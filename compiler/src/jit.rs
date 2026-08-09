@@ -37,7 +37,7 @@ use string_interner::DefaultStringInterner;
 use crate::codegen::CodegenSession;
 use crate::ir::{FuncId, Linkage};
 use crate::lower;
-use crate::{CompilerOptions, EmitKind, ContractMessages};
+use crate::{CompilerOptions, ContractMessages};
 
 /// Pointer to the JIT-compiled `main`. Same calling convention as
 /// the AOT build's exported `main` symbol — no params, single u64
@@ -177,16 +177,7 @@ pub fn compile_to_jit_main(source: &str) -> Result<JitProgram, String> {
     // synthetic placeholder. `EmitKind` is unused here (we bypass
     // `emit=...` by going straight into the codegen layer) but the
     // struct still requires it.
-    let options = CompilerOptions {
-        diagnostics_json: false,
-        input: std::path::PathBuf::from("<jit>"),
-        output: None,
-        emit: EmitKind::Executable,
-        verbose: false,
-        release: false,
-        core_modules_dir: None,
-        link_cache_dir: None,
-    };
+    let options = CompilerOptions::new(std::path::PathBuf::from("<jit>"));
     compile_to_jit_main_with_options(source, &options)
 }
 

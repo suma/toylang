@@ -533,12 +533,7 @@ pub fn check_typing_diagnostics(
         if let (Some(source), Some(location)) = (source_code, error.location.as_ref()) {
             // Calculate line and column from source
             let (line, column) = calculate_line_col_from_offset(source, location.offset as usize);
-            error.location = Some(frontend::type_checker::SourceLocation {
-                line,
-                column,
-                offset: location.offset,
-                end_offset: location.end_offset,
-            });
+            error.location = Some(location.with_line_col(line, column));
         }
         errors.push(Diagnostic::from_type_check_error(&error, diag_file));
     }
@@ -867,7 +862,13 @@ pub fn execute_program(program: &File, string_interner: &DefaultStringInterner, 
 /// in-process callers can drive the JIT and tree-walker paths in the
 /// same process without poisoning a sibling thread's run. `core_modules_dir`
 /// mirrors `--core-modules` / `TOYLANG_CORE_MODULES`.
+///
+/// `#[non_exhaustive]` on purpose: adding a field here used to break
+/// every struct-literal construction across the workspace. Callers
+/// start from [`RunOptions::default`] and set what they care about, so
+/// a new field costs one edit — the default itself.
 #[derive(Debug, Default, Clone, Copy)]
+#[non_exhaustive]
 pub struct RunOptions<'a> {
     pub jit: bool,
     pub core_modules_dir: Option<&'a std::path::Path>,

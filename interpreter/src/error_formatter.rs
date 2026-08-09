@@ -63,12 +63,8 @@ impl<'a> ErrorFormatter<'a> {
                 diagnostic.code, diagnostic.message
             )
         } else if let Some(span) = diagnostic.span {
-            let location = SourceLocation {
-                line: span.line,
-                column: span.column,
-                offset: span.offset,
-                end_offset: span.end_offset,
-            };
+            let location =
+                SourceLocation::new(span.line, span.column, span.offset, span.end_offset);
             let body = format!("[{}] {}", diagnostic.code, diagnostic.message);
             self.format_error_with_location(&body, &location)
         } else {
@@ -232,13 +228,8 @@ mod tests {
             frontend::type_decl::TypeDecl::Int64,
             frontend::type_decl::TypeDecl::String
         );
-        error.location = Some(SourceLocation {
-            line: 2,
-            column: 18,
-            offset: 35,
-            // `"string"` — the caret should span the whole literal.
-            end_offset: 43,
-        });
+        // `"string"` — the caret should span the whole literal.
+        error.location = Some(SourceLocation::new(2, 18, 35, 43));
 
         let formatted = formatter.format_type_check_error(&error);
         assert!(formatted.contains("Error at test.t:2:18:"));
@@ -261,12 +252,7 @@ mod tests {
         let source = "fn main() -> u64 {\n    val a: [u64; 2] = [1u64, 2u64]\n    a[5u64]\n}";
         let formatter = ErrorFormatter::new(source, "test.t");
         
-        let location = SourceLocation {
-            line: 3,
-            column: 5,
-            offset: 58,
-            end_offset: 65,
-        };
+        let location = SourceLocation::new(3, 5, 58, 65);
         
         let formatted = formatter.format_runtime_error("Index out of bounds", Some(&location));
         assert!(formatted.contains("Error at test.t:3:5:"));

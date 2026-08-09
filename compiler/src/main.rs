@@ -96,16 +96,14 @@ fn parse_args(args: &[String]) -> Result<CompilerOptions, String> {
         i += 1;
     }
     let input = input.ok_or_else(|| "no input file".to_string())?;
-    Ok(CompilerOptions {
-        input,
-        output,
-        emit,
-        verbose,
-        release,
-        core_modules_dir,
-        diagnostics_json,
-        link_cache_dir: None,
-    })
+    let mut options = CompilerOptions::new(input);
+    options.output = output;
+    options.emit = emit;
+    options.verbose = verbose;
+    options.release = release;
+    options.core_modules_dir = core_modules_dir;
+    options.diagnostics_json = diagnostics_json;
+    Ok(options)
 }
 
 fn parse_emit(s: &str) -> Result<EmitKind, String> {

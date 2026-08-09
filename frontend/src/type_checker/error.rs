@@ -1,7 +1,14 @@
 use crate::type_decl::TypeDecl;
 
+/// A position in a source file, with the extent of what it covers.
+///
+/// `#[non_exhaustive]` on purpose: `end_offset` was added in LLM-LOOP
+/// P2 and broke every struct-literal construction outside this crate.
+/// Build one with [`SourceLocation::new`] or [`SourceLocation::point`]
+/// so the next such addition costs one edit rather than a sweep.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct SourceLocation {
     pub line: u32,
     pub column: u32,
@@ -22,6 +29,23 @@ pub struct SourceLocation {
 }
 
 impl SourceLocation {
+    pub fn new(line: u32, column: u32, offset: u32, end_offset: u32) -> Self {
+        Self { line, column, offset, end_offset }
+    }
+
+    /// A location with no known extent -- the formatter falls back to a
+    /// one-column caret. Use only where the producer genuinely cannot
+    /// say how far the construct reaches.
+    pub fn point(line: u32, column: u32, offset: u32) -> Self {
+        Self { line, column, offset, end_offset: offset }
+    }
+
+    /// Same span, re-anchored to a recomputed line/column. The driver
+    /// recalculates these from `offset` against the real source.
+    pub fn with_line_col(self, line: u32, column: u32) -> Self {
+        Self { line, column, ..self }
+    }
+
     /// Width of the span in bytes, at least 1 so a caret is always drawn.
     pub fn width(&self) -> usize {
         (self.end_offset.saturating_sub(self.offset)).max(1) as usize

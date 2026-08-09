@@ -20,7 +20,15 @@ pub enum EmitKind {
     Clif,
 }
 
+/// Build configuration.
+///
+/// `#[non_exhaustive]` on purpose: adding a field here used to break
+/// every struct-literal construction across the workspace (tests,
+/// examples, the JIT driver — ten sites for one field). Callers go
+/// through [`CompilerOptions::new`] and assign what they need, so a new
+/// field costs exactly one edit: the default in `new`.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CompilerOptions {
     pub input: PathBuf,
     pub output: Option<PathBuf>,
@@ -52,6 +60,8 @@ pub struct CompilerOptions {
 }
 
 impl CompilerOptions {
+    /// Defaults for everything but the input path, which has no
+    /// sensible default and so stays a required argument.
     pub fn new(input: PathBuf) -> Self {
         Self {
             input,

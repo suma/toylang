@@ -30,22 +30,11 @@ fn main() {
     let core = core_dir();
     let source = "fn main() -> u64 { 42u64 }";
 
-    let opts_full = compiler::CompilerOptions {
-        diagnostics_json: false,
-        input: PathBuf::from("<jit>"),
-        output: None,
-        emit: compiler::EmitKind::Executable,
-        verbose: false,
-        release: false,
-        core_modules_dir: Some(core.clone()),
-            link_cache_dir: None,
-    };
-    let opts_no_core = compiler::CompilerOptions {
-        diagnostics_json: false,
-        core_modules_dir: None,
-            link_cache_dir: None,
-        ..opts_full.clone()
-    };
+    let mut opts_full = compiler::CompilerOptions::new(PathBuf::from("<jit>"));
+    opts_full.core_modules_dir = Some(core.clone());
+    let mut opts_no_core = opts_full.clone();
+    opts_no_core.core_modules_dir = None;
+    opts_no_core.link_cache_dir = None;
 
     // Warm up file-system caches and lazy statics.
     for _ in 0..3 {

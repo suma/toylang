@@ -136,11 +136,10 @@ fn main() {
     };
 
     let jit = matches!(env::var("INTERPRETER_JIT").as_deref(), Ok("1"));
-    let options = RunOptions {
-        jit,
-        core_modules_dir: core_modules_dir.as_deref(),
-        diagnostics_json,
-    };
+    let mut options = RunOptions::default();
+    options.jit = jit;
+    options.core_modules_dir = core_modules_dir.as_deref();
+    options.diagnostics_json = diagnostics_json;
     match interpreter::run_source(&source, &filename, &options) {
         Ok(RunOutcome { exit_code: Some(code) }) => process::exit(code),
         Ok(RunOutcome { exit_code: None }) => {}

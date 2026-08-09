@@ -26,7 +26,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{LazyLock, Mutex};
 
-use compiler::{compile_file, compile_to_jit_main_with_options, CompilerOptions, EmitKind};
+use compiler::{compile_file, compile_to_jit_main_with_options, CompilerOptions};
 use interpreter::object::Object;
 use interpreter::{RunOptions, RunOutcome};
 
@@ -44,24 +44,12 @@ static JIT_CACHE: LazyLock<Mutex<HashMap<(String, bool), i32>>> =
 /// back to the full options on failure. Same shape as
 /// `e2e_batched.rs::compile_to_jit_lazy_core`.
 fn compile_jit_lazy_core(source: &str) -> Result<compiler::JitProgram, String> {
-    let lite = CompilerOptions {
-        diagnostics_json: false,
-        input: PathBuf::from("<jit>"),
-        output: None,
-        emit: EmitKind::Executable,
-        verbose: false,
-        release: false,
-        core_modules_dir: None,
-        link_cache_dir: None,
-    };
+    let lite = CompilerOptions::new(PathBuf::from("<jit>"));
     if let Ok(prog) = compile_to_jit_main_with_options(source, &lite) {
         return Ok(prog);
     }
-    let full = CompilerOptions {
-        diagnostics_json: false,
-        core_modules_dir: Some(core_modules_dir()),
-        ..lite
-    };
+    let mut full = lite.clone();
+    full.core_modules_dir = Some(core_modules_dir());
     compile_to_jit_main_with_options(source, &full)
 }
 
@@ -169,11 +157,9 @@ fn jit_exit_code(source: &str, _stem: &str, with_core: bool) -> i32 {
         }
     }
     let core_dir = if with_core { Some(core_modules_dir()) } else { None };
-    let options = RunOptions {
-        jit: true,
-        core_modules_dir: core_dir.as_deref(),
-        diagnostics_json: false,
-    };
+    let mut options = RunOptions::default();
+    options.jit = true;
+    options.core_modules_dir = core_dir.as_deref();
     let result = match interpreter::run_source(source, "test.t", &options) {
         Ok(RunOutcome { exit_code: Some(code) }) => code & 0xff,
         Ok(RunOutcome { exit_code: None }) => 0,
@@ -200,16 +186,10 @@ fn try_compiler_exit_code(source: &str, stem: &str, with_core: bool) -> Option<i
     let src_path = unique_path(&format!("{stem}.t"));
     std::fs::write(&src_path, source).expect("write source");
     let exe_path = unique_path(stem);
-    let options = CompilerOptions {
-        diagnostics_json: false,
-        input: src_path.clone(),
-        output: Some(exe_path.clone()),
-        emit: EmitKind::Executable,
-        verbose: false,
-        release: false,
-        core_modules_dir: if with_core { Some(core_modules_dir()) } else { None },
-        link_cache_dir: Some(link_cache_dir_for_tests()),
-    };
+    let mut options = CompilerOptions::new(src_path.clone());
+    options.output = Some(exe_path.clone());
+    options.core_modules_dir = if with_core { Some(core_modules_dir()) } else { None };
+    options.link_cache_dir = Some(link_cache_dir_for_tests());
     let compile_ok = compile_file(&options).is_ok();
     let result = if compile_ok {
         let status = Command::new(&exe_path).status().expect("spawn binary");
@@ -315,11 +295,8 @@ fn assert_consistent(source: &str, stem: &str) {
 /// `with_core` — same convention as `jit_exit_code`.
 fn interpreter_stdout(source: &str, _stem: &str, with_core: bool) -> String {
     let core_dir = if with_core { Some(core_modules_dir()) } else { None };
-    let options = RunOptions {
-        jit: false,
-        core_modules_dir: core_dir.as_deref(),
-        diagnostics_json: false,
-    };
+    let mut options = RunOptions::default();
+    options.core_modules_dir = core_dir.as_deref();
     let (result, captured) = interpreter::output::with_capture(|| {
         interpreter::run_source(source, "test.t", &options)
     });
@@ -334,11 +311,9 @@ fn interpreter_stdout(source: &str, _stem: &str, with_core: bool) -> String {
 /// helpers fire. They route through the same thread-local sink.
 fn jit_stdout(source: &str, _stem: &str, with_core: bool) -> String {
     let core_dir = if with_core { Some(core_modules_dir()) } else { None };
-    let options = RunOptions {
-        jit: true,
-        core_modules_dir: core_dir.as_deref(),
-        diagnostics_json: false,
-    };
+    let mut options = RunOptions::default();
+    options.jit = true;
+    options.core_modules_dir = core_dir.as_deref();
     let (result, captured) = interpreter::output::with_capture(|| {
         interpreter::run_source(source, "test.t", &options)
     });
@@ -356,16 +331,10 @@ fn try_compiler_stdout(source: &str, stem: &str, with_core: bool) -> Option<Stri
     let src_path = unique_path(&format!("{stem}.t"));
     std::fs::write(&src_path, source).expect("write source");
     let exe_path = unique_path(stem);
-    let options = CompilerOptions {
-        diagnostics_json: false,
-        input: src_path.clone(),
-        output: Some(exe_path.clone()),
-        emit: EmitKind::Executable,
-        verbose: false,
-        release: false,
-        core_modules_dir: if with_core { Some(core_modules_dir()) } else { None },
-        link_cache_dir: Some(link_cache_dir_for_tests()),
-    };
+    let mut options = CompilerOptions::new(src_path.clone());
+    options.output = Some(exe_path.clone());
+    options.core_modules_dir = if with_core { Some(core_modules_dir()) } else { None };
+    options.link_cache_dir = Some(link_cache_dir_for_tests());
     let result = if compile_file(&options).is_ok() {
         let out = Command::new(&exe_path).output().expect("spawn binary");
         Some(String::from_utf8_lossy(&out.stdout).into_owned())

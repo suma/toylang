@@ -74,16 +74,10 @@ fn try_compile_and_run(
     let src_path = unique_path(&format!("{stem}.t"));
     std::fs::write(&src_path, source).expect("write source");
     let exe_path = unique_path(stem);
-    let options = CompilerOptions {
-        diagnostics_json: false,
-        input: src_path.clone(),
-        output: Some(exe_path.clone()),
-        emit: EmitKind::Executable,
-        verbose: false,
-        release: false,
-        core_modules_dir: core_dir,
-            link_cache_dir: Some(link_cache_dir_for_tests()),
-    };
+    let mut options = CompilerOptions::new(src_path.clone());
+    options.output = Some(exe_path.clone());
+    options.core_modules_dir = core_dir;
+    options.link_cache_dir = Some(link_cache_dir_for_tests());
     let result = if compile_file(&options).is_ok() {
         let status = Command::new(&exe_path)
             .status()
@@ -121,16 +115,9 @@ fn compile_and_capture(source: &str, stem: &str) -> Output {
     let src_path = unique_path(&format!("{stem}.t"));
     std::fs::write(&src_path, source).expect("write source");
     let exe_path = unique_path(stem);
-    let options = CompilerOptions {
-        diagnostics_json: false,
-        input: src_path.clone(),
-        output: Some(exe_path.clone()),
-        emit: EmitKind::Executable,
-        verbose: false,
-        release: false,
-        core_modules_dir: None,
-            link_cache_dir: Some(link_cache_dir_for_tests()),
-    };
+    let mut options = CompilerOptions::new(src_path.clone());
+    options.output = Some(exe_path.clone());
+    options.link_cache_dir = Some(link_cache_dir_for_tests());
     compile_file(&options).expect("compile_file failed");
     let output = Command::new(&exe_path).output().expect("spawn binary");
     let _ = std::fs::remove_file(&src_path);
@@ -607,16 +594,9 @@ fn release_flag_skips_requires_check() {
     let src_path = unique_path("rel_chk.t");
     std::fs::write(&src_path, src).unwrap();
     let exe_chk = unique_path("rel_chk");
-    let opts_chk = CompilerOptions {
-        diagnostics_json: false,
-        input: src_path.clone(),
-        output: Some(exe_chk.clone()),
-        emit: EmitKind::Executable,
-        verbose: false,
-        release: false,
-        core_modules_dir: None,
-            link_cache_dir: Some(link_cache_dir_for_tests()),
-    };
+    let mut opts_chk = CompilerOptions::new(src_path.clone());
+    opts_chk.output = Some(exe_chk.clone());
+    opts_chk.link_cache_dir = Some(link_cache_dir_for_tests());
     compile_file(&opts_chk).expect("compile checked");
     let out_chk = Command::new(&exe_chk).output().expect("spawn checked");
     assert_eq!(out_chk.status.code(), Some(1));
@@ -624,16 +604,10 @@ fn release_flag_skips_requires_check() {
     // 2) release build: predicate gone, body runs and returns -1 (cast
     //    to u64 → 0xff... ; & 0xff = 0xff = 255).
     let exe_rel = unique_path("rel_rel");
-    let opts_rel = CompilerOptions {
-        diagnostics_json: false,
-        input: src_path.clone(),
-        output: Some(exe_rel.clone()),
-        emit: EmitKind::Executable,
-        verbose: false,
-        release: true,
-        core_modules_dir: None,
-            link_cache_dir: Some(link_cache_dir_for_tests()),
-    };
+    let mut opts_rel = CompilerOptions::new(src_path.clone());
+    opts_rel.output = Some(exe_rel.clone());
+    opts_rel.release = true;
+    opts_rel.link_cache_dir = Some(link_cache_dir_for_tests());
     compile_file(&opts_rel).expect("compile release");
     let out_rel = Command::new(&exe_rel).output().expect("spawn release");
     assert_eq!(out_rel.status.code(), Some(0xff));
@@ -779,16 +753,10 @@ fn emit_object_writes_o_file() {
     let src_path = unique_path("emit_obj.t");
     std::fs::write(&src_path, "fn main() -> u64 { 1u64 }\n").unwrap();
     let obj_path = unique_path("emit_obj.o");
-    let options = CompilerOptions {
-        diagnostics_json: false,
-        input: src_path.clone(),
-        output: Some(obj_path.clone()),
-        emit: EmitKind::Object,
-        verbose: false,
-        release: false,
-        core_modules_dir: None,
-            link_cache_dir: Some(link_cache_dir_for_tests()),
-    };
+    let mut options = CompilerOptions::new(src_path.clone());
+    options.output = Some(obj_path.clone());
+    options.emit = EmitKind::Object;
+    options.link_cache_dir = Some(link_cache_dir_for_tests());
     compile_file(&options).expect("compile_file failed");
     let metadata = std::fs::metadata(&obj_path).expect("object file exists");
     assert!(metadata.len() > 0, "object file should be non-empty");
@@ -807,16 +775,10 @@ fn emit_ir_writes_compiler_ir() {
     let src_path = unique_path("emit_ir.t");
     std::fs::write(&src_path, "fn main() -> u64 { 99u64 }\n").unwrap();
     let ir_path = unique_path("emit_ir.ir");
-    let options = CompilerOptions {
-        diagnostics_json: false,
-        input: src_path.clone(),
-        output: Some(ir_path.clone()),
-        emit: EmitKind::Ir,
-        verbose: false,
-        release: false,
-        core_modules_dir: None,
-            link_cache_dir: Some(link_cache_dir_for_tests()),
-    };
+    let mut options = CompilerOptions::new(src_path.clone());
+    options.output = Some(ir_path.clone());
+    options.emit = EmitKind::Ir;
+    options.link_cache_dir = Some(link_cache_dir_for_tests());
     compile_file(&options).expect("compile_file failed");
     let text = std::fs::read_to_string(&ir_path).expect("ir file exists");
     assert!(text.contains("export function main()"), "ir text should declare `main`: {text}");
@@ -835,16 +797,10 @@ fn emit_clif_writes_cranelift_ir() {
     let src_path = unique_path("emit_clif.t");
     std::fs::write(&src_path, "fn main() -> u64 { 7u64 }\n").unwrap();
     let clif_path = unique_path("emit_clif.clif");
-    let options = CompilerOptions {
-        diagnostics_json: false,
-        input: src_path.clone(),
-        output: Some(clif_path.clone()),
-        emit: EmitKind::Clif,
-        verbose: false,
-        release: false,
-        core_modules_dir: None,
-            link_cache_dir: Some(link_cache_dir_for_tests()),
-    };
+    let mut options = CompilerOptions::new(src_path.clone());
+    options.output = Some(clif_path.clone());
+    options.emit = EmitKind::Clif;
+    options.link_cache_dir = Some(link_cache_dir_for_tests());
     compile_file(&options).expect("compile_file failed");
     let text = std::fs::read_to_string(&clif_path).expect("clif file exists");
     // Cranelift IR uses `function` keyword followed by the signature,

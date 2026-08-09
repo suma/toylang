@@ -40,7 +40,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use compiler::{compile_to_jit_main_with_options, CompilerOptions, EmitKind};
+use compiler::{compile_to_jit_main_with_options, CompilerOptions};
 
 /// Skip everything when the operator opts out via
 /// `COMPILER_E2E=skip`. Originally there because the AOT
@@ -86,16 +86,9 @@ impl SubTest {
 /// `prelude` (see `core/std/`) — without the dir, the
 /// type-checker rejects every such test as "method not found".
 fn jit_options_with_core() -> CompilerOptions {
-    CompilerOptions {
-        diagnostics_json: false,
-        input: PathBuf::from("<jit>"),
-        output: None,
-        emit: EmitKind::Executable,
-        verbose: false,
-        release: false,
-        core_modules_dir: Some(core_modules_dir()),
-            link_cache_dir: None,
-    }
+    let mut options = CompilerOptions::new(PathBuf::from("<jit>"));
+    options.core_modules_dir = Some(core_modules_dir());
+    options
 }
 
 /// JIT compile with **lazy core-module loading** — try once with
@@ -113,12 +106,9 @@ fn compile_to_jit_lazy_core(
     source: &str,
     full_opts: &CompilerOptions,
 ) -> Result<compiler::JitProgram, String> {
-    let no_core = CompilerOptions {
-        diagnostics_json: false,
-        core_modules_dir: None,
-            link_cache_dir: None,
-        ..full_opts.clone()
-    };
+    let mut no_core = full_opts.clone();
+    no_core.core_modules_dir = None;
+    no_core.link_cache_dir = None;
     if let Ok(prog) = compile_to_jit_main_with_options(source, &no_core) {
         return Ok(prog);
     }

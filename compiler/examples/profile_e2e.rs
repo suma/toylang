@@ -55,16 +55,10 @@ fn main() {
             std::fs::write(&src_path, src).unwrap();
 
             // Phase 1: compile to object only (no linking).
-            let obj_opts = CompilerOptions {
-        diagnostics_json: false,
-                input: src_path.clone(),
-                output: Some(obj_path.clone()),
-                emit: EmitKind::Object,
-                verbose: false,
-                release: false,
-                core_modules_dir: Some(core.clone()),
-            link_cache_dir: None,
-            };
+            let mut obj_opts = CompilerOptions::new(src_path.clone());
+            obj_opts.output = Some(obj_path.clone());
+            obj_opts.emit = EmitKind::Object;
+            obj_opts.core_modules_dir = Some(core.clone());
             let t_obj0 = Instant::now();
             compile_file(&obj_opts).expect("compile object");
             let obj_dur = t_obj0.elapsed();
@@ -73,16 +67,9 @@ fn main() {
             // Phase 2: full executable (compile + link). The
             // difference compile_file_exec - compile_file_obj
             // is the link cost (cc invocation, code-signing, etc.).
-            let exe_opts = CompilerOptions {
-        diagnostics_json: false,
-                input: src_path.clone(),
-                output: Some(exe_path.clone()),
-                emit: EmitKind::Executable,
-                verbose: false,
-                release: false,
-                core_modules_dir: Some(core.clone()),
-            link_cache_dir: None,
-            };
+            let mut exe_opts = CompilerOptions::new(src_path.clone());
+            exe_opts.output = Some(exe_path.clone());
+            exe_opts.core_modules_dir = Some(core.clone());
             let t_exe0 = Instant::now();
             compile_file(&exe_opts).expect("compile exec");
             let exe_dur = t_exe0.elapsed();

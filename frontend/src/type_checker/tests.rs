@@ -23,6 +23,7 @@ mod tests {
             function_checking: FunctionCheckingState::new(),
             optimization: PerformanceOptimization::new(),
             errors: Vec::new(),
+            recovery_enabled: false,
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
             source_code: None,
             current_package: None,

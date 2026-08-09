@@ -350,9 +350,6 @@ pub fn check_typing_with_core_modules(
     core_modules_dir: Option<&std::path::Path>,
 ) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = vec![];
-    
-    // Clone string_interner for later use
-    let string_interner_for_names = string_interner.clone();
 
     // Snapshot user-function count BEFORE integration so we can
     // re-extract the user-authored slice once integration + alias
@@ -482,38 +479,60 @@ pub fn check_typing_with_core_modules(
         tc.context.set_var(c.name, c.type_decl.clone());
     }
 
+    // LLM-LOOP P1: let a failing statement be recorded rather than
+    // abort its whole function, so one run reports every independent
+    // problem instead of only the first one per function. The errors
+    // land in `tc.errors`; `type_check` keeps returning `Err` for
+    // failures raised around a body (reference-typed return position,
+    // malformed body, non-bool `requires`), so both are collected.
+    tc.recovery_enabled = true;
+
     // Process impl blocks and collect errors
     errors.extend(process_impl_blocks_extracted(&mut tc, &impl_blocks, &formatter));
 
     // Process functions
+    let mut fn_errors: Vec<frontend::type_checker::TypeCheckError> = Vec::new();
     functions.iter().for_each(|func| {
-        let name = string_interner_for_names.resolve(func.name).unwrap_or("<NOT_FOUND>");
         // Commented out for performance benchmarking
         // println!("Checking function {}", name);
-        let r = tc.type_check(func.clone());
-        if let Err(mut error) = r {
-            
-            // Add source location information if available
-            if let (Some(source), Some(location)) = (source_code, error.location.as_ref()) {
-                // Calculate line and column from source
-                let (line, column) = calculate_line_col_from_offset(source, location.offset as usize);
-                error.location = Some(frontend::type_checker::SourceLocation {
-                    line,
-                    column,
-                    offset: location.offset,
-                });
-            }
-            
-            // Use formatter if available, otherwise fallback to simple format
-            let formatted_error = if let Some(ref fmt) = formatter {
-                fmt.format_type_check_error(&error)
-            } else {
-                format!("type_check failed in {name}: {error}")
-            };
-            
-            errors.push(formatted_error);
+        if let Err(error) = tc.type_check(func.clone()) {
+            fn_errors.push(error);
         }
     });
+    tc.recovery_enabled = false;
+    fn_errors.append(&mut tc.errors);
+
+    // Report in source order. A call site can pull a callee's body
+    // forward (`type_check_forward_ref`), so collection order doesn't
+    // follow the file. Errors with no location sort last -- there is
+    // nothing to place them by.
+    fn_errors.sort_by_key(|e| {
+        e.location
+            .map(|loc| (0u8, loc.line, loc.column))
+            .unwrap_or((1, 0, 0))
+    });
+
+    for mut error in fn_errors {
+        // Add source location information if available
+        if let (Some(source), Some(location)) = (source_code, error.location.as_ref()) {
+            // Calculate line and column from source
+            let (line, column) = calculate_line_col_from_offset(source, location.offset as usize);
+            error.location = Some(frontend::type_checker::SourceLocation {
+                line,
+                column,
+                offset: location.offset,
+            });
+        }
+
+        // Use formatter if available, otherwise fallback to simple format
+        let formatted_error = if let Some(ref fmt) = formatter {
+            fmt.format_type_check_error(&error)
+        } else {
+            format!("type_check failed: {error}")
+        };
+
+        errors.push(formatted_error);
+    }
 
     if errors.is_empty() {
         Ok(())

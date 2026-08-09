@@ -9,9 +9,23 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.errors.push(error);
     }
 
-    /// Type check program with multiple error collection
+    /// Type check program with multiple error collection.
+    ///
+    /// LLM-LOOP P1: recovery is statement-level. Before, the loops below
+    /// were the only recovery point, so a function that failed reported
+    /// exactly one error no matter how many its body contained and the
+    /// caller had to re-run after every single fix. With
+    /// `recovery_enabled` set, a failing statement is recorded and
+    /// checking continues with the next one, so one run reports every
+    /// independent problem in the program.
+    ///
+    /// The loops still catch errors themselves: recovery covers
+    /// statements inside a body, not failures raised around it (a
+    /// reference-typed return position, a malformed body, a `requires`
+    /// clause that isn't bool).
     pub fn check_program_multiple_errors(&mut self, program: &File) -> error::MultipleTypeCheckResult<()> {
         self.errors.clear();
+        let prev_recovery = std::mem::replace(&mut self.recovery_enabled, true);
 
         // Collect errors during type checking instead of returning immediately
         for func in &program.function {
@@ -26,6 +40,19 @@ impl<'a> TypeCheckerVisitor<'a> {
                 self.errors.push(e);
             }
         }
+
+        self.recovery_enabled = prev_recovery;
+
+        // Report in source order. Functions are checked in declaration
+        // order but a call site can pull a callee's body forward
+        // (`type_check_forward_ref`), so collection order doesn't match
+        // the file. Errors without a location keep their relative order
+        // and sort last -- there is nothing to place them by.
+        self.errors.sort_by_key(|e| {
+            e.location
+                .map(|loc| (0u8, loc.line, loc.column))
+                .unwrap_or((1, 0, 0))
+        });
 
         if self.errors.is_empty() {
             error::MultipleTypeCheckResult::success(())

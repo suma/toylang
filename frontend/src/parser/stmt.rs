@@ -425,12 +425,17 @@ fn desugar_for_in_iterator(
 }
 
 pub fn parse_var_def(parser: &mut Parser) -> ParserResult<StmtRef> {
+    // Capture the position of the `val` / `var` keyword before anything
+    // is consumed. Reading it after the rhs has been parsed (which is
+    // what this used to do) leaves the cursor on the *next* statement,
+    // so every diagnostic anchored to a binding pointed one statement
+    // too far down the file.
+    let decl_location = parser.current_source_location();
     let is_val = match parser.peek() {
         Some(Kind::Val) => true,
         Some(Kind::Var) => false,
         _ => {
-            let location = parser.current_source_location();
-            return Err(ParserError::generic_error(location, "parse_var_def: expected val or var".to_string()))
+            return Err(ParserError::generic_error(decl_location, "parse_var_def: expected val or var".to_string()))
         },
     };
     parser.next();
@@ -499,11 +504,10 @@ pub fn parse_var_def(parser: &mut Parser) -> ParserResult<StmtRef> {
             return Err(ParserError::generic_error(location, format!("parse_var_def: expected expression but {:?}", parser.peek())))
         },
     };
-    let location = parser.current_source_location();
     if is_val {
-        Ok(parser.ast_builder.val_stmt(ident, Some(ty), rhs.unwrap(), Some(location)))
+        Ok(parser.ast_builder.val_stmt(ident, Some(ty), rhs.unwrap(), Some(decl_location)))
     } else {
-        Ok(parser.ast_builder.var_stmt(ident, Some(ty), rhs, Some(location)))
+        Ok(parser.ast_builder.var_stmt(ident, Some(ty), rhs, Some(decl_location)))
     }
 }
 

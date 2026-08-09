@@ -17,6 +17,13 @@ pub struct TypeCheckerVisitor<'a> {
     pub function_checking: FunctionCheckingState,
     pub optimization: PerformanceOptimization,
     pub errors: Vec<TypeCheckError>,
+    /// LLM-LOOP P1: when set, a statement that fails to type check is
+    /// pushed onto `errors` and checking continues with the next
+    /// statement instead of unwinding out of the whole function. Only
+    /// `check_program_multiple_errors` turns this on; the plain
+    /// `type_check` API keeps its fail-fast `Result` contract so
+    /// existing callers are unaffected.
+    pub recovery_enabled: bool,
     pub source_code: Option<&'a str>,
     // Module system support
     pub current_package: Option<Vec<DefaultSymbol>>,
@@ -52,6 +59,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             function_checking: FunctionCheckingState::new(),
             optimization: PerformanceOptimization::new(),
             errors: Vec::new(),
+            recovery_enabled: false,
             source_code: None,
             current_package: None,
             imported_modules: HashMap::new(),
@@ -108,6 +116,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             function_checking: FunctionCheckingState::new(),
             optimization: PerformanceOptimization::new(),
             errors: Vec::new(),
+            recovery_enabled: false,
             source_code: None,
             current_package: None,
             imported_modules: HashMap::new(),
@@ -323,6 +332,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             function_checking: FunctionCheckingState::new(),
             optimization: PerformanceOptimization::new(),
             errors: Vec::new(),
+            recovery_enabled: false,
             source_code: None,
             current_package: None,
             imported_modules: HashMap::new(),
@@ -528,17 +538,30 @@ impl<'a> TypeCheckerVisitor<'a> {
             self.type_inference.type_hint = Some(return_type.clone());
         }
 
+        // LLM-LOOP P1: remember how many errors were already collected so
+        // the return-type check below can tell whether *this* body
+        // contributed any. A body that failed produces a meaningless
+        // `last`, and reporting a return-type mismatch on top of the real
+        // error is pure noise.
+        let errors_before_body = self.errors.len();
+
         for stmt in statements.iter() {
             let stmt_obj = self.core.stmt_pool.get(stmt).ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference"))?;
             let res = stmt_obj.clone().accept_stmt(self);
-            if res.is_err() {
-                // Restore bounds so a following type-check doesn't inherit them.
-                self.context.current_fn_generic_bounds = prev_bounds;
-                return res;
-            } else {
-                last = res?;
+            match res {
+                Ok(ty) => last = ty,
+                Err(e) if self.recovery_enabled => {
+                    self.recover_stmt_error(stmt, e);
+                    last = TypeDecl::Unknown;
+                }
+                Err(e) => {
+                    // Restore bounds so a following type-check doesn't inherit them.
+                    self.context.current_fn_generic_bounds = prev_bounds;
+                    return Err(e);
+                }
             }
         }
+        let body_had_errors = self.errors.len() > errors_before_body;
         self.pop_context();
         self.context.current_fn_generic_bounds = prev_bounds;
         self.function_checking.call_depth -= 1;
@@ -552,8 +575,12 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Apply all accumulated expression transformations
         self.apply_expr_transformations();
 
-        // Check if the function body type matches the declared return type
-        if let Some(ref expected_return_type) = func.return_type {
+        // Check if the function body type matches the declared return type.
+        // LLM-LOOP P1: skipped when the body already reported an error --
+        // `last` is then a recovery placeholder rather than the real body
+        // type, so any mismatch found here is a cascade, not a defect.
+        if let Some(ref expected_return_type) = func.return_type
+            && !body_had_errors {
             let types_match = match (&last, expected_return_type) {
                 // Special case for arrays: if actual type has size 0 (dynamic), check if element types are compatible
                 (TypeDecl::Array(actual_elements, 0), TypeDecl::Array(expected_elements, _)) => {

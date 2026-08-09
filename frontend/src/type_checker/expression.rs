@@ -379,6 +379,18 @@ impl<'a> TypeCheckerVisitor<'a> {
             rhs_obj.clone().accept_expr(self)?
         };
 
+        // `Unknown` is the checker's poison type: it marks an operand
+        // whose real type could not be determined, either because it
+        // diverges (`panic("...")`) or because its defining statement
+        // already reported an error and LLM-LOOP P1 recovery bound it to
+        // `Unknown` to keep checking. Either way the operands cannot be
+        // compared usefully, and reporting "expected Unknown, but got
+        // UInt64" would bury the real diagnostic under noise that names
+        // an internal type the user never wrote. Propagate instead.
+        if lhs_ty == TypeDecl::Unknown || rhs_ty == TypeDecl::Unknown {
+            return Ok(TypeDecl::Unknown);
+        }
+
         // Resolve concrete types from generics / Number placeholders.
         // Shift ops get their own resolver because the rhs must be UInt64
         // regardless of any Number context hint.
@@ -654,6 +666,50 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
     /// Type check block expressions
+    /// Type check one statement of a block. Split out of `visit_block` so
+    /// every `?` inside it lands on the loop's error arm rather than
+    /// unwinding past it -- statement-level recovery (LLM-LOOP P1) only
+    /// works if the whole statement is one fallible unit.
+    fn visit_block_stmt(
+        &mut self,
+        s: &StmtRef,
+        last_empty: &mut bool,
+        last: &Option<TypeDecl>,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        let stmt = self.core.stmt_pool.get(s)
+            .ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference in block"))?;
+
+        match stmt {
+            Stmt::Return(None) => Ok(TypeDecl::Unit),
+            Stmt::Return(ret_ty) => {
+                if let Some(e) = ret_ty {
+                    let expr_obj = self.core.expr_pool.get(&e)
+                        .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in return"))?;
+                    let ty = expr_obj.clone().accept_expr(self)?;
+                    if *last_empty {
+                        *last_empty = false;
+                        Ok(ty)
+                    } else if let Some(last_ty) = last.clone() {
+                        if last_ty == ty {
+                            Ok(ty)
+                        } else {
+                            Err(TypeCheckError::type_mismatch(last_ty, ty).with_context("return statement"))
+                        }
+                    } else {
+                        Ok(ty)
+                    }
+                } else {
+                    Ok(TypeDecl::Unit)
+                }
+            }
+            _ => {
+                let stmt_obj = self.core.stmt_pool.get(s)
+                    .ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference"))?;
+                stmt_obj.clone().accept_stmt(self)
+            }
+        }
+    }
+
     pub fn visit_block(&mut self, statements: &Vec<StmtRef>) -> Result<TypeDecl, TypeCheckError> {
         let mut last_empty = true;
         let mut last: Option<TypeDecl> = None;
@@ -675,41 +731,14 @@ impl<'a> TypeCheckerVisitor<'a> {
         // This code assumes Block(expression) don't make nested function
         // so `return` expression always return for this context.
         for s in statements.iter() {
-            let stmt = self.core.stmt_pool.get(s)
-                .ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference in block"))?;
-            
-            let stmt_type = match stmt {
-                Stmt::Return(None) => Ok(TypeDecl::Unit),
-                Stmt::Return(ret_ty) => {
-                    if let Some(e) = ret_ty {
-                        let expr_obj = self.core.expr_pool.get(&e)
-                            .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in return"))?;
-                        let ty = expr_obj.clone().accept_expr(self)?;
-                        if last_empty {
-                            last_empty = false;
-                            Ok(ty)
-                        } else if let Some(last_ty) = last.clone() {
-                            if last_ty == ty {
-                                Ok(ty)
-                            } else {
-                                return Err(TypeCheckError::type_mismatch(last_ty, ty).with_context("return statement"));
-                            }
-                        } else {
-                            Ok(ty)
-                        }
-                    } else {
-                        Ok(TypeDecl::Unit)
-                    }
-                }
-                _ => {
-                    let stmt_obj = self.core.stmt_pool.get(s)
-                        .ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference"))?;
-                    stmt_obj.clone().accept_stmt(self)
-                }
-            };
-
-            match stmt_type {
+            match self.visit_block_stmt(s, &mut last_empty, &last) {
                 Ok(def_ty) => last = Some(def_ty),
+                // LLM-LOOP P1: record and move on to the next statement so
+                // one bad statement doesn't hide the rest of the block.
+                Err(e) if self.recovery_enabled => {
+                    self.recover_stmt_error(s, e);
+                    last = Some(TypeDecl::Unknown);
+                }
                 Err(e) => return Err(e),
             }
         }

@@ -5,6 +5,7 @@
 > 詳細は git log / commit message を参照。本セクションは直近マイルストーンの 1 行サマリのみ保持する。
 
 ### 2026-08-09
+- **LLM-LOOP P1: 診断の一括報告 (文単位のエラー回復)** — 型検査の回復粒度が関数単位だったため、1 関数に複数エラーがあっても **1 件しか報告されず**、修正 1 件につき 1 往復かかっていた。`TypeCheckerVisitor::recovery_enabled` フラグを新設し、ON のとき失敗した文を `recover_stmt_error` に吸収させて次の文へ進むようにした (OFF がデフォルトなので既存の `type_check` fail-fast 契約は不変)。回復点は **2 箇所必要**: 関数本体のループ (`visitor.rs::type_check`) とネストブロックのループ (`expression.rs::visit_block`、後者は `if` / `while` body を通る)。`visit_block` の文処理は `visit_block_stmt` に抽出 — 内部の `?` が回復点を飛び越えて unwind するため、文全体を 1 つの fallible 単位にする必要がある。報告はソース位置でソート (`type_check_forward_ref` が callee body を先に検査するので収集順はファイル順と一致しない)。**カスケード抑制も同時に実装**: (1) 失敗した `val` / `var` を `Unknown` 束縛 (でないと以降の全参照が「変数が見つからない」を出す)、(2) `visit_binary` でオペランドが `Unknown` なら `Unknown` を返す (でないと `z + 1u64` が「expected Unknown, but got UInt64」というユーザが書いていない内部型名を出す)、(3) body がエラーを出した関数では戻り値型照合をスキップ。**併せてパーサのバグを修正**: `parse_var_def` が `val` / `var` の位置を rhs パース後に取得していたため、束縛に紐づく診断がすべて 1 文下を指していた (location が付いていない間は不可視だったが、P1 で付くようになると間違った行を指す)。回帰テスト `interpreter/tests/diagnostics_recovery_tests.rs` 10 件。1594 → **1604 tests pass** (0 regression)。
 - **LLM-LOOP P0: bare-name 呼び出しのレキシカルスコープ修正** — 関数型のローカル束縛 (クロージャ引数 / `val f = fn(...)`) がグローバル関数テーブルより**後**に引かれていたため、同名のトップレベル関数が stdlib のクロージャ呼び出し箇所を乗っ取っていた。`core/std/option.t::map` / `result.t::map` / `map_err` はクロージャ引数を `f(v)` / `f()` の形で呼ぶので、ユーザが `fn f(..)` を定義しただけで**そのプログラム全体が型検査を通らなくなる** (`Function 'f' argument count mismatch`、しかも location 表示なし)。3 バックエンドすべてが独立に同じ順序ミスを持っていたので 3 箇所を修正: `frontend/src/type_checker/expression.rs::visit_call` (型検査)、`interpreter/src/evaluation/call.rs::evaluate_function_call` (tree-walker)、`compiler_lower/src/call.rs::resolve_call_target` + `type_inference.rs` (AOT / IR VM / compiler-side JIT — capturing closure では暗黙 env 引数のぶん arity がずれ、cranelift verifier error になっていた)。関数型でないローカル束縛 (`val h = 5i64`) は shadow しないので通常の呼び出しは影響なし。回帰テスト: `interpreter/tests/closure_tests.rs` 4 件 + `compiler/tests/consistency.rs` 3-way 一致 3 件。1587 → **1594 tests pass** (0 regression)。
 - **LLM_FEEDBACK_LOOP.md 新設** — LLM エージェントの試行錯誤ループを速くするための設計文書 (`design-docs/LLM_FEEDBACK_LOOP.md`)。現状の診断品質を実測 (エラーの回復粒度が関数単位で 1 件しか出ない / location なしの診断が多数 / `SourceLocation` が span を持たない / stdlib 由来エラーがユーザに帰着しない / panic に位置情報なし) して P0〜P7 に Phase 分割。
 
@@ -211,7 +212,7 @@ TEST-PERF. **テスト実行時間改善** (2026-05-16 プロファイル):
 
 LLM-LOOP. **LLM の試行錯誤ループ高速化** — 設計は `design-docs/LLM_FEEDBACK_LOOP.md`。
    - ✅ **P0: bare-name 呼び出しのレキシカルスコープ修正** — 2026-08-09 完了 (上記「完了済み」参照)
-   - **P1: 診断の一括報告** — `check_program_multiple_errors` (`frontend/src/type_checker/module_access.rs:13`) の回復粒度が関数単位なので、1 関数に複数エラーがあっても 1 件しか出ない。文単位に下げると往復回数が N → 1 になる。優先度 ★★★
+   - ✅ **P1: 診断の一括報告** — 2026-08-09 完了 (上記「完了済み」参照)
    - **P2: Span 化 + 全診断への location 強制** — `SourceLocation` が点でしか位置を持たないため caret 幅が引けず、`ErrorFormatter::find_error_position_in_line` がメッセージ文字列から識別子を推測している。加えて `TypeCheckError::location` が `Option` なので付け忘れが構造的に起きる (エラー生成 209 箇所に対し `error_with_location` 呼び出しは 35 箇所)。優先度 ★★★
    - **P3: 構造化診断出力 (`--diagnostics=json`) + machine-applicable な修正提案** — 優先度 ★★
    - **P4: 言語組み込みテスト (`test` ブロック + 値を表示する `assert_eq`)** — 「検討中の機能」の同項目を具体化。優先度 ★★

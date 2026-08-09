@@ -10,7 +10,7 @@ FFI_PLAN.md / ALLOCATOR_PLAN.md / DYN_TRAIT_AOT.md と同じく
 
 | Phase | Scope | Status |
 |---|---|---|
-| **P0** | 致命的な診断バグの修正 (glue bug / location 欠落) | 進行中 |
+| **P0** | 致命的な診断バグの修正 (bare-name 解決順) | ✅ 2026-08-09 |
 | **P1** | 診断の一括報告 (文単位のエラー回復) | 未着手 |
 | **P2** | Span 化 + 全診断への location 強制 | 未着手 |
 | **P3** | 構造化診断出力 (`--diagnostics=json`) + 修正提案 | 未着手 |
@@ -248,21 +248,31 @@ LLM がテストを 1 行も書かずに反例を得られる。これは他言�
 
 ## Phase 詳細
 
-### P0 — 致命的な診断バグの修正 (進行中)
+### P0 — 致命的な診断バグの修正 (✅ 2026-08-09 完了)
 
-実測 4 の `f` バグを修正する。
+実測 4 の `f` バグを修正した。
 
-**修正方針**: `visit_call` の解決順を逆にする。ローカル変数が
-`TypeDecl::Function(..)` 型を持つ場合は**それを優先**し、そうでない場合のみ
-グローバル関数テーブルを引く。関数型でない同名変数 (`val print = 3u64` 等) は
-グローバル関数の解決を妨げない。
+**修正方針**: bare-name 呼び出しの解決順を逆にする。ローカル束縛が関数型
+(型検査では `TypeDecl::Function(..)`、実行時では `Object::Closure`、lowering では
+`closure_bindings` / `Binding::FunctionPtr`) を持つ場合は**それを優先**し、
+そうでない場合のみグローバル関数テーブルを引く。関数型でない同名変数
+(`val h = 5i64` 等) は shadow しないので通常の呼び出しは影響を受けない。
 
-対象: `frontend/src/type_checker/expression.rs::visit_call`。
-interpreter (`interpreter/src/evaluation/call.rs`) と AOT lowering にも
-同じ順序の問題がないか併せて確認する。
+**3 バックエンドが独立に同じ順序ミスを持っていた**ので、3 箇所すべてを修正した:
 
-回帰テスト: ユーザが `f` / `map` / `x` など stdlib のクロージャ引数名と衝突する
-名前で関数を定義しても通ること。
+| 層 | 修正箇所 | 修正前の症状 |
+|---|---|---|
+| 型検査 | `frontend/src/type_checker/expression.rs::visit_call` | `Function 'f' argument count mismatch` (location なし) |
+| tree-walker | `interpreter/src/evaluation/call.rs::evaluate_function_call` | 型検査を通しても**黙って別の関数本体が呼ばれる** (`map` が 10 でなく 50 を返す) |
+| lowering (AOT / IR VM / compiler-JIT) | `compiler_lower/src/call.rs::resolve_call_target`、`type_inference.rs` | capturing closure では暗黙 env 引数のぶん arity がずれ、cranelift verifier error |
+
+型検査だけ直して実行系を直さないと **型は通るが答えが間違う** 状態になる点に注意。
+実測でこれを踏んだ (型検査修正直後、`o.map(...)` が 10 でなく 50 を返した)。
+
+**回帰テスト**: `interpreter/tests/closure_tests.rs` に 4 件
+(shadowing / stdlib 衝突 / stdlib HOF の正しい dispatch / 非関数値は shadow しない)、
+`compiler/tests/consistency.rs` に 3-way 一致テスト 3 件
+(non-capturing / capturing / 非関数ローカル)。1587 → 1594 tests pass。
 
 ### P1 — 診断の一括報告 (文単位のエラー回復)
 

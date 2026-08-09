@@ -590,6 +590,22 @@ impl EvaluationContext<'_> {
 
     /// Evaluates function calls
     pub(super) fn evaluate_function_call(&mut self, name: &DefaultSymbol, args: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+        // Lexical scoping: a local binding holding a closure shadows a
+        // top-level function of the same name. Mirrors the resolution
+        // order in the type checker's `visit_call` -- consulting the
+        // function table first would let a user-defined `fn f(..)`
+        // hijack stdlib call sites such as the `f(v)` in
+        // `core/std/option.t::map`, which call a closure parameter.
+        // Non-closure bindings do not shadow, so ordinary calls keep
+        // resolving to the function table.
+        if let Some(callee_val) = self.environment.get_val(*name) {
+            let callee_rc = callee_val.into_rc();
+            let is_closure = matches!(&*callee_rc.borrow(), Object::Closure { .. });
+            if is_closure {
+                return self.evaluate_indirect_call(callee_rc, name, args);
+            }
+        }
+
         // Bare-name resolution: prefer the user-authored
         // `(None, name)` slot so a user `fn add(Point, Point)`
         // wins over an auto-loaded stdlib `pub fn add(u64, u64)`

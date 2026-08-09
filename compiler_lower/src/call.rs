@@ -49,20 +49,27 @@ impl<'a> FunctionLower<'a> {
         fn_name: DefaultSymbol,
         args_ref: &ExprRef,
     ) -> Result<FuncId, String> {
+        // Closures Phase 5a: `lift_closure_binding` registers
+        // `name -> FuncId` when it sees a `val name = fn(...)`
+        // literal, so a subsequent `name(args)` lands here as a
+        // regular direct `Call` to the lifted body.
+        //
+        // Lexical scoping: this map is consulted *before* the global
+        // function table so a closure binding shadows a top-level
+        // function of the same name, matching the type checker's
+        // `visit_call` and the interpreter's `evaluate_function_call`.
+        // Resolving the global first would call the wrong body (and
+        // with the wrong arity, since a capturing closure carries an
+        // implicit env parameter).
+        if let Some(link) = self.closure_bindings.get(&fn_name).copied() {
+            return Ok(link.func_id);
+        }
         // Bare call: try the user-authored `(None, fn_name)` slot
         // first, then any unique `(Some(_), fn_name)` integrated
         // module's `pub fn`. See `Module::lookup_function` for the
         // ambiguity rule.
         if let Some(id) = self.module.lookup_function(None, fn_name) {
             return Ok(id);
-        }
-        // Closures Phase 5a: the bare-name miss falls through to
-        // the closure-binding map. `lift_closure_binding` registers
-        // `name -> FuncId` when it sees a `val name = fn(...)`
-        // literal, so a subsequent `name(args)` lands here as a
-        // regular direct `Call` to the lifted body.
-        if let Some(link) = self.closure_bindings.get(&fn_name).copied() {
-            return Ok(link.func_id);
         }
         if let Some(template) = self.generic_funcs.get(&fn_name).cloned() {
             // Infer type-argument bindings by walking each parameter

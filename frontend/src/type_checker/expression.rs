@@ -1058,6 +1058,18 @@ impl<'a> TypeCheckerVisitor<'a> {
         // and falls back to a unique imported entry, so namespace
         // enforcement has been relaxed.
 
+        // Lexical scoping: a function-typed local binding (a closure
+        // parameter, or a `val f = fn(...) -> R { ... }`) shadows a
+        // top-level function of the same name. The global table must not
+        // win here -- consulting it first lets a user-defined `fn f(..)`
+        // hijack stdlib call sites such as the `f(v)` in
+        // `core/std/option.t::map`, which call a closure parameter rather
+        // than a global. Non-function locals (`val print = 3u64`) do not
+        // shadow, so ordinary calls keep resolving to the global.
+        if matches!(self.context.get_var(fn_name), Some(TypeDecl::Function(_, _))) {
+            return self.visit_call_indirect_fallback(fn_name, args_ref);
+        }
+
         self.push_context();
 
         if let Some(fun) = self.context.get_fn(fn_name) {

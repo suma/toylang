@@ -5020,3 +5020,55 @@ fn contract_method_requires_round_trip() {
     assert_consistent(src, "contract_method_requires");
 }
 
+
+// Lexical scoping of the callee name — a function-typed local
+// binding shadows a same-named top-level function. All three
+// backends resolve the callee through their own tables (type
+// checker `visit_call`, interpreter `evaluate_function_call`,
+// lowering `resolve_call_target`), so each had to be fixed
+// independently; 3-way agreement pins the shared rule.
+//
+// Before the fix, lowering resolved the global first and emitted a
+// direct `Call` to the wrong body — with the wrong arity once the
+// closure captured anything, which surfaced as a cranelift verifier
+// error rather than a wrong answer.
+#[test]
+fn closure_shadows_same_named_function_round_trip() {
+    let src = r#"
+        fn f(n: i64) -> i64 { n * 10i64 }
+        fn main() -> i64 {
+            val a = f(2i64)
+            val f: fn (i64) -> i64 = fn(x: i64) -> i64 { x + 1i64 }
+            val b = f(2i64)
+            a + b
+        }
+    "#;
+    assert_consistent(src, "closure_shadows_same_named_function");
+}
+
+#[test]
+fn capturing_closure_shadows_same_named_function_round_trip() {
+    let src = r#"
+        fn f(n: i64) -> i64 { n * 10i64 }
+        fn main() -> i64 {
+            val base = 100i64
+            val a = f(2i64)
+            val f: fn (i64) -> i64 = fn(x: i64) -> i64 { x + base }
+            val b = f(2i64)
+            a + b
+        }
+    "#;
+    assert_consistent(src, "capturing_closure_shadows_same_named_function");
+}
+
+#[test]
+fn non_function_local_does_not_shadow_function_round_trip() {
+    let src = r#"
+        fn g(n: i64) -> i64 { n + 1i64 }
+        fn main() -> i64 {
+            val h = 5i64
+            g(h)
+        }
+    "#;
+    assert_consistent(src, "non_function_local_does_not_shadow_function");
+}

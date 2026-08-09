@@ -174,3 +174,79 @@ fn closure_object_has_function_type() {
     let result = test_program(program).expect("execution");
     assert_eq!(result.borrow().unwrap_int64(), 0);
 }
+
+// --- Lexical scoping of the callee name ---------------------------
+//
+// A bare `name(args)` call site must resolve a function-typed local
+// binding *before* the top-level function table. Resolving the
+// global first is observable in two ways:
+//
+//   1. a local closure that shadows a same-named function silently
+//      calls the wrong body, and
+//   2. a user-defined function collides with the closure *parameter*
+//      names used inside the stdlib, breaking programs that never
+//      touch the shadowed name themselves.
+//
+// (2) is the nastier one: `core/std/option.t::map` calls its closure
+// parameter as `f(v)`, so before the fix a user-defined `fn f(..)`
+// hijacked that call site and any program defining `f` failed to
+// type check with an arity error pointing at no source location.
+
+#[test]
+fn local_closure_shadows_same_named_function() {
+    assert_program_result_i64(
+        "fn f(n: i64) -> i64 { n * 10i64 }
+        fn main() -> i64 {
+            val a = f(2i64)
+            val f: fn (i64) -> i64 = fn(x: i64) -> i64 { x + 1i64 }
+            val b = f(2i64)
+            a * 100i64 + b
+        }",
+        // 20 from the global `f`, 3 from the shadowing closure.
+        2003,
+    );
+}
+
+#[test]
+fn user_function_named_f_does_not_collide_with_stdlib_closure_param() {
+    // `f` is the closure parameter name in `core/std/option.t` and
+    // `core/std/result.t`. Defining a top-level `f` must not disturb
+    // those call sites.
+    assert_program_result_i64(
+        "fn f(n: i64) -> i64 { n * 10i64 }
+        fn main() -> i64 { f(4i64) }",
+        40,
+    );
+}
+
+#[test]
+fn stdlib_hof_calls_its_own_closure_param_not_a_user_function() {
+    // Before the fix this returned 50 (the user's `f` applied)
+    // instead of 10 (the closure passed to `map`).
+    assert_program_result_i64(
+        "fn f(n: i64) -> i64 { n * 10i64 }
+        fn main() -> i64 {
+            val o: Option<i64> = Option::Some(5i64)
+            val m = o.map(fn(x: i64) -> i64 { x * 2i64 })
+            match m {
+                Option::Some(v) => v,
+                Option::None => 0i64,
+            }
+        }",
+        10,
+    );
+}
+
+#[test]
+fn non_function_local_does_not_shadow_a_function() {
+    // Only function-typed bindings shadow; a plain value named like a
+    // function must leave the call site resolving to the global.
+    assert_program_result_i64(
+        "fn g(n: i64) -> i64 { n + 1i64 }
+        fn main() -> i64 {
+            val h = 5i64
+            g(h)
+        }",
+        6,
+    );
+}

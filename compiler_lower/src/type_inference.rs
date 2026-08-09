@@ -154,9 +154,13 @@ impl<'a> FunctionLower<'a> {
                 {
                     return Some(*ret_ty);
                 }
-                self.module
-                    .lookup_function(None, fn_name)
-                    .or_else(|| self.closure_bindings.get(&fn_name).map(|link| link.func_id))
+                // A closure binding shadows a top-level function of the
+                // same name, so it is consulted first -- same order as
+                // `resolve_call_target`, which decides the actual callee.
+                self.closure_bindings
+                    .get(&fn_name)
+                    .map(|link| link.func_id)
+                    .or_else(|| self.module.lookup_function(None, fn_name))
                     .map(|id| self.module.function(id).return_type)
             }
             Expr::AssociatedFunctionCall(struct_name, fn_name, _) => {

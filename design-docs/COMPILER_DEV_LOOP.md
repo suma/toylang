@@ -19,7 +19,7 @@ LLM (コーディングエージェント) が **toylang コンパイラその�
 | **D3** | 横断的な設定構造体の `#[non_exhaustive]` 化 | ✅ 2026-08-09 |
 | **D4** | `CLAUDE.md` の Commands 節を検証済みの内容に更新 | ✅ 2026-08-09 |
 | **D5** | 「関心事 → 実装サイト」マップ / `CLAUDE.md` から履歴を分離 | ✅ 2026-08-10 |
-| **D6** | `--all-backends` 実行 + stdin 入力 | 未着手 |
+| **D6** | `--all-backends` 実行 + stdin 入力 | ✅ 2026-08-10 |
 | **D7** | 意味論変更時の cross-backend 検証の機械的強制 | ✅ 2026-08-09 |
 
 ---
@@ -207,20 +207,77 @@ release ビルドが走るぶん、編集 → テストのループはむしろ�
 **維持**: 表は**間違っていると無いより有害**。パスや関数名を変えたら
 同時に直す。`CODE_MAP.md` の末尾にその旨を書いてある。
 
-### D6 — `--all-backends` 実行 + stdin 入力
+### D6 — `--all-backends` 実行 + stdin 入力 (✅ 2026-08-10)
 
 **問題**: 1 つの `.t` を 3 バックエンドで確認するのに 3 コマンド・3 出力。
+しかも**比較そのもの — 唯一情報を持つ部分 — は読み手の頭の中**で行われる。
 加えて小さなスクラッチプログラムを 20 個ほどファイルとして作った。
 
-**提案**:
+**実装** (`toy` バイナリは存在しないので既存 CLI のフラグとして landing):
 
 ```bash
-toy run --all-backends f.t     # interpreter / JIT / AOT を実行し不一致だけ報告
+compiler f.t --all-backends                          # 一致なら 1 行
 echo 'fn main() -> u64 { 0u64 }' | interpreter --check -
+echo 'fn main() -> u64 { 7u64 }' | compiler - --all-backends
 ```
 
-前者は実行 3 回 → 1 回、出力も「不一致があれば表示」に絞れる。
-後者は Write ツールの往復を丸ごと消す。
+```
+$ compiler interpreter/example/fib.t --all-backends
+all 3 backends agree (exit=8)
+```
+
+#### どの 3 つか — ここで 1 つ罠を踏んだ
+
+interpreter (tree-walker) / **compiler 側**の cranelift JIT / AOT。
+
+interpreter 側 JIT を使わなかったのは**黙って嘘をつくから**。
+`compiler/Cargo.toml` は `interpreter = { ..., default-features = false }`
+なので `jit` feature が落ちており、この crate から `RunOptions::jit = true`
+を立てても `#[cfg(not(feature = "jit"))]` の側に落ちて**tree-walker が
+そのまま走る**。つまり「interpreter と JIT が一致した」ではなく
+「同じバックエンドを 2 回走らせて一致した」を報告することになる。
+
+> **同じ罠が `example_consistency.rs` (D7) にもある**。
+> `cargo nextest run` (ワークスペース全体) では feature unification で
+> `jit` が有効になるため実害が出ないが、`cargo test -p compiler` 単体では
+> JIT 列が tree-walker の複製になる。`todo.md` に記録した。
+
+#### 出力の切り分け
+
+- **プログラム自身の stdout は stdout へ、1 回だけ**。
+  リダイレクトしたときに素の実行と同じものが取れる
+- **判定は stderr へ**。一致なら 1 行、不一致なら各バックエンドの
+  exit / stdout を並べて exit 1
+- **「バックエンドが実行できなかった」は不一致とは別枠で報告する**。
+  AOT 未対応・JIT 非対応は不一致ではないが、黙ると
+  「3 つ中 1 つしか走っていないのに合格」になる
+
+```
+$ echo 'fn main() -> u64 { val d = 7.0f64 % 2.0f64  0u64 }' | compiler - --all-backends
+jit could not run the program:
+  compiler MVP does not support `%` on f64 (cranelift has no native fmod)
+aot could not run the program:
+  compiler MVP does not support `%` on f64 (cranelift has no native fmod)
+```
+
+基準は interpreter。最も完全で、壊れているときに読む価値のある診断を出すのが
+そこだから。interpreter が型検査で落ちた時点で比較対象が無いので即座に打ち切る。
+
+#### stdin (`-`)
+
+`interpreter` / `compiler` の両方で入力ファイル名 `-` が stdin になる。
+`--test` / `--check` / `--api` とも組み合わせられる。
+
+- 診断のファイル名は `<stdin>` と表示する。`-` は読み手が開けない名前
+- AOT はファイルからしかコンパイルできないので、stdin のときだけ
+  一時ファイルに spill する。RAII guard で消す
+- フラグパーサの `s.starts_with('-')` が `-` を「不明なフラグ」として
+  弾いていたので、両方の CLI で例外を入れた
+
+**回帰テスト**: `compiler/tests/all_backends_cli.rs` (4 件) と
+`interpreter/tests/auxiliary_query_tests.rs` の CLI 節 (4 件)。
+いずれもバイナリを spawn する — 検証対象がライブラリ関数ではなく
+**コマンド** (フラグ解析・stdout/stderr の分配・exit code) だから。
 
 ### D7 — cross-backend 検証の機械的強制 (✅ 2026-08-09)
 

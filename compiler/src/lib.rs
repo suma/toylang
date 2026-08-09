@@ -26,6 +26,7 @@
 //! have a runtime to back any of them. They will land in subsequent phases
 //! (see `design-docs/todo.md` #183).
 
+pub mod all_backends;
 pub mod cache;
 pub mod codegen;
 pub mod driver;
@@ -41,7 +42,35 @@ pub mod options;
 pub use jit::{compile_to_jit_main, compile_to_jit_main_with_options, JitMainFn, JitProgram};
 pub use options::{CompilerOptions, EmitKind};
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Read the program, from stdin when `path` is `-` (D6).
+///
+/// The AOT backend compiles from a file, so a stdin program is spilled
+/// to a temp file for that step. The caller gets the path to use and is
+/// responsible for the returned guard's lifetime; dropping it removes
+/// the spill.
+pub fn read_input(path: &Path) -> std::io::Result<(String, PathBuf, Option<SpillGuard>)> {
+    if path != Path::new("-") {
+        let source = std::fs::read_to_string(path)?;
+        return Ok((source, path.to_path_buf(), None));
+    }
+    use std::io::Read;
+    let mut source = String::new();
+    std::io::stdin().read_to_string(&mut source)?;
+    let spill = all_backends::temp_path("toy_stdin").with_extension("t");
+    std::fs::write(&spill, &source)?;
+    Ok((source, spill.clone(), Some(SpillGuard(spill))))
+}
+
+/// Removes the stdin spill file when dropped.
+pub struct SpillGuard(PathBuf);
+
+impl Drop for SpillGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 
 /// Top-level entry point used by both the CLI and the integration tests.
 /// Returns `Ok(())` after writing whichever artefact `options.emit`

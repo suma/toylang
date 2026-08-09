@@ -17,6 +17,41 @@ impl<'a> TypeCheckerVisitor<'a> {
         error
     }
 
+    /// Answer a `val x: _ = expr` type hole (LLM-LOOP P7).
+    ///
+    /// The caller registers the binding with the inferred type *before*
+    /// calling this. A hole is a question, and failing the statement
+    /// would poison every later use of `x` — the answer would then
+    /// arrive buried under a cascade of "unknown type" noise it caused
+    /// itself, which is the opposite of the point.
+    ///
+    /// Returns `Some(err)` only when recovery is off (the fail-fast
+    /// `type_check` entry point). The CLI path runs with recovery on and
+    /// collects, so every hole in a file is answered in one run.
+    pub fn report_type_hole(
+        &mut self,
+        name: string_interner::DefaultSymbol,
+        inferred: &TypeDecl,
+        at: &ExprRef,
+    ) -> Option<TypeCheckError> {
+        let var = self.resolve_symbol_name(name).to_string();
+        // An initializer whose type has no surface syntax (an
+        // unresolved numeric literal, a range) cannot be spelled back.
+        // Say so rather than printing an internal name that does not
+        // parse -- the reader's next move is to paste this.
+        let spelled = inferred
+            .source_name(self.core.string_interner)
+            .unwrap_or_else(|| format!("<{}: no source syntax>", self.type_name_for_error(inferred)));
+        let error = TypeCheckError::type_hole(var, spelled);
+        let error = self.error_with_location(error, at);
+        if self.recovery_enabled {
+            self.collect_error(error);
+            None
+        } else {
+            Some(error)
+        }
+    }
+
     /// Attach an `as <T>` cast suggestion when the only thing wrong is
     /// the numeric type of `expr`.
     ///

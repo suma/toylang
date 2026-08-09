@@ -51,10 +51,39 @@ fn resolve_core_modules_dir(cli_override: Option<PathBuf>) -> Option<PathBuf> {
     None
 }
 
+/// Read a program from a path, or from stdin when the path is `-`
+/// (COMPILER_DEV_LOOP D6).
+///
+/// The dash convention exists so a throwaway program does not need a
+/// throwaway file. Writing one costs a round trip to create it and
+/// leaves it behind; `echo '...' | interpreter --check -` costs
+/// neither.
+fn read_source(path: &str) -> std::io::Result<String> {
+    if path == "-" {
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf)?;
+        return Ok(buf);
+    }
+    fs::read_to_string(path)
+}
+
 /// Parsed command-line arguments. `core_modules_cli` is `Some` when
 /// the user passed `--core-modules <DIR>` (or `--core-modules=<DIR>`)
 /// — that overrides the env var fallback in
 /// `resolve_core_modules_dir`.
+/// A query that answers from the compiler's own tables and exits,
+/// without running a program (LLM-LOOP P7). Kept separate from
+/// `CliArgs` because these modes take no input file — folding them in
+/// would make `filename` optional for every other mode too.
+enum Query {
+    /// `--explain <CODE>`: what a diagnostic code means. No argument
+    /// lists every code with its summary.
+    Explain(Option<String>),
+    /// `--api <FILE>`: the signatures a module provides.
+    Api(String),
+}
+
 struct CliArgs {
     filename: String,
     verbose: bool,
@@ -69,6 +98,39 @@ struct CliArgs {
     check_contracts: bool,
     /// Seed for `--check`. Omitted means "pick one and print it".
     seed: Option<u64>,
+}
+
+/// Pull a query mode out of the raw arguments, if one is present.
+///
+/// Done before the main parse so the query flags do not have to
+/// pretend to be an input file. Both take an optional value in the
+/// `--flag=value` or `--flag value` form.
+fn parse_query(raw: &[String]) -> Result<Option<Query>, String> {
+    let mut iter = raw.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        let (flag, inline) = match arg.split_once('=') {
+            Some((f, v)) => (f, Some(v.to_string())),
+            None => (arg.as_str(), None),
+        };
+        match flag {
+            "--explain" => {
+                // A bare `--explain` lists the codes; a following
+                // argument is only the code if it is not another flag.
+                let value = inline.or_else(|| {
+                    iter.clone().next().filter(|v| !v.starts_with('-')).cloned()
+                });
+                return Ok(Some(Query::Explain(value)));
+            }
+            "--api" => {
+                let value = inline
+                    .or_else(|| iter.clone().next().cloned())
+                    .ok_or_else(|| "--api needs a module path".to_string())?;
+                return Ok(Some(Query::Api(value)));
+            }
+            _ => {}
+        }
+    }
+    Ok(None)
 }
 
 fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
@@ -109,7 +171,8 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
                     other => return Err(format!("--diagnostics expects `text` or `json`, got `{other}`")),
                 }
             }
-            s if s.starts_with('-') => {
+            // A bare `-` is the input, not a flag (D6: read stdin).
+            s if s.starts_with('-') && s != "-" => {
                 return Err(format!("unknown flag: {s}"));
             }
             _ => {
@@ -126,13 +189,28 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
 
 fn main() {
     let raw: Vec<String> = env::args().collect();
+
+    match parse_query(&raw) {
+        Ok(Some(Query::Explain(code))) => process::exit(run_explain(code.as_deref())),
+        Ok(Some(Query::Api(path))) => process::exit(run_api(&path)),
+        Ok(None) => {}
+        Err(msg) => {
+            eprintln!("{msg}");
+            process::exit(2);
+        }
+    }
+
     let cli = match parse_cli(&raw) {
         Ok(c) => c,
         Err(msg) => {
             eprintln!("{msg}");
+            let exe = raw.first().map(String::as_str).unwrap_or("interpreter");
             println!("Usage:");
-            println!("  {} <file>", raw.first().map(String::as_str).unwrap_or("interpreter"));
-            println!("  {} <file> [-v] [--test] [--check [--seed=N]] [--core-modules <DIR>] [--diagnostics=text|json]", raw.first().map(String::as_str).unwrap_or("interpreter"));
+            println!("  {exe} <file>");
+            println!("  {exe} <file> [-v] [--test] [--check [--seed=N]] [--core-modules <DIR>] [--diagnostics=text|json]");
+            println!("  {exe} --explain [<CODE>]   # what a diagnostic code means");
+            println!("  {exe} --api <file>         # signatures a module provides");
+            println!("  (use `-` as <file> to read the program from stdin)");
             return;
         }
     };
@@ -146,13 +224,16 @@ fn main() {
         }
     }
 
-    let source = match fs::read_to_string(&filename) {
+    let source = match read_source(&filename) {
         Ok(content) => content,
         Err(e) => {
             eprintln!("Failed to read file {}: {}", filename, e);
             return;
         }
     };
+    // Diagnostics quote the file they came from; `-` is not a name a
+    // reader can act on.
+    let filename = if filename == "-" { "<stdin>".to_string() } else { filename };
 
     let jit = matches!(env::var("INTERPRETER_JIT").as_deref(), Ok("1"));
     let mut options = RunOptions::default();
@@ -180,6 +261,64 @@ fn main() {
             process::exit(1);
         }
     }
+}
+
+/// `--explain [<CODE>]` (LLM-LOOP P7).
+///
+/// With a code, print its explanation. Without one, list every code so
+/// the reader can find the category without knowing the number.
+fn run_explain(code: Option<&str>) -> i32 {
+    use frontend::explain;
+
+    let Some(code) = code else {
+        println!("diagnostic codes (use `--explain <CODE>` for details):");
+        for (code, summary) in explain::summaries() {
+            println!("  {code}  {summary}");
+        }
+        return 0;
+    };
+    match explain::explain(code) {
+        Some(text) => {
+            println!("{text}");
+            0
+        }
+        None => {
+            eprintln!("no such diagnostic code: {code}");
+            eprintln!("run `--explain` with no argument to list them");
+            2
+        }
+    }
+}
+
+/// `--api <FILE>` (LLM-LOOP P7).
+///
+/// Print the signatures a module declares. Parses only — the point is
+/// to answer "what can I call" for a file that may not be a runnable
+/// program, and type checking a stdlib module in isolation would fail
+/// on names its importers provide.
+fn run_api(path: &str) -> i32 {
+    let source = match read_source(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to read {path}: {e}");
+            return 1;
+        }
+    };
+    let display_name = if path == "-" { "<stdin>" } else { path };
+    let mut session = compiler_core::CompilerSession::new();
+    let program = match session.parse_program_all_errors(&source, display_name) {
+        Ok(p) => p,
+        Err(errors) => {
+            interpreter::error_formatter::ErrorFormatter::new(&source, display_name)
+                .display_parse_errors(&errors);
+            return 1;
+        }
+    };
+    print!(
+        "{}",
+        frontend::api::render(&program, session.string_interner(), Some(&source))
+    );
+    0
 }
 
 /// Run the file's `test` blocks and print a report. Returns the exit

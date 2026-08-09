@@ -495,7 +495,20 @@ pub fn parse_var_def(parser: &mut Parser) -> ParserResult<StmtRef> {
     let ty: TypeDecl = match parser.peek() {
         Some(Kind::Colon) => {
             parser.next();
-            parser.parse_type_declaration()?
+            // LLM-LOOP P7 type hole: `val x: _ = expr` asks what the
+            // initializer's type is. Recognised here rather than in
+            // `parse_type_declaration` so the hole is confined to the
+            // one position where the checker knows how to answer it —
+            // a `_` in a parameter or field type would otherwise parse
+            // and then mean nothing. `_` reaches the parser as a plain
+            // identifier (the lexer has no distinct token for it), the
+            // same way match wildcards do.
+            if matches!(parser.peek(), Some(Kind::Identifier(s)) if s == "_") {
+                parser.next();
+                TypeDecl::Hole
+            } else {
+                parser.parse_type_declaration()?
+            }
         }
         _ => TypeDecl::Unknown,
     };

@@ -97,6 +97,15 @@ pub enum TypeCheckErrorKind {
     InvalidLiteral { value: String, expected_type: String },
     AccessDenied { message: String },
     GenericError { message: String },
+    /// LLM-LOOP P7: the answer to a `val x: _ = expr` type hole.
+    ///
+    /// Reported as an error rather than a note because a hole is a
+    /// question the author asked, not code they meant to keep — letting
+    /// it compile would leave the query silently in the program. It gets
+    /// its own kind (and code) so `--diagnostics=json` consumers can
+    /// tell "here is the type you asked for" apart from "your program is
+    /// wrong", which are opposite signals.
+    TypeHole { name: String, inferred: String },
 }
 
 #[derive(Debug, Clone)]
@@ -266,6 +275,19 @@ impl TypeCheckError {
         }
     }
 
+    /// LLM-LOOP P7: report what a `_` annotation resolved to.
+    /// `inferred` is the type spelled as source, so the reader can paste
+    /// it over the hole.
+    pub fn type_hole(name: String, inferred: String) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::TypeHole { name, inferred }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
     pub fn with_context(mut self, context: &str) -> Self {
         self.context = Some(context.to_string());
         self
@@ -318,6 +340,9 @@ impl std::fmt::Display for TypeCheckError {
             }
             TypeCheckErrorKind::GenericError { message } => {
                 message.clone()
+            }
+            TypeCheckErrorKind::TypeHole { name, inferred } => {
+                format!("type hole: `{}` has type `{}`", name, inferred)
             }
         };
 

@@ -266,6 +266,7 @@ impl<'a> ErrorHandling for TypeCheckerVisitor<'a> {
             TypeDecl::Dyn(trait_sym) => {
                 format!("dyn {}", self.resolve_symbol_name(*trait_sym))
             }
+            TypeDecl::Hole => "_".to_string(),
         }
     }
     

@@ -369,6 +369,25 @@ impl<'a> TypeCheckerVisitor<'a> {
                 )));
             }
 
+        // LLM-LOOP P7: a `_` annotation is a hole. Treated as an
+        // unannotated binding here (`Unknown` is the parser's spelling
+        // of that) and answered once the initializer's type is known.
+        let is_hole = matches!(type_decl, Some(TypeDecl::Hole));
+        let hole_free = is_hole.then_some(TypeDecl::Unknown);
+        let type_decl = if is_hole { &hole_free } else { type_decl };
+
+        // `var x: _` with no initializer has nothing to infer from. The
+        // hole cannot be answered, so say that instead of reporting a
+        // type the reader would have to distrust.
+        if is_hole && expr.is_none() {
+            let var_name = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
+            return Err(TypeCheckError::generic_error(&format!(
+                "type hole: `{}` has no initializer, so there is nothing to infer from -- \
+                 write `var {} : <type>` or give it a value",
+                var_name, var_name
+            )));
+        }
+
         let expr_ty = match expr {
             Some(e) => {
                 // Set type hint for proper type inference
@@ -453,6 +472,15 @@ impl<'a> TypeCheckerVisitor<'a> {
             (None, None) => {
                 // No type declaration and no initial value - use Unknown type
                 setter(&mut self.context, name, TypeDecl::Unknown);
+            }
+        }
+
+        if is_hole
+            && let (Some(ty), Some(e)) = (expr_ty.as_ref(), expr.as_ref())
+        {
+            let ty = ty.clone();
+            if let Some(err) = self.report_type_hole(name, &ty, e) {
+                return Err(err);
             }
         }
 

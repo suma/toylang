@@ -61,6 +61,30 @@ cargo run -q -p interpreter -- --check <source_file.t>
 cargo run -q -p interpreter -- --check --seed=0x99 <source_file.t>   # 再現
 ```
 
+### 実行せずに聞く / まとめて確認する (LLM-LOOP P7, DEV-LOOP D6)
+
+```bash
+# エラーコードの解説 (原因カテゴリ + 再現例 + 直し方)
+cargo run -q -p interpreter -- --explain E0003
+cargo run -q -p interpreter -- --explain          # 全コードの 1 行要約
+
+# モジュールが提供するシグネチャ一覧 (contract 込み、body 無し)。
+# `core/std/*.t` を grep する代わりに使う
+cargo run -q -p interpreter -- --api core/std/string.t
+
+# 3 バックエンド (interpreter / JIT / AOT) を 1 コマンドで実行し、
+# 不一致だけ報告する。一致なら stderr に 1 行
+cargo run -q -p compiler -- <source_file.t> --all-backends
+
+# 入力ファイル名 `-` で stdin から読む。スクラッチファイルを作らずに済む
+echo 'fn main() -> u64 { 0u64 }' | cargo run -q -p interpreter -- --check -
+echo 'fn main() -> u64 { 7u64 }' | cargo run -q -p compiler -- - --all-backends
+```
+
+**型ホール**: `val x: _ = expr` と書くと推論結果を報告して停止する
+(`[E0011] type hole: \`x\` has type \`i64\``)。1 回の実行でファイル中の
+全ホールが答えられ、束縛は推論した型で登録されるので後続がカスケードしない。
+
 **`--message-format=short`** を付けると診断が `path:line:col: error[CODE]: msg`
 の 1 行形式になる (デフォルトのスニペット付き形式は 1 エラーあたり ~11 行)。
 位置情報は保持されるので、機械的に読む場面ではこちらが適している。

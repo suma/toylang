@@ -57,7 +57,12 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Type check value declarations (val) - internal implementation
     pub fn visit_val_impl(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let expr_ref = *expr;
-        let type_decl = type_decl.clone();
+        // LLM-LOOP P7: `val x: _ = expr` is a hole. For the rest of this
+        // routine it behaves exactly like an unannotated binding
+        // (`Unknown` is how the parser records "no annotation"); the
+        // answer is reported once the inferred type is known.
+        let is_hole = matches!(type_decl, Some(TypeDecl::Hole));
+        let type_decl = if is_hole { Some(TypeDecl::Unknown) } else { type_decl.clone() };
 
         // REF-Stage-2 (e): syntactic escape rule — a `val` binding
         // cannot annotate a reference type. The inferred-type form
@@ -145,7 +150,11 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         // Restore previous type hint
         self.type_inference.type_hint = old_hint;
-        
+
+        if is_hole && let Some(err) = self.report_type_hole(name, &final_type, &expr_ref) {
+            return Err(err);
+        }
+
         Ok(TypeDecl::Unit)
     }
 

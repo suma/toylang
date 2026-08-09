@@ -163,6 +163,20 @@ impl<'a> Parser<'a> {
             }
             Some(Kind::Identifier(s)) => {
                 let s_owned = s.to_string();
+                // LLM-LOOP P7: `_` is a type hole, and only a `val` /
+                // `var` annotation has an initializer to infer it from
+                // (`parse_var_def` handles that position). Anywhere
+                // else it would otherwise become a type *named* `_`
+                // and fail much later with a confusing "not defined".
+                if s_owned == "_" {
+                    let location = self.current_source_location();
+                    return Err(ParserError::generic_error(
+                        location,
+                        "`_` is a type hole and is only allowed as a `val` / `var` type \
+                         annotation, where the initializer says what it stands for"
+                            .to_string(),
+                    ));
+                }
                 let ident = self.string_interner.get_or_intern(s_owned.clone());
                 self.next();
 

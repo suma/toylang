@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use string_interner::DefaultSymbol;
 use crate::ast::{ExprRef, Parameter, PackageDecl, ImportDecl};
+use crate::type_checker::SourceLocation;
 use crate::type_decl::TypeDecl;
 use crate::token::Kind;
 use crate::parser::error::{ParserError, ParserResult};
@@ -157,14 +158,14 @@ impl<'a> Parser<'a> {
                     // the trailing `{ body }` of the function isn't mistaken
                     // for a struct literal at the tail of the predicate.
                     self.push_context(crate::parser::core::ParseContext::Condition);
-                    let cond = self.parse_expr_impl();
+                    let cond = self.parse_clause_with_span();
                     self.pop_context();
                     requires.push(cond?);
                 }
                 Some(Kind::Ensures) => {
                     self.next();
                     self.push_context(crate::parser::core::ParseContext::Condition);
-                    let cond = self.parse_expr_impl();
+                    let cond = self.parse_clause_with_span();
                     self.pop_context();
                     ensures.push(cond?);
                 }
@@ -172,6 +173,35 @@ impl<'a> Parser<'a> {
             }
         }
         Ok((requires, ensures))
+    }
+
+    /// Parse one contract predicate and record the span of the *whole*
+    /// clause on its root expression.
+    ///
+    /// A node's own location is the token that names it, so the root of
+    /// `a / b * b == a` is located at the `==`. That is too narrow twice
+    /// over: the caret on a "clause is not bool" diagnostic covers two
+    /// characters of a predicate the reader has to find, and `--api`
+    /// (LLM-LOOP P7), which quotes contracts from source, would print
+    /// `== a`. Both want the extent, and the parser is the only place
+    /// that knows it without reconstructing the subtree.
+    ///
+    /// The end is taken as the start of the token that follows the
+    /// predicate, so trailing whitespace or a newline is included and
+    /// trimmed by the consumer; the body's `{` is never inside the span.
+    fn parse_clause_with_span(&mut self) -> ParserResult<ExprRef> {
+        let start = self.current_source_location();
+        let cond = self.parse_expr_impl()?;
+        let end_offset = self
+            .current_position()
+            .map(|p| p.start as u32)
+            .unwrap_or(start.end_offset)
+            .max(start.end_offset);
+        self.ast_builder.get_location_pool_mut().set_expr_location(
+            &cond,
+            SourceLocation::new(start.line, start.column, start.offset, end_offset),
+        );
+        Ok(cond)
     }
 
     /// Parse generic type parameters: `<T>`, `<T, U>`, or with bounds `<T: Bound, U>`.

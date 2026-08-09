@@ -68,6 +68,14 @@ pub enum TypeDecl {
     /// `Rc<RefCell<...>>`); AOT and JIT reject programs that
     /// reach a `Dyn` type via their eligibility passes (P2 / P3).
     Dyn(DefaultSymbol),
+    /// LLM-LOOP P7 type hole: the `_` written in place of a type in a
+    /// `val` / `var` annotation. It is a *question*, not a type — the
+    /// checker infers what the initializer produces, reports it, and
+    /// then fails the program so the hole cannot survive into code that
+    /// runs. The parser only produces it from the annotation position
+    /// of `parse_var_def`, so no other type-checker path has to know
+    /// about it.
+    Hole,
 }
 
 impl TypeDecl {
@@ -284,5 +292,97 @@ impl TypeDecl {
             // For all other types, no substitution needed
             _ => self.clone(),
         }
+    }
+
+    /// Spell the type the way it is written in source.
+    ///
+    /// Distinct from the type checker's `type_name_for_error`, which is
+    /// prose for a message body and renders `String` as "string" and
+    /// `UInt8` as "uint8". This one has to produce something the reader
+    /// can paste back into the program — it backs the type-hole
+    /// diagnostic and the `--api` signature dump (LLM-LOOP P7), and a
+    /// name that does not parse is worse than no name at all.
+    ///
+    /// `None` is returned for types with no surface syntax (the
+    /// checker's internal `Unknown` / `Number` placeholders, ranges, and
+    /// the hole itself). Callers decide what to say instead; inventing a
+    /// spelling here would put an unparseable string in front of the
+    /// reader.
+    pub fn source_name(&self, interner: &string_interner::DefaultStringInterner) -> Option<String> {
+        let resolve = |sym: &DefaultSymbol| interner.resolve(*sym).unwrap_or("?").to_string();
+        // Type arguments render as `<A, B>`, or as nothing when absent.
+        let args = |params: &Vec<TypeDecl>| -> Option<String> {
+            if params.is_empty() {
+                return Some(String::new());
+            }
+            let mut parts = Vec::with_capacity(params.len());
+            for p in params {
+                parts.push(p.source_name(interner)?);
+            }
+            Some(format!("<{}>", parts.join(", ")))
+        };
+        Some(match self {
+            TypeDecl::Unit => "()".to_string(),
+            TypeDecl::Bool => "bool".to_string(),
+            TypeDecl::Int64 => "i64".to_string(),
+            TypeDecl::UInt64 => "u64".to_string(),
+            TypeDecl::Float64 => "f64".to_string(),
+            TypeDecl::Int8 => "i8".to_string(),
+            TypeDecl::Int16 => "i16".to_string(),
+            TypeDecl::Int32 => "i32".to_string(),
+            TypeDecl::UInt8 => "u8".to_string(),
+            TypeDecl::UInt16 => "u16".to_string(),
+            TypeDecl::UInt32 => "u32".to_string(),
+            TypeDecl::String => "str".to_string(),
+            TypeDecl::Ptr => "ptr".to_string(),
+            TypeDecl::Self_ => "Self".to_string(),
+            TypeDecl::Allocator => "Allocator".to_string(),
+            TypeDecl::Identifier(name) | TypeDecl::Generic(name) => resolve(name),
+            TypeDecl::Dyn(name) => format!("dyn {}", resolve(name)),
+            TypeDecl::Struct(name, params) | TypeDecl::Enum(name, params) => {
+                format!("{}{}", resolve(name), args(params)?)
+            }
+            // A zero size is how the parser records the unsized form
+            // `[T]`; a sized array keeps its length.
+            TypeDecl::Array(elements, size) => {
+                let element = elements.first().unwrap_or(&TypeDecl::Unknown).source_name(interner)?;
+                if *size == 0 {
+                    format!("[{element}]")
+                } else {
+                    format!("[{element}; {size}]")
+                }
+            }
+            TypeDecl::Dict(key, value) => format!(
+                "dict<{}, {}>",
+                key.source_name(interner)?,
+                value.source_name(interner)?
+            ),
+            TypeDecl::Tuple(elements) => {
+                let mut parts = Vec::with_capacity(elements.len());
+                for e in elements {
+                    parts.push(e.source_name(interner)?);
+                }
+                format!("({})", parts.join(", "))
+            }
+            TypeDecl::Ref { is_mut, inner } => {
+                let m = if *is_mut { "mut " } else { "" };
+                format!("&{m}{}", inner.source_name(interner)?)
+            }
+            TypeDecl::Function(params, ret) => {
+                let mut parts = Vec::with_capacity(params.len());
+                for p in params {
+                    parts.push(p.source_name(interner)?);
+                }
+                format!("fn ({}) -> {}", parts.join(", "), ret.source_name(interner)?)
+            }
+            TypeDecl::TraitIntersection(traits) => traits
+                .iter()
+                .map(resolve)
+                .collect::<Vec<_>>()
+                .join(" + "),
+            TypeDecl::Unknown | TypeDecl::Number | TypeDecl::Range(_) | TypeDecl::Hole => {
+                return None;
+            }
+        })
     }
 }

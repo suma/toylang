@@ -96,6 +96,11 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | 型検査ドライバ (全件報告) | `interpreter/src/lib.rs::check_typing_diagnostics` |
 | panic の位置・backtrace (P6-1) | `interpreter/src/error.rs` (`CallFrame`), `evaluation/call.rs` |
 | 契約違反時の値 (P6-2) | `evaluation/call.rs::capture_contract_bindings` |
+| 型ホール `val x: _` (P7) | `parser/stmt.rs::parse_var_def` (受理), `parser/types.rs` (他位置で拒否), `type_checker/error_helpers.rs::report_type_hole` |
+| 型のソース表記 | `frontend/src/type_decl.rs::TypeDecl::source_name` (**散文用の `type_name_for_error` とは別物** — 貼り戻せる表記を返す) |
+| エラーコード解説 (P7 `--explain`) | `frontend/src/explain.rs` (`codes::ALL` と対応、テストで強制) |
+| シグネチャ一覧 (P7 `--api`) | `frontend/src/api.rs::render` |
+| 契約節の span | `parser/declarations.rs::parse_clause_with_span` (節全体を根の式に記録) |
 
 ## 契約 (Design by Contract)
 
@@ -114,6 +119,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | 契約プロパティテスト (P5) | `interpreter/src/property.rs` |
 | バックエンド一致 (単発) | `compiler/tests/consistency.rs::assert_consistent` |
 | バックエンド一致 (全 example 掃引) | `compiler/tests/example_consistency.rs` |
+| バックエンド一致 (CLI・D6) | `compiler/src/all_backends.rs` (`compiler f.t --all-backends`) |
 | JIT の eligibility / fallback | `interpreter/src/jit/eligibility/` |
 
 ## メモリ・allocator

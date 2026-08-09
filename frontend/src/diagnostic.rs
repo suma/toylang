@@ -164,6 +164,25 @@ pub mod codes {
     pub const INVALID_LITERAL: &str = "E0008";
     pub const ACCESS_DENIED: &str = "E0009";
     pub const UNCATEGORISED: &str = "E0010";
+    /// The answer to a `val x: _ = expr` type hole (LLM-LOOP P7). Not a
+    /// defect in the program — it reports what was asked for.
+    pub const TYPE_HOLE: &str = "E0011";
+
+    /// Every code, in order. `crate::explain` is checked against this
+    /// list by a test, so a new code cannot ship without prose.
+    pub const ALL: &[&str] = &[
+        TYPE_MISMATCH,
+        TYPE_MISMATCH_OPERATION,
+        NOT_FOUND,
+        UNSUPPORTED_OPERATION,
+        CONVERSION,
+        ARRAY,
+        METHOD,
+        INVALID_LITERAL,
+        ACCESS_DENIED,
+        UNCATEGORISED,
+        TYPE_HOLE,
+    ];
 }
 
 fn code_for(kind: &TypeCheckErrorKind) -> &'static str {
@@ -178,6 +197,7 @@ fn code_for(kind: &TypeCheckErrorKind) -> &'static str {
         TypeCheckErrorKind::InvalidLiteral { .. } => codes::INVALID_LITERAL,
         TypeCheckErrorKind::AccessDenied { .. } => codes::ACCESS_DENIED,
         TypeCheckErrorKind::GenericError { .. } => codes::UNCATEGORISED,
+        TypeCheckErrorKind::TypeHole { .. } => codes::TYPE_HOLE,
     }
 }
 

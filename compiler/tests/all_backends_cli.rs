@@ -1,0 +1,149 @@
+//! COMPILER_DEV_LOOP D6 — `--all-backends` and stdin input.
+//!
+//! Both features exist to remove round trips from the loop, so what is
+//! pinned is the round-trip-shaped behaviour: one command runs every
+//! backend and says nothing when they agree, a program can be handed
+//! over a pipe instead of through a file, and a backend that cannot run
+//! the program is reported rather than quietly counted as agreeing.
+//!
+//! Driven through the binary rather than the library because the
+//! subject under test is the command: flag parsing, what lands on
+//! stdout versus stderr, and the exit code.
+//!
+//! Set `COMPILER_E2E=skip` to opt out, same as the other e2e suites —
+//! these link a native binary.
+
+use std::io::Write;
+use std::process::{Command, Stdio};
+
+const BIN: &str = env!("CARGO_BIN_EXE_compiler");
+
+fn skip_e2e() -> bool {
+    std::env::var("COMPILER_E2E").map(|v| v == "skip").unwrap_or(false)
+}
+
+fn core_modules_dir() -> String {
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../core").to_string()
+}
+
+struct Run {
+    status: i32,
+    stdout: String,
+    stderr: String,
+}
+
+/// Feed `source` to the compiler on stdin with the given flags.
+fn run_stdin(source: &str, extra: &[&str]) -> Run {
+    let mut child = Command::new(BIN)
+        .arg("-")
+        .args(extra)
+        .arg("--core-modules")
+        .arg(core_modules_dir())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn compiler");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(source.as_bytes())
+        .expect("write source");
+    let out = child.wait_with_output().expect("wait");
+    Run {
+        status: out.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    }
+}
+
+#[test]
+fn agreeing_backends_report_one_line() {
+    if skip_e2e() {
+        return;
+    }
+    let run = run_stdin(
+        "fn main() -> u64 {\n    println(\"hello\")\n    7u64\n}\n",
+        &["--all-backends"],
+    );
+    assert_eq!(run.status, 0, "stderr: {}", run.stderr);
+    // The program's output goes to stdout exactly once, so the flag
+    // composes with a redirect the way a plain run does.
+    assert_eq!(run.stdout, "hello\n", "stderr: {}", run.stderr);
+    // The verdict is one line, on stderr.
+    assert_eq!(run.stderr.lines().count(), 1, "stderr: {}", run.stderr);
+    assert!(run.stderr.contains("all 3 backends agree"), "stderr: {}", run.stderr);
+    assert!(run.stderr.contains("exit=7"), "stderr: {}", run.stderr);
+}
+
+#[test]
+fn a_backend_that_cannot_run_the_program_is_reported() {
+    if skip_e2e() {
+        return;
+    }
+    // `%` on f64 is interpreter-only (cranelift has no native fmod), so
+    // both compiled backends refuse it. Silence here would look like
+    // agreement while two thirds of the check had not run.
+    let run = run_stdin(
+        "fn main() -> u64 {\n    val d = 7.0f64 % 2.0f64\n    0u64\n}\n",
+        &["--all-backends"],
+    );
+    assert_ne!(run.status, 0, "stderr: {}", run.stderr);
+    assert!(
+        run.stderr.contains("could not run the program"),
+        "stderr: {}",
+        run.stderr
+    );
+}
+
+#[test]
+fn a_program_that_does_not_type_check_stops_before_comparing() {
+    if skip_e2e() {
+        return;
+    }
+    let run = run_stdin(
+        "fn main() -> u64 {\n    val x: bool = 1u64\n    0u64\n}\n",
+        &["--all-backends"],
+    );
+    assert_ne!(run.status, 0);
+    assert!(
+        run.stderr.contains("nothing to compare against"),
+        "stderr: {}",
+        run.stderr
+    );
+}
+
+#[test]
+fn stdin_works_for_an_ordinary_compile() {
+    if skip_e2e() {
+        return;
+    }
+    // The dash is an input, not an unknown flag — the whole point is
+    // that a throwaway program needs no throwaway file.
+    let out = std::env::temp_dir().join(format!("toy_stdin_cli_{}", std::process::id()));
+    let mut child = Command::new(BIN)
+        .args(["-", "-o"])
+        .arg(&out)
+        .arg("--core-modules")
+        .arg(core_modules_dir())
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn compiler");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(b"fn main() -> u64 { 5u64 }\n")
+        .expect("write");
+    let result = child.wait_with_output().expect("wait");
+    assert!(
+        result.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let status = Command::new(&out).status().expect("run compiled binary");
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(status.code(), Some(5));
+}

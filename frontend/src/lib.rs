@@ -1,6 +1,7 @@
 #![allow(clippy::slow_vector_initialization)]
 #![allow(clippy::upper_case_acronyms)]
 
+pub mod api;
 pub mod ast;
 #[cfg(feature = "serde")]
 pub mod cache;
@@ -8,6 +9,7 @@ pub mod type_decl;
 pub mod token;
 pub mod type_checker;
 pub mod diagnostic;
+pub mod explain;
 pub mod parser;
 pub mod visitor;
 pub mod module_resolver;

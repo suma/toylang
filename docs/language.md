@@ -354,6 +354,33 @@ The runtime / IR pick this up so concrete-args dispatch
 (`impl Trait for Container<u8>` vs `impl Trait for Container<i64>`)
 sees the right `[u8]` type-arg vector at the receiver.
 
+#### Type holes (`_`)
+
+Writing `_` where a `val` / `var` annotation goes asks the type checker
+what the initializer produces. It reports the answer and fails the
+program — a hole is a question, not code meant to survive.
+
+```rust
+fn main() -> u64 {
+    val total: _ = 1i64 + 2i64
+    0u64
+}
+```
+
+```
+ 2 |     val total: _ = 1i64 + 2i64
+   |                    ^ [E0011] type hole: `total` has type `i64`
+```
+
+Every hole in a file is answered in one run, and each binding keeps its
+inferred type, so later uses are checked normally rather than collapsing
+into follow-on errors. The reported type is spelled the way source
+spells it, so it can be pasted over the `_`.
+
+`_` is accepted only in this position. In a parameter, return, field or
+element type there is no initializer to infer from, and the parser
+rejects it.
+
 ---
 
 ## Type checker
@@ -547,6 +574,15 @@ when feasible, so the user sees multiple problems per run. The
 front-end driver (`interpreter::check_typing*` /
 `compile_file`) routes errors through `ErrorFormatter` for the
 caret-pointer formatting visible in test output.
+
+Every diagnostic carries a stable code (`E0001`…`E0011`). These are
+toylang's own numbering, not Rust's — identical-looking identifiers with
+different meanings would be worse than none. `interpreter --explain
+<CODE>` prints the category, a program that triggers it, and the fix;
+`interpreter --explain` with no argument lists them all.
+
+`--diagnostics=json` emits the same diagnostics on stderr in machine
+form, including spans and any machine-applicable fix.
 
 ---
 

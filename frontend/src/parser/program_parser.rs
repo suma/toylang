@@ -4,7 +4,7 @@ use string_interner::DefaultSymbol;
 use crate::ast::*;
 use crate::type_decl::TypeDecl;
 use crate::token::Kind;
-use crate::parser::error::{ParserResult, MultipleParserResult};
+use crate::parser::error::{ParserError, ParserResult, MultipleParserResult};
 use super::core::Parser;
 
 /// Map a primitive-type token to the canonical string it should be
@@ -64,6 +64,26 @@ impl<'a> Parser<'a> {
         }
 
         loop {
+            // Start a fresh error budget only when a real declaration
+            // begins. The catch-all arm below skips one unrecognised
+            // token per iteration, and resetting there would hand every
+            // skipped token its own report — which is exactly the
+            // cascade this rule exists to suppress.
+            if matches!(
+                self.peek(),
+                Some(Kind::Function)
+                    | Some(Kind::Extern)
+                    | Some(Kind::Public)
+                    | Some(Kind::Struct)
+                    | Some(Kind::Impl)
+                    | Some(Kind::Enum)
+                    | Some(Kind::Trait)
+                    | Some(Kind::Const)
+                    | Some(Kind::Type)
+            ) {
+                self.begin_declaration();
+            }
+
             // Check for visibility modifier first
             let visibility = if matches!(self.peek(), Some(Kind::Public)) {
                 self.next(); // consume 'pub'
@@ -648,12 +668,42 @@ impl<'a> Parser<'a> {
                 if self.errors.is_empty() {
                     MultipleParserResult::success(program)
                 } else {
-                    MultipleParserResult::with_errors(program, self.errors.clone())
+                    MultipleParserResult::with_errors(program, self.collected_errors_for_report())
                 }
             }
-            Err(_) => {
-                MultipleParserResult::failure(self.errors.clone())
+            Err(hard_failure) => {
+                // A `?` bubbling out of a sub-parser can return before
+                // anything was collected. Report that one rather than an
+                // empty list — "the parse failed, and here is nothing"
+                // is the least useful diagnostic there is.
+                if self.errors.is_empty() {
+                    MultipleParserResult::failure(vec![hard_failure])
+                } else {
+                    MultipleParserResult::failure(self.collected_errors_for_report())
+                }
             }
         }
+    }
+
+    /// Collected parse errors, in source order and without duplicates.
+    ///
+    /// LLM-LOOP P1: same treatment the type checker's errors get. The
+    /// parser recovers and keeps going, so one mistake can be recorded
+    /// more than once as the recovery path re-enters; reporting the same
+    /// line twice reads as two separate problems.
+    fn collected_errors_for_report(&self) -> Vec<ParserError> {
+        let mut errors = self.errors.clone();
+        errors.sort_by_key(|e| (e.location.line, e.location.column, e.location.offset));
+        // One report per line. Unlike the type checker — which recovers
+        // at statement boundaries and produces genuinely independent
+        // errors — the parser resumes mid-expression and piles on
+        // consequences of the same bad token: "maximum parse iterations
+        // reached", "unexpected token", "expected statement in block",
+        // each at its own offset but all describing one mistake. A line
+        // is the coarsest unit that still separates mistakes a reader
+        // would fix separately; two errors on one line collapse into the
+        // first, which is the one that says what is actually wrong.
+        errors.dedup_by(|a, b| a.location.line == b.location.line);
+        errors
     }
 }

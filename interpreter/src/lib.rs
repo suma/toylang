@@ -915,16 +915,17 @@ pub fn run_source(
 ) -> Result<RunOutcome, String> {
     let formatter = ErrorFormatter::new(source, filename);
     let mut session = compiler_core::CompilerSession::new();
-    let mut program = match session.parse_program_with_source(source, filename) {
+    let mut program = match session.parse_program_all_errors(source, filename) {
         Ok(p) => p,
-        Err(err) => {
-            // Report it, then hand a short summary back to the caller so
-            // it can decide how to surface it (e.g. test assertions vs.
-            // process exit). The formatted diagnostic used to be built
-            // and then dropped on the floor, so a parse error produced
-            // no output at all — the process just exited non-zero.
-            formatter.display_parse_errors(std::slice::from_ref(&err));
-            return Err(format!("parse error: {err:?}"));
+        Err(errors) => {
+            // Report every syntax error, then hand a short summary back
+            // to the caller so it can decide how to surface it (e.g.
+            // test assertions vs. process exit). The formatted
+            // diagnostic used to be built and then dropped on the floor,
+            // so a parse error produced no output at all — the process
+            // just exited non-zero.
+            formatter.display_parse_errors(&errors);
+            return Err(format!("{} parse error(s)", errors.len()));
         }
     };
     if let Err(diagnostics) = check_typing_diagnostics(

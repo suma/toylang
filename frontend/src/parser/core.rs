@@ -160,6 +160,9 @@ pub struct Parser<'a> {
     pub string_interner: &'a mut DefaultStringInterner,
     pub builtin_symbols: BuiltinFunctionSymbols,
     pub errors: Vec<ParserError>,
+    /// Index into `errors` marking where the current top-level
+    /// declaration started. See [`Parser::report_error`].
+    decl_error_floor: usize,
     input: &'a str,
     recursion_depth: u32,
     max_recursion_depth: u32,
@@ -209,6 +212,7 @@ impl<'a> Parser<'a> {
             string_interner,
             builtin_symbols,
             errors: Vec::with_capacity(4),
+            decl_error_floor: 0,
             input,
             recursion_depth: 0,
             max_recursion_depth: 500,
@@ -366,16 +370,40 @@ impl<'a> Parser<'a> {
             Ok(())
         } else {
             let location = self.current_source_location();
-            self.errors.push(ParserError::unexpected_token(location, format!("{:?}", accept)));
+            let error = ParserError::unexpected_token(location, format!("{:?}", accept));
+            self.report_error(error);
             self.next();
             Ok(())
         }
     }
 
     /// Collect error without stopping parse, used for multiple error collection
+    /// Mark the start of a top-level declaration.
+    ///
+    /// LLM-LOOP P1: the parser resynchronises reliably at declaration
+    /// boundaries but not inside one — after a bad token it keeps
+    /// stumbling through the rest of the body, collecting consequences
+    /// of the same mistake ("unexpected token: x", "unexpected token:
+    /// }"). Those read as separate problems and send a reader chasing
+    /// code that is fine. One report per declaration keeps the errors
+    /// that are genuinely independent (one per broken declaration) and
+    /// drops the derivative ones.
+    pub fn begin_declaration(&mut self) {
+        self.decl_error_floor = self.errors.len();
+    }
+
+    /// Record a parse error, subject to the one-per-declaration rule.
+    pub fn report_error(&mut self, error: ParserError) {
+        if self.errors.len() > self.decl_error_floor {
+            return;
+        }
+        self.errors.push(error);
+    }
+
     pub fn collect_error(&mut self, error_msg: &str) {
         let location = self.current_source_location();
-        self.errors.push(ParserError::unexpected_token(location, error_msg.to_string()));
+        let error = ParserError::unexpected_token(location, error_msg.to_string());
+        self.report_error(error);
     }
 
     /// Check condition and collect error if failed, continue parsing

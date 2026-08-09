@@ -78,9 +78,12 @@ impl ParserError {
 impl std::fmt::Display for ParserError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let base_message = match &self.kind {
-            ParserErrorKind::UnexpectedToken { expected} => {
-                format!("Expected {:?}", expected)
-            }
+            // The payload is a message, not a token name — most call
+            // sites pass a sentence ("unexpected token in primary
+            // expression: ..."). `format!("Expected {:?}", ..)` wrapped
+            // that in a second, contradictory sentence *and* quoted it,
+            // so the reader got `Expected "unexpected token ..."`.
+            ParserErrorKind::UnexpectedToken { expected } => expected.clone(),
             ParserErrorKind::RecursionLimitExceeded => {
                 "Recursion limit exceeded".to_string()
             }

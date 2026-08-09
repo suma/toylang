@@ -42,7 +42,7 @@ fn reject_else_if(parser: &mut Parser, else_location: SourceLocation) -> ParserR
     // us right back to a silent mis-parse; `parse_program` refuses to
     // hand back a tree while `errors` is non-empty, so this is what
     // makes the rejection stick.
-    parser.errors.push(error.clone());
+    parser.report_error(error.clone());
     Err(error)
 }
 

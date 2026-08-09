@@ -68,6 +68,27 @@ impl CompilerSession {
         parser.set_source_file(filename);
         parser.parse_program()
     }
+
+    /// Parse, reporting *every* syntax error rather than the first.
+    ///
+    /// LLM-LOOP P1: the type checker has reported all its errors in one
+    /// run since P1; the parser kept stopping at one, so a file with
+    /// three syntax mistakes still cost three round trips. The parser
+    /// already recovers and collects — this just stops throwing the rest
+    /// away at the boundary.
+    pub fn parse_program_all_errors(
+        &mut self,
+        input: &str,
+        filename: &str,
+    ) -> Result<File, Vec<frontend::parser::error::ParserError>> {
+        let mut parser = Parser::new(input, &mut self.string_interner);
+        parser.set_source_file(filename);
+        let outcome = parser.parse_program_multiple_errors();
+        match (outcome.result, outcome.errors) {
+            (Some(program), errors) if errors.is_empty() => Ok(program),
+            (_, errors) => Err(errors),
+        }
+    }
     
     /// Merge symbols from another string interner into the session's interner
     /// 

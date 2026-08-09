@@ -647,6 +647,7 @@ impl<'a> Parser<'a> {
         let (expr, stmt, location_pool) = ast_builder.extract_pools();
         let function_module_paths = vec![None; def_func.len()];
         Ok(File {
+            id: crate::ast::program::next_file_id(),
             node: Node::new(start_pos.unwrap_or(0usize), end_pos.unwrap_or(0usize)),
             package_decl,
             imports,

@@ -8,6 +8,18 @@ use super::{StmtRef, ExprRef, StmtPool, ExprPool, LocationPool, Expr};
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct File {
+    /// Identity that survives the address being reused.
+    ///
+    /// The JIT keyed its compiled-`main` cache on the *pointer* of the
+    /// `File`, on the reasoning that a freshly parsed program always
+    /// misses. It does not: parse a program, drop it, parse another,
+    /// and the allocator can hand back the same address — at which
+    /// point the second program runs the first one's compiled code.
+    /// Harmless when a process runs one program; wrong for anything
+    /// that runs several (a benchmark harness, an embedding, the
+    /// example sweep in `compiler/tests/example_consistency.rs`, which
+    /// is what surfaced it).
+    pub id: u64,
     pub node: Node,
     pub package_decl: Option<PackageDecl>,
     pub imports: Vec<ImportDecl>,
@@ -45,6 +57,14 @@ pub struct ConstDecl {
     pub type_decl: TypeDecl,
     pub value: ExprRef,
     pub visibility: Visibility,
+}
+
+/// Source of [`File::id`]. Monotonic for the life of the process.
+static NEXT_FILE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Allocate a fresh [`File::id`].
+pub fn next_file_id() -> u64 {
+    NEXT_FILE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl File {

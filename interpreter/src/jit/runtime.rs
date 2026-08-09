@@ -921,7 +921,7 @@ fn find_main(program: &File, interner: &DefaultStringInterner) -> Option<Rc<Func
 /// kept around. Cache hits skip eligibility, codegen and finalization
 /// entirely — we just call the cached function pointer again.
 struct CachedJit {
-    program_id: usize,
+    program_id: u64,
     /// Owns the executable code.
     _module: JITModule,
     main_ptr: *const u8,
@@ -932,7 +932,7 @@ thread_local! {
     static JIT_CACHE: RefCell<Option<CachedJit>> = const { RefCell::new(None) };
 }
 
-fn cache_lookup(program_id: usize) -> Option<(*const u8, ScalarTy)> {
+fn cache_lookup(program_id: u64) -> Option<(*const u8, ScalarTy)> {
     JIT_CACHE.with(|c| {
         c.borrow().as_ref().and_then(|cj| {
             if cj.program_id == program_id {
@@ -973,14 +973,18 @@ pub fn try_execute_main(
     // parsed program (e.g. inside a benchmark loop) hits the cache; a
     // freshly parsed program in another invocation always misses.
     //
-    // The pointer is only stable for the lifetime of the parsed
-    // `File`; between distinct `run_source` calls the underlying
-    // memory may be reused, which would surface as an unwanted cache
-    // hit (and miss the verbose `JIT compiled:` log a test was
-    // about to assert on). When verbose is on we therefore force
-    // a recompile so the log actually fires.
-    let program_id = program as *const File as usize;
+    // Keyed on `File::id`, not on the `File`'s address. The address is
+    // only stable for the lifetime of that parse: drop a program, parse
+    // another, and the allocator can hand back the same memory — the
+    // second program would then hit the cache and run the first one's
+    // compiled `main`. Nothing catches that in a process that runs one
+    // program, which is why it survived; the example sweep in
+    // `compiler/tests/example_consistency.rs` runs dozens per process
+    // and found it immediately.
+    let program_id = program.id;
     if verbose {
+        // Force a recompile so the `JIT compiled:` log a test may be
+        // asserting on actually fires.
         cache_clear();
     }
     let (main_ptr, main_ret) = match cache_lookup(program_id) {
@@ -1026,7 +1030,7 @@ fn build_cache_entry(
     interner: &DefaultStringInterner,
     main_fn: &Rc<Function>,
     eligible: &EligibleSet,
-    program_id: usize,
+    program_id: u64,
     verbose: bool,
 ) -> Result<CachedJit, String> {
     let mut flag_builder = settings::builder();

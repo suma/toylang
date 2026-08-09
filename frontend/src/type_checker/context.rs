@@ -340,12 +340,27 @@ impl TypeCheckContext {
         if let Some(definition) = self.get_struct_fields(struct_name) {
             // Check if all required fields are provided
             for required_field in definition {
-                let field_name_symbol = string_interner.string_interner.get(&required_field.name).unwrap_or_else(|| panic!("Field name not found in string interner"));
-                let field_provided = provided_fields.iter().any(|(name, _)| *name == field_name_symbol);
+                // A declared field name that was never interned cannot
+                // match anything in `provided_fields` — no symbol equals
+                // one that does not exist — so it is missing, which is
+                // the diagnostic to produce. Panicking here turned a
+                // program whose entire point is a missing field
+                // (`interpreter/example/struct_field_error_test.t`) into
+                // a compiler crash, in every backend.
+                let field_provided = match string_interner.string_interner.get(&required_field.name) {
+                    Some(field_name_symbol) => provided_fields
+                        .iter()
+                        .any(|(name, _)| *name == field_name_symbol),
+                    None => false,
+                };
                 if !field_provided {
+                    let struct_name_str = string_interner
+                        .string_interner
+                        .resolve(struct_name)
+                        .unwrap_or("<unknown>");
                     return Err(TypeCheckError::generic_error(&format!(
-                        "Missing required field '{}' in struct '{:?}'", 
-                        required_field.name, struct_name
+                        "Missing required field '{}' in struct '{struct_name_str}'",
+                        required_field.name
                     )));
                 }
             }

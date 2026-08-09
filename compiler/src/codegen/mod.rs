@@ -1166,7 +1166,18 @@ impl<M: Module> CodegenSession<M> {
             );
             ctxt.lower()
         };
-        builder.finalize();
+        // Only finalize a function that was lowered completely.
+        // `finalize()` asserts every block is sealed and filled, and
+        // `lower()` returns early on an unsupported construct — leaving
+        // the current block without a terminator. Finalizing anyway
+        // replaced an intended, specific rejection ("compiler MVP does
+        // not support `%` on f64") with `FunctionBuilder finalized, but
+        // block block0 is not sealed`, an assertion from a dependency
+        // that says nothing about the program. On the error path the
+        // function is discarded, so there is nothing to finalize.
+        if result.is_ok() {
+            builder.finalize();
+        }
         result?;
         self.module
             .define_function(cl_id, &mut ctx)
@@ -1218,7 +1229,18 @@ impl<M: Module> CodegenSession<M> {
             );
             ctxt.lower()
         };
-        builder.finalize();
+        // Only finalize a function that was lowered completely.
+        // `finalize()` asserts every block is sealed and filled, and
+        // `lower()` returns early on an unsupported construct — leaving
+        // the current block without a terminator. Finalizing anyway
+        // replaced an intended, specific rejection ("compiler MVP does
+        // not support `%` on f64") with `FunctionBuilder finalized, but
+        // block block0 is not sealed`, an assertion from a dependency
+        // that says nothing about the program. On the error path the
+        // function is discarded, so there is nothing to finalize.
+        if result.is_ok() {
+            builder.finalize();
+        }
         result?;
         Ok(ctx)
     }
@@ -1266,7 +1288,18 @@ impl<M: Module> CodegenSession<M> {
             );
             ctxt.lower()
         };
-        builder.finalize();
+        // Only finalize a function that was lowered completely.
+        // `finalize()` asserts every block is sealed and filled, and
+        // `lower()` returns early on an unsupported construct — leaving
+        // the current block without a terminator. Finalizing anyway
+        // replaced an intended, specific rejection ("compiler MVP does
+        // not support `%` on f64") with `FunctionBuilder finalized, but
+        // block block0 is not sealed`, an assertion from a dependency
+        // that says nothing about the program. On the error path the
+        // function is discarded, so there is nothing to finalize.
+        if result.is_ok() {
+            builder.finalize();
+        }
         result?;
         Ok(format!("{}", ctx.func.display()))
     }

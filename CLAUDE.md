@@ -107,9 +107,15 @@ clippy は**無警告が既定状態**。警告が出たら、それは今回の
 
 **同じ意味論が 3 バックエンド (tree-walker / IR VM・AOT / JIT) に独立実装されている。**
 型チェッカだけ直すと「型は通るが答えが間違う」状態になりうる。
-意味論を変える修正には `compiler/tests/consistency.rs` の
-`assert_consistent` を使ったテストを必ず追加すること —
-バックエンド間の一致を自動で検証する唯一の仕組み。
+
+- 意味論を変える修正には `compiler/tests/consistency.rs` の
+  `assert_consistent` を使ったテストを必ず追加する
+- `compiler/tests/example_consistency.rs` が
+  **`interpreter/example/` の全プログラムを 3 バックエンドで突き合わせる**ので、
+  example を追加すればカバレッジは自動で増える。
+  失敗したら skip リスト (`ERROR_EXAMPLES` / `AOT_UNSUPPORTED` / `KNOWN_CRASHES`)
+  に足す前に、まず本当にバックエンドのバグでないかを確認すること —
+  リストは**両方向に検査される**ので、直ったのに残っていても失敗する
 
 設定用の構造体 (`CompilerOptions` / `RunOptions` / `SourceLocation`) は
 `#[non_exhaustive]` なので、構造体リテラルではなくコンストラクタを使う:

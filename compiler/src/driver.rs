@@ -50,6 +50,18 @@ const LINK_CACHE_VERSION: u32 = 1;
 /// stable inputs) the hit rate approaches 100% after the first
 /// run, turning the AOT-link bottleneck into a copy.
 ///
+/// **This depends entirely on codegen being reproducible.** The
+/// key is a hash of the object bytes, so a compiler whose output
+/// drifts between runs turns the cache into a write-only
+/// directory: it grew one entry per invocation and never hit once,
+/// for as long as two passes iterated a `HashMap`. Measured after
+/// the fix: an AOT build of a small program went from 67 ms to
+/// 19 ms, and `cargo nextest run -p compiler` from 5.3 s to 2.8 s.
+/// `compiler/tests/reproducible_build.rs` pins it — anything that
+/// introduces an unordered iteration into lowering or codegen
+/// silently costs the cache, so the guard has to be a test rather
+/// than a comment.
+///
 /// Production users don't set the env var so behaviour stays
 /// identical to the uncached path.
 fn link_cache_dir(cli_override: Option<&Path>) -> Option<PathBuf> {

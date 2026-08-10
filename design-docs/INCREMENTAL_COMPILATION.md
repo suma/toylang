@@ -26,6 +26,94 @@ import the standard library.
   widths and dodges the misalignment.
 - Measured speedup on `fib.t`: warm 0.01s vs cold 0.04s (~4x).
 
+## Phase 5 (2026-08-10): measured first, then re-scoped
+
+Phase 5 was written as "per-module IR compilation + dependency graph +
+cascade invalidation", with the IR linker estimated at 1–2 weeks. The
+measurement below says most of that would have optimised the wrong
+thing, and that something adjacent was silently broken.
+
+### Where the time actually went (release build, macOS/M-series)
+
+| | cold | warm |
+|---|---|---|
+| `interpreter prog.t` | 48 ms | 10 ms |
+| `compiler prog.t -o exe` | 114 ms | 67 ms |
+
+Breaking the warm AOT run down by `--emit`:
+
+| stage | cost |
+|---|---|
+| process start (measured with `--explain`) | 4.7 ms |
+| parse + type check + integrate 16 core modules (cached) | ~10 ms |
+| lowering to IR | ~4 ms |
+| cranelift codegen | ~1 ms |
+| **link (`cc`)** | **~47 ms — 70% of the run** |
+
+**Per-module IR caching targets the ~4 ms slice.** Even a perfect
+implementation of the designed Phase 5 could not have moved the number
+that matters.
+
+### The link cache never hit
+
+`driver.rs` already had a content-addressed cache whose entire purpose
+is to remove that 47 ms, with a comment claiming a hit rate approaching
+100%. Ten invocations of one unchanged program left **eleven** cache
+entries: every run was a miss.
+
+The key is a hash of the emitted object bytes, and the object bytes were
+not reproducible — 8780 of 20016 bytes differed between two runs of the
+same program. Two unordered iterations were responsible:
+
+1. `compiler_lower/src/program.rs` iterated `method_registry`
+   (a `HashMap`) in the pass that assigns `FuncId`s, and again when
+   choosing the order to lower method bodies — which is what triggers
+   lazy monomorphisation. The same program produced
+   `toy_Vec__new__Struct(StructId(0))` on one run and
+   `...(StructId(1))` on the next.
+2. `compiler/src/codegen/mod.rs` collected panic and print string
+   symbols into `HashSet`s, and that iteration drives `define_data`,
+   so `.rodata` came out in a different order. The two neighbouring
+   collections were already `BTreeSet` for this reason; these two had
+   been missed.
+
+Both are now ordered. Results:
+
+| | before | after |
+|---|---|---|
+| AOT build, warm link cache | 67 ms | **19 ms** |
+| link-cache entries after 11 builds of one program | 11 | **1** |
+| `cargo nextest run -p compiler` (warm) | 5.3 s | **2.8 s** |
+
+`compiler/tests/reproducible_build.rs` pins this. The tests **spawn the
+binary** rather than calling the library: the per-process hash seed is
+the thing that varies, so an in-process comparison is a weaker check.
+
+### Dependency graph / dirty detection / cascade invalidation
+
+**Not needed at the current cache granularity**, verified empirically.
+Each cache entry holds one module's own AST keyed by that module's own
+source hash, and nothing derived from *other* modules is cached —
+integration and whole-program type checking are redone on every run. A
+module edit and a `pub fn` signature change both propagate correctly
+today (editing `base.t` changed the observed result; changing its return
+type produced the expected type error).
+
+Cascade invalidation becomes necessary only once **derived, cross-module
+artefacts** are cached — i.e. exactly when per-module IR lands. Building
+it before then would be machinery guarding nothing.
+
+### What is left, and what it is worth
+
+Per-module IR compilation + IR linker (the original Phase 5) now targets
+~4 ms of a 19 ms warm build. The open questions in "IR Linker" below
+(link-time monomorphisation, vtable `FuncId` patching) are unchanged and
+still hard. Recommended only if a much larger program makes lowering
+dominate — worth re-measuring on a realistic codebase before starting.
+
+The cheaper remaining slice is the ~10 ms spent loading and integrating
+16 cached core modules on every run, which is 2.5x the lowering cost.
+
 ## Remaining Work for Full Incremental Compilation
 
 ### 1. Full AST Serialization (Phase 0 prerequisite)

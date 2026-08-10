@@ -125,6 +125,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | バックエンド一致 (単発) | `compiler/tests/consistency.rs::assert_consistent` |
 | バックエンド一致 (全 example 掃引) | `compiler/tests/example_consistency.rs` |
 | バックエンド一致 (CLI・D6) | `compiler/src/all_backends.rs` (`compiler f.t --all-backends`) |
+| コード生成の再現性 | `compiler/tests/reproducible_build.rs` (**lowering / codegen で HashMap を反復すると link cache が全ミスになる**) |
 | JIT の eligibility / fallback | `interpreter/src/jit/eligibility/` |
 
 ## メモリ・allocator

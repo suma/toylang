@@ -544,10 +544,21 @@ pub fn lower_program(
     // concrete `target_type_args`). Iterate them and declare a
     // separate FuncId per spec, mangling the export name with the
     // type args to disambiguate.
-    let registry_pairs: Vec<((DefaultSymbol, DefaultSymbol), Vec<MethodTemplateSpec>)> = method_registry
-        .iter()
-        .map(|((t, m), specs)| ((*t, *m), specs.clone()))
-        .collect();
+    // Sorted, because this loop is what assigns `FuncId`s and (through
+    // lazy `intern_struct` calls) `StructId`s. `method_registry` is a
+    // `HashMap`, so iterating it directly made both depend on the
+    // per-process hash seed: the same program produced a different IR
+    // function order — and different monomorphised names like
+    // `toy_Vec__new__Struct(StructId(0))` vs `...(StructId(1))` — on
+    // every run. That leaked all the way into the emitted object's
+    // bytes, which is what the link cache keys on, so the cache missed
+    // every time and grew an entry per invocation.
+    let mut registry_pairs: Vec<((DefaultSymbol, DefaultSymbol), Vec<MethodTemplateSpec>)> =
+        method_registry
+            .iter()
+            .map(|((t, m), specs)| ((*t, *m), specs.clone()))
+            .collect();
+    registry_pairs.sort_by_key(|((t, m), _)| (*t, *m));
     for ((target_sym, method_sym), specs) in &registry_pairs {
         for spec in specs {
             let method = &spec.method;
@@ -968,7 +979,12 @@ pub fn lower_program(
     // in `specs`).
     let bodies_to_lower: Vec<(DefaultSymbol, Rc<frontend::ast::MethodFunction>, FuncId)> = {
         let mut acc = Vec::new();
-        for ((target_sym, method_sym), specs) in method_registry.iter() {
+        // `registry_pairs` rather than `method_registry.iter()`: it is
+        // the same content in sorted order. Lowering a body is what
+        // triggers lazy monomorphisation, so a `HashMap` order here
+        // made the *instances* (`toy_Vec__push__U8`, …) get their
+        // `FuncId`s in a different sequence on every run.
+        for ((target_sym, method_sym), specs) in &registry_pairs {
             let func_specs = match method_func_ids.get(&(*target_sym, *method_sym)) {
                 Some(v) => v,
                 None => continue,

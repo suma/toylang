@@ -722,10 +722,25 @@ impl<M: Module> CodegenSession<M> {
         // panic blob is prefixed with `"panic: "` to match the
         // interpreter's display format, while print strings ride
         // verbatim.
-        let mut panic_needed: std::collections::HashSet<DefaultSymbol> =
-            std::collections::HashSet::new();
-        let mut print_needed: std::collections::HashSet<DefaultSymbol> =
-            std::collections::HashSet::new();
+        //
+        // **Ordered sets, not hash sets.** The iteration below drives
+        // `define_data`, and the object writer lays `.rodata` out in
+        // definition order — so a `HashSet` here makes the emitted
+        // object's bytes different on every run (Rust seeds
+        // `RandomState` per process). That is not merely untidy: the
+        // link cache keys on a hash of the object bytes, so it missed
+        // every single time and grew one entry per invocation while
+        // saving nothing. `raw_needed` and `const_bytes_needed` below
+        // are already `BTreeSet` for this reason; these two were
+        // missed.
+        // `DefaultSymbol` derives `Ord` over its interning index, which
+        // is itself stable run to run — the emitted symbol *names*
+        // (`toy_panic_msg_<id>`) already matched across runs; only the
+        // order they were defined in did not.
+        let mut panic_needed: std::collections::BTreeSet<DefaultSymbol> =
+            std::collections::BTreeSet::new();
+        let mut print_needed: std::collections::BTreeSet<DefaultSymbol> =
+            std::collections::BTreeSet::new();
         for func in &ir_module.functions {
             for blk in &func.blocks {
                 if let Some(Terminator::Panic { message }) = &blk.terminator {

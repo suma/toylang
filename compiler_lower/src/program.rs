@@ -1273,6 +1273,23 @@ impl<'a> FunctionLower<'a> {
     /// queued method body. Cleared automatically by re-construction
     /// of `FunctionLower` between bodies; setting it explicitly here
     /// keeps the fact that the body is monomorphised visible.
+    /// `lower_scalar`, but resolving generic parameters through the
+    /// monomorphisation currently being lowered. A bare `lower_scalar`
+    /// returns `None` for `Generic(T)`, which is right when nothing is
+    /// substituting it and wrong inside a monomorphised body.
+    pub(super) fn lower_scalar_substituted(
+        &self,
+        ty: &frontend::type_decl::TypeDecl,
+    ) -> Option<Type> {
+        use frontend::type_decl::TypeDecl;
+        if let TypeDecl::Generic(p) | TypeDecl::Identifier(p) = ty
+            && let Some(concrete) = self.active_subst.get(p)
+        {
+            return Some(*concrete);
+        }
+        super::types::lower_scalar(ty)
+    }
+
     pub(super) fn set_active_subst(&mut self, subst: Vec<(DefaultSymbol, Type)>) {
         self.active_subst = subst.into_iter().collect();
     }
@@ -1478,10 +1495,17 @@ impl<'a> FunctionLower<'a> {
             // `Type::U64` by `lower_scalar`, so codegen sees a
             // plain pointer-sized argument.
             if let frontend::type_decl::TypeDecl::Function(p_tys, r_ty) = decl_ty {
+                // Resolve through the active monomorphisation first:
+                // inside `impl<T> Option<T> { fn map<U>(f: fn (T) -> U) }`
+                // the declared parameter is `fn (Generic(T)) -> Generic(U)`,
+                // and `lower_scalar` has no idea what those stand for.
+                // Without the substitution every HOF over a generic type
+                // failed here, which is what kept `Option::map` /
+                // `Result::map` out of the compiled backends.
                 let mut ir_param_tys: Vec<Type> = Vec::with_capacity(p_tys.len());
                 let mut ok = true;
                 for pt in p_tys {
-                    match super::types::lower_scalar(pt) {
+                    match self.lower_scalar_substituted(pt) {
                         Some(t) => ir_param_tys.push(t),
                         None => {
                             ok = false;
@@ -1489,7 +1513,7 @@ impl<'a> FunctionLower<'a> {
                         }
                     }
                 }
-                let ir_ret_ty = super::types::lower_scalar(r_ty);
+                let ir_ret_ty = self.lower_scalar_substituted(r_ty);
                 #[allow(clippy::collapsible_if)]
                 if ok {
                     if let Some(ret_ty) = ir_ret_ty {

@@ -195,6 +195,17 @@ impl<'a> FunctionLower<'a> {
                     Some((_, t)) => t.clone(),
                     None => continue,
                 };
+                // A function-typed parameter has to be matched
+                // against the argument's *signature*: `map<U>(f: fn
+                // (T) -> U)` mentions `U` only inside the closure's
+                // return type, and the argument's IR type is a bare
+                // U64 pointer that says nothing about it.
+                self.bind_method_only_param_from_fn_arg(
+                    &declared,
+                    arg_ref,
+                    &method_only_params,
+                    &mut subst,
+                );
                 let arg_ty = match self.value_scalar(arg_ref) {
                     Some(t) => t,
                     None => continue,
@@ -310,6 +321,66 @@ impl<'a> FunctionLower<'a> {
     /// Walk `declared` against `arg_ty`, binding any `Generic(P)`
     /// (or defensive `Identifier(P)`) entries in `params` to the
     /// runtime type.
+    /// Bind method-only generic params that appear inside a
+    /// **function-typed** parameter, by unifying the declared
+    /// signature against the argument's.
+    ///
+    /// `fn map<U>(self: Self, f: fn (T) -> U) -> Option<U>` is the
+    /// motivating case: `U` occurs nowhere except the closure's return
+    /// type, so `bind_method_only_param` — which compares the declared
+    /// type against the argument's *IR* type — never sees it. A
+    /// closure argument lowers to a U64 pointer, and a U64 carries no
+    /// return type. The signature has to come from the AST (a closure
+    /// literal's declared shape) or from a `FunctionPtr` binding.
+    ///
+    /// Without this, `o.map(fn(x: i64) -> bool { ... })` type checked
+    /// and ran on the interpreter but failed to lower, so the stdlib's
+    /// own `Option::map` / `Result::map` were interpreter-only.
+    pub(super) fn bind_method_only_param_from_fn_arg(
+        &self,
+        declared: &TypeDecl,
+        arg_ref: &ExprRef,
+        params: &[DefaultSymbol],
+        subst: &mut HashMap<DefaultSymbol, Type>,
+    ) {
+        let TypeDecl::Function(declared_params, declared_ret) = declared else {
+            return;
+        };
+        let Some(arg_expr) = self.program.expression.get(arg_ref) else {
+            return;
+        };
+        match arg_expr {
+            Expr::Closure { params: closure_params, return_type, .. } => {
+                for (declared_p, (_, actual_p)) in
+                    declared_params.iter().zip(closure_params.iter())
+                {
+                    if let Some(ty) = crate::types::lower_scalar(actual_p) {
+                        self.bind_method_only_param(declared_p, ty, params, subst);
+                    }
+                }
+                if let Some(actual_ret) = return_type
+                    && let Some(ty) = crate::types::lower_scalar(&actual_ret)
+                {
+                    self.bind_method_only_param(declared_ret, ty, params, subst);
+                }
+            }
+            // A function value passed along (a HOF parameter forwarded
+            // to another HOF): the binding already carries the lowered
+            // signature.
+            Expr::Identifier(sym) => {
+                if let Some(Binding::FunctionPtr { param_tys, ret_ty, .. }) =
+                    self.bindings.get(&sym)
+                {
+                    for (declared_p, actual) in declared_params.iter().zip(param_tys.iter()) {
+                        self.bind_method_only_param(declared_p, *actual, params, subst);
+                    }
+                    self.bind_method_only_param(declared_ret, *ret_ty, params, subst);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn bind_method_only_param(
         &self,
         declared: &TypeDecl,
@@ -380,17 +451,38 @@ impl<'a> FunctionLower<'a> {
             method,
             &recv_type_args_decl,
         ) {
-            let recv_struct_id = match &binding {
-                Binding::Struct { struct_id, .. } => *struct_id,
+            // Enum receivers go through the type-args-aware
+            // instantiator, the same split the expression-position
+            // dispatch above makes. Bailing out on them (which this
+            // used to do) meant every caller that resolves a target
+            // before choosing a call shape — `val` binding, `print`
+            // argument, `match` scrutinee — saw a generic method on an
+            // enum as "not a method", and fell through to a message
+            // telling the user to bind it with `val` when they already
+            // had. `Option::map` and `Result::map` were unreachable
+            // from the compiler for exactly this reason.
+            let id = match &binding {
+                Binding::Struct { struct_id, .. } => self.instantiate_generic_method_with_args(
+                    target_sym,
+                    method,
+                    &template,
+                    *struct_id,
+                    args,
+                )?,
+                Binding::Enum(storage) => {
+                    let enum_id = storage.enum_id;
+                    let recv_type_args = self.module.enum_def(enum_id).type_args.clone();
+                    self.instantiate_generic_method_with_self_type(
+                        target_sym,
+                        method,
+                        &template,
+                        Type::Enum(enum_id),
+                        recv_type_args,
+                        args,
+                    )?
+                }
                 _ => return Ok(None),
             };
-            let id = self.instantiate_generic_method_with_args(
-                target_sym,
-                method,
-                &template,
-                recv_struct_id,
-                args,
-            )?;
             return Ok(Some((id, binding)));
         }
         Ok(None)

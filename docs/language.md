@@ -1488,10 +1488,11 @@ show_n()                      # 1 — captured the original value
   recovers the fn-pointer from `env+0` and prepends env to
   the user-visible args. Captures support both 8-byte scalars
   (i64 / u64 / f64 / bool) and narrow ints (u8 / u16 / u32 /
-  i8 / i16 / i32). The remaining gap is stdlib HOF methods
-  on generic enums (`Option::map<U>` etc.), blocked on a
-  generic-enum match arm unification fix in the type
-  checker.
+  i8 / i16 / i32). Stdlib HOF methods on generic enums
+  (`Option::map` / `Result::map` / `map_err` /
+  `unwrap_or_else`) work on every backend. The remaining gap
+  is the same shape on a *user-defined* generic enum, where
+  the impl-level parameter reaches the compiler unresolved.
 
 ---
 
@@ -2716,10 +2717,11 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   closures stored in struct fields — capturing and
   non-capturing alike — via a unified env-based ABI
   (Phase 6b/8). Captures support 8-byte scalars and narrow
-  ints. The remaining gap is stdlib HOF methods on generic
-  enums (e.g. `Option::map<U>`), blocked on a generic-enum
-  match arm unification improvement in the type checker.
-  See [Closures → Backend coverage](#closures).
+  ints. Stdlib HOF methods on generic enums (`Option::map`,
+  `Result::map`, `map_err`, `unwrap_or_else`) work on every
+  backend. The remaining gap is that same shape on a
+  *user-defined* generic enum. See
+  [Closures → Backend coverage](#closures).
 - **No `else if`** — use `elif`.
 - **No bare `self`** — `self: Self` is mandatory in method signatures.
 - **`val` is a keyword** — cannot be used as a parameter or field name.

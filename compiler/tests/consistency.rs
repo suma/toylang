@@ -5349,3 +5349,103 @@ fn val_bound_match_on_a_stdlib_result_binds_both_arms() {
     "#;
     assert_consistent(src, "val_match_result_both_arms");
 }
+
+// --- stdlib higher-order methods on generic enums -------------------
+//
+// `Option::map` / `Result::map` / `map_err` / `unwrap_or_else` ran on
+// the interpreter but could not be lowered, so they were effectively
+// interpreter-only. Three separate gaps stacked up:
+//
+//   1. `resolve_method_target` bailed out on an *enum* receiver in its
+//      generic-method branch, so every caller that resolves a target
+//      before choosing a call shape reported "cannot use a
+//      compound-returning method in expression position; bind the
+//      result with `val`" — to code that had already done that.
+//   2. a method-only generic param mentioned solely inside a
+//      function-typed parameter (`map<U>(f: fn (T) -> U)`) could not be
+//      inferred: the argument's IR type is a bare U64 pointer.
+//   3. that same `fn (T) -> U` parameter was lowered without applying
+//      the active monomorphisation, so it arrived as
+//      `Function([Generic(T)], Generic(U))`.
+
+#[test]
+fn option_map_round_trips_through_every_backend() {
+    let src = r#"
+        fn main() -> i64 {
+            val some: Option<i64> = Option::Some(20i64)
+            val mapped = some.map(fn(x: i64) -> i64 { x + 1i64 })
+            val from_some: i64 = match mapped {
+                Option::Some(v) => v,
+                Option::None => 0i64,
+            }
+
+            val none: Option<i64> = Option::None
+            val untouched = none.map(fn(x: i64) -> i64 { x + 1i64 })
+            val from_none: i64 = match untouched {
+                Option::Some(v) => v,
+                Option::None => 100i64,
+            }
+
+            from_some + from_none
+        }
+    "#;
+    assert_consistent(src, "option_map_backends");
+}
+
+#[test]
+fn option_map_changes_the_payload_type() {
+    // `U` differs from `T`, which is the whole point of `map` and the
+    // case that needs the method-only param inferred from the
+    // closure's declared return type.
+    let src = r#"
+        fn main() -> i64 {
+            val some: Option<i64> = Option::Some(3i64)
+            val flagged = some.map(fn(x: i64) -> bool { x > 1i64 })
+            match flagged {
+                Option::Some(v) => if v { 1i64 } else { 0i64 },
+                Option::None => 0i64,
+            }
+        }
+    "#;
+    assert_consistent(src, "option_map_retype");
+}
+
+#[test]
+fn result_map_and_map_err_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            val ok: Result<i64, i64> = Result::Ok(20i64)
+            val doubled = ok.map(fn(x: i64) -> i64 { x * 2i64 })
+            val from_ok: i64 = match doubled {
+                Result::Ok(v) => v,
+                Result::Err(e) => e,
+            }
+
+            val err: Result<i64, i64> = Result::Err(5i64)
+            val relabelled = err.map_err(fn(e: i64) -> i64 { e + 1i64 })
+            val from_err: i64 = match relabelled {
+                Result::Ok(v) => v,
+                Result::Err(e) => e,
+            }
+
+            from_ok + from_err
+        }
+    "#;
+    assert_consistent(src, "result_map_backends");
+}
+
+#[test]
+fn option_unwrap_or_else_takes_a_zero_argument_closure() {
+    // The function-typed parameter has no parameters at all, so the
+    // substitution has to reach the return type on its own.
+    let src = r#"
+        fn main() -> i64 {
+            val none: Option<i64> = Option::None
+            val fallback: i64 = none.unwrap_or_else(fn() -> i64 { 9i64 })
+            val some: Option<i64> = Option::Some(4i64)
+            val kept: i64 = some.unwrap_or_else(fn() -> i64 { 9i64 })
+            fallback + kept
+        }
+    "#;
+    assert_consistent(src, "option_unwrap_or_else_backends");
+}

@@ -147,20 +147,20 @@ fn closure_value_round_trips_through_value_binding() {
     );
 }
 
-// Closures Phase 7 — stdlib HOF methods on `Option` /
-// `Result` (e.g. `Option::map`, `unwrap_or_else`) are
-// deferred to a follow-up. The blocker is that the impl-block
-// body `match self { Option::Some(v) => Option::Some(f(v)),
-// Option::None => Option::None }` makes the type checker
-// instantiate the two arms with different `Generic(?)`
-// substitutions for the same enum (one arm reaches the
-// type checker as `Struct(?, ...)`, the other as
-// `Enum(?, ...)`), so the unifier rejects the body even
-// though the runtime semantics are sound. Tracked in
-// `design-docs/todo.md` GENERIC-ENUM-HOF-UNIFY. Until that is
-// fixed, user code can
-// still write `match` directly or define HOFs as free
-// functions over a concrete `Option<i64>` type.
+// Closures Phase 7 — stdlib HOF methods on `Option` / `Result`
+// (`map`, `map_err`, `unwrap_or_else`) work, on every backend. The
+// comment that used to sit here described a type-checker unification
+// blocker; that was fixed in 2026-05-17 and the note outlived it,
+// which is how it came to be cited as an open issue two months later.
+// Backend coverage is pinned in `compiler/tests/consistency.rs`
+// (`option_map_round_trips_through_every_backend` and neighbours).
+//
+// Still open: the same shape on a *user-defined* generic enum
+// (`impl Box<T> { fn map<U>(self, f: fn (T) -> U) -> Box<U> }`) does
+// not lower — the impl-level `T` reaches the compiler as
+// `Identifier` rather than `Generic` and misses the active
+// substitution. Tracked as GENERIC-ENUM-HOF-USER in
+// `design-docs/todo.md`.
 
 #[test]
 fn closure_object_has_function_type() {

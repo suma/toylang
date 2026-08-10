@@ -102,6 +102,8 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | シグネチャ一覧 (P7 `--api`) | `frontend/src/api.rs::render` |
 | 契約節の span | `parser/declarations.rs::parse_clause_with_span` (節全体を根の式に記録) |
 | 式の span を消費範囲まで広げる | `parser/core.rs::Parser::span_to_cursor` |
+| postfix チェーンの span 付け直し | `parser/expr/mod.rs::parse_postfix_impl` (field / tuple access / method call / index / cast / `?`) |
+| キーワード構文の anchor (`if` / `match` / `with`) | `parser/expr/primary.rs::keyword_form` |
 | `as` キャスト提案の可否 | `type_checker/error_helpers.rs::cast_suggestion_form` (**span が式全体を覆う形にだけ提案する**) |
 | JIT が実際にビルドに入っているか | `interpreter::jit_available()` (cross-backend suite が assert) |
 

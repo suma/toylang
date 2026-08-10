@@ -299,18 +299,26 @@ impl<'a> Parser<'a> {
     /// (`a + b` produced `+ as i64`). Callers that have just finished
     /// consuming a construct widen its location with this.
     ///
-    /// The end is the *start* of the following token, so trailing
-    /// whitespace can fall inside the span. Harmless for both uses —
-    /// the caret covers a space and a replacement carries one — and
-    /// the alternative is tracking the previous token's end through
-    /// the token source for no gain.
+    /// The end is derived from the *start* of the following token and
+    /// then walked back over whitespace, since the token source does
+    /// not expose the previous token's end. Without the walk-back a
+    /// span reaches to the next token — across the newline and the
+    /// indentation when the construct ends a line — and the caret runs
+    /// to the end of its line.
     pub fn span_to_cursor(&mut self, start: SourceLocation) -> SourceLocation {
-        let end = self
+        let cursor = self
             .current_position()
-            .map(|p| p.start as u32)
-            .unwrap_or(start.end_offset)
-            .max(start.end_offset);
-        SourceLocation::new(start.line, start.column, start.offset, end)
+            .map(|p| p.start)
+            .unwrap_or(self.input.len());
+        let end = self.input[..cursor.min(self.input.len())]
+            .trim_end()
+            .len() as u32;
+        SourceLocation::new(
+            start.line,
+            start.column,
+            start.offset,
+            end.max(start.end_offset),
+        )
     }
 
     /// Get current source location with line and column information

@@ -510,18 +510,24 @@ pub fn parse_mul(parser: &mut Parser) -> ParserResult<ExprRef> {
     parse_binary(parser, &group)
 }
 
+/// Prefix operators. Each arm spans the operator *and* its operand: a
+/// node located at the bare `-` gives a one-character caret and quotes
+/// as `-`, which is useless to a diagnostic that wants to name the
+/// value.
 pub fn parse_unary(parser: &mut Parser) -> ParserResult<ExprRef> {
     match parser.peek() {
         Some(Kind::Tilde) => {
             let location = parser.current_source_location();
             parser.next();
             let operand = parse_unary(parser)?;
+            let location = parser.span_to_cursor(location);
             Ok(parser.ast_builder.unary_expr(UnaryOp::BitwiseNot, operand, Some(location)))
         }
         Some(Kind::Exclamation) => {
             let location = parser.current_source_location();
             parser.next();
             let operand = parse_unary(parser)?;
+            let location = parser.span_to_cursor(location);
             Ok(parser.ast_builder.unary_expr(UnaryOp::LogicalNot, operand, Some(location)))
         }
         // `-` at expression start is unary negation. Binary subtraction uses the
@@ -532,6 +538,7 @@ pub fn parse_unary(parser: &mut Parser) -> ParserResult<ExprRef> {
             let location = parser.current_source_location();
             parser.next();
             let operand = parse_unary(parser)?;
+            let location = parser.span_to_cursor(location);
             Ok(parser.ast_builder.unary_expr(UnaryOp::Negate, operand, Some(location)))
         }
         // REF-Stage-2: prefix `&` / `&mut` at expression start is an
@@ -548,6 +555,7 @@ pub fn parse_unary(parser: &mut Parser) -> ParserResult<ExprRef> {
                 UnaryOp::Borrow
             };
             let operand = parse_unary(parser)?;
+            let location = parser.span_to_cursor(location);
             Ok(parser.ast_builder.unary_expr(op, operand, Some(location)))
         }
         _ => parse_postfix(parser)
@@ -566,8 +574,17 @@ pub fn parse_postfix(parser: &mut Parser) -> ParserResult<ExprRef> {
 
 fn parse_postfix_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
     let mut expr = parse_primary(parser)?;
-    
+    // Where the whole postfix chain begins. Each step below builds its
+    // node with whatever `current_source_location()` happens to be —
+    // the `[`, the `as`, the `(` of a method call, or, for a field
+    // access, the token on the *next line*. None of those is the
+    // expression, and a diagnostic about the value it produces has
+    // nothing useful to point at. Re-spanned after every step to cover
+    // receiver and suffix together.
+    let chain_start = expr_start(parser, expr);
+
     loop {
+        let before = expr;
         match parser.peek() {
             Some(Kind::Dot) => {
                 parser.next();
@@ -658,6 +675,15 @@ fn parse_postfix_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                 );
             }
             _ => break,
+        }
+        // A step that produced a new node gets the chain's extent. The
+        // guard matters for the error paths above that `break` after
+        // collecting a diagnostic without building anything.
+        if expr != before
+            && let Some(start) = chain_start
+        {
+            let span = parser.span_to_cursor(start);
+            parser.ast_builder.get_location_pool_mut().set_expr_location(&expr, span);
         }
     }
 

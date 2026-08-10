@@ -154,19 +154,34 @@ fn a_cast_suggestion_is_either_correct_or_absent_whatever_the_argument_looks_lik
     // So the property is per-shape: whatever suggestion is offered must
     // resolve the diagnostic, and a shape we cannot quote correctly must
     // offer none at all. Silence is free; a wrong edit is not.
+    // `expect_fix` is asserted, not merely observed: a shape silently
+    // losing its suggestion is a regression too, and "no suggestion"
+    // otherwise passes this test trivially.
     let cases = [
-        ("identifier", "fn f(n: i64) -> i64 { n }\nfn main() -> u64 {\n    val a: u64 = 1u64\n    val x = f(a)\n    0u64\n}"),
-        ("binary", "fn f(n: i64) -> i64 { n }\nfn main() -> u64 {\n    val a: u64 = 1u64\n    val x = f(a + 2u64)\n    0u64\n}"),
-        ("nested binary", "fn f(n: i64) -> i64 { n }\nfn main() -> u64 {\n    val a: u64 = 1u64\n    val x = f(a * 2u64 + 3u64)\n    0u64\n}"),
-        ("second argument", "fn f(n: i64, m: i64) -> i64 { n }\nfn main() -> u64 {\n    val a: u64 = 1u64\n    val x = f(1i64, a)\n    0u64\n}"),
-        ("call result", "fn g() -> u64 { 3u64 }\nfn f(n: i64) -> i64 { n }\nfn main() -> u64 {\n    val x = f(g())\n    0u64\n}"),
-        ("field access", "struct P { x: u64 }\nfn f(n: i64) -> i64 { n }\nfn main() -> u64 {\n    val p = P { x: 1u64 }\n    val y = f(p.x)\n    0u64\n}"),
-        ("unary", "fn f(n: u64) -> u64 { n }\nfn main() -> u64 {\n    val a: i64 = 1i64\n    val y = f(-a)\n    0u64\n}"),
+        ("identifier", true, "fn f(n: i64) -> i64 { n }\nfn main() -> u64 {\n    val a: u64 = 1u64\n    val x = f(a)\n    0u64\n}"),
+        ("binary", true, "fn f(n: i64) -> i64 { n }\nfn main() -> u64 {\n    val a: u64 = 1u64\n    val x = f(a + 2u64)\n    0u64\n}"),
+        ("nested binary", true, "fn f(n: i64) -> i64 { n }\nfn main() -> u64 {\n    val a: u64 = 1u64\n    val x = f(a * 2u64 + 3u64)\n    0u64\n}"),
+        ("second argument", true, "fn f(n: i64, m: i64) -> i64 { n }\nfn main() -> u64 {\n    val a: u64 = 1u64\n    val x = f(1i64, a)\n    0u64\n}"),
+        ("field access", true, "struct P { x: u64 }\nfn f(n: i64) -> i64 { n }\nfn main() -> u64 {\n    val p = P { x: 1u64 }\n    val y = f(p.x)\n    0u64\n}"),
+        ("tuple access", true, "fn f(n: i64) -> i64 { n }\nfn main() -> u64 {\n    val t = (1u64, 2u64)\n    val y = f(t.0)\n    0u64\n}"),
+        ("index", true, "fn f(n: i64) -> i64 { n }\nfn main() -> u64 {\n    val a: [u64; 2] = [1u64, 2u64]\n    val y = f(a[0])\n    0u64\n}"),
+        ("method call", true, "fn f(n: u64) -> u64 { n }\nfn main() -> u64 {\n    val n: i64 = -3i64\n    val y = f(n.abs())\n    0u64\n}"),
+        ("cast", true, "fn f(n: i64) -> i64 { n }\nfn main() -> u64 {\n    val a: f64 = 1.0f64\n    val x = f(a as u64)\n    0u64\n}"),
+        ("unary", true, "fn f(n: u64) -> u64 { n }\nfn main() -> u64 {\n    val a: i64 = 1i64\n    val y = f(-a)\n    0u64\n}"),
+        // A call is located at its callee so that "function not found"
+        // points at the name (P2). That span cannot be quoted as a
+        // value -- `g as i64()` -- so no suggestion is offered.
+        ("call result", false, "fn g() -> u64 { 3u64 }\nfn f(n: i64) -> i64 { n }\nfn main() -> u64 {\n    val x = f(g())\n    0u64\n}"),
     ];
-    for (shape, source) in cases {
+    for (shape, expect_fix, source) in cases {
         let diagnostics = diagnose(source);
         assert!(!diagnostics.is_empty(), "{shape}: expected a diagnostic");
-        if diagnostics.iter().all(|d| d.suggestions.is_empty()) {
+        let has_fix = diagnostics.iter().any(|d| !d.suggestions.is_empty());
+        assert_eq!(
+            has_fix, expect_fix,
+            "{shape}: expected a suggestion? {expect_fix}, got {has_fix}:\n{diagnostics:#?}"
+        );
+        if !has_fix {
             continue;
         }
         let fixed = apply_suggestions(source, &diagnostics);

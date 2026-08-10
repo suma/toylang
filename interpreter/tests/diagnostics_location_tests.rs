@@ -195,3 +195,67 @@ fn struct_literal_field_mismatch_is_located() {
         }",
     ));
 }
+
+/// Every expression form's caret covers the expression, not the token
+/// that happens to name it.
+///
+/// A node used to be located wherever the parser's cursor sat when it
+/// was built: a field access at the token on the *next line*, an index
+/// at the `[`, a unary at its `-`, a cast at its `as`, an `if` at the
+/// first token of the following statement. Two consequences, one bad
+/// and one worse — a one-character caret says nothing about which
+/// subexpression is wrong, and a caret on an unrelated line points the
+/// reader confidently at innocent code, which is precisely the failure
+/// P2 exists to prevent.
+#[test]
+fn every_expression_form_underlines_itself() {
+    // `val q: bool = <expr>` anchors the mismatch at the initializer,
+    // so the caret width is the expression node's own span.
+    let cases: &[(&str, &str, &str)] = &[
+        ("field access", "struct P { x: u64 }\nfn main() -> u64 {\n    val p = P { x: 1u64 }\n    val q: bool = p.x\n    0u64\n}", "^^^"),
+        ("tuple access", "fn main() -> u64 {\n    val t = (1u64, 2u64)\n    val q: bool = t.0\n    0u64\n}", "^^^"),
+        ("index", "fn main() -> u64 {\n    val a: [u64; 2] = [1u64, 2u64]\n    val q: bool = a[0]\n    0u64\n}", "^^^^"),
+        ("slice", "fn main() -> u64 {\n    val a: [u64; 3] = [1u64, 2u64, 3u64]\n    val q: bool = a[0..2]\n    0u64\n}", "^^^^^^"),
+        ("unary", "fn main() -> u64 {\n    val n: i64 = 1i64\n    val q: bool = -n\n    0u64\n}", "^^"),
+        ("cast", "fn main() -> u64 {\n    val n: u64 = 1u64\n    val q: bool = n as i64\n    0u64\n}", "^^^^^^^^"),
+        ("method call", "fn main() -> u64 {\n    val n: i64 = -3i64\n    val q: bool = n.abs()\n    0u64\n}", "^^^^^^^"),
+        ("struct literal", "struct P { x: u64 }\nfn main() -> u64 {\n    val q: bool = P { x: 1u64 }\n    0u64\n}", "^^^^^^^^^^^^^"),
+        ("tuple literal", "fn main() -> u64 {\n    val q: bool = (1u64, 2u64)\n    0u64\n}", "^^^^^^^^^^^^"),
+        ("array literal", "fn main() -> u64 {\n    val q: bool = [1u64, 2u64]\n    0u64\n}", "^^^^^^^^^^^^"),
+        ("binary", "fn main() -> u64 {\n    val q: bool = 1u64 + 2u64\n    0u64\n}", "^^^^^^^^^^^"),
+        // `if` and `match` span several lines and the caret is clamped
+        // to the line it annotates, so these are anchored at the
+        // keyword — precise, and on the right line.
+        ("if", "fn main() -> u64 {\n    val q: bool = if true { 1u64 } else { 2u64 }\n    0u64\n}", "^^ "),
+        ("match", "fn main() -> u64 {\n    val q: bool = match 1u64 { _ => 2u64 }\n    0u64\n}", "^^^^^ "),
+    ];
+    for (shape, source, caret) in cases {
+        let diags = diagnostics(source);
+        assert!(
+            diags.contains(caret),
+            "{shape}: expected a caret of `{caret}`:\n{diags}"
+        );
+        // The caret has to be on the line holding the expression, not
+        // on a later statement that happens to sit at that offset.
+        assert!(
+            diags.contains("val q: bool"),
+            "{shape}: the diagnostic points at the wrong line:\n{diags}"
+        );
+    }
+}
+
+/// A call keeps its narrower anchor: "function not found" has to point
+/// at the name, not at the whole call.
+#[test]
+fn a_call_stays_anchored_at_its_callee() {
+    let diags = diagnostics(
+        "fn main() -> u64 {
+            val z = no_such_thing(1u64, 2u64)
+            0u64
+        }",
+    );
+    assert!(
+        diags.contains("^^^^^^^^^^^^^ [E0003]"),
+        "caret should cover just the callee name:\n{diags}"
+    );
+}

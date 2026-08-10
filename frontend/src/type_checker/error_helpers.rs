@@ -109,18 +109,17 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// How to spell a cast of `expr`, or `None` when no suggestion can
     /// be made for it.
     ///
-    /// The gate is not syntax but **whether the expression's recorded
-    /// location covers the expression**. Most nodes are located at the
-    /// token that *names* them, deliberately: a call is located at its
-    /// callee so "function not found" points at the name, a field
-    /// access at the `.`, an index at the `[`. Quoting those spans and
-    /// appending ` as i64` produces `g as i64()` — an edit that does
-    /// not compile, offered as machine-applicable.
+    /// The gate is **whether the expression's recorded location covers
+    /// the expression**. `Expr::Call` is located at its callee, on
+    /// purpose, so "function not found" points at the name; quoting
+    /// that span and appending ` as i64` gives `g as i64()`, an edit
+    /// that does not compile, offered as machine-applicable. Control
+    /// forms (`if` / `match` / `with`) are anchored at their keyword
+    /// for the same reason a caret cannot usefully span three lines.
     ///
-    /// So only the forms whose span is known to be their full extent
-    /// get a suggestion. The rest keep the message, which already names
-    /// both types; a missing suggestion costs a reader nothing, and a
-    /// wrong one costs them a round trip plus their trust in the next.
+    /// Those get no suggestion. The message already names both types; a
+    /// missing suggestion costs a reader nothing, and a wrong one costs
+    /// them a round trip plus their trust in the next.
     fn cast_suggestion_form(&self, expr: &ExprRef) -> Option<CastForm> {
         use crate::ast::Expr;
         match self.core.expr_pool.get(expr)? {
@@ -140,10 +139,19 @@ impl<'a> TypeCheckerVisitor<'a> {
             | Expr::Number(_)
             | Expr::String(_)
             | Expr::Identifier(_)
-            | Expr::QualifiedIdentifier(_) => Some(CastForm::Bare),
-            // The parser widens a binary node's span over both operands
-            // (`parse_binary_impl`), so the whole operation is quotable.
-            Expr::Binary(..) => Some(CastForm::Parenthesised),
+            | Expr::QualifiedIdentifier(_)
+            // Postfix forms: the parser spans these from the receiver
+            // through the suffix, and postfix binds tighter than `as`,
+            // so no parentheses are needed.
+            | Expr::FieldAccess(..)
+            | Expr::TupleAccess(..)
+            | Expr::SliceAccess(..)
+            | Expr::MethodCall(..)
+            | Expr::Cast(..) => Some(CastForm::Bare),
+            // Spanned over the whole operation, but bound more loosely
+            // than `as`: `a + b as i64` casts `b`, and `-a as i64`
+            // negates the cast rather than casting the negation.
+            Expr::Binary(..) | Expr::Unary(..) => Some(CastForm::Parenthesised),
             _ => None,
         }
     }

@@ -137,11 +137,12 @@ fn parse_interpolated_string(parser: &mut Parser) -> ParserResult<ExprRef> {
 
 /// Parse `(a, b)` tuple or `(expr)` grouped expression.
 fn parse_tuple_or_grouped_expr(parser: &mut Parser) -> ParserResult<ExprRef> {
-    let location = parser.current_source_location();
+    let open = parser.current_source_location();
     parser.next();
     parser.skip_newlines();
     if parser.peek() == Some(&Kind::ParenClose) {
         parser.next();
+        let location = parser.span_to_cursor(open);
         return Ok(parser.ast_builder.tuple_literal_expr(vec![], Some(location)));
     }
     let first = parser.parse_expr_impl()?;
@@ -161,6 +162,7 @@ fn parse_tuple_or_grouped_expr(parser: &mut Parser) -> ParserResult<ExprRef> {
             }
         }
         parser.expect_err(&Kind::ParenClose)?;
+        let location = parser.span_to_cursor(open);
         Ok(parser.ast_builder.tuple_literal_expr(elements, Some(location)))
     } else {
         parser.expect_err(&Kind::ParenClose)?;
@@ -268,13 +270,20 @@ fn parse_primary_after_identifier(
             let location = parser.current_source_location();
             parser.next();
             let object_ref = parser.ast_builder.identifier_expr(name, None);
-            parse_bracket_access(parser, object_ref, location)
+            let access = parse_bracket_access(parser, object_ref, location)?;
+            // `a[0]` never reaches the postfix loop's re-spanning pass,
+            // so widen it here: located at the `[`, it quotes as `[`.
+            let span = parser.span_to_cursor(name_location);
+            parser.ast_builder.get_location_pool_mut().set_expr_location(&access, span);
+            Ok(access)
         }
         Some(Kind::BraceOpen) if struct_literal_allowed => {
-            let location = parser.current_source_location();
             parser.next();
             let fields = parse_struct_literal_fields(parser, vec![])?;
             parser.expect_err(&Kind::BraceClose)?;
+            // From the type name through the closing brace, so the
+            // caret covers `P { x: 1u64 }` rather than the `{`.
+            let location = parser.span_to_cursor(name_location);
             Ok(parser.ast_builder.struct_literal_expr(name, fields, Some(location)))
         }
         _ => {
@@ -360,6 +369,31 @@ fn parse_primary_atom_or_form(parser: &mut Parser) -> ParserResult<ExprRef> {
     e
 }
 
+/// Parse a keyword-introduced form, anchoring the result at the
+/// keyword.
+///
+/// These builders take their location at the end of parsing, by which
+/// point the cursor has left the construct entirely — an `if`
+/// expression came out located at the *first token of the next
+/// statement*, so a diagnostic about it underlined innocent code on
+/// another line. That is the failure P2 set out to remove, and it is
+/// worse than no location at all.
+///
+/// The keyword alone, rather than the whole construct: `if` and `match`
+/// span several lines, and the caret is clamped to the line it
+/// annotates, so a full extent would just underline the rest of the
+/// first line.
+fn keyword_form(
+    parser: &mut Parser,
+    parse: fn(&mut Parser) -> ParserResult<ExprRef>,
+) -> ParserResult<ExprRef> {
+    let keyword = parser.current_source_location();
+    parser.next();
+    let expr = parse(parser)?;
+    parser.ast_builder.get_location_pool_mut().set_expr_location(&expr, keyword);
+    Ok(expr)
+}
+
 /// Parse primary expression starting with keyword or punctuation.
 fn parse_primary_keyword_form(parser: &mut Parser) -> ParserResult<ExprRef> {
     let x = parser.peek();
@@ -372,20 +406,15 @@ fn parse_primary_keyword_form(parser: &mut Parser) -> ParserResult<ExprRef> {
         }
         Some(Kind::BraceOpen) => parse_block(parser),
         Some(Kind::BracketOpen) => {
-            let location = parser.current_source_location();
+            let open = parser.current_source_location();
             parser.next();
             let elements = parse_array_elements(parser, vec![])?;
             parser.expect_err(&Kind::BracketClose)?;
+            let location = parser.span_to_cursor(open);
             Ok(parser.ast_builder.array_literal_expr(elements, Some(location)))
         }
-        Some(Kind::If) => {
-            parser.next();
-            parse_if(parser)
-        }
-        Some(Kind::With) => {
-            parser.next();
-            parse_with(parser)
-        }
+        Some(Kind::If) => keyword_form(parser, parse_if),
+        Some(Kind::With) => keyword_form(parser, parse_with),
         Some(Kind::Ambient) => {
             let location = parser.current_source_location();
             parser.next();
@@ -399,10 +428,7 @@ fn parse_primary_keyword_form(parser: &mut Parser) -> ParserResult<ExprRef> {
             parser.next();
             parse_dict_literal(parser)
         }
-        Some(Kind::Match) => {
-            parser.next();
-            parse_match(parser)
-        }
+        Some(Kind::Match) => keyword_form(parser, parse_match),
         _ => {
             let x_cloned = x.cloned();
             parser.collect_error(&format!("unexpected token in primary expression: {:?}", x_cloned));

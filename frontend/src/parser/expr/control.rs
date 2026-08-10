@@ -58,6 +58,7 @@ pub fn parse_dict_literal(parser: &mut Parser) -> ParserResult<ExprRef> {
     let entries = parse_dict_entries(parser, vec![])?;
     parser.skip_newlines();
     parser.expect_err(&Kind::BraceClose)?;
+    let location = parser.span_to_cursor(location);
     Ok(parser.ast_builder.dict_literal_expr(entries, Some(location)))
 }
 

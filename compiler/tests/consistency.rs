@@ -4230,9 +4230,8 @@ fn if_val_none_round_trip() {
 fn while_val_drain_round_trip() {
     // Counter struct with `&mut self` next() — same shape the iterator
     // protocol uses, so AOT's method-call enum-scrutinee path applies.
-    // (Function-call enum scrutinees in match position aren't supported
-    // by the AOT MVP; pre-bind to a struct method when you want the
-    // 3-backend round-trip.)
+    // The free-function form is covered by the
+    // `match_scrutinee_is_a_*` tests below.
     let src = r#"
         struct Counter { v: i64 }
 
@@ -5084,4 +5083,151 @@ fn non_function_local_does_not_shadow_function_round_trip() {
         }
     "#;
     assert_consistent(src, "non_function_local_does_not_shadow_function");
+}
+
+// --- AOT-MATCH-SCRUTINEE-EXPAND ------------------------------------
+//
+// A `match` whose scrutinee is a call to a free function returning an
+// enum. AOT used to reject these ("`match` on scalar scrutinee only
+// supports i64 / u64 / bool, got enum#0") while the interpreter ran
+// them, so the shape the iterator protocol desugars into only worked
+// when the producer happened to be a method. A free function has no
+// receiver, so unlike the method path there are no receiver leaves to
+// pass and no `&mut self` writeback to route back.
+
+#[test]
+fn match_scrutinee_is_a_function_call_returning_an_enum() {
+    let src = r#"
+        enum Step { Go(i64), Stop }
+
+        fn step(n: i64) -> Step {
+            if n < 3i64 { Step::Go(n + 1i64) } else { Step::Stop }
+        }
+
+        fn main() -> i64 {
+            var total: i64 = 0i64
+            var i: i64 = 0i64
+            while val Step::Go(next) = step(i) {
+                total = total + next
+                i = next
+            }
+            total
+        }
+    "#;
+    assert_consistent(src, "match_scrut_call_enum");
+}
+
+#[test]
+fn match_scrutinee_is_a_call_with_computed_arguments() {
+    // The arguments are lowered by the same path as any other call, so
+    // this pins that they are evaluated rather than skipped.
+    let src = r#"
+        enum E { A(i64), B }
+
+        fn f(n: i64, m: i64) -> E { E::A(n + m) }
+
+        fn main() -> i64 {
+            val k: i64 = 3i64
+            match f(k * 2i64, k + 1i64) {
+                E::A(v) => v,
+                E::B => 0i64,
+            }
+        }
+    "#;
+    assert_consistent(src, "match_scrut_call_args");
+}
+
+#[test]
+fn match_scrutinee_is_a_call_returning_a_stdlib_enum() {
+    // `Option` / `Result` come from the core modules, so this also
+    // exercises the module-qualified lookup inside the new path.
+    let src = r#"
+        fn find(n: i64) -> Option<i64> {
+            if n > 0i64 { Option::Some(n * 2i64) } else { Option::None }
+        }
+
+        fn halve(a: i64) -> Result<i64, i64> {
+            if a % 2i64 == 0i64 { Result::Ok(a / 2i64) } else { Result::Err(a) }
+        }
+
+        fn main() -> i64 {
+            val a: i64 = match find(21i64) {
+                Option::Some(v) => v,
+                Option::None => 0i64,
+            }
+            # Tail position rather than a `val` binding: a match whose
+            # arms *all* bind a payload cannot be used as a val rhs
+            # yet, independently of the scrutinee (see
+            # MATCH-LET-RHS-PAYLOAD-INFER in todo.md).
+            match halve(a) {
+                Result::Ok(v) => v,
+                Result::Err(e) => e,
+            }
+        }
+    "#;
+    assert_consistent(src, "match_scrut_call_stdlib_enum");
+}
+
+#[test]
+fn match_scrutinee_is_a_generic_function_call() {
+    // Resolution goes through `resolve_call_target`, so a generic
+    // callee monomorphises here the same as at any other call site.
+    let src = r#"
+        fn wrap<T>(x: T) -> Option<T> { Option::Some(x) }
+
+        fn main() -> i64 {
+            match wrap(9i64) {
+                Option::Some(v) => v,
+                Option::None => 0i64,
+            }
+        }
+    "#;
+    assert_consistent(src, "match_scrut_generic_call");
+}
+
+#[test]
+fn match_scrutinee_call_writes_back_a_mut_argument() {
+    // A free function has no `self` writeback, but a `&mut T`
+    // parameter still has to be routed back to the caller's local.
+    let src = r#"
+        enum E { A(i64), B }
+
+        fn bump(c: &mut i64) -> E {
+            c = c + 1i64
+            E::A(c)
+        }
+
+        fn main() -> i64 {
+            var n: i64 = 4i64
+            val r: i64 = match bump(&mut n) {
+                E::A(v) => v,
+                E::B => 0i64,
+            }
+            r + n
+        }
+    "#;
+    assert_consistent(src, "match_scrut_call_mut_arg");
+}
+
+#[test]
+fn match_scrutinee_call_returning_a_scalar_still_takes_the_scalar_path() {
+    // The enum arm must not swallow calls that return a scalar — those
+    // still go through the literal-comparison path below it.
+    let src = r#"
+        fn f(n: i64) -> i64 { n * 2i64 }
+        fn p(n: i64) -> bool { n > 0i64 }
+
+        fn main() -> i64 {
+            val a: i64 = match f(3i64) {
+                6i64 => 60i64,
+                _ => 0i64,
+            }
+            val b: i64 = match p(1i64) {
+                true => 1i64,
+                false => 0i64,
+            }
+            a + b
+        }
+    "#;
+    assert_consistent(src, "match_scrut_call_scalar");
 }

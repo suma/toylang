@@ -926,13 +926,9 @@ fn pipeline(a: i64, b: i64, c: i64) -> Result<i64, str> {
   through the standard final-expression unification rather than
   inspecting each early `return`, so the error surface matches
   any other "function body type mismatch" error.
-- **AOT-specific**: when the enclosing match scrutinee is a
-  bare function call (`match compute() { ... }`), the AOT
-  compiler's MVP rejects the call-form scrutinee. The workaround
-  is to bind first: `val r = compute(); match r { ... }`. This
-  is a property of the surrounding `match`, not of `?` itself —
-  `?` always introduces its own binding internally, so the
-  scrutinee inside the desugar is always an identifier.
+- `?` always introduces its own binding internally, so the
+  scrutinee inside the desugar is always an identifier — the
+  surrounding `match`'s scrutinee rules never come into play.
 - **Out of scope** (initial implementation): user-defined `Try`
   trait, conversion between Err types via a `From` impl
   (Rust-style `?` for cross-error-type propagation).
@@ -1275,12 +1271,10 @@ nested forms. `if var PAT = ...` (mutable binding) is not yet
 supported; bindings introduced by `if val` follow the standard
 match-arm immutability rule.
 
-**AOT note**: as with any `match`, the scrutinee must be either
-an enum-typed binding (`while val ... = c.next()` where `c` is a
-struct method receiver) or a scalar primitive. Free-function
-calls returning enums in scrutinee position are not yet supported
-in the AOT MVP — bind to a method receiver or a local first if
-you need 3-backend portability.
+**AOT note**: as with any `match`, the scrutinee must be an
+enum-typed binding, a call returning an enum (method or free
+function, including generic ones), or a scalar primitive. All
+three backends agree on each of those.
 
 ### Match
 
@@ -2754,15 +2748,14 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   *Operator overload (struct receivers)*) only fire in let-rhs
   context. `a + b + c` and `a & Bits { v: 1 }` need explicit
   intermediates (`val tmp = a + b; val r = tmp + c`).
-- **AOT `match` scrutinee — function-call enums not supported** —
-  the AOT compiler accepts (1) an enum-bound identifier, (2) a
-  method call returning an enum (`c.next()` from
-  ITER-PROTOCOL-AOT), and (3) scalar primitives in `match` /
-  `if val` / `while val` scrutinee position. A bare
-  enum-returning **function call** (`while val Some(x) =
-  func(i)`) is rejected at lower time. Pre-bind to a struct
-  method or a local first if you need 3-backend portability.
-  Tracked as `AOT-MATCH-SCRUTINEE-EXPAND` in `design-docs/todo.md`.
+- **`match` as a `val` right-hand side, with every arm binding a
+  payload** — `val x = match e { A(v) => v, B(e) => e }` cannot
+  infer its result type in the AOT compiler and is rejected with
+  "could not infer scalar type for val/var rhs". Independent of
+  the scrutinee: an identifier, a call and a literal all hit it.
+  Put the `match` in tail position, or give one arm a literal
+  body. Tracked as `MATCH-LET-RHS-PAYLOAD-INFER` in
+  `design-docs/todo.md`.
 - **Trait limitations** — no trait inheritance; no associated
   types. Generic trait declarations (`trait Foo<T>`) are
   supported (see ITER-PROTOCOL-TRAIT in `design-docs/todo.md`

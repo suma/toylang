@@ -590,6 +590,45 @@ impl<'a> FunctionLower<'a> {
                     return Ok(MatchScrutinee::Enum(storage));
                 }
             }
+        // AOT-MATCH-SCRUTINEE-EXPAND: `match func(...)` where the
+        // function returns an enum. Same shape as the method-call arm
+        // above, minus the receiver: a free function has no `self`, so
+        // there are no receiver leaves to pass and no `&mut self`
+        // writeback to route back. Argument writeback still applies
+        // when the callee takes `&mut T`.
+        //
+        // Reached by `while val Some(x) = next(i)`, which the parser
+        // desugars into a `match` over the call.
+        if let Expr::Call(fn_name, args_ref) = scrut_expr.clone() {
+            // `resolve_call_target` rather than a bare table lookup so
+            // closure bindings and generic instantiation resolve the
+            // same way they do at any other call site. It is
+            // idempotent, so falling through to the scalar path below
+            // for a non-enum return does not declare anything twice.
+            let target_id = self.resolve_call_target(fn_name, &args_ref)?;
+            if let Type::Enum(enum_id) = self.module.function(target_id).return_type {
+                let storage = self.allocate_enum_storage(enum_id);
+                let mut dests = Self::flatten_enum_dests(&storage);
+                if !self
+                    .module
+                    .function(target_id)
+                    .self_writeback_types
+                    .is_empty()
+                {
+                    dests.extend(self.collect_compound_writeback_dests(&args_ref)?);
+                }
+                let arg_values = self.lower_call_args(&args_ref)?;
+                self.emit(
+                    InstKind::CallEnum {
+                        target: target_id,
+                        args: arg_values,
+                        dests,
+                    },
+                    None,
+                );
+                return Ok(MatchScrutinee::Enum(storage));
+            }
+        }
         // Generic scalar scrutinee: lower the expression once.
         let ty = self.value_scalar(scrutinee).ok_or_else(|| {
             "compiler MVP requires `match` scrutinee to be either an enum binding \

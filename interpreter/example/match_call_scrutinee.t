@@ -11,6 +11,10 @@ fn find(n: i64) -> Option<i64> {
     if n > 0i64 { Option::Some(n * 2i64) } else { Option::None }
 }
 
+fn halve(a: i64) -> Result<i64, i64> {
+    if a % 2i64 == 0i64 { Result::Ok(a / 2i64) } else { Result::Err(a) }
+}
+
 fn main() -> i64 {
     var total: i64 = 0i64
     var i: i64 = 0i64
@@ -22,5 +26,11 @@ fn main() -> i64 {
         Option::Some(v) => v,
         Option::None => 0i64,
     }
-    doubled
+    # MATCH-LET-RHS-PAYLOAD-INFER: every arm binds a payload, so the
+    # val's type has to come from the enum's declared payload type.
+    val halved: i64 = match halve(doubled) {
+        Result::Ok(v) => v,
+        Result::Err(e) => e,
+    }
+    halved
 }

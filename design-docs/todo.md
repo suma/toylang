@@ -11,6 +11,7 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-10
+- **MATCH-LET-RHS-PAYLOAD-INFER** — 全 arm が payload 束縛の match を val/var 右辺に置けるように。`value_scalar` は `&self` なので lowering 時の `arm_body_type` のように pattern を束縛して再帰できず、代わりに **enum 定義から payload の宣言型**を読む。enum の同定は pattern の名前ではなく **scrutinee** から行う — generic enum は instantiation ごとに intern されるので `Option<i64>` と `Option<u64>` は base name が同じでも別物。残るのは method-call scrutinee のみ (target 解決に `&mut self` が要る)。
 - **AOT-MATCH-SCRUTINEE-EXPAND** — enum を返す**関数呼び出し**を match scrutinee に許可 (`while val Some(x) = func(i)`)。既存の method-call 経路と同形で、free function は self を持たないので receiver leaves も `&mut self` writeback も無い (引数の `&mut T` writeback は従来どおり)。解決は `resolve_call_target` を通すので closure 束縛と generic 単相化も同じ経路に乗る。
 - **INCREMENTAL-COMPILATION Phase 5** — 実測して再スコープ。warm AOT 67ms の 70% は `cc` で、per-module IR が狙えるのは ~4ms だけと判明。代わりに codegen の非決定性 (lowering / codegen の HashMap 反復 2 箇所) を潰し、全ミスしていた link cache を機能させて **67ms → 19ms**。**dependency graph / cascade invalidation は現在の粒度では不要**と実測で確認 — cross-module 派生物をキャッシュして初めて要る。
 - **LLM-LOOP-FIX: 式の span を full extent に** — postfix / unary / literal 系が「自分を名付けるトークン」しか指しておらず、field access と `if` / `match` / `with` は**次の文の先頭**を指していた (P2 が潰したはずの「無関係なコードを自信満々に指す」形)。`Call` は callee 名のまま (P2 の意図)。
@@ -119,7 +120,7 @@
 
 ### バックエンドのカバレッジ
 
-- **MATCH-LET-RHS-PAYLOAD-INFER** ★★ — `val x = match e { A(v) => v, B(e) => e }` のように **全 arm が payload を束縛する match** を val/var の右辺に置くと「could not infer scalar type for val/var rhs」で落ちる。scrutinee とは無関係 (識別子 / 呼び出し / リテラルすべてで再現)。arm が 1 つでもリテラル body を持てば通るので、`arm_body_type` が payload 束縛だけの body から型を取れていない。回避策は tail position に置くこと。
+- **MATCH-LET-RHS-PAYLOAD-INFER (residual)** ★ — 全 arm が payload を束縛する match を val 右辺に置く形は、**scrutinee が method call のときだけ**まだ「could not infer scalar type for val/var rhs」で落ちる。識別子・関数呼び出しは 2026-08-10 に対応済み。method target の解決は `&mut self` を要るので、read-only な `value_scalar` からは引けないのが理由。回避策は arm の 1 つにリテラル body を持たせるか、呼び出しを先に local に束縛すること。
 - **159. JIT の generic struct 対応** ★★ — `struct_layouts` を type-args 別に持つ refactor。踏むと `JIT: skipped (... see #159)` が出るので診断から辿れる (`jit_skip_reason_for_generic_struct` で wording を pin)。
 - **160. タプルの JIT 対応 (ネスト)** ★ — `((a,b),c)` と tuple-of-struct。`ParamTy::Tuple(Vec<ScalarTy>)` を tree 構造にする 100+ 箇所の refactor。inline tuple literal を call 引数に渡す件も残り。
 - **JIT-enum-1 (residual)** ★ — ネストした generic enum payload (`Option<Option<T>>`)、enum 型の struct field、payload に struct / tuple を持つ enum。

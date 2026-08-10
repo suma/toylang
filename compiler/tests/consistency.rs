@@ -5231,3 +5231,121 @@ fn match_scrutinee_call_returning_a_scalar_still_takes_the_scalar_path() {
     "#;
     assert_consistent(src, "match_scrut_call_scalar");
 }
+
+// --- MATCH-LET-RHS-PAYLOAD-INFER -----------------------------------
+//
+// `val x = match e { A(v) => v, B(w) => w }` — a match used as a
+// val/var right-hand side where *every* arm body is a name its own
+// pattern binds. The lowering pass infers the binding's slot type with
+// `value_scalar`, which is `&self` and so cannot introduce the pattern
+// bindings and recurse the way the lowering-time `arm_body_type` does.
+// It gave up, and the whole `val` was rejected with "could not infer
+// scalar type for val/var rhs" even though lowering would have handled
+// it. One arm with a literal body was enough to hide the problem,
+// which is why the plain `Option::None => 0i64` shape always worked.
+
+#[test]
+fn val_bound_match_infers_from_payload_bindings() {
+    let src = r#"
+        enum E { A(i64), B(i64) }
+
+        fn produce() -> E { E::A(7i64) }
+
+        fn main() -> i64 {
+            val bound = E::B(4i64)
+            val from_binding: i64 = match bound {
+                E::A(v) => v,
+                E::B(w) => w,
+            }
+            val from_call: i64 = match produce() {
+                E::A(v) => v,
+                E::B(w) => w,
+            }
+            from_binding + from_call
+        }
+    "#;
+    assert_consistent(src, "val_match_payload_infer");
+}
+
+#[test]
+fn val_bound_match_infers_without_an_annotation() {
+    // The annotation is not what rescues it — the inference has to
+    // stand on its own.
+    let src = r#"
+        enum E { A(i64), B(i64) }
+
+        fn produce() -> E { E::B(4i64) }
+
+        fn main() -> i64 {
+            val x = match produce() {
+                E::A(v) => v,
+                E::B(w) => w,
+            }
+            x
+        }
+    "#;
+    assert_consistent(src, "val_match_payload_infer_noann");
+}
+
+#[test]
+fn val_bound_match_picks_the_payload_slot_the_body_names() {
+    // `P::Pt(_, y) => y` takes the *second* payload, so the slot has to
+    // come from the sub-pattern's position rather than always slot 0.
+    let src = r#"
+        enum P { Pt(i64, i64), Z(i64) }
+
+        fn produce() -> P { P::Pt(1i64, 8i64) }
+
+        fn main() -> i64 {
+            val y: i64 = match produce() {
+                P::Pt(_, second) => second,
+                P::Z(z) => z,
+            }
+            y
+        }
+    "#;
+    assert_consistent(src, "val_match_payload_slot");
+}
+
+#[test]
+fn val_bound_match_distinguishes_two_instantiations_of_one_generic_enum() {
+    // The enum is identified from the scrutinee, not from the pattern's
+    // enum name: `Option<i64>` and `Option<u64>` share a base name and
+    // are separate interned enums with different payload types. Reading
+    // the type off the name would pick whichever was interned first.
+    let src = r#"
+        fn signed() -> Option<i64> { Option::Some(0i64 - 3i64) }
+        fn unsigned() -> Option<u64> { Option::Some(70u64) }
+
+        fn main() -> i64 {
+            val a: i64 = match signed() {
+                Option::Some(v) => v,
+                Option::None => 0i64,
+            }
+            val b: u64 = match unsigned() {
+                Option::Some(w) => w,
+                Option::None => 0u64,
+            }
+            a + (b as i64)
+        }
+    "#;
+    assert_consistent(src, "val_match_generic_instantiations");
+}
+
+#[test]
+fn val_bound_match_on_a_stdlib_result_binds_both_arms() {
+    let src = r#"
+        fn halve(a: i64) -> Result<i64, i64> {
+            if a % 2i64 == 0i64 { Result::Ok(a / 2i64) } else { Result::Err(a) }
+        }
+
+        fn main() -> i64 {
+            val b: i64 = match halve(42i64) {
+                Result::Ok(v) => v,
+                Result::Err(e) => e,
+            }
+            b
+        }
+    "#;
+    assert_consistent(src, "val_match_result_both_arms");
+}

@@ -25,6 +25,65 @@ use super::FunctionLower;
 use crate::ir::{Type, TupleId};
 
 impl<'a> FunctionLower<'a> {
+    /// Declared type of an arm body that is exactly one of the names
+    /// its own pattern binds (`Enum::V(x) => x`).
+    ///
+    /// The enum is identified from the **scrutinee**, not from the
+    /// pattern's enum name: generic enums are interned per
+    /// instantiation, so `Option<i64>` and `Option<str>` share a base
+    /// name but not their payload types. Picking by name would return
+    /// the wrong one.
+    ///
+    /// `None` for any shape this cannot resolve purely — a method-call
+    /// scrutinee needs `&mut self` to resolve its target, so those keep
+    /// the previous behaviour rather than guessing.
+    fn arm_payload_binding_type(
+        &self,
+        scrutinee: &ExprRef,
+        arm: &frontend::ast::MatchArm,
+    ) -> Option<Type> {
+        use frontend::ast::Pattern;
+        let Expr::Identifier(body_sym) = self.program.expression.get(&arm.body)? else {
+            return None;
+        };
+        let Pattern::EnumVariant(_, variant_sym, sub_patterns) = &arm.pattern else {
+            return None;
+        };
+        let slot = sub_patterns
+            .iter()
+            .position(|p| matches!(p, Pattern::Name(s) if *s == body_sym))?;
+        let enum_id = self.scrutinee_enum_id(scrutinee)?;
+        let variant = self
+            .module
+            .enum_def(enum_id)
+            .variants
+            .iter()
+            .find(|v| v.name == *variant_sym)?;
+        variant.payload_types.get(slot).copied()
+    }
+
+    /// The interned enum a match scrutinee produces, when that can be
+    /// determined without lowering anything.
+    fn scrutinee_enum_id(&self, scrutinee: &ExprRef) -> Option<crate::ir::EnumId> {
+        match self.program.expression.get(scrutinee)? {
+            Expr::Identifier(sym) => match self.bindings.get(&sym)? {
+                Binding::Enum(storage) => Some(storage.enum_id),
+                _ => None,
+            },
+            // Direct table lookup, not `resolve_call_target`: that one
+            // takes `&mut self` and would queue a monomorphisation from
+            // what is supposed to be a peek.
+            Expr::Call(fn_name, _) => {
+                let target = self.module.lookup_function(None, fn_name)?;
+                match self.module.function(target).return_type {
+                    Type::Enum(id) => Some(id),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn value_scalar(&self, expr_ref: &ExprRef) -> Option<Type> {
         let e = self.program.expression.get(expr_ref)?;
         match e {
@@ -142,7 +201,23 @@ impl<'a> FunctionLower<'a> {
                 None
             }
             Expr::IfElifElse(_, then_body, _, _) => self.value_scalar(&then_body),
-            Expr::Match(_, arms) => arms.iter().find_map(|a| self.value_scalar(&a.body)),
+            Expr::Match(scrutinee, arms) => {
+                // An arm body that stands on its own: a literal, a call,
+                // an expression over bindings from an enclosing scope.
+                if let Some(ty) = arms.iter().find_map(|a| self.value_scalar(&a.body)) {
+                    return Some(ty);
+                }
+                // Otherwise every body depends on what its *own* pattern
+                // binds — `match e { A(v) => v, B(e) => e }`. This method
+                // is `&self`, so it cannot introduce the binding and
+                // recurse the way `arm_body_type` does at lowering time;
+                // it reads the payload's declared type off the enum
+                // instead. Without this the whole match infers nothing
+                // and a `val` over it is rejected, even though lowering
+                // would have handled it.
+                arms.iter()
+                    .find_map(|a| self.arm_payload_binding_type(&scrutinee, a))
+            }
             Expr::Call(fn_name, _) => {
                 // Phase 6b: a FunctionPtr binding (HOF parameter
                 // or closure-returning call result) carries its

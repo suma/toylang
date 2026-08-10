@@ -2748,14 +2748,16 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   *Operator overload (struct receivers)*) only fire in let-rhs
   context. `a + b + c` and `a & Bits { v: 1 }` need explicit
   intermediates (`val tmp = a + b; val r = tmp + c`).
-- **`match` as a `val` right-hand side, with every arm binding a
-  payload** — `val x = match e { A(v) => v, B(e) => e }` cannot
-  infer its result type in the AOT compiler and is rejected with
-  "could not infer scalar type for val/var rhs". Independent of
-  the scrutinee: an identifier, a call and a literal all hit it.
-  Put the `match` in tail position, or give one arm a literal
-  body. Tracked as `MATCH-LET-RHS-PAYLOAD-INFER` in
-  `design-docs/todo.md`.
+- **`match` on a *method call* as a `val` right-hand side, with
+  every arm binding a payload** — `val x = match c.next() { A(v)
+  => v, B(w) => w }` is rejected with "could not infer scalar
+  type for val/var rhs". The same shape over an identifier or a
+  free-function call infers fine; only the method-call scrutinee
+  is left, because resolving a method target needs mutable access
+  from what is otherwise a read-only inference pass. Give one arm
+  a literal body, bind the call to a local first, or put the
+  `match` in tail position. Tracked as
+  `MATCH-LET-RHS-PAYLOAD-INFER` in `design-docs/todo.md`.
 - **Trait limitations** — no trait inheritance; no associated
   types. Generic trait declarations (`trait Foo<T>`) are
   supported (see ITER-PROTOCOL-TRAIT in `design-docs/todo.md`

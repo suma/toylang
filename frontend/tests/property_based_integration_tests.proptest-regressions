@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 6583fff3f262e2e093157bd80440b294d86b06fe2cc989a80af9f3ad7080df6f # shrinks to name = "i8", value = "0i64", is_const = false
+cc 1dd366d94faedbe8c338b516cff484471a4056b2f5d6a3f85d75413cdabebc53 # shrinks to vars = ["f64"], value = "0i64"

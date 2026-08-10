@@ -43,20 +43,54 @@ mod helpers {
         }
     }
 
+    /// Whether the lexer refuses to treat `s` as a plain identifier.
+    ///
+    /// **Asked of the lexer, not of a list.** This filter used to spell
+    /// the keywords out by hand, and the list drifted from
+    /// `frontend/src/lexer.l`: it was missing `f64`, `dict`, `dyn`,
+    /// `enum`, `loop`, `match`, `mut`, `trait`, `type`, `with`, `const`
+    /// and `self`. The generator could therefore produce a keyword, and
+    /// every property using it failed whenever proptest happened to
+    /// pick one — rarely enough to look like a flake and to survive for
+    /// months, deterministic once the seed was saved. Adding the twelve
+    /// missing names would only restart the same drift.
+    fn is_reserved(s: &str) -> bool {
+        use frontend::parser::core::lexer::Lexer;
+        use frontend::token::Kind;
+        let mut lexer = Lexer::new(s, 1);
+        match lexer.yylex() {
+            Ok(token) => !matches!(token.kind, Kind::Identifier(_)),
+            // Anything the lexer rejects outright is not usable either.
+            Err(_) => true,
+        }
+    }
+
     /// Strategy for generating valid identifiers (reduced complexity for performance)
     pub fn valid_identifier() -> impl Strategy<Value = String> {
-        "[a-z_][a-zA-Z0-9_]{0,5}".prop_map(|s| s.to_string())
-            .prop_filter("Not a reserved keyword", |s| {
-                !matches!(s.as_str(),
-                    "if" | "elif" | "else" | "while" | "for" | "in" | "to" |
-                    "fn" | "return" | "break" | "continue" |
-                    "val" | "var" | "struct" | "impl" | "class" |
-                    "true" | "false" | "null" |
-                    "u64" | "i64" | "str" | "ptr" | "usize" | "bool" |
-                    // NUM-W: narrow integer keywords are reserved.
-                    "u8" | "u16" | "u32" | "i8" | "i16" | "i32" |
-                    "pub" | "extern" | "package" | "import" | "as")
-            })
+        "[a-z_][a-zA-Z0-9_]{0,5}"
+            .prop_map(|s| s.to_string())
+            .prop_filter("Not a reserved keyword", |s| !is_reserved(s))
+    }
+
+    /// The identifier filter has to reject keywords **and keep
+    /// everything else**. An over-broad filter is the worse failure of
+    /// the two: it makes every property that draws an identifier pass
+    /// vacuously, and nothing goes red to say so.
+    #[test]
+    fn identifier_filter_rejects_keywords_and_keeps_names() {
+        for kw in [
+            "fn", "val", "var", "if", "elif", "else", "while", "for", "in", "to",
+            "return", "break", "continue", "struct", "impl", "trait", "enum",
+            "match", "loop", "with", "dyn", "mut", "type", "const", "dict",
+            "true", "false", "null", "pub", "extern", "package", "import", "as",
+            "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f64",
+            "bool", "str", "ptr", "usize",
+        ] {
+            assert!(is_reserved(kw), "`{kw}` is a keyword but the filter allows it");
+        }
+        for name in ["x", "y1", "foo", "_tmp", "count", "u64x", "f6", "iff", "matcha"] {
+            assert!(!is_reserved(name), "`{name}` is a usable name but the filter rejects it");
+        }
     }
 
     /// Strategy for generating i64 integer literals

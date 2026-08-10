@@ -161,6 +161,7 @@
 
 - **TEST-PERF** — ワークスペース全体で ~5s (2026-08-10 実測、`cargo nextest run`)。残: `interpreter/tests/` の 25 テストバイナリを機能別に統合 ★、core モジュールのパース結果を `thread_local!` でテストバイナリ内共有 ★★、`serial_test` (`oop_tests.rs`) の並列化 ★。
 - **65. frontend リファクタリング** — (a)〜(g) は完了。残: doc コメント拡充、プロパティベーステスト追加。
+- **property test の generator が仕様と drift しないか** — `valid_identifier()` は lexer に問い合わせる形にした (2026-08-10)。他の generator (リテラル / 演算子) はまだ手書きなので、同種の drift が起きうる。
 - **26. ドキュメント整備** — `docs/language.md` / `compiler/README.md` / `interpreter/README.md` は最新化済み。残: API リファレンス、advanced topics。
 
 ## 検討中の機能

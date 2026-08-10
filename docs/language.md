@@ -1546,7 +1546,15 @@ impl Container<T> {
 ```
 
 The type parameter list on `impl` is implicit — `impl Container<T>`
-re-uses the parameter declared on `struct`.
+re-uses the parameter declared on `struct`. `impl<T> Container<T>` is
+equivalent and does the same thing explicitly.
+
+A name counts as a parameter only when the type's declaration lists
+it, which is what keeps `impl Vec<u8>` a concrete-argument impl (see
+*Concrete-args impl dispatch*) rather than an impl over a type
+parameter named `u8`. The implicit form therefore requires the
+`struct` / `enum` to be declared **before** the `impl`; the explicit
+form has no such ordering requirement.
 
 ### `__getitem__` / `__setitem__`
 

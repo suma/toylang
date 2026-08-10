@@ -191,6 +191,22 @@ pub struct Parser<'a> {
     /// target keeps `Generic(T)` placeholders that get substituted at
     /// the use site via `substitute_generics`.
     pub type_aliases: HashMap<DefaultSymbol, (Vec<DefaultSymbol>, TypeDecl)>,
+    /// Generic parameters declared on each `struct` / `enum`, by type
+    /// name.
+    ///
+    /// Exists so `impl Container<T>` can mean what the language
+    /// reference says it means — "the type parameter list on `impl` is
+    /// implicit, re-using the parameter declared on `struct`". Without
+    /// the declaration to compare against, the parser cannot tell that
+    /// `T` from the `u8` in `impl Vec<u8>`: both are just a type
+    /// argument at that position. Matching against the declaration is
+    /// what distinguishes them, so the concrete-args form keeps
+    /// working unchanged.
+    ///
+    /// Consequence: the type has to be declared before the `impl` that
+    /// uses the implicit form. The explicit `impl<T> Container<T>`
+    /// has no such ordering requirement.
+    pub declared_type_generics: HashMap<DefaultSymbol, Vec<DefaultSymbol>>,
     /// Source file path for `__builtin_source_file()` substitution.
     /// `None` defaults to `"<source>"`. Set via `set_source_file` when
     /// the entry point knows the on-disk path (e.g. `interpreter` CLI,
@@ -221,6 +237,7 @@ impl<'a> Parser<'a> {
             pending_prelude_stmts: Vec::new(),
             synthetic_counter: 0,
             type_aliases: HashMap::new(),
+            declared_type_generics: HashMap::new(),
             source_file: None,
         }
     }

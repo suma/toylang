@@ -393,6 +393,10 @@ impl<'a> Parser<'a> {
                                 (vec![], std::collections::HashMap::new())
                             };
 
+                            if !generic_params.is_empty() {
+                                self.declared_type_generics
+                                    .insert(struct_symbol, generic_params.clone());
+                            }
                             self.expect_err(&Kind::BraceOpen)?;
                             let fields = super::stmt::parse_struct_fields_with_generic_context(self, vec![], &generic_params)?;
                             self.expect_err(&Kind::BraceClose)?;
@@ -426,6 +430,10 @@ impl<'a> Parser<'a> {
                             } else {
                                 Vec::new()
                             };
+                            if !generic_params.is_empty() {
+                                self.declared_type_generics
+                                    .insert(enum_symbol, generic_params.clone());
+                            }
                             let generic_context: HashSet<DefaultSymbol> = generic_params.iter().cloned().collect();
                             self.expect_err(&Kind::BraceOpen)?;
                             self.skip_newlines();
@@ -524,12 +532,54 @@ impl<'a> Parser<'a> {
                             // following `for` (the first identifier was
                             // the trait name, not the target).
                             let generic_params_set: std::collections::HashSet<DefaultSymbol> = generic_params.iter().copied().collect();
-                            let first_target_args = if self.peek() == Some(&Kind::LT) {
+                            let mut first_target_args = if self.peek() == Some(&Kind::LT) {
                                 self.next(); // consume '<'
                                 self.parse_type_args_after_lt(&generic_params_set)?
                             } else {
                                 Vec::new()
                             };
+                            // Implicit type-parameter list: `impl
+                            // Container<T>` re-uses what `struct
+                            // Container<T>` declared, as the language
+                            // reference specifies.
+                            //
+                            // Decided *after* parsing the args, on the
+                            // args themselves: a name is a type
+                            // parameter only if the declaration lists
+                            // it. `u8` in `impl Vec<u8>` lexes as a
+                            // type keyword and can never match, so the
+                            // concrete-args form (CONCRETE-IMPL) is
+                            // untouched — and `impl C<i64>` alongside
+                            // `impl C<u8>` keeps dispatching to two
+                            // separate specs. Adopting the declaration
+                            // wholesale instead would turn those into
+                            // generic templates and lose the methods.
+                            let mut generic_params = generic_params;
+                            if generic_params.is_empty()
+                                && let Some(declared) =
+                                    self.declared_type_generics.get(&first_ident_symbol)
+                            {
+                                let declared = declared.clone();
+                                let implicit: Vec<DefaultSymbol> = first_target_args
+                                    .iter()
+                                    .filter_map(|a| match a {
+                                        TypeDecl::Identifier(sym) if declared.contains(sym) => {
+                                            Some(*sym)
+                                        }
+                                        _ => None,
+                                    })
+                                    .collect();
+                                if !implicit.is_empty() {
+                                    for arg in first_target_args.iter_mut() {
+                                        if let TypeDecl::Identifier(sym) = arg
+                                            && implicit.contains(sym)
+                                        {
+                                            *arg = TypeDecl::Generic(*sym);
+                                        }
+                                    }
+                                    generic_params = implicit;
+                                }
+                            }
 
                             // `impl Trait for Type` — the `for` keyword is
                             // contextually reused here. If present, the

@@ -155,12 +155,10 @@ fn closure_value_round_trips_through_value_binding() {
 // Backend coverage is pinned in `compiler/tests/consistency.rs`
 // (`option_map_round_trips_through_every_backend` and neighbours).
 //
-// Still open: the same shape on a *user-defined* generic enum
-// (`impl Box<T> { fn map<U>(self, f: fn (T) -> U) -> Box<U> }`) does
-// not lower — the impl-level `T` reaches the compiler as
-// `Identifier` rather than `Generic` and misses the active
-// substitution. Tracked as GENERIC-ENUM-HOF-USER in
-// `design-docs/todo.md`.
+// The same shape on a *user-defined* generic enum
+// (`impl Box<T> { fn map<U>(self, f: fn (T) -> U) -> Box<U> }`) works
+// too, once `impl Box<T>` started declaring `T` rather than treating
+// it as a concrete type of that name.
 
 #[test]
 fn closure_object_has_function_type() {

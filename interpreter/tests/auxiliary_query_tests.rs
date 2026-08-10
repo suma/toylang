@@ -238,7 +238,10 @@ impl Holder<T> {
 "#;
     let out = api(source);
     assert!(out.contains("pub struct Holder<T> {"), "{out}");
-    assert!(out.contains("fn get(&self) -> T"), "{out}");
+    // `impl Holder<T>` declares `T` implicitly, re-using the struct's
+    // parameter, so its methods carry it exactly as the explicit
+    // `impl<T> Holder<T>` form does.
+    assert!(out.contains("fn get<T>(&self) -> T"), "{out}");
     assert!(out.contains("other: &Holder<T>"), "{out}");
 }
 

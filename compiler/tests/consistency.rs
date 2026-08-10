@@ -5449,3 +5449,139 @@ fn option_unwrap_or_else_takes_a_zero_argument_closure() {
     "#;
     assert_consistent(src, "option_unwrap_or_else_backends");
 }
+
+// --- implicit impl type parameters ---------------------------------
+//
+// `impl Container<T>` re-uses the parameter `struct Container<T>`
+// declared — the form the language reference documents. It did not
+// work: `T` was parsed as a concrete type argument named `T`, so the
+// reference's own example failed to type check ("Cannot unify
+// Identifier(T) with Int64") and only the explicit `impl<T>
+// Container<T>` compiled.
+//
+// The distinguishing rule is the *declaration*: a type argument
+// becomes a parameter only if the struct / enum lists that name. `u8`
+// in `impl Vec<u8>` lexes as a type keyword and can never match, so
+// the concrete-args form is unaffected — which is what the
+// `two_concrete_impls` test below guards, because the first attempt at
+// this adopted the declaration wholesale and turned those impls into
+// generic templates, losing their methods.
+
+#[test]
+fn implicit_impl_type_parameter_on_a_struct() {
+    // Verbatim from docs/language.md.
+    let src = r#"
+        struct Container<T> {
+            value: T
+        }
+
+        impl Container<T> {
+            fn new(v: T) -> Self {
+                Container { value: v }
+            }
+            fn get(self: Self) -> T {
+                self.value
+            }
+        }
+
+        fn main() -> i64 {
+            val c: Container<i64> = Container::new(7i64)
+            c.get()
+        }
+    "#;
+    assert_consistent(src, "implicit_impl_struct");
+}
+
+#[test]
+fn implicit_impl_type_parameter_on_an_enum() {
+    let src = r#"
+        enum Box<T> { Put(T), Empty }
+
+        impl Box<T> {
+            fn or(self: Self, fallback: T) -> T {
+                match self {
+                    Box::Put(v) => v,
+                    Box::Empty => fallback,
+                }
+            }
+        }
+
+        fn main() -> i64 {
+            val present: Box<i64> = Box::Put(4i64)
+            val absent: Box<i64> = Box::Empty
+            present.or(0i64) + absent.or(3i64)
+        }
+    "#;
+    assert_consistent(src, "implicit_impl_enum");
+}
+
+#[test]
+fn implicit_impl_type_parameter_carries_into_a_higher_order_method() {
+    // The shape that motivated this: `f: fn (T) -> U` needs `T` to be
+    // a parameter, not a type named `T`, before the function-typed
+    // parameter can be lowered at all.
+    let src = r#"
+        enum Box<T> { Put(T), Empty }
+
+        impl Box<T> {
+            fn map<U>(self: Self, f: fn (T) -> U) -> Box<U> {
+                match self {
+                    Box::Put(v) => Box::Put(f(v)),
+                    Box::Empty => Box::Empty,
+                }
+            }
+        }
+
+        fn main() -> i64 {
+            val b: Box<i64> = Box::Put(4i64)
+            val doubled = b.map(fn(x: i64) -> i64 { x * 2i64 })
+            match doubled {
+                Box::Put(v) => v,
+                Box::Empty => 0i64,
+            }
+        }
+    "#;
+    assert_consistent(src, "implicit_impl_hof");
+}
+
+#[test]
+fn two_concrete_impls_of_one_generic_struct_still_dispatch_separately() {
+    // CONCRETE-IMPL: `impl C<u8>` and `impl C<i64>` are two distinct
+    // specs, not templates. Treating the declaration's `T` as present
+    // here would collapse them.
+    let src = r#"
+        struct C<T> { v: T }
+
+        impl C<u8> { fn tag(self: Self) -> i64 { 1i64 } }
+        impl C<i64> { fn tag(self: Self) -> i64 { 2i64 } }
+
+        fn main() -> i64 {
+            val a: C<i64> = C { v: 5i64 }
+            a.tag()
+        }
+    "#;
+    assert_consistent(src, "two_concrete_impls");
+}
+
+#[test]
+fn explicit_and_implicit_impl_parameter_lists_agree() {
+    // The two spellings have to produce the same program.
+    let implicit = r#"
+        struct Holder<T> { item: T }
+        impl Holder<T> { fn get(self: Self) -> T { self.item } }
+        fn main() -> i64 {
+            val h: Holder<i64> = Holder { item: 11i64 }
+            h.get()
+        }
+    "#;
+    let explicit = r#"
+        struct Holder<T> { item: T }
+        impl<T> Holder<T> { fn get(self: Self) -> T { self.item } }
+        fn main() -> i64 {
+            val h: Holder<i64> = Holder { item: 11i64 }
+            h.get()
+        }
+    "#;
+    assert_consistent(implicit, "impl_param_implicit");
+    assert_consistent(explicit, "impl_param_explicit");
+}

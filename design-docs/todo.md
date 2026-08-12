@@ -156,6 +156,10 @@
 - **`??` (null-coalesce)** ★ — `opt ?? default` で `unwrap_or` の糖衣。
 - **raw / multi-line string literal** ★ — `r"\path"` / `"""..."""`。lexer 拡張のみ。
 
+### メモリプロファイリング
+
+- **MEMORY-PROFILING** ★★ — 設計は [`MEMORY_PROFILING.md`](MEMORY_PROFILING.md)。実行時のメモリ使用量と断片化を記録し、実行後にレポート / 機械可読な数値を出す。**着手前の実測で 3 点判明済み**: (1) interpreter の `HeapManager` は再利用しない bump allocator なので **アドレス由来のメトリクスは全バックエンド共通にできない** (同じプログラムで interpreter は再利用せず AOT は再利用する)、(2) AOT の `toy_dispatched_alloc` は allocator handle を無視している、(3) `Arena::bytes_used` と `FixedBuffer::used()` は同名だが意味が違う (arena は free が no-op)。**断片化は `trait Alloc` の責務**にして allocator 自身に報告させる — ランタイムに閉じ込めると単なるツールだが、trait に置けばユーザ定義 allocator も同じレポートに乗る。M0 (用語固定 + interpreter 計数) から刻む。
+
 ### インクリメンタルコンパイル
 
 - **INCREMENTAL-COMPILATION** — 設計と実測は [`INCREMENTAL_COMPILATION.md`](INCREMENTAL_COMPILATION.md)。Phase 1〜5 完了。**残る改善余地は「16 個の core module のキャッシュ読み込み + 統合に毎回 ~10ms」** (lowering の 2.5 倍)。per-module IR compilation + IR linker は warm 19ms のうち ~4ms しか狙えないので保留 — 着手するなら、大きめの実プログラムで lowering が支配的になることを**再測定してから**。

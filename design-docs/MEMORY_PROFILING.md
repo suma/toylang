@@ -1,0 +1,357 @@
+# MEMORY_PROFILING.md — メモリ使用量と断片化を計測できる言語にする
+
+toylang で書いたプログラムの**メモリ確保を、実行後にレポートとして出し、
+機械可読な数値として取り出せる**ようにするための設計。
+`ALLOCATOR_PLAN.md` / `FFI_PLAN.md` / `LLM_FEEDBACK_LOOP.md` と同じく
+「現状調査 → 論点決定 → Phase 分割 → MVP 刻みで landing」で進める。
+
+## Status snapshot
+
+| Phase | Scope | Status |
+|---|---|---|
+| **M0** | 用語の固定 + interpreter 側のイベント計数 | 未着手 |
+| **M1** | AOT 側の同一計数 + `--profile=mem` テキスト出力 | 未着手 |
+| **M2** | 静的サイト ID による帰属 + リーク検出 | 未着手 |
+| **M3** | `trait Alloc` の layout 報告 (ここで初めて断片化が出る) | 未着手 |
+| **M4** | JSON 出力 + 契約 / `test` ブロックとの連携 | 未着手 |
+
+---
+
+## なぜ設計文書が要るか
+
+「メモリ使用量を記録する」は一見単純だが、このリポジトリでは
+**同じ意味論を 4 実行系が独立に実装している**ため、計測層を間違えると
+**バックエンドごとに違う数字を出す計測器**ができる。数値は診断と同じで、
+**間違っているなら無い方がまし**である。
+
+下の実測 1 が示すとおり、その差は既に観測可能な形で存在する。
+
+---
+
+## 現状調査 (2026-08-13 実測)
+
+### 実測 1: interpreter と AOT で allocator の挙動が既に違う
+
+```rust
+fn main() -> u64 {
+    val a: ptr = __builtin_heap_alloc(64u64)
+    __builtin_heap_free(a)
+    val b: ptr = __builtin_heap_alloc(64u64)
+    if __builtin_ptr_eq(a, b) { 1u64 } else { 0u64 }
+}
+```
+
+| バックエンド | 結果 |
+|---|---|
+| interpreter | **0** — アドレスを再利用しない |
+| AOT | **1** — 同じブロックが返る (libc malloc) |
+
+`HeapManager` は bump allocator である。
+
+```rust
+pub fn alloc(&mut self, size: usize) -> usize {
+    let addr = self.next_addr;
+    self.memory.resize(self.memory.len() + size, 0);
+    self.next_addr += size;          // 単調増加。free しても戻らない
+    addr
+}
+pub fn free(&mut self, addr: usize) -> bool {
+    self.allocations.remove(&addr).is_some()   // 領域は返らない
+}
+```
+
+**帰結**: interpreter には測るべき断片化が存在しない。ここから
+「断片化率」を出せば、それは実装の副産物であって
+プログラムの性質ではない。**アドレスや領域レイアウトを土台にした
+メトリクスは、この時点で全バックエンド共通にはできない。**
+
+### 実測 2: AOT の allocator handle は現状無視されている
+
+```c
+void *toy_dispatched_alloc(uint64_t handle, uint64_t size) {
+    (void)handle;                 /* ← 現状すべて libc へ */
+    return malloc((size_t)size);
+}
+```
+
+IR は handle を運んでいるが、ネイティブ側は使っていない。
+`Arena` / `FixedBuffer` の policy は **toylang 空間** (`core/std/allocator.t`)
+に実装されているのでプログラムの意味は保たれるが、
+`with allocator = arena { __builtin_heap_alloc(...) }` のように
+**raw builtin を直接呼ぶ経路は wrapper の追跡を通らない**
+(この点は `CLAUDE.md` に既出)。
+
+**帰結**: 「現在の allocator ごとの集計」を AOT でも出すには、
+少なくとも handle を計測に使う必要がある (実行の dispatch を変える
+必要はない)。
+
+### 実測 3: 同名のメトリクスが allocator ごとに違う意味を持っている
+
+| allocator | `free` の実装 | 既存メトリクスの実際の意味 |
+|---|---|---|
+| `Arena` | **no-op** (bulk free のみ) | `bytes_used` は reset までの **live** であり、同時に累積でもある |
+| `FixedBuffer` | `used_bytes` を減算 | `used()` は純粋に **live** |
+
+`CLAUDE.md` は `Arena::bytes_used` を「累積追跡バイト数」と書いているが、
+`free` が no-op なので reset までは live と一致する。両者が乖離するのは
+**arena に free を実装した瞬間**であり、そのとき既存の記述は静かに嘘になる。
+
+**帰結**: 用語 (cumulative / live / peak) を先に固定する。これは M0 の
+主目的であって、付随作業ではない。
+
+### 参考: 既にある足場
+
+- **`RuntimeState { heap, registry, active }`** — tree-walker / IR VM /
+  interpreter JIT が共有する。**interpreter 系の単一チョークポイント**
+- **`toy_dispatched_alloc/free/realloc(handle, ...)`** — AOT 側の同じ位置
+- **`with allocator = ...`** — レキシカルスコープ。push/pop は全バックエンドで
+  実装済みなので、**帰属の単位としてそのまま使える**
+- **`trait Alloc`** — allocator が toylang 空間にある。ユーザ定義 allocator も
+  同じ仕組みに乗せられる
+- **P4 `test` ブロック / P5 契約** — 数値を assert する足場が既にある
+- **`--all-backends` (D6)** — バックエンド間の数値一致をコマンド 1 本で検査できる
+
+---
+
+## 論点と決定
+
+### 論点 1: どの層で計測するか
+
+| 層 | 見えるもの | 却下理由 |
+|---|---|---|
+| A. 言語 (stdlib wrapper) | wrapper 経由の確保のみ | 生の `__builtin_heap_alloc` を取りこぼす |
+| **B. ランタイム** | **全確保** | — |
+| C. ホスト (malloc interposition) | 本物の断片化 | バックエンド依存・移植不能。測っているのは**ホストの** allocator であってプログラムではない |
+
+**決定: B を正とする。** `HeapManager` と `toy_dispatched_*` の 2 箇所に
+同一のカウンタを置き、**一致を `--all-backends` で強制する**。
+
+C は言語機能としては採らない。ホストの RSS が知りたい場面はあるので、
+レポートの末尾に参考値として 1 行出すのは可 (M4)。ただし
+**厳密系メトリクスと同じ表に混ぜない** — 精度が違うものを並べると、
+読み手は両方を同じ信頼度で読む。
+
+### 論点 2: 断片化をどこの責務にするか
+
+**決定: 断片化は allocator の性質であり、`trait Alloc` に属させる。**
+
+プロファイラが断片化を「計算」できるのは、領域レイアウトを知っている
+場合だけである。実測 1 のとおり、それを知っているのは allocator であって
+ランタイムではない。したがって allocator 自身に報告させる。
+
+```rust
+pub trait Alloc {
+    fn alloc(&mut self, size: u64) -> ptr
+    fn free(&mut self, p: ptr)
+    fn realloc(&mut self, p: ptr, new_size: u64) -> ptr
+
+    # 領域を管理しない allocator は既定実装で「報告しない」を返す。
+    # 実装しないことと「断片化ゼロ」は別物なので、区別できる形にする。
+    fn layout_report(&self) -> AllocLayout { AllocLayout::opaque() }
+}
+
+pub struct AllocLayout {
+    known: bool,          # false なら以下は無意味
+    managed_bytes: u64,   # 管理下の総バイト
+    live_bytes: u64,      # うち使用中
+    free_blocks: u64,     # 空きブロック数
+    largest_free: u64,    # 最大連続空き
+}
+```
+
+外部断片化は allocator の報告から導出する:
+
+```
+external_fragmentation = 1 - largest_free / (managed_bytes - live_bytes)
+```
+
+この形にすると **ユーザが自分で書いた allocator も同じレポートに乗る**。
+ランタイムに閉じ込めればそれは単なるツールだが、`trait` に置けば
+**言語機能**になる。toylang が「メモリをプロファイルできる言語」を
+名乗れるかどうかはここで決まる。
+
+### 論点 3: メトリクスを 1 種類にするか 2 種類にするか
+
+**決定: 厳密系と allocator 依存系を分けて表示する。**
+
+**厳密系** — 確保イベントの列だけから決まる。全バックエンドで一致し、
+再現可能:
+
+- 確保回数 / 解放回数 / 総確保バイト (cumulative)
+- **live bytes の推移**と **peak live bytes**
+- サイズヒストグラム (2 冪ビン)
+- 寿命分布 (確保シーケンス番号の差)
+- 解放されなかった確保 = リーク (サイト別)
+
+**allocator 依存系** — `layout_report()` を実装した allocator のみ:
+
+- 外部断片化 / 内部断片化 (要求サイズ vs 実確保サイズ)
+- 空きブロック分布
+
+分けない場合、実測 1 のせいで interpreter が嘘の断片化を出す。
+**「測れない」と書くことは、測れないものを測ったふりをするより価値がある。**
+
+### 論点 4: 帰属をどう取るか
+
+**決定: lowering 時に確保サイトへ静的 ID を振る。**
+
+`with allocator` スコープだけでは「どのコードが確保したか」が出ない。
+かといって P6-1 で interpreter に入った `call_stack` を使うと、
+**AOT にはコールスタックが無い**ので粒度がバックエンドで変わる。
+
+```
+alloc(handle, size)  →  alloc(handle, size, site_id)
+```
+
+`site_id` は lowering が確保サイトごとに採番する `u32`。
+`Terminator::Panic` が interned symbol を運んでいるのと同じ手口で、
+**プログラムに `site_id → ソース位置` の表を 1 つ持たせる**。
+これで 4 バックエンドが同一の帰属を出す。
+
+### 論点 5: 再現性をどう担保するか
+
+**決定: レポートは同一プログラムに対して bit-identical にする。**
+
+diff できないレポートはテストにもレビューにも使えない。具体的な規則:
+
+1. **時間軸に wall clock を使わない。** 確保シーケンス番号を時間軸にする
+2. **生アドレスをレポートに出さない。** 実測 1 のとおりアドレスは
+   バックエンドで違う。必要なら別フラグ (`--profile-raw`) に隔離する
+3. **レポート生成にハッシュ順の反復を入れない。** これは
+   `INCREMENTAL_COMPILATION.md` に記録した「link cache が全ミスしていた」
+   原因そのもので、同じ轍を踏まない
+
+### 論点 6: オーバーヘッドをどう扱うか
+
+**決定: 既定で常時 ON にはしない。`--profile=mem` を明示したときだけ。**
+
+`HeapManager::alloc` はホットパスである。M0 では
+**tree-walker にだけ入れて既存ベンチとの差を測ってから**他へ広げる
+(P6-3 で u64 underflow trap を入れたときと同じ手順)。
+差が測定誤差に収まるなら常時 ON も検討するが、**先に測る**。
+
+---
+
+## Phase 詳細
+
+### M0 — 用語の固定 + interpreter 側の計数
+
+- **用語を先に決める** (これが本 Phase の主目的):
+  - `cumulative_bytes` — 確保された総バイト。減らない
+  - `live_bytes` — 現在確保されていて解放されていないバイト
+  - `peak_live_bytes` — `live_bytes` の最大値
+  - `Arena::bytes_used` / `FixedBuffer::used()` をこの用語に合わせて
+    再記述する (実測 3)。`CLAUDE.md` の「累積追跡バイト数」も修正
+- `HeapManager` に上記カウンタを追加。**free list は入れない**
+  (bump allocator のままにする — 変えると意味論が変わる。実測 1 は
+  仕様ではなく現状の記録として `assert_consistent` に pin する)
+- 計数のオーバーヘッドを tree-walker だけで測る
+
+**受け入れ基準**: 確保 / 解放 / peak が interpreter で取れ、
+ベンチの回帰が測定誤差内。
+
+### M1 — AOT 側の同一計数 + テキスト出力
+
+- `toy_dispatched_*` に同じカウンタ。プロセス終了時に集計を書き出す
+- `--profile=mem` でテキストレポート。既定は**1 画面に収める要約**
+  (D1 の failure-first と同じ発想 — 全イベントの羅列は情報量ゼロで
+  コストだけ高い)
+
+```
+memory profile — prog.t
+  allocations      1,284      frees  1,284      leaked  0
+  cumulative       412.5 KB
+  peak live         38.2 KB   (at alloc #712)
+  live at exit          0 B
+
+  size histogram          count      bytes
+    16..31                  904     18.1 KB
+    32..63                  310     14.2 KB
+    ...
+```
+
+**受け入れ基準**: **`--all-backends --profile=mem` で 4 バックエンドの
+厳密系メトリクスが完全一致**する。これが M1 の本体であって、
+出力整形はおまけ。
+
+### M2 — 静的サイト ID + リーク検出
+
+- lowering が確保サイトに `site_id` を採番、`site_id → 位置` 表を持たせる
+- サイト別集計とリーク一覧 (解放されなかった確保をサイトで示す)
+
+```
+leaks (3 sites, 1.2 KB)
+  prog.t:42:14   12 allocations    768 B
+  prog.t:87:9     4 allocations    448 B
+```
+
+**受け入れ基準**: 同じプログラムで 4 バックエンドが同じサイトを報告する。
+
+### M3 — `trait Alloc::layout_report` (断片化)
+
+- `AllocLayout` + `trait Alloc` の既定実装
+- `FixedBuffer` / `Arena` で実装。`Global` は `opaque()` のまま
+  (libc / bump の内部は見えない — **見えないと報告することが正しい**)
+- レポートに allocator セクションを追加。`known == false` の allocator は
+  「報告なし」と明示し、断片化 0 とは書かない
+
+**受け入れ基準**: ユーザ定義 allocator が `layout_report` を実装すれば
+同じレポートに載る。
+
+### M4 — JSON + 契約 / テスト連携
+
+- `--profile-format=json` (`--diagnostics=json` と同じ流儀、出力は stderr)
+- 数値を読む builtin:
+
+```rust
+test "no leak" {
+    val before = __builtin_live_bytes()
+    do_work()
+    assert_eq(__builtin_live_bytes(), before)
+}
+
+fn parse(s: str) -> Ast
+    ensures __builtin_live_bytes() <= 4096u64
+{ ... }
+```
+
+`requires` / `ensures` が既にあるので、**メモリを契約で縛れる**のは
+この言語では自然に収まる。P5 の `--check` と組み合わせれば
+「入力を変えても peak が閾値を超えない」を自動で反例探索できる。
+
+**受け入れ基準**: レポートが run 間で bit-identical (論点 5)。
+
+---
+
+## 非目標
+
+- **ホスト allocator の内部計測** (jemalloc stats、malloc interposition) —
+  測っているのはホストであってプログラムではない。論点 1 参照
+- **GC** — toylang は GC を持たない。本文書はあくまで計測であり、
+  管理方式の変更ではない
+- **常時 ON のプロファイル** — 論点 6。まず測ってから判断する
+- **アロケーション削減の自動提案** — レポートは事実を出すところまで。
+  どう直すかは書き手の判断
+
+---
+
+## テスト戦略
+
+1. **バックエンド一致** — `compiler/tests/consistency.rs` に
+   「同一プログラムの厳密系メトリクスが 4 バックエンドで一致する」を追加。
+   これが本機能の中心的な性質
+2. **再現性** — 同一プログラムを 2 回プロファイルしてレポートが
+   bit-identical。`reproducible_build.rs` と同じ発想で、
+   **プロセスを分けて**比較する (ハッシュシードはプロセスごとに変わる)
+3. **既知のプログラムでの正しさ** — 確保回数とバイト数が手計算で
+   分かる小さなプログラムを固定し、数値を直接 assert する
+4. **オーバーヘッド** — `--profile=mem` 無しの実行が回帰していないこと
+
+---
+
+## メンテナンス
+
+`CLAUDE.md` の Allocator 節と `docs/language.md` は、M0 で用語を固定した
+時点で同時に直すこと。実測 3 のとおり、**同名で意味の違うメトリクスが
+既に存在している**状態から始めるので、ここを放置すると
+用語の食い違いがそのまま数値の食い違いになる。

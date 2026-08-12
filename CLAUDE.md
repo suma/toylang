@@ -15,6 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | いつ何が landing したか / 未実装項目 | [`design-docs/todo.md`](design-docs/todo.md) |
 | 機能ごとの実装詳細・フェーズ履歴 | [`design-docs/FEATURE_NOTES.md`](design-docs/FEATURE_NOTES.md) |
 | LLM 向けの診断・テスト機能の設計 | [`design-docs/LLM_FEEDBACK_LOOP.md`](design-docs/LLM_FEEDBACK_LOOP.md) |
+| メモリ使用量・断片化の計測をどう作るか | [`design-docs/MEMORY_PROFILING.md`](design-docs/MEMORY_PROFILING.md) |
 | このリポジトリで LLM が作業する際の指針 | [`design-docs/COMPILER_DEV_LOOP.md`](design-docs/COMPILER_DEV_LOOP.md) |
 
 以下の「Language Syntax」節は**日常的に踏む要点の早見表**であって仕様書ではない。

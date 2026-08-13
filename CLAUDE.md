@@ -15,7 +15,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | いつ何が landing したか / 未実装項目 | [`design-docs/todo.md`](design-docs/todo.md) |
 | 機能ごとの実装詳細・フェーズ履歴 | [`design-docs/FEATURE_NOTES.md`](design-docs/FEATURE_NOTES.md) |
 | LLM 向けの診断・テスト機能の設計 | [`design-docs/LLM_FEEDBACK_LOOP.md`](design-docs/LLM_FEEDBACK_LOOP.md) |
-| メモリ使用量・断片化の計測をどう作るか | [`design-docs/MEMORY_PROFILING.md`](design-docs/MEMORY_PROFILING.md) |
 | このリポジトリで LLM が作業する際の指針 | [`design-docs/COMPILER_DEV_LOOP.md`](design-docs/COMPILER_DEV_LOOP.md) |
 
 以下の「Language Syntax」節は**日常的に踏む要点の早見表**であって仕様書ではない。
@@ -380,7 +379,7 @@ fn main() -> u64 {
 `core/std/allocator.t` の wrapper struct に名前束縛 (`val arena = Arena::new()`) でアクセスすると、以下の inherent method が使える:
 
 - `arena.alloc(size: u64) -> ptr` / `arena.free(p: ptr)` / `arena.realloc(p: ptr, n: u64) -> ptr` (`trait Alloc`)
-- `arena.bytes_used() -> u64` — 累積追跡バイト数
+- `arena.bytes_used() -> u64` — **live** な追跡バイト数 (reset までは累積と一致するが、意味は live。用語は `design-docs/MEMORY_PROFILING.md` M0 で固定)
 - `arena.reset()` — 一括 free + 再利用可能化 (Odin の `mem.free_all` 相当)
 - `fb.capacity() -> u64` / `fb.used() -> u64` / `fb.remaining() -> u64` / `fb.is_empty() -> bool`
 - `fb.reset()` — quota を 0 に戻す

@@ -54,6 +54,76 @@ impl Allocator for GlobalAllocator {
 // `__builtin_fixed_buffer_allocator` / `__builtin_fixed_buffer_drop`)
 // were retired together.
 
+/// Allocation counters (MEMORY_PROFILING M0).
+///
+/// **Every field is defined on what the program *requested*, never on
+/// what the allocator did with the request.** That is the whole point:
+/// the interpreter's heap is a bump allocator that never reuses an
+/// address, while the AOT path is libc `malloc`, which does — a
+/// program can observe the difference today. Any counter derived from
+/// addresses or region layout would therefore disagree between
+/// backends by construction. Sizes and request order do not.
+///
+/// Fragmentation is deliberately absent here. It is a property of an
+/// allocator's layout, so it belongs to `trait Alloc` and lands in M3;
+/// deriving it from these numbers would be inventing it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MemoryStats {
+    /// Number of allocation requests. A `realloc` is *not* counted
+    /// here even when the implementation services it by allocating —
+    /// the program asked for one resize, not for an allocate plus a
+    /// free, and an implementation that grows in place must produce
+    /// the same number.
+    pub alloc_count: u64,
+    /// Number of free requests. Freeing a null pointer is a no-op and
+    /// is not counted.
+    pub free_count: u64,
+    /// Number of resize requests, whether the block moved or not.
+    pub realloc_count: u64,
+    /// Total bytes ever obtained. Never decreases. A `realloc` that
+    /// grows contributes the growth (`new - old`); one that shrinks
+    /// contributes nothing, because no new bytes were obtained.
+    pub cumulative_bytes: u64,
+    /// Bytes currently held: obtained and not yet released. A shrinking
+    /// `realloc` lowers it.
+    pub live_bytes: u64,
+    /// Highest value `live_bytes` reached.
+    pub peak_live_bytes: u64,
+    /// Value of `alloc_count + realloc_count` when `peak_live_bytes`
+    /// was last raised — the reproducible stand-in for "when".
+    ///
+    /// Wall-clock time is deliberately not recorded: a report has to be
+    /// byte-identical between runs to be diffable or assertable, and a
+    /// timestamp makes that impossible.
+    pub peak_at_request: u64,
+}
+
+impl MemoryStats {
+    /// Requests that obtained memory, in program order. Used as the
+    /// reproducible time axis.
+    fn request_seq(&self) -> u64 {
+        self.alloc_count + self.realloc_count
+    }
+
+    /// Record `bytes` newly obtained and refresh the peak.
+    fn obtained(&mut self, bytes: u64) {
+        self.cumulative_bytes += bytes;
+        self.live_bytes += bytes;
+        if self.live_bytes > self.peak_live_bytes {
+            self.peak_live_bytes = self.live_bytes;
+            self.peak_at_request = self.request_seq();
+        }
+    }
+
+    /// Record `bytes` released. Saturating because a double free or a
+    /// free of an untracked address must not wrap the counter into a
+    /// nonsense number; the accounting stays monotone even when the
+    /// program misbehaves.
+    fn released(&mut self, bytes: u64) {
+        self.live_bytes = self.live_bytes.saturating_sub(bytes);
+    }
+}
+
 /// Simple heap memory manager for pointer operations
 #[derive(Debug)]
 pub struct HeapManager {
@@ -68,6 +138,12 @@ pub struct HeapManager {
     // byte-level reads, but still deposit the Rc here to keep a single source
     // of truth.
     typed_slots: HashMap<(usize, usize), crate::object::RcObject>,
+    /// MEMORY_PROFILING M0. Updated by the public `alloc` / `free` /
+    /// `realloc` entry points only — never by the internal calls
+    /// `realloc` makes to service a move, which would count one resize
+    /// as an allocate plus a free and make the numbers depend on the
+    /// implementation strategy.
+    stats: MemoryStats,
 }
 
 impl HeapManager {
@@ -77,7 +153,13 @@ impl HeapManager {
             allocations: HashMap::new(),
             next_addr: 1, // 0 is reserved for null pointer
             typed_slots: HashMap::new(),
+            stats: MemoryStats::default(),
         }
+    }
+
+    /// Allocation counters for this heap.
+    pub fn stats(&self) -> MemoryStats {
+        self.stats
     }
 
     /// Record a typed slot so a later `typed_read` can return the exact Rc.
@@ -94,24 +176,52 @@ impl HeapManager {
     
     /// Allocate memory and return address
     pub fn alloc(&mut self, size: usize) -> usize {
+        let addr = self.alloc_uncounted(size);
+        if addr != 0 {
+            self.stats.alloc_count += 1;
+            self.stats.obtained(size as u64);
+        }
+        addr
+    }
+
+    /// The allocation itself, without touching the counters.
+    ///
+    /// `realloc` services a move through this so one resize request
+    /// stays one counted event. Note there is no free list and no
+    /// reuse: `next_addr` only ever moves forward. That is the current
+    /// behaviour, recorded rather than endorsed —
+    /// `interpreter_heap_does_not_reuse_addresses` pins it.
+    fn alloc_uncounted(&mut self, size: usize) -> usize {
         if size == 0 {
             return 0; // null pointer for zero-size allocations
         }
-        
+
         let addr = self.next_addr;
         self.memory.resize(self.memory.len() + size, 0);
         self.allocations.insert(addr, size);
         self.next_addr += size;
         addr
     }
-    
+
     /// Free memory at address
     pub fn free(&mut self, addr: usize) -> bool {
         if addr == 0 {
             return true; // freeing null pointer is a no-op
         }
-        
-        self.allocations.remove(&addr).is_some()
+        match self.free_uncounted(addr) {
+            Some(size) => {
+                self.stats.free_count += 1;
+                self.stats.released(size as u64);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Drop the tracking entry, returning the size it held. Counter-free
+    /// for the same reason as `alloc_uncounted`.
+    fn free_uncounted(&mut self, addr: usize) -> Option<usize> {
+        self.allocations.remove(&addr)
     }
     
     /// Reallocate memory
@@ -128,8 +238,20 @@ impl HeapManager {
         }
         
         if let Some(old_size) = self.allocations.get(&addr).copied() {
+            // MEMORY_PROFILING M0: one resize request, counted once and
+            // in terms of the size change the program asked for. The
+            // move below is this implementation's way of servicing it —
+            // an allocator that grew the block in place would have to
+            // report the same numbers, so the internal calls are the
+            // uncounted ones.
+            self.stats.realloc_count += 1;
+            if new_size > old_size {
+                self.stats.obtained((new_size - old_size) as u64);
+            } else {
+                self.stats.released((old_size - new_size) as u64);
+            }
             // Allocate new memory
-            let new_addr = self.alloc(new_size);
+            let new_addr = self.alloc_uncounted(new_size);
 
             // Copy old data to new location
             let copy_size = old_size.min(new_size);
@@ -160,7 +282,7 @@ impl HeapManager {
             }
 
             // Free old memory
-            self.free(addr);
+            self.free_uncounted(addr);
 
             new_addr
         } else {
@@ -490,4 +612,98 @@ mod tests {
     // are now covered end-to-end by the consistency suite against
     // the toylang stdlib `Arena` / `FixedBuffer` (`compiler/tests/
     // consistency.rs::aot_arena_bytes_used_and_reset` etc.).
+}
+#[cfg(test)]
+mod memory_stats_tests {
+    use super::*;
+
+    /// The counters are defined on what the program asked for, so they
+    /// are checked against hand-computed numbers rather than against
+    /// whatever the implementation happened to do.
+    #[test]
+    fn alloc_and_free_account_exactly() {
+        let mut heap = HeapManager::new();
+        let a = heap.alloc(64);
+        let b = heap.alloc(32);
+        assert_eq!(heap.stats().live_bytes, 96);
+        assert_eq!(heap.stats().peak_live_bytes, 96);
+
+        heap.free(a);
+        let s = heap.stats();
+        assert_eq!(s.alloc_count, 2);
+        assert_eq!(s.free_count, 1);
+        assert_eq!(s.live_bytes, 32);
+        assert_eq!(s.cumulative_bytes, 96, "cumulative never decreases");
+        assert_eq!(s.peak_live_bytes, 96, "peak survives the free");
+
+        heap.free(b);
+        assert_eq!(heap.stats().live_bytes, 0);
+    }
+
+    #[test]
+    fn realloc_is_one_request_not_an_alloc_plus_a_free() {
+        // This implementation services a growing realloc by moving the
+        // block. An allocator that grew it in place has to report the
+        // same numbers, so the counts must not leak the strategy.
+        let mut heap = HeapManager::new();
+        let p = heap.alloc(16);
+        heap.realloc(p, 64);
+
+        let s = heap.stats();
+        assert_eq!(s.alloc_count, 1, "the move must not count as an allocation");
+        assert_eq!(s.free_count, 0, "the move must not count as a free");
+        assert_eq!(s.realloc_count, 1);
+        assert_eq!(s.live_bytes, 64);
+        assert_eq!(s.cumulative_bytes, 64, "16 obtained, then 48 more");
+    }
+
+    #[test]
+    fn shrinking_realloc_lowers_live_but_not_cumulative() {
+        let mut heap = HeapManager::new();
+        let p = heap.alloc(64);
+        heap.realloc(p, 16);
+
+        let s = heap.stats();
+        assert_eq!(s.live_bytes, 16);
+        assert_eq!(s.cumulative_bytes, 64, "shrinking obtains nothing");
+        assert_eq!(s.peak_live_bytes, 64);
+    }
+
+    #[test]
+    fn peak_records_the_request_it_happened_at() {
+        let mut heap = HeapManager::new();
+        heap.alloc(10); // request 1
+        let big = heap.alloc(100); // request 2 — peak here, 110 live
+        heap.free(big);
+        heap.alloc(5); // request 3
+
+        let s = heap.stats();
+        assert_eq!(s.peak_live_bytes, 110);
+        assert_eq!(s.peak_at_request, 2);
+        assert_eq!(s.live_bytes, 15);
+    }
+
+    #[test]
+    fn zero_size_and_null_are_not_counted() {
+        let mut heap = HeapManager::new();
+        assert_eq!(heap.alloc(0), 0, "zero-size allocation yields the null pointer");
+        heap.free(0);
+        let s = heap.stats();
+        assert_eq!(s.alloc_count, 0);
+        assert_eq!(s.free_count, 0);
+        assert_eq!(s.live_bytes, 0);
+    }
+
+    #[test]
+    fn a_double_free_cannot_drive_live_bytes_negative() {
+        // Saturating accounting: a misbehaving program produces wrong
+        // numbers, not nonsensical ones.
+        let mut heap = HeapManager::new();
+        let p = heap.alloc(32);
+        heap.free(p);
+        heap.free(p);
+        let s = heap.stats();
+        assert_eq!(s.live_bytes, 0);
+        assert_eq!(s.free_count, 1, "the second free tracked nothing");
+    }
 }

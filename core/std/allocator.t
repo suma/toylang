@@ -78,7 +78,13 @@ pub struct Arena {
     sizes: ptr,        # parallel array of tracked sizes (u64, parallel to addrs)
     count: u64,        # number of live tracked entries
     cap_slots: u64,    # capacity of addrs/sizes in slots (each slot is 8 bytes)
-    bytes_used: u64,   # cumulative tracked bytes (sum of sizes[0..count])
+    # Live tracked bytes: the sum of sizes[0..count]. Because this
+    # arena's `free` is a no-op, nothing leaves the set until `reset()`
+    # or `drop()`, so this also happens to equal the cumulative total —
+    # the two diverge the moment a per-pointer `free` is implemented.
+    # MEMORY_PROFILING M0 fixed the terminology; the runtime's
+    # `MemoryStats` keeps `live_bytes` and `cumulative_bytes` apart.
+    bytes_used: u64,
 }
 
 impl Arena {
@@ -93,6 +99,8 @@ impl Arena {
         }
     }
 
+    # Live tracked bytes. See the field comment: not a cumulative
+    # total, despite coinciding with one while `free` is a no-op.
     fn bytes_used(&self) -> u64 { self.bytes_used }
 
     # Bulk-free every tracked allocation. The arena stays valid
@@ -222,6 +230,9 @@ pub struct FixedBuffer {
     sizes: ptr,
     count: u64,
     cap_slots: u64,
+    # Live bytes, in the MEMORY_PROFILING M0 sense: `free` decrements
+    # it, so it is the quota actually in use rather than a running
+    # total of everything ever handed out.
     used_bytes: u64,
 }
 

@@ -5585,3 +5585,46 @@ fn explicit_and_implicit_impl_parameter_lists_agree() {
     assert_consistent(implicit, "impl_param_implicit");
     assert_consistent(explicit, "impl_param_explicit");
 }
+
+// --- allocator behaviour that the backends do NOT share -------------
+//
+// Recorded, not endorsed — the same spirit as
+// `u64_addition_still_wraps`. `assert_consistent` cannot express this
+// because the whole point is that the backends disagree.
+//
+// The interpreter's `HeapManager` is a bump allocator: `next_addr`
+// only moves forward and a `free` returns nothing to it. The AOT path
+// is libc `malloc`, which hands the block straight back. So a program
+// can observe which backend it is running on.
+//
+// This is why MEMORY_PROFILING defines every counter on the sizes and
+// order the program *requested*, never on addresses or region layout:
+// an address-derived metric could not be made to agree here, and a
+// fragmentation number computed from the interpreter would describe
+// the bump allocator rather than the program.
+
+#[test]
+fn interpreter_heap_does_not_reuse_addresses_but_the_aot_heap_does() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val a: ptr = __builtin_heap_alloc(64u64)
+            __builtin_heap_free(a)
+            val b: ptr = __builtin_heap_alloc(64u64)
+            if __builtin_ptr_eq(a, b) { 1u64 } else { 0u64 }
+        }
+    "#;
+    assert_eq!(
+        interpreter_value(src),
+        0,
+        "the interpreter heap is a bump allocator; if this now reuses, \
+         MEMORY_PROFILING's reasoning about address-derived metrics needs revisiting"
+    );
+    assert_eq!(
+        compiler_exit_code(src, "heap_addr_reuse", false),
+        1,
+        "the AOT path is libc malloc and does reuse the block"
+    );
+}

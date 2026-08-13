@@ -9,7 +9,7 @@ toylang で書いたプログラムの**メモリ確保を、実行後にレポ�
 
 | Phase | Scope | Status |
 |---|---|---|
-| **M0** | 用語の固定 + interpreter 側のイベント計数 | 未着手 |
+| **M0** | 用語の固定 + interpreter 側のイベント計数 | ✅ 2026-08-13 |
 | **M1** | AOT 側の同一計数 + `--profile=mem` テキスト出力 | 未着手 |
 | **M2** | 静的サイト ID による帰属 + リーク検出 | 未着手 |
 | **M3** | `trait Alloc` の layout 報告 (ここで初めて断片化が出る) | 未着手 |
@@ -98,73 +98,6 @@ IR は handle を運んでいるが、ネイティブ側は使っていない。
 
 **帰結**: 用語 (cumulative / live / peak) を先に固定する。これは M0 の
 主目的であって、付随作業ではない。
-
-### 実測 4: バックエンドは 4 つあり、どれも消せる状態にない
-
-本機能の計装点をいくつ持つかを決めるため、「interpreter か AOT の
-どちらかを削除する」案を検討した。**結論は削除しない。** 根拠:
-
-**(a) 依存の向き**
-
-```
-compiler ──依存──> interpreter
-```
-
-`compiler` は型検査・診断・エラー整形・core モジュール解決を
-interpreter に依存している (`check_typing_diagnostics` /
-`emit_diagnostics_json` / `ErrorFormatter` /
-`check_typing_with_core_modules`)。**AOT は葉だが interpreter は葉ではない。**
-「interpreter を消す」は削除ではなくフロントエンド駆動部の移設を伴う。
-
-**(b) 「interpreter」は 1 つではない**
-
-| 実行系 | 実体 | `compiler_lower` を通るか |
-|---|---|---|
-| tree-walker | `interpreter/src/evaluation/` | 通らない (参照実装) |
-| **IR VM** | `interpreter/src/ir_vm/` | **通る。既定エンジン** |
-| interpreter JIT | `interpreter/src/jit/` | 通らない。`INTERPRETER_JIT=1` の opt-in |
-| **AOT** | `compiler/src/codegen/` | **通る** |
-
-IR VM と AOT は同じ IR を消費するので、**意味論の独立実装ではなく
-同じ lowering の 2 つの実行方法**である。「interpreter か AOT か」の
-二択はこの構造では成立しない。
-
-**(c) tree-walker 無しでは 27% が動かない (2026-08-13 実測)**
-
-```bash
-# interpreter/example/ の全プログラムを IR VM lane で走らせ、
-# fallback の理由を数える
-for f in interpreter/example/*.t; do
-  TOY_IR_VM=1 TOY_IR_VM_TRACE=1 interpreter "$f" 2>&1 >/dev/null \
-    | grep '^IRVM_TRACE' | head -1
-done | awk '{print $2}' | sort | uniq -c
-```
-
-| 分類 | 件数 |
-|---|---|
-| IR VM で実行 | 84 |
-| `fb_lower_err` (compiler のカバレッジ穴) | 22 |
-| `fb_ineligible` | 9 |
-| `fb_diverge` | 1 |
-
-落ちる 31 本は `contracts.t` / `print_demo.t` / `trait_basic.t` /
-`tuple_destructure.t` / `match_guard.t` / `math_*.t` / `allocator_*.t` —
-**周辺機能ではなく言語の中核**である。
-
-> `BACKEND.md` の「残り ~176 件」は 2026-06-01 にテストスイート全体で
-> 測った数字で、上とは母集団が違う。**比較しないこと。**
-
-**(d) プロファイラにとって 2 つは別のものを測る**
-
-| | interpreter 系 | AOT |
-|---|---|---|
-| 確保イベント (回数 / live / peak / 寿命) | 厳密・決定的 | 同じ |
-| 実際のメモリ挙動 | **虚構** — bump allocator + `typed_slots` の側テーブルで、`Vec<u8>` は本物の記憶域ではない | **本物** (libc malloc) |
-| 断片化 | 測れない (実測 1) | **ここだけが事実** |
-
-M3 (断片化) は AOT が無いと成立せず、M4 (契約 / `test` で数値を assert)
-は決定的な数値が要るので interpreter 系が要る。**どちらを消しても
-本設計の半分が消える。**
 
 ### 参考: 既にある足場
 
@@ -297,72 +230,53 @@ diff できないレポートはテストにもレビューにも使えない。
 (P6-3 で u64 underflow trap を入れたときと同じ手順)。
 差が測定誤差に収まるなら常時 ON も検討するが、**先に測る**。
 
-### 論点 7: 計装点をいくつ持つか / バックエンドを減らすか
-
-**決定: 減らさない。ただし計装点は 4 つではなく 2 つで足りる。**
-
-バックエンドは 4 つだが、**確保が通る場所は 2 つしかない**:
-
-| 計装点 | カバーするバックエンド |
-|---|---|
-| `RuntimeState` / `HeapManager` | tree-walker / IR VM / interpreter JIT |
-| `toy_dispatched_*` | AOT |
-
-`runtime_state.rs` は「heap manager、allocator registry、active stack を
-集約して**全実行経路が同じ状態を見る**」ために作られており、
-interpreter 系 3 つはここを共有している。したがって
-**バックエンドを 1 つも消さなくても、計装は 2 箇所で済む** (論点 1 の決定と同じ)。
-
-実測 4 のとおり、削除は現時点でどれも成立しない。将来減らすとしても
-順序は決まっていて、本設計はそれに追随すればよい:
-
-1. **interpreter JIT** — 最も安い。opt-in で、compiler 側 JIT と機能が
-   重複し、`compiler_lower` を通らない 4 本目の独自経路。ただし計装の
-   都合ではなく**保守コストの都合**で消す話であって、本設計の得にはならない
-   (同じ `RuntimeState` を共有しているので計装点は減らない)
-2. **tree-walker** — `BACKEND.md` の既存計画。上の 31 件が前提条件で、
-   **数えられるので進捗が測れる**
-3. **IR VM と AOT は両方残す** — `compiler_lower` を共有しているので、
-   意味論の実装は 1 つ
-
-ただし削除には条件を付ける:
-
-> **tree-walker の価値は実行エンジンではなくオラクルである。**
-> バックエンド差分検査 (`--all-backends` / `example_consistency.rs`) は、
-> 参照実装があるからこそ機能している。実行経路から外すことと、
-> 参照実装として捨てることは別の判断であり、前者をやるなら
-> **テスト専用として残す形**を同時に決めること。
-
-つまり**バックエンドが 4 つあることは本設計の負担ではない**。
-厳密系メトリクスは確保イベントの列だけから決まる (論点 3) ので、
-2 箇所が同じ順序で同じサイズを見れば 4 バックエンドとも同じ数字になる。
-**むしろ 4-way の一致検査そのものが計装の正しさの証明になる** —
-これが M1 の受け入れ基準を「出力整形」ではなく
-「4 バックエンドで数値一致」に置いた理由である。
-
-なお interpreter JIT を将来消しても計装点は減らない (同じ
-`RuntimeState` を共有しているため)。**削除の動機はプロファイラ側には
-無い**、というのが本論点の結論である。
-
 ---
 
 ## Phase 詳細
 
-### M0 — 用語の固定 + interpreter 側の計数
+### M0 — 用語の固定 + interpreter 側の計数 (✅ 2026-08-13)
 
-- **用語を先に決める** (これが本 Phase の主目的):
-  - `cumulative_bytes` — 確保された総バイト。減らない
-  - `live_bytes` — 現在確保されていて解放されていないバイト
-  - `peak_live_bytes` — `live_bytes` の最大値
-  - `Arena::bytes_used` / `FixedBuffer::used()` をこの用語に合わせて
-    再記述する (実測 3)。`CLAUDE.md` の「累積追跡バイト数」も修正
-- `HeapManager` に上記カウンタを追加。**free list は入れない**
-  (bump allocator のままにする — 変えると意味論が変わる。実測 1 は
-  仕様ではなく現状の記録として `assert_consistent` に pin する)
-- 計数のオーバーヘッドを tree-walker だけで測る
+**用語は `MemoryStats` (`interpreter/src/heap.rs`) がコード側の正本**:
 
-**受け入れ基準**: 確保 / 解放 / peak が interpreter で取れ、
-ベンチの回帰が測定誤差内。
+| 項目 | 定義 |
+|---|---|
+| `alloc_count` / `free_count` / `realloc_count` | 各**要求**の回数 |
+| `cumulative_bytes` | 取得した総バイト。減らない。realloc は**増分のみ**寄与 |
+| `live_bytes` | 取得済みかつ未解放のバイト |
+| `peak_live_bytes` | `live_bytes` の最大値 |
+| `peak_at_request` | peak を更新した時点の要求番号 (wall clock は使わない) |
+
+**すべて「プログラムが要求した内容」で定義し、allocator が何をしたかでは
+定義しない。** これが M1 以降で 4 バックエンドの数値を一致させる前提になる。
+具体的には **realloc を 1 件の resize として数える** — この実装はブロックを
+移動して処理するが、in-place で伸ばす allocator も同じ数値を報告しなければ
+ならないので、`realloc` が内部で使う alloc / free は計数しない
+(`alloc_uncounted` / `free_uncounted`)。
+
+- `HeapManager` に計数を追加。**free list は入れていない** (bump allocator
+  のまま — 変えると意味論が変わる)
+- 実測 3 の用語ずれを修正: `Arena::bytes_used` は **live** (free が no-op
+  なので reset までは累積と一致するだけ)、`FixedBuffer::used()` は真の live。
+  `CLAUDE.md` も修正
+- 実測 1 は **`assert_consistent` では pin できない** (一致しないことが
+  要点なので)。`interpreter_heap_does_not_reuse_addresses_but_the_aot_heap_does`
+  として、interpreter=0 / AOT=1 を直接 assert する形で記録した
+  (`u64_addition_still_wraps` と同じ「現状の記録であって是認ではない」扱い)
+
+**オーバーヘッド実測** (20 万回の alloc/write/read/free ループ、release):
+
+| | 実測 |
+|---|---|
+| 計数なし | 270.2 / 267.6 ms |
+| 計数あり | 252.4 / 253.2 ms |
+
+計数ありの方が速く出ているが、これはコードレイアウトによる誤差。
+**言えるのは「回帰なし」まで**で、高速化したとは言わない。
+interpreter の確保は HashMap 挿入と Vec 拡張が支配的なので、
+整数インクリメント数個は雑音以下に沈む。
+
+**残**: 数値を外から観測する手段はまだ Rust 側の `HeapManager::stats()`
+だけ。CLI 出力は M1、builtin は M4。
 
 ### M1 — AOT 側の同一計数 + テキスト出力
 

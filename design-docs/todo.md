@@ -158,7 +158,7 @@
 
 ### メモリプロファイリング
 
-- **MEMORY-PROFILING** ★★ — 設計は [`MEMORY_PROFILING.md`](MEMORY_PROFILING.md)。実行時のメモリ使用量と断片化を記録し、実行後にレポート / 機械可読な数値を出す。**着手前の実測で 3 点判明済み**: (1) interpreter の `HeapManager` は再利用しない bump allocator なので **アドレス由来のメトリクスは全バックエンド共通にできない** (同じプログラムで interpreter は再利用せず AOT は再利用する)、(2) AOT の `toy_dispatched_alloc` は allocator handle を無視している、(3) `Arena::bytes_used` と `FixedBuffer::used()` は同名だが意味が違う (arena は free が no-op)。**断片化は `trait Alloc` の責務**にして allocator 自身に報告させる — ランタイムに閉じ込めると単なるツールだが、trait に置けばユーザ定義 allocator も同じレポートに乗る。M0 (用語固定 + interpreter 計数) から刻む。
+- **MEMORY-PROFILING** ★★ — 設計は [`MEMORY_PROFILING.md`](MEMORY_PROFILING.md)。実行時のメモリ使用量と断片化を記録し、実行後にレポート / 機械可読な数値を出す。**着手前の実測で 3 点判明済み**: (1) interpreter の `HeapManager` は再利用しない bump allocator なので **アドレス由来のメトリクスは全バックエンド共通にできない** (同じプログラムで interpreter は再利用せず AOT は再利用する)、(2) AOT の `toy_dispatched_alloc` は allocator handle を無視している、(3) `Arena::bytes_used` と `FixedBuffer::used()` は同名だが意味が違う (arena は free が no-op)。**断片化は `trait Alloc` の責務**にして allocator 自身に報告させる — ランタイムに閉じ込めると単なるツールだが、trait に置けばユーザ定義 allocator も同じレポートに乗る。M0 (用語固定 + interpreter 計数) から刻む。**バックエンド削除は検討して却下** (実測 4) — `compiler` が `interpreter` に依存しているので AOT だけが葉であること、IR VM と AOT は `compiler_lower` を共有するので二択が成立しないこと、tree-walker 無しでは example の 27% が動かないこと (2026-08-13 実測)、そして interpreter 系 3 経路は `RuntimeState` を共有するので**計装点は消さなくても 2 箇所で済む**ことによる。既存コードの削除はしない。
 
 ### インクリメンタルコンパイル
 

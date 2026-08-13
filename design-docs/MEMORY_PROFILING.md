@@ -99,6 +99,73 @@ IR は handle を運んでいるが、ネイティブ側は使っていない。
 **帰結**: 用語 (cumulative / live / peak) を先に固定する。これは M0 の
 主目的であって、付随作業ではない。
 
+### 実測 4: バックエンドは 4 つあり、どれも消せる状態にない
+
+本機能の計装点をいくつ持つかを決めるため、「interpreter か AOT の
+どちらかを削除する」案を検討した。**結論は削除しない。** 根拠:
+
+**(a) 依存の向き**
+
+```
+compiler ──依存──> interpreter
+```
+
+`compiler` は型検査・診断・エラー整形・core モジュール解決を
+interpreter に依存している (`check_typing_diagnostics` /
+`emit_diagnostics_json` / `ErrorFormatter` /
+`check_typing_with_core_modules`)。**AOT は葉だが interpreter は葉ではない。**
+「interpreter を消す」は削除ではなくフロントエンド駆動部の移設を伴う。
+
+**(b) 「interpreter」は 1 つではない**
+
+| 実行系 | 実体 | `compiler_lower` を通るか |
+|---|---|---|
+| tree-walker | `interpreter/src/evaluation/` | 通らない (参照実装) |
+| **IR VM** | `interpreter/src/ir_vm/` | **通る。既定エンジン** |
+| interpreter JIT | `interpreter/src/jit/` | 通らない。`INTERPRETER_JIT=1` の opt-in |
+| **AOT** | `compiler/src/codegen/` | **通る** |
+
+IR VM と AOT は同じ IR を消費するので、**意味論の独立実装ではなく
+同じ lowering の 2 つの実行方法**である。「interpreter か AOT か」の
+二択はこの構造では成立しない。
+
+**(c) tree-walker 無しでは 27% が動かない (2026-08-13 実測)**
+
+```bash
+# interpreter/example/ の全プログラムを IR VM lane で走らせ、
+# fallback の理由を数える
+for f in interpreter/example/*.t; do
+  TOY_IR_VM=1 TOY_IR_VM_TRACE=1 interpreter "$f" 2>&1 >/dev/null \
+    | grep '^IRVM_TRACE' | head -1
+done | awk '{print $2}' | sort | uniq -c
+```
+
+| 分類 | 件数 |
+|---|---|
+| IR VM で実行 | 84 |
+| `fb_lower_err` (compiler のカバレッジ穴) | 22 |
+| `fb_ineligible` | 9 |
+| `fb_diverge` | 1 |
+
+落ちる 31 本は `contracts.t` / `print_demo.t` / `trait_basic.t` /
+`tuple_destructure.t` / `match_guard.t` / `math_*.t` / `allocator_*.t` —
+**周辺機能ではなく言語の中核**である。
+
+> `BACKEND.md` の「残り ~176 件」は 2026-06-01 にテストスイート全体で
+> 測った数字で、上とは母集団が違う。**比較しないこと。**
+
+**(d) プロファイラにとって 2 つは別のものを測る**
+
+| | interpreter 系 | AOT |
+|---|---|---|
+| 確保イベント (回数 / live / peak / 寿命) | 厳密・決定的 | 同じ |
+| 実際のメモリ挙動 | **虚構** — bump allocator + `typed_slots` の側テーブルで、`Vec<u8>` は本物の記憶域ではない | **本物** (libc malloc) |
+| 断片化 | 測れない (実測 1) | **ここだけが事実** |
+
+M3 (断片化) は AOT が無いと成立せず、M4 (契約 / `test` で数値を assert)
+は決定的な数値が要るので interpreter 系が要る。**どちらを消しても
+本設計の半分が消える。**
+
 ### 参考: 既にある足場
 
 - **`RuntimeState { heap, registry, active }`** — tree-walker / IR VM /
@@ -229,6 +296,53 @@ diff できないレポートはテストにもレビューにも使えない。
 **tree-walker にだけ入れて既存ベンチとの差を測ってから**他へ広げる
 (P6-3 で u64 underflow trap を入れたときと同じ手順)。
 差が測定誤差に収まるなら常時 ON も検討するが、**先に測る**。
+
+### 論点 7: 計装点をいくつ持つか / バックエンドを減らすか
+
+**決定: 減らさない。ただし計装点は 4 つではなく 2 つで足りる。**
+
+バックエンドは 4 つだが、**確保が通る場所は 2 つしかない**:
+
+| 計装点 | カバーするバックエンド |
+|---|---|
+| `RuntimeState` / `HeapManager` | tree-walker / IR VM / interpreter JIT |
+| `toy_dispatched_*` | AOT |
+
+`runtime_state.rs` は「heap manager、allocator registry、active stack を
+集約して**全実行経路が同じ状態を見る**」ために作られており、
+interpreter 系 3 つはここを共有している。したがって
+**バックエンドを 1 つも消さなくても、計装は 2 箇所で済む** (論点 1 の決定と同じ)。
+
+実測 4 のとおり、削除は現時点でどれも成立しない。将来減らすとしても
+順序は決まっていて、本設計はそれに追随すればよい:
+
+1. **interpreter JIT** — 最も安い。opt-in で、compiler 側 JIT と機能が
+   重複し、`compiler_lower` を通らない 4 本目の独自経路。ただし計装の
+   都合ではなく**保守コストの都合**で消す話であって、本設計の得にはならない
+   (同じ `RuntimeState` を共有しているので計装点は減らない)
+2. **tree-walker** — `BACKEND.md` の既存計画。上の 31 件が前提条件で、
+   **数えられるので進捗が測れる**
+3. **IR VM と AOT は両方残す** — `compiler_lower` を共有しているので、
+   意味論の実装は 1 つ
+
+ただし削除には条件を付ける:
+
+> **tree-walker の価値は実行エンジンではなくオラクルである。**
+> バックエンド差分検査 (`--all-backends` / `example_consistency.rs`) は、
+> 参照実装があるからこそ機能している。実行経路から外すことと、
+> 参照実装として捨てることは別の判断であり、前者をやるなら
+> **テスト専用として残す形**を同時に決めること。
+
+つまり**バックエンドが 4 つあることは本設計の負担ではない**。
+厳密系メトリクスは確保イベントの列だけから決まる (論点 3) ので、
+2 箇所が同じ順序で同じサイズを見れば 4 バックエンドとも同じ数字になる。
+**むしろ 4-way の一致検査そのものが計装の正しさの証明になる** —
+これが M1 の受け入れ基準を「出力整形」ではなく
+「4 バックエンドで数値一致」に置いた理由である。
+
+なお interpreter JIT を将来消しても計装点は減らない (同じ
+`RuntimeState` を共有しているため)。**削除の動機はプロファイラ側には
+無い**、というのが本論点の結論である。
 
 ---
 

@@ -12,7 +12,7 @@ toylang で書いたプログラムの**メモリ確保を、実行後にレポ�
 | **M0** | 用語の固定 + interpreter 側のイベント計数 | ✅ 2026-08-13 |
 | **M1** | AOT 側の同一計数 + `--profile=mem` テキスト出力 | ✅ 2026-08-13 |
 | **M2** | サイト帰属 + リーク検出 | ✅ 2026-08-13 |
-| **M3** | `trait Alloc` の layout 報告 (ここで初めて断片化が出る) | 未着手 |
+| **M3** | `trait Alloc` の layout 報告 (ここで初めて断片化が出る) | ✅ 2026-08-13 |
 | **M4** | JSON 出力 + 契約 / `test` ブロックとの連携 | 未着手 |
 
 ---
@@ -378,16 +378,54 @@ interpreter / JIT / AOT で **byte-identical**。`--all-backends --profile=mem`
 別の呼び出しを挟むより安い (codegen は実行時にプロファイルが有効か
 知らないので、常に何かを渡すしかない)。
 
-### M3 — `trait Alloc::layout_report` (断片化)
+### M3 — `trait Alloc::layout_report` (断片化) (✅ 2026-08-13)
 
-- `AllocLayout` + `trait Alloc` の既定実装
-- `FixedBuffer` / `Arena` で実装。`Global` は `opaque()` のまま
-  (libc / bump の内部は見えない — **見えないと報告することが正しい**)
-- レポートに allocator セクションを追加。`known == false` の allocator は
-  「報告なし」と明示し、断片化 0 とは書かない
+**着手時の調査で前提が 1 つ崩れた。** 設計は `FixedBuffer` / `Arena` に
+`layout_report` を実装する想定だったが、**どちらも領域を管理していない**。
+両者とも個々の確保を default allocator に委譲して記帳するだけで、
+`FixedBuffer` の `cap` はバッファではなく quota である。
+したがって**両者に報告すべき断片化は存在しない**。
 
-**受け入れ基準**: ユーザ定義 allocator が `layout_report` を実装すれば
-同じレポートに載る。
+そこで:
+
+- `Global` / `Arena` / `FixedBuffer` は既定実装のまま **「報告しない」**
+  (`known == false`)。**断片化 0 とは書かない** — 「領域を持たないので
+  報告するものがない」と「断片化していない」は別の主張である
+- 実際に領域を管理する **`SlotRegion`** を stdlib に追加した。
+  これが無いと `layout_report` は実装者ゼロの飾りになる
+
+#### `SlotRegion` — なぜスロット方式か
+
+当初は「1 ブロックから offset で切り出す free-list allocator」を書こうと
+したが、**toylang にポインタ演算の builtin が無い** (`__builtin_ptr_read/write`
+は base + offset を読み書きするだけで、内部ポインタを値として作れない)。
+1 つの確保の内部を指すポインタを配れないので、この方式は現状書けない。
+
+代わりに **等サイズのスロット集合**を管理する。各スロットは独立した確保
+なので既存 builtin で書け、**連続スロットの run** という形で本物の断片化が
+起きる。
+
+```
+$ # 6 スロット中 1 つおきに解放 → 空き 48 バイト、最大 run は 16 バイト
+leaks / layout:
+  managed 96, live 48, free_blocks 3, largest_free 16
+  external_fragmentation 666 permille
+  48 バイトの確保は失敗する
+```
+
+**この「失敗する」が本質**。断片化の数値が飾りでないことは、
+空きバイトが足りているのに確保が通らないことで示される
+(`fragmentation_is_reported_and_actually_bites` で pin)。
+
+外部断片化は permille (千分率) で返す。float ではないので**値が厳密で、
+バックエンド間で完全に一致**する。
+
+#### 自動レポートへの取り込みは保留
+
+allocator は toylang 空間のオブジェクトで、ランタイム側のプロファイラから
+は届かない。`--profile=mem` に自動で載せるには allocator レジストリ
+(ランタイム → toylang のコールバック) が要る。現状は toylang から
+`a.layout_report()` を呼ぶ API として提供する。
 
 ### M4 — JSON + 契約 / テスト連携
 

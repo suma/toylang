@@ -5797,3 +5797,82 @@ fn allocations_from_one_site_reached_by_several_callers_aggregate_together() {
         "prof_site_aggregation",
     );
 }
+
+// --- MEMORY_PROFILING M3: layout reporting --------------------------
+//
+// Fragmentation is a property of an allocator's layout, so `trait
+// Alloc` reports it and the profiler only collects. The default is
+// "not reported", which is not the same as "zero fragmentation" —
+// `Global`, `Arena` and `FixedBuffer` all answer that way because none
+// of them owns a region: each forwards individual allocations to the
+// default allocator and keeps bookkeeping on the side.
+
+#[test]
+fn allocators_without_a_region_report_no_layout() {
+    let src = r#"
+        fn main() -> u64 {
+            val a = Arena::new()
+            val fb = FixedBuffer::new(1024u64)
+            val g = Global::new()
+            # Bound first: chained method calls are not lowerable by
+            # the AOT MVP.
+            val la = a.layout_report()
+            val lf = fb.layout_report()
+            val lg = g.layout_report()
+            var known: u64 = 0u64
+            if la.is_known() { known = known + 1u64 }
+            if lf.is_known() { known = known + 1u64 }
+            if lg.is_known() { known = known + 1u64 }
+            known
+        }
+    "#;
+    assert_consistent(src, "layout_opaque");
+}
+
+#[test]
+fn a_region_owning_allocator_reports_its_layout() {
+    // 8 slots of 16 bytes; two live, and freeing the middle one splits
+    // the free space into two runs.
+    let src = r#"
+        fn main() -> u64 {
+            var r = SlotRegion::new(16u64, 8u64)
+            val a = r.alloc(16u64)
+            val b = r.alloc(16u64)
+            val c = r.alloc(16u64)
+            r.free(b)
+            val l = r.layout_report()
+            l.managed() + l.live() * 1000u64
+                + l.blocks() * 1000000u64 + l.largest() * 10000000u64
+        }
+    "#;
+    // managed 128, live 32, 2 free runs, largest run 5 slots = 80 bytes.
+    assert_consistent(src, "layout_region");
+}
+
+#[test]
+fn fragmentation_is_reported_and_actually_bites() {
+    // Freeing every other slot leaves 48 bytes free with no run longer
+    // than 16, so a 48-byte request fails. A number that did not
+    // predict that would be decoration.
+    let src = r#"
+        fn main() -> u64 {
+            var r = SlotRegion::new(16u64, 6u64)
+            val a = r.alloc(16u64)
+            val b = r.alloc(16u64)
+            val c = r.alloc(16u64)
+            val d = r.alloc(16u64)
+            val e = r.alloc(16u64)
+            val f = r.alloc(16u64)
+            r.free(b)
+            r.free(d)
+            r.free(f)
+            val l = r.layout_report()
+            val big = r.alloc(48u64)
+            var code: u64 = 0u64
+            if __builtin_ptr_is_null(big) { code = code + 1u64 }
+            code + l.largest() * 10u64 + l.external_fragmentation_permille() * 1000u64
+        }
+    "#;
+    // 1 (the request failed) + 16 * 10 + 666 * 1000.
+    assert_consistent(src, "layout_fragmentation");
+}

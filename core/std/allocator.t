@@ -28,10 +28,81 @@
 # the `_h` field consumed by the language's `with` auto-
 # extract) vs `Alloc` (this trait). The two never collide.
 
+# ---- Layout reporting (MEMORY_PROFILING M3) ----
+#
+# Fragmentation is a property of an allocator's layout, so the
+# allocator reports it. The runtime profiler cannot compute it: it
+# sees a stream of sizes, not a region.
+#
+# `known == false` means "this allocator does not manage a region, so
+# there is nothing to report" — which is emphatically not the same as
+# "zero fragmentation". `Global`, `Arena` and `FixedBuffer` all answer
+# that way, because none of them owns a region: every one of them
+# forwards individual allocations to the default allocator and keeps
+# bookkeeping on the side. `FixedBuffer`'s `cap` is a quota, not a
+# buffer.
+pub struct AllocLayout {
+    known: bool,
+    managed_bytes: u64,   # total bytes under management
+    live_bytes: u64,      # of which in use
+    free_blocks: u64,     # number of separate free runs
+    largest_free: u64,    # biggest single free run
+}
+
+impl AllocLayout {
+    fn opaque() -> Self {
+        AllocLayout {
+            known: false,
+            managed_bytes: 0u64,
+            live_bytes: 0u64,
+            free_blocks: 0u64,
+            largest_free: 0u64,
+        }
+    }
+
+    fn is_known(&self) -> bool { self.known }
+    fn managed(&self) -> u64 { self.managed_bytes }
+    fn live(&self) -> u64 { self.live_bytes }
+    fn blocks(&self) -> u64 { self.free_blocks }
+    fn largest(&self) -> u64 { self.largest_free }
+
+    # Free bytes that are not in the largest run, as a permille of all
+    # free bytes. Permille rather than a float so the number is exact
+    # and compares equal across backends.
+    #
+    # Zero when nothing is free: an allocator with no free space is
+    # not fragmented, it is full.
+    fn external_fragmentation_permille(&self) -> u64 {
+        if self.known == false { return 0u64 }
+        if self.managed_bytes <= self.live_bytes { return 0u64 }
+        val free_total: u64 = self.managed_bytes - self.live_bytes
+        if free_total == 0u64 { return 0u64 }
+        val scattered: u64 = free_total - self.largest_free
+        scattered * 1000u64 / free_total
+    }
+}
+
 pub trait Alloc {
     fn alloc(&mut self, size: u64) -> ptr
     fn free(&mut self, p: ptr)
     fn realloc(&mut self, p: ptr, new_size: u64) -> ptr
+
+    # Default: report nothing. An allocator that does not manage a
+    # region has no layout to describe, and saying so is the correct
+    # answer — inventing zeros would put a fabricated fragmentation
+    # figure in front of the reader.
+    fn layout_report(&self) -> AllocLayout {
+        # Written out rather than calling `AllocLayout::opaque()`: an
+        # associated-function call in a trait default body is not
+        # lowerable by the AOT MVP yet.
+        AllocLayout {
+            known: false,
+            managed_bytes: 0u64,
+            live_bytes: 0u64,
+            free_blocks: 0u64,
+            largest_free: 0u64,
+        }
+    }
 }
 
 # ---- Default global allocator ----
@@ -394,5 +465,180 @@ impl Alloc for FixedBuffer {
             self.used_bytes = self.used_bytes + new_size
         }
         q
+    }
+}
+
+# ---- SlotRegion: an allocator with a layout to report ----
+#
+# MEMORY_PROFILING M3. `Global` / `Arena` / `FixedBuffer` forward every
+# allocation to the default allocator and keep bookkeeping on the
+# side, so none of them owns a layout and all three report nothing.
+# This one manages a fixed set of equally-sized slots and satisfies a
+# request only from a run of *consecutive* free slots — so freeing in
+# the middle really does scatter the free space, and `layout_report`
+# has something true to describe.
+#
+# Slots rather than offsets into one block because toylang has no
+# pointer-arithmetic builtin: there is no way to hand out an interior
+# pointer of a single allocation. Each slot is therefore its own
+# allocation, made up front, and the region manages the *index* space.
+# Fragmentation is over that space, which is a real constraint — a
+# 3-slot request fails when the free slots are scattered singly, even
+# with plenty of bytes free.
+#
+# It exists as much to prove the mechanism as to be used: a
+# user-written allocator implements the same trait and lands in the
+# same report with no further wiring.
+pub struct SlotRegion {
+    _h: Allocator,
+    slot_bytes: u64,
+    slot_count: u64,
+    ptrs: ptr,     # slot index -> pointer
+    used: ptr,     # slot index -> run length when a run starts here, else 0
+    live_slots: u64,
+}
+
+impl SlotRegion {
+    fn new(slot_bytes: u64, slot_count: u64) -> Self {
+        var r = SlotRegion {
+            _h: __builtin_default_allocator(),
+            slot_bytes: slot_bytes,
+            slot_count: slot_count,
+            ptrs: __builtin_null_ptr(),
+            used: __builtin_null_ptr(),
+            live_slots: 0u64,
+        }
+        with allocator = __builtin_default_allocator() {
+            r.ptrs = __builtin_heap_alloc(slot_count * 8u64)
+            r.used = __builtin_heap_alloc(slot_count * 8u64)
+        }
+        var i: u64 = 0u64
+        while i < slot_count {
+            var p = __builtin_null_ptr()
+            with allocator = __builtin_default_allocator() {
+                p = __builtin_heap_alloc(slot_bytes)
+            }
+            __builtin_ptr_write(r.ptrs, i * 8u64, p)
+            __builtin_ptr_write(r.used, i * 8u64, 0u64)
+            i = i + 1u64
+        }
+        r
+    }
+
+    fn capacity(&self) -> u64 { self.slot_count * self.slot_bytes }
+    fn live(&self) -> u64 { self.live_slots * self.slot_bytes }
+
+    # How many slots a request of `size` bytes needs.
+    fn _slots_for(&self, size: u64) -> u64 {
+        (size + self.slot_bytes - 1u64) / self.slot_bytes
+    }
+
+    # True when `n` slots starting at `at` are all free.
+    fn _run_free(&self, at: u64, n: u64) -> bool {
+        if at + n > self.slot_count { return false }
+        var i: u64 = at
+        var ok: bool = true
+        while i < at + n {
+            val u: u64 = __builtin_ptr_read(self.used, i * 8u64)
+            if u != 0u64 { ok = false }
+            i = i + 1u64
+        }
+        ok
+    }
+}
+
+impl Alloc for SlotRegion {
+    fn alloc(&mut self, size: u64) -> ptr {
+        if size == 0u64 { return __builtin_null_ptr() }
+        val need: u64 = self._slots_for(size)
+        if need > self.slot_count { return __builtin_null_ptr() }
+        var at: u64 = self.slot_count
+        var i: u64 = 0u64
+        while i + need <= self.slot_count {
+            if self._run_free(i, need) {
+                at = i
+                i = self.slot_count
+            } else {
+                i = i + 1u64
+            }
+        }
+        if at >= self.slot_count { return __builtin_null_ptr() }
+        # The run's first slot records its length; the rest are marked
+        # occupied so a later scan cannot start inside a live run.
+        __builtin_ptr_write(self.used, at * 8u64, need)
+        var k: u64 = at + 1u64
+        while k < at + need {
+            __builtin_ptr_write(self.used, k * 8u64, 1u64)
+            k = k + 1u64
+        }
+        self.live_slots = self.live_slots + need
+        # Annotated binding: the AOT lowering takes the read width from
+        # the annotation, so a bare expression-position read is not
+        # supported there.
+        val slot_ptr: ptr = __builtin_ptr_read(self.ptrs, at * 8u64)
+        slot_ptr
+    }
+
+    fn free(&mut self, p: ptr) {
+        if __builtin_ptr_is_null(p) { return }
+        var i: u64 = 0u64
+        var at: u64 = self.slot_count
+        while i < self.slot_count {
+            val q: ptr = __builtin_ptr_read(self.ptrs, i * 8u64)
+            if __builtin_ptr_eq(q, p) {
+                at = i
+                i = self.slot_count
+            } else {
+                i = i + 1u64
+            }
+        }
+        if at >= self.slot_count { return }
+        val n: u64 = __builtin_ptr_read(self.used, at * 8u64)
+        if n == 0u64 { return }
+        var k: u64 = at
+        while k < at + n {
+            __builtin_ptr_write(self.used, k * 8u64, 0u64)
+            k = k + 1u64
+        }
+        self.live_slots = self.live_slots - n
+    }
+
+    fn realloc(&mut self, p: ptr, new_size: u64) -> ptr {
+        if new_size == 0u64 {
+            self.free(p)
+            return __builtin_null_ptr()
+        }
+        val np = self.alloc(new_size)
+        if __builtin_ptr_is_null(np) { return __builtin_null_ptr() }
+        if __builtin_ptr_is_null(p) == false { self.free(p) }
+        np
+    }
+
+    # The point of M3: this allocator owns a layout, so it can
+    # describe one. A free "block" is a run of consecutive free slots,
+    # which is exactly the unit a request has to fit into.
+    fn layout_report(&self) -> AllocLayout {
+        var blocks: u64 = 0u64
+        var largest: u64 = 0u64
+        var run: u64 = 0u64
+        var i: u64 = 0u64
+        while i < self.slot_count {
+            val u: u64 = __builtin_ptr_read(self.used, i * 8u64)
+            if u == 0u64 {
+                run = run + 1u64
+                if run == 1u64 { blocks = blocks + 1u64 }
+                if run > largest { largest = run }
+            } else {
+                run = 0u64
+            }
+            i = i + 1u64
+        }
+        AllocLayout {
+            known: true,
+            managed_bytes: self.slot_count * self.slot_bytes,
+            live_bytes: self.live_slots * self.slot_bytes,
+            free_blocks: blocks,
+            largest_free: largest * self.slot_bytes,
+        }
     }
 }

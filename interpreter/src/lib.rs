@@ -927,8 +927,18 @@ fn execute_entry_with_values(
     // lower fails / diverges, we fall back to the tree-walker so that
     // compiler MVP gaps do not break existing tests.  Placed *after*
     // the JIT fast-path so JIT-specific tests are not shadowed.
+    //
+    // The attempt is speculative: the VM can print and *then* diverge,
+    // at which point the tree-walker re-runs the program and the output
+    // would appear twice. So stdout is captured for the attempt and only
+    // replayed when the VM actually finished the run — a fallback discards
+    // the partial output rather than emitting it alongside the retry's.
     if args.is_none() {
-        if let Some(obj) = ir_vm::lift::run_main_via_ir_vm(program, string_interner) {
+        let (result, captured) = crate::output::with_capture(|| {
+            ir_vm::lift::run_main_via_ir_vm(program, string_interner)
+        });
+        if let Some(obj) = result {
+            crate::output::print_text(&captured);
             return Ok(obj);
         }
         crate::heap::restore_profile(profile_before_attempt);

@@ -239,3 +239,17 @@ fn parity_narrow_int_cast() {
     "#
     ));
 }
+
+#[test]
+fn fallback_does_not_duplicate_stdout() {
+    // A program the IR VM can run that prints and *then* diverges: the VM
+    // emits partial output and hands the run back to the tree-walker, which
+    // re-runs the program. The fallback must discard the VM's partial output
+    // rather than replay it — otherwise `hello` appears twice.
+    let src = "fn main() -> u64 {\n    println(\"hello\")\n    panic(\"boom\")\n}\n";
+    let (result, stdout) = interpreter::output::with_capture(|| {
+        interpreter::run_source(src, "dup.t", &interpreter::RunOptions::default())
+    });
+    assert!(result.is_err(), "the program should diverge");
+    assert_eq!(stdout, "hello\n", "output must not be duplicated on fallback");
+}

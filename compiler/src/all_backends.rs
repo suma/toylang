@@ -30,6 +30,9 @@ use crate::{compile_file, CompilerOptions};
 
 /// What one backend produced.
 struct Outcome {
+    /// MEMORY_PROFILING M1. `None` when the backend was not asked for
+    /// a profile, or could not produce one.
+    memory: Option<interpreter::heap::MemoryStats>,
     /// `None` when `main` returned something that is not a number, so
     /// there is no exit code to compare. Several examples return `bool`
     /// or `str`.
@@ -61,13 +64,18 @@ fn disagrees(reference: &Outcome, other: &Outcome) -> bool {
 
 /// Run `source` on every backend. Returns the process exit code: 0 when
 /// they all ran and agreed.
-pub fn run(options: &CompilerOptions, source: &str, display_name: &str) -> i32 {
+pub fn run(
+    options: &CompilerOptions,
+    source: &str,
+    display_name: &str,
+    profile_mem: bool,
+) -> i32 {
     let interpreter = BackendResult {
         name: "interpreter",
-        outcome: run_interpreter(options, source, display_name),
+        outcome: run_interpreter(options, source, display_name, profile_mem),
     };
-    let jit = BackendResult { name: "jit", outcome: run_jit(options, source) };
-    let aot = BackendResult { name: "aot", outcome: run_aot(options) };
+    let jit = BackendResult { name: "jit", outcome: run_jit(options, source, profile_mem) };
+    let aot = BackendResult { name: "aot", outcome: run_aot(options, profile_mem) };
 
     // The interpreter is the reference: it is the most complete
     // implementation and the one whose diagnostics are worth reading
@@ -108,7 +116,34 @@ pub fn run(options: &CompilerOptions, source: &str, display_name: &str) -> i32 {
         }
     }
 
+    // MEMORY_PROFILING M1: the acceptance criterion for the phase is
+    // that the strict metrics are identical everywhere, so a mismatch
+    // is a failure of the same weight as a wrong answer.
+    if profile_mem {
+        for backend in [&jit, &aot] {
+            let (Ok(other), Some(theirs)) = (&backend.outcome, backend.outcome.as_ref().ok().and_then(|o| o.memory))
+            else {
+                continue;
+            };
+            let _ = other;
+            if let Some(ours) = reference.memory
+                && ours != theirs
+            {
+                problems.push(format!(
+                    "{} reports different allocation totals:\n  interpreter:\n{}  {}:\n{}",
+                    backend.name,
+                    indent(&ours.report()),
+                    backend.name,
+                    indent(&theirs.report()),
+                ));
+            }
+        }
+    }
+
     if problems.is_empty() {
+        if let Some(stats) = reference.memory {
+            eprint!("{}", stats.report());
+        }
         eprintln!(
             "all 3 backends agree (exit={})",
             reference.exit.map(|c| c.to_string()).unwrap_or_else(|| "n/a".to_string())
@@ -129,41 +164,98 @@ fn run_interpreter(
     options: &CompilerOptions,
     source: &str,
     display_name: &str,
+    profile_mem: bool,
 ) -> Result<Outcome, String> {
     let core = crate::resolve_core_modules_dir(options.core_modules_dir.clone());
     let mut run_options = interpreter::RunOptions::default();
     run_options.core_modules_dir = core.as_deref();
+    if profile_mem {
+        interpreter::heap::reset_profile();
+    }
     let (result, stdout) = interpreter::output::with_capture(|| {
         interpreter::run_source(source, display_name, &run_options)
     });
+    let memory = profile_mem.then(interpreter::heap::profile);
     result
-        .map(|outcome| Outcome { exit: outcome.exit_code, stdout })
+        .map(|outcome| Outcome { exit: outcome.exit_code, stdout, memory })
         // `run_source` has already rendered the diagnostic to stderr;
         // repeating it here would print the same text twice.
         .map_err(|_| "see the diagnostics above".to_string())
 }
 
-fn run_jit(options: &CompilerOptions, source: &str) -> Result<Outcome, String> {
+fn run_jit(
+    options: &CompilerOptions,
+    source: &str,
+    profile_mem: bool,
+) -> Result<Outcome, String> {
     let program = crate::compile_to_jit_main_with_options(source, options)?;
+    if profile_mem {
+        crate::jit::reset_memory_profile();
+    }
     let (exit, stdout) = program.run_capturing_stdout();
-    Ok(Outcome { exit: Some(exit as i32), stdout })
+    let memory = profile_mem.then(crate::jit::memory_profile);
+    Ok(Outcome { exit: Some(exit as i32), stdout, memory })
 }
 
-fn run_aot(options: &CompilerOptions) -> Result<Outcome, String> {
+fn run_aot(options: &CompilerOptions, profile_mem: bool) -> Result<Outcome, String> {
     let exe = temp_path("toy_all_backends");
     let mut aot_options = options.clone();
     aot_options.output = Some(exe.clone());
     aot_options.emit = crate::EmitKind::Executable;
     compile_file(&aot_options)?;
-    let output = Command::new(&exe)
+    let mut cmd = Command::new(&exe);
+    if profile_mem {
+        // The compiled runtime writes its report to stderr at exit
+        // when this is set; the parent parses it back.
+        cmd.env("TOY_PROFILE_MEM", "1");
+    }
+    let output = cmd
         .output()
         .map_err(|e| format!("could not spawn the compiled binary: {e}"));
     let _ = std::fs::remove_file(&exe);
     let output = output?;
+    let memory = if profile_mem {
+        parse_memory_report(&String::from_utf8_lossy(&output.stderr))
+    } else {
+        None
+    };
     Ok(Outcome {
         exit: output.status.code(),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        memory,
     })
+}
+
+/// Read back the report the compiled runtime wrote to stderr.
+///
+/// Deliberately strict: an unrecognised line count or field name
+/// yields `None` rather than a partially-filled struct, because a
+/// silently-zero metric would compare equal to a backend that
+/// legitimately allocated nothing.
+fn parse_memory_report(stderr: &str) -> Option<interpreter::heap::MemoryStats> {
+    let mut stats = interpreter::heap::MemoryStats::ZERO;
+    let mut seen = 0;
+    for line in stderr.lines() {
+        let mut parts = line.split_whitespace();
+        let (Some(name), Some(value)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let Ok(value) = value.parse::<u64>() else {
+            continue;
+        };
+        match name {
+            "alloc_count" => stats.alloc_count = value,
+            "free_count" => stats.free_count = value,
+            "realloc_count" => stats.realloc_count = value,
+            "cumulative_bytes" => stats.cumulative_bytes = value,
+            "live_bytes" => stats.live_bytes = value,
+            "peak_live_bytes" => stats.peak_live_bytes = value,
+            "peak_at_request" => stats.peak_at_request = value,
+            _ => continue,
+        }
+        seen += 1;
+    }
+    (seen == 7).then_some(stats)
 }
 
 /// A collision-free path in the system temp directory. Process id plus

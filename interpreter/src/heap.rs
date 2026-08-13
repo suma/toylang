@@ -99,6 +99,41 @@ pub struct MemoryStats {
 }
 
 impl MemoryStats {
+    /// All-zero value, usable in a `const` context.
+    pub const ZERO: MemoryStats = MemoryStats {
+        alloc_count: 0,
+        free_count: 0,
+        realloc_count: 0,
+        cumulative_bytes: 0,
+        live_bytes: 0,
+        peak_live_bytes: 0,
+        peak_at_request: 0,
+    };
+
+    /// Render the report shared by every backend.
+    ///
+    /// The three implementations (this one, `toylang_rt.c`, and the JIT
+    /// mirror in `compiler/src/jit.rs`) print byte-identical text, so
+    /// `--all-backends --profile=mem` can compare them without parsing
+    /// anything cleverly. Field names are the struct's own, and no
+    /// value is humanised — a rounded "38.2 KB" would make two runs
+    /// that differ by a byte look equal.
+    pub fn report(&self) -> String {
+        let mut out = String::from("memory profile\n");
+        for (name, value) in [
+            ("alloc_count", self.alloc_count),
+            ("free_count", self.free_count),
+            ("realloc_count", self.realloc_count),
+            ("cumulative_bytes", self.cumulative_bytes),
+            ("live_bytes", self.live_bytes),
+            ("peak_live_bytes", self.peak_live_bytes),
+            ("peak_at_request", self.peak_at_request),
+        ] {
+            out.push_str(&format!("  {name:<16}  {value}\n"));
+        }
+        out
+    }
+
     /// Requests that obtained memory, in program order. Used as the
     /// reproducible time axis.
     fn request_seq(&self) -> u64 {
@@ -106,7 +141,11 @@ impl MemoryStats {
     }
 
     /// Record `bytes` newly obtained and refresh the peak.
-    fn obtained(&mut self, bytes: u64) {
+    ///
+    /// Public so the JIT mirror in `compiler/src/jit.rs` reuses the
+    /// arithmetic instead of restating it — the counting *sites* differ
+    /// per backend, the accounting must not.
+    pub fn record_obtained(&mut self, bytes: u64) {
         self.cumulative_bytes += bytes;
         self.live_bytes += bytes;
         if self.live_bytes > self.peak_live_bytes {
@@ -119,9 +158,39 @@ impl MemoryStats {
     /// free of an untracked address must not wrap the counter into a
     /// nonsense number; the accounting stays monotone even when the
     /// program misbehaves.
-    fn released(&mut self, bytes: u64) {
+    pub fn record_released(&mut self, bytes: u64) {
         self.live_bytes = self.live_bytes.saturating_sub(bytes);
     }
+}
+
+thread_local! {
+    /// Process-wide (per-thread) allocation totals.
+    ///
+    /// A run does not have one heap: the tree-walker allocates through
+    /// the `HeapManager` its `EvaluationContext` owns, while the JIT
+    /// path installs a second one in `RuntimeState`. Reporting "the
+    /// heap's" numbers would therefore mean guessing which heap ran the
+    /// program. Every `HeapManager` folds into this instead, so the
+    /// total is right whichever path executed — and stays right if a
+    /// run uses both.
+    ///
+    /// Read by `--profile=mem` (MEMORY_PROFILING M1). M4 replaces the
+    /// read-after-the-fact shape with builtins that can be called
+    /// mid-run.
+    static PROFILE: std::cell::Cell<MemoryStats> = const {
+        std::cell::Cell::new(MemoryStats::ZERO)
+    };
+}
+
+/// Clear the per-thread totals. The profiling CLI calls this before a
+/// run so the numbers describe that run alone.
+pub fn reset_profile() {
+    PROFILE.with(|p| p.set(MemoryStats::ZERO));
+}
+
+/// The per-thread totals accumulated since the last [`reset_profile`].
+pub fn profile() -> MemoryStats {
+    PROFILE.with(|p| p.get())
 }
 
 /// Simple heap memory manager for pointer operations
@@ -179,7 +248,13 @@ impl HeapManager {
         let addr = self.alloc_uncounted(size);
         if addr != 0 {
             self.stats.alloc_count += 1;
-            self.stats.obtained(size as u64);
+            self.stats.record_obtained(size as u64);
+            PROFILE.with(|p| {
+                let mut g = p.get();
+                g.alloc_count += 1;
+                g.record_obtained(size as u64);
+                p.set(g);
+            });
         }
         addr
     }
@@ -211,7 +286,13 @@ impl HeapManager {
         match self.free_uncounted(addr) {
             Some(size) => {
                 self.stats.free_count += 1;
-                self.stats.released(size as u64);
+                self.stats.record_released(size as u64);
+                PROFILE.with(|p| {
+                    let mut g = p.get();
+                    g.free_count += 1;
+                    g.record_released(size as u64);
+                    p.set(g);
+                });
                 true
             }
             None => false,
@@ -246,10 +327,20 @@ impl HeapManager {
             // uncounted ones.
             self.stats.realloc_count += 1;
             if new_size > old_size {
-                self.stats.obtained((new_size - old_size) as u64);
+                self.stats.record_obtained((new_size - old_size) as u64);
             } else {
-                self.stats.released((old_size - new_size) as u64);
+                self.stats.record_released((old_size - new_size) as u64);
             }
+            PROFILE.with(|p| {
+                let mut g = p.get();
+                g.realloc_count += 1;
+                if new_size > old_size {
+                    g.record_obtained((new_size - old_size) as u64);
+                } else {
+                    g.record_released((old_size - new_size) as u64);
+                }
+                p.set(g);
+            });
             // Allocate new memory
             let new_addr = self.alloc_uncounted(new_size);
 

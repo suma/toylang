@@ -14,7 +14,7 @@ use compiler::{compile_file, CompilerOptions, EmitKind};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (mut options, all_backends) = match parse_args(&args) {
+    let (mut options, all_backends, profile_mem) = match parse_args(&args) {
         Ok(o) => o,
         Err(msg) => {
             eprintln!("{msg}");
@@ -40,7 +40,7 @@ fn main() -> ExitCode {
 
     if all_backends {
         return ExitCode::from(
-            u8::try_from(compiler::all_backends::run(&options, &source, &display_name))
+            u8::try_from(compiler::all_backends::run(&options, &source, &display_name, profile_mem))
                 .unwrap_or(1),
         );
     }
@@ -58,11 +58,12 @@ fn main() -> ExitCode {
 /// for. It is not a `CompilerOptions` field because it selects a
 /// different action entirely (run everywhere and compare) rather than
 /// configuring the build.
-fn parse_args(args: &[String]) -> Result<(CompilerOptions, bool), String> {
+fn parse_args(args: &[String]) -> Result<(CompilerOptions, bool, bool), String> {
     if args.is_empty() {
         return Err("no input file".to_string());
     }
     let mut all_backends = false;
+    let mut profile_mem = false;
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut emit = EmitKind::Executable;
@@ -81,6 +82,10 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, bool), String> {
             "-v" | "--verbose" => verbose = true,
             "--release" => release = true,
             "--all-backends" => all_backends = true,
+            s if s.starts_with("--profile=") => match &s["--profile=".len()..] {
+                "mem" => profile_mem = true,
+                other => return Err(format!("--profile expects `mem`, got `{other}`")),
+            },
             "-o" => {
                 i += 1;
                 let v = args.get(i).ok_or_else(|| "-o needs an argument".to_string())?;
@@ -132,7 +137,7 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, bool), String> {
     options.release = release;
     options.core_modules_dir = core_modules_dir;
     options.diagnostics_json = diagnostics_json;
-    Ok((options, all_backends))
+    Ok((options, all_backends, profile_mem))
 }
 
 fn parse_emit(s: &str) -> Result<EmitKind, String> {
@@ -151,6 +156,9 @@ fn print_usage() {
     );
     eprintln!(
         "       compiler <input.t> --all-backends   # run on interpreter / JIT / AOT, report disagreements"
+    );
+    eprintln!(
+        "       compiler <input.t> --all-backends --profile=mem  # also compare allocation totals"
     );
     eprintln!("       use `-` as <input.t> to read the program from stdin");
 }

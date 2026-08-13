@@ -98,6 +98,8 @@ struct CliArgs {
     check_contracts: bool,
     /// Seed for `--check`. Omitted means "pick one and print it".
     seed: Option<u64>,
+    /// MEMORY_PROFILING M1: print allocation totals after the run.
+    profile_mem: bool,
 }
 
 /// Pull a query mode out of the raw arguments, if one is present.
@@ -141,11 +143,16 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
     let mut run_tests = false;
     let mut check_contracts = false;
     let mut seed: Option<u64> = None;
+    let mut profile_mem = false;
     let mut iter = raw.iter().skip(1);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "-v" | "--verbose" => verbose = true,
             "--test" => run_tests = true,
+            s if s.starts_with("--profile=") => match &s["--profile=".len()..] {
+                "mem" => profile_mem = true,
+                other => return Err(format!("--profile expects `mem`, got `{other}`")),
+            },
             "--check" => check_contracts = true,
             s if s.starts_with("--seed=") => {
                 let raw = &s["--seed=".len()..];
@@ -184,7 +191,7 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
         }
     }
     let filename = filename.ok_or_else(|| "no input file".to_string())?;
-    Ok(CliArgs { filename, verbose, core_modules_cli, diagnostics_json, run_tests, check_contracts, seed })
+    Ok(CliArgs { filename, verbose, core_modules_cli, diagnostics_json, run_tests, check_contracts, seed, profile_mem })
 }
 
 fn main() {
@@ -210,11 +217,12 @@ fn main() {
             println!("  {exe} <file> [-v] [--test] [--check [--seed=N]] [--core-modules <DIR>] [--diagnostics=text|json]");
             println!("  {exe} --explain [<CODE>]   # what a diagnostic code means");
             println!("  {exe} --api <file>         # signatures a module provides");
+            println!("  {exe} --profile=mem <file> # allocation totals after the run");
             println!("  (use `-` as <file> to read the program from stdin)");
             return;
         }
     };
-    let CliArgs { filename, verbose, core_modules_cli, diagnostics_json, run_tests, check_contracts, seed } = cli;
+    let CliArgs { filename, verbose, core_modules_cli, diagnostics_json, run_tests, check_contracts, seed, profile_mem } = cli;
     let core_modules_dir = resolve_core_modules_dir(core_modules_cli);
     if verbose {
         if let Some(dir) = &core_modules_dir {
@@ -248,7 +256,16 @@ fn main() {
         process::exit(report_contract_check(&source, &filename, &options, seed));
     }
 
-    match interpreter::run_source(&source, &filename, &options) {
+    // MEMORY_PROFILING M1: totals describe this run alone.
+    if profile_mem {
+        interpreter::heap::reset_profile();
+    }
+    let outcome = interpreter::run_source(&source, &filename, &options);
+    if profile_mem {
+        // stderr, so the program's own stdout stays usable.
+        eprint!("{}", interpreter::heap::profile().report());
+    }
+    match outcome {
         Ok(RunOutcome { exit_code: Some(code) }) => process::exit(code),
         Ok(RunOutcome { exit_code: None }) => {}
         Err(_diagnostic) => {

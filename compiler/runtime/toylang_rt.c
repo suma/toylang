@@ -141,19 +141,213 @@ uint64_t toy_alloc_current(void) {
  * straight through libc; the `handle` argument is preserved in the
  * IR for forward compatibility but currently ignored.
  */
+/* ---- MEMORY_PROFILING M1: allocation counters --------------------
+ *
+ * Field-for-field the same definitions as
+ * `interpreter/src/heap.rs::MemoryStats`, and mirrored again in
+ * `compiler/src/jit.rs` for the JIT. Three implementations is one
+ * more than anybody wants, but the alternative — linking this
+ * translation unit into the compiler binary so the JIT can call it —
+ * would collide with the print helpers, which the JIT deliberately
+ * reimplements so it can capture stdout. Agreement is therefore
+ * enforced by a test (`--all-backends --profile=mem`) rather than by
+ * construction; see MEMORY_PROFILING.md.
+ *
+ * Everything here is off unless TOY_PROFILE_MEM is set, including the
+ * size table, so an unprofiled run allocates exactly what it did
+ * before.
+ */
+
+static int toy_prof_state = -1; /* -1 unresolved, 0 off, 1 on */
+
+static uint64_t toy_prof_alloc_count;
+static uint64_t toy_prof_free_count;
+static uint64_t toy_prof_realloc_count;
+static uint64_t toy_prof_cumulative_bytes;
+static uint64_t toy_prof_live_bytes;
+static uint64_t toy_prof_peak_live_bytes;
+static uint64_t toy_prof_peak_at_request;
+
+/* ptr -> size, open addressing with tombstones. Needed because
+ * `realloc` has to be accounted as one resize, which means knowing the
+ * old size, and libc does not hand it back. Its own storage uses
+ * malloc directly so it never appears in the numbers it records. */
+typedef struct {
+    void *key;
+    uint64_t size;
+    int state; /* 0 empty, 1 occupied, 2 tombstone */
+} toy_prof_slot;
+
+static toy_prof_slot *toy_prof_tab;
+static uint64_t toy_prof_tab_cap;
+static uint64_t toy_prof_tab_occupied;
+
+static void toy_prof_report(void);
+
+static int toy_prof_enabled(void) {
+    if (toy_prof_state < 0) {
+        const char *v = getenv("TOY_PROFILE_MEM");
+        toy_prof_state = (v && v[0] && v[0] != '0') ? 1 : 0;
+        if (toy_prof_state) {
+            atexit(toy_prof_report);
+        }
+    }
+    return toy_prof_state;
+}
+
+static uint64_t toy_prof_hash(void *p) {
+    uint64_t x = (uint64_t) (uintptr_t) p;
+    x >>= 4; /* malloc alignment: the low bits carry no information */
+    x *= 0x9E3779B97F4A7C15ull;
+    return x ^ (x >> 29);
+}
+
+static void toy_prof_tab_grow(void);
+
+static void toy_prof_put(void *p, uint64_t size) {
+    if (toy_prof_tab_cap == 0 || (toy_prof_tab_occupied + 1) * 4 >= toy_prof_tab_cap * 3) {
+        toy_prof_tab_grow();
+    }
+    uint64_t mask = toy_prof_tab_cap - 1;
+    uint64_t i = toy_prof_hash(p) & mask;
+    while (toy_prof_tab[i].state == 1 && toy_prof_tab[i].key != p) {
+        i = (i + 1) & mask;
+    }
+    if (toy_prof_tab[i].state != 1) {
+        toy_prof_tab_occupied++;
+    }
+    toy_prof_tab[i].key = p;
+    toy_prof_tab[i].size = size;
+    toy_prof_tab[i].state = 1;
+}
+
+/* Remove `p` and return the size it held, or 0 if it was not tracked
+ * (a double free, or a pointer this runtime never handed out). */
+static uint64_t toy_prof_take(void *p) {
+    if (toy_prof_tab_cap == 0) {
+        return 0;
+    }
+    uint64_t mask = toy_prof_tab_cap - 1;
+    uint64_t i = toy_prof_hash(p) & mask;
+    while (toy_prof_tab[i].state != 0) {
+        if (toy_prof_tab[i].state == 1 && toy_prof_tab[i].key == p) {
+            uint64_t size = toy_prof_tab[i].size;
+            toy_prof_tab[i].state = 2;
+            toy_prof_tab_occupied--;
+            return size;
+        }
+        i = (i + 1) & mask;
+    }
+    return 0;
+}
+
+static void toy_prof_tab_grow(void) {
+    uint64_t old_cap = toy_prof_tab_cap;
+    toy_prof_slot *old = toy_prof_tab;
+    uint64_t new_cap = old_cap ? old_cap * 2 : 256;
+    toy_prof_slot *fresh = (toy_prof_slot *) calloc((size_t) new_cap, sizeof(toy_prof_slot));
+    if (!fresh) {
+        return; /* out of memory while profiling: keep running, lose accuracy */
+    }
+    toy_prof_tab = fresh;
+    toy_prof_tab_cap = new_cap;
+    toy_prof_tab_occupied = 0;
+    for (uint64_t i = 0; i < old_cap; i++) {
+        if (old[i].state == 1) {
+            toy_prof_put(old[i].key, old[i].size);
+        }
+    }
+    free(old);
+}
+
+static void toy_prof_obtained(uint64_t bytes) {
+    toy_prof_cumulative_bytes += bytes;
+    toy_prof_live_bytes += bytes;
+    if (toy_prof_live_bytes > toy_prof_peak_live_bytes) {
+        toy_prof_peak_live_bytes = toy_prof_live_bytes;
+        toy_prof_peak_at_request = toy_prof_alloc_count + toy_prof_realloc_count;
+    }
+}
+
+static void toy_prof_released(uint64_t bytes) {
+    if (bytes > toy_prof_live_bytes) {
+        toy_prof_live_bytes = 0; /* saturating, as in the interpreter */
+    } else {
+        toy_prof_live_bytes -= bytes;
+    }
+}
+
+/* Written to stderr so a profiled run's stdout stays exactly what the
+ * program printed. Field names match `MemoryStats` so the three
+ * implementations can be compared verbatim. */
+static void toy_prof_report(void) {
+    fprintf(stderr, "memory profile\n");
+    fprintf(stderr, "  alloc_count       %llu\n", (unsigned long long) toy_prof_alloc_count);
+    fprintf(stderr, "  free_count        %llu\n", (unsigned long long) toy_prof_free_count);
+    fprintf(stderr, "  realloc_count     %llu\n", (unsigned long long) toy_prof_realloc_count);
+    fprintf(stderr, "  cumulative_bytes  %llu\n", (unsigned long long) toy_prof_cumulative_bytes);
+    fprintf(stderr, "  live_bytes        %llu\n", (unsigned long long) toy_prof_live_bytes);
+    fprintf(stderr, "  peak_live_bytes   %llu\n", (unsigned long long) toy_prof_peak_live_bytes);
+    fprintf(stderr, "  peak_at_request   %llu\n", (unsigned long long) toy_prof_peak_at_request);
+}
+
 void *toy_dispatched_alloc(uint64_t handle, uint64_t size) {
     (void)handle;
-    return malloc((size_t)size);
+    /* A zero-size request yields the null pointer and is not counted,
+     * matching the interpreter. libc would hand back a unique
+     * non-null pointer here, which would then differ. */
+    if (size == 0) {
+        return NULL;
+    }
+    void *p = malloc((size_t)size);
+    if (p && toy_prof_enabled()) {
+        toy_prof_alloc_count++;
+        toy_prof_obtained(size);
+        toy_prof_put(p, size);
+    }
+    return p;
 }
 
 void toy_dispatched_free(uint64_t handle, void *p) {
     (void)handle;
+    if (!p) {
+        return; /* freeing null is a no-op and is not counted */
+    }
+    if (toy_prof_enabled()) {
+        uint64_t size = toy_prof_take(p);
+        if (size > 0) {
+            toy_prof_free_count++;
+            toy_prof_released(size);
+        }
+    }
     free(p);
 }
 
 void *toy_dispatched_realloc(uint64_t handle, void *p, uint64_t new_size) {
+    if (!p) {
+        return toy_dispatched_alloc(handle, new_size);
+    }
+    if (new_size == 0) {
+        toy_dispatched_free(handle, p);
+        return NULL;
+    }
     (void)handle;
-    return realloc(p, (size_t)new_size);
+    if (!toy_prof_enabled()) {
+        return realloc(p, (size_t)new_size);
+    }
+    /* One resize request, accounted by the size change the program
+     * asked for — never as an allocate plus a free, so that an
+     * allocator growing the block in place reports the same numbers. */
+    uint64_t old_size = toy_prof_take(p);
+    toy_prof_realloc_count++;
+    if (new_size > old_size) {
+        toy_prof_obtained(new_size - old_size);
+    } else {
+        toy_prof_released(old_size - new_size);
+    }
+    void *np = realloc(p, (size_t)new_size);
+    toy_prof_put(np ? np : p, new_size);
+    return np;
 }
 
 void toy_print_bool(uint8_t v) {

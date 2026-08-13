@@ -5628,3 +5628,123 @@ fn interpreter_heap_does_not_reuse_addresses_but_the_aot_heap_does() {
         "the AOT path is libc malloc and does reuse the block"
     );
 }
+
+// --- MEMORY_PROFILING M1: allocation totals across backends ---------
+//
+// The phase's acceptance criterion. Every counter is defined on the
+// sizes and order the program requested, so the backends have to agree
+// on them even though their heaps behave differently (see
+// `interpreter_heap_does_not_reuse_addresses_but_the_aot_heap_does`).
+//
+// These compare through the `--all-backends --profile=mem` path, which
+// is also what a user runs.
+
+fn memory_profiles_agree(source: &str, stem: &str) {
+    if skip_e2e() {
+        return;
+    }
+    let dir = unique_path(stem);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let src_path = dir.join("p.t");
+    std::fs::write(&src_path, source).expect("write source");
+    let output = Command::new(env!("CARGO_BIN_EXE_compiler"))
+        .arg(&src_path)
+        .arg("--all-backends")
+        .arg("--profile=mem")
+        .arg("--core-modules")
+        .arg(core_modules_dir())
+        .output()
+        .expect("spawn compiler");
+    let _ = std::fs::remove_dir_all(&dir);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "backends disagreed on allocation totals:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("alloc_count"),
+        "no profile was produced:\n{stderr}"
+    );
+}
+
+#[test]
+fn allocation_totals_agree_for_raw_heap_builtins() {
+    memory_profiles_agree(
+        r#"
+        fn main() -> u64 {
+            val a: ptr = __builtin_heap_alloc(64u64)
+            val b: ptr = __builtin_heap_alloc(96u64)
+            __builtin_heap_free(a)
+            val c: ptr = __builtin_heap_realloc(b, 160u64)
+            __builtin_heap_free(c)
+            0u64
+        }
+        "#,
+        "prof_raw_builtins",
+    );
+}
+
+#[test]
+fn allocation_totals_agree_for_a_growing_vec() {
+    // A `Vec` that outgrows its capacity several times exercises the
+    // realloc accounting, which is where the definitions bite: this
+    // implementation moves the block, and the numbers must not say so.
+    memory_profiles_agree(
+        r#"
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            var i: u64 = 0u64
+            while i < 40u64 {
+                v.push(i)
+                i = i + 1u64
+            }
+            v.size()
+        }
+        "#,
+        "prof_vec_growth",
+    );
+}
+
+/// Allocation totals that the backends do **not** share, recorded for
+/// the same reason as the address-reuse test above.
+///
+/// `String::from_str` on a literal allocates a heap buffer in the
+/// interpreter, because that is where its `str` values live; the
+/// compiled backends point into `.rodata` and allocate nothing for it
+/// (STR-PTR-LEN). So the interpreter reports one extra allocation and
+/// the bytes that go with it.
+///
+/// This is a representation difference, not a profiling bug — the
+/// programs above show the accounting agrees once the allocations are
+/// ones the program itself asked for. Found by the profiler on its
+/// first realistic program.
+#[test]
+fn string_literals_allocate_on_the_interpreter_but_not_when_compiled() {
+    if skip_e2e() {
+        return;
+    }
+    let dir = unique_path("prof_string_divergence");
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let src_path = dir.join("p.t");
+    std::fs::write(
+        &src_path,
+        "fn main() -> u64 {\n    val s = String::from_str(\"hello world\")\n    s.len()\n}\n",
+    )
+    .expect("write source");
+    let output = Command::new(env!("CARGO_BIN_EXE_compiler"))
+        .arg(&src_path)
+        .arg("--all-backends")
+        .arg("--profile=mem")
+        .arg("--core-modules")
+        .arg(core_modules_dir())
+        .output()
+        .expect("spawn compiler");
+    let _ = std::fs::remove_dir_all(&dir);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("different allocation totals"),
+        "the interpreter/compiled string divergence has gone away — if that is \
+         intended, drop this test and fold the program into \
+         `memory_profiles_agree`:\n{stderr}"
+    );
+}

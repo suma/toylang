@@ -76,6 +76,11 @@ cargo run -q -p interpreter -- --api core/std/string.t
 # 不一致だけ報告する。一致なら stderr に 1 行
 cargo run -q -p compiler -- <source_file.t> --all-backends
 
+# メモリ確保の集計を実行後に出す (MEMORY_PROFILING M1)
+cargo run -q -p interpreter -- --profile=mem <source_file.t>
+cargo run -q -p compiler -- <source_file.t> --all-backends --profile=mem
+TOY_PROFILE_MEM=1 ./compiled_binary          # AOT バイナリ単体
+
 # 入力ファイル名 `-` で stdin から読む。スクラッチファイルを作らずに済む
 echo 'fn main() -> u64 { 0u64 }' | cargo run -q -p interpreter -- --check -
 echo 'fn main() -> u64 { 7u64 }' | cargo run -q -p compiler -- - --all-backends

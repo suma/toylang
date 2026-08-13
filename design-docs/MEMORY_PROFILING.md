@@ -10,7 +10,7 @@ toylang で書いたプログラムの**メモリ確保を、実行後にレポ�
 | Phase | Scope | Status |
 |---|---|---|
 | **M0** | 用語の固定 + interpreter 側のイベント計数 | ✅ 2026-08-13 |
-| **M1** | AOT 側の同一計数 + `--profile=mem` テキスト出力 | 未着手 |
+| **M1** | AOT 側の同一計数 + `--profile=mem` テキスト出力 | ✅ 2026-08-13 |
 | **M2** | 静的サイト ID による帰属 + リーク検出 | 未着手 |
 | **M3** | `trait Alloc` の layout 報告 (ここで初めて断片化が出る) | 未着手 |
 | **M4** | JSON 出力 + 契約 / `test` ブロックとの連携 | 未着手 |
@@ -278,29 +278,62 @@ interpreter の確保は HashMap 挿入と Vec 拡張が支配的なので、
 **残**: 数値を外から観測する手段はまだ Rust 側の `HeapManager::stats()`
 だけ。CLI 出力は M1、builtin は M4。
 
-### M1 — AOT 側の同一計数 + テキスト出力
+### M1 — AOT 側の同一計数 + テキスト出力 (✅ 2026-08-13)
 
-- `toy_dispatched_*` に同じカウンタ。プロセス終了時に集計を書き出す
-- `--profile=mem` でテキストレポート。既定は**1 画面に収める要約**
-  (D1 の failure-first と同じ発想 — 全イベントの羅列は情報量ゼロで
-  コストだけ高い)
-
-```
-memory profile — prog.t
-  allocations      1,284      frees  1,284      leaked  0
-  cumulative       412.5 KB
-  peak live         38.2 KB   (at alloc #712)
-  live at exit          0 B
-
-  size histogram          count      bytes
-    16..31                  904     18.1 KB
-    32..63                  310     14.2 KB
-    ...
+```bash
+interpreter --profile=mem prog.t                 # 実行後に stderr へ
+compiler prog.t --all-backends --profile=mem     # 3 バックエンドの数値を突き合わせ
+TOY_PROFILE_MEM=1 ./compiled_binary              # AOT バイナリ単体
 ```
 
-**受け入れ基準**: **`--all-backends --profile=mem` で 4 バックエンドの
-厳密系メトリクスが完全一致**する。これが M1 の本体であって、
-出力整形はおまけ。
+```
+memory profile
+  alloc_count       2
+  free_count        2
+  realloc_count     1
+  cumulative_bytes  224
+  live_bytes        0
+  peak_live_bytes   160
+  peak_at_request   2
+```
+
+**計数の実装は 3 つある。** `interpreter/src/heap.rs` (tree-walker /
+IR VM / interpreter JIT が共有)、`compiler/runtime/toylang_rt.c` (AOT)、
+`compiler/src/jit.rs` (compiler 側 JIT)。1 つに寄せるには C の翻訳単位を
+compiler バイナリにリンクする必要があるが、**print ヘルパと衝突する** —
+JIT 側はまさに stdout をキャプチャするために別実装を持っている。
+なので**一致は構造ではなくテストで強制する** (D7 と同じ方針)。
+算術だけは `MemoryStats::record_obtained` / `record_released` を
+公開して共有し、数える**場所**だけが実装ごとに違う形にした。
+
+- 3 実装のレポートは **byte-identical** (`{name:<16}` と C の固定幅が一致)。
+  数値を humanize しない — "38.2 KB" は 1 バイト違う 2 つの run を
+  同じに見せる
+- AOT のレポートは `atexit` で stderr へ。プロファイル無効時は
+  サイズ追跡表も作らないので、**通常実行の挙動は変わらない**
+- `realloc` の旧サイズは libc が返さないので、C 側に
+  open-addressing のポインタ→サイズ表を書いた (自身の記憶域は
+  malloc 直呼びなので計数に現れない)
+- interpreter 側は run ごとの合算を thread-local に持つ。
+  「その run のヒープ」を読む形にしなかったのは、**tree-walker と JIT が
+  別々の `HeapManager` を持つ**ため、どちらが走ったかを推測することに
+  なるから
+
+**受け入れ基準の結果**: 生 heap builtin と `Vec` の成長 (realloc を
+4 回踏む) で **4 バックエンドの厳密系メトリクスが完全一致**。
+`allocation_totals_agree_for_*` で pin。
+
+#### 初回の実プログラムで見つかった差異
+
+`String::from_str("...")` を含むと **interpreter だけ 1 確保 (20 bytes) 多い**。
+interpreter は `str` をヒープに実体化するが、コンパイル系は `.rodata` を
+指すため (STR-PTR-LEN)。**表現の差であって計測のバグではない** — 同じ
+プログラムから String を除くと完全に一致する。実測 1 と同じ扱いで
+`string_literals_allocate_on_the_interpreter_but_not_when_compiled`
+に記録した。
+
+> この差は M1 の道具が**最初の実プログラムで**見つけたものである。
+> 一致を目視で確認する運用だったら気づかなかった。
 
 ### M2 — 静的サイト ID + リーク検出
 

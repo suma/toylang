@@ -617,16 +617,96 @@ unsafe extern "C" {
     fn free(p: *mut u8);
 }
 
+// MEMORY_PROFILING M1: the third implementation of the allocation
+// counters, after `interpreter/src/heap.rs::MemoryStats` and
+// `compiler/runtime/toylang_rt.c`. Sharing one would mean linking the
+// C translation unit into this binary, which collides with the print
+// helpers above — those exist precisely because the JIT needs to
+// capture stdout. The three are held in agreement by a test rather
+// than by construction: `--all-backends --profile=mem` compares them.
+//
+// The size table is needed for the same reason as in C: a `realloc`
+// counts as one resize, which means knowing the old size, and libc
+// does not return it.
+thread_local! {
+    static JIT_PROFILE: std::cell::Cell<interpreter::heap::MemoryStats> = const {
+        std::cell::Cell::new(interpreter::heap::MemoryStats::ZERO)
+    };
+    static JIT_ALLOC_SIZES: RefCell<std::collections::HashMap<usize, u64>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// Clear the JIT's allocation totals, so a report describes one run.
+pub fn reset_memory_profile() {
+    JIT_PROFILE.with(|p| p.set(interpreter::heap::MemoryStats::ZERO));
+    JIT_ALLOC_SIZES.with(|m| m.borrow_mut().clear());
+}
+
+/// The JIT's allocation totals since the last [`reset_memory_profile`].
+pub fn memory_profile() -> interpreter::heap::MemoryStats {
+    JIT_PROFILE.with(|p| p.get())
+}
+
 unsafe extern "C" fn toy_dispatched_alloc(_handle: u64, size: u64) -> *mut u8 {
-    unsafe { malloc(size as usize) }
+    // Zero-size yields null and is not counted, matching the other two
+    // implementations; libc would return a unique non-null pointer.
+    if size == 0 {
+        return std::ptr::null_mut();
+    }
+    let p = unsafe { malloc(size as usize) };
+    if !p.is_null() {
+        JIT_PROFILE.with(|prof| {
+            let mut g = prof.get();
+            g.alloc_count += 1;
+            g.record_obtained(size);
+            prof.set(g);
+        });
+        JIT_ALLOC_SIZES.with(|m| m.borrow_mut().insert(p as usize, size));
+    }
+    p
 }
 
 unsafe extern "C" fn toy_dispatched_free(_handle: u64, p: *mut u8) {
+    if p.is_null() {
+        return;
+    }
+    let tracked = JIT_ALLOC_SIZES.with(|m| m.borrow_mut().remove(&(p as usize)));
+    if let Some(size) = tracked {
+        JIT_PROFILE.with(|prof| {
+            let mut g = prof.get();
+            g.free_count += 1;
+            g.record_released(size);
+            prof.set(g);
+        });
+    }
     unsafe { free(p) };
 }
 
 unsafe extern "C" fn toy_dispatched_realloc(_handle: u64, p: *mut u8, new_size: u64) -> *mut u8 {
-    unsafe { realloc(p, new_size as usize) }
+    if p.is_null() {
+        return unsafe { toy_dispatched_alloc(_handle, new_size) };
+    }
+    if new_size == 0 {
+        unsafe { toy_dispatched_free(_handle, p) };
+        return std::ptr::null_mut();
+    }
+    let old_size = JIT_ALLOC_SIZES
+        .with(|m| m.borrow_mut().remove(&(p as usize)))
+        .unwrap_or(0);
+    JIT_PROFILE.with(|prof| {
+        let mut g = prof.get();
+        g.realloc_count += 1;
+        if new_size > old_size {
+            g.record_obtained(new_size - old_size);
+        } else {
+            g.record_released(old_size - new_size);
+        }
+        prof.set(g);
+    });
+    let np = unsafe { realloc(p, new_size as usize) };
+    let key = if np.is_null() { p } else { np };
+    JIT_ALLOC_SIZES.with(|m| m.borrow_mut().insert(key as usize, new_size));
+    np
 }
 
 unsafe extern "C" fn toy_print_bool(v: u8) {

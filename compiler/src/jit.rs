@@ -632,14 +632,25 @@ thread_local! {
     static JIT_PROFILE: std::cell::Cell<interpreter::heap::MemoryStats> = const {
         std::cell::Cell::new(interpreter::heap::MemoryStats::ZERO)
     };
-    static JIT_ALLOC_SIZES: RefCell<std::collections::HashMap<usize, u64>> =
+    static JIT_ALLOC_SIZES: RefCell<std::collections::HashMap<usize, (u64, u64)>> =
         RefCell::new(std::collections::HashMap::new());
+    /// Per-site totals, keyed by the packed source position. `BTreeMap`
+    /// so the report order is the source order rather than a hash
+    /// order — a report that reorders between runs is not diffable.
+    static JIT_SITES: RefCell<std::collections::BTreeMap<u64, interpreter::heap::SiteStats>> =
+        const { RefCell::new(std::collections::BTreeMap::new()) };
 }
 
 /// Clear the JIT's allocation totals, so a report describes one run.
 pub fn reset_memory_profile() {
     JIT_PROFILE.with(|p| p.set(interpreter::heap::MemoryStats::ZERO));
     JIT_ALLOC_SIZES.with(|m| m.borrow_mut().clear());
+    JIT_SITES.with(|m| m.borrow_mut().clear());
+}
+
+/// Per-site totals for the JIT, in source order.
+pub fn memory_profile_sites() -> Vec<(u64, interpreter::heap::SiteStats)> {
+    JIT_SITES.with(|m| m.borrow().iter().map(|(k, v)| (*k, *v)).collect())
 }
 
 /// The JIT's allocation totals since the last [`reset_memory_profile`].
@@ -647,7 +658,7 @@ pub fn memory_profile() -> interpreter::heap::MemoryStats {
     JIT_PROFILE.with(|p| p.get())
 }
 
-unsafe extern "C" fn toy_dispatched_alloc(_handle: u64, size: u64) -> *mut u8 {
+unsafe extern "C" fn toy_dispatched_alloc(_handle: u64, size: u64, site: u64) -> *mut u8 {
     // Zero-size yields null and is not counted, matching the other two
     // implementations; libc would return a unique non-null pointer.
     if size == 0 {
@@ -661,7 +672,15 @@ unsafe extern "C" fn toy_dispatched_alloc(_handle: u64, size: u64) -> *mut u8 {
             g.record_obtained(size);
             prof.set(g);
         });
-        JIT_ALLOC_SIZES.with(|m| m.borrow_mut().insert(p as usize, size));
+        JIT_ALLOC_SIZES.with(|m| m.borrow_mut().insert(p as usize, (size, site)));
+        JIT_SITES.with(|m| {
+            let mut m = m.borrow_mut();
+            let e = m.entry(site).or_default();
+            e.alloc_count += 1;
+            e.cumulative_bytes += size;
+            e.live_count += 1;
+            e.live_bytes += size;
+        });
     }
     p
 }
@@ -671,12 +690,18 @@ unsafe extern "C" fn toy_dispatched_free(_handle: u64, p: *mut u8) {
         return;
     }
     let tracked = JIT_ALLOC_SIZES.with(|m| m.borrow_mut().remove(&(p as usize)));
-    if let Some(size) = tracked {
+    if let Some((size, site)) = tracked {
         JIT_PROFILE.with(|prof| {
             let mut g = prof.get();
             g.free_count += 1;
             g.record_released(size);
             prof.set(g);
+        });
+        JIT_SITES.with(|m| {
+            let mut m = m.borrow_mut();
+            let e = m.entry(site).or_default();
+            e.live_count = e.live_count.saturating_sub(1);
+            e.live_bytes = e.live_bytes.saturating_sub(size);
         });
     }
     unsafe { free(p) };
@@ -684,15 +709,15 @@ unsafe extern "C" fn toy_dispatched_free(_handle: u64, p: *mut u8) {
 
 unsafe extern "C" fn toy_dispatched_realloc(_handle: u64, p: *mut u8, new_size: u64) -> *mut u8 {
     if p.is_null() {
-        return unsafe { toy_dispatched_alloc(_handle, new_size) };
+        return unsafe { toy_dispatched_alloc(_handle, new_size, 0) };
     }
     if new_size == 0 {
         unsafe { toy_dispatched_free(_handle, p) };
         return std::ptr::null_mut();
     }
-    let old_size = JIT_ALLOC_SIZES
+    let (old_size, site) = JIT_ALLOC_SIZES
         .with(|m| m.borrow_mut().remove(&(p as usize)))
-        .unwrap_or(0);
+        .unwrap_or((0, 0));
     JIT_PROFILE.with(|prof| {
         let mut g = prof.get();
         g.realloc_count += 1;
@@ -703,9 +728,20 @@ unsafe extern "C" fn toy_dispatched_realloc(_handle: u64, p: *mut u8, new_size: 
         }
         prof.set(g);
     });
+    // A resize keeps the site its block already had.
+    JIT_SITES.with(|m| {
+        let mut m = m.borrow_mut();
+        let e = m.entry(site).or_default();
+        if new_size > old_size {
+            e.cumulative_bytes += new_size - old_size;
+            e.live_bytes += new_size - old_size;
+        } else {
+            e.live_bytes = e.live_bytes.saturating_sub(old_size - new_size);
+        }
+    });
     let np = unsafe { realloc(p, new_size as usize) };
     let key = if np.is_null() { p } else { np };
-    JIT_ALLOC_SIZES.with(|m| m.borrow_mut().insert(key as usize, new_size));
+    JIT_ALLOC_SIZES.with(|m| m.borrow_mut().insert(key as usize, (new_size, site)));
     np
 }
 

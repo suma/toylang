@@ -14,7 +14,13 @@ use crate::runtime_state::{with_active_allocator, with_heap};
 
 /// Allocate `size` bytes via the active allocator and return the address.
 pub fn heap_alloc(size: u64) -> u64 {
-    with_active_allocator(|alloc| alloc.alloc(size as usize) as u64)
+    heap_alloc_at(size, 0)
+}
+
+/// Allocate, attributing the block to a packed source position
+/// (MEMORY_PROFILING M2).
+pub fn heap_alloc_at(size: u64, site: u64) -> u64 {
+    with_active_allocator(|alloc| alloc.alloc_at(size as usize, site) as u64)
         .unwrap_or(0)
 }
 

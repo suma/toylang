@@ -264,6 +264,10 @@ fn main() {
     if profile_mem {
         // stderr, so the program's own stdout stays usable.
         eprint!("{}", interpreter::heap::profile().report());
+        eprint!(
+            "{}",
+            interpreter::heap::MemoryStats::leak_report(&interpreter::heap::profile_sites())
+        );
     }
     match outcome {
         Ok(RunOutcome { exit_code: Some(code) }) => process::exit(code),

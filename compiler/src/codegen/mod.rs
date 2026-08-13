@@ -528,7 +528,10 @@ impl<M: Module> CodegenSession<M> {
 
         // Dispatched alloc / realloc / free.
         // Signatures: (handle: u64, ...) -> ptr (or void for free).
+        // (handle, size, site) -> ptr. `site` is MEMORY_PROFILING M2's
+        // packed source position; ignored unless profiling is enabled.
         let mut dispatched_alloc_sig = Signature::new(call_conv);
+        dispatched_alloc_sig.params.push(AbiParam::new(types::I64));
         dispatched_alloc_sig.params.push(AbiParam::new(types::I64));
         dispatched_alloc_sig.params.push(AbiParam::new(types::I64));
         dispatched_alloc_sig.returns.push(AbiParam::new(types::I64));

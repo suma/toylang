@@ -33,6 +33,8 @@ struct Outcome {
     /// MEMORY_PROFILING M1. `None` when the backend was not asked for
     /// a profile, or could not produce one.
     memory: Option<interpreter::heap::MemoryStats>,
+    /// Per-site totals (MEMORY_PROFILING M2), in source order.
+    sites: Vec<(u64, interpreter::heap::SiteStats)>,
     /// `None` when `main` returned something that is not a number, so
     /// there is no exit code to compare. Several examples return `bool`
     /// or `str`.
@@ -126,6 +128,25 @@ pub fn run(
                 continue;
             };
             let _ = other;
+            let leaks_ours = interpreter::heap::MemoryStats::leak_report(&reference.sites);
+            let leaks_theirs = if backend.name == "aot" {
+                interpreter::heap::MemoryStats::leak_report(
+                    &backend.outcome.as_ref().map(|o| o.sites.clone()).unwrap_or_default(),
+                )
+            } else {
+                interpreter::heap::MemoryStats::leak_report(
+                    &backend.outcome.as_ref().map(|o| o.sites.clone()).unwrap_or_default(),
+                )
+            };
+            if leaks_ours != leaks_theirs {
+                problems.push(format!(
+                    "{} attributes leaks differently:\n  interpreter:\n{}  {}:\n{}",
+                    backend.name,
+                    indent(&leaks_ours),
+                    backend.name,
+                    indent(&leaks_theirs),
+                ));
+            }
             if let Some(ours) = reference.memory
                 && ours != theirs
             {
@@ -143,6 +164,10 @@ pub fn run(
     if problems.is_empty() {
         if let Some(stats) = reference.memory {
             eprint!("{}", stats.report());
+            eprint!(
+                "{}",
+                interpreter::heap::MemoryStats::leak_report(&reference.sites)
+            );
         }
         eprintln!(
             "all 3 backends agree (exit={})",
@@ -176,8 +201,9 @@ fn run_interpreter(
         interpreter::run_source(source, display_name, &run_options)
     });
     let memory = profile_mem.then(interpreter::heap::profile);
+    let sites = if profile_mem { interpreter::heap::profile_sites() } else { Vec::new() };
     result
-        .map(|outcome| Outcome { exit: outcome.exit_code, stdout, memory })
+        .map(|outcome| Outcome { exit: outcome.exit_code, stdout, memory, sites })
         // `run_source` has already rendered the diagnostic to stderr;
         // repeating it here would print the same text twice.
         .map_err(|_| "see the diagnostics above".to_string())
@@ -194,7 +220,8 @@ fn run_jit(
     }
     let (exit, stdout) = program.run_capturing_stdout();
     let memory = profile_mem.then(crate::jit::memory_profile);
-    Ok(Outcome { exit: Some(exit as i32), stdout, memory })
+    let sites = if profile_mem { crate::jit::memory_profile_sites() } else { Vec::new() };
+    Ok(Outcome { exit: Some(exit as i32), stdout, memory, sites })
 }
 
 fn run_aot(options: &CompilerOptions, profile_mem: bool) -> Result<Outcome, String> {
@@ -214,15 +241,14 @@ fn run_aot(options: &CompilerOptions, profile_mem: bool) -> Result<Outcome, Stri
         .map_err(|e| format!("could not spawn the compiled binary: {e}"));
     let _ = std::fs::remove_file(&exe);
     let output = output?;
-    let memory = if profile_mem {
-        parse_memory_report(&String::from_utf8_lossy(&output.stderr))
-    } else {
-        None
-    };
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let memory = if profile_mem { parse_memory_report(&stderr) } else { None };
+    let sites = if profile_mem { parse_leak_report(&stderr) } else { Vec::new() };
     Ok(Outcome {
         exit: output.status.code(),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         memory,
+        sites,
     })
 }
 
@@ -256,6 +282,44 @@ fn parse_memory_report(stderr: &str) -> Option<interpreter::heap::MemoryStats> {
         seen += 1;
     }
     (seen == 7).then_some(stats)
+}
+
+/// Read the leak section back out of a compiled run's stderr.
+///
+/// Only the leaking sites appear there, which is exactly what the
+/// comparison needs: a site that allocated and freed everything is not
+/// a leak on any backend.
+fn parse_leak_report(stderr: &str) -> Vec<(u64, interpreter::heap::SiteStats)> {
+    let mut out = Vec::new();
+    for line in stderr.lines() {
+        // `  <line>:<col>  <n> allocations  <b> bytes`
+        let t = line.trim();
+        let Some((pos, rest)) = t.split_once("  ") else {
+            continue;
+        };
+        let Some((l, c)) = pos.split_once(':') else {
+            continue;
+        };
+        let (Ok(l), Ok(c)) = (l.parse::<u64>(), c.parse::<u64>()) else {
+            continue;
+        };
+        let mut f = rest.split_whitespace();
+        let (Some(count), Some(_), Some(bytes)) = (f.next(), f.next(), f.next()) else {
+            continue;
+        };
+        let (Ok(count), Ok(bytes)) = (count.parse::<u64>(), bytes.parse::<u64>()) else {
+            continue;
+        };
+        out.push((
+            (l << 32) | c,
+            interpreter::heap::SiteStats {
+                live_count: count,
+                live_bytes: bytes,
+                ..Default::default()
+            },
+        ));
+    }
+    out
 }
 
 /// A collision-free path in the system temp directory. Process id plus

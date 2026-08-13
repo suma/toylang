@@ -11,7 +11,7 @@ toylang で書いたプログラムの**メモリ確保を、実行後にレポ�
 |---|---|---|
 | **M0** | 用語の固定 + interpreter 側のイベント計数 | ✅ 2026-08-13 |
 | **M1** | AOT 側の同一計数 + `--profile=mem` テキスト出力 | ✅ 2026-08-13 |
-| **M2** | 静的サイト ID による帰属 + リーク検出 | 未着手 |
+| **M2** | サイト帰属 + リーク検出 | ✅ 2026-08-13 |
 | **M3** | `trait Alloc` の layout 報告 (ここで初めて断片化が出る) | 未着手 |
 | **M4** | JSON 出力 + 契約 / `test` ブロックとの連携 | 未着手 |
 
@@ -335,18 +335,48 @@ interpreter は `str` をヒープに実体化するが、コンパイル系は 
 > この差は M1 の道具が**最初の実プログラムで**見つけたものである。
 > 一致を目視で確認する運用だったら気づかなかった。
 
-### M2 — 静的サイト ID + リーク検出
+### M2 — サイト帰属 + リーク検出 (✅ 2026-08-13)
 
-- lowering が確保サイトに `site_id` を採番、`site_id → 位置` 表を持たせる
-- サイト別集計とリーク一覧 (解放されなかった確保をサイトで示す)
+**設計を 1 点変えた。** 論点 4 は「lowering で静的サイト ID を採番し、
+`site_id → ソース位置` の表をプログラムに持たせる」としていたが、
+実装時に**位置そのものを ID にする**方が良いと分かった。
 
 ```
-leaks (3 sites, 1.2 KB)
-  prog.t:42:14   12 allocations    768 B
-  prog.t:87:9     4 allocations    448 B
+site = (line << 32) | column
 ```
 
-**受け入れ基準**: 同じプログラムで 4 バックエンドが同じサイトを報告する。
+- **表が要らない。** AOT バイナリに文字列テーブルを埋め込んで
+  ランタイムに登録する、という M2 の一番面倒な部分が丸ごと消える
+- **一致が構造的に保証される。** 全バックエンドが同じ `location_pool`
+  を読むので、ID を突き合わせる仕組み自体が不要
+- 単独で走る AOT バイナリも `3:18` と位置を出せる
+
+`HeapAlloc` だけが site を運ぶ。`realloc` は**ブロックが既に持っている
+site を維持**する (同じ論理的な確保なので、リークは「最後に伸ばした場所」
+ではなく「どこから来たか」を指すべき)。`free` は解放する確保に帰属する。
+
+```
+$ interpreter --profile=mem leak.t
+memory profile
+  alloc_count       2
+  ...
+leaks (1 sites, 1 allocations, 32 bytes)
+  3:18  1 allocations  32 bytes
+```
+
+interpreter / JIT / AOT で **byte-identical**。`--all-backends --profile=mem`
+は総計とリーク節の両方を突き合わせる。
+
+**帰属の粒度は「確保サイト」であって「呼び出しパス」ではない。**
+`keep()` を 2 箇所から呼べば、両方の確保が `keep` 内の 1 サイトに
+集約される。`allocations_from_one_site_reached_by_several_callers_aggregate_together`
+で記録した — 呼び出しパス別にするなら、それは意図的な変更として
+後のフェーズで行う。
+
+**ABI 変更**: `toy_dispatched_alloc(handle, size)` →
+`(handle, size, site)`。定数レジスタ 1 本を足す方が、site を設定する
+別の呼び出しを挟むより安い (codegen は実行時にプロファイルが有効か
+知らないので、常に何かを渡すしかない)。
 
 ### M3 — `trait Alloc::layout_report` (断片化)
 

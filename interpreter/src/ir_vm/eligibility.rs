@@ -262,6 +262,7 @@ mod tests {
             result: Some((ValueId(1), Type::U64)),
             kind: compiler_ir::InstKind::HeapAlloc {
                 size: ValueId(0),
+                site: 0,
                 binding: compiler_ir::AllocatorBinding::Ambient,
             },
         });

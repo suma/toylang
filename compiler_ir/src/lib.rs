@@ -793,7 +793,17 @@ pub enum InstKind {
     /// but the field is preserved so a future devirt pass can
     /// emit a direct `libc malloc` call when the binding is
     /// known statically.
-    HeapAlloc { size: ValueId, binding: AllocatorBinding },
+    /// `site` packs the allocation's source position as
+    /// `(line << 32) | column` (MEMORY_PROFILING M2), zero when the
+    /// position is unknown.
+    ///
+    /// The position *is* the site identifier: every backend reads it
+    /// from the same `location_pool`, so attribution agrees by
+    /// construction rather than by keeping separate id tables in step.
+    /// Only `HeapAlloc` carries one — a `realloc` keeps the site its
+    /// block already had, and a `free` is attributed to the allocation
+    /// it releases.
+    HeapAlloc { size: ValueId, binding: AllocatorBinding, site: u64 },
     /// `__builtin_heap_realloc(ptr, new_size)` — resize the allocation
     /// at `ptr` to `new_size` bytes through the active allocator
     /// (which accepts a null `ptr` and behaves like `malloc`).
@@ -1452,8 +1462,8 @@ impl fmt::Display for DisplayInst<'_> {
             InstKind::ArrayStore { slot, index, value, elem_ty } => {
                 write!(f, "array_store slot#{}, {index} <- {value}: {elem_ty}", slot.0)
             }
-            InstKind::HeapAlloc { size, binding } => {
-                write!(f, "{prefix}heap_alloc {size}  ; {binding}")
+            InstKind::HeapAlloc { size, binding, site } => {
+                write!(f, "{prefix}heap_alloc {size}  ; {binding} @{}:{}", site >> 32, site & 0xffff_ffff)
             }
             InstKind::HeapRealloc { ptr, new_size, binding } => {
                 write!(f, "{prefix}heap_realloc {ptr}, {new_size}  ; {binding}")

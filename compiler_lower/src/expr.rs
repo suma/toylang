@@ -883,7 +883,7 @@ impl<'a> FunctionLower<'a> {
             Expr::AssociatedFunctionCall(struct_name, fn_name, args) => {
                 self.lower_expr_associated_call(struct_name, fn_name, args)
             }
-            Expr::BuiltinCall(func, args) => self.lower_builtin_call(&func, &args),
+            Expr::BuiltinCall(func, args) => self.lower_builtin_call(&func, &args, expr_ref),
             Expr::Cast(inner, target_ty) => self.lower_cast(&inner, &target_ty),
             Expr::Match(scrutinee, arms) => self.lower_match(&scrutinee, &arms),
             Expr::MethodCall(obj, method, args) => self.lower_method_call(&obj, method, &args),
@@ -1445,10 +1445,24 @@ impl<'a> FunctionLower<'a> {
     /// restricted to a string-literal message because the codegen lays
     /// the message bytes into a static data segment; non-literal
     /// messages would require formatting at runtime.
+    /// Source position of an allocation site, packed as
+    /// `(line << 32) | column` (MEMORY_PROFILING M2).
+    ///
+    /// Read from the same `location_pool` the tree-walker consults, so
+    /// a compiled run and an interpreted one attribute an allocation to
+    /// the same place without a shared id table.
+    pub(super) fn alloc_site(&self, call_ref: &ExprRef) -> u64 {
+        match self.program.location_pool.get_expr_location(call_ref) {
+            Some(loc) => ((loc.line as u64) << 32) | (loc.column as u64),
+            None => 0,
+        }
+    }
+
     pub(super) fn lower_builtin_call(
         &mut self,
         func: &BuiltinFunction,
         args: &Vec<ExprRef>,
+        call_ref: &ExprRef,
     ) -> Result<Option<ValueId>, String> {
         match func {
             BuiltinFunction::Panic => {
@@ -1548,7 +1562,8 @@ impl<'a> FunctionLower<'a> {
                 let size = self.lower_expr(&args[0])?
                     .ok_or_else(|| "heap_alloc size produced no value".to_string())?;
                 let binding = self.classify_active_allocator_binding();
-                Ok(self.emit(InstKind::HeapAlloc { size, binding }, Some(Type::U64)))
+                let site = self.alloc_site(call_ref);
+                Ok(self.emit(InstKind::HeapAlloc { size, binding, site }, Some(Type::U64)))
             }
             BuiltinFunction::HeapRealloc => {
                 if args.len() != 2 {

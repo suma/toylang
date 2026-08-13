@@ -954,14 +954,19 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             // dispatch. A future devirt pass can branch on
             // `Static` to emit a direct libc malloc / free without
             // reading `toy_alloc_current`.
-            InstKind::HeapAlloc { size, binding: _ } => {
+            InstKind::HeapAlloc { size, binding: _, site } => {
                 let size_v = self.value(*size);
                 let handle_call = self.builder.ins().call(self.runtime.alloc_current, &[]);
                 let handle_v = self.builder.inst_results(handle_call)[0];
+                // MEMORY_PROFILING M2: the packed source position rides
+                // along as a constant. An extra register argument is
+                // cheaper than a separate call to set it, and codegen
+                // cannot know whether profiling will be on at run time.
+                let site_v = self.builder.ins().iconst(types::I64, *site as i64);
                 let call = self
                     .builder
                     .ins()
-                    .call(self.runtime.dispatched_alloc, &[handle_v, size_v]);
+                    .call(self.runtime.dispatched_alloc, &[handle_v, size_v, site_v]);
                 let result = self.builder.inst_results(call)[0];
                 if let Some((vid, _)) = inst.result {
                     self.values.insert(vid.0, result);

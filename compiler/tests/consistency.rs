@@ -5748,3 +5748,52 @@ fn string_literals_allocate_on_the_interpreter_but_not_when_compiled() {
          `memory_profiles_agree`:\n{stderr}"
     );
 }
+
+// --- MEMORY_PROFILING M2: attribution -------------------------------
+//
+// The site identifier *is* the allocation's source position, packed as
+// `(line << 32) | column`. Every backend reads it from the same
+// location pool, so the leak report has to name the same place without
+// any shared table of ids to keep in step.
+
+#[test]
+fn leaks_are_attributed_to_the_same_source_position_on_every_backend() {
+    // `memory_profiles_agree` fails on any disagreement, and the
+    // `--all-backends` path compares the leak sections as well as the
+    // totals.
+    memory_profiles_agree(
+        r#"
+        fn main() -> u64 {
+            val a: ptr = __builtin_heap_alloc(64u64)
+            val b: ptr = __builtin_heap_alloc(32u64)
+            __builtin_heap_free(a)
+            0u64
+        }
+        "#,
+        "prof_leak_sites",
+    );
+}
+
+#[test]
+fn allocations_from_one_site_reached_by_several_callers_aggregate_together() {
+    // Attribution is per allocation *site*, not per call path: both
+    // calls to `keep` land on the same line and are reported as one
+    // site. Recording the granularity so a later phase that adds call
+    // paths has something to change deliberately.
+    memory_profiles_agree(
+        r#"
+        fn keep(n: u64) -> ptr {
+            __builtin_heap_alloc(n)
+        }
+
+        fn main() -> u64 {
+            val a: ptr = keep(16u64)
+            val b: ptr = keep(24u64)
+            val c: ptr = __builtin_heap_alloc(48u64)
+            __builtin_heap_free(c)
+            0u64
+        }
+        "#,
+        "prof_site_aggregation",
+    );
+}

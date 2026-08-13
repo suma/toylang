@@ -153,9 +153,9 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
             let addr = base + unsafe { idx.u64 } * stride as u64;
             heap::ptr_write(addr, 0, val, *elem_ty);
         }
-        InstKind::HeapAlloc { size, .. } => {
+        InstKind::HeapAlloc { size, site, .. } => {
             let sz = vm.read_value(*size);
-            let addr = heap::heap_alloc(unsafe { sz.u64 });
+            let addr = heap::heap_alloc_at(unsafe { sz.u64 }, *site);
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }

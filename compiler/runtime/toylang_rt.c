@@ -175,14 +175,45 @@ static uint64_t toy_prof_peak_at_request;
 typedef struct {
     void *key;
     uint64_t size;
+    uint64_t site; /* packed (line << 32) | column, MEMORY_PROFILING M2 */
     int state; /* 0 empty, 1 occupied, 2 tombstone */
 } toy_prof_slot;
+
+/* Per-site totals. Linear scan: an allocation site count is in the
+ * dozens for realistic programs, and keeping it an array means the
+ * report comes out in insertion order deterministically without
+ * sorting a hash table. */
+#define TOY_PROF_SITES_CAP 256
+typedef struct {
+    uint64_t site;
+    uint64_t alloc_count;
+    uint64_t cumulative_bytes;
+    uint64_t live_count;
+    uint64_t live_bytes;
+} toy_prof_site;
+static toy_prof_site toy_prof_sites[TOY_PROF_SITES_CAP];
+static int toy_prof_site_len;
+
+static toy_prof_site *toy_prof_site_for(uint64_t site) {
+    for (int i = 0; i < toy_prof_site_len; i++) {
+        if (toy_prof_sites[i].site == site) {
+            return &toy_prof_sites[i];
+        }
+    }
+    if (toy_prof_site_len >= TOY_PROF_SITES_CAP) {
+        return NULL; /* beyond the cap the per-site view degrades; totals stay exact */
+    }
+    toy_prof_site *e = &toy_prof_sites[toy_prof_site_len++];
+    e->site = site;
+    return e;
+}
 
 static toy_prof_slot *toy_prof_tab;
 static uint64_t toy_prof_tab_cap;
 static uint64_t toy_prof_tab_occupied;
 
 static void toy_prof_report(void);
+static void toy_prof_report_leaks(void);
 
 static int toy_prof_enabled(void) {
     if (toy_prof_state < 0) {
@@ -204,7 +235,7 @@ static uint64_t toy_prof_hash(void *p) {
 
 static void toy_prof_tab_grow(void);
 
-static void toy_prof_put(void *p, uint64_t size) {
+static void toy_prof_put(void *p, uint64_t size, uint64_t site) {
     if (toy_prof_tab_cap == 0 || (toy_prof_tab_occupied + 1) * 4 >= toy_prof_tab_cap * 3) {
         toy_prof_tab_grow();
     }
@@ -218,12 +249,16 @@ static void toy_prof_put(void *p, uint64_t size) {
     }
     toy_prof_tab[i].key = p;
     toy_prof_tab[i].size = size;
+    toy_prof_tab[i].site = site;
     toy_prof_tab[i].state = 1;
 }
 
 /* Remove `p` and return the size it held, or 0 if it was not tracked
  * (a double free, or a pointer this runtime never handed out). */
+static uint64_t toy_prof_take_site;
+
 static uint64_t toy_prof_take(void *p) {
+    toy_prof_take_site = 0;
     if (toy_prof_tab_cap == 0) {
         return 0;
     }
@@ -232,6 +267,7 @@ static uint64_t toy_prof_take(void *p) {
     while (toy_prof_tab[i].state != 0) {
         if (toy_prof_tab[i].state == 1 && toy_prof_tab[i].key == p) {
             uint64_t size = toy_prof_tab[i].size;
+            toy_prof_take_site = toy_prof_tab[i].site;
             toy_prof_tab[i].state = 2;
             toy_prof_tab_occupied--;
             return size;
@@ -254,7 +290,7 @@ static void toy_prof_tab_grow(void) {
     toy_prof_tab_occupied = 0;
     for (uint64_t i = 0; i < old_cap; i++) {
         if (old[i].state == 1) {
-            toy_prof_put(old[i].key, old[i].size);
+            toy_prof_put(old[i].key, old[i].size, old[i].site);
         }
     }
     free(old);
@@ -280,6 +316,43 @@ static void toy_prof_released(uint64_t bytes) {
 /* Written to stderr so a profiled run's stdout stays exactly what the
  * program printed. Field names match `MemoryStats` so the three
  * implementations can be compared verbatim. */
+/* Sites that still hold memory at exit, in source order so the report
+ * is diffable. */
+static void toy_prof_report_leaks(void) {
+    uint64_t sites = 0, count = 0, bytes = 0;
+    for (int i = 0; i < toy_prof_site_len; i++) {
+        if (toy_prof_sites[i].live_count > 0) {
+            sites++;
+            count += toy_prof_sites[i].live_count;
+            bytes += toy_prof_sites[i].live_bytes;
+        }
+    }
+    if (sites == 0) {
+        return;
+    }
+    fprintf(stderr, "leaks (%llu sites, %llu allocations, %llu bytes)\n",
+            (unsigned long long) sites, (unsigned long long) count,
+            (unsigned long long) bytes);
+    /* Selection sort by packed position: the table is tiny and this
+     * avoids depending on insertion order, which differs from the
+     * interpreter's. */
+    for (int a = 0; a < toy_prof_site_len; a++) {
+        int best = -1;
+        for (int i = 0; i < toy_prof_site_len; i++) {
+            if (toy_prof_sites[i].live_count == 0) continue;
+            if (toy_prof_sites[i].site == UINT64_MAX) continue;
+            if (best < 0 || toy_prof_sites[i].site < toy_prof_sites[best].site) best = i;
+        }
+        if (best < 0) break;
+        fprintf(stderr, "  %llu:%llu  %llu allocations  %llu bytes\n",
+                (unsigned long long) (toy_prof_sites[best].site >> 32),
+                (unsigned long long) (toy_prof_sites[best].site & 0xffffffffu),
+                (unsigned long long) toy_prof_sites[best].live_count,
+                (unsigned long long) toy_prof_sites[best].live_bytes);
+        toy_prof_sites[best].site = UINT64_MAX; /* consumed */
+    }
+}
+
 static void toy_prof_report(void) {
     fprintf(stderr, "memory profile\n");
     fprintf(stderr, "  alloc_count       %llu\n", (unsigned long long) toy_prof_alloc_count);
@@ -289,9 +362,10 @@ static void toy_prof_report(void) {
     fprintf(stderr, "  live_bytes        %llu\n", (unsigned long long) toy_prof_live_bytes);
     fprintf(stderr, "  peak_live_bytes   %llu\n", (unsigned long long) toy_prof_peak_live_bytes);
     fprintf(stderr, "  peak_at_request   %llu\n", (unsigned long long) toy_prof_peak_at_request);
+    toy_prof_report_leaks();
 }
 
-void *toy_dispatched_alloc(uint64_t handle, uint64_t size) {
+void *toy_dispatched_alloc(uint64_t handle, uint64_t size, uint64_t site) {
     (void)handle;
     /* A zero-size request yields the null pointer and is not counted,
      * matching the interpreter. libc would hand back a unique
@@ -303,7 +377,14 @@ void *toy_dispatched_alloc(uint64_t handle, uint64_t size) {
     if (p && toy_prof_enabled()) {
         toy_prof_alloc_count++;
         toy_prof_obtained(size);
-        toy_prof_put(p, size);
+        toy_prof_put(p, size, site);
+        toy_prof_site *e = toy_prof_site_for(site);
+        if (e) {
+            e->alloc_count++;
+            e->cumulative_bytes += size;
+            e->live_count++;
+            e->live_bytes += size;
+        }
     }
     return p;
 }
@@ -318,6 +399,11 @@ void toy_dispatched_free(uint64_t handle, void *p) {
         if (size > 0) {
             toy_prof_free_count++;
             toy_prof_released(size);
+            toy_prof_site *e = toy_prof_site_for(toy_prof_take_site);
+            if (e) {
+                if (e->live_count) e->live_count--;
+                e->live_bytes = (e->live_bytes > size) ? e->live_bytes - size : 0;
+            }
         }
     }
     free(p);
@@ -325,7 +411,7 @@ void toy_dispatched_free(uint64_t handle, void *p) {
 
 void *toy_dispatched_realloc(uint64_t handle, void *p, uint64_t new_size) {
     if (!p) {
-        return toy_dispatched_alloc(handle, new_size);
+        return toy_dispatched_alloc(handle, new_size, 0);
     }
     if (new_size == 0) {
         toy_dispatched_free(handle, p);
@@ -339,14 +425,27 @@ void *toy_dispatched_realloc(uint64_t handle, void *p, uint64_t new_size) {
      * asked for — never as an allocate plus a free, so that an
      * allocator growing the block in place reports the same numbers. */
     uint64_t old_size = toy_prof_take(p);
+    uint64_t site = toy_prof_take_site;
     toy_prof_realloc_count++;
     if (new_size > old_size) {
         toy_prof_obtained(new_size - old_size);
     } else {
         toy_prof_released(old_size - new_size);
     }
+    /* A resize keeps the site its block already had, so a leak still
+     * points at where the memory came from. */
+    toy_prof_site *e = toy_prof_site_for(site);
+    if (e) {
+        if (new_size > old_size) {
+            e->cumulative_bytes += new_size - old_size;
+            e->live_bytes += new_size - old_size;
+        } else {
+            uint64_t shrank = old_size - new_size;
+            e->live_bytes = (e->live_bytes > shrank) ? e->live_bytes - shrank : 0;
+        }
+    }
     void *np = realloc(p, (size_t)new_size);
-    toy_prof_put(np ? np : p, new_size);
+    toy_prof_put(np ? np : p, new_size, site);
     return np;
 }
 

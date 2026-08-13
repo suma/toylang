@@ -12,6 +12,12 @@ use std::rc::Rc;
 /// state via `Rc`.
 pub trait Allocator: fmt::Debug {
     fn alloc(&self, size: usize) -> usize;
+    /// Allocate, attributing the block to a source position
+    /// (MEMORY_PROFILING M2). Defaults to dropping the attribution so
+    /// an allocator that does not track sites needs no change.
+    fn alloc_at(&self, size: usize, _site: u64) -> usize {
+        self.alloc(size)
+    }
     fn free(&self, addr: usize) -> bool;
     fn realloc(&self, addr: usize, new_size: usize) -> usize;
 }
@@ -34,6 +40,10 @@ impl GlobalAllocator {
 impl Allocator for GlobalAllocator {
     fn alloc(&self, size: usize) -> usize {
         self.inner.borrow_mut().alloc(size)
+    }
+
+    fn alloc_at(&self, size: usize, site: u64) -> usize {
+        self.inner.borrow_mut().alloc_at(size, site)
     }
 
     fn free(&self, addr: usize) -> bool {
@@ -134,6 +144,36 @@ impl MemoryStats {
         out
     }
 
+    /// The leak section, or an empty string when nothing leaked.
+    ///
+    /// Byte-identical to what `toy_prof_report_leaks` in the C runtime
+    /// prints, so the three implementations stay comparable verbatim.
+    /// Sites are emitted in source order; a hash order would make the
+    /// report differ between runs of the same program.
+    pub fn leak_report(sites: &[(u64, SiteStats)]) -> String {
+        let leaked: Vec<&(u64, SiteStats)> =
+            sites.iter().filter(|(_, s)| s.live_count > 0).collect();
+        if leaked.is_empty() {
+            return String::new();
+        }
+        let count: u64 = leaked.iter().map(|(_, s)| s.live_count).sum();
+        let bytes: u64 = leaked.iter().map(|(_, s)| s.live_bytes).sum();
+        let mut out = format!(
+            "leaks ({} sites, {count} allocations, {bytes} bytes)\n",
+            leaked.len()
+        );
+        for (site, s) in leaked {
+            out.push_str(&format!(
+                "  {}:{}  {} allocations  {} bytes\n",
+                site >> 32,
+                site & 0xffff_ffff,
+                s.live_count,
+                s.live_bytes
+            ));
+        }
+        out
+    }
+
     /// Requests that obtained memory, in program order. Used as the
     /// reproducible time axis.
     fn request_seq(&self) -> u64 {
@@ -182,10 +222,38 @@ thread_local! {
     };
 }
 
+/// What one allocation site did (MEMORY_PROFILING M2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SiteStats {
+    pub alloc_count: u64,
+    pub cumulative_bytes: u64,
+    /// Allocations from this site that were never freed, and their
+    /// bytes — the leak report.
+    pub live_count: u64,
+    pub live_bytes: u64,
+}
+
+thread_local! {
+    /// Per-site totals, keyed by the packed `(line << 32) | column` the
+    /// allocation site carries. Separate from `PROFILE` because
+    /// `MemoryStats` is `Copy` and a map is not.
+    static PROFILE_SITES: RefCell<std::collections::BTreeMap<u64, SiteStats>> =
+        const { RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// Per-site totals since the last [`reset_profile`], ordered by source
+/// position. A `BTreeMap` rather than a hash map so the report is
+/// emitted in a stable order — a hash-ordered report would not be
+/// diffable, which is the property the whole design rests on.
+pub fn profile_sites() -> Vec<(u64, SiteStats)> {
+    PROFILE_SITES.with(|m| m.borrow().iter().map(|(k, v)| (*k, *v)).collect())
+}
+
 /// Clear the per-thread totals. The profiling CLI calls this before a
 /// run so the numbers describe that run alone.
 pub fn reset_profile() {
     PROFILE.with(|p| p.set(MemoryStats::ZERO));
+    PROFILE_SITES.with(|m| m.borrow_mut().clear());
 }
 
 /// The per-thread totals accumulated since the last [`reset_profile`].
@@ -197,7 +265,7 @@ pub fn profile() -> MemoryStats {
 #[derive(Debug)]
 pub struct HeapManager {
     memory: Vec<u8>,
-    allocations: HashMap<usize, usize>, // address -> size
+    allocations: HashMap<usize, (usize, u64)>, // address -> (size, site)
     next_addr: usize,
     // Typed-slot storage keyed by (base address, byte offset). When a write
     // stores a non-u64 value (bool, i64, user struct, enum variant, ...)
@@ -245,7 +313,14 @@ impl HeapManager {
     
     /// Allocate memory and return address
     pub fn alloc(&mut self, size: usize) -> usize {
-        let addr = self.alloc_uncounted(size);
+        self.alloc_at(size, 0)
+    }
+
+    /// Allocate, attributing the block to `site` (MEMORY_PROFILING M2's
+    /// packed `(line << 32) | column`). `alloc` is this with an unknown
+    /// site, kept so existing callers and tests read unchanged.
+    pub fn alloc_at(&mut self, size: usize, site: u64) -> usize {
+        let addr = self.alloc_uncounted_at(size, site);
         if addr != 0 {
             self.stats.alloc_count += 1;
             self.stats.record_obtained(size as u64);
@@ -254,6 +329,14 @@ impl HeapManager {
                 g.alloc_count += 1;
                 g.record_obtained(size as u64);
                 p.set(g);
+            });
+            PROFILE_SITES.with(|m| {
+                let mut m = m.borrow_mut();
+                let e = m.entry(site).or_default();
+                e.alloc_count += 1;
+                e.cumulative_bytes += size as u64;
+                e.live_count += 1;
+                e.live_bytes += size as u64;
             });
         }
         addr
@@ -266,14 +349,14 @@ impl HeapManager {
     /// reuse: `next_addr` only ever moves forward. That is the current
     /// behaviour, recorded rather than endorsed —
     /// `interpreter_heap_does_not_reuse_addresses` pins it.
-    fn alloc_uncounted(&mut self, size: usize) -> usize {
+    fn alloc_uncounted_at(&mut self, size: usize, site: u64) -> usize {
         if size == 0 {
             return 0; // null pointer for zero-size allocations
         }
 
         let addr = self.next_addr;
         self.memory.resize(self.memory.len() + size, 0);
-        self.allocations.insert(addr, size);
+        self.allocations.insert(addr, (size, site));
         self.next_addr += size;
         addr
     }
@@ -284,7 +367,7 @@ impl HeapManager {
             return true; // freeing null pointer is a no-op
         }
         match self.free_uncounted(addr) {
-            Some(size) => {
+            Some((size, site)) => {
                 self.stats.free_count += 1;
                 self.stats.record_released(size as u64);
                 PROFILE.with(|p| {
@@ -292,6 +375,12 @@ impl HeapManager {
                     g.free_count += 1;
                     g.record_released(size as u64);
                     p.set(g);
+                });
+                PROFILE_SITES.with(|m| {
+                    let mut m = m.borrow_mut();
+                    let e = m.entry(site).or_default();
+                    e.live_count = e.live_count.saturating_sub(1);
+                    e.live_bytes = e.live_bytes.saturating_sub(size as u64);
                 });
                 true
             }
@@ -301,7 +390,7 @@ impl HeapManager {
 
     /// Drop the tracking entry, returning the size it held. Counter-free
     /// for the same reason as `alloc_uncounted`.
-    fn free_uncounted(&mut self, addr: usize) -> Option<usize> {
+    fn free_uncounted(&mut self, addr: usize) -> Option<(usize, u64)> {
         self.allocations.remove(&addr)
     }
     
@@ -318,7 +407,7 @@ impl HeapManager {
             return 0;
         }
         
-        if let Some(old_size) = self.allocations.get(&addr).copied() {
+        if let Some((old_size, site)) = self.allocations.get(&addr).copied() {
             // MEMORY_PROFILING M0: one resize request, counted once and
             // in terms of the size change the program asked for. The
             // move below is this implementation's way of servicing it —
@@ -341,8 +430,23 @@ impl HeapManager {
                 }
                 p.set(g);
             });
+            // MEMORY_PROFILING M2: a resize keeps the site its block
+            // already had — it is the same logical allocation, so a leak
+            // still points at where the memory came from rather than at
+            // the last place it was grown.
+            PROFILE_SITES.with(|m| {
+                let mut m = m.borrow_mut();
+                let e = m.entry(site).or_default();
+                if new_size > old_size {
+                    let grew = (new_size - old_size) as u64;
+                    e.cumulative_bytes += grew;
+                    e.live_bytes += grew;
+                } else {
+                    e.live_bytes = e.live_bytes.saturating_sub((old_size - new_size) as u64);
+                }
+            });
             // Allocate new memory
-            let new_addr = self.alloc_uncounted(new_size);
+            let new_addr = self.alloc_uncounted_at(new_size, site);
 
             // Copy old data to new location
             let copy_size = old_size.min(new_size);
@@ -387,7 +491,7 @@ impl HeapManager {
             return None; // null pointer access
         }
         
-        let size = self.allocations.get(&addr)?;
+        let (size, _) = self.allocations.get(&addr)?;
         if offset + 8 > *size {
             return None; // out of bounds
         }
@@ -456,7 +560,7 @@ impl HeapManager {
             return false; // null pointer access
         }
         
-        let size = match self.allocations.get(&addr) {
+        let (size, _) = match self.allocations.get(&addr) {
             Some(s) => *s,
             None => return false,
         };
@@ -589,7 +693,7 @@ impl HeapManager {
     }
     
     fn get_memory_slice(&self, addr: usize, size: usize) -> Option<&[u8]> {
-        let alloc_size = self.allocations.get(&addr)?;
+        let (alloc_size, _) = self.allocations.get(&addr)?;
         if size > *alloc_size {
             return None;
         }
@@ -603,7 +707,7 @@ impl HeapManager {
     }
     
     fn get_memory_slice_mut(&mut self, addr: usize, size: usize) -> Option<&mut [u8]> {
-        let alloc_size = self.allocations.get(&addr).copied()?;
+        let (alloc_size, _) = self.allocations.get(&addr).copied()?;
         if size > alloc_size {
             return None;
         }

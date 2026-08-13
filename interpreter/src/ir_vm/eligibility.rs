@@ -124,6 +124,8 @@ fn inst_supported(kind: &InstKind) -> bool {
         | InstKind::PtrWrite { .. }
         | InstKind::PtrIsNull { .. }
         | InstKind::PtrEq { .. }
+        | InstKind::MemStat { .. }
+        | InstKind::MemStatEnable
         | InstKind::ArrayLoad { .. }
         | InstKind::ArrayStore { .. }
         | InstKind::ArrayElemAddr { .. }

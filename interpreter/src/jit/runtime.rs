@@ -125,6 +125,18 @@ extern "C" fn jit_heap_realloc(addr: u64, new_size: u64) -> u64 {
     with_active_allocator(|a| a.realloc(addr as usize, new_size as usize) as u64)
         .unwrap_or(0)
 }
+/// One allocation counter, selected by `MemStat::code` (MEMORY_PROFILING
+/// M4). The JIT shares the interpreter's per-thread totals, so a
+/// function that got compiled reads the same numbers a tree-walked one
+/// would — which is the whole point of letting a contract assert on
+/// them.
+extern "C" fn jit_mem_stat(which: u64) -> u64 {
+    match frontend::ast::MemStat::from_code(which) {
+        Some(stat) => crate::heap::profile().field(stat),
+        // Unreachable: codegen only ever passes a `MemStat::code`.
+        None => 0,
+    }
+}
 extern "C" fn jit_mem_copy(src: u64, dest: u64, size: u64) {
     let _ = with_heap(|h| h.copy_memory(src as usize, dest as usize, size as usize));
 }
@@ -536,6 +548,7 @@ pub(crate) enum HelperKind {
     HeapAlloc,
     HeapFree,
     HeapRealloc,
+    MemStat,
     MemCopy,
     MemMove,
     MemSet,
@@ -623,6 +636,7 @@ impl HelperKind {
             HelperKind::HeapAlloc => "jit_heap_alloc",
             HelperKind::HeapFree => "jit_heap_free",
             HelperKind::HeapRealloc => "jit_heap_realloc",
+            HelperKind::MemStat => "jit_mem_stat",
             HelperKind::MemCopy => "jit_mem_copy",
             HelperKind::MemMove => "jit_mem_move",
             HelperKind::MemSet => "jit_mem_set",
@@ -690,6 +704,7 @@ impl HelperKind {
             HelperKind::HeapAlloc => jit_heap_alloc as *const u8,
             HelperKind::HeapFree => jit_heap_free as *const u8,
             HelperKind::HeapRealloc => jit_heap_realloc as *const u8,
+            HelperKind::MemStat => jit_mem_stat as *const u8,
             HelperKind::MemCopy => jit_mem_copy as *const u8,
             HelperKind::MemMove => jit_mem_move as *const u8,
             HelperKind::MemSet => jit_mem_set as *const u8,
@@ -748,6 +763,7 @@ impl HelperKind {
             HelperKind::HeapAlloc => (vec![types::I64], Some(types::I64)),
             HelperKind::HeapFree => (vec![types::I64], None),
             HelperKind::HeapRealloc => (vec![types::I64, types::I64], Some(types::I64)),
+            HelperKind::MemStat => (vec![types::I64], Some(types::I64)),
             HelperKind::MemCopy | HelperKind::MemMove => {
                 (vec![types::I64, types::I64, types::I64], None)
             }
@@ -795,7 +811,7 @@ impl HelperKind {
         }
     }
 
-    pub(crate) const ALL: [HelperKind; 62] = [
+    pub(crate) const ALL: [HelperKind; 63] = [
         HelperKind::PrintI64,
         HelperKind::PrintlnI64,
         HelperKind::PrintU64,
@@ -821,6 +837,7 @@ impl HelperKind {
         HelperKind::HeapAlloc,
         HelperKind::HeapFree,
         HelperKind::HeapRealloc,
+        HelperKind::MemStat,
         HelperKind::MemCopy,
         HelperKind::MemMove,
         HelperKind::MemSet,

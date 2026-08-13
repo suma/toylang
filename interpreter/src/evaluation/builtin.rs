@@ -558,6 +558,23 @@ impl EvaluationContext<'_> {
                 Ok(EvaluationResult::Value((Object::Pointer(0)).into()))
             }
 
+            // Allocation counters (MEMORY_PROFILING M4). Read from the
+            // per-thread totals every `HeapManager` folds into, which
+            // is what `--profile=mem` reports at exit — so a contract
+            // asserting on these is asserting on the same numbers the
+            // report will show.
+            BuiltinFunction::MemStat(stat) => {
+                if !args.is_empty() {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: format!("{}() takes 0 arguments", stat.builtin_name()),
+                        expected: 0,
+                        found: args.len(),
+                    });
+                }
+                let value = crate::heap::profile().field(*stat);
+                Ok(EvaluationResult::Value((Object::UInt64(value)).into()))
+            }
+
             // Memory operations
             BuiltinFunction::MemCopy => {
                 if args.len() != 3 {

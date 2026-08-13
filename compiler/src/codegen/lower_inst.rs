@@ -1130,6 +1130,21 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, cmp);
                 }
             }
+            // MEMORY_PROFILING M4. One call with a constant selector
+            // rather than an entry point per counter — the constant
+            // costs a register, a second symbol costs a declaration
+            // and a place to get them out of step.
+            InstKind::MemStat { stat } => {
+                let which = self.builder.ins().iconst(types::I64, *stat as i64);
+                let call = self.builder.ins().call(self.runtime.prof_stat, &[which]);
+                let value = self.builder.inst_results(call)[0];
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, value);
+                }
+            }
+            InstKind::MemStatEnable => {
+                self.builder.ins().call(self.runtime.prof_force_counting, &[]);
+            }
             InstKind::PtrEq { a, b } => {
                 let av = self.value(*a);
                 let bv = self.value(*b);

@@ -489,6 +489,18 @@ impl Function {
     }
 }
 
+/// Counter names for IR dumps, indexed by `MemStat::code()`. Display
+/// only — the meaning of the code lives in the AST enum and in
+/// `toy_prof_stat`.
+pub const MEM_STAT_NAMES: [&str; 6] = [
+    "alloc_count",
+    "free_count",
+    "realloc_count",
+    "cumulative_bytes",
+    "live_bytes",
+    "peak_live_bytes",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Linkage {
     /// Visible to the linker; reserved for `main` so the C runtime can
@@ -909,6 +921,27 @@ pub enum InstKind {
     /// `FixedBuffer` to find tracked addresses in their
     /// (addr, size) parallel-array bookkeeping.
     PtrEq { a: ValueId, b: ValueId },
+    /// Read one allocation counter as U64 (MEMORY_PROFILING M4).
+    ///
+    /// `stat` is `frontend::ast::MemStat::code()`, kept as a plain
+    /// number so this crate stays free of the AST. The names below are
+    /// for dumps only and are cross-checked against the AST enum by
+    /// `mem_stat_names_match_the_ast` in `compiler_lower`.
+    MemStat { stat: u64 },
+    /// Tell the runtime to keep counting allocations for the rest of
+    /// the run, whatever the profiling environment says
+    /// (MEMORY_PROFILING M4). Returns no value.
+    ///
+    /// Emitted as the first instruction of `main` when, and only when,
+    /// the program reads a counter. The compiled runtime otherwise
+    /// counts nothing unless `TOY_PROFILE_MEM` is set — an unprofiled
+    /// run must allocate exactly what it did before the profiler
+    /// existed — and a `__builtin_live_bytes()` that answered 0 for
+    /// that reason would be worse than no answer: an `ensures` built
+    /// on it would pass while checking nothing.
+    ///
+    /// Reporting stays separate. This turns on counting, never output.
+    MemStatEnable,
     /// REF-Stage-2 (b): produce a pointer-sized value that
     /// addresses the canonical storage of an IR local. The local
     /// must be in `Function.address_taken_locals`; codegen emits
@@ -1509,6 +1542,12 @@ impl fmt::Display for DisplayInst<'_> {
             InstKind::AllocCurrent => write!(f, "{prefix}alloc_current"),
             InstKind::PtrIsNull { ptr } => write!(f, "{prefix}ptr_is_null {ptr}"),
             InstKind::PtrEq { a, b } => write!(f, "{prefix}ptr_eq {a}, {b}"),
+            InstKind::MemStat { stat } => write!(
+                f,
+                "{prefix}mem_stat {}",
+                MEM_STAT_NAMES.get(*stat as usize).copied().unwrap_or("?")
+            ),
+            InstKind::MemStatEnable => write!(f, "{prefix}mem_stat_enable"),
             InstKind::AddressOf { local } => write!(f, "{prefix}address_of {local}"),
             InstKind::LoadRef { ptr, ty } => write!(f, "{prefix}load_ref {ptr} : {ty}"),
             InstKind::StoreRef { ptr, value, ty } => {

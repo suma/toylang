@@ -2409,6 +2409,14 @@ pub(crate) fn check_expr(
                     }
                     Some(ScalarTy::Ptr)
                 }
+                BuiltinFunction::MemStat(stat) => {
+                    if !args.is_empty() {
+                        *reject_reason =
+                            Some(format!("{} takes no args", stat.builtin_name()));
+                        return None;
+                    }
+                    Some(ScalarTy::U64)
+                }
                 BuiltinFunction::StrToPtr => {
                     // `__builtin_str_to_ptr(s: str) -> ptr` is not yet
                     // hot-path JIT-eligible: the JIT has no `ScalarTy::Str`

@@ -803,6 +803,16 @@ fn execute_entry_with_values(
     main_function: Rc<Function>,
     args: Option<&[crate::value::Value]>,
 ) -> Result<RcObject, EntryError> {
+    // MEMORY_PROFILING M4: the allocation counters describe one run.
+    //
+    // A compiled binary's counters start at zero because the process
+    // does; the interpreter can host many runs in one process (a test
+    // suite, `--test` with several blocks, `--check` trials), and
+    // without this the second run's `__builtin_alloc_count()` would
+    // include the first one's. The counters would then answer a
+    // question nobody asked — "how much has this process ever
+    // allocated" — and would disagree with every compiled backend.
+    crate::heap::reset_profile();
 
     let func_map = build_function_map(program, string_interner);
     let func_qualified = build_function_qualified_map(program);
@@ -893,6 +903,14 @@ fn execute_entry_with_values(
         eval.environment.set_val(c.name, (value).into());
     }
 
+    // MEMORY_PROFILING M4: the fast paths below can allocate and then
+    // give up, at which point a later engine runs the program again.
+    // Those allocations belong to no run — the answer comes from
+    // whichever engine finished — so the counters are rolled back
+    // before each retry. Captured after const evaluation, which is
+    // part of every run whichever engine follows.
+    let profile_before_attempt = crate::heap::snapshot_profile();
+
     // The `main` fast paths only apply to the argument-less entry;
     // a property trial calls an arbitrary function with values.
     #[cfg(feature = "jit")]
@@ -900,6 +918,7 @@ fn execute_entry_with_values(
         if let Some(result) = jit::try_execute_main(program, string_interner) {
             return Ok(result);
         }
+        crate::heap::restore_profile(profile_before_attempt.clone());
     }
 
     // Phase 4: IR VM is the default execution engine.  It runs the
@@ -912,6 +931,7 @@ fn execute_entry_with_values(
         if let Some(obj) = ir_vm::lift::run_main_via_ir_vm(program, string_interner) {
             return Ok(obj);
         }
+        crate::heap::restore_profile(profile_before_attempt);
     }
 
     if let Some(values) = args {

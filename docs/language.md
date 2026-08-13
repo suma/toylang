@@ -2348,6 +2348,47 @@ widths (`u64`/`i64`/`f64`/`ptr` = 8, `bool` = 1); structs sum their
 fields; enums account for a 1-byte tag plus payload; tuples and
 arrays sum their elements.
 
+### Allocation counters
+
+```rust
+__builtin_alloc_count() -> u64
+__builtin_free_count() -> u64
+__builtin_realloc_count() -> u64
+__builtin_cumulative_bytes() -> u64
+__builtin_live_bytes() -> u64
+__builtin_peak_live_bytes() -> u64
+```
+
+その run がこれまでに要求したメモリの集計を返す。名前と意味は
+`--profile=mem` が出すレポートのフィールドと**同一**。
+
+- **要求ベース**。`realloc` は 1 回の resize として数え、確保が
+  実際にブロックを動かしたかどうかは現れない。したがって全
+  バックエンドで同じ値になる
+- **run 単位**。`main` (または 1 つの `test` ブロック) の開始時に 0。
+  コンパイル済みバイナリではプロセス開始と一致する
+- **プロファイルフラグは不要**。これらを読むプログラムは、
+  `--profile=mem` を付けなくても本当の数値を得る
+
+`requires` / `ensures` と `test` ブロックから使えるので、メモリを
+契約で縛れる:
+
+```rust
+fn parse(s: str) -> u64
+    ensures __builtin_live_bytes() <= 4096u64
+{ ... }
+
+test "tidy leaks nothing" {
+    val before: u64 = __builtin_live_bytes()
+    val r: u64 = tidy(64u64)
+    assert_eq(__builtin_live_bytes(), before)
+}
+```
+
+`peak_at_request` に対応する builtin は無い。あれはレポートが
+「いつ」を再現可能に表すための軸であって、プログラムが意見を
+持つ量ではない。
+
 ### Numeric value methods
 
 ```rust

@@ -232,6 +232,9 @@ impl<M: Module> CodegenSession<M> {
                 .declare_func_in_func_readonly(self.rt_dispatched_realloc, func),
             dispatched_free: self
                 .declare_func_in_func_readonly(self.rt_dispatched_free, func),
+            prof_stat: self.declare_func_in_func_readonly(self.rt_prof_stat, func),
+            prof_force_counting: self
+                .declare_func_in_func_readonly(self.rt_prof_force_counting, func),
             pow: self.declare_func_in_func_readonly(self.libm_pow, func),
             sin: self.declare_func_in_func_readonly(self.libm_sin, func),
             cos: self.declare_func_in_func_readonly(self.libm_cos, func),

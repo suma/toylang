@@ -87,6 +87,10 @@ const AOT_UNSUPPORTED: &[&str] = &[
     "jit_tuple_inline_arg.t",
     "match_guard.t",
     "match_tuple.t",
+    // Same reasons as `contracts.t`: `requires` / `ensures`, plus
+    // `assert_eq`, which lowers to a panic whose message is built at
+    // runtime rather than being a literal.
+    "memory_contract.t",
     "panic.t",
     "print_demo.t",
     "struct_null_test.t",

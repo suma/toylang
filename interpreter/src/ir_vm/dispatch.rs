@@ -277,6 +277,19 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
                 vm.write_value(vid, RawSlot::from_bool(eq));
             }
         }
+        // MEMORY_PROFILING M4. The VM shares the interpreter's
+        // per-thread totals, which are always being kept, so there is
+        // nothing for `MemStatEnable` to turn on here — only the
+        // compiled runtime gates counting.
+        InstKind::MemStat { stat } => {
+            let value = frontend::ast::MemStat::from_code(*stat)
+                .map(|s| crate::heap::profile().field(s))
+                .unwrap_or(0);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(value));
+            }
+        }
+        InstKind::MemStatEnable => {}
         InstKind::AddressOf { local } => {
             // Phase 3c: pointer to an address-taken local's backing cell.
             let addr = vm.addr_of_local(*local);

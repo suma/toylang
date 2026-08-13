@@ -36,6 +36,19 @@ pub struct TypeCheckerVisitor<'a> {
     pub builtin_function_signatures: Vec<BuiltinFunctionSignature>,
 }
 
+/// `() -> u64` for every allocation counter (MEMORY_PROFILING M4).
+///
+/// Derived from `MemStat::ALL` so adding a counter cannot leave the
+/// type checker behind.
+fn frontend_mem_stat_signatures() -> impl Iterator<Item = BuiltinFunctionSignature> {
+    MemStat::ALL.into_iter().map(|stat| BuiltinFunctionSignature {
+        func: BuiltinFunction::MemStat(stat),
+        arg_count: 0,
+        arg_types: vec![],
+        return_type: TypeDecl::UInt64,
+    })
+}
+
 impl<'a> TypeCheckerVisitor<'a> {
     /// Create a TypeCheckerVisitor with program - processes package and imports automatically
     pub fn with_program(program: &'a mut File, string_interner: &'a DefaultStringInterner) -> Self {
@@ -315,6 +328,11 @@ impl<'a> TypeCheckerVisitor<'a> {
             // table — no entry needed in the BuiltinFunction
             // signature catalogue.
         ]
+        .into_iter()
+        // Allocation counters (MEMORY_PROFILING M4): all `() -> u64`,
+        // so the catalogue is generated rather than restated six times.
+        .chain(frontend_mem_stat_signatures())
+        .collect()
     }
 
     /// Create a TypeCheckerVisitor with module resolver for import handling

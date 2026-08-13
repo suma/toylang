@@ -219,16 +219,49 @@ static uint64_t toy_prof_tab_occupied;
 static void toy_prof_report(void);
 static void toy_prof_report_leaks(void);
 
+/* Set by `toy_prof_force_counting` when the compiled program reads a
+ * counter. Counting and reporting are separate: this turns on the
+ * former only. See MEMORY_PROFILING M4. */
+static int toy_prof_forced;
+
 static int toy_prof_enabled(void) {
     if (toy_prof_state < 0) {
         const char *v = getenv("TOY_PROFILE_MEM");
-        toy_prof_state = (v && v[0] && v[0] != '0') ? 1 : 0;
-        toy_prof_json = (toy_prof_state && strcmp(v, "json") == 0) ? 1 : 0;
-        if (toy_prof_state) {
+        int want_report = (v && v[0] && v[0] != '0') ? 1 : 0;
+        toy_prof_json = (want_report && strcmp(v, "json") == 0) ? 1 : 0;
+        toy_prof_state = want_report || toy_prof_forced;
+        /* Only an explicit request prints anything. A program that
+         * asserts on `__builtin_live_bytes()` in a contract has not
+         * asked for its stderr to grow a report. */
+        if (want_report) {
             atexit(toy_prof_report);
         }
     }
     return toy_prof_state;
+}
+
+/* Emitted at the top of `main` when the program reads a counter, so it
+ * lands before any allocation and `toy_prof_enabled` has not resolved
+ * yet. Top-level `const`s are folded at compile time, so nothing
+ * allocates earlier. */
+void toy_prof_force_counting(void) {
+    toy_prof_forced = 1;
+}
+
+/* One counter, selected by `frontend::ast::MemStat::code()`. The
+ * numbering is shared with that enum and with the JIT mirror; it is
+ * an ABI, not an implementation detail. */
+uint64_t toy_prof_stat(uint64_t which) {
+    toy_prof_enabled();
+    switch (which) {
+        case 0: return toy_prof_alloc_count;
+        case 1: return toy_prof_free_count;
+        case 2: return toy_prof_realloc_count;
+        case 3: return toy_prof_cumulative_bytes;
+        case 4: return toy_prof_live_bytes;
+        case 5: return toy_prof_peak_live_bytes;
+        default: return 0;
+    }
 }
 
 static uint64_t toy_prof_hash(void *p) {

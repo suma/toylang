@@ -233,6 +233,12 @@ fn ir_vm_exit_code(source: &str, with_core: bool) -> Option<i64> {
     if !interpreter::ir_vm::eligibility::ir_vm_supported(&ir_module) {
         return None;
     }
+    // MEMORY_PROFILING M4: this calls the VM directly rather than
+    // through `execute_entry`, which is where a run's allocation
+    // counters are zeroed. Without this a program that reads
+    // `__builtin_alloc_count()` would see the tree-walker column's
+    // allocations too, since both columns run in this process.
+    interpreter::heap::reset_profile();
     interpreter::ir_vm::run_module_with_interner(&ir_module, Some(interner)).ok()
 }
 
@@ -5995,4 +6001,135 @@ fn nothing_leaked_is_an_empty_array_not_a_missing_section() {
         "expected an empty leaks array, got:\n{json}"
     );
     assert!(json.contains("\"live_bytes\": 0,"), "got:\n{json}");
+}
+
+// --- MEMORY_PROFILING M4: reading the counters from the program ------
+//
+// The point of the phase: `requires` / `ensures` and `test` blocks can
+// assert on memory, which only works if the counters answer truthfully
+// in an ordinary run. The compiled runtime counts nothing unless asked,
+// so lowering emits a `MemStatEnable` at the top of `main` when the
+// program reads a counter — these check that it actually took effect,
+// because a backend that answered 0 would make every such contract
+// pass while checking nothing.
+
+#[test]
+fn every_backend_agrees_on_what_the_counters_say() {
+    let src = r#"
+        fn main() -> u64 {
+            val before: u64 = __builtin_live_bytes()
+            val p: ptr = __builtin_heap_alloc(64u64)
+            val during: u64 = __builtin_live_bytes()
+            __builtin_heap_free(p)
+            val after: u64 = __builtin_live_bytes()
+            val n: u64 = __builtin_alloc_count()
+            val peak: u64 = __builtin_peak_live_bytes()
+            # before=0, during=64, after=0, n=1, peak=64
+            before + during + after * 100u64 + n * 1000u64 + peak * 10000u64
+        }
+    "#;
+    assert_consistent(src, "mem_stat_read");
+}
+
+#[test]
+fn the_compiled_binary_counts_without_being_asked_to_profile() {
+    // The one that would silently rot: `TOY_PROFILE_MEM` is unset here,
+    // so the C runtime's counting is off unless `main` turned it on.
+    // Written as a direct exit-code check rather than through
+    // `assert_consistent` so the failure says "the AOT answered 0"
+    // rather than "the backends disagree".
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val p: ptr = __builtin_heap_alloc(64u64)
+            val live: u64 = __builtin_live_bytes()
+            __builtin_heap_free(p)
+            live
+        }
+    "#;
+    assert_eq!(
+        compiler_exit_code(src, "mem_stat_unprofiled", false),
+        64,
+        "the compiled binary reported no live bytes; `MemStatEnable` is \
+         not reaching `toy_prof_force_counting`"
+    );
+}
+
+#[test]
+fn a_program_that_reads_no_counter_does_not_ask_for_counting() {
+    // The other half of the bargain: an unprofiled run has to allocate
+    // exactly what it did before the profiler existed, so the enable
+    // call appears only when something reads a counter.
+    let with_read = "fn main() -> u64 { __builtin_live_bytes() }\n";
+    let without = "fn main() -> u64 {\n    val p: ptr = __builtin_heap_alloc(8u64)\n    __builtin_heap_free(p)\n    0u64\n}\n";
+    assert!(
+        lowered_ir(with_read).contains("mem_stat_enable"),
+        "a program that reads a counter must enable counting"
+    );
+    assert!(
+        !lowered_ir(without).contains("mem_stat_enable"),
+        "a program that reads no counter must not pay for counting"
+    );
+}
+
+/// The IR `lower_program` produces for `source`, rendered.
+fn lowered_ir(source: &str) -> String {
+    let mut parser = frontend::ParserWithInterner::new(source);
+    let mut program = parser.parse_program().expect("parse");
+    let interner = parser.get_string_interner();
+    interpreter::check_typing_with_core_modules(
+        &mut program,
+        interner,
+        Some(source),
+        Some("test.t"),
+        None,
+    )
+    .expect("type check");
+    let contract_msgs = compiler_lower::ContractMessages::intern(interner);
+    let module = compiler_lower::lower_program(&program, interner, &contract_msgs, false)
+        .expect("lower");
+    format!("{module}")
+}
+
+#[test]
+fn an_abandoned_execution_attempt_is_not_counted_against_the_next_one() {
+    // A run tries the IR VM before the tree-walker, and an engine that
+    // fails partway has already allocated. Rolling the counters back at
+    // the fallback is what keeps a memory contract pointing at the
+    // function that broke it.
+    //
+    // Here `tidy` frees what it takes and `hoggy` does not. Under the
+    // IR VM, `hoggy` violates its bound and the run restarts on the
+    // tree-walker — with `hoggy`'s 4096 bytes still counted as live,
+    // `tidy` was the first to fail on the way through, and the message
+    // named the one function that was behaving.
+    let src = "fn tidy(n: u64) -> u64\n\
+        \x20   ensures __builtin_live_bytes() <= 128u64\n\
+        {\n\
+        \x20   val p: ptr = __builtin_heap_alloc(n)\n\
+        \x20   __builtin_heap_free(p)\n\
+        \x20   n\n\
+        }\n\
+        \n\
+        fn hoggy(n: u64) -> u64\n\
+        \x20   ensures __builtin_live_bytes() <= 128u64\n\
+        {\n\
+        \x20   val p: ptr = __builtin_heap_alloc(n)\n\
+        \x20   n\n\
+        }\n\
+        \n\
+        fn main() -> u64 {\n\
+        \x20   val a: u64 = tidy(64u64)\n\
+        \x20   val b: u64 = hoggy(4096u64)\n\
+        \x20   a + b\n\
+        }\n";
+    let options = RunOptions::default();
+    let err = interpreter::run_source(src, "test.t", &options)
+        .expect_err("hoggy leaks 4096 bytes against a 128-byte bound");
+    assert!(
+        err.contains("function `hoggy`"),
+        "the violation should name the function that leaked, got: {err}"
+    );
 }

@@ -256,6 +256,10 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_dispatched_alloc: cranelift_module::FuncId,
     rt_dispatched_realloc: cranelift_module::FuncId,
     rt_dispatched_free: cranelift_module::FuncId,
+    // MEMORY_PROFILING M4: read one allocation counter / turn counting
+    // on for the run.
+    rt_prof_stat: cranelift_module::FuncId,
+    rt_prof_force_counting: cranelift_module::FuncId,
     // STR-INTERP-AOT: string interpolation runtime helpers.
     // `concat` and the `to_string` family produce heap-allocated
     // str values following the toylang str layout
@@ -549,6 +553,20 @@ impl<M: Module> CodegenSession<M> {
         dispatched_free_sig.params.push(AbiParam::new(types::I64));
         let rt_dispatched_free = declare_helper(&mut module, "toy_dispatched_free", &dispatched_free_sig)?;
 
+        // MEMORY_PROFILING M4. `toy_prof_stat(which) -> u64` reads one
+        // counter, selected by `MemStat::code`; `toy_prof_force_counting()`
+        // makes the runtime keep counting even when no report was asked
+        // for, and is emitted at the top of `main` only when the program
+        // reads a counter.
+        let mut prof_stat_sig = Signature::new(call_conv);
+        prof_stat_sig.params.push(AbiParam::new(types::I64));
+        prof_stat_sig.returns.push(AbiParam::new(types::I64));
+        let rt_prof_stat = declare_helper(&mut module, "toy_prof_stat", &prof_stat_sig)?;
+
+        let prof_force_sig = Signature::new(call_conv);
+        let rt_prof_force_counting =
+            declare_helper(&mut module, "toy_prof_force_counting", &prof_force_sig)?;
+
         // STR-INTERP-AOT: str runtime helpers. `concat` takes two
         // str pointers (= u64 in cranelift IR) and returns one;
         // each `to_string_*` takes its native scalar width and
@@ -652,6 +670,8 @@ impl<M: Module> CodegenSession<M> {
             rt_dispatched_alloc,
             rt_dispatched_realloc,
             rt_dispatched_free,
+            rt_prof_stat,
+            rt_prof_force_counting,
             rt_str_concat,
             rt_to_string_i64,
             rt_to_string_u64,
@@ -1368,6 +1388,8 @@ struct RuntimeRefs {
     dispatched_alloc: cranelift_codegen::ir::FuncRef,
     dispatched_realloc: cranelift_codegen::ir::FuncRef,
     dispatched_free: cranelift_codegen::ir::FuncRef,
+    prof_stat: cranelift_codegen::ir::FuncRef,
+    prof_force_counting: cranelift_codegen::ir::FuncRef,
     pow: cranelift_codegen::ir::FuncRef,
     sin: cranelift_codegen::ir::FuncRef,
     cos: cranelift_codegen::ir::FuncRef,

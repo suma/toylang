@@ -1140,6 +1140,13 @@ impl<'a, 'b> State<'a, 'b> {
                     BuiltinFunction::NullPtr => {
                         Ok(Some(self.builder.ins().iconst(cranelift_codegen::ir::types::I64, 0)))
                     }
+                    BuiltinFunction::MemStat(stat) => {
+                        let which = self
+                            .builder
+                            .ins()
+                            .iconst(cranelift_codegen::ir::types::I64, stat.code() as i64);
+                        Ok(Some(self.call_helper(HelperKind::MemStat, &[which])?))
+                    }
                     BuiltinFunction::StrToPtr => {
                         // Eligibility (`jit/eligibility.rs::StrToPtr`)
                         // already rejects this for the JIT hot path —

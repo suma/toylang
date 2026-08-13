@@ -24,14 +24,23 @@ use crate::ast::module_interface::ModuleInterface;
 /// - the `Function` / `MethodFunction` / `ConstDecl` / `TestCase` structs
 /// - the `File` struct's own field list
 /// - the bincode options used by [`cache_bincode_options`]
+/// - **the set of names `BuiltinFunctionSymbols::new` interns**, or
+///   anything else pre-seeded into the interner before parsing. A
+///   cache entry stores `DefaultSymbol`s, which are indices into that
+///   interner; adding a name shifts every symbol after it and the
+///   stored indices then mean something else.
 ///
 /// Mismatched versions are treated as a cache miss by
 /// [`load_full_module`].
-pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 2;
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 3;
 // v2: `File` gained `id` (JIT cache key) and `tests` (LLM-LOOP P4).
+// v3: `BuiltinFunctionSymbols` interns the MEMORY_PROFILING M4 counter
+// names, shifting every later symbol id.
 // Forgetting this bump is not a subtle failure: stale entries
 // deserialize into the new layout and the program silently comes out
-// wrong — every stdlib trait reported "is not defined".
+// wrong — every stdlib trait reported "is not defined". The M4 bump
+// was found the same way: an unrelated `val a: u64 = 5u64` started
+// failing with three type errors from the stdlib.
 
 /// Bincode options for the AST cache.
 ///

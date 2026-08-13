@@ -275,6 +275,68 @@ impl Expr {
     }
 }
 
+/// Which of the running program's allocation counters to read
+/// (MEMORY_PROFILING M4).
+///
+/// One variant per `MemoryStats` field a program can hold an opinion
+/// about, under exactly the name the report prints — a second
+/// vocabulary for the same numbers would be a thing to get wrong.
+/// `peak_at_request` is deliberately absent: it is the report's
+/// reproducible stand-in for "when", not a quantity to assert on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum MemStat {
+    AllocCount,
+    FreeCount,
+    ReallocCount,
+    CumulativeBytes,
+    LiveBytes,
+    PeakLiveBytes,
+}
+
+impl MemStat {
+    pub const ALL: [MemStat; 6] = [
+        MemStat::AllocCount,
+        MemStat::FreeCount,
+        MemStat::ReallocCount,
+        MemStat::CumulativeBytes,
+        MemStat::LiveBytes,
+        MemStat::PeakLiveBytes,
+    ];
+
+    /// Stable selector passed to the runtime helpers, so a counter is
+    /// one call with a constant argument rather than one entry point
+    /// per field. Shared with `toy_prof_stat` in `toylang_rt.c`, which
+    /// is why the numbering must not be reshuffled.
+    pub fn code(self) -> u64 {
+        match self {
+            MemStat::AllocCount => 0,
+            MemStat::FreeCount => 1,
+            MemStat::ReallocCount => 2,
+            MemStat::CumulativeBytes => 3,
+            MemStat::LiveBytes => 4,
+            MemStat::PeakLiveBytes => 5,
+        }
+    }
+
+    pub fn from_code(code: u64) -> Option<MemStat> {
+        MemStat::ALL.into_iter().find(|s| s.code() == code)
+    }
+
+    /// The source spelling. `__builtin_` prefixed: these are
+    /// introspection on the runtime, not everyday I/O.
+    pub fn builtin_name(self) -> &'static str {
+        match self {
+            MemStat::AllocCount => "__builtin_alloc_count",
+            MemStat::FreeCount => "__builtin_free_count",
+            MemStat::ReallocCount => "__builtin_realloc_count",
+            MemStat::CumulativeBytes => "__builtin_cumulative_bytes",
+            MemStat::LiveBytes => "__builtin_live_bytes",
+            MemStat::PeakLiveBytes => "__builtin_peak_live_bytes",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BuiltinFunction {
@@ -327,6 +389,14 @@ pub enum BuiltinFunction {
     // Allocator context
     CurrentAllocator,      // __builtin_current_allocator() -> Allocator on top of stack (default handle when unset)
     DefaultAllocator,      // __builtin_default_allocator() -> Allocator referring to the global/default allocator
+
+    // Allocation counters, readable mid-run (MEMORY_PROFILING M4).
+    // `__builtin_live_bytes()` and friends, all `() -> u64`. The point
+    // is that `requires` / `ensures` and `test` blocks can assert on
+    // memory, so these must answer truthfully in an ordinary run —
+    // no profiling flag involved. See `MemStatEnable` in the IR for
+    // how the compiled runtime is told to keep counting.
+    MemStat(MemStat),
 
     // Output (exposed without the `__builtin_` prefix since they are
     // everyday user-facing operations, not low-level intrinsics).
@@ -409,6 +479,9 @@ pub struct BuiltinFunctionSymbols {
     pub current_allocator: DefaultSymbol,
     pub default_allocator: DefaultSymbol,
 
+    /// Allocation counters, in `MemStat::ALL` order.
+    pub mem_stats: Vec<DefaultSymbol>,
+
     // Output
     pub print: DefaultSymbol,
     pub println: DefaultSymbol,
@@ -473,6 +546,10 @@ impl BuiltinFunctionSymbols {
             mem_set: interner.get_or_intern("__builtin_mem_set"),
             current_allocator: interner.get_or_intern("__builtin_current_allocator"),
             default_allocator: interner.get_or_intern("__builtin_default_allocator"),
+            mem_stats: MemStat::ALL
+                .iter()
+                .map(|s| interner.get_or_intern(s.builtin_name()))
+                .collect(),
             // I/O builtins are user-facing, so they keep the plain names
             // `print` and `println` instead of the `__builtin_` prefix used
             // for low-level memory primitives.
@@ -526,7 +603,12 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.abs { Some(BuiltinFunction::Abs) }
         else if symbol == self.min { Some(BuiltinFunction::Min) }
         else if symbol == self.max { Some(BuiltinFunction::Max) }
-        else { None }
+        else {
+            self.mem_stats
+                .iter()
+                .position(|s| *s == symbol)
+                .map(|i| BuiltinFunction::MemStat(MemStat::ALL[i]))
+        }
     }
 }
 

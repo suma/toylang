@@ -353,6 +353,16 @@ fn main() -> u64 {
 
 ## ビルトイン関数
 - ビルトイン関数の実装方針は `design-docs/BUILTIN_ARCHITECTURE.md` に記述されています
+- **メモリ確保カウンタ** (`__builtin_live_bytes()` 等 6 種、`() -> u64`) を
+  `requires` / `ensures` / `test` から読める。名前と意味は `--profile=mem`
+  のレポートと同一、run 単位で 0 から。プロファイルフラグ不要。
+  詳細は [`docs/language.md`](docs/language.md) の「Allocation counters」
+
+> **`BuiltinFunctionSymbols::new` に名前を足したら
+> `FULL_AST_CACHE_SCHEMA_VERSION` を上げること。** `.toycache` は
+> `DefaultSymbol` を保存し、キーはソースのハッシュだけなので、
+> intern 順が変わると古いエントリが別の意味に化ける (無関係な
+> `val a: u64 = 5u64` が stdlib 由来の型エラーで落ちる)。
 
 ## Cranelift JIT
 

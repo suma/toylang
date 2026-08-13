@@ -1191,7 +1191,51 @@ pub fn lower_program(
             work.self_is_mut,
         )?;
     }
+    enable_allocation_counting_if_read(&mut module);
     Ok(module)
+}
+
+/// MEMORY_PROFILING M4. When the program reads an allocation counter,
+/// put a `MemStatEnable` at the very front of `main`.
+///
+/// The compiled runtime counts nothing unless asked, so that an
+/// unprofiled run allocates exactly what it did before the profiler
+/// existed. A program that calls `__builtin_live_bytes()` is asking,
+/// and has to be answered with real numbers — a 0 returned because
+/// nobody passed `--profile=mem` would make an `ensures` clause pass
+/// while checking nothing.
+///
+/// Whole-module rather than per-function: the counters are global, so
+/// one read anywhere means counting has to have been on from the
+/// start. Derived by scanning rather than tracked in a flag while
+/// lowering, so it cannot go stale — nothing to forget to set on a
+/// path that emits a `MemStat` later.
+///
+/// Top-level `const`s are evaluated at compile time, so no allocation
+/// happens before `main` runs and this is genuinely first.
+fn enable_allocation_counting_if_read(module: &mut crate::ir::Module) {
+    let reads_a_counter = module.functions.iter().any(|f| {
+        f.blocks
+            .iter()
+            .any(|b| b.instructions.iter().any(|i| matches!(i.kind, InstKind::MemStat { .. })))
+    });
+    if !reads_a_counter {
+        return;
+    }
+    let Some(main) = module
+        .functions
+        .iter_mut()
+        .find(|f| f.export_name == "main")
+    else {
+        return;
+    };
+    let entry = main.entry;
+    if let Some(block) = main.blocks.iter_mut().find(|b| b.id == entry) {
+        block.instructions.insert(
+            0,
+            crate::ir::Instruction { result: None, kind: InstKind::MemStatEnable },
+        );
+    }
 }
 
 /// Side tables threaded through generic-function lowering.

@@ -224,6 +224,24 @@ impl MemoryStats {
         out
     }
 
+    /// One counter by name, for the `__builtin_*` readers
+    /// (MEMORY_PROFILING M4).
+    ///
+    /// The single definition of which builtin maps to which field:
+    /// the tree-walker, the IR VM and the compiler-side JIT all go
+    /// through here, so only the C runtime restates it.
+    pub fn field(&self, stat: frontend::ast::MemStat) -> u64 {
+        use frontend::ast::MemStat;
+        match stat {
+            MemStat::AllocCount => self.alloc_count,
+            MemStat::FreeCount => self.free_count,
+            MemStat::ReallocCount => self.realloc_count,
+            MemStat::CumulativeBytes => self.cumulative_bytes,
+            MemStat::LiveBytes => self.live_bytes,
+            MemStat::PeakLiveBytes => self.peak_live_bytes,
+        }
+    }
+
     /// Requests that obtained memory, in program order. Used as the
     /// reproducible time axis.
     fn request_seq(&self) -> u64 {
@@ -309,6 +327,38 @@ pub fn reset_profile() {
 /// The per-thread totals accumulated since the last [`reset_profile`].
 pub fn profile() -> MemoryStats {
     PROFILE.with(|p| p.get())
+}
+
+/// Everything [`profile`] and [`profile_sites`] would report, captured
+/// so an abandoned execution attempt can be rolled back.
+#[derive(Debug, Clone)]
+pub struct ProfileSnapshot {
+    totals: MemoryStats,
+    sites: std::collections::BTreeMap<u64, SiteStats>,
+}
+
+/// Capture the counters before an execution attempt that might be
+/// abandoned (MEMORY_PROFILING M4).
+///
+/// A run tries the JIT, then the IR VM, then the tree-walker, and an
+/// engine that fails partway has already allocated. Those allocations
+/// belong to no run: the answer the user gets comes from whichever
+/// engine finished. Without this, a program that panics under the IR
+/// VM and is re-run by the tree-walker reports every allocation twice,
+/// and `__builtin_live_bytes()` returns a number that never described
+/// any state the program was in.
+pub fn snapshot_profile() -> ProfileSnapshot {
+    ProfileSnapshot {
+        totals: PROFILE.with(|p| p.get()),
+        sites: PROFILE_SITES.with(|m| m.borrow().clone()),
+    }
+}
+
+/// Roll the counters back to `snapshot`, discarding whatever the
+/// abandoned attempt recorded.
+pub fn restore_profile(snapshot: ProfileSnapshot) {
+    PROFILE.with(|p| p.set(snapshot.totals));
+    PROFILE_SITES.with(|m| *m.borrow_mut() = snapshot.sites);
 }
 
 /// Simple heap memory manager for pointer operations

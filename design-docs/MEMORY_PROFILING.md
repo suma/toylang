@@ -13,7 +13,7 @@ toylang で書いたプログラムの**メモリ確保を、実行後にレポ�
 | **M1** | AOT 側の同一計数 + `--profile=mem` テキスト出力 | ✅ 2026-08-13 |
 | **M2** | サイト帰属 + リーク検出 | ✅ 2026-08-13 |
 | **M3** | `trait Alloc` の layout 報告 (ここで初めて断片化が出る) | ✅ 2026-08-13 |
-| **M4** | JSON 出力 + 契約 / `test` ブロックとの連携 | JSON ✅ 2026-08-13 / builtin 作業中 |
+| **M4** | JSON 出力 + 契約 / `test` ブロックとの連携 | ✅ 2026-08-13 |
 
 ---
 
@@ -470,25 +470,86 @@ TOY_PROFILE_MEM=json ./compiled_binary
 期待値はテスト内に**書き下してある** — 導出すると、両方が同時に壊れたときに
 気づけない。
 
-#### 数値を読む builtin
+#### 数値を読む builtin (✅ 2026-08-13)
 
-- 数値を読む builtin:
+`MemoryStats` の 6 フィールドを**レポートと同じ名前で**公開する
+(`__builtin_live_bytes` / `_alloc_count` / `_free_count` /
+`_realloc_count` / `_cumulative_bytes` / `_peak_live_bytes`)。同じ数値に
+2 つの語彙があると、それは間違える箇所になる。`peak_at_request` だけは
+出さない — レポートが「いつ」を再現可能に表すための軸であって、
+プログラムが意見を持つ量ではない。
 
 ```rust
-test "no leak" {
-    val before = __builtin_live_bytes()
-    do_work()
+fn parse(s: str) -> Ast ensures __builtin_live_bytes() <= 4096u64 { ... }
+
+test "tidy leaks nothing" {
+    val before: u64 = __builtin_live_bytes()
+    val r: u64 = tidy(64u64)
     assert_eq(__builtin_live_bytes(), before)
 }
-
-fn parse(s: str) -> Ast
-    ensures __builtin_live_bytes() <= 4096u64
-{ ... }
 ```
 
-`requires` / `ensures` が既にあるので、**メモリを契約で縛れる**のは
-この言語では自然に収まる。P5 の `--check` と組み合わせれば
-「入力を変えても peak が閾値を超えない」を自動で反例探索できる。
+`AST` 側は `BuiltinFunction::MemStat(MemStat)` の**ペイロード付き 1 変種**。
+6 変種にすると各バックエンドに 6 本の match arm が生えるが、この形なら
+バックエンドごとに 1 本で済み、追加はテーブルの 1 行になる。
+
+##### 論点: 計測していないランタイムに数値を聞いたらどうなるか
+
+M1 は「プロファイル無効時はサイズ追跡表も作らない」と決めた。素直に
+実装すると、**AOT で `__builtin_live_bytes()` が常に 0 を返す**。
+`ensures __builtin_live_bytes() <= 4096u64` は通るが、何も検査していない。
+**0 を返す方が、答えないより悪い。**
+
+そこで `InstKind::MemStatEnable` を足し、**プログラムがカウンタを読む
+ときだけ** `main` の先頭に置く。計数と出力は別で、これは計数だけを
+入れる (レポートは `TOY_PROFILE_MEM` があるときだけ)。
+
+- **モジュール全体を走査して決める**。カウンタはグローバルなので、
+  どこか 1 箇所で読むなら最初から数えていなければならない
+- **lowering 中のフラグではなく走査**で導出するので古くならない
+- トップレベル `const` はコンパイル時評価なので `main` より前に確保は
+  起きず、「先頭」が本当に先頭になる
+- 読まないプログラムには何も足さない (M1 の「無効時は以前と同じだけ
+  確保する」を保つ)
+
+`the_compiled_binary_counts_without_being_asked_to_profile` が
+`TOY_PROFILE_MEM` 無しで pin する。この経路が壊れると 0 が返るので、
+「バックエンドが不一致」ではなく「AOT が 0 と答えた」と読める形で
+書いてある。
+
+##### 実装中に見つかった 2 つの数え間違い
+
+どちらも **builtin を入れて初めて観測可能になった**もので、`--profile=mem`
+だけの頃は表に出なかった。
+
+1. **run をまたいで累積していた。** インタプリタは 1 プロセスで何度も
+   run できる (テストスイート、`--test` の複数ブロック、`--check` の試行)。
+   カウンタはプロセス生存期間で積み上がっていたので、2 回目の run の
+   `__builtin_alloc_count()` は 1 回目の分を含んでいた。コンパイル済み
+   バイナリはプロセス = run なので**必ず食い違う**。
+   `execute_entry` 冒頭で reset するようにした
+2. **放棄した実行の分を数えていた。** run は JIT → IR VM → tree-walker の
+   順に試し、途中で失敗したエンジンは既に確保を済ませている。その分は
+   どの run のものでもない (答えを出したのは完走したエンジン)。
+   fallback 時に `snapshot_profile` / `restore_profile` で巻き戻す。
+   これが無いと、`ensures __builtin_live_bytes() <= N` の違反が
+   **漏らしていない方の関数**に帰属した (IR VM で漏らした 4096 バイトが
+   live のまま tree-walker が再実行し、先に通りかかった健全な関数の
+   契約が落ちる)。`an_abandoned_execution_attempt_is_not_counted_against_the_next_one`
+   が、違反メッセージが漏らした関数を名指しすることで pin する
+
+> 2 番目は M4 の道具が見つけたものである。`--profile=mem` は run の
+> 最後に読むので、run の途中で二重に数えていても最終値には出ない。
+
+##### 副産物: AST キャッシュのスキーマ版を上げる必要があった
+
+`BuiltinFunctionSymbols::new` が 6 個の名前を追加で intern するので、
+以後の全シンボル ID がずれる。`.toycache` は **`DefaultSymbol` を
+そのまま保存**していて、キーはソースのハッシュだけなので、古い
+エントリは別の意味に化ける。実際 `val a: u64 = 5u64` が stdlib 由来の
+型エラー 3 件で落ちた。`FULL_AST_CACHE_SCHEMA_VERSION` を 3 に上げ、
+**「interner に事前投入する名前の集合」も bump 対象**であることを
+その doc コメントに書いた (今まで書かれていたのは構造体レイアウトだけ)。
 
 **受け入れ基準**: レポートが run 間で bit-identical (論点 5)。
 

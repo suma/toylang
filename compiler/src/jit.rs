@@ -354,6 +354,8 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_dispatched_alloc", toy_dispatched_alloc as *const u8);
     jit_builder.symbol("toy_dispatched_realloc", toy_dispatched_realloc as *const u8);
     jit_builder.symbol("toy_dispatched_free", toy_dispatched_free as *const u8);
+    jit_builder.symbol("toy_prof_stat", toy_prof_stat as *const u8);
+    jit_builder.symbol("toy_prof_force_counting", toy_prof_force_counting as *const u8);
     // STR-INTERP-AOT: str runtime helpers. The JIT-side
     // implementations (below) mirror the C runtime so JIT and
     // AOT produce byte-identical interpolation output.
@@ -657,6 +659,21 @@ pub fn memory_profile_sites() -> Vec<(u64, interpreter::heap::SiteStats)> {
 pub fn memory_profile() -> interpreter::heap::MemoryStats {
     JIT_PROFILE.with(|p| p.get())
 }
+
+/// MEMORY_PROFILING M4. Counting here is unconditional — these are
+/// plain thread-local integers with no side table to build, so there is
+/// nothing to switch off and `toy_prof_force_counting` has nothing to
+/// do. The C runtime needs the switch because its counting requires a
+/// ptr->size table it would otherwise not allocate.
+unsafe extern "C" fn toy_prof_stat(which: u64) -> u64 {
+    match frontend::ast::MemStat::from_code(which) {
+        Some(stat) => memory_profile().field(stat),
+        // Unreachable: codegen only ever passes a `MemStat::code`.
+        None => 0,
+    }
+}
+
+unsafe extern "C" fn toy_prof_force_counting() {}
 
 unsafe extern "C" fn toy_dispatched_alloc(_handle: u64, size: u64, site: u64) -> *mut u8 {
     // Zero-size yields null and is not counted, matching the other two

@@ -1955,6 +1955,16 @@ impl<'a> FunctionLower<'a> {
                 }
                 Ok(self.emit(InstKind::Const(crate::ir::Const::U64(0)), Some(Type::U64)))
             }
+            BuiltinFunction::MemStat(stat) => {
+                if !args.is_empty() {
+                    return Err(format!(
+                        "{} takes no args, got {}",
+                        stat.builtin_name(),
+                        args.len()
+                    ));
+                }
+                Ok(self.emit(InstKind::MemStat { stat: stat.code() }, Some(Type::U64)))
+            }
             other => Err(format!(
                 "compiler MVP cannot lower builtin yet: {:?}",
                 other

@@ -2663,6 +2663,16 @@ pub(crate) fn check_expr(
                     }
                     Some(a)
                 }
+                // MEMORY_PROFILING M3 residual. Not JIT-eligible: the
+                // stdlib region allocator that uses it is struct-backed,
+                // so the surrounding function already falls back; this
+                // arm just says so rather than letting the match fail.
+                BuiltinFunction::RecordAllocatorLayout => {
+                    note(reject_reason, || {
+                        "record_allocator_layout is not JIT-eligible".to_string()
+                    });
+                    None
+                }
             }
         }
         Expr::With(allocator_expr, body_expr) => {

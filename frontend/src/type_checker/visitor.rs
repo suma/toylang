@@ -298,6 +298,24 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg_types: vec![TypeDecl::Unknown],
                 return_type: TypeDecl::String,
             },
+            // Allocator layout registry (MEMORY_PROFILING M3 residual).
+            // `__builtin_record_allocator_layout` — a region-owning
+            // allocator pushes its final layout (as individual numeric
+            // fields, since the builtin takes no structs) so the report
+            // can print it. `name` is a str for human-readable labels;
+            // the four u64s are exactly `AllocLayout`'s numbers.
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::RecordAllocatorLayout,
+                arg_count: 5,
+                arg_types: vec![
+                    TypeDecl::String,
+                    TypeDecl::UInt64,
+                    TypeDecl::UInt64,
+                    TypeDecl::UInt64,
+                    TypeDecl::UInt64,
+                ],
+                return_type: TypeDecl::Unit,
+            },
             // Integer math (user-facing). Signatures use Unknown
             // because the concrete shape is `i64 -> i64` *or*
             // `u64 -> u64` (resp. `(T, T) -> T`); visit_builtin_call

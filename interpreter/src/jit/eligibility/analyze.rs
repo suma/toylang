@@ -73,14 +73,22 @@ pub fn analyze(
     // Phase 5 (汎用 RAII): the JIT codegen doesn't model the
     // user-Drop scope-bound auto-call. When the program has a
     // **user-defined** `impl Drop for ...` (i.e. excluding the
-    // stdlib `Arena` / `FixedBuffer` impls, which use a
+    // stdlib `Arena` / `FixedBuffer` / `SlotRegion` impls, which use a
     // syntactic-sniff path the interpreter / AOT both wire
     // without a Drop trait dispatch), fall back to the tree-
     // walking interpreter so the auto-drop machinery runs.
     // Cheap pre-check before the main eligibility walk.
+    //
+    // The stdlib allocators are allow-listed because their `Drop` is
+    // only bookkeeping — free / layout registration — and skipping it
+    // under the JIT is harmless (a leak-at-exit on the tree-walker too,
+    // or a report entry that only `--profile=mem` reads, which does not
+    // drive the JIT). Auto-loading them would otherwise disable the JIT
+    // for every program.
     if let Some(drop_sym) = interner.get("Drop") {
         let arena_sym = interner.get("Arena");
         let fixed_buffer_sym = interner.get("FixedBuffer");
+        let slot_region_sym = interner.get("SlotRegion");
         for i in 0..program.statement.len() {
             let stmt_ref = frontend::ast::StmtRef(i as u32);
             if let Some(frontend::ast::Stmt::ImplBlock {
@@ -92,6 +100,7 @@ pub fn analyze(
                 if t == drop_sym
                     && Some(target_type) != arena_sym
                     && Some(target_type) != fixed_buffer_sym
+                    && Some(target_type) != slot_region_sym
                 {
                     return Err(
                         "program has a user-defined `impl Drop for ...` block (JIT delegates to interpreter for auto-drop)"

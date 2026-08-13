@@ -398,6 +398,16 @@ pub enum BuiltinFunction {
     // how the compiled runtime is told to keep counting.
     MemStat(MemStat),
 
+    // Allocator layout registry (MEMORY_PROFILING M3 residual).
+    // `__builtin_record_allocator_layout(name: str, managed: u64,
+    // live: u64, free_blocks: u64, largest: u64) -> unit` registers a
+    // region-owning allocator's final layout with the runtime, so
+    // `--profile=mem` can fold fragmentation into its report without
+    // the runtime reaching back into a toylang object. The stdlib's
+    // region allocator (`SlotRegion`) calls it from its `Drop`, which
+    // is what makes the report automatic.
+    RecordAllocatorLayout,
+
     // Output (exposed without the `__builtin_` prefix since they are
     // everyday user-facing operations, not low-level intrinsics).
     Print,   // print(value) -> unit (no trailing newline)
@@ -482,6 +492,9 @@ pub struct BuiltinFunctionSymbols {
     /// Allocation counters, in `MemStat::ALL` order.
     pub mem_stats: Vec<DefaultSymbol>,
 
+    /// Allocator layout registry (MEMORY_PROFILING M3 residual).
+    pub record_allocator_layout: DefaultSymbol,
+
     // Output
     pub print: DefaultSymbol,
     pub println: DefaultSymbol,
@@ -550,6 +563,7 @@ impl BuiltinFunctionSymbols {
                 .iter()
                 .map(|s| interner.get_or_intern(s.builtin_name()))
                 .collect(),
+            record_allocator_layout: interner.get_or_intern("__builtin_record_allocator_layout"),
             // I/O builtins are user-facing, so they keep the plain names
             // `print` and `println` instead of the `__builtin_` prefix used
             // for low-level memory primitives.
@@ -600,6 +614,7 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.assert { Some(BuiltinFunction::Assert) }
         else if symbol == self.sizeof { Some(BuiltinFunction::SizeOf) }
         else if symbol == self.to_string { Some(BuiltinFunction::ToString) }
+        else if symbol == self.record_allocator_layout { Some(BuiltinFunction::RecordAllocatorLayout) }
         else if symbol == self.abs { Some(BuiltinFunction::Abs) }
         else if symbol == self.min { Some(BuiltinFunction::Min) }
         else if symbol == self.max { Some(BuiltinFunction::Max) }

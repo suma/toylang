@@ -186,7 +186,7 @@ impl MemoryStats {
     /// report omits the section entirely, which is right for a human
     /// skimming stderr and wrong for a consumer that would then have to
     /// tell "no leaks" from "this producer predates leak reporting".
-    pub fn report_json(&self, sites: &[(u64, SiteStats)]) -> String {
+    pub fn report_json(&self, sites: &[(u64, SiteStats)], layouts: &[AllocatorLayoutReport]) -> String {
         let mut out = String::from("{\n  \"memory_profile\": {\n");
         let fields = [
             ("alloc_count", self.alloc_count),
@@ -206,21 +206,25 @@ impl MemoryStats {
         let leaked: Vec<&(u64, SiteStats)> =
             sites.iter().filter(|(_, s)| s.live_count > 0).collect();
         if leaked.is_empty() {
-            out.push_str("  \"leaks\": []\n}\n");
-            return out;
+            out.push_str("  \"leaks\": [],\n");
+        } else {
+            out.push_str("  \"leaks\": [\n");
+            for (i, (site, s)) in leaked.iter().enumerate() {
+                let comma = if i + 1 == leaked.len() { "" } else { "," };
+                out.push_str(&format!(
+                    "    {{\n      \"line\": {},\n      \"column\": {},\n      \"allocations\": {},\n      \"bytes\": {}\n    }}{comma}\n",
+                    site >> 32,
+                    site & 0xffff_ffff,
+                    s.live_count,
+                    s.live_bytes
+                ));
+            }
+            out.push_str("  ],\n");
         }
-        out.push_str("  \"leaks\": [\n");
-        for (i, (site, s)) in leaked.iter().enumerate() {
-            let comma = if i + 1 == leaked.len() { "" } else { "," };
-            out.push_str(&format!(
-                "    {{\n      \"line\": {},\n      \"column\": {},\n      \"allocations\": {},\n      \"bytes\": {}\n    }}{comma}\n",
-                site >> 32,
-                site & 0xffff_ffff,
-                s.live_count,
-                s.live_bytes
-            ));
-        }
-        out.push_str("  ]\n}\n");
+        // The layouts section is always present, so "leaks" above always
+        // takes a trailing comma.
+        out.push_str(&allocator_layout_report_json(layouts));
+        out.push_str("}\n");
         out
     }
 
@@ -301,6 +305,133 @@ pub struct SiteStats {
     pub live_bytes: u64,
 }
 
+/// One allocator's final layout, as registered by
+/// `__builtin_record_allocator_layout` (MEMORY_PROFILING M3 residual).
+///
+/// A region-owning allocator reports its layout so `--profile=mem` can
+/// fold fragmentation into the report. The runtime profiler cannot
+/// reach back into a toylang object once the run has ended, so the
+/// allocator pushes its numbers here — the stdlib `SlotRegion` does it
+/// from `Drop`, which fires just before `main` returns and is what
+/// makes the report automatic rather than opt-in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AllocatorLayoutReport {
+    pub name: String,
+    pub managed_bytes: u64,
+    pub live_bytes: u64,
+    pub free_blocks: u64,
+    pub largest_free: u64,
+}
+
+impl AllocatorLayoutReport {
+    /// External fragmentation as a permille — the free bytes that are
+    /// *not* in the largest contiguous run, as a fraction of all free
+    /// bytes. Identical to the stdlib `AllocLayout::external_fragmentation_permille`;
+    /// pure integer arithmetic so the number is exact and byte-identical
+    /// across backends. Zero when nothing is free (an allocator with no
+    /// free space is full, not fragmented).
+    pub fn external_fragmentation_permille(&self) -> u64 {
+        if self.managed_bytes <= self.live_bytes {
+            return 0;
+        }
+        let free_total = self.managed_bytes - self.live_bytes;
+        if free_total == 0 {
+            return 0;
+        }
+        let scattered = free_total - self.largest_free;
+        scattered * 1000 / free_total
+    }
+}
+
+thread_local! {
+    /// Per-thread registered allocator layouts, in registration order
+    /// (which is deterministic — it follows the program's `Drop`
+    /// order). Separate from the counters so a profile run and an
+    /// ordinary run can share the collection point.
+    static PROFILE_ALLOCATORS: RefCell<Vec<AllocatorLayoutReport>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Register an allocator's layout (MEMORY_PROFILING M3 residual).
+pub fn record_allocator_layout(
+    name: &str,
+    managed: u64,
+    live: u64,
+    free_blocks: u64,
+    largest: u64,
+) {
+    PROFILE_ALLOCATORS.with(|v| {
+        v.borrow_mut().push(AllocatorLayoutReport {
+            name: name.to_string(),
+            managed_bytes: managed,
+            live_bytes: live,
+            free_blocks,
+            largest_free: largest,
+        });
+    });
+}
+
+/// The registered allocator layouts since the last [`reset_profile`].
+pub fn allocator_layouts() -> Vec<AllocatorLayoutReport> {
+    PROFILE_ALLOCATORS.with(|v| v.borrow().clone())
+}
+
+/// Render the allocator-layout section of the text report, or an empty
+/// string when no region-owning allocator registered one.
+///
+/// Byte-identical to `toy_prof_report_layouts` in the C runtime and the
+/// JIT mirror, so `--all-backends --profile=mem` can compare it
+/// verbatim. Entries are in registration order (the program's `Drop`
+/// order), which is deterministic.
+pub fn allocator_layout_report_text(layouts: &[AllocatorLayoutReport]) -> String {
+    if layouts.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("allocator layouts\n");
+    for l in layouts {
+        out.push_str(&format!(
+            "  {}  managed {}  live {}  free_blocks {}  largest_free {}  external_fragmentation {} permille\n",
+            l.name,
+            l.managed_bytes,
+            l.live_bytes,
+            l.free_blocks,
+            l.largest_free,
+            l.external_fragmentation_permille()
+        ));
+    }
+    out
+}
+
+/// Render the `"layouts"` JSON fragment (MEMORY_PROFILING M3 residual),
+/// always present so a consumer can tell "no allocators registered a
+/// layout" from "this producer predates layout reporting". Written out
+/// by hand for the same reason as [`MemoryStats::report_json`]: the C
+/// runtime emits the same bytes with `fprintf`, and only a test keeps
+/// the two in step.
+///
+/// The name is emitted verbatim; the stdlib registers fixed identifier
+/// names (`SlotRegion`), which never need escaping.
+pub fn allocator_layout_report_json(layouts: &[AllocatorLayoutReport]) -> String {
+    if layouts.is_empty() {
+        return "  \"layouts\": []\n".to_string();
+    }
+    let mut out = String::from("  \"layouts\": [\n");
+    for (i, l) in layouts.iter().enumerate() {
+        let comma = if i + 1 == layouts.len() { "" } else { "," };
+        out.push_str(&format!(
+            "    {{\n      \"name\": \"{}\",\n      \"managed\": {},\n      \"live\": {},\n      \"free_blocks\": {},\n      \"largest_free\": {},\n      \"external_fragmentation_permille\": {}\n    }}{comma}\n",
+            l.name,
+            l.managed_bytes,
+            l.live_bytes,
+            l.free_blocks,
+            l.largest_free,
+            l.external_fragmentation_permille()
+        ));
+    }
+    out.push_str("  ]\n");
+    out
+}
+
 thread_local! {
     /// Per-site totals, keyed by the packed `(line << 32) | column` the
     /// allocation site carries. Separate from `PROFILE` because
@@ -322,6 +453,7 @@ pub fn profile_sites() -> Vec<(u64, SiteStats)> {
 pub fn reset_profile() {
     PROFILE.with(|p| p.set(MemoryStats::ZERO));
     PROFILE_SITES.with(|m| m.borrow_mut().clear());
+    PROFILE_ALLOCATORS.with(|v| v.borrow_mut().clear());
 }
 
 /// The per-thread totals accumulated since the last [`reset_profile`].
@@ -335,6 +467,7 @@ pub fn profile() -> MemoryStats {
 pub struct ProfileSnapshot {
     totals: MemoryStats,
     sites: std::collections::BTreeMap<u64, SiteStats>,
+    allocators: Vec<AllocatorLayoutReport>,
 }
 
 /// Capture the counters before an execution attempt that might be
@@ -347,10 +480,15 @@ pub struct ProfileSnapshot {
 /// VM and is re-run by the tree-walker reports every allocation twice,
 /// and `__builtin_live_bytes()` returns a number that never described
 /// any state the program was in.
+///
+/// The allocator-layout registry is rolled back too: a `Drop` that
+/// fired under the abandoned engine would otherwise register the same
+/// allocator twice (once per engine).
 pub fn snapshot_profile() -> ProfileSnapshot {
     ProfileSnapshot {
         totals: PROFILE.with(|p| p.get()),
         sites: PROFILE_SITES.with(|m| m.borrow().clone()),
+        allocators: PROFILE_ALLOCATORS.with(|v| v.borrow().clone()),
     }
 }
 
@@ -359,6 +497,7 @@ pub fn snapshot_profile() -> ProfileSnapshot {
 pub fn restore_profile(snapshot: ProfileSnapshot) {
     PROFILE.with(|p| p.set(snapshot.totals));
     PROFILE_SITES.with(|m| *m.borrow_mut() = snapshot.sites);
+    PROFILE_ALLOCATORS.with(|v| *v.borrow_mut() = snapshot.allocators);
 }
 
 /// Simple heap memory manager for pointer operations

@@ -285,11 +285,13 @@ fn main() {
         // stderr, so the program's own stdout stays usable.
         let stats = interpreter::heap::profile();
         let sites = interpreter::heap::profile_sites();
+        let layouts = interpreter::heap::allocator_layouts();
         if profile_json {
-            eprint!("{}", stats.report_json(&sites));
+            eprint!("{}", stats.report_json(&sites, &layouts));
         } else {
             eprint!("{}", stats.report());
             eprint!("{}", interpreter::heap::MemoryStats::leak_report(&sites));
+            eprint!("{}", interpreter::heap::allocator_layout_report_text(&layouts));
         }
     }
     match outcome {

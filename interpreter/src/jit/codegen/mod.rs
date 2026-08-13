@@ -1347,6 +1347,12 @@ impl<'a, 'b> State<'a, 'b> {
                         let cmp = self.builder.ins().icmp(cc, a, b);
                         Ok(Some(self.builder.ins().select(cmp, a, b)))
                     }
+                    // MEMORY_PROFILING M3 residual. Eligibility rejects the
+                    // program before codegen, so this arm is unreachable —
+                    // it exists only to keep the match exhaustive.
+                    BuiltinFunction::RecordAllocatorLayout => {
+                        Err("record_allocator_layout is not JIT-eligible".into())
+                    }
                 }
             }
             Expr::Cast(inner, target) => {

@@ -575,6 +575,69 @@ impl EvaluationContext<'_> {
                 Ok(EvaluationResult::Value((Object::UInt64(value)).into()))
             }
 
+            // Allocator layout registry (MEMORY_PROFILING M3 residual).
+            // A region-owning allocator pushes its final layout so
+            // `--profile=mem` can report fragmentation. Populated from
+            // the stdlib `SlotRegion`'s `Drop`.
+            BuiltinFunction::RecordAllocatorLayout => {
+                if args.len() != 5 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message:
+                            "__builtin_record_allocator_layout takes 5 arguments \
+                             (name, managed, live, free_blocks, largest)"
+                                .to_string(),
+                        expected: 5,
+                        found: args.len(),
+                    });
+                }
+                let name_result = self.evaluate(&args[0])?;
+                let name_obj = try_value!(Ok(name_result));
+                let name = name_obj.borrow().to_display_string(self.string_interner);
+
+                let m = self.evaluate(&args[1])?;
+                let m = try_value!(Ok(m));
+                let managed = m
+                    .borrow()
+                    .try_unwrap_uint64()
+                    .map_err(|_| {
+                        InterpreterError::InternalError(
+                            "record_allocator_layout expects u64 managed".to_string(),
+                        )
+                    })?;
+                let lv = self.evaluate(&args[2])?;
+                let lv = try_value!(Ok(lv));
+                let live = lv
+                    .borrow()
+                    .try_unwrap_uint64()
+                    .map_err(|_| {
+                        InterpreterError::InternalError(
+                            "record_allocator_layout expects u64 live".to_string(),
+                        )
+                    })?;
+                let fb = self.evaluate(&args[3])?;
+                let fb = try_value!(Ok(fb));
+                let free_blocks = fb
+                    .borrow()
+                    .try_unwrap_uint64()
+                    .map_err(|_| {
+                        InterpreterError::InternalError(
+                            "record_allocator_layout expects u64 free_blocks".to_string(),
+                        )
+                    })?;
+                let lg = self.evaluate(&args[4])?;
+                let lg = try_value!(Ok(lg));
+                let largest = lg
+                    .borrow()
+                    .try_unwrap_uint64()
+                    .map_err(|_| {
+                        InterpreterError::InternalError(
+                            "record_allocator_layout expects u64 largest".to_string(),
+                        )
+                    })?;
+                crate::heap::record_allocator_layout(&name, managed, live, free_blocks, largest);
+                Ok(EvaluationResult::Value((Object::Unit).into()))
+            }
+
             // Memory operations
             BuiltinFunction::MemCopy => {
                 if args.len() != 3 {

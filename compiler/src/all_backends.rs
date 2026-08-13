@@ -53,6 +53,9 @@ struct Outcome {
     memory: Option<interpreter::heap::MemoryStats>,
     /// Per-site totals (MEMORY_PROFILING M2), in source order.
     sites: Vec<(u64, interpreter::heap::SiteStats)>,
+    /// Registered allocator layouts (MEMORY_PROFILING M3 residual), in
+    /// registration order.
+    layouts: Vec<interpreter::heap::AllocatorLayoutReport>,
     /// `None` when `main` returned something that is not a number, so
     /// there is no exit code to compare. Several examples return `bool`
     /// or `str`.
@@ -154,6 +157,17 @@ pub fn run(
                     indent(&leaks_theirs),
                 ));
             }
+            let layouts_ours = interpreter::heap::allocator_layout_report_text(&reference.layouts);
+            let layouts_theirs = interpreter::heap::allocator_layout_report_text(&other.layouts);
+            if layouts_ours != layouts_theirs {
+                problems.push(format!(
+                    "{} reports different allocator layouts:\n  interpreter:\n{}  {}:\n{}",
+                    backend.name,
+                    indent(&layouts_ours),
+                    backend.name,
+                    indent(&layouts_theirs),
+                ));
+            }
             if let Some(ours) = reference.memory
                 && ours != theirs
             {
@@ -171,12 +185,16 @@ pub fn run(
     if problems.is_empty() {
         if let Some(stats) = reference.memory {
             match profile {
-                ProfileMode::Json => eprint!("{}", stats.report_json(&reference.sites)),
+                ProfileMode::Json => eprint!("{}", stats.report_json(&reference.sites, &reference.layouts)),
                 _ => {
                     eprint!("{}", stats.report());
                     eprint!(
                         "{}",
                         interpreter::heap::MemoryStats::leak_report(&reference.sites)
+                    );
+                    eprint!(
+                        "{}",
+                        interpreter::heap::allocator_layout_report_text(&reference.layouts)
                     );
                 }
             }
@@ -214,8 +232,9 @@ fn run_interpreter(
     });
     let memory = profile.enabled().then(interpreter::heap::profile);
     let sites = if profile.enabled() { interpreter::heap::profile_sites() } else { Vec::new() };
+    let layouts = if profile.enabled() { interpreter::heap::allocator_layouts() } else { Vec::new() };
     result
-        .map(|outcome| Outcome { exit: outcome.exit_code, stdout, memory, sites })
+        .map(|outcome| Outcome { exit: outcome.exit_code, stdout, memory, sites, layouts })
         // `run_source` has already rendered the diagnostic to stderr;
         // repeating it here would print the same text twice.
         .map_err(|_| "see the diagnostics above".to_string())
@@ -233,7 +252,8 @@ fn run_jit(
     let (exit, stdout) = program.run_capturing_stdout();
     let memory = profile.enabled().then(crate::jit::memory_profile);
     let sites = if profile.enabled() { crate::jit::memory_profile_sites() } else { Vec::new() };
-    Ok(Outcome { exit: Some(exit as i32), stdout, memory, sites })
+    let layouts = if profile.enabled() { crate::jit::memory_profile_layouts() } else { Vec::new() };
+    Ok(Outcome { exit: Some(exit as i32), stdout, memory, sites, layouts })
 }
 
 fn run_aot(options: &CompilerOptions, profile: ProfileMode) -> Result<Outcome, String> {
@@ -263,11 +283,13 @@ fn run_aot(options: &CompilerOptions, profile: ProfileMode) -> Result<Outcome, S
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let memory = if profile.enabled() { parse_memory_report(&stderr) } else { None };
     let sites = if profile.enabled() { parse_leak_report(&stderr) } else { Vec::new() };
+    let layouts = if profile.enabled() { parse_layout_report(&stderr) } else { Vec::new() };
     Ok(Outcome {
         exit: output.status.code(),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         memory,
         sites,
+        layouts,
     })
 }
 
@@ -337,6 +359,46 @@ fn parse_leak_report(stderr: &str) -> Vec<(u64, interpreter::heap::SiteStats)> {
                 ..Default::default()
             },
         ));
+    }
+    out
+}
+
+/// Read the allocator-layout section back out of a compiled run's
+/// stderr (MEMORY_PROFILING M3 residual).
+///
+/// `  <name>  managed <m>  live <l>  free_blocks <fb>  largest_free <lf>  external_fragmentation <p> permille`
+///
+/// The external-fragmentation field is ignored on read: it is derived
+/// from the four numbers and re-derived on the interpreter side, so it
+/// need not be parsed back.
+fn parse_layout_report(stderr: &str) -> Vec<interpreter::heap::AllocatorLayoutReport> {
+    let mut out = Vec::new();
+    for line in stderr.lines() {
+        let t = line.trim();
+        if !t.contains("  managed ") {
+            continue;
+        }
+        // `name  managed m  live l  free_blocks fb  largest_free lf  external_fragmentation p permille`
+        let mut f = t.splitn(2, "  ");
+        let name = f.next().unwrap_or("");
+        let g = f
+            .next()
+            .unwrap_or("")
+            .split_whitespace();
+        // "managed" <m> "live" <l> "free_blocks" <fb> "largest_free" <lf> "external_fragmentation" <p> "permille"
+        let values: Vec<u64> = g
+            .filter_map(|tok| tok.parse::<u64>().ok())
+            .collect();
+        if values.len() < 4 {
+            continue;
+        }
+        out.push(interpreter::heap::AllocatorLayoutReport {
+            name: name.to_string(),
+            managed_bytes: values[0],
+            live_bytes: values[1],
+            free_blocks: values[2],
+            largest_free: values[3],
+        });
     }
     out
 }

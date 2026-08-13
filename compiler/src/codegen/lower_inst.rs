@@ -1145,6 +1145,17 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             InstKind::MemStatEnable => {
                 self.builder.ins().call(self.runtime.prof_force_counting, &[]);
             }
+            InstKind::RecordAllocatorLayout { name, managed, live, free_blocks, largest } => {
+                let name_v = self.value(*name);
+                let managed_v = self.value(*managed);
+                let live_v = self.value(*live);
+                let free_blocks_v = self.value(*free_blocks);
+                let largest_v = self.value(*largest);
+                self.builder.ins().call(
+                    self.runtime.record_allocator_layout,
+                    &[name_v, managed_v, live_v, free_blocks_v, largest_v],
+                );
+            }
             InstKind::PtrEq { a, b } => {
                 let av = self.value(*a);
                 let bv = self.value(*b);

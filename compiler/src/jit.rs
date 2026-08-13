@@ -356,6 +356,7 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_dispatched_free", toy_dispatched_free as *const u8);
     jit_builder.symbol("toy_prof_stat", toy_prof_stat as *const u8);
     jit_builder.symbol("toy_prof_force_counting", toy_prof_force_counting as *const u8);
+    jit_builder.symbol("toy_record_allocator_layout", toy_record_allocator_layout as *const u8);
     // STR-INTERP-AOT: str runtime helpers. The JIT-side
     // implementations (below) mirror the C runtime so JIT and
     // AOT produce byte-identical interpolation output.
@@ -641,6 +642,10 @@ thread_local! {
     /// order — a report that reorders between runs is not diffable.
     static JIT_SITES: RefCell<std::collections::BTreeMap<u64, interpreter::heap::SiteStats>> =
         const { RefCell::new(std::collections::BTreeMap::new()) };
+    /// Registered allocator layouts, in registration order
+    /// (MEMORY_PROFILING M3 residual).
+    static JIT_LAYOUTS: RefCell<Vec<interpreter::heap::AllocatorLayoutReport>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 /// Clear the JIT's allocation totals, so a report describes one run.
@@ -648,11 +653,17 @@ pub fn reset_memory_profile() {
     JIT_PROFILE.with(|p| p.set(interpreter::heap::MemoryStats::ZERO));
     JIT_ALLOC_SIZES.with(|m| m.borrow_mut().clear());
     JIT_SITES.with(|m| m.borrow_mut().clear());
+    JIT_LAYOUTS.with(|v| v.borrow_mut().clear());
 }
 
 /// Per-site totals for the JIT, in source order.
 pub fn memory_profile_sites() -> Vec<(u64, interpreter::heap::SiteStats)> {
     JIT_SITES.with(|m| m.borrow().iter().map(|(k, v)| (*k, *v)).collect())
+}
+
+/// The JIT's registered allocator layouts, in registration order.
+pub fn memory_profile_layouts() -> Vec<interpreter::heap::AllocatorLayoutReport> {
+    JIT_LAYOUTS.with(|v| v.borrow().clone())
 }
 
 /// The JIT's allocation totals since the last [`reset_memory_profile`].
@@ -674,6 +685,33 @@ unsafe extern "C" fn toy_prof_stat(which: u64) -> u64 {
 }
 
 unsafe extern "C" fn toy_prof_force_counting() {}
+
+unsafe extern "C" fn toy_record_allocator_layout(
+    name: *const u8,
+    managed: u64,
+    live: u64,
+    free_blocks: u64,
+    largest_free: u64,
+) {
+    // `name` is a str value: a pointer at the `[bytes][NUL][u64 len]`
+    // layout's length field. Walk back to the bytes to recover the name.
+    // `read_unaligned` because the len field is not 8-byte aligned in
+    // general (it sits at `byte_start + len + 1`).
+    let len = unsafe { (name as *const u64).read_unaligned() };
+    let bytes = unsafe { name.sub(len as usize + 1) };
+    let name_str = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes, len as usize))
+    };
+    JIT_LAYOUTS.with(|v| {
+        v.borrow_mut().push(interpreter::heap::AllocatorLayoutReport {
+            name: name_str.to_string(),
+            managed_bytes: managed,
+            live_bytes: live,
+            free_blocks,
+            largest_free,
+        });
+    });
+}
 
 unsafe extern "C" fn toy_dispatched_alloc(_handle: u64, size: u64, site: u64) -> *mut u8 {
     // Zero-size yields null and is not counted, matching the other two

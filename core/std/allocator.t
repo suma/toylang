@@ -500,17 +500,15 @@ pub struct SlotRegion {
 
 impl SlotRegion {
     fn new(slot_bytes: u64, slot_count: u64) -> Self {
-        var r = SlotRegion {
-            _h: __builtin_default_allocator(),
-            slot_bytes: slot_bytes,
-            slot_count: slot_count,
-            ptrs: __builtin_null_ptr(),
-            used: __builtin_null_ptr(),
-            live_slots: 0u64,
-        }
+        # Build the backing arrays in plain pointer locals (not a
+        # `SlotRegion` value) so returning the struct literal below does
+        # not fire a transient `Drop` that would register a spurious,
+        # empty layout in the report.
+        var ptrs = __builtin_null_ptr()
+        var used = __builtin_null_ptr()
         with allocator = __builtin_default_allocator() {
-            r.ptrs = __builtin_heap_alloc(slot_count * 8u64)
-            r.used = __builtin_heap_alloc(slot_count * 8u64)
+            ptrs = __builtin_heap_alloc(slot_count * 8u64)
+            used = __builtin_heap_alloc(slot_count * 8u64)
         }
         var i: u64 = 0u64
         while i < slot_count {
@@ -518,11 +516,18 @@ impl SlotRegion {
             with allocator = __builtin_default_allocator() {
                 p = __builtin_heap_alloc(slot_bytes)
             }
-            __builtin_ptr_write(r.ptrs, i * 8u64, p)
-            __builtin_ptr_write(r.used, i * 8u64, 0u64)
+            __builtin_ptr_write(ptrs, i * 8u64, p)
+            __builtin_ptr_write(used, i * 8u64, 0u64)
             i = i + 1u64
         }
-        r
+        SlotRegion {
+            _h: __builtin_default_allocator(),
+            slot_bytes: slot_bytes,
+            slot_count: slot_count,
+            ptrs: ptrs,
+            used: used,
+            live_slots: 0u64,
+        }
     }
 
     fn capacity(&self) -> u64 { self.slot_count * self.slot_bytes }
@@ -640,5 +645,24 @@ impl Alloc for SlotRegion {
             free_blocks: blocks,
             largest_free: largest * self.slot_bytes,
         }
+    }
+}
+
+# MEMORY_PROFILING M3 residual: the region's final layout is folded into
+# the `--profile=mem` report. `Drop` fires just before `main` returns, so
+# registering here is what makes the report automatic — the runtime
+# profiler cannot reach back into a toylang object once the run ends, but
+# the allocator itself is still alive at Drop time and pushes its numbers.
+#
+# The region's slots are deliberately not freed here (they were never
+# freed before — a `SlotRegion` relies on process exit). Releasing them in
+# `Drop` would be the honest thing, but it currently trips a backend bug:
+# `__builtin_heap_free` on a `&mut self` field (e.g. `self.ptrs`) is
+# mis-compiled unless a `&mut self` method call precedes it. Left as a
+# documented follow-up rather than a subtle source of divergence.
+impl Drop for SlotRegion {
+    fn drop(&mut self) {
+        val l = self.layout_report()
+        __builtin_record_allocator_layout("SlotRegion", l.managed(), l.live(), l.blocks(), l.largest())
     }
 }

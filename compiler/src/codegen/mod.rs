@@ -260,6 +260,11 @@ pub(crate) struct CodegenSession<M: Module> {
     // on for the run.
     rt_prof_stat: cranelift_module::FuncId,
     rt_prof_force_counting: cranelift_module::FuncId,
+    // MEMORY_PROFILING M3 residual: register an allocator's layout for
+    // the report. `(name: str-ptr, managed, live, free_blocks, largest)`
+    // all passed as u64; the C runtime reads the name via the
+    // `[bytes][NUL][u64 len]` str layout.
+    rt_record_allocator_layout: cranelift_module::FuncId,
     // STR-INTERP-AOT: string interpolation runtime helpers.
     // `concat` and the `to_string` family produce heap-allocated
     // str values following the toylang str layout
@@ -567,6 +572,20 @@ impl<M: Module> CodegenSession<M> {
         let rt_prof_force_counting =
             declare_helper(&mut module, "toy_prof_force_counting", &prof_force_sig)?;
 
+        // MEMORY_PROFILING M3 residual. `toy_record_allocator_layout`
+        // takes the str name as an i64 pointer (the `[bytes][NUL][u64
+        // len]` layout, NUL-terminated so C can read it as `const char*`)
+        // plus the four layout numbers, and records nothing but the
+        // report entry.
+        let mut record_allocator_layout_sig = Signature::new(call_conv);
+        record_allocator_layout_sig.params.push(AbiParam::new(types::I64));
+        record_allocator_layout_sig.params.push(AbiParam::new(types::I64));
+        record_allocator_layout_sig.params.push(AbiParam::new(types::I64));
+        record_allocator_layout_sig.params.push(AbiParam::new(types::I64));
+        record_allocator_layout_sig.params.push(AbiParam::new(types::I64));
+        let rt_record_allocator_layout =
+            declare_helper(&mut module, "toy_record_allocator_layout", &record_allocator_layout_sig)?;
+
         // STR-INTERP-AOT: str runtime helpers. `concat` takes two
         // str pointers (= u64 in cranelift IR) and returns one;
         // each `to_string_*` takes its native scalar width and
@@ -672,6 +691,7 @@ impl<M: Module> CodegenSession<M> {
             rt_dispatched_free,
             rt_prof_stat,
             rt_prof_force_counting,
+            rt_record_allocator_layout,
             rt_str_concat,
             rt_to_string_i64,
             rt_to_string_u64,
@@ -1390,6 +1410,7 @@ struct RuntimeRefs {
     dispatched_free: cranelift_codegen::ir::FuncRef,
     prof_stat: cranelift_codegen::ir::FuncRef,
     prof_force_counting: cranelift_codegen::ir::FuncRef,
+    record_allocator_layout: cranelift_codegen::ir::FuncRef,
     pow: cranelift_codegen::ir::FuncRef,
     sin: cranelift_codegen::ir::FuncRef,
     cos: cranelift_codegen::ir::FuncRef,

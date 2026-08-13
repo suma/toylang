@@ -290,6 +290,14 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
             }
         }
         InstKind::MemStatEnable => {}
+        InstKind::RecordAllocatorLayout { name, managed, live, free_blocks, largest } => {
+            let name_str = heap::read_str(unsafe { vm.read_value(*name).u64 });
+            let managed = unsafe { vm.read_value(*managed).u64 };
+            let live = unsafe { vm.read_value(*live).u64 };
+            let free_blocks = unsafe { vm.read_value(*free_blocks).u64 };
+            let largest = unsafe { vm.read_value(*largest).u64 };
+            crate::heap::record_allocator_layout(&name_str, managed, live, free_blocks, largest);
+        }
         InstKind::AddressOf { local } => {
             // Phase 3c: pointer to an address-taken local's backing cell.
             let addr = vm.addr_of_local(*local);

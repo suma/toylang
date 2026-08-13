@@ -264,6 +264,48 @@ uint64_t toy_prof_stat(uint64_t which) {
     }
 }
 
+/* ---- Allocator layout registry (MEMORY_PROFILING M3 residual) ----
+ *
+ * A region-owning allocator pushes its final layout here (from its
+ * `Drop`) so the report can fold fragmentation in without the runtime
+ * reaching back into a toylang object. Entries are recorded even when
+ * no report was asked for — the cost is one push per dropped allocator,
+ * not a hot path — and the report only reads them when TOY_PROFILE_MEM
+ * is set. */
+
+#define TOY_PROF_LAYOUT_CAP 64
+typedef struct {
+    const char *name; /* str value: points at the u64 len field */
+    uint64_t managed;
+    uint64_t live;
+    uint64_t free_blocks;
+    uint64_t largest_free;
+} toy_prof_layout;
+static toy_prof_layout toy_prof_layouts[TOY_PROF_LAYOUT_CAP];
+static int toy_prof_layout_len;
+
+void toy_record_allocator_layout(const char *name, uint64_t managed,
+        uint64_t live, uint64_t free_blocks, uint64_t largest_free) {
+    if (toy_prof_layout_len >= TOY_PROF_LAYOUT_CAP) return;
+    toy_prof_layout *e = &toy_prof_layouts[toy_prof_layout_len++];
+    e->name = name;
+    e->managed = managed;
+    e->live = live;
+    e->free_blocks = free_blocks;
+    e->largest_free = largest_free;
+}
+
+/* External fragmentation, permille. Mirrors the interpreter's
+ * `AllocatorLayoutReport::external_fragmentation_permille` and the
+ * stdlib `AllocLayout::external_fragmentation_permille`. */
+static uint64_t toy_prof_fragmentation(const toy_prof_layout *l) {
+    if (l->managed <= l->live) return 0;
+    uint64_t free_total = l->managed - l->live;
+    if (free_total == 0) return 0;
+    uint64_t scattered = free_total - l->largest_free;
+    return scattered * 1000 / free_total;
+}
+
 static uint64_t toy_prof_hash(void *p) {
     uint64_t x = (uint64_t) (uintptr_t) p;
     x >>= 4; /* malloc alignment: the low bits carry no information */
@@ -356,6 +398,51 @@ static void toy_prof_released(uint64_t bytes) {
  * implementations can be compared verbatim. */
 /* Sites that still hold memory at exit, in source order so the report
  * is diffable. */
+static void toy_prof_report_layouts(void) {
+    if (toy_prof_layout_len == 0) {
+        return;
+    }
+    fprintf(stderr, "allocator layouts\n");
+    for (int i = 0; i < toy_prof_layout_len; i++) {
+        const toy_prof_layout *l = &toy_prof_layouts[i];
+        uint64_t len = *(const uint64_t *) l->name;
+        const char *bytes = l->name - len - 1u;
+        fprintf(stderr,
+                "  %.*s  managed %llu  live %llu  free_blocks %llu  largest_free %llu  external_fragmentation %llu permille\n",
+                (int) len, bytes,
+                (unsigned long long) l->managed,
+                (unsigned long long) l->live,
+                (unsigned long long) l->free_blocks,
+                (unsigned long long) l->largest_free,
+                (unsigned long long) toy_prof_fragmentation(l));
+    }
+}
+
+static void toy_prof_report_layouts_json(void) {
+    if (toy_prof_layout_len == 0) {
+        fprintf(stderr, "  \"layouts\": []\n");
+        return;
+    }
+    fprintf(stderr, "  \"layouts\": [\n");
+    for (int i = 0; i < toy_prof_layout_len; i++) {
+        const toy_prof_layout *l = &toy_prof_layouts[i];
+        uint64_t len = *(const uint64_t *) l->name;
+        const char *bytes = l->name - len - 1u;
+        fprintf(stderr,
+                "    {\n      \"name\": \"%.*s\",\n      \"managed\": %llu,\n      \"live\": %llu,\n      \"free_blocks\": %llu,\n      \"largest_free\": %llu,\n      \"external_fragmentation_permille\": %llu\n    }%s\n",
+                (int) len, bytes,
+                (unsigned long long) l->managed,
+                (unsigned long long) l->live,
+                (unsigned long long) l->free_blocks,
+                (unsigned long long) l->largest_free,
+                (unsigned long long) toy_prof_fragmentation(l),
+                (i + 1 == toy_prof_layout_len) ? "" : ",");
+    }
+    fprintf(stderr, "  ]\n");
+}
+
+/* Sites that still hold memory at exit, in source order so the report
+ * is diffable. */
 static void toy_prof_report_leaks(void) {
     uint64_t sites = 0, count = 0, bytes = 0;
     for (int i = 0; i < toy_prof_site_len; i++) {
@@ -414,7 +501,9 @@ static void toy_prof_report_json(void) {
         if (toy_prof_sites[i].live_count > 0) leaking++;
     }
     if (leaking == 0) {
-        fprintf(stderr, "  \"leaks\": []\n}\n");
+        fprintf(stderr, "  \"leaks\": [],\n");
+        toy_prof_report_layouts_json();
+        fprintf(stderr, "}\n");
         return;
     }
     fprintf(stderr, "  \"leaks\": [\n");
@@ -436,7 +525,9 @@ static void toy_prof_report_json(void) {
                 (emitted + 1 == leaking) ? "" : ",");
         toy_prof_sites[best].site = UINT64_MAX; /* consumed */
     }
-    fprintf(stderr, "  ]\n}\n");
+    fprintf(stderr, "  ],\n");
+    toy_prof_report_layouts_json();
+    fprintf(stderr, "}\n");
 }
 
 static void toy_prof_report(void) {
@@ -453,6 +544,7 @@ static void toy_prof_report(void) {
     fprintf(stderr, "  peak_live_bytes   %llu\n", (unsigned long long) toy_prof_peak_live_bytes);
     fprintf(stderr, "  peak_at_request   %llu\n", (unsigned long long) toy_prof_peak_at_request);
     toy_prof_report_leaks();
+    toy_prof_report_layouts();
 }
 
 void *toy_dispatched_alloc(uint64_t handle, uint64_t size, uint64_t site) {

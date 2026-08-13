@@ -274,6 +274,8 @@ impl<'a> FunctionLower<'a> {
                 frontend::ast::BuiltinFunction::PtrEq => Some(Type::Bool),
                 frontend::ast::BuiltinFunction::NullPtr => Some(Type::U64),
                 frontend::ast::BuiltinFunction::MemStat(_) => Some(Type::U64),
+                // `__builtin_record_allocator_layout(...) -> unit`.
+                frontend::ast::BuiltinFunction::RecordAllocatorLayout => Some(Type::Unit),
                 // `__builtin_str_to_ptr(s) -> ptr` returns a u64-sized
                 // pointer value.
                 frontend::ast::BuiltinFunction::StrToPtr => Some(Type::U64),

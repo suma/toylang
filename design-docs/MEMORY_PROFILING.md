@@ -420,12 +420,27 @@ leaks / layout:
 外部断片化は permille (千分率) で返す。float ではないので**値が厳密で、
 バックエンド間で完全に一致**する。
 
-#### 自動レポートへの取り込みは保留
+#### 自動レポートへの取り込み (✅ 2026-08-13)
 
 allocator は toylang 空間のオブジェクトで、ランタイム側のプロファイラから
-は届かない。`--profile=mem` に自動で載せるには allocator レジストリ
-(ランタイム → toylang のコールバック) が要る。現状は toylang から
-`a.layout_report()` を呼ぶ API として提供する。
+は届かない。**Drop フック方式**で解決した — 「ランタイム → toylang の
+コールバック」は AOT/JIT では構造的に書けないため、代わりに allocator
+自身が生存中に登録する:
+
+- `__builtin_record_allocator_layout(name, managed, live, free_blocks, largest)`
+  を追加 (既存の `__builtin_heap_alloc` と同じ builtin → スレッドローカル /
+  C ランタイムのパターン)。
+- `SlotRegion` に `impl Drop` を足し、破棄時に `layout_report()` の
+  フィールドをこの builtin で登録 → `main` 終了時点の最終レイアウトが
+  自動で入る。
+- レポート (テキスト / JSON) に `allocator layouts` 節を追加。全バックエンド
+  byte-identical (`--all-backends --profile=mem` が layout 節も突き合わせる)。
+
+**実装で見つかった既存バグ 1 件** (Drop の free を書いた初回で露見):
+`__builtin_heap_free` を `&mut self` フィールド (`self.ptrs`) に対して
+Drop 内で呼ぶと、`&mut self` メソッド呼び出しが先行しない限り AOT が
+segfault / IR VM が panic する。`SlotRegion` の Drop はレイアウト登録のみ
+に留め、slots の解放は見送った (従来どおりプロセス終了に依存)。
 
 ### M4 — JSON + 契約 / テスト連携
 

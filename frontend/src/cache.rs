@@ -32,10 +32,12 @@ use crate::ast::module_interface::ModuleInterface;
 ///
 /// Mismatched versions are treated as a cache miss by
 /// [`load_full_module`].
-pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 3;
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 4;
 // v2: `File` gained `id` (JIT cache key) and `tests` (LLM-LOOP P4).
 // v3: `BuiltinFunctionSymbols` interns the MEMORY_PROFILING M4 counter
 // names, shifting every later symbol id.
+// v4: `BuiltinFunctionSymbols` interns `__builtin_record_allocator_layout`
+// (allocator layout registry), shifting every later symbol id.
 // Forgetting this bump is not a subtle failure: stale entries
 // deserialize into the new layout and the program silently comes out
 // wrong — every stdlib trait reported "is not defined". The M4 bump

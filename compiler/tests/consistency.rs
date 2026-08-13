@@ -5927,7 +5927,8 @@ const JSON_PROFILE_EXPECTED: &str = r#"{
       "allocations": 1,
       "bytes": 32
     }
-  ]
+  ],
+  "layouts": []
 }
 "#;
 
@@ -5937,7 +5938,10 @@ fn interpreter_json_profile(source: &str) -> String {
     interpreter::heap::reset_profile();
     let options = RunOptions::default();
     interpreter::run_source(source, "test.t", &options).expect("interpreter run");
-    interpreter::heap::profile().report_json(&interpreter::heap::profile_sites())
+    interpreter::heap::profile().report_json(
+        &interpreter::heap::profile_sites(),
+        &interpreter::heap::allocator_layouts(),
+    )
 }
 
 #[test]
@@ -5997,7 +6001,7 @@ fn nothing_leaked_is_an_empty_array_not_a_missing_section() {
         }\n";
     let json = interpreter_json_profile(src);
     assert!(
-        json.contains("\"leaks\": []\n"),
+        json.contains("\"leaks\": [],\n"),
         "expected an empty leaks array, got:\n{json}"
     );
     assert!(json.contains("\"live_bytes\": 0,"), "got:\n{json}");
@@ -6071,6 +6075,106 @@ fn a_program_that_reads_no_counter_does_not_ask_for_counting() {
     assert!(
         !lowered_ir(without).contains("mem_stat_enable"),
         "a program that reads no counter must not pay for counting"
+    );
+}
+
+// --- MEMORY_PROFILING M3 residual: allocator layout in the report ----
+//
+// A region-owning allocator registers its final layout from `Drop`, and
+// `--profile=mem` folds it into the report. The numbers are hand-checked
+// here, and the section is byte-identical across the interpreter and the
+// C runtime (the counter totals deliberately are *not* compared: the
+// `"SlotRegion"` str literal is materialised on the interpreter's heap
+// but lives in `.rodata` for the compiler — the same known difference as
+// `string_literals_allocate_on_the_interpreter_but_not_when_compiled`).
+
+/// 6 slots of 16 bytes, two live, and the middle one freed so the free
+/// space splits into two runs (1 slot + 3 slots).
+const LAYOUT_PROFILE_PROGRAM: &str = "fn main() -> u64 {\n\
+    \x20   var r = SlotRegion::new(16u64, 6u64)\n\
+    \x20   val a = r.alloc(16u64)\n\
+    \x20   val b = r.alloc(16u64)\n\
+    \x20   val c = r.alloc(16u64)\n\
+    \x20   r.free(b)\n\
+    \x20   0u64\n\
+    }\n";
+
+/// Exactly what the layout section must be: managed 6*16, live 2*16,
+/// two free runs, the largest 3 slots = 48 bytes, fragmentation
+/// (64 - 48) * 1000 / 64 = 250 permille.
+const LAYOUT_PROFILE_EXPECTED: &str = "allocator layouts\n\
+    \x20 SlotRegion  managed 96  live 32  free_blocks 2  largest_free 48  external_fragmentation 250 permille\n";
+
+fn interpreter_layout_report(source: &str) -> String {
+    interpreter::heap::reset_profile();
+    let core = core_modules_dir();
+    let mut options = RunOptions::default();
+    options.core_modules_dir = Some(core.as_path());
+    interpreter::run_source(source, "test.t", &options).expect("interpreter run");
+    interpreter::heap::allocator_layout_report_text(&interpreter::heap::allocator_layouts())
+}
+
+#[test]
+fn allocator_layouts_are_reported_in_the_memory_profile() {
+    let report = interpreter_layout_report(LAYOUT_PROFILE_PROGRAM);
+    assert_eq!(
+        report, LAYOUT_PROFILE_EXPECTED,
+        "the layout section drifted from the hand-computed numbers"
+    );
+}
+
+#[test]
+fn the_aot_layout_report_is_byte_identical_to_the_shared_one() {
+    if skip_e2e() {
+        return;
+    }
+    let src_path = unique_path("prof_layout.t");
+    std::fs::write(&src_path, LAYOUT_PROFILE_PROGRAM).expect("write source");
+    let exe_path = unique_path("prof_layout");
+    let mut options = CompilerOptions::new(src_path.clone());
+    options.output = Some(exe_path.clone());
+    options.core_modules_dir = Some(core_modules_dir());
+    options.link_cache_dir = Some(link_cache_dir_for_tests());
+    compile_file(&options).expect("compile");
+
+    let output = Command::new(&exe_path)
+        .env("TOY_PROFILE_MEM", "1")
+        .output()
+        .expect("spawn binary");
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&exe_path);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let aot_layouts = stderr
+        .split("allocator layouts\n")
+        .nth(1)
+        .unwrap_or_default();
+    let aot_layouts = format!("allocator layouts\n{aot_layouts}");
+
+    assert_eq!(
+        aot_layouts, LAYOUT_PROFILE_EXPECTED,
+        "the C runtime's layout report has drifted from the shared one"
+    );
+    assert_eq!(
+        interpreter_layout_report(LAYOUT_PROFILE_PROGRAM),
+        aot_layouts,
+        "the interpreter and the C runtime disagree on the layout report"
+    );
+}
+
+#[test]
+fn allocators_without_a_region_still_report_no_layout() {
+    // `Arena` / `FixedBuffer` / `Global` forward everything to the
+    // default allocator and own no region, so none of them implements
+    // a `Drop` that registers a layout — the report is simply absent.
+    let src = "fn main() -> u64 {\n\
+        \x20   val a = Arena::new()\n\
+        \x20   val fb = FixedBuffer::new(1024u64)\n\
+        \x20   a.bytes_used() + fb.used()\n\
+        }\n";
+    let report = interpreter_layout_report(src);
+    assert_eq!(
+        report, "",
+        "allocators without a region must not register a layout, got:\n{report}"
     );
 }
 

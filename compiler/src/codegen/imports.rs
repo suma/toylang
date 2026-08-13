@@ -235,6 +235,8 @@ impl<M: Module> CodegenSession<M> {
             prof_stat: self.declare_func_in_func_readonly(self.rt_prof_stat, func),
             prof_force_counting: self
                 .declare_func_in_func_readonly(self.rt_prof_force_counting, func),
+            record_allocator_layout: self
+                .declare_func_in_func_readonly(self.rt_record_allocator_layout, func),
             pow: self.declare_func_in_func_readonly(self.libm_pow, func),
             sin: self.declare_func_in_func_readonly(self.libm_sin, func),
             cos: self.declare_func_in_func_readonly(self.libm_cos, func),

@@ -942,6 +942,18 @@ pub enum InstKind {
     ///
     /// Reporting stays separate. This turns on counting, never output.
     MemStatEnable,
+    /// Register a region-owning allocator's final layout with the
+    /// runtime report (MEMORY_PROFILING M3 residual). Emitted by
+    /// `__builtin_record_allocator_layout`; `name` is a `str` value
+    /// (a pointer at the `[bytes][NUL][u64 len]` layout), the rest
+    /// are plain U64s. No result — a pure side effect.
+    RecordAllocatorLayout {
+        name: ValueId,
+        managed: ValueId,
+        live: ValueId,
+        free_blocks: ValueId,
+        largest: ValueId,
+    },
     /// REF-Stage-2 (b): produce a pointer-sized value that
     /// addresses the canonical storage of an IR local. The local
     /// must be in `Function.address_taken_locals`; codegen emits
@@ -1548,6 +1560,12 @@ impl fmt::Display for DisplayInst<'_> {
                 MEM_STAT_NAMES.get(*stat as usize).copied().unwrap_or("?")
             ),
             InstKind::MemStatEnable => write!(f, "{prefix}mem_stat_enable"),
+            InstKind::RecordAllocatorLayout { name, managed, live, free_blocks, largest } => {
+                write!(
+                    f,
+                    "{prefix}record_allocator_layout {name}, managed={managed} live={live} free_blocks={free_blocks} largest={largest}"
+                )
+            }
             InstKind::AddressOf { local } => write!(f, "{prefix}address_of {local}"),
             InstKind::LoadRef { ptr, ty } => write!(f, "{prefix}load_ref {ptr} : {ty}"),
             InstKind::StoreRef { ptr, value, ty } => {

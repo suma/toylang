@@ -1965,6 +1965,34 @@ impl<'a> FunctionLower<'a> {
                 }
                 Ok(self.emit(InstKind::MemStat { stat: stat.code() }, Some(Type::U64)))
             }
+            BuiltinFunction::RecordAllocatorLayout => {
+                if args.len() != 5 {
+                    return Err(format!(
+                        "__builtin_record_allocator_layout takes 5 args (name, managed, live, free_blocks, largest), got {}",
+                        args.len()
+                    ));
+                }
+                let name = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "record_allocator_layout name produced no value".to_string())?;
+                let managed = self
+                    .lower_expr(&args[1])?
+                    .ok_or_else(|| "record_allocator_layout managed produced no value".to_string())?;
+                let live = self
+                    .lower_expr(&args[2])?
+                    .ok_or_else(|| "record_allocator_layout live produced no value".to_string())?;
+                let free_blocks = self
+                    .lower_expr(&args[3])?
+                    .ok_or_else(|| "record_allocator_layout free_blocks produced no value".to_string())?;
+                let largest = self
+                    .lower_expr(&args[4])?
+                    .ok_or_else(|| "record_allocator_layout largest produced no value".to_string())?;
+                self.emit(
+                    InstKind::RecordAllocatorLayout { name, managed, live, free_blocks, largest },
+                    None,
+                );
+                Ok(None)
+            }
             other => Err(format!(
                 "compiler MVP cannot lower builtin yet: {:?}",
                 other

@@ -81,6 +81,10 @@ cargo run -q -p interpreter -- --profile=mem <source_file.t>
 cargo run -q -p compiler -- <source_file.t> --all-backends --profile=mem
 TOY_PROFILE_MEM=1 ./compiled_binary          # AOT バイナリ単体
 
+# 同じレポートを JSON で (M4)。`leaks` は空でも `[]` が出る
+cargo run -q -p interpreter -- --profile=mem --profile-format=json <source_file.t>
+TOY_PROFILE_MEM=json ./compiled_binary
+
 # 入力ファイル名 `-` で stdin から読む。スクラッチファイルを作らずに済む
 echo 'fn main() -> u64 { 0u64 }' | cargo run -q -p interpreter -- --check -
 echo 'fn main() -> u64 { 7u64 }' | cargo run -q -p compiler -- - --all-backends

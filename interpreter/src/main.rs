@@ -100,6 +100,8 @@ struct CliArgs {
     seed: Option<u64>,
     /// MEMORY_PROFILING M1: print allocation totals after the run.
     profile_mem: bool,
+    /// MEMORY_PROFILING M4: emit that report as JSON instead of text.
+    profile_json: bool,
 }
 
 /// Pull a query mode out of the raw arguments, if one is present.
@@ -144,6 +146,7 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
     let mut check_contracts = false;
     let mut seed: Option<u64> = None;
     let mut profile_mem = false;
+    let mut profile_json = false;
     let mut iter = raw.iter().skip(1);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -153,6 +156,17 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
                 "mem" => profile_mem = true,
                 other => return Err(format!("--profile expects `mem`, got `{other}`")),
             },
+            s if s.starts_with("--profile-format=") => {
+                match &s["--profile-format=".len()..] {
+                    "json" => profile_json = true,
+                    "text" => profile_json = false,
+                    other => {
+                        return Err(format!(
+                            "--profile-format expects `text` or `json`, got `{other}`"
+                        ))
+                    }
+                }
+            }
             "--check" => check_contracts = true,
             s if s.starts_with("--seed=") => {
                 let raw = &s["--seed=".len()..];
@@ -191,7 +205,13 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
         }
     }
     let filename = filename.ok_or_else(|| "no input file".to_string())?;
-    Ok(CliArgs { filename, verbose, core_modules_cli, diagnostics_json, run_tests, check_contracts, seed, profile_mem })
+    // Choosing a shape for a report that was never asked for is a
+    // typo, not a request. Ignoring it silently would leave the user
+    // waiting for JSON that is not coming.
+    if profile_json && !profile_mem {
+        return Err("--profile-format needs --profile=mem".to_string());
+    }
+    Ok(CliArgs { filename, verbose, core_modules_cli, diagnostics_json, run_tests, check_contracts, seed, profile_mem, profile_json })
 }
 
 fn main() {
@@ -217,12 +237,12 @@ fn main() {
             println!("  {exe} <file> [-v] [--test] [--check [--seed=N]] [--core-modules <DIR>] [--diagnostics=text|json]");
             println!("  {exe} --explain [<CODE>]   # what a diagnostic code means");
             println!("  {exe} --api <file>         # signatures a module provides");
-            println!("  {exe} --profile=mem <file> # allocation totals after the run");
+            println!("  {exe} --profile=mem [--profile-format=text|json] <file>  # allocation totals after the run");
             println!("  (use `-` as <file> to read the program from stdin)");
             return;
         }
     };
-    let CliArgs { filename, verbose, core_modules_cli, diagnostics_json, run_tests, check_contracts, seed, profile_mem } = cli;
+    let CliArgs { filename, verbose, core_modules_cli, diagnostics_json, run_tests, check_contracts, seed, profile_mem, profile_json } = cli;
     let core_modules_dir = resolve_core_modules_dir(core_modules_cli);
     if verbose {
         if let Some(dir) = &core_modules_dir {
@@ -263,11 +283,14 @@ fn main() {
     let outcome = interpreter::run_source(&source, &filename, &options);
     if profile_mem {
         // stderr, so the program's own stdout stays usable.
-        eprint!("{}", interpreter::heap::profile().report());
-        eprint!(
-            "{}",
-            interpreter::heap::MemoryStats::leak_report(&interpreter::heap::profile_sites())
-        );
+        let stats = interpreter::heap::profile();
+        let sites = interpreter::heap::profile_sites();
+        if profile_json {
+            eprint!("{}", stats.report_json(&sites));
+        } else {
+            eprint!("{}", stats.report());
+            eprint!("{}", interpreter::heap::MemoryStats::leak_report(&sites));
+        }
     }
     match outcome {
         Ok(RunOutcome { exit_code: Some(code) }) => process::exit(code),

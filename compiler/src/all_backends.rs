@@ -28,6 +28,24 @@ use std::process::Command;
 
 use crate::{compile_file, CompilerOptions};
 
+/// Whether to profile the run, and in which shape to report it
+/// (MEMORY_PROFILING M1 / M4).
+///
+/// An enum rather than two booleans so "report as JSON, but do not
+/// profile" cannot be spelled at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileMode {
+    Off,
+    Text,
+    Json,
+}
+
+impl ProfileMode {
+    fn enabled(self) -> bool {
+        !matches!(self, ProfileMode::Off)
+    }
+}
+
 /// What one backend produced.
 struct Outcome {
     /// MEMORY_PROFILING M1. `None` when the backend was not asked for
@@ -70,14 +88,14 @@ pub fn run(
     options: &CompilerOptions,
     source: &str,
     display_name: &str,
-    profile_mem: bool,
+    profile: ProfileMode,
 ) -> i32 {
     let interpreter = BackendResult {
         name: "interpreter",
-        outcome: run_interpreter(options, source, display_name, profile_mem),
+        outcome: run_interpreter(options, source, display_name, profile),
     };
-    let jit = BackendResult { name: "jit", outcome: run_jit(options, source, profile_mem) };
-    let aot = BackendResult { name: "aot", outcome: run_aot(options, profile_mem) };
+    let jit = BackendResult { name: "jit", outcome: run_jit(options, source, profile) };
+    let aot = BackendResult { name: "aot", outcome: run_aot(options, profile) };
 
     // The interpreter is the reference: it is the most complete
     // implementation and the one whose diagnostics are worth reading
@@ -121,23 +139,12 @@ pub fn run(
     // MEMORY_PROFILING M1: the acceptance criterion for the phase is
     // that the strict metrics are identical everywhere, so a mismatch
     // is a failure of the same weight as a wrong answer.
-    if profile_mem {
+    if profile.enabled() {
         for backend in [&jit, &aot] {
-            let (Ok(other), Some(theirs)) = (&backend.outcome, backend.outcome.as_ref().ok().and_then(|o| o.memory))
-            else {
-                continue;
-            };
-            let _ = other;
+            let Ok(other) = &backend.outcome else { continue };
+            let Some(theirs) = other.memory else { continue };
             let leaks_ours = interpreter::heap::MemoryStats::leak_report(&reference.sites);
-            let leaks_theirs = if backend.name == "aot" {
-                interpreter::heap::MemoryStats::leak_report(
-                    &backend.outcome.as_ref().map(|o| o.sites.clone()).unwrap_or_default(),
-                )
-            } else {
-                interpreter::heap::MemoryStats::leak_report(
-                    &backend.outcome.as_ref().map(|o| o.sites.clone()).unwrap_or_default(),
-                )
-            };
+            let leaks_theirs = interpreter::heap::MemoryStats::leak_report(&other.sites);
             if leaks_ours != leaks_theirs {
                 problems.push(format!(
                     "{} attributes leaks differently:\n  interpreter:\n{}  {}:\n{}",
@@ -163,11 +170,16 @@ pub fn run(
 
     if problems.is_empty() {
         if let Some(stats) = reference.memory {
-            eprint!("{}", stats.report());
-            eprint!(
-                "{}",
-                interpreter::heap::MemoryStats::leak_report(&reference.sites)
-            );
+            match profile {
+                ProfileMode::Json => eprint!("{}", stats.report_json(&reference.sites)),
+                _ => {
+                    eprint!("{}", stats.report());
+                    eprint!(
+                        "{}",
+                        interpreter::heap::MemoryStats::leak_report(&reference.sites)
+                    );
+                }
+            }
         }
         eprintln!(
             "all 3 backends agree (exit={})",
@@ -189,19 +201,19 @@ fn run_interpreter(
     options: &CompilerOptions,
     source: &str,
     display_name: &str,
-    profile_mem: bool,
+    profile: ProfileMode,
 ) -> Result<Outcome, String> {
     let core = crate::resolve_core_modules_dir(options.core_modules_dir.clone());
     let mut run_options = interpreter::RunOptions::default();
     run_options.core_modules_dir = core.as_deref();
-    if profile_mem {
+    if profile.enabled() {
         interpreter::heap::reset_profile();
     }
     let (result, stdout) = interpreter::output::with_capture(|| {
         interpreter::run_source(source, display_name, &run_options)
     });
-    let memory = profile_mem.then(interpreter::heap::profile);
-    let sites = if profile_mem { interpreter::heap::profile_sites() } else { Vec::new() };
+    let memory = profile.enabled().then(interpreter::heap::profile);
+    let sites = if profile.enabled() { interpreter::heap::profile_sites() } else { Vec::new() };
     result
         .map(|outcome| Outcome { exit: outcome.exit_code, stdout, memory, sites })
         // `run_source` has already rendered the diagnostic to stderr;
@@ -212,28 +224,35 @@ fn run_interpreter(
 fn run_jit(
     options: &CompilerOptions,
     source: &str,
-    profile_mem: bool,
+    profile: ProfileMode,
 ) -> Result<Outcome, String> {
     let program = crate::compile_to_jit_main_with_options(source, options)?;
-    if profile_mem {
+    if profile.enabled() {
         crate::jit::reset_memory_profile();
     }
     let (exit, stdout) = program.run_capturing_stdout();
-    let memory = profile_mem.then(crate::jit::memory_profile);
-    let sites = if profile_mem { crate::jit::memory_profile_sites() } else { Vec::new() };
+    let memory = profile.enabled().then(crate::jit::memory_profile);
+    let sites = if profile.enabled() { crate::jit::memory_profile_sites() } else { Vec::new() };
     Ok(Outcome { exit: Some(exit as i32), stdout, memory, sites })
 }
 
-fn run_aot(options: &CompilerOptions, profile_mem: bool) -> Result<Outcome, String> {
+fn run_aot(options: &CompilerOptions, profile: ProfileMode) -> Result<Outcome, String> {
     let exe = temp_path("toy_all_backends");
     let mut aot_options = options.clone();
     aot_options.output = Some(exe.clone());
     aot_options.emit = crate::EmitKind::Executable;
     compile_file(&aot_options)?;
     let mut cmd = Command::new(&exe);
-    if profile_mem {
+    if profile.enabled() {
         // The compiled runtime writes its report to stderr at exit
         // when this is set; the parent parses it back.
+        //
+        // Always the text shape, even under `--profile-format=json`:
+        // what crosses this boundary is the numbers, and the shape is
+        // the driver's choice about its own stderr. Asking the child
+        // for JSON would buy a second parser and nothing else. The C
+        // runtime's JSON is instead pinned directly, byte for byte,
+        // by `aot_json_report_matches_the_shared_one`.
         cmd.env("TOY_PROFILE_MEM", "1");
     }
     let output = cmd
@@ -242,8 +261,8 @@ fn run_aot(options: &CompilerOptions, profile_mem: bool) -> Result<Outcome, Stri
     let _ = std::fs::remove_file(&exe);
     let output = output?;
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let memory = if profile_mem { parse_memory_report(&stderr) } else { None };
-    let sites = if profile_mem { parse_leak_report(&stderr) } else { Vec::new() };
+    let memory = if profile.enabled() { parse_memory_report(&stderr) } else { None };
+    let sites = if profile.enabled() { parse_leak_report(&stderr) } else { Vec::new() };
     Ok(Outcome {
         exit: output.status.code(),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),

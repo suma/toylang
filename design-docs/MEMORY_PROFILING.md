@@ -13,7 +13,7 @@ toylang で書いたプログラムの**メモリ確保を、実行後にレポ�
 | **M1** | AOT 側の同一計数 + `--profile=mem` テキスト出力 | ✅ 2026-08-13 |
 | **M2** | サイト帰属 + リーク検出 | ✅ 2026-08-13 |
 | **M3** | `trait Alloc` の layout 報告 (ここで初めて断片化が出る) | ✅ 2026-08-13 |
-| **M4** | JSON 出力 + 契約 / `test` ブロックとの連携 | 未着手 |
+| **M4** | JSON 出力 + 契約 / `test` ブロックとの連携 | JSON ✅ 2026-08-13 / builtin 作業中 |
 
 ---
 
@@ -429,7 +429,49 @@ allocator は toylang 空間のオブジェクトで、ランタイム側のプ�
 
 ### M4 — JSON + 契約 / テスト連携
 
-- `--profile-format=json` (`--diagnostics=json` と同じ流儀、出力は stderr)
+#### `--profile-format=json` (✅ 2026-08-13)
+
+```bash
+interpreter --profile=mem --profile-format=json prog.t
+compiler prog.t --all-backends --profile=mem --profile-format=json
+TOY_PROFILE_MEM=json ./compiled_binary
+```
+
+```json
+{
+  "memory_profile": {
+    "alloc_count": 2,
+    ...
+    "peak_at_request": 1
+  },
+  "leaks": [
+    { "line": 2, "column": 18, "allocations": 1, "bytes": 32 }
+  ]
+}
+```
+
+- **`leaks` は常に出す**。何も漏れていなければ `[]`。テキスト版が節ごと
+  省略するのは stderr を読む人間には正しいが、消費側には
+  「漏れていない」と「リーク報告より前の生成器」の区別がつかなくなる
+- **JSON も手書き**。テキスト版と同じ理由で、`toylang_rt.c` が同じバイト列を
+  `fprintf` で出す必要があり、**両側が書き下されていて初めて突き合わせられる**。
+  レポートに文字列値は 1 つも無いのでエスケープの食い違いは起きない
+- `--all-backends` の**子プロセスは常にテキスト**を出す。境界を渡るのは
+  数値であって、形は driver が自分の stderr について決めること。
+  子に JSON を要求してもパーサが 1 つ増えるだけになる。C 側の JSON は
+  `the_aot_json_report_is_byte_identical_to_the_shared_one` が
+  **バイト単位で直接** pin する
+- `--profile-format` を `--profile=mem` 無しで渡すとエラー。黙って無視すると
+  来ない JSON を待つことになる
+
+**受け入れ基準の結果**: `the_json_report_is_identical_between_runs` /
+`the_aot_json_report_is_byte_identical_to_the_shared_one` が、同一プログラムの
+2 回の run と 2 実装の間でレポートが**バイト単位で一致**することを pin。
+期待値はテスト内に**書き下してある** — 導出すると、両方が同時に壊れたときに
+気づけない。
+
+#### 数値を読む builtin
+
 - 数値を読む builtin:
 
 ```rust

@@ -5876,3 +5876,123 @@ fn fragmentation_is_reported_and_actually_bites() {
     // 1 (the request failed) + 16 * 10 + 666 * 1000.
     assert_consistent(src, "layout_fragmentation");
 }
+
+// --- MEMORY_PROFILING M4: the report as JSON -------------------------
+//
+// The phase's acceptance criterion is that the report is byte-identical
+// between runs, which is what makes it diffable and assertable. These
+// check that, and that the C runtime's hand-written mirror produces the
+// same bytes as the shared Rust one — the two are written out
+// separately (see `MemoryStats::report_json`), so nothing but a test
+// keeps them together.
+
+/// A program with a predictable allocation history: raw builtins only,
+/// no stdlib, one 32-byte block deliberately left live.
+const JSON_PROFILE_PROGRAM: &str = "fn keep() -> u64 {\n\
+    \x20   val p: ptr = __builtin_heap_alloc(32u64)\n\
+    \x20   __builtin_ptr_write(p, 0u64, 7u64)\n\
+    \x20   val v: u64 = __builtin_ptr_read(p, 0u64)\n\
+    \x20   v\n\
+    }\n\
+    \n\
+    fn main() -> u64 {\n\
+    \x20   val a: ptr = __builtin_heap_alloc(64u64)\n\
+    \x20   __builtin_heap_free(a)\n\
+    \x20   keep()\n\
+    }\n";
+
+/// Exactly what both implementations must print for the program above.
+/// Spelled out rather than derived, so a change to either one has to be
+/// made on purpose.
+const JSON_PROFILE_EXPECTED: &str = r#"{
+  "memory_profile": {
+    "alloc_count": 2,
+    "free_count": 1,
+    "realloc_count": 0,
+    "cumulative_bytes": 96,
+    "live_bytes": 32,
+    "peak_live_bytes": 64,
+    "peak_at_request": 1
+  },
+  "leaks": [
+    {
+      "line": 2,
+      "column": 18,
+      "allocations": 1,
+      "bytes": 32
+    }
+  ]
+}
+"#;
+
+/// Run `source` on the tree-walker and render the JSON report, the way
+/// `interpreter --profile=mem --profile-format=json` does.
+fn interpreter_json_profile(source: &str) -> String {
+    interpreter::heap::reset_profile();
+    let options = RunOptions::default();
+    interpreter::run_source(source, "test.t", &options).expect("interpreter run");
+    interpreter::heap::profile().report_json(&interpreter::heap::profile_sites())
+}
+
+#[test]
+fn the_json_report_is_identical_between_runs() {
+    let first = interpreter_json_profile(JSON_PROFILE_PROGRAM);
+    let second = interpreter_json_profile(JSON_PROFILE_PROGRAM);
+    assert_eq!(
+        first, second,
+        "the same program produced two different reports; a report that \
+         is not reproducible cannot be diffed or asserted on"
+    );
+    assert_eq!(first, JSON_PROFILE_EXPECTED);
+}
+
+#[test]
+fn the_aot_json_report_is_byte_identical_to_the_shared_one() {
+    if skip_e2e() {
+        return;
+    }
+    let src_path = unique_path("prof_json.t");
+    std::fs::write(&src_path, JSON_PROFILE_PROGRAM).expect("write source");
+    let exe_path = unique_path("prof_json");
+    let mut options = CompilerOptions::new(src_path.clone());
+    options.output = Some(exe_path.clone());
+    options.link_cache_dir = Some(link_cache_dir_for_tests());
+    compile_file(&options).expect("compile");
+
+    let run = || {
+        let output = Command::new(&exe_path)
+            .env("TOY_PROFILE_MEM", "json")
+            .output()
+            .expect("spawn binary");
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    };
+    let first = run();
+    let second = run();
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&exe_path);
+
+    assert_eq!(first, second, "the compiled runtime's report is not reproducible");
+    assert_eq!(
+        first, JSON_PROFILE_EXPECTED,
+        "the C runtime's JSON has drifted from `MemoryStats::report_json`"
+    );
+}
+
+#[test]
+fn nothing_leaked_is_an_empty_array_not_a_missing_section() {
+    // The text report omits the leak section entirely when there is
+    // nothing to say, which is right for a human and wrong for a
+    // consumer: absence would have to be told apart from a producer
+    // that predates leak reporting.
+    let src = "fn main() -> u64 {\n\
+        \x20   val p: ptr = __builtin_heap_alloc(16u64)\n\
+        \x20   __builtin_heap_free(p)\n\
+        \x20   0u64\n\
+        }\n";
+    let json = interpreter_json_profile(src);
+    assert!(
+        json.contains("\"leaks\": []\n"),
+        "expected an empty leaks array, got:\n{json}"
+    );
+    assert!(json.contains("\"live_bytes\": 0,"), "got:\n{json}");
+}

@@ -10,11 +10,12 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use compiler::all_backends::ProfileMode;
 use compiler::{compile_file, CompilerOptions, EmitKind};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (mut options, all_backends, profile_mem) = match parse_args(&args) {
+    let (mut options, all_backends, profile) = match parse_args(&args) {
         Ok(o) => o,
         Err(msg) => {
             eprintln!("{msg}");
@@ -40,7 +41,7 @@ fn main() -> ExitCode {
 
     if all_backends {
         return ExitCode::from(
-            u8::try_from(compiler::all_backends::run(&options, &source, &display_name, profile_mem))
+            u8::try_from(compiler::all_backends::run(&options, &source, &display_name, profile))
                 .unwrap_or(1),
         );
     }
@@ -58,12 +59,13 @@ fn main() -> ExitCode {
 /// for. It is not a `CompilerOptions` field because it selects a
 /// different action entirely (run everywhere and compare) rather than
 /// configuring the build.
-fn parse_args(args: &[String]) -> Result<(CompilerOptions, bool, bool), String> {
+fn parse_args(args: &[String]) -> Result<(CompilerOptions, bool, ProfileMode), String> {
     if args.is_empty() {
         return Err("no input file".to_string());
     }
     let mut all_backends = false;
     let mut profile_mem = false;
+    let mut profile_json = false;
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut emit = EmitKind::Executable;
@@ -86,6 +88,17 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, bool, bool), String> 
                 "mem" => profile_mem = true,
                 other => return Err(format!("--profile expects `mem`, got `{other}`")),
             },
+            s if s.starts_with("--profile-format=") => {
+                match &s["--profile-format=".len()..] {
+                    "json" => profile_json = true,
+                    "text" => profile_json = false,
+                    other => {
+                        return Err(format!(
+                            "--profile-format expects `text` or `json`, got `{other}`"
+                        ))
+                    }
+                }
+            }
             "-o" => {
                 i += 1;
                 let v = args.get(i).ok_or_else(|| "-o needs an argument".to_string())?;
@@ -137,7 +150,17 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, bool, bool), String> 
     options.release = release;
     options.core_modules_dir = core_modules_dir;
     options.diagnostics_json = diagnostics_json;
-    Ok((options, all_backends, profile_mem))
+    // Asking for a shape without asking for the report is a typo; a
+    // silently-ignored flag would leave the user waiting for JSON.
+    if profile_json && !profile_mem {
+        return Err("--profile-format needs --profile=mem".to_string());
+    }
+    let profile = match (profile_mem, profile_json) {
+        (false, _) => ProfileMode::Off,
+        (true, false) => ProfileMode::Text,
+        (true, true) => ProfileMode::Json,
+    };
+    Ok((options, all_backends, profile))
 }
 
 fn parse_emit(s: &str) -> Result<EmitKind, String> {
@@ -158,7 +181,7 @@ fn print_usage() {
         "       compiler <input.t> --all-backends   # run on interpreter / JIT / AOT, report disagreements"
     );
     eprintln!(
-        "       compiler <input.t> --all-backends --profile=mem  # also compare allocation totals"
+        "       compiler <input.t> --all-backends --profile=mem [--profile-format=text|json]  # also compare allocation totals"
     );
     eprintln!("       use `-` as <input.t> to read the program from stdin");
 }

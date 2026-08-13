@@ -159,6 +159,10 @@ uint64_t toy_alloc_current(void) {
  */
 
 static int toy_prof_state = -1; /* -1 unresolved, 0 off, 1 on */
+/* Report shape, resolved with the state above: 0 text, 1 JSON. Chosen
+ * by TOY_PROFILE_MEM=json, which is what `--profile-format=json` sets
+ * when it runs a compiled binary. */
+static int toy_prof_json;
 
 static uint64_t toy_prof_alloc_count;
 static uint64_t toy_prof_free_count;
@@ -219,6 +223,7 @@ static int toy_prof_enabled(void) {
     if (toy_prof_state < 0) {
         const char *v = getenv("TOY_PROFILE_MEM");
         toy_prof_state = (v && v[0] && v[0] != '0') ? 1 : 0;
+        toy_prof_json = (toy_prof_state && strcmp(v, "json") == 0) ? 1 : 0;
         if (toy_prof_state) {
             atexit(toy_prof_report);
         }
@@ -353,7 +358,59 @@ static void toy_prof_report_leaks(void) {
     }
 }
 
+/* MEMORY_PROFILING M4. Byte-identical to `MemoryStats::report_json`;
+ * both are written out by hand so the mirror is checkable, and the
+ * check is `--all-backends --profile=mem --profile-format=json`.
+ *
+ * Leak entries come out in source order, using the same consume-the-
+ * minimum scan as the text report, so the two orderings cannot drift
+ * apart. */
+static void toy_prof_report_json(void) {
+    fprintf(stderr, "{\n  \"memory_profile\": {\n");
+    fprintf(stderr, "    \"alloc_count\": %llu,\n", (unsigned long long) toy_prof_alloc_count);
+    fprintf(stderr, "    \"free_count\": %llu,\n", (unsigned long long) toy_prof_free_count);
+    fprintf(stderr, "    \"realloc_count\": %llu,\n", (unsigned long long) toy_prof_realloc_count);
+    fprintf(stderr, "    \"cumulative_bytes\": %llu,\n", (unsigned long long) toy_prof_cumulative_bytes);
+    fprintf(stderr, "    \"live_bytes\": %llu,\n", (unsigned long long) toy_prof_live_bytes);
+    fprintf(stderr, "    \"peak_live_bytes\": %llu,\n", (unsigned long long) toy_prof_peak_live_bytes);
+    fprintf(stderr, "    \"peak_at_request\": %llu\n", (unsigned long long) toy_prof_peak_at_request);
+    fprintf(stderr, "  },\n");
+
+    uint64_t leaking = 0;
+    for (int i = 0; i < toy_prof_site_len; i++) {
+        if (toy_prof_sites[i].live_count > 0) leaking++;
+    }
+    if (leaking == 0) {
+        fprintf(stderr, "  \"leaks\": []\n}\n");
+        return;
+    }
+    fprintf(stderr, "  \"leaks\": [\n");
+    for (uint64_t emitted = 0; emitted < leaking; emitted++) {
+        int best = -1;
+        for (int i = 0; i < toy_prof_site_len; i++) {
+            if (toy_prof_sites[i].live_count == 0) continue;
+            if (toy_prof_sites[i].site == UINT64_MAX) continue;
+            if (best < 0 || toy_prof_sites[i].site < toy_prof_sites[best].site) best = i;
+        }
+        if (best < 0) break;
+        fprintf(stderr,
+                "    {\n      \"line\": %llu,\n      \"column\": %llu,\n"
+                "      \"allocations\": %llu,\n      \"bytes\": %llu\n    }%s\n",
+                (unsigned long long) (toy_prof_sites[best].site >> 32),
+                (unsigned long long) (toy_prof_sites[best].site & 0xffffffffu),
+                (unsigned long long) toy_prof_sites[best].live_count,
+                (unsigned long long) toy_prof_sites[best].live_bytes,
+                (emitted + 1 == leaking) ? "" : ",");
+        toy_prof_sites[best].site = UINT64_MAX; /* consumed */
+    }
+    fprintf(stderr, "  ]\n}\n");
+}
+
 static void toy_prof_report(void) {
+    if (toy_prof_json) {
+        toy_prof_report_json();
+        return;
+    }
     fprintf(stderr, "memory profile\n");
     fprintf(stderr, "  alloc_count       %llu\n", (unsigned long long) toy_prof_alloc_count);
     fprintf(stderr, "  free_count        %llu\n", (unsigned long long) toy_prof_free_count);

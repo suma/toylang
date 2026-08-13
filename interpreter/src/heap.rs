@@ -174,6 +174,56 @@ impl MemoryStats {
         out
     }
 
+    /// The whole report as JSON (MEMORY_PROFILING M4).
+    ///
+    /// Hand-written rather than derived through `serde`, for the same
+    /// reason [`Self::report`] is: `toylang_rt.c` has to emit the same
+    /// bytes with `fprintf`, and a mirror is only checkable when both
+    /// sides are written out. Nothing here is a string, so there is no
+    /// escaping to get subtly different between the two.
+    ///
+    /// `leaks` is always present, `[]` when nothing leaked — the text
+    /// report omits the section entirely, which is right for a human
+    /// skimming stderr and wrong for a consumer that would then have to
+    /// tell "no leaks" from "this producer predates leak reporting".
+    pub fn report_json(&self, sites: &[(u64, SiteStats)]) -> String {
+        let mut out = String::from("{\n  \"memory_profile\": {\n");
+        let fields = [
+            ("alloc_count", self.alloc_count),
+            ("free_count", self.free_count),
+            ("realloc_count", self.realloc_count),
+            ("cumulative_bytes", self.cumulative_bytes),
+            ("live_bytes", self.live_bytes),
+            ("peak_live_bytes", self.peak_live_bytes),
+            ("peak_at_request", self.peak_at_request),
+        ];
+        for (i, (name, value)) in fields.iter().enumerate() {
+            let comma = if i + 1 == fields.len() { "" } else { "," };
+            out.push_str(&format!("    \"{name}\": {value}{comma}\n"));
+        }
+        out.push_str("  },\n");
+
+        let leaked: Vec<&(u64, SiteStats)> =
+            sites.iter().filter(|(_, s)| s.live_count > 0).collect();
+        if leaked.is_empty() {
+            out.push_str("  \"leaks\": []\n}\n");
+            return out;
+        }
+        out.push_str("  \"leaks\": [\n");
+        for (i, (site, s)) in leaked.iter().enumerate() {
+            let comma = if i + 1 == leaked.len() { "" } else { "," };
+            out.push_str(&format!(
+                "    {{\n      \"line\": {},\n      \"column\": {},\n      \"allocations\": {},\n      \"bytes\": {}\n    }}{comma}\n",
+                site >> 32,
+                site & 0xffff_ffff,
+                s.live_count,
+                s.live_bytes
+            ));
+        }
+        out.push_str("  ]\n}\n");
+        out
+    }
+
     /// Requests that obtained memory, in program order. Used as the
     /// reproducible time axis.
     fn request_seq(&self) -> u64 {

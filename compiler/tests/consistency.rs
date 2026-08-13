@@ -6225,6 +6225,40 @@ fn interior_pointers_compose() {
     assert_consistent(src, "ptr_offset_compose");
 }
 
+#[test]
+fn a_struct_returned_from_its_constructor_is_not_dropped() {
+    // The constructor's local `var r` must be moved out, not dropped:
+    // dropping it would free `r.ptrs`, and the caller's binding drop
+    // would then free the same pointer a second time (use-after-free
+    // that crashed the AOT). A clean single free on every backend is
+    // the pass condition.
+    let src = r#"
+        struct Region { ptrs: ptr }
+
+        impl Region {
+            fn new() -> Self {
+                var r = Region { ptrs: __builtin_null_ptr() }
+                with allocator = __builtin_default_allocator() {
+                    r.ptrs = __builtin_heap_alloc(16u64)
+                }
+                r
+            }
+        }
+
+        impl Drop for Region {
+            fn drop(&mut self) {
+                __builtin_heap_free(self.ptrs)
+            }
+        }
+
+        fn main() -> u64 {
+            val r = Region::new()
+            42u64
+        }
+    "#;
+    assert_consistent(src, "drop_returned_binding");
+}
+
 /// The IR `lower_program` produces for `source`, rendered.
 fn lowered_ir(source: &str) -> String {
     let mut parser = frontend::ParserWithInterner::new(source);

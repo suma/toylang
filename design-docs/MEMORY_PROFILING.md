@@ -445,8 +445,10 @@ allocator は toylang 空間のオブジェクトで、ランタイム側のプ�
 **実装で見つかった既存バグ 1 件** (Drop の free を書いた初回で露見):
 `__builtin_heap_free` を `&mut self` フィールド (`self.ptrs`) に対して
 Drop 内で呼ぶと、`&mut self` メソッド呼び出しが先行しない限り AOT が
-segfault / IR VM が panic する。`SlotRegion` の Drop はレイアウト登録のみ
-に留め、slots の解放は見送った (従来どおりプロセス終了に依存)。
+segfault / IR VM が panic する。真因は「struct 束縛を return すると
+ローカル束縛にも Drop が発火して use-after-free になる」ことで、同じ日に
+修正済み (`lower_expr_block` で return される束縛の DropTarget を除去)。
+`SlotRegion` の Drop は slots 解放込みに戻した。
 
 ### M4 — JSON + 契約 / テスト連携
 

@@ -944,6 +944,11 @@ impl<'a> FunctionLower<'a> {
     /// `Stmt::Continue` before terminating). Errors propagate without
     /// running drops — same panic-safety policy the interpreter uses.
     fn lower_expr_block(&mut self, stmts: &[StmtRef]) -> Result<Option<ValueId>, String> {
+        // The function body is the one block lowered while `drop_scopes`
+        // is still empty; nested blocks (`if` arms, `val x = { .. }`,
+        // `with` bodies) are entered with at least one scope already
+        // on the stack.
+        let is_function_body = self.drop_scopes.is_empty();
         self.enter_drop_scope();
         // Restore any binding this block shadows. `bindings` is a flat
         // map, so a `var x` inside a block was permanently overwriting
@@ -965,6 +970,22 @@ impl<'a> FunctionLower<'a> {
             last = self.lower_stmt(s)?;
             if self.is_unreachable() {
                 break;
+            }
+        }
+        // A struct binding used as the function's tail expression is
+        // moved out — the caller takes ownership — so its auto-drop
+        // must not fire when the function-body scope pops below.
+        // Without this, `fn new() -> Region { var r = ...; r }` drops
+        // `r` (freeing its pointer) and then returns the dangling value.
+        // Nested blocks are excluded: their tail feeds a `val` binding
+        // or a branch, which *copies*, so the source binding still owns
+        // its value and must be dropped.
+        if is_function_body
+            && let Some(fields) = &self.pending_struct_value
+        {
+            let leaves = flatten_struct_locals(fields);
+            if let Some(top) = self.drop_scopes.last_mut() {
+                top.retain(|t| t.field_locals.as_slice() != leaves.as_slice());
             }
         }
         self.pop_and_emit_drops()?;

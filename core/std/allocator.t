@@ -654,15 +654,27 @@ impl Alloc for SlotRegion {
 # profiler cannot reach back into a toylang object once the run ends, but
 # the allocator itself is still alive at Drop time and pushes its numbers.
 #
-# The region's slots are deliberately not freed here (they were never
-# freed before — a `SlotRegion` relies on process exit). Releasing them in
-# `Drop` would be the honest thing, but it currently trips a backend bug:
-# `__builtin_heap_free` on a `&mut self` field (e.g. `self.ptrs`) is
-# mis-compiled unless a `&mut self` method call precedes it. Left as a
-# documented follow-up rather than a subtle source of divergence.
+# The layout is registered *before* the slots are released: fragmentation
+# is a statement about the intact region, and it stops meaning anything
+# the moment the underlying slots are gone.
 impl Drop for SlotRegion {
     fn drop(&mut self) {
         val l = self.layout_report()
         __builtin_record_allocator_layout("SlotRegion", l.managed(), l.live(), l.blocks(), l.largest())
+        var i: u64 = 0u64
+        while i < self.slot_count {
+            val p: ptr = __builtin_ptr_read(self.ptrs, i * 8u64)
+            with allocator = __builtin_default_allocator() {
+                __builtin_heap_free(p)
+            }
+            i = i + 1u64
+        }
+        with allocator = __builtin_default_allocator() {
+            __builtin_heap_free(self.ptrs)
+            __builtin_heap_free(self.used)
+        }
+        self.ptrs = __builtin_null_ptr()
+        self.used = __builtin_null_ptr()
+        self.live_slots = 0u64
     }
 }

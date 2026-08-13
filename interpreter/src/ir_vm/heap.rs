@@ -129,6 +129,29 @@ pub fn alloc_string(text: String) -> u64 {
     alloc_str_bytes(text.as_bytes())
 }
 
+/// Materialise a str **literal** using the same layout as
+/// [`alloc_str_bytes`] but *without* touching the allocation counters.
+///
+/// The compiled backends keep literals in `.rodata` and allocate nothing
+/// for them; the IR VM's byte-uniform heap has no static section, so it
+/// has to materialise the bytes somewhere — but counting that as an
+/// allocation made the interpreter report one extra allocation per
+/// literal (MEMORY_PROFILING M3 residual, the "SlotRegion" name being
+/// the first literal the profiler saw in a real program).
+pub fn alloc_str_literal(bytes: &[u8]) -> u64 {
+    let len = bytes.len();
+    let base = with_heap(|h| h.alloc_uncounted(len + 1 + 8)).unwrap_or(0);
+    if base == 0 {
+        return 0;
+    }
+    with_heap(|h| {
+        h.write_bytes_raw(base, bytes); // [0..len]
+        h.write_bytes_raw(base + len, &[0u8]); // NUL at [len]
+        h.write_bytes_raw(base + len + 1, &(len as u64).to_le_bytes());
+    });
+    base as u64 + len as u64 + 1
+}
+
 /// Read the bytes of a `str` value (pointer to the len field) into a String.
 pub fn read_str(value: u64) -> String {
     if value == 0 {

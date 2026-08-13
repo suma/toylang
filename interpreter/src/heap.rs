@@ -600,6 +600,14 @@ impl HeapManager {
         addr
     }
 
+    /// Counter-free allocation at an unknown site. The storage for a
+    /// str literal (MEMORY_PROFILING M3 residual): the compiled
+    /// backends keep literals in `.rodata`, so an interpreter-only heap
+    /// allocation would make the allocation counters disagree.
+    pub fn alloc_uncounted(&mut self, size: usize) -> usize {
+        self.alloc_uncounted_at(size, 0)
+    }
+
     /// Free memory at address
     pub fn free(&mut self, addr: usize) -> bool {
         if addr == 0 {

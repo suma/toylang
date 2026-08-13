@@ -5711,47 +5711,17 @@ fn allocation_totals_agree_for_a_growing_vec() {
     );
 }
 
-/// Allocation totals that the backends do **not** share, recorded for
-/// the same reason as the address-reuse test above.
-///
-/// `String::from_str` on a literal allocates a heap buffer in the
-/// interpreter, because that is where its `str` values live; the
-/// compiled backends point into `.rodata` and allocate nothing for it
-/// (STR-PTR-LEN). So the interpreter reports one extra allocation and
-/// the bytes that go with it.
-///
-/// This is a representation difference, not a profiling bug — the
-/// programs above show the accounting agrees once the allocations are
-/// ones the program itself asked for. Found by the profiler on its
-/// first realistic program.
+/// `String::from_str` on a literal used to diverge: the interpreter
+/// materialised the str literal on its heap (one extra allocation),
+/// while the compiled backends pointed into `.rodata` and allocated
+/// nothing (STR-PTR-LEN). The IR VM now materialises literals
+/// counter-free, so the accounting agrees once more — this used to be
+/// recorded as a known difference, and its disappearance is the test.
 #[test]
-fn string_literals_allocate_on_the_interpreter_but_not_when_compiled() {
-    if skip_e2e() {
-        return;
-    }
-    let dir = unique_path("prof_string_divergence");
-    std::fs::create_dir_all(&dir).expect("create temp dir");
-    let src_path = dir.join("p.t");
-    std::fs::write(
-        &src_path,
+fn string_literals_no_longer_allocate_differently_across_backends() {
+    memory_profiles_agree(
         "fn main() -> u64 {\n    val s = String::from_str(\"hello world\")\n    s.len()\n}\n",
-    )
-    .expect("write source");
-    let output = Command::new(env!("CARGO_BIN_EXE_compiler"))
-        .arg(&src_path)
-        .arg("--all-backends")
-        .arg("--profile=mem")
-        .arg("--core-modules")
-        .arg(core_modules_dir())
-        .output()
-        .expect("spawn compiler");
-    let _ = std::fs::remove_dir_all(&dir);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("different allocation totals"),
-        "the interpreter/compiled string divergence has gone away — if that is \
-         intended, drop this test and fold the program into \
-         `memory_profiles_agree`:\n{stderr}"
+        "prof_string_from_str",
     );
 }
 

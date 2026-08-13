@@ -120,15 +120,15 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
         }
         InstKind::ConstStr { message, .. } => {
             if let Some(interner) = vm.interner() {
-                let text = interner.resolve(*message).unwrap_or("").to_string();
-                let addr = heap::alloc_string(text);
+                let text = interner.resolve(*message).unwrap_or("");
+                let addr = heap::alloc_str_literal(text.as_bytes());
                 if let Some((vid, _)) = inst.result {
                     vm.write_value(vid, RawSlot::from_u64(addr));
                 }
             }
         }
         InstKind::ConstStrBytes { bytes } => {
-            let addr = heap::alloc_str_bytes(bytes);
+            let addr = heap::alloc_str_literal(bytes);
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }

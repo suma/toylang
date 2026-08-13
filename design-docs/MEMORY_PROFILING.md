@@ -335,6 +335,13 @@ interpreter は `str` をヒープに実体化するが、コンパイル系は 
 > この差は M1 の道具が**最初の実プログラムで**見つけたものである。
 > 一致を目視で確認する運用だったら気づかなかった。
 
+> 追記 (2026-08-13): この差異は解消済み。IR VM の `ConstStr` /
+> `ConstStrBytes` が str リテラルを counter-free に実体化するようになり
+> (コンパイル系の `.rodata` と同じ「確保として数えない」扱い)、
+> `--all-backends --profile=mem` はリテラル込みで完全一致する。
+> 上記テストは `string_literals_no_longer_allocate_differently_across_backends`
+> に置き換えた。
+
 ### M2 — サイト帰属 + リーク検出 (✅ 2026-08-13)
 
 **設計を 1 点変えた。** 論点 4 は「lowering で静的サイト ID を採番し、

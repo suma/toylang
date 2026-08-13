@@ -2673,6 +2673,15 @@ pub(crate) fn check_expr(
                     });
                     None
                 }
+                // Pointer arithmetic (interior pointers). `ptr` values
+                // are opaque to the JIT scalar model; reject and fall
+                // back to the tree-walker.
+                BuiltinFunction::PtrOffset => {
+                    note(reject_reason, || {
+                        "ptr_offset is not JIT-eligible".to_string()
+                    });
+                    None
+                }
             }
         }
         Expr::With(allocator_expr, body_expr) => {

@@ -401,6 +401,12 @@ interpreter / JIT / AOT で **byte-identical**。`--all-backends --profile=mem`
 は base + offset を読み書きするだけで、内部ポインタを値として作れない)。
 1 つの確保の内部を指すポインタを配れないので、この方式は現状書けない。
 
+> 追記 (2026-08-13): `__builtin_ptr_offset(base, offset) -> ptr` を追加した
+> (interior pointer を作る、AOT では単なる `iadd`)。interpreter の
+> `HeapManager` も interior アドレスを `resolve_block` で逆引きして
+> 読み書きできるようになったので、offset ベースの region allocator は
+> もう書ける。SlotRegion のスロット方式はそのまま (動くものは変えない)。
+
 代わりに **等サイズのスロット集合**を管理する。各スロットは独立した確保
 なので既存 builtin で書け、**連続スロットの run** という形で本物の断片化が
 起きる。

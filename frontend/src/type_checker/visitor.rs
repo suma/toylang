@@ -189,6 +189,16 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg_types: vec![],
                 return_type: TypeDecl::Ptr,
             },
+            // Pointer arithmetic (MEMORY_PROFILING M3 residual): make an
+            // interior pointer that addresses `base + offset`, so an
+            // offset-based region allocator can hand out sub-blocks of one
+            // allocation. `ptr` is pointer-sized (u64) in every backend.
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::PtrOffset,
+                arg_count: 2,
+                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64],
+                return_type: TypeDecl::Ptr,
+            },
             // String → pointer conversion. The pointer's lifetime is
             // tied to the input string; backends differ on the pointee
             // representation (raw NUL-terminated bytes for AOT/JIT,

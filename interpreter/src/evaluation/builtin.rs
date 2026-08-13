@@ -425,6 +425,35 @@ impl EvaluationContext<'_> {
                 Ok(EvaluationResult::Value((Object::Unit).into()))
             }
 
+            BuiltinFunction::PtrOffset => {
+                if args.len() != 2 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "ptr_offset takes 2 arguments (base, offset)".to_string(),
+                        expected: 2,
+                        found: args.len(),
+                    });
+                }
+                let base_result = self.evaluate(&args[0])?;
+                let base_obj = try_value!(Ok(base_result));
+                let base = base_obj.borrow().try_unwrap_pointer().map_err(|_| {
+                    InterpreterError::InternalError(
+                        "ptr_offset expects pointer as first argument".to_string(),
+                    )
+                })?;
+                let offset_result = self.evaluate(&args[1])?;
+                let offset_obj = try_value!(Ok(offset_result));
+                let offset = offset_obj.borrow().try_unwrap_uint64().map_err(|_| {
+                    InterpreterError::InternalError(
+                        "ptr_offset expects u64 offset as second argument".to_string(),
+                    )
+                })?;
+                // The pointer value is the raw address; an interior
+                // pointer is just `base + offset`. Wrapping keeps the
+                // arithmetic total, matching the AOT `iadd` lowering.
+                let addr = base.wrapping_add(offset as usize);
+                Ok(EvaluationResult::Value((Object::Pointer(addr)).into()))
+            }
+
             BuiltinFunction::StrLen => {
                 // `__builtin_str_len(s: str) -> u64` — interpreter
                 // semantic: just return `s.bytes().len()`. Object

@@ -724,19 +724,22 @@ impl HeapManager {
         }
     }
     
-    /// Read u64 from memory at address + offset
+    /// Read u64 from memory at address + offset. `addr` may be a base
+    /// address or an interior pointer (`__builtin_ptr_offset`).
     pub fn read_u64(&self, addr: usize, offset: usize) -> Option<u64> {
         if addr == 0 {
             return None; // null pointer access
         }
-        
-        let (size, _) = self.allocations.get(&addr)?;
-        if offset + 8 > *size {
+
+        let (base, size) = self.resolve_block(addr)?;
+        let within = addr - base;
+        let end = within.checked_add(offset)?.checked_add(8)?;
+        if end > size {
             return None; // out of bounds
         }
-        
-        let memory_offset = self.addr_to_memory_offset(addr)?;
-        let slice = &self.memory[memory_offset + offset..memory_offset + offset + 8];
+
+        let memory_offset = addr - 1;
+        let slice = self.memory.get(memory_offset + offset..memory_offset + offset + 8)?;
         Some(u64::from_le_bytes(slice.try_into().ok()?))
     }
     
@@ -793,29 +796,33 @@ impl HeapManager {
         true
     }
 
-    /// Write u64 to memory at address + offset
+    /// Write u64 to memory at address + offset. `addr` may be a base
+    /// address or an interior pointer (`__builtin_ptr_offset`).
     pub fn write_u64(&mut self, addr: usize, offset: usize, value: u64) -> bool {
         if addr == 0 {
             return false; // null pointer access
         }
-        
-        let (size, _) = match self.allocations.get(&addr) {
-            Some(s) => *s,
+
+        let (base, size) = match self.resolve_block(addr) {
+            Some(b) => b,
             None => return false,
         };
-        
-        if offset + 8 > size {
+        let within = addr - base;
+        let end = match within.checked_add(offset).and_then(|e| e.checked_add(8)) {
+            Some(e) => e,
+            None => return false,
+        };
+        if end > size {
             return false; // out of bounds
         }
-        
-        if let Some(memory_offset) = self.addr_to_memory_offset(addr) {
-            let bytes = value.to_le_bytes();
-            self.memory[memory_offset + offset..memory_offset + offset + 8]
-                .copy_from_slice(&bytes);
-            true
-        } else {
-            false
-        }
+
+        let memory_offset = addr - 1;
+        let Some(slice) = self.memory.get_mut(memory_offset + offset..memory_offset + offset + 8)
+        else {
+            return false;
+        };
+        slice.copy_from_slice(&value.to_le_bytes());
+        true
     }
     
     /// Copy memory from src to dest. Walks both the raw byte buffer
@@ -914,46 +921,63 @@ impl HeapManager {
         }
     }
     
-    /// Check if address is valid
+    /// Check if address is valid. `addr` may be a base or an interior
+    /// pointer.
     pub fn is_valid_address(&self, addr: usize) -> bool {
-        addr == 0 || self.allocations.contains_key(&addr)
+        addr == 0 || self.resolve_block(addr).is_some()
     }
     
     // Helper methods
-    
-    fn addr_to_memory_offset(&self, addr: usize) -> Option<usize> {
-        // Simple linear mapping for now
-        // In a real implementation, this would be more complex
-        if self.allocations.contains_key(&addr) {
-            Some(addr - 1) // subtract 1 because addresses start at 1
-        } else {
-            None
+
+    /// Resolve `addr` to the allocation that contains it, returning
+    /// `(base, size)`. `addr` may be a base address or an interior
+    /// pointer produced by `__builtin_ptr_offset`. The byte buffer is
+    /// contiguous and 1-based, so every address in `(0, next_addr]`
+    /// falls into exactly one block.
+    fn resolve_block(&self, addr: usize) -> Option<(usize, usize)> {
+        if let Some((size, _)) = self.allocations.get(&addr) {
+            return Some((addr, *size));
         }
+        // Interior pointer: scan for the enclosing block. Only
+        // offset-based allocators create interior pointers, so the
+        // linear scan is the rare path.
+        for (&base, &(size, _)) in &self.allocations {
+            if addr > base && addr < base + size {
+                return Some((base, size));
+            }
+        }
+        None
     }
     
     fn get_memory_slice(&self, addr: usize, size: usize) -> Option<&[u8]> {
-        let (alloc_size, _) = self.allocations.get(&addr)?;
-        if size > *alloc_size {
+        let (base, alloc_size) = self.resolve_block(addr)?;
+        let within = addr - base;
+        let end = within.checked_add(size)?;
+        if end > alloc_size {
             return None;
         }
-        
-        let memory_offset = self.addr_to_memory_offset(addr)?;
-        if memory_offset + size <= self.memory.len() {
-            Some(&self.memory[memory_offset..memory_offset + size])
+
+        let memory_offset = addr - 1;
+        let end = memory_offset.checked_add(size)?;
+        if end <= self.memory.len() {
+            Some(&self.memory[memory_offset..end])
         } else {
             None
         }
     }
     
     fn get_memory_slice_mut(&mut self, addr: usize, size: usize) -> Option<&mut [u8]> {
-        let (alloc_size, _) = self.allocations.get(&addr).copied()?;
-        if size > alloc_size {
+        let (base, alloc_size) = self.resolve_block(addr)?;
+        let within = addr - base;
+        let end = within.checked_add(size)?;
+        if end > alloc_size {
             return None;
         }
-        
-        let memory_offset = self.addr_to_memory_offset(addr)?;
-        if memory_offset + size <= self.memory.len() {
-            Some(&mut self.memory[memory_offset..memory_offset + size])
+
+        let memory_offset = addr - 1;
+        let end = memory_offset.checked_add(size)?;
+        if end <= self.memory.len() {
+            Some(&mut self.memory[memory_offset..end])
         } else {
             None
         }

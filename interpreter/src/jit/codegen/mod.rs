@@ -1353,6 +1353,9 @@ impl<'a, 'b> State<'a, 'b> {
                     BuiltinFunction::RecordAllocatorLayout => {
                         Err("record_allocator_layout is not JIT-eligible".into())
                     }
+                    BuiltinFunction::PtrOffset => {
+                        Err("ptr_offset is not JIT-eligible".into())
+                    }
                 }
             }
             Expr::Cast(inner, target) => {

@@ -351,6 +351,7 @@ pub enum BuiltinFunction {
     PtrIsNull,    // __builtin_ptr_is_null(pointer: ptr) -> bool
     PtrEq,        // __builtin_ptr_eq(a: ptr, b: ptr) -> bool
     NullPtr,      // __builtin_null_ptr() -> ptr — portable null pointer constant
+    PtrOffset,    // __builtin_ptr_offset(base: ptr, offset: u64) -> ptr — interior pointer
 
     // String → pointer conversion. Returns a pointer to the string's
     // UTF-8 bytes (NUL-terminated). The pointer is valid for the
@@ -475,6 +476,7 @@ pub struct BuiltinFunctionSymbols {
     pub ptr_is_null: DefaultSymbol,
     pub ptr_eq: DefaultSymbol,
     pub null_ptr: DefaultSymbol,
+    pub ptr_offset: DefaultSymbol,
 
     // String → pointer conversion (interop with raw byte access).
     pub str_to_ptr: DefaultSymbol,
@@ -552,6 +554,7 @@ impl BuiltinFunctionSymbols {
             ptr_is_null: interner.get_or_intern("__builtin_ptr_is_null"),
             ptr_eq: interner.get_or_intern("__builtin_ptr_eq"),
             null_ptr: interner.get_or_intern("__builtin_null_ptr"),
+            ptr_offset: interner.get_or_intern("__builtin_ptr_offset"),
             str_to_ptr: interner.get_or_intern("__builtin_str_to_ptr"),
             str_len: interner.get_or_intern("__builtin_str_len"),
             mem_copy: interner.get_or_intern("__builtin_mem_copy"),
@@ -601,6 +604,7 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.ptr_is_null { Some(BuiltinFunction::PtrIsNull) }
         else if symbol == self.ptr_eq { Some(BuiltinFunction::PtrEq) }
         else if symbol == self.null_ptr { Some(BuiltinFunction::NullPtr) }
+        else if symbol == self.ptr_offset { Some(BuiltinFunction::PtrOffset) }
         else if symbol == self.str_to_ptr { Some(BuiltinFunction::StrToPtr) }
         else if symbol == self.str_len { Some(BuiltinFunction::StrLen) }
         else if symbol == self.mem_copy { Some(BuiltinFunction::MemCopy) }

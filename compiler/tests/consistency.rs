@@ -6178,6 +6178,53 @@ fn allocators_without_a_region_still_report_no_layout() {
     );
 }
 
+// --- Pointer arithmetic: interior pointers (MEMORY-PROFILING M3 residual) ---
+//
+// `__builtin_ptr_offset(base, offset)` makes a pointer into the middle of
+// an allocation. That is the primitive an offset-based free-list / region
+// allocator is built on: allocate one block, hand out sub-blocks.
+
+#[test]
+fn interior_pointers_read_and_write_independently() {
+    // One 64-byte block split into two 32-byte cells. Writes through the
+    // two interior pointers must land in disjoint regions, and a write
+    // through one must be visible at the same offset of the base block.
+    let src = r#"
+        fn main() -> u64 {
+            val block: ptr = __builtin_heap_alloc(64u64)
+            val cell0: ptr = __builtin_ptr_offset(block, 0u64)
+            val cell1: ptr = __builtin_ptr_offset(block, 32u64)
+            __builtin_ptr_write(cell0, 0u64, 111u64)
+            __builtin_ptr_write(cell1, 0u64, 222u64)
+            val a: u64 = __builtin_ptr_read(cell0, 0u64)
+            val b: u64 = __builtin_ptr_read(cell1, 0u64)
+            # The interior pointer of cell1 aliases base + 32.
+            val c: u64 = __builtin_ptr_read(block, 32u64)
+            __builtin_heap_free(block)
+            a + b + c
+        }
+    "#;
+    // 111 + 222 + 222.
+    assert_consistent(src, "ptr_offset_cells");
+}
+
+#[test]
+fn interior_pointers_compose() {
+    // Offset from an interior pointer reaches the same address as the
+    // equivalent offset from the base — the value is plain addition.
+    let src = r#"
+        fn main() -> u64 {
+            val block: ptr = __builtin_heap_alloc(64u64)
+            val half: ptr = __builtin_ptr_offset(block, 32u64)
+            val quarter: ptr = __builtin_ptr_offset(half, 16u64)
+            __builtin_ptr_write(quarter, 0u64, 99u64)
+            val v: u64 = __builtin_ptr_read(block, 48u64)
+            v
+        }
+    "#;
+    assert_consistent(src, "ptr_offset_compose");
+}
+
 /// The IR `lower_program` produces for `source`, rendered.
 fn lowered_ir(source: &str) -> String {
     let mut parser = frontend::ParserWithInterner::new(source);

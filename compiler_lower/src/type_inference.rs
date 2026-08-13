@@ -273,6 +273,9 @@ impl<'a> FunctionLower<'a> {
                 frontend::ast::BuiltinFunction::PtrIsNull => Some(Type::Bool),
                 frontend::ast::BuiltinFunction::PtrEq => Some(Type::Bool),
                 frontend::ast::BuiltinFunction::NullPtr => Some(Type::U64),
+                // `__builtin_ptr_offset(base, offset) -> ptr` is a
+                // pointer-sized (u64) interior address.
+                frontend::ast::BuiltinFunction::PtrOffset => Some(Type::U64),
                 frontend::ast::BuiltinFunction::MemStat(_) => Some(Type::U64),
                 // `__builtin_record_allocator_layout(...) -> unit`.
                 frontend::ast::BuiltinFunction::RecordAllocatorLayout => Some(Type::Unit),

@@ -1955,6 +1955,32 @@ impl<'a> FunctionLower<'a> {
                 }
                 Ok(self.emit(InstKind::Const(crate::ir::Const::U64(0)), Some(Type::U64)))
             }
+            BuiltinFunction::PtrOffset => {
+                // `__builtin_ptr_offset(base, offset) -> ptr` is a plain
+                // address addition: `ptr` is u64 in the IR, so lowering
+                // to `BinOp::Add` reuses every backend's integer add
+                // without a new instruction.
+                if args.len() != 2 {
+                    return Err(format!(
+                        "__builtin_ptr_offset takes 2 args (base, offset), got {}",
+                        args.len()
+                    ));
+                }
+                let base = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "ptr_offset base produced no value".to_string())?;
+                let offset = self
+                    .lower_expr(&args[1])?
+                    .ok_or_else(|| "ptr_offset offset produced no value".to_string())?;
+                Ok(self.emit(
+                    InstKind::BinOp {
+                        op: crate::ir::BinOp::Add,
+                        lhs: base,
+                        rhs: offset,
+                    },
+                    Some(Type::U64),
+                ))
+            }
             BuiltinFunction::MemStat(stat) => {
                 if !args.is_empty() {
                     return Err(format!(

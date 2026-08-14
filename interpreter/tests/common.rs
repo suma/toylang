@@ -94,8 +94,15 @@ pub fn assert_program_result_f64(source_code: &str, expected: f64) {
     );
 }
 
-/// Helper function to execute a program and assert the result is a u64 array
-pub fn assert_program_result_array_u64(source_code: &str, expected: Vec<u64>) {
+/// Helper function to execute a program and assert the result is an array
+/// of primitive elements. The two concrete helpers (`_u64` / `_i64`) share
+/// this shape; a generic-with-extractor would force a closure at every call
+/// site for no gain, so keep the typed wrappers thin.
+fn assert_program_result_array<T: PartialEq + std::fmt::Debug>(
+    source_code: &str,
+    expected: &[T],
+    extract: fn(&Object) -> Option<T>,
+) {
     let result = test_program(source_code)
         .expect("File execution failed");
     let borrowed = result.borrow();
@@ -104,34 +111,30 @@ pub fn assert_program_result_array_u64(source_code: &str, expected: Vec<u64>) {
             assert_eq!(elements.len(), expected.len(), "Array length mismatch");
             for (i, elem) in elements.iter().enumerate() {
                 let elem_borrowed = elem.borrow();
-                match &*elem_borrowed {
-                    Object::UInt64(val) => assert_eq!(*val, expected[i], "Element {} mismatch", i),
-                    other => panic!("Expected UInt64 at index {} but got {:?}", i, other),
-                }
+                let Some(actual) = extract(&elem_borrowed) else {
+                    panic!("Expected element at index {} but got {:?}", i, &elem_borrowed);
+                };
+                assert_eq!(actual, expected[i], "Element {} mismatch", i);
             }
         }
         other => panic!("Expected Array but got {:?}", other),
     }
 }
 
+/// Helper function to execute a program and assert the result is a u64 array
+pub fn assert_program_result_array_u64(source_code: &str, expected: Vec<u64>) {
+    assert_program_result_array(source_code, &expected, |obj| match obj {
+        Object::UInt64(val) => Some(*val),
+        _ => None,
+    });
+}
+
 /// Helper function to execute a program and assert the result is an i64 array
 pub fn assert_program_result_array_i64(source_code: &str, expected: Vec<i64>) {
-    let result = test_program(source_code)
-        .expect("File execution failed");
-    let borrowed = result.borrow();
-    match &*borrowed {
-        Object::Array(elements) => {
-            assert_eq!(elements.len(), expected.len(), "Array length mismatch");
-            for (i, elem) in elements.iter().enumerate() {
-                let elem_borrowed = elem.borrow();
-                match &*elem_borrowed {
-                    Object::Int64(val) => assert_eq!(*val, expected[i], "Element {} mismatch", i),
-                    other => panic!("Expected Int64 at index {} but got {:?}", i, other),
-                }
-            }
-        }
-        other => panic!("Expected Array but got {:?}", other),
-    }
+    assert_program_result_array(source_code, &expected, |obj| match obj {
+        Object::Int64(val) => Some(*val),
+        _ => None,
+    });
 }
 
 /// Helper function to execute a program and expect it to fail

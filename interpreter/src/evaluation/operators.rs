@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::rc::Rc;
 use frontend::ast::*;
 use frontend::type_decl::TypeDecl;
@@ -8,60 +7,6 @@ use crate::value::Value;
 use crate::error::InterpreterError;
 use super::{EvaluationContext, EvaluationResult};
 
-/// Lift an `&Object` into a `Value` without allocating an `Rc`. Used
-/// by the legacy `&Object`-shaped operator wrappers; all internal
-/// dispatch operates on `Value` directly.
-fn object_ref_to_value(obj: &Object) -> Value {
-    match obj {
-        Object::Bool(b) => Value::Bool(*b),
-        Object::Int64(v) => Value::Int64(*v),
-        Object::UInt64(v) => Value::UInt64(*v),
-        Object::Int8(v) => Value::Int8(*v),
-        Object::Int16(v) => Value::Int16(*v),
-        Object::Int32(v) => Value::Int32(*v),
-        Object::UInt8(v) => Value::UInt8(*v),
-        Object::UInt16(v) => Value::UInt16(*v),
-        Object::UInt32(v) => Value::UInt32(*v),
-        Object::Float64(v) => Value::Float64(*v),
-        Object::ConstString(sym) => Value::ConstString(*sym),
-        Object::Pointer(addr) => Value::Pointer(*addr),
-        Object::Null(td) => Value::Null(td.clone()),
-        Object::Unit => Value::Unit,
-        // Heap-shaped: we do need a fresh Rc cell here because the
-        // caller only has `&Object`. Wrapping a clone keeps the new
-        // cell independent of any outer storage. The legacy callers
-        // are warm enough that this is acceptable.
-        _ => Value::Heap(Rc::new(RefCell::new(obj.clone()))),
-    }
-}
-
-/// Inverse of `object_ref_to_value` — convert a `Value` back into the
-/// owned `Object` form expected by callers that still pass and return
-/// `Object` (the public `evaluate_add` / `evaluate_sub` wrappers).
-fn value_to_object(v: Value) -> Object {
-    match v {
-        Value::Bool(b) => Object::Bool(b),
-        Value::Int64(v) => Object::Int64(v),
-        Value::UInt64(v) => Object::UInt64(v),
-        Value::Int8(v) => Object::Int8(v),
-        Value::Int16(v) => Object::Int16(v),
-        Value::Int32(v) => Object::Int32(v),
-        Value::UInt8(v) => Object::UInt8(v),
-        Value::UInt16(v) => Object::UInt16(v),
-        Value::UInt32(v) => Object::UInt32(v),
-        Value::Float64(v) => Object::Float64(v),
-        Value::ConstString(sym) => Object::ConstString(sym),
-        Value::Pointer(addr) => Object::Pointer(addr),
-        Value::Null(td) => Object::Null(td),
-        Value::Unit => Object::Unit,
-        Value::Heap(rc) => match Rc::try_unwrap(rc) {
-            Ok(cell) => cell.into_inner(),
-            // Multiple Rc references: clone out the heap value.
-            Err(rc) => rc.borrow().clone(),
-        },
-    }
-}
-
 #[derive(Debug)]
 pub(super) enum ArithmeticOp {
     Add,
@@ -69,6 +14,26 @@ pub(super) enum ArithmeticOp {
     Mul,
     Div,
     Mod,
+}
+
+/// Generate the per-width integer `apply_*` methods. Every width's
+/// `wrapping_*` family in libcore has the same semantics (silent wrap
+/// on overflow, trap on div-by-zero), so the bodies are identical —
+/// only the operand type differs. This mirrors `object_unwrap_methods!`.
+macro_rules! arithmetic_apply {
+    ($(($method:ident, $ty:ty)),+ $(,)?) => {
+        $(
+            fn $method(&self, l: $ty, r: $ty) -> $ty {
+                match self {
+                    ArithmeticOp::Add => l.wrapping_add(r),
+                    ArithmeticOp::Sub => l.wrapping_sub(r),
+                    ArithmeticOp::Mul => l.wrapping_mul(r),
+                    ArithmeticOp::Div => l.wrapping_div(r),
+                    ArithmeticOp::Mod => l.wrapping_rem(r),
+                }
+            }
+        )+
+    };
 }
 
 impl ArithmeticOp {
@@ -92,94 +57,27 @@ impl ArithmeticOp {
         }
     }
 
-    fn apply_i64(&self, l: i64, r: i64) -> i64 {
-        // Wrapping arithmetic so the interpreter agrees with the
-        // compiler / JIT (cranelift's `iadd` / `isub` / `imul` wrap
-        // on overflow). Rust's bare `+` would panic in debug mode
-        // and wrap in release — we want a single deterministic
-        // semantics across all build modes.
-        match self {
-            ArithmeticOp::Add => l.wrapping_add(r),
-            ArithmeticOp::Sub => l.wrapping_sub(r),
-            ArithmeticOp::Mul => l.wrapping_mul(r),
-            // Division and remainder by zero still trap (cranelift's
-            // `sdiv` / `srem` trap, and Rust's `/` / `%` panic);
-            // overflow on signed division (i64::MIN / -1) wraps.
-            ArithmeticOp::Div => l.wrapping_div(r),
-            // Rust's `%` is truncated remainder, matching most C-family
-            // languages — `(-7) % 3 == -1`. Diverges from mathematical
-            // modulo, which is fine for our use cases.
-            ArithmeticOp::Mod => l.wrapping_rem(r),
-        }
-    }
-
-    fn apply_u64(&self, l: u64, r: u64) -> u64 {
-        match self {
-            ArithmeticOp::Add => l.wrapping_add(r),
-            ArithmeticOp::Sub => l.wrapping_sub(r),
-            ArithmeticOp::Mul => l.wrapping_mul(r),
-            ArithmeticOp::Div => l.wrapping_div(r),
-            ArithmeticOp::Mod => l.wrapping_rem(r),
-        }
-    }
-
-    // NUM-W narrow integer arithmetic. Each width has its own
-    // `wrapping_*` family in libcore, so the semantics match the
-    // i64 / u64 path: silent wrap on overflow, trap on
-    // div-by-zero (Rust's `wrapping_div` panics on rhs == 0).
-    fn apply_i32(&self, l: i32, r: i32) -> i32 {
-        match self {
-            ArithmeticOp::Add => l.wrapping_add(r),
-            ArithmeticOp::Sub => l.wrapping_sub(r),
-            ArithmeticOp::Mul => l.wrapping_mul(r),
-            ArithmeticOp::Div => l.wrapping_div(r),
-            ArithmeticOp::Mod => l.wrapping_rem(r),
-        }
-    }
-    fn apply_u32(&self, l: u32, r: u32) -> u32 {
-        match self {
-            ArithmeticOp::Add => l.wrapping_add(r),
-            ArithmeticOp::Sub => l.wrapping_sub(r),
-            ArithmeticOp::Mul => l.wrapping_mul(r),
-            ArithmeticOp::Div => l.wrapping_div(r),
-            ArithmeticOp::Mod => l.wrapping_rem(r),
-        }
-    }
-    fn apply_i16(&self, l: i16, r: i16) -> i16 {
-        match self {
-            ArithmeticOp::Add => l.wrapping_add(r),
-            ArithmeticOp::Sub => l.wrapping_sub(r),
-            ArithmeticOp::Mul => l.wrapping_mul(r),
-            ArithmeticOp::Div => l.wrapping_div(r),
-            ArithmeticOp::Mod => l.wrapping_rem(r),
-        }
-    }
-    fn apply_u16(&self, l: u16, r: u16) -> u16 {
-        match self {
-            ArithmeticOp::Add => l.wrapping_add(r),
-            ArithmeticOp::Sub => l.wrapping_sub(r),
-            ArithmeticOp::Mul => l.wrapping_mul(r),
-            ArithmeticOp::Div => l.wrapping_div(r),
-            ArithmeticOp::Mod => l.wrapping_rem(r),
-        }
-    }
-    fn apply_i8(&self, l: i8, r: i8) -> i8 {
-        match self {
-            ArithmeticOp::Add => l.wrapping_add(r),
-            ArithmeticOp::Sub => l.wrapping_sub(r),
-            ArithmeticOp::Mul => l.wrapping_mul(r),
-            ArithmeticOp::Div => l.wrapping_div(r),
-            ArithmeticOp::Mod => l.wrapping_rem(r),
-        }
-    }
-    fn apply_u8(&self, l: u8, r: u8) -> u8 {
-        match self {
-            ArithmeticOp::Add => l.wrapping_add(r),
-            ArithmeticOp::Sub => l.wrapping_sub(r),
-            ArithmeticOp::Mul => l.wrapping_mul(r),
-            ArithmeticOp::Div => l.wrapping_div(r),
-            ArithmeticOp::Mod => l.wrapping_rem(r),
-        }
+    // Wrapping arithmetic so the interpreter agrees with the
+    // compiler / JIT (cranelift's `iadd` / `isub` / `imul` wrap
+    // on overflow). Rust's bare `+` would panic in debug mode
+    // and wrap in release — we want a single deterministic
+    // semantics across all build modes.
+    //
+    // Division and remainder by zero still trap (cranelift's
+    // `sdiv` / `srem` trap, and Rust's `/` / `%` panic);
+    // overflow on signed division (i64::MIN / -1) wraps.
+    // Rust's `%` is truncated remainder, matching most C-family
+    // languages — `(-7) % 3 == -1`. Diverges from mathematical
+    // modulo, which is fine for our use cases.
+    arithmetic_apply! {
+        (apply_i64, i64),
+        (apply_u64, u64),
+        (apply_i32, i32),
+        (apply_u32, u32),
+        (apply_i16, i16),
+        (apply_u16, u16),
+        (apply_i8, i8),
+        (apply_u8, u8),
     }
 
     fn apply_f64(&self, l: f64, r: f64) -> f64 {
@@ -205,6 +103,26 @@ pub(super) enum ComparisonOp {
     Ge,  // >=
 }
 
+/// Generate the per-width integer `apply_*` comparison methods. Each
+/// width compares natively in its own range, so the bodies are
+/// identical — only the operand type differs.
+macro_rules! comparison_apply {
+    ($(($method:ident, $ty:ty)),+ $(,)?) => {
+        $(
+            fn $method(&self, l: $ty, r: $ty) -> bool {
+                match self {
+                    ComparisonOp::Eq => l == r,
+                    ComparisonOp::Ne => l != r,
+                    ComparisonOp::Lt => l < r,
+                    ComparisonOp::Le => l <= r,
+                    ComparisonOp::Gt => l > r,
+                    ComparisonOp::Ge => l >= r,
+                }
+            }
+        )+
+    };
+}
+
 impl ComparisonOp {
     fn name(&self) -> &str {
         match self {
@@ -228,71 +146,15 @@ impl ComparisonOp {
         }
     }
 
-    fn apply_i64(&self, l: i64, r: i64) -> bool {
-        match self {
-            ComparisonOp::Eq => l == r,
-            ComparisonOp::Ne => l != r,
-            ComparisonOp::Lt => l < r,
-            ComparisonOp::Le => l <= r,
-            ComparisonOp::Gt => l > r,
-            ComparisonOp::Ge => l >= r,
-        }
-    }
-
-    fn apply_u64(&self, l: u64, r: u64) -> bool {
-        match self {
-            ComparisonOp::Eq => l == r,
-            ComparisonOp::Ne => l != r,
-            ComparisonOp::Lt => l < r,
-            ComparisonOp::Le => l <= r,
-            ComparisonOp::Gt => l > r,
-            ComparisonOp::Ge => l >= r,
-        }
-    }
-
-    // NUM-W narrow-int comparisons. Same shape as i64 / u64;
-    // each width compares natively in its own range.
-    fn apply_i32(&self, l: i32, r: i32) -> bool {
-        match self {
-            ComparisonOp::Eq => l == r, ComparisonOp::Ne => l != r,
-            ComparisonOp::Lt => l < r, ComparisonOp::Le => l <= r,
-            ComparisonOp::Gt => l > r, ComparisonOp::Ge => l >= r,
-        }
-    }
-    fn apply_u32(&self, l: u32, r: u32) -> bool {
-        match self {
-            ComparisonOp::Eq => l == r, ComparisonOp::Ne => l != r,
-            ComparisonOp::Lt => l < r, ComparisonOp::Le => l <= r,
-            ComparisonOp::Gt => l > r, ComparisonOp::Ge => l >= r,
-        }
-    }
-    fn apply_i16(&self, l: i16, r: i16) -> bool {
-        match self {
-            ComparisonOp::Eq => l == r, ComparisonOp::Ne => l != r,
-            ComparisonOp::Lt => l < r, ComparisonOp::Le => l <= r,
-            ComparisonOp::Gt => l > r, ComparisonOp::Ge => l >= r,
-        }
-    }
-    fn apply_u16(&self, l: u16, r: u16) -> bool {
-        match self {
-            ComparisonOp::Eq => l == r, ComparisonOp::Ne => l != r,
-            ComparisonOp::Lt => l < r, ComparisonOp::Le => l <= r,
-            ComparisonOp::Gt => l > r, ComparisonOp::Ge => l >= r,
-        }
-    }
-    fn apply_i8(&self, l: i8, r: i8) -> bool {
-        match self {
-            ComparisonOp::Eq => l == r, ComparisonOp::Ne => l != r,
-            ComparisonOp::Lt => l < r, ComparisonOp::Le => l <= r,
-            ComparisonOp::Gt => l > r, ComparisonOp::Ge => l >= r,
-        }
-    }
-    fn apply_u8(&self, l: u8, r: u8) -> bool {
-        match self {
-            ComparisonOp::Eq => l == r, ComparisonOp::Ne => l != r,
-            ComparisonOp::Lt => l < r, ComparisonOp::Le => l <= r,
-            ComparisonOp::Gt => l > r, ComparisonOp::Ge => l >= r,
-        }
+    comparison_apply! {
+        (apply_i64, i64),
+        (apply_u64, u64),
+        (apply_i32, i32),
+        (apply_u32, u32),
+        (apply_i16, i16),
+        (apply_u16, u16),
+        (apply_i8, i8),
+        (apply_u8, u8),
     }
 
     fn apply_f64(&self, l: f64, r: f64) -> bool {
@@ -470,21 +332,6 @@ impl EvaluationContext<'_> {
                 ),
             }),
         })
-    }
-
-    // Legacy `&Object`-flavoured wrappers retained while other modules
-    // still funnel through them (e.g. older tests). They go through
-    // the Value path so there's a single source of truth.
-    fn evaluate_comparison_op(&self, lhs: &Object, rhs: &Object, op: ComparisonOp) -> Result<Object, InterpreterError> {
-        let lv = object_ref_to_value(lhs);
-        let rv = object_ref_to_value(rhs);
-        Ok(value_to_object(self.evaluate_comparison_op_v(&lv, &rv, op)?))
-    }
-
-    fn evaluate_arithmetic_op(&self, lhs: &Object, rhs: &Object, op: ArithmeticOp) -> Result<Object, InterpreterError> {
-        let lv = object_ref_to_value(lhs);
-        let rv = object_ref_to_value(rhs);
-        Ok(value_to_object(self.evaluate_arithmetic_op_v(&lv, &rv, op, None)?))
     }
 
     pub fn evaluate_unary(&mut self, op: &UnaryOp, operand: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
@@ -725,121 +572,51 @@ impl EvaluationContext<'_> {
             Operator::LE => self.evaluate_comparison_op_v(&lhs_v, &rhs_v, ComparisonOp::Le)?,
             Operator::GT => self.evaluate_comparison_op_v(&lhs_v, &rhs_v, ComparisonOp::Gt)?,
             Operator::GE => self.evaluate_comparison_op_v(&lhs_v, &rhs_v, ComparisonOp::Ge)?,
-            Operator::BitwiseAnd => self.evaluate_bitwise_and_v(&lhs_v, &rhs_v)?,
-            Operator::BitwiseOr => self.evaluate_bitwise_or_v(&lhs_v, &rhs_v)?,
-            Operator::BitwiseXor => self.evaluate_bitwise_xor_v(&lhs_v, &rhs_v)?,
-            Operator::LeftShift => self.evaluate_left_shift_v(&lhs_v, &rhs_v)?,
-            Operator::RightShift => self.evaluate_right_shift_v(&lhs_v, &rhs_v)?,
+            Operator::BitwiseAnd => self.evaluate_bitwise_v(&lhs_v, &rhs_v, "Bitwise AND", |l, r| l & r, |l, r| l & r)?,
+            Operator::BitwiseOr => self.evaluate_bitwise_v(&lhs_v, &rhs_v, "Bitwise OR", |l, r| l | r, |l, r| l | r)?,
+            Operator::BitwiseXor => self.evaluate_bitwise_v(&lhs_v, &rhs_v, "Bitwise XOR", |l, r| l ^ r, |l, r| l ^ r)?,
+            Operator::LeftShift => self.evaluate_shift_v(&lhs_v, &rhs_v, "Left shift", |l, r| l.wrapping_shl(r), |l, r| l.wrapping_shl(r))?,
+            Operator::RightShift => self.evaluate_shift_v(&lhs_v, &rhs_v, "Right shift", |l, r| l.wrapping_shr(r), |l, r| l.wrapping_shr(r))?,
             Operator::LogicalAnd | Operator::LogicalOr => unreachable!("Should be handled above"),
         };
 
         Ok(EvaluationResult::Value(result_v))
     }
 
-    pub fn evaluate_add(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        self.evaluate_arithmetic_op(lhs, rhs, ArithmeticOp::Add)
-    }
-
-    pub fn evaluate_sub(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        self.evaluate_arithmetic_op(lhs, rhs, ArithmeticOp::Sub)
-    }
-
-    pub fn evaluate_mul(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        self.evaluate_arithmetic_op(lhs, rhs, ArithmeticOp::Mul)
-    }
-
-    pub fn evaluate_div(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        self.evaluate_arithmetic_op(lhs, rhs, ArithmeticOp::Div)
-    }
-
-    pub fn evaluate_mod(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        self.evaluate_arithmetic_op(lhs, rhs, ArithmeticOp::Mod)
-    }
-
-    pub fn evaluate_eq(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        self.evaluate_comparison_op(lhs, rhs, ComparisonOp::Eq)
-    }
-
-    pub fn evaluate_ne(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        self.evaluate_comparison_op(lhs, rhs, ComparisonOp::Ne)
-    }
-
-    pub fn evaluate_ge(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        self.evaluate_comparison_op(lhs, rhs, ComparisonOp::Ge)
-    }
-
-    pub fn evaluate_gt(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        self.evaluate_comparison_op(lhs, rhs, ComparisonOp::Gt)
-    }
-
-    pub fn evaluate_le(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        self.evaluate_comparison_op(lhs, rhs, ComparisonOp::Le)
-    }
-
-    pub fn evaluate_lt(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        self.evaluate_comparison_op(lhs, rhs, ComparisonOp::Lt)
-    }
-
-    pub fn evaluate_logical_and(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        let lhs_ty = lhs.get_type();
-        let rhs_ty = rhs.get_type();
-
-        Ok(match (lhs, rhs) {
-            (Object::Bool(l), Object::Bool(r)) => Object::Bool(*l && *r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_logical_and: Bad types for binary '&&' operation due to different type: {lhs:?}")}),
-        })
-    }
-
-    pub fn evaluate_logical_or(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        let lhs_ty = lhs.get_type();
-        let rhs_ty = rhs.get_type();
-
-        Ok(match (lhs, rhs) {
-            (Object::Bool(l), Object::Bool(r)) => Object::Bool(*l || *r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_logical_or: Bad types for binary '||' operation due to different type: {lhs:?}")}),
-        })
-    }
-
-    // Bitwise operations — Value-flavoured fast paths plus thin
-    // `&Object` wrappers retained for any external callers (none in
-    // tree today, kept for symmetry with the public API in this file).
-    fn evaluate_bitwise_and_v(&self, lhs: &Value, rhs: &Value) -> Result<Value, InterpreterError> {
+    // Bitwise operations — Value-flavoured fast paths used by
+    // `evaluate_binary`. The three ops differ only in the applied
+    // operator, so a single helper parameterised by the op name keeps
+    // the error message and the integer-type match in one place.
+    fn evaluate_bitwise_v(
+        &self,
+        lhs: &Value,
+        rhs: &Value,
+        op_name: &str,
+        apply_u64: fn(u64, u64) -> u64,
+        apply_i64: fn(i64, i64) -> i64,
+    ) -> Result<Value, InterpreterError> {
         match (lhs, rhs) {
-            (Value::UInt64(l), Value::UInt64(r)) => Ok(Value::UInt64(*l & *r)),
-            (Value::Int64(l), Value::Int64(r)) => Ok(Value::Int64(*l & *r)),
+            (Value::UInt64(l), Value::UInt64(r)) => Ok(Value::UInt64(apply_u64(*l, *r))),
+            (Value::Int64(l), Value::Int64(r)) => Ok(Value::Int64(apply_i64(*l, *r))),
             _ => Err(InterpreterError::TypeError {
                 expected: lhs.get_type(),
                 found: rhs.get_type(),
-                message: format!("Bitwise AND requires same integer types, got {:?} and {:?}", lhs, rhs),
+                message: format!("{op_name} requires same integer types, got {:?} and {:?}", lhs, rhs),
             }),
         }
     }
 
-    fn evaluate_bitwise_or_v(&self, lhs: &Value, rhs: &Value) -> Result<Value, InterpreterError> {
-        match (lhs, rhs) {
-            (Value::UInt64(l), Value::UInt64(r)) => Ok(Value::UInt64(*l | *r)),
-            (Value::Int64(l), Value::Int64(r)) => Ok(Value::Int64(*l | *r)),
-            _ => Err(InterpreterError::TypeError {
-                expected: lhs.get_type(),
-                found: rhs.get_type(),
-                message: format!("Bitwise OR requires same integer types, got {:?} and {:?}", lhs, rhs),
-            }),
-        }
-    }
-
-    fn evaluate_bitwise_xor_v(&self, lhs: &Value, rhs: &Value) -> Result<Value, InterpreterError> {
-        match (lhs, rhs) {
-            (Value::UInt64(l), Value::UInt64(r)) => Ok(Value::UInt64(*l ^ *r)),
-            (Value::Int64(l), Value::Int64(r)) => Ok(Value::Int64(*l ^ *r)),
-            _ => Err(InterpreterError::TypeError {
-                expected: lhs.get_type(),
-                found: rhs.get_type(),
-                message: format!("Bitwise XOR requires same integer types, got {:?} and {:?}", lhs, rhs),
-            }),
-        }
-    }
-
-    fn evaluate_left_shift_v(&self, lhs: &Value, rhs: &Value) -> Result<Value, InterpreterError> {
+    // Shifts share the "rhs must be a UInt64 shift amount, then
+    // operate on the lhs's integer type" shape; only the direction
+    // of the `wrapping_sh*` call differs.
+    fn evaluate_shift_v(
+        &self,
+        lhs: &Value,
+        rhs: &Value,
+        op_name: &str,
+        apply_u64: fn(u64, u32) -> u64,
+        apply_i64: fn(i64, u32) -> i64,
+    ) -> Result<Value, InterpreterError> {
         let shift_amount = match rhs {
             Value::UInt64(r) => *r,
             _ => return Err(InterpreterError::TypeError {
@@ -849,64 +626,14 @@ impl EvaluationContext<'_> {
             }),
         };
         match lhs {
-            Value::UInt64(l) => Ok(Value::UInt64(l.wrapping_shl(shift_amount as u32))),
-            Value::Int64(l) => Ok(Value::Int64(l.wrapping_shl(shift_amount as u32))),
+            Value::UInt64(l) => Ok(Value::UInt64(apply_u64(*l, shift_amount as u32))),
+            Value::Int64(l) => Ok(Value::Int64(apply_i64(*l, shift_amount as u32))),
             _ => Err(InterpreterError::TypeError {
                 expected: TypeDecl::UInt64,
                 found: lhs.get_type(),
-                message: format!("Left shift requires integer type on left side, got {:?}", lhs),
+                message: format!("{op_name} requires integer type on left side, got {:?}", lhs),
             }),
         }
-    }
-
-    fn evaluate_right_shift_v(&self, lhs: &Value, rhs: &Value) -> Result<Value, InterpreterError> {
-        let shift_amount = match rhs {
-            Value::UInt64(r) => *r,
-            _ => return Err(InterpreterError::TypeError {
-                expected: TypeDecl::UInt64,
-                found: rhs.get_type(),
-                message: format!("Shift amount must be UInt64, got {:?}", rhs),
-            }),
-        };
-        match lhs {
-            Value::UInt64(l) => Ok(Value::UInt64(l.wrapping_shr(shift_amount as u32))),
-            Value::Int64(l) => Ok(Value::Int64(l.wrapping_shr(shift_amount as u32))),
-            _ => Err(InterpreterError::TypeError {
-                expected: TypeDecl::UInt64,
-                found: lhs.get_type(),
-                message: format!("Right shift requires integer type on left side, got {:?}", lhs),
-            }),
-        }
-    }
-
-    pub fn evaluate_bitwise_and(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        let lv = object_ref_to_value(lhs);
-        let rv = object_ref_to_value(rhs);
-        Ok(value_to_object(self.evaluate_bitwise_and_v(&lv, &rv)?))
-    }
-
-    pub fn evaluate_bitwise_or(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        let lv = object_ref_to_value(lhs);
-        let rv = object_ref_to_value(rhs);
-        Ok(value_to_object(self.evaluate_bitwise_or_v(&lv, &rv)?))
-    }
-
-    pub fn evaluate_bitwise_xor(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        let lv = object_ref_to_value(lhs);
-        let rv = object_ref_to_value(rhs);
-        Ok(value_to_object(self.evaluate_bitwise_xor_v(&lv, &rv)?))
-    }
-
-    pub fn evaluate_left_shift(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        let lv = object_ref_to_value(lhs);
-        let rv = object_ref_to_value(rhs);
-        Ok(value_to_object(self.evaluate_left_shift_v(&lv, &rv)?))
-    }
-
-    pub fn evaluate_right_shift(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        let lv = object_ref_to_value(lhs);
-        let rv = object_ref_to_value(rhs);
-        Ok(value_to_object(self.evaluate_right_shift_v(&lv, &rv)?))
     }
 
     // Short-circuit evaluation for logical AND

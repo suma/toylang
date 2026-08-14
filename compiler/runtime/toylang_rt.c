@@ -711,6 +711,29 @@ static const char *toy_str_alloc(const char *bytes, uint64_t len) {
     return (const char *) (base + len + 1u);
 }
 
+/* `a == b` between two toylang str values: compare the bytes.
+ *
+ * The runtime value points at the trailing u64 length, so the bytes
+ * start at `p - len - 1`. Comparing the handles instead would make two
+ * equal strings unequal unless they came from the same literal. */
+int toy_str_eq(const char *a, const char *b) {
+    if (a == b) {
+        return 1;
+    }
+    if (!a || !b) {
+        return 0;
+    }
+    uint64_t la = *(const uint64_t *) a;
+    uint64_t lb = *(const uint64_t *) b;
+    if (la != lb) {
+        return 0;
+    }
+    if (la == 0) {
+        return 1;
+    }
+    return memcmp(a - la - 1u, b - lb - 1u, (size_t) la) == 0;
+}
+
 /* `__builtin_str_from_bytes(p, len)` — exported wrapper over the
  * allocator above so codegen can call it directly. Copies, so the
  * resulting str is unaffected by later writes to the buffer. */

@@ -2916,12 +2916,9 @@ fn str_to_ptr_byte_walk_round_trip() {
 // --- `__builtin_str_from_bytes` ------------------------------------
 //
 // The inverse of `str_to_ptr`, and the only way to build a `str` from
-// bytes computed at runtime. Asserted on stdout rather than on an exit
-// code from `s == "..."`: `==` between two `str` values compares
-// *pointers* on the compiled backends and *content* on the
-// interpreter, so a str built at runtime never equals a literal there
-// (`str_equality_compares_pointers_when_compiled` records it). Printing
-// the value is both the honest check and the thing users do with it.
+// bytes computed at runtime. Asserted on stdout because printing is
+// what users do with the result, and because the text is the thing
+// that would change.
 
 #[test]
 fn str_from_bytes_round_trips_through_a_buffer() {
@@ -2986,38 +2983,65 @@ fn a_str_built_from_bytes_survives_the_buffer_changing() {
 }
 
 #[test]
-fn str_equality_compares_pointers_when_compiled() {
-    // Recorded, not endorsed — the same spirit as
-    // `u64_addition_still_wraps`. `assert_consistent` cannot express
-    // it because the whole point is that the backends disagree.
+fn str_equality_compares_content_not_handles() {
+    // `a == b` on two `str` values compares their bytes. It used to
+    // compare the runtime handles everywhere except the tree-walker,
+    // which are pointers: `"h".concat("i") == "hi"` was true on the
+    // interpreter and false once compiled — a wrong answer that type
+    // checked, and the kind of divergence `--all-backends` exists for.
     //
-    // `a == b` on two `str` values is a content comparison on the
-    // interpreter and an integer compare of the two runtime handles
-    // everywhere else. Two equal strings that were not produced by the
-    // same literal therefore compare unequal once compiled. Any test
-    // that wants to check a computed string has to go through stdout
-    // until this is fixed.
+    // Covers both directions, both operators, empty strings, and
+    // unequal lengths. The three deliberate false cases add 1000 each,
+    // so any of them firing is unmistakable in the exit code.
+    let src = r#"
+        fn check() -> u64 {
+            var score: u64 = 0u64
+            val hi = "hi"
+            val built = "h".concat("i")
+            val other = "ho"
+            val empty = ""
+            val empty2 = "".concat("")
+            val longer = "hii"
+
+            if built == hi { score = score + 1u64 }
+            if hi == hi { score = score + 2u64 }
+            if empty == empty2 { score = score + 4u64 }
+            if built != other { score = score + 8u64 }
+            if hi != longer { score = score + 16u64 }
+            if other == hi { score = score + 1000u64 }
+            if built != hi { score = score + 1000u64 }
+            if longer == hi { score = score + 1000u64 }
+            score
+        }
+
+        fn main() -> u64 { check() }
+    "#;
+    // 1 + 2 + 4 + 8 + 16, and none of the 1000s.
+    assert_consistent(src, "str_eq_content");
+}
+
+#[test]
+fn the_interpreter_jit_compares_str_content_too() {
+    // `assert_consistent`'s lite path returns as soon as the
+    // tree-walker, the compiler-side JIT, the AOT binary and the IR VM
+    // agree — the interpreter's own JIT is only reached on the full
+    // path, so the test above passes with its str-equality arm removed.
+    // This one drives that column directly.
     if skip_e2e() {
         return;
     }
     let src = r#"
-        fn main() -> u64 {
+        fn cmp() -> u64 {
             val a = "hi"
             val b = "h".concat("i")
             if a == b { 42u64 } else { 1u64 }
         }
+        fn main() -> u64 { cmp() }
     "#;
     assert_eq!(
-        interpreter_value(src),
+        jit_exit_code(src, "str_eq_interp_jit", true),
         42,
-        "the interpreter compares str content"
-    );
-    assert_eq!(
-        compiler_exit_code(src, "str_eq_pointer", true),
-        1,
-        "the AOT path compares str handles; if this now matches, str \
-         equality has been fixed and the tests that route through \
-         stdout to avoid it can compare directly"
+        "the interpreter JIT compared str handles rather than content"
     );
 }
 

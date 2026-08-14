@@ -1039,6 +1039,15 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, result);
                 }
             }
+            InstKind::StrEq { a, b } => {
+                let av = self.value(*a);
+                let bv = self.value(*b);
+                let call = self.builder.ins().call(self.runtime.str_eq, &[av, bv]);
+                let result = self.builder.inst_results(call)[0];
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, result);
+                }
+            }
             InstKind::StrFromBytes { ptr, len } => {
                 let p = self.value(*ptr);
                 let n = self.value(*len);

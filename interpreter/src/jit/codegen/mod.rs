@@ -787,6 +787,20 @@ impl<'a, 'b> State<'a, 'b> {
                 let lhs_ty = self.expr_type(&lhs_ref)?;
                 let l = self.gen_expr(&lhs_ref)?.ok_or_else(|| "missing lhs".to_string())?;
                 let r = self.gen_expr(&rhs_ref)?.ok_or_else(|| "missing rhs".to_string())?;
+                // `==` / `!=` on two str values compares their bytes.
+                // The scalar holds a pointer, so the `icmp` below would
+                // answer "did these come from the same literal".
+                if lhs_ty == ScalarTy::Str && matches!(op, Operator::EQ | Operator::NE) {
+                    let eq = self.call_helper(HelperKind::StrEq, &[l, r])?;
+                    let cc = if matches!(op, Operator::EQ) {
+                        IntCC::NotEqual
+                    } else {
+                        IntCC::Equal
+                    };
+                    // `jit_str_eq` returns 0/1 in an i64; narrow it to
+                    // the i8 the rest of the JIT uses for bool.
+                    return Ok(Some(self.builder.ins().icmp_imm(cc, eq, 0)));
+                }
                 if lhs_ty == ScalarTy::F64 {
                     // f64 takes a separate dispatch table because the cranelift
                     // mnemonics (fadd/fsub/fmul/fdiv/fcmp) and ordered-vs-

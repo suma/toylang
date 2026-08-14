@@ -844,6 +844,15 @@ pub enum InstKind {
     /// heap-allocated str with the same layout. Produced when the
     /// type checker resolves `BuiltinMethod::StrConcat`.
     StrConcat { a: ValueId, b: ValueId },
+    /// `a == b` between two `str` values — a byte-wise comparison of
+    /// their contents, producing Bool.
+    ///
+    /// A plain `BinOp::Eq` would compare the two runtime handles,
+    /// which are pointers: two equal strings that did not come from
+    /// the same literal would compare unequal, and did. The
+    /// interpreter has always compared content, so this is also what
+    /// makes the backends agree.
+    StrEq { a: ValueId, b: ValueId },
     /// `__builtin_str_from_bytes(p, len) -> str` — copy `len` bytes
     /// from `p` into a fresh str with the standard runtime layout.
     /// The inverse of `StrToPtr`, and the only way to build a str
@@ -1528,6 +1537,7 @@ impl fmt::Display for DisplayInst<'_> {
             InstKind::PtrWrite { ptr, offset, value, value_ty } => {
                 write!(f, "ptr_write {ptr}, {offset} <- {value}: {value_ty}")
             }
+            InstKind::StrEq { a, b } => write!(f, "{prefix}str_eq {a}, {b}"),
             InstKind::StrFromBytes { ptr, len } => {
                 write!(f, "{prefix}str_from_bytes {ptr}, {len}")
             }

@@ -203,6 +203,13 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }
         }
+        InstKind::StrEq { a, b } => {
+            let l = unsafe { vm.read_value(*a).u64 };
+            let r = unsafe { vm.read_value(*b).u64 };
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_bool(heap::str_eq(l, r)));
+            }
+        }
         InstKind::StrFromBytes { ptr, len } => {
             let p = unsafe { vm.read_value(*ptr).u64 };
             let n = unsafe { vm.read_value(*len).u64 };

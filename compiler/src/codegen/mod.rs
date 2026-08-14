@@ -258,6 +258,7 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_dispatched_free: cranelift_module::FuncId,
     // MEMORY_PROFILING M4: read one allocation counter / turn counting
     // on for the run.
+    rt_str_eq: cranelift_module::FuncId,
     rt_str_from_bytes: cranelift_module::FuncId,
     rt_prof_stat: cranelift_module::FuncId,
     rt_prof_force_counting: cranelift_module::FuncId,
@@ -593,6 +594,13 @@ impl<M: Module> CodegenSession<M> {
         // returns a str pointer. The narrow-int variants ride on
         // the same sext / uext convention as the print helpers
         // (the C ABI side reads register-extended bits).
+        // `a == b` on two str values: both handles in, bool out.
+        let mut str_eq_sig = Signature::new(call_conv);
+        str_eq_sig.params.push(AbiParam::new(types::I64));
+        str_eq_sig.params.push(AbiParam::new(types::I64));
+        str_eq_sig.returns.push(AbiParam::new(types::I8));
+        let rt_str_eq = declare_helper(&mut module, "toy_str_eq", &str_eq_sig)?;
+
         // `__builtin_str_from_bytes(p, len) -> str`: byte pointer plus
         // length in, str runtime value out.
         let mut str_from_bytes_sig = Signature::new(call_conv);
@@ -699,6 +707,7 @@ impl<M: Module> CodegenSession<M> {
             rt_dispatched_alloc,
             rt_dispatched_realloc,
             rt_dispatched_free,
+            rt_str_eq,
             rt_str_from_bytes,
             rt_prof_stat,
             rt_prof_force_counting,
@@ -1419,6 +1428,7 @@ struct RuntimeRefs {
     dispatched_alloc: cranelift_codegen::ir::FuncRef,
     dispatched_realloc: cranelift_codegen::ir::FuncRef,
     dispatched_free: cranelift_codegen::ir::FuncRef,
+    str_eq: cranelift_codegen::ir::FuncRef,
     str_from_bytes: cranelift_codegen::ir::FuncRef,
     prof_stat: cranelift_codegen::ir::FuncRef,
     prof_force_counting: cranelift_codegen::ir::FuncRef,

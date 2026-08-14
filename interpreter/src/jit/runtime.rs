@@ -368,6 +368,35 @@ extern "C" fn jit_string_literal(sym_id: u64) -> u64 {
     unsafe { jit_str_alloc_from_bytes(bytes.as_ptr(), bytes.len() as u64) }
 }
 
+/// `a == b` between two str handles: compare the bytes.
+///
+/// Same layout and rule as the C runtime's `toy_str_eq`. Comparing the
+/// handles — which is what an `icmp` on the scalar would do — makes two
+/// equal strings unequal unless they came from the same literal.
+extern "C" fn jit_str_eq(a: u64, b: u64) -> u64 {
+    if a == b {
+        return 1;
+    }
+    if a == 0 || b == 0 {
+        return 0;
+    }
+    unsafe {
+        let a_ptr = a as *const u8;
+        let b_ptr = b as *const u8;
+        let la = (a_ptr as *const u64).read_unaligned();
+        let lb = (b_ptr as *const u64).read_unaligned();
+        if la != lb {
+            return 0;
+        }
+        if la == 0 {
+            return 1;
+        }
+        let a_bytes = std::slice::from_raw_parts(a_ptr.sub(la as usize + 1), la as usize);
+        let b_bytes = std::slice::from_raw_parts(b_ptr.sub(lb as usize + 1), lb as usize);
+        (a_bytes == b_bytes) as u64
+    }
+}
+
 extern "C" fn jit_str_concat(a: u64, b: u64) -> u64 {
     unsafe {
         let a_ptr = a as *const u8;
@@ -549,6 +578,7 @@ pub(crate) enum HelperKind {
     HeapFree,
     HeapRealloc,
     MemStat,
+    StrEq,
     MemCopy,
     MemMove,
     MemSet,
@@ -637,6 +667,7 @@ impl HelperKind {
             HelperKind::HeapFree => "jit_heap_free",
             HelperKind::HeapRealloc => "jit_heap_realloc",
             HelperKind::MemStat => "jit_mem_stat",
+            HelperKind::StrEq => "jit_str_eq",
             HelperKind::MemCopy => "jit_mem_copy",
             HelperKind::MemMove => "jit_mem_move",
             HelperKind::MemSet => "jit_mem_set",
@@ -705,6 +736,7 @@ impl HelperKind {
             HelperKind::HeapFree => jit_heap_free as *const u8,
             HelperKind::HeapRealloc => jit_heap_realloc as *const u8,
             HelperKind::MemStat => jit_mem_stat as *const u8,
+            HelperKind::StrEq => jit_str_eq as *const u8,
             HelperKind::MemCopy => jit_mem_copy as *const u8,
             HelperKind::MemMove => jit_mem_move as *const u8,
             HelperKind::MemSet => jit_mem_set as *const u8,
@@ -764,6 +796,7 @@ impl HelperKind {
             HelperKind::HeapFree => (vec![types::I64], None),
             HelperKind::HeapRealloc => (vec![types::I64, types::I64], Some(types::I64)),
             HelperKind::MemStat => (vec![types::I64], Some(types::I64)),
+            HelperKind::StrEq => (vec![types::I64, types::I64], Some(types::I64)),
             HelperKind::MemCopy | HelperKind::MemMove => {
                 (vec![types::I64, types::I64, types::I64], None)
             }
@@ -811,7 +844,7 @@ impl HelperKind {
         }
     }
 
-    pub(crate) const ALL: [HelperKind; 63] = [
+    pub(crate) const ALL: [HelperKind; 64] = [
         HelperKind::PrintI64,
         HelperKind::PrintlnI64,
         HelperKind::PrintU64,
@@ -838,6 +871,7 @@ impl HelperKind {
         HelperKind::HeapFree,
         HelperKind::HeapRealloc,
         HelperKind::MemStat,
+        HelperKind::StrEq,
         HelperKind::MemCopy,
         HelperKind::MemMove,
         HelperKind::MemSet,

@@ -232,6 +232,7 @@ impl<M: Module> CodegenSession<M> {
                 .declare_func_in_func_readonly(self.rt_dispatched_realloc, func),
             dispatched_free: self
                 .declare_func_in_func_readonly(self.rt_dispatched_free, func),
+            str_eq: self.declare_func_in_func_readonly(self.rt_str_eq, func),
             str_from_bytes: self
                 .declare_func_in_func_readonly(self.rt_str_from_bytes, func),
             prof_stat: self.declare_func_in_func_readonly(self.rt_prof_stat, func),

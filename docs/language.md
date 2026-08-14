@@ -821,7 +821,7 @@ Listed lowest precedence first:
 |---|---|
 | `\|\|` | Logical OR (short-circuit) |
 | `&&` | Logical AND (short-circuit) |
-| `==` `!=` `<` `<=` `>` `>=` | Comparison; result is `bool` |
+| `==` `!=` `<` `<=` `>` `>=` | Comparison; result is `bool`. `str` compares **content**, not identity — `"h".concat("i") == "hi"` is true |
 | `\|` `^` `&` | Bitwise (integer) |
 | `<<` `>>` | Shift; rhs must be `u64` |
 | `..` | Range expression `start..end` (half-open) |

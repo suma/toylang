@@ -188,6 +188,33 @@ pub fn concat_strings(a: u64, b: u64) -> u64 {
     alloc_str_bytes(&ab)
 }
 
+/// `a == b` between two str handles: compare the bytes they point at.
+/// Same rule as the C runtime's `toy_str_eq` — comparing handles would
+/// make two equal strings unequal unless they shared a literal.
+pub fn str_eq(a: u64, b: u64) -> bool {
+    if a == b {
+        return true;
+    }
+    if a == 0 || b == 0 {
+        return false;
+    }
+    let la = string_len(a);
+    let lb = string_len(b);
+    if la != lb {
+        return false;
+    }
+    if la == 0 {
+        return true;
+    }
+    let a_start = a.wrapping_sub(la + 1);
+    let b_start = b.wrapping_sub(lb + 1);
+    with_heap(|h| {
+        h.read_bytes_raw(a_start as usize, la as usize)
+            == h.read_bytes_raw(b_start as usize, lb as usize)
+    })
+    .unwrap_or(false)
+}
+
 /// `__builtin_str_from_bytes(p, len)` — copy `len` bytes out of the
 /// shared heap into a fresh str.
 pub fn str_from_bytes(addr: u64, len: u64) -> u64 {

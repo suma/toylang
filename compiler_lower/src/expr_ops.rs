@@ -102,6 +102,27 @@ impl<'a> FunctionLower<'a> {
         let r = self
             .lower_expr(rhs)?
             .ok_or_else(|| "binary rhs produced no value".to_string())?;
+
+        // `==` / `!=` between two `str` values compares their bytes.
+        // A `BinOp::Eq` here would compare the runtime handles, which
+        // are pointers, so `"h".concat("i") == "hi"` came out false
+        // once compiled while the interpreter said true.
+        if matches!(op, Operator::EQ | Operator::NE) && matches!(lhs_ty, Type::Str) {
+            let eq = self
+                .emit(InstKind::StrEq { a: l, b: r }, Some(Type::Bool))
+                .expect("StrEq returns a value");
+            if matches!(op, Operator::NE) {
+                let const_false = self
+                    .emit(InstKind::Const(Const::Bool(false)), Some(Type::Bool))
+                    .expect("Const returns a value");
+                return Ok(self.emit(
+                    InstKind::BinOp { op: BinOp::Eq, lhs: eq, rhs: const_false },
+                    Some(Type::Bool),
+                ));
+            }
+            return Ok(Some(eq));
+        }
+
         let (ir_op, result_ty) = match op {
             Operator::IAdd => (BinOp::Add, lhs_ty),
             Operator::ISub => (BinOp::Sub, lhs_ty),

@@ -362,6 +362,7 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     // AOT produce byte-identical interpolation output.
     jit_builder.symbol("toy_str_concat", toy_str_concat as *const u8);
     jit_builder.symbol("toy_str_from_bytes", toy_str_from_bytes as *const u8);
+    jit_builder.symbol("toy_str_eq", toy_str_eq as *const u8);
     jit_builder.symbol("toy_to_string_i64", toy_to_string_i64 as *const u8);
     jit_builder.symbol("toy_to_string_u64", toy_to_string_u64 as *const u8);
     jit_builder.symbol("toy_to_string_f64", toy_to_string_f64 as *const u8);
@@ -960,6 +961,36 @@ unsafe fn toy_str_alloc(bytes: *const u8, len: u64) -> *const u8 {
         len_field.write_unaligned(len);
         len_field as *const u8
     }
+}
+
+/// `a == b` on two str values — mirror of the C runtime's `toy_str_eq`.
+/// Returns i8 to match the cranelift Bool representation.
+unsafe extern "C" fn toy_str_eq(a: *const u8, b: *const u8) -> i8 {
+    if a == b {
+        return 1;
+    }
+    if a.is_null() || b.is_null() {
+        return 0;
+    }
+    let (la, lb) = unsafe {
+        (
+            (a as *const u64).read_unaligned(),
+            (b as *const u64).read_unaligned(),
+        )
+    };
+    if la != lb {
+        return 0;
+    }
+    if la == 0 {
+        return 1;
+    }
+    let (abytes, bbytes) = unsafe {
+        (
+            std::slice::from_raw_parts(a.sub(la as usize + 1), la as usize),
+            std::slice::from_raw_parts(b.sub(lb as usize + 1), lb as usize),
+        )
+    };
+    (abytes == bbytes) as i8
 }
 
 /// `__builtin_str_from_bytes(p, len)` — mirror of the C runtime's

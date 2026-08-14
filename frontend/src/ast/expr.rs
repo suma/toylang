@@ -382,6 +382,23 @@ pub enum BuiltinFunction {
     //     underlying `Object::String` / `Object::ConstString`.
     StrLen,       // __builtin_str_len(s: str) -> u64
 
+    // Bytes → string. The inverse of `StrToPtr`: copies `len` bytes
+    // from `p` into a fresh `str`. Nothing else in the language can
+    // produce a `str` from data computed at runtime, which is what
+    // kept the stdlib's own `String` from being printable — it holds
+    // its bytes in a heap buffer and had no way to hand them back as
+    // the type interpolation consumes. Backend semantics:
+    //   - AOT / compiler JIT: `toy_str_alloc`, the same helper that
+    //     already builds the results of `concat` and `to_string`.
+    //   - Interpreter: reads the bytes back out of the heap (typed
+    //     slots first, raw memory otherwise) into an `Object::String`.
+    //   - Interpreter JIT: rejected, like `StrToPtr`.
+    //
+    // The bytes are copied, so the `str` outlives any later write to
+    // the buffer. UTF-8 is not validated: the buffer is the program's
+    // to get right, exactly as with `__builtin_ptr_write`.
+    StrFromBytes, // __builtin_str_from_bytes(p: ptr, len: u64) -> str
+
     // Memory operations
     MemCopy,      // __builtin_mem_copy(src: ptr, dest: ptr, size: u64) -> unit
     MemMove,      // __builtin_mem_move(src: ptr, dest: ptr, size: u64) -> unit
@@ -481,6 +498,7 @@ pub struct BuiltinFunctionSymbols {
     // String → pointer conversion (interop with raw byte access).
     pub str_to_ptr: DefaultSymbol,
     pub str_len: DefaultSymbol,
+    pub str_from_bytes: DefaultSymbol,
 
     // Memory operations
     pub mem_copy: DefaultSymbol,
@@ -557,6 +575,7 @@ impl BuiltinFunctionSymbols {
             ptr_offset: interner.get_or_intern("__builtin_ptr_offset"),
             str_to_ptr: interner.get_or_intern("__builtin_str_to_ptr"),
             str_len: interner.get_or_intern("__builtin_str_len"),
+            str_from_bytes: interner.get_or_intern("__builtin_str_from_bytes"),
             mem_copy: interner.get_or_intern("__builtin_mem_copy"),
             mem_move: interner.get_or_intern("__builtin_mem_move"),
             mem_set: interner.get_or_intern("__builtin_mem_set"),
@@ -607,6 +626,7 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.ptr_offset { Some(BuiltinFunction::PtrOffset) }
         else if symbol == self.str_to_ptr { Some(BuiltinFunction::StrToPtr) }
         else if symbol == self.str_len { Some(BuiltinFunction::StrLen) }
+        else if symbol == self.str_from_bytes { Some(BuiltinFunction::StrFromBytes) }
         else if symbol == self.mem_copy { Some(BuiltinFunction::MemCopy) }
         else if symbol == self.mem_move { Some(BuiltinFunction::MemMove) }
         else if symbol == self.mem_set { Some(BuiltinFunction::MemSet) }

@@ -203,6 +203,14 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }
         }
+        InstKind::StrFromBytes { ptr, len } => {
+            let p = unsafe { vm.read_value(*ptr).u64 };
+            let n = unsafe { vm.read_value(*len).u64 };
+            let addr = heap::str_from_bytes(p, n);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
+        }
         InstKind::ToString { value, value_ty } => {
             let v = vm.read_value(*value);
             let addr = heap::to_string_value(v, *value_ty);

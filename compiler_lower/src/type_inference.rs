@@ -282,6 +282,7 @@ impl<'a> FunctionLower<'a> {
                 // `__builtin_str_to_ptr(s) -> ptr` returns a u64-sized
                 // pointer value.
                 frontend::ast::BuiltinFunction::StrToPtr => Some(Type::U64),
+                frontend::ast::BuiltinFunction::StrFromBytes => Some(Type::Str),
                 // `__builtin_str_len(s) -> u64`.
                 frontend::ast::BuiltinFunction::StrLen => Some(Type::U64),
                 // `__builtin_to_string(value) -> str` (powers

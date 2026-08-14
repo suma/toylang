@@ -361,6 +361,7 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     // implementations (below) mirror the C runtime so JIT and
     // AOT produce byte-identical interpolation output.
     jit_builder.symbol("toy_str_concat", toy_str_concat as *const u8);
+    jit_builder.symbol("toy_str_from_bytes", toy_str_from_bytes as *const u8);
     jit_builder.symbol("toy_to_string_i64", toy_to_string_i64 as *const u8);
     jit_builder.symbol("toy_to_string_u64", toy_to_string_u64 as *const u8);
     jit_builder.symbol("toy_to_string_f64", toy_to_string_f64 as *const u8);
@@ -959,6 +960,12 @@ unsafe fn toy_str_alloc(bytes: *const u8, len: u64) -> *const u8 {
         len_field.write_unaligned(len);
         len_field as *const u8
     }
+}
+
+/// `__builtin_str_from_bytes(p, len)` — mirror of the C runtime's
+/// exported wrapper.
+unsafe extern "C" fn toy_str_from_bytes(bytes: *const u8, len: u64) -> *const u8 {
+    unsafe { toy_str_alloc(bytes, len) }
 }
 
 unsafe extern "C" fn toy_str_concat(a: *const u8, b: *const u8) -> *const u8 {

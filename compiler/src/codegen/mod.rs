@@ -258,6 +258,7 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_dispatched_free: cranelift_module::FuncId,
     // MEMORY_PROFILING M4: read one allocation counter / turn counting
     // on for the run.
+    rt_str_from_bytes: cranelift_module::FuncId,
     rt_prof_stat: cranelift_module::FuncId,
     rt_prof_force_counting: cranelift_module::FuncId,
     // MEMORY_PROFILING M3 residual: register an allocator's layout for
@@ -592,6 +593,15 @@ impl<M: Module> CodegenSession<M> {
         // returns a str pointer. The narrow-int variants ride on
         // the same sext / uext convention as the print helpers
         // (the C ABI side reads register-extended bits).
+        // `__builtin_str_from_bytes(p, len) -> str`: byte pointer plus
+        // length in, str runtime value out.
+        let mut str_from_bytes_sig = Signature::new(call_conv);
+        str_from_bytes_sig.params.push(AbiParam::new(types::I64));
+        str_from_bytes_sig.params.push(AbiParam::new(types::I64));
+        str_from_bytes_sig.returns.push(AbiParam::new(types::I64));
+        let rt_str_from_bytes =
+            declare_helper(&mut module, "toy_str_from_bytes", &str_from_bytes_sig)?;
+
         let mut str_concat_sig = Signature::new(call_conv);
         str_concat_sig.params.push(AbiParam::new(types::I64));
         str_concat_sig.params.push(AbiParam::new(types::I64));
@@ -689,6 +699,7 @@ impl<M: Module> CodegenSession<M> {
             rt_dispatched_alloc,
             rt_dispatched_realloc,
             rt_dispatched_free,
+            rt_str_from_bytes,
             rt_prof_stat,
             rt_prof_force_counting,
             rt_record_allocator_layout,
@@ -1408,6 +1419,7 @@ struct RuntimeRefs {
     dispatched_alloc: cranelift_codegen::ir::FuncRef,
     dispatched_realloc: cranelift_codegen::ir::FuncRef,
     dispatched_free: cranelift_codegen::ir::FuncRef,
+    str_from_bytes: cranelift_codegen::ir::FuncRef,
     prof_stat: cranelift_codegen::ir::FuncRef,
     prof_force_counting: cranelift_codegen::ir::FuncRef,
     record_allocator_layout: cranelift_codegen::ir::FuncRef,

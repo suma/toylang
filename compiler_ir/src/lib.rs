@@ -844,6 +844,12 @@ pub enum InstKind {
     /// heap-allocated str with the same layout. Produced when the
     /// type checker resolves `BuiltinMethod::StrConcat`.
     StrConcat { a: ValueId, b: ValueId },
+    /// `__builtin_str_from_bytes(p, len) -> str` — copy `len` bytes
+    /// from `p` into a fresh str with the standard runtime layout.
+    /// The inverse of `StrToPtr`, and the only way to build a str
+    /// from bytes computed at runtime. Lowers to `toy_str_alloc`,
+    /// the helper `StrConcat` and the `to_string` family already use.
+    StrFromBytes { ptr: ValueId, len: ValueId },
     /// `__builtin_to_string(value) -> str` — format any scalar
     /// value as its display string and return a heap-allocated
     /// str. The `value_ty` snapshot is captured at lower time so
@@ -1521,6 +1527,9 @@ impl fmt::Display for DisplayInst<'_> {
             }
             InstKind::PtrWrite { ptr, offset, value, value_ty } => {
                 write!(f, "ptr_write {ptr}, {offset} <- {value}: {value_ty}")
+            }
+            InstKind::StrFromBytes { ptr, len } => {
+                write!(f, "{prefix}str_from_bytes {ptr}, {len}")
             }
             InstKind::StrLen { value } => {
                 write!(f, "{prefix}str_len {value}")

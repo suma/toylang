@@ -549,6 +549,31 @@ impl HeapManager {
     pub fn typed_read(&self, addr: usize, offset: usize) -> Option<crate::object::RcObject> {
         self.typed_slots.get(&(addr, offset)).cloned()
     }
+
+    /// One byte of a buffer, wherever it happens to live.
+    ///
+    /// A `__builtin_ptr_write` of a narrow integer is recorded only in
+    /// the typed-slot map — the raw byte buffer is stamped for 64-bit
+    /// writes alone, on both the tree-walker and the IR VM. Anything
+    /// reading a byte buffer back therefore has to consult both, and
+    /// this is the single place that knows the order. Writing it out
+    /// per caller is how `__builtin_str_from_bytes` first came out as
+    /// five NUL bytes on one engine and `hello` on the others.
+    pub fn read_byte_at(&self, addr: usize, offset: usize) -> u8 {
+        if let Some(v) = self.typed_read(addr, offset) {
+            let b = v.borrow();
+            return match &*b {
+                crate::object::Object::UInt8(x) => *x,
+                crate::object::Object::Int8(x) => *x as u8,
+                // A slot written through a wider type truncates, the
+                // same way storing it in a byte buffer would have.
+                other => other.try_unwrap_uint64().unwrap_or(0) as u8,
+            };
+        }
+        self.read_bytes_raw(addr + offset, 1)
+            .and_then(|b| b.first().copied())
+            .unwrap_or(0)
+    }
     
     /// Allocate memory and return address
     pub fn alloc(&mut self, size: usize) -> usize {

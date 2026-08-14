@@ -1849,6 +1849,21 @@ impl<'a> FunctionLower<'a> {
                     .ok_or_else(|| "str_len arg produced no value".to_string())?;
                 Ok(self.emit(InstKind::StrLen { value: v }, Some(Type::U64)))
             }
+            BuiltinFunction::StrFromBytes => {
+                if args.len() != 2 {
+                    return Err(format!(
+                        "__builtin_str_from_bytes takes 2 args (ptr, u64), got {}",
+                        args.len()
+                    ));
+                }
+                let p = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "str_from_bytes ptr produced no value".to_string())?;
+                let n = self
+                    .lower_expr(&args[1])?
+                    .ok_or_else(|| "str_from_bytes len produced no value".to_string())?;
+                Ok(self.emit(InstKind::StrFromBytes { ptr: p, len: n }, Some(Type::Str)))
+            }
             BuiltinFunction::StrToPtr => {
                 // `__builtin_str_to_ptr(s: str) -> ptr`. AOT
                 // representation: `Type::Str` is already a pointer-

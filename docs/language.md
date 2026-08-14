@@ -2226,6 +2226,19 @@ These always go through the active allocator:
 by its surrounding context (the lhs annotation of `val v: T = ...`,
 typically). `__builtin_ptr_write` accepts any type.
 
+`str` との相互変換:
+
+| Builtin | Signature |
+|---|---|
+| `__builtin_str_to_ptr(s: str)` | `-> ptr` (UTF-8 バイト列、NUL 終端) |
+| `__builtin_str_len(s: str)` | `-> u64` (バイト数、文字数ではない) |
+| `__builtin_str_from_bytes(p: ptr, len: u64)` | `-> str` |
+
+`__builtin_str_from_bytes` は **実行時に計算したバイト列から `str` を
+作る唯一の手段**。バイト列は**コピー**されるので、後からバッファを
+書き換えても得られた `str` は変わらない。UTF-8 の検証はしない —
+バッファの正しさはプログラムの責任で、他の raw pointer builtin と同じ。
+
 ---
 
 ## Built-in functions and methods

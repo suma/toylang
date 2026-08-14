@@ -2417,6 +2417,16 @@ pub(crate) fn check_expr(
                     }
                     Some(ScalarTy::U64)
                 }
+                BuiltinFunction::StrFromBytes => {
+                    // Same reason as `StrToPtr`: the interpreter JIT
+                    // models str values only inside a function body,
+                    // and building one is a runtime-helper call it has
+                    // no signature for yet. Falls back.
+                    *reject_reason = Some(
+                        "__builtin_str_from_bytes (JIT does not build str values)".to_string(),
+                    );
+                    None
+                }
                 BuiltinFunction::StrToPtr => {
                     // `__builtin_str_to_ptr(s: str) -> ptr` is not yet
                     // hot-path JIT-eligible: the JIT has no `ScalarTy::Str`

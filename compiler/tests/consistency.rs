@@ -2913,6 +2913,114 @@ fn str_to_ptr_byte_walk_round_trip() {
     assert_consistent(src, "str_to_ptr_byte_walk_round_trip");
 }
 
+// --- `__builtin_str_from_bytes` ------------------------------------
+//
+// The inverse of `str_to_ptr`, and the only way to build a `str` from
+// bytes computed at runtime. Asserted on stdout rather than on an exit
+// code from `s == "..."`: `==` between two `str` values compares
+// *pointers* on the compiled backends and *content* on the
+// interpreter, so a str built at runtime never equals a literal there
+// (`str_equality_compares_pointers_when_compiled` records it). Printing
+// the value is both the honest check and the thing users do with it.
+
+#[test]
+fn str_from_bytes_round_trips_through_a_buffer() {
+    let src = r#"
+        fn main() -> u64 {
+            val src_str = "hi"
+            val p: ptr = __builtin_str_to_ptr(src_str)
+            val back: str = __builtin_str_from_bytes(p, 2u64)
+            println(back)
+            println("[{back}]")
+            println(__builtin_str_len(back))
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "str_from_bytes_round_trip");
+}
+
+#[test]
+fn str_from_bytes_reads_bytes_the_engines_store_differently() {
+    // A `__builtin_ptr_write` of a narrow integer lands only in the
+    // interpreter's typed-slot map — the raw byte buffer is stamped
+    // for 64-bit writes alone, on both the tree-walker and the IR VM.
+    // Reading only the raw buffer made this print five NUL bytes on
+    // the interpreter and `hello` on the compiled backends, so
+    // `HeapManager::read_byte_at` is the one place that knows where a
+    // byte actually lives.
+    let src = r#"
+        fn main() -> u64 {
+            val p: ptr = __builtin_heap_alloc(5u64)
+            __builtin_ptr_write(p, 0u64, 104u8)
+            __builtin_ptr_write(p, 1u64, 101u8)
+            __builtin_ptr_write(p, 2u64, 108u8)
+            __builtin_ptr_write(p, 3u64, 108u8)
+            __builtin_ptr_write(p, 4u64, 111u8)
+            val s: str = __builtin_str_from_bytes(p, 5u64)
+            __builtin_heap_free(p)
+            println(s)
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "str_from_bytes_typed_slots");
+}
+
+#[test]
+fn a_str_built_from_bytes_survives_the_buffer_changing() {
+    // `str_from_bytes` copies. A str that aliased the buffer would
+    // change under the program's feet, and differently per backend:
+    // the interpreter stores an owned String, the compiled backends
+    // malloc a fresh block.
+    let src = r#"
+        fn main() -> u64 {
+            val p: ptr = __builtin_heap_alloc(2u64)
+            __builtin_ptr_write(p, 0u64, 104u8)
+            __builtin_ptr_write(p, 1u64, 105u8)
+            val s: str = __builtin_str_from_bytes(p, 2u64)
+            __builtin_ptr_write(p, 0u64, 88u8)
+            println(s)
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "str_from_bytes_copies");
+}
+
+#[test]
+fn str_equality_compares_pointers_when_compiled() {
+    // Recorded, not endorsed — the same spirit as
+    // `u64_addition_still_wraps`. `assert_consistent` cannot express
+    // it because the whole point is that the backends disagree.
+    //
+    // `a == b` on two `str` values is a content comparison on the
+    // interpreter and an integer compare of the two runtime handles
+    // everywhere else. Two equal strings that were not produced by the
+    // same literal therefore compare unequal once compiled. Any test
+    // that wants to check a computed string has to go through stdout
+    // until this is fixed.
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val a = "hi"
+            val b = "h".concat("i")
+            if a == b { 42u64 } else { 1u64 }
+        }
+    "#;
+    assert_eq!(
+        interpreter_value(src),
+        42,
+        "the interpreter compares str content"
+    );
+    assert_eq!(
+        compiler_exit_code(src, "str_eq_pointer", true),
+        1,
+        "the AOT path compares str handles; if this now matches, str \
+         equality has been fixed and the tests that route through \
+         stdout to avoid it can compare directly"
+    );
+}
+
 #[test]
 fn aot_allocator_default_and_current_round_trip() {
     // #121 Phase B-min: `__builtin_default_allocator()` returns

@@ -711,6 +711,13 @@ static const char *toy_str_alloc(const char *bytes, uint64_t len) {
     return (const char *) (base + len + 1u);
 }
 
+/* `__builtin_str_from_bytes(p, len)` — exported wrapper over the
+ * allocator above so codegen can call it directly. Copies, so the
+ * resulting str is unaffected by later writes to the buffer. */
+const char *toy_str_from_bytes(const char *bytes, uint64_t len) {
+    return toy_str_alloc(bytes, len);
+}
+
 /* Concatenate two toylang str values. Both arguments and the
  * result follow the runtime layout described above. */
 const char *toy_str_concat(const char *a, const char *b) {

@@ -220,6 +220,14 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg_types: vec![TypeDecl::String],
                 return_type: TypeDecl::UInt64,
             },
+            // Bytes -> str. The only way to build a `str` from data
+            // computed at runtime; `String` needs it to render itself.
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::StrFromBytes,
+                arg_count: 2,
+                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64],
+                return_type: TypeDecl::String,
+            },
             BuiltinFunctionSignature {
                 func: BuiltinFunction::MemCopy,
                 arg_count: 3,

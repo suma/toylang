@@ -1147,6 +1147,9 @@ impl<'a, 'b> State<'a, 'b> {
                             .iconst(cranelift_codegen::ir::types::I64, stat.code() as i64);
                         Ok(Some(self.call_helper(HelperKind::MemStat, &[which])?))
                     }
+                    BuiltinFunction::StrFromBytes => {
+                        Err("__builtin_str_from_bytes unreachable in JIT codegen (eligibility should reject)".into())
+                    }
                     BuiltinFunction::StrToPtr => {
                         // Eligibility (`jit/eligibility.rs::StrToPtr`)
                         // already rejects this for the JIT hot path —

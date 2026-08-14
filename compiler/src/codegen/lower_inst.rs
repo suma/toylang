@@ -1039,6 +1039,15 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, result);
                 }
             }
+            InstKind::StrFromBytes { ptr, len } => {
+                let p = self.value(*ptr);
+                let n = self.value(*len);
+                let call = self.builder.ins().call(self.runtime.str_from_bytes, &[p, n]);
+                let result = self.builder.inst_results(call)[0];
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, result);
+                }
+            }
             InstKind::StrConcat { a, b } => {
                 // Direct call to `toy_str_concat(a, b)` — both args
                 // and the result are str runtime values (= u64

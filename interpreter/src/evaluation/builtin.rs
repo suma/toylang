@@ -540,6 +540,45 @@ impl EvaluationContext<'_> {
                 Ok(EvaluationResult::Value((Object::Pointer(addr)).into()))
             }
 
+            BuiltinFunction::StrFromBytes => {
+                // `__builtin_str_from_bytes(p: ptr, len: u64) -> str`,
+                // the inverse of `str_to_ptr`. `read_byte_at` knows
+                // where a byte actually lives (typed slot or raw
+                // buffer); see its doc comment.
+                if args.len() != 2 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "str_from_bytes takes 2 arguments (ptr, u64)".to_string(),
+                        expected: 2,
+                        found: args.len(),
+                    });
+                }
+                let ptr_result = self.evaluate(&args[0])?;
+                let ptr_obj = try_value!(Ok(ptr_result));
+                let addr = ptr_obj.borrow().try_unwrap_pointer().map_err(|_| {
+                    InterpreterError::InternalError(
+                        "str_from_bytes expects a pointer as its first argument".to_string(),
+                    )
+                })?;
+                let len_result = self.evaluate(&args[1])?;
+                let len_obj = try_value!(Ok(len_result));
+                let len = len_obj.borrow().try_unwrap_uint64().map_err(|_| {
+                    InterpreterError::InternalError(
+                        "str_from_bytes expects a u64 length".to_string(),
+                    )
+                })? as usize;
+
+                let bytes: Vec<u8> = {
+                    let hm = self.heap_manager.borrow();
+                    (0..len).map(|i| hm.read_byte_at(addr, i)).collect()
+                };
+                // Not UTF-8-validated: the buffer is the program's to
+                // get right, as with every other raw pointer builtin.
+                // Lossy conversion keeps a malformed buffer from
+                // aborting the run.
+                let s = String::from_utf8_lossy(&bytes).into_owned();
+                Ok(EvaluationResult::Value((Object::String(s)).into()))
+            }
+
             BuiltinFunction::PtrIsNull => {
                 if args.len() != 1 {
                     return Err(InterpreterError::FunctionParameterMismatch {

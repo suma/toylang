@@ -188,6 +188,16 @@ pub fn concat_strings(a: u64, b: u64) -> u64 {
     alloc_str_bytes(&ab)
 }
 
+/// `__builtin_str_from_bytes(p, len)` — copy `len` bytes out of the
+/// shared heap into a fresh str.
+pub fn str_from_bytes(addr: u64, len: u64) -> u64 {
+    let bytes = with_heap(|h| {
+        (0..len as usize).map(|i| h.read_byte_at(addr as usize, i)).collect::<Vec<u8>>()
+    })
+    .unwrap_or_default();
+    alloc_str_bytes(&bytes)
+}
+
 /// Format a scalar value as a string and return its handle. `Str` is
 /// identity (mirrors the AOT `toy_to_string_str`), so interpolating an
 /// already-`str` value reuses its handle.

@@ -34,6 +34,17 @@ pub struct TypeCheckerVisitor<'a> {
     pub builtin_methods: HashMap<(TypeDecl, String), BuiltinMethod>,
     // Builtin function signatures table
     pub builtin_function_signatures: Vec<BuiltinFunctionSignature>,
+    /// Types that render themselves (`Display`, `core/std/display.t`),
+    /// built once from the statement pool on first use.
+    ///
+    /// Deliberately *not* read out of `context.struct_methods`: an impl
+    /// block registers its methods only after type-checking their
+    /// bodies, so a method body sees a registry that depends on where
+    /// its own impl sits relative to everyone else's. That made
+    /// `"{self.name}"` inside one type's `to_str` miss `String`'s while
+    /// the same expression in a plain function found it. The pool is
+    /// complete before any body is checked, so reading it is stable.
+    pub display_types: Option<std::collections::HashSet<DefaultSymbol>>,
 }
 
 /// `() -> u64` for every allocation counter (MEMORY_PROFILING M4).
@@ -78,6 +89,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             imported_modules: HashMap::new(),
             builtin_methods: Self::create_builtin_method_registry(),
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
+            display_types: None,
             transformed_exprs: HashMap::new(),
         };
 
@@ -136,6 +148,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             transformed_exprs: HashMap::new(),
             builtin_methods: Self::create_builtin_method_registry(),
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
+            display_types: None,
         }
     }
 
@@ -392,6 +405,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             imported_modules: HashMap::new(),
             builtin_methods: Self::create_builtin_method_registry(),
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
+            display_types: None,
             transformed_exprs: HashMap::new(),
         }
     }

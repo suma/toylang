@@ -486,6 +486,12 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
     }
 
     fn visit_builtin_call(&mut self, func: &BuiltinFunction, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+        // `Display`: when the argument's type has a `to_str` method,
+        // rewrite the argument to call it, so `println(v)` and `"{v}"`
+        // show what the type says rather than its fields. Done here
+        // because this is where both routes into a builtin call meet.
+        self.apply_display_dispatch(func, args)?;
+
         // `ptr_read` originally always returned u64, but generic `List<T>`
         // code stores non-u64 values. When the caller supplies a primitive
         // type hint (e.g. `val v: i64 = __builtin_ptr_read(p, off)` or a

@@ -2580,6 +2580,54 @@ Backend coverage:
   The verbose log spells this out: `JIT: skipped (... JIT does
   not yet model enum values (constructors / match / methods))`.
 
+### `Display` — 型が自分の見せ方を決める
+
+`core/std/display.t`:
+
+```rust
+pub trait Display {
+    fn to_str(&self) -> str
+}
+```
+
+`to_str(&self) -> str` を持つ型は、`print` / `println` の出力と
+文字列補間 `"{v}"` の中身を自分で決める:
+
+```rust
+struct Point { x: i64, y: i64 }
+impl Display for Point {
+    fn to_str(&self) -> str { "({self.x}, {self.y})" }
+}
+
+val p = Point { x: 1i64, y: 2i64 }
+println(p)          # (1, 2)
+println("at {p}")   # at (1, 2)
+```
+
+実装が無ければ従来どおり構造的に出る (`Point { x: 1, y: 2 }`)。
+デバッグには有用だが、人が読む出力としては普通は望むものではない。
+
+- **ディスパッチは method の有無で決まり、`impl Display for` の
+  登録では決まらない** — `==` が `eq` を、`+` が `add` を見つけるのと
+  同じ。inherent な `fn to_str(&self) -> str` でも動く。trait は
+  契約に名前を与え、`--api` に出し、`<T: Display>` を書けるようにする
+  ためにある
+- **形が合うものだけが renderer**。`fn to_str(&self, radix: u64) -> str`
+  や `-> u64` を返すものは対象外で、従来の意味のまま。そうしないと、
+  ユーザが書いていない呼び出しについての arity エラーが `println` から
+  出ることになる
+- 型検査器が `println(v)` を `println(v.to_str())` に書き換えるので、
+  **バックエンドは通常の method 呼び出ししか見ない**
+- `String` は `impl Display for String` を持つので `println(s)` は
+  中身のテキストを出す (これが無かった頃は
+  `String { cap: 2, data: 12, elem_size: 1, len: 2 }` と出ていた)
+- **自分の型を `to_str` の中で補間すると無限再帰する**。他の言語の
+  ユーザ定義 `Display` と同じで、実装側の責任
+
+`str` と `String` は別の型なので、method 名は `to_string` ではなく
+`to_str`。`String::to_string() -> String` は Rust と同じ冪等な clone
+として既にあり、補間が繋ぐのは `str` のほう。
+
 ### String methods
 
 Method-call syntax on `str` (the static-string primitive):

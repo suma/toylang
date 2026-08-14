@@ -25,6 +25,7 @@ mod tests {
             errors: Vec::new(),
             recovery_enabled: false,
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
+            display_types: None,
             source_code: None,
             current_package: None,
             imported_modules: HashMap::new(),

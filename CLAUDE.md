@@ -374,7 +374,13 @@ fn main() -> u64 {
 - `println(value)` — stdout に値を出力 + 改行
 - 任意の型を受け取り、`Object::to_display_string` で整形。文字列は引用符なし、構造体 / dict はフィールド名順にソートして決定的な出力
 - ユーザ向けの日常的な I/O なので、`heap_alloc` 等の低レベル builtin と違って `__builtin_` prefix は付けない
-- 使用例: `interpreter/example/print_demo.t`
+- **`Display`**: `fn to_str(&self) -> str` を持つ型は `print` / `println` /
+  文字列補間 `"{v}"` の出方を自分で決める (`core/std/display.t`)。
+  型検査器が `println(v)` → `println(v.to_str())` に書き換えるので
+  **バックエンドは通常の method 呼び出ししか見ない**。ディスパッチは
+  method の有無で決まる (`==` → `eq` と同じ流儀) ので inherent method でも動く。
+  詳細は [`docs/language.md`](docs/language.md) の「`Display`」
+- 使用例: `interpreter/example/print_demo.t` / `interpreter/example/display_trait.t`
 
 ## Allocator システム
 

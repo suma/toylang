@@ -1986,4 +1986,122 @@ impl<'a> TypeCheckerVisitor<'a> {
         // updated Expr (now `Block`) and processes it normally.
         self.visit_expr(&try_ref)
     }
+
+    /// `Display` dispatch (`core/std/display.t`).
+    ///
+    /// Rewrites the argument of the three builtins that turn a value
+    /// into text, when that value's type knows how to render itself:
+    ///
+    /// ```text
+    /// println(v)              ->  println(v.to_str())
+    /// __builtin_to_string(v)  ->  __builtin_to_string(v.to_str())
+    /// ```
+    ///
+    /// Rewriting the *argument* rather than the whole call keeps one
+    /// code path for all three: `__builtin_to_string` of a `str` is
+    /// identity on every backend, so the extra wrapper costs nothing
+    /// and the builtin does not have to be removed. It also means the
+    /// rewrite can happen here, in the one place both routes into a
+    /// builtin call converge — a statement-position `println(v)` goes
+    /// through `check_expr_located` -> `accept_expr` and never reaches
+    /// `visit_expr`, where `Try` is intercepted.
+    ///
+    /// String interpolation desugars to `__builtin_to_string`, so
+    /// `"{v}"` is covered by the same rewrite.
+    ///
+    /// Idempotent: the replacement's type is `str`, which is not a
+    /// nominal type, so a second visit rewrites nothing.
+    ///
+    /// Dispatch is on the presence of the method, not on a recorded
+    /// `impl Display for`, matching how `==` finds `eq` and `+` finds
+    /// `add`. An inherent `to_str` therefore works too.
+    pub(super) fn apply_display_dispatch(
+        &mut self,
+        func: &BuiltinFunction,
+        args: &[ExprRef],
+    ) -> Result<(), TypeCheckError> {
+        if !matches!(
+            func,
+            BuiltinFunction::ToString | BuiltinFunction::Print | BuiltinFunction::Println
+        ) {
+            return Ok(());
+        }
+        let [arg] = args else { return Ok(()) };
+        let arg_ty = self.visit_expr(arg)?;
+        if !self.type_renders_itself(&arg_ty) {
+            return Ok(());
+        }
+        let Some(to_str) = self.core.string_interner.get(DISPLAY_METHOD) else {
+            return Ok(());
+        };
+        // Move the receiver into a fresh slot first: the method call
+        // has to point at it, and it is about to be overwritten.
+        let Some(receiver) = self.core.expr_pool.get(arg) else {
+            return Ok(());
+        };
+        let receiver_ref = self.core.expr_pool.add(receiver);
+        self.core
+            .expr_pool
+            .update(arg, Expr::MethodCall(receiver_ref, to_str, Vec::new()));
+        Ok(())
+    }
+
+    /// Whether `ty` is a struct or enum that renders itself.
+    ///
+    /// Restricted to nominal types on purpose. Primitives already
+    /// render correctly and route through per-type fast paths in every
+    /// backend; sending them via a method call would be slower, and
+    /// would let a stray `to_str` in scope change how integers print.
+    fn type_renders_itself(&mut self, ty: &TypeDecl) -> bool {
+        let name = match ty {
+            TypeDecl::Struct(name, _) | TypeDecl::Enum(name, _) => *name,
+            // Bare nominal name, pre-canonicalisation — the same shape
+            // `struct_method_compatible` has to accept.
+            TypeDecl::Identifier(name) => *name,
+            _ => return false,
+        };
+        self.display_types().contains(&name)
+    }
+
+    /// Every type with a `to_str(&self) -> str`, collected from the
+    /// statement pool once.
+    ///
+    /// The shape is checked rather than assumed so that a same-named
+    /// method that is not a renderer keeps its own meaning. Dispatching
+    /// to `fn to_str(&self, radix: u64) -> str` would turn a `println`
+    /// into an arity error about a call the user never wrote, and one
+    /// returning `u64` is not a rendering at all.
+    fn display_types(&mut self) -> &std::collections::HashSet<DefaultSymbol> {
+        if self.display_types.is_none() {
+            let mut found = std::collections::HashSet::new();
+            if let Some(method) = self.core.string_interner.get(DISPLAY_METHOD) {
+                for i in 0..self.core.stmt_pool.len() {
+                    let Some(Stmt::ImplBlock { target_type, methods, .. }) =
+                        self.core.stmt_pool.get(&StmtRef(i as u32))
+                    else {
+                        continue;
+                    };
+                    let renders = methods.iter().any(|m| {
+                        m.name == method
+                            // `parameter` excludes the receiver, so a
+                            // renderer takes none.
+                            && m.has_self_param
+                            && m.parameter.is_empty()
+                            && matches!(m.return_type, Some(TypeDecl::String))
+                    });
+                    if renders {
+                        found.insert(target_type);
+                    }
+                }
+            }
+            self.display_types = Some(found);
+        }
+        self.display_types.as_ref().expect("just populated")
+    }
 }
+
+/// The method `Display` dispatches to. Named `to_str` rather than
+/// `to_string` because `str` and `String` are different types here and
+/// `String::to_string() -> String` already means the idempotent clone;
+/// interpolation splices `str`, which is what this returns.
+const DISPLAY_METHOD: &str = "to_str";

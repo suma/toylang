@@ -11,6 +11,7 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-13
+- **`Display` trait — 型が自分の見せ方を決める** — `core/std/display.t` に `pub trait Display { fn to_str(&self) -> str }`。型検査器が `println(v)` → `println(v.to_str())`、`__builtin_to_string(v)` → `__builtin_to_string(v.to_str())` に**引数を**書き換えるので、**バックエンドは通常の method 呼び出ししか見ない** (4 実装に手を入れずに済む)。引数だけを書き換えるのは、`__builtin_to_string(str)` が全バックエンドで identity なので 1 経路で 3 builtin を賄えるから。ディスパッチは **method の有無** (`==` → `eq` と同じ流儀) で、`impl Display for` の登録では見ない → inherent method でも動く。**形が合うものだけ** renderer 扱い (`&self` のみ・`-> str`) — `fn to_str(&self, radix: u64)` にディスパッチすると、ユーザが書いていない呼び出しについての arity エラーが `println` から出る。前提として **`__builtin_str_from_bytes(p, len) -> str`** を新設 (`str_to_ptr` の逆方向。実行時に計算したバイト列から `str` を作る唯一の手段で、これが無いと `String` が自分を描画できない)。**`impl Display for String` で「stdlib 自身の文字列型が `String { cap: 2, data: 12, ... }` と表示される」が直った。****実装中に踏んだ 2 点**: (a) 文の位置の式は `check_expr_located` → `accept_expr` を通り **`visit_expr` を経由しない** ので、`Try` と同じ場所に hook を置くと `println(v)` が素通りする → 両経路が合流する `visit_builtin_call` に置いた。(b) impl block は **method 本体を型検査してから** 登録するので、`context.struct_methods` は「自分の impl が他人の impl より前か後か」で中身が変わる → 「`{self.name}`」が method 本体の中でだけ `String` の `to_str` を見つけられなかった。renderer 集合は **stmt pool から 1 回だけ**構築する形にした (pool はどの本体より先に完成している)。テストは**描画結果そのもの**も pin する — `assert_stdout_consistent` だけだと、ディスパッチを切っても 3 バックエンドが揃って構造的に出力して一致してしまう。1756 → **1762 tests pass**。
 - **str リテラルの数え差 (interpreter だけ +1 確保) を解消** — MEMORY-PROFILING M1 で「表現の差」として記録していた `String::from_str` の差異を除去。IR VM の `ConstStr` / `ConstStrBytes` が str リテラルを `HeapManager::alloc_uncounted` で counter-free に実体化するようにした (コンパイル系の `.rodata` と同じ「確保として数えない」扱い)。`allocator レジストリ` の `__builtin_record_allocator_layout("SlotRegion", ...)` がこの差異を毎回踏んでいた (interpreter だけ 19 bytes 余分)。`--all-backends --profile=mem` がリテラル込みで完全一致するようになった。テスト `string_literals_allocate_on_the_interpreter_but_not_when_compiled` は `string_literals_no_longer_allocate_differently_across_backends` に置換。1752 tests のまま (置換)。
 
 - **Drop 内で `&mut self` フィールドを free すると use-after-free するバグを修正** — `fn new() -> Region { var r = ...; r }` のように **struct 束縛を return すると、ローカル `var r` に scope-exit の Drop が発火して `r.ptrs` を解放し、戻り値が dangling になった** (呼び出し側の Drop が二重解放)。AOT は segfault / IR VM は panic。真因は `lower_expr_block` がブロック末尾の `pop_and_emit_drops` で「return される束縛」も drop していたこと。**関数本体ブロック** (`drop_scopes` が空のとき) かつ tail が struct 束縛のときだけ、`pending_struct_value` の leaf locals に一致する DropTarget を retain で除去するようにした (ネストブロックの tail は `val` 束縛や分岐への copy なので対象外)。`SlotRegion` の Drop を slots 解放込みに戻した (登録のみの workaround を撤去 → AOT で free_count == alloc_count、リーク無し)。`a_struct_returned_from_its_constructor_is_not_dropped` で pin。1751 → **1752 tests pass**。
@@ -160,7 +161,6 @@
   - **A5-P4: `Box<dyn Trait>`** — owned trait object + `Vec<Box<dyn Trait>>`。**前提**: `Box<T>` 自体が未実装。
   - **A5 残作業** — `&dyn Trait` の return / struct field 位置 (REF-Stage-2 の escape rule が阻む)、`dyn A + B`、`dyn Iterator<T>`、generic trait の default body 内での `T` 参照。
 - **Trait-bounded generic API** ★★ — `fn first<I: Iterator<i64>>(iter: I)` の bound check。`<T: Trait>` は struct で動くが generic trait の bound は未強制。
-- **`Display` trait** ★★ — user-defined `to_string` で文字列補間の既定動作を拡張可能に。A1 完了で前提は揃っている。
 - **`From` / `Into`** ★★ — `val s: String = "hi".into()`。`?` の cross-error 変換にも要る。
 - **`must_use` / unused-Result 警告** ★★ — `?` の補完。**警告の emit 経路が無い**ので (`Severity::Warning` は型としては存在するが未使用)、そこから作る必要がある。
 - **slice 型 `&[T]`** ★ — 配列 borrow を first-class に。中〜大。
@@ -208,6 +208,13 @@
 - 合計 **1702 テスト**、31 skipped (100% 成功、2026-08-10 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - ワークスペース全体で ~5s。`compiler/build.rs` が `toylang_rt.c` を pre-build し、リンク結果は `TOY_LINK_CACHE_DIR` で content-addressed にキャッシュされる (キャッシュが効くにはコード生成が決定的である必要がある — `compiler/tests/reproducible_build.rs` が pin)。
+
+### 既知の不具合 (Display 作業中に発見、いずれも先行して存在)
+
+- **`str == str` がコンパイル系ではポインタ比較** ★★ — interpreter は内容比較、AOT / JIT は 2 つの runtime handle の整数比較。`"h".concat("i") == "hi"` が interpreter で true、コンパイルすると false になる。**型は通るが答えが違う**類。`str_equality_compares_pointers_when_compiled` で現状を記録済み (`assert_consistent` では pin できない — 一致しないことが要点なので)。直すには `BinOp::Eq` の operand が `Str` のとき `toy_str_eq` を呼ぶ形に lower する必要がある。これがあるため、計算した文字列を検査するテストは stdout 経由で書くしかない。
+- **非 ASCII のソースリテラルが lexer で化ける** ★★ — `"♠"` (UTF-8 3 バイト) が `__builtin_str_len` で **6** を返し、出力も mojibake になる。ソースのバイト列が Latin-1 として読まれて再エンコードされている疑い。**全バックエンドが同じ壊れたリテラルを消費するので一致テストでは検出されない**。
+- **receiver を読まない method が AOT codegen を panic させる** ★ — `impl S { fn f(&self) -> u64 { 9u64 } }` のように **本体が `self` を一切参照しない** method を **core module 無し**でコンパイルすると `param local not declared` (`compiler/src/codegen/mod.rs`) で panic する。並列コンパイル経路の worker thread なので出力自体は出るが、panic は出る。`self` を読む本体では起きない。
+- **struct field を associated function call で初期化できない (AOT MVP)** ★ — `Named { name: String::new(), n: 3i64 }` が `compiler MVP requires struct field ... to be initialised by a struct literal` で落ちる。つまり **`String` フィールドを持つ struct は AOT で構築できない** (`String` を作る手段が associated function しかないため)。回避策は `String` を引数で渡すか、`var` に束縛してから field を埋めること。
 
 ### パーサーの既知制限事項
 - bare `self` 非対応 — `self: Self` / `&self` / `&mut self` のいずれかを書く。

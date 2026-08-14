@@ -234,6 +234,19 @@ impl String {
     }
 }
 
+# `Display` — render the buffer's bytes as a `str`, so `println(s)`
+# and `"{s}"` show the text rather than the struct's fields. Without
+# this, the stdlib's own string type printed as
+# `String { cap: 2, data: 12, elem_size: 1, len: 2 }`.
+#
+# `__builtin_str_from_bytes` copies, so the result does not alias the
+# buffer and is unaffected by a later `push`.
+impl Display for String {
+    fn to_str(&self) -> str {
+        __builtin_str_from_bytes(self.data, self.len)
+    }
+}
+
 # `substring(start, end)` — half-open byte slice `[start, end)`.
 # Both indices are byte offsets, not codepoint counts. Out-of-range
 # / inverted ranges panic via `assert(...)`.

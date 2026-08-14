@@ -6396,3 +6396,204 @@ fn an_abandoned_execution_attempt_is_not_counted_against_the_next_one() {
         "the violation should name the function that leaked, got: {err}"
     );
 }
+
+// --- `Display` (core/std/display.t) ---------------------------------
+//
+// A type with a `to_str(&self) -> str` method controls what `print` /
+// `println` write and what string interpolation splices in. The type
+// checker rewrites the argument of those builtins to call it, so every
+// backend sees an ordinary method call.
+//
+// Each test pins the text as well as cross-backend agreement.
+// `assert_stdout_consistent` alone would not: with the dispatch turned
+// off, every backend renders structurally and they still agree with
+// each other, so the test would pass while the feature did nothing.
+
+/// Assert that `source` prints exactly `expected`, and that all three
+/// backends agree on it.
+fn assert_renders(source: &str, stem: &str, expected: &str) {
+    if skip_e2e() {
+        return;
+    }
+    assert_stdout_consistent(source, stem);
+    assert_eq!(
+        interpreter_stdout(source, stem, true),
+        expected,
+        "rendered output changed"
+    );
+}
+
+#[test]
+fn a_type_with_to_str_renders_through_it() {
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        impl Display for Point {
+            fn to_str(&self) -> str { "({self.x}, {self.y})" }
+        }
+
+        fn main() -> u64 {
+            val p = Point { x: 1i64, y: 2i64 }
+            println(p)
+            println("at {p}")
+            0u64
+        }
+    "#;
+    assert_renders(src, "display_struct", "(1, 2)\nat (1, 2)\n");
+}
+
+#[test]
+fn a_type_without_to_str_still_renders_structurally() {
+    // The fallback has to stay put: a struct with no renderer prints
+    // its fields, which is what makes `println` useful while debugging.
+    let src = r#"
+        struct Plain { a: i64 }
+
+        fn main() -> u64 {
+            val q = Plain { a: 7i64 }
+            println(q)
+            println("plain {q}")
+            0u64
+        }
+    "#;
+    assert_renders(src, "display_absent", "Plain { a: 7 }\nplain Plain { a: 7 }\n");
+}
+
+#[test]
+fn the_stdlib_string_renders_as_its_text() {
+    // Before `impl Display for String`, the stdlib's own string type
+    // printed as `String { cap: 2, data: 12, elem_size: 1, len: 2 }` —
+    // the most visible instance of the problem Display exists to fix.
+    let src = r#"
+        fn main() -> u64 {
+            val s = String::from_str("hi")
+            println(s)
+            println("s = {s}")
+            0u64
+        }
+    "#;
+    assert_renders(src, "display_string", "hi\ns = hi\n");
+}
+
+#[test]
+fn an_enum_and_an_inherent_to_str_both_dispatch() {
+    // Dispatch is on the method, not on a recorded `impl Display for`,
+    // the same way `==` finds `eq`. An inherent `to_str` works, and so
+    // does an enum.
+    let src = r#"
+        enum Colour { Red, Green }
+        impl Display for Colour {
+            fn to_str(&self) -> str {
+                match self {
+                    Colour::Red => "red",
+                    Colour::Green => "green",
+                }
+            }
+        }
+
+        struct Inherent { v: i64 }
+        impl Inherent {
+            fn to_str(&self) -> str { "inherent:{self.v}" }
+        }
+
+        fn main() -> u64 {
+            val g = Colour::Green
+            println(g)
+            val r = Colour::Red
+            println("c={r}")
+            val i = Inherent { v: 5i64 }
+            println(i)
+            0u64
+        }
+    "#;
+    assert_renders(src, "display_enum_and_inherent", "green\nc=red\ninherent:5\n");
+}
+
+#[test]
+fn a_to_str_of_the_wrong_shape_does_not_hijack_rendering() {
+    // Only `fn to_str(&self) -> str` is a renderer. A method that
+    // merely shares the name keeps its own meaning: dispatching to
+    // `fn to_str(&self, radix: u64) -> str` would turn a `println`
+    // into an arity error about a call the user never wrote, and one
+    // returning `u64` is not a rendering at all.
+    //
+    // Both methods read `self` deliberately: a method that never
+    // touches its receiver makes the AOT codegen panic with "param
+    // local not declared" when compiled without the core modules,
+    // which predates this feature and is tracked separately.
+    let src = r#"
+        struct Radix { v: i64 }
+        impl Radix {
+            fn to_str(&self, radix: u64) -> str { "{self.v}@{radix}" }
+        }
+
+        struct Wrong { v: i64 }
+        impl Wrong {
+            fn to_str(&self) -> u64 { 7u64 + self.v as u64 }
+        }
+
+        fn main() -> u64 {
+            val r = Radix { v: 3i64 }
+            println(r)
+            println(r.to_str(16u64))
+            val w = Wrong { v: 1i64 }
+            println(w)
+            0u64
+        }
+    "#;
+    assert_renders(
+        src,
+        "display_wrong_shape",
+        "Radix { v: 3 }\n3@16\nWrong { v: 1 }\n",
+    );
+}
+
+#[test]
+fn a_method_body_dispatches_the_same_as_a_function_body() {
+    // The rewrite applies wherever a value reaches one of the text
+    // builtins, including inside a method body — which is where it
+    // first did not.
+    //
+    // An impl block registers its methods only *after* type-checking
+    // their bodies, so `"{s}"` inside `Tag::label` consulted a
+    // `struct_methods` that did not yet contain `String`'s `to_str`,
+    // while the same expression in a plain function found it: the
+    // String printed as its fields in one place and as its text in the
+    // other. The set of rendering types is now read from the statement
+    // pool, which is complete before any body is checked.
+    //
+    // The `String` arrives as a parameter rather than a field because
+    // the AOT MVP rejects a struct field initialised by an
+    // associated-function call, which is the only way to build one.
+    let src = r#"
+        struct Tag { n: i64 }
+        impl Display for Tag {
+            fn to_str(&self) -> str { "T{self.n}" }
+        }
+        impl Tag {
+            fn label(&self, s: String) -> u64 {
+                println("in-method {s}")
+                0u64
+            }
+        }
+
+        fn in_function(s: String) -> u64 {
+            println("in-function {s}")
+            0u64
+        }
+
+        fn main() -> u64 {
+            val t = Tag { n: 3i64 }
+            val s = String::from_str("ada")
+            t.label(s)
+            val s2 = String::from_str("ada")
+            in_function(s2)
+            println(t)
+            0u64
+        }
+    "#;
+    assert_renders(
+        src,
+        "display_method_body",
+        "in-method ada\nin-function ada\nT3\n",
+    );
+}

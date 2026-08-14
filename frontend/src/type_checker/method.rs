@@ -4,6 +4,33 @@ use crate::ast::*;
 use crate::type_decl::*;
 use crate::type_checker::{TypeCheckerVisitor, TypeCheckError, BuiltinMethod};
 
+/// The type shapes accepted as an impl-block method parameter or
+/// return type: primitives (incl. NUM-W narrow ints), named types,
+/// collections, and function types. `Ref { .. }` (params) and
+/// `Unit` (returns) are the two position-specific additions layered
+/// on top at the call sites.
+fn is_supported_impl_signature_shape(ty: &TypeDecl) -> bool {
+    matches!(
+        ty,
+        TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Float64 | TypeDecl::Bool |
+        TypeDecl::String | TypeDecl::Ptr |
+        // NUM-W: narrow ints valid as method param types so
+        // `impl Hash for u8 { fn hash(self: Self) -> u64 }`
+        // (and any user-defined inherent impl on a narrow
+        // primitive) survives validation.
+        TypeDecl::Int8 | TypeDecl::Int16 | TypeDecl::Int32 |
+        TypeDecl::UInt8 | TypeDecl::UInt16 | TypeDecl::UInt32 |
+        TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_, _) |
+        TypeDecl::Array(_, _) | TypeDecl::Dict(_, _) | TypeDecl::Tuple(_) |
+        // Closures Phase 7: `fn (T1, T2) -> R` parameter
+        // type is valid for HOF methods. The impl-block
+        // validator only checks shape — the body
+        // type-checker still validates that calls through
+        // the parameter match the declared signature.
+        TypeDecl::Function(_, _)
+    )
+}
+
 /// Method processing and Self type handling for type checker
 pub trait MethodProcessing {
     /// Resolve Self type to the actual struct type in impl block context
@@ -185,43 +212,21 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
             // Resolve Self type to the actual struct type
             let resolved_type = self.resolve_self_type(param_type);
             
-            match &resolved_type {
-                TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Float64 | TypeDecl::Bool |
-                TypeDecl::String | TypeDecl::Ptr |
-                // NUM-W: narrow ints valid as method param types so
-                // `impl Hash for u8 { fn hash(self: Self) -> u64 }`
-                // (and any user-defined inherent impl on a narrow
-                // primitive) survives validation.
-                TypeDecl::Int8 | TypeDecl::Int16 | TypeDecl::Int32 |
-                TypeDecl::UInt8 | TypeDecl::UInt16 | TypeDecl::UInt32 |
-                TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_, _) |
-                TypeDecl::Array(_, _) | TypeDecl::Dict(_, _) | TypeDecl::Tuple(_) |
-                // REF-Stage-2: `&T` parameter type is accepted as
-                // long as the inner type is one of the supported
-                // shapes; the impl-block validator only needs to
-                // know the wrapper exists (lowering peels it).
-                TypeDecl::Ref { .. } |
-                // Closures Phase 7: `fn (T1, T2) -> R` parameter
-                // type is valid for HOF methods. The impl-block
-                // validator only checks shape — the body
-                // type-checker still validates that calls through
-                // the parameter match the declared signature.
-                TypeDecl::Function(_, _) => {
-                    // Valid parameter types — primitives, structs,
-                    // generics, and collections. `Float64` / `Ptr`
-                    // were added when extension traits over
-                    // primitives landed (Step A).
-                },
-                _ => {
-                    if has_generics {
-                        self.type_inference.pop_generic_scope();
-                    }
-                    let method_name = self.resolve_symbol_name(method.name);
-                    return Err(TypeCheckError::unsupported_operation(
-                        &format!("parameter type in method '{}' for impl block '{:?}'", method_name, target_type),
-                        resolved_type
-                    ));
+            // REF-Stage-2: `&T` parameter type is accepted as
+            // long as the inner type is one of the supported
+            // shapes; the impl-block validator only needs to
+            // know the wrapper exists (lowering peels it).
+            let is_supported = is_supported_impl_signature_shape(&resolved_type)
+                || matches!(&resolved_type, TypeDecl::Ref { .. });
+            if !is_supported {
+                if has_generics {
+                    self.type_inference.pop_generic_scope();
                 }
+                let method_name = self.resolve_symbol_name(method.name);
+                return Err(TypeCheckError::unsupported_operation(
+                    &format!("parameter type in method '{}' for impl block '{:?}'", method_name, target_type),
+                    resolved_type
+                ));
             }
         }
         
@@ -232,35 +237,17 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
             
             // For generic types, we need to validate they can be resolved
             // but don't enforce strict type checking here since generics will be resolved later
-            match &resolved_ret_type {
-                TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Float64 | TypeDecl::Bool |
-                TypeDecl::String | TypeDecl::Ptr |
-                // NUM-W: narrow ints valid as method return types.
-                TypeDecl::Int8 | TypeDecl::Int16 | TypeDecl::Int32 |
-                TypeDecl::UInt8 | TypeDecl::UInt16 | TypeDecl::UInt32 |
-                TypeDecl::Unit | TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_, _) |
-                TypeDecl::Array(_, _) | TypeDecl::Dict(_, _) | TypeDecl::Tuple(_) |
-                // Closures Phase 7: a method may return `fn (T) -> R`
-                // (e.g. `Option::map_to_self` style; `make_adder`
-                // factory pattern). Body validator handles the
-                // detailed shape; this just allows the type to
-                // appear at all.
-                TypeDecl::Function(_, _) => {
-                    // Valid return types — primitives, structs,
-                    // generics, and collections. `Float64` / `Ptr`
-                    // were added when extension traits over
-                    // primitives landed (Step A).
-                },
-                _ => {
-                    if has_generics {
-                        self.type_inference.pop_generic_scope();
-                    }
-                    let method_name = self.resolve_symbol_name(method.name);
-                    return Err(TypeCheckError::unsupported_operation(
-                        &format!("return type in method '{}' for impl block", method_name),
-                        resolved_ret_type
-                    ));
+            let is_supported = is_supported_impl_signature_shape(&resolved_ret_type)
+                || matches!(&resolved_ret_type, TypeDecl::Unit);
+            if !is_supported {
+                if has_generics {
+                    self.type_inference.pop_generic_scope();
                 }
+                let method_name = self.resolve_symbol_name(method.name);
+                return Err(TypeCheckError::unsupported_operation(
+                    &format!("return type in method '{}' for impl block", method_name),
+                    resolved_ret_type
+                ));
             }
         }
         

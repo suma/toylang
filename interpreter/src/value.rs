@@ -105,24 +105,11 @@ impl Value {
     /// represent the same datum.
     pub fn from_rc(rc: &RcObject) -> Self {
         let borrowed = rc.borrow();
-        match &*borrowed {
-            Object::Bool(b) => Value::Bool(*b),
-            Object::Int64(v) => Value::Int64(*v),
-            Object::UInt64(v) => Value::UInt64(*v),
-            Object::Int8(v) => Value::Int8(*v),
-            Object::Int16(v) => Value::Int16(*v),
-            Object::Int32(v) => Value::Int32(*v),
-            Object::UInt8(v) => Value::UInt8(*v),
-            Object::UInt16(v) => Value::UInt16(*v),
-            Object::UInt32(v) => Value::UInt32(*v),
-            Object::Float64(v) => Value::Float64(*v),
-            Object::ConstString(sym) => Value::ConstString(*sym),
-            Object::Pointer(addr) => Value::Pointer(*addr),
-            Object::Null(td) => Value::Null(td.clone()),
-            Object::Unit => Value::Unit,
+        match lift_primitive(&borrowed) {
+            Some(v) => v,
             // Heap-shaped: keep the existing Rc cell to preserve
             // sharing semantics.
-            _ => {
+            None => {
                 drop(borrowed);
                 Value::Heap(rc.clone())
             }
@@ -278,49 +265,40 @@ impl From<RcObject> for Value {
 
 impl From<Object> for Value {
     fn from(obj: Object) -> Self {
-        // `Object` implements `Drop`, so we can't move primitive
-        // payloads out by destructuring. Inspect by reference and
-        // copy the small-value payload manually.
-        match &obj {
-            Object::Bool(b) => Value::Bool(*b),
-            Object::Int64(v) => Value::Int64(*v),
-            Object::UInt64(v) => Value::UInt64(*v),
-            Object::Int8(v) => Value::Int8(*v),
-            Object::Int16(v) => Value::Int16(*v),
-            Object::Int32(v) => Value::Int32(*v),
-            Object::UInt8(v) => Value::UInt8(*v),
-            Object::UInt16(v) => Value::UInt16(*v),
-            Object::UInt32(v) => Value::UInt32(*v),
-            Object::Float64(v) => Value::Float64(*v),
-            Object::ConstString(sym) => Value::ConstString(*sym),
-            Object::Pointer(addr) => Value::Pointer(*addr),
-            Object::Null(td) => Value::Null(td.clone()),
-            Object::Unit => Value::Unit,
-            _ => Value::Heap(Rc::new(RefCell::new(obj))),
+        match lift_primitive(&obj) {
+            Some(v) => v,
+            None => Value::Heap(Rc::new(RefCell::new(obj))),
         }
     }
 }
 
+/// Copy the payload of a primitive `Object` variant into its inline
+/// `Value` variant. Returns `None` for heap-shaped (composite) objects.
+/// The single source of truth for the `Object` ↔ `Value` primitive
+/// correspondence — `from_rc` / `From<Object>` / `is_primitive_variant`
+/// all consult it.
+fn lift_primitive(obj: &Object) -> Option<Value> {
+    match obj {
+        Object::Bool(b) => Some(Value::Bool(*b)),
+        Object::Int64(v) => Some(Value::Int64(*v)),
+        Object::UInt64(v) => Some(Value::UInt64(*v)),
+        Object::Int8(v) => Some(Value::Int8(*v)),
+        Object::Int16(v) => Some(Value::Int16(*v)),
+        Object::Int32(v) => Some(Value::Int32(*v)),
+        Object::UInt8(v) => Some(Value::UInt8(*v)),
+        Object::UInt16(v) => Some(Value::UInt16(*v)),
+        Object::UInt32(v) => Some(Value::UInt32(*v)),
+        Object::Float64(v) => Some(Value::Float64(*v)),
+        Object::ConstString(sym) => Some(Value::ConstString(*sym)),
+        Object::Pointer(addr) => Some(Value::Pointer(*addr)),
+        Object::Null(td) => Some(Value::Null(td.clone())),
+        Object::Unit => Some(Value::Unit),
+        _ => None,
+    }
+}
+
 fn is_primitive_variant(obj: &Object) -> bool {
-    matches!(
-        obj,
-        Object::Bool(_)
-            | Object::Int64(_)
-            | Object::UInt64(_)
-            // NUM-W narrow ints round-trip through the inline
-            // Value path the same way the wide ints do.
-            | Object::Int8(_)
-            | Object::Int16(_)
-            | Object::Int32(_)
-            | Object::UInt8(_)
-            | Object::UInt16(_)
-            | Object::UInt32(_)
-            | Object::Float64(_)
-            | Object::ConstString(_)
-            | Object::Pointer(_)
-            | Object::Null(_)
-            | Object::Unit
-    )
+    lift_primitive(obj).is_some()
 }
 
 #[cfg(test)]

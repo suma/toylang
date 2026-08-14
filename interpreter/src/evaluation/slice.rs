@@ -7,13 +7,24 @@ use crate::try_value;
 use super::{EvaluationContext, EvaluationResult};
 
 impl EvaluationContext<'_> {
-    /// Convert index (positive or negative) to array index
-    fn resolve_array_index(&self, index_obj: &RcObject, array_len: usize) -> Result<usize, InterpreterError> {
+    /// Convert index (positive or negative) to array index.
+    ///
+    /// `allow_len == true` marks an exclusive end bound (`arr[a..b]`
+    /// permits `b == array_len`); `false` is a single-element access
+    /// (`arr[i]` requires `i < array_len`). The check is the only
+    /// difference between the two callers, so it lives here.
+    fn resolve_array_index(
+        &self,
+        index_obj: &RcObject,
+        array_len: usize,
+        allow_len: bool,
+    ) -> Result<usize, InterpreterError> {
+        let in_range = |idx: usize| if allow_len { idx <= array_len } else { idx < array_len };
         let borrowed = index_obj.borrow();
         match &*borrowed {
             Object::UInt64(idx) => {
                 let idx = *idx as usize;
-                if idx >= array_len {
+                if !in_range(idx) {
                     return Err(InterpreterError::IndexOutOfBounds {
                         index: idx as isize,
                         size: array_len
@@ -25,7 +36,7 @@ impl EvaluationContext<'_> {
                 if *idx >= 0 {
                     // Positive i64, treat as u64
                     let idx = *idx as usize;
-                    if idx >= array_len {
+                    if !in_range(idx) {
                         return Err(InterpreterError::IndexOutOfBounds {
                             index: idx as isize,
                             size: array_len
@@ -61,7 +72,7 @@ impl EvaluationContext<'_> {
                 let start_idx = if let Some(start_expr) = &slice_info.start {
                     let start_val = self.evaluate(start_expr)?;
                     let start_obj = try_value!(Ok(start_val));
-                    self.resolve_array_index(&start_obj, array_len)?
+                    self.resolve_array_index(&start_obj, array_len, false)?
                 } else {
                     0
                 };
@@ -70,43 +81,7 @@ impl EvaluationContext<'_> {
                 let end_idx = if let Some(end_expr) = &slice_info.end {
                     let end_val = self.evaluate(end_expr)?;
                     let end_obj = try_value!(Ok(end_val));
-                    // Use same logic as in original function for end index
-                    let borrowed = end_obj.borrow();
-                    match &*borrowed {
-                        Object::UInt64(idx) => {
-                            let idx = *idx as usize;
-                            if idx > array_len {
-                                return Err(InterpreterError::IndexOutOfBounds {
-                                    index: idx as isize,
-                                    size: array_len
-                                });
-                            }
-                            idx
-                        }
-                        Object::Int64(idx) => {
-                            if *idx >= 0 {
-                                let idx = *idx as usize;
-                                if idx > array_len {
-                                    return Err(InterpreterError::IndexOutOfBounds {
-                                        index: idx as isize,
-                                        size: array_len
-                                    });
-                                }
-                                idx
-                            } else {
-                                // Negative end index: convert to positive
-                                let abs_idx = (-*idx) as usize;
-                                if abs_idx > array_len {
-                                    return Err(InterpreterError::IndexOutOfBounds {
-                                        index: *idx as isize,
-                                        size: array_len
-                                    });
-                                }
-                                array_len - abs_idx
-                            }
-                        }
-                        _ => return Err(InterpreterError::InternalError("Array index must be an integer".to_string()))
-                    }
+                    self.resolve_array_index(&end_obj, array_len, true)?
                 } else {
                     array_len
                 };
@@ -226,7 +201,7 @@ impl EvaluationContext<'_> {
                 let start_idx = if let Some(start_expr) = start {
                     let start_val = self.evaluate(start_expr)?;
                     let start_obj = try_value!(Ok(start_val));
-                    self.resolve_array_index(&start_obj, array_len)?
+                    self.resolve_array_index(&start_obj, array_len, false)?
                 } else {
                     0
                 };
@@ -235,42 +210,7 @@ impl EvaluationContext<'_> {
                 let end_idx = if let Some(end_expr) = end {
                     let end_val = self.evaluate(end_expr)?;
                     let end_obj = try_value!(Ok(end_val));
-                    // For end index, we need to allow array_len as valid (exclusive end)
-                    let borrowed = end_obj.borrow();
-                    match &*borrowed {
-                        Object::UInt64(idx) => {
-                            let idx = *idx as usize;
-                            if idx > array_len {
-                                return Err(InterpreterError::IndexOutOfBounds {
-                                    index: idx as isize,
-                                    size: array_len
-                                });
-                            }
-                            idx
-                        }
-                        Object::Int64(idx) => {
-                            if *idx >= 0 {
-                                let idx = *idx as usize;
-                                if idx > array_len {
-                                    return Err(InterpreterError::IndexOutOfBounds {
-                                        index: idx as isize,
-                                        size: array_len
-                                    });
-                                }
-                                idx
-                            } else {
-                                let abs_idx = (-*idx) as usize;
-                                if abs_idx > array_len {
-                                    return Err(InterpreterError::IndexOutOfBounds {
-                                        index: *idx as isize,
-                                        size: array_len
-                                    });
-                                }
-                                array_len - abs_idx
-                            }
-                        }
-                        _ => return Err(InterpreterError::InternalError("Array index must be an integer".to_string()))
-                    }
+                    self.resolve_array_index(&end_obj, array_len, true)?
                 } else {
                     array_len
                 };
@@ -413,7 +353,7 @@ impl EvaluationContext<'_> {
                     if let Some(start_expr) = start {
                         let start_val = self.evaluate(start_expr)?;
                         let start_obj = try_value!(Ok(start_val));
-                        let resolved_idx = self.resolve_array_index(&start_obj, array_len)?;
+                        let resolved_idx = self.resolve_array_index(&start_obj, array_len, false)?;
 
                         let mut obj_borrowed = object_obj.borrow_mut();
                         if let Object::Array(elements) = &mut *obj_borrowed {

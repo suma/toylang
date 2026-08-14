@@ -711,15 +711,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // round-to-nearest, float-int saturates with NaN→0.
         // The classifier below replaces the per-pair allowlist
         // the i64/u64/f64-only era used.
-        let is_numeric = |t: &TypeDecl| matches!(
-            t,
-            TypeDecl::Int64 | TypeDecl::UInt64
-                | TypeDecl::Int32 | TypeDecl::UInt32
-                | TypeDecl::Int16 | TypeDecl::UInt16
-                | TypeDecl::Int8 | TypeDecl::UInt8
-                | TypeDecl::Float64
-        );
-        if is_numeric(&expr_type) && is_numeric(target_type) {
+        if expr_type.is_numeric() && target_type.is_numeric() {
             return Ok(target_type.clone());
         }
         match (&expr_type, target_type) {
@@ -735,7 +727,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             // Allow Number to specific numeric types (parser
             // emits `Number` for unsuffixed integer literals
             // before type inference fixes them).
-            (TypeDecl::Number, t) if is_numeric(t) => Ok(target_type.clone()),
+            (TypeDecl::Number, t) if t.is_numeric() => Ok(target_type.clone()),
 
             // Identity cast for other types
             (from, to) if from == to => Ok(target_type.clone()),

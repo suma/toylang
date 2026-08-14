@@ -79,6 +79,21 @@ pub enum TypeDecl {
 }
 
 impl TypeDecl {
+    /// Whether `self` is a primitive numeric type (UInt64 / Int64,
+    /// Float64, or any NUM-W narrow width). Used by the arithmetic /
+    /// comparison / cast classifier arms that would otherwise re-list
+    /// the same variant set in every file.
+    pub fn is_numeric(&self) -> bool {
+        matches!(
+            self,
+            TypeDecl::Int64 | TypeDecl::UInt64
+                | TypeDecl::Int32 | TypeDecl::UInt32
+                | TypeDecl::Int16 | TypeDecl::UInt16
+                | TypeDecl::Int8 | TypeDecl::UInt8
+                | TypeDecl::Float64
+        )
+    }
+
     /// Check if two types are equivalent for function argument checking.
     /// This considers Identifier(symbol) and Struct(symbol) as equivalent when they have the same symbol.
     pub fn is_equivalent(&self, other: &TypeDecl) -> bool {

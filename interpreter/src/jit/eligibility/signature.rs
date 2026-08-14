@@ -59,58 +59,87 @@ pub type MonoKey = (MonoTarget, Vec<ScalarTy>);
 /// Source unit a monomorphization compiles from. `Function` and
 /// `MethodFunction` share enough of a shape (parameters, return type,
 /// generic params, body StmtRef) that we expose a small read-only view
-/// in `CallableInfo` so codegen / signature-building can stay generic.
+/// in `MonomorphSource` so codegen / signature-building can stay
+/// generic.
 #[derive(Clone)]
 pub enum MonomorphSource {
     Function(Rc<Function>),
     Method(Rc<MethodFunction>),
 }
 
+/// Read-only view over the callable fields `Function` and
+/// `MethodFunction` share (parameter list, return type, generics, body,
+/// contracts). Implemented here for the two AST nodes — the trait is
+/// local and the types are foreign, which is legal under the orphan rule.
+pub trait CallableInfo {
+    fn parameter(&self) -> &[(DefaultSymbol, TypeDecl)];
+    fn return_type(&self) -> Option<&TypeDecl>;
+    fn generic_params(&self) -> &[DefaultSymbol];
+    fn generic_bounds(&self) -> &std::collections::HashMap<DefaultSymbol, TypeDecl>;
+    fn code(&self) -> StmtRef;
+    fn has_contracts(&self) -> bool;
+}
+
+impl CallableInfo for Function {
+    fn parameter(&self) -> &[(DefaultSymbol, TypeDecl)] { &self.parameter }
+    fn return_type(&self) -> Option<&TypeDecl> { self.return_type.as_ref() }
+    fn generic_params(&self) -> &[DefaultSymbol] { &self.generic_params }
+    fn generic_bounds(&self) -> &std::collections::HashMap<DefaultSymbol, TypeDecl> {
+        &self.generic_bounds
+    }
+    fn code(&self) -> StmtRef { self.code }
+    fn has_contracts(&self) -> bool {
+        !self.requires.is_empty() || !self.ensures.is_empty()
+    }
+}
+
+impl CallableInfo for MethodFunction {
+    fn parameter(&self) -> &[(DefaultSymbol, TypeDecl)] { &self.parameter }
+    fn return_type(&self) -> Option<&TypeDecl> { self.return_type.as_ref() }
+    fn generic_params(&self) -> &[DefaultSymbol] { &self.generic_params }
+    fn generic_bounds(&self) -> &std::collections::HashMap<DefaultSymbol, TypeDecl> {
+        &self.generic_bounds
+    }
+    fn code(&self) -> StmtRef { self.code }
+    fn has_contracts(&self) -> bool {
+        !self.requires.is_empty() || !self.ensures.is_empty()
+    }
+}
+
 impl MonomorphSource {
-    pub fn parameter(&self) -> &[(DefaultSymbol, TypeDecl)] {
+    fn callable(&self) -> &dyn CallableInfo {
         match self {
-            MonomorphSource::Function(f) => &f.parameter,
-            MonomorphSource::Method(m) => &m.parameter,
+            MonomorphSource::Function(f) => f.as_ref(),
+            MonomorphSource::Method(m) => m.as_ref(),
         }
+    }
+
+    pub fn parameter(&self) -> &[(DefaultSymbol, TypeDecl)] {
+        self.callable().parameter()
     }
 
     pub fn return_type(&self) -> Option<&TypeDecl> {
-        match self {
-            MonomorphSource::Function(f) => f.return_type.as_ref(),
-            MonomorphSource::Method(m) => m.return_type.as_ref(),
-        }
+        self.callable().return_type()
     }
 
     pub fn generic_params(&self) -> &[DefaultSymbol] {
-        match self {
-            MonomorphSource::Function(f) => &f.generic_params,
-            MonomorphSource::Method(m) => &m.generic_params,
-        }
+        self.callable().generic_params()
     }
 
     pub fn generic_bounds(
         &self,
     ) -> &std::collections::HashMap<DefaultSymbol, TypeDecl> {
-        match self {
-            MonomorphSource::Function(f) => &f.generic_bounds,
-            MonomorphSource::Method(m) => &m.generic_bounds,
-        }
+        self.callable().generic_bounds()
     }
 
     pub fn code(&self) -> StmtRef {
-        match self {
-            MonomorphSource::Function(f) => f.code,
-            MonomorphSource::Method(m) => m.code,
-        }
+        self.callable().code()
     }
 
     /// Whether this source has any DbC clauses (`requires` / `ensures`).
     /// Eligibility uses this to silent-fallback contract-bearing functions
     /// rather than try to lower the predicates into cranelift IR.
     pub fn has_contracts(&self) -> bool {
-        match self {
-            MonomorphSource::Function(f) => !f.requires.is_empty() || !f.ensures.is_empty(),
-            MonomorphSource::Method(m) => !m.requires.is_empty() || !m.ensures.is_empty(),
-        }
+        self.callable().has_contracts()
     }
 }

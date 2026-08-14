@@ -7,27 +7,6 @@ use crate::type_checker::{
 };
 use crate::type_checker::generics::GenericTypeChecking;
 
-/// Build a generic-substitution map for a struct/enum instantiation:
-/// `params[i] -> args[i]`, resolving each arg through the enclosing `outer`
-/// substitution so nested generics (`Option<Option<T>>`) compose. Used by
-/// `typedecl_byte_size` to size generic compound types under concrete args.
-#[allow(dead_code)]
-fn build_size_subst(
-    params: &[DefaultSymbol],
-    args: &[TypeDecl],
-    outer: &std::collections::HashMap<DefaultSymbol, TypeDecl>,
-) -> std::collections::HashMap<DefaultSymbol, TypeDecl> {
-    let mut m = std::collections::HashMap::new();
-    for (p, a) in params.iter().zip(args.iter()) {
-        let resolved = match a {
-            TypeDecl::Generic(g) => outer.get(g).cloned().unwrap_or_else(|| a.clone()),
-            _ => a.clone(),
-        };
-        m.insert(*p, resolved);
-    }
-    m
-}
-
 /// Expression type checking implementation
 impl<'a> TypeCheckerVisitor<'a> {
     /// REF-Stage-2 (iii): walk a `&mut <expr>` operand down through
@@ -120,76 +99,6 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
 
         result
-    }
-
-    /// Type-based byte size of `ty` (mirrors `compiler_lower::compute_byte_size`):
-    /// scalars 1/2/4/8, struct = Σ fields, tuple = Σ elements, enum =
-    /// 1 (tag) + max variant payload. `subst` maps in-scope generic
-    /// parameters to concrete types. Returns `None` for types that can't be
-    /// sized at type-check time (unresolved generics, arrays, fn types, ...),
-    /// in which case `__builtin_sizeof` is left for the backend.
-    #[allow(dead_code)]
-    fn typedecl_byte_size(
-        &self,
-        ty: &TypeDecl,
-        subst: &std::collections::HashMap<DefaultSymbol, TypeDecl>,
-    ) -> Option<u64> {
-        match ty {
-            TypeDecl::Bool | TypeDecl::Int8 | TypeDecl::UInt8 => Some(1),
-            TypeDecl::Int16 | TypeDecl::UInt16 => Some(2),
-            TypeDecl::Int32 | TypeDecl::UInt32 => Some(4),
-            TypeDecl::Int64
-            | TypeDecl::UInt64
-            | TypeDecl::Float64
-            | TypeDecl::String
-            | TypeDecl::Ptr => Some(8),
-            TypeDecl::Unit => Some(0),
-            TypeDecl::Generic(p) => {
-                let concrete = subst.get(p)?.clone();
-                self.typedecl_byte_size(&concrete, subst)
-            }
-            TypeDecl::Tuple(elems) => {
-                let mut total: u64 = 0;
-                for e in elems {
-                    total = total.saturating_add(self.typedecl_byte_size(e, subst)?);
-                }
-                Some(total)
-            }
-            TypeDecl::Struct(sym, args) => {
-                let fields = self.context.get_struct_fields(*sym)?.clone();
-                let params = self
-                    .context
-                    .get_struct_generic_params(*sym)
-                    .cloned()
-                    .unwrap_or_default();
-                let inner = build_size_subst(&params, args, subst);
-                let mut total: u64 = 0;
-                for f in &fields {
-                    total = total.saturating_add(self.typedecl_byte_size(&f.type_decl, &inner)?);
-                }
-                Some(total)
-            }
-            TypeDecl::Enum(sym, args) => {
-                let variants = self.context.enum_definitions.get(sym)?.clone();
-                let params = self
-                    .context
-                    .enum_generic_params
-                    .get(sym)
-                    .cloned()
-                    .unwrap_or_default();
-                let inner = build_size_subst(&params, args, subst);
-                let mut max_payload: u64 = 0;
-                for v in &variants {
-                    let mut payload: u64 = 0;
-                    for pt in &v.payload_types {
-                        payload = payload.saturating_add(self.typedecl_byte_size(pt, &inner)?);
-                    }
-                    max_payload = max_payload.max(payload);
-                }
-                Some(1u64.saturating_add(max_payload))
-            }
-            _ => None,
-        }
     }
 
     /// Type check unary operators
@@ -525,16 +434,10 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// narrow width). Used by `visit_arith_binary` and
     /// `visit_compare_binary` to eliminate repetitive match arms.
     fn same_numeric_pair(l: &TypeDecl, r: &TypeDecl) -> Option<TypeDecl> {
-        if l != r {
-            return None;
-        }
-        match l {
-            TypeDecl::UInt64 | TypeDecl::Int64
-            | TypeDecl::UInt32 | TypeDecl::Int32
-            | TypeDecl::UInt16 | TypeDecl::Int16
-            | TypeDecl::UInt8 | TypeDecl::Int8
-            | TypeDecl::Float64 => Some(l.clone()),
-            _ => None,
+        if l == r && l.is_numeric() {
+            Some(l.clone())
+        } else {
+            None
         }
     }
 

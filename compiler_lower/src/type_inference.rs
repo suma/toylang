@@ -80,6 +80,15 @@ impl<'a> FunctionLower<'a> {
                     _ => None,
                 }
             }
+            // A method-call scrutinee resolves through the same
+            // receiver-binding + method-registry peek `value_scalar`'s
+            // `MethodCall` arm uses. It needs no `&mut self` and the
+            // recursion is bounded: every step descends into a
+            // subexpression of the scrutinee.
+            Expr::MethodCall(..) => match self.value_scalar(scrutinee)? {
+                Type::Enum(id) => Some(id),
+                _ => None,
+            },
             _ => None,
         }
     }

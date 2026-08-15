@@ -5770,6 +5770,13 @@ fn match_scrutinee_call_returning_a_scalar_still_takes_the_scalar_path() {
 // scalar type for val/var rhs" even though lowering would have handled
 // it. One arm with a literal body was enough to hide the problem,
 // which is why the plain `Option::None => 0i64` shape always worked.
+//
+// The last residual — a *method-call* scrutinee (`val x = match
+// h.get() { ... }`) — was resolved by teaching `scrutinee_enum_id` to
+// peek through method calls with the same receiver-binding +
+// method-registry lookup `value_scalar`'s `MethodCall` arm already
+// used. It needs no `&mut self`: the registry is data lowered once per
+// program, not state created during resolution.
 
 #[test]
 fn val_bound_match_infers_from_payload_bindings() {
@@ -5875,6 +5882,144 @@ fn val_bound_match_on_a_stdlib_result_binds_both_arms() {
         }
     "#;
     assert_consistent(src, "val_match_result_both_arms");
+}
+
+// The residual: scrutinees that are *method calls*. Every earlier test
+// above has an identifier or function call on the left of `match`; a
+// method call used to send `value_scalar` (which cannot resolve a
+// method target without the `&mut self` machinery) back with nothing,
+// so the val was rejected despite lowering being able to handle it.
+
+#[test]
+fn val_bound_match_on_a_method_call_scrutinee() {
+    let src = r#"
+        enum E { A(i64), B(i64) }
+
+        struct Holder { n: i64 }
+
+        impl Holder {
+            fn get(self: Self) -> E { E::B(self.n) }
+        }
+
+        fn main() -> i64 {
+            val h = Holder { n: 5i64 }
+            val x: i64 = match h.get() {
+                E::A(v) => v,
+                E::B(w) => w,
+            }
+            x
+        }
+    "#;
+    assert_consistent(src, "val_match_method_scrutinee");
+}
+
+#[test]
+fn val_bound_match_on_a_mut_method_scrutinee_keeps_the_writeback() {
+    // `&mut self` methods write the mutated receiver back after the
+    // call; the loop below would return the wrong total if the
+    // scrutinee path dropped the writeback half.
+    let src = r#"
+        enum E { A(i64), B(i64) }
+
+        struct Counter { n: i64 }
+
+        impl Counter {
+            fn step(&mut self) -> E {
+                self.n = self.n + 1i64
+                if self.n % 2i64 == 0i64 { E::A(self.n) } else { E::B(self.n) }
+            }
+        }
+
+        fn main() -> i64 {
+            var c = Counter { n: 0i64 }
+            var total = 0i64
+            for i in 0u64 to 4u64 {
+                val x: i64 = match c.step() {
+                    E::A(v) => v,
+                    E::B(w) => w,
+                }
+                total = total + x
+            }
+            total
+        }
+    "#;
+    assert_consistent(src, "val_match_mut_method_writeback");
+}
+
+#[test]
+fn val_bound_match_on_self_method_scrutinee_inside_a_method() {
+    // `self.get()` — the receiver is the implicit `self` parameter,
+    // which is an identifier like any other at lowering time.
+    let src = r#"
+        enum E { A(i64), B(i64) }
+
+        struct Holder { n: i64 }
+
+        impl Holder {
+            fn get(self: Self) -> E { E::B(self.n) }
+            fn twice(self: Self) -> i64 {
+                val x: i64 = match self.get() {
+                    E::A(v) => v,
+                    E::B(w) => w,
+                }
+                x * 2i64
+            }
+        }
+
+        fn main() -> i64 {
+            val h = Holder { n: 5i64 }
+            h.twice()
+        }
+    "#;
+    assert_consistent(src, "val_match_self_method_scrutinee");
+}
+
+#[test]
+fn val_bound_match_on_a_generic_method_scrutinee() {
+    // The scrutinee method goes through the generic-method template
+    // instantiation (`Result::map<U>`), not a plain registry hit — the
+    // peek has to find the *instantiated* return type.
+    let src = r#"
+        fn halve(a: i64) -> Result<i64, i64> {
+            if a % 2i64 == 0i64 { Result::Ok(a / 2i64) } else { Result::Err(a) }
+        }
+
+        fn main() -> i64 {
+            val r: Result<i64, i64> = halve(42i64)
+            val mapped = r.map(fn(x: i64) -> i64 { x + 1i64 })
+            val b: i64 = match mapped {
+                Result::Ok(v) => v,
+                Result::Err(e) => e,
+            }
+            b
+        }
+    "#;
+    assert_consistent(src, "val_match_generic_method_scrutinee");
+}
+
+#[test]
+fn val_bound_match_without_annotation_on_a_method_call_scrutinee() {
+    // The annotation is not what makes the inference work; the slot
+    // type has to come from the payload's declared type alone.
+    let src = r#"
+        enum E { A(i64), B(i64) }
+
+        struct Holder { n: i64 }
+
+        impl Holder {
+            fn get(self: Self) -> E { E::A(self.n) }
+        }
+
+        fn main() -> i64 {
+            val h = Holder { n: 7i64 }
+            val x = match h.get() {
+                E::A(v) => v,
+                E::B(w) => w,
+            }
+            x
+        }
+    "#;
+    assert_consistent(src, "val_match_method_scrutinee_noann");
 }
 
 // --- stdlib higher-order methods on generic enums -------------------

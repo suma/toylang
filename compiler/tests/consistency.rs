@@ -6022,6 +6022,128 @@ fn val_bound_match_without_annotation_on_a_method_call_scrutinee() {
     assert_consistent(src, "val_match_method_scrutinee_noann");
 }
 
+// The other half of the residual: a *field-access* receiver
+// (`h.inner.get()`). `resolve_method_target` used to accept only bare
+// identifier receivers, so the match scrutinee fell through to the
+// scalar path and was rejected with "match on scalar scrutinee only
+// supports i64 / u64 / bool" — for a value that is an enum. The
+// receiver's leaf locals live inside the parent binding, so the
+// synthesized struct binding must point at those same locals for the
+// call args *and* the `&mut self` writeback to land correctly.
+
+#[test]
+fn val_bound_match_on_a_field_access_method_scrutinee() {
+    let src = r#"
+        enum E { A(i64), B(i64) }
+
+        struct Inner { n: i64 }
+
+        struct Holder { inner: Inner }
+
+        impl Inner {
+            fn get(self: Self) -> E { E::A(self.n) }
+        }
+
+        fn main() -> i64 {
+            val h = Holder { inner: Inner { n: 6i64 } }
+            val x: i64 = match h.inner.get() {
+                E::A(v) => v,
+                E::B(w) => w,
+            }
+            x
+        }
+    "#;
+    assert_consistent(src, "val_match_field_scrutinee");
+}
+
+#[test]
+fn val_bound_match_on_a_mut_field_access_scrutinee_keeps_the_writeback() {
+    // `&mut self` on `h.inner` writes back into the *parent's* leaf
+    // locals; if the synthesized receiver binding pointed anywhere
+    // else, the loop below would return a stale total.
+    let src = r#"
+        enum E { A(i64), B(i64) }
+
+        struct Inner { n: i64 }
+
+        struct Holder { inner: Inner }
+
+        impl Inner {
+            fn step(&mut self) -> E {
+                self.n = self.n + 1i64
+                if self.n % 2i64 == 0i64 { E::A(self.n) } else { E::B(self.n) }
+            }
+        }
+
+        fn main() -> i64 {
+            var h = Holder { inner: Inner { n: 0i64 } }
+            var total = 0i64
+            for i in 0u64 to 4u64 {
+                val x: i64 = match h.inner.step() {
+                    E::A(v) => v,
+                    E::B(w) => w,
+                }
+                total = total + x
+            }
+            total
+        }
+    "#;
+    assert_consistent(src, "val_match_field_mut_writeback");
+}
+
+#[test]
+fn val_bound_match_on_a_nested_field_access_scrutinee() {
+    // The chain resolves through several levels of nesting before the
+    // method's receiver appears.
+    let src = r#"
+        enum E { A(i64), B(i64) }
+
+        struct Deep { n: i64 }
+
+        struct Mid { deep: Deep }
+
+        struct Top { mid: Mid }
+
+        impl Deep {
+            fn get(self: Self) -> E { E::B(self.n) }
+        }
+
+        fn main() -> i64 {
+            val t = Top { mid: Mid { deep: Deep { n: 9i64 } } }
+            val x: i64 = match t.mid.deep.get() {
+                E::A(v) => v,
+                E::B(w) => w,
+            }
+            x
+        }
+    "#;
+    assert_consistent(src, "val_match_nested_field_scrutinee");
+}
+
+#[test]
+fn compound_method_on_a_field_receiver_binds_with_val() {
+    // `resolve_method_target` is shared with the compound-returning
+    // val-rhs path — a field receiver must resolve there too, or the
+    // upgrade below fails with "no method".
+    let src = r#"
+        struct Inner { n: i64 }
+
+        struct Holder { inner: Inner }
+
+        impl Inner {
+            fn make(n: i64) -> Inner { Inner { n: n } }
+            fn bump(self: Self) -> Inner { Inner { n: self.n + 1i64 } }
+        }
+
+        fn main() -> i64 {
+            val h = Holder { inner: Inner::make(5i64) }
+            val upgraded: Inner = h.inner.bump()
+            upgraded.n
+        }
+    "#;
+    assert_consistent(src, "compound_val_rhs_field_receiver");
+}
+
 // --- stdlib higher-order methods on generic enums -------------------
 //
 // `Option::map` / `Result::map` / `map_err` / `unwrap_or_else` ran on

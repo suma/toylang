@@ -412,13 +412,27 @@ impl<'a> FunctionLower<'a> {
             .expression
             .get(obj)
             .ok_or_else(|| "method-call receiver missing".to_string())?;
-        let recv_sym = match obj_expr {
-            Expr::Identifier(s) => s,
+        // A field-access receiver (`holder.inner.get()`) has no
+        // binding of its own — its leaf locals live inside the
+        // parent binding. `resolve_method_receiver_binding`
+        // synthesises the struct binding from the field chain, so the
+        // compound-method paths (match scrutinees, compound-returning
+        // val rhs) can treat it exactly like a bare identifier
+        // receiver, writeback included (the leaves are the parent's
+        // locals, so `&mut self` mutations propagate). Any chain that
+        // does not resolve to a struct stays "not this shape"
+        // (`Ok(None)`), preserving the peek contract for the scalar
+        // fall-through.
+        let binding = match obj_expr {
+            Expr::Identifier(s) => match self.bindings.get(&s).cloned() {
+                Some(b) => b,
+                None => return Ok(None),
+            },
+            Expr::FieldAccess(_, _) => match self.resolve_method_receiver_binding(obj) {
+                Ok(b) => b,
+                Err(_) => return Ok(None),
+            },
             _ => return Ok(None),
-        };
-        let binding = match self.bindings.get(&recv_sym).cloned() {
-            Some(b) => b,
-            None => return Ok(None),
         };
         // CONCRETE-IMPL Phase 2b: receiver's IR type args distinguish
         // multiple `impl Foo for Container<X>` impls; consult them

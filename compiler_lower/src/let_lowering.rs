@@ -812,203 +812,67 @@ impl<'a> FunctionLower<'a> {
         method_sym: DefaultSymbol,
         method_args: Vec<ExprRef>,
     ) -> Result<Option<Option<ValueId>>, String> {
-        if let Some((target_id, recv_binding)) =
-            self.resolve_method_target(&recv, method_sym, &method_args)?
-        {
-            let target_ret = self.module.function(target_id).return_type;
-            if matches!(
-                target_ret,
-                Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)
-            ) {
-                // Build the call args: receiver leaf scalars
-                // first, then method arguments (each lowered
-                // individually so identifier-arg expansion for
-                // struct / tuple / enum stays intact).
-                let mut all_args: Vec<ValueId> = Vec::new();
-                match &recv_binding {
-                    Binding::Struct { fields, .. } => {
-                        for (local, ty) in flatten_struct_locals(fields) {
-                            let v = self
-                                .emit(InstKind::LoadLocal(local), Some(ty))
-                                .expect("LoadLocal returns");
-                            all_args.push(v);
-                        }
-                    }
-                    Binding::Enum(storage) => {
-                        let storage = storage.clone();
-                        let vs = self.load_enum_locals(&storage);
-                        all_args.extend(vs);
-                    }
-                    _ => unreachable!(
-                        "resolve_method_target only returns struct/enum receivers"
-                    ),
-                }
-                for a in &method_args {
-                    // Mirror `method_call.rs::lower_method_call`'s
-                    // identifier-arg flatten path so a struct /
-                    // tuple / enum argument (auto-borrowed or
-                    // not) decomposes into leaf locals before
-                    // landing in the cranelift call ABI. Without
-                    // this, a `concat(other: &Vec<u8>)` / similar
-                    // signature on a compound-returning method
-                    // would bail with "method argument produced
-                    // no value" because `lower_expr` on a struct
-                    // identifier intentionally returns `Ok(None)`
-                    // (the value is held in the binding's leaf
-                    // locals, not in the IR value graph).
-                    let arg_expr_ref = match self.program.expression.get(a) {
-                        Some(Expr::Unary(frontend::ast::UnaryOp::Borrow | frontend::ast::UnaryOp::BorrowMut, inner)) => {
-                            inner
-                        }
-                        _ => *a,
-                    };
-                    if let Some(Expr::Identifier(sym)) =
-                        self.program.expression.get(&arg_expr_ref)
-                    {
-                        if let Some(Binding::Struct { fields, .. }) =
-                            self.bindings.get(&sym).cloned()
-                        {
-                            for (local, ty) in flatten_struct_locals(&fields) {
-                                let v = self
-                                    .emit(InstKind::LoadLocal(local), Some(ty))
-                                    .expect("LoadLocal returns a value");
-                                all_args.push(v);
-                            }
-                            continue;
-                        }
-                        if let Some(Binding::Tuple { elements }) =
-                            self.bindings.get(&sym).cloned()
-                        {
-                            for (local, ty) in flatten_tuple_element_locals(&elements) {
-                                let v = self
-                                    .emit(InstKind::LoadLocal(local), Some(ty))
-                                    .expect("LoadLocal returns a value");
-                                all_args.push(v);
-                            }
-                            continue;
-                        }
-                        if let Some(Binding::Enum(storage)) =
-                            self.bindings.get(&sym).cloned()
-                        {
-                            let vs = self.load_enum_locals(&storage);
-                            all_args.extend(vs);
-                            continue;
-                        }
-                    }
-                    let v = self
-                        .lower_expr(&arg_expr_ref)?
-                        .ok_or_else(|| "method argument produced no value".to_string())?;
-                    all_args.push(v);
-                }
-                // ITER-PROTOCOL-AOT: when the callee is `&mut self`
-                // (or has compound `&mut T` arg writeback declared),
-                // its cranelift signature carries extra return
-                // values for the writeback leaves. Compute the
-                // additional dests so the caller-side bindings
-                // receive the modified leaves alongside the
-                // compound result. Order matches
-                // `populate_method_writeback_types`: receiver
-                // leaves first, then args in declaration order.
-                let needs_writeback = !self
-                    .module
-                    .function(target_id)
-                    .self_writeback_types
-                    .is_empty();
-                let receiver_writeback_dests: Vec<LocalId> = if needs_writeback {
-                    match &recv_binding {
-                        Binding::Struct { fields, .. } => flatten_struct_locals(fields)
-                            .into_iter()
-                            .map(|(l, _)| l)
-                            .collect(),
-                        Binding::Enum(storage) => {
-                            let mut out = Vec::new();
-                            Self::flatten_enum_dests_into(storage, &mut out);
-                            out
-                        }
-                        _ => Vec::new(),
-                    }
-                } else {
-                    Vec::new()
-                };
-                let arg_writeback_dests: Vec<LocalId> = if needs_writeback {
-                    // Build a synthetic ExprList for the args so
-                    // `collect_compound_writeback_dests` can scan
-                    // them. We can't reuse the existing helper
-                    // (`collect_compound_writeback_dests_slice`)
-                    // because it lives on the same module; the
-                    // helper takes a slice of ExprRefs, which is
-                    // exactly `&method_args`.
-                    self.collect_compound_writeback_dests_slice(&method_args)?
-                } else {
-                    Vec::new()
-                };
-                match target_ret {
-                    Type::Struct(struct_id) => {
-                        let fields = self.allocate_struct_fields(struct_id);
-                        let mut dests: Vec<LocalId> =
-                            flatten_struct_locals(&fields)
-                                .into_iter()
-                                .map(|(l, _)| l)
-                                .collect();
-                        dests.extend(receiver_writeback_dests.iter().copied());
-                        dests.extend(arg_writeback_dests.iter().copied());
-                        self.register_drop_for_struct_binding(struct_id, &fields);
-                        self.bindings.insert(
-                            name,
-                            Binding::Struct { struct_id, fields },
-                        );
-                        self.emit(
-                            InstKind::CallStruct {
-                                target: target_id,
-                                args: all_args,
-                                dests,
-                            },
-                            None,
-                        );
-                    }
-                    Type::Tuple(tuple_id) => {
-                        let elements = self.allocate_tuple_elements(tuple_id)?;
-                        let mut dests: Vec<LocalId> =
-                            flatten_tuple_element_locals(&elements)
-                                .into_iter()
-                                .map(|(l, _)| l)
-                                .collect();
-                        dests.extend(receiver_writeback_dests.iter().copied());
-                        dests.extend(arg_writeback_dests.iter().copied());
-                        self.bindings.insert(
-                            name,
-                            Binding::Tuple { elements },
-                        );
-                        self.emit(
-                            InstKind::CallTuple {
-                                target: target_id,
-                                args: all_args,
-                                dests,
-                            },
-                            None,
-                        );
-                    }
-                    Type::Enum(enum_id) => {
-                        let storage = self.allocate_enum_storage(enum_id);
-                        let mut dests = Self::flatten_enum_dests(&storage);
-                        dests.extend(receiver_writeback_dests.iter().copied());
-                        dests.extend(arg_writeback_dests.iter().copied());
-                        self.bindings.insert(name, Binding::Enum(storage));
-                        self.emit(
-                            InstKind::CallEnum {
-                                target: target_id,
-                                args: all_args,
-                                dests,
-                            },
-                            None,
-                        );
-                    }
-                    _ => unreachable!("guard ensured compound return"),
-                }
-                return Ok(Some(None));
+        let Some(call) =
+            self.prepare_compound_method_call(&recv, method_sym, &method_args)?
+        else {
+            return Ok(None);
+        };
+        // Allocate the binding the result lands in, then emit the call
+        // with its leaf locals as destinations (writeback slots last).
+        match call.ret {
+            Type::Struct(struct_id) => {
+                let fields = self.allocate_struct_fields(struct_id);
+                let mut dests: Vec<LocalId> = flatten_struct_locals(&fields)
+                    .into_iter()
+                    .map(|(l, _)| l)
+                    .collect();
+                dests.extend(call.writeback_dests.iter().copied());
+                self.register_drop_for_struct_binding(struct_id, &fields);
+                self.bindings
+                    .insert(name, Binding::Struct { struct_id, fields });
+                self.emit(
+                    InstKind::CallStruct {
+                        target: call.target,
+                        args: call.args,
+                        dests,
+                    },
+                    None,
+                );
             }
+            Type::Tuple(tuple_id) => {
+                let elements = self.allocate_tuple_elements(tuple_id)?;
+                let mut dests: Vec<LocalId> = flatten_tuple_element_locals(&elements)
+                    .into_iter()
+                    .map(|(l, _)| l)
+                    .collect();
+                dests.extend(call.writeback_dests.iter().copied());
+                self.bindings.insert(name, Binding::Tuple { elements });
+                self.emit(
+                    InstKind::CallTuple {
+                        target: call.target,
+                        args: call.args,
+                        dests,
+                    },
+                    None,
+                );
+            }
+            Type::Enum(enum_id) => {
+                let storage = self.allocate_enum_storage(enum_id);
+                let mut dests = Self::flatten_enum_dests(&storage);
+                dests.extend(call.writeback_dests.iter().copied());
+                self.bindings.insert(name, Binding::Enum(storage));
+                self.emit(
+                    InstKind::CallEnum {
+                        target: call.target,
+                        args: call.args,
+                        dests,
+                    },
+                    None,
+                );
+            }
+            _ => unreachable!("prepare_compound_method_call guards the return shape"),
         }
-        Ok(None)
+        Ok(Some(None))
     }
 
     /// Primitive-receiver compound-returning method RHS helper

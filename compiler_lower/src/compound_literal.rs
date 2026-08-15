@@ -285,8 +285,52 @@ impl<'a> FunctionLower<'a> {
                     target_fields,
                 )
             }
+            Expr::MethodCall(recv, method_sym, method_args) => {
+                let Some(call) =
+                    self.prepare_compound_method_call(&recv, method_sym, &method_args)?
+                else {
+                    return Err(format!(
+                        "`{}` is not a struct- or enum-receiver method returning a compound value",
+                        self.interner.resolve(method_sym).unwrap_or("?"),
+                    ));
+                };
+                let Type::Struct(ret_struct_id) = call.ret else {
+                    return Err(format!(
+                        "method `{}` returns {:?}, but this slot holds a struct",
+                        self.interner.resolve(method_sym).unwrap_or("?"),
+                        call.ret,
+                    ));
+                };
+                if !self.struct_shapes_match(ret_struct_id, target_struct_id) {
+                    return Err(format!(
+                        "method `{}` returns `{}`, but this slot holds `{}`",
+                        self.interner.resolve(method_sym).unwrap_or("?"),
+                        self.interner
+                            .resolve(self.module.struct_def(ret_struct_id).base_name)
+                            .unwrap_or("?"),
+                        self.interner
+                            .resolve(self.module.struct_def(target_struct_id).base_name)
+                            .unwrap_or("?"),
+                    ));
+                }
+                let mut dests: Vec<crate::ir::LocalId> =
+                    super::bindings::flatten_struct_locals(target_fields)
+                        .into_iter()
+                        .map(|(l, _)| l)
+                        .collect();
+                dests.extend(call.writeback_dests);
+                self.emit(
+                    InstKind::CallStruct {
+                        target: call.target,
+                        args: call.args,
+                        dests,
+                    },
+                    None,
+                );
+                Ok(())
+            }
             other => Err(format!(
-                "compiler MVP cannot build a struct-typed value from {other:?} — use a struct literal, an existing binding, or a struct-returning function / associated-function call"
+                "compiler MVP cannot build a struct-typed value from {other:?} — use a struct literal, an existing binding, or a struct-returning function / associated-function / method call"
             )),
         }
     }

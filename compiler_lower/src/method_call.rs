@@ -1370,4 +1370,141 @@ impl<'a> FunctionLower<'a> {
             result_ty,
         ))
     }
+
+    /// Everything a compound-returning method call needs *except* the
+    /// destination: the target, its return type, the flattened
+    /// argument values, and the writeback slots the callee appends to
+    /// its return shape.
+    ///
+    /// Split out because the destination differs by caller — a `val`
+    /// rhs allocates a fresh binding, a struct field or enum payload
+    /// already has leaf locals waiting — while the resolution, the
+    /// receiver-leaf flatten and the writeback bookkeeping are the
+    /// same work either way.
+    ///
+    /// `Ok(None)` means "not this shape" (the receiver isn't a struct
+    /// or enum binding, or the method returns a scalar), and the
+    /// caller should keep looking; nothing has been emitted.
+    pub(super) fn prepare_compound_method_call(
+        &mut self,
+        recv: &ExprRef,
+        method_sym: DefaultSymbol,
+        method_args: &[ExprRef],
+    ) -> Result<Option<CompoundMethodCall>, String> {
+        let Some((target, recv_binding)) =
+            self.resolve_method_target(recv, method_sym, method_args)?
+        else {
+            return Ok(None);
+        };
+        let ret = self.module.function(target).return_type;
+        if !matches!(ret, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
+            return Ok(None);
+        }
+        // Call args: receiver leaf scalars first, then the method
+        // arguments (each lowered individually so identifier-arg
+        // expansion for struct / tuple / enum stays intact).
+        let mut args: Vec<ValueId> = Vec::new();
+        match &recv_binding {
+            Binding::Struct { fields, .. } => {
+                for (local, ty) in flatten_struct_locals(fields) {
+                    let v = self
+                        .emit(InstKind::LoadLocal(local), Some(ty))
+                        .expect("LoadLocal returns");
+                    args.push(v);
+                }
+            }
+            Binding::Enum(storage) => {
+                let storage = storage.clone();
+                let vs = self.load_enum_locals(&storage);
+                args.extend(vs);
+            }
+            _ => unreachable!("resolve_method_target only returns struct/enum receivers"),
+        }
+        for a in method_args {
+            // Mirror `lower_method_call`'s identifier-arg flatten path
+            // so a struct / tuple / enum argument (auto-borrowed or
+            // not) decomposes into leaf locals before landing in the
+            // cranelift call ABI. Without this, a `concat(other:
+            // &Vec<u8>)` / similar signature would bail with "method
+            // argument produced no value" — `lower_expr` on a struct
+            // identifier intentionally returns `Ok(None)` (the value
+            // is held in the binding's leaf locals, not in the IR
+            // value graph).
+            let arg_expr_ref = match self.program.expression.get(a) {
+                Some(Expr::Unary(
+                    frontend::ast::UnaryOp::Borrow | frontend::ast::UnaryOp::BorrowMut,
+                    inner,
+                )) => inner,
+                _ => *a,
+            };
+            if let Some(Expr::Identifier(sym)) = self.program.expression.get(&arg_expr_ref) {
+                if let Some(Binding::Struct { fields, .. }) = self.bindings.get(&sym).cloned() {
+                    for (local, ty) in flatten_struct_locals(&fields) {
+                        let v = self
+                            .emit(InstKind::LoadLocal(local), Some(ty))
+                            .expect("LoadLocal returns a value");
+                        args.push(v);
+                    }
+                    continue;
+                }
+                if let Some(Binding::Tuple { elements }) = self.bindings.get(&sym).cloned() {
+                    for (local, ty) in flatten_tuple_element_locals(&elements) {
+                        let v = self
+                            .emit(InstKind::LoadLocal(local), Some(ty))
+                            .expect("LoadLocal returns a value");
+                        args.push(v);
+                    }
+                    continue;
+                }
+                if let Some(Binding::Enum(storage)) = self.bindings.get(&sym).cloned() {
+                    let vs = self.load_enum_locals(&storage);
+                    args.extend(vs);
+                    continue;
+                }
+            }
+            let v = self
+                .lower_expr(&arg_expr_ref)?
+                .ok_or_else(|| "method argument produced no value".to_string())?;
+            args.push(v);
+        }
+        // ITER-PROTOCOL-AOT: when the callee is `&mut self` (or has
+        // compound `&mut T` arg writeback declared), its cranelift
+        // signature carries extra return values for the writeback
+        // leaves. Order matches `populate_method_writeback_types`:
+        // receiver leaves first, then args in declaration order.
+        let mut writeback_dests: Vec<LocalId> = Vec::new();
+        if !self.module.function(target).self_writeback_types.is_empty() {
+            match &recv_binding {
+                Binding::Struct { fields, .. } => writeback_dests.extend(
+                    flatten_struct_locals(fields).into_iter().map(|(l, _)| l),
+                ),
+                Binding::Enum(storage) => {
+                    Self::flatten_enum_dests_into(storage, &mut writeback_dests)
+                }
+                _ => {}
+            }
+            writeback_dests.extend(self.collect_compound_writeback_dests_slice(method_args)?);
+        }
+        Ok(Some(CompoundMethodCall {
+            target,
+            ret,
+            args,
+            writeback_dests,
+        }))
+    }
+}
+
+/// A compound-returning method call resolved down to "emit this into
+/// the slots you pick". Built by
+/// [`FunctionLower::prepare_compound_method_call`].
+pub(super) struct CompoundMethodCall {
+    pub target: FuncId,
+    /// The callee's return type — decides `CallStruct` / `CallTuple` /
+    /// `CallEnum`.
+    pub ret: Type,
+    /// Receiver leaves followed by the method's arguments.
+    pub args: Vec<ValueId>,
+    /// Slots that receive `&mut` writeback, appended *after* the
+    /// caller's own destination locals.
+    pub writeback_dests: Vec<LocalId>,
 }

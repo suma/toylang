@@ -3172,6 +3172,68 @@ fn a_string_field_can_be_built_by_its_associated_function() {
 }
 
 #[test]
+fn a_struct_field_can_be_built_by_a_method_call() {
+    // The last rhs shape a struct-typed slot did not take. It needs
+    // more than the plain-call path: the receiver's leaf scalars go in
+    // front of the arguments, and a `&mut self` callee returns its
+    // mutated receiver leaves *after* the result, so those slots have
+    // to be appended to the destination list.
+    //
+    // `bump_and_copy` is the case that pins the writeback half:
+    // `mutable.a` is read after the literal is built, so a lost
+    // writeback changes the answer rather than crashing.
+    let src = r#"
+        struct Inner { a: u64, b: u64 }
+        struct Outer { i: Inner, n: u64 }
+        enum Holder { With(Inner), Empty }
+
+        impl Inner {
+            fn doubled(&self) -> Inner { Inner { a: self.a * 2u64, b: self.b * 2u64 } }
+            fn plus(&self, k: u64) -> Inner { Inner { a: self.a + k, b: self.b + k } }
+            fn bump_and_copy(&mut self, k: u64) -> Inner {
+                self.a = self.a + k
+                Inner { a: self.a, b: self.b }
+            }
+        }
+
+        fn main() -> u64 {
+            var src: Inner = Inner { a: 1u64, b: 2u64 }
+            val o1: Outer = Outer { i: src.doubled(), n: 1u64 }
+            val o2: Outer = Outer { i: src.plus(10u64), n: 2u64 }
+            val h: Holder = Holder::With(src.doubled())
+            var mutable: Inner = Inner { a: 5u64, b: 6u64 }
+            val o3: Outer = Outer { i: mutable.bump_and_copy(3u64), n: 3u64 }
+            val from_h: u64 = match h {
+                Holder::With(i) => i.a + i.b,
+                Holder::Empty => 0u64,
+            }
+            o1.i.a + o1.i.b + o2.i.a + o2.i.b + from_h + o3.i.a + mutable.a
+        }
+    "#;
+    // 6 + 23 + 6 + 8 + 8 = 51, the last two terms being the returned
+    // copy and the written-back receiver.
+    assert_eq!(interpreter_value(src) & 0xff, 51);
+    assert_consistent(src, "struct_field_method_init");
+}
+
+#[test]
+fn a_string_field_can_be_built_by_a_method_call() {
+    // The shape that motivated it: `String` values come out of methods
+    // as often as associated functions.
+    let src = r#"
+        struct Named { name: String, n: u64 }
+        fn main() -> u64 {
+            val src: String = String::from_str("abc")
+            var a: Named = Named { name: src.to_string(), n: 1u64 }
+            a.name.push_char('!')
+            a.name.len() + a.n
+        }
+    "#;
+    assert_eq!(interpreter_value(src) & 0xff, 5);
+    assert_consistent(src, "struct_field_string_method_init");
+}
+
+#[test]
 fn an_enum_payload_can_be_built_by_a_call() {
     // Enum payload slots share the same storage helper as struct
     // fields, so they pick up the call shape too.

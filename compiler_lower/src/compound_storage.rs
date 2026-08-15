@@ -565,58 +565,18 @@ impl<'a> FunctionLower<'a> {
 
     /// Lower an expression whose result is a struct value into the
     /// supplied target field bindings (the slot of an enum payload).
-    /// Accepts the same RHS shapes that `lower_let`'s
-    /// `Expr::StructLiteral` branch does, plus a bare identifier
-    /// referring to an existing struct binding (deep-copied via
-    /// `copy_struct_fields`).
+    /// Shares `store_struct_value_into_fields` with struct literals'
+    /// struct-typed fields, so a payload accepts the same rhs shapes
+    /// a field does — literal, existing binding, or struct-returning
+    /// call (`Option::Some(String::new())`).
     pub(super) fn lower_into_struct_slot(
         &mut self,
         expr_ref: &ExprRef,
         target_struct_id: StructId,
         target_fields: &[FieldBinding],
     ) -> Result<(), String> {
-        let expr = self
-            .program
-            .expression
-            .get(expr_ref)
-            .ok_or_else(|| "struct-target expression missing".to_string())?;
-        match expr {
-            Expr::StructLiteral(name, literal_fields) => {
-                let expected_base = self.module.struct_def(target_struct_id).base_name;
-                if name != expected_base {
-                    return Err(format!(
-                        "struct payload expects `{}`, got `{}` literal",
-                        self.interner.resolve(expected_base).unwrap_or("?"),
-                        self.interner.resolve(name).unwrap_or("?"),
-                    ));
-                }
-                self.store_struct_literal_fields(
-                    target_struct_id,
-                    target_fields,
-                    &literal_fields,
-                )
-            }
-            Expr::Identifier(sym) => {
-                let src_fields = match self.bindings.get(&sym).cloned() {
-                    Some(Binding::Struct {
-                        struct_id: src_id,
-                        fields,
-                    }) if src_id == target_struct_id => fields,
-                    _ => {
-                        return Err(format!(
-                            "`{}` is not a struct binding of the expected payload type",
-                            self.interner.resolve(sym).unwrap_or("?")
-                        ));
-                    }
-                };
-                self.copy_struct_fields(&src_fields, target_fields);
-                Ok(())
-            }
-            other => Err(format!(
-                "compiler MVP cannot lower `{:?}` as a struct-typed enum payload",
-                other
-            )),
-        }
+        self.store_struct_value_into_fields(target_struct_id, target_fields, expr_ref)
+            .map_err(|e| format!("enum payload: {e}"))
     }
 
     /// Element-wise copy between two tuple slot bindings. The shape

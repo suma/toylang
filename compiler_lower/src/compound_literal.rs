@@ -81,29 +81,23 @@ impl<'a> FunctionLower<'a> {
                     self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
                 }
                 FieldShape::Struct { struct_id: inner_id, fields: inner_fields } => {
-                    // Field type is itself a struct; the rhs must be
-                    // a struct literal of the matching shape.
-                    let inner_expr = self
-                        .program
-                        .expression
-                        .get(value_ref)
-                        .ok_or_else(|| "struct field rhs missing".to_string())?;
-                    let inner_literal = match inner_expr {
-                        Expr::StructLiteral(_, inner_fs) => inner_fs,
-                        other => {
-                            return Err(format!(
-                                "compiler MVP requires struct field `{}.{}` to be initialised by a struct literal (got {:?})",
-                                self.interner.resolve(outer_base).unwrap_or("?"),
-                                field_str,
-                                other
-                            ));
-                        }
-                    };
-                    self.store_struct_literal_fields(
+                    // Field type is itself a struct. A nested literal
+                    // stores field-by-field; a call / identifier rhs
+                    // writes into the same leaf locals (which is the
+                    // only way to fill a `String`-typed field, since
+                    // `String` is built by associated functions).
+                    self.store_struct_value_into_fields(
                         inner_id,
                         &inner_fields,
-                        &inner_literal,
-                    )?;
+                        value_ref,
+                    )
+                    .map_err(|e| {
+                        format!(
+                            "struct field `{}.{}`: {e}",
+                            self.interner.resolve(outer_base).unwrap_or("?"),
+                            field_str,
+                        )
+                    })?;
                 }
                 FieldShape::Tuple { elements: inner_elements, .. } => {
                     // Field type is a tuple; the rhs must be a tuple
@@ -141,6 +135,221 @@ impl<'a> FunctionLower<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Store a struct-typed value into leaf locals that are already
+    /// allocated — a struct literal's struct-typed field, or an enum
+    /// payload slot.
+    ///
+    /// Four rhs shapes are accepted. A nested struct literal stores
+    /// field-by-field; an identifier deep-copies the source binding's
+    /// leaves; a struct-returning call (plain or associated) writes
+    /// its multi-value return **straight into the target leaves** via
+    /// `CallStruct`, so no temporary binding is needed. The call
+    /// shapes are what make `Named { name: String::new() }`
+    /// compilable: `String` has no literal form, so a struct with a
+    /// `String` field could not be built at all before.
+    ///
+    /// Note the target leaves are not registered for auto-drop here —
+    /// struct *fields* never are, only whole bindings whose own type
+    /// implements `Drop`. Registering the call result separately would
+    /// drop a value the enclosing struct still owns.
+    pub(super) fn store_struct_value_into_fields(
+        &mut self,
+        target_struct_id: StructId,
+        target_fields: &[FieldBinding],
+        value_ref: &ExprRef,
+    ) -> Result<(), String> {
+        let expr = self
+            .program
+            .expression
+            .get(value_ref)
+            .ok_or_else(|| "struct-typed initialiser missing".to_string())?;
+        match expr {
+            Expr::StructLiteral(name, literal_fields) => {
+                let expected = self.module.struct_def(target_struct_id).base_name;
+                if name != expected {
+                    return Err(format!(
+                        "expected a `{}` literal, got `{}`",
+                        self.interner.resolve(expected).unwrap_or("?"),
+                        self.interner.resolve(name).unwrap_or("?"),
+                    ));
+                }
+                self.store_struct_literal_fields(
+                    target_struct_id,
+                    target_fields,
+                    &literal_fields,
+                )
+            }
+            Expr::Identifier(sym) => {
+                let src_fields = match self.bindings.get(&sym).cloned() {
+                    Some(Binding::Struct { struct_id, fields })
+                        if self.struct_shapes_match(struct_id, target_struct_id) =>
+                    {
+                        fields
+                    }
+                    _ => {
+                        return Err(format!(
+                            "`{}` is not a struct binding of the expected type",
+                            self.interner.resolve(sym).unwrap_or("?")
+                        ));
+                    }
+                };
+                self.copy_struct_fields(&src_fields, target_fields);
+                Ok(())
+            }
+            Expr::AssociatedFunctionCall(struct_name, fn_name, args)
+                if self.struct_defs.contains_key(&struct_name) =>
+            {
+                // The target's own type args pick the monomorphisation
+                // when the callee names the same struct (`Vec::new()`
+                // in a `Vec<u8>`-typed slot has nothing else to go on —
+                // there is no annotation at a field site).
+                let target_def = self.module.struct_def(target_struct_id);
+                let (self_struct_id, type_args) = if target_def.base_name == struct_name {
+                    (target_struct_id, target_def.type_args.clone())
+                } else {
+                    let id = self.resolve_struct_instance(struct_name, None)?;
+                    (id, self.module.struct_def(id).type_args.clone())
+                };
+                // Non-generic impls live in `method_func_ids`;
+                // generic ones (`impl<T> Vec<T> { fn new() -> Self }`)
+                // are templates that need instantiating against the
+                // slot's own type args. Same two-registry lookup
+                // `lower_let_struct_associated_call` does for
+                // `val v: Vec<u8> = Vec::new()`.
+                let func_id = match super::method_registry::lookup_method_func(
+                    self.method_func_ids,
+                    struct_name,
+                    fn_name,
+                    &type_args,
+                ) {
+                    Some(f) => f,
+                    None => {
+                        let template = super::method_registry::lookup_method_template(
+                            self.generic_methods,
+                            struct_name,
+                            fn_name,
+                            &[],
+                        )
+                        .ok_or_else(|| {
+                            format!(
+                                "no associated function `{}::{}` to build this value with",
+                                self.interner.resolve(struct_name).unwrap_or("?"),
+                                self.interner.resolve(fn_name).unwrap_or("?"),
+                            )
+                        })?;
+                        self.instantiate_generic_method_with_self_type(
+                            struct_name,
+                            fn_name,
+                            &template,
+                            Type::Struct(self_struct_id),
+                            type_args.clone(),
+                            &args,
+                        )?
+                    }
+                };
+                let mut arg_values: Vec<ValueId> = Vec::with_capacity(args.len());
+                for a in &args {
+                    let v = self.lower_expr(a)?.ok_or_else(|| {
+                        "associated-function arg produced no value".to_string()
+                    })?;
+                    arg_values.push(v);
+                }
+                let extra = self.collect_compound_writeback_dests_slice(&args)?;
+                self.emit_struct_call_into_fields(
+                    func_id,
+                    arg_values,
+                    extra,
+                    target_struct_id,
+                    target_fields,
+                )
+            }
+            Expr::Call(fn_name, args_ref) => {
+                let func_id = self
+                    .module
+                    .lookup_function(None, fn_name)
+                    .ok_or_else(|| {
+                        format!(
+                            "unknown function `{}`",
+                            self.interner.resolve(fn_name).unwrap_or("?")
+                        )
+                    })?;
+                let arg_values = self.lower_call_args(&args_ref)?;
+                let extra = self.collect_compound_writeback_dests(&args_ref)?;
+                self.emit_struct_call_into_fields(
+                    func_id,
+                    arg_values,
+                    extra,
+                    target_struct_id,
+                    target_fields,
+                )
+            }
+            other => Err(format!(
+                "compiler MVP cannot build a struct-typed value from {other:?} — use a struct literal, an existing binding, or a struct-returning function / associated-function call"
+            )),
+        }
+    }
+
+    /// Emit `CallStruct` for a struct-returning callee whose result
+    /// lands directly in `target_fields`' leaf locals. `extra_dests`
+    /// carries the compound `&mut` writeback slots the callee declares
+    /// (empty for the constructor shapes this path usually sees), in
+    /// the same order `lower_let_call_struct` appends them.
+    fn emit_struct_call_into_fields(
+        &mut self,
+        func_id: crate::ir::FuncId,
+        args: Vec<ValueId>,
+        extra_dests: Vec<crate::ir::LocalId>,
+        target_struct_id: StructId,
+        target_fields: &[FieldBinding],
+    ) -> Result<(), String> {
+        let ret = self.module.function(func_id).return_type;
+        let Type::Struct(ret_struct_id) = ret else {
+            return Err(format!("callee does not return a struct (got {ret:?})"));
+        };
+        if !self.struct_shapes_match(ret_struct_id, target_struct_id) {
+            return Err(format!(
+                "callee returns `{}`, but this slot holds `{}`",
+                self.interner
+                    .resolve(self.module.struct_def(ret_struct_id).base_name)
+                    .unwrap_or("?"),
+                self.interner
+                    .resolve(self.module.struct_def(target_struct_id).base_name)
+                    .unwrap_or("?"),
+            ));
+        }
+        // Leaf order is declaration order on both sides (both trees
+        // come from `allocate_struct_fields` over the same shape), so
+        // the multi-result call lands field-for-field.
+        let mut dests: Vec<crate::ir::LocalId> =
+            super::bindings::flatten_struct_locals(target_fields)
+                .into_iter()
+                .map(|(l, _)| l)
+                .collect();
+        dests.extend(extra_dests);
+        self.emit(
+            InstKind::CallStruct {
+                target: func_id,
+                args,
+                dests,
+            },
+            None,
+        );
+        Ok(())
+    }
+
+    /// Two `StructId`s denote the same type when they are the same
+    /// instance, or when they agree on base name *and* type args —
+    /// separate lowering paths can intern the same monomorphisation
+    /// twice.
+    fn struct_shapes_match(&self, a: StructId, b: StructId) -> bool {
+        if a == b {
+            return true;
+        }
+        let da = self.module.struct_def(a);
+        let db = self.module.struct_def(b);
+        da.base_name == db.base_name && da.type_args == db.type_args
     }
 
     /// Allocate a `FieldBinding` tree for a struct, recursively

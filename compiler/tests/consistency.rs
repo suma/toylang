@@ -2983,6 +2983,85 @@ fn a_str_built_from_bytes_survives_the_buffer_changing() {
 }
 
 #[test]
+fn struct_fields_accept_non_literal_initialisers() {
+    // A struct-typed field used to require a nested struct *literal*
+    // on the rhs. Calls and existing bindings now write into the same
+    // leaf locals, so all four shapes coexist in one literal.
+    let src = r#"
+        struct Inner { a: u64, b: u64 }
+        struct Outer { i: Inner, n: u64 }
+
+        fn make() -> Inner { Inner { a: 4u64, b: 5u64 } }
+
+        fn build() -> Outer { Outer { i: make(), n: 1u64 } }
+
+        fn main() -> u64 {
+            val src: Inner = Inner { a: 10u64, b: 20u64 }
+            val from_call: Outer = Outer { i: make(), n: 1u64 }
+            val from_ident: Outer = Outer { i: src, n: 2u64 }
+            val from_literal: Outer = Outer { i: Inner { a: 1u64, b: 1u64 }, n: 3u64 }
+            val from_tail: Outer = build()
+            from_call.i.a + from_call.i.b + from_call.n
+              + from_ident.i.a + from_ident.i.b + from_ident.n
+              + from_literal.i.a + from_literal.i.b + from_literal.n
+              + from_tail.i.a + from_tail.i.b + from_tail.n
+        }
+    "#;
+    // 10 + 32 + 5 + 10 = 57. A leaf landing in the wrong local shows
+    // up as a different sum rather than a crash, so pin the value.
+    assert_eq!(interpreter_value(src) & 0xff, 57);
+    assert_consistent(src, "struct_field_non_literal_init");
+}
+
+#[test]
+fn a_string_field_can_be_built_by_its_associated_function() {
+    // The motivating case: `String` has no literal form — the only
+    // way to make one is `String::new()` / `String::from_str(...)` —
+    // so a struct with a `String` field could not be compiled at all.
+    // `Vec::new()` covers the generic-template registry alongside it
+    // (`String::from_str` resolves through the non-generic one).
+    let src = r#"
+        struct Named { name: String, n: u64 }
+        struct Bag { v: Vec<u8>, n: u64 }
+
+        fn main() -> u64 {
+            var a: Named = Named { name: String::new(), n: 1u64 }
+            a.name.push_char('x')
+            a.name.push_char('y')
+            var b: Named = Named { name: String::from_str("zzz"), n: 2u64 }
+            var c: Bag = Bag { v: Vec::new(), n: 4u64 }
+            c.v.push(1u8)
+            a.name.len() + b.name.len() + c.v.size() + a.n + b.n + c.n
+        }
+    "#;
+    // 2 + 3 + 1 + 1 + 2 + 4 = 13.
+    assert_eq!(interpreter_value(src) & 0xff, 13);
+    assert_consistent(src, "struct_field_string_init");
+}
+
+#[test]
+fn an_enum_payload_can_be_built_by_a_call() {
+    // Enum payload slots share the same storage helper as struct
+    // fields, so they pick up the call shape too.
+    let src = r#"
+        struct Inner { a: u64, b: u64 }
+        enum Holder { With(Inner), Empty }
+
+        fn make() -> Inner { Inner { a: 4u64, b: 5u64 } }
+
+        fn main() -> u64 {
+            val h: Holder = Holder::With(make())
+            match h {
+                Holder::With(i) => i.a + i.b,
+                Holder::Empty => 0u64,
+            }
+        }
+    "#;
+    assert_eq!(interpreter_value(src) & 0xff, 9);
+    assert_consistent(src, "enum_payload_call_init");
+}
+
+#[test]
 fn multibyte_utf8_string_literals_keep_their_bytes() {
     // The lexer used to push every inner byte of a string literal
     // `as char`, re-encoding each byte of a multi-byte scalar as its

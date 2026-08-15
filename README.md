@@ -110,6 +110,9 @@ INTERPRETER_JIT=1 cargo run --release example/fib.t
 
 # Disable contract evaluation (D `-release` equivalent)
 INTERPRETER_CONTRACTS=off cargo run --release example/contracts.t
+
+# Print allocation totals after the run (JSON with --profile-format=json)
+cd interpreter && cargo run -- example/allocator_list.t --profile=mem
 ```
 
 For the full CLI / env-var reference see [`interpreter/README.md`](interpreter/README.md).
@@ -428,6 +431,76 @@ clause has measurable cost. The `panic` and `assert` builtins
 intentionally have no analogous gate; both are always active so
 safety checks behave identically across build profiles.
 
+### Memory Profiling
+
+```bash
+# Print the run's allocation totals to stderr (text)
+cd interpreter && cargo run -- example/memory_contract.t --profile=mem
+
+# Machine-readable form — `leaks` is always present, `[]` when nothing leaked
+cd interpreter && cargo run -- example/memory_contract.t --profile=mem --profile-format=json
+
+# AOT-compiled binaries profile themselves, no interpreter involved
+TOY_PROFILE_MEM=1 ./fib
+
+# All backends must report the same numbers — verify with one command
+cargo run -p compiler -- example/allocator_list.t --all-backends --profile=mem
+```
+
+Example report:
+
+```
+memory profile
+  alloc_count       2
+  free_count        2
+  realloc_count     0
+  cumulative_bytes  96
+  live_bytes        0
+  peak_live_bytes   64
+  peak_at_request   1
+```
+
+When allocations are never freed, a `leaks` section follows, each
+line attributing the leak to the allocation *site* (`line:column`):
+
+```
+leaks (1 sites, 1 allocations, 32 bytes)
+  2:18  1 allocations  32 bytes
+```
+
+What each field means and how allocator layout reports work are in
+[`design-docs/MEMORY_PROFILING.md`](design-docs/MEMORY_PROFILING.md).
+All counters are **request-based** — they describe what the program
+asked for, not what the allocator did — which is why every backend
+(tree-walker, IR VM, JIT, AOT) reports byte-identical numbers.
+
+**Memory as a contract.** The same counters are readable from
+`requires` / `ensures` clauses and `test` blocks, so allocation
+becomes a property a function can promise:
+
+```rust
+fn scratch(size: u64) -> u64
+    requires size >= 8u64
+    requires size <= 4096u64
+    ensures __builtin_live_bytes() == 0u64
+{ ... }
+
+test "scratch work leaves nothing behind" {
+    val before: u64 = __builtin_live_bytes()
+    val r: u64 = scratch(128u64)
+    assert_eq(__builtin_live_bytes(), before)
+}
+```
+
+Reading a counter does **not** require the profiling flag: a program
+that uses `__builtin_live_bytes()` gets real numbers with or without
+`--profile=mem` (counting is enabled for that run; the report is a
+separate, opt-in output). `--check` treats a memory clause like any
+other contract. See *Allocation counters* in
+[`docs/language.md`](docs/language.md) for the six counters and their
+exact semantics; `interpreter/example/memory_contract.t` runs
+`--test` and `--check` cleanly.
+
 ### Module System
 ```rust
 # math.t (in modules/math/math.t)
@@ -484,6 +557,7 @@ The implementation includes comprehensive documentation, extensive testing, and 
 - **Cranelift JIT** (default-on cargo feature, `INTERPRETER_JIT=1` to opt in at runtime): native-code compilation for numeric / bool / struct / tuple / `f64` subsets, with `panic("literal")` and `assert(cond, "literal")` lowered through a host helper + `trap` (see [`design-docs/JIT.md`](design-docs/JIT.md))
 - **Multi-backend Architecture**: Tree-walker (reference oracle) + AOT compiler (IR → cranelift → object file) + Cranelift JIT (AST direct) + IR VM (shared IR flat-slot interpreter). 4-way consistency is continuously validated via `compiler/tests/consistency.rs` (see [`design-docs/BACKEND.md`](design-docs/BACKEND.md) for the full backend technical specification)
 - **Design by Contract**: `requires` / `ensures` clauses with `result` binding and an `INTERPRETER_CONTRACTS=all|pre|post|off` runtime gate (D `-release` equivalent)
+- **Memory profiling**: request-based allocation counters, leak detection (per allocation site), and allocator layout reports — `--profile=mem` / `--profile-format=json` on the interpreter and `TOY_PROFILE_MEM=1` on AOT binaries, byte-identical across all four backends. The same counters are readable from `requires` / `ensures` / `test`, so memory use can be pinned by contract (see [`design-docs/MEMORY_PROFILING.md`](design-docs/MEMORY_PROFILING.md))
 - **Efficient Memory Management**: Append-only `StmtPool` / `ExprPool` plus automatic destruction with custom `drop` methods
 - **Production-quality Testing**: Comprehensive test suite (970+ tests) with full pass rate
 - **Debug-mode Logging**: Conditional compilation for zero-overhead production builds

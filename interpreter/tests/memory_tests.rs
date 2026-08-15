@@ -836,3 +836,34 @@ fn test_with_allocator_rejects_non_allocator_expression() {
         "error should mention Allocator type requirement, got: {msg}"
     );
 }
+
+#[test]
+fn test_heap_alloc_unsatisfiable_size_returns_null_not_a_panic() {
+    // A huge size (e.g. u64::MAX arriving from a `--check` input)
+    // used to abort the whole process with a Rust `capacity overflow`
+    // panic inside the interpreter's bump allocator. The compiled
+    // backends answer the same request with libc `malloc` returning
+    // NULL, so "allocation failed" is the language-level answer.
+    let source = r#"
+        fn main() -> u64 {
+            val p: ptr = __builtin_heap_alloc(18446744073709551615u64)
+            if __builtin_ptr_is_null(p) { 1u64 } else { 0u64 }
+        }
+    "#;
+    let result = test_program(source);
+    let obj = result.expect("unsatisfiable allocation must not crash the interpreter");
+    assert_eq!(obj.borrow().unwrap_uint64(), 1, "huge allocation must report null");
+
+    // Reallocating to a huge size is the same path and must not crash
+    // either; the caller observes the null result.
+    let source = r#"
+        fn main() -> u64 {
+            val p: ptr = __builtin_heap_alloc(8u64)
+            val q: ptr = __builtin_heap_realloc(p, 18446744073709551615u64)
+            if __builtin_ptr_is_null(q) { 1u64 } else { 0u64 }
+        }
+    "#;
+    let result = test_program(source);
+    let obj = result.expect("unsatisfiable realloc must not crash the interpreter");
+    assert_eq!(obj.borrow().unwrap_uint64(), 1, "huge realloc must report null");
+}

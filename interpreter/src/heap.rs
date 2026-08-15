@@ -617,9 +617,22 @@ impl HeapManager {
         if size == 0 {
             return 0; // null pointer for zero-size allocations
         }
+        // A request the buffer cannot satisfy — e.g. `u64::MAX`
+        // reaching a raw `__builtin_heap_alloc` from a property-test
+        // input — used to abort the process with a Rust `capacity
+        // overflow` panic. The compiled backends answer the same
+        // request with libc `malloc` returning NULL, so "allocation
+        // failed" is the language-level answer: return the null
+        // pointer and let the program observe it.
+        let Some(total) = self.memory.len().checked_add(size) else {
+            return 0;
+        };
+        if total > isize::MAX as usize {
+            return 0;
+        }
 
         let addr = self.next_addr;
-        self.memory.resize(self.memory.len() + size, 0);
+        self.memory.resize(total, 0);
         self.allocations.insert(addr, (size, site));
         self.next_addr += size;
         addr

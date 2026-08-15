@@ -23,6 +23,9 @@ cargo run -p compiler -- input.t -o output
 | `--release` | DbC (`requires` / `ensures`) を skip (= `INTERPRETER_CONTRACTS=off`) |
 | `-v` / `--verbose` | 進行ログを stderr に出す |
 | `--core-modules <DIR>` | core modules ディレクトリを上書き |
+| `--all-backends` | interpreter / JIT / AOT を 1 コマンドで実行し、不一致だけ報告する (一致なら stderr に 1 行) |
+| `--profile=mem` | 実行後にメモリプロファイル (確保集計 + リーク + allocator layout) を stderr へ |
+| `--profile-format=text\|json` | `--profile=mem` のレポート形式 (`--all-backends` の子は常に text) |
 
 ### 環境変数
 
@@ -32,6 +35,7 @@ cargo run -p compiler -- input.t -o output
 | `TOY_CACHE_DIR` | インクリメンタル cache のルート (default `.toycache/`) |
 | `TOY_CACHE_DISABLE=<non-empty>` | cache の load / save を両方 skip |
 | `TOYLANG_CRANELIFT_OPT_LEVEL` | `speed`(default) / `none` / `speed_and_size` |
+| `TOY_PROFILE_MEM` | 生成した AOT バイナリ単体でプロファイルを出す (`1` = text、`json` = JSON)。interpreter の `--profile=mem` と同じ数値を byte-identical で出す |
 
 ### core modules (auto-load)
 
@@ -73,6 +77,24 @@ interpreter と (`dict` と `dyn Trait` JIT 経路を除き) ほぼ同等の言�
 - `f64` の `%` (mod) — cranelift に native fmod がない
 - bool / Unit との `as` キャスト、narrow int ↔ f64 cast
 - 文字列 / 複雑な式の `const` 初期化 (リテラル / 単純算術 fold のみ)
+
+## メモリプロファイリング
+
+```bash
+# コンパイルしたバイナリ自身にプロファイルを出す (interpreter と byte-identical)
+TOY_PROFILE_MEM=1 ./fib
+
+# 3 バックエンド (interpreter / JIT / AOT) が同じ数値を出すことを 1 コマンドで検証
+cargo run -p compiler -- example/allocator_list.t --all-backends --profile=mem
+```
+
+計数は**要求ベース** (プログラムが要求した内容であって、allocator が
+何をしたかではない) なので、4 バックエンドで同じ値になる。カウンタの
+builtin (`__builtin_live_bytes()` 等 6 種) は `requires` / `ensures` /
+`test` から読める — プロファイルフラグ無しでも本物の数値が返り、
+**メモリを契約で縛れる** (`ensures __builtin_live_bytes() <= 4096u64`)。
+詳細は [`docs/language.md`](../docs/language.md) の「Allocation counters」と
+[`design-docs/MEMORY_PROFILING.md`](../design-docs/MEMORY_PROFILING.md)。
 
 ## 設計
 

@@ -9,7 +9,8 @@ knobs.
 ## CLI
 
 ```
-interpreter <file> [-v] [--core-modules <DIR>]
+interpreter <file> [-v] [--core-modules <DIR>] [--test] [--check [--seed=N]]
+             [--diagnostics=text|json] [--profile=mem [--profile-format=text|json]]
 ```
 
 | Flag | Meaning |
@@ -17,6 +18,11 @@ interpreter <file> [-v] [--core-modules <DIR>]
 | `<file>` | Required. Source file to parse, type-check, and execute. By convention `*.t`. |
 | `-v` / `--verbose` | Verbose mode. Prints "Core modules directory: …", "Parsing source file: …", "Performing type checking", "Executing program" between phases, and any JIT decisions ("JIT compiled: …" or "JIT: skipped (…)" with a reason). |
 | `--core-modules <DIR>` (also `--core-modules=<DIR>`) | Override the core-modules directory the interpreter auto-loads at startup. See *Core modules* below. |
+| `--test` | Run the `test "name" { … }` blocks instead of `main`, each in its own evaluation context. |
+| `--check [--seed=N]` | Property-check `requires` / `ensures` over generated inputs and report the smallest failing case (`--seed` reproduces a run). |
+| `--diagnostics=text\|json` | Render type-check / parse diagnostics as text (default) or as a JSON array on stderr. |
+| `--profile=mem` | Print the run's allocation totals — plus leaks and allocator layouts — to stderr after the run. See *Memory profiling* below. |
+| `--profile-format=text\|json` | Shape of the `--profile=mem` report. Requires `--profile=mem`. |
 
 The exit code is the integer returned by `main`:
 
@@ -29,6 +35,8 @@ The exit code is the integer returned by `main`:
 $ cargo run example/fib.t          # exits 8 (the 6th Fibonacci)
 $ cargo run example/contracts.t    # exits 22
 $ cargo run example/fib.t -v       # show pipeline phases on stderr
+$ cargo run example/fib.t --profile=mem     # allocation totals after the run
+$ cargo run example/fib.t --profile=mem --profile-format=json
 ```
 
 ## Core modules (auto-load)
@@ -119,6 +127,71 @@ $ INTERPRETER_CONTRACTS=off cargo run --release example/contracts.t
 > `assert` builtins have no analogous gate by design — they are always
 > active so safety checks behave identically across build profiles.
 
+## Memory profiling
+
+`--profile=mem` prints what the run *asked for* from the heap — the
+counters are request-based, so they describe the program rather than
+the allocator, and every backend (tree-walker, IR VM, JIT, AOT)
+reports byte-identical numbers:
+
+```
+$ cargo run example/memory_contract.t --profile=mem
+memory profile
+  alloc_count       2
+  free_count        2
+  realloc_count     0
+  cumulative_bytes  96
+  live_bytes        0
+  peak_live_bytes   64
+  peak_at_request   1
+```
+
+- **leaks** — allocations never freed, attributed to the allocation
+  *site* (`line:column`), not the call path:
+
+  ```
+  leaks (1 sites, 1 allocations, 32 bytes)
+    2:18  1 allocations  32 bytes
+  ```
+
+  `--profile-format=json` always emits the `leaks` array (`[]` when
+  clean).
+- **allocator layouts** — `trait Alloc::layout_report()` results,
+  registered by allocators that manage their own region (e.g. the
+  stdlib `SlotRegion`), appear as an `allocator layouts` section.
+  "No region to report" and "no fragmentation" are distinguished.
+
+The same six counters are also **builtins readable from the program**:
+`__builtin_alloc_count()` / `__builtin_free_count()` /
+`__builtin_realloc_count()` / `__builtin_cumulative_bytes()` /
+`__builtin_live_bytes()` / `__builtin_peak_live_bytes()`. They need no
+profiling flag — a program that reads them gets real numbers with or
+without `--profile=mem` (counting is enabled for that run; the report
+is a separate opt-in output). Since `requires` / `ensures` and `test`
+blocks can call builtins, memory use can be pinned by contract:
+
+```rust
+fn scratch(size: u64) -> u64
+    requires size >= 8u64
+    requires size <= 4096u64
+    ensures __builtin_live_bytes() == 0u64
+{ ... }
+
+test "scratch work leaves nothing behind" {
+    val before: u64 = __builtin_live_bytes()
+    val r: u64 = scratch(128u64)
+    assert_eq(__builtin_live_bytes(), before)
+}
+```
+
+`--check` treats a memory clause like any other contract — the
+example program `example/memory_contract.t` runs `--test` and
+`--check` cleanly. AOT binaries profile themselves via
+`TOY_PROFILE_MEM=1` (or `=json`); the compiler's
+`--all-backends --profile=mem` verifies all backends agree on one run.
+Full semantics: [`docs/language.md`](../docs/language.md) (Allocation
+counters) and [`design-docs/MEMORY_PROFILING.md`](../design-docs/MEMORY_PROFILING.md).
+
 ## Build features
 
 Set in `Cargo.toml`. Toggle with `--features` / `--no-default-features`.
@@ -149,6 +222,7 @@ high-signal ones:
 | `match_guard.t` | Pattern matching with per-arm `if` guards. |
 | `tuple_destructure_nested.t` | `val ((a, b), c) = …` style destructuring. |
 | `allocator_basic.t` / `allocator_list.t` | `with allocator = …` scopes and a user-space `List<T>`. |
+| `memory_contract.t` | Allocation counters in `requires` / `ensures` / `test`; pair with `--profile=mem` / `--test` / `--check`. |
 | `jit_*.t` | Programs hand-tuned to land on the JIT happy path; pair with `INTERPRETER_JIT=1 -v` to confirm. |
 
 ## Tests

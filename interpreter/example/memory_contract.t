@@ -9,11 +9,22 @@
  *
  *   cargo run -q -p interpreter -- interpreter/example/memory_contract.t
  *   cargo run -q -p interpreter -- --test interpreter/example/memory_contract.t
+ *   cargo run -q -p interpreter -- --check interpreter/example/memory_contract.t
+ *
+ * The `requires` clauses on `scratch` / `keep` exist so `--check`
+ * can find inputs the bodies actually handle: `__builtin_heap_alloc`
+ * answers an unsatisfiable size with the null pointer (like libc
+ * `malloc`), so a contract over memory must bound what it accepts.
  */
 
 # Takes a scratch buffer and gives it back. The contract says so:
-# whatever this leaves behind, it is not bytes.
+# whatever this leaves behind, it is not bytes. The buffer must be
+# able to hold a `u64`: `__builtin_ptr_write` stores 8 bytes at the
+# offset, and the interpreter rejects a write that would run past the
+# block (AOT would silently overflow — the strict side wins here).
 fn scratch(size: u64) -> u64
+    requires size >= 8u64
+    requires size <= 4096u64
     ensures __builtin_live_bytes() == 0u64
 {
     val p: ptr = __builtin_heap_alloc(size)
@@ -26,6 +37,7 @@ fn scratch(size: u64) -> u64
 # A bound rather than an exact figure: this one keeps its buffer for
 # the caller, but promises not to be extravagant about it.
 fn keep(size: u64) -> ptr
+    requires size > 0u64
     requires size <= 256u64
     ensures __builtin_live_bytes() <= 256u64
 {

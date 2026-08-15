@@ -100,37 +100,17 @@ impl<'a> FunctionLower<'a> {
                     })?;
                 }
                 FieldShape::Tuple { elements: inner_elements, .. } => {
-                    // Field type is a tuple; the rhs must be a tuple
-                    // literal of the matching length. Element values
-                    // store directly into the per-element locals.
-                    let inner_expr = self
-                        .program
-                        .expression
-                        .get(value_ref)
-                        .ok_or_else(|| "struct field rhs missing".to_string())?;
-                    let inner_elems = match inner_expr {
-                        Expr::TupleLiteral(es) => es,
-                        _ => {
-                            return Err(format!(
-                                "compiler MVP requires tuple-typed struct field `{}.{}` to be initialised by a tuple literal",
+                    // Field type is a tuple. Same four rhs shapes the
+                    // struct case takes, routed through the tuple
+                    // counterpart.
+                    self.store_tuple_value_into_elements(&inner_elements, value_ref)
+                        .map_err(|e| {
+                            format!(
+                                "tuple-typed struct field `{}.{}`: {e}",
                                 self.interner.resolve(outer_base).unwrap_or("?"),
-                                field_str
-                            ));
-                        }
-                    };
-                    if inner_elems.len() != inner_elements.len() {
-                        return Err(format!(
-                            "tuple-typed struct field `{}.{}` expects {} elements, got {}",
-                            self.interner.resolve(outer_base).unwrap_or("?"),
-                            field_str,
-                            inner_elements.len(),
-                            inner_elems.len(),
-                        ));
-                    }
-                    for (i, e) in inner_elems.iter().enumerate() {
-                        let shape = inner_elements[i].shape.clone();
-                        self.store_value_into_tuple_element_shape(e, i, &shape)?;
-                    }
+                                field_str,
+                            )
+                        })?;
                 }
             }
         }
@@ -333,6 +313,210 @@ impl<'a> FunctionLower<'a> {
                 "compiler MVP cannot build a struct-typed value from {other:?} — use a struct literal, an existing binding, or a struct-returning function / associated-function / method call"
             )),
         }
+    }
+
+    /// Tuple counterpart to [`Self::store_struct_value_into_fields`],
+    /// with the same four rhs shapes: a tuple literal, an existing
+    /// tuple binding, a tuple-typed field / element, and a
+    /// tuple-returning call (plain, associated, or method).
+    pub(super) fn store_tuple_value_into_elements(
+        &mut self,
+        target_elements: &[TupleElementBinding],
+        value_ref: &ExprRef,
+    ) -> Result<(), String> {
+        let expr = self
+            .program
+            .expression
+            .get(value_ref)
+            .ok_or_else(|| "tuple-typed initialiser missing".to_string())?;
+        match expr {
+            Expr::TupleLiteral(elems) => {
+                if elems.len() != target_elements.len() {
+                    return Err(format!(
+                        "expects {} element(s), got {}",
+                        target_elements.len(),
+                        elems.len(),
+                    ));
+                }
+                for (i, e) in elems.iter().enumerate() {
+                    let shape = target_elements[i].shape.clone();
+                    self.store_value_into_tuple_element_shape(e, i, &shape)?;
+                }
+                Ok(())
+            }
+            Expr::Identifier(sym) => {
+                let src = match self.bindings.get(&sym).cloned() {
+                    Some(Binding::Tuple { elements }) => elements,
+                    _ => {
+                        return Err(format!(
+                            "`{}` is not a tuple binding",
+                            self.interner.resolve(sym).unwrap_or("?")
+                        ));
+                    }
+                };
+                self.copy_tuple_elements_checked(&src, target_elements)
+            }
+            Expr::FieldAccess(_, _) | Expr::TupleAccess(_, _) => {
+                match self.resolve_field_chain(value_ref)? {
+                    FieldChainResult::Tuple { elements } => {
+                        self.copy_tuple_elements_checked(&elements, target_elements)
+                    }
+                    _ => Err("field is not tuple-typed".to_string()),
+                }
+            }
+            Expr::AssociatedFunctionCall(struct_name, fn_name, args)
+                if self.struct_defs.contains_key(&struct_name) =>
+            {
+                let type_args = {
+                    let id = self.resolve_struct_instance(struct_name, None)?;
+                    self.module.struct_def(id).type_args.clone()
+                };
+                let func_id = super::method_registry::lookup_method_func(
+                    self.method_func_ids,
+                    struct_name,
+                    fn_name,
+                    &type_args,
+                )
+                .ok_or_else(|| {
+                    format!(
+                        "no associated function `{}::{}` to build this value with",
+                        self.interner.resolve(struct_name).unwrap_or("?"),
+                        self.interner.resolve(fn_name).unwrap_or("?"),
+                    )
+                })?;
+                let mut arg_values: Vec<ValueId> = Vec::with_capacity(args.len());
+                for a in &args {
+                    let v = self.lower_expr(a)?.ok_or_else(|| {
+                        "associated-function arg produced no value".to_string()
+                    })?;
+                    arg_values.push(v);
+                }
+                let extra = self.collect_compound_writeback_dests_slice(&args)?;
+                self.emit_tuple_call_into_elements(
+                    func_id,
+                    arg_values,
+                    extra,
+                    target_elements,
+                )
+            }
+            Expr::Call(fn_name, args_ref) => {
+                let func_id = self
+                    .module
+                    .lookup_function(None, fn_name)
+                    .ok_or_else(|| {
+                        format!(
+                            "unknown function `{}`",
+                            self.interner.resolve(fn_name).unwrap_or("?")
+                        )
+                    })?;
+                let arg_values = self.lower_call_args(&args_ref)?;
+                let extra = self.collect_compound_writeback_dests(&args_ref)?;
+                self.emit_tuple_call_into_elements(
+                    func_id,
+                    arg_values,
+                    extra,
+                    target_elements,
+                )
+            }
+            Expr::MethodCall(recv, method_sym, method_args) => {
+                let Some(call) =
+                    self.prepare_compound_method_call(&recv, method_sym, &method_args)?
+                else {
+                    return Err(format!(
+                        "`{}` is not a struct- or enum-receiver method returning a compound value",
+                        self.interner.resolve(method_sym).unwrap_or("?"),
+                    ));
+                };
+                if !matches!(call.ret, Type::Tuple(_)) {
+                    return Err(format!(
+                        "method `{}` returns {:?}, but this slot holds a tuple",
+                        self.interner.resolve(method_sym).unwrap_or("?"),
+                        call.ret,
+                    ));
+                }
+                let mut dests: Vec<crate::ir::LocalId> =
+                    super::bindings::flatten_tuple_element_locals(target_elements)
+                        .into_iter()
+                        .map(|(l, _)| l)
+                        .collect();
+                dests.extend(call.writeback_dests);
+                self.emit(
+                    InstKind::CallTuple {
+                        target: call.target,
+                        args: call.args,
+                        dests,
+                    },
+                    None,
+                );
+                Ok(())
+            }
+            other => Err(format!(
+                "compiler MVP cannot build a tuple-typed value from {other:?} — use a tuple literal, an existing binding, or a tuple-returning function / associated-function / method call"
+            )),
+        }
+    }
+
+    /// `copy_tuple_elements` with the shape check its callers outside
+    /// the enum-storage tree need. Inside that tree both sides come
+    /// from the same allocation walk and always agree; here the source
+    /// is whatever the user named, and a mismatch would otherwise trip
+    /// the `unreachable!` in the copy.
+    fn copy_tuple_elements_checked(
+        &mut self,
+        src: &[TupleElementBinding],
+        dst: &[TupleElementBinding],
+    ) -> Result<(), String> {
+        if src.len() != dst.len() {
+            return Err(format!(
+                "expects {} element(s), got {}",
+                dst.len(),
+                src.len()
+            ));
+        }
+        for (s, d) in src.iter().zip(dst.iter()) {
+            let same = matches!(
+                (&s.shape, &d.shape),
+                (TupleElementShape::Scalar { .. }, TupleElementShape::Scalar { .. })
+                    | (TupleElementShape::Struct { .. }, TupleElementShape::Struct { .. })
+                    | (TupleElementShape::Tuple { .. }, TupleElementShape::Tuple { .. })
+            );
+            if !same {
+                return Err(format!("element #{} has a different shape", s.index));
+            }
+        }
+        self.copy_tuple_elements(src, dst);
+        Ok(())
+    }
+
+    /// Emit `CallTuple` for a tuple-returning callee whose result
+    /// lands directly in `target_elements`' leaf locals. Tuple counterpart
+    /// to [`Self::emit_struct_call_into_fields`].
+    fn emit_tuple_call_into_elements(
+        &mut self,
+        func_id: crate::ir::FuncId,
+        args: Vec<ValueId>,
+        extra_dests: Vec<crate::ir::LocalId>,
+        target_elements: &[TupleElementBinding],
+    ) -> Result<(), String> {
+        let ret = self.module.function(func_id).return_type;
+        let Type::Tuple(_) = ret else {
+            return Err(format!("callee does not return a tuple (got {ret:?})"));
+        };
+        let mut dests: Vec<crate::ir::LocalId> =
+            super::bindings::flatten_tuple_element_locals(target_elements)
+                .into_iter()
+                .map(|(l, _)| l)
+                .collect();
+        dests.extend(extra_dests);
+        self.emit(
+            InstKind::CallTuple {
+                target: func_id,
+                args,
+                dests,
+            },
+            None,
+        );
+        Ok(())
     }
 
     /// Emit `CallStruct` for a struct-returning callee whose result

@@ -650,61 +650,19 @@ impl<'a> FunctionLower<'a> {
 
     /// Lower an expression whose result is a tuple value into the
     /// supplied target element bindings (the slot of an enum payload).
-    /// Accepts a tuple literal of the matching shape, or a bare
-    /// identifier referring to an existing tuple binding (deep-copied
-    /// via `copy_tuple_elements`).
+    /// Shares `store_tuple_value_into_elements` with tuple-typed struct
+    /// fields, so a payload accepts the same rhs shapes a field does —
+    /// literal, existing binding, tuple-typed field, or tuple-returning
+    /// call.
     pub(super) fn lower_into_tuple_slot(
         &mut self,
         expr_ref: &ExprRef,
         target_tuple_id: crate::ir::TupleId,
         target_elements: &[TupleElementBinding],
     ) -> Result<(), String> {
-        let expr = self
-            .program
-            .expression
-            .get(expr_ref)
-            .ok_or_else(|| "tuple-target expression missing".to_string())?;
-        match expr {
-            Expr::TupleLiteral(elems) => {
-                if elems.len() != target_elements.len() {
-                    return Err(format!(
-                        "tuple payload expects {} elements, got {}",
-                        target_elements.len(),
-                        elems.len()
-                    ));
-                }
-                for (i, e) in elems.iter().enumerate() {
-                    let shape = target_elements[i].shape.clone();
-                    self.store_value_into_tuple_element_shape(e, i, &shape)?;
-                }
-                let _ = target_tuple_id;
-                Ok(())
-            }
-            Expr::Identifier(sym) => {
-                let src_elements = match self.bindings.get(&sym).cloned() {
-                    Some(Binding::Tuple { elements }) => elements,
-                    _ => {
-                        return Err(format!(
-                            "`{}` is not a tuple binding of the expected payload type",
-                            self.interner.resolve(sym).unwrap_or("?")
-                        ));
-                    }
-                };
-                if src_elements.len() != target_elements.len() {
-                    return Err(format!(
-                        "tuple payload shape mismatch: expected {} elements, got {}",
-                        target_elements.len(),
-                        src_elements.len()
-                    ));
-                }
-                self.copy_tuple_elements(&src_elements, target_elements);
-                Ok(())
-            }
-            other => Err(format!(
-                "compiler MVP cannot lower `{:?}` as a tuple-typed enum payload",
-                other
-            )),
-        }
+        let _ = target_tuple_id;
+        self.store_tuple_value_into_elements(target_elements, expr_ref)
+            .map_err(|e| format!("tuple payload: {e}"))
     }
 
     /// Mirror of `lower_if_chain` for an enum-producing if-chain.

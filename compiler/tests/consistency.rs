@@ -3172,6 +3172,70 @@ fn a_string_field_can_be_built_by_its_associated_function() {
 }
 
 #[test]
+fn a_tuple_field_accepts_the_same_initialisers_a_struct_field_does() {
+    // Tuple-typed slots were the half of the literal path still stuck
+    // on "must be a literal". They now share the rhs shapes struct
+    // slots take: an existing binding, a tuple-typed field, and a
+    // tuple-returning plain or method call.
+    //
+    // Every element carries a bool as well as a number, and the one
+    // false is deliberate: a slot filled from the wrong source, or an
+    // element pair landing swapped, shows up as a wrong sum rather
+    // than a crash.
+    let src = r#"
+        struct Holder { t: (u64, bool), n: u64 }
+        struct Src { pair: (u64, bool) }
+
+        impl Src {
+            fn get(&self) -> (u64, bool) { (self.pair.0 + 1u64, self.pair.1) }
+        }
+
+        fn make_pair() -> (u64, bool) { (7u64, true) }
+
+        fn main() -> u64 {
+            val src: Src = Src { pair: (3u64, true) }
+            val existing: (u64, bool) = (5u64, false)
+            val a: Holder = Holder { t: (1u64, true), n: 1u64 }
+            val b: Holder = Holder { t: make_pair(), n: 2u64 }
+            val c: Holder = Holder { t: existing, n: 3u64 }
+            val d: Holder = Holder { t: src.pair, n: 4u64 }
+            val e: Holder = Holder { t: src.get(), n: 5u64 }
+            var total: u64 = a.t.0 + b.t.0 + c.t.0 + d.t.0 + e.t.0
+                + a.n + b.n + c.n + d.n + e.n
+            if a.t.1 { total = total + 100u64 }
+            if b.t.1 { total = total + 100u64 }
+            if c.t.1 { total = total + 1000u64 }
+            if d.t.1 { total = total + 100u64 }
+            if e.t.1 { total = total + 100u64 }
+            total
+        }
+    "#;
+    // 20 (first elements) + 15 (n) + 400 (four true bools, and *not*
+    // the 1000 that `existing`'s false would trigger).
+    assert_eq!(interpreter_value(src), 435);
+    assert_consistent(src, "tuple_field_initialisers");
+}
+
+#[test]
+fn a_tuple_enum_payload_can_be_built_by_a_call() {
+    // Payload slots share the storage helper with struct fields on the
+    // tuple side too.
+    let src = r#"
+        enum E { P((u64, bool)), None }
+        fn make_pair() -> (u64, bool) { (7u64, true) }
+        fn main() -> u64 {
+            val e: E = E::P(make_pair())
+            match e {
+                E::P(t) => t.0,
+                E::None => 0u64,
+            }
+        }
+    "#;
+    assert_eq!(interpreter_value(src) & 0xff, 7);
+    assert_consistent(src, "tuple_payload_call_init");
+}
+
+#[test]
 fn a_struct_field_can_be_built_by_a_method_call() {
     // The last rhs shape a struct-typed slot did not take. It needs
     // more than the plain-call path: the receiver's leaf scalars go in

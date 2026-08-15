@@ -19,13 +19,13 @@ mod lexer_tests{
 
     // Helper function: Create lexer and verify single token
     fn assert_token(input: &str, expected: Kind) {
-        let mut l = lexer::Lexer::new(input, 1u64);
+        let mut l = lexer::Lexer::new(input, 1u64, None);
         assert_eq!(l.yylex().unwrap().kind, expected, "Input: '{}'", input);
     }
 
     // Helper function: Verify multiple tokens in sequence
     fn assert_tokens(input: &str, expected: Vec<Kind>) {
-        let mut l = lexer::Lexer::new(input, 1u64);
+        let mut l = lexer::Lexer::new(input, 1u64, None);
         for exp in expected {
             assert_eq!(l.yylex().unwrap().kind, exp, "Input: '{}'", input);
         }
@@ -51,7 +51,7 @@ mod lexer_tests{
         ];
         
         test_cases.par_iter().for_each(|&(input, ref expected)| {
-            let mut l = lexer::Lexer::new(input, 1u64);
+            let mut l = lexer::Lexer::new(input, 1u64, None);
             assert_eq!(l.yylex().unwrap().kind, *expected);
         });
     }
@@ -70,7 +70,7 @@ mod lexer_tests{
         ];
         
         test_cases.par_iter().for_each(|&(input, ref expected)| {
-            let mut l = lexer::Lexer::new(input, 1u64);
+            let mut l = lexer::Lexer::new(input, 1u64, None);
             assert_eq!(l.yylex().unwrap().kind, *expected);
         });
     }
@@ -103,7 +103,7 @@ mod lexer_tests{
         ];
         
         test_cases.par_iter().for_each(|&(input, ref expected)| {
-            let mut l = lexer::Lexer::new(input, 1u64);
+            let mut l = lexer::Lexer::new(input, 1u64, None);
             assert_eq!(l.yylex().unwrap().kind, *expected);
         });
     }
@@ -111,7 +111,7 @@ mod lexer_tests{
     #[test]
     fn lexer_simple_keyword() {
         let s = " if else while break continue return for class fn val var bool";
-        let mut l = lexer::Lexer::new(s, 1u64);
+        let mut l = lexer::Lexer::new(s, 1u64, None);
         assert_eq!(l.yylex().unwrap().kind, Kind::If);
         assert_eq!(l.yylex().unwrap().kind, Kind::Else);
         assert_eq!(l.yylex().unwrap().kind, Kind::While);
@@ -129,7 +129,7 @@ mod lexer_tests{
     #[test]
     fn lexer_simple_integer() {
         let s = " -1i64 1i64 2u64  true false null 1234";
-        let mut l = lexer::Lexer::new(s, 1u64);
+        let mut l = lexer::Lexer::new(s, 1u64, None);
         assert_eq!(l.yylex().unwrap().kind, Kind::Int64(-1));
         assert_eq!(l.yylex().unwrap().kind, Kind::Int64(1));
         assert_eq!(l.yylex().unwrap().kind, Kind::UInt64(2u64));
@@ -160,7 +160,7 @@ mod lexer_tests{
 
         // `__builtin_str_len` counts bytes, so the length is the
         // observable half of the bug — pin it directly.
-        let mut l = lexer::Lexer::new("\"♠\"", 1u64);
+        let mut l = lexer::Lexer::new("\"♠\"", 1u64, None);
         match l.yylex().unwrap().kind {
             Kind::String(s) => assert_eq!(s.len(), 3, "`♠` is 3 UTF-8 bytes"),
             other => panic!("expected a string token, got {other:?}"),
@@ -189,7 +189,7 @@ mod lexer_tests{
         // producing *two* bytes (0xC3 0xBF) — never what the source
         // asked for. Non-ASCII code points go through `\u{HEX}`.
         for input in ["\"\\x80\"", "\"\\xff\"", "\"a\\xC3b\""] {
-            let mut l = lexer::Lexer::new(input, 1u64);
+            let mut l = lexer::Lexer::new(input, 1u64, None);
             assert!(
                 l.yylex().is_err(),
                 "expected `{input}` to be rejected as a string literal"
@@ -199,6 +199,61 @@ mod lexer_tests{
         // unaffected — it yields a `u32` code point, not str bytes.
         assert_token("\"\\x41\"", Kind::String("A".to_string()));
         assert_token("'\\xff'", Kind::UInt32(0xff));
+    }
+
+    #[test]
+    fn lexer_records_why_yylex_failed() {
+        // rflex's `Error::Unmatch` carries no reason; every failing
+        // rule action records one in `last_lex_error` so the parser's
+        // token source can build a diagnostic that points at the
+        // literal. Pin the kind per input — a category collapse (two
+        // inputs reporting the same thing) is exactly the bug this
+        // field exists to prevent.
+        use lexer::LexErrorKind;
+        let cases: &[(&str, LexErrorKind)] = &[
+            (r#""\q""#, LexErrorKind::UnknownEscape { byte: b'q' }),
+            (r#""bad \x80 byte""#, LexErrorKind::NonAsciiHexByte { byte: 0x80 }),
+            (r#""\x""#, LexErrorKind::MalformedHexEscape),
+            (r#""\x4""#, LexErrorKind::MalformedHexEscape),
+            (r#""\u{}""#, LexErrorKind::MalformedHexEscape),
+            (r#""a {b""#, LexErrorKind::UnterminatedInterpolation),
+            (r#""abc"#, LexErrorKind::UnterminatedString),
+            (r#""\""#, LexErrorKind::DanglingEscape),
+            (r"'\q'", LexErrorKind::UnknownEscape { byte: b'q' }),
+            (r"'\u{110000}'", LexErrorKind::InvalidCodePoint),
+            ("123abc", LexErrorKind::BadNumber),
+        ];
+        for (input, expected) in cases {
+            let mut l = lexer::Lexer::new(input, 1u64, None);
+            assert!(l.yylex().is_err(), "expected `{input}` to fail");
+            assert_eq!(
+                *l.get_last_lex_error(),
+                Some(*expected),
+                "wrong failure reason for `{input}`"
+            );
+        }
+        // A rule-less failure (`$`) runs no action, so the field stays
+        // `None`; the *token source* supplies `UnmatchedChar` there.
+        let mut l = lexer::Lexer::new("$", 1u64, None);
+        assert!(l.yylex().is_err());
+        assert_eq!(*l.get_last_lex_error(), None);
+    }
+
+    #[test]
+    fn lexer_skips_unmatched_characters_and_continues() {
+        // `$` matches no rule: rflex falls back to `Unmatch` with
+        // zero width. The token source resynchronises by skipping the
+        // character (`skip_current_char` — without it the next
+        // `yylex` would fail on the same byte forever), so the tokens
+        // after it still lex normally. The kind fallback
+        // (`UnmatchedChar`) is the token source's job — no action
+        // ran, so the lexer field is `None`.
+        let mut l = lexer::Lexer::new("1u64 $ 2u64", 1u64, None);
+        assert_eq!(l.yylex().unwrap().kind, Kind::UInt64(1));
+        assert!(l.yylex().is_err(), "`$` must fail");
+        assert_eq!(*l.get_last_lex_error(), None);
+        assert_eq!(l.skip_current_char(), 1, "the failed char is skipped");
+        assert_eq!(l.yylex().unwrap().kind, Kind::UInt64(2), "lexing must resume after the skip");
     }
 
     #[test]
@@ -266,7 +321,7 @@ mod lexer_tests{
     #[test]
     fn lexer_multiple_lines() {
         let s = " A \n B ";
-        let mut l = lexer::Lexer::new(s, 1u64);
+        let mut l = lexer::Lexer::new(s, 1u64, None);
         assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("A".to_string()));
         assert_eq!(l.yylex().unwrap().kind, Kind::NewLine);
         assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("B".to_string()));
@@ -276,7 +331,7 @@ mod lexer_tests{
     #[test]
     fn lexer_comment_test() {
         let s = "# this is a comment\n val x = 1u64";
-        let mut l = lexer::Lexer::new(s, 1u64);
+        let mut l = lexer::Lexer::new(s, 1u64, None);
         assert_eq!(l.yylex().unwrap().kind, Kind::Comment(" this is a comment".to_string()));
         assert_eq!(l.yylex().unwrap().kind, Kind::NewLine);
         assert_eq!(l.yylex().unwrap().kind, Kind::Val);

@@ -357,7 +357,15 @@ pub fn check_source(
     let mut program = match session.parse_program_all_errors(source, filename) {
         Ok(p) => p,
         Err(errors) => {
-            formatter.display_parse_errors(&errors);
+            if options.diagnostics_json {
+                let diagnostics: Vec<frontend::diagnostic::Diagnostic> = errors
+                    .iter()
+                    .map(|e| frontend::diagnostic::Diagnostic::from_parser_error(e, filename))
+                    .collect();
+                crate::emit_diagnostics_json(&diagnostics);
+            } else {
+                formatter.display_parse_errors(&errors);
+            }
             return Err(format!("{} parse error(s)", errors.len()));
         }
     };

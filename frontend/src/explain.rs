@@ -57,6 +57,7 @@ const ENTRIES: &[Entry] = &[
     (codes::ACCESS_DENIED, E0009),
     (codes::UNCATEGORISED, E0010),
     (codes::TYPE_HOLE, E0011),
+    (codes::LEXICAL, E0012),
 ];
 
 const E0001: &str = "\
@@ -326,8 +327,34 @@ its inferred type, so later uses of the variable are checked normally
 instead of collapsing into follow-on errors.
 
 `_` is only accepted in a `val` / `var` annotation. In a parameter,
-return or field type it is a parse error -- there is nothing there for
+return or field type it is a parse error — there is nothing there for
 the checker to infer from.";
+
+const E0012: &str = "\
+E0012: a literal or character could not be read (lexical error)
+
+The lexer could not make sense of some source text — most often a
+literal whose content is invalid. The diagnostic points at the
+offending literal, on its own line.
+
+  * `\"\\q\"` — unknown escape sequence
+  * `\"\\x80\"` — `\\xHH` can only encode ASCII bytes. `str` is UTF-8,
+    and a lone byte >= 0x80 has no representation inside one: write
+    `\\u{HEX}` (or the character itself) for non-ASCII code points.
+  * `\"\\x\"` / `\"\\x4\"` / `\"\\xZZ\"` — `\\x` requires exactly two
+    hex digits
+  * `\"abc {x` — the `{...}` interpolation never closes
+  * `'\\u{110000}'` — a code point outside the Unicode scalar range
+    (max U+10FFFF, no surrogates)
+  * `123abc` — digits followed by letters is not a number
+  * `$` — a character no rule recognizes
+
+Escapes are decoded at lex time, so a bad escape is a lexical error —
+there is no way to write it that parses. `'\\xff'` as a *char* literal
+is unaffected: it yields the `u32` value 255, not str bytes.
+
+The `\\xHH` ASCII limit and the `\\u{HEX}` spelling of the fix are
+documented in the language reference's string-literal section.";
 
 #[cfg(test)]
 mod tests {

@@ -55,7 +55,17 @@ impl ParserWithInterner {
     where
         F: FnOnce(&mut Parser<'static>) -> T,
     {
-        let result = f(self.get_parser());
+        let result = {
+            let parser = self.get_parser();
+            let result = f(parser);
+            // Lex failures are recorded by the token source as the
+            // parse runs; surface them into `parser.errors` so every
+            // entry point (`parse_program` / `parse_stmt` /
+            // `parse_expr_impl` / ...) reports them. Draining makes
+            // repeated calls idempotent.
+            parser.merge_lex_errors();
+            result
+        };
         // Copy errors from the internal parser
         self.errors = self.get_parser().errors.clone();
         result
@@ -392,6 +402,48 @@ impl<'a> Parser<'a> {
 
     pub fn line_count(&mut self) -> usize {
         self.token_provider.line_count()
+    }
+
+    /// Collect lexical failures recorded by the token source into
+    /// `self.errors` as ordinary parse errors, so they surface through
+    /// the existing parse-error reporting and fail the parse.
+    ///
+    /// The lexer *skips* a failing token (or a single character when
+    /// no rule matched at all) and keeps going, so the parser runs to
+    /// the end; the error is only recorded here. That is deliberate:
+    /// the token source has no way to reach `self.errors`, and
+    /// reporting the token stream's damage instead — "expected
+    /// expression" at the next statement — is exactly the misleading
+    /// diagnostic this replaces.
+    ///
+    /// Lex errors are inserted at the *front* of the error list: a
+    /// lexical failure usually desynchronises the parse around it, so
+    /// in the single-error path (`parse_program`) the root cause is
+    /// what gets reported. The multi-error path sorts by position
+    /// anyway, so the insertion order is invisible there.
+    pub fn merge_lex_errors(&mut self) {
+        let lex_errors = self.token_provider.drain_lex_errors();
+        if lex_errors.is_empty() {
+            return;
+        }
+        for lex in lex_errors {
+            let start = lex.span.start.min(self.input.len());
+            let mut end = lex.span.end.min(self.input.len());
+            // A failed token can span several lines (an unterminated
+            // string matches to end of input); quoting everything to
+            // EOF would drown the message in the rest of the file.
+            // Clamp to the end of the first line.
+            if let Some(nl) = self.input[start..end].find('\n') {
+                end = start + nl;
+            }
+            let (line, column) = self.offset_to_line_col(start);
+            let text = &self.input[start..end];
+            let error = ParserError::lex_error(
+                SourceLocation::new(line, column, start as u32, end as u32),
+                lex.kind.describe(text),
+            );
+            self.errors.insert(0, error);
+        }
     }
 
     /// Push a synthetic token to the front of the token stream.

@@ -724,6 +724,12 @@ UTF-8 on its own and therefore has no representation inside a `str`;
 non-ASCII code points. The char literal `'\xff'` is unaffected — it
 yields the `u32` value `255`, not str bytes.
 
+Lexical failures are reported as `E0012` diagnostics that point at the
+offending literal (`--explain E0012`): a bad escape, an unterminated
+string or interpolation, a number followed by letters (`123abc`), or a
+character no rule recognizes (`$`). A lex error fails the parse, so it
+never leaks into type checking as a mismatch elsewhere in the file.
+
 `\"` inside a `"..."` literal is **not** yet decodable — the
 closing-quote regex still wins. Use `'\"'` (char) or
 `"\u{22}"` (Unicode escape) when you need a literal `"` in a

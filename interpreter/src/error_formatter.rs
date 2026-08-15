@@ -171,10 +171,13 @@ impl<'a> ErrorFormatter<'a> {
             return;
         }
 
-        eprintln!("{}", ErrorType::Parse.header());
+        // Through the sink-aware helpers so in-process tests can
+        // capture parse diagnostics with `output::with_stderr_capture`
+        // instead of spawning the binary.
+        crate::output::eprintln_text(ErrorType::Parse.header());
         for error in errors {
             let formatted_error = self.format_parse_error(error);
-            eprintln!("{}{}", ErrorType::Parse.prefix(), formatted_error);
+            crate::output::eprintln_text(&format!("{}{}", ErrorType::Parse.prefix(), formatted_error));
         }
     }
 

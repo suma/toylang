@@ -1,6 +1,18 @@
 use crate::token::{Token, Kind};
 use super::lookahead::LookaheadBuffer;
 use crate::parser::error::ParserResult;
+use crate::parser::core::lexer::{Error as LexerError, LexErrorKind};
+
+/// One lexical failure: why `yylex` gave up, and the byte range of
+/// the offending text. In-action failures (a bad escape, a malformed
+/// literal) carry the whole token — the literal including its quotes;
+/// rule-less failures (a character no rule matches) carry a single
+/// character.
+#[derive(Debug, Clone)]
+pub struct LexError {
+    pub kind: LexErrorKind,
+    pub span: std::ops::Range<usize>,
+}
 
 /// Trait for token sources that can provide tokens to the parser
 pub trait TokenSource {
@@ -9,6 +21,12 @@ pub trait TokenSource {
     
     /// Get current line count for error reporting
     fn line_count(&self) -> usize;
+
+    /// Lexical failures recorded since the last drain. The default
+    /// implementation is empty — only the real lexer records failures.
+    fn drain_lex_errors(&mut self) -> Vec<LexError> {
+        Vec::new()
+    }
 }
 
 /// Token provider that combines a TokenSource with an optimized LookaheadBuffer
@@ -171,6 +189,13 @@ impl<T: TokenSource> TokenProvider<T> {
         }
     }
 
+    /// Lexical failures recorded by the source since the last drain.
+    /// The parser drains these at the end of a parse and reports them
+    /// as parse errors — see [`super::core::Parser::merge_lex_errors`].
+    pub fn drain_lex_errors(&mut self) -> Vec<LexError> {
+        self.source.drain_lex_errors()
+    }
+
     /// Get current line count from the source
     pub fn line_count(&self) -> usize {
         self.source.line_count()
@@ -206,26 +231,62 @@ impl<T: TokenSource> TokenProvider<T> {
 /// Lexer wrapper that implements TokenSource
 pub struct LexerTokenSource<'a> {
     lexer: crate::parser::core::lexer::Lexer<'a>,
+    /// Lexical failures, drained by the parser at the end of a parse.
+    errors: Vec<LexError>,
 }
 
 impl<'a> LexerTokenSource<'a> {
     pub fn new(input: &'a str) -> Self {
         LexerTokenSource {
-            lexer: crate::parser::core::lexer::Lexer::new(input, 1u64),
+            lexer: crate::parser::core::lexer::Lexer::new(input, 1u64, None),
+            errors: Vec::new(),
         }
     }
 }
 
 impl<'a> TokenSource for LexerTokenSource<'a> {
     fn next_token(&mut self) -> ParserResult<Option<Token>> {
-        match self.lexer.yylex() {
-            Ok(token) => Ok(Some(token)),
-            Err(_) => Ok(None), // End of input or error
+        loop {
+            match self.lexer.yylex() {
+                Ok(token) => return Ok(Some(token)),
+                Err(LexerError::EOF) => return Ok(None),
+                Err(LexerError::Unmatch) => {
+                    // The failing rule action recorded *why* it gave
+                    // up; a rule-less fallthrough (a character nothing
+                    // matches) ran no action, so the field is None.
+                    let kind = self
+                        .lexer
+                        .get_last_lex_error()
+                        .take()
+                        .unwrap_or(LexErrorKind::UnmatchedChar);
+                    let mut span = self.lexer.yybytepos();
+                    if span.is_empty() {
+                        // Zero-width failure: nothing matched, so the
+                        // position did not move and the next `yylex`
+                        // would fail on the same character forever.
+                        // Skip it, then keep lexing — the parse below
+                        // continues and the error is reported at the
+                        // end, in the parser's error list.
+                        let skipped = self.lexer.skip_current_char();
+                        if skipped == 0 {
+                            return Ok(None);
+                        }
+                        span.end = span.start + skipped;
+                    }
+                    self.errors.push(LexError { kind, span });
+                    // Continue the loop: the failed token was consumed
+                    // (or skipped), so the next `yylex` starts after it.
+                }
+            }
         }
     }
 
     fn line_count(&self) -> usize {
         self.lexer.get_current_line_count()
+    }
+
+    fn drain_lex_errors(&mut self) -> Vec<LexError> {
+        std::mem::take(&mut self.errors)
     }
 }
 

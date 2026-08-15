@@ -57,7 +57,7 @@ mod helpers {
     fn is_reserved(s: &str) -> bool {
         use frontend::parser::core::lexer::Lexer;
         use frontend::token::Kind;
-        let mut lexer = Lexer::new(s, 1);
+        let mut lexer = Lexer::new(s, 1, None);
         match lexer.yylex() {
             Ok(token) => !matches!(token.kind, Kind::Identifier(_)),
             // Anything the lexer rejects outright is not usable either.

@@ -19,6 +19,86 @@ fn hex_digit(b: u8) -> Option<u8> {
     }
 }
 
+/// Why `yylex` failed. rflex's generated `Error::Unmatch` carries no
+/// reason, so every failing rule action records the reason in
+/// `last_lex_error` first; the parser's token source reads it back to
+/// build a diagnostic that points at the offending literal. The
+/// fallback [`LexErrorKind::UnmatchedChar`] (a character no rule
+/// matches) is recorded by the token source when the field is `None` —
+/// no action ran, so nothing could set it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LexErrorKind {
+    /// `\x` escape whose byte is not valid UTF-8 on its own (`\x80`).
+    NonAsciiHexByte { byte: u8 },
+    /// `\x` / `\u` escape with missing or non-hex digits.
+    MalformedHexEscape,
+    /// An escape sequence the string / char rules do not know (`\q`).
+    UnknownEscape { byte: u8 },
+    /// A string literal whose `{...}` interpolation never closes.
+    UnterminatedInterpolation,
+    /// A string literal with no closing `"` before end of input.
+    UnterminatedString,
+    /// `\u{HEX}` naming a value outside the Unicode scalar range.
+    InvalidCodePoint,
+    /// A string literal ending with a bare `\` (which would escape the
+    /// closing quote — `\"` is not decodable yet).
+    DanglingEscape,
+    /// A float literal whose text cannot be parsed as `f64`.
+    MalformedNumber,
+    /// `[0-9][A-Za-z_0-9]*` — digits followed by identifier chars.
+    BadNumber,
+    /// No rule matched the character (rflex's fallback). Constructed
+    /// by the parser's token source, which is a different include of
+    /// this file — hence the `allow`.
+    #[allow(dead_code)]
+    UnmatchedChar,
+}
+
+impl LexErrorKind {
+    /// Render the failure as a diagnostic message, quoting the
+    /// offending source text (`text` is the whole failing token —
+    /// usually a literal including its quotes).
+    #[allow(dead_code)]
+    pub fn describe(self, text: &str) -> String {
+        match self {
+            LexErrorKind::NonAsciiHexByte { byte } => format!(
+                "`\\x{byte:02X}` cannot be decoded inside a string literal: `str` is UTF-8, \
+                 and a lone byte >= 0x80 has no representation — use `\\u{{HEX}}` for non-ASCII \
+                 code points"
+            ),
+            LexErrorKind::MalformedHexEscape => format!(
+                "malformed escape in `{text}`: `\\x` needs exactly two hex digits and \
+                 `\\u` needs `{{HEX}}`"
+            ),
+            LexErrorKind::UnknownEscape { byte } => format!(
+                "unknown escape sequence `\\{}` in `{text}`",
+                byte as char
+            ),
+            LexErrorKind::UnterminatedInterpolation => format!(
+                "unterminated interpolation in `{text}`: the `{{...}}` inside a string \
+                 literal never closes"
+            ),
+            LexErrorKind::UnterminatedString => format!(
+                "unterminated string literal: `{text}` has no closing `\"`"
+            ),
+            LexErrorKind::InvalidCodePoint => format!(
+                "invalid Unicode code point in `{text}`: `\\u{{HEX}}` must name a scalar \
+                 value (max U+10FFFF, no surrogates)"
+            ),
+            LexErrorKind::DanglingEscape => format!(
+                "`{text}` ends with a bare backslash: `\\\"` (an escaped quote) is not \
+                 decodable inside a string literal yet — use `\\u{{22}}` for the quote \
+                 character"
+            ),
+            LexErrorKind::MalformedNumber => format!("invalid number literal `{text}`"),
+            LexErrorKind::BadNumber => {
+                format!("invalid number `{text}`: digits cannot be followed by letters")
+            }
+            LexErrorKind::UnmatchedChar => format!("unrecognized character `{text}`"),
+        }
+    }
+}
+
 /// Parse the body of a `\u{HEX}` Unicode escape. `bytes[start]`
 /// must point at the `{`. Returns `(code_point, end_index)`
 /// where `end_index` is the index *after* the closing `}`.
@@ -54,6 +134,7 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
 %class Lexer
 %result_type Token
 %field u64 line_count
+%field Option<LexErrorKind> last_lex_error
 
 "if"        return Ok(token!(self, Kind::If));
 "elif"      return Ok(token!(self, Kind::Elif));
@@ -169,7 +250,10 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                         let s: String = drain.collect::<String>().replace("_", "");
                         match s.parse::<f64>() {
                             Ok(value) => return Ok(token!(self, Kind::Float64(value))),
-                            Err(_) => return Err(Error::Unmatch),
+                            Err(_) => {
+                                self.get_last_lex_error().replace(LexErrorKind::MalformedNumber);
+                                return Err(Error::Unmatch);
+                            }
                         }
                     }
 
@@ -179,7 +263,10 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                         let s: String = drain.collect::<String>().replace("_", "");
                         match s.parse::<f64>() {
                             Ok(value) => return Ok(token!(self, Kind::Float64(value))),
-                            Err(_) => return Err(Error::Unmatch),
+                            Err(_) => {
+                                self.get_last_lex_error().replace(LexErrorKind::MalformedNumber);
+                                return Err(Error::Unmatch);
+                            }
                         }
                     }
 
@@ -481,10 +568,17 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                                     j += 1;
                                 }
                                 if depth != 0 {
+                                    self.get_last_lex_error()
+                                        .replace(LexErrorKind::UnterminatedInterpolation);
                                     return Err(Error::Unmatch);
                                 }
                                 let expr_text = match std::str::from_utf8(&bytes[expr_start..j]) {
                                     Ok(s) => s.to_string(),
+                                    // Unreachable: `inner` is a `&str` and
+                                    // every branch above consumes whole
+                                    // chars, so this slice is valid UTF-8.
+                                    // Keep the error path anyway; the token
+                                    // source falls back to UnmatchedChar.
                                     Err(_) => return Err(Error::Unmatch),
                                 };
                                 parts.push(StringPart::Expr(expr_text));
@@ -509,6 +603,8 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                             }
                             if b == b'\\' {
                                 if i + 1 >= bytes.len() {
+                                    self.get_last_lex_error()
+                                        .replace(LexErrorKind::DanglingEscape);
                                     return Err(Error::Unmatch);
                                 }
                                 // `\xHH` — 2-digit hex byte. Consumes
@@ -517,10 +613,26 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                                 // or non-hex bails as `Unmatch`.
                                 if bytes[i + 1] == b'x' {
                                     if i + 3 >= bytes.len() {
+                                        self.get_last_lex_error()
+                                            .replace(LexErrorKind::MalformedHexEscape);
                                         return Err(Error::Unmatch);
                                     }
-                                    let hi = hex_digit(bytes[i + 2]).ok_or(Error::Unmatch)?;
-                                    let lo = hex_digit(bytes[i + 3]).ok_or(Error::Unmatch)?;
+                                    let hi = match hex_digit(bytes[i + 2]) {
+                                        Some(v) => v,
+                                        None => {
+                                            self.get_last_lex_error()
+                                                .replace(LexErrorKind::MalformedHexEscape);
+                                            return Err(Error::Unmatch);
+                                        }
+                                    };
+                                    let lo = match hex_digit(bytes[i + 3]) {
+                                        Some(v) => v,
+                                        None => {
+                                            self.get_last_lex_error()
+                                                .replace(LexErrorKind::MalformedHexEscape);
+                                            return Err(Error::Unmatch);
+                                        }
+                                    };
                                     let byte = (hi << 4) | lo;
                                     // `str` is UTF-8, so a lone byte >= 0x80
                                     // cannot be stored as itself. Pushing it
@@ -529,6 +641,8 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                                     // never what the source asked for. Use
                                     // `\u{HEX}` for non-ASCII code points.
                                     if byte >= 0x80 {
+                                        self.get_last_lex_error()
+                                            .replace(LexErrorKind::NonAsciiHexByte { byte });
                                         return Err(Error::Unmatch);
                                     }
                                     out.push(byte as char);
@@ -541,9 +655,23 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                                 // code points (which `char::from_u32`
                                 // rejects) bail as `Unmatch`.
                                 if bytes[i + 1] == b'u' {
-                                    let (cp, end) = parse_unicode_escape_body(bytes, i + 2)
-                                        .ok_or(Error::Unmatch)?;
-                                    let c = char::from_u32(cp).ok_or(Error::Unmatch)?;
+                                    let (cp, end) = match parse_unicode_escape_body(bytes, i + 2)
+                                    {
+                                        Some(v) => v,
+                                        None => {
+                                            self.get_last_lex_error()
+                                                .replace(LexErrorKind::MalformedHexEscape);
+                                            return Err(Error::Unmatch);
+                                        }
+                                    };
+                                    let c = match char::from_u32(cp) {
+                                        Some(c) => c,
+                                        None => {
+                                            self.get_last_lex_error()
+                                                .replace(LexErrorKind::InvalidCodePoint);
+                                            return Err(Error::Unmatch);
+                                        }
+                                    };
                                     out.push(c);
                                     i = end;
                                     continue;
@@ -562,7 +690,11 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                                     // handler stays symmetric with the
                                     // char literal escape table.
                                     b'"'  => b'"',
-                                    _ => return Err(Error::Unmatch),
+                                    other => {
+                                        self.get_last_lex_error()
+                                            .replace(LexErrorKind::UnknownEscape { byte: other });
+                                        return Err(Error::Unmatch);
+                                    }
                                 };
                                 out.push(escaped as char);
                                 i += 2;
@@ -578,7 +710,13 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                                 // `&str` and every branch above consumes
                                 // whole ASCII bytes, so `i` is always on a
                                 // char boundary here.
-                                let c = inner[i..].chars().next().ok_or(Error::Unmatch)?;
+                                let c = match inner[i..].chars().next() {
+                                    Some(c) => c,
+                                    // Unreachable (`i < bytes.len()` and `i`
+                                    // is on a char boundary); the token
+                                    // source falls back to UnmatchedChar.
+                                    None => return Err(Error::Unmatch),
+                                };
                                 out.push(c);
                                 i += c.len_utf8();
                             }
@@ -589,6 +727,18 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                             return Ok(token!(self, Kind::InterpolatedString(parts)));
                         }
                         return Ok(token!(self, Kind::String(out)));
+                    }
+
+\"[^"]*  {
+                        // Unterminated string literal — no closing `"`.
+                        // The rule above needs the closing quote to
+                        // match, so this one only fires when it does
+                        // not exist; the longest match takes the full
+                        // literal (possibly to EOF). Recorded so the
+                        // parser can say "the string never closes"
+                        // instead of "unrecognized character `\"`".
+                        self.get_last_lex_error().replace(LexErrorKind::UnterminatedString);
+                        return Err(Error::Unmatch);
                     }
 
 '\\u"{"[0-9a-fA-F]+"}"'            {
@@ -605,9 +755,22 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                         let bytes = text.as_bytes();
                         // Layout: ' \ u { HEX } ' — body starts at
                         // index 3 (after `\u{`).
-                        let (cp, _end) = parse_unicode_escape_body(bytes, 3)
-                            .ok_or(Error::Unmatch)?;
-                        char::from_u32(cp).ok_or(Error::Unmatch)?;
+                        let (cp, _end) = match parse_unicode_escape_body(bytes, 3) {
+                            Some(v) => v,
+                            None => {
+                                self.get_last_lex_error()
+                                    .replace(LexErrorKind::MalformedHexEscape);
+                                return Err(Error::Unmatch);
+                            }
+                        };
+                        match char::from_u32(cp) {
+                            Some(_) => {}
+                            None => {
+                                self.get_last_lex_error()
+                                    .replace(LexErrorKind::InvalidCodePoint);
+                                return Err(Error::Unmatch);
+                            }
+                        }
                         return Ok(token!(self, Kind::UInt32(cp)));
                     }
 
@@ -642,7 +805,11 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                             b'\\' => 92,
                             b'\'' => 39,
                             b'"'  => 34,
-                            _ => return Err(Error::Unmatch),
+                            other => {
+                                self.get_last_lex_error()
+                                    .replace(LexErrorKind::UnknownEscape { byte: other });
+                                return Err(Error::Unmatch);
+                            }
                         };
                         return Ok(token!(self, Kind::UInt32(value)));
                     }
@@ -660,7 +827,14 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                         return Ok(token!(self, Kind::UInt32(value)));
                     }
 
-[0-9][A-Za-z_0-9]*      return Err(Error::Unmatch);
+[0-9][A-Za-z_0-9]*      {
+                        // `123abc` — digits followed by identifier
+                        // characters are not a number. Recorded so the
+                        // parser can report it at this token instead of
+                        // wherever the stream breaks.
+                        self.get_last_lex_error().replace(LexErrorKind::BadNumber);
+                        return Err(Error::Unmatch);
+                    }
 [A-Za-z_][A-Za-z_0-9]*  return Ok(token!(self, Kind::Identifier(self.yytext())));
 
 "/*"([^*]|"*"[^/])*"*/"  {
@@ -687,4 +861,33 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
 
     pub fn get_current_line_count(&self) -> usize {
         self.line_count as usize
+    }
+
+    /// Advance the lexer one character past a zero-width failure.
+    ///
+    /// When no rule matches a character at all, rflex falls through to
+    /// `Error::Unmatch` with `zz_marked_pos == zz_start_read` — the
+    /// position did not move, so a second `yylex` would fail on the
+    /// same byte forever. The token source calls this after recording
+    /// the error to resynchronise: the character is skipped, the
+    /// lexer resumes after it, and the next `yylex` attempts a new
+    /// token. Returns the number of bytes skipped (0 only when there
+    /// is nothing left to skip, which the token source treats as EOF).
+    #[allow(dead_code)]
+    pub fn skip_current_char(&mut self) -> usize {
+        if self.zz_start_read >= self.input.len() {
+            return 0;
+        }
+        let Some(c) = self.input[self.zz_start_read..].chars().next() else {
+            return 0;
+        };
+        let len = c.len_utf8();
+        self.zz_marked_pos = self.zz_start_read + len;
+        self.zz_marked_char += 1;
+        // The DFA loop only ever reads `next.1` (the char) from the
+        // iterator, so rebuilding it from the slice is equivalent to
+        // advancing it — and does not depend on which state it was in
+        // after the failed attempt.
+        self.current = self.input[self.zz_marked_pos..].char_indices();
+        len
     }

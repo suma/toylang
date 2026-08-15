@@ -99,7 +99,7 @@ fn parse_interpolated_string(parser: &mut Parser) -> ParserResult<ExprRef> {
             StringPart::Expr(expr_text) => {
                 tokens.push(Kind::Identifier("__builtin_to_string".to_string()));
                 tokens.push(Kind::ParenOpen);
-                let mut sub_lex = crate::parser::core::lexer::Lexer::new(expr_text, 1);
+                let mut sub_lex = crate::parser::core::lexer::Lexer::new(expr_text, 1, None);
                 loop {
                     match sub_lex.yylex() {
                         Ok(tok) => {

@@ -6,6 +6,10 @@ pub enum ParserErrorKind {
     RecursionLimitExceeded,
     GenericError { message: String },
     IoError { message: String },
+    /// A lexical failure — a literal or character the lexer could not
+    /// read. Carries its diagnostic code ([`crate::diagnostic::codes::LEXICAL`])
+    /// so `--explain` can answer it like any other code.
+    LexError { message: String },
 }
 
 #[derive(Debug)]
@@ -74,6 +78,16 @@ impl ParserError {
             location,
         }
     }
+
+    /// A lexical failure, reported at the offending literal. The
+    /// message is rendered with the code (`[E0012]`) so it can be
+    /// looked up with `--explain E0012`.
+    pub fn lex_error(location: SourceLocation, message: String) -> Self {
+        Self {
+            kind: ParserErrorKind::LexError { message },
+            location,
+        }
+    }
 }
 impl std::fmt::Display for ParserError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -92,6 +106,12 @@ impl std::fmt::Display for ParserError {
             }
             ParserErrorKind::IoError { message } => {
                 format!("IO error: {}", message)
+            }
+            ParserErrorKind::LexError { message } => {
+                // The code travels in the message so every rendering —
+                // the interpreter's formatter, `{:?}` in test helpers,
+                // JSON `message` fields — carries the lookup key.
+                format!("[{}] {}", crate::diagnostic::codes::LEXICAL, message)
             }
         };
 

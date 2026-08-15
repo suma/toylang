@@ -188,7 +188,10 @@ mod lexer_tests {
 
     #[test]
     fn test_string_literal_malformed_hex_escape_rejected() {
-        // Unfinished or non-hex `\x` should bail with `Unmatch`.
+        // Unfinished or non-hex `\x` should bail with `Unmatch` — and
+        // the failure must surface as a *lex* error (E0012) that names
+        // the literal, not merely as whatever the parser tripped over
+        // after the literal vanished from the token stream.
         for input in [
             r#""\x""#,        // no digits
             r#""\x4""#,       // one digit
@@ -200,6 +203,11 @@ mod lexer_tests {
             assert!(
                 result.is_err() || !parser.errors.is_empty(),
                 "Expected error parsing malformed hex escape: {input}"
+            );
+            assert!(
+                parser.errors.iter().any(|e| e.to_string().contains("E0012")),
+                "expected a lex error (E0012) for {input}, got: {:?}",
+                parser.errors,
             );
         }
     }

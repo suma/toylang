@@ -737,6 +737,7 @@ impl<'a> Parser<'a> {
         // up later as an unrelated diagnostic (a function swallowed by a
         // bad `else if` was reported as "Function 'main' not found") or
         // not at all until runtime.
+        self.merge_lex_errors();
         if let Some(error) = self.errors.first() {
             return Err(error.clone());
         }
@@ -766,6 +767,11 @@ impl<'a> Parser<'a> {
 
         match self.parse_program() {
             Ok(program) => {
+                // `parse_program` merges lex errors itself on its
+                // success path; on a `?` early return it never reached
+                // the merge, so the failure path below drains whatever
+                // is left.
+                self.merge_lex_errors();
                 if self.errors.is_empty() {
                     MultipleParserResult::success(program)
                 } else {
@@ -777,6 +783,7 @@ impl<'a> Parser<'a> {
                 // anything was collected. Report that one rather than an
                 // empty list — "the parse failed, and here is nothing"
                 // is the least useful diagnostic there is.
+                self.merge_lex_errors();
                 if self.errors.is_empty() {
                     MultipleParserResult::failure(vec![hard_failure])
                 } else {

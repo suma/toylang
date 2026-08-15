@@ -16,6 +16,7 @@
 //!   `E0001`, but they are toylang's own numbering — reusing Rust's
 //!   numbers for different meanings would be worse than having none.
 
+use crate::parser::error::{ParserError, ParserErrorKind};
 use crate::type_checker::{SourceLocation, TypeCheckError, TypeCheckErrorKind};
 use crate::type_decl::TypeDecl;
 
@@ -151,6 +152,24 @@ impl Diagnostic {
             suggestions: error.suggestions.clone(),
         }
     }
+
+    /// A parse error as a structured diagnostic. Lex errors carry
+    /// their own code (E0012); the parser's other failures have no
+    /// category yet and share the catch-all.
+    pub fn from_parser_error(error: &ParserError, file: &str) -> Self {
+        Diagnostic {
+            severity: Severity::Error,
+            code: match &error.kind {
+                ParserErrorKind::LexError { .. } => codes::LEXICAL,
+                _ => codes::UNCATEGORISED,
+            },
+            message: error.to_string(),
+            file: file.to_string(),
+            span: Some(Span::from(error.location)),
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
 }
 
 pub mod codes {
@@ -167,6 +186,9 @@ pub mod codes {
     /// The answer to a `val x: _ = expr` type hole (LLM-LOOP P7). Not a
     /// defect in the program — it reports what was asked for.
     pub const TYPE_HOLE: &str = "E0011";
+    /// A lexical failure: a literal or character the lexer could not
+    /// read (`"\q"`, `"\x80"`, an unterminated interpolation, ...).
+    pub const LEXICAL: &str = "E0012";
 
     /// Every code, in order. `crate::explain` is checked against this
     /// list by a test, so a new code cannot ship without prose.
@@ -182,6 +204,7 @@ pub mod codes {
         ACCESS_DENIED,
         UNCATEGORISED,
         TYPE_HOLE,
+        LEXICAL,
     ];
 }
 

@@ -1085,7 +1085,15 @@ pub fn run_tests_from_source(
     let mut program = match session.parse_program_all_errors(source, filename) {
         Ok(p) => p,
         Err(errors) => {
-            formatter.display_parse_errors(&errors);
+            if options.diagnostics_json {
+                let diagnostics: Vec<Diagnostic> = errors
+                    .iter()
+                    .map(|e| Diagnostic::from_parser_error(e, filename))
+                    .collect();
+                emit_diagnostics_json(&diagnostics);
+            } else {
+                formatter.display_parse_errors(&errors);
+            }
             return Err(format!("{} parse error(s)", errors.len()));
         }
     };
@@ -1148,11 +1156,13 @@ pub struct RunOutcome {
 /// stays usable in the same run.
 pub fn emit_diagnostics_json(diagnostics: &[Diagnostic]) {
     match serde_json::to_string_pretty(diagnostics) {
-        Ok(json) => eprintln!("{json}"),
+        Ok(json) => crate::output::eprintln_text(&json),
         // Serialisation cannot realistically fail for these types, but
         // swallowing the diagnostics entirely would be the worst
         // possible outcome -- fall back to debug output.
-        Err(e) => eprintln!("failed to serialise diagnostics ({e}): {diagnostics:?}"),
+        Err(e) => crate::output::eprintln_text(&format!(
+            "failed to serialise diagnostics ({e}): {diagnostics:?}"
+        )),
     }
 }
 
@@ -1180,7 +1190,15 @@ pub fn run_source(
             // diagnostic used to be built and then dropped on the floor,
             // so a parse error produced no output at all — the process
             // just exited non-zero.
-            formatter.display_parse_errors(&errors);
+            if options.diagnostics_json {
+                let diagnostics: Vec<Diagnostic> = errors
+                    .iter()
+                    .map(|e| Diagnostic::from_parser_error(e, filename))
+                    .collect();
+                emit_diagnostics_json(&diagnostics);
+            } else {
+                formatter.display_parse_errors(&errors);
+            }
             return Err(format!("{} parse error(s)", errors.len()));
         }
     };

@@ -21,9 +21,11 @@
 use frontend::ast::{BuiltinFunction, Expr, ExprRef, StmtRef, UnaryOp};
 use string_interner::DefaultSymbol;
 
-use super::bindings::{flatten_struct_locals, flatten_tuple_element_locals, Binding};
+use super::bindings::{
+    flatten_struct_locals, flatten_tuple_element_locals, Binding, EnumStorage, PayloadSlot,
+};
 use super::FunctionLower;
-use crate::ir::{Const, InstKind, Terminator, Type, ValueId};
+use crate::ir::{BinOp, Const, EnumId, InstKind, Terminator, Type, ValueId};
 
 impl<'a> FunctionLower<'a> {
     /// Mirror of `interpreter/src/evaluation/builtin.rs::object_byte_size`
@@ -392,6 +394,211 @@ impl<'a> FunctionLower<'a> {
             .emit(InstKind::StrConcat { a: acc, b: footer }, Some(Type::Str))
             .expect("StrConcat returns a value");
         Ok(acc)
+    }
+
+    /// STR-INTERP-COMPOUND-EXTEND-ENUM enum-arm. Builds the formatted
+    /// string `EnumName::VariantName(p0, p1, ...)` inline, matching
+    /// the interpreter's `Object::to_display_string` (generic enums
+    /// include the concrete type-arg list: `Option<i64>::Some(5)`).
+    /// The variant is chosen at runtime by dispatching on the tag
+    /// local — the same brif chain `emit_print_enum` uses — and each
+    /// per-variant block concatenates its text into a result local
+    /// that the merge block loads. Payloads route through the same
+    /// emitters as struct / tuple fields: scalars via the
+    /// `InstKind::ToString` runtime helper, nested struct / tuple
+    /// payloads via `emit_struct_format` / `emit_tuple_format`, enum
+    /// payloads by recursion.
+    fn lower_enum_to_string(
+        &mut self,
+        enum_id: EnumId,
+        arg_expr: &ExprRef,
+    ) -> Result<Option<ValueId>, String> {
+        let arg_inner = self
+            .program
+            .expression
+            .get(arg_expr)
+            .ok_or_else(|| "__builtin_to_string arg expr missing".to_string())?;
+        let storage = match arg_inner {
+            Expr::Identifier(sym) => match self.bindings.get(&sym).cloned() {
+                Some(Binding::Enum(storage)) => storage,
+                _ => return Err(
+                    "__builtin_to_string: enum identifier needs an Enum binding".to_string(),
+                ),
+            },
+            // Enum-typed fields / elements are out of reach: the
+            // field chain has no Enum variant yet, so there is no way
+            // to name the tag / payload locals from the chain.
+            _ => return Err(
+                "__builtin_to_string: enum arg must be a bare identifier (MVP) — \
+                 enum-typed fields are not supported at AOT"
+                    .to_string(),
+            ),
+        };
+        if storage.enum_id != enum_id {
+            return Err(format!(
+                "__builtin_to_string: enum id mismatch (inference said {:?} but the binding \
+                 holds {:?})",
+                enum_id, storage.enum_id
+            ));
+        }
+        let v = self.emit_enum_to_string(&storage)?;
+        Ok(Some(v))
+    }
+
+    /// STR-INTERP-COMPOUND-EXTEND-ENUM: emit the tag-dispatch chain
+    /// that produces the formatted text for an enum storage. Each
+    /// per-variant block builds `EnumName::VariantName(...)` via
+    /// `ConstStrBytes` + `StrConcat` and stores it into the result
+    /// local; the merge block loads it as the final value.
+    fn emit_enum_to_string(&mut self, storage: &EnumStorage) -> Result<ValueId, String> {
+        let enum_def = self.module.enum_def(storage.enum_id).clone();
+        // `Name` for non-generic enums, `Name<T1, ...>` for generic
+        // instantiations — must match the interpreter's header
+        // byte-for-byte for the consistency suite.
+        let enum_str = self.format_enum_header(storage.enum_id);
+        let n_variants = enum_def.variants.len();
+        if n_variants == 0 {
+            // An enum with no variants can never be constructed; emit
+            // an empty string rather than crashing on an empty chain.
+            return Ok(self
+                .emit(
+                    InstKind::ConstStrBytes { bytes: Vec::new() },
+                    Some(Type::Str),
+                )
+                .expect("ConstStrBytes returns a value"));
+        }
+        let result_local = self.module.function_mut(self.func_id).add_local(Type::Str);
+        let merge = self.fresh_block();
+        let tag_v = self
+            .emit(InstKind::LoadLocal(storage.tag_local), Some(Type::U64))
+            .expect("LoadLocal returns a value");
+        for (idx, variant) in enum_def.variants.iter().enumerate() {
+            let variant_str = self
+                .interner
+                .resolve(variant.name)
+                .unwrap_or("?")
+                .to_string();
+            let body_blk = self.fresh_block();
+            let slots = storage.payloads[idx].clone();
+            if idx + 1 < n_variants {
+                let next = self.fresh_block();
+                let want = self
+                    .emit(InstKind::Const(Const::U64(idx as u64)), Some(Type::U64))
+                    .expect("Const returns a value");
+                let cond = self
+                    .emit(
+                        InstKind::BinOp {
+                            op: BinOp::Eq,
+                            lhs: tag_v,
+                            rhs: want,
+                        },
+                        Some(Type::Bool),
+                    )
+                    .expect("Eq returns a value");
+                self.terminate(Terminator::Branch {
+                    cond,
+                    then_blk: body_blk,
+                    else_blk: next,
+                });
+                self.switch_to(body_blk);
+                let text = self.emit_enum_variant_to_string(&enum_str, &variant_str, &slots)?;
+                self.emit(InstKind::StoreLocal { dst: result_local, src: text }, None);
+                self.terminate(Terminator::Jump(merge));
+                self.switch_to(next);
+            } else {
+                // Last variant: unconditional fallback — the
+                // type-checker guarantees the tag only holds a known
+                // variant index, so no panic block is needed (same as
+                // `emit_print_enum`).
+                self.terminate(Terminator::Jump(body_blk));
+                self.switch_to(body_blk);
+                let text = self.emit_enum_variant_to_string(&enum_str, &variant_str, &slots)?;
+                self.emit(InstKind::StoreLocal { dst: result_local, src: text }, None);
+                self.terminate(Terminator::Jump(merge));
+            }
+        }
+        self.switch_to(merge);
+        Ok(self
+            .emit(InstKind::LoadLocal(result_local), Some(Type::Str))
+            .expect("LoadLocal returns a value"))
+    }
+
+    /// The text of one enum variant: `EnumName::VariantName` plus,
+    /// for tuple variants, a parenthesised comma-separated list of
+    /// payload values. Concatenation mirrors `emit_struct_format`'s
+    /// `ConstStrBytes` + `StrConcat` chain; nested enum payloads
+    /// recurse so `Some(Some(5))` renders through the same dispatch.
+    fn emit_enum_variant_to_string(
+        &mut self,
+        enum_str: &str,
+        variant_str: &str,
+        slots: &[PayloadSlot],
+    ) -> Result<ValueId, String> {
+        let concat = |f: &mut Self, acc: ValueId, b: ValueId| {
+            f.emit(InstKind::StrConcat { a: acc, b }, Some(Type::Str))
+                .expect("StrConcat returns a value")
+        };
+        let mut acc = self
+            .emit(
+                InstKind::ConstStrBytes {
+                    bytes: format!("{enum_str}::{variant_str}").into_bytes(),
+                },
+                Some(Type::Str),
+            )
+            .expect("ConstStrBytes returns a value");
+        if slots.is_empty() {
+            return Ok(acc);
+        }
+        let open = self
+            .emit(
+                InstKind::ConstStrBytes { bytes: b"(".to_vec() },
+                Some(Type::Str),
+            )
+            .expect("ConstStrBytes returns a value");
+        acc = concat(self, acc, open);
+        for (i, slot) in slots.iter().enumerate() {
+            if i > 0 {
+                let sep = self
+                    .emit(
+                        InstKind::ConstStrBytes { bytes: b", ".to_vec() },
+                        Some(Type::Str),
+                    )
+                    .expect("ConstStrBytes returns a value");
+                acc = concat(self, acc, sep);
+            }
+            let val = match slot {
+                PayloadSlot::Scalar { local, ty } => {
+                    let v = self
+                        .emit(InstKind::LoadLocal(*local), Some(*ty))
+                        .expect("LoadLocal returns a value");
+                    self.emit(
+                        InstKind::ToString { value: v, value_ty: *ty },
+                        Some(Type::Str),
+                    )
+                    .expect("ToString returns a value")
+                }
+                PayloadSlot::Enum(inner) => {
+                    let inner = (**inner).clone();
+                    self.emit_enum_to_string(&inner)?
+                }
+                PayloadSlot::Struct { struct_id, fields } => {
+                    let fields = fields.clone();
+                    self.emit_struct_format(*struct_id, &fields)?
+                }
+                PayloadSlot::Tuple { elements, .. } => {
+                    let elements = elements.clone();
+                    self.emit_tuple_format(&elements)?
+                }
+            };
+            acc = concat(self, acc, val);
+        }
+        let close = self
+            .emit(
+                InstKind::ConstStrBytes { bytes: b")".to_vec() },
+                Some(Type::Str),
+            )
+            .expect("ConstStrBytes returns a value");
+        Ok(concat(self, acc, close))
     }
 
     fn collect_leaves(
@@ -1798,6 +2005,14 @@ impl<'a> FunctionLower<'a> {
                 }
                 if let Some(Type::Struct(struct_id)) = self.value_scalar(&args[0]) {
                     return self.lower_struct_to_string(struct_id, &args[0]);
+                }
+                // STR-INTERP-COMPOUND-EXTEND-ENUM: enum-typed
+                // identifier — the tag + payload locals live in the
+                // `EnumStorage` binding, and the variant is chosen at
+                // runtime via a tag-dispatch chain (same shape the
+                // print path already uses).
+                if let Some(Type::Enum(enum_id)) = self.value_scalar(&args[0]) {
+                    return self.lower_enum_to_string(enum_id, &args[0]);
                 }
                 // Tuple-typed identifier — `value_scalar` can't
                 // surface a Tuple shape (the binding doesn't carry

@@ -4511,6 +4511,118 @@ fn string_interp_struct_round_trip() {
     assert_consistent(src, "string_interp_struct");
 }
 
+// STR-INTERP-COMPOUND-EXTEND-ENUM: interpolating an *enum* value at
+// AOT. The variant is not known at compile time, so lowering emits a
+// runtime tag-dispatch chain — one block per variant, each building
+// `EnumName::VariantName(p0, p1, ...)` via ConstStrBytes + StrConcat,
+// converging on a result local. The output must match the
+// interpreter's `Object::to_display_string` byte-for-byte, which is
+// why these tests assert on stdout rather than just the length.
+
+#[test]
+fn string_interp_enum_round_trip() {
+    let src = r#"
+        enum Shape { Circle(i64), Rect(i64, i64), Point }
+
+        fn main() -> u64 {
+            val s = Shape::Circle(5i64)
+            val r = Shape::Rect(3i64, 4i64)
+            val p = Shape::Point
+            println("{s} {r} {p}")
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "interp_enum");
+    // The length route pins the same bytes through the `StrConcat`
+    // chain's `.len()` half.
+    let src = r#"
+        enum Shape { Circle(i64), Rect(i64, i64), Point }
+
+        fn main() -> i64 {
+            val s = Shape::Circle(5i64)
+            val r = Shape::Rect(3i64, 4i64)
+            val p = Shape::Point
+            val text = "{s} {r} {p}"
+            text.len() as i64
+        }
+    "#;
+    assert_consistent(src, "interp_enum_len");
+}
+
+#[test]
+fn string_interp_enum_with_mixed_payload_types() {
+    // The payloads route through different `toy_to_string_<ty>`
+    // helpers (f64 / u64 / bool) — the dispatch chain must pass the
+    // right value type per slot.
+    let src = r#"
+        enum R { Pair(f64, u64), Single(u64), Flag(bool) }
+
+        fn main() -> u64 {
+            val a = R::Pair(1.5f64, 7u64)
+            val b = R::Single(9u64)
+            val c = R::Flag(true)
+            println("{a} | {b} | {c}")
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "interp_enum_payload_types");
+}
+
+#[test]
+fn string_interp_generic_enum_round_trip() {
+    // The header must carry the concrete type-arg list
+    // (`Option<i64>::Some(5)`), matching the interpreter.
+    let src = r#"
+        fn main() -> u64 {
+            val o: Option<i64> = Option::Some(5i64)
+            val n: Option<i64> = Option::None
+            println("{o} / {n}")
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "interp_enum_generic");
+}
+
+#[test]
+fn string_interp_enum_returned_from_a_function() {
+    // The binding arrives via `CallEnum` dests (function return), not
+    // a literal — the storage shape is the same but the path into it
+    // is not.
+    let src = r#"
+        enum M { F(f64), U(u64), B(bool) }
+
+        fn pick(k: u64) -> M {
+            if k == 0u64 { M::F(1.5f64) } elif k == 1u64 { M::U(7u64) } else { M::B(true) }
+        }
+
+        fn main() -> u64 {
+            val a = pick(0u64)
+            val b = pick(1u64)
+            val c = pick(2u64)
+            println("[{a}][{b}][{c}]")
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "interp_enum_from_function");
+}
+
+#[test]
+fn string_interp_enum_inside_a_longer_literal() {
+    // The enum's dispatch chain is one segment of a multi-part
+    // interpolation; surrounding literal text must survive the
+    // concat chain in order.
+    let src = r#"
+        enum S { A(i64), B(u64) }
+
+        fn main() -> u64 {
+            val s = S::B(42u64)
+            println("value = {s} (end)")
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "interp_enum_in_literal");
+}
+
 #[test]
 fn string_interp_arithmetic_round_trip() {
     let src = r#"

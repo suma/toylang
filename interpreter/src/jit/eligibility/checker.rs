@@ -2545,6 +2545,23 @@ pub(crate) fn check_expr(
                         });
                         return None;
                     }
+                    // An enum-typed local reports its *tag* type (U64)
+                    // — see the `Identifier` arm above — so the
+                    // primitive check alone would accept it and
+                    // format the tag instead of the value
+                    // (`Option::Some(5)` prints as `1`). Reject
+                    // explicitly so enum interpolation falls back to
+                    // the tree-walker.
+                    if let Some(Expr::Identifier(sym)) = program.expression.get(&args[0]) {
+                        if compound_locals.enums.contains_key(&sym) {
+                            note(reject_reason, || {
+                                "__builtin_to_string of an enum value is not supported in JIT \
+                                 (enum interpolation falls back to the tree-walker)"
+                                    .to_string()
+                            });
+                            return None;
+                        }
+                    }
                     let arg_ty = check_expr(
                         program, &args[0], locals, compound_locals, substitutions,
                         struct_layouts, callees, ptr_read_hints, reject_reason,

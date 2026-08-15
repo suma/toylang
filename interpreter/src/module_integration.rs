@@ -1469,6 +1469,7 @@ pub(crate) fn preparse_core_modules(
     let cache_dir = frontend::cache::default_cache_dir();
     let cache_disabled = is_cache_disabled();
 
+    preparse_pool().install(|| {
     modules
         .par_iter()
         .map(|module| {
@@ -1505,6 +1506,40 @@ pub(crate) fn preparse_core_modules(
             })
         })
         .collect()
+    })
+}
+
+/// Thread pool for the pre-parse above.
+///
+/// Deliberately small. The work is 16 modules of roughly a quarter
+/// millisecond each, and **the pool is built per process**: `cargo
+/// nextest` runs one test per process, so every test that loads the
+/// stdlib pays to spawn it. Measured on a 20-core machine, running a
+/// one-line program cost 46.6 ms of CPU with rayon's default pool (one
+/// thread per core) and 36.7 ms with four, at identical wall time.
+/// Dropping rayon entirely instead costs 6 ms of wall per run, which is
+/// why this is a small pool rather than no pool.
+fn preparse_pool() -> &'static rayon::ThreadPool {
+    use std::sync::OnceLock;
+    static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .min(4);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .thread_name(|i| format!("toy-preparse-{i}"))
+            .build()
+            // Falling back to a one-thread pool keeps the module load
+            // working; it is not worth failing a run over.
+            .unwrap_or_else(|_| {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(1)
+                    .build()
+                    .expect("single-threaded rayon pool")
+            })
+    })
 }
 
 /// Integrate a single `PreparsedCoreModule` into `main_program`.

@@ -38,6 +38,7 @@ pub mod jit;
 pub use compiler_lower as lower;
 pub use compiler_lower::ContractMessages;
 pub mod options;
+mod small_pool;
 
 pub use jit::{compile_to_jit_main, compile_to_jit_main_with_options, JitMainFn, JitProgram};
 pub use options::{CompilerOptions, EmitKind};

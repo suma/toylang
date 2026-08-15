@@ -32,7 +32,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use compiler::{compile_file, CompilerOptions};
-use interpreter::RunOptions;
 
 /// Examples that are supposed to fail — they demonstrate a diagnostic.
 /// Running them proves nothing about backend agreement.
@@ -166,20 +165,61 @@ fn disagrees(reference: &Run, other: &Run) -> bool {
     }
 }
 
-/// Run in-process, capturing `print` output. `Err` carries the
-/// diagnostic so the caller can tell "this program is meant to fail"
-/// from "this program regressed".
-fn run_in_process(source: &str, name: &str, jit: bool) -> Result<Run, String> {
+/// Run the tree-walker and the interpreter's JIT over **one** parsed,
+/// type-checked program, capturing `print` output from each. `Err`
+/// carries the diagnostic so the caller can tell "this program is
+/// meant to fail" from "this program regressed".
+///
+/// Both columns used to go through `interpreter::run_source`, which
+/// parses, integrates the core modules and type-checks every time —
+/// about 26 ms of the ~50 ms each example costs, spent twice on
+/// identical input. The frontend is not what this sweep compares, so
+/// it runs once and both engines execute the result. What that gives
+/// up is the guarantee of going through the same entry point the
+/// binary uses; the steps below are that entry point's, minus the
+/// diagnostic rendering.
+fn run_both_engines(source: &str, name: &str) -> Result<(Run, Run), String> {
     let core = core_modules_dir();
-    let mut options = RunOptions::default();
-    options.jit = jit;
-    options.core_modules_dir = Some(core.as_path());
-    let (result, stdout) =
-        interpreter::output::with_capture(|| interpreter::run_source(source, name, &options));
-    result.map(|outcome| Run {
-        exit_code: outcome.exit_code,
-        stdout,
-    })
+    let mut parser = frontend::ParserWithInterner::new(source);
+    parser.set_source_file(name);
+    let mut program = parser
+        .parse_program()
+        .map_err(|e| format!("Parse error: {e:?}"))?;
+    let interner = parser.get_string_interner();
+    interpreter::check_typing_with_core_modules(
+        &mut program,
+        interner,
+        Some(source),
+        Some(name),
+        Some(core.as_path()),
+    )
+    .map_err(|errors| format!("Type check errors: {errors:?}"))?;
+
+    let interp = execute_once(&program, interner, source, name, false)?;
+    let jit = execute_once(&program, interner, source, name, true)?;
+    Ok((interp, jit))
+}
+
+/// Execute an already-checked program with the JIT forced on or off.
+fn execute_once(
+    program: &frontend::ast::File,
+    interner: &string_interner::DefaultStringInterner,
+    source: &str,
+    name: &str,
+    jit: bool,
+) -> Result<Run, String> {
+    let (result, stdout) = interpreter::output::with_capture(|| {
+        interpreter::jit::with_jit_override(jit, || {
+            interpreter::execute_program(program, interner, Some(source), Some(name))
+        })
+    });
+    let value = result?;
+    let exit_code = match &*value.borrow() {
+        interpreter::object::Object::Int64(v) => Some(*v as i32),
+        interpreter::object::Object::UInt64(v) => Some(*v as i32),
+        _ => None,
+    };
+    Ok(Run { exit_code, stdout })
 }
 
 /// Compile and run. `None` when the AOT backend cannot build it.
@@ -225,15 +265,15 @@ fn check_example(path: &Path) -> Result<(), String> {
     let source = std::fs::read_to_string(path).expect("read example");
     let expects_error = ERROR_EXAMPLES.contains(&name.as_str());
 
-    let interp = match run_in_process(&source, &name, false) {
-        Ok(run) => {
+    let (interp, jit) = match run_both_engines(&source, &name) {
+        Ok(runs) => {
             if expects_error {
                 return Err(format!(
                     "`{name}` is listed in ERROR_EXAMPLES but now runs cleanly — \
                      remove it from the list so it is checked across backends"
                 ));
             }
-            run
+            runs
         }
         Err(diagnostic) => {
             return if expects_error {
@@ -244,8 +284,6 @@ fn check_example(path: &Path) -> Result<(), String> {
         }
     };
 
-    let jit = run_in_process(&source, &name, true)
-        .map_err(|d| format!("`{name}` failed under the JIT: {d}"))?;
     if disagrees(&interp, &jit) {
         return Err(format!(
             "`{name}`: JIT disagrees with the interpreter\n  \
@@ -286,8 +324,18 @@ fn check_example(path: &Path) -> Result<(), String> {
     }
 }
 
+/// How many parallel pieces the sweep is cut into.
+///
+/// Sizing is a scheduling decision, not a coverage one — `check_shard`
+/// partitions by `index % SHARDS`, so every example runs for any value.
+/// The sweep is the most expensive thing in the suite, so its shard
+/// width sets the run's critical path: at 4 each shard took ~3.8s while
+/// the next-slowest test in the whole workspace was under 1s. 12 brings
+/// a shard down to about that, which is as far as widening helps.
+const SHARDS: usize = 12;
+
 /// Shard the sweep so nextest runs the parts in parallel; one serial
-/// pass over ~140 programs takes about four times as long as four.
+/// pass over ~140 programs takes about `SHARDS` times as long.
 fn check_shard(shard: usize, shards: usize) {
     if skip_e2e() {
         return;
@@ -315,24 +363,51 @@ fn check_shard(shard: usize, shards: usize) {
     );
 }
 
-#[test]
-fn examples_agree_across_backends_shard_0() {
-    check_shard(0, 4);
+/// One `#[test]` per shard — nextest schedules tests, not threads, so
+/// the sweep only runs in parallel if it is spelled out as separate
+/// test functions. Written with a macro so the count stays in one
+/// place (`SHARDS`) instead of drifting between the list and the
+/// divisor.
+macro_rules! example_shards {
+    ($($name:ident => $index:expr),+ $(,)?) => {
+        $(
+            #[test]
+            fn $name() {
+                check_shard($index, SHARDS);
+            }
+        )+
+
+        /// A missing shard function is invisible otherwise: the sweep
+        /// would still pass, having quietly stopped checking every
+        /// `SHARDS`-th example. Assert the declared indices are exactly
+        /// `0..SHARDS`.
+        #[test]
+        fn the_shards_cover_every_example() {
+            let mut declared = [$($index),+];
+            declared.sort_unstable();
+            let expected: Vec<usize> = (0..SHARDS).collect();
+            assert_eq!(
+                declared.as_slice(),
+                expected.as_slice(),
+                "shard functions must declare each index in 0..SHARDS exactly once",
+            );
+        }
+    };
 }
 
-#[test]
-fn examples_agree_across_backends_shard_1() {
-    check_shard(1, 4);
-}
-
-#[test]
-fn examples_agree_across_backends_shard_2() {
-    check_shard(2, 4);
-}
-
-#[test]
-fn examples_agree_across_backends_shard_3() {
-    check_shard(3, 4);
+example_shards! {
+    examples_agree_across_backends_shard_0 => 0,
+    examples_agree_across_backends_shard_1 => 1,
+    examples_agree_across_backends_shard_2 => 2,
+    examples_agree_across_backends_shard_3 => 3,
+    examples_agree_across_backends_shard_4 => 4,
+    examples_agree_across_backends_shard_5 => 5,
+    examples_agree_across_backends_shard_6 => 6,
+    examples_agree_across_backends_shard_7 => 7,
+    examples_agree_across_backends_shard_8 => 8,
+    examples_agree_across_backends_shard_9 => 9,
+    examples_agree_across_backends_shard_10 => 10,
+    examples_agree_across_backends_shard_11 => 11,
 }
 
 /// The lists name real files. A rename that leaves a stale entry would

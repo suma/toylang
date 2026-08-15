@@ -107,9 +107,28 @@ fn test_is_still_usable_as_an_ordinary_identifier() {
 // --- P5: contract-driven property checks -----------------------------
 
 fn check(source: &str, seed: u64) -> interpreter::property::CheckReport {
+    check_with_cases(source, seed, 200)
+}
+
+/// `check` with an explicit case budget. Only worth spelling out when
+/// the test is about *rejected* inputs: the checker keeps generating
+/// until `cases * MAX_DISCARD_RATIO` (20x) inputs have been discarded,
+/// so a `requires` nothing satisfies costs 20 generations per case and
+/// nothing else in the suite comes close.
+fn check_with_cases(
+    source: &str,
+    seed: u64,
+    cases: usize,
+) -> interpreter::property::CheckReport {
     let core = core_modules_dir();
-    interpreter::property::check_source(source, "check.t", &options(core.as_path()), seed, Some(200))
-        .expect("program should type check")
+    interpreter::property::check_source(
+        source,
+        "check.t",
+        &options(core.as_path()),
+        seed,
+        Some(cases),
+    )
+    .expect("program should type check")
 }
 
 fn outcome_for<'a>(
@@ -218,7 +237,11 @@ fn a_requires_rejection_is_not_reported_as_a_failure() {
 fn an_unsatisfiable_requires_is_inconclusive_rather_than_passing() {
     // Every input rejected means the `ensures` was never exercised.
     // Calling that a pass would be a lie.
-    let report = check(
+    //
+    // 10 cases, not the usual 200: every generated input is discarded
+    // here, so the run costs the full 20x discard budget either way —
+    // 4000 generations to reach the same verdict 200 do.
+    let report = check_with_cases(
         "fn impossible(x: i64) -> i64
             requires x > 0i64
             requires x < 0i64
@@ -228,6 +251,7 @@ fn an_unsatisfiable_requires_is_inconclusive_rather_than_passing() {
         }
         fn main() -> i64 { 0i64 }",
         0x1234,
+        10,
     );
     assert!(
         matches!(

@@ -130,6 +130,7 @@ fn build_object_module(
     // the `ObjectModule`, so that stays sequential.
     let compiled: Vec<Result<(FuncId, Vec<u8>, u64, Vec<ModuleReloc>), String>> = {
         use rayon::prelude::*;
+        crate::small_pool::pool().install(|| {
         funcs_to_compile
             .par_iter()
             .map(|&func_id| {
@@ -158,6 +159,7 @@ fn build_object_module(
                 Ok((func_id, bytes, alignment, relocs))
             })
             .collect()
+        })
     };
 
     for result in compiled {

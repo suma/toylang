@@ -23,6 +23,25 @@ pub struct StructDefinition {
     pub visibility: Visibility,
 }
 
+/// One `impl`-block registration for a `(struct, method)` pair.
+///
+/// CONCRETE-IMPL: several impls can provide the same method under
+/// different concrete type args (`impl Vec<u8>` alongside
+/// `impl<T> Vec<T>`), so the registry keeps one spec per impl and
+/// dispatch picks by the receiver's type args. The precedence mirrors
+/// the interpreter's `EvaluationContext::get_method` and the
+/// compiler's `method_func_ids` lookup — the type checker must agree
+/// with the runtime or a program type-checks against the wrong
+/// signature.
+#[derive(Debug, Clone)]
+pub struct MethodSpec {
+    /// Concrete type args of the impl's target (`[u8]` for
+    /// `impl Vec<u8>`; empty for a non-generic target or an explicit
+    /// `impl<T> Vec<T>` whose params stay symbolic).
+    pub target_type_args: Vec<TypeDecl>,
+    pub method: Rc<MethodFunction>,
+}
+
 #[derive(Debug)]
 pub struct TypeCheckContext {
     pub vars: Vec<HashMap<DefaultSymbol, VarState>>,
@@ -37,7 +56,7 @@ pub struct TypeCheckContext {
     /// `module::func(args)` calls go straight at `(Some(m), name)`.
     pub functions: HashMap<(Option<DefaultSymbol>, DefaultSymbol), Rc<Function>>,
     pub struct_definitions: HashMap<DefaultSymbol, StructDefinition>,
-    pub struct_methods: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>>,
+    pub struct_methods: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Vec<MethodSpec>>>,
     pub struct_generic_params: HashMap<DefaultSymbol, Vec<DefaultSymbol>>, // Store generic parameters for structs
     pub struct_generic_bounds: HashMap<DefaultSymbol, HashMap<DefaultSymbol, TypeDecl>>, // Bounds per struct generic param
     pub var_type_mappings: Vec<HashMap<DefaultSymbol, HashMap<DefaultSymbol, TypeDecl>>>, // Store type parameter mappings for variables
@@ -320,9 +339,14 @@ impl TypeCheckContext {
     }
     
     pub fn get_method_visibility(&self, struct_name: DefaultSymbol, method_name: DefaultSymbol) -> Option<&Visibility> {
+        // Specs for one (struct, method) may carry different
+        // visibilities; the first spec's answer is used. Access is
+        // not enforced across modules today anyway (see E0009), so
+        // the precision does not matter yet.
         self.struct_methods.get(&struct_name)
             .and_then(|methods| methods.get(&method_name))
-            .map(|method| &method.visibility)
+            .and_then(|specs| specs.first())
+            .map(|spec| &spec.method.visibility)
     }
     
     pub fn is_method_accessible(&self, struct_name: DefaultSymbol, method_name: DefaultSymbol, _same_module: bool) -> bool {
@@ -386,14 +410,80 @@ impl TypeCheckContext {
     }
 
     // Method management methods
-    pub fn register_struct_method(&mut self, struct_name: DefaultSymbol, method_name: DefaultSymbol, method: Rc<MethodFunction>) {
-        self.struct_methods.entry(struct_name).or_default().insert(method_name, method);
+
+    /// Register one impl's method. `target_type_args` are the impl's
+    /// concrete type args (`[u8]` for `impl Vec<u8>`, empty for
+    /// `impl<T> Vec<T>`); several specs for the same
+    /// `(struct, method)` coexist. Re-registering the same type args
+    /// replaces the existing spec — the old single-entry semantics
+    /// for a genuine duplicate impl.
+    pub fn register_struct_method(
+        &mut self,
+        struct_name: DefaultSymbol,
+        method_name: DefaultSymbol,
+        target_type_args: Vec<TypeDecl>,
+        method: Rc<MethodFunction>,
+    ) {
+        let specs = self
+            .struct_methods
+            .entry(struct_name)
+            .or_default()
+            .entry(method_name)
+            .or_default();
+        if let Some(existing) = specs
+            .iter_mut()
+            .find(|s| s.target_type_args == target_type_args)
+        {
+            existing.method = method;
+        } else {
+            specs.push(MethodSpec {
+                target_type_args,
+                method,
+            });
+        }
     }
 
-    pub fn get_struct_method(&self, struct_name: DefaultSymbol, method_name: DefaultSymbol) -> Option<&Rc<MethodFunction>> {
-        self.struct_methods.get(&struct_name)?.get(&method_name)
+    /// Pick the method spec for a receiver with `receiver_type_args`.
+    ///
+    /// Precedence (mirrors the interpreter's `get_method` and the
+    /// compiler's `method_func_ids` dispatch):
+    ///
+    /// 1. an impl whose concrete args equal the receiver's,
+    /// 2. an impl with no concrete args (non-generic target or an
+    ///    explicit `impl<T> C<T>` whose params stay symbolic),
+    /// 3. a lone spec — the fallback that kept single-impl programs
+    ///    working before the registry became multi-spec.
+    ///
+    /// `None` when several specs remain ambiguous — the runtime would
+    /// not know which signature to dispatch either, so the error is
+    /// honest rather than a silent last-wins pick.
+    pub fn get_struct_method(
+        &self,
+        struct_name: DefaultSymbol,
+        method_name: DefaultSymbol,
+        receiver_type_args: &[TypeDecl],
+    ) -> Option<&Rc<MethodFunction>> {
+        let specs = self.struct_methods.get(&struct_name)?.get(&method_name)?;
+        if let Some(spec) = specs
+            .iter()
+            .find(|s| s.target_type_args.as_slice() == receiver_type_args)
+        {
+            return Some(&spec.method);
+        }
+        if let Some(spec) = specs.iter().find(|s| s.target_type_args.is_empty()) {
+            return Some(&spec.method);
+        }
+        if specs.len() == 1 {
+            return Some(&specs[0].method);
+        }
+        None
     }
 
+    /// Name-based lookup without a receiver type (magic-method sugar:
+    /// `__getitem__`, `__setitem__`, ...). Treats the receiver as
+    /// having no concrete args, so an exact concrete match is not
+    /// attempted — the same fallbacks as [`get_struct_method`] with
+    /// an empty receiver.
     pub fn get_method_function_by_name(&self, struct_name: &str, method_name: &str, string_interner: &DefaultStringInterner) -> Option<&Rc<MethodFunction>> {
         // Find struct symbol by name
         let struct_symbol = self.struct_definitions.iter()
@@ -405,7 +495,7 @@ impl TypeCheckContext {
         // Find method symbol by name
         let method_symbol = string_interner.get(method_name)?;
         
-        self.struct_methods.get(&struct_symbol)?.get(&method_symbol)
+        self.get_struct_method(struct_symbol, method_symbol, &[])
     }
 
     pub fn get_method_return_type(&self, struct_name: &str, method_name: &str, string_interner: &DefaultStringInterner) -> Option<TypeDecl> {

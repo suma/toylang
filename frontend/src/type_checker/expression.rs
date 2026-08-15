@@ -890,9 +890,12 @@ impl<'a> TypeCheckerVisitor<'a> {
             Some(s) => s,
             None => return false,
         };
-        self.context.struct_methods.get(&lhs_name)
-            .and_then(|m| m.get(&method_sym))
-            .is_some()
+        // CONCRETE-IMPL-Phase-2c: dispatch the overload check against
+        // the *receiver's* concrete type args, so `a + b` on two
+        // `C<u8>` values checks the `impl C<u8>` spec and a `C<i64>`
+        // pair the `impl C<i64>` one — not whichever impl registered
+        // last.
+        self.context.get_struct_method(lhs_name, method_sym, &lhs_args).is_some()
     }
 
     /// Returns the inherent method name an arithmetic operator

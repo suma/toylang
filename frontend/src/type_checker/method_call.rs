@@ -179,7 +179,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // receiver's primitive `TypeDecl`.
         if let Some(target_sym) = self.primitive_target_symbol_from_type(obj_type)
             && let Some(method_func) =
-                self.context.get_struct_method(target_sym, *method).cloned()
+                self.context.get_struct_method(target_sym, *method, &[]).cloned()
             {
                 // Visit the args so each one is type-checked even
                 // when the callee's parameters are concrete (no
@@ -254,7 +254,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         if let TypeDecl::Enum(enum_name, type_params) = obj_type {
             let _method_str = self.core.string_interner.resolve(*method).unwrap_or("?").to_string();
             if let Some(method_func) =
-                self.context.get_struct_method(*enum_name, *method).cloned()
+                self.context.get_struct_method(*enum_name, *method, type_params).cloned()
             {
                 let generic_params = self
                     .context
@@ -318,7 +318,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             
             if !type_params.is_empty() {
                 // Handle generic struct method call
-                let method_func_opt = self.context.get_struct_method(*struct_name, *method);
+                let method_func_opt = self.context.get_struct_method(*struct_name, *method, type_params);
                 
                 
                 if let Some(method_func) = method_func_opt {
@@ -362,7 +362,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 // from the actual argument types — pull the method
                 // function and infer.
                 if let Some(method_func) =
-                    self.context.get_struct_method(*struct_name, *method).cloned()
+                    self.context.get_struct_method(*struct_name, *method, &[]).cloned()
                 {
                     let method_return_type = method_func
                         .return_type
@@ -676,7 +676,20 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         let function_name_str = self.resolve_symbol_name(function_name);
 
-        let method = self.context.get_struct_method(struct_name, function_name)
+        // CONCRETE-IMPL-Phase-2c: an associated call has no receiver,
+        // so the spec is picked from the enclosing type hint
+        // (`val v: Vec<u8> = Vec::from_str(...)` selects the
+        // `impl Vec<u8>` spec). Without a matching hint the lookup
+        // falls back to the lone-spec / generic-impl rules; several
+        // concrete specs with no hint is ambiguous and reports the
+        // plain "not found" diagnostic below.
+        let hint_args: Vec<TypeDecl> = match &self.type_inference.type_hint {
+            Some(TypeDecl::Struct(name, a)) if *name == struct_name => a.clone(),
+            Some(TypeDecl::Enum(name, a)) if *name == struct_name => a.clone(),
+            _ => Vec::new(),
+        };
+        let method = self.context
+            .get_struct_method(struct_name, function_name, &hint_args)
             .cloned()
             .ok_or_else(|| TypeCheckError::generic_error(&format!(
                 "Associated function '{}' not found for struct '{:?}'",

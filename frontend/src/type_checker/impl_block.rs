@@ -22,11 +22,11 @@ impl<'a> TypeCheckerVisitor<'a> {
     ) -> Result<TypeDecl, TypeCheckError> {
         // target_type is already a symbol
         let struct_symbol = target_type;
-        // CONCRETE-IMPL: type args are captured for the registry but not
-        // yet consumed by Self-type resolution at this layer (callers
-        // provide explicit return types like `Vec<u8>` instead of `Self`
-        // for concrete-args impls).
-        let _ = target_type_args;
+        // CONCRETE-IMPL: the impl's concrete type args are the spec
+        // key for this block's methods — `impl Vec<u8>` registers
+        // under `[u8]` so a `Vec<u8>` receiver dispatches here while
+        // a `Vec<i64>` receiver falls through to `impl<T> Vec<T>`.
+        let target_type_args = target_type_args.clone();
 
         // For `impl <Trait> for <Struct>`, validate that the trait exists
         // and that this block satisfies every required method signature.
@@ -157,7 +157,12 @@ impl<'a> TypeCheckerVisitor<'a> {
             self.validate_method_return_type(method, body_result, has_generics)?;
 
             // Register method in context
-            self.context.register_struct_method(struct_symbol, method.name, method.clone());
+            self.context.register_struct_method(
+                struct_symbol,
+                method.name,
+                target_type_args.clone(),
+                method.clone(),
+            );
         }
         
         // Pop generic scope if it was pushed

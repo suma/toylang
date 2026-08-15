@@ -1072,6 +1072,119 @@ fn concrete_impl_dispatch_by_receiver_type_args() {
 }
 
 #[test]
+fn concrete_inherent_impls_type_check_against_the_matching_signature() {
+    // CONCRETE-IMPL-Phase-2c: the *type checker's* registry used to
+    // hold one method per (struct, method) — the last impl registered
+    // won for every receiver. With two inherent impls whose `get`
+    // signatures differ (`-> u8` vs `-> i64`), `a.get()` on a
+    // `C<u8>` receiver was typed with the `C<i64>` signature, and the
+    // program was rejected with a bogus "expected u8, got i64" — even
+    // though both runtimes had dispatched per-receiver since Phase 2b.
+    // The registry is now multi-spec and dispatch reads the receiver's
+    // type args, matching the runtime layers. Both impl orders are
+    // pinned — the result must not depend on registration order.
+    let src = r#"
+        struct C<T> { v: T }
+        impl C<u8> {
+            fn get(self: Self) -> u8 { self.v }
+        }
+        impl C<i64> {
+            fn get(self: Self) -> i64 { self.v }
+        }
+        fn main() -> i64 {
+            val a: C<u8> = C { v: 1u8 }
+            val b: C<i64> = C { v: 2i64 }
+            val x: u8 = a.get()
+            val y: i64 = b.get()
+            (x as i64) + y
+        }
+    "#;
+    assert_consistent(src, "concrete_impl_tycheck_u8_first");
+    // Reverse registration order: the i64 impl first.
+    let src = r#"
+        struct C<T> { v: T }
+        impl C<i64> {
+            fn get(self: Self) -> i64 { self.v }
+        }
+        impl C<u8> {
+            fn get(self: Self) -> u8 { self.v }
+        }
+        fn main() -> i64 {
+            val a: C<u8> = C { v: 1u8 }
+            val b: C<i64> = C { v: 2i64 }
+            val x: u8 = a.get()
+            val y: i64 = b.get()
+            (x as i64) + y
+        }
+    "#;
+    assert_consistent(src, "concrete_impl_tycheck_reversed");
+}
+
+#[test]
+fn concrete_associated_call_picks_the_spec_from_the_annotation() {
+    // The associated-function form has no receiver to read type args
+    // off of; `C::make` exists under both `impl C<u8>` and
+    // `impl C<i64>`, so the enclosing annotation (`val b: C<i64> = ...`)
+    // is the only discriminator. Phase 2c threads the type hint into
+    // the lookup so each binding picks the spec matching its
+    // annotation. Without the hint (a bare call in expression
+    // position) the ambiguity would be a compile error.
+    let src = r#"
+        struct C<T> { v: T }
+        impl C<u8> {
+            fn make(v: u8) -> C<u8> { C { v: v } }
+        }
+        impl C<i64> {
+            fn make(v: i64) -> C<i64> { C { v: v } }
+        }
+        fn main() -> i64 {
+            val a: C<u8> = C::make(1u8)
+            val x: u8 = a.v
+            val b: C<i64> = C::make(2i64)
+            val y: i64 = b.v
+            val total = x as i64 + y
+            total
+        }
+    "#;
+    assert_consistent(src, "concrete_associated_hint");
+}
+
+#[test]
+fn ambiguous_concrete_and_generic_impls_are_rejected_not_last_wins() {
+    // `impl<T> C<T> { get }` + `impl C<u8> { get }`: a `C<i64>`
+    // receiver has no unambiguous spec — the concrete impl doesn't
+    // match and the generic impl registers `[Generic(T)]` args, not
+    // the empty-args marker the fallback recognises. The old
+    // single-slot registry silently typed *both* receivers with the
+    // last-registered signature (one of them wrong); the multi-spec
+    // registry reports the ambiguity at compile time. The runtime
+    // layers reject the same call (their dispatch also finds no
+    // spec), so the compile error is honest rather than a
+    // type-checks-but-fails-at-runtime divergence.
+    let src = r#"
+        struct C<T> { v: T }
+        impl C<u8> {
+            fn get(self: Self) -> u8 { self.v }
+        }
+        impl<T> C<T> {
+            fn get(self: Self) -> T { self.v }
+        }
+        fn main() -> i64 {
+            val b: C<i64> = C { v: 2i64 }
+            b.get()
+        }
+    "#;
+    assert!(
+        try_compiler_exit_code(src, "ambiguous_overlap", false).is_none(),
+        "ambiguous generic+concrete overlap must not compile"
+    );
+    assert!(
+        interpreter_value_with_core(src, None).is_none(),
+        "the interpreter must reject the same overlap"
+    );
+}
+
+#[test]
 fn string_from_str_round_trip() {
     // `core/std/string.t::String::from_str(s)` copies the UTF-8
     // bytes of `s` into a fresh, heap-allocated `String` (a

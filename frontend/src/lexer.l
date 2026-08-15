@@ -521,7 +521,17 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                                     }
                                     let hi = hex_digit(bytes[i + 2]).ok_or(Error::Unmatch)?;
                                     let lo = hex_digit(bytes[i + 3]).ok_or(Error::Unmatch)?;
-                                    out.push(((hi << 4) | lo) as char);
+                                    let byte = (hi << 4) | lo;
+                                    // `str` is UTF-8, so a lone byte >= 0x80
+                                    // cannot be stored as itself. Pushing it
+                                    // `as char` would silently encode it as
+                                    // *two* bytes (Latin-1 -> UTF-8), which is
+                                    // never what the source asked for. Use
+                                    // `\u{HEX}` for non-ASCII code points.
+                                    if byte >= 0x80 {
+                                        return Err(Error::Unmatch);
+                                    }
+                                    out.push(byte as char);
                                     i += 4;
                                     continue;
                                 }
@@ -556,9 +566,21 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                                 };
                                 out.push(escaped as char);
                                 i += 2;
-                            } else {
+                            } else if b < 0x80 {
                                 out.push(b as char);
                                 i += 1;
+                            } else {
+                                // Multi-byte UTF-8 scalar in the source —
+                                // copy it through verbatim. `b as char` on
+                                // each byte would re-encode every byte as
+                                // its own code point, so a 3-byte `♠` came
+                                // back out as 6 mojibake bytes. `inner` is a
+                                // `&str` and every branch above consumes
+                                // whole ASCII bytes, so `i` is always on a
+                                // char boundary here.
+                                let c = inner[i..].chars().next().ok_or(Error::Unmatch)?;
+                                out.push(c);
+                                i += c.len_utf8();
                             }
                         }
                         if has_interpolation {

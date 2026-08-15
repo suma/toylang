@@ -165,13 +165,14 @@ mod lexer_tests {
     #[test]
     fn test_string_literal_hex_escapes_decode() {
         // `\xHH` two-digit hex escape inside string literals.
-        // Each one consumes 4 input bytes and produces 1 output byte.
+        // Each one consumes 4 input bytes and produces 1 output byte,
+        // so only ASCII (`HH <= 0x7f`) is representable — see
+        // `lexer_string_literal_rejects_non_ascii_hex_escape`.
         for input in [
             r#""hex\x41""#,                // 'A'
             r#""hex\x7a""#,                // 'z' lowercase hex
             r#""hex\x7A""#,                // 'z' uppercase hex
             r#""hex\x00""#,                // NUL
-            r#""hex\xff""#,                // 0xff (high byte)
             r#""\x48\x69""#,               // "Hi"
         ] {
             let mut parser = ParserWithInterner::new(input);

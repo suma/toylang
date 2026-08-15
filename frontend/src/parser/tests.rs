@@ -145,6 +145,63 @@ mod lexer_tests{
     }
 
     #[test]
+    fn lexer_string_literal_keeps_multibyte_utf8() {
+        // The decode loop used to push every inner byte `as char`,
+        // which re-encodes each byte of a multi-byte scalar as its own
+        // code point: `"♠"` (3 source bytes) came back out as 6
+        // mojibake bytes. Every backend consumed the same broken
+        // literal, so the 3-way consistency tests could not see it.
+        assert_token("\"♠\"", Kind::String("♠".to_string()));
+        assert_token("\"日本語\"", Kind::String("日本語".to_string()));
+        assert_token("\"😀\"", Kind::String("😀".to_string())); // 4-byte scalar
+        assert_token("\"mix ♠ ok\"", Kind::String("mix ♠ ok".to_string()));
+        // The bare character and its `\u{HEX}` escape must agree.
+        assert_token("\"\\u{2660}\"", Kind::String("♠".to_string()));
+
+        // `__builtin_str_len` counts bytes, so the length is the
+        // observable half of the bug — pin it directly.
+        let mut l = lexer::Lexer::new("\"♠\"", 1u64);
+        match l.yylex().unwrap().kind {
+            Kind::String(s) => assert_eq!(s.len(), 3, "`♠` is 3 UTF-8 bytes"),
+            other => panic!("expected a string token, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lexer_interpolated_string_keeps_multibyte_utf8() {
+        // Same decode loop, interpolated path: the literal segments
+        // around `{expr}` go through the identical byte walk.
+        use crate::token::StringPart;
+        assert_token(
+            "\"日本 {x} 語\"",
+            Kind::InterpolatedString(vec![
+                StringPart::Literal("日本 ".to_string()),
+                StringPart::Expr("x".to_string()),
+                StringPart::Literal(" 語".to_string()),
+            ]),
+        );
+    }
+
+    #[test]
+    fn lexer_string_literal_rejects_non_ascii_hex_escape() {
+        // `str` is UTF-8, so a lone byte >= 0x80 has no representation
+        // inside one. `\xff` used to be pushed `as char`, silently
+        // producing *two* bytes (0xC3 0xBF) — never what the source
+        // asked for. Non-ASCII code points go through `\u{HEX}`.
+        for input in ["\"\\x80\"", "\"\\xff\"", "\"a\\xC3b\""] {
+            let mut l = lexer::Lexer::new(input, 1u64);
+            assert!(
+                l.yylex().is_err(),
+                "expected `{input}` to be rejected as a string literal"
+            );
+        }
+        // ASCII stays accepted, and `'\xff'` as a *char* literal is
+        // unaffected — it yields a `u32` code point, not str bytes.
+        assert_token("\"\\x41\"", Kind::String("A".to_string()));
+        assert_token("'\\xff'", Kind::UInt32(0xff));
+    }
+
+    #[test]
     fn lexer_simple_symbol1() {
         let s = " ( ) { } [ ] , . :: : = !";
         assert_tokens(s, vec![

@@ -2983,6 +2983,58 @@ fn a_str_built_from_bytes_survives_the_buffer_changing() {
 }
 
 #[test]
+fn multibyte_utf8_string_literals_keep_their_bytes() {
+    // The lexer used to push every inner byte of a string literal
+    // `as char`, re-encoding each byte of a multi-byte scalar as its
+    // own code point: `"♠"` (3 source bytes) reached every backend as
+    // 6 mojibake bytes. **Agreement alone cannot see this** — all four
+    // backends consumed the same broken literal — so this test pins
+    // the values as well: byte lengths (`__builtin_str_len` counts
+    // bytes) and equality against `\u{HEX}`, which decodes through a
+    // separate lexer path and was always correct.
+    let src = r#"
+        fn main() -> u64 {
+            var score: u64 = 0u64
+            val spade = "♠"
+            if __builtin_str_len(spade) == 3u64 { score = score + 1u64 }
+            if spade == "\u{2660}" { score = score + 2u64 }
+            if __builtin_str_len("日本語") == 9u64 { score = score + 4u64 }
+            if __builtin_str_len("😀") == 4u64 { score = score + 8u64 }
+            val mixed = "a♠b"
+            if __builtin_str_len(mixed) == 5u64 { score = score + 16u64 }
+            if mixed == "a".concat(spade).concat("b") { score = score + 32u64 }
+            score
+        }
+    "#;
+    assert_eq!(
+        interpreter_value(src) & 0xff,
+        63,
+        "a multi-byte UTF-8 literal lost or gained bytes on the way in"
+    );
+    assert_consistent(src, "utf8_string_literals");
+}
+
+#[test]
+fn multibyte_utf8_string_literals_print_as_written() {
+    // The rendering half of the same bug: `println("♠")` emitted the
+    // Latin-1 re-encoding. Pinned against the expected text, not just
+    // across backends, for the reason above.
+    let src = r#"
+        fn main() -> u64 {
+            println("a♠b")
+            println("日本語 {1u64 + 1u64}")
+            0u64
+        }
+    "#;
+    assert_eq!(
+        interpreter_stdout(src, "utf8_print_pin", false),
+        "a♠b\n日本語 2\n",
+        "a multi-byte UTF-8 literal was re-encoded on its way to stdout"
+    );
+    assert_stdout_consistent(src, "utf8_print");
+}
+
+#[test]
 fn str_equality_compares_content_not_handles() {
     // `a == b` on two `str` values compares their bytes. It used to
     // compare the runtime handles everywhere except the tree-walker,

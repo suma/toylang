@@ -702,8 +702,9 @@ values >= U+110000 panic.
 ```rust
 "hello"           # ConstString — interned, immutable
 "line1\nline2"    # \n decoded to LF in the lexer
-"hex \x41 here"   # \x41 decoded to 'A'
+"hex \x41 here"   # \x41 decoded to 'A' (ASCII only, see below)
 "unicode \u{3042} here"   # \u{3042} encoded as 3-byte UTF-8 'あ'
+"日本語 ♠ 😀"      # non-ASCII source characters pass through verbatim
 ```
 
 The lexer decodes the same escape ladder as the char literal rule
@@ -711,6 +712,17 @@ The lexer decodes the same escape ladder as the char literal rule
 once at lex time and stores the resulting bytes in the
 `Kind::String(...)` token. Downstream layers see only the decoded
 byte sequence.
+
+Non-ASCII characters written **directly** in the literal are kept as
+their source UTF-8 bytes, so `"♠"` is 3 bytes (`__builtin_str_len`
+counts bytes) and equals `"\u{2660}"`. Unlike the char literal rule,
+the string rule has no ASCII-only restriction.
+
+`\xHH` is limited to `HH <= 0x7f`. A lone byte >= 0x80 is not valid
+UTF-8 on its own and therefore has no representation inside a `str`;
+`"\x80"` is a lex error. Use `\u{HEX}` (or the character itself) for
+non-ASCII code points. The char literal `'\xff'` is unaffected — it
+yields the `u32` value `255`, not str bytes.
 
 `\"` inside a `"..."` literal is **not** yet decodable — the
 closing-quote regex still wins. Use `'\"'` (char) or

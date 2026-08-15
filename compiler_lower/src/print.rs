@@ -11,7 +11,7 @@ use frontend::ast::{Expr, ExprRef};
 
 use super::bindings::{
     flatten_struct_locals, flatten_tuple_element_locals, Binding, EnumStorage, FieldBinding,
-    FieldShape, PayloadSlot, TupleElementBinding, TupleElementShape,
+    FieldChainResult, FieldShape, PayloadSlot, TupleElementBinding, TupleElementShape,
 };
 use super::FunctionLower;
 use crate::ir::{
@@ -101,6 +101,26 @@ impl<'a> FunctionLower<'a> {
                     }
                 }
             }
+        // Struct- and tuple-typed field / element arguments
+        // (`print(o.inner)`, `print(o.pair)`). The chain resolves to
+        // the same leaf-local tree an identifier binding carries, so
+        // the existing formatters take it unchanged. A scalar leaf
+        // falls through to the value path below.
+        if let Some(arg_expr) = self.program.expression.get(&args[0])
+            && matches!(arg_expr, Expr::FieldAccess(_, _) | Expr::TupleAccess(_, _))
+        {
+            match self.resolve_field_chain(&args[0])? {
+                FieldChainResult::Struct { struct_id, fields } => {
+                    self.emit_print_struct(struct_id, &fields, newline);
+                    return Ok(None);
+                }
+                FieldChainResult::Tuple { elements } => {
+                    self.emit_print_tuple(&elements, newline);
+                    return Ok(None);
+                }
+                FieldChainResult::Scalar { .. } => {}
+            }
+        }
         // Compound-literal shortcuts: `print(Point { ... })`,
         // `print((1, 2))`, `print(Color::Red)`,
         // `print(Shape::Circle(5))`. We allocate scratch locals for

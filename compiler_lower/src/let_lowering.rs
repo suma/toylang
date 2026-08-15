@@ -30,7 +30,8 @@ use string_interner::DefaultSymbol;
 
 use super::array_layout::{elem_stride_bytes, leaf_scalar_count, leaf_type_at};
 use super::bindings::{
-    flatten_struct_locals, flatten_tuple_element_locals, Binding, TupleElementBinding,
+    flatten_struct_locals, flatten_tuple_element_locals, Binding, FieldChainResult,
+    TupleElementBinding,
 };
 use super::FunctionLower;
 use crate::ir::{Const, InstKind, LocalId, Type, ValueId};
@@ -296,8 +297,70 @@ impl<'a> FunctionLower<'a> {
             {
                 return Ok(result);
             }
+        // Compound-typed RHS that already lives in leaf locals: a
+        // field / element access (`val inner: Inner = o.i`,
+        // `val t = o.pair`) or another compound binding
+        // (`val q: Inner = p`). The new name adopts the same locals.
+        // Scalar leaves fall through to the scalar path below, which
+        // loads the local as a value.
+        if matches!(
+            rhs,
+            Expr::FieldAccess(_, _) | Expr::TupleAccess(_, _) | Expr::Identifier(_)
+        ) && let Some(result) = self.lower_let_compound_access(name, rhs_ref)?
+        {
+            return Ok(result);
+        }
         // Scalar fallback (existing behaviour).
         self.lower_let_scalar_fallback(name, rhs_ref)
+    }
+
+    /// Bind a name to a struct- / tuple-typed field, tuple element,
+    /// or another compound binding (`val inner = o.i`, `val q = p`).
+    /// Returns `Ok(None)` when the rhs is not compound, so the caller
+    /// falls through to the scalar path.
+    ///
+    /// The binding **adopts the same leaf locals** rather than
+    /// copying them, so the new name and the source are one value:
+    /// writing `inner.a` is writing `o.i.a`. That matches the
+    /// interpreter, where compound values share the existing
+    /// reference (see "Captures" in `docs/language.md` — the rule is
+    /// stated for closures but describes every binding), and it emits
+    /// no instructions at all.
+    fn lower_let_compound_access(
+        &mut self,
+        name: DefaultSymbol,
+        rhs_ref: &ExprRef,
+    ) -> Result<Option<Option<ValueId>>, String> {
+        // A bare identifier is looked up directly: `resolve_field_chain`
+        // rejects tuple roots (a tuple can't be *stepped into* by
+        // field name), but a tuple binding is a perfectly good rhs.
+        if let Some(Expr::Identifier(sym)) = self.program.expression.get(rhs_ref) {
+            return Ok(match self.bindings.get(&sym).cloned() {
+                Some(Binding::Struct { struct_id, fields }) => {
+                    self.bindings
+                        .insert(name, Binding::Struct { struct_id, fields });
+                    Some(None)
+                }
+                Some(Binding::Tuple { elements }) => {
+                    self.bindings.insert(name, Binding::Tuple { elements });
+                    Some(None)
+                }
+                _ => None,
+            });
+        }
+        match self.resolve_field_chain(rhs_ref)? {
+            FieldChainResult::Struct { struct_id, fields } => {
+                self.bindings
+                    .insert(name, Binding::Struct { struct_id, fields });
+                Ok(Some(None))
+            }
+            FieldChainResult::Tuple { elements } => {
+                self.bindings.insert(name, Binding::Tuple { elements });
+                Ok(Some(None))
+            }
+            // Scalar field — the existing `LoadLocal` path handles it.
+            FieldChainResult::Scalar { .. } => Ok(None),
+        }
     }
 
     /// Scalar fallback for `lower_let`: any RHS shape not picked up

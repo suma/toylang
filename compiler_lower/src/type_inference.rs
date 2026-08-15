@@ -146,7 +146,14 @@ impl<'a> FunctionLower<'a> {
                     .find(|f| f.name == field_str)
                     .and_then(|f| match &f.shape {
                         FieldShape::Scalar { ty, .. } => Some(*ty),
-                        FieldShape::Struct { .. } | FieldShape::Tuple { .. } => None,
+                        // Struct-typed field — surface the shape for
+                        // the same reason the `Identifier` arm above
+                        // does (`__builtin_sizeof`, the interpolation
+                        // formatter). Tuple fields stay `None`: a
+                        // `FieldShape::Tuple` carries no `tuple_id`
+                        // to name, exactly as tuple bindings don't.
+                        FieldShape::Struct { struct_id, .. } => Some(Type::Struct(*struct_id)),
+                        FieldShape::Tuple { .. } => None,
                     })
             }
             Expr::TupleAccess(tuple, index) => {
@@ -351,6 +358,27 @@ impl<'a> FunctionLower<'a> {
                                 return Some(Type::Str);
                             }
                 let obj_expr = self.program.expression.get(&obj)?;
+                // A compound-typed field / element receiver
+                // (`x.name.to_str()`) resolves through the same leaf
+                // tree a field read walks. Without this, `println(v)`
+                // on a `Display` field could not be typed: the
+                // checker rewrites the argument to `v.to_str()`, and
+                // a `None` here reports it as "print accepts only
+                // scalar values" — about a call the user never wrote.
+                if matches!(obj_expr, Expr::FieldAccess(_, _) | Expr::TupleAccess(_, _)) {
+                    let FieldChainResult::Struct { struct_id, .. } =
+                        self.resolve_field_chain(&obj).ok()?
+                    else {
+                        return None;
+                    };
+                    let def = self.module.struct_def(struct_id);
+                    return self.method_call_return_type(
+                        def.base_name,
+                        Some((Type::Struct(struct_id), def.type_args.clone())),
+                        method,
+                        &args,
+                    );
+                }
                 let recv_sym = match obj_expr {
                     Expr::Identifier(s) => s,
                     _ => return None,
@@ -406,57 +434,69 @@ impl<'a> FunctionLower<'a> {
                         }
                         _ => return None,
                     };
-                // CONCRETE-IMPL Phase 2b: pick FuncId by receiver
-                // type args (extracted above as part of recv_self).
-                let recv_args_for_lookup: Vec<Type> = recv_self
-                    .as_ref()
-                    .map(|(_, args)| args.clone())
-                    .unwrap_or_default();
-                if let Some(func_id) = super::method_registry::lookup_method_func(
-                    self.method_func_ids, target_sym, method, &recv_args_for_lookup,
-                ) {
-                    return Some(self.module.function(func_id).return_type);
-                }
-                let template_opt = super::method_registry::lookup_method_template(
-                    self.generic_methods, target_sym, method, &[],
-                );
-                if let (Some(template), Some((self_ty, recv_type_args))) =
-                    (template_opt, recv_self)
-                    && template.generic_params.len() >= recv_type_args.len() {
-                        let mut subst: HashMap<DefaultSymbol, Type> = HashMap::new();
-                        for (i, p) in template.generic_params.iter().enumerate() {
-                            if let Some(t) = recv_type_args.get(i).copied() {
-                                subst.insert(*p, t);
-                            }
-                        }
-                        let method_only_params: Vec<DefaultSymbol> = template
-                            .generic_params
-                            .iter()
-                            .skip(recv_type_args.len())
-                            .copied()
-                            .collect();
-                        if !method_only_params.is_empty() {
-                            for (i, arg_ref) in args.iter().enumerate() {
-                                let param_idx = i + 1;
-                                if let Some((_, decl)) = template.parameter.get(param_idx)
-                                    && let Some(arg_ty) = self.value_scalar(arg_ref)
-                                        && let TypeDecl::Generic(p) | TypeDecl::Identifier(p) =
-                                            decl
-                                            && method_only_params.contains(p) {
-                                                subst.entry(*p).or_insert(arg_ty);
-                                            }
-                            }
-                        }
-                        if let Some(ret) = &template.return_type {
-                            return self.peek_method_return_type_with_self(
-                                ret, &subst, self_ty,
-                            );
-                        }
-                        return Some(Type::Unit);
-                    }
-                None
+                self.method_call_return_type(target_sym, recv_self, method, &args)
             }
             _ => None,
         }
+    }
+
+    /// Return type of `<receiver>.method(args)` once the receiver has
+    /// been resolved to its impl target symbol and (for nominal
+    /// receivers) its self type + type args. Split out of
+    /// `value_scalar`'s `MethodCall` arm so identifier receivers and
+    /// compound field / element receivers share one lookup.
+    fn method_call_return_type(
+        &self,
+        target_sym: DefaultSymbol,
+        recv_self: Option<(Type, Vec<Type>)>,
+        method: DefaultSymbol,
+        args: &[ExprRef],
+    ) -> Option<Type> {
+        // CONCRETE-IMPL Phase 2b: pick FuncId by receiver
+        // type args (extracted by the caller as part of recv_self).
+        let recv_args_for_lookup: Vec<Type> = recv_self
+            .as_ref()
+            .map(|(_, args)| args.clone())
+            .unwrap_or_default();
+        if let Some(func_id) = super::method_registry::lookup_method_func(
+            self.method_func_ids, target_sym, method, &recv_args_for_lookup,
+        ) {
+            return Some(self.module.function(func_id).return_type);
+        }
+        let template_opt = super::method_registry::lookup_method_template(
+            self.generic_methods, target_sym, method, &[],
+        );
+        if let (Some(template), Some((self_ty, recv_type_args))) =
+            (template_opt, recv_self)
+            && template.generic_params.len() >= recv_type_args.len() {
+                let mut subst: HashMap<DefaultSymbol, Type> = HashMap::new();
+                for (i, p) in template.generic_params.iter().enumerate() {
+                    if let Some(t) = recv_type_args.get(i).copied() {
+                        subst.insert(*p, t);
+                    }
+                }
+                let method_only_params: Vec<DefaultSymbol> = template
+                    .generic_params
+                    .iter()
+                    .skip(recv_type_args.len())
+                    .copied()
+                    .collect();
+                if !method_only_params.is_empty() {
+                    for (i, arg_ref) in args.iter().enumerate() {
+                        let param_idx = i + 1;
+                        if let Some((_, decl)) = template.parameter.get(param_idx)
+                            && let Some(arg_ty) = self.value_scalar(arg_ref)
+                                && let TypeDecl::Generic(p) | TypeDecl::Identifier(p) = decl
+                                    && method_only_params.contains(p) {
+                                        subst.entry(*p).or_insert(arg_ty);
+                                    }
+                    }
+                }
+                if let Some(ret) = &template.return_type {
+                    return self.peek_method_return_type_with_self(ret, &subst, self_ty);
+                }
+                return Some(Type::Unit);
+            }
+        None
     }
 }

@@ -125,16 +125,26 @@ impl<'a> FunctionLower<'a> {
             .expression
             .get(arg_expr)
             .ok_or_else(|| "__builtin_to_string arg expr missing".to_string())?;
-        let sym = match arg_inner {
-            Expr::Identifier(s) => s,
+        let fields = match arg_inner {
+            Expr::Identifier(sym) => match self.bindings.get(&sym).cloned() {
+                Some(Binding::Struct { fields, .. }) => fields,
+                _ => return Err(
+                    "__builtin_to_string: struct identifier needs a Struct binding".to_string(),
+                ),
+            },
+            // A struct-typed field / element (`"{o.inner}"`) resolves
+            // to the same leaf tree an identifier binding carries.
+            Expr::FieldAccess(_, _) | Expr::TupleAccess(_, _) => {
+                match self.resolve_field_chain(arg_expr)? {
+                    super::bindings::FieldChainResult::Struct { fields, .. } => fields,
+                    _ => return Err(
+                        "__builtin_to_string: field is not struct-typed".to_string(),
+                    ),
+                }
+            }
             _ => return Err(
-                "__builtin_to_string: struct arg must be a bare identifier (MVP)".to_string(),
-            ),
-        };
-        let fields = match self.bindings.get(&sym).cloned() {
-            Some(Binding::Struct { fields, .. }) => fields,
-            _ => return Err(
-                "__builtin_to_string: struct identifier needs a Struct binding".to_string(),
+                "__builtin_to_string: struct arg must be a bare identifier or a field access (MVP)"
+                    .to_string(),
             ),
         };
         let v = self.emit_struct_format(struct_id, &fields)?;
@@ -309,16 +319,25 @@ impl<'a> FunctionLower<'a> {
             .expression
             .get(arg_expr)
             .ok_or_else(|| "__builtin_to_string arg expr missing".to_string())?;
-        let sym = match arg_inner {
-            Expr::Identifier(s) => s,
+        let elements = match arg_inner {
+            Expr::Identifier(sym) => match self.bindings.get(&sym).cloned() {
+                Some(Binding::Tuple { elements }) => elements,
+                _ => return Err(
+                    "__builtin_to_string: tuple identifier needs a Tuple binding".to_string(),
+                ),
+            },
+            // Tuple-typed field / element (`"{o.pair}"`), as above.
+            Expr::FieldAccess(_, _) | Expr::TupleAccess(_, _) => {
+                match self.resolve_field_chain(arg_expr)? {
+                    super::bindings::FieldChainResult::Tuple { elements } => elements,
+                    _ => return Err(
+                        "__builtin_to_string: field is not tuple-typed".to_string(),
+                    ),
+                }
+            }
             _ => return Err(
-                "__builtin_to_string: tuple arg must be a bare identifier (MVP)".to_string(),
-            ),
-        };
-        let elements = match self.bindings.get(&sym).cloned() {
-            Some(Binding::Tuple { elements }) => elements,
-            _ => return Err(
-                "__builtin_to_string: tuple identifier needs a Tuple binding".to_string(),
+                "__builtin_to_string: tuple arg must be a bare identifier or a field access (MVP)"
+                    .to_string(),
             ),
         };
         let v = self.emit_tuple_format(&elements)?;
@@ -1788,6 +1807,17 @@ impl<'a> FunctionLower<'a> {
                     && matches!(self.bindings.get(&sym), Some(Binding::Tuple { .. })) {
                         return self.lower_tuple_to_string(&args[0]);
                     }
+                // Tuple-typed field / element (`"{o.pair}"`) — same
+                // blind spot, resolved through the field chain.
+                if let Some(arg_expr) = self.program.expression.get(&args[0])
+                    && matches!(arg_expr, Expr::FieldAccess(_, _) | Expr::TupleAccess(_, _))
+                    && matches!(
+                        self.resolve_field_chain(&args[0]),
+                        Ok(super::bindings::FieldChainResult::Tuple { .. })
+                    )
+                {
+                    return self.lower_tuple_to_string(&args[0]);
+                }
                 let arg_value = self
                     .lower_expr(&args[0])?
                     .ok_or_else(|| "__builtin_to_string arg produced no value".to_string())?;

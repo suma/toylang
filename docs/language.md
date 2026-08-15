@@ -1189,8 +1189,8 @@ parser picks the desugaring based on what follows `EXPR`:
    cranelift JIT all run the protocol end-to-end. Range-based
    `for` loops keep the dedicated AOT fast path. The desugaring
    skips the synthetic `var __iter_for_<n> = EXPR` temporary when
-   EXPR is already a bare identifier (the AOT compiler's let-rhs
-   path doesn't aliasing-copy struct bindings); `&mut self`
+   EXPR is already a bare identifier, so the loop advances the
+   user's own iterator; `&mut self`
    writeback through `iter.next()` mutates the user's original
    binding correctly between iterations.
 

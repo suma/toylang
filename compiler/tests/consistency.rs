@@ -2983,6 +2983,95 @@ fn a_str_built_from_bytes_survives_the_buffer_changing() {
 }
 
 #[test]
+fn a_compound_field_binds_to_a_name() {
+    // `val inner = o.i` used to fail with "val/var rhs produced no
+    // value" on both compiled backends — struct values live in leaf
+    // locals, not in the IR value graph, so the scalar let path had
+    // nothing to store. The binding now adopts the field's own leaf
+    // locals.
+    //
+    // Adoption, not copying: the interpreter shares the reference for
+    // compound values, so a write through either name has to be
+    // visible from the other. Both directions are exercised below,
+    // which is also what makes this test meaningful — a copying
+    // implementation passes the read-only half and fails here.
+    let src = r#"
+        struct Inner { a: u64, b: u64 }
+        struct Mid { i: Inner, t: (u64, u64) }
+        struct Outer { m: Mid, n: u64 }
+
+        fn main() -> u64 {
+            var o: Outer = Outer {
+                m: Mid { i: Inner { a: 1u64, b: 2u64 }, t: (3u64, 4u64) },
+                n: 5u64,
+            }
+            var mid: Mid = o.m
+            val inner: Inner = o.m.i
+            val pair: (u64, u64) = o.m.t
+            o.m.i.a = 10u64        # write through the field, read via `inner`
+            var deep: Inner = mid.i
+            deep.b = 20u64         # write through the binding, read via the field
+            inner.a + inner.b + pair.0 + pair.1 + o.m.i.b + o.n
+        }
+    "#;
+    // 10 + 20 + 3 + 4 + 20 + 5 = 62. A copying implementation would
+    // read the pre-write values and land elsewhere.
+    assert_eq!(interpreter_value(src) & 0xff, 62);
+    assert_consistent(src, "compound_field_binding");
+}
+
+#[test]
+fn a_compound_binding_shares_storage_under_a_new_name() {
+    // `var y: Inner = x` hit the same "val/var rhs produced no value"
+    // wall as a field read, and takes the same fix: the new name
+    // adopts the existing leaf locals. Sharing (not copying) is what
+    // the interpreter does, so the write below is visible through
+    // both names on every backend.
+    let src = r#"
+        struct Inner { a: u64 }
+        fn main() -> u64 {
+            var x: Inner = Inner { a: 1u64 }
+            var y: Inner = x
+            y.a = 9u64
+            x.a
+        }
+    "#;
+    assert_eq!(interpreter_value(src) & 0xff, 9);
+    assert_consistent(src, "compound_binding_alias");
+}
+
+#[test]
+fn a_compound_field_prints_and_interpolates() {
+    // `println(o.i)` reported "println accepts only scalar values …
+    // or identifiers referring to struct / tuple bindings"; the same
+    // blind spot hit `__builtin_to_string` (interpolation) and, via
+    // the `Display` rewrite `println(v)` -> `println(v.to_str())`,
+    // any `String`-typed field. All three read the field's leaf tree
+    // now, which is what an identifier binding already handed over.
+    let src = r#"
+        struct Inner { a: u64, b: u64 }
+        struct Outer { i: Inner, t: (u64, bool), n: u64 }
+        struct Named { name: String, n: u64 }
+
+        fn main() -> u64 {
+            val o: Outer = Outer { i: Inner { a: 1u64, b: 2u64 }, t: (7u64, true), n: 5u64 }
+            var x: Named = Named { name: String::from_str("hi"), n: 3u64 }
+            println(o.i)
+            println(o.t)
+            println(x.name)
+            println("inner={o.i} tup={o.t} name={x.name}")
+            0u64
+        }
+    "#;
+    assert_eq!(
+        interpreter_stdout(src, "compound_field_print_pin", true),
+        "Inner { a: 1, b: 2 }\n(7, true)\nhi\ninner=Inner { a: 1, b: 2 } tup=(7, true) name=hi\n",
+        "a compound field rendered differently than an equivalent binding"
+    );
+    assert_stdout_consistent(src, "compound_field_print");
+}
+
+#[test]
 fn a_method_that_never_reads_its_receiver_still_compiles() {
     // The implicit `&self` / `&mut self` receiver is matched by token
     // text and never interned, so a program where **no source line

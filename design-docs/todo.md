@@ -192,7 +192,19 @@
 ### テスト・ドキュメント
 
 - **TEST-PERF** — ワークスペース全体で **~4.4s** (2026-08-15 実測、20 コア、`cargo nextest run`)。**この suite は wall ではなく CPU 律速**: 合計 ~82s CPU / 20 コア ≈ 4.2s が下限で、実測がほぼそこにある。したがって「並列度を上げる」策はもう効かない (`-j 24` で 1%、shard を増やしても critical path が下限を割らない)。**残る削り代は CPU そのもの**:
-  - **core module のロードが suite CPU の約半分** ★★★ — 1 回 ~26ms (preparse 4.2ms / integrate 7.8ms / 合流後の型検査 ~11ms)。これを stdlib を使わないテストまで全件が払っている (実測: `test_program` を no-core にすると interpreter の 879 テスト中 **797 が通り**、その binary は 2.3s → 1.3s)。取りうる手は (a) stdlib を使わないテストを `test_program_no_core` に寄せる (coverage は落ちる — stdlib 同居時の回帰を見なくなる)、(b) 型検査済み core をプロセス内で使い回す (INCREMENTAL-COMPILATION 側の仕事。`File` が `Rc` を持つので memo 化は素直にはできない = 別スレッドから clone すると refcount が壊れる)。
+  - **core module のロードが suite CPU の約半分** ★★★ — stdlib を auto-load した trivial プログラム 1 実行 ~24ms の内訳 (2026-08-15 実測、debug ビルド):
+
+    | 区間 | 時間 | 割合 |
+    |---|---|---|
+    | `integrate_modules` (preparse ~4ms + 逐次 integrate ~7.8ms) | 11.3ms | 48% |
+    | `execute_entry` の準備 (registry 構築自体は 0.4ms、残りは context 構築) | 5.2ms | 22% |
+    | impl block の型検査 (stdlib の 40 block) | 2.5ms | 10% |
+    | その他の型検査 (alias 解決 0.5 / trait default 0.11 / setup 0.18 / stmt 0.16) | 1.1ms | 5% |
+    | user プログラムのパース | 0.25ms | 1% |
+    | プロセス起動 | ~2-3ms | ~10% |
+
+    **測って分かった否定的な結果を 2 つ記録しておく**: (1) **free function の body は既に user 分しか検査していない** (`take(user_func_count)`) ので「stdlib 本体を型検査しない」で削れるのは impl block の 2.5ms だけ。しかも**型検査器は body を書き換える** (`?` の desugar、`Display` の `to_str` 挿入) ので、stdlib の body を検査しないと**書き換え前の AST がバックエンドに流れる** — 今の stdlib は `?` も補間も使っていないので通ってしまい、使った日に壊れる罠になる。(2) `remap_symbol` の memo 化 (module symbol → main symbol を Vec でキャッシュ) は**効果ゼロ**だった。integrate の時間は文字列ハッシュではなく AST を pool に複製する作業そのもの。
+    したがって残る手は (a) stdlib を使わないテストを `test_program_no_core` に寄せる (実測: `test_program` を no-core にすると interpreter の 879 テスト中 **797 が通り**、その binary は 2.3s → 1.3s。ただし stdlib 同居時の回帰を見なくなる = coverage を実際に落とす)、(b) 型検査済み core をプロセス内で使い回す (INCREMENTAL-COMPILATION 側の仕事。`File` が `Rc` を持つので素朴な memo 化はできない — 別スレッドから clone すると refcount が壊れる)。
   - **プロセス起動が ~4.4ms × 1784 ≈ 8s CPU (約 10%)** ★ — nextest は 1 テスト 1 プロセス。テストを機能別に束ねれば減るが、失敗の切り分けと引き換え。
   - `serial_test` (`oop_tests.rs`) の並列化 ★。
 - **65. frontend リファクタリング** — (a)〜(g) は完了。残: doc コメント拡充、プロパティベーステスト追加。

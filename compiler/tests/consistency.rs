@@ -2983,6 +2983,49 @@ fn a_str_built_from_bytes_survives_the_buffer_changing() {
 }
 
 #[test]
+fn a_method_that_never_reads_its_receiver_still_compiles() {
+    // The implicit `&self` / `&mut self` receiver is matched by token
+    // text and never interned, so a program where **no source line
+    // writes `self` at all** left the interner without the symbol —
+    // and the receiver parameter then went unmaterialised while its
+    // cranelift block param stayed (`param local not declared`), or
+    // the next parameter bound to the receiver's type instead.
+    //
+    // Hence the deliberate shape here: not one method body mentions
+    // `self`, and `add` takes a parameter after the receiver so a
+    // dropped receiver shifts it onto the struct type. Adding any
+    // `self.field` read anywhere in this source interns the symbol
+    // and the whole program stops exercising the bug — which is why
+    // it only ever showed up without the core modules, whose sources
+    // interned `self` for everyone else.
+    //
+    // Driven through the no-core column directly: `assert_consistent`
+    // falls back to the core-aware path on failure and would hide it.
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        struct S { a: u64, b: u64 }
+        impl S {
+            fn konst(&self) -> u64 { 7u64 }
+            fn bump(&mut self) { }
+            fn add(&self, n: u64) -> u64 { n + 1u64 }
+        }
+        fn main() -> u64 {
+            var s = S { a: 1u64, b: 2u64 }
+            s.bump()
+            s.konst() + s.add(2u64)
+        }
+    "#;
+    assert_eq!(
+        try_compiler_exit_code(src, "receiver_unread_no_core", false),
+        Some(10),
+        "AOT compile without core modules dropped the implicit receiver"
+    );
+    assert_consistent(src, "receiver_unread");
+}
+
+#[test]
 fn struct_fields_accept_non_literal_initialisers() {
     // A struct-typed field used to require a nested struct *literal*
     // on the rhs. Calls and existing bindings now write into the same

@@ -43,16 +43,30 @@ use crate::ir::{
 };
 use compiler_ir::layout::flatten_compound_leaf_types;
 
-/// Pre-interned canonical contract-violation messages. Lowering attaches
-/// these symbols to `requires` / `ensures` `Terminator::Panic` arms without
-/// needing mutable interner access of its own. (Moved here from `compiler`
-/// so both the compiler and the interpreter can drive lowering.)
+/// Symbols lowering needs but cannot mint itself — it holds the
+/// interner by shared reference. The caller interns them once up
+/// front and hands them over. Contract-violation messages were the
+/// first members (hence the name); `self_ident` joined them for the
+/// same mechanical reason. (Moved here from `compiler` so both the
+/// compiler and the interpreter can drive lowering.)
 pub struct ContractMessages {
     pub requires_violation: DefaultSymbol,
     pub ensures_violation: DefaultSymbol,
     /// LLM-LOOP P6-3. Interned here for the same reason as the two
     /// above: lowering emits the guard but has no mutable interner.
     pub u64_underflow: DefaultSymbol,
+    /// The `self` identifier. An implicit `&self` / `&mut self`
+    /// receiver is **not** a parameter in the AST (the parser only
+    /// flips `has_self_param` and matches the token text), so
+    /// nothing interns `self` unless some source actually names it.
+    /// A method whose body never reads the receiver — or one loaded
+    /// from the AST cache — leaves the interner without it, and the
+    /// receiver parameter then goes unmaterialised while its
+    /// cranelift block param still exists: `param local not
+    /// declared`, or a following parameter silently binding to the
+    /// receiver's type. Interning it unconditionally keeps the
+    /// receiver's name available no matter what the source says.
+    pub self_ident: DefaultSymbol,
 }
 
 impl ContractMessages {
@@ -62,6 +76,7 @@ impl ContractMessages {
             ensures_violation: interner.get_or_intern("ensures violation"),
             u64_underflow: interner
                 .get_or_intern("u64 subtraction underflowed (left operand is smaller than the right)"),
+            self_ident: interner.get_or_intern("self"),
         }
     }
 }

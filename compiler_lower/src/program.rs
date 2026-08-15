@@ -1423,13 +1423,22 @@ impl<'a> FunctionLower<'a> {
         // identifier just like it does for any normal parameter.
         // The leading position matches how `instantiate_generic_method_with_self_type`
         // already arranges params for receiver-pointer methods.
+        // The symbol comes from `contract_msgs` rather than
+        // `interner.get("self")`: the parser matches the receiver by
+        // token text without interning it, so a method whose body
+        // never names `self` (or one restored from the AST cache) can
+        // leave the interner without the symbol entirely. Skipping the
+        // insert there dropped the receiver from `func.parameter`
+        // while its IR param / cranelift block param stayed — codegen
+        // then panicked with `param local not declared`, or bound the
+        // next parameter to the receiver's type.
         if method.has_self_param
             && parameter.first().map(|(n, _)| {
                 self.interner.resolve(*n) != Some("self")
             }).unwrap_or(true)
-            && let Some(self_sym) = self.interner.get("self") {
-                parameter.insert(0, (self_sym, self_decl.clone()));
-            }
+        {
+            parameter.insert(0, (self.contract_msgs.self_ident, self_decl.clone()));
+        }
         // Build a synthetic Function-shaped value and delegate. We
         // keep `name` / `generic_*` / `visibility` empty since
         // lower_body only reads parameter / requires / ensures / code.
@@ -1657,11 +1666,12 @@ impl<'a> FunctionLower<'a> {
                 continue;
             }
             // Skip the receiver — already handled above so we don't
-            // double-append its leaves.
-            if let Some(self_sym) = self.interner.get("self")
-                && *name == self_sym {
-                    continue;
-                }
+            // double-append its leaves. Same pre-interned symbol the
+            // receiver parameter is materialised under, so the check
+            // holds even when no source text says `self`.
+            if *name == self.contract_msgs.self_ident {
+                continue;
+            }
             match self.bindings.get(name).cloned() {
                 Some(super::bindings::Binding::Struct { fields, .. }) => {
                     writeback_leaves.extend(super::bindings::flatten_struct_locals(&fields));

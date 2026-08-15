@@ -11,6 +11,7 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-15
+- **receiver を読まない method の AOT panic を修正** — 真因は「**`self` という symbol が interner に無い**」こと。暗黙の `&self` / `&mut self` は AST の parameter ではなく (parser は token の**文字列**を見て `has_self_param` を立てるだけで intern しない)、lowering 側が `interner.get("self")` で receiver パラメータを materialise していた。**ソース中のどこも `self` と書いていない**プログラムでは symbol が存在せず、receiver が parameter 列から落ちる → cranelift の block param だけ残って `param local not declared` で panic、あるいは**次の parameter が receiver の型に束縛される** (`fn f(&self, x: u64)` が `binary lhs produced no value` で落ちる)。core module を読むと stdlib 側が `self` を intern するので隠れていた。lowering は interner を共有参照でしか持てないので、`ContractMessages` (呼び出し側が事前 intern して渡す symbol 群) に `self_ident` を足して常に存在させた。**テストは「`self` と書かない」ことが本質** — `self.a` を 1 箇所でも足すと symbol が intern されてバグを踏まなくなるので、その旨をテストに書いた。`assert_consistent` は失敗時に core 有りの経路へ fallback して隠すため、no-core の列 (`try_compiler_exit_code(.., false)`) を直接叩いている。1771 → **1772 tests pass**。
 - **struct-typed な field / enum payload を call でも初期化できるように (AOT/JIT)** — struct 型の field は **nested struct literal でしか**初期化できず、`String` はリテラル形を持たない (作る手段が associated function だけ) ため **`String` フィールドを持つ struct は AOT で一切構築できなかった**。`store_struct_value_into_fields` を新設し、rhs が literal / 既存束縛 identifier / struct を返す関数呼び出し・associated function 呼び出しの 4 形を受ける。**呼び出しは一時束縛を作らず `CallStruct` の dests を field の leaf locals に直結**する (`with allocator = Arena::new()` の inline 経路と同じ手口) ので copy も drop 登録も増えない — field は元々 auto-drop 対象ではなく、ここで登録すると外側の struct が所有する値を落としてしまう。generic な `Vec::new()` は template registry 側なので、**slot 自身の type args** で instantiate する (field 位置には annotation が無い)。enum payload の `lower_into_struct_slot` は同じ helper に委譲したので `Holder::With(make())` も通るようになった。1768 → **1771 tests pass**。
 - **非 ASCII のソースリテラルの化けを修正** — string literal の decode ループが inner の各バイトを `push(b as char)` していたため、multi-byte scalar のバイトが 1 つずつ独立した code point として再エンコードされていた (`"♠"` = 3 バイトが 6 バイトの mojibake、`__builtin_str_len` も 6)。バイトが char boundary にあることを使って **UTF-8 scalar 単位でそのまま写す**ようにした。同じ `as char` を使っていた `\xHH` は `HH >= 0x80` を **lex error** に変更 — `str` は UTF-8 なので単独の高位バイトは表現できず、従来は黙って 2 バイト吐いていた (非 ASCII は `\u{HEX}` を使う。char literal の `'\xff'` は u32 値なので影響なし)。**この種のバグは一致テストで検出できない** (全バックエンドが同じ壊れたリテラルを消費して仲良く一致する) ので、consistency テストは byte 長と `\u{HEX}` (別経路で decode され常に正しかった) との等価性で**値そのもの**を pin し、stdout も期待文字列と突き合わせる。既存の `test_string_literal_hex_escapes_decode` が `"hex\xff"` を受理側に置いていたが、これは `parse_stmt().is_ok()` しか見ておらず decode 結果を検査していなかった (lexer error でも parse は通っていた)。1763 → **1768 tests pass**。
 
@@ -217,7 +218,6 @@
 
 ### 既知の不具合 (Display 作業中に発見、いずれも先行して存在)
 
-- **receiver を読まない method が AOT codegen を panic させる** ★ — `impl S { fn f(&self) -> u64 { 9u64 } }` のように **本体が `self` を一切参照しない** method を **core module 無し**でコンパイルすると `param local not declared` (`compiler/src/codegen/mod.rs`) で panic する。並列コンパイル経路の worker thread なので出力自体は出るが、panic は出る。`self` を読む本体では起きない。
 
 ### パーサーの既知制限事項
 - bare `self` 非対応 — `self: Self` / `&self` / `&mut self` のいずれかを書く。

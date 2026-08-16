@@ -417,6 +417,19 @@ pub fn check_typing_diagnostics(
     // aliases included) before any type-check work runs.
     frontend::resolve_type_aliases(program);
 
+    // RECURSIVE-TYPES: reject types that contain themselves by value
+    // before anything tries to lay one out. `compiler_lower`'s
+    // `instantiate_struct` / `instantiate_enum` walk a type's members
+    // before memoising it, so such a type recursed until the host stack
+    // was gone — the process aborted (exit 134) with no diagnostic at
+    // all. Placed right after alias resolution: `type L = List` is
+    // substituted by then, and every later pass is spared the shape.
+    errors.extend(
+        frontend::type_checker::check_recursive_types(program, string_interner)
+            .iter()
+            .map(|e| Diagnostic::from_type_check_error(e, diag_file)),
+    );
+
     // Pull the user-authored function slice from the resolved
     // `program.function`. Integration appends stdlib functions
     // after the user ones, so the first `user_func_count` entries

@@ -118,6 +118,18 @@ impl<'a> ProgramVisitor for TypeCheckerVisitor<'a> {
         // as if the user had written them in the impl block.
         self.expand_trait_defaults()?;
 
+        // RECURSIVE-TYPES: a type containing itself by value has no
+        // finite layout, and lowering one used to abort the process
+        // (stack overflow, exit 134). Fail here so no later pass — and
+        // no backend — is handed the shape.
+        if let Some(err) =
+            crate::type_checker::check_recursive_types(program, self.core.string_interner)
+                .into_iter()
+                .next()
+        {
+            return Err(err);
+        }
+
         // Process all statements in the program (this includes StructDecl and ImplBlock)
         for index in 0..program.statement.len() {
             let stmt_ref = StmtRef(index as u32);

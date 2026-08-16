@@ -58,6 +58,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 
 | 関心事 | 場所 |
 |---|---|
+| 再帰型の検出 (E0013) | `type_checker/recursive_type.rs::check_recursive_types` (呼び出しは `interpreter/src/lib.rs::check_typing_diagnostics`)、lowering 側の保険は `compiler_lower/src/templates.rs` の `Guard` |
 | `val` の型注釈チェック | `type_checker/statement.rs::visit_val_impl` |
 | `var` の型注釈チェック | `type_checker/visitor.rs::process_val_type_with_mut` |
 | ブロックスコープ (lowering) | `compiler_lower/src/expr.rs::lower_expr_block` |

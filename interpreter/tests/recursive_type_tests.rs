@@ -1,0 +1,236 @@
+// RECURSIVE-TYPES: a type that contains itself by value is rejected
+// with a diagnostic instead of aborting the process.
+//
+// What these pin is the *failure mode*, not the rejection. Before this
+// check, `enum List { Cons(i64, List), Nil }` type-checked, reached
+// `compiler_lower::templates::instantiate_enum`, and recursed until the
+// host stack was gone: `fatal runtime error: stack overflow`, exit 134,
+// no message, no line number, nothing to grep. A test that only asserts
+// "this program does not run" would have passed against that behaviour
+// too — so every case here asserts on the diagnostic's code, the member
+// chain it names, and the line it blames.
+//
+// The accepted cases matter just as much: the indirections that make a
+// linked structure writable today (`ptr`, an index into a `Vec`) must
+// keep working, or the check has taken the language backwards.
+
+mod common;
+
+use common::{core_modules_dir, test_program};
+use frontend::diagnostic::Diagnostic;
+
+/// Type check `source` and return the diagnostics. Panics when the
+/// program checks cleanly — these cases are about rejection.
+fn diagnose(source: &str) -> Vec<Diagnostic> {
+    let mut parser = frontend::ParserWithInterner::new(source);
+    parser.set_source_file("test.t");
+    let mut program = parser.parse_program().expect("parse");
+    let string_interner = parser.get_string_interner();
+    let core = core_modules_dir();
+    match interpreter::check_typing_diagnostics(
+        &mut program,
+        string_interner,
+        Some(source),
+        Some("test.t"),
+        Some(core.as_path()),
+    ) {
+        Ok(()) => panic!("expected the program to fail type checking:\n{source}"),
+        Err(diagnostics) => diagnostics,
+    }
+}
+
+/// The single E0013 among `source`'s diagnostics. Later passes can pile
+/// cascades on top (a recursive struct makes every use of it
+/// `Unknown`), so the cycle report is selected by code rather than by
+/// position.
+fn recursive_type_diagnostic(source: &str) -> Diagnostic {
+    let diagnostics = diagnose(source);
+    let mut found: Vec<Diagnostic> = diagnostics
+        .into_iter()
+        .filter(|d| d.code == "E0013")
+        .collect();
+    assert_eq!(
+        found.len(),
+        1,
+        "expected exactly one recursive-type diagnostic:\n{source}"
+    );
+    found.pop().unwrap()
+}
+
+#[test]
+fn a_self_referential_enum_names_the_payload_that_closes_the_cycle() {
+    let diagnostic = recursive_type_diagnostic(
+        "enum List {
+    Cons(i64, List),
+    Nil,
+}
+
+fn main() -> i64 { 0i64 }",
+    );
+    assert!(
+        diagnostic.message.contains("`List`"),
+        "the type should be named: {}",
+        diagnostic.message
+    );
+    // The slot, not just the type: `Cons` has two payloads and only
+    // the second one recurses.
+    assert!(
+        diagnostic.message.contains("List::Cons.1: List"),
+        "the recursive payload should be named: {}",
+        diagnostic.message
+    );
+    assert_eq!(
+        diagnostic.span.expect("E0013 carries a span").line,
+        1,
+        "the declaration is what has to change"
+    );
+}
+
+#[test]
+fn a_self_referential_struct_names_the_field() {
+    let diagnostic = recursive_type_diagnostic(
+        "struct Node {
+    v: i64,
+    next: Node,
+}
+
+fn main() -> i64 { 0i64 }",
+    );
+    assert!(
+        diagnostic.message.contains("Node.next: Node"),
+        "the recursive field should be named: {}",
+        diagnostic.message
+    );
+}
+
+#[test]
+fn a_cycle_through_two_types_names_both_hops() {
+    let diagnostic = recursive_type_diagnostic(
+        "struct A { b: B }
+struct B { a: A }
+
+fn main() -> i64 { 0i64 }",
+    );
+    assert!(
+        diagnostic.message.contains("A.b: B") && diagnostic.message.contains("B.a: A"),
+        "both hops should be named so the reader can pick one to break: {}",
+        diagnostic.message
+    );
+}
+
+/// `Vec<T>` stores a `ptr`, so `Tree` below has a finite layout — and
+/// still aborted, because monomorphisation lowers a type argument
+/// before the type that carries it. The check models what lowering
+/// walks, so this is rejected too; the alternative is the crash.
+#[test]
+fn recursion_through_a_type_argument_is_rejected() {
+    let diagnostic = recursive_type_diagnostic(
+        "struct Tree {
+    v: i64,
+    kids: Vec<Tree>,
+}
+
+fn main() -> i64 { 0i64 }",
+    );
+    assert!(
+        diagnostic.message.contains("Tree.kids: Vec<Tree>"),
+        "the type argument should be shown, not just the field: {}",
+        diagnostic.message
+    );
+}
+
+/// `&T` is erased to `T` at lowering (REF-Stage-2), so a reference
+/// field recurses exactly like a value one and must not be mistaken
+/// for an indirection.
+#[test]
+fn a_reference_field_does_not_count_as_indirection() {
+    let diagnostic = recursive_type_diagnostic(
+        "struct Node {
+    v: i64,
+    next: &Node,
+}
+
+fn main() -> i64 { 0i64 }",
+    );
+    assert!(
+        diagnostic.message.contains("Node.next: &Node"),
+        "the reference field should be named: {}",
+        diagnostic.message
+    );
+}
+
+#[test]
+fn a_ptr_field_breaks_the_cycle() {
+    let result = test_program(
+        "struct Node {
+    v: i64,
+    next: ptr,
+    has_next: bool,
+}
+
+enum Chain {
+    Link(i64, ptr),
+    End,
+}
+
+fn main() -> i64 {
+    val n = Node { v: 7i64, next: __builtin_null_ptr(), has_next: false }
+    n.v
+}",
+    )
+    .expect("a `ptr` field carries no value of the struct's own type");
+    assert_eq!(result.borrow().unwrap_int64(), 7i64);
+}
+
+/// The shape a linked structure takes today: nodes in a `Vec`, edges
+/// as indices. Nothing in it is recursive at the type level, so the
+/// check must leave it alone.
+#[test]
+fn an_arena_plus_index_list_still_runs() {
+    let result = test_program(
+        "struct Node {
+    v: i64,
+    next: u64,
+}
+
+fn main() -> i64 {
+    var arena: Vec<Node> = Vec::new()
+    val a = Node { v: 3i64, next: 9999u64 }
+    arena.push(a)
+    val b = Node { v: 2i64, next: 0u64 }
+    arena.push(b)
+    val c = Node { v: 1i64, next: 1u64 }
+    arena.push(c)
+
+    var i: u64 = 2u64
+    var total: i64 = 0i64
+    while i != 9999u64 {
+        val n: Node = arena.get(i)
+        total = total + n.v
+        i = n.next
+    }
+    total
+}",
+    )
+    .expect("an index is a u64, not a Node");
+    assert_eq!(result.borrow().unwrap_int64(), 6i64);
+}
+
+/// A generic type whose parameter is never instantiated with itself is
+/// not recursive, however many times it nests.
+#[test]
+fn a_generic_type_used_at_another_type_is_not_a_cycle() {
+    let result = test_program(
+        "struct Wrapper<T> {
+    v: T,
+}
+
+fn main() -> i64 {
+    val inner = Wrapper { v: 5i64 }
+    val outer = Wrapper { v: inner }
+    outer.v.v
+}",
+    )
+    .expect("Wrapper<Wrapper<i64>> is finite");
+    assert_eq!(result.borrow().unwrap_int64(), 5i64);
+}

@@ -49,6 +49,9 @@ mod error_handling;
 mod type_conversion;
 mod tests;
 
+mod recursive_type;
+pub use recursive_type::check_recursive_types;
+
 mod visitor;
 mod visitor_impl;
 mod module_access;

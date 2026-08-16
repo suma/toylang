@@ -189,6 +189,10 @@ pub mod codes {
     /// A lexical failure: a literal or character the lexer could not
     /// read (`"\q"`, `"\x80"`, an unterminated interpolation, ...).
     pub const LEXICAL: &str = "E0012";
+    /// A struct / enum that contains itself with no indirection
+    /// (RECURSIVE-TYPES). It has no finite layout, so no backend can
+    /// represent it.
+    pub const RECURSIVE_TYPE: &str = "E0013";
 
     /// Every code, in order. `crate::explain` is checked against this
     /// list by a test, so a new code cannot ship without prose.
@@ -205,6 +209,7 @@ pub mod codes {
         UNCATEGORISED,
         TYPE_HOLE,
         LEXICAL,
+        RECURSIVE_TYPE,
     ];
 }
 
@@ -221,6 +226,7 @@ fn code_for(kind: &TypeCheckErrorKind) -> &'static str {
         TypeCheckErrorKind::AccessDenied { .. } => codes::ACCESS_DENIED,
         TypeCheckErrorKind::GenericError { .. } => codes::UNCATEGORISED,
         TypeCheckErrorKind::TypeHole { .. } => codes::TYPE_HOLE,
+        TypeCheckErrorKind::RecursiveType { .. } => codes::RECURSIVE_TYPE,
     }
 }
 

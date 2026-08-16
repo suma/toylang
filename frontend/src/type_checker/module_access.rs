@@ -27,6 +27,14 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.errors.clear();
         let prev_recovery = std::mem::replace(&mut self.recovery_enabled, true);
 
+        // RECURSIVE-TYPES: a type containing itself by value has no
+        // finite layout, and lowering one used to abort the process.
+        // Reported before anything else so the cause comes ahead of the
+        // cascade it produces at each use site.
+        let recursive =
+            crate::type_checker::check_recursive_types(program, self.core.string_interner);
+        self.errors.extend(recursive);
+
         // Collect errors during type checking instead of returning immediately
         for func in &program.function {
             if let Err(e) = self.type_check(func.clone()) {

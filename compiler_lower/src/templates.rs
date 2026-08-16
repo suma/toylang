@@ -16,7 +16,8 @@
 //! `instantiate_struct`) — keeping them in one module avoids a
 //! gnarly visibility dance.
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 
 use frontend::ast::{File, Stmt, StmtRef};
 use frontend::type_decl::TypeDecl;
@@ -24,6 +25,90 @@ use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 use super::types::{intern_tuple, lower_scalar};
 use crate::ir::{EnumId, EnumVariant, Module, StructId, Type};
+
+/// Instantiations currently being lowered, as a cycle guard.
+///
+/// `instantiate_struct` / `instantiate_enum` memoise only once every
+/// member is lowered, so a type reachable from its own members
+/// re-entered itself forever: the process died with
+/// `fatal runtime error: stack overflow` and no diagnostic
+/// (RECURSIVE-TYPES). The frontend now rejects those declarations
+/// outright — `frontend::type_checker::check_recursive_types` — and
+/// this is the backstop for any path that reaches lowering anyway
+/// (an embedder calling `lower_program` directly, or a future edge the
+/// frontend graph does not model). It turns an abort into an ordinary
+/// lowering error, which every caller already handles.
+///
+/// Thread-local rather than threaded through the ~15 call sites: the
+/// set is scratch state for one `lower_program` call, and lowering is
+/// single-threaded within a program. `Guard` removes the entry on
+/// drop, so an early `?` return cannot leave a stale key behind.
+type InstanceKey = (bool, DefaultSymbol, Vec<Type>);
+
+thread_local! {
+    static IN_PROGRESS: RefCell<HashSet<InstanceKey>> = RefCell::new(HashSet::new());
+
+    /// The cycle message from the innermost refused `Guard::enter`.
+    ///
+    /// The member-lowering helpers (`substitute_payload_type` /
+    /// `substitute_field_type`) return `Option`, so they drop the inner
+    /// `Err` and their caller reports its own "unsupported member type"
+    /// fallback — which names the wrong cause. The outer frame takes
+    /// this instead when it has one. Cleared whenever a fresh
+    /// instantiation starts, so a message can never outlive the walk
+    /// that produced it.
+    static PENDING_CYCLE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+struct Guard(InstanceKey);
+
+impl Guard {
+    /// `None` when this instantiation is already on the stack.
+    fn enter(key: InstanceKey) -> Option<Self> {
+        IN_PROGRESS.with(|set| {
+            if !set.borrow_mut().insert(key.clone()) {
+                return None;
+            }
+            PENDING_CYCLE.with(|c| *c.borrow_mut() = None);
+            Some(Guard(key))
+        })
+    }
+}
+
+/// Record the cycle so the frame that swallows this `Err` can report
+/// it, and hand the same message back for the immediate return.
+fn note_cycle(message: String) -> String {
+    PENDING_CYCLE.with(|c| *c.borrow_mut() = Some(message.clone()));
+    message
+}
+
+/// The cycle message, if a nested instantiation refused since this one
+/// started. Consumes it.
+fn take_pending_cycle() -> Option<String> {
+    PENDING_CYCLE.with(|c| c.borrow_mut().take())
+}
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        IN_PROGRESS.with(|set| {
+            set.borrow_mut().remove(&self.0);
+        });
+    }
+}
+
+/// The message both instantiation paths report for a cycle. Kept in
+/// one place so the two read identically.
+fn recursive_type_error(
+    kind: &str,
+    base_name: DefaultSymbol,
+    interner: &DefaultStringInterner,
+) -> String {
+    format!(
+        "{kind} `{}` is recursive: it contains itself with no indirection, so it has no \
+         finite layout. Break the cycle with a `ptr` field or an index into a `Vec`",
+        interner.resolve(base_name).unwrap_or("?"),
+    )
+}
 
 /// `struct Name { f1: T1, f2: T2, ... }` declarations, indexed by
 /// symbol. Field names stay as `String` because the AST stores them
@@ -150,6 +235,9 @@ pub(super) fn instantiate_enum(
     if let Some(id) = module.enum_index.get(&(base_name, type_args.clone())).copied() {
         return Ok(id);
     }
+    let Some(_guard) = Guard::enter((true, base_name, type_args.clone())) else {
+        return Err(note_cycle(recursive_type_error("enum", base_name, interner)));
+    };
     let template = template.clone();
     let subst: HashMap<DefaultSymbol, Type> = template
         .generic_params
@@ -170,14 +258,16 @@ pub(super) fn instantiate_enum(
                 interner,
             )
             .ok_or_else(|| {
-                format!(
-                    "enum `{}::{}` has unsupported payload type `{:?}` \
-                     (compiler MVP accepts i64 / u64 / f64 / bool, or another \
-                     enum substituted from a generic parameter)",
-                    interner.resolve(base_name).unwrap_or("?"),
-                    interner.resolve(v.name).unwrap_or("?"),
-                    pt,
-                )
+                take_pending_cycle().unwrap_or_else(|| {
+                    format!(
+                        "enum `{}::{}` has unsupported payload type `{:?}` \
+                         (compiler MVP accepts i64 / u64 / f64 / bool, or another \
+                         enum substituted from a generic parameter)",
+                        interner.resolve(base_name).unwrap_or("?"),
+                        interner.resolve(v.name).unwrap_or("?"),
+                        pt,
+                    )
+                })
             })?;
             if !is_supported_enum_payload(lowered) {
                 return Err(format!(
@@ -375,6 +465,9 @@ pub(super) fn instantiate_struct(
     {
         return Ok(id);
     }
+    let Some(_guard) = Guard::enter((false, base_name, type_args.clone())) else {
+        return Err(note_cycle(recursive_type_error("struct", base_name, interner)));
+    };
     let template = template.clone();
     let subst: HashMap<DefaultSymbol, Type> = template
         .generic_params
@@ -387,12 +480,14 @@ pub(super) fn instantiate_struct(
         let lowered =
             substitute_field_type(ftype, &subst, module, templates, enum_templates, interner)
                 .ok_or_else(|| {
-                    format!(
-                        "compiler MVP cannot lower struct field `{}.{}: {:?}`",
-                        interner.resolve(base_name).unwrap_or("?"),
-                        fname,
-                        ftype,
-                    )
+                    take_pending_cycle().unwrap_or_else(|| {
+                        format!(
+                            "compiler MVP cannot lower struct field `{}.{}: {:?}`",
+                            interner.resolve(base_name).unwrap_or("?"),
+                            fname,
+                            ftype,
+                        )
+                    })
                 })?;
         if matches!(lowered, Type::Unit) {
             return Err(format!(
@@ -606,5 +701,101 @@ pub(super) fn lower_param_or_return_type(
             Some(Type::Tuple(id))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The frontend rejects recursive declarations before lowering
+    /// ever sees them, but nothing stops an embedder from calling
+    /// `lower_program` on an AST of its own. This is the backstop:
+    /// the instantiation has to *return* rather than exhaust the
+    /// host stack, since a stack overflow aborts the whole process
+    /// and no caller can recover from it.
+    #[test]
+    fn a_self_referential_enum_errors_instead_of_recursing() {
+        let mut interner = DefaultStringInterner::new();
+        let list = interner.get_or_intern("List");
+        let cons = interner.get_or_intern("Cons");
+        let mut enum_defs: EnumDefs = HashMap::new();
+        enum_defs.insert(
+            list,
+            EnumTemplate {
+                generic_params: Vec::new(),
+                variants: vec![EnumTemplateVariant {
+                    name: cons,
+                    payload_types: vec![TypeDecl::Identifier(list)],
+                }],
+            },
+        );
+        let struct_defs: StructDefs = HashMap::new();
+        let mut module = Module::new();
+
+        let err = instantiate_enum(
+            &mut module,
+            &enum_defs,
+            &struct_defs,
+            list,
+            Vec::new(),
+            &interner,
+        )
+        .expect_err("a self-referential enum has no finite layout");
+        assert!(err.contains("is recursive"), "unexpected message: {err}");
+    }
+
+    #[test]
+    fn a_self_referential_struct_errors_instead_of_recursing() {
+        let mut interner = DefaultStringInterner::new();
+        let node = interner.get_or_intern("Node");
+        let mut struct_defs: StructDefs = HashMap::new();
+        struct_defs.insert(
+            node,
+            StructTemplate {
+                generic_params: Vec::new(),
+                fields: vec![("next".to_string(), TypeDecl::Identifier(node))],
+            },
+        );
+        let enum_defs: EnumDefs = HashMap::new();
+        let mut module = Module::new();
+
+        let err = instantiate_struct(
+            &mut module,
+            &struct_defs,
+            &enum_defs,
+            node,
+            Vec::new(),
+            &interner,
+        )
+        .expect_err("a self-referential struct has no finite layout");
+        assert!(err.contains("is recursive"), "unexpected message: {err}");
+    }
+
+    /// The guard is scoped to one instantiation, not to the whole
+    /// program: lowering the same type twice in sequence has to
+    /// succeed both times (the second through the memo).
+    #[test]
+    fn the_guard_does_not_leak_between_instantiations() {
+        let mut interner = DefaultStringInterner::new();
+        let point = interner.get_or_intern("Point");
+        let mut struct_defs: StructDefs = HashMap::new();
+        struct_defs.insert(
+            point,
+            StructTemplate {
+                generic_params: Vec::new(),
+                fields: vec![("x".to_string(), TypeDecl::Int64)],
+            },
+        );
+        let enum_defs: EnumDefs = HashMap::new();
+        let mut module = Module::new();
+
+        let first =
+            instantiate_struct(&mut module, &struct_defs, &enum_defs, point, Vec::new(), &interner)
+                .expect("first instantiation");
+        let second =
+            instantiate_struct(&mut module, &struct_defs, &enum_defs, point, Vec::new(), &interner)
+                .expect("second instantiation");
+        assert_eq!(first, second, "the same type interns to the same id");
     }
 }

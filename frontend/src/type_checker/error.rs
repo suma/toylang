@@ -106,6 +106,10 @@ pub enum TypeCheckErrorKind {
     /// tell "here is the type you asked for" apart from "your program is
     /// wrong", which are opposite signals.
     TypeHole { name: String, inferred: String },
+    /// RECURSIVE-TYPES: a struct / enum that contains itself with no
+    /// indirection. `path` is the chain of members that closes the
+    /// cycle, e.g. ``` `A.b: B` -> `B.a: A` ```.
+    RecursiveType { name: String, path: String },
 }
 
 #[derive(Debug, Clone)]
@@ -288,6 +292,19 @@ impl TypeCheckError {
         }
     }
 
+    /// RECURSIVE-TYPES: a type that contains itself by value. `path`
+    /// is the member chain that closes the cycle, so the reader can see
+    /// which field or payload to put behind an indirection.
+    pub fn recursive_type(name: String, path: String) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::RecursiveType { name, path }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
     pub fn with_context(mut self, context: &str) -> Self {
         self.context = Some(context.to_string());
         self
@@ -343,6 +360,12 @@ impl std::fmt::Display for TypeCheckError {
             }
             TypeCheckErrorKind::TypeHole { name, inferred } => {
                 format!("type hole: `{}` has type `{}`", name, inferred)
+            }
+            TypeCheckErrorKind::RecursiveType { name, path } => {
+                format!(
+                    "recursive type `{}` contains itself with no indirection: {}",
+                    name, path
+                )
             }
         };
 

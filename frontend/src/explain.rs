@@ -58,6 +58,7 @@ const ENTRIES: &[Entry] = &[
     (codes::UNCATEGORISED, E0010),
     (codes::TYPE_HOLE, E0011),
     (codes::LEXICAL, E0012),
+    (codes::RECURSIVE_TYPE, E0013),
 ];
 
 const E0001: &str = "\
@@ -355,6 +356,42 @@ is unaffected: it yields the `u32` value 255, not str bytes.
 
 The `\\xHH` ASCII limit and the `\\u{HEX}` spelling of the fix are
 documented in the language reference's string-literal section.";
+
+const E0013: &str = "\
+E0013: a type contains itself with no indirection
+
+Every backend flattens a struct / enum / tuple down to its leaf
+scalars, so a type that holds a value of itself has no finite size.
+
+    enum List { Cons(i64, List), Nil }   # E0013: List::Cons.1: List
+    struct Node { v: i64, next: Node }   # E0013: Node.next: Node
+
+The diagnostic prints the member chain that closes the cycle, so a
+cycle through two types names both hops:
+`A.b: B -> B.a: A`.
+
+A **type argument counts as containment** even when the type it is
+passed to stores a pointer:
+
+    struct Tree { v: i64, kids: Vec<Tree> }   # E0013
+
+`Vec<Tree>` is a fixed-size struct, but monomorphising it lowers
+`Tree` first, and `Tree` is what is being lowered — the same cycle,
+one level up. There is no `Box<T>` yet to break it (design-docs/todo.md
+BOX-T).
+
+Write the indirection by hand instead. Either store an index into a
+side table:
+
+    struct Node { v: i64, next: u64 }   # index into a `Vec<Node>`
+
+or hold a raw `ptr` and go through the heap builtins:
+
+    struct Node { v: i64, next: ptr, has_next: bool }
+
+`ptr`, function types and `dyn Trait` are the positions that break a
+cycle. `&T` is not: it is erased to `T` at lowering, so `next: &Node`
+recurses exactly like `next: Node`.";
 
 #[cfg(test)]
 mod tests {

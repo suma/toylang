@@ -2826,8 +2826,49 @@ at the call site.
 
 ### Recursion
 
-The interpreter limits recursion depth to 1000 frames to prevent stack
-overflow on cyclic structures.
+**Recursive functions** are unrestricted. The default execution engine
+keeps its frames on the heap, so depth is bounded by memory rather than
+by the host stack (a 200 000-deep chain runs). The tree-walker — the
+fallback engine, used when a program contains something the IR does not
+cover yet — recurses on the host stack instead and dies with a process
+abort a few hundred frames in; that is a defect, tracked in
+`design-docs/todo.md`, not a language rule.
+
+**Recursive types** are rejected. A struct or enum that contains
+itself, directly or through other types, has no finite layout: every
+backend flattens a compound value down to its leaf scalars, so there is
+nothing to lay out.
+
+```rust
+enum List { Cons(i64, List), Nil }   # [E0013]
+struct Node { v: i64, next: Node }   # [E0013]
+struct A { b: B }                    # [E0013] — A.b: B -> B.a: A
+struct B { a: A }
+```
+
+A **type argument counts as containment**, even when the type it is
+passed to only stores a pointer: `struct Tree { kids: Vec<Tree> }` is
+rejected too, because monomorphisation lowers `Vec`'s argument before
+`Vec` itself and so re-enters `Tree` while `Tree` is being lowered.
+
+The positions that break a cycle are the ones that hold no value of the
+named type: `ptr`, function types, and `dyn Trait`. `&T` is **not** one
+of them — a reference is erased to its inner type at lowering, so
+`next: &Node` recurses exactly like `next: Node` (and a reference-typed
+struct field is separately rejected anyway).
+
+Write the indirection explicitly. Either keep the nodes in a `Vec` and
+make the edge an index:
+
+```rust
+struct Node { v: i64, next: u64 }   # index into a Vec<Node>
+```
+
+or hold a raw `ptr` and go through the heap builtins
+(`__builtin_heap_alloc` / `__builtin_ptr_read` / `__builtin_ptr_write`).
+`interpreter/example/linked_list_arena.t` is a worked example of the
+first shape. A `Box<T>` that would make this ergonomic does not exist
+yet (`design-docs/todo.md`, BOX-T).
 
 ---
 

@@ -11,6 +11,7 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-16
+- **RECURSIVE-TYPES step 1: 再帰型を診断で拒否 (E0013)** — 間接化なしで自分を含む struct / enum は有限な layout を持てないのに、型検査を素通りして lowering (`instantiate_struct` / `instantiate_enum` は memo 化の**前**にメンバを lower する) で host stack を食い潰し、**exit 134 / メッセージ無し**で abort していた。型引数経由 (`Vec<Tree>`) も同じ経路で落ちるので同じ検査に含む。`compiler_lower` 側にも in-progress guard を入れ、abort を通常の lowering error に落とす二段構え。`Box<T>` (BOX-T) は別途。
 - **parser: 改行前 `(` は method call に継続しない** — `b.v\n(x as i64)` が `b.v(...)` と parse され、ユーザが書いていない呼び出しについて型エラーが出ていた。
 - **CONCRETE-IMPL-Phase-2c (generic-wildcard 完遂)** — 型チェッカの method registry を `Vec<MethodSpec>` 化し、3 層 (型検査 / interpreter / compiler) の dispatch を exact → wildcard → lone-spec に統一。concrete impl が generic impl を override できる。
 - **STR-INTERP-COMPOUND-EXTEND-ENUM** — enum 値の補間を AOT / compiler JIT で (tag brif chain + variant ごとの concat)。interpreter JIT が tag を出力していたバグも修正。
@@ -186,16 +187,26 @@
 
 ### 型システム (NEW-TYPE-SYSTEM)
 
-- **RECURSIVE-TYPES: 再帰型の扱いを決める** ★★★ — 連結リスト・木が**書けない**。
-  しかも壊れ方が悪い: `struct Node { v: i64, next: Node }` は**型検査を素通りし**、
-  `enum List { Cons(i64, List), Nil }` は宣言だけなら通って**構築した瞬間に
-  stack overflow で abort する** (既知の不具合の節を参照)。決めるべきは
-  「拒否するのか、`Box<T>` で間接化させるのか」。**最低限の第一歩は
-  crash を診断に変えること** (再帰型の検出 → エラー) で、これは安い。
-- **BOX-T: `Box<T>`** ★★★ — heap 間接の first-class 化。RECURSIVE-TYPES の解
-  であり、**A5-P4 (`Box<dyn Trait>`) の前提**でもある。現状は raw `ptr` +
-  `__builtin_ptr_read/write` で手書きするしかない。`Drop` / auto-drop と
-  所有権の相互作用 (GENERIC-RAII の scope-bound drop に乗るか) が設計の要点。
+- **BOX-T: `Box<T>`** ★★★ — heap 間接の first-class 化。**再帰型を書ける
+  ようにする唯一の道**であり (step 1 で拒否は landing 済み、E0013)、
+  **A5-P4 (`Box<dyn Trait>`) の前提**でもある。現状は arena + index か
+  raw `ptr` + `__builtin_ptr_read/write` で手書きする
+  (`interpreter/example/linked_list_arena.t`)。
+  - **前提となる改修**: `instantiate_struct` / `instantiate_enum` の
+    two-phase interning (id を先に予約してからメンバを埋める)。今は
+    memo 挿入がメンバ lower の後なので、`Box<List>` の layout が有限でも
+    `(Box, [Enum(List)])` の型引数解決で `List` に再入する。
+  - **設計判断が先**: 値意味論との整合。代入・引数渡しが値コピーなので
+    `Box` を素直にコピーすると同じ ptr を 2 人が持ち、`Drop`
+    (GENERIC-RAII) と組むと二重解放になる。move を入れるか / refcount か /
+    `Drop` を付けず手動 free に留めるかを決めてから stdlib に置くこと。
+  - **付随して埋まると嬉しい穴**: `val n: Node = __builtin_ptr_read(p, 0)`
+    が動かない。型検査の型ヒント許容リスト
+    (`type_checker/visitor_impl.rs::visit_builtin_call`) に
+    `TypeDecl::Identifier(_)` が無く、lowering 側も
+    `lower_scalar_with_subst` が `Identifier(名前) → StructId` を解決しない
+    (generic 実体化中の `T` しか見ない)。埋まれば `Box<T>` を待たずに
+    raw ptr で再帰構造を手書きできる。
 - **NEWTYPE: tuple struct / newtype (`struct Meters(i64)`)** ★ — parse エラー。
   単位型・ID 型のラップが「1 フィールドの struct + 冗長な field 名」になる。
   parser + 位置指定のフィールドアクセス (`m.0`) が要る。
@@ -281,18 +292,24 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **1800 テスト** (100% 成功、2026-08-15 時点)。
+- 合計 **1833 テスト** (100% 成功、2026-08-16 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - ワークスペース全体で ~5s。`compiler/build.rs` が `toylang_rt.c` を pre-build し、リンク結果は `TOY_LINK_CACHE_DIR` で content-addressed にキャッシュされる (キャッシュが効くにはコード生成が決定的である必要がある — `compiler/tests/reproducible_build.rs` が pin)。
 
 ### 既知の不具合
 
-- **再帰 enum の構築でプロセスが stack overflow (2026-08-16 確認)** —
-  `enum List { Cons(i64, List), Nil }` は宣言だけなら通り、
-  `List::Cons(1i64, List::Nil)` を書くと `fatal runtime error: stack
-  overflow` で abort する (exit 134)。`struct Node { v: i64, next: Node }`
-  は型検査を素通りする。**診断ではなく crash なのでユーザは原因に辿り
-  着けない**。RECURSIVE-TYPES / BOX-T を参照。
+- **tree-walker の関数再帰が ~200 フレームで abort する (2026-08-16 実測)** —
+  IR VM (既定エンジン) はヒープにフレームを積むので 200000 段でも通るが、
+  IR VM が lower を諦めて **tree-walker に fallback したプログラムだけ**
+  host stack を使い、debug ビルドで ~200 段で `fatal runtime error:
+  stack overflow` (exit 134) になる。`max_recursion_depth: 1000`
+  (`evaluation/mod.rs`) のガードは**式評価の入れ子しか数えていない**ので
+  先に host stack が尽きる。再帰型 (E0013) と違い、これは診断化ではなく
+  ガードの数え方を関数フレームに変える話。
+- **型不一致診断が `Identifier(SymbolU32 { value: 40 })` と Debug 表記を
+  漏らす** — `TypeCheckErrorKind::TypeMismatch` の `Display` が `{:?}`
+  なので、解決前の user 型名が生の symbol id で出る。`source_name` /
+  `type_name_for_error` に寄せる。
 
 ### パーサーの既知制限事項
 - bare `self` 非対応 — `self: Self` / `&self` / `&mut self` のいずれかを書く。

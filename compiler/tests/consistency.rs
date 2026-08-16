@@ -7748,3 +7748,77 @@ fn a_type_holding_a_vec_of_itself_round_trips() {
     "#;
     assert_consistent(src, "vec_of_self");
 }
+
+#[test]
+fn a_transferred_value_is_not_freed_by_the_binding_that_built_it() {
+    // BOX-T phase D, and the bug the whole line of work started from.
+    //
+    // `c` owns a heap slot and `store` keeps it after the push. Before
+    // ownership transfer, `c` freed the slot at the end of its scope
+    // and the read below hit freed memory: the interpreter returned 7
+    // and the AOT binary took SIGTRAP. Backends disagreeing — one wrong
+    // answer, one crash — is the shape this pins against.
+    //
+    // Nobody frees the slot now: the `Vec` holds it and `Vec` has no
+    // element drop. That is a leak, which `--profile=mem` reports, and
+    // it is the safe direction to be wrong in.
+    let src = r#"
+        struct Cell<T> { p: ptr }
+
+        impl<T> Cell<T> {
+            fn new(v: T) -> Self {
+                val p: ptr = __builtin_heap_alloc(__builtin_sizeof(v))
+                __builtin_ptr_write(p, 0u64, v)
+                Cell { p: p }
+            }
+            fn get(&self) -> T {
+                val v: T = __builtin_ptr_read(self.p, 0u64)
+                v
+            }
+        }
+
+        impl<T> Drop for Cell<T> {
+            fn drop(&mut self) { __builtin_heap_free(self.p) }
+        }
+
+        fn main() -> i64 {
+            var store: Vec<Cell<i64>> = Vec::new()
+            val c: Cell<i64> = Cell::new(7i64)
+            store.push(c)
+            val back: Cell<i64> = store.get(0u64)
+            back.get()
+        }
+    "#;
+    assert_consistent(src, "transferred_value_survives");
+}
+
+#[test]
+fn a_value_that_was_never_transferred_still_drops() {
+    // The other half: suppression has to be limited to bindings that
+    // actually handed their value over. A `Cell` that stays put is
+    // still freed at scope exit, and the `Drop` body still runs.
+    let src = r#"
+        struct Cell { p: ptr }
+
+        impl Cell {
+            fn new(v: i64) -> Self {
+                val p: ptr = __builtin_heap_alloc(8u64)
+                __builtin_ptr_write(p, 0u64, v)
+                Cell { p: p }
+            }
+        }
+
+        impl Drop for Cell {
+            fn drop(&mut self) {
+                println("freed")
+                __builtin_heap_free(self.p)
+            }
+        }
+
+        fn main() -> i64 {
+            val c = Cell::new(7i64)
+            0i64
+        }
+    "#;
+    assert_renders(src, "untransferred_value_drops", "freed\n");
+}

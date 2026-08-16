@@ -11,6 +11,7 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-16
+- **BOX-T Phase D: 移動された束縛は drop しない (3 バックエンド)** — 実測していた use-after-free が解消。`File::transferred_bindings` (`val`/`var` 文の `StmtRef` 集合) を型検査が埋め、tree-walker の `register_drop_if_needed` と `compiler_lower` の `register_drop_for_struct_binding` が参照して登録をスキップ。移動先 (Vec / struct field / callee) には drop glue が無いので**解放されない = leak** になるが、UAF より安全側で `--profile=mem` の `leaks` に出る。`FULL_AST_CACHE_SCHEMA_VERSION` を 7 に bump。
 - **BOX-T Phase C: 所有権の移動と use-after-move チェック (E0014)** — `impl Drop` を持つ型の値を「今のスコープより長生きする場所」(値渡し引数 / struct・tuple・array の要素 / 代入右辺) に置くと所有権が移り、以後その名前を読むと E0014。`val b = a` は**別名のままで移動ではない** (compound の alias は仕様でテストもある)、`&T` 引数は borrow、raw ptr builtin は無検査 (`Box::new` がそれで書かれている)。分岐 / ループ本体からの移動は drop flag が要るので専用診断で拒否。`frontend/src/type_checker/move_check.rs`、診断のみでランタイム変更は Phase D。
 - **BOX-T Phase A+B: 型引数経由の再帰を通す** — `struct Tree { kids: Vec<Tree> }` が書けるようになった。(A) `instantiate_struct` / `instantiate_enum` がメンバを lower する**前**に id を予約 (`Module::reserve_*` / `fill_*`)。(B) 型引数が辺になるのは**渡し先がそのパラメータを by-value で持つときだけ**、という規則を `check_recursive_types` に (宣言グラフ上の fixpoint)。member 位置と型引数位置で instantiate の入口を分け、member 側は予約を見ないので `struct Node { next: Node }` の backstop (Guard) は生きたまま。
 - **PTR-READ-ENUM: enum の byte layout を関数境界の flatten に統一** — enum に**サイズが 3 つ**あった (`__builtin_sizeof` の `1 + max(payload)` / tree-walker の「手元の variant 依存」/ 関数境界 flatten の `u64 tag + 全 variant 連結`)。3 番目に寄せ、`Vec<Option<T>>` と `enum List { Cons(i64, ptr), Nil }` が 3 バックエンドで動くように。`Vec` の `elem_size` は最初に push した要素から採るので、variant 依存のサイズは stride がバラつくバグでもあった。
@@ -320,7 +321,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **1850 テスト** (100% 成功、2026-08-16 時点)。
+- 合計 **1852 テスト** (100% 成功、2026-08-16 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - ワークスペース全体で ~5s。`compiler/build.rs` が `toylang_rt.c` を pre-build し、リンク結果は `TOY_LINK_CACHE_DIR` で content-addressed にキャッシュされる (キャッシュが効くにはコード生成が決定的である必要がある — `compiler/tests/reproducible_build.rs` が pin)。
 

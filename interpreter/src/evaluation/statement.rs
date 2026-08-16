@@ -134,18 +134,23 @@ impl EvaluationContext<'_> {
             self.stmt_pool.get(s)
                 .ok_or_else(|| InterpreterError::InternalError("Invalid statement reference".to_string()))
         };
-        let statements = statements.iter()
-            .map(to_stmt)
+        // The refs are kept alongside the statements: a `val` / `var`
+        // that transferred its value away must not register a drop, and
+        // `File::transferred_bindings` is keyed by the statement
+        // (BOX-T).
+        let statements = statements
+            .iter()
+            .map(|s| to_stmt(s).map(|stmt| (*s, stmt)))
             .collect::<Result<Vec<_>, _>>()?;
         let mut last: Option<EvaluationResult> = None;
 
-        for stmt in statements {
+        for (stmt_ref, stmt) in statements {
             match stmt {
                 Stmt::Val(name, annotation, e) => {
                     // val/var declarations don't themselves produce a value, but
                     // the rhs may propagate control flow (e.g. `val x = return ...`)
                     // which we must surface to the enclosing function/loop.
-                    match self.handle_val_declaration(name, annotation.as_ref(), &e)? {
+                    match self.handle_val_declaration(stmt_ref, name, annotation.as_ref(), &e)? {
                         flow @ (EvaluationResult::Return(_)
                                 | EvaluationResult::Break(_)
                                 | EvaluationResult::Continue(_)) => return Ok(flow),
@@ -153,7 +158,7 @@ impl EvaluationContext<'_> {
                     }
                 }
                 Stmt::Var(name, annotation, e) => {
-                    match self.handle_var_declaration(name, annotation.as_ref(), &e)? {
+                    match self.handle_var_declaration(stmt_ref, name, annotation.as_ref(), &e)? {
                         flow @ (EvaluationResult::Return(_)
                                 | EvaluationResult::Break(_)
                                 | EvaluationResult::Continue(_)) => return Ok(flow),
@@ -248,6 +253,7 @@ impl EvaluationContext<'_> {
     /// previously this would surface as a stray "Propagate flow:" error.
     fn handle_val_declaration(
         &mut self,
+        stmt_ref: StmtRef,
         name: DefaultSymbol,
         annotation: Option<&frontend::type_decl::TypeDecl>,
         expr: &ExprRef,
@@ -258,7 +264,7 @@ impl EvaluationContext<'_> {
         let value = apply_annotation_type_args(value, annotation);
         // Phase 5 (汎用 RAII): record the binding for auto-drop
         // before consuming `value` into the environment.
-        self.register_drop_if_needed(name, &value);
+        self.register_drop_if_needed(stmt_ref, name, &value);
         self.environment.set_val(name, value);
         Ok(EvaluationResult::None)
     }
@@ -267,6 +273,7 @@ impl EvaluationContext<'_> {
     /// convention as `handle_val_declaration`.
     fn handle_var_declaration(
         &mut self,
+        stmt_ref: StmtRef,
         name: DefaultSymbol,
         annotation: Option<&frontend::type_decl::TypeDecl>,
         expr: &Option<ExprRef>,
@@ -284,7 +291,7 @@ impl EvaluationContext<'_> {
         // Drop. (Reassignment via `var x = ...` later in scope
         // doesn't re-trigger registration; the original Rc is
         // shared so the drop record stays valid.)
-        self.register_drop_if_needed(name, &value);
+        self.register_drop_if_needed(stmt_ref, name, &value);
         self.environment.set_var(name, value, VariableSetType::Insert, self.string_interner)?;
         Ok(EvaluationResult::None)
     }

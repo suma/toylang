@@ -44,7 +44,14 @@ impl<'a> FunctionLower<'a> {
         match stmt {
             Stmt::Expression(e) => self.lower_expr(&e),
             Stmt::Val(name, ty, e) | Stmt::Var(name, ty, Some(e)) => {
-                self.lower_let(name, ty.as_ref(), &e)
+                // BOX-T: `register_drop_for_struct_binding` is reached
+                // from a dozen places inside `lower_let`, so the
+                // statement being lowered is parked here rather than
+                // threaded through all of them.
+                let previous = self.current_let_stmt.replace(*stmt_ref);
+                let result = self.lower_let(name, ty.as_ref(), &e);
+                self.current_let_stmt = previous;
+                result
             }
             Stmt::Var(name, ty, None) => {
                 let scalar = ty

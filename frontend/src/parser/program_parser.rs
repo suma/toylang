@@ -755,6 +755,7 @@ impl<'a> Parser<'a> {
             function_module_paths,
             consts,
             tests,
+            transferred_bindings: std::collections::HashSet::new(),
             statement: stmt,
             expression: expr,
             location_pool,

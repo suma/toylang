@@ -50,8 +50,19 @@ use crate::type_checker::error::SourceLocation;
 use crate::type_checker::TypeCheckError;
 use crate::type_decl::TypeDecl;
 
-/// Report every read of a binding whose value has been transferred
-/// away, plus every transfer this pass refuses to model.
+/// What the pass found: the diagnostics, and the bindings whose value
+/// left them.
+pub struct MoveAnalysis {
+    /// Reads of a transferred binding, plus transfers this pass refuses
+    /// to model.
+    pub errors: Vec<TypeCheckError>,
+    /// `val` / `var` statements whose value was handed over. The
+    /// backends must not drop these — whatever received the value owns
+    /// it now.
+    pub transferred: HashSet<StmtRef>,
+}
+
+/// Analyse ownership transfer across every function body.
 ///
 /// `expr_types` is the type checker's own record, so nothing is
 /// re-inferred here; a binding whose type cannot be determined is
@@ -60,10 +71,10 @@ pub fn check_moves(
     program: &File,
     interner: &DefaultStringInterner,
     expr_types: &HashMap<ExprRef, TypeDecl>,
-) -> Vec<TypeCheckError> {
+) -> MoveAnalysis {
     let owning = owning_types(program, interner);
     if owning.is_empty() {
-        return Vec::new();
+        return MoveAnalysis { errors: Vec::new(), transferred: HashSet::new() };
     }
     let signatures = Signatures::collect(program, interner);
 
@@ -76,6 +87,7 @@ pub fn check_moves(
         scopes: Vec::new(),
         moved: HashMap::new(),
         errors: Vec::new(),
+        transferred: HashSet::new(),
     };
     for function in &program.function {
         if function.is_extern {
@@ -83,7 +95,7 @@ pub fn check_moves(
         }
         checker.run_function(&function.parameter, function.code);
     }
-    checker.errors
+    MoveAnalysis { errors: checker.errors, transferred: checker.transferred }
 }
 
 /// Types with an `impl Drop`. Read from the statement pool, the same
@@ -183,6 +195,9 @@ struct Owned {
     /// Depth of the scope that declared it, for the conditional-move
     /// check.
     depth: usize,
+    /// The `val` / `var` statement that introduced it. `None` for a
+    /// parameter, which no scope drops.
+    decl: Option<StmtRef>,
 }
 
 struct MoveCheck<'a> {
@@ -195,6 +210,7 @@ struct MoveCheck<'a> {
     /// Where each transferred binding was transferred.
     moved: HashMap<DefaultSymbol, SourceLocation>,
     errors: Vec<TypeCheckError>,
+    transferred: HashSet<StmtRef>,
 }
 
 impl MoveCheck<'_> {
@@ -204,7 +220,7 @@ impl MoveCheck<'_> {
         self.scopes.push(Vec::new());
         for (name, ty) in params {
             if self.is_owning(ty) {
-                self.declare(*name);
+                self.declare(*name, None);
             }
         }
         self.walk_stmt(body, false);
@@ -215,13 +231,13 @@ impl MoveCheck<'_> {
         self.scopes.len()
     }
 
-    fn declare(&mut self, name: DefaultSymbol) {
+    fn declare(&mut self, name: DefaultSymbol, decl: Option<StmtRef>) {
         let depth = self.depth();
         // A fresh binding shadows whatever the name meant before,
         // including a transferred one.
         self.moved.remove(&name);
         if let Some(scope) = self.scopes.last_mut() {
-            scope.push(Owned { name, depth });
+            scope.push(Owned { name, depth, decl });
         }
     }
 
@@ -286,7 +302,7 @@ impl MoveCheck<'_> {
                 if let Some(ty) = self.binding_type(&annotation, rhs)
                     && self.is_owning(&ty)
                 {
-                    self.declare(name);
+                    self.declare(name, Some(stmt_ref));
                 }
             }
             Stmt::Var(name, annotation, Some(rhs)) => {
@@ -294,7 +310,7 @@ impl MoveCheck<'_> {
                 if let Some(ty) = self.binding_type(&annotation, rhs)
                     && self.is_owning(&ty)
                 {
-                    self.declare(name);
+                    self.declare(name, Some(stmt_ref));
                 }
             }
             Stmt::Var(_, _, None) => {}
@@ -513,6 +529,7 @@ impl MoveCheck<'_> {
             return;
         };
         let declared_depth = owned.depth;
+        let decl = owned.decl;
 
         if let Some(moved_at) = self.moved.get(&name).copied() {
             let mut error = TypeCheckError::use_after_move(self.name_of(name), moved_at.line);
@@ -538,6 +555,9 @@ impl MoveCheck<'_> {
             return;
         }
 
+        if let Some(decl) = decl {
+            self.transferred.insert(decl);
+        }
         if let Some(loc) = self.location(expr_ref) {
             self.moved.insert(name, loc);
         } else {

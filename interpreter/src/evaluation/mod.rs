@@ -206,6 +206,11 @@ pub struct EvaluationContext<'a> {
     /// struct in this set get pushed onto `drop_scopes` and
     /// `Drop::drop` is auto-called when the scope exits.
     pub(super) drop_trait_structs: std::collections::HashSet<DefaultSymbol>,
+    /// BOX-T: `val` / `var` statements whose value was handed to
+    /// something that outlives them. A binding listed here does not
+    /// register a drop — the receiver owns the resource now. Copied
+    /// from `File::transferred_bindings` at startup.
+    pub(super) transferred_bindings: std::collections::HashSet<frontend::ast::StmtRef>,
     /// Phase 5 (汎用 RAII): per-active-scope LIFO list of bindings
     /// awaiting auto-drop. Each `enter_drop_scope` pushes a fresh
     /// Vec, `register_drop` appends, `exit_drop_scope` runs the
@@ -292,6 +297,7 @@ impl<'a> EvaluationContext<'a> {
             result_symbol,
             extern_registry: extern_math::build_default_registry(),
             drop_trait_structs: std::collections::HashSet::new(),
+            transferred_bindings: std::collections::HashSet::new(),
             drop_scopes: vec![Vec::new()],
         }
     }
@@ -469,10 +475,16 @@ impl<'a> EvaluationContext<'a> {
     /// visible inside the synthesized `drop(&mut self)` call.
     pub(super) fn register_drop_if_needed(
         &mut self,
+        stmt_ref: frontend::ast::StmtRef,
         name: DefaultSymbol,
         value: &crate::value::Value,
     ) {
         if self.drop_trait_structs.is_empty() {
+            return;
+        }
+        // BOX-T: a binding that handed its value to something outliving
+        // it must not free the resource — the receiver owns it now.
+        if self.transferred_bindings.contains(&stmt_ref) {
             return;
         }
         let rc = match value {

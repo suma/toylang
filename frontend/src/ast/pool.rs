@@ -19,7 +19,10 @@ impl ExprRef {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+// `Eq` / `Hash` so a statement can be a set key — `File::
+// transferred_bindings` records ownership transfer per `val` / `var`
+// statement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StmtRef(pub u32);
 

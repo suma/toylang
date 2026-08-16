@@ -1291,6 +1291,7 @@ impl<'a> FunctionLower<'a> {
             with_scope_depth: 0,
             with_scope_arena_drops: Vec::new(),
             drop_scopes: Vec::new(),
+            current_let_stmt: None,
             current_block: None,
             next_value: 0,
             pending_struct_value: None,

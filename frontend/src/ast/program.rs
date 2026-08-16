@@ -49,6 +49,20 @@ pub struct File {
     /// Normal execution never calls them.
     pub tests: Vec<TestCase>,
 
+    /// Declaration statements of bindings whose value was handed to
+    /// something that outlives them (BOX-T phase C/D).
+    ///
+    /// Filled by `type_checker::check_moves` after the bodies are
+    /// checked, and read by every backend's auto-drop registration: a
+    /// binding in this set must *not* drop, because whatever it was
+    /// given to now holds the resource. Keyed by the `val` / `var`
+    /// statement rather than by name, since a name means different
+    /// values in different scopes.
+    ///
+    /// Empty until the checker runs, which is the right default — an
+    /// empty set is exactly the pre-ownership behaviour.
+    pub transferred_bindings: std::collections::HashSet<StmtRef>,
+
     pub statement: StmtPool,
     pub expression: ExprPool,
     pub location_pool: LocationPool,

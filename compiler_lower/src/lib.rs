@@ -243,6 +243,11 @@ struct FunctionLower<'a> {
     /// `Stmt::Break` / `Stmt::Continue`). Mirrors the
     /// interpreter's `EvaluationContext::drop_scopes`.
     drop_scopes: Vec<Vec<DropTarget>>,
+    /// The `val` / `var` statement currently being lowered, so
+    /// `register_drop_for_struct_binding` can ask whether this binding
+    /// transferred its value away (BOX-T). Parked here because that
+    /// registration is reached from a dozen places inside `lower_let`.
+    current_let_stmt: Option<frontend::ast::StmtRef>,
     /// Block we are currently appending instructions into. None means the
     /// previous block was just terminated and the lowering pass is in the
     /// "unreachable" state — code after a `return` / `break` / `continue`
@@ -1592,6 +1597,14 @@ impl<'a> FunctionLower<'a> {
         fields: &[bindings::FieldBinding],
     ) {
         if self.module.drop_trait_structs.is_empty() {
+            return;
+        }
+        // BOX-T: a binding that handed its value to something outliving
+        // it must not free the resource — the receiver holds it now.
+        // Dropping here is what made a `Vec` of owning values dangle.
+        if let Some(stmt) = self.current_let_stmt
+            && self.program.transferred_bindings.contains(&stmt)
+        {
             return;
         }
         let base_name = self.module.struct_def(struct_id).base_name;

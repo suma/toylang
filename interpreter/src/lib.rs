@@ -563,8 +563,11 @@ pub fn check_typing_diagnostics(
     // the map is cloned out so `tc`'s borrow of `program` can end.
     let expr_types = tc.get_expr_types();
     drop(tc);
-    let mut move_errors = frontend::type_checker::check_moves(program, string_interner, &expr_types);
-    fn_errors.append(&mut move_errors);
+    let mut analysis = frontend::type_checker::check_moves(program, string_interner, &expr_types);
+    // Recorded on the program so every backend's auto-drop
+    // registration can skip a binding that no longer owns its value.
+    program.transferred_bindings = analysis.transferred;
+    fn_errors.append(&mut analysis.errors);
     fn_errors.sort_by_key(|e| {
         e.location
             .map(|loc| (0u8, loc.line, loc.column))
@@ -865,6 +868,7 @@ fn execute_entry_with_values(
 
     register_methods(&mut eval, method_registry);
     eval.drop_trait_structs = drop_trait_structs;
+    eval.transferred_bindings = program.transferred_bindings.clone();
 
     // Register enum and struct declarations so runtime lookup of
     // `Enum::Variant` paths works and so `Object::{Struct,EnumVariant}`

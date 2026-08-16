@@ -193,6 +193,10 @@ pub mod codes {
     /// (RECURSIVE-TYPES). It has no finite layout, so no backend can
     /// represent it.
     pub const RECURSIVE_TYPE: &str = "E0013";
+    /// A resource-owning value used after it was handed to something
+    /// else, or handed over where the handover cannot be modelled
+    /// (BOX-T).
+    pub const MOVED_VALUE: &str = "E0014";
 
     /// Every code, in order. `crate::explain` is checked against this
     /// list by a test, so a new code cannot ship without prose.
@@ -210,6 +214,7 @@ pub mod codes {
         TYPE_HOLE,
         LEXICAL,
         RECURSIVE_TYPE,
+        MOVED_VALUE,
     ];
 }
 
@@ -227,6 +232,8 @@ fn code_for(kind: &TypeCheckErrorKind) -> &'static str {
         TypeCheckErrorKind::GenericError { .. } => codes::UNCATEGORISED,
         TypeCheckErrorKind::TypeHole { .. } => codes::TYPE_HOLE,
         TypeCheckErrorKind::RecursiveType { .. } => codes::RECURSIVE_TYPE,
+        TypeCheckErrorKind::UseAfterMove { .. }
+        | TypeCheckErrorKind::ConditionalMove { .. } => codes::MOVED_VALUE,
     }
 }
 

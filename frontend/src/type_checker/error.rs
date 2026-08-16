@@ -110,6 +110,10 @@ pub enum TypeCheckErrorKind {
     /// indirection. `path` is the chain of members that closes the
     /// cycle, e.g. ``` `A.b: B` -> `B.a: A` ```.
     RecursiveType { name: String, path: String },
+    /// BOX-T: a binding read after its value was handed to something
+    /// that outlives it, or a transfer this pass will not model.
+    UseAfterMove { name: String, moved_at_line: u32 },
+    ConditionalMove { name: String },
 }
 
 #[derive(Debug, Clone)]
@@ -305,6 +309,29 @@ impl TypeCheckError {
         }
     }
 
+    /// BOX-T: reading a binding whose value was transferred away.
+    pub fn use_after_move(name: String, moved_at_line: u32) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::UseAfterMove { name, moved_at_line }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
+    /// BOX-T: a transfer whose drop would have to be decided at run
+    /// time. Refused rather than tracked, for now.
+    pub fn conditional_move(name: String) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::ConditionalMove { name }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
     pub fn with_context(mut self, context: &str) -> Self {
         self.context = Some(context.to_string());
         self
@@ -360,6 +387,19 @@ impl std::fmt::Display for TypeCheckError {
             }
             TypeCheckErrorKind::TypeHole { name, inferred } => {
                 format!("type hole: `{}` has type `{}`", name, inferred)
+            }
+            TypeCheckErrorKind::UseAfterMove { name, moved_at_line } => {
+                format!(
+                    "`{}` was moved on line {} and cannot be used again",
+                    name, moved_at_line
+                )
+            }
+            TypeCheckErrorKind::ConditionalMove { name } => {
+                format!(
+                    "`{}` cannot be moved inside a branch or a loop body: whether it \
+                     still owns its value would only be known at run time",
+                    name
+                )
             }
             TypeCheckErrorKind::RecursiveType { name, path } => {
                 format!(

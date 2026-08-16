@@ -557,6 +557,20 @@ pub fn check_typing_diagnostics(
             .unwrap_or((1, 0, 0))
     });
 
+    // BOX-T: ownership transfer for values whose type has an `impl
+    // Drop`. Runs after the bodies are checked because it reads the
+    // type checker's own `expr_types` record rather than re-inferring;
+    // the map is cloned out so `tc`'s borrow of `program` can end.
+    let expr_types = tc.get_expr_types();
+    drop(tc);
+    let mut move_errors = frontend::type_checker::check_moves(program, string_interner, &expr_types);
+    fn_errors.append(&mut move_errors);
+    fn_errors.sort_by_key(|e| {
+        e.location
+            .map(|loc| (0u8, loc.line, loc.column))
+            .unwrap_or((1, 0, 0))
+    });
+
     for mut error in fn_errors {
         // Add source location information if available
         if let (Some(source), Some(location)) = (source_code, error.location.as_ref()) {

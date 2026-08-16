@@ -59,6 +59,7 @@ const ENTRIES: &[Entry] = &[
     (codes::TYPE_HOLE, E0011),
     (codes::LEXICAL, E0012),
     (codes::RECURSIVE_TYPE, E0013),
+    (codes::MOVED_VALUE, E0014),
 ];
 
 const E0001: &str = "\
@@ -406,6 +407,43 @@ so a `ptr` payload can carry the recursion:
 `ptr`, function types and `dyn Trait` are the positions that break a
 cycle. `&T` is not: it is erased to `T` at lowering, so `next: &Node`
 recurses exactly like `next: Node`.";
+
+const E0014: &str = "\
+E0014: a value that owns a resource was used after it was handed away
+
+A type with an `impl Drop` owns something the runtime gives back — a
+heap block, a buffer, an arena — and the scope that built it frees it
+on the way out. Putting such a value somewhere that outlives the scope
+therefore hands ownership over, and the old name no longer refers to
+anything live.
+
+    val c: Box<i64> = Box::new(7i64)
+    store.push(c)              # ownership goes into the Vec
+    val v: i64 = c.get()       # E0014: `c` was moved on the line above
+
+Without the rule, `c` would be freed at the end of its scope while the
+`Vec` still held the pointer: the interpreter would return a value and
+the compiled binary would trap.
+
+Fix it by reading the value through whatever now owns it
+(`store.get(0u64)`), or by not handing it over — a parameter declared
+`&T` / `&mut T` borrows, so passing to one of those leaves the caller
+in charge.
+
+The positions that hand ownership over are: an argument in a by-value
+parameter, a field of a struct / tuple / array being built, and the
+right-hand side of an assignment. `val b = a` is **not** one of them:
+compound bindings alias in this language, so `a` and `b` name one value
+with one owner.
+
+The same code also reports a hand-over this compiler will not model:
+
+    if cond { store.push(c) }  # E0014: cannot be moved inside a branch
+
+Whether `c` still owns its value at the end of the scope would depend
+on `cond`, and deciding that needs a run-time flag the backends do not
+have. Lift the transfer out of the branch, or build the value inside
+it.";
 
 #[cfg(test)]
 mod tests {

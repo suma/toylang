@@ -5,7 +5,7 @@
 # toylang (`FixedBuffer::alloc` checks `used_bytes + size > cap`).
 #
 # Expected: 1 + 0 + 7 = 8 → exit 8.
-fn run_with(fb: FixedBuffer) -> u64 {
+fn run_with(fb: &FixedBuffer) -> u64 {
     val p = fb.alloc(8u64)
     val ok = if __builtin_ptr_is_null(p) {
         0u64

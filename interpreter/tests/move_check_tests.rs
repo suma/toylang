@@ -1,0 +1,234 @@
+// BOX-T phase C: ownership transfer for values whose type has an
+// `impl Drop`.
+//
+// The bug these guard against is not a type error, it is a dangling
+// pointer: a value stored into something that outlives its scope was
+// still freed at that scope's exit. The interpreter would return a
+// plausible answer and the compiled binary would trap, which is the
+// worst possible split — so the cases below assert on the diagnostic
+// rather than on "the program does not run".
+//
+// Just as important is what must keep working. Aliasing (`val b = a`)
+// is documented behaviour, `&T` parameters borrow, and types without an
+// `impl Drop` own nothing and are untouched by any of this. A check
+// that rejects those has taken more than it gave.
+
+mod common;
+
+use common::{core_modules_dir, test_program};
+use frontend::diagnostic::Diagnostic;
+
+/// A `Cell<T>` that owns a heap slot, plus the `Vec` to put one in.
+/// Prepended to every program below so the cases read as just their
+/// interesting lines.
+const OWNING_TYPE: &str = r#"
+struct Cell<T> { p: ptr }
+
+impl<T> Cell<T> {
+    fn new(v: T) -> Self {
+        val p: ptr = __builtin_heap_alloc(__builtin_sizeof(v))
+        __builtin_ptr_write(p, 0u64, v)
+        Cell { p: p }
+    }
+    fn get(&self) -> T {
+        val v: T = __builtin_ptr_read(self.p, 0u64)
+        v
+    }
+}
+
+impl<T> Drop for Cell<T> {
+    fn drop(&mut self) { __builtin_heap_free(self.p) }
+}
+"#;
+
+fn diagnose(body: &str) -> Vec<Diagnostic> {
+    let source = format!("{OWNING_TYPE}\n{body}");
+    let mut parser = frontend::ParserWithInterner::new(&source);
+    parser.set_source_file("test.t");
+    let mut program = parser.parse_program().expect("parse");
+    let string_interner = parser.get_string_interner();
+    let core = core_modules_dir();
+    match interpreter::check_typing_diagnostics(
+        &mut program,
+        string_interner,
+        Some(&source),
+        Some("test.t"),
+        Some(core.as_path()),
+    ) {
+        Ok(()) => panic!("expected the program to fail type checking:\n{source}"),
+        Err(diagnostics) => diagnostics,
+    }
+}
+
+/// The single E0014 among the diagnostics.
+fn move_diagnostic(body: &str) -> Diagnostic {
+    let mut found: Vec<Diagnostic> = diagnose(body)
+        .into_iter()
+        .filter(|d| d.code == "E0014")
+        .collect();
+    assert_eq!(found.len(), 1, "expected exactly one move diagnostic:\n{body}");
+    found.pop().unwrap()
+}
+
+fn run(body: &str) -> i64 {
+    let source = format!("{OWNING_TYPE}\n{body}");
+    let result = test_program(&source).expect("program should run");
+    let v = result.borrow().unwrap_int64();
+    v
+}
+
+#[test]
+fn reading_a_value_after_it_was_pushed_into_a_vec_is_rejected() {
+    // The motivating case. Without the check, `c` frees the slot at the
+    // end of `main` while `store` still holds the pointer.
+    let diagnostic = move_diagnostic(
+        "fn main() -> i64 {
+    var store: Vec<Cell<i64>> = Vec::new()
+    val c: Cell<i64> = Cell::new(7i64)
+    store.push(c)
+    val v: i64 = c.get()
+    v
+}",
+    );
+    assert!(
+        diagnostic.message.contains("`c` was moved"),
+        "the binding should be named: {}",
+        diagnostic.message
+    );
+    // The message cites the transfer, which sits one line above the
+    // use being reported. Asserting the relationship rather than an
+    // absolute line keeps the test readable when the shared prelude
+    // above changes length.
+    let use_line = diagnostic.span.expect("E0014 carries a span").line;
+    assert!(
+        diagnostic
+            .message
+            .contains(&format!("moved on line {}", use_line - 1)),
+        "the message should cite where it went (use is on line {use_line}): {}",
+        diagnostic.message
+    );
+}
+
+#[test]
+fn a_value_given_to_a_by_value_parameter_is_rejected_afterwards() {
+    let diagnostic = move_diagnostic(
+        "fn consume(c: Cell<i64>) -> i64 { 0i64 }
+
+fn main() -> i64 {
+    val c: Cell<i64> = Cell::new(7i64)
+    val a: i64 = consume(c)
+    val b: i64 = c.get()
+    a + b
+}",
+    );
+    assert!(
+        diagnostic.message.contains("`c` was moved"),
+        "the binding should be named: {}",
+        diagnostic.message
+    );
+}
+
+#[test]
+fn a_value_stored_into_a_struct_field_is_rejected_afterwards() {
+    let diagnostic = move_diagnostic(
+        "struct Holder { c: Cell<i64> }
+
+fn main() -> i64 {
+    val c: Cell<i64> = Cell::new(7i64)
+    val h = Holder { c: c }
+    c.get()
+}",
+    );
+    assert!(
+        diagnostic.message.contains("`c` was moved"),
+        "the binding should be named: {}",
+        diagnostic.message
+    );
+}
+
+/// A transfer inside a branch would leave the drop conditional, which
+/// needs a run-time flag no backend has. Refused with its own wording
+/// rather than accepted and silently mis-dropped.
+#[test]
+fn a_transfer_inside_a_branch_is_refused() {
+    let diagnostic = move_diagnostic(
+        "fn main() -> i64 {
+    var store: Vec<Cell<i64>> = Vec::new()
+    val c: Cell<i64> = Cell::new(7i64)
+    if store.is_empty() {
+        store.push(c)
+    }
+    0i64
+}",
+    );
+    assert!(
+        diagnostic.message.contains("branch or a loop body"),
+        "the refusal should say why: {}",
+        diagnostic.message
+    );
+}
+
+/// Building the value inside the branch is the way to write it, and has
+/// to keep working: the binding's scope ends with the branch, so its
+/// ownership is not conditional.
+#[test]
+fn a_value_built_and_transferred_inside_a_branch_is_fine() {
+    assert_eq!(
+        run("fn main() -> i64 {
+    var store: Vec<Cell<i64>> = Vec::new()
+    if store.is_empty() {
+        val c: Cell<i64> = Cell::new(7i64)
+        store.push(c)
+    }
+    val back: Cell<i64> = store.get(0u64)
+    back.get()
+}"),
+        7i64
+    );
+}
+
+/// `val b = a` aliases rather than transfers — two names, one value,
+/// one owner. Rejecting it would break documented behaviour.
+#[test]
+fn rebinding_a_name_is_not_a_transfer() {
+    assert_eq!(
+        run("fn main() -> i64 {
+    val c: Cell<i64> = Cell::new(7i64)
+    val d = c
+    c.get() + d.get()
+}"),
+        14i64
+    );
+}
+
+/// A `&T` parameter borrows, so the caller keeps the value and can pass
+/// it again. This is what the allocator examples rely on.
+#[test]
+fn a_reference_parameter_borrows() {
+    assert_eq!(
+        run("fn peek(c: &Cell<i64>) -> i64 { c.get() }
+
+fn main() -> i64 {
+    val c: Cell<i64> = Cell::new(7i64)
+    peek(c) + peek(c)
+}"),
+        14i64
+    );
+}
+
+/// A type with no `impl Drop` owns nothing, so none of this applies to
+/// it however many times it is passed around.
+#[test]
+fn a_type_without_drop_is_untouched() {
+    assert_eq!(
+        run("struct Plain { v: i64 }
+
+fn take(p: Plain) -> i64 { p.v }
+
+fn main() -> i64 {
+    val p = Plain { v: 7i64 }
+    take(p) + take(p)
+}"),
+        14i64
+    );
+}

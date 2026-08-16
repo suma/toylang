@@ -190,25 +190,49 @@
 ### 型システム (NEW-TYPE-SYSTEM)
 
 - **BOX-T: `Box<T>`** ★★★ — heap 間接の first-class 化。**再帰型を書ける
-  ようにする唯一の道**であり (step 1 で拒否は landing 済み、E0013)、
-  **A5-P4 (`Box<dyn Trait>`) の前提**でもある。現状は arena + index か
-  raw `ptr` + `__builtin_ptr_read/write` で手書きする
-  (`interpreter/example/linked_list_arena.t`)。
-  - **前提となる改修**: `instantiate_struct` / `instantiate_enum` の
-    two-phase interning (id を先に予約してからメンバを埋める)。今は
-    memo 挿入がメンバ lower の後なので、`Box<List>` の layout が有限でも
-    `(Box, [Enum(List)])` の型引数解決で `List` に再入する。
-  - **設計判断が先**: 値意味論との整合。代入・引数渡しが値コピーなので
-    `Box` を素直にコピーすると同じ ptr を 2 人が持ち、`Drop`
-    (GENERIC-RAII) と組むと二重解放になる。move を入れるか / refcount か /
-    `Drop` を付けず手動 free に留めるかを決めてから stdlib に置くこと。
-  - **手書きの逃げ道は 3 つとも動く** (2026-08-16 に ptr_read の型注釈と
-    PTR-READ-ENUM が landing した): arena + index
+  ようにする道**であり (拒否は landing 済み、E0013)、**A5-P4
+  (`Box<dyn Trait>`) の前提**でもある。**設計は 2026-08-16 に決定**:
+  - **軸 1 (cycle の切り方) = 一般則**。「型引数が `ptr` フィールド越しに
+    しか現れない struct」を遅延辺として扱う。`Box` を特権化しないので
+    **`struct Tree { kids: Vec<Tree> }` も一緒に通る** (今 E0013 で
+    落ちている最も自然な形)。`Box` だけを既知名として特別扱いする案と、
+    `indirect` マーカーを言語に足す案は不採用。
+  - **軸 2 (所有権) = 現行の scope-bound Drop に乗せる**。move semantics
+    も refcount も入れない。
+  - **実測した前提** (すべて 3 バックエンド一致で確認):
+    - `val b = a` は**共有**で値コピーではない (`b.x = 42` が `a.x` に出る)。
+      以前ここに「値コピーなので二重解放になる」と書いていたが**誤り**。
+    - `Drop` は**値ごとに 1 回**、構築した束縛のスコープ退出で鳴る。
+      alias / 引数渡し / struct field 格納のいずれでも 1 回。
+    - **user 空間の `Box` 相当は既に書けて動く** (generic struct +
+      `impl<T> Drop` + heap builtin)。足りないのは cycle の切り方だけ。
+  - **軸 2 の帰結 (既知の限界として明記すること)**: `Box` が構築した
+    束縛より長生きする場所 (`Vec` / 別 struct の field / 外側スコープ)
+    に格納されると、構築スコープの退出で free され dangling になる。
+    実測では interpreter が値を返し **AOT バイナリは SIGTRAP (exit 133)**。
+    規約は「`Box` は構築したスコープが所有する」。再帰構造の所有
+    (ノードが自分の子 `Box` を持つ) はこの規約に収まる。将来 move
+    semantics を入れれば消える性質なので、`Drop` を後から足す方向 =
+    互換、という前提は保たれる。
+  - **実装フェーズ**:
+    1. `instantiate_struct` / `instantiate_enum` の two-phase interning
+       (id を先に予約してからメンバを埋める)。今は memo 挿入がメンバ
+       lower の後なので、`Box<List>` の layout が有限でも
+       `(Box, [Enum(List)])` の型引数解決で `List` に再入する。
+    2. 遅延辺の規則を 2 箇所に入れる — `check_recursive_types` の辺集合と
+       lowering の型引数解決。**片方だけだと「型は通るが lower で落ちる」**。
+    3. stdlib `core/std/box.t` (`new` / `get` / `set` / `as_ptr` +
+       `impl<T> Drop`)。
+    4. 3 バックエンド一致テスト (再帰 enum / 再帰 struct / `Vec<Tree>`) と
+       `--profile=mem` の一致。
+    5. 限界を `docs/language.md` と `--explain E0013` に書き、E0013 の
+       メッセージから `Box` へ誘導する。
+  - **残る宿題**: 長い連結リストの `Drop` は実行時に深い再帰になるので、
+    tree-walker の関数再帰 abort (既知の不具合) を踏む。
+  - **手書きの逃げ道は 3 つとも動く** (2026-08-16): arena + index
     (`example/linked_list_arena.t`)、struct + raw ptr
     (`example/linked_list_ptr.t`)、enum payload に raw ptr
-    (`consistency.rs::an_enum_through_a_ptr_round_trips`)。いずれも
-    3 バックエンド一致。残るのは alloc/free と drop を誰が持つかで、
-    それが `Box<T>` の中身。
+    (`consistency.rs::an_enum_through_a_ptr_round_trips`)。
 - **NEWTYPE: tuple struct / newtype (`struct Meters(i64)`)** ★ — parse エラー。
   単位型・ID 型のラップが「1 フィールドの struct + 冗長な field 名」になる。
   parser + 位置指定のフィールドアクセス (`m.0`) が要る。

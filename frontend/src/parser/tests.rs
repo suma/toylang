@@ -376,6 +376,48 @@ mod parser_tests {
     }
 
     #[test]
+    fn a_paren_expression_on_a_new_line_is_not_a_method_call() {
+        // `b.v\n(x as i64)` used to parse as `b.v(x as i64)` — the
+        // postfix chain continued across the newline, so the type
+        // checker reported "Method 'v' not found" about a call the
+        // user never wrote (a field read followed by a parenthesised
+        // expression statement). A `(` that opens a new line is a
+        // fresh expression, the same disambiguation the `[` guard
+        // applies for array literals. Chained calls whose `(` sits
+        // on the field's own line are unaffected.
+        let mut parser = ParserWithInterner::new(
+            "fn main() -> i64 {\n    val y: i64 = b.v\n    (x as i64) + y\n}",
+        );
+        let result = parser.parse_program();
+        assert!(result.is_ok(), "parse failed: {:?}", parser.errors);
+        // parse_program swaps the builder's pools into the File.
+        let pool = &result.unwrap().expression;
+        let has_method_call = (0..pool.len())
+            .filter_map(|i| pool.get(&ExprRef(i as u32)))
+            .any(|e| matches!(e, Expr::MethodCall(..)));
+        let has_field_access = (0..pool.len())
+            .filter_map(|i| pool.get(&ExprRef(i as u32)))
+            .any(|e| matches!(e, Expr::FieldAccess(..)));
+        assert!(!has_method_call, "`b.v` must not become a method call");
+        assert!(has_field_access, "`b.v` must stay a field access");
+    }
+
+    #[test]
+    fn a_method_call_on_the_same_line_still_parses() {
+        // The guard must not fire when the `(` follows the field
+        // name on the same line — the overwhelmingly common shape.
+        let mut parser = ParserWithInterner::new("fn main() -> u64 {\n    val s = \"a\"\n    val t = s.concat(\"b\")\n    t.len()\n}");
+        let result = parser.parse_program();
+        assert!(result.is_ok(), "parse failed: {:?}", parser.errors);
+        // parse_program swaps the builder's pools into the File.
+        let pool = &result.unwrap().expression;
+        let has_method_call = (0..pool.len())
+            .filter_map(|i| pool.get(&ExprRef(i as u32)))
+            .any(|e| matches!(e, Expr::MethodCall(..)));
+        assert!(has_method_call, "same-line `.concat(...)` must parse as a call");
+    }
+
+    #[test]
     fn parser_util_lookahead() {
         let mut p = ParserWithInterner::new("1u64 + 2u64");
 

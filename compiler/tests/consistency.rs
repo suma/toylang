@@ -1224,6 +1224,26 @@ fn concrete_overrides_generic_for_compound_methods_and_associated_calls() {
 }
 
 #[test]
+fn a_paren_expression_on_a_new_line_stays_a_separate_statement() {
+    // `b.v\n(x as i64)` used to parse as `b.v(x as i64)`: the postfix
+    // chain continued across the newline and the type checker
+    // reported "Method 'v' not found" — the field read `b.v` became a
+    // call whose "argument" was the next statement. The `(` opening a
+    // new line is a fresh expression (same disambiguation as `[` for
+    // array literals); this program was previously un-runnable.
+    let src = r#"
+        struct Holder { v: i64 }
+        fn main() -> i64 {
+            val h = Holder { v: 7i64 }
+            val x: i64 = 1i64
+            val y: i64 = h.v
+            (x + y) * 2i64
+        }
+    "#;
+    assert_consistent(src, "newline_paren_is_not_a_method_call");
+}
+
+#[test]
 fn string_from_str_round_trip() {
     // `core/std/string.t::String::from_str(s)` copies the UTF-8
     // bytes of `s` into a fresh, heap-allocated `String` (a

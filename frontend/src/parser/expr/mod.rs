@@ -593,8 +593,22 @@ fn parse_postfix_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                         let field_name = field_name.to_string();
                         let field_symbol = parser.string_interner.get_or_intern(field_name);
                         parser.next();
-                        
-                        if parser.peek() == Some(&Kind::ParenOpen) {
+
+                        // A `(` that opens a *new line* is a fresh
+                        // expression, not this field's method-call
+                        // argument list — the same disambiguation the
+                        // `[` arm below applies for array literals.
+                        // Without this, `b.v\n(x as i64)` parsed as
+                        // `b.v(x as i64)` and the type checker
+                        // reported "Method 'v' not found" about a call
+                        // the user never wrote. Chained calls whose
+                        // `(` sits on the field's own line
+                        // (`"s".concat(...)` over a continuation line)
+                        // are unaffected — the scan only sees the
+                        // gap between the field name and `(`.
+                        let is_method_call = parser.peek() == Some(&Kind::ParenOpen)
+                            && !parser.has_newline_before_current_token();
+                        if is_method_call {
                             let location = parser.current_source_location();
                             parser.next();
                             let args = parse_expr_list(parser, vec![])?;

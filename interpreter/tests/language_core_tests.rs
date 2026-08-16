@@ -1802,14 +1802,22 @@ mod heap_operations {
 
     #[test]
     fn test_sizeof_enum_adds_tag_and_payload() {
-        // Unit variants take 1 byte (tag only). Tuple variants add their
-        // payload sizes on top of the 1-byte tag.
+        // An enum is a `u64` tag followed by every variant's payload,
+        // the layout it already occupied at a function boundary and
+        // now also occupies in a heap buffer (PTR-READ-ENUM):
         //
-        // NOTE: the canonical type-based answer is 19 (9 for Option<i64>
-        // max variant + 9 for Option<i64> max variant + 1 for Color max
-        // variant).  The old tree-walker did a value-based sizeof so
-        // it returned 11 (1 + 9 + 1).  The IR VM (and AOT compiler)
-        // use type-based sizeof, which is the spec-compliant answer.
+        //   Option<i64> = 8 (tag) + 8 (Some's i64)      = 16
+        //   Color       = 8 (tag) + nothing             =  8
+        //
+        // so 16 + 16 + 8 = 40.
+        //
+        // The size does not depend on the variant in hand. This test
+        // used to accept *either* 11 or 19 because it did: the
+        // tree-walker sized the value it was given (`None` = 1 byte)
+        // while the compiler sized the type (`1 + max(payload)`), and
+        // neither matched the layout the backends actually use. A
+        // `Vec<Option<i64>>` inherited the disagreement through
+        // `elem_size`, which vec.t takes from the first element pushed.
         let source = r#"
             enum Option<T> { None, Some(T) }
             enum Color { Red, Green, Blue }
@@ -1822,12 +1830,36 @@ mod heap_operations {
             }
         "#;
         let result = execute_test_program(source).expect("should execute");
-        // tree-walker (value-based) = 11, IR VM / AOT (type-based) = 19
-        assert!(
-            result.contains("UInt64(11)") || result.contains("UInt64(19)"),
-            "got: {}",
-            result
-        );
+        assert!(result.contains("UInt64(40)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_sizeof_enum_matches_on_the_fallback_engine() {
+        // Same question as the test above, aimed at the tree-walker.
+        //
+        // The IR VM is the default engine and only hands a program to
+        // the tree-walker when it cannot lower it — which is why the
+        // two disagreeing about an enum's size stayed invisible: every
+        // ordinary program took the IR VM lane. The `dict` here is what
+        // makes the VM decline, so the answer below comes from the
+        // tree-walker's own `object_byte_size`.
+        //
+        // If `dict` ever becomes IR-VM-eligible this test keeps
+        // passing while no longer aiming at the fallback lane; the
+        // assertion stays correct either way.
+        let source = r#"
+            enum Shape { Point, Circle(i64), Rect(i64, i64) }
+
+            fn main() -> u64 {
+                val forces_fallback = dict{"k": 1u64}
+                val p: Shape = Shape::Point
+                val r: Shape = Shape::Rect(1i64, 2i64)
+                __builtin_sizeof(p) + __builtin_sizeof(r)
+            }
+        "#;
+        // 8 (tag) + 8 (Circle) + 16 (Rect) = 32 for either value.
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("UInt64(64)"), "got: {}", result);
     }
 
     #[test]

@@ -7609,3 +7609,108 @@ fn ptr_read_into_a_named_struct_round_trips() {
     "#;
     assert_consistent(src, "ptr_read_named_struct");
 }
+
+#[test]
+fn an_enum_in_a_vec_round_trips() {
+    // PTR-READ-ENUM: `Vec<Option<i64>>` did not compile. `Vec::push` /
+    // `Vec::get` go through `__builtin_ptr_write` / `__builtin_ptr_read`
+    // with `T` bound to an enum, and an enum had two byte layouts that
+    // disagreed — `1 + max(payload)` from `__builtin_sizeof`, which is
+    // what `vec.t` strides by, against `tag + every variant's payload`
+    // from the function-boundary flatten, which is what the leaf walk
+    // would have read. The read was refused rather than allowed to
+    // garble. Both are now the second layout.
+    let src = r#"
+        fn main() -> i64 {
+            var v: Vec<Option<i64>> = Vec::new()
+            val a: Option<i64> = Option::Some(7i64)
+            v.push(a)
+            val b: Option<i64> = Option::None
+            v.push(b)
+            val c: Option<i64> = Option::Some(35i64)
+            v.push(c)
+
+            var i: u64 = 0u64
+            var total: i64 = 0i64
+            while i < v.size() {
+                val got: Option<i64> = v.get(i)
+                match got {
+                    Option::Some(x) => { total = total + x }
+                    Option::None => { total = total + 100i64 }
+                }
+                i = i + 1u64
+            }
+            total
+        }
+    "#;
+    assert_consistent(src, "enum_in_vec");
+}
+
+#[test]
+fn an_enum_through_a_ptr_round_trips() {
+    // The shape E0013 points a recursive enum at: the cycle is broken
+    // by a `ptr` payload, and the node behind it comes back through an
+    // enum-annotated read. Every element of it — writing an enum to a
+    // buffer, sizing one for the allocation, reading one back — was
+    // unavailable before PTR-READ-ENUM.
+    let src = r#"
+        enum List {
+            Cons(i64, ptr),
+            Nil,
+        }
+
+        fn cons(v: i64, rest: List) -> List {
+            val p: ptr = __builtin_heap_alloc(__builtin_sizeof(rest))
+            __builtin_ptr_write(p, 0u64, rest)
+            List::Cons(v, p)
+        }
+
+        fn sum(l: List) -> i64 {
+            match l {
+                List::Cons(v, p) => {
+                    val rest: List = __builtin_ptr_read(p, 0u64)
+                    v + sum(rest)
+                }
+                List::Nil => 0i64,
+            }
+        }
+
+        fn main() -> i64 {
+            val nil: List = List::Nil
+            val a = cons(3i64, nil)
+            val b = cons(2i64, a)
+            val c = cons(1i64, b)
+            sum(c)
+        }
+    "#;
+    assert_consistent(src, "enum_through_ptr");
+}
+
+#[test]
+fn enum_sizeof_does_not_depend_on_the_variant() {
+    // A size that changes with the variant is not a size: `vec.t` takes
+    // its `elem_size` from whichever element is pushed first, so a
+    // `Vec<Option<T>>` built `None`-first would stride differently from
+    // one built `Some`-first. Both values below must report the same
+    // width on every backend.
+    let src = r#"
+        enum Shape {
+            Point,
+            Circle(i64),
+            Rect(i64, i64),
+        }
+
+        fn main() -> u64 {
+            val p: Shape = Shape::Point
+            val c: Shape = Shape::Circle(1i64)
+            val r: Shape = Shape::Rect(1i64, 2i64)
+            if __builtin_sizeof(p) == __builtin_sizeof(r) && __builtin_sizeof(c) == __builtin_sizeof(r) {
+                __builtin_sizeof(r)
+            } else {
+                0u64
+            }
+        }
+    "#;
+    // 8 (tag) + 8 (Circle's i64) + 16 (Rect's two) = 32.
+    assert_consistent(src, "enum_sizeof_uniform");
+}

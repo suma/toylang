@@ -30,8 +30,8 @@ use string_interner::DefaultSymbol;
 
 use super::array_layout::{elem_stride_bytes, leaf_scalar_count, leaf_type_at};
 use super::bindings::{
-    flatten_struct_locals, flatten_tuple_element_locals, Binding, FieldChainResult,
-    TupleElementBinding,
+    flatten_enum_storage_locals, flatten_struct_locals, flatten_tuple_element_locals, Binding,
+    FieldChainResult, TupleElementBinding,
 };
 use super::FunctionLower;
 use crate::ir::{Const, InstKind, LocalId, Type, ValueId};
@@ -419,23 +419,8 @@ impl<'a> FunctionLower<'a> {
             Some(t) => Some(t),
             None => annotation.and_then(|a| self.lower_type_arg(a)),
         };
-        // An enum's buffer layout is not the leaf list
-        // `compute_leaf_layout` produces (`compute_byte_size` gives an
-        // enum `1 + max(payload)`, while the leaf walk would want every
-        // variant's payload laid end to end), so a per-leaf read would
-        // garble it. Say so, rather than falling through to the scalar
-        // path and reading a tag-sized slot as if it were the value.
-        if let Some(Type::Enum(_)) = elem_ty {
-            return Err(
-                "__builtin_ptr_read: an enum-typed annotation is not supported yet — the \
-                 per-leaf read model has no layout for a slot whose shape depends on the \
-                 variant. Store the payload through a struct, or keep the enum in a \
-                 `Vec` and index it"
-                    .to_string(),
-            );
-        }
         if let Some(elem_ty) = elem_ty {
-            if matches!(elem_ty, Type::Struct(_) | Type::Tuple(_)) {
+            if matches!(elem_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
                 let leaves = self.compute_leaf_layout(elem_ty).ok_or_else(|| {
                     format!(
                         "__builtin_ptr_read: unable to compute leaf layout for {:?}",
@@ -463,6 +448,17 @@ impl<'a> FunctionLower<'a> {
                         let elements = self.allocate_tuple_elements(tuple_id)?;
                         let locals = flatten_tuple_element_locals(&elements);
                         (locals, Binding::Tuple { elements })
+                    }
+                    // PTR-READ-ENUM: a tag local plus one slot per
+                    // (variant, payload) — the destination shape that
+                    // `collect_leaves` walks the buffer in. Reading
+                    // fills the inactive variants' slots with whatever
+                    // the buffer holds there; the tag is what any
+                    // subsequent `match` dispatches on.
+                    Type::Enum(enum_id) => {
+                        let storage = self.allocate_enum_storage(enum_id);
+                        let locals = flatten_enum_storage_locals(&storage);
+                        (locals, Binding::Enum(storage))
                     }
                     _ => unreachable!("guarded above"),
                 };

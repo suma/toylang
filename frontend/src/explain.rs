@@ -395,7 +395,12 @@ or hold a raw `ptr` and go through the heap builtins:
 
 The annotation on the read is what gives it a shape -- it names the
 type whose leaves come back out of the buffer, so it cannot be left
-off. An enum-typed annotation is not supported there yet.
+off. A struct, tuple or enum may be named there.
+
+An enum in a buffer is a `u64` tag followed by every variant's payload,
+so a `ptr` payload can carry the recursion:
+
+    enum List { Cons(i64, ptr), Nil }
 
 `ptr`, function types and `dyn Trait` are the positions that break a
 cycle. `&T` is not: it is erased to `T` at lowering, so `next: &Node`

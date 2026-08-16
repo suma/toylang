@@ -395,7 +395,7 @@ fn main() -> u64 {
 | `ambient` | 現在の allocator（式として使える糖衣） |
 | `__builtin_current_allocator()` | 現在の allocator（スタック top） |
 | `__builtin_default_allocator()` | プロセス全体の global allocator |
-| `__builtin_sizeof(value)` | 値のバイトサイズ（u64）。primitive に加え struct（フィールド合計）/ enum（1-byte タグ + payload）/ tuple / array をサポート。generic `T` の実体サイズ取得に使う |
+| `__builtin_sizeof(value)` | 値のバイトサイズ（u64）。primitive に加え struct（フィールド合計）/ tuple / array（要素合計）/ **enum（u64 タグ + 全 variant の payload 連結）** をサポート。enum のサイズは**型の性質で、手元の variant に依存しない** (`Vec<T>` の stride がこれ)。generic `T` の実体サイズ取得に使う |
 | `__builtin_ptr_eq(a: ptr, b: ptr) -> bool` | 2 ポインタの addr 等値比較。stdlib `Arena` / `FixedBuffer` の追跡表検索に使用 |
 | `__builtin_null_ptr() -> ptr` | null pointer (addr 0)。`__builtin_heap_alloc(0u64)` は AOT で libc malloc に委譲するため非 null を返しうる; 移植性のあるコードは本 builtin を使う |
 | `with allocator = a { ... }` | scope 内で allocator を有効化、内部の `__builtin_heap_alloc` 等が経由する |
@@ -426,7 +426,7 @@ fn main() -> u64 {
 - 関数の引数として `Allocator` を渡す形は推奨しない (関数は `with allocator = ...` の active stack を経由して暗黙的に allocator を使う)
 - arena は個別 `free` を no-op とし、`Drop` で一括解放。fixed_buffer は quota 超過で `0`（null ポインタ）を返す。両者の policy はすべて toylang stdlib (`core/std/allocator.t`) に実装され、底に default allocator が居る
 - `List<T>` のようなコレクションは言語組み込みではなく、`struct` + `impl` + `__builtin_heap_alloc/realloc/ptr_read/ptr_write` で書く。これらの builtin は現在の active allocator を経由する
-- `__builtin_ptr_write(p, off, value)` は任意型の値を受け取り、`__builtin_ptr_read(p, off)` は呼び出し側の型ヒント（`val v: T = ...` など）に沿って値を返す。内部的には typed-slot map に値を保存しているため、`List<i64>` / `List<bool>` / `List<MyStruct>` もそのまま動作する。**読み出しの型注釈は必須** (それが唯一の shape の情報源)。generic param (`T`) / primitive に加えて **user 定義の struct 名 / tuple** も書ける (3 backend)。**enum 名は未対応** — variant で shape が変わる slot の layout が未定 (AOT/JIT は専用の診断で拒否、tree-walker は動く)
+- `__builtin_ptr_write(p, off, value)` は任意型の値を受け取り、`__builtin_ptr_read(p, off)` は呼び出し側の型ヒント（`val v: T = ...` など）に沿って値を返す。内部的には typed-slot map に値を保存しているため、`List<i64>` / `List<bool>` / `List<MyStruct>` もそのまま動作する。**読み出しの型注釈は必須** (それが唯一の shape の情報源)。generic param (`T`) / primitive に加えて **user 定義の struct / tuple / enum 名**も書ける (3 backend)
 
 ### 進捗
 

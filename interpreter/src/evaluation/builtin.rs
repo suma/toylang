@@ -1,18 +1,35 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use frontend::ast::*;
 use frontend::type_decl::TypeDecl;
+use string_interner::DefaultSymbol;
 use crate::object::{Object, RcObject};
 use crate::error::InterpreterError;
 use crate::try_value;
 use super::{EvaluationContext, EvaluationResult};
 
+/// Width of an enum's discriminant, mirroring
+/// `compiler_lower::expr::TAG_BYTE_SIZE`.
+const ENUM_TAG_BYTE_SIZE: u64 = 8;
+
 /// Compute the byte size of a runtime value by walking its Object tree.
 /// Primitives have fixed widths; composite values sum their components.
-/// Enum variants include a 1-byte tag — note that this yields a
-/// variant-specific size, so `List<SomeEnum>` users who need a uniform
-/// stride should probe the largest variant.
-fn object_byte_size(value: &Object) -> Option<u64> {
+///
+/// Must agree with `compiler_lower::expr::compute_byte_size`, which
+/// answers the same `__builtin_sizeof(v)` on every backend that goes
+/// through the shared IR (the IR VM, the AOT compiler, the compiler
+/// JIT). This is the tree-walker's own answer.
+/// The value walk gets there for every shape except an enum, where the
+/// value only knows its own variant: `ctx.enum_byte_size` reads the
+/// declaration instead, so `Shape::Point` and `Shape::Rect(1, 2)`
+/// report the same width. They did not — the tree-walker returned 1 and
+/// 17 for those two while the compiler returned 17 for both — and
+/// `core/std/collections/vec.t` takes its `elem_size` from whichever
+/// element happened to be pushed first, so a `Vec<Option<T>>` built
+/// `None`-first got a different stride than one built `Some`-first
+/// (PTR-READ-ENUM).
+fn object_byte_size(ctx: &EvaluationContext<'_>, value: &Object) -> Option<u64> {
     match value {
         Object::Int64(_) | Object::UInt64(_) | Object::Float64(_) | Object::Pointer(_) => Some(8),
         // NUM-W narrow widths: 1 byte for u8/i8, 2 for u16/i16,
@@ -26,31 +43,26 @@ fn object_byte_size(value: &Object) -> Option<u64> {
         Object::Struct { fields, .. } => {
             let mut total: u64 = 0;
             for v in fields.values() {
-                total = total.saturating_add(object_byte_size(&v.borrow())?);
+                total = total.saturating_add(object_byte_size(ctx, &v.borrow())?);
             }
             Some(total)
         }
         Object::Tuple(elements) => {
             let mut total: u64 = 0;
             for e in elements.iter() {
-                total = total.saturating_add(object_byte_size(&e.borrow())?);
+                total = total.saturating_add(object_byte_size(ctx, &e.borrow())?);
             }
             Some(total)
         }
         Object::Array(elements) => {
             let mut total: u64 = 0;
             for e in elements.iter() {
-                total = total.saturating_add(object_byte_size(&e.borrow())?);
+                total = total.saturating_add(object_byte_size(ctx, &e.borrow())?);
             }
             Some(total)
         }
-        Object::EnumVariant { values, .. } => {
-            // 1-byte tag + payload sizes.
-            let mut total: u64 = 1;
-            for v in values.iter() {
-                total = total.saturating_add(object_byte_size(&v.borrow())?);
-            }
-            Some(total)
+        Object::EnumVariant { enum_name, type_args, .. } => {
+            ctx.enum_byte_size(*enum_name, type_args)
         }
         // Opaque / non-serialisable values have no canonical byte size.
         Object::ConstString(_) | Object::String(_) | Object::Dict(_)
@@ -60,6 +72,115 @@ fn object_byte_size(value: &Object) -> Option<u64> {
 }
 
 impl EvaluationContext<'_> {
+    /// Byte size of `enum_name` instantiated at `type_args`:
+    /// `u64` tag followed by *every* variant's payload, matching
+    /// `compiler_lower::expr::compute_byte_size` and the layout an enum
+    /// occupies at a function boundary (PTR-READ-ENUM).
+    ///
+    /// Read from the declaration rather than the value, because the
+    /// value knows only its own variant and a size that changes with
+    /// the variant is not a size — it is what made `Vec<Option<T>>`
+    /// stride differently depending on which element was pushed first.
+    fn enum_byte_size(&self, enum_name: DefaultSymbol, type_args: &[TypeDecl]) -> Option<u64> {
+        let entry = self.enum_definitions.get(&enum_name)?;
+        let subst: HashMap<DefaultSymbol, TypeDecl> = entry
+            .generic_params
+            .iter()
+            .copied()
+            .zip(type_args.iter().cloned())
+            .collect();
+        let mut total: u64 = ENUM_TAG_BYTE_SIZE;
+        for variant in &entry.variants {
+            for payload in &variant.payload_types {
+                total = total.saturating_add(self.type_decl_byte_size(payload, &subst)?);
+            }
+        }
+        Some(total)
+    }
+
+    /// Byte size of a declared type, for the members a value cannot be
+    /// asked about (an enum's inactive variants).
+    ///
+    /// Terminates because a type that reaches itself is rejected before
+    /// anything runs — `[E0013]`, `frontend::type_checker::
+    /// check_recursive_types` — so the declaration graph is acyclic.
+    fn type_decl_byte_size(
+        &self,
+        ty: &TypeDecl,
+        subst: &HashMap<DefaultSymbol, TypeDecl>,
+    ) -> Option<u64> {
+        match ty {
+            TypeDecl::Bool | TypeDecl::Int8 | TypeDecl::UInt8 => Some(1),
+            TypeDecl::Int16 | TypeDecl::UInt16 => Some(2),
+            TypeDecl::Int32 | TypeDecl::UInt32 => Some(4),
+            TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Number | TypeDecl::Float64 => Some(8),
+            // Pointer-width handles. `str` is one too on the compiler
+            // side (`Type::Str` is an address into the string blob), so
+            // it has a width *as a member* even though a `str` value on
+            // its own has no byte size here.
+            TypeDecl::Ptr | TypeDecl::String | TypeDecl::Allocator => Some(8),
+            TypeDecl::Unit => Some(0),
+            TypeDecl::Tuple(elements) => {
+                let mut total: u64 = 0;
+                for e in elements {
+                    total = total.saturating_add(self.type_decl_byte_size(e, subst)?);
+                }
+                Some(total)
+            }
+            // `&T` is erased to `T` everywhere below the type checker.
+            TypeDecl::Ref { inner, .. } => self.type_decl_byte_size(inner, subst),
+            // A generic parameter is whatever this instance bound it
+            // to; without a binding there is no width to report.
+            TypeDecl::Generic(p) => self.type_decl_byte_size(subst.get(p)?, subst),
+            TypeDecl::Identifier(name) => {
+                if let Some(bound) = subst.get(name) {
+                    return self.type_decl_byte_size(bound, subst);
+                }
+                self.named_type_byte_size(*name, &[], subst)
+            }
+            TypeDecl::Struct(name, args) | TypeDecl::Enum(name, args) => {
+                self.named_type_byte_size(*name, args, subst)
+            }
+            _ => None,
+        }
+    }
+
+    /// Size of a struct or enum named in a member position, with its
+    /// own type arguments applied.
+    fn named_type_byte_size(
+        &self,
+        name: DefaultSymbol,
+        args: &[TypeDecl],
+        subst: &HashMap<DefaultSymbol, TypeDecl>,
+    ) -> Option<u64> {
+        // Resolve the arguments through the *outer* substitution first,
+        // so `Wrapper<T>` inside a `Foo<i64>` payload sees `i64`.
+        let resolved: Vec<TypeDecl> = args
+            .iter()
+            .map(|a| match a {
+                TypeDecl::Generic(p) | TypeDecl::Identifier(p) => {
+                    subst.get(p).cloned().unwrap_or_else(|| a.clone())
+                }
+                other => other.clone(),
+            })
+            .collect();
+        if self.enum_definitions.contains_key(&name) {
+            return self.enum_byte_size(name, &resolved);
+        }
+        let entry = self.struct_definitions.get(&name)?;
+        let inner: HashMap<DefaultSymbol, TypeDecl> = entry
+            .generic_params
+            .iter()
+            .copied()
+            .zip(resolved)
+            .collect();
+        let mut total: u64 = 0;
+        for (_field, field_ty) in &entry.fields {
+            total = total.saturating_add(self.type_decl_byte_size(field_ty, &inner)?);
+        }
+        Some(total)
+    }
+
     /// Evaluate builtin method calls
     pub(super) fn evaluate_builtin_method_call(&mut self, receiver: &ExprRef, method: &BuiltinMethod, args: &Vec<ExprRef>) -> Result<EvaluationResult, InterpreterError> {
         let receiver_value = self.evaluate(receiver)?;
@@ -846,7 +967,7 @@ impl EvaluationContext<'_> {
                 // Object recursively to accumulate a byte size.
                 let value = self.evaluate(&args[0])?;
                 let value = try_value!(Ok(value));
-                let size = object_byte_size(&value.borrow()).ok_or_else(|| {
+                let size = object_byte_size(self, &value.borrow()).ok_or_else(|| {
                     InterpreterError::InternalError(format!(
                         "__builtin_sizeof: size of value {:?} is not supported",
                         value.borrow()

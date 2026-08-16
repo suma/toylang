@@ -27,16 +27,24 @@ use super::bindings::{
 use super::FunctionLower;
 use crate::ir::{BinOp, Const, EnumId, InstKind, Terminator, Type, ValueId};
 
+/// Width of an enum's discriminant in a byte layout.
+///
+/// `Type::U64`, matching the tag `flatten_compound_leaf_types` emits at
+/// function boundaries and the `Type::U64` local `EnumStorage` keeps it
+/// in. Named because `compute_byte_size` and `collect_leaves` have to
+/// agree on it or every payload offset after the tag is wrong.
+const TAG_BYTE_SIZE: u64 = 8;
+
 impl<'a> FunctionLower<'a> {
     /// Mirror of `interpreter/src/evaluation/builtin.rs::object_byte_size`
     /// for the AOT side. `__builtin_sizeof(value)` lowers to a
     /// constant via this helper. The recursion sums field /
-    /// element sizes for structs / tuples / arrays and uses
-    /// `1-byte tag + max(payload)` for enums (matches the
-    /// interpreter's behaviour). Alignment / padding are not
-    /// modelled — the byte total is the natural sum, which lines
-    /// up with how the user-space `Vec<T>` body uses the result
-    /// (`self.cap * self.elem_size` for raw heap-alloc bookkeeping).
+    /// element sizes for structs / tuples / arrays, and gives an enum
+    /// a `u64` tag plus every variant's payload (see the arm below).
+    /// Alignment / padding are not modelled — the byte total is the
+    /// natural sum, which lines up with how the user-space `Vec<T>`
+    /// body uses the result (`self.cap * self.elem_size` for raw
+    /// heap-alloc bookkeeping).
     pub(super) fn compute_byte_size(&self, ty: Type) -> Option<u64> {
         match ty {
             Type::Bool | Type::I8 | Type::U8 => Some(1),
@@ -60,19 +68,31 @@ impl<'a> FunctionLower<'a> {
                 }
                 Some(total)
             }
+            // PTR-READ-ENUM: `u64` tag followed by *every* variant's
+            // payload laid end to end — the same shape
+            // `compiler_ir::layout::flatten_compound_leaf_types`
+            // already uses at function boundaries, and the same shape
+            // `EnumStorage` uses in locals (one slot per variant, not
+            // one shared slot).
+            //
+            // It was `1 + max(payload)` — a packed tagged union — which
+            // no part of the implementation actually laid out that way.
+            // Two models meant an enum written through
+            // `__builtin_ptr_write` and read back through
+            // `__builtin_ptr_read` disagreed about where its payload
+            // was, so the read had to be refused outright. The cost of
+            // agreeing is the inactive variants' slots; for the enums
+            // that carry one payload variant (`Option<T>`) there is no
+            // difference at all.
             Type::Enum(enum_id) => {
                 let def = self.module.enum_def(enum_id);
-                let mut max_payload: u64 = 0;
+                let mut total: u64 = TAG_BYTE_SIZE;
                 for variant in &def.variants {
-                    let mut payload: u64 = 0;
                     for ty in &variant.payload_types {
-                        payload = payload.saturating_add(self.compute_byte_size(*ty)?);
-                    }
-                    if payload > max_payload {
-                        max_payload = payload;
+                        total = total.saturating_add(self.compute_byte_size(*ty)?);
                     }
                 }
-                Some(1u64.saturating_add(max_payload))
+                Some(total)
             }
         }
     }
@@ -632,7 +652,31 @@ impl<'a> FunctionLower<'a> {
                 }
                 Some(())
             }
-            Type::Enum(_) => None,
+            // PTR-READ-ENUM: tag, then every variant's payload in
+            // declaration order. Identical to `compute_byte_size`'s
+            // enum arm and to `flatten_compound_leaf_types`, which is
+            // the point — the buffer an enum is written to and the
+            // locals it lives in now have one layout between them.
+            //
+            // Writing a value stores the inactive variants' slots too
+            // (they hold whatever their locals hold). That is harmless:
+            // the tag decides which slots a reader looks at, and the
+            // same "load every slot" rule already governs enums crossing
+            // a function boundary.
+            Type::Enum(enum_id) => {
+                out.push((*offset, Type::U64));
+                *offset = offset.saturating_add(TAG_BYTE_SIZE);
+                let def = self.module.enum_def(enum_id);
+                let payload_tys: Vec<Type> = def
+                    .variants
+                    .iter()
+                    .flat_map(|v| v.payload_types.iter().copied())
+                    .collect();
+                for pt in payload_tys {
+                    self.collect_leaves(pt, offset, out)?;
+                }
+                Some(())
+            }
         }
     }
 
@@ -1861,10 +1905,10 @@ impl<'a> FunctionLower<'a> {
                 let value_ty = self
                     .value_scalar(&args[2])
                     .ok_or_else(|| {
-                        "__builtin_ptr_write value type unsupported (needs scalar or struct/tuple)"
+                        "__builtin_ptr_write value type unsupported (needs scalar or struct/tuple/enum)"
                             .to_string()
                     })?;
-                if matches!(value_ty, Type::Struct(_) | Type::Tuple(_)) {
+                if matches!(value_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
                     let leaves = self.compute_leaf_layout(value_ty).ok_or_else(|| {
                         format!(
                             "__builtin_ptr_write: unable to compute leaf layout for {:?}",
@@ -1885,8 +1929,15 @@ impl<'a> FunctionLower<'a> {
                             Some(super::bindings::Binding::Tuple { elements }) => {
                                 super::bindings::flatten_tuple_element_locals(&elements)
                             }
+                            // PTR-READ-ENUM: an enum binding's locals
+                            // flatten to tag-then-every-variant, the
+                            // same order `collect_leaves` walks the
+                            // type in.
+                            Some(super::bindings::Binding::Enum(storage)) => {
+                                super::bindings::flatten_enum_storage_locals(&storage)
+                            }
                             other => return Err(format!(
-                                "__builtin_ptr_write: compound value identifier needs struct/tuple binding, got {:?}",
+                                "__builtin_ptr_write: compound value identifier needs struct/tuple/enum binding, got {:?}",
                                 other.is_some()
                             )),
                         },

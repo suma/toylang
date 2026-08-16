@@ -2376,8 +2376,15 @@ __builtin_sizeof(value: T) -> u64
 
 Returns the byte size of the argument's type. Primitives use fixed
 widths (`u64`/`i64`/`f64`/`ptr` = 8, `bool` = 1); structs sum their
-fields; enums account for a 1-byte tag plus payload; tuples and
-arrays sum their elements.
+fields; tuples and arrays sum their elements; an enum is a `u64` tag
+plus **every** variant's payload laid end to end.
+
+The enum figure is a property of the type, not of the value in hand —
+`Shape::Point` and `Shape::Rect(1, 2)` report the same width. That is
+what makes it usable as a stride: `Vec<T>` takes its element size from
+the first element pushed, so a per-variant answer would give a
+`Vec<Option<i64>>` a different layout depending on which element
+happened to arrive first.
 
 ### Allocation counters
 
@@ -2876,9 +2883,19 @@ val rest: Node = __builtin_ptr_read(n.next, 0u64)
 
 The annotation on the read is not optional: it names the type whose
 leaves are pulled back out of the buffer, and the read has no other way
-to know its shape. An enum-typed annotation is not supported there yet
-— the buffer layout of a slot whose shape depends on the variant is
-still undecided.
+to know its shape. A struct, tuple or enum may be named there — so the
+`ptr` can equally sit in an enum payload, which is the shape a list
+usually wants:
+
+```rust
+enum List { Cons(i64, ptr), Nil }
+```
+
+An enum occupies a `u64` tag followed by **every** variant's payload,
+laid end to end — the same layout it has when crossing a function
+boundary, and what `__builtin_sizeof` reports. The width therefore does
+not depend on which variant a value holds, which is what lets
+`Vec<Option<T>>` stride over its elements.
 
 `interpreter/example/linked_list_arena.t` and `linked_list_ptr.t` are
 worked examples of the two shapes. A `Box<T>` that would carry the

@@ -182,14 +182,16 @@ impl<'a> FunctionLower<'a> {
         use super::bindings::{flatten_struct_locals, Binding};
         let struct_def = self.module.struct_def(struct_id);
         let target_sym = struct_def.base_name;
-        let type_args = struct_def.type_args.clone();
         let method_sym = match self.interner.get(method_name) {
             Some(s) => s,
             None => return Ok(None),
         };
-        let func_id = match super::method_registry::lookup_method_func(
-            self.method_func_ids, target_sym, method_sym, &type_args,
-        ) {
+        // CONCRETE-IMPL-Phase-2c: unified dispatch — a generic-impl
+        // `eq` catches receivers the concrete impls don't exactly
+        // match.
+        let func_id = match self.resolve_struct_method_func_id(
+            target_sym, method_sym, struct_id, &[*lhs, *rhs],
+        )? {
             Some(f) => f,
             None => return Ok(None),
         };

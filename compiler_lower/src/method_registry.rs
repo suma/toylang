@@ -61,9 +61,17 @@ pub(super) type GenericMethods =
 /// receiver's concrete type args. Lookup priority:
 ///   1. exact match on `target_type_args`;
 ///   2. generic-parameterised impl with empty args (matches anything);
-    ///   3. lone-spec fallback (single spec wins regardless of args).
-    ///
-    /// Mirrors `EvaluationContext::get_method` in the interpreter.
+///   3. lone-spec fallback (single spec wins regardless of args).
+///
+/// Mirrors `EvaluationContext::get_method` in the interpreter.
+///
+/// Note: the lone-spec tier is what [`resolve_method_target`] splits
+/// out — when a generic template exists for the same `(target,
+/// method)`, the lone concrete spec must not preempt it (CONCRETE-IMPL
+/// "concrete overrides generic": a receiver the concrete impl doesn't
+/// cover belongs to the generic impl). Sites that consult only this
+/// registry (primitives, auto-drop, inline `with` constructors) keep
+/// using this function unchanged.
 pub(super) fn lookup_method_func(
     method_func_ids: &MethodFuncIds,
     target_sym: DefaultSymbol,
@@ -84,6 +92,99 @@ pub(super) fn lookup_method_func(
         return Some(specs[0].func_id);
     }
     None
+}
+
+/// Exact-match tier of [`lookup_method_func`] — the only tier allowed
+/// to run *before* the generic template is consulted.
+pub(super) fn lookup_method_func_exact(
+    method_func_ids: &MethodFuncIds,
+    target_sym: DefaultSymbol,
+    method_sym: DefaultSymbol,
+    receiver_type_args: &[Type],
+) -> Option<FuncId> {
+    let specs = method_func_ids.get(&(target_sym, method_sym))?;
+    specs
+        .iter()
+        .find(|s| s.target_type_args.as_slice() == receiver_type_args)
+        .map(|s| s.func_id)
+}
+
+/// Lone-spec tier of [`lookup_method_func`] — consulted only after
+/// the generic template registry came up empty.
+pub(super) fn lookup_method_func_lone(
+    method_func_ids: &MethodFuncIds,
+    target_sym: DefaultSymbol,
+    method_sym: DefaultSymbol,
+) -> Option<FuncId> {
+    let specs = method_func_ids.get(&(target_sym, method_sym))?;
+    if specs.len() == 1 {
+        return Some(specs[0].func_id);
+    }
+    None
+}
+
+/// The generic-impl template for `(target, method)`, when one exists.
+/// Its target args are all symbolic params (`impl<T> C<T>` registers
+/// `[Generic(T)]`), so no receiver comparison is needed — it matches
+/// any receiver. A concrete-args template (a method with its own
+/// generic params on `impl C<u8>`) falls back to the first spec, the
+/// pre-existing lone-template behaviour.
+pub(super) fn lookup_generic_template(
+    registry: &GenericMethods,
+    target_sym: DefaultSymbol,
+    method_sym: DefaultSymbol,
+) -> Option<Rc<frontend::ast::MethodFunction>> {
+    let specs = registry.get(&(target_sym, method_sym))?;
+    specs
+        .iter()
+        .find(|s| frontend::type_checker::is_wildcard_spec(&s.target_type_args))
+        .map(|s| Rc::clone(&s.method))
+        .or_else(|| specs.first().map(|s| Rc::clone(&s.method)))
+}
+
+/// Unified CONCRETE-IMPL dispatch across *both* registries.
+///
+/// Concrete-args impls live in `method_func_ids`; generic-impl
+/// methods (whose `generic_params` include the impl's params) live in
+/// `generic_methods`. A `(target, method)` can therefore be split
+/// across the two, and the precedence is:
+///
+///   1. exact concrete match on the receiver's IR type args,
+///   2. the generic template (wildcard — matches any receiver),
+///   3. a lone concrete spec, preserving the single-impl baseline.
+///
+/// The two-registry split is why this exists: a lone concrete spec
+/// that does not match the receiver must not preempt the generic
+/// impl — "concrete overrides generic" means the concrete impl wins
+/// *only* for receivers it exactly matches.
+pub(super) fn resolve_method_target(
+    method_func_ids: &MethodFuncIds,
+    generic_methods: &GenericMethods,
+    target_sym: DefaultSymbol,
+    method_sym: DefaultSymbol,
+    receiver_type_args: &[Type],
+) -> Option<ResolvedMethodTarget> {
+    if let Some(id) = lookup_method_func_exact(
+        method_func_ids,
+        target_sym,
+        method_sym,
+        receiver_type_args,
+    ) {
+        return Some(ResolvedMethodTarget::Concrete(id));
+    }
+    if let Some(t) = lookup_generic_template(generic_methods, target_sym, method_sym) {
+        return Some(ResolvedMethodTarget::Template(t));
+    }
+    lookup_method_func_lone(method_func_ids, target_sym, method_sym)
+        .map(ResolvedMethodTarget::Concrete)
+}
+
+/// Result of [`resolve_method_target`]: either a minted FuncId
+/// (concrete-args impl) or a generic template the caller must
+/// instantiate against the receiver's type args.
+pub(super) enum ResolvedMethodTarget {
+    Concrete(FuncId),
+    Template(Rc<frontend::ast::MethodFunction>),
 }
 
 /// Look up a method TEMPLATE (Rc<MethodFunction>) by `(target, method)`

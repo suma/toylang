@@ -141,15 +141,13 @@ impl<'a> FunctionLower<'a> {
                         if let Some(method_name) = op_method {
                             let struct_def = self.module.struct_def(struct_id);
                             let target_sym = struct_def.base_name;
-                            let type_args = struct_def.type_args.clone();
                             if let Some(method_sym) = self.interner.get(method_name)
-                                && let Some(func_id) =
-                                    super::method_registry::lookup_method_func(
-                                        self.method_func_ids,
-                                        target_sym,
-                                        method_sym,
-                                        &type_args,
-                                    )
+                                && let Some(func_id) = self.resolve_struct_method_func_id(
+                                    target_sym,
+                                    method_sym,
+                                    struct_id,
+                                    &[b_rhs],
+                                )?
                                 {
                                     use super::bindings::flatten_struct_locals;
                                     let lhs_leaves = match self

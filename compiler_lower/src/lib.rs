@@ -1623,14 +1623,29 @@ impl<'a> FunctionLower<'a> {
         // Look up the Drop method's FuncId. Use the receiver's
         // type-args so generic-struct Drop impls dispatch
         // correctly (matches the regular method-call path).
+        // CONCRETE-IMPL Phase 2c: unified dispatch — a generic-impl
+        // Drop (`impl<T> C<T> { fn drop }`) is a template that gets
+        // instantiated against the concrete struct.
         let type_args: Vec<crate::ir::Type> = struct_def.type_args.clone();
-        let func_id = match method_registry::lookup_method_func(
+        let func_id = match method_registry::resolve_method_target(
             self.method_func_ids,
+            self.generic_methods,
             struct_sym,
             drop_sym,
             &type_args,
         ) {
-            Some(id) => id,
+            Some(method_registry::ResolvedMethodTarget::Concrete(id)) => id,
+            Some(method_registry::ResolvedMethodTarget::Template(t)) => {
+                self.instantiate_generic_method_with_args(
+                    struct_sym, drop_sym, &t, target.struct_id, &[],
+                )
+                .map_err(|e| {
+                    format!(
+                        "auto-drop: failed to instantiate Drop for `{}`: {e}",
+                        self.interner.resolve(struct_sym).unwrap_or("?")
+                    )
+                })?
+            }
             None => {
                 let s = self.interner.resolve(struct_sym).unwrap_or("?");
                 return Err(format!(

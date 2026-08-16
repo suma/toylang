@@ -408,7 +408,15 @@ impl<'a> EvaluationContext<'a> {
         {
             return Some(spec.method.clone());
         }
-        if let Some(spec) = specs.iter().find(|s| s.target_type_args.is_empty()) {
+        // CONCRETE-IMPL-Phase-2c: a wildcard spec — empty args or
+        // all-symbolic args (`impl<T> C<T>` registers
+        // `[Generic(T)]`) — matches any receiver. This is the tier
+        // that lets `impl C<u8>` override the generic impl for `u8`
+        // receivers while every other receiver falls back to it.
+        if let Some(spec) = specs
+            .iter()
+            .find(|s| frontend::type_checker::is_wildcard_spec(&s.target_type_args))
+        {
             return Some(spec.method.clone());
         }
         if specs.len() == 1 {

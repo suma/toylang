@@ -461,51 +461,59 @@ impl<'a> FunctionLower<'a> {
         method: DefaultSymbol,
         args: &[ExprRef],
     ) -> Option<Type> {
-        // CONCRETE-IMPL Phase 2b: pick FuncId by receiver
-        // type args (extracted by the caller as part of recv_self).
+        // CONCRETE-IMPL Phase 2c: unified dispatch — exact concrete
+        // spec first, then the generic template peek, then a lone
+        // concrete spec. Mirrors `resolve_method_target` so the peek
+        // agrees with the call-time dispatch (a receiver the concrete
+        // impls don't exactly match belongs to the generic impl).
         let recv_args_for_lookup: Vec<Type> = recv_self
             .as_ref()
             .map(|(_, args)| args.clone())
             .unwrap_or_default();
-        if let Some(func_id) = super::method_registry::lookup_method_func(
-            self.method_func_ids, target_sym, method, &recv_args_for_lookup,
+        match super::method_registry::resolve_method_target(
+            self.method_func_ids,
+            self.generic_methods,
+            target_sym,
+            method,
+            &recv_args_for_lookup,
         ) {
-            return Some(self.module.function(func_id).return_type);
-        }
-        let template_opt = super::method_registry::lookup_method_template(
-            self.generic_methods, target_sym, method, &[],
-        );
-        if let (Some(template), Some((self_ty, recv_type_args))) =
-            (template_opt, recv_self)
-            && template.generic_params.len() >= recv_type_args.len() {
-                let mut subst: HashMap<DefaultSymbol, Type> = HashMap::new();
-                for (i, p) in template.generic_params.iter().enumerate() {
-                    if let Some(t) = recv_type_args.get(i).copied() {
-                        subst.insert(*p, t);
-                    }
-                }
-                let method_only_params: Vec<DefaultSymbol> = template
-                    .generic_params
-                    .iter()
-                    .skip(recv_type_args.len())
-                    .copied()
-                    .collect();
-                if !method_only_params.is_empty() {
-                    for (i, arg_ref) in args.iter().enumerate() {
-                        let param_idx = i + 1;
-                        if let Some((_, decl)) = template.parameter.get(param_idx)
-                            && let Some(arg_ty) = self.value_scalar(arg_ref)
-                                && let TypeDecl::Generic(p) | TypeDecl::Identifier(p) = decl
-                                    && method_only_params.contains(p) {
-                                        subst.entry(*p).or_insert(arg_ty);
-                                    }
-                    }
-                }
-                if let Some(ret) = &template.return_type {
-                    return self.peek_method_return_type_with_self(ret, &subst, self_ty);
-                }
-                return Some(Type::Unit);
+            Some(super::method_registry::ResolvedMethodTarget::Concrete(id)) => {
+                Some(self.module.function(id).return_type)
             }
-        None
+            Some(super::method_registry::ResolvedMethodTarget::Template(template)) => {
+                if let Some((self_ty, recv_type_args)) = recv_self
+                    && template.generic_params.len() >= recv_type_args.len() {
+                        let mut subst: HashMap<DefaultSymbol, Type> = HashMap::new();
+                        for (i, p) in template.generic_params.iter().enumerate() {
+                            if let Some(t) = recv_type_args.get(i).copied() {
+                                subst.insert(*p, t);
+                            }
+                        }
+                        let method_only_params: Vec<DefaultSymbol> = template
+                            .generic_params
+                            .iter()
+                            .skip(recv_type_args.len())
+                            .copied()
+                            .collect();
+                        if !method_only_params.is_empty() {
+                            for (i, arg_ref) in args.iter().enumerate() {
+                                let param_idx = i + 1;
+                                if let Some((_, decl)) = template.parameter.get(param_idx)
+                                    && let Some(arg_ty) = self.value_scalar(arg_ref)
+                                        && let TypeDecl::Generic(p) | TypeDecl::Identifier(p) = decl
+                                            && method_only_params.contains(p) {
+                                                subst.entry(*p).or_insert(arg_ty);
+                                            }
+                            }
+                        }
+                        if let Some(ret) = &template.return_type {
+                            return self.peek_method_return_type_with_self(ret, &subst, self_ty);
+                        }
+                        return Some(Type::Unit);
+                    }
+                    None
+                }
+                None => None,
+        }
     }
 }

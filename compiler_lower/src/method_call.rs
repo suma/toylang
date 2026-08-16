@@ -437,6 +437,10 @@ impl<'a> FunctionLower<'a> {
         // CONCRETE-IMPL Phase 2b: receiver's IR type args distinguish
         // multiple `impl Foo for Container<X>` impls; consult them
         // when looking up the matching FuncId. Templates likewise.
+        // Phase 2c: the unified cross-registry dispatch resolves a
+        // lone concrete spec only after the generic template is
+        // exhausted, so `impl<T> C<T>` catches the receivers the
+        // concrete impls don't exactly match.
         let (target_sym, recv_type_args): (DefaultSymbol, Vec<crate::ir::Type>) = match &binding {
             Binding::Struct { struct_id, .. } => {
                 let def = self.module.struct_def(*struct_id);
@@ -448,58 +452,87 @@ impl<'a> FunctionLower<'a> {
             }
             _ => return Ok(None),
         };
-        if let Some(id) = super::method_registry::lookup_method_func(
+        let resolved = super::method_registry::resolve_method_target(
             self.method_func_ids,
-            target_sym,
-            method,
-            &recv_type_args,
-        ) {
-            return Ok(Some((id, binding)));
-        }
-        // For generic methods we still use the raw lookup (templates
-        // are TypeDecl-based; lone-spec fallback dominates).
-        let recv_type_args_decl: Vec<frontend::type_decl::TypeDecl> = Vec::new();
-        if let Some(template) = super::method_registry::lookup_method_template(
             self.generic_methods,
             target_sym,
             method,
-            &recv_type_args_decl,
-        ) {
-            // Enum receivers go through the type-args-aware
-            // instantiator, the same split the expression-position
-            // dispatch above makes. Bailing out on them (which this
-            // used to do) meant every caller that resolves a target
-            // before choosing a call shape — `val` binding, `print`
-            // argument, `match` scrutinee — saw a generic method on an
-            // enum as "not a method", and fell through to a message
-            // telling the user to bind it with `val` when they already
-            // had. `Option::map` and `Result::map` were unreachable
-            // from the compiler for exactly this reason.
-            let id = match &binding {
-                Binding::Struct { struct_id, .. } => self.instantiate_generic_method_with_args(
-                    target_sym,
-                    method,
-                    &template,
-                    *struct_id,
-                    args,
-                )?,
-                Binding::Enum(storage) => {
-                    let enum_id = storage.enum_id;
-                    let recv_type_args = self.module.enum_def(enum_id).type_args.clone();
-                    self.instantiate_generic_method_with_self_type(
+            &recv_type_args,
+        );
+        let id = match resolved {
+            Some(super::method_registry::ResolvedMethodTarget::Concrete(id)) => id,
+            Some(super::method_registry::ResolvedMethodTarget::Template(template)) => {
+                // Enum receivers go through the type-args-aware
+                // instantiator, the same split the expression-position
+                // dispatch above makes. Bailing out on them (which this
+                // used to do) meant every caller that resolves a target
+                // before choosing a call shape — `val` binding, `print`
+                // argument, `match` scrutinee — saw a generic method on an
+                // enum as "not a method", and fell through to a message
+                // telling the user to bind it with `val` when they already
+                // had. `Option::map` and `Result::map` were unreachable
+                // from the compiler for exactly this reason.
+                match &binding {
+                    Binding::Struct { struct_id, .. } => self.instantiate_generic_method_with_args(
                         target_sym,
                         method,
                         &template,
-                        Type::Enum(enum_id),
-                        recv_type_args,
+                        *struct_id,
                         args,
-                    )?
+                    )?,
+                    Binding::Enum(storage) => {
+                        let enum_id = storage.enum_id;
+                        let recv_type_args = self.module.enum_def(enum_id).type_args.clone();
+                        self.instantiate_generic_method_with_self_type(
+                            target_sym,
+                            method,
+                            &template,
+                            Type::Enum(enum_id),
+                            recv_type_args,
+                            args,
+                        )?
+                    }
+                    _ => return Ok(None),
                 }
-                _ => return Ok(None),
-            };
-            return Ok(Some((id, binding)));
+            }
+            None => return Ok(None),
+        };
+        Ok(Some((id, binding)))
+    }
+
+    /// CONCRETE-IMPL-Phase-2c: resolve `(target, method)` for a
+    /// struct receiver to a FuncId, instantiating the generic
+    /// template against `struct_id` when no concrete spec matches.
+    /// `args` are the call arguments (used only to bind method-only
+    /// generic params during instantiation). `Ok(None)` when neither
+    /// registry has the method.
+    pub(super) fn resolve_struct_method_func_id(
+        &mut self,
+        target_sym: DefaultSymbol,
+        method_sym: DefaultSymbol,
+        struct_id: crate::ir::StructId,
+        args: &[ExprRef],
+    ) -> Result<Option<FuncId>, String> {
+        let type_args = self.module.struct_def(struct_id).type_args.clone();
+        match super::method_registry::resolve_method_target(
+            self.method_func_ids,
+            self.generic_methods,
+            target_sym,
+            method_sym,
+            &type_args,
+        ) {
+            Some(super::method_registry::ResolvedMethodTarget::Concrete(id)) => Ok(Some(id)),
+            Some(super::method_registry::ResolvedMethodTarget::Template(t)) => Ok(Some(
+                self.instantiate_generic_method_with_args(
+                    target_sym,
+                    method_sym,
+                    &t,
+                    struct_id,
+                    args,
+                )?,
+            )),
+            None => Ok(None),
         }
-        Ok(None)
     }
 
     /// Lower an `obj.method(args)` expression. Phase R1 dispatch is
@@ -683,52 +716,62 @@ impl<'a> FunctionLower<'a> {
                 );
             }
         };
-        let target = if let Some(id) = super::method_registry::lookup_method_func(
-            self.method_func_ids, target_sym, method, &recv_type_args,
+        // CONCRETE-IMPL Phase 2c: unified cross-registry dispatch —
+        // exact concrete spec first, then the generic template
+        // (instantiated against the receiver), then a lone concrete
+        // spec. A receiver the concrete impls don't exactly match
+        // belongs to the generic impl, not to whichever concrete spec
+        // happens to be alone in its registry.
+        let target = match super::method_registry::resolve_method_target(
+            self.method_func_ids,
+            self.generic_methods,
+            target_sym,
+            method,
+            &recv_type_args,
         ) {
-            id
-        } else if let Some(template) = super::method_registry::lookup_method_template(
-            self.generic_methods, target_sym, method, &[],
-        ) {
-            match &binding {
-                Binding::Struct { struct_id, .. } => self.instantiate_generic_method_with_args(
-                    target_sym,
-                    method,
-                    &template,
-                    *struct_id,
-                    args,
-                )?,
-                Binding::Enum(storage) => {
-                    // Enum receiver dispatch: pull the receiver's
-                    // resolved `type_args` from `enum_def` and feed
-                    // them to the type-args-aware monomorph
-                    // instantiator. `Type::Enum(enum_id)` is the
-                    // Self type for the impl body.
-                    let enum_id = storage.enum_id;
-                    let recv_type_args = self.module.enum_def(enum_id).type_args.clone();
-                    self.instantiate_generic_method_with_self_type(
+            Some(super::method_registry::ResolvedMethodTarget::Concrete(id)) => id,
+            Some(super::method_registry::ResolvedMethodTarget::Template(template)) => {
+                match &binding {
+                    Binding::Struct { struct_id, .. } => self.instantiate_generic_method_with_args(
                         target_sym,
                         method,
                         &template,
-                        Type::Enum(enum_id),
-                        recv_type_args,
+                        *struct_id,
                         args,
-                    )?
-                }
-                _ => {
-                    return Err(format!(
-                        "compiler MVP: generic method `{}::{}` requires a struct or enum receiver",
-                        self.interner.resolve(target_sym).unwrap_or("?"),
-                        self.interner.resolve(method).unwrap_or("?"),
-                    ));
+                    )?,
+                    Binding::Enum(storage) => {
+                        // Enum receiver dispatch: pull the receiver's
+                        // resolved `type_args` from `enum_def` and feed
+                        // them to the type-args-aware monomorph
+                        // instantiator. `Type::Enum(enum_id)` is the
+                        // Self type for the impl body.
+                        let enum_id = storage.enum_id;
+                        let recv_type_args = self.module.enum_def(enum_id).type_args.clone();
+                        self.instantiate_generic_method_with_self_type(
+                            target_sym,
+                            method,
+                            &template,
+                            Type::Enum(enum_id),
+                            recv_type_args,
+                            args,
+                        )?
+                    }
+                    _ => {
+                        return Err(format!(
+                            "compiler MVP: generic method `{}::{}` requires a struct or enum receiver",
+                            self.interner.resolve(target_sym).unwrap_or("?"),
+                            self.interner.resolve(method).unwrap_or("?"),
+                        ));
+                    }
                 }
             }
-        } else {
-            return Err(format!(
-                "no method `{}::{}` is defined",
-                self.interner.resolve(target_sym).unwrap_or("?"),
-                self.interner.resolve(method).unwrap_or("?"),
-            ));
+            None => {
+                return Err(format!(
+                    "no method `{}::{}` is defined",
+                    self.interner.resolve(target_sym).unwrap_or("?"),
+                    self.interner.resolve(method).unwrap_or("?"),
+                ));
+            }
         };
         let _ = self.method_registry; // referenced for documentation
 

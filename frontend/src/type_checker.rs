@@ -20,7 +20,7 @@ pub mod inference;
 pub mod optimization;
 
 pub use core::CoreReferences;
-pub use context::{TypeCheckContext, VarState};
+pub use context::{is_wildcard_spec, TypeCheckContext, VarState};
 pub use error::{SourceLocation, TypeCheckError, TypeCheckErrorKind};
 pub use function::FunctionCheckingState;
 pub use generics::GenericTypeChecking;

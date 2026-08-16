@@ -186,11 +186,10 @@ impl<'a> FunctionLower<'a> {
                 // in a `Vec<u8>`-typed slot has nothing else to go on —
                 // there is no annotation at a field site).
                 let target_def = self.module.struct_def(target_struct_id);
-                let (self_struct_id, type_args) = if target_def.base_name == struct_name {
-                    (target_struct_id, target_def.type_args.clone())
+                let self_struct_id = if target_def.base_name == struct_name {
+                    target_struct_id
                 } else {
-                    let id = self.resolve_struct_instance(struct_name, None)?;
-                    (id, self.module.struct_def(id).type_args.clone())
+                    self.resolve_struct_instance(struct_name, None)?
                 };
                 // Non-generic impls live in `method_func_ids`;
                 // generic ones (`impl<T> Vec<T> { fn new() -> Self }`)
@@ -198,37 +197,20 @@ impl<'a> FunctionLower<'a> {
                 // slot's own type args. Same two-registry lookup
                 // `lower_let_struct_associated_call` does for
                 // `val v: Vec<u8> = Vec::new()`.
-                let func_id = match super::method_registry::lookup_method_func(
-                    self.method_func_ids,
-                    struct_name,
-                    fn_name,
-                    &type_args,
-                ) {
-                    Some(f) => f,
-                    None => {
-                        let template = super::method_registry::lookup_method_template(
-                            self.generic_methods,
-                            struct_name,
-                            fn_name,
-                            &[],
+                let func_id = self
+                    .resolve_struct_method_func_id(
+                        struct_name,
+                        fn_name,
+                        self_struct_id,
+                        &args,
+                    )?
+                    .ok_or_else(|| {
+                        format!(
+                            "no associated function `{}::{}` to build this value with",
+                            self.interner.resolve(struct_name).unwrap_or("?"),
+                            self.interner.resolve(fn_name).unwrap_or("?"),
                         )
-                        .ok_or_else(|| {
-                            format!(
-                                "no associated function `{}::{}` to build this value with",
-                                self.interner.resolve(struct_name).unwrap_or("?"),
-                                self.interner.resolve(fn_name).unwrap_or("?"),
-                            )
-                        })?;
-                        self.instantiate_generic_method_with_self_type(
-                            struct_name,
-                            fn_name,
-                            &template,
-                            Type::Struct(self_struct_id),
-                            type_args.clone(),
-                            &args,
-                        )?
-                    }
-                };
+                    })?;
                 let mut arg_values: Vec<ValueId> = Vec::with_capacity(args.len());
                 for a in &args {
                     let v = self.lower_expr(a)?.ok_or_else(|| {
@@ -367,23 +349,16 @@ impl<'a> FunctionLower<'a> {
             Expr::AssociatedFunctionCall(struct_name, fn_name, args)
                 if self.struct_defs.contains_key(&struct_name) =>
             {
-                let type_args = {
-                    let id = self.resolve_struct_instance(struct_name, None)?;
-                    self.module.struct_def(id).type_args.clone()
-                };
-                let func_id = super::method_registry::lookup_method_func(
-                    self.method_func_ids,
-                    struct_name,
-                    fn_name,
-                    &type_args,
-                )
-                .ok_or_else(|| {
-                    format!(
-                        "no associated function `{}::{}` to build this value with",
-                        self.interner.resolve(struct_name).unwrap_or("?"),
-                        self.interner.resolve(fn_name).unwrap_or("?"),
-                    )
-                })?;
+                let struct_id = self.resolve_struct_instance(struct_name, None)?;
+                let func_id = self
+                    .resolve_struct_method_func_id(struct_name, fn_name, struct_id, &args)?
+                    .ok_or_else(|| {
+                        format!(
+                            "no associated function `{}::{}` to build this value with",
+                            self.interner.resolve(struct_name).unwrap_or("?"),
+                            self.interner.resolve(fn_name).unwrap_or("?"),
+                        )
+                    })?;
                 let mut arg_values: Vec<ValueId> = Vec::with_capacity(args.len());
                 for a in &args {
                     let v = self.lower_expr(a)?.ok_or_else(|| {

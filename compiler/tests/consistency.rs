@@ -1150,17 +1150,16 @@ fn concrete_associated_call_picks_the_spec_from_the_annotation() {
 }
 
 #[test]
-fn ambiguous_concrete_and_generic_impls_are_rejected_not_last_wins() {
-    // `impl<T> C<T> { get }` + `impl C<u8> { get }`: a `C<i64>`
-    // receiver has no unambiguous spec — the concrete impl doesn't
-    // match and the generic impl registers `[Generic(T)]` args, not
-    // the empty-args marker the fallback recognises. The old
-    // single-slot registry silently typed *both* receivers with the
-    // last-registered signature (one of them wrong); the multi-spec
-    // registry reports the ambiguity at compile time. The runtime
-    // layers reject the same call (their dispatch also finds no
-    // spec), so the compile error is honest rather than a
-    // type-checks-but-fails-at-runtime divergence.
+fn concrete_impl_overrides_the_generic_impl_for_matching_receivers() {
+    // CONCRETE-IMPL-Phase-2c generic-wildcard: the generic impl
+    // (`impl<T> C<T>`) registers its target args as `[Generic(T)]`,
+    // not the empty marker the old fallback looked for — so a
+    // `C<i64>` receiver used to find no spec at all when a concrete
+    // `impl C<u8>` coexisted (every layer rejected the overlap). Now
+    // the wildcard tier makes the generic impl match any receiver the
+    // concrete specs don't exactly cover: "concrete overrides
+    // generic" is expressible, in the type checker and both
+    // runtimes. Both registration orders are pinned.
     let src = r#"
         struct C<T> { v: T }
         impl C<u8> {
@@ -1170,18 +1169,58 @@ fn ambiguous_concrete_and_generic_impls_are_rejected_not_last_wins() {
             fn get(self: Self) -> T { self.v }
         }
         fn main() -> i64 {
+            val a: C<u8> = C { v: 1u8 }
             val b: C<i64> = C { v: 2i64 }
-            b.get()
+            val x: u8 = a.get()
+            val y: i64 = b.get()
+            (x as i64) + y
         }
     "#;
-    assert!(
-        try_compiler_exit_code(src, "ambiguous_overlap", false).is_none(),
-        "ambiguous generic+concrete overlap must not compile"
-    );
-    assert!(
-        interpreter_value_with_core(src, None).is_none(),
-        "the interpreter must reject the same overlap"
-    );
+    assert_consistent(src, "concrete_overrides_generic");
+    let src = r#"
+        struct C<T> { v: T }
+        impl<T> C<T> {
+            fn get(self: Self) -> T { self.v }
+        }
+        impl C<u8> {
+            fn get(self: Self) -> u8 { self.v }
+        }
+        fn main() -> i64 {
+            val a: C<u8> = C { v: 1u8 }
+            val b: C<i64> = C { v: 2i64 }
+            val x: u8 = a.get()
+            val y: i64 = b.get()
+            (x as i64) + y
+        }
+    "#;
+    assert_consistent(src, "concrete_overrides_generic_reversed");
+}
+
+#[test]
+fn concrete_overrides_generic_for_compound_methods_and_associated_calls() {
+    // The unified cross-registry dispatch must hold on every path:
+    // compound-returning methods (`clone` — a val-rhs binding) and
+    // associated calls (`make` — no receiver, the annotation picks
+    // the concrete spec).
+    let src = r#"
+        struct C<T> { v: T }
+        impl C<u8> {
+            fn clone(self: Self) -> C<u8> { C { v: self.v } }
+            fn make(v: u8) -> C<u8> { C { v: v } }
+        }
+        impl<T> C<T> {
+            fn clone(self: Self) -> C<T> { C { v: self.v } }
+            fn make(v: T) -> C<T> { C { v: v } }
+        }
+        fn main() -> i64 {
+            val a: C<u8> = C::make(1u8)
+            val b: C<i64> = C::make(2i64)
+            val ca: C<u8> = a.clone()
+            val cb: C<i64> = b.clone()
+            (ca.v as i64) + cb.v
+        }
+    "#;
+    assert_consistent(src, "concrete_overrides_generic_compound");
 }
 
 #[test]

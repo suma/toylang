@@ -288,8 +288,11 @@ impl<'a> FunctionLower<'a> {
                                 _ => None,
                             };
                             if let Some(target_sym) = target_sym_opt {
-                                // CONCRETE-IMPL Phase 2b: pick FuncId
-                                // by receiver type args.
+                                // CONCRETE-IMPL Phase 2c: unified
+                                // dispatch — exact concrete spec first,
+                                // then the generic template
+                                // (instantiated against the receiver),
+                                // then a lone concrete spec.
                                 let recv_args: Vec<crate::ir::Type> = match &binding {
                                     Binding::Struct { struct_id, .. } => {
                                         self.module.struct_def(*struct_id).type_args.clone()
@@ -299,9 +302,31 @@ impl<'a> FunctionLower<'a> {
                                     }
                                     _ => Vec::new(),
                                 };
-                                let target_id = super::method_registry::lookup_method_func(
-                                    self.method_func_ids, target_sym, method_sym, &recv_args,
-                                );
+                                let target_id = match super::method_registry::resolve_method_target(
+                                    self.method_func_ids,
+                                    self.generic_methods,
+                                    target_sym,
+                                    method_sym,
+                                    &recv_args,
+                                ) {
+                                    Some(super::method_registry::ResolvedMethodTarget::Concrete(id)) => Some(id),
+                                    Some(super::method_registry::ResolvedMethodTarget::Template(t)) => {
+                                        match &binding {
+                                            Binding::Struct { struct_id, .. } => self.instantiate_generic_method_with_args(
+                                                target_sym, method_sym, &t, *struct_id, &method_args,
+                                            ).ok(),
+                                            Binding::Enum(storage) => {
+                                                let enum_id = storage.enum_id;
+                                                let args = self.module.enum_def(enum_id).type_args.clone();
+                                                self.instantiate_generic_method_with_self_type(
+                                                    target_sym, method_sym, &t, Type::Enum(enum_id), args, &method_args,
+                                                ).ok()
+                                            }
+                                            _ => None,
+                                        }
+                                    }
+                                    None => None,
+                                };
                                 if let Some(target_id) = target_id {
                                     let target_ret =
                                         self.module.function(target_id).return_type;

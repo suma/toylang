@@ -42,6 +42,19 @@ pub struct MethodSpec {
     pub method: Rc<MethodFunction>,
 }
 
+/// CONCRETE-IMPL-Phase-2c: a spec matches any receiver when it names
+/// no concrete args — an empty list (non-generic target) or a list of
+/// all-symbolic params (`impl<T> C<T>` registers `[Generic(T)]`, not
+/// the empty marker the runtime comments used to claim). This is the
+/// "generic impl" tier: concrete-args impls win by exact match first,
+/// the generic impl catches every other receiver.
+pub fn is_wildcard_spec(target_type_args: &[TypeDecl]) -> bool {
+    target_type_args.is_empty()
+        || target_type_args
+            .iter()
+            .all(|t| matches!(t, TypeDecl::Generic(_)))
+}
+
 #[derive(Debug)]
 pub struct TypeCheckContext {
     pub vars: Vec<HashMap<DefaultSymbol, VarState>>,
@@ -449,8 +462,9 @@ impl TypeCheckContext {
     /// compiler's `method_func_ids` dispatch):
     ///
     /// 1. an impl whose concrete args equal the receiver's,
-    /// 2. an impl with no concrete args (non-generic target or an
-    ///    explicit `impl<T> C<T>` whose params stay symbolic),
+    /// 2. a wildcard spec — no concrete args (non-generic target) or
+    ///    all-symbolic args (the generic `impl<T> C<T>` registers
+    ///    `[Generic(T)]`), which matches any receiver,
     /// 3. a lone spec — the fallback that kept single-impl programs
     ///    working before the registry became multi-spec.
     ///
@@ -470,7 +484,10 @@ impl TypeCheckContext {
         {
             return Some(&spec.method);
         }
-        if let Some(spec) = specs.iter().find(|s| s.target_type_args.is_empty()) {
+        if let Some(spec) = specs
+            .iter()
+            .find(|s| is_wildcard_spec(&s.target_type_args))
+        {
             return Some(&spec.method);
         }
         if specs.len() == 1 {

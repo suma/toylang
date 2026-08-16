@@ -1505,19 +1505,14 @@ impl<'a> FunctionLower<'a> {
                 .get(new_str)
                 .ok_or_else(|| "with: `new` symbol not interned".to_string())?;
             let struct_id = self.resolve_struct_instance(struct_sym, None)?;
-            let recv_type_args = self.module.struct_def(struct_id).type_args.clone();
-            let func_id = super::method_registry::lookup_method_func(
-                self.method_func_ids,
-                struct_sym,
-                new_sym,
-                &recv_type_args,
-            )
-            .ok_or_else(|| {
-                format!(
-                    "with: missing FuncId for {}::new",
-                    self.interner.resolve(struct_sym).unwrap_or("?")
-                )
-            })?;
+            let func_id = self
+                .resolve_struct_method_func_id(struct_sym, new_sym, struct_id, &[])?
+                .ok_or_else(|| {
+                    format!(
+                        "with: missing FuncId for {}::new",
+                        self.interner.resolve(struct_sym).unwrap_or("?")
+                    )
+                })?;
             let target_ret = self.module.function(func_id).return_type;
             let ret_struct_id = match target_ret {
                 crate::ir::Type::Struct(id) => id,

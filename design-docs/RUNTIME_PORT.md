@@ -12,8 +12,36 @@ Phase 分割 → MVP 刻みで landing」で進める。
 | **R0** | 出力シンクの抽象化 (print だけ差し替え可能にする) | ✅ 完了 (2026-08-16) |
 | **R1** | `toylang_rt` crate 新設 + C 全機能の移植 + jit.rs ミラー削除 | ✅ 完了 (2026-08-16) |
 | **R2** | extern 宣言の一般化で `toy_io_*` を廃止 (FFI_PLAN P1 に相乗り) | ✅ 完了 (2026-08-16) |
-| **R3** | str / 整数整形 / 集計を `core/std/` (toylang) へ | 未着手 |
+| **R3** | str / 整数整形 / 集計を `core/std/` (toylang) へ | ⛔ 計測で中止条件に該当 (2026-08-16、下記) |
 | **R4** | f64 整形・allocator・profiler も toylang へ (任意) | 検討のみ |
+
+### R3 計測結果 (2026-08-16) — 中止条件に該当、移動せず
+
+R3 の 4 候補を実際に書いて測った。**結論: どれも doc 自身の基準で
+Layer 1 に残すのが正しい。**
+
+- **`str_eq` / `str_concat` / `to_string_*`**: toylang 実装は
+  `__builtin_str_len` / `str_to_ptr` / `ptr_read(u8)` /
+  `str_from_bytes` で書ける (4 バックエンド動作はプロトタイプで確認)。
+  しかし既定エンジン (IR VM) で **byte-walk パターンは ~20 倍遅い**
+  (str==str を 40000 回: native 0.2s → toylang 3.9s)。`String::eq`
+  (string.t) が既に同じパターンで、その遅さが許容されているのは
+  struct だから — 言語プリミティブ `str == str` に広げると
+  assert_eq / 補間 / Dict キーが全部そのペナルティを払う。
+  「interpreter が目に見えて遅くなる」= 中止条件に該当。
+- **R3 の前提が成立していない発見**: `str == str` は型チェッカに
+  **経路が無かった** (`if`/`while` 条件が未検査なのが唯一の入口 —
+  `val x: bool = a == b` は E0002 で拒否、`if 42u64 {}` は通る)。
+  「`==` オーバーロード経由で既に toylang 側の入口がある」は誤り。
+  この修正として `visit_compare_binary` に String ペアの arm を追加し、
+  `str == str` を value 位置でも一級にした (consistency に
+  `str_equality_is_first_class_in_value_positions`)。if 条件の
+  bool 検査は checker の順序依存 (Generic/Identifier のずれ) で
+  stdlib が壊れたため見送り、既知の不具合として todo.md に記録。
+- **profiler の集計**: doc 自身の判断基準「バグを言語のバグと切り離して
+  調べたいか = Yes のものは native に残す」で profiler は該当。移動しない。
+- **if 条件が未検査である件** (`if 42u64 {}` が通る) は todo.md の
+  既知の不具合に追加。
 
 ### R2 実装メモ (2026-08-16)
 

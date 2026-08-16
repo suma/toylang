@@ -467,6 +467,19 @@ impl<'a> TypeCheckerVisitor<'a> {
             return Ok(TypeDecl::Bool);
         }
 
+        // `str == str` / `str != str` compares bytes (STR-EQ). The
+        // comparison was previously only reachable through unchecked
+        // if/while conditions — the checker had no path for it, so a
+        // value position (`val x: bool = a == b`) was rejected while
+        // the same expression inside an `if` sailed through. First-class
+        // here; the lowering emits `InstKind::StrEq` either way.
+        if matches!(op, Operator::EQ | Operator::NE)
+            && *l == TypeDecl::String
+            && *r == TypeDecl::String
+        {
+            return Ok(TypeDecl::Bool);
+        }
+
         if matches!(op, Operator::EQ | Operator::NE)
             && self.is_allocator_compatible(l)
             && self.is_allocator_compatible(r) {

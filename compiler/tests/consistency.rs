@@ -3582,6 +3582,34 @@ fn str_equality_compares_content_not_handles() {
 }
 
 #[test]
+fn str_equality_is_first_class_in_value_positions() {
+    // R3 (2026-08-16): `str == str` used to type-check only inside
+    // if/while conditions — the checker had no comparison rule for
+    // `String` operands, so a value position (`val x: bool = a == b`)
+    // was rejected with E0002 while the same expression in an `if`
+    // sailed through unchecked (if conditions are not validated).
+    // The comparison rule is now first-class; this pins the value
+    // position on every backend. The false cases add 1000 each.
+    let src = r#"
+        fn main() -> u64 {
+            var score: u64 = 0u64
+            val hi = "hi"
+            val built = "h".concat("i")
+            val other = "ho"
+
+            val equal: bool = built == hi
+            val not_equal: bool = built != other
+            val wrong: bool = built != hi
+            if equal { score = score + 1u64 }
+            if not_equal { score = score + 2u64 }
+            if wrong { score = score + 1000u64 }
+            score
+        }
+    "#;
+    assert_consistent(src, "str_eq_value_pos");
+}
+
+#[test]
 fn the_interpreter_jit_compares_str_content_too() {
     // `assert_consistent`'s lite path returns as soon as the
     // tree-walker, the compiler-side JIT, the AOT binary and the IR VM

@@ -52,6 +52,17 @@
   (5) JIT の io argv は compile 時に空リセット、`profiler_reset` は注入済み
   args を保持。(6) `ffi_tests.rs` + fixture C ライブラリが 3 者一致を pin。
   `FULL_AST_CACHE_SCHEMA_VERSION` 8。
+- **RUNTIME-PORT R3: toylang 化の計測と判断 (移動は中止)** — `str_eq` /
+  `str_concat` / `to_string_*` の toylang 実装をプロトタイプで書いて計測:
+  既定エンジン (IR VM) で byte-walk パターンは **~20 倍遅い**
+  (str==str 40000 回: 0.2s → 3.9s) で doc の中止条件「interpreter が
+  目に見えて遅くなる」に該当 → Layer 1 に残す (設計判断)。
+  profiler 集計も doc の「バグを切り離して調べたい = native に残す」基準で
+  移動しない。**副産物の発見**: `str == str` は型チェッカに経路が無く
+  if/while 条件の未検査を経由してのみ動作していた (value 位置は E0002)。
+  この前提崩れの修正として `visit_compare_binary` に String ペアの arm を
+  追加し、`str == str` を一級にした (consistency: `str_eq_value_pos`)。
+  R3 の経緯と測定値は RUNTIME_PORT.md に記載。
 - **RUNTIME-IO: 最小 I/O セット (3 バックエンド)** — `core/std/io.t` に
   `read_line()` / `argc()` / `arg(i)` / `env_var(name)` / `read_file(path)` /
   `file_exists(path)` / `now()` / `random()`。既存 extern fn 機構
@@ -333,8 +344,8 @@
 * FFI — P1 (静的 FFI、`from`/`as`) 完了 (2026-08-16、[`FFI_PLAN.md`](FFI_PLAN.md))。
   P2 (動的ロード / dlopen builtin) は未着手
 * AOT ランタイムの Rust 化 — R0+R1 完了、R2 (extern 一般化 = FFI_PLAN P1)
-  も完了 (2026-08-16、[`RUNTIME_PORT.md`](RUNTIME_PORT.md))。残るのは
-  R3/R4 (toylang 化)
+  も完了 (2026-08-16、[`RUNTIME_PORT.md`](RUNTIME_PORT.md))。R3 (toylang 化)
+  は計測で中止条件に該当 (interpreter ~20 倍遅延)。R4 は費用対効果で判断
 * モジュール拡張 — バージョニング、リモートパッケージ
 * 言語内からの AST 取得・操作
 * LSP 対応 — 補完 / go-to-definition / hover / 診断 / フォーマット。frontend の AST・型チェッカ・`SourceLocation` を再利用できる。ただし**エージェントは LSP より CLI クエリを使いやすい**ので、LLM ループの観点では `--api` / 型ホール (P7 で landing 済み) の方が先だった
@@ -378,6 +389,15 @@
   漏らす** — `TypeCheckErrorKind::TypeMismatch` の `Display` が `{:?}`
   なので、解決前の user 型名が生の symbol id で出る。`source_name` /
   `type_name_for_error` に寄せる。
+- **`if` / `elif` の条件が型検査されない (2026-08-16 実測)** —
+  `if 42u64 { ... }` が通る。`visit_if_elif_else` が条件を
+  `check_expr_located` しない (while は検査する)。R3 の調査で
+  `str == str` が「value 位置は E0002 / if 条件内は素通り」という
+  非対称になっていた原因でもある。条件検査を足すと型チェッカの順序依存
+  (Generic/Identifier のずれ) で stdlib の `Vec::push` 等が E0001 で
+  壊れたため見送り — 直すなら条件検査の前に
+  `is_equivalent` の Generic↔Identifier leniency を条件評価の
+  型比較にも適用する話。
 
 ### パーサーの既知制限事項
 - bare `self` 非対応 — `self: Self` / `&self` / `&mut self` のいずれかを書く。

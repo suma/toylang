@@ -75,6 +75,12 @@ impl Guard {
     }
 }
 
+/// Whether this instantiation is on the stack right now — i.e. its
+/// index entry is a reservation rather than a finished type.
+fn in_progress(key: &InstanceKey) -> bool {
+    IN_PROGRESS.with(|set| set.borrow().contains(key))
+}
+
 /// Record the cycle so the frame that swallows this `Err` can report
 /// it, and hand the same message back for the immediate return.
 fn note_cycle(message: String) -> String {
@@ -218,6 +224,38 @@ pub(super) fn instantiate_enum(
     type_args: Vec<Type>,
     interner: &DefaultStringInterner,
 ) -> Result<EnumId, String> {
+    instantiate_enum_inner(module, templates, struct_templates, base_name, type_args, interner, false)
+}
+
+/// `instantiate_enum` for a *type-argument* position, which is allowed
+/// to see a reservation.
+///
+/// The difference is the whole point of the two-phase form. A member
+/// position needs the type's shape, so meeting it mid-flight is a
+/// genuine by-value cycle and must be refused. A type argument needs
+/// only its identity — `Vec<Tree>` keys off `Tree`'s id and stores a
+/// `ptr` — so meeting `Tree` mid-flight is exactly the case that should
+/// resolve rather than recurse.
+pub(super) fn instantiate_enum_type_arg(
+    module: &mut Module,
+    templates: &EnumDefs,
+    struct_templates: &StructDefs,
+    base_name: DefaultSymbol,
+    type_args: Vec<Type>,
+    interner: &DefaultStringInterner,
+) -> Result<EnumId, String> {
+    instantiate_enum_inner(module, templates, struct_templates, base_name, type_args, interner, true)
+}
+
+fn instantiate_enum_inner(
+    module: &mut Module,
+    templates: &EnumDefs,
+    struct_templates: &StructDefs,
+    base_name: DefaultSymbol,
+    type_args: Vec<Type>,
+    interner: &DefaultStringInterner,
+    allow_pending: bool,
+) -> Result<EnumId, String> {
     let template = templates.get(&base_name).ok_or_else(|| {
         format!(
             "internal error: no enum template for `{}`",
@@ -232,11 +270,22 @@ pub(super) fn instantiate_enum(
             type_args.len(),
         ));
     }
-    if let Some(id) = module.enum_index.get(&(base_name, type_args.clone())).copied() {
+    let key: InstanceKey = (true, base_name, type_args.clone());
+    if let Some(id) = module.enum_index.get(&(base_name, type_args.clone())).copied()
+        && (allow_pending || !in_progress(&key))
+    {
         return Ok(id);
     }
-    let Some(_guard) = Guard::enter((true, base_name, type_args.clone())) else {
+    let Some(_guard) = Guard::enter(key) else {
         return Err(note_cycle(recursive_type_error("enum", base_name, interner)));
+    };
+    // Claim the id before the payloads are lowered: one of them may
+    // name a type whose own lowering needs *this* id back (an enum
+    // parameterising a `Vec`, say). Interning afterwards made that walk
+    // re-enter with the memo still empty.
+    let id = match module.reserve_enum(base_name, type_args.clone()) {
+        Ok(id) => id,
+        Err(existing) => return Ok(existing),
     };
     let template = template.clone();
     let subst: HashMap<DefaultSymbol, Type> = template
@@ -245,43 +294,59 @@ pub(super) fn instantiate_enum(
         .copied()
         .zip(type_args.iter().copied())
         .collect();
-    let mut ir_variants: Vec<EnumVariant> = Vec::with_capacity(template.variants.len());
-    for v in &template.variants {
-        let mut payload_types: Vec<Type> = Vec::with_capacity(v.payload_types.len());
-        for pt in &v.payload_types {
-            let lowered = substitute_payload_type(
-                pt,
-                &subst,
-                module,
-                templates,
-                struct_templates,
-                interner,
-            )
-            .ok_or_else(|| {
-                take_pending_cycle().unwrap_or_else(|| {
-                    format!(
-                        "enum `{}::{}` has unsupported payload type `{:?}` \
-                         (compiler MVP accepts i64 / u64 / f64 / bool, or another \
-                         enum substituted from a generic parameter)",
+    let lowered_variants = (|| -> Result<Vec<EnumVariant>, String> {
+        let mut ir_variants: Vec<EnumVariant> = Vec::with_capacity(template.variants.len());
+        for v in &template.variants {
+            let mut payload_types: Vec<Type> = Vec::with_capacity(v.payload_types.len());
+            for pt in &v.payload_types {
+                let lowered = substitute_payload_type(
+                    pt,
+                    &subst,
+                    module,
+                    templates,
+                    struct_templates,
+                    interner,
+                )
+                .ok_or_else(|| {
+                    take_pending_cycle().unwrap_or_else(|| {
+                        format!(
+                            "enum `{}::{}` has unsupported payload type `{:?}` \
+                             (compiler MVP accepts i64 / u64 / f64 / bool, or another \
+                             enum substituted from a generic parameter)",
+                            interner.resolve(base_name).unwrap_or("?"),
+                            interner.resolve(v.name).unwrap_or("?"),
+                            pt,
+                        )
+                    })
+                })?;
+                if !is_supported_enum_payload(lowered) {
+                    return Err(format!(
+                        "enum `{}::{}` has unsupported payload type `{lowered}` \
+                         (compiler MVP accepts i64 / u64 / f64 / bool / str / nested enum / struct / tuple)",
                         interner.resolve(base_name).unwrap_or("?"),
                         interner.resolve(v.name).unwrap_or("?"),
-                        pt,
-                    )
-                })
-            })?;
-            if !is_supported_enum_payload(lowered) {
-                return Err(format!(
-                    "enum `{}::{}` has unsupported payload type `{lowered}` \
-                     (compiler MVP accepts i64 / u64 / f64 / bool / str / nested enum / struct / tuple)",
-                    interner.resolve(base_name).unwrap_or("?"),
-                    interner.resolve(v.name).unwrap_or("?"),
-                ));
+                    ));
+                }
+                payload_types.push(lowered);
             }
-            payload_types.push(lowered);
+            ir_variants.push(EnumVariant { name: v.name, payload_types });
         }
-        ir_variants.push(EnumVariant { name: v.name, payload_types });
+        Ok(ir_variants)
+    })();
+    // A reservation whose payloads did not lower must not survive as a
+    // finished type: the compile fails either way today, but a
+    // key-reachable placeholder with no variants is the kind of thing
+    // that turns a later error into a silently wrong program.
+    match lowered_variants {
+        Ok(ir_variants) => {
+            module.fill_enum_variants(id, ir_variants);
+            Ok(id)
+        }
+        Err(e) => {
+            module.unreserve_enum(base_name, &type_args);
+            Err(e)
+        }
     }
-    Ok(module.intern_enum(base_name, type_args, ir_variants))
 }
 
 pub(super) fn is_supported_enum_payload(t: Type) -> bool {
@@ -349,12 +414,12 @@ pub(super) fn substitute_payload_type(
         {
             let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
             for a in args {
-                let t = substitute_payload_type(
+                let t = substitute_type_arg(
                     a,
                     subst,
                     module,
-                    enum_templates,
                     struct_templates,
+                    enum_templates,
                     interner,
                 )?;
                 concrete.push(t);
@@ -375,12 +440,12 @@ pub(super) fn substitute_payload_type(
         {
             let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
             for a in args {
-                let t = substitute_payload_type(
+                let t = substitute_type_arg(
                     a,
                     subst,
                     module,
-                    enum_templates,
                     struct_templates,
+                    enum_templates,
                     interner,
                 )?;
                 concrete.push(t);
@@ -444,6 +509,31 @@ pub(super) fn instantiate_struct(
     type_args: Vec<Type>,
     interner: &DefaultStringInterner,
 ) -> Result<StructId, String> {
+    instantiate_struct_inner(module, templates, enum_templates, base_name, type_args, interner, false)
+}
+
+/// `instantiate_struct` for a *type-argument* position. See
+/// `instantiate_enum_type_arg` for why the two differ.
+pub(super) fn instantiate_struct_type_arg(
+    module: &mut Module,
+    templates: &StructDefs,
+    enum_templates: &EnumDefs,
+    base_name: DefaultSymbol,
+    type_args: Vec<Type>,
+    interner: &DefaultStringInterner,
+) -> Result<StructId, String> {
+    instantiate_struct_inner(module, templates, enum_templates, base_name, type_args, interner, true)
+}
+
+fn instantiate_struct_inner(
+    module: &mut Module,
+    templates: &StructDefs,
+    enum_templates: &EnumDefs,
+    base_name: DefaultSymbol,
+    type_args: Vec<Type>,
+    interner: &DefaultStringInterner,
+    allow_pending: bool,
+) -> Result<StructId, String> {
     let template = templates.get(&base_name).ok_or_else(|| {
         format!(
             "internal error: no struct template for `{}`",
@@ -458,15 +548,22 @@ pub(super) fn instantiate_struct(
             type_args.len(),
         ));
     }
-    if let Some(id) = module
-        .struct_index
-        .get(&(base_name, type_args.clone()))
-        .copied()
+    let key: InstanceKey = (false, base_name, type_args.clone());
+    if let Some(id) = module.struct_index.get(&(base_name, type_args.clone())).copied()
+        && (allow_pending || !in_progress(&key))
     {
         return Ok(id);
     }
-    let Some(_guard) = Guard::enter((false, base_name, type_args.clone())) else {
+    let Some(_guard) = Guard::enter(key) else {
         return Err(note_cycle(recursive_type_error("struct", base_name, interner)));
+    };
+    // Same two-phase reservation as `instantiate_enum`: a field can
+    // name a generic instantiated over the struct being built
+    // (`struct Tree { kids: Vec<Tree> }`), and `Vec` needs a `Type` for
+    // its argument rather than `Tree`'s field list.
+    let id = match module.reserve_struct(base_name, type_args.clone()) {
+        Ok(id) => id,
+        Err(existing) => return Ok(existing),
     };
     let template = template.clone();
     let subst: HashMap<DefaultSymbol, Type> = template
@@ -475,30 +572,44 @@ pub(super) fn instantiate_struct(
         .copied()
         .zip(type_args.iter().copied())
         .collect();
-    let mut concrete_fields: Vec<(String, Type)> = Vec::with_capacity(template.fields.len());
-    for (fname, ftype) in &template.fields {
-        let lowered =
-            substitute_field_type(ftype, &subst, module, templates, enum_templates, interner)
-                .ok_or_else(|| {
-                    take_pending_cycle().unwrap_or_else(|| {
-                        format!(
-                            "compiler MVP cannot lower struct field `{}.{}: {:?}`",
-                            interner.resolve(base_name).unwrap_or("?"),
-                            fname,
-                            ftype,
-                        )
-                    })
-                })?;
-        if matches!(lowered, Type::Unit) {
-            return Err(format!(
-                "struct field `{}.{}` cannot have type Unit",
-                interner.resolve(base_name).unwrap_or("?"),
-                fname
-            ));
+    let lowered_fields = (|| -> Result<Vec<(String, Type)>, String> {
+        let mut concrete_fields: Vec<(String, Type)> = Vec::with_capacity(template.fields.len());
+        for (fname, ftype) in &template.fields {
+            let lowered =
+                substitute_field_type(ftype, &subst, module, templates, enum_templates, interner)
+                    .ok_or_else(|| {
+                        take_pending_cycle().unwrap_or_else(|| {
+                            format!(
+                                "compiler MVP cannot lower struct field `{}.{}: {:?}`",
+                                interner.resolve(base_name).unwrap_or("?"),
+                                fname,
+                                ftype,
+                            )
+                        })
+                    })?;
+            if matches!(lowered, Type::Unit) {
+                return Err(format!(
+                    "struct field `{}.{}` cannot have type Unit",
+                    interner.resolve(base_name).unwrap_or("?"),
+                    fname
+                ));
+            }
+            concrete_fields.push((fname.clone(), lowered));
         }
-        concrete_fields.push((fname.clone(), lowered));
+        Ok(concrete_fields)
+    })();
+    // See `instantiate_enum`: a reservation that failed to lower is
+    // withdrawn rather than left reachable as a field-less type.
+    match lowered_fields {
+        Ok(concrete_fields) => {
+            module.fill_struct_fields(id, concrete_fields);
+            Ok(id)
+        }
+        Err(e) => {
+            module.unreserve_struct(base_name, &type_args);
+            Err(e)
+        }
     }
-    Ok(module.intern_struct(base_name, type_args, concrete_fields))
 }
 
 /// Recursively lower a struct field's declared type, applying the
@@ -543,7 +654,7 @@ pub(super) fn substitute_field_type(
         TypeDecl::Struct(name, args) if templates.contains_key(name) => {
             let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
             for a in args {
-                concrete.push(substitute_field_type(
+                concrete.push(substitute_type_arg(
                     a,
                     subst,
                     module,
@@ -574,6 +685,107 @@ pub(super) fn substitute_field_type(
             }
             let id = intern_tuple(module, lowered);
             Some(Type::Tuple(id))
+        }
+        _ => None,
+    }
+}
+
+/// Lower a `TypeDecl` sitting in a **type-argument** position.
+///
+/// Same walk as `substitute_field_type`, except that it instantiates
+/// through the pending-tolerant entry points: a type argument needs the
+/// referenced type's identity, not its shape, so meeting a reservation
+/// is the case that should resolve. Using `substitute_field_type` here
+/// instead would make `struct Tree { kids: Vec<Tree> }` refuse itself —
+/// the argument `Tree` would be read as a by-value member of `Vec`.
+pub(super) fn substitute_type_arg(
+    ty: &TypeDecl,
+    subst: &HashMap<DefaultSymbol, Type>,
+    module: &mut Module,
+    struct_templates: &StructDefs,
+    enum_templates: &EnumDefs,
+    interner: &DefaultStringInterner,
+) -> Option<Type> {
+    if let Some(s) = lower_scalar(ty) {
+        return Some(s);
+    }
+    match ty {
+        TypeDecl::Generic(name) => subst.get(name).copied(),
+        TypeDecl::Identifier(name) => {
+            if let Some(t) = subst.get(name).copied() {
+                return Some(t);
+            }
+            if struct_templates.contains_key(name) {
+                instantiate_struct_type_arg(
+                    module,
+                    struct_templates,
+                    enum_templates,
+                    *name,
+                    Vec::new(),
+                    interner,
+                )
+                .ok()
+                .map(Type::Struct)
+            } else if enum_templates.contains_key(name) {
+                instantiate_enum_type_arg(
+                    module,
+                    enum_templates,
+                    struct_templates,
+                    *name,
+                    Vec::new(),
+                    interner,
+                )
+                .ok()
+                .map(Type::Enum)
+            } else {
+                None
+            }
+        }
+        TypeDecl::Struct(name, args) if struct_templates.contains_key(name) => {
+            let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
+            for a in args {
+                concrete.push(substitute_type_arg(
+                    a,
+                    subst,
+                    module,
+                    struct_templates,
+                    enum_templates,
+                    interner,
+                )?);
+            }
+            instantiate_struct_type_arg(
+                module,
+                struct_templates,
+                enum_templates,
+                *name,
+                concrete,
+                interner,
+            )
+            .ok()
+            .map(Type::Struct)
+        }
+        TypeDecl::Enum(name, args) if enum_templates.contains_key(name) => {
+            let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
+            for a in args {
+                concrete.push(substitute_type_arg(
+                    a,
+                    subst,
+                    module,
+                    struct_templates,
+                    enum_templates,
+                    interner,
+                )?);
+            }
+            instantiate_enum_type_arg(
+                module,
+                enum_templates,
+                struct_templates,
+                *name,
+                concrete,
+                interner,
+            )
+            .ok()
+            .map(Type::Enum)
         }
         _ => None,
     }
@@ -770,6 +982,69 @@ mod tests {
         )
         .expect_err("a self-referential struct has no finite layout");
         assert!(err.contains("is recursive"), "unexpected message: {err}");
+    }
+
+    /// What the two-phase reservation is for: a struct whose field is
+    /// a generic instantiated over the struct itself.
+    ///
+    /// `Vec<Tree>` has a perfectly finite layout — `Vec` holds a `ptr`
+    /// and never a `T` by value — but instantiating it needs a `Type`
+    /// for the argument, and that argument is the `Tree` currently
+    /// being built. Interning `Tree` only after its fields were lowered
+    /// meant the walk re-entered `Tree` with the memo still empty and
+    /// recursed until the host stack was gone. Reserving the id first
+    /// makes the argument resolvable and the walk terminate.
+    #[test]
+    fn a_field_holding_a_generic_over_the_struct_itself_terminates() {
+        let mut interner = DefaultStringInterner::new();
+        let tree = interner.get_or_intern("Tree");
+        let vec = interner.get_or_intern("Vec");
+        let t_param = interner.get_or_intern("T");
+
+        let mut struct_defs: StructDefs = HashMap::new();
+        struct_defs.insert(
+            vec,
+            StructTemplate {
+                generic_params: vec![t_param],
+                // `T` appears nowhere in the fields — the element type
+                // lives behind `data`.
+                fields: vec![
+                    ("data".to_string(), TypeDecl::Ptr),
+                    ("len".to_string(), TypeDecl::UInt64),
+                ],
+            },
+        );
+        struct_defs.insert(
+            tree,
+            StructTemplate {
+                generic_params: Vec::new(),
+                fields: vec![
+                    ("v".to_string(), TypeDecl::Int64),
+                    (
+                        "kids".to_string(),
+                        TypeDecl::Struct(vec, vec![TypeDecl::Identifier(tree)]),
+                    ),
+                ],
+            },
+        );
+        let enum_defs: EnumDefs = HashMap::new();
+        let mut module = Module::new();
+
+        let id = instantiate_struct(
+            &mut module,
+            &struct_defs,
+            &enum_defs,
+            tree,
+            Vec::new(),
+            &interner,
+        )
+        .expect("Vec<Tree> is finite, so Tree is");
+        let fields = &module.struct_def(id).fields;
+        assert_eq!(fields.len(), 2, "both fields lowered: {fields:?}");
+        assert!(
+            matches!(fields[1].1, Type::Struct(_)),
+            "`kids` lowered to the Vec instance: {fields:?}"
+        );
     }
 
     /// The guard is scoped to one instantiation, not to the whole

@@ -30,7 +30,9 @@ use frontend::ast::ExprRef;
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 
-use super::templates::{instantiate_enum, instantiate_struct};
+use super::templates::{
+    instantiate_enum, instantiate_enum_type_arg, instantiate_struct, instantiate_struct_type_arg,
+};
 use super::types::{intern_tuple, lower_scalar};
 use super::FunctionLower;
 use crate::ir::{EnumId, StructId, Type};
@@ -285,6 +287,11 @@ impl<'a> FunctionLower<'a> {
     /// Accepts scalars and (recursively) other enum instantiations
     /// — that's what allows nested annotations like
     /// `Option<Option<i64>>` to thread through the whole tree.
+    ///
+    /// Instantiates through the pending-tolerant entry points: a type
+    /// argument is identified, not laid out, so a type still being
+    /// built resolves to its reservation instead of recursing
+    /// (`templates::instantiate_struct_type_arg`).
     pub(super) fn lower_type_arg(&mut self, t: &TypeDecl) -> Option<Type> {
         if let Some(s) = lower_scalar(t) {
             return Some(s);
@@ -297,7 +304,7 @@ impl<'a> FunctionLower<'a> {
                 for a in args {
                     concrete.push(self.lower_type_arg(a)?);
                 }
-                instantiate_enum(
+                instantiate_enum_type_arg(
                     self.module,
                     self.enum_defs,
                     self.struct_defs,
@@ -313,7 +320,7 @@ impl<'a> FunctionLower<'a> {
                 for a in args {
                     concrete.push(self.lower_type_arg(a)?);
                 }
-                instantiate_struct(
+                instantiate_struct_type_arg(
                     self.module,
                     self.struct_defs,
                     self.enum_defs,
@@ -325,7 +332,7 @@ impl<'a> FunctionLower<'a> {
                 .map(Type::Struct)
             }
             TypeDecl::Identifier(name) if self.enum_defs.contains_key(name) => {
-                instantiate_enum(
+                instantiate_enum_type_arg(
                     self.module,
                     self.enum_defs,
                     self.struct_defs,
@@ -337,7 +344,7 @@ impl<'a> FunctionLower<'a> {
                 .map(Type::Enum)
             }
             TypeDecl::Identifier(name) if self.struct_defs.contains_key(name) => {
-                instantiate_struct(
+                instantiate_struct_type_arg(
                     self.module,
                     self.struct_defs,
                     self.enum_defs,

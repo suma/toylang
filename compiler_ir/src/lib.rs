@@ -337,6 +337,58 @@ impl Module {
         id
     }
 
+    /// Claim a `StructId` for `(base_name, type_args)` *before* its
+    /// fields are known, returning `Err(id)` when the combination is
+    /// already interned.
+    ///
+    /// The two-phase form exists because a field can name a type whose
+    /// own lowering needs this id. `struct Tree { kids: Vec<Tree> }`
+    /// asks for `Vec<Tree>` while `Tree` itself is being built:
+    /// instantiating `Vec` needs a `Type` for the argument, not `Tree`'s
+    /// field list, so reserving first breaks the knot. Interning after
+    /// the fields were lowered — the only form there used to be — meant
+    /// that walk re-entered `Tree` with the memo still empty and
+    /// recursed until the host stack was gone.
+    ///
+    /// The placeholder is visible to anything that looks the id up
+    /// before `fill_struct_fields` runs, and reads an empty field list.
+    /// Nothing does: the id is handed out for type-argument keys and
+    /// `Type::Struct` construction, both of which are shape-agnostic,
+    /// and a genuine by-value cycle is refused by the frontend (E0013)
+    /// and by `templates::Guard` before reaching here.
+    pub fn reserve_struct(
+        &mut self,
+        base_name: DefaultSymbol,
+        type_args: Vec<Type>,
+    ) -> Result<StructId, StructId> {
+        let key = (base_name, type_args.clone());
+        if let Some(existing) = self.struct_index.get(&key) {
+            return Err(*existing);
+        }
+        let id = StructId(self.struct_defs.len() as u32);
+        self.struct_defs.push(StructDef {
+            base_name,
+            type_args,
+            fields: Vec::new(),
+        });
+        self.struct_index.insert(key, id);
+        Ok(id)
+    }
+
+    /// Complete a `reserve_struct` placeholder.
+    pub fn fill_struct_fields(&mut self, id: StructId, fields: Vec<(String, Type)>) {
+        self.struct_defs[id.0 as usize].fields = fields;
+    }
+
+    /// Drop a reservation whose members failed to lower, so the
+    /// placeholder cannot be handed to a later lookup as a finished
+    /// type. The `StructDef` itself stays in place — ids are indices
+    /// and nested reservations may already sit above it — but it is no
+    /// longer reachable by key.
+    pub fn unreserve_struct(&mut self, base_name: DefaultSymbol, type_args: &[Type]) {
+        self.struct_index.remove(&(base_name, type_args.to_vec()));
+    }
+
     /// Mint a fresh `EnumId` for `(base_name, type_args, variants)`,
     /// or return the existing one if this combination has already
     /// been instantiated. The caller is responsible for substituting
@@ -361,6 +413,39 @@ impl Module {
         });
         self.enum_index.insert(key, id);
         id
+    }
+
+    /// `reserve_struct` for enums: claim the id before the variant
+    /// payloads are lowered, so a payload that names a type needing
+    /// this id resolves instead of recursing. See `reserve_struct` for
+    /// why the placeholder is safe to expose.
+    pub fn reserve_enum(
+        &mut self,
+        base_name: DefaultSymbol,
+        type_args: Vec<Type>,
+    ) -> Result<EnumId, EnumId> {
+        let key = (base_name, type_args.clone());
+        if let Some(existing) = self.enum_index.get(&key) {
+            return Err(*existing);
+        }
+        let id = EnumId(self.enum_defs.len() as u32);
+        self.enum_defs.push(EnumDef {
+            base_name,
+            type_args,
+            variants: Vec::new(),
+        });
+        self.enum_index.insert(key, id);
+        Ok(id)
+    }
+
+    /// Complete a `reserve_enum` placeholder.
+    pub fn fill_enum_variants(&mut self, id: EnumId, variants: Vec<EnumVariant>) {
+        self.enum_defs[id.0 as usize].variants = variants;
+    }
+
+    /// Drop an enum reservation whose payloads failed to lower.
+    pub fn unreserve_enum(&mut self, base_name: DefaultSymbol, type_args: &[Type]) {
+        self.enum_index.remove(&(base_name, type_args.to_vec()));
     }
 }
 

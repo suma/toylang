@@ -387,7 +387,13 @@ side table:
 
     struct Node { v: i64, next: u64 }   # index into a `Vec<Node>`
 
-or hold a raw `ptr` and go through the heap builtins:
+or hold the value in a `Box<T>` — the stdlib struct for one
+heap-allocated `T`, whose parameter appears in no field:
+
+    enum List { Cons(i64, Box<List>), Nil }
+
+or, at a lower level, hold a raw `ptr` and go through the heap
+builtins:
 
     struct Node { v: i64, next: ptr, has_next: bool }
 

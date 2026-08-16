@@ -1296,11 +1296,7 @@ impl<'a> FunctionLower<'a> {
             );
             let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());
             for a in args_vec {
-                let v = self.lower_expr(a)?
-                    .ok_or_else(|| {
-                        "associated-function arg produced no value".to_string()
-                    })?;
-                arg_values.push(v);
+                arg_values.extend(self.lower_arg_values(a)?);
             }
             self.emit(
                 InstKind::CallStruct {
@@ -1316,11 +1312,7 @@ impl<'a> FunctionLower<'a> {
         if target_ret.produces_value() {
             let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());
             for a in args_vec {
-                let v = self.lower_expr(a)?
-                    .ok_or_else(|| {
-                        "associated-function arg produced no value".to_string()
-                    })?;
-                arg_values.push(v);
+                arg_values.extend(self.lower_arg_values(a)?);
             }
             let v = self
                 .emit(

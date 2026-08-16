@@ -680,6 +680,50 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
+    /// Values for one argument expression, expanding a compound
+    /// binding to its leaves.
+    ///
+    /// The regular call path does this inline; associated-function
+    /// calls used to lower each argument with a bare `lower_expr`,
+    /// which produces nothing for a struct / tuple / enum binding and
+    /// failed with "associated-function arg produced no value". That
+    /// ruled out `Box::new(v)` for exactly the compound `v` the type
+    /// exists to hold.
+    pub(super) fn lower_arg_values(&mut self, a: &ExprRef) -> Result<Vec<ValueId>, String> {
+        if let Some(Expr::Identifier(sym)) = self.program.expression.get(a) {
+            match self.bindings.get(&sym).cloned() {
+                Some(Binding::Struct { fields, .. }) => {
+                    let mut out = Vec::new();
+                    for (local, ty) in flatten_struct_locals(&fields) {
+                        let v = self
+                            .emit(InstKind::LoadLocal(local), Some(ty))
+                            .expect("LoadLocal returns a value");
+                        out.push(v);
+                    }
+                    return Ok(out);
+                }
+                Some(Binding::Tuple { elements }) => {
+                    let mut out = Vec::new();
+                    for (local, ty) in flatten_tuple_element_locals(&elements) {
+                        let v = self
+                            .emit(InstKind::LoadLocal(local), Some(ty))
+                            .expect("LoadLocal returns a value");
+                        out.push(v);
+                    }
+                    return Ok(out);
+                }
+                Some(Binding::Enum(storage)) => {
+                    return Ok(self.load_enum_locals(&storage));
+                }
+                _ => {}
+            }
+        }
+        let v = self
+            .lower_expr(a)?
+            .ok_or_else(|| "call argument produced no value".to_string())?;
+        Ok(vec![v])
+    }
+
     pub(super) fn lower_call_args(&mut self, args_ref: &ExprRef) -> Result<Vec<ValueId>, String> {
         self.lower_call_args_with_target(args_ref, None)
     }

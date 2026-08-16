@@ -58,6 +58,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 
 | 関心事 | 場所 |
 |---|---|
+| 所有権の移動 / use-after-move (E0014) | `type_checker/move_check.rs::check_moves` (結果は `File::transferred_bindings`)。**drop を抑制する側は 2 箇所** — `interpreter/src/evaluation/mod.rs::register_drop_if_needed` と `compiler_lower/src/lib.rs::register_drop_for_struct_binding` |
 | 再帰型の検出 (E0013) | `type_checker/recursive_type.rs::check_recursive_types` (呼び出しは `interpreter/src/lib.rs::check_typing_diagnostics`)、lowering 側の保険は `compiler_lower/src/templates.rs` の `Guard` |
 | `val` の型注釈チェック | `type_checker/statement.rs::visit_val_impl` |
 | `var` の型注釈チェック | `type_checker/visitor.rs::process_val_type_with_mut` |

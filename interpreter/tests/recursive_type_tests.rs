@@ -287,6 +287,48 @@ fn main() -> i64 {
     assert_eq!(result.borrow().unwrap_int64(), 5i64);
 }
 
+/// `Box<T>` is the stdlib answer: its parameter appears in no field,
+/// only behind a `ptr`, so a type may hold a `Box` of itself.
+#[test]
+fn a_recursive_enum_through_box_is_allowed() {
+    let result = test_program(
+        "enum List {
+    Cons(i64, Box<List>),
+    Nil,
+}
+
+fn main() -> i64 {
+    val nil: List = List::Nil
+    val b: Box<List> = Box::new(nil)
+    val one: List = List::Cons(41i64, b)
+    match one {
+        List::Cons(v, _) => v + 1i64,
+        List::Nil => 0i64,
+    }
+}",
+    )
+    .expect("Box holds its T behind a ptr");
+    assert_eq!(result.borrow().unwrap_int64(), 42i64);
+}
+
+/// The declaration is what E0013 judges, so a recursive *struct*
+/// through `Box` has to be accepted too — even though building one
+/// needs a base case the shape itself cannot provide.
+#[test]
+fn a_recursive_struct_through_box_is_accepted() {
+    let result = test_program(
+        "struct Tree {
+    v: i64,
+    left: Box<Tree>,
+    has_left: bool,
+}
+
+fn main() -> i64 { 42i64 }",
+    )
+    .expect("the declaration has a finite layout");
+    assert_eq!(result.borrow().unwrap_int64(), 42i64);
+}
+
 /// A generic type whose parameter is never instantiated with itself is
 /// not recursive, however many times it nests.
 #[test]

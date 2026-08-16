@@ -2901,10 +2901,57 @@ boundary, and what `__builtin_sizeof` reports. The width therefore does
 not depend on which variant a value holds, which is what lets
 `Vec<Option<T>>` stride over its elements.
 
-`interpreter/example/linked_list_arena.t` and `linked_list_ptr.t` are
-worked examples of the two shapes. A `Box<T>` that would carry the
-allocation and its drop does not exist yet (`design-docs/todo.md`,
-BOX-T).
+or hold the value in a `Box<T>`, which is the stdlib's name for one
+heap-allocated `T`:
+
+```rust
+enum List {
+    Cons(i64, Box<List>),
+    Nil,
+}
+```
+
+`Box` is an ordinary struct whose only field is a `ptr`. Nothing about
+it is built into the compiler — it works because its type parameter
+appears in no field, which is exactly the rule above.
+
+`interpreter/example/box_linked_list.t`, `linked_list_arena.t` and
+`linked_list_ptr.t` are worked examples of the three shapes.
+
+### Ownership
+
+A type with an `impl Drop` owns something the runtime hands back, and
+the scope that built the value frees it on the way out. Handing such a
+value to something that outlives the scope therefore **transfers**
+ownership, and the old binding is an error to read afterwards
+(`[E0014]`):
+
+```rust
+val c: Box<i64> = Box::new(7i64)
+store.push(c)              # ownership goes into the Vec
+val v: i64 = c.get()       # [E0014]
+```
+
+The positions that transfer are: an argument in a by-value parameter,
+a member of an aggregate being built (struct literal, tuple, array,
+enum payload), and the right-hand side of an assignment. A parameter
+declared `&T` / `&mut T` borrows instead, so passing to one of those
+leaves the caller in charge.
+
+`val b = a` is **not** a transfer. Compound bindings alias: `b.x = 42`
+shows up in `a.x`, and one drop fires for the pair. The value has one
+owner; it just answers to two names.
+
+Two limits worth knowing:
+
+- A transfer inside a branch or a loop body is refused rather than
+  tracked, because whether the binding still owns anything at scope
+  exit would depend on the path taken. Build the value inside the
+  branch instead.
+- Nothing drops what a transferred value was put into: a `Vec` does
+  not drop its elements and a struct's drop does not reach its fields.
+  A transferred value is therefore *leaked*, not double-freed, and
+  `--profile=mem` reports it under `leaks`.
 
 ---
 

@@ -125,6 +125,17 @@ struct Signatures {
     /// parameter's borrow-ness, and none when they disagree — an
     /// ambiguous call is left alone rather than guessed at.
     methods: HashMap<DefaultSymbol, Option<Vec<TypeDecl>>>,
+    /// `Type::function(...)` calls, keyed by both names. Unlike a
+    /// method call the receiving type is written at the call site, so
+    /// these need no agreement rule — and they must not share the
+    /// method table, where `new` means `Vec::new`, `Box::new` and
+    /// `FixedBuffer::new` at once and so resolves to nothing.
+    associated: HashMap<(DefaultSymbol, DefaultSymbol), Vec<TypeDecl>>,
+    /// `Enum::Variant` pairs. Variant construction is spelled like an
+    /// associated call but has no parameter list to consult, and it
+    /// takes ownership of every payload — the value ends up inside the
+    /// enum, which outlives the expression.
+    enum_variants: HashSet<(DefaultSymbol, DefaultSymbol)>,
 }
 
 impl Signatures {
@@ -134,9 +145,16 @@ impl Signatures {
             functions.insert(f.name, f.parameter.iter().map(|(_, t)| t.clone()).collect());
         }
         let mut methods: HashMap<DefaultSymbol, Option<Vec<TypeDecl>>> = HashMap::new();
+        let mut associated: HashMap<(DefaultSymbol, DefaultSymbol), Vec<TypeDecl>> = HashMap::new();
+        let mut enum_variants = HashSet::new();
         for i in 0..program.statement.len() {
             let stmt_ref = StmtRef(i as u32);
-            let Some(Stmt::ImplBlock { methods: impl_methods, .. }) =
+            if let Some(Stmt::EnumDecl { name, variants, .. }) = program.statement.get(&stmt_ref) {
+                for v in &variants {
+                    enum_variants.insert((name, v.name));
+                }
+            }
+            let Some(Stmt::ImplBlock { target_type, methods: impl_methods, .. }) =
                 program.statement.get(&stmt_ref)
             else {
                 continue;
@@ -155,6 +173,7 @@ impl Signatures {
                     .skip_while(|(name, _)| interner.resolve(*name) == Some("self"))
                     .map(|(_, t)| t.clone())
                     .collect();
+                associated.insert((target_type, m.name), params.clone());
                 match methods.get(&m.name) {
                     None => {
                         methods.insert(m.name, Some(params));
@@ -166,7 +185,7 @@ impl Signatures {
                 }
             }
         }
-        Signatures { functions, methods }
+        Signatures { functions, methods, associated, enum_variants }
     }
 }
 
@@ -420,8 +439,21 @@ impl MoveCheck<'_> {
                 self.walk_arg_list(&args, params.as_deref(), conditional);
             }
             Expr::AssociatedFunctionCall(type_name, fn_name, args) => {
-                let _ = type_name;
-                let params = self.signatures.functions.get(&fn_name).cloned();
+                // `Enum::Variant(payload)` puts the payload inside the
+                // enum, which outlives the expression — a transfer,
+                // with no signature to consult.
+                if self.signatures.enum_variants.contains(&(type_name, fn_name)) {
+                    for a in &args {
+                        self.walk_expr(*a, Use::Transfer, conditional);
+                    }
+                    return;
+                }
+                let params = self
+                    .signatures
+                    .associated
+                    .get(&(type_name, fn_name))
+                    .or_else(|| self.signatures.functions.get(&fn_name))
+                    .cloned();
                 self.walk_arg_list(&args, params.as_deref(), conditional);
             }
 

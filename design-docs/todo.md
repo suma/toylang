@@ -11,6 +11,7 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-16
+- **BOX-T Phase E+F: stdlib `Box<T>` (`core/std/box.t`)** — `enum List { Cons(i64, Box<List>), Nil }` が 3 バックエンドで動く。`Box` は**言語側に特別扱いが無い**普通の struct で、型引数がフィールドに現れないという Phase B の規則だけで成立する。付随して (1) associated function の compound 引数 lowering (`Box::new(struct_value)` が "arg produced no value" で落ちていた)、(2) enum variant 構築の payload を move 位置として扱う、(3) JIT の Drop allow-list に `Box` を追加 (auto-load される `impl Drop` は JIT を全プログラムで無効化するため)。`&Arena` 移行と docs (`--explain E0013/E0014`、`docs/language.md` の Ownership 節) も。
 - **BOX-T Phase D: 移動された束縛は drop しない (3 バックエンド)** — 実測していた use-after-free が解消。`File::transferred_bindings` (`val`/`var` 文の `StmtRef` 集合) を型検査が埋め、tree-walker の `register_drop_if_needed` と `compiler_lower` の `register_drop_for_struct_binding` が参照して登録をスキップ。移動先 (Vec / struct field / callee) には drop glue が無いので**解放されない = leak** になるが、UAF より安全側で `--profile=mem` の `leaks` に出る。`FULL_AST_CACHE_SCHEMA_VERSION` を 7 に bump。
 - **BOX-T Phase C: 所有権の移動と use-after-move チェック (E0014)** — `impl Drop` を持つ型の値を「今のスコープより長生きする場所」(値渡し引数 / struct・tuple・array の要素 / 代入右辺) に置くと所有権が移り、以後その名前を読むと E0014。`val b = a` は**別名のままで移動ではない** (compound の alias は仕様でテストもある)、`&T` 引数は borrow、raw ptr builtin は無検査 (`Box::new` がそれで書かれている)。分岐 / ループ本体からの移動は drop flag が要るので専用診断で拒否。`frontend/src/type_checker/move_check.rs`、診断のみでランタイム変更は Phase D。
 - **BOX-T Phase A+B: 型引数経由の再帰を通す** — `struct Tree { kids: Vec<Tree> }` が書けるようになった。(A) `instantiate_struct` / `instantiate_enum` がメンバを lower する**前**に id を予約 (`Module::reserve_*` / `fill_*`)。(B) 型引数が辺になるのは**渡し先がそのパラメータを by-value で持つときだけ**、という規則を `check_recursive_types` に (宣言グラフ上の fixpoint)。member 位置と型引数位置で instantiate の入口を分け、member 側は予約を見ないので `struct Node { next: Node }` の backstop (Guard) は生きたまま。
@@ -192,50 +193,16 @@
 
 ### 型システム (NEW-TYPE-SYSTEM)
 
-- **BOX-T: `Box<T>`** ★★★ — heap 間接の first-class 化。**再帰型を書ける
-  ようにする道**であり (拒否は landing 済み、E0013)、**A5-P4
-  (`Box<dyn Trait>`) の前提**でもある。**設計は 2026-08-16 に決定**:
-  - **軸 1 (cycle の切り方) = 一般則**。「型引数が `ptr` フィールド越しに
-    しか現れない struct」を遅延辺として扱う。`Box` を特権化しないので
-    **`struct Tree { kids: Vec<Tree> }` も一緒に通る** (今 E0013 で
-    落ちている最も自然な形)。`Box` だけを既知名として特別扱いする案と、
-    `indirect` マーカーを言語に足す案は不採用。
-  - **軸 2 (所有権) = 現行の scope-bound Drop に乗せる**。move semantics
-    も refcount も入れない。
-  - **実測した前提** (すべて 3 バックエンド一致で確認):
-    - `val b = a` は**共有**で値コピーではない (`b.x = 42` が `a.x` に出る)。
-      以前ここに「値コピーなので二重解放になる」と書いていたが**誤り**。
-    - `Drop` は**値ごとに 1 回**、構築した束縛のスコープ退出で鳴る。
-      alias / 引数渡し / struct field 格納のいずれでも 1 回。
-    - **user 空間の `Box` 相当は既に書けて動く** (generic struct +
-      `impl<T> Drop` + heap builtin)。足りないのは cycle の切り方だけ。
-  - **軸 2 の帰結 (既知の限界として明記すること)**: `Box` が構築した
-    束縛より長生きする場所 (`Vec` / 別 struct の field / 外側スコープ)
-    に格納されると、構築スコープの退出で free され dangling になる。
-    実測では interpreter が値を返し **AOT バイナリは SIGTRAP (exit 133)**。
-    規約は「`Box` は構築したスコープが所有する」。再帰構造の所有
-    (ノードが自分の子 `Box` を持つ) はこの規約に収まる。将来 move
-    semantics を入れれば消える性質なので、`Drop` を後から足す方向 =
-    互換、という前提は保たれる。
-  - **実装フェーズ**:
-    1. `instantiate_struct` / `instantiate_enum` の two-phase interning
-       (id を先に予約してからメンバを埋める)。今は memo 挿入がメンバ
-       lower の後なので、`Box<List>` の layout が有限でも
-       `(Box, [Enum(List)])` の型引数解決で `List` に再入する。
-    2. 遅延辺の規則を 2 箇所に入れる — `check_recursive_types` の辺集合と
-       lowering の型引数解決。**片方だけだと「型は通るが lower で落ちる」**。
-    3. stdlib `core/std/box.t` (`new` / `get` / `set` / `as_ptr` +
-       `impl<T> Drop`)。
-    4. 3 バックエンド一致テスト (再帰 enum / 再帰 struct / `Vec<Tree>`) と
-       `--profile=mem` の一致。
-    5. 限界を `docs/language.md` と `--explain E0013` に書き、E0013 の
-       メッセージから `Box` へ誘導する。
-  - **残る宿題**: 長い連結リストの `Drop` は実行時に深い再帰になるので、
-    tree-walker の関数再帰 abort (既知の不具合) を踏む。
-  - **手書きの逃げ道は 3 つとも動く** (2026-08-16): arena + index
-    (`example/linked_list_arena.t`)、struct + raw ptr
-    (`example/linked_list_ptr.t`)、enum payload に raw ptr
-    (`consistency.rs::an_enum_through_a_ptr_round_trips`)。
+- **DROP-GLUE: 移動先が解放しない** ★★ — `Box` を `Vec` / struct field /
+  enum payload に移すと**誰も free しない** (leak)。`Vec<T>` は要素を drop せず、
+  struct の drop はフィールドに届かない。`--profile=mem` の `leaks` には出るので
+  沈黙はしていない。UAF より安全側だが、`Box` を実用にするには要る。
+  **長い連結リストの再帰 drop は tree-walker の再帰 abort を踏む**点に注意。
+- **MOVE-CONDITIONAL: 分岐 / ループからの移動** ★ — 現状は E0014 で拒否。
+  許すには実行時 drop flag (Rust と同じ) が要る。実プログラムで踏んだら着手。
+- **MOVE-ALIAS-GAP: `val b = a` 後の `a`** ★ — alias なので `b` を移動しても
+  `a` の読みは検出されない。全 compound を move にするか、alias に対して
+  drop を移送するかの判断が要る。
 - **NEWTYPE: tuple struct / newtype (`struct Meters(i64)`)** ★ — parse エラー。
   単位型・ID 型のラップが「1 フィールドの struct + 冗長な field 名」になる。
   parser + 位置指定のフィールドアクセス (`m.0`) が要る。
@@ -321,7 +288,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **1852 テスト** (100% 成功、2026-08-16 時点)。
+- 合計 **1856 テスト** (100% 成功、2026-08-16 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - ワークスペース全体で ~5s。`compiler/build.rs` が `toylang_rt.c` を pre-build し、リンク結果は `TOY_LINK_CACHE_DIR` で content-addressed にキャッシュされる (キャッシュが効くにはコード生成が決定的である必要がある — `compiler/tests/reproducible_build.rs` が pin)。
 

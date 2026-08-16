@@ -213,10 +213,7 @@ impl<'a> FunctionLower<'a> {
                     })?;
                 let mut arg_values: Vec<ValueId> = Vec::with_capacity(args.len());
                 for a in &args {
-                    let v = self.lower_expr(a)?.ok_or_else(|| {
-                        "associated-function arg produced no value".to_string()
-                    })?;
-                    arg_values.push(v);
+                    arg_values.extend(self.lower_arg_values(a)?);
                 }
                 let extra = self.collect_compound_writeback_dests_slice(&args)?;
                 self.emit_struct_call_into_fields(
@@ -361,10 +358,7 @@ impl<'a> FunctionLower<'a> {
                     })?;
                 let mut arg_values: Vec<ValueId> = Vec::with_capacity(args.len());
                 for a in &args {
-                    let v = self.lower_expr(a)?.ok_or_else(|| {
-                        "associated-function arg produced no value".to_string()
-                    })?;
-                    arg_values.push(v);
+                    arg_values.extend(self.lower_arg_values(a)?);
                 }
                 let extra = self.collect_compound_writeback_dests_slice(&args)?;
                 self.emit_tuple_call_into_elements(

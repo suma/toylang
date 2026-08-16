@@ -7822,3 +7822,59 @@ fn a_value_that_was_never_transferred_still_drops() {
     "#;
     assert_renders(src, "untransferred_value_drops", "freed\n");
 }
+
+#[test]
+fn a_recursive_enum_through_box_round_trips() {
+    // BOX-T phase E, and the shape the whole feature exists for.
+    // `Cons(i64, List)` has no finite layout; `Cons(i64, Box<List>)`
+    // holds a pointer. `Box` is an ordinary stdlib struct — the reason
+    // it works is that its type parameter appears in no field, so the
+    // recursion check does not read `Box<List>` as containment.
+    let src = r#"
+        enum List {
+            Cons(i64, Box<List>),
+            Nil,
+        }
+
+        fn sum(l: List) -> i64 {
+            match l {
+                List::Cons(v, rest) => {
+                    val inner: List = rest.get()
+                    v + sum(inner)
+                }
+                List::Nil => 0i64,
+            }
+        }
+
+        fn main() -> i64 {
+            val nil: List = List::Nil
+            val b3: Box<List> = Box::new(nil)
+            val three: List = List::Cons(3i64, b3)
+            val b2: Box<List> = Box::new(three)
+            val two: List = List::Cons(2i64, b2)
+            val b1: Box<List> = Box::new(two)
+            val one: List = List::Cons(1i64, b1)
+            sum(one)
+        }
+    "#;
+    assert_consistent(src, "box_recursive_enum");
+}
+
+#[test]
+fn a_box_of_a_struct_round_trips() {
+    // `Box::new(p)` with a compound argument. The associated-function
+    // call path lowered each argument with a bare `lower_expr`, which
+    // produces no value for a struct binding — so `Box` worked for
+    // scalars and failed for exactly the values it exists to hold.
+    let src = r#"
+        struct P { x: i64, y: i64 }
+
+        fn main() -> i64 {
+            val p = P { x: 3i64, y: 4i64 }
+            val b: Box<P> = Box::new(p)
+            val q: P = b.get()
+            q.x + q.y
+        }
+    "#;
+    assert_consistent(src, "box_of_struct");
+}

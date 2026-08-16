@@ -34,6 +34,24 @@
   bump 冪等性 / f64 整形 / io args) が副産物として新設された。
   `LINK_CACHE_VERSION` 2、`--profile=mem` (text/JSON) と reproducible
   build はグリーンのまま。
+- **RUNTIME-PORT R2 + FFI_PLAN P1: `extern fn ... from "lib" [as "sym"]`** —
+  extern 宣言がシンボルとライブラリを直接名指しできるようになり
+  (`Function.extern_link`)、`core/std/io.t` が `getchar` / `time` を
+  `from "c"` で宣言して **`read_line` / `now` が toylang 実装**に (RUNTIME-IO の
+  `toy_io_read_line` / `toy_io_now` を toylang_rt から削除)。残り 6 シンボルは
+  `from "toylang_rt" as "toy_io_*"` で宣言 (extern 境界が C ポインタを deref
+  できないため argv / FILE* は runtime helper に残る)。**設計上の要点**:
+  (1) 型制約は scalar のみ (narrow int は R2 で許可に修正 — 整数レジスタクラス
+  は同一、`getchar` の i32 が要る)。`from "toylang_rt"` は内部マーシャリング
+  のため適用外。(2) interpreter は registry 優先 → registry に無い from-fn は
+  `extern_ffi.rs` で libloading + レジスタクラス trampoline (arity ≤ 4)。
+  io の libc 名は Rust std 実装の registry が応える (libc は dlopen しない)。
+  (3) JIT は `symbol_lookup_fn` で宣言 lib を dlopen。`"c"` は RTLD_DEFAULT、
+  `"toylang_rt"` は symbol map。(4) AOT は `-l<lib>` + `TOYLANG_LINK_PATHS`
+  → `-L`、link hash に link_libs を追加 (`LINK_CACHE_VERSION` 3)。
+  (5) JIT の io argv は compile 時に空リセット、`profiler_reset` は注入済み
+  args を保持。(6) `ffi_tests.rs` + fixture C ライブラリが 3 者一致を pin。
+  `FULL_AST_CACHE_SCHEMA_VERSION` 8。
 - **RUNTIME-IO: 最小 I/O セット (3 バックエンド)** — `core/std/io.t` に
   `read_line()` / `argc()` / `arg(i)` / `env_var(name)` / `read_file(path)` /
   `file_exists(path)` / `now()` / `random()`。既存 extern fn 機構
@@ -312,9 +330,11 @@
 
 ## 検討中の機能
 
-* FFI / 拡張ライブラリ — 設計は [`FFI_PLAN.md`](FFI_PLAN.md) (未着手)
-* AOT ランタイムの Rust 化 — R0+R1 完了 (2026-08-16、[`RUNTIME_PORT.md`](RUNTIME_PORT.md))。
-  残るのは R2 (extern 一般化 = FFI_PLAN P1 に相乗り) と R3/R4 (toylang 化)
+* FFI — P1 (静的 FFI、`from`/`as`) 完了 (2026-08-16、[`FFI_PLAN.md`](FFI_PLAN.md))。
+  P2 (動的ロード / dlopen builtin) は未着手
+* AOT ランタイムの Rust 化 — R0+R1 完了、R2 (extern 一般化 = FFI_PLAN P1)
+  も完了 (2026-08-16、[`RUNTIME_PORT.md`](RUNTIME_PORT.md))。残るのは
+  R3/R4 (toylang 化)
 * モジュール拡張 — バージョニング、リモートパッケージ
 * 言語内からの AST 取得・操作
 * LSP 対応 — 補完 / go-to-definition / hover / 診断 / フォーマット。frontend の AST・型チェッカ・`SourceLocation` を再利用できる。ただし**エージェントは LSP より CLI クエリを使いやすい**ので、LLM ループの観点では `--api` / 型ホール (P7 で landing 済み) の方が先だった
@@ -330,7 +350,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **1856 テスト** (100% 成功、2026-08-16 時点)。
+- 合計 **1897 テスト** (100% 成功、2026-08-16 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - ワークスペース全体で ~5s。`compiler/build.rs` が `toylang_rt` を rustc で
   staticlib pre-build し、リンク結果は `TOY_LINK_CACHE_DIR` で

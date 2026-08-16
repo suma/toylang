@@ -9,11 +9,40 @@ MVP 刻みで landing」のスタイルで進める。
 
 | Phase | Scope | Status |
 |---|---|---|
-| **P1-MVP-A** | 構文拡張 + AOT (`-l` リンク + import) | 未着手 |
-| **P1-MVP-B** | interpreter (libloading + trampoline) | 未着手 |
-| **P1-MVP-C** | compiler-side JIT (JITModule symbol 解決) | 未着手 |
+| **P1-MVP-A** | 構文拡張 + AOT (`-l` リンク + import) | ✅ 完了 (2026-08-16) |
+| **P1-MVP-B** | interpreter (libloading + trampoline) | ✅ 完了 (2026-08-16) |
+| **P1-MVP-C** | compiler-side JIT (JITModule symbol 解決) | ✅ 完了 (2026-08-16) |
 | **P2** | 動的ロード (`dlopen` / `dlsym` builtin + indirect call) | 未着手 |
 | **P3** | toylang モジュールの実行時ロード | 検討のみ (本ドキュメント範囲外) |
+
+### P1 実装メモ (2026-08-16、RUNTIME-PORT R2 と同時)
+
+- **構文**: `extern fn name(params) -> ret from "lib" [as "sym"]`。`from` は
+  contextual keyword (lexer 変更なし)、`as` は既存キーワード。
+  `Function.extern_link: Option<ExternLink>` (`FULL_AST_CACHE_SCHEMA_VERSION`
+  7 → 8)。
+- **型制約 (論点 3) の変更**: narrow int (u8〜i32) を**許可**した —
+  整数レジスタクラスは同一で、`getchar` / `access` (i32 返し) が要るため。
+  `from "toylang_rt"` (言語自身のランタイム) は制約適用外 —
+  シンボルが内部で str マーシャリングするため。
+- **interpreter**: registry を先に見る (io externs は Rust std 実装のまま、
+  RUNTIME_PORT R2 注意のとおり libc は dlopen しない)。registry に無い
+  from-fn は `extern_ffi.rs` で libloading + 引数/戻り値レジスタクラス
+  (整数系 / f64 / void、arity ≤ 4) の trampoline 列挙。`"c"` は
+  `Library::open(None)` (dlopen(NULL))。
+- **JIT**: `JITBuilder::symbol_lookup_fn` で宣言 lib を dlopen。
+  `"c"` は RTLD_DEFAULT fallback、`"toylang_rt"` は symbol map。
+- **AOT**: `-l<lib>` + `TOYLANG_LINK_PATHS` → `-L`、`compute_link_hash` に
+  link_libs / link paths を追加、`LINK_CACHE_VERSION` 3。
+- **fixture**: `compiler/tests/fixtures/ffi/libtoytest.c` (cc -shared で
+  test 時にビルド)。`ffi_tests.rs` が interpreter / JIT / AOT の 3 者一致を
+  pin (int / f64 / mixed register / arity 4 / void / narrow / bool / ptr /
+  `as` リネーム / 型制約拒否)。
+- **受益 (RUNTIME-PORT R2)**: `core/std/io.t` が `getchar` / `time` を
+  `from "c"` で宣言し、`read_line` / `now` が toylang 実装に。
+  argv / env / read_file / file_exists / random は `from "toylang_rt"`
+  経由で runtime helper に残る (extern 境界が C ポインタを deref できない
+  ため)。`toy_io_read_line` / `toy_io_now` は削除。
 
 ## 背景 — 現状の足場
 
@@ -113,10 +142,11 @@ interpreter-side JIT (`interpreter/src/jit/`) は既存方針どおり silent fa
 
 ### 論点 3: 型の制約 (P1)
 
-**決定 (案): scalar のみ。**
+**決定: scalar のみ (P1 実装時に narrow int を許可に修正)。**
 
 - 引数・戻り値とも `i64` / `u64` / `f64` / `bool` / `ptr` / `usize` に限定。
-  narrow int (u8〜i32) は P1 では不可 (C ABI の整数昇格を考えなくて済む)。
+  **narrow int (u8〜i32) は P1 実装時に許可に変更** (整数レジスタクラスは
+  同一で、`getchar` / `access` の i32 返しが io.t に要るため)。
 - `str` を直接渡すのは不可。`__builtin_str_to_ptr(s)` / `s.as_ptr()` で
   `ptr` にして渡す (NUL 終端は STR-PTR-LEN layout で保証済み)。
 - struct by-value / 配列 / 可変長引数 (printf) は**対象外**と明記。

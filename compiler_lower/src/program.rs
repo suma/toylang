@@ -381,9 +381,32 @@ pub fn lower_program(
         // than emitting a dangling symbol.
         if func.is_extern {
             let raw_name = interner.resolve(func.name).unwrap_or("");
-            let import_name = match libm_import_name_for(raw_name) {
-                Some(s) => s,
-                None => continue,
+            // FFI_PLAN P1: `from`-declared externs take their symbol
+            // from the declaration (`as "sym"`, defaulting to the
+            // function's own name) and ask the link step for
+            // `-l<lib>`. Externs without a `from` clause keep using
+            // the libm dispatch table (mirrors the JIT extern
+            // dispatch in `interpreter::jit::eligibility`); externs
+            // whose name isn't in the table fall through and are
+            // skipped, so any call site to them produces a clean
+            // "no FuncId" error rather than emitting a dangling
+            // symbol.
+            let import_name = match &func.extern_link {
+                Some(link) => {
+                    let symbol = link
+                        .symbol
+                        .map(|s| interner.resolve(s).unwrap_or("").to_string())
+                        .unwrap_or_else(|| raw_name.to_string());
+                    let lib = interner.resolve(link.lib).unwrap_or("").to_string();
+                    if !lib.is_empty() && !module.link_libs.contains(&lib) {
+                        module.link_libs.push(lib);
+                    }
+                    symbol
+                }
+                None => match libm_import_name_for(raw_name) {
+                    Some(s) => s.to_string(),
+                    None => continue,
+                },
             };
             let mut params: Vec<Type> = Vec::with_capacity(func.parameter.len());
             for (pname, pty) in &func.parameter {
@@ -405,7 +428,7 @@ pub fn lower_program(
             module.declare_function_with_module(
                 func.name,
                 module_qualifier,
-                import_name.to_string(),
+                import_name,
                 Linkage::Import,
                 params,
                 ret,
@@ -1538,6 +1561,7 @@ impl<'a> FunctionLower<'a> {
             ensures: method.ensures.clone(),
             code: method.code,
             is_extern: false,
+            extern_link: None,
             visibility: method.visibility,
         };
         // Stage 1 of `&` references: remember whether this body

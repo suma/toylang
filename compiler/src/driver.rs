@@ -37,7 +37,7 @@ const RUNTIME_ARCHIVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libtoyl
 /// Cache schema version — bump when the link inputs (cc flags,
 /// runtime archive format, output convention) change in a way that
 /// would invalidate previously-cached artefacts.
-const LINK_CACHE_VERSION: u32 = 2;
+const LINK_CACHE_VERSION: u32 = 3;
 
 /// Opt-in content-addressed cache for linked binaries. When the
 /// `TOY_LINK_CACHE_DIR` env var is set, `link_executable` first
@@ -81,7 +81,7 @@ fn link_cache_dir(cli_override: Option<&Path>) -> Option<PathBuf> {
 /// bytes. SipHasher13 with the fixed (0, 0) keys (i.e.
 /// `DefaultHasher::new()`) is deterministic across processes —
 /// caches built by one test run remain valid for the next.
-fn compute_link_hash(object_bytes: &[u8], cc: &str) -> u64 {
+fn compute_link_hash(object_bytes: &[u8], cc: &str, link_libs: &[String]) -> u64 {
     let mut h = DefaultHasher::new();
     h.write_u32(LINK_CACHE_VERSION);
     h.write_usize(object_bytes.len());
@@ -89,6 +89,17 @@ fn compute_link_hash(object_bytes: &[u8], cc: &str) -> u64 {
     h.write_usize(RUNTIME_ARCHIVE.len());
     h.write(RUNTIME_ARCHIVE);
     h.write(cc.as_bytes());
+    // FFI_PLAN P1: the `-l` set and the `-L` search path both change
+    // the linked binary. Forgetting them here would let two programs
+    // that link different libraries share a cache entry — the
+    // classic silent-mis-cache the hash exists to prevent.
+    for lib in link_libs {
+        h.write(lib.as_bytes());
+        h.write_u8(0);
+    }
+    if let Some(paths) = std::env::var_os("TOYLANG_LINK_PATHS") {
+        h.write(paths.as_encoded_bytes());
+    }
     // Platform flag is encoded into the hash so a cache produced
     // on a Linux box can't collide with a macOS-flagged build.
     #[cfg(target_os = "macos")]
@@ -103,11 +114,12 @@ pub fn link_executable(
     output: &Path,
     verbose: bool,
     cache_dir_override: Option<&Path>,
+    link_libs: &[String],
 ) -> Result<(), String> {
     let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
     // Opt-in cache hit: copy cached binary to `output`.
     if let Some(dir) = link_cache_dir(cache_dir_override) {
-        let hash = compute_link_hash(object_bytes, &cc);
+        let hash = compute_link_hash(object_bytes, &cc, link_libs);
         let cached = dir.join(format!("{hash:016x}.bin"));
         if cached.is_file() {
             // Copy preserves file mode on Unix (executable bit
@@ -117,7 +129,7 @@ pub fn link_executable(
             return Ok(());
         }
         // Miss: link normally, then populate the cache atomically.
-        link_executable_uncached(object_bytes, output, verbose, &cc)?;
+        link_executable_uncached(object_bytes, output, verbose, &cc, link_libs)?;
         if let Err(e) = populate_link_cache(&dir, hash, output) {
             // Cache population failure is non-fatal — we already
             // produced the requested binary. Surface a warning
@@ -126,7 +138,7 @@ pub fn link_executable(
         }
         return Ok(());
     }
-    link_executable_uncached(object_bytes, output, verbose, &cc)
+    link_executable_uncached(object_bytes, output, verbose, &cc, link_libs)
 }
 
 /// Atomic cache write: copy `output` to a temp file in the cache
@@ -161,6 +173,7 @@ fn link_executable_uncached(
     output: &Path,
     verbose: bool,
     cc: &str,
+    link_libs: &[String],
 ) -> Result<(), String> {
     // Write the toylang object next to the desired output. Putting it
     // in the same directory keeps the artefact local and easy to clean
@@ -204,6 +217,22 @@ fn link_executable_uncached(
     {
         cmd.arg("-mmacosx-version-min=11.0");
         cmd.arg("-Wl,-dead_strip");
+    }
+    // FFI_PLAN P1: `-l<lib>` per `extern fn ... from "lib"`
+    // declaration, plus `-L` for every TOYLANG_LINK_PATHS entry.
+    // The runtime crate is linked unconditionally as an archive, so
+    // its lib name is a no-op here — the declaration exists so the
+    // JIT and interpreter know which symbols the program means.
+    for lib in link_libs {
+        if lib == "toylang_rt" {
+            continue;
+        }
+        cmd.arg(format!("-l{lib}"));
+    }
+    if let Some(paths) = std::env::var_os("TOYLANG_LINK_PATHS") {
+        for path in std::env::split_paths(&paths) {
+            cmd.arg(format!("-L{}", path.display()));
+        }
     }
     cmd.arg("-o").arg(output);
 

@@ -131,6 +131,7 @@ impl<'a> Parser<'a> {
                     ensures: vec![],
                     code: self.ast_builder.expression_stmt(block, Some(location)),
                     is_extern: false,
+                    extern_link: None,
                     visibility: Visibility::Private,
                 }));
                 tests.push(TestCase {
@@ -195,6 +196,65 @@ impl<'a> Parser<'a> {
                         )?);
                     }
                     self.skip_newlines();
+                    // FFI_PLAN P1: `from "lib" [as "sym"]` — the
+                    // declaration carries the linker symbol instead of
+                    // relying on the backend's built-in dispatch.
+                    // `from` is a contextual keyword here (it stays an
+                    // ordinary identifier everywhere else), `as` is
+                    // the existing keyword.
+                    let mut extern_link = None;
+                    let starts_with_from =
+                        matches!(self.peek(), Some(Kind::Identifier(s)) if s == "from");
+                    if starts_with_from {
+                        self.next(); // consume `from`
+                        // Extract the literal text before interning:
+                        // `self.peek()` holds a borrow of the token
+                        // stream, which `get_or_intern` (a `&mut self`
+                        // call) must not overlap.
+                        let lib_text = match self.peek() {
+                            Some(Kind::String(s)) => Some(s.clone()),
+                            _ => None,
+                        };
+                        let lib = match lib_text {
+                            Some(text) => {
+                                let sym = self.string_interner.get_or_intern(text);
+                                self.next();
+                                sym
+                            }
+                            None => {
+                                self.collect_error(
+                                    "expected a string literal after `from` (e.g. `from \"mylib\"`)",
+                                );
+                                self.next();
+                                continue;
+                            }
+                        };
+                        let as_next = matches!(self.peek(), Some(Kind::As));
+                        let symbol = if as_next {
+                            self.next(); // consume `as`
+                            let sym_text = match self.peek() {
+                                Some(Kind::String(s)) => Some(s.clone()),
+                                _ => None,
+                            };
+                            match sym_text {
+                                Some(text) => {
+                                    let sym = self.string_interner.get_or_intern(text);
+                                    self.next();
+                                    Some(sym)
+                                }
+                                None => {
+                                    self.collect_error(
+                                        "expected a string literal after `as` (e.g. `as \"sym\"`)",
+                                    );
+                                    self.next();
+                                    continue;
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        extern_link = Some(ExternLink { lib, symbol });
+                    }
                     let fn_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
                     update_end_pos(fn_end_pos);
                     // Use a placeholder `Stmt::Break` as the body slot.
@@ -217,6 +277,7 @@ impl<'a> Parser<'a> {
                         ensures: vec![],
                         code: placeholder_body,
                         is_extern: true,
+                        extern_link,
                         visibility,
                     }));
                 }
@@ -269,6 +330,7 @@ impl<'a> Parser<'a> {
                                 ensures,
                                 code: self.ast_builder.expression_stmt(block, Some(location)),
                                 is_extern: false,
+                                extern_link: None,
                                 visibility,
                             }));
                         }

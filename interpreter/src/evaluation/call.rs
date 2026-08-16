@@ -1393,6 +1393,33 @@ impl EvaluationContext<'_> {
                     .collect();
                 impl_fn(&normalized)
             }
+            // FFI_PLAN P1: a `from`-declared extern the registry does
+            // not serve is a genuine C ABI call — dlopen the library
+            // and trampoline into the symbol. The interpreter's own
+            // io externs (`extern_io`) are registry-served, so this
+            // path is for user code.
+            None if function.extern_link.is_some() => {
+                let link = function.extern_link.as_ref().expect("checked above");
+                let lib = self
+                    .string_interner
+                    .resolve(link.lib)
+                    .ok_or_else(|| InterpreterError::InternalError(
+                        "FFI: extern fn lib name failed to resolve in interner".to_string(),
+                    ))?;
+                let symbol = match link.symbol {
+                    Some(sym) => self.string_interner.resolve(sym).unwrap_or("").to_string(),
+                    None => name.to_string(),
+                };
+                let fn_ptr =
+                    crate::evaluation::extern_ffi::resolve_symbol(lib, &symbol)?;
+                let return_type = function.return_type.clone().unwrap_or(frontend::type_decl::TypeDecl::Unit);
+                crate::evaluation::extern_ffi::call_extern(
+                    fn_ptr,
+                    &function.parameter,
+                    args,
+                    &return_type,
+                )
+            }
             None => Err(InterpreterError::FunctionNotFound(format!(
                 "extern fn `{name}` is not yet implemented in the interpreter"
             ))),

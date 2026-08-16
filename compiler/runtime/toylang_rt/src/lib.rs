@@ -70,7 +70,6 @@ unsafe extern "C" {
     fn free(ptr: *mut u8);
     fn exit(code: i32) -> !;
     fn getenv(name: *const u8) -> *mut u8;
-    fn getchar() -> i32;
     fn atexit(f: extern "C" fn()) -> i32;
     fn time(t: *mut i64) -> i64;
     fn getpid() -> i32;
@@ -989,9 +988,15 @@ extern "C" fn toy_prof_report() {
 /// Reset the profiler's per-thread state and enable counting. Used by
 /// the compiler's JIT before a `--profile=mem` run; the AOT binary
 /// relies on `TOY_PROFILE_MEM` / `toy_prof_force_counting` instead.
+/// The injected program arguments are preserved — they are harness
+/// state for the current run, not profiler state.
 pub fn profiler_reset() {
     let st = thread_state();
+    let io_args = st.io_args;
+    let io_args_len = st.io_args_len;
     *st = ThreadState::default();
+    st.io_args = io_args;
+    st.io_args_len = io_args_len;
     st.prof_forced = true;
 }
 
@@ -1511,24 +1516,6 @@ pub extern "C" fn toy_io_arg(i: u64) -> *const u8 {
     toy_str_alloc(&[])
 }
 
-/// Read one line from stdin, without the trailing newline (`\n`, or
-/// `\r\n`). `""` at EOF.
-#[unsafe(no_mangle)]
-pub extern "C" fn toy_io_read_line() -> *const u8 {
-    let mut buf: Vec<u8> = Vec::with_capacity(256);
-    loop {
-        let c = unsafe { getchar() };
-        if c == -1 || c == b'\n' as i32 {
-            break;
-        }
-        buf.push(c as u8);
-    }
-    if buf.last() == Some(&b'\r') {
-        buf.pop();
-    }
-    toy_str_alloc(&buf)
-}
-
 /// The value of the environment variable named by the toylang str
 /// `name`; `""` when unset.
 #[unsafe(no_mangle)]
@@ -1579,13 +1566,6 @@ pub extern "C" fn toy_io_file_exists(path: *const u8) -> u8 {
     let p = str_to_cstring(path);
     let exists = unsafe { access(p.as_ptr(), F_OK) } == 0;
     exists as u8
-}
-
-/// Seconds since the Unix epoch.
-#[unsafe(no_mangle)]
-pub extern "C" fn toy_io_now() -> u64 {
-    let t = unsafe { time(core::ptr::null_mut()) };
-    t.max(0) as u64
 }
 
 /// A pseudo-random u64. xorshift64* seeded from the clock and the

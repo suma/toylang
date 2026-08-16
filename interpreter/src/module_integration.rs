@@ -823,6 +823,22 @@ impl<'a> AstIntegrationContext<'a> {
             None => None,
         };
 
+        // FFI_PLAN P1: the `extern_link` lib / symbol names are
+        // symbols in the module's interner and must be rerouted onto
+        // the main interner like every other symbol above — otherwise
+        // the type checker's `from "toylang_rt"` exemption (and the
+        // lowering's symbol resolution) resolve them to nothing.
+        let new_extern_link = match &function.extern_link {
+            Some(link) => Some(frontend::ast::ExternLink {
+                lib: self.remap_symbol(link.lib)?,
+                symbol: match link.symbol {
+                    Some(s) => Some(self.remap_symbol(s)?),
+                    None => None,
+                },
+            }),
+            None => None,
+        };
+
         Ok(Function {
             node: function.node.clone(),
             name: new_name,
@@ -834,6 +850,7 @@ impl<'a> AstIntegrationContext<'a> {
             ensures: new_ensures,
             code: new_code,
             is_extern: function.is_extern,
+            extern_link: new_extern_link,
             visibility: function.visibility
         })
     }

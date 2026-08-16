@@ -66,6 +66,12 @@ pub struct Module {
     /// `Expr::AssociatedFunctionCall(mod, fn)` calls go straight at
     /// `(Some(mod), fn)`.
     pub function_index: HashMap<(Option<DefaultSymbol>, DefaultSymbol), FuncId>,
+    /// `extern fn ... from "lib"` link requests (FFI_PLAN P1), deduped
+    /// and in declaration order. The AOT driver passes each as `-l<lib>`;
+    /// the JIT dlopens them for symbol lookup. `"toylang_rt"` is the
+    /// runtime archive, which is linked unconditionally, so the driver
+    /// skips the flag for it.
+    pub link_libs: Vec<String>,
     /// Concrete struct instances. Each entry is one fully-monomorphised
     /// struct: a non-generic struct has exactly one entry; a generic
     /// struct `Cell<T>` has one entry per concrete `T` it's

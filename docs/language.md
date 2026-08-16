@@ -1366,21 +1366,58 @@ generic extern call falls back to the interpreter (JIT) or fails
 to resolve at link time (AOT) until each backend grows
 per-instance dispatch.
 
+### Linking to real C libraries (`from "lib"` / `as "sym"`)
+
+FFI_PLAN P1: an `extern fn` can name its own library and symbol,
+making it a real C ABI call instead of a backend-registered one:
+
+```rust
+extern fn add(a: i64, b: i64) -> i64 from "mylib"          # symbol = add
+extern fn my_sin(x: f64) -> f64 from "m" as "sin"          # renamed symbol
+```
+
+- `from "lib"` is the linker `-l` name (no `lib` prefix /
+  extension): the AOT link gets `-l<lib>`, the JIT dlopens it, and
+  the interpreter loads it through `libloading` (search order:
+  `TOYLANG_LINK_PATHS` directories, then the loader defaults). The
+  special name `"c"` resolves to the already-linked libc.
+- `as "sym"` renames the symbol; without it the function's own name
+  is the symbol.
+- **Types**: only scalars cross the boundary — ints of every width
+  (narrow ints ride the integer register class), `f64`, `bool`,
+  `ptr`, `usize`, and a `()` return. `str` and compound types are
+  rejected by the type checker; pass `__builtin_str_to_ptr(s)` as a
+  `ptr` instead. At most 4 arguments. The declaration's signature
+  must match the C function — correctness is the caller's
+  responsibility (the language has no `unsafe` keyword; raw
+  pointer operations are already unchecked).
+- `from "toylang_rt"` names the language's own runtime crate: its
+  symbols marshal internally (e.g. `str` handles), so the scalar
+  restriction does not apply to them. `core/std/io.t` uses this for
+  the argv / env / file helpers, and declares `getchar` / `time`
+  `from "c"` with the rest of the I/O written in toylang.
+
 Each backend resolves the call differently:
 
 - **interpreter** looks the source-level name up in
   `evaluation::extern_math::build_default_registry` (a
   `HashMap<&str, fn(&[Value]) -> Result<Value, _>>`) and
-  invokes the matching Rust closure.
+  invokes the matching Rust closure. A `from`-declared extern the
+  registry does not serve goes through `evaluation::extern_ffi`
+  (dlopen + a trampoline over the arg / return register classes).
+  The interpreter deliberately does *not* dlopen libc — its
+  `extern_io` registry serves the libc names with std-based
+  implementations (RUNTIME-PORT R2 注意).
 - **JIT** routes through `jit::eligibility::JIT_EXTERN_DISPATCH`,
   which maps each name to either a runtime `HelperKind` (for
   ops cranelift can't lower natively, like `sin` / `cos` / `pow`)
   or a native cranelift instruction (`sqrt` / `floor` / `ceil` /
-  `fabs`).
+  `fabs`). A `from`-declared extern resolves through a
+  symbol-lookup closure that dlopens the declared libraries.
 - **AOT compiler** declares the function as `Linkage::Import` with
-  the libm symbol name returned by
-  `lower::program::libm_import_name_for` (`__extern_sin_f64 -> sin`,
-  `__extern_pow_f64 -> pow`, …).
+  the declared symbol (or the libm symbol name returned by
+  `lower::program::libm_import_name_for` for `__extern_sin_f64 ->
+  sin`-style registry externs) and passes `-l<lib>` to the link.
 
 Bare-name calls into `extern fn`s are always allowed regardless of
 import / namespace context — they're runtime bindings, not

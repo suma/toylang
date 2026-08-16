@@ -203,6 +203,13 @@ fn compile_program_to_jit(
     contract_msgs: &ContractMessages,
     options: &CompilerOptions,
 ) -> Result<JitProgram, String> {
+    // RUNTIME-IO: the runtime's io-argv reads the *real* process argv
+    // unless args are injected (that is the AOT convention), but the
+    // JIT runs in-process inside the compiler, whose own argv is not
+    // the program's. Reset to the "launched with no arguments" default
+    // on this thread; the harness may call `set_jit_program_args`
+    // between compile and run to override it.
+    toylang_rt::set_program_args(Vec::new());
     let ir_module =
         lower::lower_program(program, interner, contract_msgs, options.release)?;
 
@@ -215,6 +222,29 @@ fn compile_program_to_jit(
         JITBuilder::with_flags(&[("opt_level", crate::codegen::cranelift_opt_level())], cranelift_module::default_libcall_names())
             .map_err(|e| format!("JITBuilder: {e}"))?;
     register_runtime_symbols(&mut jit_builder);
+    // FFI_PLAN P1-MVP-C: `extern fn ... from "lib"` symbols are
+    // resolved through a lookup closure that dlopens the declared
+    // libraries. The closure runs at `finalize_definitions` time on
+    // this same thread, so the handles can live in it; the module
+    // owns the builder (and therefore the closure) for its lifetime.
+    // `"c"` and `"toylang_rt"` are skipped: the former resolves
+    // through the builder's RTLD_DEFAULT fallback, the latter's
+    // symbols are already registered in the builder's symbol map.
+    let ffi_libs = ffi_lib_handles(&ir_module.link_libs);
+    if !ffi_libs.is_empty() {
+        let lookup: Box<dyn Fn(&str) -> Option<*const u8> + Send> =
+            Box::new(move |name: &str| {
+                let mut sym_name: Vec<u8> = name.as_bytes().to_vec();
+                sym_name.push(0);
+                for (_, lib) in &ffi_libs {
+                    if let Ok(sym) = unsafe { lib.get::<*mut u8>(&sym_name) } {
+                        return Some(sym.into_raw() as *const u8);
+                    }
+                }
+                None
+            });
+        jit_builder.symbol_lookup_fn(lookup);
+    }
     let module = JITModule::new(jit_builder);
 
     let mut session = CodegenSession::new(module)?;
@@ -341,13 +371,11 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_prof_force_counting", toylang_rt::toy_prof_force_counting as *const u8);
     jit_builder.symbol("toy_record_allocator_layout", toylang_rt::toy_record_allocator_layout as *const u8);
     // RUNTIME-IO: stdlib I/O externs (core/std/io.t).
-    jit_builder.symbol("toy_io_read_line", toylang_rt::toy_io_read_line as *const u8);
     jit_builder.symbol("toy_io_argc", toylang_rt::toy_io_argc as *const u8);
     jit_builder.symbol("toy_io_arg", toylang_rt::toy_io_arg as *const u8);
     jit_builder.symbol("toy_io_env", toylang_rt::toy_io_env as *const u8);
     jit_builder.symbol("toy_io_read_file", toylang_rt::toy_io_read_file as *const u8);
     jit_builder.symbol("toy_io_file_exists", toylang_rt::toy_io_file_exists as *const u8);
-    jit_builder.symbol("toy_io_now", toylang_rt::toy_io_now as *const u8);
     jit_builder.symbol("toy_io_random", toylang_rt::toy_io_random as *const u8);
     // STR-INTERP-AOT: str runtime helpers.
     jit_builder.symbol("toy_str_concat", toylang_rt::toy_str_concat as *const u8);
@@ -435,4 +463,42 @@ pub fn memory_profile_layouts() -> Vec<interpreter::heap::AllocatorLayoutReport>
 /// matching a compiled binary launched with no arguments).
 pub fn set_jit_program_args(args: Vec<String>) {
     toylang_rt::set_program_args(args.into_iter().map(String::into_bytes).collect());
+}
+
+// ---------------------------------------------------------------------------
+// FFI_PLAN P1-MVP-C: `-l`-style library resolution for the JIT.
+// ---------------------------------------------------------------------------
+
+/// The candidate file names for `-l`-style lib `name`, in search
+/// order: every `TOYLANG_LINK_PATHS` directory first, then the bare
+/// name (the loader's own search path). Mirrors the interpreter's
+/// `extern_ffi::lib_candidates`.
+fn ffi_lib_candidates(name: &str) -> Vec<std::ffi::OsString> {
+    let ext = if cfg!(target_os = "macos") { "dylib" } else { "so" };
+    let file = format!("lib{name}.{ext}");
+    let mut out: Vec<std::ffi::OsString> = Vec::new();
+    if let Some(paths) = std::env::var_os("TOYLANG_LINK_PATHS") {
+        for dir in std::env::split_paths(&paths) {
+            out.push(dir.join(&file).into_os_string());
+        }
+    }
+    out.push(file.into());
+    out
+}
+
+/// dlopen every `from "lib"` library the program declared (except the
+/// two handled by other mechanisms), returning `(lib name, handle)`
+/// pairs. The handles live for the JITModule's lifetime via the
+/// lookup closure.
+fn ffi_lib_handles(link_libs: &[String]) -> Vec<(String, libloading::os::unix::Library)> {
+    link_libs
+        .iter()
+        .filter(|lib| *lib != "c" && *lib != "toylang_rt")
+        .filter_map(|lib| {
+            let handle = ffi_lib_candidates(lib)
+                .into_iter()
+                .find_map(|c| unsafe { libloading::os::unix::Library::new(&c).ok() });
+            handle.map(|h| (lib.clone(), h))
+        })
+        .collect()
 }

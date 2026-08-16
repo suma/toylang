@@ -41,20 +41,23 @@ use crate::lower;
 use crate::{CompilerOptions, ContractMessages};
 
 /// Lower the program (AST → IR → Cranelift) and emit a relocatable object
-/// file. Returns the raw bytes; callers decide whether to write them out
-/// directly or hand them to the linker driver.
+/// file. Returns the raw bytes plus the `-l` link requests collected
+/// from `extern fn ... from "lib"` declarations (FFI_PLAN P1); callers
+/// decide whether to write the bytes out directly or hand both to the
+/// linker driver.
 pub fn emit_object(
     program: &File,
     interner: &DefaultStringInterner,
     contract_msgs: &ContractMessages,
     options: &CompilerOptions,
-) -> Result<Vec<u8>, String> {
+) -> Result<(Vec<u8>, Vec<String>), String> {
     let ir_module = lower::lower_program(program, interner, contract_msgs, options.release)?;
     let module = build_object_module(&ir_module, interner, options)?;
     let product = module.finish();
-    product
+    let bytes = product
         .emit()
-        .map_err(|e| format!("object emission failed: {e}"))
+        .map_err(|e| format!("object emission failed: {e}"))?;
+    Ok((bytes, ir_module.link_libs))
 }
 
 /// Render the freshly-built IR as text. Used by `--emit=ir`.

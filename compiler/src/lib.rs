@@ -133,7 +133,7 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
     // own.
     let contract_msgs = ContractMessages::intern(session.string_interner_mut());
 
-    let object_bytes = codegen::emit_object(&program, session.string_interner(), &contract_msgs, options)?;
+    let (object_bytes, link_libs) = codegen::emit_object(&program, session.string_interner(), &contract_msgs, options)?;
 
     match options.emit {
         EmitKind::Object => {
@@ -151,6 +151,7 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
                 &out,
                 options.verbose,
                 options.link_cache_dir.as_deref(),
+                &link_libs,
             )?;
             if options.verbose {
                 eprintln!("wrote {}", out.display());

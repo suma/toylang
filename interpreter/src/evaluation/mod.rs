@@ -12,6 +12,7 @@ use crate::heap::{Allocator, GlobalAllocator, HeapManager};
 
 pub mod extern_io;
 pub mod extern_math;
+pub mod extern_ffi;
 use extern_math::ExternFn;
 
 /// Per-enum entry registered with the evaluation context. Carries

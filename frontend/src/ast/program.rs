@@ -149,7 +149,22 @@ pub struct Function {
     /// frontend's `BuiltinFunction` enum and inside a stdlib
     /// `.t` file instead.
     pub is_extern: bool,
+    /// FFI_PLAN P1: `extern fn ... from "lib" [as "sym"]`. When
+    /// present, the symbol name comes from the declaration instead
+    /// of the backend's built-in dispatch, and the AOT linker gets
+    /// `-l<lib>`. `None` for every non-extern function.
+    pub extern_link: Option<ExternLink>,
     pub visibility: Visibility,
+}
+
+/// `from "lib" as "sym"` on an `extern fn` declaration (FFI_PLAN 論点 1).
+/// `lib` is the linker `-l` name (no `lib` prefix / extension);
+/// `symbol` defaults to the function's own name when `as` is absent.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ExternLink {
+    pub lib: DefaultSymbol,
+    pub symbol: Option<DefaultSymbol>,
 }
 
 pub type Parameter = (DefaultSymbol, TypeDecl);

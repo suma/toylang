@@ -10,6 +10,28 @@ use crate::type_checker::{
     TypeInferenceState, FunctionCheckingState, PerformanceOptimization,
 };
 
+/// FFI_PLAN P1 論点3: the types that may cross an `extern fn ... from
+/// "lib"` boundary. Scalars only — ints of every width (narrow ints
+/// ride the integer register class), f64, bool, ptr, usize. `str` and
+/// every compound type are rejected at the type checker so no backend
+/// has to marshal them.
+fn is_ffi_boundary_scalar(ty: &TypeDecl) -> bool {
+    matches!(
+        ty,
+        TypeDecl::Bool
+            | TypeDecl::Int64
+            | TypeDecl::UInt64
+            | TypeDecl::Int8
+            | TypeDecl::UInt8
+            | TypeDecl::Int16
+            | TypeDecl::UInt16
+            | TypeDecl::Int32
+            | TypeDecl::UInt32
+            | TypeDecl::Float64
+            | TypeDecl::Ptr
+    )
+}
+
 pub struct TypeCheckerVisitor<'a> {
     pub core: CoreReferences<'a>,
     pub context: TypeCheckContext,
@@ -624,6 +646,55 @@ impl<'a> TypeCheckerVisitor<'a> {
         // declared parameter / return signature is the contract;
         // skip body type-checking and record the declared return.
         if func.is_extern {
+            // FFI_PLAN P1 論点3: `from`-declared externs may only
+            // cross scalar types. Narrow ints ride the integer
+            // register class (R2 refinement over the plan's "narrow
+            // ints excluded" — `getchar`/`access` need i32), `str`
+            // and compounds are rejected: convert with
+            // `__builtin_str_to_ptr` and pass `ptr`.
+            //
+            // The language's own runtime (`from "toylang_rt"`) is
+            // exempt — those symbols implement the marshaling
+            // internally (str handles and all), so they are not a
+            // raw C ABI boundary.
+            if let Some(link) = &func.extern_link
+                && self
+                    .core
+                    .string_interner
+                    .resolve(link.lib)
+                    .is_some_and(|lib| lib != "toylang_rt")
+            {
+                let fn_name = self
+                    .core
+                    .string_interner
+                    .resolve(func.name)
+                    .unwrap_or("?")
+                    .to_string();
+                for (pname, pty) in &func.parameter {
+                    if !is_ffi_boundary_scalar(pty) {
+                        let param_name = self
+                            .core
+                            .string_interner
+                            .resolve(*pname)
+                            .unwrap_or("?");
+                        return Err(TypeCheckError::generic_error(&format!(
+                            "extern fn `{fn_name}`: parameter `{param_name}` has type `{pty:?}`, \
+                             which cannot cross the C ABI boundary (FFI_PLAN P1 allows only \
+                             scalars: ints, f64, bool, ptr, usize; pass `str` as \
+                             `__builtin_str_to_ptr(s)`)"
+                        )));
+                    }
+                }
+                if let Some(ret) = func.return_type.as_ref()
+                    && *ret != TypeDecl::Unit
+                    && !is_ffi_boundary_scalar(ret)
+                {
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "extern fn `{fn_name}`: return type `{ret:?}` cannot cross the C ABI \
+                         boundary (FFI_PLAN P1 allows only scalars: ints, f64, bool, ptr, usize)"
+                    )));
+                }
+            }
             let declared = func.return_type.clone().unwrap_or(TypeDecl::Unit);
             self.function_checking
                 .is_checked_fn

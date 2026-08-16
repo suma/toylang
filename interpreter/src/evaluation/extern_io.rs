@@ -3,12 +3,15 @@
 //!
 //! Same architecture as `extern_math.rs`: the interpreter dispatches
 //! `extern fn` calls through a registry of Rust closures keyed by the
-//! declared name. Each backend resolves the same names differently —
-//! the AOT re-declares them as `Linkage::Import` calls against the
-//! `toy_io_*` symbols in the `toylang_rt` crate (via
-//! `compiler_lower::program::libm_import_name_for`), and the
-//! compiler-side JIT registers the same crate's symbols in
-//! `compiler/src/jit.rs::register_runtime_symbols`.
+//! declared name. Since RUNTIME-PORT R2 the stdlib declarations carry
+//! their own symbols (`from "toylang_rt" as "toy_io_*"` for the
+//! pointer-boundary helpers, `from "c"` for `getchar` / `time` /
+//! `getpid`), and the interpreter deliberately does **not** dlopen
+//! libc — these std-based implementations serve the libc names
+//! instead, keeping stdin/env handling under the interpreter's
+//! control. The AOT linker and the compiler JIT resolve the real
+//! symbols. User `from`-declared externs that the registry does not
+//! serve go through the general FFI path (`extern_ffi`).
 //!
 //! Return-value convention: `str` results use the language's str
 //! representation (a `String` object here; a pointer to the trailing
@@ -45,14 +48,18 @@ pub type ExternFn = fn(&[Value]) -> Result<Value, InterpreterError>;
 /// as written in the source program (see `core/std/io.t`).
 pub fn build_io_registry() -> HashMap<&'static str, ExternFn> {
     let mut m: HashMap<&'static str, ExternFn> = HashMap::new();
-    m.insert("__extern_io_read_line_str", io_read_line);
     m.insert("__extern_io_argc_u64", io_argc);
     m.insert("__extern_io_arg_str", io_arg);
     m.insert("__extern_io_env_str", io_env);
     m.insert("__extern_io_read_file_str", io_read_file);
     m.insert("__extern_io_file_exists_bool", io_file_exists);
-    m.insert("__extern_io_now_u64", io_now);
     m.insert("__extern_io_random_u64", io_random);
+    // RUNTIME-PORT R2: the libc names `core/std/io.t` now declares
+    // `from "c"`. `read_line` / `now` are implemented in toylang on
+    // top of these.
+    m.insert("getchar", io_getchar);
+    m.insert("time", io_time);
+    m.insert("getpid", io_getpid);
     m
 }
 
@@ -82,29 +89,41 @@ fn u64_result(v: u64) -> Value {
     Object::UInt64(v).into()
 }
 
-/// Read one line from stdin, without the trailing newline (`\n`, or
-/// `\r\n`). `""` at EOF.
-fn io_read_line(_args: &[Value]) -> Result<Value, InterpreterError> {
-    let mut line = String::new();
+/// `getchar()` — one byte from stdin, `-1` (EOF) when exhausted.
+/// Serves the `from "c"` declaration in `core/std/io.t`; `read_line`
+/// (toylang) loops on it.
+fn io_getchar(_args: &[Value]) -> Result<Value, InterpreterError> {
     use std::io::Read;
     let mut buf = [0u8; 1];
     let mut stdin = std::io::stdin().lock();
-    loop {
-        match stdin.read(&mut buf) {
-            Ok(0) => break,
-            Ok(_) => {
-                if buf[0] == b'\n' {
-                    break;
-                }
-                line.push(buf[0] as char);
-            }
-            Err(_) => break,
-        }
+    let c = match stdin.read(&mut buf) {
+        Ok(0) => -1, // EOF
+        Ok(_) => buf[0] as i32,
+        Err(_) => -1,
+    };
+    Ok(Object::Int32(c).into())
+}
+
+/// `time(NULL)` — seconds since the Unix epoch. The argument (the
+/// caller passes a null pointer) is ignored.
+fn io_time(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `time` takes 1 argument".to_string(),
+            expected: 1,
+            found: args.len(),
+        });
     }
-    if line.ends_with('\r') {
-        line.pop();
-    }
-    Ok(str_result(line))
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    Ok(Object::Int64(secs).into())
+}
+
+/// `getpid()` — the process id, for seeding `random` in toylang.
+fn io_getpid(_args: &[Value]) -> Result<Value, InterpreterError> {
+    Ok(Object::Int32(std::process::id() as i32).into())
 }
 
 /// Number of program arguments (excluding the program name).
@@ -170,15 +189,6 @@ fn io_file_exists(args: &[Value]) -> Result<Value, InterpreterError> {
     }
     let path = str_arg(&args[0], "__extern_io_file_exists_bool")?;
     Ok(Object::Bool(std::path::Path::new(&path).exists()).into())
-}
-
-/// Seconds since the Unix epoch.
-fn io_now(_args: &[Value]) -> Result<Value, InterpreterError> {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    Ok(u64_result(secs))
 }
 
 /// A pseudo-random `u64`. xorshift64* seeded from the clock and the

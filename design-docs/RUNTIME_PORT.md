@@ -11,9 +11,34 @@ Phase 分割 → MVP 刻みで landing」で進める。
 |---|---|---|
 | **R0** | 出力シンクの抽象化 (print だけ差し替え可能にする) | ✅ 完了 (2026-08-16) |
 | **R1** | `toylang_rt` crate 新設 + C 全機能の移植 + jit.rs ミラー削除 | ✅ 完了 (2026-08-16) |
-| **R2** | extern 宣言の一般化で `toy_io_*` を廃止 (FFI_PLAN P1 に相乗り) | 未着手 |
+| **R2** | extern 宣言の一般化で `toy_io_*` を廃止 (FFI_PLAN P1 に相乗り) | ✅ 完了 (2026-08-16) |
 | **R3** | str / 整数整形 / 集計を `core/std/` (toylang) へ | 未着手 |
 | **R4** | f64 整形・allocator・profiler も toylang へ (任意) | 検討のみ |
+
+### R2 実装メモ (2026-08-16)
+
+- **P1-MVP-A/B/C をそのまま実施** (FFI_PLAN.md に実装メモを追記): 構文
+  `from "lib" [as "sym"]`、`Module.link_libs`、driver `-l`/`-L` + link hash
+  更新、interpreter は registry → libloading trampoline の 2 段、
+  JIT は `symbol_lookup_fn`。
+- **受益の実装**: `core/std/io.t` が `getchar` / `time` を `from "c"` で
+  直接宣言し、`read_line` / `now` が **toylang 実装**に変わった
+  (`toy_io_read_line` / `toy_io_now` を toylang_rt から削除)。
+  残る 5 シンボル (`toy_io_argc` / `_arg` / `_env` / `_read_file` /
+  `_file_exists` / `_random`) は `from "toylang_rt" as "toy_io_*"` で宣言 —
+  extern 境界が C ポインタを deref できない (argv 配列 / FILE* の解釈は
+  backend ごとに別実装が要る) ため toylang 化は保留。doc の「8 シンボルが
+  消える」は 2 シンボルの削除 + 6 シンボルの宣言一般化として実現した。
+  interpreter の `extern_io` registry は「宣言名 → Rust std 実装」のまま
+  (注意どおり libc は dlopen しない — `getchar` / `time` / `getpid` の
+  registry エントリが `from "c"` 宣言に応える)。
+- **注意点**: JIT の io argv は compile 時に空にリセットする
+  (`compile_program_to_jit` が `set_program_args(vec![])`) —
+  toylang_rt の argv は「注入されなければ実プロセス argv」なので、
+  リセットしないと compiler 自身の argv が見える。
+  `profiler_reset` は注入済み args を保持する。
+- **テスト**: `ffi_tests.rs` (fixture を cc -shared でビルド、3 者一致を
+  pin)。型制約の拒否テストも同ファイル。`LINK_CACHE_VERSION` 3。
 
 ### R0/R1 実装メモ (2026-08-16)
 

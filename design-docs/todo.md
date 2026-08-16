@@ -10,44 +10,36 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-08-16
+- **parser: 改行前 `(` は method call に継続しない** — `b.v\n(x as i64)` が `b.v(...)` と parse され、ユーザが書いていない呼び出しについて型エラーが出ていた。
+- **CONCRETE-IMPL-Phase-2c (generic-wildcard 完遂)** — 型チェッカの method registry を `Vec<MethodSpec>` 化し、3 層 (型検査 / interpreter / compiler) の dispatch を exact → wildcard → lone-spec に統一。concrete impl が generic impl を override できる。
+- **STR-INTERP-COMPOUND-EXTEND-ENUM** — enum 値の補間を AOT / compiler JIT で (tag brif chain + variant ごとの concat)。interpreter JIT が tag を出力していたバグも修正。
+- **MATCH-LET-RHS-PAYLOAD-INFER 完遂** — method call / field-access レシーバの method call を scrutinee に持つ val/var 右辺 match。
+
 ### 2026-08-15
-- **parser: 改行前 `(` は method call に継続しない** — `b.v\n(x as i64)` が `b.v(x as i64)` と parse され、型チェッカがユーザが書いていない呼び出しについて「Method 'v' not found」を報告していた (postfix の `.field` arm が `[` arm と違って改行 guard を持っていなかった)。`has_newline_before_current_token` を `.field(` の分岐にも適用 — `(` が新しい行を開くなら field access + 次の文として parse する。同一行の `.method(...)` と、改行を跨ぐ `.concat(` チェーン (guard は field 名と `(` の間しか見ない) は無傷。この形のプログラムは以前は実行不能だった (テスト中に 2 回踏んだ)。parser の AST shape を 2 テスト + 3 バックエンド一致を 1 テストで pin。
-- **CONCRETE-IMPL-Phase-2c (generic-wildcard 完遂)** — 型チェッカの `struct_methods` registry が same `(struct, method)` で 1 本しか持てず、**異なる concrete args の impl は last-wins** だった (`impl C<u8>` + `impl C<i64>` でシグネチャが違うと、後から登録した方の型で全レシーバが検査され、`a.get()` が「expected u8, got i64」と誤拒否)。`Vec<MethodSpec>` (target_type_args + method) に refactor し、dispatch は interpreter / compiler と同じ precedence (exact → empty-args → lone-spec → None) を実装。associated call (`C::make(...)`) はレシーバが無いので **enclosing の型注釈を hint として lookup に thread** (`val b: C<i64> = C::make(2i64)` が `impl C<i64>` の spec を選ぶ)。operator overload の compat check も receiver args で dispatch。**発見した既存ドリフト**: generic impl (`impl<T> C<T>`) は parser が `[Generic(T)]` を登録する (コメント群の「empty args が generic のマーカー」は stale) — empty-args fallback は generic impl に効かず、generic + concrete の同名 overlap は全層で None になっていた。**Phase 2c 完遂で wildcard tier を追加**: 「args が空 or 全部 Generic」の spec は任意レシーバに一致 (concrete が exact で勝ち、それ以外は generic impl に落ちる)。型チェッカ `get_struct_method` / interpreter `get_method` / compiler `resolve_method_target` (func_ids + generic_methods の 2 registry を跨ぐ 3 段: exact-func → template → lone-func) を統一し、**9 箇所の dispatch サイトを移行** (lower_method_call / resolve_method_target / method_call_return_type peek / 演算子 overload ×3 / associated compound rhs / compound_literal ×2 / with インライン / print compound / auto-drop)。「concrete が generic を override」が 3 バックエンドで動作 (両順序 + compound + associated を pin)。4 テスト (両順序 / associated hint / ambiguous rejection→positive 化 / compound+associated)。
-- **STR-INTERP-COMPOUND-EXTEND-ENUM** — enum 値の文字列補間 (`"{shape}"`) が AOT / compiler JIT で「__builtin_to_string arg produced no value」で落ちていた (enum 値は leaf locals に住んでいて IR value graph に無い)。`emit_enum_to_string` を新設 — `emit_print_enum` と同じ tag brif chain (最後の variant が unconditional fallback、merge block で結果 local をロード) で、各 variant が `EnumName::VariantName(p0, p1, ...)` を `ConstStrBytes` + `StrConcat` で組み立てる。payload は scalar が `ToString` helper、struct / tuple は `emit_struct_format` / `emit_tuple_format` を再利用、enum payload は再帰。generic enum は `format_enum_header` (type args 込み) で interpreter と byte-identical (`Option<i64>::Some(5)`)。arg は identifier binding のみ (enum field は field chain に Enum 変種が無い既存ギャップ)。**interpreter JIT の bug を 1 件発見**: generic enum (stdlib `Option`) は JIT で「tag を U64 として値に使う」表現のため、`__builtin_to_string(o)` が eligibility の primitive 検査を通って **tag を出力**していた (`Option::Some(5)` が `1` に化ける)。ToString arm で enum local を明示 reject して silent fallback に。stdout をバイト単位で pin (assert_stdout_consistent 5 件 + len 経路 1 件)。
-- **MATCH-LET-RHS-PAYLOAD-INFER 完遂** — 最後の残骸は「scrutinee が method call の val/var 右辺 match」で、read-only な `value_scalar` が method target を解決できないため「could not infer scalar type for val/var rhs」で落ちていた。`scrutinee_enum_id` に `Expr::MethodCall` アームを追加し、`value_scalar` の MethodCall 解決 (レシーバ束縛 + method registry peek、`&mut self` 不要 — registry は lower 時に 1 回構築したデータ) を再利用。再帰は常に scrutinee の部分式へ降りるので AST 深さで有界。識別子レシーバ (`h.get()` / `self.get()` / `&mut self` writeback / generic `map` 戻り) を 5 テストで pin。**field-access レシーバ (`h.inner.get()`) も解消**: `resolve_method_target` が Identifier レシーバしか受けない既存ギャップで、`resolve_method_receiver_binding` (field chain → 合成 struct Binding、leaf は親 binding のローカル) に委譲。scalar/tuple チェーンは `Ok(None)` の peek 契約を維持 (fall-through 無傷)。writeback は親の leaf に書くので `&mut self` 伝播も正しい。副産物として compound-returning method の field レシーバ val-rhs (`val x: Inner = h.inner.bump()`) も動く。4 テスト追加。
-- **`--check` が満たせないサイズの確保で Rust panic していたのを修正** — `__builtin_heap_alloc(u64::MAX)` 相当の要求 (property checker がエッジ値として生成) が interpreter の bump allocator で `capacity overflow` してプロセスごと abort していた。AOT は libc `malloc` が NULL を返すので、「確保失敗 → null ポインタ」を言語レベルの答えに統一 (`len.checked_add(size)` + isize::MAX ガード)。`test_heap_alloc_unsatisfiable_size_returns_null_not_a_panic` で pin。`--check` がメモリ契約プログラムで使えるようになった — `example/memory_contract.t` に `--check` が通るよう `requires` を追加 (scratch は 8 バイト境界: ptr_write が u64 を書くので size >= 8 必須、interpreter は境界検査で AOT の silent overflow より厳しい側を採用)。
-- **lexer エラーを診断として報告 (E0012)** — rflex の `Error::Unmatch` は理由を持たず、`LexerTokenSource` が `Ok(None)` に潰して parse を EOF 扱いしていたため、`"bad \x80 byte"` が**その行の型エラーとして無関係な行に出る** (最悪の診断パターン) だった。`%field Option<LexErrorKind> last_lex_error` を追加し、各 failing action が理由を記録。token source は失敗を記録して resync (zero-width は `skip_current_char` で 1 文字スキップ、`\"[^"]*` 規則で「閉じていない文字列」も検出) — parse は最後まで走り、`Parser::merge_lex_errors` が `ParserErrorKind::LexError` として報告 (先頭挿入なので単一エラー経路でも根因が勝つ)。**診断基盤**: コード `E0012` + `--explain` 解説 + `--diagnostics=json` が parse エラーにも効く (`Diagnostic::from_parser_error`)。テストは**行・列まで assert** (`(2, 18)` 等) — 「リテラルの位置を指す」こと自体が本質。1788 → **1800 tests pass**。
-- **tuple 型の field / enum payload も同じ 4 形を受けるように** — struct 側と揃えて `store_tuple_value_into_elements` を新設 (literal / 既存束縛 / tuple 型 field / tuple を返す call・associated fn・method)。`lower_into_tuple_slot` (enum payload) も委譲。**enum storage 内の copy は両側が同じ確保 walk 由来で必ず形が合うが、ここでの source はユーザが書いた式**なので、`copy_tuple_elements` の `unreachable!` を踏まないよう長さと要素形を検査する版を挟んだ。テストは全要素に bool を持たせ、**1 つだけ false** にしてある — slot が別のソースから埋まったり要素が入れ替わったりすると crash ではなく和が変わる。1786 → **1788 tests pass**。
-- **struct field / enum payload を method 呼び出しでも初期化できるように** — 残っていた最後の rhs 形 (`Named { name: src.to_string() }`)。plain call と違い、**receiver の leaf scalar を引数の前に並べる**のと、`&mut self` の callee が**結果の後ろに変更後の receiver leaf を返す**ぶんを dest 列に足す必要がある。`lower_let_struct_enum_method_compound` が持っていたその段取りを `prepare_compound_method_call` に切り出し、**行き先の決定だけを呼び出し側に残した** (val rhs は新しい束縛を確保、field / payload は既にある leaf locals を使う)。テストは `&mut self` の writeback 半分を、リテラル構築後に `mutable.a` を読むことで pin する (writeback を落とすと crash ではなく答えが変わる)。1784 → **1786 tests pass**。
-- **テストスイートを 5.15s → 4.4s に (-15%、CPU 90s → 82s)** — 4 点。(1) **rayon の oversubscription**: `preparse_core_modules` と AOT の並列 codegen が既定プールを使っており、**プールはプロセス単位で作られる**ので nextest の 1 テスト 1 プロセスでは全テストが 20 スレッドの生成を払っていた。4 スレッドの専用プールに変更 — 1 行プログラムの実行が CPU 46.6ms → 36.7ms、wall は同じ (最大の example でも 4 スレッドと 20 スレッドの差は 10ms)。(2) **example sweep が同じ入力を 2 回フロントエンドに通していた** (tree-walker 列と JIT 列がそれぞれ `run_source`) — 1 回パース + 型検査して両エンジンで実行するようにした。(3) sweep の shard 4 → 12 (critical path 3.8s → 0.8s)。**shard 関数の抜けは「そのぶん検査しないまま緑になる」ので、宣言された index が `0..SHARDS` と一致することをテストで pin した**。(4) `an_unsatisfiable_requires_...` が 2.5s → 0.13s: 全入力が捨てられるテストなので discard budget (20x) を 200 ケース分回していた、10 ケースで同じ判定。**計測して分かった一番大きな事実は「この suite は CPU 律速で、下限 (82s / 20 コア ≈ 4.2s) にほぼ到達している」**こと — 残りは `todo.md` の TEST-PERF に記録した。
-- **compound 値の「読み出し側」を AOT/JIT で通す** — `val inner: Inner = o.i` / `var y: Inner = x` が `val/var rhs produced no value` で落ちていた (struct 値は leaf locals に住んでいて IR の value graph に無いので、scalar 用の let 経路には store するものが無い)。新しい名前が**同じ leaf locals をそのまま引き受ける** (copy しない) ようにした — interpreter は compound 値を参照共有するので、どちらの名前から書いても他方に見える必要がある。**copy 実装だと read-only の半分だけ通ってしまう**ので、テストは両方向の write-through を踏む。併せて同じ盲点だった 3 箇所: `println(o.i)` (print)、`"{o.i}"` (`__builtin_to_string`)、そして `String` フィールドの `println(x.name)` — 最後のは型検査器の Display 書き換え `println(v)` → `println(v.to_str())` が **field access レシーバの method 呼び出しを型付けできず** "print accepts only scalar values" という**ユーザが書いていない呼び出しについてのエラー**になっていた (`value_scalar` の MethodCall arm が identifier レシーバしか見ていなかった)。`docs/language.md` の iterator desugar の但し書き (「AOT の let-rhs は struct 束縛を aliasing-copy しない」) は古くなったので直した。1772 → **1775 tests pass**。
-- **receiver を読まない method の AOT panic を修正** — 真因は「**`self` という symbol が interner に無い**」こと。暗黙の `&self` / `&mut self` は AST の parameter ではなく (parser は token の**文字列**を見て `has_self_param` を立てるだけで intern しない)、lowering 側が `interner.get("self")` で receiver パラメータを materialise していた。**ソース中のどこも `self` と書いていない**プログラムでは symbol が存在せず、receiver が parameter 列から落ちる → cranelift の block param だけ残って `param local not declared` で panic、あるいは**次の parameter が receiver の型に束縛される** (`fn f(&self, x: u64)` が `binary lhs produced no value` で落ちる)。core module を読むと stdlib 側が `self` を intern するので隠れていた。lowering は interner を共有参照でしか持てないので、`ContractMessages` (呼び出し側が事前 intern して渡す symbol 群) に `self_ident` を足して常に存在させた。**テストは「`self` と書かない」ことが本質** — `self.a` を 1 箇所でも足すと symbol が intern されてバグを踏まなくなるので、その旨をテストに書いた。`assert_consistent` は失敗時に core 有りの経路へ fallback して隠すため、no-core の列 (`try_compiler_exit_code(.., false)`) を直接叩いている。1771 → **1772 tests pass**。
-- **struct-typed な field / enum payload を call でも初期化できるように (AOT/JIT)** — struct 型の field は **nested struct literal でしか**初期化できず、`String` はリテラル形を持たない (作る手段が associated function だけ) ため **`String` フィールドを持つ struct は AOT で一切構築できなかった**。`store_struct_value_into_fields` を新設し、rhs が literal / 既存束縛 identifier / struct を返す関数呼び出し・associated function 呼び出しの 4 形を受ける。**呼び出しは一時束縛を作らず `CallStruct` の dests を field の leaf locals に直結**する (`with allocator = Arena::new()` の inline 経路と同じ手口) ので copy も drop 登録も増えない — field は元々 auto-drop 対象ではなく、ここで登録すると外側の struct が所有する値を落としてしまう。generic な `Vec::new()` は template registry 側なので、**slot 自身の type args** で instantiate する (field 位置には annotation が無い)。enum payload の `lower_into_struct_slot` は同じ helper に委譲したので `Holder::With(make())` も通るようになった。1768 → **1771 tests pass**。
-- **非 ASCII のソースリテラルの化けを修正** — string literal の decode ループが inner の各バイトを `push(b as char)` していたため、multi-byte scalar のバイトが 1 つずつ独立した code point として再エンコードされていた (`"♠"` = 3 バイトが 6 バイトの mojibake、`__builtin_str_len` も 6)。バイトが char boundary にあることを使って **UTF-8 scalar 単位でそのまま写す**ようにした。同じ `as char` を使っていた `\xHH` は `HH >= 0x80` を **lex error** に変更 — `str` は UTF-8 なので単独の高位バイトは表現できず、従来は黙って 2 バイト吐いていた (非 ASCII は `\u{HEX}` を使う。char literal の `'\xff'` は u32 値なので影響なし)。**この種のバグは一致テストで検出できない** (全バックエンドが同じ壊れたリテラルを消費して仲良く一致する) ので、consistency テストは byte 長と `\u{HEX}` (別経路で decode され常に正しかった) との等価性で**値そのもの**を pin し、stdout も期待文字列と突き合わせる。既存の `test_string_literal_hex_escapes_decode` が `"hex\xff"` を受理側に置いていたが、これは `parse_stmt().is_ok()` しか見ておらず decode 結果を検査していなかった (lexer error でも parse は通っていた)。1763 → **1768 tests pass**。
+- **`--check` が満たせないサイズの確保で Rust panic していたのを修正** — 確保失敗は全バックエンドで null ポインタに統一。
+- **lexer エラーを診断として報告 (E0012)** — 従来は `Ok(None)` に潰れて無関係な行の型エラーに化けていた。`--explain` / `--diagnostics=json` も対応。
+- **struct field / enum payload の初期化形を 4 形に揃えた (AOT/JIT)** — literal / 既存束縛 / call / associated fn / method call を、struct 型・tuple 型の両方で。`String` フィールドを持つ struct が AOT で構築できるようになった。
+- **compound 値の読み出し側を AOT/JIT で** — `val inner: Inner = o.i` / `println(o.i)` / `"{o.i}"`。新しい名前は同じ leaf locals を引き受ける (copy しない)。
+- **receiver を読まない method の AOT panic を修正** — `self` を一度も書かないプログラムでは symbol が intern されず receiver が parameter 列から落ちていた。
+- **非 ASCII のソースリテラルの化けを修正** — UTF-8 scalar 単位で写す。`\xHH` の `HH >= 0x80` は lex error に。
+- **テストスイートを 5.15s → 4.4s に (-15%、CPU 90s → 82s)** — rayon の oversubscription / example sweep の二重パース / shard 4 → 12 / discard budget。**この suite は CPU 律速で下限にほぼ到達**していることが分かった (詳細は TEST-PERF)。
 
 ### 2026-08-13
-- **`str == str` を内容比較に統一** — interpreter (tree-walker) だけが内容比較で、**AOT / compiler JIT / interpreter JIT / IR VM は runtime handle (ポインタ) の整数比較**だった。`"h".concat("i") == "hi"` が interpreter で true、コンパイルすると false という**型は通るが答えが違う**divergence。`InstKind::StrEq` を足し、lowering で `EQ` / `NE` の operand が `Type::Str` のとき emit する (`NE` は `== false` で反転、既存の cmp overload と同じ手口)。ランタイム側は `toy_str_eq` (C) / 同名 Rust ミラー (compiler JIT) / `ir_vm::heap::str_eq` / `jit_str_eq` (interpreter JIT) の 4 実装 — レイアウト `[bytes][NUL][u64 len]` は共通なので、長さを先に比べてから `memcmp` 相当。interpreter JIT は `ScalarTy::Str` の `icmp` を helper 呼び出しに差し替え。**テストの罠を 1 つ踏んだ**: `assert_consistent` は lite path (tree-walker / compiler JIT / AOT / IR VM) が一致した時点で return するので、**interpreter JIT の arm を消しても通ってしまう**。`the_interpreter_jit_compares_str_content_too` で `jit_exit_code` を直接叩く列を足した。1762 → **1763 tests pass**。
-- **`Display` trait — 型が自分の見せ方を決める** — `core/std/display.t` に `pub trait Display { fn to_str(&self) -> str }`。型検査器が `println(v)` → `println(v.to_str())`、`__builtin_to_string(v)` → `__builtin_to_string(v.to_str())` に**引数を**書き換えるので、**バックエンドは通常の method 呼び出ししか見ない** (4 実装に手を入れずに済む)。引数だけを書き換えるのは、`__builtin_to_string(str)` が全バックエンドで identity なので 1 経路で 3 builtin を賄えるから。ディスパッチは **method の有無** (`==` → `eq` と同じ流儀) で、`impl Display for` の登録では見ない → inherent method でも動く。**形が合うものだけ** renderer 扱い (`&self` のみ・`-> str`) — `fn to_str(&self, radix: u64)` にディスパッチすると、ユーザが書いていない呼び出しについての arity エラーが `println` から出る。前提として **`__builtin_str_from_bytes(p, len) -> str`** を新設 (`str_to_ptr` の逆方向。実行時に計算したバイト列から `str` を作る唯一の手段で、これが無いと `String` が自分を描画できない)。**`impl Display for String` で「stdlib 自身の文字列型が `String { cap: 2, data: 12, ... }` と表示される」が直った。****実装中に踏んだ 2 点**: (a) 文の位置の式は `check_expr_located` → `accept_expr` を通り **`visit_expr` を経由しない** ので、`Try` と同じ場所に hook を置くと `println(v)` が素通りする → 両経路が合流する `visit_builtin_call` に置いた。(b) impl block は **method 本体を型検査してから** 登録するので、`context.struct_methods` は「自分の impl が他人の impl より前か後か」で中身が変わる → 「`{self.name}`」が method 本体の中でだけ `String` の `to_str` を見つけられなかった。renderer 集合は **stmt pool から 1 回だけ**構築する形にした (pool はどの本体より先に完成している)。テストは**描画結果そのもの**も pin する — `assert_stdout_consistent` だけだと、ディスパッチを切っても 3 バックエンドが揃って構造的に出力して一致してしまう。1756 → **1762 tests pass**。
-- **str リテラルの数え差 (interpreter だけ +1 確保) を解消** — MEMORY-PROFILING M1 で「表現の差」として記録していた `String::from_str` の差異を除去。IR VM の `ConstStr` / `ConstStrBytes` が str リテラルを `HeapManager::alloc_uncounted` で counter-free に実体化するようにした (コンパイル系の `.rodata` と同じ「確保として数えない」扱い)。`allocator レジストリ` の `__builtin_record_allocator_layout("SlotRegion", ...)` がこの差異を毎回踏んでいた (interpreter だけ 19 bytes 余分)。`--all-backends --profile=mem` がリテラル込みで完全一致するようになった。テスト `string_literals_allocate_on_the_interpreter_but_not_when_compiled` は `string_literals_no_longer_allocate_differently_across_backends` に置換。1752 tests のまま (置換)。
-
-- **Drop 内で `&mut self` フィールドを free すると use-after-free するバグを修正** — `fn new() -> Region { var r = ...; r }` のように **struct 束縛を return すると、ローカル `var r` に scope-exit の Drop が発火して `r.ptrs` を解放し、戻り値が dangling になった** (呼び出し側の Drop が二重解放)。AOT は segfault / IR VM は panic。真因は `lower_expr_block` がブロック末尾の `pop_and_emit_drops` で「return される束縛」も drop していたこと。**関数本体ブロック** (`drop_scopes` が空のとき) かつ tail が struct 束縛のときだけ、`pending_struct_value` の leaf locals に一致する DropTarget を retain で除去するようにした (ネストブロックの tail は `val` 束縛や分岐への copy なので対象外)。`SlotRegion` の Drop を slots 解放込みに戻した (登録のみの workaround を撤去 → AOT で free_count == alloc_count、リーク無し)。`a_struct_returned_from_its_constructor_is_not_dropped` で pin。1751 → **1752 tests pass**。
-
-- **ポインタ演算 builtin (`__builtin_ptr_offset`) を追加** — MEMORY-PROFILING M3 の残。`__builtin_ptr_offset(base: ptr, offset: u64) -> ptr` で interior pointer を作る。offset ベースの free-list / region allocator を書くためのプリミティブ。**AOT / IR VM / compiler JIT は `BinOp::Add` に lower するだけ** (ptr は u64、新 InstKind 不要)。interpreter は `HeapManager::resolve_block` を追加し、`read_u64` / `write_u64` / `get_memory_slice` が interior アドレスを「含むブロックの逆引き」で処理するようにした (bump allocator は contiguous + 1-based なので `addr - 1` がそのままメモリ offset、typed_slots は `(addr, off)` キーのまま整合)。interpreter 側 JIT は reject (fallback)。`interior_pointers_read_and_write_independently` / `interior_pointers_compose` で 3 backend pin。1749 → **1751 tests pass**。
-
-- **allocator レジストリ: `layout_report` を `--profile=mem` に自動で載せる** — MEMORY-PROFILING M3 の残。**Drop フック方式**: `__builtin_record_allocator_layout(name, managed, live, free_blocks, largest)` を全レイヤーに追加 (frontend enum + type checker + interpreter + IR VM + AOT `toy_record_allocator_layout` + compiler JIT mirror)。`SlotRegion` に `impl Drop` を足し、破棄時に `layout_report()` のフィールドを登録 → main 終了時点の最終レイアウトが自動で入る。レポートに `allocator layouts` 節 (テキスト/JSON、全バックエンド byte-identical)。`--all-backends` が layout 節も突き合わせる。**実装で見つかった既存バグ 1 件**: `__builtin_heap_free` を `&mut self` フィールド (`self.ptrs`) に Drop 内で呼ぶと、`&mut self` メソッド呼び出しが先行しない限り AOT segfault / IR VM panic (`value not defined`)。`SlotRegion` Drop は当初登録のみに留めたが、真因は「return される束縛も drop される」ことで、後続で修正済み (同上エントリ)。**str 名の読み取りは `read_unaligned` 必須** — `[bytes][NUL][u64 len]` レイアウトの len フィールドは 8 バイト整列しない (`byte_start + len + 1`)、Rust の `*const u64` 直 deref は debug で trap。1746 → **1749 tests pass**。
-
-- **エンジン fallback 時の副作用重複実行を修正** — IR VM は既定エンジンだが、出力をしてから diverge すると tree-walker が再実行して `println` が 2 回出ていた (M4 でカウンタ側だけ巻き戻した残り)。`execute_entry_with_values` の IR VM 試行を `output::with_capture` で包み、**成功したときだけ** captured 出力を replay、fallback 時は破棄する。JIT は実行前に eligibility 判定で返るので対象外 (実行後に失敗する経路が無い)。`fallback_does_not_duplicate_stdout` で pin — IR VM eligible な「print して panic」プログラムの stdout が `hello` 1 回だけであることを assert。1745 → **1746 tests pass**。
+- **`str == str` を内容比較に統一** — interpreter (tree-walker) だけが内容比較で、他 4 実装は runtime handle の整数比較だった (**型は通るが答えが違う** divergence)。`InstKind::StrEq` + 4 ランタイム実装。
+- **`Display` trait — 型が自分の見せ方を決める** — `core/std/display.t`。型検査器が `println(v)` → `println(v.to_str())` に**引数を**書き換えるので、バックエンドは通常の method 呼び出ししか見ない。ディスパッチは method の有無 (`==` → `eq` と同じ流儀)。前提として `__builtin_str_from_bytes` を新設。
+- **str リテラルの数え差 (interpreter だけ +1 確保) を解消** — IR VM が str リテラルを counter-free に実体化 (コンパイル系の `.rodata` と同じ扱い)。`--all-backends --profile=mem` がリテラル込みで完全一致。
+- **Drop 内で `&mut self` フィールドを free すると use-after-free するバグを修正** — **struct 束縛を return すると、そのローカルにも scope-exit の Drop が発火**して戻り値が dangling になっていた (AOT segfault / IR VM panic)。関数本体ブロックの tail 束縛だけ DropTarget から除去。
+- **ポインタ演算 builtin (`__builtin_ptr_offset`)** — interior pointer。offset ベースの free-list / region allocator を書くためのプリミティブ。interpreter 側 JIT は reject。
+- **allocator レジストリ: `layout_report` を `--profile=mem` に自動で載せる** — `__builtin_record_allocator_layout` + `impl Drop` フック。レポートに `allocator layouts` 節 (全バックエンド byte-identical)。
+- **エンジン fallback 時の副作用重複実行を修正** — IR VM が出力後に diverge すると tree-walker の再実行で `println` が 2 回出ていた。成功時のみ captured 出力を replay。
 
 ### 2026-08-10
-- **MEMORY-PROFILING M4: JSON 出力 + カウンタ builtin** — (1) `--profile-format=json` (両バイナリ) / `TOY_PROFILE_MEM=json` (AOT 単体)。`leaks` は空でも `[]` を出す — テキスト版が節ごと省略するのは人間には正しいが、消費側は「漏れていない」と「リーク報告より前の生成器」を区別できなくなる。JSON も**両側手書き**でテスト突き合わせ (テキスト版と同じ理由)。`--all-backends` の子は常にテキスト (境界を渡るのは数値、形は driver が自分の stderr について決めること)。受け入れ基準「run 間で bit-identical」を 2 テストで pin、期待値はテスト内に書き下し。(2) **カウンタ builtin 6 種** (`__builtin_live_bytes()` 等、`() -> u64`) を `requires` / `ensures` / `test` から読める。名前はレポートのフィールドと同一 (同じ数値に 2 語彙は間違える箇所)。`peak_at_request` は出さない (レポートの時間軸であってプログラムが意見を持つ量ではない)。AST は `BuiltinFunction::MemStat(MemStat)` の**ペイロード付き 1 変種**なのでバックエンドごとに match arm 1 本。**要点**: M1 の「プロファイル無効時は計数もしない」を素直に守ると AOT が常に 0 を返し、`ensures __builtin_live_bytes() <= N` が何も検査せず通る — **0 を返す方が答えないより悪い**。`InstKind::MemStatEnable` を足し、**カウンタを読むプログラムだけ** `main` 先頭に置く (計数だけ入れる。出力は `TOY_PROFILE_MEM` のまま)。走査で導出するのでフラグが古くならず、const はコンパイル時評価なので「先頭」が本当に先頭。**builtin を入れて初めて観測できた数え間違いが 2 つ**: (a) インタプリタは 1 プロセスで複数 run できるのにカウンタがプロセス生存期間で累積していた (コンパイル済みバイナリと必ず食い違う) → `execute_entry` 冒頭で reset、(b) run は JIT → IR VM → tree-walker と試し、途中で失敗したエンジンの確保も数えていた → fallback 時に snapshot/restore で巻き戻す。(b) が無いと**メモリ契約の違反が漏らしていない方の関数に帰属**した。どちらも `--profile=mem` は run の最後に読むので表に出なかった。**副産物**: `BuiltinFunctionSymbols` に名前を足すと以後の全シンボル ID がずれ、`DefaultSymbol` をそのまま保存する `.toycache` の古いエントリが化ける (無関係な `val a: u64 = 5u64` が stdlib 由来の型エラー 3 件で落ちた) → `FULL_AST_CACHE_SCHEMA_VERSION` を 3 に上げ、**「interner に事前投入する名前の集合」も bump 対象**だと doc コメントに明記。1738 → **1745 tests pass**。
-- **MEMORY-PROFILING M3: `trait Alloc::layout_report` (断片化)** — **着手時の調査で前提が 1 つ崩れた**: `Arena` / `FixedBuffer` は**領域を管理していない** (どちらも個々の確保を default allocator に委譲して記帳するだけ、`FixedBuffer` の `cap` はバッファでなく quota)。よって両者に報告すべき断片化は存在しないので、`Global` を含む 3 つとも既定実装のまま**「報告しない」** (`known == false`) にした — **「領域を持たないので報告できない」と「断片化していない」は別の主張**であり、0 と書けば後者を意味してしまう。実装者ゼロの飾りにしないため、実際に領域を管理する **`SlotRegion`** を stdlib に追加。当初は 1 ブロックから offset で切り出す free-list allocator にする予定だったが、**toylang にポインタ演算の builtin が無く内部ポインタを作れない**ため書けないと判明し、等サイズスロット方式にした (各スロットが独立確保なので既存 builtin で書け、連続スロットの run として本物の断片化が起きる)。外部断片化は float でなく permille で返すのでバックエンド間で厳密に一致。**数値が飾りでないことの検証**: 1 つおきに解放して空き 48 バイト・最大 run 16 バイトの状態を作り、48 バイトの確保が実際に失敗することをテストで pin した。`layout_report` を `--profile=mem` に自動で載せるには allocator レジストリ (ランタイム → toylang のコールバック) が要るので保留。1735 → **1738 tests pass**。
-- **MEMORY-PROFILING M2: サイト帰属 + リーク検出** — 設計を 1 点変えた。論点 4 は「lowering で静的サイト ID を採番し `site_id → ソース位置` の表をプログラムに持たせる」としていたが、**位置そのものを ID にする** (`(line << 32) | column`) 方が良いと実装時に判明: (1) AOT バイナリに文字列テーブルを埋め込んでランタイムに登録するという M2 の一番面倒な部分が丸ごと消える、(2) 全バックエンドが同じ `location_pool` を読むので**一致が構造的に保証**され ID を突き合わせる仕組みが要らない、(3) 単独で走る AOT バイナリも位置を出せる。`HeapAlloc` だけが site を運び、`realloc` は**ブロックが既に持っている site を維持**する (リークは「最後に伸ばした場所」ではなく「どこから来たか」を指すべき)。ABI は `toy_dispatched_alloc(handle, size)` → `(handle, size, site)` — 定数レジスタ 1 本の方が site を設定する別呼び出しより安い (codegen は実行時にプロファイルが有効か知らない)。レポートは interpreter / JIT / AOT で byte-identical、`--all-backends --profile=mem` が総計とリーク節の両方を突き合わせる。**帰属の粒度は確保サイトであって呼び出しパスではない** — `keep()` を 2 箇所から呼べば 1 サイトに集約される。テストで記録済み。
-- **MEMORY-PROFILING M1: AOT 側の同一計数 + `--profile=mem`** — `interpreter --profile=mem` / `compiler --all-backends --profile=mem` / AOT バイナリは `TOY_PROFILE_MEM=1`。**計数の実装は 3 つ** (interpreter / C ランタイム / compiler JIT ミラー) — 1 つに寄せるには C を compiler バイナリにリンクする必要があるが JIT 側の print ヘルパ (stdout キャプチャのための別実装) と衝突するので、**一致は構造ではなくテストで強制**する (D7 と同じ)。算術だけ `MemoryStats::record_obtained/released` を公開して共有した。レポートは 3 実装で byte-identical、数値は humanize しない (「38.2 KB」は 1 バイト違う run を同じに見せる)。`realloc` の旧サイズは libc が返さないので C 側に open-addressing のポインタ→サイズ表を書いた (プロファイル無効時は表も作らないので通常実行の挙動は不変)。**受け入れ基準達成**: 生 heap builtin と Vec の成長 (realloc 4 回) で 4 バックエンドの厳密系メトリクスが完全一致。**この道具が最初の実プログラムで差異を検出した** — `String::from_str` を含むと interpreter だけ 1 確保 20 bytes 多い (interpreter は `str` をヒープに実体化、コンパイル系は `.rodata` を指す = STR-PTR-LEN)。表現の差であって計測のバグではないので、アドレス再利用差と同じくテストに記録した。1730 → **1733 tests pass**。
-- **MEMORY-PROFILING M0: 用語の固定 + interpreter 側の確保計数** — 設計は [`MEMORY_PROFILING.md`](MEMORY_PROFILING.md)。**用語を決めることが主目的**で、カウンタはその適用。`MemoryStats` を新設し、全項目を「プログラムが要求した内容」で定義した (allocator が何をしたかでは定義しない) — これが M1 以降で 4 バックエンドの数値を一致させる前提。具体的には **realloc を 1 件の resize として数える** (この実装はブロックを移動するが、in-place で伸ばす allocator も同じ数値を出さねばならないので、realloc が内部で使う alloc/free は計数しない)。実測 3 の用語ずれも修正 — `Arena::bytes_used` は **live** で (free が no-op なので reset までは累積と一致するだけ)、`FixedBuffer::used()` は真の live、`CLAUDE.md` の「累積追跡バイト数」も訂正。**interpreter が確保アドレスを再利用せず AOT は再利用する**という既存の差は `assert_consistent` では pin できない (一致しないことが要点) ので、interpreter=0 / AOT=1 を直接 assert する テストとして記録した。オーバーヘッドは 20 万回ループで計数なし 270ms / 計数あり 252ms — **言えるのは回帰なしまで**で、速くなったとは言わない (誤差)。1723 → **1730 tests pass**。
-- **暗黙の impl 型パラメータ (`impl Container<T>`) を実装** — `docs/language.md` が「型パラメータリストは暗黙 — struct で宣言したパラメータを再利用する」と明記していたが**未実装**で、**リファレンス自身の例が型検査を通らなかった** (`Cannot unify Identifier(T) with Int64`)。`T` が「T という名前の具体型」として parse されていたのが原因で、動くのは `impl<T> Container<T>` だけだった (stdlib が全部 explicit 形なのでこれまで露見しなかった)。パーサに「型名 → 宣言された generic params」の表を持たせ、**型引数を parse した後に**宣言と照合して、宣言に載っている名前だけを parameter に昇格する。`u8` は型キーワードなので決して一致せず、CONCRETE-IMPL (`impl Vec<u8>` / `impl C<u8>` と `impl C<i64>` の併存) は無傷。最初の実装は宣言を丸ごと採用して concrete impl を template に変えてしまい、`no method C::tag` で回帰した — consistency test で pin 済み。副産物として `GENERIC-ENUM-HOF-USER` (user 定義 generic enum の HOF) も解消。**制約**: 暗黙形は struct/enum 宣言が impl より前にある必要がある (explicit 形には無い)。
-- **stdlib の generic enum HOF を全 backend で** (`Option::map` / `Result::map` / `map_err` / `unwrap_or_else`) — interpreter でだけ動いていた。3 つのギャップが積み重なっていた: (1) `resolve_method_target` の generic 分岐が **enum receiver で `Ok(None)`** を返すため、target を先に解決する呼び出し側 (val 束縛 / print / match scrutinee) が「compound-returning method を expression position で使えない、`val` で束縛せよ」と — 既に `val` で束縛しているコードに — 言っていた。(2) 関数型パラメータの中にしか現れない method-only generic param (`map<U>(f: fn (T) -> U)`) を推論できなかった (引数の IR 型は U64 ポインタで戻り型の情報を持たない) ので closure literal の宣言シグネチャから取るようにした。(3) その `fn (T) -> U` パラメータが active monomorphisation を適用せずに lower され `Function([Generic(T)], Generic(U))` のまま落ちていた。**`closure_tests.rs` の「型チェッカの unifier が弾く」というコメントは 2026-05-17 に解消済みの古い記述**で、2 か月後に未解決課題として引用されていた (todo 整理時に拾ってしまった) ため訂正。
-- **MATCH-LET-RHS-PAYLOAD-INFER** — 全 arm が payload 束縛の match を val/var 右辺に置けるように。`value_scalar` は `&self` なので lowering 時の `arm_body_type` のように pattern を束縛して再帰できず、代わりに **enum 定義から payload の宣言型**を読む。enum の同定は pattern の名前ではなく **scrutinee** から行う — generic enum は instantiation ごとに intern されるので `Option<i64>` と `Option<u64>` は base name が同じでも別物。残るのは method-call scrutinee のみ (target 解決に `&mut self` が要る)。
-- **AOT-MATCH-SCRUTINEE-EXPAND** — enum を返す**関数呼び出し**を match scrutinee に許可 (`while val Some(x) = func(i)`)。既存の method-call 経路と同形で、free function は self を持たないので receiver leaves も `&mut self` writeback も無い (引数の `&mut T` writeback は従来どおり)。解決は `resolve_call_target` を通すので closure 束縛と generic 単相化も同じ経路に乗る。
+- **MEMORY-PROFILING M0〜M5 完了** — 設計は [`MEMORY_PROFILING.md`](MEMORY_PROFILING.md)。M0 用語の固定 (`MemoryStats`、全項目を「プログラムが要求した内容」で定義) → M1 `--profile=mem` / `TOY_PROFILE_MEM=1` の 4 バックエンド byte-identical レポート → M2 サイト帰属 + リーク検出 (**ソース位置そのものを site ID にする** `(line << 32) | column`) → M3 `trait Alloc::layout_report` (断片化。**`Arena` / `FixedBuffer` は領域を管理していないので「報告しない」**が正しく、実際に領域を持つ `SlotRegion` を stdlib に追加) → M4 `--profile-format=json` + カウンタ builtin 6 種 → M5 `__builtin_ptr_offset`。**設計上の要点**: 断片化はランタイムでなく `trait Alloc` の責務に置いた (ユーザ定義 allocator も同じレポートに乗る)、プロファイル無効時に **0 を返すのは答えないより悪い**ので `InstKind::MemStatEnable` をカウンタを読むプログラムにだけ挿す。
+- **暗黙の impl 型パラメータ (`impl Container<T>`)** — `docs/language.md` が明記していたのに**未実装**で、リファレンス自身の例が型検査を通らなかった。parser に「型名 → 宣言された generic params」の表を持たせ、宣言に載っている名前だけを parameter に昇格。副産物として `GENERIC-ENUM-HOF-USER` も解消。**制約**: 暗黙形は struct/enum 宣言が impl より前にある必要がある。
+- **stdlib の generic enum HOF を全 backend で** (`Option::map` / `Result::map` / `map_err` / `unwrap_or_else`) — enum receiver の generic method target 解決 / 関数型パラメータ内にしか現れない method-only generic param の推論 / その monomorphisation の 3 つのギャップ。
+- **MATCH-LET-RHS-PAYLOAD-INFER (第一段)** — 全 arm が payload 束縛の match を val/var 右辺に。enum の同定は pattern 名でなく **scrutinee** から (generic enum は instantiation ごとに別物)。
+- **AOT-MATCH-SCRUTINEE-EXPAND** — enum を返す**関数呼び出し**を match scrutinee に許可 (`while val Some(x) = func(i)`)。`resolve_call_target` を通すので closure 束縛と generic 単相化も同じ経路。
 - **INCREMENTAL-COMPILATION Phase 5** — 実測して再スコープ。warm AOT 67ms の 70% は `cc` で、per-module IR が狙えるのは ~4ms だけと判明。代わりに codegen の非決定性 (lowering / codegen の HashMap 反復 2 箇所) を潰し、全ミスしていた link cache を機能させて **67ms → 19ms**。**dependency graph / cascade invalidation は現在の粒度では不要**と実測で確認 — cross-module 派生物をキャッシュして初めて要る。
 - **LLM-LOOP-FIX: 式の span を full extent に** — postfix / unary / literal 系が「自分を名付けるトークン」しか指しておらず、field access と `if` / `match` / `with` は**次の文の先頭**を指していた (P2 が潰したはずの「無関係なコードを自信満々に指す」形)。`Call` は callee 名のまま (P2 の意図)。
 - **LLM-LOOP-FIX: 壊れた `as` キャスト提案 / 引数型不一致 E0010 → E0001 / JIT 列の空洞化** — machine-applicable 提案が `f(a) as i64` を生成して元のエラーを解決していなかった。`compiler` の `interpreter` 依存が `default-features = false` で `jit` feature を落としており、cross-backend suite の JIT 列が単体ビルドで tree-walker の複製になっていた (`interpreter::jit_available()` で assert)。
@@ -158,8 +150,6 @@
 - **159. JIT の generic struct 対応** ★★ — `struct_layouts` を type-args 別に持つ refactor。踏むと `JIT: skipped (... see #159)` が出るので診断から辿れる (`jit_skip_reason_for_generic_struct` で wording を pin)。
 - **160. タプルの JIT 対応 (ネスト)** ★ — `((a,b),c)` と tuple-of-struct。`ParamTy::Tuple(Vec<ScalarTy>)` を tree 構造にする 100+ 箇所の refactor。inline tuple literal を call 引数に渡す件も残り。
 - **JIT-enum-1 (residual)** ★ — ネストした generic enum payload (`Option<Option<T>>`)、enum 型の struct field、payload に struct / tuple を持つ enum。
-- **STR-INTERP-COMPOUND-EXTEND-ENUM 完了 (2026-08-16)** — enum 値の補間。完了済み節参照。
-- **CONCRETE-IMPL-Phase-2c 完遂 (2026-08-16)** — type checker の multi-spec dispatch + 型注釈 hint + **generic-wildcard**。完了済み節参照。
 - **NUM-W-AOT-pack Phase 3** ★ — compound element 配列の tighter layout (`[PackedRgba; N]` が 4 バイト相当のところ 32 バイト消費)。メモリ効率のみで機能差はない。
 - **195b. `extern fn` の monomorph 化** ★ — generic extern は現状 interpreter の type-erased registry でのみ動く。JIT / AOT には mangled symbol の emit と Rust 側実装の登録が要る。実需要なし。
 - **185残. 3+ part qualified call** ★ — `std::math::abs(x)`。現状は `import std.math` 経由のみ (parser が last 名だけを採る)。auto-load があるので実害は限定的。
@@ -167,8 +157,48 @@
 - **REF-Stage-2 (residual)** ★ — compound `&mut T` の真の pointer-passing、`&T` compound の RefScalar 経路活用。どちらも copy 削減で機能差はない。
 - **183. コンパイラ MVP の残** — compound-returning method の expression position 制約。個別項目は上記に分解済み。
 
+### 標準ライブラリ・実行環境 (STDLIB-RUNTIME)
+
+> 2026-08-16 に「言語機能として何が残っているか」を実際に叩いて洗い出した結果。
+> 言語のコアはほぼ揃っており、**実プログラムを書けなくしているのはこの節**。
+
+- **STDLIB-ITER: `Vec` / `Dict` / `String` に `iter()`** ★★★ — `for x in v { ... }` が
+  **動かない** (`[E0010] Method 'next' not found for struct 'Vec'`)。iterator
+  protocol も `trait Iterator<T>` も実装済みで、**標準コレクションが誰も
+  `next()` を持っていない**だけ。stdlib のみで閉じ、バックエンド変更が
+  要らないので費用対効果が最も高い。
+- **STDLIB-ITER-ADAPT: iterator アダプタ** ★★ — `map` / `filter` / `enumerate` /
+  `collect` / `zip` 相当。generic enum 側 (`Option::map` 等) はあるのに
+  コレクション側が空。**前提**: STDLIB-ITER。`fn map<U>(...)` を struct に
+  持たせる形は generic method-only param の推論が既に通っている。
+- **RUNTIME-IO: 最小 I/O セット** ★★★ — `print` / `println` 以外の I/O が
+  **ひとつも無い** (stdin / ファイル / `argv` / 環境変数 / 時刻 / 乱数)。
+  つまり**入力を受け取るプログラムが 1 本も書けない**。経路は `extern fn` +
+  [`FFI_PLAN.md`](FFI_PLAN.md)。`extern fn` の generic monomorph が JIT / AOT
+  未対応 (#195b) なので、非 generic な最小セット (`read_line() -> str` /
+  `args() -> Vec<str>` / `read_file(path) -> Result<String, _>`) から入る。
+  **API 判断が要る点**: 失敗をどう返すか (`Result` 一択にするか)、
+  auto-load される core module に置くか明示 import にするか。
+- **STDLIB-ORD: 順序比較 trait とソート** ★ — `trait Hash` はあるが `Ord` /
+  `PartialOrd` 相当が無く、`Vec` のソートも無い。`<` の演算子オーバーロード
+  (`lt` / `le` / `gt` / `ge`) が既にあるので、規約をそちらに寄せるか
+  trait を切るかの設計判断から。
+
 ### 型システム (NEW-TYPE-SYSTEM)
 
+- **RECURSIVE-TYPES: 再帰型の扱いを決める** ★★★ — 連結リスト・木が**書けない**。
+  しかも壊れ方が悪い: `struct Node { v: i64, next: Node }` は**型検査を素通りし**、
+  `enum List { Cons(i64, List), Nil }` は宣言だけなら通って**構築した瞬間に
+  stack overflow で abort する** (既知の不具合の節を参照)。決めるべきは
+  「拒否するのか、`Box<T>` で間接化させるのか」。**最低限の第一歩は
+  crash を診断に変えること** (再帰型の検出 → エラー) で、これは安い。
+- **BOX-T: `Box<T>`** ★★★ — heap 間接の first-class 化。RECURSIVE-TYPES の解
+  であり、**A5-P4 (`Box<dyn Trait>`) の前提**でもある。現状は raw `ptr` +
+  `__builtin_ptr_read/write` で手書きするしかない。`Drop` / auto-drop と
+  所有権の相互作用 (GENERIC-RAII の scope-bound drop に乗るか) が設計の要点。
+- **NEWTYPE: tuple struct / newtype (`struct Meters(i64)`)** ★ — parse エラー。
+  単位型・ID 型のラップが「1 フィールドの struct + 冗長な field 名」になる。
+  parser + 位置指定のフィールドアクセス (`m.0`) が要る。
 - **Trait 拡張** ★★★ (大規模、ロードマップ)
   - **A3: trait inheritance (`trait B: A`)** — 中。super trait 経由で `A` の method を `B` impl からも要求。
   - **A4: associated types (`trait Iterator { type Item }`)** — 中〜大。
@@ -186,14 +216,24 @@
 - **OP-OVERLOAD-CHAIN** — `a + b + c` の chained position。現状は let-rhs のみ。binary struct literal operand も対象外。
 - **`??` (null-coalesce)** ★ — `opt ?? default` で `unwrap_or` の糖衣。
 - **raw / multi-line string literal** ★ — `r"\path"` / `"""..."""`。lexer 拡張のみ。
-
-### メモリプロファイリング
-
-- **MEMORY-PROFILING** ★★ — 設計は [`MEMORY_PROFILING.md`](MEMORY_PROFILING.md)。実行時のメモリ使用量と断片化を記録し、実行後にレポート / 機械可読な数値を出す。**着手前の実測で 3 点判明済み**: (1) interpreter の `HeapManager` は再利用しない bump allocator なので **アドレス由来のメトリクスは全バックエンド共通にできない** (同じプログラムで interpreter は再利用せず AOT は再利用する)、(2) AOT の `toy_dispatched_alloc` は allocator handle を無視している、(3) `Arena::bytes_used` と `FixedBuffer::used()` は同名だが意味が違う (arena は free が no-op)。**断片化は `trait Alloc` の責務**にして allocator 自身に報告させる — ランタイムに閉じ込めると単なるツールだが、trait に置けばユーザ定義 allocator も同じレポートに乗る。**M0 完了 (2026-08-13)** — 用語を `MemoryStats` に固定し interpreter に計数を入れた。**M1 完了 (2026-08-13)** — `--profile=mem` / `--all-backends --profile=mem` / `TOY_PROFILE_MEM=1`。**M2 完了 (2026-08-13)** — サイト帰属とリーク検出。**M3 完了 (2026-08-13)**。**M4 完了 (2026-08-13)** — JSON 出力 + カウンタ builtin。**M5 完了 (2026-08-13)** — ポインタ演算 builtin (`__builtin_ptr_offset`)。
+- **PATTERN-EXTEND: or / 範囲 / `@` バインディングパターン** ★★ — いずれも
+  parse エラー。`1i64 | 2i64 => ...` / `0i64..5i64 => ...` / `n @ 2i64 => n`。
+  parser + **網羅性・到達性チェックの拡張**が要る (or は「複数 variant を
+  1 arm が覆う」、範囲は整数の被覆判定)。バックエンドは既存の arm に
+  展開できるので手を入れずに済むはず。タプル / ガード / ネストパターンと
+  `val (a, b) = ...` の分解は既に動く。
+- **STR-INTERP-FMT: 補間の format spec** ★★ — `"{x:.2}"` が parse エラーで、
+  **f64 の桁数指定手段が言語に無い** (`println(3.14159f64)` の出方を
+  ユーザが選べない)。lexer の `{...}` 切り出しに spec 部を足し、
+  `__builtin_to_string` 系に幅 / 精度 / 基数を渡す形。`Display` の
+  `to_str(&self)` は引数を取らない規約なので、**user 型に spec を渡すか
+  (`fn to_str(&self, spec: str)`) は API 判断**。
+- **STRUCT-UPDATE: struct update 構文 (`P { x: 5i64, ..a }`)** ★ — parse エラー。
+  「1 フィールドだけ差し替えた copy」が全フィールド列挙になる。
 
 ### インクリメンタルコンパイル
 
-- **INCREMENTAL-COMPILATION** — 設計と実測は [`INCREMENTAL_COMPILATION.md`](INCREMENTAL_COMPILATION.md)。Phase 1〜5 完了。**残る改善余地は「16 個の core module のキャッシュ読み込み + 統合に毎回 ~10ms」** (lowering の 2.5 倍)。per-module IR compilation + IR linker は warm 19ms のうち ~4ms しか狙えないので保留 — 着手するなら、大きめの実プログラムで lowering が支配的になることを**再測定してから**。
+- **INCREMENTAL-COMPILATION の残** — Phase 1〜5 は完了 (設計と実測は [`INCREMENTAL_COMPILATION.md`](INCREMENTAL_COMPILATION.md))。**残るのは「16 個の core module のキャッシュ読み込み + 統合に毎回 ~10ms」** (lowering の 2.5 倍)。per-module IR compilation + IR linker は warm 19ms のうち ~4ms しか狙えないので保留 — 着手するなら、大きめの実プログラムで lowering が支配的になることを**再測定してから**。
 
 ### テスト・ドキュメント
 
@@ -215,7 +255,13 @@
   - `serial_test` (`oop_tests.rs`) の並列化 ★。
 - **65. frontend リファクタリング** — (a)〜(g) は完了。残: doc コメント拡充、プロパティベーステスト追加。
 - **property test の generator が仕様と drift しないか** — `valid_identifier()` は lexer に問い合わせる形にした (2026-08-10)。他の generator (リテラル / 演算子) はまだ手書きなので、同種の drift が起きうる。
-- **26. ドキュメント整備** — `docs/language.md` / `compiler/README.md` / `interpreter/README.md` は最新化済み。残: API リファレンス、advanced topics。
+- **26. ドキュメント整備** — 残: API リファレンス、advanced topics。
+- **DOC-DRIFT (2026-08-16 実測)** ★ — `docs/language.md` の *Generics and bounds*
+  が「`<T: SomeBound>` は parse されるが型検査器は bound を強制しない」と
+  書いているが、**実際は強制されている** (`fn g<T: Z>(x: T)` に `g(1u64)` は
+  `[E0010] ... bound violation` で拒否される)。`CLAUDE.md` 側の記述が正しい。
+  同節の *Known limitations* も enum 補間 / MATCH-LET-RHS-PAYLOAD-INFER を
+  未対応として残しているが、どちらも 2026-08-16 に解消済み。
 
 ## 検討中の機能
 
@@ -235,17 +281,25 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **1702 テスト**、31 skipped (100% 成功、2026-08-10 時点)。
+- 合計 **1800 テスト** (100% 成功、2026-08-15 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - ワークスペース全体で ~5s。`compiler/build.rs` が `toylang_rt.c` を pre-build し、リンク結果は `TOY_LINK_CACHE_DIR` で content-addressed にキャッシュされる (キャッシュが効くにはコード生成が決定的である必要がある — `compiler/tests/reproducible_build.rs` が pin)。
 
-### 既知の不具合 (Display 作業中に発見、いずれも先行して存在)
+### 既知の不具合
 
+- **再帰 enum の構築でプロセスが stack overflow (2026-08-16 確認)** —
+  `enum List { Cons(i64, List), Nil }` は宣言だけなら通り、
+  `List::Cons(1i64, List::Nil)` を書くと `fatal runtime error: stack
+  overflow` で abort する (exit 134)。`struct Node { v: i64, next: Node }`
+  は型検査を素通りする。**診断ではなく crash なのでユーザは原因に辿り
+  着けない**。RECURSIVE-TYPES / BOX-T を参照。
 
 ### パーサーの既知制限事項
 - bare `self` 非対応 — `self: Self` / `&self` / `&mut self` のいずれかを書く。
 - `else if` 非対応 — `elif` を使う。
 - `val` はキーワードなのでパラメータ名に使えない。
+- 関数のネスト定義 (`fn` の中の `fn`) は不可 — closure (`fn(x: T) -> R { ... }`) を使う。
+- デフォルト引数 / 名前付き引数は不可 (`f(a: u64, b: u64 = 1u64)` / `f(a: 1u64)`)。導入予定も無い。
 - `extern fn` の generic params は parser では受理されるが、JIT / AOT が per-instance シンボル名を持たないため interpreter でのみ動く (`#195b`)。
 - `package` 宣言 / `import` path のセグメントに primitive type キーワード (`i64` / `f64` / ...) は使えない (`core/std/i64.t` が `package` 宣言を省いているのはこのため)。
 - 3-part qualified call (`std::math::abs(x)`) は parser が **last 名だけを採る**。名前が一意なら結果的に解決するが、意図した経路ではない (`#185残`)。

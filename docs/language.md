@@ -2948,10 +2948,16 @@ Two limits worth knowing:
   tracked, because whether the binding still owns anything at scope
   exit would depend on the path taken. Build the value inside the
   branch instead.
-- Nothing drops what a transferred value was put into: a `Vec` does
-  not drop its elements and a struct's drop does not reach its fields.
-  A transferred value is therefore *leaked*, not double-freed, and
-  `--profile=mem` reports it under `leaks`.
+- Ownership is transitive (DROP-GLUE): a `Vec`, a struct field or an
+  enum payload that received a transferred value frees it when the
+  container dies. `Vec<T>` frees each element and its buffer, a
+  struct's drop glue reaches its fields, an enum's reaches the active
+  payload, and `Box<T>` frees its contents before its slot. The drop
+  recurses through the value (`Box<List>` → `List` → `Box<List>`), and
+  frees are *idempotent*: a value reachable through several aliases (a
+  `get()` copy, a shared boxed node) is freed once and later visits are
+  no-ops. Both heaps are bump allocators that never reuse an address,
+  so a second visit reads the block's original contents.
 
 ---
 

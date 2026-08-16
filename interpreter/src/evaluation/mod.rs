@@ -10,6 +10,7 @@ use crate::value::Value;
 use crate::error::InterpreterError;
 use crate::heap::{Allocator, GlobalAllocator, HeapManager};
 
+pub mod extern_io;
 pub mod extern_math;
 use extern_math::ExternFn;
 
@@ -229,7 +230,6 @@ pub struct EvaluationContext<'a> {
 #[allow(dead_code)]
 pub(super) struct DropEntry {
     pub(super) name: DefaultSymbol,
-    pub(super) struct_sym: DefaultSymbol,
     pub(super) value: RcObject,
 }
 
@@ -295,7 +295,11 @@ impl<'a> EvaluationContext<'a> {
             struct_definitions: HashMap::new(),
             contract_mode: ContractMode::from_env(),
             result_symbol,
-            extern_registry: extern_math::build_default_registry(),
+            extern_registry: {
+                let mut registry = extern_math::build_default_registry();
+                registry.extend(extern_io::build_io_registry());
+                registry
+            },
             drop_trait_structs: std::collections::HashSet::new(),
             transferred_bindings: std::collections::HashSet::new(),
             drop_scopes: vec![Vec::new()],
@@ -443,8 +447,8 @@ impl<'a> EvaluationContext<'a> {
         self.drop_scopes.push(Vec::new());
     }
 
-    /// Pop the current auto-drop scope and run each `Drop::drop`
-    /// in reverse declaration order (LIFO — last-bound drops
+    /// Pop the current auto-drop scope and run each binding's drop
+    /// glue in reverse declaration order (LIFO — last-bound drops
     /// first). Errors from any drop call abort the unwind and
     /// surface to the caller. Called on every successful exit
     /// path of a block (linear / `Return` / `Break` / `Continue`);
@@ -454,7 +458,7 @@ impl<'a> EvaluationContext<'a> {
     pub(super) fn run_and_pop_drop_scope(&mut self) -> Result<(), InterpreterError> {
         let scope = self.drop_scopes.pop().unwrap_or_default();
         for entry in scope.into_iter().rev() {
-            self.invoke_drop(&entry)?;
+            self.glue_drop(&entry)?;
         }
         Ok(())
     }
@@ -467,12 +471,19 @@ impl<'a> EvaluationContext<'a> {
         self.drop_scopes.pop();
     }
 
-    /// Inspect a freshly bound value and, if its runtime type is
-    /// a struct registered in `drop_trait_structs`, append a
-    /// matching `DropEntry` to the current top scope. The Rc
-    /// captured here is the same one the binding holds, so
-    /// mutations through the binding (`s.field = ...`) are
-    /// visible inside the synthesized `drop(&mut self)` call.
+    /// Inspect a freshly bound value and, if it (transitively)
+    /// contains a type with an `impl Drop`, append a matching
+    /// `DropEntry` to the current top scope. The Rc captured here
+    /// is the same one the binding holds, so mutations through the
+    /// binding (`s.field = ...`) are visible inside the
+    /// synthesized `drop(&mut self)` call.
+    ///
+    /// DROP-GLUE: this registers far more than the old direct
+    /// membership check — an enum carrying a `Box` payload, a
+    /// struct holding a `Box` field, a `Vec<Box<T>>`: anything
+    /// whose death can free something. The probe is value-driven
+    /// (the runtime shape is the only reliable source) and
+    /// iterative so a deep value cannot overflow the host stack.
     pub(super) fn register_drop_if_needed(
         &mut self,
         stmt_ref: frontend::ast::StmtRef,
@@ -491,37 +502,231 @@ impl<'a> EvaluationContext<'a> {
             crate::value::Value::Heap(rc) => rc.clone(),
             _ => return, // Primitives have no Drop impl by definition.
         };
-        let struct_sym = match &*rc.borrow() {
-            Object::Struct { type_name, .. } => *type_name,
-            _ => return,
-        };
-        if !self.drop_trait_structs.contains(&struct_sym) {
+        if !self.value_contains_drop(&rc) {
             return;
         }
         if let Some(scope) = self.drop_scopes.last_mut() {
-            scope.push(DropEntry {
-                name,
-                struct_sym,
-                value: rc,
-            });
+            scope.push(DropEntry { name, value: rc });
         }
+    }
+
+    /// Whether the value (transitively) contains a type with a
+    /// `Drop` impl. Walks the runtime shape: struct fields, enum
+    /// payloads, tuple / array elements, and — for the stdlib
+    /// containers `Box` / `Vec` — the heap slots they own (the
+    /// typed-slot map holds the exact Rc, so the walk reaches
+    /// boxed values the field walk cannot see). Iterative, with a
+    /// visited set, so deep and shared values are both safe.
+    pub(super) fn value_contains_drop(&self, value: &RcObject) -> bool {
+        let mut work: Vec<RcObject> = vec![value.clone()];
+        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        while let Some(v) = work.pop() {
+            let ptr = Rc::as_ptr(&v) as usize;
+            if !seen.insert(ptr) {
+                continue;
+            }
+            let obj = v.borrow();
+            match &*obj {
+                Object::Struct { type_name, .. }
+                    if self.drop_trait_structs.contains(type_name) =>
+                {
+                    return true;
+                }
+                Object::Struct { type_name, fields, .. } => {
+                    if self.struct_has_name(*type_name, "Box") {
+                        let addr = self
+                            .string_interner
+                            .get("data")
+                            .and_then(|s| Self::struct_pointer_field(fields, s));
+                        if let Some(addr) = addr {
+                            if let Some(inner) = self.heap_manager.borrow().typed_read(addr, 0) {
+                                work.push(inner);
+                            }
+                        }
+                    } else if self.struct_has_name(*type_name, "Vec") {
+                        let addr = self
+                            .string_interner
+                            .get("data")
+                            .and_then(|s| Self::struct_pointer_field(fields, s));
+                        let len = self
+                            .string_interner
+                            .get("len")
+                            .and_then(|s| Self::struct_uint_field(fields, s));
+                        let elem_size = self
+                            .string_interner
+                            .get("elem_size")
+                            .and_then(|s| Self::struct_uint_field(fields, s));
+                        if let (Some(addr), Some(len), Some(elem_size)) = (addr, len, elem_size) {
+                            let mut i = 0u64;
+                            while i < len {
+                                if let Some(e) = self
+                                    .heap_manager
+                                    .borrow()
+                                    .typed_read(addr, (i * elem_size) as usize)
+                                {
+                                    work.push(e);
+                                }
+                                i += 1;
+                            }
+                        }
+                    } else {
+                        work.extend(fields.values().cloned());
+                    }
+                }
+                Object::EnumVariant { values, .. } => work.extend(values.iter().cloned()),
+                Object::Tuple(elems) | Object::Array(elems) => work.extend(elems.iter().cloned()),
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// The recursive drop of a binding whose value owns resources
+    /// (DROP-GLUE). Visits the value's owned sub-values — for the
+    /// stdlib containers `Box` / `Vec` the heap slots themselves —
+    /// and then runs the type's user `drop()` body, which for the
+    /// containers frees the storage the contents lived in.
+    ///
+    /// Iterative (an explicit worklist, not recursion): a long
+    /// boxed linked list must not exhaust the host stack. `free`
+    /// is idempotent on every backend, so a value reachable from
+    /// two bindings (aliasing, a `get()` copy, a shared boxed
+    /// node) is freed once and later visits are no-ops.
+    pub(super) fn glue_drop(&mut self, entry: &DropEntry) -> Result<(), InterpreterError> {
+        enum Phase {
+            Contents,
+            UserDrop,
+        }
+        let mut work: Vec<(Phase, RcObject)> = vec![(Phase::Contents, entry.value.clone())];
+        while let Some((phase, v)) = work.pop() {
+            if matches!(phase, Phase::UserDrop) {
+                self.invoke_drop(&v)?;
+                continue;
+            }
+            let obj = v.borrow();
+            match &*obj {
+                // Containers: the user drop frees the storage, so
+                // the contents must be glued first.
+                Object::Struct { type_name, fields, .. }
+                    if self.drop_trait_structs.contains(type_name)
+                        && self.struct_has_name(*type_name, "Box") =>
+                {
+                    let addr = self
+                        .string_interner
+                        .get("data")
+                        .and_then(|s| Self::struct_pointer_field(fields, s));
+                    if let Some(addr) = addr {
+                        if let Some(inner) = self.heap_manager.borrow().typed_read(addr, 0) {
+                            work.push((Phase::Contents, inner));
+                        }
+                    }
+                    work.push((Phase::UserDrop, v.clone()));
+                }
+                Object::Struct { type_name, fields, .. }
+                    if self.drop_trait_structs.contains(type_name)
+                        && self.struct_has_name(*type_name, "Vec") =>
+                {
+                    let addr = self
+                        .string_interner
+                        .get("data")
+                        .and_then(|s| Self::struct_pointer_field(fields, s));
+                    let len = self
+                        .string_interner
+                        .get("len")
+                        .and_then(|s| Self::struct_uint_field(fields, s));
+                    let elem_size = self
+                        .string_interner
+                        .get("elem_size")
+                        .and_then(|s| Self::struct_uint_field(fields, s));
+                    if let (Some(addr), Some(len), Some(elem_size)) = (addr, len, elem_size) {
+                        let mut i = 0u64;
+                        while i < len {
+                            if let Some(e) = self
+                                .heap_manager
+                                .borrow()
+                                .typed_read(addr, (i * elem_size) as usize)
+                            {
+                                work.push((Phase::Contents, e));
+                            }
+                            i += 1;
+                        }
+                    }
+                    work.push((Phase::UserDrop, v.clone()));
+                }
+                // A user Drop impl runs first (Rust order — the body
+                // may read its fields), then the fields are glued.
+                Object::Struct { type_name, fields, .. }
+                    if self.drop_trait_structs.contains(type_name) =>
+                {
+                    work.extend(fields.values().cloned().map(|f| (Phase::Contents, f)));
+                    work.push((Phase::UserDrop, v.clone()));
+                }
+                Object::Struct { fields, .. } => {
+                    work.extend(fields.values().cloned().map(|f| (Phase::Contents, f)));
+                }
+                Object::EnumVariant { values, .. } => {
+                    work.extend(values.iter().cloned().map(|p| (Phase::Contents, p)));
+                }
+                Object::Tuple(elems) | Object::Array(elems) => {
+                    work.extend(elems.iter().cloned().map(|e| (Phase::Contents, e)));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Extract the `ptr`-typed field of a struct value, by name.
+    fn struct_pointer_field(
+        fields: &std::collections::HashMap<DefaultSymbol, RcObject>,
+        sym: DefaultSymbol,
+    ) -> Option<usize> {
+        fields
+            .get(&sym)
+            .and_then(|v| v.borrow().try_unwrap_pointer().ok())
+    }
+
+    /// Extract the `u64`-typed field of a struct value, by name.
+    fn struct_uint_field(
+        fields: &std::collections::HashMap<DefaultSymbol, RcObject>,
+        sym: DefaultSymbol,
+    ) -> Option<u64> {
+        fields
+            .get(&sym)
+            .and_then(|v| v.borrow().try_unwrap_uint64().ok())
+    }
+
+    /// Whether `type_name` is the base name of the stdlib
+    /// container `Box` / `Vec` (checked by `which`).
+    fn struct_has_name(&self, type_name: DefaultSymbol, which: &str) -> bool {
+        self.string_interner.resolve(type_name) == Some(which)
     }
 
     /// Synthesize the equivalent of `value.drop()` and invoke it
     /// via the regular method-dispatch path. The receiver is
     /// `&mut`, but the interpreter's value model is Rc-shared so
     /// mutations against the cell are visible without any
-    /// out-parameter writeback dance.
-    pub(super) fn invoke_drop(&mut self, entry: &DropEntry) -> Result<(), InterpreterError> {
+    /// out-parameter writeback dance. The value's type must have
+    /// a registered `drop` method (the glue only emits
+    /// `UserDrop` phases for `drop_trait_structs` members).
+    pub(super) fn invoke_drop(&mut self, value: &RcObject) -> Result<(), InterpreterError> {
+        let struct_sym = match &*value.borrow() {
+            Object::Struct { type_name, .. } => *type_name,
+            _ => {
+                return Err(InterpreterError::InternalError(
+                    "auto-drop: drop target is not a struct".to_string(),
+                ));
+            }
+        };
         let drop_sym = self.string_interner.get_or_intern("drop");
-        let method = match self.get_method(entry.struct_sym, drop_sym, &[]) {
+        let method = match self.get_method(struct_sym, drop_sym, &[]) {
             Some(m) => m,
             None => {
                 // The struct was registered as Drop-impl-bearing
                 // at startup but the method went missing — flag
                 // it as an internal error rather than silently
                 // skipping (which could mask a registry bug).
-                let s = self.string_interner.resolve(entry.struct_sym).unwrap_or("?");
+                let s = self.string_interner.resolve(struct_sym).unwrap_or("?");
                 return Err(InterpreterError::InternalError(format!(
                     "auto-drop: no `drop` method registered for struct `{s}`"
                 )));
@@ -530,7 +735,7 @@ impl<'a> EvaluationContext<'a> {
         // call_method takes (method, self_obj, args). No extra args
         // for `Drop::drop`. Result envelope is discarded — drop is
         // unit-returning by convention.
-        self.call_method(method, entry.value.clone(), Vec::new())?;
+        self.call_method(method, value.clone(), Vec::new())?;
         Ok(())
     }
 

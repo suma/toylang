@@ -324,6 +324,15 @@ impl<'a> FunctionLower<'a> {
                 .ok()
                 .map(Type::Enum)
             }
+            // STDLIB-ITER: a tuple type argument (`Option<(K, V)>`)
+            // needs its elements substituted before interning.
+            TypeDecl::Tuple(elems) => {
+                let mut concrete: Vec<Type> = Vec::with_capacity(elems.len());
+                for e in elems {
+                    concrete.push(self.lower_type_with_subst(e, subst)?);
+                }
+                Some(Type::Tuple(super::types::intern_tuple(self.module, concrete)))
+            }
             _ => None,
         }
     }

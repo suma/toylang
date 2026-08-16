@@ -11,6 +11,35 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-16
+- **RUNTIME-IO: 最小 I/O セット (3 バックエンド)** — `core/std/io.t` に
+  `read_line()` / `argc()` / `arg(i)` / `env_var(name)` / `read_file(path)` /
+  `file_exists(path)` / `now()` / `random()`。既存 extern fn 機構
+  (`__extern_` 名 → interpreter registry / AOT `libm_import_name_for` → C
+  runtime シンボル / JIT Rust ミラー) を流用。**設計上の要点**: (1) extern 境界は
+  compound return を運べないので失敗は `""` 返し + `file_exists` プローブ
+  (`Result` は将来の struct-return FFI まで保留)、(2) `str` 引数は toylang str
+  layout (len フィールド先頭ポインタ) で渡り、C runtime / JIT ミラーが
+  同じ layout で読む、(3) AOT は実行ファイル本体が toylang main なので argv を
+  macOS `_NSGetArgc/_NSGetArgv`、Linux `/proc/self/cmdline` から取得、
+  (4) compiler-side JIT は in-process なのでプログラム引数を thread-local で
+  注入 (デフォルト空 = 引数なしバイナリと一致)、(5) `random()` は時計 + pid
+  シードで**非決定的** (3-way 比較不能、テストは範囲のみ)、(6) `RunOptions.args` +
+  CLI のファイル後ろ引数をプログラム引数に。interpreter の extern dispatch は
+  `str` リテラル (ConstString) を heap String に正規化してから registry に渡す。
+- **STDLIB-ITER: `Vec` / `Dict` / `String` に `iter()` (3 バックエンド)** —
+  `for x in v.iter()` / `for kv in d.iter()` (キー順は挿入順、payload は
+  `(K, V)` タプル) / `for b in s.iter()` (1 バイトずつ)。iterator struct は
+  `Box<T>` と同じく型引数をフィールドに持たない形で per-monomorph 不要。
+  **frontend 修正 3 件**: `is_equivalent` に Generic↔Identifier 同一記号と
+  Tuple 要素ごとの arm を追加 (guard 付きで generic wildcard の leniency は
+  温存 — 最初 guard なしで入れて `var result: Vec<String> = Vec::new()` が
+  壊れた)、`lower_type_with_subst` / `lower_param_or_return_type` に Tuple
+  arm、enum payload の narrow int (u8〜i32) を許可 (`StringIter::next ->
+  Option<u8>`)。**ABI 制約**: `&mut self` の writeback return がレジスタ上限
+  8 に当たるため `DictIter` は key/value の stride を 1 つの u64 にパックして
+  5 フィールドに抑えた (コメントに明記)。`Dict` / `String` のバッファは
+  依然 Drop なし (leak は 3 バックエンド一致)。
+- **DROP-GLUE: 移動先が再帰的に解放される (3 バックエンド + IR VM)** — `Box` を `Vec` / struct field / enum payload に移しても、コンテナの死とともに中の値が free される。`Vec<T>` は要素 + buffer、struct の glue はフィールド、enum は active payload、`Box<T>` は slot の中身 → 自 slot。再帰は型ごとに合成した drop-glue 関数 (`Box<List>` → `List` → `Box<List>` は runtime 再帰) で、tree-walker は値駆動の iterative な walk。**設計上の要点**: (1) 言語の alias (`val b = a`、`get()` copy、共有された boxed node) は同じ値を複数の drop 経路から到達可能にするので、**free を全バックエンドで冪等**にした — interpreter は元々 address 冪等、AOT/JIT の C/Rust runtime に always-on のサイズレジストリ (double-free は no-op) と **never-reuse bump region** (解放済みブロックの内容が残るので 2 回目の visit が元の値を見る) を導入。`ptr_read` copy は alias として drop 登録しない。(2) 所有は**推移的** (`contains_drop`): `Vec<Box<i64>>` や payload に Box を持つ enum も移動 (E0014) と glue の対象。(3) match arm 束縛は per-arm で drop (共有 continuation block に載ると別 arm の経路が未初期化 local で発火する)。(4) 長いリストは glue が runtime 再帰なので tree-walker と同様にホストスタックを使う — イテレーティブなのは tree-walker 側のみ。`--profile=mem` が 3 バックエンド byte-identical (parity テストで tree-walker 対 IR VM も pin)。`interpreter_heap_does_not_reuse_addresses_but_the_aot_heap_does` は「両方 never-reuse」に更新。
 - **BOX-T Phase E+F: stdlib `Box<T>` (`core/std/box.t`)** — `enum List { Cons(i64, Box<List>), Nil }` が 3 バックエンドで動く。`Box` は**言語側に特別扱いが無い**普通の struct で、型引数がフィールドに現れないという Phase B の規則だけで成立する。付随して (1) associated function の compound 引数 lowering (`Box::new(struct_value)` が "arg produced no value" で落ちていた)、(2) enum variant 構築の payload を move 位置として扱う、(3) JIT の Drop allow-list に `Box` を追加 (auto-load される `impl Drop` は JIT を全プログラムで無効化するため)。`&Arena` 移行と docs (`--explain E0013/E0014`、`docs/language.md` の Ownership 節) も。
 - **BOX-T Phase D: 移動された束縛は drop しない (3 バックエンド)** — 実測していた use-after-free が解消。`File::transferred_bindings` (`val`/`var` 文の `StmtRef` 集合) を型検査が埋め、tree-walker の `register_drop_if_needed` と `compiler_lower` の `register_drop_for_struct_binding` が参照して登録をスキップ。移動先 (Vec / struct field / callee) には drop glue が無いので**解放されない = leak** になるが、UAF より安全側で `--profile=mem` の `leaks` に出る。`FULL_AST_CACHE_SCHEMA_VERSION` を 7 に bump。
 - **BOX-T Phase C: 所有権の移動と use-after-move チェック (E0014)** — `impl Drop` を持つ型の値を「今のスコープより長生きする場所」(値渡し引数 / struct・tuple・array の要素 / 代入右辺) に置くと所有権が移り、以後その名前を読むと E0014。`val b = a` は**別名のままで移動ではない** (compound の alias は仕様でテストもある)、`&T` 引数は borrow、raw ptr builtin は無検査 (`Box::new` がそれで書かれている)。分岐 / ループ本体からの移動は drop flag が要るので専用診断で拒否。`frontend/src/type_checker/move_check.rs`、診断のみでランタイム変更は Phase D。
@@ -169,23 +198,16 @@
 > 2026-08-16 に「言語機能として何が残っているか」を実際に叩いて洗い出した結果。
 > 言語のコアはほぼ揃っており、**実プログラムを書けなくしているのはこの節**。
 
-- **STDLIB-ITER: `Vec` / `Dict` / `String` に `iter()`** ★★★ — `for x in v { ... }` が
-  **動かない** (`[E0010] Method 'next' not found for struct 'Vec'`)。iterator
-  protocol も `trait Iterator<T>` も実装済みで、**標準コレクションが誰も
-  `next()` を持っていない**だけ。stdlib のみで閉じ、バックエンド変更が
-  要らないので費用対効果が最も高い。
 - **STDLIB-ITER-ADAPT: iterator アダプタ** ★★ — `map` / `filter` / `enumerate` /
   `collect` / `zip` 相当。generic enum 側 (`Option::map` 等) はあるのに
-  コレクション側が空。**前提**: STDLIB-ITER。`fn map<U>(...)` を struct に
+  コレクション側が空。**前提**: STDLIB-ITER (済)。`fn map<U>(...)` を struct に
   持たせる形は generic method-only param の推論が既に通っている。
-- **RUNTIME-IO: 最小 I/O セット** ★★★ — `print` / `println` 以外の I/O が
-  **ひとつも無い** (stdin / ファイル / `argv` / 環境変数 / 時刻 / 乱数)。
-  つまり**入力を受け取るプログラムが 1 本も書けない**。経路は `extern fn` +
-  [`FFI_PLAN.md`](FFI_PLAN.md)。`extern fn` の generic monomorph が JIT / AOT
-  未対応 (#195b) なので、非 generic な最小セット (`read_line() -> str` /
-  `args() -> Vec<str>` / `read_file(path) -> Result<String, _>`) から入る。
-  **API 判断が要る点**: 失敗をどう返すか (`Result` 一択にするか)、
-  auto-load される core module に置くか明示 import にするか。
+- **RUNTIME-IO 拡張: 乱数シード / 時刻フォーマット / 環境変数一覧** ★ — 最小
+  セット (`read_line` / `argc` / `arg` / `env_var` / `read_file` /
+  `file_exists` / `now` / `random`) は 2026-08-16 に landing。`random()` は
+  非決定的 (テスト不能)、`now()` は epoch 秒のみ。`Result` を返す IO
+  (失敗理由付き read_file) は extern 境界が compound return を運べないため
+  未対応 — 将来 FFI の struct-return 対応か builtin 化で。
 - **STDLIB-ORD: 順序比較 trait とソート** ★ — `trait Hash` はあるが `Ord` /
   `PartialOrd` 相当が無く、`Vec` のソートも無い。`<` の演算子オーバーロード
   (`lt` / `le` / `gt` / `ge`) が既にあるので、規約をそちらに寄せるか
@@ -193,16 +215,11 @@
 
 ### 型システム (NEW-TYPE-SYSTEM)
 
-- **DROP-GLUE: 移動先が解放しない** ★★ — `Box` を `Vec` / struct field /
-  enum payload に移すと**誰も free しない** (leak)。`Vec<T>` は要素を drop せず、
-  struct の drop はフィールドに届かない。`--profile=mem` の `leaks` には出るので
-  沈黙はしていない。UAF より安全側だが、`Box` を実用にするには要る。
-  **長い連結リストの再帰 drop は tree-walker の再帰 abort を踏む**点に注意。
 - **MOVE-CONDITIONAL: 分岐 / ループからの移動** ★ — 現状は E0014 で拒否。
   許すには実行時 drop flag (Rust と同じ) が要る。実プログラムで踏んだら着手。
 - **MOVE-ALIAS-GAP: `val b = a` 後の `a`** ★ — alias なので `b` を移動しても
-  `a` の読みは検出されない。全 compound を move にするか、alias に対して
-  drop を移送するかの判断が要る。
+  `a` の読みは検出されない。DROP-GLUE の冪等 free + never-reuse ヒープが
+  二重 drop を無害化しているので、これは診断の網羅性の問題 (読み放題)。
 - **NEWTYPE: tuple struct / newtype (`struct Meters(i64)`)** ★ — parse エラー。
   単位型・ID 型のラップが「1 フィールドの struct + 冗長な field 名」になる。
   parser + 位置指定のフィールドアクセス (`m.0`) が要る。

@@ -18,6 +18,8 @@
 #include <stdio.h>
 #include <stdlib.h>  /* exit() for the allocator-stack guard rails. */
 #include <string.h>  /* memcpy() for str_alloc / str_concat. */
+#include <time.h>    /* time() for toy_io_now / the random seed. */
+#include <unistd.h>  /* access() / getpid() for the io externs. */
 
 void toy_print_i64(int64_t v) {
     printf("%lld", (long long) v);
@@ -547,6 +549,42 @@ static void toy_prof_report(void) {
     toy_prof_report_layouts();
 }
 
+/* ---- Bump region (DROP-GLUE) ----
+ *
+ * The dispatcher hands memory out of a bump region that *never reuses
+ * a freed address*, exactly like the interpreter's `HeapManager`. A
+ * freed block keeps its contents, so a drop-glue walk that reaches the
+ * same boxed node twice (aliasing, a `get()` copy, a shared boxed list
+ * tail) reads the original values on the second visit and the free is
+ * an idempotent no-op. libc malloc is never called for the freed
+ * address again, which is also what keeps `toy_dispatched_free`
+ * idempotent without any reuse races. */
+
+#define TOY_BUMP_CHUNK_SIZE (1u << 20) /* 1 MiB per chunk */
+
+typedef struct toy_bump_chunk {
+    struct toy_bump_chunk *next;
+    size_t used;
+} toy_bump_chunk;
+
+static toy_bump_chunk *toy_bump_head;
+
+static void *toy_bump_alloc_raw(size_t size) {
+    size = (size + 15u) & ~(size_t) 15u; /* 16-byte align */
+    if (!toy_bump_head || toy_bump_head->used + size > TOY_BUMP_CHUNK_SIZE) {
+        toy_bump_chunk *fresh = (toy_bump_chunk *) malloc(sizeof(toy_bump_chunk) + TOY_BUMP_CHUNK_SIZE);
+        if (!fresh) {
+            return NULL;
+        }
+        fresh->next = toy_bump_head;
+        fresh->used = 0;
+        toy_bump_head = fresh;
+    }
+    void *p = (char *) (toy_bump_head + 1) + toy_bump_head->used;
+    toy_bump_head->used += size;
+    return p;
+}
+
 void *toy_dispatched_alloc(uint64_t handle, uint64_t size, uint64_t site) {
     (void)handle;
     /* A zero-size request yields the null pointer and is not counted,
@@ -555,40 +593,57 @@ void *toy_dispatched_alloc(uint64_t handle, uint64_t size, uint64_t site) {
     if (size == 0) {
         return NULL;
     }
-    void *p = malloc((size_t)size);
-    if (p && toy_prof_enabled()) {
-        toy_prof_alloc_count++;
-        toy_prof_obtained(size);
+    void *p = toy_bump_alloc_raw((size_t) size);
+    if (p) {
+        /* DROP-GLUE: the size table is maintained even when no report
+         * was asked for — an always-on registry is what makes
+         * `toy_dispatched_free` idempotent (see below). */
         toy_prof_put(p, size, site);
-        toy_prof_site *e = toy_prof_site_for(site);
-        if (e) {
-            e->alloc_count++;
-            e->cumulative_bytes += size;
-            e->live_count++;
-            e->live_bytes += size;
+        if (toy_prof_enabled()) {
+            toy_prof_alloc_count++;
+            toy_prof_obtained(size);
+            toy_prof_site *e = toy_prof_site_for(site);
+            if (e) {
+                e->alloc_count++;
+                e->cumulative_bytes += size;
+                e->live_count++;
+                e->live_bytes += size;
+            }
         }
     }
     return p;
 }
 
+/* Free is *idempotent*: an address the runtime never handed out — or
+ * already freed — is a no-op instead of a libc double-free. That is
+ * what makes recursive drop glue safe under this language's aliasing
+ * (`val b = a`, a `get()` copy, a boxed node shared by two paths):
+ * the first free wins, later visits of the same address do nothing,
+ * and the counters record the free exactly once, matching the
+ * interpreter's `HeapManager::free`. The block itself is *not* handed
+ * back to malloc — the bump region never reuses addresses, so a later
+ * glue walk reads the block's original contents, not garbage. */
 void toy_dispatched_free(uint64_t handle, void *p) {
     (void)handle;
     if (!p) {
         return; /* freeing null is a no-op and is not counted */
     }
+    uint64_t size = toy_prof_take(p);
+    if (size == 0) {
+        return; /* already freed, or not this runtime's memory */
+    }
     if (toy_prof_enabled()) {
-        uint64_t size = toy_prof_take(p);
-        if (size > 0) {
-            toy_prof_free_count++;
-            toy_prof_released(size);
-            toy_prof_site *e = toy_prof_site_for(toy_prof_take_site);
-            if (e) {
-                if (e->live_count) e->live_count--;
-                e->live_bytes = (e->live_bytes > size) ? e->live_bytes - size : 0;
-            }
+        toy_prof_free_count++;
+        toy_prof_released(size);
+        toy_prof_site *e = toy_prof_site_for(toy_prof_take_site);
+        if (e) {
+            if (e->live_count) e->live_count--;
+            e->live_bytes = (e->live_bytes > size) ? e->live_bytes - size : 0;
         }
     }
-    free(p);
+    /* No libc free: the bump region never reuses an address, so a
+     * later drop-glue visit of this block reads its original contents
+     * (see the region comment above). */
 }
 
 void *toy_dispatched_realloc(uint64_t handle, void *p, uint64_t new_size) {
@@ -600,34 +655,43 @@ void *toy_dispatched_realloc(uint64_t handle, void *p, uint64_t new_size) {
         return NULL;
     }
     (void)handle;
-    if (!toy_prof_enabled()) {
-        return realloc(p, (size_t)new_size);
-    }
-    /* One resize request, accounted by the size change the program
-     * asked for — never as an allocate plus a free, so that an
-     * allocator growing the block in place reports the same numbers. */
+    /* DROP-GLUE: the registry is always maintained (see
+     * `toy_dispatched_free`), so the old-size lookup is unconditional
+     * too — a resize of an untracked pointer is a no-op bookkeeping
+     * wise. */
     uint64_t old_size = toy_prof_take(p);
     uint64_t site = toy_prof_take_site;
-    toy_prof_realloc_count++;
-    if (new_size > old_size) {
-        toy_prof_obtained(new_size - old_size);
-    } else {
-        toy_prof_released(old_size - new_size);
-    }
-    /* A resize keeps the site its block already had, so a leak still
-     * points at where the memory came from. */
-    toy_prof_site *e = toy_prof_site_for(site);
-    if (e) {
+    if (toy_prof_enabled()) {
+        toy_prof_realloc_count++;
         if (new_size > old_size) {
-            e->cumulative_bytes += new_size - old_size;
-            e->live_bytes += new_size - old_size;
+            toy_prof_obtained(new_size - old_size);
         } else {
-            uint64_t shrank = old_size - new_size;
-            e->live_bytes = (e->live_bytes > shrank) ? e->live_bytes - shrank : 0;
+            toy_prof_released(old_size - new_size);
+        }
+        /* A resize keeps the site its block already had, so a leak
+         * still points at where the memory came from. */
+        toy_prof_site *e = toy_prof_site_for(site);
+        if (e) {
+            if (new_size > old_size) {
+                e->cumulative_bytes += new_size - old_size;
+                e->live_bytes += new_size - old_size;
+            } else {
+                uint64_t shrank = old_size - new_size;
+                e->live_bytes = (e->live_bytes > shrank) ? e->live_bytes - shrank : 0;
+            }
         }
     }
-    void *np = realloc(p, (size_t)new_size);
-    toy_prof_put(np ? np : p, new_size, site);
+    /* Bump-region move: a fresh block, old contents copied, the old
+     * block left in place (it is never reused). */
+    void *np = toy_bump_alloc_raw((size_t) new_size);
+    if (!np) {
+        toy_prof_put(p, old_size, site); /* restore tracking on failure */
+        return NULL;
+    }
+    if (old_size > 0 && p != NULL) {
+        memcpy(np, p, old_size < new_size ? (size_t) old_size : (size_t) new_size);
+    }
+    toy_prof_put(np, new_size, site);
     return np;
 }
 
@@ -826,4 +890,232 @@ const char *toy_to_string_i32(int32_t v) {
 }
 const char *toy_to_string_u32(uint32_t v) {
     return toy_to_string_u64((uint64_t) v);
+}
+
+/* ---- RUNTIME-IO: stdlib I/O externs (core/std/io.t) ----
+ *
+ * Each `toy_io_*` below backs one `extern fn` declaration; the
+ * lowering maps the declared name to the symbol here via
+ * `compiler_lower::program::libm_import_name_for` (interpreter:
+ * `extern_io::build_io_registry`, JIT: the mirrors in
+ * `compiler/src/jit.rs`).
+ *
+ * `str` arguments arrive as toylang str handles — pointers to the
+ * trailing `u64 len` field of a `[bytes][NUL][u64 len]` blob (see
+ * `toy_str_alloc`). Results are returned the same way. Failure
+ * convention: `""` for "not found / unreadable" — the extern
+ * boundary cannot carry a `Result`, so callers probe with
+ * `toy_io_file_exists`. */
+
+/* Program argv. The compiled binary's `main` *is* the toylang main,
+ * so there is no wrapper to receive argv at startup; macOS exposes
+ * the original vector via `_NSGetArgc` / `_NSGetArgv`, and Linux is
+ * served from `/proc/self/cmdline` on first use. */
+static char **toy_io_argv_vec(void) {
+#ifdef __APPLE__
+    extern char ***_NSGetArgv(void);
+    return *_NSGetArgv();
+#else
+    static char **cached;
+    if (!cached) {
+        FILE *f = fopen("/proc/self/cmdline", "rb");
+        if (!f) {
+            return NULL;
+        }
+        size_t cap = 0;
+        char *buf = NULL;
+        ssize_t n = getline(&buf, &cap, f);
+        fclose(f);
+        if (n <= 0) {
+            free(buf);
+            return NULL;
+        }
+        int count = 0;
+        for (char *p = buf; p < buf + n && *p != '\0';) {
+            count++;
+            while (p < buf + n && *p != '\0') {
+                p++;
+            }
+            p++;
+        }
+        if (count == 0) {
+            free(buf);
+            return NULL;
+        }
+        cached = (char **) calloc((size_t) count + 1, sizeof(char *));
+        if (!cached) {
+            free(buf);
+            return NULL;
+        }
+        int i = 0;
+        for (char *p = buf; i < count; i++) {
+            cached[i] = p;
+            while (*p != '\0') {
+                p++;
+            }
+            p++;
+        }
+    }
+    return cached;
+#endif
+}
+
+static int toy_io_argv_count(void) {
+#ifdef __APPLE__
+    extern int *_NSGetArgc(void);
+    return *_NSGetArgc();
+#else
+    static int cached_count = -1;
+    if (cached_count < 0) {
+        char **argv = toy_io_argv_vec();
+        if (!argv) {
+            cached_count = 0;
+            return 0;
+        }
+        int count = 0;
+        while (argv[count]) {
+            count++;
+        }
+        cached_count = count;
+    }
+    return cached_count;
+#endif
+}
+
+/* Number of program arguments, excluding the program name. */
+uint64_t toy_io_argc(void) {
+    int total = toy_io_argv_count();
+    return total > 0 ? (uint64_t) (total - 1) : 0;
+}
+
+/* The `i`-th program argument (0-based, after the program name);
+ * `""` out of range. */
+const char *toy_io_arg(uint64_t i) {
+    char **argv = toy_io_argv_vec();
+    int total = toy_io_argv_count();
+    if (argv && total > 0 && i + 1 < (uint64_t) total) {
+        return toy_str_alloc(argv[i + 1], (uint64_t) strlen(argv[i + 1]));
+    }
+    return toy_str_alloc("", 0);
+}
+
+/* Read one line from stdin, without the trailing newline (`\n`, or
+ * `\r\n`). `""` at EOF. */
+const char *toy_io_read_line(void) {
+    size_t cap = 256;
+    size_t len = 0;
+    char *buf = (char *) malloc(cap);
+    if (!buf) {
+        return toy_str_alloc("", 0);
+    }
+    int c;
+    while ((c = getchar()) != EOF && c != '\n') {
+        if (len + 1 >= cap) {
+            cap *= 2;
+            char *grown = (char *) realloc(buf, cap);
+            if (!grown) {
+                free(buf);
+                return toy_str_alloc("", 0);
+            }
+            buf = grown;
+        }
+        buf[len++] = (char) c;
+    }
+    if (len > 0 && buf[len - 1] == '\r') {
+        len--;
+    }
+    const char *result = toy_str_alloc(buf, len);
+    free(buf);
+    return result;
+}
+
+/* The value of the environment variable named by the toylang str
+ * `name`; `""` when unset. */
+const char *toy_io_env(const char *name) {
+    uint64_t len = *(const uint64_t *) name;
+    const char *bytes = name - len - 1;
+    char *key = (char *) malloc((size_t) len + 1);
+    if (!key) {
+        return toy_str_alloc("", 0);
+    }
+    memcpy(key, bytes, (size_t) len);
+    key[len] = '\0';
+    const char *v = getenv(key);
+    free(key);
+    if (!v) {
+        return toy_str_alloc("", 0);
+    }
+    return toy_str_alloc(v, (uint64_t) strlen(v));
+}
+
+/* The contents of the file at the toylang str `path`; `""` when it
+ * cannot be read. */
+const char *toy_io_read_file(const char *path) {
+    uint64_t plen = *(const uint64_t *) path;
+    const char *pbytes = path - plen - 1;
+    char *p = (char *) malloc((size_t) plen + 1);
+    if (!p) {
+        return toy_str_alloc("", 0);
+    }
+    memcpy(p, pbytes, (size_t) plen);
+    p[plen] = '\0';
+    FILE *f = fopen(p, "rb");
+    free(p);
+    if (!f) {
+        return toy_str_alloc("", 0);
+    }
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return toy_str_alloc("", 0);
+    }
+    long n = ftell(f);
+    if (n < 0) {
+        fclose(f);
+        return toy_str_alloc("", 0);
+    }
+    rewind(f);
+    char *buf = (char *) malloc((size_t) n > 0 ? (size_t) n : 1);
+    size_t got = n > 0 ? fread(buf, 1, (size_t) n, f) : 0;
+    fclose(f);
+    const char *result = toy_str_alloc(buf, (uint64_t) got);
+    free(buf);
+    return result;
+}
+
+/* Whether the file at the toylang str `path` exists. */
+int toy_io_file_exists(const char *path) {
+    uint64_t plen = *(const uint64_t *) path;
+    const char *pbytes = path - plen - 1;
+    char *p = (char *) malloc((size_t) plen + 1);
+    if (!p) {
+        return 0;
+    }
+    memcpy(p, pbytes, (size_t) plen);
+    p[plen] = '\0';
+    int exists = access(p, F_OK) == 0;
+    free(p);
+    return exists;
+}
+
+/* Seconds since the Unix epoch. */
+uint64_t toy_io_now(void) {
+    return (uint64_t) time(NULL);
+}
+
+/* A pseudo-random u64. xorshift64* seeded from the clock and the
+ * process id — deliberately not reproducible across runs. */
+uint64_t toy_io_random(void) {
+    static uint64_t state;
+    if (state == 0) {
+        state = ((uint64_t) time(NULL) << 32) ^ (uint64_t) getpid();
+        if (state == 0) {
+            state = 0x9E3779B97F4A7C15ull;
+        }
+    }
+    uint64_t x = state;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    state = x;
+    return x * 0x2545F4914F6CDD1Dull;
 }

@@ -69,6 +69,18 @@ fn libm_import_name_for(name: &str) -> Option<&'static str> {
         // platforms we target it returns `i64::MIN` unchanged
         // (matches the legacy `BuiltinMethod::I64Abs` semantics).
         "__extern_abs_i64" => "labs",
+        // RUNTIME-IO: the `core/std/io.t` extern declarations map to
+        // the `toy_io_*` helpers in `compiler/runtime/toylang_rt.c`
+        // (interpreter: `extern_io::build_io_registry`, JIT: the
+        // mirrors in `compiler/src/jit.rs`).
+        "__extern_io_read_line_str" => "toy_io_read_line",
+        "__extern_io_argc_u64" => "toy_io_argc",
+        "__extern_io_arg_str" => "toy_io_arg",
+        "__extern_io_env_str" => "toy_io_env",
+        "__extern_io_read_file_str" => "toy_io_read_file",
+        "__extern_io_file_exists_bool" => "toy_io_file_exists",
+        "__extern_io_now_u64" => "toy_io_now",
+        "__extern_io_random_u64" => "toy_io_random",
         _ => return None,
     })
 }
@@ -926,6 +938,11 @@ pub fn lower_program(
     // the body is lowered after the main passes complete so we don't
     // recurse into a fresh `FunctionLower` while another is mid-flight.
     let mut pending_closure_work: Vec<super::PendingClosureBody> = Vec::new();
+    // DROP-GLUE: queue of synthesized per-type drop-glue function
+    // bodies awaiting lowering. Filled by `ensure_drop_glue` (from
+    // drop-site emission and from other glue bodies); drained after
+    // the closure / thunk passes below.
+    let mut pending_glue_work: Vec<super::drop_glue::GlueWork> = Vec::new();
     for (idx, func) in non_generic {
         // Skip body lowering for `extern fn` declarations — there is
         // no body to lower. Phase 2c (compiler extern dispatch) will
@@ -963,6 +980,7 @@ pub fn lower_program(
             &mut method_instances,
             &mut pending_method_work,
             &mut pending_closure_work,
+            &mut pending_glue_work,
         )?;
         builder.lower_body(&func)?;
     }
@@ -1023,6 +1041,7 @@ pub fn lower_program(
             &mut method_instances,
             &mut pending_method_work,
             &mut pending_closure_work,
+            &mut pending_glue_work,
         )?;
         builder.lower_method_body(&method, target_sym)?;
     }
@@ -1064,6 +1083,7 @@ pub fn lower_program(
                 &mut method_instances,
                 &mut pending_method_work,
                 &mut pending_closure_work,
+                &mut pending_glue_work,
             )?;
             builder.lower_body(&template)?;
         }
@@ -1114,6 +1134,7 @@ pub fn lower_program(
                 &mut method_instances,
                 &mut pending_method_work,
                 &mut pending_closure_work,
+                &mut pending_glue_work,
             )?;
             // Install the per-monomorph subst so val/var
             // annotations inside the body that reference
@@ -1121,6 +1142,35 @@ pub fn lower_program(
             // concrete type for this instance.
             builder.set_active_subst(work.subst.clone());
             builder.lower_method_body(&template, work.target_sym)?;
+        }
+        // DROP-GLUE: drain the drop-glue queue inside the main loop
+        // too — a glue body may request a generic method instance
+        // (`Box<List>::drop`), which lands on `pending_method_work`
+        // and has to be lowered on the next iteration.
+        while let Some(work) = pending_glue_work.pop() {
+            made_progress = true;
+            let mut builder = FunctionLower::new(
+                &mut module,
+                work.func_id,
+                program,
+                interner,
+                &struct_defs,
+                &enum_defs,
+                &generic_funcs,
+                &mut generic_instances,
+                &mut pending_generic_work,
+                &const_values,
+                contract_msgs,
+                release,
+                &method_registry,
+                &method_func_ids,
+                &generic_methods,
+                &mut method_instances,
+                &mut pending_method_work,
+                &mut pending_closure_work,
+                &mut pending_glue_work,
+            )?;
+            builder.lower_drop_glue(&work)?;
         }
         if !made_progress {
             break;
@@ -1153,6 +1203,7 @@ pub fn lower_program(
             &mut method_instances,
             &mut pending_method_work,
             &mut pending_closure_work,
+            &mut pending_glue_work,
         )?;
         builder.lower_closure_body(&work.parameter, &work.body, &work.captures)?;
     }
@@ -1183,6 +1234,7 @@ pub fn lower_program(
             &mut method_instances,
             &mut pending_method_work,
             &mut pending_closure_work,
+            &mut pending_glue_work,
         )?;
         builder.lower_dyn_thunk_body(
             work.impl_func_id,
@@ -1190,6 +1242,35 @@ pub fn lower_program(
             &work.user_param_tys,
             work.self_is_mut,
         )?;
+    }
+
+    // DROP-GLUE: safety-net drain for glue functions queued after
+    // the main loop exited (e.g. from a thunk body). Normally the
+    // glue queue drains inside the main loop; this catches the
+    // stragglers so no declared function is left without a body.
+    while let Some(work) = pending_glue_work.pop() {
+        let mut builder = FunctionLower::new(
+            &mut module,
+            work.func_id,
+            program,
+            interner,
+            &struct_defs,
+            &enum_defs,
+            &generic_funcs,
+            &mut generic_instances,
+            &mut pending_generic_work,
+            &const_values,
+            contract_msgs,
+            release,
+            &method_registry,
+            &method_func_ids,
+            &generic_methods,
+            &mut method_instances,
+            &mut pending_method_work,
+            &mut pending_closure_work,
+            &mut pending_glue_work,
+        )?;
+        builder.lower_drop_glue(&work)?;
     }
     enable_allocation_counting_if_read(&mut module);
     Ok(module)
@@ -1273,6 +1354,7 @@ impl<'a> FunctionLower<'a> {
         method_instances: &'a mut MethodInstances,
         pending_method_work: &'a mut Vec<PendingMethodInstance>,
         pending_closure_work: &'a mut Vec<super::PendingClosureBody>,
+        pending_glue_work: &'a mut Vec<super::drop_glue::GlueWork>,
     ) -> Result<Self, String> {
         Ok(Self {
             module,
@@ -1311,6 +1393,8 @@ impl<'a> FunctionLower<'a> {
             pending_self_writeback_param: None,
             closure_bindings: HashMap::new(),
             pending_closure_work,
+            pending_glue_work,
+            arm_drop_targets: Vec::new(),
         })
     }
 

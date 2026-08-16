@@ -1371,7 +1371,28 @@ impl EvaluationContext<'_> {
                 "extern fn name failed to resolve in interner".to_string(),
             ))?;
         match self.extern_registry.get(name) {
-            Some(impl_fn) => impl_fn(args),
+            Some(impl_fn) => {
+                // Normalise `str` arguments: a literal arrives as a
+                // `ConstString` symbol, which the registry closures
+                // have no interner to resolve. Materialise it as a
+                // heap String so every backend's extern sees the same
+                // value shape (RUNTIME-IO).
+                let normalized: Vec<crate::value::Value> = args
+                    .iter()
+                    .map(|a| match a {
+                        crate::value::Value::ConstString(sym) => {
+                            let text = self
+                                .string_interner
+                                .resolve(*sym)
+                                .unwrap_or("")
+                                .to_string();
+                            crate::value::Value::from(crate::object::Object::String(text))
+                        }
+                        other => other.clone(),
+                    })
+                    .collect();
+                impl_fn(&normalized)
+            }
             None => Err(InterpreterError::FunctionNotFound(format!(
                 "extern fn `{name}` is not yet implemented in the interpreter"
             ))),

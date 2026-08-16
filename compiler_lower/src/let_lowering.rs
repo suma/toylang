@@ -437,11 +437,13 @@ impl<'a> FunctionLower<'a> {
                 // locals up front so we can store each
                 // PtrRead value straight into them in
                 // declaration order.
+                // DROP-GLUE: no drop registration here — a
+                // `ptr_read` copy is an alias of the slot it
+                // read; the slot's owner frees it when it dies.
                 let (leaf_locals, binding) = match elem_ty {
                     Type::Struct(struct_id) => {
                         let fields = self.allocate_struct_fields(struct_id);
                         let locals = flatten_struct_locals(&fields);
-                        self.register_drop_for_struct_binding(struct_id, &fields);
                         (locals, Binding::Struct { struct_id, fields })
                     }
                     Type::Tuple(tuple_id) => {

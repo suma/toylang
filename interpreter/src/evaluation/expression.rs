@@ -208,13 +208,12 @@ impl EvaluationContext<'_> {
                             None
                         }
                     };
-                    if let Some(struct_sym) = drop_target {
+                    if let Some(name) = drop_target {
                         let entry = super::DropEntry {
-                            name: struct_sym,
-                            struct_sym,
+                            name,
                             value: allocator_val.clone(),
                         };
-                        self.invoke_drop(&entry)?;
+                        self.glue_drop(&entry)?;
                     }
                 }
                 result
@@ -819,6 +818,17 @@ impl EvaluationContext<'_> {
         match pattern {
             Pattern::Wildcard => Ok(true),
             Pattern::Name(sym) => {
+                // DROP-GLUE: a payload binding owns what it names (the
+                // scrutinee's payload is not otherwise reachable — the
+                // scrutinee itself may never be dropped, e.g. a
+                // function parameter). Register it so the arm's scope
+                // exit glues it. The sentinel statement is never a
+                // real `val` / `var`, so a transfer of the binding
+                // cannot suppress this registration — an
+                // over-approximation that is safe because `free` is
+                // idempotent everywhere.
+                let v = crate::value::Value::from_rc(value);
+                self.register_drop_if_needed(frontend::ast::StmtRef(u32::MAX), *sym, &v);
                 self.environment.set_val(*sym, value.clone().into());
                 Ok(true)
             }

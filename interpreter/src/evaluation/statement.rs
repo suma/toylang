@@ -262,9 +262,20 @@ impl EvaluationContext<'_> {
         let value = self.evaluate(expr);
         let value = try_value_v!(value);
         let value = apply_annotation_type_args(value, annotation);
-        // Phase 5 (汎用 RAII): record the binding for auto-drop
-        // before consuming `value` into the environment.
-        self.register_drop_if_needed(stmt_ref, name, &value);
+        // DROP-GLUE: `val v: T = __builtin_ptr_read(...)` copies the
+        // slot's value out. The copy is an *alias* of the slot (the
+        // slot's owner frees it when it dies), so the binding must not
+        // register a drop — otherwise `Box::get()` on a `Box<Box<i64>>`
+        // frees the inner slot while the outer box still owns it.
+        let from_ptr_read = matches!(
+            self.expr_pool.get(expr),
+            Some(Expr::BuiltinCall(frontend::ast::BuiltinFunction::PtrRead, _))
+        );
+        if !from_ptr_read {
+            // Phase 5 (汎用 RAII): record the binding for auto-drop
+            // before consuming `value` into the environment.
+            self.register_drop_if_needed(stmt_ref, name, &value);
+        }
         self.environment.set_val(name, value);
         Ok(EvaluationResult::None)
     }
@@ -286,12 +297,22 @@ impl EvaluationContext<'_> {
             self.null_object.clone().into()
         };
         let value = apply_annotation_type_args(value, annotation);
-        // Phase 5 (汎用 RAII): same as val — `var` bindings are
-        // also auto-dropped at scope exit when the type impls
-        // Drop. (Reassignment via `var x = ...` later in scope
-        // doesn't re-trigger registration; the original Rc is
-        // shared so the drop record stays valid.)
-        self.register_drop_if_needed(stmt_ref, name, &value);
+        // DROP-GLUE: same ptr_read alias rule as `val` — see
+        // `handle_val_declaration`.
+        let from_ptr_read = expr.is_some_and(|e| {
+            matches!(
+                self.expr_pool.get(&e),
+                Some(Expr::BuiltinCall(frontend::ast::BuiltinFunction::PtrRead, _))
+            )
+        });
+        if !from_ptr_read {
+            // Phase 5 (汎用 RAII): same as val — `var` bindings are
+            // also auto-dropped at scope exit when the type impls
+            // Drop. (Reassignment via `var x = ...` later in scope
+            // doesn't re-trigger registration; the original Rc is
+            // shared so the drop record stays valid.)
+            self.register_drop_if_needed(stmt_ref, name, &value);
+        }
         self.environment.set_var(name, value, VariableSetType::Insert, self.string_interner)?;
         Ok(EvaluationResult::None)
     }

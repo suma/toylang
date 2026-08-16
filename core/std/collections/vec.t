@@ -117,9 +117,68 @@ impl<T> Vec<T> {
     # Logically clear the vec. Capacity / data buffer are kept so
     # a subsequent series of `push`es doesn't pay for the first
     # `heap_realloc`. To actually free the buffer the caller would
-    # drop the binding and let the active allocator reclaim it.
+    # drop the binding — the `impl Drop for Vec<T>` below frees the
+    # buffer (and the drop glue frees each element) when it dies.
     fn clear(&mut self) {
         self.len = 0u64
+    }
+}
+
+# DROP-GLUE: the buffer dies with the binding. The element values
+# are glued by the backend *before* this runs (contents first, then
+# the storage free), so a `Vec<Box<i64>>` releases every box when
+# the vec goes out of scope. `data` is null for a never-grown vec
+# (`Vec::new` allocates 0 bytes), and freeing null is a no-op.
+impl<T> Drop for Vec<T> {
+    fn drop(&mut self) {
+        __builtin_heap_free(self.data)
+    }
+}
+
+# Iterator-protocol support (STDLIB-ITER): `for x in v.iter() { ... }`
+# works against any struct exposing `fn next(&mut self) -> Option<T>`
+# (structural / duck-typed — the desugaring in
+# `frontend/src/parser/stmt.rs::desugar_for_in_iterator` never checks
+# for a `trait Iterator<T>` impl). The iterator snapshots the buffer
+# pointer and walks it with the same `__builtin_ptr_read` the vec
+# itself uses. `T` deliberately appears in no field (like `Box<T>`),
+# so the struct needs no per-monomorph instantiation of its own.
+# Mutating the vec while iterating is the caller's hazard (a realloc
+# moves the buffer), same as Rust.
+struct VecIter<T> {
+    data: ptr,
+    len: u64,
+    elem_size: u64,
+    index: u64,
+}
+
+impl<T> Vec<T> {
+    # Borrow the vec into an iterator. `&self` keeps the caller's
+    # binding alive; the returned iterator shares the buffer.
+    fn iter(&self) -> VecIter<T> {
+        VecIter {
+            data: self.data,
+            len: self.len,
+            elem_size: self.elem_size,
+            index: 0u64,
+        }
+    }
+}
+
+impl<T> VecIter<T> {
+    # Advance by one element. Returns `None` once `index` has walked
+    # past `len`. The element is read as a copy out of the buffer —
+    # exactly like `Vec::get`, so compound `T` (including `Box`) is
+    # an alias of the stored value.
+    fn next(&mut self) -> Option<T> {
+        if self.index >= self.len {
+            Option::None
+        } else {
+            val i = self.index
+            self.index = self.index + 1u64
+            val e: T = __builtin_ptr_read(self.data, i * self.elem_size)
+            Option::Some(e)
+        }
     }
 }
 

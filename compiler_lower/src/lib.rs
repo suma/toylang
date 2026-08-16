@@ -133,14 +133,21 @@ mod stmt;
 
 mod expr;
 
+mod drop_glue;
+
 /// Phase 5 (汎用 RAII): one per-binding auto-drop record kept on
-/// the `FunctionLower::drop_scopes` stack. Captures the struct
-/// id (so we can look up the Drop method) and the leaf scalar
-/// locals (so we can emit the matching `CallWithSelfWriteback`
-/// pattern that `&mut self` method calls already use).
+/// the `FunctionLower::drop_scopes` stack. Captures the binding's
+/// IR type (so the drop site can dispatch to the per-type drop
+/// glue) and the leaf scalar locals that hold the value.
+///
+/// DROP-GLUE: the glue covers far more than the original
+/// `impl Drop` structs — an enum carrying a `Box` payload, a
+/// struct holding a `Box` field, a `Vec<Box<T>>`: anything whose
+/// death can free something. The recorded type is what the glue
+/// function dispatches on.
 #[derive(Debug, Clone)]
 pub(crate) struct DropTarget {
-    pub(crate) struct_id: crate::ir::StructId,
+    pub(crate) ty: crate::ir::Type,
     pub(crate) field_locals: Vec<(crate::ir::LocalId, crate::ir::Type)>,
 }
 
@@ -357,6 +364,18 @@ struct FunctionLower<'a> {
     /// to the same queue; the program-level driver drains it
     /// after the main + generic + method passes complete.
     pending_closure_work: &'a mut Vec<PendingClosureBody>,
+    /// DROP-GLUE: queue of pending drop-glue function bodies whose
+    /// anonymous function has been declared but not yet lowered.
+    /// Glue functions request further glue functions, so the
+    /// program-level driver drains this until empty.
+    pending_glue_work: &'a mut Vec<drop_glue::GlueWork>,
+    /// DROP-GLUE: per-match-arm drop targets. Pattern bindings
+    /// (`Cons(v, rest)`) collect here instead of `drop_scopes` so
+    /// their drops fire on the arm's own path at arm exit — a
+    /// scope's drops are emitted on the enclosing block's linear
+    /// exit, which every arm shares. Cleared at arm start, drained
+    /// after the arm body.
+    arm_drop_targets: Vec<DropTarget>,
 }
 
 /// Closures Phase 5a/6: queued closure body lowering job. The
@@ -1585,12 +1604,11 @@ impl<'a> FunctionLower<'a> {
         Ok(())
     }
 
-    /// Phase 5 (汎用 RAII): inspect a freshly created
-    /// `Binding::Struct` and, if its struct base-name is in
-    /// `Module::drop_trait_structs`, append a matching
-    /// `DropTarget` to the current top scope. Called from
-    /// `lower_let`'s struct-binding paths right after
-    /// `self.bindings.insert`.
+    /// Phase 5 (汎用 RAII): inspect a freshly created struct /
+    /// tuple binding and, if its type (transitively) contains a
+    /// `Drop`-impl type, append a matching `DropTarget` to the
+    /// current top scope. Called from `lower_let`'s compound-binding
+    /// paths right after `self.bindings.insert`.
     pub(crate) fn register_drop_for_struct_binding(
         &mut self,
         struct_id: crate::ir::StructId,
@@ -1607,88 +1625,119 @@ impl<'a> FunctionLower<'a> {
         {
             return;
         }
-        let base_name = self.module.struct_def(struct_id).base_name;
-        if !self.module.drop_trait_structs.contains(&base_name) {
+        // DROP-GLUE: register any type that owns resources, not just
+        // the direct `impl Drop` members — a struct holding a `Box`
+        // field must free it at scope exit too.
+        if !self.ir_contains_drop(crate::ir::Type::Struct(struct_id)) {
             return;
         }
         let leaves = bindings::flatten_struct_locals(fields);
         if let Some(scope) = self.drop_scopes.last_mut() {
             scope.push(DropTarget {
-                struct_id,
+                ty: crate::ir::Type::Struct(struct_id),
                 field_locals: leaves,
             });
         }
     }
 
-    /// Synthesize and emit `<binding>.drop()` for an auto-drop
-    /// target. Looks the Drop method's `FuncId` up in the per-
-    /// `(struct, "drop")` registry, builds the receiver-leaf arg
-    /// list, and emits `CallWithSelfWriteback` so the `&mut
-    /// self` writeback semantics propagate any field mutation
-    /// the body made.
+    /// DROP-GLUE: register an enum binding (tag + payload storage)
+    /// whose type carries resources. The same transfer / containment
+    /// rules as the struct path.
+    pub(crate) fn register_drop_for_enum_binding(
+        &mut self,
+        enum_id: crate::ir::EnumId,
+        storage: &bindings::EnumStorage,
+    ) {
+        if self.module.drop_trait_structs.is_empty() {
+            return;
+        }
+        if let Some(stmt) = self.current_let_stmt
+            && self.program.transferred_bindings.contains(&stmt)
+        {
+            return;
+        }
+        if !self.ir_contains_drop(crate::ir::Type::Enum(enum_id)) {
+            return;
+        }
+        let leaves = bindings::flatten_enum_storage_locals(storage);
+        if let Some(scope) = self.drop_scopes.last_mut() {
+            scope.push(DropTarget {
+                ty: crate::ir::Type::Enum(enum_id),
+                field_locals: leaves,
+            });
+        }
+    }
+
+    /// DROP-GLUE: register a tuple binding whose elements carry
+    /// resources. `Binding::Tuple` has no `TupleId` of its own, so
+    /// there is no tuple-level glue function — instead each owning
+    /// element gets its own `DropTarget` (the drop site then emits
+    /// the element glue calls directly, which is exactly what a
+    /// tuple glue function would have done).
+    pub(crate) fn register_drop_for_tuple_binding(
+        &mut self,
+        elements: &[bindings::TupleElementBinding],
+    ) {
+        if self.module.drop_trait_structs.is_empty() {
+            return;
+        }
+        if let Some(stmt) = self.current_let_stmt
+            && self.program.transferred_bindings.contains(&stmt)
+        {
+            return;
+        }
+        self.push_tuple_element_drops(elements);
+    }
+
+    /// Push one `DropTarget` per owning element of a tuple shape,
+    /// recursing through nested tuples.
+    fn push_tuple_element_drops(&mut self, elements: &[bindings::TupleElementBinding]) {
+        for el in elements {
+            match &el.shape {
+                bindings::TupleElementShape::Scalar { local, ty } => {
+                    if self.ir_contains_drop(*ty)
+                        && let Some(scope) = self.drop_scopes.last_mut()
+                    {
+                        scope.push(DropTarget {
+                            ty: *ty,
+                            field_locals: vec![(*local, *ty)],
+                        });
+                    }
+                }
+                bindings::TupleElementShape::Struct { struct_id, fields } => {
+                    if self.ir_contains_drop(crate::ir::Type::Struct(*struct_id)) {
+                        let leaves = bindings::flatten_struct_locals(fields);
+                        if let Some(scope) = self.drop_scopes.last_mut() {
+                            scope.push(DropTarget {
+                                ty: crate::ir::Type::Struct(*struct_id),
+                                field_locals: leaves,
+                            });
+                        }
+                    }
+                }
+                bindings::TupleElementShape::Tuple { elements, .. } => {
+                    self.push_tuple_element_drops(elements);
+                }
+            }
+        }
+    }
+
+    /// DROP-GLUE: emit the recursive drop for an auto-drop target.
+    /// Dispatches to the per-type glue function, which frees the
+    /// binding's owned sub-values and runs the user `drop()` body
+    /// where one exists (the old `emit_drop_call` emitted only that
+    /// body, which is why `Box::drop` freed its slot but nothing
+    /// freed what the slot held).
     fn emit_drop_call(&mut self, target: &DropTarget) -> Result<(), String> {
-        let struct_def = self.module.struct_def(target.struct_id);
-        let struct_sym = struct_def.base_name;
-        let drop_sym = match self.interner.get("drop") {
-            Some(s) => s,
-            None => return Err("auto-drop: `drop` symbol missing from interner".to_string()),
-        };
-        // Look up the Drop method's FuncId. Use the receiver's
-        // type-args so generic-struct Drop impls dispatch
-        // correctly (matches the regular method-call path).
-        // CONCRETE-IMPL Phase 2c: unified dispatch — a generic-impl
-        // Drop (`impl<T> C<T> { fn drop }`) is a template that gets
-        // instantiated against the concrete struct.
-        let type_args: Vec<crate::ir::Type> = struct_def.type_args.clone();
-        let func_id = match method_registry::resolve_method_target(
-            self.method_func_ids,
-            self.generic_methods,
-            struct_sym,
-            drop_sym,
-            &type_args,
-        ) {
-            Some(method_registry::ResolvedMethodTarget::Concrete(id)) => id,
-            Some(method_registry::ResolvedMethodTarget::Template(t)) => {
-                self.instantiate_generic_method_with_args(
-                    struct_sym, drop_sym, &t, target.struct_id, &[],
-                )
-                .map_err(|e| {
-                    format!(
-                        "auto-drop: failed to instantiate Drop for `{}`: {e}",
-                        self.interner.resolve(struct_sym).unwrap_or("?")
-                    )
-                })?
-            }
-            None => {
-                let s = self.interner.resolve(struct_sym).unwrap_or("?");
-                return Err(format!(
-                    "auto-drop: no `drop` FuncId registered for struct `{s}`"
-                ));
-            }
-        };
-        // Receiver leaves are passed as args (mirroring
-        // `lower_method_call` for `&mut self`); the same locals
-        // also serve as `self_dests` so any field mutation in
-        // the drop body lands back in the caller's binding.
+        let glue_id = self.ensure_drop_glue(target.ty)?;
         let mut args: Vec<crate::ir::ValueId> = Vec::new();
-        let mut self_dests: Vec<crate::ir::LocalId> = Vec::new();
         for (local, ty) in &target.field_locals {
             let v = self
                 .emit(crate::ir::InstKind::LoadLocal(*local), Some(*ty))
                 .ok_or_else(|| "auto-drop: LoadLocal returned no value".to_string())?;
             args.push(v);
-            self_dests.push(*local);
         }
-        self.emit(
-            crate::ir::InstKind::CallWithSelfWriteback {
-                target: func_id,
-                args,
-                ret_dest: None,
-                ret_ty: None,
-                self_dests,
-            },
-            None,
-        );
+        self.emit(crate::ir::InstKind::Call { target: glue_id, args }, None);
         Ok(())
     }
 

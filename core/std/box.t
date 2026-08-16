@@ -29,10 +29,11 @@
 # transfers ownership, after which the old name is an error to read
 # ([E0014]). See "Ownership" in docs/language.md.
 #
-# What is *not* handled yet: dropping a `Box` frees its own slot but
-# does not drop what the slot contains. A `Box<Box<i64>>`, or a list
-# whose nodes hold boxes, leaks the inner allocations — `--profile=mem`
-# reports them under `leaks`. Recursive drop is its own piece of work.
+# The drop is recursive (DROP-GLUE): when a `Box` dies, its slot's
+# contents are freed first — so `Box<Box<i64>>` and a boxed list free
+# everything they hold, down to the innermost value — and then the slot
+# itself. A value reachable through several aliases (a `get()` copy, a
+# shared boxed node) is freed once; later visits are idempotent no-ops.
 #
 # ## API
 #

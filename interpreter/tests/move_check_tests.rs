@@ -232,3 +232,83 @@ fn main() -> i64 {
         14i64
     );
 }
+
+// --- DROP-GLUE: transfer covers containers, not just the Drop type ---
+//
+// A `Vec<Cell<i64>>`, an enum carrying a `Cell` payload, or a struct
+// holding one by value owns resources transitively, so handing such a
+// value over transfers ownership just like handing over the `Cell`
+// itself did. The moved binding must not drop, or the receiver's glue
+// would free the same slot twice.
+
+#[test]
+fn transferring_a_container_is_a_move() {
+    // `v` (a `Vec<Cell<i64>>`) is handed to `consume` by value. The
+    // Vec's own drop would free the buffer, but ownership moved.
+    let diagnostic = move_diagnostic(
+        "fn consume(v: Vec<Cell<i64>>) -> u64 { v.size() }
+
+fn main() -> i64 {
+    var v: Vec<Cell<i64>> = Vec::new()
+    val c: Cell<i64> = Cell::new(7i64)
+    v.push(c)
+    consume(v)
+    val n: u64 = v.size()
+    n as i64
+}",
+    );
+    assert!(
+        diagnostic.message.contains("`v` was moved"),
+        "the binding should be named: {}",
+        diagnostic.message
+    );
+}
+
+#[test]
+fn transferring_an_enum_carrying_a_drop_payload_is_a_move() {
+    // `Boxed` carries a `Cell<i64>` payload. The enum has no `impl
+    // Drop` of its own, but it owns the payload transitively — the
+    // DROP-GLUE containment rule.
+    let diagnostic = move_diagnostic(
+        "enum Boxed {
+    Put(Cell<i64>),
+    Empty,
+}
+
+fn main() -> i64 {
+    val c: Cell<i64> = Cell::new(7i64)
+    val b = Boxed::Put(c)
+    c.get()
+}",
+    );
+    assert!(
+        diagnostic.message.contains("`c` was moved"),
+        "the binding should be named: {}",
+        diagnostic.message
+    );
+}
+
+#[test]
+fn a_struct_holding_a_drop_field_transfers_its_whole_value() {
+    // `Holder` holds a `Cell` by value; passing the holder by value
+    // moves the whole thing, so reading the holder afterwards is
+    // E0014 even though `Holder` itself has no `impl Drop`.
+    let diagnostic = move_diagnostic(
+        "struct Holder { c: Cell<i64> }
+
+fn consume(h: Holder) -> i64 { 0i64 }
+
+fn main() -> i64 {
+    val c: Cell<i64> = Cell::new(7i64)
+    val h = Holder { c: c }
+    consume(h)
+    val v: i64 = h.c.get()
+    v
+}",
+    );
+    assert!(
+        diagnostic.message.contains("`h` was moved"),
+        "the binding should be named: {}",
+        diagnostic.message
+    );
+}

@@ -29,10 +29,10 @@ use frontend::ast::{Expr, ExprRef, MatchArm, Pattern};
 use string_interner::DefaultSymbol;
 
 use super::bindings::{
-    Binding, EnumStorage, MatchScrutinee, PayloadSlot, TupleElementBinding,
-    TupleElementShape,
+    flatten_enum_storage_locals, flatten_struct_locals, Binding, EnumStorage, MatchScrutinee,
+    PayloadSlot, TupleElementBinding, TupleElementShape,
 };
-use super::FunctionLower;
+use super::{DropTarget, FunctionLower};
 use crate::ir::{BinOp, BlockId, Const, InstKind, Terminator, Type, ValueId};
 
 impl<'a> FunctionLower<'a> {
@@ -83,6 +83,13 @@ impl<'a> FunctionLower<'a> {
             // block, which is reached only when the pattern actually
             // matched.
             let saved_bindings = self.bindings.clone();
+            // DROP-GLUE: each arm's pattern bindings collect here and
+            // are emitted at arm exit. They must NOT go through
+            // `drop_scopes` — a scope's drops are emitted on the
+            // enclosing block's linear exit, which every arm shares,
+            // so a different arm's path could fire them with
+            // uninitialized locals.
+            self.arm_drop_targets.clear();
             let next_blk = self.fresh_block();
             // 1. Pattern shape check + sub-pattern equality checks.
             //    On any failure, jump to next_blk. On full success,
@@ -148,10 +155,19 @@ impl<'a> FunctionLower<'a> {
             //    current block already).
             let body_v = self.lower_expr(&arm.body)?;
             if !self.is_unreachable() {
+                // The arm's pattern bindings die here, at arm exit,
+                // before the merge jump.
+                let arm_drops = std::mem::take(&mut self.arm_drop_targets);
+                for target in arm_drops.into_iter().rev() {
+                    self.emit_drop_call(&target)?;
+                }
                 if let (Some(local), Some(v)) = (result_local, body_v) {
                     self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
                 }
                 self.terminate(Terminator::Jump(merge));
+            } else {
+                // The body diverged; the arm's drops never run.
+                self.arm_drop_targets.clear();
             }
             // 4. Roll back bindings and continue with the next arm.
             self.bindings = saved_bindings;
@@ -337,7 +353,24 @@ impl<'a> FunctionLower<'a> {
                         let inner = (*inner_storage).clone();
                         let copy = self.allocate_enum_storage(inner.enum_id);
                         self.copy_enum_storage(&inner, &copy);
-                        self.bindings.insert(*sym, Binding::Enum(copy));
+                        self.bindings.insert(*sym, Binding::Enum(copy.clone()));
+                        // DROP-GLUE: the payload binding owns what it
+                        // names (the scrutinee may never be dropped —
+                        // e.g. a function parameter), so it must free
+                        // it at the arm's scope exit. Collected into
+                        // `arm_drop_targets` so the drop fires on this
+                        // arm's path only. A transfer can never
+                        // suppress this (no statement is in flight
+                        // during match lowering) — an over-
+                        // approximation that is safe because `free` is
+                        // idempotent everywhere.
+                        if self.ir_contains_drop(crate::ir::Type::Enum(copy.enum_id)) {
+                            let leaves = flatten_enum_storage_locals(&copy);
+                            self.arm_drop_targets.push(DropTarget {
+                                ty: crate::ir::Type::Enum(copy.enum_id),
+                                field_locals: leaves,
+                            });
+                        }
                     }
                     PayloadSlot::Struct {
                         struct_id,
@@ -352,9 +385,16 @@ impl<'a> FunctionLower<'a> {
                             *sym,
                             Binding::Struct {
                                 struct_id,
-                                fields: dst_fields,
+                                fields: dst_fields.clone(),
                             },
                         );
+                        if self.ir_contains_drop(crate::ir::Type::Struct(struct_id)) {
+                            let leaves = flatten_struct_locals(&dst_fields);
+                            self.arm_drop_targets.push(DropTarget {
+                                ty: crate::ir::Type::Struct(struct_id),
+                                field_locals: leaves,
+                            });
+                        }
                     }
                     PayloadSlot::Tuple {
                         elements: src_elements,

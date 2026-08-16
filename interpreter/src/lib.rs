@@ -1162,7 +1162,7 @@ pub fn run_tests_from_source(
 /// every struct-literal construction across the workspace. Callers
 /// start from [`RunOptions::default`] and set what they care about, so
 /// a new field costs one edit — the default itself.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct RunOptions<'a> {
     pub jit: bool,
@@ -1170,6 +1170,10 @@ pub struct RunOptions<'a> {
     /// LLM-LOOP P3: emit type-check diagnostics as a JSON array on
     /// stderr instead of the rendered text form.
     pub diagnostics_json: bool,
+    /// RUNTIME-IO: program arguments visible to `argc()` / `arg(i)`.
+    /// The CLI passes everything after the input file; tests set it
+    /// directly. Empty by default.
+    pub args: Vec<String>,
 }
 
 /// Outcome of [`run_source`]. `exit_code` mirrors the value the
@@ -1254,11 +1258,13 @@ pub fn run_source(
 
     #[cfg(feature = "jit")]
     let exec_result = jit::with_jit_override(options.jit, || {
+        crate::evaluation::extern_io::set_program_args(options.args.clone());
         execute_program(&program, session.string_interner(), Some(source), Some(filename))
     });
     #[cfg(not(feature = "jit"))]
     let exec_result = {
         let _ = options.jit;
+        crate::evaluation::extern_io::set_program_args(options.args.clone());
         execute_program(&program, session.string_interner(), Some(source), Some(filename))
     };
 

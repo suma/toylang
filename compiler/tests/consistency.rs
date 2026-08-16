@@ -6682,7 +6682,14 @@ fn explicit_and_implicit_impl_parameter_lists_agree() {
 // the bump allocator rather than the program.
 
 #[test]
-fn interpreter_heap_does_not_reuse_addresses_but_the_aot_heap_does() {
+fn neither_heap_reuses_addresses() {
+    // DROP-GLUE: the compiled runtime's bump region never reuses a
+    // freed address either, so a drop-glue walk that reaches the same
+    // boxed node twice reads the block's original contents on the
+    // second visit (the free is an idempotent no-op). This used to be
+    // a documented interpreter-vs-AOT divergence (the AOT was libc
+    // malloc); the glue made reuse observable through crashes, so the
+    // AOT heap now mirrors the interpreter's bump allocator.
     if skip_e2e() {
         return;
     }
@@ -6702,8 +6709,8 @@ fn interpreter_heap_does_not_reuse_addresses_but_the_aot_heap_does() {
     );
     assert_eq!(
         compiler_exit_code(src, "heap_addr_reuse", false),
-        1,
-        "the AOT path is libc malloc and does reuse the block"
+        0,
+        "the AOT bump region must not reuse a freed address either"
     );
 }
 
@@ -7877,4 +7884,217 @@ fn a_box_of_a_struct_round_trips() {
         }
     "#;
     assert_consistent(src, "box_of_struct");
+}
+
+// --- DROP-GLUE: moved-into containers are freed by the container ----
+//
+// Before DROP-GLUE, `Box` moved into a `Vec`, a struct field or an
+// enum payload was freed by nobody: the moved binding skipped its
+// drop, and the container had no element / field / payload drop. The
+// three `memory_profiles_agree` tests below pin the recursive drop
+// glue across interpreter / JIT / AOT — each expects the freed count
+// to match the allocated count with zero leaks. The glue runs in all
+// three backends because they share the lowered IR (the interpreter's
+// IR VM and the compiler-side JIT execute the synthesized drop-glue
+// functions; the AOT compiles them).
+
+#[test]
+fn a_box_moved_into_a_vec_is_freed_when_the_vec_dies() {
+    memory_profiles_agree(
+        r#"
+        fn main() -> u64 {
+            val v: Vec<Box<i64>> = Vec::new()
+            val b1: Box<i64> = Box::new(1i64)
+            v.push(b1)
+            val b2: Box<i64> = Box::new(2i64)
+            v.push(b2)
+            v.size()
+        }
+        "#,
+        "prof_box_in_vec_freed",
+    );
+}
+
+#[test]
+fn a_box_moved_into_a_struct_field_is_freed_when_the_struct_dies() {
+    memory_profiles_agree(
+        r#"
+        struct Holder {
+            b: Box<i64>,
+            tag: i64,
+        }
+
+        fn main() -> u64 {
+            val b: Box<i64> = Box::new(9i64)
+            val h = Holder { b: b, tag: 3i64 }
+            h.b.get() as u64
+        }
+        "#,
+        "prof_box_in_struct_field_freed",
+    );
+}
+
+#[test]
+fn a_boxed_list_chain_is_freed_exactly_once_across_recursion() {
+    // The shape that needs the glue *and* the idempotent free: the
+    // recursive `sum` reads boxed nodes through `get()` (an alias of
+    // the slot) and the match payloads, so the same node is reachable
+    // from several drop paths. Freed blocks keep their contents (both
+    // heaps are bump allocators), so a second visit is a no-op and
+    // each of the three slots is freed exactly once.
+    memory_profiles_agree(
+        r#"
+        enum List {
+            Cons(i64, Box<List>),
+            Nil,
+        }
+
+        fn sum(l: List) -> i64 {
+            match l {
+                List::Cons(v, rest) => {
+                    val inner: List = rest.get()
+                    v + sum(inner)
+                }
+                List::Nil => 0i64,
+            }
+        }
+
+        fn main() -> i64 {
+            val nil: List = List::Nil
+            val b3: Box<List> = Box::new(nil)
+            val three: List = List::Cons(3i64, b3)
+            val b2: Box<List> = Box::new(three)
+            val two: List = List::Cons(2i64, b2)
+            val b1: Box<List> = Box::new(two)
+            val one: List = List::Cons(1i64, b1)
+            sum(one)
+        }
+        "#,
+        "prof_boxed_list_chain_freed",
+    );
+}
+
+#[test]
+fn a_plain_vec_frees_its_buffer() {
+    // The new `impl Drop for Vec<T>` gives every `Vec` a drop: the
+    // buffer dies with the binding. `Vec::new` allocates 0 bytes
+    // (null), so an untouched vec frees nothing; a grown vec frees
+    // its one realloc'd block.
+    memory_profiles_agree(
+        r#"
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            var i: u64 = 0u64
+            while i < 10u64 {
+                v.push(i)
+                i = i + 1u64
+            }
+            v.size()
+        }
+        "#,
+        "prof_vec_buffer_freed",
+    );
+}
+
+#[test]
+fn a_boxed_box_frees_both_slots() {
+    // `Box<Box<i64>>`: the outer glue reads the inner `Box` out of
+    // its slot and frees it before freeing the outer slot. Before
+    // DROP-GLUE the inner slot leaked unless something happened to
+    // read the inner box out.
+    memory_profiles_agree(
+        r#"
+        fn main() -> u64 {
+            val inner: Box<i64> = Box::new(42i64)
+            val outer: Box<Box<i64>> = Box::new(inner)
+            0u64
+        }
+        "#,
+        "prof_box_of_box_freed",
+    );
+}
+
+// --- STDLIB-ITER: the standard collections iterate -------------------
+
+#[test]
+fn stdlib_iteration_is_consistent_across_backends() {
+    // `Vec::iter` / `Dict::iter` / `String::iter` go through the
+    // iterator-protocol desugaring on all three backends.
+    let src = r#"
+        fn main() -> i64 {
+            var v: Vec<i64> = Vec::new()
+            v.push(1i64)
+            v.push(2i64)
+            v.push(3i64)
+            var d: Dict<i64, i64> = Dict::new()
+            d.insert(10i64, 100i64)
+            d.insert(20i64, 200i64)
+            val s = String::from_str("abc")
+            var total = 0i64
+            for x in v.iter() {
+                total = total + x
+            }
+            for kv in d.iter() {
+                val (k, val2) = kv
+                total = total + (val2 / k)
+            }
+            for b in s.iter() {
+                total = total + (b as i64) - 96i64
+            }
+            total
+        }
+    "#;
+    assert_consistent(src, "stdlib_iteration");
+}
+
+#[test]
+fn iterating_a_vec_of_boxes_frees_every_slot_once() {
+    memory_profiles_agree(
+        r#"
+        fn main() -> u64 {
+            var v: Vec<Box<i64>> = Vec::new()
+            val b1: Box<i64> = Box::new(1i64)
+            v.push(b1)
+            val b2: Box<i64> = Box::new(2i64)
+            v.push(b2)
+            var sum = 0i64
+            for x in v.iter() {
+                sum = sum + x.get()
+            }
+            sum as u64
+        }
+        "#,
+        "prof_vec_iter_boxes",
+    );
+}
+
+// --- RUNTIME-IO: the stdlib I/O externs agree across backends --------
+//
+// Deterministic functions only: `argc` (no args in the harness), the
+// environment, file probes. `now` / `random` are non-deterministic by
+// design and are covered by loose interpreter tests instead.
+
+#[test]
+fn io_externs_are_consistent_across_backends() {
+    let dir = unique_path("io_externs_fixture");
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("data.txt");
+    std::fs::write(&path, "hello io\n").expect("write fixture");
+    let src = format!(
+        r#"
+        fn main() -> u64 {{
+            val n = io::argc()
+            val home = io::env_var("HOME")
+            val yes = io::file_exists("{}")
+            val no = io::file_exists("{}/missing.t")
+            val f = io::read_file("{}")
+            if n == 0u64 && home != "" && yes && !no && f == "hello io\n" {{ 1u64 }} else {{ 0u64 }}
+        }}
+        "#,
+        path.display(),
+        dir.display(),
+        path.display(),
+    );
+    assert_consistent(&src, "io_externs");
+    let _ = std::fs::remove_dir_all(&dir);
 }

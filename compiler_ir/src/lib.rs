@@ -104,6 +104,15 @@ pub struct Module {
     /// Some("Drop"), .. }`. Empty for programs that don't reference
     /// the stdlib `Drop` trait.
     pub drop_trait_structs: std::collections::HashSet<DefaultSymbol>,
+    /// DROP-GLUE: memoized per-type drop-glue functions. Each entry
+    /// frees everything a value of that type owns (recursively),
+    /// then runs the type's user `drop()` body where one exists.
+    /// The recursion (`Box<List>` -> `List` -> `Box<List>`) lives in
+    /// these runtime functions rather than in drop-site code, so it
+    /// is bounded by the value's depth, not the type graph. Filled
+    /// lazily by `FunctionLower::ensure_drop_glue`; the bodies are
+    /// synthesized when the driver drains `pending_glue_work`.
+    pub drop_glue: std::collections::HashMap<Type, FuncId>,
     /// A5-P2: ordered list of method symbols for each `trait` decl,
     /// keyed by the trait's symbol. Lookup of `(trait_sym, method_sym)`
     /// yields the **vtable slot index** for that method on any

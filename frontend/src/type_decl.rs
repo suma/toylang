@@ -102,6 +102,15 @@ impl TypeDecl {
         }
         
         match (self, other) {
+            // A generic parameter and a bare identifier of the same
+            // name are the same type: declarations write `k: K` as
+            // `Generic(K)` while identifier uses resolve to
+            // `Identifier(K)`. (STDLIB-ITER: `Option::Some((k, v))`
+            // inside a generic fn hit exactly this pair.) A mismatch
+            // falls through to the generic wildcard below — `Generic`
+            // stays compatible with anything during inference.
+            (TypeDecl::Generic(s1), TypeDecl::Identifier(s2)) if s1 == s2 => true,
+            (TypeDecl::Identifier(s1), TypeDecl::Generic(s2)) if s1 == s2 => true,
             // Identifier and Struct with same symbol are equivalent (ignore type parameters for compatibility)
             (TypeDecl::Identifier(s1), TypeDecl::Struct(s2, _)) |
             (TypeDecl::Struct(s1, _), TypeDecl::Identifier(s2)) => s1 == s2,
@@ -162,6 +171,14 @@ impl TypeDecl {
                 p1.len() == p2.len()
                     && p1.iter().zip(p2.iter()).all(|(a, b)| a.is_equivalent(b))
                     && r1.is_equivalent(r2)
+            }
+            // Tuples match element-wise. (STDLIB-ITER: the same tuple
+            // can surface as `Tuple([Generic(K), ...])` from a variant
+            // declaration and `Tuple([Identifier(K), ...])` from the
+            // arguments, so plain `==` is not enough.)
+            (TypeDecl::Tuple(e1), TypeDecl::Tuple(e2)) => {
+                e1.len() == e2.len()
+                    && e1.iter().zip(e2.iter()).all(|(a, b)| a.is_equivalent(b))
             }
             // Generic types are compatible with any type during inference
             (TypeDecl::Generic(_), _) | (_, TypeDecl::Generic(_)) => true,

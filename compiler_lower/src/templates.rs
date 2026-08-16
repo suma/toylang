@@ -357,6 +357,14 @@ pub(super) fn is_supported_enum_payload(t: Type) -> bool {
             | Type::F64
             | Type::Bool
             | Type::Str
+            // NUM-W: narrow ints land in enum payloads too
+            // (STDLIB-ITER: `StringIter::next -> Option<u8>`).
+            | Type::I8
+            | Type::U8
+            | Type::I16
+            | Type::U16
+            | Type::I32
+            | Type::U32
             | Type::Enum(_)
             | Type::Struct(_)
             | Type::Tuple(_)
@@ -875,7 +883,11 @@ pub(super) fn lower_param_or_return_type(
         TypeDecl::Enum(name, args) if enum_defs.contains_key(name) => {
             let mut lowered_args: Vec<Type> = Vec::with_capacity(args.len());
             for a in args {
-                let l = lower_scalar(a)?;
+                // STDLIB-ITER: recurse (like the struct arm above) so
+                // a tuple type argument — `Option<(K, V)>` from
+                // `DictIter::next` — lowers instead of being rejected
+                // by `lower_scalar`.
+                let l = lower_param_or_return_type(a, struct_defs, enum_defs, module, interner)?;
                 if matches!(l, Type::Unit) {
                     return None;
                 }
@@ -890,7 +902,9 @@ pub(super) fn lower_param_or_return_type(
         {
             let mut lowered_args: Vec<Type> = Vec::with_capacity(args.len());
             for a in args {
-                let l = lower_scalar(a)?;
+                // STDLIB-ITER: recurse (see the `TypeDecl::Enum` arm
+                // above) so tuple type arguments lower.
+                let l = lower_param_or_return_type(a, struct_defs, enum_defs, module, interner)?;
                 if matches!(l, Type::Unit) {
                     return None;
                 }

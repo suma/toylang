@@ -50,6 +50,34 @@ impl<'a> FunctionLower<'a> {
                 // threaded through all of them.
                 let previous = self.current_let_stmt.replace(*stmt_ref);
                 let result = self.lower_let(name, ty.as_ref(), &e);
+                // DROP-GLUE: enum / tuple bindings register their
+                // drop glue here (struct bindings register inside
+                // `lower_let`). Must run *before* `current_let_stmt`
+                // is restored — the transferred check needs this
+                // statement to decide whether the binding still
+                // owns its value. A `__builtin_ptr_read` copy is an
+                // *alias* of the slot it read — the slot's owner
+                // frees it, so the copy must not register.
+                let from_ptr_read = matches!(
+                    self.program.expression.get(&e),
+                    Some(frontend::ast::Expr::BuiltinCall(
+                        frontend::ast::BuiltinFunction::PtrRead,
+                        _
+                    ))
+                );
+                if !from_ptr_read
+                    && let Some(binding) = self.bindings.get(&name).cloned()
+                {
+                    match binding {
+                        super::bindings::Binding::Enum(storage) => {
+                            self.register_drop_for_enum_binding(storage.enum_id, &storage);
+                        }
+                        super::bindings::Binding::Tuple { elements } => {
+                            self.register_drop_for_tuple_binding(&elements);
+                        }
+                        _ => {}
+                    }
+                }
                 self.current_let_stmt = previous;
                 result
             }

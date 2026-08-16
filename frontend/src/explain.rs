@@ -436,11 +436,15 @@ Fix it by reading the value through whatever now owns it
 `&T` / `&mut T` borrows, so passing to one of those leaves the caller
 in charge.
 
+Ownership is transitive: a `Vec<Box<i64>>`, an enum carrying a `Box`
+payload, or a struct holding one by value owns resources too, so
+handing *it* over moves the whole thing.
+
 The positions that hand ownership over are: an argument in a by-value
-parameter, a field of a struct / tuple / array being built, and the
-right-hand side of an assignment. `val b = a` is **not** one of them:
-compound bindings alias in this language, so `a` and `b` name one value
-with one owner.
+parameter, a field of a struct / tuple / array being built, an enum
+payload, and the right-hand side of an assignment. `val b = a` is
+**not** one of them: compound bindings alias in this language, so `a`
+and `b` name one value with one owner.
 
 The same code also reports a hand-over this compiler will not model:
 

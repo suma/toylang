@@ -9,10 +9,12 @@
 # `rest.get()` is bound with `val` before use: a compound-returning
 # method cannot yet be called in expression position (todo.md #183).
 #
-# The nodes are not freed. Each `Box` binding hands its value to the
-# `List` being built, so it no longer drops it, and nothing drops an
-# enum payload — `--profile=mem` reports the three allocations under
-# `leaks`. Recursive drop is still to come (todo.md BOX-T).
+# The nodes are freed when the last path to them dies: the `Box`
+# bindings handed their slots into the `List` being built (transfer,
+# [E0014] on later reads), and the drop glue frees each slot the moment
+# its containing value goes away — every node exactly once, even though
+# the recursive `sum` reaches each node through several aliases (DROP-
+# GLUE; frees are idempotent on every backend).
 #
 # Run: cargo run -q -p interpreter -- example/box_linked_list.t
 # Expected exit code: 6 (1 + 2 + 3)

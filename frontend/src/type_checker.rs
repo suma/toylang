@@ -55,6 +55,9 @@ pub use recursive_type::check_recursive_types;
 mod move_check;
 pub use move_check::check_moves;
 
+mod contains_drop;
+pub use contains_drop::{type_contains_drop, DropAnalysis};
+
 mod visitor;
 mod visitor_impl;
 mod module_access;

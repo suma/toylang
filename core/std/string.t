@@ -431,3 +431,36 @@ impl Split<String, Vec<String>> for String {
         result
     }
 }
+
+# Iterator-protocol support (STDLIB-ITER): `for b in s.iter() { ... }`
+# yields one `u8` per byte of the buffer, in order. Same structural
+# protocol as `Vec::iter`. (Byte iteration, not codepoint iteration —
+# a UTF-8-aware `chars()` iterator is a future stdlib addition.)
+struct StringIter {
+    data: ptr,
+    len: u64,
+    index: u64,
+}
+
+impl String {
+    # Borrow the string into an iterator. `&self` keeps the caller's
+    # binding alive; the returned iterator shares the buffer.
+    fn iter(&self) -> StringIter {
+        StringIter { data: self.data, len: self.len, index: 0u64 }
+    }
+}
+
+impl StringIter {
+    # Advance by one byte. Returns `None` once `index` has walked
+    # past `len`.
+    fn next(&mut self) -> Option<u8> {
+        if self.index >= self.len {
+            Option::None
+        } else {
+            val i = self.index
+            self.index = self.index + 1u64
+            val b: u8 = __builtin_ptr_read(self.data, i)
+            Option::Some(b)
+        }
+    }
+}

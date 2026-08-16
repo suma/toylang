@@ -143,3 +143,60 @@ impl<K, V> Dict<K, V> {
         false
     }
 }
+
+# Iterator-protocol support (STDLIB-ITER): `for kv in d.iter() { ... }`
+# yields `(key, value)` tuples in insertion order. Same structural
+# protocol as `Vec::iter` — a `next(&mut self) -> Option<(K, V)>`
+# method, no `trait Iterator` impl required. `K` / `V` appear in no
+# field of the iterator (like `Box<T>`), so it needs no instantiation
+# of its own.
+#
+# The two element strides are packed into one `sizes` field (key in
+# the high 32 bits, value in the low 32): the AOT's `&mut self`
+# writeback returns one register per receiver leaf, and this iterator
+# with 6 fields + a 3-leaf enum return would exceed the 8-return
+# cranelift ABI limit. Element sizes are byte widths of realistic
+# keys / values — far below 2^32.
+struct DictIter<K, V> {
+    keys: ptr,
+    vals: ptr,
+    count: u64,
+    sizes: u64,
+    index: u64,
+}
+
+impl<K, V> Dict<K, V> {
+    # Borrow the dict into an iterator. `&self` keeps the caller's
+    # binding alive; the returned iterator shares the key / value
+    # buffers.
+    fn iter(&self) -> DictIter<K, V> {
+        val sizes: u64 = (self.key_size << 32u64) | self.val_size
+        DictIter {
+            keys: self.keys,
+            vals: self.vals,
+            count: self.count,
+            sizes: sizes,
+            index: 0u64,
+        }
+    }
+}
+
+impl<K, V> DictIter<K, V> {
+    # Advance by one entry. Returns `None` once `index` has walked
+    # past `count`. Keys and values are read as copies out of the
+    # buffers — like `Dict::get`, compound entries alias the stored
+    # values.
+    fn next(&mut self) -> Option<(K, V)> {
+        if self.index >= self.count {
+            Option::None
+        } else {
+            val i = self.index
+            self.index = self.index + 1u64
+            val ks: u64 = self.sizes >> 32u64
+            val vs: u64 = self.sizes & 0xFFFFFFFFu64
+            val k: K = __builtin_ptr_read(self.keys, i * ks)
+            val v: V = __builtin_ptr_read(self.vals, i * vs)
+            Option::Some((k, v))
+        }
+    }
+}

@@ -173,3 +173,101 @@ fn integer_range_fast_path_still_works() {
         10,
     );
 }
+
+// --- STDLIB-ITER: the standard collections iterate -------------------
+//
+// `for x in v.iter()` / `d.iter()` / `s.iter()` go through the same
+// structural protocol as the user-defined `Counter` above — the
+// stdlib now ships the `next(&mut self) -> Option<T>` methods the
+// desugaring looks for.
+
+#[test]
+fn vec_iter_yields_each_element() {
+    assert_program_result_u64(
+        "fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            v.push(1u64)
+            v.push(2u64)
+            v.push(3u64)
+            var sum = 0u64
+            for x in v.iter() { sum = sum + x }
+            sum
+        }",
+        6,
+    );
+}
+
+#[test]
+fn vec_iter_yields_boxed_elements_and_frees_them() {
+    // Iterating `Vec<Box<i64>>`: the yielded `Box` is an alias of the
+    // stored value, so reads work and every slot is freed exactly once
+    // when the vec dies (DROP-GLUE).
+    assert_program_result_u64(
+        "fn main() -> u64 {
+            var v: Vec<Box<i64>> = Vec::new()
+            val b1: Box<i64> = Box::new(1i64)
+            v.push(b1)
+            val b2: Box<i64> = Box::new(2i64)
+            v.push(b2)
+            var sum = 0i64
+            for x in v.iter() { sum = sum + x.get() }
+            sum as u64
+        }",
+        3,
+    );
+}
+
+#[test]
+fn dict_iter_yields_key_value_tuples() {
+    assert_program_result_u64(
+        "fn main() -> u64 {
+            var d: Dict<i64, i64> = Dict::new()
+            d.insert(1i64, 10i64)
+            d.insert(2i64, 20i64)
+            var sum = 0i64
+            for kv in d.iter() {
+                val (k, v) = kv
+                sum = sum + v / k
+            }
+            sum as u64
+        }",
+        20,
+    );
+}
+
+#[test]
+fn string_iter_yields_bytes() {
+    assert_program_result_u64(
+        "fn main() -> u64 {
+            val s = String::from_str(\"abc\")
+            var sum = 0u64
+            for b in s.iter() { sum = sum + (b as u64) }
+            sum
+        }",
+        97 + 98 + 99,
+    );
+}
+
+#[test]
+fn generic_tuple_payload_variant_constructs() {
+    // The frontend fix behind `DictIter::next`'s `Option<(K, V)>`
+    // return: `Option::Some((k, v))` inside a generic function used to
+    // fail with a `Generic(K)` vs `Identifier(K)` conflict.
+    assert_program_result_i64(
+        "fn make<K, V>(k: K, v: V) -> Option<(K, V)> {
+            Option::Some((k, v))
+        }
+
+        fn main() -> i64 {
+            val o: Option<(i64, i64)> = make(3i64, 4i64)
+            match o {
+                Option::Some(pair) => {
+                    val (a, b) = pair
+                    a + b
+                }
+                Option::None => 0i64,
+            }
+        }",
+        7,
+    );
+}

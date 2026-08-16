@@ -86,6 +86,9 @@ enum Query {
 
 struct CliArgs {
     filename: String,
+    /// RUNTIME-IO: program arguments (everything after the input
+    /// file) surfaced to `argc()` / `arg(i)`.
+    prog_args: Vec<String>,
     verbose: bool,
     core_modules_cli: Option<PathBuf>,
     /// LLM-LOOP P3: emit diagnostics as JSON on stderr instead of the
@@ -147,6 +150,7 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
     let mut seed: Option<u64> = None;
     let mut profile_mem = false;
     let mut profile_json = false;
+    let mut prog_args: Vec<String> = Vec::new();
     let mut iter = raw.iter().skip(1);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -198,9 +202,10 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
             }
             _ => {
                 if filename.is_some() {
-                    return Err(format!("more than one input file: {arg}"));
+                    prog_args.push(arg.clone());
+                } else {
+                    filename = Some(arg.clone());
                 }
-                filename = Some(arg.clone());
             }
         }
     }
@@ -211,7 +216,7 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
     if profile_json && !profile_mem {
         return Err("--profile-format needs --profile=mem".to_string());
     }
-    Ok(CliArgs { filename, verbose, core_modules_cli, diagnostics_json, run_tests, check_contracts, seed, profile_mem, profile_json })
+    Ok(CliArgs { filename, prog_args, verbose, core_modules_cli, diagnostics_json, run_tests, check_contracts, seed, profile_mem, profile_json })
 }
 
 fn main() {
@@ -242,7 +247,7 @@ fn main() {
             return;
         }
     };
-    let CliArgs { filename, verbose, core_modules_cli, diagnostics_json, run_tests, check_contracts, seed, profile_mem, profile_json } = cli;
+    let CliArgs { filename, prog_args, verbose, core_modules_cli, diagnostics_json, run_tests, check_contracts, seed, profile_mem, profile_json } = cli;
     let core_modules_dir = resolve_core_modules_dir(core_modules_cli);
     if verbose {
         if let Some(dir) = &core_modules_dir {
@@ -268,6 +273,7 @@ fn main() {
     options.jit = jit;
     options.core_modules_dir = core_modules_dir.as_deref();
     options.diagnostics_json = diagnostics_json;
+    options.args = prog_args;
     if run_tests {
         process::exit(report_tests(&source, &filename, &options));
     }

@@ -30,6 +30,12 @@ fn assert_engine_parity(src: &str) -> bool {
     let tw = interpreter::execute_program(&program, interner, Some(src), Some("parity.t"))
         .expect("tree-walker run");
 
+    // DROP-GLUE: the engines share one HeapManager, so allocation /
+    // free counters accumulate across runs. Programs that read them
+    // (the drop-glue parity cases) need each run's numbers to start
+    // from zero.
+    interpreter::heap::reset_profile();
+
     // IR VM path (env-independent entry).
     match interpreter::ir_vm::lift::run_main_via_ir_vm(&program, interner) {
         Some(vm) => {
@@ -252,4 +258,115 @@ fn fallback_does_not_duplicate_stdout() {
     });
     assert!(result.is_err(), "the program should diverge");
     assert_eq!(stdout, "hello\n", "output must not be duplicated on fallback");
+}
+
+// --- DROP-GLUE: the two engines must free the same things ------------
+//
+// The IR VM runs the *lowered* drop glue (synthesized per-type
+// functions); the tree-walker runs a value-driven recursive walk. Both
+// must produce the same frees — observed through the allocation
+// counters, which both engines read from the same heap.
+
+#[test]
+fn parity_drop_glue_frees_a_binding() {
+    assert!(assert_engine_parity(
+        r#"
+pub trait Drop {
+    fn drop(&mut self)
+}
+
+        struct Cell { p: ptr }
+
+        impl Cell {
+            fn new(v: i64) -> Self {
+                val p: ptr = __builtin_heap_alloc(8u64)
+                __builtin_ptr_write(p, 0u64, v)
+                Cell { p: p }
+            }
+        }
+
+        impl Drop for Cell {
+            fn drop(&mut self) { __builtin_heap_free(self.p) }
+        }
+
+        fn main() -> u64 {
+            val c: Cell = Cell::new(7i64)
+            __builtin_free_count()
+        }
+    "#
+    ));
+}
+
+#[test]
+fn parity_drop_glue_frees_a_holding_struct() {
+    // `Holder` has no `impl Drop` of its own, but it holds a `Cell`
+    // by value — the containment rule registers it for glue on both
+    // engines.
+    assert!(assert_engine_parity(
+        r#"
+pub trait Drop {
+    fn drop(&mut self)
+}
+
+        struct Cell { p: ptr }
+
+        impl Cell {
+            fn new(v: i64) -> Self {
+                val p: ptr = __builtin_heap_alloc(8u64)
+                __builtin_ptr_write(p, 0u64, v)
+                Cell { p: p }
+            }
+        }
+
+        impl Drop for Cell {
+            fn drop(&mut self) { __builtin_heap_free(self.p) }
+        }
+
+        struct Holder { c: Cell, tag: i64 }
+
+        fn main() -> u64 {
+            val c: Cell = Cell::new(7i64)
+            val h = Holder { c: c, tag: 3i64 }
+            __builtin_free_count()
+        }
+    "#
+    ));
+}
+
+#[test]
+fn parity_drop_glue_frees_an_enum_payload() {
+    // The enum has no `impl Drop`; the payload Cell is freed by the
+    // glue when the enum binding dies.
+    assert!(assert_engine_parity(
+        r#"
+pub trait Drop {
+    fn drop(&mut self)
+}
+
+        struct Cell { p: ptr }
+
+        impl Cell {
+            fn new(v: i64) -> Self {
+                val p: ptr = __builtin_heap_alloc(8u64)
+                __builtin_ptr_write(p, 0u64, v)
+                Cell { p: p }
+            }
+        }
+
+        impl Drop for Cell {
+            fn drop(&mut self) { __builtin_heap_free(self.p) }
+        }
+
+        enum Boxed {
+            Put(Cell),
+            Empty,
+        }
+
+        fn main() -> u64 {
+            val c: Cell = Cell::new(7i64)
+            val b = Boxed::Put(c)
+            __builtin_free_count()
+        }
+    "#
+    ));
 }

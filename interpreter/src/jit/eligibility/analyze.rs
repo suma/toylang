@@ -85,11 +85,21 @@ pub fn analyze(
     // or a report entry that only `--profile=mem` reads, which does not
     // drive the JIT). Every one of them is auto-loaded, so without the
     // list the JIT would be off for every program in the language.
+    //
+    // DROP-GLUE: `Box` and `Vec` are allow-listed for the same reason
+    // as the allocator wrappers. The interpreter-side JIT compiles the
+    // user functions but not the scope-exit drop machinery, so their
+    // storage leaks at exit under the JIT — the documented convention
+    // for allow-listed types, invisible to output. The *compiler-side*
+    // JIT (and the IR VM / AOT) run the full lowered module including
+    // the synthesized drop-glue functions, so `--all-backends
+    // --profile=mem` compares them byte-for-byte regardless.
     if let Some(drop_sym) = interner.get("Drop") {
-        let stdlib_owning: Vec<DefaultSymbol> = ["Arena", "FixedBuffer", "SlotRegion", "Box"]
-            .iter()
-            .filter_map(|name| interner.get(name))
-            .collect();
+        let stdlib_owning: Vec<DefaultSymbol> =
+            ["Arena", "FixedBuffer", "SlotRegion", "Box", "Vec"]
+                .iter()
+                .filter_map(|name| interner.get(name))
+                .collect();
         for i in 0..program.statement.len() {
             let stmt_ref = frontend::ast::StmtRef(i as u32);
             if let Some(frontend::ast::Stmt::ImplBlock {

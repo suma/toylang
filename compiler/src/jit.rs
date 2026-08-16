@@ -355,6 +355,16 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_dispatched_realloc", toy_dispatched_realloc as *const u8);
     jit_builder.symbol("toy_dispatched_free", toy_dispatched_free as *const u8);
     jit_builder.symbol("toy_prof_stat", toy_prof_stat as *const u8);
+    // RUNTIME-IO: stdlib I/O externs (core/std/io.t). Rust mirrors of
+    // the `toy_io_*` helpers in `compiler/runtime/toylang_rt.c`.
+    jit_builder.symbol("toy_io_read_line", toy_io_read_line as *const u8);
+    jit_builder.symbol("toy_io_argc", toy_io_argc as *const u8);
+    jit_builder.symbol("toy_io_arg", toy_io_arg as *const u8);
+    jit_builder.symbol("toy_io_env", toy_io_env as *const u8);
+    jit_builder.symbol("toy_io_read_file", toy_io_read_file as *const u8);
+    jit_builder.symbol("toy_io_file_exists", toy_io_file_exists as *const u8);
+    jit_builder.symbol("toy_io_now", toy_io_now as *const u8);
+    jit_builder.symbol("toy_io_random", toy_io_random as *const u8);
     jit_builder.symbol("toy_prof_force_counting", toy_prof_force_counting as *const u8);
     jit_builder.symbol("toy_record_allocator_layout", toy_record_allocator_layout as *const u8);
     // STR-INTERP-AOT: str runtime helpers. The JIT-side
@@ -615,11 +625,9 @@ unsafe extern "C" fn toy_alloc_current() -> u64 {
 // policies live in the toylang stdlib (`core/std/allocator.t`) on
 // top of the default allocator. The `handle` argument is preserved
 // in the IR for forward compatibility but currently routes every
-// call straight to libc.
+// call to the bump region below.
 unsafe extern "C" {
     fn malloc(size: usize) -> *mut u8;
-    fn realloc(p: *mut u8, size: usize) -> *mut u8;
-    fn free(p: *mut u8);
 }
 
 // MEMORY_PROFILING M1: the third implementation of the allocation
@@ -715,13 +723,66 @@ unsafe extern "C" fn toy_record_allocator_layout(
     });
 }
 
+// ---- Bump region (DROP-GLUE) ----
+//
+// Mirror of the C runtime's `toy_bump_*`: the JIT's dispatcher hands
+// memory out of a bump region that never reuses a freed address. A
+// drop-glue walk that reaches the same boxed node twice (aliasing, a
+// `get()` copy, a shared boxed list tail) therefore reads the block's
+// original contents on the second visit, and the free is an idempotent
+// no-op. libc `free` is never called on dispatcher memory.
+
+const JIT_BUMP_CHUNK_SIZE: usize = 1 << 20; // 1 MiB per chunk
+
+#[repr(C)]
+struct JitBumpChunk {
+    next: *mut JitBumpChunk,
+    used: usize,
+}
+
+thread_local! {
+    static JIT_BUMP_HEAD: std::cell::Cell<*mut JitBumpChunk> =
+        const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
+
+fn jit_bump_alloc_raw(size: usize) -> *mut u8 {
+    let size = (size + 15) & !15usize;
+    JIT_BUMP_HEAD.with(|head| {
+        let chunk = head.get();
+        if chunk.is_null() || unsafe { (*chunk).used } + size > JIT_BUMP_CHUNK_SIZE {
+            let fresh =
+                unsafe { malloc(std::mem::size_of::<JitBumpChunk>() + JIT_BUMP_CHUNK_SIZE) }
+                    as *mut JitBumpChunk;
+            if fresh.is_null() {
+                return std::ptr::null_mut();
+            }
+            unsafe {
+                (*fresh).next = chunk;
+                (*fresh).used = 0;
+            }
+            head.set(fresh);
+            let p = unsafe {
+                (fresh as *mut u8).add(std::mem::size_of::<JitBumpChunk>())
+            };
+            unsafe { (*fresh).used += size };
+            p
+        } else {
+            let p = unsafe {
+                (chunk as *mut u8).add(std::mem::size_of::<JitBumpChunk>() + (*chunk).used)
+            };
+            unsafe { (*chunk).used += size };
+            p
+        }
+    })
+}
+
 unsafe extern "C" fn toy_dispatched_alloc(_handle: u64, size: u64, site: u64) -> *mut u8 {
     // Zero-size yields null and is not counted, matching the other two
     // implementations; libc would return a unique non-null pointer.
     if size == 0 {
         return std::ptr::null_mut();
     }
-    let p = unsafe { malloc(size as usize) };
+    let p = jit_bump_alloc_raw(size as usize);
     if !p.is_null() {
         JIT_PROFILE.with(|prof| {
             let mut g = prof.get();
@@ -761,7 +822,8 @@ unsafe extern "C" fn toy_dispatched_free(_handle: u64, p: *mut u8) {
             e.live_bytes = e.live_bytes.saturating_sub(size);
         });
     }
-    unsafe { free(p) };
+    // No libc free: the bump region never reuses an address, so a
+    // later drop-glue visit of this block reads its original contents.
 }
 
 unsafe extern "C" fn toy_dispatched_realloc(_handle: u64, p: *mut u8, new_size: u64) -> *mut u8 {
@@ -796,9 +858,19 @@ unsafe extern "C" fn toy_dispatched_realloc(_handle: u64, p: *mut u8, new_size: 
             e.live_bytes = e.live_bytes.saturating_sub(old_size - new_size);
         }
     });
-    let np = unsafe { realloc(p, new_size as usize) };
-    let key = if np.is_null() { p } else { np };
-    JIT_ALLOC_SIZES.with(|m| m.borrow_mut().insert(key as usize, (new_size, site)));
+    // Bump-region move: a fresh block, old contents copied, the old
+    // block left in place (it is never reused).
+    let np = jit_bump_alloc_raw(new_size as usize);
+    if np.is_null() {
+        JIT_ALLOC_SIZES.with(|m| m.borrow_mut().insert(p as usize, (old_size, site)));
+        return np;
+    }
+    if old_size > 0 {
+        unsafe {
+            std::ptr::copy_nonoverlapping(p, np, (old_size as usize).min(new_size as usize));
+        }
+    }
+    JIT_ALLOC_SIZES.with(|m| m.borrow_mut().insert(np as usize, (new_size, site)));
     np
 }
 
@@ -1071,3 +1143,119 @@ unsafe extern "C" fn toy_to_string_u32(v: u32) -> *const u8 {
     unsafe { toy_to_string_u64(v as u64) }
 }
 
+
+// ---------------------------------------------------------------------------
+// RUNTIME-IO: JIT mirrors of the `toy_io_*` C helpers.
+//
+// Same semantics as `compiler/runtime/toylang_rt.c`: `str` args are
+// toylang str handles (pointer to the trailing u64 len field), `str`
+// results are built with `toy_str_alloc` (malloc'd, never freed — the
+// str runtime owns them), failures return `""`.
+// ---------------------------------------------------------------------------
+
+// Program arguments for `toy_io_argc` / `toy_io_arg`. The JIT runs
+// in-process inside the compiler, whose own argv is not the program's
+// — the harness sets this explicitly (default: empty, matching a
+// compiled binary launched with no arguments).
+thread_local! {
+    static JIT_PROGRAM_ARGS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+pub fn set_jit_program_args(args: Vec<String>) {
+    JIT_PROGRAM_ARGS.with(|a| *a.borrow_mut() = args);
+}
+
+fn jit_str_to_rust(name: *const u8) -> String {
+    unsafe {
+        let len = (name as *const u64).read_unaligned() as usize;
+        let bytes = name.sub(len + 1);
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes, len)).to_string()
+    }
+}
+
+fn jit_str_from_rust(text: &str) -> *const u8 {
+    unsafe { toy_str_alloc(text.as_ptr(), text.len() as u64) }
+}
+
+unsafe extern "C" fn toy_io_read_line() -> *const u8 {
+    let mut line = String::new();
+    use std::io::Read;
+    let mut buf = [0u8; 1];
+    let mut stdin = std::io::stdin().lock();
+    loop {
+        match stdin.read(&mut buf) {
+            Ok(0) => break,
+            Ok(_) => {
+                if buf[0] == b'\n' {
+                    break;
+                }
+                line.push(buf[0] as char);
+            }
+            Err(_) => break,
+        }
+    }
+    if line.ends_with('\r') {
+        line.pop();
+    }
+    jit_str_from_rust(&line)
+}
+
+unsafe extern "C" fn toy_io_argc() -> u64 {
+    JIT_PROGRAM_ARGS.with(|a| a.borrow().len() as u64)
+}
+
+unsafe extern "C" fn toy_io_arg(i: u64) -> *const u8 {
+    let text = JIT_PROGRAM_ARGS
+        .with(|a| a.borrow().get(i as usize).cloned())
+        .unwrap_or_default();
+    jit_str_from_rust(&text)
+}
+
+unsafe extern "C" fn toy_io_env(name: *const u8) -> *const u8 {
+    let key = jit_str_to_rust(name);
+    let text = std::env::var(&key).unwrap_or_default();
+    jit_str_from_rust(&text)
+}
+
+unsafe extern "C" fn toy_io_read_file(path: *const u8) -> *const u8 {
+    let p = jit_str_to_rust(path);
+    let text = std::fs::read_to_string(&p).unwrap_or_default();
+    jit_str_from_rust(&text)
+}
+
+unsafe extern "C" fn toy_io_file_exists(path: *const u8) -> u8 {
+    let p = jit_str_to_rust(path);
+    if std::path::Path::new(&p).exists() {
+        1
+    } else {
+        0
+    }
+}
+
+unsafe extern "C" fn toy_io_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+unsafe extern "C" fn toy_io_random() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static STATE: AtomicU64 = AtomicU64::new(0);
+    let mut st = STATE.load(Ordering::Relaxed);
+    if st == 0 {
+        let seed = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0))
+            ^ ((std::process::id() as u64) << 32);
+        st = if seed == 0 { 0x9E3779B97F4A7C15 } else { seed };
+    }
+    let mut x = st;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    STATE.store(x, Ordering::Relaxed);
+    x.wrapping_mul(0x2545F4914F6CDD1D)
+}

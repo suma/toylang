@@ -1,9 +1,10 @@
 //! Ownership transfer for resource-owning values (BOX-T phase C).
 //!
-//! A value whose type has an `impl Drop` owns something the runtime
-//! will hand back — a heap block, a buffer, an arena. The scope that
-//! built it drops it on the way out. That is fine until the value is
-//! also stored somewhere that outlives the scope:
+//! A value whose type (transitively) has an `impl Drop` owns
+//! something the runtime will hand back — a heap block, a buffer, an
+//! arena. The scope that built it drops it on the way out. That is
+//! fine until the value is also stored somewhere that outlives the
+//! scope:
 //!
 //! ```text
 //! while store.size() < 1u64 {
@@ -20,6 +21,12 @@
 //! backends then skip the transferred binding's drop, so the pointer
 //! the container holds stays valid.
 //!
+//! DROP-GLUE: "owns" is the transitive containment answer
+//! (`DropAnalysis::contains_drop`), not just the direct `impl Drop`
+//! members. A `Vec<Box<i64>>`, an enum carrying a `Box` payload, or a
+//! struct holding one by value all transfer when handed over, and all
+//! get drop glue when their own lifetime ends.
+//!
 //! ## What is deliberately *not* a transfer
 //!
 //! * **`val b = a`.** Compound bindings alias in this language: `b.x =
@@ -31,7 +38,9 @@
 //!   frontend inserts the borrow), so the caller keeps the value.
 //! * **`__builtin_ptr_write` and friends.** Raw pointer traffic is
 //!   unchecked by construction — and `Box::new` is written with it, so
-//!   treating it as a transfer would make `Box` itself unwritable.
+//!   treating it as a transfer would make `Box` itself unwritable. The
+//!   value written into memory is freed by the memory's owner (the
+//!   container's drop glue), not by the writing binding.
 //!
 //! ## Known gaps
 //!
@@ -39,7 +48,11 @@
 //! `b` leaves `a` naming a value that has moved on, and this pass will
 //! not complain about reading it. Transferring out of a branch or a
 //! loop body is refused rather than tracked, since a conditionally-owned
-//! binding needs a runtime drop flag to know whether to fire.
+//! binding needs a runtime drop flag to know whether to fire. A
+//! *parameter* whose value is written into memory inside the callee
+//! (the `value: T` parameter of `Box::new` / `Vec::push`) is not
+//! tracked either — parameters register no drop, so the value is freed
+//! once, by whoever owns the memory it went into.
 
 use std::collections::{HashMap, HashSet};
 
@@ -47,7 +60,7 @@ use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 use crate::ast::{Expr, ExprRef, File, Stmt, StmtRef};
 use crate::type_checker::error::SourceLocation;
-use crate::type_checker::TypeCheckError;
+use crate::type_checker::{contains_drop::DropAnalysis, TypeCheckError};
 use crate::type_decl::TypeDecl;
 
 /// What the pass found: the diagnostics, and the bindings whose value
@@ -72,8 +85,8 @@ pub fn check_moves(
     interner: &DefaultStringInterner,
     expr_types: &HashMap<ExprRef, TypeDecl>,
 ) -> MoveAnalysis {
-    let owning = owning_types(program, interner);
-    if owning.is_empty() {
+    let drop_analysis = DropAnalysis::new(program, interner);
+    if drop_analysis.drop_implementing_types().is_empty() {
         return MoveAnalysis { errors: Vec::new(), transferred: HashSet::new() };
     }
     let signatures = Signatures::collect(program, interner);
@@ -82,7 +95,7 @@ pub fn check_moves(
         program,
         interner,
         expr_types,
-        owning: &owning,
+        drop_analysis: &drop_analysis,
         signatures: &signatures,
         scopes: Vec::new(),
         moved: HashMap::new(),
@@ -98,24 +111,11 @@ pub fn check_moves(
     MoveAnalysis { errors: checker.errors, transferred: checker.transferred }
 }
 
-/// Types with an `impl Drop`. Read from the statement pool, the same
-/// way `compiler_lower::program` builds `Module::drop_trait_structs` —
-/// the two must agree, or a binding this pass transfers would still be
-/// dropped by the backend.
-fn owning_types(program: &File, interner: &DefaultStringInterner) -> HashSet<DefaultSymbol> {
-    let mut out = HashSet::new();
-    for i in 0..program.statement.len() {
-        let stmt_ref = StmtRef(i as u32);
-        if let Some(Stmt::ImplBlock { target_type, trait_name: Some(trait_sym), .. }) =
-            program.statement.get(&stmt_ref)
-            && interner.resolve(trait_sym) == Some("Drop")
-        {
-            out.insert(target_type);
-        }
-    }
-    out
-}
-
+/// The set of owning types is computed by `DropAnalysis` (DROP-GLUE):
+/// any type that has an `impl Drop` *or* holds one by value. This is
+/// the transitive answer — a `Vec<Box<i64>>`, an enum carrying a
+/// `Box` payload, or a struct holding one by value all own resources,
+/// so all of them transfer when handed over.
 /// Parameter lists, so a call site can tell a borrow from a transfer.
 struct Signatures {
     /// Free functions by name.
@@ -223,7 +223,7 @@ struct MoveCheck<'a> {
     program: &'a File,
     interner: &'a DefaultStringInterner,
     expr_types: &'a HashMap<ExprRef, TypeDecl>,
-    owning: &'a HashSet<DefaultSymbol>,
+    drop_analysis: &'a DropAnalysis,
     signatures: &'a Signatures,
     scopes: Vec<Vec<Owned>>,
     /// Where each transferred binding was transferred.
@@ -280,13 +280,10 @@ impl MoveCheck<'_> {
     }
 
     fn is_owning(&self, ty: &TypeDecl) -> bool {
-        match ty {
-            TypeDecl::Identifier(name)
-            | TypeDecl::Struct(name, _)
-            | TypeDecl::Enum(name, _) => self.owning.contains(name),
-            TypeDecl::Ref { inner, .. } => self.is_owning(inner),
-            _ => false,
-        }
+        // DROP-GLUE: the transitive containment answer. A binding of a
+        // `Vec<Box<i64>>` or a `List` enum carrying `Box` payloads owns
+        // resources even though neither type has its own `impl Drop`.
+        self.drop_analysis.contains_drop(ty)
     }
 
     /// The declared or inferred type of a `val` / `var` initializer.

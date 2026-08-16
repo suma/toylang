@@ -2864,11 +2864,26 @@ make the edge an index:
 struct Node { v: i64, next: u64 }   # index into a Vec<Node>
 ```
 
-or hold a raw `ptr` and go through the heap builtins
-(`__builtin_heap_alloc` / `__builtin_ptr_read` / `__builtin_ptr_write`).
-`interpreter/example/linked_list_arena.t` is a worked example of the
-first shape. A `Box<T>` that would make this ergonomic does not exist
-yet (`design-docs/todo.md`, BOX-T).
+or hold a raw `ptr` and go through the heap builtins:
+
+```rust
+struct Node { v: i64, next: ptr, has_next: bool }
+
+val p: ptr = __builtin_heap_alloc(__builtin_sizeof(rest))
+__builtin_ptr_write(p, 0u64, rest)
+val rest: Node = __builtin_ptr_read(n.next, 0u64)
+```
+
+The annotation on the read is not optional: it names the type whose
+leaves are pulled back out of the buffer, and the read has no other way
+to know its shape. An enum-typed annotation is not supported there yet
+— the buffer layout of a slot whose shape depends on the variant is
+still undecided.
+
+`interpreter/example/linked_list_arena.t` and `linked_list_ptr.t` are
+worked examples of the two shapes. A `Box<T>` that would carry the
+allocation and its drop does not exist yet (`design-docs/todo.md`,
+BOX-T).
 
 ---
 

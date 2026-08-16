@@ -7561,3 +7561,51 @@ fn a_method_body_dispatches_the_same_as_a_function_body() {
         "in-method ada\nin-function ada\nT3\n",
     );
 }
+
+#[test]
+fn ptr_read_into_a_named_struct_round_trips() {
+    // RECURSIVE-TYPES follow-up: `val n: Node = __builtin_ptr_read(...)`.
+    //
+    // The compound read path existed but only recognised an annotation
+    // it could reach through `lower_scalar` or the active
+    // monomorphisation substitution — that is, a primitive or a generic
+    // parameter inside a `Vec<T>`-style body. A user-named type arrives
+    // as `TypeDecl::Identifier`, matched neither, and the read failed
+    // with "compiler MVP requires `val NAME: TYPE = ...`" while the
+    // annotation was sitting right there.
+    //
+    // It matters because the raw-`ptr` field is what E0013 points a
+    // recursive type at: without this, such a structure could be
+    // *written* but never read back, so the advice was not executable.
+    let src = r#"
+        struct Node {
+            v: i64,
+            next: ptr,
+            has_next: bool,
+        }
+
+        fn cons(v: i64, rest: Node) -> Node {
+            val p: ptr = __builtin_heap_alloc(__builtin_sizeof(rest))
+            __builtin_ptr_write(p, 0u64, rest)
+            Node { v: v, next: p, has_next: true }
+        }
+
+        fn sum(n: Node) -> i64 {
+            if n.has_next {
+                val rest: Node = __builtin_ptr_read(n.next, 0u64)
+                n.v + sum(rest)
+            } else {
+                n.v
+            }
+        }
+
+        fn main() -> i64 {
+            val nil = Node { v: 0i64, next: __builtin_null_ptr(), has_next: false }
+            val a = cons(3i64, nil)
+            val b = cons(2i64, a)
+            val c = cons(1i64, b)
+            sum(c)
+        }
+    "#;
+    assert_consistent(src, "ptr_read_named_struct");
+}

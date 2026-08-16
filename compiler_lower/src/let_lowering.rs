@@ -409,6 +409,31 @@ impl<'a> FunctionLower<'a> {
         // wouldn't be reachable through `lower_scalar`,
         // which only knows the leaf-primitive `TypeDecl`s.
         let elem_ty = annotation.and_then(|a| self.lower_scalar_with_subst(a));
+        // A user-named type (`val n: Node = ...`) is not a scalar and
+        // is not in the substitution either, so the step above misses
+        // it and the read used to fall through to the "needs a type
+        // annotation" error — with the annotation right there. Resolve
+        // the name to its monomorphised instance instead; this is the
+        // same path type arguments already take.
+        let elem_ty = match elem_ty {
+            Some(t) => Some(t),
+            None => annotation.and_then(|a| self.lower_type_arg(a)),
+        };
+        // An enum's buffer layout is not the leaf list
+        // `compute_leaf_layout` produces (`compute_byte_size` gives an
+        // enum `1 + max(payload)`, while the leaf walk would want every
+        // variant's payload laid end to end), so a per-leaf read would
+        // garble it. Say so, rather than falling through to the scalar
+        // path and reading a tag-sized slot as if it were the value.
+        if let Some(Type::Enum(_)) = elem_ty {
+            return Err(
+                "__builtin_ptr_read: an enum-typed annotation is not supported yet — the \
+                 per-leaf read model has no layout for a slot whose shape depends on the \
+                 variant. Store the payload through a struct, or keep the enum in a \
+                 `Vec` and index it"
+                    .to_string(),
+            );
+        }
         if let Some(elem_ty) = elem_ty {
             if matches!(elem_ty, Type::Struct(_) | Type::Tuple(_)) {
                 let leaves = self.compute_leaf_layout(elem_ty).ok_or_else(|| {

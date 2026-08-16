@@ -216,6 +216,47 @@ fn main() -> i64 {
     assert_eq!(result.borrow().unwrap_int64(), 6i64);
 }
 
+/// The `ptr` indirection E0013 recommends has to be *readable*, not
+/// just writable. A user-named type reaches the annotation as
+/// `TypeDecl::Identifier`, which the `__builtin_ptr_read` hint list
+/// used to drop — the read came back `u64` and the binding failed with
+/// a type mismatch, so a hand-rolled linked structure could be built
+/// and never traversed.
+#[test]
+fn a_node_can_be_read_back_through_its_ptr_field() {
+    let result = test_program(
+        "struct Node {
+    v: i64,
+    next: ptr,
+    has_next: bool,
+}
+
+fn cons(v: i64, rest: Node) -> Node {
+    val p: ptr = __builtin_heap_alloc(__builtin_sizeof(rest))
+    __builtin_ptr_write(p, 0u64, rest)
+    Node { v: v, next: p, has_next: true }
+}
+
+fn sum(n: Node) -> i64 {
+    if n.has_next {
+        val rest: Node = __builtin_ptr_read(n.next, 0u64)
+        n.v + sum(rest)
+    } else {
+        n.v
+    }
+}
+
+fn main() -> i64 {
+    val nil = Node { v: 0i64, next: __builtin_null_ptr(), has_next: false }
+    val a = cons(3i64, nil)
+    val b = cons(2i64, a)
+    sum(b)
+}",
+    )
+    .expect("a named struct annotation gives the read its shape");
+    assert_eq!(result.borrow().unwrap_int64(), 5i64);
+}
+
 /// A generic type whose parameter is never instantiated with itself is
 /// not recursive, however many times it nests.
 #[test]

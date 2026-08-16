@@ -523,6 +523,16 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
                     | TypeDecl::Int32 | TypeDecl::UInt32
                     | TypeDecl::Ptr | TypeDecl::String | TypeDecl::Allocator
                     | TypeDecl::Struct(_, _) | TypeDecl::Enum(_, _)
+                    // A user-named type reaches an annotation as
+                    // `Identifier` — the parser cannot tell a struct
+                    // from an enum, and nothing resolves the annotation
+                    // before this point. Without this arm the hint was
+                    // dropped and the read came back `u64`, so
+                    // `val n: Node = __builtin_ptr_read(p, off)` failed
+                    // with a type mismatch: the raw-`ptr` indirection
+                    // that E0013 points recursive types at could be
+                    // written but not read back (RECURSIVE-TYPES).
+                    | TypeDecl::Identifier(_)
                     | TypeDecl::Generic(_)
                 ) {
                     return Ok(hint.clone());

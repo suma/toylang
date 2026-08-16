@@ -134,6 +134,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | 関心事 | 場所 |
 |---|---|
 | heap builtin (`__builtin_heap_*` / `ptr_*`) | `evaluation/builtin.rs` |
+| `__builtin_ptr_read` の**型注釈の解釈** | **2 箇所ある**: 型検査は `type_checker/visitor_impl.rs::visit_builtin_call` の hint 許容リスト、lowering は `compiler_lower/src/let_lowering.rs::lower_let_builtin_ptr_read` (名前解決は `lower_type_arg`)。片方だけ足すと「型は通るが lower できない」/「lower はできるが型で落ちる」になる |
 | allocator スタック (`with allocator =`) | `evaluation/builtin.rs`, `interpreter/src/runtime_state.rs` |
 | stdlib 側の policy | `core/std/allocator.t` |
 

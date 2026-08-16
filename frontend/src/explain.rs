@@ -389,6 +389,14 @@ or hold a raw `ptr` and go through the heap builtins:
 
     struct Node { v: i64, next: ptr, has_next: bool }
 
+    val p: ptr = __builtin_heap_alloc(__builtin_sizeof(rest))
+    __builtin_ptr_write(p, 0u64, rest)
+    val rest: Node = __builtin_ptr_read(n.next, 0u64)
+
+The annotation on the read is what gives it a shape -- it names the
+type whose leaves come back out of the buffer, so it cannot be left
+off. An enum-typed annotation is not supported there yet.
+
 `ptr`, function types and `dyn Trait` are the positions that break a
 cycle. `&T` is not: it is erased to `T` at lowering, so `next: &Node`
 recurses exactly like `next: Node`.";

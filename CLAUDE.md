@@ -426,7 +426,7 @@ fn main() -> u64 {
 - 関数の引数として `Allocator` を渡す形は推奨しない (関数は `with allocator = ...` の active stack を経由して暗黙的に allocator を使う)
 - arena は個別 `free` を no-op とし、`Drop` で一括解放。fixed_buffer は quota 超過で `0`（null ポインタ）を返す。両者の policy はすべて toylang stdlib (`core/std/allocator.t`) に実装され、底に default allocator が居る
 - `List<T>` のようなコレクションは言語組み込みではなく、`struct` + `impl` + `__builtin_heap_alloc/realloc/ptr_read/ptr_write` で書く。これらの builtin は現在の active allocator を経由する
-- `__builtin_ptr_write(p, off, value)` は任意型の値を受け取り、`__builtin_ptr_read(p, off)` は呼び出し側の型ヒント（`val v: T = ...` など）に沿って値を返す。内部的には typed-slot map に値を保存しているため、`List<i64>` / `List<bool>` / `List<MyStruct>` もそのまま動作する
+- `__builtin_ptr_write(p, off, value)` は任意型の値を受け取り、`__builtin_ptr_read(p, off)` は呼び出し側の型ヒント（`val v: T = ...` など）に沿って値を返す。内部的には typed-slot map に値を保存しているため、`List<i64>` / `List<bool>` / `List<MyStruct>` もそのまま動作する。**読み出しの型注釈は必須** (それが唯一の shape の情報源)。generic param (`T`) / primitive に加えて **user 定義の struct 名 / tuple** も書ける (3 backend)。**enum 名は未対応** — variant で shape が変わる slot の layout が未定 (AOT/JIT は専用の診断で拒否、tree-walker は動く)
 
 ### 進捗
 

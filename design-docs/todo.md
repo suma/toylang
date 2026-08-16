@@ -11,6 +11,7 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-16
+- **`__builtin_ptr_read` が user 定義型名の注釈を受けるように** — `val n: Node = __builtin_ptr_read(p, off)` が通る。user 型は注釈に `TypeDecl::Identifier` で来るので型検査のヒント許容リストから落ち、lowering も名前 → `StructId` を解決していなかった (generic 実体化中の `T` だけ見ていた)。**E0013 が勧める raw ptr の逃げ道が「書けるが読み出せない」状態だったのを解消**。enum 名は per-leaf read model に layout が無いので専用の診断で拒否。
 - **RECURSIVE-TYPES step 1: 再帰型を診断で拒否 (E0013)** — 間接化なしで自分を含む struct / enum は有限な layout を持てないのに、型検査を素通りして lowering (`instantiate_struct` / `instantiate_enum` は memo 化の**前**にメンバを lower する) で host stack を食い潰し、**exit 134 / メッセージ無し**で abort していた。型引数経由 (`Vec<Tree>`) も同じ経路で落ちるので同じ検査に含む。`compiler_lower` 側にも in-progress guard を入れ、abort を通常の lowering error に落とす二段構え。`Box<T>` (BOX-T) は別途。
 - **parser: 改行前 `(` は method call に継続しない** — `b.v\n(x as i64)` が `b.v(...)` と parse され、ユーザが書いていない呼び出しについて型エラーが出ていた。
 - **CONCRETE-IMPL-Phase-2c (generic-wildcard 完遂)** — 型チェッカの method registry を `Vec<MethodSpec>` 化し、3 層 (型検査 / interpreter / compiler) の dispatch を exact → wildcard → lone-spec に統一。concrete impl が generic impl を override できる。
@@ -200,13 +201,17 @@
     `Box` を素直にコピーすると同じ ptr を 2 人が持ち、`Drop`
     (GENERIC-RAII) と組むと二重解放になる。move を入れるか / refcount か /
     `Drop` を付けず手動 free に留めるかを決めてから stdlib に置くこと。
-  - **付随して埋まると嬉しい穴**: `val n: Node = __builtin_ptr_read(p, 0)`
-    が動かない。型検査の型ヒント許容リスト
-    (`type_checker/visitor_impl.rs::visit_builtin_call`) に
-    `TypeDecl::Identifier(_)` が無く、lowering 側も
-    `lower_scalar_with_subst` が `Identifier(名前) → StructId` を解決しない
-    (generic 実体化中の `T` しか見ない)。埋まれば `Box<T>` を待たずに
-    raw ptr で再帰構造を手書きできる。
+  - **手書きの逃げ道は 2 つとも動く** (2026-08-16 に ptr_read の型注釈が
+    landing した): arena + index (`example/linked_list_arena.t`) と
+    raw ptr (`example/linked_list_ptr.t`)。どちらも 3 バックエンド一致。
+    残るのは alloc/free と drop を誰が持つかで、それが `Box<T>` の中身。
+- **PTR-READ-ENUM: enum 名の `__builtin_ptr_read`** ★ — `val e: Chain =
+  __builtin_ptr_read(p, off)` は AOT/JIT で拒否 (tree-walker では動く)。
+  `compute_leaf_layout` が enum を拒んでいるため。**decide すべきは buffer
+  layout**: `compute_byte_size` は enum を `1 + max(payload)` と数えるのに、
+  関数境界の flatten (`flatten_compound_leaf_types`) は `tag + 全 variant の
+  payload 連結` で、2 つが食い違う。どちらかに寄せないと read/write が
+  garble する。BOX-T で enum を heap に置くなら前提になる。
 - **NEWTYPE: tuple struct / newtype (`struct Meters(i64)`)** ★ — parse エラー。
   単位型・ID 型のラップが「1 フィールドの struct + 冗長な field 名」になる。
   parser + 位置指定のフィールドアクセス (`m.0`) が要る。
@@ -292,7 +297,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **1833 テスト** (100% 成功、2026-08-16 時点)。
+- 合計 **1835 テスト** (100% 成功、2026-08-16 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - ワークスペース全体で ~5s。`compiler/build.rs` が `toylang_rt.c` を pre-build し、リンク結果は `TOY_LINK_CACHE_DIR` で content-addressed にキャッシュされる (キャッシュが効くにはコード生成が決定的である必要がある — `compiler/tests/reproducible_build.rs` が pin)。
 

@@ -290,6 +290,9 @@
 ## 検討中の機能
 
 * FFI / 拡張ライブラリ — 設計は [`FFI_PLAN.md`](FFI_PLAN.md) (未着手)
+* AOT ランタイムの Rust 化 → toylang 化 — 設計は
+  [`RUNTIME_PORT.md`](RUNTIME_PORT.md) (未着手)。動機は「C / JIT ミラー /
+  interpreter の 3 重実装」で、下の f64 不一致がその実害
 * モジュール拡張 — バージョニング、リモートパッケージ
 * 言語内からの AST 取得・操作
 * LSP 対応 — 補完 / go-to-definition / hover / 診断 / フォーマット。frontend の AST・型チェッカ・`SourceLocation` を再利用できる。ただし**エージェントは LSP より CLI クエリを使いやすい**ので、LLM ループの観点では `--api` / 型ホール (P7 で landing 済み) の方が先だった
@@ -319,6 +322,18 @@
   (`evaluation/mod.rs`) のガードは**式評価の入れ子しか数えていない**ので
   先に host stack が尽きる。再帰型 (E0013) と違い、これは診断化ではなく
   ガードの数え方を関数フレームに変える話。
+- **f64 の print / 補間が 3 バックエンドで食い違う (2026-08-16 実測)** —
+  AOT は C ランタイムの `%g` / `%.1f` (`emit_f64`)、interpreter / JIT は
+  Rust の `Display`。`0.1f64 + 0.2f64` が interpreter `0.30000000000000004`
+  に対し AOT `0.3`、`1234567.75f64` が AOT `1.23457e+06`。大きい整数値の
+  f64 では JIT も interpreter と割れる。`example_consistency` がこの形の
+  値を踏んでいないので緑のまま。実装を 1 本にすれば構造的に消えるので、
+  個別修正ではなく [`RUNTIME_PORT.md`](RUNTIME_PORT.md) R1 で解消する。
+  **決定 (2026-08-16): 正本は Rust の `Display` 側とし、AOT の出力が変わる
+  仕様変更を受け入れる。** `%g` は 6 桁で丸めて情報を落とすので、精度を
+  保つ側に寄せる。R1 で AOT の出力が `0.3` → `0.30000000000000004`、
+  `1.23457e+06` → `1234567.75` に変わるため、`docs/language.md` の
+  print / 補間の節への明記と golden の更新を同じコミットに含める。
 - **型不一致診断が `Identifier(SymbolU32 { value: 40 })` と Debug 表記を
   漏らす** — `TypeCheckErrorKind::TypeMismatch` の `Display` が `{:?}`
   なので、解決前の user 型名が生の symbol id で出る。`source_name` /

@@ -70,9 +70,11 @@ pub fn check_recursive_types(
         index.entry(d.name).or_insert(i);
     }
 
+    let by_value = ByValueParams::compute(&decls, &index);
     let mut walk = Walk {
         decls: &decls,
         index: &index,
+        by_value: &by_value,
         program,
         interner,
         color: vec![Color::White; decls.len()],
@@ -92,6 +94,9 @@ pub fn check_recursive_types(
 /// another declared type.
 struct Decl {
     name: DefaultSymbol,
+    /// Declared type parameters, in order. Indices into this list are
+    /// what `ByValueParams` answers about.
+    generic_params: Vec<DefaultSymbol>,
     /// Where the declaration is, for the diagnostic's location.
     stmt: StmtRef,
     /// `(member label, member type)` in declaration order. The label is
@@ -110,6 +115,7 @@ enum Color {
 struct Walk<'a> {
     decls: &'a [Decl],
     index: &'a HashMap<DefaultSymbol, usize>,
+    by_value: &'a ByValueParams,
     program: &'a File,
     interner: &'a DefaultStringInterner,
     color: Vec<Color>,
@@ -132,7 +138,7 @@ impl Walk<'_> {
 
         for (label, ty) in &self.decls[i].members {
             let mut refs = Vec::new();
-            collect_value_refs(ty, &mut refs);
+            collect_value_refs(ty, self.index, self.by_value, &mut refs);
             for target in refs {
                 let Some(&j) = self.index.get(&target) else {
                     continue;
@@ -193,39 +199,164 @@ impl Walk<'_> {
     }
 }
 
-/// Every declared type named in a value position of `ty`.
+/// Which type parameters of each declared type are held **by value**.
 ///
-/// Type arguments count (see the module comment): monomorphisation
-/// lowers them before the type that carries them. `ptr`, function
-/// types and `dyn Trait` name no value of their own and contribute
-/// nothing.
-fn collect_value_refs(ty: &TypeDecl, out: &mut Vec<DefaultSymbol>) {
+/// `Vec<T>` holds none: its fields are `ptr` / `u64`, and the elements
+/// live behind the pointer. `Wrapper<T> { v: T }` holds its one
+/// parameter. The distinction decides whether a type argument is an
+/// edge — see `collect_value_refs`.
+///
+/// Indexed the same way as the `decls` slice it was built from.
+struct ByValueParams(Vec<Vec<bool>>);
+
+impl ByValueParams {
+    /// Fixpoint over the declaration graph: a parameter is held by
+    /// value if it appears in a member position directly, or is passed
+    /// to another type at a position *that* type holds by value
+    /// (`struct A<T> { b: B<T> }` inherits from `B`).
+    fn compute(decls: &[Decl], index: &HashMap<DefaultSymbol, usize>) -> Self {
+        let mut flags: Vec<Vec<bool>> = decls
+            .iter()
+            .map(|d| vec![false; d.generic_params.len()])
+            .collect();
+        loop {
+            let mut changed = false;
+            for (owner, decl) in decls.iter().enumerate() {
+                for (_label, ty) in &decl.members {
+                    mark_by_value(ty, owner, decls, index, &mut flags, &mut changed);
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        ByValueParams(flags)
+    }
+
+    /// Whether `decls[owner]` holds its `param`-th type parameter by
+    /// value. Out-of-range answers `true` so an unmodelled shape is
+    /// treated as containment rather than waved through.
+    fn holds(&self, owner: usize, param: usize) -> bool {
+        self.0
+            .get(owner)
+            .and_then(|params| params.get(param))
+            .copied()
+            .unwrap_or(true)
+    }
+}
+
+/// Mark every parameter of `decls[owner]` that `ty` holds by value.
+fn mark_by_value(
+    ty: &TypeDecl,
+    owner: usize,
+    decls: &[Decl],
+    index: &HashMap<DefaultSymbol, usize>,
+    flags: &mut [Vec<bool>],
+    changed: &mut bool,
+) {
+    match ty {
+        TypeDecl::Generic(name) | TypeDecl::Identifier(name) => {
+            if let Some(pos) = decls[owner].generic_params.iter().position(|p| p == name)
+                && !flags[owner][pos]
+            {
+                flags[owner][pos] = true;
+                *changed = true;
+            }
+        }
+        TypeDecl::Struct(name, args) | TypeDecl::Enum(name, args) => {
+            match index.get(name) {
+                // Only the argument positions the target holds by value
+                // carry our parameters into a value position.
+                Some(&target) => {
+                    for (slot, arg) in args.iter().enumerate() {
+                        if flags
+                            .get(target)
+                            .and_then(|p| p.get(slot))
+                            .copied()
+                            .unwrap_or(true)
+                        {
+                            mark_by_value(arg, owner, decls, index, flags, changed);
+                        }
+                    }
+                }
+                // Unknown type: assume every argument is held.
+                None => {
+                    for arg in args {
+                        mark_by_value(arg, owner, decls, index, flags, changed);
+                    }
+                }
+            }
+        }
+        TypeDecl::Array(elements, _) | TypeDecl::Tuple(elements) => {
+            for e in elements {
+                mark_by_value(e, owner, decls, index, flags, changed);
+            }
+        }
+        TypeDecl::Dict(k, v) => {
+            mark_by_value(k, owner, decls, index, flags, changed);
+            mark_by_value(v, owner, decls, index, flags, changed);
+        }
+        TypeDecl::Range(inner) | TypeDecl::Ref { inner, .. } => {
+            mark_by_value(inner, owner, decls, index, flags, changed);
+        }
+        // `ptr` / function types / `dyn Trait` hold no value of the
+        // type they were parameterised with.
+        _ => {}
+    }
+}
+
+/// Every declared type named in a by-value position of `ty`.
+///
+/// A type argument is an edge only when the type it is passed to holds
+/// that parameter by value. `struct Tree { kids: Vec<Tree> }` therefore
+/// has one edge, `Tree -> Vec`, and no cycle: `Vec` keeps its elements
+/// behind a `ptr`, so `Tree`'s layout does not contain `Tree`. The
+/// lowering pass agrees, because it reserves a type's id before walking
+/// its members and resolves argument positions against that
+/// reservation (`compiler_lower::templates`).
+///
+/// `ptr`, function types and `dyn Trait` name no value of their own and
+/// contribute nothing.
+fn collect_value_refs(
+    ty: &TypeDecl,
+    index: &HashMap<DefaultSymbol, usize>,
+    by_value: &ByValueParams,
+    out: &mut Vec<DefaultSymbol>,
+) {
     match ty {
         // The parser cannot tell a struct from an enum, so most
         // user-named types arrive as `Identifier`.
         TypeDecl::Identifier(name) => out.push(*name),
         TypeDecl::Struct(name, args) | TypeDecl::Enum(name, args) => {
             out.push(*name);
-            for a in args {
-                collect_value_refs(a, out);
+            let target = index.get(name).copied();
+            for (slot, a) in args.iter().enumerate() {
+                let held = match target {
+                    Some(t) => by_value.holds(t, slot),
+                    // Unknown type: treat the argument as contained.
+                    None => true,
+                };
+                if held {
+                    collect_value_refs(a, index, by_value, out);
+                }
             }
         }
         TypeDecl::Array(elements, _) | TypeDecl::Tuple(elements) => {
             for e in elements {
-                collect_value_refs(e, out);
+                collect_value_refs(e, index, by_value, out);
             }
         }
         TypeDecl::Dict(k, v) => {
-            collect_value_refs(k, out);
-            collect_value_refs(v, out);
+            collect_value_refs(k, index, by_value, out);
+            collect_value_refs(v, index, by_value, out);
         }
-        TypeDecl::Range(inner) => collect_value_refs(inner, out),
+        TypeDecl::Range(inner) => collect_value_refs(inner, index, by_value, out),
         // REF-Stage-2 erases `&T` to `T` at lowering, so a reference
         // field recurses just like a value one.
-        TypeDecl::Ref { inner, .. } => collect_value_refs(inner, out),
+        TypeDecl::Ref { inner, .. } => collect_value_refs(inner, index, by_value, out),
         // `Generic(P)` is a parameter, not a type: whatever it is
         // substituted with appears as a type argument at the use site,
-        // which is an edge in its own right.
+        // which is an edge there when the target holds it by value.
         _ => {}
     }
 }
@@ -239,15 +370,20 @@ fn collect_decls(program: &File, interner: &DefaultStringInterner) -> Vec<Decl> 
             continue;
         };
         match stmt {
-            Stmt::StructDecl { name, fields, .. } => {
+            Stmt::StructDecl { name, generic_params, fields, .. } => {
                 let type_name = interner.resolve(name).unwrap_or("?");
                 let members = fields
                     .iter()
                     .map(|f| (format!("{type_name}.{}", f.name), f.type_decl.clone()))
                     .collect();
-                decls.push(Decl { name, stmt: stmt_ref, members });
+                decls.push(Decl {
+                    name,
+                    generic_params: generic_params.clone(),
+                    stmt: stmt_ref,
+                    members,
+                });
             }
-            Stmt::EnumDecl { name, variants, .. } => {
+            Stmt::EnumDecl { name, generic_params, variants, .. } => {
                 let type_name = interner.resolve(name).unwrap_or("?");
                 let mut members = Vec::new();
                 for v in &variants {
@@ -259,7 +395,12 @@ fn collect_decls(program: &File, interner: &DefaultStringInterner) -> Vec<Decl> 
                         ));
                     }
                 }
-                decls.push(Decl { name, stmt: stmt_ref, members });
+                decls.push(Decl {
+                    name,
+                    generic_params: generic_params.clone(),
+                    stmt: stmt_ref,
+                    members,
+                });
             }
             _ => {}
         }

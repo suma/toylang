@@ -118,22 +118,52 @@ fn main() -> i64 { 0i64 }",
     );
 }
 
-/// `Vec<T>` stores a `ptr`, so `Tree` below has a finite layout — and
-/// still aborted, because monomorphisation lowers a type argument
-/// before the type that carries it. The check models what lowering
-/// walks, so this is rejected too; the alternative is the crash.
+/// A type argument is only containment when the type it is passed to
+/// holds that parameter by value. `Vec<T>` keeps its elements behind a
+/// `ptr`, so `Tree` below has a finite layout and is accepted.
+///
+/// It was rejected for a while, and before that it aborted the process:
+/// monomorphisation lowered `Vec`'s argument before `Vec` itself, so
+/// the walk re-entered `Tree` mid-flight. Reserving a type's id before
+/// walking its members is what made the argument resolvable, and this
+/// test is the shape that motivated it.
 #[test]
-fn recursion_through_a_type_argument_is_rejected() {
-    let diagnostic = recursive_type_diagnostic(
+fn recursion_through_a_ptr_holding_generic_is_allowed() {
+    let result = test_program(
         "struct Tree {
     v: i64,
     kids: Vec<Tree>,
 }
 
+fn main() -> i64 {
+    var t: Tree = Tree { v: 1i64, kids: Vec::new() }
+    val leaf = Tree { v: 41i64, kids: Vec::new() }
+    t.kids.push(leaf)
+    val got: Tree = t.kids.get(0u64)
+    t.v + got.v
+}",
+    )
+    .expect("Vec holds its elements behind a ptr, so Tree is finite");
+    assert_eq!(result.borrow().unwrap_int64(), 42i64);
+}
+
+/// The same shape with a by-value parameter *is* a cycle: `Wrapper`
+/// stores its `T`, so `Held` would contain itself.
+#[test]
+fn recursion_through_a_by_value_type_argument_is_rejected() {
+    let diagnostic = recursive_type_diagnostic(
+        "struct Wrapper<T> {
+    v: T,
+}
+
+struct Held {
+    w: Wrapper<Held>,
+}
+
 fn main() -> i64 { 0i64 }",
     );
     assert!(
-        diagnostic.message.contains("Tree.kids: Vec<Tree>"),
+        diagnostic.message.contains("Held.w: Wrapper<Held>"),
         "the type argument should be shown, not just the field: {}",
         diagnostic.message
     );

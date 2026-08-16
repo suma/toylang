@@ -7714,3 +7714,37 @@ fn enum_sizeof_does_not_depend_on_the_variant() {
     // 8 (tag) + 8 (Circle's i64) + 16 (Rect's two) = 32.
     assert_consistent(src, "enum_sizeof_uniform");
 }
+
+#[test]
+fn a_type_holding_a_vec_of_itself_round_trips() {
+    // BOX-T phase B: `Vec<Tree>` is not containment — `Vec` keeps its
+    // elements behind a `ptr`, so `Tree`'s layout is finite. This
+    // aborted the process before E0013 existed, was then rejected by
+    // it, and now runs: the lowering pass reserves `Tree`'s id before
+    // walking its fields, so instantiating `Vec<Tree>` resolves the
+    // argument instead of re-entering the type being built.
+    let src = r#"
+        struct Tree {
+            v: i64,
+            kids: Vec<Tree>,
+        }
+
+        fn main() -> i64 {
+            var t: Tree = Tree { v: 1i64, kids: Vec::new() }
+            val a = Tree { v: 20i64, kids: Vec::new() }
+            t.kids.push(a)
+            val b = Tree { v: 21i64, kids: Vec::new() }
+            t.kids.push(b)
+
+            var i: u64 = 0u64
+            var total: i64 = t.v
+            while i < t.kids.size() {
+                val kid: Tree = t.kids.get(i)
+                total = total + kid.v
+                i = i + 1u64
+            }
+            total
+        }
+    "#;
+    assert_consistent(src, "vec_of_self");
+}

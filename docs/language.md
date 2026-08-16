@@ -2853,10 +2853,14 @@ struct A { b: B }                    # [E0013] — A.b: B -> B.a: A
 struct B { a: A }
 ```
 
-A **type argument counts as containment**, even when the type it is
-passed to only stores a pointer: `struct Tree { kids: Vec<Tree> }` is
-rejected too, because monomorphisation lowers `Vec`'s argument before
-`Vec` itself and so re-enters `Tree` while `Tree` is being lowered.
+A type argument counts as containment only when the type it is passed
+to holds that parameter **by value**:
+
+```rust
+struct Tree { v: i64, kids: Vec<Tree> }   # fine — Vec holds a ptr
+struct Wrapper<T> { v: T }
+struct Held { w: Wrapper<Held> }          # [E0013] — Wrapper stores its T
+```
 
 The positions that break a cycle are the ones that hold no value of the
 named type: `ptr`, function types, and `dyn Trait`. `&T` is **not** one

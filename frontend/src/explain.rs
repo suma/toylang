@@ -370,15 +370,16 @@ The diagnostic prints the member chain that closes the cycle, so a
 cycle through two types names both hops:
 `A.b: B -> B.a: A`.
 
-A **type argument counts as containment** even when the type it is
-passed to stores a pointer:
+A type argument is containment only when the type it is passed to
+holds that parameter **by value**:
 
-    struct Tree { v: i64, kids: Vec<Tree> }   # E0013
+    struct Tree { v: i64, kids: Vec<Tree> }       # fine
+    struct Wrapper<T> { v: T }
+    struct Held { w: Wrapper<Held> }              # E0013
 
-`Vec<Tree>` is a fixed-size struct, but monomorphising it lowers
-`Tree` first, and `Tree` is what is being lowered — the same cycle,
-one level up. There is no `Box<T>` yet to break it (design-docs/todo.md
-BOX-T).
+`Vec` keeps its elements behind a `ptr`, so `Tree`'s own layout does
+not contain a `Tree`. `Wrapper` stores its `T` in a field, so `Held`
+does.
 
 Write the indirection by hand instead. Either store an index into a
 side table:

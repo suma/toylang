@@ -16,6 +16,7 @@ compiler_core = { path = "../compiler_core" }
 compiler_ir = { path = "../compiler_ir" }
 compiler_lower = { path = "../compiler_lower" }
 interpreter = { path = "../interpreter", default-features = false }
+toylang_rt = { path = "../compiler/runtime/toylang_rt" }
 string-interner.workspace = true
 
 cranelift = "0.131"
@@ -44,13 +45,12 @@ tempfile = "3.27"
 # a future change cannot quietly undo it.
 interpreter = { path = "../interpreter", features = ["jit"] }
 
-# Runtime is pre-compiled at compiler-build time so each
-# `compile_file(... emit=Executable)` only links rather than
-# compiling C from scratch — turns each AOT e2e test from
-# ~5.7s of `cc -c toylang_rt.c` per invocation into a quick
-# link of two pre-built objects.
+# Runtime is pre-compiled at compiler-build time (`build.rs` compiles
+# `toylang_rt` to a staticlib with a bare rustc invocation) so each
+# `compile_file(... emit=Executable)` only links rather than building
+# the runtime from scratch — turns each AOT e2e test from a
+# per-invocation compile into a quick link of two pre-built artefacts.
 [build-dependencies]
-cc = "1"
 
 [lints]
 workspace = true

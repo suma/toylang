@@ -122,8 +122,8 @@ impl MemoryStats {
 
     /// Render the report shared by every backend.
     ///
-    /// The three implementations (this one, `toylang_rt.c`, and the JIT
-    /// mirror in `compiler/src/jit.rs`) print byte-identical text, so
+    /// The two native implementations (this one and `toylang_rt`)
+    /// print byte-identical text, so
     /// `--all-backends --profile=mem` can compare them without parsing
     /// anything cleverly. Field names are the struct's own, and no
     /// value is humanised — a rounded "38.2 KB" would make two runs
@@ -177,7 +177,7 @@ impl MemoryStats {
     /// The whole report as JSON (MEMORY_PROFILING M4).
     ///
     /// Hand-written rather than derived through `serde`, for the same
-    /// reason [`Self::report`] is: `toylang_rt.c` has to emit the same
+    /// reason [`Self::report`] is: `toylang_rt` has to emit the same
     /// bytes with `fprintf`, and a mirror is only checkable when both
     /// sides are written out. Nothing here is a string, so there is no
     /// escaping to get subtly different between the two.
@@ -254,7 +254,7 @@ impl MemoryStats {
 
     /// Record `bytes` newly obtained and refresh the peak.
     ///
-    /// Public so the JIT mirror in `compiler/src/jit.rs` reuses the
+    /// Public so `toylang_rt` reuses the
     /// arithmetic instead of restating it — the counting *sites* differ
     /// per backend, the accounting must not.
     pub fn record_obtained(&mut self, bytes: u64) {
@@ -379,8 +379,8 @@ pub fn allocator_layouts() -> Vec<AllocatorLayoutReport> {
 /// Render the allocator-layout section of the text report, or an empty
 /// string when no region-owning allocator registered one.
 ///
-/// Byte-identical to `toy_prof_report_layouts` in the C runtime and the
-/// JIT mirror, so `--all-backends --profile=mem` can compare it
+/// Byte-identical to `toy_prof_report_layouts` in the `toylang_rt`
+/// crate, so `--all-backends --profile=mem` can compare it
 /// verbatim. Entries are in registration order (the program's `Drop`
 /// order), which is deterministic.
 pub fn allocator_layout_report_text(layouts: &[AllocatorLayoutReport]) -> String {

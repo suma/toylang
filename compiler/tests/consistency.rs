@@ -3611,7 +3611,7 @@ fn aot_allocator_default_and_current_round_trip() {
     // #121 Phase B-min: `__builtin_default_allocator()` returns
     // the sentinel u64 = 0; `__builtin_current_allocator()` reads
     // the top of the runtime active-allocator stack
-    // (`runtime/toylang_rt.c::toy_alloc_*`). The
+    // (the `toylang_rt` crate). The
     // `with allocator = expr { body }` scope emits push/pop calls
     // around the body so a `__builtin_current_allocator()` call
     // inside the body yields the pushed handle.
@@ -4977,6 +4977,32 @@ fn string_interp_chain_with_println_round_trip() {
         }
     "#;
     assert_consistent(src, "string_interp_chain_with_println");
+}
+
+// RUNTIME_PORT R1: the f64 display that used to diverge. The C
+// runtime formatted with `%g` (6 significant digits) while the
+// interpreter and JIT used Rust's `Display`, so the three agreed
+// only for short decimals — the expressions below are the ones
+// measured in RUNTIME_PORT.md 実測1, plus the integral/decimal
+// boundary. Since R1 they all run the same `toylang_rt` formatting
+// code, so agreement is by construction; this test keeps a drift
+// from sneaking back in through a golden path.
+
+#[test]
+fn f64_display_agrees_across_backends() {
+    let src = r#"
+        fn main() -> u64 {
+            println(0.1f64 + 0.2f64)
+            println(1234567.75f64)
+            println(123456789.0f64 * 10000000000000.0f64)
+            println(1.0f64)
+            println(-2.5f64)
+            println(0.000001f64)
+            println(3.14159f64)
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "f64_display_agrees");
 }
 
 // LABEL: 3-way pin for `@label: while/for` + `break @label` /

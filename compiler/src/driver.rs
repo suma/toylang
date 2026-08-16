@@ -7,15 +7,17 @@
 //! covers macOS, Linux, and (with `cl.exe` / MSVC) Windows without us
 //! having to enumerate sysroot paths or argv conventions per OS.
 //!
-//! ## Tiny C runtime
+//! ## Tiny Rust runtime
 //!
-//! Each compiled executable is linked against a small C runtime
-//! (`compiler/runtime/toylang_rt.c`) that provides type-specific
-//! `print` / `println` helpers. The codegen pass emits direct calls
-//! into these helpers; we compile the runtime alongside the toylang
-//! object on every invocation. Doing it this way side-steps the
-//! variadic ABI quirks (notably macOS aarch64) that make calling
-//! `printf` directly from cranelift error-prone.
+//! Each compiled executable is linked against a small runtime
+//! (`compiler/runtime/toylang_rt/`, a `no_std` Rust crate) that
+//! provides type-specific `print` / `println` helpers plus the
+//! allocator / profiler / io-extern machinery. The codegen pass emits
+//! direct calls into these helpers; we build the runtime once at
+//! compiler-build time (see `build.rs`) and link the staticlib archive
+//! alongside the toylang object on every invocation. Doing it this way
+//! side-steps the variadic ABI quirks (notably macOS aarch64) that
+//! make calling `printf` directly from cranelift error-prone.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
@@ -23,19 +25,19 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// Pre-compiled runtime object. `compiler/build.rs` invokes `cc -c
-/// runtime/toylang_rt.c -o $OUT_DIR/toylang_rt.o` once when the
-/// compiler crate itself is built, so every `link_executable`
-/// invocation can skip the C compilation step and just hand `cc`
-/// two ready-to-link objects. Massively cuts the per-test cost of
-/// the compiler e2e suite (the runtime never changes between tests
-/// in a single run).
-const RUNTIME_OBJECT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/toylang_rt.o"));
+/// Pre-built runtime archive. `compiler/build.rs` compiles
+/// `runtime/toylang_rt/src/lib.rs` to a staticlib with a bare rustc
+/// invocation once when the compiler crate itself is built, so every
+/// `link_executable` invocation can skip the runtime build step and
+/// just hand `cc` two ready-to-link inputs. Massively cuts the
+/// per-test cost of the compiler e2e suite (the runtime never changes
+/// between tests in a single run).
+const RUNTIME_ARCHIVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libtoylang_rt.a"));
 
 /// Cache schema version — bump when the link inputs (cc flags,
-/// runtime object format, output convention) change in a way that
+/// runtime archive format, output convention) change in a way that
 /// would invalidate previously-cached artefacts.
-const LINK_CACHE_VERSION: u32 = 1;
+const LINK_CACHE_VERSION: u32 = 2;
 
 /// Opt-in content-addressed cache for linked binaries. When the
 /// `TOY_LINK_CACHE_DIR` env var is set, `link_executable` first
@@ -84,8 +86,8 @@ fn compute_link_hash(object_bytes: &[u8], cc: &str) -> u64 {
     h.write_u32(LINK_CACHE_VERSION);
     h.write_usize(object_bytes.len());
     h.write(object_bytes);
-    h.write_usize(RUNTIME_OBJECT.len());
-    h.write(RUNTIME_OBJECT);
+    h.write_usize(RUNTIME_ARCHIVE.len());
+    h.write(RUNTIME_ARCHIVE);
     h.write(cc.as_bytes());
     // Platform flag is encoded into the hash so a cache produced
     // on a Linux box can't collide with a macOS-flagged build.
@@ -168,15 +170,15 @@ fn link_executable_uncached(
     std::fs::write(&tmp_obj, object_bytes)
         .map_err(|e| format!("write {}: {}", tmp_obj.display(), e))?;
 
-    // Materialise the pre-compiled runtime object as a sibling file.
+    // Materialise the pre-built runtime archive as a sibling file.
     // It's the same bytes for every link, so a follow-up could share
     // a single on-disk copy across compiles — but the cost of the
-    // write itself is now well under the (already-eliminated) C
-    // compile cost, so leaving it per-compile keeps the cleanup logic
+    // write itself is now well under the (already-eliminated) runtime
+    // build cost, so leaving it per-compile keeps the cleanup logic
     // local and avoids races between concurrent test workers.
-    let tmp_rt_obj = sibling_temp_path(output, ".rt.o");
-    std::fs::write(&tmp_rt_obj, RUNTIME_OBJECT)
-        .map_err(|e| format!("write {}: {}", tmp_rt_obj.display(), e))?;
+    let tmp_rt_archive = sibling_temp_path(output, ".rt.a");
+    std::fs::write(&tmp_rt_archive, RUNTIME_ARCHIVE)
+        .map_err(|e| format!("write {}: {}", tmp_rt_archive.display(), e))?;
 
     // Platform-specific link flags. On macOS, cranelift's `ObjectModule`
     // doesn't emit an `LC_BUILD_VERSION` load command in the Mach-O
@@ -189,11 +191,19 @@ fn link_executable_uncached(
     // codegen (cranelift already generated the object), only the
     // linker's deployment-target metadata. No-op on Linux / Windows
     // where cranelift emits ELF / COFF and the warning doesn't apply.
+    //
+    // `-Wl,-dead_strip` removes the runtime functions the program
+    // does not call. A rustc staticlib is a single archive member, so
+    // the linker would otherwise pull in *all* `toy_*` helpers (the
+    // old C object did too, but the Rust archive carries the f64
+    // formatting machinery with it); stripping keeps the binaries at
+    // the size of the pre-port era.
     let mut cmd = Command::new(cc);
-    cmd.arg(&tmp_obj).arg(&tmp_rt_obj);
+    cmd.arg(&tmp_obj).arg(&tmp_rt_archive);
     #[cfg(target_os = "macos")]
     {
         cmd.arg("-mmacosx-version-min=11.0");
+        cmd.arg("-Wl,-dead_strip");
     }
     cmd.arg("-o").arg(output);
 
@@ -202,18 +212,18 @@ fn link_executable_uncached(
             "invoking: {} {} {}{} -o {}",
             cc,
             tmp_obj.display(),
-            tmp_rt_obj.display(),
+            tmp_rt_archive.display(),
             if cfg!(target_os = "macos") {
-                " -mmacosx-version-min=11.0"
+                " -mmacosx-version-min=11.0 -Wl,-dead_strip"
             } else {
                 ""
             },
             output.display()
         );
     }
-    // Hand `cc` both objects; it just links them into a single
-    // executable, which is dramatically faster than recompiling the
-    // runtime's C source every invocation.
+    // Hand `cc` the object and the archive; it just links them into a
+    // single executable, which is dramatically faster than rebuilding
+    // the runtime every invocation.
     //
     // On macOS we capture stderr and filter out the per-object
     // "ld: warning: no platform load command found in '...'"
@@ -236,7 +246,7 @@ fn link_executable_uncached(
     // Best-effort cleanup; if linking failed we still want to surface
     // that, not the rm error.
     let _ = std::fs::remove_file(&tmp_obj);
-    let _ = std::fs::remove_file(&tmp_rt_obj);
+    let _ = std::fs::remove_file(&tmp_rt_archive);
     if !status.success() {
         return Err(format!("`{cc}` exited with status {}", status));
     }

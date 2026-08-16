@@ -9,9 +9,9 @@
 # - interpreter: dispatched by the registry in
 #   `interpreter::evaluation::extern_io::build_io_registry`.
 # - AOT compiler: re-declared as a `Linkage::Import` call against the
-#   `toy_io_*` symbols in `compiler/runtime/toylang_rt.c` via
+#   `toy_io_*` symbols in the `toylang_rt` crate via
 #   `compiler_lower::program::libm_import_name_for`.
-# - JIT (cranelift): the Rust mirrors registered in
+# - JIT (cranelift): the same `toylang_rt` symbols registered in
 #   `compiler/src/jit.rs::register_runtime_symbols`.
 #
 # Failure convention: `read_file` / `env_var` return `""` when the

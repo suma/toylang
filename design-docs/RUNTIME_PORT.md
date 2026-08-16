@@ -9,11 +9,39 @@ Phase 分割 → MVP 刻みで landing」で進める。
 
 | Phase | Scope | Status |
 |---|---|---|
-| **R0** | 出力シンクの抽象化 (print だけ差し替え可能にする) | 未着手 |
-| **R1** | `toylang_rt` crate 新設 + C 全機能の移植 + jit.rs ミラー削除 | 未着手 |
+| **R0** | 出力シンクの抽象化 (print だけ差し替え可能にする) | ✅ 完了 (2026-08-16) |
+| **R1** | `toylang_rt` crate 新設 + C 全機能の移植 + jit.rs ミラー削除 | ✅ 完了 (2026-08-16) |
 | **R2** | extern 宣言の一般化で `toy_io_*` を廃止 (FFI_PLAN P1 に相乗り) | 未着手 |
 | **R3** | str / 整数整形 / 集計を `core/std/` (toylang) へ | 未着手 |
 | **R4** | f64 整形・allocator・profiler も toylang へ (任意) | 検討のみ |
+
+### R0/R1 実装メモ (2026-08-16)
+
+- **crate は `compiler/runtime/toylang_rt/` に置いた** (未決事項 3 の後者 —
+  `toylang_rt.c` の場所と履歴が繋がる)。`#![no_std]` + `alloc`、依存 0。
+- **出力シンクは pthread-key TLS**。`#[thread_local]` / `thread_local!` は
+  stable no_std で使えないので、`pthread_key_create` / `pthread_getspecific`
+  でスレッドごとに 1 つの `ThreadState` (sink / alloc stack / bump head /
+  profiler / io args を全部収める) を保持する。AOT は単一スレッドなので
+  従来の file-scope static と同値、JIT はテストワーカーごとに隔離され
+  (旧ミラーと同じ)、**旧ミラーの global Mutex alloc stack のレースも
+  per-thread 化で解消した**。論点 1 の `static SINK: AtomicPtr` はスケッチ
+  であり、並列テストキャプチャのため実装は per-thread が正しい。
+- **`build.rs` は rustc 直呼び** (論点 3 の採用案)。`-C panic=abort` +
+  `--cfg toylang_rt_standalone` (panic handler / malloc-backed global
+  allocator / `rust_eh_personality` stub を付与) + `--remap-path-prefix`
+  (決定性)。rlib 側 (compiler の JIT 用) は host バイナリの handler を
+  継承するので cfg なし。`cc` は build-dependency から外れ、リンクのみ。
+- **f64 整形の正本は Rust `Display`** (論点 4、未決事項 1 の決定どおり)。
+  AOT の出力が変わる: `0.1+0.2` → `0.30000000000000004`、
+  `1234567.75` → `1234567.75` (旧 `1.23457e+06`)。`docs/language.md` の
+  Output 節に明記、`f64_display_agrees_across_backends` (実測 1 の 3 式 +
+  境界値) を consistency に追加。
+- **str の print は NUL 終端 cstring を受け取る** — codegen が
+  `byte_start = len_field_addr - 1 - len` を計算して渡す (lower_inst.rs
+  `Print`)。ヘッダで str ハンドルと混同しないこと。
+- **`--profile=mem` (text / JSON) と reproducible build はグリーン**。
+  単体テストは R1 の副産物として新設 (str layout / bump 冪等性 / f64 整形)。
 
 ---
 
@@ -23,16 +51,15 @@ Phase 分割 → MVP 刻みで landing」で進める。
 3 本から減らす」話である。** 移植そのものは機械的だが、減らし方を間違えると
 「Rust になったが実装は 3 本のまま」で終わる。
 
-現在、ランタイムの意味論は独立に 3 回実装されている:
+現在、ランタイムの意味論は独立に 2 回実装されている (R1 前は 3 回):
 
 | 実装 | 場所 | 行数の目安 |
 |---|---|---|
-| AOT | `compiler/runtime/toylang_rt.c` | 1121 |
-| compiler 側 JIT | `compiler/src/jit.rs` の `toy_*` ミラー | ~880 (L380 以降) |
+| AOT + compiler 側 JIT (共有) | `compiler/runtime/toylang_rt/` (Rust、no_std) | ~1500 (R1 で一本化) |
 | interpreter | `heap.rs` + `output` + `evaluation/extern_io.rs` | — |
 
-C を編集するたびに jit.rs を同じ形に編集する運用になっており、
-`toylang_rt.c` 自身のコメントもそれを認めている:
+旧状態: C を編集するたびに jit.rs を同じ形に編集する運用になっており、
+`toylang_rt.c` 自身のコメントもそれを認めていた:
 
 > Three implementations is one more than anybody wants, but the alternative —
 > linking this translation unit into the compiler binary so the JIT can call
@@ -40,7 +67,8 @@ C を編集するたびに jit.rs を同じ形に編集する運用になって�
 > reimplements so it can capture stdout.
 
 この「衝突」は **print の出力先が固定されていること**だけが原因で、そこを
-関数ポインタ 1 個に抽象すれば消える (論点 1)。
+関数ポインタ 1 個に抽象すれば消える (論点 1)。R0/R1 で解決済み: 出力は
+`toylang_rt` の per-thread sink を通り、JIT は差し替え、AOT は libc `write`。
 
 ---
 
@@ -63,16 +91,16 @@ C を編集するたびに jit.rs を同じ形に編集する運用になって�
 $ cargo run -q -p compiler -- f64chk.t --all-backends
 ```
 
-| 式 | interpreter | compiler JIT | AOT |
+| 式 | interpreter | compiler JIT | AOT (R1 前) |
 |---|---|---|---|
 | `0.1f64 + 0.2f64` | `0.30000000000000004` | 同左 | **`0.3`** |
 | `1234567.75f64` | `1234567.75` | 同左 | **`1.23457e+06`** |
 | `123456789.0f64 * 10000000000000.0f64` | `1234567890000000057344.0` | **`1234567890000000000000`** | **`1.23457e+21`** |
 
 C 側が `%g` / `%.1f` (`emit_f64`)、Rust 側が `Display` ベースなのが原因。
-`example_consistency` がこのケースを踏んでいないだけで、**現時点の既知の
-不具合**である。R1 で実装が 1 本になれば構造的に解消する (テストで押さえる
-のではなく、同じコードだから一致する)。
+**R1 で解消済み**: 実装が 1 本 (toylang_rt) になったので一致は構造的に
+保証され、実測 1 の 3 式は `f64_display_agrees_across_backends` として
+consistency に pin されている。
 
 ### 実測 2: rustc 単発で staticlib を作り、cranelift の `main` とリンクできる
 
@@ -130,7 +158,11 @@ static SINK: AtomicPtr<()> = AtomicPtr::new(default_sink as *mut ());
 
 print 1 回あたり atomic load 1 回のコスト。これで **print helper も含めて
 AOT と JIT が同一コードを共有できる**ようになり、`compiler/src/jit.rs` の
-ミラーは消える。
+ミラーは消える。**実装メモ**: スケッチの `AtomicPtr` はプロセスグローバル
+だが、並列 `cargo test` ワーカーが同時にキャプチャする要件 (旧 jit.rs が
+thread-local だった理由) は per-thread でないと満たせない。stable no_std
+には `thread_local!` が無いので、pthread key 経由の TLS (`thread_state()`)
+で実装した — 1 sink につき pointer load 1 回で、要件も同じ。
 
 ### 論点 2: `no_std` か `std` か → **`no_std` + `alloc`**
 
@@ -220,7 +252,7 @@ Layer 0  libc                  write / malloc / exit / getenv / fopen
 
 ## Phase 分割
 
-### R0: 出力シンクの抽象化
+### R0: 出力シンクの抽象化 ✅ (2026-08-16)
 
 **Scope**: C とその jit.rs ミラーの両方で、print 系の出力先を 1 箇所に集約する
 (C なら関数ポインタ、Rust なら論点 1 の `SINK`)。振る舞いは変えない。
@@ -231,30 +263,36 @@ Layer 0  libc                  write / malloc / exit / getenv / fopen
 ため。ここを R1 に混ぜると、出力が壊れたときに移植ミスか設計ミスか切り分け
 られなくなる。
 
-### R1: `toylang_rt` crate 新設 + C 廃止
+> 実装メモ: R0 を C 側で先に単体で行う価値は、R1 が同じセッションで
+> 続き、テストスイートが「出力が壊れたら即座に分かる」役割を果たす
+> ため限定的と判断し、**R0 の設計 (sink) を R1 の Rust 実装に最初から
+> 組み込んだ**。キャプチャ機構の設計は `compiler/src/jit.rs` の
+> `run_capturing_stdout` + `capture_sink` に単一の場所として残っている。
+
+### R1: `toylang_rt` crate 新設 + C 廃止 ✅ (2026-08-16)
 
 **Scope**:
 
 1. ワークスペースに `toylang_rt` crate を追加 (`#![no_std]` + `alloc`、
-   依存 0、`crate-type = ["lib"]`)。`toylang_rt.c` の全機能を移植。
+   依存 0、`crate-type = ["lib"]`)。`toylang_rt.c` の全機能を移植。 ✅
 2. `compiler/build.rs` を `cc -c` から `rustc --crate-type staticlib` に置換
    (`-C panic=abort` / `--remap-path-prefix` / `-C opt-level=2`)。
-   `include_bytes!` → `.rt.a` を書き出して `cc` に渡す形は現状のまま。
+   `include_bytes!` → `.rt.a` を書き出して `cc` に渡す形は現状のまま。 ✅
 3. `compiler` が `toylang_rt` を依存に追加し、`register_runtime_symbols` を
    crate の関数ポインタに向ける。**`compiler/src/jit.rs` の L380 以降の
-   ミラー (~880 行) を削除**。
-4. `compiler/runtime/toylang_rt.c` を削除。
+   ミラー (~880 行) を削除**。 ✅
+4. `compiler/runtime/toylang_rt.c` を削除。 ✅
 
 **完了条件**:
 
-- `cargo nextest run` グリーン (f64 の golden 更新を含む)。
-- `--all-backends` で f64 が 3 者一致 (実測 1 の 3 式を consistency テストに追加)。
-- `--profile=mem` / `--profile-format=json` が interpreter と一致。
-- `reproducible_build.rs` グリーン (rustc 出力の決定性確認)。
-- `cc` 依存が残るのはリンクのみ (C コンパイルは消える)。
+- `cargo nextest run` グリーン (f64 の golden 更新を含む)。 ✅
+- `--all-backends` で f64 が 3 者一致 (実測 1 の 3 式を consistency テストに追加)。 ✅
+- `--profile=mem` / `--profile-format=json` が interpreter と一致。 ✅
+- `reproducible_build.rs` グリーン (rustc 出力の決定性確認)。 ✅
+- `cc` 依存が残るのはリンクのみ (C コンパイルは消える)。 ✅
 
 **リスク**: `rust_eh_personality` / `panic_handler` の扱いを間違えるとリンク
-エラー。実測 2 で解決済み。
+エラー。実測 2 で解決済み。 ✅ (`--cfg toylang_rt_standalone` で rlib と分離)
 
 ### R2: extern 宣言の一般化 → `toy_io_*` の廃止
 
@@ -306,11 +344,12 @@ interpreter のベンチ (`println` ループ) が許容範囲内 (基準は移�
 | 3 バックエンドの出力一致 | `compiler/tests/consistency.rs` / `example_consistency.rs` |
 | メモリ計数の一致 | `--profile=mem` / `--profile-format=json` の 3 者比較 |
 | リンクキャッシュが効き続けること | `compiler/tests/reproducible_build.rs` |
-| f64 の乖離が再発しないこと | 実測 1 の 3 式を R1 で consistency に追加 (**新規**) |
+| f64 の乖離が再発しないこと | `f64_display_agrees_across_backends` (実測 1 の 3 式 + 境界値、R1 で追加) |
 | ランタイム単体の性質 | `toylang_rt` crate の `#[test]` (C では書けなかった) |
 
-最後の行は移植の副産物として大きい: bump region の冪等 free や profiler の
-ハッシュ表を、AOT バイナリを作らずに unit test できるようになる。
+最後の行は移植の副産物として大きい: bump region の冪等 free や str layout、
+f64 整形を、AOT バイナリを作らずに unit test できるようになった
+(2026-08-16 時点 8 テスト)。
 
 ## やらないこと
 
@@ -327,9 +366,8 @@ interpreter のベンチ (`println` ループ) が許容範囲内 (基準は移�
 1. ~~**f64 の出力仕様変更を受け入れるか** (論点 4)~~ — **2026-08-16 決定: 受け入れる。**
    R1 で `docs/language.md` の print / 補間の節に「Rust の `Display` と同じ、
    ただし整数値の f64 は `.0` を付ける」を明記し、golden の更新を同じ
-   コミットに含める。
+   コミットに含める。 → **R1 で実施済み**。
 2. **R4 まで行くか** — R2/R3 で「ランタイムを toylang で書く」意図はかなり
    満たせる。R4 は費用対効果で判断。
-3. **`toylang_rt` の置き場所** — ワークスペース直下 (`toylang_rt/`) か
-   `compiler/runtime/` を crate 化するか。後者なら `compiler/runtime/toylang_rt.c`
-   の履歴と場所が繋がる。
+3. ~~**`toylang_rt` の置き場所**~~ — **2026-08-16 決定: `compiler/runtime/toylang_rt/`
+   (後者)。** `toylang_rt.c` の履歴と場所が繋がる。

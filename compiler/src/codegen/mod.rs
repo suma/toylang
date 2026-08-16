@@ -216,8 +216,8 @@ pub(crate) struct CodegenSession<M: Module> {
     libm_log: cranelift_module::FuncId,
     libm_log2: cranelift_module::FuncId,
     libm_exp: cranelift_module::FuncId,
-    /// Helpers shipped in `compiler/runtime/toylang_rt.c`. The driver
-    /// compiles that file and links it next to the toylang object;
+    /// Helpers shipped in the `toylang_rt` crate. The driver
+    /// builds it as a staticlib and links it next to the toylang object;
     /// these FuncIds are how codegen reaches them.
     rt_print_i64: cranelift_module::FuncId,
     rt_println_i64: cranelift_module::FuncId,
@@ -525,7 +525,7 @@ impl<M: Module> CodegenSession<M> {
         let rt_println_u32 = declare_helper(&mut module, "toy_println_u32", &i32u_sig)?;
 
         // #121 Phase B-min: active-allocator stack helpers. The stack
-        // lives in `runtime/toylang_rt.c` as a 64-deep fixed buffer
+        // lives in the `toylang_rt` crate as a 64-deep fixed buffer
         // of u64 handles. Default allocator handle is the sentinel
         // 0 (which the heap path already routes to libc malloc).
         let mut alloc_push_sig = Signature::new(call_conv);

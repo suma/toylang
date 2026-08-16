@@ -303,7 +303,7 @@ extern "C" fn jit_with_allocator_pop() {
 
 // ---------------------------------------------------------------------------
 // STR-INTERP-INTERP-JIT: heap-allocated str helpers — JIT-side mirror
-// of `compiler/runtime/toylang_rt.c::toy_str_*` and `toy_to_string_*`.
+// of the `toylang_rt` crate. 
 // Same memory layout (`[bytes][NUL][u64 len LE]`, returned pointer
 // points at the u64 len field) so JIT-emitted code is interchangeable
 // with the AOT runtime — `__builtin_str_len(s)` is a single

@@ -11,6 +11,29 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-16
+- **RUNTIME-PORT R0+R1: ランタイムを C から Rust に移植** — `toylang_rt` crate
+  (`compiler/runtime/toylang_rt/`、`no_std` + alloc、依存 0) が
+  `toylang_rt.c` の全 53 シンボルを継承し、**AOT と compiler 側 JIT が同一
+  ソースを実行**するように (旧 jit.rs の ~880 行ミラーを削除)。
+  設計は [`RUNTIME_PORT.md`](RUNTIME_PORT.md)。**設計上の要点**:
+  (1) 出力シンクは per-thread (`pthread_key` 経由の TLS で `ThreadState`
+  1 個に sink / alloc stack / bump head / profiler / io args を収める。
+  `#[thread_local]` は stable no_std に無い)、JIT の
+  `run_capturing_stdout` は sink を差し替えるだけ — 旧ミラーの global
+  Mutex alloc stack のレースも per-thread 化で解消。(2) `build.rs` は
+  rustc 直呼び staticlib (`--cfg toylang_rt_standalone` で panic handler /
+  malloc-backed global allocator / `rust_eh_personality` を付与。
+  `--remap-path-prefix` で決定性)。(3) **f64 整形の正本を Rust `Display`
+  に統一** (論点 4): AOT の出力が変わる (`0.1+0.2` → `0.30000000000000004`、
+  `1234567.75` → `1234567.75` と精度が上がる方へ)。`docs/language.md` に
+  明記、`f64_display_agrees_across_backends` (実測 1 の 3 式 + 境界値) を
+  consistency に追加。(4) str の print は codegen が渡す **NUL 終端
+  cstring (byte_start)** を受け取る — ヘッダの `toy_print_str` を参照。
+  (5) macOS リンクに `-Wl,-dead_strip` を追加 (staticlib は 1 archive
+  member なので全 helper が入ってしまうため)。単体テスト 8 本 (str layout /
+  bump 冪等性 / f64 整形 / io args) が副産物として新設された。
+  `LINK_CACHE_VERSION` 2、`--profile=mem` (text/JSON) と reproducible
+  build はグリーンのまま。
 - **RUNTIME-IO: 最小 I/O セット (3 バックエンド)** — `core/std/io.t` に
   `read_line()` / `argc()` / `arg(i)` / `env_var(name)` / `read_file(path)` /
   `file_exists(path)` / `now()` / `random()`。既存 extern fn 機構
@@ -290,9 +313,8 @@
 ## 検討中の機能
 
 * FFI / 拡張ライブラリ — 設計は [`FFI_PLAN.md`](FFI_PLAN.md) (未着手)
-* AOT ランタイムの Rust 化 → toylang 化 — 設計は
-  [`RUNTIME_PORT.md`](RUNTIME_PORT.md) (未着手)。動機は「C / JIT ミラー /
-  interpreter の 3 重実装」で、下の f64 不一致がその実害
+* AOT ランタイムの Rust 化 — R0+R1 完了 (2026-08-16、[`RUNTIME_PORT.md`](RUNTIME_PORT.md))。
+  残るのは R2 (extern 一般化 = FFI_PLAN P1 に相乗り) と R3/R4 (toylang 化)
 * モジュール拡張 — バージョニング、リモートパッケージ
 * 言語内からの AST 取得・操作
 * LSP 対応 — 補完 / go-to-definition / hover / 診断 / フォーマット。frontend の AST・型チェッカ・`SourceLocation` を再利用できる。ただし**エージェントは LSP より CLI クエリを使いやすい**ので、LLM ループの観点では `--api` / 型ホール (P7 で landing 済み) の方が先だった
@@ -310,7 +332,10 @@
 ### テスト状況
 - 合計 **1856 テスト** (100% 成功、2026-08-16 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
-- ワークスペース全体で ~5s。`compiler/build.rs` が `toylang_rt.c` を pre-build し、リンク結果は `TOY_LINK_CACHE_DIR` で content-addressed にキャッシュされる (キャッシュが効くにはコード生成が決定的である必要がある — `compiler/tests/reproducible_build.rs` が pin)。
+- ワークスペース全体で ~5s。`compiler/build.rs` が `toylang_rt` を rustc で
+  staticlib pre-build し、リンク結果は `TOY_LINK_CACHE_DIR` で
+  content-addressed にキャッシュされる (キャッシュが効くにはコード生成が
+  決定的である必要がある — `compiler/tests/reproducible_build.rs` が pin)。
 
 ### 既知の不具合
 
@@ -322,18 +347,13 @@
   (`evaluation/mod.rs`) のガードは**式評価の入れ子しか数えていない**ので
   先に host stack が尽きる。再帰型 (E0013) と違い、これは診断化ではなく
   ガードの数え方を関数フレームに変える話。
-- **f64 の print / 補間が 3 バックエンドで食い違う (2026-08-16 実測)** —
-  AOT は C ランタイムの `%g` / `%.1f` (`emit_f64`)、interpreter / JIT は
-  Rust の `Display`。`0.1f64 + 0.2f64` が interpreter `0.30000000000000004`
-  に対し AOT `0.3`、`1234567.75f64` が AOT `1.23457e+06`。大きい整数値の
-  f64 では JIT も interpreter と割れる。`example_consistency` がこの形の
-  値を踏んでいないので緑のまま。実装を 1 本にすれば構造的に消えるので、
-  個別修正ではなく [`RUNTIME_PORT.md`](RUNTIME_PORT.md) R1 で解消する。
-  **決定 (2026-08-16): 正本は Rust の `Display` 側とし、AOT の出力が変わる
-  仕様変更を受け入れる。** `%g` は 6 桁で丸めて情報を落とすので、精度を
-  保つ側に寄せる。R1 で AOT の出力が `0.3` → `0.30000000000000004`、
-  `1.23457e+06` → `1234567.75` に変わるため、`docs/language.md` の
-  print / 補間の節への明記と golden の更新を同じコミットに含める。
+- **f64 の print / 補間が 3 バックエンドで食い違う** — ~~AOT は C ランタイムの
+  `%g` / `%.1f` (`emit_f64`)、interpreter / JIT は Rust の `Display`。~~
+  **解消 (2026-08-16、RUNTIME-PORT R1)**: ランタイムが `toylang_rt`
+  1 本になり、整形も `Display` (整数値は `.0`) に統一された。AOT の出力は
+  `0.3` → `0.30000000000000004`、`1.23457e+06` → `1234567.75` に変わった
+  (精度が上がる方向の仕様変更、`docs/language.md` の Output 節に明記)。
+  `f64_display_agrees_across_backends` が 3 者一致を pin する。
 - **型不一致診断が `Identifier(SymbolU32 { value: 40 })` と Debug 表記を
   漏らす** — `TypeCheckErrorKind::TypeMismatch` の `Display` が `{:?}`
   なので、解決前の user 型名が生の symbol id で出る。`source_name` /

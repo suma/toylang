@@ -1060,7 +1060,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             InstKind::StrConcat { a, b } => {
                 // Direct call to `toy_str_concat(a, b)` — both args
                 // and the result are str runtime values (= u64
-                // pointers in cranelift IR; see toylang_rt.c for
+                // pointers in cranelift IR; see toylang_rt for
                 // the concrete heap layout).
                 let av = self.value(*a);
                 let bv = self.value(*b);

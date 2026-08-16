@@ -1,53 +1,71 @@
-// Pre-compile the toylang C runtime once at compiler-build time and
-// stash the resulting object next to OUT_DIR. The link driver
-// (`src/driver.rs`) loads those bytes via `include_bytes!` and writes
-// them out as a sibling `.rt.o` for each AOT compile, so every
-// `compile_file(... emit=Executable)` skips the C compilation step
-// entirely. End-to-end test wall-clock drops from ~5.7s per test
-// (where `cc` rebuilds toylang_rt.c every time) to a quick two-object
-// link.
+// Pre-compile the toylang runtime once at compiler-build time and
+// stash the resulting staticlib archive next to OUT_DIR. The link
+// driver (`src/driver.rs`) loads those bytes via `include_bytes!` and
+// writes them out as a sibling `.rt.a` for each AOT compile, so every
+// `compile_file(... emit=Executable)` skips the runtime build step
+// entirely. End-to-end test wall-clock stays at the old "pre-built
+// object" level while the runtime itself is now Rust
+// (`compiler/runtime/toylang_rt/`) rather than C.
 //
-// Cargo invalidates this build script when the runtime source
-// changes (the `rerun-if-changed` line below), so editing
-// toylang_rt.c still triggers a rebuild.
+// The runtime is `no_std` and dependency-free, so this is a bare
+// `rustc --crate-type staticlib` invocation — no cargo, no target-dir
+// plumbing, exactly the shape of the old `cc -c` call it replaces.
+// `--cfg toylang_rt_standalone` turns on the pieces that only a final
+// artifact needs (the panic handler, the malloc-backed global
+// allocator, and the `rust_eh_personality` stub); the same source
+// compiled as an rlib for the compiler's JIT leaves those to the host
+// binary.
+//
+// rustc output is deterministic, but absolute paths embedded in the
+// debug info would not be; `--remap-path-prefix` pins the runtime's
+// path so the archive bytes (and therefore the linked binaries) are
+// reproducible. Cargo invalidates this build script when the runtime
+// source changes (the `rerun-if-changed` line below), so editing
+// `lib.rs` still triggers a rebuild.
 
 use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    let runtime_src = "runtime/toylang_rt.c";
+    let runtime_src = "runtime/toylang_rt/src/lib.rs";
     println!("cargo:rerun-if-changed={runtime_src}");
     println!("cargo:rerun-if-changed=build.rs");
-    // Allow callers to override the C compiler used at build time.
-    println!("cargo:rerun-if-env-changed=CC");
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR set by cargo"));
-    let object_path = out_dir.join("toylang_rt.o");
+    let archive_path = out_dir.join("libtoylang_rt.a");
 
-    // Use the `cc` build helper so platform flags / sysroot matches
-    // what cargo would otherwise pass. We could call `cc::Build` for
-    // the heavy machinery; a single-file compile is straightforward
-    // enough that invoking the resolved tool directly keeps the
-    // build script trivial and avoids dragging cc's many feature
-    // gates into the dep graph any further than necessary.
-    let tool = cc::Build::new().get_compiler();
-    let mut cmd = Command::new(tool.path());
-    for (key, val) in tool.env() {
-        cmd.env(key, val);
+    // `RUSTC` is set by cargo for build scripts. The archive must
+    // match the host platform, which is what `TARGET` names (this
+    // toolchain has no cross-compilation support; the flags mirror
+    // the codegen's assumptions).
+    let rustc = env::var("RUSTC").expect("RUSTC set by cargo");
+    let mut cmd = Command::new(&rustc);
+    cmd.args([
+        "--edition",
+        "2024",
+        "--crate-type",
+        "staticlib",
+        "--cfg",
+        "toylang_rt_standalone",
+        "-C",
+        "opt-level=2",
+        "-C",
+        "panic=abort",
+        "--remap-path-prefix",
+    ]);
+    let workspace_root = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set");
+    cmd.arg(format!("{workspace_root}=<workspace>"));
+    let target = env::var("TARGET").unwrap_or_default();
+    if !target.is_empty() {
+        cmd.arg("--target").arg(&target);
     }
-    cmd.args(tool.args());
-    // Object compilation flags. `-O2` matches what `cc` would do for
-    // a release-style build; the runtime is small so the cost is
-    // negligible at build time and the result is faster at run time.
-    cmd.args(["-c", "-O2", "-fPIC", runtime_src, "-o"]).arg(&object_path);
+    cmd.arg(runtime_src).arg("-o").arg(&archive_path);
 
     let status = cmd
         .status()
-        .unwrap_or_else(|e| panic!("failed to spawn C compiler for runtime build: {e}"));
+        .unwrap_or_else(|e| panic!("failed to spawn rustc for runtime build: {e}"));
     if !status.success() {
-        panic!(
-            "C compiler exited with {status} while building {runtime_src}",
-        );
+        panic!("rustc exited with {status} while building {runtime_src}");
     }
 }

@@ -1011,7 +1011,7 @@ pub enum InstKind {
         self_dests: Vec<LocalId>,
     },
     // #121 Phase B-min: active-allocator stack ops. The stack lives
-    // in `runtime/toylang_rt.c` as a 64-deep fixed buffer of u64
+    // in the `toylang_rt` crate as a 64-deep fixed buffer of u64
     // handles; sentinel 0 means "default global allocator".
     /// `with allocator = expr { body }` entry: push `handle` onto
     /// the runtime allocator stack.

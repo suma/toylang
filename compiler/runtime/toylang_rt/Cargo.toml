@@ -1,0 +1,13 @@
+[package]
+name = "toylang_rt"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Native runtime for AOT-compiled toylang programs (Rust port of toylang_rt.c)"
+
+# `--cfg toylang_rt_standalone` is passed by `compiler/build.rs` when it
+# compiles this crate as the AOT staticlib (it adds the panic handler /
+# global allocator / rust_eh_personality that only a final artifact needs).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(toylang_rt_standalone)"] }

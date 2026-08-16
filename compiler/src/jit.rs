@@ -18,17 +18,15 @@
 //! Runtime symbol resolution: `puts` / `exit` / `pow` / libm
 //! transcendentals come from libc/libm via the process's global
 //! symbol table (cranelift_jit's default `JITBuilder` looks them
-//! up with `dlsym(RTLD_DEFAULT, ...)`). The `toy_*` print
-//! helpers live in C inside `runtime/toylang_rt.c` for the AOT
-//! linker; for JIT we re-implement them as Rust `extern "C"`
-//! functions in this module and register them on the JITBuilder
-//! so the generated code can call them. The Rust versions match
-//! the C versions byte-for-byte by routing through `printf` /
-//! `puts` via `libc` so `println(struct)` etc. produces the same
-//! output regardless of which backend ran the program.
+//! up with `dlsym(RTLD_DEFAULT, ...)`). The `toy_*` helpers all
+//! live in the `toylang_rt` crate — the same `no_std` source the
+//! AOT link driver builds as a staticlib — and are registered here
+//! on the JITBuilder by pointer, so both backends execute literally
+//! the same runtime code. The only difference is the output sink:
+//! `run_capturing_stdout` swaps it for a capture function, the AOT
+//! binary keeps the libc-`write` default (see RUNTIME_PORT.md R1).
 
 use std::cell::RefCell;
-use std::io::Write as _;
 
 use cranelift_jit::{JITBuilder, JITModule};
 use frontend::ast::File;
@@ -67,9 +65,11 @@ impl JitProgram {
     }
 
     /// Run the program with stdout captured into a `String`. The
-    /// `toy_print_*` runtime helpers consult a thread-local
-    /// buffer; when one is set they append to it instead of
-    /// writing to fd 1. Returns `(exit_code, captured_stdout)`.
+    /// `toy_print_*` runtime helpers route through the runtime's
+    /// per-thread output sink (see `toylang_rt`); this swaps that
+    /// sink for [`capture_sink`], which appends to a thread-local
+    /// buffer instead of writing to fd 1. Returns `(exit_code,
+    /// captured_stdout)`.
     ///
     /// Thread-local rather than module-global because the JIT
     /// runtime helpers run on whatever thread invokes `main`
@@ -89,25 +89,22 @@ impl JitProgram {
                 CAPTURE.with(|c| {
                     *c.borrow_mut() = Some(Vec::new());
                 });
+                toylang_rt::set_sink(Some(capture_sink));
                 CaptureGuard
-            }
-            fn take(self) -> Vec<u8> {
-                let buf = CAPTURE
-                    .with(|c| c.borrow_mut().take())
-                    .unwrap_or_default();
-                std::mem::forget(self); // drop side already done
-                buf
             }
         }
         impl Drop for CaptureGuard {
             fn drop(&mut self) {
+                toylang_rt::set_sink(None);
                 CAPTURE.with(|c| *c.borrow_mut() = None);
             }
         }
 
-        let guard = CaptureGuard::arm();
+        let _guard = CaptureGuard::arm();
         let exit = self.run();
-        let buf = guard.take();
+        let buf = CAPTURE
+            .with(|c| c.borrow_mut().take())
+            .unwrap_or_default();
         // Lossy decode: the JIT helpers only ever push valid UTF-8
         // (they're either ASCII formatting from format!() or the
         // bytes the user's `str` literal already contained, which
@@ -126,40 +123,27 @@ impl JitProgram {
 
 thread_local! {
     /// Stdout-capture buffer. `None` is the normal case (the
-    /// `toy_*` helpers write to fd 1 via `printf` / `puts`).
-    /// `run_capturing_stdout` flips it to `Some(Vec::new())` for
-    /// the duration of one program run. Thread-local so parallel
-    /// `cargo test` workers don't fight over a single buffer.
+    /// `toy_*` helpers write to fd 1 via the runtime's default
+    /// sink). `run_capturing_stdout` flips it to `Some(Vec::new())`
+    /// for the duration of one program run. Thread-local so
+    /// parallel `cargo test` workers don't fight over a single
+    /// buffer.
     static CAPTURE: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
 }
 
-/// Append bytes to the capture buffer if one is armed. Returns
-/// `true` when the bytes were captured, `false` when no capture
-/// is active and the caller should fall through to printf/puts.
-fn try_capture(bytes: &[u8]) -> bool {
+/// The runtime's output sink while this thread is capturing
+/// stdout. Appends the bytes to [`CAPTURE`] when one is armed;
+/// `run_capturing_stdout` arms it, so every print between arm and
+/// disarm lands in the buffer.
+extern "C" fn capture_sink(bytes: *const u8, len: usize) {
+    if len == 0 || bytes.is_null() {
+        return;
+    }
     CAPTURE.with(|c| {
         if let Some(buf) = c.borrow_mut().as_mut() {
-            buf.extend_from_slice(bytes);
-            true
-        } else {
-            false
+            buf.extend_from_slice(unsafe { core::slice::from_raw_parts(bytes, len) });
         }
-    })
-}
-
-/// Same idea, for callers that want to format directly into the
-/// buffer with `write!` rather than building an intermediate
-/// `String`. Skips the format step entirely when no capture is
-/// armed (returns `false` for the printf fallback).
-fn try_capture_with(f: impl FnOnce(&mut Vec<u8>)) -> bool {
-    CAPTURE.with(|c| {
-        if let Some(buf) = c.borrow_mut().as_mut() {
-            f(buf);
-            true
-        } else {
-            false
-        }
-    })
+    });
 }
 
 // `JITModule` allocates executable memory. The drop order matters:
@@ -296,6 +280,7 @@ fn find_main_id(ir_module: &crate::ir::Module) -> Option<FuncId> {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Runtime symbol bridge.
 //
 // The Cranelift codegen emits direct calls to symbols like
@@ -307,955 +292,147 @@ fn find_main_id(ir_module: &crate::ir::Module) -> Option<FuncId> {
 //      automatically because they're already linked into the
 //      compiler binary that's running this code.
 //
-// We only need to register the `toy_*` helpers — there's no C
-// runtime object linked into the test binary that defines them,
-// so libc fallback wouldn't find them. Each registered Rust
-// function below mirrors its C twin in `runtime/toylang_rt.c`
-// so the JIT and AOT outputs print identically.
+// Every `toy_*` helper now lives in the `toylang_rt` crate (the same
+// `no_std` source the AOT link driver builds as a staticlib), so we
+// only register function pointers here — there is no second
+// implementation to keep in step. The single difference between the
+// JIT and AOT runs is the output sink: the JIT swaps it for
+// [`capture_sink`] while a test captures stdout, the AOT binary never
+// does (see RUNTIME_PORT.md R0/R1).
 // ---------------------------------------------------------------------------
 
 fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
-    jit_builder.symbol("toy_print_i64", toy_print_i64 as *const u8);
-    jit_builder.symbol("toy_println_i64", toy_println_i64 as *const u8);
-    jit_builder.symbol("toy_print_u64", toy_print_u64 as *const u8);
-    jit_builder.symbol("toy_println_u64", toy_println_u64 as *const u8);
-    jit_builder.symbol("toy_print_bool", toy_print_bool as *const u8);
-    jit_builder.symbol("toy_println_bool", toy_println_bool as *const u8);
-    jit_builder.symbol("toy_print_str", toy_print_str as *const u8);
-    jit_builder.symbol("toy_println_str", toy_println_str as *const u8);
-    jit_builder.symbol("toy_print_f64", toy_print_f64 as *const u8);
-    jit_builder.symbol("toy_println_f64", toy_println_f64 as *const u8);
+    // print / println helpers, one per primitive width.
+    jit_builder.symbol("toy_print_i64", toylang_rt::toy_print_i64 as *const u8);
+    jit_builder.symbol("toy_println_i64", toylang_rt::toy_println_i64 as *const u8);
+    jit_builder.symbol("toy_print_u64", toylang_rt::toy_print_u64 as *const u8);
+    jit_builder.symbol("toy_println_u64", toylang_rt::toy_println_u64 as *const u8);
+    jit_builder.symbol("toy_print_bool", toylang_rt::toy_print_bool as *const u8);
+    jit_builder.symbol("toy_println_bool", toylang_rt::toy_println_bool as *const u8);
+    jit_builder.symbol("toy_print_str", toylang_rt::toy_print_str as *const u8);
+    jit_builder.symbol("toy_println_str", toylang_rt::toy_println_str as *const u8);
+    jit_builder.symbol("toy_print_f64", toylang_rt::toy_print_f64 as *const u8);
+    jit_builder.symbol("toy_println_f64", toylang_rt::toy_println_f64 as *const u8);
     // NUM-W-AOT-pack Phase 2: dedicated narrow-int helpers so the
     // JIT call site mirrors the AOT call site at the symbol level.
-    // The wide path (sextend/uextend → toy_print_{i,u}64) still
-    // produces the same decimal output, so this is purely a
-    // codegen / capture-buffer correctness alignment.
-    jit_builder.symbol("toy_print_i8", toy_print_i8 as *const u8);
-    jit_builder.symbol("toy_println_i8", toy_println_i8 as *const u8);
-    jit_builder.symbol("toy_print_u8", toy_print_u8 as *const u8);
-    jit_builder.symbol("toy_println_u8", toy_println_u8 as *const u8);
-    jit_builder.symbol("toy_print_i16", toy_print_i16 as *const u8);
-    jit_builder.symbol("toy_println_i16", toy_println_i16 as *const u8);
-    jit_builder.symbol("toy_print_u16", toy_print_u16 as *const u8);
-    jit_builder.symbol("toy_println_u16", toy_println_u16 as *const u8);
-    jit_builder.symbol("toy_print_i32", toy_print_i32 as *const u8);
-    jit_builder.symbol("toy_println_i32", toy_println_i32 as *const u8);
-    jit_builder.symbol("toy_print_u32", toy_print_u32 as *const u8);
-    jit_builder.symbol("toy_println_u32", toy_println_u32 as *const u8);
-    // #121 Phase B-min: active-allocator stack helpers. Match the
-    // C runtime's behaviour: a 64-deep fixed buffer of u64 handles
-    // with an `exit(1)` guard rail on overflow / underflow.
-    jit_builder.symbol("toy_alloc_push", toy_alloc_push as *const u8);
-    jit_builder.symbol("toy_alloc_pop", toy_alloc_pop as *const u8);
-    jit_builder.symbol("toy_alloc_current", toy_alloc_current as *const u8);
-    // Dispatched alloc / realloc / free (libc passthrough — runtime
-    // arena/fixed_buffer infrastructure has been retired in favour
-    // of the toylang stdlib `Arena` / `FixedBuffer`).
-    jit_builder.symbol("toy_dispatched_alloc", toy_dispatched_alloc as *const u8);
-    jit_builder.symbol("toy_dispatched_realloc", toy_dispatched_realloc as *const u8);
-    jit_builder.symbol("toy_dispatched_free", toy_dispatched_free as *const u8);
-    jit_builder.symbol("toy_prof_stat", toy_prof_stat as *const u8);
-    // RUNTIME-IO: stdlib I/O externs (core/std/io.t). Rust mirrors of
-    // the `toy_io_*` helpers in `compiler/runtime/toylang_rt.c`.
-    jit_builder.symbol("toy_io_read_line", toy_io_read_line as *const u8);
-    jit_builder.symbol("toy_io_argc", toy_io_argc as *const u8);
-    jit_builder.symbol("toy_io_arg", toy_io_arg as *const u8);
-    jit_builder.symbol("toy_io_env", toy_io_env as *const u8);
-    jit_builder.symbol("toy_io_read_file", toy_io_read_file as *const u8);
-    jit_builder.symbol("toy_io_file_exists", toy_io_file_exists as *const u8);
-    jit_builder.symbol("toy_io_now", toy_io_now as *const u8);
-    jit_builder.symbol("toy_io_random", toy_io_random as *const u8);
-    jit_builder.symbol("toy_prof_force_counting", toy_prof_force_counting as *const u8);
-    jit_builder.symbol("toy_record_allocator_layout", toy_record_allocator_layout as *const u8);
-    // STR-INTERP-AOT: str runtime helpers. The JIT-side
-    // implementations (below) mirror the C runtime so JIT and
-    // AOT produce byte-identical interpolation output.
-    jit_builder.symbol("toy_str_concat", toy_str_concat as *const u8);
-    jit_builder.symbol("toy_str_from_bytes", toy_str_from_bytes as *const u8);
-    jit_builder.symbol("toy_str_eq", toy_str_eq as *const u8);
-    jit_builder.symbol("toy_to_string_i64", toy_to_string_i64 as *const u8);
-    jit_builder.symbol("toy_to_string_u64", toy_to_string_u64 as *const u8);
-    jit_builder.symbol("toy_to_string_f64", toy_to_string_f64 as *const u8);
-    jit_builder.symbol("toy_to_string_bool", toy_to_string_bool as *const u8);
-    jit_builder.symbol("toy_to_string_str", toy_to_string_str as *const u8);
-    jit_builder.symbol("toy_to_string_i8", toy_to_string_i8 as *const u8);
-    jit_builder.symbol("toy_to_string_u8", toy_to_string_u8 as *const u8);
-    jit_builder.symbol("toy_to_string_i16", toy_to_string_i16 as *const u8);
-    jit_builder.symbol("toy_to_string_u16", toy_to_string_u16 as *const u8);
-    jit_builder.symbol("toy_to_string_i32", toy_to_string_i32 as *const u8);
-    jit_builder.symbol("toy_to_string_u32", toy_to_string_u32 as *const u8);
+    jit_builder.symbol("toy_print_i8", toylang_rt::toy_print_i8 as *const u8);
+    jit_builder.symbol("toy_println_i8", toylang_rt::toy_println_i8 as *const u8);
+    jit_builder.symbol("toy_print_u8", toylang_rt::toy_print_u8 as *const u8);
+    jit_builder.symbol("toy_println_u8", toylang_rt::toy_println_u8 as *const u8);
+    jit_builder.symbol("toy_print_i16", toylang_rt::toy_print_i16 as *const u8);
+    jit_builder.symbol("toy_println_i16", toylang_rt::toy_println_i16 as *const u8);
+    jit_builder.symbol("toy_print_u16", toylang_rt::toy_print_u16 as *const u8);
+    jit_builder.symbol("toy_println_u16", toylang_rt::toy_println_u16 as *const u8);
+    jit_builder.symbol("toy_print_i32", toylang_rt::toy_print_i32 as *const u8);
+    jit_builder.symbol("toy_println_i32", toylang_rt::toy_println_i32 as *const u8);
+    jit_builder.symbol("toy_print_u32", toylang_rt::toy_print_u32 as *const u8);
+    jit_builder.symbol("toy_println_u32", toylang_rt::toy_println_u32 as *const u8);
+    // #121 Phase B-min: active-allocator stack helpers.
+    jit_builder.symbol("toy_alloc_push", toylang_rt::toy_alloc_push as *const u8);
+    jit_builder.symbol("toy_alloc_pop", toylang_rt::toy_alloc_pop as *const u8);
+    jit_builder.symbol("toy_alloc_current", toylang_rt::toy_alloc_current as *const u8);
+    // Dispatched alloc / realloc / free (the bump region; the runtime
+    // arena/fixed_buffer infrastructure has been retired in favour of
+    // the toylang stdlib `Arena` / `FixedBuffer`).
+    jit_builder.symbol("toy_dispatched_alloc", toylang_rt::toy_dispatched_alloc as *const u8);
+    jit_builder.symbol("toy_dispatched_realloc", toylang_rt::toy_dispatched_realloc as *const u8);
+    jit_builder.symbol("toy_dispatched_free", toylang_rt::toy_dispatched_free as *const u8);
+    jit_builder.symbol("toy_prof_stat", toylang_rt::toy_prof_stat as *const u8);
+    jit_builder.symbol("toy_prof_force_counting", toylang_rt::toy_prof_force_counting as *const u8);
+    jit_builder.symbol("toy_record_allocator_layout", toylang_rt::toy_record_allocator_layout as *const u8);
+    // RUNTIME-IO: stdlib I/O externs (core/std/io.t).
+    jit_builder.symbol("toy_io_read_line", toylang_rt::toy_io_read_line as *const u8);
+    jit_builder.symbol("toy_io_argc", toylang_rt::toy_io_argc as *const u8);
+    jit_builder.symbol("toy_io_arg", toylang_rt::toy_io_arg as *const u8);
+    jit_builder.symbol("toy_io_env", toylang_rt::toy_io_env as *const u8);
+    jit_builder.symbol("toy_io_read_file", toylang_rt::toy_io_read_file as *const u8);
+    jit_builder.symbol("toy_io_file_exists", toylang_rt::toy_io_file_exists as *const u8);
+    jit_builder.symbol("toy_io_now", toylang_rt::toy_io_now as *const u8);
+    jit_builder.symbol("toy_io_random", toylang_rt::toy_io_random as *const u8);
+    // STR-INTERP-AOT: str runtime helpers.
+    jit_builder.symbol("toy_str_concat", toylang_rt::toy_str_concat as *const u8);
+    jit_builder.symbol("toy_str_from_bytes", toylang_rt::toy_str_from_bytes as *const u8);
+    jit_builder.symbol("toy_str_eq", toylang_rt::toy_str_eq as *const u8);
+    jit_builder.symbol("toy_to_string_i64", toylang_rt::toy_to_string_i64 as *const u8);
+    jit_builder.symbol("toy_to_string_u64", toylang_rt::toy_to_string_u64 as *const u8);
+    jit_builder.symbol("toy_to_string_f64", toylang_rt::toy_to_string_f64 as *const u8);
+    jit_builder.symbol("toy_to_string_bool", toylang_rt::toy_to_string_bool as *const u8);
+    jit_builder.symbol("toy_to_string_str", toylang_rt::toy_to_string_str as *const u8);
+    jit_builder.symbol("toy_to_string_i8", toylang_rt::toy_to_string_i8 as *const u8);
+    jit_builder.symbol("toy_to_string_u8", toylang_rt::toy_to_string_u8 as *const u8);
+    jit_builder.symbol("toy_to_string_i16", toylang_rt::toy_to_string_i16 as *const u8);
+    jit_builder.symbol("toy_to_string_u16", toylang_rt::toy_to_string_u16 as *const u8);
+    jit_builder.symbol("toy_to_string_i32", toylang_rt::toy_to_string_i32 as *const u8);
+    jit_builder.symbol("toy_to_string_u32", toylang_rt::toy_to_string_u32 as *const u8);
 }
 
-// All helpers below mirror `runtime/toylang_rt.c`. Use libc's
-// `printf` / `puts` rather than Rust's `print!` so behaviour
-// matches the AOT path exactly (same buffering, same format
-// codes). `extern "C"` keeps the ABI in lockstep with the
-// cranelift Signature declared in `CodegenSession::new`.
-
-// Only `printf` / `puts` / `putchar` are needed: the AOT runtime
-// uses `fputs(s, stdout)` to print without a newline, but on macOS
-// `stdout` is a macro (`__stdoutp`) rather than a real linker
-// symbol, so we instead route the no-newline path through
-// `printf("%s", s)` here. Behaviour is identical (both call into
-// the same `__sfwrite` under the hood) and the output is
-// byte-for-byte the same as the AOT path.
-unsafe extern "C" {
-    fn printf(fmt: *const u8, ...) -> i32;
-    fn puts(s: *const u8) -> i32;
-    fn putchar(c: i32) -> i32;
-}
-
-unsafe extern "C" fn toy_print_i64(v: i64) {
-    if try_capture_with(|buf| {
-        let _ = write!(buf, "{v}");
-    }) {
-        return;
-    }
-    unsafe {
-        printf(b"%lld\0".as_ptr(), v as std::ffi::c_longlong);
-    }
-}
-
-unsafe extern "C" fn toy_println_i64(v: i64) {
-    if try_capture_with(|buf| {
-        let _ = writeln!(buf, "{v}");
-    }) {
-        return;
-    }
-    unsafe {
-        printf(b"%lld\n\0".as_ptr(), v as std::ffi::c_longlong);
-    }
-}
-
-unsafe extern "C" fn toy_print_u64(v: u64) {
-    if try_capture_with(|buf| {
-        let _ = write!(buf, "{v}");
-    }) {
-        return;
-    }
-    unsafe {
-        printf(b"%llu\0".as_ptr(), v as std::ffi::c_ulonglong);
-    }
-}
-
-unsafe extern "C" fn toy_println_u64(v: u64) {
-    if try_capture_with(|buf| {
-        let _ = writeln!(buf, "{v}");
-    }) {
-        return;
-    }
-    unsafe {
-        printf(b"%llu\n\0".as_ptr(), v as std::ffi::c_ulonglong);
-    }
-}
-
-// NUM-W-AOT-pack Phase 2 narrow-int helpers. Each mirrors its C
-// twin in `runtime/toylang_rt.c` — captured-mode uses Rust's
-// default Display so the buffer matches `printf("%d"/"%u", ...)`
-// byte-for-byte for the supported value range. The wide helpers
-// above already produce the same digits via the sextend/uextend
-// path, so output equivalence holds across both code paths.
-
-unsafe extern "C" fn toy_print_i8(v: i8) {
-    if try_capture_with(|buf| {
-        let _ = write!(buf, "{v}");
-    }) {
-        return;
-    }
-    unsafe {
-        printf(b"%d\0".as_ptr(), v as i32);
-    }
-}
-
-unsafe extern "C" fn toy_println_i8(v: i8) {
-    if try_capture_with(|buf| {
-        let _ = writeln!(buf, "{v}");
-    }) {
-        return;
-    }
-    unsafe {
-        printf(b"%d\n\0".as_ptr(), v as i32);
-    }
-}
-
-unsafe extern "C" fn toy_print_u8(v: u8) {
-    if try_capture_with(|buf| {
-        let _ = write!(buf, "{v}");
-    }) {
-        return;
-    }
-    unsafe {
-        printf(b"%u\0".as_ptr(), v as u32);
-    }
-}
-
-unsafe extern "C" fn toy_println_u8(v: u8) {
-    if try_capture_with(|buf| {
-        let _ = writeln!(buf, "{v}");
-    }) {
-        return;
-    }
-    unsafe {
-        printf(b"%u\n\0".as_ptr(), v as u32);
-    }
-}
-
-unsafe extern "C" fn toy_print_i16(v: i16) {
-    if try_capture_with(|buf| {
-        let _ = write!(buf, "{v}");
-    }) {
-        return;
-    }
-    unsafe {
-        printf(b"%d\0".as_ptr(), v as i32);
-    }
-}
-
-unsafe extern "C" fn toy_println_i16(v: i16) {
-    if try_capture_with(|buf| {
-        let _ = writeln!(buf, "{v}");
-    }) {
-        return;
-    }
-    unsafe {
-        printf(b"%d\n\0".as_ptr(), v as i32);
-    }
-}
-
-unsafe extern "C" fn toy_print_u16(v: u16) {
-    if try_capture_with(|buf| {
-        let _ = write!(buf, "{v}");
-    }) {
-        return;
-    }
-    unsafe {
-        printf(b"%u\0".as_ptr(), v as u32);
-    }
-}
-
-unsafe extern "C" fn toy_println_u16(v: u16) {
-    if try_capture_with(|buf| {
-        let _ = writeln!(buf, "{v}");
-    }) {
-        return;
-    }
-    unsafe {
-        printf(b"%u\n\0".as_ptr(), v as u32);
-    }
-}
-
-unsafe extern "C" fn toy_print_i32(v: i32) {
-    if try_capture_with(|buf| {
-        let _ = write!(buf, "{v}");
-    }) {
-        return;
-    }
-    unsafe {
-        printf(b"%d\0".as_ptr(), v);
-    }
-}
-
-unsafe extern "C" fn toy_println_i32(v: i32) {
-    if try_capture_with(|buf| {
-        let _ = writeln!(buf, "{v}");
-    }) {
-        return;
-    }
-    unsafe {
-        printf(b"%d\n\0".as_ptr(), v);
-    }
-}
-
-unsafe extern "C" fn toy_print_u32(v: u32) {
-    if try_capture_with(|buf| {
-        let _ = write!(buf, "{v}");
-    }) {
-        return;
-    }
-    unsafe {
-        printf(b"%u\0".as_ptr(), v);
-    }
-}
-
-unsafe extern "C" fn toy_println_u32(v: u32) {
-    if try_capture_with(|buf| {
-        let _ = writeln!(buf, "{v}");
-    }) {
-        return;
-    }
-    unsafe {
-        printf(b"%u\n\0".as_ptr(), v);
-    }
-}
-
-// #121 Phase B-min: JIT mirror of the C runtime's allocator stack.
-// The 64-deep fixed-size buffer matches `runtime/toylang_rt.c`
-// byte-for-byte. We use a `Mutex<Vec<u64>>` instead of a static
-// array so the JIT path stays Rust-clean (the C path uses a
-// global because the runtime is single-translation-unit C).
-// Single-thread for now — both backends.
-use std::sync::Mutex;
-static JIT_ALLOC_STACK: Mutex<Vec<u64>> = Mutex::new(Vec::new());
-
-unsafe extern "C" fn toy_alloc_push(handle: u64) {
-    let mut stack = JIT_ALLOC_STACK.lock().expect("alloc stack mutex poisoned");
-    if stack.len() >= 64 {
-        eprintln!("toylang JIT runtime: allocator stack overflow");
-        std::process::exit(1);
-    }
-    stack.push(handle);
-}
-
-unsafe extern "C" fn toy_alloc_pop() {
-    let mut stack = JIT_ALLOC_STACK.lock().expect("alloc stack mutex poisoned");
-    if stack.is_empty() {
-        eprintln!("toylang JIT runtime: allocator stack underflow");
-        std::process::exit(1);
-    }
-    stack.pop();
-}
-
-unsafe extern "C" fn toy_alloc_current() -> u64 {
-    let stack = JIT_ALLOC_STACK.lock().expect("alloc stack mutex poisoned");
-    stack.last().copied().unwrap_or(0)
-}
-
-// JIT mirror of the dispatched alloc / realloc / free helpers. The
-// runtime arena / fixed_buffer registry has been retired; both
-// policies live in the toylang stdlib (`core/std/allocator.t`) on
-// top of the default allocator. The `handle` argument is preserved
-// in the IR for forward compatibility but currently routes every
-// call to the bump region below.
-unsafe extern "C" {
-    fn malloc(size: usize) -> *mut u8;
-}
-
-// MEMORY_PROFILING M1: the third implementation of the allocation
-// counters, after `interpreter/src/heap.rs::MemoryStats` and
-// `compiler/runtime/toylang_rt.c`. Sharing one would mean linking the
-// C translation unit into this binary, which collides with the print
-// helpers above — those exist precisely because the JIT needs to
-// capture stdout. The three are held in agreement by a test rather
-// than by construction: `--all-backends --profile=mem` compares them.
+// ---------------------------------------------------------------------------
+// Memory-profile accessors (MEMORY_PROFILING M1–M5).
 //
-// The size table is needed for the same reason as in C: a `realloc`
-// counts as one resize, which means knowing the old size, and libc
-// does not return it.
-thread_local! {
-    static JIT_PROFILE: std::cell::Cell<interpreter::heap::MemoryStats> = const {
-        std::cell::Cell::new(interpreter::heap::MemoryStats::ZERO)
-    };
-    static JIT_ALLOC_SIZES: RefCell<std::collections::HashMap<usize, (u64, u64)>> =
-        RefCell::new(std::collections::HashMap::new());
-    /// Per-site totals, keyed by the packed source position. `BTreeMap`
-    /// so the report order is the source order rather than a hash
-    /// order — a report that reorders between runs is not diffable.
-    static JIT_SITES: RefCell<std::collections::BTreeMap<u64, interpreter::heap::SiteStats>> =
-        const { RefCell::new(std::collections::BTreeMap::new()) };
-    /// Registered allocator layouts, in registration order
-    /// (MEMORY_PROFILING M3 residual).
-    static JIT_LAYOUTS: RefCell<Vec<interpreter::heap::AllocatorLayoutReport>> =
-        const { RefCell::new(Vec::new()) };
+// The counters, per-site totals and allocator layouts live in the
+// `toylang_rt` runtime's per-thread state — the same state the AOT
+// binary's `--profile=mem` report reads — so the JIT's numbers agree
+// with AOT by construction. The structs here convert them to the
+// interpreter's `MemoryStats` shape that `--all-backends` compares
+// against.
+// ---------------------------------------------------------------------------
+
+/// Clear the runtime's per-thread allocation totals, so a report
+/// describes one run, and enable counting for it.
+pub fn reset_memory_profile() {
+    toylang_rt::profiler_reset();
 }
 
-/// Clear the JIT's allocation totals, so a report describes one run.
-pub fn reset_memory_profile() {
-    JIT_PROFILE.with(|p| p.set(interpreter::heap::MemoryStats::ZERO));
-    JIT_ALLOC_SIZES.with(|m| m.borrow_mut().clear());
-    JIT_SITES.with(|m| m.borrow_mut().clear());
-    JIT_LAYOUTS.with(|v| v.borrow_mut().clear());
+/// The runtime's allocation totals since the last [`reset_memory_profile`].
+pub fn memory_profile() -> interpreter::heap::MemoryStats {
+    let s = toylang_rt::profiler_stats();
+    interpreter::heap::MemoryStats {
+        alloc_count: s.alloc_count,
+        free_count: s.free_count,
+        realloc_count: s.realloc_count,
+        cumulative_bytes: s.cumulative_bytes,
+        live_bytes: s.live_bytes,
+        peak_live_bytes: s.peak_live_bytes,
+        peak_at_request: s.peak_at_request,
+    }
 }
 
 /// Per-site totals for the JIT, in source order.
 pub fn memory_profile_sites() -> Vec<(u64, interpreter::heap::SiteStats)> {
-    JIT_SITES.with(|m| m.borrow().iter().map(|(k, v)| (*k, *v)).collect())
+    toylang_rt::profiler_sites()
+        .into_iter()
+        .map(|(site, s)| {
+            (
+                site,
+                interpreter::heap::SiteStats {
+                    alloc_count: s.alloc_count,
+                    cumulative_bytes: s.cumulative_bytes,
+                    live_count: s.live_count,
+                    live_bytes: s.live_bytes,
+                },
+            )
+        })
+        .collect()
 }
 
-/// The JIT's registered allocator layouts, in registration order.
+/// The runtime's registered allocator layouts, in registration order.
 pub fn memory_profile_layouts() -> Vec<interpreter::heap::AllocatorLayoutReport> {
-    JIT_LAYOUTS.with(|v| v.borrow().clone())
+    toylang_rt::profiler_layouts()
+        .into_iter()
+        .map(|l| interpreter::heap::AllocatorLayoutReport {
+            name: l.name,
+            managed_bytes: l.managed,
+            live_bytes: l.live,
+            free_blocks: l.free_blocks,
+            largest_free: l.largest_free,
+        })
+        .collect()
 }
 
-/// The JIT's allocation totals since the last [`reset_memory_profile`].
-pub fn memory_profile() -> interpreter::heap::MemoryStats {
-    JIT_PROFILE.with(|p| p.get())
-}
-
-/// MEMORY_PROFILING M4. Counting here is unconditional — these are
-/// plain thread-local integers with no side table to build, so there is
-/// nothing to switch off and `toy_prof_force_counting` has nothing to
-/// do. The C runtime needs the switch because its counting requires a
-/// ptr->size table it would otherwise not allocate.
-unsafe extern "C" fn toy_prof_stat(which: u64) -> u64 {
-    match frontend::ast::MemStat::from_code(which) {
-        Some(stat) => memory_profile().field(stat),
-        // Unreachable: codegen only ever passes a `MemStat::code`.
-        None => 0,
-    }
-}
-
-unsafe extern "C" fn toy_prof_force_counting() {}
-
-unsafe extern "C" fn toy_record_allocator_layout(
-    name: *const u8,
-    managed: u64,
-    live: u64,
-    free_blocks: u64,
-    largest_free: u64,
-) {
-    // `name` is a str value: a pointer at the `[bytes][NUL][u64 len]`
-    // layout's length field. Walk back to the bytes to recover the name.
-    // `read_unaligned` because the len field is not 8-byte aligned in
-    // general (it sits at `byte_start + len + 1`).
-    let len = unsafe { (name as *const u64).read_unaligned() };
-    let bytes = unsafe { name.sub(len as usize + 1) };
-    let name_str = unsafe {
-        std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes, len as usize))
-    };
-    JIT_LAYOUTS.with(|v| {
-        v.borrow_mut().push(interpreter::heap::AllocatorLayoutReport {
-            name: name_str.to_string(),
-            managed_bytes: managed,
-            live_bytes: live,
-            free_blocks,
-            largest_free,
-        });
-    });
-}
-
-// ---- Bump region (DROP-GLUE) ----
-//
-// Mirror of the C runtime's `toy_bump_*`: the JIT's dispatcher hands
-// memory out of a bump region that never reuses a freed address. A
-// drop-glue walk that reaches the same boxed node twice (aliasing, a
-// `get()` copy, a shared boxed list tail) therefore reads the block's
-// original contents on the second visit, and the free is an idempotent
-// no-op. libc `free` is never called on dispatcher memory.
-
-const JIT_BUMP_CHUNK_SIZE: usize = 1 << 20; // 1 MiB per chunk
-
-#[repr(C)]
-struct JitBumpChunk {
-    next: *mut JitBumpChunk,
-    used: usize,
-}
-
-thread_local! {
-    static JIT_BUMP_HEAD: std::cell::Cell<*mut JitBumpChunk> =
-        const { std::cell::Cell::new(std::ptr::null_mut()) };
-}
-
-fn jit_bump_alloc_raw(size: usize) -> *mut u8 {
-    let size = (size + 15) & !15usize;
-    JIT_BUMP_HEAD.with(|head| {
-        let chunk = head.get();
-        if chunk.is_null() || unsafe { (*chunk).used } + size > JIT_BUMP_CHUNK_SIZE {
-            let fresh =
-                unsafe { malloc(std::mem::size_of::<JitBumpChunk>() + JIT_BUMP_CHUNK_SIZE) }
-                    as *mut JitBumpChunk;
-            if fresh.is_null() {
-                return std::ptr::null_mut();
-            }
-            unsafe {
-                (*fresh).next = chunk;
-                (*fresh).used = 0;
-            }
-            head.set(fresh);
-            let p = unsafe {
-                (fresh as *mut u8).add(std::mem::size_of::<JitBumpChunk>())
-            };
-            unsafe { (*fresh).used += size };
-            p
-        } else {
-            let p = unsafe {
-                (chunk as *mut u8).add(std::mem::size_of::<JitBumpChunk>() + (*chunk).used)
-            };
-            unsafe { (*chunk).used += size };
-            p
-        }
-    })
-}
-
-unsafe extern "C" fn toy_dispatched_alloc(_handle: u64, size: u64, site: u64) -> *mut u8 {
-    // Zero-size yields null and is not counted, matching the other two
-    // implementations; libc would return a unique non-null pointer.
-    if size == 0 {
-        return std::ptr::null_mut();
-    }
-    let p = jit_bump_alloc_raw(size as usize);
-    if !p.is_null() {
-        JIT_PROFILE.with(|prof| {
-            let mut g = prof.get();
-            g.alloc_count += 1;
-            g.record_obtained(size);
-            prof.set(g);
-        });
-        JIT_ALLOC_SIZES.with(|m| m.borrow_mut().insert(p as usize, (size, site)));
-        JIT_SITES.with(|m| {
-            let mut m = m.borrow_mut();
-            let e = m.entry(site).or_default();
-            e.alloc_count += 1;
-            e.cumulative_bytes += size;
-            e.live_count += 1;
-            e.live_bytes += size;
-        });
-    }
-    p
-}
-
-unsafe extern "C" fn toy_dispatched_free(_handle: u64, p: *mut u8) {
-    if p.is_null() {
-        return;
-    }
-    let tracked = JIT_ALLOC_SIZES.with(|m| m.borrow_mut().remove(&(p as usize)));
-    if let Some((size, site)) = tracked {
-        JIT_PROFILE.with(|prof| {
-            let mut g = prof.get();
-            g.free_count += 1;
-            g.record_released(size);
-            prof.set(g);
-        });
-        JIT_SITES.with(|m| {
-            let mut m = m.borrow_mut();
-            let e = m.entry(site).or_default();
-            e.live_count = e.live_count.saturating_sub(1);
-            e.live_bytes = e.live_bytes.saturating_sub(size);
-        });
-    }
-    // No libc free: the bump region never reuses an address, so a
-    // later drop-glue visit of this block reads its original contents.
-}
-
-unsafe extern "C" fn toy_dispatched_realloc(_handle: u64, p: *mut u8, new_size: u64) -> *mut u8 {
-    if p.is_null() {
-        return unsafe { toy_dispatched_alloc(_handle, new_size, 0) };
-    }
-    if new_size == 0 {
-        unsafe { toy_dispatched_free(_handle, p) };
-        return std::ptr::null_mut();
-    }
-    let (old_size, site) = JIT_ALLOC_SIZES
-        .with(|m| m.borrow_mut().remove(&(p as usize)))
-        .unwrap_or((0, 0));
-    JIT_PROFILE.with(|prof| {
-        let mut g = prof.get();
-        g.realloc_count += 1;
-        if new_size > old_size {
-            g.record_obtained(new_size - old_size);
-        } else {
-            g.record_released(old_size - new_size);
-        }
-        prof.set(g);
-    });
-    // A resize keeps the site its block already had.
-    JIT_SITES.with(|m| {
-        let mut m = m.borrow_mut();
-        let e = m.entry(site).or_default();
-        if new_size > old_size {
-            e.cumulative_bytes += new_size - old_size;
-            e.live_bytes += new_size - old_size;
-        } else {
-            e.live_bytes = e.live_bytes.saturating_sub(old_size - new_size);
-        }
-    });
-    // Bump-region move: a fresh block, old contents copied, the old
-    // block left in place (it is never reused).
-    let np = jit_bump_alloc_raw(new_size as usize);
-    if np.is_null() {
-        JIT_ALLOC_SIZES.with(|m| m.borrow_mut().insert(p as usize, (old_size, site)));
-        return np;
-    }
-    if old_size > 0 {
-        unsafe {
-            std::ptr::copy_nonoverlapping(p, np, (old_size as usize).min(new_size as usize));
-        }
-    }
-    JIT_ALLOC_SIZES.with(|m| m.borrow_mut().insert(np as usize, (new_size, site)));
-    np
-}
-
-unsafe extern "C" fn toy_print_bool(v: u8) {
-    let s: &[u8] = if v != 0 { b"true" } else { b"false" };
-    if try_capture(s) {
-        return;
-    }
-    let cstr: &[u8] = if v != 0 { b"true\0" } else { b"false\0" };
-    unsafe {
-        printf(b"%s\0".as_ptr(), cstr.as_ptr());
-    }
-}
-
-unsafe extern "C" fn toy_println_bool(v: u8) {
-    if try_capture_with(|buf| {
-        let _ = writeln!(buf, "{}", if v != 0 { "true" } else { "false" });
-    }) {
-        return;
-    }
-    let cstr: &[u8] = if v != 0 { b"true\0" } else { b"false\0" };
-    unsafe {
-        puts(cstr.as_ptr());
-    }
-}
-
-/// Walk a NUL-terminated C string and return its bytes (without
-/// the terminator). Used by the str-print helpers when capture
-/// is active so we can splice the content into the Vec<u8>
-/// buffer directly. Bounded to 1 MiB just to make sure a stray
-/// non-terminated pointer doesn't infinite-loop.
-unsafe fn cstr_bytes<'a>(s: *const u8) -> &'a [u8] {
-    if s.is_null() {
-        return &[];
-    }
-    let mut len = 0usize;
-    let limit = 1 << 20;
-    while len < limit {
-        if unsafe { *s.add(len) } == 0 {
-            break;
-        }
-        len += 1;
-    }
-    unsafe { std::slice::from_raw_parts(s, len) }
-}
-
-unsafe extern "C" fn toy_print_str(s: *const u8) {
-    let bytes = unsafe { cstr_bytes(s) };
-    if try_capture(bytes) {
-        return;
-    }
-    unsafe {
-        printf(b"%s\0".as_ptr(), s);
-    }
-}
-
-unsafe extern "C" fn toy_println_str(s: *const u8) {
-    let bytes = unsafe { cstr_bytes(s) };
-    if try_capture_with(|buf| {
-        buf.extend_from_slice(bytes);
-        buf.push(b'\n');
-    }) {
-        return;
-    }
-    unsafe {
-        puts(s);
-    }
-}
-
-// f64 display follows the C runtime's contract: integral values
-// print as `%.1f` (so `1f64` displays as `1.0`, matching the
-// interpreter), everything else uses `%g`. Captured-mode mirrors
-// this: `format!("{:.1}", v)` for integral, `format!("{}", v)`
-// for the `%g` path. Rust's default Display for f64 differs from
-// `%g` for very large / very small magnitudes (Rust never uses
-// scientific notation by default at this width while C `%g` does
-// past 6 sig figs), but every fixture in the e2e suite uses
-// short decimals where the two agree byte-for-byte.
-fn format_f64(v: f64) -> String {
-    if v == (v as i64) as f64 {
-        format!("{v:.1}")
-    } else {
-        format!("{v}")
-    }
-}
-
-unsafe extern "C" fn emit_f64(v: f64, newline: bool) {
-    unsafe {
-        if v == (v as i64) as f64 {
-            printf(b"%.1f\0".as_ptr(), v);
-        } else {
-            printf(b"%g\0".as_ptr(), v);
-        }
-        if newline {
-            putchar(b'\n' as i32);
-        }
-    }
-}
-
-unsafe extern "C" fn toy_print_f64(v: f64) {
-    if try_capture_with(|buf| {
-        let _ = write!(buf, "{}", format_f64(v));
-    }) {
-        return;
-    }
-    unsafe {
-        emit_f64(v, false);
-    }
-}
-
-unsafe extern "C" fn toy_println_f64(v: f64) {
-    if try_capture_with(|buf| {
-        let _ = writeln!(buf, "{}", format_f64(v));
-    }) {
-        return;
-    }
-    unsafe {
-        emit_f64(v, true);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// STR-INTERP-AOT: heap str helpers — JIT-side mirror of
-// `runtime/toylang_rt.c::toy_str_*` / `toy_to_string_*`. Exact same
-// memory layout (`[bytes][NUL][u64 len LE]`, returned pointer
-// points at the u64 len field) so JIT-emitted code is interchangeable
-// with the AOT object code at the symbol level — pointer-uniform
-// with `.rodata` strs, so `print` / `println` / `__builtin_str_len`
-// already work on the result without any backend-specific tweak.
-// Memory is allocated via libc malloc directly, mirroring the C
-// runtime; the result is leaked at process exit (interpolation
-// strings are typically short-lived).
-//
-// Unsafe invariant: each `*const u8` returned points at the u64
-// len field; `byte_start = ret - len - 1`. The leading 8-byte
-// prefix is correctly aligned because libc malloc returns
-// 16-byte-aligned memory on every platform we target.
-// ---------------------------------------------------------------------------
-
-unsafe extern "C" {
-    fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8;
-}
-
-unsafe fn toy_str_alloc(bytes: *const u8, len: u64) -> *const u8 {
-    unsafe {
-        let total = (len as usize) + 1 + 8;
-        let base = malloc(total);
-        if base.is_null() {
-            // Mirror the C runtime's hard-fail behaviour.
-            std::process::exit(1);
-        }
-        if len > 0 && !bytes.is_null() {
-            memcpy(base, bytes, len as usize);
-        }
-        *base.add(len as usize) = 0u8; // NUL terminator
-        // Length stored little-endian (host order = LE everywhere
-        // we target). `write_unaligned` because the caller has no
-        // 8-byte alignment guarantee for `base + len + 1`.
-        let len_field = base.add((len as usize) + 1) as *mut u64;
-        len_field.write_unaligned(len);
-        len_field as *const u8
-    }
-}
-
-/// `a == b` on two str values — mirror of the C runtime's `toy_str_eq`.
-/// Returns i8 to match the cranelift Bool representation.
-unsafe extern "C" fn toy_str_eq(a: *const u8, b: *const u8) -> i8 {
-    if a == b {
-        return 1;
-    }
-    if a.is_null() || b.is_null() {
-        return 0;
-    }
-    let (la, lb) = unsafe {
-        (
-            (a as *const u64).read_unaligned(),
-            (b as *const u64).read_unaligned(),
-        )
-    };
-    if la != lb {
-        return 0;
-    }
-    if la == 0 {
-        return 1;
-    }
-    let (abytes, bbytes) = unsafe {
-        (
-            std::slice::from_raw_parts(a.sub(la as usize + 1), la as usize),
-            std::slice::from_raw_parts(b.sub(lb as usize + 1), lb as usize),
-        )
-    };
-    (abytes == bbytes) as i8
-}
-
-/// `__builtin_str_from_bytes(p, len)` — mirror of the C runtime's
-/// exported wrapper.
-unsafe extern "C" fn toy_str_from_bytes(bytes: *const u8, len: u64) -> *const u8 {
-    unsafe { toy_str_alloc(bytes, len) }
-}
-
-unsafe extern "C" fn toy_str_concat(a: *const u8, b: *const u8) -> *const u8 {
-    unsafe {
-        // The len field lives at offset 0 from the str runtime
-        // value (read with `read_unaligned`; see `toy_str_alloc`).
-        let la = (a as *const u64).read_unaligned();
-        let lb = (b as *const u64).read_unaligned();
-        let a_bytes = a.sub((la as usize) + 1);
-        let b_bytes = b.sub((lb as usize) + 1);
-        let total = la + lb;
-        let base = malloc((total as usize) + 1 + 8);
-        if base.is_null() {
-            std::process::exit(1);
-        }
-        if la > 0 {
-            memcpy(base, a_bytes, la as usize);
-        }
-        if lb > 0 {
-            memcpy(base.add(la as usize), b_bytes, lb as usize);
-        }
-        *base.add(total as usize) = 0u8;
-        let len_field = base.add((total as usize) + 1) as *mut u64;
-        len_field.write_unaligned(total);
-        len_field as *const u8
-    }
-}
-
-unsafe extern "C" fn toy_to_string_i64(v: i64) -> *const u8 {
-    let s = format!("{v}");
-    unsafe { toy_str_alloc(s.as_ptr(), s.len() as u64) }
-}
-
-unsafe extern "C" fn toy_to_string_u64(v: u64) -> *const u8 {
-    let s = format!("{v}");
-    unsafe { toy_str_alloc(s.as_ptr(), s.len() as u64) }
-}
-
-unsafe extern "C" fn toy_to_string_f64(v: f64) -> *const u8 {
-    let s = format_f64(v);
-    unsafe { toy_str_alloc(s.as_ptr(), s.len() as u64) }
-}
-
-unsafe extern "C" fn toy_to_string_bool(v: u8) -> *const u8 {
-    let bytes: &[u8] = if v != 0 { b"true" } else { b"false" };
-    unsafe { toy_str_alloc(bytes.as_ptr(), bytes.len() as u64) }
-}
-
-// str -> str: identity. Mirrors the C runtime so the desugared
-// interpolation chain can route every `{expr}` segment through
-// `__builtin_to_string` uniformly.
-unsafe extern "C" fn toy_to_string_str(s: *const u8) -> *const u8 {
-    s
-}
-
-unsafe extern "C" fn toy_to_string_i8(v: i8) -> *const u8 {
-    unsafe { toy_to_string_i64(v as i64) }
-}
-unsafe extern "C" fn toy_to_string_u8(v: u8) -> *const u8 {
-    unsafe { toy_to_string_u64(v as u64) }
-}
-unsafe extern "C" fn toy_to_string_i16(v: i16) -> *const u8 {
-    unsafe { toy_to_string_i64(v as i64) }
-}
-unsafe extern "C" fn toy_to_string_u16(v: u16) -> *const u8 {
-    unsafe { toy_to_string_u64(v as u64) }
-}
-unsafe extern "C" fn toy_to_string_i32(v: i32) -> *const u8 {
-    unsafe { toy_to_string_i64(v as i64) }
-}
-unsafe extern "C" fn toy_to_string_u32(v: u32) -> *const u8 {
-    unsafe { toy_to_string_u64(v as u64) }
-}
-
-
-// ---------------------------------------------------------------------------
-// RUNTIME-IO: JIT mirrors of the `toy_io_*` C helpers.
-//
-// Same semantics as `compiler/runtime/toylang_rt.c`: `str` args are
-// toylang str handles (pointer to the trailing u64 len field), `str`
-// results are built with `toy_str_alloc` (malloc'd, never freed — the
-// str runtime owns them), failures return `""`.
-// ---------------------------------------------------------------------------
-
-// Program arguments for `toy_io_argc` / `toy_io_arg`. The JIT runs
-// in-process inside the compiler, whose own argv is not the program's
-// — the harness sets this explicitly (default: empty, matching a
-// compiled binary launched with no arguments).
-thread_local! {
-    static JIT_PROGRAM_ARGS: std::cell::RefCell<Vec<String>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
+/// Program arguments for the JIT's `argc()` / `arg(i)`. The JIT runs
+/// in-process inside the compiler, whose own argv is not the
+/// program's — the harness sets this explicitly (default: empty,
+/// matching a compiled binary launched with no arguments).
 pub fn set_jit_program_args(args: Vec<String>) {
-    JIT_PROGRAM_ARGS.with(|a| *a.borrow_mut() = args);
-}
-
-fn jit_str_to_rust(name: *const u8) -> String {
-    unsafe {
-        let len = (name as *const u64).read_unaligned() as usize;
-        let bytes = name.sub(len + 1);
-        std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes, len)).to_string()
-    }
-}
-
-fn jit_str_from_rust(text: &str) -> *const u8 {
-    unsafe { toy_str_alloc(text.as_ptr(), text.len() as u64) }
-}
-
-unsafe extern "C" fn toy_io_read_line() -> *const u8 {
-    let mut line = String::new();
-    use std::io::Read;
-    let mut buf = [0u8; 1];
-    let mut stdin = std::io::stdin().lock();
-    loop {
-        match stdin.read(&mut buf) {
-            Ok(0) => break,
-            Ok(_) => {
-                if buf[0] == b'\n' {
-                    break;
-                }
-                line.push(buf[0] as char);
-            }
-            Err(_) => break,
-        }
-    }
-    if line.ends_with('\r') {
-        line.pop();
-    }
-    jit_str_from_rust(&line)
-}
-
-unsafe extern "C" fn toy_io_argc() -> u64 {
-    JIT_PROGRAM_ARGS.with(|a| a.borrow().len() as u64)
-}
-
-unsafe extern "C" fn toy_io_arg(i: u64) -> *const u8 {
-    let text = JIT_PROGRAM_ARGS
-        .with(|a| a.borrow().get(i as usize).cloned())
-        .unwrap_or_default();
-    jit_str_from_rust(&text)
-}
-
-unsafe extern "C" fn toy_io_env(name: *const u8) -> *const u8 {
-    let key = jit_str_to_rust(name);
-    let text = std::env::var(&key).unwrap_or_default();
-    jit_str_from_rust(&text)
-}
-
-unsafe extern "C" fn toy_io_read_file(path: *const u8) -> *const u8 {
-    let p = jit_str_to_rust(path);
-    let text = std::fs::read_to_string(&p).unwrap_or_default();
-    jit_str_from_rust(&text)
-}
-
-unsafe extern "C" fn toy_io_file_exists(path: *const u8) -> u8 {
-    let p = jit_str_to_rust(path);
-    if std::path::Path::new(&p).exists() {
-        1
-    } else {
-        0
-    }
-}
-
-unsafe extern "C" fn toy_io_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-unsafe extern "C" fn toy_io_random() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static STATE: AtomicU64 = AtomicU64::new(0);
-    let mut st = STATE.load(Ordering::Relaxed);
-    if st == 0 {
-        let seed = (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0))
-            ^ ((std::process::id() as u64) << 32);
-        st = if seed == 0 { 0x9E3779B97F4A7C15 } else { seed };
-    }
-    let mut x = st;
-    x ^= x >> 12;
-    x ^= x << 25;
-    x ^= x >> 27;
-    STATE.store(x, Ordering::Relaxed);
-    x.wrapping_mul(0x2545F4914F6CDD1D)
+    toylang_rt::set_program_args(args.into_iter().map(String::into_bytes).collect());
 }

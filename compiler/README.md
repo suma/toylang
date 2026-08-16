@@ -111,7 +111,7 @@ IR を挟むことで AST に直接バックエンドの都合を持ち込まず
 | `src/lower/` | AST → IR (24 ファイル分割、`program.rs` が top-level) |
 | `src/codegen.rs` | IR → Cranelift IR + `.o` 出力 |
 | `src/driver.rs` | `cc` 経由のリンク |
-| `build.rs` | `runtime/toylang_rt.c` を pre-build して `.o` を同梱 |
+| `build.rs` | `runtime/toylang_rt/` を rustc で staticlib に pre-build して同梱 |
 
 frontend / type checker は `compiler_core::CompilerSession` と
 `interpreter::check_typing_with_core_modules` を再利用するため、
@@ -161,5 +161,5 @@ COMPILER_E2E=skip cargo nextest run -p compiler    # cc が無い環境で skip
 `speed` がデフォルト。
 
 並列 wall-clock の支配項は macOS の Mach-O コード署名検証 (新規バイナリ
-ごとに 150〜300ms)。`build.rs` で `toylang_rt.c` を 1 度だけ pre-build
+ごとに 150〜300ms)。`build.rs` で `toylang_rt` を 1 度だけ pre-build
 して各テストの `cc` 起動コストを削っている。

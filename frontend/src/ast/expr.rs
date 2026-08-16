@@ -306,7 +306,7 @@ impl MemStat {
 
     /// Stable selector passed to the runtime helpers, so a counter is
     /// one call with a constant argument rather than one entry point
-    /// per field. Shared with `toy_prof_stat` in `toylang_rt.c`, which
+    /// per field. Shared with `toy_prof_stat` in the `toylang_rt` crate,
     /// is why the numbering must not be reshuffled.
     pub fn code(self) -> u64 {
         match self {

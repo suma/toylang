@@ -2272,6 +2272,14 @@ Both accept any type; rendering goes through `Object::to_display_string`
 (strings are unquoted, structs/dicts deterministic via sorted keys).
 These are user-facing names without the `__builtin_` prefix.
 
+f64 rendering (the same rule every backend shares, since RUNTIME_PORT
+R1): Rust's `Display` (shortest round-trip, so `0.1f64 + 0.2f64`
+prints as `0.30000000000000004`), except that integral values get a
+trailing `.0` so floats stay visually distinct from ints (`1f64`
+prints as `1.0`). This is a change from the old AOT runtime, which
+used C's `%g` (6 significant digits: `1234567.75` used to print as
+`1.23457e+06`).
+
 ### Termination
 
 ```rust

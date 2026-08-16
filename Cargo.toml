@@ -7,6 +7,7 @@ members = [
     "compiler_ir",
     "compiler_lower",
     "compiler",
+    "compiler/runtime/toylang_rt",
 ]
 
 [workspace.dependencies]

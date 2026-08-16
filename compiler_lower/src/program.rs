@@ -70,7 +70,7 @@ fn libm_import_name_for(name: &str) -> Option<&'static str> {
         // (matches the legacy `BuiltinMethod::I64Abs` semantics).
         "__extern_abs_i64" => "labs",
         // RUNTIME-IO: the `core/std/io.t` extern declarations map to
-        // the `toy_io_*` helpers in `compiler/runtime/toylang_rt.c`
+        // the `toy_io_*` helpers in the `toylang_rt` crate
         // (interpreter: `extern_io::build_io_registry`, JIT: the
         // mirrors in `compiler/src/jit.rs`).
         "__extern_io_read_line_str" => "toy_io_read_line",

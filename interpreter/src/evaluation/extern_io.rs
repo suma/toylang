@@ -5,9 +5,10 @@
 //! `extern fn` calls through a registry of Rust closures keyed by the
 //! declared name. Each backend resolves the same names differently —
 //! the AOT re-declares them as `Linkage::Import` calls against the
-//! `toy_io_*` symbols in `compiler/runtime/toylang_rt.c` (via
+//! `toy_io_*` symbols in the `toylang_rt` crate (via
 //! `compiler_lower::program::libm_import_name_for`), and the
-//! compiler-side JIT registers Rust mirrors in `compiler/src/jit.rs`.
+//! compiler-side JIT registers the same crate's symbols in
+//! `compiler/src/jit.rs::register_runtime_symbols`.
 //!
 //! Return-value convention: `str` results use the language's str
 //! representation (a `String` object here; a pointer to the trailing

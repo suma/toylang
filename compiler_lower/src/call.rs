@@ -64,13 +64,15 @@ impl<'a> FunctionLower<'a> {
         if let Some(link) = self.closure_bindings.get(&fn_name).copied() {
             return Ok(link.func_id);
         }
-        // Bare call: try the user-authored `(None, fn_name)` slot
-        // first, then any unique `(Some(_), fn_name)` integrated
-        // module's `pub fn`. See `Module::lookup_function` for the
-        // ambiguity rule.
-        if let Some(id) = self.module.lookup_function(None, fn_name) {
-            return Ok(id);
-        }
+        // Generic template first: a generic function is instantiated
+        // *per concrete type-argument list*, and each instantiation is
+        // registered in the module's function index under the bare
+        // template name. Looking the bare name up first would find the
+        // first instantiation regardless of the call's actual argument
+        // types — `id(1u64)` then `id("x")` would call the u64 body
+        // with a str handle, returning garbage on every backend (found
+        // via the if-condition type-checking work: `same<str>` resolved
+        // to the `same<u64>` FuncId).
         if let Some(template) = self.generic_funcs.get(&fn_name).cloned() {
             // Infer type-argument bindings by walking each parameter
             // declaration alongside the call's actual argument
@@ -122,6 +124,13 @@ impl<'a> FunctionLower<'a> {
                 )
             })?;
             return self.instantiate_generic_function(fn_name, &template, type_args);
+        }
+        // Bare call: try the user-authored `(None, fn_name)` slot
+        // first, then any unique `(Some(_), fn_name)` integrated
+        // module's `pub fn`. See `Module::lookup_function` for the
+        // ambiguity rule.
+        if let Some(id) = self.module.lookup_function(None, fn_name) {
+            return Ok(id);
         }
         Err(format!(
             "call to unknown function `{}` (only same-program functions are supported)",
@@ -226,9 +235,18 @@ impl<'a> FunctionLower<'a> {
             .collect::<Vec<_>>()
             .join(",");
         let export_name = format!("toy_{raw_name}__{arg_str}");
+        // `declare_function_anon`, not `declare_function`: the
+        // instance must not occupy the bare template name in the
+        // function index. With `declare_function`, the *first*
+        // instantiation registered itself under `same`, so a later
+        // `same<str>` call resolved to the `same<u64>` body — a
+        // wrong-answer divergence the type checker could not catch
+        // (generic equality was previously rejected outright, which
+        // is how `same<T>` stayed untested until the if-condition
+        // type-checking work made `a == b` on generics legal).
         let func_id = self
             .module
-            .declare_function(template_name, export_name, Linkage::Local, params, ret);
+            .declare_function_anon(export_name, Linkage::Local, params, ret);
         // REF-Stage-2 (iv): mark `&T` / `&mut T` parameters so
         // call sites can forward pointers when passing a
         // `RefScalar` binding through unmodified.

@@ -234,7 +234,7 @@ impl<'a> FunctionLower<'a> {
                 arms.iter()
                     .find_map(|a| self.arm_payload_binding_type(&scrutinee, a))
             }
-            Expr::Call(fn_name, _) => {
+            Expr::Call(fn_name, args_ref) => {
                 // Phase 6b: a FunctionPtr binding (HOF parameter
                 // or closure-returning call result) carries its
                 // own return type; resolve through the binding
@@ -253,6 +253,52 @@ impl<'a> FunctionLower<'a> {
                     .map(|link| link.func_id)
                     .or_else(|| self.module.lookup_function(None, fn_name))
                     .map(|id| self.module.function(id).return_type)
+                    // A generic template is *not* in the function index
+                    // (its instances are registered under the mangled
+                    // name only), so the lookup above finds nothing.
+                    // Substitute the inferred type args into the
+                    // declared return type instead — the instance was
+                    // already created while lowering the call itself,
+                    // so the inference is guaranteed to succeed when
+                    // the program type-checked.
+                    .or_else(|| {
+                        let template = self.generic_funcs.get(&fn_name)?;
+                        let arg_exprs = match self.program.expression.get(&args_ref) {
+                            Some(Expr::ExprList(items)) => items,
+                            _ => return None,
+                        };
+                        let mut inferred: std::collections::HashMap<
+                            DefaultSymbol,
+                            Type,
+                        > = std::collections::HashMap::new();
+                        for ((_pname, ptype), arg) in
+                            template.parameter.iter().zip(arg_exprs.iter())
+                        {
+                            self.infer_generic_args_from_param(
+                                ptype,
+                                arg,
+                                &template.generic_params,
+                                &mut inferred,
+                            );
+                        }
+                        let type_args: Option<Vec<Type>> = template
+                            .generic_params
+                            .iter()
+                            .map(|p| inferred.get(p).copied())
+                            .collect();
+                        let subst: std::collections::HashMap<DefaultSymbol, Type> =
+                            template
+                                .generic_params
+                                .iter()
+                                .copied()
+                                .zip(type_args?)
+                                .collect();
+                        let ret = template.return_type.as_ref()?;
+                        match ret {
+                            TypeDecl::Generic(g) => subst.get(g).copied(),
+                            other => lower_scalar(other),
+                        }
+                    })
             }
             Expr::AssociatedFunctionCall(struct_name, fn_name, _) => {
                 // Module-qualified call: prefer

@@ -460,6 +460,22 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
             },
 
+            // Bare identifier vs generic parameter of the same name:
+            // a mention of `K` in an expression resolves to the
+            // `Identifier` form while the binding itself is
+            // `Generic(K)`. `Dict::get`'s `existing == key` (a
+            // generic key compared against another key value) hit
+            // exactly this pair — the strict `==` fallback below
+            // rejected it once if/elif conditions started being
+            // checked (mirrors `is_equivalent`'s leniency, without
+            // its generic-wildcard slack).
+            (TypeDecl::Identifier(s1), TypeDecl::Generic(s2))
+            | (TypeDecl::Generic(s1), TypeDecl::Identifier(s2))
+                if s1 == s2 =>
+            {
+                Ok((resolved_lhs.clone(), resolved_rhs.clone()))
+            },
+
             // Allocator handle vs generic parameter bounded by Allocator — pass through so
             // the caller's comparison/op logic can validate (e.g. `current_allocator() == a`
             // inside a `<A: Allocator>` function body).

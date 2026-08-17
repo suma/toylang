@@ -3609,6 +3609,106 @@ fn str_equality_is_first_class_in_value_positions() {
     assert_consistent(src, "str_eq_value_pos");
 }
 
+// if/elif conditions were never type-checked — `visit_if_elif_else`
+// validated only the branches, so `if 42u64 { ... }` sailed through
+// and every expression inside a condition escaped validation (the
+// same gap through which `str == str` used to reach the lowering
+// without a checker rule). The condition check is on now; the tests
+// below pin the rejection and the generic-equality rules that had to
+// become first-class for the stdlib to keep checking (Dict::get's
+// `existing == key` compares two same-`K` values, which the checker
+// previously never saw because conditions were skipped).
+
+/// Parse + type-check `source` with the core modules, returning the
+/// rendered diagnostics on failure.
+fn type_check_errors(source: &str) -> Vec<String> {
+    let mut session = compiler_core::CompilerSession::new();
+    let mut program = session
+        .parse_program(source)
+        .expect("parse");
+    interpreter::check_typing_with_core_modules(
+        &mut program,
+        session.string_interner_mut(),
+        Some(source),
+        Some("test.t"),
+        Some(core_modules_dir().as_path()),
+    )
+    .expect_err("expected a type-check error")
+}
+
+#[test]
+fn if_conditions_must_be_bool() {
+    let errors = type_check_errors(
+        "fn main() -> u64 {\n    if 42u64 { 1u64 } else { 0u64 }\n}\n",
+    );
+    let rendered = errors.join("\n");
+    assert!(
+        rendered.contains("expected `bool`, but got `u64`")
+            || rendered.contains("expected Bool"),
+        "unexpected diagnostics: {rendered}"
+    );
+    // elif conditions are checked the same way.
+    let errors = type_check_errors(
+        "fn main() -> u64 {\n    if true { 1u64 } elif 7u64 { 2u64 } else { 0u64 }\n}\n",
+    );
+    let rendered = errors.join("\n");
+    assert!(
+        rendered.contains("expected `bool`, but got `u64`")
+            || rendered.contains("expected Bool"),
+        "unexpected diagnostics: {rendered}"
+    );
+}
+
+#[test]
+fn generic_equality_is_instantiated_per_type() {
+    // `a == b` on two same-`T` values had no checker rule (unchecked
+    // conditions hid the absence), so `fn same<T>(a: T, b: T) -> bool`
+    // was rejected outright. Now it type-checks and each instantiation
+    // compares in the concrete type — including str, whose bytes must
+    // be compared (STR-EQ), not the handles.
+    let src = r#"
+        fn same<T>(a: T, b: T) -> bool { a == b }
+        fn main() -> u64 {
+            var score: u64 = 0u64
+            val a = 1u64
+            val s1 = "x"
+            val s2 = "x"
+            val other = "y"
+            if same(a, 1u64) { score = score + 1u64 }
+            if same(s1, s2) { score = score + 2u64 }
+            if !same(s1, other) { score = score + 4u64 }
+            if !same(a, 2u64) { score = score + 8u64 }
+            score
+        }
+    "#;
+    assert_consistent(src, "generic_eq_per_type");
+}
+
+#[test]
+fn generic_functions_instantiate_per_type_argument() {
+    // A generic function called with two different concrete types
+    // used to resolve the second call to the *first* instantiation:
+    // `id(1u64)` then `id("hello")` called the u64 body with a str
+    // handle and returned garbage on every backend. The lowering
+    // registered instances under the bare template name, so the
+    // bare-name lookup in `resolve_call_target` found the first one;
+    // instances now live under the mangled name only and the generic
+    // template is resolved before the plain lookup. The IR VM's
+    // per-occurrence literal materialisation made the old wrong
+    // answer visible (handles differed), while .rodata inlining hid
+    // it in the compiled backends.
+    let src = r#"
+        fn id<T>(x: T) -> T { x }
+        fn main() -> u64 {
+            val a = id(1u64)
+            val s = id("hello")
+            println(s)
+            a
+        }
+    "#;
+    assert_stdout_consistent(src, "generic_two_instantiations");
+}
+
 #[test]
 fn the_interpreter_jit_compares_str_content_too() {
     // `assert_consistent`'s lite path returns as soon as the

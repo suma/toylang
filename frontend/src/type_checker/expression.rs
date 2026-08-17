@@ -288,6 +288,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             rhs_obj.clone().accept_expr(self)?
         };
 
+
         // `Unknown` is the checker's poison type: it marks an operand
         // whose real type could not be determined, either because it
         // diverges (`panic("...")`) or because its defining statement
@@ -476,6 +477,26 @@ impl<'a> TypeCheckerVisitor<'a> {
         if matches!(op, Operator::EQ | Operator::NE)
             && *l == TypeDecl::String
             && *r == TypeDecl::String
+        {
+            return Ok(TypeDecl::Bool);
+        }
+
+        // Same generic parameter on both sides (either canonical
+        // form — a bare mention of `K` resolves to `Identifier(K)`
+        // while the binding is `Generic(K)`). `Dict::get`'s
+        // `existing == key` relies on it, and generic functions are
+        // monomorphised before lowering, so the comparison becomes a
+        // concrete same-type check at every instantiation. This rule
+        // had to exist all along; unchecked if/while conditions were
+        // hiding its absence.
+        if matches!(op, Operator::EQ | Operator::NE)
+            && match (l, r) {
+                (TypeDecl::Generic(a), TypeDecl::Generic(b))
+                | (TypeDecl::Generic(a), TypeDecl::Identifier(b))
+                | (TypeDecl::Identifier(a), TypeDecl::Generic(b))
+                | (TypeDecl::Identifier(a), TypeDecl::Identifier(b)) => a == b,
+                _ => false,
+            }
         {
             return Ok(TypeDecl::Bool);
         }
@@ -670,8 +691,28 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
     /// Type check if-elif-else expressions
-    pub fn visit_if_elif_else(&mut self, _cond: &ExprRef, then_block: &ExprRef, elif_pairs: &Vec<(ExprRef, ExprRef)>, else_block: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+    pub fn visit_if_elif_else(&mut self, cond: &ExprRef, then_block: &ExprRef, elif_pairs: &Vec<(ExprRef, ExprRef)>, else_block: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let mut block_types = Vec::new();
+
+        // The condition must be a bool (R4-era fix; it used to be
+        // unchecked, so `if 42u64 { ... }` sailed through and the
+        // condition's expressions were never validated at all).
+        let cond_ty = self.check_expr_located(cond)?;
+        if cond_ty != TypeDecl::Bool {
+            return Err(self.error_with_location(
+                TypeCheckError::type_mismatch(TypeDecl::Bool, cond_ty),
+                cond,
+            ));
+        }
+        for (elif_cond, _) in elif_pairs {
+            let elif_ty = self.check_expr_located(elif_cond)?;
+            if elif_ty != TypeDecl::Bool {
+                return Err(self.error_with_location(
+                    TypeCheckError::type_mismatch(TypeDecl::Bool, elif_ty),
+                    elif_cond,
+                ));
+            }
+        }
 
         // Check if-block
         let if_block = *then_block;
@@ -770,7 +811,6 @@ impl<'a> TypeCheckerVisitor<'a> {
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid right-hand expression reference"))?;
             rhs_obj.clone().accept_expr(self)?
         };
-        
         // Allow assignment compatibility. `is_equivalent` covers the
         // user-named-type cases the parser emits ambiguously
         // (`Identifier(name)` vs `Enum(name, _)` / `Struct(name, _)`),

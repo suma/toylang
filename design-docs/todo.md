@@ -401,15 +401,28 @@
   漏らす** — `TypeCheckErrorKind::TypeMismatch` の `Display` が `{:?}`
   なので、解決前の user 型名が生の symbol id で出る。`source_name` /
   `type_name_for_error` に寄せる。
-- **`if` / `elif` の条件が型検査されない (2026-08-16 実測)** —
-  `if 42u64 { ... }` が通る。`visit_if_elif_else` が条件を
-  `check_expr_located` しない (while は検査する)。R3 の調査で
-  `str == str` が「value 位置は E0002 / if 条件内は素通り」という
-  非対称になっていた原因でもある。条件検査を足すと型チェッカの順序依存
-  (Generic/Identifier のずれ) で stdlib の `Vec::push` 等が E0001 で
-  壊れたため見送り — 直すなら条件検査の前に
-  `is_equivalent` の Generic↔Identifier leniency を条件評価の
-  型比較にも適用する話。
+- **`if` / `elif` の条件が型検査されない** — ~~`if 42u64 { ... }` が通る。~~
+  **解消 (2026-08-16)**: `visit_if_elif_else` が条件を
+  `check_expr_located` し bool を要求するように。この変更で 2 つの
+  隠れバグが露呈し、両方修正:
+  (1) `resolve_numeric_types` / `visit_compare_binary` に
+  Generic↔Identifier 同一シンボル (と Generic↔Generic 同一パラメータ)
+  の arm が無く、dict.t の `existing == key` が E0001/E0002 で弾かれた
+  (条件未検査が隠していた) — 専用 arm を追加。
+  (2) **generic 関数の 2 回目以降のインスタンス化が最初の実体に解決
+  される既存バグ** — `id(1u64)` の後に `id("hello")` を呼ぶと u64 版を
+  str handle で呼んで全バックエンドでゴミを返す。インスタンスが
+  function_index に bare name で登録されていたのが原因で、
+  `declare_function_anon` 化 + `resolve_call_target` の generic 優先に
+  修正 (`toy_same__str` が生成されず fn#158 が呼ばれていた)。
+  `val x = <generic call>` の型推論 (value_scalar) も template の
+  return 型を置換する形に。付随して `struct_null_test.t` (u64 に
+  `.is_null()` を呼ぶ壊れた example) を `ptr` +
+  `__builtin_ptr_is_null` に修正し AOT_UNSUPPORTED から外し、
+  `trait_basic.t` も generic 修正で AOT が通るようになったので同様に
+  リストから除去。テスト: `if_conditions_must_be_bool` /
+  `generic_equality_is_instantiated_per_type` /
+  `generic_functions_instantiate_per_type_argument`。
 
 ### パーサーの既知制限事項
 - bare `self` 非対応 — `self: Self` / `&self` / `&mut self` のいずれかを書く。

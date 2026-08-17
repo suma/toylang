@@ -97,8 +97,6 @@ const AOT_UNSUPPORTED: &[&str] = &[
     "memory_contract.t",
     "panic.t",
     "print_demo.t",
-    "struct_null_test.t",
-    "trait_basic.t",
     "tuple_destructure_nested.t",
     "tuple_destructure.t",
 ];

@@ -60,7 +60,13 @@ Layer 1 に残すのが正しい。**
   `str == str` を value 位置でも一級にした (consistency に
   `str_equality_is_first_class_in_value_positions`)。if 条件の
   bool 検査は checker の順序依存 (Generic/Identifier のずれ) で
-  stdlib が壊れたため見送り、既知の不具合として todo.md に記録。
+  stdlib が壊れたため一旦見送ったが、**後日 (2026-08-16) 解決済み**:
+  `resolve_numeric_types` / `visit_compare_binary` に Generic↔Identifier
+  同一シンボル arm を追加し、`visit_if_elif_else` が条件を bool 検査する
+  ように。その過程で **generic 関数の 2 回目以降のインスタンス化が最初の
+  実体に解決される既存バグ** (`id<u64>` 後に `id<str>` → u64 版を呼ぶ)
+  を発見・修正 (インスタンスを `declare_function_anon` 化 + generic 優先
+  解決 + value_scalar の template return 置換)。
 - **profiler の集計**: doc 自身の判断基準「バグを言語のバグと切り離して
   調べたいか = Yes のものは native に残す」で profiler は該当。移動しない。
 - **if 条件が未検査である件** (`if 42u64 {}` が通る) は todo.md の

@@ -464,3 +464,130 @@ impl StringIter {
         }
     }
 }
+
+# Iterator adapters (STDLIB-ITER-ADAPT): `map` / `filter` /
+# `enumerate` / `collect` on a `StringIter` (one `u8` per byte).
+# Same design as the `VecIter` adapters in
+# `core/std/collections/vec.t` — ordinary structs exposing
+# `fn next(&mut self) -> Option<T>`, type params kept out of every
+# field. `collect` takes the iterator by value and drains it into a
+# `Vec`; `enumerate` has no `collect` (tuple-element Vecs are not
+# AOT-lowerable).
+
+struct StringMapIter<U> {
+    source: StringIter,
+    f: fn (u8) -> U,
+}
+
+impl<U> StringMapIter<U> {
+    # Apply `f` to each byte on the way out.
+    fn next(&mut self) -> Option<U> {
+        match self.source.next() {
+            Option::Some(b) => Option::Some(self.f(b)),
+            Option::None => Option::None,
+        }
+    }
+
+    fn collect(self: Self) -> Vec<U> {
+        val out: Vec<U> = Vec::new()
+        var it = self
+        loop {
+            match it.next() {
+                Option::Some(v) => { out.push(v) }
+                Option::None => { break }
+            }
+        }
+        out
+    }
+}
+
+impl StringIter {
+    fn map<U>(&self, f: fn (u8) -> U) -> StringMapIter<U> {
+        val src: StringIter = StringIter {
+            data: self.data,
+            len: self.len,
+            index: self.index,
+        }
+        StringMapIter { source: src, f: f }
+    }
+}
+
+struct StringFilterIter {
+    source: StringIter,
+    pred: fn (u8) -> bool,
+}
+
+impl StringFilterIter {
+    # Yield only the bytes for which `pred` returns true.
+    fn next(&mut self) -> Option<u8> {
+        loop {
+            match self.source.next() {
+                Option::Some(b) => {
+                    if self.pred(b) {
+                        val r: Option<u8> = Option::Some(b)
+                        return r
+                    }
+                    continue
+                }
+                Option::None => {
+                    break
+                }
+            }
+        }
+        val r: Option<u8> = Option::None
+        r
+    }
+
+    fn collect(self: Self) -> Vec<u8> {
+        val out: Vec<u8> = Vec::new()
+        var it = self
+        loop {
+            match it.next() {
+                Option::Some(v) => { out.push(v) }
+                Option::None => { break }
+            }
+        }
+        out
+    }
+}
+
+impl StringIter {
+    fn filter(&self, pred: fn (u8) -> bool) -> StringFilterIter {
+        val src: StringIter = StringIter {
+            data: self.data,
+            len: self.len,
+            index: self.index,
+        }
+        StringFilterIter { source: src, pred: pred }
+    }
+}
+
+struct StringEnumerateIter {
+    source: StringIter,
+    index: u64,
+}
+
+impl StringEnumerateIter {
+    # Yield `(index, byte)` pairs, starting at 0.
+    fn next(&mut self) -> Option<(u64, u8)> {
+        match self.source.next() {
+            Option::Some(b) => {
+                val i = self.index
+                self.index = self.index + 1u64
+                Option::Some((i, b))
+            }
+            Option::None => Option::None,
+        }
+    }
+}
+
+impl StringIter {
+    fn enumerate(&self) -> StringEnumerateIter {
+        val src: StringIter = StringIter {
+            data: self.data,
+            len: self.len,
+            index: self.index,
+        }
+        StringEnumerateIter { source: src, index: 0u64 }
+    }
+}

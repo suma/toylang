@@ -417,9 +417,15 @@ impl<'a> TypeCheckerVisitor<'a> {
                         // Visit each call argument and bind any
                         // matching `Generic(P)` slot in the method's
                         // declared params to the runtime arg type.
-                        // Skip the first parameter (self).
+                        // `self` occupies a parameter slot only when
+                        // the receiver is by-value (`self: Self`);
+                        // `&self` / `&mut self` receivers are kept
+                        // out of `method_func.parameter` (same
+                        // convention as the generic-struct path).
+                        let param_offset =
+                            if method_func.parameter.len() > args.len() { 1 } else { 0 };
                         for (i, arg_ref) in args.iter().enumerate() {
-                            let param_idx = i + 1;
+                            let param_idx = i + param_offset;
                             if let Some((_, declared_ty)) =
                                 method_func.parameter.get(param_idx)
                             {

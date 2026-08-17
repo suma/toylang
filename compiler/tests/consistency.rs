@@ -5182,6 +5182,114 @@ fn iter_adapt_zip_round_trip() {
     assert_consistent(src, "iter_adapt_zip");
 }
 
+// STDLIB-ITER-ADAPT on `DictIter<K, V>` / `StringIter` (dict.t /
+// string.t): the Dict adapters take `f: fn (K, V) -> U` (key and
+// value as separate scalar args — an AOT closure cannot receive a
+// tuple parameter) and keep the iterator state flat with `count`
+// packed into `index`'s high 32 bits to stay within the 8-return
+// register budget.
+
+#[test]
+fn iter_adapt_dict_map_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            var d: Dict<u64, u64> = Dict::new()
+            d.insert(10u64, 100u64)
+            d.insert(20u64, 200u64)
+            d.insert(30u64, 300u64)
+            var it = d.iter()
+            var m = it.map(fn(k: u64, v: u64) -> u64 { k + v })
+            var total: u64 = 0u64
+            for x in m { total = total + x }
+            total
+        }
+    "#;
+    assert_consistent(src, "iter_adapt_dict_map");
+}
+
+#[test]
+fn iter_adapt_dict_filter_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            var d: Dict<u64, u64> = Dict::new()
+            d.insert(10u64, 100u64)
+            d.insert(20u64, 200u64)
+            d.insert(30u64, 300u64)
+            var it = d.iter()
+            var f = it.filter(fn(k: u64, v: u64) -> bool { v > 150u64 })
+            var total: u64 = 0u64
+            for kv in f { total = total + kv.1 }
+            total
+        }
+    "#;
+    assert_consistent(src, "iter_adapt_dict_filter");
+}
+
+#[test]
+fn iter_adapt_string_map_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            val s = String::from_str("abc")
+            var it = s.iter()
+            var m = it.map(fn(b: u8) -> u64 { (b as u64) - 96u64 })
+            var total: u64 = 0u64
+            for x in m { total = total + x }
+            total
+        }
+    "#;
+    assert_consistent(src, "iter_adapt_string_map");
+}
+
+#[test]
+fn iter_adapt_string_filter_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            val s = String::from_str("hello")
+            var it = s.iter()
+            var f = it.filter(fn(b: u8) -> bool { b == 108u8 })
+            var total: u64 = 0u64
+            for b in f { total = total + (b as u64) }
+            total
+        }
+    "#;
+    assert_consistent(src, "iter_adapt_string_filter");
+}
+
+#[test]
+fn iter_adapt_string_enumerate_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            val s = String::from_str("xyz")
+            var it = s.iter()
+            var e = it.enumerate()
+            var total: u64 = 0u64
+            for kv in e { total = total + kv.0 + (kv.1 as u64) }
+            total
+        }
+    "#;
+    assert_consistent(src, "iter_adapt_string_enumerate");
+}
+
+#[test]
+fn iter_adapt_string_collect_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            val s = String::from_str("hello")
+            var it = s.iter()
+            var m = it.map(fn(b: u8) -> u8 { b })
+            var c = m.collect()
+            var total: u64 = 0u64
+            var i: u64 = 0u64
+            while i < c.size() {
+                total = total + (c.get(i) as u64)
+                i = i + 1u64
+            }
+            total
+        }
+    "#;
+    assert_consistent(src, "iter_adapt_string_collect");
+}
+
 #[test]
 fn iter_protocol_nested_round_trip() {
     let src = format!(

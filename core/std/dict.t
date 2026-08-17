@@ -200,3 +200,103 @@ impl<K, V> DictIter<K, V> {
         }
     }
 }
+
+# Iterator adapters (STDLIB-ITER-ADAPT): `map` / `filter` /
+# `enumerate` on a `DictIter<K, V>`. Same design as the `VecIter`
+# adapters in `core/std/collections/vec.t` — ordinary structs exposing
+# `fn next(&mut self) -> Option<T>`, type params kept out of every
+# field so no per-monomorph layout is needed.
+#
+# The adapter receiver holds a 5-leaf `DictIter` plus a 2-leaf fn
+# field — 7 receiver leaves + a 2-leaf Option return exceeds the
+# backend's 8-return register budget. The adapters therefore keep the
+# iterator state FLAT (no nested `DictIter`) and pack `count` into
+# the high 32 bits of the same field as `index` (like `sizes`):
+# 4 state leaves + 2 fn leaves + 2 return leaves = 8, exactly at the
+# budget. `collect` is not provided here: a `Vec<(K, V)>` return
+# would blow the budget, and tuple-element Vecs are not AOT-lowerable.
+
+struct DictMapIter<K, V, U> {
+    keys: ptr,
+    vals: ptr,
+    count_index: u64,
+    sizes: u64,
+    f: fn (K, V) -> U,
+}
+
+impl<K, V, U> DictMapIter<K, V, U> {
+    # Apply `f` to each `(key, value)` pair on the way out. `f` takes
+    # the key and value as separate scalar args: an AOT closure cannot
+    # receive a tuple parameter, so the adapter destructures the pair
+    # before calling.
+    fn next(&mut self) -> Option<U> {
+        val count = self.count_index >> 32u64
+        val index = self.count_index & 0xFFFFFFFFu64
+        if index >= count {
+            Option::None
+        } else {
+            val ks: u64 = self.sizes >> 32u64
+            val vs: u64 = self.sizes & 0xFFFFFFFFu64
+            val k: K = __builtin_ptr_read(self.keys, index * ks)
+            val v: V = __builtin_ptr_read(self.vals, index * vs)
+            self.count_index = (count << 32u64) | (index + 1u64)
+            Option::Some(self.f(k, v))
+        }
+    }
+}
+
+impl<K, V> DictIter<K, V> {
+    fn map<U>(&self, f: fn (K, V) -> U) -> DictMapIter<K, V, U> {
+        DictMapIter {
+            keys: self.keys,
+            vals: self.vals,
+            count_index: (self.count << 32u64) | self.index,
+            sizes: self.sizes,
+            f: f,
+        }
+    }
+}
+
+struct DictFilterIter<K, V> {
+    keys: ptr,
+    vals: ptr,
+    count_index: u64,
+    sizes: u64,
+    pred: fn (K, V) -> bool,
+}
+
+impl<K, V> DictFilterIter<K, V> {
+    # Yield only the pairs for which `pred` returns true.
+    fn next(&mut self) -> Option<(K, V)> {
+        loop {
+            val count = self.count_index >> 32u64
+            val index = self.count_index & 0xFFFFFFFFu64
+            if index >= count {
+                break
+            }
+            val ks: u64 = self.sizes >> 32u64
+            val vs: u64 = self.sizes & 0xFFFFFFFFu64
+            val k: K = __builtin_ptr_read(self.keys, index * ks)
+            val v: V = __builtin_ptr_read(self.vals, index * vs)
+            self.count_index = (count << 32u64) | (index + 1u64)
+            if self.pred(k, v) {
+                val r: Option<(K, V)> = Option::Some((k, v))
+                return r
+            }
+        }
+        val r: Option<(K, V)> = Option::None
+        r
+    }
+}
+
+impl<K, V> DictIter<K, V> {
+    fn filter(&self, pred: fn (K, V) -> bool) -> DictFilterIter<K, V> {
+        DictFilterIter {
+            keys: self.keys,
+            vals: self.vals,
+            count_index: (self.count << 32u64) | self.index,
+            sizes: self.sizes,
+            pred: pred,
+        }
+    }
+}

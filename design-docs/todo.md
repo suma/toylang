@@ -41,6 +41,23 @@
   push が `__builtin_sizeof` のタプル値解決 + compound 引数 lower の
   AOT 未対応に当たるため。map / filter / VecIter の collect のみ。
   consistency に 5 テスト、`std_iter_adapt.t` が example sweep に乗る。
+- **STDLIB-ITER-ADAPT (Dict / String 版)** — `DictIter<K, V>` に
+  `map` / `filter` (`core/std/dict.t`)、`StringIter` に `map` /
+  `filter` / `enumerate` / `collect` (`core/std/string.t`)。3
+  バックエンド。**Dict 版の AOT 制約**:
+  (1) **タプル引数 closure は AOT 不可** (「closure parameter requires
+  a primitive scalar type」) — closure は `fn (K, V) -> U` で k, v を
+  別スカラー引数に取り、アダプタ側でタプルを分解してから呼ぶ。
+  (2) **5-leaf DictIter + 2-leaf fn = 7 writeback + 2 return = 9 で
+  レジスタ上限超過** — アダプタは source をネストせず state をフラット
+  に持ち、`count` を `index` の上位 32bit にパックして 6 レジスタに
+  収めた (VecIter 版の MapIter は source 4 + f 2 = 8 でギリギリ)。
+  collect は Vec<(K,V)> になるため提供しない。**frontend 修正**:
+  non-generic struct 経路の method-only param 推論も `&self` receiver
+  では param_idx = i (self が parameter に入らない。enum 経路と同型の
+  バグが VecIter 版では generic struct 経路にのみあった)。
+  consistency に 6 テスト、`std_iter_adapt_dict.t` /
+  `std_iter_adapt_string.t` が example sweep に乗る。
 
 ### 2026-08-16
 - **RUNTIME-PORT R0+R1: ランタイムを C から Rust に移植** — `toylang_rt` crate

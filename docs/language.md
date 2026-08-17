@@ -1220,6 +1220,16 @@ parser picks the desugaring based on what follows `EXPR`:
    cannot resolve yet. The adapters work on all three backends
    (interpreter / AOT / JIT).
 
+   `DictIter<K, V>` (`d.iter()`) gains `map` / `filter` in
+   `core/std/dict.t`; `StringIter` (`s.iter()`) gains `map` /
+   `filter` / `enumerate` / `collect` in `core/std/string.t`. Two
+   backend constraints shape the Dict adapters: the closure receives
+   the key and value as **separate scalar arguments**
+   (`fn (K, V) -> U`) because an AOT closure cannot take a tuple
+   parameter, and the iterator state is kept flat inside the adapter
+   (no nested `DictIter`) with `count` packed into `index`'s high 32
+   bits, staying within the 8-return register budget.
+
    `break` / `continue` / `return` inside the body propagate
    through the desugared `match` and `while` to the expected target
    (the enclosing for-loop, the next iteration, or the surrounding

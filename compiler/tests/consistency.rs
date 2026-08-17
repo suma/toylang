@@ -5033,6 +5033,78 @@ fn f64_display_agrees_across_backends() {
     assert_stdout_consistent(src, "f64_display_agrees");
 }
 
+// RUNTIME-PORT R4, first step ("interpreter とバイト一致を先にテストで
+// 固定してから"): a comprehensive f64 display sweep. The values are the
+// ones the shortest-round-trip canonical (Rust `Display`, 論点4) has to
+// get right: huge / tiny magnitudes where the positional form runs into
+// hundreds of digits, the integral `.0` rule, signed zero, infinity and
+// NaN (reached through arithmetic — toylang has no scientific-notation
+// literals). Every backend must print byte-identical text.
+
+#[test]
+fn f64_display_comprehensive_set_agrees_across_backends() {
+    let src = r#"
+        fn main() -> u64 {
+            println(0.1f64 + 0.2f64)
+            println(1.0f64)
+            println(-0.0f64)
+            println(3.141592653589793f64)
+            println(1234567.75f64)
+            println(0.1f64)
+            println(100000000.00000001f64)
+            println(123456789012345678901.0f64)
+            println(1.0f64 / 0.0f64)
+            println(0.0f64 / 0.0f64)
+            println(math::pow(10.0f64, 23.0f64))
+            println(math::pow(10.0f64, 300.0f64))
+            println(math::pow(10.0f64, -300.0f64))
+            println(math::pow(2.0f64, 1023.0f64))
+            println(-math::pow(2.0f64, 1023.0f64))
+            println(2.5f64)
+            println(-2.5f64)
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "f64_display_comprehensive");
+}
+
+/// The canonical output is Rust's `Display` — spelled out here so a
+/// drift on *every* backend (which `assert_stdout_consistent` cannot
+/// catch) is still pinned. The values are the short ones from the
+/// comprehensive sweep; the giant positional forms are covered by the
+/// sweep's equality check instead of being transcribed.
+#[test]
+fn f64_display_canonical_is_rust_display() {
+    let src = r#"
+        fn main() -> u64 {
+            println(0.1f64 + 0.2f64)
+            println(1.0f64)
+            println(-0.0f64)
+            println(3.141592653589793f64)
+            println(1234567.75f64)
+            println(0.1f64)
+            println(1.0f64 / 0.0f64)
+            println(0.0f64 / 0.0f64)
+            println(2.5f64)
+            println(-2.5f64)
+            0u64
+        }
+    "#;
+    let expected = "0.30000000000000004\n1.0\n-0.0\n3.141592653589793\n1234567.75\n0.1\ninf\nNaN\n2.5\n-2.5\n";
+    let options = RunOptions::default();
+    let (result, captured) = interpreter::output::with_capture(|| {
+        interpreter::run_source(src, "test.t", &options)
+    });
+    result.expect("interpreter run");
+    assert_eq!(
+        captured, expected,
+        "the interpreter's f64 display drifted from the Rust-Display canonical"
+    );
+    // And the compiled backends print the same text (the sweep covers
+    // them; this runs it under the same source shape for locality).
+    assert_stdout_consistent(src, "f64_display_canonical");
+}
+
 // LABEL: 3-way pin for `@label: while/for` + `break @label` /
 // `continue @label`. Both round-trips exercise nested loops where
 // the label resolves through multiple loop_stack frames.

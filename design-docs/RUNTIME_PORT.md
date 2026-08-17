@@ -13,7 +13,30 @@ Phase 分割 → MVP 刻みで landing」で進める。
 | **R1** | `toylang_rt` crate 新設 + C 全機能の移植 + jit.rs ミラー削除 | ✅ 完了 (2026-08-16) |
 | **R2** | extern 宣言の一般化で `toy_io_*` を廃止 (FFI_PLAN P1 に相乗り) | ✅ 完了 (2026-08-16) |
 | **R3** | str / 整数整形 / 集計を `core/std/` (toylang) へ | ⛔ 計測で中止条件に該当 (2026-08-16、下記) |
-| **R4** | f64 整形・allocator・profiler も toylang へ (任意) | 検討のみ |
+| **R4** | f64 整形・allocator・profiler も toylang へ (任意) | ⛔ 計測で中止条件に該当 (2026-08-16、下記)。doc の「先にテストで固定」の部分のみ完了 |
+
+### R4 計測結果 (2026-08-16) — 中止条件に該当、移動せず
+
+R4 の 3 候補は doc 自身の基準で全て却下。**doc の定めた第一歩
+(「interpreter とバイト一致を先にテストで固定してから」) は実施済み**:
+`f64_display_comprehensive_set_agrees_across_backends` (巨大/微小な
+magnitude、integral `.0` 規則、signed zero、inf/NaN を含む 17 値の
+3 バックエンド byte 一致) と `f64_display_canonical_is_rust_display`
+(正本 Rust `Display` の golden を明記)。
+
+- **f64 整形**: toylang プロトタイプ (桁ループ + Vec + str_from_bytes) を
+  計測 — **IR VM (既定エンジン) で ~1.1ms/回**、AOT は 3µs/回
+  (計測: 2000 回で 2.2s vs 6ms)、native の Rust 整形とは **~1000 倍**。
+  f64 整形はすべての f64 print / 補間のホットパスなので
+  「interpreter が目に見えて遅くなる」に明確に該当。Ryu/Grisu 級の
+  移植をしても速さは変えられない (解釈実行のコストが支配的)。
+- **allocator**: bump region はメモリの底層 — `__builtin_heap_alloc` を
+  toylang で書くには toylang に global mutable state が無く、また
+  native memory primitive が必要。加えて doc の「バグを言語のバグと
+  切り離して調べたい = native に残す」基準に該当。policy 層
+  (Arena / FixedBuffer) は 2026-05 に既に toylang 化済み。
+- **profiler**: doc の native-keep 基準に該当 (レポート出力と site id の
+  扱いも「移すのが重い」列)。
 
 ### R3 計測結果 (2026-08-16) — 中止条件に該当、移動せず
 

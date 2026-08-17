@@ -63,6 +63,16 @@
   この前提崩れの修正として `visit_compare_binary` に String ペアの arm を
   追加し、`str == str` を一級にした (consistency: `str_eq_value_pos`)。
   R3 の経緯と測定値は RUNTIME_PORT.md に記載。
+- **RUNTIME-PORT R4: f64 整形の toylang 化は計測で却下、byte 一致は固定** —
+  doc の手順「interpreter とバイト一致を先にテストで固定」どおりに進めた。
+  (1) **テスト固定**: `f64_display_comprehensive_set_agrees_across_backends`
+  (巨大/微小 magnitude・`.0` 規則・signed zero・inf/NaN の 17 値、
+  3 バックエンド byte 一致) と `f64_display_canonical_is_rust_display`
+  (正本 golden)。(2) **計測**: toylang の f64 整形プロトタイプ
+  (桁ループ) は IR VM で **~1.1ms/回** (AOT 3µs、native Rust 整形とは
+  ~1000 倍) — 中止条件に明確に該当、移動せず。(3) allocator / profiler は
+  doc の「native に残す」基準で移動しない (allocator の policy 層は
+  2026-05 に toylang 化済み)。経緯は RUNTIME_PORT.md。
 - **RUNTIME-IO: 最小 I/O セット (3 バックエンド)** — `core/std/io.t` に
   `read_line()` / `argc()` / `arg(i)` / `env_var(name)` / `read_file(path)` /
   `file_exists(path)` / `now()` / `random()`。既存 extern fn 機構
@@ -344,8 +354,10 @@
 * FFI — P1 (静的 FFI、`from`/`as`) 完了 (2026-08-16、[`FFI_PLAN.md`](FFI_PLAN.md))。
   P2 (動的ロード / dlopen builtin) は未着手
 * AOT ランタイムの Rust 化 — R0+R1 完了、R2 (extern 一般化 = FFI_PLAN P1)
-  も完了 (2026-08-16、[`RUNTIME_PORT.md`](RUNTIME_PORT.md))。R3 (toylang 化)
-  は計測で中止条件に該当 (interpreter ~20 倍遅延)。R4 は費用対効果で判断
+  も完了 (2026-08-16、[`RUNTIME_PORT.md`](RUNTIME_PORT.md))。R3 (str 系の
+  toylang 化) と R4 (f64 整形等) は計測で中止条件に該当 (interpreter
+  ~20 倍〜~1000 倍遅延) し、Layer 1 に残すのが確定。R4 の byte 一致
+  テスト固定のみ実施済み。
 * モジュール拡張 — バージョニング、リモートパッケージ
 * 言語内からの AST 取得・操作
 * LSP 対応 — 補完 / go-to-definition / hover / 診断 / フォーマット。frontend の AST・型チェッカ・`SourceLocation` を再利用できる。ただし**エージェントは LSP より CLI クエリを使いやすい**ので、LLM ループの観点では `--api` / 型ホール (P7 で landing 済み) の方が先だった

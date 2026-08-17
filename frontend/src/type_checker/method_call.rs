@@ -154,11 +154,24 @@ impl<'a> TypeCheckerVisitor<'a> {
         
         // Debug: If result is Generic, show what happened
         if let Ok(TypeDecl::Generic(sym)) = &result {
-            let sym_str = self.resolve_symbol_name(*sym);
-            return Err(TypeCheckError::generic_error(&format!(
-                "DEBUG: Method '{}' returned unresolved Generic('{}') for object type {:?}",
-                method_name, sym_str, resolved_obj_type
-            )));
+            // A method inside a generic impl legitimately returns an
+            // impl-level generic param (`self.f(v)` on `MapIter<T, U>`
+            // returns `U` while `next`'s body is type-checked against
+            // the template). Only a Generic outside that scope is a
+            // genuine unresolved-param bug worth reporting.
+            let in_impl_scope = self
+                .context
+                .current_impl_generic_params
+                .as_ref()
+                .map(|p| p.contains(sym))
+                .unwrap_or(false);
+            if !in_impl_scope {
+                let sym_str = self.resolve_symbol_name(*sym);
+                return Err(TypeCheckError::generic_error(&format!(
+                    "DEBUG: Method '{}' returned unresolved Generic('{}') for object type {:?}",
+                    method_name, sym_str, resolved_obj_type
+                )));
+            }
         }
         
         result
@@ -312,13 +325,11 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         // Check if this is a user-defined method for a struct
         if let TypeDecl::Struct(struct_name, type_params) = obj_type {
-            let struct_name_str = self.resolve_symbol_name(*struct_name);
-            
             // Check if this is a generic struct with type parameters
             
             if !type_params.is_empty() {
                 // Handle generic struct method call
-                let method_func_opt = self.context.get_struct_method(*struct_name, *method, type_params);
+                let method_func_opt = self.context.get_struct_method(*struct_name, *method, type_params).cloned();
                 
                 
                 if let Some(method_func) = method_func_opt {
@@ -333,7 +344,36 @@ impl<'a> TypeCheckerVisitor<'a> {
                             substitutions.insert(*generic_param, concrete_type.clone());
                         }
                     }
-                    
+
+                    // STDLIB-ITER-ADAPT: bind method-only generic params
+                    // (`fn map<U>(&self, f: fn (T) -> U) -> MapIter<T, U>`)
+                    // from the call argument types, same as the enum and
+                    // non-generic-struct paths below. Without this the
+                    // return type keeps `Generic(U)` unresolved and the
+                    // caller sees a generic-typed value.
+                    // Note: `&self` / `&mut self` receivers are not part
+                    // of `method_func.parameter`, so the argument index
+                    // maps straight onto the parameter index (unlike the
+                    // enum path where `self: Self` occupies slot 0).
+                    if !method_func.generic_params.is_empty() {
+                        let param_values: std::collections::HashSet<u32> =
+                            method_func.generic_params.iter()
+                                .map(|p| p.to_usize() as u32)
+                                .collect();
+                        for (i, arg_ref) in args.iter().enumerate() {
+                            if let Some((_, declared_ty)) =
+                                method_func.parameter.get(i)
+                            {
+                                let arg_ty = self.visit_expr(arg_ref)?;
+                                self.collect_substitution(
+                                    declared_ty,
+                                    &arg_ty,
+                                    &param_values,
+                                    &mut substitutions,
+                                );
+                            }
+                        }
+                    }
                     
                     // Apply substitutions to method return type
                     let method_return_type = method_func.return_type.as_ref().unwrap_or(&TypeDecl::Unit);
@@ -349,13 +389,12 @@ impl<'a> TypeCheckerVisitor<'a> {
                     
                     
                     return Ok(resolved_return_type);
-                } else {
-                    // Method not found, but let's see what we have
-                    return Err(TypeCheckError::generic_error(&format!(
-                        "Method '{}' not found for struct '{}' with type params {:?}",
-                        method_name, struct_name_str, type_params
-                    )));
                 }
+                // No matching method on this generic struct: fall
+                // through to the field-call / array / builtin arms
+                // below instead of failing outright, so a field of
+                // fn type (`self.f(v)` on `MapIter`) dispatches
+                // through the Closure-Phase-8 fallback.
             } else {
                 // Handle non-generic struct method call. Method-only
                 // generic params (`fn pick<U>(...)`) need substitution
@@ -435,11 +474,25 @@ impl<'a> TypeCheckerVisitor<'a> {
         // (interpreter / AOT) reads the field as a closure
         // value and dispatches indirectly — same path it uses
         // when a function-typed local is called.
-        if let TypeDecl::Struct(struct_name, _) = obj_type
+        if let TypeDecl::Struct(struct_name, type_params) = obj_type
             && let Some(fields) = self.context.get_struct_fields(*struct_name).cloned() {
                 let field = fields.iter().find(|f| f.name == method_name);
-                if let Some(field) = field
-                    && let TypeDecl::Function(param_tys, ret_ty) = &field.type_decl {
+                if let Some(field) = field {
+                    // STDLIB-ITER-ADAPT: a field of fn type inside a
+                    // generic struct (`MapIter<T, U>`'s `f: fn (T) -> U`)
+                    // mentions the struct's generic params. Substitute
+                    // them from the receiver's concrete type args so the
+                    // field's function signature — and its return type —
+                    // resolve to the impl-level params instead of the
+                    // declaration-level symbols.
+                    let mut subst: HashMap<DefaultSymbol, TypeDecl> = HashMap::new();
+                    if let Some(decl_params) = self.context.get_struct_generic_params(*struct_name) {
+                        for (decl, concrete) in decl_params.iter().zip(type_params.iter()) {
+                            subst.insert(*decl, concrete.clone());
+                        }
+                    }
+                    let field_ty = field.type_decl.substitute_generics(&subst);
+                    if let TypeDecl::Function(param_tys, ret_ty) = field_ty {
                         // Argument count + per-position
                         // compatibility — same shape as
                         // `visit_indirect_call`'s checks.
@@ -471,8 +524,9 @@ impl<'a> TypeCheckerVisitor<'a> {
                             }
                         }
                         self.type_inference.type_hint = original_hint;
-                        return Ok((**ret_ty).clone());
+                        return Ok((*ret_ty).clone());
                     }
+                }
             }
 
         Err(TypeCheckError::method_error(&method_name, obj_type.clone(), "method not found"))

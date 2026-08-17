@@ -10,6 +10,38 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-08-17
+- **STDLIB-ITER-ADAPT: `VecIter` に `map` / `filter` / `enumerate` /
+  `zip` / `collect` (3 バックエンド)** — `core/std/collections/vec.t`。
+  アダプタは全て普通の `next(&mut self) -> Option<T>` struct なので
+  for ループ desugar は無変更。**設計上の要点**:
+  (1) **frontend の generic struct 経路に method-only generic param の
+  推論が無かった** (`fn map<U>(&self, f: fn (T) -> U)` の U が解決されず
+  戻り型が `MapIter<u64, U>` のまま。enum / non-generic struct 経路には
+  あった)。`&self` / `&mut self` receiver は `method_func.parameter` に
+  含まれないので arg index がそのまま param index に写る
+  (`self: Self` は含まれる、`has_self_param` では判別できない —
+  compiler_lower は parameter.len() > arg_refs.len() で判定)。
+  (2) generic struct で method が見つからないとき field-call フォール
+  バック (Closure Phase 8) に落ちなかった — 落ちるようにして、fn 型
+  フィールドの型に struct の generic params を置換 (self.f の戻りが
+  `Generic(U)` のままになるのを防ぐ)。impl スコープの Generic 戻りは
+  デバッグチェックで許可。
+  (3) compiler_lower 3 箇所: method-only param 推論の param offset、
+  `bind_method_only_param` がネストした Generic (`other: VecIter<U>` の U)
+  を bind、`lower_type_arg` が active_subst を参照 (generic method body の
+  型注釈 `val src: VecIter<T>` の T を解決)、field-call の lower も
+  `lower_scalar_with_subst`。
+  (4) **レジスタ制約**: `&mut self` writeback + `Vec` 戻り (6+4=10) が
+  cranelift の戻りレジスタ上限を超えるので collect は **by-value self**
+  (`self: Self`、呼び出し側のイテレータは alias のまま = 再利用可)。
+  ZipIter は 8 フィールド版がオーバー → `elems` に a/b の stride を
+  32bit ずつパックして 5 フィールド (DictIter と同じ流儀)。
+  (5) **enumerate / zip の collect は提供しない**: `Vec<(A, B)>` の
+  push が `__builtin_sizeof` のタプル値解決 + compound 引数 lower の
+  AOT 未対応に当たるため。map / filter / VecIter の collect のみ。
+  consistency に 5 テスト、`std_iter_adapt.t` が example sweep に乗る。
+
 ### 2026-08-16
 - **RUNTIME-PORT R0+R1: ランタイムを C から Rust に移植** — `toylang_rt` crate
   (`compiler/runtime/toylang_rt/`、`no_std` + alloc、依存 0) が
@@ -260,10 +292,6 @@
 > 2026-08-16 に「言語機能として何が残っているか」を実際に叩いて洗い出した結果。
 > 言語のコアはほぼ揃っており、**実プログラムを書けなくしているのはこの節**。
 
-- **STDLIB-ITER-ADAPT: iterator アダプタ** ★★ — `map` / `filter` / `enumerate` /
-  `collect` / `zip` 相当。generic enum 側 (`Option::map` 等) はあるのに
-  コレクション側が空。**前提**: STDLIB-ITER (済)。`fn map<U>(...)` を struct に
-  持たせる形は generic method-only param の推論が既に通っている。
 - **RUNTIME-IO 拡張: 乱数シード / 時刻フォーマット / 環境変数一覧** ★ — 最小
   セット (`read_line` / `argc` / `arg` / `env_var` / `read_file` /
   `file_exists` / `now` / `random`) は 2026-08-16 に landing。`random()` は

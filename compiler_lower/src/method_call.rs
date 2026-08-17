@@ -186,11 +186,24 @@ impl<'a> FunctionLower<'a> {
             .copied()
             .collect();
         if !method_only_params.is_empty() {
-            // Method param[0] is `self`; call args[i] corresponds to
-            // method param[i+1]. Walk each pair, looking for
+            // `template.parameter` includes `self` only when the
+            // receiver is by-value (`self: Self`). `&self` /
+            // `&mut self` receivers are kept OUT of the parameter
+            // list by the frontend, so the call args map straight
+            // onto the params in that case. Detect which case we
+            // are in from the lengths: a by-value receiver leaves
+            // one more param than there are call args (note that
+            // `has_self_param` cannot tell the two apart — it is
+            // false for `self: Self` receivers).
+            let param_offset = if template.parameter.len() > arg_refs.len() {
+                1
+            } else {
+                0
+            };
+            // Walk each pair, looking for
             // `Generic(P)` slots that match a method-only param.
             for (i, arg_ref) in arg_refs.iter().enumerate() {
-                let param_idx = i + 1;
+                let param_idx = i + param_offset;
                 let declared = match template.parameter.get(param_idx) {
                     Some((_, t)) => t.clone(),
                     None => continue,
@@ -391,6 +404,27 @@ impl<'a> FunctionLower<'a> {
         match declared {
             TypeDecl::Generic(p) | TypeDecl::Identifier(p) if params.contains(p) => {
                 subst.entry(*p).or_insert(arg_ty);
+            }
+            // STDLIB-ITER-ADAPT: a generic struct / enum argument
+            // (`other: VecIter<U>`) carries the method-only param
+            // nested inside its type args. Match positionally against
+            // the argument's resolved type args so `zip<U>(other:
+            // VecIter<U>)` binds U from a `VecIter<u64>` argument.
+            TypeDecl::Struct(_, decl_args) => {
+                if let Type::Struct(id) = arg_ty {
+                    let def = self.module.struct_def(id);
+                    for (d, a) in decl_args.iter().zip(def.type_args.iter()) {
+                        self.bind_method_only_param(d, *a, params, subst);
+                    }
+                }
+            }
+            TypeDecl::Enum(_, decl_args) => {
+                if let Type::Enum(id) = arg_ty {
+                    let def = self.module.enum_def(id);
+                    for (d, a) in decl_args.iter().zip(def.type_args.iter()) {
+                        self.bind_method_only_param(d, *a, params, subst);
+                    }
+                }
             }
             _ => {}
         }
@@ -607,19 +641,21 @@ impl<'a> FunctionLower<'a> {
         // the CallIndirect signature.
         let mut ir_param_tys: Vec<Type> = Vec::with_capacity(param_tys_decl.len());
         for pt in &param_tys_decl {
-            let lowered = lower_scalar(pt).ok_or_else(|| {
+            let lowered = self.lower_scalar_with_subst(pt).ok_or_else(|| {
                 format!(
                     "compiler MVP: field-call closure parameter type {pt:?} is not a primitive scalar"
                 )
             })?;
             ir_param_tys.push(lowered);
         }
-        let ir_ret_ty = lower_scalar(&ret_ty_decl).ok_or_else(|| {
-            format!(
-                "compiler MVP: field-call closure return type {:?} is not a primitive scalar",
-                ret_ty_decl
-            )
-        })?;
+        let ir_ret_ty = self
+            .lower_scalar_with_subst(&ret_ty_decl)
+            .ok_or_else(|| {
+                format!(
+                    "compiler MVP: field-call closure return type {:?} is not a primitive scalar",
+                    ret_ty_decl
+                )
+            })?;
         if args.len() != ir_param_tys.len() {
             return Err(format!(
                 "field-call `{}` expects {} arg(s), got {}",

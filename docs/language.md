@@ -1186,6 +1186,40 @@ parser picks the desugaring based on what follows `EXPR`:
    for x in iter { sum = sum + x }   # sum == 10
    ```
 
+   **Stdlib adapters** (STDLIB-ITER-ADAPT, `core/std/collections/vec.t`):
+   `VecIter<T>` (returned by `v.iter()`) composes through ordinary
+   adapter structs that expose the same `next(&mut self) ->
+   Option<T>` protocol:
+
+   ```rust
+   var v: Vec<u64> = Vec::new()
+   v.push(1u64); v.push(2u64); v.push(3u64); v.push(4u64)
+
+   var m = v.iter().map(fn(x: u64) -> u64 { x * 2u64 })    # 2, 4, 6, 8
+   for x in m { println(x) }
+
+   var f = v.iter().filter(fn(x: u64) -> bool { x % 2u64 == 0u64 })   # 2, 4
+   for x in f { println(x) }
+
+   var e = v.iter().enumerate()                            # (0, 1) (1, 2) ...
+   for kv in e { println(kv.0 * kv.1) }
+
+   var z = v.iter().zip(v.iter())                          # (1, 1) (2, 2) ...
+   for p in z { println(p.0 + p.1) }
+
+   var c = v.iter().map(fn(x: u64) -> u64 { x + 10u64 }).collect()   # Vec<u64>
+   ```
+
+   `collect` takes the iterator **by value** (`self: Self`) and
+   drains it into a fresh `Vec`. Because compound values alias in
+   toylang, the caller's iterator binding keeps its state afterwards
+   — a second `collect()` call starts again from the beginning.
+   `collect` is provided on `VecIter` / `MapIter` / `FilterIter`
+   only: `Vec<(A, B)>` (from `zip` / `enumerate`) needs
+   `__builtin_sizeof` on a tuple value, which the AOT backend
+   cannot resolve yet. The adapters work on all three backends
+   (interpreter / AOT / JIT).
+
    `break` / `continue` / `return` inside the body propagate
    through the desugared `match` and `while` to the expected target
    (the enclosing for-loop, the next iteration, or the surrounding

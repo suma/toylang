@@ -312,3 +312,189 @@ impl Vec<u8> {
         true
     }
 }
+
+# Iterator adapters (STDLIB-ITER-ADAPT): `map` / `filter` /
+# `enumerate` / `zip` / `collect` on a `VecIter<T>`. Each adapter is a
+# small struct that holds a snapshot of the source iterator plus the
+# adapting function (or counter). They work with `for x in it.map(f)`
+# through the same structural `next(&mut self) -> Option<T>` protocol
+# the base iterators use, so the parser's for-loop desugaring needs no
+# special-casing. Function fields are stored as `fn (T) -> U` values;
+# the AOT / JIT backends dispatch them as field-closure calls.
+#
+# The adapter structs keep their type params OUT of any field (like
+# `Box<T>`) so the JIT's non-parameterised `struct_layouts` table can
+# lay them out without per-monomorph entries. `collect` takes the
+# iterator by value (`self: Self`) rather than `&mut self` — the
+# receiver writeback plus the `Vec` return would otherwise exceed the
+# backend register budget (6 receiver fields + 4 Vec fields). Only
+# scalar-element adapters (`VecIter` / `MapIter` / `FilterIter`) get
+# `collect`: `Vec<(A, B)>` needs `__builtin_sizeof` on a tuple value,
+# which the AOT backend cannot resolve yet.
+
+struct MapIter<T, U> {
+    source: VecIter<T>,
+    f: fn (T) -> U,
+}
+
+impl<T, U> MapIter<T, U> {
+    # Apply `f` to each element on the way out.
+    fn next(&mut self) -> Option<U> {
+        match self.source.next() {
+            Option::Some(v) => Option::Some(self.f(v)),
+            Option::None => Option::None,
+        }
+    }
+
+    # Drain the mapped stream into a fresh `Vec<U>`. The iterator is
+    # consumed by value, so the caller's binding keeps its state
+    # (compound alias semantics); a second call would re-read from the
+    # start.
+    fn collect(self: Self) -> Vec<U> {
+        val out: Vec<U> = Vec::new()
+        var it = self
+        loop {
+            match it.next() {
+                Option::Some(v) => { out.push(v) }
+                Option::None => { break }
+            }
+        }
+        out
+    }
+}
+
+impl<T> VecIter<T> {
+    # `it.map(f)` yields `f(x)` for each element `x`.
+    fn map<U>(&self, f: fn (T) -> U) -> MapIter<T, U> {
+        val src: VecIter<T> = VecIter {
+            data: self.data,
+            len: self.len,
+            elem_size: self.elem_size,
+            index: self.index,
+        }
+        MapIter { source: src, f: f }
+    }
+}
+
+struct FilterIter<T> {
+    source: VecIter<T>,
+    pred: fn (T) -> bool,
+}
+
+impl<T> FilterIter<T> {
+    # Yield only the elements for which `pred` returns true.
+    fn next(&mut self) -> Option<T> {
+        loop {
+            match self.source.next() {
+                Option::Some(v) => {
+                    if self.pred(v) {
+                        val r: Option<T> = Option::Some(v)
+                        return r
+                    }
+                    continue
+                }
+                Option::None => {
+                    break
+                }
+            }
+        }
+        val r: Option<T> = Option::None
+        r
+    }
+
+    fn collect(self: Self) -> Vec<T> {
+        val out: Vec<T> = Vec::new()
+        var it = self
+        loop {
+            match it.next() {
+                Option::Some(v) => { out.push(v) }
+                Option::None => { break }
+            }
+        }
+        out
+    }
+}
+
+impl<T> VecIter<T> {
+    fn filter(&self, pred: fn (T) -> bool) -> FilterIter<T> {
+        val src: VecIter<T> = VecIter {
+            data: self.data,
+            len: self.len,
+            elem_size: self.elem_size,
+            index: self.index,
+        }
+        FilterIter { source: src, pred: pred }
+    }
+}
+
+struct EnumerateIter<T> {
+    source: VecIter<T>,
+    index: u64,
+}
+
+impl<T> EnumerateIter<T> {
+    # Yield `(index, element)` pairs, starting at 0.
+    fn next(&mut self) -> Option<(u64, T)> {
+        match self.source.next() {
+            Option::Some(v) => {
+                val i = self.index
+                self.index = self.index + 1u64
+                Option::Some((i, v))
+            }
+            Option::None => Option::None,
+        }
+    }
+}
+
+impl<T> VecIter<T> {
+    fn enumerate(&self) -> EnumerateIter<T> {
+        val src: VecIter<T> = VecIter {
+            data: self.data,
+            len: self.len,
+            elem_size: self.elem_size,
+            index: self.index,
+        }
+        EnumerateIter { source: src, index: 0u64 }
+    }
+}
+
+struct ZipIter<A, B> {
+    a_data: ptr,
+    b_data: ptr,
+    min_len: u64,
+    elems: u64,
+    index: u64,
+}
+
+impl<A, B> ZipIter<A, B> {
+    # Yield `(a, b)` pairs, stopping at the shorter of the two
+    # sources. `elems` packs the two element strides into one field
+    # (`a_elem << 32 | b_elem`) so the struct fits in the backend's
+    # receiver-writeback register budget (the same trick `DictIter`
+    # uses for its key/value sizes).
+    fn next(&mut self) -> Option<(A, B)> {
+        if self.index >= self.min_len {
+            Option::None
+        } else {
+            val a_elem = self.elems >> 32u64
+            val b_elem = self.elems & 0xFFFFFFFFu64
+            val ai: A = __builtin_ptr_read(self.a_data, self.index * a_elem)
+            val bi: B = __builtin_ptr_read(self.b_data, self.index * b_elem)
+            self.index = self.index + 1u64
+            Option::Some((ai, bi))
+        }
+    }
+}
+
+impl<T> VecIter<T> {
+    fn zip<U>(&self, other: VecIter<U>) -> ZipIter<T, U> {
+        val ml = if self.len < other.len { self.len } else { other.len }
+        ZipIter {
+            a_data: self.data,
+            b_data: other.data,
+            min_len: ml,
+            elems: (self.elem_size << 32u64) | other.elem_size,
+            index: 0u64,
+        }
+    }
+}

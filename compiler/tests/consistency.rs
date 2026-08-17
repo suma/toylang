@@ -5071,6 +5071,117 @@ fn iter_protocol_zero_iterations_round_trip() {
     assert_consistent(&src, "iter_protocol_zero_iterations");
 }
 
+// STDLIB-ITER-ADAPT: `VecIter<T>` gains `map` / `filter` /
+// `enumerate` / `zip` / `collect` (implemented in
+// `core/std/collections/vec.t` as ordinary `next(&mut self) ->
+// Option<T>` structs). These pin the 3-way consistency of the
+// adapters, including the frontend's method-only generic param
+// inference on generic-struct receivers (`it.map(f)` binds `U` from
+// the closure signature) and the AOT field-closure-call dispatch
+// (`self.f(v)` on a struct field of fn type).
+
+#[test]
+fn iter_adapt_map_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            v.push(1u64)
+            v.push(2u64)
+            v.push(3u64)
+            var it = v.iter()
+            var m = it.map(fn(x: u64) -> u64 { x * 2u64 })
+            var total: u64 = 0u64
+            for x in m { total = total + x }
+            total
+        }
+    "#;
+    assert_consistent(src, "iter_adapt_map");
+}
+
+#[test]
+fn iter_adapt_filter_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            v.push(1u64)
+            v.push(2u64)
+            v.push(3u64)
+            v.push(4u64)
+            var it = v.iter()
+            var f = it.filter(fn(x: u64) -> bool { x % 2u64 == 0u64 })
+            var total: u64 = 0u64
+            for x in f { total = total + x }
+            total
+        }
+    "#;
+    assert_consistent(src, "iter_adapt_filter");
+}
+
+#[test]
+fn iter_adapt_collect_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            v.push(1u64)
+            v.push(2u64)
+            v.push(3u64)
+            var it = v.iter()
+            var m = it.map(fn(x: u64) -> u64 { x + 10u64 })
+            var c = m.collect()
+            var total: u64 = 0u64
+            var i: u64 = 0u64
+            while i < c.size() {
+                total = total + c.get(i)
+                i = i + 1u64
+            }
+            total
+        }
+    "#;
+    assert_consistent(src, "iter_adapt_collect");
+}
+
+#[test]
+fn iter_adapt_enumerate_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            v.push(3u64)
+            v.push(7u64)
+            v.push(11u64)
+            var it = v.iter()
+            var e = it.enumerate()
+            var total: u64 = 0u64
+            for kv in e { total = total + kv.0 * kv.1 }
+            total
+        }
+    "#;
+    assert_consistent(src, "iter_adapt_enumerate");
+}
+
+#[test]
+fn iter_adapt_zip_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            var a: Vec<u64> = Vec::new()
+            a.push(1u64)
+            a.push(2u64)
+            a.push(3u64)
+            var b: Vec<u64> = Vec::new()
+            b.push(10u64)
+            b.push(20u64)
+            b.push(30u64)
+            b.push(40u64)
+            var ia = a.iter()
+            var ib = b.iter()
+            var z = ia.zip(ib)
+            var total: u64 = 0u64
+            for p in z { total = total + p.0 + p.1 }
+            total
+        }
+    "#;
+    assert_consistent(src, "iter_adapt_zip");
+}
+
 #[test]
 fn iter_protocol_nested_round_trip() {
     let src = format!(

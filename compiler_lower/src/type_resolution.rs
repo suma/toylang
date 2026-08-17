@@ -33,7 +33,7 @@ use string_interner::DefaultSymbol;
 use super::templates::{
     instantiate_enum, instantiate_enum_type_arg, instantiate_struct, instantiate_struct_type_arg,
 };
-use super::types::{intern_tuple, lower_scalar};
+use super::types::intern_tuple;
 use super::FunctionLower;
 use crate::ir::{EnumId, StructId, Type};
 
@@ -293,7 +293,11 @@ impl<'a> FunctionLower<'a> {
     /// built resolves to its reservation instead of recursing
     /// (`templates::instantiate_struct_type_arg`).
     pub(super) fn lower_type_arg(&mut self, t: &TypeDecl) -> Option<Type> {
-        if let Some(s) = lower_scalar(t) {
+        // Consult the active monomorphisation substitution first so a
+        // generic param referenced in a type annotation inside a
+        // generic method body (`val src: VecIter<T> = ...` in
+        // `VecIter::zip`) resolves to the instance's concrete type.
+        if let Some(s) = self.lower_scalar_with_subst(t) {
             return Some(s);
         }
         match t {

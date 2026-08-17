@@ -591,3 +591,15 @@ impl StringIter {
         StringEnumerateIter { source: src, index: 0u64 }
     }
 }
+
+# From/Into: `str -> String`. The blanket `Into` side (any
+# `U: From<T>` gives `T: Into<U>`) is derived by the type checker at
+# the `.into()` call site (`core/std/convert.t`), so only the `From`
+# impl is written here. `s.into()` with a `String` expected type
+# rewrites to `String::from(s)`.
+impl From<str> for String {
+    fn from(value: str) -> String {
+        val r: String = String::from_str(value)
+        r
+    }
+}

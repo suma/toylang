@@ -392,6 +392,80 @@ mod errors {
     }
 
     #[test]
+    fn test_into_rewrites_to_from_with_type_hint() {
+        // From/Into: `"hi".into()` with a `String` annotation rewrites
+        // to `String::from("hi")` at the call site (the blanket `Into`
+        // side is derived, not written as an impl).
+        let source = r#"
+            fn main() -> u64 {
+                val s: String = "hi".into()
+                val n: u64 = s.size()
+                n
+            }
+        "#;
+        let result = test_program(source);
+        assert!(result.is_ok(), "into() with String hint should run: {:?}", result.err());
+        assert_eq!(result.unwrap().borrow().unwrap_uint64(), 2);
+    }
+
+    #[test]
+    fn test_into_on_user_defined_struct() {
+        // From/Into on a user type: `impl From<i64> for Kelvin` gives
+        // `300i64.into() -> Kelvin`.
+        let source = r#"
+            struct Kelvin { k: i64 }
+            impl From<i64> for Kelvin {
+                fn from(value: i64) -> Kelvin {
+                    val r: Kelvin = Kelvin { k: value }
+                    r
+                }
+            }
+            fn main() -> u64 {
+                val t: Kelvin = 300i64.into()
+                t.k as u64
+            }
+        "#;
+        let result = test_program(source);
+        assert!(result.is_ok(), "into() on user struct should run: {:?}", result.err());
+        assert_eq!(result.unwrap().borrow().unwrap_uint64(), 300);
+    }
+
+    #[test]
+    fn test_into_without_type_hint_is_rejected() {
+        // No expected type -> no target for the `Into` derivation; the
+        // call falls through to ordinary method dispatch which rejects
+        // the unknown `into` method.
+        let source = r#"
+            fn main() -> u64 {
+                val s = "hi".into()
+                0u64
+            }
+        "#;
+        let err = test_program(source).expect_err("expected error");
+        assert!(
+            err.contains("into"),
+            "expected a diagnostic mentioning into, got: {}", err
+        );
+    }
+
+    #[test]
+    fn test_into_with_unimplemented_target_is_rejected() {
+        // `u64` does not implement `From<str>`, so the rewrite must
+        // not fire and the call is rejected.
+        let source = r#"
+            fn main() -> u64 {
+                val n: u64 = "hi".into()
+                n
+            }
+        "#;
+        let err = test_program(source).expect_err("expected error");
+        assert!(
+            err.contains("into") || err.contains("method"),
+            "expected a diagnostic mentioning into, got: {}", err
+        );
+    }
+
+    #[test]
     fn test_duplicate_trait_decl_is_rejected() {
         let source = r#"
             trait Greet {

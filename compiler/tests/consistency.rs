@@ -5940,6 +5940,40 @@ fn generic_trait_bound_passthrough_round_trip() {
 }
 
 #[test]
+fn into_string_round_trip() {
+    // From/Into: `"hi".into()` with a `String` annotation rewrites to
+    // `String::from("hi")`. All three backends must run the rewritten
+    // call and agree on the byte count.
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = "hi".into()
+            s.size()
+        }
+    "#;
+    assert_consistent(src, "into_string");
+}
+
+#[test]
+fn into_user_struct_round_trip() {
+    // From/Into on a user type: `300i64.into()` with a `Kelvin`
+    // annotation dispatches to `impl From<i64> for Kelvin`.
+    let src = r#"
+        struct Kelvin { k: i64 }
+        impl From<i64> for Kelvin {
+            fn from(value: i64) -> Kelvin {
+                val r: Kelvin = Kelvin { k: value }
+                r
+            }
+        }
+        fn main() -> u64 {
+            val t: Kelvin = 300i64.into()
+            t.k as u64
+        }
+    "#;
+    assert_consistent(src, "into_user_struct");
+}
+
+#[test]
 fn multi_bound_three_traits_round_trip() {
     // A2: `<T: A + B + C>` — longer bound list across 3 backends.
     let src = r#"

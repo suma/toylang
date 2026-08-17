@@ -32,7 +32,7 @@ use crate::ast::module_interface::ModuleInterface;
 ///
 /// Mismatched versions are treated as a cache miss by
 /// [`load_full_module`].
-pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 8;
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 9;
 // v2: `File` gained `id` (JIT cache key) and `tests` (LLM-LOOP P4).
 // v3: `BuiltinFunctionSymbols` interns the MEMORY_PROFILING M4 counter
 // names, shifting every later symbol id.
@@ -43,6 +43,10 @@ pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 8;
 // v6: same again for `__builtin_str_from_bytes` (the bytes-to-str
 // primitive the Display trait needs).
 // v7: `File` gained `transferred_bindings` (BOX-T ownership transfer).
+// v8: `BuiltinFunctionSymbols` interns the FFI_PLAN P1 `from` / `as`
+// extern-link keywords.
+// v9: `core/std/convert.t` adds `From` / `Into` / `from` / `into` to
+// the shared interner, shifting every symbol interned after `string.t`.
 // Forgetting this bump is not a subtle failure: stale entries
 // deserialize into the new layout and the program silently comes out
 // wrong — every stdlib trait reported "is not defined". The M4 bump

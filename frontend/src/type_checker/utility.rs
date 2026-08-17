@@ -93,7 +93,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     ///   bound args have been resolved through the call's substitutions
     ///   (`fn outer<U>(x: U) { inner(x) }` with `inner<I: Iter<U>>`
     ///   substitutes `U` before comparing).
-    fn trait_type_args_match(
+    pub fn trait_type_args_match(
         &self,
         impl_args: &[TypeDecl],
         bound_args: &[TypeDecl],

@@ -177,6 +177,79 @@ impl<'a> TypeCheckerVisitor<'a> {
         result
     }
 
+    /// From/Into: rewrite `expr.into()` (the MethodCall node at
+    /// `call_ref`, whose receiver is `obj_ref`) to
+    /// `Target::from(expr)` when the expected type `Target` implements
+    /// `From<source>`. Returns `true` when the rewrite happened.
+    ///
+    /// The target type is taken from the type hint — the surrounding
+    /// annotation (`val s: String = x.into()`) or argument-expected
+    /// type. Without a hint the call has no target and is left for the
+    /// ordinary method dispatch to reject (Rust requires the same
+    /// annotation: `let x = s.into();` is ambiguous).
+    ///
+    /// Only the `From` side is ever written as an impl
+    /// (`core/std/convert.t` explains why); `Into` is the blanket
+    /// derivation here, so `struct_implements_trait(target, From)`
+    /// plus a matching `From<source>` entry is the whole check.
+    pub(super) fn rewrite_into_call(
+        &mut self,
+        call_ref: ExprRef,
+        obj_ref: ExprRef,
+    ) -> bool {
+        // Expected target type from the surrounding context.
+        let target = match self.type_inference.get_type_hint() {
+            Some(ty) => ty,
+            None => return false,
+        };
+        // The parser emits `Struct(String, [])` for a bare struct name
+        // in an annotation, but `Identifier(String)` for a named alias;
+        // normalise both to a concrete carrier symbol.
+        let target_sym = match &target {
+            TypeDecl::Struct(sym, _) => *sym,
+            TypeDecl::Identifier(sym) => *sym,
+            _ => return false,
+        };
+        let from_trait = match self.core.string_interner.get(FROM_TRAIT) {
+            Some(sym) => sym,
+            None => return false,
+        };
+        if !self.context.struct_implements_trait(target_sym, from_trait) {
+            return false;
+        }
+        // Source type: the receiver's own type, with `&T` peeled.
+        let Ok(source_ty) = self.visit_expr(&obj_ref) else {
+            return false;
+        };
+        let source_ty = source_ty.deref_ref().clone();
+        // The target must implement `From<source>` with matching args
+        // (`From<str>` for `str -> String`, not `From<u64>`).
+        let empty = HashMap::new();
+        let args_match = self
+            .context
+            .trait_impl_type_args
+            .get(&(target_sym, from_trait))
+            .map(|entries| {
+                entries.iter().any(|impl_args| {
+                    self.trait_type_args_match(impl_args, std::slice::from_ref(&source_ty), &empty)
+                })
+            })
+            .unwrap_or(false);
+        if !args_match {
+            return false;
+        }
+        let from_method = match self.core.string_interner.get(FROM_METHOD) {
+            Some(sym) => sym,
+            None => return false,
+        };
+        // Rewrite `expr.into()` -> `Target::from(expr)` in place.
+        self.core.expr_pool.update(
+            &call_ref,
+            Expr::AssociatedFunctionCall(target_sym, from_method, vec![obj_ref]),
+        );
+        true
+    }
+
     /// Helper method to handle method calls on a specific type
     pub fn visit_method_call_on_type(&mut self, obj_type: &TypeDecl, method: &DefaultSymbol, args: &Vec<ExprRef>, _arg_types: &[TypeDecl]) -> Result<TypeDecl, TypeCheckError> {
         let method_name = self.resolve_symbol_name(*method);
@@ -753,7 +826,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
 
         // Verify the struct exists — generic and non-generic both count.
-        if !self.context.struct_definitions.contains_key(&struct_name) {
+        // From/Into: an enum target is also allowed (`MyErr::from(...)`
+        // for `impl From<str> for MyErr`); the enum's methods are
+        // registered in the same `struct_methods` registry under the
+        // enum's symbol, so the lookup below works unchanged.
+        if !self.context.struct_definitions.contains_key(&struct_name)
+            && !self.context.enum_definitions.contains_key(&struct_name)
+        {
             return Err(TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)));
         }
 
@@ -819,9 +898,13 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         // Normalize the method's return type so downstream dispatch sees the
         // struct form. `Self` and bare `Identifier(struct_name)` both become
-        // `Struct(struct_name, [])`.
+        // `Struct(struct_name, [])`. From/Into: an enum target's `Self`
+        // return (`MyErr::from(...) -> Self`) becomes `Enum(MyErr, [])`
+        // instead, so the caller's expected type matches.
         let return_ty = method.return_type.clone().unwrap_or(TypeDecl::Unit);
+        let is_enum_target = self.context.enum_definitions.contains_key(&struct_name);
         let return_ty = match return_ty {
+            TypeDecl::Self_ if is_enum_target => TypeDecl::Enum(struct_name, vec![]),
             TypeDecl::Self_ => TypeDecl::Struct(struct_name, vec![]),
             TypeDecl::Identifier(name)
                 if self.context.struct_definitions.contains_key(&name) =>
@@ -833,3 +916,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         Ok(return_ty)
     }
 }
+
+/// From/Into: the trait and method names the `expr.into()` rewrite
+/// and the `?` cross-error conversion look up. `FROM_TRAIT` is the
+/// `From` trait declared in `core/std/convert.t`; `FROM_METHOD` is
+/// its `fn from` method.
+pub const FROM_TRAIT: &str = "From";
+pub const FROM_METHOD: &str = "from";

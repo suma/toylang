@@ -75,6 +75,29 @@ impl<'a> TypeCheckerVisitor<'a> {
             return self.desugar_try_expr(*expr, *inner);
         }
 
+        // From/Into: `expr.into()` rewrites to `Target::from(expr)`
+        // when the expected type is known. Like `Try`, this needs the
+        // MethodCall's own ExprRef to rewrite the pool entry in place;
+        // the result is a plain `AssociatedFunctionCall` that every
+        // backend lowers like a hand-written `String::from(...)`.
+        // Only a zero-arg `into` on a known-target receiver is
+        // intercepted; anything else falls through to normal method
+        // dispatch (and its usual "no method named into" error).
+        if let Expr::MethodCall(obj_ref, method_sym, args) = &expr_obj {
+            let method_name = self
+                .core
+                .string_interner
+                .resolve(*method_sym)
+                .unwrap_or("?")
+                .to_string();
+            if method_name == "into"
+                && args.is_empty()
+                && self.rewrite_into_call(*expr, *obj_ref)
+            {
+                return self.visit_expr(expr);
+            }
+        }
+
         let result = expr_obj.clone().accept_expr(self);
         
         // Add location information to errors if not already present

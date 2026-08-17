@@ -119,7 +119,13 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
 
             // Type check method body
+            let prev_fn_return = self.current_fn_return_type.replace(
+                method.return_type.clone()
+                    .map(|t| self.resolve_self_type(&t))
+                    .unwrap_or(TypeDecl::Unit),
+            );
             let body_result = self.visit_stmt(&method.code);
+            self.current_fn_return_type = prev_fn_return;
 
             // `ensures` runs after the body. Bind `result` to the method's
             // return type before checking each clause.

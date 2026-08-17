@@ -5974,6 +5974,41 @@ fn into_user_struct_round_trip() {
 }
 
 #[test]
+fn try_cross_error_conversion_round_trip() {
+    // From/Into `?` cross-error conversion: `inner()?` inside a
+    // function returning `Result<i64, ErrWrap>` converts the `str`
+    // error through `ErrWrap: From<str>` before re-returning it.
+    // All three backends must agree on the converted payload.
+    let src = r#"
+        struct ErrWrap { code: u64 }
+
+        impl From<str> for ErrWrap {
+            fn from(value: str) -> ErrWrap {
+                val r: ErrWrap = ErrWrap { code: 42u64 }
+                r
+            }
+        }
+
+        fn inner() -> Result<i64, str> {
+            Result::Err("boom")
+        }
+
+        fn outer() -> Result<i64, ErrWrap> {
+            val x = inner()?
+            Result::Ok(x)
+        }
+
+        fn main() -> u64 {
+            match outer() {
+                Result::Err(w) => w.code,
+                Result::Ok(v) => v as u64,
+            }
+        }
+    "#;
+    assert_consistent(src, "try_cross_error_conversion");
+}
+
+#[test]
 fn multi_bound_three_traits_round_trip() {
     // A2: `<T: A + B + C>` — longer bound list across 3 backends.
     let src = r#"

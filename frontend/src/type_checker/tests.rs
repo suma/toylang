@@ -31,6 +31,7 @@ mod tests {
             imported_modules: HashMap::new(),
             transformed_exprs: HashMap::new(),
             builtin_methods: TypeCheckerVisitor::create_builtin_method_registry(),
+            current_fn_return_type: None,
         }
     }
 

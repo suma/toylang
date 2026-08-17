@@ -67,6 +67,13 @@ pub struct TypeCheckerVisitor<'a> {
     /// the same expression in a plain function found it. The pool is
     /// complete before any body is checked, so reading it is stable.
     pub display_types: Option<std::collections::HashSet<DefaultSymbol>>,
+    /// From/Into `?` cross-error conversion: the return type of the
+    /// function currently being type-checked, or `None` outside a
+    /// function body. `desugar_try_expr` consults this to decide
+    /// whether the `Err(E1)` value it would `return` must first be
+    /// converted through an `E2: From<E1>` impl (when `E2` is the
+    /// enclosing function's error type).
+    pub current_fn_return_type: Option<TypeDecl>,
 }
 
 /// `() -> u64` for every allocation counter (MEMORY_PROFILING M4).
@@ -112,6 +119,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             builtin_methods: Self::create_builtin_method_registry(),
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
             display_types: None,
+            current_fn_return_type: None,
             transformed_exprs: HashMap::new(),
         };
 
@@ -171,6 +179,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             builtin_methods: Self::create_builtin_method_registry(),
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
             display_types: None,
+            current_fn_return_type: None,
         }
     }
 
@@ -428,6 +437,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             builtin_methods: Self::create_builtin_method_registry(),
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
             display_types: None,
+            current_fn_return_type: None,
             transformed_exprs: HashMap::new(),
         }
     }
@@ -710,6 +720,13 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         self.function_checking.call_depth += 1;
 
+        // From/Into `?` cross-error conversion: remember this function's
+        // return type so `desugar_try_expr` can convert `Err(E1)` to the
+        // enclosing function's `Err(E2)` via an `E2: From<E1>` impl.
+        let prev_fn_return = self.current_fn_return_type.replace(
+            func.return_type.clone().unwrap_or(TypeDecl::Unit),
+        );
+
         let statements = match self.core.stmt_pool.get(&s).ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference"))? {
             Stmt::Expression(e) => {
                 match self.core.expr_pool.get(&e).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference"))? {
@@ -794,6 +811,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.pop_context();
         self.context.current_fn_generic_bounds = prev_bounds;
         self.function_checking.call_depth -= 1;
+        self.current_fn_return_type = prev_fn_return;
 
         // Restore original type hint
         self.type_inference.type_hint = original_hint;

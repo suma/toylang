@@ -128,6 +128,8 @@ impl AstBuilder {
         success_binding: DefaultSymbol,
         error_binding: DefaultSymbol,
         panic_msg: DefaultSymbol,
+        converted_binding: DefaultSymbol,
+        result_binding: DefaultSymbol,
         location: Option<SourceLocation>,
     ) -> ExprRef {
         let expr_ref = self.expr_pool.add(Expr::Try {
@@ -136,6 +138,8 @@ impl AstBuilder {
             success_binding,
             error_binding,
             panic_msg,
+            converted_binding,
+            result_binding,
         });
         self.location_pool.add_expr_location(location);
         expr_ref

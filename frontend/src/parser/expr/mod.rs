@@ -675,16 +675,22 @@ fn parse_postfix_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                 let t_name = format!("__try_t_{}", counter);
                 let v_name = format!("__try_v_{}", counter);
                 let e_name = format!("__try_e_{}", counter);
+                let conv_name = format!("__try_conv_{}", counter);
+                let err_name = format!("__try_err_{}", counter);
                 let scrutinee_binding = parser.string_interner.get_or_intern(t_name.as_str());
                 let success_binding = parser.string_interner.get_or_intern(v_name.as_str());
                 let error_binding = parser.string_interner.get_or_intern(e_name.as_str());
                 let panic_msg = parser.string_interner.get_or_intern("?-unreachable");
+                let converted_binding = parser.string_interner.get_or_intern(conv_name.as_str());
+                let result_binding = parser.string_interner.get_or_intern(err_name.as_str());
                 expr = parser.ast_builder.try_expr(
                     expr,
                     scrutinee_binding,
                     success_binding,
                     error_binding,
                     panic_msg,
+                    converted_binding,
+                    result_binding,
                     Some(location),
                 );
             }

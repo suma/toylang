@@ -210,13 +210,6 @@ impl<'a> TypeCheckerVisitor<'a> {
             TypeDecl::Identifier(sym) => *sym,
             _ => return false,
         };
-        let from_trait = match self.core.string_interner.get(FROM_TRAIT) {
-            Some(sym) => sym,
-            None => return false,
-        };
-        if !self.context.struct_implements_trait(target_sym, from_trait) {
-            return false;
-        }
         // Source type: the receiver's own type, with `&T` peeled.
         let Ok(source_ty) = self.visit_expr(&obj_ref) else {
             return false;
@@ -224,21 +217,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         let source_ty = source_ty.deref_ref().clone();
         // The target must implement `From<source>` with matching args
         // (`From<str>` for `str -> String`, not `From<u64>`).
-        let empty = HashMap::new();
-        let args_match = self
-            .context
-            .trait_impl_type_args
-            .get(&(target_sym, from_trait))
-            .map(|entries| {
-                entries.iter().any(|impl_args| {
-                    self.trait_type_args_match(impl_args, std::slice::from_ref(&source_ty), &empty)
-                })
-            })
-            .unwrap_or(false);
-        if !args_match {
+        if !self.type_implements_from(&target, &source_ty) {
             return false;
         }
-        let from_method = match self.core.string_interner.get(FROM_METHOD) {
+        let from_method = match self.from_method_symbol() {
             Some(sym) => sym,
             None => return false,
         };
@@ -916,10 +898,3 @@ impl<'a> TypeCheckerVisitor<'a> {
         Ok(return_ty)
     }
 }
-
-/// From/Into: the trait and method names the `expr.into()` rewrite
-/// and the `?` cross-error conversion look up. `FROM_TRAIT` is the
-/// `From` trait declared in `core/std/convert.t`; `FROM_METHOD` is
-/// its `fn from` method.
-pub const FROM_TRAIT: &str = "From";
-pub const FROM_METHOD: &str = "from";

@@ -456,15 +456,22 @@ impl ExprPool {
                 self.target_type[index] = return_type;
                 self.closure_params[index] = Some(params);
             }
-            Expr::Try { inner, scrutinee_binding, success_binding, error_binding, panic_msg } => {
-                // `lhs` holds the inner expression; the four synthetic
+            Expr::Try { inner, scrutinee_binding, success_binding, error_binding, panic_msg, converted_binding, result_binding } => {
+                // `lhs` holds the inner expression; the six synthetic
                 // symbols are packed into `symbol_list` in a fixed
-                // order (scrutinee, success, error, panic_msg) so
-                // `get` can reconstruct the struct variant without
-                // needing a dedicated column.
+                // order (scrutinee, success, error, panic_msg,
+                // converted, result) so `get` can reconstruct the
+                // struct variant without needing a dedicated column.
                 self.expr_types[index] = ExprType::Try;
                 self.lhs[index] = Some(inner);
-                self.symbol_list[index] = Some(vec![scrutinee_binding, success_binding, error_binding, panic_msg]);
+                self.symbol_list[index] = Some(vec![
+                    scrutinee_binding,
+                    success_binding,
+                    error_binding,
+                    panic_msg,
+                    converted_binding,
+                    result_binding,
+                ]);
             }
         }
     }
@@ -684,13 +691,28 @@ impl ExprPool {
             }
             ExprType::Try => {
                 let symbols = self.symbol_list[index].clone()?;
-                if symbols.len() == 4 {
+                if symbols.len() == 6 {
                     Some(Expr::Try {
                         inner: self.lhs[index]?,
                         scrutinee_binding: symbols[0],
                         success_binding: symbols[1],
                         error_binding: symbols[2],
                         panic_msg: symbols[3],
+                        converted_binding: symbols[4],
+                        result_binding: symbols[5],
+                    })
+                } else if symbols.len() == 4 {
+                    // Legacy 4-symbol form (pre-From/Into): supply
+                    // placeholder bindings for the conversion
+                    // temporaries so old pool entries stay readable.
+                    Some(Expr::Try {
+                        inner: self.lhs[index]?,
+                        scrutinee_binding: symbols[0],
+                        success_binding: symbols[1],
+                        error_binding: symbols[2],
+                        panic_msg: symbols[3],
+                        converted_binding: symbols[0],
+                        result_binding: symbols[0],
                     })
                 } else {
                     None

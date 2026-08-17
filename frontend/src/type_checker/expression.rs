@@ -1786,20 +1786,30 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Pull pre-interned synthetic symbols out of the Try node
         // before we visit `inner` (visiting may mutate `expr_pool`
         // and invalidate clones taken later).
-        let (t_sym, v_sym, e_sym, panic_msg_sym) = match self.core.expr_pool.get(&try_ref) {
-            Some(Expr::Try {
-                scrutinee_binding,
-                success_binding,
-                error_binding,
-                panic_msg,
-                ..
-            }) => (scrutinee_binding, success_binding, error_binding, panic_msg),
-            _ => {
-                return Err(TypeCheckError::generic_error(
-                    "desugar_try_expr: pool entry no longer a Try node",
-                ));
-            }
-        };
+        let (t_sym, v_sym, e_sym, panic_msg_sym, conv_sym, err_sym) =
+            match self.core.expr_pool.get(&try_ref) {
+                Some(Expr::Try {
+                    scrutinee_binding,
+                    success_binding,
+                    error_binding,
+                    panic_msg,
+                    converted_binding,
+                    result_binding,
+                    ..
+                }) => (
+                    scrutinee_binding,
+                    success_binding,
+                    error_binding,
+                    panic_msg,
+                    converted_binding,
+                    result_binding,
+                ),
+                _ => {
+                    return Err(TypeCheckError::generic_error(
+                        "desugar_try_expr: pool entry no longer a Try node",
+                    ));
+                }
+            };
 
         // Determine inner type first.
         let inner_ty = self.visit_expr(&inner)?;
@@ -1898,16 +1908,83 @@ impl<'a> TypeCheckerVisitor<'a> {
         // `Result::Err(e)` / `Option::None` would be an
         // `AssociatedFunctionCall` / `QualifiedIdentifier` and fail
         // that check.
+        //
+        // From/Into cross-error conversion: when the inner type is
+        // `Result<T, E1>` and the enclosing function returns
+        // `Result<T, E2>` with E1 != E2 and `E2: From<E1>`, the arm
+        // instead converts the error before re-returning:
+        //
+        //     Result::Err(__try_e_N) => {
+        //         val __try_conv_N = E2::from(__try_e_N)
+        //         val __try_err_N = Result::Err(__try_conv_N)
+        //         return __try_err_N
+        //         panic("?-unreachable")
+        //     }
+        //
+        // `return __try_err_N` stays a bare identifier (AOT-safe); the
+        // conversion call and the enum re-construction both live in
+        // `val` bindings, which every backend lowers like ordinary
+        // let statements.
         let error_pattern = if error_is_unit {
             Pattern::EnumVariant(enum_name, error_sym, vec![])
         } else {
             Pattern::EnumVariant(enum_name, error_sym, vec![Pattern::Name(e_sym)])
         };
-        let return_value = self.core.expr_pool.add(Expr::Identifier(t_sym));
-        let return_stmt = self
-            .core
-            .stmt_pool
-            .add(Stmt::Return(Some(return_value)));
+        // From/Into: decide whether a cross-error conversion applies.
+        // Only `Result` (a payload-bearing error) can convert; an
+        // `Option::None` has no value to feed a `From` impl.
+        //
+        // When the enclosing function's return type names a *different*
+        // error type (`Result<T, E2>` vs inner `Result<T, E1>`), the
+        // conversion impl is mandatory: without `E2: From<E1>` the
+        // error arm would silently `return` the E1-typed scrutinee and
+        // the caller would observe the wrong variant payload. Reject
+        // that here rather than letting it through as a "type-checks
+        // but answers wrong" program.
+        let conversion_stmts: Vec<StmtRef> = if error_is_unit {
+            Vec::new()
+        } else {
+            let inner_err_ty = match &inner_ty {
+                TypeDecl::Enum(_, args) | TypeDecl::Struct(_, args) if args.len() == 2 => {
+                    args[1].clone()
+                }
+                _ => TypeDecl::Unknown,
+            };
+            let fn_ret = self.current_fn_return_type.clone();
+            let target_err_ty = match &fn_ret {
+                Some(TypeDecl::Enum(_, args)) | Some(TypeDecl::Struct(_, args))
+                    if args.len() == 2 =>
+                {
+                    args[1].clone()
+                }
+                _ => TypeDecl::Unknown,
+            };
+            if inner_err_ty != TypeDecl::Unknown
+                && target_err_ty != TypeDecl::Unknown
+                && inner_err_ty != target_err_ty
+            {
+                let inner_name = self.type_name_for_error(&inner_err_ty);
+                let target_name = self.type_name_for_error(&target_err_ty);
+                if !self.type_implements_from(&target_err_ty, &inner_err_ty) {
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "`?` cannot convert error type `{}` to `{}`; implement \
+                         `From<{}> for {}` (e.g. `impl From<str> for String`)",
+                        inner_name, target_name, inner_name, target_name,
+                    )));
+                }
+            }
+            self.cross_error_conversion(&inner_ty, e_sym, conv_sym, err_sym, enum_name, error_sym)
+        };
+
+        let mut error_stmts: Vec<StmtRef> = if conversion_stmts.is_empty() {
+            // Plain propagation: `return <scrutinee>` — the scrutinee
+            // is already the error variant, and a bare identifier
+            // keeps the AOT's `return <ident>` constraint satisfied.
+            let return_value = self.core.expr_pool.add(Expr::Identifier(t_sym));
+            vec![self.core.stmt_pool.add(Stmt::Return(Some(return_value)))]
+        } else {
+            conversion_stmts
+        };
 
         // `panic("?-unreachable")` after `return` is dead code at
         // runtime, but it makes the block's static type `Unknown`,
@@ -1921,11 +1998,12 @@ impl<'a> TypeCheckerVisitor<'a> {
             .core
             .stmt_pool
             .add(Stmt::Expression(panic_call));
+        error_stmts.push(panic_stmt);
 
         let error_block = self
             .core
             .expr_pool
-            .add(Expr::Block(vec![return_stmt, panic_stmt]));
+            .add(Expr::Block(error_stmts));
         let error_arm = MatchArm {
             pattern: error_pattern,
             guard: None,
@@ -1967,6 +2045,125 @@ impl<'a> TypeCheckerVisitor<'a> {
         // miss (no prior cache entry for try_ref), so it fetches the
         // updated Expr (now `Block`) and processes it normally.
         self.visit_expr(&try_ref)
+    }
+
+    /// From/Into `?` cross-error conversion. Returns the statement
+    /// sequence for the error arm when the conversion applies:
+    ///
+    /// ```text
+    /// val __try_conv_N = E2::from(__try_e_N)
+    /// val __try_err_N = Result::Err(__try_conv_N)
+    /// return __try_err_N
+    /// ```
+    ///
+    /// The enclosing function's return type (`current_fn_return_type`,
+    /// set per function / method body) is `Result<T, E2>`; the inner
+    /// expression is `Result<T, E1>`. When E1 != E2 and
+    /// `E2: From<E1>` is implemented, the error value is converted
+    /// before the reconstructed `Result::Err(E2)` is re-returned.
+    /// Returns `None` when no conversion applies (matching types, or
+    /// no `From` impl — the arm falls back to returning the scrutinee
+    /// as-is, which type-checks because the types are equal).
+    ///
+    /// Note: the conversion is only emitted when `E2: From<E1>`
+    /// exists. Without it the desugar is unchanged — the error value
+    /// propagates with the inner type, so a `?` across mismatched
+    /// error types without a `From` impl remains a type error at the
+    /// enclosing function's return-type check.
+    fn cross_error_conversion(
+        &mut self,
+        inner_ty: &TypeDecl,
+        e_sym: DefaultSymbol,
+        conv_sym: DefaultSymbol,
+        err_sym: DefaultSymbol,
+        enum_name: DefaultSymbol,
+        error_sym: DefaultSymbol,
+    ) -> Vec<StmtRef> {
+        // Inner error type: `Result<T, E1>` -> E1.
+        let inner_err_ty = match inner_ty {
+            TypeDecl::Enum(_, args) | TypeDecl::Struct(_, args) if args.len() == 2 => {
+                args[1].clone()
+            }
+            _ => return Vec::new(),
+        };
+        // Enclosing function's error type: `Result<T, E2>` -> E2.
+        let fn_ret = match self.current_fn_return_type.as_ref() {
+            Some(ty) => ty.clone(),
+            None => return Vec::new(),
+        };
+        let target_err_ty = match &fn_ret {
+            TypeDecl::Enum(_, args) | TypeDecl::Struct(_, args) if args.len() == 2 => {
+                args[1].clone()
+            }
+            _ => return Vec::new(),
+        };
+        if target_err_ty == inner_err_ty {
+            return Vec::new();
+        }
+        // `E2: From<E1>` must be implemented.
+        if !self.type_implements_from(&target_err_ty, &inner_err_ty) {
+            return Vec::new();
+        }
+        let from_method = match self.from_method_symbol() {
+            Some(sym) => sym,
+            None => return Vec::new(),
+        };
+        let target_sym = match &target_err_ty {
+            TypeDecl::Struct(sym, _) | TypeDecl::Identifier(sym) | TypeDecl::Enum(sym, _) => *sym,
+            _ => return Vec::new(),
+        };
+
+        // `val __try_conv_N = E2::from(__try_e_N)`
+        let e_ident = self.core.expr_pool.add(Expr::Identifier(e_sym));
+        let conv_call = self.core.expr_pool.add(Expr::AssociatedFunctionCall(
+            target_sym,
+            from_method,
+            vec![e_ident],
+        ));
+        // Type annotation: the AOT's `value_scalar` cannot infer the
+        // associated call's compound return shape from the call site
+        // alone, and `Result::Err(...)` below cannot infer the generic
+        // enum's type args from a bare identifier payload. Pin both
+        // with explicit annotations (`E2` and `Result<T, E2>`).
+        let conv_annotation = Some(target_err_ty.clone());
+        let conv_stmt = self
+            .core
+            .stmt_pool
+            .add(Stmt::Val(conv_sym, conv_annotation, conv_call));
+
+        // `val __try_err_N = Result::Err(__try_conv_N)` — annotation
+        // `Result<T, E2>` with T taken from the inner expression's
+        // success type.
+        let success_ty = match inner_ty {
+            TypeDecl::Enum(_, args) | TypeDecl::Struct(_, args) if args.len() == 2 => {
+                args[0].clone()
+            }
+            _ => TypeDecl::Unknown,
+        };
+        let err_annotation = match &inner_ty {
+            TypeDecl::Enum(name, _) => TypeDecl::Enum(*name, vec![success_ty, target_err_ty]),
+            TypeDecl::Struct(name, _) => TypeDecl::Struct(*name, vec![success_ty, target_err_ty]),
+            _ => TypeDecl::Unknown,
+        };
+        let conv_ident = self.core.expr_pool.add(Expr::Identifier(conv_sym));
+        let err_construct = self.core.expr_pool.add(Expr::AssociatedFunctionCall(
+            enum_name,
+            error_sym,
+            vec![conv_ident],
+        ));
+        let err_stmt = self
+            .core
+            .stmt_pool
+            .add(Stmt::Val(err_sym, Some(err_annotation), err_construct));
+
+        // `return __try_err_N`
+        let err_ident = self.core.expr_pool.add(Expr::Identifier(err_sym));
+        let return_stmt = self
+            .core
+            .stmt_pool
+            .add(Stmt::Return(Some(err_ident)));
+
+        vec![conv_stmt, err_stmt, return_stmt]
     }
 
     /// `Display` dispatch (`core/std/display.t`).

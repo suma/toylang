@@ -240,19 +240,40 @@ pub enum Expr {
     /// `expr_pool.update`. Backends therefore never see `Try` —
     /// they only see the rewritten `Match` at the same `ExprRef`.
     ///
-    /// The three synthetic symbols are pre-interned by the parser
-    /// so the type checker (which holds an immutable
-    /// `&DefaultStringInterner`) can build the desugared AST
-    /// without needing mutable access:
-    ///   - `success_binding`: the success-arm pattern binding
-    ///     (`__try_v_<n>`) bound to the unwrapped value.
-    ///   - `error_binding`: the error-arm pattern binding
-    ///     (`__try_e_<n>`) bound to the error value; unused for
-    ///     `Option::None` (no payload).
-    ///   - `panic_msg`: pre-interned `"?-unreachable"` symbol that
-    ///     drives the dead `panic` after the early `return` —
-    ///     pinning the arm's static type to `Unknown` so the two
-    ///     arms unify into `T`.
+    /// The synthetic symbols are pre-interned by the parser so the
+    /// type checker (which holds an immutable `&DefaultStringInterner`)
+    /// can build the desugared AST without mutable access:
+    ///
+    /// - `success_binding`: the success-arm pattern binding
+    ///   (`__try_v_<n>`) bound to the unwrapped value.
+    /// - `error_binding`: the error-arm pattern binding
+    ///   (`__try_e_<n>`) bound to the error value; unused for
+    ///   `Option::None` (no payload).
+    /// - `panic_msg`: pre-interned `"?-unreachable"` symbol that
+    ///   drives the dead `panic` after the early `return` —
+    ///   pinning the arm's static type to `Unknown` so the two
+    ///   arms unify into `T`.
+    ///
+    /// From/Into cross-error conversion (`?`): when the enclosed
+    /// `Result<T, E1>` is `?`-propagated through a function
+    /// returning `Result<T, E2>` with `E2: From<E1>`, the error
+    /// arm becomes:
+    ///
+    /// ```text
+    /// Result::Err(__try_e_N) => {
+    ///     val __try_conv_N = E2::from(__try_e_N)
+    ///     val __try_err_N = Result::Err(__try_conv_N)
+    ///     return __try_err_N
+    ///     panic("?-unreachable")
+    /// }
+    /// ```
+    ///
+    /// `converted_binding` (`__try_conv_<n>`) and `result_binding`
+    /// (`__try_err_<n>`) are the two extra pre-interned temporaries;
+    /// `result_binding` keeps the AOT's `return <ident>` constraint
+    /// satisfied (a bare identifier) while carrying the *converted*
+    /// error. Unused (and unallocated in the desugar) when no
+    /// conversion applies.
     Try {
         inner: ExprRef,
         /// Outer-scope binding for the evaluated inner value
@@ -266,6 +287,12 @@ pub enum Expr {
         success_binding: DefaultSymbol,
         error_binding: DefaultSymbol,
         panic_msg: DefaultSymbol,
+        /// From/Into cross-error conversion temporary:
+        /// `E2::from(__try_e_N)` result (`__try_conv_<n>`).
+        converted_binding: DefaultSymbol,
+        /// From/Into cross-error conversion temporary:
+        /// reconstructed `Result::Err(E2)` (`__try_err_<n>`).
+        result_binding: DefaultSymbol,
     },
 }
 

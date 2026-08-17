@@ -8,7 +8,7 @@
 
 mod common;
 
-use common::{assert_program_result_i64, assert_program_result_u64};
+use common::{assert_program_result_i64, assert_program_result_u64, test_program};
 
 // ---------------------------------------------------------------------
 // `?` on Result — happy and error paths.
@@ -219,4 +219,101 @@ fn try_op_used_as_expression_argument() {
         }
     "#;
     assert_program_result_i64(src, 50i64);
+}
+
+#[test]
+fn try_op_cross_error_converts_via_from() {
+    // From/Into cross-error conversion: `?` inside a function that
+    // returns `Result<T, ErrWrap>` converts the inner `str` error
+    // through `ErrWrap: From<str>` before re-returning.
+    let src = r#"
+        struct ErrWrap { code: u64 }
+
+        impl From<str> for ErrWrap {
+            fn from(value: str) -> ErrWrap {
+                val r: ErrWrap = ErrWrap { code: 42u64 }
+                r
+            }
+        }
+
+        fn inner() -> Result<i64, str> {
+            Result::Err("boom")
+        }
+
+        fn outer() -> Result<i64, ErrWrap> {
+            val x = inner()?
+            Result::Ok(x)
+        }
+
+        fn main() -> i64 {
+            match outer() {
+                Result::Err(w) => w.code as i64,
+                Result::Ok(_) => -1i64,
+            }
+        }
+    "#;
+    assert_program_result_i64(src, 42i64);
+}
+
+#[test]
+fn try_op_cross_error_converts_enum_target() {
+    // Cross-error conversion into an enum error type. The interpreter
+    // dispatches `MyErr::from(str)`; the AOT / JIT reject enum
+    // associated calls (existing MVP limit), so this is interpreter-only.
+    let src = r#"
+        enum MyErr {
+            Fail(u64),
+        }
+
+        impl From<str> for MyErr {
+            fn from(value: str) -> MyErr {
+                val r: MyErr = MyErr::Fail(7u64)
+                r
+            }
+        }
+
+        fn inner() -> Result<i64, str> {
+            Result::Err("boom")
+        }
+
+        fn outer() -> Result<i64, MyErr> {
+            val x = inner()?
+            Result::Ok(x)
+        }
+
+        fn main() -> i64 {
+            match outer() {
+                Result::Err(MyErr::Fail(v)) => v as i64,
+                _ => -1i64,
+            }
+        }
+    "#;
+    assert_program_result_i64(src, 7i64);
+}
+
+#[test]
+fn try_op_cross_error_no_from_is_a_type_error() {
+    // No `From` impl for the mismatched error types: the `?` desugar
+    // leaves the inner type alone and the enclosing return-type check
+    // rejects the program.
+    let src = r#"
+        struct ErrWrap { code: u64 }
+
+        fn inner() -> Result<i64, str> {
+            Result::Err("boom")
+        }
+
+        fn outer() -> Result<i64, ErrWrap> {
+            val x = inner()?
+            Result::Ok(x)
+        }
+
+        fn main() -> i64 {
+            match outer() {
+                Result::Err(_) => -1i64,
+                Result::Ok(v) => v,
+            }
+        }
+    "#;
+    assert!(test_program(src).is_err(), "mismatched error types without From must fail");
 }

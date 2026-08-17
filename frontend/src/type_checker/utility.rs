@@ -4,6 +4,12 @@ use crate::ast::*;
 use crate::type_decl::*;
 use crate::type_checker::{TypeCheckerVisitor, TypeCheckError};
 
+/// From/Into: the `From` trait and its `fn from` method, declared in
+/// `core/std/convert.t`. Shared by the `.into()` rewrite and the `?`
+/// cross-error conversion.
+const FROM_TRAIT: &str = "From";
+const FROM_METHOD: &str = "from";
+
 /// Utility methods for TypeCheckerVisitor
 impl<'a> TypeCheckerVisitor<'a> {
     /// A5 dyn-trait coercion + REF-Stage-2 auto-borrow compatibility,
@@ -174,6 +180,47 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
             _ => false,
         }
+    }
+
+    /// From/Into: whether `target` implements `From<source>` — i.e.
+    /// the `From` trait impl registered for `target` carries matching
+    /// type args (`From<str>` for a `str -> String` conversion, not
+    /// `From<u64>`). Used by both the `.into()` rewrite and the `?`
+    /// cross-error conversion.
+    pub fn type_implements_from(&self, target: &TypeDecl, source: &TypeDecl) -> bool {
+        let target_sym = match target {
+            TypeDecl::Struct(sym, _) | TypeDecl::Identifier(sym) | TypeDecl::Enum(sym, _) => *sym,
+            _ => return false,
+        };
+        let from_trait = match self.core.string_interner.get(FROM_TRAIT) {
+            Some(sym) => sym,
+            None => return false,
+        };
+        if !self.context.struct_implements_trait(target_sym, from_trait) {
+            return false;
+        }
+        let empty = HashMap::new();
+        self.context
+            .trait_impl_type_args
+            .get(&(target_sym, from_trait))
+            .map(|entries| {
+                entries.iter().any(|impl_args| {
+                    self.trait_type_args_match(impl_args, std::slice::from_ref(source), &empty)
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    /// From/Into: the trait and method names the `.into()` rewrite and
+    /// the `?` cross-error conversion look up. `FROM_TRAIT` is the
+    /// `From` trait declared in `core/std/convert.t`; `FROM_METHOD` is
+    /// its `fn from` method.
+    pub fn from_trait_symbol(&self) -> Option<DefaultSymbol> {
+        self.core.string_interner.get(FROM_TRAIT)
+    }
+
+    pub fn from_method_symbol(&self) -> Option<DefaultSymbol> {
+        self.core.string_interner.get(FROM_METHOD)
     }
 
     /// Helper method to resolve symbol names safely.

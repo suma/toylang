@@ -10,6 +10,38 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-08-18
+- **TRAIT-BOUND: generic trait の bound を call-site で強制** —
+  `fn first<I: Iter<i64>>(it: I)` が「型引数込みでその trait を
+  実装している struct」だけを受け付けるように。従来は
+  `Iter<i64>` が `Struct(iter, [i64])` に parse され、非 trait bound
+  扱いの等価比較に落ちて **全呼び出しが false の bound violation** に
+  なっていた (`impl Iter<i64> for Counter` が通らない)。
+  (1) context に `trait_impl_type_args` (struct → trait → impl ごとの
+  型引数リスト) を追加、`check_trait_conformance_with_args` が
+  conformance 成功時に記録。(2) utility の
+  `satisfies_trait_bound` / `trait_type_args_match` が impl 型引数と
+  bound 型引数を照合 (bound 側は call-site substitutions で解決、
+  generic impl `impl<T> Iter<T>` は wildcard)。(3) generics と
+  struct_literal の bound check を trait bound (bare / generic /
+  intersection) 統一ルートに。(4) method_call の bounded generic
+  receiver は trait method を型引数置換付きで解決
+  (`I: Iter<i64>` の `next()` は `Option<i64>`)。エラー表示も
+  `Iter<i64>` と型引数込み。テスト: trait_tests 3 + consistency 2。
+- **FROM-INTO: `.into()` と `?` の cross-error 変換** —
+  `core/std/convert.t` に `trait From<T>` / `trait Into<T>`、`String`
+  に `impl From<str>`。`.into()` は期待型 (型注釈) から
+  `Target::from(expr)` への AST 書き換え (blanket `Into` は where 節が
+  書けないので checker が導出)。`?` は enclosing 関数の戻り型
+  (`Result<T, E2>`) と inner (`Result<T, E1>`) が異なり
+  `E2: From<E1>` があれば error arm を `E2::from(e)` → `Result::Err`
+  再構築 → bare-identifier return に書き換え、From が無ければ
+  専用エラー。enum の associated function call (`MyErr::from`) も
+  型チェッカで受理。**制約**: enum エラー型への変換は AOT/JIT が
+  enum associated call を lower できないため interpreter のみ。
+  `Expr::Try` に `converted_binding` / `result_binding` 追加、
+  `FULL_AST_CACHE_SCHEMA_VERSION` 9 → 10。
+
 ### 2026-08-17
 - **STDLIB-ITER-ADAPT: `VecIter` に `map` / `filter` / `enumerate` /
   `zip` / `collect` (3 バックエンド)** — `core/std/collections/vec.t`。
@@ -336,8 +368,8 @@
   - **A5-P3-interp: interpreter 側 JIT の `dyn Trait`** ★ — `ScalarTy::from_type_decl` が `TypeDecl::Dyn` で `None` を返し silent fallback。correctness 問題はなく、compiler 側 JIT が実用的な高速化を担うので優先度は低い。
   - **A5-P4: `Box<dyn Trait>`** — owned trait object + `Vec<Box<dyn Trait>>`。**前提**: `Box<T>` 自体が未実装。
   - **A5 残作業** — `&dyn Trait` の return / struct field 位置 (REF-Stage-2 の escape rule が阻む)、`dyn A + B`、`dyn Iterator<T>`、generic trait の default body 内での `T` 参照。
-- **Trait-bounded generic API** ★★ — `fn first<I: Iterator<i64>>(iter: I)` の bound check。`<T: Trait>` は struct で動くが generic trait の bound は未強制。
-- **`From` / `Into`** ★★ — `val s: String = "hi".into()`。`?` の cross-error 変換にも要る。
+- **Trait-bounded generic API** ★★ — ~~`fn first<I: Iterator<i64>>(iter: I)` の bound check。~~ **解消 (2026-08-18)**: generic trait の bound (`Iter<i64>`) が call-site で型引数込みで強制される。残るのは generic **enum** payload 経由の AOT lower 制約のみ (下記 159 / JIT-enum-1)。
+- **`From` / `Into`** ★★ — ~~`val s: String = "hi".into()`。`?` の cross-error 変換にも要る。~~ **解消 (2026-08-18)**: `.into()` は期待型から `Target::from(expr)` へ書き換え、`?` は `E2: From<E1>` で error 変換。残る制約: **enum エラー型**への変換は AOT/JIT が `MyErr::from(...)` の associated call を lower できないため interpreter のみ (struct エラー型は 3 バックエンド)。
 - **`must_use` / unused-Result 警告** ★★ — `?` の補完。**警告の emit 経路が無い**ので (`Severity::Warning` は型としては存在するが未使用)、そこから作る必要がある。
 - **slice 型 `&[T]`** ★ — 配列 borrow を first-class に。中〜大。
 - **const generics** ★ — `struct Array<T, const N: usize>`。大規模。

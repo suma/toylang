@@ -239,15 +239,38 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Try each trait in declaration order and take the first whose
         // signature table contains `method` (overlap is allowed but rare;
         // first-hit semantics keep the lookup deterministic).
+        // TRAIT-BOUND: a generic-trait bound (`I: Iter<i64>`) parses as
+        // `Struct(iter_sym, [i64])`; the trait's own generic params are
+        // substituted with those args in the method's return type
+        // (`fn next(&mut self) -> Option<T>` resolves to `Option<i64>`).
         if let TypeDecl::Generic(t_sym) = obj_type {
-            let trait_syms: Vec<DefaultSymbol> = match self.context.current_fn_generic_bounds.get(t_sym).cloned() {
-                Some(TypeDecl::Identifier(trait_sym)) => vec![trait_sym],
-                Some(TypeDecl::TraitIntersection(syms)) => syms,
-                _ => Vec::new(),
-            };
-            for trait_sym in &trait_syms {
+            let trait_bounds: Vec<(DefaultSymbol, Vec<TypeDecl>)> =
+                match self.context.current_fn_generic_bounds.get(t_sym).cloned() {
+                    Some(TypeDecl::Identifier(trait_sym)) => vec![(trait_sym, Vec::new())],
+                    Some(TypeDecl::Struct(trait_sym, args))
+                    | Some(TypeDecl::Enum(trait_sym, args)) => vec![(trait_sym, args)],
+                    Some(TypeDecl::TraitIntersection(syms)) => {
+                        syms.into_iter().map(|s| (s, Vec::new())).collect()
+                    }
+                    _ => Vec::new(),
+                };
+            for (trait_sym, trait_args) in &trait_bounds {
                 if let Some(sig) = self.context.get_trait_method(*trait_sym, *method).cloned() {
+                    // Substitute the trait's generic params with the
+                    // bound's type args (`Iter<i64>`: T -> i64) so the
+                    // resolved return type is concrete.
+                    let trait_generic_params = self
+                        .context
+                        .trait_generic_params
+                        .get(trait_sym)
+                        .cloned()
+                        .unwrap_or_default();
+                    let mut subst: HashMap<DefaultSymbol, TypeDecl> = HashMap::new();
+                    for (p, a) in trait_generic_params.iter().zip(trait_args.iter()) {
+                        subst.insert(*p, a.clone());
+                    }
                     let ret = sig.return_type.clone().unwrap_or(TypeDecl::Unit);
+                    let ret = ret.substitute_generics(&subst);
                     let resolved = match ret {
                         TypeDecl::Self_ => TypeDecl::Generic(*t_sym),
                         other => other,

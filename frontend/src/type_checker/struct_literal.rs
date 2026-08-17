@@ -443,6 +443,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Enforce struct-level bounds (e.g. `struct Foo<A: Allocator>`). A concrete
         // substitution must match the bound; a generic parameter from the current
         // function satisfies the bound when its own declared bound matches.
+        // TRAIT-BOUND: trait bounds (bare `Identifier(trait)` or generic
+        // `Struct(trait_sym, args)`) go through `satisfies_trait_bound`.
         if let Some(struct_bounds) = self.context.get_struct_generic_bounds(*struct_name).cloned() {
             for generic_param in generic_params {
                 if let Some(bound) = struct_bounds.get(generic_param) {
@@ -450,13 +452,33 @@ impl<'a> TypeCheckerVisitor<'a> {
                         Some(ty) => ty,
                         None => continue,
                     };
-                    let satisfies = match inferred {
-                        ty if ty == bound => true,
-                        TypeDecl::Generic(sym) => matches!(
-                            self.context.current_fn_generic_bounds.get(sym),
-                            Some(caller_bound) if caller_bound == bound
-                        ),
-                        _ => false,
+                    let trait_bounds: Vec<(DefaultSymbol, Vec<TypeDecl>)> = match bound {
+                        TypeDecl::Identifier(sym) if self.context.is_trait(*sym) => {
+                            vec![(*sym, Vec::new())]
+                        }
+                        TypeDecl::Struct(sym, args) | TypeDecl::Enum(sym, args)
+                            if self.context.is_trait(*sym) =>
+                        {
+                            vec![(*sym, args.clone())]
+                        }
+                        TypeDecl::TraitIntersection(syms) => {
+                            syms.iter().map(|s| (*s, Vec::new())).collect()
+                        }
+                        _ => Vec::new(),
+                    };
+                    let satisfies = if !trait_bounds.is_empty() {
+                        trait_bounds.iter().all(|(trait_sym, bound_args)| {
+                            self.satisfies_trait_bound(inferred, *trait_sym, bound_args, &substitutions)
+                        })
+                    } else {
+                        match inferred {
+                            ty if ty == bound => true,
+                            TypeDecl::Generic(sym) => matches!(
+                                self.context.current_fn_generic_bounds.get(sym),
+                                Some(caller_bound) if caller_bound == bound
+                            ),
+                            _ => false,
+                        }
                     };
                     if !satisfies {
                         self.type_inference.pop_generic_scope();

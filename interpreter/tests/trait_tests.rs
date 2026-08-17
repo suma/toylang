@@ -296,6 +296,102 @@ mod errors {
     }
 
     #[test]
+    fn test_generic_trait_bound_accepts_matching_impl() {
+        // `Iter<i64>` as a bound: the concrete impl `impl Iter<i64> for
+        // Counter` satisfies it, and the trait's method resolves with the
+        // type args substituted (`next` returns `Option<i64>`).
+        let source = r#"
+            trait Iter<T> {
+                fn next(&mut self) -> Option<T>
+            }
+            struct Counter { n: i64 }
+            impl Iter<i64> for Counter {
+                fn next(&mut self) -> Option<i64> {
+                    self.n = self.n + 1i64
+                    Option::Some(self.n)
+                }
+            }
+            fn collect<I: Iter<i64>>(it: I) -> i64 {
+                val r = it.next()
+                r.unwrap_or(0i64)
+            }
+            fn main() -> u64 {
+                val c = Counter { n: 40i64 }
+                val r: i64 = collect(c)
+                assert_eq(r, 41i64)
+                0u64
+            }
+        "#;
+        let result = test_program(source);
+        assert!(result.is_ok(), "generic trait bound should type check: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_generic_trait_bound_rejects_wrong_type_args() {
+        // StrCounter implements `Iter<str>`, not `Iter<i64>`, so the
+        // bound `I: Iter<i64>` must reject it — the trait name alone is
+        // not enough to satisfy a generic-trait bound.
+        let source = r#"
+            trait Iter<T> {
+                fn next(&mut self) -> Option<T>
+            }
+            struct StrCounter { n: i64 }
+            impl Iter<str> for StrCounter {
+                fn next(&mut self) -> Option<str> {
+                    Option::Some("x")
+                }
+            }
+            fn collect<I: Iter<i64>>(it: I) -> i64 {
+                val r = it.next()
+                r.unwrap_or(0i64)
+            }
+            fn main() -> u64 {
+                val c = StrCounter { n: 0i64 }
+                collect(c) as u64
+            }
+        "#;
+        let err = test_program(source).expect_err("expected error");
+        assert!(
+            err.contains("bound violation") && err.contains("Iter<i64>"),
+            "expected bound-violation error mentioning Iter<i64>, got: {}", err
+        );
+    }
+
+    #[test]
+    fn test_generic_trait_bound_passthrough() {
+        // A bounded generic can forward to another function with the same
+        // bound: `passthrough<X: Iter<i64>>` calling `collect<I: Iter<i64>>`
+        // passes the bound through instead of requiring a concrete struct.
+        let source = r#"
+            trait Iter<T> {
+                fn next(&mut self) -> Option<T>
+            }
+            struct Counter { n: i64 }
+            impl Iter<i64> for Counter {
+                fn next(&mut self) -> Option<i64> {
+                    self.n = self.n + 1i64
+                    Option::Some(self.n)
+                }
+            }
+            fn collect<I: Iter<i64>>(it: I) -> i64 {
+                val r = it.next()
+                r.unwrap_or(0i64)
+            }
+            fn passthrough<X: Iter<i64>>(x: X) -> i64 {
+                collect(x)
+            }
+            fn main() -> u64 {
+                val c = Counter { n: 40i64 }
+                val r: i64 = passthrough(c)
+                assert_eq(r, 41i64)
+                0u64
+            }
+        "#;
+        let result = test_program(source);
+        assert!(result.is_ok(), "generic trait bound passthrough should type check: {:?}", result.err());
+    }
+
+    #[test]
     fn test_duplicate_trait_decl_is_rejected() {
         let source = r#"
             trait Greet {

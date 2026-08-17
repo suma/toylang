@@ -107,6 +107,16 @@ pub struct TypeCheckContext {
     // Populated by `impl <Trait> for <Struct>` blocks once the conformance
     // check succeeds. Used at call sites to verify generic-bound satisfaction.
     pub struct_trait_impls: HashMap<DefaultSymbol, HashSet<DefaultSymbol>>,
+    /// TRAIT-BOUND: generic-trait impl arguments, side table on top of
+    /// `struct_trait_impls`. `(struct, trait) -> type-arg list per impl`
+    /// block, e.g. `impl Iter<i64> for Counter` records `[i64]` under
+    /// `(Counter, Iter)`. A generic impl `impl<T> Iter<T> for Counter`
+    /// records `[Generic(T)]` (wildcard — matches any type args).
+    /// Empty list means the trait was implemented without type args
+    /// (non-generic trait impl). Consumed by the call-site bound check
+    /// to verify `fn f<I: Iter<i64>>` only accepts implementors of
+    /// `Iter<i64>` specifically, not `Iter<str>`.
+    pub trait_impl_type_args: HashMap<(DefaultSymbol, DefaultSymbol), Vec<Vec<TypeDecl>>>,
     /// Side-table populated by `visit_closure` (Phase 2): for each
     /// closure literal, the list of `(name, type)` pairs the body
     /// references from outside its own parameter scope. Phase 1+2
@@ -153,6 +163,7 @@ impl TypeCheckContext {
             trait_generic_params: HashMap::new(),
             pending_trait_type_args: Vec::new(),
             struct_trait_impls: HashMap::new(),
+            trait_impl_type_args: HashMap::new(),
             closure_captures: HashMap::new(),
             loop_label_stack: Vec::new(),
         }

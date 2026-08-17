@@ -231,6 +231,16 @@ impl<'a> TypeCheckerVisitor<'a> {
             .entry(struct_symbol)
             .or_default()
             .insert(trait_symbol);
+        // TRAIT-BOUND: record the concrete type args of this impl so
+        // call-site bound checks can distinguish `Iter<i64>` from
+        // `Iter<str>`. The args are stored verbatim: a generic impl
+        // (`impl<T> Iter<T> for Counter`) registers `[Generic(T)]`,
+        // which the bound check treats as a wildcard match.
+        self.context
+            .trait_impl_type_args
+            .entry((struct_symbol, trait_symbol))
+            .or_default()
+            .push(trait_type_args.clone());
         Ok(())
     }
 

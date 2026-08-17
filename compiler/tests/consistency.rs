@@ -5880,6 +5880,66 @@ fn multi_bound_dispatch_round_trip() {
 }
 
 #[test]
+fn generic_trait_bound_dispatch_round_trip() {
+    // TRAIT-BOUND: a generic-trait bound (`I: Iter<i64>`) is checked
+    // against the impl's concrete type args at the call site, and the
+    // trait method's return type is resolved with those args substituted.
+    // All three backends must agree.
+    let src = r#"
+        trait Iter<T> {
+            fn next(&mut self) -> Option<T>
+        }
+        struct Counter { n: i64 }
+        impl Iter<i64> for Counter {
+            fn next(&mut self) -> Option<i64> {
+                self.n = self.n + 1i64
+                Option::Some(self.n)
+            }
+        }
+        fn collect<I: Iter<i64>>(it: I) -> i64 {
+            val r = it.next()
+            r.unwrap_or(0i64)
+        }
+        fn main() -> u64 {
+            val c = Counter { n: 40i64 }
+            collect(c) as u64
+        }
+    "#;
+    assert_consistent(src, "generic_trait_bound_dispatch");
+}
+
+#[test]
+fn generic_trait_bound_passthrough_round_trip() {
+    // TRAIT-BOUND: a bounded generic forwards to another function with
+    // the same generic-trait bound; the pass-through must satisfy the
+    // callee's bound without naming a concrete struct.
+    let src = r#"
+        trait Iter<T> {
+            fn next(&mut self) -> Option<T>
+        }
+        struct Counter { n: i64 }
+        impl Iter<i64> for Counter {
+            fn next(&mut self) -> Option<i64> {
+                self.n = self.n + 1i64
+                Option::Some(self.n)
+            }
+        }
+        fn collect<I: Iter<i64>>(it: I) -> i64 {
+            val r = it.next()
+            r.unwrap_or(0i64)
+        }
+        fn passthrough<X: Iter<i64>>(x: X) -> i64 {
+            collect(x)
+        }
+        fn main() -> u64 {
+            val c = Counter { n: 40i64 }
+            passthrough(c) as u64
+        }
+    "#;
+    assert_consistent(src, "generic_trait_bound_passthrough");
+}
+
+#[test]
 fn multi_bound_three_traits_round_trip() {
     // A2: `<T: A + B + C>` — longer bound list across 3 backends.
     let src = r#"

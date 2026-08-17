@@ -1,4 +1,5 @@
 use string_interner::DefaultSymbol;
+use std::collections::HashMap;
 use crate::ast::*;
 use crate::type_decl::*;
 use crate::type_checker::{TypeCheckerVisitor, TypeCheckError};
@@ -76,6 +77,101 @@ impl<'a> TypeCheckerVisitor<'a> {
             // so we only land here for a different trait — which is
             // unsound to widen.
             TypeDecl::Dyn(t) => *t == trait_sym,
+            _ => false,
+        }
+    }
+
+    /// TRAIT-BOUND: whether `impl_args` (the concrete type args an
+    /// `impl Iter<i64> for Counter` block registered) matches the
+    /// `bound_args` of a call-site bound (`Iter<i64>` in
+    /// `fn f<I: Iter<i64>>`). Rules:
+    ///
+    /// - length must agree;
+    /// - a generic impl (`impl<T> Iter<T>` records `[Generic(T)]`) is a
+    ///   wildcard — matches any args;
+    /// - otherwise the impl args must equal the bound args after the
+    ///   bound args have been resolved through the call's substitutions
+    ///   (`fn outer<U>(x: U) { inner(x) }` with `inner<I: Iter<U>>`
+    ///   substitutes `U` before comparing).
+    fn trait_type_args_match(
+        &self,
+        impl_args: &[TypeDecl],
+        bound_args: &[TypeDecl],
+        substitutions: &HashMap<DefaultSymbol, TypeDecl>,
+    ) -> bool {
+        if impl_args.len() != bound_args.len() {
+            return false;
+        }
+        impl_args.iter().zip(bound_args).all(|(impl_arg, bound_arg)| {
+            if matches!(impl_arg, TypeDecl::Generic(_)) {
+                return true;
+            }
+            let bound_resolved = bound_arg.substitute_generics(substitutions);
+            impl_arg == &bound_resolved
+        })
+    }
+
+    /// TRAIT-BOUND: whether `inferred` satisfies a trait bound named by
+    /// `trait_sym` with `bound_args` (empty for a bare
+    /// `Identifier(trait)` bound, `[i64]` for `Iter<i64>`). Handles:
+    ///
+    /// - a concrete struct / enum / identifier receiver — must implement
+    ///   the trait and (for a generic trait) implement it with matching
+    ///   type args;
+    /// - a generic parameter (`TypeDecl::Generic(sym)`) — pass-through:
+    ///   the caller's own bound on `sym` must name the same trait with
+    ///   matching args;
+    /// - anything else fails.
+    ///
+    /// `substitutions` resolves the current call's inferred type args
+    /// before any comparison.
+    pub fn satisfies_trait_bound(
+        &self,
+        inferred: &TypeDecl,
+        trait_sym: DefaultSymbol,
+        bound_args: &[TypeDecl],
+        substitutions: &HashMap<DefaultSymbol, TypeDecl>,
+    ) -> bool {
+        match inferred {
+            TypeDecl::Struct(s, _) | TypeDecl::Identifier(s) | TypeDecl::Enum(s, _) => {
+                if !self.context.struct_implements_trait(*s, trait_sym) {
+                    return false;
+                }
+                if bound_args.is_empty() {
+                    return true;
+                }
+                // Non-generic trait impls satisfy any bound args
+                // request by the empty-args rule above; a generic
+                // trait needs at least one impl whose args match.
+                let entry = self
+                    .context
+                    .trait_impl_type_args
+                    .get(&(*s, trait_sym))
+                    .map(|entries| entries.as_slice())
+                    .unwrap_or(&[]);
+                if entry.is_empty() {
+                    return false;
+                }
+                entry
+                    .iter()
+                    .any(|impl_args| self.trait_type_args_match(impl_args, bound_args, substitutions))
+            }
+            TypeDecl::Generic(sym) => {
+                // Pass-through bound: the caller's own generic
+                // parameter declares the same trait bound.
+                match self.context.current_fn_generic_bounds.get(sym) {
+                    Some(TypeDecl::Identifier(b)) => {
+                        *b == trait_sym && bound_args.is_empty()
+                    }
+                    Some(TypeDecl::TraitIntersection(syms)) => {
+                        syms.contains(&trait_sym) && bound_args.is_empty()
+                    }
+                    Some(TypeDecl::Struct(t, args)) | Some(TypeDecl::Enum(t, args)) => {
+                        *t == trait_sym && self.trait_type_args_match(args, bound_args, substitutions)
+                    }
+                    _ => false,
+                }
+            }
             _ => false,
         }
     }

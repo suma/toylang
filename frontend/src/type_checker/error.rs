@@ -352,14 +352,22 @@ impl TypeCheckError {
     }
 }
 
-impl std::fmt::Display for TypeCheckError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl TypeCheckError {
+    /// The diagnostic message. `interner` is optional: when present,
+    /// user types are spelled by their source names (via
+    /// `TypeDecl::spell_with`); when absent the interner-free
+    /// `display_name` spelling is used, which shows primitives by
+    /// their source name but falls back to Debug for user types.
+    /// `Display` calls this without an interner; the driver's
+    /// `Diagnostic::from_type_check_error` passes the real one.
+    pub fn message_with(&self, interner: Option<&string_interner::DefaultStringInterner>) -> String {
+        let spell = |ty: &TypeDecl| ty.spell_with(interner);
         let base_message = match &*self.kind {
             TypeCheckErrorKind::TypeMismatch { expected, actual } => {
-                format!("Type mismatch: expected {}, but got {}", expected.display_name(), actual.display_name())
+                format!("Type mismatch: expected {}, but got {}", spell(expected), spell(actual))
             }
             TypeCheckErrorKind::TypeMismatchOperation(data) => {
-                format!("Type mismatch in {} operation: incompatible types {} and {}", data.operation, data.left.display_name(), data.right.display_name())
+                format!("Type mismatch in {} operation: incompatible types {} and {}", data.operation, spell(&data.left), spell(&data.right))
             }
             TypeCheckErrorKind::NotFound { item_type, name } => {
                 format!("{} '{}' not found", item_type, name)
@@ -409,7 +417,7 @@ impl std::fmt::Display for TypeCheckError {
             }
         };
 
-        // LLM-LOOP P2: `Display` is the message and nothing else.
+        // LLM-LOOP P2: the message is the message and nothing else.
         // It used to prefix `line:column:offset:`, which duplicated the
         // `Error at <file>:<line>:<col>` header the formatter already
         // prints and leaked `offset` -- a byte index into the source
@@ -421,6 +429,12 @@ impl std::fmt::Display for TypeCheckError {
             result = format!("{} (in {})", result, context);
         }
 
-        write!(f, "{}", result)
+        result
+    }
+}
+
+impl std::fmt::Display for TypeCheckError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.message_with(None))
     }
 }

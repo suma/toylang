@@ -357,6 +357,19 @@ impl TypeDecl {
         }
     }
 
+    /// Spell a type for a diagnostic message: `source_name` when the
+    /// interner is available (so user types render by their written
+    /// name rather than an interned symbol id), the interner-free
+    /// `display_name` otherwise. `TypeCheckError`'s own `Display` has
+    /// no interner, so the driver-level diagnostic conversion passes
+    /// one through `Diagnostic::from_type_check_error`.
+    pub fn spell_with(&self, interner: Option<&string_interner::DefaultStringInterner>) -> String {
+        match interner {
+            Some(i) => self.source_name(i).unwrap_or_else(|| self.display_name()),
+            None => self.display_name(),
+        }
+    }
+
     /// Spell the type the way it is written in source.
     ///
     /// Distinct from the type checker's `type_name_for_error`, which is

@@ -98,6 +98,25 @@ fn undefined_function_and_type_mismatch_are_reported_together() {
 }
 
 #[test]
+fn user_type_mismatch_spells_the_source_name() {
+    // The mismatch diagnostic used to fall back to Debug for user
+    // types, leaking interned symbol ids
+    // (`identifier(symbolu32 { value: 40 })`) into the message. The
+    // driver-level conversion now spells them through the interner.
+    let diags = diagnostics(
+        "struct Point { x: i64, y: i64 }
+        fn main() -> u64 {
+            val p = Point { x: 1i64, y: 2i64 }
+            val q: Point = 5u64
+            q.x as u64
+        }",
+    );
+    assert!(diags.contains("expected Point, but got u64"), "{diags}");
+    assert!(!diags.contains("symbolu32"), "interned symbol id leaked:\n{diags}");
+    assert!(!diags.contains("SymbolU32"), "interned symbol id leaked:\n{diags}");
+}
+
+#[test]
 fn a_failed_binding_does_not_cascade_through_a_cast() {
     // `as` had the same leak as the binary operators: casting a
     // recovery placeholder reported "Cannot cast Unknown to UInt64",

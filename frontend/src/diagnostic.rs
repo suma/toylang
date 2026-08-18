@@ -141,11 +141,18 @@ impl Diagnostic {
         }
     }
 
-    pub fn from_type_check_error(error: &TypeCheckError, file: &str) -> Self {
+    /// `interner` spells user types by their source names in the
+    /// message (see `TypeCheckError::message_with`); pass `None` when
+    /// none is available and the interner-free spelling is used.
+    pub fn from_type_check_error(
+        error: &TypeCheckError,
+        file: &str,
+        interner: Option<&string_interner::DefaultStringInterner>,
+    ) -> Self {
         Diagnostic {
             severity: Severity::Error,
             code: code_for(&error.kind),
-            message: error.to_string(),
+            message: error.message_with(interner),
             file: file.to_string(),
             span: error.location.map(Span::from),
             origin_module: error.origin_module.clone(),

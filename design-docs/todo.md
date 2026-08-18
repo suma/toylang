@@ -11,6 +11,19 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-18
+- **型不一致診断の user 型を source 綴りに (interner 経由)** —
+  `TypeCheckError` の `Display` は interner を持てないので、診断
+  変換経路に interner を渡した: (1) `TypeDecl::spell_with(interner)`
+  を新設 (`source_name` → 無ければ `display_name`)、(2)
+  `TypeCheckError::message_with(interner)` を新設して `Display` は
+  引数なしで委譲、(3) `Diagnostic::from_type_check_error(error, file,
+  interner)` に interner を追加 — 呼び出し側 (interpreter の
+  `check_typing_diagnostics`) は borrow 衝突を避けるため
+  `tc.core.string_interner` (共有参照) 経由、(4) `type_name_for_error`
+  の catch-all (`{:?}` を lowercase) を `spell_with` に置き換え —
+  `Cannot convert 'u64' to 'identifier(symbolu32 { value: 41 })'` が
+  `'Point'` になる。テスト: `user_type_mismatch_spells_the_source_name`
+  (symbol id が漏れないことを pin)。
 - **`str.substring` / `str.split` の dispatch を接続** — 型検査器は
   `BuiltinMethod::StrSubstring` / `StrSplit` を登録するのに、interpreter の
   `Object::String` レシーバ分岐 (`evaluation/call.rs`) の arm が `trim` /
@@ -629,15 +642,6 @@
   `0.3` → `0.30000000000000004`、`1.23457e+06` → `1234567.75` に変わった
   (精度が上がる方向の仕様変更、`docs/language.md` の Output 節に明記)。
   `f64_display_agrees_across_backends` が 3 者一致を pin する。
-- **型不一致診断が `Identifier(SymbolU32 { value: 40 })` と Debug 表記を
-  漏らす** — 解決前の user 型名が生の symbol id で出る。
-  **primitive 側は解消 (2026-08-18)**: `TypeDecl::display_name()` を
-  新設し、`TypeMismatch` / `TypeMismatchOperation` の `Display` が
-  source 綴り (`str` / `u64` / `bool`) を出すようにした。残るのは
-  interner が必要な user 型 (Identifier / Struct / Enum) のみ —
-  `TypeCheckError` の `Display` は interner を持たないので、診断
-  変換経路 (`Diagnostic::from_type_check_error`) に interner を渡して
-  `source_name` に寄せる話。
 - **`if` / `elif` の条件が型検査されない** — ~~`if 42u64 { ... }` が通る。~~
   **解消 (2026-08-16)**: `visit_if_elif_else` が条件を
   `check_expr_located` し bool を要求するように。この変更で 2 つの

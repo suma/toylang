@@ -427,7 +427,7 @@ pub fn check_typing_diagnostics(
     errors.extend(
         frontend::type_checker::check_recursive_types(program, string_interner)
             .iter()
-            .map(|e| Diagnostic::from_type_check_error(e, diag_file)),
+            .map(|e| Diagnostic::from_type_check_error(e, diag_file, Some(&*string_interner))),
     );
 
     // Pull the user-authored function slice from the resolved
@@ -484,7 +484,7 @@ pub fn check_typing_diagnostics(
                 .unwrap_or(false);
             if should_visit {
                 if let Err(err) = tc.visit_stmt(&stmt_ref) {
-                    errors.push(Diagnostic::from_type_check_error(&err, diag_file));
+                    errors.push(Diagnostic::from_type_check_error(&err, diag_file, Some(tc.core.string_interner)));
                 }
             }
         }
@@ -499,15 +499,17 @@ pub fn check_typing_diagnostics(
         let value_ty = match tc.visit_expr(&c.value) {
             Ok(t) => t,
             Err(err) => {
-                errors.push(Diagnostic::from_type_check_error(&err, diag_file));
+                errors.push(Diagnostic::from_type_check_error(&err, diag_file, Some(tc.core.string_interner)));
                 continue;
             }
         };
         if !value_ty.is_equivalent(&c.type_decl) && value_ty != TypeDecl::Number {
             let cname = tc.core.string_interner.resolve(c.name).unwrap_or("<unknown>");
+            let spell = |ty: &TypeDecl| ty.spell_with(Some(tc.core.string_interner));
             let msg = format!(
-                "Const `{cname}` declared as {:?} but initializer has type {:?}",
-                c.type_decl, value_ty
+                "Const `{cname}` declared as {} but initializer has type {}",
+                spell(&c.type_decl),
+                spell(&value_ty)
             );
             // LLM-LOOP P2: point at the initializer. This diagnostic
             // used to be a bare string with no position, so a file with
@@ -529,10 +531,11 @@ pub fn check_typing_diagnostics(
     tc.recovery_enabled = true;
 
     // Process impl blocks and collect errors
+    let impl_errors = process_impl_blocks_extracted(&mut tc, &impl_blocks);
     errors.extend(
-        process_impl_blocks_extracted(&mut tc, &impl_blocks)
+        impl_errors
             .iter()
-            .map(|e| Diagnostic::from_type_check_error(e, diag_file)),
+            .map(|e| Diagnostic::from_type_check_error(e, diag_file, Some(tc.core.string_interner))),
     );
 
     // Process functions
@@ -581,7 +584,7 @@ pub fn check_typing_diagnostics(
             let (line, column) = calculate_line_col_from_offset(source, location.offset as usize);
             error.location = Some(location.with_line_col(line, column));
         }
-        errors.push(Diagnostic::from_type_check_error(&error, diag_file));
+        errors.push(Diagnostic::from_type_check_error(&error, diag_file, Some(&*string_interner)));
     }
 
     if errors.is_empty() {

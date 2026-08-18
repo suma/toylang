@@ -239,41 +239,12 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.errors.push(error);
     }
 
-    /// Get human-readable type name for error messages.
+    /// Get human-readable type name for error messages. Backed by
+    /// `TypeDecl::spell_with` so user types resolve through the
+    /// interner — the old catch-all fell back to Debug, leaking
+    /// interned symbol ids (`identifier(symbolu32 { value: 40 })`)
+    /// into messages.
     pub fn type_name_for_error(&self, type_decl: &TypeDecl) -> String {
-        match type_decl {
-            TypeDecl::Bool => "bool".to_string(),
-            TypeDecl::UInt64 => "u64".to_string(),
-            TypeDecl::Int64 => "i64".to_string(),
-            TypeDecl::String => "string".to_string(),
-            TypeDecl::Number => "number".to_string(),
-            TypeDecl::Unit => "unit".to_string(),
-            TypeDecl::Unknown => "unknown".to_string(),
-            TypeDecl::Array(element_types, size) => {
-                if element_types.len() == 1 {
-                    format!(
-                        "[{}; {}]",
-                        self.type_name_for_error(&element_types[0]),
-                        size
-                    )
-                } else {
-                    format!("[{:?}; {}]", element_types, size)
-                }
-            }
-            TypeDecl::Struct(name, _) => self
-                .core
-                .string_interner
-                .resolve(*name)
-                .unwrap_or("struct")
-                .to_string(),
-            TypeDecl::Dict(key_type, value_type) => {
-                format!(
-                    "dict<{}, {}>",
-                    self.type_name_for_error(key_type),
-                    self.type_name_for_error(value_type)
-                )
-            }
-            _ => format!("{:?}", type_decl).to_lowercase(),
-        }
+        type_decl.spell_with(Some(self.core.string_interner))
     }
 }

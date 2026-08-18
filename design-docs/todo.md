@@ -589,22 +589,23 @@
 
 ### テスト・ドキュメント
 
-- **TEST-PERF** — ワークスペース全体で **~4.4s** (2026-08-15 実測、20 コア、`cargo nextest run`)。**この suite は wall ではなく CPU 律速**: 合計 ~82s CPU / 20 コア ≈ 4.2s が下限で、実測がほぼそこにある。したがって「並列度を上げる」策はもう効かない (`-j 24` で 1%、shard を増やしても critical path が下限を割らない)。**残る削り代は CPU そのもの**:
-  - **core module のロードが suite CPU の約半分** ★★★ — stdlib を auto-load した trivial プログラム 1 実行 ~24ms の内訳 (2026-08-15 実測、debug ビルド):
+- **TEST-PERF** — ワークスペース全体で **~7.8s** (2026-08-18 実測、20 コア、warm、`cargo nextest run`、1995 テスト)。**この suite は wall ではなく CPU 律速**: テスト時間の総和 **156.7s CPU / 20 コア = 7.83s** が下限で、実測 wall 7.79s はそこに張り付いている。最長の単一テストも 2.11s (`example_consistency` shard_8) なので critical path 律速でもない。したがって**並列度を上げる策は効かず、効くのは CPU そのものを減らす策だけ。換算レートは 20:1** (CPU を 20s 削って wall 1s)。
 
-    | 区間 | 時間 | 割合 |
-    |---|---|---|
-    | `integrate_modules` (preparse ~4ms + 逐次 integrate ~7.8ms) | 11.3ms | 48% |
-    | `execute_entry` の準備 (registry 構築自体は 0.4ms、残りは context 構築) | 5.2ms | 22% |
-    | impl block の型検査 (stdlib の 40 block) | 2.5ms | 10% |
-    | その他の型検査 (alias 解決 0.5 / trait default 0.11 / setup 0.18 / stmt 0.16) | 1.1ms | 5% |
-    | user プログラムのパース | 0.25ms | 1% |
-    | プロセス起動 | ~2-3ms | ~10% |
+  クレート別 CPU:
 
-    **測って分かった否定的な結果を 2 つ記録しておく**: (1) **free function の body は既に user 分しか検査していない** (`take(user_func_count)`) ので「stdlib 本体を型検査しない」で削れるのは impl block の 2.5ms だけ。しかも**型検査器は body を書き換える** (`?` の desugar、`Display` の `to_str` 挿入) ので、stdlib の body を検査しないと**書き換え前の AST がバックエンドに流れる** — 今の stdlib は `?` も補間も使っていないので通ってしまい、使った日に壊れる罠になる。(2) `remap_symbol` の memo 化 (module symbol → main symbol を Vec でキャッシュ) は**効果ゼロ**だった。integrate の時間は文字列ハッシュではなく AST を pool に複製する作業そのもの。
-    したがって残る手は (a) stdlib を使わないテストを `test_program_no_core` に寄せる (実測: `test_program` を no-core にすると interpreter の 879 テスト中 **797 が通り**、その binary は 2.3s → 1.3s。ただし stdlib 同居時の回帰を見なくなる = coverage を実際に落とす)、(b) 型検査済み core をプロセス内で使い回す (INCREMENTAL-COMPILATION 側の仕事。`File` が `Rc` を持つので素朴な memo 化はできない — 別スレッドから clone すると refcount が壊れる)。
-  - **プロセス起動が ~4.4ms × 1784 ≈ 8s CPU (約 10%)** ★ — nextest は 1 テスト 1 プロセス。テストを機能別に束ねれば減るが、失敗の切り分けと引き換え。
-  - `serial_test` (`oop_tests.rs`) の並列化 ★。
+  | | CPU | テスト数 | 平均 |
+  |---|---|---|---|
+  | compiler | 84.9s (54%) | 408 | 208ms |
+  | interpreter | 57.3s (37%) | 984 | 58ms |
+  | frontend | 14.1s (9%) | 579 | 24ms |
+
+  - **`compiler::consistency` + `example_consistency` が suite CPU の 48%** ★★★ — 52.7s (317 テスト) + 22.0s (14 shard) = 74.7s。`consistency` の分布は二峰性で、**lite パスで完結する 173 本が計 11.6s、full core にフォールスルーする 124 本が計 38.6s** (39% のテストが 73% の CPU)。狙える無駄が 2 つある: (1) `assert_consistent` の **lite → full 二重パス** — stdlib を使うプログラムは、捨てられる lite 試行 (interp + AOT codegen/link/spawn + JIT) を丸ごと払ってから full をやり直す。(2) **同一プロセス内で core を 3 回ロードしている** — interpreter / AOT / JIT が別々に `core_modules_dir` を渡すので 27ms × 3。**下の (b)「プロセス内で使い回す」が文字どおり効くのはここだけ**で、~124 テスト × ~54ms ≈ 6.7s CPU。
+  - **core module のロードが 1 プロセスあたり 27ms** ★★★ — trivial プログラムを空 core dir と比べた実測 (2026-08-18、debug ビルド): **33.5ms → 6.1ms**。nextest は 1 テスト 1 プロセスなので、interpreter の 984 テストはそれぞれこれを払う = ~26s CPU ≈ wall 1.3s。内訳は 2026-08-15 時点の計測 (integrate ~43% 削減が landing する前) で `integrate_modules` 11.3ms / `execute_entry` の context 構築 5.2ms / stdlib 40 impl block の型検査 2.5ms / その他の型検査 1.1ms。
+
+    **測って分かった否定的な結果を 3 つ記録しておく**: (1) **free function の body は既に user 分しか検査していない** (`take(user_func_count)`) ので「stdlib 本体を型検査しない」で削れるのは impl block の 2.5ms だけ。しかも**型検査器は body を書き換える** (`?` の desugar、`Display` の `to_str` 挿入) ので、stdlib の body を検査しないと**書き換え前の AST がバックエンドに流れる** — 今の stdlib は `?` も補間も使っていないので通ってしまい、使った日に壊れる罠になる。(2) `remap_symbol` の memo 化 (module symbol → main symbol を Vec でキャッシュ) は**効果ゼロ**だった。integrate の時間は文字列ハッシュではなく AST を pool に複製する作業そのもの。(3) **「型検査済み core をプロセス内で使い回す」は unit テストには効かない** — nextest は 1 テスト 1 プロセスなので、そもそもプロセス内に 2 回目の呼び出しが無い。
+    したがって残る手は (a) stdlib を使わないテストを `test_program_no_core` に寄せる (実測: `test_program` を no-core にすると interpreter の 879 テスト中 **797 が通り**、その binary は 2.3s → 1.3s。ただし stdlib 同居時の回帰を見なくなる = coverage を実際に落とす)、(b) **プロセスを跨いで**型検査済み core を再利用する (INCREMENTAL-COMPILATION 側の仕事。`File` が `Rc` を持つので素朴な in-memory memo 化はできない — 別スレッドから clone すると refcount が壊れる)、(c) 1 プロセスで core を複数回ロードしている `consistency` を直す (上記)。
+  - **プロセス起動が ~5ms × 1995 ≈ 10s CPU (約 6%)** ★ — 起動フロアの実測は空 core dir の trivial 実行 6.1ms。nextest は 1 テスト 1 プロセス。テストを機能別に束ねれば減るが、失敗の切り分けと引き換え。
+  - ~~`serial_test` (`oop_tests.rs`) の並列化~~ — **効果ゼロと分かったので却下 (2026-08-18)**。`#[serial]` が付いているのは 8 テストで合計 **0.193s CPU (suite の 0.12%)**、1 本 18〜34ms と既に起動フロア。しかも `serial_test` のロックはプロセスローカルなので、**nextest では各テストが別プロセスに散る = 元から直列化していない**。
 - **65. frontend リファクタリング** — (a)〜(g) は完了。残: doc コメント拡充、プロパティベーステスト追加。
 - **property test の generator が仕様と drift しないか** — `valid_identifier()` は lexer に問い合わせる形にした (2026-08-10)。他の generator (リテラル / 演算子) はまだ手書きなので、同種の drift が起きうる。
 - **26. ドキュメント整備** — 残: API リファレンス、advanced topics。
@@ -633,9 +634,9 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **1897 テスト** (100% 成功、2026-08-16 時点)。
+- 合計 **1995 テスト** (100% 成功、2026-08-18 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
-- ワークスペース全体で ~5s。`compiler/build.rs` が `toylang_rt` を rustc で
+- ワークスペース全体で ~7.8s (warm、20 コア。内訳と削り代は TEST-PERF)。`compiler/build.rs` が `toylang_rt` を rustc で
   staticlib pre-build し、リンク結果は `TOY_LINK_CACHE_DIR` で
   content-addressed にキャッシュされる (キャッシュが効くにはコード生成が
   決定的である必要がある — `compiler/tests/reproducible_build.rs` が pin)。

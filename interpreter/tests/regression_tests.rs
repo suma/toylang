@@ -491,3 +491,28 @@ fn main() -> i64 {
     let result = test_program(source).expect("File should execute successfully");
     assert_eq!(result.borrow().unwrap_int64(), 7);
 }
+
+#[test]
+fn tree_walker_call_depth_guard_trips_before_stack_overflow() {
+    // The IR VM lifts deep recursion onto the heap, so a plain deep
+    // recursion runs fine. But when the program is not IR-VM-eligible
+    // (here: `main` returns a struct), the tree-walker fallback burns
+    // one host stack frame per toylang call and used to die with
+    // `fatal runtime error: stack overflow` (exit 134) around 200
+    // frames. The call-depth guard must trip first and surface a plain
+    // error instead of crashing the process.
+    let source = r#"
+struct Box { v: u64 }
+
+fn down(n: u64) -> u64 {
+    if n == 0u64 { 0u64 } else { down(n - 1u64) }
+}
+
+fn main() -> Box {
+    val x = down(200u64)
+    Box { v: x }
+}
+"#;
+    let err = test_program(source).expect_err("deep tree-walker recursion must stop with an error");
+    assert!(err.contains("Maximum call depth exceeded"), "{err}");
+}

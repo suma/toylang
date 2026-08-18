@@ -11,6 +11,22 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-18
+- **tree-walker の関数再帰ガード (call-depth)** — IR VM (既定エンジン) は
+  ヒープにフレームを積むので 100000 段でも通るが、IR VM が lower を諦めて
+  **tree-walker に fallback したプログラム**は host stack を使い、debug
+  ビルドの 2 MiB テストスレッドで ~40 フレーム、main スレッド (8 MiB) で
+  ~200 フレームで `fatal runtime error: stack overflow` (exit 134) に
+  なっていた。既存の `recursion_depth` ガード (1000) は式評価の入れ子しか
+  数えないので先に host stack が尽きる。**直し方**: `EvaluationContext` に
+  `call_depth` / `max_call_depth` を追加し、
+  `evaluate_function_with_values_writeback` (全関数呼び出しの共通入口) で
+  increment + 上限チェック。decrement は requires エラー / 通常 return の
+  全経路で実施 (ensures エラー経路は evaluate_block 後に decrement 済み
+  なので二重 decrement に注意 — 1 回踏んだ)。`max_call_depth=30` —
+  実測で 2 MiB スレッドの限界 (~40 フレーム) より手前で発火する安全値。
+  IR VM は影響なし。テスト:
+  `tree_walker_call_depth_guard_trips_before_stack_overflow` (struct 返し
+  main で fallback を強制し、エラーを pin)。
 - **`null` / `is_null()` の扱いを確定 (docs の仕様に実装を追従)** —
   方針 2 択を「**予約・実行時停止**」に決めた (docs/language.md が
   2026-08-18 の監査で既にそう確定していた。`null` は parser / 型検査は
@@ -643,14 +659,6 @@
 
 ### 既知の不具合
 
-- **tree-walker の関数再帰が ~200 フレームで abort する (2026-08-16 実測)** —
-  IR VM (既定エンジン) はヒープにフレームを積むので 200000 段でも通るが、
-  IR VM が lower を諦めて **tree-walker に fallback したプログラムだけ**
-  host stack を使い、debug ビルドで ~200 段で `fatal runtime error:
-  stack overflow` (exit 134) になる。`max_recursion_depth: 1000`
-  (`evaluation/mod.rs`) のガードは**式評価の入れ子しか数えていない**ので
-  先に host stack が尽きる。再帰型 (E0013) と違い、これは診断化ではなく
-  ガードの数え方を関数フレームに変える話。
 - **f64 の print / 補間が 3 バックエンドで食い違う** — ~~AOT は C ランタイムの
   `%g` / `%.1f` (`emit_f64`)、interpreter / JIT は Rust の `Display`。~~
   **解消 (2026-08-16、RUNTIME-PORT R1)**: ランタイムが `toylang_rt`

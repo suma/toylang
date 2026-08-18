@@ -161,6 +161,15 @@ pub struct EvaluationContext<'a> {
     pub(super) call_stack: Vec<crate::error::CallFrame>,
     pub(super) recursion_depth: u32,
     pub(super) max_recursion_depth: u32,
+    // Nesting depth of `evaluate_function_with_values_writeback`
+    // frames. The tree-walker consumes a host stack frame per toylang
+    // call, so a deeply recursive program (or one whose recursion the
+    // IR VM could not lift) would overflow the host stack *before* the
+    // `recursion_depth` guard above (which counts expression nesting)
+    // ever fires. This guard trips first and turns a fatal stack
+    // overflow (exit 134) into a plain error.
+    pub(super) call_depth: u32,
+    pub(super) max_call_depth: u32,
     // Shared heap state. The GlobalAllocator holds an Rc to this same cell so
     // pointer-based builtins (ptr_read/write, mem_copy, ...) can access memory
     // regardless of which allocator is active on the stack.
@@ -289,6 +298,18 @@ impl<'a> EvaluationContext<'a> {
             call_stack: Vec::new(),
             recursion_depth: 0,
             max_recursion_depth: 1000, // Increased to support deeper recursion like fib(20)
+            call_depth: 0,
+            // The tree-walker burns a large host stack frame per
+            // toylang call (function body + nested expression
+            // evaluation). In a debug build a default 2 MiB test
+            // thread overflows around 40 frames — well before the
+            // expression-nesting guard (1000) fires. Count call
+            // frames explicitly and trip first, so a deep recursion
+            // on the tree-walker fallback path stops with a plain
+            // error instead of `fatal runtime error: stack overflow`
+            // (exit 134). The IR VM runs deep recursion on the heap,
+            // so the guard only constrains the fallback path.
+            max_call_depth: 30,
             heap_manager,
             global_allocator,
             allocator_stack,

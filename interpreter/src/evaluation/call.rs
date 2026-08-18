@@ -1589,6 +1589,24 @@ impl EvaluationContext<'_> {
             _ => return Err(InterpreterError::FunctionNotFound(format!("evaluate_function_with_values: Not handled yet {:?}", function.code))),
         };
 
+        // Recursion guard: the tree-walker burns one host stack frame
+        // per toylang call, and a deep (or unliftable-to-IR-VM)
+        // recursion overflows the host stack *before* the
+        // `recursion_depth` expression-nesting guard fires. Count
+        // call frames explicitly and trip first, so the failure is a
+        // plain error rather than `fatal runtime error: stack
+        // overflow` (exit 134). Decrement on every exit path below.
+        self.call_depth += 1;
+        if self.call_depth > self.max_call_depth {
+            self.call_depth -= 1;
+            return Err(InterpreterError::InternalError(format!(
+                "Maximum call depth exceeded ({}) - possible infinite recursion; \
+                 the IR VM runs deep recursion on the heap, so this only fires \
+                 on the tree-walker fallback path",
+                self.max_call_depth
+            )));
+        }
+
         self.environment.enter_block();
         // Track which params are `&mut T` so we can snapshot their
         // post-body values just before `exit_block` clears the
@@ -1615,6 +1633,7 @@ impl EvaluationContext<'_> {
         // and method calls.
         if let Err(e) = self.evaluate_requires_clauses(function.name, &function.requires, &function.parameter) {
             self.environment.exit_block();
+            self.call_depth -= 1;
             return Err(e);
         }
 
@@ -1635,6 +1654,7 @@ impl EvaluationContext<'_> {
         // The contract helper still takes `RcObject`; bridge the value once.
         if let Err(e) = self.evaluate_ensures_clauses(function.name, &function.ensures, return_value.clone_to_rc(), &function.parameter) {
             self.environment.exit_block();
+            self.call_depth -= 1;
             return Err(e);
         }
 
@@ -1647,6 +1667,7 @@ impl EvaluationContext<'_> {
             .map(|maybe_sym| maybe_sym.and_then(|s| self.environment.get_val(s)))
             .collect();
 
+        self.call_depth -= 1;
         self.environment.exit_block();
         Ok((return_value, writebacks))
     }

@@ -128,10 +128,46 @@ impl<'a> FunctionLower<'a> {
                         next_blk,
                     )?;
                 }
+                Pattern::Name(sym) => {
+                    // PATTERN-EXTEND: an irrefutable binding of the
+                    // whole scrutinee — no shape check, just a name.
+                    // Range and `@` patterns desugar to exactly this
+                    // plus a guard, so this arm is what makes them
+                    // reachable at AOT. Enum scrutinees bind through
+                    // a copied storage, the same treatment a payload
+                    // `Name` sub-pattern gets, so the arm body can
+                    // outlive the match without aliasing it.
+                    match &scrut {
+                        MatchScrutinee::Scalar { value, ty } => {
+                            let local = self
+                                .module
+                                .function_mut(self.func_id)
+                                .add_local(*ty);
+                            self.emit(
+                                InstKind::StoreLocal { dst: local, src: *value },
+                                None,
+                            );
+                            self.bindings
+                                .insert(*sym, Binding::Scalar { local, ty: *ty });
+                        }
+                        MatchScrutinee::Enum(storage) => {
+                            let copy = self.allocate_enum_storage(storage.enum_id);
+                            self.copy_enum_storage(storage, &copy);
+                            self.bindings.insert(*sym, Binding::Enum(copy.clone()));
+                            if self.ir_contains_drop(crate::ir::Type::Enum(copy.enum_id)) {
+                                let leaves = flatten_enum_storage_locals(&copy);
+                                self.arm_drop_targets.push(DropTarget {
+                                    ty: crate::ir::Type::Enum(copy.enum_id),
+                                    field_locals: leaves,
+                                });
+                            }
+                        }
+                    }
+                }
                 other => {
                     return Err(format!(
-                        "compiler MVP `match` arms must be enum-variant, literal, or \
-                         `_` patterns, got {other:?}"
+                        "compiler MVP `match` arms must be enum-variant, literal, \
+                         `_`, or a bare name, got {other:?}"
                     ));
                 }
             }

@@ -2549,5 +2549,213 @@ mod enum_and_match {
         let result = execute_test_program(source);
         assert!(result.is_err(), "expected duplicate variant rejection");
     }
+
+    // PATTERN-EXTEND: or-patterns (`a | b`), ranges (`0i64..5i64`), and
+    // `@` bindings (`n @ 2i64`).
+    //
+    // All three lower onto pattern forms that already existed: an
+    // alternative list expands into one arm per alternative (sharing
+    // the body), and a range / `@` becomes an irrefutable `Name`
+    // pattern plus a comparison guard. Nothing downstream of the
+    // parser learns a new `Pattern` variant, which is why these tests
+    // sit next to the existing match tests rather than in a new file.
+
+    #[test]
+    fn test_or_pattern_covers_each_alternative() {
+        let source = r#"
+            fn classify(n: i64) -> i64 {
+                match n {
+                    0i64 | 1i64 | 2i64 => 10i64,
+                    _ => 20i64,
+                }
+            }
+
+            fn main() -> i64 {
+                classify(0i64) + classify(2i64) + classify(9i64)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(40)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_or_pattern_of_enum_variants_counts_toward_exhaustiveness() {
+        // Two variants in one arm and the third in another covers the
+        // enum, so no wildcard is needed.
+        let source = r#"
+            enum Color { Red, Green, Blue }
+
+            fn warm(c: Color) -> i64 {
+                match c {
+                    Color::Red | Color::Green => 1i64,
+                    Color::Blue => 0i64,
+                }
+            }
+
+            fn main() -> i64 {
+                val r: Color = Color::Red
+                val g: Color = Color::Green
+                val b: Color = Color::Blue
+                warm(r) + warm(g) + warm(b)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(2)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_or_pattern_repeating_a_value_is_unreachable() {
+        let source = r#"
+            fn f(n: i64) -> i64 {
+                match n {
+                    1i64 | 1i64 => 0i64,
+                    _ => 1i64,
+                }
+            }
+
+            fn main() -> i64 { f(1i64) }
+        "#;
+        let err = execute_test_program(source).expect_err("duplicate alternative");
+        assert!(
+            err.contains("unreachable match arm"),
+            "expected an unreachable-arm diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_or_pattern_shares_one_body() {
+        // The alternatives point at the same body expression. A body
+        // that the type checker rewrites in place (string
+        // interpolation lowers to a `concat` chain) must survive being
+        // reached from more than one arm.
+        let source = r#"
+            enum E { A, B, C }
+
+            fn pick(e: E, n: u64) -> str {
+                match e {
+                    E::A | E::B => "n is {n}",
+                    E::C => "c",
+                }
+            }
+
+            fn main() -> i64 {
+                val a: E = E::A
+                val c: E = E::C
+                pick(a, 7u64).len() as i64 + pick(c, 7u64).len() as i64
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        // "n is 7" (6) + "c" (1)
+        assert!(result.contains("Int64(7)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_range_pattern_is_half_open() {
+        // `0i64..5i64` covers 0 through 4, matching the `..`
+        // expression form used by `for i in 0..5`.
+        let source = r#"
+            fn bucket(n: i64) -> i64 {
+                match n {
+                    0i64..5i64 => 0i64,
+                    5i64..10i64 => 1i64,
+                    _ => 2i64,
+                }
+            }
+
+            fn main() -> i64 {
+                bucket(0i64) + bucket(4i64) + bucket(5i64) + bucket(9i64) + bucket(10i64)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        // 0 + 0 + 1 + 1 + 2
+        assert!(result.contains("Int64(4)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_range_pattern_still_needs_a_wildcard() {
+        // A range arm is guarded, and a guarded arm never counts as
+        // exhaustive — the same rule that already applied to integer
+        // literal arms.
+        let source = r#"
+            fn f(n: i64) -> i64 {
+                match n {
+                    0i64..5i64 => 0i64,
+                }
+            }
+
+            fn main() -> i64 { f(1i64) }
+        "#;
+        let err = execute_test_program(source).expect_err("non-exhaustive");
+        assert!(
+            err.contains("wildcard") || err.contains("exhaustive"),
+            "expected an exhaustiveness diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_at_binding_names_the_matched_value() {
+        let source = r#"
+            fn f(n: i64) -> i64 {
+                match n {
+                    x @ 7i64 => x * 2i64,
+                    y @ 10i64..20i64 => y + 1i64,
+                    _ => 0i64,
+                }
+            }
+
+            fn main() -> i64 {
+                f(7i64) + f(15i64) + f(99i64)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        // 14 + 16 + 0
+        assert!(result.contains("Int64(30)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_at_binding_rejects_a_non_value_pattern() {
+        // `@` is expressed as a guard comparison, which an enum
+        // variant cannot be written as — so it is refused with an
+        // explanation rather than silently dropping the binding.
+        let source = r#"
+            enum Color { Red, Blue }
+
+            fn f(c: Color) -> i64 {
+                match c {
+                    x @ Color::Red => 0i64,
+                    _ => 1i64,
+                }
+            }
+
+            fn main() -> i64 {
+                val r: Color = Color::Red
+                f(r)
+            }
+        "#;
+        let err = execute_test_program(source).expect_err("`@` on an enum variant");
+        assert!(
+            err.contains("binds a literal or a range"),
+            "expected the `@` shape diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_pattern_extensions_combine_with_a_user_guard() {
+        // The synthesized guard and the user's own are ANDed.
+        let source = r#"
+            fn f(n: i64, allow: bool) -> i64 {
+                match n {
+                    0i64..10i64 if allow => 1i64,
+                    _ => 0i64,
+                }
+            }
+
+            fn main() -> i64 {
+                f(5i64, true) + f(5i64, false) + f(50i64, true)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(1)"), "got: {}", result);
+    }
 }
 

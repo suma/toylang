@@ -314,6 +314,7 @@ fn main() -> u64 {
   - unit variant は `Color::Red`、tuple variant は `Shape::Circle(5i64)` で生成
   - 各 arm は式。全 arm が同じ型でなければならない
   - パターン: `Enum::Variant` / `Enum::Variant(x, _, y)`（`_` は discard） / `_`（全 catch）
+  - **or / 範囲 / `@` (PATTERN-EXTEND)**: `1i64 | 2i64 => ...` (alternative ごとに arm 複製、body は共有) / `0i64..5i64 => ...` (**半開区間**、整数リテラル端点のみ) / `n @ 2i64 => n`。範囲と `@` は **irrefutable な `Name` + 比較 guard** に desugar されるので **網羅性に寄与しない** (整数 match の `_` は必要なまま)。or は guard が無いので網羅に寄与する (`Color::Red | Color::Green` + `Color::Blue` で wildcard 不要)。`@` を enum variant に付けるのは parser が拒否、sub-pattern 位置の or は未対応。interpreter JIT は範囲 / `@` で silent fallback
   - 網羅性チェック: wildcard がなく variant が欠落していると型チェックエラー
   - 到達性チェック: 同じ variant を 2 回 arm に書く、または `_` の後ろに arm を置くと型チェックエラー
   - ジェネリック enum: `enum Option<T> { None, Some(T) }` をサポート。タプル variant の引数から型パラメータを推論、ユニット variant（`None`）は `val x: Option<i64> = Option::None` のように型注釈から補完

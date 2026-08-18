@@ -461,6 +461,17 @@ impl<'a> Parser<'a> {
 
     /// Push a synthetic token to the front of the token stream.
     /// Used for rewriting `>>` into two `>` tokens in nested generic contexts.
+    /// A fresh binding name for a desugaring that needs to hold the
+    /// scrutinee (PATTERN-EXTEND: range patterns compare against a
+    /// name, so one has to exist). The `__` prefix keeps it out of
+    /// the identifier space a program can write.
+    pub(super) fn fresh_pattern_binding(&mut self) -> DefaultSymbol {
+        let counter = self.synthetic_counter;
+        self.synthetic_counter += 1;
+        self.string_interner
+            .get_or_intern(format!("__match_bound_{counter}"))
+    }
+
     pub(super) fn insert_token(&mut self, token: Kind) {
         self.token_provider.insert_token(token);
     }

@@ -8844,3 +8844,74 @@ fn format_spec_on_text_round_trip() {
     "#;
     assert_consistent(src, "format_spec_text");
 }
+
+// PATTERN-EXTEND: or-patterns, ranges, and `@` bindings across the
+// three backends. `interpreter/example/match_pattern_extend.t` diffs
+// the printed output; these pin the exit-code path, and in particular
+// that the AOT lowering of a top-level `Name` arm (what a range and an
+// `@` desugar to) agrees with the tree-walker.
+
+#[test]
+fn or_pattern_alternatives_agree_across_backends() {
+    let src = r#"
+        enum Color { Red, Green, Blue }
+
+        fn warm(c: Color) -> i64 {
+            match c {
+                Color::Red | Color::Green => 1i64,
+                Color::Blue => 0i64,
+            }
+        }
+
+        fn classify(n: i64) -> i64 {
+            match n {
+                0i64 | 1i64 | 2i64 => 10i64,
+                _ => 20i64,
+            }
+        }
+
+        fn main() -> i64 {
+            val r: Color = Color::Red
+            val b: Color = Color::Blue
+            warm(r) + warm(b) + classify(1i64) + classify(9i64)
+        }
+    "#;
+    assert_consistent(src, "or_pattern_alternatives");
+}
+
+#[test]
+fn range_and_at_patterns_agree_across_backends() {
+    let src = r#"
+        fn describe(n: i64) -> i64 {
+            match n {
+                x @ 0i64 => x,
+                y @ 1i64..10i64 => y * 10i64,
+                10i64..100i64 => 5i64,
+                _ => -1i64,
+            }
+        }
+
+        fn main() -> i64 {
+            describe(0i64) + describe(3i64) + describe(50i64) + describe(1000i64)
+        }
+    "#;
+    assert_consistent(src, "range_and_at_patterns");
+}
+
+#[test]
+fn a_synthesized_guard_ands_with_a_user_guard_across_backends() {
+    let src = r#"
+        fn gated(n: i64, allow: bool) -> i64 {
+            match n {
+                0i64..10i64 if allow => 1i64,
+                0i64..10i64 => 2i64,
+                _ => 3i64,
+            }
+        }
+
+        fn main() -> i64 {
+            gated(5i64, true) + gated(5i64, false) + gated(50i64, true)
+        }
+    "#;
+    assert_consistent(src, "pattern_extend_guard_combination");
+}

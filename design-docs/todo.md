@@ -11,6 +11,25 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-18
+- **PATTERN-EXTEND: or / 範囲 / `@` パターン (3 バックエンド)** —
+  `1i64 | 2i64 => ...` / `0i64..5i64 => ...` / `n @ 2i64 => n`。
+  **設計判断**: 新しい `Pattern` variant を足さず、**既に存在する形へ
+  parser で desugar** した。(1) or は alternative ごとに arm を複製
+  (**body の `ExprRef` は共有** — 走るのは 1 arm だけなので複製不要。
+  型検査が body を複数回 visit するが、in-place rewrite (`?` / 補間 /
+  Display) は 2 回目が no-op になるので安全。`test_or_pattern_shares_one_body`
+  で pin)。(2) 範囲と `@` は **irrefutable な `Name` + 比較 guard**。
+  guard 機構は既存なので網羅性の扱いも自動で正しい — **guard 付き arm は
+  網羅に寄与しない**ので整数 match の `_` 必須は変わらず、or は guard が
+  無いので `Color::Red | Color::Green` + `Color::Blue` が wildcard 無しで
+  網羅になる。到達性 (`1i64 | 1i64`) も複製後の既存チェックが検出。
+  **唯一のバックエンド改修**: AOT の match lowering が top-level
+  `Pattern::Name` を拒否していたので追加 (scalar は StoreLocal、enum は
+  storage の deep copy + drop target 登録)。interpreter JIT は
+  top-level Name を元から reject するので範囲 / `@` は silent fallback。
+  **制約**: 範囲は整数リテラル端点のみ、`@` は literal / 範囲のみ
+  (enum variant への `@` は parser が明示的に拒否)、or は top-level arm
+  のみ (sub-pattern 位置は未対応)。
 - **INTERP-DIAG-SPAN: 補間内の診断が実際の位置を指すように** — 補間の中の
   型エラーが**ファイル先頭 (1:1)** を指していた (LLM-LOOP-FIX が潰した
   「無関係なコードを自信満々に指す」形が 1 箇所残っていた)。原因は
@@ -465,17 +484,16 @@
 - **OP-OVERLOAD-CHAIN** — `a + b + c` の chained position。現状は let-rhs のみ。binary struct literal operand も対象外。
 - **`??` (null-coalesce)** ★ — `opt ?? default` で `unwrap_or` の糖衣。
 - **raw / multi-line string literal** ★ — `r"\path"` / `"""..."""`。lexer 拡張のみ。
-- **PATTERN-EXTEND: or / 範囲 / `@` バインディングパターン** ★★ — いずれも
-  parse エラー。`1i64 | 2i64 => ...` / `0i64..5i64 => ...` / `n @ 2i64 => n`。
-  parser + **網羅性・到達性チェックの拡張**が要る (or は「複数 variant を
-  1 arm が覆う」、範囲は整数の被覆判定)。バックエンドは既存の arm に
-  展開できるので手を入れずに済むはず。タプル / ガード / ネストパターンと
-  `val (a, b) = ...` の分解は既に動く。
 - **STR-INTERP-FMT の残** ★ — (a) user 型に spec を渡す API
   (`Display` の `to_str(&self)` は引数を取らない規約なので、
   `fn to_str(&self, spec: str)` にするかは未決)、(b) fill 文字 / `+` /
   `#` / `$`-parameterised width、(c) interpreter JIT の
   `jit_format_<ty>` helper。いずれも踏んでから。
+- **PATTERN-EXTEND の残** ★ — (a) sub-pattern 位置の or
+  (`Shape::Circle(1i64 | 2i64)`)、(b) `@` を enum variant に
+  (`x @ Color::Red` — guard では表現できないので `Pattern` 拡張が要る)、
+  (c) 範囲の被覆判定 (`0i64..5i64` + `5i64..10i64` + ... で `_` 不要に)。
+  いずれも踏んでから。
 - **STRUCT-UPDATE: struct update 構文 (`P { x: 5i64, ..a }`)** ★ — parse エラー。
   「1 フィールドだけ差し替えた copy」が全フィールド列挙になる。
 

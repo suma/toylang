@@ -2196,8 +2196,45 @@ Patterns:
 - `_` — wildcard (catch-all)
 - `(p, q)` — tuple patterns (any arity ≥ 2)
 - `42i64`, `true`, `"hello"` — literal patterns for primitives
+- `a | b | c` — alternatives, all sharing one arm body
+- `lo..hi` — a half-open integer range
+- `name @ p` — bind the matched value while still testing it
 
 Each arm is an expression; all arms must produce the same type.
+
+#### Alternatives, ranges, and `@` bindings
+
+```rust
+match c {
+    Color::Red | Color::Green => "warm",
+    Color::Blue               => "cool",
+}
+
+match n {
+    0i64..5i64   => "low",         # 0 through 4
+    x @ 5i64     => "exactly five",
+    y @ 6i64..10i64 => "six to nine",
+    _            => "high",
+}
+```
+
+- **`a | b`** puts several alternatives on one arm. They share the
+  body, and each alternative is checked for reachability and
+  exhaustiveness on its own — so `Color::Red | Color::Green` covers
+  two variants, and `1i64 | 1i64` is an unreachable-arm error.
+- **`lo..hi`** is **half-open**, matching the `..` expression form:
+  `0i64..5i64` covers 0 through 4. Endpoints are integer literals.
+- **`name @ p`** binds the matched value to `name`, which the arm body
+  and any guard can use. `p` is a literal or a range; an enum variant
+  or tuple pattern cannot be bound this way (the parser says so
+  explicitly).
+
+A range and an `@` binding are expressed internally as an irrefutable
+binding plus a comparison guard. That has one visible consequence: like
+any guarded arm, **they never count toward exhaustiveness**, so an
+integer `match` still needs its `_` arm. An or-pattern carries no
+guard, so it does count — an enum whose variants are all named across
+alternatives needs no wildcard.
 
 ### Guards
 

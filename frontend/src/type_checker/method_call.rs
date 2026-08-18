@@ -298,9 +298,26 @@ impl<'a> TypeCheckerVisitor<'a> {
         // `Struct(iter_sym, [i64])`; the trait's own generic params are
         // substituted with those args in the method's return type
         // (`fn next(&mut self) -> Option<T>` resolves to `Option<i64>`).
-        if let TypeDecl::Generic(t_sym) = obj_type {
+        //
+        // STDLIB-ORD: the receiver may also surface as the bare
+        // `Identifier(t_sym)` form — a local annotated `val key: T`
+        // inside a bounded impl (`impl<T: Ord> Vec<T>`) resolves `T`
+        // to `Identifier` rather than the canonical `Generic`. Both
+        // shapes are treated as the bounded generic when `t_sym` is a
+        // bound in scope; a bare struct name is never in
+        // `current_fn_generic_bounds`, so the guard is precise.
+        let generic_sym = match obj_type {
+            TypeDecl::Generic(sym) => Some(*sym),
+            TypeDecl::Identifier(sym)
+                if self.context.current_fn_generic_bounds.contains_key(sym) =>
+            {
+                Some(*sym)
+            }
+            _ => None,
+        };
+        if let Some(t_sym) = generic_sym {
             let trait_bounds: Vec<(DefaultSymbol, Vec<TypeDecl>)> =
-                match self.context.current_fn_generic_bounds.get(t_sym).cloned() {
+                match self.context.current_fn_generic_bounds.get(&t_sym).cloned() {
                     Some(TypeDecl::Identifier(trait_sym)) => vec![(trait_sym, Vec::new())],
                     Some(TypeDecl::Struct(trait_sym, args))
                     | Some(TypeDecl::Enum(trait_sym, args)) => vec![(trait_sym, args)],
@@ -327,7 +344,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     let ret = sig.return_type.clone().unwrap_or(TypeDecl::Unit);
                     let ret = ret.substitute_generics(&subst);
                     let resolved = match ret {
-                        TypeDecl::Self_ => TypeDecl::Generic(*t_sym),
+                        TypeDecl::Self_ => TypeDecl::Generic(t_sym),
                         other => other,
                     };
                     return Ok(resolved);

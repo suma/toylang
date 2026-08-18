@@ -11,6 +11,26 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-18
+- **STDLIB-ORD: `Ord` trait + `Vec::sort` (3 バックエンド)** —
+  `core/std/ord.t` に `trait Ord { fn lt(self: Self, other: Self) -> bool }`、
+  `core/std/collections/vec.t` に `impl<T: Ord> Vec<T>::sort()` (安定
+  insertion sort)、`core/std/string.t` に `impl Ord for String`
+  (byte-wise)。**設計判断**: (1) method 名を `<` 演算子オーバーロードの
+  `lt` と同じにした — `impl Ord` が `<` も自動で得る (3 backend で pin)。
+  (2) receiver は `self: Self` (by value) — primitive には deref が無いので
+  `&self` では値を比較できない。compound は alias 意味論なので sort が
+  `key.lt(...)` を繰り返しても key は壊れない。**frontend 修正 2 件**:
+  (1) bounded-generic receiver の method dispatch が `Generic` 形しか扱って
+  おらず、`val key: T` (bounded impl 内) の `Identifier` 形で
+  `key.lt(...)` が method not found になっていた — `Identifier` 形も
+  bound の時に受理。(2) `satisfies_trait_bound` が primitive receiver
+  (`min(5u64, 3u64)` の u64) を bound 違反にしていた — extension-trait の
+  登録 (`impl Ord for u64` は `"u64"` symbol 配下) を確認する arm を追加。
+  **制約**: `Vec<非Ord>::sort()` は型エラーにせず interpreter runtime /
+  AOT compile で落ちる (method dispatch は impl の generic bound を検証
+  しない — 今後の課題)。`str` の `Ord` は byte 比較が AOT で書けないため
+  未提供。テスト: ord_tests 10 + consistency 1 (primitive / f64 / String /
+  user struct / `min<T: Ord>` / `<` 演算子を 3 backend 一致で pin)。
 - **RUNTIME-IO 拡張: 乱数シード / 時刻フォーマット / 環境変数一覧 (3 バック
   エンド)** — `core/std/io.t` に `random_seed(seed)` / `strftime(fmt, secs)` /
   `env_count()` / `env_name(i)` / `env_value(i)` を追加。**設計上の要点**:
@@ -362,10 +382,11 @@
   extern 境界が compound return を運べないため未対応 — 将来 FFI の
   struct-return 対応か builtin 化で (2026-08-18 に乱数シード / 時刻
   フォーマット / 環境変数一覧は landing 済み)。
-- **STDLIB-ORD: 順序比較 trait とソート** ★ — `trait Hash` はあるが `Ord` /
-  `PartialOrd` 相当が無く、`Vec` のソートも無い。`<` の演算子オーバーロード
-  (`lt` / `le` / `gt` / `ge`) が既にあるので、規約をそちらに寄せるか
-  trait を切るかの設計判断から。
+- **STDLIB-ORD: 非 Ord 要素の `sort()` を型エラーにする** ★ — 現状は
+  method dispatch が impl の generic bound (`impl<T: Ord>`) を検証しない
+  ため runtime/AOT compile で落ちる。MethodSpec に bounds を持たせて
+  call-site で拒否するのが本筋。`str` の `Ord` impl (byte 比較) も AOT
+  制約で未提供。
 
 ### 型システム (NEW-TYPE-SYSTEM)
 

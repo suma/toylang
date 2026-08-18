@@ -1001,6 +1001,34 @@ if a == b { ... }   # uses eq
 - Binary operands that are inline struct literals
   (`a & Bits { v: 1 }`) — bind via `val` first.
 
+### `Ord` and `Vec::sort` (STDLIB-ORD)
+
+`core/std/ord.t` declares `trait Ord { fn lt(self: Self, other: Self) -> bool }`
+with impls for every primitive width, `f64`, `bool`, and `String`
+(byte-wise, in `core/std/string.t`). The method is named `lt` — the
+same name the `<` operator overload dispatches to — so a type that
+implements `impl Ord` also gets the `<` operator for free, and a
+type with a hand-written `lt` already satisfies the shape. The
+receiver is `self: Self` (by value) because primitives cannot be
+dereferenced; the alias-based compound semantics keep the caller's
+binding usable, so sort can call `lt` repeatedly.
+
+`Vec<T>::sort()` (`core/std/collections/vec.t`) is a stable in-place
+insertion sort over the bound `impl<T: Ord> Vec<T>`:
+
+```rust
+var v: Vec<u64> = Vec::new()
+v.push(3u64); v.push(1u64); v.push(2u64)
+v.sort()                    # [1, 2, 3]
+```
+
+Sorting works for primitives, `String`, and any user struct with
+`impl Ord`. `f64` compares with the native `<`, so NaN (less than
+nothing, including itself) stays put rather than ordering. Calling
+`sort` on a `Vec<T>` whose `T` does not implement `Ord` is not a
+type error today — the body's `lt` dispatch fails at runtime on the
+interpreter and at compile time on the AOT / JIT backends.
+
 ### Numeric semantics
 
 - **Integer arithmetic**: standard two's-complement, panics on overflow

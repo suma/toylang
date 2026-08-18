@@ -8711,3 +8711,83 @@ fn io_extensions_are_consistent_across_backends() {
     assert_consistent(src, "io_extensions");
     unsafe { std::env::remove_var("TOYLANG_CONSISTENCY_IO_VAR") };
 }
+
+// --- STDLIB-ORD: `Vec::sort` over the `Ord` trait ------------------
+//
+// Sorting is deterministic, so the three backends must agree for
+// every element shape: primitive widths, f64, `String` (compound
+// elements), and a user struct whose `impl Ord` also provides the `<`
+// operator (the operator table looks `lt` up by name).
+
+#[test]
+fn vec_sort_is_consistent_across_backends() {
+    let src = r#"
+        struct Pt { x: i64, y: i64 }
+        impl Ord for Pt {
+            fn lt(self: Self, other: Self) -> bool {
+                if self.x != other.x { self.x < other.x } else { self.y < other.y }
+            }
+        }
+        # A generic function over the bound: the call-site check must
+        # accept primitives (`impl Ord for u64`) and the body's `lt`
+        # must dispatch through the trait.
+        fn min<T: Ord>(a: T, b: T) -> T {
+            if a.lt(b) { a } else { b }
+        }
+        fn main() -> u64 {
+            # u64
+            var v: Vec<u64> = Vec::new()
+            v.push(5u64)
+            v.push(1u64)
+            v.push(4u64)
+            v.push(2u64)
+            v.push(3u64)
+            v.sort()
+            val a0: u64 = v.get(0u64)
+            val a4: u64 = v.get(4u64)
+            # f64
+            var f: Vec<f64> = Vec::new()
+            f.push(2.5f64)
+            f.push(1.0f64)
+            f.push(3.75f64)
+            f.sort()
+            val f0: f64 = f.get(0u64)
+            # String (compound elements)
+            var s: Vec<String> = Vec::new()
+            val pa: String = String::from_str("pear")
+            s.push(pa)
+            val pb: String = String::from_str("apple")
+            s.push(pb)
+            val pc: String = String::from_str("fig")
+            s.push(pc)
+            s.sort()
+            val s0: String = s.get(0u64)
+            val want: String = String::from_str("apple")
+            # user struct with `impl Ord`
+            var p: Vec<Pt> = Vec::new()
+            val p1: Pt = Pt { x: 2i64, y: 9i64 }
+            p.push(p1)
+            val p2: Pt = Pt { x: 1i64, y: 5i64 }
+            p.push(p2)
+            val p3: Pt = Pt { x: 1i64, y: 3i64 }
+            p.push(p3)
+            p.sort()
+            val first: Pt = p.get(0u64)
+            # `impl Ord` also gives the `<` operator (lt by name).
+            val ordered: bool = p2 < p1
+            # generic `min` over the bound; the call-site check must
+            # accept primitives (`impl Ord for u64`) and the body's
+            # `lt` must dispatch through the trait. (A compound
+            # `min` — returning `T = Pt` — is a separate AOT gap:
+            # struct-returning plain calls in expression position.)
+            val mn: u64 = min(5u64, 3u64)
+            if a0 == 1u64 && a4 == 5u64
+                && f0 == 1.0f64
+                && s0 == want
+                && first.x == 1i64 && first.y == 3i64
+                && ordered
+                && mn == 3u64 { 1u64 } else { 0u64 }
+        }
+    "#;
+    assert_consistent(src, "vec_sort");
+}

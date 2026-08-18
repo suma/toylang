@@ -178,7 +178,16 @@ impl<'a> TypeCheckerVisitor<'a> {
                     _ => false,
                 }
             }
-            _ => false,
+            // STDLIB-ORD: a primitive receiver (`min(5u64, 3u64)` for
+            // `<T: Ord>`) must satisfy the bound through an extension
+            // trait impl on the primitive's canonical symbol (`impl Ord
+            // for u64` registers under `"u64"`, same as `impl Hash`).
+            _ => {
+                let Some(prim_sym) = self.primitive_target_symbol_from_type(inferred) else {
+                    return false;
+                };
+                self.context.struct_implements_trait(prim_sym, trait_sym) && bound_args.is_empty()
+            }
         }
     }
 

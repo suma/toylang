@@ -603,3 +603,25 @@ impl From<str> for String {
         r
     }
 }
+
+# STDLIB-ORD: byte-wise lexicographic ordering, the same comparison
+# `==` (`eq`) does but on `<`. The shorter prefix is the smaller
+# string; equal length means equal content. `Ord for String` lives
+# here (the module owning the type), matching `eq` / `concat` / etc.
+impl Ord for String {
+    fn lt(self: Self, other: Self) -> bool {
+        val n: u64 = self.size()
+        val m: u64 = other.size()
+        val k: u64 = if n < m { n } else { m }
+        var i: u64 = 0u64
+        while i < k {
+            val a: u8 = self.get(i)
+            val b: u8 = other.get(i)
+            if a != b {
+                return a < b
+            }
+            i = i + 1u64
+        }
+        n < m
+    }
+}

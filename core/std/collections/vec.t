@@ -124,6 +124,42 @@ impl<T> Vec<T> {
     }
 }
 
+# STDLIB-ORD: stable insertion sort over the `Ord` trait
+# (`core/std/ord.t`). O(n^2) worst case — fine for the sizes toy
+# programs sort, and much simpler than a generic partition (which
+# would need swap-by-value and a 3-way comparison). The `<` on the
+# element type resolves to the `lt` the `Ord` impl provides, so
+# `Vec<u64>` / `Vec<i64>` / `Vec<f64>` / `Vec<bool>` and any
+# `impl Ord` struct (including `String`, byte-wise) sort.
+impl<T: Ord> Vec<T> {
+    # Sort in place, ascending. Stable: equal elements keep their
+    # relative order. Elements are read as copies out of the buffer
+    # (like `get`), and `lt` takes `self: Self` which aliases rather
+    # than moves, so `key` stays usable across the inner loop.
+    #
+    # Each `self.get(...)` is bound to a local before use — a
+    # compound-returning method call directly in an expression
+    # position (a `set` argument, a `lt` argument) cannot be
+    # AOT-lowered for compound `T` (e.g. `Vec<String>`).
+    fn sort(&mut self) {
+        var i: u64 = 1u64
+        while i < self.len {
+            val key: T = self.get(i)
+            var j: u64 = i
+            while j > 0u64 {
+                val prev: T = self.get(j - 1u64)
+                if !key.lt(prev) {
+                    break
+                }
+                self.set(j, prev)
+                j = j - 1u64
+            }
+            self.set(j, key)
+            i = i + 1u64
+        }
+    }
+}
+
 # DROP-GLUE: the buffer dies with the binding. The element values
 # are glued by the backend *before* this runs (contents first, then
 # the storage free), so a `Vec<Box<i64>>` releases every box when

@@ -95,10 +95,11 @@ echo 'fn main() -> u64 { 7u64 }' | cargo run -q -p compiler -- - --all-backends
 (`[E0011] type hole: \`x\` has type \`i64\``)。1 回の実行でファイル中の
 全ホールが答えられ、束縛は推論した型で登録されるので後続がカスケードしない。
 
-**`--message-format=short`** を付けると診断が `path:line:col: error[CODE]: msg`
-の 1 行形式になる (デフォルトのスニペット付き形式は 1 エラーあたり ~11 行)。
-位置情報は保持されるので、機械的に読む場面ではこちらが適している。
-cargo の config / 環境変数では設定できないのでフラグで渡すこと。
+**`--diagnostics=json`** で診断を stderr に JSON 配列で出す
+(各要素は `severity` / `code` / `message` / `span` (`line`・`column`・
+`offset`・`end_offset`) / `suggestions` を持つ)。既定は
+`--diagnostics=text` (スニペット付き、1 エラーあたり ~11 行)。位置情報は
+JSON でも保持されるので、機械的に読む場面 (LLM ループ) ではこちらを使う。
 
 ### Testing
 

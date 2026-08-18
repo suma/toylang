@@ -11,6 +11,11 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-18
+- **CLAUDE.md の `--message-format=short` 案内を `--diagnostics=json` に誘導** —
+  `--message-format=short` はどちらの CLI にも実装が無く、渡すと usage を
+  出して終わるのに「診断を 1 行にする手段」として繰り返し勧めていた。
+  実装せず、該当節を `--diagnostics=json` (severity / code / span /
+  suggestions 付きの JSON 配列) の説明に差し替えた。
 - **INCR-INTEGRATE: 統合パスを placeholder 2 パス + HashMap から 1 パス + オフセット演算に** —
   16 個の core module のキャッシュ読み込み + 統合 (~10ms) の削減。**計測** (release,
   warm): preparse (deserialize) ~1.5ms / sequential integrate ~3.2ms / 型検査 ~2.4ms /
@@ -651,13 +656,6 @@
   入ったままなのもこれが理由。方針は 2 択で、(a) `null` を文法から
   落として `Option<T>` に一本化するか、(b) 評価と型検査を実装して
   生かすか。現状は「予約されているが動かない」という最悪の中間。
-- **CLAUDE.md が案内する `--message-format=short` が存在しない** —
-  interpreter / compiler のどちらにも実装が無く (ワークスペース全体を
-  grep しても該当なし)、渡すと usage を出して終わる。CLAUDE.md は
-  診断を 1 行にする手段として繰り返し勧めており、LLM 作業ループの
-  前提が崩れている。実装する (`--diagnostics=text|json` の隣に短縮
-  形式を足す) か、CLAUDE.md から落として `--diagnostics=json` に
-  誘導するかを決める。
 
 ### パーサーの既知制限事項
 - bare `self` 非対応 — `self: Self` / `&self` / `&mut self` のいずれかを書く。

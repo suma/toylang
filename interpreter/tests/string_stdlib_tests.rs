@@ -794,3 +794,68 @@ fn str_plus_str_is_rejected_by_the_type_checker() {
         }
     }
 }
+
+// ---------------------------------------------------------------
+// `str` (primitive) receiver builtin methods. The type checker
+// registered `substring` / `split` but the interpreter's
+// `Object::String` dispatch arms stopped at `trim` / `to_upper` /
+// `to_lower`, so both died with "Method 'substring' not found for
+// String type" at runtime. The `String` (stdlib struct) versions
+// above never hit these arms — they dispatch through the struct
+// method registry — so the gap was `str`-receiver-only.
+// ---------------------------------------------------------------
+
+#[test]
+fn str_substring_basic() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: str = "hello world"
+            val sub: str = s.substring(6u64, 11u64)
+            if sub != "world" { return 1u64 }
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn str_substring_empty_range() {
+    // start == end yields an empty string.
+    let src = r#"
+        fn main() -> u64 {
+            val s: str = "hello"
+            val sub: str = s.substring(2u64, 2u64)
+            if __builtin_str_len(sub) != 0u64 { return 1u64 }
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn str_substring_out_of_range_fails() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: str = "hi"
+            val sub: str = s.substring(0u64, 10u64)
+            __builtin_str_len(sub)
+        }
+    "#;
+    assert_program_fails(src);
+}
+
+#[test]
+fn str_split_basic() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: str = "a,b,c"
+            val parts: [str] = s.split(",")
+            if parts.len() != 3u64 { return 1u64 }
+            if parts[0u64] != "a" { return 2u64 }
+            if parts[1u64] != "b" { return 3u64 }
+            if parts[2u64] != "c" { return 4u64 }
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}

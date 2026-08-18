@@ -1099,6 +1099,55 @@ impl EvaluationContext<'_> {
                         // Return as dynamic String, not interned - this is the key improvement
                         Ok(EvaluationResult::Value((Object::String(concatenated)).into()))
                     }
+                    "substring" => {
+                        if args.len() != 2 {
+                            return Err(InterpreterError::InternalError(format!(
+                                "String.substring() method takes 2 arguments, but {} provided",
+                                args.len()
+                            )));
+                        }
+
+                        let string_value = obj_borrowed.to_string_value(self.string_interner);
+
+                        let start_value = self.evaluate(&args[0])?;
+                        let start_obj = try_value!(Ok(start_value));
+                        let start = start_obj.borrow().try_unwrap_uint64().map_err(InterpreterError::ObjectError)? as usize;
+
+                        let end_value = self.evaluate(&args[1])?;
+                        let end_obj = try_value!(Ok(end_value));
+                        let end = end_obj.borrow().try_unwrap_uint64().map_err(InterpreterError::ObjectError)? as usize;
+
+                        if start >= string_value.len() || end > string_value.len() || start > end {
+                            return Err(InterpreterError::InternalError(format!(
+                                "Invalid substring indices: start={start}, end={end}, len={}",
+                                string_value.len()
+                            )));
+                        }
+
+                        let substring = string_value[start..end].to_string();
+                        Ok(EvaluationResult::Value((Object::String(substring)).into()))
+                    }
+                    "split" => {
+                        if args.len() != 1 {
+                            return Err(InterpreterError::InternalError(format!(
+                                "String.split() method takes 1 argument, but {} provided",
+                                args.len()
+                            )));
+                        }
+
+                        let string_value = obj_borrowed.to_string_value(self.string_interner);
+
+                        let sep_value = self.evaluate(&args[0])?;
+                        let sep_obj = try_value!(Ok(sep_value));
+                        let sep_borrowed = sep_obj.borrow();
+                        let separator = sep_borrowed.to_string_value(self.string_interner);
+
+                        let parts: Vec<_> = string_value.split(&separator)
+                            .map(|part| Rc::new(RefCell::new(Object::String(part.to_string()))))
+                            .collect();
+
+                        Ok(EvaluationResult::Value(Object::Array(Box::new(parts)).into()))
+                    }
                     "trim" => {
                         if !args.is_empty() {
                             return Err(InterpreterError::InternalError(format!(

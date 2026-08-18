@@ -11,6 +11,19 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-18
+- **`str.substring` / `str.split` の dispatch を接続** — 型検査器は
+  `BuiltinMethod::StrSubstring` / `StrSplit` を登録するのに、interpreter の
+  `Object::String` レシーバ分岐 (`evaluation/call.rs`) の arm が `trim` /
+  `to_upper` / `to_lower` で止まっており、実行時に
+  `Internal error: Method 'substring' not found for String type` で停止
+  していた。arm を 2 つ追加 (substring は 2 引数 u64 の byte range、
+  split は `Object::Array` of `Object::String` — `builtin.rs` の
+  `BuiltinMethod` 実装と同形)。`String` (stdlib struct) 版は struct
+  method registry 経由なので影響なし、`str` 受け側のみの修正。
+  AOT は従来どおり primitive builtin method を lower できない
+  (interpreter-only は既存の仕様)。テスト 4 件
+  (`str_substring_basic` / `_empty_range` / `_out_of_range_fails` /
+  `str_split_basic` — 要素アクセス `parts[i]` 込み)。
 - **`str + str` を型検査で拒否 (E0002)** — `visit_binary` が
   `str + str` を明示的に受理する arm があったが、**どのバックエンドにも
   実装が無い** (interpreter はゴミハンドル、AOT は bus error / exit 138)。
@@ -652,15 +665,6 @@
 発見。ドキュメント側は同日のコミットで実態に合わせたので、残るのは
 実装をどう直すかの判断。
 
-- **`str.substring` / `str.split` が実行時に内部エラー** —
-  型検査器は `BuiltinMethod::StrSubstring` / `StrSplit` を登録して
-  戻り型まで決める (`frontend/src/type_checker/builtin.rs:18-20`) のに、
-  interpreter の `Object::String` レシーバ分岐
-  (`interpreter/src/evaluation/call.rs:1141`) に該当 arm が無く
-  `Internal error: Method 'substring' not found for String type` で
-  停止する。実装自体は `evaluation/builtin.rs:242/343` にあるので、
-  ディスパッチが繋がっていないだけ。`String` (stdlib の trait impl) は
-  正常に動くので影響は `str` 受け側のみ。
 - **`null` リテラルと universal `is_null()` が両方とも死んでいる** —
   `Expr::Null` の評価が無条件で `InternalError("Null reference error")`
   (`interpreter/src/evaluation/expression.rs:80`) なので、`val n = null`

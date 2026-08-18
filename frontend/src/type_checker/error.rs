@@ -356,10 +356,10 @@ impl std::fmt::Display for TypeCheckError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let base_message = match &*self.kind {
             TypeCheckErrorKind::TypeMismatch { expected, actual } => {
-                format!("Type mismatch: expected {:?}, but got {:?}", expected, actual)
+                format!("Type mismatch: expected {}, but got {}", expected.display_name(), actual.display_name())
             }
             TypeCheckErrorKind::TypeMismatchOperation(data) => {
-                format!("Type mismatch in {} operation: incompatible types {:?} and {:?}", data.operation, data.left, data.right)
+                format!("Type mismatch in {} operation: incompatible types {} and {}", data.operation, data.left.display_name(), data.right.display_name())
             }
             TypeCheckErrorKind::NotFound { item_type, name } => {
                 format!("{} '{}' not found", item_type, name)

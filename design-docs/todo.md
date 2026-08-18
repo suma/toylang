@@ -11,6 +11,22 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-18
+- **`str + str` を型検査で拒否 (E0002)** — `visit_binary` が
+  `str + str` を明示的に受理する arm があったが、**どのバックエンドにも
+  実装が無い** (interpreter はゴミハンドル、AOT は bus error / exit 138)。
+  型チェッカの doc コメントは「String concat is handled before the
+  dispatch」と 5 バックエンドに無い前提を書いていた。arm を削除して
+  `visit_arith_binary` に落とすと、`str` は primitive (overload 不可)、
+  `String` も `add` overload を持たないので自然に E0002 になる
+  (連結は `a.concat(b)`)。**診断の型名も source 綴りに**:
+  `TypeDecl::display_name()` を新設して `TypeMismatch` /
+  `TypeMismatchOperation` の `Display` が `{:?}` (String / Bool /
+  SymbolU32) の代わりに `str` / `bool` / `u64` を出すようにした
+  (display_name は interner 不要の primitive 表記で、user 型は
+  Debug フォールバック — interner 経由の解決は残課題)。
+  テスト: `str_plus_str_is_rejected_by_the_type_checker`
+  (E0002 + `str and str` 表記をピン)。`docs/language.md` の Operator
+  表も実態に合わせた。
 - **CLAUDE.md の `--message-format=short` 案内を `--diagnostics=json` に誘導** —
   `--message-format=short` はどちらの CLI にも実装が無く、渡すと usage を
   出して終わるのに「診断を 1 行にする手段」として繰り返し勧めていた。
@@ -601,9 +617,14 @@
   (精度が上がる方向の仕様変更、`docs/language.md` の Output 節に明記)。
   `f64_display_agrees_across_backends` が 3 者一致を pin する。
 - **型不一致診断が `Identifier(SymbolU32 { value: 40 })` と Debug 表記を
-  漏らす** — `TypeCheckErrorKind::TypeMismatch` の `Display` が `{:?}`
-  なので、解決前の user 型名が生の symbol id で出る。`source_name` /
-  `type_name_for_error` に寄せる。
+  漏らす** — 解決前の user 型名が生の symbol id で出る。
+  **primitive 側は解消 (2026-08-18)**: `TypeDecl::display_name()` を
+  新設し、`TypeMismatch` / `TypeMismatchOperation` の `Display` が
+  source 綴り (`str` / `u64` / `bool`) を出すようにした。残るのは
+  interner が必要な user 型 (Identifier / Struct / Enum) のみ —
+  `TypeCheckError` の `Display` は interner を持たないので、診断
+  変換経路 (`Diagnostic::from_type_check_error`) に interner を渡して
+  `source_name` に寄せる話。
 - **`if` / `elif` の条件が型検査されない** — ~~`if 42u64 { ... }` が通る。~~
   **解消 (2026-08-16)**: `visit_if_elif_else` が条件を
   `check_expr_located` し bool を要求するように。この変更で 2 つの
@@ -631,12 +652,6 @@
 発見。ドキュメント側は同日のコミットで実態に合わせたので、残るのは
 実装をどう直すかの判断。
 
-- **`str + str` が型検査を通るのにどのバックエンドにも実装が無い** —
-  `val s: str = "a" + "b"` が通り、interpreter は空文字 + 巨大な
-  `__builtin_str_len` (ゴミハンドル) を返し、AOT バイナリは bus error
-  (exit 138) で落ちる。連結は `a.concat(b)` が正で、`+` は
-  **型検査で弾く**のが筋 (E0002)。3 バックエンド一致テストを足す前に、
-  まず型検査器の str 加算パスを削る。
 - **`str.substring` / `str.split` が実行時に内部エラー** —
   型検査器は `BuiltinMethod::StrSubstring` / `StrSplit` を登録して
   戻り型まで決める (`frontend/src/type_checker/builtin.rs:18-20`) のに、

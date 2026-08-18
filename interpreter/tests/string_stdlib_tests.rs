@@ -17,7 +17,8 @@
 
 mod common;
 
-use common::{assert_program_fails, assert_program_result_u64};
+use common::{assert_program_fails, assert_program_result_u64, core_modules_dir};
+use frontend::diagnostic::Diagnostic;
 
 // Returns each byte of the buffer packed into a u64 — bytes are
 // laid out LSB-first so byte_0 ends up in the low 8 bits. The
@@ -748,4 +749,48 @@ fn push_char_appends_to_existing_buffer() {
         }
     "#;
     assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn str_plus_str_is_rejected_by_the_type_checker() {
+    // `str + str` never had an implementation in any backend: the
+    // checker accepted it while no engine handled `+` on strings, so
+    // the interpreter returned garbage handles and the AOT binary
+    // trapped (exit 138). Concatenation is `a.concat(b)`; neither
+    // `str` (a primitive) nor `String` (no `add` overload) makes `+`
+    // type-check, so the checker must reject it (E0002).
+    let source = r#"
+        fn main() -> u64 {
+            val s: str = "a" + "b"
+            s.len() as u64
+        }
+    "#;
+    let mut parser = frontend::ParserWithInterner::new(source);
+    parser.set_source_file("test.t");
+    let mut program = parser.parse_program().expect("parse");
+    let string_interner = parser.get_string_interner();
+    let core = core_modules_dir();
+    match interpreter::check_typing_diagnostics(
+        &mut program,
+        string_interner,
+        Some(source),
+        Some("test.t"),
+        Some(core.as_path()),
+    ) {
+        Ok(()) => panic!("`str + str` must be a type error (no backend implements it)"),
+        Err(diagnostics) => {
+            let arithmetic: Vec<&Diagnostic> = diagnostics.iter().filter(|d| d.code == "E0002").collect();
+            assert!(
+                !arithmetic.is_empty(),
+                "expected an E0002 arithmetic type error, got: {diagnostics:?}"
+            );
+            // The message must spell the primitive `str` — the old
+            // Debug rendering showed `String`, which reads as the
+            // stdlib struct.
+            assert!(
+                arithmetic.iter().all(|d| d.message.contains("str and str")),
+                "expected 'incompatible types str and str', got: {arithmetic:?}"
+            );
+        }
+    }
 }

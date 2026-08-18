@@ -935,7 +935,7 @@ Listed lowest precedence first:
 | `\|` `^` `&` | Bitwise (integer) |
 | `<<` `>>` | Shift; rhs must be `u64` |
 | `..` | Range expression `start..end` (half-open) |
-| `+` `-` | Add / subtract. **Not** string concatenation: the type checker accepts `str + str` but no backend implements it (the interpreter yields a garbage handle, the AOT binary faults) — use `a.concat(b)` |
+| `+` `-` | Add / subtract. **Not** string concatenation: `str + str` is a type error (E0002) — neither `str` nor `String` provides an `add` overload; use `a.concat(b)` |
 | `*` `/` `%` | Multiply / divide / remainder |
 | Unary `-` | Negation (`i64`, `f64` only) |
 | Unary `!` | Logical not (`bool`) |

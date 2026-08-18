@@ -344,9 +344,6 @@ impl<'a> TypeCheckerVisitor<'a> {
         // own operator-overload short-circuit and produces a
         // `TypeCheckError` with a category-specific label on mismatch.
         match op {
-            Operator::IAdd if resolved_lhs_ty == TypeDecl::String && resolved_rhs_ty == TypeDecl::String => {
-                Ok(TypeDecl::String)
-            }
             Operator::IAdd | Operator::ISub | Operator::IDiv | Operator::IMul | Operator::IMod => {
                 self.visit_arith_binary(&op, &lhs, &resolved_lhs_ty, &resolved_rhs_ty)
             }
@@ -417,9 +414,11 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
     /// Result-type rule for `+ - * / %` between numeric / generic /
-    /// struct-overload pairs. String concat is handled before the
-    /// dispatch (see `visit_binary`). NUM-W narrow integers follow
-    /// the same-width rule as i64/u64 — no implicit widening.
+    /// struct-overload pairs. There is no string `+` — concatenation
+    /// is `a.concat(b)`, and neither `str` (a primitive) nor `String`
+    /// provides an `add` overload, so `"a" + "b"` is a type error.
+    /// NUM-W narrow integers follow the same-width rule as i64/u64 —
+    /// no implicit widening.
     fn visit_arith_binary(
         &self,
         op: &Operator,

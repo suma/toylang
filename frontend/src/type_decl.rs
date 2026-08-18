@@ -326,6 +326,37 @@ impl TypeDecl {
         }
     }
 
+    /// Spell a type for a diagnostic message without an interner.
+    ///
+    /// The primitives use their source spelling (`str`, not the
+    /// `String` Debug name), and everything else falls back to Debug —
+    /// which may show interned symbol ids for user types, but the
+    /// checkers' messages are better off showing `str`/`u64` than the
+    /// wrong name. `TypeCheckError`'s `Display` has no interner, so
+    /// this is the interner-free form; the full renderings are
+    /// `source_name` (source spelling) and the type checker's
+    /// `format_type_for_error` (prose).
+    pub fn display_name(&self) -> String {
+        match self {
+            TypeDecl::Unit => "()".to_string(),
+            TypeDecl::Bool => "bool".to_string(),
+            TypeDecl::Int64 => "i64".to_string(),
+            TypeDecl::UInt64 => "u64".to_string(),
+            TypeDecl::Int32 => "i32".to_string(),
+            TypeDecl::UInt32 => "u32".to_string(),
+            TypeDecl::Int16 => "i16".to_string(),
+            TypeDecl::UInt16 => "u16".to_string(),
+            TypeDecl::Int8 => "i8".to_string(),
+            TypeDecl::UInt8 => "u8".to_string(),
+            TypeDecl::Float64 => "f64".to_string(),
+            TypeDecl::String => "str".to_string(),
+            TypeDecl::Ptr => "ptr".to_string(),
+            TypeDecl::Self_ => "Self".to_string(),
+            TypeDecl::Allocator => "Allocator".to_string(),
+            other => format!("{other:?}"),
+        }
+    }
+
     /// Spell the type the way it is written in source.
     ///
     /// Distinct from the type checker's `type_name_for_error`, which is

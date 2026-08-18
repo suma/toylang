@@ -3643,8 +3643,7 @@ fn if_conditions_must_be_bool() {
     );
     let rendered = errors.join("\n");
     assert!(
-        rendered.contains("expected `bool`, but got `u64`")
-            || rendered.contains("expected Bool"),
+        rendered.contains("expected bool, but got u64"),
         "unexpected diagnostics: {rendered}"
     );
     // elif conditions are checked the same way.
@@ -3653,8 +3652,7 @@ fn if_conditions_must_be_bool() {
     );
     let rendered = errors.join("\n");
     assert!(
-        rendered.contains("expected `bool`, but got `u64`")
-            || rendered.contains("expected Bool"),
+        rendered.contains("expected bool, but got u64"),
         "unexpected diagnostics: {rendered}"
     );
 }

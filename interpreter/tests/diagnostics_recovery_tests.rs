@@ -94,7 +94,7 @@ fn undefined_function_and_type_mismatch_are_reported_together() {
     );
     assert_eq!(error_count(&diags), 2, "{diags}");
     assert!(diags.contains("definitely_not_defined"), "{diags}");
-    assert!(diags.contains("Bool"), "{diags}");
+    assert!(diags.contains("expected bool, but got u64"), "{diags}");
 }
 
 #[test]
@@ -307,7 +307,7 @@ fn var_annotation_mismatch_is_rejected_like_val() {
         }",
     );
     assert_eq!(error_count(&diags), 1, "{diags}");
-    assert!(diags.contains("Bool"), "{diags}");
+    assert!(diags.contains("expected bool, but got u64"), "{diags}");
 }
 
 #[test]

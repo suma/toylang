@@ -315,6 +315,19 @@ impl<'a> Parser<'a> {
         self.token_provider.peek_position_at(0)
     }
 
+    /// A [`SourceLocation`] for an arbitrary byte span, rather than
+    /// for the token at the cursor. INTERP-DIAG-SPAN: the
+    /// string-interpolation desugaring reports against spans it
+    /// recorded before consuming the literal, so it cannot use
+    /// [`current_source_location`].
+    pub(super) fn location_from_span(
+        &self,
+        span: &std::ops::Range<usize>,
+    ) -> SourceLocation {
+        let (line, column) = self.offset_to_line_col(span.start);
+        SourceLocation::new(line, column, span.start as u32, span.end as u32)
+    }
+
     /// A span running from `start` to wherever the cursor now sits.
     ///
     /// A node's own location is the token that *names* it — a binary
@@ -450,6 +463,17 @@ impl<'a> Parser<'a> {
     /// Used for rewriting `>>` into two `>` tokens in nested generic contexts.
     pub(super) fn insert_token(&mut self, token: Kind) {
         self.token_provider.insert_token(token);
+    }
+
+    /// Insert a synthesized token with the span it should report
+    /// (INTERP-DIAG-SPAN). See
+    /// [`TokenProvider::insert_token_at`][super::token_source].
+    pub(super) fn insert_token_at(
+        &mut self,
+        token: Kind,
+        position: std::ops::Range<usize>,
+    ) {
+        self.token_provider.insert_token_at(token, position);
     }
 
     pub fn expect(&mut self, accept: &Kind) -> ParserResult<()> {

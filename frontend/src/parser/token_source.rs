@@ -216,6 +216,18 @@ impl<T: TokenSource> TokenProvider<T> {
         self.buffer.reset();
     }
 
+    /// Insert a token carrying an explicit source span.
+    ///
+    /// INTERP-DIAG-SPAN: [`insert_token`] borrows whatever token
+    /// happens to sit at the cursor, which is right for splitting
+    /// `>>` into `>` `>` but wrong for a desugaring that synthesizes
+    /// a whole expression — every node then claims a position it
+    /// never occupied. The string-interpolation desugaring passes the
+    /// real span instead.
+    pub fn insert_token_at(&mut self, kind: Kind, position: std::ops::Range<usize>) {
+        self.buffer.insert_at_current(Token { kind, position });
+    }
+
     /// Insert a token at the current position (for token splitting like >> to > >)
     /// Used in contexts where a compound token needs to be split into multiple tokens
     pub fn insert_token(&mut self, kind: Kind) {

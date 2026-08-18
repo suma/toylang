@@ -259,3 +259,104 @@ fn a_call_stays_anchored_at_its_callee() {
         "caret should cover just the callee name:\n{diags}"
     );
 }
+
+// INTERP-DIAG-SPAN: a diagnostic raised inside a string interpolation.
+//
+// The desugaring re-lexes each `{...}` segment with a fresh lexer whose
+// positions start at zero, and used to insert the resulting tokens with
+// no span of their own — so every node built from them claimed
+// whatever the cursor happened to hold, and the error surfaced at line
+// 1 of the file. The lexer now records each segment's absolute offset
+// and the parser shifts the sub-lexer's positions by it.
+//
+// Note: `diagnostics()` returns the errors through a `Debug` format, so
+// the quoted source line arrives with its `"` escaped. These tests
+// match on quote-free fragments and read the column out of the header
+// rather than counting characters in the rendered line.
+
+/// `line:column` from the first `Error at <file>:<line>:<column>:`
+/// header. `diagnostics()` hands back the rendered text through a
+/// `Debug` format, so the whole report arrives as one line with `\n`
+/// spelled out — hence scanning for the first two runs of digits
+/// after the header rather than splitting on lines.
+fn first_error_line_col(diags: &str) -> (usize, usize) {
+    let at = diags.find("Error at").expect("a located diagnostic");
+    let nums: Vec<usize> = diags[at..]
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|t| !t.is_empty())
+        .take(2)
+        .map(|t| t.parse().expect("a line / column number"))
+        .collect();
+    (nums[0], nums[1])
+}
+
+#[test]
+fn an_error_inside_an_interpolation_points_at_the_sub_expression() {
+    let diags = diagnostics(
+        "fn main() -> u64 {
+            val a: u64 = 1u64
+            println(\"{a + true}\")
+            0u64
+        }",
+    );
+    assert_all_located(&diags);
+    let (line, _) = first_error_line_col(&diags);
+    assert_eq!(
+        line, 3,
+        "the interpolating line is 3, not the file's first line:\n{diags}"
+    );
+    assert!(
+        diags.contains("{a + true}"),
+        "the diagnostic should quote the interpolating line:\n{diags}"
+    );
+}
+
+#[test]
+fn the_caret_picks_the_right_segment_of_a_multi_part_literal() {
+    // Three segments, only the middle one is ill-typed: the column has
+    // to land inside it rather than at the start of the literal.
+    let source = "fn main() -> u64 {
+            val a: u64 = 1u64
+            val b: bool = true
+            println(\"first={a} second={a + b} third={a}\")
+            0u64
+        }";
+    let diags = diagnostics(source);
+    assert_all_located(&diags);
+    let (line, column) = first_error_line_col(&diags);
+    assert_eq!(line, 4, "the literal is on line 4:\n{diags}");
+    let src_line = source.lines().nth(3).expect("the interpolating line");
+    // Columns are 1-based; `find` is 0-based.
+    let second = src_line.find("second=").expect("the second segment") + 1;
+    let third = src_line.find("third=").expect("the third segment") + 1;
+    assert!(
+        column > second && column < third,
+        "column {column} should sit inside the `second=` segment \
+         ({second}..{third}):\n{diags}"
+    );
+}
+
+#[test]
+fn a_malformed_format_spec_points_at_its_literal() {
+    // STR-INTERP-FMT: the spec is rejected at parse time, before any
+    // token from the segment exists, so it reports against the literal
+    // it was written in.
+    let diags = diagnostics(
+        "fn main() -> u64 {
+            val x: f64 = 1.5f64
+            println(\"{x:.q}\")
+            0u64
+        }",
+    );
+    // A parse error, so it arrives as a `ParserError` rather than the
+    // rendered `Error at` form the type checker produces — assert on
+    // the location it carries.
+    assert!(
+        diags.contains("invalid format spec"),
+        "the diagnostic should name the problem:\n{diags}"
+    );
+    assert!(
+        diags.contains("line: 3"),
+        "the spec is written on line 3:\n{diags}"
+    );
+}

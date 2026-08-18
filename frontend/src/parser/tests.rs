@@ -179,6 +179,9 @@ mod lexer_tests{
                 StringPart::Expr {
                     text: "x".to_string(),
                     spec: None,
+                    // `"日本 {x} 語"`: opening quote (1) + 日本 (6) +
+                    // space (1) + `{` (1).
+                    offset: 9,
                 },
                 StringPart::Literal(" 語".to_string()),
             ]),
@@ -197,6 +200,7 @@ mod lexer_tests{
                 StringPart::Expr {
                     text: "x".to_string(),
                     spec: Some(".2".to_string()),
+                    offset: 2,
                 },
                 StringPart::Literal(String::new()),
             ]),
@@ -215,6 +219,7 @@ mod lexer_tests{
                 StringPart::Expr {
                     text: "P { x: 1i64 }".to_string(),
                     spec: None,
+                    offset: 2,
                 },
                 StringPart::Literal(String::new()),
             ]),
@@ -226,6 +231,7 @@ mod lexer_tests{
                 StringPart::Expr {
                     text: "Color::Red".to_string(),
                     spec: None,
+                    offset: 2,
                 },
                 StringPart::Literal(String::new()),
             ]),

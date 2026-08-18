@@ -552,6 +552,12 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                         // becomes `Kind::InterpolatedString(parts)`;
                         // otherwise the original `Kind::String(out)`.
                         let text = self.yytext();
+                        // INTERP-DIAG-SPAN: absolute offset of the
+                        // literal's first inner byte, so each `{...}`
+                        // segment can record where it really sits and
+                        // the parser can put the re-lexed tokens back
+                        // on the map.
+                        let inner_base = self.yybytepos().start + 1;
                         let inner = &text[1..text.len() - 1];
                         let mut out = String::with_capacity(inner.len());
                         let mut parts: Vec<StringPart> = Vec::new();
@@ -623,6 +629,7 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                                 parts.push(StringPart::Expr {
                                     text: expr_text.to_string(),
                                     spec: spec.map(|s| s.to_string()),
+                                    offset: inner_base + expr_start,
                                 });
                                 has_interpolation = true;
                                 i = j + 1;

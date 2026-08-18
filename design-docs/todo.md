@@ -11,6 +11,19 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-18
+- **INTERP-DIAG-SPAN: 補間内の診断が実際の位置を指すように** — 補間の中の
+  型エラーが**ファイル先頭 (1:1)** を指していた (LLM-LOOP-FIX が潰した
+  「無関係なコードを自信満々に指す」形が 1 箇所残っていた)。原因は
+  desugar が合成 token を `insert_token` で挿していたこと — この関数は
+  「カーソル位置のトークンの span」を借りるので、`>>` を `>` `>` に割る
+  用途では正しいが、式まるごとを合成する desugar では**誰も占めていない
+  位置**を主張することになる。**直し方**: (1) lexer が各 `{...}`
+  セグメントの**絶対 byte offset** を `StringPart::Expr` に記録、
+  (2) parser が sub-lexer の (0 始まりの) 位置にそれを足して
+  `insert_token_at` で挿す。scaffolding (`concat` / builtin 名 / 括弧) は
+  literal 全体の span。結果、`"first={a} second={a + b} third={a}"` の
+  2 番目のセグメントを正確に指す。format spec のエラーも literal の
+  span で報告 (parse 時点でセグメントの token はまだ無いため)。
 - **STR-INTERP-FMT: 補間の format spec (`"{x:.2}"`, 3 バックエンド)** —
   `[align]['0'][width]['.'precision][type]` (`< > ^` / `x X b o`) の
   Rust サブセット。**f64 の桁数指定手段が言語に無かった**のを解消。
@@ -463,11 +476,6 @@
   `fn to_str(&self, spec: str)` にするかは未決)、(b) fill 文字 / `+` /
   `#` / `$`-parameterised width、(c) interpreter JIT の
   `jit_format_<ty>` helper。いずれも踏んでから。
-- **INTERP-DIAG-SPAN** ★ — 補間の中で起きた型エラーが
-  **ファイル先頭 (1:1) を指す**。desugar が合成した token に元の span を
-  持たせていないため (`insert_token` は「現在のトークン」の位置を採る)。
-  spec 由来のエラーも同じ経路。LLM-LOOP-FIX が潰した「無関係なコードを
-  自信満々に指す」形なので、直すなら位置付き `insert_token_at`。
 - **STRUCT-UPDATE: struct update 構文 (`P { x: 5i64, ..a }`)** ★ — parse エラー。
   「1 フィールドだけ差し替えた copy」が全フィールド列挙になる。
 

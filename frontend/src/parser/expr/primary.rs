@@ -73,6 +73,24 @@ fn parse_interpolated_string(parser: &mut Parser) -> ParserResult<ExprRef> {
             "parse_interpolated_string called without InterpolatedString token".to_string(),
         )),
     };
+    // INTERP-DIAG-SPAN: the literal's own span, used for the tokens
+    // this desugaring invents (`concat`, the builtin name, parens).
+    // Sub-expression tokens get their real position instead — see
+    // below — so only the scaffolding points at the literal as a
+    // whole.
+    let literal_span = parser
+        .peek_position_n(0)
+        .cloned()
+        .unwrap_or(0..0);
+    // The scaffolding tokens sit at the literal's *closing* quote
+    // rather than its start. Position-sensitive parse rules read the
+    // source immediately before a token — `has_newline_before_current_token`
+    // decides whether a `(` opens this field's argument list or a new
+    // statement — and a literal that starts a line (`\n    "a {b}"`)
+    // would otherwise make the synthesized `.concat(` look like a
+    // fresh expression. Anchoring at the closing quote puts a
+    // non-whitespace byte immediately before every synthesized token.
+    let scaffold_span = literal_span.end.saturating_sub(1)..literal_span.end;
     parser.next();
 
     let parts: Vec<StringPart> = parts
@@ -86,18 +104,19 @@ fn parse_interpolated_string(parser: &mut Parser) -> ParserResult<ExprRef> {
         return Ok(parser.ast_builder.string_expr(sym, Some(location)));
     }
 
-    let mut tokens: Vec<Kind> = Vec::new();
+    // (token, span) pairs — see `literal_span` / `scaffold_span` above.
+    let mut tokens: Vec<(Kind, std::ops::Range<usize>)> = Vec::new();
     for (i, part) in parts.iter().enumerate() {
         if i > 0 {
-            tokens.push(Kind::Dot);
-            tokens.push(Kind::Identifier("concat".to_string()));
-            tokens.push(Kind::ParenOpen);
+            tokens.push((Kind::Dot, scaffold_span.clone()));
+            tokens.push((Kind::Identifier("concat".to_string()), scaffold_span.clone()));
+            tokens.push((Kind::ParenOpen, scaffold_span.clone()));
         }
         match part {
             StringPart::Literal(s) => {
-                tokens.push(Kind::String(s.clone()));
+                tokens.push((Kind::String(s.clone()), scaffold_span.clone()));
             }
-            StringPart::Expr { text: expr_text, spec } => {
+            StringPart::Expr { text: expr_text, spec, offset } => {
                 // STR-INTERP-FMT: a segment carrying a spec lowers to
                 // `__builtin_format(expr, <packed>)` instead of
                 // `__builtin_to_string(expr)`. The spec is constant
@@ -118,9 +137,13 @@ fn parse_interpolated_string(parser: &mut Parser) -> ParserResult<ExprRef> {
                             // wrong. Recording the diagnostic and
                             // rendering the segment without a spec
                             // keeps the rest of the parse honest.
-                            parser.collect_error(&format!(
-                                "invalid format spec `{{{}:{}}}`: {}",
-                                expr_text, spec_text, reason
+                            let location = parser.location_from_span(&literal_span);
+                            parser.report_error(ParserError::unexpected_token(
+                                location,
+                                format!(
+                                    "invalid format spec `{{{}:{}}}`: {}",
+                                    expr_text, spec_text, reason
+                                ),
                             ));
                             None
                         }
@@ -132,8 +155,8 @@ fn parse_interpolated_string(parser: &mut Parser) -> ParserResult<ExprRef> {
                 } else {
                     "__builtin_to_string"
                 };
-                tokens.push(Kind::Identifier(builtin_name.to_string()));
-                tokens.push(Kind::ParenOpen);
+                tokens.push((Kind::Identifier(builtin_name.to_string()), scaffold_span.clone()));
+                tokens.push((Kind::ParenOpen, scaffold_span.clone()));
                 let mut sub_lex = crate::parser::core::lexer::Lexer::new(expr_text, 1, None);
                 loop {
                     match sub_lex.yylex() {
@@ -141,7 +164,13 @@ fn parse_interpolated_string(parser: &mut Parser) -> ParserResult<ExprRef> {
                             if matches!(tok.kind, Kind::NewLine | Kind::Comment(_)) {
                                 continue;
                             }
-                            tokens.push(tok.kind);
+                            // INTERP-DIAG-SPAN: the sub-lexer counts
+                            // from zero within `expr_text`; shift by
+                            // where that text starts in the file so
+                            // diagnostics land on the sub-expression
+                            // the user wrote.
+                            let span = (offset + tok.position.start)..(offset + tok.position.end);
+                            tokens.push((tok.kind, span));
                         }
                         Err(crate::parser::core::lexer::Error::EOF) => break,
                         Err(e) => {
@@ -156,19 +185,19 @@ fn parse_interpolated_string(parser: &mut Parser) -> ParserResult<ExprRef> {
                     }
                 }
                 if let Some(code) = packed {
-                    tokens.push(Kind::Comma);
-                    tokens.push(Kind::UInt64(code));
+                    tokens.push((Kind::Comma, scaffold_span.clone()));
+                    tokens.push((Kind::UInt64(code), scaffold_span.clone()));
                 }
-                tokens.push(Kind::ParenClose);
+                tokens.push((Kind::ParenClose, scaffold_span.clone()));
             }
         }
         if i > 0 {
-            tokens.push(Kind::ParenClose);
+            tokens.push((Kind::ParenClose, scaffold_span.clone()));
         }
     }
 
-    for tok in tokens.into_iter().rev() {
-        parser.insert_token(tok);
+    for (tok, span) in tokens.into_iter().rev() {
+        parser.insert_token_at(tok, span);
     }
 
     parse_postfix(parser)

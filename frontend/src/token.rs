@@ -19,6 +19,14 @@ pub enum StringPart {
     Expr {
         text: String,
         spec: Option<String>,
+        /// Absolute byte offset of `text` in the source file
+        /// (INTERP-DIAG-SPAN). The parser re-lexes `text` with a
+        /// fresh lexer whose positions start at 0; adding this
+        /// offset puts every synthesized token back where the user
+        /// wrote it, so a type error inside `"{a + b}"` points at
+        /// the offending sub-expression instead of the file's first
+        /// line.
+        offset: usize,
     },
 }
 

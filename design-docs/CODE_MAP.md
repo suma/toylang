@@ -150,7 +150,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | 文 | `parser/stmt.rs` |
 | 式 | `parser/expr/` (`mod.rs` / `primary.rs` / `control.rs` / `match_.rs` / `macros.rs`) |
 | `assert_eq` / `dbg` 等のマクロ desugar | `parser/expr/macros.rs` |
-| 文字列補間の desugar (`.concat` chain) | lexer 側の `{...}` 切り出しは `frontend/src/lexer.l` (`split_format_spec`)、token 合成は `parser/expr/primary.rs::parse_interpolated_string` |
+| 文字列補間の desugar (`.concat` chain) | lexer 側の `{...}` 切り出しは `frontend/src/lexer.l` (`split_format_spec`)、token 合成は `parser/expr/primary.rs::parse_interpolated_string`。合成 token の位置は `StringPart::Expr.offset` + `Parser::insert_token_at` (INTERP-DIAG-SPAN) |
 | format spec (`"{x:.2}"`) の文法 / pack / 描画 | `frontend/src/format_spec.rs` (**同じ bit layout の no_std 版が `compiler/runtime/toylang_rt` の `Spec`**)、実行は interpreter `evaluation/builtin.rs::format_object` / IR VM `ir_vm/heap.rs::format_value` / AOT・JIT `toy_format_*` |
 | AST プール / 位置プール | `frontend/src/ast/pool.rs`, `frontend/src/ast/builder.rs` |
 | AST キャッシュ (schema version) | `frontend/src/cache.rs` |

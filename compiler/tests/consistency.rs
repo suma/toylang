@@ -8672,3 +8672,42 @@ fn io_externs_are_consistent_across_backends() {
     assert_consistent(&src, "io_externs");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// The RUNTIME-IO extensions: seeded `random` (deterministic), UTC
+// `strftime` and the environment list. All are deterministic once
+// seeded / pinned, so they must agree across the three backends.
+// The interpreter and JIT run in-process and the AOT child inherits
+// the process environment, so the controlled variable is visible to
+// all three.
+
+#[test]
+fn io_extensions_are_consistent_across_backends() {
+    // Safety (edition 2024): the mutation is confined to this single
+    // test and removed before it returns.
+    unsafe { std::env::set_var("TOYLANG_CONSISTENCY_IO_VAR", "io-extension") };
+    let src = r#"
+        fn main() -> u64 {
+            io::random_seed(123u64)
+            val r1 = io::random()
+            val r2 = io::random()
+            io::random_seed(7u64)
+            val r3 = io::random()
+            val fmt = io::strftime("%F %T %a %s", 1700000000u64)
+            val n = io::env_count()
+            var found = false
+            var i: u64 = 0u64
+            while i < n {
+                if io::env_name(i) == "TOYLANG_CONSISTENCY_IO_VAR" {
+                    found = io::env_value(i) == "io-extension"
+                }
+                i = i + 1u64
+            }
+            if r1 == 0u64 || r2 == 0u64 || r3 == 0u64 { 0u64 }
+            elif fmt != "2023-11-14 22:13:20 Tue 1700000000" { 2u64 }
+            elif !found { 3u64 }
+            else { 1u64 }
+        }
+    "#;
+    assert_consistent(src, "io_extensions");
+    unsafe { std::env::remove_var("TOYLANG_CONSISTENCY_IO_VAR") };
+}

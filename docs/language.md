@@ -2361,6 +2361,43 @@ prints as `1.0`). This is a change from the old AOT runtime, which
 used C's `%g` (6 significant digits: `1234567.75` used to print as
 `1.23457e+06`).
 
+### I/O module (`io::`)
+
+`core/std/io.t` exposes the process environment through the `io::`
+module, auto-loaded like the rest of the stdlib:
+
+```rust
+io::read_line() -> str          # one line from stdin, no trailing newline; "" at EOF
+io::argc() -> u64               # number of program arguments (excluding program name)
+io::arg(i: u64) -> str          # the i-th argument; "" out of range
+io::env_var(name: str) -> str   # the environment variable; "" when unset
+io::read_file(path: str) -> str # file contents; "" when unreadable
+io::file_exists(path: str) -> bool
+io::now() -> u64                # seconds since the Unix epoch
+io::random() -> u64             # pseudo-random; not reproducible
+io::random_seed(seed: u64)      # re-seed `random()`; reproducible afterwards
+io::strftime(fmt: str, secs: u64) -> str  # format epoch seconds (UTC)
+io::env_count() -> u64          # number of environment variables
+io::env_name(i: u64) -> str     # the i-th environment variable's name
+io::env_value(i: u64) -> str    # the i-th environment variable's value
+```
+
+Each function delegates to an `extern fn`; see [Calling C
+functions](#calling-c-functions) for the boundary rules. Failure
+convention is `""`-return plus a `file_exists` probe — an `extern fn`
+boundary cannot carry a `Result`.
+
+Determinism: `random()` is seeded from the clock and process id, so it
+is not reproducible across runs — but `random_seed(s)` makes the
+sequence reproducible (identical across runs *and* backends for the
+same `s`, with `0` honoured literally). `strftime(fmt, secs)` formats
+a fixed subset of C `strftime` specifiers and is **UTC, never local
+time**, so a fixed timestamp formats identically regardless of the
+host timezone (this is what keeps the 3-backend consistency suite
+byte-identical). The environment list (`env_count` / `env_name` /
+`env_value`) iterates `environ` order, which the interpreter's
+`std::env::vars` matches.
+
 ### Termination
 
 ```rust

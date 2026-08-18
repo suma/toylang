@@ -377,6 +377,11 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_io_read_file", toylang_rt::toy_io_read_file as *const u8);
     jit_builder.symbol("toy_io_file_exists", toylang_rt::toy_io_file_exists as *const u8);
     jit_builder.symbol("toy_io_random", toylang_rt::toy_io_random as *const u8);
+    jit_builder.symbol("toy_io_random_seed", toylang_rt::toy_io_random_seed as *const u8);
+    jit_builder.symbol("toy_io_strftime", toylang_rt::toy_io_strftime as *const u8);
+    jit_builder.symbol("toy_io_env_count", toylang_rt::toy_io_env_count as *const u8);
+    jit_builder.symbol("toy_io_env_name", toylang_rt::toy_io_env_name as *const u8);
+    jit_builder.symbol("toy_io_env_value", toylang_rt::toy_io_env_value as *const u8);
     // STR-INTERP-AOT: str runtime helpers.
     jit_builder.symbol("toy_str_concat", toylang_rt::toy_str_concat as *const u8);
     jit_builder.symbol("toy_str_from_bytes", toylang_rt::toy_str_from_bytes as *const u8);

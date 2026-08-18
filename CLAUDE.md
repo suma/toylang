@@ -376,12 +376,19 @@ fn main() -> u64 {
 
 - **`io::` モジュール** (`core/std/io.t`) — `read_line()` / `argc()` /
   `arg(i)` / `env_var(name)` / `read_file(path)` / `file_exists(path)` /
-  `now()` / `random()`。`extern fn` 宣言 + バックエンド別実装
-  (interpreter: `extern_io::build_io_registry`、AOT: `toy_io_*` C シンボル、
-  JIT: `compiler/src/jit.rs` の Rust ミラー)。失敗は `""` 返し +
+  `now()` / `random()` / `random_seed(seed)` / `strftime(fmt, secs)` /
+  `env_count()` / `env_name(i)` / `env_value(i)`。`extern fn` 宣言 +
+  バックエンド別実装 (interpreter: `extern_io::build_io_registry`、
+  AOT/JIT: `toylang_rt` の `toy_io_*` シンボル)。失敗は `""` 返し +
   `file_exists` プローブ (`Result` は extern 境界が compound return を
-  運べないため不可)。`random()` は非決定的。プログラム引数は
-  CLI ではファイル後ろの引数、`RunOptions.args` で注入。
+  運べないため不可)。`random()` は非決定的だが、`random_seed(s)` で
+  再現可能になる (0 も literal に保持、シーケンスは 3 バックエンド一致)。
+  `strftime(fmt, secs)` は C `strftime` の文書化された部分集合で
+  **UTC 固定** (ローカル時刻にしない、`docs/language.md` の
+  Output 節相当の決定性規約)。環境変数一覧は `env_count` +
+  `env_name` / `env_value` の `environ` 順アクセス (interpreter の
+  `std::env::vars` も同じ順)。プログラム引数は CLI ではファイル後ろの
+  引数、`RunOptions.args` で注入。
 - `print(value)` — stdout に値を出力（改行なし）
 - `println(value)` — stdout に値を出力 + 改行
 - 任意の型を受け取り、`Object::to_display_string` で整形。文字列は引用符なし、構造体 / dict はフィールド名順にソートして決定的な出力

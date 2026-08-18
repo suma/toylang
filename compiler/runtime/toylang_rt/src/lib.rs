@@ -74,6 +74,9 @@ unsafe extern "C" {
     fn time(t: *mut i64) -> i64;
     fn getpid() -> i32;
     fn access(path: *const u8, mode: i32) -> i32;
+    // The process environment, an array of `name=value` C strings
+    // terminated by a null pointer. Iterated by `toy_io_env_*`.
+    static environ: *mut *mut u8;
     fn fopen(path: *const u8, mode: *const u8) -> *mut u8;
     fn fclose(f: *mut u8) -> i32;
     fn fseek(f: *mut u8, offset: i64, whence: i32) -> i32;
@@ -248,7 +251,12 @@ struct ThreadState {
     // (default: empty, matching a compiled binary with no arguments).
     io_args: *mut *const u8,
     io_args_len: u64,
+    // RUNTIME-IO: the `toy_io_random` state. `random_seeded` is what
+    // distinguishes "never seeded" (derive from clock + pid on first
+    // use) from an explicit `random_seed(0)` (stay at 0), so seeding
+    // with 0 is honoured rather than re-derived.
     random_state: u64,
+    random_seeded: bool,
 }
 
 impl Default for ThreadState {
@@ -272,6 +280,7 @@ impl Default for ThreadState {
             io_args: core::ptr::null_mut(),
             io_args_len: 0,
             random_state: 0,
+            random_seeded: false,
         }
     }
 }
@@ -1569,16 +1578,20 @@ pub extern "C" fn toy_io_file_exists(path: *const u8) -> u8 {
 }
 
 /// A pseudo-random u64. xorshift64* seeded from the clock and the
-/// process id — deliberately not reproducible across runs.
+/// process id on first use — or from an explicit `toy_io_random_seed`
+/// call, which makes the sequence reproducible (and therefore
+/// testable across backends). Deliberately not reproducible when
+/// never seeded.
 #[unsafe(no_mangle)]
 pub extern "C" fn toy_io_random() -> u64 {
     let st = thread_state();
-    if st.random_state == 0 {
+    if !st.random_seeded {
         st.random_state = ((unsafe { time(core::ptr::null_mut()) } as u64) << 32)
             ^ (unsafe { getpid() } as u64);
         if st.random_state == 0 {
             st.random_state = 0x9E3779B97F4A7C15;
         }
+        st.random_seeded = true;
     }
     let mut x = st.random_state;
     x ^= x >> 12;
@@ -1586,6 +1599,223 @@ pub extern "C" fn toy_io_random() -> u64 {
     x ^= x >> 27;
     st.random_state = x;
     x.wrapping_mul(0x2545F4914F6CDD1D)
+}
+
+/// Re-seed the `toy_io_random` generator. `seed == 0` is honoured
+/// literally (the sequence stays at 0) rather than re-derived, so
+/// `random_seed(0)` is deterministic too.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_io_random_seed(seed: u64) {
+    let st = thread_state();
+    st.random_state = seed;
+    st.random_seeded = true;
+}
+
+/// Format Unix epoch seconds as a UTC date/time string. A documented
+/// subset of C `strftime` specifiers, implemented in pure Rust so the
+/// interpreter, the JIT and AOT binaries share one implementation
+/// (byte-identical output). Unknown specifiers pass through literally
+/// (`%q` → `%q`), matching libc.
+///
+/// Supported: `%% %a %A %b %B %C %d %D %e %F %H %I %j %m %M %n %p %R
+/// %S %s %t %T %u %w %y %Y %z %Z`. `%z` is always `+0000` and `%Z`
+/// always `UTC` — the conversion is deliberately UTC, never local
+/// time, so a fixed timestamp formats identically regardless of the
+/// host timezone.
+pub fn strftime_utc(fmt: &str, secs: i64) -> String {
+    const DAY_ABBR: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const DAY_FULL: [&str; 7] = [
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+    ];
+    const MON_ABBR: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    const MON_FULL: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+
+    let days = secs.div_euclid(86_400);
+    let secs_of_day = secs.rem_euclid(86_400);
+    let (y, m, d) = civil_from_days(days);
+    let hh = (secs_of_day / 3600) as u32;
+    let mm = ((secs_of_day % 3600) / 60) as u32;
+    let ss = (secs_of_day % 60) as u32;
+    // 1970-01-01 was a Thursday. days=0 → 0=Sunday.
+    let wd = days.rem_euclid(7) + 4;
+    // `%u`: Monday=1 .. Sunday=7.
+    let wd_mon = days.rem_euclid(7) + 3;
+    let doy = day_of_year(y, m, d);
+
+    let mut out = String::new();
+    let mut chars = fmt.chars();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        let Some(spec) = chars.next() else {
+            out.push('%');
+            break;
+        };
+        match spec {
+            '%' => out.push('%'),
+            'a' => out.push_str(DAY_ABBR[(wd % 7) as usize]),
+            'A' => out.push_str(DAY_FULL[(wd % 7) as usize]),
+            'b' => out.push_str(MON_ABBR[(m - 1) as usize]),
+            'B' => out.push_str(MON_FULL[(m - 1) as usize]),
+            'C' => out.push_str(&format!("{:02}", y.div_euclid(100))),
+            'd' => out.push_str(&format!("{:02}", d)),
+            'D' => out.push_str(&format!("{:02}/{:02}/{:02}", m, d, y.rem_euclid(100))),
+            'e' => out.push_str(&format!("{:2}", d)),
+            'F' => out.push_str(&format!("{:04}-{:02}-{:02}", y, m, d)),
+            'H' => out.push_str(&format!("{:02}", hh)),
+            'I' => out.push_str(&format!("{:02}", ((hh + 11) % 12) + 1)),
+            'j' => out.push_str(&format!("{:03}", doy)),
+            'm' => out.push_str(&format!("{:02}", m)),
+            'M' => out.push_str(&format!("{:02}", mm)),
+            'n' => out.push('\n'),
+            'p' => out.push_str(if hh < 12 { "AM" } else { "PM" }),
+            'R' => out.push_str(&format!("{:02}:{:02}", hh, mm)),
+            'S' => out.push_str(&format!("{:02}", ss)),
+            's' => out.push_str(&format!("{secs}")),
+            't' => out.push('\t'),
+            'T' => out.push_str(&format!("{:02}:{:02}:{:02}", hh, mm, ss)),
+            'u' => out.push_str(&format!("{}", ((wd_mon % 7) + 1))),
+            'w' => out.push_str(&format!("{}", wd % 7)),
+            'y' => out.push_str(&format!("{:02}", y.rem_euclid(100))),
+            'Y' => out.push_str(&format!("{:04}", y)),
+            'z' => out.push_str("+0000"),
+            'Z' => out.push_str("UTC"),
+            _ => {
+                out.push('%');
+                out.push(spec);
+            }
+        }
+    }
+    out
+}
+
+/// Days since 1970-01-01 of the given proleptic Gregorian date.
+/// Howard Hinnant's `days_from_civil`.
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let mp = (m + 9) % 12; // [0, 11]
+    let doy = ((153 * mp + 2) / 5 + d - 1) as i64; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146097 + doe - 719468
+}
+
+/// The proleptic Gregorian date of the given days-since-1970-01-01.
+/// Howard Hinnant's `civil_from_days`.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// Day of year (1..=366) for the given date.
+fn day_of_year(y: i64, m: u32, d: u32) -> u32 {
+    let first = days_from_civil(y, 1, 1);
+    let cur = days_from_civil(y, m, d);
+    (cur - first + 1) as u32
+}
+
+/// The `strftime` extern for `core/std/io.t`: format Unix epoch
+/// seconds as a UTC date/time string. `fmt` is a toylang str handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_io_strftime(fmt: *const u8, secs: u64) -> *const u8 {
+    let bytes = if fmt.is_null() { &[][..] } else { str_bytes(fmt) };
+    let f = core::str::from_utf8(bytes).unwrap_or("");
+    let out = strftime_utc(f, secs as i64);
+    toy_str_alloc(out.as_bytes())
+}
+
+/// The process environment as a null-terminated array of `name=value`
+/// C strings, or null if `environ` is unavailable.
+fn io_env_vec() -> *mut *mut u8 {
+    unsafe { environ }
+}
+
+/// Number of environment variables.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_io_env_count() -> u64 {
+    let mut env = io_env_vec();
+    let mut n = 0u64;
+    while !env.is_null() && !unsafe { *env }.is_null() {
+        n += 1;
+        env = unsafe { env.add(1) };
+    }
+    n
+}
+
+/// The name (before `=`) of the `i`-th environment variable;
+/// `""` out of range.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_io_env_name(i: u64) -> *const u8 {
+    io_env_entry(i)
+        .and_then(|bytes| {
+            bytes
+                .iter()
+                .position(|&b| b == b'=')
+                .map(|eq| toy_str_alloc(&bytes[..eq]))
+        })
+        .unwrap_or_else(|| toy_str_alloc(&[]))
+}
+
+/// The value (after `=`) of the `i`-th environment variable;
+/// `""` out of range or when the entry has no `=`.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_io_env_value(i: u64) -> *const u8 {
+    io_env_entry(i)
+        .and_then(|bytes| {
+            bytes
+                .iter()
+                .position(|&b| b == b'=')
+                .map(|eq| toy_str_alloc(&bytes[eq + 1..]))
+        })
+        .unwrap_or_else(|| toy_str_alloc(&[]))
+}
+
+/// The raw bytes of the `i`-th environment entry (`name=value`).
+fn io_env_entry(i: u64) -> Option<&'static [u8]> {
+    let mut env = io_env_vec();
+    let mut k = 0u64;
+    while !env.is_null() && !unsafe { *env }.is_null() {
+        if k == i {
+            let s = unsafe { *env };
+            let len = unsafe { strlen(s) };
+            return Some(unsafe { core::slice::from_raw_parts(s, len) });
+        }
+        k += 1;
+        env = unsafe { env.add(1) };
+    }
+    None
 }
 
 /// Program arguments for the JIT's `toy_io_argc` / `toy_io_arg`.
@@ -1800,5 +2030,64 @@ mod tests {
         assert_eq!(str_bytes(toy_io_arg(0)), b"one");
         assert_eq!(str_bytes(toy_io_arg(1)), b"two");
         assert_eq!(str_bytes(toy_io_arg(2)), b"");
+    }
+
+    #[test]
+    fn strftime_utc_matches_reference_values() {
+        // 0 = 1970-01-01 00:00:00 UTC (Thursday).
+        assert_eq!(strftime_utc("%Y-%m-%d %H:%M:%S", 0), "1970-01-01 00:00:00");
+        assert_eq!(strftime_utc("%F %T", 1_700_000_000), "2023-11-14 22:13:20");
+        assert_eq!(
+            strftime_utc("%a %A %b %B %Y", 1_700_000_000),
+            "Tue Tuesday Nov November 2023"
+        );
+        assert_eq!(strftime_utc("%s", 1_700_000_000), "1700000000");
+        assert_eq!(strftime_utc("%j %u %w", 1_700_000_000), "318 2 2");
+        assert_eq!(strftime_utc("%H:%M %I %p", 1_700_000_000), "22:13 10 PM");
+        assert_eq!(strftime_utc("%z %Z %C%y", 1_700_000_000), "+0000 UTC 2023");
+        // Unknown specifiers pass through literally (libc behaviour).
+        assert_eq!(strftime_utc("%q", 0), "%q");
+        assert_eq!(strftime_utc("100%%", 0), "100%");
+        assert_eq!(strftime_utc("plain text", 0), "plain text");
+    }
+
+    #[test]
+    fn seeded_random_is_reproducible() {
+        toy_io_random_seed(42);
+        let a = toy_io_random();
+        let b = toy_io_random();
+        toy_io_random_seed(42);
+        let a2 = toy_io_random();
+        let b2 = toy_io_random();
+        assert_eq!((a, b), (a2, b2), "same seed must reproduce the sequence");
+        // An explicit zero seed stays at zero rather than being
+        // re-derived from the clock.
+        toy_io_random_seed(0);
+        assert_eq!(toy_io_random(), 0);
+    }
+
+    #[test]
+    fn env_iteration_round_trips_through_the_entries() {
+        // The test process env is visible through `environ`; a
+        // variable we control is guaranteed present regardless of the
+        // runner's environment.
+        // Safety (edition 2024): the mutation is confined to this
+        // single test and removed before it returns.
+        unsafe { std::env::set_var("TOYLANG_RT_ENV_TEST", "hello=world") };
+        let n = toy_io_env_count();
+        assert!(n > 0);
+        let mut found = false;
+        let mut i = 0u64;
+        while i < n {
+            if str_bytes(toy_io_env_name(i)) == b"TOYLANG_RT_ENV_TEST"
+                && str_bytes(toy_io_env_value(i)) == b"hello=world"
+            {
+                found = true;
+            }
+            i += 1;
+        }
+        unsafe { std::env::remove_var("TOYLANG_RT_ENV_TEST") };
+        assert!(found, "the controlled variable must appear in the env list");
+        assert_eq!(str_bytes(toy_io_env_name(n + 5)), b"");
     }
 }

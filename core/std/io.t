@@ -36,6 +36,11 @@ extern fn __extern_io_env_str(name: str) -> str from "toylang_rt" as "toy_io_env
 extern fn __extern_io_read_file_str(path: str) -> str from "toylang_rt" as "toy_io_read_file"
 extern fn __extern_io_file_exists_bool(path: str) -> bool from "toylang_rt" as "toy_io_file_exists"
 extern fn __extern_io_random_u64() -> u64 from "toylang_rt" as "toy_io_random"
+extern fn __extern_io_random_seed(seed: u64) from "toylang_rt" as "toy_io_random_seed"
+extern fn __extern_io_strftime_str(fmt: str, secs: u64) -> str from "toylang_rt" as "toy_io_strftime"
+extern fn __extern_io_env_count_u64() -> u64 from "toylang_rt" as "toy_io_env_count"
+extern fn __extern_io_env_name_str(i: u64) -> str from "toylang_rt" as "toy_io_env_name"
+extern fn __extern_io_env_value_str(i: u64) -> str from "toylang_rt" as "toy_io_env_value"
 
 # Read one line from stdin, without the trailing newline (`\n`, or
 # `\r\n`). `""` at EOF.
@@ -88,4 +93,67 @@ pub fn now() -> u64 {
 # A pseudo-random `u64`. Not reproducible.
 pub fn random() -> u64 {
     __extern_io_random_u64()
+}
+
+# Re-seed the `random()` generator. After `random_seed(s)` the
+# sequence is reproducible (identical across runs and backends for
+# the same `s`), which is how programs print deterministic results
+# or tests assert on them. `random_seed(0u64)` is honoured literally
+# (the sequence stays at 0).
+pub fn random_seed(seed: u64) {
+    __extern_io_random_seed(seed)
+}
+
+# Format Unix epoch seconds as a UTC date/time string using a
+# documented subset of C `strftime` specifiers:
+#
+#   %%   literal `%`
+#   %a %A  abbreviated / full weekday name (Sun..Sat / Sunday..)
+#   %b %B  abbreviated / full month name (Jan..Dec / January..)
+#   %C   century (year / 100, zero-padded)
+#   %d   day of month 01-31
+#   %D   %m/%d/%y
+#   %e   day of month 1-31 (space-padded)
+#   %F   %Y-%m-%d
+#   %H   hour 00-23
+#   %I   hour 01-12
+#   %j   day of year 001-366
+#   %m   month 01-12
+#   %M   minute 00-59
+#   %n   newline
+#   %p   AM / PM
+#   %R   %H:%M
+#   %S   second 00-59
+#   %s   epoch seconds
+#   %t   tab
+#   %T   %H:%M:%S
+#   %u   weekday 1-7 (Monday=1)
+#   %w   weekday 0-6 (Sunday=0)
+#   %y   year without century 00-99
+#   %Y   full year, zero-padded to 4 digits
+#   %z   UTC offset (`+0000`)
+#   %Z   timezone name (`UTC`)
+#
+# The conversion is **UTC**, never local time, so a fixed timestamp
+# formats identically regardless of the host timezone. Unknown
+# specifiers pass through literally (`%q` → `%q`), matching libc.
+pub fn strftime(fmt: str, secs: u64) -> str {
+    __extern_io_strftime_str(fmt, secs)
+}
+
+# Number of environment variables.
+pub fn env_count() -> u64 {
+    __extern_io_env_count_u64()
+}
+
+# The name (before `=`) of the `i`-th environment variable; `""` out
+# of range. The order is the process's `environ` order.
+pub fn env_name(i: u64) -> str {
+    __extern_io_env_name_str(i)
+}
+
+# The value (after `=`) of the `i`-th environment variable; `""` out
+# of range.
+pub fn env_value(i: u64) -> str {
+    __extern_io_env_value_str(i)
 }

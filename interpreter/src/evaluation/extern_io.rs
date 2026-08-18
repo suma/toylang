@@ -35,6 +35,13 @@ thread_local! {
     static IO_ARGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
+// The `random()` generator's xorshift64* state. `None` = never seeded
+// (derive from the clock + pid on first use); `Some(s)` = explicit
+// seed from `io_random_seed`, honoured literally (including `0`).
+thread_local! {
+    static RANDOM_STATE: RefCell<Option<u64>> = const { RefCell::new(None) };
+}
+
 pub fn set_program_args(args: Vec<String>) {
     IO_ARGS.with(|a| *a.borrow_mut() = args);
 }
@@ -54,6 +61,11 @@ pub fn build_io_registry() -> HashMap<&'static str, ExternFn> {
     m.insert("__extern_io_read_file_str", io_read_file);
     m.insert("__extern_io_file_exists_bool", io_file_exists);
     m.insert("__extern_io_random_u64", io_random);
+    m.insert("__extern_io_random_seed", io_random_seed);
+    m.insert("__extern_io_strftime_str", io_strftime);
+    m.insert("__extern_io_env_count_u64", io_env_count);
+    m.insert("__extern_io_env_name_str", io_env_name);
+    m.insert("__extern_io_env_value_str", io_env_value);
     // RUNTIME-PORT R2: the libc names `core/std/io.t` now declares
     // `from "c"`. `read_line` / `now` are implemented in toylang on
     // top of these.
@@ -192,30 +204,132 @@ fn io_file_exists(args: &[Value]) -> Result<Value, InterpreterError> {
 }
 
 /// A pseudo-random `u64`. xorshift64* seeded from the clock and the
-/// process id — deliberately not reproducible, so programs that print
-/// it cannot be compared across runs.
+/// process id on first use — or from an explicit `io_random_seed`,
+/// which makes the sequence reproducible (and therefore testable
+/// across backends). Deliberately not reproducible when never seeded.
+/// Mirrors `toylang_rt::toy_io_random` step-for-step so the sequences
+/// agree between the interpreter and the compiled backends.
 fn io_random(_args: &[Value]) -> Result<Value, InterpreterError> {
-    thread_local! {
-        static STATE: RefCell<u64> = const { RefCell::new(0) };
-    }
-    let seed = STATE.with(|s| {
+    let out = RANDOM_STATE.with(|s| {
         let mut st = *s.borrow();
-        if st == 0 {
-            st = (SystemTime::now()
+        if st.is_none() {
+            let mut derived = (SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(0))
                 ^ ((std::process::id() as u64) << 32);
-            if st == 0 {
-                st = 0x9E3779B97F4A7C15;
+            if derived == 0 {
+                derived = 0x9E3779B97F4A7C15;
             }
+            st = Some(derived);
         }
-        *s.borrow_mut() = st;
-        st
+        let mut x = st.expect("seeded above");
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        // Persist the advanced state, mirroring `toylang_rt` — the
+        // next call starts from the mixed value, not the seed.
+        *s.borrow_mut() = Some(x);
+        x.wrapping_mul(0x2545F4914F6CDD1D)
     });
-    let mut x = seed;
-    x ^= x >> 12;
-    x ^= x << 25;
-    x ^= x >> 27;
-    Ok(u64_result(x.wrapping_mul(0x2545F4914F6CDD1D)))
+    Ok(u64_result(out))
+}
+
+/// Re-seed the `random()` generator. `seed == 0` is honoured literally
+/// (the sequence stays at 0) rather than re-derived, so
+/// `random_seed(0)` is deterministic too. Mirrors
+/// `toylang_rt::toy_io_random_seed`.
+fn io_random_seed(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_io_random_seed` takes 1 argument".to_string(),
+            expected: 1,
+            found: args.len(),
+        });
+    }
+    let seed = match args[0] {
+        Value::UInt64(v) => v,
+        _ => {
+            return Err(InterpreterError::InternalError(
+                "extern fn `__extern_io_random_seed`: expected u64 seed".to_string(),
+            ));
+        }
+    };
+    RANDOM_STATE.with(|s| *s.borrow_mut() = Some(seed));
+    Ok(Value::Unit)
+}
+
+/// `strftime(fmt, secs)` — format Unix epoch seconds as a UTC
+/// date/time string. Delegates to the same pure `strftime_utc` the
+/// compiled backends call (`toylang_rt`), so the interpreter, the JIT
+/// and AOT binaries produce byte-identical output. UTC, never local
+/// time — a fixed timestamp formats identically on any host.
+fn io_strftime(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 2 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_io_strftime_str` takes 2 arguments".to_string(),
+            expected: 2,
+            found: args.len(),
+        });
+    }
+    let fmt = str_arg(&args[0], "__extern_io_strftime_str")?;
+    let secs = match args[1] {
+        Value::UInt64(v) => v,
+        _ => {
+            return Err(InterpreterError::InternalError(
+                "extern fn `__extern_io_strftime_str`: expected u64 seconds".to_string(),
+            ));
+        }
+    };
+    Ok(str_result(toylang_rt::strftime_utc(&fmt, secs as i64)))
+}
+
+/// Number of environment variables. Mirrors `toylang_rt::toy_io_env_count`.
+fn io_env_count(_args: &[Value]) -> Result<Value, InterpreterError> {
+    Ok(u64_result(std::env::vars().count() as u64))
+}
+
+/// The name (before `=`) of the `i`-th environment variable; `""` out
+/// of range. Order is `environ` order — the same order the compiled
+/// backends report, so the three agree.
+fn io_env_name(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_io_env_name_str` takes 1 argument".to_string(),
+            expected: 1,
+            found: args.len(),
+        });
+    }
+    let i = match args[0] {
+        Value::UInt64(v) => v as usize,
+        _ => {
+            return Err(InterpreterError::InternalError(
+                "extern fn `__extern_io_env_name_str`: expected u64 index".to_string(),
+            ));
+        }
+    };
+    let name = std::env::vars().nth(i).map(|(k, _)| k).unwrap_or_default();
+    Ok(str_result(name))
+}
+
+/// The value (after `=`) of the `i`-th environment variable; `""` out
+/// of range.
+fn io_env_value(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_io_env_value_str` takes 1 argument".to_string(),
+            expected: 1,
+            found: args.len(),
+        });
+    }
+    let i = match args[0] {
+        Value::UInt64(v) => v as usize,
+        _ => {
+            return Err(InterpreterError::InternalError(
+                "extern fn `__extern_io_env_value_str`: expected u64 index".to_string(),
+            ));
+        }
+    };
+    let value = std::env::vars().nth(i).map(|(_, v)| v).unwrap_or_default();
+    Ok(str_result(value))
 }

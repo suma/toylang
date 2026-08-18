@@ -96,3 +96,73 @@ fn random_is_nonzero_and_changes() {
     let r = run_with_args("fn main() -> u64 { io::random() }", vec![]).expect("run");
     assert!(r != 0, "random() should not stay at the zero seed");
 }
+
+#[test]
+fn random_seed_makes_random_reproducible() {
+    let r = run_with_args(
+        "fn main() -> u64 {
+            io::random_seed(42u64)
+            val a = io::random()
+            val b = io::random()
+            io::random_seed(42u64)
+            val a2 = io::random()
+            val b2 = io::random()
+            if a == a2 && b == b2 { 1u64 } else { 0u64 }
+        }",
+        vec![],
+    )
+    .expect("run");
+    assert_eq!(r, 1);
+}
+
+#[test]
+fn zero_seed_is_honoured_literally() {
+    let r = run_with_args(
+        "fn main() -> u64 {
+            io::random_seed(0u64)
+            if io::random() == 0u64 && io::random() == 0u64 { 1u64 } else { 0u64 }
+        }",
+        vec![],
+    )
+    .expect("run");
+    assert_eq!(r, 1);
+}
+
+#[test]
+fn strftime_formats_fixed_timestamps_in_utc() {
+    let r = run_with_args(
+        r#"fn main() -> u64 {
+            if io::strftime("%Y-%m-%d %H:%M:%S %a %j %s", 1700000000u64) == "2023-11-14 22:13:20 Tue 318 1700000000"
+                && io::strftime("%F %T %z %Z", 0u64) == "1970-01-01 00:00:00 +0000 UTC"
+                && io::strftime("%q %%", 0u64) == "%q %"
+                && io::strftime("%b %B %u %w", 1700000000u64) == "Nov November 2 2"
+            { 1u64 } else { 0u64 }
+        }"#,
+        vec![],
+    )
+    .expect("run");
+    assert_eq!(r, 1);
+}
+
+#[test]
+fn env_listing_reports_names_and_values() {
+    std::env::set_var("TOYLANG_IO_TEST_VAR", "hello");
+    let r = run_with_args(
+        "fn main() -> u64 {
+            val n = io::env_count()
+            var found = false
+            var i: u64 = 0u64
+            while i < n {
+                if io::env_name(i) == \"TOYLANG_IO_TEST_VAR\" && io::env_value(i) == \"hello\" {
+                    found = true
+                }
+                i = i + 1u64
+            }
+            if found && n > 0u64 && io::env_name(n + 10u64) == \"\" { 1u64 } else { 0u64 }
+        }",
+        vec![],
+    )
+    .expect("run");
+    std::env::remove_var("TOYLANG_IO_TEST_VAR");
+    assert_eq!(r, 1);
+}

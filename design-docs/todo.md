@@ -11,6 +11,23 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-18
+- **RUNTIME-IO 拡張: 乱数シード / 時刻フォーマット / 環境変数一覧 (3 バック
+  エンド)** — `core/std/io.t` に `random_seed(seed)` / `strftime(fmt, secs)` /
+  `env_count()` / `env_name(i)` / `env_value(i)` を追加。**設計上の要点**:
+  (1) `random_seed(s)` で `random()` が再現可能になる (0 も literal に保持、
+  シーケンスは 3 バックエンド一致 — interpreter の xorshift と `toylang_rt` を
+  逐語一致させた。初回 derive と explicit seed を区別する seeded フラグを
+  ThreadState に追加)。(2) `strftime` は C `strftime` の文書化された部分集合で
+  **UTC 固定** (ローカル時刻にしない) — 決定性を 3 バックエンドで保証するため。
+  実装は `toylang_rt` の純関数 `strftime_utc` 1 本で、interpreter が
+  `toylang_rt` を dependency にして**同じ関数を共有** (RUNTIME-PORT の
+  「ミラーを作らない」方針)。(3) 環境変数一覧は `environ` 順の
+  `env_count` / `env_name` / `env_value` (interpreter の `std::env::vars` も
+  同じ順)。**挫折した設計**: `env_names() -> Vec<String>` は AOT の
+  module-qualified compound return 制約 (`io::env_names()` が lower 不能) に
+  当たるため stdlib から外した (raw accessor で十分)。テスト: io_tests 4 +
+  consistency 1 (seeded random / strftime / env 一覧を 3 バックエンド一致で
+  pin)、toylang_rt 単体 2、`io_demo.t` が example sweep に乗る。
 - **TRAIT-BOUND: generic trait の bound を call-site で強制** —
   `fn first<I: Iter<i64>>(it: I)` が「型引数込みでその trait を
   実装している struct」だけを受け付けるように。従来は
@@ -341,12 +358,10 @@
 > 2026-08-16 に「言語機能として何が残っているか」を実際に叩いて洗い出した結果。
 > 言語のコアはほぼ揃っており、**実プログラムを書けなくしているのはこの節**。
 
-- **RUNTIME-IO 拡張: 乱数シード / 時刻フォーマット / 環境変数一覧** ★ — 最小
-  セット (`read_line` / `argc` / `arg` / `env_var` / `read_file` /
-  `file_exists` / `now` / `random`) は 2026-08-16 に landing。`random()` は
-  非決定的 (テスト不能)、`now()` は epoch 秒のみ。`Result` を返す IO
-  (失敗理由付き read_file) は extern 境界が compound return を運べないため
-  未対応 — 将来 FFI の struct-return 対応か builtin 化で。
+- **RUNTIME-IO: `Result` を返す IO** ★ — 失敗理由付き `read_file` 等。
+  extern 境界が compound return を運べないため未対応 — 将来 FFI の
+  struct-return 対応か builtin 化で (2026-08-18 に乱数シード / 時刻
+  フォーマット / 環境変数一覧は landing 済み)。
 - **STDLIB-ORD: 順序比較 trait とソート** ★ — `trait Hash` はあるが `Ord` /
   `PartialOrd` 相当が無く、`Vec` のソートも無い。`<` の演算子オーバーロード
   (`lt` / `le` / `gt` / `ge`) が既にあるので、規約をそちらに寄せるか

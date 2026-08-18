@@ -34,23 +34,63 @@ use interpreter::{RunOptions, RunOutcome};
 // binary is single-process but multi-threaded under libtest; a
 // `Mutex` is sufficient because the critical section is tiny
 // (HashMap lookup / insert) and the work itself is CPU-bound.
-static INTERP_CACHE: LazyLock<Mutex<HashMap<(String, bool), Option<u64>>>> =
+static AST_LANES_CACHE: LazyLock<Mutex<HashMap<(String, bool), Option<(u64, Option<i64>)>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static JIT_CACHE: LazyLock<Mutex<HashMap<(String, bool), i32>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Memoizes `needs_core`, which is asked once per lane per source.
+static NEEDS_CORE_CACHE: LazyLock<Mutex<HashMap<String, bool>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Wrapper around `compile_to_jit_main_with_options` that mirrors
-/// the lite-path pattern: try without core auto-load first, fall
-/// back to the full options on failure. Same shape as
-/// `e2e_batched.rs::compile_to_jit_lazy_core`.
-fn compile_jit_lazy_core(source: &str) -> Result<compiler::JitProgram, String> {
-    let lite = CompilerOptions::new(PathBuf::from("<jit>"));
-    if let Ok(prog) = compile_to_jit_main_with_options(source, &lite) {
-        return Ok(prog);
+/// Does `source` need the auto-loaded `core/` modules to type-check?
+///
+/// This is the *single* place the lite-vs-full decision is made. Each
+/// lane used to discover it independently by attempting its own lite
+/// run and falling back on failure, which meant a stdlib-using program
+/// paid a thrown-away attempt per lane. Deciding once — with the
+/// cheapest probe there is, a parse plus a no-core type-check, no
+/// lowering and no codegen — and handing the answer to every lane
+/// makes that duplicate structurally impossible.
+///
+/// The answer is memoized per source: `assert_consistent` and the
+/// helpers it calls all ask, and sub-tests reuse sources.
+fn needs_core(source: &str) -> bool {
+    if let Some(cached) = NEEDS_CORE_CACHE.lock().unwrap().get(source) {
+        return *cached;
     }
-    let mut full = lite.clone();
-    full.core_modules_dir = Some(core_modules_dir());
-    compile_to_jit_main_with_options(source, &full)
+    let mut parser = frontend::ParserWithInterner::new(source);
+    let answer = match parser.parse_program() {
+        Ok(mut program) => {
+            let interner = parser.get_string_interner();
+            interpreter::check_typing_with_core_modules(
+                &mut program,
+                interner,
+                Some(source),
+                Some("test.t"),
+                None,
+            )
+            .is_err()
+        }
+        // A parse error is not a core question; let the lanes report it
+        // against the canonical (with-core) configuration.
+        Err(_) => true,
+    };
+    NEEDS_CORE_CACHE
+        .lock()
+        .unwrap()
+        .insert(source.to_string(), answer);
+    answer
+}
+
+/// Compile `source` to an in-process JIT program without auto-loading
+/// core. Only the lite paths call this, and they have already
+/// established that the source needs no stdlib, so there is nothing to
+/// fall back to — the previous version probed without core and then
+/// retried with it, a retry that could only fire after a caller had
+/// already proven the no-core configuration works.
+fn compile_jit_lite(source: &str) -> Result<compiler::JitProgram, String> {
+    let options = CompilerOptions::new(PathBuf::from("<jit>"));
+    compile_to_jit_main_with_options(source, &options)
 }
 
 /// Repo-relative content-addressed link cache. Pinned outside `/tmp` so
@@ -89,12 +129,10 @@ fn unique_path(stem: &str) -> PathBuf {
 /// produced. Numeric programs are reduced to `u64` (with i64 sign-cast
 /// folded into u64 via the same `as` semantics the interpreter exposes).
 fn interpreter_value(source: &str) -> u64 {
-    // Try without auto-loading core modules first. Most consistency
-    // sub-tests are pure user code (no stdlib references); skipping
-    // the ~150 ms type-check pass over `core/std/*.t` shaves a
-    // measurable amount off every such test. Fall back to the full
-    // core-aware path if the lite path fails (e.g. the source
-    // references `Vec`, `Dict`, `String`, `Option`, ...).
+    // Most consistency sub-tests are pure user code (no stdlib
+    // references), and skipping the type-check pass over `core/std/*.t`
+    // shaves a measurable amount off every such test. Both outcomes of
+    // the lite attempt are memoized, so the fallback never re-runs it.
     if let Some(v) = interpreter_value_with_core(source, None) {
         return v;
     }
@@ -102,39 +140,82 @@ fn interpreter_value(source: &str) -> u64 {
         .expect("interpreter type-check / execute (with core)")
 }
 
-fn interpreter_value_with_core(
-    source: &str,
-    core_dir: Option<PathBuf>,
-) -> Option<u64> {
+fn interpreter_value_with_core(source: &str, core_dir: Option<PathBuf>) -> Option<u64> {
+    ast_lanes(source, core_dir).map(|(value, _ir_vm)| value)
+}
+
+/// The two lanes that run straight off a type-checked AST — the
+/// tree-walker and the IR VM — sharing one frontend pass.
+///
+/// They used to parse and type-check `source` independently. In the
+/// with-core configuration that meant integrating and type-checking
+/// every `core/std/*.t` module twice for the same program, which is the
+/// dominant per-test cost once a test leaves the lite path. Neither
+/// lane mutates the AST (`execute_program` takes `&File`, and the pools
+/// hold no interior mutability), so one checked program feeds both.
+///
+/// `None` means the program does not type-check or run in this
+/// configuration; that is also the lite/full probe every caller uses.
+/// The IR VM half is separately `None` when lowering fails or the
+/// module leaves the VM's supported subset — the "lane not eligible"
+/// signal, not a failure.
+///
+/// Both outcomes are memoized. Failures used to return early without
+/// recording anything, so a source that cannot run in this
+/// configuration was re-parsed and re-type-checked on every ask.
+fn ast_lanes(source: &str, core_dir: Option<PathBuf>) -> Option<(u64, Option<i64>)> {
     let key = (source.to_string(), core_dir.is_some());
     {
-        let cache = INTERP_CACHE.lock().unwrap();
+        let cache = AST_LANES_CACHE.lock().unwrap();
         if let Some(cached) = cache.get(&key) {
             return *cached;
         }
     }
-    let mut parser = frontend::ParserWithInterner::new(source);
-    let mut program = parser.parse_program().ok()?;
-    let interner = parser.get_string_interner();
-    interpreter::check_typing_with_core_modules(
-        &mut program,
-        interner,
-        Some(source),
-        Some("test.t"),
-        core_dir.as_deref(),
-    )
-    .ok()?;
-    let result = interpreter::execute_program(&program, interner, Some(source), Some("test.t"))
+    let lanes = (|| {
+        let mut parser = frontend::ParserWithInterner::new(source);
+        let mut program = parser.parse_program().ok()?;
+        let interner = parser.get_string_interner();
+        interpreter::check_typing_with_core_modules(
+            &mut program,
+            interner,
+            Some(source),
+            Some("test.t"),
+            core_dir.as_deref(),
+        )
         .ok()?;
-    let v = match &*result.borrow() {
-        Object::UInt64(n) => *n,
-        Object::Int64(n) => *n as u64,
-        Object::Bool(b) => *b as u64,
-        other => panic!("unexpected interpreter result: {other:?}"),
-    };
-    let mut cache = INTERP_CACHE.lock().unwrap();
-    cache.insert(key, Some(v));
-    Some(v)
+
+        // Tree-walker lane.
+        let result =
+            interpreter::execute_program(&program, interner, Some(source), Some("test.t")).ok()?;
+        let value = match &*result.borrow() {
+            Object::UInt64(n) => *n,
+            Object::Int64(n) => *n as u64,
+            Object::Bool(b) => *b as u64,
+            other => panic!("unexpected interpreter result: {other:?}"),
+        };
+
+        // IR VM lane, off the same checked AST.
+        let ir_vm = (|| {
+            let contract_msgs = compiler::ContractMessages::intern(interner);
+            let ir_module =
+                compiler::lower::lower_program(&program, interner, &contract_msgs, false).ok()?;
+            if !interpreter::ir_vm::eligibility::ir_vm_supported(&ir_module) {
+                return None;
+            }
+            // MEMORY_PROFILING M4: this calls the VM directly rather
+            // than through `execute_entry`, which is where a run's
+            // allocation counters are zeroed. Without this a program
+            // that reads `__builtin_alloc_count()` would see the
+            // tree-walker lane's allocations too, since both lanes run
+            // in this process.
+            interpreter::heap::reset_profile();
+            interpreter::ir_vm::run_module_with_interner(&ir_module, Some(interner)).ok()
+        })();
+
+        Some((value, ir_vm))
+    })();
+    AST_LANES_CACHE.lock().unwrap().insert(key, lanes);
+    lanes
 }
 
 /// Run `source` through the in-process interpreter with the JIT path
@@ -213,33 +294,12 @@ fn try_compiler_exit_code(source: &str, stem: &str, with_core: bool) -> Option<i
     result
 }
 
-/// Run `source` through the IR VM (AST → lowering → execute).
-/// Returns `None` when lowering fails, type-check fails, or the
-/// lowered IR contains instructions outside the Phase 1 scalar subset.
+/// The IR VM lane's view of the shared frontend pass. `None` when the
+/// program does not type-check, when lowering fails, or when the
+/// lowered IR leaves the Phase 1 scalar subset.
 fn ir_vm_exit_code(source: &str, with_core: bool) -> Option<i64> {
-    let mut parser = frontend::ParserWithInterner::new(source);
-    let mut program = parser.parse_program().ok()?;
-    let interner = parser.get_string_interner();
-    interpreter::check_typing_with_core_modules(
-        &mut program,
-        interner,
-        Some(source),
-        Some("test.t"),
-        if with_core { Some(core_modules_dir()) } else { None }.as_deref(),
-    )
-    .ok()?;
-    let contract_msgs = compiler::ContractMessages::intern(interner);
-    let ir_module = compiler::lower::lower_program(&program, interner, &contract_msgs, false).ok()?;
-    if !interpreter::ir_vm::eligibility::ir_vm_supported(&ir_module) {
-        return None;
-    }
-    // MEMORY_PROFILING M4: this calls the VM directly rather than
-    // through `execute_entry`, which is where a run's allocation
-    // counters are zeroed. Without this a program that reads
-    // `__builtin_alloc_count()` would see the tree-walker column's
-    // allocations too, since both columns run in this process.
-    interpreter::heap::reset_profile();
-    interpreter::ir_vm::run_module_with_interner(&ir_module, Some(interner)).ok()
+    let core_dir = with_core.then(core_modules_dir);
+    ast_lanes(source, core_dir).and_then(|(_value, ir_vm)| ir_vm)
 }
 
 /// Assert that the interpreter result, the JIT-compiled binary's exit
@@ -247,12 +307,13 @@ fn ir_vm_exit_code(source: &str, with_core: bool) -> Option<i64> {
 /// 0xff` shell truncation applied uniformly so test programs need not
 /// stay below 256 to pass. Any divergence pinpoints which pair drifted.
 ///
-/// Each path tries to compile / run *without* auto-loading the core
-/// modules first. When all three backends agree under that lite
-/// configuration the test stays on the fast path and saves roughly
-/// 150 ms × 3 spawns per sub-test. Any failure (e.g. the source
-/// references a stdlib symbol) falls back to the full core-aware
-/// path, so the visible semantics never change.
+/// `needs_core` decides once, up front, whether the source needs the
+/// auto-loaded stdlib; every lane then runs exactly once in that
+/// configuration. Pure user code (most sub-tests) skips the type-check
+/// pass over `core/std/*.t` in all four lanes. The lite lanes are still
+/// allowed to fail or disagree — if they do we redo the comparison
+/// with core, so the diagnostic the user sees comes from the
+/// configuration that matches the production binaries.
 ///
 /// Phase 1+: when the IR VM lane is eligible, a 4-way agreement
 /// (interpreter / compiler / JIT / IR VM) is required on the fast path.
@@ -260,13 +321,17 @@ fn assert_consistent(source: &str, stem: &str) {
     if skip_e2e() {
         return;
     }
-    // Fast path: if all backends succeed without auto-loading core
-    // modules, we use in-process drivers to skip both the stdlib
-    // type-check (~150 ms) AND the JIT spawn (~1-2 s of interpreter
-    // binary startup).
+    // Fast path: in-process drivers, no stdlib auto-load. This also
+    // skips the JIT spawn (~1-2 s of interpreter binary startup).
+    // The no-core interpreter run *is* the lite/full probe: it is the
+    // cheapest lane (no lowering, no codegen, no link) and the `&&`
+    // chain short-circuits on it, so a stdlib-using source never
+    // reaches the lanes that would only throw their work away. Its
+    // result — success and failure alike — is memoized, so the
+    // canonical path below re-asks for free.
     if let Some(interp) = interpreter_value_with_core(source, None)
         && let Some(compiled) = try_compiler_exit_code(source, stem, false)
-        && let Ok(jit_prog) = compile_jit_lazy_core(source)
+        && let Ok(jit_prog) = compile_jit_lite(source)
     {
         let jit = jit_prog.run();
         let compiled = compiled as u64;
@@ -278,10 +343,8 @@ fn assert_consistent(source: &str, stem: &str) {
             return;
         }
     }
-    // Disagreement on the lite path falls through to the canonical
-    // full path below, so the diagnostic the user sees is from the
-    // configuration that matches the production binaries.
-    let interp = interpreter_value(source);
+    let interp = interpreter_value_with_core(source, Some(core_modules_dir()))
+        .expect("interpreter type-check / execute (with core)");
     let compiled = compiler_exit_code(source, stem, true) as u64;
     let jit = jit_exit_code(source, stem, true) as u64;
     assert_eq!(
@@ -373,14 +436,13 @@ fn compiler_stdout(source: &str, stem: &str) -> String {
 /// interpreter-vs-compiler generic-instance type-args mismatch that
 /// Phase "interpreter generic print" tracked down).
 ///
-/// Lite path: try all three backends with `TOYLANG_CORE_MODULES=""`
-/// (skip stdlib auto-load) first. When all three succeed AND the
-/// outputs agree, the test wins ~150 ms × 3 spawns of stdlib
-/// type-checking. Programs that reference stdlib symbols
-/// (`Vec`, `String`, `Option`, ...) fail compile in the lite path,
-/// so we fall back to the canonical with-core path. The lite path's
-/// AOT compile uses `try_compiler_stdout` (returns None on failure)
-/// to avoid panicking when stdlib symbols are missing.
+/// Lite path: same `needs_core` decision as `assert_consistent`. When
+/// the source is pure user code all three backends skip the stdlib
+/// auto-load; when it is not, none of them attempts a lite run that
+/// would only be thrown away. The lite lanes may still fail or
+/// disagree, in which case we fall back to the canonical with-core
+/// path. The lite path's AOT compile uses `try_compiler_stdout`
+/// (returns None on failure) so that fallback does not panic.
 fn assert_stdout_consistent(source: &str, stem: &str) {
     if skip_e2e() {
         return;
@@ -392,8 +454,9 @@ fn assert_stdout_consistent(source: &str, stem: &str) {
     // in-process stdout-capturing API for it yet (and the
     // interpreter spawn is comparatively cheap once stdlib
     // auto-load is skipped).
-    if let Some(compiled) = try_compiler_stdout(source, &format!("{stem}_aot_lite"), false)
-        && let Ok(jit_prog) = compile_jit_lazy_core(source) {
+    if !needs_core(source)
+        && let Some(compiled) = try_compiler_stdout(source, &format!("{stem}_aot_lite"), false)
+        && let Ok(jit_prog) = compile_jit_lite(source) {
             let interp = interpreter_stdout(source, &format!("{stem}_interp_lite"), false);
             let (_exit, jit) = jit_prog.run_capturing_stdout();
             if interp == compiled && interp == jit {

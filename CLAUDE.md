@@ -1,5 +1,6 @@
 # CLAUDE.md
-以下日本語のみで書いてください。ただし、コード内のコメントとgitコミットメッセージは英語で記述してください。
+以下日本語のみで書いてください。ただし、コード内のコメント、gitコミットメッセージ、
+および `docs/language.md` (言語仕様の正本) は英語で記述してください。
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 

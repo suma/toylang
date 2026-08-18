@@ -7,28 +7,23 @@
 //! orchestration. Nothing here is on the hot path — it runs once per
 //! `import` declaration before type checking begins.
 //!
-//! The integration is a three-phase walk over the module's pools so we can
-//! handle circular references between expressions and statements:
-//!
-//!   1. **Placeholder phase**: allocate one entry in the main pool for every
-//!      module entry, recording the mapping. The placeholder values
-//!      (`Expr::Null` / `Stmt::Break`) are temporary and never observed
-//!      outside this module.
-//!   2. **Remap phase**: walk module entries and translate them into the
-//!      main pool's ID space using the mapping table. Pool update is still
-//!      a TODO for non-trivial cases (see inline comments).
-//!   3. **Top-level phase**: copy struct decls and functions across.
+//! The integration appends the module's pools onto the main pools in
+//! module-index order. The main index of a module node is therefore
+//! `base + module_index` (pure arithmetic — see `map_expr` / `map_stmt`),
+//! and symbols are translated through the cached `remap_symbol` /
+//! `remap_type_symbol`. Struct / enum / trait / impl declarations live in
+//! the module's statement pool, so the pool copy carries them across;
+//! functions are remapped and returned for the caller to append.
 //!
 //! The two public entry points are `load_and_integrate_module` (used during
 //! `setup_type_checker_with_modules`) and `integrate_module_into_program`
 //! (re-exported by `lib.rs` for crate consumers).
 
-use std::collections::HashMap;
 use std::rc::Rc;
 use frontend::ast::*;
 use frontend::ast::module_interface::ModuleInterface;
 use frontend::type_decl::TypeDecl;
-use string_interner::{DefaultStringInterner, DefaultSymbol};
+use string_interner::{DefaultStringInterner, DefaultSymbol, Symbol};
 
 /// Try to load a cached `ModuleInterface` for the given source.
 ///
@@ -45,15 +40,34 @@ pub fn try_load_cached_interface(
 }
 
 /// Per-import scratch context. Owns the main / module borrows and the
-/// `expr_mapping` / `stmt_mapping` tables that translate IDs across
-/// pools.
+/// pool-offset tables that translate IDs across pools.
+///
+/// `expr_base` / `stmt_base` are the main-pool lengths at the start of
+/// this module's copy pass. Module pool indices are appended to the
+/// main pools in module-index order, so the translation is arithmetic
+/// (`main_ref = base + module_ref`) — no per-node mapping table is
+/// needed (see `integrate`).
 pub(crate) struct AstIntegrationContext<'a> {
     main_program: &'a mut File,
     module_program: &'a File,
     main_string_interner: &'a mut DefaultStringInterner,
     module_string_interner: &'a DefaultStringInterner,
-    expr_mapping: HashMap<u32, ExprRef>, // module ExprRef -> main ExprRef
-    stmt_mapping: HashMap<u32, StmtRef>, // module StmtRef -> main StmtRef
+    /// Main-pool `ExprRef` base for this module's expression copy.
+    expr_base: u32,
+    /// Main-pool `StmtRef` base for this module's statement copy.
+    stmt_base: u32,
+    /// Module-symbol → main-symbol translation cache. `remap_symbol`
+    /// interns every occurrence into the main interner; the same
+    /// module symbol (e.g. `u64`) recurs hundreds of times per module,
+    /// so caching the translation avoids the interner hash lookup on
+    /// every occurrence. Indexed by `DefaultSymbol::to_usize()`
+    /// (module interner symbols are dense `0..len`); `None` = not yet
+    /// translated.
+    symbol_cache: Vec<Option<DefaultSymbol>>,
+    /// Separate cache for `remap_type_symbol`: the stdlib-alias path
+    /// (`__std_<name>`) produces a different main symbol than the
+    /// plain path, so the two caches must not share entries.
+    type_symbol_cache: Vec<Option<DefaultSymbol>>,
     /// Stdlib type names (struct + enum decl names declared by any
     /// auto-loaded core module) that the user has shadowed with their
     /// own declaration. Computed up-front by the caller (lib.rs's
@@ -89,8 +103,10 @@ impl<'a> AstIntegrationContext<'a> {
             module_program,
             main_string_interner,
             module_string_interner,
-            expr_mapping: HashMap::new(),
-            stmt_mapping: HashMap::new(),
+            expr_base: 0,
+            stmt_base: 0,
+            symbol_cache: vec![None; module_string_interner.len()],
+            type_symbol_cache: vec![None; module_string_interner.len()],
             shadowed_stdlib_types,
         }
     }
@@ -120,15 +136,21 @@ impl<'a> AstIntegrationContext<'a> {
     /// generic param that happens to be spelled `Option` (silly but
     /// legal) doesn't get unexpectedly renamed inside a generic body.
     fn remap_type_symbol(&mut self, symbol: DefaultSymbol) -> Result<DefaultSymbol, String> {
+        let idx = symbol.to_usize();
+        if let Some(cached) = self.type_symbol_cache[idx] {
+            return Ok(cached);
+        }
         let symbol_str = self
             .module_string_interner
             .resolve(symbol)
             .ok_or("Cannot resolve symbol")?;
-        if let Some(alias) = self.aliased_name(symbol_str) {
-            Ok(self.main_string_interner.get_or_intern(&alias))
+        let remapped = if let Some(alias) = self.aliased_name(symbol_str) {
+            self.main_string_interner.get_or_intern(&alias)
         } else {
-            Ok(self.main_string_interner.get_or_intern(symbol_str))
-        }
+            self.main_string_interner.get_or_intern(symbol_str)
+        };
+        self.type_symbol_cache[idx] = Some(remapped);
+        Ok(remapped)
     }
 
 
@@ -664,10 +686,9 @@ impl<'a> AstIntegrationContext<'a> {
                     };
                     // A1 default-body remap: trait default bodies live in
                     // the module's stmt pool, so translate the StmtRef
-                    // through `stmt_mapping` just like MethodFunction.code.
+                    // through `map_stmt` just like MethodFunction.code.
                     let remapped_body = match &sig.body {
-                        Some(body_ref) => Some(*self.stmt_mapping.get(&body_ref.0)
-                            .ok_or("Cannot find trait default body stmt mapping")?),
+                        Some(body_ref) => Some(self.map_stmt(body_ref, "trait default body")?),
                         None => None,
                     };
                     new_methods.push(TraitMethodSignature {
@@ -723,22 +744,32 @@ impl<'a> AstIntegrationContext<'a> {
         }
     }
 
-    /// Remap a symbol from module to main program's string interner
+    /// Remap a symbol from module to main program's string interner.
+    ///
+    /// The translation is cached per module symbol: the module
+    /// interner's id space is fixed for the whole integration, so the
+    /// first occurrence of each symbol pays the `resolve` + hash + 
+    /// `get_or_intern`, every later occurrence is a HashMap hit.
     fn remap_symbol(&mut self, symbol: DefaultSymbol) -> Result<DefaultSymbol, String> {
+        let idx = symbol.to_usize();
+        if let Some(cached) = self.symbol_cache[idx] {
+            return Ok(cached);
+        }
         let symbol_str = self.module_string_interner.resolve(symbol)
             .ok_or("Cannot resolve symbol")?;
-        Ok(self.main_string_interner.get_or_intern(symbol_str))
+        let remapped = self.main_string_interner.get_or_intern(symbol_str);
+        self.symbol_cache[idx] = Some(remapped);
+        Ok(remapped)
     }
 
-    /// Look up a module `ExprRef` in the expr-mapping table and return the
-    /// corresponding main-program `ExprRef`. `ctx` is the human label for
-    /// the lookup site, used only on the (theoretically unreachable) error
-    /// path where a child id is missing from the placeholder phase.
-    fn map_expr(&self, eref: &ExprRef, ctx: &str) -> Result<ExprRef, String> {
-        self.expr_mapping
-            .get(&eref.0)
-            .cloned()
-            .ok_or_else(|| format!("Cannot find {} expression mapping", ctx))
+    /// Translate a module `ExprRef` into the main-program pool.
+    ///
+    /// Module expressions are appended to the main pool in module-index
+    /// order, so the main index is `expr_base + module_index` — pure
+    /// arithmetic, no mapping table. `ctx` is kept for the call sites'
+    /// labels; this path can no longer fail.
+    fn map_expr(&self, eref: &ExprRef, _ctx: &str) -> Result<ExprRef, String> {
+        Ok(ExprRef(self.expr_base + eref.0))
     }
 
     /// Vector form of `map_expr` — keeps the per-element ctx label for
@@ -752,12 +783,11 @@ impl<'a> AstIntegrationContext<'a> {
         opt.map(|e| self.map_expr(e, ctx)).transpose()
     }
 
-    /// Look up a module `StmtRef` in the stmt-mapping table.
-    fn map_stmt(&self, sref: &StmtRef, ctx: &str) -> Result<StmtRef, String> {
-        self.stmt_mapping
-            .get(&sref.0)
-            .cloned()
-            .ok_or_else(|| format!("Cannot find {} statement mapping", ctx))
+    /// Translate a module `StmtRef` into the main-program pool.
+    ///
+    /// Same arithmetic identity as `map_expr`.
+    fn map_stmt(&self, sref: &StmtRef, _ctx: &str) -> Result<StmtRef, String> {
+        Ok(StmtRef(self.stmt_base + sref.0))
     }
 
     /// Optional form of `remap_type_decl` — `None` passes through unchanged.
@@ -788,19 +818,16 @@ impl<'a> AstIntegrationContext<'a> {
         }
 
         // Remap function body statement reference
-        let new_code = *self.stmt_mapping.get(&function.code.0)
-            .ok_or("Cannot find function code statement mapping")?;
+        let new_code = self.map_stmt(&function.code, "function code")?;
 
         // Remap contract clauses through the same expression mapping the
         // body uses. Each ExprRef in `requires`/`ensures` was added to the
         // module's pool, so the import path must follow the same redirect.
         let new_requires = function.requires.iter()
-            .map(|e| self.expr_mapping.get(&e.0).cloned()
-                .ok_or_else(|| "Cannot find requires-clause expr mapping".to_string()))
+            .map(|e| self.map_expr(e, "requires-clause expr"))
             .collect::<Result<Vec<_>, _>>()?;
         let new_ensures = function.ensures.iter()
-            .map(|e| self.expr_mapping.get(&e.0).cloned()
-                .ok_or_else(|| "Cannot find ensures-clause expr mapping".to_string()))
+            .map(|e| self.map_expr(e, "ensures-clause expr"))
             .collect::<Result<Vec<_>, _>>()?;
 
         // Remap generic params and bounds — same reason as the
@@ -888,16 +915,13 @@ impl<'a> AstIntegrationContext<'a> {
             None => None,
         };
 
-        let new_code = *self.stmt_mapping.get(&method.code.0)
-            .ok_or("Cannot find method code statement mapping")?;
+        let new_code = self.map_stmt(&method.code, "method code")?;
 
         let new_requires = method.requires.iter()
-            .map(|e| self.expr_mapping.get(&e.0).cloned()
-                .ok_or_else(|| "Cannot find requires-clause expr mapping".to_string()))
+            .map(|e| self.map_expr(e, "requires-clause expr"))
             .collect::<Result<Vec<_>, _>>()?;
         let new_ensures = method.ensures.iter()
-            .map(|e| self.expr_mapping.get(&e.0).cloned()
-                .ok_or_else(|| "Cannot find ensures-clause expr mapping".to_string()))
+            .map(|e| self.map_expr(e, "ensures-clause expr"))
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Rc::new(MethodFunction {
@@ -928,61 +952,21 @@ impl<'a> AstIntegrationContext<'a> {
         Ok(integrated_functions)
     }
 
-    /// Complete AST integration process using three-phase approach to handle circular dependencies
-    fn integrate(&mut self) -> Result<Vec<Rc<Function>>, String> {
-
-        // Phase 1: Create placeholder mappings for all AST nodes
-        self.create_placeholder_mappings()?;
-
-        // Phase 2: Replace placeholders with actual remapped content
-        self.update_with_remapped_content()?;
-
-        // Phase 3: Functions only. StructDecl statements are
-        // already added during phase 2's `update_with_remapped_content`
-        // (the placeholder slots reserved in phase 1 get overwritten
-        // with the remapped Stmt::StructDecl). Calling
-        // copy_struct_declarations afterwards would re-add the same
-        // struct under a fresh StmtRef, making the type-checker walk
-        // it twice; with two registrations sharing the same name
-        // symbol the second overwrites the first, but the duplicate
-        // walk also confuses generic-method lookup paths that key on
-        // the first declaration site.
-        let integrated_functions = self.copy_functions()?;
-
-        Ok(integrated_functions)
-    }
-
-    /// Phase 1: Create placeholder mappings for all expressions and statements
-    fn create_placeholder_mappings(&mut self) -> Result<(), String> {
-        // Create placeholder mappings for all expressions
-        for index in 0..self.module_program.expression.len() {
-            let placeholder_expr = Expr::Null;
-            let main_expr_ref = self.main_program.expression.add(placeholder_expr);
-            self.expr_mapping.insert(index as u32, main_expr_ref);
-        }
-
-        // Create placeholder mappings for all statements
-        for index in 0..self.module_program.statement.len() {
-            let placeholder_stmt = Stmt::Break(None);
-            let main_stmt_ref = self.main_program.statement.add(placeholder_stmt);
-            self.stmt_mapping.insert(index as u32, main_stmt_ref);
-        }
-
-        Ok(())
-    }
-
-    /// Phase 2: Replace placeholders with actual remapped content.
+    /// Complete AST integration process.
     ///
-    /// Phase 1 reserved a placeholder slot (`Expr::Null` /
-    /// `Stmt::Break`) in the main pools for every node in the
-    /// module's pools, so `expr_mapping` / `stmt_mapping` now point
-    /// at stable destinations for the entire module AST. This
-    /// pass walks the module's pools and overwrites each placeholder
-    /// with the corresponding remapped node via `ExprPool::update`
-    /// and `StmtPool::update`. After this returns, every imported
-    /// function body's `code: StmtRef` resolves through the main
-    /// pool to the real (remapped) statement / expression tree.
-    fn update_with_remapped_content(&mut self) -> Result<(), String> {
+    /// The module's expressions and statements are appended to the
+    /// main pools in module-index order, so `main_ref = base +
+    /// module_index` is an identity (see `map_expr` / `map_stmt`).
+    /// A module expression may reference a *later* module expression
+    /// (pool order is allocation order, not dependency order), but
+    /// the target index `base + module_index` is known before the
+    /// target slot exists — the mapping is arithmetic, so the
+    /// reference is correct as soon as the loop reaches that index.
+    fn integrate(&mut self) -> Result<Vec<Rc<Function>>, String> {
+        // Record the pool offsets before the first append.
+        self.expr_base = self.main_program.expression.len() as u32;
+        self.stmt_base = self.main_program.statement.len() as u32;
+
         for index in 0..self.module_program.expression.len() {
             let module_expr_ref = ExprRef(index as u32);
             let expr = self
@@ -993,13 +977,7 @@ impl<'a> AstIntegrationContext<'a> {
                     format!("Module ExprRef({}) is missing during integration", index)
                 })?;
             let remapped_expr = self.remap_expression(&expr)?;
-            let main_expr_ref = *self
-                .expr_mapping
-                .get(&(index as u32))
-                .ok_or_else(|| {
-                    format!("Missing ExprRef({}) placeholder mapping", index)
-                })?;
-            self.main_program.expression.update(&main_expr_ref, remapped_expr);
+            self.main_program.expression.add(remapped_expr);
         }
 
         for index in 0..self.module_program.statement.len() {
@@ -1012,16 +990,21 @@ impl<'a> AstIntegrationContext<'a> {
                     format!("Module StmtRef({}) is missing during integration", index)
                 })?;
             let remapped_stmt = self.remap_statement(&stmt)?;
-            let main_stmt_ref = *self
-                .stmt_mapping
-                .get(&(index as u32))
-                .ok_or_else(|| {
-                    format!("Missing StmtRef({}) placeholder mapping", index)
-                })?;
-            self.main_program.statement.update(&main_stmt_ref, remapped_stmt);
+            self.main_program.statement.add(remapped_stmt);
         }
 
-        Ok(())
+        // Functions only. StructDecl statements are already added
+        // during the pool copy above (the module's statement pool
+        // includes its struct / enum / trait / impl declarations).
+        // Calling copy_struct_declarations afterwards would re-add
+        // the same struct under a fresh StmtRef, making the
+        // type-checker walk it twice; with two registrations sharing
+        // the same name symbol the second overwrites the first, but
+        // the duplicate walk also confuses generic-method lookup
+        // paths that key on the first declaration site.
+        let integrated_functions = self.copy_functions()?;
+
+        Ok(integrated_functions)
     }
 }
 
@@ -1342,8 +1325,8 @@ pub fn integrate_module_into_program_with_options_full(
                 cached,
                 main_program,
                 main_string_interner,
-                module_path,
-                shadowed_stdlib_types,
+                module_path.as_deref(),
+                &shadowed_stdlib_types,
             );
         }
     }
@@ -1406,22 +1389,22 @@ pub(crate) fn integrate_cached_module(
     cached: frontend::cache::CachedModule,
     main_program: &mut File,
     main_string_interner: &mut DefaultStringInterner,
-    module_path: Option<Vec<DefaultSymbol>>,
-    shadowed_stdlib_types: std::collections::HashSet<String>,
+    module_path: Option<&[DefaultSymbol]>,
+    shadowed_stdlib_types: &std::collections::HashSet<String>,
 ) -> Result<(), String> {
     let mut integration_context = AstIntegrationContext::new(
         main_program,
         &cached.file,
         main_string_interner,
         &cached.interner,
-        shadowed_stdlib_types,
+        shadowed_stdlib_types.clone(),
     );
     let integrated_functions = integration_context.integrate()?;
     for function in integrated_functions {
         main_program.function.push(function);
         main_program
             .function_module_paths
-            .push(module_path.clone());
+            .push(module_path.map(|p| p.to_vec()));
     }
     Ok(())
 }
@@ -1565,8 +1548,8 @@ pub(crate) fn integrate_preparsed_core_module(
     preparsed: PreparsedCoreModule,
     main_program: &mut File,
     main_string_interner: &mut DefaultStringInterner,
-    module_path: Option<Vec<DefaultSymbol>>,
-    shadowed_stdlib_types: std::collections::HashSet<String>,
+    module_path: Option<&[DefaultSymbol]>,
+    shadowed_stdlib_types: &std::collections::HashSet<String>,
 ) -> Result<(), String> {
     match preparsed.payload {
         PreparsedPayload::Cached(SendCachedModule(cached)) => integrate_cached_module(
@@ -1585,14 +1568,14 @@ pub(crate) fn integrate_preparsed_core_module(
                 &file,
                 main_string_interner,
                 &interner,
-                shadowed_stdlib_types,
+                shadowed_stdlib_types.clone(),
             );
             let integrated_functions = integration_context.integrate()?;
             for function in integrated_functions {
                 main_program.function.push(function);
                 main_program
                     .function_module_paths
-                    .push(module_path.clone());
+                    .push(module_path.map(|p| p.to_vec()));
             }
 
             // --- Save to cache ---

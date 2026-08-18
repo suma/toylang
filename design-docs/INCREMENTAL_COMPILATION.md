@@ -111,8 +111,20 @@ Per-module IR compilation + IR linker (the original Phase 5) now targets
 still hard. Recommended only if a much larger program makes lowering
 dominate — worth re-measuring on a realistic codebase before starting.
 
-The cheaper remaining slice is the ~10 ms spent loading and integrating
+The cheaper remaining slice was the ~10 ms spent loading and integrating
 16 cached core modules on every run, which is 2.5x the lowering cost.
+**Landing 2026-08-18 (`INCR-INTEGRATE`)**: the integration pass itself
+was rewritten from a placeholder 2-pass + `HashMap<u32, ExprRef>` mapping
+to a single pass with arithmetic offset mapping (`main_ref = base +
+module_index` — an identity, since module pools are appended in index
+order), plus a per-module symbol translation cache
+(`Vec<Option<DefaultSymbol>>` indexed by dense module symbol id).
+Result: integrate() 1.3ms → 0.74ms (~43%), sequential integrate 3.2ms →
+2.6ms, warm run ~8-9ms. The remaining ~1.5ms cache-load (16 parallel
+file reads + bincode deserialization) is left as-is: bundling the 16
+`.full` files into one would change cache invalidation granularity to
+all-modules-or-nothing, which is a trade-off, not a win, for a stdlib
+that changes rarely but must stay individually invalidatable.
 
 ## Remaining Work for Full Incremental Compilation
 

@@ -11,6 +11,23 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-18
+- **INCR-INTEGRATE: 統合パスを placeholder 2 パス + HashMap から 1 パス + オフセット演算に** —
+  16 個の core module のキャッシュ読み込み + 統合 (~10ms) の削減。**計測** (release,
+  warm): preparse (deserialize) ~1.5ms / sequential integrate ~3.2ms / 型検査 ~2.4ms /
+  IR VM ~2ms。integrate() 本体が 1.3ms のうち、placeholder 2 パス + 2 つの
+  `HashMap<u32, ExprRef>` が無駄だった。**設計判断**: (1) モジュールの pool を
+  module index 順に追加するので `main_ref = base + module_index` は恒等式 —
+  `expr_mapping` / `stmt_mapping` を削除し `map_expr` / `map_stmt` を純粋な
+  オフセット計算に (前方参照は「base + index が確定していればスロットが未作成
+  でも良い」)。placeholder フェーズも不要になり、copy は 1 パスに。
+  (2) `remap_symbol` / `remap_type_symbol` は module シンボルごとの翻訳を
+  `Vec<Option<DefaultSymbol>>` (dense symbol id を index に) でキャッシュ —
+  同一シンボル (`u64` 等) が数百回現れても interner のハッシュ計算は初回のみ。
+  (3) `module_path` / `shadowed_stdlib_types` はループ内 clone を参照渡しに。
+  **結果**: integrate 本体 1.3ms → 0.74ms (**~43% 削減**)、sequential integrate
+  3.2ms → 2.6ms、warm ラン全体 ~8-9ms。動作は「warm と cold で同一の
+  `main_program` 状態」を構成で保証する設計のまま (置換は write 同順の
+  add なので pool 内容は逐語一致)。全 1990 テスト + clippy グリーン。
 - **PATTERN-EXTEND: or / 範囲 / `@` パターン (3 バックエンド)** —
   `1i64 | 2i64 => ...` / `0i64..5i64 => ...` / `n @ 2i64 => n`。
   **設計判断**: 新しい `Pattern` variant を足さず、**既に存在する形へ
@@ -499,7 +516,14 @@
 
 ### インクリメンタルコンパイル
 
-- **INCREMENTAL-COMPILATION の残** — Phase 1〜5 は完了 (設計と実測は [`INCREMENTAL_COMPILATION.md`](INCREMENTAL_COMPILATION.md))。**残るのは「16 個の core module のキャッシュ読み込み + 統合に毎回 ~10ms」** (lowering の 2.5 倍)。per-module IR compilation + IR linker は warm 19ms のうち ~4ms しか狙えないので保留 — 着手するなら、大きめの実プログラムで lowering が支配的になることを**再測定してから**。
+- **INCREMENTAL-COMPILATION の残** — Phase 1〜5 は完了 (設計と実測は [`INCREMENTAL_COMPILATION.md`](INCREMENTAL_COMPILATION.md))。統合パスの削減
+  (placeholder 2 パス + HashMap → 1 パス + オフセット演算、シンボル翻訳キャッシュ)
+  は **2026-08-18 に landing** (integrate 本体 ~43% 削減)。残るのは
+  (a) **preparse の deserialize ~1.5ms** (16 ファイルの並列 read + bincode。
+  bundle 化 = 1 ファイルにすると invalidation が全モジュール単位になるので
+  見送り)、(b) per-module IR compilation + IR linker (warm 19ms のうち ~4ms
+  しか狙えないので保留 — 着手するなら、大きめの実プログラムで lowering が
+  支配的になることを**再測定してから**)。
 
 ### テスト・ドキュメント
 

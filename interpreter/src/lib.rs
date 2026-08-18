@@ -260,8 +260,8 @@ fn integrate_modules(
                 preparsed,
                 program,
                 string_interner,
-                Some(path_syms.clone()),
-                shadowed_stdlib_types.clone(),
+                Some(&path_syms),
+                &shadowed_stdlib_types,
             ) {
                 errors.push(format!(
                     "Core module `{}` integration error: {}",

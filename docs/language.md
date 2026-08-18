@@ -28,6 +28,7 @@ implementation-side details, see the companion documents:
 - [Modules](#modules) (incl. core auto-load + extern fn)
 - [Allocators](#allocators)
 - [Built-in functions and methods](#built-in-functions-and-methods) (numeric methods + Option / Result + math + string are stdlib `core/std/*.t`)
+- [Test blocks](#test-blocks)
 - [Design by Contract](#design-by-contract)
 - [Runtime model](#runtime-model)
 - [Known limitations](#known-limitations)
@@ -72,10 +73,10 @@ Reserved words, none of which can be used as identifiers:
 
 ```
 fn  val  var  const  type  return  break  continue
-if  elif  else  for  in  to  while
-class  struct  trait  impl  enum  match  Self
+if  elif  else  for  in  to  while  loop
+class  struct  trait  impl  dyn  enum  match  Self
 true  false  null
-pub  extern  package  import  as
+pub  extern  package  import  as  mut
 with  ambient
 requires  ensures
 u8  u16  u32  u64  i8  i16  i32  i64  f64
@@ -83,6 +84,11 @@ bool  str  ptr  usize  dict
 ```
 
 `else if` is **not** valid; use `elif`.
+
+`test` is **contextual**, not reserved: `test "name" { ... }` at the
+top level declares a test block (see [Test blocks](#test-blocks)),
+while `fn test(...)` and `val test = ...` keep working as ordinary
+identifiers.
 
 `@` is reserved as the [labelled-loop](#control-flow) prefix
 (`@outer:`, `break @outer`, `continue @outer`) and cannot appear
@@ -369,7 +375,7 @@ fn main() -> u64 {
 
 ```
  2 |     val total: _ = 1i64 + 2i64
-   |                    ^ [E0011] type hole: `total` has type `i64`
+   |                    ^^^^^^^^^^^ [E0011] type hole: `total` has type `i64`
 ```
 
 Every hole in a file is answered in one run, and each binding keeps its
@@ -575,7 +581,7 @@ front-end driver (`interpreter::check_typing*` /
 `compile_file`) routes errors through `ErrorFormatter` for the
 caret-pointer formatting visible in test output.
 
-Every diagnostic carries a stable code (`E0001`…`E0011`). These are
+Every diagnostic carries a stable code (`E0001`…`E0014`). These are
 toylang's own numbering, not Rust's — identical-looking identifiers with
 different meanings would be worse than none. `interpreter --explain
 <CODE>` prints the category, a program that triggers it, and the fix;
@@ -642,8 +648,11 @@ tuple-access syntax (`outer.0.1`):
 -2.5f64
 ```
 
-A bare `1.5` is **not** a valid token in this language. To convert an
-integer to a float, use `as`:
+A bare `1.5` is **not** a valid token in this language. Exponent
+notation is not part of the grammar either — `1.0e300f64` is a lex
+error (`E0012`), so write the digits out or compute the value.
+
+To convert an integer to a float, use `as`:
 
 ```rust
 val i: i64 = 5i64
@@ -658,8 +667,14 @@ false
 null
 ```
 
-`null` carries a type at runtime (`Null(T)`). The type comes from the
-binding or value position the null is assigned into.
+`null` is accepted by the parser and the type checker (a `null` in a
+typed position takes that position's type), but **no backend evaluates
+it**: reaching a `null` expression at run time stops the program with
+`Internal error: Null reference error`. Treat the literal as reserved
+surface with no working semantics, and model absence with
+`Option<T>` instead. The universal `is_null()` method described in
+older notes is likewise not reachable — see
+[`is_null`](#is_null).
 
 ### Char literals
 
@@ -887,10 +902,14 @@ emit identical heap-str layout
 (`[bytes][NUL][u64 len LE]`, returned pointer points at the
 `u64 len` field) so the result is pointer-uniform with `.rodata`
 strs and flows through `print` / `println` / `__builtin_str_len`
-unchanged. The interpreter JIT
-(`interpreter/src/jit/`, separate codebase) silently falls back
-to the tree-walking interpreter for interpolation, including every
-segment that carries a format spec.
+unchanged. The interpreter JIT (`interpreter/src/jit/`, a separate
+codebase) compiles plain interpolation through its own
+`jit_string_literal` / `jit_to_string_<ty>` / `jit_str_concat`
+helpers — pinned by
+`interpreter/example/string_interpolation_jit.t`. **Format specs
+are the exception**: `__builtin_format` has no interpreter-JIT
+lowering, so a segment carrying a spec makes the enclosing
+function fall back to the tree-walking interpreter silently.
 
 ### Array, tuple, and dict literals
 
@@ -916,7 +935,7 @@ Listed lowest precedence first:
 | `\|` `^` `&` | Bitwise (integer) |
 | `<<` `>>` | Shift; rhs must be `u64` |
 | `..` | Range expression `start..end` (half-open) |
-| `+` `-` | Add / subtract (also `+` for `str` concat in the type checker) |
+| `+` `-` | Add / subtract. **Not** string concatenation: the type checker accepts `str + str` but no backend implements it (the interpreter yields a garbage handle, the AOT binary faults) — use `a.concat(b)` |
 | `*` `/` `%` | Multiply / divide / remainder |
 | Unary `-` | Negation (`i64`, `f64` only) |
 | Unary `!` | Logical not (`bool`) |
@@ -1150,8 +1169,9 @@ for i in 0u64 to n { ... }    # legacy `to` form, still accepted
 Lexically scoped allocator binding:
 
 ```rust
-with allocator = arena_allocator() {
-    # heap_alloc inside this block uses `arena_allocator`
+var arena = Arena::new()
+with allocator = arena {
+    # `__builtin_heap_alloc` in here reads the handle `arena` carries
 }
 ```
 
@@ -1167,11 +1187,14 @@ See [Allocators](#allocators).
 val a: i64 = 7i64       # immutable; required initializer
 val b      = 7i64       # type inferred from rhs
 var c: u64 = 0u64       # mutable
-var d                   # uninitialized (typed null until first assign)
 ```
 
 `val` produces a binding that cannot be reassigned. `var` permits later
 `=` assignment.
+
+Both forms require an initializer: a bare `var d` (no `=`) is a parse
+error. There is no declare-now-assign-later shape, and no implicit
+null to stand in until the first assignment.
 
 ### Top-level `const` declarations
 
@@ -1472,10 +1495,12 @@ fn divide(a: i64, b: i64) -> i64 {
 fn identity<T>(x: T) -> T { x }
 ```
 
-Generic parameters appear in `<...>` after the function name. Bounds use
-the `<T: Bound>` syntax (currently no bound has documented behaviour at
-the language level — they parse but the type checker doesn't enforce
-any specific contract for them).
+Generic parameters appear in `<...>` after the function name. Bounds
+use the `<T: Bound>` syntax and **are enforced**: at every call site the
+type checker verifies that the inferred type argument implements the
+named trait, and inside the body the bounded parameter may call that
+trait's methods. See [Generics and bounds](#generics-and-bounds) and
+[Trait bounds on generics](#trait-bounds-on-generics).
 
 Functions that need to allocate read the active allocator off the
 runtime stack — callers wrap the call in `with allocator = ... { ... }`
@@ -1557,7 +1582,7 @@ Each backend resolves the call differently:
   (dlopen + a trampoline over the arg / return register classes).
   The interpreter deliberately does *not* dlopen libc — its
   `extern_io` registry serves the libc names with std-based
-  implementations (RUNTIME-PORT R2 注意).
+  implementations (see RUNTIME-PORT R2).
 - **JIT** routes through `jit::eligibility::JIT_EXTERN_DISPATCH`,
   which maps each name to either a runtime `HelperKind` (for
   ops cranelift can't lower natively, like `sin` / `cos` / `pow`)
@@ -1835,7 +1860,7 @@ struct Cell { v: i64 }
 
 impl Num for Cell {
     fn value(self: Self) -> i64 { self.v }
-    # doubled は trait default をそのまま継承
+    # `doubled` is inherited from the trait default as-is
 }
 
 fn main() -> i64 {
@@ -2109,13 +2134,16 @@ Phase status (A5):
   - **MVP-F** — `&mut self` methods that *also* return a
     compound type (`CallWithSelfWritebackCompound` fans both
     return leaves and writeback leaves out of the same call).
-- **A5-P3 (planned)** — cranelift JIT support. Programs that
-  thread `Dyn` types currently fall back to the interpreter via
-  the JIT eligibility's catch-all; they run correctly but skip
-  JIT optimisation.
+- **A5-P3 (planned)** — support in the *interpreter's* cranelift
+  JIT. Programs that thread `Dyn` types fall back there via the
+  JIT eligibility's catch-all; they run correctly but skip JIT
+  optimisation. The compiler's JIT mode
+  (`compiler <file> --all-backends`) already agrees with the
+  interpreter and the AOT binary on `dyn` dispatch.
 - **A5-P4 (planned)** — owned trait objects via `Box<dyn Trait>`
-  and heterogeneous `Vec<Box<dyn Trait>>` collections. Requires a
-  `Box<T>` type, which the language doesn't have yet.
+  and heterogeneous `Vec<Box<dyn Trait>>` collections. `Box<T>`
+  landed in the meantime (`core/std/box.t`); what is still missing
+  is erasing a trait object into it.
 
 ### Errors caught at type-check time
 
@@ -2127,25 +2155,36 @@ Phase status (A5):
 
 ### Out of scope (initial implementation)
 
-- ~~Generics on traits themselves (`trait Foo<T> { ... }`)~~ —
-  完了済み (ITER-PROTOCOL-TRAIT, 2026-05-07)
-- ~~Default method bodies in traits~~ — 完了済み (A1,
-  2026-05-18). See *Default method bodies* above. Remaining gap:
-  default bodies on generic traits that reference `T`.
-- ~~Multiple bounds (`<T: A + B>`)~~ — 完了済み (A2, 2026-05-18).
-  See *Trait bounds on generics → Multiple bounds* above.
-- Trait inheritance (`trait B: A`)
-- ~~Dynamic dispatch via `dyn Trait` objects~~ — 完了済み in
-  the interpreter (A5 Phase 1, 2026-05-18) and AOT compiler
-  (A5 Phase 2 MVP-A〜F, 2026-05-19). See *Dynamic dispatch with
-  `dyn Trait`* above. Remaining: cranelift JIT support (P3 —
-  programs run via the interpreter today), `Box<dyn Trait>` for
-  owned trait objects (P4 — requires a `Box<T>` type that doesn't
-  exist yet), `dyn TraitA + TraitB` multi-trait objects,
-  `dyn Iterator<T>` generic-trait objects, and `&dyn Trait` /
-  `&mut dyn Trait` in return position / struct field (the
-  REF-Stage-2 escape rule rejects ref-typed return / fields).
-- Associated types
+Landed since this list was first written, kept here so the history
+reads straight:
+
+- ~~Generics on traits themselves (`trait Foo<T> { ... }`)~~ — done
+  (ITER-PROTOCOL-TRAIT, 2026-05-07).
+- ~~Default method bodies in traits~~ — done (A1, 2026-05-18); see
+  *Default method bodies* above. Remaining gap: default bodies on
+  generic traits that reference `T`.
+- ~~Multiple bounds (`<T: A + B>`)~~ — done (A2, 2026-05-18); see
+  *Trait bounds on generics → Multiple bounds* above.
+- ~~Dynamic dispatch via `dyn Trait` objects~~ — done in the
+  interpreter (A5 Phase 1, 2026-05-18) and in the AOT compiler
+  (A5 Phase 2 MVP-A…F, 2026-05-19); see *Dynamic dispatch with
+  `dyn Trait`* above.
+
+Still out of scope:
+
+- Trait inheritance (`trait B: A`).
+- Associated types.
+- `dyn Trait` in the interpreter's cranelift JIT (A5-P3). The
+  compiler's JIT mode already runs it; `INTERPRETER_JIT=1` falls
+  back to the tree-walker for programs that thread `Dyn` types.
+- `Box<dyn Trait>` for owned trait objects (A5-P4). `Box<T>` itself
+  exists now (`core/std/box.t`), so what is missing is the erased
+  vtable-carrying form, not the box.
+- `dyn TraitA + TraitB` multi-trait objects and `dyn Iterator<T>`
+  generic-trait objects.
+- `&dyn Trait` / `&mut dyn Trait` in return position or in a struct
+  field — the REF-Stage-2 escape rule rejects ref-typed returns and
+  fields.
 
 ---
 
@@ -2419,16 +2458,19 @@ h::add(1u64, 2u64)              # via alias
 
 ## Allocators
 
-The allocator system gives `with allocator = expr { body }` lexical
-control over which allocator backs heap operations inside the body.
+The allocator system has two halves. Stdlib **wrapper structs**
+(`Arena`, `FixedBuffer`, …) carry an allocation policy written in
+toylang and are used by calling their methods directly. `with allocator
+= expr { body }` is the other half: it lexically rebinds the raw
+`Allocator` handle that the `__builtin_heap_*` builtins consult inside
+`body`. The two are less connected than they look — see *Tracking only
+follows the wrapper's own methods* below.
 
 ```rust
-val arena = __builtin_arena_allocator()
-with allocator = arena {
-    val p = __builtin_heap_alloc(64u64)   # served by `arena`
-    # ... use p ...
-}
-# `arena` drops here; everything it allocated is freed in one go.
+var arena = Arena::new()
+val p: ptr = arena.alloc(64u64)   # served by `arena`, tracked by it
+# ... use p ...
+arena.reset()                     # frees everything the arena handed out
 ```
 
 ### Allocator type
@@ -2436,22 +2478,58 @@ with allocator = arena {
 `Allocator` is an opaque handle. Two values are equal iff cloned from
 the same `Rc` (`==` and `!=` only — no ordering).
 
-### Built-in allocator constructors
+### Getting an allocator
 
-| Builtin | Returns |
+Only two allocator builtins remain; every allocation *policy* lives in
+the stdlib (`core/std/allocator.t`), written in toylang on top of them:
+
+| Expression | Returns |
 |---|---|
 | `__builtin_default_allocator()` | The process-wide global allocator |
-| `__builtin_arena_allocator()` | A fresh arena (bulk-free on drop) |
-| `__builtin_fixed_buffer_allocator(cap: u64)` | Bounded by `cap` bytes; overflow returns null |
 | `__builtin_current_allocator()` | The allocator at the top of the active stack |
 | `ambient` | Sugar for `__builtin_current_allocator()` |
+
+The earlier `__builtin_arena_allocator()` /
+`__builtin_fixed_buffer_allocator(cap)` constructors no longer exist —
+calling them is an `E0003` "function not found". Use the stdlib wrapper
+structs instead; each implements `trait Alloc`
+(`alloc` / `free` / `realloc`) plus its own introspection:
+
+| Wrapper | Constructor | Extra methods |
+|---|---|---|
+| `Global` | `Global::new()` | — (forwards to the default allocator) |
+| `Arena` | `Arena::new()` | `bytes_used()`, `reset()`, `drop()` (bulk free) |
+| `FixedBuffer` | `FixedBuffer::new(cap)` | `capacity()`, `used()`, `remaining()`, `is_empty()`, `reset()`; allocation past `cap` returns a null `ptr` |
+| `SlotRegion` | `SlotRegion::new(slot_bytes, slot_count)` | `capacity()`, `live()`, `layout_report()` |
+
+```rust
+var arena = Arena::new()
+val p: ptr = arena.alloc(32u64)
+arena.bytes_used()               # 32
+arena.reset()                    # frees in one go; bytes_used() == 0
+```
+
+**Tracking only follows the wrapper's own methods.** A wrapper is a
+toylang struct holding an `(addr, size)` table beside a plain
+`Allocator` handle, and its policy lives in its own `alloc` / `free` /
+`realloc` bodies. `with allocator = <wrapper>` pushes the *handle* the
+wrapper holds, which for all four wrappers is the process-wide default
+allocator — so a raw `__builtin_heap_alloc(n)` inside
+`with allocator = fb { ... }` is served by the global allocator: it is
+neither counted by `fb.used()` nor bounded by `fb`'s capacity (a
+1 KiB request against a 16-byte `FixedBuffer` returns a valid
+pointer). Call `fb.alloc(n)` / `arena.alloc(n)` when you want the
+policy and the bookkeeping.
 
 ### Allocator-aware functions
 
 Functions don't need to thread an allocator through their parameters.
-Wrap the call site in `with allocator = ... { ... }` and the body's
+Wrap the call site in `with allocator = ... { ... }` and the callee's
 `__builtin_heap_alloc` (and `realloc` / `free`) reads the active
-allocator off the runtime stack:
+handle off the runtime stack — no allocator parameter, no plumbing.
+With today's stdlib wrappers that handle is still the global allocator
+(see the note above), so this is a scoping mechanism ready for
+custom handles rather than a way to redirect a callee into an arena:
 
 ```rust
 fn collect(items: [u64; 4]) -> ptr {
@@ -2459,7 +2537,7 @@ fn collect(items: [u64; 4]) -> ptr {
 }
 
 # Caller:
-val arena = Arena::new()
+var arena = Arena::new()
 with allocator = arena {
     val p = collect([1u64, 2u64, 3u64, 4u64])
 }
@@ -2468,9 +2546,12 @@ arena.drop()
 
 ### `with` semantics
 
-- `with allocator = expr { body }` evaluates `expr`, requires it to be
-  an `Allocator`, pushes it onto the active stack for the duration of
+- `with allocator = expr { body }` evaluates `expr`, pushes the
+  resulting `Allocator` onto the active stack for the duration of
   `body`, and pops on every exit path (value, return, break, error).
+  `expr` may be an `Allocator` directly, or a struct with exactly one
+  `Allocator` field (the stdlib wrappers) — in that case the field's
+  handle is what gets pushed.
 - Nested `with` works as a stack; `ambient` always sees the innermost.
 - The body's type is the body block's type.
 
@@ -2489,23 +2570,27 @@ These always go through the active allocator:
 | `__builtin_mem_copy(src: ptr, dst: ptr, size: u64)` | `-> ()` |
 | `__builtin_mem_move(src: ptr, dst: ptr, size: u64)` | `-> ()` |
 | `__builtin_mem_set(p: ptr, byte: u8, size: u64)` | `-> ()` |
+| `__builtin_ptr_offset(p: ptr, bytes: u64)` | `-> ptr` (address arithmetic; no allocation) |
+| `__builtin_ptr_eq(a: ptr, b: ptr)` | `-> bool` (address equality) |
+| `__builtin_null_ptr()` | `-> ptr` (address 0; `__builtin_heap_alloc(0u64)` may return non-null, so use this when you need a portable null) |
 
 `__builtin_ptr_read` is type-polymorphic: it returns the type required
 by its surrounding context (the lhs annotation of `val v: T = ...`,
 typically). `__builtin_ptr_write` accepts any type.
 
-`str` との相互変換:
+Converting to and from `str`:
 
 | Builtin | Signature |
 |---|---|
-| `__builtin_str_to_ptr(s: str)` | `-> ptr` (UTF-8 バイト列、NUL 終端) |
-| `__builtin_str_len(s: str)` | `-> u64` (バイト数、文字数ではない) |
+| `__builtin_str_to_ptr(s: str)` | `-> ptr` (UTF-8 bytes, NUL-terminated) |
+| `__builtin_str_len(s: str)` | `-> u64` (bytes, not characters) |
 | `__builtin_str_from_bytes(p: ptr, len: u64)` | `-> str` |
 
-`__builtin_str_from_bytes` は **実行時に計算したバイト列から `str` を
-作る唯一の手段**。バイト列は**コピー**されるので、後からバッファを
-書き換えても得られた `str` は変わらない。UTF-8 の検証はしない —
-バッファの正しさはプログラムの責任で、他の raw pointer builtin と同じ。
+`__builtin_str_from_bytes` is the **only way to build a `str` from
+bytes computed at run time**. The bytes are **copied**, so writing to
+the buffer afterwards does not change the `str` that came out. It does
+not validate UTF-8 — the buffer's correctness is the program's
+responsibility, as with every other raw-pointer builtin.
 
 ---
 
@@ -2551,8 +2636,9 @@ io::env_name(i: u64) -> str     # the i-th environment variable's name
 io::env_value(i: u64) -> str    # the i-th environment variable's value
 ```
 
-Each function delegates to an `extern fn`; see [Calling C
-functions](#calling-c-functions) for the boundary rules. Failure
+Each function delegates to an `extern fn`; see [Linking to real C
+libraries](#linking-to-real-c-libraries-from-lib-as-sym) for the
+boundary rules. Failure
 convention is `""`-return plus a `file_exists` probe — an `extern fn`
 boundary cannot carry a `Result`.
 
@@ -2692,19 +2778,21 @@ __builtin_live_bytes() -> u64
 __builtin_peak_live_bytes() -> u64
 ```
 
-その run がこれまでに要求したメモリの集計を返す。名前と意味は
-`--profile=mem` が出すレポートのフィールドと**同一**。
+These return what the current run has requested from the allocator so
+far. The names and their meanings are **identical** to the fields
+`--profile=mem` reports.
 
-- **要求ベース**。`realloc` は 1 回の resize として数え、確保が
-  実際にブロックを動かしたかどうかは現れない。したがって全
-  バックエンドで同じ値になる
-- **run 単位**。`main` (または 1 つの `test` ブロック) の開始時に 0。
-  コンパイル済みバイナリではプロセス開始と一致する
-- **プロファイルフラグは不要**。これらを読むプログラムは、
-  `--profile=mem` を付けなくても本当の数値を得る
+- **Request-based.** A `realloc` counts as one resize; whether the
+  allocation actually moved the block never shows up. That is what
+  makes the numbers identical across all three backends.
+- **Per run.** Every counter is 0 at the start of `main` (or of a
+  single `test` block). In a compiled binary that coincides with
+  process start.
+- **No profiling flag needed.** A program that reads these gets the
+  real numbers without `--profile=mem`.
 
-`requires` / `ensures` と `test` ブロックから使えるので、メモリを
-契約で縛れる:
+They are callable from `requires` / `ensures` and from `test` blocks,
+so memory can be bounded by contract:
 
 ```rust
 fn parse(s: str) -> u64
@@ -2718,9 +2806,9 @@ test "tidy leaks nothing" {
 }
 ```
 
-`peak_at_request` に対応する builtin は無い。あれはレポートが
-「いつ」を再現可能に表すための軸であって、プログラムが意見を
-持つ量ではない。
+There is no builtin for `peak_at_request`. That field is the axis the
+report uses to say *when* a peak happened reproducibly — not a
+quantity a program should hold an opinion about.
 
 ### Numeric value methods
 
@@ -2853,26 +2941,30 @@ whatever T or E carries).
 ```rust
 val o: Option<u64> = Option::Some(42u64)
 
-o.is_some()              # bool
-o.is_none()              # bool
-o.unwrap_or(0u64)        # T  — returns Some's payload or `default`
-o.expect("must be Some") # T  — panics with the literal message on None
+o.is_some()                                  # bool
+o.is_none()                                  # bool
+o.unwrap_or(0u64)                            # T  — payload or `default`
+o.unwrap()                                   # T  — panics on None
+o.expect("must be Some")                     # T  — panics with the literal message on None
+o.map(fn(x: u64) -> u64 { x + 1u64 })        # Option<U>
+o.unwrap_or_else(fn() -> u64 { 0u64 })       # T  — default computed lazily
 
 val r: Result<u64, str> = Result::Err("boom")
 
-r.is_ok()                # bool
-r.is_err()               # bool
-r.unwrap_or(99u64)       # T
-r.expect("ok required")  # T  — panics on Err
+r.is_ok()                                    # bool
+r.is_err()                                   # bool
+r.unwrap_or(99u64)                           # T
+r.unwrap()                                   # T  — panics on Err
+r.expect("ok required")                      # T  — panics on Err
+r.map(fn(x: u64) -> u64 { x * 2u64 })        # Result<U, E>
+r.map_err(fn(e: str) -> str { e })           # Result<T, F>
 ```
 
-`unwrap_or(default)` takes the default eagerly. The language now
-has closures (see *Closures*), so an `unwrap_or_else(f: () -> T) -> T`
-shape is mechanically possible — it isn't yet provided by the
-stdlib because closure-as-argument dispatch requires AOT Phase 5b
-(see *Closures → AOT support*). `expect(msg)` accepts a string
-literal and lowers to the same `panic("...")` machinery the
-runtime already provides.
+`unwrap_or(default)` takes the default eagerly; `unwrap_or_else(f)`
+calls `f` only on `None`. `expect(msg)` accepts a string literal and
+lowers to the same `panic("...")` machinery the runtime already
+provides. The closure-taking methods (`map` / `map_err` /
+`unwrap_or_else`) run on every backend.
 
 For error-propagation rather than panicking unwrap, see the
 postfix [`?` operator](#-operator-early-return): `divide(a, b)?`
@@ -2895,12 +2987,17 @@ Backend coverage:
   `instantiate_generic_method_with_self_type`; enum payload types
   include `i64` / `u64` / `f64` / `bool` / `str` / nested enum /
   struct / tuple.
-- **JIT** silently falls back to the interpreter for any program
-  touching enum values — full enum support in the JIT is deferred.
-  The verbose log spells this out: `JIT: skipped (... JIT does
-  not yet model enum values (constructors / match / methods))`.
+- **JIT** (the interpreter's, `INTERPRETER_JIT=1`) compiles enum
+  values whose payloads are JIT scalars: tuple and unit variant
+  constructors, `match` over them with payload binding, generic
+  enums, enums crossing function boundaries, and receiver-method
+  dispatch (`opt.unwrap_or(0i64)`) — the JE-2 → JE-6 family in
+  [`JIT.md`](../design-docs/JIT.md). What still falls back:
+  non-scalar payloads (a struct or tuple inside a variant),
+  nested generic enums (`Option<Option<T>>`), and match arms with
+  guards. The fallback is silent; `-v` names the reason.
 
-### `Display` — 型が自分の見せ方を決める
+### `Display`
 
 `core/std/display.t`:
 
@@ -2910,8 +3007,8 @@ pub trait Display {
 }
 ```
 
-`to_str(&self) -> str` を持つ型は、`print` / `println` の出力と
-文字列補間 `"{v}"` の中身を自分で決める:
+A type that has `to_str(&self) -> str` decides how it prints through
+`print` / `println` and what string interpolation `"{v}"` splices in:
 
 ```rust
 struct Point { x: i64, y: i64 }
@@ -2924,29 +3021,32 @@ println(p)          # (1, 2)
 println("at {p}")   # at (1, 2)
 ```
 
-実装が無ければ従来どおり構造的に出る (`Point { x: 1, y: 2 }`)。
-デバッグには有用だが、人が読む出力としては普通は望むものではない。
+Without an implementation the value still prints structurally
+(`Point { x: 1, y: 2 }`). That is useful while debugging but rarely
+what human-facing output wants.
 
-- **ディスパッチは method の有無で決まり、`impl Display for` の
-  登録では決まらない** — `==` が `eq` を、`+` が `add` を見つけるのと
-  同じ。inherent な `fn to_str(&self) -> str` でも動く。trait は
-  契約に名前を与え、`--api` に出し、`<T: Display>` を書けるようにする
-  ためにある
-- **形が合うものだけが renderer**。`fn to_str(&self, radix: u64) -> str`
-  や `-> u64` を返すものは対象外で、従来の意味のまま。そうしないと、
-  ユーザが書いていない呼び出しについての arity エラーが `println` から
-  出ることになる
-- 型検査器が `println(v)` を `println(v.to_str())` に書き換えるので、
-  **バックエンドは通常の method 呼び出ししか見ない**
-- `String` は `impl Display for String` を持つので `println(s)` は
-  中身のテキストを出す (これが無かった頃は
-  `String { cap: 2, data: 12, elem_size: 1, len: 2 }` と出ていた)
-- **自分の型を `to_str` の中で補間すると無限再帰する**。他の言語の
-  ユーザ定義 `Display` と同じで、実装側の責任
+- **Dispatch keys off the method, not off an `impl Display for`
+  registration** — the same way `==` finds `eq` and `+` finds `add`.
+  An inherent `fn to_str(&self) -> str` works just as well. The trait
+  exists to name the contract, to surface it in `--api`, and to let
+  you write `<T: Display>`.
+- **Only the matching shape is a renderer.** A
+  `fn to_str(&self, radix: u64) -> str`, or one returning `-> u64`,
+  is left alone and keeps its ordinary meaning. Otherwise `println`
+  would report arity errors about a call the user never wrote.
+- The type checker rewrites `println(v)` into `println(v.to_str())`,
+  so **the backends only ever see a normal method call**.
+- `String` has `impl Display for String`, so `println(s)` prints the
+  text it holds (before that existed it printed
+  `String { cap: 2, data: 12, elem_size: 1, len: 2 }`).
+- **Interpolating your own type inside its `to_str` recurses forever.**
+  As with user-defined `Display` in other languages, that is the
+  implementer's responsibility.
 
-`str` と `String` は別の型なので、method 名は `to_string` ではなく
-`to_str`。`String::to_string() -> String` は Rust と同じ冪等な clone
-として既にあり、補間が繋ぐのは `str` のほう。
+`str` and `String` are different types, so the method is named
+`to_str`, not `to_string`: `String::to_string() -> String` already
+exists as the idempotent clone Rust has, and what interpolation
+concatenates is the `str` side.
 
 ### String methods
 
@@ -2956,12 +3056,18 @@ Method-call syntax on `str` (the static-string primitive):
 |---|---|
 | `str.len()` | `-> u64` |
 | `str.concat(other: str)` | `-> str` |
-| `str.substring(start: u64, end: u64)` | `-> str` |
 | `str.contains(needle: str)` | `-> bool` |
-| `str.split(sep: str)` | `-> [str]` |
 | `str.trim()` | `-> str` |
 | `str.to_upper()` | `-> str` |
 | `str.to_lower()` | `-> str` |
+
+Two more shapes type-check but do **not** run: `str.substring(start,
+end)` and `str.split(sep)` reach an unimplemented arm of the
+interpreter's string dispatch and stop the program with
+`Internal error: Method '<name>' not found for String type`. Both work
+on [`String`](#string-heap-byte-buffer), through the `Substring` /
+`Split` trait impls — build one with `String::from_str(s)` when you
+need them.
 
 ### `String` (heap byte buffer)
 
@@ -3005,14 +3111,70 @@ semantics. It is **not** `String` — convert across the boundary
 with `String::from_str(s)` (str → String) or `s.as_ptr()` +
 manual byte handling (String → raw pointer).
 
-### `is_null` (universal)
+### `is_null`
+
+Not available. The interpreter still carries a universal `is_null()`
+implementation, but the type checker has no rule that reaches it, so
+every receiver — `i64`, `ptr`, `str`, a struct, a `dict` — fails with
+`[E0007] Method 'is_null' ... method not found`. Its only argument
+would have been the [`null` literal](#boolean-and-null-literals),
+which no backend evaluates either.
+
+For a raw pointer, test the address instead:
 
 ```rust
-val n: i64 = null
-n.is_null()                # true
+val p: ptr = __builtin_heap_alloc(32u64)
+__builtin_ptr_is_null(p)                  # bool
+__builtin_ptr_eq(p, __builtin_null_ptr()) # same question, spelled out
 ```
 
-Available on any type; returns `bool`.
+For an absent value, use `Option<T>` and `is_none()`.
+
+---
+
+## Test blocks
+
+A `test "name" { ... }` block is a top-level declaration holding
+assertions about the program it sits in:
+
+```rust
+fn add(a: u64, b: u64) -> u64 { a + b }
+
+test "add works" {
+    assert_eq(add(1u64, 2u64), 3u64)
+}
+```
+
+- `test` is a **contextual** keyword — it only starts a test block at
+  the top level, followed by a string literal and a block. `fn
+  test(...)` and `val test = ...` keep working.
+- Each block lowers to a zero-argument function, so type checking and
+  every backend treat it as ordinary code — there is no special form
+  to support.
+- A normal run (`interpreter <file>`) ignores test blocks entirely and
+  calls `main`.
+- `interpreter --test <file>` runs them instead of `main`, each in its
+  own evaluation context, and prints a `N passed, M failed` summary.
+  A failing block reports the assertion's left / right values and the
+  source line; the process exits non-zero when anything failed.
+- The body is ordinary code, so `assert` / `assert_eq` / `assert_ne`,
+  `panic`, and the [allocation counters](#allocation-counters) are all
+  available.
+
+```
+$ interpreter --test example.t
+FAILED  this one fails (example.t:7)
+     8 |     assert_eq(add(1u64, 2u64), 4u64)
+       |     ^^^^^^^^^ panic: assertion `left == right` failed at line 8
+      left:  3
+      right: 4
+1 passed, 1 failed
+```
+
+`interpreter --check <file>` is the neighbouring tool: it treats a
+function's `requires` clauses as an input filter and its `ensures`
+clauses as the oracle, property-tests the function, and prints a
+minimised counterexample. `--seed=N` reproduces a run.
 
 ---
 
@@ -3276,10 +3438,28 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   *user-defined* generic enum. See
   [Closures → Backend coverage](#closures).
 - **No `else if`** — use `elif`.
+- **`null` does not run** — the literal parses and type-checks, but
+  evaluating it stops the program (`Internal error: Null reference
+  error`), and the universal `is_null()` is unreachable from the type
+  checker. Use `Option<T>`; for raw pointers use
+  `__builtin_ptr_is_null`.
+- **`var` without an initializer does not parse** — every `val` / `var`
+  needs a value at declaration.
+- **`str + str` is not concatenation** — the type checker accepts it,
+  no backend implements it (the AOT binary faults on it). Use
+  `a.concat(b)`.
+- **`str.substring` / `str.split` are unimplemented at run time** —
+  they type-check and then stop the interpreter. Use the same methods
+  on `String`.
 - **No bare `self`** — `self: Self` is mandatory in method signatures.
 - **`val` is a keyword** — cannot be used as a parameter or field name.
-- **`val name: TypeName = StructLiteral`** does not always typecheck;
-  prefer `val name = StructLiteral` (let inference handle it).
+- **Literals in a generic struct literal are not converted by the
+  binding's annotation** — `val p: P = P { v: 5 }` works for a plain
+  struct (the field type drives the literal), but
+  `val c: C<i64> = C { value: 5 }` fails: for a generic struct the
+  field's literal must already carry the right suffix
+  (`C { value: 5i64 }`), or the annotation can be dropped and
+  inference left to do the work.
 - **Float literals require the `f64` suffix** — `1.5` is not a token;
   write `1.5f64`.
 - **`panic` / `assert` are always active by design** — there is no
@@ -3298,23 +3478,14 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   context. `a + b + c` and `a & Bits { v: 1 }` need explicit
   intermediates (`val tmp = a + b; val r = tmp + c`).
 - **Trait limitations** — no trait inheritance; no associated
-  types. Generic trait declarations (`trait Foo<T>`) are
-  supported (see ITER-PROTOCOL-TRAIT in `design-docs/todo.md`
-  完了済み 2026-05-07). **Default method bodies** are supported
-  as of A1 (2026-05-18) — see *Traits → Default method bodies*.
-  **Multiple bounds (`<T: A + B>`)** are supported as of A2
-  (2026-05-18) — see *Traits → Trait bounds on generics*.
-  **`dyn Trait`** (dynamic dispatch via trait objects) is
-  supported in the interpreter as of A5 Phase 1 (2026-05-18)
-  **and the AOT compiler as of A5 Phase 2 (MVP-A〜F, 2026-05-19)**
-  — see *Traits → Dynamic dispatch with `dyn Trait`*. The
-  cranelift JIT silently falls back to the interpreter for
-  programs that thread `Dyn` types (P3 work tracked but
-  programs run correctly today). `Box<dyn Trait>` for owned
-  trait objects is not yet available (P4 — needs a `Box<T>`
-  type). Generic-trait default bodies that reference the trait's
-  type parameter `T` are not yet wired. See *Traits → Out of
-  scope* for the remaining list.
+  types. Generic trait declarations (`trait Foo<T>`), default
+  method bodies, multiple bounds (`<T: A + B>`) and `dyn Trait`
+  dynamic dispatch are all supported — see *Traits*. What is
+  still missing: `Box<dyn Trait>` for owned trait objects,
+  `dyn` support in the *interpreter's* JIT (the compiler's JIT
+  mode already runs it), and generic-trait default bodies that
+  reference the trait's type parameter `T`. See *Traits → Out of
+  scope* for the full list.
 - **`extern fn` generic params: backend monomorph not yet wired** —
   the parser accepts `extern fn name<T>(x: T) -> T` and the
   interpreter dispatches via the type-erased `extern_registry` by
@@ -3327,13 +3498,14 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   `math` alias and you call through `math::abs(x)`. The parser
   drops module path components beyond the last two when the head
   isn't a known struct / enum.
-- **Enum support in JIT** — JIT eligibility rejects every program
-  that touches enum values (constructors, match, methods on enum
-  receivers). `core/std/option.t` / `core/std/result.t` therefore
-  always run via the interpreter fallback. Verbose log:
-  `JIT: skipped (... JIT does not yet model enum values
-  (constructors / match / methods))`. AOT compiler handles all of
-  this through its monomorph pipeline.
+- **Enum support in JIT: partial** — the interpreter's JIT
+  compiles tuple / unit variants with JIT-scalar payloads,
+  `match` over them, generic enums, enum-typed function
+  boundaries, and enum receiver methods (JE-2 → JE-6). It still
+  falls back for non-scalar payloads (a struct or tuple inside a
+  variant), nested generic enums (`Option<Option<T>>`), and
+  guarded match arms. The AOT compiler handles all of these
+  through its monomorph pipeline.
 - **Generic struct / method JIT** — `struct Cell<T>` and methods
   on it run in the interpreter only; the JIT eligibility rejects
   generic struct types because `struct_layouts` isn't yet keyed by
@@ -3343,8 +3515,8 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   i64, bool)`) reach the JIT; nested tuples (`((a, b), c)`) and
   tuple-of-struct (`(Point, i64)`) fall back to the interpreter
   until `ParamTy::Tuple` becomes a tree of element shapes.
-- **JIT enum / generic-struct fallback is permanent for now** —
-  see entries above; both code paths land in the interpreter
+- **JIT generic-struct fallback is permanent for now** — see the
+  entry above; generic struct types land in the interpreter
   fallback regardless of the program shape. This is acceptable
   because the AOT pipeline handles the same code through its
   monomorph machinery.

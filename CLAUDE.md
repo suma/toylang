@@ -137,6 +137,28 @@ nextest の `[profile.*.env]` は**存在しないキー**なので、そこに�
 黙って無視される (毎回警告が出る)。テスト用の環境変数は必ず
 `.cargo/config.toml` の `[env]` に置くこと。
 
+**テストファイルを新設したら `tests/suite.rs` に登録すること。** 各クレートは
+`autotests = false` で **1 クレート 1 テストバイナリ**にまとめてある
+(`tests/suite.rs` が `#[path]` で各ファイルをモジュールとして取り込む)。
+そのため `tests/foo_tests.rs` を置いただけでは **cargo が拾わず、テストは
+黙って実行されない** — 失敗ではなく無音なので気づきにくい。suite.rs に
+
+```rust
+#[path = "foo_tests.rs"]
+mod foo_tests;
+```
+
+を足す。この構成の理由と実測値は
+[`design-docs/todo.md`](design-docs/todo.md) の BUILD-PERF にある
+(テストバイナリ 73 本 → 12 本、クリーンビルド 37.5s → 23.7s)。
+interpreter のテストは共有ヘルパを `use crate::common::...` で参照する
+(以前の `mod common;` は suite.rs 側に 1 つだけある)。
+
+**`target/` を肥大させない。** 過去の成果物が溜まると
+`-L dependency=target/debug/deps` の走査だけでビルドが桁で遅くなる
+(125 万ファイルまで育ったとき、lib 1 行の変更が 2.35s → 1m55s だった)。
+時々 `cargo clean` するか `cargo-sweep` を入れること。
+
 `cargo test` も使用可能 (doc-tests は nextest が実行しないので必要なときに併用):
 
 ```bash

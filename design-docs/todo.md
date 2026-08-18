@@ -11,6 +11,21 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-18
+- **`null` / `is_null()` の扱いを確定 (docs の仕様に実装を追従)** —
+  方針 2 択を「**予約・実行時停止**」に決めた (docs/language.md が
+  2026-08-18 の監査で既にそう確定していた。`null` は parser / 型検査は
+  通すがどのバックエンドも評価せず、代替は `Option<T>`、raw pointer は
+  `__builtin_ptr_is_null`)。実装側の曖昧さを除去: (1) `Expr::Null` の
+  実行時メッセージを `Null reference error` → 「`null` cannot be
+  evaluated: reserved / no backend implements it — model absence with
+  `Option<T>`」に (docs も合わせて更新)、(2) `is_null()` の E0007 に
+  「test raw pointers with `__builtin_ptr_is_null(p)` / absent values
+  with `Option<T>::is_none()`」の誘導を追加、(3) 壊れた
+  `interpreter/example/null_test.t` (`x.is_null()` を使う) を
+  `__builtin_ptr_is_null` + `Option::is_none` の正しい example に書き換え、
+  ERROR_EXAMPLES から外した (3 バックエンド一致 exit=42)。
+  テスト: `is_null_suggests_the_supported_spellings` /
+  `null_literal_stops_with_a_clear_message`。
 - **型不一致診断の user 型を source 綴りに (interner 経由)** —
   `TypeCheckError` の `Display` は interner を持てないので、診断
   変換経路に interner を渡した: (1) `TypeDecl::spell_with(interner)`
@@ -668,17 +683,6 @@
 以下 4 件は `docs/language.md` を実装と突き合わせた監査 (2026-08-18) で
 発見。ドキュメント側は同日のコミットで実態に合わせたので、残るのは
 実装をどう直すかの判断。
-
-- **`null` リテラルと universal `is_null()` が両方とも死んでいる** —
-  `Expr::Null` の評価が無条件で `InternalError("Null reference error")`
-  (`interpreter/src/evaluation/expression.rs:80`) なので、`val n = null`
-  を書いた時点で実行が止まる。`is_null()` は interpreter 側に実装が
-  残っている (`evaluation/call.rs:1005`) が型検査器に到達経路が無く、
-  `i64` / `ptr` / `str` / struct / dict のどれでも `[E0007] method not
-  found`。`interpreter/example/null_test.t` が `ERROR_EXAMPLES` に
-  入ったままなのもこれが理由。方針は 2 択で、(a) `null` を文法から
-  落として `Option<T>` に一本化するか、(b) 評価と型検査を実装して
-  生かすか。現状は「予約されているが動かない」という最悪の中間。
 
 ### パーサーの既知制限事項
 - bare `self` 非対応 — `self: Self` / `&self` / `&mut self` のいずれかを書く。

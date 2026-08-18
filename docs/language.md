@@ -670,10 +670,11 @@ null
 `null` is accepted by the parser and the type checker (a `null` in a
 typed position takes that position's type), but **no backend evaluates
 it**: reaching a `null` expression at run time stops the program with
-`Internal error: Null reference error`. Treat the literal as reserved
-surface with no working semantics, and model absence with
-`Option<T>` instead. The universal `is_null()` method described in
-older notes is likewise not reachable — see
+`Internal error: \`null\` cannot be evaluated: the literal is reserved
+and no backend implements it — model absence with \`Option<T>\``.
+Treat the literal as reserved surface with no working semantics, and
+model absence with `Option<T>` instead. The universal `is_null()`
+method described in older notes is likewise not reachable — see
 [`is_null`](#is_null).
 
 ### Char literals
@@ -3116,9 +3117,10 @@ manual byte handling (String → raw pointer).
 Not available. The interpreter still carries a universal `is_null()`
 implementation, but the type checker has no rule that reaches it, so
 every receiver — `i64`, `ptr`, `str`, a struct, a `dict` — fails with
-`[E0007] Method 'is_null' ... method not found`. Its only argument
-would have been the [`null` literal](#boolean-and-null-literals),
-which no backend evaluates either.
+`[E0007] Method 'is_null' ... method not found` (the message suggests
+the supported spellings below). Its only argument would have been the
+[`null` literal](#boolean-and-null-literals), which no backend
+evaluates either.
 
 For a raw pointer, test the address instead:
 

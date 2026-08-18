@@ -117,6 +117,37 @@ fn user_type_mismatch_spells_the_source_name() {
 }
 
 #[test]
+fn is_null_suggests_the_supported_spellings() {
+    // The universal `is_null()` is deliberately unsupported (see
+    // docs/language.md); the diagnostic must point at the spellings
+    // that do work instead of a bare "method not found".
+    let diags = diagnostics(
+        "fn main() -> u64 {
+            val p: ptr = __builtin_null_ptr()
+            p.is_null()
+        }",
+    );
+    assert!(diags.contains("is_null"), "{diags}");
+    assert!(diags.contains("__builtin_ptr_is_null"), "{diags}");
+    assert!(diags.contains("Option<T>"), "{diags}");
+}
+
+#[test]
+fn null_literal_stops_with_a_clear_message() {
+    // `null` is reserved: it parses and type-checks, but evaluating
+    // it must stop with a message pointing at the supported model.
+    let err = test_program(
+        "fn main() -> u64 {
+            val n = null
+            0u64
+        }",
+    )
+    .expect_err("null must stop at run time");
+    assert!(err.contains("reserved"), "{err}");
+    assert!(err.contains("Option<T>"), "{err}");
+}
+
+#[test]
 fn a_failed_binding_does_not_cascade_through_a_cast() {
     // `as` had the same leak as the binary operators: casting a
     // recovery placeholder reported "Cannot cast Unknown to UInt64",

@@ -58,7 +58,6 @@ const ERROR_EXAMPLES: &[&str] = &[
     "mutual_struct_test.t",
     "nested_struct_array_test.t",
     "null_assignment_test.t",
-    "null_test.t",
     "simple_test.t",
     "struct_array_error_test.t",
     "struct_array_test.t",

@@ -672,7 +672,18 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
             }
 
-        Err(TypeCheckError::method_error(&method_name, obj_type.clone(), "method not found"))
+        // The universal `is_null()` is deliberately unsupported — the
+        // `null` literal has no working semantics in any backend (see
+        // `docs/language.md`). Rather than a bare "method not found",
+        // point the reader at the supported spellings.
+        let reason = if method_name == "is_null" {
+            "method not found; the universal is_null() is unsupported — \
+             test raw pointers with `__builtin_ptr_is_null(p)` and absent \
+             values with `Option<T>::is_none()`"
+        } else {
+            "method not found"
+        };
+        Err(TypeCheckError::method_error(&method_name, obj_type.clone(), reason))
     }
 
     /// Type check associated function calls - implementation

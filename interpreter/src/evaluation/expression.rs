@@ -77,7 +77,16 @@ impl EvaluationContext<'_> {
                 self.evaluate_qualified_identifier(&path)
             }
             Expr::Null => {
-                Err(InterpreterError::InternalError("Null reference error".to_string()))
+                // `null` is a reserved literal with no working
+                // semantics in any backend (see docs/language.md).
+                // The parser and type checker accept it (a `null` in
+                // a typed position takes that position's type), but
+                // reaching one at run time is always a stop.
+                Err(InterpreterError::InternalError(
+                    "`null` cannot be evaluated: the literal is reserved and no backend \
+                     implements it — model absence with `Option<T>`"
+                        .to_string(),
+                ))
             }
             Expr::SliceAssign(object, start, end, value) => {
                 self.evaluate_slice_assign(&object, &start, &end, &value)

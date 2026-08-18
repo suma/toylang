@@ -2146,6 +2146,47 @@ impl<'a> FunctionLower<'a> {
                     Some(Type::Str),
                 ))
             }
+            BuiltinFunction::Format => {
+                // STR-INTERP-FMT: `__builtin_format(value, spec)`.
+                // The spec argument is always the parser's packed
+                // constant, so it is read out here and travels as an
+                // immediate on the instruction rather than as a
+                // value — nothing downstream has to keep a register
+                // alive for it.
+                if args.len() != 2 {
+                    return Err(format!(
+                        "__builtin_format takes 2 arguments, got {}",
+                        args.len()
+                    ));
+                }
+                let Some(Expr::UInt64(spec)) = self.program.expression.get(&args[1]) else {
+                    return Err(
+                        "__builtin_format: spec must be the parser-generated u64 constant"
+                            .to_string(),
+                    );
+                };
+                let arg_value = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "__builtin_format arg produced no value".to_string())?;
+                let value_ty = self
+                    .value_ir_type_for(arg_value)
+                    .ok_or_else(|| {
+                        "__builtin_format: could not infer arg IR type at lower time".to_string()
+                    })?;
+                if matches!(
+                    value_ty,
+                    Type::Struct(_) | Type::Tuple(_) | Type::Enum(_) | Type::Unit
+                ) {
+                    return Err(format!(
+                        "__builtin_format of compound type {value_ty:?} reached lowering \
+                         (the type checker only allows primitives)"
+                    ));
+                }
+                Ok(self.emit(
+                    InstKind::Format { value: arg_value, value_ty, spec },
+                    Some(Type::Str),
+                ))
+            }
             BuiltinFunction::MemCopy => {
                 // `__builtin_mem_copy(src: ptr, dest: ptr, size: u64)`
                 // — emit `InstKind::MemCopy` which codegen lowers

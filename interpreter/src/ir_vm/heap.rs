@@ -7,6 +7,7 @@
 use std::cell::RefCell;
 
 use compiler_ir::Type;
+use frontend::format_spec::FormatSpec;
 
 use crate::ir_vm::slot::RawSlot;
 use crate::object::{Object, RcObject};
@@ -241,6 +242,32 @@ pub fn to_string_value(slot: RawSlot, ty: Type) -> u64 {
         Type::F64 => format_f64(unsafe { slot.f64 }),
         Type::Bool => format!("{}", unsafe { slot.bool }),
         Type::Str => return unsafe { slot.u64 }, // identity
+        _ => format!("{:?}", unsafe { slot.u64 }),
+    };
+    alloc_string(text)
+}
+
+/// STR-INTERP-FMT: `InstKind::Format` — the same value rendering as
+/// [`to_string_value`] under a packed format spec. `str` is the one
+/// type that cannot take the identity shortcut here: padding it
+/// produces new bytes, so the result is a fresh allocation.
+pub fn format_value(slot: RawSlot, ty: Type, spec_code: u64) -> u64 {
+    let spec = FormatSpec::unpack(spec_code);
+    let signed = |v: i64, bits: u32| spec.render_uint(v.unsigned_abs(), v < 0, bits);
+    let text = match ty {
+        Type::I64 => signed(unsafe { slot.i64 }, 64),
+        Type::I32 => signed(unsafe { slot.i64 as i32 } as i64, 32),
+        Type::I16 => signed(unsafe { slot.i64 as i16 } as i64, 16),
+        Type::I8 => signed(unsafe { slot.i64 as i8 } as i64, 8),
+        Type::U64 => spec.render_uint(unsafe { slot.u64 }, false, 64),
+        Type::U32 => spec.render_uint(unsafe { slot.u64 as u32 } as u64, false, 32),
+        Type::U16 => spec.render_uint(unsafe { slot.u64 as u16 } as u64, false, 16),
+        Type::U8 => spec.render_uint(unsafe { slot.u64 as u8 } as u64, false, 8),
+        Type::F64 => spec.render_f64(unsafe { slot.f64 }),
+        Type::Bool => spec.render_text(if unsafe { slot.bool } { "true" } else { "false" }),
+        Type::Str => spec.render_text(&read_str(unsafe { slot.u64 })),
+        // The type checker only lets primitives carry a spec, so a
+        // compound here means the lowering let one through.
         _ => format!("{:?}", unsafe { slot.u64 }),
     };
     alloc_string(text)

@@ -967,6 +967,14 @@ pub enum InstKind {
     /// interpolation (`"hello {x}"` →
     /// `"hello ".concat(__builtin_to_string(x))`).
     ToString { value: ValueId, value_ty: Type },
+    /// STR-INTERP-FMT: `__builtin_format(value, spec) -> str` — the
+    /// same rendering as [`InstKind::ToString`] under a format spec
+    /// (`"{x:.2}"`). `spec` is the packed constant
+    /// `frontend::format_spec::FormatSpec::pack` produced at parse
+    /// time, so it rides along as an immediate rather than a value:
+    /// there is no runtime spec in this language. Codegen calls the
+    /// matching `toy_format_<ty>` helper with `(value, spec)`.
+    Format { value: ValueId, value_ty: Type, spec: u64 },
     /// `__builtin_mem_copy(src, dest, size)` — libc memcpy. Note
     /// the toylang argument order is (src, dest, size); codegen
     /// swaps to libc's `(dest, src, n)` at the call site.
@@ -1649,6 +1657,9 @@ impl fmt::Display for DisplayInst<'_> {
             }
             InstKind::ToString { value, value_ty } => {
                 write!(f, "{prefix}to_string {value}: {value_ty}")
+            }
+            InstKind::Format { value, value_ty, spec } => {
+                write!(f, "{prefix}format {value}: {value_ty}, spec={spec:#x}")
             }
             InstKind::MemCopy { src, dest, size } => {
                 write!(f, "mem_copy {src} -> {dest}, {size}")

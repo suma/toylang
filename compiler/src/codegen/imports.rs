@@ -259,6 +259,11 @@ impl<M: Module> CodegenSession<M> {
             to_string_u16: self.declare_func_in_func_readonly(self.rt_to_string_u16, func),
             to_string_i32: self.declare_func_in_func_readonly(self.rt_to_string_i32, func),
             to_string_u32: self.declare_func_in_func_readonly(self.rt_to_string_u32, func),
+            format_i64: self.declare_func_in_func_readonly(self.rt_format_i64, func),
+            format_u64: self.declare_func_in_func_readonly(self.rt_format_u64, func),
+            format_f64: self.declare_func_in_func_readonly(self.rt_format_f64, func),
+            format_bool: self.declare_func_in_func_readonly(self.rt_format_bool, func),
+            format_str: self.declare_func_in_func_readonly(self.rt_format_str, func),
         }
     }
 }

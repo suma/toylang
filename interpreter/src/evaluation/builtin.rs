@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use frontend::ast::*;
+use frontend::format_spec::FormatSpec;
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 use crate::object::{Object, RcObject};
@@ -994,6 +995,47 @@ impl EvaluationContext<'_> {
                 Ok(EvaluationResult::Value(Object::String(rendered).into()))
             }
 
+            // STR-INTERP-FMT: `__builtin_format(value, spec)`. The
+            // spec is a parser-packed constant, so decoding it here
+            // costs one `unpack` per call and nothing at the call
+            // site. Rendering lives in
+            // `frontend::format_spec::FormatSpec` so the interpreter
+            // and the type checker agree on the grammar; the AOT / JIT
+            // runtime (`toylang_rt`) reimplements the same rules
+            // because it cannot depend on this crate, and the
+            // cross-backend tests pin the two together.
+            BuiltinFunction::Format => {
+                if args.len() != 2 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "__builtin_format takes 2 arguments".to_string(),
+                        expected: 2,
+                        found: args.len(),
+                    });
+                }
+                let value = self.evaluate(&args[0])?;
+                let value = try_value!(Ok(value));
+                let spec_obj = self.evaluate(&args[1])?;
+                let spec_obj = try_value!(Ok(spec_obj));
+                let code = match &*spec_obj.borrow() {
+                    Object::UInt64(v) => *v,
+                    Object::Int64(v) => *v as u64,
+                    other => {
+                        return Err(InterpreterError::InternalError(format!(
+                            "__builtin_format: spec must be a u64 constant, got {other:?}"
+                        )));
+                    }
+                };
+                let spec = FormatSpec::unpack(code);
+                let rendered = format_object(&value.borrow(), &spec, self.string_interner)
+                    .ok_or_else(|| {
+                        InterpreterError::InternalError(format!(
+                            "__builtin_format: a format spec does not apply to {:?}",
+                            value.borrow()
+                        ))
+                    })?;
+                Ok(EvaluationResult::Value(Object::String(rendered).into()))
+            }
+
             BuiltinFunction::Panic => {
                 if args.len() != 1 {
                     return Err(InterpreterError::FunctionParameterMismatch {
@@ -1136,4 +1178,40 @@ impl EvaluationContext<'_> {
             }
         }
     }
+}
+
+/// STR-INTERP-FMT: render one `Object` under a format spec.
+///
+/// Returns `None` for a value no spec applies to. The type checker
+/// rejects those at the call site, so reaching `None` means a
+/// compound slipped through and the caller reports it as an internal
+/// error rather than printing something arbitrary.
+///
+/// Signed values hand their magnitude and sign to `render_uint`
+/// separately, so a non-decimal radix can show the two's-complement
+/// pattern at the value's own width (`{-1i32:x}` is `ffffffff`, not
+/// 16 digits) while decimal keeps the `-` prefix.
+fn format_object(
+    value: &Object,
+    spec: &FormatSpec,
+    interner: &string_interner::StringInterner<string_interner::DefaultBackend>,
+) -> Option<String> {
+    let signed = |v: i64, bits: u32| spec.render_uint(v.unsigned_abs(), v < 0, bits);
+    Some(match value {
+        Object::Int64(v) => signed(*v, 64),
+        Object::Int32(v) => signed(*v as i64, 32),
+        Object::Int16(v) => signed(*v as i64, 16),
+        Object::Int8(v) => signed(*v as i64, 8),
+        Object::UInt64(v) => spec.render_uint(*v, false, 64),
+        Object::UInt32(v) => spec.render_uint(*v as u64, false, 32),
+        Object::UInt16(v) => spec.render_uint(*v as u64, false, 16),
+        Object::UInt8(v) => spec.render_uint(*v as u64, false, 8),
+        Object::Float64(v) => spec.render_f64(*v),
+        Object::Bool(v) => spec.render_text(if *v { "true" } else { "false" }),
+        Object::String(s) => spec.render_text(s),
+        Object::ConstString(sym) => {
+            spec.render_text(interner.resolve(*sym).unwrap_or(""))
+        }
+        _ => return None,
+    })
 }

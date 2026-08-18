@@ -11,6 +11,25 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-18
+- **STR-INTERP-FMT: 補間の format spec (`"{x:.2}"`, 3 バックエンド)** —
+  `[align]['0'][width]['.'precision][type]` (`< > ^` / `x X b o`) の
+  Rust サブセット。**f64 の桁数指定手段が言語に無かった**のを解消。
+  **設計判断**: (1) spec は literal の一部で実行時値になりえないので
+  **parse 時に検証して u64 1 個に pack** (`frontend/src/format_spec.rs`)
+  — backend が見るのは `__builtin_format(value, <u64>)` というスカラー
+  引数 1 個増えただけの形で、不正な spec は parse エラーになる。
+  (2) 対象は **primitive のみ**。compound は再帰的な field walk で
+  描画するので単一の width / radix に意味が無く、型エラーで拒否して
+  `Display` の `to_str` に誘導する。(3) runtime helper は
+  `toy_format_{i64,u64,f64,bool,str}` の 5 本。narrow int は codegen で
+  sext/uext して自分の幅 (`bits`) を渡すので、`{-1i32:x}` が
+  `ffffffff` (16 桁でなく 8 桁) になる。**pack の bit layout は
+  `frontend/src/format_spec.rs` と `toylang_rt` の 2 箇所**に書かれる
+  (後者は no_std で前者に依存できない) — `example/string_format_spec.t`
+  の stdout 比較が両者を突き合わせる。**interpreter JIT は
+  silent fallback** (`jit_format_<ty>` helper が未実装、correctness に
+  影響なし)。`BuiltinFunctionSymbols` に名前を足したので
+  `FULL_AST_CACHE_SCHEMA_VERSION` を 10 → 11。
 - **DOC-DRIFT 解消** — `docs/language.md` の *Generics and bounds* が
   「bound は parse されるが強制されない」と書いていたのを実際の挙動
   (call site で強制、pass-through / generic trait の型引数一致 / 多重 bound)
@@ -439,12 +458,16 @@
   1 arm が覆う」、範囲は整数の被覆判定)。バックエンドは既存の arm に
   展開できるので手を入れずに済むはず。タプル / ガード / ネストパターンと
   `val (a, b) = ...` の分解は既に動く。
-- **STR-INTERP-FMT: 補間の format spec** ★★ — `"{x:.2}"` が parse エラーで、
-  **f64 の桁数指定手段が言語に無い** (`println(3.14159f64)` の出方を
-  ユーザが選べない)。lexer の `{...}` 切り出しに spec 部を足し、
-  `__builtin_to_string` 系に幅 / 精度 / 基数を渡す形。`Display` の
-  `to_str(&self)` は引数を取らない規約なので、**user 型に spec を渡すか
-  (`fn to_str(&self, spec: str)`) は API 判断**。
+- **STR-INTERP-FMT の残** ★ — (a) user 型に spec を渡す API
+  (`Display` の `to_str(&self)` は引数を取らない規約なので、
+  `fn to_str(&self, spec: str)` にするかは未決)、(b) fill 文字 / `+` /
+  `#` / `$`-parameterised width、(c) interpreter JIT の
+  `jit_format_<ty>` helper。いずれも踏んでから。
+- **INTERP-DIAG-SPAN** ★ — 補間の中で起きた型エラーが
+  **ファイル先頭 (1:1) を指す**。desugar が合成した token に元の span を
+  持たせていないため (`insert_token` は「現在のトークン」の位置を採る)。
+  spec 由来のエラーも同じ経路。LLM-LOOP-FIX が潰した「無関係なコードを
+  自信満々に指す」形なので、直すなら位置付き `insert_token_at`。
 - **STRUCT-UPDATE: struct update 構文 (`P { x: 5i64, ..a }`)** ★ — parse エラー。
   「1 フィールドだけ差し替えた copy」が全フィールド列挙になる。
 

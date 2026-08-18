@@ -6,6 +6,35 @@ macro_rules! token {
     }
 }
 
+/// STR-INTERP-FMT: split one `{...}` interpolation segment into its
+/// expression text and optional format spec at the first depth-0 `:`.
+///
+/// Brackets of every kind raise the depth, so field colons inside a
+/// struct or dict literal stay part of the expression. A `::` pair is
+/// consumed whole — a path (`Color::Red`, `String::from_str(s)`) has
+/// no spec. Returns `(expr, None)` when no separator is found.
+fn split_format_spec(segment: &str) -> (&str, Option<&str>) {
+    let bytes = segment.as_bytes();
+    let mut depth: usize = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' | b'[' | b'(' => depth += 1,
+            b'}' | b']' | b')' => depth = depth.saturating_sub(1),
+            b':' if depth == 0 => {
+                if i + 1 < bytes.len() && bytes[i + 1] == b':' {
+                    i += 2;
+                    continue;
+                }
+                return (&segment[..i], Some(&segment[i + 1..]));
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    (segment, None)
+}
+
 /// One ASCII hex digit `0-9 a-f A-F` -> nibble value `0..=15`.
 /// Used by both the `'\xHH'` char literal rule and the `\xHH`
 /// escape inside string literals.
@@ -572,8 +601,8 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                                         .replace(LexErrorKind::UnterminatedInterpolation);
                                     return Err(Error::Unmatch);
                                 }
-                                let expr_text = match std::str::from_utf8(&bytes[expr_start..j]) {
-                                    Ok(s) => s.to_string(),
+                                let segment = match std::str::from_utf8(&bytes[expr_start..j]) {
+                                    Ok(s) => s,
                                     // Unreachable: `inner` is a `&str` and
                                     // every branch above consumes whole
                                     // chars, so this slice is valid UTF-8.
@@ -581,7 +610,20 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                                     // source falls back to UnmatchedChar.
                                     Err(_) => return Err(Error::Unmatch),
                                 };
-                                parts.push(StringPart::Expr(expr_text));
+                                // STR-INTERP-FMT: `{expr:spec}` splits at
+                                // the first depth-0 `:`. Nesting keeps a
+                                // struct literal's field colons
+                                // (`{Point { x: 1i64 }}`) and a dict
+                                // literal's out of reach, and `::` is
+                                // skipped as a pair so a path expression
+                                // (`{Color::Red}`) is never mistaken for a
+                                // spec. The spec text itself is validated
+                                // by the parser.
+                                let (expr_text, spec) = split_format_spec(segment);
+                                parts.push(StringPart::Expr {
+                                    text: expr_text.to_string(),
+                                    spec: spec.map(|s| s.to_string()),
+                                });
                                 has_interpolation = true;
                                 i = j + 1;
                                 continue;

@@ -504,6 +504,43 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
         // because this is where both routes into a builtin call meet.
         self.apply_display_dispatch(func, args)?;
 
+        // STR-INTERP-FMT: `__builtin_format(value, spec)` only makes
+        // sense for values the spec's knobs (width / alignment /
+        // precision / radix) apply to. A compound value renders
+        // through its own recursive walk, where a single width or
+        // radix has no defined meaning, so a spec on one is an error
+        // here rather than a silently ignored spec at run time. The
+        // spec argument itself is a parser-generated `u64` constant.
+        if matches!(func, BuiltinFunction::Format) {
+            let [value, _spec] = args.as_slice() else {
+                return Err(TypeCheckError::generic_error(&format!(
+                    "__builtin_format takes 2 arguments, got {}",
+                    args.len()
+                )));
+            };
+            let value_ty = self.visit_expr(value)?;
+            let formattable = matches!(
+                value_ty,
+                TypeDecl::Int64 | TypeDecl::UInt64
+                    | TypeDecl::Int8 | TypeDecl::UInt8
+                    | TypeDecl::Int16 | TypeDecl::UInt16
+                    | TypeDecl::Int32 | TypeDecl::UInt32
+                    | TypeDecl::Float64 | TypeDecl::Bool | TypeDecl::String
+                    | TypeDecl::Number
+            );
+            if !formattable {
+                let shown = self.named_type_for_error(&value_ty);
+                let err = TypeCheckError::generic_error(&format!(
+                    "a format spec applies to primitives only \
+                     (integers, `f64`, `bool`, `str`), but this value is `{shown}`; \
+                     write `{{value}}` without a spec, or give the type a \
+                     `to_str` method and format that"
+                ));
+                return Err(self.error_with_location(err, value));
+            }
+            return Ok(TypeDecl::String);
+        }
+
         // `ptr_read` originally always returned u64, but generic `List<T>`
         // code stores non-u64 values. When the caller supplies a primitive
         // type hint (e.g. `val v: i64 = __builtin_ptr_read(p, off)` or a

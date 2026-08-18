@@ -289,6 +289,15 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_to_string_u16: cranelift_module::FuncId,
     rt_to_string_i32: cranelift_module::FuncId,
     rt_to_string_u32: cranelift_module::FuncId,
+    // STR-INTERP-FMT: `__builtin_format`. Five helpers cover every
+    // primitive — narrow ints are extended to i64/u64 at the call
+    // site and pass their own width as `bits`, so the runtime can
+    // render the two's-complement pattern a non-decimal radix wants.
+    rt_format_i64: cranelift_module::FuncId,
+    rt_format_u64: cranelift_module::FuncId,
+    rt_format_f64: cranelift_module::FuncId,
+    rt_format_bool: cranelift_module::FuncId,
+    rt_format_str: cranelift_module::FuncId,
     /// `panic`-message symbol → data id of `.rodata` blob holding
     /// `"panic: <msg>\0"`. Layout differs from print strings.
     panic_strings: HashMap<DefaultSymbol, DataId>,
@@ -668,6 +677,32 @@ impl<M: Module> CodegenSession<M> {
         to_string_u32_sig.returns.push(AbiParam::new(types::I64));
         let rt_to_string_u32 = declare_helper(&mut module, "toy_to_string_u32", &to_string_u32_sig)?;
 
+        let mut format_int_sig = Signature::new(call_conv);
+        format_int_sig.params.push(AbiParam::new(types::I64));
+        format_int_sig.params.push(AbiParam::new(types::I64));
+        format_int_sig.params.push(AbiParam::new(types::I64));
+        format_int_sig.returns.push(AbiParam::new(types::I64));
+        let rt_format_i64 = declare_helper(&mut module, "toy_format_i64", &format_int_sig)?;
+        let rt_format_u64 = declare_helper(&mut module, "toy_format_u64", &format_int_sig)?;
+
+        let mut format_f64_sig = Signature::new(call_conv);
+        format_f64_sig.params.push(AbiParam::new(types::F64));
+        format_f64_sig.params.push(AbiParam::new(types::I64));
+        format_f64_sig.returns.push(AbiParam::new(types::I64));
+        let rt_format_f64 = declare_helper(&mut module, "toy_format_f64", &format_f64_sig)?;
+
+        let mut format_bool_sig = Signature::new(call_conv);
+        format_bool_sig.params.push(AbiParam::new(types::I8).uext());
+        format_bool_sig.params.push(AbiParam::new(types::I64));
+        format_bool_sig.returns.push(AbiParam::new(types::I64));
+        let rt_format_bool = declare_helper(&mut module, "toy_format_bool", &format_bool_sig)?;
+
+        let mut format_str_sig = Signature::new(call_conv);
+        format_str_sig.params.push(AbiParam::new(types::I64));
+        format_str_sig.params.push(AbiParam::new(types::I64));
+        format_str_sig.returns.push(AbiParam::new(types::I64));
+        let rt_format_str = declare_helper(&mut module, "toy_format_str", &format_str_sig)?;
+
         Ok(Self {
             module,
             fn_ids: HashMap::new(),
@@ -729,6 +764,11 @@ impl<M: Module> CodegenSession<M> {
             rt_to_string_u16,
             rt_to_string_i32,
             rt_to_string_u32,
+            rt_format_i64,
+            rt_format_u64,
+            rt_format_f64,
+            rt_format_bool,
+            rt_format_str,
             panic_strings: HashMap::new(),
             print_strings: HashMap::new(),
             raw_print_strings: HashMap::new(),
@@ -1458,6 +1498,11 @@ struct RuntimeRefs {
     to_string_u16: cranelift_codegen::ir::FuncRef,
     to_string_i32: cranelift_codegen::ir::FuncRef,
     to_string_u32: cranelift_codegen::ir::FuncRef,
+    format_i64: cranelift_codegen::ir::FuncRef,
+    format_u64: cranelift_codegen::ir::FuncRef,
+    format_f64: cranelift_codegen::ir::FuncRef,
+    format_bool: cranelift_codegen::ir::FuncRef,
+    format_str: cranelift_codegen::ir::FuncRef,
 }
 
 /// REF-Stage-2: byte size of a scalar IR type for stack-slot

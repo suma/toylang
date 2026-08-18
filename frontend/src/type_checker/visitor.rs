@@ -360,6 +360,17 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg_types: vec![TypeDecl::Unknown],
                 return_type: TypeDecl::String,
             },
+            // STR-INTERP-FMT: `__builtin_format(value, spec)` renders
+            // `value` under the packed spec in its second argument.
+            // The value type stays Unknown at signature level like
+            // `ToString`'s; `visit_builtin_call` narrows it to the
+            // primitives a spec can act on.
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::Format,
+                arg_count: 2,
+                arg_types: vec![TypeDecl::Unknown, TypeDecl::UInt64],
+                return_type: TypeDecl::String,
+            },
             // Allocator layout registry (MEMORY_PROFILING M3 residual).
             // `__builtin_record_allocator_layout` — a region-owning
             // allocator pushes its final layout (as individual numeric

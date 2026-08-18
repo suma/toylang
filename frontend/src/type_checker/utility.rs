@@ -233,7 +233,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// message where every operand is a name. Unwrap that one case;
     /// `Generic(T)` keeps its wrapper because "got T" would read as a
     /// concrete type rather than the caller's type parameter.
-    fn named_type_for_error(&self, ty: &TypeDecl) -> String {
+    pub(crate) fn named_type_for_error(&self, ty: &TypeDecl) -> String {
         match ty {
             TypeDecl::Identifier(sym) => self.resolve_symbol_name(*sym),
             other => self.format_type_for_error(other),

@@ -8791,3 +8791,56 @@ fn vec_sort_is_consistent_across_backends() {
     "#;
     assert_consistent(src, "vec_sort");
 }
+
+// STR-INTERP-FMT: format specs (`"{x:.2}"`). The rendered *text* is
+// compared across backends by `example_consistency` running
+// `interpreter/example/string_format_spec.t` (it diffs stdout); these
+// cover the same lowering through the exit-code path, where a
+// mis-decoded spec shows up as a different padded length.
+//
+// The spec constant is packed by `frontend::format_spec` and decoded
+// twice — once in `frontend`/the IR VM, once in the `no_std`
+// `toylang_rt` — so a divergence in the bit layout is exactly what
+// these pin.
+
+#[test]
+fn format_spec_width_and_precision_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            val pi: f64 = 3.14159265f64
+            val n: u64 = 42u64
+            val s = "[{pi:.3}][{n:6}][{n:<6}][{n:06}]"
+            s.len() as i64
+        }
+    "#;
+    assert_consistent(src, "format_spec_width_precision");
+}
+
+#[test]
+fn format_spec_radix_round_trip() {
+    // A negative value renders its two's-complement pattern at its
+    // own width, so the i32 and i64 forms differ in length.
+    let src = r#"
+        fn main() -> i64 {
+            val a: i32 = -1i32
+            val b: i64 = -1i64
+            val n: u64 = 255u64
+            val s = "{a:x}|{b:x}|{n:b}|{n:o}|{n:X}"
+            s.len() as i64
+        }
+    "#;
+    assert_consistent(src, "format_spec_radix");
+}
+
+#[test]
+fn format_spec_on_text_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            val t: str = "ok"
+            val flag: bool = true
+            val s = "[{t:6}][{t:>6}][{t:^7}][{flag:8}]"
+            s.len() as i64
+        }
+    "#;
+    assert_consistent(src, "format_spec_text");
+}

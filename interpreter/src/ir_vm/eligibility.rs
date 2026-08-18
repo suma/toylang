@@ -140,6 +140,7 @@ fn inst_supported(kind: &InstKind) -> bool {
         | InstKind::StrFromBytes { .. }
         | InstKind::StrEq { .. }
         | InstKind::ToString { .. }
+        | InstKind::Format { .. }
         // Phase 3a: closures (function pointers + env-based indirect call).
         | InstKind::FuncAddr { .. }
         | InstKind::CallIndirect { .. }

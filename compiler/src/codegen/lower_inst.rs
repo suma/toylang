@@ -1109,6 +1109,62 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, result);
                 }
             }
+            InstKind::Format { value, value_ty, spec } => {
+                // STR-INTERP-FMT: `(value, spec[, bits])` into one of
+                // the five `toy_format_*` helpers. Narrow ints widen
+                // here — sign-extended or zero-extended to match their
+                // own signedness — and carry their original width so
+                // the runtime can mask a two's-complement rendering to
+                // it (`{-1i32:x}` is `ffffffff`, not 16 digits).
+                let v = self.value(*value);
+                let spec_v = self.builder.ins().iconst(types::I64, *spec as i64);
+                let (helper, args) = match value_ty {
+                    IrType::I64 | IrType::I32 | IrType::I16 | IrType::I8 => {
+                        let bits = match value_ty {
+                            IrType::I8 => 8i64,
+                            IrType::I16 => 16,
+                            IrType::I32 => 32,
+                            _ => 64,
+                        };
+                        let widened = if bits == 64 {
+                            v
+                        } else {
+                            self.builder.ins().sextend(types::I64, v)
+                        };
+                        let bits_v = self.builder.ins().iconst(types::I64, bits);
+                        (self.runtime.format_i64, vec![widened, spec_v, bits_v])
+                    }
+                    IrType::U64 | IrType::U32 | IrType::U16 | IrType::U8 => {
+                        let bits = match value_ty {
+                            IrType::U8 => 8i64,
+                            IrType::U16 => 16,
+                            IrType::U32 => 32,
+                            _ => 64,
+                        };
+                        let widened = if bits == 64 {
+                            v
+                        } else {
+                            self.builder.ins().uextend(types::I64, v)
+                        };
+                        let bits_v = self.builder.ins().iconst(types::I64, bits);
+                        (self.runtime.format_u64, vec![widened, spec_v, bits_v])
+                    }
+                    IrType::F64 => (self.runtime.format_f64, vec![v, spec_v]),
+                    IrType::Bool => (self.runtime.format_bool, vec![v, spec_v]),
+                    IrType::Str => (self.runtime.format_str, vec![v, spec_v]),
+                    IrType::Unit | IrType::Struct(_) | IrType::Tuple(_) | IrType::Enum(_) => {
+                        return Err(format!(
+                            "internal error: __builtin_format of {value_ty:?} reached codegen \
+                             (the type checker only allows primitives)"
+                        ));
+                    }
+                };
+                let call = self.builder.ins().call(helper, &args);
+                let result = self.builder.inst_results(call)[0];
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, result);
+                }
+            }
             InstKind::MemCopy { src, dest, size } => {
                 // libc memcpy uses (dest, src, n) — swap from
                 // toylang's (src, dest, size) order.

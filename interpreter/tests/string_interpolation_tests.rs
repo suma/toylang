@@ -14,7 +14,7 @@
 
 mod common;
 
-use common::{assert_program_result_i64, get_program_result};
+use common::{assert_program_result_i64, get_program_result, test_program};
 use interpreter::object::Object;
 
 /// Run a toylang program returning a string and read it back. The
@@ -307,4 +307,159 @@ fn interpolation_with_struct_mixed_scalar_types() {
         "#,
     );
     assert_eq!(s, "Cell { count: 7, total: 42 }");
+}
+
+// ---------------------------------------------------------------
+// STR-INTERP-FMT: format specs (`"{x:.2}"`).
+//
+// The spec is packed at parse time into the second argument of
+// `__builtin_format`, so these tests also cover the packing: a wrong
+// bit layout shows up as wrong text. The AOT / JIT agreement is
+// pinned separately in `compiler/tests/consistency.rs`.
+// ---------------------------------------------------------------
+
+#[test]
+fn precision_controls_f64_decimals() {
+    // The reason the feature exists: without a spec there is no way
+    // to choose how many decimals an f64 shows.
+    let s = run_returns_owned_string(
+        r#"fn main() -> str {
+            val pi: f64 = 3.14159265f64
+            "{pi:.2}|{pi:.5}|{pi}"
+        }"#,
+    );
+    assert_eq!(s, "3.14|3.14159|3.14159265");
+}
+
+#[test]
+fn width_and_alignment_pad_the_rendered_value() {
+    let s = run_returns_owned_string(
+        r#"fn main() -> str {
+            val n: u64 = 42u64
+            val t: str = "ok"
+            "[{n:6}][{n:<6}][{n:^6}][{t:6}][{t:>6}]"
+        }"#,
+    );
+    // Numbers default to right-aligned, text to left-aligned.
+    assert_eq!(s, "[    42][42    ][  42  ][ok    ][    ok]");
+}
+
+#[test]
+fn zero_padding_goes_after_the_sign() {
+    let s = run_returns_owned_string(
+        r#"fn main() -> str {
+            val neg: i64 = -42i64
+            val pos: u64 = 42u64
+            "{neg:06}|{pos:06}|{neg:6}"
+        }"#,
+    );
+    assert_eq!(s, "-00042|000042|   -42");
+}
+
+#[test]
+fn radix_types_render_the_alternate_bases() {
+    let s = run_returns_owned_string(
+        r#"fn main() -> str {
+            val n: u64 = 255u64
+            "{n:x}|{n:X}|{n:b}|{n:o}"
+        }"#,
+    );
+    assert_eq!(s, "ff|FF|11111111|377");
+}
+
+#[test]
+fn negative_values_render_twos_complement_at_their_own_width() {
+    // A narrow int must not widen to 16 hex digits — the runtime
+    // masks to the value's own width.
+    let s = run_returns_owned_string(
+        r#"fn main() -> str {
+            val a: i32 = -1i32
+            val b: i8 = -1i8
+            val c: i64 = -1i64
+            "{a:x}|{b:x}|{c:x}"
+        }"#,
+    );
+    assert_eq!(s, "ffffffff|ff|ffffffffffffffff");
+}
+
+#[test]
+fn bool_takes_width_and_alignment() {
+    let s = run_returns_owned_string(
+        r#"fn main() -> str {
+            val flag: bool = true
+            "[{flag:7}][{flag:>7}]"
+        }"#,
+    );
+    assert_eq!(s, "[true   ][   true]");
+}
+
+#[test]
+fn an_empty_spec_is_the_default_rendering() {
+    // `"{x:}"` lowers to a plain `__builtin_to_string` — the spec
+    // asks for nothing, so it costs nothing.
+    let s = run_returns_owned_string(
+        r#"fn main() -> str {
+            val n: u64 = 7u64
+            "{n:}|{n}"
+        }"#,
+    );
+    assert_eq!(s, "7|7");
+}
+
+#[test]
+fn colons_inside_the_expression_are_not_spec_separators() {
+    // A struct literal's field colon sits at brace depth 1, and `::`
+    // is consumed as a pair, so neither starts a spec.
+    let s = run_returns_owned_string(
+        r#"struct P {
+            x: i64
+        }
+        enum Color {
+            Red,
+            Blue,
+        }
+        fn main() -> str {
+            val c: Color = Color::Red
+            "{P { x: 2i64 }}|{c}"
+        }"#,
+    );
+    assert_eq!(s, "P { x: 2 }|Color::Red");
+}
+
+#[test]
+fn a_malformed_spec_is_reported_at_parse_time() {
+    let err = test_program(
+        r#"fn main() -> u64 {
+            val x: f64 = 1.5f64
+            println("{x:.q}")
+            0u64
+        }"#,
+    )
+    .expect_err("`.q` is not a precision");
+    assert!(
+        err.contains("invalid format spec") && err.contains("{x:.q}"),
+        "error should quote the offending spec, got: {err}"
+    );
+}
+
+#[test]
+fn a_spec_on_a_compound_value_is_a_type_error() {
+    // Width / radix have no defined meaning for a value that renders
+    // through a recursive field walk, so it is rejected rather than
+    // silently ignored.
+    let err = test_program(
+        r#"struct P {
+            x: i64
+        }
+        fn main() -> u64 {
+            val p: P = P { x: 1i64 }
+            println("{p:5}")
+            0u64
+        }"#,
+    )
+    .expect_err("a struct cannot carry a format spec");
+    assert!(
+        err.contains("format spec applies to primitives only"),
+        "error should explain the primitive-only rule, got: {err}"
+    );
 }

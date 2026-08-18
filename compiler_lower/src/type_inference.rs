@@ -350,6 +350,9 @@ impl<'a> FunctionLower<'a> {
                 // `__builtin_to_string(value) -> str` (powers
                 // string-interpolation desugaring; STR-INTERP-AOT).
                 frontend::ast::BuiltinFunction::ToString => Some(Type::Str),
+                // `__builtin_format(value, spec) -> str` — the same,
+                // under a parse-time format spec (STR-INTERP-FMT).
+                frontend::ast::BuiltinFunction::Format => Some(Type::Str),
                 // SizeOf handled above already; no other builtins
                 // currently route through value_scalar.
                 // f64 math (sqrt/pow/sin/cos/tan/log/log2/exp

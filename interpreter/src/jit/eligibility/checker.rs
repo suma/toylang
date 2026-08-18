@@ -2583,6 +2583,20 @@ pub(crate) fn check_expr(
                     }
                     Some(ScalarTy::Str)
                 }
+                BuiltinFunction::Format => {
+                    // STR-INTERP-FMT: `__builtin_format(value, spec)`
+                    // needs a `jit_format_<ty>` counterpart to the
+                    // `jit_to_string_<ty>` helpers. Until that exists,
+                    // reject so a spec-carrying interpolation falls
+                    // back to the tree-walker — the compiler-side JIT
+                    // and AOT both lower it natively.
+                    note(reject_reason, || {
+                        "__builtin_format (interpolation format spec) is not supported \
+                         in the interpreter JIT (falls back to the tree-walker)"
+                            .to_string()
+                    });
+                    None
+                }
                 BuiltinFunction::PtrWrite => {
                     if args.len() != 3 {
                         return None;

@@ -1353,6 +1353,169 @@ pub extern "C" fn toy_to_string_bool(v: u8) -> *const u8 {
     }
 }
 
+// ---------------------------------------------------------------
+// STR-INTERP-FMT: `__builtin_format(value, spec)`
+//
+// The spec is a compile-time constant packed by
+// `frontend::format_spec::FormatSpec::pack`. This crate is `no_std`
+// and dependency-free, so it decodes the same bit layout instead of
+// sharing the type:
+//
+// | bits | field |
+// |---|---|
+// | 0-15 | width (0 = none) |
+// | 16-23 | precision + 1 (0 = none) |
+// | 24-25 | align (0 = default, 1 = left, 2 = right, 3 = center) |
+// | 26 | zero-pad flag |
+// | 27-29 | radix (0 = dec, 1 = hex, 2 = HEX, 3 = bin, 4 = oct) |
+//
+// Any change here has to be mirrored in `frontend/src/format_spec.rs`;
+// the cross-backend consistency tests compare the rendered output.
+// ---------------------------------------------------------------
+
+struct Spec {
+    align: u8,
+    zero_pad: bool,
+    width: usize,
+    precision: Option<usize>,
+    radix: u8,
+}
+
+impl Spec {
+    fn unpack(code: u64) -> Spec {
+        let precision = ((code >> 16) & 0xFF) as usize;
+        Spec {
+            align: ((code >> 24) & 0x3) as u8,
+            zero_pad: (code >> 26) & 1 != 0,
+            width: (code & 0xFFFF) as usize,
+            precision: if precision == 0 {
+                None
+            } else {
+                Some(precision - 1)
+            },
+            radix: ((code >> 27) & 0x7) as u8,
+        }
+    }
+
+    /// Width / alignment, matching `FormatSpec::pad`.
+    fn pad(&self, body: &str, numeric: bool) -> String {
+        let len = body.chars().count();
+        if len >= self.width {
+            return String::from(body);
+        }
+        let fill = self.width - len;
+        if self.zero_pad && numeric && self.align == 0 {
+            let (sign, digits) = match body.strip_prefix('-') {
+                Some(rest) => ("-", rest),
+                None => ("", body),
+            };
+            let mut out = String::from(sign);
+            for _ in 0..fill {
+                out.push('0');
+            }
+            out.push_str(digits);
+            return out;
+        }
+        let align = match self.align {
+            0 if numeric => 2,
+            0 => 1,
+            other => other,
+        };
+        let mut out = String::new();
+        let (left, right) = match align {
+            1 => (0, fill),
+            3 => (fill / 2, fill - fill / 2),
+            _ => (fill, 0),
+        };
+        for _ in 0..left {
+            out.push(' ');
+        }
+        out.push_str(body);
+        for _ in 0..right {
+            out.push(' ');
+        }
+        out
+    }
+
+    fn render_uint(&self, magnitude: u64, is_negative: bool, bits: u32) -> String {
+        let body = if self.radix == 0 {
+            if is_negative {
+                format!("-{magnitude}")
+            } else {
+                format!("{magnitude}")
+            }
+        } else {
+            let raw = if is_negative {
+                let mask = if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };
+                magnitude.wrapping_neg() & mask
+            } else {
+                magnitude
+            };
+            match self.radix {
+                1 => format!("{raw:x}"),
+                2 => format!("{raw:X}"),
+                3 => format!("{raw:b}"),
+                _ => format!("{raw:o}"),
+            }
+        };
+        self.pad(&body, true)
+    }
+
+    fn render_f64(&self, v: f64) -> String {
+        let body = match self.precision {
+            Some(p) => format!("{v:.*}", p),
+            None => {
+                if v.is_finite() && v % 1.0 == 0.0 {
+                    format!("{v:.1}")
+                } else {
+                    format!("{v}")
+                }
+            }
+        };
+        self.pad(&body, true)
+    }
+}
+
+/// Signed integers of every width. `bits` is the value's own width so
+/// a non-decimal radix shows the two's-complement pattern at that
+/// width (`{-1i32:x}` is `ffffffff`); codegen sign-extends the value
+/// to i64 before the call and passes the original width here.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_format_i64(v: i64, spec: u64, bits: u64) -> *const u8 {
+    let spec = Spec::unpack(spec);
+    toy_str_alloc(spec.render_uint(v.unsigned_abs(), v < 0, bits as u32).as_bytes())
+}
+
+/// Unsigned integers of every width; codegen zero-extends to i64.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_format_u64(v: u64, spec: u64, bits: u64) -> *const u8 {
+    let spec = Spec::unpack(spec);
+    toy_str_alloc(spec.render_uint(v, false, bits as u32).as_bytes())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_format_f64(v: f64, spec: u64) -> *const u8 {
+    let spec = Spec::unpack(spec);
+    toy_str_alloc(spec.render_f64(v).as_bytes())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_format_bool(v: u8, spec: u64) -> *const u8 {
+    let spec = Spec::unpack(spec);
+    let body = if v != 0 { "true" } else { "false" };
+    toy_str_alloc(spec.pad(body, false).as_bytes())
+}
+
+/// Unlike `toy_to_string_str`, this cannot return the argument
+/// unchanged: padding produces new bytes.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_format_str(s: *const u8, spec: u64) -> *const u8 {
+    let spec = Spec::unpack(spec);
+    let bytes = str_bytes(s);
+    let text = core::str::from_utf8(bytes).unwrap_or("");
+    toy_str_alloc(spec.pad(text, false).as_bytes())
+}
+
 /// str -> str: identity. The desugaring lifts every `{expr}` segment
 /// through `__builtin_to_string`, even when `expr` is already `str`,
 /// so the codegen call site can stay type-uniform. Returning the
@@ -1978,6 +2141,32 @@ mod tests {
         assert_eq!(str_bytes(toy_to_string_bool(1)), b"true");
         let s = toy_str_alloc(b"id");
         assert_eq!(toy_to_string_str(s), s);
+    }
+
+    /// STR-INTERP-FMT: the packed spec is produced by
+    /// `frontend::format_spec::FormatSpec::pack` and decoded here by
+    /// hand, so the two bit layouts have to stay in step. The
+    /// constants below are the ones `packed_bits_are_stable` pins on
+    /// the frontend side; if either moves, one of the two tests
+    /// fails instead of the mismatch showing up as wrong output in a
+    /// compiled program.
+    #[test]
+    fn format_spec_bits_match_runtime() {
+        // "08.3" — width 8, precision 3 (stored +1), zero-pad.
+        let code = 8 | (4u64 << 16) | (1u64 << 26);
+        assert_eq!(str_bytes(toy_format_f64(1.5, code)), b"0001.500");
+        // "^10x" — width 10, center-aligned, hex.
+        let code = 10 | (3u64 << 24) | (1u64 << 27);
+        assert_eq!(str_bytes(toy_format_u64(255, code, 64)), b"    ff    ");
+        // A negative value in a non-decimal radix masks to its own
+        // width, so an i32 shows 8 digits rather than 16.
+        let code = 1u64 << 27;
+        assert_eq!(str_bytes(toy_format_i64(-1, code, 32)), b"ffffffff");
+        assert_eq!(str_bytes(toy_format_i64(-1, code, 64)), b"ffffffffffffffff");
+        // An all-zero spec is the default rendering.
+        assert_eq!(str_bytes(toy_format_bool(1, 0)), b"true");
+        let s = toy_str_alloc(b"hi");
+        assert_eq!(str_bytes(toy_format_str(s, 6)), b"hi    ");
     }
 
     #[test]

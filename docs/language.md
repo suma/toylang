@@ -815,17 +815,82 @@ participate (`"point at {Point { x: 1, y: 2 }}"`). Nested string
 literals inside `{expr}` are not yet supported (the inner `"`
 terminates the outer regex).
 
+##### Format specs
+
+A segment may carry a **format spec** after a `:` —
+`"{value:spec}"` — choosing width, alignment, padding, precision,
+and radix:
+
+```text
+spec  := [align] ['0'] [width] ['.' precision] [type]
+align := '<' | '>' | '^'
+type  := 'x' | 'X' | 'b' | 'o'
+```
+
+```rust
+val pi: f64 = 3.14159265f64
+println("{pi:.2}")            # 3.14
+println("[{pi:8.3}]")         # [   3.142]
+
+val n: u64 = 42u64
+println("[{n:6}] [{n:<6}] [{n:^6}]")   # [    42] [42    ] [  42  ]
+println("[{n:06}]")                    # [000042]
+println("{n:x} {n:X} {n:b} {n:o}")     # 2a 2A 101010 52
+
+val label: str = "ok"
+println("[{label:6}] [{label:>6}]")    # [ok    ] [    ok]
+```
+
+Details, and where this differs from Rust:
+
+- **Precision is the reason the feature exists.** Without it there
+  is no way to choose how many decimals an `f64` shows — the
+  default rendering is fixed (integral values get one decimal
+  place, everything else the shortest round-trippable form).
+  Precision applies to `f64`; it does not truncate strings.
+- **Default alignment** follows the value: numbers pad on the
+  left, text and `bool` on the right. An explicit `<` / `>` / `^`
+  overrides that.
+- **`0` pads with zeros after the sign**, so `"{-42i64:06}"` is
+  `-00042` rather than `00-42`. It applies to numbers and is
+  ignored once an explicit alignment is given.
+- **A non-decimal radix on a negative value** renders the
+  two's-complement pattern **at the value's own width**:
+  `"{-1i32:x}"` is `ffffffff`, not sixteen digits.
+- **Specs apply to primitives only** — integers of every width,
+  `f64`, `bool`, and `str`. A struct, tuple, or enum with a spec
+  is a type error, because a single width or radix has no defined
+  meaning for a value that renders through a recursive field walk.
+  Give the type a [`Display`](#display) `to_str` method and
+  interpolate that instead.
+- **The spec is part of the literal, never a runtime value.** It
+  is parsed and packed into a constant at parse time, so a
+  malformed spec (`"{x:.q}"`) is a parse error rather than a
+  runtime surprise, and the backends see one extra scalar
+  argument rather than a string to interpret.
+- Not supported (and not planned unless a program needs them): a
+  fill character other than `0`, `+`, `#`, and `$`-parameterised
+  width.
+- An empty spec (`"{x:}"`) is exactly the default rendering — it
+  lowers to the same call a spec-less segment does.
+
+Only a depth-0 `:` starts a spec, so a struct literal's field
+colon (`"{Point { x: 1i64 }}"`) and a path's `::`
+(`"{Color::Red}"`) stay part of the expression.
+
 **Backend coverage**: interpreter, AOT compiler, and the
 cranelift JIT all run the desugaring end-to-end. AOT and JIT
-share the runtime helpers `toy_str_concat` and the
-`toy_to_string_<ty>` family (one per scalar primitive); both
+share the runtime helpers `toy_str_concat`, the
+`toy_to_string_<ty>` family (one per scalar primitive), and the
+`toy_format_*` family behind format specs; both
 emit identical heap-str layout
 (`[bytes][NUL][u64 len LE]`, returned pointer points at the
 `u64 len` field) so the result is pointer-uniform with `.rodata`
 strs and flows through `print` / `println` / `__builtin_str_len`
 unchanged. The interpreter JIT
 (`interpreter/src/jit/`, separate codebase) silently falls back
-to the tree-walking interpreter for interpolation.
+to the tree-walking interpreter for interpolation, including every
+segment that carries a format spec.
 
 ### Array, tuple, and dict literals
 

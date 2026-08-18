@@ -176,8 +176,58 @@ mod lexer_tests{
             "\"日本 {x} 語\"",
             Kind::InterpolatedString(vec![
                 StringPart::Literal("日本 ".to_string()),
-                StringPart::Expr("x".to_string()),
+                StringPart::Expr {
+                    text: "x".to_string(),
+                    spec: None,
+                },
                 StringPart::Literal(" 語".to_string()),
+            ]),
+        );
+    }
+
+    #[test]
+    fn lexer_splits_a_format_spec_at_the_depth_zero_colon() {
+        // STR-INTERP-FMT: `{expr:spec}`. The spec text is carried
+        // verbatim; the parser validates it.
+        use crate::token::StringPart;
+        assert_token(
+            "\"{x:.2}\"",
+            Kind::InterpolatedString(vec![
+                StringPart::Literal(String::new()),
+                StringPart::Expr {
+                    text: "x".to_string(),
+                    spec: Some(".2".to_string()),
+                },
+                StringPart::Literal(String::new()),
+            ]),
+        );
+    }
+
+    #[test]
+    fn lexer_keeps_nested_and_path_colons_out_of_the_spec() {
+        // A struct literal's field colon is at brace depth 1 and `::`
+        // is consumed as a pair, so neither splits the segment.
+        use crate::token::StringPart;
+        assert_token(
+            "\"{P { x: 1i64 }}\"",
+            Kind::InterpolatedString(vec![
+                StringPart::Literal(String::new()),
+                StringPart::Expr {
+                    text: "P { x: 1i64 }".to_string(),
+                    spec: None,
+                },
+                StringPart::Literal(String::new()),
+            ]),
+        );
+        assert_token(
+            "\"{Color::Red}\"",
+            Kind::InterpolatedString(vec![
+                StringPart::Literal(String::new()),
+                StringPart::Expr {
+                    text: "Color::Red".to_string(),
+                    spec: None,
+                },
+                StringPart::Literal(String::new()),
             ]),
         );
     }

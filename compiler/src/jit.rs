@@ -397,6 +397,12 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_to_string_u16", toylang_rt::toy_to_string_u16 as *const u8);
     jit_builder.symbol("toy_to_string_i32", toylang_rt::toy_to_string_i32 as *const u8);
     jit_builder.symbol("toy_to_string_u32", toylang_rt::toy_to_string_u32 as *const u8);
+    // STR-INTERP-FMT: `__builtin_format` helpers.
+    jit_builder.symbol("toy_format_i64", toylang_rt::toy_format_i64 as *const u8);
+    jit_builder.symbol("toy_format_u64", toylang_rt::toy_format_u64 as *const u8);
+    jit_builder.symbol("toy_format_f64", toylang_rt::toy_format_f64 as *const u8);
+    jit_builder.symbol("toy_format_bool", toylang_rt::toy_format_bool as *const u8);
+    jit_builder.symbol("toy_format_str", toylang_rt::toy_format_str as *const u8);
 }
 
 // ---------------------------------------------------------------------------

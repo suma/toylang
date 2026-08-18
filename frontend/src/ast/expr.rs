@@ -483,6 +483,18 @@ pub enum BuiltinFunction {
     // argument's type.
     ToString,
 
+    // STR-INTERP-FMT: `__builtin_format(value, spec: u64) -> str`.
+    // Same rendering as `ToString`, plus width / alignment /
+    // zero-padding / precision / radix taken from `spec` — a
+    // compile-time constant packed by
+    // `frontend::format_spec::FormatSpec::pack`, never a runtime
+    // value. Emitted only by the interpolation desugaring for
+    // `"{x:.2}"`-style segments; a spec that asks for nothing lowers
+    // to a plain `ToString` instead. The value must be a primitive
+    // (see `docs/language.md`): a struct / tuple / enum with a spec
+    // is a type error rather than a silently ignored spec.
+    Format,
+
     // Integer math (user-facing; same shape as `print`/`println`/`panic`/
     // `assert` — everyday operations rather than low-level intrinsics).
     // `abs(x)` accepts `i64` and returns `i64` (matches Rust's
@@ -555,6 +567,8 @@ pub struct BuiltinFunctionSymbols {
 
     // Display formatting (powers string interpolation).
     pub to_string: DefaultSymbol,
+    // Display formatting with a packed format spec (STR-INTERP-FMT).
+    pub format: DefaultSymbol,
 
     // Integer math (user-facing names).
     pub abs: DefaultSymbol,
@@ -622,6 +636,7 @@ impl BuiltinFunctionSymbols {
             assert: interner.get_or_intern("assert"),
             sizeof: interner.get_or_intern("__builtin_sizeof"),
             to_string: interner.get_or_intern("__builtin_to_string"),
+            format: interner.get_or_intern("__builtin_format"),
             // Integer math intrinsics. The user-facing entry points
             // are `math::abs` / `math::min_*` / `math::max_*` in
             // `interpreter/modules/math/math.t`; the wrappers forward
@@ -665,6 +680,7 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.assert { Some(BuiltinFunction::Assert) }
         else if symbol == self.sizeof { Some(BuiltinFunction::SizeOf) }
         else if symbol == self.to_string { Some(BuiltinFunction::ToString) }
+        else if symbol == self.format { Some(BuiltinFunction::Format) }
         else if symbol == self.record_allocator_layout { Some(BuiltinFunction::RecordAllocatorLayout) }
         else if symbol == self.abs { Some(BuiltinFunction::Abs) }
         else if symbol == self.min { Some(BuiltinFunction::Min) }

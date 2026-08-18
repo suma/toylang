@@ -11,7 +11,15 @@ pub struct Token {
 #[derive(Debug, PartialEq, Clone)]
 pub enum StringPart {
     Literal(String),
-    Expr(String),
+    /// `{expr}` or, with a STR-INTERP-FMT format spec, `{expr:spec}`.
+    /// The lexer only splits the two at the depth-0 `:`; the spec
+    /// text is validated by the parser (see
+    /// [`crate::format_spec::FormatSpec`]) so a bad spec is reported
+    /// with the rest of the parse diagnostics.
+    Expr {
+        text: String,
+        spec: Option<String>,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -148,9 +156,10 @@ pub enum Kind {
     String(String),
     /// String interpolation literal — `"hello {name}, sum={a + b}"`.
     /// Each `StringPart::Literal(s)` is a verbatim segment (escapes
-    /// already processed); each `StringPart::Expr(s)` is the raw
+    /// already processed); each `StringPart::Expr` is the raw
     /// source text inside `{...}` that the parser re-tokenizes and
-    /// parses as a sub-expression. `{{` / `}}` lex to literal `{` /
+    /// parses as a sub-expression, plus the optional format spec
+    /// that followed a depth-0 `:`. `{{` / `}}` lex to literal `{` /
     /// `}` (Rust convention). At least one Expr part is present
     /// (otherwise the lexer emits a plain `String`).
     InterpolatedString(Vec<StringPart>),

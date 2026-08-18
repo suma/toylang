@@ -7,9 +7,10 @@
 #
 # `{{` / `}}` lex to literal `{` / `}` (Rust convention).
 #
-# Currently interpreter-only — JIT silently falls back, AOT rejects
-# `__builtin_to_string` with a precise message (see design-docs/todo.md
-# `STR-INTERP-AOT`).
+# Runs on every backend: the interpreter, the AOT compiler, and the
+# cranelift JIT share the desugaring (the last two through the
+# `toy_str_concat` / `toy_to_string_<ty>` runtime helpers). Format
+# specs (`"{x:.2}"`) are in `string_format_spec.t`.
 
 fn double(x: i64) -> i64 { x * 2i64 }
 

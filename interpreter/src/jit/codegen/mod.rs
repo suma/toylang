@@ -1019,6 +1019,13 @@ impl<'a, 'b> State<'a, 'b> {
             }
             Expr::BuiltinCall(func, args) => {
                 match func {
+                    BuiltinFunction::Format => {
+                        // Unreachable: eligibility rejects this builtin
+                        // so a spec-carrying interpolation never gets
+                        // here (STR-INTERP-FMT).
+                        Err("__builtin_format is not supported in the interpreter JIT"
+                            .to_string())
+                    }
                     BuiltinFunction::Panic => {
                         // Eligibility already validated args.len() == 1 and
                         // that args[0] is `Expr::String(sym)`. We pass the

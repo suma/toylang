@@ -1,5 +1,6 @@
 use crate::ast::*;
 use crate::token::{Kind, StringPart};
+use crate::format_spec::FormatSpec;
 use crate::parser::core::Parser;
 use crate::parser::error::{ParserResult, ParserError};
 use string_interner::DefaultSymbol;
@@ -96,8 +97,42 @@ fn parse_interpolated_string(parser: &mut Parser) -> ParserResult<ExprRef> {
             StringPart::Literal(s) => {
                 tokens.push(Kind::String(s.clone()));
             }
-            StringPart::Expr(expr_text) => {
-                tokens.push(Kind::Identifier("__builtin_to_string".to_string()));
+            StringPart::Expr { text: expr_text, spec } => {
+                // STR-INTERP-FMT: a segment carrying a spec lowers to
+                // `__builtin_format(expr, <packed>)` instead of
+                // `__builtin_to_string(expr)`. The spec is constant
+                // here, so it is validated and packed at parse time —
+                // the backends only ever see one extra u64 argument.
+                // A spec that asks for nothing (`"{x:}"`) keeps the
+                // plain `to_string` shape.
+                let packed = match spec {
+                    Some(spec_text) => match FormatSpec::parse(spec_text) {
+                        Ok(parsed) if parsed.is_default() => None,
+                        Ok(parsed) => Some(parsed.pack()),
+                        Err(reason) => {
+                            // Collect rather than bail: returning `Err`
+                            // here leaves the synthesized token stream
+                            // half-built, and the recovery path then
+                            // reports whatever it trips over next
+                            // instead of the spec that is actually
+                            // wrong. Recording the diagnostic and
+                            // rendering the segment without a spec
+                            // keeps the rest of the parse honest.
+                            parser.collect_error(&format!(
+                                "invalid format spec `{{{}:{}}}`: {}",
+                                expr_text, spec_text, reason
+                            ));
+                            None
+                        }
+                    },
+                    None => None,
+                };
+                let builtin_name = if packed.is_some() {
+                    "__builtin_format"
+                } else {
+                    "__builtin_to_string"
+                };
+                tokens.push(Kind::Identifier(builtin_name.to_string()));
                 tokens.push(Kind::ParenOpen);
                 let mut sub_lex = crate::parser::core::lexer::Lexer::new(expr_text, 1, None);
                 loop {
@@ -119,6 +154,10 @@ fn parse_interpolated_string(parser: &mut Parser) -> ParserResult<ExprRef> {
                             ));
                         }
                     }
+                }
+                if let Some(code) = packed {
+                    tokens.push(Kind::Comma);
+                    tokens.push(Kind::UInt64(code));
                 }
                 tokens.push(Kind::ParenClose);
             }

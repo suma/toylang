@@ -225,6 +225,15 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }
         }
+        InstKind::Format { value, value_ty, spec } => {
+            // STR-INTERP-FMT: same shape as ToString, plus the packed
+            // spec the parser fixed at compile time.
+            let v = vm.read_value(*value);
+            let addr = heap::format_value(v, *value_ty, *spec);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
+        }
         InstKind::MemCopy { src, dest, size } => {
             // Phase 3c: libc memcpy (toylang arg order src, dest, size).
             let s = unsafe { vm.read_value(*src).u64 };

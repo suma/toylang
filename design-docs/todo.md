@@ -622,6 +622,43 @@
   `generic_equality_is_instantiated_per_type` /
   `generic_functions_instantiate_per_type_argument`。
 
+以下 4 件は `docs/language.md` を実装と突き合わせた監査 (2026-08-18) で
+発見。ドキュメント側は同日のコミットで実態に合わせたので、残るのは
+実装をどう直すかの判断。
+
+- **`str + str` が型検査を通るのにどのバックエンドにも実装が無い** —
+  `val s: str = "a" + "b"` が通り、interpreter は空文字 + 巨大な
+  `__builtin_str_len` (ゴミハンドル) を返し、AOT バイナリは bus error
+  (exit 138) で落ちる。連結は `a.concat(b)` が正で、`+` は
+  **型検査で弾く**のが筋 (E0002)。3 バックエンド一致テストを足す前に、
+  まず型検査器の str 加算パスを削る。
+- **`str.substring` / `str.split` が実行時に内部エラー** —
+  型検査器は `BuiltinMethod::StrSubstring` / `StrSplit` を登録して
+  戻り型まで決める (`frontend/src/type_checker/builtin.rs:18-20`) のに、
+  interpreter の `Object::String` レシーバ分岐
+  (`interpreter/src/evaluation/call.rs:1141`) に該当 arm が無く
+  `Internal error: Method 'substring' not found for String type` で
+  停止する。実装自体は `evaluation/builtin.rs:242/343` にあるので、
+  ディスパッチが繋がっていないだけ。`String` (stdlib の trait impl) は
+  正常に動くので影響は `str` 受け側のみ。
+- **`null` リテラルと universal `is_null()` が両方とも死んでいる** —
+  `Expr::Null` の評価が無条件で `InternalError("Null reference error")`
+  (`interpreter/src/evaluation/expression.rs:80`) なので、`val n = null`
+  を書いた時点で実行が止まる。`is_null()` は interpreter 側に実装が
+  残っている (`evaluation/call.rs:1005`) が型検査器に到達経路が無く、
+  `i64` / `ptr` / `str` / struct / dict のどれでも `[E0007] method not
+  found`。`interpreter/example/null_test.t` が `ERROR_EXAMPLES` に
+  入ったままなのもこれが理由。方針は 2 択で、(a) `null` を文法から
+  落として `Option<T>` に一本化するか、(b) 評価と型検査を実装して
+  生かすか。現状は「予約されているが動かない」という最悪の中間。
+- **CLAUDE.md が案内する `--message-format=short` が存在しない** —
+  interpreter / compiler のどちらにも実装が無く (ワークスペース全体を
+  grep しても該当なし)、渡すと usage を出して終わる。CLAUDE.md は
+  診断を 1 行にする手段として繰り返し勧めており、LLM 作業ループの
+  前提が崩れている。実装する (`--diagnostics=text|json` の隣に短縮
+  形式を足す) か、CLAUDE.md から落として `--diagnostics=json` に
+  誘導するかを決める。
+
 ### パーサーの既知制限事項
 - bare `self` 非対応 — `self: Self` / `&self` / `&mut self` のいずれかを書く。
 - `else if` 非対応 — `elif` を使う。

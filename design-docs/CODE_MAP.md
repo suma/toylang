@@ -84,6 +84,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | trait 宣言・conformance | `type_checker/trait_decl.rs` |
 | default method 展開 | `type_checker::expand_trait_defaults_in_pool` |
 | impl block | `type_checker/impl_block.rs`, `type_checker/method.rs` |
+| 型パラメータ bound の強制 (`<T: Ord>`) | `type_checker/utility.rs::check_generic_bounds` (判定は `satisfies_trait_bound`)。呼び出しは free function が `generics.rs::visit_generic_call`、method が `method_call.rs` の generic struct / enum 経路 |
 | `dyn Trait` (AOT vtable / thunk) | `compiler_lower/src/program.rs`, `compiler/src/codegen/` |
 
 ## 診断 (LLM_FEEDBACK_LOOP)

@@ -786,10 +786,18 @@ val single: (i64,) = (42i64,)
 println("{single}")       # (42,)
 ```
 
-**Out of scope** (carried forward as STR-INTERP-COMPOUND-EXTEND-ENUM):
-- enum value interpolation (`{Option::Some(v)}`) — needs a
-  cranelift block-dispatch chain on the variant tag, different
-  shape from the linear concat chain struct/tuple use.
+Enum values interpolate too, on every backend — the AOT / JIT
+side dispatches on the variant tag through a branch chain and
+concatenates that variant's payload:
+
+```rust
+enum Shape { Circle(i64), Point }
+val s: Shape = Shape::Circle(3i64)
+println("{s}")                       # Shape::Circle(3)
+
+val o: Option<i64> = Option::Some(7i64)
+println("{o}")                       # Option<i64>::Some(7)
+```
 
 Empty literal segments are filtered, so `"{a}{b}"` lowers
 directly to `__builtin_to_string(a).concat(__builtin_to_string(b))`
@@ -1025,9 +1033,14 @@ v.sort()                    # [1, 2, 3]
 Sorting works for primitives, `String`, and any user struct with
 `impl Ord`. `f64` compares with the native `<`, so NaN (less than
 nothing, including itself) stays put rather than ordering. Calling
-`sort` on a `Vec<T>` whose `T` does not implement `Ord` is not a
-type error today — the body's `lt` dispatch fails at runtime on the
-interpreter and at compile time on the AOT / JIT backends.
+`sort` on a `Vec<T>` whose `T` does not implement `Ord` is rejected
+at the call site, like any other unsatisfied bound (see
+[Generics and bounds](#generics-and-bounds)):
+
+```
+[E0010] Method 'sort' generic parameter 'T' bound violation:
+        expected Ord, got P (struct `P` does not implement trait `Ord`)
+```
 
 ### Numeric semantics
 
@@ -2167,9 +2180,35 @@ val p = pair(1u64, true)              # T = u64, U = bool
 val q: (str, str) = pair("a", "b")    # T, U from annotation
 ```
 
-Bound syntax (`<T: SomeBound>`) parses but the type checker does not
-currently enforce any specific bound for user-declared traits. The
-allocator system doesn't use generic-bound parameters at all — see
+Bound syntax (`<T: SomeBound>`) is enforced at the call site: the
+inferred type argument must implement the named trait. A generic
+trait bound must match on its type arguments too (`<I: Iter<i64>>`
+is not satisfied by an `impl Iter<str>`), and a multiple bound
+(`<T: A + B>`) requires every trait in it.
+
+```rust
+trait Greet {
+    fn greet(self: Self) -> str
+}
+
+fn announce<T: Greet>(x: T) -> str { x.greet() }
+
+fn relay<U: Greet>(x: U) -> str { announce(x) }   # bound passes through
+```
+
+A caller's own bounded parameter satisfies the same bound, as
+`relay` shows — the bound chain is transparent, so a bounded generic
+can hand its value to another function with the same requirement.
+Primitives satisfy a bound through an extension impl
+(`impl Ord for u64` in `core/std/ord.t` makes `<T: Ord>` accept
+`u64`).
+
+The check covers methods as well as free functions: a method from an
+`impl<T: Ord> Vec<T>` block rejects a receiver whose element type has
+no `Ord` impl, so `v.sort()` on a `Vec<SomeStructWithoutOrd>` is a
+type error rather than a run-time dispatch failure.
+
+The allocator system doesn't use generic-bound parameters at all — see
 [Allocators](#allocators) for the active-stack convention.
 
 ---
@@ -3149,12 +3188,6 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   `INTERPRETER_CONTRACTS` gate exists only because contract clauses
   can carry non-trivial cost; even there, `all` is the recommended
   setting — see "Operational guidance" above.)
-- **String interpolation: enum values not yet supported** —
-  `"{point}"` (struct), `"{(a, b)}"` (tuple), nested compounds
-  all work in every backend, but `"{Option::Some(v)}"` is still
-  carried forward (variant-tag dispatch needs a cranelift block
-  chain, different shape from the linear concat the others use).
-  Tracked as `STR-INTERP-COMPOUND-EXTEND-ENUM` in `design-docs/todo.md`.
 - **No raw strings or multi-line strings** — only the regular
   `"..."` literal with backslash escapes today.
 - **Operator overload — chained / literal operands** — same-shape
@@ -3162,16 +3195,6 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   *Operator overload (struct receivers)*) only fire in let-rhs
   context. `a + b + c` and `a & Bits { v: 1 }` need explicit
   intermediates (`val tmp = a + b; val r = tmp + c`).
-- **`match` on a *method call* as a `val` right-hand side, with
-  every arm binding a payload** — `val x = match c.next() { A(v)
-  => v, B(w) => w }` is rejected with "could not infer scalar
-  type for val/var rhs". The same shape over an identifier or a
-  free-function call infers fine; only the method-call scrutinee
-  is left, because resolving a method target needs mutable access
-  from what is otherwise a read-only inference pass. Give one arm
-  a literal body, bind the call to a local first, or put the
-  `match` in tail position. Tracked as
-  `MATCH-LET-RHS-PAYLOAD-INFER` in `design-docs/todo.md`.
 - **Trait limitations** — no trait inheritance; no associated
   types. Generic trait declarations (`trait Foo<T>`) are
   supported (see ITER-PROTOCOL-TRAIT in `design-docs/todo.md`

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::ast::*;
 use crate::type_decl::*;
 use crate::type_checker::{TypeCheckerVisitor, TypeCheckError};
+use crate::type_checker::error_handling::ErrorHandling;
 
 /// From/Into: the `From` trait and its `fn from` method, declared in
 /// `core/std/convert.t`. Shared by the `.into()` rewrite and the `?`
@@ -115,6 +116,175 @@ impl<'a> TypeCheckerVisitor<'a> {
             let bound_resolved = bound_arg.substitute_generics(substitutions);
             impl_arg == &bound_resolved
         })
+    }
+
+    /// STDLIB-ORD: map an impl block's own type-parameter names onto
+    /// the receiver's concrete type args. `impl<E: Ord> Vec<E>`
+    /// registers `target_type_args = [Generic(E)]`; a `Vec<i64>`
+    /// receiver therefore binds `E -> i64` even though the struct
+    /// declared its parameter as `T`. Returns an empty map for a
+    /// non-generic impl target or when the arities disagree.
+    pub fn impl_param_substitutions(
+        &self,
+        struct_name: DefaultSymbol,
+        method_name: DefaultSymbol,
+        receiver_type_args: &[TypeDecl],
+    ) -> HashMap<DefaultSymbol, TypeDecl> {
+        let mut out = HashMap::new();
+        let Some(spec) =
+            self.context
+                .get_struct_method_spec(struct_name, method_name, receiver_type_args)
+        else {
+            return out;
+        };
+        if spec.target_type_args.len() != receiver_type_args.len() {
+            return out;
+        }
+        for (impl_arg, concrete) in spec.target_type_args.iter().zip(receiver_type_args) {
+            if let TypeDecl::Generic(sym) = impl_arg {
+                out.insert(*sym, concrete.clone());
+            }
+        }
+        out
+    }
+
+    /// TRAIT-BOUND: enforce the declared bounds on a set of generic
+    /// parameters given the substitution the call site inferred.
+    /// Shared by the free-function path (`visit_generic_call`) and the
+    /// method path (`STDLIB-ORD`: an `impl<T: Ord> Vec<T>` method must
+    /// reject a `Vec<NonOrd>` receiver at the call site instead of
+    /// letting dispatch fail at run time / AOT-compile time).
+    ///
+    /// A parameter with no inferred type is skipped — the caller
+    /// reports "cannot infer" separately, and a method-only parameter
+    /// that no argument constrains has nothing to check yet.
+    ///
+    /// `owner_kind` / `owner_name` only shape the message
+    /// (`Function 'f'` vs `Method 'sort'`).
+    pub fn check_generic_bounds(
+        &self,
+        generic_params: &[DefaultSymbol],
+        generic_bounds: &HashMap<DefaultSymbol, TypeDecl>,
+        substitutions: &HashMap<DefaultSymbol, TypeDecl>,
+        owner_kind: &str,
+        owner_name: &str,
+    ) -> Result<(), TypeCheckError> {
+        for generic_param in generic_params {
+            let Some(bound) = generic_bounds.get(generic_param) else {
+                continue;
+            };
+            let Some(inferred) = substitutions.get(generic_param) else {
+                continue;
+            };
+            // Extract the trait bound(s) for this parameter.
+            // Single-trait bounds parse as `Identifier(trait)` or —
+            // for a generic trait — `Struct(trait_sym, args)` /
+            // `Enum(trait_sym, args)`; multi-trait bounds (A2
+            // `<T: A + B>`) parse as `TraitIntersection([A, B, ...])`.
+            // Empty list means a non-trait bound (e.g. `Allocator`);
+            // we fall back to direct equality below.
+            let trait_bounds: Vec<(DefaultSymbol, Vec<TypeDecl>)> = match bound {
+                TypeDecl::Identifier(sym) if self.context.is_trait(*sym) => {
+                    vec![(*sym, Vec::new())]
+                }
+                TypeDecl::Struct(sym, args) | TypeDecl::Enum(sym, args)
+                    if self.context.is_trait(*sym) =>
+                {
+                    vec![(*sym, args.clone())]
+                }
+                TypeDecl::TraitIntersection(syms) => {
+                    syms.iter().map(|s| (*s, Vec::new())).collect()
+                }
+                _ => Vec::new(),
+            };
+            let satisfies = if !trait_bounds.is_empty() {
+                // Trait bounds: AND over all traits — the inferred type
+                // must implement every trait in the intersection.
+                trait_bounds.iter().all(|(trait_sym, bound_args)| {
+                    self.satisfies_trait_bound(inferred, *trait_sym, bound_args, substitutions)
+                })
+            } else {
+                match inferred {
+                    ty if ty == bound => true,
+                    TypeDecl::Generic(sym) => matches!(
+                        self.context.current_fn_generic_bounds.get(sym),
+                        Some(caller_bound) if caller_bound == bound
+                    ),
+                    _ => false,
+                }
+            };
+            if satisfies {
+                continue;
+            }
+            let param_name = self.resolve_symbol_name(*generic_param);
+            let bound_str = self.named_type_for_error(bound);
+            let inferred_str = self.named_type_for_error(inferred);
+            let note = self.bound_violation_note(inferred, &trait_bounds, substitutions);
+            return Err(TypeCheckError::generic_error(&format!(
+                "{} '{}' generic parameter '{}' bound violation: expected {}, got {}{}",
+                owner_kind, owner_name, param_name, bound_str, inferred_str, note
+            )));
+        }
+        Ok(())
+    }
+
+    /// `format_type_for_error` wraps an unresolved-but-named type as
+    /// `Identifier(Ord)`, which reads as noise in a bound-violation
+    /// message where every operand is a name. Unwrap that one case;
+    /// `Generic(T)` keeps its wrapper because "got T" would read as a
+    /// concrete type rather than the caller's type parameter.
+    fn named_type_for_error(&self, ty: &TypeDecl) -> String {
+        match ty {
+            TypeDecl::Identifier(sym) => self.resolve_symbol_name(*sym),
+            other => self.format_type_for_error(other),
+        }
+    }
+
+    /// The trailing "(struct `Foo` does not implement trait `Bar`)"
+    /// clause of a bound-violation message. Names the *first* missing
+    /// trait so a multi-bound intersection points at the precise
+    /// offender. Empty for a non-trait bound or a receiver that is not
+    /// a named type.
+    fn bound_violation_note(
+        &self,
+        inferred: &TypeDecl,
+        trait_bounds: &[(DefaultSymbol, Vec<TypeDecl>)],
+        substitutions: &HashMap<DefaultSymbol, TypeDecl>,
+    ) -> String {
+        if trait_bounds.is_empty() {
+            return String::new();
+        }
+        let inferred_struct = match inferred {
+            TypeDecl::Struct(s, _) | TypeDecl::Identifier(s) => {
+                Some(self.resolve_symbol_name(*s))
+            }
+            _ => None,
+        };
+        let Some(struct_name) = inferred_struct else {
+            return String::new();
+        };
+        let missing = trait_bounds.iter().find(|(trait_sym, bound_args)| {
+            !self.satisfies_trait_bound(inferred, *trait_sym, bound_args, substitutions)
+        });
+        match missing {
+            Some((t, bound_args)) => {
+                let trait_name = self.resolve_symbol_name(*t);
+                let args_str = if bound_args.is_empty() {
+                    String::new()
+                } else {
+                    let arg_strs: Vec<String> = bound_args
+                        .iter()
+                        .map(|a| self.format_type_for_error(a))
+                        .collect();
+                    format!("<{}>", arg_strs.join(", "))
+                };
+                format!(
+                    " (struct `{}` does not implement trait `{}{}`)",
+                    struct_name, trait_name, args_str
+                )
+            }
+            None => String::new(),
+        }
     }
 
     /// TRAIT-BOUND: whether `inferred` satisfies a trait bound named by

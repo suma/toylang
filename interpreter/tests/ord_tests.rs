@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::assert_program_result_u64;
+use common::{assert_program_result_u64, test_program};
 
 #[test]
 fn vec_sort_orders_u64_ascending() {
@@ -269,4 +269,141 @@ fn ord_impls_cover_all_primitive_widths() {
         "#,
         1,
     );
+}
+
+// STDLIB-ORD: `impl<T: Ord> Vec<T>` bounds are enforced at the call
+// site. Before this, dispatch simply failed later — at run time in
+// the interpreter ("Method 'lt' not found"), at compile time in AOT.
+
+#[test]
+fn vec_sort_on_non_ord_element_is_a_type_error() {
+    let err = test_program(
+        r#"
+        struct P {
+            x: i64
+        }
+        fn main() -> u64 {
+            var v: Vec<P> = Vec::new()
+            v.push(P { x: 3i64 })
+            v.sort()
+            0u64
+        }
+        "#,
+    )
+    .expect_err("sorting a Vec of a type without `impl Ord` must not type-check");
+    assert!(
+        err.contains("bound violation") && err.contains("Ord") && err.contains("sort"),
+        "error should name the violated `Ord` bound on `sort`, got: {err}"
+    );
+}
+
+#[test]
+fn vec_sort_in_unbounded_generic_is_a_type_error() {
+    // The caller's own `T` carries no bound, so it cannot satisfy
+    // `impl<T: Ord>` — the same rule Rust applies.
+    let err = test_program(
+        r#"
+        fn sorted_size<T>(v: Vec<T>) -> u64 {
+            v.sort()
+            v.size()
+        }
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            v.push(1u64)
+            sorted_size(v)
+        }
+        "#,
+    )
+    .expect_err("`v.sort()` under an unbounded `T` must not type-check");
+    assert!(
+        err.contains("bound violation") && err.contains("Ord"),
+        "error should name the violated `Ord` bound, got: {err}"
+    );
+}
+
+#[test]
+fn vec_sort_in_ord_bounded_generic_is_accepted() {
+    // Pass-through: the caller declares the same bound, so the
+    // receiver satisfies it without being concrete.
+    assert_program_result_u64(
+        r#"
+        fn sorted_size<T: Ord>(v: Vec<T>) -> u64 {
+            v.sort()
+            v.size()
+        }
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            v.push(5u64)
+            v.push(2u64)
+            sorted_size(v)
+        }
+        "#,
+        2,
+    );
+}
+
+#[test]
+fn user_struct_with_impl_ord_still_sorts() {
+    // The negative tests above must not have made the positive
+    // case stricter: a struct that *does* implement `Ord` passes
+    // the same call-site check.
+    assert_program_result_u64(
+        r#"
+        struct Item {
+            key: u64
+        }
+        impl Ord for Item {
+            fn lt(self: Self, other: Self) -> bool {
+                self.key < other.key
+            }
+        }
+        fn main() -> u64 {
+            var v: Vec<Item> = Vec::new()
+            v.push(Item { key: 3u64 })
+            v.push(Item { key: 1u64 })
+            v.sort()
+            val first: Item = v.get(0u64)
+            first.key
+        }
+        "#,
+        1,
+    );
+}
+
+#[test]
+fn enum_impl_bound_is_enforced_on_the_receiver() {
+    // The same rule on a generic *enum* receiver: `impl<T: Ord>
+    // Holder<T>` is only reachable for payload types with `Ord`.
+    let program = |payload: &str, value: &str| {
+        format!(
+            r#"
+            struct P {{
+                x: i64
+            }}
+            enum Holder<T> {{
+                Val(T),
+                Empty,
+            }}
+            impl<T: Ord> Holder<T> {{
+                fn is_empty(self: Self) -> bool {{
+                    match self {{
+                        Holder::Val(_) => false,
+                        Holder::Empty => true,
+                    }}
+                }}
+            }}
+            fn main() -> u64 {{
+                val h: Holder<{payload}> = Holder::Val({value})
+                if h.is_empty() {{ 1u64 }} else {{ 0u64 }}
+            }}
+            "#
+        )
+    };
+    let err = test_program(&program("P", "P { x: 1i64 }"))
+        .expect_err("`Holder<P>` must not reach an `impl<T: Ord>` method");
+    assert!(
+        err.contains("bound violation") && err.contains("Ord"),
+        "error should name the violated `Ord` bound, got: {err}"
+    );
+    assert_program_result_u64(&program("u64", "7u64"), 0);
 }

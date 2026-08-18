@@ -488,21 +488,36 @@ impl TypeCheckContext {
         method_name: DefaultSymbol,
         receiver_type_args: &[TypeDecl],
     ) -> Option<&Rc<MethodFunction>> {
+        self.get_struct_method_spec(struct_name, method_name, receiver_type_args)
+            .map(|spec| &spec.method)
+    }
+
+    /// [`get_struct_method`] but keeping the whole spec, so a caller
+    /// can also see which impl block won. STDLIB-ORD uses
+    /// `target_type_args` to map the impl's own type-parameter names
+    /// (`impl<E: Ord> Vec<E>` need not reuse the struct's `T`) onto
+    /// the receiver's concrete args before checking the impl bounds.
+    pub fn get_struct_method_spec(
+        &self,
+        struct_name: DefaultSymbol,
+        method_name: DefaultSymbol,
+        receiver_type_args: &[TypeDecl],
+    ) -> Option<&MethodSpec> {
         let specs = self.struct_methods.get(&struct_name)?.get(&method_name)?;
         if let Some(spec) = specs
             .iter()
             .find(|s| s.target_type_args.as_slice() == receiver_type_args)
         {
-            return Some(&spec.method);
+            return Some(spec);
         }
         if let Some(spec) = specs
             .iter()
             .find(|s| is_wildcard_spec(&s.target_type_args))
         {
-            return Some(&spec.method);
+            return Some(spec);
         }
         if specs.len() == 1 {
-            return Some(&specs[0].method);
+            return Some(&specs[0]);
         }
         None
     }

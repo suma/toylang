@@ -303,6 +303,13 @@ Frequent members, with what each actually means:
     looks like tuple indexing. Write `1.5f64`.
   * the reference-escape rule: a `val` / `var` binding cannot hold `&T`.
   * a `requires` / `ensures` clause that is not `bool`.
+  * `... generic parameter 'T' bound violation` -- the type argument
+    inferred at this call site does not implement the trait the
+    parameter is bounded by. It names the offending trait; write an
+    `impl <Trait> for <Type>` block, or bound the caller's own type
+    parameter with the same trait so the bound passes through. Methods
+    inherit their impl block's bounds, so `v.sort()` reports this when
+    the element type has no `Ord` impl.
 
 Syntax errors do not reach this code, or any code -- `else if` (write
 `elif`), a stray `;`, and other parse failures are reported separately,

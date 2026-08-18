@@ -1,7 +1,6 @@
 use crate::ast::{ExprRef, Function, MethodFunction};
 use crate::type_checker::{TypeCheckError, TypeDecl, TypeCheckerVisitor};
 use crate::type_checker::context::StructDefinition;
-use crate::type_checker::error_handling::ErrorHandling;
 use string_interner::DefaultSymbol;
 use std::rc::Rc;
 use std::collections::HashMap;
@@ -122,104 +121,18 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         // TRAIT-BOUND: a generic-trait bound (`I: Iter<i64>`) parses as
         // `Struct(iter_sym, [i64])`; it is split into a trait symbol plus
         // type args and checked through `satisfies_trait_bound` against
-        // the impl's recorded type args.
-        for generic_param in &fun.generic_params {
-            if let Some(bound) = fun.generic_bounds.get(generic_param) {
-                let inferred = match substitutions.get(generic_param) {
-                    Some(ty) => ty,
-                    None => continue,
-                };
-                // Extract the trait bound(s) for this parameter.
-                // Single-trait bounds parse as `Identifier(trait)` or —
-                // for a generic trait — `Struct(trait_sym, args)` /
-                // `Enum(trait_sym, args)`; multi-trait bounds (A2
-                // `<T: A + B>`) parse as `TraitIntersection([A, B, ...])`.
-                // Empty list means a non-trait bound (e.g. `Allocator`);
-                // we fall back to direct equality below.
-                let trait_bounds: Vec<(DefaultSymbol, Vec<TypeDecl>)> = match bound {
-                    TypeDecl::Identifier(sym) if self.context.is_trait(*sym) => {
-                        vec![(*sym, Vec::new())]
-                    }
-                    TypeDecl::Struct(sym, args) | TypeDecl::Enum(sym, args)
-                        if self.context.is_trait(*sym) =>
-                    {
-                        vec![(*sym, args.clone())]
-                    }
-                    TypeDecl::TraitIntersection(syms) => {
-                        syms.iter().map(|s| (*s, Vec::new())).collect()
-                    }
-                    _ => Vec::new(),
-                };
-                let satisfies = if !trait_bounds.is_empty() {
-                    // Trait bounds: AND over all traits — the inferred type
-                    // must implement every trait in the intersection.
-                    trait_bounds
-                        .iter()
-                        .all(|(trait_sym, bound_args)| {
-                            self.satisfies_trait_bound(inferred, *trait_sym, bound_args, &substitutions)
-                        })
-                } else {
-                    match inferred {
-                        ty if ty == bound => true,
-                        TypeDecl::Generic(sym) => matches!(
-                            self.context.current_fn_generic_bounds.get(sym),
-                            Some(caller_bound) if caller_bound == bound
-                        ),
-                        _ => false,
-                    }
-                };
-                if !satisfies {
-                    self.pop_context();
-                    let param_name = self.resolve_symbol_name(*generic_param);
-                    let fn_name_str = self.resolve_symbol_name(fn_name);
-                    let bound_str = self.format_type_for_error(bound);
-                    let inferred_str = self.format_type_for_error(inferred);
-                    let note = if !trait_bounds.is_empty() {
-                        let inferred_struct = match inferred {
-                            TypeDecl::Struct(s, _) | TypeDecl::Identifier(s) => Some(self.resolve_symbol_name(*s).to_string()),
-                            _ => None,
-                        };
-                        match inferred_struct {
-                            Some(s) => {
-                                // Identify the first missing trait so the
-                                // user sees the precise offender of a
-                                // multi-bound intersection.
-                                let missing = trait_bounds.iter().find(|(trait_sym, bound_args)| {
-                                    match inferred {
-                                        TypeDecl::Struct(_, _) | TypeDecl::Identifier(_) => {
-                                            !self.satisfies_trait_bound(inferred, *trait_sym, bound_args, &substitutions)
-                                        }
-                                        _ => true,
-                                    }
-                                });
-                                match missing {
-                                    Some((t, bound_args)) => {
-                                        let trait_name = self.resolve_symbol_name(*t);
-                                        let args_str = if bound_args.is_empty() {
-                                            String::new()
-                                        } else {
-                                            let arg_strs: Vec<String> = bound_args
-                                                .iter()
-                                                .map(|a| self.format_type_for_error(a))
-                                                .collect();
-                                            format!("<{}>", arg_strs.join(", "))
-                                        };
-                                        format!(" (struct `{}` does not implement trait `{}{}`)", s, trait_name, args_str)
-                                    }
-                                    None => String::new(),
-                                }
-                            }
-                            None => String::new(),
-                        }
-                    } else {
-                        String::new()
-                    };
-                    return Err(TypeCheckError::generic_error(&format!(
-                        "Function '{}' generic parameter '{}' bound violation: expected {}, got {}{}",
-                        fn_name_str, param_name, bound_str, inferred_str, note
-                    )));
-                }
-            }
+        // the impl's recorded type args. Shared with the method-call
+        // path (STDLIB-ORD) through `check_generic_bounds`.
+        let fn_name_str = self.resolve_symbol_name(fn_name);
+        if let Err(e) = self.check_generic_bounds(
+            &fun.generic_params,
+            &fun.generic_bounds,
+            &substitutions,
+            "Function",
+            &fn_name_str,
+        ) {
+            self.pop_context();
+            return Err(e);
         }
         
         // Generate unique name for the instantiated function

@@ -400,6 +400,23 @@ impl<'a> TypeCheckerVisitor<'a> {
                         }
                     }
                 }
+                // Same impl-bound enforcement as the generic-struct
+                // path below (`impl<T: Ord> MyEnum<T>` must reject a
+                // receiver whose payload type has no `Ord` impl).
+                let mut bound_subs = substitutions.clone();
+                bound_subs.extend(self.impl_param_substitutions(
+                    *enum_name,
+                    *method,
+                    type_params,
+                ));
+                let method_name_str = self.resolve_symbol_name(*method);
+                self.check_generic_bounds(
+                    &method_func.generic_params,
+                    &method_func.generic_bounds,
+                    &bound_subs,
+                    "Method",
+                    &method_name_str,
+                )?;
                 let method_return_type = method_func
                     .return_type
                     .clone()
@@ -469,7 +486,32 @@ impl<'a> TypeCheckerVisitor<'a> {
                             }
                         }
                     }
-                    
+
+                    // STDLIB-ORD: enforce the bounds the winning impl
+                    // block declared (`impl<T: Ord> Vec<T>` rejects a
+                    // `Vec<NonOrd>` receiver here). The parser merges
+                    // impl-level bounds into every method it contains,
+                    // so `method_func.generic_bounds` already carries
+                    // them; only the parameter *names* can differ from
+                    // the struct's, which `impl_param_substitutions`
+                    // reconciles. Without this the call type-checks and
+                    // dispatch fails much later — at run time in the
+                    // interpreter, at AOT-compile time natively.
+                    let mut bound_subs = substitutions.clone();
+                    bound_subs.extend(self.impl_param_substitutions(
+                        *struct_name,
+                        *method,
+                        type_params,
+                    ));
+                    let method_name_str = self.resolve_symbol_name(*method);
+                    self.check_generic_bounds(
+                        &method_func.generic_params,
+                        &method_func.generic_bounds,
+                        &bound_subs,
+                        "Method",
+                        &method_name_str,
+                    )?;
+
                     // Apply substitutions to method return type
                     let method_return_type = method_func.return_type.as_ref().unwrap_or(&TypeDecl::Unit);
                     

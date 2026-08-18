@@ -11,6 +11,27 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-18
+- **DOC-DRIFT 解消** — `docs/language.md` の *Generics and bounds* が
+  「bound は parse されるが強制されない」と書いていたのを実際の挙動
+  (call site で強制、pass-through / generic trait の型引数一致 / 多重 bound)
+  に直し、*Known limitations* から解消済みの 2 件 (enum 補間 /
+  MATCH-LET-RHS-PAYLOAD-INFER) を削除。両方とも `--all-backends` で
+  3 バックエンド一致を確認してから消した。
+- **STDLIB-ORD-BOUND: impl block の generic bound を call site で強制** —
+  `impl<T: Ord> Vec<T>` の method は receiver の型引数が bound を満たさないと
+  `[E0010] Method 'sort' generic parameter 'T' bound violation`。以前は
+  型検査を素通りし、interpreter runtime (`Method 'lt' not found`) /
+  AOT compile まで落ちなかった。free function 側の検査
+  (`visit_generic_call`) を `check_generic_bounds` に切り出して method 経路と
+  共有。**要点**: (1) parser が impl-level bound を各 method の
+  `generic_bounds` にマージ済みなので MethodSpec に bounds を足す必要はなく、
+  足りないのは「impl の型パラメータ名 → receiver の具体型」の対応だけ
+  (`impl<E: Ord> Vec<E>` は struct の `T` と名前が違いうる) —
+  `MethodSpec.target_type_args` から作る。(2) substitution に無い
+  パラメータは検査しない (method-only generic は引数から bind される
+  前なので、false positive を出さない側に倒す)。(3) bound 違反の診断が
+  `expected Identifier(Ord)` と内部表記を漏らしていたのも直した。
+  generic **enum** receiver (`impl<T: Ord> Holder<T>`) も同じ検査を通る。
 - **STDLIB-ORD: `Ord` trait + `Vec::sort` (3 バックエンド)** —
   `core/std/ord.t` に `trait Ord { fn lt(self: Self, other: Self) -> bool }`、
   `core/std/collections/vec.t` に `impl<T: Ord> Vec<T>::sort()` (安定
@@ -382,11 +403,8 @@
   extern 境界が compound return を運べないため未対応 — 将来 FFI の
   struct-return 対応か builtin 化で (2026-08-18 に乱数シード / 時刻
   フォーマット / 環境変数一覧は landing 済み)。
-- **STDLIB-ORD: 非 Ord 要素の `sort()` を型エラーにする** ★ — 現状は
-  method dispatch が impl の generic bound (`impl<T: Ord>`) を検証しない
-  ため runtime/AOT compile で落ちる。MethodSpec に bounds を持たせて
-  call-site で拒否するのが本筋。`str` の `Ord` impl (byte 比較) も AOT
-  制約で未提供。
+- **STDLIB-ORD: `str` の `Ord` impl** ★ — byte 比較が heap copy を要求し、
+  generic context で AOT が表現できないため未提供 (`String` は提供済み)。
 
 ### 型システム (NEW-TYPE-SYSTEM)
 
@@ -455,12 +473,6 @@
 - **65. frontend リファクタリング** — (a)〜(g) は完了。残: doc コメント拡充、プロパティベーステスト追加。
 - **property test の generator が仕様と drift しないか** — `valid_identifier()` は lexer に問い合わせる形にした (2026-08-10)。他の generator (リテラル / 演算子) はまだ手書きなので、同種の drift が起きうる。
 - **26. ドキュメント整備** — 残: API リファレンス、advanced topics。
-- **DOC-DRIFT (2026-08-16 実測)** ★ — `docs/language.md` の *Generics and bounds*
-  が「`<T: SomeBound>` は parse されるが型検査器は bound を強制しない」と
-  書いているが、**実際は強制されている** (`fn g<T: Z>(x: T)` に `g(1u64)` は
-  `[E0010] ... bound violation` で拒否される)。`CLAUDE.md` 側の記述が正しい。
-  同節の *Known limitations* も enum 補間 / MATCH-LET-RHS-PAYLOAD-INFER を
-  未対応として残しているが、どちらも 2026-08-16 に解消済み。
 
 ## 検討中の機能
 

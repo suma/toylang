@@ -15,9 +15,8 @@
 // the interpreter for any program containing a closure, and AOT
 // support is a later phase.
 
-mod common;
 
-use common::{
+use crate::common::{
     assert_program_fails, assert_program_result_i64, assert_program_result_u64, test_program,
 };
 

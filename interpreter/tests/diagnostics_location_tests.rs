@@ -10,9 +10,8 @@
 //      raised inside an imported module carried one that pointed into a
 //      *different file* while being rendered against this one
 
-mod common;
 
-use common::test_program;
+use crate::common::test_program;
 
 fn diagnostics(source: &str) -> String {
     match test_program(source) {

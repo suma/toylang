@@ -1,4 +1,3 @@
-mod common;
 
 // =====================================================================
 // Trait Tests — basic trait declaration, impl-trait blocks, trait-bounded

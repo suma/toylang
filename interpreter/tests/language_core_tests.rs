@@ -14,7 +14,7 @@
 //! - Heap memory operations (val with builtins)
 //! - Error handling (immutable variable reassignment)
 
-mod common;
+use crate::common;
 
 use std::collections::HashMap;
 use frontend::ast::*;

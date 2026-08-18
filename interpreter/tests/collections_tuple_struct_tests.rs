@@ -1,5 +1,5 @@
-mod common;
-use common::test_program;
+use crate::common;
+use crate::common::test_program;
 
 #[cfg(test)]
 mod tuple_tests {

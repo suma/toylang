@@ -1,5 +1,4 @@
-mod common;
-use common::test_program;
+use crate::common::test_program;
 use interpreter::object::Object;
 
 // Helper to execute and return debug string (preserves existing test assertion style)

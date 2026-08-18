@@ -11,9 +11,8 @@
 // before `resolve_numeric_types` so the standard arithmetic
 // "incompatible types" diagnostic doesn't preempt the overload.
 
-mod common;
 
-use common::assert_program_result_u64;
+use crate::common::assert_program_result_u64;
 
 const VEC3_DECL: &str = r#"
 struct Vec3 { x: i64, y: i64, z: i64 }

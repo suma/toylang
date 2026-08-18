@@ -14,9 +14,8 @@
 // linked structure writable today (`ptr`, an index into a `Vec`) must
 // keep working, or the check has taken the language backwards.
 
-mod common;
 
-use common::{core_modules_dir, test_program};
+use crate::common::{core_modules_dir, test_program};
 use frontend::diagnostic::Diagnostic;
 
 /// Type check `source` and return the diagnostics. Panics when the

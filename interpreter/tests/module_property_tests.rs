@@ -1,5 +1,4 @@
-mod common;
-use common::{test_program, test_program_no_core, test_program_with_core_modules};
+use crate::common::{test_program, test_program_no_core, test_program_with_core_modules};
 
 // ============================================================================
 // Module system tests

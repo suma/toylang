@@ -6,9 +6,8 @@
 // AOT, JIT) therefore see only the desugared form — these tests
 // exercise the construct via the interpreter end-to-end.
 
-mod common;
 
-use common::{assert_program_result_i64, assert_program_result_u64, test_program};
+use crate::common::{assert_program_result_i64, assert_program_result_u64, test_program};
 
 // ---------------------------------------------------------------------
 // `?` on Result — happy and error paths.

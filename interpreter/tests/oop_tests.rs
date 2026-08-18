@@ -1,6 +1,5 @@
-mod common;
 
-use common::test_program;
+use crate::common::test_program;
 
 // OOP (Object-Oriented Programming) integration tests.
 //

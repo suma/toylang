@@ -10,9 +10,8 @@
 // JIT all see plain `match` and `while` and need no further work. These
 // tests exercise the desugar via end-to-end interpreter runs.
 
-mod common;
 
-use common::{assert_program_result_i64, assert_program_result_u64, test_program};
+use crate::common::{assert_program_result_i64, assert_program_result_u64, test_program};
 
 // ---------------------------------------------------------------------
 // `if val` — happy paths.

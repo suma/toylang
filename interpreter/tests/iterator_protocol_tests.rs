@@ -22,9 +22,8 @@
 // their dedicated `Stmt::For` integer fast path and don't flow
 // through this protocol.
 
-mod common;
 
-use common::{assert_program_result_i64, assert_program_result_u64};
+use crate::common::{assert_program_result_i64, assert_program_result_u64};
 
 const COUNTER_PRELUDE: &str = "
 struct Counter {

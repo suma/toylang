@@ -15,9 +15,8 @@
 // AOT-COMPOUND-PTR-RW fix (compound `__builtin_ptr_read/write`)
 // so `Vec<String>` round-trips through the heap buffer.
 
-mod common;
 
-use common::{assert_program_fails, assert_program_result_u64, core_modules_dir};
+use crate::common::{assert_program_fails, assert_program_result_u64, core_modules_dir};
 use frontend::diagnostic::Diagnostic;
 
 // Returns each byte of the buffer packed into a u64 — bytes are

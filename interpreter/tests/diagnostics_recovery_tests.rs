@@ -11,9 +11,9 @@
 //   - errors within a single statement (expression-level recovery is an
 //     explicit non-goal; see design-docs/LLM_FEEDBACK_LOOP.md)
 
-mod common;
+use crate::common;
 
-use common::test_program;
+use crate::common::test_program;
 
 /// Type-check the source and return the joined diagnostics. Panics if
 /// the program unexpectedly succeeds.

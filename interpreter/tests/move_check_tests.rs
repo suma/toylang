@@ -13,9 +13,8 @@
 // `impl Drop` own nothing and are untouched by any of this. A check
 // that rejects those has taken more than it gave.
 
-mod common;
 
-use common::{core_modules_dir, test_program};
+use crate::common::{core_modules_dir, test_program};
 use frontend::diagnostic::Diagnostic;
 
 /// A `Cell<T>` that owns a heap slot, plus the `Vec` to put one in.

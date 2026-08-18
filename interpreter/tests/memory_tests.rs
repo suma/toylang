@@ -1,5 +1,4 @@
-mod common;
-use common::test_program;
+use crate::common::test_program;
 
 // ============================================================================
 // Heap and val integration tests

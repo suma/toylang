@@ -12,9 +12,8 @@
 // its trust in every later suggestion, so these tests apply the fixes
 // and re-run rather than just inspecting the text.
 
-mod common;
 
-use common::{core_modules_dir, test_program};
+use crate::common::{core_modules_dir, test_program};
 use frontend::diagnostic::{Applicability, Diagnostic};
 
 /// Type check `source` and return the structured diagnostics.

@@ -14,9 +14,8 @@
 // tests therefore cover the desugar correctness via the
 // tree-walking interpreter end-to-end.
 
-mod common;
 
-use common::{assert_program_fails, assert_program_result_u64, test_program};
+use crate::common::{assert_program_fails, assert_program_result_u64, test_program};
 use interpreter::object::Object;
 
 // ---------------------------------------------------------------------

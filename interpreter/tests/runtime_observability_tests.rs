@@ -6,9 +6,9 @@
 // run again — which is the round trip the whole LLM-LOOP effort exists
 // to remove.
 
-mod common;
+use crate::common;
 
-use common::test_program;
+use crate::common::test_program;
 
 /// Run a program expected to fail at runtime and return the diagnostic.
 fn runtime_failure(source: &str) -> String {

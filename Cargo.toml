@@ -19,20 +19,109 @@ edition = "2024"
 license = "MIT"
 authors = ["Shuzo Kashihara <suman.orega.warukatta@gmail.com>"]
 
-# Build third-party dependencies with full optimization even in dev /
-# test profiles. Cranelift / cranelift-codegen / cranelift-jit
-# dominate the wall-clock of `e2e_batched.rs` and the `consistency`
-# suite (each test JIT-compiles or AOT-compiles a small program);
-# unoptimized cranelift is roughly 20x slower than its optimized
-# build. Workspace-local crates (frontend / interpreter / compiler /
-# compiler_core) stay at opt-level=0 so test compile times and
-# debugger ergonomics for the code we actually iterate on are
-# unchanged.
+# Third-party dependencies build unoptimized, with cranelift carved
+# out. Building every dependency at opt-level=3 cost more than it
+# bought: the suite's bottleneck is the build, not the run (touching
+# one test file relinks in ~9s, touching a library in ~2min, against
+# ~7s to execute all of the tests). Only cranelift is fast enough to
+# matter at *run* time -- it is what `e2e_batched.rs` and the
+# `consistency` suite spend their wall-clock in, since each test JIT-
+# or AOT-compiles a small program, and unoptimized cranelift is
+# roughly 20x slower than its optimized build.
+#
+# Two notes on the spelling, both of which fail silently if gotten
+# wrong:
+#
+#  * The key is `package`, not `overrides`. `[profile.*.overrides.*]`
+#    was the pre-1.41 name; cargo now reports it as an unused manifest
+#    key and ignores the section entirely.
+#  * `cranelift` alone matches only the umbrella crate. The code that
+#    actually runs is in `cranelift-codegen` and friends, so each one
+#    is named. A package spec here matches nothing silently, so a
+#    typo reads as "no override" rather than as an error.
+#
+# `[profile.test.package."*"]` is the one that governs a `cargo
+# nextest run`; the `dev` copy keeps the `interpreter` / `compiler`
+# binaries consistent with it (and stops cargo from building two
+# copies of cranelift at different levels).
 [profile.dev.package."*"]
-opt-level = 3
+opt-level = 0
 
 [profile.test.package."*"]
-opt-level = 3
+opt-level = 0
+
+[profile.dev.package.cranelift]
+opt-level = 2
+
+[profile.dev.package.cranelift-codegen]
+opt-level = 2
+
+[profile.dev.package.cranelift-frontend]
+opt-level = 2
+
+[profile.dev.package.cranelift-jit]
+opt-level = 2
+
+[profile.dev.package.cranelift-module]
+opt-level = 2
+
+[profile.dev.package.cranelift-object]
+opt-level = 2
+
+[profile.dev.package.cranelift-native]
+opt-level = 2
+
+[profile.dev.package.cranelift-entity]
+opt-level = 2
+
+[profile.dev.package.cranelift-bforest]
+opt-level = 2
+
+[profile.dev.package.cranelift-bitset]
+opt-level = 2
+
+[profile.dev.package.cranelift-control]
+opt-level = 2
+
+[profile.dev.package.cranelift-assembler-x64]
+opt-level = 2
+
+[profile.test.package.cranelift]
+opt-level = 2
+
+[profile.test.package.cranelift-codegen]
+opt-level = 2
+
+[profile.test.package.cranelift-frontend]
+opt-level = 2
+
+[profile.test.package.cranelift-jit]
+opt-level = 2
+
+[profile.test.package.cranelift-module]
+opt-level = 2
+
+[profile.test.package.cranelift-object]
+opt-level = 2
+
+[profile.test.package.cranelift-native]
+opt-level = 2
+
+[profile.test.package.cranelift-entity]
+opt-level = 2
+
+[profile.test.package.cranelift-bforest]
+opt-level = 2
+
+[profile.test.package.cranelift-bitset]
+opt-level = 2
+
+[profile.test.package.cranelift-control]
+opt-level = 2
+
+[profile.test.package.cranelift-assembler-x64]
+opt-level = 2
+
 
 # Release-equivalent build with line tables for samply / instruments.
 # Use with: cargo build --profile profiling --tests

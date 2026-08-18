@@ -12,9 +12,8 @@
 // produce a `"".concat(...)` step. `{{` / `}}` lex to literal
 // `{` / `}` (Rust convention).
 
-mod common;
 
-use common::{assert_program_result_i64, get_program_result, test_program};
+use crate::common::{assert_program_result_i64, get_program_result, test_program};
 use interpreter::object::Object;
 
 /// Run a toylang program returning a string and read it back. The

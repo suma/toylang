@@ -3,9 +3,8 @@
 // the 3-backend agreement is pinned in
 // `compiler/tests/consistency.rs` (`vec_sort_is_consistent_across_backends`).
 
-mod common;
 
-use common::{assert_program_result_u64, test_program};
+use crate::common::{assert_program_result_u64, test_program};
 
 #[test]
 fn vec_sort_orders_u64_ascending() {

@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "interpreter"
 version = "0.1.0"
 edition = "2021"
@@ -52,3 +53,9 @@ harness = false
 
 [lints]
 workspace = true
+
+# One test target instead of one per `tests/*.rs`. See tests/suite.rs
+# for why; `autotests = false` above disables the per-file default.
+[[test]]
+name = "suite"
+path = "tests/suite.rs"

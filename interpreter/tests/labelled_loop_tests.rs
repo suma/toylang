@@ -7,9 +7,8 @@
 // undefined labels and `break` / `continue` outside of any loop both
 // fail to type-check (see `typecheck_*_rejected` cases at the bottom).
 
-mod common;
 
-use common::{assert_program_result_i64, assert_program_result_u64, test_program};
+use crate::common::{assert_program_result_i64, assert_program_result_u64, test_program};
 
 // ---------------------------------------------------------------------
 // Runtime: nested labelled break (interpreter / AOT / JIT all share

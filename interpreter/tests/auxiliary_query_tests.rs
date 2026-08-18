@@ -12,9 +12,8 @@
 //   * `--api` lists what a module provides, contracts included
 //   * every diagnostic code the compiler can print has an explanation
 
-mod common;
 
-use common::core_modules_dir;
+use crate::common::core_modules_dir;
 use frontend::diagnostic::Diagnostic;
 
 /// Type check `source` and return the structured diagnostics.

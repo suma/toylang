@@ -6,9 +6,8 @@
 // stdin, which tests cannot feed — it is covered by the CLI /
 // compiled-binary smoke runs instead.
 
-mod common;
 
-use common::core_modules_dir;
+use crate::common::core_modules_dir;
 
 fn run_with_args(source: &str, args: Vec<&str>) -> Result<i64, String> {
     let core = core_modules_dir();

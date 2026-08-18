@@ -5,9 +5,9 @@
 // P5: `requires` read as a generator filter and `ensures` as an oracle,
 // producing a shrunk counterexample without the author writing a test.
 
-mod common;
+use crate::common;
 
-use common::core_modules_dir;
+use crate::common::core_modules_dir;
 use interpreter::property::CheckOutcome;
 use interpreter::RunOptions;
 

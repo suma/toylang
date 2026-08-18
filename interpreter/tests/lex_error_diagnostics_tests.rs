@@ -7,9 +7,8 @@
 // The location assertions are the point: "the error names the line of
 // the bad literal" is the property that was broken.
 
-mod common;
 
-use common::test_program;
+use crate::common::test_program;
 use frontend::parser::error::ParserError;
 
 /// Parse `source` and return every reported parse error, in source

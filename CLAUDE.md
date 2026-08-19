@@ -109,17 +109,28 @@ JSON でも保持されるので、機械的に読む場面 (LLM ループ) で�
 # ワークスペース全体
 cargo nextest run
 
-# パッケージ / テスト名で絞る
+# パッケージ / テスト名で絞る (以下はすべて実際に当たることを確認済み)
 cargo nextest run -p compiler
-cargo nextest run -p interpreter proptest
-cargo nextest run -E 'test(=basic_arithmetic)'
+cargo nextest run -p interpreter property
+cargo nextest run -E 'test(basic_arithmetic)'
+
+# 旧「1 ファイル = 1 バイナリ」時代のファイル単位で走らせる。
+# テスト名の先頭がファイル名になっているので prefix で絞れる
+cargo nextest run -E 'test(/^language_core_tests::/)'
 
 # 失敗の詳細だけでなく全テストの一覧が欲しいとき
 cargo nextest run --profile verbose
 ```
 
+**フィルタは部分一致で書くこと。** テスト名は
+`language_core_tests::basic_execution::test_f64_basic_arithmetic` のように
+**ファイル名 + モジュール名**で修飾されているので、`test(=basic_arithmetic)`
+のような**完全一致 (`=`) は当たらない** — しかも 0 件でも
+`no tests to run` と出るだけでフィルタの綴り間違いと区別がつかない。
+まず `cargo nextest list | grep ...` で名前を確認するのが早い。
+
 **出力は失敗のみが既定** (`.config/nextest.toml`)。グリーンな全体実行は
-**7 行**で終わる (この設定を入れる前は 1641 行だった)。実行自体は ~4 秒なので、
+**6〜7 行**で終わる (この設定を入れる前は 1641 行だった)。実行自体は ~7.5 秒なので、
 ボトルネックは速度ではなく出力量。全テストの一覧が要るとき
 (ハングの二分探索、フィルタが意図通りか確認するとき) だけ
 `--profile verbose` を使う。

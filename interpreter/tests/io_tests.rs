@@ -5,7 +5,16 @@
 // loosely (range / non-zero). `read_line` reads the process's real
 // stdin, which tests cannot feed — it is covered by the CLI /
 // compiled-binary smoke runs instead.
+//
+// The two tests that reach for `TOYLANG_IO_TEST_VAR` are `#[serial]`:
+// they set and then remove the same variable, so run in parallel one
+// can clear it while the other is still reading the environment. Under
+// nextest that could not happen — one process per test — but the crate
+// is a single test binary now, so `cargo test` runs them as threads in
+// one process and they really do collide.
 
+
+use serial_test::serial;
 
 use crate::common::core_modules_dir;
 
@@ -45,6 +54,7 @@ fn argc_is_zero_without_arguments() {
 }
 
 #[test]
+#[serial]
 fn env_var_reads_the_environment() {
     // A variable the test controls, so the assertion is hermetic.
     std::env::set_var("TOYLANG_IO_TEST_VAR", "hello");
@@ -144,6 +154,7 @@ fn strftime_formats_fixed_timestamps_in_utc() {
 }
 
 #[test]
+#[serial]
 fn env_listing_reports_names_and_values() {
     std::env::set_var("TOYLANG_IO_TEST_VAR", "hello");
     let r = run_with_args(

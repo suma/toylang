@@ -29,7 +29,7 @@
 //! adds methods to `FunctionLower` through its own
 //! `impl<'a> super::FunctionLower<'a> { ... }` block.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use frontend::ast::ExprRef;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
@@ -376,6 +376,14 @@ struct FunctionLower<'a> {
     /// exit, which every arm shares. Cleared at arm start, drained
     /// after the arm body.
     arm_drop_targets: Vec<DropTarget>,
+    /// TEST-PERF: every `FuncId` that is queued for body lowering
+    /// (or already lowered). The program-level reachability scan
+    /// consults it to enqueue a declared-but-bodyless function at
+    /// most once. Any newly-created body-bearing `FuncId` (generic
+    /// instance, method instance, closure, drop glue) must register
+    /// here at creation time so the scan doesn't treat it as an
+    /// undiscovered plain function.
+    scheduled: &'a mut HashSet<FuncId>,
 }
 
 /// Closures Phase 5a/6: queued closure body lowering job. The
@@ -452,6 +460,12 @@ pub(crate) struct PendingThunkBody {
     /// writes each back to `data_ptr` at its natural-sum offset
     /// so the caller's stack slot reflects the mutation.
     pub(crate) self_is_mut: bool,
+    /// TEST-PERF: the `(trait, struct)` pair this thunk belongs to.
+    /// The drain gates body lowering on the vtable being referenced
+    /// by a reachable body (`VtableAddr` instruction), so unreferenced
+    /// impl pairs never pay for a thunk body or its impl methods.
+    pub(crate) trait_sym: DefaultSymbol,
+    pub(crate) target_type: DefaultSymbol,
 }
 
 /// Closures Phase 5a/6: linkage info for a `val name = fn(...)`
@@ -587,6 +601,8 @@ impl<'a> FunctionLower<'a> {
                 env_ptr,
             },
         );
+        // TEST-PERF: queued body-bearing closure — not plain work.
+        self.scheduled.insert(func_id);
         self.pending_closure_work.push(PendingClosureBody {
             func_id,
             parameter: params.clone(),
@@ -923,6 +939,8 @@ impl<'a> FunctionLower<'a> {
             capture_vals.push(v);
             capture_tys.push(*cap_ty);
         }
+        // TEST-PERF: queued body-bearing closure — not plain work.
+        self.scheduled.insert(func_id);
         self.pending_closure_work.push(PendingClosureBody {
             func_id,
             parameter: params.clone(),

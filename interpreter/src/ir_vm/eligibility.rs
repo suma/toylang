@@ -4,7 +4,7 @@
 //! Phase 1 scalar subset so the IR VM can run it without falling back
 //! to the tree-walker.
 
-use compiler_ir::{InstKind, Module};
+use compiler_ir::{FuncId, InstKind, Module};
 
 /// Check whether the entire module can be executed by the Phase 1 IR VM.
 ///
@@ -24,17 +24,18 @@ pub fn ir_vm_supported(module: &Module) -> bool {
     //   - a reachable instruction the VM can't model → reject.
     // `run_loop` keeps a runtime guard for any body-less callee that slips
     // through an indirect edge.
-    let Some(main_id) = module
+    let main_id = module
         .functions
         .iter()
         .position(|f| f.export_name == "main")
-    else {
+        .map(|i| FuncId(i as u32));
+    let Some(main_id) = main_id else {
         return false;
     };
 
-    let reachable = reachable_functions(module, main_id as u32);
+    let reachable = module.reachable_from(main_id);
     for fid in &reachable {
-        let func = &module.functions[*fid as usize];
+        let func = &module.functions[fid.0 as usize];
         if matches!(func.linkage, compiler_ir::Linkage::Import) || func.blocks.is_empty() {
             return false;
         }
@@ -52,54 +53,6 @@ pub fn ir_vm_supported(module: &Module) -> bool {
         }
     }
     true
-}
-
-/// Functions reachable from `start` via static call edges: direct calls
-/// (`Call` family), closure construction (`FuncAddr` / `MakeClosure`), and
-/// dynamic dispatch (`VtableAddr` → the vtable's thunk `FuncId`s). Indirect
-/// calls through a runtime value have no static edge.
-fn reachable_functions(module: &Module, start: u32) -> std::collections::HashSet<u32> {
-    let mut seen = std::collections::HashSet::new();
-    let mut stack = vec![start];
-    while let Some(fid) = stack.pop() {
-        if !seen.insert(fid) {
-            continue;
-        }
-        let Some(func) = module.functions.get(fid as usize) else {
-            continue;
-        };
-        for block in &func.blocks {
-            for inst in &block.instructions {
-                for callee in call_edges(&inst.kind, module) {
-                    if !seen.contains(&callee) {
-                        stack.push(callee);
-                    }
-                }
-            }
-        }
-    }
-    seen
-}
-
-/// The `FuncId`s an instruction can transfer control to (statically).
-fn call_edges(kind: &InstKind, module: &Module) -> Vec<u32> {
-    match kind {
-        InstKind::Call { target, .. }
-        | InstKind::CallStruct { target, .. }
-        | InstKind::CallTuple { target, .. }
-        | InstKind::CallEnum { target, .. }
-        | InstKind::CallWithSelfWriteback { target, .. }
-        | InstKind::CallWithSelfWritebackCompound { target, .. }
-        | InstKind::FuncAddr { target }
-        | InstKind::MakeClosure { target, .. } => vec![target.0],
-        // Dynamic dispatch: every thunk in the referenced vtable is callable.
-        InstKind::VtableAddr { trait_sym, struct_sym } => module
-            .vtables
-            .get(&(*trait_sym, *struct_sym))
-            .map(|ids| ids.iter().map(|f| f.0).collect())
-            .unwrap_or_default(),
-        _ => vec![],
-    }
 }
 
 fn inst_supported(kind: &InstKind) -> bool {

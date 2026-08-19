@@ -258,6 +258,9 @@ impl<'a> FunctionLower<'a> {
         self.module.function_mut(func_id).param_is_ref = param_is_ref;
         self.generic_instances
             .insert((template_name, type_args), func_id);
+        // TEST-PERF: this body-bearing instance is now queued; the
+        // reachability scan must not re-enqueue it as plain work.
+        self.scheduled.insert(func_id);
         self.pending_generic_work.push(PendingGenericInstance {
             func_id,
             template_name,

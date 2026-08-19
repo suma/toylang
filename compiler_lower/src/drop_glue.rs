@@ -52,6 +52,8 @@ impl<'a> FunctionLower<'a> {
             Type::Unit,
         );
         self.module.drop_glue.insert(ty, func_id);
+        // TEST-PERF: queued body-bearing glue — not plain work.
+        self.scheduled.insert(func_id);
         self.pending_glue_work.push(GlueWork { ty, func_id });
         Ok(func_id)
     }

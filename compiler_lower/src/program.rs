@@ -21,7 +21,7 @@
 //! definition stay in `mod.rs` so every other sub-module can
 //! reach them through `super::FunctionLower`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use frontend::ast::{ExprRef, File, Stmt};
@@ -40,6 +40,30 @@ use super::templates::{
 use super::FunctionLower;
 use crate::ir::{FuncId, InstKind, Linkage, LocalId, Module, Terminator, Type, ValueId};
 use compiler_ir::layout::flatten_compound_leaf_types;
+
+/// A non-generic function or method whose body lowering can be deferred
+/// until a reachable call site demands it. TEST-PERF: the auto-loaded
+/// stdlib declares ~190 functions but a program usually touches a
+/// handful; lowering bodies only for the reachable transitive closure
+/// (from `main` + `test` blocks) turns a ~170-function codegen into a
+/// ~4-function one.
+#[derive(Clone)]
+enum PlainSource {
+    /// A top-level function.
+    Function(Rc<frontend::ast::Function>),
+    /// An inherent / trait method on a struct.
+    Method {
+        target_sym: DefaultSymbol,
+        method: Rc<frontend::ast::MethodFunction>,
+    },
+}
+
+/// Work item for deferring a non-generic function / method body until
+/// a reachable call site references its `FuncId`.
+struct PendingPlainBody {
+    func_id: FuncId,
+    source: PlainSource,
+}
 
 /// Map a source-level `extern fn` identifier to the libm symbol name
 /// the AOT compiler should emit as a `Linkage::Import`. Returns `None`
@@ -352,6 +376,14 @@ pub fn lower_program(
     // declaration pass below can mint a FuncId per method.
     let method_registry: MethodRegistry = collect_method_decls(program)?;
 
+    // TEST-PERF: `FuncId` → source for every non-generic function /
+    // method, so a reachable call site can defer the body lowering.
+    // `scheduled` is the set of `FuncId`s that are already queued for
+    // body lowering (or already lowered) — the reachability scan uses
+    // it to enqueue each declared-but-bodyless function at most once.
+    let mut plain_sources: HashMap<FuncId, PlainSource> = HashMap::new();
+    let mut scheduled: HashSet<FuncId> = HashSet::new();
+
     // First pass: declare every non-generic function so call sites
     // (which may refer to functions defined later in the file) can
     // resolve to a `FuncId` during the body lowering pass. Generic
@@ -482,6 +514,13 @@ pub fn lower_program(
             linkage,
             params,
             ret,
+        );
+        // TEST-PERF: this is a body-bearing function (non-generic,
+        // non-extern), so it can be scheduled for deferred lowering
+        // when a reachable call site references it.
+        plain_sources.insert(
+            func_id,
+            PlainSource::Function(Rc::clone(func)),
         );
         // REF-Stage-2 (iv): mark every `&T` / `&mut T` scalar
         // parameter as ref-passed so call sites can forward
@@ -745,6 +784,15 @@ pub fn lower_program(
         let export_name = format!("toy_{}{}__{}", target_str, args_suffix, method_str);
         let func_id =
             module.declare_function_anon(export_name, Linkage::Local, params, ret);
+        // TEST-PERF: defer this method's body until a reachable call
+        // site dispatches to it.
+        plain_sources.insert(
+            func_id,
+            PlainSource::Method {
+                target_sym: *target_sym,
+                method: Rc::clone(method),
+            },
+        );
         // REF-Stage-2 (ii-method): pre-populate the method's
         // writeback shape so callers compiled before the method's
         // body see the correct trailing-return layout. Same
@@ -923,6 +971,11 @@ pub fn lower_program(
                 thunk_params,
                 ret_ty,
             );
+            // TEST-PERF: the thunk is scheduled up front with the rest
+            // of the vtable machinery; only thunks whose vtable is
+            // actually referenced by a reachable body get their body
+            // lowered (see the drain below).
+            scheduled.insert(thunk_func_id);
             pending_thunk_work.push(super::PendingThunkBody {
                 thunk_func_id,
                 impl_func_id,
@@ -930,6 +983,8 @@ pub fn lower_program(
                 user_param_tys,
                 ret_ty,
                 self_is_mut,
+                trait_sym,
+                target_type,
             });
             // Vtable entry points at the thunk, not the impl, so
             // every dyn dispatch site sees the uniform
@@ -941,141 +996,125 @@ pub fn lower_program(
         }
     }
 
-    // Second pass: lower each non-generic body. Generic instantiations
-    // happen lazily as call sites discover them; the work queue keeps
-    // them coming until everything reachable is monomorphised.
-    // Iterate by index so we can recover the matching module qualifier
-    // from `program.function_module_paths` for the IR lookup key.
-    let non_generic: Vec<(usize, Rc<frontend::ast::Function>)> = program
-        .function
-        .iter()
-        .enumerate()
-        .filter(|(_, f)| f.generic_params.is_empty())
-        .map(|(i, f)| (i, Rc::clone(f)))
-        .collect();
+    // Second pass: lower bodies for the reachable transitive closure
+    // from the entry points (`main` + `test` blocks) instead of every
+    // non-generic function / method. Pass 1 has already *declared* every
+    // FuncId, so any call site can resolve; the `schedule_from_ir` scan
+    // enqueues a declared-but-bodyless function as soon as a lowered
+    // body references it, and the loop below drains until quiescence.
+    // Generic instantiations, method instances, closures, drop glue and
+    // dyn thunks are queued lazily by their own mechanisms and marked in
+    // `scheduled` at creation time, so the scan never double-enqueues
+    // them. A program that uses a handful of stdlib functions now lowers
+    // a handful of bodies instead of the whole ~190-function auto-loaded
+    // core.
     let mut generic_instances: GenericInstances = HashMap::new();
     let mut pending_generic_work: Vec<PendingGenericInstance> = Vec::new();
     // Closures Phase 5a: queue of closure bodies awaiting lowering.
     // The lift step (`lower_let` of `Expr::Closure`) declares the
     // synthetic top-level FuncId immediately so call sites resolve;
-    // the body is lowered after the main passes complete so we don't
-    // recurse into a fresh `FunctionLower` while another is mid-flight.
+    // the body is lowered here under its own `FunctionLower` instance.
     let mut pending_closure_work: Vec<super::PendingClosureBody> = Vec::new();
     // DROP-GLUE: queue of synthesized per-type drop-glue function
     // bodies awaiting lowering. Filled by `ensure_drop_glue` (from
-    // drop-site emission and from other glue bodies); drained after
-    // the closure / thunk passes below.
+    // drop-site emission and from other glue bodies).
     let mut pending_glue_work: Vec<super::drop_glue::GlueWork> = Vec::new();
-    for (idx, func) in non_generic {
-        // Skip body lowering for `extern fn` declarations — there is
-        // no body to lower. Phase 2c (compiler extern dispatch) will
-        // re-declare these as `Linkage::Import` so call sites resolve
-        // against libm / a runtime shim. For now they simply don't
-        // contribute any IR.
-        if func.is_extern {
-            continue;
-        }
-        let module_qualifier = program
-            .function_module_paths
-            .get(idx)
-            .and_then(|opt| opt.as_ref())
-            .and_then(|path| path.last().copied());
-        let func_id = *module
-            .function_index
-            .get(&(module_qualifier, func.name))
-            .expect("declared in pass 1");
-        let mut builder = FunctionLower::new(
-            &mut module,
-            func_id,
-            program,
-            interner,
-            &struct_defs,
-            &enum_defs,
-            &generic_funcs,
-            &mut generic_instances,
-            &mut pending_generic_work,
-            &const_values,
-            contract_msgs,
-            release,
-            &method_registry,
-            &method_func_ids,
-            &generic_methods,
-            &mut method_instances,
-            &mut pending_method_work,
-            &mut pending_closure_work,
-            &mut pending_glue_work,
-        )?;
-        builder.lower_body(&func)?;
-    }
+    // TEST-PERF: deferred non-generic function / method bodies.
+    let mut pending_plain_work: Vec<PendingPlainBody> = Vec::new();
+    // `(trait, struct)` pairs whose vtable a reachable body referenced.
+    // Only these thunks get their body lowered.
+    let mut used_vtables: HashSet<(DefaultSymbol, DefaultSymbol)> = HashSet::new();
 
-    // Lower each non-generic inherent method body. We share the same
-    // `FunctionLower` driver as plain functions; the method-flavour
-    // entry just substitutes `Self` in the parameter list before
-    // delegating. Generic methods are skipped — they're lowered
-    // lazily by `pending_method_work` below.
-    // CONCRETE-IMPL Phase 2b: iterate (target, method, spec) triples
-    // and pair each non-generic spec with its corresponding FuncId
-    // (declared in the first pass, same iteration order — non-generic
-    // specs are pushed to `func_specs` in the same order they appear
-    // in `specs`).
-    let bodies_to_lower: Vec<(DefaultSymbol, Rc<frontend::ast::MethodFunction>, FuncId)> = {
-        let mut acc = Vec::new();
-        // `registry_pairs` rather than `method_registry.iter()`: it is
-        // the same content in sorted order. Lowering a body is what
-        // triggers lazy monomorphisation, so a `HashMap` order here
-        // made the *instances* (`toy_Vec__push__U8`, …) get their
-        // `FuncId`s in a different sequence on every run.
-        for ((target_sym, method_sym), specs) in &registry_pairs {
-            let func_specs = match method_func_ids.get(&(*target_sym, *method_sym)) {
-                Some(v) => v,
-                None => continue,
-            };
-            let non_generic_specs: Vec<&MethodTemplateSpec> = specs
-                .iter()
-                .filter(|s| s.method.generic_params.is_empty())
-                .collect();
-            for (template_spec, func_spec) in non_generic_specs.iter().zip(func_specs.iter()) {
-                acc.push((
-                    *target_sym,
-                    Rc::clone(&template_spec.method),
-                    func_spec.func_id,
-                ));
+    // Seed the queue with the entry points. Every runnable program has
+    // `main`; `test "name"` blocks are zero-argument functions that the
+    // interpreter runs under `--test`.
+    let mut entry_syms: Vec<DefaultSymbol> = Vec::new();
+    if let Some(s) = interner.get("main") {
+        entry_syms.push(s);
+    }
+    entry_syms.extend(program.tests.iter().map(|t| t.function));
+    let mut main_seeded = false;
+    for sym in entry_syms {
+        let is_main = interner.resolve(sym) == Some("main");
+        if let Some(func_id) = module.lookup_function(None, sym) {
+            if is_main {
+                main_seeded = true;
+            }
+            if scheduled.insert(func_id)
+                && let Some(src) = plain_sources.get(&func_id)
+            {
+                pending_plain_work.push(PendingPlainBody {
+                    func_id,
+                    source: src.clone(),
+                });
             }
         }
-        acc
-    };
-    for (target_sym, method, func_id) in bodies_to_lower {
-        let mut builder = FunctionLower::new(
-            &mut module,
-            func_id,
-            program,
-            interner,
-            &struct_defs,
-            &enum_defs,
-            &generic_funcs,
-            &mut generic_instances,
-            &mut pending_generic_work,
-            &const_values,
-            contract_msgs,
-            release,
-            &method_registry,
-            &method_func_ids,
-            &generic_methods,
-            &mut method_instances,
-            &mut pending_method_work,
-            &mut pending_closure_work,
-            &mut pending_glue_work,
-        )?;
-        builder.lower_method_body(&method, target_sym)?;
+    }
+    // Defensive: a file without `main` (partial / library source fed to
+    // `--emit=ir`) falls back to lowering every non-generic body, in
+    // declaration (FuncId) order for determinism.
+    if !main_seeded {
+        let mut all: Vec<FuncId> = plain_sources.keys().copied().collect();
+        all.sort_by_key(|f| f.0);
+        for func_id in all {
+            if scheduled.insert(func_id) {
+                pending_plain_work.push(PendingPlainBody {
+                    func_id,
+                    source: plain_sources[&func_id].clone(),
+                });
+            }
+        }
     }
 
-    // Drain both queues: generic functions and generic methods. We
-    // alternate (functions first, then methods) inside the outer
-    // loop so a freshly-instantiated method body that calls another
-    // generic function (or vice versa) gets its dependencies lowered
-    // in one pass.
+    // Drain every body-lowering queue until nothing new is scheduled.
+    // Order within an iteration is fixed (plain → generic → method →
+    // glue → closure → thunk) so the order in which lazily-instantiated
+    // generic bodies get their FuncIds stays deterministic across runs.
     loop {
         let mut made_progress = false;
+
+        // 1. Deferred non-generic functions and methods.
+        while let Some(work) = pending_plain_work.pop() {
+            made_progress = true;
+            let mut builder = FunctionLower::new(
+                &mut module,
+                work.func_id,
+                program,
+                interner,
+                &struct_defs,
+                &enum_defs,
+                &generic_funcs,
+                &mut generic_instances,
+                &mut pending_generic_work,
+                &const_values,
+                contract_msgs,
+                release,
+                &method_registry,
+                &method_func_ids,
+                &generic_methods,
+                &mut method_instances,
+                &mut pending_method_work,
+                &mut pending_closure_work,
+                &mut pending_glue_work,
+                &mut scheduled,
+            )?;
+            match &work.source {
+                PlainSource::Function(func) => builder.lower_body(func)?,
+                PlainSource::Method { target_sym, method } => {
+                    builder.lower_method_body(method, *target_sym)?
+                }
+            }
+            schedule_from_ir(
+                &module,
+                work.func_id,
+                &plain_sources,
+                &mut scheduled,
+                &mut pending_plain_work,
+                &mut used_vtables,
+            );
+        }
+
+        // 2. Generic function instances.
         while let Some(work) = pending_generic_work.pop() {
             made_progress = true;
             let template = generic_funcs
@@ -1107,9 +1146,20 @@ pub fn lower_program(
                 &mut pending_method_work,
                 &mut pending_closure_work,
                 &mut pending_glue_work,
+                &mut scheduled,
             )?;
             builder.lower_body(&template)?;
+            schedule_from_ir(
+                &module,
+                work.func_id,
+                &plain_sources,
+                &mut scheduled,
+                &mut pending_plain_work,
+                &mut used_vtables,
+            );
         }
+
+        // 3. Generic method instances.
         while let Some(work) = pending_method_work.pop() {
             made_progress = true;
             // CONCRETE-IMPL Phase 2b: `generic_methods` is now
@@ -1158,6 +1208,7 @@ pub fn lower_program(
                 &mut pending_method_work,
                 &mut pending_closure_work,
                 &mut pending_glue_work,
+                &mut scheduled,
             )?;
             // Install the per-monomorph subst so val/var
             // annotations inside the body that reference
@@ -1165,11 +1216,17 @@ pub fn lower_program(
             // concrete type for this instance.
             builder.set_active_subst(work.subst.clone());
             builder.lower_method_body(&template, work.target_sym)?;
+            schedule_from_ir(
+                &module,
+                work.func_id,
+                &plain_sources,
+                &mut scheduled,
+                &mut pending_plain_work,
+                &mut used_vtables,
+            );
         }
-        // DROP-GLUE: drain the drop-glue queue inside the main loop
-        // too — a glue body may request a generic method instance
-        // (`Box<List>::drop`), which lands on `pending_method_work`
-        // and has to be lowered on the next iteration.
+
+        // 4. DROP-GLUE.
         while let Some(work) = pending_glue_work.pop() {
             made_progress = true;
             let mut builder = FunctionLower::new(
@@ -1192,111 +1249,159 @@ pub fn lower_program(
                 &mut pending_method_work,
                 &mut pending_closure_work,
                 &mut pending_glue_work,
+                &mut scheduled,
             )?;
             builder.lower_drop_glue(&work)?;
+            schedule_from_ir(
+                &module,
+                work.func_id,
+                &plain_sources,
+                &mut scheduled,
+                &mut pending_plain_work,
+                &mut used_vtables,
+            );
         }
+
+        // 5. Closures.
+        while let Some(work) = pending_closure_work.pop() {
+            made_progress = true;
+            let mut builder = FunctionLower::new(
+                &mut module,
+                work.func_id,
+                program,
+                interner,
+                &struct_defs,
+                &enum_defs,
+                &generic_funcs,
+                &mut generic_instances,
+                &mut pending_generic_work,
+                &const_values,
+                contract_msgs,
+                release,
+                &method_registry,
+                &method_func_ids,
+                &generic_methods,
+                &mut method_instances,
+                &mut pending_method_work,
+                &mut pending_closure_work,
+                &mut pending_glue_work,
+                &mut scheduled,
+            )?;
+            builder.lower_closure_body(&work.parameter, &work.body, &work.captures)?;
+            schedule_from_ir(
+                &module,
+                work.func_id,
+                &plain_sources,
+                &mut scheduled,
+                &mut pending_plain_work,
+                &mut used_vtables,
+            );
+        }
+
+        // 6. A5-P2-MVP-B: dyn-dispatch thunks — only those whose
+        // vtable a reachable body referenced. Unused thunks stay in
+        // the queue (a later iteration may discover the vtable), and
+        // a no-progress loop leaves them bodyless (unreferenced, so
+        // never compiled).
+        let mut remaining_thunks: Vec<super::PendingThunkBody> = Vec::new();
+        while let Some(work) = pending_thunk_work.pop() {
+            if !used_vtables.contains(&(work.trait_sym, work.target_type)) {
+                remaining_thunks.push(work);
+                continue;
+            }
+            made_progress = true;
+            let mut builder = FunctionLower::new(
+                &mut module,
+                work.thunk_func_id,
+                program,
+                interner,
+                &struct_defs,
+                &enum_defs,
+                &generic_funcs,
+                &mut generic_instances,
+                &mut pending_generic_work,
+                &const_values,
+                contract_msgs,
+                release,
+                &method_registry,
+                &method_func_ids,
+                &generic_methods,
+                &mut method_instances,
+                &mut pending_method_work,
+                &mut pending_closure_work,
+                &mut pending_glue_work,
+                &mut scheduled,
+            )?;
+            builder.lower_dyn_thunk_body(
+                work.impl_func_id,
+                &work.struct_leaves,
+                &work.user_param_tys,
+                work.self_is_mut,
+            )?;
+            schedule_from_ir(
+                &module,
+                work.thunk_func_id,
+                &plain_sources,
+                &mut scheduled,
+                &mut pending_plain_work,
+                &mut used_vtables,
+            );
+        }
+        pending_thunk_work = remaining_thunks;
+
         if !made_progress {
             break;
         }
     }
-
-    // Closures Phase 5a: drain the closure-body queue. Each entry
-    // was synthesised when the parent function's `lower_let` saw
-    // an `Expr::Closure` rhs — the FuncId is already declared on
-    // the module, the body lowers here under its own
-    // `FunctionLower` instance. Looping in case a closure body
-    // declares another closure that pushes onto the same queue.
-    while let Some(work) = pending_closure_work.pop() {
-        let mut builder = FunctionLower::new(
-            &mut module,
-            work.func_id,
-            program,
-            interner,
-            &struct_defs,
-            &enum_defs,
-            &generic_funcs,
-            &mut generic_instances,
-            &mut pending_generic_work,
-            &const_values,
-            contract_msgs,
-            release,
-            &method_registry,
-            &method_func_ids,
-            &generic_methods,
-            &mut method_instances,
-            &mut pending_method_work,
-            &mut pending_closure_work,
-            &mut pending_glue_work,
-        )?;
-        builder.lower_closure_body(&work.parameter, &work.body, &work.captures)?;
-    }
-
-    // A5-P2-MVP-B: drain the dyn-dispatch thunk queue. Each entry
-    // synthesizes a small wrapper that reads receiver-struct leaves
-    // from `data_ptr` and forwards to the impl method. Closure-bodies
-    // must drain first so any impl method that depends on a closure
-    // helper sees a complete IR module when its thunk references it
-    // via `Call(impl_func_id)`.
-    while let Some(work) = pending_thunk_work.pop() {
-        let mut builder = FunctionLower::new(
-            &mut module,
-            work.thunk_func_id,
-            program,
-            interner,
-            &struct_defs,
-            &enum_defs,
-            &generic_funcs,
-            &mut generic_instances,
-            &mut pending_generic_work,
-            &const_values,
-            contract_msgs,
-            release,
-            &method_registry,
-            &method_func_ids,
-            &generic_methods,
-            &mut method_instances,
-            &mut pending_method_work,
-            &mut pending_closure_work,
-            &mut pending_glue_work,
-        )?;
-        builder.lower_dyn_thunk_body(
-            work.impl_func_id,
-            &work.struct_leaves,
-            &work.user_param_tys,
-            work.self_is_mut,
-        )?;
-    }
-
-    // DROP-GLUE: safety-net drain for glue functions queued after
-    // the main loop exited (e.g. from a thunk body). Normally the
-    // glue queue drains inside the main loop; this catches the
-    // stragglers so no declared function is left without a body.
-    while let Some(work) = pending_glue_work.pop() {
-        let mut builder = FunctionLower::new(
-            &mut module,
-            work.func_id,
-            program,
-            interner,
-            &struct_defs,
-            &enum_defs,
-            &generic_funcs,
-            &mut generic_instances,
-            &mut pending_generic_work,
-            &const_values,
-            contract_msgs,
-            release,
-            &method_registry,
-            &method_func_ids,
-            &generic_methods,
-            &mut method_instances,
-            &mut pending_method_work,
-            &mut pending_closure_work,
-            &mut pending_glue_work,
-        )?;
-        builder.lower_drop_glue(&work)?;
-    }
     enable_allocation_counting_if_read(&mut module);
     Ok(module)
+}
+
+/// TEST-PERF: scan a freshly-lowered function's IR for references to
+/// declared-but-bodyless non-generic functions / methods, and enqueue
+/// their bodies. Also records which `(trait, struct)` vtables the body
+/// needs so the thunk drain can skip unreferenced impl pairs. Already-
+/// scheduled `FuncId`s (generic instances, closures, glue, thunks) are
+/// ignored — they are marked in `scheduled` at creation time.
+fn schedule_from_ir(
+    module: &Module,
+    lowered_func_id: FuncId,
+    plain_sources: &HashMap<FuncId, PlainSource>,
+    scheduled: &mut HashSet<FuncId>,
+    pending_plain_work: &mut Vec<PendingPlainBody>,
+    used_vtables: &mut HashSet<(DefaultSymbol, DefaultSymbol)>,
+) {
+    let Some(func) = module.functions.get(lowered_func_id.0 as usize) else {
+        return;
+    };
+    for block in &func.blocks {
+        for inst in &block.instructions {
+            if let InstKind::VtableAddr { trait_sym, struct_sym } = &inst.kind {
+                used_vtables.insert((*trait_sym, *struct_sym));
+                continue;
+            }
+            for callee in module.call_edges(&inst.kind) {
+                let Some(callee_fn) = module.functions.get(callee.0 as usize) else {
+                    continue;
+                };
+                // Imports have no body to lower. Already-lowered and
+                // already-scheduled functions are enqueued at most once.
+                if matches!(callee_fn.linkage, Linkage::Import) {
+                    continue;
+                }
+                if !callee_fn.blocks.is_empty() || scheduled.contains(&callee) {
+                    continue;
+                }
+                if let Some(src) = plain_sources.get(&callee) {
+                    scheduled.insert(callee);
+                    pending_plain_work.push(PendingPlainBody {
+                        func_id: callee,
+                        source: src.clone(),
+                    });
+                }
+            }
+        }
+    }
 }
 
 /// MEMORY_PROFILING M4. When the program reads an allocation counter,
@@ -1378,6 +1483,7 @@ impl<'a> FunctionLower<'a> {
         pending_method_work: &'a mut Vec<PendingMethodInstance>,
         pending_closure_work: &'a mut Vec<super::PendingClosureBody>,
         pending_glue_work: &'a mut Vec<super::drop_glue::GlueWork>,
+        scheduled: &'a mut HashSet<FuncId>,
     ) -> Result<Self, String> {
         Ok(Self {
             module,
@@ -1418,6 +1524,7 @@ impl<'a> FunctionLower<'a> {
             pending_closure_work,
             pending_glue_work,
             arm_drop_targets: Vec::new(),
+            scheduled,
         })
     }
 

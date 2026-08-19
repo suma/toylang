@@ -84,12 +84,25 @@ pub fn emit_clif_text(
     let mut session = CodegenSession::new(module)?;
     session.declare_all(&ir_module, interner)?;
     let mut out = String::new();
+    // TEST-PERF: only emit reachable functions — unreachable stdlib
+    // bodies are no longer lowered, and their declarations have no
+    // cranelift code to render.
+    let main_id = ir_module
+        .functions
+        .iter()
+        .position(|f| f.export_name == "main")
+        .map(|i| FuncId(i as u32));
+    let reachable = main_id
+        .map(|id| ir_module.reachable_from(id))
+        .unwrap_or_default();
     for func_id in 0..ir_module.functions.len() {
         let func_id = FuncId(func_id as u32);
         // Skip `Linkage::Import` functions — they have no body to
         // lower (declaration-only `extern fn` from the prelude or
         // user code). Same skip as `build_object_module`.
-        if matches!(ir_module.function(func_id).linkage, Linkage::Import) {
+        if matches!(ir_module.function(func_id).linkage, Linkage::Import)
+            || !reachable.contains(&func_id)
+        {
             continue;
         }
         let clif = session.lower_function(&ir_module, func_id)?;
@@ -111,10 +124,29 @@ fn build_object_module(
     let mut session = CodegenSession::new(module)?;
     session.declare_all(ir_module, interner)?;
 
-    let funcs_to_compile: Vec<FuncId> = (0..ir_module.functions.len())
-        .map(|i| FuncId(i as u32))
-        .filter(|&id| !matches!(ir_module.function(id).linkage, Linkage::Import))
-        .collect();
+    let funcs_to_compile: Vec<FuncId> = {
+        // TEST-PERF: only compile functions reachable from `main`. The
+        // auto-loaded stdlib leaves ~190 declared-but-bodyless functions
+        // in the module (lowering is demand-driven, so only the reachable
+        // closure has bodies); compiling all of them costs ~85ms per
+        // program. Reachability follows direct calls, closure construction
+        // and vtable thunks — anything `main` can transfer control to.
+        let main_id = ir_module
+            .functions
+            .iter()
+            .position(|f| f.export_name == "main")
+            .map(|i| FuncId(i as u32));
+        let reachable = main_id
+            .map(|id| ir_module.reachable_from(id))
+            .unwrap_or_default();
+        (0..ir_module.functions.len())
+            .map(|i| FuncId(i as u32))
+            .filter(|&id| {
+                !matches!(ir_module.function(id).linkage, Linkage::Import)
+                    && reachable.contains(&id)
+            })
+            .collect()
+    };
 
     for &func_id in &funcs_to_compile {
         let func = ir_module.function(func_id);
@@ -791,8 +823,24 @@ impl<M: Module> CodegenSession<M> {
         ir_module: &IrModule,
         interner: &DefaultStringInterner,
     ) -> Result<(), String> {
+        // TEST-PERF: only declare functions reachable from `main` (plus
+        // `Import` externs, which the runtime / linker must see). The
+        // auto-loaded stdlib leaves ~190 declared-but-bodyless functions
+        // in the module; declaring them all as cranelift `Local`s makes
+        // `finish()` / `finalize_definitions()` demand a body for each.
+        let main_id = ir_module
+            .functions
+            .iter()
+            .position(|f| f.export_name == "main")
+            .map(|i| FuncId(i as u32));
+        let reachable = main_id
+            .map(|id| ir_module.reachable_from(id))
+            .unwrap_or_default();
         for (i, func) in ir_module.functions.iter().enumerate() {
             let id = FuncId(i as u32);
+            if !matches!(func.linkage, Linkage::Import) && !reachable.contains(&id) {
+                continue;
+            }
             let sig = self.cranelift_signature_with_writeback(
                 ir_module,
                 &func.params,

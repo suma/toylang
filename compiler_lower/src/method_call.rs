@@ -311,6 +311,8 @@ impl<'a> FunctionLower<'a> {
         );
         self.method_instances
             .insert((target_sym, method_sym, inst_args), func_id);
+        // TEST-PERF: queued body-bearing instance — not plain work.
+        self.scheduled.insert(func_id);
         // Capture the subst (including a synthetic `Self` entry when
         // the symbol is already interned) so the body lowering of
         // this monomorph can resolve val/var annotations that

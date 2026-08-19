@@ -321,6 +321,58 @@ impl Module {
         &mut self.functions[id.0 as usize]
     }
 
+    /// The set of `FuncId`s statically reachable from `start` via call
+    /// edges: direct calls (`Call` family), closure construction
+    /// (`FuncAddr` / `MakeClosure`), and dynamic dispatch (`VtableAddr`
+    /// → the vtable's thunk `FuncId`s). Indirect calls through a
+    /// runtime value have no static edge. Used to prune codegen /
+    /// lowering to the live set — the auto-loaded stdlib declares far
+    /// more functions than a program actually touches.
+    pub fn reachable_from(&self, start: FuncId) -> std::collections::HashSet<FuncId> {
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![start];
+        while let Some(fid) = stack.pop() {
+            if !seen.insert(fid) {
+                continue;
+            }
+            let Some(func) = self.functions.get(fid.0 as usize) else {
+                continue;
+            };
+            for block in &func.blocks {
+                for inst in &block.instructions {
+                    for callee in self.call_edges(&inst.kind) {
+                        if !seen.contains(&callee) {
+                            stack.push(callee);
+                        }
+                    }
+                }
+            }
+        }
+        seen
+    }
+
+    /// The `FuncId`s an instruction can transfer control to (statically).
+    pub fn call_edges(&self, kind: &InstKind) -> Vec<FuncId> {
+        match kind {
+            InstKind::Call { target, .. }
+            | InstKind::CallStruct { target, .. }
+            | InstKind::CallTuple { target, .. }
+            | InstKind::CallEnum { target, .. }
+            | InstKind::CallWithSelfWriteback { target, .. }
+            | InstKind::CallWithSelfWritebackCompound { target, .. }
+            | InstKind::FuncAddr { target }
+            | InstKind::MakeClosure { target, .. } => vec![*target],
+            // Dynamic dispatch: every thunk in the referenced vtable is
+            // callable.
+            InstKind::VtableAddr { trait_sym, struct_sym } => self
+                .vtables
+                .get(&(*trait_sym, *struct_sym))
+                .cloned()
+                .unwrap_or_default(),
+            _ => vec![],
+        }
+    }
+
     pub fn enum_def(&self, id: EnumId) -> &EnumDef {
         &self.enum_defs[id.0 as usize]
     }

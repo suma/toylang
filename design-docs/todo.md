@@ -10,6 +10,28 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-08-19
+- **TEST-PERF: AOT の demand-driven lowering + codegen 刈り込み (★★★)** —
+  auto-load された stdlib の ~190 関数を**毎回全部 lower / codegen** していた
+  のを、`main` + `test` ブロックから到達可能な transitive closure だけに。
+  **設計判断**: (1) pass 1 の宣言は全関数のまま (FuncId 解決のため、安価) —
+  本体 lower だけを需要駆動に。`schedule_from_ir` が「lower 済み body の IR を
+  走査して参照された bodyless 関数を enqueue」する fixpoint ループで、
+  generic instance / closure / drop glue / dyn thunk は従来どおり作成時点で
+  自前キューに乗り `scheduled` set で二重 enqueue を防ぐ。(2) thunk は
+  参照された vtable (`VtableAddr`) のみ body を lower。(3) `compiler_ir` に
+  `Module::reachable_from` / `call_edges` を新設 (IR VM の eligibility.rs と
+  共有。従来の `reachable_functions` / `call_edges` を削除)。(4) codegen の
+  `declare_all` と `build_object_module` / JIT / `--emit=clif` は
+  reachable-from-main のみ宣言・compile (bodyless の unreachable を
+  cranelift に宣言すると `finish()` が body を要求して panic するため)。
+  **測定** (debug, opt=none, link cache warm): lowering (`--emit=ir`)
+  0.10-0.11 CPU → **0.03-0.04** (~3x)、フル AOT 0.18-0.21 → **0.09-0.10**
+  (~2x)。`main` だけのプログラムは 196 関数中 1 個だけ lower される
+  (String 使用なら 4 個)。**workspace テスト 7.8s → ~6.5s wall**。object
+  bytes は再現 (reproducible_build / link cache グリーン)。全 1999 テスト +
+  clippy 無警告。
+
 ### 2026-08-18
 - **tree-walker の関数再帰ガード (call-depth)** — IR VM (既定エンジン) は
   ヒープにフレームを積むので 100000 段でも通るが、IR VM が lower を諦めて
@@ -611,7 +633,7 @@
   - **third-party の opt-level は 0、ただし cranelift だけ 2** (2026-08-19) — 全 deps を 3 で焼くのはビルド時間の払い損だった。**テスト実行が速さを感じる dep は cranelift だけ** (各テストが小さなプログラムを JIT / AOT する) なので、そこだけ残した。**テスト実行は劣化していない** (7.5s)。綴りに 2 つ罠があり、**どちらも間違えても cargo はエラーを出さない**: キーは `overrides` ではなく **`package`** (`overrides` は 1.41 以前の名前で、`unused manifest key` として黙って無視される)、そして **`cranelift` 単体は umbrella crate にしか当たらない** (実体は `cranelift-codegen` 以下 12 crate なので個別に列挙する。一致しない package spec は警告なしで「オーバーライド無し」になる)。
   - **測って外れた仮説を 2 つ記録しておく**: (1) **デバッグ情報の削減は効かない** — `[profile.dev]` / `[profile.test]` に `debug = "line-tables-only"` を入れて 2m06s (対照 1m55s)、改善ゼロ。27MB の中身はデバッグ情報ではなく cranelift のコード。(2) **リンカ差し替え (lld) と Spotlight 除外は、上を片付けた後では測る意味がない** — 絶対値が 1〜2 秒台まで落ちているので削り代が残っていない。target が肥大していた頃の「リンクが遅い」という観察は、リンカの速度ではなくディレクトリ規模の問題だった。
 
-- **TEST-PERF** — ワークスペース全体で **~7.5s** (2026-08-19 実測、20 コア、warm、`cargo nextest run`、1999 テスト)。**この suite は wall ではなく CPU 律速**: テスト時間の総和 **149.4s CPU / 20 コア = 7.47s** が下限で、実測 wall 7.46s はそこに張り付いている。**ビルド時間は別問題で、そちらの方が大きい — BUILD-PERF を見ること**。最長の単一テストも 2.11s (`example_consistency` shard_8) なので critical path 律速でもない。したがって**並列度を上げる策は効かず、効くのは CPU そのものを減らす策だけ。換算レートは 20:1** (CPU を 20s 削って wall 1s)。
+- **TEST-PERF** — ワークスペース全体で **~6.5s** (2026-08-19 実測、20 コア、warm、`cargo nextest run`、1999 テスト。AOT demand-driven lowering で 7.8s → ~6.5s)。**この suite は wall ではなく CPU 律速**: テスト時間の総和 (149.4s CPU は demand-driven lowering 前の値) / 20 コア が下限で、実測 wall はそこに張り付いている。**ビルド時間は別問題で、そちらの方が大きい — BUILD-PERF を見ること**。最長の単一テストも 2.11s (`example_consistency` shard_8) なので critical path 律速でもない。したがって**並列度を上げる策は効かず、効くのは CPU そのものを減らす策だけ。換算レートは 20:1** (CPU を 20s 削って wall 1s)。
 
   クレート別 CPU:
 
@@ -624,7 +646,11 @@
   - **`compiler::consistency` + `example_consistency` が suite CPU の 45%** ★★★ — 46.5s (317 テスト) + 22.0s (14 shard) = 68.5s。`consistency` の分布は二峰性で、**lite パスで完結するテストと full core にフォールスルーするテストで 1 桁違う**。
     **「lite → full 二重パス」は 2026-08-18 に潰したが、それ自体はコストではなかった**と分かったので記録しておく: `assert_consistent` の let-chain は**最も安いレーン (no-core の tree-walker) で短絡する**ので、stdlib を使うソースが捨てられる AOT codegen / link / spawn まで到達することは元から無かった。捨てていたのは parse + no-core 型検査 ~2ms だけ。実際に効いたのは同時に入れた**フロントエンドパスの共有**の方 (下記)。
   - **with-core のフロントエンドパスがレーンごとに独立** ★★ — 1 テストが core を使うと、tree-walker / AOT / JIT / IR VM がそれぞれ `core/std/*.t` を integrate + 型検査する。**tree-walker と IR VM の 2 レーンは 2026-08-18 に 1 パスに統合済み** (`ast_lanes`、AST に interior mutability が無いので型検査済み `File` を両方に渡せる。ついでに lite 試行の失敗も memo 化 — 以前は失敗を記録せず毎回引き直していた)。**実測 `consistency` 52.7s → 46.5s CPU (-12%)、suite 156.7s → 149.7s CPU / wall 7.8s → 7.3s**。残る 2 レーン (AOT は `compile_file` がパス受け取り、JIT は `run_source` がソース受け取り) を畳むには**ライブラリ側に「型検査済み program を受け取る」入口**が要る。
-  - **AOT レーンが stdlib 全体を毎回 codegen している** ★★★ — CLI 実測 (opt=none、link cache warm、2026-08-18): **core あり 116ms CPU / core なし 28ms**。差の ~85ms は型検査 (~25ms) では説明できず、**使っていない core 関数の lowering + cranelift codegen** が本体。到達可能性で刈れば full core 落ちのテスト ~124 本 × ~85ms ≈ **10s CPU ≈ wall 0.5s**、しかもこれはテストだけでなく**実ユーザのコンパイル時間にも効く**。テストハーネスではなくコンパイラ側の仕事。
+  - ~~**AOT レーンが stdlib 全体を毎回 codegen している** ★★★~~ —
+    **解消 (2026-08-19)**: `lower_program` の本体 lowering を需要駆動にし
+    (reachable closure のみ)、codegen / JIT は `Module::reachable_from` で
+    reachable-from-main だけを compile。lowering ~3x、フル AOT ~2x
+    (debug, opt=none)。詳細は 完了済み節 2026-08-19。
   - **core module のロードが 1 プロセスあたり 27ms** ★★★ — trivial プログラムを空 core dir と比べた実測 (2026-08-18、debug ビルド): **33.5ms → 6.1ms**。nextest は 1 テスト 1 プロセスなので、interpreter の 984 テストはそれぞれこれを払う = ~26s CPU ≈ wall 1.3s。内訳は 2026-08-15 時点の計測 (integrate ~43% 削減が landing する前) で `integrate_modules` 11.3ms / `execute_entry` の context 構築 5.2ms / stdlib 40 impl block の型検査 2.5ms / その他の型検査 1.1ms。
 
     **測って分かった否定的な結果を 3 つ記録しておく**: (1) **free function の body は既に user 分しか検査していない** (`take(user_func_count)`) ので「stdlib 本体を型検査しない」で削れるのは impl block の 2.5ms だけ。しかも**型検査器は body を書き換える** (`?` の desugar、`Display` の `to_str` 挿入) ので、stdlib の body を検査しないと**書き換え前の AST がバックエンドに流れる** — 今の stdlib は `?` も補間も使っていないので通ってしまい、使った日に壊れる罠になる。(2) `remap_symbol` の memo 化 (module symbol → main symbol を Vec でキャッシュ) は**効果ゼロ**だった。integrate の時間は文字列ハッシュではなく AST を pool に複製する作業そのもの。(3) **「型検査済み core をプロセス内で使い回す」は unit テストには効かない** — nextest は 1 テスト 1 プロセスなので、そもそもプロセス内に 2 回目の呼び出しが無い。
@@ -661,7 +687,9 @@
 ### テスト状況
 - 合計 **1999 テスト** (100% 成功、2026-08-18 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
-- テスト実行はワークスペース全体で ~7.5s (warm、20 コア。内訳と削り代は TEST-PERF、ビルド時間は BUILD-PERF)。`compiler/build.rs` が `toylang_rt` を rustc で
+- テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
+  AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、
+  ビルド時間は BUILD-PERF)。`compiler/build.rs` が `toylang_rt` を rustc で
   staticlib pre-build し、リンク結果は `TOY_LINK_CACHE_DIR` で
   content-addressed にキャッシュされる (キャッシュが効くにはコード生成が
   決定的である必要がある — `compiler/tests/reproducible_build.rs` が pin)。

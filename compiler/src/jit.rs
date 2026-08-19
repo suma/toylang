@@ -250,14 +250,26 @@ fn compile_program_to_jit(
     let mut session = CodegenSession::new(module)?;
     session.declare_all(&ir_module, interner)?;
 
-    // Drive `define_function` over every body-bearing function
-    // exactly like `build_object_module`. Linkage::Import
+    // Drive `define_function` over every body-bearing reachable
+    // function exactly like `build_object_module`. Linkage::Import
     // declarations have no body to emit; the JIT resolves them
     // through the symbol table set up by `register_runtime_symbols`
-    // and the libc/libm fallback.
+    // and the libc/libm fallback. TEST-PERF: unreachable stdlib
+    // functions are declared-but-bodyless (demand-driven lowering),
+    // so only the reachable closure is defined.
+    let main_id = ir_module
+        .functions
+        .iter()
+        .position(|f| f.export_name == "main")
+        .map(|i| FuncId(i as u32));
+    let reachable = main_id
+        .map(|id| ir_module.reachable_from(id))
+        .unwrap_or_default();
     for func_id in 0..ir_module.functions.len() {
         let func_id = FuncId(func_id as u32);
-        if matches!(ir_module.function(func_id).linkage, Linkage::Import) {
+        if matches!(ir_module.function(func_id).linkage, Linkage::Import)
+            || !reachable.contains(&func_id)
+        {
             continue;
         }
         let func = ir_module.function(func_id);

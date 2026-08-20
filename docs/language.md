@@ -1129,9 +1129,17 @@ at the call site, like any other unsatisfied bound (see
 
 ### Numeric semantics
 
-- **Integer arithmetic**: standard two's-complement, panics on overflow
-  in debug builds (Rust default).
+- **Integer arithmetic**: standard two's-complement. `+`, `*`, and
+  signed `-` **wrap** on overflow, on every backend and in every build
+  profile — the compiled binary produces the value the interpreter
+  produces. This is deliberate: one arithmetic semantics, not one per
+  build. Use `checked_*` / `saturating_*` (see *Overflow-aware
+  arithmetic* below) where wrapping is the wrong answer.
 - **Integer division and `%`**: truncated; `(-7) % 3 == -1`.
+- **Arithmetic that traps rather than wrapping**: three cases stop the
+  program instead of producing a value, because the value they would
+  produce is a plausible-looking number that surfaces far from the
+  mistake. See *Runtime traps*.
 - **Float arithmetic**: standard IEEE 754. NaN compares false against
   everything (matching Rust's `PartialOrd`).
 - **`as` casts**:
@@ -2861,6 +2869,46 @@ the inner result through the same primitive-method dispatch. The
 AOT compiler does the same via the `value_scalar`-driven
 `lower_method_call` arm.
 
+### Overflow-aware arithmetic
+
+`core/std/checked.t` provides the escape hatch from wrapping
+arithmetic: ask for the result as an `Option`, or ask for it clamped
+to the type's bound.
+
+```rust
+val big: u64 = 18446744073709551615u64
+val five: u64 = 5u64
+val ten: u64 = 10u64
+
+val sum = big.checked_add(five)      # -> Option<u64>, here Option::None
+match sum {
+    Option::Some(v) => println(v),
+    Option::None => println("overflows"),
+}
+
+val clamped = five.saturating_sub(ten)   # -> 0u64, not a huge number
+```
+
+| | `u64` | `i64` |
+|---|---|---|
+| `checked_add` / `checked_sub` / `checked_mul` / `checked_div` | yes | yes |
+| `saturating_add` / `saturating_sub` | yes | yes |
+| `saturating_mul` | yes | — |
+
+`checked_div` answers `Option::None` for both traps the `/` operator
+raises — a zero divisor and `i64::MIN / -1` — so it is the way to
+divide by a value that might be either.
+
+Two call shapes matter for the compiled backends: the **receiver must
+be a name**, not a literal (`five.checked_add(...)`, not
+`5u64.checked_add(...)`), and an enum result must be **bound with
+`val` before it is matched**. Both are existing compiler-MVP limits
+rather than anything specific to this module.
+
+Widths other than 64-bit are not covered yet, and the traits are split
+per type (`CheckedU64` / `CheckedI64`) because a trait method
+returning `Option<Self>` does not survive lowering.
+
 ### Math (via the `math` module)
 
 ```rust
@@ -3261,6 +3309,36 @@ possible. Categories include: `TypeError`, `UndefinedVariable`,
 `ImmutableAssignment`, `IndexOutOfBounds`, `NullDereference`,
 `ContractViolation`, and a generic `InternalError` reserved for
 interpreter bugs.
+
+### Runtime traps
+
+A *trap* is a `panic` the language raises on an operation with no
+correct answer: the program stops with a message and a non-zero exit
+status, and — like every other panic — it cannot be caught. All four
+engines (tree-walker, IR VM, AOT compiler, JIT) raise the same trap on
+the same input; `compiler/tests/consistency.rs` pins that.
+
+| Operation | Trap |
+|---|---|
+| `a - b` on `u64` where `a < b` | `u64 subtraction underflowed` |
+| `a / b` or `a % b` where `b == 0` (any integer width) | `integer division by zero` |
+| `a / b` or `a % b` where `a` is the type's most negative value and `b == -1` | `integer division overflowed` |
+| `arr[i]` / `arr[i] = v` where `i` is at or past the array's length | `array index out of bounds` |
+
+What is deliberately **not** a trap:
+
+- **`+`, `*` and signed `-` overflow** — these wrap (see *Numeric
+  semantics*). The three arithmetic traps above are the cases where a
+  wrapped result is actively misleading rather than merely modular.
+- **`f64` division by zero** — IEEE-754 defines it as an infinity,
+  which is a value.
+
+Array indices are checked against the length the binding was declared
+with. A **constant** index out of range is rejected earlier, at compile
+time, rather than trapping at run time. A **negative** index counts
+from the end (`arr[-1i64]` is the last element) before the check
+applies, so `-1` through `-length` are in bounds and anything beyond
+them traps.
 
 ### No exception machinery
 

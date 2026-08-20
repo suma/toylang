@@ -325,6 +325,12 @@ fn main() -> u64 {
 - **モジュールシステム**: `package`, `import`, `as`
 - **演算子**:
   - 算術: `+`, `-`, `*`, `/`, `%`（剰余・truncated remainder で `(-7) % 3 == -1`）
+  - **実行時トラップ (RUNTIME-TRAP)**: `u64` 減算のアンダーフロー / 整数の 0 除算 /
+    符号付き `MIN / -1` / 配列添字の境界外は **`panic`**（4 バックエンド一致、
+    `compiler/tests/consistency.rs` が pin）。一方 `+` / `*` / 符号付き `-` の
+    overflow は **wrap**（ビルドプロファイルに依らず 1 つの意味論）。逃げ道は
+    `core/std/checked.t` の `checked_*` → `Option<T>` / `saturating_*`
+    (`u64` / `i64` のみ、レシーバは名前束縛、enum 結果は `val` 束縛してから `match`)
   - 比較: `==`, `!=`, `<`, `<=`, `>`, `>=`。`==` / `!=` は同型 struct ペアで **operator overload** — その struct に `eq(&self, other: &Self) -> bool` method があれば dispatch (3 backend)。`s == t` で String/Vec<u8> 等の比較が動く
   - **全 binary / unary operator overload** (Phase B + OP-OVERLOAD-ARITH + OP-OVERLOAD-EXTEND Phase 1-4): 同型 struct ペアで以下に dispatch (3 backend、let-rhs context):
     - 算術: `+` / `-` / `*` / `/` / `%` → `add` / `sub` / `mul` / `div` / `rem` (`(&self, &Self) -> Self`)

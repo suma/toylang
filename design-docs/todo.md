@@ -11,6 +11,10 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-20
+- **RUNTIME-TRAP: 算術 / 添字の実行時トラップを 4 バックエンドで統一** —
+  0 除算 / 符号付き `MIN / -1` / 添字境界外を `panic` 経路に載せ、
+  `core/std/checked.t` (`checked_*` / `saturating_*`) を追加。
+  overflow は wrap のまま (仕様側を実装に合わせた)。
 - **TEST-PERF: with-core フロントエンドパスを全レーンで共有 (4 レーン → 1 パス)** —
   残っていた 2 レーン (AOT の `compile_file` / JIT の `run_source`) が
   with-core テストごとに `core/std/*.t` の integrate + 型検査を再実行して
@@ -621,30 +625,16 @@
 
 ### 実行時の意味論 (RUNTIME-TRAP)
 
-> 2026-08-20 に算術 / 添字を 3 バックエンドで実際に叩いて判明。機能追加ではなく
-> **土台の話** — 仕様と実装が食い違っており、しかも AOT だけメモリ安全でない。
+> 2026-08-20 に算術 / 添字を 3 バックエンドで実際に叩いて洗い出した節。
+> トラップ本体は同日 landing (完了済み節)。残るのは下の 2 件。
 
-- **RUNTIME-TRAP: overflow / 0 除算 / 添字境界を `panic` 経路に載せる** ★★★ —
-  `--all-backends` での実測:
-  - **整数 overflow は panic せず wrap する** — `u64::MAX + 1u64` が
-    3 バックエンド一致で `0` を返す。`docs/language.md` の Numeric semantics は
-    "standard two's-complement, panics on overflow" と書いており **仕様が嘘**。
-  - **0 除算はホスト Rust の panic で落ちる** — `attempt to divide by zero` +
-    backtrace (`interpreter/src/ir_vm/dispatch.rs:469`)。行番号付きの
-    言語診断になっていない。
-  - **添字の境界チェックが無い** — `[1u64, 2u64, 3u64]` に `arr[10u64]` で
-    interpreter は内部エラー (`value not defined`,
-    `interpreter/src/ir_vm/mod.rs:208`)、**AOT は無検査でメモリを読み
-    exit 0 でゴミを返す**。3 バックエンド一致もここでは成立していない。
-
-  やること: (1) 3 つとも既存の `toy_panic` / `jit_panic` 経路に載せて
-  行番号付きメッセージにする、(2) 仕様を実装に合わせるか実装を仕様に
-  合わせるかを決める、(3) 逃げ道として `wrapping_*` / `checked_*`
-  (→ `Option<T>`) / `saturating_*` を `core/std/i64.t` 系に足す、
-  (4) `compiler/tests/consistency.rs` に **panic するプログラムの一致テスト**を
-  足す (現状トラップは 3 経路比較の対象外)。`panic` / `assert` /
-  `requires` を「ビルドプロファイルに関係なく必ず効く」と明言している
-  言語で、算術と添字だけが素通りするのは一貫していない。
+- **RUNTIME-TRAP-NARROW: narrow int の `checked_*` / `saturating_*`** ★ —
+  `core/std/checked.t` は `u64` / `i64` だけ。`u8`〜`u32` / `i8`〜`i32` は
+  未提供。トラップ自体 (0 除算 / `MIN / -1`) は全幅で効いているので、
+  足りないのは逃げ道の API だけ。**trait を型ごとに分ける必要がある** —
+  trait method の戻り型 `Option<Self>` は lower できず
+  (`compiler MVP cannot lower method return type Struct(.., [Self_])`)、
+  幅ごとに `Option<u8>` 等を書き下すことになる。踏んでから。
 
 - **TYPECHECK-LIES: 型検査が受理するのに実行が破綻する構文** ★★ —
   `docs/language.md` の Known limitations に自己申告済みだが、**型システムの
@@ -787,7 +777,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **1999 テスト** (100% 成功、2026-08-18 時点)。
+- 合計 **2018 テスト** (100% 成功、2026-08-20 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、

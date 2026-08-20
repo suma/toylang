@@ -619,6 +619,43 @@
 - **STDLIB-ORD: `str` の `Ord` impl** ★ — byte 比較が heap copy を要求し、
   generic context で AOT が表現できないため未提供 (`String` は提供済み)。
 
+### 実行時の意味論 (RUNTIME-TRAP)
+
+> 2026-08-20 に算術 / 添字を 3 バックエンドで実際に叩いて判明。機能追加ではなく
+> **土台の話** — 仕様と実装が食い違っており、しかも AOT だけメモリ安全でない。
+
+- **RUNTIME-TRAP: overflow / 0 除算 / 添字境界を `panic` 経路に載せる** ★★★ —
+  `--all-backends` での実測:
+  - **整数 overflow は panic せず wrap する** — `u64::MAX + 1u64` が
+    3 バックエンド一致で `0` を返す。`docs/language.md` の Numeric semantics は
+    "standard two's-complement, panics on overflow" と書いており **仕様が嘘**。
+  - **0 除算はホスト Rust の panic で落ちる** — `attempt to divide by zero` +
+    backtrace (`interpreter/src/ir_vm/dispatch.rs:469`)。行番号付きの
+    言語診断になっていない。
+  - **添字の境界チェックが無い** — `[1u64, 2u64, 3u64]` に `arr[10u64]` で
+    interpreter は内部エラー (`value not defined`,
+    `interpreter/src/ir_vm/mod.rs:208`)、**AOT は無検査でメモリを読み
+    exit 0 でゴミを返す**。3 バックエンド一致もここでは成立していない。
+
+  やること: (1) 3 つとも既存の `toy_panic` / `jit_panic` 経路に載せて
+  行番号付きメッセージにする、(2) 仕様を実装に合わせるか実装を仕様に
+  合わせるかを決める、(3) 逃げ道として `wrapping_*` / `checked_*`
+  (→ `Option<T>`) / `saturating_*` を `core/std/i64.t` 系に足す、
+  (4) `compiler/tests/consistency.rs` に **panic するプログラムの一致テスト**を
+  足す (現状トラップは 3 経路比較の対象外)。`panic` / `assert` /
+  `requires` を「ビルドプロファイルに関係なく必ず効く」と明言している
+  言語で、算術と添字だけが素通りするのは一貫していない。
+
+- **TYPECHECK-LIES: 型検査が受理するのに実行が破綻する構文** ★★ —
+  `docs/language.md` の Known limitations に自己申告済みだが、**型システムの
+  嘘**なので機能追加より先に潰す価値がある。いずれも「型検査で拒否して
+  `--explain` に誘導先を書く」だけなら小さい。
+  - `str + str` — 型検査は通り、AOT バイナリは fault する (→ `a.concat(b)`)
+  - `str.substring` / `str.split` — 型検査は通り、実行時に停止 (→ `String` 版)
+  - `null` — parse も型検査も通り、評価すると
+    `Internal error: Null reference error`。`Option<T>` がある以上、
+    言語から消すのが筋。
+
 ### 型システム (NEW-TYPE-SYSTEM)
 
 - **MOVE-CONDITIONAL: 分岐 / ループからの移動** ★ — 現状は E0014 で拒否。
@@ -638,6 +675,10 @@
 - **Trait-bounded generic API** ★★ — ~~`fn first<I: Iterator<i64>>(iter: I)` の bound check。~~ **解消 (2026-08-18)**: generic trait の bound (`Iter<i64>`) が call-site で型引数込みで強制される。残るのは generic **enum** payload 経由の AOT lower 制約のみ (下記 159 / JIT-enum-1)。
 - **`From` / `Into`** ★★ — ~~`val s: String = "hi".into()`。`?` の cross-error 変換にも要る。~~ **解消 (2026-08-18)**: `.into()` は期待型から `Target::from(expr)` へ書き換え、`?` は `E2: From<E1>` で error 変換。残る制約: **enum エラー型**への変換は AOT/JIT が `MyErr::from(...)` の associated call を lower できないため interpreter のみ (struct エラー型は 3 バックエンド)。
 - **`must_use` / unused-Result 警告** ★★ — `?` の補完。**警告の emit 経路が無い**ので (`Severity::Warning` は型としては存在するが未使用)、そこから作る必要がある。
+- **CLOSURE-CAPTURE: capture 意味論の拡張** ★★ — 現状は**生成時スナップショット
+  のみ**なので「カウンタを閉じ込めて更新する」基本形が書けない。`&mut` capture に
+  するか明示 capture list にするかは言語の性格を決める判断なので、closure の
+  利用が増える前に決めたい。
 - **slice 型 `&[T]`** ★ — 配列 borrow を first-class に。中〜大。
 - **const generics** ★ — `struct Array<T, const N: usize>`。大規模。
 
@@ -656,6 +697,10 @@
   (`x @ Color::Red` — guard では表現できないので `Pattern` 拡張が要る)、
   (c) 範囲の被覆判定 (`0i64..5i64` + `5i64..10i64` + ... で `_` 不要に)。
   いずれも踏んでから。
+- **PATTERN-STRUCT: struct パターン (`Point { x, y: 0i64 }`)** ★★ — enum /
+  tuple / リテラル / 範囲 / `@` / or / guard まで揃っているのに **struct 分解
+  だけ無い**という非対称。`Pattern` に 1 variant 足せば `match` と `if val` の
+  両方に効く。NEWTYPE / STRUCT-UPDATE と同じ族なのでまとめて片付く。
 - **STRUCT-UPDATE: struct update 構文 (`P { x: 5i64, ..a }`)** ★ — parse エラー。
   「1 フィールドだけ差し替えた copy」が全フィールド列挙になる。
 
@@ -721,6 +766,12 @@
   toylang 化) と R4 (f64 整形等) は計測で中止条件に該当 (interpreter
   ~20 倍〜~1000 倍遅延) し、Layer 1 に残すのが確定。R4 の byte 一致
   テスト固定のみ実施済み。
+* 並行性 (CONCURRENCY) ★★★ — **言語コアで唯一の完全な空白** (2026-08-20 まで
+  仕様にもこの todo にも項目が無かった)。最小形は `spawn(fn () -> ())` + join ハンドル +
+  チャネル。ランタイム側の下地は一部ある (`toylang_rt` の出力シンクは
+  `pthread_key` TLS で per-thread 化済み)。ただし本体は「共有可変性を現行の
+  move / Drop モデルにどう載せるか」で、`Send` 相当の判定を決めるまで
+  着手できない。設計フェーズを別に取る前提。
 * モジュール拡張 — バージョニング、リモートパッケージ
 * 言語内からの AST 取得・操作
 * LSP 対応 — 補完 / go-to-definition / hover / 診断 / フォーマット。frontend の AST・型チェッカ・`SourceLocation` を再利用できる。ただし**エージェントは LSP より CLI クエリを使いやすい**ので、LLM ループの観点では `--api` / 型ホール (P7 で landing 済み) の方が先だった

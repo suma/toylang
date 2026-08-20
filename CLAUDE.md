@@ -168,7 +168,16 @@ interpreter のテストは共有ヘルパを `use crate::common::...` で参照
 **`target/` を肥大させない。** 過去の成果物が溜まると
 `-L dependency=target/debug/deps` の走査だけでビルドが桁で遅くなる
 (125 万ファイルまで育ったとき、lib 1 行の変更が 2.35s → 1m55s だった)。
-時々 `cargo clean` するか `cargo-sweep` を入れること。
+
+```bash
+# 世代 GC (古い成果物を残して今のビルドを保つ)。定期実行の運用に
+cargo sweep --time 30
+# 全削除 (フルリビルドを覚悟するときだけ)
+cargo clean
+```
+
+cargo-sweep は `cargo install cargo-sweep` で入る (`cargo sweep --dry-run`
+で削除対象を確認してから)。--time は「この日数より新しい成果物は残す」。
 
 `cargo test` も使用可能 (doc-tests は nextest が実行しないので必要なときに併用):
 

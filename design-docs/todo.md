@@ -10,6 +10,30 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-08-20
+- **TEST-PERF: with-core フロントエンドパスを全レーンで共有 (4 レーン → 1 パス)** —
+  残っていた 2 レーン (AOT の `compile_file` / JIT の `run_source`) が
+  with-core テストごとに `core/std/*.t` の integrate + 型検査を再実行して
+  いたのを、**「型検査済み program を受け取る」ライブラリ入口**を足して畳んだ。
+  (1) `compiler::compile_checked_program` を新設 — `compile_file` から
+  parse + type-check 部分を分離し、`program` / interner / `ContractMessages`
+  を受け取って lower + codegen + link だけを行う (CLI 挙動は不変)。
+  (2) `consistency.rs` に `CheckedProgram` (program + interner +
+  contract_msgs) を導入し、`assert_consistent` / `assert_stdout_consistent`
+  の full path が parse + type-check を **1 回**にして tree-walker / IR VM /
+  JIT / AOT の 4 レーンに配る (IR VM は MEMORY_PROFILING M4 の
+  `reset_profile` を維持)。(3) `example_consistency.rs` も同構造に —
+  `run_both_engines` の shared-program を AOT レーンまで拡張し、
+  `run_compiled` が `compile_checked_program` 経由に。**実測 (warm、user CPU)**:
+  `consistency` 37.5s → 27.5s (**-27%**)、`example_consistency` 12.1s →
+  8.5s (**-29%**)、両者合わせて ~13.6s CPU 削減。テスト 1999 グリーン +
+  clippy 無警告。
+- **BUILD-PERF 運用: cargo-sweep 導入 + CLAUDE.md に定期 GC コマンドを明記** —
+  「target を肥大させない」の運用を具体化。`cargo sweep --time 30` (世代 GC、
+  --time より新しい成果物は残す) と `cargo clean` (全削除) を
+  CLAUDE.md に追記し、`cargo install cargo-sweep` で導入済み。
+  `cargo sweep --dry-run` で削除対象を先に確認する流儀も記載。
+
 ### 2026-08-19
 - **TEST-PERF: AOT の demand-driven lowering + codegen 刈り込み (★★★)** —
   auto-load された stdlib の ~190 関数を**毎回全部 lower / codegen** していた
@@ -628,7 +652,7 @@
 ### テスト・ドキュメント
 
 - **BUILD-PERF** — **ビルドはテスト実行より桁で高い**。クリーンな target で、`interpreter/src/lib.rs` を 1 行触ってからの再ビルドが **2.35s**、テストファイル 1 個なら **1.08s**、クリーンからのフルビルド (テストターゲット全部) が **23.7s** — 対して全 1999 テストの実行が 7.5s (2026-08-19 実測、20 コア)。ここは 2026-08-19 に一度片付けたので、**残っているのは運用の話**:
-  - **target を肥大させないこと — 実測 49x で、他のどの施策より大きい** ★★★ — 同じ「lib を触って再ビルド」が、**95GB / 1,248,912 ファイル**まで育った target の上では **1m55s**、`cargo clean` 直後の 1.7GB / 7,729 ファイルでは **2.35s**。消えた 125 万ファイルの 99% は過去のビルドの残骸。理由は cargo が rustc に `-L dependency=target/debug/deps` を渡すことで、**リンカが毎回 125 万エントリのディレクトリを走査する**。「user 45s に対し sys 6分」という異常な比率の正体がこれで、リンカが遅いのではなくディレクトリが大きすぎた。**古い成果物を定期的に GC すること** (`cargo clean`、または `cargo-sweep` のような世代 GC)。この状態に戻ると下の施策は全部誤差に埋もれる。
+  - **target を肥大させないこと — 実測 49x で、他のどの施策より大きい** ★★★ — 同じ「lib を触って再ビルド」が、**95GB / 1,248,912 ファイル**まで育った target の上では **1m55s**、`cargo clean` 直後の 1.7GB / 7,729 ファイルでは **2.35s**。消えた 125 万ファイルの 99% は過去のビルドの残骸。理由は cargo が rustc に `-L dependency=target/debug/deps` を渡すことで、**リンカが毎回 125 万エントリのディレクトリを走査する**。「user 45s に対し sys 6分」という異常な比率の正体がこれで、リンカが遅いのではなくディレクトリが大きすぎた。**古い成果物を定期的に GC すること** — **運用セットアップ済み (2026-08-20)**: `cargo-sweep` を導入し、`cargo sweep --time 30` (世代 GC) を CLAUDE.md に明記。この状態に戻ると下の施策は全部誤差に埋もれる。
   - **テストバイナリは 1 クレート 1 本** (2026-08-19 landing、73 → 12) — cargo は `tests/*.rs` を **1 ファイル 1 バイナリ**でリンクするので、64 ファイルは ~27MB の実行ファイルを 64 回リンクすることを意味していた (各々が frontend / interpreter / cranelift を静的に抱える)。`autotests = false` + `[[test]]` 1 個 + `#[path]` でモジュール取り込み。ファイルは 1 つも移動していない。**クリーン比較で フルビルド 37.5s → 23.7s / CPU 8m45s → 3m13s、lib 変更ループ 4.33s → 2.35s**。代償はテストファイル 1 個の編集が 0.88s → 1.08s (クレートの suite 全体が再コンパイルされる) と、テスト名にファイル名が前置されること。
   - **third-party の opt-level は 0、ただし cranelift だけ 2** (2026-08-19) — 全 deps を 3 で焼くのはビルド時間の払い損だった。**テスト実行が速さを感じる dep は cranelift だけ** (各テストが小さなプログラムを JIT / AOT する) なので、そこだけ残した。**テスト実行は劣化していない** (7.5s)。綴りに 2 つ罠があり、**どちらも間違えても cargo はエラーを出さない**: キーは `overrides` ではなく **`package`** (`overrides` は 1.41 以前の名前で、`unused manifest key` として黙って無視される)、そして **`cranelift` 単体は umbrella crate にしか当たらない** (実体は `cranelift-codegen` 以下 12 crate なので個別に列挙する。一致しない package spec は警告なしで「オーバーライド無し」になる)。
   - **測って外れた仮説を 2 つ記録しておく**: (1) **デバッグ情報の削減は効かない** — `[profile.dev]` / `[profile.test]` に `debug = "line-tables-only"` を入れて 2m06s (対照 1m55s)、改善ゼロ。27MB の中身はデバッグ情報ではなく cranelift のコード。(2) **リンカ差し替え (lld) と Spotlight 除外は、上を片付けた後では測る意味がない** — 絶対値が 1〜2 秒台まで落ちているので削り代が残っていない。target が肥大していた頃の「リンクが遅い」という観察は、リンカの速度ではなくディレクトリ規模の問題だった。
@@ -643,9 +667,9 @@
   | interpreter | 55.5s (37%) | 984 | 56ms |
   | frontend | 15.6s (10%) | 583 | 27ms |
 
-  - **`compiler::consistency` + `example_consistency` が suite CPU の 45%** ★★★ — 46.5s (317 テスト) + 22.0s (14 shard) = 68.5s。`consistency` の分布は二峰性で、**lite パスで完結するテストと full core にフォールスルーするテストで 1 桁違う**。
+  - **`compiler::consistency` + `example_consistency` が suite CPU の 45%** ★★★ — 46.5s (317 テスト) + 22.0s (14 shard) = 68.5s。`consistency` の分布は二峰性で、**lite パスで完結するテストと full core にフォールスルーするテストで 1 桁違う**。**2026-08-20 のフロントエンドパス共有で 46.5s → 34s / 22.0s → 16s 相当 (下記)** まで下がったが、残りは AOT の codegen + link + spawn (cache warm でも ~50ms/テスト) と JIT の native compile が本質的なので、ここから先はバックエンド実行そのものの削減になる。
     **「lite → full 二重パス」は 2026-08-18 に潰したが、それ自体はコストではなかった**と分かったので記録しておく: `assert_consistent` の let-chain は**最も安いレーン (no-core の tree-walker) で短絡する**ので、stdlib を使うソースが捨てられる AOT codegen / link / spawn まで到達することは元から無かった。捨てていたのは parse + no-core 型検査 ~2ms だけ。実際に効いたのは同時に入れた**フロントエンドパスの共有**の方 (下記)。
-  - **with-core のフロントエンドパスがレーンごとに独立** ★★ — 1 テストが core を使うと、tree-walker / AOT / JIT / IR VM がそれぞれ `core/std/*.t` を integrate + 型検査する。**tree-walker と IR VM の 2 レーンは 2026-08-18 に 1 パスに統合済み** (`ast_lanes`、AST に interior mutability が無いので型検査済み `File` を両方に渡せる。ついでに lite 試行の失敗も memo 化 — 以前は失敗を記録せず毎回引き直していた)。**実測 `consistency` 52.7s → 46.5s CPU (-12%)、suite 156.7s → 149.7s CPU / wall 7.8s → 7.3s**。残る 2 レーン (AOT は `compile_file` がパス受け取り、JIT は `run_source` がソース受け取り) を畳むには**ライブラリ側に「型検査済み program を受け取る」入口**が要る。
+  - **with-core のフロントエンドパスがレーンごとに独立** ★★ — 1 テストが core を使うと、tree-walker / AOT / JIT / IR VM がそれぞれ `core/std/*.t` を integrate + 型検査する。**tree-walker と IR VM の 2 レーンは 2026-08-18 に 1 パスに統合済み** (`ast_lanes`、AST に interior mutability が無いので型検査済み `File` を両方に渡せる。ついでに lite 試行の失敗も memo 化 — 以前は失敗を記録せず毎回引き直していた)。**実測 `consistency` 52.7s → 46.5s CPU (-12%)、suite 156.7s → 149.7s CPU / wall 7.8s → 7.3s**。残る 2 レーン (AOT は `compile_file` がパス受け取り、JIT は `run_source` がソース受け取り) を畳むには**ライブラリ側に「型検査済み program を受け取る」入口**が要る。~~残る 2 レーン~~ **解消 (2026-08-20)**: `compile_checked_program` + `CheckedProgram` で 4 レーンが 1 フロントエンドパスを共有 (consistency -27% / example -29% CPU。詳細は完了済み節)。
   - ~~**AOT レーンが stdlib 全体を毎回 codegen している** ★★★~~ —
     **解消 (2026-08-19)**: `lower_program` の本体 lowering を需要駆動にし
     (reachable closure のみ)、codegen / JIT は `Module::reachable_from` で
@@ -654,7 +678,7 @@
   - **core module のロードが 1 プロセスあたり 27ms** ★★★ — trivial プログラムを空 core dir と比べた実測 (2026-08-18、debug ビルド): **33.5ms → 6.1ms**。nextest は 1 テスト 1 プロセスなので、interpreter の 984 テストはそれぞれこれを払う = ~26s CPU ≈ wall 1.3s。内訳は 2026-08-15 時点の計測 (integrate ~43% 削減が landing する前) で `integrate_modules` 11.3ms / `execute_entry` の context 構築 5.2ms / stdlib 40 impl block の型検査 2.5ms / その他の型検査 1.1ms。
 
     **測って分かった否定的な結果を 3 つ記録しておく**: (1) **free function の body は既に user 分しか検査していない** (`take(user_func_count)`) ので「stdlib 本体を型検査しない」で削れるのは impl block の 2.5ms だけ。しかも**型検査器は body を書き換える** (`?` の desugar、`Display` の `to_str` 挿入) ので、stdlib の body を検査しないと**書き換え前の AST がバックエンドに流れる** — 今の stdlib は `?` も補間も使っていないので通ってしまい、使った日に壊れる罠になる。(2) `remap_symbol` の memo 化 (module symbol → main symbol を Vec でキャッシュ) は**効果ゼロ**だった。integrate の時間は文字列ハッシュではなく AST を pool に複製する作業そのもの。(3) **「型検査済み core をプロセス内で使い回す」は unit テストには効かない** — nextest は 1 テスト 1 プロセスなので、そもそもプロセス内に 2 回目の呼び出しが無い。
-    したがって残る手は (a) stdlib を使わないテストを `test_program_no_core` に寄せる (実測: `test_program` を no-core にすると interpreter の 879 テスト中 **797 が通り**、その binary は 2.3s → 1.3s。ただし stdlib 同居時の回帰を見なくなる = coverage を実際に落とす)、(b) **プロセスを跨いで**型検査済み core を再利用する (INCREMENTAL-COMPILATION 側の仕事。`File` が `Rc` を持つので素朴な in-memory memo 化はできない — 別スレッドから clone すると refcount が壊れる)、(c) 1 プロセスで core を複数回ロードしている `consistency` を直す (4 レーン中 2 つは統合済み、上記)。
+    したがって残る手は (a) stdlib を使わないテストを `test_program_no_core` に寄せる (実測: `test_program` を no-core にすると interpreter の 879 テスト中 **797 が通り**、その binary は 2.3s → 1.3s。ただし stdlib 同居時の回帰を見なくなる = coverage を実際に落とす)、(b) **プロセスを跨いで**型検査済み core を再利用する (INCREMENTAL-COMPILATION 側の仕事。`File` が `Rc` を持つので素朴な in-memory memo 化はできない — 別スレッドから clone すると refcount が壊れる)、(c) 1 プロセスで core を複数回ロードしている `consistency` を直す — **解消 (2026-08-20)**: 4 レーンが 1 フロントエンドパスを共有するようになり、AOT / JIT レーンが毎回 core をロードし直す重複が無くなった (consistency -27% CPU)。
   - **プロセス起動が ~5ms × 1999 ≈ 10s CPU (約 7%)** ★ — 起動フロアの実測は空 core dir の trivial 実行 6.1ms。nextest は 1 テスト 1 プロセス。テストを機能別に束ねれば減るが、失敗の切り分けと引き換え。
   - ~~`serial_test` (`oop_tests.rs`) の並列化~~ — **効果ゼロと分かったので却下 (2026-08-18)**。`#[serial]` が付いているのは 8 テストで合計 **0.193s CPU (suite の 0.12%)**、1 本 18〜34ms と既に起動フロア。しかも `serial_test` のロックはプロセスローカルなので、**nextest では各テストが別プロセスに散る = 元から直列化していない**。
 - **65. frontend リファクタリング** — (a)〜(g) は完了。残: doc コメント拡充、プロパティベーステスト追加。

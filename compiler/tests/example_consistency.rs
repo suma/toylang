@@ -31,7 +31,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use compiler::{compile_file, CompilerOptions};
+use compiler::CompilerOptions;
 
 /// Examples that are supposed to fail — they demonstrate a diagnostic.
 /// Running them proves nothing about backend agreement.
@@ -167,52 +167,66 @@ fn disagrees(reference: &Run, other: &Run) -> bool {
     }
 }
 
-/// Run the tree-walker and the interpreter's JIT over **one** parsed,
-/// type-checked program, capturing `print` output from each. `Err`
-/// carries the diagnostic so the caller can tell "this program is
-/// meant to fail" from "this program regressed".
+/// A parsed + type-checked program, shared by every backend lane.
 ///
-/// Both columns used to go through `interpreter::run_source`, which
-/// parses, integrates the core modules and type-checks every time —
-/// about 26 ms of the ~50 ms each example costs, spent twice on
-/// identical input. The frontend is not what this sweep compares, so
-/// it runs once and both engines execute the result. What that gives
-/// up is the guarantee of going through the same entry point the
-/// binary uses; the steps below are that entry point's, minus the
-/// diagnostic rendering.
-fn run_both_engines(source: &str, name: &str) -> Result<(Run, Run), String> {
+/// The tree-walker, the interpreter's JIT and the AOT compiler all run
+/// off this one checked program. The AOT lane used to go through
+/// `compile_file`, which re-parses and re-type-checks — for an example
+/// that meant the core-module integrate + type-check pass ran a third
+/// time on identical input. `compile_checked_program` lowers the same
+/// checked AST the two in-process engines already executed.
+struct CheckedProgram<'a> {
+    program: frontend::ast::File,
+    interner: &'a string_interner::DefaultStringInterner,
+    contract_msgs: compiler::ContractMessages,
+}
+
+/// Parse + type-check the example once, borrowing the caller's parser
+/// so the interner survives for every lane. `Err` carries the
+/// diagnostic so the caller can tell "this program is meant to fail"
+/// from "this program regressed".
+///
+/// The frontend is not what this sweep compares, so it runs once and
+/// every engine executes the result. What that gives up is the
+/// guarantee of going through the same entry point the binary uses;
+/// the steps below are that entry point's, minus the diagnostic
+/// rendering.
+fn check_checked<'a>(
+    source: &str,
+    name: &str,
+    parser: &'a mut frontend::ParserWithInterner,
+) -> Result<CheckedProgram<'a>, String> {
     let core = core_modules_dir();
-    let mut parser = frontend::ParserWithInterner::new(source);
     parser.set_source_file(name);
     let mut program = parser
         .parse_program()
         .map_err(|e| format!("Parse error: {e:?}"))?;
-    let interner = parser.get_string_interner();
     interpreter::check_typing_with_core_modules(
         &mut program,
-        interner,
+        parser.get_string_interner(),
         Some(source),
         Some(name),
         Some(core.as_path()),
     )
     .map_err(|errors| format!("Type check errors: {errors:?}"))?;
-
-    let interp = execute_once(&program, interner, source, name, false)?;
-    let jit = execute_once(&program, interner, source, name, true)?;
-    Ok((interp, jit))
+    let contract_msgs = compiler::ContractMessages::intern(parser.get_string_interner());
+    Ok(CheckedProgram {
+        program,
+        interner: &*parser.get_string_interner(),
+        contract_msgs,
+    })
 }
 
 /// Execute an already-checked program with the JIT forced on or off.
 fn execute_once(
-    program: &frontend::ast::File,
-    interner: &string_interner::DefaultStringInterner,
+    checked: &CheckedProgram,
     source: &str,
     name: &str,
     jit: bool,
 ) -> Result<Run, String> {
     let (result, stdout) = interpreter::output::with_capture(|| {
         interpreter::jit::with_jit_override(jit, || {
-            interpreter::execute_program(program, interner, Some(source), Some(name))
+            interpreter::execute_program(&checked.program, checked.interner, Some(source), Some(name))
         })
     });
     let value = result?;
@@ -225,13 +239,20 @@ fn execute_once(
 }
 
 /// Compile and run. `None` when the AOT backend cannot build it.
-fn run_compiled(path: &Path, stem: &str) -> Option<Run> {
+fn run_compiled(checked: &CheckedProgram, stem: &str) -> Option<Run> {
     let exe_path = unique_path(stem);
-    let mut options = CompilerOptions::new(path.to_path_buf());
+    let mut options = CompilerOptions::new(PathBuf::from("<checked>"));
     options.output = Some(exe_path.clone());
     options.core_modules_dir = Some(core_modules_dir());
     options.link_cache_dir = Some(link_cache_dir_for_tests());
-    if compile_file(&options).is_err() {
+    if compiler::compile_checked_program(
+        &checked.program,
+        checked.interner,
+        &checked.contract_msgs,
+        &options,
+    )
+    .is_err()
+    {
         return None;
     }
     let output = Command::new(&exe_path).output().expect("spawn compiled binary");
@@ -267,16 +288,9 @@ fn check_example(path: &Path) -> Result<(), String> {
     let source = std::fs::read_to_string(path).expect("read example");
     let expects_error = ERROR_EXAMPLES.contains(&name.as_str());
 
-    let (interp, jit) = match run_both_engines(&source, &name) {
-        Ok(runs) => {
-            if expects_error {
-                return Err(format!(
-                    "`{name}` is listed in ERROR_EXAMPLES but now runs cleanly — \
-                     remove it from the list so it is checked across backends"
-                ));
-            }
-            runs
-        }
+    let mut parser = frontend::ParserWithInterner::new(&source);
+    let checked = match check_checked(&source, &name, &mut parser) {
+        Ok(checked) => checked,
         Err(diagnostic) => {
             return if expects_error {
                 Ok(())
@@ -285,6 +299,33 @@ fn check_example(path: &Path) -> Result<(), String> {
             };
         }
     };
+
+    let interp = match execute_once(&checked, &source, &name, false) {
+        Ok(run) => run,
+        Err(diagnostic) => {
+            return if expects_error {
+                Ok(())
+            } else {
+                Err(format!("`{name}` failed on the interpreter: {diagnostic}"))
+            };
+        }
+    };
+    let jit = match execute_once(&checked, &source, &name, true) {
+        Ok(run) => run,
+        Err(diagnostic) => {
+            return if expects_error {
+                Ok(())
+            } else {
+                Err(format!("`{name}` failed on the JIT: {diagnostic}"))
+            };
+        }
+    };
+    if expects_error {
+        return Err(format!(
+            "`{name}` is listed in ERROR_EXAMPLES but now runs cleanly — \
+             remove it from the list so it is checked across backends"
+        ));
+    }
 
     if disagrees(&interp, &jit) {
         return Err(format!(
@@ -296,7 +337,7 @@ fn check_example(path: &Path) -> Result<(), String> {
 
     let aot_expected_unsupported = AOT_UNSUPPORTED.contains(&name.as_str());
     let stem = name.trim_end_matches(".t");
-    match run_compiled(path, stem) {
+    match run_compiled(&checked, stem) {
         None => {
             if aot_expected_unsupported {
                 Ok(())

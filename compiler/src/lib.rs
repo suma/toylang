@@ -43,7 +43,9 @@ mod small_pool;
 pub use jit::{compile_to_jit_main, compile_to_jit_main_with_options, JitMainFn, JitProgram};
 pub use options::{CompilerOptions, EmitKind};
 
+use frontend::ast::File;
 use std::path::{Path, PathBuf};
+use string_interner::DefaultStringInterner;
 
 /// Read the program, from stdin when `path` is `-` (D6).
 ///
@@ -133,7 +135,31 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
     // own.
     let contract_msgs = ContractMessages::intern(session.string_interner_mut());
 
-    let (object_bytes, link_libs) = codegen::emit_object(&program, session.string_interner(), &contract_msgs, options)?;
+    compile_checked_program(&program, session.string_interner(), &contract_msgs, options)
+}
+
+/// Lower, codegen and (optionally) link an already parsed **and
+/// type-checked** program. Skips the frontend pass — source reading,
+/// parsing, core-module integration and type-checking — which the
+/// caller has already performed.
+///
+/// This is the entry the consistency suite uses to run every backend
+/// off one checked program: the AOT lane used to re-parse and
+/// re-type-check through [`compile_file`], duplicating the frontend
+/// work the tree-walker / IR VM / JIT lanes already shared.
+///
+/// `contract_msgs` must be produced with the same interner the caller
+/// passed to the type-checker (see [`ContractMessages::intern`]) — the
+/// symbols it holds are resolved by address, so a different interner
+/// would silently mis-key them.
+pub fn compile_checked_program(
+    program: &File,
+    string_interner: &DefaultStringInterner,
+    contract_msgs: &ContractMessages,
+    options: &CompilerOptions,
+) -> Result<(), String> {
+    let (object_bytes, link_libs) =
+        codegen::emit_object(program, string_interner, contract_msgs, options)?;
 
     match options.emit {
         EmitKind::Object => {
@@ -161,7 +187,7 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
             // Emit our own mid-level IR — the layer between AST and
             // Cranelift. Useful for inspecting how the front-end maps
             // onto the compiler's internal representation.
-            let ir_text = codegen::emit_ir_text(&program, session.string_interner(), &contract_msgs, options)?;
+            let ir_text = codegen::emit_ir_text(program, string_interner, contract_msgs, options)?;
             let out = options.output.clone().unwrap_or_else(|| {
                 let mut p = options.input.clone();
                 p.set_extension("ir");
@@ -175,7 +201,7 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
         }
         EmitKind::Clif => {
             // Cranelift IR text — for backend debugging.
-            let clif_text = codegen::emit_clif_text(&program, session.string_interner(), &contract_msgs, options)?;
+            let clif_text = codegen::emit_clif_text(program, string_interner, contract_msgs, options)?;
             let out = options.output.clone().unwrap_or_else(|| {
                 let mut p = options.input.clone();
                 p.set_extension("clif");

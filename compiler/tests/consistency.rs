@@ -218,6 +218,169 @@ fn ast_lanes(source: &str, core_dir: Option<PathBuf>) -> Option<(u64, Option<i64
     lanes
 }
 
+/// A parsed + type-checked program, ready for every backend lane.
+///
+/// The with-core full paths of `assert_consistent` and
+/// `assert_stdout_consistent` produce this **once** and hand it to the
+/// tree-walker, IR VM, JIT and AOT lanes. The AOT lane used to go
+/// through `compile_file` (which re-parses and re-type-checks) and the
+/// JIT lane through `run_source` (same), so a with-core test paid the
+/// integrate + type-check pass over `core/std/*.t` three times for the
+/// same program — once for `ast_lanes`, once for AOT, once for JIT.
+/// The AST is never mutated between lanes (in-place type-check
+/// rewrites already happened), so one checked program feeds all four,
+/// exactly as `ast_lanes` already fed tree-walker + IR VM.
+struct CheckedProgram<'a> {
+    program: frontend::ast::File,
+    interner: &'a string_interner::DefaultStringInterner,
+    contract_msgs: compiler::ContractMessages,
+}
+
+/// Parse + type-check `source` once, borrowing the caller's parser so
+/// the interner stays alive for every lane. `None` when the source does
+/// not parse or type-check in this configuration.
+fn checked_program<'a>(
+    source: &str,
+    parser: &'a mut frontend::ParserWithInterner,
+    core_dir: Option<&std::path::Path>,
+) -> Option<CheckedProgram<'a>> {
+    let mut program = parser.parse_program().ok()?;
+    interpreter::check_typing_with_core_modules(
+        &mut program,
+        parser.get_string_interner(),
+        Some(source),
+        Some("test.t"),
+        core_dir,
+    )
+    .ok()?;
+    let contract_msgs = compiler::ContractMessages::intern(parser.get_string_interner());
+    Some(CheckedProgram {
+        program,
+        interner: &*parser.get_string_interner(),
+        contract_msgs,
+    })
+}
+
+fn checked_interpreter_value(checked: &CheckedProgram, source: &str) -> u64 {
+    let result = interpreter::execute_program(
+        &checked.program,
+        checked.interner,
+        Some(source),
+        Some("test.t"),
+    )
+    .expect("interpreter execute (checked program)");
+    match &*result.borrow() {
+        Object::UInt64(n) => *n,
+        Object::Int64(n) => *n as u64,
+        Object::Bool(b) => *b as u64,
+        other => panic!("unexpected interpreter result: {other:?}"),
+    }
+}
+
+/// IR VM lane off a shared checked program. `None` when lowering fails
+/// or the module leaves the VM's supported subset — the "lane not
+/// eligible" signal, not a failure.
+fn checked_ir_vm_value(checked: &CheckedProgram) -> Option<i64> {
+    let ir_module = compiler::lower::lower_program(
+        &checked.program,
+        checked.interner,
+        &checked.contract_msgs,
+        false,
+    )
+    .ok()?;
+    if !interpreter::ir_vm::eligibility::ir_vm_supported(&ir_module) {
+        return None;
+    }
+    // MEMORY_PROFILING M4: same rationale as `ast_lanes` — without the
+    // reset, `__builtin_alloc_count()` would see the tree-walker lane's
+    // allocations too.
+    interpreter::heap::reset_profile();
+    interpreter::ir_vm::run_module_with_interner(&ir_module, Some(checked.interner)).ok()
+}
+
+/// JIT lane off a shared checked program. In-process, so it needs the
+/// same `jit_available` guard as `jit_exit_code` — a build without the
+/// `jit` feature would silently compare the tree-walker against itself.
+fn checked_jit_exit_code(checked: &CheckedProgram, source: &str) -> i32 {
+    assert!(
+        interpreter::jit_available(),
+        "the interpreter was built without its `jit` feature, so this would compare the \
+         tree-walker against itself"
+    );
+    let result = interpreter::jit::with_jit_override(true, || {
+        interpreter::execute_program(
+            &checked.program,
+            checked.interner,
+            Some(source),
+            Some("test.t"),
+        )
+    })
+    .expect("interpreter execute (checked program, jit)");
+    let code = match &*result.borrow() {
+        Object::Int64(v) => Some(*v as i32),
+        Object::UInt64(v) => Some(*v as i32),
+        _ => None,
+    };
+    code.map(|c| c & 0xff).unwrap_or(0)
+}
+
+/// AOT lane off a shared checked program: link a fresh executable from
+/// the already-lowered code and run it. Returns `(exit_code, stdout)`;
+/// stdout is always captured so exit-code callers pay nothing extra.
+fn checked_compiler_run(checked: &CheckedProgram, stem: &str) -> (i32, String) {
+    let exe_path = unique_path(stem);
+    let mut options = CompilerOptions::new(PathBuf::from("<checked>"));
+    options.output = Some(exe_path.clone());
+    options.core_modules_dir = Some(core_modules_dir());
+    options.link_cache_dir = Some(link_cache_dir_for_tests());
+    compiler::compile_checked_program(
+        &checked.program,
+        checked.interner,
+        &checked.contract_msgs,
+        &options,
+    )
+    .expect("compile_checked_program failed");
+    let output = Command::new(&exe_path).output().expect("spawn binary");
+    let _ = std::fs::remove_file(&exe_path);
+    (
+        output.status.code().expect("exit code"),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+    )
+}
+
+fn checked_interpreter_stdout(checked: &CheckedProgram, source: &str) -> String {
+    let (result, captured) = interpreter::output::with_capture(|| {
+        interpreter::execute_program(
+            &checked.program,
+            checked.interner,
+            Some(source),
+            Some("test.t"),
+        )
+    });
+    result.expect("interpreter execute (checked program)");
+    captured
+}
+
+fn checked_jit_stdout(checked: &CheckedProgram, source: &str) -> String {
+    assert!(
+        interpreter::jit_available(),
+        "the interpreter was built without its `jit` feature, so this would compare the \
+         tree-walker against itself"
+    );
+    let (result, captured) = interpreter::output::with_capture(|| {
+        interpreter::jit::with_jit_override(true, || {
+            interpreter::execute_program(
+                &checked.program,
+                checked.interner,
+                Some(source),
+                Some("test.t"),
+            )
+        })
+    });
+    result.expect("interpreter execute (checked program, jit)");
+    captured
+}
+
 /// Run `source` through the in-process interpreter with the JIT path
 /// forced on. Returns the exit code `main` would have produced, already
 /// `& 0xff`. When `with_core` is false the call skips auto-loading the
@@ -343,10 +506,14 @@ fn assert_consistent(source: &str, stem: &str) {
             return;
         }
     }
-    let interp = interpreter_value_with_core(source, Some(core_modules_dir()))
+    let core = core_modules_dir();
+    let mut parser = frontend::ParserWithInterner::new(source);
+    let checked = checked_program(source, &mut parser, Some(core.as_path()))
         .expect("interpreter type-check / execute (with core)");
-    let compiled = compiler_exit_code(source, stem, true) as u64;
-    let jit = jit_exit_code(source, stem, true) as u64;
+    let interp = checked_interpreter_value(&checked, source);
+    let (compiled, _) = checked_compiler_run(&checked, stem);
+    let compiled = compiled as u64;
+    let jit = checked_jit_exit_code(&checked, source) as u64;
     assert_eq!(
         interp & 0xff,
         compiled & 0xff,
@@ -357,7 +524,7 @@ fn assert_consistent(source: &str, stem: &str) {
         jit & 0xff,
         "interpreter={interp} jit={jit} for source:\n{source}",
     );
-    if let Some(ir_vm) = ir_vm_exit_code(source, true) {
+    if let Some(ir_vm) = checked_ir_vm_value(&checked) {
         assert_eq!(
             interp & 0xff,
             (ir_vm as u64) & 0xff,
@@ -386,23 +553,6 @@ fn interpreter_stdout(source: &str, _stem: &str, with_core: bool) -> String {
     captured
 }
 
-/// JIT counterpart to `interpreter_stdout` — same in-process pipeline,
-/// with `RunOptions::jit = true` so the JIT path's `jit_print_*`
-/// helpers fire. They route through the same thread-local sink.
-fn jit_stdout(source: &str, _stem: &str, with_core: bool) -> String {
-    let core_dir = if with_core { Some(core_modules_dir()) } else { None };
-    let mut options = RunOptions::default();
-    options.jit = true;
-    options.core_modules_dir = core_dir.as_deref();
-    let (result, captured) = interpreter::output::with_capture(|| {
-        interpreter::run_source(source, "test.t", &options)
-    });
-    if let Err(diag) = result {
-        panic!("interpreter run_source (jit) failed: {diag}");
-    }
-    captured
-}
-
 /// Compile to a binary, run it, and capture stdout. Mirrors
 /// `compiler_exit_code` but keeps the bytes instead of the exit code.
 /// `with_core` follows the same convention; returns `None` when
@@ -424,10 +574,6 @@ fn try_compiler_stdout(source: &str, stem: &str, with_core: bool) -> Option<Stri
     let _ = std::fs::remove_file(&src_path);
     let _ = std::fs::remove_file(&exe_path);
     result
-}
-
-fn compiler_stdout(source: &str, stem: &str) -> String {
-    try_compiler_stdout(source, stem, true).expect("compile_file")
 }
 
 /// Same shape as `assert_consistent`, but compares stdout instead of
@@ -465,9 +611,13 @@ fn assert_stdout_consistent(source: &str, stem: &str) {
             // Mismatch on lite path falls through; the canonical path
             // produces the diagnostic the user sees.
         }
-    let interp = interpreter_stdout(source, &format!("{stem}_interp"), true);
-    let compiled = compiler_stdout(source, &format!("{stem}_aot"));
-    let jit = jit_stdout(source, &format!("{stem}_jit"), true);
+    let core = core_modules_dir();
+    let mut parser = frontend::ParserWithInterner::new(source);
+    let checked = checked_program(source, &mut parser, Some(core.as_path()))
+        .expect("interpreter type-check / execute (with core)");
+    let interp = checked_interpreter_stdout(&checked, source);
+    let (_, compiled) = checked_compiler_run(&checked, &format!("{stem}_aot"));
+    let jit = checked_jit_stdout(&checked, source);
     assert_eq!(
         interp, compiled,
         "interpreter vs compiler stdout mismatch for source:\n{source}\n--interp--\n{interp}\n--compiler--\n{compiled}",

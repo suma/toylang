@@ -55,6 +55,21 @@ pub struct ContractMessages {
     /// LLM-LOOP P6-3. Interned here for the same reason as the two
     /// above: lowering emits the guard but has no mutable interner.
     pub u64_underflow: DefaultSymbol,
+    /// RUNTIME-TRAP. Integer division / remainder by zero. Without
+    /// this guard the trap came from the host: cranelift's `sdiv`
+    /// traps with its own message in the compiled binary and the
+    /// IR VM hit Rust's `attempt to divide by zero` panic with a
+    /// backtrace into `ir_vm/dispatch.rs` — neither names the
+    /// toylang source line.
+    pub div_by_zero: DefaultSymbol,
+    /// RUNTIME-TRAP. Signed `MIN / -1` (and `MIN % -1`), whose result
+    /// is not representable. Cranelift's `sdiv` faults on it, so the
+    /// compiled binary died with SIGILL while the interpreter wrapped
+    /// back to `MIN` — the one trap where the backends disagreed on
+    /// whether the program even survived.
+    pub div_overflow: DefaultSymbol,
+    /// RUNTIME-TRAP. Array index at or past the array's length.
+    pub index_out_of_bounds: DefaultSymbol,
     /// The `self` identifier. An implicit `&self` / `&mut self`
     /// receiver is **not** a parameter in the AST (the parser only
     /// flips `has_self_param` and matches the token text), so
@@ -76,6 +91,11 @@ impl ContractMessages {
             ensures_violation: interner.get_or_intern("ensures violation"),
             u64_underflow: interner
                 .get_or_intern("u64 subtraction underflowed (left operand is smaller than the right)"),
+            div_by_zero: interner.get_or_intern("integer division by zero"),
+            div_overflow: interner
+                .get_or_intern("integer division overflowed (most negative value divided by -1)"),
+            index_out_of_bounds: interner
+                .get_or_intern("array index out of bounds (index is at or past the array's length)"),
             self_ident: interner.get_or_intern("self"),
         }
     }

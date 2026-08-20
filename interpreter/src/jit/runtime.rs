@@ -546,6 +546,24 @@ extern "C" fn jit_panic_u64_underflow() {
     std::process::exit(1);
 }
 
+/// RUNTIME-TRAP: abort on integer division / remainder by zero.
+/// Same fixed-message shape as the underflow helper above, and the
+/// same text `compiler_lower`'s guard interns for the other three
+/// backends.
+extern "C" fn jit_panic_div_by_zero() {
+    eprintln!("Runtime error occurred:");
+    eprintln!("panic: integer division by zero");
+    std::process::exit(1);
+}
+
+/// RUNTIME-TRAP: abort on signed `MIN / -1`, whose result is not
+/// representable.
+extern "C" fn jit_panic_div_overflow() {
+    eprintln!("Runtime error occurred:");
+    eprintln!("panic: integer division overflowed (most negative value divided by -1)");
+    std::process::exit(1);
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum HelperKind {
     PrintI64,
@@ -574,6 +592,8 @@ pub(crate) enum HelperKind {
     PrintlnU32,
     Panic,
     PanicU64Underflow,
+    PanicDivByZero,
+    PanicDivOverflow,
     HeapAlloc,
     HeapFree,
     HeapRealloc,
@@ -663,6 +683,8 @@ impl HelperKind {
             HelperKind::PrintlnU32 => "jit_println_u32",
             HelperKind::Panic => "jit_panic",
             HelperKind::PanicU64Underflow => "jit_panic_u64_underflow",
+            HelperKind::PanicDivByZero => "jit_panic_div_by_zero",
+            HelperKind::PanicDivOverflow => "jit_panic_div_overflow",
             HelperKind::HeapAlloc => "jit_heap_alloc",
             HelperKind::HeapFree => "jit_heap_free",
             HelperKind::HeapRealloc => "jit_heap_realloc",
@@ -732,6 +754,8 @@ impl HelperKind {
             HelperKind::PrintlnU32 => jit_println_u32 as *const u8,
             HelperKind::Panic => jit_panic as *const u8,
             HelperKind::PanicU64Underflow => jit_panic_u64_underflow as *const u8,
+            HelperKind::PanicDivByZero => jit_panic_div_by_zero as *const u8,
+            HelperKind::PanicDivOverflow => jit_panic_div_overflow as *const u8,
             HelperKind::HeapAlloc => jit_heap_alloc as *const u8,
             HelperKind::HeapFree => jit_heap_free as *const u8,
             HelperKind::HeapRealloc => jit_heap_realloc as *const u8,
@@ -791,7 +815,9 @@ impl HelperKind {
             HelperKind::PrintI32 | HelperKind::PrintlnI32 => (vec![types::I32], None),
             HelperKind::PrintU32 | HelperKind::PrintlnU32 => (vec![types::I32], None),
             HelperKind::Panic => (vec![types::I64], None),
-            HelperKind::PanicU64Underflow => (vec![], None),
+            HelperKind::PanicU64Underflow
+            | HelperKind::PanicDivByZero
+            | HelperKind::PanicDivOverflow => (vec![], None),
             HelperKind::HeapAlloc => (vec![types::I64], Some(types::I64)),
             HelperKind::HeapFree => (vec![types::I64], None),
             HelperKind::HeapRealloc => (vec![types::I64, types::I64], Some(types::I64)),
@@ -844,7 +870,7 @@ impl HelperKind {
         }
     }
 
-    pub(crate) const ALL: [HelperKind; 64] = [
+    pub(crate) const ALL: [HelperKind; 66] = [
         HelperKind::PrintI64,
         HelperKind::PrintlnI64,
         HelperKind::PrintU64,
@@ -867,6 +893,8 @@ impl HelperKind {
         HelperKind::PrintlnU32,
         HelperKind::Panic,
         HelperKind::PanicU64Underflow,
+        HelperKind::PanicDivByZero,
+        HelperKind::PanicDivOverflow,
         HelperKind::HeapAlloc,
         HelperKind::HeapFree,
         HelperKind::HeapRealloc,

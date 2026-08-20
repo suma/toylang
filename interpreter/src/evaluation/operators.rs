@@ -36,6 +36,37 @@ macro_rules! arithmetic_apply {
     };
 }
 
+/// Whether the operands are the one signed division that overflows:
+/// the most negative value of the width divided by `-1`
+/// (RUNTIME-TRAP). Mixed widths cannot occur — the type checker
+/// requires both sides to share a type — so each arm checks one width.
+fn is_signed_min_over_minus_one(lhs: &Value, rhs: &Value) -> bool {
+    matches!(
+        (lhs, rhs),
+        (Value::Int64(i64::MIN), Value::Int64(-1))
+            | (Value::Int32(i32::MIN), Value::Int32(-1))
+            | (Value::Int16(i16::MIN), Value::Int16(-1))
+            | (Value::Int8(i8::MIN), Value::Int8(-1))
+    )
+}
+
+/// Whether `v` is an integer zero of any width (RUNTIME-TRAP's
+/// divide-by-zero guard). `Float64(0.0)` is deliberately not a match —
+/// dividing an f64 by zero is defined by IEEE-754.
+fn is_integer_zero(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::Int64(0)
+            | Value::UInt64(0)
+            | Value::Int8(0)
+            | Value::Int16(0)
+            | Value::Int32(0)
+            | Value::UInt8(0)
+            | Value::UInt16(0)
+            | Value::UInt32(0)
+    )
+}
+
 impl ArithmeticOp {
     fn name(&self) -> &str {
         match self {
@@ -295,6 +326,32 @@ impl EvaluationContext<'_> {
         op: ArithmeticOp,
         site: Option<frontend::type_checker::SourceLocation>,
     ) -> Result<Value, InterpreterError> {
+        // RUNTIME-TRAP: integer `/` and `%` by zero. `wrapping_div` /
+        // `wrapping_rem` panic in the host on a zero divisor, which
+        // surfaced as a Rust backtrace into this file rather than as a
+        // toylang panic carrying the source line. Checked ahead of the
+        // width dispatch so every integer width traps identically, and
+        // matching the guard `compiler_lower` emits for the other three
+        // backends. `f64` is excluded: IEEE division by zero yields an
+        // infinity, which is a value rather than a fault.
+        if matches!(op, ArithmeticOp::Div | ArithmeticOp::Mod) && is_integer_zero(rhs) {
+            return Err(self.panic_error(
+                "integer division by zero".to_string(),
+                site,
+            ));
+        }
+        // RUNTIME-TRAP: signed `MIN / -1` has no representable result.
+        // `wrapping_div` answers `MIN` here, but cranelift's `sdiv`
+        // faults, so the compiled binary died with SIGILL while this
+        // engine carried on with a wrapped value. Both now stop.
+        if matches!(op, ArithmeticOp::Div | ArithmeticOp::Mod)
+            && is_signed_min_over_minus_one(lhs, rhs)
+        {
+            return Err(self.panic_error(
+                "integer division overflowed (most negative value divided by -1)".to_string(),
+                site,
+            ));
+        }
         Ok(match (lhs, rhs) {
             (Value::Int64(l), Value::Int64(r)) => Value::Int64(op.apply_i64(*l, *r)),
             (Value::UInt64(l), Value::UInt64(r)) => {

@@ -41,6 +41,105 @@ impl<'a> FunctionLower<'a> {
                 Some(Type::Bool),
             )
             .ok_or_else(|| "underflow guard produced no value".to_string())?;
+        self.emit_trap_unless(ok, self.contract_msgs.u64_underflow);
+        Ok(())
+    }
+
+    /// RUNTIME-TRAP. Branch to a panic when the divisor is zero, so
+    /// the integer `Div` / `Rem` that follows cannot trap in the
+    /// host. Before this guard the three lowered backends each
+    /// failed in their own way — the IR VM through Rust's
+    /// `attempt to divide by zero` panic (backtrace into
+    /// `ir_vm/dispatch.rs`, no toylang line) and the AOT binary
+    /// through cranelift's own `sdiv` trap.
+    ///
+    /// `F64` is deliberately excluded: IEEE-754 division by zero
+    /// produces an infinity, which is a value rather than a fault.
+    fn emit_div_by_zero_guard(&mut self, rhs: ValueId, ty: Type) -> Result<(), String> {
+        let zero_const = Const::zero(ty)
+            .ok_or_else(|| format!("divide-by-zero guard needs an integer type, got {ty:?}"))?;
+        let zero = self
+            .emit(InstKind::Const(zero_const), Some(ty))
+            .ok_or_else(|| "divide-by-zero guard produced no zero".to_string())?;
+        let ok = self
+            .emit(
+                InstKind::BinOp { op: BinOp::Ne, lhs: rhs, rhs: zero },
+                Some(Type::Bool),
+            )
+            .ok_or_else(|| "divide-by-zero guard produced no value".to_string())?;
+        self.emit_trap_unless(ok, self.contract_msgs.div_by_zero);
+        Ok(())
+    }
+
+    /// RUNTIME-TRAP. Branch to a panic on signed `MIN / -1`, the one
+    /// integer division whose result is not representable. Cranelift
+    /// lowers `sdiv` to a machine divide that faults on it (the
+    /// compiled binary died with `Illegal instruction`), while the
+    /// interpreter's `wrapping_div` quietly produced `MIN`; the guard
+    /// makes all four engines stop with the same message.
+    ///
+    /// Emitted as a nested branch — `if rhs == -1 { if lhs == MIN {
+    /// panic } }` — rather than a single `&&`, so the common path
+    /// costs one comparison and the IR needs no boolean conjunction.
+    fn emit_div_overflow_guard(
+        &mut self,
+        lhs: ValueId,
+        rhs: ValueId,
+        ty: Type,
+    ) -> Result<(), String> {
+        let (Some(min_const), Some(minus_one)) = (Const::signed_min(ty), Const::minus_one(ty))
+        else {
+            return Ok(());
+        };
+        let neg_one_v = self
+            .emit(InstKind::Const(minus_one), Some(ty))
+            .ok_or_else(|| "division overflow guard produced no constant".to_string())?;
+        let is_minus_one = self
+            .emit(
+                InstKind::BinOp { op: BinOp::Eq, lhs: rhs, rhs: neg_one_v },
+                Some(Type::Bool),
+            )
+            .ok_or_else(|| "division overflow guard produced no value".to_string())?;
+        let check = self.fresh_block();
+        let cont = self.fresh_block();
+        self.terminate(Terminator::Branch {
+            cond: is_minus_one,
+            then_blk: check,
+            else_blk: cont,
+        });
+        self.switch_to(check);
+        let min_v = self
+            .emit(InstKind::Const(min_const), Some(ty))
+            .ok_or_else(|| "division overflow guard produced no constant".to_string())?;
+        let is_min = self
+            .emit(
+                InstKind::BinOp { op: BinOp::Eq, lhs, rhs: min_v },
+                Some(Type::Bool),
+            )
+            .ok_or_else(|| "division overflow guard produced no value".to_string())?;
+        let fail = self.fresh_block();
+        self.terminate(Terminator::Branch {
+            cond: is_min,
+            then_blk: fail,
+            else_blk: cont,
+        });
+        self.switch_to(fail);
+        self.terminate(Terminator::Panic {
+            message: self.contract_msgs.div_overflow,
+        });
+        self.switch_to(cont);
+        Ok(())
+    }
+
+    /// Emit `if !ok { panic(message) }` and continue lowering in the
+    /// passing block. Shared by every RUNTIME-TRAP guard so all of
+    /// them terminate the same way; `Terminator::Panic` carries an
+    /// interned symbol, so the message is static and the operand
+    /// values cannot be formatted in. The tree-walker, which has the
+    /// values to hand, includes them; the lowered backends report the
+    /// operation and the location. Both say the same thing about what
+    /// happened.
+    pub(super) fn emit_trap_unless(&mut self, ok: ValueId, message: string_interner::DefaultSymbol) {
         let pass = self.fresh_block();
         let fail = self.fresh_block();
         self.terminate(Terminator::Branch {
@@ -49,11 +148,8 @@ impl<'a> FunctionLower<'a> {
             else_blk: fail,
         });
         self.switch_to(fail);
-        self.terminate(Terminator::Panic {
-            message: self.contract_msgs.u64_underflow,
-        });
+        self.terminate(Terminator::Panic { message });
         self.switch_to(pass);
-        Ok(())
     }
 
     pub(super) fn lower_binary(
@@ -151,6 +247,14 @@ impl<'a> FunctionLower<'a> {
         // consume this IR — get the check from one place.
         if matches!(ir_op, BinOp::Sub) && matches!(lhs_ty, Type::U64) {
             self.emit_u64_underflow_guard(l, r)?;
+        }
+        // RUNTIME-TRAP: integer division / remainder by zero, and the
+        // signed `MIN / -1` whose result is not representable.
+        if matches!(ir_op, BinOp::Div | BinOp::Rem) && lhs_ty.is_integer() {
+            self.emit_div_by_zero_guard(r, lhs_ty)?;
+            if lhs_ty.is_signed() {
+                self.emit_div_overflow_guard(l, r, lhs_ty)?;
+            }
         }
 
         Ok(self.emit(

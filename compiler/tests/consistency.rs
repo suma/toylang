@@ -970,6 +970,124 @@ fn u64_underflow_traps_on_every_backend() {
 }
 
 
+/// RUNTIME-TRAP. Integer `/` and `%` by zero used to fail in whatever
+/// way the host happened to fail: the IR VM hit Rust's
+/// `attempt to divide by zero` panic (a backtrace into
+/// `ir_vm/dispatch.rs`, naming no toylang line) and the compiled
+/// binary took cranelift's own `sdiv` trap. Now every backend raises
+/// the same toylang panic. Written out rather than run through
+/// `assert_consistent`, which asserts each backend *succeeds* before
+/// comparing results and so cannot express "they all fail the same
+/// way".
+#[test]
+fn integer_division_by_zero_traps_on_every_backend() {
+    for (op, stem) in [("/", "div_by_zero"), ("%", "rem_by_zero")] {
+        let src = format!(
+            r#"
+        fn main() -> u64 {{
+            var z: u64 = 0u64
+            10u64 {op} z
+        }}
+    "#
+        );
+        let core = core_modules_dir();
+        let mut interp_opts = RunOptions::default();
+        interp_opts.core_modules_dir = Some(core.as_path());
+        assert!(
+            interpreter::run_source(&src, "div_by_zero.t", &interp_opts).is_err(),
+            "the interpreter should refuse `{op}` by zero"
+        );
+
+        let compiled = try_compiler_exit_code(&src, stem, true)
+            .expect("the program should still compile — the guard is a runtime trap");
+        assert_ne!(compiled, 0, "compiled binary should exit non-zero for `{op}`");
+    }
+}
+
+/// RUNTIME-TRAP. `i64::MIN / -1` has no representable result. The
+/// compiled binary used to die with SIGILL (cranelift's `sdiv`
+/// faults) while the interpreter wrapped back to `MIN` and carried
+/// on — the one trap where the backends disagreed on whether the
+/// program even survived.
+#[test]
+fn signed_division_overflow_traps_on_every_backend() {
+    for (op, stem) in [("/", "div_overflow"), ("%", "rem_overflow")] {
+        let src = format!(
+            r#"
+        fn main() -> i64 {{
+            var lo: i64 = -9223372036854775808i64
+            var m: i64 = -1i64
+            lo {op} m
+        }}
+    "#
+        );
+        let core = core_modules_dir();
+        let mut interp_opts = RunOptions::default();
+        interp_opts.core_modules_dir = Some(core.as_path());
+        assert!(
+            interpreter::run_source(&src, "div_overflow.t", &interp_opts).is_err(),
+            "the interpreter should refuse `MIN {op} -1`"
+        );
+
+        let compiled = try_compiler_exit_code(&src, stem, true)
+            .expect("the program should still compile — the guard is a runtime trap");
+        assert_ne!(
+            compiled, 0,
+            "compiled binary should exit non-zero for `MIN {op} -1`"
+        );
+    }
+}
+
+/// RUNTIME-TRAP. A runtime index past the end of an array reached
+/// `ArrayLoad` unchecked: the AOT binary read whatever followed the
+/// backing stack slot and exited 0 (printing a stack address), while
+/// the IR VM raised the internal error "value not defined". Constant
+/// indices were already rejected at compile time — this pins the
+/// runtime ones.
+#[test]
+fn runtime_index_out_of_bounds_traps_on_every_backend() {
+    let src = r#"
+        fn main() -> u64 {
+            val arr = [1u64, 2u64, 3u64]
+            var i: u64 = 10u64
+            arr[i]
+        }
+    "#;
+    let core = core_modules_dir();
+    let mut interp_opts = RunOptions::default();
+    interp_opts.core_modules_dir = Some(core.as_path());
+    assert!(
+        interpreter::run_source(src, "index_oob.t", &interp_opts).is_err(),
+        "the interpreter should refuse the out-of-bounds read"
+    );
+
+    let compiled = try_compiler_exit_code(src, "index_oob", true)
+        .expect("the program should still compile — the guard is a runtime trap");
+    assert_ne!(
+        compiled, 0,
+        "compiled binary should exit non-zero rather than read past the array"
+    );
+}
+
+/// RUNTIME-TRAP. The bounds guard adjusts a negative runtime index the
+/// way the tree-walker does (`arr[-1i64]` is the last element), so the
+/// backends agree on the in-bounds negative cases too — they did not
+/// before, since the lowered lanes indexed with the raw negative value.
+#[test]
+fn negative_runtime_index_match() {
+    let src = r#"
+        fn main() -> i64 {
+            val arr = [10i64, 20i64, 30i64]
+            var i: i64 = 0i64 - 1i64
+            println(arr[i])
+            var j: i64 = 0i64 - 3i64
+            println(arr[j])
+            arr[i]
+        }
+    "#;
+    assert_consistent(src, "negative_runtime_index");
+}
+
 #[test]
 fn top_level_const_match() {
     let src = r#"

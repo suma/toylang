@@ -49,7 +49,8 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | 関心事 | 型検査 | tree-walker | lowering | IR VM 実行 |
 |---|---|---|---|---|
 | 二項演算 | `type_checker/expression.rs::visit_binary` | `evaluation/operators.rs::evaluate_binary` | `compiler_lower/src/expr_ops.rs::lower_binary` | `ir_vm/dispatch.rs::eval_binop` |
-| 算術 guard (u64 underflow) | — | `evaluation/operators.rs::evaluate_arithmetic_op_v` | `expr_ops.rs::emit_u64_underflow_guard` | (guard は IR に含まれる) |
+| 実行時トラップ (RUNTIME-TRAP: u64 underflow / 0 除算 / `MIN / -1`) | — | `evaluation/operators.rs::evaluate_arithmetic_op_v` | `expr_ops.rs` の `emit_u64_underflow_guard` / `emit_div_by_zero_guard` / `emit_div_overflow_guard` (どれも `emit_trap_unless` 経由) | (guard は IR に含まれる) |
+| 添字境界の実行時トラップ | — | `evaluation/slice.rs::resolve_array_index` | `array_access.rs::emit_index_guard` (定数 index は `resolve_const_index` がコンパイル時に弾く) | (guard は IR に含まれる) |
 | 代入 | `type_checker/expression.rs::visit_assign` | `evaluation/operators.rs` | `compiler_lower/src/assign.rs::lower_assign` | — |
 | 演算子オーバーロード | `type_checker/expression.rs::visit_arith_binary` | `evaluation/operators.rs` | `compiler_lower/src/expr_ops.rs` | — |
 | キャスト (`as`) | `type_checker/collections.rs` | `evaluation/expression.rs` | `compiler_lower/src/expr.rs` | `ir_vm/dispatch.rs` |

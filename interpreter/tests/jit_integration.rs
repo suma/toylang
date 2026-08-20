@@ -1149,3 +1149,32 @@ fn u64_underflow_traps_under_the_jit() {
     );
     assert_ne!(output.status.code(), Some(0));
 }
+
+#[cfg(feature = "jit")]
+#[test]
+fn integer_division_by_zero_traps_under_the_jit() {
+    // RUNTIME-TRAP. Cranelift's `sdiv` / `udiv` trap on a zero divisor
+    // on their own, but with a machine-level trap that names nothing in
+    // the toylang source; the guard routes through the panic helper so
+    // the JIT prints what the other three backends print. Spawned for
+    // the same reason as the test above: the helper exits the process.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("div_by_zero.t");
+    std::fs::write(
+        &path,
+        "fn main() -> u64 {\n    var z: u64 = 0u64\n    10u64 / z\n}\n",
+    )
+    .unwrap();
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_interpreter"))
+        .arg(&path)
+        .env("INTERPRETER_JIT", "1")
+        .output()
+        .expect("spawn interpreter");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("integer division by zero"),
+        "the JIT should raise a toylang panic for `/` by zero, got: {stderr}"
+    );
+    assert_ne!(output.status.code(), Some(0));
+}

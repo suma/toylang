@@ -841,6 +841,38 @@ impl<'a, 'b> State<'a, 'b> {
                     self.builder.ins().trap(TrapCode::user(1).expect("non-zero"));
                     self.switch_to(cont_blk);
                 }
+                // RUNTIME-TRAP: guard integer division / remainder by
+                // zero. Cranelift's `sdiv` / `udiv` trap on their own,
+                // but with a machine-level trap that says nothing about
+                // the toylang source; routing through the helper gives
+                // the same message the other three backends print.
+                if matches!(op, Operator::IDiv | Operator::IMod) {
+                    let ok = self.builder.ins().icmp_imm(IntCC::NotEqual, r, 0);
+                    let fail_blk = self.builder.create_block();
+                    let cont_blk = self.builder.create_block();
+                    self.brif(ok, cont_blk, fail_blk);
+                    self.switch_to(fail_blk);
+                    self.call_helper(HelperKind::PanicDivByZero, &[])?;
+                    self.builder.ins().trap(TrapCode::user(1).expect("non-zero"));
+                    self.switch_to(cont_blk);
+                }
+                // RUNTIME-TRAP: signed `MIN / -1` faults in `sdiv`.
+                // Guarded as a nested branch so the common path pays
+                // one comparison.
+                if matches!(op, Operator::IDiv | Operator::IMod) && signed {
+                    let is_minus_one = self.builder.ins().icmp_imm(IntCC::Equal, r, -1);
+                    let check_blk = self.builder.create_block();
+                    let cont_blk = self.builder.create_block();
+                    self.brif(is_minus_one, check_blk, cont_blk);
+                    self.switch_to(check_blk);
+                    let is_min = self.builder.ins().icmp_imm(IntCC::Equal, l, i64::MIN);
+                    let fail_blk = self.builder.create_block();
+                    self.brif(is_min, fail_blk, cont_blk);
+                    self.switch_to(fail_blk);
+                    self.call_helper(HelperKind::PanicDivOverflow, &[])?;
+                    self.builder.ins().trap(TrapCode::user(1).expect("non-zero"));
+                    self.switch_to(cont_blk);
+                }
                 let v = match op {
                     Operator::IAdd => self.builder.ins().iadd(l, r),
                     Operator::ISub => self.builder.ins().isub(l, r),

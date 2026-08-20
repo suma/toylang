@@ -742,6 +742,24 @@ impl Type {
         matches!(self, Type::F64)
     }
 
+    /// Whether values of this type are integers of any width and
+    /// signedness. Used by the runtime-trap guards (RUNTIME-TRAP),
+    /// which apply to every integer width but not to `F64` (IEEE
+    /// division by zero yields an infinity rather than trapping).
+    pub fn is_integer(self) -> bool {
+        matches!(
+            self,
+            Type::I64
+                | Type::U64
+                | Type::I8
+                | Type::U8
+                | Type::I16
+                | Type::U16
+                | Type::I32
+                | Type::U32
+        )
+    }
+
     pub fn produces_value(self) -> bool {
         !matches!(self, Type::Unit)
     }
@@ -1291,6 +1309,72 @@ pub enum Const {
 }
 
 impl Const {
+    /// The zero constant for an integer type, or `None` for
+    /// non-integer types. RUNTIME-TRAP's divide-by-zero and
+    /// bounds guards compare an operand against zero and need the
+    /// constant to carry the operand's own width, since the IR's
+    /// `BinOp` requires both sides to share a type.
+    pub fn zero(ty: Type) -> Option<Const> {
+        match ty {
+            Type::I64 => Some(Const::I64(0)),
+            Type::U64 => Some(Const::U64(0)),
+            Type::I8 => Some(Const::I8(0)),
+            Type::U8 => Some(Const::U8(0)),
+            Type::I16 => Some(Const::I16(0)),
+            Type::U16 => Some(Const::U16(0)),
+            Type::I32 => Some(Const::I32(0)),
+            Type::U32 => Some(Const::U32(0)),
+            _ => None,
+        }
+    }
+
+    /// A `usize` as a constant of integer type `ty`, or `None` when
+    /// the value does not fit (or `ty` is not an integer). The
+    /// RUNTIME-TRAP bounds guard uses this to materialise an array's
+    /// length in the index expression's own type: `BinOp` requires
+    /// both sides to share a type, and a length that does not fit the
+    /// index type means every value of that type is in bounds, so the
+    /// guard can be skipped entirely.
+    /// The most negative value of a signed integer type, or `None` for
+    /// any other type. Paired with `minus_one` by the signed-division
+    /// overflow guard: `MIN / -1` has no representable result, and
+    /// cranelift's `sdiv` faults on it (the compiled binary died with
+    /// SIGILL) while the interpreter wrapped back to `MIN`.
+    pub fn signed_min(ty: Type) -> Option<Const> {
+        match ty {
+            Type::I64 => Some(Const::I64(i64::MIN)),
+            Type::I8 => Some(Const::I8(i8::MIN)),
+            Type::I16 => Some(Const::I16(i16::MIN)),
+            Type::I32 => Some(Const::I32(i32::MIN)),
+            _ => None,
+        }
+    }
+
+    /// `-1` in a signed integer type, or `None` for any other type.
+    pub fn minus_one(ty: Type) -> Option<Const> {
+        match ty {
+            Type::I64 => Some(Const::I64(-1)),
+            Type::I8 => Some(Const::I8(-1)),
+            Type::I16 => Some(Const::I16(-1)),
+            Type::I32 => Some(Const::I32(-1)),
+            _ => None,
+        }
+    }
+
+    pub fn from_usize_in(ty: Type, v: usize) -> Option<Const> {
+        match ty {
+            Type::I64 => i64::try_from(v).ok().map(Const::I64),
+            Type::U64 => u64::try_from(v).ok().map(Const::U64),
+            Type::I8 => i8::try_from(v).ok().map(Const::I8),
+            Type::U8 => u8::try_from(v).ok().map(Const::U8),
+            Type::I16 => i16::try_from(v).ok().map(Const::I16),
+            Type::U16 => u16::try_from(v).ok().map(Const::U16),
+            Type::I32 => i32::try_from(v).ok().map(Const::I32),
+            Type::U32 => u32::try_from(v).ok().map(Const::U32),
+            _ => None,
+        }
+    }
+
     pub fn ty(self) -> Type {
         match self {
             Const::I64(_) => Type::I64,

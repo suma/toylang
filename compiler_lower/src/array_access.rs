@@ -23,7 +23,7 @@ use super::bindings::{
     TupleElementBinding,
 };
 use super::FunctionLower;
-use crate::ir::{ArraySlotId, BinOp, Const, InstKind, LocalId, Type, ValueId};
+use crate::ir::{ArraySlotId, BinOp, Const, InstKind, LocalId, Terminator, Type, ValueId};
 
 /// Result of folding a constant array index against the array length.
 pub(super) enum ConstIndex {
@@ -190,6 +190,97 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
+    /// RUNTIME-TRAP: bounds-check a **runtime** array index and return
+    /// the index to use for the access.
+    ///
+    /// Constant indices are folded (and rejected at compile time) by
+    /// `resolve_const_index`; this covers the values that only exist at
+    /// run time, which previously reached `ArrayLoad` / `ArrayStore`
+    /// unchecked. Unchecked, `arr[10u64]` on a 3-element array read
+    /// whatever followed the backing slot: the AOT binary printed a
+    /// stack address and exited 0, and the IR VM raised an internal
+    /// "value not defined" error rather than a toylang panic.
+    ///
+    /// A signed index is first adjusted the way the tree-walker adjusts
+    /// it — `arr[-1i64]` is the last element — so all four engines agree
+    /// on negative runtime indices as they already do on negative
+    /// constant ones. After adjustment a still-negative index is out of
+    /// bounds, which is why the signed path needs the second
+    /// comparison; on the unsigned path the single `idx < length` test
+    /// is sufficient.
+    fn emit_index_guard(
+        &mut self,
+        idx: ValueId,
+        idx_ty: Type,
+        length: usize,
+    ) -> Result<ValueId, String> {
+        let Some(len_const) = Const::from_usize_in(idx_ty, length) else {
+            // Either a non-integer index (the type checker rejects
+            // those) or a length too large for the index type, in
+            // which case every value of that type is in bounds.
+            return Ok(idx);
+        };
+        let zero_const = Const::zero(idx_ty).expect("integer type has a zero");
+        let mut idx = idx;
+        if idx_ty.is_signed() {
+            let local = self.module.function_mut(self.func_id).add_local(idx_ty);
+            self.emit(InstKind::StoreLocal { dst: local, src: idx }, None);
+            let zero = self
+                .emit(InstKind::Const(zero_const), Some(idx_ty))
+                .expect("Const returns a value");
+            let is_neg = self
+                .emit(
+                    InstKind::BinOp { op: BinOp::Lt, lhs: idx, rhs: zero },
+                    Some(Type::Bool),
+                )
+                .expect("BinOp returns a value");
+            let adjust = self.fresh_block();
+            let merge = self.fresh_block();
+            self.terminate(Terminator::Branch {
+                cond: is_neg,
+                then_blk: adjust,
+                else_blk: merge,
+            });
+            self.switch_to(adjust);
+            let len_v = self
+                .emit(InstKind::Const(len_const), Some(idx_ty))
+                .expect("Const returns a value");
+            let adjusted = self
+                .emit(
+                    InstKind::BinOp { op: BinOp::Add, lhs: idx, rhs: len_v },
+                    Some(idx_ty),
+                )
+                .expect("BinOp returns a value");
+            self.emit(InstKind::StoreLocal { dst: local, src: adjusted }, None);
+            self.terminate(Terminator::Jump(merge));
+            self.switch_to(merge);
+            idx = self
+                .emit(InstKind::LoadLocal(local), Some(idx_ty))
+                .expect("LoadLocal returns a value");
+            let zero = self
+                .emit(InstKind::Const(zero_const), Some(idx_ty))
+                .expect("Const returns a value");
+            let non_negative = self
+                .emit(
+                    InstKind::BinOp { op: BinOp::Ge, lhs: idx, rhs: zero },
+                    Some(Type::Bool),
+                )
+                .expect("BinOp returns a value");
+            self.emit_trap_unless(non_negative, self.contract_msgs.index_out_of_bounds);
+        }
+        let len_v = self
+            .emit(InstKind::Const(len_const), Some(idx_ty))
+            .expect("Const returns a value");
+        let in_bounds = self
+            .emit(
+                InstKind::BinOp { op: BinOp::Lt, lhs: idx, rhs: len_v },
+                Some(Type::Bool),
+            )
+            .expect("BinOp returns a value");
+        self.emit_trap_unless(in_bounds, self.contract_msgs.index_out_of_bounds);
+        Ok(idx)
+    }
+
     /// Lower `arr[index]`. Phase S only handles single-element
     /// access on a bare identifier bound to an array, with a
     /// constant index folding to a direct LoadLocal on the matching
@@ -284,6 +375,8 @@ impl<'a> FunctionLower<'a> {
                 let raw_idx = self
                     .lower_expr(index_ref)?
                     .ok_or_else(|| "array index produced no value".to_string())?;
+                let idx_ty = self.value_scalar(index_ref).unwrap_or(Type::U64);
+                let raw_idx = self.emit_index_guard(raw_idx, idx_ty, length)?;
                 let leaf_count_v = self
                     .emit(
                         InstKind::Const(Const::U64(leaf_count as u64)),
@@ -349,9 +442,13 @@ impl<'a> FunctionLower<'a> {
             ConstIndex::OutOfBounds => {
                 return Err(format!("array index out of bounds (length {length})"));
             }
-            ConstIndex::NotConstant => self
-                .lower_expr(index_ref)?
-                .ok_or_else(|| "array index produced no value".to_string())?,
+            ConstIndex::NotConstant => {
+                let raw_idx = self
+                    .lower_expr(index_ref)?
+                    .ok_or_else(|| "array index produced no value".to_string())?;
+                let idx_ty = self.value_scalar(index_ref).unwrap_or(Type::U64);
+                self.emit_index_guard(raw_idx, idx_ty, length)?
+            }
         };
         Ok(self.emit(
             InstKind::ArrayLoad { slot, index: idx_v, elem_ty: element_ty },
@@ -411,9 +508,13 @@ impl<'a> FunctionLower<'a> {
             ConstIndex::OutOfBounds => {
                 return Err(format!("array index out of bounds (length {length})"));
             }
-            ConstIndex::NotConstant => self
-                .lower_expr(index_ref)?
-                .ok_or_else(|| "array index produced no value".to_string())?,
+            ConstIndex::NotConstant => {
+                let raw_idx = self
+                    .lower_expr(index_ref)?
+                    .ok_or_else(|| "array index produced no value".to_string())?;
+                let idx_ty = self.value_scalar(index_ref).unwrap_or(Type::U64);
+                self.emit_index_guard(raw_idx, idx_ty, length)?
+            }
         };
         let v = self
             .lower_expr(value)?

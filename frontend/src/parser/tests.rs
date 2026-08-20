@@ -474,6 +474,27 @@ mod parser_tests {
     }
 
     #[test]
+    fn a_block_with_more_than_1000_statements_parses() {
+        // FRONTEND-PERF (c): `parse_block_impl` used to count
+        // iterations and bail past 1000, which hardened a loop guard
+        // into a "no more than 1000 statements per block" language
+        // limit (`Maximum parse iterations reached in block`). The
+        // guard is now a no-progress check, so large blocks must parse.
+        let mut source = String::from("fn main() -> u64 {\n");
+        for i in 0..1500u32 {
+            source.push_str(&format!("    val x{i} = {i}u64\n"));
+        }
+        source.push_str("    0u64\n}\n");
+        let mut parser = ParserWithInterner::new(&source);
+        let result = parser.parse_program();
+        assert!(
+            result.is_ok(),
+            "parse failed for a 1500-statement block: {:?}",
+            parser.errors
+        );
+    }
+
+    #[test]
     fn parser_util_lookahead() {
         let mut p = ParserWithInterner::new("1u64 + 2u64");
 

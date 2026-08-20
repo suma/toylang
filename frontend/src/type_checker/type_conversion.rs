@@ -248,18 +248,14 @@ impl<'a> TypeCheckerVisitor<'a> {
             && let Some(expr) = self.core.expr_pool.get(expr_ref) {
                 match expr {
                     Expr::Identifier(name) => {
-                        // Find all Number expressions that might belong to this variable
-                        // and record the context type
-                        for i in 0..self.core.expr_pool.len() {
-                            if let Some(candidate_expr) = self.core.expr_pool.get(&ExprRef(i as u32))
-                                && let Expr::Number(_) = candidate_expr {
-                                    let candidate_ref = ExprRef(i as u32);
-                                    // Check if this Number might be associated with this variable
-                                    if self.is_number_for_variable(name, &candidate_ref) {
-                                        self.type_inference.number_usage_context.push((candidate_ref, resolved_ty.clone()));
-                                    }
-                                }
-                        }
+                        // FRONTEND-PERF: `is_number_for_variable` matches
+                        // only the single Number expr this variable is
+                        // mapped to, so the old full-pool scan was a
+                        // one-entry lookup in disguise.
+                        if let Some(&candidate_ref) = self.type_inference.variable_expr_mapping.get(&name)
+                            && let Some(Expr::Number(_)) = self.core.expr_pool.get(&candidate_ref) {
+                                self.type_inference.number_usage_context.push((candidate_ref, resolved_ty.clone()));
+                            }
                     }
                     Expr::Number(_) => {
                         // Direct Number literal - record its resolved type
@@ -311,18 +307,15 @@ impl<'a> TypeCheckerVisitor<'a> {
             && let Expr::Identifier(name) = expr
                 && let Some(var_type) = self.context.get_var(name)
                     && var_type == TypeDecl::Number {
-                        // Find and record the Number expression for this variable
-                        for i in 0..self.core.expr_pool.len() {
-                            if let Some(candidate_expr) = self.core.expr_pool.get(&ExprRef(i as u32))
-                                && let Expr::Number(_) = candidate_expr {
-                                    let candidate_ref = ExprRef(i as u32);
-                                    if self.is_number_for_variable(name, &candidate_ref) {
-                                        self.type_inference.number_usage_context.push((candidate_ref, target_type.clone()));
-                                        // Update variable type in context
-                                        self.context.update_var_type(name, target_type.clone());
-                                    }
-                                }
-                        }
+                        // FRONTEND-PERF: same one-entry lookup as
+                        // `record_number_usage_context` — the old
+                        // full-pool scan matched only this.
+                        if let Some(&candidate_ref) = self.type_inference.variable_expr_mapping.get(&name)
+                            && let Some(Expr::Number(_)) = self.core.expr_pool.get(&candidate_ref) {
+                                self.type_inference.number_usage_context.push((candidate_ref, target_type.clone()));
+                                // Update variable type in context
+                                self.context.update_var_type(name, target_type.clone());
+                            }
                     }
         Ok(())
     }
@@ -331,30 +324,49 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn finalize_number_types(&mut self) -> Result<(), TypeCheckError> {
         // Use recorded context information to transform Number expressions
         let context_info = self.type_inference.number_usage_context.clone();
+
+        // FRONTEND-PERF: the old code scanned `variable_expr_mapping`
+        // (cloned, per entry!) to find which variables map to each
+        // Number node. `finalize_number_types` runs once per function,
+        // so those clones made it O(pool × mapping) per function, on top
+        // of the whole-pool scan in the second pass. Build the
+        // expr -> vars reverse map once — iteration order is preserved
+        // so the "first concrete-typed variable wins" logic below is
+        // unchanged.
+        let mut expr_to_vars: std::collections::HashMap<ExprRef, Vec<DefaultSymbol>> =
+            std::collections::HashMap::with_capacity(self.type_inference.variable_expr_mapping.len());
+        for (var_name, mapped_expr_ref) in &self.type_inference.variable_expr_mapping {
+            expr_to_vars.entry(*mapped_expr_ref).or_default().push(*var_name);
+        }
+
         for (expr_ref, target_type) in &context_info {
             if let Some(expr) = self.core.expr_pool.get(expr_ref)
                 && let Expr::Number(_) = expr {
                     self.transform_numeric_expr(expr_ref, target_type)?;
-                    
                     // Update variable types in context if this expression is mapped to a variable
-                    for (var_name, mapped_expr_ref) in &self.type_inference.variable_expr_mapping.clone() {
-                        if mapped_expr_ref == expr_ref {
+                    if let Some(vars) = expr_to_vars.get(expr_ref) {
+                        for var_name in vars {
                             self.context.update_var_type(*var_name, target_type.clone());
                         }
                     }
                 }
         }
         
-        // Second pass: handle any remaining Number types by using variable context
-        let expr_len = self.core.expr_pool.len();
-        for i in 0..expr_len {
-            if let Some(expr) = self.core.expr_pool.get(&ExprRef(i as u32))
+        // Second pass: handle any remaining Number types by using variable context.
+        // FRONTEND-PERF: iterate only the cached Number nodes instead of
+        // the whole pool (stdlib included), and hash both linear lookups
+        // the old code did per node.
+        let processed: std::collections::HashSet<ExprRef> =
+            context_info.iter().map(|(r, _)| *r).collect();
+        // Clone so the loop body can borrow `self` mutably (the index is
+        // small — one entry per Number literal — and cloning is the same
+        // cost as the iteration that replaces the old whole-pool scan).
+        let number_exprs = self.refresh_number_index().clone();
+        for &expr_ref in &number_exprs {
+            if let Some(expr) = self.core.expr_pool.get(&expr_ref)
                 && let Expr::Number(_) = expr {
-                    let expr_ref = ExprRef(i as u32);
-                    
                     // Skip if already processed in first pass
-                    let already_processed = context_info.iter().any(|(processed_ref, _)| processed_ref == &expr_ref);
-                    if already_processed {
+                    if processed.contains(&expr_ref) {
                         continue;
                     }
                     
@@ -376,9 +388,9 @@ impl<'a> TypeCheckerVisitor<'a> {
                             TypeDecl::UInt64  // Fallback
                         }
                     };
-                    
-                    for (var_name, mapped_expr_ref) in &self.type_inference.variable_expr_mapping {
-                        if mapped_expr_ref == &expr_ref {
+
+                    if let Some(vars) = expr_to_vars.get(&expr_ref) {
+                        for var_name in vars {
                             // Check the current type of this variable in context
                             if let Some(var_type) = self.context.get_var(*var_name)
                                 && var_type != TypeDecl::Number {
@@ -391,14 +403,33 @@ impl<'a> TypeCheckerVisitor<'a> {
                     self.transform_numeric_expr(&expr_ref, &target_type)?;
                     
                     // Update variable types in context if this expression is mapped to a variable
-                    for (var_name, mapped_expr_ref) in &self.type_inference.variable_expr_mapping.clone() {
-                        if mapped_expr_ref == &expr_ref {
+                    if let Some(vars) = expr_to_vars.get(&expr_ref) {
+                        for var_name in vars {
                             self.context.update_var_type(*var_name, target_type.clone());
                         }
                     }
                 }
         }
         Ok(())
+    }
+
+    /// Extend the cached Number-node index to cover the current pool,
+    /// then return it. The pool can grow during type-checking
+    /// (desugaring `?`, string interpolation and Display rewrites all
+    /// call `expr_pool.add`), so the index is filled incrementally up to
+    /// the current length rather than built once up front.
+    fn refresh_number_index(&mut self) -> &Vec<ExprRef> {
+        let pool_len = self.core.expr_pool.len();
+        let from = self.type_inference.number_expr_index_scanned;
+        if from < pool_len {
+            for i in from..pool_len {
+                if let Some(Expr::Number(_)) = self.core.expr_pool.get(&ExprRef(i as u32)) {
+                    self.type_inference.number_expr_index.push(ExprRef(i as u32));
+                }
+            }
+            self.type_inference.number_expr_index_scanned = pool_len;
+        }
+        &self.type_inference.number_expr_index
     }
 
     /// Helper method to resolve numeric types with automatic conversion

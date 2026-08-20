@@ -33,6 +33,27 @@
   --time より新しい成果物は残す) と `cargo clean` (全削除) を
   CLAUDE.md に追記し、`cargo install cargo-sweep` で導入済み。
   `cargo sweep --dry-run` で削除対象を先に確認する流儀も記載。
+- **FRONTEND-PERF: frontend の O(n²) を 3 点で解消 (★★★)** — コンパイル時間は
+  frontend が支配 (24k 行 99.97s が 0.14s、**~700x**)。詳細な測定と設計判断は
+  [`SEPARATE_COMPILATION.md`](SEPARATE_COMPILATION.md)。
+  (a) `Parser::offset_to_line_col` (`frontend/src/parser/core.rs`) の
+  **先頭から線形走査**を、`Parser::new` で 1 回構築する行頭テーブル +
+  二分探索に置換 (列は従来どおり char 数、141 箇所の呼び出し元)。
+  (b) `finalize_number_types` (`type_checker/type_conversion.rs`) の
+  **関数ごとの全 ExprPool 走査**を、遅延構築の Number ノードインデックス
+  (`TypeInferenceState::number_expr_index`、desugar でプールが伸びるので
+  インクリメンタル) に置換。`record_number_usage_context` /
+  `propagate_to_number_variable` の全プール走査は `variable_expr_mapping`
+  の 1 回引きと等価 (is_number_for_variable が一致するのは唯一のマップ先
+  だけ) と判明し直接 lookup に。`finalize_number_types` 内の
+  `variable_expr_mapping` を**エントリごとに clone** していた 2 箇所も
+  expr→vars の逆引き (反復順維持、first-match と 全 update を保存) に。
+  (c) `parse_block_impl` の `MAX_ITERATIONS = 1000` (**1000 文超のブロックが
+  パースエラーになる言語制限**だった) を、トークン位置が進まないことの検知
+  (`current_position` 比較) に置換 — 1500 文ブロックが通る。
+  **検証**: `--emit=ir` が 3 サイズともバイト一致、テスト 2002 グリーン
+  (新規 3 件: offset_to_line_col の char/byte・行境界ユニットテスト 2 +
+  1500 文ブロック)、clippy 無警告。
 
 ### 2026-08-19
 - **TEST-PERF: AOT の demand-driven lowering + codegen 刈り込み (★★★)** —
@@ -640,6 +661,12 @@
 
 ### インクリメンタルコンパイル
 
+- **FRONTEND-PERF** ★★★ — ~~**コンパイル時間は frontend の O(n²) が支配する**~~ **解消 (2026-08-20)**: (a) `offset_to_line_col` の行頭テーブル化 / (b) `finalize_number_types` の Number インデックス化 / (c) `MAX_ITERATIONS=1000` の撤廃を実施 (24k 行 99.97s → 0.14s、バイト一致。詳細は完了済み節 2026-08-20 と [`SEPARATE_COMPILATION.md`](SEPARATE_COMPILATION.md))。
+- **AOT の中間オブジェクト (分離コンパイル) は見送り** — 検討の記録は
+  [`SEPARATE_COMPILATION.md`](SEPARATE_COMPILATION.md)。削れるのは stdlib の
+  固定費 ~6-7ms/回で、同じプログラムの実 `cc` リンクが 55ms。着手条件
+  (lowering が全体の 30% 超) と最小設計も同文書に記載。
+
 - **INCREMENTAL-COMPILATION の残** — Phase 1〜5 は完了 (設計と実測は [`INCREMENTAL_COMPILATION.md`](INCREMENTAL_COMPILATION.md))。統合パスの削減
   (placeholder 2 パス + HashMap → 1 パス + オフセット演算、シンボル翻訳キャッシュ)
   は **2026-08-18 に landing** (integrate 本体 ~43% 削減)。残るのは
@@ -762,4 +789,5 @@
 - デフォルト引数 / 名前付き引数は不可 (`f(a: u64, b: u64 = 1u64)` / `f(a: 1u64)`)。導入予定も無い。
 - `extern fn` の generic params は parser では受理されるが、JIT / AOT が per-instance シンボル名を持たないため interpreter でのみ動く (`#195b`)。
 - `package` 宣言 / `import` path のセグメントに primitive type キーワード (`i64` / `f64` / ...) は使えない (`core/std/i64.t` が `package` 宣言を省いているのはこのため)。
+- 関数名に primitive type キーワードは使えない (`fn f64(...)` は `expected function name`)。
 - 3-part qualified call (`std::math::abs(x)`) は parser が **last 名だけを採る**。名前が一意なら結果的に解決するが、意図した経路ではない (`#185残`)。

@@ -171,18 +171,17 @@ pub fn parse_block(parser: &mut Parser) -> ParserResult<ExprRef> {
 }
 
 pub fn parse_block_impl(parser: &mut Parser, mut statements: Vec<StmtRef>) -> ParserResult<Vec<StmtRef>> {
-    // Add maximum iteration limit to prevent infinite loops
-    const MAX_ITERATIONS: usize = 1000;
-    let mut iteration_count = 0;
+    // FRONTEND-PERF: non-progress detection replaces the old
+    // `MAX_ITERATIONS = 1000` counter, which had hardened into a
+    // "no more than 1000 statements per block" language limit. Every
+    // iteration below advances the token position (the error path
+    // consumes a token; a successful statement consumes its tokens), so
+    // an infinite loop can only happen if a statement parser returns
+    // `Ok` without consuming any token — detect exactly that instead of
+    // counting iterations.
+    let mut last_position: Option<usize> = None;
     
     loop {
-        // Safety check for infinite loop prevention
-        iteration_count += 1;
-        if iteration_count > MAX_ITERATIONS {
-            parser.collect_error("Maximum parse iterations reached in block - possible infinite loop");
-            return Ok(statements);
-        }
-        
         // Skip newlines
         while parser.peek() == Some(&Kind::NewLine) {
             parser.next();
@@ -195,6 +194,17 @@ pub fn parse_block_impl(parser: &mut Parser, mut statements: Vec<StmtRef>) -> Pa
             }
             _ => {}
         }
+
+        // Non-progress guard: if a full iteration left the cursor where
+        // the previous one started, a statement parsed without consuming
+        // tokens. `last_position` starts `None` so the first iteration
+        // never trips it.
+        let position = parser.current_position().map(|p| p.start);
+        if last_position == position {
+            parser.collect_error("Maximum parse iterations reached in block - possible infinite loop");
+            return Ok(statements);
+        }
+        last_position = position;
         
         // Store current state before parsing
         let token_before = parser.peek().cloned();

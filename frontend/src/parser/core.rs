@@ -223,6 +223,25 @@ pub struct Parser<'a> {
     /// module loader); test / bench / inline-string parser sites
     /// typically leave it unset.
     pub source_file: Option<String>,
+    /// Byte offset of the start of every line, built once in `new`.
+    /// FRONTEND-PERF: `offset_to_line_col` used to walk the whole input
+    /// from the top on every call (141 call sites), making the parse
+    /// O(n²) on large files (20k lines ~100s). A binary search over
+    /// this table is O(log lines) plus one line-length char count.
+    line_starts: Vec<usize>,
+}
+
+/// Offsets where each line begins (line 1 starts at 0, every later
+/// line right after a `\n`).
+fn build_line_starts(input: &str) -> Vec<usize> {
+    let mut starts = Vec::with_capacity(input.len() / 32 + 1);
+    starts.push(0);
+    for (i, b) in input.bytes().enumerate() {
+        if b == b'\n' {
+            starts.push(i + 1);
+        }
+    }
+    starts
 }
 
 impl<'a> Parser<'a> {
@@ -249,6 +268,7 @@ impl<'a> Parser<'a> {
             type_aliases: HashMap::new(),
             declared_type_generics: HashMap::new(),
             source_file: None,
+            line_starts: build_line_starts(input),
         }
     }
 
@@ -389,24 +409,21 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Calculate line and column from absolute offset
+    /// Calculate line and column from absolute offset.
+    ///
+    /// FRONTEND-PERF: binary search over the precomputed line-start
+    /// table. Line is 1-based; column is the 1-based count of chars
+    /// from the start of the line to `offset` (not bytes — the old
+    /// linear walk counted `char_indices`, so diagnostics report
+    /// columns in characters).
     fn offset_to_line_col(&self, offset: usize) -> (u32, u32) {
-        let mut line = 1u32;
-        let mut column = 1u32;
-
-        for (i, ch) in self.input.char_indices() {
-            if i >= offset {
-                break;
-            }
-            if ch == '\n' {
-                line += 1;
-                column = 1;
-            } else {
-                column += 1;
-            }
-        }
-
-        (line, column)
+        let offset = offset.min(self.input.len());
+        // `partition_point` counts the line starts <= offset; the first
+        // entry is 0 so the count is at least 1.
+        let line_index = self.line_starts.partition_point(|&s| s <= offset) - 1;
+        let line_start = self.line_starts[line_index];
+        let column = self.input[line_start..offset].chars().count() as u32 + 1;
+        (line_index as u32 + 1, column)
     }
 
     pub fn next(&mut self) {
@@ -639,5 +656,39 @@ impl<'a> Parser<'a> {
             }
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod offset_to_line_col_tests {
+    use super::*;
+
+    /// FRONTEND-PERF (a): pin the binary-search `offset_to_line_col`
+    /// against the linear walk it replaced. Columns are counted in
+    /// characters, not bytes — a multi-byte char before the offset
+    /// advances the column by one (offset 6 in the input below is
+    /// `c`, which follows the 3-byte `雪`), and lines are 1-based with
+    /// the first line starting at offset 0.
+    #[test]
+    fn offset_to_line_col_counts_characters_and_lines() {
+        let mut interner = DefaultStringInterner::new();
+        // a b \n 雪(3 bytes) c \n
+        let input = "ab\n\u{96ea}c\n";
+        let parser = Parser::new(input, &mut interner);
+        assert_eq!(parser.offset_to_line_col(0), (1, 1));
+        assert_eq!(parser.offset_to_line_col(1), (1, 2));
+        assert_eq!(parser.offset_to_line_col(2), (1, 3));
+        assert_eq!(parser.offset_to_line_col(3), (2, 1)); // `雪` first byte
+        assert_eq!(parser.offset_to_line_col(6), (2, 2)); // `c` — one char after `雪`
+        assert_eq!(parser.offset_to_line_col(7), (2, 3)); // `\n` on line 2
+        assert_eq!(parser.offset_to_line_col(8), (3, 1)); // EOF after trailing `\n`
+    }
+
+    #[test]
+    fn offset_past_end_clamps_to_input_len() {
+        let mut interner = DefaultStringInterner::new();
+        let input = "hi";
+        let parser = Parser::new(input, &mut interner);
+        assert_eq!(parser.offset_to_line_col(99), (1, 3)); // clamps to len 2 -> column 3
     }
 }

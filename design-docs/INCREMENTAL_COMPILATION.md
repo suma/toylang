@@ -126,6 +126,14 @@ file reads + bincode deserialization) is left as-is: bundling the 16
 all-modules-or-nothing, which is a trade-off, not a win, for a stdlib
 that changes rarely but must stay individually invalidatable.
 
+## Phase 5 revisited (2026-08-19)
+
+The same question was asked again from the AOT side ("should the compiler
+emit a parsed / semantically-analysed intermediate object and link from
+it?") and re-measured. Answer unchanged, plus the actual bottleneck is
+now located: see
+[`SEPARATE_COMPILATION.md`](SEPARATE_COMPILATION.md).
+
 ## Remaining Work for Full Incremental Compilation
 
 ### 1. Full AST Serialization (Phase 0 prerequisite)

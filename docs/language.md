@@ -3317,15 +3317,44 @@ part of its signature:
 ```rust
 # "allocates nothing" — enforced, not a comment that rots
 fn triangle(n: u64) -> u64
-    ensures __builtin_live_bytes() == old(__builtin_live_bytes())
+    ensures allocates(0u64)
 { ... }
 
-# "requests at most 256 bytes, and hands every one of them back"
+# "requests at most 256 bytes, in one go, and hands them all back"
 fn scratch(n: u64) -> u64
-    ensures __builtin_cumulative_bytes() - old(__builtin_cumulative_bytes()) <= 256u64
-    ensures __builtin_live_bytes() == old(__builtin_live_bytes())
+    ensures allocates(256u64)
+    ensures allocations(1u64)
+    ensures retains(0u64)
 { ... }
 ```
+
+`allocates(N)` / `retains(N)` / `allocations(N)` are contextual forms
+usable only inside an `ensures` clause. Each desugars to a comparison
+against the matching counter's entry snapshot:
+
+| Clause | Counter | Question it answers |
+|---|---|---|
+| `allocates(N)` | `__builtin_cumulative_bytes()` | were any bytes requested at all |
+| `retains(N)` | `__builtin_live_bytes()` | were any bytes not handed back |
+| `allocations(N)` | `__builtin_alloc_count()` | how many requests were made |
+
+The three do not collapse into one: `retains(0)` also holds for a
+function that allocated and freed, while `allocates(0)` forbids the
+request in the first place.
+
+A violated budget reports the measurement, which a hand-written
+predicate cannot:
+
+```
+Contract violation: `ensures` clause #1 of function `leaky`: retained 128 bytes, budget 0 bytes
+```
+
+The same sentence comes out of a compiled binary. Writing the
+comparison by hand still works and is the way to reach a counter the
+three clauses do not cover — but note that a subtraction underflows
+when the counter *falls* (a function that frees a pointer it was
+handed), so prefer `counter() <= old(counter()) + N`, which is what
+the sugar expands to.
 
 The counters are request-based and identical across backends, so an
 allocation contract means the same thing in the interpreter and in a

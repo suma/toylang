@@ -327,9 +327,10 @@ fn main() -> u64 {
   **`requires` は RUNTIME-TRAP の guard を消す** (CONTRACT-ELISION): `requires b != 0`
   で 0 除算 guard、`requires a >= b` で u64 underflow guard が lowering から落ちる
   (パラメータ名のみ、`--release` では契約が検査されないので guard は残る)。
-  アロケーションカウンタと組み合わせると**メモリ挙動をシグネチャで約束できる**
-  (`ensures __builtin_live_bytes() == old(__builtin_live_bytes())`)。例:
-  `interpreter/example/alloc_contract.t`。関数 / メソッドの `-> ReturnType` の後、body `{` の前に複数並べられる。各節は bool 式で、AND 合成。`ensures` 内では `result` が戻り値を指す。違反時は `ContractViolation` エラーで停止。`INTERPRETER_CONTRACTS=all|pre|post|off`（unset = `all`）で `requires` / `ensures` を独立に切り替えられる（D の `-release` 相当）
+  アロケーションカウンタと組み合わせると**メモリ挙動をシグネチャで約束できる**。
+  専用の節 **`ensures allocates(N)` / `retains(N)` / `allocations(N)`** (ALLOC-CONTRACT-SUGAR)
+  があり、破れると実測値が出る (`retained 128 bytes, budget 0 bytes`、3 backend 同文言)。
+  例: `interpreter/example/alloc_contract.t`。関数 / メソッドの `-> ReturnType` の後、body `{` の前に複数並べられる。各節は bool 式で、AND 合成。`ensures` 内では `result` が戻り値を指す。違反時は `ContractViolation` エラーで停止。`INTERPRETER_CONTRACTS=all|pre|post|off`（unset = `all`）で `requires` / `ensures` を独立に切り替えられる（D の `-release` 相当）
 - **可視性・外部連携**: `pub`（公開）, `extern`（外部関数）
 - **モジュールシステム**: `package`, `import`, `as`
 - **演算子**:

@@ -11,6 +11,14 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-21
+- **ALLOC-CONTRACT-SUGAR: `ensures allocates(N)` / `retains(N)` / `allocations(N)`** —
+  アロケーション契約の専用節。破れると**実測値**が出る
+  (`retained 128 bytes, budget 0 bytes`、3 バックエンド同文言)。
+  展開は `counter() <= old(counter()) + N` — 生の式で書く
+  `counter() - old(counter()) <= N` は live が減る関数で u64
+  アンダーフローする罠があり、糖衣はそれを避ける。診断のために
+  `Terminator::PanicAllocBudget` + `toy_panic_alloc_budget` を新設。
+  設計と却下案は [`ALLOC_CONTRACT_SUGAR.md`](ALLOC_CONTRACT_SUGAR.md)。
 - **DBC-TRAIT-INHERIT: trait の契約を impl に継承** — trait の method
   シグネチャに書いた `requires` / `ensures` が、それを実装する impl の
   method に適用されるようにした (trait の節が先、impl の節が後で AND)。
@@ -710,29 +718,6 @@
 ### 構文糖衣の候補 (NEW-FEATURES、未着手)
 
 - **OP-OVERLOAD-CHAIN** — `a + b + c` の chained position。現状は let-rhs のみ。binary struct literal operand も対象外。
-- **ALLOC-CONTRACT-SUGAR: アロケーション契約の短い書き方** ★ —
-  **設計検討は [`ALLOC_CONTRACT_SUGAR.md`](ALLOC_CONTRACT_SUGAR.md) に分離**
-  (2026-08-21)。以下は要約。現状は生の式で書く:
-
-  ```rust
-  ensures __builtin_live_bytes() == old(__builtin_live_bytes())
-  ensures __builtin_cumulative_bytes() - old(__builtin_cumulative_bytes()) <= 256u64
-  ```
-
-  `ensures allocates(0)` / `ensures allocates <= 256u64` / 関数修飾子
-  `no_alloc` のような形が候補。**先に決める必要があるのは文法ではなく
-  「何を数えるか」** — `live` 差分 0 は「確保して解放した」も含み、
-  `cumulative` 差分 0 だけが「1 バイトも要求していない」。この 2 つは
-  別の性質で、1 つのキーワードには畳めない (畳むと今の生の式より
-  意味が曖昧になり、糖衣が嘘をつく)。したがって最低 2 語要る
-  (`allocates` / `retains` 等)。
-  **静的検査版と混ぜないこと** — 「heap builtin を呼ぶ関数を推移的に
-  禁止する」のは呼び出しグラフ解析であって実行時契約ではない。
-  同じ綴りに両方の意味を持たせると、契約が実行時に検査されるという
-  今の規約が崩れる。
-  **着手条件**: 実プログラムで生の式を何度も書いて長いと感じてから。
-  現状 example 1 つ (`alloc_contract.t`) しか書き手がいないので、
-  頻度が分かっていない。
 - **`??` (null-coalesce)** ★ — `opt ?? default` で `unwrap_or` の糖衣。
 - **raw / multi-line string literal** ★ — `r"\path"` / `"""..."""`。lexer 拡張のみ。
 - **STR-INTERP-FMT の残** ★ — (a) user 型に spec を渡す API
@@ -829,7 +814,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2046 テスト** (100% 成功、2026-08-21 時点)。
+- 合計 **2057 テスト** (100% 成功、2026-08-21 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、

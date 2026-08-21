@@ -1,8 +1,12 @@
 # ALLOC-CONTRACT-SUGAR — 設計検討
 
-`ensures allocates(0)` のような糖衣を入れるかどうか、入れるなら何を
-どう書けるようにするかの検討。**まだ実装していない。** 着手条件は
-末尾。
+`ensures allocates(0)` のような糖衣の設計検討。**2026-08-21 に実装済み**
+(`allocates` / `retains` / `allocations`、Phase 1 + Phase 2 とも)。
+本文書は決定の記録として残す — 何を却下したか、なぜ 1 語に畳まなかったか
+は、後から触る人が最初に知りたいことなので。
+
+使い方は [`docs/design_by_contract.md`](../docs/design_by_contract.md)、
+文法は [`language.md`](../docs/language.md) の Design by Contract 章。
 
 前提となる既存機能は
 [`docs/design_by_contract.md`](../docs/design_by_contract.md) の
@@ -230,14 +234,38 @@ Contract violation: `retains` budget exceeded in `outer`
 
 ---
 
-## 8. 着手条件
+## 8. 実装の結果 (2026-08-21)
 
-**実プログラムで生の式を何度も書き、長いと感じてから。** 現状の書き手は
-example 2 つ（`alloc_contract.t` / `memory_contract.t`）と
-`design_by_contract.t` だけで、頻度が分かっていない。
+着手条件は「生の式を何度も書いてから」としていたが、判断点 5
+(アンダーフロー) が**生の式を書く人全員が踏む罠**だと分かった時点で、
+頻度と無関係に優先度が上がったので実装した。
 
-ただし問題 (b)（診断に数字が出ない）と判断点 5（アンダーフロー）は
-**頻度と無関係に効く**ので、アロケーション契約を実際に使い始めた時点で
-優先度は上がる。
+決定どおりに入ったもの:
 
-関連: [`todo.md`](todo.md) の ALLOC-CONTRACT-SUGAR。
+- 構文は案 A (関数風)、語は `allocates` / `retains` / `allocations`
+- 展開は `counter() <= old(counter()) + N` (判断点 5 の安全な形)
+- Phase 1 (desugar) と Phase 2 (種別付き診断) を両方
+- 診断は 3 バックエンド同文言
+  (`retained 128 bytes, budget 0 bytes`)
+
+検討時に見えていなかった実装上の要点:
+
+- **`Terminator::PanicAllocBudget` を新設した** — 判断点 4 で予想した
+  とおり `Terminator::Panic` は静的文字列しか運べないので、読み取り値
+  3 つ (entry / current / limit) を運ぶ終端子を足し、`toylang_rt` の
+  `toy_panic_alloc_budget` が整形して exit する。JIT にはシンボル登録が
+  別途要る (`compiler/src/jit.rs`)
+- **文言が 2 箇所に増えた** — `compiler_ir::format_alloc_budget_violation`
+  (interpreter / IR VM) と `toylang_rt` の複製 (no_std で依存を持てない)。
+  `frontend::format_spec` と `toylang_rt` の `Spec` と同じ関係で、
+  drift は `consistency.rs` の
+  `an_allocation_budget_reports_the_same_numbers_on_every_backend` が
+  stderr を突き合わせて検出する
+- **複合述語は budget 節にしない** — `ensures retains(0u64) && result > 0u64`
+  は「budget を含む普通の節」であって budget 節ではない。parser が
+  「糖衣の展開結果が節の根そのものか」を見て判定する
+
+残っている判断点: 3 (静的検査版との名前衝突) は未決のまま。
+将来 `no_alloc` 相当を入れるなら別の綴りを使うこと。
+
+関連: [`todo.md`](todo.md) の完了済み節。

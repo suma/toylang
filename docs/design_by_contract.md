@@ -104,47 +104,65 @@ impl Counter {
 
 ## アロケーション契約
 
-[アロケーションカウンタ](language.md#allocation-counters)は契約から呼べる。
-`old` と組み合わせると、**関数のメモリ挙動をシグネチャに載せられる**。
+**関数のメモリ挙動をシグネチャに載せられる。** 3 つの節が使える:
 
 ```rust
-# "allocates nothing" — 腐るコメントではなく、
+# "1 バイトも確保しない" — 腐るコメントではなく、
 # body に heap 呼び出しが増えた日に止まる節
 fn triangle(n: u64) -> u64
-    ensures __builtin_live_bytes() == old(__builtin_live_bytes())
+    ensures allocates(0u64)
 { ... }
 
-# "最大 256 バイトまで要求し、全部返す"
+# "最大 256 バイトまで要求し、1 回で取り、全部返す"
 fn scratch(n: u64) -> u64
-    ensures __builtin_cumulative_bytes() - old(__builtin_cumulative_bytes()) <= 256u64
-    ensures __builtin_live_bytes() == old(__builtin_live_bytes())
+    ensures allocates(256u64)
+    ensures allocations(1u64)
+    ensures retains(0u64)
 { ... }
 ```
 
-**2 つのカウンタは別のことを言う**ので、意図に合う方を選ぶ:
+| 節 | 数えるもの | 答える問い |
+|---|---|---|
+| `allocates(N)` | 要求したバイト総量 | そもそも確保したか |
+| `retains(N)` | 返さなかったバイト数 | 漏らしていないか |
+| `allocations(N)` | 確保の回数 | 1 回に抑えているか |
 
-| 書きたいこと | 使うカウンタ |
-|---|---|
-| 呼び出しの前後で live が増えない（確保しても返せばよい） | `__builtin_live_bytes()` |
-| そもそも 1 バイトも要求しない | `__builtin_cumulative_bytes()` |
-| 確保回数を縛る（1 回だけ、など） | `__builtin_alloc_count()` |
+**3 つは畳めない。** `retains(0)` は「確保して解放した」関数も通すが、
+`allocates(0)` は 1 バイトの要求も許さない。arena に取る関数を縛るなら
+バイト数ではなく `allocations` が自然、というように、意図に合う軸を選ぶ。
 
-> **差分は「引き算」ではなく「足し算」で書く。** `live` が入口より
-> **減る**関数（引数で渡されたポインタを解放する等）では、
+破れると**実測値が出る**:
+
+```
+Contract violation: `ensures` clause #1 of function `leaky`: retained 128 bytes, budget 0 bytes
+```
+
+これは 3 バックエンドで同じ文言になる（コンパイル済みバイナリも同じ）。
+
+### 生の式でも書ける
+
+節は糖衣で、[アロケーションカウンタ](language.md#allocation-counters)を
+`old` と組み合わせた式に展開される。カウンタは 6 つあり、糖衣が扱わない
+軸（`free_count` など）を使いたいときは生で書く:
+
+```rust
+ensures __builtin_free_count() <= old(__builtin_free_count()) + 2u64
+```
+
+> **生で書くときは「引き算」ではなく「足し算」に寄せる。** `live` が
+> 入口より**減る**関数（引数で渡されたポインタを解放する等）では、
 > `live_bytes() - old(live_bytes()) <= 0u64` が u64 アンダーフローで
-> panic する。同じことは足す側に寄せて書けば安全:
->
-> ```rust
-> ensures __builtin_live_bytes() <= old(__builtin_live_bytes()) + 0u64
-> ```
->
-> `cumulative` は単調増加なのでこの問題は起きない。「増えていないこと」
-> だけを言うなら `==` で書くのが最も素直。
+> panic する。糖衣は最初からこの形を避けて展開するので、この罠は
+> `retains(0u64)` と書く限り踏まない。
 
 カウンタは**リクエスト単位**で、3 バックエンドで同じ数字になる。
 `realloc` は移動したかどうかに関係なく「リサイズ 1 回」として数える。
 数字の意味は `--profile=mem` のレポートと同一なので、契約が主張している
 値をそのまま `--profile=mem` で観察できる。
+
+**呼び出し先の確保も数える。** カウンタはプロセス全体なので、
+`ensures allocates(0u64)` を宣言した関数が確保する関数を呼べば、そこで
+捕まる。「確保しない」が推移的に効くということで、これは意図した性質。
 
 ---
 

@@ -79,9 +79,10 @@ impl EvaluationContext<'_> {
             Expr::Null => {
                 // `null` is a reserved literal with no working
                 // semantics in any backend (see docs/language.md).
-                // The parser and type checker accept it (a `null` in
-                // a typed position takes that position's type), but
-                // reaching one at run time is always a stop.
+                // The type checker refuses it outright (E0015), so
+                // this arm is unreachable for any program that was
+                // checked; it stays as the backstop for paths that
+                // evaluate an expression without checking it first.
                 Err(InterpreterError::InternalError(
                     "`null` cannot be evaluated: the literal is reserved and no backend \
                      implements it — model absence with `Option<T>`"

@@ -1,3 +1,8 @@
+# TYPECHECK-LIES: this program does not run, and is kept because it
+# demonstrates the diagnostic. `null` used to type-check as "whatever
+# this position wants" and then stop the program when evaluated; the
+# type checker refuses it now (E0015), as it refuses the universal
+# `is_null()` (E0007). Model absence with `Option<T>`.
 fn main() -> u64 {
 	var str_var = "hello"
 	str_var = null

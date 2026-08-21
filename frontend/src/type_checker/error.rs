@@ -114,6 +114,11 @@ pub enum TypeCheckErrorKind {
     /// that outlives it, or a transfer this pass will not model.
     UseAfterMove { name: String, moved_at_line: u32 },
     ConditionalMove { name: String },
+    /// TYPECHECK-LIES: a literal the grammar accepts but no backend
+    /// implements. `null` is the only one — it used to type-check as
+    /// "whatever the context wants" and then stop the program when
+    /// evaluated.
+    ReservedLiteral { name: String, alternative: String },
 }
 
 #[derive(Debug, Clone)]
@@ -309,6 +314,23 @@ impl TypeCheckError {
         }
     }
 
+    /// TYPECHECK-LIES: a reserved literal with no runtime meaning.
+    /// `alternative` names what to write instead, and is part of the
+    /// message rather than a machine-applicable suggestion because the
+    /// right replacement depends on what the position is for.
+    pub fn reserved_literal(name: &str, alternative: &str) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::ReservedLiteral {
+                name: name.to_string(),
+                alternative: alternative.to_string(),
+            }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
     /// BOX-T: reading a binding whose value was transferred away.
     pub fn use_after_move(name: String, moved_at_line: u32) -> Self {
         Self {
@@ -373,7 +395,7 @@ impl TypeCheckError {
                 format!("{} '{}' not found", item_type, name)
             }
             TypeCheckErrorKind::UnsupportedOperation { operation, type_name } => {
-                format!("Unsupported operation '{}' for type {:?}", operation, type_name)
+                format!("Unsupported operation '{}' for type {}", operation, spell(type_name))
             }
             TypeCheckErrorKind::ConversionError { from, to } => {
                 format!("Cannot convert '{}' to {}", from, to)
@@ -407,6 +429,12 @@ impl TypeCheckError {
                     "`{}` cannot be moved inside a branch or a loop body: whether it \
                      still owns its value would only be known at run time",
                     name
+                )
+            }
+            TypeCheckErrorKind::ReservedLiteral { name, alternative } => {
+                format!(
+                    "`{}` is reserved and has no runtime meaning: {}",
+                    name, alternative
                 )
             }
             TypeCheckErrorKind::RecursiveType { name, path } => {

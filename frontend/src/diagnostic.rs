@@ -204,6 +204,9 @@ pub mod codes {
     /// else, or handed over where the handover cannot be modelled
     /// (BOX-T).
     pub const MOVED_VALUE: &str = "E0014";
+    /// A literal the grammar accepts but no backend implements
+    /// (TYPECHECK-LIES). `null` is the only one.
+    pub const RESERVED_LITERAL: &str = "E0015";
 
     /// Every code, in order. `crate::explain` is checked against this
     /// list by a test, so a new code cannot ship without prose.
@@ -222,6 +225,7 @@ pub mod codes {
         LEXICAL,
         RECURSIVE_TYPE,
         MOVED_VALUE,
+        RESERVED_LITERAL,
     ];
 }
 
@@ -241,6 +245,7 @@ fn code_for(kind: &TypeCheckErrorKind) -> &'static str {
         TypeCheckErrorKind::RecursiveType { .. } => codes::RECURSIVE_TYPE,
         TypeCheckErrorKind::UseAfterMove { .. }
         | TypeCheckErrorKind::ConditionalMove { .. } => codes::MOVED_VALUE,
+        TypeCheckErrorKind::ReservedLiteral { .. } => codes::RESERVED_LITERAL,
     }
 }
 

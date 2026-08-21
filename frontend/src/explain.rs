@@ -60,6 +60,7 @@ const ENTRIES: &[Entry] = &[
     (codes::LEXICAL, E0012),
     (codes::RECURSIVE_TYPE, E0013),
     (codes::MOVED_VALUE, E0014),
+    (codes::RESERVED_LITERAL, E0015),
 ];
 
 const E0001: &str = "\
@@ -461,6 +462,35 @@ Whether `c` still owns its value at the end of the scope would depend
 on `cond`, and deciding that needs a run-time flag the backends do not
 have. Lift the transfer out of the branch, or build the value inside
 it.";
+
+const E0015: &str = "\
+E0015: a reserved literal that no backend implements
+
+`null` is a keyword the grammar still accepts, but nothing runs it.
+It used to take on whatever type its position wanted and pass the
+type check, then stop the program the moment it was evaluated:
+
+    val name: str = null       # E0015
+    var n: u64 = 0u64
+    n = null                   # E0015
+
+The language models absence with `Option<T>` instead, so that the
+`match` is exhaustive and every backend agrees on the layout:
+
+    val name: Option<str> = Option::None
+    match name {
+        Option::Some(s) => println(s),
+        Option::None => println(\"(anonymous)\"),
+    }
+
+A raw pointer is a separate case, because address 0 is a real value
+rather than an absent one:
+
+    val p: ptr = __builtin_null_ptr()
+    if __builtin_ptr_is_null(p) { ... }
+
+The universal `is_null()` method is unsupported for the same reason
+the literal is — it only made sense on a `null` that worked.";
 
 #[cfg(test)]
 mod tests {

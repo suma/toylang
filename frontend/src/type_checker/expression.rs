@@ -446,10 +446,37 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
 
+        // TYPECHECK-LIES: `"a" + "b"` is the first thing most people
+        // try, and "incompatible types str and str" reads like a
+        // compiler bug when both sides plainly have the same type.
+        // Name the operations that do work instead. `String` (the
+        // heap buffer) lands here too, since it has no `add` overload.
+        if matches!(op, Operator::IAdd) && self.is_string_like(l) && self.is_string_like(r) {
+            return Err(self.error_with_location(
+                TypeCheckError::unsupported_operation(
+                    "`+` (concatenate with `a.concat(b)`, or interpolate: \"{a}{b}\")",
+                    l.clone(),
+                ),
+                lhs,
+            ));
+        }
+
         Err(self.error_with_location(
             TypeCheckError::type_mismatch_operation("arithmetic", l.clone(), r.clone()),
             lhs,
         ))
+    }
+
+    /// Whether `ty` is one of the two string types: the `str`
+    /// primitive, or the stdlib `String` heap buffer.
+    fn is_string_like(&self, ty: &TypeDecl) -> bool {
+        match ty {
+            TypeDecl::String => true,
+            TypeDecl::Identifier(sym) | TypeDecl::Struct(sym, _) => {
+                self.resolve_symbol_name(*sym) == "String"
+            }
+            _ => false,
+        }
     }
 
     /// Returns the concrete `TypeDecl` when `l` and `r` are the same
@@ -828,11 +855,11 @@ impl<'a> TypeCheckerVisitor<'a> {
             lhs_obj.clone().accept_expr(self)?
         };
         
-        let rhs_ty = {
-            let rhs_obj = self.core.expr_pool.get(&rhs)
-                .ok_or_else(|| TypeCheckError::generic_error("Invalid right-hand expression reference"))?;
-            rhs_obj.clone().accept_expr(self)?
-        };
+        // Located: an error raised inside the right-hand side (an
+        // unrunnable literal, a bad call) otherwise reached the
+        // statement-level recovery with no location of its own, and
+        // was then anchored on whatever statement came next.
+        let rhs_ty = self.check_expr_located(&rhs)?;
         // Allow assignment compatibility. `is_equivalent` covers the
         // user-named-type cases the parser emits ambiguously
         // (`Identifier(name)` vs `Enum(name, _)` / `Struct(name, _)`),
@@ -1717,13 +1744,16 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
     pub fn visit_null_literal(&mut self) -> Result<TypeDecl, TypeCheckError> {
-        // Null value type is determined by context
-        // If we have a type hint, use that; otherwise return Unknown
-        if let Some(hint) = self.type_inference.get_type_hint() {
-            Ok(hint)
-        } else {
-            Ok(TypeDecl::Unknown)
-        }
+        // TYPECHECK-LIES: `null` used to take on whatever type the
+        // position wanted and pass the check, then stop the program the
+        // moment it was evaluated — a type system that accepted a
+        // program no backend could run. Refused here instead, with the
+        // supported spellings named in the message.
+        Err(TypeCheckError::reserved_literal(
+            "null",
+            "model an absent value with `Option<T>`, or a raw null pointer \
+             with `__builtin_null_ptr()`",
+        ))
     }
 
     /// Type check expression lists

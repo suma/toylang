@@ -778,17 +778,26 @@ fn str_plus_str_is_rejected_by_the_type_checker() {
     ) {
         Ok(()) => panic!("`str + str` must be a type error (no backend implements it)"),
         Err(diagnostics) => {
-            let arithmetic: Vec<&Diagnostic> = diagnostics.iter().filter(|d| d.code == "E0002").collect();
+            // TYPECHECK-LIES: this used to fall out as E0002
+            // "incompatible types str and str", which reads like a
+            // compiler bug when both sides plainly have the same type.
+            // It is now E0004, naming what to write instead.
+            let unsupported: Vec<&Diagnostic> =
+                diagnostics.iter().filter(|d| d.code == "E0004").collect();
             assert!(
-                !arithmetic.is_empty(),
-                "expected an E0002 arithmetic type error, got: {diagnostics:?}"
+                !unsupported.is_empty(),
+                "expected an E0004 unsupported-operation error, got: {diagnostics:?}"
             );
             // The message must spell the primitive `str` — the old
             // Debug rendering showed `String`, which reads as the
             // stdlib struct.
             assert!(
-                arithmetic.iter().all(|d| d.message.contains("str and str")),
-                "expected 'incompatible types str and str', got: {arithmetic:?}"
+                unsupported.iter().all(|d| d.message.contains("for type str")),
+                "expected the message to name `str`, got: {unsupported:?}"
+            );
+            assert!(
+                unsupported.iter().all(|d| d.message.contains("concat")),
+                "expected the message to point at `concat`, got: {unsupported:?}"
             );
         }
     }

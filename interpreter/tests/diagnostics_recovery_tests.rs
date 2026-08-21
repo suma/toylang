@@ -133,18 +133,42 @@ fn is_null_suggests_the_supported_spellings() {
 }
 
 #[test]
-fn null_literal_stops_with_a_clear_message() {
-    // `null` is reserved: it parses and type-checks, but evaluating
-    // it must stop with a message pointing at the supported model.
-    let err = test_program(
+fn null_literal_is_rejected_by_the_type_checker() {
+    // TYPECHECK-LIES: `null` used to take on whatever type its
+    // position wanted, pass the check, and then stop the program the
+    // moment it was evaluated — a type system accepting a program no
+    // backend could run. It is refused at check time now, with the
+    // supported model named.
+    let diags = diagnostics(
         "fn main() -> u64 {
             val n = null
             0u64
         }",
-    )
-    .expect_err("null must stop at run time");
-    assert!(err.contains("reserved"), "{err}");
-    assert!(err.contains("Option<T>"), "{err}");
+    );
+    assert!(diags.contains("E0015"), "{diags}");
+    assert!(diags.contains("reserved"), "{diags}");
+    assert!(diags.contains("Option<T>"), "{diags}");
+}
+
+#[test]
+fn null_in_an_assignment_points_at_the_literal() {
+    // The right-hand side of an assignment was checked without a
+    // location, so an error raised inside it reached statement-level
+    // recovery unanchored and was reported against whatever statement
+    // came next — two lines below the `null` that caused it.
+    let diags = diagnostics(
+        "fn main() -> u64 {
+            var n: u64 = 1u64
+            n = null
+            val other: u64 = 2u64
+            other
+        }",
+    );
+    assert!(diags.contains("E0015"), "{diags}");
+    assert!(
+        diags.contains(":3:"),
+        "the diagnostic should point at line 3, where `null` is written:\n{diags}"
+    );
 }
 
 #[test]

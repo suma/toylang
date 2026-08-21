@@ -603,9 +603,10 @@
 
 ### バックエンドのカバレッジ
 
-- **159. JIT の generic struct 対応** ★★ — `struct_layouts` を type-args 別に持つ refactor。踏むと `JIT: skipped (... see #159)` が出るので診断から辿れる (`jit_skip_reason_for_generic_struct` で wording を pin)。
+- **159. JIT の generic struct 対応** ★★ — `struct_layouts` を type-args 別に持つ refactor。踏むと `JIT: skipped (... see #159)` が出るので診断から辿れる (`jit_skip_reason_for_generic_struct` で wording を pin)。generic enum payload 経由の trait-bounded generic API (`fn first<I: Iter<i64>>(..)`) が AOT で通らないのもここが原因。
 - **160. タプルの JIT 対応 (ネスト)** ★ — `((a,b),c)` と tuple-of-struct。`ParamTy::Tuple(Vec<ScalarTy>)` を tree 構造にする 100+ 箇所の refactor。inline tuple literal を call 引数に渡す件も残り。
 - **JIT-enum-1 (residual)** ★ — ネストした generic enum payload (`Option<Option<T>>`)、enum 型の struct field、payload に struct / tuple を持つ enum。
+- **FROM-INTO-ENUM-ERR** ★ — enum エラー型への `From` 変換 (`?` の cross-error 経路) が interpreter のみ。AOT/JIT が enum の associated call (`MyErr::from(e)`) を lower できないため。struct エラー型は 3 バックエンドで動く。
 - **NUM-W-AOT-pack Phase 3** ★ — compound element 配列の tighter layout (`[PackedRgba; N]` が 4 バイト相当のところ 32 バイト消費)。メモリ効率のみで機能差はない。
 - **195b. `extern fn` の monomorph 化** ★ — generic extern は現状 interpreter の type-erased registry でのみ動く。JIT / AOT には mangled symbol の emit と Rust 側実装の登録が要る。実需要なし。
 - **185残. 3+ part qualified call** ★ — `std::math::abs(x)`。現状は `import std.math` 経由のみ (parser が last 名だけを採る)。auto-load があるので実害は限定的。
@@ -663,8 +664,6 @@
   - **A5-P3-interp: interpreter 側 JIT の `dyn Trait`** ★ — `ScalarTy::from_type_decl` が `TypeDecl::Dyn` で `None` を返し silent fallback。correctness 問題はなく、compiler 側 JIT が実用的な高速化を担うので優先度は低い。
   - **A5-P4: `Box<dyn Trait>`** — owned trait object + `Vec<Box<dyn Trait>>`。**前提**: `Box<T>` 自体が未実装。
   - **A5 残作業** — `&dyn Trait` の return / struct field 位置 (REF-Stage-2 の escape rule が阻む)、`dyn A + B`、`dyn Iterator<T>`、generic trait の default body 内での `T` 参照。
-- **Trait-bounded generic API** ★★ — ~~`fn first<I: Iterator<i64>>(iter: I)` の bound check。~~ **解消 (2026-08-18)**: generic trait の bound (`Iter<i64>`) が call-site で型引数込みで強制される。残るのは generic **enum** payload 経由の AOT lower 制約のみ (下記 159 / JIT-enum-1)。
-- **`From` / `Into`** ★★ — ~~`val s: String = "hi".into()`。`?` の cross-error 変換にも要る。~~ **解消 (2026-08-18)**: `.into()` は期待型から `Target::from(expr)` へ書き換え、`?` は `E2: From<E1>` で error 変換。残る制約: **enum エラー型**への変換は AOT/JIT が `MyErr::from(...)` の associated call を lower できないため interpreter のみ (struct エラー型は 3 バックエンド)。
 - **`must_use` / unused-Result 警告** ★★ — `?` の補完。**警告の emit 経路が無い**ので (`Severity::Warning` は型としては存在するが未使用)、そこから作る必要がある。
 - **CLOSURE-CAPTURE: capture 意味論の拡張** ★★ — 現状は**生成時スナップショット
   のみ**なので「カウンタを閉じ込めて更新する」基本形が書けない。`&mut` capture に
@@ -697,7 +696,6 @@
 
 ### インクリメンタルコンパイル
 
-- **FRONTEND-PERF** ★★★ — ~~**コンパイル時間は frontend の O(n²) が支配する**~~ **解消 (2026-08-20)**: (a) `offset_to_line_col` の行頭テーブル化 / (b) `finalize_number_types` の Number インデックス化 / (c) `MAX_ITERATIONS=1000` の撤廃を実施 (24k 行 99.97s → 0.14s、バイト一致。詳細は完了済み節 2026-08-20 と [`SEPARATE_COMPILATION.md`](SEPARATE_COMPILATION.md))。
 - **AOT の中間オブジェクト (分離コンパイル) は見送り** — 検討の記録は
   [`SEPARATE_COMPILATION.md`](SEPARATE_COMPILATION.md)。削れるのは stdlib の
   固定費 ~6-7ms/回で、同じプログラムの実 `cc` リンクが 55ms。着手条件
@@ -732,12 +730,7 @@
 
   - **`compiler::consistency` + `example_consistency` が suite CPU の 45%** ★★★ — 46.5s (317 テスト) + 22.0s (14 shard) = 68.5s。`consistency` の分布は二峰性で、**lite パスで完結するテストと full core にフォールスルーするテストで 1 桁違う**。**2026-08-20 のフロントエンドパス共有で 46.5s → 34s / 22.0s → 16s 相当 (下記)** まで下がったが、残りは AOT の codegen + link + spawn (cache warm でも ~50ms/テスト) と JIT の native compile が本質的なので、ここから先はバックエンド実行そのものの削減になる。
     **「lite → full 二重パス」は 2026-08-18 に潰したが、それ自体はコストではなかった**と分かったので記録しておく: `assert_consistent` の let-chain は**最も安いレーン (no-core の tree-walker) で短絡する**ので、stdlib を使うソースが捨てられる AOT codegen / link / spawn まで到達することは元から無かった。捨てていたのは parse + no-core 型検査 ~2ms だけ。実際に効いたのは同時に入れた**フロントエンドパスの共有**の方 (下記)。
-  - **with-core のフロントエンドパスがレーンごとに独立** ★★ — 1 テストが core を使うと、tree-walker / AOT / JIT / IR VM がそれぞれ `core/std/*.t` を integrate + 型検査する。**tree-walker と IR VM の 2 レーンは 2026-08-18 に 1 パスに統合済み** (`ast_lanes`、AST に interior mutability が無いので型検査済み `File` を両方に渡せる。ついでに lite 試行の失敗も memo 化 — 以前は失敗を記録せず毎回引き直していた)。**実測 `consistency` 52.7s → 46.5s CPU (-12%)、suite 156.7s → 149.7s CPU / wall 7.8s → 7.3s**。残る 2 レーン (AOT は `compile_file` がパス受け取り、JIT は `run_source` がソース受け取り) を畳むには**ライブラリ側に「型検査済み program を受け取る」入口**が要る。~~残る 2 レーン~~ **解消 (2026-08-20)**: `compile_checked_program` + `CheckedProgram` で 4 レーンが 1 フロントエンドパスを共有 (consistency -27% / example -29% CPU。詳細は完了済み節)。
-  - ~~**AOT レーンが stdlib 全体を毎回 codegen している** ★★★~~ —
-    **解消 (2026-08-19)**: `lower_program` の本体 lowering を需要駆動にし
-    (reachable closure のみ)、codegen / JIT は `Module::reachable_from` で
-    reachable-from-main だけを compile。lowering ~3x、フル AOT ~2x
-    (debug, opt=none)。詳細は 完了済み節 2026-08-19。
+  - ~~**with-core のフロントエンドパスがレーンごとに独立**~~ / ~~**AOT レーンが stdlib 全体を毎回 codegen している**~~ — **どちらも解消** (2026-08-18 / 08-19 / 08-20、完了済み節に記載)。フロントエンドは 4 レーンで 1 パス、lowering / codegen は reachable-from-main のみ。
   - **core module のロードが 1 プロセスあたり 27ms** ★★★ — trivial プログラムを空 core dir と比べた実測 (2026-08-18、debug ビルド): **33.5ms → 6.1ms**。nextest は 1 テスト 1 プロセスなので、interpreter の 984 テストはそれぞれこれを払う = ~26s CPU ≈ wall 1.3s。内訳は 2026-08-15 時点の計測 (integrate ~43% 削減が landing する前) で `integrate_modules` 11.3ms / `execute_entry` の context 構築 5.2ms / stdlib 40 impl block の型検査 2.5ms / その他の型検査 1.1ms。
 
     **測って分かった否定的な結果を 3 つ記録しておく**: (1) **free function の body は既に user 分しか検査していない** (`take(user_func_count)`) ので「stdlib 本体を型検査しない」で削れるのは impl block の 2.5ms だけ。しかも**型検査器は body を書き換える** (`?` の desugar、`Display` の `to_str` 挿入) ので、stdlib の body を検査しないと**書き換え前の AST がバックエンドに流れる** — 今の stdlib は `?` も補間も使っていないので通ってしまい、使った日に壊れる罠になる。(2) `remap_symbol` の memo 化 (module symbol → main symbol を Vec でキャッシュ) は**効果ゼロ**だった。integrate の時間は文字列ハッシュではなく AST を pool に複製する作業そのもの。(3) **「型検査済み core をプロセス内で使い回す」は unit テストには効かない** — nextest は 1 テスト 1 プロセスなので、そもそもプロセス内に 2 回目の呼び出しが無い。

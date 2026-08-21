@@ -94,6 +94,8 @@ const AOT_UNSUPPORTED: &[&str] = &[
     // `assert_eq`, which lowers to a panic whose message is built at
     // runtime rather than being a literal.
     "memory_contract.t",
+    // Same again: the guide example carries `test` blocks.
+    "design_by_contract.t",
     "panic.t",
     "print_demo.t",
     "tuple_destructure_nested.t",

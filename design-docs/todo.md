@@ -641,6 +641,22 @@
 > 2026-08-20 に算術 / 添字を 3 バックエンドで実際に叩いて洗い出した節。
 > トラップ本体は同日 landing (完了済み節)。残るのは下の 2 件。
 
+- **DBC-TRAIT-INHERIT: trait 宣言の契約が impl に継承されない** ★★ —
+  `trait` の method シグネチャに `requires` / `ensures` を書けるが、
+  `impl` 側で同じ節を書かない限り**実行時には効かない** (2026-08-21 に
+  実測。`trait Shrink { fn shrink(..) requires by > 0u64 }` の impl で節を
+  省くと `shrink(0u64)` が素通りする)。契約が「trait が課す義務」として
+  読めないので、書いた側の期待と食い違う。conformance 検査は通っている
+  ので、継承するか「impl 側にも書け」と診断するかの判断が要る。
+- **DBC-CHECK-CASES: `--check` が通過ケース数を報告しない** ★ —
+  `CheckOutcome::Passed { cases }` を `let _ = cases` で捨てている
+  (`interpreter/src/main.rs`)。`requires` が狭いと 1 ケースしか実行され
+  ていなくても "0 failed" と出るので、**成功の強さが読めない**。
+  Inconclusive (全弾き) だけは明示されている。
+- **DBC-CHECK-METHODS: `--check` がメソッドを掃かない** ★ —
+  `check_program` が `program.function` (自由関数) だけを回している。
+  契約付き method は対象外で、しかも黙って対象外になる。
+
 - **CONTRACT-ELISION の残** ★ — 消せる guard を増やす余地:
   (a) **添字境界** — `requires i < 8u64` + `[T; 8]` で `emit_index_guard` を
   落とせる (配列長は binding が持っているので比較可能)。今は未対応。

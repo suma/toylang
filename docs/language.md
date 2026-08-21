@@ -3245,11 +3245,19 @@ between the return type and the body block.
 ```rust
 fn divide(a: i64, b: i64) -> i64
     requires b != 0i64
-    ensures  result * b == a
+    requires !(a == -9223372036854775808i64 && b == -1i64)
+    ensures  result * b + (a % b) == a
 {
     a / b
 }
 ```
+
+The postcondition accounts for the remainder because integer division
+truncates — `result * b == a` is false for `7 / 2` — and the second
+precondition rules out `MIN / -1`, which a non-zero divisor does not.
+Both are the kind of detail `--check` surfaces in seconds; see the
+[Design by Contract guide](design_by_contract.md) for the working
+practice around these clauses.
 
 Rules:
 
@@ -3733,6 +3741,9 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
 
 ## See also
 
+- [`design_by_contract.md`](design_by_contract.md) — working practice for
+  `requires` / `ensures`: what to put in a contract, how to check one
+  with `--check`, and the traps worth knowing before you hit them
 - [`README.md`](../README.md) — project overview and quickstart
 - [`interpreter/README.md`](../interpreter/README.md) — interpreter CLI
   and environment variables

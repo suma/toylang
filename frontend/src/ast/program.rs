@@ -135,6 +135,21 @@ pub struct Function {
     /// expression evaluated just before return; the special identifier
     /// `result` is in scope and refers to the return value.
     pub ensures: Vec<ExprRef>,
+    /// ALLOC-CONTRACT: the expressions written inside `old(...)` in
+    /// this function's `ensures` clauses, in the order the parser
+    /// met them. Each is evaluated once on entry — after `requires`,
+    /// before the body — and bound to the synthetic name `__old_<i>`
+    /// that the parser left in the clause's place. A postcondition
+    /// can therefore compare a value against the pre-state it had,
+    /// which is what makes an allocation contract expressible:
+    ///
+    /// ```text
+    /// ensures __builtin_live_bytes() == old(__builtin_live_bytes())
+    /// ```
+    ///
+    /// Empty for the overwhelming majority of functions, and never
+    /// evaluated when postconditions are switched off.
+    pub old_exprs: Vec<ExprRef>,
     /// Body block. For `extern fn` declarations this points at a
     /// placeholder `Stmt::Break`; backends look at `is_extern`
     /// before walking the body.
@@ -211,6 +226,21 @@ pub struct TraitMethodSignature {
     pub return_type: Option<TypeDecl>,
     pub requires: Vec<ExprRef>,
     pub ensures: Vec<ExprRef>,
+    /// ALLOC-CONTRACT: the expressions written inside `old(...)` in
+    /// this function's `ensures` clauses, in the order the parser
+    /// met them. Each is evaluated once on entry — after `requires`,
+    /// before the body — and bound to the synthetic name `__old_<i>`
+    /// that the parser left in the clause's place. A postcondition
+    /// can therefore compare a value against the pre-state it had,
+    /// which is what makes an allocation contract expressible:
+    ///
+    /// ```text
+    /// ensures __builtin_live_bytes() == old(__builtin_live_bytes())
+    /// ```
+    ///
+    /// Empty for the overwhelming majority of functions, and never
+    /// evaluated when postconditions are switched off.
+    pub old_exprs: Vec<ExprRef>,
     pub has_self_param: bool,
     /// `true` when the receiver was written `&mut self` (mutable
     /// reference). Only meaningful when `has_self_param == true`.
@@ -240,6 +270,21 @@ pub struct MethodFunction {
     pub return_type: Option<TypeDecl>,
     pub requires: Vec<ExprRef>,
     pub ensures: Vec<ExprRef>,
+    /// ALLOC-CONTRACT: the expressions written inside `old(...)` in
+    /// this function's `ensures` clauses, in the order the parser
+    /// met them. Each is evaluated once on entry — after `requires`,
+    /// before the body — and bound to the synthetic name `__old_<i>`
+    /// that the parser left in the clause's place. A postcondition
+    /// can therefore compare a value against the pre-state it had,
+    /// which is what makes an allocation contract expressible:
+    ///
+    /// ```text
+    /// ensures __builtin_live_bytes() == old(__builtin_live_bytes())
+    /// ```
+    ///
+    /// Empty for the overwhelming majority of functions, and never
+    /// evaluated when postconditions are switched off.
+    pub old_exprs: Vec<ExprRef>,
     pub code: StmtRef,
     pub has_self_param: bool, // true if first parameter is &self
     /// `true` when the receiver was written `&mut self` (mutable

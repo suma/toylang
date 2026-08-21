@@ -1656,7 +1656,8 @@ impl<'a> FunctionLower<'a> {
         }
         // Build a synthetic Function-shaped value and delegate. We
         // keep `name` / `generic_*` / `visibility` empty since
-        // lower_body only reads parameter / requires / ensures / code.
+        // lower_body only reads parameter / requires / ensures /
+        // old_exprs / code.
         let synthetic = frontend::ast::Function {
             node: method.node.clone(),
             name: method.name,
@@ -1666,6 +1667,7 @@ impl<'a> FunctionLower<'a> {
             return_type: method.return_type.clone(),
             requires: method.requires.clone(),
             ensures: method.ensures.clone(),
+            old_exprs: method.old_exprs.clone(),
             code: method.code,
             is_extern: false,
             extern_link: None,
@@ -1925,6 +1927,12 @@ impl<'a> FunctionLower<'a> {
         // compiled binary.
         if !self.release {
             self.emit_contract_checks(&func.requires, self.contract_msgs.requires_violation)?;
+            // ALLOC-CONTRACT: snapshot each `old(...)` here, between
+            // the preconditions and the body, so what a postcondition
+            // reads is genuinely the entry-time value. Under
+            // `--release` neither the snapshots nor their readers are
+            // emitted at all.
+            self.emit_old_snapshots(&func.old_exprs)?;
             self.ensures = func.ensures.clone();
         }
 
@@ -2087,6 +2095,30 @@ impl<'a> FunctionLower<'a> {
             self.switch_to(fail);
             self.terminate(Terminator::Panic { message });
             self.switch_to(pass);
+        }
+        Ok(())
+    }
+
+    /// ALLOC-CONTRACT: evaluate the `old(...)` expressions on entry
+    /// and bind each result to the `__old_N` name its `ensures`
+    /// clause refers to.
+    ///
+    /// The synthetic names were interned by the parser, so a lookup
+    /// that misses means the clause did not survive to this point;
+    /// the snapshot is then dead code and is skipped rather than
+    /// failing the build.
+    fn emit_old_snapshots(&mut self, old_exprs: &[ExprRef]) -> Result<(), String> {
+        for (index, expr) in old_exprs.iter().enumerate() {
+            let value = self
+                .lower_expr(expr)?
+                .ok_or_else(|| "`old(...)` expression produced no value".to_string())?;
+            let Some(sym) = self.interner.get(format!("__old_{index}")) else {
+                continue;
+            };
+            let ty = self.value_ir_type_for(value).unwrap_or(Type::U64);
+            let local = self.module.function_mut(self.func_id).add_local(ty);
+            self.emit(InstKind::StoreLocal { dst: local, src: value }, None);
+            self.bindings.insert(sym, Binding::Scalar { local, ty });
         }
         Ok(())
     }

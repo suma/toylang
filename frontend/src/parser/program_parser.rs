@@ -129,6 +129,7 @@ impl<'a> Parser<'a> {
                     return_type: None,
                     requires: vec![],
                     ensures: vec![],
+                    old_exprs: vec![],
                     code: self.ast_builder.expression_stmt(block, Some(location)),
                     is_extern: false,
                     extern_link: None,
@@ -275,6 +276,7 @@ impl<'a> Parser<'a> {
                         return_type: ret_ty,
                         requires: vec![],
                         ensures: vec![],
+                        old_exprs: vec![],
                         code: placeholder_body,
                         is_extern: true,
                         extern_link,
@@ -314,7 +316,7 @@ impl<'a> Parser<'a> {
                             // `<T: Bound>` annotates a generic param. They are
                             // optional and may repeat; multiple clauses of the
                             // same kind are AND-composed by the type checker.
-                            let (requires, ensures) = self.parse_contract_clauses()?;
+                            let (requires, ensures, old_exprs) = self.parse_contract_clauses()?;
                             let block = super::expr::parse_block(self)?;
                             let fn_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
                             update_end_pos(fn_end_pos);
@@ -328,6 +330,7 @@ impl<'a> Parser<'a> {
                                 return_type: ret_ty,
                                 requires,
                                 ensures,
+                                old_exprs,
                                 code: self.ast_builder.expression_stmt(block, Some(location)),
                                 is_extern: false,
                                 extern_link: None,

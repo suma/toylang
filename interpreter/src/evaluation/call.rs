@@ -394,6 +394,10 @@ impl EvaluationContext<'_> {
             self.environment.exit_block();
             return Err(e);
         }
+        if let Err(e) = self.evaluate_old_snapshots(&method.old_exprs) {
+            self.environment.exit_block();
+            return Err(e);
+        }
 
         // Execute method body
         let result = self.evaluate_method(&method);
@@ -504,6 +508,27 @@ impl EvaluationContext<'_> {
     /// `ensures` clause. The caller is responsible for cleaning up the
     /// environment block; we don't enter/exit a new scope here so the
     /// `result` binding lives in the same scope as the parameters.
+    /// ALLOC-CONTRACT: evaluate the `old(...)` snapshots and bind each
+    /// to the `__old_N` name its `ensures` clause refers to.
+    ///
+    /// Runs on entry, after `requires` (a precondition may be what
+    /// makes the snapshot expression legal) and before the body, so
+    /// the value recorded is genuinely the pre-state. Skipped entirely
+    /// when postconditions are off: the snapshot would have no reader,
+    /// and the expressions can be as costly as any other call.
+    fn evaluate_old_snapshots(&mut self, old_exprs: &[ExprRef]) -> Result<(), InterpreterError> {
+        if !self.contract_mode.check_post || old_exprs.is_empty() {
+            return Ok(());
+        }
+        for (index, expr) in old_exprs.iter().enumerate() {
+            let value = self.evaluate(expr)?;
+            let obj = self.unwrap_value(value)?;
+            let sym = self.string_interner.get_or_intern(format!("__old_{index}"));
+            self.environment.set_val(sym, obj.into());
+        }
+        Ok(())
+    }
+
     fn evaluate_ensures_clauses(
         &mut self,
         fn_name: DefaultSymbol,
@@ -568,6 +593,10 @@ impl EvaluationContext<'_> {
         // have no `self`, but `requires` / `ensures` predicates may still
         // reference the named parameters and `result`.
         if let Err(e) = self.evaluate_requires_clauses(method.name, &method.requires, &method.parameter) {
+            self.environment.exit_block();
+            return Err(e);
+        }
+        if let Err(e) = self.evaluate_old_snapshots(&method.old_exprs) {
             self.environment.exit_block();
             return Err(e);
         }
@@ -1632,6 +1661,11 @@ impl EvaluationContext<'_> {
         // path, so contract evaluation behaves identically across function
         // and method calls.
         if let Err(e) = self.evaluate_requires_clauses(function.name, &function.requires, &function.parameter) {
+            self.environment.exit_block();
+            self.call_depth -= 1;
+            return Err(e);
+        }
+        if let Err(e) = self.evaluate_old_snapshots(&function.old_exprs) {
             self.environment.exit_block();
             self.call_depth -= 1;
             return Err(e);

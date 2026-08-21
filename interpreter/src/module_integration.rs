@@ -700,6 +700,7 @@ impl<'a> AstIntegrationContext<'a> {
                         return_type: remapped_return_type,
                         requires: sig.requires.clone(),
                         ensures: sig.ensures.clone(),
+                        old_exprs: sig.old_exprs.clone(),
                         has_self_param: sig.has_self_param,
                         self_is_mut: sig.self_is_mut,
                         body: remapped_body,
@@ -826,6 +827,9 @@ impl<'a> AstIntegrationContext<'a> {
         let new_requires = function.requires.iter()
             .map(|e| self.map_expr(e, "requires-clause expr"))
             .collect::<Result<Vec<_>, _>>()?;
+        let new_old_exprs = function.old_exprs.iter()
+            .map(|e| self.map_expr(e, "old() snapshot expr"))
+            .collect::<Result<Vec<_>, _>>()?;
         let new_ensures = function.ensures.iter()
             .map(|e| self.map_expr(e, "ensures-clause expr"))
             .collect::<Result<Vec<_>, _>>()?;
@@ -875,6 +879,7 @@ impl<'a> AstIntegrationContext<'a> {
             return_type: new_return_type,
             requires: new_requires,
             ensures: new_ensures,
+            old_exprs: new_old_exprs,
             code: new_code,
             is_extern: function.is_extern,
             extern_link: new_extern_link,
@@ -920,6 +925,9 @@ impl<'a> AstIntegrationContext<'a> {
         let new_requires = method.requires.iter()
             .map(|e| self.map_expr(e, "requires-clause expr"))
             .collect::<Result<Vec<_>, _>>()?;
+        let new_old_exprs = method.old_exprs.iter()
+            .map(|e| self.map_expr(e, "old() snapshot expr"))
+            .collect::<Result<Vec<_>, _>>()?;
         let new_ensures = method.ensures.iter()
             .map(|e| self.map_expr(e, "ensures-clause expr"))
             .collect::<Result<Vec<_>, _>>()?;
@@ -933,6 +941,7 @@ impl<'a> AstIntegrationContext<'a> {
             return_type: new_return_type,
             requires: new_requires,
             ensures: new_ensures,
+            old_exprs: new_old_exprs,
             code: new_code,
             has_self_param: method.has_self_param,
             self_is_mut: method.self_is_mut,

@@ -106,6 +106,9 @@ mod operator_overload_tests;
 #[path = "checked_arith_tests.rs"]
 mod checked_arith_tests;
 
+#[path = "contract_old_tests.rs"]
+mod contract_old_tests;
+
 #[path = "ord_tests.rs"]
 mod ord_tests;
 

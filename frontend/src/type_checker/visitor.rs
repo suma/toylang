@@ -954,6 +954,12 @@ impl<'a> TypeCheckerVisitor<'a> {
             if let Some(result_sym) = self.core.string_interner.get("result") {
                 self.context.set_var(result_sym, result_ty);
             }
+            // ALLOC-CONTRACT: each `old(...)` the parser lifted out of
+            // these clauses is checked in the *entry* scope — it may
+            // read parameters but never `result`, since it is
+            // evaluated before the body runs — and its type becomes
+            // the type of the `__old_N` the clause now refers to.
+            self.check_old_snapshots(&func.old_exprs)?;
             for cond in &func.ensures {
                 self.check_contract_clause(cond, "ensures")?;
             }
@@ -962,6 +968,23 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         self.function_checking.is_checked_fn.insert(func.name, Some(last.clone()));
         Ok(last)
+    }
+
+    /// ALLOC-CONTRACT: type-check the `old(...)` snapshot expressions
+    /// and register each one's `__old_N` binding for the `ensures`
+    /// clauses that reference it.
+    ///
+    /// The synthetic name is interned by the parser, so `get` finding
+    /// nothing means this function has no such clause left after
+    /// error recovery — not a reason to fail.
+    pub(super) fn check_old_snapshots(&mut self, old_exprs: &[ExprRef]) -> Result<(), TypeCheckError> {
+        for (index, expr) in old_exprs.iter().enumerate() {
+            let ty = self.check_expr_located(expr)?;
+            if let Some(sym) = self.core.string_interner.get(format!("__old_{index}")) {
+                self.context.set_var(sym, ty);
+            }
+        }
+        Ok(())
     }
 
     /// Type-check a single contract predicate. Reused by both `requires`

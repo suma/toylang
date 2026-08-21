@@ -62,6 +62,48 @@ struct Fixtures {
     post_violation: String,
 }
 
+/// ALLOC-CONTRACT: with postconditions off, the `old(...)` snapshots
+/// must not be evaluated either — nothing would read them, and a
+/// snapshot expression can be as costly as any other call. Observable
+/// because the program below only survives when the clause (and so
+/// the snapshot) is skipped: with checks on it stops as a violation.
+#[test]
+fn old_snapshots_are_skipped_when_post_checks_are_off() {
+    let dir = tempfile::tempdir().expect("create fixture dir");
+    let path = dir.path().join("old_gate.t");
+    std::fs::write(
+        &path,
+        "fn leaky(n: u64) -> u64\n\
+         \x20   ensures __builtin_live_bytes() == old(__builtin_live_bytes())\n\
+         {\n\
+         \x20   val p: ptr = __builtin_heap_alloc(64u64)\n\
+         \x20   n + 1u64\n\
+         }\n\
+         fn main() -> u64 {\n\
+         \x20   println(leaky(1u64))\n\
+         \x20   0u64\n\
+         }\n",
+    )
+    .expect("write fixture");
+    let source = path.to_str().expect("utf-8 path");
+
+    let on = run_with(None, source);
+    assert!(
+        on.stderr.contains("Contract violation"),
+        "with checks on the clause should fire: {on:?}",
+        on = on.stderr
+    );
+
+    let off = run_with(Some("off"), source);
+    assert_eq!(off.code, 0, "with checks off the program should run: {}", off.stderr);
+    assert!(off.stdout.contains('2'), "body result should reach main: {}", off.stdout);
+
+    // `pre` keeps preconditions only, so the postcondition — and its
+    // snapshot — stay off.
+    let pre = run_with(Some("pre"), source);
+    assert_eq!(pre.code, 0, "`pre` should not evaluate ensures: {}", pre.stderr);
+}
+
 fn fixtures() -> Fixtures {
     use std::fs;
 

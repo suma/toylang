@@ -140,6 +140,17 @@ impl<'a> TypeCheckerVisitor<'a> {
                 if let Some(result_sym) = self.core.string_interner.get("result") {
                     self.context.set_var(result_sym, result_ty);
                 }
+                // ALLOC-CONTRACT: same as the free-function path — each
+                // `old(...)` is checked here and its type published
+                // under the `__old_N` the clause refers to.
+                if let Err(e) = self.check_old_snapshots(&method.old_exprs) {
+                    self.context.current_fn_generic_bounds = prev_bounds;
+                    self.restore_method_parameter_context();
+                    if has_generics {
+                        self.type_inference.pop_generic_scope();
+                    }
+                    return Err(e);
+                }
                 for cond in &method.ensures {
                     if let Err(e) = self.check_method_contract_clause(cond, "ensures") {
                         self.context.current_fn_generic_bounds = prev_bounds;

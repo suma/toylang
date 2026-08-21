@@ -143,10 +143,18 @@ impl<'a> Parser<'a> {
     /// Contract clauses. Called between the optional return type and the
     /// `{` body in `fn` declarations and `impl` methods. Multiple clauses of
     /// the same kind are allowed; the type checker AND-composes them.
-    /// Returns `(requires, ensures)` in declaration order.
-    pub fn parse_contract_clauses(&mut self) -> ParserResult<(Vec<ExprRef>, Vec<ExprRef>)> {
+    /// Returns `(requires, ensures, old_exprs)` in declaration order.
+    /// The third element is ALLOC-CONTRACT's `old(...)` snapshots,
+    /// collected across every `ensures` clause of this function.
+    pub fn parse_contract_clauses(
+        &mut self,
+    ) -> ParserResult<(Vec<ExprRef>, Vec<ExprRef>, Vec<ExprRef>)> {
         let mut requires = Vec::new();
         let mut ensures = Vec::new();
+        // One buffer per function: `__old_N` indexes into it, so it
+        // must start empty even if a previous declaration failed to
+        // parse partway through.
+        self.old_exprs.clear();
         loop {
             // Tolerate blank lines between clauses; the body's `{` ends the
             // run. Newlines are not significant inside this parser.
@@ -165,14 +173,16 @@ impl<'a> Parser<'a> {
                 Some(Kind::Ensures) => {
                     self.next();
                     self.push_context(crate::parser::core::ParseContext::Condition);
+                    self.in_ensures_clause = true;
                     let cond = self.parse_clause_with_span();
+                    self.in_ensures_clause = false;
                     self.pop_context();
                     ensures.push(cond?);
                 }
                 _ => break,
             }
         }
-        Ok((requires, ensures))
+        Ok((requires, ensures, std::mem::take(&mut self.old_exprs)))
     }
 
     /// Parse one contract predicate and record the span of the *whole*

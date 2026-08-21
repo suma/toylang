@@ -187,6 +187,19 @@ pub struct Parser<'a> {
     /// before the return value of `parse_stmt`, preserving source
     /// order.
     pub pending_prelude_stmts: Vec<StmtRef>,
+    /// ALLOC-CONTRACT: set while parsing an `ensures` predicate, so
+    /// `old(...)` is recognised there and refused everywhere else.
+    /// Cleared around the argument of an `old` so a nested
+    /// `old(old(x))` — which would snapshot the same instant — is a
+    /// parse error rather than a silently accepted no-op.
+    pub(super) in_ensures_clause: bool,
+    /// ALLOC-CONTRACT: the expressions collected from `old(...)` in
+    /// the contract clauses of the function being parsed, in the
+    /// order met. `parse_contract_clauses` takes this and hands it to
+    /// the `Function` / `MethodFunction` it is building; each entry's
+    /// index is the `N` in the `__old_N` identifier left behind in
+    /// the clause.
+    pub(super) old_exprs: Vec<ExprRef>,
     /// Counter feeding fresh synthetic identifiers (e.g.
     /// `__tuple_tmp_0`, `__tuple_tmp_1`) during desugaring.
     pub synthetic_counter: u32,
@@ -265,6 +278,8 @@ impl<'a> Parser<'a> {
             context_stack: vec![ParseContext::Expression],
             pending_prelude_stmts: Vec::new(),
             synthetic_counter: 0,
+            in_ensures_clause: false,
+            old_exprs: Vec::new(),
             type_aliases: HashMap::new(),
             declared_type_generics: HashMap::new(),
             source_file: None,

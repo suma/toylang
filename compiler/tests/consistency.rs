@@ -1088,6 +1088,91 @@ fn negative_runtime_index_match() {
     assert_consistent(src, "negative_runtime_index");
 }
 
+/// ALLOC-CONTRACT. `old(expr)` is the value `expr` had on entry, so
+/// every backend has to take the snapshot at the same point — after
+/// `requires`, before the body — and read it back in the
+/// postcondition. A backend that evaluated it late would silently
+/// compare a value against itself.
+#[test]
+fn old_snapshot_match() {
+    let src = r#"
+        struct Counter { n: u64 }
+
+        impl Counter {
+            fn bump(&mut self, by: u64) -> u64
+                ensures result == old(self.n) + by
+            {
+                self.n = self.n + by
+                self.n
+            }
+        }
+
+        fn bump_free(n: u64) -> u64
+            ensures result == old(n) + 1u64
+        {
+            n + 1u64
+        }
+
+        fn main() -> u64 {
+            println(bump_free(41u64))
+            var c = Counter { n: 40u64 }
+            c.bump(2u64)
+        }
+    "#;
+    assert_consistent(src, "old_snapshot");
+}
+
+/// ALLOC-CONTRACT. A function that claims to be memory-neutral and
+/// then allocates must be stopped by every backend — the counters the
+/// clause reads are request-based precisely so they agree across all
+/// three.
+#[test]
+fn allocation_contract_violation_stops_on_every_backend() {
+    let src = r#"
+        fn leaky(n: u64) -> u64
+            ensures __builtin_live_bytes() == old(__builtin_live_bytes())
+        {
+            val p: ptr = __builtin_heap_alloc(64u64)
+            n + 1u64
+        }
+
+        fn main() -> u64 { leaky(1u64) }
+    "#;
+    let core = core_modules_dir();
+
+    let mut interp_opts = RunOptions::default();
+    interp_opts.core_modules_dir = Some(core.as_path());
+    assert!(
+        interpreter::run_source(src, "alloc_contract.t", &interp_opts).is_err(),
+        "the interpreter should refuse the allocating body"
+    );
+
+    let compiled = try_compiler_exit_code(src, "alloc_contract", true)
+        .expect("the program should still compile — the contract is a runtime check");
+    assert_ne!(compiled, 0, "compiled binary should exit non-zero");
+}
+
+/// ALLOC-CONTRACT. The satisfied form of the same contract has to
+/// agree too, or the check would be worthless: a backend whose
+/// counters drifted would fail a correct program.
+#[test]
+fn allocation_contract_satisfied_match() {
+    let src = r#"
+        fn scratch(n: u64) -> u64
+            ensures __builtin_live_bytes() == old(__builtin_live_bytes())
+        {
+            val p: ptr = __builtin_heap_alloc(128u64)
+            __builtin_ptr_write(p, 0u64, n)
+            val v: u64 = __builtin_ptr_read(p, 0u64)
+            __builtin_heap_free(p)
+            v
+        }
+
+        fn main() -> u64 { scratch(7u64) }
+    "#;
+    assert_consistent(src, "alloc_contract_ok");
+}
+
 #[test]
 fn top_level_const_match() {
     let src = r#"

@@ -274,12 +274,52 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
     }
 }
 
+/// ALLOC-CONTRACT: `old(expr)` in an `ensures` clause — the value
+/// `expr` had on entry to the function.
+///
+/// Desugared here rather than carried as its own AST node: the
+/// expression is moved to the function's `old_exprs` list and the call
+/// is replaced by a reference to the synthetic binding `__old_<index>`
+/// that every backend materialises on entry. Backends therefore see an
+/// ordinary identifier, and `old` stays a contextual name that
+/// programs can still use for their own functions and variables
+/// everywhere else.
+fn parse_old_snapshot(
+    parser: &mut Parser,
+    location: crate::type_checker::SourceLocation,
+) -> ParserResult<ExprRef> {
+    debug_assert!(parser.in_ensures_clause, "caller checks the context");
+    parser.expect_err(&Kind::ParenOpen)?;
+    // A nested `old` would snapshot the same instant as the outer one,
+    // so it is refused rather than silently accepted as a no-op.
+    parser.in_ensures_clause = false;
+    let inner = parser.parse_expr_impl();
+    parser.in_ensures_clause = true;
+    let inner = inner?;
+    parser.expect_err(&Kind::ParenClose)?;
+
+    let index = parser.old_exprs.len();
+    parser.old_exprs.push(inner);
+    let sym = parser
+        .string_interner
+        .get_or_intern(format!("__old_{index}"));
+    Ok(parser.ast_builder.identifier_expr(sym, Some(location)))
+}
+
 /// Parse what follows an identifier head in primary position.
 fn parse_primary_after_identifier(
     parser: &mut Parser,
     name: DefaultSymbol,
     name_location: crate::type_checker::SourceLocation,
 ) -> ParserResult<ExprRef> {
+    // ALLOC-CONTRACT: `old(...)` is contextual — only a call spelled
+    // `old` directly inside an `ensures` clause means the snapshot.
+    if parser.peek() == Some(&Kind::ParenOpen)
+        && parser.in_ensures_clause
+        && parser.string_interner.resolve(name) == Some("old")
+    {
+        return parse_old_snapshot(parser, name_location);
+    }
     if parser.peek() == Some(&Kind::DoubleColon) {
         let mut qualified_path = vec![name];
         while parser.peek() == Some(&Kind::DoubleColon) {

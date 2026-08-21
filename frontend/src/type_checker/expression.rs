@@ -1164,6 +1164,17 @@ impl<'a> TypeCheckerVisitor<'a> {
                 return self.visit_indirect_call(fn_name, args_ref, &param_tys, &ret_ty);
             }
         let fn_name_str = self.resolve_symbol_name(fn_name);
+        // ALLOC-CONTRACT: `old(...)` is a contextual form the parser
+        // only recognises inside an `ensures` clause, so writing it
+        // anywhere else arrives here as an ordinary missing function.
+        // Say what it is instead of letting the reader hunt for a
+        // function they never wrote.
+        if fn_name_str == "old" {
+            return Err(TypeCheckError::generic_error(
+                "`old(...)` is only meaningful in an `ensures` clause: it snapshots \
+                 the value an expression had on entry to the function",
+            ));
+        }
         let error = TypeCheckError::not_found("Function", &fn_name_str);
         Err(self.suggest_known_function_name(error, &fn_name_str))
     }

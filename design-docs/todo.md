@@ -11,6 +11,8 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-20
+- **TYPECHECK-LIES: `null` を型検査で拒否 (E0015)** — 型が付いて実行だけ
+  落ちる唯一の構文だった。`str + str` の診断も E0004 + `concat` 誘導に。
 - **RUNTIME-TRAP: 算術 / 添字の実行時トラップを 4 バックエンドで統一** —
   0 除算 / 符号付き `MIN / -1` / 添字境界外を `panic` 経路に載せ、
   `core/std/checked.t` (`checked_*` / `saturating_*`) を追加。
@@ -636,15 +638,14 @@
   (`compiler MVP cannot lower method return type Struct(.., [Self_])`)、
   幅ごとに `Option<u8>` 等を書き下すことになる。踏んでから。
 
-- **TYPECHECK-LIES: 型検査が受理するのに実行が破綻する構文** ★★ —
-  `docs/language.md` の Known limitations に自己申告済みだが、**型システムの
-  嘘**なので機能追加より先に潰す価値がある。いずれも「型検査で拒否して
-  `--explain` に誘導先を書く」だけなら小さい。
-  - `str + str` — 型検査は通り、AOT バイナリは fault する (→ `a.concat(b)`)
-  - `str.substring` / `str.split` — 型検査は通り、実行時に停止 (→ `String` 版)
-  - `null` — parse も型検査も通り、評価すると
-    `Internal error: Null reference error`。`Option<T>` がある以上、
-    言語から消すのが筋。
+- **TYPECHECK-LIES 残: `str.substring` / `str.split` の AOT/JIT 対応** ★ —
+  2026-08-20 に 3 件を実測したところ、**本物の嘘は `null` だけ**だった
+  (E0015 で拒否、同日 landing)。`str + str` は元から型検査が拒否して
+  おり (メッセージを E0004 + `concat` 誘導に改善)、`substring` / `split`
+  は interpreter で**動く** — docs 側の Known limitations が古い記述を
+  抱えていたのを実態に合わせた。残るのはバックエンドカバレッジで、
+  compiled 側は `the method receiver must be a struct or enum binding`
+  で受け付けない (`String` の同名 method には制限なし)。
 
 ### 型システム (NEW-TYPE-SYSTEM)
 
@@ -777,7 +778,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2018 テスト** (100% 成功、2026-08-20 時点)。
+- 合計 **2019 テスト** (100% 成功、2026-08-20 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、

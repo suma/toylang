@@ -153,7 +153,7 @@ Primitive / built-in types:
 | `[T]` | Dynamic-array slice (returned by slicing) |
 | `(T1, T2, ...)` | Tuple — heterogeneous, fixed-arity |
 | `Self` | The enclosing struct/enum type within an `impl` block |
-| `null` | Bottom type carried by `Object::Null(T)` for typed-null values |
+| `null` | Reserved. The literal is refused by the type checker (`E0015`); the internal `Object::Null(T)` remains only as a runtime backstop |
 | `Allocator` | Opaque allocator handle (see [Allocators](#allocators)) |
 
 Composite / user-defined types:
@@ -667,15 +667,22 @@ false
 null
 ```
 
-`null` is accepted by the parser and the type checker (a `null` in a
-typed position takes that position's type), but **no backend evaluates
-it**: reaching a `null` expression at run time stops the program with
-`Internal error: \`null\` cannot be evaluated: the literal is reserved
-and no backend implements it — model absence with \`Option<T>\``.
-Treat the literal as reserved surface with no working semantics, and
-model absence with `Option<T>` instead. The universal `is_null()`
-method described in older notes is likewise not reachable — see
-[`is_null`](#is_null).
+`null` still lexes and parses — so that writing it produces a
+diagnostic rather than an "undefined identifier" — but **the type
+checker refuses it**:
+
+```
+[E0015] `null` is reserved and has no runtime meaning: model an absent
+        value with `Option<T>`, or a raw null pointer with
+        `__builtin_null_ptr()`
+```
+
+It used to type-check instead (a `null` in a typed position took that
+position's type) and then stop the program the moment it was
+evaluated, which meant the type system accepted programs no backend
+could run. Model absence with `Option<T>`; the universal `is_null()`
+method is refused for the same reason — see [`is_null`](#is_null).
+`__builtin_null_ptr()` is the separate, working, raw-pointer case.
 
 ### Char literals
 
@@ -3167,8 +3174,8 @@ implementation, but the type checker has no rule that reaches it, so
 every receiver — `i64`, `ptr`, `str`, a struct, a `dict` — fails with
 `[E0007] Method 'is_null' ... method not found` (the message suggests
 the supported spellings below). Its only argument would have been the
-[`null` literal](#boolean-and-null-literals), which no backend
-evaluates either.
+[`null` literal](#boolean-and-null-literals), which the type checker
+refuses (`E0015`).
 
 For a raw pointer, test the address instead:
 
@@ -3518,19 +3525,22 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   *user-defined* generic enum. See
   [Closures → Backend coverage](#closures).
 - **No `else if`** — use `elif`.
-- **`null` does not run** — the literal parses and type-checks, but
-  evaluating it stops the program (`Internal error: Null reference
-  error`), and the universal `is_null()` is unreachable from the type
-  checker. Use `Option<T>`; for raw pointers use
-  `__builtin_ptr_is_null`.
+- **`null` is reserved and rejected** — the literal still parses, so
+  that it can be diagnosed rather than read as an identifier, but the
+  type checker refuses it (`E0015`). The universal `is_null()` method
+  is refused for the same reason. Model absence with `Option<T>`; for
+  raw pointers use `__builtin_null_ptr()` / `__builtin_ptr_is_null(p)`.
 - **`var` without an initializer does not parse** — every `val` / `var`
   needs a value at declaration.
-- **`str + str` is not concatenation** — the type checker accepts it,
-  no backend implements it (the AOT binary faults on it). Use
-  `a.concat(b)`.
-- **`str.substring` / `str.split` are unimplemented at run time** —
-  they type-check and then stop the interpreter. Use the same methods
-  on `String`.
+- **`str + str` is not concatenation** — there is no string `+`, and
+  neither `str` nor `String` provides an `add` overload, so the type
+  checker refuses it (`E0004`, naming the alternatives). Use
+  `a.concat(b)` or interpolation (`"{a}{b}"`).
+- **`str.substring` / `str.split` run in the interpreter only** — they
+  type-check and work there, but the compiled backends reject the call
+  (`the method receiver must be a struct or enum binding`), so they
+  cannot appear in a program you AOT-compile. The `String` methods have
+  no such limit.
 - **No bare `self`** — `self: Self` is mandatory in method signatures.
 - **`val` is a keyword** — cannot be used as a parameter or field name.
 - **Literals in a generic struct literal are not converted by the

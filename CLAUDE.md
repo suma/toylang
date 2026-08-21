@@ -253,7 +253,8 @@ fn main() -> u64 {
 
 - Functions require explicit return types
 - Variables: `val` (immutable), `var` (mutable)
-- Types: `u64`, `i64`, `f64`, `bool`, `str`, `ptr`, `usize`, `dict`, `null`, `Self`
+- Types: `u64`, `i64`, `f64`, `bool`, `str`, `ptr`, `usize`, `dict`, `Self`
+  (`null` は**予約済みで型検査が拒否する** — `[E0015]`。不在は `Option<T>`、生ポインタは `__builtin_null_ptr()`)
 - Narrow ints (NUM-W): `u8` / `u16` / `u32` / `i8` / `i16` / `i32` (literal suffix `42u8` / `0xFFi32` 等)。`as` cast で wide ↔ narrow 変換 (暗黙 widening は無し)
 - Stdlib types:
   - `char = u32` (Unicode codepoint alias、char literal `'a'` / `'\u{1F600}'` は lexer で `Kind::UInt32` に lex)

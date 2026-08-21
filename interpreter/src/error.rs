@@ -27,6 +27,12 @@ pub enum InterpreterError {
         function: String,
         clause_index: usize,
         bindings: Vec<(String, String)>,
+        /// ALLOC-CONTRACT-SUGAR: what the clause was actually about,
+        /// when the clause is one the compiler wrote. A budget
+        /// violation reports the amount and the allowance ("retained
+        /// 128 bytes, budget 0 bytes") — the numbers a plain bool
+        /// predicate cannot give a reader.
+        detail: Option<String>,
     },
     /// Explicit user-triggered abort via the `panic("msg")` builtin.
     /// The message is exactly what the user passed.
@@ -79,9 +85,16 @@ impl fmt::Display for InterpreterError {
             InterpreterError::IndexOutOfBounds { index, size } => {
                 write!(f, "Array index {index} out of bounds for array of size {size}")
             }
-            InterpreterError::ContractViolation { kind, function, clause_index, bindings } => {
-                write!(f, "Contract violation: `{kind}` clause #{idx} of function `{function}` evaluated to false",
-                       idx = clause_index + 1)?;
+            InterpreterError::ContractViolation { kind, function, clause_index, bindings, detail } => {
+                match detail {
+                    Some(detail) => write!(
+                        f,
+                        "Contract violation: `{kind}` clause #{idx} of function `{function}`: {detail}",
+                        idx = clause_index + 1
+                    )?,
+                    None => write!(f, "Contract violation: `{kind}` clause #{idx} of function `{function}` evaluated to false",
+                       idx = clause_index + 1)?,
+                }
                 // LLM-LOOP P6: the values the predicate saw. Which
                 // clause failed is only half the answer; this is the
                 // other half, and it is the half that says what to fix.

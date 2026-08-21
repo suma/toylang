@@ -188,6 +188,19 @@ impl<'a> Vm<'a> {
                             .unwrap_or_else(|| format!("panic #{}", message.to_usize()));
                         return VmResult::Diverged { message: text };
                     }
+                    // ALLOC-CONTRACT-SUGAR: the numbers, not a fixed
+                    // string. Same wording the tree-walker and the
+                    // compiled binary produce.
+                    Terminator::PanicAllocBudget { stat, entry, current, limit } => {
+                        let entry = unsafe { self.read_value(entry).u64 };
+                        let current = unsafe { self.read_value(current).u64 };
+                        let limit = unsafe { self.read_value(limit).u64 };
+                        return VmResult::Diverged {
+                            message: compiler_ir::format_alloc_budget_violation(
+                                stat, entry, current, limit,
+                            ),
+                        };
+                    }
                     Terminator::Unreachable => {
                         return VmResult::Diverged {
                             message: "unreachable".to_string(),

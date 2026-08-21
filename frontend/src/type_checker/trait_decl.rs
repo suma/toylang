@@ -536,6 +536,7 @@ fn synthesize_default_method(sig: &TraitMethodSignature, body: StmtRef) -> Rc<Me
         return_type: sig.return_type.clone(),
         requires: sig.requires.clone(),
         ensures: sig.ensures.clone(),
+        ensures_kinds: sig.ensures_kinds.clone(),
         old_exprs: sig.old_exprs.clone(),
         code: body,
         has_self_param: sig.has_self_param,

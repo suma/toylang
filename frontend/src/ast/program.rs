@@ -3,6 +3,7 @@ use std::rc::Rc;
 use string_interner::DefaultSymbol;
 use crate::type_decl::TypeDecl;
 use crate::type_checker::SourceLocation;
+use crate::ast::MemStat;
 use super::{StmtRef, ExprRef, StmtPool, ExprPool, LocationPool, Expr};
 
 #[derive(Debug, Clone)]
@@ -150,6 +151,9 @@ pub struct Function {
     /// Empty for the overwhelming majority of functions, and never
     /// evaluated when postconditions are switched off.
     pub old_exprs: Vec<ExprRef>,
+    /// ALLOC-CONTRACT-SUGAR: one entry per `ensures` clause, in the
+    /// same order. `Plain` for anything a user wrote by hand.
+    pub ensures_kinds: Vec<EnsuresKind>,
     /// Body block. For `extern fn` declarations this points at a
     /// placeholder `Stmt::Break`; backends look at `is_extern`
     /// before walking the body.
@@ -210,6 +214,30 @@ pub struct ImplBlock {
     pub trait_name: Option<DefaultSymbol>,
 }
 
+/// ALLOC-CONTRACT-SUGAR: what an `ensures` clause is, when that is
+/// more than "a bool expression".
+///
+/// Carried alongside `ensures` (same length, same order) rather than
+/// replacing it, so every reader that only needs the predicate — the
+/// type checker, the lowering's contract emitter — is untouched, and
+/// only the code that reports a violation looks at the kind.
+///
+/// Deliberately holds no `ExprRef`: the pieces a diagnostic needs are
+/// recoverable from the clause expression itself (which is
+/// `counter() <= __old_N + budget` by construction), so module
+/// integration has nothing extra to remap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum EnsuresKind {
+    /// An ordinary predicate. Violation reports the clause index.
+    Plain,
+    /// An allocation budget written as `allocates(N)` / `retains(N)` /
+    /// `allocations(N)`. `old_index` is the entry snapshot's position
+    /// in `old_exprs`, which is what turns the two absolute counter
+    /// readings into the delta a reader wants to see.
+    AllocBudget { stat: MemStat, old_index: usize },
+}
+
 /// A method signature appearing in a `trait` declaration. The body is absent;
 /// only the contract (parameters, return type, optional `requires` / `ensures`)
 /// participates in conformance checking. This intentionally mirrors the
@@ -241,6 +269,9 @@ pub struct TraitMethodSignature {
     /// Empty for the overwhelming majority of functions, and never
     /// evaluated when postconditions are switched off.
     pub old_exprs: Vec<ExprRef>,
+    /// ALLOC-CONTRACT-SUGAR: one entry per `ensures` clause, in the
+    /// same order. `Plain` for anything a user wrote by hand.
+    pub ensures_kinds: Vec<EnsuresKind>,
     pub has_self_param: bool,
     /// `true` when the receiver was written `&mut self` (mutable
     /// reference). Only meaningful when `has_self_param == true`.
@@ -285,6 +316,9 @@ pub struct MethodFunction {
     /// Empty for the overwhelming majority of functions, and never
     /// evaluated when postconditions are switched off.
     pub old_exprs: Vec<ExprRef>,
+    /// ALLOC-CONTRACT-SUGAR: one entry per `ensures` clause, in the
+    /// same order. `Plain` for anything a user wrote by hand.
+    pub ensures_kinds: Vec<EnsuresKind>,
     pub code: StmtRef,
     pub has_self_param: bool, // true if first parameter is &self
     /// `true` when the receiver was written `&mut self` (mutable

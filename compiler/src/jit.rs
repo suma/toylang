@@ -380,6 +380,10 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_dispatched_realloc", toylang_rt::toy_dispatched_realloc as *const u8);
     jit_builder.symbol("toy_dispatched_free", toylang_rt::toy_dispatched_free as *const u8);
     jit_builder.symbol("toy_prof_stat", toylang_rt::toy_prof_stat as *const u8);
+    jit_builder.symbol(
+        "toy_panic_alloc_budget",
+        toylang_rt::toy_panic_alloc_budget as *const u8,
+    );
     jit_builder.symbol("toy_prof_force_counting", toylang_rt::toy_prof_force_counting as *const u8);
     jit_builder.symbol("toy_record_allocator_layout", toylang_rt::toy_record_allocator_layout as *const u8);
     // RUNTIME-IO: stdlib I/O externs (core/std/io.t).

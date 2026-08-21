@@ -408,7 +408,7 @@ impl EvaluationContext<'_> {
         // anyway, but we don't want to mask the original error).
         let result = match result {
             Ok(EvaluationResult::Value(v)) => {
-                if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, v.clone_to_rc(), &method.parameter) {
+                if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, &method.ensures_kinds, v.clone_to_rc(), &method.parameter) {
                     self.environment.exit_block();
                     return Err(e);
                 }
@@ -416,7 +416,7 @@ impl EvaluationContext<'_> {
             }
             Ok(EvaluationResult::Return(v)) => {
                 let ret = v.clone().map(|val| val.into_rc()).unwrap_or_else(|| Rc::new(RefCell::new(Object::Unit)));
-                if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, ret, &method.parameter) {
+                if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, &method.ensures_kinds, ret, &method.parameter) {
                     self.environment.exit_block();
                     return Err(e);
                 }
@@ -494,6 +494,7 @@ impl EvaluationContext<'_> {
             let passed = cond_obj.borrow().try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
             if !passed {
                 return Err(InterpreterError::ContractViolation {
+                    detail: None,
                     kind: "requires",
                     function: self.string_interner.resolve(fn_name).unwrap_or("<unknown>").to_string(),
                     clause_index: idx,
@@ -533,6 +534,7 @@ impl EvaluationContext<'_> {
         &mut self,
         fn_name: DefaultSymbol,
         clauses: &[ExprRef],
+        kinds: &[EnsuresKind],
         return_value: RcObject,
         params: &ParameterList,
     ) -> Result<(), InterpreterError> {
@@ -545,7 +547,17 @@ impl EvaluationContext<'_> {
             let cond_obj = self.unwrap_value(cond_res)?;
             let passed = cond_obj.borrow().try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
             if !passed {
+                // ALLOC-CONTRACT-SUGAR: a budget clause knows what it
+                // was counting, so it can report the amount instead of
+                // leaving the reader to run `--profile=mem` and compare.
+                let detail = match kinds.get(idx) {
+                    Some(EnsuresKind::AllocBudget { stat, old_index }) => {
+                        self.alloc_budget_detail(*stat, *old_index, cond)
+                    }
+                    _ => None,
+                };
                 return Err(InterpreterError::ContractViolation {
+                    detail,
                     kind: "ensures",
                     function: self.string_interner.resolve(fn_name).unwrap_or("<unknown>").to_string(),
                     clause_index: idx,
@@ -554,6 +566,52 @@ impl EvaluationContext<'_> {
             }
         }
         Ok(())
+    }
+
+    /// ALLOC-CONTRACT-SUGAR: render "retained 128 bytes, budget 0
+    /// bytes" for a violated budget clause.
+    ///
+    /// The clause is `counter() <= __old_N + budget` by construction,
+    /// so the amount consumed is the counter's current value minus the
+    /// entry snapshot, and the allowance is the right-hand side minus
+    /// the same snapshot. Anything unexpected about that shape yields
+    /// `None` and the generic message, since a wrong number would be
+    /// worse than no number.
+    fn alloc_budget_detail(
+        &mut self,
+        stat: frontend::ast::MemStat,
+        old_index: usize,
+        clause: &ExprRef,
+    ) -> Option<String> {
+        let entry_sym = self.string_interner.get(format!("__old_{old_index}"))?;
+        let entry = match self.environment.get_val(entry_sym)? {
+            crate::value::Value::UInt64(v) => v,
+            _ => return None,
+        };
+        let current = crate::heap::profile().field(stat);
+        let limit = match self.expr_pool.get(clause)? {
+            frontend::ast::Expr::Binary(_, _, rhs) => {
+                let value = self.evaluate(&rhs).ok()?;
+                let obj = self.unwrap_value(value).ok()?;
+                let limit = obj.borrow().try_unwrap_uint64().ok()?;
+                limit
+            }
+            _ => return None,
+        };
+        let used = current.saturating_sub(entry);
+        let budget = limit.saturating_sub(entry);
+        Some(match stat {
+            frontend::ast::MemStat::CumulativeBytes => {
+                format!("requested {used} bytes, budget {budget} bytes")
+            }
+            frontend::ast::MemStat::LiveBytes => {
+                format!("retained {used} bytes, budget {budget} bytes")
+            }
+            frontend::ast::MemStat::AllocCount => {
+                format!("made {used} allocations, budget {budget}")
+            }
+            _ => return None,
+        })
     }
 
     /// Call an associated method (without self parameter)
@@ -605,7 +663,7 @@ impl EvaluationContext<'_> {
 
         let result = match result {
             Ok(EvaluationResult::Value(v)) => {
-                if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, v.clone_to_rc(), &method.parameter) {
+                if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, &method.ensures_kinds, v.clone_to_rc(), &method.parameter) {
                     self.environment.exit_block();
                     return Err(e);
                 }
@@ -613,7 +671,7 @@ impl EvaluationContext<'_> {
             }
             Ok(EvaluationResult::Return(v)) => {
                 let ret = v.clone().map(|val| val.into_rc()).unwrap_or_else(|| Rc::new(RefCell::new(Object::Unit)));
-                if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, ret, &method.parameter) {
+                if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, &method.ensures_kinds, ret, &method.parameter) {
                     self.environment.exit_block();
                     return Err(e);
                 }
@@ -1686,7 +1744,7 @@ impl EvaluationContext<'_> {
 
         // Post-body `ensures` checks with `result` bound to the return value.
         // The contract helper still takes `RcObject`; bridge the value once.
-        if let Err(e) = self.evaluate_ensures_clauses(function.name, &function.ensures, return_value.clone_to_rc(), &function.parameter) {
+        if let Err(e) = self.evaluate_ensures_clauses(function.name, &function.ensures, &function.ensures_kinds, return_value.clone_to_rc(), &function.parameter) {
             self.environment.exit_block();
             self.call_depth -= 1;
             return Err(e);

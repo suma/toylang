@@ -220,6 +220,10 @@ struct FunctionLower<'a> {
     /// is held so we don't have to re-fetch from `program.function`
     /// on every Return.
     ensures: Vec<ExprRef>,
+    /// ALLOC-CONTRACT-SUGAR: the kind of each stashed `ensures` clause,
+    /// same length and order. Budget clauses take a different failure
+    /// path so the compiled binary can report the numbers.
+    ensures_kinds: Vec<frontend::ast::EnsuresKind>,
     /// CONTRACT-ELISION: what this function's `requires` clauses prove
     /// about its (immutable) parameters. Consulted by the
     /// RUNTIME-TRAP guard sites to skip a check the precondition has

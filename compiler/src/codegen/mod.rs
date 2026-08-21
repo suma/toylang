@@ -298,6 +298,7 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_str_eq: cranelift_module::FuncId,
     rt_str_from_bytes: cranelift_module::FuncId,
     rt_prof_stat: cranelift_module::FuncId,
+    rt_panic_alloc_budget: cranelift_module::FuncId,
     rt_prof_force_counting: cranelift_module::FuncId,
     // MEMORY_PROFILING M3 residual: register an allocator's layout for
     // the report. `(name: str-ptr, managed, live, free_blocks, largest)`
@@ -620,6 +621,19 @@ impl<M: Module> CodegenSession<M> {
         let rt_prof_force_counting =
             declare_helper(&mut module, "toy_prof_force_counting", &prof_force_sig)?;
 
+        // ALLOC-CONTRACT-SUGAR. `toy_panic_alloc_budget(stat, entry,
+        // current, limit)` prints the same sentence the interpreter
+        // prints for a violated allocation budget and exits. It takes
+        // the raw readings rather than a formatted string because
+        // `Terminator::Panic` can only carry a static one, which is
+        // the whole reason this path exists.
+        let mut alloc_budget_sig = Signature::new(call_conv);
+        for _ in 0..4 {
+            alloc_budget_sig.params.push(AbiParam::new(types::I64));
+        }
+        let rt_panic_alloc_budget =
+            declare_helper(&mut module, "toy_panic_alloc_budget", &alloc_budget_sig)?;
+
         // MEMORY_PROFILING M3 residual. `toy_record_allocator_layout`
         // takes the str name as an i64 pointer (the `[bytes][NUL][u64
         // len]` layout, NUL-terminated so C can read it as `const char*`)
@@ -782,6 +796,7 @@ impl<M: Module> CodegenSession<M> {
             rt_str_eq,
             rt_str_from_bytes,
             rt_prof_stat,
+            rt_panic_alloc_budget,
             rt_prof_force_counting,
             rt_record_allocator_layout,
             rt_str_concat,
@@ -1524,6 +1539,7 @@ struct RuntimeRefs {
     str_eq: cranelift_codegen::ir::FuncRef,
     str_from_bytes: cranelift_codegen::ir::FuncRef,
     prof_stat: cranelift_codegen::ir::FuncRef,
+    panic_alloc_budget: cranelift_codegen::ir::FuncRef,
     prof_force_counting: cranelift_codegen::ir::FuncRef,
     record_allocator_layout: cranelift_codegen::ir::FuncRef,
     pow: cranelift_codegen::ir::FuncRef,
@@ -1901,6 +1917,23 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let then_b = *self.block_map.get(&then_blk.0).expect("then block");
                 let else_b = *self.block_map.get(&else_blk.0).expect("else block");
                 self.builder.ins().brif(c, then_b, &[], else_b, &[]);
+            }
+            Terminator::PanicAllocBudget { stat, entry, current, limit } => {
+                // ALLOC-CONTRACT-SUGAR: hand the three readings to the
+                // runtime, which formats and exits. Same trailing trap
+                // as `Panic` — the helper does not return, but
+                // cranelift needs a terminator on the block.
+                let which = self.builder.ins().iconst(types::I64, *stat as i64);
+                let entry_v = self.value(*entry);
+                let current_v = self.value(*current);
+                let limit_v = self.value(*limit);
+                self.builder.ins().call(
+                    self.runtime.panic_alloc_budget,
+                    &[which, entry_v, current_v, limit_v],
+                );
+                self.builder
+                    .ins()
+                    .trap(cranelift_codegen::ir::TrapCode::user(1).expect("non-zero"));
             }
             Terminator::Panic { message } => {
                 // Materialise the address of the message in `.rodata`,

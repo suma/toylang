@@ -306,6 +306,86 @@ fn parse_old_snapshot(
     Ok(parser.ast_builder.identifier_expr(sym, Some(location)))
 }
 
+/// ALLOC-CONTRACT-SUGAR: the counter an allocation-budget clause reads,
+/// or `None` for any other name.
+///
+/// Three axes, because they answer different questions and collapsing
+/// them would make the sugar say less than the expression it replaces:
+/// a zero `retains` delta also holds for a function that allocated and
+/// freed, while a zero `allocates` delta means nothing was requested
+/// at all.
+fn alloc_budget_stat(name: &str) -> Option<crate::ast::MemStat> {
+    match name {
+        // "requested this much, in total"
+        "allocates" => Some(crate::ast::MemStat::CumulativeBytes),
+        // "did not hand back this much"
+        "retains" => Some(crate::ast::MemStat::LiveBytes),
+        // "asked the allocator this many times"
+        "allocations" => Some(crate::ast::MemStat::AllocCount),
+        _ => None,
+    }
+}
+
+/// ALLOC-CONTRACT-SUGAR: `allocates(N)` / `retains(N)` /
+/// `allocations(N)` in an `ensures` clause.
+///
+/// Desugars to `counter() <= old(counter()) + N`, reusing the
+/// `old(...)` machinery for the entry snapshot. Note the shape:
+/// **not** `counter() - old(counter()) <= N`, which is what one writes
+/// by hand and which panics with a u64 underflow whenever the counter
+/// goes *down* — a function that frees a pointer it was handed leaves
+/// `live_bytes` below where it started. Moving the term to the other
+/// side says the same thing and cannot wrap.
+fn parse_alloc_budget(
+    parser: &mut Parser,
+    stat: crate::ast::MemStat,
+    location: crate::type_checker::SourceLocation,
+) -> ParserResult<ExprRef> {
+    use crate::ast::BuiltinFunction;
+
+    parser.expect_err(&Kind::ParenOpen)?;
+    // The budget is an ordinary expression, but it is evaluated at
+    // exit like the rest of the clause — `old` inside it would be a
+    // different question, so the context is dropped while it parses.
+    parser.in_ensures_clause = false;
+    let budget = parser.parse_expr_impl();
+    parser.in_ensures_clause = true;
+    let budget = budget?;
+    parser.expect_err(&Kind::ParenClose)?;
+
+    let entry_read = parser.ast_builder.builtin_call_expr(
+        BuiltinFunction::MemStat(stat),
+        vec![],
+        Some(location),
+    );
+    let index = parser.old_exprs.len();
+    parser.old_exprs.push(entry_read);
+    let old_sym = parser
+        .string_interner
+        .get_or_intern(format!("__old_{index}"));
+    let entry_value = parser.ast_builder.identifier_expr(old_sym, Some(location));
+
+    let limit = parser.ast_builder.binary_expr(
+        Operator::IAdd,
+        entry_value,
+        budget,
+        Some(location),
+    );
+    let current = parser.ast_builder.builtin_call_expr(
+        BuiltinFunction::MemStat(stat),
+        vec![],
+        Some(location),
+    );
+    let clause = parser
+        .ast_builder
+        .binary_expr(Operator::LE, current, limit, Some(location));
+    parser.last_alloc_budget = Some((
+        clause,
+        crate::ast::EnsuresKind::AllocBudget { stat, old_index: index },
+    ));
+    Ok(clause)
+}
+
 /// Parse what follows an identifier head in primary position.
 fn parse_primary_after_identifier(
     parser: &mut Parser,
@@ -314,11 +394,17 @@ fn parse_primary_after_identifier(
 ) -> ParserResult<ExprRef> {
     // ALLOC-CONTRACT: `old(...)` is contextual — only a call spelled
     // `old` directly inside an `ensures` clause means the snapshot.
-    if parser.peek() == Some(&Kind::ParenOpen)
-        && parser.in_ensures_clause
-        && parser.string_interner.resolve(name) == Some("old")
-    {
-        return parse_old_snapshot(parser, name_location);
+    if parser.peek() == Some(&Kind::ParenOpen) && parser.in_ensures_clause {
+        let spelling = parser.string_interner.resolve(name).map(str::to_string);
+        if spelling.as_deref() == Some("old") {
+            return parse_old_snapshot(parser, name_location);
+        }
+        // ALLOC-CONTRACT-SUGAR: same contextual treatment — a program
+        // that already has a function called `allocates` keeps it
+        // everywhere except inside an `ensures` clause.
+        if let Some(stat) = spelling.as_deref().and_then(alloc_budget_stat) {
+            return parse_alloc_budget(parser, stat, name_location);
+        }
     }
     if parser.peek() == Some(&Kind::DoubleColon) {
         let mut qualified_path = vec![name];

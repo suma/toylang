@@ -200,6 +200,13 @@ pub struct Parser<'a> {
     /// index is the `N` in the `__old_N` identifier left behind in
     /// the clause.
     pub(super) old_exprs: Vec<ExprRef>,
+    /// ALLOC-CONTRACT-SUGAR: the clause root the last budget sugar
+    /// expanded to, and which counter it read. `parse_contract_clauses`
+    /// compares the root against the finished clause to tell
+    /// `ensures retains(0u64)` (a budget) from
+    /// `ensures retains(0u64) && result > 0u64` (a plain predicate
+    /// with a budget inside it).
+    pub(super) last_alloc_budget: Option<(ExprRef, crate::ast::EnsuresKind)>,
     /// Counter feeding fresh synthetic identifiers (e.g.
     /// `__tuple_tmp_0`, `__tuple_tmp_1`) during desugaring.
     pub synthetic_counter: u32,
@@ -280,6 +287,7 @@ impl<'a> Parser<'a> {
             synthetic_counter: 0,
             in_ensures_clause: false,
             old_exprs: Vec::new(),
+            last_alloc_budget: None,
             type_aliases: HashMap::new(),
             declared_type_generics: HashMap::new(),
             source_file: None,

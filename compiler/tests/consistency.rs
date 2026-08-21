@@ -1425,6 +1425,107 @@ fn a_trait_contract_violation_stops_every_backend() {
     assert_ne!(compiled, 0, "compiled binary should exit non-zero");
 }
 
+/// ALLOC-CONTRACT-SUGAR. The point of the sugar is the numbers in the
+/// diagnostic, so the numbers have to be the same wherever the
+/// program runs. The sentence lives in two places — `compiler_ir` for
+/// the interpreter and IR VM, and a hand-copied version in the no_std
+/// `toylang_rt` for compiled binaries — and this is what catches them
+/// drifting apart.
+#[test]
+fn an_allocation_budget_reports_the_same_numbers_on_every_backend() {
+    for (clause, alloc, expected) in [
+        ("retains(0u64)", "128u64", "retained 128 bytes, budget 0 bytes"),
+        ("allocates(64u64)", "384u64", "requested 384 bytes, budget 64 bytes"),
+    ] {
+        let src = format!(
+            r#"
+        fn over(n: u64) -> u64
+            ensures {clause}
+        {{
+            val p: ptr = __builtin_heap_alloc({alloc})
+            n
+        }}
+
+        fn main() -> u64 {{ over(1u64) }}
+    "#
+        );
+
+        let mut interp_opts = RunOptions::default();
+        let core = core_modules_dir();
+        interp_opts.core_modules_dir = Some(core.as_path());
+        let interpreted = interpreter::run_source(&src, "budget.t", &interp_opts)
+            .expect_err("the budget must be enforced");
+        assert!(
+            interpreted.to_string().contains(expected),
+            "interpreter should report `{expected}`, got: {interpreted}"
+        );
+
+        let (code, stderr) =
+            compiled_run_output(&src, "alloc_budget_msg").expect("the program should compile");
+        assert_ne!(code, 0, "compiled binary should exit non-zero");
+        assert!(
+            stderr.contains(expected),
+            "compiled binary should report `{expected}`, got: {stderr}"
+        );
+    }
+}
+
+/// ALLOC-CONTRACT-SUGAR. A satisfied budget must not disturb anything,
+/// including the case the desugar exists to protect: a function whose
+/// `live_bytes` ends up *below* where it started.
+#[test]
+fn satisfied_allocation_budgets_match() {
+    let src = r#"
+        fn scratch(n: u64) -> u64
+            ensures allocates(256u64)
+            ensures retains(0u64)
+            ensures allocations(1u64)
+        {
+            val p: ptr = __builtin_heap_alloc(128u64)
+            __builtin_ptr_write(p, 0u64, n)
+            val v: u64 = __builtin_ptr_read(p, 0u64)
+            __builtin_heap_free(p)
+            v
+        }
+
+        fn freer(p: ptr) -> u64
+            ensures retains(0u64)
+        {
+            __builtin_heap_free(p)
+            7u64
+        }
+
+        fn main() -> u64 {
+            println(scratch(35u64))
+            val q: ptr = __builtin_heap_alloc(64u64)
+            freer(q)
+        }
+    "#;
+    assert_consistent(src, "alloc_budget_ok");
+}
+
+/// ALLOC-CONTRACT-SUGAR. The budget clause lowers to its own
+/// terminator rather than the shared `panic #N`, which is what lets
+/// the compiled binary report numbers at all.
+#[test]
+fn a_budget_clause_lowers_to_its_own_terminator() {
+    let src = r#"
+        fn leaky(n: u64) -> u64
+            ensures retains(0u64)
+        {
+            val p: ptr = __builtin_heap_alloc(128u64)
+            n
+        }
+
+        fn main() -> u64 { leaky(1u64) }
+    "#;
+    let ir = lowered_function(&lowered_ir(src), "leaky");
+    assert!(
+        ir.contains("panic_alloc_budget live_bytes"),
+        "expected the budget terminator in:\n{ir}"
+    );
+}
+
 #[test]
 fn top_level_const_match() {
     let src = r#"
@@ -8546,6 +8647,35 @@ fn a_struct_returned_from_its_constructor_is_not_dropped() {
         }
     "#;
     assert_consistent(src, "drop_returned_binding");
+}
+
+/// Compile `source` and run it, returning `(exit code, stderr)`.
+///
+/// `try_compiler_exit_code` throws the output away, which is enough
+/// for "did it stop" but not for "did it say the same thing" —
+/// ALLOC-CONTRACT-SUGAR needs the latter, because the sentence exists
+/// twice: once in `compiler_ir` for the interpreting engines and once
+/// in the dependency-free `toylang_rt` for compiled binaries.
+fn compiled_run_output(source: &str, stem: &str) -> Option<(i32, String)> {
+    let src_path = unique_path(&format!("{stem}.t"));
+    std::fs::write(&src_path, source).expect("write source");
+    let exe_path = unique_path(stem);
+    let mut options = CompilerOptions::new(src_path.clone());
+    options.output = Some(exe_path.clone());
+    options.core_modules_dir = Some(core_modules_dir());
+    options.link_cache_dir = Some(link_cache_dir_for_tests());
+    let result = if compile_file(&options).is_ok() {
+        let out = Command::new(&exe_path).output().expect("spawn binary");
+        Some((
+            out.status.code().expect("exit code"),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        ))
+    } else {
+        None
+    };
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&exe_path);
+    result
 }
 
 /// The IR `lower_program` produces for `source`, rendered.

@@ -819,7 +819,7 @@ pub fn parse_trait_method_signatures_with_generics(
                     ret_ty = Some(parser.parse_type_declaration_with_generic_context(&gen_set)?);
                 }
 
-                let (requires, ensures, old_exprs) = parser.parse_contract_clauses()?;
+                let clauses = parser.parse_contract_clauses()?;
 
                 // A1: optional default body — `fn name(...) -> T { ... }`
                 // declares a default implementation that impl blocks inherit
@@ -844,9 +844,10 @@ pub fn parse_trait_method_signatures_with_generics(
                     generic_bounds: std::collections::HashMap::new(),
                     parameter: params,
                     return_type: ret_ty,
-                    requires,
-                    ensures,
-                    old_exprs,
+                    requires: clauses.requires,
+                    ensures: clauses.ensures,
+                    ensures_kinds: clauses.ensures_kinds,
+                    old_exprs: clauses.old_exprs,
                     has_self_param: has_self,
                     self_is_mut,
                     body,
@@ -935,7 +936,7 @@ pub fn parse_impl_methods_with_generic_context(
                             ret_ty = Some(parser.parse_type_declaration_with_generic_context(&generic_context)?);
                         }
 
-                        let (requires, ensures, old_exprs) = parser.parse_contract_clauses()?;
+                        let clauses = parser.parse_contract_clauses()?;
                         let block = super::expr::parse_block(parser)?;
                         let fn_end_pos = parser.peek_position_n(0).unwrap_or(&std::ops::Range {start: 0, end: 0}).end;
 
@@ -953,9 +954,10 @@ pub fn parse_impl_methods_with_generic_context(
                             generic_bounds: merged_bounds,
                             parameter: params,
                             return_type: ret_ty,
-                            requires,
-                            ensures,
-                            old_exprs,
+                            requires: clauses.requires,
+                            ensures: clauses.ensures,
+                            ensures_kinds: clauses.ensures_kinds,
+                            old_exprs: clauses.old_exprs,
                             code: parser.ast_builder.expression_stmt(block, Some(location)),
                             has_self_param: has_self,
                             self_is_mut,

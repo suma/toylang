@@ -1497,6 +1497,7 @@ impl<'a> FunctionLower<'a> {
             contract_msgs,
             release,
             ensures: Vec::new(),
+            ensures_kinds: Vec::new(),
             result_sym: interner.get("result"),
             facts: Default::default(),
             bindings: HashMap::new(),
@@ -1669,6 +1670,7 @@ impl<'a> FunctionLower<'a> {
             return_type: method.return_type.clone(),
             requires: method.requires.clone(),
             ensures: method.ensures.clone(),
+            ensures_kinds: method.ensures_kinds.clone(),
             old_exprs: method.old_exprs.clone(),
             code: method.code,
             is_extern: false,
@@ -1947,6 +1949,7 @@ impl<'a> FunctionLower<'a> {
             // emitted at all.
             self.emit_old_snapshots(&func.old_exprs)?;
             self.ensures = func.ensures.clone();
+            self.ensures_kinds = func.ensures_kinds.clone();
         }
 
         // Function bodies are wrapped in a single Stmt::Expression(block).
@@ -2160,8 +2163,77 @@ impl<'a> FunctionLower<'a> {
             self.bindings.insert(result_sym, Binding::Scalar { local, ty });
         }
         let clauses: Vec<ExprRef> = self.ensures.clone();
+        let kinds = self.ensures_kinds.clone();
         let message = self.contract_msgs.ensures_violation;
-        self.emit_contract_checks(&clauses, message)?;
+        for (index, clause) in clauses.iter().enumerate() {
+            // ALLOC-CONTRACT-SUGAR: a budget clause diverges through a
+            // terminator that carries the readings, so the compiled
+            // binary reports the same numbers the interpreter does.
+            // Everything else takes the ordinary static-message path.
+            match kinds.get(index) {
+                Some(frontend::ast::EnsuresKind::AllocBudget { stat, old_index }) => {
+                    self.emit_alloc_budget_check(clause, *stat, *old_index, message)?;
+                }
+                _ => self.emit_contract_checks(std::slice::from_ref(clause), message)?,
+            }
+        }
+        Ok(())
+    }
+
+    /// ALLOC-CONTRACT-SUGAR: lower one `allocates` / `retains` /
+    /// `allocations` clause.
+    ///
+    /// The clause is `counter() <= __old_N + budget` by construction,
+    /// so both sides are lowered separately: the comparison is the
+    /// check, and the two values plus the entry snapshot are what the
+    /// failure path reports. Falls back to the plain path if the shape
+    /// is not the expected one — a wrong number would read worse than
+    /// the generic message.
+    fn emit_alloc_budget_check(
+        &mut self,
+        clause: &ExprRef,
+        stat: frontend::ast::MemStat,
+        old_index: usize,
+        message: DefaultSymbol,
+    ) -> Result<(), String> {
+        use frontend::ast::{Expr, Operator};
+
+        let Some(Expr::Binary(Operator::LE, lhs, rhs)) = self.program.expression.get(clause) else {
+            return self.emit_contract_checks(std::slice::from_ref(clause), message);
+        };
+        let Some(entry_sym) = self.interner.get(format!("__old_{old_index}")) else {
+            return self.emit_contract_checks(std::slice::from_ref(clause), message);
+        };
+        let Some(Binding::Scalar { local, ty }) = self.bindings.get(&entry_sym).cloned() else {
+            return self.emit_contract_checks(std::slice::from_ref(clause), message);
+        };
+
+        let current = self
+            .lower_expr(&lhs)?
+            .ok_or_else(|| "allocation budget lhs produced no value".to_string())?;
+        let limit = self
+            .lower_expr(&rhs)?
+            .ok_or_else(|| "allocation budget rhs produced no value".to_string())?;
+        let entry = self
+            .emit(InstKind::LoadLocal(local), Some(ty))
+            .ok_or_else(|| "entry snapshot produced no value".to_string())?;
+        let ok = self
+            .emit(
+                InstKind::BinOp { op: crate::ir::BinOp::Le, lhs: current, rhs: limit },
+                Some(Type::Bool),
+            )
+            .ok_or_else(|| "budget comparison produced no value".to_string())?;
+        let pass = self.fresh_block();
+        let fail = self.fresh_block();
+        self.terminate(Terminator::Branch { cond: ok, then_blk: pass, else_blk: fail });
+        self.switch_to(fail);
+        self.terminate(Terminator::PanicAllocBudget {
+            stat: stat.code(),
+            entry,
+            current,
+            limit,
+        });
+        self.switch_to(pass);
         Ok(())
     }
 }

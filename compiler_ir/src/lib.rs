@@ -644,6 +644,26 @@ impl Function {
 /// Counter names for IR dumps, indexed by `MemStat::code()`. Display
 /// only — the meaning of the code lives in the AST enum and in
 /// `toy_prof_stat`.
+/// ALLOC-CONTRACT-SUGAR: the one place the budget-violation sentence
+/// is written.
+///
+/// The tree-walker builds the same text from its own values, and the
+/// AOT runtime helper calls straight through to this — a diagnostic
+/// that differs by engine is a diagnostic a reader cannot trust.
+pub fn format_alloc_budget_violation(stat: u64, entry: u64, current: u64, limit: u64) -> String {
+    let used = current.saturating_sub(entry);
+    let budget = limit.saturating_sub(entry);
+    match stat {
+        // MemStat::CumulativeBytes
+        3 => format!("requested {used} bytes, budget {budget} bytes"),
+        // MemStat::LiveBytes
+        4 => format!("retained {used} bytes, budget {budget} bytes"),
+        // MemStat::AllocCount
+        0 => format!("made {used} allocations, budget {budget}"),
+        _ => format!("allocation budget exceeded: {used} over {budget}"),
+    }
+}
+
 pub const MEM_STAT_NAMES: [&str; 6] = [
     "alloc_count",
     "free_count",
@@ -1483,6 +1503,25 @@ pub enum Terminator {
     /// `assert(cond, "msg")` is lowered to a `Branch` followed by a
     /// `Panic` block.
     Panic { message: DefaultSymbol },
+    /// ALLOC-CONTRACT-SUGAR: diverge on a violated allocation budget,
+    /// reporting the numbers rather than a fixed string.
+    ///
+    /// `Panic` carries an interned message and nothing else, which is
+    /// why a violated budget could only ever print "ensures
+    /// violation". This one hands the counter reading, the entry
+    /// snapshot and the allowance to a runtime helper, which does the
+    /// subtraction and the formatting — the same three numbers the
+    /// tree-walker prints, so the diagnostic reads the same whichever
+    /// engine produced it.
+    ///
+    /// `stat` is `frontend::ast::MemStat::code()`, matching
+    /// `InstKind::MemStat`.
+    PanicAllocBudget {
+        stat: u64,
+        entry: ValueId,
+        current: ValueId,
+        limit: ValueId,
+    },
     /// Generic divergence — not currently emitted by lowering, but kept
     /// as a fall-through for future codegen needs (e.g. the unreachable
     /// arm of a fully-covered match).
@@ -1935,6 +1974,14 @@ impl fmt::Display for DisplayTerm<'_> {
             // codegen pass reaches into the program's interner anyway,
             // so this is mostly cosmetic.
             Terminator::Panic { message } => write!(f, "panic #{}", message.to_usize()),
+            Terminator::PanicAllocBudget { stat, entry, current, limit } => write!(
+                f,
+                "panic_alloc_budget {} entry={entry} current={current} limit={limit}",
+                MEM_STAT_NAMES
+                    .get(*stat as usize)
+                    .copied()
+                    .unwrap_or("?"),
+            ),
             Terminator::Unreachable => write!(f, "unreachable"),
         }
     }

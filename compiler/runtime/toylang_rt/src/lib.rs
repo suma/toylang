@@ -783,6 +783,54 @@ pub extern "C" fn toy_prof_force_counting() {
     thread_state().prof_forced = true;
 }
 
+/// ALLOC-CONTRACT-SUGAR: report a violated allocation budget and stop.
+///
+/// `Terminator::Panic` can only carry a static message, so a compiled
+/// binary could say "ensures violation" and nothing else; this takes
+/// the readings and formats them the way the interpreter does.
+///
+/// The wording is duplicated from
+/// `compiler_ir::format_alloc_budget_violation` — this crate is
+/// deliberately dependency-free, so it cannot call it. The pairing is
+/// the same one `Spec` already has with `frontend::format_spec`, and
+/// `compiler/tests/consistency.rs` pins the two against each other by
+/// comparing stderr across backends.
+///
+/// `stat` is `frontend::ast::MemStat::code()`.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_panic_alloc_budget(stat: u64, entry: u64, current: u64, limit: u64) -> ! {
+    let used = current.saturating_sub(entry);
+    let budget = limit.saturating_sub(entry);
+    let mut buf = StackBuf::<128>::new();
+    let written = match stat {
+        // MemStat::CumulativeBytes
+        3 => core::fmt::write(
+            &mut buf,
+            format_args!("panic: requested {used} bytes, budget {budget} bytes\n"),
+        ),
+        // MemStat::LiveBytes
+        4 => core::fmt::write(
+            &mut buf,
+            format_args!("panic: retained {used} bytes, budget {budget} bytes\n"),
+        ),
+        // MemStat::AllocCount
+        0 => core::fmt::write(
+            &mut buf,
+            format_args!("panic: made {used} allocations, budget {budget}\n"),
+        ),
+        _ => core::fmt::write(
+            &mut buf,
+            format_args!("panic: allocation budget exceeded: {used} over {budget}\n"),
+        ),
+    };
+    if written.is_ok() {
+        write_fd(2, buf.as_slice());
+    } else {
+        err_write("panic: allocation budget exceeded\n");
+    }
+    unsafe { exit(1) };
+}
+
 /// One counter, selected by `frontend::ast::MemStat::code()`. The
 /// numbering is shared with that enum; it is an ABI, not an
 /// implementation detail.

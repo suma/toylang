@@ -124,6 +124,7 @@ fn terminator_supported(term: &compiler_ir::Terminator) -> bool {
         | compiler_ir::Terminator::Jump(_)
         | compiler_ir::Terminator::Branch { .. }
         | compiler_ir::Terminator::Panic { .. }
+        | compiler_ir::Terminator::PanicAllocBudget { .. }
         | compiler_ir::Terminator::Unreachable => true,
     }
 }

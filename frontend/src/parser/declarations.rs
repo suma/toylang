@@ -1,6 +1,17 @@
 use std::collections::{HashMap, HashSet};
 use string_interner::DefaultSymbol;
-use crate::ast::{ExprRef, Parameter, PackageDecl, ImportDecl};
+use crate::ast::{EnsuresKind, ExprRef, Parameter, PackageDecl, ImportDecl};
+
+/// What `parse_contract_clauses` produces. A struct rather than a
+/// tuple because four same-shaped vectors in a row is a swap waiting
+/// to happen — `ensures` and `ensures_kinds` in particular have to
+/// stay the same length and order.
+pub struct ContractClauses {
+    pub requires: Vec<ExprRef>,
+    pub ensures: Vec<ExprRef>,
+    pub ensures_kinds: Vec<EnsuresKind>,
+    pub old_exprs: Vec<ExprRef>,
+}
 use crate::type_checker::SourceLocation;
 use crate::type_decl::TypeDecl;
 use crate::token::Kind;
@@ -143,14 +154,15 @@ impl<'a> Parser<'a> {
     /// Contract clauses. Called between the optional return type and the
     /// `{` body in `fn` declarations and `impl` methods. Multiple clauses of
     /// the same kind are allowed; the type checker AND-composes them.
-    /// Returns `(requires, ensures, old_exprs)` in declaration order.
+    /// Returns the clauses in declaration order.
     /// The third element is ALLOC-CONTRACT's `old(...)` snapshots,
     /// collected across every `ensures` clause of this function.
     pub fn parse_contract_clauses(
         &mut self,
-    ) -> ParserResult<(Vec<ExprRef>, Vec<ExprRef>, Vec<ExprRef>)> {
+    ) -> ParserResult<ContractClauses> {
         let mut requires = Vec::new();
         let mut ensures = Vec::new();
+        let mut ensures_kinds = Vec::new();
         // One buffer per function: `__old_N` indexes into it, so it
         // must start empty even if a previous declaration failed to
         // parse partway through.
@@ -174,15 +186,32 @@ impl<'a> Parser<'a> {
                     self.next();
                     self.push_context(crate::parser::core::ParseContext::Condition);
                     self.in_ensures_clause = true;
+                    self.last_alloc_budget = None;
                     let cond = self.parse_clause_with_span();
                     self.in_ensures_clause = false;
                     self.pop_context();
-                    ensures.push(cond?);
+                    let cond = cond?;
+                    // ALLOC-CONTRACT-SUGAR: the clause counts as a
+                    // budget only when the sugar *is* the whole
+                    // predicate. `ensures allocates(0u64) && result > 0u64`
+                    // is a plain clause with a budget inside it, and
+                    // reporting it as a budget violation would name the
+                    // wrong thing.
+                    ensures_kinds.push(match self.last_alloc_budget.take() {
+                        Some((root, kind)) if root == cond => kind,
+                        _ => EnsuresKind::Plain,
+                    });
+                    ensures.push(cond);
                 }
                 _ => break,
             }
         }
-        Ok((requires, ensures, std::mem::take(&mut self.old_exprs)))
+        Ok(ContractClauses {
+            requires,
+            ensures,
+            ensures_kinds,
+            old_exprs: std::mem::take(&mut self.old_exprs),
+        })
     }
 
     /// Parse one contract predicate and record the span of the *whole*

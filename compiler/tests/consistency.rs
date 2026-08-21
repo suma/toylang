@@ -1359,6 +1359,72 @@ fn a_broken_precondition_still_stops_every_backend() {
     assert_ne!(compiled, 0, "compiled binary should exit non-zero");
 }
 
+/// DBC-TRAIT-INHERIT. A contract declared on a trait method has to
+/// reach every backend the same way — it is copied onto the impl's
+/// `MethodFunction` before lowering, so the three engines see one
+/// method carrying both sets of clauses.
+#[test]
+fn trait_contract_reaches_every_backend() {
+    let src = r#"
+        trait Shrink {
+            fn shrink(self: Self, by: u64) -> u64
+                requires by > 0u64
+                ensures result < 1000u64
+        }
+
+        struct B { n: u64 }
+
+        impl Shrink for B {
+            fn shrink(self: Self, by: u64) -> u64
+                requires by < 100u64
+            {
+                self.n - by
+            }
+        }
+
+        fn main() -> u64 {
+            val b = B { n: 50u64 }
+            b.shrink(8u64)
+        }
+    "#;
+    assert_consistent(src, "trait_contract_ok");
+}
+
+#[test]
+fn a_trait_contract_violation_stops_every_backend() {
+    let src = r#"
+        trait Shrink {
+            fn shrink(self: Self, by: u64) -> u64
+                requires by > 0u64
+        }
+
+        struct B { n: u64 }
+
+        impl Shrink for B {
+            fn shrink(self: Self, by: u64) -> u64 {
+                self.n - by
+            }
+        }
+
+        fn main() -> u64 {
+            val b = B { n: 10u64 }
+            var zero: u64 = 0u64
+            b.shrink(zero)
+        }
+    "#;
+    let core = core_modules_dir();
+    let mut interp_opts = RunOptions::default();
+    interp_opts.core_modules_dir = Some(core.as_path());
+    assert!(
+        interpreter::run_source(src, "trait_contract.t", &interp_opts).is_err(),
+        "the trait's precondition should refuse the call"
+    );
+
+    let compiled = try_compiler_exit_code(src, "trait_contract", true)
+        .expect("the program should still compile");
+    assert_ne!(compiled, 0, "compiled binary should exit non-zero");
+}
+
 #[test]
 fn top_level_const_match() {
     let src = r#"

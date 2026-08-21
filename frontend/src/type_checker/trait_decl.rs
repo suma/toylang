@@ -207,6 +207,27 @@ impl<'a> TypeCheckerVisitor<'a> {
                     )));
                 }
             }
+            // DBC-TRAIT-INHERIT: a contract is an expression written
+            // over parameter *names*, so it can only be carried onto
+            // an impl that spells them the same way. Renaming used to
+            // drop the trait's clauses without a word; refusing it
+            // keeps "the trait declares an obligation" true.
+            if !sig.requires.is_empty() || !sig.ensures.is_empty() {
+                for ((impl_name, _), (trait_name_sym, _)) in
+                    m.parameter.iter().zip(sig.parameter.iter())
+                {
+                    if impl_name != trait_name_sym {
+                        let t_str = self.core.string_interner.resolve(trait_symbol).unwrap_or("?");
+                        let s_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("?");
+                        let m_str = self.core.string_interner.resolve(sig.name).unwrap_or("?");
+                        let want = self.core.string_interner.resolve(*trait_name_sym).unwrap_or("?");
+                        let got = self.core.string_interner.resolve(*impl_name).unwrap_or("?");
+                        return Err(TypeCheckError::new(format!(
+                            "impl {t_str} for {s_str}: method '{m_str}' renames parameter `{want}` to `{got}`, but {t_str} declares a contract over `{want}` — rename the parameter back so the trait's `requires` / `ensures` still resolve"
+                        )));
+                    }
+                }
+            }
             // Compare return types. Both sides resolve `Self`; the
             // trait side also runs through `substitute_generics`
             // for `T -> trait_type_args[i]`.
@@ -270,7 +291,16 @@ impl<'a> TypeCheckerVisitor<'a> {
 /// Generic-trait defaults whose bodies depend on the trait generic
 /// params are out of scope for this phase; users should still
 /// write those impls explicitly.
+///
+/// DBC-TRAIT-INHERIT: the same walk also copies a trait method's
+/// `requires` / `ensures` onto the impl's own method. Without it a
+/// contract written on the trait did nothing at all unless the impl
+/// happened to repeat it — the clause read as an obligation the trait
+/// imposed, and was in fact inert. Inherited clauses go *first*, so a
+/// violation of the trait's own contract is reported before any the
+/// impl adds.
 pub fn expand_trait_defaults_in_pool(stmt_pool: &mut StmtPool) {
+    inherit_trait_contracts(stmt_pool);
     // Pass 1: index trait default bodies by trait name.
     let mut defaults: std::collections::HashMap<
         DefaultSymbol,
@@ -340,6 +370,155 @@ pub fn expand_trait_defaults_in_pool(stmt_pool: &mut StmtPool) {
             },
         );
     }
+}
+
+/// DBC-TRAIT-INHERIT: give every impl method the contract its trait
+/// declared for it.
+///
+/// A method that carries a default body already inherited its clauses
+/// through `synthesize_default_method`; this covers the other case —
+/// the impl wrote the method itself — which is the common one, and
+/// where the clauses used to vanish.
+///
+/// Two conditions have to hold, and both are about the clause meaning
+/// the same thing in its new home:
+///
+/// * **Parameter names must match.** A clause is an expression over
+///   parameter names, so a trait that says `requires by > 0u64` cannot
+///   be attached to an impl that spells the parameter `amount` — the
+///   name would resolve to nothing. The receiver is excluded from the
+///   comparison since it is not a parameter in the implicit
+///   `&self` / `&mut self` form.
+/// * **At most one side may use `old(...)`.** The snapshots are
+///   referenced positionally (`__old_0`, `__old_1`, ...), so merging
+///   two lists would renumber one side's references. Concatenating is
+///   only safe when one list is empty.
+///
+/// Where either fails the impl keeps exactly the contract it had,
+/// which is the pre-existing behaviour rather than a regression.
+/// Idempotent: re-running finds the clauses already present and
+/// leaves them alone.
+fn inherit_trait_contracts(stmt_pool: &mut StmtPool) {
+    let mut contracts: std::collections::HashMap<
+        DefaultSymbol,
+        Vec<TraitMethodSignature>,
+    > = std::collections::HashMap::new();
+    for index in 0..stmt_pool.len() {
+        let stmt_ref = StmtRef(index as u32);
+        if let Some(Stmt::TraitDecl { name, methods, .. }) = stmt_pool.get(&stmt_ref) {
+            let contracted: Vec<TraitMethodSignature> = methods
+                .iter()
+                .filter(|sig| !sig.requires.is_empty() || !sig.ensures.is_empty())
+                .cloned()
+                .collect();
+            if !contracted.is_empty() {
+                contracts.insert(name, contracted);
+            }
+        }
+    }
+    if contracts.is_empty() {
+        return;
+    }
+
+    for index in 0..stmt_pool.len() {
+        let stmt_ref = StmtRef(index as u32);
+        let Some(Stmt::ImplBlock {
+            target_type,
+            target_type_args,
+            methods,
+            trait_name: Some(trait_name),
+            trait_type_args,
+        }) = stmt_pool.get(&stmt_ref)
+        else {
+            continue;
+        };
+        let Some(signatures) = contracts.get(&trait_name) else {
+            continue;
+        };
+        let mut changed = false;
+        let new_methods: Vec<Rc<MethodFunction>> = methods
+            .iter()
+            .map(|method| {
+                let Some(sig) = signatures.iter().find(|s| s.name == method.name) else {
+                    return method.clone();
+                };
+                match merge_trait_contract(sig, method) {
+                    Some(merged) => {
+                        changed = true;
+                        Rc::new(merged)
+                    }
+                    None => method.clone(),
+                }
+            })
+            .collect();
+        if !changed {
+            continue;
+        }
+        stmt_pool.update(
+            &stmt_ref,
+            Stmt::ImplBlock {
+                target_type,
+                target_type_args,
+                methods: new_methods,
+                trait_name: Some(trait_name),
+                trait_type_args,
+            },
+        );
+    }
+}
+
+/// The impl method with its trait's clauses prepended, or `None` when
+/// nothing needs to change (or the merge would not be sound — see
+/// `inherit_trait_contracts`).
+fn merge_trait_contract(
+    sig: &TraitMethodSignature,
+    method: &Rc<MethodFunction>,
+) -> Option<MethodFunction> {
+    // Already carrying them (a second run, or `synthesize_default_method`
+    // copied them verbatim).
+    let already_there = sig
+        .requires
+        .iter()
+        .all(|r| method.requires.contains(r))
+        && sig.ensures.iter().all(|e| method.ensures.contains(e));
+    if already_there {
+        return None;
+    }
+    if !parameter_names_match(sig, method) {
+        return None;
+    }
+    if !sig.old_exprs.is_empty() && !method.old_exprs.is_empty() {
+        return None;
+    }
+    let mut merged = (**method).clone();
+    merged.requires = sig
+        .requires
+        .iter()
+        .copied()
+        .chain(method.requires.iter().copied())
+        .collect();
+    merged.ensures = sig
+        .ensures
+        .iter()
+        .copied()
+        .chain(method.ensures.iter().copied())
+        .collect();
+    if method.old_exprs.is_empty() {
+        merged.old_exprs = sig.old_exprs.clone();
+    }
+    Some(merged)
+}
+
+/// Whether the two signatures name their parameters identically, so a
+/// clause written against one resolves in the other. Conformance
+/// already requires the receiver kinds to match, so `self` is either
+/// present in both parameter lists (the `self: Self` spelling) or in
+/// neither (`&self` / `&mut self`, where the receiver is not a
+/// parameter) — comparing the lists as they stand is enough.
+fn parameter_names_match(sig: &TraitMethodSignature, method: &MethodFunction) -> bool {
+    let trait_params: Vec<DefaultSymbol> = sig.parameter.iter().map(|(n, _)| *n).collect();
+    let impl_params: Vec<DefaultSymbol> = method.parameter.iter().map(|(n, _)| *n).collect();
+    trait_params == impl_params
 }
 
 /// A1: build a synthetic `MethodFunction` for a trait method whose

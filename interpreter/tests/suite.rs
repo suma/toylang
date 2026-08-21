@@ -109,6 +109,9 @@ mod checked_arith_tests;
 #[path = "contract_old_tests.rs"]
 mod contract_old_tests;
 
+#[path = "contract_trait_tests.rs"]
+mod contract_trait_tests;
+
 #[path = "ord_tests.rs"]
 mod ord_tests;
 

@@ -11,6 +11,10 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-21
+- **CONTRACT-ELISION: 契約が RUNTIME-TRAP の guard を消す** — `requires b != 0`
+  で 0 除算 guard、`requires a >= b` で u64 underflow guard を lowering から
+  落とす (パラメータ限定、シャドウで失効、`--release` では契約が検査されない
+  ので guard を残す)。合成ベンチ (1 億回、AOT opt=speed) で **0.13s → 0.06s**。
 - **ALLOC-CONTRACT: `ensures` の `old(expr)`** — 関数入口時点の値を参照できる
   ようにし (parser が `__old_N` に desugar、3 backend が入口で評価)、
   アロケーションカウンタと組み合わせて**メモリ挙動を契約で縛れる**ように
@@ -637,6 +641,15 @@
 > 2026-08-20 に算術 / 添字を 3 バックエンドで実際に叩いて洗い出した節。
 > トラップ本体は同日 landing (完了済み節)。残るのは下の 2 件。
 
+- **CONTRACT-ELISION の残** ★ — 消せる guard を増やす余地:
+  (a) **添字境界** — `requires i < 8u64` + `[T; 8]` で `emit_index_guard` を
+  落とせる (配列長は binding が持っているので比較可能)。今は未対応。
+  (b) **符号付き `MIN / -1`** — `requires b != -1` を認識する節の形が無い。
+  (c) **推移的な事実** — `requires a >= b` から `a - b >= 0` を導いて
+  さらに下流の guard を消す、といった伝播はしていない (1 段のみ)。
+  いずれも「実プログラムでその形の契約を書いていて、かつ guard が
+  ホットパスにある」ことを確認してから。
+
 - **RUNTIME-TRAP-NARROW: narrow int の `checked_*` / `saturating_*`** ★ —
   `core/std/checked.t` は `u64` / `i64` だけ。`u8`〜`u32` / `i8`〜`i32` は
   未提供。トラップ自体 (0 除算 / `MIN / -1`) は全幅で効いているので、
@@ -799,7 +812,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2032 テスト** (100% 成功、2026-08-21 時点)。
+- 合計 **2038 テスト** (100% 成功、2026-08-21 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、

@@ -3327,6 +3327,56 @@ Rules and limits:
 - The snapshot expression is checked in the entry scope: it may read
   parameters and `self`, but not `result`.
 
+### Contracts and traps
+
+A precondition that rules out a [runtime trap](#runtime-traps) takes
+the guard's place: the check happens once, on entry, instead of at
+every operation.
+
+```rust
+fn div(a: i64, b: i64) -> i64
+    requires b != 0i64          # checked once here...
+{
+    a / b                       # ...so this needs no divide-by-zero guard
+}
+
+fn take(a: u64, b: u64) -> u64
+    requires a >= b             # the exact condition the guard would test
+{
+    a - b
+}
+```
+
+Writing the contract is therefore not only a correctness statement —
+it is how the operation gets cheaper. In a loop doing one division and
+one subtraction per iteration, the contracted version measured **~2x**
+the throughput of the same code without the clauses (100M iterations,
+AOT, cranelift `speed`; the guards are not something cranelift can
+remove on its own, since it cannot see the precondition).
+
+What can be elided, and when:
+
+| Clause | Guard it replaces |
+|---|---|
+| `x != 0`, `0 != x`, `x > 0`, `x >= 1` | divide-by-zero on `a / x`, `a % x` |
+| `a >= b`, `b <= a` | `u64` subtraction underflow on `a - b` |
+
+- Only **parameters** qualify. The type checker refuses assignment to a
+  parameter, so a fact proved on entry holds for the whole body,
+  including inside loops. A field, an index, or any computed
+  expression keeps its guard.
+- A `val` / `var` in the body that **takes over the parameter's name**
+  drops the fact from that point on — the guard site would be reading
+  the new binding.
+- `&&` contributes both halves; `||` contributes neither.
+- **`--release` keeps every guard.** Preconditions are not emitted
+  there, so nothing verifies them, and an unverified contract must not
+  be allowed to remove a memory-safety check. This is deliberately the
+  opposite of the usual arrangement: the optimisation is on in checked
+  builds and off in unchecked ones.
+- The signed `MIN / -1` trap is never elided — no clause shape
+  currently proves it away.
+
 ### Runtime gating
 
 The `INTERPRETER_CONTRACTS` environment variable selects which clauses
@@ -3404,6 +3454,9 @@ What is deliberately **not** a trap:
   wrapped result is actively misleading rather than merely modular.
 - **`f64` division by zero** — IEEE-754 defines it as an infinity,
   which is a value.
+
+A `requires` clause that already rules a trap out **removes the
+guard** — see *Contracts and traps* below.
 
 Array indices are checked against the length the binding was declared
 with. A **constant** index out of range is rejected earlier, at compile

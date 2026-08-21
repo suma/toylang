@@ -323,6 +323,9 @@ fn main() -> u64 {
 - **クロージャ / ラムダ** — `fn(params) -> R { body }` の anonymous function literal。関数型は `fn (T1, T2) -> R` (推奨) / `(T1, T2) -> R` (bare)。parameter / return / `val` 注釈 / struct field 型に書ける。capture は生成時スナップショット。interpreter は full support、AOT は env-based ABI で capturing / non-capturing 両対応、JIT は silent fallback。詳細は [`docs/language.md`](docs/language.md)
 - **Design by Contract キーワード**: `requires`（事前条件）, `ensures`（事後条件）。
   `ensures` 内では **`old(expr)`** が「関数入口時点の値」を指す (ALLOC-CONTRACT、3 backend)。
+  **`requires` は RUNTIME-TRAP の guard を消す** (CONTRACT-ELISION): `requires b != 0`
+  で 0 除算 guard、`requires a >= b` で u64 underflow guard が lowering から落ちる
+  (パラメータ名のみ、`--release` では契約が検査されないので guard は残る)。
   アロケーションカウンタと組み合わせると**メモリ挙動をシグネチャで約束できる**
   (`ensures __builtin_live_bytes() == old(__builtin_live_bytes())`)。例:
   `interpreter/example/alloc_contract.t`。関数 / メソッドの `-> ReturnType` の後、body `{` の前に複数並べられる。各節は bool 式で、AND 合成。`ensures` 内では `result` が戻り値を指す。違反時は `ContractViolation` エラーで停止。`INTERPRETER_CONTRACTS=all|pre|post|off`（unset = `all`）で `requires` / `ensures` を独立に切り替えられる（D の `-release` 相当）

@@ -111,35 +111,22 @@ pub fn mem_copy(src: u64, dest: u64, size: u64) {
 /// the trailing `u64 len` field (so `byte_start = value - len - 1`). This
 /// keeps the IR VM byte-uniform with AOT / `__builtin_str_to_ptr`, so
 /// `as_ptr` + `PtrRead(U8)` and `mem_copy` over string buffers work.
-pub fn alloc_str_bytes(bytes: &[u8]) -> u64 {
-    let len = bytes.len();
-    let base = heap_alloc((len + 1 + 8) as u64);
-    if base == 0 {
-        return 0;
-    }
-    with_heap(|h| {
-        h.write_bytes_raw(base as usize, bytes); // [0..len]
-        h.write_bytes_raw(base as usize + len, &[0u8]); // NUL at [len]
-        h.write_bytes_raw(base as usize + len + 1, &(len as u64).to_le_bytes());
-    });
-    base + len as u64 + 1
-}
-
-/// Allocate a `str` from owned text.
-pub fn alloc_string(text: String) -> u64 {
-    alloc_str_bytes(text.as_bytes())
-}
-
-/// Materialise a str **literal** using the same layout as
-/// [`alloc_str_bytes`] but *without* touching the allocation counters.
 ///
-/// The compiled backends keep literals in `.rodata` and allocate nothing
-/// for them; the IR VM's byte-uniform heap has no static section, so it
-/// has to materialise the bytes somewhere — but counting that as an
-/// allocation made the interpreter report one extra allocation per
-/// literal (MEMORY_PROFILING M3 residual, the "SlotRegion" name being
-/// the first literal the profiler saw in a real program).
-pub fn alloc_str_literal(bytes: &[u8]) -> u64 {
+/// **Does not touch the allocation counters** (MEM-COUNTER-INTERP-DRIFT).
+/// The counters report what the program asked the allocator for —
+/// `__builtin_heap_alloc` and friends — not what the language runtime
+/// spends underneath to hold a string. The compiled backends already
+/// work that way: `toylang_rt::toy_str_alloc` calls `malloc` directly,
+/// while `toy_heap_alloc` is the path that bumps `alloc_count`. Counting
+/// here made the same `println("n = {n}")` cost 24 bytes on this engine
+/// and 0 on AOT, so a contract reading the counters could pass on one
+/// and fail on the other.
+///
+/// The literal case was already excluded for the same reason (the
+/// compiled backends keep literals in `.rodata`); this extends it to
+/// every string the runtime materialises — concatenation, `to_string`,
+/// formatting.
+pub fn alloc_str_bytes(bytes: &[u8]) -> u64 {
     let len = bytes.len();
     let base = with_heap(|h| h.alloc_uncounted(len + 1 + 8)).unwrap_or(0);
     if base == 0 {
@@ -151,6 +138,11 @@ pub fn alloc_str_literal(bytes: &[u8]) -> u64 {
         h.write_bytes_raw(base + len + 1, &(len as u64).to_le_bytes());
     });
     base as u64 + len as u64 + 1
+}
+
+/// Allocate a `str` from owned text.
+pub fn alloc_string(text: String) -> u64 {
+    alloc_str_bytes(text.as_bytes())
 }
 
 /// Read the bytes of a `str` value (pointer to the len field) into a String.

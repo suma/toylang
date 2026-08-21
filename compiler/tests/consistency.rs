@@ -1526,6 +1526,67 @@ fn a_budget_clause_lowers_to_its_own_terminator() {
     );
 }
 
+/// MEM-COUNTER-INTERP-DRIFT. The counters report what the *program*
+/// asked the allocator for, not what the language runtime spends
+/// underneath to hold a string — and every engine has to agree on
+/// that, because contracts read these numbers.
+///
+/// This used to differ: `println("n = {n}")` cost 24 bytes on the IR
+/// VM (whose byte-uniform heap materialises the concatenation) and 0
+/// on AOT (whose `toy_str_alloc` calls `malloc` directly), so the
+/// same `ensures allocates(0u64)` passed on one engine and failed on
+/// the other.
+#[test]
+fn string_interpolation_costs_the_same_everywhere() {
+    let src = r#"
+        fn probe(n: u64) -> u64 {
+            val before: u64 = __builtin_cumulative_bytes()
+            println("n = {n}")
+            val after: u64 = __builtin_cumulative_bytes()
+            after - before
+        }
+
+        fn main() -> u64 { probe(1u64) }
+    "#;
+    assert_consistent(src, "interp_counter");
+}
+
+/// The other half of the same rule: an allocation the program makes
+/// explicitly is still counted, on every engine. Without this the fix
+/// above could have been "stop counting anything".
+#[test]
+fn an_explicit_allocation_is_still_counted_everywhere() {
+    let src = r#"
+        fn probe(n: u64) -> u64 {
+            val before: u64 = __builtin_cumulative_bytes()
+            val p: ptr = __builtin_heap_alloc(32u64)
+            __builtin_heap_free(p)
+            val after: u64 = __builtin_cumulative_bytes()
+            after - before
+        }
+
+        fn main() -> u64 { probe(1u64) }
+    "#;
+    assert_consistent(src, "explicit_counter");
+}
+
+/// A budget clause over a function that interpolates must therefore
+/// hold everywhere, rather than depending on which engine ran it.
+#[test]
+fn an_allocation_budget_survives_interpolation() {
+    let src = r#"
+        fn report(n: u64) -> u64
+            ensures allocates(0u64)
+        {
+            println("n = {n}")
+            n
+        }
+
+        fn main() -> u64 { report(7u64) }
+    "#;
+    assert_consistent(src, "budget_with_interp");
+}
+
 #[test]
 fn top_level_const_match() {
     let src = r#"

@@ -631,6 +631,15 @@
 - **159. JIT の generic struct 対応** ★★ — `struct_layouts` を type-args 別に持つ refactor。踏むと `JIT: skipped (... see #159)` が出るので診断から辿れる (`jit_skip_reason_for_generic_struct` で wording を pin)。generic enum payload 経由の trait-bounded generic API (`fn first<I: Iter<i64>>(..)`) が AOT で通らないのもここが原因。
 - **160. タプルの JIT 対応 (ネスト)** ★ — `((a,b),c)` と tuple-of-struct。`ParamTy::Tuple(Vec<ScalarTy>)` を tree 構造にする 100+ 箇所の refactor。inline tuple literal を call 引数に渡す件も残り。
 - **JIT-enum-1 (residual)** ★ — ネストした generic enum payload (`Option<Option<T>>`)、enum 型の struct field、payload に struct / tuple を持つ enum。
+- **MEM-COUNTER-INTERP-DRIFT: 文字列補間の確保がバックエンドで食い違う** ★★ —
+  `docs/language.md` の Allocation counters は「リクエスト単位で、3 バックエンドで
+  同じ数字」と明言しているが、**文字列補間では成り立たない** (2026-08-21 実測):
+  `before` / `after` を挟んで `println("n = {n}")` を測ると
+  **interpreter は 24、AOT は 0**。`__builtin_heap_alloc` を直接呼ぶ場合は
+  一致する (32 が両方で見える) ので、補間が使う確保の経路がバックエンドで
+  別なのが原因。カウンタは契約から読めるので、**同じ契約が engine によって
+  通ったり落ちたりする**。NEVER-ALLOCATES の前提でもある
+  ([`NEVER_ALLOCATES.md`](NEVER_ALLOCATES.md) 7-1)。
 - **FROM-INTO-ENUM-ERR** ★ — enum エラー型への `From` 変換 (`?` の cross-error 経路) が interpreter のみ。AOT/JIT が enum の associated call (`MyErr::from(e)`) を lower できないため。struct エラー型は 3 バックエンドで動く。
 - **NUM-W-AOT-pack Phase 3** ★ — compound element 配列の tighter layout (`[PackedRgba; N]` が 4 バイト相当のところ 32 バイト消費)。メモリ効率のみで機能差はない。
 - **195b. `extern fn` の monomorph 化** ★ — generic extern は現状 interpreter の type-erased registry でのみ動く。JIT / AOT には mangled symbol の emit と Rust 側実装の登録が要る。実需要なし。
@@ -708,6 +717,15 @@
   - **A5-P4: `Box<dyn Trait>`** — owned trait object + `Vec<Box<dyn Trait>>`。**前提**: `Box<T>` 自体が未実装。
   - **A5 残作業** — `&dyn Trait` の return / struct field 位置 (REF-Stage-2 の escape rule が阻む)、`dyn A + B`、`dyn Iterator<T>`、generic trait の default body 内での `T` 参照。
 - **`must_use` / unused-Result 警告** ★★ — `?` の補完。**警告の emit 経路が無い**ので (`Severity::Warning` は型としては存在するが未使用)、そこから作る必要がある。
+- **NEVER-ALLOCATES: 静的な「確保しない」** ★★ — `never_allocates fn f()` を
+  コンパイル時に検査する (実行時版の `ensures allocates(0u64)` の対)。
+  **設計検討済み** — 名前の選定 (D の `@nogc` / Ada の `No_Allocators` /
+  Rust の crate 群を調べた結果)、検査方式 (属性の伝播ではなく呼び出しグラフの
+  到達可能性)、追えないもの (closure / `dyn` / `extern`) の扱いまで
+  [`NEVER_ALLOCATES.md`](NEVER_ALLOCATES.md) にある。**バックエンドの変更は不要**
+  (検査だけ) なので実行時契約より軽い。**着手条件**: 先に
+  MEM-COUNTER-INTERP-DRIFT を直すこと — 「何が確保か」が engine で揺れている
+  状態では、静的検査が何を禁止すべきかも決まらない。
 - **CLOSURE-CAPTURE: capture 意味論の拡張** ★★ — 現状は**生成時スナップショット
   のみ**なので「カウンタを閉じ込めて更新する」基本形が書けない。`&mut` capture に
   するか明示 capture list にするかは言語の性格を決める判断なので、closure の

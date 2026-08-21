@@ -12,9 +12,16 @@
 # `result` references the declared return type.
 
 # Plain function with both pre- and postconditions.
+# The postcondition has to account for the remainder: integer division
+# truncates, so `result * b == a` is false for 7 / 2. `--check` finds
+# that in a second — a plausible-looking clause is exactly the kind
+# worth running it against. The second precondition is the other trap
+# a non-zero divisor does not rule out: `MIN / -1` has no
+# representable result.
 fn divide(a: i64, b: i64) -> i64
     requires b != 0i64
-    ensures  result * b == a
+    requires !(a == -9223372036854775808i64 && b == -1i64)
+    ensures  result * b + (a % b) == a
 {
     a / b
 }

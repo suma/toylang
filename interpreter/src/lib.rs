@@ -567,6 +567,17 @@ pub fn check_typing_diagnostics(
     let expr_types = tc.get_expr_types();
     drop(tc);
     let mut analysis = frontend::type_checker::check_moves(program, string_interner, &expr_types);
+    // NEVER-ALLOCATES: a function declared `never_allocates` must not
+    // be able to reach the allocator. Runs here, with the move check,
+    // because it reads the same `expr_types` — the receiver's type is
+    // what separates a `concat` on `str` (runtime-internal, excluded
+    // from the counters) from one on `String` (stdlib code that
+    // allocates).
+    fn_errors.extend(frontend::type_checker::check_never_allocates(
+        program,
+        string_interner,
+        &expr_types,
+    ));
     // Recorded on the program so every backend's auto-drop
     // registration can skip a binding that no longer owns its value.
     program.transferred_bindings = analysis.transferred;

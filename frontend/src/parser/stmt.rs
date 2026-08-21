@@ -847,6 +847,11 @@ pub fn parse_trait_method_signatures_with_generics(
                     requires: clauses.requires,
                     ensures: clauses.ensures,
                     ensures_kinds: clauses.ensures_kinds,
+                                // NEVER-ALLOCATES: declarable on free functions only
+                        // for now. The check still walks *into* methods, so a
+                        // `never_allocates` function calling an allocating
+                        // method is caught.
+                        never_allocates: false,
                     old_exprs: clauses.old_exprs,
                     has_self_param: has_self,
                     self_is_mut,
@@ -957,6 +962,11 @@ pub fn parse_impl_methods_with_generic_context(
                             requires: clauses.requires,
                             ensures: clauses.ensures,
                             ensures_kinds: clauses.ensures_kinds,
+                                // NEVER-ALLOCATES: declarable on free functions only
+                        // for now. The check still walks *into* methods, so a
+                        // `never_allocates` function calling an allocating
+                        // method is caught.
+                        never_allocates: false,
                             old_exprs: clauses.old_exprs,
                             code: parser.ast_builder.expression_stmt(block, Some(location)),
                             has_self_param: has_self,

@@ -119,6 +119,10 @@ pub enum TypeCheckErrorKind {
     /// "whatever the context wants" and then stop the program when
     /// evaluated.
     ReservedLiteral { name: String, alternative: String },
+    /// NEVER-ALLOCATES: a function declared `never_allocates` can
+    /// reach the allocator, or reaches a call this check cannot
+    /// follow. `path` is the chain that gets there.
+    NeverAllocates { function: String, path: String, opaque: Option<&'static str> },
 }
 
 #[derive(Debug, Clone)]
@@ -314,6 +318,21 @@ impl TypeCheckError {
         }
     }
 
+    /// NEVER-ALLOCATES: the declaration cannot be honoured.
+    pub fn never_allocates(
+        function: String,
+        path: String,
+        opaque: Option<&'static str>,
+    ) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::NeverAllocates { function, path, opaque }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
     /// TYPECHECK-LIES: a reserved literal with no runtime meaning.
     /// `alternative` names what to write instead, and is part of the
     /// message rather than a machine-applicable suggestion because the
@@ -431,6 +450,14 @@ impl TypeCheckError {
                     name
                 )
             }
+            TypeCheckErrorKind::NeverAllocates { function, path, opaque } => match opaque {
+                Some(what) => format!(
+                    "`{function}` is declared `never_allocates`, but it makes a call this check cannot follow ({what}): {path}"
+                ),
+                None => format!(
+                    "`{function}` is declared `never_allocates`, but it can reach the allocator: {path}"
+                ),
+            },
             TypeCheckErrorKind::ReservedLiteral { name, alternative } => {
                 format!(
                     "`{}` is reserved and has no runtime meaning: {}",

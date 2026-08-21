@@ -97,6 +97,9 @@ mod module_property_tests;
 #[path = "move_check_tests.rs"]
 mod move_check_tests;
 
+#[path = "never_allocates_tests.rs"]
+mod never_allocates_tests;
+
 #[path = "oop_tests.rs"]
 mod oop_tests;
 

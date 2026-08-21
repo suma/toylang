@@ -61,6 +61,7 @@ const ENTRIES: &[Entry] = &[
     (codes::RECURSIVE_TYPE, E0013),
     (codes::MOVED_VALUE, E0014),
     (codes::RESERVED_LITERAL, E0015),
+    (codes::NEVER_ALLOCATES, E0016),
 ];
 
 const E0001: &str = "\
@@ -491,6 +492,51 @@ rather than an absent one:
 
 The universal `is_null()` method is unsupported for the same reason
 the literal is — it only made sense on a `null` that worked.";
+
+const E0016: &str = "\
+E0016: a function declared `never_allocates` can reach the allocator
+
+`never_allocates` is the compile-time counterpart to
+`ensures allocates(0u64)`. That clause measures one call and reports
+what it cost; this one says the call cannot allocate at all, and the
+compiler checks it by following every path out of the function.
+
+    never_allocates fn triangle(n: u64) -> u64 {
+        var total: u64 = 0u64
+        var i: u64 = 1u64
+        while i <= n { total = total + i  i = i + 1u64 }
+        total
+    }                                    # fine: no path reaches the allocator
+
+    never_allocates fn build(n: u64) -> u64 {
+        var v: Vec<u64> = Vec::new()     # E0016: build -> new ->
+        v.push(n)                        #        __builtin_heap_alloc
+        n
+    }
+
+The message names the path, because the allocation is usually not in
+the function you wrote — `Vec::new` is rejected for reaching
+`__builtin_heap_alloc`, not for being on a list.
+
+What counts as allocating is what the allocation counters count:
+`__builtin_heap_alloc` and `__builtin_heap_realloc`, plus everything
+built on them. Memory the runtime spends holding a `str` is not the
+program\'s allocation, so `println(\"{x}\")` is allowed.
+
+The other form of this error is a call the check cannot follow:
+
+    never_allocates fn run(f: fn () -> u64) -> u64 { f() }   # E0016
+
+A closure value, a `dyn Trait` receiver, or an `extern fn` lands
+somewhere with no body to walk. Assuming such a call is
+allocation-free would make the whole guarantee worthless, so it is
+refused instead. For `extern`, the author can take responsibility with
+`extern never_allocates fn getchar() -> i32 from \"c\"`, which is a
+declaration rather than a proof.
+
+To fix: remove the allocating call, take a buffer as a parameter
+instead of building one, or drop the `never_allocates` and state the
+weaker runtime bound with `ensures allocates(0u64)`.";
 
 #[cfg(test)]
 mod tests {

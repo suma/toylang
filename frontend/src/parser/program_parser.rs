@@ -93,6 +93,20 @@ impl<'a> Parser<'a> {
                 Visibility::Private
             };
 
+            // NEVER-ALLOCATES: `never_allocates fn f()`. Contextual
+            // like `test` — only a `never_allocates` immediately
+            // followed by `fn` or `extern` is the modifier, so a
+            // program with its own `never_allocates` name is
+            // unaffected.
+            let never_allocates = if matches!(self.peek(), Some(Kind::Identifier(s)) if s == "never_allocates")
+                && matches!(self.peek_n(1), Some(Kind::Function) | Some(Kind::Extern))
+            {
+                self.next();
+                true
+            } else {
+                false
+            };
+
             // LLM-LOOP P4: `test "name" { ... }`. Recognised
             // contextually — `test` stays an ordinary identifier
             // everywhere else, so existing code with a `fn test(..)` or
@@ -130,6 +144,7 @@ impl<'a> Parser<'a> {
                     requires: vec![],
                     ensures: vec![],
                     ensures_kinds: vec![],
+                    never_allocates: false,
                     old_exprs: vec![],
                     code: self.ast_builder.expression_stmt(block, Some(location)),
                     is_extern: false,
@@ -278,6 +293,12 @@ impl<'a> Parser<'a> {
                         requires: vec![],
                         ensures: vec![],
                         ensures_kinds: vec![],
+                        // NEVER-ALLOCATES: on an `extern fn` this is a
+                        // declaration, not a check — the body is
+                        // outside the language, so the compiler takes
+                        // the author's word and lets a
+                        // `never_allocates` caller through.
+                        never_allocates,
                         old_exprs: vec![],
                         code: placeholder_body,
                         is_extern: true,
@@ -333,6 +354,7 @@ impl<'a> Parser<'a> {
                                 requires: clauses.requires,
                                 ensures: clauses.ensures,
                                 ensures_kinds: clauses.ensures_kinds,
+                                never_allocates,
                                 old_exprs: clauses.old_exprs,
                                 code: self.ast_builder.expression_stmt(block, Some(location)),
                                 is_extern: false,

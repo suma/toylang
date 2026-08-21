@@ -154,6 +154,15 @@ pub struct Function {
     /// ALLOC-CONTRACT-SUGAR: one entry per `ensures` clause, in the
     /// same order. `Plain` for anything a user wrote by hand.
     pub ensures_kinds: Vec<EnsuresKind>,
+    /// NEVER-ALLOCATES: the function was declared `never_allocates`,
+    /// so the type checker refuses it if any path from here can reach
+    /// `__builtin_heap_alloc` / `__builtin_heap_realloc`.
+    ///
+    /// The static counterpart to `ensures allocates(0u64)`: that one
+    /// measures a call, this one rules the possibility out. On an
+    /// `extern fn` it is a *declaration* rather than a check — the
+    /// implementation lives outside the language and cannot be walked.
+    pub never_allocates: bool,
     /// Body block. For `extern fn` declarations this points at a
     /// placeholder `Stmt::Break`; backends look at `is_extern`
     /// before walking the body.
@@ -272,6 +281,15 @@ pub struct TraitMethodSignature {
     /// ALLOC-CONTRACT-SUGAR: one entry per `ensures` clause, in the
     /// same order. `Plain` for anything a user wrote by hand.
     pub ensures_kinds: Vec<EnsuresKind>,
+    /// NEVER-ALLOCATES: the function was declared `never_allocates`,
+    /// so the type checker refuses it if any path from here can reach
+    /// `__builtin_heap_alloc` / `__builtin_heap_realloc`.
+    ///
+    /// The static counterpart to `ensures allocates(0u64)`: that one
+    /// measures a call, this one rules the possibility out. On an
+    /// `extern fn` it is a *declaration* rather than a check — the
+    /// implementation lives outside the language and cannot be walked.
+    pub never_allocates: bool,
     pub has_self_param: bool,
     /// `true` when the receiver was written `&mut self` (mutable
     /// reference). Only meaningful when `has_self_param == true`.
@@ -319,6 +337,15 @@ pub struct MethodFunction {
     /// ALLOC-CONTRACT-SUGAR: one entry per `ensures` clause, in the
     /// same order. `Plain` for anything a user wrote by hand.
     pub ensures_kinds: Vec<EnsuresKind>,
+    /// NEVER-ALLOCATES: the function was declared `never_allocates`,
+    /// so the type checker refuses it if any path from here can reach
+    /// `__builtin_heap_alloc` / `__builtin_heap_realloc`.
+    ///
+    /// The static counterpart to `ensures allocates(0u64)`: that one
+    /// measures a call, this one rules the possibility out. On an
+    /// `extern fn` it is a *declaration* rather than a check — the
+    /// implementation lives outside the language and cannot be walked.
+    pub never_allocates: bool,
     pub code: StmtRef,
     pub has_self_param: bool, // true if first parameter is &self
     /// `true` when the receiver was written `&mut self` (mutable

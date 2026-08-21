@@ -701,6 +701,7 @@ impl<'a> AstIntegrationContext<'a> {
                         requires: sig.requires.clone(),
                         ensures: sig.ensures.clone(),
                         ensures_kinds: sig.ensures_kinds.clone(),
+                        never_allocates: sig.never_allocates,
                         old_exprs: sig.old_exprs.clone(),
                         has_self_param: sig.has_self_param,
                         self_is_mut: sig.self_is_mut,
@@ -832,6 +833,7 @@ impl<'a> AstIntegrationContext<'a> {
             .map(|e| self.map_expr(e, "old() snapshot expr"))
             .collect::<Result<Vec<_>, _>>()?;
         let source_ensures_kinds = function.ensures_kinds.clone();
+        let source_never_allocates = function.never_allocates;
         let new_ensures = function.ensures.iter()
             .map(|e| self.map_expr(e, "ensures-clause expr"))
             .collect::<Result<Vec<_>, _>>()?;
@@ -885,6 +887,7 @@ impl<'a> AstIntegrationContext<'a> {
             // the same length and order as `ensures`, which is
             // preserved by construction.
             ensures_kinds: source_ensures_kinds,
+            never_allocates: source_never_allocates,
             old_exprs: new_old_exprs,
             code: new_code,
             is_extern: function.is_extern,
@@ -935,6 +938,7 @@ impl<'a> AstIntegrationContext<'a> {
             .map(|e| self.map_expr(e, "old() snapshot expr"))
             .collect::<Result<Vec<_>, _>>()?;
         let source_ensures_kinds = method.ensures_kinds.clone();
+        let source_never_allocates = method.never_allocates;
         let new_ensures = method.ensures.iter()
             .map(|e| self.map_expr(e, "ensures-clause expr"))
             .collect::<Result<Vec<_>, _>>()?;
@@ -952,6 +956,7 @@ impl<'a> AstIntegrationContext<'a> {
             // the same length and order as `ensures`, which is
             // preserved by construction.
             ensures_kinds: source_ensures_kinds,
+            never_allocates: source_never_allocates,
             old_exprs: new_old_exprs,
             code: new_code,
             has_self_param: method.has_self_param,

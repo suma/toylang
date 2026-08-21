@@ -37,6 +37,9 @@ mod struct_literal;
 mod impl_block;
 mod trait_decl;
 pub use trait_decl::expand_trait_defaults_in_pool;
+
+mod alloc_check;
+pub use alloc_check::check_never_allocates;
 mod collections;
 mod builtin;
 mod utility;

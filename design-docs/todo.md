@@ -10,6 +10,12 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-08-21
+- **ALLOC-CONTRACT: `ensures` の `old(expr)`** — 関数入口時点の値を参照できる
+  ようにし (parser が `__old_N` に desugar、3 backend が入口で評価)、
+  アロケーションカウンタと組み合わせて**メモリ挙動を契約で縛れる**ように
+  した。`docs/language.md` の DbC 「Out of scope (planned)」から 1 項目消化。
+
 ### 2026-08-20
 - **TYPECHECK-LIES: `null` を型検査で拒否 (E0015)** — 型が付いて実行だけ
   落ちる唯一の構文だった。`str + str` の診断も E0004 + `concat` 誘導に。
@@ -771,7 +777,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2019 テスト** (100% 成功、2026-08-20 時点)。
+- 合計 **2032 テスト** (100% 成功、2026-08-21 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、

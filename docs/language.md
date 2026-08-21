@@ -2808,7 +2808,9 @@ far. The names and their meanings are **identical** to the fields
   real numbers without `--profile=mem`.
 
 They are callable from `requires` / `ensures` and from `test` blocks,
-so memory can be bounded by contract:
+so memory can be bounded by contract. Pair them with
+[`old(...)`](#old-and-allocation-contracts) to bound what a *single
+call* does rather than the run so far:
 
 ```rust
 fn parse(s: str) -> u64
@@ -3260,6 +3262,70 @@ Rules:
 - Methods can use `self` in both clauses.
 - Failures abort the call with `ContractViolation` and propagate to the
   process exit unless caught.
+- `ensures` clauses may call `old(expr)`, which is the value `expr` had
+  **on entry** to the function. See *`old(...)` and allocation
+  contracts* below.
+
+### `old(...)` and allocation contracts
+
+A postcondition often needs to talk about what changed, not just about
+the final state. `old(expr)` inside an `ensures` clause is the value
+`expr` had on entry:
+
+```rust
+struct Counter { n: u64 }
+
+impl Counter {
+    fn bump(&mut self, by: u64) -> u64
+        ensures result == old(self.n) + by
+    {
+        self.n = self.n + by
+        self.n
+    }
+}
+```
+
+Without it the clause cannot be written at all: by the time `ensures`
+runs, `self.n` already holds the new value.
+
+Each snapshot is evaluated once, **after** the `requires` clauses and
+**before** the body, so a precondition can be what makes the snapshot
+expression legal. When postconditions are switched off (see *Runtime
+gating*) the snapshots are not taken either — nothing would read them.
+
+Because the [allocation counters](#allocation-counters) are callable
+from contracts, `old` is what makes a function's **memory behaviour**
+part of its signature:
+
+```rust
+# "allocates nothing" — enforced, not a comment that rots
+fn triangle(n: u64) -> u64
+    ensures __builtin_live_bytes() == old(__builtin_live_bytes())
+{ ... }
+
+# "requests at most 256 bytes, and hands every one of them back"
+fn scratch(n: u64) -> u64
+    ensures __builtin_cumulative_bytes() - old(__builtin_cumulative_bytes()) <= 256u64
+    ensures __builtin_live_bytes() == old(__builtin_live_bytes())
+{ ... }
+```
+
+The counters are request-based and identical across backends, so an
+allocation contract means the same thing in the interpreter and in a
+compiled binary. `interpreter/example/alloc_contract.t` is the worked
+example.
+
+Rules and limits:
+
+- `old(...)` is **contextual**: only a call spelled `old` directly
+  inside an `ensures` clause is the snapshot form. A program that
+  already has a function or variable named `old` keeps working, and
+  writing `old(...)` in a `requires` clause or in a body is a
+  type-check error naming the reason.
+- Nested `old(old(x))` is refused — the inner one would snapshot the
+  same instant.
+- The snapshot expression is checked in the entry scope: it may read
+  parameters and `self`, but not `result`.
 
 ### Runtime gating
 
@@ -3285,7 +3351,6 @@ Unrecognised values print a warning and fall back to `all`.
 
 ### Out of scope (planned)
 
-- `old(...)` for snapshotting pre-state in `ensures`
 - Named-tuple returns (`-> (q: i64, r: i64)`) for binding result
   components
 - `invariant` clauses on `impl` blocks

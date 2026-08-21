@@ -1173,6 +1173,192 @@ fn allocation_contract_satisfied_match() {
     assert_consistent(src, "alloc_contract_ok");
 }
 
+/// CONTRACT-ELISION. A `requires` that proves the divisor non-zero is
+/// checked once on entry, so the per-operation divide-by-zero guard
+/// underneath it can never fire. Counted rather than pattern-matched:
+/// with three divisions in the body, the unguarded version tests the
+/// divisor three times and the contracted one tests it once — in the
+/// precondition.
+#[test]
+fn a_precondition_replaces_the_divide_by_zero_guard() {
+    let contracted = r#"
+        fn hot(a: u64, b: u64) -> u64
+            requires b != 0u64
+        {
+            (a / b) + (a / b) + (a / b)
+        }
+
+        fn main() -> u64 { hot(9u64, 3u64) }
+    "#;
+    let plain = r#"
+        fn hot(a: u64, b: u64) -> u64
+        {
+            (a / b) + (a / b) + (a / b)
+        }
+
+        fn main() -> u64 { hot(9u64, 3u64) }
+    "#;
+
+    let with_contract = lowered_function(&lowered_ir(contracted), "hot");
+    let without = lowered_function(&lowered_ir(plain), "hot");
+    assert_eq!(
+        with_contract.matches("= ne ").count(),
+        1,
+        "the only zero test should be the precondition:\n{with_contract}"
+    );
+    assert_eq!(
+        without.matches("= ne ").count(),
+        3,
+        "each division needs its own guard without a contract:\n{without}"
+    );
+}
+
+/// CONTRACT-ELISION. Same for the u64 subtraction guard, whose
+/// condition (`a >= b`) is exactly what the precondition states.
+#[test]
+fn a_precondition_replaces_the_underflow_guard() {
+    let contracted = r#"
+        fn hot(a: u64, b: u64) -> u64
+            requires a >= b
+        {
+            (a - b) + (a - b)
+        }
+
+        fn main() -> u64 { hot(9u64, 3u64) }
+    "#;
+    let plain = r#"
+        fn hot(a: u64, b: u64) -> u64
+        {
+            (a - b) + (a - b)
+        }
+
+        fn main() -> u64 { hot(9u64, 3u64) }
+    "#;
+    let with_contract = lowered_function(&lowered_ir(contracted), "hot");
+    let without = lowered_function(&lowered_ir(plain), "hot");
+    assert_eq!(
+        with_contract.matches("= ge ").count(),
+        1,
+        "the only ordering test should be the precondition:\n{with_contract}"
+    );
+    assert_eq!(
+        without.matches("= ge ").count(),
+        2,
+        "each subtraction needs its own guard without a contract:\n{without}"
+    );
+}
+
+/// CONTRACT-ELISION, the safety property. `--release` does not emit
+/// the preconditions, so nothing verifies them — and an unverified
+/// contract must not be allowed to remove a memory-safety check. The
+/// guards come back.
+#[test]
+fn release_keeps_the_guards_because_nothing_checks_the_contract() {
+    let src = r#"
+        fn hot(a: u64, b: u64) -> u64
+            requires b != 0u64
+        {
+            (a / b) + (a / b)
+        }
+
+        fn main() -> u64 { hot(9u64, 3u64) }
+    "#;
+    let checked = lowered_function(&lowered_ir_with(src, false), "hot");
+    let released = lowered_function(&lowered_ir_with(src, true), "hot");
+    assert_eq!(
+        checked.matches("= ne ").count(),
+        1,
+        "checked build: precondition only:\n{checked}"
+    );
+    assert_eq!(
+        released.matches("= ne ").count(),
+        2,
+        "release build: no precondition, so both guards stay:\n{released}"
+    );
+}
+
+/// CONTRACT-ELISION, the other safety property. A fact is only about
+/// the *parameter*; once a `val` in the body takes the name over, the
+/// guard site is reading something the contract never described.
+#[test]
+fn shadowing_the_parameter_brings_the_guard_back() {
+    let src = r#"
+        fn hot(a: u64, b: u64) -> u64
+            requires b != 0u64
+        {
+            val first: u64 = a / b
+            val b: u64 = first - first
+            first + (a / b)
+        }
+
+        fn main() -> u64 { hot(9u64, 3u64) }
+    "#;
+    let ir = lowered_function(&lowered_ir(src), "hot");
+    // Precondition, plus a guard on the division that reads the
+    // shadowing binding. The first division, which still reads the
+    // parameter, is elided.
+    assert_eq!(
+        ir.matches("= ne ").count(),
+        2,
+        "the division after the shadow must keep its guard:\n{ir}"
+    );
+}
+
+/// CONTRACT-ELISION. The elision must not change what a program
+/// computes, and a call that breaks the contract must still stop —
+/// through the precondition rather than through the guard that is no
+/// longer there.
+#[test]
+fn contracted_arithmetic_matches_across_backends() {
+    let src = r#"
+        fn div(a: i64, b: i64) -> i64
+            requires b != 0i64
+        {
+            a / b
+        }
+
+        fn take(a: u64, b: u64) -> u64
+            requires a >= b
+        {
+            a - b
+        }
+
+        fn main() -> i64 {
+            println(div(10i64, 3i64))
+            println(take(10u64, 3u64))
+            div(-9i64, 3i64)
+        }
+    "#;
+    assert_consistent(src, "contract_elision_ok");
+}
+
+#[test]
+fn a_broken_precondition_still_stops_every_backend() {
+    let src = r#"
+        fn div(a: i64, b: i64) -> i64
+            requires b != 0i64
+        {
+            a / b
+        }
+
+        fn main() -> i64 {
+            var zero: i64 = 0i64
+            div(10i64, zero)
+        }
+    "#;
+    let core = core_modules_dir();
+    let mut interp_opts = RunOptions::default();
+    interp_opts.core_modules_dir = Some(core.as_path());
+    assert!(
+        interpreter::run_source(src, "contract_elision_bad.t", &interp_opts).is_err(),
+        "the precondition should refuse the call"
+    );
+
+    let compiled = try_compiler_exit_code(src, "contract_elision_bad", true)
+        .expect("the program should still compile");
+    assert_ne!(compiled, 0, "compiled binary should exit non-zero");
+}
+
 #[test]
 fn top_level_const_match() {
     let src = r#"
@@ -8298,6 +8484,13 @@ fn a_struct_returned_from_its_constructor_is_not_dropped() {
 
 /// The IR `lower_program` produces for `source`, rendered.
 fn lowered_ir(source: &str) -> String {
+    lowered_ir_with(source, false)
+}
+
+/// As `lowered_ir`, with the `release` flag `lower_program` takes —
+/// which decides whether contract clauses are emitted at all, and so
+/// (CONTRACT-ELISION) whether they may stand in for a guard.
+fn lowered_ir_with(source: &str, release: bool) -> String {
     let mut parser = frontend::ParserWithInterner::new(source);
     let mut program = parser.parse_program().expect("parse");
     let interner = parser.get_string_interner();
@@ -8310,9 +8503,21 @@ fn lowered_ir(source: &str) -> String {
     )
     .expect("type check");
     let contract_msgs = compiler_lower::ContractMessages::intern(interner);
-    let module = compiler_lower::lower_program(&program, interner, &contract_msgs, false)
+    let module = compiler_lower::lower_program(&program, interner, &contract_msgs, release)
         .expect("lower");
     format!("{module}")
+}
+
+/// The rendered body of one lowered function, so a test can count
+/// instructions inside it without matching the rest of the module.
+fn lowered_function(ir: &str, name: &str) -> String {
+    let head = format!("local function toy_{name}(");
+    let start = ir
+        .find(&head)
+        .unwrap_or_else(|| panic!("no function `{name}` in:\n{ir}"));
+    let rest = &ir[start..];
+    let end = rest.find("\n}").expect("function end") + 2;
+    rest[..end].to_string()
 }
 
 #[test]

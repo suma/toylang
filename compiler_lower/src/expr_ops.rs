@@ -18,6 +18,7 @@
 //!   blocks, and joins them at a merge block.
 
 use frontend::ast::{ExprRef, Operator, UnaryOp};
+use string_interner::DefaultSymbol;
 
 use super::FunctionLower;
 use crate::ir::{
@@ -129,6 +130,39 @@ impl<'a> FunctionLower<'a> {
         });
         self.switch_to(cont);
         Ok(())
+    }
+
+    /// CONTRACT-ELISION: whether a `requires` clause already proved
+    /// this divisor non-zero.
+    ///
+    /// Only a bare parameter name qualifies. A field, an index, or any
+    /// computed expression could have changed since entry, and a
+    /// wrongly elided guard is an unchecked division rather than a
+    /// missed optimisation — so anything not obviously the parameter
+    /// itself keeps its guard.
+    fn contract_rules_out_zero(&self, divisor: &ExprRef) -> bool {
+        self.parameter_name(divisor)
+            .is_some_and(|sym| self.facts.is_nonzero(sym))
+    }
+
+    /// CONTRACT-ELISION: whether a `requires` clause proved `lhs >= rhs`,
+    /// which is exactly the condition the u64 subtraction guard tests.
+    fn contract_rules_out_underflow(&self, lhs: &ExprRef, rhs: &ExprRef) -> bool {
+        match (self.parameter_name(lhs), self.parameter_name(rhs)) {
+            (Some(a), Some(b)) => self.facts.is_at_least(a, b),
+            _ => false,
+        }
+    }
+
+    /// The symbol behind `expr` when it is written as a plain name.
+    fn parameter_name(&self, expr: &ExprRef) -> Option<DefaultSymbol> {
+        if self.facts.is_empty() {
+            return None;
+        }
+        match self.program.expression.get(expr)? {
+            frontend::ast::Expr::Identifier(sym) => Some(sym),
+            _ => None,
+        }
     }
 
     /// Emit `if !ok { panic(message) }` and continue lowering in the
@@ -245,13 +279,21 @@ impl<'a> FunctionLower<'a> {
         // cause. Emitted here rather than in codegen so the AOT
         // compiler, the IR VM and the compiler-side JIT — all of which
         // consume this IR — get the check from one place.
-        if matches!(ir_op, BinOp::Sub) && matches!(lhs_ty, Type::U64) {
+        if matches!(ir_op, BinOp::Sub)
+            && matches!(lhs_ty, Type::U64)
+            && !self.contract_rules_out_underflow(lhs, rhs)
+        {
             self.emit_u64_underflow_guard(l, r)?;
         }
         // RUNTIME-TRAP: integer division / remainder by zero, and the
         // signed `MIN / -1` whose result is not representable.
         if matches!(ir_op, BinOp::Div | BinOp::Rem) && lhs_ty.is_integer() {
-            self.emit_div_by_zero_guard(r, lhs_ty)?;
+            // CONTRACT-ELISION: a `requires` that proved the divisor
+            // non-zero has already been checked at entry, so the guard
+            // here can only ever fall through.
+            if !self.contract_rules_out_zero(rhs) {
+                self.emit_div_by_zero_guard(r, lhs_ty)?;
+            }
             if lhs_ty.is_signed() {
                 self.emit_div_overflow_guard(l, r, lhs_ty)?;
             }

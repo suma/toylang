@@ -48,6 +48,13 @@ impl<'a> FunctionLower<'a> {
         annotation: Option<&TypeDecl>,
         rhs_ref: &ExprRef,
     ) -> Result<Option<ValueId>, String> {
+        // CONTRACT-ELISION: this binding takes over the name from here
+        // on, so whatever a `requires` clause proved about a parameter
+        // of the same name no longer describes what a guard site would
+        // read. Dropped before the rhs is lowered, which is the
+        // conservative order — a guard inside the rhs referring to the
+        // parameter keeps its check.
+        self.facts.shadowed(name);
         let rhs = self
             .program
             .expression

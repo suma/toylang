@@ -51,6 +51,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | 二項演算 | `type_checker/expression.rs::visit_binary` | `evaluation/operators.rs::evaluate_binary` | `compiler_lower/src/expr_ops.rs::lower_binary` | `ir_vm/dispatch.rs::eval_binop` |
 | 実行時トラップ (RUNTIME-TRAP: u64 underflow / 0 除算 / `MIN / -1`) | — | `evaluation/operators.rs::evaluate_arithmetic_op_v` | `expr_ops.rs` の `emit_u64_underflow_guard` / `emit_div_by_zero_guard` / `emit_div_overflow_guard` (どれも `emit_trap_unless` 経由) | (guard は IR に含まれる) |
 | 添字境界の実行時トラップ | — | `evaluation/slice.rs::resolve_array_index` | `array_access.rs::emit_index_guard` (定数 index は `resolve_const_index` がコンパイル時に弾く) | (guard は IR に含まれる) |
+| 契約による guard の除去 (CONTRACT-ELISION) | — | — | `contract_facts.rs::ContractFacts::from_requires` (事実の抽出) + `expr_ops.rs` の `contract_rules_out_zero` / `contract_rules_out_underflow` (guard 発行の抑止)、失効は `let_lowering.rs` の `facts.shadowed` | — |
 | 代入 | `type_checker/expression.rs::visit_assign` | `evaluation/operators.rs` | `compiler_lower/src/assign.rs::lower_assign` | — |
 | 演算子オーバーロード | `type_checker/expression.rs::visit_arith_binary` | `evaluation/operators.rs` | `compiler_lower/src/expr_ops.rs` | — |
 | キャスト (`as`) | `type_checker/collections.rs` | `evaluation/expression.rs` | `compiler_lower/src/expr.rs` | `ir_vm/dispatch.rs` |

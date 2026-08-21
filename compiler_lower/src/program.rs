@@ -38,6 +38,7 @@ use super::templates::{
     collect_enum_defs, collect_struct_defs, lower_param_or_return_type, EnumDefs, StructDefs,
 };
 use super::FunctionLower;
+use crate::contract_facts::ContractFacts;
 use crate::ir::{FuncId, InstKind, Linkage, LocalId, Module, Terminator, Type, ValueId};
 use compiler_ir::layout::flatten_compound_leaf_types;
 
@@ -1497,6 +1498,7 @@ impl<'a> FunctionLower<'a> {
             release,
             ensures: Vec::new(),
             result_sym: interner.get("result"),
+            facts: Default::default(),
             bindings: HashMap::new(),
             loop_stack: Vec::new(),
             with_scope_depth: 0,
@@ -1927,6 +1929,17 @@ impl<'a> FunctionLower<'a> {
         // compiled binary.
         if !self.release {
             self.emit_contract_checks(&func.requires, self.contract_msgs.requires_violation)?;
+            // CONTRACT-ELISION: the preconditions are now checked, so
+            // what they prove about the parameters can stand in for a
+            // RUNTIME-TRAP guard further down. Built here rather than
+            // at the top of the function precisely so it cannot happen
+            // under `--release`, where the checks above are skipped.
+            self.facts = ContractFacts::from_requires(
+                self.program,
+                self.interner,
+                &func.requires,
+                &func.parameter,
+            );
             // ALLOC-CONTRACT: snapshot each `old(...)` here, between
             // the preconditions and the body, so what a postcondition
             // reads is genuinely the entry-time value. Under

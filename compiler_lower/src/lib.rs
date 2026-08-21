@@ -106,6 +106,9 @@ use consts::ConstValues;
 
 mod array_layout;
 
+mod contract_facts;
+use contract_facts::ContractFacts;
+
 mod types;
 
 mod templates;
@@ -217,6 +220,13 @@ struct FunctionLower<'a> {
     /// is held so we don't have to re-fetch from `program.function`
     /// on every Return.
     ensures: Vec<ExprRef>,
+    /// CONTRACT-ELISION: what this function's `requires` clauses prove
+    /// about its (immutable) parameters. Consulted by the
+    /// RUNTIME-TRAP guard sites to skip a check the precondition has
+    /// already ruled out. Empty under `--release`, where the
+    /// preconditions themselves are not emitted — see
+    /// `contract_facts`.
+    facts: ContractFacts,
     /// `result` symbol — used to bind the return value during
     /// ensures evaluation. The interpreter / type-checker rely on the
     /// same name. We resolve it lazily because the symbol may not

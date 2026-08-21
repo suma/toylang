@@ -711,7 +711,8 @@
 
 - **OP-OVERLOAD-CHAIN** — `a + b + c` の chained position。現状は let-rhs のみ。binary struct literal operand も対象外。
 - **ALLOC-CONTRACT-SUGAR: アロケーション契約の短い書き方** ★ —
-  現状は生の式で書く (2026-08-21 landing、`old(...)` 参照):
+  **設計検討は [`ALLOC_CONTRACT_SUGAR.md`](ALLOC_CONTRACT_SUGAR.md) に分離**
+  (2026-08-21)。以下は要約。現状は生の式で書く:
 
   ```rust
   ensures __builtin_live_bytes() == old(__builtin_live_bytes())

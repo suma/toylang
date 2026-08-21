@@ -330,7 +330,11 @@ fn main() -> u64 {
   アロケーションカウンタと組み合わせると**メモリ挙動をシグネチャで約束できる**。
   専用の節 **`ensures allocates(N)` / `retains(N)` / `allocations(N)`** (ALLOC-CONTRACT-SUGAR)
   があり、破れると実測値が出る (`retained 128 bytes, budget 0 bytes`、3 backend 同文言)。
-  例: `interpreter/example/alloc_contract.t`。関数 / メソッドの `-> ReturnType` の後、body `{` の前に複数並べられる。各節は bool 式で、AND 合成。`ensures` 内では `result` が戻り値を指す。違反時は `ContractViolation` エラーで停止。`INTERPRETER_CONTRACTS=all|pre|post|off`（unset = `all`）で `requires` / `ensures` を独立に切り替えられる（D の `-release` 相当）
+  例: `interpreter/example/alloc_contract.t`。
+  **静的版 `never_allocates fn f()`** (NEVER-ALLOCATES) は「確保しえない」を
+  コンパイル時に検査 (`[E0016]`、診断は到達経路を出す)。closure / `dyn` /
+  `extern` 経由は追えないので拒否 (`never_allocates extern fn ...` で申告は可能)。
+  例: `interpreter/example/never_allocates.t`。関数 / メソッドの `-> ReturnType` の後、body `{` の前に複数並べられる。各節は bool 式で、AND 合成。`ensures` 内では `result` が戻り値を指す。違反時は `ContractViolation` エラーで停止。`INTERPRETER_CONTRACTS=all|pre|post|off`（unset = `all`）で `requires` / `ensures` を独立に切り替えられる（D の `-release` 相当）
 - **可視性・外部連携**: `pub`（公開）, `extern`（外部関数）
 - **モジュールシステム**: `package`, `import`, `as`
 - **演算子**:

@@ -3438,6 +3438,36 @@ What can be elided, and when:
 - The signed `MIN / -1` trap is never elided — no clause shape
   currently proves it away.
 
+### `never_allocates` — the static half
+
+`ensures allocates(0u64)` measures one call; `never_allocates` says
+the call cannot allocate at all, and the compiler checks it:
+
+```rust
+never_allocates fn triangle(n: u64) -> u64 { ... }
+
+never_allocates extern fn getchar() -> i32 from "c"
+```
+
+The check walks every path out of the function and reports one that
+reaches `__builtin_heap_alloc` / `__builtin_heap_realloc`, naming the
+chain (`build -> new -> __builtin_heap_alloc`, `E0016`). Callees need
+no annotation of their own — `Vec::new` is refused for what it
+reaches, not for what it is missing.
+
+- Costs nothing at run time; the modifier generates no code.
+- Calls through a closure value, a `dyn Trait` receiver or an
+  `extern fn` cannot be followed and are refused. On an `extern`
+  declaration the modifier is a **declaration** rather than a check,
+  since the implementation is outside the language.
+- `println("{x}")` is allowed: what the runtime spends holding a `str`
+  is not the program's allocation, and the counters exclude it too.
+- Contextual, like `old` and the budget clauses — only a
+  `never_allocates` immediately before `fn` or `extern` is the
+  modifier.
+- Declarable on free functions only for now; the check still walks
+  into methods.
+
 ### Runtime gating
 
 The `INTERPRETER_CONTRACTS` environment variable selects which clauses
@@ -3465,10 +3495,9 @@ Unrecognised values print a warning and fall back to `all`.
 - Named-tuple returns (`-> (q: i64, r: i64)`) for binding result
   components
 - `invariant` clauses on `impl` blocks
-- Static verification beyond runtime checking. The nearest planned
-  piece is `never_allocates`, a compile-time counterpart to
-  `ensures allocates(0u64)`: designed but not implemented, see
-  `design-docs/NEVER_ALLOCATES.md`.
+- Static verification beyond runtime checking, other than
+  `never_allocates` (above).
+- `never_allocates` on methods.
 
 ---
 

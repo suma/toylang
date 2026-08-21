@@ -11,6 +11,12 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-21
+- **NEVER-ALLOCATES: 静的な「確保しない」** — `never_allocates fn f()` を
+  コンパイル時に検査 (`[E0016]`)。属性の伝播ではなく**呼び出しグラフの
+  到達可能性**なので stdlib に注釈が要らず、診断は到達経路を出す
+  (`build -> new -> __builtin_heap_alloc`)。closure / `dyn` / `extern` は
+  追えないので拒否 (`never_allocates extern fn` で申告可)。バックエンドの
+  変更はゼロ。設計は [`NEVER_ALLOCATES.md`](NEVER_ALLOCATES.md)。
 - **MEM-COUNTER-INTERP-DRIFT: アロケーションカウンタの定義を固定** —
   文字列補間が IR VM で 24 バイト・AOT で 0 バイトと数えられていた
   (同じ契約が engine で通ったり落ちたりする状態)。**カウンタが数えるのは
@@ -716,16 +722,15 @@
   - **A5-P4: `Box<dyn Trait>`** — owned trait object + `Vec<Box<dyn Trait>>`。**前提**: `Box<T>` 自体が未実装。
   - **A5 残作業** — `&dyn Trait` の return / struct field 位置 (REF-Stage-2 の escape rule が阻む)、`dyn A + B`、`dyn Iterator<T>`、generic trait の default body 内での `T` 参照。
 - **`must_use` / unused-Result 警告** ★★ — `?` の補完。**警告の emit 経路が無い**ので (`Severity::Warning` は型としては存在するが未使用)、そこから作る必要がある。
-- **NEVER-ALLOCATES: 静的な「確保しない」** ★★ — `never_allocates fn f()` を
-  コンパイル時に検査する (実行時版の `ensures allocates(0u64)` の対)。
-  **設計検討済み** — 名前の選定 (D の `@nogc` / Ada の `No_Allocators` /
-  Rust の crate 群を調べた結果)、検査方式 (属性の伝播ではなく呼び出しグラフの
-  到達可能性)、追えないもの (closure / `dyn` / `extern`) の扱いまで
-  [`NEVER_ALLOCATES.md`](NEVER_ALLOCATES.md) にある。**バックエンドの変更は不要**
-  (検査だけ) なので実行時契約より軽い。前提だった
-  MEM-COUNTER-INTERP-DRIFT は 2026-08-21 に解消 — カウンタが数えるのは
-  「プログラムが要求した確保」だけ、と定義が固まったので、静的検査が
-  禁止すべき対象 (`__builtin_heap_alloc` / `realloc` への到達) も確定した。
+- **NEVER-ALLOCATES-METHODS: メソッドにも `never_allocates` を書けるように** ★ —
+  現状は自由関数のみ (検査はメソッドの中まで辿るので、メソッドを呼ぶ
+  `never_allocates` 関数は正しく弾かれる)。parser の impl / trait 側に
+  同じ修飾子判定を足すだけ。
+- **NEVER-ALLOCATES-RECEIVER: 同名メソッドの解決** ★ — 検査は receiver の型で
+  メソッドを選ばず、**同名の body をすべて辿る** (`Vec::new` と `String::new` を
+  区別しない)。保守的な方向なので誤って通すことはないが、無関係な型の
+  メソッドが確保していると誤検出になる。`expr_types` は既に渡しているので、
+  receiver 型で絞れる。
 - **CLOSURE-CAPTURE: capture 意味論の拡張** ★★ — 現状は**生成時スナップショット
   のみ**なので「カウンタを閉じ込めて更新する」基本形が書けない。`&mut` capture に
   するか明示 capture list にするかは言語の性格を決める判断なので、closure の
@@ -832,7 +837,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2060 テスト** (100% 成功、2026-08-21 時点)。
+- 合計 **2069 テスト** (100% 成功、2026-08-21 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、

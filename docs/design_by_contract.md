@@ -171,6 +171,54 @@ ensures __builtin_free_count() <= old(__builtin_free_count()) + 2u64
 `ensures allocates(0u64)` を宣言した関数が確保する関数を呼べば、そこで
 捕まる。「確保しない」が推移的に効くということで、これは意図した性質。
 
+### 静的版 — `never_allocates`
+
+`ensures allocates(0u64)` は**その呼び出しで確保しなかった**ことを実行時に
+確かめる。`never_allocates` は**確保しえない**ことをコンパイル時に確かめる:
+
+```rust
+never_allocates fn triangle(n: u64) -> u64 {
+    var total: u64 = 0u64
+    var i: u64 = 1u64
+    while i <= n { total = total + i  i = i + 1u64 }
+    total
+}
+```
+
+関数から到達できる**すべての経路**を辿り、`__builtin_heap_alloc` /
+`__builtin_heap_realloc` に届いたら型エラー。診断は**経路**を出す —
+確保しているのはたいてい自分の関数ではないため:
+
+```
+[E0016] `build` is declared `never_allocates`, but it can reach the
+        allocator: build -> new -> __builtin_heap_alloc
+```
+
+| | `never_allocates` | `ensures allocates(0u64)` |
+|---|---|---|
+| いつ | コンパイル時 | 実行時 |
+| 何を保証 | 確保しえない | その呼び出しでは確保しなかった |
+| `extern` の先 | 保証外（申告ベース） | **数える** |
+| 実行時コスト | ゼロ | カウンタ読み + 比較 |
+
+**追えない呼び出しは拒否される。** closure 値・`dyn Trait`・`extern fn`
+経由は呼び先が静的に決まらないので、「確保しない」と仮定せずエラーにする
+（仮定すると保証全体が無意味になるため）。`extern` だけは書き手が責任を
+持つ逃げ道がある:
+
+```rust
+never_allocates extern fn getchar() -> i32 from "c"
+```
+
+これは検査ではなく**申告**で、実装は言語の外にある。
+
+`println("{x}")` は許される — `str` を保持するために言語ランタイムが使う
+メモリはプログラムの確保ではなく、カウンタも数えないため。
+
+`never_allocates` は contextual なので、自分の関数や変数を
+`never_allocates` と名付けているプログラムは影響を受けない。
+例: [`never_allocates.t`](../interpreter/example/never_allocates.t)。
+
 ---
 
 ## `--check` — 契約をプロパティテストにする
@@ -373,9 +421,10 @@ enum など）。メソッドしか契約が無い場合もこうなる。
   （Tips 4）、trait と impl の**両方**が `old(...)` を使っている場合は
   継承されない（スナップショットは位置で参照されるため、連結すると
   片方の番号がずれる）
-- **静的検証は無い** — 契約は実行時にのみ検査される。最も近い計画は
-  `never_allocates`（`ensures allocates(0u64)` のコンパイル時版）で、
-  設計のみ済み（[`NEVER_ALLOCATES.md`](../design-docs/NEVER_ALLOCATES.md)）
+- **静的検証は `never_allocates` だけ** — 他の契約は実行時にのみ検査される
+- **`never_allocates` はメソッドに書けない** — 自由関数のみ。ただし検査は
+  メソッドの中まで辿るので、メソッドを呼ぶ `never_allocates` 関数は
+  正しく弾かれる
 
 - **名前付きタプル返し**（`-> (q: i64, r: i64)`）が無いので、複数の戻り値
   成分に対する事後条件は書きにくい

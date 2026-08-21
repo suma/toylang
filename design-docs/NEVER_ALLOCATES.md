@@ -2,7 +2,10 @@
 
 `ensures allocates(0u64)` は**実行時**に「確保しなかった」を確かめる。
 本文書はその静的版 — 「この関数は確保**しえない**」をコンパイル時に
-検査する仕組み — の設計検討。**まだ実装していない。**
+検査する仕組み — の設計検討。**2026-08-21 に実装済み**（自由関数のみ、
+メソッドは未対応）。使い方は
+[`docs/design_by_contract.md`](../docs/design_by_contract.md)、
+文法は [`language.md`](../docs/language.md)。本文書は決定の記録として残す。
 
 実行時版は [`docs/design_by_contract.md`](../docs/design_by_contract.md)
 と [`ALLOC_CONTRACT_SUGAR.md`](ALLOC_CONTRACT_SUGAR.md)。同文書の

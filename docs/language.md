@@ -1837,6 +1837,10 @@ trait Greet {
 }
 ```
 
+A signature may also carry `requires` / `ensures` clauses, which apply
+to every `impl` of the trait — see
+[Design by Contract](#design-by-contract).
+
 A trait method can optionally carry a `{ ... }` **default body**;
 impls that omit the method inherit that body as an ordinary inherent
 method. See *Default method bodies* below.
@@ -3268,6 +3272,11 @@ Rules:
   diagnostic identifies the specific clause by 1-based index.
 - Each clause must type-check as `bool`.
 - Methods can use `self` in both clauses.
+- A contract declared on a **trait** method applies to every `impl` of
+  that trait; the trait's clauses run before any the impl adds. The
+  impl must keep the trait's parameter names, since a clause is an
+  expression over them — renaming is a type error when the trait
+  declares a contract.
 - Failures abort the call with `ContractViolation` and propagate to the
   process exit unless caught.
 - `ensures` clauses may call `old(expr)`, which is the value `expr` had

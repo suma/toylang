@@ -11,6 +11,13 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-21
+- **DBC-TRAIT-INHERIT: trait の契約を impl に継承** — trait の method
+  シグネチャに書いた `requires` / `ensures` が、それを実装する impl の
+  method に適用されるようにした (trait の節が先、impl の節が後で AND)。
+  以前は default body 経由のときだけ継承され、impl が自分で実装すると
+  黙って消えていた。引数名が違うと節が解決できないので型エラーで拒否。
+  残: trait と impl が**両方** `old(...)` を使う場合は継承しない
+  (`__old_N` の番号が衝突するため)。
 - **CONTRACT-ELISION: 契約が RUNTIME-TRAP の guard を消す** — `requires b != 0`
   で 0 除算 guard、`requires a >= b` で u64 underflow guard を lowering から
   落とす (パラメータ限定、シャドウで失効、`--release` では契約が検査されない
@@ -641,13 +648,6 @@
 > 2026-08-20 に算術 / 添字を 3 バックエンドで実際に叩いて洗い出した節。
 > トラップ本体は同日 landing (完了済み節)。残るのは下の 2 件。
 
-- **DBC-TRAIT-INHERIT: trait 宣言の契約が impl に継承されない** ★★ —
-  `trait` の method シグネチャに `requires` / `ensures` を書けるが、
-  `impl` 側で同じ節を書かない限り**実行時には効かない** (2026-08-21 に
-  実測。`trait Shrink { fn shrink(..) requires by > 0u64 }` の impl で節を
-  省くと `shrink(0u64)` が素通りする)。契約が「trait が課す義務」として
-  読めないので、書いた側の期待と食い違う。conformance 検査は通っている
-  ので、継承するか「impl 側にも書け」と診断するかの判断が要る。
 - **DBC-CHECK-CASES: `--check` が通過ケース数を報告しない** ★ —
   `CheckOutcome::Passed { cases }` を `let _ = cases` で捨てている
   (`interpreter/src/main.rs`)。`requires` が狭いと 1 ケースしか実行され
@@ -828,7 +828,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2038 テスト** (100% 成功、2026-08-21 時点)。
+- 合計 **2046 テスト** (100% 成功、2026-08-21 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、

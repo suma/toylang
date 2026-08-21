@@ -256,10 +256,22 @@ cranelift `speed`）。cranelift 自身にはこれができない — 事実は
 どちらも許したくないなら `checked_div`（`core/std/checked.t`）が
 `Option::None` を返す形で両方を吸収する。
 
-**4. trait 宣言に書いた契約は impl に継承されない。**
-`trait` の method シグネチャには `requires` / `ensures` を書けるが、
-`impl` 側で同じ節を書かない限り**実行時には効かない**。契約を効かせたい
-なら impl 側にも書くこと（現状の仕様。継承は未実装）。
+**4. trait に書いた契約は impl に継承される — ただし引数名を変えないこと。**
+`trait` の method シグネチャに書いた `requires` / `ensures` は、その trait
+を実装する impl の method に自動で適用される。impl 側でも節を書けば、
+**trait のものが先、impl のものが後**という順で AND される（違反時の
+`clause #N` もその順）。
+
+契約は引数名を使った式なので、impl が引数名を変えると節が解決できない。
+その場合は型エラーで拒否される:
+
+```
+[E0010] impl Grow for G: method 'grow' renames parameter `by` to `amount`,
+        but Grow declares a contract over `by` — rename the parameter back
+        so the trait's `requires` / `ensures` still resolve
+```
+
+契約を持たない trait では引数名を自由に変えてよい。
 
 **5. 契約に副作用を書かない。**
 実行モードで消える（`off` では評価すらされない）ので、契約の中で状態を
@@ -319,7 +331,10 @@ enum など）。メソッドしか契約が無い場合もこうなる。
 ## 現在の制限
 
 - **`invariant`（型・ループの不変条件）は未実装**
-- **trait 契約の impl への継承は未実装**（Tips 4）
+- **trait 契約の継承に制限がある** — 引数名が一致する必要があり
+  （Tips 4）、trait と impl の**両方**が `old(...)` を使っている場合は
+  継承されない（スナップショットは位置で参照されるため、連結すると
+  片方の番号がずれる）
 - **静的検証は無い** — 契約は実行時にのみ検査される
 - **名前付きタプル返し**（`-> (q: i64, r: i64)`）が無いので、複数の戻り値
   成分に対する事後条件は書きにくい

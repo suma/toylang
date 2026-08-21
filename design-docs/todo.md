@@ -681,6 +681,28 @@
 ### 構文糖衣の候補 (NEW-FEATURES、未着手)
 
 - **OP-OVERLOAD-CHAIN** — `a + b + c` の chained position。現状は let-rhs のみ。binary struct literal operand も対象外。
+- **ALLOC-CONTRACT-SUGAR: アロケーション契約の短い書き方** ★ —
+  現状は生の式で書く (2026-08-21 landing、`old(...)` 参照):
+
+  ```rust
+  ensures __builtin_live_bytes() == old(__builtin_live_bytes())
+  ensures __builtin_cumulative_bytes() - old(__builtin_cumulative_bytes()) <= 256u64
+  ```
+
+  `ensures allocates(0)` / `ensures allocates <= 256u64` / 関数修飾子
+  `no_alloc` のような形が候補。**先に決める必要があるのは文法ではなく
+  「何を数えるか」** — `live` 差分 0 は「確保して解放した」も含み、
+  `cumulative` 差分 0 だけが「1 バイトも要求していない」。この 2 つは
+  別の性質で、1 つのキーワードには畳めない (畳むと今の生の式より
+  意味が曖昧になり、糖衣が嘘をつく)。したがって最低 2 語要る
+  (`allocates` / `retains` 等)。
+  **静的検査版と混ぜないこと** — 「heap builtin を呼ぶ関数を推移的に
+  禁止する」のは呼び出しグラフ解析であって実行時契約ではない。
+  同じ綴りに両方の意味を持たせると、契約が実行時に検査されるという
+  今の規約が崩れる。
+  **着手条件**: 実プログラムで生の式を何度も書いて長いと感じてから。
+  現状 example 1 つ (`alloc_contract.t`) しか書き手がいないので、
+  頻度が分かっていない。
 - **`??` (null-coalesce)** ★ — `opt ?? default` で `unwrap_or` の糖衣。
 - **raw / multi-line string literal** ★ — `r"\path"` / `"""..."""`。lexer 拡張のみ。
 - **STR-INTERP-FMT の残** ★ — (a) user 型に spec を渡す API

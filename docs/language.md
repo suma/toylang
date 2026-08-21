@@ -2804,7 +2804,16 @@ far. The names and their meanings are **identical** to the fields
 
 - **Request-based.** A `realloc` counts as one resize; whether the
   allocation actually moved the block never shows up. That is what
-  makes the numbers identical across all three backends.
+  makes the numbers identical across all three backends for anything
+  the program allocates explicitly.
+- **Known gap: string interpolation is not counted alike.** Measured
+  2026-08-21, `println("n = {n}")` costs 24 bytes on the interpreter
+  and 0 on the AOT backend, so a contract reading these counters can
+  pass on one engine and fail on another. A direct
+  `__builtin_heap_alloc` agrees everywhere. Tracked as
+  `MEM-COUNTER-INTERP-DRIFT` in `design-docs/todo.md`; until it is
+  fixed, keep allocation contracts on functions whose allocations are
+  explicit.
 - **Per run.** Every counter is 0 at the start of `main` (or of a
   single `test` block). In a compiled binary that coincides with
   process start.
@@ -3362,10 +3371,12 @@ when the counter *falls* (a function that frees a pointer it was
 handed), so prefer `counter() <= old(counter()) + N`, which is what
 the sugar expands to.
 
-The counters are request-based and identical across backends, so an
-allocation contract means the same thing in the interpreter and in a
-compiled binary. `interpreter/example/alloc_contract.t` is the worked
-example.
+The counters are request-based, so an allocation contract over
+explicitly allocated memory means the same thing in the interpreter
+and in a compiled binary — with one known exception, string
+interpolation, noted under [Allocation
+counters](#allocation-counters). `interpreter/example/alloc_contract.t`
+is the worked example.
 
 Rules and limits:
 
@@ -3456,7 +3467,10 @@ Unrecognised values print a warning and fall back to `all`.
 - Named-tuple returns (`-> (q: i64, r: i64)`) for binding result
   components
 - `invariant` clauses on `impl` blocks
-- Static verification beyond runtime checking
+- Static verification beyond runtime checking. The nearest planned
+  piece is `never_allocates`, a compile-time counterpart to
+  `ensures allocates(0u64)`: designed but not implemented, see
+  `design-docs/NEVER_ALLOCATES.md`.
 
 ---
 
@@ -3694,6 +3708,12 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   backend. The remaining gap is that same shape on a
   *user-defined* generic enum. See
   [Closures → Backend coverage](#closures).
+- **Allocation counters disagree on string interpolation** —
+  `println("n = {n}")` costs 24 bytes on the interpreter and 0 on the
+  AOT backend, so a contract reading the counters can pass on one
+  engine and fail on another. Explicit `__builtin_heap_alloc` agrees
+  everywhere. `compiler <file> --all-backends --profile=mem` reports
+  the difference (and exits non-zero), which is how it was found.
 - **No `else if`** — use `elif`.
 - **`null` is reserved and rejected** — the literal still parses, so
   that it can be diagnosed rather than read as an identifier, but the

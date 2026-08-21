@@ -122,6 +122,12 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | 実行時評価 | `evaluation/call.rs::evaluate_requires_clauses` / `evaluate_ensures_clauses` |
 | 実行モード (`INTERPRETER_CONTRACTS`) | `evaluation/mod.rs::ContractMode` |
 | lowering (panic 化) | `compiler_lower/src/program.rs` + `ContractMessages` |
+| `old(expr)` の desugar (ALLOC-CONTRACT) | `parser/expr/primary.rs::parse_old_snapshot` — 式を `Function.old_exprs` に移し、跡地に `__old_N` を残す。**バックエンドは普通の識別子しか見ない** |
+| `old` の入口評価 | 型検査は `type_checker/visitor.rs::check_old_snapshots`、tree-walker は `evaluation/call.rs::evaluate_old_snapshots`、lowering は `compiler_lower/src/program.rs::emit_old_snapshots` (どれも requires の後・body の前) |
+| アロケーション契約の糖衣 (ALLOC-CONTRACT-SUGAR) | `parser/expr/primary.rs::parse_alloc_budget` (`allocates` / `retains` / `allocations` → `counter() <= old(counter()) + N`)。語の対応は同ファイルの `alloc_budget_stat` |
+| 契約節の種別 | `ast/program.rs::EnsuresKind` (`ensures` と並列の `ensures_kinds`)。budget 判定は `parser/declarations.rs` の `last_alloc_budget` 比較 |
+| budget 違反の診断 | 文言は `compiler_ir::format_alloc_budget_violation` (**no_std 複製が `toylang_rt::toy_panic_alloc_budget`**)、tree-walker は `evaluation/call.rs::alloc_budget_detail`、lowering は `program.rs::emit_alloc_budget_check` → `Terminator::PanicAllocBudget` |
+| trait 契約の impl への継承 (DBC-TRAIT-INHERIT) | `type_checker/trait_decl.rs::inherit_trait_contracts` (引数名の一致は `check_trait_conformance_with_args` が強制) |
 
 ## テスト・検証機構
 

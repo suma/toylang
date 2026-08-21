@@ -512,6 +512,11 @@ TOY_PROFILE_MEM=json ./compiled_binary
 ```rust
 fn parse(s: str) -> Ast ensures __builtin_live_bytes() <= 4096u64 { ... }
 
+# 2026-08-21 追記: 「1 回の呼び出しで何バイトまで」を言うなら、
+# 今は専用の節がある (ALLOC-CONTRACT-SUGAR)。カウンタを直接読むのは
+# 絶対量を縛るときと、節が扱わない軸 (free_count 等) のとき:
+fn parse(s: str) -> Ast ensures allocates(4096u64) { ... }
+
 test "tidy leaks nothing" {
     val before: u64 = __builtin_live_bytes()
     val r: u64 = tidy(64u64)

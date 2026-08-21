@@ -313,9 +313,10 @@ cranelift `speed`）。cranelift 自身にはこれができない — 事実は
 周回ごとの性質を書きたいなら、ループ本体を関数に切り出してその関数に
 契約を付ける。
 
-**7. メモリ契約は `live` と `cumulative` を使い分ける。**
-「漏らさない」は `live`、「そもそも確保しない」は `cumulative`。
-前者は確保して解放した関数も通す。
+**7. メモリ契約は `retains` と `allocates` を使い分ける。**
+「漏らさない」は `retains(0u64)`、「そもそも確保しない」は
+`allocates(0u64)`。前者は確保して解放した関数も通す。arena に取る関数を
+縛るならバイト数ではなく `allocations(N)` が自然。
 
 **8. `test` ブロックと契約は補完関係。**
 契約は**あらゆる呼び出し**を検査し、`test` は**気になる 1 ケース**を
@@ -369,6 +370,9 @@ enum など）。メソッドしか契約が無い場合もこうなる。
 - **名前付きタプル返し**（`-> (q: i64, r: i64)`）が無いので、複数の戻り値
   成分に対する事後条件は書きにくい
 - `--check` の対象は自由関数のみ、生成できる型は 4 つ（上記）
+- **アロケーション契約の節は 3 つ**（`allocates` / `retains` /
+  `allocations`）。`free_count` / `realloc_count` / `peak_live_bytes` を
+  縛りたいときは生の式で書く
 
 計画は [language.md の Out of scope](language.md#out-of-scope-planned) と
 [`design-docs/todo.md`](../design-docs/todo.md) にある。

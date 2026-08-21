@@ -2812,9 +2812,15 @@ far. The names and their meanings are **identical** to the fields
   real numbers without `--profile=mem`.
 
 They are callable from `requires` / `ensures` and from `test` blocks,
-so memory can be bounded by contract. Pair them with
-[`old(...)`](#old-and-allocation-contracts) to bound what a *single
-call* does rather than the run so far:
+so memory can be bounded by contract.
+
+To bound what a **single call** does rather than the run so far, the
+usual spelling is one of the three budget clauses —
+`ensures allocates(N)` / `retains(N)` / `allocations(N)`, see
+[Design by Contract](#old-and-allocation-contracts) — which read these
+same counters against an entry snapshot. Reading a counter directly is
+for an absolute bound, or for one of the fields the clauses do not
+cover:
 
 ```rust
 fn parse(s: str) -> u64

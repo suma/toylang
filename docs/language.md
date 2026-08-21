@@ -2804,16 +2804,15 @@ far. The names and their meanings are **identical** to the fields
 
 - **Request-based.** A `realloc` counts as one resize; whether the
   allocation actually moved the block never shows up. That is what
-  makes the numbers identical across all three backends for anything
-  the program allocates explicitly.
-- **Known gap: string interpolation is not counted alike.** Measured
-  2026-08-21, `println("n = {n}")` costs 24 bytes on the interpreter
-  and 0 on the AOT backend, so a contract reading these counters can
-  pass on one engine and fail on another. A direct
-  `__builtin_heap_alloc` agrees everywhere. Tracked as
-  `MEM-COUNTER-INTERP-DRIFT` in `design-docs/todo.md`; until it is
-  fixed, keep allocation contracts on functions whose allocations are
-  explicit.
+  makes the numbers identical across all three backends.
+- **What the program asked for, not what the runtime spends.** The
+  counters cover `__builtin_heap_alloc` / `__builtin_heap_realloc` and
+  the stdlib built on them. Memory the language runtime uses to hold a
+  `str` — concatenation, `to_string`, interpolation, literals — is not
+  counted, because each backend holds strings differently and counting
+  them would make the numbers engine-specific. `println("n = {n}")`
+  therefore costs nothing on every backend, while
+  `__builtin_heap_alloc(32u64)` costs 32 everywhere.
 - **Per run.** Every counter is 0 at the start of `main` (or of a
   single `test` block). In a compiled binary that coincides with
   process start.
@@ -3371,12 +3370,11 @@ when the counter *falls* (a function that frees a pointer it was
 handed), so prefer `counter() <= old(counter()) + N`, which is what
 the sugar expands to.
 
-The counters are request-based, so an allocation contract over
-explicitly allocated memory means the same thing in the interpreter
-and in a compiled binary — with one known exception, string
-interpolation, noted under [Allocation
-counters](#allocation-counters). `interpreter/example/alloc_contract.t`
-is the worked example.
+The counters are request-based and identical across backends, so an
+allocation contract means the same thing in the interpreter and in a
+compiled binary. What they cover is the program's own allocations —
+see [Allocation counters](#allocation-counters).
+`interpreter/example/alloc_contract.t` is the worked example.
 
 Rules and limits:
 
@@ -3708,12 +3706,6 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   backend. The remaining gap is that same shape on a
   *user-defined* generic enum. See
   [Closures → Backend coverage](#closures).
-- **Allocation counters disagree on string interpolation** —
-  `println("n = {n}")` costs 24 bytes on the interpreter and 0 on the
-  AOT backend, so a contract reading the counters can pass on one
-  engine and fail on another. Explicit `__builtin_heap_alloc` agrees
-  everywhere. `compiler <file> --all-backends --profile=mem` reports
-  the difference (and exits non-zero), which is how it was found.
 - **No `else if`** — use `elif`.
 - **`null` is reserved and rejected** — the literal still parses, so
   that it can be diagnosed rather than read as an identifier, but the

@@ -138,10 +138,12 @@ pub never_allocates fn triangle(n: u64) -> u64 { ... }
 
 ## 7. 未解決
 
-1. **文字列補間・`to_string` が確保するか** — 実測すると
-   **バックエンドで食い違う** (下記)。静的検査の対象を決めるには先に
-   これを直す必要がある。補間が確保するなら、`println("{x}")` を含む
-   関数は `never_allocates` になれない
+1. ~~**文字列補間・`to_string` が確保するか**~~ — **解決 (2026-08-21、
+   MEM-COUNTER-INTERP-DRIFT)**。カウンタが数えるのは「プログラムが
+   要求した確保」だけと定義が固まり、`str` を保持するランタイム内部の
+   メモリは数えない。したがって **`println("{x}")` を含む関数も
+   `never_allocates` になれる**。静的検査が禁止すべきなのは
+   `__builtin_heap_alloc` / `__builtin_heap_realloc` への到達のみ
 2. **`never_allocates` を最適化に使うか** — CONTRACT-ELISION と同じ発想で、
    「確保しない」と分かっている関数から drop glue を省ける可能性がある。
    検査が入ってから測る話
@@ -149,23 +151,13 @@ pub never_allocates fn triangle(n: u64) -> u64 { ... }
    「注釈が無い関数の到達可能性を計算しておき、`--api` で表示する」ことは
    できる。宣言を強制せずに情報だけ出す形
 
-### 7-1. 実測で見つかった不一致 (2026-08-21)
+### 7-1. 前提だった不一致 (解決済み)
 
-```
-fn probe(n: u64) -> u64 {
-    val before: u64 = __builtin_cumulative_bytes()
-    println("n = {n}")
-    val after: u64 = __builtin_cumulative_bytes()
-    after - before
-}
-```
+検討中の実測で、`println("n = {n}")` が interpreter で 24 バイト・AOT で
+0 バイトと数えられているのを見つけた。カウンタは契約から読めるので、
+**同じ契約が engine によって通ったり落ちたりする**状態だった。
 
-interpreter は **24**、AOT は **0** を返す。`docs/language.md` の
-Allocation counters は「リクエスト単位で、3 バックエンドで同じ数字に
-なる」と明言しているので、これは仕様違反。`__builtin_heap_alloc` を
-直接呼ぶ場合は一致する (32 バイトが両方で見える) ので、**文字列補間が
-使う確保がバックエンドで別経路**なのが原因と思われる。
-
-todo に `MEM-COUNTER-INTERP-DRIFT` として登録した。静的検査より先に
-こちらを片付けるべきで、理由は単純 — 「何が確保か」の定義が
-バックエンドで揺れている状態では、静的検査が何を禁止すべきかも決まらない。
+2026-08-21 に解消 (`MEM-COUNTER-INTERP-DRIFT`)。カウンタの定義を
+「プログラムが要求した確保」に固定し、`str` を保持するためのランタイム
+内部確保は数えないようにした。**この定義が固まったことが本機能の前提**
+だったので、着手可能になっている。

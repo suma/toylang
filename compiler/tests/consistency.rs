@@ -1587,6 +1587,99 @@ fn an_allocation_budget_survives_interpolation() {
     assert_consistent(src, "budget_with_interp");
 }
 
+/// CONTRACT-ELISION. `requires i < 4u64` on a four-element array
+/// states exactly what the bounds guard would test, and it is checked
+/// once on entry — so the per-access guard goes. Counted rather than
+/// matched: two accesses need two guards without the contract and
+/// none with it, leaving only the precondition's own comparison.
+#[test]
+fn a_precondition_replaces_the_bounds_guard() {
+    let contracted = r#"
+        fn hot(i: u64) -> u64
+            requires i < 4u64
+        {
+            val arr = [1u64, 2u64, 3u64, 4u64]
+            arr[i] + arr[i]
+        }
+
+        fn main() -> u64 { hot(1u64) }
+    "#;
+    let plain = r#"
+        fn hot(i: u64) -> u64
+        {
+            val arr = [1u64, 2u64, 3u64, 4u64]
+            arr[i] + arr[i]
+        }
+
+        fn main() -> u64 { hot(1u64) }
+    "#;
+    let with_contract = lowered_function(&lowered_ir(contracted), "hot");
+    let without = lowered_function(&lowered_ir(plain), "hot");
+    assert_eq!(
+        with_contract.matches("= lt ").count(),
+        1,
+        "the only bound test should be the precondition:\n{with_contract}"
+    );
+    assert_eq!(
+        without.matches("= lt ").count(),
+        2,
+        "each access needs its own guard without a contract:\n{without}"
+    );
+}
+
+/// CONTRACT-ELISION. A bound that does not cover the array keeps the
+/// guard — `i < 8u64` says nothing useful about a four-element array.
+#[test]
+fn a_bound_wider_than_the_array_keeps_the_guard() {
+    let src = r#"
+        fn hot(i: u64) -> u64
+            requires i < 8u64
+        {
+            val arr = [1u64, 2u64, 3u64, 4u64]
+            arr[i]
+        }
+
+        fn main() -> u64 { hot(1u64) }
+    "#;
+    let ir = lowered_function(&lowered_ir(src), "hot");
+    assert_eq!(
+        ir.matches("= lt ").count(),
+        2,
+        "precondition plus the guard it does not justify removing:\n{ir}"
+    );
+}
+
+/// CONTRACT-ELISION, the safety property for the bounds case: a call
+/// that breaks the precondition still stops, through the precondition
+/// rather than through the guard that is no longer there.
+#[test]
+fn a_broken_index_precondition_still_stops_every_backend() {
+    let src = r#"
+        fn contracted(i: u64) -> u64
+            requires i < 4u64
+        {
+            val arr = [1u64, 2u64, 3u64, 4u64]
+            arr[i]
+        }
+
+        fn main() -> u64 {
+            var bad: u64 = 9u64
+            contracted(bad)
+        }
+    "#;
+    let core = core_modules_dir();
+    let mut interp_opts = RunOptions::default();
+    interp_opts.core_modules_dir = Some(core.as_path());
+    assert!(
+        interpreter::run_source(src, "index_contract.t", &interp_opts).is_err(),
+        "the precondition should refuse the call"
+    );
+
+    let compiled = try_compiler_exit_code(src, "index_contract", true)
+        .expect("the program should still compile");
+    assert_ne!(compiled, 0, "compiled binary should exit non-zero");
+}
+
 #[test]
 fn top_level_const_match() {
     let src = r#"

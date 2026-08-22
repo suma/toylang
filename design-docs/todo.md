@@ -11,6 +11,9 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-23
+- **CONTRACT-ELISION: 添字境界の guard も消す** — `requires i < 4u64` +
+  `[T; 4]` で `emit_index_guard` が落ちる (符号なし添字のみ)。契約が
+  カバーしない上限 (`i < 8u64` に対し長さ 4) では guard を残す。
 - **NEVER-ALLOCATES の残件 2 つを解消** — (1) メソッドにも `never_allocates` を
   書けるように (違反は `Counter::bad` と owner 付きで報告)、(2) メソッド解決を
   receiver の型で行うようにし、`Vec::new` と `Counter::new` の取り違えによる
@@ -690,8 +693,9 @@
   それだけでは価値が薄い。
 
 - **CONTRACT-ELISION の残** ★ — 消せる guard を増やす余地:
-  (a) **添字境界** — `requires i < 8u64` + `[T; 8]` で `emit_index_guard` を
-  落とせる (配列長は binding が持っているので比較可能)。今は未対応。
+  (a) **符号付き添字** — `requires i < N` は符号なしのみ対応
+  (2026-08-23)。符号付きは負の可能性を別に排除する必要があり
+  (`requires i >= 0`)、guard は負の調整も兼ねているので単純に落とせない。
   (b) **符号付き `MIN / -1`** — `requires b != -1` を認識する節の形が無い。
   (c) **推移的な事実** — `requires a >= b` から `a - b >= 0` を導いて
   さらに下流の guard を消す、といった伝播はしていない (1 段のみ)。
@@ -838,7 +842,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2072 テスト** (100% 成功、2026-08-23 時点)。
+- 合計 **2075 テスト** (100% 成功、2026-08-23 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、

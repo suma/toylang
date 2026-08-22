@@ -3421,6 +3421,7 @@ What can be elided, and when:
 |---|---|
 | `x != 0`, `0 != x`, `x > 0`, `x >= 1` | divide-by-zero on `a / x`, `a % x` |
 | `a >= b`, `b <= a` | `u64` subtraction underflow on `a - b` |
+| `i < N`, `i <= N` (integer literal `N`) | bounds check on `arr[i]`, when the array is no longer than `N` and the index is unsigned |
 
 - Only **parameters** qualify. The type checker refuses assignment to a
   parameter, so a fact proved on entry holds for the whole body,

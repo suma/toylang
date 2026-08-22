@@ -29,7 +29,7 @@
 //! (`shadowed`), since the guard site would then be reading the new
 //! binding rather than the parameter.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use frontend::ast::{Expr, ExprRef, File, Operator, ParameterList};
 use string_interner::{DefaultStringInterner, DefaultSymbol};
@@ -40,6 +40,11 @@ pub(super) struct ContractFacts {
     nonzero: HashSet<DefaultSymbol>,
     /// Ordered pairs `(a, b)` where some clause proved `a >= b`.
     at_least: HashSet<(DefaultSymbol, DefaultSymbol)>,
+    /// Parameters some clause bounded from above: `x < N` records `N`,
+    /// `x <= N` records `N + 1`. The value is the first index the
+    /// parameter cannot take, which is exactly what an array bounds
+    /// check compares against.
+    below: HashMap<DefaultSymbol, u128>,
 }
 
 impl ContractFacts {
@@ -65,7 +70,12 @@ impl ContractFacts {
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.nonzero.is_empty() && self.at_least.is_empty()
+        self.nonzero.is_empty() && self.at_least.is_empty() && self.below.is_empty()
+    }
+
+    /// Whether a clause proved `sym < limit` — or better.
+    pub(super) fn is_below(&self, sym: DefaultSymbol, limit: u128) -> bool {
+        self.below.get(&sym).is_some_and(|bound| *bound <= limit)
     }
 
     /// Whether `sym` is a parameter a clause proved non-zero.
@@ -86,7 +96,17 @@ impl ContractFacts {
             return;
         }
         self.nonzero.remove(&sym);
+        self.below.remove(&sym);
         self.at_least.retain(|(a, b)| *a != sym && *b != sym);
+    }
+
+    /// Keep the tightest bound seen; two clauses about the same
+    /// parameter are both true.
+    fn record_below(&mut self, sym: DefaultSymbol, limit: u128) {
+        self.below
+            .entry(sym)
+            .and_modify(|existing| *existing = (*existing).min(limit))
+            .or_insert(limit);
     }
 
     fn collect(
@@ -141,15 +161,30 @@ impl ContractFacts {
                             self.at_least.insert((a, b));
                         }
                     }
-                    // Mirror images of the two above.
+                    // Mirror images of the two above, plus the upper
+                    // bound an array index needs: `i < 8u64` says the
+                    // index cannot reach 8, which is the same test the
+                    // bounds guard would emit.
                     Operator::LT => {
                         if let (Some(a), Some(b)) = (left, right) {
                             self.at_least.insert((b, a));
+                        }
+                        if let (Some(sym), Some(limit)) =
+                            (left, integer_literal_value(program, interner, &rhs))
+                            && let Ok(limit) = u128::try_from(limit)
+                        {
+                            self.record_below(sym, limit);
                         }
                     }
                     Operator::LE => {
                         if let (Some(a), Some(b)) = (left, right) {
                             self.at_least.insert((b, a));
+                        }
+                        if let (Some(sym), Some(limit)) =
+                            (left, integer_literal_value(program, interner, &rhs))
+                            && let Ok(limit) = u128::try_from(limit)
+                        {
+                            self.record_below(sym, limit + 1);
                         }
                     }
                     _ => {}

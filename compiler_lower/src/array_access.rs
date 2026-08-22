@@ -210,10 +210,22 @@ impl<'a> FunctionLower<'a> {
     /// is sufficient.
     fn emit_index_guard(
         &mut self,
+        index_ref: &ExprRef,
         idx: ValueId,
         idx_ty: Type,
         length: usize,
     ) -> Result<ValueId, String> {
+        // CONTRACT-ELISION: a `requires i < 8u64` on an `[T; 8]` states
+        // exactly what this guard would test, and it was already
+        // checked on entry. Unsigned only — a signed index would still
+        // need the negative case ruled out, and the adjustment below
+        // is part of what the guard does.
+        if !idx_ty.is_signed()
+            && let Some(sym) = self.parameter_name(index_ref)
+            && self.facts.is_below(sym, length as u128)
+        {
+            return Ok(idx);
+        }
         let Some(len_const) = Const::from_usize_in(idx_ty, length) else {
             // Either a non-integer index (the type checker rejects
             // those) or a length too large for the index type, in
@@ -376,7 +388,7 @@ impl<'a> FunctionLower<'a> {
                     .lower_expr(index_ref)?
                     .ok_or_else(|| "array index produced no value".to_string())?;
                 let idx_ty = self.value_scalar(index_ref).unwrap_or(Type::U64);
-                let raw_idx = self.emit_index_guard(raw_idx, idx_ty, length)?;
+                let raw_idx = self.emit_index_guard(index_ref, raw_idx, idx_ty, length)?;
                 let leaf_count_v = self
                     .emit(
                         InstKind::Const(Const::U64(leaf_count as u64)),
@@ -447,7 +459,7 @@ impl<'a> FunctionLower<'a> {
                     .lower_expr(index_ref)?
                     .ok_or_else(|| "array index produced no value".to_string())?;
                 let idx_ty = self.value_scalar(index_ref).unwrap_or(Type::U64);
-                self.emit_index_guard(raw_idx, idx_ty, length)?
+                self.emit_index_guard(index_ref, raw_idx, idx_ty, length)?
             }
         };
         Ok(self.emit(
@@ -513,7 +525,7 @@ impl<'a> FunctionLower<'a> {
                     .lower_expr(index_ref)?
                     .ok_or_else(|| "array index produced no value".to_string())?;
                 let idx_ty = self.value_scalar(index_ref).unwrap_or(Type::U64);
-                self.emit_index_guard(raw_idx, idx_ty, length)?
+                self.emit_index_guard(index_ref, raw_idx, idx_ty, length)?
             }
         };
         let v = self

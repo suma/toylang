@@ -155,7 +155,7 @@ impl<'a> FunctionLower<'a> {
     }
 
     /// The symbol behind `expr` when it is written as a plain name.
-    fn parameter_name(&self, expr: &ExprRef) -> Option<DefaultSymbol> {
+    pub(super) fn parameter_name(&self, expr: &ExprRef) -> Option<DefaultSymbol> {
         if self.facts.is_empty() {
             return None;
         }

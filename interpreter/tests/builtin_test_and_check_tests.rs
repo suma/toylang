@@ -234,6 +234,58 @@ fn a_requires_rejection_is_not_reported_as_a_failure() {
 }
 
 #[test]
+fn a_pass_records_how_much_was_actually_tried() {
+    // DBC-CHECK-CASES: a pass over 200 inputs and a pass over one are
+    // very different claims. The outcome carries both halves so the
+    // caller can tell them apart — `--check` prints a THIN line for
+    // the second kind, which used to look exactly like the first.
+    let broad = check(
+        "fn double(x: i64) -> i64
+            requires x > 0i64
+            ensures  result == x * 2i64
+        {
+            x * 2i64
+        }
+        fn main() -> i64 { double(1i64) }",
+        0x1234,
+    );
+    match outcome_for(&broad, "double") {
+        CheckOutcome::Passed { cases, discarded } => {
+            assert_eq!(*cases, 200, "the whole budget should have been used");
+            assert!(
+                *cases * 10 > *discarded,
+                "{cases} case(s) against {discarded} discards should not read as thin"
+            );
+        }
+        other => panic!("expected a pass, got {other:?}"),
+    }
+
+    let narrow = check(
+        "fn exact(x: i64) -> i64
+            requires x == 42i64
+            ensures  result == 43i64
+        {
+            x + 1i64
+        }
+        fn main() -> i64 { exact(42i64) }",
+        0x1234,
+    );
+    match outcome_for(&narrow, "exact") {
+        CheckOutcome::Passed { cases, discarded } => {
+            assert!(
+                *cases * 10 < *discarded,
+                "a pass resting on {cases} case(s) against {discarded} discards should be \
+                 recognisable as thin"
+            );
+        }
+        // Drawing 42 is luck; with none the run is inconclusive, which
+        // is already reported as its own thing.
+        CheckOutcome::Inconclusive { .. } => {}
+        other => panic!("expected a pass or inconclusive, got {other:?}"),
+    }
+}
+
+#[test]
 fn an_unsatisfiable_requires_is_inconclusive_rather_than_passing() {
     // Every input rejected means the `ensures` was never exercised.
     // Calling that a pass would be a lie.

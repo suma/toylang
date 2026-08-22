@@ -155,7 +155,12 @@ fn render(value: &Value) -> String {
 pub enum CheckOutcome {
     /// Every generated input that satisfied `requires` also satisfied
     /// `ensures`.
-    Passed { cases: usize },
+    ///
+    /// `discarded` is how many the precondition turned away. A pass
+    /// over 3 inputs and a pass over 200 are very different claims,
+    /// and the caller has no other way to tell them apart
+    /// (DBC-CHECK-CASES).
+    Passed { cases: usize, discarded: usize },
     /// The precondition rejected nearly everything, so the pass means
     /// little. Reported separately rather than counted as success.
     Inconclusive { discarded: usize },
@@ -306,7 +311,7 @@ fn check_function(
     if executed == 0 {
         CheckOutcome::Inconclusive { discarded }
     } else {
-        CheckOutcome::Passed { cases: executed }
+        CheckOutcome::Passed { cases: executed, discarded }
     }
 }
 

@@ -266,9 +266,17 @@ fn divide(a: i64, b: i64) -> i64
 - **生成できる型は `bool` / `i64` / `u64` / `f64`**。それ以外（`str`、struct、
   enum など）を引数に持つ関数は**黙って対象外**になる。`0 contracted
   function(s) checked` と出たらこれを疑う
-- **`requires` が狭すぎると意味が無い**。`requires n == 42u64` のような節は
-  ほぼ全ての生成値を弾き、運良く 1 ケース通っただけで「成功」に見える
-  （通過ケース数は表示されない）。全部弾かれた場合だけは明示される:
+- **`requires` が狭すぎる場合は報告される**。`requires n == 42u64` のような節は
+  ほぼ全ての生成値を弾くので、通ったケースが一握りなら `THIN` として出る。
+  サマリにも合計ケース数が入るので、「200 ケース通った」と「1 ケース通った」を
+  取り違えない:
+
+  ```
+  THIN  exact — only 1 input(s) satisfied `requires` (4000 discarded)
+  1 contracted function(s) checked, 1 case(s), 0 failed  (seed: 0x...)
+  ```
+
+  全部弾かれた場合は別立てで出る:
 
   ```
   INCONCLUSIVE  impossible — `requires` rejected all 4000 generated inputs

@@ -10,6 +10,12 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-08-23
+- **DBC-CHECK-CASES: `--check` が「どれだけ試したか」を出す** — `Passed` に
+  `discarded` を持たせ、サマリに合計ケース数、`requires` が狭くて数ケース
+  しか通らなかった関数には `THIN` 行を出す。以前は 1 ケース通っただけの
+  成功が 200 ケース通った成功と同じ見た目だった。
+
 ### 2026-08-21
 - **NEVER-ALLOCATES: 静的な「確保しない」** — `never_allocates fn f()` を
   コンパイル時に検査 (`[E0016]`)。属性の伝播ではなく**呼び出しグラフの
@@ -670,14 +676,14 @@
 > 2026-08-20 に算術 / 添字を 3 バックエンドで実際に叩いて洗い出した節。
 > トラップ本体は同日 landing (完了済み節)。残るのは下の 2 件。
 
-- **DBC-CHECK-CASES: `--check` が通過ケース数を報告しない** ★ —
-  `CheckOutcome::Passed { cases }` を `let _ = cases` で捨てている
-  (`interpreter/src/main.rs`)。`requires` が狭いと 1 ケースしか実行され
-  ていなくても "0 failed" と出るので、**成功の強さが読めない**。
-  Inconclusive (全弾き) だけは明示されている。
 - **DBC-CHECK-METHODS: `--check` がメソッドを掃かない** ★ —
   `check_program` が `program.function` (自由関数) だけを回している。
   契約付き method は対象外で、しかも黙って対象外になる。
+  **前提**: receiver を生成する必要があり、今の generator は
+  `bool` / `i64` / `u64` / `f64` しか作れない。struct の生成 (フィールドを
+  再帰的に埋める) が要るので、これは generator 側の拡張が本体。
+  `self` を取らない associated function だけなら今でも掃けるが、
+  それだけでは価値が薄い。
 
 - **CONTRACT-ELISION の残** ★ — 消せる guard を増やす余地:
   (a) **添字境界** — `requires i < 8u64` + `[T; 8]` で `emit_index_guard` を
@@ -837,7 +843,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2069 テスト** (100% 成功、2026-08-21 時点)。
+- 合計 **2070 テスト** (100% 成功、2026-08-23 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、

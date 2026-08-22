@@ -21,6 +21,13 @@ use interpreter::{RunOptions, RunOutcome};
 ///
 /// Returns `None` when nothing resolves and the env var didn't
 /// explicitly opt out — auto-loading then becomes a no-op.
+/// DBC-CHECK-CASES: report a pass as thin when the precondition
+/// discarded more than this many inputs per accepted one. A narrow
+/// `requires` is legitimate — the point is that the reader should
+/// know the pass rests on a handful of cases rather than on the full
+/// budget.
+const THIN_PASS_RATIO: usize = 10;
+
 fn resolve_core_modules_dir(cli_override: Option<PathBuf>) -> Option<PathBuf> {
     if let Some(p) = cli_override {
         return Some(p);
@@ -429,11 +436,24 @@ fn report_contract_check(
 
     let mut checked = 0usize;
     let mut failures = 0usize;
+    let mut total_cases = 0usize;
     for check in &report.checks {
         match &check.outcome {
-            CheckOutcome::Passed { cases } => {
+            CheckOutcome::Passed { cases, discarded } => {
                 checked += 1;
-                let _ = cases;
+                total_cases += cases;
+                // DBC-CHECK-CASES: a pass says nothing about how much
+                // was actually tried. `requires n == 42u64` turns away
+                // almost every generated input, and one lucky case
+                // used to print exactly what a thorough run prints.
+                // Reported when the precondition swallowed most of the
+                // budget, which is the case worth a second look.
+                if *cases * THIN_PASS_RATIO < *discarded {
+                    eprintln!(
+                        "THIN  {} — only {cases} input(s) satisfied `requires` ({discarded} discarded)",
+                        check.function
+                    );
+                }
             }
             CheckOutcome::Inconclusive { discarded } => {
                 checked += 1;
@@ -463,8 +483,8 @@ fn report_contract_check(
     }
 
     println!(
-        "{} contracted function(s) checked, {failures} failed  (seed: 0x{seed:x}; replay with --check --seed=0x{seed:x})",
-        checked
+        "{checked} contracted function(s) checked, {total_cases} case(s), {failures} failed  \
+         (seed: 0x{seed:x}; replay with --check --seed=0x{seed:x})"
     );
     i32::from(failures > 0)
 }

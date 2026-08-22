@@ -3465,8 +3465,12 @@ reaches, not for what it is missing.
 - Contextual, like `old` and the budget clauses — only a
   `never_allocates` immediately before `fn` or `extern` is the
   modifier.
-- Declarable on free functions only for now; the check still walks
-  into methods.
+- Usable on methods as well as free functions; a violation there is
+  named by owner and method (`Counter::bad`).
+- A method call is resolved by the receiver's type, so `Vec::new` and
+  `Counter::new` are not confused with one another. Where the type is
+  not recoverable, every same-named body is walked instead — the
+  direction that refuses too much rather than missing an allocation.
 
 ### Runtime gating
 
@@ -3497,7 +3501,6 @@ Unrecognised values print a warning and fall back to `all`.
 - `invariant` clauses on `impl` blocks
 - Static verification beyond runtime checking, other than
   `never_allocates` (above).
-- `never_allocates` on methods.
 
 ---
 

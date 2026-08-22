@@ -785,6 +785,18 @@ pub fn parse_trait_method_signatures_with_generics(
             return Ok(methods);
         }
 
+        // NEVER-ALLOCATES: same contextual rule as the free-function
+        // form — only a `never_allocates` immediately before `fn` is
+        // the modifier.
+        let never_allocates = if matches!(parser.peek(), Some(Kind::Identifier(s)) if s == "never_allocates")
+            && matches!(parser.peek_n(1), Some(Kind::Function))
+        {
+            parser.next();
+            true
+        } else {
+            false
+        };
+
         match parser.peek() {
             Some(Kind::Function) => {
                 let fn_start_pos = parser.peek_position_n(0).unwrap().start;
@@ -847,11 +859,7 @@ pub fn parse_trait_method_signatures_with_generics(
                     requires: clauses.requires,
                     ensures: clauses.ensures,
                     ensures_kinds: clauses.ensures_kinds,
-                                // NEVER-ALLOCATES: declarable on free functions only
-                        // for now. The check still walks *into* methods, so a
-                        // `never_allocates` function calling an allocating
-                        // method is caught.
-                        never_allocates: false,
+                                never_allocates,
                     old_exprs: clauses.old_exprs,
                     has_self_param: has_self,
                     self_is_mut,
@@ -891,7 +899,19 @@ pub fn parse_impl_methods_with_generic_context(
         } else {
             crate::ast::Visibility::Private
         };
-        
+
+        // NEVER-ALLOCATES: same contextual rule as the free-function
+        // form — only a `never_allocates` immediately before `fn` is
+        // the modifier.
+        let never_allocates = if matches!(parser.peek(), Some(Kind::Identifier(s)) if s == "never_allocates")
+            && matches!(parser.peek_n(1), Some(Kind::Function))
+        {
+            parser.next();
+            true
+        } else {
+            false
+        };
+
         match parser.peek() {
             Some(Kind::Function) => {
                 let fn_start_pos = parser.peek_position_n(0).unwrap().start;
@@ -962,11 +982,7 @@ pub fn parse_impl_methods_with_generic_context(
                             requires: clauses.requires,
                             ensures: clauses.ensures,
                             ensures_kinds: clauses.ensures_kinds,
-                                // NEVER-ALLOCATES: declarable on free functions only
-                        // for now. The check still walks *into* methods, so a
-                        // `never_allocates` function calling an allocating
-                        // method is caught.
-                        never_allocates: false,
+                                never_allocates,
                             old_exprs: clauses.old_exprs,
                             code: parser.ast_builder.expression_stmt(block, Some(location)),
                             has_self_param: has_self,

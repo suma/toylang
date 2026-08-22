@@ -11,6 +11,10 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-23
+- **NEVER-ALLOCATES の残件 2 つを解消** — (1) メソッドにも `never_allocates` を
+  書けるように (違反は `Counter::bad` と owner 付きで報告)、(2) メソッド解決を
+  receiver の型で行うようにし、`Vec::new` と `Counter::new` の取り違えによる
+  誤検出を解消 (型が取れない場合は従来どおり同名 body を全部辿る)。
 - **DBC-CHECK-CASES: `--check` が「どれだけ試したか」を出す** — `Passed` に
   `discarded` を持たせ、サマリに合計ケース数、`requires` が狭くて数ケース
   しか通らなかった関数には `THIN` 行を出す。以前は 1 ケース通っただけの
@@ -728,15 +732,6 @@
   - **A5-P4: `Box<dyn Trait>`** — owned trait object + `Vec<Box<dyn Trait>>`。**前提**: `Box<T>` 自体が未実装。
   - **A5 残作業** — `&dyn Trait` の return / struct field 位置 (REF-Stage-2 の escape rule が阻む)、`dyn A + B`、`dyn Iterator<T>`、generic trait の default body 内での `T` 参照。
 - **`must_use` / unused-Result 警告** ★★ — `?` の補完。**警告の emit 経路が無い**ので (`Severity::Warning` は型としては存在するが未使用)、そこから作る必要がある。
-- **NEVER-ALLOCATES-METHODS: メソッドにも `never_allocates` を書けるように** ★ —
-  現状は自由関数のみ (検査はメソッドの中まで辿るので、メソッドを呼ぶ
-  `never_allocates` 関数は正しく弾かれる)。parser の impl / trait 側に
-  同じ修飾子判定を足すだけ。
-- **NEVER-ALLOCATES-RECEIVER: 同名メソッドの解決** ★ — 検査は receiver の型で
-  メソッドを選ばず、**同名の body をすべて辿る** (`Vec::new` と `String::new` を
-  区別しない)。保守的な方向なので誤って通すことはないが、無関係な型の
-  メソッドが確保していると誤検出になる。`expr_types` は既に渡しているので、
-  receiver 型で絞れる。
 - **CLOSURE-CAPTURE: capture 意味論の拡張** ★★ — 現状は**生成時スナップショット
   のみ**なので「カウンタを閉じ込めて更新する」基本形が書けない。`&mut` capture に
   するか明示 capture list にするかは言語の性格を決める判断なので、closure の
@@ -843,7 +838,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2070 テスト** (100% 成功、2026-08-23 時点)。
+- 合計 **2072 テスト** (100% 成功、2026-08-23 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、

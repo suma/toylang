@@ -157,6 +157,71 @@ fn an_extern_call_is_refused_unless_the_declaration_says_otherwise() {
 }
 
 #[test]
+fn the_modifier_works_on_methods_too() {
+    let err = test_program(
+        r#"
+        struct Counter { n: u64 }
+
+        impl Counter {
+            never_allocates fn bad(&self) -> u64 {
+                val p: ptr = __builtin_heap_alloc(16u64)
+                self.n
+            }
+        }
+
+        fn main() -> u64 {
+            val c = Counter { n: 7u64 }
+            c.bad()
+        }
+        "#,
+    )
+    .expect_err("the method's declaration cannot be honoured");
+    // Named by owner and method, since the same method name can
+    // belong to several types.
+    assert!(err.contains("`Counter::bad`"), "{err}");
+
+    assert_program_result_u64(
+        r#"
+        struct Counter { n: u64 }
+
+        impl Counter {
+            never_allocates fn get(&self) -> u64 { self.n }
+        }
+
+        fn main() -> u64 {
+            val c = Counter { n: 7u64 }
+            c.get()
+        }
+        "#,
+        7,
+    );
+}
+
+#[test]
+fn a_same_named_method_on_another_type_is_not_confused_with_it() {
+    // `Vec::new` allocates and `Counter::new` does not. Resolving by
+    // name alone would reject this program for what `Vec` does.
+    assert_program_result_u64(
+        r#"
+        struct Counter { n: u64 }
+
+        impl Counter {
+            fn new(start: u64) -> Counter { Counter { n: start } }
+            fn get(&self) -> u64 { self.n }
+        }
+
+        never_allocates fn make(n: u64) -> u64 {
+            val c = Counter::new(n)
+            c.get()
+        }
+
+        fn main() -> u64 { make(7u64) }
+        "#,
+        7,
+    );
+}
+
+#[test]
 fn the_name_stays_available_outside_a_declaration() {
     // Contextual, like `old` and the budget clauses: only a
     // `never_allocates` immediately before `fn` or `extern` is the

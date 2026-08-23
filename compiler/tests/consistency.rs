@@ -10412,3 +10412,117 @@ fn a_generic_struct_may_name_another_type_in_a_field() {
     // 8 + 1 + 200
     assert_consistent(src, "generic_struct_named_field");
 }
+
+// AOT-GENERIC-THROUGH-STRUCT: the AOT / compiler-JIT lowering infers a
+// generic function's type arguments through a struct parameter's type
+// args (`fn peek<T>(c: Cell<T>) -> T`). The interpreter-side JIT
+// learned this with #159; the compiled path was still rejecting the
+// call with "cannot infer type arguments for generic function". Each
+// call site's concrete instance supplies the zip, so two monomorphs of
+// the same function may coexist (`peek<u64>` / `peek<i64>`).
+
+#[test]
+fn generic_function_infers_type_args_through_struct_param() {
+    let src = r#"
+        struct Cell<T> { value: T }
+
+        fn peek<T>(c: Cell<T>) -> T {
+            c.value
+        }
+
+        fn main() -> u64 {
+            val a: Cell<u64> = Cell { value: 9u64 }
+            val b: Cell<i64> = Cell { value: 6i64 }
+            peek(a) + peek(b) as u64
+        }
+    "#;
+    assert_consistent(src, "generic_through_struct");
+}
+
+#[test]
+fn generic_function_infers_two_params_through_struct() {
+    // Two type params in one struct (`Pair<A, B>`) must each bind to
+    // the corresponding concrete arg slot.
+    let src = r#"
+        struct Pair<A, B> { first: A, second: B }
+
+        fn pick_first<A, B>(p: Pair<A, B>) -> A {
+            p.first
+        }
+
+        fn pick_second<A, B>(p: Pair<A, B>) -> B {
+            p.second
+        }
+
+        fn main() -> u64 {
+            val p: Pair<u64, i64> = Pair { first: 11u64, second: 4i64 }
+            pick_first(p) + pick_second(p) as u64
+        }
+    "#;
+    assert_consistent(src, "generic_through_struct_two_params");
+}
+
+#[test]
+fn generic_function_infers_through_enum_param() {
+    // The parser spells `Option<T>` as `Struct(Option, [T])` until the
+    // type checker refines it to `Enum`; the lowering accepts either
+    // spelling as long as the concrete instance is an enum.
+    let src = r#"
+        fn unwrap_default<T>(o: Option<T>) -> T {
+            match o {
+                Option::Some(v) => v,
+                Option::None => panic("none"),
+            }
+        }
+
+        fn main() -> u64 {
+            val o: Option<u64> = Option::Some(21u64)
+            unwrap_default(o)
+        }
+    "#;
+    assert_consistent(src, "generic_through_enum");
+}
+
+#[test]
+fn generic_function_infers_through_tuple_param() {
+    // A `(T, u64)` parameter: the tuple binding carries per-element
+    // shapes (no interned tuple id), so the zip walks the shapes
+    // directly.
+    let src = r#"
+        fn first_of_pair<T>(p: (T, u64)) -> T {
+            p.0
+        }
+
+        fn main() -> u64 {
+            val p: (u64, u64) = (1u64, 2u64)
+            first_of_pair(p) + 1u64
+        }
+    "#;
+    assert_consistent(src, "generic_through_tuple");
+}
+
+#[test]
+fn generic_function_infers_through_nested_struct_param() {
+    // `Wrapper<Cell<T>>` — the zip recurses through two levels of
+    // type args.
+    let src = r#"
+        struct Cell<T> { value: T }
+        struct Wrapper<T> { inner: T }
+
+        fn peek<T>(c: Cell<T>) -> T {
+            c.value
+        }
+
+        fn unwrap_wrap<T>(w: Wrapper<Cell<T>>) -> T {
+            w.inner.value
+        }
+
+        fn main() -> u64 {
+            val a: Cell<u64> = Cell { value: 9u64 }
+            val inner: Cell<u64> = Cell { value: 3u64 }
+            val w: Wrapper<Cell<u64>> = Wrapper { inner: inner }
+            peek(a) + unwrap_wrap(w)
+        }
+    "#;
+    assert_consistent(src, "generic_through_nested_struct");
+}

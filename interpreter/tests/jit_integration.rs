@@ -224,29 +224,11 @@ fn jit_generic_function_over_generic_struct() {
     // args. Two call sites with different monomorphs must produce two
     // cranelift functions.
     //
-    // Kept out of `example/` on purpose: the AOT backend cannot infer
-    // a generic function's type arguments through a struct parameter
-    // yet, and every file in `example/` is swept by
-    // `compiler/tests/example_consistency.rs` across all 3 backends.
-    use std::fs;
-    let path = "tests/fixtures/jit_generic_struct_fn.t";
-    fs::create_dir_all("tests/fixtures").unwrap();
-    fs::write(
-        path,
-        r#"struct Cell<T> { value: T }
-
-fn peek<T>(c: Cell<T>) -> T {
-    c.value
-}
-
-fn main() -> u64 {
-    val a: Cell<u64> = Cell { value: 9u64 }
-    val b: Cell<i64> = Cell { value: 6i64 }
-    peek(a) + peek(b) as u64
-}
-"#,
-    )
-    .unwrap();
+    // Lives in `example/` now that AOT-GENERIC-THROUGH-STRUCT lets the
+    // compiled backends infer the same call sites, so
+    // `compiler/tests/example_consistency.rs` sweeps the file across
+    // all 3 backends.
+    let path = "example/jit_generic_struct_fn.t";
     let plain = run(path, false, false);
     let jit = run(path, true, true);
     assert_eq!(plain.code, 15, "interpreter exit; stderr: {}", plain.stderr);

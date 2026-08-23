@@ -32,7 +32,7 @@ use frontend::ast::{Expr, ExprRef};
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 
-use super::bindings::Binding;
+use super::bindings::{Binding, TupleElementShape};
 use super::templates::{instantiate_enum, instantiate_struct};
 use super::types::lower_scalar;
 use super::{FunctionLower, PendingGenericInstance};
@@ -140,11 +140,16 @@ impl<'a> FunctionLower<'a> {
 
     /// Walk one parameter declaration / call-site argument pair and
     /// record any generic-parameter bindings the pairing implies.
-    /// Currently handles scalar generic params (`fn id<T>(x: T)` where
-    /// `x`'s arg has a concrete scalar type), enum identifier args
+    /// Handles scalar generic params (`fn id<T>(x: T)` where `x`'s
+    /// arg has a concrete scalar type), enum identifier args
     /// (`fn f<T>(o: Option<T>)` where the arg is an Option binding),
-    /// and struct identifier args. Other shapes are silently skipped
-    /// (`infer` returns None overall).
+    /// and struct identifier args. A generic param nested inside a
+    /// struct / enum / tuple type argument (`fn peek<T>(c: Cell<T>)`)
+    /// is recovered by matching the declared type args positionally
+    /// against the argument's concrete type args
+    /// (AOT-GENERIC-THROUGH-STRUCT — the same zip the generic-method
+    /// path's `bind_method_only_param` performs). Other shapes are
+    /// silently skipped (`infer` returns None overall).
     pub(super) fn infer_generic_args_from_param(
         &self,
         ptype: &TypeDecl,
@@ -171,6 +176,62 @@ impl<'a> FunctionLower<'a> {
                                 inferred.entry(*g).or_insert(Type::Enum(s.enum_id));
                             }
                             _ => {}
+                        }
+                    }
+            }
+            // AOT-GENERIC-THROUGH-STRUCT: a named-type parameter whose
+            // type args contain a generic param (`Cell<T>`). The
+            // argument's concrete instance carries its own type args
+            // (`Cell<u64>` → `[U64]`), so zip the declared args
+            // against them positionally and recurse into each pair.
+            // The parser writes `Struct(N, args)` for `N<args>`
+            // regardless of struct vs enum, so both arms accept both
+            // concrete shapes and verify the base name before zipping.
+            TypeDecl::Struct(name, decl_args) | TypeDecl::Enum(name, decl_args) => {
+                match self.value_scalar(arg) {
+                    Some(Type::Struct(id)) => {
+                        let def = self.module.struct_def(id);
+                        if def.base_name == *name {
+                            for (d, a) in decl_args.iter().zip(def.type_args.iter()) {
+                                self.bind_method_only_param(d, *a, generic_params, inferred);
+                            }
+                        }
+                    }
+                    Some(Type::Enum(id)) => {
+                        let def = self.module.enum_def(id);
+                        if def.base_name == *name {
+                            for (d, a) in decl_args.iter().zip(def.type_args.iter()) {
+                                self.bind_method_only_param(d, *a, generic_params, inferred);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            TypeDecl::Tuple(elems) => {
+                if let Some(Type::Tuple(id)) = self.value_scalar(arg) {
+                    let def = &self.module.tuple_defs[id.0 as usize];
+                    for (d, a) in elems.iter().zip(def.iter()) {
+                        self.bind_method_only_param(d, *a, generic_params, inferred);
+                    }
+                    return;
+                }
+                // A tuple *binding* carries only per-element shapes,
+                // not an interned tuple id (`value_scalar` returns
+                // None for it), so walk the shapes directly.
+                if let Some(Expr::Identifier(sym)) = self.program.expression.get(arg)
+                    && let Some(Binding::Tuple { elements }) = self.bindings.get(&sym) {
+                        for (d, el) in elems.iter().zip(elements.iter()) {
+                            let ty = match &el.shape {
+                                TupleElementShape::Scalar { ty, .. } => *ty,
+                                TupleElementShape::Struct { struct_id, .. } => {
+                                    Type::Struct(*struct_id)
+                                }
+                                TupleElementShape::Tuple { tuple_id, .. } => {
+                                    Type::Tuple(*tuple_id)
+                                }
+                            };
+                            self.bind_method_only_param(d, ty, generic_params, inferred);
                         }
                     }
             }

@@ -11,6 +11,19 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-23
+- **AOT-GENERIC-THROUGH-STRUCT: struct 引数越しの generic 型引数推論 (AOT / compiler JIT)** —
+  `fn peek<T>(c: Cell<T>) -> T` の呼び出しが "cannot infer type arguments for generic
+  function" で落ちていた。`infer_generic_args_from_param` (compiler_lower/call.rs) は
+  裸の `T` しか扱えず、型引数に generic が入る `Cell<T>` は無視されていた。
+  generic-method 経路の `bind_method_only_param` と同じ zip を適用: 引数の具体
+  インスタンス (`Cell<u64>` → `StructDef.type_args = [U64]`) と宣言された型引数を
+  位置で突き合わせて再帰する。parser は enum にも `Struct(N, args)` を書くので
+  両 arm が両方の具体形 (Struct/Enum) を受け、base_name を検証してから zip。
+  tuple 束縛は `value_scalar` が tuple_id を持たず None を返すため、要素 shape を
+  直接 walk。呼び出し元の `value_scalar` の `Expr::Call` 経路も同じ関数を使うので
+  ネストした generic call も解消。`interpreter/example/jit_generic_struct_fn.t`
+  (元 fixture) が 3 バックエンド掃引に載る (5 新テスト: struct / 2 パラメータ /
+  enum / tuple / ネスト struct)。
 - **TYPE-NAME-SPELLING: 名前型の 3 つの綴りを統一** — parser は位置に
   よって `Identifier(N)` (裸) / `Struct(N, args)` (`N<args>` は struct でも
   enum でもこれ) / `Enum(N, args)` (型検査後) を出すのに、generic 推論の
@@ -748,14 +761,10 @@
 
 ### バックエンドのカバレッジ
 
-- **AOT-GENERIC-THROUGH-STRUCT** ★ — AOT / compiler JIT が
-  **struct 引数越しに generic 関数の型引数を推論できない**
-  (`fn peek<T>(c: Cell<T>) -> T` の呼び出しが
-  `cannot infer type arguments for generic function ... from call
-  arguments` で落ちる)。interpreter JIT 側は #159 で解消したので、
-  残るのはこちら。例は `interpreter/tests/fixtures/jit_generic_struct_fn.t`
-  (この理由で `interpreter/example/` に置いていない — 置くと
-  `example_consistency` が 3 バックエンドで掃く)。
+- **AOT-GENERIC-THROUGH-STRUCT** ★ — 解消 (2026-08-23)。AOT / compiler JIT が
+  struct 引数越しの generic 型引数を推論できるようになり、旧 fixture
+  `interpreter/tests/fixtures/jit_generic_struct_fn.t` は
+  `interpreter/example/` に昇格して 3 バックエンド掃引に乗っている。
 - **JIT-INTERP-COVERAGE (residual)** ★ — interpreter 側 JIT が silent
   fallback する残り: (a) impl block ではなく **method 固有の generic**
   (`fn map<U>(..)`) と **phantom 型パラメータ** (どのフィールドも触れない

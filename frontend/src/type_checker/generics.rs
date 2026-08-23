@@ -87,7 +87,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         }
         
         // Solve constraints to get type substitutions
-        let substitutions = match self.type_inference.solve_constraints() {
+        let substitutions = match self.type_inference.solve_constraints(self.core.string_interner) {
             Ok(solution) => solution,
             Err(e) => {
                 self.pop_context();
@@ -219,7 +219,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         
         // Solve constraints to get type substitutions
         let struct_name_str = self.resolve_symbol_name(*struct_name);
-        let substitutions = match self.type_inference.solve_constraints() {
+        let substitutions = match self.type_inference.solve_constraints(self.core.string_interner) {
             Ok(solution) => {
                 solution
             },
@@ -394,7 +394,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         }
 
         // Solve constraints to get type substitutions
-        let substitutions = match self.type_inference.solve_constraints() {
+        let substitutions = match self.type_inference.solve_constraints(self.core.string_interner) {
             Ok(solution) => {
                 solution
             }

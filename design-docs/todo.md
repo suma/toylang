@@ -11,6 +11,23 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-23
+- **TYPE-NAME-SPELLING: 名前型の 3 つの綴りを統一** — parser は位置に
+  よって `Identifier(N)` (裸) / `Struct(N, args)` (`N<args>` は struct でも
+  enum でもこれ) / `Enum(N, args)` (型検査後) を出すのに、generic 推論の
+  `unify_types` にそれらを突き合わせる arm が無かった。結果、**generic 宣言の
+  フィールド / パラメータが別の user 型を名指すと型検査に落ちていた**
+  (`struct Cell<T> { value: T, p: Point }` が
+  `Cannot unify Identifier(Point) with Struct(Point, [])`、enum フィールドや
+  `unwrap_or(o: Option<T>, d: T)` への `Option<Option<T>>` も同様)。
+  同一性は **symbol のみ**で判定する — parser が enum にも
+  `Struct(N, args)` を書き、lowering も名前キーの別表で持っている以上、
+  それがパイプライン全体の前提。Generic 束縛の衝突判定も
+  `==` から綴りを見ない比較に変え、**最も解決された綴りを残す**ので
+  制約の到着順に依存しなくなった。
+  あわせて診断が `SymbolU32 { value: 41 }` を出していたのを解消
+  (`unify_types` に interner を通し、`TypeDecl::spell_with` を使う) —
+  `Conflicting type constraint: \`T\` already bound to \`Option<i64>\`,
+  cannot bind to \`Option<u64>\`` のように読める。
 - **JIT-enum-1: struct のフィールドに enum を置けるように (3 backend)** —
   `FieldShape` に `Enum(Box<EnumStorage>)` を追加。フィールドは
   「tag local + variant ごとの payload slot」を持つ (enum 束縛と同じ
@@ -750,22 +767,6 @@
   `EnumLayout` が別実装)、(d) **enum 型の struct field** (`StructLayout`
   は scalar フィールドのみ)。どれも correctness 問題ではない。
 - **160. タプルの JIT 対応 (ネスト)** ★ — `((a,b),c)` と tuple-of-struct。`ParamTy::Tuple(Vec<ScalarTy>)` を tree 構造にする 100+ 箇所の refactor。(inline tuple literal を call 引数に渡す件は 2026-08-23 に CALL-ARG-COMPOUND-LITERAL で解消)
-- **TYPE-NAME-SPELLING** ★★ — 型検査器が**同じ名前型の 3 つの綴りを
-  統一しない**。parser は位置によって `Identifier(N)` (裸) /
-  `Struct(N, args)` (`N<args>` は何であれこれ) / `Enum(N, args)` を
-  出すが、generic 推論の `unify_types` にそれらを突き合わせる arm が
-  無い。結果:
-  (a) generic struct のフィールドが**別の名前型**だと落ちる —
-  `struct Cell<T> { value: T, p: Point }` が
-  `Cannot unify Identifier(Point) with Struct(Point, [])`
-  (enum フィールドでも同じ、非 generic struct なら通る)、
-  (b) generic enum を跨ぐ generic 関数 —
-  `unwrap_or(a: Option<T>, d: T)` に `Option<Option<i64>>` を渡すと
-  `already bound to Enum(Option, [i64]), cannot bind to
-  Struct(Option, [i64])`。
-  frontend 単独の問題 (lowering には届かない)。1 arm で直る見込みだが、
-  名前の同一性をどこで決めるか (symbol だけか、kind も見るか) を
-  決める必要がある。
 - **FROM-INTO-ENUM-ERR** ★ — enum エラー型への `From` 変換 (`?` の cross-error 経路) が interpreter のみ。AOT/JIT が enum の associated call (`MyErr::from(e)`) を lower できないため。struct エラー型は 3 バックエンドで動く。
 - **NUM-W-AOT-pack Phase 3** ★ — compound element 配列の tighter layout (`[PackedRgba; N]` が 4 バイト相当のところ 32 バイト消費)。メモリ効率のみで機能差はない。
 - **195b. `extern fn` の monomorph 化** ★ — generic extern は現状 interpreter の type-erased registry でのみ動く。JIT / AOT には mangled symbol の emit と Rust 側実装の登録が要る。実需要なし。
@@ -940,7 +941,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2122 テスト** (100% 成功、2026-08-23 時点)。
+- 合計 **2128 テスト** (100% 成功、2026-08-23 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、

@@ -387,7 +387,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
 
-        let mut substitutions = match self.type_inference.solve_constraints() {
+        let mut substitutions = match self.type_inference.solve_constraints(self.core.string_interner) {
             Ok(solution) => solution,
             Err(e) => {
                 self.type_inference.pop_generic_scope();

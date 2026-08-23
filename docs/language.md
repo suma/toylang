@@ -3837,18 +3837,6 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   backend. The remaining gap is that same shape on a
   *user-defined* generic enum. See
   [Closures → Backend coverage](#closures).
-- **A generic struct whose field names another type does not
-  type-check** — `struct Cell<T> { value: T, p: Point }` fails with
-  ``Cannot unify Identifier(Point) with Struct(Point, [])``, and the
-  same for an enum-typed field. The parser spells a named type three
-  ways depending on where it appears (`Identifier(N)` bare,
-  `Struct(N, args)` for any `N<args>`, `Enum(N, args)` once resolved)
-  and the generic-inference unifier does not reconcile them, so the
-  constraint over the field's declared type never solves. It bites
-  generic functions over generic enums too — passing an `Option<T>`
-  where the callee wrote `Option<T>` can raise
-  ``already bound to Enum(Option, [i64]), cannot bind to
-  Struct(Option, [i64])``. Non-generic structs are unaffected.
 - **No `else if`** — use `elif`.
 - **`null` is reserved and rejected** — the literal still parses, so
   that it can be diagnosed rather than read as an identifier, but the

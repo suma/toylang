@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use string_interner::DefaultSymbol;
+use string_interner::{DefaultStringInterner, DefaultSymbol};
 use crate::ast::ExprRef;
 use crate::type_decl::TypeDecl;
 
@@ -238,12 +238,15 @@ impl TypeInferenceState {
     }
     
     /// Solve all constraints using unification algorithm
-    pub fn solve_constraints(&mut self) -> Result<HashMap<DefaultSymbol, TypeDecl>, String> {
+    pub fn solve_constraints(
+        &mut self,
+        interner: &DefaultStringInterner,
+    ) -> Result<HashMap<DefaultSymbol, TypeDecl>, String> {
         let mut solution = self.partial_solutions.clone();
         let mut work_queue: VecDeque<TypeConstraint> = self.constraints.iter().cloned().collect();
         
         while let Some(constraint) = work_queue.pop_front() {
-            match self.unify_types(&constraint.left, &constraint.right, &mut solution) {
+            match self.unify_types(&constraint.left, &constraint.right, &mut solution, interner) {
                 Ok(new_constraints) => {
                     // Add any new constraints generated during unification
                     for new_constraint in new_constraints {
@@ -259,17 +262,139 @@ impl TypeInferenceState {
         Ok(solution)
     }
     
+    /// Interned text of a symbol, for diagnostics. Formatting a
+    /// `DefaultSymbol` with `{:?}` prints `SymbolU32 { value: 41 }`,
+    /// which has bitten this file's messages before.
+    fn name_of(sym: DefaultSymbol, interner: &DefaultStringInterner) -> String {
+        interner.resolve(sym).unwrap_or("<unknown>").to_string()
+    }
+
+    /// The name and type arguments of a **named** type, whichever way
+    /// it happens to be spelled.
+    ///
+    /// One user type reaches the unifier under three spellings,
+    /// because the parser cannot tell the kinds apart at a type
+    /// position: a bare name is `Identifier(N)`, anything written
+    /// `N<args>` is `Struct(N, args)` whether `N` is a struct or an
+    /// enum, and the type checker rewrites to `Enum(N, args)` once it
+    /// has resolved the name. A struct field declared `p: Point`
+    /// therefore arrives as `Identifier(Point)` while the literal
+    /// initialising it types as `Struct(Point, [])` — the same type,
+    /// which the unifier used to reject.
+    ///
+    /// Identity is the symbol alone. That is what the rest of the
+    /// pipeline already assumes: the parser writes `Struct(N, args)`
+    /// for an enum, and the lowering keeps structs and enums in
+    /// separate tables keyed by name, so a program with both a struct
+    /// and an enum called `Foo` is already ambiguous before reaching
+    /// here.
+    fn named_type_parts(td: &TypeDecl) -> Option<(DefaultSymbol, &[TypeDecl])> {
+        match td {
+            TypeDecl::Identifier(name) => Some((*name, &[])),
+            TypeDecl::Struct(name, args) | TypeDecl::Enum(name, args) => {
+                Some((*name, args.as_slice()))
+            }
+            _ => None,
+        }
+    }
+
+    /// How much a spelling of a named type pins down: a bare
+    /// `Identifier` says only the name, `Struct` adds the type
+    /// arguments, `Enum` also says which kind it is. Non-named types
+    /// rank above all of them — nothing should replace them.
+    fn spelling_rank(td: &TypeDecl) -> u8 {
+        match td {
+            TypeDecl::Identifier(_) => 0,
+            TypeDecl::Struct(_, _) => 1,
+            TypeDecl::Enum(_, _) => 2,
+            _ => 3,
+        }
+    }
+
+    /// Structural equality that reads the three spellings of a named
+    /// type as one. Containers recurse so a difference nested inside
+    /// (`Vec<Point>` against `Vec<Point>` spelled differently, or a
+    /// tuple holding one) is seen through; everything else compares
+    /// as it did before.
+    fn same_type_modulo_spelling(a: &TypeDecl, b: &TypeDecl) -> bool {
+        if a == b {
+            return true;
+        }
+        if let (Some((a_name, a_args)), Some((b_name, b_args))) =
+            (Self::named_type_parts(a), Self::named_type_parts(b))
+        {
+            return a_name == b_name
+                && a_args.len() == b_args.len()
+                && a_args
+                    .iter()
+                    .zip(b_args.iter())
+                    .all(|(x, y)| Self::same_type_modulo_spelling(x, y));
+        }
+        match (a, b) {
+            (TypeDecl::Tuple(xs), TypeDecl::Tuple(ys)) => {
+                xs.len() == ys.len()
+                    && xs
+                        .iter()
+                        .zip(ys.iter())
+                        .all(|(x, y)| Self::same_type_modulo_spelling(x, y))
+            }
+            (TypeDecl::Array(xs, nx), TypeDecl::Array(ys, ny)) => {
+                nx == ny
+                    && xs.len() == ys.len()
+                    && xs
+                        .iter()
+                        .zip(ys.iter())
+                        .all(|(x, y)| Self::same_type_modulo_spelling(x, y))
+            }
+            (TypeDecl::Dict(ka, va), TypeDecl::Dict(kb, vb)) => {
+                Self::same_type_modulo_spelling(ka, kb)
+                    && Self::same_type_modulo_spelling(va, vb)
+            }
+            (
+                TypeDecl::Ref { is_mut: ma, inner: ia },
+                TypeDecl::Ref { is_mut: mb, inner: ib },
+            ) => ma == mb && Self::same_type_modulo_spelling(ia, ib),
+            (TypeDecl::Function(pa, ra), TypeDecl::Function(pb, rb)) => {
+                pa.len() == pb.len()
+                    && pa
+                        .iter()
+                        .zip(pb.iter())
+                        .all(|(x, y)| Self::same_type_modulo_spelling(x, y))
+                    && Self::same_type_modulo_spelling(ra, rb)
+            }
+            _ => false,
+        }
+    }
+
     /// Unify two types, returning new constraints if needed
-    fn unify_types(&self, left: &TypeDecl, right: &TypeDecl, solution: &mut HashMap<DefaultSymbol, TypeDecl>) -> Result<Vec<TypeConstraint>, String> {
+    fn unify_types(
+        &self,
+        left: &TypeDecl,
+        right: &TypeDecl,
+        solution: &mut HashMap<DefaultSymbol, TypeDecl>,
+        interner: &DefaultStringInterner,
+    ) -> Result<Vec<TypeConstraint>, String> {
         match (left, right) {
             // Generic parameter unification
             (TypeDecl::Generic(param), concrete_type) | (concrete_type, TypeDecl::Generic(param)) => {
                 if let Some(existing) = solution.get(param) {
-                    if existing != concrete_type {
+                    // Not `!=`: the same named type reaches us under
+                    // several spellings (see `named_type_parts`), so a
+                    // parameter bound to `Enum(Option, [i64])` must
+                    // still accept `Struct(Option, [i64])`.
+                    if !Self::same_type_modulo_spelling(existing, concrete_type) {
                         return Err(format!(
-                            "Conflicting type constraint: {:?} already bound to {:?}, cannot bind to {:?}",
-                            param, existing, concrete_type
+                            "Conflicting type constraint: `{}` already bound to `{}`, cannot bind to `{}`",
+                            Self::name_of(*param, interner),
+                            existing.spell_with(Some(interner)),
+                            concrete_type.spell_with(Some(interner)),
                         ));
+                    }
+                    // Keep whichever spelling says the most, so the
+                    // substitution downstream does not depend on the
+                    // order the constraints happened to arrive in.
+                    if Self::spelling_rank(concrete_type) > Self::spelling_rank(existing) {
+                        solution.insert(*param, concrete_type.clone());
                     }
                 } else {
                     solution.insert(*param, concrete_type.clone());
@@ -326,7 +451,11 @@ impl TypeInferenceState {
             // Struct type unification
             (TypeDecl::Struct(left_name, left_params), TypeDecl::Struct(right_name, right_params)) => {
                 if left_name != right_name {
-                    return Err(format!("Cannot unify struct {:?} with struct {:?}", left_name, right_name));
+                    return Err(format!(
+                        "Cannot unify struct `{}` with struct `{}`",
+                        Self::name_of(*left_name, interner),
+                        Self::name_of(*right_name, interner),
+                    ));
                 }
                 if left_params.len() != right_params.len() {
                     return Err(format!("Struct type parameter count mismatch: {} vs {}", left_params.len(), right_params.len()));
@@ -342,6 +471,43 @@ impl TypeInferenceState {
                 Ok(new_constraints)
             }
 
+            // Two spellings of one named type — see
+            // `named_type_parts`. The struct/struct case above keeps
+            // its own arm because its diagnostics are more specific;
+            // this one catches the mixed pairs (`Identifier(Point)`
+            // against `Struct(Point, [])`, `Struct(Option, [i64])`
+            // against `Enum(Option, [i64])`).
+            _ if Self::named_type_parts(left).is_some()
+                && Self::named_type_parts(right).is_some() =>
+            {
+                let (left_name, left_args) = Self::named_type_parts(left).unwrap();
+                let (right_name, right_args) = Self::named_type_parts(right).unwrap();
+                if left_name != right_name {
+                    return Err(format!(
+                        "Cannot unify type `{}` with type `{}`",
+                        Self::name_of(left_name, interner),
+                        Self::name_of(right_name, interner),
+                    ));
+                }
+                if left_args.len() != right_args.len() {
+                    return Err(format!(
+                        "Type `{}` expects {} type argument(s), got {}",
+                        Self::name_of(left_name, interner),
+                        left_args.len(),
+                        right_args.len(),
+                    ));
+                }
+                Ok(left_args
+                    .iter()
+                    .zip(right_args.iter())
+                    .map(|(l, r)| TypeConstraint {
+                        left: l.clone(),
+                        right: r.clone(),
+                        context: ConstraintContext::Generic,
+                    })
+                    .collect())
+            }
+
             // Identical types unify trivially
             (left_type, right_type) if left_type == right_type => Ok(Vec::new()),
 
@@ -355,7 +521,11 @@ impl TypeInferenceState {
             }
             
             // Type mismatch
-            _ => Err(format!("Cannot unify {:?} with {:?}", left, right)),
+            _ => Err(format!(
+                "Cannot unify `{}` with `{}`",
+                left.spell_with(Some(interner)),
+                right.spell_with(Some(interner)),
+            )),
         }
     }
     
@@ -424,7 +594,7 @@ mod tests {
             ConstraintContext::Generic
         );
         
-        let solution = inference.solve_constraints().expect("Should solve successfully");
+        let solution = inference.solve_constraints(&interner).expect("Should solve successfully");
         assert_eq!(solution.get(&t_param), Some(&TypeDecl::UInt64));
     }
 
@@ -442,7 +612,7 @@ mod tests {
             ConstraintContext::Generic
         );
         
-        let solution = inference.solve_constraints().expect("Should solve successfully");
+        let solution = inference.solve_constraints(&interner).expect("Should solve successfully");
         assert_eq!(solution.get(&t_param), Some(&TypeDecl::Int64));
     }
 
@@ -465,7 +635,7 @@ mod tests {
             ConstraintContext::Generic
         );
         
-        let result = inference.solve_constraints();
+        let result = inference.solve_constraints(&interner);
         assert!(result.is_err(), "Should fail due to conflicting constraints");
     }
 
@@ -484,7 +654,7 @@ mod tests {
             ConstraintContext::Generic
         );
         
-        let solution = inference.solve_constraints().expect("Should solve successfully");
+        let solution = inference.solve_constraints(&interner).expect("Should solve successfully");
         assert_eq!(solution.get(&t_param), Some(&TypeDecl::UInt64));
         assert_eq!(solution.get(&u_param), Some(&TypeDecl::Bool));
     }
@@ -517,6 +687,7 @@ mod tests {
     #[test]
     fn test_number_type_unification() {
         let mut inference = TypeInferenceState::new();
+        let interner = DefaultStringInterner::new();
         
         // Number should unify with numeric types
         inference.add_constraint(
@@ -525,7 +696,7 @@ mod tests {
             ConstraintContext::Generic
         );
         
-        let solution = inference.solve_constraints().expect("Should solve successfully");
+        let solution = inference.solve_constraints(&interner).expect("Should solve successfully");
         // Number doesn't create bindings itself, just validates compatibility
         assert!(solution.is_empty());
     }
@@ -548,7 +719,7 @@ mod tests {
             }
         );
         
-        let solution = inference.solve_constraints().expect("Should solve successfully");
+        let solution = inference.solve_constraints(&interner).expect("Should solve successfully");
         assert_eq!(solution.get(&t_param), Some(&TypeDecl::String));
     }
 }

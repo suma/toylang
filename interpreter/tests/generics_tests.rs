@@ -1845,6 +1845,137 @@ mod edge_cases {
 // =====================================================================
 // Module: errors - Error handling tests (from generic_struct_error_tests.rs)
 // =====================================================================
+/// TYPE-NAME-SPELLING: one named type reaches the unifier under three
+/// spellings — `Identifier(N)` for a bare name, `Struct(N, args)` for
+/// anything written `N<args>` (the parser cannot tell the kinds
+/// apart), and `Enum(N, args)` once the checker resolves it. The
+/// generic-inference unifier read them as different types, so a
+/// generic declaration whose field or parameter named *another* user
+/// type failed to type-check.
+mod named_type_spelling {
+    use crate::common::test_program;
+    use interpreter::object::Object;
+
+    fn expect_u64(source: &str, want: u64) {
+        let result = test_program(source).expect("program should type-check and run");
+        let got = match &*result.borrow() {
+            Object::UInt64(v) => *v,
+            other => panic!("expected UInt64, got {other:?}"),
+        };
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn a_generic_struct_may_have_a_struct_typed_field() {
+        // `p: Point` is `Identifier(Point)`; the literal initialising
+        // it types as `Struct(Point, [])`. Nothing generic about the
+        // field — only the *enclosing* struct is generic, which is
+        // what routes the field through constraint solving.
+        expect_u64(
+            r#"
+            struct Point { x: i64 }
+            struct Cell<T> { value: T, p: Point }
+
+            fn main() -> u64 {
+                val g: Cell<i64> = Cell { value: 8i64, p: Point { x: 1i64 } }
+                (g.value + g.p.x) as u64
+            }
+            "#,
+            9,
+        );
+    }
+
+    #[test]
+    fn a_generic_struct_may_have_an_enum_typed_field() {
+        expect_u64(
+            r#"
+            enum Color { Red, Green, Blue }
+            struct Cell<T> { value: T, color: Color }
+
+            fn main() -> u64 {
+                val g: Cell<i64> = Cell { value: 8i64, color: Color::Green }
+                val n = match g.color {
+                    Color::Red => 1i64,
+                    Color::Green => 2i64,
+                    Color::Blue => 3i64,
+                }
+                (g.value + n) as u64
+            }
+            "#,
+            10,
+        );
+    }
+
+    #[test]
+    fn a_generic_parameter_binds_through_two_spellings_of_one_enum() {
+        // `T` is bound from `o: Option<T>` against an argument typed
+        // `Enum(Option, [i64])`, then again from `d: T` against one
+        // the parser spelled `Struct(Option, [i64])`. Same type, so
+        // the second binding must not conflict.
+        expect_u64(
+            r#"
+            fn unwrap_or<T>(o: Option<T>, d: T) -> T {
+                match o {
+                    Option::Some(v) => v,
+                    Option::None => d,
+                }
+            }
+
+            fn main() -> u64 {
+                val inner: Option<u64> = Option::Some(5u64)
+                val nested: Option<Option<u64>> = Option::Some(inner)
+                val fallback: Option<u64> = Option::None
+                val got: Option<u64> = unwrap_or(nested, fallback)
+                unwrap_or(got, 0u64)
+            }
+            "#,
+            5,
+        );
+    }
+
+    #[test]
+    fn a_different_type_in_the_same_position_is_still_rejected() {
+        // The relaxation is about spelling, not about identity: two
+        // different names must not unify.
+        let source = r#"
+            struct Point { x: i64 }
+            struct Other { y: i64 }
+            struct Cell<T> { value: T, p: Point }
+
+            fn main() -> u64 {
+                val g: Cell<i64> = Cell { value: 8i64, p: Other { y: 1i64 } }
+                g.value as u64
+            }
+        "#;
+        let err = test_program(source).expect_err("Other is not Point");
+        assert!(
+            err.contains("Point") && err.contains("Other"),
+            "the diagnostic should name both types, got: {err}"
+        );
+    }
+
+    #[test]
+    fn one_parameter_still_cannot_take_two_type_arguments() {
+        // `Option<i64>` and `Option<u64>` share a name and an arity,
+        // so they reach the argument comparison — which must reject.
+        let source = r#"
+            fn same<T>(a: T, b: T) -> T { a }
+
+            fn main() -> u64 {
+                val x: Option<i64> = Option::Some(1i64)
+                val y: Option<u64> = Option::Some(2u64)
+                val z: Option<i64> = same(x, y)
+                0u64
+            }
+        "#;
+        let err = test_program(source).expect_err("Option<i64> is not Option<u64>");
+        assert!(
+            err.contains("Option<i64>") && err.contains("Option<u64>"),
+            "the diagnostic should spell both instantiations, got: {err}"
+        );
+    }
+}
+
 mod errors {
     use crate::common::test_program;
 

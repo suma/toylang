@@ -10380,3 +10380,35 @@ fn a_struct_pattern_can_name_an_enum_variant_in_a_field() {
     // 4 + 40
     assert_consistent(src, "struct_pattern_enum_field");
 }
+
+#[test]
+fn a_generic_struct_may_name_another_type_in_a_field() {
+    // TYPE-NAME-SPELLING: the field's declared type arrives as
+    // `Identifier(Point)` / `Identifier(Color)` while the literal
+    // initialising it types as `Struct(Point, [])` / `Enum(Color, [])`.
+    // The generic-inference unifier read those as different types, so
+    // the whole declaration failed to type-check — on every backend,
+    // since this is a frontend pass.
+    let src = r#"
+        struct Point { x: i64 }
+        enum Color { Red, Green, Blue }
+
+        struct Cell<T> {
+            value: T,
+            p: Point,
+            color: Color,
+        }
+
+        fn main() -> i64 {
+            val g: Cell<i64> = Cell { value: 8i64, p: Point { x: 1i64 }, color: Color::Green }
+            val n: i64 = match g.color {
+                Color::Red => 100i64,
+                Color::Green => 200i64,
+                Color::Blue => 300i64,
+            }
+            g.value + g.p.x + n
+        }
+    "#;
+    // 8 + 1 + 200
+    assert_consistent(src, "generic_struct_named_field");
+}

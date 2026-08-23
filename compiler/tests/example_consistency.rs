@@ -87,8 +87,6 @@ const AOT_UNSUPPORTED: &[&str] = &[
     "jit_heap.t",
     "jit_nested_tuple_fallback.t",
     "jit_panic_expr.t",
-    "jit_tuple_inline_arg.t",
-    "match_guard.t",
     // Same reasons as `contracts.t`: `requires` / `ensures`, plus
     // `assert_eq`, which lowers to a panic whose message is built at
     // runtime rather than being a literal.
@@ -98,7 +96,6 @@ const AOT_UNSUPPORTED: &[&str] = &[
     "panic.t",
     "print_demo.t",
     "tuple_destructure_nested.t",
-    "tuple_destructure.t",
 ];
 
 /// Examples that make a backend panic rather than fail cleanly. Each

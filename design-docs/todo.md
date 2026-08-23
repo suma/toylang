@@ -11,6 +11,17 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-23
+- **CALL-ARG-COMPOUND-LITERAL: compound literal を call 引数に直接渡せるように** —
+  `f(Point { x: 1i64, y: 2i64 })` / `f((1i64, 2i64))` / `g.shifted(Point { .. })` /
+  `Grid::make(Point { .. })` が 3 backend で通る。compound は 1 値として SSA を
+  流れず leaf ごとの local に住むので、literal を leaf local に materialize して
+  その値を渡す (compound *binding* 引数は元からそうしていた)。
+  monomorph は callee の**引数スロットの型**から採る (literal の名前だけでは
+  `Cell<i64>` と `Cell<bool>` を区別できない)。スロットが literal と食い違う
+  ときは名前ベースに落ちるので、receiver / closure env による index ずれが
+  誤った shape を作ることはない。`AOT_UNSUPPORTED` から
+  `jit_tuple_inline_arg.t` / `match_guard.t` / `tuple_destructure.t` が外れ、
+  `match_struct.t` / `match_tuple.t` の回避策も戻した。
 - **STRUCT-FIELD-GENERIC-ENUM: struct のフィールドに enum を書けるようにした** —
   原因は 2 つで、generic とは無関係だった: (1) フィールド型の検証が
   `struct_definitions` しか見ていなかった (enum は別表)、(2) struct は
@@ -695,12 +706,7 @@
 ### バックエンドのカバレッジ
 
 - **159. JIT の generic struct 対応** ★★ — `struct_layouts` を type-args 別に持つ refactor。踏むと `JIT: skipped (... see #159)` が出るので診断から辿れる (`jit_skip_reason_for_generic_struct` で wording を pin)。generic enum payload 経由の trait-bounded generic API (`fn first<I: Iter<i64>>(..)`) が AOT で通らないのもここが原因。
-- **CALL-ARG-COMPOUND-LITERAL: compound literal を call 引数に直接渡せない** ★ —
-  `f(Point { x: 1i64, y: 2i64 })` / `f((1i64, 2i64))` が AOT で
-  `call argument produced no value`。**先に `val` に束縛すれば通る**。
-  パターンとは無関係で、match 抜きでも再現する (2026-08-23 に切り分け)。
-  #160 の「inline tuple literal を call 引数に渡す件」と同じもの。
-- **160. タプルの JIT 対応 (ネスト)** ★ — `((a,b),c)` と tuple-of-struct。`ParamTy::Tuple(Vec<ScalarTy>)` を tree 構造にする 100+ 箇所の refactor。inline tuple literal を call 引数に渡す件も残り。
+- **160. タプルの JIT 対応 (ネスト)** ★ — `((a,b),c)` と tuple-of-struct。`ParamTy::Tuple(Vec<ScalarTy>)` を tree 構造にする 100+ 箇所の refactor。(inline tuple literal を call 引数に渡す件は 2026-08-23 に CALL-ARG-COMPOUND-LITERAL で解消)
 - **JIT-enum-1 (residual)** ★★ — ネストした generic enum payload (`Option<Option<T>>`)、**enum 型の struct field**、payload に struct / tuple を持つ enum。
   enum 型の struct field は 2026-08-23 に**型検査が通るようになった**ので
   (STRUCT-FIELD-GENERIC-ENUM) 踏みやすくなった。本体は `FieldShape` に
@@ -884,7 +890,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2107 テスト** (100% 成功、2026-08-23 時点)。
+- 合計 **2117 テスト** (100% 成功、2026-08-23 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、

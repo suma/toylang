@@ -3845,11 +3845,6 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   ``compiler MVP cannot hold an enum in struct field `Painted.color` ``.
   Holding the enum in a separate binding, or reducing it to a scalar
   before it enters the struct, keeps a program on all three backends.
-- **A compound literal cannot be passed straight into a call** —
-  `f(Point { x: 1i64, y: 2i64 })` and `f((1i64, 2i64))` fail to
-  compile with `call argument produced no value`. Bind the value
-  first (`val p = Point { .. }` then `f(p)`). Unrelated to patterns —
-  it happens with or without a `match`.
 - **No `else if`** — use `elif`.
 - **`null` is reserved and rejected** — the literal still parses, so
   that it can be diagnosed rather than read as an identifier, but the

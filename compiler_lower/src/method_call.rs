@@ -821,7 +821,7 @@ impl<'a> FunctionLower<'a> {
                 self.interner.resolve(method).unwrap_or("?"),
             ));
         }
-        let values = self.build_method_call_values(&binding, args)?;
+        let values = self.build_method_call_values(&binding, args, target)?;
         // Stage 1 of `&` references: if the method is `&mut self`,
         // emit `CallWithSelfWriteback` so the cranelift call's
         // trailing self-leaf return values are stored back into
@@ -1059,8 +1059,15 @@ impl<'a> FunctionLower<'a> {
         &mut self,
         binding: &Binding,
         args: &Vec<ExprRef>,
+        target: crate::ir::FuncId,
     ) -> Result<Vec<ValueId>, String> {
         let mut values: Vec<ValueId> = Vec::new();
+        // The callee's declared parameter types, receiver leaves
+        // included — a compound literal argument follows the one at
+        // its own slot to pick the right monomorphisation. The
+        // offset is worked out below, once the receiver's leaves are
+        // on `values`.
+        let param_tys: Vec<Type> = self.module.function(target).params.clone();
         match binding {
             Binding::Struct { fields, .. } => {
                 let leaves = flatten_struct_locals(fields);
@@ -1078,7 +1085,7 @@ impl<'a> FunctionLower<'a> {
             }
             _ => unreachable!("receiver shape already validated"),
         }
-        for a in args {
+        for (arg_idx, a) in args.iter().enumerate() {
             // REF-Stage-2: scalar `&` / `&mut` borrow of a local
             // emits an `AddressOf` (with the local marked
             // address-taken so codegen places it in a stack slot).
@@ -1210,6 +1217,18 @@ impl<'a> FunctionLower<'a> {
                     values.extend(vs);
                     continue;
                 }
+            }
+            // CALL-ARG-COMPOUND-LITERAL: `g.shifted(Point { .. })`.
+            // `params` carries one entry per declared parameter, and
+            // the receiver is always the first of them (prepended for
+            // an implicit `&self`, written out for `self: Self`), so
+            // this argument's slot is `1 + arg_idx`. A slot that does
+            // not match the literal is ignored rather than trusted —
+            // see `lower_compound_literal_arg`.
+            let param_ty = param_tys.get(1 + arg_idx).copied();
+            if let Some(leaves) = self.lower_compound_literal_arg(param_ty, &arg_expr_ref)? {
+                values.extend(leaves);
+                continue;
             }
             let v = self
                 .lower_expr(&arg_expr_ref)?

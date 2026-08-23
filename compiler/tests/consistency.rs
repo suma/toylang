@@ -10157,3 +10157,90 @@ fn or_patterns_in_sub_positions_agree_across_backends() {
     "#;
     assert_consistent(src, "or_patterns_in_sub_positions");
 }
+
+// CALL-ARG-COMPOUND-LITERAL: a struct / tuple literal written straight
+// into an argument. A compound never flows through SSA as one value —
+// it lives in one local per leaf — so the literal has to be
+// materialised into leaf locals at the call site, which is what
+// binding it to a `val` first used to do by hand.
+
+#[test]
+fn struct_literal_call_arguments_agree_across_backends() {
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        struct Box2 { lo: Point, hi: Point }
+
+        fn sum(p: Point) -> i64 { p.x + p.y }
+        fn span(b: Box2) -> i64 { b.hi.x - b.lo.x + b.hi.y - b.lo.y }
+        fn both(p: Point, q: Point) -> i64 { sum(p) + sum(q) }
+        fn mixed(n: i64, p: Point, flag: bool) -> i64 {
+            if flag { n + sum(p) } else { n }
+        }
+
+        fn main() -> i64 {
+            sum(Point { x: 1i64, y: 2i64 })
+                + span(Box2 { lo: Point { x: 0i64, y: 0i64 }, hi: Point { x: 3i64, y: 4i64 } })
+                + both(Point { x: 1i64, y: 1i64 }, Point { x: 2i64, y: 2i64 })
+                + mixed(10i64, Point { x: 1i64, y: 2i64 }, true)
+        }
+    "#;
+    assert_consistent(src, "struct_literal_call_arguments");
+}
+
+#[test]
+fn tuple_literal_call_arguments_agree_across_backends() {
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+
+        fn pair(t: (i64, i64)) -> i64 { t.0 * t.1 }
+        fn sum(p: Point) -> i64 { p.x + p.y }
+        fn nested(t: (i64, i64), p: Point) -> i64 { pair(t) + sum(p) }
+
+        fn main() -> i64 {
+            pair((3i64, 4i64)) + nested((2i64, 5i64), Point { x: 1i64, y: 1i64 })
+        }
+    "#;
+    assert_consistent(src, "tuple_literal_call_arguments");
+}
+
+#[test]
+fn generic_struct_literal_argument_follows_the_parameter_slot() {
+    // The literal's own name cannot pick between `Cell<i64>` and
+    // `Cell<bool>`; the callee's declared parameter type does. Both
+    // monomorphisations in one program is what pins that.
+    let src = r#"
+        struct Cell<T> { value: T }
+
+        fn take_i64(c: Cell<i64>) -> i64 { c.value }
+        fn take_bool(c: Cell<bool>) -> bool { c.value }
+
+        fn main() -> i64 {
+            val flag: bool = take_bool(Cell { value: true })
+            if flag { take_i64(Cell { value: 7i64 }) } else { 0i64 }
+        }
+    "#;
+    assert_consistent(src, "generic_struct_literal_argument");
+}
+
+#[test]
+fn compound_literal_arguments_to_methods_agree_across_backends() {
+    // The method path indexes the callee's parameters past the
+    // receiver, so a wrong offset here would build the wrong shape.
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        struct Grid { origin: Point }
+
+        impl Grid {
+            fn make(o: Point) -> Self { Grid { origin: o } }
+            fn shifted(self: Self, by: Point) -> i64 {
+                self.origin.x + by.x + self.origin.y + by.y
+            }
+        }
+
+        fn main() -> i64 {
+            val g: Grid = Grid::make(Point { x: 1i64, y: 2i64 })
+            g.shifted(Point { x: 10i64, y: 20i64 })
+        }
+    "#;
+    assert_consistent(src, "compound_literal_method_arguments");
+}

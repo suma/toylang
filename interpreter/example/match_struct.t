@@ -47,15 +47,9 @@ fn total(o: Outer) -> i64 {
 }
 
 fn main() -> u64 {
-    # The values are bound first because passing a struct literal
-    # straight into a call is a separate compiler-MVP gap, unrelated
-    # to patterns.
-    val origin = Point { x: 0i64, y: 0i64 }
-    val on_x = Point { x: 3i64, y: 0i64 }
-    val elsewhere = Point { x: 3i64, y: 4i64 }
-    println(quadrant(origin))
-    println(quadrant(on_x))
-    println(quadrant(elsewhere))
+    println(quadrant(Point { x: 0i64, y: 0i64 }))
+    println(quadrant(Point { x: 3i64, y: 0i64 }))
+    println(quadrant(Point { x: 3i64, y: 4i64 }))
 
     val cfg = Config { host: "a", port: 8080i64, debug: true }
     val nested = Outer { inner: Inner { v: 3i64 }, tag: 5i64 }

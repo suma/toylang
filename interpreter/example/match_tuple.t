@@ -16,12 +16,8 @@ fn classify(p: (u64, u64)) -> u64 {
 }
 
 fn main() -> u64 {
-    # Bound rather than passed inline: a tuple literal straight into a
-    # call is a separate compiler-MVP gap (#160), unrelated to the
-    # patterns this example is about.
-    val zeros = (0u64, 0u64)
-    val first_zero = (0u64, 5u64)
-    val second_zero = (9u64, 0u64)
-    val neither = (3u64, 4u64)
-    classify(zeros) + classify(first_zero) + classify(second_zero) + classify(neither)
+    classify((0u64, 0u64))
+        + classify((0u64, 5u64))
+        + classify((9u64, 0u64))
+        + classify((3u64, 4u64))
 }

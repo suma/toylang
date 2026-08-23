@@ -23,6 +23,7 @@ use string_interner::DefaultSymbol;
 
 use super::bindings::{
     flatten_struct_locals, flatten_tuple_element_locals, Binding, EnumStorage, PayloadSlot,
+    TupleElementBinding,
 };
 use super::FunctionLower;
 use crate::ir::{BinOp, Const, EnumId, InstKind, Terminator, Type, ValueId};
@@ -689,6 +690,105 @@ impl<'a> FunctionLower<'a> {
     /// failed with "associated-function arg produced no value". That
     /// ruled out `Box::new(v)` for exactly the compound `v` the type
     /// exists to hold.
+    /// CALL-ARG-COMPOUND-LITERAL: a struct / tuple literal written
+    /// straight into an argument (`f(Point { x: 1i64, y: 2i64 })`,
+    /// `f((1i64, 2i64))`).
+    ///
+    /// A compound never flows through SSA as one value — it lives in
+    /// one local per leaf, and a call takes those leaves flattened.
+    /// A compound *binding* argument was already expanded that way;
+    /// a literal was not, so it reached `lower_expr`, which builds a
+    /// pending compound and returns no value — hence "call argument
+    /// produced no value", and the standing advice to bind the
+    /// literal to a `val` first. Here it materialises into fresh
+    /// leaf locals and the call takes their values, which is what
+    /// the `val` was doing by hand.
+    ///
+    /// `param_ty` is the callee's declared type for this slot when
+    /// the target is known; it picks the monomorphisation, which a
+    /// struct literal's own name cannot do for a generic struct. It
+    /// is only believed when it agrees with the literal in front of
+    /// us — same struct name, same element count — so a caller whose
+    /// slot indexing is off by an implicit receiver or a closure's
+    /// env pointer degrades to the by-name path rather than building
+    /// the wrong shape.
+    ///
+    /// Returns `Ok(None)` when the argument is not a compound
+    /// literal, so the caller falls through to its normal path.
+    pub(super) fn lower_compound_literal_arg(
+        &mut self,
+        param_ty: Option<Type>,
+        arg: &ExprRef,
+    ) -> Result<Option<Vec<ValueId>>, String> {
+        let expr = self
+            .program
+            .expression
+            .get(arg)
+            .ok_or_else(|| "call argument missing".to_string())?;
+        match expr {
+            Expr::StructLiteral(struct_name, _) => {
+                let struct_id = match param_ty {
+                    Some(Type::Struct(id))
+                        if self.module.struct_def(id).base_name == struct_name =>
+                    {
+                        id
+                    }
+                    _ => self.resolve_struct_instance(struct_name, None)?,
+                };
+                let fields = self.allocate_struct_fields(struct_id);
+                self.store_struct_value_into_fields(struct_id, &fields, arg)?;
+                Ok(Some(self.load_leaves(flatten_struct_locals(&fields))))
+            }
+            Expr::TupleLiteral(elems) => {
+                let declared = match param_ty {
+                    Some(Type::Tuple(id))
+                        if self
+                            .module
+                            .tuple_defs
+                            .get(id.0 as usize)
+                            .is_some_and(|d| d.len() == elems.len()) =>
+                    {
+                        Some(id)
+                    }
+                    _ => None,
+                };
+                let elements = match declared {
+                    Some(id) => self.allocate_tuple_elements(id)?,
+                    // No declared type to follow — infer each
+                    // element's own scalar type, as a tail-position
+                    // tuple literal does.
+                    _ => {
+                        let mut out: Vec<TupleElementBinding> = Vec::with_capacity(elems.len());
+                        for (i, e) in elems.iter().enumerate() {
+                            let ty = self.value_scalar(e).ok_or_else(|| {
+                                format!("tuple argument element #{i} has no inferable type")
+                            })?;
+                            let shape = self.allocate_tuple_element_shape(ty)?;
+                            out.push(TupleElementBinding { index: i, shape });
+                        }
+                        out
+                    }
+                };
+                self.store_tuple_value_into_elements(&elements, arg)?;
+                Ok(Some(
+                    self.load_leaves(flatten_tuple_element_locals(&elements)),
+                ))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// `LoadLocal` for each leaf, in the order a call expects them.
+    fn load_leaves(&mut self, leaves: Vec<(crate::ir::LocalId, Type)>) -> Vec<ValueId> {
+        leaves
+            .into_iter()
+            .map(|(local, ty)| {
+                self.emit(InstKind::LoadLocal(local), Some(ty))
+                    .expect("LoadLocal returns a value")
+            })
+            .collect()
+    }
+
     pub(super) fn lower_arg_values(&mut self, a: &ExprRef) -> Result<Vec<ValueId>, String> {
         if let Some(Expr::Identifier(sym)) = self.program.expression.get(a) {
             match self.bindings.get(&sym).cloned() {
@@ -718,6 +818,9 @@ impl<'a> FunctionLower<'a> {
                 _ => {}
             }
         }
+        if let Some(values) = self.lower_compound_literal_arg(None, a)? {
+            return Ok(values);
+        }
         let v = self
             .lower_expr(a)?
             .ok_or_else(|| "call argument produced no value".to_string())?;
@@ -740,6 +843,12 @@ impl<'a> FunctionLower<'a> {
     ) -> Result<Vec<ValueId>, String> {
         let param_is_ref: Vec<bool> = target
             .map(|t| self.module.function(t).param_is_ref.clone())
+            .unwrap_or_default();
+        // The callee's declared parameter types, when the target is
+        // known. A compound literal argument follows them to pick the
+        // right monomorphisation.
+        let param_tys: Vec<Type> = target
+            .map(|t| self.module.function(t).params.clone())
             .unwrap_or_default();
         // A5-P2: per-param dyn-trait identity. `Some(trait_sym)` means
         // the slot expects a fat pointer; the call site coerces a
@@ -1125,6 +1234,15 @@ impl<'a> FunctionLower<'a> {
                         values.push(v);
                         continue;
                     }
+            }
+            // CALL-ARG-COMPOUND-LITERAL: `f(Point { .. })` /
+            // `f((1i64, 2i64))` — build the literal into leaf locals
+            // and pass those, the same shape a compound binding gets.
+            if let Some(leaves) =
+                self.lower_compound_literal_arg(param_tys.get(arg_idx).copied(), &arg_expr_ref)?
+            {
+                values.extend(leaves);
+                continue;
             }
             // Note: pass the borrow-peeled ref so explicit `&v` /
             // `&mut v` lowers via the inner expr's normal path.

@@ -2254,6 +2254,9 @@ Patterns:
   identifiers, `_`, literals, or further nested variants
 - `_` — wildcard (catch-all)
 - `(p, q)` — tuple patterns (any arity ≥ 2)
+- `Type { field: p, ... }` — struct patterns; `{ x }` is shorthand for
+  `x: x`, and a trailing `..` ignores the fields not named (see
+  [Struct patterns](#struct-patterns))
 - `42i64`, `true`, `"hello"` — literal patterns for primitives
 - `a | b | c` — alternatives, all sharing one arm body
 - `lo..hi` — a half-open integer range
@@ -3773,6 +3776,11 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   backend. The remaining gap is that same shape on a
   *user-defined* generic enum. See
   [Closures → Backend coverage](#closures).
+- **A compound literal cannot be passed straight into a call** —
+  `f(Point { x: 1i64, y: 2i64 })` and `f((1i64, 2i64))` fail to
+  compile with `call argument produced no value`. Bind the value
+  first (`val p = Point { .. }` then `f(p)`). Unrelated to patterns —
+  it happens with or without a `match`.
 - **No `else if`** — use `elif`.
 - **`null` is reserved and rejected** — the literal still parses, so
   that it can be diagnosed rather than read as an identifier, but the

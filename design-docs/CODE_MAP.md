@@ -78,7 +78,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | パターン型検査 / 網羅性 / 到達性 | `type_checker/pattern_match.rs` |
 | or / 範囲 / `@` パターン (PATTERN-EXTEND) | `parser/expr/match_.rs::parse_match_pattern_alternatives` — 既存の arm / guard 形へ desugar するので型検査・バックエンドに専用の分岐は無い (AOT の top-level `Name` arm だけ `compiler_lower/src/match_lowering.rs`) |
 | match 実行 | `evaluation/expression.rs` |
-| match lowering + scrutinee 制約 | `compiler_lower/src/match_lowering.rs` |
+| match lowering + scrutinee 制約 | `compiler_lower/src/match_lowering.rs`。compound scrutinee (struct / tuple) は `classify_match_scrutinee` が `MatchScrutinee::Struct` / `Tuple` を返し、照合は `dispatch_struct_pattern` / `dispatch_tuple_pattern` / `dispatch_field_shape_pattern`。**arm body の型推論にも束縛が要る** (`bind_*_for_inference`) — 無いと result local が作られない |
 
 ## trait / dyn
 

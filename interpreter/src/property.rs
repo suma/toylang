@@ -207,15 +207,22 @@ enum Trial {
 }
 
 fn run_trial(
-    program: &File,
-    interner: &DefaultStringInterner,
+    shared: &crate::SharedRunData<'_>,
+    string_interner: &DefaultStringInterner,
     function: &Rc<Function>,
     args: &[Value],
 ) -> Trial {
     // A fresh context per trial: contracts can mutate globals and the
     // heap, and a counterexample that only reproduces after some other
-    // trial ran is not a counterexample anyone can act on.
-    let outcome = crate::execute_function_with_values(program, interner, function.clone(), args);
+    // trial ran is not a counterexample anyone can act on. The context
+    // shares the program-derived maps with every other trial (TEST-PERF:
+    // rebuilding them per trial costs ~600µs with the stdlib loaded).
+    let outcome = crate::execute_function_with_values_shared(
+        shared,
+        string_interner,
+        function.clone(),
+        args,
+    );
     match outcome {
         Ok(_) => Trial::Ok,
         Err(InterpreterError::ContractViolation { kind: "requires", .. }) => Trial::Discarded,
@@ -226,10 +233,12 @@ fn run_trial(
 /// Check every contracted function in `program`.
 pub fn check_program(
     program: &File,
-    interner: &DefaultStringInterner,
+    interner: &mut DefaultStringInterner,
     seed: u64,
     cases: usize,
 ) -> CheckReport {
+    let shared = crate::SharedRunData::new(program, interner)
+        .expect("shared run data should build for a type-checked program");
     let mut checks = Vec::new();
     for function in &program.function {
         let name = interner.resolve(function.name).unwrap_or("<unknown>").to_string();
@@ -237,7 +246,7 @@ pub fn check_program(
             continue;
         }
         checks.push(FunctionCheck {
-            outcome: check_function(program, interner, function, seed, cases),
+            outcome: check_function(&shared, interner, function, seed, cases),
             function: name,
         });
     }
@@ -245,7 +254,7 @@ pub fn check_program(
 }
 
 fn check_function(
-    program: &File,
+    shared: &crate::SharedRunData<'_>,
     interner: &DefaultStringInterner,
     function: &Rc<Function>,
     seed: u64,
@@ -292,11 +301,11 @@ fn check_function(
                 }
             }
         }
-        match run_trial(program, interner, function, &args) {
+        match run_trial(shared, interner, function, &args) {
             Trial::Ok => executed += 1,
             Trial::Discarded => discarded += 1,
             Trial::Failed(detail) => {
-                let (args, detail) = shrink_counterexample(program, interner, function, args, detail);
+                let (args, detail) = shrink_counterexample(shared, interner, function, args, detail);
                 let counterexample = function
                     .parameter
                     .iter()
@@ -321,7 +330,7 @@ fn check_function(
 /// nothing improves. Enough to turn machine noise into something a
 /// reader can hold in their head, which is the entire point.
 fn shrink_counterexample(
-    program: &File,
+    shared: &crate::SharedRunData<'_>,
     interner: &DefaultStringInterner,
     function: &Rc<Function>,
     mut args: Vec<Value>,
@@ -337,7 +346,7 @@ fn shrink_counterexample(
             for candidate in shrink(&args[i]) {
                 let mut trial_args = args.clone();
                 trial_args[i] = candidate;
-                if let Trial::Failed(d) = run_trial(program, interner, function, &trial_args) {
+                if let Trial::Failed(d) = run_trial(shared, interner, function, &trial_args) {
                     args = trial_args;
                     detail = d;
                     improved = true;
@@ -390,7 +399,7 @@ pub fn check_source(
     }
     Ok(check_program(
         &program,
-        session.string_interner(),
+        session.string_interner_mut(),
         seed,
         cases.unwrap_or(DEFAULT_CASES),
     ))

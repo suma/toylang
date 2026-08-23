@@ -24,6 +24,25 @@
   ネストした generic call も解消。`interpreter/example/jit_generic_struct_fn.t`
   (元 fixture) が 3 バックエンド掃引に載る (5 新テスト: struct / 2 パラメータ /
   enum / tuple / ネスト struct)。
+- **TEST-PERF-CHECK-TRIALS: `--check` の trial ごとの registry 再構築を共有化** —
+  `execute_function_with_values` (property の trial が 1 回 1 呼び出し) が
+  毎回 program 全体の function maps / method registry / enum・struct
+  registry / drop 収集を 0 から作っていた。core 込みで **~840µs/trial**
+  (core 無しの 12 倍、内訳: method registry 268 + eval 登録 203 +
+  enum/struct 141 + drop 101 + function maps 67µs)。`SharedRunData` を
+  新設して 1 回構築し、`EvaluationContext` の共有可能フィールド
+  (function / function_qualified / method_registry / enum・struct
+  definitions / drop_trait_structs / transferred_bindings) を
+  **Rc 化**して `new_with_shared` から Rc clone だけで参照 (書き込みは
+  `Rc::make_mut`、実行中は read-only)。通常実行
+  (`execute_entry_with_values`) も同じ共有データを経由するように
+  リファクタ (register_methods / enum・struct registry ループを
+  SharedRunData::new に統合 — 重複排除)。struct field 名の intern は
+  program interner に対して行い、trial の eval はその clone を所有
+  するので symbol は一致。実測: `a_pass_records_how_much_was_actually_tried`
+  **4.85s → 0.40s**、CLI `--check` (discard 4000) user **3.40s → 0.40s**、
+  `builtin_test_and_check_tests` 全体 **7.0s → 1.6s**。全 2128 テスト
+  グリーン + clippy 無警告。
 - **TYPE-NAME-SPELLING: 名前型の 3 つの綴りを統一** — parser は位置に
   よって `Identifier(N)` (裸) / `Struct(N, args)` (`N<args>` は struct でも
   enum でもこれ) / `Enum(N, args)` (型検査後) を出すのに、generic 推論の
@@ -898,6 +917,12 @@
   - **測って外れた仮説を 2 つ記録しておく**: (1) **デバッグ情報の削減は効かない** — `[profile.dev]` / `[profile.test]` に `debug = "line-tables-only"` を入れて 2m06s (対照 1m55s)、改善ゼロ。27MB の中身はデバッグ情報ではなく cranelift のコード。(2) **リンカ差し替え (lld) と Spotlight 除外は、上を片付けた後では測る意味がない** — 絶対値が 1〜2 秒台まで落ちているので削り代が残っていない。target が肥大していた頃の「リンクが遅い」という観察は、リンカの速度ではなくディレクトリ規模の問題だった。
 
 - **TEST-PERF** — ワークスペース全体で **~6.5s** (2026-08-19 実測、20 コア、warm、`cargo nextest run`、1999 テスト。AOT demand-driven lowering で 7.8s → ~6.5s)。**この suite は wall ではなく CPU 律速**: テスト時間の総和 (149.4s CPU は demand-driven lowering 前の値) / 20 コア が下限で、実測 wall はそこに張り付いている。**ビルド時間は別問題で、そちらの方が大きい — BUILD-PERF を見ること**。最長の単一テストも 2.11s (`example_consistency` shard_8) なので critical path 律速でもない。したがって**並列度を上げる策は効かず、効くのは CPU そのものを減らす策だけ。換算レートは 20:1** (CPU を 20s 削って wall 1s)。
+
+  2026-08-23: `--check` (property) の trial が毎回 program 全体の registry を
+  再構築していたのを共有化 (TEST-PERF-CHECK-TRIALS、完了済み節)。最長の
+  単一テストだった `a_pass_records_how_much_was_actually_tried` が
+  4.85s → 0.40s、`builtin_test_and_check_tests` が 7.0s → 1.6s (CPU)。
+  以降の数値は 2026-08-19 の測定。**負荷が低い状態での再計測待ち**。
 
   クレート別 CPU:
 

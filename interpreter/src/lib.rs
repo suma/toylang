@@ -29,7 +29,7 @@ pub const fn jit_available() -> bool {
 }
 
 use std::rc::Rc;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use frontend::ast::*;
 use frontend::type_checker::*;
 use frontend::diagnostic::Diagnostic;
@@ -646,6 +646,131 @@ fn build_function_map(program: &File, _string_interner: &DefaultStringInterner) 
     func_map
 }
 
+/// Program-derived, run-invariant data shared across property-check
+/// trials (TEST-PERF).
+///
+/// A trial executes one function with sampled arguments under a *fresh*
+/// evaluation context (contracts may mutate globals and the heap, so
+/// runs must not see each other). Building the function maps, the
+/// method registry and the enum / struct registries costs ~600µs with
+/// the stdlib loaded — several times the trial body itself — so this
+/// builds them once and [`EvaluationContext::new_with_shared`] clones
+/// only the `Rc`s. The maps are read-only during execution; writes go
+/// through `Rc::make_mut`, which materialises a private copy on first
+/// write and is a no-op for a context that is already sole owner.
+pub struct SharedRunData<'a> {
+    pub(crate) program: &'a File,
+    pub(crate) func_map: Rc<HashMap<DefaultSymbol, Rc<Function>>>,
+    pub(crate) func_qualified:
+        Rc<HashMap<(Option<DefaultSymbol>, DefaultSymbol), Rc<Function>>>,
+    pub(crate) method_registry:
+        Rc<HashMap<DefaultSymbol, HashMap<DefaultSymbol, Vec<crate::evaluation::MethodSpec>>>>,
+    pub(crate) drop_trait_structs: Rc<HashSet<DefaultSymbol>>,
+    pub(crate) enum_definitions: Rc<HashMap<DefaultSymbol, crate::evaluation::EnumRegistryEntry>>,
+    pub(crate) struct_definitions:
+        Rc<HashMap<DefaultSymbol, crate::evaluation::StructRegistryEntry>>,
+    pub(crate) transferred_bindings: Rc<HashSet<StmtRef>>,
+}
+
+impl<'a> SharedRunData<'a> {
+    /// Build every program-derived map once. Mirrors the per-run setup
+    /// of `execute_entry_with_values`; keep the two in sync.
+    ///
+    /// The interner is borrowed mutably for the duration of the build:
+    /// struct field names are interned here so the registry symbols
+    /// agree with what a trial's eval (owner of a clone of this
+    /// interner) produces at runtime.
+    pub fn new(
+        program: &'a File,
+        string_interner: &mut DefaultStringInterner,
+    ) -> Result<Self, String> {
+        let func_map = build_function_map(program, string_interner);
+        let func_qualified = build_function_qualified_map(program);
+        let collected = build_method_registry(program, string_interner)?;
+        let method_registry: HashMap<
+            DefaultSymbol,
+            HashMap<DefaultSymbol, Vec<crate::evaluation::MethodSpec>>,
+        > = collected
+            .into_iter()
+            .map(|(struct_symbol, methods)| {
+                (
+                    struct_symbol,
+                    methods
+                        .into_iter()
+                        .map(|(method_symbol, specs)| {
+                            (
+                                method_symbol,
+                                specs
+                                    .into_iter()
+                                    .map(|spec| crate::evaluation::MethodSpec {
+                                        target_type_args: spec.target_type_args,
+                                        method: spec.method,
+                                    })
+                                    .collect(),
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        let drop_trait_structs = collect_drop_trait_structs(program, string_interner);
+
+        // Enum / struct registries: field names are interned against the
+        // program interner — a trial's eval owns a clone of it, so the
+        // symbols agree with what `evaluate_struct_literal` builds.
+        let mut enum_definitions = HashMap::new();
+        let mut struct_definitions = HashMap::new();
+        for i in 0..program.statement.len() {
+            let stmt_ref = StmtRef(i as u32);
+            match program.statement.get(&stmt_ref) {
+                Some(Stmt::EnumDecl { name, variants, generic_params, .. }) => {
+                    enum_definitions.insert(
+                        name,
+                        crate::evaluation::EnumRegistryEntry {
+                            generic_params: generic_params.clone(),
+                            variants: variants
+                                .iter()
+                                .map(|v| crate::evaluation::EnumRegistryVariant {
+                                    name: v.name,
+                                    payload_types: v.payload_types.clone(),
+                                })
+                                .collect(),
+                        },
+                    );
+                }
+                Some(Stmt::StructDecl { name, fields, generic_params, .. }) => {
+                    let field_entries: Vec<(DefaultSymbol, TypeDecl)> = fields
+                        .iter()
+                        .map(|f| {
+                            let sym = string_interner.get_or_intern(&f.name);
+                            (sym, f.type_decl.clone())
+                        })
+                        .collect();
+                    struct_definitions.insert(
+                        name,
+                        crate::evaluation::StructRegistryEntry {
+                            generic_params: generic_params.clone(),
+                            fields: field_entries,
+                        },
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        Ok(SharedRunData {
+            program,
+            func_map: Rc::new(func_map),
+            func_qualified: Rc::new(func_qualified),
+            method_registry: Rc::new(method_registry),
+            drop_trait_structs: Rc::new(drop_trait_structs),
+            enum_definitions: Rc::new(enum_definitions),
+            struct_definitions: Rc::new(struct_definitions),
+            transferred_bindings: Rc::new(program.transferred_bindings.clone()),
+        })
+    }
+}
+
 /// Module-aware mirror of `build_function_map`. Each function is
 /// keyed by `(module_qualifier, fn_name)` where the qualifier is the
 /// last segment of `program.function_module_paths[i]` (`None` for
@@ -772,24 +897,6 @@ fn build_method_registry(
     Ok(method_registry)
 }
 
-fn register_methods(
-    eval: &mut EvaluationContext,
-    method_registry: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Vec<CollectedMethod>>>,
-) {
-    for (struct_symbol, methods) in method_registry {
-        for (method_symbol, specs) in methods {
-            for spec in specs {
-                eval.register_method(
-                    struct_symbol,
-                    method_symbol,
-                    spec.target_type_args,
-                    spec.method,
-                );
-            }
-        }
-    }
-}
-
 pub fn execute_program(program: &File, string_interner: &DefaultStringInterner, source_code: Option<&str>, filename: Option<&str>) -> Result<RcObject, String> {
     let main_function = match find_main_function(program, string_interner) {
         Ok(func) => func,
@@ -858,19 +965,15 @@ fn execute_entry_with_values(
     // allocated" — and would disagree with every compiled backend.
     crate::heap::reset_profile();
 
-    let func_map = build_function_map(program, string_interner);
-    let func_qualified = build_function_qualified_map(program);
     let mut string_interner_mut = string_interner.clone();
-    let method_registry = build_method_registry(program, string_interner)
-        .map_err(|e| EntryError::Rendered(format!("Runtime Error: {}", e)))?;
-    let drop_trait_structs = collect_drop_trait_structs(program, string_interner);
+    let shared = SharedRunData::new(program, &mut string_interner_mut)
+        .map_err(|e| EntryError::Rendered(format!("Runtime Error: {e}")))?;
 
-    let mut eval = EvaluationContext::new_with_qualified(
+    let mut eval = EvaluationContext::new_with_shared(
         &program.statement,
         &program.expression,
         &mut string_interner_mut,
-        func_map,
-        func_qualified,
+        &shared,
     );
 
     // LLM-LOOP P6: give the runtime access to source positions so a
@@ -879,50 +982,6 @@ fn execute_entry_with_values(
 
     // Initialize module system
     initialize_module_environment(&mut eval, program);
-
-    register_methods(&mut eval, method_registry);
-    eval.drop_trait_structs = drop_trait_structs;
-    eval.transferred_bindings = program.transferred_bindings.clone();
-
-    // Register enum and struct declarations so runtime lookup of
-    // `Enum::Variant` paths works and so `Object::{Struct,EnumVariant}`
-    // can derive `type_args` from runtime values for display.
-    for i in 0..program.statement.len() {
-        let stmt_ref = StmtRef(i as u32);
-        match program.statement.get(&stmt_ref) {
-            Some(frontend::ast::Stmt::EnumDecl { name, variants, generic_params, .. }) => {
-                let entry = crate::evaluation::EnumRegistryEntry {
-                    generic_params: generic_params.clone(),
-                    variants: variants
-                        .iter()
-                        .map(|v| crate::evaluation::EnumRegistryVariant {
-                            name: v.name,
-                            payload_types: v.payload_types.clone(),
-                        })
-                        .collect(),
-                };
-                eval.register_enum(name, entry);
-            }
-            Some(frontend::ast::Stmt::StructDecl { name, fields, generic_params, .. }) => {
-                // Field names are stored as `String` in the AST; intern
-                // them via the eval's interner so the registry keys
-                // match what `evaluate_struct_literal` builds.
-                let field_entries: Vec<(DefaultSymbol, frontend::type_decl::TypeDecl)> = fields
-                    .iter()
-                    .map(|f| {
-                        let sym = eval.string_interner.get_or_intern(&f.name);
-                        (sym, f.type_decl.clone())
-                    })
-                    .collect();
-                let entry = crate::evaluation::StructRegistryEntry {
-                    generic_params: generic_params.clone(),
-                    fields: field_entries,
-                };
-                eval.register_struct(name, entry);
-            }
-            _ => {}
-        }
-    }
 
     // Evaluate top-level `const` declarations once and bind their values
     // in the bottom-most environment scope. Each const sees previously-
@@ -1046,6 +1105,58 @@ fn render_backtrace(frames: &[crate::error::CallFrame]) -> String {
     out
 }
 
+
+/// Execute `function` with pre-evaluated arguments under a fresh
+/// evaluation context sharing program-derived data (TEST-PERF).
+///
+/// The property checker runs hundreds of trials per contracted function;
+/// a trial body is often a handful of operations while the shared setup
+/// (function maps, method registry, enum / struct registries) costs
+/// ~600µs with the stdlib loaded. This path builds that once via
+/// [`SharedRunData`] and pays only for per-run state — the same
+/// fresh-context isolation `execute_function_with_values` gives,
+/// without the repeated setup.
+pub fn execute_function_with_values_shared(
+    shared: &SharedRunData<'_>,
+    string_interner: &DefaultStringInterner,
+    function: Rc<Function>,
+    args: &[crate::value::Value],
+) -> Result<crate::value::Value, InterpreterError> {
+    // MEMORY_PROFILING M4: one trial is one run; the counters describe
+    // it alone (see `execute_entry_with_values` for the rationale).
+    crate::heap::reset_profile();
+    let mut string_interner_mut = string_interner.clone();
+    let mut eval = EvaluationContext::new_with_shared(
+        &shared.program.statement,
+        &shared.program.expression,
+        &mut string_interner_mut,
+        shared,
+    );
+    eval.location_pool = Some(&shared.program.location_pool);
+    initialize_module_environment(&mut eval, shared.program);
+
+    for c in &shared.program.consts {
+        let value_result = eval.evaluate(&c.value);
+        let value = match value_result {
+            Ok(crate::evaluation::EvaluationResult::Value(v)) => v.into_rc(),
+            Ok(_) => {
+                return Err(InterpreterError::InternalError(format!(
+                    "Const initializer for `{}` produced a non-value result",
+                    string_interner.resolve(c.name).unwrap_or("<unknown>")
+                )));
+            }
+            Err(e) => {
+                return Err(InterpreterError::InternalError(format!(
+                    "Const initializer for `{}` failed: {e}",
+                    string_interner.resolve(c.name).unwrap_or("<unknown>")
+                )));
+            }
+        };
+        eval.environment.set_val(c.name, (value).into());
+    }
+
+    eval.evaluate_function_with_values(function, args)
+}
 
 /// Call `function` with pre-evaluated argument values, in a freshly
 /// built context (LLM-LOOP P5).

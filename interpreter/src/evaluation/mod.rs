@@ -134,7 +134,10 @@ pub struct EvaluationContext<'a> {
     pub(super) stmt_pool: &'a StmtPool,
     pub(super) expr_pool: &'a ExprPool,
     pub string_interner: &'a mut DefaultStringInterner,
-    pub(super) function: HashMap<DefaultSymbol, Rc<Function>>,
+    /// `Rc` so property-check trials (TEST-PERF) can share one
+    /// program-derived map across many fresh evaluation contexts; the
+    /// tree-walker only reads it while running.
+    pub(crate) function: Rc<HashMap<DefaultSymbol, Rc<Function>>>,
     /// Module-aware mirror of `function` keyed by
     /// `(module_qualifier, fn_name)`. The qualifier is the **last
     /// segment** of the originating module's dotted path
@@ -148,9 +151,10 @@ pub struct EvaluationContext<'a> {
     /// via `lookup_function_qualified(Some("math"), "add")`. The
     /// flat `function` map above is kept for backwards-compatibility
     /// at sites that don't yet thread the qualifier.
-    pub(super) function_qualified: HashMap<(Option<DefaultSymbol>, DefaultSymbol), Rc<Function>>,
+    pub(crate) function_qualified: Rc<HashMap<(Option<DefaultSymbol>, DefaultSymbol), Rc<Function>>>,
     pub environment: Environment,
-    pub(super) method_registry: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Vec<MethodSpec>>>, // struct_name -> method_name -> [specs by target_type_args]
+    /// `Rc` for the same reason as `function` (shared across trials).
+    pub(crate) method_registry: Rc<HashMap<DefaultSymbol, HashMap<DefaultSymbol, Vec<MethodSpec>>>>, // struct_name -> method_name -> [specs by target_type_args]
     pub(super) null_object: RcObject, // Pre-created null object for reuse
     /// Source locations for expressions, when the caller supplied them.
     /// LLM-LOOP P6: the interpreter had no access to positions at all,
@@ -186,12 +190,12 @@ pub struct EvaluationContext<'a> {
     // ordered variant definitions (variant name + payload type list).
     // Used both for variant lookup at construction sites and for
     // deriving `type_args` on `Object::EnumVariant` for display.
-    pub(super) enum_definitions: HashMap<DefaultSymbol, EnumRegistryEntry>,
+    pub(crate) enum_definitions: Rc<HashMap<DefaultSymbol, EnumRegistryEntry>>,
     // Registered struct types: struct_name -> entry. Same shape as
     // `enum_definitions` — used purely for deriving `type_args` on
     // `Object::Struct` so generic instances print like the compiler
     // (`Y<i64> { b: 2 }`).
-    pub(super) struct_definitions: HashMap<DefaultSymbol, StructRegistryEntry>,
+    pub(crate) struct_definitions: Rc<HashMap<DefaultSymbol, StructRegistryEntry>>,
     /// Runtime gate for Design-by-Contract evaluation. Read once from
     /// `INTERPRETER_CONTRACTS` at construction; `call.rs` consults
     /// `check_pre` / `check_post` to decide whether to evaluate each clause.
@@ -216,12 +220,12 @@ pub struct EvaluationContext<'a> {
     /// var binding time — bindings whose runtime value is a
     /// struct in this set get pushed onto `drop_scopes` and
     /// `Drop::drop` is auto-called when the scope exits.
-    pub(super) drop_trait_structs: std::collections::HashSet<DefaultSymbol>,
+    pub(crate) drop_trait_structs: std::rc::Rc<std::collections::HashSet<DefaultSymbol>>,
     /// BOX-T: `val` / `var` statements whose value was handed to
     /// something that outlives them. A binding listed here does not
     /// register a drop — the receiver owns the resource now. Copied
     /// from `File::transferred_bindings` at startup.
-    pub(super) transferred_bindings: std::collections::HashSet<frontend::ast::StmtRef>,
+    pub(crate) transferred_bindings: std::rc::Rc<std::collections::HashSet<frontend::ast::StmtRef>>,
     /// Phase 5 (汎用 RAII): per-active-scope LIFO list of bindings
     /// awaiting auto-drop. Each `enter_drop_scope` pushes a fresh
     /// Vec, `register_drop` appends, `exit_drop_scope` runs the
@@ -289,10 +293,10 @@ impl<'a> EvaluationContext<'a> {
             stmt_pool,
             expr_pool,
             string_interner,
-            function,
-            function_qualified,
+            function: Rc::new(function),
+            function_qualified: Rc::new(function_qualified),
             environment: Environment::new(),
-            method_registry: HashMap::new(),
+            method_registry: Rc::new(HashMap::new()),
             null_object: Rc::new(RefCell::new(Object::null_unknown())),
             location_pool: None,
             call_stack: Vec::new(),
@@ -313,8 +317,8 @@ impl<'a> EvaluationContext<'a> {
             heap_manager,
             global_allocator,
             allocator_stack,
-            enum_definitions: HashMap::new(),
-            struct_definitions: HashMap::new(),
+            enum_definitions: Rc::new(HashMap::new()),
+            struct_definitions: Rc::new(HashMap::new()),
             contract_mode: ContractMode::from_env(),
             result_symbol,
             extern_registry: {
@@ -322,8 +326,58 @@ impl<'a> EvaluationContext<'a> {
                 registry.extend(extern_io::build_io_registry());
                 registry
             },
-            drop_trait_structs: std::collections::HashSet::new(),
-            transferred_bindings: std::collections::HashSet::new(),
+            drop_trait_structs: Rc::new(std::collections::HashSet::new()),
+            transferred_bindings: Rc::new(std::collections::HashSet::new()),
+            drop_scopes: vec![Vec::new()],
+        }
+    }
+
+    /// Construct from [`crate::SharedRunData`] (TEST-PERF): program-
+    /// derived maps and registries are shared `Rc`s, so a fresh
+    /// evaluation context for a property-check trial only pays for the
+    /// per-run state (heap, allocator stack, environment, drop scopes).
+    /// The maps are read-only during execution — any code that needs to
+    /// mutate them goes through `Rc::make_mut`, which clones on first
+    /// write and only when this context is the sole owner.
+    pub fn new_with_shared(
+        stmt_pool: &'a StmtPool,
+        expr_pool: &'a ExprPool,
+        string_interner: &'a mut DefaultStringInterner,
+        shared: &crate::SharedRunData,
+    ) -> Self {
+        let heap_manager = Rc::new(RefCell::new(HeapManager::new()));
+        let global_allocator: Rc<dyn Allocator> = Rc::new(GlobalAllocator::new(heap_manager.clone()));
+        let allocator_stack: Vec<Rc<dyn Allocator>> = vec![global_allocator.clone()];
+        let result_symbol = string_interner.get_or_intern("result");
+        Self {
+            stmt_pool,
+            expr_pool,
+            string_interner,
+            function: shared.func_map.clone(),
+            function_qualified: shared.func_qualified.clone(),
+            environment: Environment::new(),
+            method_registry: shared.method_registry.clone(),
+            null_object: Rc::new(RefCell::new(Object::null_unknown())),
+            location_pool: None,
+            call_stack: Vec::new(),
+            recursion_depth: 0,
+            max_recursion_depth: 1000,
+            call_depth: 0,
+            max_call_depth: 30,
+            heap_manager,
+            global_allocator,
+            allocator_stack,
+            enum_definitions: shared.enum_definitions.clone(),
+            struct_definitions: shared.struct_definitions.clone(),
+            contract_mode: ContractMode::from_env(),
+            result_symbol,
+            extern_registry: {
+                let mut registry = extern_math::build_default_registry();
+                registry.extend(extern_io::build_io_registry());
+                registry
+            },
+            drop_trait_structs: shared.drop_trait_structs.clone(),
+            transferred_bindings: shared.transferred_bindings.clone(),
             drop_scopes: vec![Vec::new()],
         }
     }
@@ -372,7 +426,7 @@ impl<'a> EvaluationContext<'a> {
     }
 
     pub fn register_enum(&mut self, name: DefaultSymbol, entry: EnumRegistryEntry) {
-        self.enum_definitions.insert(name, entry);
+        Rc::make_mut(&mut self.enum_definitions).insert(name, entry);
     }
 
     pub fn register_struct(
@@ -380,7 +434,7 @@ impl<'a> EvaluationContext<'a> {
         name: DefaultSymbol,
         entry: StructRegistryEntry,
     ) {
-        self.struct_definitions.insert(name, entry);
+        Rc::make_mut(&mut self.struct_definitions).insert(name, entry);
     }
 
     /// Register an impl-block method. CONCRETE-IMPL Phase 2:
@@ -394,8 +448,7 @@ impl<'a> EvaluationContext<'a> {
         target_type_args: Vec<TypeDecl>,
         method: Rc<MethodFunction>,
     ) {
-        let specs = self
-            .method_registry
+        let specs = Rc::make_mut(&mut self.method_registry)
             .entry(struct_name)
             .or_default()
             .entry(method_name)

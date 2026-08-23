@@ -106,48 +106,32 @@ fn combine_guards(
     }
 }
 
-/// One alternative: a pattern, optionally a range or an `@` binding.
+/// One alternative of an arm's pattern, plus any guard the parser had
+/// to synthesize for it.
 ///
-/// Shapes handled here, in the order they are recognised:
-///
-/// - `name @ <literal or range>` — binds `name` to the scrutinee and
-///   guards on the value.
-/// - `<literal> .. <literal>` — a half-open range, matching the `..`
-///   expression form (`0i64..5i64` covers 0 through 4).
-/// - anything else — an ordinary pattern with no guard.
+/// Ranges are the only shape that needs one: `0i64..5i64` and
+/// `n @ 0i64..5i64` become an irrefutable name plus a comparison,
+/// because there is no range pattern form. Everything else — `@`
+/// included — is a pattern the rest of the compiler understands.
 fn parse_match_pattern_with_guard(
     parser: &mut Parser,
 ) -> ParserResult<PatternAlternative> {
-    // `name @ ...`
-    let at_binding = match parser.peek() {
-        Some(Kind::Identifier(name)) if name != "_" => Some(name.to_string()),
-        _ => None,
-    };
-    if let Some(name) = at_binding
-        && matches!(parser.peek_n(1), Some(Kind::At))
-    {
+    // `name @ <range>` — the one `@` shape that is still a guard,
+    // because a range has no pattern form of its own. Every other `@`
+    // is a `Pattern::Binding`, which `parse_match_pattern` recognises
+    // at any depth.
+    if at_binding_over_a_range(parser) {
         let location = parser.current_source_location();
+        let Some(Kind::Identifier(name)) = parser.peek().cloned() else {
+            unreachable!("at_binding_over_a_range checked for an identifier")
+        };
         let sym = parser.string_interner.get_or_intern(name);
         parser.next(); // name
         parser.next(); // `@`
         let bound = parser.ast_builder.identifier_expr(sym, Some(location));
-        let Some(guard) = parse_value_guard(parser, bound)? else {
-            // Report and recover by parsing what follows as an
-            // ordinary pattern: bailing here would leave the arm
-            // half-parsed and the next diagnostic would be about
-            // whatever token the recovery path tripped over rather
-            // than about the `@`.
-            parser.report_error(ParserError::generic_error(
-                location,
-                "`@` binds a literal or a range (`n @ 2i64`, `n @ 0i64..5i64`); \
-                 an enum variant or tuple pattern cannot be bound this way"
-                    .to_string(),
-            ));
-            return Ok(PatternAlternative {
-                pattern: parse_match_pattern(parser)?,
-                guard: None,
-            });
-        };
+        let guard = parse_range_guard(parser, bound)?.ok_or_else(|| {
+            ParserError::generic_error(location, "expected a range after `@`".to_string())
+        })?;
         return Ok(PatternAlternative {
             pattern: crate::ast::Pattern::Name(sym),
             guard: Some(guard),
@@ -160,7 +144,7 @@ fn parse_match_pattern_with_guard(
         let location = parser.current_source_location();
         let sym = parser.fresh_pattern_binding();
         let bound = parser.ast_builder.identifier_expr(sym, Some(location));
-        let guard = parse_value_guard(parser, bound)?.ok_or_else(|| {
+        let guard = parse_range_guard(parser, bound)?.ok_or_else(|| {
             ParserError::generic_error(location, "expected a range pattern".to_string())
         })?;
         return Ok(PatternAlternative {
@@ -175,6 +159,19 @@ fn parse_match_pattern_with_guard(
     })
 }
 
+/// True when the tokens ahead are `name @ <literal> ..`. Four tokens
+/// of lookahead so the decision is made before anything is consumed:
+/// every other `@` shape is a pattern and takes the ordinary path.
+fn at_binding_over_a_range(parser: &mut Parser) -> bool {
+    matches!(parser.peek(), Some(Kind::Identifier(n)) if n != "_")
+        && matches!(parser.peek_n(1), Some(Kind::At))
+        && matches!(
+            parser.peek_n(2),
+            Some(Kind::UInt64(_) | Kind::Int64(_) | Kind::Integer(_))
+        )
+        && matches!(parser.peek_n(3), Some(Kind::DotDot))
+}
+
 /// True when the next tokens are `<literal> ..`, i.e. a range pattern
 /// rather than a plain literal. Two tokens of lookahead is enough:
 /// range endpoints are literals.
@@ -186,11 +183,15 @@ fn pattern_starts_a_range(parser: &mut Parser) -> bool {
     starts_literal && matches!(parser.peek_n(1), Some(Kind::DotDot))
 }
 
-/// Build the comparison guard for a literal or range appearing at a
-/// value position, comparing against `bound` (the name the arm binds
-/// the scrutinee to). Returns `None` when the next tokens are not a
+/// Build the comparison guard for a range appearing at a value
+/// position, comparing against `bound` (the name the arm binds the
+/// scrutinee to). Returns `None` when the next tokens are not a
 /// literal, so the caller can report a shape it cannot express.
-fn parse_value_guard(
+///
+/// Both callers have already established that a range starts here
+/// (`pattern_starts_a_range`), so the `..` is not in doubt — a lone
+/// literal is a `Pattern::Literal` and never reaches this function.
+fn parse_range_guard(
     parser: &mut Parser,
     bound: ExprRef,
 ) -> ParserResult<Option<ExprRef>> {
@@ -198,16 +199,7 @@ fn parse_value_guard(
     let Some(crate::ast::Pattern::Literal(low)) = parse_pattern_literal(parser)? else {
         return Ok(None);
     };
-    if !matches!(parser.peek(), Some(Kind::DotDot)) {
-        // `n @ 2i64` — a single value.
-        return Ok(Some(parser.ast_builder.binary_expr(
-            Operator::EQ,
-            bound,
-            low,
-            Some(location),
-        )));
-    }
-    parser.next(); // `..`
+    parser.expect_err(&Kind::DotDot)?;
     let Some(crate::ast::Pattern::Literal(high)) = parse_pattern_literal(parser)? else {
         // Same recovery reasoning as the `@` arm above: record the
         // diagnostic, then let the caller carry on with a guard that
@@ -237,6 +229,18 @@ fn parse_value_guard(
 }
 
 pub(crate) fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::ast::Pattern> {
+    // PATTERN-EXTEND: `name @ pat`, at any depth — `Some(n @ 3i64)`
+    // reads the payload and tests it in one pattern.
+    if let Some(Kind::Identifier(name)) = parser.peek().cloned()
+        && name != "_"
+        && matches!(parser.peek_n(1), Some(Kind::At))
+    {
+        let sym = parser.string_interner.get_or_intern(name);
+        parser.next(); // name
+        parser.next(); // `@`
+        let inner = parse_match_pattern(parser)?;
+        return Ok(crate::ast::Pattern::Binding(sym, Box::new(inner)));
+    }
     if let Some(Kind::Identifier(s)) = parser.peek()
         && s == "_" {
             parser.next();

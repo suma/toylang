@@ -94,126 +94,7 @@ impl<'a> FunctionLower<'a> {
             // 1. Pattern shape check + sub-pattern equality checks.
             //    On any failure, jump to next_blk. On full success,
             //    advance the current block to where bindings happen.
-            match &arm.pattern {
-                Pattern::Wildcard => {
-                    // No checks; current block keeps going.
-                }
-                Pattern::Literal(lit_ref) => {
-                    let (scrut_v, scrut_ty) = match &scrut {
-                        MatchScrutinee::Scalar { value, ty } => (*value, *ty),
-                        MatchScrutinee::Enum { .. }
-                        | MatchScrutinee::Struct { .. }
-                        | MatchScrutinee::Tuple { .. } => {
-                            return Err(
-                                "literal pattern is only valid against a scalar scrutinee"
-                                    .to_string(),
-                            );
-                        }
-                    };
-                    self.emit_literal_eq_branch(lit_ref, scrut_v, scrut_ty, next_blk)?;
-                }
-                Pattern::EnumVariant(p_enum, p_variant, sub_patterns) => {
-                    let scrut_storage = match &scrut {
-                        MatchScrutinee::Enum(s) => s.clone(),
-                        MatchScrutinee::Scalar { .. }
-                        | MatchScrutinee::Struct { .. }
-                        | MatchScrutinee::Tuple { .. } => {
-                            return Err(
-                                "enum-variant pattern is only valid against an enum scrutinee"
-                                    .to_string(),
-                            );
-                        }
-                    };
-                    self.dispatch_enum_variant_pattern(
-                        &scrut_storage,
-                        *p_enum,
-                        *p_variant,
-                        sub_patterns,
-                        next_blk,
-                    )?;
-                }
-                Pattern::Name(sym) => {
-                    // PATTERN-EXTEND: an irrefutable binding of the
-                    // whole scrutinee — no shape check, just a name.
-                    // Range and `@` patterns desugar to exactly this
-                    // plus a guard, so this arm is what makes them
-                    // reachable at AOT. Enum scrutinees bind through
-                    // a copied storage, the same treatment a payload
-                    // `Name` sub-pattern gets, so the arm body can
-                    // outlive the match without aliasing it.
-                    match &scrut {
-                        MatchScrutinee::Scalar { value, ty } => {
-                            let local = self
-                                .module
-                                .function_mut(self.func_id)
-                                .add_local(*ty);
-                            self.emit(
-                                InstKind::StoreLocal { dst: local, src: *value },
-                                None,
-                            );
-                            self.bindings
-                                .insert(*sym, Binding::Scalar { local, ty: *ty });
-                        }
-                        MatchScrutinee::Enum(storage) => {
-                            let copy = self.allocate_enum_storage(storage.enum_id);
-                            self.copy_enum_storage(storage, &copy);
-                            self.bindings.insert(*sym, Binding::Enum(copy.clone()));
-                            if self.ir_contains_drop(crate::ir::Type::Enum(copy.enum_id)) {
-                                let leaves = flatten_enum_storage_locals(&copy);
-                                self.arm_drop_targets.push(DropTarget {
-                                    ty: crate::ir::Type::Enum(copy.enum_id),
-                                    field_locals: leaves,
-                                });
-                            }
-                        }
-                        // PATTERN-COMPOUND-LOWER: a whole-value name
-                        // binding over a compound aliases the
-                        // scrutinee's locals. The scrutinee outlives
-                        // the arm (it is a binding of the enclosing
-                        // scope), so no copy is needed.
-                        MatchScrutinee::Struct { struct_id, fields } => {
-                            self.bindings.insert(
-                                *sym,
-                                Binding::Struct {
-                                    struct_id: *struct_id,
-                                    fields: fields.clone(),
-                                },
-                            );
-                        }
-                        MatchScrutinee::Tuple { elements } => {
-                            self.bindings
-                                .insert(*sym, Binding::Tuple { elements: elements.clone() });
-                        }
-                    }
-                }
-                // PATTERN-COMPOUND-LOWER: `Point { x: 0i64, y }` and
-                // `(0i64, y)`. Each field / element pattern either
-                // compares against the scrutinee's own local or binds
-                // a name to it, so the arm reads the value in place.
-                Pattern::Struct(_, field_patterns, _) => {
-                    let fields = match &scrut {
-                        MatchScrutinee::Struct { fields, .. } => fields.clone(),
-                        _ => {
-                            return Err(
-                                "struct pattern is only valid against a struct scrutinee"
-                                    .to_string(),
-                            );
-                        }
-                    };
-                    self.dispatch_struct_pattern(&fields, field_patterns, next_blk)?;
-                }
-                Pattern::Tuple(sub_patterns) => {
-                    let elements = match &scrut {
-                        MatchScrutinee::Tuple { elements } => elements.clone(),
-                        _ => {
-                            return Err(
-                                "tuple pattern is only valid against a tuple scrutinee".to_string(),
-                            );
-                        }
-                    };
-                    self.dispatch_tuple_pattern(&elements, sub_patterns, next_blk)?;
-                }
-            }
+            self.dispatch_arm_pattern(&arm.pattern, &scrut, next_blk)?;
             // 2. Optional guard: evaluated with the arm's bindings in
             //    scope. False routes to the next arm; true falls into
             //    the body block.
@@ -268,6 +149,140 @@ impl<'a> FunctionLower<'a> {
             Ok(self.emit(InstKind::LoadLocal(local), Some(result_ty)))
         } else {
             Ok(None)
+        }
+    }
+
+    /// PATTERN-COMPOUND-LOWER: the shape check and bindings for one
+    /// arm's pattern. Emitted code branches to `fail_blk` on the first
+    /// check that cannot match; on success the current block is where
+    /// the arm's guard and body go.
+    ///
+    /// Shared by `lower_match` and `lower_match_into_enum`, which used
+    /// to mirror a subset of this by hand.
+    pub(super) fn dispatch_arm_pattern(
+        &mut self,
+        pattern: &Pattern,
+        scrut: &MatchScrutinee,
+        fail_blk: BlockId,
+    ) -> Result<(), String> {
+        match pattern {
+            Pattern::Wildcard => {
+                // No checks; current block keeps going.
+            }
+            // PATTERN-EXTEND: `n @ pat` — name the whole scrutinee,
+            // then let `pat` decide. Binding before the check is safe:
+            // a failed check branches to `fail_blk`, and the caller
+            // restores the binding map before the next arm.
+            Pattern::Binding(sym, inner) => {
+                self.bind_whole_scrutinee(*sym, scrut);
+                self.dispatch_arm_pattern(inner, scrut, fail_blk)?;
+            }
+            Pattern::Literal(lit_ref) => {
+                let (scrut_v, scrut_ty) = match scrut {
+                    MatchScrutinee::Scalar { value, ty } => (*value, *ty),
+                    MatchScrutinee::Enum { .. }
+                    | MatchScrutinee::Struct { .. }
+                    | MatchScrutinee::Tuple { .. } => {
+                        return Err(
+                            "literal pattern is only valid against a scalar scrutinee"
+                                .to_string(),
+                        );
+                    }
+                };
+                self.emit_literal_eq_branch(lit_ref, scrut_v, scrut_ty, fail_blk)?;
+            }
+            Pattern::EnumVariant(p_enum, p_variant, sub_patterns) => {
+                let scrut_storage = match scrut {
+                    MatchScrutinee::Enum(s) => s.clone(),
+                    MatchScrutinee::Scalar { .. }
+                    | MatchScrutinee::Struct { .. }
+                    | MatchScrutinee::Tuple { .. } => {
+                        return Err(
+                            "enum-variant pattern is only valid against an enum scrutinee"
+                                .to_string(),
+                        );
+                    }
+                };
+                self.dispatch_enum_variant_pattern(
+                    &scrut_storage,
+                    *p_enum,
+                    *p_variant,
+                    sub_patterns,
+                    fail_blk,
+                )?;
+            }
+            Pattern::Name(sym) => {
+                self.bind_whole_scrutinee(*sym, scrut);
+            }
+            // PATTERN-COMPOUND-LOWER: `Point { x: 0i64, y }` and
+            // `(0i64, y)`. Each field / element pattern either
+            // compares against the scrutinee's own local or binds
+            // a name to it, so the arm reads the value in place.
+            Pattern::Struct(_, field_patterns, _) => {
+                let fields = match scrut {
+                    MatchScrutinee::Struct { fields, .. } => fields.clone(),
+                    _ => {
+                        return Err(
+                            "struct pattern is only valid against a struct scrutinee"
+                                .to_string(),
+                        );
+                    }
+                };
+                self.dispatch_struct_pattern(&fields, field_patterns, fail_blk)?;
+            }
+            Pattern::Tuple(sub_patterns) => {
+                let elements = match scrut {
+                    MatchScrutinee::Tuple { elements } => elements.clone(),
+                    _ => {
+                        return Err(
+                            "tuple pattern is only valid against a tuple scrutinee".to_string(),
+                        );
+                    }
+                };
+                self.dispatch_tuple_pattern(&elements, sub_patterns, fail_blk)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Bind a name to the entire scrutinee — what a top-level `Name`
+    /// pattern does, and the half of `n @ pat` that is not a check.
+    ///
+    /// Enum scrutinees bind through a copied storage, the same
+    /// treatment a payload `Name` sub-pattern gets, so the arm body
+    /// can outlive the match without aliasing it. A compound binding
+    /// aliases the scrutinee's locals instead: the scrutinee is a
+    /// binding of the enclosing scope and outlives the arm.
+    fn bind_whole_scrutinee(&mut self, sym: DefaultSymbol, scrut: &MatchScrutinee) {
+        match scrut {
+            MatchScrutinee::Scalar { value, ty } => {
+                let local = self.module.function_mut(self.func_id).add_local(*ty);
+                self.emit(InstKind::StoreLocal { dst: local, src: *value }, None);
+                self.bindings
+                    .insert(sym, Binding::Scalar { local, ty: *ty });
+            }
+            MatchScrutinee::Enum(storage) => {
+                let copy = self.allocate_enum_storage(storage.enum_id);
+                self.copy_enum_storage(storage, &copy);
+                self.bindings.insert(sym, Binding::Enum(copy.clone()));
+                if self.ir_contains_drop(crate::ir::Type::Enum(copy.enum_id)) {
+                    let leaves = flatten_enum_storage_locals(&copy);
+                    self.arm_drop_targets.push(DropTarget {
+                        ty: crate::ir::Type::Enum(copy.enum_id),
+                        field_locals: leaves,
+                    });
+                }
+            }
+            MatchScrutinee::Struct { struct_id, fields } => {
+                self.bindings.insert(
+                    sym,
+                    Binding::Struct { struct_id: *struct_id, fields: fields.clone() },
+                );
+            }
+            MatchScrutinee::Tuple { elements } => {
+                self.bindings
+                    .insert(sym, Binding::Tuple { elements: elements.clone() });
+            }
         }
     }
 
@@ -370,173 +385,210 @@ impl<'a> FunctionLower<'a> {
         // doesn't leave stray bindings in scope.
         for (i, sp) in sub_patterns.iter().enumerate() {
             let slot = scrut_storage.payloads[variant_idx][i].clone();
-            match sp {
-                Pattern::Literal(lit_ref) => match slot {
-                    PayloadSlot::Scalar { local, ty } => {
-                        let pv = self
-                            .emit(InstKind::LoadLocal(local), Some(ty))
-                            .expect("LoadLocal returns a value");
-                        self.emit_literal_eq_branch(lit_ref, pv, ty, next_blk)?;
-                    }
-                    PayloadSlot::Enum(_)
-                    | PayloadSlot::Struct { .. }
-                    | PayloadSlot::Tuple { .. } => {
-                        return Err(
-                            "literal sub-pattern is only valid against a scalar payload"
-                                .to_string(),
-                        );
-                    }
-                },
-                Pattern::EnumVariant(inner_enum, inner_variant, inner_subs) => match slot {
-                    PayloadSlot::Enum(inner_storage) => {
-                        self.dispatch_enum_variant_pattern(
-                            &inner_storage,
-                            *inner_enum,
-                            *inner_variant,
-                            inner_subs,
-                            next_blk,
-                        )?;
-                    }
-                    PayloadSlot::Scalar { .. }
-                    | PayloadSlot::Struct { .. }
-                    | PayloadSlot::Tuple { .. } => {
-                        return Err(
-                            "nested enum-variant sub-pattern requires an enum-typed payload"
-                                .to_string(),
-                        );
-                    }
-                },
-                _ => {}
-            }
+            self.check_payload_sub_pattern(sp, slot, next_blk)?;
         }
         // Sub-pattern bindings.
         for (i, sp) in sub_patterns.iter().enumerate() {
             let slot = scrut_storage.payloads[variant_idx][i].clone();
-            match sp {
-                Pattern::Name(sym) => match slot {
-                    PayloadSlot::Scalar { local, ty } => {
-                        let v = self
-                            .emit(InstKind::LoadLocal(local), Some(ty))
-                            .expect("LoadLocal returns a value");
-                        let dst = self
-                            .module
-                            .function_mut(self.func_id)
-                            .add_local(ty);
-                        self.emit(InstKind::StoreLocal { dst, src: v }, None);
-                        self.bindings
-                            .insert(*sym, Binding::Scalar { local: dst, ty });
-                    }
-                    PayloadSlot::Enum(inner_storage) => {
-                        // Bind the name to a fresh EnumStorage that's
-                        // a deep copy of the matched payload.
-                        let inner = (*inner_storage).clone();
-                        let copy = self.allocate_enum_storage(inner.enum_id);
-                        self.copy_enum_storage(&inner, &copy);
-                        self.bindings.insert(*sym, Binding::Enum(copy.clone()));
-                        // DROP-GLUE: the payload binding owns what it
-                        // names (the scrutinee may never be dropped —
-                        // e.g. a function parameter), so it must free
-                        // it at the arm's scope exit. Collected into
-                        // `arm_drop_targets` so the drop fires on this
-                        // arm's path only. A transfer can never
-                        // suppress this (no statement is in flight
-                        // during match lowering) — an over-
-                        // approximation that is safe because `free` is
-                        // idempotent everywhere.
-                        if self.ir_contains_drop(crate::ir::Type::Enum(copy.enum_id)) {
-                            let leaves = flatten_enum_storage_locals(&copy);
-                            self.arm_drop_targets.push(DropTarget {
-                                ty: crate::ir::Type::Enum(copy.enum_id),
-                                field_locals: leaves,
-                            });
-                        }
-                    }
-                    PayloadSlot::Struct {
-                        struct_id,
-                        fields: src_fields,
-                    } => {
-                        // Same idea for a struct payload: allocate a
-                        // fresh struct binding and deep-copy each
-                        // field's leaf locals across.
-                        let dst_fields = self.allocate_struct_fields(struct_id);
-                        self.copy_struct_fields(&src_fields, &dst_fields);
-                        self.bindings.insert(
-                            *sym,
-                            Binding::Struct {
-                                struct_id,
-                                fields: dst_fields.clone(),
-                            },
-                        );
-                        if self.ir_contains_drop(crate::ir::Type::Struct(struct_id)) {
-                            let leaves = flatten_struct_locals(&dst_fields);
-                            self.arm_drop_targets.push(DropTarget {
-                                ty: crate::ir::Type::Struct(struct_id),
-                                field_locals: leaves,
-                            });
-                        }
-                    }
-                    PayloadSlot::Tuple {
-                        elements: src_elements,
-                        ..
-                    } => {
-                        // Same shape for tuple payloads: fresh per-
-                        // element locals + element-wise copy. The new
-                        // binding is reachable as a regular tuple
-                        // binding, supporting `t.0` access in arm
-                        // bodies.
-                        let mut dst_elements: Vec<TupleElementBinding> =
-                            Vec::with_capacity(src_elements.len());
-                        for el in &src_elements {
-                            let shape = match &el.shape {
-                                TupleElementShape::Scalar { ty, .. } => {
-                                    let local = self
-                                        .module
-                                        .function_mut(self.func_id)
-                                        .add_local(*ty);
-                                    TupleElementShape::Scalar { local, ty: *ty }
-                                }
-                                TupleElementShape::Struct { struct_id, .. } => {
-                                    let fields =
-                                        self.allocate_struct_fields(*struct_id);
-                                    TupleElementShape::Struct {
-                                        struct_id: *struct_id,
-                                        fields,
-                                    }
-                                }
-                                TupleElementShape::Tuple { tuple_id, .. } => {
-                                    let elements = self
-                                        .allocate_tuple_elements(*tuple_id)
-                                        .unwrap_or_default();
-                                    TupleElementShape::Tuple {
-                                        tuple_id: *tuple_id,
-                                        elements,
-                                    }
-                                }
-                            };
-                            dst_elements.push(TupleElementBinding {
-                                index: el.index,
-                                shape,
-                            });
-                        }
-                        self.copy_tuple_elements(&src_elements, &dst_elements);
-                        self.bindings.insert(
-                            *sym,
-                            Binding::Tuple { elements: dst_elements },
-                        );
-                    }
-                },
-                Pattern::Wildcard | Pattern::Literal(_) | Pattern::EnumVariant(..) => {
-                    // Wildcard discards; literals were checked
-                    // above; nested EnumVariant patterns introduced
-                    // their own bindings via the recursive call.
+            self.bind_payload_sub_pattern(sp, slot)?;
+        }
+        Ok(())
+    }
+
+    /// The binding half of one enum payload sub-pattern. A `Name`
+    /// takes ownership of a fresh copy of the payload — the scrutinee
+    /// itself may never be dropped (a function parameter, say), so the
+    /// arm's binding is what the drop glue can reach.
+    fn bind_payload_sub_pattern(
+        &mut self,
+        sp: &Pattern,
+        slot: PayloadSlot,
+    ) -> Result<(), String> {
+        match sp {
+            Pattern::Name(sym) => match slot {
+                PayloadSlot::Scalar { local, ty } => {
+                    let v = self
+                        .emit(InstKind::LoadLocal(local), Some(ty))
+                        .expect("LoadLocal returns a value");
+                    let dst = self
+                        .module
+                        .function_mut(self.func_id)
+                        .add_local(ty);
+                    self.emit(InstKind::StoreLocal { dst, src: v }, None);
+                    self.bindings
+                        .insert(*sym, Binding::Scalar { local: dst, ty });
                 }
-                other => {
-                    return Err(format!(
-                        "compiler MVP only supports `Name`, `_`, literal, and \
-                         nested `EnumVariant` sub-patterns inside enum variants, got {other:?}"
-                    ));
+                PayloadSlot::Enum(inner_storage) => {
+                    // Bind the name to a fresh EnumStorage that's
+                    // a deep copy of the matched payload.
+                    let inner = (*inner_storage).clone();
+                    let copy = self.allocate_enum_storage(inner.enum_id);
+                    self.copy_enum_storage(&inner, &copy);
+                    self.bindings.insert(*sym, Binding::Enum(copy.clone()));
+                    // DROP-GLUE: the payload binding owns what it
+                    // names (the scrutinee may never be dropped —
+                    // e.g. a function parameter), so it must free
+                    // it at the arm's scope exit. Collected into
+                    // `arm_drop_targets` so the drop fires on this
+                    // arm's path only. A transfer can never
+                    // suppress this (no statement is in flight
+                    // during match lowering) — an over-
+                    // approximation that is safe because `free` is
+                    // idempotent everywhere.
+                    if self.ir_contains_drop(crate::ir::Type::Enum(copy.enum_id)) {
+                        let leaves = flatten_enum_storage_locals(&copy);
+                        self.arm_drop_targets.push(DropTarget {
+                            ty: crate::ir::Type::Enum(copy.enum_id),
+                            field_locals: leaves,
+                        });
+                    }
                 }
+                PayloadSlot::Struct {
+                    struct_id,
+                    fields: src_fields,
+                } => {
+                    // Same idea for a struct payload: allocate a
+                    // fresh struct binding and deep-copy each
+                    // field's leaf locals across.
+                    let dst_fields = self.allocate_struct_fields(struct_id);
+                    self.copy_struct_fields(&src_fields, &dst_fields);
+                    self.bindings.insert(
+                        *sym,
+                        Binding::Struct {
+                            struct_id,
+                            fields: dst_fields.clone(),
+                        },
+                    );
+                    if self.ir_contains_drop(crate::ir::Type::Struct(struct_id)) {
+                        let leaves = flatten_struct_locals(&dst_fields);
+                        self.arm_drop_targets.push(DropTarget {
+                            ty: crate::ir::Type::Struct(struct_id),
+                            field_locals: leaves,
+                        });
+                    }
+                }
+                PayloadSlot::Tuple {
+                    elements: src_elements,
+                    ..
+                } => {
+                    // Same shape for tuple payloads: fresh per-
+                    // element locals + element-wise copy. The new
+                    // binding is reachable as a regular tuple
+                    // binding, supporting `t.0` access in arm
+                    // bodies.
+                    let mut dst_elements: Vec<TupleElementBinding> =
+                        Vec::with_capacity(src_elements.len());
+                    for el in &src_elements {
+                        let shape = match &el.shape {
+                            TupleElementShape::Scalar { ty, .. } => {
+                                let local = self
+                                    .module
+                                    .function_mut(self.func_id)
+                                    .add_local(*ty);
+                                TupleElementShape::Scalar { local, ty: *ty }
+                            }
+                            TupleElementShape::Struct { struct_id, .. } => {
+                                let fields =
+                                    self.allocate_struct_fields(*struct_id);
+                                TupleElementShape::Struct {
+                                    struct_id: *struct_id,
+                                    fields,
+                                }
+                            }
+                            TupleElementShape::Tuple { tuple_id, .. } => {
+                                let elements = self
+                                    .allocate_tuple_elements(*tuple_id)
+                                    .unwrap_or_default();
+                                TupleElementShape::Tuple {
+                                    tuple_id: *tuple_id,
+                                    elements,
+                                }
+                            }
+                        };
+                        dst_elements.push(TupleElementBinding {
+                            index: el.index,
+                            shape,
+                        });
+                    }
+                    self.copy_tuple_elements(&src_elements, &dst_elements);
+                    self.bindings.insert(
+                        *sym,
+                        Binding::Tuple { elements: dst_elements },
+                    );
+                }
+            },
+            // PATTERN-EXTEND: `n @ pat` names the payload and then
+            // hands `pat` whatever it binds in turn.
+            Pattern::Binding(sym, inner) => {
+                self.bind_payload_sub_pattern(&Pattern::Name(*sym), slot.clone())?;
+                self.bind_payload_sub_pattern(inner, slot)?;
             }
+            Pattern::Wildcard | Pattern::Literal(_) | Pattern::EnumVariant(..) => {
+                // Wildcard discards; literals were checked
+                // above; nested EnumVariant patterns introduced
+                // their own bindings via the recursive call.
+            }
+            other => {
+                return Err(format!(
+                    "compiler MVP only supports `Name`, `_`, literal, and \
+                     nested `EnumVariant` sub-patterns inside enum variants, got {other:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The check half of one enum payload sub-pattern: literal
+    /// equality and nested variant tags, branching to `fail_blk` on a
+    /// mismatch. Bindings are a separate pass, so a failed check never
+    /// leaves a stray name in scope.
+    fn check_payload_sub_pattern(
+        &mut self,
+        sp: &Pattern,
+        slot: PayloadSlot,
+        fail_blk: BlockId,
+    ) -> Result<(), String> {
+        match sp {
+            Pattern::Literal(lit_ref) => match slot {
+                PayloadSlot::Scalar { local, ty } => {
+                    let pv = self
+                        .emit(InstKind::LoadLocal(local), Some(ty))
+                        .expect("LoadLocal returns a value");
+                    self.emit_literal_eq_branch(lit_ref, pv, ty, fail_blk)?;
+                }
+                PayloadSlot::Enum(_)
+                | PayloadSlot::Struct { .. }
+                | PayloadSlot::Tuple { .. } => {
+                    return Err(
+                        "literal sub-pattern is only valid against a scalar payload".to_string(),
+                    );
+                }
+            },
+            Pattern::EnumVariant(inner_enum, inner_variant, inner_subs) => match slot {
+                PayloadSlot::Enum(inner_storage) => {
+                    self.dispatch_enum_variant_pattern(
+                        &inner_storage,
+                        *inner_enum,
+                        *inner_variant,
+                        inner_subs,
+                        fail_blk,
+                    )?;
+                }
+                PayloadSlot::Scalar { .. }
+                | PayloadSlot::Struct { .. }
+                | PayloadSlot::Tuple { .. } => {
+                    return Err(
+                        "nested enum-variant sub-pattern requires an enum-typed payload"
+                            .to_string(),
+                    );
+                }
+            },
+            // PATTERN-EXTEND: `n @ pat` at a payload position — the
+            // check is `pat`'s; the name is bound in the second pass.
+            Pattern::Binding(_, inner) => {
+                self.check_payload_sub_pattern(inner, slot, fail_blk)?;
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -546,6 +598,31 @@ impl<'a> FunctionLower<'a> {
         scrut: &MatchScrutinee,
         pattern: &Pattern,
     ) {
+        // PATTERN-EXTEND: `n @ pat` names the whole scrutinee, and an
+        // arm body of just `n` is exactly the case this inference
+        // exists for. Compounds alias what the scrutinee already owns;
+        // a scalar has no local to alias, so one is allocated and left
+        // undefined — nothing reads it, since the real dispatch
+        // allocates and stores its own.
+        let mut pattern = pattern;
+        while let Pattern::Binding(sym, inner) = pattern {
+            let binding = match scrut {
+                MatchScrutinee::Scalar { ty, .. } => {
+                    let local = self.module.function_mut(self.func_id).add_local(*ty);
+                    Binding::Scalar { local, ty: *ty }
+                }
+                MatchScrutinee::Enum(storage) => Binding::Enum(storage.clone()),
+                MatchScrutinee::Struct { struct_id, fields } => Binding::Struct {
+                    struct_id: *struct_id,
+                    fields: fields.clone(),
+                },
+                MatchScrutinee::Tuple { elements } => {
+                    Binding::Tuple { elements: elements.clone() }
+                }
+            };
+            self.bindings.insert(*sym, binding);
+            pattern = inner;
+        }
         if let Pattern::EnumVariant(_, variant_sym, sub_patterns) = pattern
             && let MatchScrutinee::Enum(storage) = scrut {
                 let enum_def = self.module.enum_def(storage.enum_id).clone();
@@ -553,6 +630,12 @@ impl<'a> FunctionLower<'a> {
                     enum_def.variants.iter().position(|v| v.name == *variant_sym)
                     && variant_idx < storage.payloads.len() {
                         for (i, sp) in sub_patterns.iter().enumerate() {
+                            // PATTERN-EXTEND: `Some(n @ 3i64)` binds
+                            // `n` to the payload just as `Some(n)` does.
+                            let sp = match sp {
+                                Pattern::Binding(sym, _) => &Pattern::Name(*sym),
+                                other => other,
+                            };
                             if let Pattern::Name(sym) = sp
                                 && let Some(slot) =
                                     storage.payloads[variant_idx].get(i)
@@ -633,29 +716,45 @@ impl<'a> FunctionLower<'a> {
     }
 
     fn bind_field_shape_for_inference(&mut self, shape: &FieldShape, pattern: &Pattern) {
-        match (pattern, shape) {
-            (Pattern::Name(sym), FieldShape::Scalar { local, ty }) => {
-                self.bindings
-                    .insert(*sym, Binding::Scalar { local: *local, ty: *ty });
+        match pattern {
+            Pattern::Name(sym) => self.bind_name_to_field_shape(*sym, shape),
+            // PATTERN-EXTEND: `n @ pat` names the field and `pat` may
+            // name more of it.
+            Pattern::Binding(sym, inner) => {
+                self.bind_name_to_field_shape(*sym, shape);
+                self.bind_field_shape_for_inference(shape, inner);
             }
-            (Pattern::Name(sym), FieldShape::Struct { struct_id, fields }) => {
-                self.bindings.insert(
-                    *sym,
-                    Binding::Struct { struct_id: *struct_id, fields: fields.clone() },
-                );
+            Pattern::Struct(_, nested, _) => {
+                if let FieldShape::Struct { fields, .. } = shape {
+                    let fields = fields.clone();
+                    self.bind_struct_pattern_for_inference(&fields, nested);
+                }
             }
-            (Pattern::Name(sym), FieldShape::Tuple { elements, .. }) => {
-                self.bindings
-                    .insert(*sym, Binding::Tuple { elements: elements.clone() });
-            }
-            (Pattern::Struct(_, nested, _), FieldShape::Struct { fields, .. }) => {
-                self.bind_struct_pattern_for_inference(fields, nested);
-            }
-            (Pattern::Tuple(nested), FieldShape::Tuple { elements, .. }) => {
-                self.bind_tuple_pattern_for_inference(elements, nested);
+            Pattern::Tuple(nested) => {
+                if let FieldShape::Tuple { elements, .. } = shape {
+                    let elements = elements.clone();
+                    self.bind_tuple_pattern_for_inference(&elements, nested);
+                }
             }
             _ => {}
         }
+    }
+
+    /// Alias one name to a field / element the scrutinee already owns.
+    /// The scrutinee is a binding of the enclosing scope and outlives
+    /// the arm, so nothing is copied.
+    fn bind_name_to_field_shape(&mut self, sym: DefaultSymbol, shape: &FieldShape) {
+        let binding = match shape {
+            FieldShape::Scalar { local, ty } => Binding::Scalar { local: *local, ty: *ty },
+            FieldShape::Struct { struct_id, fields } => Binding::Struct {
+                struct_id: *struct_id,
+                fields: fields.clone(),
+            },
+            FieldShape::Tuple { elements, .. } => {
+                Binding::Tuple { elements: elements.clone() }
+            }
+        };
+        self.bindings.insert(sym, binding);
     }
 
     /// Resolve the `match` scrutinee into a uniform shape: either an
@@ -738,25 +837,15 @@ impl<'a> FunctionLower<'a> {
     ) -> Result<(), String> {
         match (pattern, shape) {
             (Pattern::Wildcard, _) => Ok(()),
-            (Pattern::Name(sym), FieldShape::Scalar { local, ty }) => {
-                // Alias the scrutinee's local rather than copying it:
-                // the scrutinee is a binding of the enclosing scope
-                // and outlives the arm.
-                self.bindings
-                    .insert(*sym, Binding::Scalar { local: *local, ty: *ty });
+            (Pattern::Name(sym), _) => {
+                self.bind_name_to_field_shape(*sym, shape);
                 Ok(())
             }
-            (Pattern::Name(sym), FieldShape::Struct { struct_id, fields }) => {
-                self.bindings.insert(
-                    *sym,
-                    Binding::Struct { struct_id: *struct_id, fields: fields.clone() },
-                );
-                Ok(())
-            }
-            (Pattern::Name(sym), FieldShape::Tuple { elements, .. }) => {
-                self.bindings
-                    .insert(*sym, Binding::Tuple { elements: elements.clone() });
-                Ok(())
+            // PATTERN-EXTEND: `n @ pat` names this field, then keeps
+            // checking it against `pat`.
+            (Pattern::Binding(sym, inner), _) => {
+                self.bind_name_to_field_shape(*sym, shape);
+                self.dispatch_field_shape_pattern(shape, inner, fail_blk)
             }
             (Pattern::Literal(lit_ref), FieldShape::Scalar { local, ty }) => {
                 let value = self

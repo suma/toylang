@@ -31,7 +31,21 @@ pub(super) fn is_irrefutable_pattern(pat: &Pattern) -> bool {
         Pattern::Struct(_, fields, _) => {
             fields.iter().all(|(_, sub)| is_irrefutable_pattern(sub))
         }
+        // PATTERN-EXTEND: `n @ pat` rejects exactly what `pat` rejects.
+        Pattern::Binding(_, inner) => is_irrefutable_pattern(inner),
     }
+}
+
+/// PATTERN-EXTEND: strip any `n @` wrappers, leaving the pattern that
+/// actually decides whether the arm runs. Every coverage rule looks
+/// through a binding, so the analyses call this before matching on
+/// the shape.
+pub(super) fn peel_bindings(pat: &Pattern) -> &Pattern {
+    let mut cur = pat;
+    while let Pattern::Binding(_, inner) = cur {
+        cur = inner;
+    }
+    cur
 }
 
 impl<'a> TypeCheckerVisitor<'a> {
@@ -160,6 +174,13 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
             Pattern::Struct(struct_name, field_patterns, has_rest) => {
                 self.check_struct_pattern(*struct_name, field_patterns, *has_rest, expected_ty)
+            }
+            // PATTERN-EXTEND: the name sees the whole value at this
+            // position; the inner pattern is checked against the same
+            // type, so `Some(n @ 3i64)` binds `n` to the payload.
+            Pattern::Binding(sym, inner) => {
+                self.context.set_var(*sym, expected_ty.clone());
+                self.check_sub_pattern(inner, expected_ty)
             }
             Pattern::EnumVariant(pat_enum, pat_variant, sub_patterns) => {
                 // Extract the enum name + type args from the expected payload
@@ -304,7 +325,6 @@ impl<'a> TypeCheckerVisitor<'a> {
         let mut covered_strings: std::collections::HashSet<DefaultSymbol> = std::collections::HashSet::new();
         let mut has_wildcard = false;
         for (arm_index, arm) in arms.iter().enumerate() {
-            let pat = &arm.pattern;
             let body = &arm.body;
             let is_guarded = arm.guard.is_some();
             if has_wildcard {
@@ -313,7 +333,18 @@ impl<'a> TypeCheckerVisitor<'a> {
                     arm_index
                 )));
             }
-            let mut pushed_scope = false;
+            // Every arm gets a scope of its own: its bindings must not
+            // leak into the next arm, and a `n @ pat` binding appears
+            // before the pattern's shape is even known.
+            self.context.vars.push(std::collections::HashMap::new());
+            // PATTERN-EXTEND: `n @ pat` binds the whole scrutinee and
+            // leaves the decision to `pat`, so peel the wrappers off
+            // and let every rule below see the pattern that decides.
+            let mut pat = &arm.pattern;
+            while let Pattern::Binding(sym, inner) = pat {
+                self.context.set_var(*sym, scrutinee_ty.clone());
+                pat = inner;
+            }
             match pat {
                 Pattern::Wildcard => {
                     if !is_guarded {
@@ -325,8 +356,6 @@ impl<'a> TypeCheckerVisitor<'a> {
                     // irrefutable and therefore acts like a wildcard for
                     // exhaustiveness — unless guarded, in which case the
                     // guard can fail at runtime so coverage is not total.
-                    self.context.vars.push(std::collections::HashMap::new());
-                    pushed_scope = true;
                     self.context.set_var(*sym, scrutinee_ty.clone());
                     if !is_guarded {
                         has_wildcard = true;
@@ -338,8 +367,6 @@ impl<'a> TypeCheckerVisitor<'a> {
                 // all-irrefutable one count for exhaustiveness the
                 // same way a bare name does.
                 Pattern::Struct(struct_name, field_patterns, has_rest) => {
-                    self.context.vars.push(std::collections::HashMap::new());
-                    pushed_scope = true;
                     self.check_struct_pattern(
                         *struct_name,
                         field_patterns,
@@ -425,6 +452,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                             }
                         }
                 }
+                // Peeled off above, so the loop never sees one here.
+                Pattern::Binding(_, _) => unreachable!("`n @ pat` is peeled before this match"),
                 Pattern::Tuple(sub_patterns) => {
                     // Tuple matches are independent of enum dispatch;
                     // require the scrutinee to be a tuple type and
@@ -445,8 +474,6 @@ impl<'a> TypeCheckerVisitor<'a> {
                             element_types.len()
                         )));
                     }
-                    self.context.vars.push(std::collections::HashMap::new());
-                    pushed_scope = true;
                     for (sub, ty) in sub_patterns.iter().zip(element_types.iter()) {
                         self.check_sub_pattern(sub, ty)?;
                     }
@@ -517,8 +544,6 @@ impl<'a> TypeCheckerVisitor<'a> {
                         )));
                     }
                     if !bindings.is_empty() {
-                        self.context.vars.push(std::collections::HashMap::new());
-                        pushed_scope = true;
                         let generic_params = self.context.enum_generic_params.get(&enum_name).cloned().unwrap_or_default();
                         let mut substitutions: std::collections::HashMap<DefaultSymbol, TypeDecl> = std::collections::HashMap::new();
                         for (param, arg) in generic_params.iter().zip(enum_type_args.iter()) {
@@ -561,9 +586,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let guard_ty = self.visit_expr(&guard_expr)?;
                 self.type_inference.type_hint = saved_hint;
                 if !guard_ty.is_equivalent(&TypeDecl::Bool) {
-                    if pushed_scope {
-                        self.context.vars.pop();
-                    }
+                    self.context.vars.pop();
                     return Err(TypeCheckError::new(format!(
                         "match arm guard must be of type bool, got {:?}",
                         guard_ty
@@ -583,9 +606,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             } else {
                 self.visit_expr(body)?
             };
-            if pushed_scope {
-                self.context.vars.pop();
-            }
+            self.context.vars.pop();
             arm_types.push(body_ty);
         }
 
@@ -779,7 +800,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let mut variant_arms: std::collections::HashMap<DefaultSymbol, Vec<Vec<Pattern>>> =
             std::collections::HashMap::new();
         for pat in patterns {
-            if let Pattern::EnumVariant(p_enum, p_variant, bindings) = pat {
+            if let Pattern::EnumVariant(p_enum, p_variant, bindings) = peel_bindings(pat) {
                 if *p_enum != enum_name {
                     continue;
                 }

@@ -11,6 +11,12 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-23
+- **PATTERN-AT-BINDING: `@` を実 pattern に (`Pattern::Binding`)** —
+  `x @ Color::Red` / `whole @ Point { x: 0i64, y }` / `Just(n @ 3i64)` が
+  書ける (任意の深さ、3 backend)。束縛は値を拒否しないので網羅性・到達性は
+  内側の pattern のもの (`peel_bindings`)。範囲だけは pattern 形が無いので
+  guard のまま。ついでに `lower_match_into_enum` が手で写していた arm dispatch を
+  `dispatch_arm_pattern` に統合。
 - **PATTERN-COMPOUND-LOWER: struct / tuple パターンを lowering 対応** —
   `MatchScrutinee` に compound を足し、フィールド / 要素ごとに比較・束縛・
   再帰する dispatch を実装。**tuple パターンも同時に解消** (元から未対応
@@ -774,10 +780,8 @@
   `#` / `$`-parameterised width、(c) interpreter JIT の
   `jit_format_<ty>` helper。いずれも踏んでから。
 - **PATTERN-EXTEND の残** ★ — (a) sub-pattern 位置の or
-  (`Shape::Circle(1i64 | 2i64)`)、(b) `@` を enum variant に
-  (`x @ Color::Red` — guard では表現できないので `Pattern` 拡張が要る)、
-  (c) 範囲の被覆判定 (`0i64..5i64` + `5i64..10i64` + ... で `_` 不要に)。
-  いずれも踏んでから。
+  (`Shape::Circle(1i64 | 2i64)`)、(b) 範囲の被覆判定
+  (`0i64..5i64` + `5i64..10i64` + ... で `_` 不要に)。いずれも踏んでから。
 - **STRUCT-UPDATE: struct update 構文 (`P { x: 5i64, ..a }`)** ★ — parse エラー。
   「1 フィールドだけ差し替えた copy」が全フィールド列挙になる。
 

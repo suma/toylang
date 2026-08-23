@@ -880,6 +880,12 @@ impl<'a> FunctionLower<'a> {
                     Self::pattern_bound_names(sp, bound);
                 }
             }
+            // PATTERN-EXTEND: `n @ pat` binds `n` on top of whatever
+            // `pat` binds.
+            Pattern::Binding(s, inner) => {
+                bound.insert(*s);
+                Self::pattern_bound_names(inner, bound);
+            }
             Pattern::Wildcard | Pattern::Literal(_) => {}
         }
     }

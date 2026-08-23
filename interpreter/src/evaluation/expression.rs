@@ -492,6 +492,12 @@ impl EvaluationContext<'_> {
                     Self::pattern_bound_names(sp, bound);
                 }
             }
+            // PATTERN-EXTEND: `n @ pat` binds `n` on top of whatever
+            // `pat` binds.
+            Pattern::Binding(s, inner) => {
+                bound.insert(*s);
+                Self::pattern_bound_names(inner, bound);
+            }
             Pattern::Wildcard | Pattern::Literal(_) => {}
         }
     }
@@ -825,6 +831,22 @@ impl EvaluationContext<'_> {
     /// sub-patterns into the current environment scope. Returns `true` if
     /// the pattern matches; on mismatch the caller should unwind the scope
     /// it pushed so abandoned bindings don't persist.
+    /// Bind one pattern name to the value it matched.
+    ///
+    /// DROP-GLUE: a payload binding owns what it names (the
+    /// scrutinee's payload is not otherwise reachable — the scrutinee
+    /// itself may never be dropped, e.g. a function parameter).
+    /// Register it so the arm's scope exit glues it. The sentinel
+    /// statement is never a real `val` / `var`, so a transfer of the
+    /// binding cannot suppress this registration — an
+    /// over-approximation that is safe because `free` is idempotent
+    /// everywhere.
+    fn bind_pattern_name(&mut self, sym: DefaultSymbol, value: &RcObject) {
+        let v = crate::value::Value::from_rc(value);
+        self.register_drop_if_needed(frontend::ast::StmtRef(u32::MAX), sym, &v);
+        self.environment.set_val(sym, value.clone().into());
+    }
+
     fn try_match_pattern(
         &mut self,
         pattern: &Pattern,
@@ -832,19 +854,18 @@ impl EvaluationContext<'_> {
     ) -> Result<bool, InterpreterError> {
         match pattern {
             Pattern::Wildcard => Ok(true),
+            // PATTERN-EXTEND: `n @ pat` — the inner pattern decides,
+            // and the name is bound only once it has said yes, so a
+            // failed arm leaves nothing behind.
+            Pattern::Binding(sym, inner) => {
+                if !self.try_match_pattern(inner, value)? {
+                    return Ok(false);
+                }
+                self.bind_pattern_name(*sym, value);
+                Ok(true)
+            }
             Pattern::Name(sym) => {
-                // DROP-GLUE: a payload binding owns what it names (the
-                // scrutinee's payload is not otherwise reachable — the
-                // scrutinee itself may never be dropped, e.g. a
-                // function parameter). Register it so the arm's scope
-                // exit glues it. The sentinel statement is never a
-                // real `val` / `var`, so a transfer of the binding
-                // cannot suppress this registration — an
-                // over-approximation that is safe because `free` is
-                // idempotent everywhere.
-                let v = crate::value::Value::from_rc(value);
-                self.register_drop_if_needed(frontend::ast::StmtRef(u32::MAX), *sym, &v);
-                self.environment.set_val(*sym, value.clone().into());
+                self.bind_pattern_name(*sym, value);
                 Ok(true)
             }
             Pattern::Literal(literal_expr) => {

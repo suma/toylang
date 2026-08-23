@@ -471,6 +471,13 @@ impl<'a> AstIntegrationContext<'a> {
                 }
                 Ok(Pattern::Tuple(new_subs))
             }
+            // PATTERN-EXTEND: the bound name is a plain identifier;
+            // whatever it wraps remaps on its own terms.
+            Pattern::Binding(sym, inner) => {
+                let new_sym = self.remap_symbol(*sym)?;
+                let new_inner = self.remap_pattern(inner)?;
+                Ok(Pattern::Binding(new_sym, Box::new(new_inner)))
+            }
             Pattern::Wildcard => Ok(Pattern::Wildcard),
         }
     }

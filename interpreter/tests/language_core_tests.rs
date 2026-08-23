@@ -2551,14 +2551,13 @@ mod enum_and_match {
     }
 
     // PATTERN-EXTEND: or-patterns (`a | b`), ranges (`0i64..5i64`), and
-    // `@` bindings (`n @ 2i64`).
+    // `@` bindings (`n @ pat`).
     //
-    // All three lower onto pattern forms that already existed: an
-    // alternative list expands into one arm per alternative (sharing
-    // the body), and a range / `@` becomes an irrefutable `Name`
-    // pattern plus a comparison guard. Nothing downstream of the
-    // parser learns a new `Pattern` variant, which is why these tests
-    // sit next to the existing match tests rather than in a new file.
+    // An alternative list expands into one arm per alternative,
+    // sharing the body, and a range becomes an irrefutable `Name`
+    // pattern plus a comparison guard. `@` is a pattern of its own
+    // (`Pattern::Binding`) that every backend peels: the inner
+    // pattern decides, the name is bound once it says yes.
 
     #[test]
     fn test_or_pattern_covers_each_alternative() {
@@ -2713,17 +2712,97 @@ mod enum_and_match {
     }
 
     #[test]
-    fn test_at_binding_rejects_a_non_value_pattern() {
-        // `@` is expressed as a guard comparison, which an enum
-        // variant cannot be written as — so it is refused with an
-        // explanation rather than silently dropping the binding.
+    fn test_at_binding_over_an_enum_variant() {
+        // `@` wraps any pattern, so a variant can be tested and named
+        // at once. The binding is the whole scrutinee, not a payload.
+        let source = r#"
+            enum Color { Red, Green, Blue }
+
+            fn rank(c: Color) -> i64 {
+                match c {
+                    Color::Red => 0i64,
+                    same @ Color::Green => rank_of(same),
+                    Color::Blue => 2i64,
+                }
+            }
+
+            fn rank_of(c: Color) -> i64 { 1i64 }
+
+            fn main() -> i64 {
+                val r: Color = Color::Red
+                val g: Color = Color::Green
+                val b: Color = Color::Blue
+                rank(r) + rank(g) + rank(b)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(3)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_at_binding_inside_a_payload() {
+        // `Some(n @ 3i64)` reads the payload and tests it in one
+        // pattern; the earlier arm must not swallow the other values.
+        let source = r#"
+            enum Maybe { Just(i64), Nothing }
+
+            fn f(o: Maybe) -> i64 {
+                match o {
+                    Maybe::Just(n @ 3i64) => n * 10i64,
+                    Maybe::Just(n) => n,
+                    Maybe::Nothing => -1i64,
+                }
+            }
+
+            fn main() -> i64 {
+                val a: Maybe = Maybe::Just(3i64)
+                val b: Maybe = Maybe::Just(8i64)
+                val c: Maybe = Maybe::Nothing
+                f(a) + f(b) + f(c)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        // 30 + 8 + (-1)
+        assert!(result.contains("Int64(37)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_at_binding_over_a_struct_pattern() {
+        // The name sees the whole struct while the field patterns
+        // still decide, so both are readable in the body.
+        let source = r#"
+            struct Point { x: i64, y: i64 }
+
+            fn f(p: Point) -> i64 {
+                match p {
+                    whole @ Point { x: 0i64, y } => whole.y + y,
+                    Point { x, y } => x + y,
+                }
+            }
+
+            fn main() -> i64 {
+                val a: Point = Point { x: 0i64, y: 5i64 }
+                val b: Point = Point { x: 2i64, y: 3i64 }
+                f(a) + f(b)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        // (5 + 5) + (2 + 3)
+        assert!(result.contains("Int64(15)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_at_binding_is_transparent_to_exhaustiveness() {
+        // A binding never rejects a value, so `x @ Color::Red` counts
+        // for `Red` exactly as the bare variant would — and the arm
+        // set below is complete without a wildcard.
         let source = r#"
             enum Color { Red, Blue }
 
             fn f(c: Color) -> i64 {
                 match c {
                     x @ Color::Red => 0i64,
-                    _ => 1i64,
+                    y @ Color::Blue => 1i64,
                 }
             }
 
@@ -2732,10 +2811,29 @@ mod enum_and_match {
                 f(r)
             }
         "#;
-        let err = execute_test_program(source).expect_err("`@` on an enum variant");
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(0)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_at_binding_over_a_literal_counts_as_that_literal() {
+        // `x @ 1i64` covers the same value the bare literal does, so a
+        // later `1i64` arm is unreachable.
+        let source = r#"
+            fn f(n: i64) -> i64 {
+                match n {
+                    x @ 1i64 => x,
+                    1i64 => 2i64,
+                    _ => 0i64,
+                }
+            }
+
+            fn main() -> i64 { f(1i64) }
+        "#;
+        let err = execute_test_program(source).expect_err("duplicate literal");
         assert!(
-            err.contains("binds a literal or a range"),
-            "expected the `@` shape diagnostic, got: {err}"
+            err.contains("unreachable match arm"),
+            "expected an unreachable-arm diagnostic, got: {err}"
         );
     }
 

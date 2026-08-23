@@ -30,12 +30,12 @@
 //!   counterparts of the pre-allocated write path, also called
 //!   recursively from the enum payload code.
 
-use frontend::ast::{Expr, ExprRef, MatchArm, Pattern, Stmt};
+use frontend::ast::{Expr, ExprRef, MatchArm, Stmt};
 use string_interner::DefaultSymbol;
 
 use super::bindings::{
     flatten_struct_locals, flatten_tuple_element_locals, Binding, EnumStorage, FieldBinding,
-    FieldShape, MatchScrutinee, PayloadSlot, TupleElementBinding, TupleElementShape,
+    FieldShape, PayloadSlot, TupleElementBinding, TupleElementShape,
 };
 use super::FunctionLower;
 use crate::ir::{
@@ -757,52 +757,9 @@ impl<'a> FunctionLower<'a> {
         for arm in arms.iter() {
             let saved_bindings = self.bindings.clone();
             let next_blk = self.fresh_block();
-            // Pattern-match dispatch — same shape as lower_match's
-            // first phase. We can't easily share code without a
-            // bigger refactor, so we mirror it here for clarity.
-            match &arm.pattern {
-                Pattern::Wildcard => {}
-                Pattern::Literal(lit_ref) => {
-                    let (scrut_v, scrut_ty) = match &scrut {
-                        MatchScrutinee::Scalar { value, ty } => (*value, *ty),
-                        MatchScrutinee::Enum { .. }
-                        | MatchScrutinee::Struct { .. }
-                        | MatchScrutinee::Tuple { .. } => {
-                            return Err(
-                                "literal pattern is only valid against a scalar scrutinee"
-                                    .to_string(),
-                            );
-                        }
-                    };
-                    self.emit_literal_eq_branch(lit_ref, scrut_v, scrut_ty, next_blk)?;
-                }
-                Pattern::EnumVariant(p_enum, p_variant, sub_patterns) => {
-                    let scrut_storage = match &scrut {
-                        MatchScrutinee::Enum(s) => s.clone(),
-                        MatchScrutinee::Scalar { .. }
-                        | MatchScrutinee::Struct { .. }
-                        | MatchScrutinee::Tuple { .. } => {
-                            return Err(
-                                "enum-variant pattern is only valid against an enum scrutinee"
-                                    .to_string(),
-                            );
-                        }
-                    };
-                    self.dispatch_enum_variant_pattern(
-                        &scrut_storage,
-                        *p_enum,
-                        *p_variant,
-                        sub_patterns,
-                        next_blk,
-                    )?;
-                }
-                other => {
-                    return Err(format!(
-                        "compiler MVP `match` arms must be enum-variant, literal, or \
-                         `_` patterns, got {other:?}"
-                    ));
-                }
-            }
+            // Pattern-match dispatch — the same one `lower_match`
+            // uses. This used to be a hand-mirrored subset.
+            self.dispatch_arm_pattern(&arm.pattern, &scrut, next_blk)?;
             if let Some(guard_ref) = &arm.guard {
                 let body_blk = self.fresh_block();
                 let gv = self

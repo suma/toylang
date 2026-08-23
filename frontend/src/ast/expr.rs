@@ -172,6 +172,15 @@ pub enum Pattern {
     /// named. Field order in the pattern need not match the
     /// declaration.
     Struct(DefaultSymbol, Vec<(DefaultSymbol, Pattern)>, bool),
+    /// PATTERN-EXTEND: `n @ pat` — bind `n` to the whole matched
+    /// value while `pat` still decides whether the arm runs.
+    ///
+    /// The inner pattern is any pattern, so `x @ Color::Red` and
+    /// `p @ Point { x: 0i64, .. }` both work. The binding itself never
+    /// rejects a value, so refutability, exhaustiveness and the shape
+    /// checks every backend emits are all the inner pattern's — a
+    /// `Binding` is transparent to them and is peeled before they run.
+    Binding(DefaultSymbol, Box<Pattern>),
     Wildcard, // _
 }
 

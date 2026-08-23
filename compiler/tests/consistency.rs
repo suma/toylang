@@ -9915,8 +9915,8 @@ fn format_spec_on_text_round_trip() {
 // PATTERN-EXTEND: or-patterns, ranges, and `@` bindings across the
 // three backends. `interpreter/example/match_pattern_extend.t` diffs
 // the printed output; these pin the exit-code path, and in particular
-// that the AOT lowering of a top-level `Name` arm (what a range and an
-// `@` desugar to) agrees with the tree-walker.
+// that the AOT lowering of a top-level `Name` arm (what a range
+// desugars to) and of `Pattern::Binding` agree with the tree-walker.
 
 #[test]
 fn or_pattern_alternatives_agree_across_backends() {
@@ -9981,4 +9981,78 @@ fn a_synthesized_guard_ands_with_a_user_guard_across_backends() {
         }
     "#;
     assert_consistent(src, "pattern_extend_guard_combination");
+}
+
+
+#[test]
+fn at_binding_over_patterns_agrees_across_backends() {
+    // `@` wraps a pattern rather than desugaring to a guard, so each
+    // backend has to peel it: bind the whole matched value, then let
+    // the inner pattern decide. The three shapes below cover the
+    // scrutinee kinds that bind differently — a scalar copies, an
+    // enum copies its storage, a struct aliases the fields.
+    let src = r#"
+        enum Color { Red, Green, Blue }
+
+        struct Point { x: i64, y: i64 }
+
+        fn rank(c: Color) -> i64 {
+            match c {
+                Color::Red => 0i64,
+                same @ Color::Green => rank_of(same),
+                Color::Blue => 2i64,
+            }
+        }
+
+        fn rank_of(c: Color) -> i64 { 1i64 }
+
+        fn corner(p: Point) -> i64 {
+            match p {
+                whole @ Point { x: 0i64, y } => whole.y + y,
+                Point { x, y } => x + y,
+            }
+        }
+
+        fn scaled(n: i64) -> i64 {
+            match n {
+                x @ 7i64 => x * 2i64,
+                _ => 0i64,
+            }
+        }
+
+        fn main() -> i64 {
+            val g: Color = Color::Green
+            val b: Color = Color::Blue
+            val origin: Point = Point { x: 0i64, y: 5i64 }
+            val other: Point = Point { x: 2i64, y: 3i64 }
+            rank(g) + rank(b) + corner(origin) + corner(other) + scaled(7i64) + scaled(1i64)
+        }
+    "#;
+    assert_consistent(src, "at_binding_over_patterns");
+}
+
+#[test]
+fn at_binding_inside_a_payload_agrees_across_backends() {
+    // The payload position: `Just(n @ 3i64)` has to run the literal
+    // check and the payload binding in the right order, and must not
+    // swallow the values the next arm handles.
+    let src = r#"
+        enum Maybe { Just(i64), Nothing }
+
+        fn f(m: Maybe) -> i64 {
+            match m {
+                Maybe::Just(n @ 3i64) => n * 10i64,
+                Maybe::Just(n) => n,
+                Maybe::Nothing => -1i64,
+            }
+        }
+
+        fn main() -> i64 {
+            val a: Maybe = Maybe::Just(3i64)
+            val b: Maybe = Maybe::Just(8i64)
+            val c: Maybe = Maybe::Nothing
+            f(a) + f(b) + f(c)
+        }
+    "#;
+    assert_consistent(src, "at_binding_inside_payload");
 }

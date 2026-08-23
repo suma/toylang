@@ -2260,7 +2260,8 @@ Patterns:
 - `42i64`, `true`, `"hello"` — literal patterns for primitives
 - `a | b | c` — alternatives, all sharing one arm body
 - `lo..hi` — a half-open integer range
-- `name @ p` — bind the matched value while still testing it
+- `name @ p` — bind the matched value while `p` still tests it; `p`
+  is any pattern, and `@` nests
 
 Each arm is an expression; all arms must produce the same type.
 
@@ -2278,6 +2279,17 @@ match n {
     y @ 6i64..10i64 => "six to nine",
     _            => "high",
 }
+
+match c {
+    Color::Red        => 0i64,
+    same @ Color::Green => rank_of(same),   # names the value, still only Green
+    Color::Blue       => 2i64,
+}
+
+match p {
+    whole @ Point { x: 0i64, y } => whole.y + y,   # on the y axis
+    Point { x, y }               => x + y,
+}
 ```
 
 - **`a | b`** puts several alternatives on one arm. They share the
@@ -2287,16 +2299,23 @@ match n {
 - **`lo..hi`** is **half-open**, matching the `..` expression form:
   `0i64..5i64` covers 0 through 4. Endpoints are integer literals.
 - **`name @ p`** binds the matched value to `name`, which the arm body
-  and any guard can use. `p` is a literal or a range; an enum variant
-  or tuple pattern cannot be bound this way (the parser says so
-  explicitly).
+  and any guard can use, while `p` still decides whether the arm runs.
+  `p` is any pattern — a literal, an enum variant, a struct or tuple
+  pattern — and `@` may appear at any depth, so `Some(n @ 3i64)` reads
+  a payload and tests it in one pattern. The one exception is a range
+  (`n @ 0i64..5i64`), which becomes a guard for the reason below.
 
-A range and an `@` binding are expressed internally as an irrefutable
-binding plus a comparison guard. That has one visible consequence: like
-any guarded arm, **they never count toward exhaustiveness**, so an
-integer `match` still needs its `_` arm. An or-pattern carries no
-guard, so it does count — an enum whose variants are all named across
-alternatives needs no wildcard.
+A binding never rejects a value, so `@` is **invisible to
+exhaustiveness and reachability**: `x @ Color::Red` covers `Red` the
+way the bare variant does, and `x @ 1i64` makes a later `1i64` arm
+unreachable.
+
+A range — including one under an `@` — is expressed internally as an
+irrefutable binding plus a comparison guard. That has one visible
+consequence: like any guarded arm, **a range never counts toward
+exhaustiveness**, so an integer `match` still needs its `_` arm. An
+or-pattern carries no guard, so it does count — an enum whose variants
+are all named across alternatives needs no wildcard.
 
 ### Guards
 

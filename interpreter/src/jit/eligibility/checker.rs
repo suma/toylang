@@ -1354,11 +1354,14 @@ fn check_match_pattern(
                 Some(None)
             }
         }
-        // PATTERN-STRUCT: struct patterns fall back to the
-        // interpreter, like tuple patterns do.
-        Pattern::Struct(_, _, _) | Pattern::Tuple(_) | Pattern::Name(_) => {
+        // PATTERN-STRUCT / PATTERN-EXTEND: struct, tuple and `n @ pat`
+        // patterns fall back to the interpreter.
+        Pattern::Struct(_, _, _)
+        | Pattern::Tuple(_)
+        | Pattern::Name(_)
+        | Pattern::Binding(_, _) => {
             note(reject_reason, || {
-                "JIT match: tuple / top-level name patterns not yet supported".to_string()
+                "JIT match: tuple / top-level name / `@` patterns not yet supported".to_string()
             });
             None
         }

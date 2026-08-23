@@ -1557,7 +1557,7 @@ generic extern call falls back to the interpreter (JIT) or fails
 to resolve at link time (AOT) until each backend grows
 per-instance dispatch.
 
-### Linking to real C libraries (`from "lib"` / `as "sym"`)
+### Linking to real C libraries
 
 FFI_PLAN P1: an `extern fn` can name its own library and symbol,
 making it a real C ABI call instead of a backend-registered one:
@@ -2694,7 +2694,7 @@ io::env_value(i: u64) -> str    # the i-th environment variable's value
 ```
 
 Each function delegates to an `extern fn`; see [Linking to real C
-libraries](#linking-to-real-c-libraries-from-lib-as-sym) for the
+libraries](#linking-to-real-c-libraries) for the
 boundary rules. Failure
 convention is `""`-return plus a `file_exists` probe — an `extern fn`
 boundary cannot carry a `Result`.

@@ -382,12 +382,22 @@ fn main() -> u64 {
     `..` で残りを無視。全フィールド列挙が既定 (`..` なしで省くと型エラー)。
     irrefutable な arm が 1 つあれば網羅。`if val` でも使える。**3 backend 対応**
     (tuple パターンも同時に lowering 対応した)
-  - **or / 範囲 / `@` (PATTERN-EXTEND)**: `1i64 | 2i64 => ...` (alternative ごとに arm 複製、body は共有) / `0i64..5i64 => ...` (**半開区間**、整数リテラル端点のみ) / `n @ 2i64 => n`。範囲と `@` は **irrefutable な `Name` + 比較 guard** に desugar されるので **網羅性に寄与しない** (整数 match の `_` は必要なまま)。or は guard が無いので網羅に寄与する (`Color::Red | Color::Green` + `Color::Blue` で wildcard 不要)。`@` を enum variant に付けるのは parser が拒否、sub-pattern 位置の or は未対応。interpreter JIT は範囲 / `@` で silent fallback
+  - **or / 範囲 / `@` (PATTERN-EXTEND、完了)**: `1i64 | 2i64 => ...` /
+    `0i64..5i64 => ...` (**半開区間**、整数リテラル端点のみ) / `n @ 2i64 => n`。
+    3 つとも**実 pattern** なので **sub-pattern 位置にも書け** (`Circle(1i64 | 2i64)` /
+    `Point { x: 0i64 | 1i64, y }` / `Just(n @ 3i64)`)、**網羅性・到達性に寄与する** —
+    範囲は隣接区間を merge した区間集合で判定するので earlier arm に含まれる arm は
+    unreachable (`0i64..10i64` の後の `3i64..5i64`)、空範囲 (`5i64..5i64`) は型エラー。
+    ただし整数型を**跨がない**範囲だけでは網羅にならないので `_` は要る
+    (診断は「add a wildcard `_` arm (or ranges that span the type)」)。
+    `@` の網羅性は内側の pattern のもの (`x @ Color::Red` は Red を覆う)。
+    3 backend 対応。interpreter JIT は範囲 / `@` / struct / tuple パターンで
+    silent fallback
   - 網羅性チェック: wildcard がなく variant が欠落していると型チェックエラー
   - 到達性チェック: 同じ variant を 2 回 arm に書く、または `_` の後ろに arm を置くと型チェックエラー
   - ジェネリック enum: `enum Option<T> { None, Some(T) }` をサポート。タプル variant の引数から型パラメータを推論、ユニット variant（`None`）は `val x: Option<i64> = Option::None` のように型注釈から補完
   - リテラルパターン: scrutinee が `bool`/`i64`/`u64`/`str` のとき、`0i64 => ...` / `true => ...` / `"hello" => ...` のようにリテラルで分岐可能。`bool` は両値で網羅、整数・文字列は wildcard 必須
-  - ネストパターン: `Option::Some(Option::Some(v))` や `Box::Put(Color::Red)` のように、タプル variant のサブパターンに再帰的にパターンを書ける。サブパターン位置には Name バインディング、`_` ワイルドカード、リテラル、ネストした enum variant を記述可能
+  - ネストパターン: `Option::Some(Option::Some(v))` や `Box::Put(Color::Red)` のように、タプル variant のサブパターンに再帰的にパターンを書ける。サブパターン位置には**任意の pattern** — Name バインディング / `_` / リテラル / ネストした enum variant に加え、struct・tuple・or・範囲・`@` も書ける
 
 ## Architecture Notes
 

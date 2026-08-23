@@ -57,7 +57,7 @@ thread_local! {
     /// this instead when it has one. Cleared whenever a fresh
     /// instantiation starts, so a message can never outlive the walk
     /// that produced it.
-    static PENDING_CYCLE: RefCell<Option<String>> = const { RefCell::new(None) };
+    static PENDING_REFUSAL: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 struct Guard(InstanceKey);
@@ -69,7 +69,7 @@ impl Guard {
             if !set.borrow_mut().insert(key.clone()) {
                 return None;
             }
-            PENDING_CYCLE.with(|c| *c.borrow_mut() = None);
+            PENDING_REFUSAL.with(|c| *c.borrow_mut() = None);
             Some(Guard(key))
         })
     }
@@ -81,17 +81,19 @@ fn in_progress(key: &InstanceKey) -> bool {
     IN_PROGRESS.with(|set| set.borrow().contains(key))
 }
 
-/// Record the cycle so the frame that swallows this `Err` can report
-/// it, and hand the same message back for the immediate return.
-fn note_cycle(message: String) -> String {
-    PENDING_CYCLE.with(|c| *c.borrow_mut() = Some(message.clone()));
+/// Record the reason so the frame that swallows this `Err` can report
+/// it, and hand the same message back for the immediate return. Used
+/// for a recursive type and for a member shape the MVP has no storage
+/// for — both are refusals a caller would otherwise mis-describe.
+fn note_refusal(message: String) -> String {
+    PENDING_REFUSAL.with(|c| *c.borrow_mut() = Some(message.clone()));
     message
 }
 
-/// The cycle message, if a nested instantiation refused since this one
-/// started. Consumes it.
-fn take_pending_cycle() -> Option<String> {
-    PENDING_CYCLE.with(|c| c.borrow_mut().take())
+/// The reason a nested instantiation refused since this one started,
+/// if there was one. Consumes it.
+fn take_pending_refusal() -> Option<String> {
+    PENDING_REFUSAL.with(|c| c.borrow_mut().take())
 }
 
 impl Drop for Guard {
@@ -277,7 +279,7 @@ fn instantiate_enum_inner(
         return Ok(id);
     }
     let Some(_guard) = Guard::enter(key) else {
-        return Err(note_cycle(recursive_type_error("enum", base_name, interner)));
+        return Err(note_refusal(recursive_type_error("enum", base_name, interner)));
     };
     // Claim the id before the payloads are lowered: one of them may
     // name a type whose own lowering needs *this* id back (an enum
@@ -308,7 +310,7 @@ fn instantiate_enum_inner(
                     interner,
                 )
                 .ok_or_else(|| {
-                    take_pending_cycle().unwrap_or_else(|| {
+                    take_pending_refusal().unwrap_or_else(|| {
                         format!(
                             "enum `{}::{}` has unsupported payload type `{:?}` \
                              (compiler MVP accepts i64 / u64 / f64 / bool, or another \
@@ -563,7 +565,7 @@ fn instantiate_struct_inner(
         return Ok(id);
     }
     let Some(_guard) = Guard::enter(key) else {
-        return Err(note_cycle(recursive_type_error("struct", base_name, interner)));
+        return Err(note_refusal(recursive_type_error("struct", base_name, interner)));
     };
     // Same two-phase reservation as `instantiate_enum`: a field can
     // name a generic instantiated over the struct being built
@@ -586,7 +588,7 @@ fn instantiate_struct_inner(
             let lowered =
                 substitute_field_type(ftype, &subst, module, templates, enum_templates, interner)
                     .ok_or_else(|| {
-                        take_pending_cycle().unwrap_or_else(|| {
+                        take_pending_refusal().unwrap_or_else(|| {
                             format!(
                                 "compiler MVP cannot lower struct field `{}.{}: {:?}`",
                                 interner.resolve(base_name).unwrap_or("?"),
@@ -601,6 +603,22 @@ fn instantiate_struct_inner(
                     interner.resolve(base_name).unwrap_or("?"),
                     fname
                 ));
+            }
+            // An enum-typed field needs a tag local plus per-variant
+            // payload locals, and `FieldShape` has no such form — it
+            // would silently become a one-local scalar and fail later
+            // with "struct field rhs produced no value". Refuse here,
+            // where the struct is named, so the message says what is
+            // missing (JIT-enum-1 residual). The tree-walker has no
+            // such limit.
+            if matches!(lowered, Type::Enum(_)) {
+                return Err(note_refusal(format!(
+                    "compiler MVP cannot hold an enum in struct field `{}.{}` — \
+                     the compiled backends have no storage shape for it yet, \
+                     so this program runs on the interpreter only",
+                    interner.resolve(base_name).unwrap_or("?"),
+                    fname
+                )));
             }
             concrete_fields.push((fname.clone(), lowered));
         }
@@ -623,6 +641,32 @@ fn instantiate_struct_inner(
 /// Recursively lower a struct field's declared type, applying the
 /// active generic substitution. Recurses through nested generic
 /// struct types so `Cell<Cell<i64>>` resolves all the way down.
+/// Lower a named type's type arguments under the active generic
+/// substitution. Shared by the struct and enum arms of
+/// [`substitute_field_type`], which differ only in what they hand the
+/// results to.
+fn substitute_type_args(
+    args: &[TypeDecl],
+    subst: &HashMap<DefaultSymbol, Type>,
+    module: &mut Module,
+    templates: &StructDefs,
+    enum_templates: &EnumDefs,
+    interner: &DefaultStringInterner,
+) -> Option<Vec<Type>> {
+    let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
+    for a in args {
+        concrete.push(substitute_type_arg(
+            a,
+            subst,
+            module,
+            templates,
+            enum_templates,
+            interner,
+        )?);
+    }
+    Some(concrete)
+}
+
 pub(super) fn substitute_field_type(
     ty: &TypeDecl,
     subst: &HashMap<DefaultSymbol, Type>,
@@ -660,17 +704,14 @@ pub(super) fn substitute_field_type(
             }
         }
         TypeDecl::Struct(name, args) if templates.contains_key(name) => {
-            let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
-            for a in args {
-                concrete.push(substitute_type_arg(
-                    a,
-                    subst,
-                    module,
-                    templates,
-                    enum_templates,
-                    interner,
-                )?);
-            }
+            let concrete = substitute_type_args(
+                args,
+                subst,
+                module,
+                templates,
+                enum_templates,
+                interner,
+            )?;
             instantiate_struct(
                 module,
                 templates,
@@ -681,6 +722,27 @@ pub(super) fn substitute_field_type(
             )
             .ok()
             .map(Type::Struct)
+        }
+        // A generic enum field (`value: Option<i64>`). The parser
+        // cannot tell a struct name from an enum one, so this arrives
+        // as `Struct(name, args)` too and only the template tables
+        // say which it is — without this arm the non-generic spelling
+        // lowered and the generic one did not
+        // (STRUCT-FIELD-GENERIC-ENUM).
+        TypeDecl::Struct(name, args) | TypeDecl::Enum(name, args)
+            if enum_templates.contains_key(name) =>
+        {
+            let concrete = substitute_type_args(
+                args,
+                subst,
+                module,
+                templates,
+                enum_templates,
+                interner,
+            )?;
+            instantiate_enum(module, enum_templates, templates, *name, concrete, interner)
+                .ok()
+                .map(Type::Enum)
         }
         TypeDecl::Tuple(elements) => {
             let mut lowered: Vec<Type> = Vec::with_capacity(elements.len());
@@ -804,6 +866,17 @@ pub(super) fn substitute_type_arg(
 /// tuples respectively. Used at function-signature boundaries
 /// (params and return type) where these compound shapes are
 /// allowed; values inside the IR's value graph stay scalar.
+/// The message for a parameter / return type the MVP could not lower.
+///
+/// `lower_param_or_return_type` returns `Option`, so a nested refusal
+/// with a real explanation ("cannot hold an enum in struct field
+/// `S.c`") would otherwise be replaced by the caller's own guess,
+/// which only knows the spelling of the type. Prefer the recorded
+/// reason when there is one.
+pub(super) fn unlowerable_type_message(fallback: impl FnOnce() -> String) -> String {
+    take_pending_refusal().unwrap_or_else(fallback)
+}
+
 pub(super) fn lower_param_or_return_type(
     ty: &TypeDecl,
     struct_defs: &StructDefs,

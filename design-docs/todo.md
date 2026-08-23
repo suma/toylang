@@ -11,6 +11,16 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-23
+- **STRUCT-FIELD-GENERIC-ENUM: struct のフィールドに enum を書けるようにした** —
+  原因は 2 つで、generic とは無関係だった: (1) フィールド型の検証が
+  `struct_definitions` しか見ていなかった (enum は別表)、(2) struct は
+  宣言前に一括登録されるのに enum はされておらず前方参照できなかった
+  (auto-load 由来の `Option` はどう並べても救えない)。あわせて診断が
+  `SymbolU32 { value: 42 }` を出していたのを名前に。AOT/JIT 側も
+  generic enum のフィールド型を lower できるようにした
+  (`substitute_field_type` に enum の arm が無かった) が、`FieldShape` に
+  Enum 形が無いのは別件 (JIT-enum-1) なので struct の時点で理由付きで
+  refuse する。interpreter は 3 例とも動く。
 - **PATTERN-OR-NESTED: sub-pattern 位置の or** — `Circle(1i64 | 2i64)` /
   `Point { x: 0i64 | 1i64, y }` / `(0i64 | 1i64, n)`。全 sub-pattern 位置が
   `parse_match_pattern` を通り、container が slot の直積を取る (上限 64)。
@@ -691,11 +701,14 @@
   パターンとは無関係で、match 抜きでも再現する (2026-08-23 に切り分け)。
   #160 の「inline tuple literal を call 引数に渡す件」と同じもの。
 - **160. タプルの JIT 対応 (ネスト)** ★ — `((a,b),c)` と tuple-of-struct。`ParamTy::Tuple(Vec<ScalarTy>)` を tree 構造にする 100+ 箇所の refactor。inline tuple literal を call 引数に渡す件も残り。
-- **STRUCT-FIELD-GENERIC-ENUM: struct のフィールドに generic enum を置くと壊れる** ★★ —
-  `struct Wrapper { value: Option<i64> }` が `[E0003] Struct 'SymbolU32 { value: 42 }'
-  not found` になる (2026-08-23、PATTERN-STRUCT のテスト作成中に発見)。
-  パターンとは無関係で、struct 宣言と literal だけで再現する。
-- **JIT-enum-1 (residual)** ★ — ネストした generic enum payload (`Option<Option<T>>`)、enum 型の struct field、payload に struct / tuple を持つ enum。
+- **JIT-enum-1 (residual)** ★★ — ネストした generic enum payload (`Option<Option<T>>`)、**enum 型の struct field**、payload に struct / tuple を持つ enum。
+  enum 型の struct field は 2026-08-23 に**型検査が通るようになった**ので
+  (STRUCT-FIELD-GENERIC-ENUM) 踏みやすくなった。本体は `FieldShape` に
+  Enum 形が無いこと — tag + variant ごとの payload local が要る。
+  現状はフィールド名付きで refuse する (`cannot hold an enum in struct
+  field \`Painted.color\``、`compiler/tests/e2e.rs` が wording を pin)。
+  影響は `FieldShape` の 51 箇所 (match_lowering / field_access / expr /
+  compound_literal / compound_storage / type_inference / print / bindings)。
 - **FROM-INTO-ENUM-ERR** ★ — enum エラー型への `From` 変換 (`?` の cross-error 経路) が interpreter のみ。AOT/JIT が enum の associated call (`MyErr::from(e)`) を lower できないため。struct エラー型は 3 バックエンドで動く。
 - **NUM-W-AOT-pack Phase 3** ★ — compound element 配列の tighter layout (`[PackedRgba; N]` が 4 バイト相当のところ 32 バイト消費)。メモリ効率のみで機能差はない。
 - **195b. `extern fn` の monomorph 化** ★ — generic extern は現状 interpreter の type-erased registry でのみ動く。JIT / AOT には mangled symbol の emit と Rust 側実装の登録が要る。実需要なし。

@@ -1201,4 +1201,137 @@ fn main() -> u64 {
         let result = test_program(program);
         assert!(result.is_err(), "assigning to a missing field must fail");
     }
+
+    // STRUCT-FIELD-GENERIC-ENUM: a struct field may name an enum.
+    //
+    // The declaration validator used to consult only
+    // `struct_definitions`, so every enum-typed field was rejected as
+    // an undefined struct, and enums were not pre-registered the way
+    // structs are, so even a local enum had to be declared first.
+
+    #[test]
+    fn test_struct_field_of_enum_type() {
+        let program = r#"
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+struct Painted {
+    color: Color,
+    n: u64,
+}
+
+fn main() -> u64 {
+    val p = Painted { color: Color::Green, n: 5u64 }
+    match p.color {
+        Color::Red => p.n,
+        Color::Green => p.n * 2u64,
+        Color::Blue => p.n * 3u64,
+    }
+}
+"#;
+        let result = test_program(program).expect("enum-typed struct field should work");
+        assert_eq!(*result.borrow(), Object::UInt64(10));
+    }
+
+    #[test]
+    fn test_struct_field_may_name_an_enum_declared_later() {
+        // Structs could always forward-reference a struct; enums are
+        // pre-registered now, so the same holds for them.
+        let program = r#"
+struct Holder {
+    value: Flag,
+}
+
+enum Flag {
+    On,
+    Off,
+}
+
+fn main() -> u64 {
+    val h = Holder { value: Flag::On }
+    match h.value {
+        Flag::On => 1u64,
+        Flag::Off => 0u64,
+    }
+}
+"#;
+        let result = test_program(program).expect("forward-referenced enum should work");
+        assert_eq!(*result.borrow(), Object::UInt64(1));
+    }
+
+    #[test]
+    fn test_struct_field_of_generic_enum_type() {
+        // The case the bug was filed under: a field typed with an enum
+        // that comes from an auto-loaded module, so no ordering in the
+        // user's file could have helped.
+        let program = r#"
+struct Wrapper {
+    value: Option<i64>,
+    tag: i64,
+}
+
+fn unwrap_or(w: Wrapper, fallback: i64) -> i64 {
+    match w.value {
+        Option::Some(v) => v,
+        Option::None => fallback,
+    }
+}
+
+fn main() -> i64 {
+    val some: Option<i64> = Option::Some(42i64)
+    val none: Option<i64> = Option::None
+    val a = Wrapper { value: some, tag: 1i64 }
+    val b = Wrapper { value: none, tag: 2i64 }
+    unwrap_or(a, -1i64) + unwrap_or(b, -1i64) + a.tag + b.tag
+}
+"#;
+        let result = test_program(program).expect("Option-typed struct field should work");
+        // 42 + (-1) + 1 + 2
+        assert_eq!(*result.borrow(), Object::Int64(44));
+    }
+
+    #[test]
+    fn test_struct_field_of_undefined_type_is_still_rejected() {
+        // Pre-registering enums must not turn the check into a no-op,
+        // and the message spells the name (it used to print the raw
+        // `SymbolU32 { value: 42 }`).
+        let program = r#"
+struct Holder {
+    value: Nope,
+}
+
+fn main() -> u64 { 0u64 }
+"#;
+        let err = test_program(program).expect_err("undefined field type");
+        assert!(
+            err.contains("Type 'Nope' not found"),
+            "expected the name to be spelled, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_duplicate_enum_is_still_rejected() {
+        // Pre-registration inserts the name before the declaration is
+        // visited, so the duplicate check has to tell its own entry
+        // apart from a second declaration.
+        let program = r#"
+enum Flag {
+    On,
+}
+
+enum Flag {
+    Off,
+}
+
+fn main() -> u64 { 0u64 }
+"#;
+        let err = test_program(program).expect_err("duplicate enum");
+        assert!(
+            err.contains("already defined"),
+            "expected the duplicate-enum diagnostic, got: {err}"
+        );
+    }
 }

@@ -145,18 +145,38 @@ impl<'a> TypeCheckerVisitor<'a> {
             visitor.add_function_with_module(qualifier, func.clone());
         }
 
-        // Register all structs from the program's statements into the type checker context
+        // Register every struct and enum the program declares, before
+        // any of them is type-checked, so a declaration can name a
+        // type that appears further down the file. Structs already
+        // worked this way; enums did not, which made a field of enum
+        // type an error unless the enum came first — and no ordering
+        // saves a field whose type comes from an auto-loaded module
+        // (STRUCT-FIELD-GENERIC-ENUM).
+        //
+        // The enum's own declaration is still visited later and stays
+        // the authority on duplicates and variant names; see
+        // `enums_awaiting_decl`.
         let stmt_len = visitor.core.stmt_pool.len();
         for i in 0..stmt_len {
             let stmt_ref = StmtRef(i as u32);
-            if let Some(stmt) = visitor.core.stmt_pool.get(&stmt_ref)
-                && let Stmt::StructDecl { name, generic_params: _, generic_bounds: _, fields, visibility } = stmt {
-                    visitor.context.register_struct(
-                        name,
-                        fields.clone(),
-                        visibility,
-                    );
+            match visitor.core.stmt_pool.get(&stmt_ref) {
+                Some(Stmt::StructDecl { name, fields, visibility, .. }) => {
+                    visitor.context.register_struct(name, fields.clone(), visibility);
                 }
+                Some(Stmt::EnumDecl { name, generic_params, variants, .. }) => {
+                    // A duplicate name overwrites here and is reported
+                    // when the second declaration is visited.
+                    visitor.context.enum_definitions.insert(name, variants.clone());
+                    if !generic_params.is_empty() {
+                        visitor
+                            .context
+                            .enum_generic_params
+                            .insert(name, generic_params.clone());
+                    }
+                    visitor.context.enums_awaiting_decl.insert(name);
+                }
+                _ => {}
+            }
         }
 
         visitor

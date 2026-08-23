@@ -85,6 +85,13 @@ pub struct TypeCheckContext {
     // Generic parameter symbols declared by each generic enum, in order.
     // Missing entry means the enum is non-generic.
     pub enum_generic_params: HashMap<DefaultSymbol, Vec<DefaultSymbol>>,
+    /// Enums the constructor pre-registered but whose declaration the
+    /// statement walk has not reached yet. Structs are pre-registered
+    /// so a field can name one declared further down the file, and
+    /// enums are too (STRUCT-FIELD-GENERIC-ENUM); this set is what
+    /// lets `visit_enum_decl` still tell "the pre-pass put it there"
+    /// apart from "a second enum claims this name".
+    pub enums_awaiting_decl: std::collections::HashSet<DefaultSymbol>,
     // Registered traits: name -> ordered method signatures.
     pub traits: HashMap<DefaultSymbol, Vec<TraitMethodSignature>>,
     /// ITER-PROTOCOL-TRAIT: generic parameters declared on each
@@ -159,6 +166,7 @@ impl TypeCheckContext {
             current_fn_generic_bounds: HashMap::new(),
             enum_definitions: HashMap::new(),
             enum_generic_params: HashMap::new(),
+            enums_awaiting_decl: std::collections::HashSet::new(),
             traits: HashMap::new(),
             trait_generic_params: HashMap::new(),
             pending_trait_type_args: Vec::new(),

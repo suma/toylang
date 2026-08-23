@@ -35,7 +35,8 @@ use super::method_registry::{
     MethodRegistry, MethodTemplateSpec, PendingMethodInstance,
 };
 use super::templates::{
-    collect_enum_defs, collect_struct_defs, lower_param_or_return_type, EnumDefs, StructDefs,
+    collect_enum_defs, collect_struct_defs, lower_param_or_return_type,
+    unlowerable_type_message, EnumDefs, StructDefs,
 };
 use super::FunctionLower;
 use crate::contract_facts::ContractFacts;
@@ -444,17 +445,23 @@ pub fn lower_program(
             let mut params: Vec<Type> = Vec::with_capacity(func.parameter.len());
             for (pname, pty) in &func.parameter {
                 let lowered = lower_param_or_return_type(pty, &struct_defs, &enum_defs, &mut module, interner).ok_or_else(|| {
-                    format!(
-                        "compiler MVP cannot lower extern fn parameter `{}: {:?}`",
-                        interner.resolve(*pname).unwrap_or("?"),
-                        pty
-                    )
+                    unlowerable_type_message(|| {
+                        format!(
+                            "compiler MVP cannot lower extern fn parameter `{}: {:?}`",
+                            interner.resolve(*pname).unwrap_or("?"),
+                            pty
+                        )
+                    })
                 })?;
                 params.push(lowered);
             }
             let ret = match &func.return_type {
                 Some(ty) => lower_param_or_return_type(ty, &struct_defs, &enum_defs, &mut module, interner).ok_or_else(
-                    || format!("compiler MVP cannot lower extern fn return type `{:?}`", ty),
+                    || {
+                        unlowerable_type_message(|| {
+                            format!("compiler MVP cannot lower extern fn return type `{:?}`", ty)
+                        })
+                    },
                 )?,
                 None => Type::Unit,
             };
@@ -471,17 +478,23 @@ pub fn lower_program(
         let mut params: Vec<Type> = Vec::with_capacity(func.parameter.len());
         for (name, ty) in &func.parameter {
             let lowered = lower_param_or_return_type(ty, &struct_defs, &enum_defs, &mut module, interner).ok_or_else(|| {
-                format!(
-                    "compiler MVP cannot lower parameter `{}: {:?}` yet",
-                    interner.resolve(*name).unwrap_or("?"),
-                    ty
-                )
+                unlowerable_type_message(|| {
+                    format!(
+                        "compiler MVP cannot lower parameter `{}: {:?}` yet",
+                        interner.resolve(*name).unwrap_or("?"),
+                        ty
+                    )
+                })
             })?;
             params.push(lowered);
         }
         let ret = match &func.return_type {
             Some(ty) => lower_param_or_return_type(ty, &struct_defs, &enum_defs, &mut module, interner).ok_or_else(
-                || format!("compiler MVP cannot lower return type `{:?}` yet", ty),
+                || {
+                    unlowerable_type_message(|| {
+                        format!("compiler MVP cannot lower return type `{:?}` yet", ty)
+                    })
+                },
             )?,
             None => Type::Unit,
         };

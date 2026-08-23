@@ -751,7 +751,13 @@ impl<'a> DeclVisitor for TypeCheckerVisitor<'a> {
 
     fn visit_enum_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, variants: &Vec<EnumVariantDef>, _visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
         // Reject duplicate enum names and duplicate variant names inside one enum.
-        if self.context.enum_definitions.contains_key(&name) {
+        //
+        // The constructor pre-registers every enum so a declaration
+        // above can name one below, so "already in the map" is not by
+        // itself a duplicate — the first visit claims the name out of
+        // `enums_awaiting_decl`, and only a later one finds it gone.
+        let claimed_pre_registration = self.context.enums_awaiting_decl.remove(&name);
+        if !claimed_pre_registration && self.context.enum_definitions.contains_key(&name) {
             let name_str = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
             return Err(TypeCheckError::new(format!("enum '{}' is already defined", name_str)));
         }

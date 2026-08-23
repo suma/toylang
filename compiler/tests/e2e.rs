@@ -90,6 +90,52 @@ fn try_compile_and_run(
     let _ = std::fs::remove_file(&exe_path);
     result
 }
+/// STRUCT-FIELD-GENERIC-ENUM: the frontend accepts an enum-typed
+/// struct field now, which makes an old backend gap reachable —
+/// `FieldShape` has no enum form, so the compiled backends cannot
+/// hold one. Pin the wording: without a refusal at the struct, the
+/// failure surfaced much later as "struct field rhs produced no
+/// value", or as a parameter type printed as a raw `SymbolU32`.
+#[test]
+fn enum_typed_struct_field_is_refused_with_its_reason() {
+    if skip_e2e() {
+        return;
+    }
+    let source = r#"
+enum Color { Red, Green }
+
+struct Painted {
+    color: Color,
+    n: i64,
+}
+
+fn shade(p: Painted) -> i64 {
+    match p.color {
+        Color::Red => p.n,
+        Color::Green => p.n * 2i64,
+    }
+}
+
+fn main() -> i64 {
+    val p: Painted = Painted { color: Color::Green, n: 5i64 }
+    shade(p)
+}
+"#;
+    let src_path = unique_path("enum_struct_field.t");
+    std::fs::write(&src_path, source).expect("write source");
+    let mut options = CompilerOptions::new(src_path.clone());
+    options.output = Some(unique_path("enum_struct_field"));
+    options.core_modules_dir = Some(core_modules_dir());
+    options.link_cache_dir = Some(link_cache_dir_for_tests());
+    let err = compile_file(&options).expect_err("enum-typed struct field should be refused");
+    let msg = format!("{err:?}");
+    let _ = std::fs::remove_file(&src_path);
+    assert!(
+        msg.contains("cannot hold an enum in struct field `Painted.color`"),
+        "expected the refusal to name the field, got: {msg}"
+    );
+}
+
 #[test]
 fn short_circuit_and_or() {
     if skip_e2e() {

@@ -1765,6 +1765,17 @@ impl Point {
 }
 ```
 
+A field's type may be any type that has a definition: a primitive, a
+tuple, an array, another struct, a function type, or an **enum** —
+generic ones (`value: Option<i64>`) included. Declaration order does
+not matter; a field can name a type declared further down the file, or
+one that comes from an auto-loaded module.
+
+> **Backend coverage.** An enum-typed field runs on the interpreter
+> only. The compiled backends have no storage shape for an enum inside
+> a struct and refuse the program by name (``cannot hold an enum in
+> struct field `Painted.color` ``); see *Known limitations*.
+
 ### Field access and assignment
 
 ```rust
@@ -3825,6 +3836,15 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   backend. The remaining gap is that same shape on a
   *user-defined* generic enum. See
   [Closures → Backend coverage](#closures).
+- **An enum-typed struct field runs on the interpreter only** — a
+  field such as `color: Color` or `value: Option<i64>` type-checks and
+  runs on the tree-walker, but the compiled backends have no storage
+  shape for an enum held inside a struct (an enum needs a tag slot plus
+  per-variant payload slots; struct fields carry scalars, structs and
+  tuples). They refuse the program at the struct, naming the field:
+  ``compiler MVP cannot hold an enum in struct field `Painted.color` ``.
+  Holding the enum in a separate binding, or reducing it to a scalar
+  before it enters the struct, keeps a program on all three backends.
 - **A compound literal cannot be passed straight into a call** —
   `f(Point { x: 1i64, y: 2i64 })` and `f((1i64, 2i64))` fail to
   compile with `call argument produced no value`. Bind the value

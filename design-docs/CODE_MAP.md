@@ -67,6 +67,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | `var` の型注釈チェック | `type_checker/visitor.rs::process_val_type_with_mut` |
 | ブロックスコープ (lowering) | `compiler_lower/src/expr.rs::lower_expr_block` |
 | スコープスタック (型検査) | `type_checker/scope.rs`, `type_checker/context.rs` |
+| struct / enum 宣言の**事前登録** | `type_checker/visitor.rs` のコンストラクタ (statement pool を 1 周して `register_struct` / `enum_definitions` に入れる)。これがあるのでフィールド型は後方の宣言を名指しできる。enum は `enums_awaiting_decl` で「事前登録した分」と「2 つ目の宣言」を区別する。フィールド型の妥当性検査は `type_checker/struct_literal.rs::visit_struct_decl_impl` (`named_type_is_defined` が **両方の表**を見る) |
 | 実行時環境 | `interpreter/src/environment.rs` |
 
 > `val` と `var` は**別経路**。片方だけ直すと非対称になる (実際に起きた)。

@@ -8,6 +8,22 @@ use crate::type_checker::method::MethodProcessing;
 
 /// Struct declaration type checking implementation
 impl<'a> TypeCheckerVisitor<'a> {
+    /// Whether a name used as a field type names a type that exists.
+    /// Structs and enums live in separate tables, and a field type
+    /// mentions a name without saying which kind it is.
+    fn named_type_is_defined(&self, name: &DefaultSymbol) -> bool {
+        self.context.struct_definitions.contains_key(name)
+            || self.context.enum_definitions.contains_key(name)
+    }
+
+    /// The diagnostic for a field whose type names nothing. It says
+    /// "type", not "struct", because either kind would have done, and
+    /// it spells the name — a `{:?}` on the symbol printed
+    /// `SymbolU32 { value: 42 }`, which tells a reader nothing.
+    fn undefined_field_type(&self, name: &DefaultSymbol) -> TypeCheckError {
+        TypeCheckError::not_found("Type", &self.resolve_symbol_name(*name))
+    }
+
     /// Type check struct declarations
     pub fn visit_struct_decl_impl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, generic_bounds: &std::collections::HashMap<DefaultSymbol, TypeDecl>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
         
@@ -64,34 +80,35 @@ impl<'a> TypeCheckerVisitor<'a> {
                 TypeDecl::Generic(_) => {
                     // Generic types are valid if they're in scope
                 },
-                TypeDecl::Identifier(struct_name) => {
-                    // Check if referenced struct is already defined
-                    if !self.context.struct_definitions.contains_key(struct_name) {
+                // A named type: a struct, or an enum. The parser
+                // cannot tell them apart — `value: E` is an
+                // `Identifier` and `value: Option<i64>` a `Struct`
+                // whatever `E` / `Option` turn out to be — so both
+                // tables have to be consulted. Checking only
+                // `struct_definitions` rejected every enum-typed
+                // field (STRUCT-FIELD-GENERIC-ENUM).
+                TypeDecl::Identifier(type_name)
+                | TypeDecl::Struct(type_name, _)
+                | TypeDecl::Enum(type_name, _) => {
+                    if !self.named_type_is_defined(type_name) {
                         if !generic_params.is_empty() {
                             self.type_inference.pop_generic_scope();
                         }
-                        return Err(TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)));
-                    }
-                },
-                TypeDecl::Struct(struct_name, _type_args) => {
-                    // Generic struct field types like Inner<U> are valid if the struct is defined
-                    if !self.context.struct_definitions.contains_key(struct_name) {
-                        if !generic_params.is_empty() {
-                            self.type_inference.pop_generic_scope();
-                        }
-                        return Err(TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)));
+                        return Err(self.undefined_field_type(type_name));
                     }
                 },
                 TypeDecl::Array(element_types, _) => {
                     // Validate array element types
                     for element_type in element_types {
                         match element_type {
-                            TypeDecl::Identifier(struct_name)
-                                if !self.context.struct_definitions.contains_key(struct_name) => {
+                            TypeDecl::Identifier(type_name)
+                            | TypeDecl::Struct(type_name, _)
+                            | TypeDecl::Enum(type_name, _)
+                                if !self.named_type_is_defined(type_name) => {
                                     if !generic_params.is_empty() {
                                         self.type_inference.pop_generic_scope();
                                     }
-                                    return Err(TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)));
+                                    return Err(self.undefined_field_type(type_name));
                                 },
                             TypeDecl::Generic(_) => {
                                 // Generic array elements are valid

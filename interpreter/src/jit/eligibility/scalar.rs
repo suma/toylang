@@ -92,6 +92,30 @@ impl ScalarTy {
         }
     }
 
+    /// Inverse of `from_type_decl`. #159 uses it to rebuild a concrete
+    /// annotation (`Cell<u64>`) from a receiver's resolved type args so
+    /// `Self` in a method signature carries the monomorph's arguments.
+    /// `Unit` / `Never` map to `TypeDecl::Unit`, which no boundary
+    /// accepts — those never reach a struct type-argument position.
+    pub fn to_type_decl(self) -> TypeDecl {
+        match self {
+            ScalarTy::I64 => TypeDecl::Int64,
+            ScalarTy::U64 => TypeDecl::UInt64,
+            ScalarTy::F64 => TypeDecl::Float64,
+            ScalarTy::Bool => TypeDecl::Bool,
+            ScalarTy::Ptr => TypeDecl::Ptr,
+            ScalarTy::Allocator => TypeDecl::Allocator,
+            ScalarTy::I8 => TypeDecl::Int8,
+            ScalarTy::I16 => TypeDecl::Int16,
+            ScalarTy::I32 => TypeDecl::Int32,
+            ScalarTy::U8 => TypeDecl::UInt8,
+            ScalarTy::U16 => TypeDecl::UInt16,
+            ScalarTy::U32 => TypeDecl::UInt32,
+            ScalarTy::Str => TypeDecl::String,
+            ScalarTy::Unit | ScalarTy::Never => TypeDecl::Unit,
+        }
+    }
+
     /// `true` for the narrow integer widths (NUM-W). Used at codegen
     /// boundaries that need per-width logic (printer dispatch, ABI
     /// extension, cast lowering).
@@ -158,5 +182,50 @@ pub struct EnumLocalInfo {
 impl EnumLocalInfo {
     pub fn new(base_name: DefaultSymbol, payload_ty: Option<ScalarTy>) -> Self {
         Self { base_name, payload_ty }
+    }
+}
+
+/// #159: a struct field's representational shape. Non-generic structs
+/// use `Concrete(ty)` for every field; a generic struct's field that
+/// names one of the declaration's type parameters uses `Generic(param)`
+/// so each monomorph can supply its own scalar. Mirrors `PayloadRepr`
+/// on the enum side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FieldRepr {
+    Concrete(ScalarTy),
+    Generic(DefaultSymbol),
+}
+
+impl FieldRepr {
+    /// Resolve to a concrete `ScalarTy` given the per-monomorph
+    /// substitution map. `None` when a generic param is unbound.
+    pub fn resolve(&self, subst: &HashMap<DefaultSymbol, ScalarTy>) -> Option<ScalarTy> {
+        match self {
+            FieldRepr::Concrete(t) => Some(*t),
+            FieldRepr::Generic(p) => subst.get(p).copied(),
+        }
+    }
+}
+
+/// #159: per-local struct-binding info. Holds the base struct's name
+/// plus the type arguments of *this* binding's monomorph, ordered by
+/// the declaration's `generic_params` (empty for non-generic structs).
+/// Two monomorphs of the same generic struct (`Cell<i64>` vs
+/// `Cell<u64>`) therefore stay distinguishable at every use site, which
+/// is what lets field access / method dispatch pick the right scalar.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct StructLocalInfo {
+    pub base_name: DefaultSymbol,
+    pub type_args: Vec<ScalarTy>,
+}
+
+impl StructLocalInfo {
+    pub fn new(base_name: DefaultSymbol, type_args: Vec<ScalarTy>) -> Self {
+        Self { base_name, type_args }
+    }
+
+    /// Non-generic struct binding (the pre-#159 shape).
+    pub fn plain(base_name: DefaultSymbol) -> Self {
+        Self { base_name, type_args: Vec::new() }
     }
 }

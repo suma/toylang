@@ -2,17 +2,20 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use frontend::ast::{Expr, ExprRef, Function, File};
+use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 use super::checker::check_callable_body;
-use super::collection::{collect_enum_layouts, collect_method_map, collect_struct_layouts};
+use super::collection::{
+    collect_enum_layouts, collect_method_map, collect_struct_layouts, find_impl_target_args,
+};
 use super::extern_dispatch::{
     install_concat_sym, install_enum_layouts, install_extern_dispatch,
     install_primitive_target_symbols,
 };
 use super::layout::{EnumLayout, StructLayout};
 use super::resolver::callable_signature;
-use super::scalar::ScalarTy;
+use super::scalar::{ScalarTy, StructLocalInfo};
 use super::signature::{FuncSignature, MonoKey, MonoTarget, MonomorphSource};
 
 /// Result of eligibility analysis. Each MonoKey corresponds to one
@@ -188,13 +191,29 @@ pub fn analyze(
             .collect();
 
         let receiver_struct = match &target {
-            MonoTarget::Method(struct_name, _) => Some(*struct_name),
+            MonoTarget::Method(struct_name, method_name) => {
+                match receiver_info(
+                    program,
+                    &struct_layouts,
+                    *struct_name,
+                    *method_name,
+                    &substitutions,
+                ) {
+                    Some(info) => Some(info),
+                    None => {
+                        return Err(format!(
+                            "function `{fname_disp}`: cannot resolve the receiver's type \
+                             arguments for this monomorph"
+                        ))
+                    }
+                }
+            }
             MonoTarget::Function(_) => None,
         };
         let mut sig_reason: Option<String> = None;
         let sig = match callable_signature(
             &source,
-            receiver_struct,
+            receiver_struct.as_ref(),
             &substitutions,
             &struct_layouts,
             &mut sig_reason,
@@ -270,6 +289,50 @@ pub fn analyze(
         struct_layouts,
         enum_layouts,
     })
+}
+
+/// #159: rebuild the receiver's `StructLocalInfo` for a method
+/// monomorph. `substitutions` is keyed by the *method's* generic params
+/// (impl-level params merged in by the parser), while a struct binding
+/// needs its args ordered by the *declaration's* params — the impl
+/// block's `target_type_args` maps between the two when the two spell
+/// them differently.
+///
+/// Targets without a struct layout (an enum's impl block, or an
+/// extension `impl Trait for i64`) have no type args to recover and
+/// come back as a plain binding.
+fn receiver_info(
+    program: &File,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
+    struct_name: DefaultSymbol,
+    method_name: DefaultSymbol,
+    substitutions: &HashMap<DefaultSymbol, ScalarTy>,
+) -> Option<StructLocalInfo> {
+    let layout = match struct_layouts.get(&struct_name) {
+        Some(l) => l,
+        None => return Some(StructLocalInfo::plain(struct_name)),
+    };
+    if !layout.is_generic() {
+        return Some(StructLocalInfo::plain(struct_name));
+    }
+    let target_args = find_impl_target_args(program, struct_name, method_name)
+        .unwrap_or_default();
+    let mut type_args = Vec::with_capacity(layout.generic_params.len());
+    for (i, param) in layout.generic_params.iter().enumerate() {
+        let resolved = match target_args.get(i) {
+            Some(TypeDecl::Generic(s)) | Some(TypeDecl::Identifier(s))
+                if substitutions.contains_key(s) =>
+            {
+                substitutions[s]
+            }
+            Some(other) => ScalarTy::from_type_decl(other)?,
+            // No `target_type_args` on the impl block: the impl and the
+            // declaration share the parameter's name.
+            None => substitutions.get(param).copied()?,
+        };
+        type_args.push(resolved);
+    }
+    Some(StructLocalInfo::new(struct_name, type_args))
 }
 
 /// Format a monomorphization for diagnostic output, e.g. `id<i64>` or

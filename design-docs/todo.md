@@ -11,6 +11,15 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-23
+- **159: interpreter JIT の generic struct 対応** — `struct_layouts` を
+  宣言ごとの**テンプレート**にし、型引数は**値の側**が持つ形にした
+  (`FieldRepr::Generic` / `StructLocalInfo` / `ParamTy::Struct { base_name,
+  type_args }`)。フィールド型は (template, 型引数) の純関数なので
+  `(name, type_args)` キーの第 2 のマップは要らない — generic enum の
+  `PayloadRepr` / `EnumLocalInfo` と同じ流儀。`Cell<u64>` / `Cell<bool>` が
+  別 ABI に展開され、method は receiver の monomorph ごとに 1 本出る。
+  設計と制約は [`JIT.md`](JIT.md) の「Generic structs」節。
+  例: `interpreter/example/jit_generic_struct.t` (3 backend 一致)。
 - **CALL-ARG-COMPOUND-LITERAL: compound literal を call 引数に直接渡せるように** —
   `f(Point { x: 1i64, y: 2i64 })` / `f((1i64, 2i64))` / `g.shifted(Point { .. })` /
   `Grid::make(Point { .. })` が 3 backend で通る。compound は 1 値として SSA を
@@ -705,7 +714,20 @@
 
 ### バックエンドのカバレッジ
 
-- **159. JIT の generic struct 対応** ★★ — `struct_layouts` を type-args 別に持つ refactor。踏むと `JIT: skipped (... see #159)` が出るので診断から辿れる (`jit_skip_reason_for_generic_struct` で wording を pin)。generic enum payload 経由の trait-bounded generic API (`fn first<I: Iter<i64>>(..)`) が AOT で通らないのもここが原因。
+- **AOT-GENERIC-THROUGH-STRUCT** ★ — AOT / compiler JIT が
+  **struct 引数越しに generic 関数の型引数を推論できない**
+  (`fn peek<T>(c: Cell<T>) -> T` の呼び出しが
+  `cannot infer type arguments for generic function ... from call
+  arguments` で落ちる)。interpreter JIT 側は #159 で解消したので、
+  残るのはこちら。例は `interpreter/tests/fixtures/jit_generic_struct_fn.t`
+  (この理由で `interpreter/example/` に置いていない — 置くと
+  `example_consistency` が 3 バックエンドで掃く)。
+- **JIT-INTERP-COVERAGE (residual)** ★ — interpreter 側 JIT が silent
+  fallback する残り: (a) impl block ではなく **method 固有の generic**
+  (`fn map<U>(..)`) と **phantom 型パラメータ** (どのフィールドも触れない
+  `T` は literal から復元できない、#159 の残)、(b) **範囲 / `@` / struct /
+  tuple パターン** (`check_match_pattern` が literal / wildcard /
+  enum variant しか受けない)。どれも correctness 問題ではない。
 - **160. タプルの JIT 対応 (ネスト)** ★ — `((a,b),c)` と tuple-of-struct。`ParamTy::Tuple(Vec<ScalarTy>)` を tree 構造にする 100+ 箇所の refactor。(inline tuple literal を call 引数に渡す件は 2026-08-23 に CALL-ARG-COMPOUND-LITERAL で解消)
 - **JIT-enum-1 (residual)** ★★ — ネストした generic enum payload (`Option<Option<T>>`)、**enum 型の struct field**、payload に struct / tuple を持つ enum。
   enum 型の struct field は 2026-08-23 に**型検査が通るようになった**ので
@@ -721,7 +743,6 @@
 - **185残. 3+ part qualified call** ★ — `std::math::abs(x)`。現状は `import std.math` 経由のみ (parser が last 名だけを採る)。auto-load があるので実害は限定的。
 - **121-Phase-B-rest-leftover** ★ — `AllocatorBinding::Generic/Local/Ambient` の lower 配線 (perf のみ、観察可能な振る舞い変化なし)、`__builtin_default_allocator()` の戻り型を `u64` にして生比較を許すかの API 判断。
 - **REF-Stage-2 (residual)** ★ — compound `&mut T` の真の pointer-passing、`&T` compound の RefScalar 経路活用。どちらも copy 削減で機能差はない。
-- **183. コンパイラ MVP の残** — compound-returning method の expression position 制約。個別項目は上記に分解済み。
 
 ### 標準ライブラリ・実行環境 (STDLIB-RUNTIME)
 
@@ -890,7 +911,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2117 テスト** (100% 成功、2026-08-23 時点)。
+- 合計 **2118 テスト** (100% 成功、2026-08-23 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、
@@ -901,39 +922,10 @@
 
 ### 既知の不具合
 
-- **f64 の print / 補間が 3 バックエンドで食い違う** — ~~AOT は C ランタイムの
-  `%g` / `%.1f` (`emit_f64`)、interpreter / JIT は Rust の `Display`。~~
-  **解消 (2026-08-16、RUNTIME-PORT R1)**: ランタイムが `toylang_rt`
-  1 本になり、整形も `Display` (整数値は `.0`) に統一された。AOT の出力は
-  `0.3` → `0.30000000000000004`、`1.23457e+06` → `1234567.75` に変わった
-  (精度が上がる方向の仕様変更、`docs/language.md` の Output 節に明記)。
-  `f64_display_agrees_across_backends` が 3 者一致を pin する。
-- **`if` / `elif` の条件が型検査されない** — ~~`if 42u64 { ... }` が通る。~~
-  **解消 (2026-08-16)**: `visit_if_elif_else` が条件を
-  `check_expr_located` し bool を要求するように。この変更で 2 つの
-  隠れバグが露呈し、両方修正:
-  (1) `resolve_numeric_types` / `visit_compare_binary` に
-  Generic↔Identifier 同一シンボル (と Generic↔Generic 同一パラメータ)
-  の arm が無く、dict.t の `existing == key` が E0001/E0002 で弾かれた
-  (条件未検査が隠していた) — 専用 arm を追加。
-  (2) **generic 関数の 2 回目以降のインスタンス化が最初の実体に解決
-  される既存バグ** — `id(1u64)` の後に `id("hello")` を呼ぶと u64 版を
-  str handle で呼んで全バックエンドでゴミを返す。インスタンスが
-  function_index に bare name で登録されていたのが原因で、
-  `declare_function_anon` 化 + `resolve_call_target` の generic 優先に
-  修正 (`toy_same__str` が生成されず fn#158 が呼ばれていた)。
-  `val x = <generic call>` の型推論 (value_scalar) も template の
-  return 型を置換する形に。付随して `struct_null_test.t` (u64 に
-  `.is_null()` を呼ぶ壊れた example) を `ptr` +
-  `__builtin_ptr_is_null` に修正し AOT_UNSUPPORTED から外し、
-  `trait_basic.t` も generic 修正で AOT が通るようになったので同様に
-  リストから除去。テスト: `if_conditions_must_be_bool` /
-  `generic_equality_is_instantiated_per_type` /
-  `generic_functions_instantiate_per_type_argument`。
-
-以下 4 件は `docs/language.md` を実装と突き合わせた監査 (2026-08-18) で
-発見。ドキュメント側は同日のコミットで実態に合わせたので、残るのは
-実装をどう直すかの判断。
+現時点で未解決のものは無い。過去にここへ挙がった 2 件 (f64 の print が
+3 バックエンドで食い違う / `if` の条件が型検査されない) は 2026-08-16 に
+どちらも解消し、経緯は git log と完了済み節にある。**直った項目をこの節に
+段落で残さないこと** — 常時読まれるファイルが changelog になる。
 
 ### パーサーの既知制限事項
 - bare `self` 非対応 — `self: Self` / `&self` / `&mut self` のいずれかを書く。

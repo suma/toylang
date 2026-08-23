@@ -23,7 +23,7 @@ use string_interner::{DefaultSymbol, Symbol};
 
 use super::eligibility::{
     jit_extern_dispatch_for, ExternDispatch, FuncSignature, MonoKey, MonomorphSource, ParamTy,
-    ScalarTy, StructLayout,
+    FieldRepr, ScalarTy, StructLayout, StructLocalInfo,
 };
 use super::runtime::HelperKind;
 
@@ -76,7 +76,7 @@ pub fn translate_function<M: Module>(
     let mut local_vars: HashMap<DefaultSymbol, Variable> = HashMap::new();
     let mut struct_locals: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Variable>> =
         HashMap::new();
-    let mut struct_local_types: HashMap<DefaultSymbol, DefaultSymbol> = HashMap::new();
+    let mut struct_local_types: HashMap<DefaultSymbol, StructLocalInfo> = HashMap::new();
     let mut tuple_locals: HashMap<DefaultSymbol, Vec<Variable>> = HashMap::new();
     let mut tuple_local_types: HashMap<DefaultSymbol, Vec<ScalarTy>> = HashMap::new();
     let mut enum_locals: HashMap<DefaultSymbol, EnumLocal> = HashMap::new();
@@ -93,12 +93,15 @@ pub fn translate_function<M: Module>(
                 local_types.insert(*name, *scalar);
                 local_vars.insert(*name, var);
             }
-            ParamTy::Struct(struct_name) => {
-                let layout = struct_layouts
-                    .get(struct_name)
+            ParamTy::Struct { base_name, type_args } => {
+                // #159: resolve the layout for this monomorph so a
+                // generic field lands in the right cranelift type.
+                let fields = struct_layouts
+                    .get(base_name)
+                    .and_then(|l| l.resolved_fields(type_args))
                     .ok_or_else(|| "struct param has no layout".to_string())?;
                 let mut field_vars: HashMap<DefaultSymbol, Variable> = HashMap::new();
-                for (field_sym, field_ty) in &layout.fields {
+                for (field_sym, field_ty) in &fields {
                     let var = builder.declare_var(
                         ir_type(*field_ty).expect("struct field cannot be Unit"),
                     );
@@ -107,7 +110,8 @@ pub fn translate_function<M: Module>(
                     field_vars.insert(*field_sym, var);
                 }
                 struct_locals.insert(*name, field_vars);
-                struct_local_types.insert(*name, *struct_name);
+                struct_local_types
+                    .insert(*name, StructLocalInfo::new(*base_name, type_args.clone()));
             }
             ParamTy::Tuple(elements) => {
                 let mut element_vars: Vec<Variable> = Vec::with_capacity(elements.len());
@@ -189,8 +193,12 @@ pub fn translate_function<M: Module>(
     // must produce a struct value (Identifier of a struct local, or a
     // StructLiteral). We process leading stmts normally and then gather
     // the struct fields from the trailing expression.
-    if let ParamTy::Struct(struct_name) = &sig.ret {
-        emit_struct_return(&mut state, &body_expr, *struct_name)?;
+    if let ParamTy::Struct { base_name, type_args } = &sig.ret {
+        emit_struct_return(
+            &mut state,
+            &body_expr,
+            &StructLocalInfo::new(*base_name, type_args.clone()),
+        )?;
     } else if let ParamTy::Tuple(elements) = &sig.ret {
         emit_tuple_return(&mut state, &body_expr, elements)?;
     } else if let ParamTy::Enum { base_name: enum_name, payload_ty } = &sig.ret {
@@ -208,7 +216,7 @@ pub fn translate_function<M: Module>(
                     })?;
                     state.builder.ins().return_(&[v]);
                 }
-                ParamTy::Struct(_) | ParamTy::Tuple(_) | ParamTy::Enum { .. } => unreachable!(),
+                ParamTy::Struct { .. } | ParamTy::Tuple(_) | ParamTy::Enum { .. } => unreachable!(),
             }
             state.terminated = true;
         }
@@ -227,7 +235,7 @@ pub fn translate_function<M: Module>(
 fn emit_struct_return(
     state: &mut State,
     body_expr: &ExprRef,
-    struct_name: DefaultSymbol,
+    struct_info: &StructLocalInfo,
 ) -> Result<(), String> {
     let body = state
         .program
@@ -258,7 +266,7 @@ fn emit_struct_return(
         Stmt::Expression(e) => e,
         _ => return Err("last stmt of struct-returning body must be an expression".into()),
     };
-    let values = gather_struct_values(state, &result_expr_ref, struct_name)?;
+    let values = gather_struct_values(state, &result_expr_ref, struct_info)?;
     if !state.terminated {
         state.builder.ins().return_(&values);
         state.terminated = true;
@@ -567,12 +575,12 @@ fn gather_tuple_values(
 fn gather_struct_values(
     state: &mut State,
     expr_ref: &ExprRef,
-    struct_name: DefaultSymbol,
+    struct_info: &StructLocalInfo,
 ) -> Result<Vec<Value>, String> {
-    let layout = state
+    let fields = state
         .struct_layouts
-        .get(&struct_name)
-        .cloned()
+        .get(&struct_info.base_name)
+        .and_then(|l| l.resolved_fields(&struct_info.type_args))
         .ok_or_else(|| "struct layout missing in JIT codegen".to_string())?;
     let expr = state
         .program
@@ -581,14 +589,14 @@ fn gather_struct_values(
         .ok_or_else(|| "missing struct-producing expression".to_string())?;
     match expr {
         Expr::Identifier(name) => {
-            let fields = state
+            let local_fields = state
                 .struct_locals
                 .get(&name)
                 .cloned()
                 .ok_or_else(|| "identifier is not a known struct local".to_string())?;
-            let mut values = Vec::with_capacity(layout.fields.len());
-            for (field_sym, _) in &layout.fields {
-                let var = fields
+            let mut values = Vec::with_capacity(fields.len());
+            for (field_sym, _) in &fields {
+                let var = local_fields
                     .get(field_sym)
                     .copied()
                     .ok_or_else(|| "struct local missing required field".to_string())?;
@@ -597,8 +605,8 @@ fn gather_struct_values(
             Ok(values)
         }
         Expr::StructLiteral(_, lit_fields) => {
-            let mut values = Vec::with_capacity(layout.fields.len());
-            for (field_sym, _) in &layout.fields {
+            let mut values = Vec::with_capacity(fields.len());
+            for (field_sym, _) in &fields {
                 let (_, field_expr_ref) = lit_fields
                     .iter()
                     .find(|(s, _)| s == field_sym)
@@ -626,7 +634,7 @@ struct State<'a, 'b> {
     /// Mirror of the eligibility-side `struct_locals` (local name ->
     /// struct type name). Forwarded into eligibility's `check_expr` from
     /// `expr_type` so FieldAccess type lookups resolve correctly.
-    struct_local_types: &'a mut HashMap<DefaultSymbol, DefaultSymbol>,
+    struct_local_types: &'a mut HashMap<DefaultSymbol, StructLocalInfo>,
     /// For each tuple local, maps the element index (via Vec position)
     /// to the SSA Variable that backs it. Tuples have no field names —
     /// only positional access through `TupleAccess(_, idx)`.
@@ -1513,7 +1521,7 @@ impl<'a, 'b> State<'a, 'b> {
                     .get(&target_key)
                     .ok_or_else(|| "missing callee signature in JIT".to_string())?
                     .clone();
-                if matches!(target_sig.ret, ParamTy::Struct(_)) {
+                if matches!(target_sig.ret, ParamTy::Struct { .. }) {
                     return Err(
                         "struct-returning call must be the rhs of a val/var".into(),
                     );
@@ -2127,6 +2135,37 @@ impl<'a, 'b> State<'a, 'b> {
         Ok(self.builder.use_var(result_var))
     }
 
+    /// #159: the binding a struct literal produces, with its type
+    /// arguments recovered from the field initializers' types — the
+    /// same rule eligibility applied, which is why it can be re-derived
+    /// here without carrying a per-ExprRef table (that table would be
+    /// wrong anyway: one literal inside a generic function has a
+    /// different monomorph per instantiation).
+    fn struct_literal_info(
+        &self,
+        struct_name: DefaultSymbol,
+        lit_fields: &[(DefaultSymbol, ExprRef)],
+    ) -> Option<StructLocalInfo> {
+        let layout = self.struct_layouts.get(&struct_name)?.clone();
+        if !layout.is_generic() {
+            return Some(StructLocalInfo::plain(struct_name));
+        }
+        let mut bound: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
+        for (field_sym, repr) in &layout.fields {
+            let FieldRepr::Generic(param) = repr else {
+                continue;
+            };
+            let (_, field_expr) = lit_fields.iter().find(|(n, _)| n == field_sym)?;
+            bound.insert(*param, self.expr_type(field_expr).ok()?);
+        }
+        let type_args: Vec<ScalarTy> = layout
+            .generic_params
+            .iter()
+            .map(|p| bound.get(p).copied())
+            .collect::<Option<Vec<_>>>()?;
+        Some(StructLocalInfo::new(struct_name, type_args))
+    }
+
     /// If `value_ref` is a struct literal whose layout we know, decompose
     /// it into one Variable per scalar field and register `name` as a
     /// struct local. Also handles struct-returning calls by collecting
@@ -2144,13 +2183,21 @@ impl<'a, 'b> State<'a, 'b> {
         };
         match value {
             Expr::StructLiteral(struct_name, lit_fields) => {
+                // #159: eligibility already resolved this binding's type
+                // args (from the annotation or the initializers) and
+                // recorded them under the binding's name; codegen reads
+                // them back rather than re-deriving them.
+                let info = match self.struct_literal_info(struct_name, &lit_fields) {
+                    Some(i) => i,
+                    None => return Ok(false),
+                };
                 let layout = match self.struct_layouts.get(&struct_name) {
                     Some(l) => l.clone(),
                     None => return Ok(false),
                 };
                 let mut field_vars: HashMap<DefaultSymbol, Variable> = HashMap::new();
                 for (field_sym, field_expr) in &lit_fields {
-                    let want = layout.field(*field_sym).ok_or_else(|| {
+                    let want = layout.field(*field_sym, &info.type_args).ok_or_else(|| {
                         "unknown field in struct literal at codegen".to_string()
                     })?;
                     let v = self
@@ -2163,7 +2210,7 @@ impl<'a, 'b> State<'a, 'b> {
                     field_vars.insert(*field_sym, var);
                 }
                 self.struct_locals.insert(name, field_vars);
-                self.struct_local_types.insert(name, struct_name);
+                self.struct_local_types.insert(name, info);
                 Ok(true)
             }
             Expr::Call(_, _) | Expr::MethodCall(_, _, _) | Expr::AssociatedFunctionCall(_, _, _) => {
@@ -2177,14 +2224,16 @@ impl<'a, 'b> State<'a, 'b> {
                     Some(s) => s.clone(),
                     None => return Ok(false),
                 };
-                let struct_name = match target_sig.ret {
-                    ParamTy::Struct(s) => s,
+                let info = match target_sig.ret {
+                    ParamTy::Struct { base_name, ref type_args } => {
+                        StructLocalInfo::new(base_name, type_args.clone())
+                    }
                     _ => return Ok(false),
                 };
-                let layout = self
+                let fields = self
                     .struct_layouts
-                    .get(&struct_name)
-                    .cloned()
+                    .get(&info.base_name)
+                    .and_then(|l| l.resolved_fields(&info.type_args))
                     .ok_or_else(|| "struct return has no layout".to_string())?;
 
                 // Emit the call: gen_expr drops all but the first result,
@@ -2197,13 +2246,13 @@ impl<'a, 'b> State<'a, 'b> {
                     .ok_or_else(|| "unresolved function reference in JIT".to_string())?;
                 let call = self.builder.ins().call(func_ref, &arg_values);
                 let results = self.builder.inst_results(call).to_vec();
-                if results.len() != layout.fields.len() {
+                if results.len() != fields.len() {
                     return Err(
                         "struct-returning call produced wrong number of results".into(),
                     );
                 }
                 let mut field_vars: HashMap<DefaultSymbol, Variable> = HashMap::new();
-                for ((field_sym, field_ty), v) in layout.fields.iter().zip(results.iter()) {
+                for ((field_sym, field_ty), v) in fields.iter().zip(results.iter()) {
                     let var = self
                         .builder
                         .declare_var(ir_type(*field_ty).expect("struct field cannot be Unit"));
@@ -2211,7 +2260,7 @@ impl<'a, 'b> State<'a, 'b> {
                     field_vars.insert(*field_sym, var);
                 }
                 self.struct_locals.insert(name, field_vars);
-                self.struct_local_types.insert(name, struct_name);
+                self.struct_local_types.insert(name, info);
                 Ok(true)
             }
             _ => Ok(false),
@@ -2370,7 +2419,7 @@ impl<'a, 'b> State<'a, 'b> {
                         .ok_or_else(|| "call arg produced no value".to_string())?;
                     arg_values.push(v);
                 }
-                ParamTy::Struct(struct_name) => {
+                ParamTy::Struct { base_name, type_args } => {
                     let arg_expr = self
                         .program
                         .expression
@@ -2389,11 +2438,12 @@ impl<'a, 'b> State<'a, 'b> {
                         .get(&arg_name)
                         .ok_or_else(|| "struct argument unknown".to_string())?
                         .clone();
-                    let layout = self
+                    let layout_fields = self
                         .struct_layouts
-                        .get(struct_name)
+                        .get(base_name)
+                        .and_then(|l| l.resolved_fields(type_args))
                         .ok_or_else(|| "struct param has no layout".to_string())?;
-                    for (field_sym, _) in &layout.fields {
+                    for (field_sym, _) in &layout_fields {
                         let var = fields.get(field_sym).copied().ok_or_else(|| {
                             "struct argument missing required field".to_string()
                         })?;

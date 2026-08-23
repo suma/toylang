@@ -159,8 +159,63 @@ Out of scope for this iteration:
 
 * Copying a struct between locals (`var q = p`).
 * Nested struct fields.
-* Generic structs (`struct Box<T> { … }`) and generic methods.
+* Inline `StructLiteral` as a function argument (bind it first).
 * `main` returning a struct.
+
+### Generic structs (#159)
+
+`struct_layouts` holds one *template* per declaration rather than one
+entry per instantiation: a field naming one of the declaration's own
+type parameters is recorded as `FieldRepr::Generic(param)` instead of a
+scalar. Every place a struct value appears carries the type arguments
+of its own monomorph — `StructLocalInfo` for a binding,
+`ParamTy::Struct { base_name, type_args }` at a function boundary — and
+the field types are resolved from the template against those arguments
+on demand. Resolution is a pure function of (template, type args), so
+there is no second map keyed by `(name, type_args)` to keep in sync;
+this mirrors how `PayloadRepr` / `EnumLocalInfo` handle generic enums.
+
+```rust
+struct Cell<T> { value: T }
+
+impl<T> Cell<T> {
+    fn get(self: Self) -> T { self.value }
+}
+
+fn main() -> u64 {
+    val a: Cell<u64> = Cell { value: 40u64 }
+    val b: Cell<bool> = Cell { value: true }
+    var t: u64 = a.get()
+    if b.get() { t = t + 2u64 }
+    t
+}
+```
+
+`Cell<u64>` and `Cell<bool>` expand to different cranelift parameters,
+and `Cell::get` compiles once per receiver monomorph
+(`Cell__get__U64`, `Cell__get__Bool`) because the receiver's type args
+join the method's `MonoKey`. A method on a generic `impl` block gets
+its type parameters bound from the receiver: the parser merges the
+impl block's parameters into every method's `generic_params`, and the
+impl's `target_type_args` maps them positionally onto the
+declaration's when the two spell them differently.
+
+Type arguments come from the annotation when there is one, but they
+must **also** be recoverable from the literal's field initializers:
+codegen re-derives them that way (it has no annotation in hand), so
+eligibility requires the two to agree. A generic function can pick up
+its own parameter through a struct argument (`fn peek<T>(c: Cell<T>)
+-> T`) — `infer_substitutions` treats struct positions as opaque, so
+those bindings are seeded from the argument binding's type args.
+
+Out of scope:
+
+* A phantom type parameter — one no field mentions — has nothing to
+  infer from and keeps the program on the interpreter.
+* Method-only generics (`fn map<U>(…)` inside an `impl`): the receiver
+  binds the impl's parameters, not the method's own.
+* A generic struct field holding another struct / enum (the non-generic
+  restriction applies unchanged).
 
 ### Tuples
 
@@ -272,7 +327,9 @@ path for `if val` / `while val`.
 
 A generic function `fn id<T>(x: T) -> T { x }` is monomorphized per call
 site: each unique combination of substituted scalar types becomes its
-own cranelift function (e.g. `id__I64` and `id__U64`). Generic bounds
+own cranelift function (e.g. `id__I64` and `id__U64`). Since #159 the
+substitution can also be inferred through a generic struct parameter
+(`fn peek<T>(c: Cell<T>) -> T`). Generic bounds
 (`<A: Allocator>`) are still rejected, and a generic function body
 cannot use `__builtin_ptr_read` because the per-call expected type
 cannot be expressed in the shared hint table.
@@ -384,10 +441,10 @@ instruction over straight-line code.
 
 ### Not supported (silent fallback)
 
-* Generic bounds (`<A: Allocator>`) and generic structs / generic methods.
-  Per-callsite monomorphisation needs `struct_layouts` to be type-args
-  aware, which is the residual blocker tracked under
-  `design-docs/todo.md` #159.
+* Generic bounds (`<A: Allocator>`) — the bound needs a runtime
+  allocator handle. Generic structs themselves are supported (see
+  *Generic structs* above); what remains is method-only generics and
+  phantom type parameters.
 * `Array`, `Dict`, `Range` values.
 * Closures / lambda values — the JIT does not model `Object::Closure`.
   Skip wording: *"JIT does not yet support closure / lambda values
@@ -480,15 +537,11 @@ JIT: skipped (function `bar`: panic argument must be a string literal in JIT)
 JIT: skipped (function `qux` has DbC contracts (not supported in JIT))
 JIT: skipped (function `h`: JIT does not yet support closure / lambda values
                             (interpreter handles them; AOT support is a later phase))
-JIT: skipped (function `mk`: struct literal references a generic struct
-                             (JIT does not yet model generic struct values; see #159))
+JIT: skipped (function `mk`: cannot infer the struct literal's type arguments; add a type annotation)
 ```
 
 The first reject reason wins. Subsequent rejections deeper in the
-recursion are ignored to keep the message close to the surface. The
-generic-struct skip wording is pinned by the
-`jit_skip_reason_for_generic_struct` test so the diagnostic stays
-linkable to the todo entry (#159).
+recursion are ignored to keep the message close to the surface.
 
 ## Performance (Apple Silicon, release)
 
@@ -535,7 +588,7 @@ spans every JIT-eligible feature:
 | `jit_generic_enum_boundary_je5.t` | generic enum at function boundary (JE-5) |
 | `jit_enum_receiver_method_je6.t` | enum receiver method dispatch (JE-6) |
 | `jit_unit_enum_pending.t` | unit-only enum fallback shape |
-| `jit_generic_struct_fallback.t` | pins the `JIT does not yet model generic struct values` skip wording |
+| `jit_generic_struct.t` | generic struct monomorphs, generic methods, generic struct params / returns (#159) |
 | `string_interpolation_jit.t` | JIT string-interpolation chain end-to-end |
 | `extern_math_jit.t` | extern math intrinsics through the JIT |
 
@@ -552,11 +605,11 @@ stack, fixed-buffer allocator, early-exit cleanup inside `with`
 blocks, NUM-W narrow ints, string interpolation, JE-2 → JE-6 enum
 support, labelled loops, `if val` / `while val`, the iterator
 protocol). The remaining items tracked under
-`design-docs/todo.md` #159 and `JIT-enum-1 (residual)`:
+`design-docs/todo.md` `JIT-enum-1 (residual)` and #160 (generic
+structs landed under #159):
 
-* Generic structs and generic methods (`struct_layouts` needs a
-  type-args-aware refactor — diagnostic skip text already pins the
-  todo entry via the `jit_skip_reason_for_generic_struct` test).
+* Method-only generics on an `impl` block, and generic structs with a
+  phantom type parameter.
 * Closures — `Object::Closure` would need a captured-environment
   representation + indirect-call dispatch.
 * Nested generic enum payloads (`Option<Option<T>>`) and enums whose

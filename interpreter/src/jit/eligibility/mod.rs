@@ -23,5 +23,5 @@ pub(crate) use extern_dispatch::{
 };
 pub(crate) use layout::{CompoundLocals, StructLayout};
 pub(crate) use resolver::payload_ty_from_annotation_pub;
-pub(crate) use scalar::{EnumLocalInfo, ScalarTy};
+pub(crate) use scalar::{EnumLocalInfo, FieldRepr, ScalarTy, StructLocalInfo};
 pub(crate) use signature::{FuncSignature, MonoKey, MonomorphSource, MonoTarget, ParamTy};

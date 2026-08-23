@@ -7,7 +7,7 @@ use string_interner::DefaultSymbol;
 use super::checker::note;
 use super::extern_dispatch::{enum_layout_for, primitive_type_decl_for_target_sym};
 use super::layout::{EnumLayout, StructLayout};
-use super::scalar::ScalarTy;
+use super::scalar::{ScalarTy, StructLocalInfo};
 use super::signature::{FuncSignature, MonomorphSource, ParamTy};
 
 /// Resolve a TypeDecl to its concrete ScalarTy after applying any active
@@ -28,11 +28,13 @@ pub(crate) fn substitute_to_scalar(
 /// `caller_subs` is used to resolve `Generic(_)` references that appear
 /// in non-generic param positions (e.g. when a generic function calls
 /// another with one of its own generics as the arg type — though that
-/// path is uncommon in our current scope).
+/// path is uncommon in our current scope). `seed` pre-binds the
+/// generics recovered from struct-typed arguments (#159).
 pub(super) fn infer_substitutions(
     callee: &Function,
     arg_tys: &[ScalarTy],
     caller_subs: &HashMap<DefaultSymbol, ScalarTy>,
+    seed: HashMap<DefaultSymbol, ScalarTy>,
     reject_reason: &mut Option<String>,
 ) -> Option<HashMap<DefaultSymbol, ScalarTy>> {
     if callee.parameter.len() != arg_tys.len() {
@@ -45,7 +47,11 @@ pub(super) fn infer_substitutions(
         });
         return None;
     }
-    let mut subs: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
+    // #159: `seed` carries the bindings a struct-typed argument already
+    // pinned down (`Cell<i64>` passed to a `Cell<T>` parameter). Struct
+    // positions are skipped below, so without the seed those generics
+    // would look unbound.
+    let mut subs: HashMap<DefaultSymbol, ScalarTy> = seed;
     for ((_, param_td), &arg_ty) in callee.parameter.iter().zip(arg_tys.iter()) {
         // Struct / tuple param positions skip generic inference and
         // scalar matching — the caller has already validated that the
@@ -104,7 +110,7 @@ pub(super) fn infer_substitutions(
 /// references in the parameter list / return type.
 pub(super) fn callable_signature(
     source: &MonomorphSource,
-    receiver_struct: Option<DefaultSymbol>,
+    receiver_struct: Option<&StructLocalInfo>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     reject_reason: &mut Option<String>,
@@ -120,8 +126,7 @@ pub(super) fn callable_signature(
         // `ParamTy::Scalar`. Struct receivers fall back to
         // `TypeDecl::Identifier` as before.
         let resolved_td = match (td, self_struct) {
-            (TypeDecl::Self_, Some(s)) => primitive_type_decl_for_target_sym(s)
-                .unwrap_or(TypeDecl::Identifier(s)),
+            (TypeDecl::Self_, Some(recv)) => self_type_decl(recv),
             (other, _) => other.clone(),
         };
         let pt = match resolve_param_ty(&resolved_td, substitutions, struct_layouts) {
@@ -150,8 +155,7 @@ pub(super) fn callable_signature(
             // targets resolve to the matching primitive `TypeDecl`
             // so the return is a `ParamTy::Scalar`.
             let resolved_td = match (td, self_struct) {
-                (TypeDecl::Self_, Some(s)) => primitive_type_decl_for_target_sym(s)
-                    .unwrap_or(TypeDecl::Identifier(s)),
+                (TypeDecl::Self_, Some(recv)) => self_type_decl(recv),
                 (other, _) => other.clone(),
             };
             match resolve_param_ty(&resolved_td, substitutions, struct_layouts) {
@@ -190,10 +194,22 @@ pub(crate) fn resolve_param_ty(
         return Some(ParamTy::Scalar(s));
     }
     match td {
+        // #159: a struct-typed position. The type args come from the
+        // annotation (`Cell<i64>`), resolved through the caller's own
+        // substitutions so `Cell<T>` inside a generic function binds to
+        // that monomorph's `T`. A bare `Identifier` naming a generic
+        // struct has no args to resolve, so it stays ineligible rather
+        // than silently picking a layout.
         TypeDecl::Identifier(s) | TypeDecl::Struct(s, _)
             if struct_layouts.contains_key(s) =>
         {
-            Some(ParamTy::Struct(*s))
+            let layout = struct_layouts.get(s)?;
+            let args = match td {
+                TypeDecl::Struct(_, a) => a.as_slice(),
+                _ => &[],
+            };
+            let type_args = resolve_struct_type_args(layout, args, substitutions)?;
+            Some(ParamTy::Struct { base_name: *s, type_args })
         }
         // Phase JE-2d: enum-typed parameters / returns. The
         // `enum_layouts` map only contains JIT-eligible enums
@@ -322,4 +338,45 @@ pub(super) fn payload_ty_from_annotation(
         subst.insert(*p, sty);
     }
     layout.resolve_uniform_payload(&subst)
+}
+
+/// #159: reduce an annotation's type-argument list to the scalar vector
+/// a struct binding carries. `args` is what the annotation wrote
+/// (`<i64>`, `<T>`, …) and `substitutions` binds the *enclosing*
+/// monomorph's generics, so `Cell<T>` written inside `fn f<T>()`
+/// resolves to the caller's `T`. An arity mismatch or an unresolvable
+/// argument yields `None`, which keeps the whole function on the
+/// interpreter instead of guessing a layout.
+pub(crate) fn resolve_struct_type_args(
+    layout: &StructLayout,
+    args: &[TypeDecl],
+    substitutions: &HashMap<DefaultSymbol, ScalarTy>,
+) -> Option<Vec<ScalarTy>> {
+    if args.len() != layout.generic_params.len() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(args.len());
+    for a in args {
+        out.push(substitute_to_scalar(a, substitutions)?);
+    }
+    Some(out)
+}
+
+/// The `TypeDecl` a method's `Self` stands for. Primitive impl targets
+/// (extension traits) expand to the matching primitive so `Self` reduces
+/// to a `ParamTy::Scalar`; struct receivers expand to
+/// `TypeDecl::Struct(name, <this monomorph's args>)` so #159's generic
+/// receivers carry their type args through the signature.
+pub(super) fn self_type_decl(recv: &StructLocalInfo) -> TypeDecl {
+    if let Some(prim) = primitive_type_decl_for_target_sym(recv.base_name) {
+        return prim;
+    }
+    if recv.type_args.is_empty() {
+        TypeDecl::Identifier(recv.base_name)
+    } else {
+        TypeDecl::Struct(
+            recv.base_name,
+            recv.type_args.iter().map(|t| t.to_type_decl()).collect(),
+        )
+    }
 }

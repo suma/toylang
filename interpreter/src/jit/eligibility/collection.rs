@@ -6,7 +6,7 @@ use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 use super::layout::{EnumLayout, StructLayout};
-use super::scalar::{PayloadRepr, ScalarTy};
+use super::scalar::{FieldRepr, PayloadRepr, ScalarTy};
 
 /// Look up a method on a struct by linear scanning ImplBlock decls.
 pub(super) fn find_method(
@@ -45,6 +45,14 @@ pub(super) fn collect_method_map(
     out
 }
 
+/// Build the struct-layout template for every JIT-compatible struct.
+///
+/// #159: generic declarations are accepted. A field naming one of the
+/// declaration's own type parameters becomes `FieldRepr::Generic`; the
+/// concrete scalar is supplied per binding by
+/// `StructLayout::resolved_fields`. A field of any other non-scalar
+/// shape (nested struct, array, enum, …) still drops the whole struct
+/// from the map, so references to it reject downstream as before.
 pub(super) fn collect_struct_layouts(
     program: &File,
     interner: &DefaultStringInterner,
@@ -59,41 +67,50 @@ pub(super) fn collect_struct_layouts(
             ..
         }) = program.statement.get(&stmt_ref)
         {
-            // Generic structs aren't supported in this iteration — the
-            // JIT would need per-monomorph layouts.
-            if !generic_params.is_empty() {
-                continue;
-            }
-            let mut scalar_fields: Vec<(DefaultSymbol, ScalarTy)> = Vec::with_capacity(fields.len());
-            let mut all_scalar = true;
+            let mut scalar_fields: Vec<(DefaultSymbol, FieldRepr)> =
+                Vec::with_capacity(fields.len());
+            let mut all_representable = true;
             for f in &fields {
-                match ScalarTy::from_type_decl(&f.type_decl) {
-                    Some(t) if t != ScalarTy::Unit => {
-                        // Resolving the field name to its symbol via the
-                        // interner avoids an extra string lookup at every
-                        // FieldAccess site.
-                        let sym = interner
-                            .get(f.name.as_str())
-                            .unwrap_or_else(|| {
-                                // Fall back: insert into a clone of the
-                                // interner. This shouldn't happen in
-                                // practice because the parser interned
-                                // every identifier already.
-                                let mut tmp = interner.clone();
-                                tmp.get_or_intern(f.name.as_str())
-                            });
-                        scalar_fields.push((sym, t));
+                // A field that names one of the struct's own generic
+                // params. The parser emits `Generic(sym)` when it knew
+                // the param was in scope and `Identifier(sym)` for the
+                // bare form, so accept both — same rule the enum
+                // payload collector uses.
+                let generic_ref = match &f.type_decl {
+                    TypeDecl::Generic(sym) | TypeDecl::Identifier(sym)
+                        if generic_params.contains(sym) =>
+                    {
+                        Some(*sym)
                     }
-                    _ => {
-                        all_scalar = false;
-                        break;
-                    }
-                }
+                    _ => None,
+                };
+                let repr = match generic_ref {
+                    Some(p) => FieldRepr::Generic(p),
+                    None => match ScalarTy::from_type_decl(&f.type_decl) {
+                        Some(t) if t != ScalarTy::Unit => FieldRepr::Concrete(t),
+                        _ => {
+                            all_representable = false;
+                            break;
+                        }
+                    },
+                };
+                // Resolving the field name to its symbol via the
+                // interner avoids an extra string lookup at every
+                // FieldAccess site.
+                let sym = interner.get(f.name.as_str()).unwrap_or_else(|| {
+                    // Fall back: insert into a clone of the interner.
+                    // This shouldn't happen in practice because the
+                    // parser interned every identifier already.
+                    let mut tmp = interner.clone();
+                    tmp.get_or_intern(f.name.as_str())
+                });
+                scalar_fields.push((sym, repr));
             }
-            if all_scalar {
+            if all_representable {
                 out.insert(
                     name,
                     StructLayout {
+                        generic_params: generic_params.to_vec(),
                         fields: scalar_fields,
                     },
                 );
@@ -101,6 +118,32 @@ pub(super) fn collect_struct_layouts(
         }
     }
     out
+}
+
+/// #159: the type arguments an `impl` block applies to its target type,
+/// e.g. `[Generic(T)]` for `impl<T> Cell<T>` and `[UInt8]` for
+/// `impl FromStr for Vec<u8>`. Empty for a plain `impl Foo`.
+///
+/// Needed to bind a method's generic params from the receiver's type
+/// args: the impl may name them differently from the struct
+/// declaration (`impl<U> Cell<U>`), so the mapping is positional
+/// through this list rather than by symbol identity.
+pub(super) fn find_impl_target_args(
+    program: &File,
+    struct_name: DefaultSymbol,
+    method_name: DefaultSymbol,
+) -> Option<Vec<TypeDecl>> {
+    for i in 0..program.statement.len() {
+        let stmt_ref = StmtRef(i as u32);
+        if let Some(Stmt::ImplBlock { target_type, target_type_args, methods, .. }) =
+            program.statement.get(&stmt_ref)
+        {
+            if target_type == struct_name && methods.iter().any(|m| m.name == method_name) {
+                return Some(target_type_args.to_vec());
+            }
+        }
+    }
+    None
 }
 
 /// Pre-pass over `Stmt::EnumDecl` declarations: build a layout for

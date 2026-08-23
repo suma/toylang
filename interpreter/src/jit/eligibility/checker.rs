@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 
 use frontend::ast::{
-    BuiltinFunction, Expr, ExprRef, Operator, Pattern, File, Stmt, StmtRef, UnaryOp,
+    BuiltinFunction, Expr, ExprRef, MethodFunction, Operator, Pattern, File, Stmt, StmtRef,
+    UnaryOp,
 };
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 
 use super::analyze::{expr_kind_name, MonoCall};
-use super::collection::find_method;
+use super::collection::{find_impl_target_args, find_method};
 use super::extern_dispatch::{
     concat_sym, enum_layout_for, jit_extern_dispatch_for,
     primitive_target_sym_for_scalar, primitive_type_decl_for_target_sym,
@@ -15,9 +16,10 @@ use super::extern_dispatch::{
 };
 use super::layout::{CompoundLocals, StructLayout};
 use super::resolver::{
-    infer_substitutions, payload_ty_from_annotation, resolve_param_ty, substitute_to_scalar,
+    infer_substitutions, payload_ty_from_annotation, resolve_param_ty,
+    resolve_struct_type_args, self_type_decl, substitute_to_scalar,
 };
-use super::scalar::{EnumLocalInfo, PayloadRepr, ScalarTy};
+use super::scalar::{EnumLocalInfo, FieldRepr, PayloadRepr, ScalarTy, StructLocalInfo};
 use super::signature::{FuncSignature, MonoTarget, MonomorphSource, ParamTy};
 
 /// Records the *first* reason eligibility analysis rejected the program.
@@ -60,8 +62,10 @@ pub(super) fn check_callable_body(
             ParamTy::Scalar(s) => {
                 locals.insert(*n, *s);
             }
-            ParamTy::Struct(struct_name) => {
-                compound_locals.structs.insert(*n, *struct_name);
+            ParamTy::Struct { base_name, type_args } => {
+                compound_locals
+                    .structs
+                    .insert(*n, StructLocalInfo::new(*base_name, type_args.clone()));
             }
             ParamTy::Tuple(elements) => {
                 compound_locals.tuples.insert(*n, elements.clone());
@@ -102,11 +106,11 @@ pub(super) fn check_callable_body(
     // StructLiteral). check_expr rejects struct literals in arbitrary
     // positions, so we process the leading statements normally and then
     // validate the trailing expression by hand.
-    if let ParamTy::Struct(struct_name) = &sig.ret {
+    if let ParamTy::Struct { base_name, type_args } = &sig.ret {
         return check_struct_returning_body(
             program,
             &code,
-            *struct_name,
+            &StructLocalInfo::new(*base_name, type_args.clone()),
             &mut locals,
             &mut compound_locals,
             substitutions,
@@ -149,7 +153,7 @@ pub(super) fn check_callable_body(
 fn check_struct_returning_body(
     program: &File,
     body_stmt_ref: &StmtRef,
-    struct_name: DefaultSymbol,
+    struct_info: &StructLocalInfo,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     compound_locals: &mut CompoundLocals,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
@@ -226,8 +230,8 @@ fn check_struct_returning_body(
     };
     match result_expr {
         Expr::Identifier(name) => {
-            match compound_locals.structs.get(&name).copied() {
-                Some(s) if s == struct_name => true,
+            match compound_locals.structs.get(&name).cloned() {
+                Some(s) if s == *struct_info => true,
                 Some(_) => {
                     note(reject_reason, || {
                         "returned struct local has a different type than declared"
@@ -244,20 +248,21 @@ fn check_struct_returning_body(
             }
         }
         Expr::StructLiteral(lit_name, _) => {
-            if lit_name != struct_name {
+            if lit_name != struct_info.base_name {
                 note(reject_reason, || {
                     "returned struct literal does not match declared return type"
                         .to_string()
                 });
                 return false;
             }
-            // Validate fields against the layout. Use a temporary
-            // variable name so check_struct_literal_fields can be reused
-            // — we don't need to actually keep the struct local around.
-            check_struct_literal_fields(
+            // Validate fields against the layout. The declared return
+            // type already pins the monomorph down, so pass its type
+            // args rather than re-inferring them from the initializers.
+            check_struct_literal(
                 program,
                 &result_expr_ref,
-                struct_name,
+                struct_info.base_name,
+                Some(&struct_info.type_args),
                 locals,
                 compound_locals,
                 substitutions,
@@ -266,6 +271,7 @@ fn check_struct_returning_body(
                 ptr_read_hints,
                 reject_reason,
             )
+            .is_some()
         }
         _ => {
             note(reject_reason, || {
@@ -778,54 +784,64 @@ fn check_tuple_returning_call(
 }
 
 /// If the value-position expression is a `StructLiteral` whose struct
-/// name has a registered scalar layout, return that struct name. Used to
+/// name has a registered scalar layout, return that struct name plus
+/// (#159) the type arguments the annotation pins down, if any. Used to
 /// special-case `val p = Point { … }` / `var p = Point { … }`.
+///
+/// `None` for the type-argument half means "the annotation didn't say" —
+/// either there is no annotation or the struct isn't generic. A generic
+/// struct with no annotation has its arguments inferred from the field
+/// initializers in `check_struct_literal`.
 fn struct_literal_target(
     program: &File,
     value_ref: &ExprRef,
     type_decl: Option<&TypeDecl>,
+    substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     reject_reason: &mut Option<String>,
-) -> Option<DefaultSymbol> {
+) -> Option<(DefaultSymbol, Option<Vec<ScalarTy>>)> {
     let expr = program.expression.get(value_ref)?;
     let lit_name = match expr {
         Expr::StructLiteral(name, _) => name,
         _ => return None,
     };
-    if !struct_layouts.contains_key(&lit_name) {
-        // Distinguish generic struct (todo #159 / T6) from
-        // other reject reasons (non-scalar field, etc.) so the
-        // diagnostic points users at the right todo entry.
-        let is_generic = (0..program.statement.len()).any(|i| {
-            if let Some(Stmt::StructDecl { name, generic_params, .. }) =
-                program.statement.get(&StmtRef(i as u32))
-            {
-                name == lit_name && !generic_params.is_empty()
-            } else {
-                false
-            }
-        });
-        note(reject_reason, || {
-            if is_generic {
-                "struct literal references a generic struct (JIT does not yet \
-                 model generic struct values; see #159)".to_string()
-            } else {
-                "struct literal references a struct without a JIT-eligible scalar layout".to_string()
-            }
-        });
-        return None;
-    }
+    let layout = match struct_layouts.get(&lit_name) {
+        Some(l) => l,
+        None => {
+            note(reject_reason, || {
+                "struct literal references a struct without a JIT-eligible scalar layout"
+                    .to_string()
+            });
+            return None;
+        }
+    };
     // If a type annotation is present, it must agree with the literal's
     // struct name. Unknown is the parser's placeholder for "no annotation"
     // (the type checker leaves it in place for many shapes), so accept it
-    // as if it weren't there. Generic struct annotations (`Point<T>`) and
-    // unrelated names are rejected.
+    // as if it weren't there. #159: a generic annotation (`Cell<u64>`)
+    // is now the primary source of the binding's type arguments.
+    let mut annotated_args: Option<Vec<ScalarTy>> = None;
     if let Some(td) = type_decl {
         match td {
             // The parser leaves Unknown when the user writes
             // `var p = Point { … }` without an annotation, so accept it.
             TypeDecl::Unknown => {}
-            TypeDecl::Identifier(s) | TypeDecl::Struct(s, _) if *s == lit_name => {}
+            TypeDecl::Identifier(s) if *s == lit_name => {}
+            TypeDecl::Struct(s, args) if *s == lit_name => {
+                if !args.is_empty() || layout.is_generic() {
+                    match resolve_struct_type_args(layout, args, substitutions) {
+                        Some(a) => annotated_args = Some(a),
+                        None => {
+                            note(reject_reason, || {
+                                "struct literal annotation's type arguments are not \
+                                 representable in the JIT"
+                                    .to_string()
+                            });
+                            return None;
+                        }
+                    }
+                }
+            }
             _ => {
                 note(reject_reason, || {
                     "struct literal type annotation does not match literal name".to_string()
@@ -834,14 +850,15 @@ fn struct_literal_target(
             }
         }
     }
-    Some(lit_name)
+    Some((lit_name, annotated_args))
 }
 
 /// If `value_ref` is a `Call(callee, args)` whose callee returns a known
 /// struct type, validate each argument against the callee's parameters
 /// (Identifier-of-struct-local for struct params; ScalarTy for scalar
 /// params), record the monomorphization, and return the resulting
-/// struct's name. Caller registers the struct local.
+/// struct binding. Caller registers the struct local.
+#[allow(clippy::too_many_arguments)]
 fn check_struct_returning_call(
     program: &File,
     value_ref: &ExprRef,
@@ -852,10 +869,10 @@ fn check_struct_returning_call(
     callees: &mut Vec<MonoCall>,
     ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
     reject_reason: &mut Option<String>,
-) -> Option<DefaultSymbol> {
+) -> Option<StructLocalInfo> {
     let expr = program.expression.get(value_ref)?;
-    let (callee_name, args_ref) = match expr {
-        Expr::Call(n, a) => (n, a),
+    let callee_name = match expr {
+        Expr::Call(n, _) => n,
         _ => return None,
     };
     let callee = program
@@ -864,12 +881,12 @@ fn check_struct_returning_call(
         .find(|f| f.name == callee_name)
         .cloned()?;
     // Only proceed when the callee returns a known struct.
-    let ret_struct = match &callee.return_type {
+    let ret_td = match &callee.return_type {
         Some(td) => match td {
             TypeDecl::Identifier(s) | TypeDecl::Struct(s, _)
                 if struct_layouts.contains_key(s) =>
             {
-                *s
+                td.clone()
             }
             _ => return None,
         },
@@ -906,8 +923,36 @@ fn check_struct_returning_call(
     if result.is_none() && callees.len() == saved_callees_len {
         return None;
     }
-    let _ = args_ref; // suppress unused warning
-    Some(ret_struct)
+    // #159: the return type is written in the *callee's* generic
+    // vocabulary (`fn wrap<T>(v: T) -> Cell<T>`), so resolve it against
+    // the substitution the call site just inferred rather than the
+    // caller's. `check_expr` recorded that inference as the MonoCall's
+    // `mono_args`, ordered by the callee's generic params.
+    let callee_subs: HashMap<DefaultSymbol, ScalarTy> = callees[saved_callees_len..]
+        .iter()
+        .find(|c| c.call_expr == *value_ref)
+        .map(|c| {
+            callee
+                .generic_params
+                .iter()
+                .copied()
+                .zip(c.mono_args.iter().copied())
+                .collect()
+        })
+        .unwrap_or_default();
+    match resolve_param_ty(&ret_td, &callee_subs, struct_layouts) {
+        Some(ParamTy::Struct { base_name, type_args }) => {
+            Some(StructLocalInfo::new(base_name, type_args))
+        }
+        _ => {
+            note(reject_reason, || {
+                "struct-returning call's return type is not resolvable for this \
+                 monomorph"
+                    .to_string()
+            });
+            None
+        }
+    }
 }
 
 /// Phase JE-2d: detect an enum-returning call as a val/var rhs.
@@ -1125,12 +1170,23 @@ fn check_enum_constructor_rhs(
 }
 
 /// Validate every field of a struct literal against the registered
-/// layout. Records callees / ptr_read hints encountered while typing the
-/// individual field initializers.
-fn check_struct_literal_fields(
+/// layout and (#159) determine the binding's type arguments. Records
+/// callees / ptr_read hints encountered while typing the individual
+/// field initializers.
+///
+/// `expected_args` is `Some(args)` when the position already pins the
+/// monomorph down (a `Cell<u64>` annotation, or a declared return
+/// type). For a generic struct without one, the arguments are inferred
+/// from the field initializers: a field declared as the type parameter
+/// `T` binds `T` to whatever scalar its initializer produced. Every
+/// parameter must end up bound — a generic that appears in no field
+/// (phantom) has nothing to infer from and stays on the interpreter.
+#[allow(clippy::too_many_arguments)]
+fn check_struct_literal(
     program: &File,
     value_ref: &ExprRef,
     struct_name: DefaultSymbol,
+    expected_args: Option<&[ScalarTy]>,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     compound_locals: &mut CompoundLocals,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
@@ -1138,44 +1194,18 @@ fn check_struct_literal_fields(
     callees: &mut Vec<MonoCall>,
     ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
     reject_reason: &mut Option<String>,
-) -> bool {
+) -> Option<StructLocalInfo> {
     let layout = match struct_layouts.get(&struct_name) {
         Some(l) => l.clone(),
         None => {
-            // Distinguish generic vs other reasons so the
-            // diagnostic points users at the right todo entry.
-            // `collect_struct_layouts` skips structs whose
-            // `generic_params` is non-empty (no per-monomorph
-            // layout yet — todo #159 / T6); a missing layout
-            // for a generic struct should say so.
-            let is_generic = (0..program.statement.len()).any(|i| {
-                if let Some(Stmt::StructDecl { name, generic_params, .. }) =
-                    program.statement.get(&StmtRef(i as u32))
-                {
-                    name == struct_name && !generic_params.is_empty()
-                } else {
-                    false
-                }
-            });
-            note(reject_reason, || {
-                if is_generic {
-                    "JIT does not yet model generic struct values \
-                     (would need per-monomorph struct_layouts; see #159)"
-                        .to_string()
-                } else {
-                    "struct layout missing in JIT analysis".to_string()
-                }
-            });
-            return false;
+            note(reject_reason, || "struct layout missing in JIT analysis".to_string());
+            return None;
         }
     };
-    let expr = match program.expression.get(value_ref) {
-        Some(e) => e,
-        None => return false,
-    };
+    let expr = program.expression.get(value_ref)?;
     let lit_fields = match expr {
         Expr::StructLiteral(_, fields) => fields,
-        _ => return false,
+        _ => return None,
     };
     if lit_fields.len() != layout.fields.len() {
         note(reject_reason, || {
@@ -1185,17 +1215,18 @@ fn check_struct_literal_fields(
                 layout.fields.len()
             )
         });
-        return false;
+        return None;
     }
+    // Type each initializer once; the same list drives both the
+    // inference of the type args and the per-field validation below.
+    let mut actual_fields: Vec<(DefaultSymbol, ScalarTy)> =
+        Vec::with_capacity(lit_fields.len());
     for (field_sym, field_expr) in &lit_fields {
-        let want = match layout.field(*field_sym) {
-            Some(t) => t,
-            None => {
-                note(reject_reason, || "unknown field in struct literal".to_string());
-                return false;
-            }
-        };
-        let actual = match check_expr(
+        if !layout.fields.iter().any(|(n, _)| n == field_sym) {
+            note(reject_reason, || "unknown field in struct literal".to_string());
+            return None;
+        }
+        let actual = check_expr(
             program,
             field_expr,
             locals,
@@ -1205,18 +1236,93 @@ fn check_struct_literal_fields(
             callees,
             ptr_read_hints,
             reject_reason,
-        ) {
+        )?;
+        actual_fields.push((*field_sym, actual));
+    }
+    // The type args always have to be recoverable from the field
+    // initializers, even when an annotation states them: codegen
+    // re-derives them the same way (it has no annotation at hand), so
+    // requiring it here keeps the two passes in lockstep. The cost is
+    // that a phantom parameter — one no field mentions — stays on the
+    // interpreter.
+    let inferred = infer_struct_type_args(&layout, &actual_fields, reject_reason)?;
+    if let Some(expected) = expected_args {
+        if expected != inferred.as_slice() {
+            note(reject_reason, || {
+                "struct literal's inferred type arguments disagree with its annotation"
+                    .to_string()
+            });
+            return None;
+        }
+    }
+    let type_args = inferred;
+    for (field_sym, actual) in &actual_fields {
+        let want = match layout.field(*field_sym, &type_args) {
             Some(t) => t,
-            None => return false,
+            None => {
+                note(reject_reason, || {
+                    "struct literal field type is not resolvable for this monomorph"
+                        .to_string()
+                });
+                return None;
+            }
         };
-        if actual != want {
+        if *actual != want {
             note(reject_reason, || {
                 format!("struct literal field type {actual:?} does not match layout {want:?}")
             });
-            return false;
+            return None;
         }
     }
-    true
+    Some(StructLocalInfo::new(struct_name, type_args))
+}
+
+/// #159: recover a generic struct's type arguments from the scalar
+/// types its literal's field initializers produced. Non-generic
+/// structs short-circuit to an empty vec.
+fn infer_struct_type_args(
+    layout: &StructLayout,
+    actual_fields: &[(DefaultSymbol, ScalarTy)],
+    reject_reason: &mut Option<String>,
+) -> Option<Vec<ScalarTy>> {
+    if !layout.is_generic() {
+        return Some(Vec::new());
+    }
+    let mut bound: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
+    for (field_sym, repr) in &layout.fields {
+        let FieldRepr::Generic(param) = repr else {
+            continue;
+        };
+        let Some((_, actual)) = actual_fields.iter().find(|(n, _)| n == field_sym) else {
+            continue;
+        };
+        if let Some(prev) = bound.insert(*param, *actual) {
+            if prev != *actual {
+                note(reject_reason, || {
+                    format!(
+                        "struct literal binds one type parameter to conflicting types \
+                         {prev:?} and {actual:?}"
+                    )
+                });
+                return None;
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(layout.generic_params.len());
+    for p in &layout.generic_params {
+        match bound.get(p) {
+            Some(t) => out.push(*t),
+            None => {
+                note(reject_reason, || {
+                    "cannot infer the struct literal's type arguments; add a type \
+                     annotation"
+                        .to_string()
+                });
+                return None;
+            }
+        }
+    }
+    Some(out)
 }
 
 /// Quick syntactic walk to detect any PtrRead within a function body.
@@ -1458,6 +1564,82 @@ fn walk_expr_for_ptr_read(program: &File, expr_ref: &ExprRef, found: &mut bool) 
     }
 }
 
+/// #159: bind a method's generic parameters from the receiver's type
+/// arguments.
+///
+/// A method on `impl<T> Cell<T>` carries `T` in its `generic_params`
+/// (the parser merges the impl block's parameters into every method),
+/// so the receiver's monomorph decides what `T` is. Two routes bind it:
+///
+///   * by position through the impl block's `target_type_args` — the
+///     impl may spell the parameter differently from the declaration
+///     (`impl<U> Cell<U>`), and a *concrete* argument there
+///     (`impl Foo for Cell<u8>`) instead has to agree with the
+///     receiver, or this call isn't for that impl;
+///   * by symbol identity with the struct declaration's own parameters,
+///     which covers the common case where both spell it `T` and the
+///     parser left `target_type_args` empty.
+///
+/// Returns `None` (with a reason) when a parameter stays unbound — a
+/// method-only generic (`fn map<U>(…)`) has nothing at the call site to
+/// infer from and remains interpreter-only.
+fn method_substitution(
+    program: &File,
+    receiver: &StructLocalInfo,
+    method: &MethodFunction,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
+    reject_reason: &mut Option<String>,
+) -> Option<HashMap<DefaultSymbol, ScalarTy>> {
+    let mut subst: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
+    if let Some(layout) = struct_layouts.get(&receiver.base_name) {
+        if layout.generic_params.len() == receiver.type_args.len() {
+            for (p, t) in layout.generic_params.iter().zip(receiver.type_args.iter()) {
+                subst.insert(*p, *t);
+            }
+        }
+    }
+    if let Some(target_args) = find_impl_target_args(program, receiver.base_name, method.name) {
+        if !target_args.is_empty() {
+            if target_args.len() != receiver.type_args.len() {
+                note(reject_reason, || {
+                    "impl block's type arguments do not match the receiver's".to_string()
+                });
+                return None;
+            }
+            for (arg, actual) in target_args.iter().zip(receiver.type_args.iter()) {
+                match arg {
+                    TypeDecl::Generic(sym) | TypeDecl::Identifier(sym)
+                        if method.generic_params.contains(sym) =>
+                    {
+                        subst.insert(*sym, *actual);
+                    }
+                    concrete => {
+                        // A specialised impl (`impl Trait for Cell<u8>`):
+                        // it only applies when the receiver's argument is
+                        // that very type.
+                        if ScalarTy::from_type_decl(concrete) != Some(*actual) {
+                            note(reject_reason, || {
+                                "receiver's type arguments do not match this impl block"
+                                    .to_string()
+                            });
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for p in &method.generic_params {
+        if !subst.contains_key(p) {
+            note(reject_reason, || {
+                "generic methods are not yet JIT-compatible".to_string()
+            });
+            return None;
+        }
+    }
+    Some(subst)
+}
+
 fn check_stmt(
     program: &File,
     stmt_ref: &StmtRef,
@@ -1482,13 +1664,15 @@ fn check_stmt(
             // struct local. Field-by-field types are validated against the
             // struct's known layout; everything else falls through to the
             // scalar path.
-            if let Some(struct_name) =
-                struct_literal_target(program, &value, type_decl.as_ref(), struct_layouts, reject_reason)
-            {
-                if !check_struct_literal_fields(
+            if let Some((struct_name, annotated_args)) = struct_literal_target(
+                program, &value, type_decl.as_ref(), substitutions, struct_layouts,
+                reject_reason,
+            ) {
+                let info = match check_struct_literal(
                     program,
                     &value,
                     struct_name,
+                    annotated_args.as_deref(),
                     locals,
                     compound_locals,
                     substitutions,
@@ -1497,9 +1681,10 @@ fn check_stmt(
                     ptr_read_hints,
                     reject_reason,
                 ) {
-                    return false;
-                }
-                compound_locals.structs.insert(name, struct_name);
+                    Some(i) => i,
+                    None => return false,
+                };
+                compound_locals.structs.insert(name, info);
                 return true;
             }
             // Special-case: a struct-returning function call also lands as
@@ -1643,13 +1828,15 @@ fn check_stmt(
             // Mirror the Val struct-literal special case — `var p = Point { ... }`
             // also registers a struct local.
             if let Some(v) = value {
-                if let Some(struct_name) =
-                    struct_literal_target(program, &v, type_decl.as_ref(), struct_layouts, reject_reason)
-                {
-                    if !check_struct_literal_fields(
+                if let Some((struct_name, annotated_args)) = struct_literal_target(
+                    program, &v, type_decl.as_ref(), substitutions, struct_layouts,
+                    reject_reason,
+                ) {
+                    let info = match check_struct_literal(
                         program,
                         &v,
                         struct_name,
+                        annotated_args.as_deref(),
                         locals,
                         compound_locals,
                         substitutions,
@@ -1658,9 +1845,10 @@ fn check_stmt(
                         ptr_read_hints,
                         reject_reason,
                     ) {
-                        return false;
-                    }
-                    compound_locals.structs.insert(name, struct_name);
+                        Some(i) => i,
+                        None => return false,
+                    };
+                    compound_locals.structs.insert(name, info);
                     return true;
                 }
                 if let Some(struct_name) = check_struct_returning_call(
@@ -2120,7 +2308,7 @@ pub(crate) fn check_expr(
                             return None;
                         }
                     };
-                    let struct_name = match compound_locals.structs.get(&recv_name).copied() {
+                    let struct_info = match compound_locals.structs.get(&recv_name).cloned() {
                         Some(s) => s,
                         None => {
                             note(reject_reason, || {
@@ -2130,8 +2318,8 @@ pub(crate) fn check_expr(
                         }
                     };
                     let field_ty = struct_layouts
-                        .get(&struct_name)
-                        .and_then(|l| l.field(field_name))?;
+                        .get(&struct_info.base_name)
+                        .and_then(|l| l.field(field_name, &struct_info.type_args))?;
                     let rhs_ty = check_expr(
                         program,
                         &rhs,
@@ -3100,7 +3288,7 @@ pub(crate) fn check_expr(
                     None => return Some(ScalarTy::Unit),
                 };
             }
-            let struct_name = match compound_locals.structs.get(&recv_name).copied() {
+            let struct_info = match compound_locals.structs.get(&recv_name).cloned() {
                 Some(s) => s,
                 None => {
                     note(reject_reason, || {
@@ -3109,9 +3297,9 @@ pub(crate) fn check_expr(
                     return None;
                 }
             };
+            let struct_name = struct_info.base_name;
             // Validate each argument's type against the corresponding
-            // method parameter (skipping `self`). Methods don't yet
-            // support generics, so callee_subs is always empty.
+            // method parameter (skipping `self`).
             // Linear scan over top-level ImplBlock decls is fine — only
             // run once per call site, and the analyzer already pre-built
             // a method_map for the work-stack pass.
@@ -3124,12 +3312,19 @@ pub(crate) fn check_expr(
                     return None;
                 }
             };
-            if !method.generic_params.is_empty() {
-                note(reject_reason, || {
-                    "generic methods are not yet JIT-compatible".to_string()
-                });
-                return None;
-            }
+            // #159: a method on a generic struct carries the impl
+            // block's type parameters in `generic_params`. Bind them
+            // from the receiver's type args; anything left unbound (a
+            // method-only generic) still can't be monomorphised from
+            // the call site.
+            let method_subst = method_substitution(
+                program, &struct_info, &method, struct_layouts, reject_reason,
+            )?;
+            let mono_args: Vec<ScalarTy> = method
+                .generic_params
+                .iter()
+                .map(|p| method_subst[p])
+                .collect();
             // The first parameter is the receiver (`self: Self` in the
             // language's preferred style). Remaining parameters must
             // line up with the explicit arguments at the call site.
@@ -3154,11 +3349,17 @@ pub(crate) fn check_expr(
                 let param_td = &method.parameter[i + 1].1;
                 let arg_expr = program.expression.get(arg)?;
                 if let Expr::Identifier(id) = arg_expr {
-                    if let Some(arg_struct) = compound_locals.structs.get(&id).copied() {
-                        match param_td {
-                            TypeDecl::Identifier(s) | TypeDecl::Struct(s, _)
-                                if *s == arg_struct
-                                    && struct_layouts.contains_key(s) =>
+                    if let Some(arg_struct) = compound_locals.structs.get(&id).cloned() {
+                        let want = match param_td {
+                            TypeDecl::Self_ => resolve_param_ty(
+                                &self_type_decl(&struct_info), &method_subst, struct_layouts,
+                            ),
+                            other => resolve_param_ty(other, &method_subst, struct_layouts),
+                        };
+                        match want {
+                            Some(ParamTy::Struct { base_name, type_args })
+                                if base_name == arg_struct.base_name
+                                    && type_args == arg_struct.type_args =>
                             {
                                 continue;
                             }
@@ -3183,7 +3384,7 @@ pub(crate) fn check_expr(
                     ptr_read_hints,
                     reject_reason,
                 )?;
-                let want = match resolve_param_ty(param_td, substitutions, struct_layouts) {
+                let want = match resolve_param_ty(param_td, &method_subst, struct_layouts) {
                     Some(ParamTy::Scalar(s)) => s,
                     _ => {
                         note(reject_reason, || {
@@ -3202,18 +3403,18 @@ pub(crate) fn check_expr(
             callees.push(MonoCall {
                 call_expr: *expr_ref,
                 target: MonoTarget::Method(struct_name, method_name),
-                mono_args: Vec::new(),
+                mono_args,
             });
             // Compute method's return type.
             match &method.return_type {
                 Some(td) => {
                     let resolved = match td {
-                        TypeDecl::Self_ => TypeDecl::Identifier(struct_name),
+                        TypeDecl::Self_ => self_type_decl(&struct_info),
                         other => other.clone(),
                     };
-                    match resolve_param_ty(&resolved, substitutions, struct_layouts) {
+                    match resolve_param_ty(&resolved, &method_subst, struct_layouts) {
                         Some(ParamTy::Scalar(s)) => Some(s),
-                        Some(ParamTy::Struct(_)) => {
+                        Some(ParamTy::Struct { .. }) => {
                             // Struct-returning methods only flow through
                             // val/var rhs, similar to free-function struct
                             // returns. Reject in arbitrary positions.
@@ -3257,7 +3458,7 @@ pub(crate) fn check_expr(
                     return None;
                 }
             };
-            let struct_name = match compound_locals.structs.get(&recv_name).copied() {
+            let struct_info = match compound_locals.structs.get(&recv_name).cloned() {
                 Some(s) => s,
                 None => {
                     note(reject_reason, || {
@@ -3267,8 +3468,8 @@ pub(crate) fn check_expr(
                 }
             };
             let field_ty = struct_layouts
-                .get(&struct_name)
-                .and_then(|l| l.field(field_name));
+                .get(&struct_info.base_name)
+                .and_then(|l| l.field(field_name, &struct_info.type_args));
             if field_ty.is_none() {
                 note(reject_reason, || "unknown field on struct".to_string());
             }
@@ -3481,6 +3682,10 @@ fn check_plain_call(
     }
     let mut scalar_arg_tys: Vec<ScalarTy> = Vec::with_capacity(arg_list.len());
     let mut callee_param_tys: Vec<ParamTy> = Vec::with_capacity(arg_list.len());
+    // #159: generics the callee picks up through a struct-typed
+    // parameter. Seeded into `infer_substitutions`, which only looks at
+    // scalar argument positions.
+    let mut struct_arg_bindings: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
     for (a, (_, param_td)) in arg_list.iter().zip(callee.parameter.iter()) {
         let arg_expr = program.expression.get(a)?;
         // Phase JE-2d: enum-typed argument matching. Either the
@@ -3548,12 +3753,72 @@ fn check_plain_call(
             return None;
         }
         if let Expr::Identifier(id) = arg_expr {
-            if let Some(struct_name) = compound_locals.structs.get(&id).copied() {
+            if let Some(arg_struct) = compound_locals.structs.get(&id).cloned() {
                 match param_td {
                     TypeDecl::Identifier(s) | TypeDecl::Struct(s, _)
-                        if *s == struct_name && struct_layouts.contains_key(s) =>
+                        if *s == arg_struct.base_name && struct_layouts.contains_key(s) =>
                     {
-                        callee_param_tys.push(ParamTy::Struct(struct_name));
+                        // #159: the parameter's own type arguments
+                        // (`Cell<T>` / `Cell<u64>`) line up positionally
+                        // with the argument's. A callee generic in that
+                        // position is inferred from the argument — this
+                        // is the only place a generic can be bound
+                        // through a struct, since `infer_substitutions`
+                        // sees struct args as opaque.
+                        let declared_args: &[TypeDecl] = match param_td {
+                            TypeDecl::Struct(_, a) => a,
+                            _ => &[],
+                        };
+                        if declared_args.len() != arg_struct.type_args.len() {
+                            note(reject_reason, || {
+                                "struct argument's type arguments do not match callee \
+                                 parameter"
+                                    .to_string()
+                            });
+                            return None;
+                        }
+                        for (declared, actual) in
+                            declared_args.iter().zip(arg_struct.type_args.iter())
+                        {
+                            let is_callee_generic = match declared {
+                                TypeDecl::Generic(g) | TypeDecl::Identifier(g) => {
+                                    callee.generic_params.contains(g).then_some(*g)
+                                }
+                                _ => None,
+                            };
+                            match is_callee_generic {
+                                Some(g) => {
+                                    if let Some(prev) =
+                                        struct_arg_bindings.insert(g, *actual)
+                                    {
+                                        if prev != *actual {
+                                            note(reject_reason, || {
+                                                "struct arguments bind one type parameter \
+                                                 to conflicting types"
+                                                    .to_string()
+                                            });
+                                            return None;
+                                        }
+                                    }
+                                }
+                                None => {
+                                    if substitute_to_scalar(declared, substitutions)
+                                        != Some(*actual)
+                                    {
+                                        note(reject_reason, || {
+                                            "struct argument's type arguments do not match \
+                                             callee parameter"
+                                                .to_string()
+                                        });
+                                        return None;
+                                    }
+                                }
+                            }
+                        }
+                        callee_param_tys.push(ParamTy::Struct {
+                            base_name: arg_struct.base_name,
+                            type_args: arg_struct.type_args.clone(),
+                        });
                         scalar_arg_tys.push(ScalarTy::Unit);
                         continue;
                     }
@@ -3631,7 +3896,7 @@ fn check_plain_call(
     }
 
     let callee_subs = infer_substitutions(
-        &callee, &scalar_arg_tys, substitutions, reject_reason,
+        &callee, &scalar_arg_tys, substitutions, struct_arg_bindings, reject_reason,
     )?;
 
     let mono_args: Vec<ScalarTy> = callee

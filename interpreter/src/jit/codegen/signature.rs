@@ -26,13 +26,16 @@ pub(crate) fn make_signature<M: Module>(
                     ir_type(*scalar).expect("param cannot be Unit"),
                 ));
             }
-            ParamTy::Struct(struct_name) => {
+            ParamTy::Struct { base_name, type_args } => {
                 // A struct parameter expands into one cranelift parameter
                 // per scalar field, matching the order in the layout.
-                let layout = struct_layouts
-                    .get(struct_name)
+                // #159: the field types are resolved for this monomorph,
+                // so `Cell<i64>` and `Cell<f64>` expand differently.
+                let fields = struct_layouts
+                    .get(base_name)
+                    .and_then(|l| l.resolved_fields(type_args))
                     .expect("struct layout missing for declared param");
-                for (_, field_ty) in &layout.fields {
+                for (_, field_ty) in &fields {
                     s.params.push(AbiParam::new(
                         ir_type(*field_ty).expect("struct field cannot be Unit"),
                     ));
@@ -69,12 +72,14 @@ pub(crate) fn make_signature<M: Module>(
                 s.returns.push(AbiParam::new(rt));
             }
         }
-        ParamTy::Struct(struct_name) => {
-            // Struct returns expand into one cranelift return per field.
-            let layout = struct_layouts
-                .get(struct_name)
+        ParamTy::Struct { base_name, type_args } => {
+            // Struct returns expand into one cranelift return per field
+            // of this monomorph (#159).
+            let fields = struct_layouts
+                .get(base_name)
+                .and_then(|l| l.resolved_fields(type_args))
                 .expect("struct layout missing for declared return");
-            for (_, field_ty) in &layout.fields {
+            for (_, field_ty) in &fields {
                 s.returns.push(AbiParam::new(
                     ir_type(*field_ty).expect("struct return field cannot be Unit"),
                 ));

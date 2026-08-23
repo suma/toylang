@@ -2,23 +2,83 @@ use std::collections::HashMap;
 
 use string_interner::DefaultSymbol;
 
-use super::scalar::{EnumLocalInfo, PayloadRepr, ScalarTy};
+use super::scalar::{EnumLocalInfo, FieldRepr, PayloadRepr, ScalarTy, StructLocalInfo};
 
 /// Field layout for a JIT-compatible struct: every field must be a JIT
-/// scalar type (no nested structs in this iteration). Field names are
-/// stored as `DefaultSymbol`s so they can be matched directly against
-/// the symbols carried by `Expr::StructLiteral` and `Expr::FieldAccess`.
+/// scalar type, or (#159) one of the declaration's own generic
+/// parameters. Field names are stored as `DefaultSymbol`s so they can
+/// be matched directly against the symbols carried by
+/// `Expr::StructLiteral` and `Expr::FieldAccess`. Nested structs are
+/// still out of scope.
+///
+/// #159: this is a *template*, not a monomorph. A generic struct has a
+/// non-empty `generic_params` and at least one `FieldRepr::Generic`
+/// field; every consumer resolves it against the type arguments of the
+/// binding at hand (`StructLocalInfo::type_args` /
+/// `ParamTy::Struct::type_args`), which is what gives `Cell<i64>` and
+/// `Cell<u64>` distinct field types without a second map keyed by
+/// `(name, type_args)`. The resolution is a pure function of
+/// `(template, type_args)`, so computing it on demand and caching
+/// nothing keeps the single name-keyed map that the whole pipeline
+/// already threads through.
 #[derive(Debug, Clone)]
 pub struct StructLayout {
-    pub fields: Vec<(DefaultSymbol, ScalarTy)>,
+    /// Generic params of the declaration, in source order. Empty for a
+    /// non-generic struct; the index into this vec is the position of
+    /// the corresponding entry in a binding's `type_args`.
+    pub generic_params: Vec<DefaultSymbol>,
+    pub fields: Vec<(DefaultSymbol, FieldRepr)>,
 }
 
 impl StructLayout {
-    pub fn field(&self, name: DefaultSymbol) -> Option<ScalarTy> {
+    /// Substitution map for one monomorph. `None` when the argument
+    /// count disagrees with the declaration (a malformed annotation, or
+    /// a binding whose args we failed to infer).
+    pub fn subst(
+        &self,
+        type_args: &[ScalarTy],
+    ) -> Option<HashMap<DefaultSymbol, ScalarTy>> {
+        if type_args.len() != self.generic_params.len() {
+            return None;
+        }
+        Some(
+            self.generic_params
+                .iter()
+                .copied()
+                .zip(type_args.iter().copied())
+                .collect(),
+        )
+    }
+
+    /// Field list of one monomorph, in declaration order. `None` when
+    /// `type_args` doesn't match the declaration or a generic field
+    /// stays unbound.
+    pub fn resolved_fields(
+        &self,
+        type_args: &[ScalarTy],
+    ) -> Option<Vec<(DefaultSymbol, ScalarTy)>> {
+        let subst = self.subst(type_args)?;
+        let mut out = Vec::with_capacity(self.fields.len());
+        for (name, repr) in &self.fields {
+            out.push((*name, repr.resolve(&subst)?));
+        }
+        Some(out)
+    }
+
+    /// Type of one field in one monomorph.
+    pub fn field(&self, name: DefaultSymbol, type_args: &[ScalarTy]) -> Option<ScalarTy> {
+        let subst = self.subst(type_args)?;
         self.fields
             .iter()
             .find(|(n, _)| *n == name)
-            .map(|(_, t)| *t)
+            .and_then(|(_, r)| r.resolve(&subst))
+    }
+
+    /// `true` when the declaration takes type parameters. Used by the
+    /// annotation-less inference path to decide whether type args have
+    /// to be recovered from the literal's field initializers.
+    pub fn is_generic(&self) -> bool {
+        !self.generic_params.is_empty()
     }
 }
 
@@ -144,9 +204,12 @@ impl EnumLayout {
 /// enum types, etc.) from re-inflating the signature footprint.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct CompoundLocals {
-    /// Local name -> struct type name. Mirrors the AOT compiler's
-    /// `Binding::Struct` lookup at the JIT eligibility layer.
-    pub structs: HashMap<DefaultSymbol, DefaultSymbol>,
+    /// Local name -> `StructLocalInfo` (base name + this binding's
+    /// type args). Mirrors the AOT compiler's `Binding::Struct` lookup
+    /// at the JIT eligibility layer. #159: the type args live here so
+    /// two monomorphs of one generic struct get distinct entries, the
+    /// same way `enums` carries a per-monomorph payload type.
+    pub structs: HashMap<DefaultSymbol, StructLocalInfo>,
     /// Local name -> per-element ScalarTy list. Used for tuple
     /// literal / tuple-of-scalars dispatch.
     pub tuples: HashMap<DefaultSymbol, Vec<ScalarTy>>,

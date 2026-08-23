@@ -12,9 +12,18 @@ use super::scalar::ScalarTy;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ParamTy {
     Scalar(ScalarTy),
-    /// Struct value, identified by its declared type name. Field layout
-    /// is looked up via `EligibleSet::struct_layouts`.
-    Struct(DefaultSymbol),
+    /// Struct value, identified by its declared type name plus (#159)
+    /// the type arguments of this monomorph, ordered by the
+    /// declaration's `generic_params` and empty for a non-generic
+    /// struct. The field layout template is looked up via
+    /// `EligibleSet::struct_layouts` and resolved against `type_args`,
+    /// so `Cell<i64>` and `Cell<u64>` expand to different cranelift
+    /// parameters and get distinct `MonoKey`s — the same treatment
+    /// `ParamTy::Enum` gives a generic enum's payload.
+    Struct {
+        base_name: DefaultSymbol,
+        type_args: Vec<ScalarTy>,
+    },
     /// Tuple value with the listed element types. Tuples are
     /// structural, so the element types alone identify the shape; no
     /// separate layout map is needed.

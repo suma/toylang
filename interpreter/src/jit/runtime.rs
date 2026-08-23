@@ -1240,7 +1240,7 @@ fn build_cache_entry(
     // need an entirely different surface, so reject it here.
     let main_ret = match &main_sig.ret {
         eligibility::ParamTy::Scalar(s) => *s,
-        eligibility::ParamTy::Struct(_) => {
+        eligibility::ParamTy::Struct { .. } => {
             return Err("main returning a struct is not supported in JIT".into());
         }
         eligibility::ParamTy::Tuple(_) => {

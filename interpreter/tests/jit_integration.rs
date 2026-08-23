@@ -172,39 +172,89 @@ fn extension_trait_primitive_method_jit_matches_interpreter() {
 }
 
 #[test]
-fn jit_generic_struct_falls_back_cleanly() {
-    // #159 last remaining sub-item: generic struct / method JIT
-    // support. Eligibility rejects generic struct types because
-    // `struct_layouts` is not yet parameterised by type args. This
-    // test confirms the interpreter handles the program and the
-    // JIT-mode fallback produces the same exit code (42) so any
-    // future work that breaks the fallback is caught.
-    assert_match("example/jit_generic_struct_fallback.t");
-    let r = run("example/jit_generic_struct_fallback.t", false, false);
-    assert_eq!(r.code, 42, "interpreter exit; stderr: {}", r.stderr);
+fn jit_generic_struct_matches_interpreter() {
+    // #159: generic struct / method JIT support. `Cell<u64>` /
+    // `Cell<i64>` / `Cell<bool>` are three monomorphs of one
+    // declaration and `Pair<A, B>` takes two parameters; the example
+    // also passes a generic struct to a function and returns one.
+    // Side-by-side run pins that the JIT agrees with the tree-walker.
+    assert_match("example/jit_generic_struct.t");
+    let r = run("example/jit_generic_struct.t", false, false);
+    assert_eq!(r.code, 97, "interpreter exit; stderr: {}", r.stderr);
 }
 
 #[cfg(feature = "jit")]
 #[test]
-fn jit_skip_reason_for_generic_struct() {
-    // T6 (#159 follow-up): full JIT generic struct dispatch
-    // (per-monomorph struct_layouts keyed by (name, type_args))
-    // is genuine multi-thousand-line work that didn't fit in
-    // this session. The smaller win this commit *does* land is
-    // a precise skip diagnostic — the previous "struct layout
-    // missing in JIT analysis" message was indistinguishable
-    // from non-scalar-field rejections, so users couldn't tell
-    // which todo entry to grep. The new wording references
-    // #159 explicitly so a future contributor can find the
-    // implementation task from the diagnostic alone.
-    let r = run("example/jit_generic_struct_fallback.t", true, true);
-    assert_eq!(r.code, 42, "fallback exit code; stderr: {}", r.stderr);
+fn jit_generic_struct_compiles_natively() {
+    // #159 landed: `struct_layouts` holds a template per declaration
+    // and each binding carries its own type args, so eligibility no
+    // longer bails out on a generic struct. This used to assert the
+    // opposite — that the skip reason cited #159 — so the assertion
+    // below is what proves the todo item is done rather than merely
+    // rewritten.
+    let r = run("example/jit_generic_struct.t", true, true);
+    assert_eq!(r.code, 97, "JIT-mode exit; stderr: {}", r.stderr);
     assert!(
-        r.stderr.contains("JIT: skipped")
-            && r.stderr.contains("generic struct")
-            && r.stderr.contains("#159"),
-        "expected generic-struct-specific skip reason citing #159; stderr: {}",
+        !r.stderr.contains("JIT: skipped"),
+        "expected no JIT skip; stderr: {}",
         r.stderr
+    );
+    assert!(
+        r.stderr.contains("JIT compiled: ") && r.stderr.contains("main"),
+        "expected a JIT compile log naming main; stderr: {}",
+        r.stderr
+    );
+    // One cranelift function per receiver monomorph — the whole point
+    // of keying the layout resolution by type args.
+    for mono in ["Cell__get__U64", "Cell__get__I64", "Cell__get__Bool"] {
+        assert!(
+            r.stderr.contains(mono),
+            "expected monomorph `{mono}` in the compile log; stderr: {}",
+            r.stderr
+        );
+    }
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_generic_function_over_generic_struct() {
+    // The type parameter of `peek<T>` is reachable only through the
+    // struct argument's monomorph — `infer_substitutions` sees struct
+    // positions as opaque, so #159 seeds it from the binding's type
+    // args. Two call sites with different monomorphs must produce two
+    // cranelift functions.
+    //
+    // Kept out of `example/` on purpose: the AOT backend cannot infer
+    // a generic function's type arguments through a struct parameter
+    // yet, and every file in `example/` is swept by
+    // `compiler/tests/example_consistency.rs` across all 3 backends.
+    use std::fs;
+    let path = "tests/fixtures/jit_generic_struct_fn.t";
+    fs::create_dir_all("tests/fixtures").unwrap();
+    fs::write(
+        path,
+        r#"struct Cell<T> { value: T }
+
+fn peek<T>(c: Cell<T>) -> T {
+    c.value
+}
+
+fn main() -> u64 {
+    val a: Cell<u64> = Cell { value: 9u64 }
+    val b: Cell<i64> = Cell { value: 6i64 }
+    peek(a) + peek(b) as u64
+}
+"#,
+    )
+    .unwrap();
+    let plain = run(path, false, false);
+    let jit = run(path, true, true);
+    assert_eq!(plain.code, 15, "interpreter exit; stderr: {}", plain.stderr);
+    assert_eq!(jit.code, plain.code, "JIT exit; stderr: {}", jit.stderr);
+    assert!(
+        jit.stderr.contains("peek__U64") && jit.stderr.contains("peek__I64"),
+        "expected both monomorphs of `peek`; stderr: {}",
+        jit.stderr
     );
 }
 

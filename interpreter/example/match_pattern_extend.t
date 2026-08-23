@@ -5,10 +5,14 @@
 #   name @ pat   bind the matched value while still testing it
 #
 # An alternative list expands into one arm per alternative, sharing
-# the body. `@` binds the whole matched value and leaves the decision
-# to the pattern it wraps, so it takes an enum variant or a struct
-# pattern as readily as a literal — and because a binding never
-# rejects anything, it is invisible to the exhaustiveness check.
+# the body — at any depth, so a `|` inside a payload or a field
+# expands the whole pattern (the slots multiply). Every alternative
+# must bind the same names, since only one of them runs.
+#
+# `@` binds the whole matched value and leaves the decision to the
+# pattern it wraps, so it takes an enum variant or a struct pattern as
+# readily as a literal — and because a binding never rejects anything,
+# it is invisible to the exhaustiveness check.
 #
 # A range covers a span of the value space, and the checker tracks
 # literals and ranges as one interval set: an arm inside an earlier
@@ -116,6 +120,32 @@ fn band(m: Maybe) -> i64 {
     }
 }
 
+# `|` in a sub-pattern. Two slots with two alternatives each is four
+# combinations, all sharing this one body.
+enum Shape {
+    Circle(i64),
+    Rect(i64, i64),
+    Dot,
+}
+
+fn small(s: Shape) -> i64 {
+    match s {
+        Shape::Circle(1i64 | 2i64) => 1i64,
+        Shape::Circle(_) => 0i64,
+        Shape::Rect(1i64 | 2i64, 3i64 | 4i64) => 2i64,
+        Shape::Rect(_, _) => 0i64,
+        Shape::Dot => -1i64,
+    }
+}
+
+# Alternatives that bind alike can each name a different position.
+fn first(s: Shape) -> i64 {
+    match s {
+        Shape::Circle(n) | Shape::Rect(n, _) => n,
+        Shape::Dot => 0i64,
+    }
+}
+
 # The synthesized guard ANDs with a user-written one.
 fn gated(n: i64, allow: bool) -> str {
     match n {
@@ -171,6 +201,15 @@ fn main() -> i64 {
     println(band(three))
     println(band(fifteen))
     println(band(none))
+
+    val c2: Shape = Shape::Circle(2i64)
+    val r24: Shape = Shape::Rect(2i64, 4i64)
+    val r94: Shape = Shape::Rect(9i64, 4i64)
+    println(small(c2))
+    println(small(r24))
+    println(small(r94))
+    println(first(c2))
+    println(first(r24))
 
     describe(3i64) + describe(50i64)
 }

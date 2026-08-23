@@ -129,7 +129,9 @@ pub fn parse_if(parser: &mut Parser) -> ParserResult<ExprRef> {
 fn parse_if_val(parser: &mut Parser) -> ParserResult<ExprRef> {
     let start_location = parser.current_source_location();
     parser.expect_err(&Kind::Val)?;
-    let pattern = parse_match_pattern(parser)?;
+    // PATTERN-EXTEND: `if val A | B = x` gets one arm per
+    // alternative, the same expansion a `match` arm does.
+    let patterns = parse_match_pattern(parser)?;
     parser.expect_err(&Kind::Equal)?;
     parser.push_context(crate::parser::core::ParseContext::Condition);
     let scrutinee = parse_logical_expr(parser)?;
@@ -163,14 +165,19 @@ fn parse_if_val(parser: &mut Parser) -> ParserResult<ExprRef> {
             (then_wrapped, else_empty)
         }
     };
-    let arms = vec![
-        crate::ast::MatchArm { pattern, guard: None, body: then_arm_body },
-        crate::ast::MatchArm {
-            pattern: crate::ast::Pattern::Wildcard,
+    let mut arms: Vec<crate::ast::MatchArm> = patterns
+        .into_iter()
+        .map(|pattern| crate::ast::MatchArm {
+            pattern,
             guard: None,
-            body: else_arm_body,
-        },
-    ];
+            body: then_arm_body,
+        })
+        .collect();
+    arms.push(crate::ast::MatchArm {
+        pattern: crate::ast::Pattern::Wildcard,
+        guard: None,
+        body: else_arm_body,
+    });
     let match_expr = parser.ast_builder.add_expr_with_location(
         crate::ast::Expr::Match(scrutinee, arms),
         Some(start_location),

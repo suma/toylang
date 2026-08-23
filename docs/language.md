@@ -2273,6 +2273,12 @@ match c {
     Color::Blue               => "cool",
 }
 
+match s {
+    Shape::Circle(1i64 | 2i64)      => "small circle",
+    Shape::Circle(n)                => "circle",
+    Shape::Rect(n) | Shape::Dot(n)  => "other",     # both bind `n`
+}
+
 match n {
     0i64..5i64   => "low",         # 0 through 4
     x @ 5i64     => "exactly five",
@@ -2295,7 +2301,13 @@ match p {
 - **`a | b`** puts several alternatives on one arm. They share the
   body, and each alternative is checked for reachability and
   exhaustiveness on its own — so `Color::Red | Color::Green` covers
-  two variants, and `1i64 | 1i64` is an unreachable-arm error.
+  two variants, and `1i64 | 1i64` is an unreachable-arm error. `|`
+  works at any depth: `Circle(1i64 | 2i64)` and
+  `Point { x: 0i64 | 1i64, y }` expand the whole pattern, and slots
+  multiply (`Rect(1i64 | 2i64, 3i64 | 4i64)` is four alternatives, up
+  to a limit of 64). **Every alternative must bind the same names** —
+  only one of them runs and they share the body, so
+  `Circle(x) | Rect(x, y)` is a parse error.
 - **`lo..hi`** is **half-open**, matching the `..` expression form:
   `0i64..5i64` covers 0 through 4. Endpoints are integer literals, and
   an empty range (`5i64..5i64`, or a `hi` below `lo`) is a type error

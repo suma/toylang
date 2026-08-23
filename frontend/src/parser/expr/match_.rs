@@ -22,7 +22,7 @@ pub fn parse_match(parser: &mut Parser) -> ParserResult<ExprRef> {
         // PATTERN-EXTEND: one arm can carry several alternatives
         // (`1i64 | 2i64 =>`), which expand into one arm each. They
         // share the body and the guard: only one of them ever runs.
-        let alternatives = parse_match_pattern_alternatives(parser)?;
+        let alternatives = parse_match_pattern(parser)?;
         let guard = if matches!(parser.peek(), Some(Kind::If)) {
             parser.next();
             parser.push_context(crate::parser::core::ParseContext::Condition);
@@ -52,19 +52,135 @@ pub fn parse_match(parser: &mut Parser) -> ParserResult<ExprRef> {
     Ok(expr_ref)
 }
 
-/// Parse `pat` or `pat | pat | ...`, one arm per alternative. They
-/// share the body, so `1i64 | 2i64 => body` costs one body rather
-/// than a copy per alternative.
-fn parse_match_pattern_alternatives(
+/// The most alternatives one pattern may expand into. Slots multiply
+/// (`(a|b, c|d)` is four), so an accidental cross product is caught
+/// here rather than as a `match` with thousands of arms.
+const MAX_PATTERN_ALTERNATIVES: usize = 64;
+
+/// PATTERN-EXTEND: parse `pat` or `pat | pat | ...`, returning one
+/// pattern per alternative. Every caller — the arms of a `match`, the
+/// pattern of an `if val` / `while val`, and every sub-pattern
+/// position — goes through here, which is what makes `|` legal at any
+/// depth: a slot hands back its alternatives and the container it sits
+/// in takes the cross product.
+///
+/// The alternatives share the arm's body and guard, so `1i64 | 2i64 =>
+/// body` costs one body rather than a copy per alternative.
+pub(crate) fn parse_match_pattern(
     parser: &mut Parser,
 ) -> ParserResult<Vec<crate::ast::Pattern>> {
-    let mut out = vec![parse_match_pattern(parser)?];
+    let location = parser.current_source_location();
+    let mut out = parse_one_pattern(parser)?;
+    if !matches!(parser.peek(), Some(Kind::Or)) {
+        return Ok(out);
+    }
     while matches!(parser.peek(), Some(Kind::Or)) {
         parser.next();
         parser.skip_newlines();
-        out.push(parse_match_pattern(parser)?);
+        out.extend(parse_one_pattern(parser)?);
     }
+    check_alternatives_bind_alike(parser, &out, location);
+    cap_alternatives(parser, &mut out, location);
     Ok(out)
+}
+
+/// Every alternative of a `|` must bind the same names: only one of
+/// them runs, and they share a body, so a name that some of them miss
+/// would be unreadable half the time. Catching it here beats the
+/// diagnostic the body would otherwise produce ("undefined variable",
+/// pointing at the body rather than the pattern).
+fn check_alternatives_bind_alike(
+    parser: &mut Parser,
+    alternatives: &[crate::ast::Pattern],
+    location: crate::type_checker::SourceLocation,
+) {
+    let names_of = |pat: &crate::ast::Pattern| {
+        let mut names = Vec::new();
+        collect_pattern_names(pat, &mut names);
+        names.sort_unstable();
+        names.dedup();
+        names
+    };
+    let first = names_of(&alternatives[0]);
+    for alt in &alternatives[1..] {
+        if names_of(alt) != first {
+            // Reported rather than returned: an `Err` from this depth
+            // is replaced by whatever the recovery path trips over
+            // next (`expected expression but found FatArrow`), and the
+            // parse continues fine without one — the alternatives are
+            // already built.
+            parser.report_error(ParserError::generic_error(
+                location,
+                "the alternatives of a `|` pattern must bind the same names — \
+                 only one of them runs, and they share the arm body"
+                    .to_string(),
+            ));
+            return;
+        }
+    }
+}
+
+/// Report and truncate a pattern that expanded past the cap, so a
+/// runaway cross product cannot turn into thousands of arms.
+fn cap_alternatives(
+    parser: &mut Parser,
+    alternatives: &mut Vec<crate::ast::Pattern>,
+    location: crate::type_checker::SourceLocation,
+) {
+    if alternatives.len() <= MAX_PATTERN_ALTERNATIVES {
+        return;
+    }
+    parser.report_error(ParserError::generic_error(
+        location,
+        format!(
+            "this pattern expands into {} alternatives (limit {}) — \
+             nested `|` positions multiply",
+            alternatives.len(),
+            MAX_PATTERN_ALTERNATIVES
+        ),
+    ));
+    alternatives.truncate(MAX_PATTERN_ALTERNATIVES);
+}
+
+fn collect_pattern_names(pat: &crate::ast::Pattern, out: &mut Vec<DefaultSymbol>) {
+    use crate::ast::Pattern;
+    match pat {
+        Pattern::Name(s) => out.push(*s),
+        Pattern::Binding(s, inner) => {
+            out.push(*s);
+            collect_pattern_names(inner, out);
+        }
+        Pattern::EnumVariant(_, _, subs) | Pattern::Tuple(subs) => {
+            for sp in subs {
+                collect_pattern_names(sp, out);
+            }
+        }
+        Pattern::Struct(_, fields, _) => {
+            for (_, sp) in fields {
+                collect_pattern_names(sp, out);
+            }
+        }
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range(_, _) => {}
+    }
+}
+
+/// One pattern per combination of its slots' alternatives, in slot
+/// order — `(a|b, c|d)` gives `(a,c) (a,d) (b,c) (b,d)`. The slots are
+/// already parsed, so this is pure recombination.
+fn expand_slots(slots: Vec<Vec<crate::ast::Pattern>>) -> Vec<Vec<crate::ast::Pattern>> {
+    let mut out: Vec<Vec<crate::ast::Pattern>> = vec![Vec::with_capacity(slots.len())];
+    for slot in slots {
+        let mut next = Vec::with_capacity(out.len() * slot.len());
+        for prefix in &out {
+            for alt in &slot {
+                let mut row = prefix.clone();
+                row.push(alt.clone());
+                next.push(row);
+            }
+        }
+        out = next;
+    }
+    out
 }
 
 /// True when the next tokens are `<literal> ..`, i.e. a range pattern
@@ -78,7 +194,10 @@ fn pattern_starts_a_range(parser: &mut Parser) -> bool {
     starts_literal && matches!(parser.peek_n(1), Some(Kind::DotDot))
 }
 
-pub(crate) fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::ast::Pattern> {
+/// One pattern, with no `|` at its own level. It still returns a
+/// list, because a `|` nested inside it — `Circle(1i64 | 2i64)` —
+/// expands the whole pattern.
+fn parse_one_pattern(parser: &mut Parser) -> ParserResult<Vec<crate::ast::Pattern>> {
     // PATTERN-EXTEND: `name @ pat`, at any depth — `Some(n @ 3i64)`
     // reads the payload and tests it in one pattern.
     if let Some(Kind::Identifier(name)) = parser.peek().cloned()
@@ -88,13 +207,17 @@ pub(crate) fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::as
         let sym = parser.string_interner.get_or_intern(name);
         parser.next(); // name
         parser.next(); // `@`
-        let inner = parse_match_pattern(parser)?;
-        return Ok(crate::ast::Pattern::Binding(sym, Box::new(inner)));
+        // `parse_one_pattern`, not the list form: `n @ a | b` binds
+        // only `a`, matching how `|` binds looser than `@`.
+        return Ok(parse_one_pattern(parser)?
+            .into_iter()
+            .map(|inner| crate::ast::Pattern::Binding(sym, Box::new(inner)))
+            .collect());
     }
     if let Some(Kind::Identifier(s)) = parser.peek()
         && s == "_" {
             parser.next();
-            return Ok(crate::ast::Pattern::Wildcard);
+            return Ok(vec![crate::ast::Pattern::Wildcard]);
         }
     if matches!(parser.peek(), Some(Kind::ParenOpen)) {
         return parse_pattern_tuple(parser);
@@ -114,10 +237,10 @@ pub(crate) fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::as
                 "expected an integer literal after `..` in a range pattern".to_string(),
             ));
         };
-        return Ok(crate::ast::Pattern::Range(low, high));
+        return Ok(vec![crate::ast::Pattern::Range(low, high)]);
     }
     if let Some(pat) = parse_pattern_literal(parser)? {
-        return Ok(pat);
+        return Ok(vec![pat]);
     }
     let first = match parser.peek() {
         Some(Kind::Identifier(s)) => {
@@ -142,7 +265,7 @@ pub(crate) fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::as
         return parse_pattern_struct(parser, first);
     }
     if parser.peek() != Some(&Kind::DoubleColon) {
-        return Ok(crate::ast::Pattern::Name(first));
+        return Ok(vec![crate::ast::Pattern::Name(first)]);
     }
     parse_pattern_enum_variant_tail(parser, first)
 }
@@ -156,9 +279,11 @@ pub(crate) fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::as
 fn parse_pattern_struct(
     parser: &mut Parser,
     name: DefaultSymbol,
-) -> ParserResult<crate::ast::Pattern> {
+) -> ParserResult<Vec<crate::ast::Pattern>> {
+    let location = parser.current_source_location();
     parser.expect_err(&Kind::BraceOpen)?;
-    let mut fields: Vec<(DefaultSymbol, crate::ast::Pattern)> = Vec::new();
+    let mut field_names: Vec<DefaultSymbol> = Vec::new();
+    let mut slots: Vec<Vec<crate::ast::Pattern>> = Vec::new();
     let mut has_rest = false;
     loop {
         parser.skip_newlines();
@@ -192,9 +317,10 @@ fn parse_pattern_struct(
             parser.skip_newlines();
             parse_match_pattern(parser)?
         } else {
-            crate::ast::Pattern::Name(field)
+            vec![crate::ast::Pattern::Name(field)]
         };
-        fields.push((field, sub));
+        field_names.push(field);
+        slots.push(sub);
         parser.skip_newlines();
         if matches!(parser.peek(), Some(Kind::Comma)) {
             parser.next();
@@ -204,19 +330,30 @@ fn parse_pattern_struct(
     }
     parser.skip_newlines();
     parser.expect_err(&Kind::BraceClose)?;
-    Ok(crate::ast::Pattern::Struct(name, fields, has_rest))
+    let mut out: Vec<crate::ast::Pattern> = expand_slots(slots)
+        .into_iter()
+        .map(|row| {
+            crate::ast::Pattern::Struct(
+                name,
+                field_names.iter().copied().zip(row).collect(),
+                has_rest,
+            )
+        })
+        .collect();
+    cap_alternatives(parser, &mut out, location);
+    Ok(out)
 }
 
-fn parse_pattern_tuple(parser: &mut Parser) -> ParserResult<crate::ast::Pattern> {
+fn parse_pattern_tuple(parser: &mut Parser) -> ParserResult<Vec<crate::ast::Pattern>> {
+    let location = parser.current_source_location();
     parser.next();
-    let mut sub_patterns: Vec<crate::ast::Pattern> = Vec::new();
+    let mut slots: Vec<Vec<crate::ast::Pattern>> = Vec::new();
     loop {
         parser.skip_newlines();
         if matches!(parser.peek(), Some(Kind::ParenClose)) {
             break;
         }
-        let sub = parse_match_pattern(parser)?;
-        sub_patterns.push(sub);
+        slots.push(parse_match_pattern(parser)?);
         parser.skip_newlines();
         if matches!(parser.peek(), Some(Kind::Comma)) {
             parser.next();
@@ -225,14 +362,18 @@ fn parse_pattern_tuple(parser: &mut Parser) -> ParserResult<crate::ast::Pattern>
         }
     }
     parser.expect_err(&Kind::ParenClose)?;
-    if sub_patterns.len() < 2 {
-        let location = parser.current_source_location();
+    if slots.len() < 2 {
         return Err(ParserError::generic_error(
-            location,
+            parser.current_source_location(),
             "tuple pattern requires at least two sub-patterns".to_string(),
         ));
     }
-    Ok(crate::ast::Pattern::Tuple(sub_patterns))
+    let mut out: Vec<crate::ast::Pattern> = expand_slots(slots)
+        .into_iter()
+        .map(crate::ast::Pattern::Tuple)
+        .collect();
+    cap_alternatives(parser, &mut out, location);
+    Ok(out)
 }
 
 fn parse_pattern_literal(parser: &mut Parser) -> ParserResult<Option<crate::ast::Pattern>> {
@@ -279,7 +420,8 @@ fn parse_pattern_literal(parser: &mut Parser) -> ParserResult<Option<crate::ast:
 fn parse_pattern_enum_variant_tail(
     parser: &mut Parser,
     enum_name: DefaultSymbol,
-) -> ParserResult<crate::ast::Pattern> {
+) -> ParserResult<Vec<crate::ast::Pattern>> {
+    let location = parser.current_source_location();
     parser.expect_err(&Kind::DoubleColon)?;
     let variant = match parser.peek() {
         Some(Kind::Identifier(s)) => {
@@ -297,7 +439,7 @@ fn parse_pattern_enum_variant_tail(
             ));
         }
     };
-    let mut sub_patterns: Vec<crate::ast::Pattern> = Vec::new();
+    let mut slots: Vec<Vec<crate::ast::Pattern>> = Vec::new();
     if matches!(parser.peek(), Some(Kind::ParenOpen)) {
         parser.next();
         loop {
@@ -305,8 +447,7 @@ fn parse_pattern_enum_variant_tail(
             if matches!(parser.peek(), Some(Kind::ParenClose)) {
                 break;
             }
-            let sub = parse_match_pattern(parser)?;
-            sub_patterns.push(sub);
+            slots.push(parse_match_pattern(parser)?);
             parser.skip_newlines();
             if matches!(parser.peek(), Some(Kind::Comma)) {
                 parser.next();
@@ -316,5 +457,10 @@ fn parse_pattern_enum_variant_tail(
         }
         parser.expect_err(&Kind::ParenClose)?;
     }
-    Ok(crate::ast::Pattern::EnumVariant(enum_name, variant, sub_patterns))
+    let mut out: Vec<crate::ast::Pattern> = expand_slots(slots)
+        .into_iter()
+        .map(|row| crate::ast::Pattern::EnumVariant(enum_name, variant, row))
+        .collect();
+    cap_alternatives(parser, &mut out, location);
+    Ok(out)
 }

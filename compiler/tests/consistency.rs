@@ -10107,3 +10107,53 @@ fn ranges_inside_a_payload_agree_across_backends() {
     "#;
     assert_consistent(src, "ranges_inside_a_payload");
 }
+
+
+#[test]
+fn or_patterns_in_sub_positions_agree_across_backends() {
+    // A `|` in a payload / field / element position expands the whole
+    // pattern into one arm per combination, so what the backends see
+    // is ordinary arms — but the expansion has to produce the same
+    // set, and in the same order, for all three.
+    let src = r#"
+        enum Shape { Circle(i64), Rect(i64, i64), Dot }
+
+        struct Point { x: i64, y: i64 }
+
+        fn small(s: Shape) -> i64 {
+            match s {
+                Shape::Circle(1i64 | 2i64) => 1i64,
+                Shape::Circle(_) => 0i64,
+                Shape::Rect(1i64 | 2i64, 3i64 | 4i64) => 2i64,
+                Shape::Rect(_, _) => 0i64,
+                Shape::Dot => -1i64,
+            }
+        }
+
+        fn axis(p: Point) -> i64 {
+            match p {
+                Point { x: 0i64 | 1i64, y } => y,
+                Point { x, y } => x + y,
+            }
+        }
+
+        fn first(s: Shape) -> i64 {
+            match s {
+                Shape::Circle(n) | Shape::Rect(n, _) => n,
+                Shape::Dot => 0i64,
+            }
+        }
+
+        fn main() -> i64 {
+            val c2: Shape = Shape::Circle(2i64)
+            val c9: Shape = Shape::Circle(9i64)
+            val r24: Shape = Shape::Rect(2i64, 4i64)
+            val r94: Shape = Shape::Rect(9i64, 4i64)
+            val on: Point = Point { x: 1i64, y: 7i64 }
+            val off: Point = Point { x: 5i64, y: 7i64 }
+            small(c2) + small(c9) + small(r24) + small(r94)
+                + axis(on) + axis(off) + first(c2) + first(r24)
+        }
+    "#;
+    assert_consistent(src, "or_patterns_in_sub_positions");
+}

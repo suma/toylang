@@ -11,6 +11,11 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-23
+- **PATTERN-OR-NESTED: sub-pattern 位置の or** — `Circle(1i64 | 2i64)` /
+  `Point { x: 0i64 | 1i64, y }` / `(0i64 | 1i64, n)`。全 sub-pattern 位置が
+  `parse_match_pattern` を通り、container が slot の直積を取る (上限 64)。
+  alternative 間で束縛名が違うと parse エラー。`if val` / `while val` も
+  alternative を受ける。**PATTERN-EXTEND はこれで全部完了**。
 - **PATTERN-RANGE: 範囲を実 pattern 形にし、被覆判定を入れた** —
   `Pattern::Range` (half-open)。literal と range を 1 つの区間集合
   (`IntCoverage`) で持ち、隣接区間を merge するので **型を分割する arm 群は
@@ -786,8 +791,6 @@
   `fn to_str(&self, spec: str)` にするかは未決)、(b) fill 文字 / `+` /
   `#` / `$`-parameterised width、(c) interpreter JIT の
   `jit_format_<ty>` helper。いずれも踏んでから。
-- **PATTERN-EXTEND の残** ★ — sub-pattern 位置の or
-  (`Shape::Circle(1i64 | 2i64)`)。踏んでから。
 - **STRUCT-UPDATE: struct update 構文 (`P { x: 5i64, ..a }`)** ★ — parse エラー。
   「1 フィールドだけ差し替えた copy」が全フィールド列挙になる。
 
@@ -868,7 +871,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2089 テスト** (100% 成功、2026-08-23 時点)。
+- 合計 **2107 テスト** (100% 成功、2026-08-23 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、

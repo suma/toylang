@@ -200,7 +200,8 @@ fn parse_loop_with_label(parser: &mut Parser, label: Option<DefaultSymbol>) -> P
 fn parse_while_val(parser: &mut Parser, outer_label: Option<DefaultSymbol>) -> ParserResult<StmtRef> {
     let location = parser.current_source_location();
     parser.expect_err(&Kind::Val)?;
-    let pattern = super::expr::parse_match_pattern(parser)?;
+    // PATTERN-EXTEND: one arm per alternative, as in `match`.
+    let patterns = super::expr::parse_match_pattern(parser)?;
     parser.expect_err(&Kind::Equal)?;
     parser.push_context(crate::parser::core::ParseContext::Condition);
     let scrutinee = super::expr::parse_logical_expr(parser)?;
@@ -218,20 +219,23 @@ fn parse_while_val(parser: &mut Parser, outer_label: Option<DefaultSymbol>) -> P
         vec![body_stmt, continue_stmt],
         Some(location),
     );
-    let some_arm = MatchArm { pattern, guard: None, body: some_arm_body };
+    let mut arms: Vec<MatchArm> = patterns
+        .into_iter()
+        .map(|pattern| MatchArm { pattern, guard: None, body: some_arm_body })
+        .collect();
 
     let break_stmt = parser.ast_builder.break_stmt(Some(location));
     let break_block = parser
         .ast_builder
         .block_expr(vec![break_stmt], Some(location));
-    let none_arm = MatchArm {
+    arms.push(MatchArm {
         pattern: Pattern::Wildcard,
         guard: None,
         body: break_block,
-    };
+    });
 
     let match_expr = parser.ast_builder.add_expr_with_location(
-        Expr::Match(scrutinee, vec![some_arm, none_arm]),
+        Expr::Match(scrutinee, arms),
         Some(location),
     );
     let match_stmt = parser

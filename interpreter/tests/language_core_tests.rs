@@ -2622,6 +2622,118 @@ mod enum_and_match {
     }
 
     #[test]
+    fn test_or_pattern_inside_a_payload() {
+        // A `|` in a sub-pattern expands the whole pattern: the arm
+        // becomes one per combination, all sharing the body.
+        let source = r#"
+            enum Shape { Circle(i64), Rect(i64, i64), Dot }
+
+            fn small(s: Shape) -> i64 {
+                match s {
+                    Shape::Circle(1i64 | 2i64) => 1i64,
+                    Shape::Circle(_) => 0i64,
+                    Shape::Rect(1i64 | 2i64, 3i64 | 4i64) => 2i64,
+                    Shape::Rect(_, _) => 0i64,
+                    Shape::Dot => -1i64,
+                }
+            }
+
+            fn main() -> i64 {
+                val a: Shape = Shape::Circle(2i64)
+                val b: Shape = Shape::Circle(9i64)
+                val c: Shape = Shape::Rect(2i64, 4i64)
+                val d: Shape = Shape::Rect(9i64, 4i64)
+                small(a) + small(b) + small(c) + small(d)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        // 1 + 0 + 2 + 0
+        assert!(result.contains("Int64(3)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_or_pattern_inside_struct_and_tuple_positions() {
+        let source = r#"
+            struct Point { x: i64, y: i64 }
+
+            fn axis(p: Point) -> i64 {
+                match p {
+                    Point { x: 0i64 | 1i64, y } => y,
+                    Point { x, y } => x + y,
+                }
+            }
+
+            fn quadrant(t: (i64, i64)) -> i64 {
+                match t {
+                    (0i64 | 1i64, 2i64 | 3i64) => 1i64,
+                    (a, b) => a + b,
+                }
+            }
+
+            fn main() -> i64 {
+                val on: Point = Point { x: 1i64, y: 7i64 }
+                val off: Point = Point { x: 5i64, y: 7i64 }
+                val near: (i64, i64) = (1i64, 3i64)
+                val far: (i64, i64) = (5i64, 4i64)
+                axis(on) + axis(off) + quadrant(near) + quadrant(far)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        // 7 + 12 + 1 + 9
+        assert!(result.contains("Int64(29)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_or_alternatives_must_bind_the_same_names() {
+        // Only one alternative runs and they share the body, so a
+        // name that some of them miss would be unreadable half the
+        // time. The parser says so instead of leaving it to an
+        // "undefined variable" pointing at the body.
+        let source = r#"
+            enum Shape { Circle(i64), Rect(i64, i64) }
+
+            fn f(s: Shape) -> i64 {
+                match s {
+                    Shape::Circle(x) | Shape::Rect(x, y) => x,
+                }
+            }
+
+            fn main() -> i64 {
+                val c: Shape = Shape::Circle(1i64)
+                f(c)
+            }
+        "#;
+        let err = execute_test_program(source).expect_err("mismatched bindings");
+        assert!(
+            err.contains("must bind the same names"),
+            "expected the binding-mismatch diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_or_alternatives_that_bind_alike_are_accepted() {
+        let source = r#"
+            enum Shape { Circle(i64), Rect(i64, i64), Dot }
+
+            fn first(s: Shape) -> i64 {
+                match s {
+                    Shape::Circle(n) | Shape::Rect(n, _) => n,
+                    Shape::Dot => 0i64,
+                }
+            }
+
+            fn main() -> i64 {
+                val c: Shape = Shape::Circle(3i64)
+                val r: Shape = Shape::Rect(6i64, 1i64)
+                val d: Shape = Shape::Dot
+                first(c) + first(r) + first(d)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(9)"), "got: {}", result);
+    }
+
+    #[test]
     fn test_or_pattern_shares_one_body() {
         // The alternatives point at the same body expression. A body
         // that the type checker rewrites in place (string

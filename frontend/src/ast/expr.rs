@@ -162,6 +162,16 @@ pub enum Pattern {
     /// any `Pattern`, including nested tuples. Currently irrefutable —
     /// the scrutinee's tuple length and element types must match.
     Tuple(Vec<Pattern>),
+    /// PATTERN-STRUCT: `Point { x: 0i64, y }` — match on a struct's
+    /// fields by name. The shorthand `{ x }` is stored as
+    /// `(x, Pattern::Name(x))`, so every entry pairs a field with the
+    /// pattern its value must match.
+    ///
+    /// The `bool` is whether the pattern ended in `..`: with it the
+    /// unlisted fields are ignored, without it every field must be
+    /// named. Field order in the pattern need not match the
+    /// declaration.
+    Struct(DefaultSymbol, Vec<(DefaultSymbol, Pattern)>, bool),
     Wildcard, // _
 }
 

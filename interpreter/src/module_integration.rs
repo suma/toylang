@@ -452,6 +452,18 @@ impl<'a> AstIntegrationContext<'a> {
                 let new_sym = self.remap_symbol(*sym)?;
                 Ok(Pattern::Name(new_sym))
             }
+            Pattern::Struct(struct_sym, fields, has_rest) => {
+                // The struct name participates in stdlib aliasing the
+                // same way an enum name does; field names are plain
+                // identifiers.
+                let new_struct = self.remap_type_symbol(*struct_sym)?;
+                let mut new_fields = Vec::with_capacity(fields.len());
+                for (field, sub) in fields {
+                    let new_field = self.remap_symbol(*field)?;
+                    new_fields.push((new_field, self.remap_pattern(sub)?));
+                }
+                Ok(Pattern::Struct(new_struct, new_fields, *has_rest))
+            }
             Pattern::Tuple(subs) => {
                 let mut new_subs = Vec::with_capacity(subs.len());
                 for sp in subs {

@@ -264,10 +264,76 @@ pub(crate) fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::as
             ));
         }
     };
+    // PATTERN-STRUCT: `Point { x: 0i64, y }`. A `{` directly after the
+    // name is unambiguous here — a pattern is always followed by `=>`
+    // or a guard, never by a block.
+    if matches!(parser.peek(), Some(Kind::BraceOpen)) {
+        return parse_pattern_struct(parser, first);
+    }
     if parser.peek() != Some(&Kind::DoubleColon) {
         return Ok(crate::ast::Pattern::Name(first));
     }
     parse_pattern_enum_variant_tail(parser, first)
+}
+
+/// PATTERN-STRUCT: the `{ ... }` half of `Point { x: 0i64, y }`.
+///
+/// `x: <pattern>` matches the field against a pattern; the shorthand
+/// `x` binds the field to a name of its own, which is stored as
+/// `x: Name(x)` so everything downstream sees one shape. A trailing
+/// `..` means the unlisted fields are not examined.
+fn parse_pattern_struct(
+    parser: &mut Parser,
+    name: DefaultSymbol,
+) -> ParserResult<crate::ast::Pattern> {
+    parser.expect_err(&Kind::BraceOpen)?;
+    let mut fields: Vec<(DefaultSymbol, crate::ast::Pattern)> = Vec::new();
+    let mut has_rest = false;
+    loop {
+        parser.skip_newlines();
+        if matches!(parser.peek(), Some(Kind::BraceClose)) {
+            break;
+        }
+        // `..` — ignore whatever was not named.
+        if matches!(parser.peek(), Some(Kind::DotDot)) {
+            parser.next();
+            has_rest = true;
+            parser.skip_newlines();
+            break;
+        }
+        let field = match parser.peek() {
+            Some(Kind::Identifier(s)) => {
+                let s = s.to_string();
+                parser.next();
+                parser.string_interner.get_or_intern(s)
+            }
+            other => {
+                let other_str = format!("{:?}", other);
+                let location = parser.current_source_location();
+                return Err(ParserError::generic_error(
+                    location,
+                    format!("expected a field name in struct pattern, got {other_str}"),
+                ));
+            }
+        };
+        let sub = if matches!(parser.peek(), Some(Kind::Colon)) {
+            parser.next();
+            parser.skip_newlines();
+            parse_match_pattern(parser)?
+        } else {
+            crate::ast::Pattern::Name(field)
+        };
+        fields.push((field, sub));
+        parser.skip_newlines();
+        if matches!(parser.peek(), Some(Kind::Comma)) {
+            parser.next();
+        } else {
+            break;
+        }
+    }
+    parser.skip_newlines();
+    parser.expect_err(&Kind::BraceClose)?;
+    Ok(crate::ast::Pattern::Struct(name, fields, has_rest))
 }
 
 fn parse_pattern_tuple(parser: &mut Parser) -> ParserResult<crate::ast::Pattern> {

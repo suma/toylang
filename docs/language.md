@@ -2316,6 +2316,38 @@ covering its variant for exhaustiveness checking.
 - A duplicate variant arm or any arm placed after a `_` catch-all is a
   type error (unreachable code).
 
+### Struct patterns
+
+A struct is taken apart by naming its fields:
+
+```rust
+struct Point { x: i64, y: i64 }
+
+match p {
+    Point { x: 0i64, y: 0i64 } => "origin",
+    Point { x: 0i64, y } => "on the y axis",
+    Point { x, y } => "somewhere else",
+}
+```
+
+- `field: <pattern>` matches the field against any pattern, so struct
+  patterns nest inside one another and inside enum patterns.
+- The shorthand `{ x }` binds the field to a name of its own — the
+  same as writing `x: x`.
+- Field order in the pattern is free; the declaration's order does not
+  matter.
+- **Every field must be named**, unless the pattern ends in `..`. A
+  pattern that quietly ignored what it does not mention would read as
+  complete when it is not, and a field added later would slip past
+  every existing pattern.
+- A struct has one shape, so an arm whose field patterns are all
+  irrefutable covers every value — that arm makes the match
+  exhaustive, and one is required unless a wildcard is present.
+- The same patterns work in [`if val` / `while val`](#if-val--while-val).
+
+Struct patterns run in the interpreter. The compiled backends do not
+lower them, the same gap tuple patterns have.
+
 ### Nested patterns
 
 ```rust

@@ -1725,6 +1725,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                     Self::pattern_bound_names(sp, bound);
                 }
             }
+            Pattern::Struct(_, fields, _) => {
+                for (_, sp) in fields {
+                    Self::pattern_bound_names(sp, bound);
+                }
+            }
             Pattern::Wildcard | Pattern::Literal(_) => {}
         }
     }

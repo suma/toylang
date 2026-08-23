@@ -11,6 +11,11 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-23
+- **PATTERN-STRUCT: struct パターン** — `match p { Point { x: 0i64, y } => ... }`。
+  省略形 `{ x }`、`..` で残りを無視、ネスト可、`if val` でも使える。
+  全フィールド列挙が既定 (省くと型エラー)。struct は 1 形なので irrefutable
+  な arm が網羅性を満たす。**interpreter のみ** — lowering は tuple パターン
+  ともども未対応 (PATTERN-COMPOUND-LOWER)。
 - **CONTRACT-ELISION: 添字境界の guard も消す** — `requires i < 4u64` +
   `[T; 4]` で `emit_index_guard` が落ちる (符号なし添字のみ)。契約が
   カバーしない上限 (`i < 8u64` に対し長さ 4) では guard を残す。
@@ -657,6 +662,16 @@
 
 - **159. JIT の generic struct 対応** ★★ — `struct_layouts` を type-args 別に持つ refactor。踏むと `JIT: skipped (... see #159)` が出るので診断から辿れる (`jit_skip_reason_for_generic_struct` で wording を pin)。generic enum payload 経由の trait-bounded generic API (`fn first<I: Iter<i64>>(..)`) が AOT で通らないのもここが原因。
 - **160. タプルの JIT 対応 (ネスト)** ★ — `((a,b),c)` と tuple-of-struct。`ParamTy::Tuple(Vec<ScalarTy>)` を tree 構造にする 100+ 箇所の refactor。inline tuple literal を call 引数に渡す件も残り。
+- **PATTERN-COMPOUND-LOWER: struct / tuple パターンの lowering** ★★ —
+  どちらも `match_lowering.rs` が扱わず、AOT / IR VM / compiler JIT では
+  `call argument produced no value` で落ちる (tree-walker にフォールバック
+  するので実行はできる)。struct パターンは 2026-08-23 に入ったが、tuple
+  パターンも元から同じ状態。**エラーメッセージが原因を示していない**のも
+  併せて直す価値がある。
+- **STRUCT-FIELD-GENERIC-ENUM: struct のフィールドに generic enum を置くと壊れる** ★★ —
+  `struct Wrapper { value: Option<i64> }` が `[E0003] Struct 'SymbolU32 { value: 42 }'
+  not found` になる (2026-08-23、PATTERN-STRUCT のテスト作成中に発見)。
+  パターンとは無関係で、struct 宣言と literal だけで再現する。
 - **JIT-enum-1 (residual)** ★ — ネストした generic enum payload (`Option<Option<T>>`)、enum 型の struct field、payload に struct / tuple を持つ enum。
 - **FROM-INTO-ENUM-ERR** ★ — enum エラー型への `From` 変換 (`?` の cross-error 経路) が interpreter のみ。AOT/JIT が enum の associated call (`MyErr::from(e)`) を lower できないため。struct エラー型は 3 バックエンドで動く。
 - **NUM-W-AOT-pack Phase 3** ★ — compound element 配列の tighter layout (`[PackedRgba; N]` が 4 バイト相当のところ 32 バイト消費)。メモリ効率のみで機能差はない。
@@ -758,10 +773,6 @@
   (`x @ Color::Red` — guard では表現できないので `Pattern` 拡張が要る)、
   (c) 範囲の被覆判定 (`0i64..5i64` + `5i64..10i64` + ... で `_` 不要に)。
   いずれも踏んでから。
-- **PATTERN-STRUCT: struct パターン (`Point { x, y: 0i64 }`)** ★★ — enum /
-  tuple / リテラル / 範囲 / `@` / or / guard まで揃っているのに **struct 分解
-  だけ無い**という非対称。`Pattern` に 1 variant 足せば `match` と `if val` の
-  両方に効く。NEWTYPE / STRUCT-UPDATE と同じ族なのでまとめて片付く。
 - **STRUCT-UPDATE: struct update 構文 (`P { x: 5i64, ..a }`)** ★ — parse エラー。
   「1 フィールドだけ差し替えた copy」が全フィールド列挙になる。
 
@@ -842,7 +853,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2075 テスト** (100% 成功、2026-08-23 時点)。
+- 合計 **2086 テスト** (100% 成功、2026-08-23 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、

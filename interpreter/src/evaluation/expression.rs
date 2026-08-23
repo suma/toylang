@@ -487,6 +487,11 @@ impl EvaluationContext<'_> {
                     Self::pattern_bound_names(sp, bound);
                 }
             }
+            Pattern::Struct(_, fields, _) => {
+                for (_, sp) in fields {
+                    Self::pattern_bound_names(sp, bound);
+                }
+            }
             Pattern::Wildcard | Pattern::Literal(_) => {}
         }
     }
@@ -866,6 +871,26 @@ impl EvaluationContext<'_> {
                 }
                 for (sub, payload) in sub_patterns.iter().zip(values.iter()) {
                     if !self.try_match_pattern(sub, payload)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            // PATTERN-STRUCT: the type checker has already agreed the
+            // pattern's struct is the value's, and that every field
+            // named exists, so a mismatch here can only come from a
+            // field pattern.
+            Pattern::Struct(_, field_patterns, _) => {
+                let fields = match &*value.borrow() {
+                    Object::Struct { fields, .. } => fields.clone(),
+                    _ => return Ok(false),
+                };
+                for (field, sub) in field_patterns {
+                    let Some(field_value) = fields.get(field) else {
+                        return Ok(false);
+                    };
+                    let field_value = field_value.clone();
+                    if !self.try_match_pattern(sub, &field_value)? {
                         return Ok(false);
                     }
                 }

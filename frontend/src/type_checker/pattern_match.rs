@@ -26,10 +26,87 @@ pub(super) fn is_irrefutable_pattern(pat: &Pattern) -> bool {
         Pattern::Literal(_) | Pattern::EnumVariant(_, _, _) => false,
         // A tuple pattern is irrefutable iff every sub-pattern is.
         Pattern::Tuple(subs) => subs.iter().all(is_irrefutable_pattern),
+        // PATTERN-STRUCT: a struct has one shape, so the pattern can
+        // only fail through a field pattern that can fail.
+        Pattern::Struct(_, fields, _) => {
+            fields.iter().all(|(_, sub)| is_irrefutable_pattern(sub))
+        }
     }
 }
 
 impl<'a> TypeCheckerVisitor<'a> {
+    /// PATTERN-STRUCT: check `Point { x: 0i64, y }` against the value
+    /// being matched, and bind whatever the field patterns name.
+    ///
+    /// The struct's own name has to agree with the value's, since a
+    /// pattern naming another struct could never match. Without `..`
+    /// every field must be listed: a pattern that silently ignores a
+    /// field it does not mention reads as complete when it is not, and
+    /// a field added later would slip past every existing pattern.
+    pub(super) fn check_struct_pattern(
+        &mut self,
+        struct_name: DefaultSymbol,
+        field_patterns: &[(DefaultSymbol, Pattern)],
+        has_rest: bool,
+        expected_ty: &TypeDecl,
+    ) -> Result<(), TypeCheckError> {
+        let value_name = match expected_ty {
+            TypeDecl::Struct(name, _) | TypeDecl::Identifier(name) => *name,
+            _ => {
+                return Err(TypeCheckError::new(format!(
+                    "struct pattern requires a struct value, got {:?}",
+                    expected_ty
+                )));
+            }
+        };
+        if value_name != struct_name {
+            return Err(TypeCheckError::new(format!(
+                "struct pattern names `{}`, but the value is `{}`",
+                self.resolve_symbol_name(struct_name),
+                self.resolve_symbol_name(value_name)
+            )));
+        }
+        let Some(declared) = self.context.get_struct_fields(struct_name).cloned() else {
+            return Err(TypeCheckError::new(format!(
+                "struct `{}` is not defined",
+                self.resolve_symbol_name(struct_name)
+            )));
+        };
+
+        for (field, sub) in field_patterns {
+            let field_name = self.resolve_symbol_name(*field);
+            let Some(decl) = declared.iter().find(|f| f.name == field_name) else {
+                return Err(TypeCheckError::new(format!(
+                    "struct `{}` has no field `{}`",
+                    self.resolve_symbol_name(struct_name),
+                    field_name
+                )));
+            };
+            self.check_sub_pattern(sub, &decl.type_decl)?;
+        }
+
+        if !has_rest {
+            let listed: Vec<String> = field_patterns
+                .iter()
+                .map(|(f, _)| self.resolve_symbol_name(*f))
+                .collect();
+            let missing: Vec<String> = declared
+                .iter()
+                .filter(|d| !listed.contains(&d.name))
+                .map(|d| d.name.clone())
+                .collect();
+            if !missing.is_empty() {
+                return Err(TypeCheckError::new(format!(
+                    "struct pattern for `{}` does not mention {} — list {} or end the pattern with `..`",
+                    self.resolve_symbol_name(struct_name),
+                    missing.join(", "),
+                    if missing.len() == 1 { "it" } else { "them" }
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Recursively type-check a sub-pattern against the expected payload type.
     /// Introduces any `Name` bindings into the *current* variable scope, which
     /// callers are responsible for pushing/popping around the arm body.
@@ -80,6 +157,9 @@ impl<'a> TypeCheckerVisitor<'a> {
                     self.check_sub_pattern(sub, ty)?;
                 }
                 Ok(())
+            }
+            Pattern::Struct(struct_name, field_patterns, has_rest) => {
+                self.check_struct_pattern(*struct_name, field_patterns, *has_rest, expected_ty)
             }
             Pattern::EnumVariant(pat_enum, pat_variant, sub_patterns) => {
                 // Extract the enum name + type args from the expected payload
@@ -163,6 +243,10 @@ impl<'a> TypeCheckerVisitor<'a> {
             // arm is processed, but the wrapper here keeps the
             // dispatch-by-kind shape uniform.
             Tuple(#[allow(dead_code)] Vec<TypeDecl>),
+            // PATTERN-STRUCT: one shape, so there is nothing to
+            // enumerate — the arms are told apart by their field
+            // patterns, and the checking happens there.
+            Struct,
         }
         let kind = match &scrutinee_ty {
             TypeDecl::Enum(name, args) => {
@@ -181,9 +265,14 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
             TypeDecl::Bool | TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::String => ScrutineeKind::Primitive(scrutinee_ty.clone()),
             TypeDecl::Tuple(element_types) => ScrutineeKind::Tuple(element_types.clone()),
+            TypeDecl::Struct(name, _) | TypeDecl::Identifier(name)
+                if self.context.struct_definitions.contains_key(name) =>
+            {
+                ScrutineeKind::Struct
+            }
             _ => {
                 return Err(TypeCheckError::new(format!(
-                    "match scrutinee must be an enum, primitive (bool / i64 / u64 / str), or tuple, got {:?}",
+                    "match scrutinee must be an enum, struct, primitive (bool / i64 / u64 / str), or tuple, got {:?}",
                     scrutinee_ty
                 )));
             }
@@ -243,12 +332,35 @@ impl<'a> TypeCheckerVisitor<'a> {
                         has_wildcard = true;
                     }
                 }
+                // PATTERN-STRUCT: a struct has one shape, so a struct
+                // pattern covers every value unless one of its field
+                // patterns can fail. That makes an unguarded,
+                // all-irrefutable one count for exhaustiveness the
+                // same way a bare name does.
+                Pattern::Struct(struct_name, field_patterns, has_rest) => {
+                    self.context.vars.push(std::collections::HashMap::new());
+                    pushed_scope = true;
+                    self.check_struct_pattern(
+                        *struct_name,
+                        field_patterns,
+                        *has_rest,
+                        &scrutinee_ty,
+                    )?;
+                    if !is_guarded && is_irrefutable_pattern(pat) {
+                        has_wildcard = true;
+                    }
+                }
                 Pattern::Literal(literal_expr) => {
                     let prim_ty = match &kind {
                         ScrutineeKind::Primitive(t) => t.clone(),
                         ScrutineeKind::Enum { .. } => {
                             return Err(TypeCheckError::new(
                                 "literal pattern cannot be used in a match on an enum".to_string()
+                            ));
+                        }
+                        ScrutineeKind::Struct => {
+                            return Err(TypeCheckError::new(
+                                "literal pattern cannot be used in a match on a struct — match its fields instead".to_string()
                             ));
                         }
                         ScrutineeKind::Tuple(_) => {
@@ -353,6 +465,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                             return Err(TypeCheckError::new(format!(
                                 "enum-variant pattern cannot be used in a match on {:?}", t
                             )));
+                        }
+                        ScrutineeKind::Struct => {
+                            return Err(TypeCheckError::new(
+                                "enum-variant pattern cannot be used in a match on a struct".to_string()
+                            ));
                         }
                         ScrutineeKind::Tuple(_) => {
                             return Err(TypeCheckError::new(
@@ -477,6 +594,16 @@ impl<'a> TypeCheckerVisitor<'a> {
         // space, so a wildcard is mandatory.
         if !has_wildcard {
             match &kind {
+                // PATTERN-STRUCT: one shape means an irrefutable
+                // struct pattern already covers everything, and that
+                // sets `has_wildcard`. Reaching here means every arm
+                // was refutable, so the match can fall through.
+                ScrutineeKind::Struct => {
+                    return Err(TypeCheckError::new(
+                        "non-exhaustive match on a struct: every arm can fail, so add one whose field patterns always match (or a wildcard `_`)"
+                            .to_string(),
+                    ));
+                }
                 ScrutineeKind::Enum { name, variants, .. } => {
                     let missing: Vec<DefaultSymbol> = variants.iter()
                         .filter(|v| !seen_variants.contains(&v.name))

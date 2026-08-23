@@ -2671,10 +2671,9 @@ mod enum_and_match {
     }
 
     #[test]
-    fn test_range_pattern_still_needs_a_wildcard() {
-        // A range arm is guarded, and a guarded arm never counts as
-        // exhaustive — the same rule that already applied to integer
-        // literal arms.
+    fn test_a_partial_range_still_needs_a_wildcard() {
+        // Coverage is by value, not by arm count: `0..5` leaves the
+        // rest of `i64` unmatched, so the arm set is incomplete.
         let source = r#"
             fn f(n: i64) -> i64 {
                 match n {
@@ -2689,6 +2688,119 @@ mod enum_and_match {
             err.contains("wildcard") || err.contains("exhaustive"),
             "expected an exhaustiveness diagnostic, got: {err}"
         );
+    }
+
+    #[test]
+    fn test_ranges_that_span_the_type_need_no_wildcard() {
+        // Adjacent spans merge, so a partition of `u64` is complete
+        // and the `match` compiles without a `_` arm.
+        let source = r#"
+            fn size(n: u64) -> u64 {
+                match n {
+                    0u64..10u64 => 0u64,
+                    10u64..100u64 => 1u64,
+                    100u64..18446744073709551615u64 => 2u64,
+                    18446744073709551615u64 => 3u64,
+                }
+            }
+
+            fn main() -> u64 {
+                size(5u64) + size(50u64) + size(500u64) + size(18446744073709551615u64)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        // 0 + 1 + 2 + 3
+        assert!(result.contains("UInt64(6)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_a_range_inside_an_earlier_one_is_unreachable() {
+        let source = r#"
+            fn f(n: i64) -> i64 {
+                match n {
+                    0i64..10i64 => 0i64,
+                    3i64..5i64 => 1i64,
+                    _ => 2i64,
+                }
+            }
+
+            fn main() -> i64 { f(4i64) }
+        "#;
+        let err = execute_test_program(source).expect_err("overlapping ranges");
+        assert!(
+            err.contains("unreachable match arm"),
+            "expected an unreachable-arm diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_a_literal_inside_a_range_is_unreachable() {
+        // Literals and ranges share one coverage set, so an earlier
+        // range hides a later literal.
+        let source = r#"
+            fn f(n: i64) -> i64 {
+                match n {
+                    0i64..10i64 => 0i64,
+                    5i64 => 1i64,
+                    _ => 2i64,
+                }
+            }
+
+            fn main() -> i64 { f(5i64) }
+        "#;
+        let err = execute_test_program(source).expect_err("literal inside a range");
+        assert!(
+            err.contains("unreachable match arm"),
+            "expected an unreachable-arm diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_an_empty_range_is_rejected() {
+        // `..` excludes its upper bound, so `5..5` matches nothing.
+        // Saying so beats accepting an arm that can never run.
+        let source = r#"
+            fn f(n: i64) -> i64 {
+                match n {
+                    5i64..5i64 => 0i64,
+                    _ => 1i64,
+                }
+            }
+
+            fn main() -> i64 { f(5i64) }
+        "#;
+        let err = execute_test_program(source).expect_err("empty range");
+        assert!(
+            err.contains("is empty"),
+            "expected the empty-range diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_range_inside_a_payload() {
+        let source = r#"
+            enum Maybe { Just(i64), Nothing }
+
+            fn band(m: Maybe) -> i64 {
+                match m {
+                    Maybe::Just(0i64..10i64) => 1i64,
+                    Maybe::Just(n @ 10i64..20i64) => n,
+                    Maybe::Just(_) => 0i64,
+                    Maybe::Nothing => -1i64,
+                }
+            }
+
+            fn main() -> i64 {
+                val a: Maybe = Maybe::Just(5i64)
+                val b: Maybe = Maybe::Just(15i64)
+                val c: Maybe = Maybe::Just(50i64)
+                val d: Maybe = Maybe::Nothing
+                band(a) + band(b) + band(c) + band(d)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        // 1 + 15 + 0 + (-1)
+        assert!(result.contains("Int64(15)"), "got: {}", result);
     }
 
     #[test]

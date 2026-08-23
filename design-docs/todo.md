@@ -11,6 +11,13 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-23
+- **PATTERN-RANGE: 範囲を実 pattern 形にし、被覆判定を入れた** —
+  `Pattern::Range` (half-open)。literal と range を 1 つの区間集合
+  (`IntCoverage`) で持ち、隣接区間を merge するので **型を分割する arm 群は
+  `_` 不要**、逆に earlier arm に含まれる arm は unreachable
+  (`0i64..10i64` の後の `3i64..5i64` / `5i64`)。空範囲 (`5i64..5i64`) は型エラー。
+  payload / field 位置にも書ける (3 backend)。guard 合成が全部消えたので
+  parser の `PatternAlternative` / `combine_guards` / `fresh_pattern_binding` も撤去。
 - **PATTERN-AT-BINDING: `@` を実 pattern に (`Pattern::Binding`)** —
   `x @ Color::Red` / `whole @ Point { x: 0i64, y }` / `Just(n @ 3i64)` が
   書ける (任意の深さ、3 backend)。束縛は値を拒否しないので網羅性・到達性は
@@ -779,9 +786,8 @@
   `fn to_str(&self, spec: str)` にするかは未決)、(b) fill 文字 / `+` /
   `#` / `$`-parameterised width、(c) interpreter JIT の
   `jit_format_<ty>` helper。いずれも踏んでから。
-- **PATTERN-EXTEND の残** ★ — (a) sub-pattern 位置の or
-  (`Shape::Circle(1i64 | 2i64)`)、(b) 範囲の被覆判定
-  (`0i64..5i64` + `5i64..10i64` + ... で `_` 不要に)。いずれも踏んでから。
+- **PATTERN-EXTEND の残** ★ — sub-pattern 位置の or
+  (`Shape::Circle(1i64 | 2i64)`)。踏んでから。
 - **STRUCT-UPDATE: struct update 構文 (`P { x: 5i64, ..a }`)** ★ — parse エラー。
   「1 フィールドだけ差し替えた copy」が全フィールド列挙になる。
 

@@ -498,7 +498,7 @@ impl EvaluationContext<'_> {
                 bound.insert(*s);
                 Self::pattern_bound_names(inner, bound);
             }
-            Pattern::Wildcard | Pattern::Literal(_) => {}
+            Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range(_, _) => {}
         }
     }
 
@@ -831,6 +831,20 @@ impl EvaluationContext<'_> {
     /// sub-patterns into the current environment scope. Returns `true` if
     /// the pattern matches; on mismatch the caller should unwind the scope
     /// it pushed so abandoned bindings don't persist.
+    /// One endpoint of a range pattern, as an `i128`. Pattern
+    /// endpoints are literals by construction, so evaluating one
+    /// cannot signal control flow.
+    fn evaluate_integer_endpoint(&mut self, endpoint: &ExprRef) -> Result<i128, InterpreterError> {
+        let res = self.evaluate(endpoint)?;
+        let obj = self.unwrap_value(res)?;
+        let v = integer_pattern_value(&obj.borrow());
+        v.ok_or_else(|| InterpreterError::TypeError {
+            expected: TypeDecl::Int64,
+            found: obj.borrow().get_type(),
+            message: "range pattern endpoint is not an integer".to_string(),
+        })
+    }
+
     /// Bind one pattern name to the value it matched.
     ///
     /// DROP-GLUE: a payload binding owns what it names (the
@@ -876,6 +890,19 @@ impl EvaluationContext<'_> {
                 let lit_value = self.unwrap_value(lit_res)?;
                 let eq = *value.borrow() == *lit_value.borrow();
                 Ok(eq)
+            }
+            // PATTERN-EXTEND: `lo..hi` is half-open, so the test is
+            // `lo <= v && v < hi`. The type checker has already agreed
+            // the endpoints are integer literals of the scrutinee's
+            // type, so `i128` holds every case without a signed /
+            // unsigned split.
+            Pattern::Range(low, high) => {
+                let Some(v) = integer_pattern_value(&value.borrow()) else {
+                    return Ok(false);
+                };
+                let lo = self.evaluate_integer_endpoint(low)?;
+                let hi = self.evaluate_integer_endpoint(high)?;
+                Ok(v >= lo && v < hi)
             }
             Pattern::EnumVariant(p_enum, p_variant, sub_patterns) => {
                 let (enum_name, variant_name, values) = match &*value.borrow() {
@@ -933,5 +960,22 @@ impl EvaluationContext<'_> {
                 Ok(true)
             }
         }
+    }
+}
+
+/// PATTERN-EXTEND: an integer runtime value widened to `i128`, which
+/// holds every `i64` and `u64` without a signed / unsigned split.
+/// `None` for anything a range pattern cannot compare against.
+fn integer_pattern_value(obj: &Object) -> Option<i128> {
+    match obj {
+        Object::Int64(v) => Some(*v as i128),
+        Object::UInt64(v) => Some(*v as i128),
+        Object::Int8(v) => Some(*v as i128),
+        Object::Int16(v) => Some(*v as i128),
+        Object::Int32(v) => Some(*v as i128),
+        Object::UInt8(v) => Some(*v as i128),
+        Object::UInt16(v) => Some(*v as i128),
+        Object::UInt32(v) => Some(*v as i128),
+        _ => None,
     }
 }

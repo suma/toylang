@@ -23,7 +23,7 @@ use crate::type_checker::{TypeCheckError, TypeCheckerVisitor};
 pub(super) fn is_irrefutable_pattern(pat: &Pattern) -> bool {
     match pat {
         Pattern::Wildcard | Pattern::Name(_) => true,
-        Pattern::Literal(_) | Pattern::EnumVariant(_, _, _) => false,
+        Pattern::Literal(_) | Pattern::Range(_, _) | Pattern::EnumVariant(_, _, _) => false,
         // A tuple pattern is irrefutable iff every sub-pattern is.
         Pattern::Tuple(subs) => subs.iter().all(is_irrefutable_pattern),
         // PATTERN-STRUCT: a struct has one shape, so the pattern can
@@ -46,6 +46,58 @@ pub(super) fn peel_bindings(pat: &Pattern) -> &Pattern {
         cur = inner;
     }
     cur
+}
+
+/// PATTERN-EXTEND: the integer values a `match` has covered so far, as
+/// a set of disjoint closed intervals over `i128` — wide enough to
+/// hold `i64` and `u64` endpoints without a signed / unsigned split.
+/// A literal is the one-value interval `[v, v]`; a half-open `lo..hi`
+/// is `[lo, hi - 1]`.
+///
+/// Two questions are asked of it, and both need the union rather than
+/// a per-arm view: whether an arm adds anything (one that does not is
+/// unreachable), and whether the type's whole value space is covered
+/// (in which case the `match` needs no wildcard).
+#[derive(Default)]
+struct IntCoverage {
+    /// Sorted, disjoint, and re-merged on every insert.
+    spans: Vec<(i128, i128)>,
+}
+
+impl IntCoverage {
+    /// True when every value in `[lo, hi]` is already covered. Exact,
+    /// because `insert` keeps the spans maximal: a span that covers
+    /// the interval at all covers it on its own.
+    fn contains(&self, lo: i128, hi: i128) -> bool {
+        self.spans.iter().any(|(a, b)| *a <= lo && hi <= *b)
+    }
+
+    fn insert(&mut self, lo: i128, hi: i128) {
+        self.spans.push((lo, hi));
+        self.spans.sort_unstable();
+        let mut merged: Vec<(i128, i128)> = Vec::with_capacity(self.spans.len());
+        for (a, b) in self.spans.drain(..) {
+            match merged.last_mut() {
+                // `a <= last.1 + 1` merges *adjacent* spans, not just
+                // overlapping ones, so `0i64..5i64` followed by
+                // `5i64..10i64` becomes one span. That is what lets a
+                // partition of the type count as exhaustive.
+                Some(last) if a <= last.1 + 1 => last.1 = last.1.max(b),
+                _ => merged.push((a, b)),
+            }
+        }
+        self.spans = merged;
+    }
+}
+
+/// The full value space of the primitive being matched, as the closed
+/// interval a complete set of arms would have to cover.
+fn integer_type_span(ty: &TypeDecl) -> Option<(i128, i128)> {
+    match ty {
+        TypeDecl::Int64 => Some((i64::MIN as i128, i64::MAX as i128)),
+        TypeDecl::UInt64 => Some((0, u64::MAX as i128)),
+        _ => None,
+    }
 }
 
 impl<'a> TypeCheckerVisitor<'a> {
@@ -175,6 +227,14 @@ impl<'a> TypeCheckerVisitor<'a> {
             Pattern::Struct(struct_name, field_patterns, has_rest) => {
                 self.check_struct_pattern(*struct_name, field_patterns, *has_rest, expected_ty)
             }
+            // PATTERN-EXTEND: a range at a payload / field position.
+            // The endpoints are checked exactly as a literal there is;
+            // coverage is only tracked at the top level, where the
+            // scrutinee's type is the one being exhausted.
+            Pattern::Range(low, high) => {
+                self.check_range_endpoints(low, high, expected_ty)?;
+                Ok(())
+            }
             // PATTERN-EXTEND: the name sees the whole value at this
             // position; the inner pattern is checked against the same
             // type, so `Some(n @ 3i64)` binds `n` to the payload.
@@ -235,6 +295,74 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
                 Ok(())
             }
+        }
+    }
+
+    /// PATTERN-EXTEND: type-check a range pattern's endpoints against
+    /// the value being matched and read their values back.
+    ///
+    /// Returns the **closed** interval the half-open range covers, so
+    /// `0i64..5i64` comes back as `(0, 4)`. An empty range is refused
+    /// here rather than silently becoming an arm that can never run —
+    /// writing one is a `..` / inclusive-range mix-up, not an intent.
+    fn check_range_endpoints(
+        &mut self,
+        low: &ExprRef,
+        high: &ExprRef,
+        expected_ty: &TypeDecl,
+    ) -> Result<(i128, i128), TypeCheckError> {
+        if integer_type_span(expected_ty).is_none() {
+            return Err(TypeCheckError::new(format!(
+                "range pattern is only valid where an integer is expected, got {:?}",
+                expected_ty
+            )));
+        }
+        let lo = self.range_endpoint(low, expected_ty)?;
+        let hi = self.range_endpoint(high, expected_ty)?;
+        if hi <= lo {
+            return Err(TypeCheckError::new(format!(
+                "range pattern {}..{} is empty — `..` excludes its upper bound, \
+                 so this arm could never run",
+                lo, hi
+            )));
+        }
+        Ok((lo, hi - 1))
+    }
+
+    /// One endpoint: checked against the scrutinee's type with it as
+    /// the hint (so an unsuffixed literal picks up `i64` / `u64`), then
+    /// read back out of the pool.
+    fn range_endpoint(
+        &mut self,
+        endpoint: &ExprRef,
+        expected_ty: &TypeDecl,
+    ) -> Result<i128, TypeCheckError> {
+        let saved_hint = self.type_inference.type_hint.clone();
+        self.type_inference.type_hint = Some(expected_ty.clone());
+        let ty = self.visit_expr(endpoint)?;
+        self.type_inference.type_hint = saved_hint;
+        if !ty.is_equivalent(expected_ty) {
+            return Err(TypeCheckError::new(format!(
+                "range endpoint type {:?} does not match {:?}",
+                ty, expected_ty
+            )));
+        }
+        match self.core.expr_pool.get(endpoint) {
+            Some(Expr::Int64(v)) => Ok(v as i128),
+            Some(Expr::UInt64(v)) => Ok(v as i128),
+            // An unsuffixed literal is still `Number` in the pool; its
+            // interned text is the value.
+            Some(Expr::Number(sym)) => self
+                .core
+                .string_interner
+                .resolve(sym)
+                .and_then(|t| t.replace('_', "").parse::<i128>().ok())
+                .ok_or_else(|| {
+                    TypeCheckError::new("range endpoint is not an integer literal".to_string())
+                }),
+            _ => Err(TypeCheckError::new(
+                "range endpoints must be integer literals".to_string(),
+            )),
         }
     }
 
@@ -319,8 +447,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         // a runtime "no matching arm" panic on `Some(None)`.
         let mut variant_payload_arms: std::collections::HashMap<DefaultSymbol, Vec<Vec<crate::ast::Pattern>>> =
             std::collections::HashMap::new();
-        let mut covered_int64: std::collections::HashSet<i64> = std::collections::HashSet::new();
-        let mut covered_uint64: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        // PATTERN-EXTEND: literals and ranges land in one interval
+        // set, so `0i64..5i64` and a later `3i64` arm are compared on
+        // the same terms.
+        let mut covered_ints = IntCoverage::default();
         let mut covered_bool: std::collections::HashSet<bool> = std::collections::HashSet::new();
         let mut covered_strings: std::collections::HashSet<DefaultSymbol> = std::collections::HashSet::new();
         let mut has_wildcard = false;
@@ -416,18 +546,19 @@ impl<'a> TypeCheckerVisitor<'a> {
                     if !is_guarded
                         && let Some(lit_expr) = self.core.expr_pool.get(literal_expr) {
                             match lit_expr {
-                                Expr::Int64(v)
-                                    if !covered_int64.insert(v) => {
+                                Expr::Int64(_) | Expr::UInt64(_) => {
+                                    let v = match lit_expr {
+                                        Expr::Int64(v) => v as i128,
+                                        Expr::UInt64(v) => v as i128,
+                                        _ => unreachable!(),
+                                    };
+                                    if covered_ints.contains(v, v) {
                                         return Err(TypeCheckError::new(format!(
                                             "unreachable match arm: literal {} already handled by an earlier arm", v
                                         )));
                                     }
-                                Expr::UInt64(v)
-                                    if !covered_uint64.insert(v) => {
-                                        return Err(TypeCheckError::new(format!(
-                                            "unreachable match arm: literal {} already handled by an earlier arm", v
-                                        )));
-                                    }
+                                    covered_ints.insert(v, v);
+                                }
                                 Expr::True
                                     if !covered_bool.insert(true) => {
                                         return Err(TypeCheckError::new(
@@ -451,6 +582,29 @@ impl<'a> TypeCheckerVisitor<'a> {
                                 _ => {}
                             }
                         }
+                }
+                // PATTERN-EXTEND: a range covers a span of the value
+                // space, which is the same bookkeeping a literal does
+                // — one point versus many.
+                Pattern::Range(low, high) => {
+                    let ScrutineeKind::Primitive(prim_ty) = &kind else {
+                        self.context.vars.pop();
+                        return Err(TypeCheckError::new(
+                            "range pattern is only valid in a match on an integer".to_string(),
+                        ));
+                    };
+                    let prim_ty = prim_ty.clone();
+                    let (lo, hi) = self.check_range_endpoints(low, high, &prim_ty)?;
+                    if !is_guarded {
+                        if covered_ints.contains(lo, hi) {
+                            return Err(TypeCheckError::new(format!(
+                                "unreachable match arm: {}..{} is already handled by earlier arms",
+                                lo,
+                                hi + 1
+                            )));
+                        }
+                        covered_ints.insert(lo, hi);
+                    }
                 }
                 // Peeled off above, so the loop never sees one here.
                 Pattern::Binding(_, _) => unreachable!("`n @ pat` is peeled before this match"),
@@ -650,16 +804,27 @@ impl<'a> TypeCheckerVisitor<'a> {
                     }
                 }
                 ScrutineeKind::Primitive(t) => {
-                    let t_name = match t {
-                        TypeDecl::Int64 => "i64".to_string(),
-                        TypeDecl::UInt64 => "u64".to_string(),
-                        TypeDecl::String => "str".to_string(),
-                        other => format!("{:?}", other),
-                    };
-                    return Err(TypeCheckError::new(format!(
-                        "non-exhaustive match on {}: primitive value space is unbounded, add a wildcard `_` arm",
-                        t_name
-                    )));
+                    // PATTERN-EXTEND: literal and range arms can add
+                    // up to the whole type, in which case no wildcard
+                    // is needed. In practice that takes a range, since
+                    // spelling out 2^64 literals is not a thing.
+                    if let Some((min, max)) = integer_type_span(t)
+                        && covered_ints.contains(min, max)
+                    {
+                        // Covered — fall through to the arm-type check.
+                    } else {
+                        let t_name = match t {
+                            TypeDecl::Int64 => "i64".to_string(),
+                            TypeDecl::UInt64 => "u64".to_string(),
+                            TypeDecl::String => "str".to_string(),
+                            other => format!("{:?}", other),
+                        };
+                        return Err(TypeCheckError::new(format!(
+                            "non-exhaustive match on {}: the arms leave values uncovered, \
+                             add a wildcard `_` arm (or ranges that span the type)",
+                            t_name
+                        )));
+                    }
                 }
                 ScrutineeKind::Tuple(_) => {
                     // Tuple value space is unbounded along each element;

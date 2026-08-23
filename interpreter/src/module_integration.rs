@@ -448,6 +448,10 @@ impl<'a> AstIntegrationContext<'a> {
                 Ok(Pattern::EnumVariant(new_enum, new_variant, new_subs))
             }
             Pattern::Literal(eref) => Ok(Pattern::Literal(self.map_expr(eref, "Pattern::Literal")?)),
+            Pattern::Range(low, high) => Ok(Pattern::Range(
+                self.map_expr(low, "Pattern::Range")?,
+                self.map_expr(high, "Pattern::Range")?,
+            )),
             Pattern::Name(sym) => {
                 let new_sym = self.remap_symbol(*sym)?;
                 Ok(Pattern::Name(new_sym))

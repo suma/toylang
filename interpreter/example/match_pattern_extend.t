@@ -5,14 +5,15 @@
 #   name @ pat   bind the matched value while still testing it
 #
 # An alternative list expands into one arm per alternative, sharing
-# the body. A range becomes an irrefutable name binding plus a
-# comparison guard, and a guarded arm never counts as exhaustive, so
-# an integer match still needs its `_` arm exactly where it did
-# before. `@` is a pattern of its own: it binds the whole matched
-# value and leaves the decision to the pattern it wraps, so it wraps
-# an enum variant or a struct pattern as readily as a literal — and
-# because a binding never rejects anything, it is invisible to the
-# exhaustiveness check.
+# the body. `@` binds the whole matched value and leaves the decision
+# to the pattern it wraps, so it takes an enum variant or a struct
+# pattern as readily as a literal — and because a binding never
+# rejects anything, it is invisible to the exhaustiveness check.
+#
+# A range covers a span of the value space, and the checker tracks
+# literals and ranges as one interval set: an arm inside an earlier
+# span is unreachable, and adjacent spans merge, so arms that
+# partition the type need no `_` at all (see `size` below).
 
 enum Color {
     Red,
@@ -36,6 +37,18 @@ fn bucket(n: i64) -> str {
         0i64..5i64 => "low",
         5i64..10i64 => "mid",
         _ => "high",
+    }
+}
+
+# Ranges that partition the type leave nothing over, so this compiles
+# without a wildcard. The last arm is the literal `u64` maximum, which
+# the half-open range above it cannot reach.
+fn size(n: u64) -> str {
+    match n {
+        0u64..10u64 => "tiny",
+        10u64..100u64 => "small",
+        100u64..18446744073709551615u64 => "big",
+        18446744073709551615u64 => "max",
     }
 }
 
@@ -93,6 +106,16 @@ fn triple(m: Maybe) -> i64 {
     }
 }
 
+# A range works at a payload position too, `@` included.
+fn band(m: Maybe) -> i64 {
+    match m {
+        Maybe::Just(0i64..10i64) => 1i64,
+        Maybe::Just(n @ 10i64..20i64) => n,
+        Maybe::Just(_) => 0i64,
+        Maybe::Nothing => -1i64,
+    }
+}
+
 # The synthesized guard ANDs with a user-written one.
 fn gated(n: i64, allow: bool) -> str {
     match n {
@@ -113,6 +136,11 @@ fn main() -> i64 {
     println(bucket(0i64))
     println(bucket(7i64))
     println(bucket(42i64))
+
+    println(size(5u64))
+    println(size(50u64))
+    println(size(500u64))
+    println(size(18446744073709551615u64))
 
     println(describe(0i64))
     println(describe(3i64))
@@ -138,6 +166,11 @@ fn main() -> i64 {
     println(triple(three))
     println(triple(eight))
     println(triple(none))
+
+    val fifteen: Maybe = Maybe::Just(15i64)
+    println(band(three))
+    println(band(fifteen))
+    println(band(none))
 
     describe(3i64) + describe(50i64)
 }

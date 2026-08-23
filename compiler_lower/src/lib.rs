@@ -886,7 +886,7 @@ impl<'a> FunctionLower<'a> {
                 bound.insert(*s);
                 Self::pattern_bound_names(inner, bound);
             }
-            Pattern::Wildcard | Pattern::Literal(_) => {}
+            Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range(_, _) => {}
         }
     }
 

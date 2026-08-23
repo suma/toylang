@@ -9915,8 +9915,8 @@ fn format_spec_on_text_round_trip() {
 // PATTERN-EXTEND: or-patterns, ranges, and `@` bindings across the
 // three backends. `interpreter/example/match_pattern_extend.t` diffs
 // the printed output; these pin the exit-code path, and in particular
-// that the AOT lowering of a top-level `Name` arm (what a range
-// desugars to) and of `Pattern::Binding` agree with the tree-walker.
+// that each backend's handling of `Pattern::Binding` and
+// `Pattern::Range` agrees with the tree-walker.
 
 #[test]
 fn or_pattern_alternatives_agree_across_backends() {
@@ -10055,4 +10055,55 @@ fn at_binding_inside_a_payload_agrees_across_backends() {
         }
     "#;
     assert_consistent(src, "at_binding_inside_payload");
+}
+
+
+#[test]
+fn ranges_that_span_the_type_agree_across_backends() {
+    // A partition of `u64` with no wildcard: the type checker accepts
+    // it, so every backend has to route the boundary values the same
+    // way. The trailing fallthrough block would panic if one did not.
+    let src = r#"
+        fn size(n: u64) -> u64 {
+            match n {
+                0u64..10u64 => 0u64,
+                10u64..100u64 => 1u64,
+                100u64..18446744073709551615u64 => 2u64,
+                18446744073709551615u64 => 3u64,
+            }
+        }
+
+        fn main() -> u64 {
+            size(0u64) + size(9u64) + size(10u64) + size(99u64)
+                + size(100u64) + size(18446744073709551615u64)
+        }
+    "#;
+    assert_consistent(src, "ranges_spanning_the_type");
+}
+
+#[test]
+fn ranges_inside_a_payload_agree_across_backends() {
+    // A range at a payload position, one of them under an `@`, so the
+    // check and the binding have to happen in the right order.
+    let src = r#"
+        enum Maybe { Just(i64), Nothing }
+
+        fn band(m: Maybe) -> i64 {
+            match m {
+                Maybe::Just(0i64..10i64) => 1i64,
+                Maybe::Just(n @ 10i64..20i64) => n,
+                Maybe::Just(_) => 0i64,
+                Maybe::Nothing => -1i64,
+            }
+        }
+
+        fn main() -> i64 {
+            val a: Maybe = Maybe::Just(5i64)
+            val b: Maybe = Maybe::Just(15i64)
+            val c: Maybe = Maybe::Just(50i64)
+            val d: Maybe = Maybe::Nothing
+            band(a) + band(b) + band(c) + band(d)
+        }
+    "#;
+    assert_consistent(src, "ranges_inside_a_payload");
 }

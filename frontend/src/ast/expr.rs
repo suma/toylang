@@ -172,6 +172,12 @@ pub enum Pattern {
     /// named. Field order in the pattern need not match the
     /// declaration.
     Struct(DefaultSymbol, Vec<(DefaultSymbol, Pattern)>, bool),
+    /// PATTERN-EXTEND: `lo..hi` — a **half-open** integer range,
+    /// matching the `..` expression form, so `0i64..5i64` covers 0
+    /// through 4. Both `ExprRef`s point at integer literals in the
+    /// pool; an empty range (`hi <= lo`) is a type error rather than
+    /// an arm that can never run.
+    Range(ExprRef, ExprRef),
     /// PATTERN-EXTEND: `n @ pat` — bind `n` to the whole matched
     /// value while `pat` still decides whether the arm runs.
     ///

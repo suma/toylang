@@ -1359,9 +1359,11 @@ fn check_match_pattern(
         Pattern::Struct(_, _, _)
         | Pattern::Tuple(_)
         | Pattern::Name(_)
-        | Pattern::Binding(_, _) => {
+        | Pattern::Binding(_, _)
+        | Pattern::Range(_, _) => {
             note(reject_reason, || {
-                "JIT match: tuple / top-level name / `@` patterns not yet supported".to_string()
+                "JIT match: tuple / top-level name / `@` / range patterns not yet supported"
+                    .to_string()
             });
             None
         }

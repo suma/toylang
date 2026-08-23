@@ -2297,25 +2297,43 @@ match p {
   exhaustiveness on its own — so `Color::Red | Color::Green` covers
   two variants, and `1i64 | 1i64` is an unreachable-arm error.
 - **`lo..hi`** is **half-open**, matching the `..` expression form:
-  `0i64..5i64` covers 0 through 4. Endpoints are integer literals.
+  `0i64..5i64` covers 0 through 4. Endpoints are integer literals, and
+  an empty range (`5i64..5i64`, or a `hi` below `lo`) is a type error
+  rather than an arm that can never run.
 - **`name @ p`** binds the matched value to `name`, which the arm body
   and any guard can use, while `p` still decides whether the arm runs.
-  `p` is any pattern — a literal, an enum variant, a struct or tuple
-  pattern — and `@` may appear at any depth, so `Some(n @ 3i64)` reads
-  a payload and tests it in one pattern. The one exception is a range
-  (`n @ 0i64..5i64`), which becomes a guard for the reason below.
+  `p` is any pattern — a literal, a range, an enum variant, a struct or
+  tuple pattern — and `@` may appear at any depth, so `Some(n @ 3i64)`
+  reads a payload and tests it in one pattern.
 
 A binding never rejects a value, so `@` is **invisible to
 exhaustiveness and reachability**: `x @ Color::Red` covers `Red` the
 way the bare variant does, and `x @ 1i64` makes a later `1i64` arm
 unreachable.
 
-A range — including one under an `@` — is expressed internally as an
-irrefutable binding plus a comparison guard. That has one visible
-consequence: like any guarded arm, **a range never counts toward
-exhaustiveness**, so an integer `match` still needs its `_` arm. An
-or-pattern carries no guard, so it does count — an enum whose variants
-are all named across alternatives needs no wildcard.
+Ranges and literals are tracked as **one set of intervals** over the
+scrutinee's type, which decides both questions the checker asks:
+
+- An arm whose values an earlier arm already covers is **unreachable**
+  — `0i64..10i64` then `3i64..5i64`, or `0i64..10i64` then `5i64`.
+- Adjacent intervals merge, so arms that **partition the type** are
+  exhaustive and need no `_`:
+
+```rust
+fn size(n: u64) -> str {
+    match n {
+        0u64..10u64                       => "tiny",
+        10u64..100u64                     => "small",
+        100u64..18446744073709551615u64   => "big",
+        18446744073709551615u64           => "max",   # `..` excludes it
+    }
+}
+```
+
+In practice most integer matches still want a `_`; spanning `i64` by
+hand is only worth it when the bounds are meaningful. An or-pattern
+counts toward exhaustiveness the same way — an enum whose variants are
+all named across alternatives needs no wildcard.
 
 ### Guards
 

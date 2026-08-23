@@ -191,6 +191,21 @@ impl<'a> FunctionLower<'a> {
                 };
                 self.emit_literal_eq_branch(lit_ref, scrut_v, scrut_ty, fail_blk)?;
             }
+            // PATTERN-EXTEND: half-open, so two branches — the value
+            // has to clear the lower bound and stay under the upper.
+            Pattern::Range(low, high) => {
+                let (scrut_v, scrut_ty) = match scrut {
+                    MatchScrutinee::Scalar { value, ty } => (*value, *ty),
+                    MatchScrutinee::Enum { .. }
+                    | MatchScrutinee::Struct { .. }
+                    | MatchScrutinee::Tuple { .. } => {
+                        return Err(
+                            "range pattern is only valid against a scalar scrutinee".to_string()
+                        );
+                    }
+                };
+                self.emit_range_branch(low, high, scrut_v, scrut_ty, fail_blk)?;
+            }
             Pattern::EnumVariant(p_enum, p_variant, sub_patterns) => {
                 let scrut_storage = match scrut {
                     MatchScrutinee::Enum(s) => s.clone(),
@@ -523,8 +538,11 @@ impl<'a> FunctionLower<'a> {
                 self.bind_payload_sub_pattern(&Pattern::Name(*sym), slot.clone())?;
                 self.bind_payload_sub_pattern(inner, slot)?;
             }
-            Pattern::Wildcard | Pattern::Literal(_) | Pattern::EnumVariant(..) => {
-                // Wildcard discards; literals were checked
+            Pattern::Wildcard
+            | Pattern::Literal(_)
+            | Pattern::Range(_, _)
+            | Pattern::EnumVariant(..) => {
+                // Wildcard discards; literals and ranges were checked
                 // above; nested EnumVariant patterns introduced
                 // their own bindings via the recursive call.
             }
@@ -580,6 +598,21 @@ impl<'a> FunctionLower<'a> {
                     return Err(
                         "nested enum-variant sub-pattern requires an enum-typed payload"
                             .to_string(),
+                    );
+                }
+            },
+            Pattern::Range(low, high) => match slot {
+                PayloadSlot::Scalar { local, ty } => {
+                    let pv = self
+                        .emit(InstKind::LoadLocal(local), Some(ty))
+                        .expect("LoadLocal returns a value");
+                    self.emit_range_branch(low, high, pv, ty, fail_blk)?;
+                }
+                PayloadSlot::Enum(_)
+                | PayloadSlot::Struct { .. }
+                | PayloadSlot::Tuple { .. } => {
+                    return Err(
+                        "range sub-pattern is only valid against a scalar payload".to_string(),
                     );
                 }
             },
@@ -853,6 +886,12 @@ impl<'a> FunctionLower<'a> {
                     .ok_or_else(|| "field load produced no value".to_string())?;
                 self.emit_literal_eq_branch(lit_ref, value, *ty, fail_blk)
             }
+            (Pattern::Range(low, high), FieldShape::Scalar { local, ty }) => {
+                let value = self
+                    .emit(InstKind::LoadLocal(*local), Some(*ty))
+                    .ok_or_else(|| "field load produced no value".to_string())?;
+                self.emit_range_branch(low, high, value, *ty, fail_blk)
+            }
             (Pattern::Struct(_, nested, _), FieldShape::Struct { fields, .. }) => {
                 self.dispatch_struct_pattern(fields, nested, fail_blk)
             }
@@ -1065,6 +1104,42 @@ impl<'a> FunctionLower<'a> {
     /// the comparand — the type-checker guarantees this in
     /// well-typed programs, so we report any mismatch as an internal
     /// drift rather than a user-facing recovery point.
+    /// PATTERN-EXTEND: `lo <= v && v < hi`, as two branches that both
+    /// fall out to `else_blk`. Half-open, matching the `..` expression
+    /// form and what the tree-walker does.
+    fn emit_range_branch(
+        &mut self,
+        low: &ExprRef,
+        high: &ExprRef,
+        value: ValueId,
+        ty: Type,
+        else_blk: BlockId,
+    ) -> Result<(), String> {
+        for (op, endpoint) in [(BinOp::Ge, low), (BinOp::Lt, high)] {
+            let bound = self
+                .lower_expr(endpoint)?
+                .ok_or_else(|| "range endpoint produced no value".to_string())?;
+            let endpoint_ty = self
+                .value_scalar(endpoint)
+                .ok_or_else(|| "range pattern lowering: missing endpoint type".to_string())?;
+            if endpoint_ty != ty {
+                return Err(format!(
+                    "range endpoint type `{endpoint_ty}` does not match scrutinee type `{ty}`"
+                ));
+            }
+            let cond = self
+                .emit(
+                    InstKind::BinOp { op, lhs: value, rhs: bound },
+                    Some(Type::Bool),
+                )
+                .expect("comparison returns a value");
+            let then_blk = self.fresh_block();
+            self.terminate(Terminator::Branch { cond, then_blk, else_blk });
+            self.switch_to(then_blk);
+        }
+        Ok(())
+    }
+
     pub(super) fn emit_literal_eq_branch(
         &mut self,
         lit_ref: &ExprRef,

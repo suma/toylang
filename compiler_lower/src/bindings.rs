@@ -193,6 +193,13 @@ pub(super) enum FieldChainResult {
 pub(super) enum MatchScrutinee {
     Enum(EnumStorage),
     Scalar { value: ValueId, ty: Type },
+    /// PATTERN-COMPOUND-LOWER: a struct being matched by its fields.
+    /// The bindings are the scrutinee's own locals — a field pattern
+    /// reads them for a comparison and re-binds them for a name, so
+    /// nothing is copied.
+    Struct { struct_id: StructId, fields: Vec<FieldBinding> },
+    /// The same for a tuple.
+    Tuple { elements: Vec<TupleElementBinding> },
 }
 
 /// One field of a `Binding::Struct`. `name` matches `StructField.name`

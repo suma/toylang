@@ -1680,6 +1680,104 @@ fn a_broken_index_precondition_still_stops_every_backend() {
     assert_ne!(compiled, 0, "compiled binary should exit non-zero");
 }
 
+/// PATTERN-COMPOUND-LOWER. Struct and tuple patterns used to reach
+/// only the tree-walker: `match_lowering` handled wildcard, literal,
+/// enum-variant and name patterns, and a compound scrutinee was
+/// refused outright. Both lower now, so the three engines agree on
+/// what an arm selects.
+#[test]
+fn struct_patterns_match_across_backends() {
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+
+        fn classify(p: Point) -> i64 {
+            match p {
+                Point { x: 0i64, y: 0i64 } => 0i64,
+                Point { x: 0i64, y } => y * 100i64,
+                Point { x, y: 0i64 } => x * 10i64,
+                Point { x, y } => x + y,
+            }
+        }
+
+        fn main() -> i64 {
+            val origin = Point { x: 0i64, y: 0i64 }
+            val on_y = Point { x: 0i64, y: 7i64 }
+            val on_x = Point { x: 3i64, y: 0i64 }
+            val other = Point { x: 3i64, y: 4i64 }
+            println(classify(origin))
+            println(classify(on_y))
+            println(classify(on_x))
+            classify(other)
+        }
+    "#;
+    assert_consistent(src, "match_struct_pattern");
+}
+
+/// PATTERN-COMPOUND-LOWER. `..`, guards and nesting go through the
+/// same dispatch, so they are pinned together.
+#[test]
+fn struct_pattern_rest_and_nesting_match_across_backends() {
+    let src = r#"
+        struct Config { host: str, port: i64, debug: bool }
+        struct Inner { v: i64 }
+        struct Outer { inner: Inner, tag: i64 }
+
+        fn port_of(c: Config) -> i64 {
+            match c {
+                Config { port: 0i64, .. } => 0i64 - 1i64,
+                Config { port, .. } if port > 100i64 => port * 2i64,
+                Config { port, .. } => port,
+            }
+        }
+
+        fn total(o: Outer) -> i64 {
+            match o {
+                Outer { inner: Inner { v: 0i64 }, tag } => tag,
+                Outer { inner: Inner { v }, tag } => v * tag,
+            }
+        }
+
+        fn main() -> i64 {
+            val zero = Config { host: "a", port: 0i64, debug: false }
+            val big = Config { host: "b", port: 500i64, debug: true }
+            val small = Config { host: "c", port: 9i64, debug: false }
+            val flat = Outer { inner: Inner { v: 0i64 }, tag: 7i64 }
+            val nested = Outer { inner: Inner { v: 3i64 }, tag: 5i64 }
+            println(port_of(zero))
+            println(port_of(big))
+            println(port_of(small))
+            println(total(flat))
+            total(nested)
+        }
+    "#;
+    assert_consistent(src, "match_struct_rest");
+}
+
+/// PATTERN-COMPOUND-LOWER. Tuple patterns were in the same position
+/// and are fixed by the same change.
+#[test]
+fn tuple_patterns_match_across_backends() {
+    let src = r#"
+        fn classify(t: (i64, i64)) -> i64 {
+            match t {
+                (0i64, y) => y * 100i64,
+                (x, 0i64) => x * 10i64,
+                (x, y) => x + y,
+            }
+        }
+
+        fn main() -> i64 {
+            val a = (0i64, 7i64)
+            val b = (3i64, 0i64)
+            val c = (3i64, 4i64)
+            println(classify(a))
+            println(classify(b))
+            classify(c)
+        }
+    "#;
+    assert_consistent(src, "match_tuple_pattern");
+}
+
 #[test]
 fn top_level_const_match() {
     let src = r#"

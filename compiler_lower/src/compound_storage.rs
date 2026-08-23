@@ -765,7 +765,9 @@ impl<'a> FunctionLower<'a> {
                 Pattern::Literal(lit_ref) => {
                     let (scrut_v, scrut_ty) = match &scrut {
                         MatchScrutinee::Scalar { value, ty } => (*value, *ty),
-                        MatchScrutinee::Enum { .. } => {
+                        MatchScrutinee::Enum { .. }
+                        | MatchScrutinee::Struct { .. }
+                        | MatchScrutinee::Tuple { .. } => {
                             return Err(
                                 "literal pattern is only valid against a scalar scrutinee"
                                     .to_string(),
@@ -777,7 +779,9 @@ impl<'a> FunctionLower<'a> {
                 Pattern::EnumVariant(p_enum, p_variant, sub_patterns) => {
                     let scrut_storage = match &scrut {
                         MatchScrutinee::Enum(s) => s.clone(),
-                        MatchScrutinee::Scalar { .. } => {
+                        MatchScrutinee::Scalar { .. }
+                        | MatchScrutinee::Struct { .. }
+                        | MatchScrutinee::Tuple { .. } => {
                             return Err(
                                 "enum-variant pattern is only valid against an enum scrutinee"
                                     .to_string(),

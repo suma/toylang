@@ -6,8 +6,8 @@
 #
 #   cargo run -q -p interpreter -- interpreter/example/match_struct.t
 #
-# The compiled backends do not lower struct patterns yet — the same
-# gap tuple patterns have.
+# Runs on every backend: the lowering handles struct and tuple
+# patterns alike (PATTERN-COMPOUND-LOWER).
 
 struct Point { x: i64, y: i64 }
 
@@ -47,12 +47,20 @@ fn total(o: Outer) -> i64 {
 }
 
 fn main() -> u64 {
-    println(quadrant(Point { x: 0i64, y: 0i64 }))
-    println(quadrant(Point { x: 3i64, y: 0i64 }))
-    println(quadrant(Point { x: 3i64, y: 4i64 }))
+    # The values are bound first because passing a struct literal
+    # straight into a call is a separate compiler-MVP gap, unrelated
+    # to patterns.
+    val origin = Point { x: 0i64, y: 0i64 }
+    val on_x = Point { x: 3i64, y: 0i64 }
+    val elsewhere = Point { x: 3i64, y: 4i64 }
+    println(quadrant(origin))
+    println(quadrant(on_x))
+    println(quadrant(elsewhere))
 
-    println(port_of(Config { host: "a", port: 8080i64, debug: true }))
-    println(total(Outer { inner: Inner { v: 3i64 }, tag: 5i64 }))
+    val cfg = Config { host: "a", port: 8080i64, debug: true }
+    val nested = Outer { inner: Inner { v: 3i64 }, tag: 5i64 }
+    println(port_of(cfg))
+    println(total(nested))
 
     # `if val` takes the same patterns.
     val p = Point { x: 0i64, y: 9i64 }

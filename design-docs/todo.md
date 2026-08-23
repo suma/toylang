@@ -11,6 +11,12 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-23
+- **PATTERN-COMPOUND-LOWER: struct / tuple パターンを lowering 対応** —
+  `MatchScrutinee` に compound を足し、フィールド / 要素ごとに比較・束縛・
+  再帰する dispatch を実装。**tuple パターンも同時に解消** (元から未対応
+  だった)。arm body の型推論にも束縛が要る (`y * 100i64` の `y` が読めないと
+  result local が作られず「値を返さない関数」になる)。`match_struct.t` /
+  `match_tuple.t` を AOT_UNSUPPORTED から除去。
 - **PATTERN-STRUCT: struct パターン** — `match p { Point { x: 0i64, y } => ... }`。
   省略形 `{ x }`、`..` で残りを無視、ネスト可、`if val` でも使える。
   全フィールド列挙が既定 (省くと型エラー)。struct は 1 形なので irrefutable
@@ -661,13 +667,12 @@
 ### バックエンドのカバレッジ
 
 - **159. JIT の generic struct 対応** ★★ — `struct_layouts` を type-args 別に持つ refactor。踏むと `JIT: skipped (... see #159)` が出るので診断から辿れる (`jit_skip_reason_for_generic_struct` で wording を pin)。generic enum payload 経由の trait-bounded generic API (`fn first<I: Iter<i64>>(..)`) が AOT で通らないのもここが原因。
+- **CALL-ARG-COMPOUND-LITERAL: compound literal を call 引数に直接渡せない** ★ —
+  `f(Point { x: 1i64, y: 2i64 })` / `f((1i64, 2i64))` が AOT で
+  `call argument produced no value`。**先に `val` に束縛すれば通る**。
+  パターンとは無関係で、match 抜きでも再現する (2026-08-23 に切り分け)。
+  #160 の「inline tuple literal を call 引数に渡す件」と同じもの。
 - **160. タプルの JIT 対応 (ネスト)** ★ — `((a,b),c)` と tuple-of-struct。`ParamTy::Tuple(Vec<ScalarTy>)` を tree 構造にする 100+ 箇所の refactor。inline tuple literal を call 引数に渡す件も残り。
-- **PATTERN-COMPOUND-LOWER: struct / tuple パターンの lowering** ★★ —
-  どちらも `match_lowering.rs` が扱わず、AOT / IR VM / compiler JIT では
-  `call argument produced no value` で落ちる (tree-walker にフォールバック
-  するので実行はできる)。struct パターンは 2026-08-23 に入ったが、tuple
-  パターンも元から同じ状態。**エラーメッセージが原因を示していない**のも
-  併せて直す価値がある。
 - **STRUCT-FIELD-GENERIC-ENUM: struct のフィールドに generic enum を置くと壊れる** ★★ —
   `struct Wrapper { value: Option<i64> }` が `[E0003] Struct 'SymbolU32 { value: 42 }'
   not found` になる (2026-08-23、PATTERN-STRUCT のテスト作成中に発見)。
@@ -853,7 +858,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2086 テスト** (100% 成功、2026-08-23 時点)。
+- 合計 **2089 テスト** (100% 成功、2026-08-23 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、

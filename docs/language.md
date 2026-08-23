@@ -2345,8 +2345,10 @@ match p {
   exhaustive, and one is required unless a wildcard is present.
 - The same patterns work in [`if val` / `while val`](#if-val--while-val).
 
-Struct patterns run in the interpreter. The compiled backends do not
-lower them, the same gap tuple patterns have.
+Struct patterns run on every backend. Note that passing a struct
+literal straight into a call (`f(Point { x: 1i64, y: 2i64 })`) is a
+separate compiler-MVP gap — bind it first — and it has nothing to do
+with the pattern.
 
 ### Nested patterns
 

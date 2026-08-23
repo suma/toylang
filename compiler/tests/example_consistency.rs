@@ -89,9 +89,6 @@ const AOT_UNSUPPORTED: &[&str] = &[
     "jit_panic_expr.t",
     "jit_tuple_inline_arg.t",
     "match_guard.t",
-    "match_tuple.t",
-    // PATTERN-STRUCT: struct patterns are not lowered either.
-    "match_struct.t",
     // Same reasons as `contracts.t`: `requires` / `ensures`, plus
     // `assert_eq`, which lowers to a panic whose message is built at
     // runtime rather than being a literal.

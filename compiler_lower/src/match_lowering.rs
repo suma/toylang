@@ -29,8 +29,8 @@ use frontend::ast::{Expr, ExprRef, MatchArm, Pattern};
 use string_interner::DefaultSymbol;
 
 use super::bindings::{
-    flatten_enum_storage_locals, flatten_struct_locals, Binding, EnumStorage, MatchScrutinee,
-    PayloadSlot, TupleElementBinding, TupleElementShape,
+    flatten_enum_storage_locals, flatten_struct_locals, Binding, EnumStorage, FieldBinding,
+    FieldShape, MatchScrutinee, PayloadSlot, TupleElementBinding, TupleElementShape,
 };
 use super::{DropTarget, FunctionLower};
 use crate::ir::{BinOp, BlockId, Const, InstKind, Terminator, Type, ValueId};
@@ -101,7 +101,9 @@ impl<'a> FunctionLower<'a> {
                 Pattern::Literal(lit_ref) => {
                     let (scrut_v, scrut_ty) = match &scrut {
                         MatchScrutinee::Scalar { value, ty } => (*value, *ty),
-                        MatchScrutinee::Enum { .. } => {
+                        MatchScrutinee::Enum { .. }
+                        | MatchScrutinee::Struct { .. }
+                        | MatchScrutinee::Tuple { .. } => {
                             return Err(
                                 "literal pattern is only valid against a scalar scrutinee"
                                     .to_string(),
@@ -113,7 +115,9 @@ impl<'a> FunctionLower<'a> {
                 Pattern::EnumVariant(p_enum, p_variant, sub_patterns) => {
                     let scrut_storage = match &scrut {
                         MatchScrutinee::Enum(s) => s.clone(),
-                        MatchScrutinee::Scalar { .. } => {
+                        MatchScrutinee::Scalar { .. }
+                        | MatchScrutinee::Struct { .. }
+                        | MatchScrutinee::Tuple { .. } => {
                             return Err(
                                 "enum-variant pattern is only valid against an enum scrutinee"
                                     .to_string(),
@@ -162,13 +166,52 @@ impl<'a> FunctionLower<'a> {
                                 });
                             }
                         }
+                        // PATTERN-COMPOUND-LOWER: a whole-value name
+                        // binding over a compound aliases the
+                        // scrutinee's locals. The scrutinee outlives
+                        // the arm (it is a binding of the enclosing
+                        // scope), so no copy is needed.
+                        MatchScrutinee::Struct { struct_id, fields } => {
+                            self.bindings.insert(
+                                *sym,
+                                Binding::Struct {
+                                    struct_id: *struct_id,
+                                    fields: fields.clone(),
+                                },
+                            );
+                        }
+                        MatchScrutinee::Tuple { elements } => {
+                            self.bindings
+                                .insert(*sym, Binding::Tuple { elements: elements.clone() });
+                        }
                     }
                 }
-                other => {
-                    return Err(format!(
-                        "compiler MVP `match` arms must be enum-variant, literal, \
-                         `_`, or a bare name, got {other:?}"
-                    ));
+                // PATTERN-COMPOUND-LOWER: `Point { x: 0i64, y }` and
+                // `(0i64, y)`. Each field / element pattern either
+                // compares against the scrutinee's own local or binds
+                // a name to it, so the arm reads the value in place.
+                Pattern::Struct(_, field_patterns, _) => {
+                    let fields = match &scrut {
+                        MatchScrutinee::Struct { fields, .. } => fields.clone(),
+                        _ => {
+                            return Err(
+                                "struct pattern is only valid against a struct scrutinee"
+                                    .to_string(),
+                            );
+                        }
+                    };
+                    self.dispatch_struct_pattern(&fields, field_patterns, next_blk)?;
+                }
+                Pattern::Tuple(sub_patterns) => {
+                    let elements = match &scrut {
+                        MatchScrutinee::Tuple { elements } => elements.clone(),
+                        _ => {
+                            return Err(
+                                "tuple pattern is only valid against a tuple scrutinee".to_string(),
+                            );
+                        }
+                    };
+                    self.dispatch_tuple_pattern(&elements, sub_patterns, next_blk)?;
                 }
             }
             // 2. Optional guard: evaluated with the arm's bindings in
@@ -527,6 +570,92 @@ impl<'a> FunctionLower<'a> {
                         }
                     }
             }
+        // PATTERN-COMPOUND-LOWER: the same for compound scrutinees.
+        // Without this the arm body's type cannot be inferred — a body
+        // of `y * 100i64` is unreadable until `y` has a binding — and
+        // the match ends up with no result local at all.
+        match (pattern, scrut) {
+            (Pattern::Struct(_, field_patterns, _), MatchScrutinee::Struct { fields, .. }) => {
+                let fields = fields.clone();
+                let field_patterns = field_patterns.clone();
+                self.bind_struct_pattern_for_inference(&fields, &field_patterns);
+            }
+            (Pattern::Tuple(sub_patterns), MatchScrutinee::Tuple { elements }) => {
+                let elements = elements.clone();
+                let sub_patterns = sub_patterns.clone();
+                self.bind_tuple_pattern_for_inference(&elements, &sub_patterns);
+            }
+            _ => {}
+        }
+    }
+
+    /// Name bindings a struct pattern introduces, for arm-body type
+    /// inference only — no code is emitted, so a literal field pattern
+    /// contributes nothing here.
+    fn bind_struct_pattern_for_inference(
+        &mut self,
+        fields: &[FieldBinding],
+        field_patterns: &[(DefaultSymbol, Pattern)],
+    ) {
+        for (field_sym, sub) in field_patterns {
+            let Some(field_name) = self.interner.resolve(*field_sym).map(str::to_string) else {
+                continue;
+            };
+            let Some(shape) = fields.iter().find(|f| f.name == field_name).map(|f| f.shape.clone())
+            else {
+                continue;
+            };
+            self.bind_field_shape_for_inference(&shape, sub);
+        }
+    }
+
+    fn bind_tuple_pattern_for_inference(
+        &mut self,
+        elements: &[TupleElementBinding],
+        sub_patterns: &[Pattern],
+    ) {
+        for (element, sub) in elements.iter().zip(sub_patterns.iter()) {
+            let shape = match &element.shape {
+                TupleElementShape::Scalar { local, ty } => {
+                    FieldShape::Scalar { local: *local, ty: *ty }
+                }
+                TupleElementShape::Struct { struct_id, fields } => FieldShape::Struct {
+                    struct_id: *struct_id,
+                    fields: fields.clone(),
+                },
+                TupleElementShape::Tuple { tuple_id, elements } => FieldShape::Tuple {
+                    tuple_id: *tuple_id,
+                    elements: elements.clone(),
+                },
+            };
+            self.bind_field_shape_for_inference(&shape, sub);
+        }
+    }
+
+    fn bind_field_shape_for_inference(&mut self, shape: &FieldShape, pattern: &Pattern) {
+        match (pattern, shape) {
+            (Pattern::Name(sym), FieldShape::Scalar { local, ty }) => {
+                self.bindings
+                    .insert(*sym, Binding::Scalar { local: *local, ty: *ty });
+            }
+            (Pattern::Name(sym), FieldShape::Struct { struct_id, fields }) => {
+                self.bindings.insert(
+                    *sym,
+                    Binding::Struct { struct_id: *struct_id, fields: fields.clone() },
+                );
+            }
+            (Pattern::Name(sym), FieldShape::Tuple { elements, .. }) => {
+                self.bindings
+                    .insert(*sym, Binding::Tuple { elements: elements.clone() });
+            }
+            (Pattern::Struct(_, nested, _), FieldShape::Struct { fields, .. }) => {
+                self.bind_struct_pattern_for_inference(fields, nested);
+            }
+            (Pattern::Tuple(nested), FieldShape::Tuple { elements, .. }) => {
+                self.bind_tuple_pattern_for_inference(elements, nested);
+            }
+            _ => {}
+        }
     }
 
     /// Resolve the `match` scrutinee into a uniform shape: either an
@@ -535,6 +664,118 @@ impl<'a> FunctionLower<'a> {
     /// pin the result for arm comparisons). Other shapes (struct /
     /// tuple bindings) are not supported as scrutinees in the
     /// compiler MVP.
+    /// PATTERN-COMPOUND-LOWER: check a struct pattern's field
+    /// patterns against the scrutinee's own field locals, jumping to
+    /// `fail_blk` on the first one that cannot match and binding the
+    /// names as it goes.
+    ///
+    /// Field order in the pattern is free and `..` simply leaves
+    /// fields unmentioned, so the walk is driven by the pattern and
+    /// looks each field up by name. The type checker has already
+    /// confirmed every name exists.
+    fn dispatch_struct_pattern(
+        &mut self,
+        fields: &[FieldBinding],
+        field_patterns: &[(DefaultSymbol, Pattern)],
+        fail_blk: BlockId,
+    ) -> Result<(), String> {
+        for (field_sym, sub) in field_patterns {
+            let field_name = self
+                .interner
+                .resolve(*field_sym)
+                .ok_or_else(|| "struct pattern field name missing".to_string())?
+                .to_string();
+            let binding = fields
+                .iter()
+                .find(|f| f.name == field_name)
+                .ok_or_else(|| format!("struct pattern names unknown field `{field_name}`"))?
+                .shape
+                .clone();
+            self.dispatch_field_shape_pattern(&binding, sub, fail_blk)?;
+        }
+        Ok(())
+    }
+
+    /// The same for a tuple pattern, which is positional.
+    fn dispatch_tuple_pattern(
+        &mut self,
+        elements: &[TupleElementBinding],
+        sub_patterns: &[Pattern],
+        fail_blk: BlockId,
+    ) -> Result<(), String> {
+        if sub_patterns.len() != elements.len() {
+            return Err(format!(
+                "tuple pattern has {} element(s), the value has {}",
+                sub_patterns.len(),
+                elements.len()
+            ));
+        }
+        for (element, sub) in elements.iter().zip(sub_patterns.iter()) {
+            let shape = match &element.shape {
+                TupleElementShape::Scalar { local, ty } => {
+                    FieldShape::Scalar { local: *local, ty: *ty }
+                }
+                TupleElementShape::Struct { struct_id, fields } => FieldShape::Struct {
+                    struct_id: *struct_id,
+                    fields: fields.clone(),
+                },
+                TupleElementShape::Tuple { tuple_id, elements } => FieldShape::Tuple {
+                    tuple_id: *tuple_id,
+                    elements: elements.clone(),
+                },
+            };
+            self.dispatch_field_shape_pattern(&shape, sub, fail_blk)?;
+        }
+        Ok(())
+    }
+
+    /// One field / element: compare, bind, or recurse.
+    fn dispatch_field_shape_pattern(
+        &mut self,
+        shape: &FieldShape,
+        pattern: &Pattern,
+        fail_blk: BlockId,
+    ) -> Result<(), String> {
+        match (pattern, shape) {
+            (Pattern::Wildcard, _) => Ok(()),
+            (Pattern::Name(sym), FieldShape::Scalar { local, ty }) => {
+                // Alias the scrutinee's local rather than copying it:
+                // the scrutinee is a binding of the enclosing scope
+                // and outlives the arm.
+                self.bindings
+                    .insert(*sym, Binding::Scalar { local: *local, ty: *ty });
+                Ok(())
+            }
+            (Pattern::Name(sym), FieldShape::Struct { struct_id, fields }) => {
+                self.bindings.insert(
+                    *sym,
+                    Binding::Struct { struct_id: *struct_id, fields: fields.clone() },
+                );
+                Ok(())
+            }
+            (Pattern::Name(sym), FieldShape::Tuple { elements, .. }) => {
+                self.bindings
+                    .insert(*sym, Binding::Tuple { elements: elements.clone() });
+                Ok(())
+            }
+            (Pattern::Literal(lit_ref), FieldShape::Scalar { local, ty }) => {
+                let value = self
+                    .emit(InstKind::LoadLocal(*local), Some(*ty))
+                    .ok_or_else(|| "field load produced no value".to_string())?;
+                self.emit_literal_eq_branch(lit_ref, value, *ty, fail_blk)
+            }
+            (Pattern::Struct(_, nested, _), FieldShape::Struct { fields, .. }) => {
+                self.dispatch_struct_pattern(fields, nested, fail_blk)
+            }
+            (Pattern::Tuple(nested), FieldShape::Tuple { elements, .. }) => {
+                self.dispatch_tuple_pattern(elements, nested, fail_blk)
+            }
+            (pattern, _) => Err(format!(
+                "compiler MVP cannot match {pattern:?} against this field shape"
+            )),
+        }
+    }
+
     pub(super) fn classify_match_scrutinee(
         &mut self,
         scrutinee: &ExprRef,
@@ -572,13 +813,18 @@ impl<'a> FunctionLower<'a> {
                             .expect("LoadRef returns a value");
                         return Ok(MatchScrutinee::Scalar { value: v, ty: pointee_ty });
                     }
-                    Binding::Struct { .. }
-                    | Binding::Tuple { .. }
-                    | Binding::Array { .. }
+                    // PATTERN-COMPOUND-LOWER: match by field / element.
+                    Binding::Struct { struct_id, fields } => {
+                        return Ok(MatchScrutinee::Struct { struct_id, fields });
+                    }
+                    Binding::Tuple { elements, .. } => {
+                        return Ok(MatchScrutinee::Tuple { elements });
+                    }
+                    Binding::Array { .. }
                     | Binding::FunctionPtr { .. }
                     | Binding::DynTraitObj { .. } => {
                         return Err(format!(
-                            "compiler MVP does not support `match` on struct / tuple / array / \
+                            "compiler MVP does not support `match` on array / \
                              function-value / dyn-trait binding `{}`",
                             self.interner.resolve(sym).unwrap_or("?")
                         ));

@@ -483,7 +483,7 @@ fn report_contract_check(
     }
 
     println!(
-        "{checked} contracted function(s) checked, {total_cases} case(s), {failures} failed  \
+        "{checked} contracted function(s)/method(s) checked, {total_cases} case(s), {failures} failed  \
          (seed: 0x{seed:x}; replay with --check --seed=0x{seed:x})"
     );
     i32::from(failures > 0)

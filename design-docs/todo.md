@@ -10,6 +10,27 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-08-24
+- **DBC-CHECK-METHODS: `--check` がメソッドも掃く** — 自由関数と同じ規則
+  (contracts 必須 / `ensures` をオラクルに / `requires` はフィルタ) で
+  impl block の契約付きメソッドを検査し、`StructType::method` の名前で
+  報告。**本体は generator の拡張**: レシーバは struct 定義のフィールドを
+  再帰的に埋めて生成する (`sample_typed` / `sample_struct_value`、深さ 8 で
+  上限)。generic impl (`impl<T> Cell<T>`) は型引数に実体化が無いので
+  `i64` → `u64` → `f64` → `bool` の順で一様代入を試し、レシーバも引数も
+  生成できる最初のものを使う (レシーバの runtime `type_args` が dispatch の
+  鍵なので concrete args を保持)。反例は `self` 込みで、**レシーバも shrink
+  する** (struct はフィールドごとに 1 候補)。enum レシーバ・primitive
+  target・`ptr` フィールド型は理由付きで Skipped。実行は
+  `execute_method_with_values_shared` (lib.rs) → `call_method` 経由なので
+  `requires` / `ensures` / `old(...)` の評価は実呼び出しと同一。stdlib は
+  契約付きメソッドが無いので自動的に素通り。**付随して発見・修正した
+  既存バグ**: `shrink` が `i64::MIN` の `wrapping_neg` (no-op) を
+  候補として出し、greedy ループが no-op を受け入れて 32 ラウンド全部
+  停滞していた (自由関数経路にも影響)。`Rect { h: 881, w: MIN }` が
+  `Rect { h: 1, w: -1 }` まで縮まる。テスト 8 件 + docs
+  (design_by_contract.md の守備範囲 / language.md)。
+
 ### 2026-08-23
 - **AOT-GENERIC-THROUGH-STRUCT: struct 引数越しの generic 型引数推論 (AOT / compiler JIT)** —
   `fn peek<T>(c: Cell<T>) -> T` の呼び出しが "cannot infer type arguments for generic
@@ -820,13 +841,12 @@
 > トラップ本体は同日 landing (完了済み節)。残るのは下の 2 件。
 
 - **DBC-CHECK-METHODS: `--check` がメソッドを掃かない** ★ —
-  `check_program` が `program.function` (自由関数) だけを回している。
-  契約付き method は対象外で、しかも黙って対象外になる。
-  **前提**: receiver を生成する必要があり、今の generator は
-  `bool` / `i64` / `u64` / `f64` しか作れない。struct の生成 (フィールドを
-  再帰的に埋める) が要るので、これは generator 側の拡張が本体。
-  `self` を取らない associated function だけなら今でも掃けるが、
-  それだけでは価値が薄い。
+  ~~`check_program` が `program.function` (自由関数) だけを回している。~~
+  **解消 (2026-08-24)**。impl block の契約付きメソッドを検査し、レシーバは
+  struct フィールドを再帰的に埋めて生成する (generic は `i64`→`u64`→`f64`→
+  `bool` の順で最初に生成できる実体化)。反例は `self` 込みで shrink される。
+  残るのは enum レシーバと `ptr` フィールドを持つ struct のみ (理由付きで
+  Skipped)。
 
 - **CONTRACT-ELISION の残** ★ — 消せる guard を増やす余地:
   (a) **符号付き添字** — `requires i < N` は符号なしのみ対応
@@ -854,6 +874,13 @@
   抱えていたのを実態に合わせた。残るのはバックエンドカバレッジで、
   compiled 側は `the method receiver must be a struct or enum binding`
   で受け付けない (`String` の同名 method には制限なし)。
+
+- **CHECK-NONTERMINATION: `--check` に実行時間の予算が無い** ★ —
+  生成値に対して body が終わらない入力 (例: `alloc_contract.t` の
+  `triangle` に edge の `n = u64::MAX` が入ると 2^64 回ループ) があると
+  `--check` 自体がハングする (2026-08-24 実測、baseline でも再現)。
+  trial にステップ / 時間予算を持たせて打ち切るか、その関数を Skipped
+  にするかの判断が必要。
 
 ### 型システム (NEW-TYPE-SYSTEM)
 

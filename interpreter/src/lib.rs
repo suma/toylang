@@ -1158,6 +1158,57 @@ pub fn execute_function_with_values_shared(
     eval.evaluate_function_with_values(function, args)
 }
 
+/// Execute `method` with a pre-evaluated receiver and argument values
+/// under a fresh evaluation context sharing program-derived data
+/// (DBC-CHECK-METHODS).
+///
+/// The method counterpart of [`execute_function_with_values_shared`]:
+/// property checks on contracted methods build the receiver and sample
+/// the remaining parameters, then run the same shared-context trial
+/// loop free functions use. `self_obj` is `None` for associated
+/// functions, which take no receiver.
+pub fn execute_method_with_values_shared(
+    shared: &SharedRunData<'_>,
+    string_interner: &DefaultStringInterner,
+    method: Rc<MethodFunction>,
+    self_obj: Option<RcObject>,
+    args: &[crate::value::Value],
+) -> Result<crate::value::Value, InterpreterError> {
+    crate::heap::reset_profile();
+    let mut string_interner_mut = string_interner.clone();
+    let mut eval = EvaluationContext::new_with_shared(
+        &shared.program.statement,
+        &shared.program.expression,
+        &mut string_interner_mut,
+        shared,
+    );
+    eval.location_pool = Some(&shared.program.location_pool);
+    initialize_module_environment(&mut eval, shared.program);
+
+    for c in &shared.program.consts {
+        let value_result = eval.evaluate(&c.value);
+        let value = match value_result {
+            Ok(crate::evaluation::EvaluationResult::Value(v)) => v.into_rc(),
+            Ok(_) => {
+                return Err(InterpreterError::InternalError(format!(
+                    "Const initializer for `{}` produced a non-value result",
+                    string_interner.resolve(c.name).unwrap_or("<unknown>")
+                )));
+            }
+            Err(e) => {
+                return Err(InterpreterError::InternalError(format!(
+                    "Const initializer for `{}` failed: {e}",
+                    string_interner.resolve(c.name).unwrap_or("<unknown>")
+                )));
+            }
+        };
+        eval.environment.set_val(c.name, (value).into());
+    }
+
+    let dummy = crate::value::Value::unit().into_rc();
+    eval.evaluate_method_with_values(method, self_obj.unwrap_or(dummy), args)
+}
+
 /// Call `function` with pre-evaluated argument values, in a freshly
 /// built context (LLM-LOOP P5).
 ///

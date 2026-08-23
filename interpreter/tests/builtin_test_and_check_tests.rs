@@ -349,3 +349,212 @@ fn the_same_seed_reproduces_the_same_counterexample() {
     };
     assert_eq!(a, b, "same seed produced different counterexamples");
 }
+
+// --- DBC-CHECK-METHODS: methods are checked too ---------------------
+
+#[test]
+fn a_method_with_contracts_is_checked() {
+    let report = check(
+        "struct Point {
+            x: i64,
+            y: i64,
+        }
+        impl Point {
+            fn dist_sq(self: Self) -> i64
+                ensures result == self.x * self.x + self.y * self.y
+            {
+                self.x * self.x + self.y * self.y
+            }
+        }
+        fn main() -> u64 { 0u64 }",
+        0x1234,
+    );
+    match outcome_for(&report, "Point::dist_sq") {
+        CheckOutcome::Passed { cases, .. } => assert_eq!(*cases, 200),
+        other => panic!("expected a pass, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_false_method_ensures_produces_a_counterexample() {
+    let report = check(
+        "struct Point {
+            x: i64,
+            y: i64,
+        }
+        impl Point {
+            fn wrong(self: Self) -> i64
+                ensures result == 0i64
+            {
+                self.x + self.y
+            }
+        }
+        fn main() -> u64 { 0u64 }",
+        0x1234,
+    );
+    match outcome_for(&report, "Point::wrong") {
+        CheckOutcome::Failed { counterexample, detail } => {
+            let rendered = format!("{counterexample:?}");
+            assert!(rendered.contains("self"), "receiver missing: {rendered}");
+            assert!(detail.contains("ensures"), "{detail}");
+        }
+        other => panic!("expected a counterexample, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_method_receiver_is_shrunk_like_an_argument() {
+    // The failure only depends on `self.x`, so the counterexample must
+    // come with the smallest `self.x` that still fails — 1, not the
+    // raw draw.
+    let report = check(
+        "struct Big {
+            x: i64,
+        }
+        impl Big {
+            fn fail(&self) -> i64
+                ensures result < 1i64
+            {
+                self.x
+            }
+        }
+        fn main() -> u64 { 0u64 }",
+        0x1234,
+    );
+    let CheckOutcome::Failed { counterexample, .. } = outcome_for(&report, "Big::fail") else {
+        panic!("expected a counterexample");
+    };
+    let rendered = counterexample
+        .iter()
+        .map(|(name, value)| format!("{name} = {value}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(rendered.contains("self = Big { x: 1 }"), "{rendered}");
+}
+
+#[test]
+fn a_method_requires_rejection_is_discarded() {
+    // `requires self.n < 100u64` turns away roughly a third of the
+    // sampled receivers (the edge values 0..=2 and u64::MAX-1..); the
+    // pass must survive the discards.
+    let report = check(
+        "struct Counter {
+            n: u64,
+        }
+        impl Counter {
+            fn inc(&mut self) -> u64
+                requires self.n < 100u64
+                ensures  result == self.n + 1u64
+            {
+                self.n + 1u64
+            }
+        }
+        fn main() -> u64 { 0u64 }",
+        0x1234,
+    );
+    match outcome_for(&report, "Counter::inc") {
+        CheckOutcome::Passed { cases, discarded } => {
+            assert_eq!(*cases, 200, "the whole budget should have been used");
+            assert!(*discarded > 0, "a receiver must have been rejected");
+        }
+        other => panic!("expected a pass, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_associated_function_is_checked() {
+    // No receiver to generate — the other parameters alone carry the
+    // contract.
+    let report = check(
+        "struct Counter {
+            n: u64,
+        }
+        impl Counter {
+            fn from(v: u64) -> Counter
+                ensures result.n == v
+            {
+                Counter { n: v }
+            }
+        }
+        fn main() -> u64 { 0u64 }",
+        0x1234,
+    );
+    match outcome_for(&report, "Counter::from") {
+        CheckOutcome::Passed { cases, .. } => assert_eq!(*cases, 200),
+        other => panic!("expected a pass, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_generic_method_is_checked() {
+    // `impl<T> Cell<T>` has no concrete instantiation in the source;
+    // the checker substitutes the first sampleable type and checks
+    // against it.
+    let report = check(
+        "struct Cell<T> {
+            value: T,
+        }
+        impl<T> Cell<T> {
+            fn get(&self) -> T
+                ensures result == self.value
+            {
+                self.value
+            }
+        }
+        fn main() -> u64 { 0u64 }",
+        0x1234,
+    );
+    match outcome_for(&report, "Cell::get") {
+        CheckOutcome::Passed { cases, .. } => assert_eq!(*cases, 200),
+        other => panic!("expected a pass, got {other:?}"),
+    }
+}
+
+#[test]
+fn methods_without_contracts_are_skipped() {
+    let report = check(
+        "struct Point {
+            x: i64,
+        }
+        impl Point {
+            fn plain(&self) -> i64 { self.x }
+        }
+        fn main() -> u64 { 0u64 }",
+        0x1234,
+    );
+    assert!(
+        matches!(
+            outcome_for(&report, "Point::plain"),
+            CheckOutcome::Skipped { .. }
+        ),
+        "{:?}",
+        outcome_for(&report, "Point::plain")
+    );
+}
+
+#[test]
+fn methods_on_types_without_a_generatable_receiver_are_skipped() {
+    // Enum receivers (and primitive extension-trait targets) cannot be
+    // generated yet; the skip must say so rather than pass silently.
+    let report = check(
+        "enum Box_ {
+            Empty,
+            Full(i64),
+        }
+        impl Box_ {
+            fn kind(&self) -> i64
+                ensures result >= 0i64
+            {
+                1i64
+            }
+        }
+        fn main() -> u64 { 0u64 }",
+        0x1234,
+    );
+    match outcome_for(&report, "Box_::kind") {
+        CheckOutcome::Skipped { reason } => {
+            assert!(reason.contains("not a struct"), "{reason}");
+        }
+        other => panic!("expected a skip, got {other:?}"),
+    }
+}

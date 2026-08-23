@@ -1646,6 +1646,36 @@ impl EvaluationContext<'_> {
         Ok(val)
     }
 
+    /// Evaluate a method with pre-evaluated argument values
+    /// (DBC-CHECK-METHODS).
+    ///
+    /// The property checker invokes methods with a generated receiver
+    /// and sampled args, mirroring what `evaluate_function_with_values`
+    /// does for free functions. `self` is handed over as an `RcObject`
+    /// (a generated struct value) and `args` carries the remaining
+    /// parameters only — the receiver never appears in the arg slice.
+    /// `call_method` performs the same `requires` / `ensures` /
+    /// `old(...)` evaluation a real method call would, so contract
+    /// violations come back as the same `ContractViolation` errors the
+    /// function path produces.
+    pub(crate) fn evaluate_method_with_values(
+        &mut self,
+        method: Rc<MethodFunction>,
+        self_obj: RcObject,
+        args: &[crate::value::Value],
+    ) -> Result<crate::value::Value, InterpreterError> {
+        let rc_args: Vec<RcObject> = args.iter().map(crate::value::Value::clone_to_rc).collect();
+        let result = self.call_method(method, self_obj, rc_args)?;
+        Ok(match result {
+            EvaluationResult::Value(v) => v,
+            EvaluationResult::Return(Some(v)) => v,
+            EvaluationResult::Return(None)
+            | EvaluationResult::Break(_)
+            | EvaluationResult::Continue(_)
+            | EvaluationResult::None => crate::value::Value::Unit,
+        })
+    }
+
     /// Like `evaluate_function_with_values` but also returns the
     /// post-body value of every `&mut T` parameter, indexed by
     /// parameter position. The returned Vec has the same length

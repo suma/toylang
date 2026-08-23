@@ -11,6 +11,23 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-23
+- **JIT-enum-1: struct のフィールドに enum を置けるように (3 backend)** —
+  `FieldShape` に `Enum(Box<EnumStorage>)` を追加。フィールドは
+  「tag local + variant ごとの payload slot」を持つ (enum 束縛と同じ
+  storage) ので、literal での構築・読み出し・`match`・**まるごと代入**・
+  関数境界の往復が通る。境界の flatten (`flatten_compound_leaf_types` /
+  `flatten_struct_to_cranelift_tys`) は元から `Type::Enum` を再帰して
+  いたので、欠けていたのは lowering 側だけだった。`match p.color` は
+  field chain が `FieldChainResult::Enum` を返すようになり、
+  struct パターンの `Painted { color: Color::Red, size }` は既存の
+  `dispatch_enum_variant_pattern` に載る。**付随して**
+  `val x = match <struct/tuple> { ... }` の型推論を修正 (compound
+  パターンが束縛した名前を body に持つ arm から型を読む) —
+  PATTERN-COMPOUND-LOWER が lowering だけ入れて推論を残していた分で、
+  enum 抜きでも落ちていた。例: `interpreter/example/struct_enum_field.t`。
+  todo が残件として挙げていた `Option<Option<T>>` と struct / tuple
+  payload は**実測すると既に動いていた** (PayloadSlot 側が対応済み)
+  ので、この項目はこれで全部完了。
 - **159: interpreter JIT の generic struct 対応** — `struct_layouts` を
   宣言ごとの**テンプレート**にし、型引数は**値の側**が持つ形にした
   (`FieldRepr::Generic` / `StructLocalInfo` / `ParamTy::Struct { base_name,
@@ -727,16 +744,28 @@
   (`fn map<U>(..)`) と **phantom 型パラメータ** (どのフィールドも触れない
   `T` は literal から復元できない、#159 の残)、(b) **範囲 / `@` / struct /
   tuple パターン** (`check_match_pattern` が literal / wildcard /
-  enum variant しか受けない)。どれも correctness 問題ではない。
+  enum variant しか受けない)、(c) **enum の payload 形** — 単一・一様
+  スカラーのみなので `Option<Option<T>>` や struct / tuple payload は
+  対象外 (compiled 側の同名の制限は JIT-enum-1 で解消済み。こちらは
+  `EnumLayout` が別実装)、(d) **enum 型の struct field** (`StructLayout`
+  は scalar フィールドのみ)。どれも correctness 問題ではない。
 - **160. タプルの JIT 対応 (ネスト)** ★ — `((a,b),c)` と tuple-of-struct。`ParamTy::Tuple(Vec<ScalarTy>)` を tree 構造にする 100+ 箇所の refactor。(inline tuple literal を call 引数に渡す件は 2026-08-23 に CALL-ARG-COMPOUND-LITERAL で解消)
-- **JIT-enum-1 (residual)** ★★ — ネストした generic enum payload (`Option<Option<T>>`)、**enum 型の struct field**、payload に struct / tuple を持つ enum。
-  enum 型の struct field は 2026-08-23 に**型検査が通るようになった**ので
-  (STRUCT-FIELD-GENERIC-ENUM) 踏みやすくなった。本体は `FieldShape` に
-  Enum 形が無いこと — tag + variant ごとの payload local が要る。
-  現状はフィールド名付きで refuse する (`cannot hold an enum in struct
-  field \`Painted.color\``、`compiler/tests/e2e.rs` が wording を pin)。
-  影響は `FieldShape` の 51 箇所 (match_lowering / field_access / expr /
-  compound_literal / compound_storage / type_inference / print / bindings)。
+- **TYPE-NAME-SPELLING** ★★ — 型検査器が**同じ名前型の 3 つの綴りを
+  統一しない**。parser は位置によって `Identifier(N)` (裸) /
+  `Struct(N, args)` (`N<args>` は何であれこれ) / `Enum(N, args)` を
+  出すが、generic 推論の `unify_types` にそれらを突き合わせる arm が
+  無い。結果:
+  (a) generic struct のフィールドが**別の名前型**だと落ちる —
+  `struct Cell<T> { value: T, p: Point }` が
+  `Cannot unify Identifier(Point) with Struct(Point, [])`
+  (enum フィールドでも同じ、非 generic struct なら通る)、
+  (b) generic enum を跨ぐ generic 関数 —
+  `unwrap_or(a: Option<T>, d: T)` に `Option<Option<i64>>` を渡すと
+  `already bound to Enum(Option, [i64]), cannot bind to
+  Struct(Option, [i64])`。
+  frontend 単独の問題 (lowering には届かない)。1 arm で直る見込みだが、
+  名前の同一性をどこで決めるか (symbol だけか、kind も見るか) を
+  決める必要がある。
 - **FROM-INTO-ENUM-ERR** ★ — enum エラー型への `From` 変換 (`?` の cross-error 経路) が interpreter のみ。AOT/JIT が enum の associated call (`MyErr::from(e)`) を lower できないため。struct エラー型は 3 バックエンドで動く。
 - **NUM-W-AOT-pack Phase 3** ★ — compound element 配列の tighter layout (`[PackedRgba; N]` が 4 バイト相当のところ 32 バイト消費)。メモリ効率のみで機能差はない。
 - **195b. `extern fn` の monomorph 化** ★ — generic extern は現状 interpreter の type-erased registry でのみ動く。JIT / AOT には mangled symbol の emit と Rust 側実装の登録が要る。実需要なし。
@@ -911,7 +940,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2118 テスト** (100% 成功、2026-08-23 時点)。
+- 合計 **2122 テスト** (100% 成功、2026-08-23 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、

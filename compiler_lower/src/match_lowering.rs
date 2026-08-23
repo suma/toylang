@@ -30,7 +30,8 @@ use string_interner::DefaultSymbol;
 
 use super::bindings::{
     flatten_enum_storage_locals, flatten_struct_locals, Binding, EnumStorage, FieldBinding,
-    FieldShape, MatchScrutinee, PayloadSlot, TupleElementBinding, TupleElementShape,
+    FieldChainResult, FieldShape, MatchScrutinee, PayloadSlot, TupleElementBinding,
+    TupleElementShape,
 };
 use super::{DropTarget, FunctionLower};
 use crate::ir::{BinOp, BlockId, Const, InstKind, Terminator, Type, ValueId};
@@ -786,6 +787,10 @@ impl<'a> FunctionLower<'a> {
             FieldShape::Tuple { elements, .. } => {
                 Binding::Tuple { elements: elements.clone() }
             }
+            // JIT-enum-1: naming an enum-typed field aliases the
+            // field's own storage, so the arm body can match on it
+            // again without a copy.
+            FieldShape::Enum(storage) => Binding::Enum((**storage).clone()),
         };
         self.bindings.insert(sym, binding);
     }
@@ -898,6 +903,22 @@ impl<'a> FunctionLower<'a> {
             (Pattern::Tuple(nested), FieldShape::Tuple { elements, .. }) => {
                 self.dispatch_tuple_pattern(elements, nested, fail_blk)
             }
+            // JIT-enum-1: `Painted { color: Color::Red, .. }` — the
+            // field carries a full `EnumStorage`, so the same tag
+            // dispatch a top-level enum scrutinee uses applies here.
+            (
+                Pattern::EnumVariant(p_enum, p_variant, sub_patterns),
+                FieldShape::Enum(storage),
+            ) => {
+                let storage = (**storage).clone();
+                self.dispatch_enum_variant_pattern(
+                    &storage,
+                    *p_enum,
+                    *p_variant,
+                    sub_patterns,
+                    fail_blk,
+                )
+            }
             (pattern, _) => Err(format!(
                 "compiler MVP cannot match {pattern:?} against this field shape"
             )),
@@ -960,6 +981,17 @@ impl<'a> FunctionLower<'a> {
                 }
             }
             // Falls through to the scalar path (could be a const).
+        // JIT-enum-1: `match p.color { ... }` — a field-access chain
+        // landing on an enum-typed field. The field owns a full
+        // `EnumStorage`, so the arm dispatch is the same tag compare
+        // an identifier-bound enum gets; without this the chain fell
+        // through to the scalar path and reported the enum's IR type
+        // as an unsupported scalar.
+        if matches!(scrut_expr, Expr::FieldAccess(_, _))
+            && let Ok(FieldChainResult::Enum(storage)) = self.resolve_field_chain(scrutinee)
+        {
+            return Ok(MatchScrutinee::Enum(storage));
+        }
         // ITER-PROTOCOL-AOT: `match obj.method(...)` where the
         // method returns an enum. Required by the iterator-protocol
         // desugaring (`for x in iter { ... }` lowers to

@@ -97,10 +97,17 @@ fn try_compile_and_run(
 /// failure surfaced much later as "struct field rhs produced no
 /// value", or as a parameter type printed as a raw `SymbolU32`.
 #[test]
-fn enum_typed_struct_field_is_refused_with_its_reason() {
+fn enum_typed_struct_field_compiles() {
     if skip_e2e() {
         return;
     }
+    // JIT-enum-1: an enum-typed struct field used to be refused here
+    // with "cannot hold an enum in struct field `Painted.color`",
+    // because `FieldShape` had no form for it. It now allocates a tag
+    // local plus per-variant payload slots, the same storage a whole
+    // enum binding gets, so the field can be built, read, matched on
+    // and passed across a function boundary. This test is the old
+    // refusal test's program, asserting it runs.
     let source = r#"
 enum Color { Red, Green }
 
@@ -121,19 +128,8 @@ fn main() -> i64 {
     shade(p)
 }
 "#;
-    let src_path = unique_path("enum_struct_field.t");
-    std::fs::write(&src_path, source).expect("write source");
-    let mut options = CompilerOptions::new(src_path.clone());
-    options.output = Some(unique_path("enum_struct_field"));
-    options.core_modules_dir = Some(core_modules_dir());
-    options.link_cache_dir = Some(link_cache_dir_for_tests());
-    let err = compile_file(&options).expect_err("enum-typed struct field should be refused");
-    let msg = format!("{err:?}");
-    let _ = std::fs::remove_file(&src_path);
-    assert!(
-        msg.contains("cannot hold an enum in struct field `Painted.color`"),
-        "expected the refusal to name the field, got: {msg}"
-    );
+    let code = compile_and_run(source, "enum_struct_field");
+    assert_eq!(code, 10, "Color::Green doubles n=5");
 }
 
 #[test]

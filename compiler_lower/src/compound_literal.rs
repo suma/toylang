@@ -112,6 +112,20 @@ impl<'a> FunctionLower<'a> {
                             )
                         })?;
                 }
+                // JIT-enum-1: field type is an enum. `lower_into_enum_storage`
+                // is the same writer a `val`-bound enum uses, so a field
+                // accepts every rhs a binding does — a constructor, another
+                // enum binding, an if-chain or a match.
+                FieldShape::Enum(storage) => {
+                    self.lower_into_enum_storage(value_ref, &storage)
+                        .map_err(|e| {
+                            format!(
+                                "enum-typed struct field `{}.{}`: {e}",
+                                self.interner.resolve(outer_base).unwrap_or("?"),
+                                field_str,
+                            )
+                        })?;
+                }
             }
         }
         Ok(())
@@ -577,6 +591,14 @@ impl<'a> FunctionLower<'a> {
                         .unwrap_or_default();
                     FieldShape::Tuple { tuple_id, elements }
                 }
+                // JIT-enum-1: an enum field gets the same storage a
+                // whole enum binding does. Without this arm it fell
+                // into the scalar branch below and became one local,
+                // which is where "struct field rhs produced no value"
+                // came from.
+                Type::Enum(enum_id) => {
+                    FieldShape::Enum(Box::new(self.allocate_enum_storage(enum_id)))
+                }
                 scalar => {
                     let local = self.module.function_mut(self.func_id).add_local(scalar);
                     FieldShape::Scalar { local, ty: scalar }
@@ -782,6 +804,12 @@ impl<'a> FunctionLower<'a> {
                 }
                 FieldChainResult::Scalar { .. } => {
                     return Err("tuple access on a scalar field".to_string());
+                }
+                FieldChainResult::Enum(_) => {
+                    return Err(
+                        "tuple access on an enum-typed field — match on it instead"
+                            .to_string(),
+                    );
                 }
             },
             Expr::TupleAccess(inner_obj, inner_index) => {

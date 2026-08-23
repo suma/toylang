@@ -365,6 +365,14 @@ impl<'a> FunctionLower<'a> {
                 self.bindings.insert(name, Binding::Tuple { elements });
                 Ok(Some(None))
             }
+            // JIT-enum-1: `val c = p.color`. Aliased, not copied —
+            // the same rule the struct / tuple arms above follow, so
+            // the binding names the field's own tag and payload
+            // locals rather than a duplicate set.
+            FieldChainResult::Enum(storage) => {
+                self.bindings.insert(name, Binding::Enum(storage));
+                Ok(Some(None))
+            }
             // Scalar field — the existing `LoadLocal` path handles it.
             FieldChainResult::Scalar { .. } => Ok(None),
         }

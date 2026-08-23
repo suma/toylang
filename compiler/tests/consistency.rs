@@ -10244,3 +10244,139 @@ fn compound_literal_arguments_to_methods_agree_across_backends() {
     "#;
     assert_consistent(src, "compound_literal_method_arguments");
 }
+
+#[test]
+fn a_struct_field_may_be_an_enum() {
+    // JIT-enum-1: `FieldShape` gained an `Enum` form, so a field can
+    // hold a tag plus a payload slot per variant instead of being
+    // forced into one local. Before this the whole program was
+    // refused at the struct declaration.
+    //
+    // Covers the four things the field has to do: be built by a
+    // literal, be read back, be matched on, and cross a function
+    // boundary in both directions.
+    let src = r#"
+        enum Color { Red, Green, Blue }
+
+        struct Painted {
+            color: Color,
+            size: i64,
+        }
+
+        fn describe(p: Painted) -> i64 {
+            match p.color {
+                Color::Red => 10i64,
+                Color::Green => 20i64,
+                Color::Blue => 30i64,
+            }
+        }
+
+        fn repaint(size: i64) -> Painted {
+            Painted { color: Color::Blue, size: size }
+        }
+
+        fn main() -> i64 {
+            val p: Painted = Painted { color: Color::Green, size: 7i64 }
+            val q: Painted = repaint(3i64)
+            describe(p) + describe(q) + p.size + q.size
+        }
+    "#;
+    // 20 + 30 + 7 + 3
+    assert_consistent(src, "struct_field_enum");
+}
+
+#[test]
+fn an_enum_struct_field_is_assigned_whole() {
+    // The field has no single local to store into, so assignment goes
+    // through the enum storage (tag + the variant's payload slots).
+    // A copy between two struct bindings has to carry the same tree.
+    let src = r#"
+        enum Color { Red, Green, Blue }
+
+        struct Painted {
+            color: Color,
+            size: i64,
+        }
+
+        fn code(p: Painted) -> i64 {
+            match p.color {
+                Color::Red => 1i64,
+                Color::Green => 2i64,
+                Color::Blue => 3i64,
+            }
+        }
+
+        fn main() -> i64 {
+            var p: Painted = Painted { color: Color::Green, size: 1i64 }
+            val before: i64 = code(p)
+            val blue: Color = Color::Blue
+            p.color = blue
+            val copy: Painted = p
+            before * 100i64 + code(p) * 10i64 + code(copy)
+        }
+    "#;
+    // 2*100 + 3*10 + 3
+    assert_consistent(src, "struct_field_enum_assign");
+}
+
+#[test]
+fn a_payload_bearing_enum_fits_in_a_struct_field() {
+    // A unit-only enum needs a tag and nothing else; a variant with a
+    // payload proves the per-variant slots are allocated and written
+    // through the field as well.
+    let src = r#"
+        struct Boxed {
+            value: Option<i64>,
+            tag: i64,
+        }
+
+        fn main() -> i64 {
+            val b: Boxed = Boxed { value: Option::Some(5i64), tag: 2i64 }
+            val e: Boxed = Boxed { value: Option::None, tag: 3i64 }
+            val got: i64 = match b.value {
+                Option::Some(n) => n,
+                Option::None => 0i64,
+            }
+            val none: i64 = match e.value {
+                Option::Some(n) => n,
+                Option::None => 100i64,
+            }
+            got + none + b.tag + e.tag
+        }
+    "#;
+    // 5 + 100 + 2 + 3
+    assert_consistent(src, "struct_field_enum_payload");
+}
+
+#[test]
+fn a_struct_pattern_can_name_an_enum_variant_in_a_field() {
+    // Two things at once: the field pattern dispatches on the field's
+    // own tag, and `val x = match <struct> { ... }` infers its type
+    // from a name a *compound* pattern bound — which the inference
+    // could not do before, so this shape was rejected with "could not
+    // infer scalar type for val/var rhs" even without an enum in it.
+    let src = r#"
+        enum Color { Red, Green, Blue }
+
+        struct Painted {
+            color: Color,
+            size: i64,
+        }
+
+        fn main() -> i64 {
+            val red: Painted = Painted { color: Color::Red, size: 4i64 }
+            val green: Painted = Painted { color: Color::Green, size: 4i64 }
+            val a: i64 = match red {
+                Painted { color: Color::Red, size } => size,
+                Painted { color: _, size } => size * 10i64,
+            }
+            val b: i64 = match green {
+                Painted { color: Color::Red, size } => size,
+                Painted { color: _, size } => size * 10i64,
+            }
+            a + b
+        }
+    "#;
+    // 4 + 40
+    assert_consistent(src, "struct_pattern_enum_field");
+}

@@ -558,6 +558,22 @@ impl<'a> FunctionLower<'a> {
                     let df = df.clone();
                     self.copy_struct_fields(&sf, &df);
                 }
+                (
+                    FieldShape::Tuple { elements: se, .. },
+                    FieldShape::Tuple { elements: de, .. },
+                ) => {
+                    let se = se.clone();
+                    let de = de.clone();
+                    self.copy_tuple_elements(&se, &de);
+                }
+                // JIT-enum-1: an enum field duplicates tag + every
+                // variant's payload, the same as copying a whole enum
+                // binding.
+                (FieldShape::Enum(src_storage), FieldShape::Enum(dst_storage)) => {
+                    let src_storage = (**src_storage).clone();
+                    let dst_storage = (**dst_storage).clone();
+                    self.copy_enum_storage(&src_storage, &dst_storage);
+                }
                 _ => unreachable!("struct field shape mismatch"),
             }
         }

@@ -19,7 +19,10 @@ use frontend::ast::{Expr, ExprRef, Operator, Stmt, UnaryOp};
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 
-use super::bindings::{Binding, FieldChainResult, FieldShape, TupleElementShape};
+use super::bindings::{
+    Binding, FieldBinding, FieldChainResult, FieldShape, TupleElementBinding,
+    TupleElementShape,
+};
 use super::types::lower_scalar;
 use super::FunctionLower;
 use crate::ir::{Type, TupleId};
@@ -60,6 +63,104 @@ impl<'a> FunctionLower<'a> {
             .iter()
             .find(|v| v.name == *variant_sym)?;
         variant.payload_types.get(slot).copied()
+    }
+
+    /// The same peek for a name bound by a **struct or tuple**
+    /// pattern (`match p { Painted { color: _, size } => size }`).
+    /// PATTERN-COMPOUND-LOWER taught the lowering to bind those names
+    /// but left the inference behind, so a `val` over such a match was
+    /// rejected with "could not infer scalar type for val/var rhs"
+    /// even though the arm bodies lower fine.
+    ///
+    /// The scrutinee's own binding already carries a shape per field /
+    /// element, so the type is read off that — no binding is
+    /// introduced, which keeps this `&self` like the rest of the
+    /// inference.
+    fn arm_compound_binding_type(
+        &self,
+        scrutinee: &ExprRef,
+        arm: &frontend::ast::MatchArm,
+    ) -> Option<Type> {
+        use frontend::ast::Pattern;
+        let Expr::Identifier(body_sym) = self.program.expression.get(&arm.body)? else {
+            return None;
+        };
+        // `size` and `size @ 0i64` both name the field.
+        let names_body = |p: &Pattern| match p {
+            Pattern::Name(s) => *s == body_sym,
+            Pattern::Binding(s, _) => *s == body_sym,
+            _ => false,
+        };
+        match &arm.pattern {
+            Pattern::Struct(_, field_patterns, _) => {
+                let fields = self.scrutinee_struct_fields(scrutinee)?;
+                let (field_sym, _) =
+                    field_patterns.iter().find(|(_, p)| names_body(p))?;
+                let field_name = self.interner.resolve(*field_sym)?;
+                let fb = fields.iter().find(|f| f.name == field_name)?;
+                Self::field_shape_type(&fb.shape)
+            }
+            Pattern::Tuple(sub_patterns) => {
+                let elements = self.scrutinee_tuple_elements(scrutinee)?;
+                let idx = sub_patterns.iter().position(names_body)?;
+                let el = elements.iter().find(|e| e.index == idx)?;
+                match &el.shape {
+                    TupleElementShape::Scalar { ty, .. } => Some(*ty),
+                    TupleElementShape::Struct { struct_id, .. } => {
+                        Some(Type::Struct(*struct_id))
+                    }
+                    TupleElementShape::Tuple { .. } => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Type a `FieldShape` names, for the inference peeks. `None` for
+    /// a tuple field, which carries no id to name — the same answer
+    /// the `FieldAccess` arm gives.
+    fn field_shape_type(shape: &FieldShape) -> Option<Type> {
+        match shape {
+            FieldShape::Scalar { ty, .. } => Some(*ty),
+            FieldShape::Struct { struct_id, .. } => Some(Type::Struct(*struct_id)),
+            FieldShape::Enum(storage) => Some(Type::Enum(storage.enum_id)),
+            FieldShape::Tuple { .. } => None,
+        }
+    }
+
+    /// Field list of a struct-valued match scrutinee — a bare
+    /// identifier or a field-access chain, the two shapes
+    /// `classify_match_scrutinee` accepts without lowering anything.
+    fn scrutinee_struct_fields(&self, scrutinee: &ExprRef) -> Option<Vec<FieldBinding>> {
+        match self.program.expression.get(scrutinee)? {
+            Expr::Identifier(sym) => match self.bindings.get(&sym)? {
+                Binding::Struct { fields, .. } => Some(fields.clone()),
+                _ => None,
+            },
+            Expr::FieldAccess(_, _) => match self.resolve_field_chain(scrutinee).ok()? {
+                FieldChainResult::Struct { fields, .. } => Some(fields),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Tuple counterpart of `scrutinee_struct_fields`.
+    fn scrutinee_tuple_elements(
+        &self,
+        scrutinee: &ExprRef,
+    ) -> Option<Vec<TupleElementBinding>> {
+        match self.program.expression.get(scrutinee)? {
+            Expr::Identifier(sym) => match self.bindings.get(&sym)? {
+                Binding::Tuple { elements } => Some(elements.clone()),
+                _ => None,
+            },
+            Expr::FieldAccess(_, _) => match self.resolve_field_chain(scrutinee).ok()? {
+                FieldChainResult::Tuple { elements } => Some(elements),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// The interned enum a match scrutinee produces, when that can be
@@ -147,7 +248,8 @@ impl<'a> FunctionLower<'a> {
                 let fields = match inner {
                     FieldChainResult::Struct { fields, .. } => fields,
                     FieldChainResult::Scalar { .. }
-                    | FieldChainResult::Tuple { .. } => return None,
+                    | FieldChainResult::Tuple { .. }
+                    | FieldChainResult::Enum(_) => return None,
                 };
                 let field_str = self.interner.resolve(field)?;
                 fields
@@ -163,6 +265,11 @@ impl<'a> FunctionLower<'a> {
                         // to name, exactly as tuple bindings don't.
                         FieldShape::Struct { struct_id, .. } => Some(Type::Struct(*struct_id)),
                         FieldShape::Tuple { .. } => None,
+                        // JIT-enum-1: same reasoning as the struct
+                        // arm — the enum id names the type, which is
+                        // what `__builtin_sizeof` and the formatter
+                        // need.
+                        FieldShape::Enum(storage) => Some(Type::Enum(storage.enum_id)),
                     })
             }
             Expr::TupleAccess(tuple, index) => {
@@ -233,6 +340,10 @@ impl<'a> FunctionLower<'a> {
                 // would have handled it.
                 arms.iter()
                     .find_map(|a| self.arm_payload_binding_type(&scrutinee, a))
+                    .or_else(|| {
+                        arms.iter()
+                            .find_map(|a| self.arm_compound_binding_type(&scrutinee, a))
+                    })
             }
             Expr::Call(fn_name, args_ref) => {
                 // Phase 6b: a FunctionPtr binding (HOF parameter

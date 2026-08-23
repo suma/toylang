@@ -604,9 +604,11 @@ The bulk of the original "Phase 2" roadmap has landed (allocator
 stack, fixed-buffer allocator, early-exit cleanup inside `with`
 blocks, NUM-W narrow ints, string interpolation, JE-2 → JE-6 enum
 support, labelled loops, `if val` / `while val`, the iterator
-protocol). The remaining items tracked under
-`design-docs/todo.md` `JIT-enum-1 (residual)` and #160 (generic
-structs landed under #159):
+protocol). The remaining items are tracked under
+`design-docs/todo.md` as `JIT-INTERP-COVERAGE (residual)` and #160
+(generic structs landed under #159). Note that the compiler-side
+`JIT-enum-1` is a different backend's entry and is closed; this
+list is about the layouts *this* JIT models:
 
 * Method-only generics on an `impl` block, and generic structs with a
   phantom type parameter.

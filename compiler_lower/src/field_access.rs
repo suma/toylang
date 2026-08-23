@@ -22,7 +22,7 @@
 use frontend::ast::{Expr, ExprRef};
 use string_interner::DefaultSymbol;
 
-use super::bindings::{Binding, FieldChainResult, FieldShape, TupleElementShape};
+use super::bindings::{Binding, EnumStorage, FieldChainResult, FieldShape, TupleElementShape};
 use super::FunctionLower;
 use crate::ir::{InstKind, LocalId, ValueId};
 
@@ -43,7 +43,9 @@ impl<'a> FunctionLower<'a> {
         let inner = self.resolve_field_chain(obj)?;
         let fields = match inner {
             FieldChainResult::Struct { fields, .. } => fields,
-            FieldChainResult::Scalar { .. } | FieldChainResult::Tuple { .. } => {
+            FieldChainResult::Scalar { .. }
+            | FieldChainResult::Tuple { .. }
+            | FieldChainResult::Enum(_) => {
                 return Err("field access on a non-struct value".to_string());
             }
         };
@@ -75,6 +77,16 @@ impl<'a> FunctionLower<'a> {
                 // implicit-return path.
                 self.pending_struct_value = None;
                 self.pending_tuple_value = Some(elements.clone());
+                Ok(None)
+            }
+            // JIT-enum-1: an enum-typed field is a compound value
+            // too, so it leaves the value graph the same way and is
+            // stashed for whatever consumes it (tail return, a `val`
+            // binding, an argument).
+            FieldShape::Enum(storage) => {
+                self.pending_struct_value = None;
+                self.pending_tuple_value = None;
+                self.pending_enum_value = Some((**storage).clone());
                 Ok(None)
             }
         }
@@ -156,7 +168,9 @@ impl<'a> FunctionLower<'a> {
                 let inner_ref = self.resolve_field_chain(&inner)?;
                 let fields = match inner_ref {
                     FieldChainResult::Struct { fields, .. } => fields,
-                    FieldChainResult::Scalar { .. } | FieldChainResult::Tuple { .. } => {
+                    FieldChainResult::Scalar { .. }
+                    | FieldChainResult::Tuple { .. }
+                    | FieldChainResult::Enum(_) => {
                         return Err("field access on a non-struct value".to_string());
                     }
                 };
@@ -181,6 +195,9 @@ impl<'a> FunctionLower<'a> {
                     FieldShape::Tuple { elements, .. } => Ok(FieldChainResult::Tuple {
                         elements: elements.clone(),
                     }),
+                    FieldShape::Enum(storage) => {
+                        Ok(FieldChainResult::Enum((**storage).clone()))
+                    }
                 }
             }
             _ => Err(
@@ -253,7 +270,9 @@ impl<'a> FunctionLower<'a> {
         let inner = self.resolve_field_chain(obj)?;
         let fields = match inner {
             FieldChainResult::Struct { fields, .. } => fields,
-            FieldChainResult::Scalar { .. } | FieldChainResult::Tuple { .. } => {
+            FieldChainResult::Scalar { .. }
+            | FieldChainResult::Tuple { .. }
+            | FieldChainResult::Enum(_) => {
                 return Err("field assignment on a non-struct value".to_string());
             }
         };
@@ -274,7 +293,33 @@ impl<'a> FunctionLower<'a> {
             FieldShape::Tuple { .. } => Err(format!(
                 "compiler MVP cannot assign whole tuple to struct field `{field_str}` (assign individual elements via `obj.{field_str}.N` instead)"
             )),
+            // JIT-enum-1: an enum field has no single local to store
+            // into. `resolve_field_enum_storage` is the route the
+            // assignment path takes instead; reaching here means the
+            // caller did not try it first.
+            FieldShape::Enum(_) => Err(format!(
+                "internal: enum-typed field `{field_str}` must be assigned through its storage"
+            )),
         }
     }
 
+    /// JIT-enum-1: resolve `obj.field` to the field's `EnumStorage`
+    /// when that field is enum-typed, and `None` for every other
+    /// shape so the caller can fall back to the scalar-local path.
+    /// Assignment needs this because an enum occupies a tag local
+    /// plus a payload slot per variant element, not one local.
+    pub(super) fn resolve_field_enum_storage(
+        &self,
+        obj: &ExprRef,
+        field: DefaultSymbol,
+    ) -> Option<EnumStorage> {
+        let FieldChainResult::Struct { fields, .. } = self.resolve_field_chain(obj).ok()? else {
+            return None;
+        };
+        let field_str = self.interner.resolve(field)?;
+        match &fields.iter().find(|f| f.name == field_str)?.shape {
+            FieldShape::Enum(storage) => Some((**storage).clone()),
+            _ => None,
+        }
+    }
 }

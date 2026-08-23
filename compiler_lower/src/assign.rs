@@ -327,6 +327,15 @@ impl<'a> FunctionLower<'a> {
                 Ok(Some(rhs_val))
             }
             Expr::FieldAccess(obj, field) => {
+                // JIT-enum-1: an enum-typed field is written through
+                // its whole storage (tag + the variant's payload
+                // slots), so it has to be tried before the
+                // single-local path below. The assignment yields no
+                // value, same as any other compound write.
+                if let Some(storage) = self.resolve_field_enum_storage(&obj, field) {
+                    self.lower_into_enum_storage(rhs, &storage)?;
+                    return Ok(None);
+                }
                 // `obj.field = rhs`. Resolve obj statically to a struct
                 // binding, then store rhs into that field's local.
                 let local = self.resolve_field_local(&obj, field)?;

@@ -604,22 +604,6 @@ fn instantiate_struct_inner(
                     fname
                 ));
             }
-            // An enum-typed field needs a tag local plus per-variant
-            // payload locals, and `FieldShape` has no such form — it
-            // would silently become a one-local scalar and fail later
-            // with "struct field rhs produced no value". Refuse here,
-            // where the struct is named, so the message says what is
-            // missing (JIT-enum-1 residual). The tree-walker has no
-            // such limit.
-            if matches!(lowered, Type::Enum(_)) {
-                return Err(note_refusal(format!(
-                    "compiler MVP cannot hold an enum in struct field `{}.{}` — \
-                     the compiled backends have no storage shape for it yet, \
-                     so this program runs on the interpreter only",
-                    interner.resolve(base_name).unwrap_or("?"),
-                    fname
-                )));
-            }
             concrete_fields.push((fname.clone(), lowered));
         }
         Ok(concrete_fields)

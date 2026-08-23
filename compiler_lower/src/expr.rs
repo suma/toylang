@@ -290,6 +290,13 @@ impl<'a> FunctionLower<'a> {
                 let nested = elements.clone();
                 self.emit_tuple_format(&nested)
             }
+            // JIT-enum-1: `"{p}"` where a field of `p` is an enum —
+            // the same per-variant formatter the standalone
+            // `"{color}"` interpolation uses.
+            FieldShape::Enum(storage) => {
+                let storage = (**storage).clone();
+                self.emit_enum_to_string(&storage)
+            }
         }
     }
 

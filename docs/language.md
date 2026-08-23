@@ -1771,10 +1771,11 @@ generic ones (`value: Option<i64>`) included. Declaration order does
 not matter; a field can name a type declared further down the file, or
 one that comes from an auto-loaded module.
 
-> **Backend coverage.** An enum-typed field runs on the interpreter
-> only. The compiled backends have no storage shape for an enum inside
-> a struct and refuse the program by name (``cannot hold an enum in
-> struct field `Painted.color` ``); see *Known limitations*.
+> **Backend coverage.** An enum-typed field works on every backend. It
+> occupies a tag slot plus one payload slot per variant element — the
+> same storage a whole enum value gets — so it can be built by a
+> literal, read back, matched on, assigned to as a whole, and passed
+> across a function boundary.
 
 ### Field access and assignment
 
@@ -3836,15 +3837,18 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   backend. The remaining gap is that same shape on a
   *user-defined* generic enum. See
   [Closures → Backend coverage](#closures).
-- **An enum-typed struct field runs on the interpreter only** — a
-  field such as `color: Color` or `value: Option<i64>` type-checks and
-  runs on the tree-walker, but the compiled backends have no storage
-  shape for an enum held inside a struct (an enum needs a tag slot plus
-  per-variant payload slots; struct fields carry scalars, structs and
-  tuples). They refuse the program at the struct, naming the field:
-  ``compiler MVP cannot hold an enum in struct field `Painted.color` ``.
-  Holding the enum in a separate binding, or reducing it to a scalar
-  before it enters the struct, keeps a program on all three backends.
+- **A generic struct whose field names another type does not
+  type-check** — `struct Cell<T> { value: T, p: Point }` fails with
+  ``Cannot unify Identifier(Point) with Struct(Point, [])``, and the
+  same for an enum-typed field. The parser spells a named type three
+  ways depending on where it appears (`Identifier(N)` bare,
+  `Struct(N, args)` for any `N<args>`, `Enum(N, args)` once resolved)
+  and the generic-inference unifier does not reconcile them, so the
+  constraint over the field's declared type never solves. It bites
+  generic functions over generic enums too — passing an `Option<T>`
+  where the callee wrote `Option<T>` can raise
+  ``already bound to Enum(Option, [i64]), cannot bind to
+  Struct(Option, [i64])``. Non-generic structs are unaffected.
 - **No `else if`** — use `elif`.
 - **`null` is reserved and rejected** — the literal still parses, so
   that it can be diagnosed rather than read as an identifier, but the

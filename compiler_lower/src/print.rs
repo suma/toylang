@@ -55,11 +55,11 @@ impl<'a> FunctionLower<'a> {
             && let Some(binding) = self.bindings.get(&sym).cloned() {
                 match binding {
                     Binding::Struct { struct_id, fields } => {
-                        self.emit_print_struct(struct_id, &fields, newline);
+                        self.emit_print_struct(struct_id, &fields, newline)?;
                         return Ok(None);
                     }
                     Binding::Tuple { elements } => {
-                        self.emit_print_tuple(&elements, newline);
+                        self.emit_print_tuple(&elements, newline)?;
                         return Ok(None);
                     }
                     Binding::Scalar { .. } => {}
@@ -111,11 +111,18 @@ impl<'a> FunctionLower<'a> {
         {
             match self.resolve_field_chain(&args[0])? {
                 FieldChainResult::Struct { struct_id, fields } => {
-                    self.emit_print_struct(struct_id, &fields, newline);
+                    self.emit_print_struct(struct_id, &fields, newline)?;
                     return Ok(None);
                 }
                 FieldChainResult::Tuple { elements } => {
-                    self.emit_print_tuple(&elements, newline);
+                    self.emit_print_tuple(&elements, newline)?;
+                    return Ok(None);
+                }
+                // JIT-enum-1: an enum-typed field prints through the
+                // same tag-dispatch formatter a whole enum binding
+                // uses.
+                FieldChainResult::Enum(storage) => {
+                    self.emit_print_enum(&storage, newline)?;
                     return Ok(None);
                 }
                 FieldChainResult::Scalar { .. } => {}
@@ -139,7 +146,7 @@ impl<'a> FunctionLower<'a> {
                         &fields,
                         &literal_fields,
                     )?;
-                    self.emit_print_struct(struct_id, &fields, newline);
+                    self.emit_print_struct(struct_id, &fields, newline)?;
                     return Ok(None);
                 }
                 Expr::TupleLiteral(elems) => {
@@ -156,7 +163,7 @@ impl<'a> FunctionLower<'a> {
                         let shape = elements[i].shape.clone();
                         self.store_value_into_tuple_element_shape(e, i, &shape)?;
                     }
-                    self.emit_print_tuple(&elements, newline);
+                    self.emit_print_tuple(&elements, newline)?;
                     return Ok(None);
                 }
                 Expr::QualifiedIdentifier(path)
@@ -224,7 +231,7 @@ impl<'a> FunctionLower<'a> {
                                 },
                                 None,
                             );
-                            self.emit_print_struct(struct_id, &fields, newline);
+                            self.emit_print_struct(struct_id, &fields, newline)?;
                         }
                         Type::Tuple(tuple_id) => {
                             let elements = self.allocate_tuple_elements(tuple_id)?;
@@ -241,7 +248,7 @@ impl<'a> FunctionLower<'a> {
                                 },
                                 None,
                             );
-                            self.emit_print_tuple(&elements, newline);
+                            self.emit_print_tuple(&elements, newline)?;
                         }
                         Type::Enum(enum_id) => {
                             let storage = self.allocate_enum_storage(enum_id);
@@ -385,7 +392,7 @@ impl<'a> FunctionLower<'a> {
                                                 );
                                                 self.emit_print_struct(
                                                     struct_id, &fields, newline,
-                                                );
+                                                )?;
                                             }
                                             Type::Tuple(tuple_id) => {
                                                 let elements =
@@ -405,7 +412,7 @@ impl<'a> FunctionLower<'a> {
                                                 );
                                                 self.emit_print_tuple(
                                                     &elements, newline,
-                                                );
+                                                )?;
                                             }
                                             Type::Enum(enum_id) => {
                                                 let storage =
@@ -509,7 +516,7 @@ impl<'a> FunctionLower<'a> {
         struct_id: StructId,
         fields: &[FieldBinding],
         newline: bool,
-    ) {
+    ) -> Result<(), String> {
         // Format the struct's display header. Generic instantiations
         // append a `<T1, T2, ...>` suffix so the user can tell
         // `Cell<u64>` apart from `Cell<i64>` in print output;
@@ -541,20 +548,29 @@ impl<'a> FunctionLower<'a> {
                     struct_id: nested_id,
                     fields: nested,
                 } => {
-                    self.emit_print_struct(*nested_id, nested, false);
+                    self.emit_print_struct(*nested_id, nested, false)?;
                 }
                 FieldShape::Tuple { elements, .. } => {
-                    self.emit_print_tuple(elements, false);
+                    self.emit_print_tuple(elements, false)?;
+                }
+                FieldShape::Enum(storage) => {
+                    let storage = (**storage).clone();
+                    self.emit_print_enum(&storage, false)?;
                 }
             }
         }
         self.emit_print_raw_text(" }".to_string(), newline);
+        Ok(())
     }
 
     /// Emit the `(a, b, ...)` rendering for a tuple binding. Single-
     /// element tuples render as `(a,)` to disambiguate from a
     /// parenthesised expression, matching the interpreter.
-    pub(super) fn emit_print_tuple(&mut self, elements: &[TupleElementBinding], newline: bool) {
+    pub(super) fn emit_print_tuple(
+        &mut self,
+        elements: &[TupleElementBinding],
+        newline: bool,
+    ) -> Result<(), String> {
         self.emit_print_raw_text("(".to_string(), false);
         for (i, el) in elements.iter().enumerate() {
             if i > 0 {
@@ -576,11 +592,11 @@ impl<'a> FunctionLower<'a> {
                 }
                 TupleElementShape::Struct { struct_id, fields } => {
                     let fields = fields.clone();
-                    self.emit_print_struct(*struct_id, &fields, false);
+                    self.emit_print_struct(*struct_id, &fields, false)?;
                 }
                 TupleElementShape::Tuple { elements: inner, .. } => {
                     let inner = inner.clone();
-                    self.emit_print_tuple(&inner, false);
+                    self.emit_print_tuple(&inner, false)?;
                 }
             }
         }
@@ -589,6 +605,7 @@ impl<'a> FunctionLower<'a> {
             self.emit_print_raw_text(",".to_string(), false);
         }
         self.emit_print_raw_text(")".to_string(), newline);
+        Ok(())
     }
 
     pub(super) fn emit_print_raw_text(&mut self, text: String, newline: bool) {
@@ -860,11 +877,11 @@ impl<'a> FunctionLower<'a> {
                 }
                 PayloadSlot::Struct { struct_id, fields } => {
                     let fields = fields.clone();
-                    self.emit_print_struct(*struct_id, &fields, false);
+                    self.emit_print_struct(*struct_id, &fields, false)?;
                 }
                 PayloadSlot::Tuple { elements, .. } => {
                     let elements = elements.clone();
-                    self.emit_print_tuple(&elements, false);
+                    self.emit_print_tuple(&elements, false)?;
                 }
             }
             let _ = last_idx;

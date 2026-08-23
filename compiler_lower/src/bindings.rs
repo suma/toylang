@@ -184,6 +184,11 @@ pub(super) enum FieldChainResult {
     /// `inner: (i64, i64)`. Callers either step further with a
     /// `TupleAccess` or stash the elements as a pending tuple.
     Tuple { elements: Vec<TupleElementBinding> },
+    /// JIT-enum-1: enum-typed field reached by the chain
+    /// (`p.color`). The storage is the scrutinee / source for
+    /// whatever the caller does next — match on it, copy it into a
+    /// binding, or stash it as the pending enum value.
+    Enum(EnumStorage),
 }
 
 /// Resolved match scrutinee. Enum scrutinees are dispatched by
@@ -231,6 +236,15 @@ pub(super) enum FieldShape {
         tuple_id: TupleId,
         elements: Vec<TupleElementBinding>,
     },
+    /// JIT-enum-1: enum-typed struct field. Holds a full
+    /// `EnumStorage` — a tag local plus a payload slot per element of
+    /// every variant — which is the same thing `Binding::Enum` and
+    /// `PayloadSlot::Enum` hold, so every enum helper (construct,
+    /// copy, tag dispatch, payload bind) works on a field unchanged.
+    /// A field cannot be one local the way a scalar is: the variant
+    /// is only known at runtime, so the storage has to be wide enough
+    /// for any of them.
+    Enum(Box<EnumStorage>),
 }
 
 /// Flatten a `FieldBinding` tree into a sequential `(LocalId, Type)`
@@ -247,6 +261,12 @@ pub(super) fn flatten_struct_locals(fields: &[FieldBinding]) -> Vec<(LocalId, Ty
             }
             FieldShape::Tuple { elements, .. } => {
                 out.extend(flatten_tuple_element_locals(elements));
+            }
+            // Same canonical order the boundary flatteners use for a
+            // `Type::Enum` field: tag first, then every variant's
+            // payload leaves in declaration order.
+            FieldShape::Enum(storage) => {
+                flatten_enum_storage_locals_into(storage, &mut out);
             }
         }
     }

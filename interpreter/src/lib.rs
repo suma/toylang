@@ -1116,11 +1116,15 @@ fn render_backtrace(frames: &[crate::error::CallFrame]) -> String {
 /// [`SharedRunData`] and pays only for per-run state — the same
 /// fresh-context isolation `execute_function_with_values` gives,
 /// without the repeated setup.
+///
+/// `step_budget` caps loop iterations for this one run
+/// (CHECK-NONTERMINATION); `None` means no cap.
 pub fn execute_function_with_values_shared(
     shared: &SharedRunData<'_>,
     string_interner: &DefaultStringInterner,
     function: Rc<Function>,
     args: &[crate::value::Value],
+    step_budget: Option<u64>,
 ) -> Result<crate::value::Value, InterpreterError> {
     // MEMORY_PROFILING M4: one trial is one run; the counters describe
     // it alone (see `execute_entry_with_values` for the rationale).
@@ -1155,6 +1159,10 @@ pub fn execute_function_with_values_shared(
         eval.environment.set_val(c.name, (value).into());
     }
 
+    // Budget the trial body only: const initializers are program
+    // setup, identical on every trial, and spending the allowance on
+    // them would make the cap depend on how many consts a file has.
+    eval.set_step_budget(step_budget);
     eval.evaluate_function_with_values(function, args)
 }
 
@@ -1167,12 +1175,15 @@ pub fn execute_function_with_values_shared(
 /// the remaining parameters, then run the same shared-context trial
 /// loop free functions use. `self_obj` is `None` for associated
 /// functions, which take no receiver.
+/// `step_budget` caps loop iterations for this one run
+/// (CHECK-NONTERMINATION); `None` means no cap.
 pub fn execute_method_with_values_shared(
     shared: &SharedRunData<'_>,
     string_interner: &DefaultStringInterner,
     method: Rc<MethodFunction>,
     self_obj: Option<RcObject>,
     args: &[crate::value::Value],
+    step_budget: Option<u64>,
 ) -> Result<crate::value::Value, InterpreterError> {
     crate::heap::reset_profile();
     let mut string_interner_mut = string_interner.clone();
@@ -1205,6 +1216,8 @@ pub fn execute_method_with_values_shared(
         eval.environment.set_val(c.name, (value).into());
     }
 
+    // Budget the trial body only; see the free-function counterpart.
+    eval.set_step_budget(step_budget);
     let dummy = crate::value::Value::unit().into_rc();
     eval.evaluate_method_with_values(method, self_obj.unwrap_or(dummy), args)
 }

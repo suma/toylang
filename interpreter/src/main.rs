@@ -455,6 +455,23 @@ fn report_contract_check(
                     );
                 }
             }
+            // CHECK-NONTERMINATION: printed as loudly as a failure
+            // without counting as one. The contract was not broken —
+            // the checker never got an answer — and the fix is
+            // almost always a `requires` that says which inputs the
+            // function was written for, so the message names it.
+            CheckOutcome::Exhausted { cases, discarded, budget } => {
+                checked += 1;
+                total_cases += cases;
+                eprintln!(
+                    "EXHAUSTED  {} — an input ran past the {budget}-iteration budget \
+                     ({cases} case(s) completed, {discarded} discarded before it)",
+                    check.function
+                );
+                eprintln!(
+                    "    bound the inputs with a `requires` clause so the check can finish"
+                );
+            }
             CheckOutcome::Inconclusive { discarded } => {
                 checked += 1;
                 eprintln!(

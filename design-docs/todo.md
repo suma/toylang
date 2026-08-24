@@ -11,6 +11,20 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-24
+- **CHECK-NONTERMINATION: `--check` の trial にステップ予算** — 生成値に
+  対して body が終わらない入力 (`alloc_contract.t` の `triangle` に
+  `n = u64::MAX`) で `--check` 自体がハングしていた。`EvaluationContext`
+  に `max_loop_steps` (既定 `None` = 無制限) を持たせ、`handle_while_loop`
+  と `execute_for_loop` の 2 つの back-edge で課金。超過は新設の
+  `InterpreterError::StepBudgetExceeded` → `Trial::Exhausted` →
+  `CheckOutcome::Exhausted` で、**失敗ではなく「答えが出なかった」**
+  として `EXHAUSTED` 行 + 「`requires` で入力を絞れ」の誘導を出す
+  (終了コードは 0 のまま)。**壁時計ではなくループ回数**で数えるのが要点 —
+  `--check --seed=X` の再現性がマシン速度に依存しなくなる。予算超過は
+  その関数の検査を即打ち切るので、コストは 1 関数あたり 1 予算
+  (debug で ~0.5s)。予算は trial 本体のみに課金し、const 初期化は
+  対象外。通常実行は `None` のままなので影響なし (テストで pin)。
+  テスト 5 件 + docs (design_by_contract.md / language.md)。
 - **DBC-CHECK-METHODS: `--check` がメソッドも掃く** — 自由関数と同じ規則
   (contracts 必須 / `ensures` をオラクルに / `requires` はフィルタ) で
   impl block の契約付きメソッドを検査し、`StructType::method` の名前で
@@ -876,13 +890,6 @@
   compiled 側は `the method receiver must be a struct or enum binding`
   で受け付けない (`String` の同名 method には制限なし)。
 
-- **CHECK-NONTERMINATION: `--check` に実行時間の予算が無い** ★ —
-  生成値に対して body が終わらない入力 (例: `alloc_contract.t` の
-  `triangle` に edge の `n = u64::MAX` が入ると 2^64 回ループ) があると
-  `--check` 自体がハングする (2026-08-24 実測、baseline でも再現)。
-  trial にステップ / 時間予算を持たせて打ち切るか、その関数を Skipped
-  にするかの判断が必要。
-
 ### 型システム (NEW-TYPE-SYSTEM)
 
 - **MOVE-CONDITIONAL: 分岐 / ループからの移動** ★ — 現状は E0014 で拒否。
@@ -1002,7 +1009,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2151 テスト** (100% 成功、2026-08-24 時点)。
+- 合計 **2156 テスト** (100% 成功、2026-08-24 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、
@@ -1027,4 +1034,9 @@
 - `extern fn` の generic params は parser では受理されるが、JIT / AOT が per-instance シンボル名を持たないため interpreter でのみ動く (`#195b`)。
 - `package` 宣言 / `import` path のセグメントに primitive type キーワード (`i64` / `f64` / ...) は使えない (`core/std/i64.t` が `package` 宣言を省いているのはこのため)。
 - 関数名に primitive type キーワードは使えない (`fn f64(...)` は `expected function name`)。
+- `for` の範囲末尾に **bare identifier は書けない** (`for i in 0u64 to n {`)。
+  `n { ... }` を struct literal の開始と読むので `Colon` を期待して落ちる。
+  `for i in 0u64 to (n)` と括ればよい (2026-08-24 に CHECK-NONTERMINATION の
+  テストを書いていて発見。既存コードは範囲末尾を全てリテラルか `.iter()` で
+  書いていたので踏まれていなかった)。
 - 3-part qualified call (`std::math::abs(x)`) は parser が **last 名だけを採る**。名前が一意なら結果的に解決するが、意図した経路ではない (`#185残`)。

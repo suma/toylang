@@ -15,7 +15,14 @@
 # budget clauses count different things: `allocates` counts requested
 # bytes, `retains` counts bytes not handed back, `allocations` counts
 # requests.
+#
+# The `requires` is not about allocation: it says which inputs this
+# function was written for. `--check` samples `n` uniformly, and
+# `while i <= n` with `n = u64::MAX` never returns — so without a
+# bound the checker reports EXHAUSTED instead of checking the budget
+# clause below (CHECK-NONTERMINATION).
 fn triangle(n: u64) -> u64
+    requires n <= 1000u64
     ensures allocates(0u64)
 {
     var total: u64 = 0u64

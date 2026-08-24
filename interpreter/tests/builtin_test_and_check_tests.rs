@@ -558,3 +558,136 @@ fn methods_on_types_without_a_generatable_receiver_are_skipped() {
         other => panic!("expected a skip, got {other:?}"),
     }
 }
+
+// --- CHECK-NONTERMINATION: the step budget ---------------------------
+
+#[test]
+fn an_input_that_never_finishes_is_reported_not_waited_for() {
+    // `triangle` is correct and terminates for every `n` a caller
+    // would pass. It is the *sampler* that reaches `n = u64::MAX`,
+    // where `while i <= n` runs for longer than anyone will wait — so
+    // before the budget this hung `--check` on a program with no bug
+    // in it at all.
+    let report = check(
+        "fn triangle(n: u64) -> u64
+            ensures result >= 0u64
+        {
+            var total: u64 = 0u64
+            var i: u64 = 1u64
+            while i <= n {
+                total = total + i
+                i = i + 1u64
+            }
+            total
+        }
+        fn main() -> u64 { triangle(3u64) }",
+        0x99,
+    );
+    match outcome_for(&report, "triangle") {
+        CheckOutcome::Exhausted { budget, .. } => assert!(*budget > 0),
+        other => panic!("expected the budget to be reported, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_requires_that_bounds_the_loop_makes_the_check_finish() {
+    // The other half of the report: EXHAUSTED tells the author to
+    // bound the inputs, and doing so has to actually work. Same
+    // function, same seed, one added clause.
+    let report = check(
+        "fn triangle(n: u64) -> u64
+            requires n <= 1000u64
+            ensures result >= 0u64
+        {
+            var total: u64 = 0u64
+            var i: u64 = 1u64
+            while i <= n {
+                total = total + i
+                i = i + 1u64
+            }
+            total
+        }
+        fn main() -> u64 { triangle(3u64) }",
+        0x99,
+    );
+    match outcome_for(&report, "triangle") {
+        CheckOutcome::Passed { cases, .. } => assert_eq!(*cases, 200),
+        other => panic!("expected a pass, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_for_loop_over_a_sampled_range_is_bounded_too() {
+    // The other back-edge. A range ending at a parameter is
+    // unremarkable in source and unbounded under sampling, exactly
+    // like the `while` above.
+    //
+    // The end bound is parenthesised because a bare identifier there
+    // parses as the start of a struct literal (`n { ... }`) — a
+    // parser limitation this test only has to route around.
+    let report = check(
+        "fn sum_to(n: u64) -> u64
+            ensures result >= 0u64
+        {
+            var total: u64 = 0u64
+            for i in 0u64 to (n) {
+                total = total + i
+            }
+            total
+        }
+        fn main() -> u64 { sum_to(3u64) }",
+        0x99,
+    );
+    assert!(
+        matches!(outcome_for(&report, "sum_to"), CheckOutcome::Exhausted { .. }),
+        "{:?}",
+        outcome_for(&report, "sum_to")
+    );
+}
+
+#[test]
+fn the_budget_is_deterministic_across_runs() {
+    // The budget counts loop iterations rather than elapsed time
+    // precisely so that `--check --seed=X` keeps its promise to
+    // replay. A wall-clock cut would make this test flaky by design.
+    let source = "fn triangle(n: u64) -> u64
+            ensures result >= 0u64
+        {
+            var total: u64 = 0u64
+            var i: u64 = 1u64
+            while i <= n {
+                total = total + i
+                i = i + 1u64
+            }
+            total
+        }
+        fn main() -> u64 { triangle(3u64) }";
+    let (a, b) = (check(source, 0x7777), check(source, 0x7777));
+    let (
+        CheckOutcome::Exhausted { cases: ca, discarded: da, budget: ba },
+        CheckOutcome::Exhausted { cases: cb, discarded: db, budget: bb },
+    ) = (outcome_for(&a, "triangle"), outcome_for(&b, "triangle"))
+    else {
+        panic!("expected both runs to hit the budget");
+    };
+    assert_eq!((ca, da, ba), (cb, db, bb));
+}
+
+#[test]
+fn ordinary_execution_is_not_capped() {
+    // The budget belongs to `--check`, which calls functions with
+    // inputs nobody wrote them for. A program the user asked to run
+    // gets to loop as long as it likes, well past the budget.
+    common::assert_program_result_u64(
+        "fn main() -> u64 {
+            var total: u64 = 0u64
+            var i: u64 = 0u64
+            while i < 300000u64 {
+                total = total + 1u64
+                i = i + 1u64
+            }
+            total
+        }",
+        300000,
+    );
+}

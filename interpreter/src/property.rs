@@ -38,6 +38,25 @@ const DEFAULT_CASES: usize = 200;
 /// precondition is too narrow for uniform sampling to hit.
 const MAX_DISCARD_RATIO: usize = 20;
 
+/// Loop iterations one trial may execute before it is abandoned
+/// (CHECK-NONTERMINATION).
+///
+/// A property trial calls a function with inputs nobody wrote it for.
+/// `fn triangle(n: u64)` looping `while i <= n` is perfectly correct
+/// and perfectly finite for every `n` a caller would pass, and takes
+/// longer than the heat death of the universe for the `n = u64::MAX`
+/// that uniform sampling hands it — so without a cap the checker
+/// hangs on a *correct* program. The cap counts loop back-edges, not
+/// wall-clock time, so `--check --seed=0x99` replays to the same
+/// verdict on any machine under any load.
+///
+/// The first trial to exceed the budget ends that function's check,
+/// so this is the ceiling per contracted function, not per case:
+/// measured at ~0.5s in a debug build (the tree-walker runs ~200k
+/// iterations/s there). Paid only by a function whose sampled inputs
+/// run away, which is a function the author has to change anyway.
+const TRIAL_STEP_BUDGET: u64 = 100_000;
+
 /// Concrete types a generic receiver's type parameters may be
 /// instantiated with, in preference order (DBC-CHECK-METHODS).
 ///
@@ -292,6 +311,21 @@ pub enum CheckOutcome {
         /// The diagnostic the contract produced.
         detail: String,
     },
+    /// A generated input kept the body looping past the step budget,
+    /// so the check could not finish (CHECK-NONTERMINATION).
+    ///
+    /// Neither a pass nor a failure: nothing falsified the contract,
+    /// but nothing established it either. Reported on its own so a
+    /// function whose inputs run away cannot masquerade as one that
+    /// passed on the handful of trials that happened to terminate.
+    Exhausted {
+        /// Inputs that ran to completion before one ran away.
+        cases: usize,
+        /// Inputs `requires` turned away in the meantime.
+        discarded: usize,
+        /// The ceiling that was hit, in loop iterations.
+        budget: u64,
+    },
     /// Not checkable: no contracts, or a parameter this cannot sample.
     Skipped { reason: String },
 }
@@ -325,6 +359,10 @@ enum Trial {
     Discarded,
     /// `ensures` (or the body) rejected the input.
     Failed(String),
+    /// The body ran past [`TRIAL_STEP_BUDGET`] loop iterations. Not a
+    /// failure — the contract was never falsified, the checker simply
+    /// could not wait for an answer (CHECK-NONTERMINATION).
+    Exhausted,
 }
 
 fn run_trial(
@@ -343,10 +381,12 @@ fn run_trial(
         string_interner,
         function.clone(),
         args,
+        Some(TRIAL_STEP_BUDGET),
     );
     match outcome {
         Ok(_) => Trial::Ok,
         Err(InterpreterError::ContractViolation { kind: "requires", .. }) => Trial::Discarded,
+        Err(InterpreterError::StepBudgetExceeded { .. }) => Trial::Exhausted,
         Err(e) => Trial::Failed(e.to_string()),
     }
 }
@@ -390,10 +430,12 @@ fn run_method_trial(
         method.clone(),
         self_obj,
         rest,
+        Some(TRIAL_STEP_BUDGET),
     );
     match outcome {
         Ok(_) => Trial::Ok,
         Err(InterpreterError::ContractViolation { kind: "requires", .. }) => Trial::Discarded,
+        Err(InterpreterError::StepBudgetExceeded { .. }) => Trial::Exhausted,
         Err(e) => Trial::Failed(e.to_string()),
     }
 }
@@ -508,6 +550,19 @@ fn check_function(
         match run_trial(shared, interner, function, &args) {
             Trial::Ok => executed += 1,
             Trial::Discarded => discarded += 1,
+            // CHECK-NONTERMINATION: stop the whole function here
+            // rather than spending the remaining cases. The inputs
+            // are drawn from one distribution, so an input that runs
+            // away means the distribution reaches a region this
+            // function cannot answer for — trying 199 more costs a
+            // budget each and changes nothing about the verdict.
+            Trial::Exhausted => {
+                return CheckOutcome::Exhausted {
+                    cases: executed,
+                    discarded,
+                    budget: TRIAL_STEP_BUDGET,
+                };
+            }
             Trial::Failed(detail) => {
                 let mut args = args;
                 let mut detail = detail;
@@ -644,6 +699,13 @@ fn check_method(
         match run_method_trial(shared, interner, method, &trial_args) {
             Trial::Ok => executed += 1,
             Trial::Discarded => discarded += 1,
+            Trial::Exhausted => {
+                return CheckOutcome::Exhausted {
+                    cases: executed,
+                    discarded,
+                    budget: TRIAL_STEP_BUDGET,
+                };
+            }
             Trial::Failed(detail) => {
                 let mut detail = detail;
                 shrink_counterexample(&mut trial_args, &mut detail, |candidate| {
@@ -752,6 +814,11 @@ fn name_hash(name: &str) -> u64 {
 /// reader can hold in their head, which is the entire point. The
 /// `trial` closure keeps this shared between free functions and
 /// methods (whose first "argument" is the receiver).
+///
+/// Only `Trial::Failed` accepts a candidate, so a candidate whose run
+/// exhausts the step budget is rejected like one that passes: it did
+/// not reproduce the failure, so it cannot replace the argument that
+/// did (CHECK-NONTERMINATION).
 fn shrink_counterexample<F>(
     args: &mut Vec<Value>,
     detail: &mut String,

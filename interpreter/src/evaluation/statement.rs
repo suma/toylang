@@ -62,6 +62,11 @@ impl EvaluationContext<'_> {
         let one = T::from(1);
 
         while current < end {
+            // CHECK-NONTERMINATION: the other back-edge. A range this
+            // wide is unreachable from source (`0u64 to u64::MAX` is
+            // legal but nobody waits for it); it is reachable from a
+            // property trial, whose bounds are sampled.
+            self.charge_loop_step()?;
             self.environment.enter_block();
             // Phase 5: bypass the `Object → Value` conversion by lifting
             // the primitive directly into a `Value` variant.
@@ -337,6 +342,10 @@ impl EvaluationContext<'_> {
     fn handle_while_loop(&mut self, loop_label: Option<DefaultSymbol>, cond: &ExprRef, body: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         use crate::try_value_v;
         loop {
+            // CHECK-NONTERMINATION: one of the two back-edges a
+            // toylang run has. Charged before the condition so a
+            // condition that itself loops forever is covered too.
+            self.charge_loop_step()?;
             let cond_result = self.evaluate(cond);
             let cond_value = try_value_v!(cond_result);
             let cond_bool = cond_value.try_unwrap_bool().map_err(InterpreterError::ObjectError)?;

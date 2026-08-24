@@ -47,6 +47,15 @@ pub enum InterpreterError {
         location: Option<SourceLocation>,
         backtrace: Vec<CallFrame>,
     },
+    /// The run exhausted a caller-imposed budget on loop iterations
+    /// (CHECK-NONTERMINATION).
+    ///
+    /// Only `--check` sets a budget: a property trial feeds generated
+    /// inputs to a function that was never written to accept them, so
+    /// `while i <= n` with `n = u64::MAX` is an ordinary outcome of
+    /// sampling rather than a bug. Ordinary execution leaves the
+    /// budget unset, so a program the user runs is never cut short.
+    StepBudgetExceeded { steps: u64 },
 }
 
 /// One toylang-level call, for panic backtraces.
@@ -110,6 +119,9 @@ impl fmt::Display for InterpreterError {
             }
             InterpreterError::Panic { message, .. } => {
                 write!(f, "panic: {message}")
+            }
+            InterpreterError::StepBudgetExceeded { steps } => {
+                write!(f, "step budget exceeded ({steps} loop iterations)")
             }
         }
     }

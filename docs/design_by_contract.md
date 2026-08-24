@@ -288,6 +288,22 @@ fn divide(a: i64, b: i64) -> i64
   INCONCLUSIVE  impossible — `requires` rejected all 4000 generated inputs
   ```
 
+- **終わらない入力は打ち切られる**（CHECK-NONTERMINATION）。生成器は
+  呼び出し側が渡さないような値も渡すので、`while i <= n` を持つ**正しい**
+  関数が `n = u64::MAX` を引くと `--check` 自体が返らなくなる。1 trial の
+  ループ回数に上限があり、超えた時点でその関数の検査を打ち切って報告する:
+
+  ```
+  EXHAUSTED  triangle — an input ran past the 100000-iteration budget (5 case(s) completed, 0 discarded before it)
+      bound the inputs with a `requires` clause so the check can finish
+  ```
+
+  **失敗ではない** — 契約が破れたのではなく、答えが出なかったという報告
+  なので終了コードは 0 のまま。直し方はメッセージの通りで、
+  `requires n <= 1000u64` のように「この関数が想定している入力」を
+  書けば検査が最後まで走る。上限は**経過時間ではなくループ回数**で数えるので、
+  `--seed` を付けた再実行はマシンや負荷に関係なく同じ判定になる
+
 ---
 
 ## 契約と性能
@@ -420,6 +436,13 @@ cranelift `speed`）。cranelift 自身にはこれができない — 事実は
 
 `requires` が狭すぎて生成値が全部弾かれた。テストしたい形なら、
 その関数を呼ぶ `test` ブロックを書く方が早い。
+
+**`EXHAUSTED` と言われる**
+
+逆に `requires` が無さすぎる。ループの回数が引数で決まる関数
+（`while i <= n`、`for i in 0u64 to (n)`）は、生成器が引く
+`n = u64::MAX` に対して事実上終わらない。関数自体は正しいので、
+「この関数が想定している入力」を `requires` で書けばよい。
 
 **契約は通るのに答えが違う**
 

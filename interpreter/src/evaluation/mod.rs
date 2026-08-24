@@ -174,6 +174,26 @@ pub struct EvaluationContext<'a> {
     // overflow (exit 134) into a plain error.
     pub(super) call_depth: u32,
     pub(super) max_call_depth: u32,
+    /// Loop iterations executed so far, and the ceiling the caller
+    /// imposed (CHECK-NONTERMINATION).
+    ///
+    /// `None` — the default, and what every ordinary run uses — means
+    /// no ceiling: a program the user asked to run is allowed to loop
+    /// as long as it likes. `--check` sets one, because a property
+    /// trial calls a function with inputs nobody wrote it for, and
+    /// `while i <= n` with a sampled `n = u64::MAX` would otherwise
+    /// hang the checker instead of reporting anything.
+    ///
+    /// The budget counts loop back-edges rather than wall-clock time
+    /// on purpose: `--check --seed=0x99` promises to replay, and a
+    /// clock would make the same seed pass on a fast machine and get
+    /// cut on a slow one. Back-edges are also the complete set of
+    /// places a toylang run can diverge — recursion is already bounded
+    /// by `max_call_depth`, and the language has no other backward
+    /// jump — so counting them costs one increment per iteration and
+    /// nothing at all on straight-line code.
+    pub(super) loop_steps: u64,
+    pub(super) max_loop_steps: Option<u64>,
     // Shared heap state. The GlobalAllocator holds an Rc to this same cell so
     // pointer-based builtins (ptr_read/write, mem_copy, ...) can access memory
     // regardless of which allocator is active on the stack.
@@ -314,6 +334,8 @@ impl<'a> EvaluationContext<'a> {
             // (exit 134). The IR VM runs deep recursion on the heap,
             // so the guard only constrains the fallback path.
             max_call_depth: 30,
+            loop_steps: 0,
+            max_loop_steps: None,
             heap_manager,
             global_allocator,
             allocator_stack,
@@ -364,6 +386,8 @@ impl<'a> EvaluationContext<'a> {
             max_recursion_depth: 1000,
             call_depth: 0,
             max_call_depth: 30,
+            loop_steps: 0,
+            max_loop_steps: None,
             heap_manager,
             global_allocator,
             allocator_stack,
@@ -423,6 +447,31 @@ impl<'a> EvaluationContext<'a> {
     /// env mutation.
     pub fn set_contract_mode(&mut self, mode: ContractMode) {
         self.contract_mode = mode;
+    }
+
+    /// Cap how many loop iterations this context will execute
+    /// (CHECK-NONTERMINATION). `None` removes the cap, which is what
+    /// every path except `--check` wants.
+    pub fn set_step_budget(&mut self, budget: Option<u64>) {
+        self.loop_steps = 0;
+        self.max_loop_steps = budget;
+    }
+
+    /// Account for one loop back-edge, failing the run once the
+    /// budget set by [`Self::set_step_budget`] is spent.
+    ///
+    /// Called from the two places a toylang run can jump backwards:
+    /// `handle_while_loop` and `execute_for_loop`. With no budget set
+    /// this is a load, a compare, and nothing else.
+    pub(super) fn charge_loop_step(&mut self) -> Result<(), InterpreterError> {
+        let Some(max) = self.max_loop_steps else {
+            return Ok(());
+        };
+        self.loop_steps += 1;
+        if self.loop_steps > max {
+            return Err(InterpreterError::StepBudgetExceeded { steps: max });
+        }
+        Ok(())
     }
 
     pub fn register_enum(&mut self, name: DefaultSymbol, entry: EnumRegistryEntry) {

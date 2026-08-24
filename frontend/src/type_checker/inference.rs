@@ -73,17 +73,16 @@ pub struct TypeInferenceState {
     pub constraints: Vec<TypeConstraint>,
     /// Partial type solutions being built up
     pub partial_solutions: HashMap<DefaultSymbol, TypeDecl>,
-    /// FRONTEND-PERF: lazily-built index of every `Expr::Number` in the
-    /// expr pool. `finalize_number_types` used to scan the whole pool
-    /// (stdlib included) on every function check — O(pool) per function,
-    /// O(n²) overall. This lets it iterate only the Number nodes.
-    /// Built incrementally (`number_expr_index_scanned`) because the
-    /// pool can grow during type-checking (desugaring `?`, string
-    /// interpolation and Display rewrites all `expr_pool.add(...)`).
-    /// Entries stay valid after `transform_numeric_expr` rewrites a node
-    /// in place — the refs are re-checked against `Expr::Number` at use.
-    pub number_expr_index: Vec<ExprRef>,
-    pub number_expr_index_scanned: usize,
+    /// NUMBER-HINT: the `Expr::Number` nodes the function currently
+    /// being checked actually reached. `finalize_number_types` walks
+    /// the whole pool, which meant the *first* function checked froze
+    /// every later function's unsuffixed literals to the default type
+    /// before those functions were ever looked at — so a parameter or
+    /// return type that could have claimed them never got the chance.
+    /// Finalization consumes this set and clears it per function; the
+    /// whole-pool index remains the safety net for nodes no function
+    /// body reached.
+    pub visited_numbers: Vec<ExprRef>,
 }
 
 impl Default for TypeInferenceState {
@@ -106,8 +105,7 @@ impl TypeInferenceState {
             instantiation_signatures: HashSet::new(),
             constraints: Vec::new(),
             partial_solutions: HashMap::new(),
-            number_expr_index: Vec::new(),
-            number_expr_index_scanned: 0,
+            visited_numbers: Vec::new(),
         }
     }
 
@@ -163,8 +161,7 @@ impl TypeInferenceState {
         self.instantiation_signatures.clear();
         self.constraints.clear();
         self.partial_solutions.clear();
-        self.number_expr_index.clear();
-        self.number_expr_index_scanned = 0;
+        self.visited_numbers.clear();
     }
     
     /// Push a new generic scope with the given type parameter mappings

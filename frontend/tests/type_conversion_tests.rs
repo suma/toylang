@@ -72,17 +72,93 @@ mod numeric_literal_conversion {
     }
 
     #[test]
-    fn test_bare_number_without_context_stays_number() {
-        // A bare number without any type context remains Number type,
-        // which causes a type mismatch with u64 return type
+    fn test_bare_number_resolved_by_return_type() {
+        // NUMBER-HINT: the tail expression *is* the return value, so
+        // the declared return type claims an unsuffixed literal that
+        // reached it through a binding. This used to be an error
+        // ("expected u64, but got Number") because no position ever
+        // told the literal what to be.
         let source = r#"
             fn main() -> u64 {
                 val x = 42
                 x
             }
         "#;
-        let result = parse_and_check(source);
-        assert!(result.is_err(), "Bare number without context should remain Number type");
+        assert!(parse_and_check(source).is_ok());
+    }
+
+    #[test]
+    fn test_bare_number_resolved_by_signed_return_type() {
+        // Same position, opposite signedness: the return type decides,
+        // not the u64 default.
+        let source = r#"
+            fn main() -> i64 {
+                val x = 0i64
+                val y = 42
+                x + y
+            }
+        "#;
+        assert!(parse_and_check(source).is_ok());
+    }
+
+    #[test]
+    fn test_bare_number_argument_takes_parameter_type() {
+        // NUMBER-HINT: a literal argument becomes the parameter's
+        // type. `f(21)` used to be rejected as `u64` against `i64`
+        // because a *previously checked* function's finalization pass
+        // had already frozen the literal.
+        let source = r#"
+            fn f(x: i64) -> i64 { x * 2i64 }
+            fn main() -> u64 {
+                println(f(21))
+                0
+            }
+        "#;
+        assert!(parse_and_check(source).is_ok());
+    }
+
+    #[test]
+    fn test_bare_number_argument_takes_narrow_parameter_type() {
+        let source = r#"
+            fn f(x: i8) -> i8 { x }
+            fn main() -> u64 {
+                println(f(3))
+                0
+            }
+        "#;
+        assert!(parse_and_check(source).is_ok());
+    }
+
+    #[test]
+    fn test_bare_number_argument_out_of_narrow_range_is_rejected() {
+        // The coercion range-checks: 300 does not fit a u8, and that
+        // is a conversion error rather than a silent wrap.
+        let source = r#"
+            fn f(x: u8) -> u8 { x }
+            fn main() -> u64 {
+                println(f(300))
+                0
+            }
+        "#;
+        assert!(parse_and_check(source).is_err());
+    }
+
+    #[test]
+    fn test_bare_number_in_explicit_return() {
+        // `return 0` names the same position as the tail expression.
+        let source = r#"
+            fn f(n: i64) -> i64 {
+                if n > 0i64 {
+                    return 1
+                }
+                0
+            }
+            fn main() -> u64 {
+                println(f(5i64))
+                0
+            }
+        "#;
+        assert!(parse_and_check(source).is_ok());
     }
 
     #[test]

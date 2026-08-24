@@ -560,6 +560,18 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let old_hint = self.setup_type_hint_for_val(type_decl);
                 let ty = self.visit_expr(e)?;
 
+                // NUMBER-HINT: an explicit annotation is the most
+                // direct statement of what an unsuffixed literal
+                // should be, so it claims the literal here rather
+                // than leaving it to the default pass. `val c: i64 =
+                // 10` only landed on `i64` by way of a function-wide
+                // hint that happened to be set; nothing made the
+                // annotation itself decide.
+                let ty = match type_decl.as_ref() {
+                    Some(decl) => self.coerce_number_expr(e, &ty, decl)?,
+                    None => ty,
+                };
+
                 // Apply type transformations and get final type
                 self.apply_type_transformations_for_expr(type_decl, &ty, e)?;
 
@@ -786,6 +798,13 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         self.function_checking.call_depth += 1;
 
+        // NUMBER-HINT: unresolved literals are finalized per function,
+        // so a nested check (a forward-referenced callee pulled in by
+        // `visit_call`) must not consume the literals the enclosing
+        // body has already visited but not yet placed.
+        let outer_visited_numbers =
+            std::mem::take(&mut self.type_inference.visited_numbers);
+
         // From/Into `?` cross-error conversion: remember this function's
         // return type so `desugar_try_expr` can convert `Err(E1)` to the
         // enclosing function's `Err(E2)` via an `E2: From<E1>` impl.
@@ -882,11 +901,30 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Restore original type hint
         self.type_inference.type_hint = original_hint;
 
-        // Final pass: convert any remaining Number literals to default type (UInt64)
+        // NUMBER-HINT: the body's tail expression *is* the return
+        // value, so the declared return type is what an unsuffixed
+        // literal there should become. Without this the comparison
+        // below rejected `fn main() -> u64 { 0 }` with "expected u64,
+        // but got Number" — a bare literal never reached a position
+        // that told it what to be. Must run before the finalization
+        // pass, which would otherwise apply the blanket default first.
+        if let Some(expected_return_type) = func.return_type.clone()
+            && last == TypeDecl::Number
+            && let Some(Stmt::Expression(tail)) =
+                statements.last().and_then(|s| self.core.stmt_pool.get(s))
+        {
+            last = self.coerce_number_expr(&tail, &last, &expected_return_type)?;
+        }
+
+        // Final pass: convert this body's remaining Number literals to
+        // the default type (UInt64). NUMBER-HINT: scoped to the nodes
+        // this function reached — see `finalize_number_types`.
         self.finalize_number_types()?;
 
         // Apply all accumulated expression transformations
         self.apply_expr_transformations();
+
+        self.type_inference.visited_numbers = outer_visited_numbers;
 
         // Check if the function body type matches the declared return type.
         // LLM-LOOP P1: skipped when the body already reported an error --

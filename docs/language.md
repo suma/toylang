@@ -604,8 +604,8 @@ form, including spans and any machine-applicable fix.
 0xFFu64     # hex u64
 0xFFi64     # hex i64
 0xFFu8      # hex narrow int (range-checked at lex time)
-0xFF        # untyped Number, resolved by context (default u64)
-42          # untyped Number, resolved by context
+0xFF        # suffix-less; type resolved by context (default u64)
+42          # suffix-less; type resolved by context
 -3i64       # i64 with leading minus inside the lexer
 ```
 
@@ -614,6 +614,34 @@ identically to `u64` / `i64`: the lexer validates the literal fits,
 the parser stores the value at its native width, and the type
 checker / interpreter / JIT / AOT compiler all carry the width
 through end-to-end.
+
+#### How a suffix-less literal gets its type
+
+A literal written without a suffix is not `u64` yet. The parser
+records it as an unresolved placeholder, and the first position
+that states an expected integer type claims it:
+
+| Position | Example | Literal becomes |
+|---|---|---|
+| Binding annotation | `val c: i64 = 10` | `i64` |
+| Call argument | `f(21)` for `fn f(x: i64)` | `i64` |
+| Declared return type (tail expression) | `fn main() -> u64 { 0 }` | `u64` |
+| Explicit `return` | `return 1` in `fn f() -> i64` | `i64` |
+| Arithmetic with a typed operand | `c - 40` where `c: i64` | `i64` |
+| Unary minus | `-5` | `i64` |
+
+All of these accept the narrow widths too, and the value is
+range-checked against the target: `f(300)` for `fn f(x: u8)` is a
+conversion error, not a silent wrap.
+
+A literal that reaches none of these positions falls back to
+**`u64`**. That default is load-bearing: `u64` subtraction traps on
+underflow (see *Runtime traps*), so `val a = 5  val b = 10  a - b`
+panics rather than producing `-5`. Annotate when the value can go
+negative.
+
+The resolution is per function. A literal in one function is never
+decided by an annotation in another.
 
 #### Numeric separators
 

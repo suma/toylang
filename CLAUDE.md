@@ -267,7 +267,10 @@ fn main() -> u64 {
 - **Numeric literals**:
   - Type suffix: `42u64` (unsigned 64-bit), `42i64` (signed 64-bit), `1.5f64` / `42f64` (IEEE 754 double)
   - Hex literals: `0xFFu64`, `0xFFi64`, `0xFF`（型サフィックスなしも可）
-  - Without suffix: defaults to `u64`, or automatically determined by type inference
+  - Without suffix: **型注釈 / 引数 / 戻り値 / 演算相手から解決**され、どの位置にも
+    届かなかったときだけ `u64` に倒れる (narrow int も対象、範囲外はエラー)。
+    決定規則の表は [`docs/language.md`](docs/language.md) の
+    「How a suffix-less literal gets its type」
   - Examples: `val x = 42` → `u64` type, `val y: i64 = 42` → automatically converted to `i64`
   - **数値リテラル区切り**: `_` を桁の間に挿入できる (`1_000_000u64`、`0xDEAD_BEEFu64`、`3_141.592_653f64`)。最初の文字は数字必須 (`_42` は識別子)。lexer のみで処理、AST / IR / runtime は separator を見ない。
   - **f64 リテラルは必ず `f64` サフィックスを付ける**: タプルアクセス `outer.0.1` のような構文との曖昧性を避けるため、`1.5` 単体は許可しない。整数 → f64 への暗黙変換も無いので、`1.0f64` または `1f64` と書く（必要なら `as f64` キャスト）

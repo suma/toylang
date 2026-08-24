@@ -184,6 +184,36 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let num_str = cleaned.as_str();
                 let num_orig = num_str_owned.as_str();
 
+                // NUM-W: shared literal parsing for the narrow widths.
+                // Parse at the widest signed/unsigned width, then
+                // range-check, so `300` for a `u8` parameter reports a
+                // conversion error rather than silently wrapping.
+                let ty_name = format!("{:?}", target_type);
+                let parse_unsigned = |max: u128| -> Result<u128, TypeCheckError> {
+                    let v = if let Some(hex) = num_str.strip_prefix("0x").or_else(|| num_str.strip_prefix("0X")) {
+                        u128::from_str_radix(hex, 16)
+                    } else {
+                        num_str.parse::<u128>()
+                    }
+                    .map_err(|_| TypeCheckError::conversion_error(num_orig, &ty_name))?;
+                    if v > max {
+                        return Err(TypeCheckError::conversion_error(num_orig, &ty_name));
+                    }
+                    Ok(v)
+                };
+                let parse_signed = |min: i128, max: i128| -> Result<i128, TypeCheckError> {
+                    let v = if let Some(hex) = num_str.strip_prefix("0x").or_else(|| num_str.strip_prefix("0X")) {
+                        i128::from_str_radix(hex, 16)
+                    } else {
+                        num_str.parse::<i128>()
+                    }
+                    .map_err(|_| TypeCheckError::conversion_error(num_orig, &ty_name))?;
+                    if v < min || v > max {
+                        return Err(TypeCheckError::conversion_error(num_orig, &ty_name));
+                    }
+                    Ok(v)
+                };
+
                 // Create the new expression based on target type
                 let new_expr = match target_type {
                     TypeDecl::UInt64 => {
@@ -210,6 +240,16 @@ impl<'a> TypeCheckerVisitor<'a> {
                         };
                         Expr::Int64(val)
                     },
+                    // NUM-W: the same coercion for the narrow widths.
+                    // Reached from NUMBER-HINT positions (`f(3)` where
+                    // the parameter is `i8`); out-of-range literals get
+                    // the same conversion error as the wide types.
+                    TypeDecl::UInt8 => Expr::UInt8(parse_unsigned(u8::MAX as u128)? as u8),
+                    TypeDecl::UInt16 => Expr::UInt16(parse_unsigned(u16::MAX as u128)? as u16),
+                    TypeDecl::UInt32 => Expr::UInt32(parse_unsigned(u32::MAX as u128)? as u32),
+                    TypeDecl::Int8 => Expr::Int8(parse_signed(i8::MIN as i128, i8::MAX as i128)? as i8),
+                    TypeDecl::Int16 => Expr::Int16(parse_signed(i16::MIN as i128, i16::MAX as i128)? as i16),
+                    TypeDecl::Int32 => Expr::Int32(parse_signed(i32::MIN as i128, i32::MAX as i128)? as i32),
                     _ => {
                         return Err(TypeCheckError::unsupported_operation("transform", target_type.clone()));
                     }
@@ -353,20 +393,29 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
         
         // Second pass: handle any remaining Number types by using variable context.
-        // FRONTEND-PERF: iterate only the cached Number nodes instead of
-        // the whole pool (stdlib included), and hash both linear lookups
-        // the old code did per node.
+        // NUMBER-HINT: only the nodes *this* function's body reached.
+        // This used to iterate every Number node in the pool, which
+        // made the first function checked decide the type of every
+        // unsuffixed literal in the program — including ones in
+        // functions not yet visited, whose parameter and return types
+        // would have named a better answer. `visited_numbers` is
+        // saved/restored around each function check, so what is left
+        // here is exactly this body's leftovers.
         let processed: std::collections::HashSet<ExprRef> =
             context_info.iter().map(|(r, _)| *r).collect();
-        // Clone so the loop body can borrow `self` mutably (the index is
-        // small — one entry per Number literal — and cloning is the same
-        // cost as the iteration that replaces the old whole-pool scan).
-        let number_exprs = self.refresh_number_index().clone();
+        let number_exprs = std::mem::take(&mut self.type_inference.visited_numbers);
         for &expr_ref in &number_exprs {
             if let Some(expr) = self.core.expr_pool.get(&expr_ref)
                 && let Expr::Number(_) = expr {
-                    // Skip if already processed in first pass
-                    if processed.contains(&expr_ref) {
+                    // Skip if already processed in first pass, or
+                    // already claimed by a position that knew what it
+                    // expected (NUMBER-HINT). `transformed_exprs` is
+                    // this function's pending rewrites; it is applied
+                    // and cleared right after finalization, so an
+                    // entry here always means "decided, not defaulted".
+                    if processed.contains(&expr_ref)
+                        || self.transformed_exprs.contains_key(&expr_ref)
+                    {
                         continue;
                     }
                     
@@ -411,25 +460,6 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
         }
         Ok(())
-    }
-
-    /// Extend the cached Number-node index to cover the current pool,
-    /// then return it. The pool can grow during type-checking
-    /// (desugaring `?`, string interpolation and Display rewrites all
-    /// call `expr_pool.add`), so the index is filled incrementally up to
-    /// the current length rather than built once up front.
-    fn refresh_number_index(&mut self) -> &Vec<ExprRef> {
-        let pool_len = self.core.expr_pool.len();
-        let from = self.type_inference.number_expr_index_scanned;
-        if from < pool_len {
-            for i in from..pool_len {
-                if let Some(Expr::Number(_)) = self.core.expr_pool.get(&ExprRef(i as u32)) {
-                    self.type_inference.number_expr_index.push(ExprRef(i as u32));
-                }
-            }
-            self.type_inference.number_expr_index_scanned = pool_len;
-        }
-        &self.type_inference.number_expr_index
     }
 
     /// Helper method to resolve numeric types with automatic conversion
@@ -558,5 +588,104 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
         Ok(())
+    }
+
+    /// NUMBER-HINT: remember that this function's body reached an
+    /// expression still carrying the unresolved-literal placeholder,
+    /// so `finalize_number_types` knows the node is *this* function's
+    /// to default. Cheap no-op for every other type.
+    pub fn note_visited_number(&mut self, expr_ref: &ExprRef, ty: &TypeDecl) {
+        if *ty == TypeDecl::Number {
+            self.type_inference.visited_numbers.push(*expr_ref);
+        }
+    }
+
+    /// NUMBER-HINT: is `ty` an integer type an unsuffixed literal is
+    /// allowed to land in? `Number` itself is excluded — it is the
+    /// placeholder, not a destination.
+    pub fn is_integer_target(ty: &TypeDecl) -> bool {
+        matches!(
+            ty,
+            TypeDecl::UInt64
+                | TypeDecl::Int64
+                | TypeDecl::UInt8
+                | TypeDecl::UInt16
+                | TypeDecl::UInt32
+                | TypeDecl::Int8
+                | TypeDecl::Int16
+                | TypeDecl::Int32
+        )
+    }
+
+    /// NUMBER-HINT: claim an expression that type-checked to the
+    /// unresolved-literal placeholder `Number` for `target`.
+    ///
+    /// A position that *knows* what it expects — a declared return
+    /// type, a parameter type — calls this so the literals in that
+    /// expression resolve to the expected type instead of waiting for
+    /// `finalize_number_types` to apply the bare default. Without it
+    /// `fn main() -> i64 { 0 }` reported "expected i64, but got
+    /// Number" (or `u64` once the default had run), forcing a suffix
+    /// on every literal in a return or argument position.
+    ///
+    /// Returns the type the expression now has: `target` when the
+    /// coercion applied, `ty` unchanged otherwise.
+    pub fn coerce_number_expr(
+        &mut self,
+        expr_ref: &ExprRef,
+        ty: &TypeDecl,
+        target: &TypeDecl,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        if *ty != TypeDecl::Number || !Self::is_integer_target(target) {
+            return Ok(ty.clone());
+        }
+        self.propagate_number_subtree(expr_ref, target)?;
+        // The visit cached `Number` for this node; later readers
+        // (the return-type comparison, an enclosing block) must see
+        // the resolved type instead.
+        self.type_inference.set_expr_type(*expr_ref, target.clone());
+        self.optimization.cache_type(*expr_ref, target.clone());
+        Ok(target.clone())
+    }
+
+    /// Walk the operand structure of an all-literal expression,
+    /// recording every `Number` leaf for `target`. Only the shapes
+    /// that can carry an unresolved `Number` type outward are
+    /// traversed — a literal, a name bound to one, and the arithmetic
+    /// that combines them. Anything else already has a concrete type,
+    /// so there is nothing to claim.
+    fn propagate_number_subtree(
+        &mut self,
+        expr_ref: &ExprRef,
+        target: &TypeDecl,
+    ) -> Result<(), TypeCheckError> {
+        let Some(expr) = self.core.expr_pool.get(expr_ref) else {
+            return Ok(());
+        };
+        match expr {
+            // Transform the leaf right here rather than queueing it in
+            // `number_usage_context`: that list is pruned whenever a
+            // later `val` redefines a binding, which silently dropped
+            // the record and let the default pass claim the literal
+            // back. A direct rewrite cannot be undone that way.
+            Expr::Number(_) => self.transform_numeric_expr(expr_ref, target),
+            Expr::Identifier(name) => {
+                if self.context.get_var(name) == Some(TypeDecl::Number) {
+                    self.context.update_var_type(name, target.clone());
+                    if let Some(mapped) =
+                        self.type_inference.variable_expr_mapping.get(&name).copied()
+                    {
+                        self.transform_numeric_expr(&mapped, target)?;
+                    }
+                }
+                Ok(())
+            }
+            Expr::Binary(_, lhs, rhs) => {
+                self.propagate_number_subtree(&lhs, target)?;
+                self.propagate_number_subtree(&rhs, target)
+            }
+            Expr::Unary(_, operand) => self.propagate_number_subtree(&operand, target),
+            _ => Ok(()),
+        }
     }
 }

@@ -10992,3 +10992,45 @@ fn tuple_struct_patterns_match_across_backends() {
     "#;
     assert_consistent(src, "tuple_struct_patterns");
 }
+
+#[test]
+fn unsuffixed_literals_take_the_expected_type_across_backends() {
+    // NUMBER-HINT: an unsuffixed integer literal resolves from the
+    // position it lands in — a parameter type, a declared return
+    // type, an explicit `return`. The signedness that comes out is
+    // observable (`u64` subtraction traps where `i64` wraps), so all
+    // three backends must agree on which type was chosen.
+    let src = r#"
+        fn twice(x: i64) -> i64 { x * 2i64 }
+        fn pick(n: i64) -> i64 {
+            if n > 0i64 {
+                return 1
+            }
+            0
+        }
+
+        fn main() -> i64 {
+            val a = twice(21)
+            val b = pick(5i64)
+            val c: i64 = 10
+            val d = c - 40
+            a + b + d
+        }
+    "#;
+    assert_consistent(src, "unsuffixed_literal_positions");
+}
+
+#[test]
+fn unsuffixed_literals_reach_narrow_parameters_across_backends() {
+    // NUM-W: the same coercion for the narrow widths, so `f(3)`
+    // needs no `3i8`.
+    let src = r#"
+        fn widen8(x: i8) -> i64 { x as i64 }
+        fn widen32(x: u32) -> i64 { x as i64 }
+
+        fn main() -> i64 {
+            widen8(3) + widen32(70000)
+        }
+    "#;
+    assert_consistent(src, "unsuffixed_literal_narrow");
+}

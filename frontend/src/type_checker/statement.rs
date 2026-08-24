@@ -80,7 +80,18 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Set type hint and evaluate expression
         let old_hint = self.setup_type_hint_for_val(&type_decl);
         let expr_ty = self.visit_expr(&expr_ref)?;
-        
+
+        // NUMBER-HINT: an explicit annotation is the most direct
+        // statement of what an unsuffixed literal should be, so it
+        // claims the literal here rather than leaving it to the
+        // default pass. `val c: i64 = 10` used to land on `i64` only
+        // by way of a function-wide hint that happened to be set —
+        // nothing made the annotation itself decide.
+        let expr_ty = match type_decl.as_ref() {
+            Some(decl) => self.coerce_number_expr(&expr_ref, &expr_ty, decl)?,
+            None => expr_ty,
+        };
+
         // Manage variable-expression mapping
         self.update_variable_expr_mapping_internal(name, &expr_ref, &expr_ty);
         
@@ -166,6 +177,12 @@ impl<'a> TypeCheckerVisitor<'a> {
             let e = expr.as_ref()
                 .ok_or_else(|| TypeCheckError::generic_error("Expected expression in return"))?;
             let return_type = self.check_expr_located(e)?;
+            // NUMBER-HINT: an explicit `return 0` names the same
+            // position as the tail expression, so the enclosing
+            // function's declared return type claims the literal.
+            if let Some(fn_ret) = self.current_fn_return_type.clone() {
+                return self.coerce_number_expr(e, &return_type, &fn_ret);
+            }
             Ok(return_type)
         }
     }

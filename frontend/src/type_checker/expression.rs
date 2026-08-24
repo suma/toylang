@@ -113,6 +113,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         if let Ok(ref result_type) = result {
             self.cache_type(expr, result_type.clone());
             self.type_inference.set_expr_type(*expr, result_type.clone());
+            self.note_visited_number(expr, result_type);
             
             // Context propagation for numeric types
             if original_hint.is_none() && (result_type == &TypeDecl::Int64 || result_type == &TypeDecl::UInt64)
@@ -131,7 +132,9 @@ impl<'a> TypeCheckerVisitor<'a> {
         let operand_ty = {
             let operand_obj = self.core.expr_pool.get(&operand)
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid operand expression reference"))?;
-            operand_obj.clone().accept_expr(self)?
+            let ty = operand_obj.clone().accept_expr(self)?;
+            self.note_visited_number(&operand, &ty);
+            ty
         };
 
         // REF-Stage-2: explicit `&expr` / `&mut expr` short-circuit
@@ -302,13 +305,17 @@ impl<'a> TypeCheckerVisitor<'a> {
         let lhs_ty = {
             let lhs_obj = self.core.expr_pool.get(&lhs)
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid left-hand expression reference"))?;
-            lhs_obj.clone().accept_expr(self)?
+            let ty = lhs_obj.clone().accept_expr(self)?;
+            self.note_visited_number(&lhs, &ty);
+            ty
         };
 
         let rhs_ty = {
             let rhs_obj = self.core.expr_pool.get(&rhs)
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid right-hand expression reference"))?;
-            rhs_obj.clone().accept_expr(self)?
+            let ty = rhs_obj.clone().accept_expr(self)?;
+            self.note_visited_number(&rhs, &ty);
+            ty
         };
 
 
@@ -672,6 +679,14 @@ impl<'a> TypeCheckerVisitor<'a> {
                     let expr_obj = self.core.expr_pool.get(&e)
                         .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in return"))?;
                     let ty = expr_obj.clone().accept_expr(self)?;
+                    self.note_visited_number(&e, &ty);
+                    // NUMBER-HINT: `return 0` inside a block names the
+                    // enclosing function's return type, same as the
+                    // tail expression does.
+                    let ty = match self.current_fn_return_type.clone() {
+                        Some(fn_ret) => self.coerce_number_expr(&e, &ty, &fn_ret)?,
+                        None => ty,
+                    };
                     if *last_empty {
                         *last_empty = false;
                         Ok(ty)
@@ -1263,6 +1278,16 @@ impl<'a> TypeCheckerVisitor<'a> {
         for (arg_index, (arg, expected_type)) in args.iter().zip(&param_types).enumerate() {
             self.type_inference.type_hint = Some(expected_type.clone());
             let arg_type = match self.visit_expr(arg) {
+                Ok(t) => t,
+                Err(e) => {
+                    self.type_inference.type_hint = original_hint;
+                    return Err(e);
+                }
+            };
+            // NUMBER-HINT: the parameter type is what an unsuffixed
+            // literal argument should become. `f(21)` for
+            // `fn f(x: i64)` used to be rejected as `u64`.
+            let arg_type = match self.coerce_number_expr(arg, &arg_type, expected_type) {
                 Ok(t) => t,
                 Err(e) => {
                     self.type_inference.type_hint = original_hint;

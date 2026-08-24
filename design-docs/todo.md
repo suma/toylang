@@ -30,8 +30,6 @@
   停滞していた (自由関数経路にも影響)。`Rect { h: 881, w: MIN }` が
   `Rect { h: 1, w: -1 }` まで縮まる。テスト 8 件 + docs
   (design_by_contract.md の守備範囲 / language.md)。
-
-### 2026-08-24
 - **CONTRACT-ELISION の残 3 件** — (a) **符号付き添字**: `requires i >= 0` +
   `requires i < N` で符号付きの境界 guard を**調整込みで**落とす。
   `ContractFacts` に `nonneg` (`x >= 0` / `x > -1` / `x > 0` / `x >= 1` と
@@ -820,10 +818,6 @@
 
 ### バックエンドのカバレッジ
 
-- **AOT-GENERIC-THROUGH-STRUCT** ★ — 解消 (2026-08-23)。AOT / compiler JIT が
-  struct 引数越しの generic 型引数を推論できるようになり、旧 fixture
-  `interpreter/tests/fixtures/jit_generic_struct_fn.t` は
-  `interpreter/example/` に昇格して 3 バックエンド掃引に乗っている。
 - **JIT-INTERP-COVERAGE (residual)** ★ — interpreter 側 JIT が silent
   fallback する残り: (a) impl block ではなく **method 固有の generic**
   (`fn map<U>(..)`) と **phantom 型パラメータ** (どのフィールドも触れない
@@ -857,21 +851,13 @@
 ### 実行時の意味論 (RUNTIME-TRAP)
 
 > 2026-08-20 に算術 / 添字を 3 バックエンドで実際に叩いて洗い出した節。
-> トラップ本体は同日 landing (完了済み節)。残るのは下の 2 件。
+> トラップ本体は同日 landing (完了済み節)。残りは下記。
 
-- **DBC-CHECK-METHODS: `--check` がメソッドを掃かない** ★ —
-  ~~`check_program` が `program.function` (自由関数) だけを回している。~~
-  **解消 (2026-08-24)**。impl block の契約付きメソッドを検査し、レシーバは
-  struct フィールドを再帰的に埋めて生成する (generic は `i64`→`u64`→`f64`→
-  `bool` の順で最初に生成できる実体化)。反例は `self` 込みで shrink される。
-  残るのは enum レシーバと `ptr` フィールドを持つ struct のみ (理由付きで
-  Skipped)。
-
-- **CONTRACT-ELISION の残** ★ — **3 件とも解消 (2026-08-24、完了済み節)**。
-  残る余地は (a) 両辺が literal の形 (`requires a >= 5u64` で `a - 3u64` の
-  guard を消す — at_least が param-param のみ)、(b) `x != MIN` の形
-  (lhs 側の `MIN / -1` 条件)、どちらも「実プログラムで書いていて guard が
-  ホットパスにある」を確認してから。
+- **CONTRACT-ELISION の残** ★ — (a) 片辺が literal の形
+  (`requires a >= 5u64` で `a - 3u64` の guard を消す — `at_least` が
+  param-param のみ)、(b) `x != MIN` の形 (lhs 側の `MIN / -1` 条件)。
+  どちらも「実プログラムで書いていて guard がホットパスにある」を
+  確認してから。
 
 - **RUNTIME-TRAP-NARROW: narrow int の `checked_*` / `saturating_*`** ★ —
   `core/std/checked.t` は `u64` / `i64` だけ。`u8`〜`u32` / `i8`〜`i32` は
@@ -976,7 +962,6 @@
 
   - **`compiler::consistency` + `example_consistency` が suite CPU の 45%** ★★★ — 46.5s (317 テスト) + 22.0s (14 shard) = 68.5s。`consistency` の分布は二峰性で、**lite パスで完結するテストと full core にフォールスルーするテストで 1 桁違う**。**2026-08-20 のフロントエンドパス共有で 46.5s → 34s / 22.0s → 16s 相当 (下記)** まで下がったが、残りは AOT の codegen + link + spawn (cache warm でも ~50ms/テスト) と JIT の native compile が本質的なので、ここから先はバックエンド実行そのものの削減になる。
     **「lite → full 二重パス」は 2026-08-18 に潰したが、それ自体はコストではなかった**と分かったので記録しておく: `assert_consistent` の let-chain は**最も安いレーン (no-core の tree-walker) で短絡する**ので、stdlib を使うソースが捨てられる AOT codegen / link / spawn まで到達することは元から無かった。捨てていたのは parse + no-core 型検査 ~2ms だけ。実際に効いたのは同時に入れた**フロントエンドパスの共有**の方 (下記)。
-  - ~~**with-core のフロントエンドパスがレーンごとに独立**~~ / ~~**AOT レーンが stdlib 全体を毎回 codegen している**~~ — **どちらも解消** (2026-08-18 / 08-19 / 08-20、完了済み節に記載)。フロントエンドは 4 レーンで 1 パス、lowering / codegen は reachable-from-main のみ。
   - **core module のロードが 1 プロセスあたり 27ms** ★★★ — trivial プログラムを空 core dir と比べた実測 (2026-08-18、debug ビルド): **33.5ms → 6.1ms**。nextest は 1 テスト 1 プロセスなので、interpreter の 984 テストはそれぞれこれを払う = ~26s CPU ≈ wall 1.3s。内訳は 2026-08-15 時点の計測 (integrate ~43% 削減が landing する前) で `integrate_modules` 11.3ms / `execute_entry` の context 構築 5.2ms / stdlib 40 impl block の型検査 2.5ms / その他の型検査 1.1ms。
 
     **測って分かった否定的な結果を 3 つ記録しておく**: (1) **free function の body は既に user 分しか検査していない** (`take(user_func_count)`) ので「stdlib 本体を型検査しない」で削れるのは impl block の 2.5ms だけ。しかも**型検査器は body を書き換える** (`?` の desugar、`Display` の `to_str` 挿入) ので、stdlib の body を検査しないと**書き換え前の AST がバックエンドに流れる** — 今の stdlib は `?` も補間も使っていないので通ってしまい、使った日に壊れる罠になる。(2) `remap_symbol` の memo 化 (module symbol → main symbol を Vec でキャッシュ) は**効果ゼロ**だった。integrate の時間は文字列ハッシュではなく AST を pool に複製する作業そのもの。(3) **「型検査済み core をプロセス内で使い回す」は unit テストには効かない** — nextest は 1 テスト 1 プロセスなので、そもそもプロセス内に 2 回目の呼び出しが無い。
@@ -1017,7 +1002,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2128 テスト** (100% 成功、2026-08-23 時点)。
+- 合計 **2151 テスト** (100% 成功、2026-08-24 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、

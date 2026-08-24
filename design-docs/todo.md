@@ -31,6 +31,25 @@
   `Rect { h: 1, w: -1 }` まで縮まる。テスト 8 件 + docs
   (design_by_contract.md の守備範囲 / language.md)。
 
+### 2026-08-24
+- **CONTRACT-ELISION の残 3 件** — (a) **符号付き添字**: `requires i >= 0` +
+  `requires i < N` で符号付きの境界 guard を**調整込みで**落とす。
+  `ContractFacts` に `nonneg` (`x >= 0` / `x > -1` / `x > 0` / `x >= 1` と
+  mirror 形) を追加し、`emit_index_guard` の elision 条件を
+  `below ∧ (unsigned ∨ nonneg)` に拡張 — `i < N` だけでは負の調整経路が
+  生き残るので落とさない (専用テストで pin)。(b) **`MIN / -1`**:
+  `not_minus_one` (`x != -1` と mirror) を追加し、`b != -1` で rhs 側、
+  `lhs` の nonneg で `lhs == MIN` 側を消す。0 除算 guard は `b != -1` が
+  `b != 0` を言わないので残す (これも pin)。(c) **推移閉包**: collect 後に
+  fixpoint (`close()`) で 3 種の伝播 — `a >= b ∧ b >= c → a >= c`
+  (underflow guard)、`a >= b ∧ b >= 0 → a >= 0` (符号付き添字・MIN 側)、
+  `a >= b ∧ a < N → b < N` (bounds guard on `arr[b]`)。1 段 → 任意段。
+  あわせて `integer_literal_value` が `- 1i64` (空白入り unary negate) も
+  畳めるように。**実測** (AOT speed、1 億回ループ): 符号付き `arr[i]` が
+  guard あり 0.16s → elide 0.06s (**~2.7x**)。テスト 10 件 (counting 6 +
+  safety 3 + cross-backend consistency 1)。docs/language.md の表と
+  「never elided」節を更新。
+
 ### 2026-08-23
 - **AOT-GENERIC-THROUGH-STRUCT: struct 引数越しの generic 型引数推論 (AOT / compiler JIT)** —
   `fn peek<T>(c: Cell<T>) -> T` の呼び出しが "cannot infer type arguments for generic
@@ -848,15 +867,11 @@
   残るのは enum レシーバと `ptr` フィールドを持つ struct のみ (理由付きで
   Skipped)。
 
-- **CONTRACT-ELISION の残** ★ — 消せる guard を増やす余地:
-  (a) **符号付き添字** — `requires i < N` は符号なしのみ対応
-  (2026-08-23)。符号付きは負の可能性を別に排除する必要があり
-  (`requires i >= 0`)、guard は負の調整も兼ねているので単純に落とせない。
-  (b) **符号付き `MIN / -1`** — `requires b != -1` を認識する節の形が無い。
-  (c) **推移的な事実** — `requires a >= b` から `a - b >= 0` を導いて
-  さらに下流の guard を消す、といった伝播はしていない (1 段のみ)。
-  いずれも「実プログラムでその形の契約を書いていて、かつ guard が
-  ホットパスにある」ことを確認してから。
+- **CONTRACT-ELISION の残** ★ — **3 件とも解消 (2026-08-24、完了済み節)**。
+  残る余地は (a) 両辺が literal の形 (`requires a >= 5u64` で `a - 3u64` の
+  guard を消す — at_least が param-param のみ)、(b) `x != MIN` の形
+  (lhs 側の `MIN / -1` 条件)、どちらも「実プログラムで書いていて guard が
+  ホットパスにある」を確認してから。
 
 - **RUNTIME-TRAP-NARROW: narrow int の `checked_*` / `saturating_*`** ★ —
   `core/std/checked.t` は `u64` / `i64` だけ。`u8`〜`u32` / `i8`〜`i32` は

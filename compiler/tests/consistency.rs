@@ -1680,6 +1680,363 @@ fn a_broken_index_precondition_still_stops_every_backend() {
     assert_ne!(compiled, 0, "compiled binary should exit non-zero");
 }
 
+/// CONTRACT-ELISION. The signed bounds guard tests two things — that
+/// the index is not negative (adjusting it if it is, since `arr[-1]`
+/// is the last element) and that it stays below the length. A
+/// precondition that states both halves (`i >= 0` and `i < N`)
+/// replaces the whole guard, adjustment included.
+#[test]
+fn a_signed_index_precondition_replaces_the_bounds_guard() {
+    let contracted = r#"
+        fn hot(i: i64) -> i64
+            requires i >= 0i64
+            requires i < 4i64
+        {
+            val arr = [1i64, 2i64, 3i64, 4i64]
+            arr[i] + arr[i]
+        }
+
+        fn main() -> i64 { hot(1i64) }
+    "#;
+    let plain = r#"
+        fn hot(i: i64) -> i64
+        {
+            val arr = [1i64, 2i64, 3i64, 4i64]
+            arr[i] + arr[i]
+        }
+
+        fn main() -> i64 { hot(1i64) }
+    "#;
+    let with_contract = lowered_function(&lowered_ir(contracted), "hot");
+    let without = lowered_function(&lowered_ir(plain), "hot");
+    assert_eq!(
+        with_contract.matches("= lt ").count(),
+        1,
+        "only the upper-bound precondition should test ordering:\n{with_contract}"
+    );
+    assert_eq!(
+        without.matches("= lt ").count(),
+        4,
+        "signed guard per access is two comparisons; two accesses need four:\n{without}"
+    );
+}
+
+/// CONTRACT-ELISION, the negative half of the signed guard. `i < N`
+/// alone does not rule out a negative index, and the guard's
+/// negative-adjustment path is part of the semantics being elided —
+/// so without a non-negativity fact the guard must stay.
+#[test]
+fn a_signed_bound_without_nonneg_keeps_the_guard() {
+    let src = r#"
+        fn hot(i: i64) -> i64
+            requires i < 4i64
+        {
+            val arr = [1i64, 2i64, 3i64, 4i64]
+            arr[i]
+        }
+
+        fn main() -> i64 { hot(1i64) }
+    "#;
+    let ir = lowered_function(&lowered_ir(src), "hot");
+    assert_eq!(
+        ir.matches("= lt ").count(),
+        3,
+        "precondition plus the signed guard's two comparisons:\n{ir}"
+    );
+}
+
+/// CONTRACT-ELISION, the safety property for the signed bounds case:
+/// a negative index that the precondition rejects must still stop
+/// every backend.
+#[test]
+fn a_broken_signed_index_precondition_still_stops_every_backend() {
+    let src = r#"
+        fn contracted(i: i64) -> i64
+            requires i >= 0i64
+            requires i < 4i64
+        {
+            val arr = [1i64, 2i64, 3i64, 4i64]
+            arr[i]
+        }
+
+        fn main() -> i64 { contracted(-1i64) }
+    "#;
+    let core = core_modules_dir();
+    let mut interp_opts = RunOptions::default();
+    interp_opts.core_modules_dir = Some(core.as_path());
+    assert!(
+        interpreter::run_source(src, "signed_index_contract.t", &interp_opts).is_err(),
+        "the precondition should refuse the call"
+    );
+
+    let compiled = try_compiler_exit_code(src, "signed_index_contract", true)
+        .expect("the program should still compile");
+    assert_ne!(compiled, 0, "compiled binary should exit non-zero");
+}
+
+/// CONTRACT-ELISION. `requires b != -1i64` kills the `rhs == -1` half
+/// of the signed `MIN / -1` guard, whose two comparisons per division
+/// (`rhs == -1`, `lhs == MIN`) can then never fire. The divide-by-zero
+/// guard is untouched: `b != -1` says nothing about `b == 0`.
+#[test]
+fn a_precondition_replaces_the_div_overflow_guard() {
+    let contracted = r#"
+        fn hot(a: i64, b: i64) -> i64
+            requires b != -1i64
+        {
+            (a / b) + (a / b)
+        }
+
+        fn main() -> i64 { hot(10i64, 3i64) }
+    "#;
+    let plain = r#"
+        fn hot(a: i64, b: i64) -> i64
+        {
+            (a / b) + (a / b)
+        }
+
+        fn main() -> i64 { hot(10i64, 3i64) }
+    "#;
+    let with_contract = lowered_function(&lowered_ir(contracted), "hot");
+    let without = lowered_function(&lowered_ir(plain), "hot");
+    assert_eq!(
+        with_contract.matches("= eq ").count(),
+        0,
+        "no overflow guard remains:\n{with_contract}"
+    );
+    assert_eq!(
+        without.matches("= eq ").count(),
+        4,
+        "two comparisons per division, two divisions:\n{without}"
+    );
+    assert_eq!(
+        with_contract.matches("= ne ").count(),
+        3,
+        "precondition plus one divide-by-zero guard per division:\n{with_contract}"
+    );
+}
+
+/// CONTRACT-ELISION, the safety property for `MIN / -1`: the call the
+/// precondition rejects must still stop every backend, through the
+/// precondition rather than through the guard that is no longer there.
+#[test]
+fn a_broken_minus_one_precondition_still_stops_every_backend() {
+    let src = r#"
+        fn contracted(a: i64, b: i64) -> i64
+            requires b != -1i64
+        {
+            a / b
+        }
+
+        fn main() -> i64 { contracted(-9223372036854775808i64, -1i64) }
+    "#;
+    let core = core_modules_dir();
+    let mut interp_opts = RunOptions::default();
+    interp_opts.core_modules_dir = Some(core.as_path());
+    assert!(
+        interpreter::run_source(src, "overflow_contract.t", &interp_opts).is_err(),
+        "the precondition should refuse the call"
+    );
+
+    let compiled = try_compiler_exit_code(src, "overflow_contract", true)
+        .expect("the program should still compile");
+    assert_ne!(compiled, 0, "compiled binary should exit non-zero");
+}
+
+/// CONTRACT-ELISION, transitivity: `a >= b` and `b >= c` chain into
+/// `a >= c`, which the underflow guard of `a - c` would otherwise test
+/// itself. Without the middle fact the guard stays.
+#[test]
+fn a_transitive_chain_replaces_the_underflow_guard() {
+    let chained = r#"
+        fn hot(a: u64, b: u64, c: u64) -> u64
+            requires a >= b
+            requires b >= c
+        {
+            (a - c) + (a - c)
+        }
+
+        fn main() -> u64 { hot(9u64, 5u64, 2u64) }
+    "#;
+    let partial = r#"
+        fn hot(a: u64, b: u64, c: u64) -> u64
+            requires a >= b
+        {
+            (a - c) + (a - c)
+        }
+
+        fn main() -> u64 { hot(9u64, 5u64, 2u64) }
+    "#;
+    let with_chain = lowered_function(&lowered_ir(chained), "hot");
+    let without = lowered_function(&lowered_ir(partial), "hot");
+    assert_eq!(
+        with_chain.matches("= ge ").count(),
+        2,
+        "the two preconditions only:\n{with_chain}"
+    );
+    assert_eq!(
+        without.matches("= ge ").count(),
+        3,
+        "one precondition plus two guards `a - c` cannot justify:\n{without}"
+    );
+}
+
+/// CONTRACT-ELISION, transitivity of the upper bound: `j <= i` and
+/// `i < N` chain into `j < N`, which is exactly what the bounds guard
+/// on `arr[j]` would test.
+#[test]
+fn a_below_fact_propagates_through_a_chain() {
+    let chained = r#"
+        fn hot(i: u64, j: u64) -> u64
+            requires j <= i
+            requires i < 4u64
+        {
+            val arr = [1u64, 2u64, 3u64, 4u64]
+            arr[j]
+        }
+
+        fn main() -> u64 { hot(3u64, 2u64) }
+    "#;
+    let direct = r#"
+        fn hot(i: u64, j: u64) -> u64
+            requires i < 4u64
+        {
+            val arr = [1u64, 2u64, 3u64, 4u64]
+            arr[j]
+        }
+
+        fn main() -> u64 { hot(3u64, 2u64) }
+    "#;
+    let with_chain = lowered_function(&lowered_ir(chained), "hot");
+    let without = lowered_function(&lowered_ir(direct), "hot");
+    assert_eq!(
+        with_chain.matches("= lt ").count(),
+        1,
+        "the upper-bound precondition only:\n{with_chain}"
+    );
+    assert_eq!(
+        without.matches("= lt ").count(),
+        2,
+        "precondition plus the guard `j` alone has no fact for:\n{without}"
+    );
+}
+
+/// CONTRACT-ELISION, non-negativity through a chain: `j >= 0` and
+/// `j <= i` chain into `i >= 0`, the missing half of the signed bounds
+/// elision on `arr[i]`.
+#[test]
+fn a_signed_index_fact_propagates_through_a_chain() {
+    let chained = r#"
+        fn hot(i: i64, j: i64) -> i64
+            requires j >= 0i64
+            requires j <= i
+            requires i < 4i64
+        {
+            val arr = [1i64, 2i64, 3i64, 4i64]
+            arr[i]
+        }
+
+        fn main() -> i64 { hot(3i64, 2i64) }
+    "#;
+    let direct = r#"
+        fn hot(i: i64, j: i64) -> i64
+            requires j >= 0i64
+            requires i < 4i64
+        {
+            val arr = [1i64, 2i64, 3i64, 4i64]
+            arr[i]
+        }
+
+        fn main() -> i64 { hot(3i64, 2i64) }
+    "#;
+    let with_chain = lowered_function(&lowered_ir(chained), "hot");
+    let without = lowered_function(&lowered_ir(direct), "hot");
+    assert_eq!(
+        with_chain.matches("= lt ").count(),
+        1,
+        "the upper-bound precondition only:\n{with_chain}"
+    );
+    assert_eq!(
+        without.matches("= lt ").count(),
+        3,
+        "precondition plus the signed guard's two comparisons:\n{without}"
+    );
+}
+
+/// CONTRACT-ELISION, the safety property for the transitive chains: a
+/// call that breaks the chain still stops every backend.
+#[test]
+fn a_broken_chain_precondition_still_stops_every_backend() {
+    let src = r#"
+        fn contracted(i: u64, j: u64) -> u64
+            requires j <= i
+            requires i < 4u64
+        {
+            val arr = [1u64, 2u64, 3u64, 4u64]
+            arr[j]
+        }
+
+        fn main() -> u64 { contracted(5u64, 5u64) }
+    "#;
+    let core = core_modules_dir();
+    let mut interp_opts = RunOptions::default();
+    interp_opts.core_modules_dir = Some(core.as_path());
+    assert!(
+        interpreter::run_source(src, "chain_contract.t", &interp_opts).is_err(),
+        "the precondition should refuse the call"
+    );
+
+    let compiled = try_compiler_exit_code(src, "chain_contract", true)
+        .expect("the program should still compile");
+    assert_ne!(compiled, 0, "compiled binary should exit non-zero");
+}
+
+/// CONTRACT-ELISION. The three new shapes — signed index, `MIN / -1`,
+/// transitive chains — must not change what a program computes; every
+/// backend has to agree on the elided versions.
+#[test]
+fn contract_elision_signed_shapes_match_across_backends() {
+    let src = r#"
+        fn signed(i: i64) -> i64
+            requires i >= 0i64
+            requires i < 4i64
+        {
+            val arr = [1i64, 2i64, 3i64, 4i64]
+            arr[i]
+        }
+
+        fn overflow(b: i64) -> i64
+            requires b != -1i64
+        {
+            (100i64 / b) + (100i64 / b)
+        }
+
+        fn chain(a: u64, b: u64, c: u64) -> u64
+            requires a >= b
+            requires b >= c
+        {
+            (a - c) + (a - c)
+        }
+
+        fn bound(i: u64, j: u64) -> u64
+            requires j <= i
+            requires i < 4u64
+        {
+            val arr = [1u64, 2u64, 3u64, 4u64]
+            arr[j]
+        }
+
+        fn main() -> u64 {
+            println(signed(1i64))
+            println(overflow(2i64))
+            println(chain(9u64, 5u64, 2u64))
+            println(bound(3u64, 2u64))
+            0u64
+        }
+    "#;
+    assert_consistent(src, "contract_elision_signed_shapes");
+}
+
 /// PATTERN-COMPOUND-LOWER. Struct and tuple patterns used to reach
 /// only the tree-walker: `match_lowering` handled wildcard, literal,
 /// enum-variant and name patterns, and a compound scrutinee was

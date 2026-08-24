@@ -217,12 +217,14 @@ impl<'a> FunctionLower<'a> {
     ) -> Result<ValueId, String> {
         // CONTRACT-ELISION: a `requires i < 8u64` on an `[T; 8]` states
         // exactly what this guard would test, and it was already
-        // checked on entry. Unsigned only — a signed index would still
-        // need the negative case ruled out, and the adjustment below
-        // is part of what the guard does.
-        if !idx_ty.is_signed()
-            && let Some(sym) = self.parameter_name(index_ref)
+        // checked on entry. Unsigned needs nothing more; a signed
+        // index additionally needs `requires i >= 0` (or a chain of
+        // `>=` facts proving it), because the negative-adjustment path
+        // below — which this elision removes along with the guard — is
+        // otherwise still live.
+        if let Some(sym) = self.parameter_name(index_ref)
             && self.facts.is_below(sym, length as u128)
+            && (!idx_ty.is_signed() || self.facts.is_nonneg(sym))
         {
             return Ok(idx);
         }

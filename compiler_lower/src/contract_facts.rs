@@ -31,7 +31,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use frontend::ast::{Expr, ExprRef, File, Operator, ParameterList};
+use frontend::ast::{Expr, ExprRef, File, Operator, ParameterList, UnaryOp};
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 #[derive(Default)]
@@ -45,6 +45,14 @@ pub(super) struct ContractFacts {
     /// parameter cannot take, which is exactly what an array bounds
     /// check compares against.
     below: HashMap<DefaultSymbol, u128>,
+    /// Parameters some clause proved `>= 0` (signed). Drives the
+    /// signed index elision, whose negative-adjustment path would
+    /// otherwise stay live, and the signed `MIN / -1` guard, whose
+    /// `lhs == MIN` half a non-negative lhs can never satisfy.
+    nonneg: HashSet<DefaultSymbol>,
+    /// Parameters some clause proved `!= -1` (signed). Kills the
+    /// `rhs == -1` half of the `MIN / -1` guard outright.
+    not_minus_one: HashSet<DefaultSymbol>,
 }
 
 impl ContractFacts {
@@ -66,11 +74,24 @@ impl ContractFacts {
         for clause in requires {
             facts.collect(program, interner, clause, &params);
         }
+        // Transitive closure (CONTRACT-ELISION 残 (c)): the clauses
+        // above are one level deep — `a >= b` elides the guard of
+        // `a - b` only. Chaining them makes the facts reach further:
+        //
+        //   a >= b  and  b >= c    →  a >= c     (guard on `a - c`)
+        //   a >= b  and  b >= 0    →  a >= 0     (signed index / MIN)
+        //   a >= b  and  a < N     →  b < N      (bounds guard on
+        //                                         `arr[b]`)
+        facts.close();
         facts
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.nonzero.is_empty() && self.at_least.is_empty() && self.below.is_empty()
+        self.nonzero.is_empty()
+            && self.at_least.is_empty()
+            && self.below.is_empty()
+            && self.nonneg.is_empty()
+            && self.not_minus_one.is_empty()
     }
 
     /// Whether a clause proved `sym < limit` — or better.
@@ -88,6 +109,17 @@ impl ContractFacts {
         self.at_least.contains(&(a, b))
     }
 
+    /// Whether a clause (or a chain of `>=` facts) proved `sym >= 0`.
+    pub(super) fn is_nonneg(&self, sym: DefaultSymbol) -> bool {
+        self.nonneg.contains(&sym)
+    }
+
+    /// Whether `sym` can be shown `!= -1`: either directly, or by
+    /// being non-negative (which -1 is not).
+    pub(super) fn is_not_minus_one(&self, sym: DefaultSymbol) -> bool {
+        self.nonneg.contains(&sym) || self.not_minus_one.contains(&sym)
+    }
+
     /// Forget everything known about `sym` — a `val` / `var` in the
     /// body re-bound the name, so a guard site reading it is no longer
     /// reading the parameter the contract spoke about.
@@ -97,16 +129,63 @@ impl ContractFacts {
         }
         self.nonzero.remove(&sym);
         self.below.remove(&sym);
+        self.nonneg.remove(&sym);
+        self.not_minus_one.remove(&sym);
         self.at_least.retain(|(a, b)| *a != sym && *b != sym);
     }
 
     /// Keep the tightest bound seen; two clauses about the same
-    /// parameter are both true.
-    fn record_below(&mut self, sym: DefaultSymbol, limit: u128) {
-        self.below
-            .entry(sym)
-            .and_modify(|existing| *existing = (*existing).min(limit))
-            .or_insert(limit);
+    /// parameter are both true. Returns whether the bound changed,
+    /// which the transitive closure uses to detect progress.
+    fn record_below(&mut self, sym: DefaultSymbol, limit: u128) -> bool {
+        match self.below.entry(sym) {
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                if limit < *e.get() {
+                    e.insert(limit);
+                    true
+                } else {
+                    false
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(limit);
+                true
+            }
+        }
+    }
+
+    /// Extend the collected facts with everything they imply
+    /// transitively. Fixpoint over the three fact sets, so the order
+    /// clauses were written in does not matter.
+    fn close(&mut self) {
+        loop {
+            let mut changed = false;
+            // a >= b and b >= c → a >= c
+            for (a, b) in self.at_least.iter().copied().collect::<Vec<_>>() {
+                for (b2, c) in self.at_least.iter().copied().collect::<Vec<_>>() {
+                    if b2 == b && self.at_least.insert((a, c)) {
+                        changed = true;
+                    }
+                }
+            }
+            // a >= b and b >= 0 → a >= 0
+            for (a, b) in self.at_least.iter().copied().collect::<Vec<_>>() {
+                if self.nonneg.contains(&b) && self.nonneg.insert(a) {
+                    changed = true;
+                }
+            }
+            // a >= b and a < N → b < N
+            for (a, b) in self.at_least.iter().copied().collect::<Vec<_>>() {
+                if let Some(limit) = self.below.get(&a).copied()
+                    && self.record_below(b, limit)
+                {
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
     }
 
     fn collect(
@@ -141,21 +220,40 @@ impl ContractFacts {
                         if left_zero && let Some(sym) = right {
                             self.nonzero.insert(sym);
                         }
+                        // `x != -1` / `-1 != x` rules out the rhs half
+                        // of the signed `MIN / -1` guard.
+                        if is_literal(program, interner, &rhs, -1) && let Some(sym) = left {
+                            self.not_minus_one.insert(sym);
+                        }
+                        if is_literal(program, interner, &lhs, -1) && let Some(sym) = right {
+                            self.not_minus_one.insert(sym);
+                        }
                     }
-                    // x > 0  (unsigned and signed alike: not zero)
+                    // x > 0  (unsigned and signed alike: not zero —
+                    // and for signed, >= 1, so also non-negative)
                     Operator::GT => {
                         if right_zero && let Some(sym) = left {
                             self.nonzero.insert(sym);
+                            self.nonneg.insert(sym);
+                        }
+                        // `x > -1` ⟺ `x >= 0` for integers
+                        if is_literal(program, interner, &rhs, -1) && let Some(sym) = left {
+                            self.nonneg.insert(sym);
                         }
                         if let (Some(a), Some(b)) = (left, right) {
                             self.at_least.insert((a, b));
                         }
                     }
                     // x >= 1 proves non-zero for unsigned and signed
-                    // alike; `a >= b` is the subtraction fact.
+                    // alike (and >= 0); `x >= 0` proves non-negativity
+                    // outright; `a >= b` is the subtraction fact.
                     Operator::GE => {
                         if right_one && let Some(sym) = left {
                             self.nonzero.insert(sym);
+                            self.nonneg.insert(sym);
+                        }
+                        if right_zero && let Some(sym) = left {
+                            self.nonneg.insert(sym);
                         }
                         if let (Some(a), Some(b)) = (left, right) {
                             self.at_least.insert((a, b));
@@ -175,6 +273,15 @@ impl ContractFacts {
                         {
                             self.record_below(sym, limit);
                         }
+                        // `-1 < x` ⟺ `x >= 0`
+                        if is_literal(program, interner, &lhs, -1) && let Some(sym) = right {
+                            self.nonneg.insert(sym);
+                        }
+                        // `0 < x` — the mirror of `x > 0`
+                        if is_literal(program, interner, &lhs, 0) && let Some(sym) = right {
+                            self.nonzero.insert(sym);
+                            self.nonneg.insert(sym);
+                        }
                     }
                     Operator::LE => {
                         if let (Some(a), Some(b)) = (left, right) {
@@ -185,6 +292,15 @@ impl ContractFacts {
                             && let Ok(limit) = u128::try_from(limit)
                         {
                             self.record_below(sym, limit + 1);
+                        }
+                        // `0 <= x` ⟺ `x >= 0`; `1 <= x` the mirror of
+                        // `x >= 1`
+                        if is_literal(program, interner, &lhs, 0) && let Some(sym) = right {
+                            self.nonneg.insert(sym);
+                        }
+                        if is_literal(program, interner, &lhs, 1) && let Some(sym) = right {
+                            self.nonzero.insert(sym);
+                            self.nonneg.insert(sym);
                         }
                     }
                     _ => {}
@@ -229,6 +345,12 @@ fn integer_literal_value(
         Expr::Int16(v) => Some(v as i128),
         Expr::Int32(v) => Some(v as i128),
         Expr::Number(sym) => interner.resolve(sym)?.parse::<i128>().ok(),
+        // `- 1i64` with a space between the minus and the literal
+        // parses as unary negation rather than a folded literal; peel
+        // it so `requires b != - 1i64` reads like `b != -1i64`.
+        Expr::Unary(UnaryOp::Negate, inner) => {
+            integer_literal_value(program, interner, &inner).map(i128::wrapping_neg)
+        }
         _ => None,
     }
 }

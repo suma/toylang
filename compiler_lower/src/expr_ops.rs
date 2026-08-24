@@ -154,6 +154,25 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
+    /// CONTRACT-ELISION: whether a `requires` clause proved one half of
+    /// the signed `MIN / -1` condition impossible. Either the divisor
+    /// is known `!= -1` (`requires b != -1i64`, or any non-negativity),
+    /// or the dividend is known non-negative — MIN is negative, so a
+    /// non-negative lhs can never equal it.
+    fn contract_rules_out_div_overflow(&self, lhs: &ExprRef, rhs: &ExprRef) -> bool {
+        if let Some(sym) = self.parameter_name(rhs)
+            && self.facts.is_not_minus_one(sym)
+        {
+            return true;
+        }
+        if let Some(sym) = self.parameter_name(lhs)
+            && self.facts.is_nonneg(sym)
+        {
+            return true;
+        }
+        false
+    }
+
     /// The symbol behind `expr` when it is written as a plain name.
     pub(super) fn parameter_name(&self, expr: &ExprRef) -> Option<DefaultSymbol> {
         if self.facts.is_empty() {
@@ -294,7 +313,7 @@ impl<'a> FunctionLower<'a> {
             if !self.contract_rules_out_zero(rhs) {
                 self.emit_div_by_zero_guard(r, lhs_ty)?;
             }
-            if lhs_ty.is_signed() {
+            if lhs_ty.is_signed() && !self.contract_rules_out_div_overflow(lhs, rhs) {
                 self.emit_div_overflow_guard(l, r, lhs_ty)?;
             }
         }

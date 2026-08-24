@@ -3513,7 +3513,10 @@ it is how the operation gets cheaper. In a loop doing one division and
 one subtraction per iteration, the contracted version measured **~2x**
 the throughput of the same code without the clauses (100M iterations,
 AOT, cranelift `speed`; the guards are not something cranelift can
-remove on its own, since it cannot see the precondition).
+remove on its own, since it cannot see the precondition). A loop doing
+one signed array access per iteration measured **~2.7x** with
+`requires i >= 0i64` + `requires i < 4i64` replacing the bounds guard
+(0.06s vs 0.16s, same setup).
 
 What can be elided, and when:
 
@@ -3522,11 +3525,17 @@ What can be elided, and when:
 | `x != 0`, `0 != x`, `x > 0`, `x >= 1` | divide-by-zero on `a / x`, `a % x` |
 | `a >= b`, `b <= a` | `u64` subtraction underflow on `a - b` |
 | `i < N`, `i <= N` (integer literal `N`) | bounds check on `arr[i]`, when the array is no longer than `N` and the index is unsigned |
+| `i >= 0` **and** `i < N` | bounds check on `arr[i]` with a **signed** index — including the negative-adjustment path, which `i >= 0` rules out |
+| `x != -1`, `x >= 0`, `x > 0`, `x >= 1` | the signed `MIN / -1` division trap (`x` may be either operand) |
 
 - Only **parameters** qualify. The type checker refuses assignment to a
   parameter, so a fact proved on entry holds for the whole body,
   including inside loops. A field, an index, or any computed
   expression keeps its guard.
+- **Facts chain.** The clauses are closed transitively, so the middle
+  of a chain can be implicit: `a >= b` and `b >= c` prove `a - c` safe
+  to subtract; `j <= i` and `i < N` bound `arr[j]`; `j >= 0` and
+  `j <= i` prove `i` non-negative.
 - A `val` / `var` in the body that **takes over the parameter's name**
   drops the fact from that point on — the guard site would be reading
   the new binding.
@@ -3536,8 +3545,6 @@ What can be elided, and when:
   be allowed to remove a memory-safety check. This is deliberately the
   opposite of the usual arrangement: the optimisation is on in checked
   builds and off in unchecked ones.
-- The signed `MIN / -1` trap is never elided — no clause shape
-  currently proves it away.
 
 ### `never_allocates` — the static half
 

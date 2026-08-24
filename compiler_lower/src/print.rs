@@ -522,14 +522,36 @@ impl<'a> FunctionLower<'a> {
         // `Cell<u64>` apart from `Cell<i64>` in print output;
         // non-generic structs render as before (`Point { x: 3, y: 4 }`).
         let header = self.format_struct_header(struct_id);
-        self.emit_print_raw_text(format!("{header} {{ "), false);
-        let mut sorted: Vec<&FieldBinding> = fields.iter().collect();
-        sorted.sort_by(|a, b| a.name.cmp(&b.name));
+        // NEWTYPE: a tuple struct prints the way it is written --
+        // `Meters(3)` -- matching `Object::to_display_string`. Its
+        // fields are ordered by index rather than by the name's
+        // spelling, so 10+ of them don't come out as 0, 1, 10, 2.
+        let positional: Option<Vec<(usize, &FieldBinding)>> = fields
+            .iter()
+            .map(|fb| fb.name.parse::<usize>().ok().map(|index| (index, fb)))
+            .collect();
+        let positional = positional.filter(|p| !p.is_empty());
+        let sorted: Vec<&FieldBinding> = match &positional {
+            Some(indexed) => {
+                let mut indexed = indexed.clone();
+                indexed.sort_by_key(|(index, _)| *index);
+                indexed.into_iter().map(|(_, fb)| fb).collect()
+            }
+            None => {
+                let mut sorted: Vec<&FieldBinding> = fields.iter().collect();
+                sorted.sort_by(|a, b| a.name.cmp(&b.name));
+                sorted
+            }
+        };
+        let open = if positional.is_some() { "(" } else { " { " };
+        self.emit_print_raw_text(format!("{header}{open}"), false);
         for (i, fb) in sorted.iter().enumerate() {
             if i > 0 {
                 self.emit_print_raw_text(", ".to_string(), false);
             }
-            self.emit_print_raw_text(format!("{}: ", fb.name), false);
+            if positional.is_none() {
+                self.emit_print_raw_text(format!("{}: ", fb.name), false);
+            }
             match &fb.shape {
                 FieldShape::Scalar { local, ty } => {
                     let v = self
@@ -559,7 +581,8 @@ impl<'a> FunctionLower<'a> {
                 }
             }
         }
-        self.emit_print_raw_text(" }".to_string(), newline);
+        let close = if positional.is_some() { ")" } else { " }" };
+        self.emit_print_raw_text(close.to_string(), newline);
         Ok(())
     }
 

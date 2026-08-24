@@ -1135,6 +1135,13 @@ impl<'a> TypeCheckerVisitor<'a> {
             Ok(self.normalize_call_return_type(fun.return_type.clone().unwrap_or(TypeDecl::Unknown)))
         } else {
             self.pop_context();
+            // NEWTYPE: `Meters(v)` parses as a call; a tuple struct of
+            // that name takes over only when no function or
+            // function-typed local answers to it, so an `fn Meters(..)`
+            // keeps winning.
+            if let Some(ty) = self.check_tuple_struct_construction(fn_name, args_ref) {
+                return ty;
+            }
             self.visit_call_indirect_fallback(fn_name, args_ref)
         }
     }
@@ -1805,6 +1812,83 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.type_inference.recursion_depth -= 1;
 
         result
+    }
+
+    /// NEWTYPE: type `Meters(v0, v1)` as the struct literal
+    /// `Meters { 0: v0, 1: v1 }` when `Meters` names a tuple struct.
+    /// Returns `None` when the callee is not one, leaving the caller's
+    /// ordinary "function not found" path in charge.
+    ///
+    /// The pool node is not rewritten here -- this visitor is reached
+    /// through `accept_expr` from a dozen call sites that do not carry
+    /// the node's own `ExprRef` (block tails, operands, branches), so
+    /// the rewrite is *recorded* and applied by
+    /// `apply_tuple_struct_rewrites` once checking is done. Backends
+    /// therefore only ever see `StructLiteral`.
+    pub(crate) fn check_tuple_struct_construction(
+        &mut self,
+        callee: DefaultSymbol,
+        args_ref: &ExprRef,
+    ) -> Option<Result<TypeDecl, TypeCheckError>> {
+        let fields = self.context.get_struct_fields(callee)?;
+        if !fields.first().is_some_and(|f| f.is_positional()) {
+            return None;
+        }
+        let field_names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
+        let args = match self.core.expr_pool.get(args_ref) {
+            Some(Expr::ExprList(args)) => args.clone(),
+            _ => return None,
+        };
+        if args.len() != field_names.len() {
+            let struct_name = self.resolve_symbol_name(callee);
+            return Some(Err(TypeCheckError::generic_error(&format!(
+                "`{struct_name}` takes {} field(s), but {} argument(s) were given",
+                field_names.len(),
+                args.len()
+            ))));
+        }
+        let mut initializers = Vec::with_capacity(args.len());
+        for (name, arg) in field_names.iter().zip(args.iter()) {
+            // Interned by the parser when it read the declaration, so
+            // the lookup cannot miss for a struct that exists.
+            let field_symbol = self.core.string_interner.get(name.as_str())?;
+            initializers.push((field_symbol, *arg));
+        }
+        let ty = self.visit_struct_literal_impl(&callee, &initializers);
+        if ty.is_ok() {
+            self.tuple_struct_rewrites.constructions.insert(*args_ref, initializers);
+        }
+        Some(ty)
+    }
+
+    /// NEWTYPE: install the tuple-struct rewrites collected while
+    /// checking, so every backend sees the named-struct forms
+    /// (`StructLiteral` / `FieldAccess`) it already lowers.
+    ///
+    /// One pass over the pool, and only when something was recorded --
+    /// a program without tuple structs pays nothing.
+    pub fn apply_tuple_struct_rewrites(&mut self) {
+        if self.tuple_struct_rewrites.is_empty() {
+            return;
+        }
+        let rewrites = std::mem::take(&mut self.tuple_struct_rewrites);
+        for index in 0..self.core.expr_pool.len() {
+            let expr_ref = ExprRef(index as u32);
+            let replacement = match self.core.expr_pool.get(&expr_ref) {
+                Some(Expr::Call(name, args)) => rewrites
+                    .constructions
+                    .get(&args)
+                    .map(|inits| Expr::StructLiteral(name, inits.clone())),
+                Some(Expr::TupleAccess(obj, _)) => rewrites
+                    .accesses
+                    .get(&obj)
+                    .map(|field| Expr::FieldAccess(obj, *field)),
+                _ => None,
+            };
+            if let Some(replacement) = replacement {
+                self.core.expr_pool.update(&expr_ref, replacement);
+            }
+        }
     }
 
     /// `?` operator desugar. The parser emits `Expr::Try(inner)`; we

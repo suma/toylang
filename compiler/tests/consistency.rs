@@ -10883,3 +10883,112 @@ fn generic_function_infers_through_nested_struct_param() {
     "#;
     assert_consistent(src, "generic_through_nested_struct");
 }
+
+// ---------------------------------------------------------------
+// NEWTYPE: tuple structs (`struct Meters(i64)`).
+//
+// The declaration is desugared by the parser to a struct whose fields
+// are named by position; the type checker rewrites the two sugared
+// uses (`Meters(v)` construction, `m.0` access) to `StructLiteral` /
+// `FieldAccess` before lowering. These pin that all three backends
+// therefore behave exactly as they do for a struct with named fields.
+// ---------------------------------------------------------------
+
+#[test]
+fn tuple_struct_construction_and_access_match_across_backends() {
+    let src = r#"
+        struct Meters(i64)
+        struct Sample(i64, i64)
+
+        fn total(a: Meters, b: Meters) -> Meters {
+            Meters(a.0 + b.0)
+        }
+
+        fn main() -> i64 {
+            val m = Meters(42i64)
+            val t = total(m, Meters(8i64))
+            val s = Sample(3i64, 4i64)
+            t.0 + s.0 + s.1
+        }
+    "#;
+    assert_consistent(src, "tuple_struct_basic");
+}
+
+#[test]
+fn tuple_struct_methods_match_across_backends() {
+    // `&self` receiver and a `Self`-typed return, both reached through
+    // the positional field.
+    let src = r#"
+        struct Meters(i64)
+
+        impl Meters {
+            fn scale(&self, k: i64) -> Meters { Meters(self.0 * k) }
+            fn raw(&self) -> i64 { self.0 }
+        }
+
+        fn main() -> i64 {
+            val m = Meters(6i64)
+            val doubled = m.scale(2i64)
+            doubled.raw() + m.0
+        }
+    "#;
+    assert_consistent(src, "tuple_struct_methods");
+}
+
+#[test]
+fn generic_tuple_struct_matches_across_backends() {
+    let src = r#"
+        struct Wrap<T>(T)
+
+        fn main() -> i64 {
+            val a: Wrap<i64> = Wrap(9i64)
+            val b: Wrap<i64> = Wrap(4i64)
+            a.0 - b.0
+        }
+    "#;
+    assert_consistent(src, "tuple_struct_generic");
+}
+
+#[test]
+fn tuple_struct_prints_in_the_form_it_was_written() {
+    // `Meters { 0: 3 }` would be syntax the reader cannot type back in,
+    // so a positional struct renders as `Meters(3)` -- in all three
+    // backends, which is the part worth pinning.
+    let src = r#"
+        struct Meters(i64)
+        struct Sample(i64, str)
+        struct Point { x: i64, y: i64 }
+
+        fn main() -> i64 {
+            println(Meters(3i64))
+            println(Sample(7i64, "seven"))
+            println(Point { x: 1i64, y: 2i64 })
+            0i64
+        }
+    "#;
+    assert_stdout_consistent(src, "tuple_struct_print");
+}
+
+#[test]
+fn tuple_struct_patterns_match_across_backends() {
+    // `Meters(v)` lowers to the same `Pattern::Struct` that
+    // `Point { x }` produces, so exhaustiveness, `..`, literal
+    // sub-patterns and every backend's matching code are shared.
+    let src = r#"
+        struct Meters(i64)
+        struct Sample(i64, i64)
+
+        fn main() -> i64 {
+            val m = Meters(7i64)
+            val s = Sample(5i64, 3i64)
+            val a = match m {
+                Meters(0i64) => 100i64,
+                Meters(_) => 1i64,
+            }
+            val b = match s { Sample(n, _) => n }
+            val c = match s { Sample(n, ..) => n }
+            a + b + c
+        }
+    "#;
+    assert_consistent(src, "tuple_struct_patterns");
+}

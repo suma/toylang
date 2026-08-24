@@ -730,6 +730,28 @@ impl Object {
             Object::Struct { type_name, fields, type_args } => {
                 let type_name_str = string_interner.resolve(*type_name).unwrap_or("<struct>");
                 let header = format_type_header(type_name_str, type_args, string_interner);
+                // NEWTYPE: a tuple struct's fields are named by position,
+                // so it prints the way it is written -- `Meters(3)`.
+                // Rendering the interned names instead would print
+                // `Meters { 0: 3 }`, syntax the reader cannot type back
+                // in. Ordering is by index, not by the name's spelling,
+                // so a 10+ field struct doesn't come out as 0, 1, 10, 2.
+                let mut indexed: Vec<(usize, String)> = Vec::with_capacity(fields.len());
+                let positional = fields.iter().all(|(k, v)| {
+                    let Some(index) = string_interner
+                        .resolve(*k)
+                        .and_then(|name| name.parse::<usize>().ok())
+                    else {
+                        return false;
+                    };
+                    indexed.push((index, v.borrow().to_display_string(string_interner)));
+                    true
+                });
+                if positional && !fields.is_empty() {
+                    indexed.sort_by_key(|(index, _)| *index);
+                    let parts: Vec<String> = indexed.into_iter().map(|(_, v)| v).collect();
+                    return format!("{}({})", header, parts.join(", "));
+                }
                 let mut parts: Vec<String> = fields.iter()
                     .map(|(k, v)| {
                         let name = string_interner.resolve(*k).unwrap_or("<field>");

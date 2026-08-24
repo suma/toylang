@@ -74,6 +74,38 @@ pub struct TypeCheckerVisitor<'a> {
     /// converted through an `E2: From<E1>` impl (when `E2` is the
     /// enclosing function's error type).
     pub current_fn_return_type: Option<TypeDecl>,
+    /// NEWTYPE: pool rewrites the tuple-struct sugar owes the backends,
+    /// collected while checking and applied by
+    /// `apply_tuple_struct_rewrites`.
+    pub tuple_struct_rewrites: TupleStructRewrites,
+}
+
+/// NEWTYPE: the deferred half of the tuple-struct desugar.
+///
+/// `struct Meters(i64)` is parsed as a struct whose fields are named by
+/// position, so only the two *use* sites stay sugared: `Meters(v)`
+/// arrives as a `Call` and `m.0` as a `TupleAccess`. Both need the
+/// struct table to resolve, which only the type checker has -- but the
+/// checker reaches expressions through `accept_expr` from many call
+/// sites that don't carry the node's own `ExprRef`, so it cannot
+/// rewrite the pool entry where it makes the decision.
+///
+/// It records the decision here instead, keyed by the one ref it *does*
+/// hold: the node's child (the call's argument list, the access's
+/// receiver). Child refs are unique per node, so a single pass over the
+/// pool can find each parent again.
+#[derive(Debug, Default)]
+pub struct TupleStructRewrites {
+    /// argument-list ref -> the `StructLiteral` initializers to install.
+    pub constructions: HashMap<ExprRef, Vec<(DefaultSymbol, ExprRef)>>,
+    /// receiver ref -> the positional field symbol to access by name.
+    pub accesses: HashMap<ExprRef, DefaultSymbol>,
+}
+
+impl TupleStructRewrites {
+    pub fn is_empty(&self) -> bool {
+        self.constructions.is_empty() && self.accesses.is_empty()
+    }
 }
 
 /// `() -> u64` for every allocation counter (MEMORY_PROFILING M4).
@@ -120,6 +152,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
             display_types: None,
             current_fn_return_type: None,
+            tuple_struct_rewrites: TupleStructRewrites::default(),
             transformed_exprs: HashMap::new(),
         };
 
@@ -200,6 +233,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
             display_types: None,
             current_fn_return_type: None,
+            tuple_struct_rewrites: TupleStructRewrites::default(),
         }
     }
 
@@ -469,6 +503,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
             display_types: None,
             current_fn_return_type: None,
+            tuple_struct_rewrites: TupleStructRewrites::default(),
             transformed_exprs: HashMap::new(),
         }
     }

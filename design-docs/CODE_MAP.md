@@ -68,6 +68,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | ブロックスコープ (lowering) | `compiler_lower/src/expr.rs::lower_expr_block` |
 | スコープスタック (型検査) | `type_checker/scope.rs`, `type_checker/context.rs` |
 | struct / enum 宣言の**事前登録** | `type_checker/visitor.rs` のコンストラクタ (statement pool を 1 周して `register_struct` / `enum_definitions` に入れる)。これがあるのでフィールド型は後方の宣言を名指しできる。enum は `enums_awaiting_decl` で「事前登録した分」と「2 つ目の宣言」を区別する。フィールド型の妥当性検査は `type_checker/struct_literal.rs::visit_struct_decl_impl` (`named_type_is_defined` が **両方の表**を見る) |
+| タプル struct の desugar (NEWTYPE) | 宣言: `parser/stmt.rs::parse_tuple_struct_fields` (フィールドを `"0"` / `"1"` ... と名付ける、判別は `ast/program.rs::StructField::is_positional`)。**使う側の 2 形は型検査器が書き換える** — `Meters(v)` は `type_checker/expression.rs::check_tuple_struct_construction` (`visit_call` の関数未発見経路から)、`m.0` は `type_checker/collections.rs::visit_tuple_access_impl` + `tuple_struct_field_symbol`。ただし**この 2 つは節点自身の `ExprRef` を持たない**ので (`accept_expr` 経由の呼び出し元が多数)、決定は `TupleStructRewrites` に記録し、`expression.rs::apply_tuple_struct_rewrites` が pool を 1 周して `StructLiteral` / `FieldAccess` に置換する (呼び出しは `interpreter/src/lib.rs::check_typing_diagnostics` と `type_checker/module_access.rs::check_program_multiple_errors`)。パターン `Meters(v)` は parser が直接 `Pattern::Struct` を作る (`parser/expr/match_.rs::parse_pattern_tuple_struct`)。**バックエンドは砂糖を見ない**。表示だけは書いた形に戻す — `interpreter/src/object.rs::to_display_string` / `compiler_lower/src/print.rs::emit_print_struct` / `frontend/src/api.rs` |
 | 実行時環境 | `interpreter/src/environment.rs` |
 
 > `val` と `var` は**別経路**。片方だけ直すと非対称になる (実際に起きた)。

@@ -1335,3 +1335,217 @@ fn main() -> u64 { 0u64 }
         );
     }
 }
+
+/// NEWTYPE: tuple structs (`struct Meters(i64)`).
+///
+/// The declaration desugars to a struct whose fields are named by
+/// position, and the type checker rewrites `Meters(v)` / `m.0` to the
+/// named-struct forms. These cover the parts that are *not* shared
+/// with a named struct: the sugar's own resolution rules and the
+/// diagnostics it owes when the sugar is misused.
+#[cfg(test)]
+mod tuple_struct_tests {
+    use super::*;
+    use interpreter::object::Object;
+
+    #[test]
+    fn tuple_struct_wraps_and_unwraps() {
+        let program = r#"
+struct Meters(i64)
+
+fn main() -> i64 {
+    val m = Meters(42i64)
+    m.0
+}
+"#;
+        let result = test_program(program).expect("tuple struct round trip");
+        assert_eq!(*result.borrow(), Object::Int64(42));
+    }
+
+    #[test]
+    fn tuple_struct_fields_are_reached_by_position() {
+        let program = r#"
+struct Sample(i64, str)
+
+fn main() -> i64 {
+    val s = Sample(7i64, "seven")
+    println(s.1)
+    s.0
+}
+"#;
+        let result = test_program(program).expect("multi-field tuple struct");
+        assert_eq!(*result.borrow(), Object::Int64(7));
+    }
+
+    /// Two wrappers over the same primitive are different types, which
+    /// is the whole point of the form.
+    #[test]
+    fn tuple_structs_of_the_same_payload_are_distinct_types() {
+        let program = r#"
+struct Meters(i64)
+struct Seconds(i64)
+
+fn take(m: Meters) -> i64 { m.0 }
+
+fn main() -> i64 {
+    take(Seconds(3i64))
+}
+"#;
+        let err = test_program(program).expect_err("Seconds is not Meters");
+        assert!(
+            err.contains("Meters") && err.contains("Seconds"),
+            "expected both type names in the mismatch, got: {err}"
+        );
+    }
+
+    /// A function of the same name keeps its meaning -- the struct form
+    /// is only reachable through a name that is not otherwise callable.
+    #[test]
+    fn a_function_of_the_same_name_wins_over_the_tuple_struct() {
+        let program = r#"
+struct Meters(i64)
+
+fn Meters(v: i64) -> i64 { v * 2i64 }
+
+fn main() -> i64 {
+    Meters(21i64)
+}
+"#;
+        let result = test_program(program).expect("the function is called");
+        assert_eq!(*result.borrow(), Object::Int64(42));
+    }
+
+    #[test]
+    fn wrong_arity_names_the_struct_and_both_counts() {
+        let program = r#"
+struct Pair(i64, str)
+
+fn main() -> i64 {
+    val p = Pair(1i64)
+    p.0
+}
+"#;
+        let err = test_program(program).expect_err("arity mismatch");
+        assert!(
+            err.contains("`Pair` takes 2 field(s), but 1 argument(s) were given"),
+            "expected the arity diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn indexing_past_the_arity_says_so() {
+        let program = r#"
+struct Meters(i64)
+
+fn main() -> i64 {
+    val m = Meters(1i64)
+    m.3
+}
+"#;
+        let err = test_program(program).expect_err("index out of bounds");
+        assert!(
+            err.contains("index 3 is out of bounds for `Meters`, which has 1 field(s)"),
+            "expected the out-of-bounds diagnostic, got: {err}"
+        );
+    }
+
+    /// Indexing a *named* struct is a different mistake and gets its
+    /// own wording, rather than the generic "non-tuple type".
+    #[test]
+    fn indexing_a_named_struct_points_at_field_names() {
+        let program = r#"
+struct Point { x: i64 }
+
+fn main() -> i64 {
+    val p = Point { x: 1i64 }
+    p.0
+}
+"#;
+        let err = test_program(program).expect_err("named struct indexed");
+        assert!(
+            err.contains("`Point` has named fields"),
+            "expected the named-field diagnostic, got: {err}"
+        );
+    }
+
+    /// `Meters(v)` in pattern position lowers to the same
+    /// `Pattern::Struct` a named struct produces, so it inherits
+    /// exhaustiveness, `..`, and sub-patterns rather than
+    /// reimplementing them.
+    #[test]
+    fn tuple_struct_patterns_destructure_by_position() {
+        let program = r#"
+struct Sample(i64, str)
+
+fn main() -> i64 {
+    val s = Sample(5i64, "five")
+    val head = match s { Sample(n, ..) => n }
+    val tail = match s { Sample(_, name) => name }
+    println(tail)
+    head + match s { Sample(0i64, _) => 100i64, Sample(n, _) => n }
+}
+"#;
+        let result = test_program(program).expect("positional pattern");
+        assert_eq!(*result.borrow(), Object::Int64(10));
+    }
+
+    /// A pattern that omits a field must say so with `..`, and the
+    /// diagnostic names the *position* -- "does not mention 1" alone
+    /// would read as a count.
+    #[test]
+    fn a_pattern_missing_a_field_names_the_position() {
+        let program = r#"
+struct Sample(i64, str)
+
+fn main() -> i64 {
+    val s = Sample(1i64, "a")
+    match s { Sample(v) => v }
+}
+"#;
+        let err = test_program(program).expect_err("incomplete pattern");
+        assert!(
+            err.contains("does not mention field 1"),
+            "expected the position to be named, got: {err}"
+        );
+    }
+
+    /// A named struct cannot be matched positionally -- the sugar is
+    /// tied to how the struct was declared, not to the pattern's shape.
+    #[test]
+    fn a_named_struct_rejects_a_positional_pattern() {
+        let program = r#"
+struct Point { x: i64 }
+
+fn main() -> i64 {
+    val p = Point { x: 1i64 }
+    match p { Point(v) => v }
+}
+"#;
+        let err = test_program(program).expect_err("positional pattern on named struct");
+        assert!(
+            err.contains("has no field `0`"),
+            "expected the missing-field diagnostic, got: {err}"
+        );
+    }
+
+    /// The struct is ordinary once declared, so `impl` blocks, `&self`
+    /// receivers and `Self` returns all work without further sugar.
+    #[test]
+    fn tuple_struct_supports_impl_blocks() {
+        let program = r#"
+struct Meters(i64)
+
+impl Meters {
+    fn scale(&self, k: i64) -> Meters { Meters(self.0 * k) }
+}
+
+fn main() -> i64 {
+    val m = Meters(6i64)
+    val doubled = m.scale(7i64)
+    doubled.0
+}
+"#;
+        let result = test_program(program).expect("impl block on a tuple struct");
+        assert_eq!(*result.borrow(), Object::Int64(42));
+    }
+}

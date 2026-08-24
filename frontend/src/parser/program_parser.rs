@@ -487,9 +487,23 @@ impl<'a> Parser<'a> {
                                 self.declared_type_generics
                                     .insert(struct_symbol, generic_params.clone());
                             }
-                            self.expect_err(&Kind::BraceOpen)?;
-                            let fields = super::stmt::parse_struct_fields_with_generic_context(self, vec![], &generic_params)?;
-                            self.expect_err(&Kind::BraceClose)?;
+                            // NEWTYPE: `struct Meters(i64)` is sugar for a
+                            // struct whose fields are named by position
+                            // (`"0"`, `"1"`, ...). Everything downstream --
+                            // the type checker's struct registry, all three
+                            // backends, drop glue, `--api` -- then handles it
+                            // as an ordinary struct. The two sugared *uses*
+                            // (`Meters(v)` construction and `m.0` access) are
+                            // rewritten in the type checker, which is where
+                            // the struct table is available.
+                            let fields = if matches!(self.peek(), Some(Kind::ParenOpen)) {
+                                super::stmt::parse_tuple_struct_fields(self, &generic_params)?
+                            } else {
+                                self.expect_err(&Kind::BraceOpen)?;
+                                let fields = super::stmt::parse_struct_fields_with_generic_context(self, vec![], &generic_params)?;
+                                self.expect_err(&Kind::BraceClose)?;
+                                fields
+                            };
                             let struct_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
                             update_end_pos(struct_end_pos);
 

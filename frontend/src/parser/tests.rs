@@ -775,6 +775,59 @@ mod parser_tests {
         }
     }
 
+    /// NEWTYPE: `struct Meters(i64)` desugars to a struct whose fields
+    /// are named by position, so everything downstream sees a plain
+    /// struct.
+    #[test]
+    fn parser_tuple_struct_decl() {
+        let input = "struct Sample(i64, pub str)";
+        let mut parser = ParserWithInterner::new(input);
+        let result = parser.parse_program();
+        assert!(result.is_ok(), "parse err {:?}", result.err());
+
+        let program = result.unwrap();
+        match program.statement.get(&StmtRef(0)).unwrap() {
+            Stmt::StructDecl { name, fields, .. } => {
+                let name_str = parser.get_string_interner().resolve(name).unwrap();
+                assert_eq!("Sample", name_str);
+                assert_eq!(2, fields.len());
+
+                assert_eq!("0", fields[0].name);
+                assert_eq!(TypeDecl::Int64, fields[0].type_decl);
+                assert_eq!(Visibility::Private, fields[0].visibility);
+                assert!(fields[0].is_positional());
+
+                assert_eq!("1", fields[1].name);
+                assert_eq!(TypeDecl::String, fields[1].type_decl);
+                assert_eq!(Visibility::Public, fields[1].visibility);
+                assert!(fields[1].is_positional());
+            }
+            other => panic!("Expected struct declaration, got {:?}", other),
+        }
+    }
+
+    /// A named field can never be mistaken for a positional one -- the
+    /// parser only accepts an identifier there.
+    #[test]
+    fn parser_named_struct_fields_are_not_positional() {
+        let input = "struct Point { x: i64 }";
+        let mut parser = ParserWithInterner::new(input);
+        let program = parser.parse_program().expect("parse");
+        match program.statement.get(&StmtRef(0)).unwrap() {
+            Stmt::StructDecl { fields, .. } => assert!(!fields[0].is_positional()),
+            other => panic!("Expected struct declaration, got {:?}", other),
+        }
+    }
+
+    /// `struct Empty()` has no meaning distinct from `struct Empty {}`,
+    /// and silently accepting it would leave a struct that can never be
+    /// indexed. Rejected at the declaration instead.
+    #[test]
+    fn parser_rejects_empty_tuple_struct() {
+        let mut parser = ParserWithInterner::new("struct Empty()");
+        assert!(parser.parse_program().is_err());
+    }
+
     #[test]
     fn parser_struct_decl_with_visibility() {
         let input = "struct Person { pub name: str, age: u64 }";

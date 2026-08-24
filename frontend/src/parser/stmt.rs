@@ -671,6 +671,58 @@ fn parse_tuple_destructuring(parser: &mut Parser, is_val: bool) -> ParserResult<
     Ok(primary)
 }
 
+/// Parse the payload of a tuple struct: `(T1, T2, ...)` after the struct
+/// name. Fields come back named `"0"`, `"1"`, ... so the rest of the
+/// compiler sees a plain struct (see `StructField::is_positional`).
+///
+/// The names are interned here because the type checker holds an
+/// immutable interner and needs to look them up when it rewrites
+/// `m.0` into a field access.
+pub fn parse_tuple_struct_fields(
+    parser: &mut Parser,
+    generic_params: &[string_interner::DefaultSymbol],
+) -> ParserResult<Vec<StructField>> {
+    parser.expect_err(&Kind::ParenOpen)?;
+    let generic_context: std::collections::HashSet<string_interner::DefaultSymbol> =
+        generic_params.iter().cloned().collect();
+    let mut fields: Vec<StructField> = Vec::new();
+    loop {
+        parser.skip_newlines();
+        if parser.peek() == Some(&Kind::ParenClose) {
+            break;
+        }
+        // `pub` on a positional field mirrors the named-field form; field
+        // visibility is recorded but not currently enforced.
+        let visibility = match parser.peek() {
+            Some(Kind::Public) => {
+                parser.next();
+                Visibility::Public
+            }
+            _ => Visibility::Private,
+        };
+        let field_type = parser.parse_type_declaration_with_generic_context(&generic_context)?;
+        let name = fields.len().to_string();
+        parser.string_interner.get_or_intern(name.as_str());
+        fields.push(StructField { name, type_decl: field_type, visibility });
+        parser.skip_newlines();
+        if parser.peek() == Some(&Kind::Comma) {
+            parser.next();
+        } else {
+            break;
+        }
+    }
+    parser.expect_err(&Kind::ParenClose)?;
+    if fields.is_empty() {
+        let location = parser.current_source_location();
+        return Err(ParserError::generic_error(
+            location,
+            "a tuple struct needs at least one field; write `struct Name {}` for an empty struct"
+                .to_string(),
+        ));
+    }
+    Ok(fields)
+}
+
 pub fn parse_struct_fields(parser: &mut Parser, fields: Vec<StructField>) -> ParserResult<Vec<StructField>> {
     parse_struct_fields_with_generic_context(parser, fields, &[])
 }

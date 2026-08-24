@@ -48,21 +48,34 @@ pub fn render(file: &File, interner: &DefaultStringInterner, source: Option<&str
         };
         match &stmt {
             Stmt::StructDecl { name, generic_params, generic_bounds, fields, visibility } => {
-                out.push_str(&format!(
-                    "{}struct {}{} {{\n",
+                let header = format!(
+                    "{}struct {}{}",
                     r.vis(*visibility),
                     r.sym(*name),
                     r.generics(generic_params, generic_bounds)
-                ));
-                for f in fields {
-                    out.push_str(&format!(
-                        "    {}{}: {}\n",
-                        r.vis(f.visibility),
-                        f.name,
-                        r.ty(&f.type_decl)
-                    ));
+                );
+                // NEWTYPE: a tuple struct is echoed in the form it was
+                // written. Printing its interned field names would show
+                // `{ 0: i64 }`, which is not syntax the reader can type
+                // back in.
+                if fields.first().is_some_and(|f| f.is_positional()) {
+                    let payload: Vec<String> = fields
+                        .iter()
+                        .map(|f| format!("{}{}", r.vis(f.visibility), r.ty(&f.type_decl)))
+                        .collect();
+                    out.push_str(&format!("{}({})\n\n", header, payload.join(", ")));
+                } else {
+                    out.push_str(&format!("{} {{\n", header));
+                    for f in fields {
+                        out.push_str(&format!(
+                            "    {}{}: {}\n",
+                            r.vis(f.visibility),
+                            f.name,
+                            r.ty(&f.type_decl)
+                        ));
+                    }
+                    out.push_str("}\n\n");
                 }
-                out.push_str("}\n\n");
             }
             Stmt::EnumDecl { name, generic_params, variants, visibility } => {
                 out.push_str(&format!(

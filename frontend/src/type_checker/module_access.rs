@@ -51,6 +51,10 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         self.recovery_enabled = prev_recovery;
 
+        // NEWTYPE: install the tuple-struct desugar's pool rewrites now
+        // that every body has been checked.
+        self.apply_tuple_struct_rewrites();
+
         // Report in source order. Functions are checked in declaration
         // order but a call site can pull a callee's body forward
         // (`type_check_forward_ref`), so collection order doesn't match

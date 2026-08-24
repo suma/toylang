@@ -162,9 +162,18 @@ impl<'a> TypeCheckerVisitor<'a> {
                 .map(|d| d.name.clone())
                 .collect();
             if !missing.is_empty() {
+                // NEWTYPE: a tuple struct's fields are named by index,
+                // so "does not mention 1" would read as a count rather
+                // than a position. Name what the numbers are.
+                let noun = if declared.iter().all(|d| d.is_positional()) {
+                    if missing.len() == 1 { "field " } else { "fields " }
+                } else {
+                    ""
+                };
                 return Err(TypeCheckError::new(format!(
-                    "struct pattern for `{}` does not mention {} — list {} or end the pattern with `..`",
+                    "struct pattern for `{}` does not mention {}{} — list {} or end the pattern with `..`",
                     self.resolve_symbol_name(struct_name),
+                    noun,
                     missing.join(", "),
                     if missing.len() == 1 { "it" } else { "them" }
                 )));

@@ -1777,6 +1777,61 @@ one that comes from an auto-loaded module.
 > literal, read back, matched on, assigned to as a whole, and passed
 > across a function boundary.
 
+### Tuple structs
+
+A struct may declare its fields **by position** instead of by name.
+This is the form to reach for when the wrapper *is* the point — a unit,
+an id, a newtype over a primitive — and inventing a field name would
+only add noise.
+
+```rust
+struct Meters(i64)
+struct Seconds(i64)
+struct Sample(i64, str)
+struct Wrap<T>(T)
+
+fn speed(distance: Meters, elapsed: Seconds) -> i64 {
+    distance.0 / elapsed.0
+}
+
+val m = Meters(120i64)
+val raw = m.0                       # read by position
+println(m)                          # ⇒ Meters(120)
+```
+
+`Meters` and `Seconds` are **distinct types**, so a function that takes
+one cannot silently be handed the other even though both wrap an
+`i64`. That separation is the reason to write the form at all.
+
+The declaration is sugar: fields are named by their index (`"0"`,
+`"1"`, ...), and the two sugared uses are rewritten before lowering —
+`Meters(v)` to the struct literal `Meters { 0: v }`, and `m.0` to a
+field access. Everything else follows from that, with no extra rules:
+
+- `impl` blocks, `&self` / `self: Self` receivers, `Self` returns, and
+  associated functions all work as they do for a named struct.
+- Generic tuple structs (`Wrap<T>`) behave like generic named structs,
+  including needing an explicit annotation
+  (`val w: Wrap<i64> = Wrap(9i64)`) where a named one would.
+- Trait impls, `Drop`, and ownership transfer are unchanged.
+- All three backends are supported, because none of them sees the
+  sugar.
+
+Fields may carry `pub` individually (`struct Meters(pub i64)`).
+
+A **function of the same name wins**: with `fn Meters(v: i64) -> i64`
+in scope, `Meters(21i64)` calls the function. The struct form is only
+reached through a name that is not otherwise callable.
+
+Two forms are rejected:
+
+- `struct Empty()` — no arity to index; write `struct Empty {}`.
+- Positional access on a named struct (`p.0` where `Point` has `x`),
+  and index access past the declared arity.
+
+They also destructure in `match` — see
+[Tuple-struct patterns](#tuple-struct-patterns).
+
 ### Field access and assignment
 
 ```rust
@@ -2413,6 +2468,41 @@ Struct patterns run on every backend. Note that passing a struct
 literal straight into a call (`f(Point { x: 1i64, y: 2i64 })`) is a
 separate compiler-MVP gap — bind it first — and it has nothing to do
 with the pattern.
+
+### Tuple-struct patterns
+
+A [tuple struct](#tuple-structs) is taken apart by position:
+
+```rust
+struct Meters(i64)
+struct Sample(i64, str)
+
+match m {
+    Meters(0i64) => "zero",
+    Meters(_)    => "some distance",
+}
+
+match s {
+    Sample(n, name) => name,
+}
+
+match s {
+    Sample(n, ..) => n,             # ignore the rest
+}
+```
+
+This is the same machinery as the named form: the fields are named by
+index, so every rule above carries over unchanged — sub-patterns
+nest, field coverage is required unless the pattern ends in `..`, an
+all-irrefutable arm makes the match exhaustive, and `if val` accepts
+the same patterns. The diagnostics name the position (`does not
+mention field 1`).
+
+The two forms are not interchangeable: `Point(v)` on a struct with
+named fields is an error (`struct \`Point\` has no field \`0\``), and
+`Meters { .. }` is how a tuple struct would be written in the named
+form. An enum variant is always spelled with `::`
+(`Shape::Circle(r)`), so it never collides with this form.
 
 ### Nested patterns
 

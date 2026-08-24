@@ -301,6 +301,13 @@ fn main() -> u64 {
 - **実行時例外 (try/catch/throw) は導入しない**: 言語仕様として例外機構を持たない。回復不能な失敗は `panic("...")` で即時停止 (process exit)、回復可能な失敗は `enum Result<T, E>` / `enum Option<T>` を戻り値で返して呼び出し側で `match` する。例外用の予約語 (`try` / `catch` / `throw` / `finally`) は parser で受理しない。`requires` / `ensures` 違反も `panic` 経路で停止する (例外として伝播しない)
 - **間接化なしの再帰型は不可** (`[E0013]`): 自分を by-value で含む struct / enum は有限な layout を持てないので型検査で拒否 (`struct Node { next: Node }` / `enum List { Cons(i64, List), Nil }`)。**型引数が containment になるのは渡し先がそのパラメータを by-value で持つときだけ**なので `struct Tree { kids: Vec<Tree> }` は OK、`struct Held { w: Wrapper<Held> }` (`Wrapper<T> { v: T }`) は NG。cycle を切るのは `ptr` / 関数型 / `dyn Trait` の位置で、`&T` は lowering で消えるので切れない。書き方は `Box<T>` (`core/std/box.t`)、arena + index、raw `ptr` の 3 通り (`interpreter/example/box_linked_list.t` / `linked_list_arena.t` / `linked_list_ptr.t`)
 - **所有権の移動** (`[E0014]`): `impl Drop` を持つ型の値を「今のスコープより長生きする場所」(値渡し引数 / struct・tuple・array・enum payload の要素 / 代入右辺) に置くと所有権が移り、以後その名前を読むとエラー。所有は**推移的** (`Vec<Box<i64>>` / payload に Box を持つ enum も対象)。`&T` / `&mut T` 引数は borrow、`val b = a` は**別名で移動ではない** (compound は alias)。分岐・ループ本体からの移動は drop flag が要るので拒否。**移動先は drop glue が再帰的に解放する** (DROP-GLUE): コンテナの死とともに要素 / フィールド / payload / Box の中身が free され、`--profile=mem` の `leaks` は 0 になる。free は全バックエンドで冪等 (never-reuse bump ヒープ)。
+- **タプル struct (NEWTYPE)**: `struct Meters(i64)` — フィールドを位置で宣言する。
+  パーサが `"0"` / `"1"` ... という名前のフィールドを持つ通常の struct に desugar し、
+  `Meters(v)` / `m.0` / パターン `Meters(v)` は型検査器が `StructLiteral` /
+  `FieldAccess` / `Pattern::Struct` に書き換えるので、**バックエンドは砂糖を見ない**
+  (3 backend 対応)。`impl` / generics / trait / `Drop` は named struct と同じ。
+  同名の `fn` があればそちらが勝つ。`struct Empty()` は拒否。`println` は
+  書いた形で出す (`Meters(3)`)。例: `interpreter/example/tuple_struct.t`
 - **OOP・モジュール関連キーワード**: `class`, `struct`, `trait`, `impl`, `Self`, `enum`, `match`
 - **`trait` 宣言と `impl <Trait> for <Type>`**: 共通インターフェースを定義する仕組み。
   ```rust

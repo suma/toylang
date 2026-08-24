@@ -32,6 +32,7 @@ mod tests {
             transformed_exprs: HashMap::new(),
             builtin_methods: TypeCheckerVisitor::create_builtin_method_registry(),
             current_fn_return_type: None,
+            tuple_struct_rewrites: Default::default(),
         }
     }
 

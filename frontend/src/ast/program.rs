@@ -206,6 +206,20 @@ pub struct StructField {
     pub visibility: Visibility,
 }
 
+impl StructField {
+    /// Whether this field came from a tuple struct (`struct Meters(i64)`),
+    /// whose fields the parser names by their index -- `"0"`, `"1"`, ...
+    ///
+    /// A named field can never collide with one: the parser only accepts
+    /// an `Identifier` in field position, and identifiers cannot start
+    /// with a digit. So the leading byte is a sound discriminator and no
+    /// extra flag has to be threaded through the pool, the module
+    /// interface, and the AST cache.
+    pub fn is_positional(&self) -> bool {
+        self.name.as_bytes().first().is_some_and(u8::is_ascii_digit)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Visibility {

@@ -11,6 +11,13 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-24
+
+- **NEWTYPE: tuple struct (`struct Meters(i64)`)** — 宣言はパーサが位置名
+  (`"0"`, `"1"`, ...) のフィールドを持つ struct に desugar、`Meters(v)` /
+  `m.0` / `Meters(v)` パターンは型検査器が `StructLiteral` /
+  `FieldAccess` / `Pattern::Struct` に書き換える。バックエンドは砂糖を
+  見ないので 3 バックエンド対応は自動。`--api` と `println` は書いた形で
+  出す (`Meters(3)`)。例: `interpreter/example/tuple_struct.t`
 - **CHECK-NONTERMINATION: `--check` の trial にステップ予算** — 生成値に
   対して body が終わらない入力 (`alloc_contract.t` の `triangle` に
   `n = u64::MAX`) で `--check` 自体がハングしていた。`EvaluationContext`
@@ -897,9 +904,6 @@
 - **MOVE-ALIAS-GAP: `val b = a` 後の `a`** ★ — alias なので `b` を移動しても
   `a` の読みは検出されない。DROP-GLUE の冪等 free + never-reuse ヒープが
   二重 drop を無害化しているので、これは診断の網羅性の問題 (読み放題)。
-- **NEWTYPE: tuple struct / newtype (`struct Meters(i64)`)** ★ — parse エラー。
-  単位型・ID 型のラップが「1 フィールドの struct + 冗長な field 名」になる。
-  parser + 位置指定のフィールドアクセス (`m.0`) が要る。
 - **Trait 拡張** ★★★ (大規模、ロードマップ)
   - **A3: trait inheritance (`trait B: A`)** — 中。super trait 経由で `A` の method を `B` impl からも要求。
   - **A4: associated types (`trait Iterator { type Item }`)** — 中〜大。
@@ -1009,7 +1013,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2156 テスト** (100% 成功、2026-08-24 時点)。
+- 合計 **2175 テスト** (100% 成功、2026-08-24 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、

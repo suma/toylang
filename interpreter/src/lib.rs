@@ -548,6 +548,10 @@ pub fn check_typing_diagnostics(
         }
     });
     tc.recovery_enabled = false;
+    // NEWTYPE: install the tuple-struct desugar's pool rewrites. Runs
+    // before the move / never-allocates passes so they walk the same
+    // named-struct AST the backends will lower.
+    tc.apply_tuple_struct_rewrites();
     fn_errors.append(&mut tc.errors);
 
     // Report in source order. A call site can pull a callee's body

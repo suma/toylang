@@ -264,10 +264,75 @@ fn parse_one_pattern(parser: &mut Parser) -> ParserResult<Vec<crate::ast::Patter
     if matches!(parser.peek(), Some(Kind::BraceOpen)) {
         return parse_pattern_struct(parser, first);
     }
+    // NEWTYPE: `Meters(v)` -- the pattern form of a tuple struct. Same
+    // disambiguation as the `{` above: a bare name in pattern position
+    // is followed by `=>` or a guard, never by `(`. Whether `first`
+    // really is a tuple struct is the type checker's call; an enum
+    // variant is spelled with `::` and took the branch below.
+    if matches!(parser.peek(), Some(Kind::ParenOpen)) {
+        return parse_pattern_tuple_struct(parser, first);
+    }
     if parser.peek() != Some(&Kind::DoubleColon) {
         return Ok(vec![crate::ast::Pattern::Name(first)]);
     }
     parse_pattern_enum_variant_tail(parser, first)
+}
+
+/// NEWTYPE: the `( ... )` half of `Meters(v)`.
+///
+/// A tuple struct's fields are named by their index, so the pattern
+/// lowers to the same `Pattern::Struct` a named struct produces --
+/// exhaustiveness, reachability and every backend's matching code are
+/// shared with `Point { x, y }` rather than reimplemented.
+///
+/// `..` is accepted in trailing position exactly as it is there, so
+/// `Sample(v, ..)` binds the first field and ignores the rest.
+fn parse_pattern_tuple_struct(
+    parser: &mut Parser,
+    name: DefaultSymbol,
+) -> ParserResult<Vec<crate::ast::Pattern>> {
+    let location = parser.current_source_location();
+    parser.expect_err(&Kind::ParenOpen)?;
+    let mut field_names: Vec<DefaultSymbol> = Vec::new();
+    let mut slots: Vec<Vec<crate::ast::Pattern>> = Vec::new();
+    let mut has_rest = false;
+    loop {
+        parser.skip_newlines();
+        if matches!(parser.peek(), Some(Kind::ParenClose)) {
+            break;
+        }
+        if matches!(parser.peek(), Some(Kind::DotDot)) {
+            parser.next();
+            has_rest = true;
+            parser.skip_newlines();
+            break;
+        }
+        let field = parser
+            .string_interner
+            .get_or_intern(field_names.len().to_string().as_str());
+        field_names.push(field);
+        slots.push(parse_match_pattern(parser)?);
+        parser.skip_newlines();
+        if matches!(parser.peek(), Some(Kind::Comma)) {
+            parser.next();
+        } else {
+            break;
+        }
+    }
+    parser.skip_newlines();
+    parser.expect_err(&Kind::ParenClose)?;
+    let mut out: Vec<crate::ast::Pattern> = expand_slots(slots)
+        .into_iter()
+        .map(|row| {
+            crate::ast::Pattern::Struct(
+                name,
+                field_names.iter().copied().zip(row).collect(),
+                has_rest,
+            )
+        })
+        .collect();
+    cap_alternatives(parser, &mut out, location);
+    Ok(out)
 }
 
 /// PATTERN-STRUCT: the `{ ... }` half of `Point { x: 0i64, y }`.

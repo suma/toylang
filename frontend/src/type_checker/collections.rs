@@ -3,6 +3,8 @@ use crate::type_decl::*;
 use crate::type_checker::{
     TypeCheckerVisitor, TypeCheckError
 };
+use crate::type_checker::method::MethodProcessing;
+use string_interner::DefaultSymbol;
 
 /// Collections type checking implementation (arrays, dictionaries, tuples, slices)
 impl<'a> TypeCheckerVisitor<'a> {
@@ -471,13 +473,62 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
                 Ok(types[index].clone())
             }
-            _ => {
-                Err(TypeCheckError::generic_error(&format!(
+            // NEWTYPE: `m.0` on a tuple struct is the positional field
+            // the parser named `"0"`. Typing is delegated to the field
+            // path so `Self`, `&T` receivers and generic substitution
+            // behave exactly as they do for `p.x`.
+            _ => match self.tuple_struct_field_symbol(&tuple_type, index)? {
+                Some(field_symbol) => {
+                    self.tuple_struct_rewrites.accesses.insert(*tuple, field_symbol);
+                    self.visit_field_access_impl(tuple, &field_symbol)
+                }
+                None => Err(TypeCheckError::generic_error(&format!(
                     "Cannot access index {} on non-tuple type {:?}",
                     index, tuple_type
-                )))
-            }
+                ))),
+            },
         }
+    }
+
+    /// NEWTYPE: the field symbol `.index` names on a tuple struct, or
+    /// `None` when `receiver_ty` isn't one (so the caller can report the
+    /// access against the type the user actually wrote).
+    ///
+    /// An `Err` is reserved for a receiver that *is* a tuple struct but
+    /// was indexed past its arity -- saying so beats "non-tuple type".
+    fn tuple_struct_field_symbol(
+        &mut self,
+        receiver_ty: &TypeDecl,
+        index: usize,
+    ) -> Result<Option<DefaultSymbol>, TypeCheckError> {
+        let resolved = match receiver_ty {
+            TypeDecl::Self_ => self.resolve_self_type(receiver_ty),
+            TypeDecl::Ref { inner, .. } => (**inner).clone(),
+            other => other.clone(),
+        };
+        let struct_symbol = match resolved {
+            TypeDecl::Struct(symbol, _) | TypeDecl::Identifier(symbol) => symbol,
+            _ => return Ok(None),
+        };
+        let Some(fields) = self.context.get_struct_fields(struct_symbol) else {
+            return Ok(None);
+        };
+        if !fields.first().is_some_and(|f| f.is_positional()) {
+            let struct_name = self.resolve_symbol_name(struct_symbol);
+            return Err(TypeCheckError::generic_error(&format!(
+                "`{struct_name}` has named fields, so its fields are reached by name \
+                 (`value.field`), not by index"
+            )));
+        }
+        let Some(field_name) = fields.get(index).map(|f| f.name.clone()) else {
+            let arity = fields.len();
+            let struct_name = self.resolve_symbol_name(struct_symbol);
+            return Err(TypeCheckError::generic_error(&format!(
+                "index {index} is out of bounds for `{struct_name}`, which has {arity} field(s)"
+            )));
+        };
+        // Interned by the parser when it read the declaration.
+        Ok(self.core.string_interner.get(field_name.as_str()))
     }
 
     /// Type check array literal - implementation (moved from type_checker.rs)

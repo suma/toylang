@@ -1280,6 +1280,13 @@ return value                 # returns a value
 Three shapes share the `for IDENT in EXPR { body }` syntax. The
 parser picks the desugaring based on what follows `EXPR`:
 
+Throughout the header — the iterable, and both ends of a range —
+**struct literals are not recognised**, exactly as in an `if` or
+`while` condition. That is what lets `for x in MyIter { ... }` read
+`{` as the loop body rather than as `MyIter {}`, and it costs nothing:
+a range bound is an integer, so a literal could never be valid there.
+Bind the struct first if you need one (`val it = MyIter { .. }`).
+
 1. **Integer range, `..` form** — `for i in 0i64..10i64 { ... }`.
    Bare `start..end` produces a fast-path `Stmt::For`; the body
    sees `i` typed as the range's element type. Same for u64.

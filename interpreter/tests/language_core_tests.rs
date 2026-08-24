@@ -999,6 +999,63 @@ mod control_flow {
         ", 10);
     }
 
+    /// A range end is parsed with struct literals banned, the same as
+    /// the range start and as `if` / `while` conditions. Without that,
+    /// `to n {` read `n { ... }` as a struct literal and the parse died
+    /// on a missing `:` somewhere inside the loop body.
+    #[test]
+    fn test_for_loop_range_end_may_be_a_bare_identifier() {
+        common::assert_program_result_u64(r"
+        fn main() -> u64 {
+            val n = 5u64
+            var sum = 0u64
+            for i in 1u64 to n {
+                sum = sum + i
+            }
+            sum
+        }
+        ", 10);
+    }
+
+    /// The `..` spelling takes the same branch, so it had the same gap.
+    #[test]
+    fn test_for_loop_dotdot_range_end_may_be_a_bare_identifier() {
+        common::assert_program_result_u64(r"
+        fn main() -> u64 {
+            val n = 5u64
+            var sum = 0u64
+            for i in 1u64..n {
+                sum = sum + i
+            }
+            sum
+        }
+        ", 10);
+    }
+
+    /// A range end is an integer, so a struct literal could never be
+    /// valid there -- but a *field* of a struct can be, and the ban
+    /// must not reach into the receiver's own suffix.
+    #[test]
+    fn test_for_loop_range_end_may_be_a_field_or_call() {
+        common::assert_program_result_u64(r"
+        struct Bound { n: u64 }
+
+        fn limit() -> u64 { 3u64 }
+
+        fn main() -> u64 {
+            val b = Bound { n: 3u64 }
+            var sum = 0u64
+            for i in 0u64 to b.n {
+                sum = sum + i
+            }
+            for j in 0u64 to limit() {
+                sum = sum + j
+            }
+            sum
+        }
+        ", 6);
+    }
+
     #[test]
     fn test_simple_for_loop_break() {
         common::assert_program_result_u64(r"

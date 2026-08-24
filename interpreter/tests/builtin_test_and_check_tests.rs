@@ -621,16 +621,12 @@ fn a_for_loop_over_a_sampled_range_is_bounded_too() {
     // The other back-edge. A range ending at a parameter is
     // unremarkable in source and unbounded under sampling, exactly
     // like the `while` above.
-    //
-    // The end bound is parenthesised because a bare identifier there
-    // parses as the start of a struct literal (`n { ... }`) — a
-    // parser limitation this test only has to route around.
     let report = check(
         "fn sum_to(n: u64) -> u64
             ensures result >= 0u64
         {
             var total: u64 = 0u64
-            for i in 0u64 to (n) {
+            for i in 0u64 to n {
                 total = total + i
             }
             total

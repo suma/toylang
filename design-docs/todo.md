@@ -12,6 +12,12 @@
 
 ### 2026-08-24
 
+- **FOR-RANGE-END: `for i in 0u64 to n {` が parse エラーだった件** — 範囲の
+  **末尾**だけ `ParseContext::Condition` で括られておらず、`n { ... }` を
+  struct literal の開始として読んでいた (`to` / `..` 両形)。開始側と
+  `if` / `while` 条件は元から括られていたので、1 行の非対称。既存コードは
+  範囲末尾を全てリテラルか `.iter()` で書いていたため踏まれていなかった。
+
 - **NEWTYPE: tuple struct (`struct Meters(i64)`)** — 宣言はパーサが位置名
   (`"0"`, `"1"`, ...) のフィールドを持つ struct に desugar、`Meters(v)` /
   `m.0` / `Meters(v)` パターンは型検査器が `StructLiteral` /
@@ -1013,7 +1019,7 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2175 テスト** (100% 成功、2026-08-24 時点)。
+- 合計 **2178 テスト** (100% 成功、2026-08-24 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
 - テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
   AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、
@@ -1038,9 +1044,4 @@
 - `extern fn` の generic params は parser では受理されるが、JIT / AOT が per-instance シンボル名を持たないため interpreter でのみ動く (`#195b`)。
 - `package` 宣言 / `import` path のセグメントに primitive type キーワード (`i64` / `f64` / ...) は使えない (`core/std/i64.t` が `package` 宣言を省いているのはこのため)。
 - 関数名に primitive type キーワードは使えない (`fn f64(...)` は `expected function name`)。
-- `for` の範囲末尾に **bare identifier は書けない** (`for i in 0u64 to n {`)。
-  `n { ... }` を struct literal の開始と読むので `Colon` を期待して落ちる。
-  `for i in 0u64 to (n)` と括ればよい (2026-08-24 に CHECK-NONTERMINATION の
-  テストを書いていて発見。既存コードは範囲末尾を全てリテラルか `.iter()` で
-  書いていたので踏まれていなかった)。
 - 3-part qualified call (`std::math::abs(x)`) は parser が **last 名だけを採る**。名前が一意なら結果的に解決するが、意図した経路ではない (`#185残`)。

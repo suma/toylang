@@ -272,7 +272,17 @@ fn parse_for_with_label(parser: &mut Parser, label: Option<DefaultSymbol>) -> Pa
             match parser.peek() {
                 Some(Kind::To) | Some(Kind::DotDot) => {
                     parser.next();
-                    let end = super::expr::parse_logical_expr(parser)?;
+                    // The range's end needs the same struct-literal ban
+                    // the start above (and `if` / `while`) gets: without
+                    // it `for i in 0u64 to n {` reads `n { ... }` as a
+                    // struct literal and dies on a missing `:` inside
+                    // the loop body. Every range end in the tree
+                    // happened to be a literal or a `.iter()` call, so
+                    // the gap went unnoticed until CHECK-NONTERMINATION.
+                    parser.push_context(crate::parser::core::ParseContext::Condition);
+                    let end = super::expr::parse_logical_expr(parser);
+                    parser.pop_context();
+                    let end = end?;
                     let block = super::expr::parse_block(parser)?;
                     let location = parser.current_source_location();
                     Ok(parser.ast_builder.for_stmt_with_label(label, ident, start, end, block, Some(location)))

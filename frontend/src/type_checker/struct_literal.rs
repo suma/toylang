@@ -363,6 +363,22 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
         self.type_inference.push_generic_scope(generic_scope);
 
+        // NUMBER-HINT: an annotation naming this struct already fixes
+        // its type parameters (`val b: B<i64> = B { v: 5 }`), so seed
+        // them before checking the fields. A field declared `T` then
+        // names a concrete type an unsuffixed literal can resolve to;
+        // without this the literal's own default became `T` and the
+        // literal's `Number` leaked out as `B<Number>`.
+        let outer_hint = self.type_inference.type_hint.clone();
+        let seeded: std::collections::HashMap<DefaultSymbol, TypeDecl> = match &outer_hint {
+            Some(TypeDecl::Struct(hint_name, args))
+                if hint_name == struct_name && args.len() == generic_params.len() =>
+            {
+                generic_params.iter().copied().zip(args.iter().cloned()).collect()
+            }
+            _ => std::collections::HashMap::new(),
+        };
+
         let mut field_types = std::collections::HashMap::new();
 
         for (field_name, field_expr) in fields {
@@ -372,7 +388,26 @@ impl<'a> TypeCheckerVisitor<'a> {
                 .map(|def| &def.type_decl);
 
             if let Some(expected_type) = expected_field_type {
+                // A field whose declared type is still generic after
+                // seeding has nothing concrete to offer. Leave the
+                // inherited hint alone there — pushing `Generic(T)`
+                // as the hint misleads the checks that read it (an
+                // array literal starts demanding `Generic(T)`
+                // elements) — and let the field's own type decide the
+                // parameter, as before.
+                let resolved_hint = expected_type.substitute_generics(&seeded);
+                let saved_hint = self.type_inference.type_hint.clone();
+                let resolved_concrete = !resolved_hint.contains_generic();
+                if resolved_concrete {
+                    self.type_inference.type_hint = Some(resolved_hint.clone());
+                }
                 let field_type = self.visit_expr(field_expr)?;
+                self.type_inference.type_hint = saved_hint;
+                let field_type = if resolved_concrete {
+                    self.coerce_number_expr(field_expr, &field_type, &resolved_hint)?
+                } else {
+                    field_type
+                };
 
                 self.type_inference.add_constraint(
                     expected_type.clone(),

@@ -872,6 +872,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         // statement-level recovery with no location of its own, and
         // was then anchored on whatever statement came next.
         let rhs_ty = self.check_expr_located(&rhs)?;
+        // NUMBER-HINT: the assignment target's type names what an
+        // unsuffixed literal on the right should become, so `x = 5`
+        // works for an `i64` binding without a suffix.
+        let rhs_ty = self.coerce_number_expr(&rhs, &rhs_ty, &lhs_ty)?;
         // Allow assignment compatibility. `is_equivalent` covers the
         // user-named-type cases the parser emits ambiguously
         // (`Identifier(name)` vs `Enum(name, _)` / `Struct(name, _)`),
@@ -1365,6 +1369,9 @@ impl<'a> TypeCheckerVisitor<'a> {
         for (idx, (arg, expected)) in args_data.iter().zip(param_tys.iter()).enumerate() {
             self.type_inference.type_hint = Some(expected.clone());
             let arg_ty = self.visit_expr(arg)?;
+            // NUMBER-HINT: same rule as a direct call — the parameter
+            // type names what an unsuffixed literal should become.
+            let arg_ty = self.coerce_number_expr(arg, &arg_ty, expected)?;
             if !self.is_arg_compatible_dyn_aware(&arg_ty, expected) && arg_ty != TypeDecl::Unknown {
                 self.type_inference.type_hint = original_hint;
                 let name_str = self.resolve_symbol_name(callee_name);
@@ -1413,8 +1420,25 @@ impl<'a> TypeCheckerVisitor<'a> {
             self.context.set_var(*name, ty.clone());
         }
         let body_result = self.visit_expr(body);
-        self.pop_context();
-        let body_ty = body_result?;
+        let body_ty = match body_result {
+            Ok(ty) => {
+                // NUMBER-HINT: the closure's declared return type is
+                // what an unsuffixed literal in its body should
+                // become, exactly as a function's is. Coerced before
+                // `pop_context` so the scope the body was checked in
+                // is still open.
+                let coerced = match return_type {
+                    Some(declared) => self.coerce_number_expr(body, &ty, declared),
+                    None => Ok(ty),
+                };
+                self.pop_context();
+                coerced?
+            }
+            Err(e) => {
+                self.pop_context();
+                return Err(e);
+            }
+        };
 
         // Validate body type against the declared return type when
         // present; otherwise the body type drives the inferred return.

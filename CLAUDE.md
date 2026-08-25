@@ -267,8 +267,11 @@ fn main() -> u64 {
 - **Numeric literals**:
   - Type suffix: `42u64` (unsigned 64-bit), `42i64` (signed 64-bit), `1.5f64` / `42f64` (IEEE 754 double)
   - Hex literals: `0xFFu64`, `0xFFi64`, `0xFF`（型サフィックスなしも可）
-  - Without suffix: **型注釈 / 引数 / 戻り値 / 演算相手から解決**され、どの位置にも
-    届かなかったときだけ `u64` に倒れる (narrow int も対象、範囲外はエラー)。
+  - Without suffix: **型を名指しする位置から解決**される (型注釈 / 代入先 /
+    引数 / 戻り値 / closure 本体 / struct フィールド / enum payload /
+    配列・tuple・dict 要素 / 演算相手 / 兄弟要素)。どの位置にも届かなかった
+    ときだけ **`u64`** に倒れる (narrow int も対象、範囲外はエラー)。
+    generic 位置は「名指し」ではないのでリテラル側が型引数を決める。
     決定規則の表は [`docs/language.md`](docs/language.md) の
     「How a suffix-less literal gets its type」
   - Examples: `val x = 42` → `u64` type, `val y: i64 = 42` → automatically converted to `i64`

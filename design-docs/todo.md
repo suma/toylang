@@ -12,6 +12,14 @@
 
 ### 2026-08-24
 
+- **NUMBER-HINT: 既定は `u64` で確定 + 位置の網羅** — 型を名指しする位置を
+  17 箇所に拡大 (代入 / 各種引数 / closure 引数・本体 / enum payload /
+  struct・generic struct フィールド / 配列・tuple・dict 要素 / 兄弟要素 /
+  `if`・`match` の分岐末尾)。整数以外の期待型に当たったリテラルもその場で
+  既定に確定させ、`Number` が診断に漏れる経路を全廃 (corpus scan 0 件)。
+  claim したのに AST を書き換えられない形は型を主張しない (backend に
+  `Expr::Number` が届くのを防ぐ)。
+
 - **NUMBER-HINT: suffix なし整数リテラルの位置ベース解決** — 型注釈 /
   呼び出し引数 / 戻り値 (tail・`return`) が未解決リテラルの型を決める
   (narrow int 含む、範囲外は変換エラー)。`finalize_number_types` を
@@ -913,11 +921,6 @@
 
 ### 型システム (NEW-TYPE-SYSTEM)
 
-- **NUMBER-HINT の残** ★★ — 既定を `u64` から `i64` に変えるかの判断。
-  u64 減算は RUNTIME-TRAP で panic するので、注釈を省いたコードが
-  実行時に落ちる (`val a = 5` / `val b = 10` / `a - b`)。位置ベースの
-  解決が入って「最後まで決まらないリテラル」は減ったので、影響範囲を
-  測ってから決める。
 
 - **MOVE-CONDITIONAL: 分岐 / ループからの移動** ★ — 現状は E0014 で拒否。
   許すには実行時 drop flag (Rust と同じ) が要る。実プログラムで踏んだら着手。

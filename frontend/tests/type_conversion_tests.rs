@@ -179,6 +179,74 @@ mod numeric_literal_conversion {
     }
 
     #[test]
+    fn test_every_position_that_names_a_type_claims_its_literals() {
+        // NUMBER-HINT: the set of positions is the whole point — one
+        // that knows what it expects but does not claim the literal
+        // forces a suffix, and leaks the internal `Number` placeholder
+        // into its diagnostic when it mismatches. Each line here was a
+        // separate hole. (The impl-block positions — method and
+        // associated-function arguments — need the interpreter's
+        // driver, so they are pinned in
+        // `interpreter/tests/language_core_tests.rs` instead, which
+        // also *runs* the program.)
+        let source = r#"
+            struct P { x: i64 }
+            struct B<T> { v: T }
+            enum E { V(i64) }
+
+            fn take(n: i64) -> i64 { n }
+
+            fn main() -> u64 {
+                val p = P { x: 5 }                      # struct field
+                val b: B<i64> = B { v: 5 }              # generic struct field
+                val arr: [i64; 3] = [1, 2, 3]           # annotated array element
+                val sib = [1i64, 2, 3]                  # sibling-typed array element
+                val tup: (i64, i64) = (1, 2)            # tuple element
+                val dic: dict[str, i64] = dict{"a": 1}  # dict value
+                val e = E::V(5)                         # enum payload
+                val clo = fn(x: i64) -> i64 { x }       # closure parameter
+                val tail = fn() -> i64 { 5 }            # closure body tail
+                val called = take(5)                    # function argument
+
+                var m: i64 = 0i64
+                m = 5                                   # assignment
+                m += 5                                  # compound assignment
+
+                var q = P { x: 0i64 }
+                q.x = 5                                 # field assignment
+
+                # `b.v` is read in the interpreter-side test instead: this
+                # helper never visits struct declarations, so a generic
+                # field access still reports `Generic(T)` here.
+                println(p.x + arr[0] + sib[0] + tup.0 + m + q.x + tail() + clo(5) + called)
+                println(dic)
+                println(e)
+                0
+            }
+        "#;
+        assert_eq!(parse_and_check(source), Ok(()));
+    }
+
+    #[test]
+    fn test_a_claimed_literal_is_rewritten_not_just_retyped() {
+        // A position that reports the resolved type but leaves an
+        // `Expr::Number` in the pool type-checks a program no backend
+        // can run. The branch tails of an `if` / `match` and a closure
+        // body are the shapes where the literal sits several levels
+        // below the expression whose type was claimed.
+        let source = r#"
+            fn branch(n: i64) -> i64 { if n > 0i64 { 1 } elif n > 5i64 { 2 } else { 3 } }
+            fn arm(n: i64) -> i64 { match n { 0i64 => 1, _ => 2 } }
+            fn main() -> u64 {
+                val c = fn(x: i64) -> i64 { if x > 0i64 { 1 } else { 2 } }
+                println(branch(1i64) + arm(0i64) + c(1i64))
+                0
+            }
+        "#;
+        assert!(parse_and_check(source).is_ok());
+    }
+
+    #[test]
     fn test_bare_number_in_explicit_return() {
         // `return 0` names the same position as the tail expression.
         let source = r#"

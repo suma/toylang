@@ -624,21 +624,46 @@ that states an expected integer type claims it:
 | Position | Example | Literal becomes |
 |---|---|---|
 | Binding annotation | `val c: i64 = 10` | `i64` |
-| Call argument | `f(21)` for `fn f(x: i64)` | `i64` |
+| Assignment target | `m = 5` where `m: i64` | `i64` |
+| Function / method / associated-function argument | `f(21)` for `fn f(x: i64)` | `i64` |
+| Closure parameter | `c(5)` for `fn(x: i64) -> i64` | `i64` |
 | Declared return type (tail expression) | `fn main() -> u64 { 0 }` | `u64` |
 | Explicit `return` | `return 1` in `fn f() -> i64` | `i64` |
+| Closure body | `fn() -> i64 { 5 }` | `i64` |
+| Struct field | `P { x: 5 }` for `x: i64` | `i64` |
+| Enum payload | `E::V(5)` for `V(i64)` | `i64` |
+| Array / tuple / dict element | `val a: [i64; 3] = [1, 2, 3]` | `i64` |
+| A typed sibling element | `[1i64, 2, 3]` | `i64` |
 | Arithmetic with a typed operand | `c - 40` where `c: i64` | `i64` |
 | Unary minus | `-5` | `i64` |
+
+The branch tails of an `if` / `elif` / `match` count as the position
+their enclosing expression is in, so `fn f() -> i64 { if c { 1 } else
+{ 2 } }` needs no suffixes.
+
+A generic position is not one of these — there is no concrete type to
+take, and the literal is what decides the parameter:
+
+```
+fn id<T>(x: T) -> T { x }
+val v: i64 = id(5)      # `5` resolves through the annotation, not `T`
+val b = B { v: 5 }      # struct B<T> { v: T } — B<u64>, by the default
+val b: B<i64> = B { v: 5 }   # annotated: B<i64>
+```
 
 All of these accept the narrow widths too, and the value is
 range-checked against the target: `f(300)` for `fn f(x: u8)` is a
 conversion error, not a silent wrap.
 
 A literal that reaches none of these positions falls back to
-**`u64`**. That default is load-bearing: `u64` subtraction traps on
-underflow (see *Runtime traps*), so `val a = 5  val b = 10  a - b`
-panics rather than producing `-5`. Annotate when the value can go
-negative.
+**`u64`**. So does one that reaches a position expecting a
+non-integer type — that is a type error either way, and reporting
+`expected bool, but got u64` gives the reader a type they can act on.
+
+The fallback is **`u64`**, and it is load-bearing: `u64` subtraction
+traps on underflow (see *Runtime traps*), so `val a = 5  val b = 10
+a - b` panics rather than producing `-5`. Annotate when the value can
+go negative.
 
 The resolution is per function and per literal. A literal in one
 function is never decided by an annotation in another, and an

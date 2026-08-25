@@ -11052,3 +11052,36 @@ fn an_annotated_sibling_does_not_retype_neighbouring_literals() {
     "#;
     assert_consistent(src, "unsuffixed_literal_sibling_annotation");
 }
+
+#[test]
+fn literal_positions_resolve_identically_across_backends() {
+    // NUMBER-HINT: assignment, closure parameter and body, enum
+    // payload, associated-function argument, array siblings, and the
+    // branch tails of `if` / `match`. The type each literal lands on
+    // is runtime-observable, and the failure mode of getting it wrong
+    // is a raw `Expr::Number` reaching lowering, so all three backends
+    // have to run this.
+    let src = r#"
+        struct S { n: i64 }
+        enum E { V(i64) }
+        impl S {
+            fn make(n: i64) -> S { S { n: n } }
+        }
+
+        fn branch(n: i64) -> i64 { if n > 5i64 { 1 } elif n > 2i64 { 2 } else { 3 } }
+        fn arm(n: i64) -> i64 { match n { 0i64 => 10, _ => 20 } }
+
+        fn main() -> i64 {
+            var m: i64 = 0i64
+            m = 5
+            val sib = [1i64, 2, 3]
+            val e = E::V(5)
+            val payload = match e { E::V(v) => v }
+            val s = S::make(5)
+            val c = fn(x: i64) -> i64 { if x > 0i64 { 100 } else { 200 } }
+            val t = fn() -> i64 { 5 }
+            m + sib[1] + payload + s.n + c(1i64) + t() + branch(3i64) + arm(0i64)
+        }
+    "#;
+    assert_consistent(src, "unsuffixed_literal_positions_all");
+}

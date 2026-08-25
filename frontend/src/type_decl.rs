@@ -267,6 +267,27 @@ impl TypeDecl {
         }
     }
 
+    /// NUMBER-HINT: does this type still mention an unsubstituted
+    /// generic parameter? A type that does names nothing concrete,
+    /// so it must not be handed out as a type hint — the checks that
+    /// read the hint would start demanding `Generic(T)` values.
+    pub fn contains_generic(&self) -> bool {
+        match self {
+            TypeDecl::Generic(_) => true,
+            TypeDecl::Array(elems, _) => elems.iter().any(|t| t.contains_generic()),
+            TypeDecl::Dict(k, v) => k.contains_generic() || v.contains_generic(),
+            TypeDecl::Tuple(elems) => elems.iter().any(|t| t.contains_generic()),
+            TypeDecl::Struct(_, args) => args.iter().any(|t| t.contains_generic()),
+            TypeDecl::Enum(_, args) => args.iter().any(|t| t.contains_generic()),
+            TypeDecl::Range(t) => t.contains_generic(),
+            TypeDecl::Ref { inner, .. } => inner.contains_generic(),
+            TypeDecl::Function(params, ret) => {
+                params.iter().any(|t| t.contains_generic()) || ret.contains_generic()
+            }
+            _ => false,
+        }
+    }
+
     /// Substitute generic type parameters with concrete types
     pub fn substitute_generics(&self, substitutions: &std::collections::HashMap<DefaultSymbol, TypeDecl>) -> TypeDecl {
         match self {

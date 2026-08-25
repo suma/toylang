@@ -337,26 +337,28 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.type_inference.type_hint = original_hint.clone();
 
         // If we have type hints and the inferred types are Unknown, use the hint types
+        // NUMBER-HINT: the annotation's key / value type names what
+        // an unsuffixed literal in the entry should become; the
+        // default applies only where no annotation did. `coerce_number_expr`
+        // settles the literal on the default for a non-integer target
+        // too, so a `dict[str, str]` with a numeric value reports
+        // `found u64` rather than the internal placeholder.
         let final_key_type = if key_type == TypeDecl::Unknown && expected_key_type.is_some() {
             expected_key_type.clone().unwrap()
+        } else if key_type == TypeDecl::Number {
+            let target = expected_key_type.clone().unwrap_or(TypeDecl::UInt64);
+            self.coerce_number_expr(first_key, &key_type, &target)?
         } else {
-            // Convert Number to concrete type
-            if key_type == TypeDecl::Number {
-                TypeDecl::UInt64  // Default numeric type for keys
-            } else {
-                key_type
-            }
+            key_type
         };
 
         let final_value_type = if value_type == TypeDecl::Unknown && expected_value_type.is_some() {
             expected_value_type.clone().unwrap()
+        } else if value_type == TypeDecl::Number {
+            let target = expected_value_type.clone().unwrap_or(TypeDecl::UInt64);
+            self.coerce_number_expr(first_value, &value_type, &target)?
         } else {
-            // Convert Number to concrete type
-            if value_type == TypeDecl::Number {
-                TypeDecl::UInt64  // Default numeric type for values
-            } else {
-                value_type
-            }
+            value_type
         };
 
         // Verify all entries have consistent types - static typing requirement
@@ -376,26 +378,25 @@ impl<'a> TypeCheckerVisitor<'a> {
             self.type_inference.type_hint = original_hint.clone();
 
             // Use final types for consistency checking
+            // NUMBER-HINT: later entries take their type from the
+            // annotation, else from the type the first entry settled
+            // on, so `dict{"a": 1i64, "b": 2}` needs the suffix once.
             let check_key_type = if k_type == TypeDecl::Unknown && expected_key_type.is_some() {
                 expected_key_type.clone().unwrap()
+            } else if k_type == TypeDecl::Number {
+                let target = expected_key_type.clone().unwrap_or_else(|| final_key_type.clone());
+                self.coerce_number_expr(key_ref, &k_type, &target)?
             } else {
-                // Convert Number to concrete type
-                if k_type == TypeDecl::Number {
-                    TypeDecl::UInt64
-                } else {
-                    k_type
-                }
+                k_type
             };
 
             let check_value_type = if v_type == TypeDecl::Unknown && expected_value_type.is_some() {
                 expected_value_type.clone().unwrap()
+            } else if v_type == TypeDecl::Number {
+                let target = expected_value_type.clone().unwrap_or_else(|| final_value_type.clone());
+                self.coerce_number_expr(value_ref, &v_type, &target)?
             } else {
-                // Convert Number to concrete type
-                if v_type == TypeDecl::Number {
-                    TypeDecl::UInt64
-                } else {
-                    v_type
-                }
+                v_type
             };
 
             if check_key_type != final_key_type {
@@ -683,12 +684,29 @@ impl<'a> TypeCheckerVisitor<'a> {
                 } // end of nesting level guard
             }
 
-        // Handle Number types when no type hint was provided
-        if original_hint.is_none() {
+        // NUMBER-HINT: settle any element still carrying the
+        // unresolved-literal placeholder. It gets here when no
+        // annotation named the element type — including when the
+        // ambient hint is not an array hint at all, as in
+        // `fn main() -> bool { val a = [true, 1] ... }`, where the
+        // `bool` belongs to the function, not the array.
+        //
+        // A sibling element that does carry an integer type names the
+        // array's element type, so `[1i64, 2, 3]` needs the suffix
+        // once rather than on every element. Failing that the
+        // literals take the default, which also keeps a genuinely
+        // mixed array's homogeneity error below naming a type the
+        // reader can write rather than the placeholder.
+        if element_types.contains(&TypeDecl::Number) {
+            let element_target = element_types
+                .iter()
+                .find(|t| Self::is_integer_target(t))
+                .cloned()
+                .unwrap_or(TypeDecl::UInt64);
             for (i, element) in elements.iter().enumerate() {
                 if element_types[i] == TypeDecl::Number {
-                    self.transform_numeric_expr(element, &TypeDecl::UInt64)?;
-                    element_types[i] = TypeDecl::UInt64;
+                    element_types[i] =
+                        self.coerce_number_expr(element, &TypeDecl::Number, &element_target)?;
                 }
             }
         }

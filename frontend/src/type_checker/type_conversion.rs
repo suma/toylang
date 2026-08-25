@@ -636,10 +636,46 @@ impl<'a> TypeCheckerVisitor<'a> {
         ty: &TypeDecl,
         target: &TypeDecl,
     ) -> Result<TypeDecl, TypeCheckError> {
-        if *ty != TypeDecl::Number || !Self::is_integer_target(target) {
+        if *ty != TypeDecl::Number {
             return Ok(ty.clone());
         }
-        self.propagate_number_subtree(expr_ref, target)?;
+        let target = if Self::is_integer_target(target) {
+            target.clone()
+        } else {
+            // The target is not an integer type, and an integer
+            // literal can never become one, so this is a mismatch.
+            // Settle the literal on its default anyway: the caller is
+            // about to report the error, and `expected bool, but got
+            // u64` names a type the reader can act on where `got
+            // Number` names an internal placeholder. Leaving it
+            // unresolved also let the default pass trip over it later
+            // ("Unsupported operation 'transform' for type Unknown"),
+            // burying the real diagnostic under a cascade.
+            //
+            // A target that is still generic is *not* a mismatch —
+            // the literal is what decides the parameter — so it keeps
+            // its placeholder and the usual inference runs.
+            let normalized = self.normalize_generic_identifier(target);
+            if normalized.contains_generic()
+                || matches!(
+                    normalized,
+                    TypeDecl::Unknown | TypeDecl::Number | TypeDecl::Self_
+                )
+            {
+                return Ok(ty.clone());
+            }
+            TypeDecl::UInt64
+        };
+        let target = &target;
+        // Claim the type only if every literal underneath was
+        // actually rewritten. Reporting the resolved type while
+        // leaving an `Expr::Number` in the pool type-checks a program
+        // no backend can run ("Internal error: Expr::Number should be
+        // transformed to concrete type during type checking"), which
+        // is strictly worse than making the author write a suffix.
+        if !self.propagate_number_subtree(expr_ref, target)? {
+            return Ok(ty.clone());
+        }
         // The visit cached `Number` for this node; later readers
         // (the return-type comparison, an enclosing block) must see
         // the resolved type instead.
@@ -648,19 +684,20 @@ impl<'a> TypeCheckerVisitor<'a> {
         Ok(target.clone())
     }
 
-    /// Walk the operand structure of an all-literal expression,
-    /// recording every `Number` leaf for `target`. Only the shapes
-    /// that can carry an unresolved `Number` type outward are
-    /// traversed — a literal, a name bound to one, and the arithmetic
-    /// that combines them. Anything else already has a concrete type,
-    /// so there is nothing to claim.
+    /// Walk the structure of an expression whose type came back as
+    /// `Number`, rewriting every literal leaf to `target`.
+    ///
+    /// Returns whether the whole subtree was accounted for. A shape
+    /// this does not know how to descend into returns `false` so the
+    /// caller leaves the expression alone rather than claiming a type
+    /// for literals it never rewrote.
     fn propagate_number_subtree(
         &mut self,
         expr_ref: &ExprRef,
         target: &TypeDecl,
-    ) -> Result<(), TypeCheckError> {
+    ) -> Result<bool, TypeCheckError> {
         let Some(expr) = self.core.expr_pool.get(expr_ref) else {
-            return Ok(());
+            return Ok(false);
         };
         match expr {
             // Transform the leaf right here rather than queueing it in
@@ -668,7 +705,10 @@ impl<'a> TypeCheckerVisitor<'a> {
             // later `val` redefines a binding, which silently dropped
             // the record and let the default pass claim the literal
             // back. A direct rewrite cannot be undone that way.
-            Expr::Number(_) => self.transform_numeric_expr(expr_ref, target),
+            Expr::Number(_) => {
+                self.transform_numeric_expr(expr_ref, target)?;
+                Ok(true)
+            }
             Expr::Identifier(name) => {
                 if self.context.get_var(name) == Some(TypeDecl::Number) {
                     self.context.update_var_type(name, target.clone());
@@ -678,14 +718,43 @@ impl<'a> TypeCheckerVisitor<'a> {
                         self.transform_numeric_expr(&mapped, target)?;
                     }
                 }
-                Ok(())
+                Ok(true)
             }
             Expr::Binary(_, lhs, rhs) => {
-                self.propagate_number_subtree(&lhs, target)?;
-                self.propagate_number_subtree(&rhs, target)
+                let l = self.propagate_number_subtree(&lhs, target)?;
+                let r = self.propagate_number_subtree(&rhs, target)?;
+                Ok(l && r)
             }
             Expr::Unary(_, operand) => self.propagate_number_subtree(&operand, target),
-            _ => Ok(()),
+            // A block's value is its tail expression, so that is where
+            // the literal to rewrite lives — as in a closure body
+            // (`fn() -> i64 { 5 }`) or a braced branch.
+            Expr::Block(statements) => match statements.last() {
+                Some(last) => match self.core.stmt_pool.get(last) {
+                    Some(Stmt::Expression(e)) => self.propagate_number_subtree(&e, target),
+                    _ => Ok(false),
+                },
+                None => Ok(false),
+            },
+            // Every branch of an `if` / `match` contributes a value of
+            // the expression's type, so all of them carry literals to
+            // rewrite.
+            Expr::IfElifElse(_, then_block, elifs, else_block) => {
+                let mut all = self.propagate_number_subtree(&then_block, target)?;
+                for (_, block) in &elifs {
+                    all &= self.propagate_number_subtree(block, target)?;
+                }
+                all &= self.propagate_number_subtree(&else_block, target)?;
+                Ok(all)
+            }
+            Expr::Match(_, arms) => {
+                let mut all = true;
+                for arm in &arms {
+                    all &= self.propagate_number_subtree(&arm.body, target)?;
+                }
+                Ok(all)
+            }
+            _ => Ok(false),
         }
     }
 }

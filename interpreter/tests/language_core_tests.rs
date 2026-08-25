@@ -3138,3 +3138,101 @@ mod enum_and_match {
     }
 }
 
+
+mod unsuffixed_literals {
+    //! NUMBER-HINT: an unsuffixed integer literal takes its type from
+    //! the position it lands in. These run the program rather than
+    //! stopping at the type check, because the failure mode that
+    //! matters is a position that reports the resolved type while
+    //! leaving an `Expr::Number` in the pool — that type-checks and
+    //! then dies at run time with "Expr::Number should be transformed
+    //! to concrete type during type checking".
+
+    use super::helpers::execute_test_program;
+
+    #[test]
+    fn every_position_that_names_a_type_claims_its_literals() {
+        // Each of these was a separate hole. The sum is arranged so a
+        // literal that took the wrong type fails the `i64` addition
+        // rather than quietly producing the right number.
+        let source = r#"
+struct P { x: i64 }
+struct B<T> { v: T }
+struct S { n: i64 }
+enum E { V(i64) }
+impl S {
+    fn make(n: i64) -> S { S { n: n } }
+    fn add(&self, d: i64) -> i64 { self.n + d }
+}
+
+fn take(n: i64) -> i64 { n }
+
+fn main() -> i64 {
+    val p = P { x: 5 }                      # struct field
+    val b: B<i64> = B { v: 5 }              # generic struct field
+    val arr: [i64; 3] = [1, 2, 3]           # annotated array element
+    val sib = [1i64, 2, 3]                  # sibling-typed array element
+    val tup: (i64, i64) = (1, 2)            # tuple element
+    val e = E::V(5)                         # enum payload
+    val s = S::make(5)                      # associated function argument
+    val clo = fn(x: i64) -> i64 { x }       # closure parameter
+    val tail = fn() -> i64 { 5 }            # closure body tail
+
+    var m: i64 = 0i64
+    m = 5                                   # assignment
+    m += 5                                  # compound assignment
+
+    var q = P { x: 0i64 }
+    q.x = 5                                 # field assignment
+
+    val payload = match e { E::V(n) => n }
+    p.x + b.v + arr[0] + sib[1] + tup.0 + m + q.x
+        + payload + s.add(5) + take(5) + clo(5) + tail()
+}
+"#;
+        // 5 + 5 + 1 + 2 + 1 + 10 + 5 + 5 + 10 + 5 + 5 + 5
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(59)"), "got: {}", result);
+    }
+
+    #[test]
+    fn a_claimed_literal_is_rewritten_all_the_way_down() {
+        // The literal can sit several levels below the expression
+        // whose type was claimed: branch tails of an `if` / `elif` /
+        // `match`, and a closure body block. Claiming the type without
+        // descending into those left the raw literal in the pool.
+        let source = r#"
+fn branch(n: i64) -> i64 { if n > 5i64 { 1 } elif n > 2i64 { 2 } else { 3 } }
+fn arm(n: i64) -> i64 { match n { 0i64 => 10, _ => 20 } }
+
+fn main() -> i64 {
+    val c = fn(x: i64) -> i64 { if x > 0i64 { 100 } else { 200 } }
+    branch(3i64) + arm(0i64) + c(1i64)
+}
+"#;
+        // 2 + 10 + 100
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(112)"), "got: {}", result);
+    }
+
+    #[test]
+    fn a_mismatch_names_a_type_the_reader_can_write() {
+        // An integer literal can never become a `bool`, so the
+        // diagnostic must name the type the literal actually has
+        // rather than the checker's internal placeholder — a reader
+        // cannot act on "got Number", and it does not parse.
+        let source = r#"
+fn f(b: bool) -> bool { b }
+fn main() -> u64 {
+    println(f(5))
+    0
+}
+"#;
+        let err = execute_test_program(source).expect_err("should fail type checking");
+        assert!(
+            err.contains("expected bool, but got u64"),
+            "got: {err}"
+        );
+        assert!(!err.contains("Number"), "leaked the Number placeholder: {err}");
+    }
+}

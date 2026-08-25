@@ -801,8 +801,14 @@ impl<'a> TypeCheckerVisitor<'a> {
                     // substitutions applied so inner literals / nested
                     // variants see the concrete expected type.
                     let resolved_hint = expected_ty.substitute_generics(&substitutions);
-                    self.type_inference.type_hint = Some(resolved_hint);
+                    self.type_inference.type_hint = Some(resolved_hint.clone());
                     let actual_ty = self.visit_expr(arg_expr)?;
+                    // NUMBER-HINT: the declared payload type names what
+                    // an unsuffixed literal in `E::V(5)` should become.
+                    // A generic payload has nothing concrete to offer,
+                    // so the coercion no-ops and the literal's own
+                    // resolution decides `T`.
+                    let actual_ty = self.coerce_number_expr(arg_expr, &actual_ty, &resolved_hint)?;
                     // When the declared payload references a generic parameter,
                     // record the argument's concrete type as that parameter.
                     if let TypeDecl::Generic(p) = expected_ty
@@ -936,6 +942,8 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         for (arg_expr, (_, expected_ty)) in args.iter().zip(params.iter()) {
             let actual_ty = self.visit_expr(arg_expr)?;
+            // NUMBER-HINT: same rule as a free function call.
+            let actual_ty = self.coerce_number_expr(arg_expr, &actual_ty, expected_ty)?;
             if !self.is_arg_compatible_dyn_aware(&actual_ty, expected_ty) && !matches!(actual_ty, TypeDecl::Unknown) {
                 return Err(TypeCheckError::type_mismatch(
                     expected_ty.clone(),

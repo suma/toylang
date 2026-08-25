@@ -433,15 +433,16 @@ extern "C" fn jit_to_string_u64(v: u64) -> u64 {
     unsafe { jit_str_alloc_from_bytes(s.as_ptr(), s.len() as u64) }
 }
 extern "C" fn jit_to_string_f64(v: f64) -> u64 {
-    // Same display rule as `Object::Float64::to_display_string` —
-    // integral values get a trailing `.0`, others use `%g`-like
-    // formatting (Rust's default Display for f64 is close enough
-    // for the small magnitudes interpolation typically prints).
-    let s = if v == (v as i64) as f64 {
-        format!("{v:.1}")
-    } else {
-        format!("{v}")
-    };
+    // Delegate to the canonical rule rather than restating it. An
+    // earlier copy tested `v == (v as i64) as f64`, which saturates
+    // for magnitudes beyond i64 and so dropped the trailing `.0`
+    // (and picked shortest-round-trip digits) exactly where
+    // `println(v)` — which already routed through
+    // `to_display_string` via `jit_print_f64` — kept them. That made
+    // `println("{v}")` and `println(v)` disagree inside this same
+    // file, and both disagree with the interpreter and AOT.
+    let s = crate::object::Object::Float64(v)
+        .to_display_string(&string_interner::DefaultStringInterner::new());
     unsafe { jit_str_alloc_from_bytes(s.as_ptr(), s.len() as u64) }
 }
 extern "C" fn jit_to_string_bool(v: u8) -> u64 {

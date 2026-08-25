@@ -6800,6 +6800,63 @@ fn f64_display_canonical_is_rust_display() {
     assert_stdout_consistent(src, "f64_display_canonical");
 }
 
+#[test]
+fn f64_interpolation_agrees_with_the_interpreter_jit() {
+    // The sweeps above go through `println(v)`, which every backend
+    // renders with its `print_f64` helper. String interpolation takes a
+    // different road — `__builtin_to_string(v)` — and the interpreter
+    // JIT is the one column that used to implement that road's f64 rule
+    // by hand (`v == (v as i64) as f64`) instead of delegating to
+    // `Object::to_display_string`. `as i64` saturates, so beyond i64's
+    // range the hand-written test went false and the value printed with
+    // shortest-round-trip digits and no trailing `.0`, disagreeing with
+    // the interpreter, the AOT binary — and with `println(v)` in the
+    // very same run.
+    //
+    // `assert_stdout_consistent` cannot pin this: its lite path returns
+    // as soon as the tree-walker, the AOT binary and the *compiler*-side
+    // JIT agree, and those three were always right. So drive the
+    // interpreter's own JIT column directly, the way
+    // `the_interpreter_jit_compares_str_content_too` does.
+    //
+    // 10^30 is built by multiplication because toylang has no
+    // scientific-notation literals; it is far outside i64.
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            var big: f64 = 1f64
+            for i in 0u64 to 30u64 {
+                big = big * 10f64
+            }
+            println("{big}")
+            println(big)
+            0u64
+        }
+    "#;
+    let core = core_modules_dir();
+    let mut parser = frontend::ParserWithInterner::new(src);
+    let checked = checked_program(src, &mut parser, Some(core.as_path()))
+        .expect("interpreter type-check (with core)");
+    let interp = checked_interpreter_stdout(&checked, src);
+    let jit = checked_jit_stdout(&checked, src);
+
+    // Both lines of the tree-walker's own output must already match
+    // each other — interpolation and `println` are the two roads.
+    let mut lines = interp.lines();
+    let (a, b) = (lines.next().unwrap(), lines.next().unwrap());
+    assert_eq!(a, b, "interpolation and println disagree in the tree-walker");
+
+    assert_eq!(
+        interp, jit,
+        "the interpreter JIT's `__builtin_to_string(f64)` drifted from \
+         `Object::to_display_string`",
+    );
+    // And the compiled backends agree on the same source.
+    assert_stdout_consistent(src, "f64_interpolation_jit");
+}
+
 // LABEL: 3-way pin for `@label: while/for` + `break @label` /
 // `continue @label`. Both round-trips exercise nested loops where
 // the label resolves through multiple loop_stack frames.

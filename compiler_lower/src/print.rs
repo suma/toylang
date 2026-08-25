@@ -42,7 +42,11 @@ impl<'a> FunctionLower<'a> {
         // expression so we route them through the dedicated `PrintStr`
         // instruction (avoiding a `Type::Str` value flow).
         if let Some(Expr::String(sym)) = self.program.expression.get(&args[0]) {
-            self.emit(InstKind::PrintStr { message: sym, newline }, None);
+            let bytes_len = self.interner.resolve(sym).unwrap_or("").len();
+            self.emit(
+                InstKind::PrintStr { message: sym, bytes_len, newline },
+                None,
+            );
             return Ok(None);
         }
         // Struct- and tuple-typed identifier arguments: read the

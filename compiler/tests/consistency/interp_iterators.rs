@@ -1020,3 +1020,43 @@ fn comparison_chain_three_ops_round_trip() {
 // desugared form. These tests pin interpreter / JIT / AOT agreement
 // for the four canonical cases.
 // ---------------------------------------------------------------------
+
+#[test]
+fn a_str_containing_a_nul_prints_all_of_itself() {
+    // `toy_print_str` used to take the byte_start of the str layout and
+    // scan forward for the terminator, so a str with a NUL in it stopped
+    // there: `"ab\u{0}cd"` printed as `ab` on the AOT binary and both
+    // JITs, while the tree-walker printed all five bytes. The length is
+    // part of the layout -- nothing needed scanning for.
+    //
+    // `\u{0}` is the reachable way to write one; the escape is decoded
+    // at lex time, so the NUL is in the literal's bytes.
+    let src = r#"
+        fn main() -> u64 {
+            val a = "ab\u{0}cd"
+            println(a)
+            println("{a}")
+            println("x\u{0}y".concat("z\u{0}w"))
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "str_with_nul");
+}
+
+#[test]
+fn a_printed_literal_containing_a_nul_survives_the_rodata_path() {
+    // A bare string-literal argument takes a different road: the lower
+    // emits `PrintStr`, which reads a `.rodata` blob rather than a
+    // runtime str value. That blob had no length field at all for the
+    // codegen-synthesised fragments, so it gained one when the helper
+    // stopped scanning.
+    let src = r#"
+        fn main() -> u64 {
+            println("lit\u{0}eral")
+            print("two\u{0}part")
+            println("")
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "literal_with_nul");
+}

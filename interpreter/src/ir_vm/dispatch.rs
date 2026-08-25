@@ -99,7 +99,7 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
                 crate::output::print_text(&text);
             }
         }
-        InstKind::PrintStr { message, newline } => {
+        InstKind::PrintStr { message, newline, .. } => {
             let text = vm
                 .interner()
                 .and_then(|i| i.resolve(*message))

@@ -1076,13 +1076,20 @@ impl<M: Module> CodegenSession<M> {
     /// monotonic counter (the bytes themselves are the cache key, not
     /// the symbol name) so we don't have to escape arbitrary content
     /// into a linker-safe identifier.
+    ///
+    /// Layout matches `declare_print_string` and
+    /// `declare_const_str_bytes` (`[bytes][NUL][u64 len LE]`). It used
+    /// to stop at the NUL, because the print helper walked to the
+    /// terminator instead of reading a length; every str blob is the
+    /// same shape now.
     fn declare_raw_print_string(&mut self, bytes: Vec<u8>) -> Result<(), String> {
         if self.raw_print_strings.contains_key(&bytes) {
             return Ok(());
         }
-        let mut payload = Vec::with_capacity(bytes.len() + 1);
+        let mut payload = Vec::with_capacity(bytes.len() + 1 + 8);
         payload.extend_from_slice(&bytes);
         payload.push(0);
+        payload.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
         let name = format!("toy_print_raw_{}", self.raw_print_strings.len());
         let data_id = self
             .module
@@ -1119,10 +1126,9 @@ impl<M: Module> CodegenSession<M> {
         //   - `__builtin_str_len(s)` → `load.i64(s, 0)`
         //   - `__builtin_str_to_ptr(s)` → `s - 1 - len`
         //     (`-1` for the NUL byte, `-len` for the bytes)
-        //   - `Print { value, value_ty: Str }` reads the same len +
-        //     computes byte_ptr the same way, then calls
-        //     `toy_print_str(byte_ptr, len)` (runtime now uses
-        //     `fwrite` instead of `puts`/`fputs`).
+        //   - `Print { value, value_ty: Str }` hands the helper the
+        //     str value itself; `toy_print_str` reads the len and
+        //     walks back to the bytes.
         //
         // The trailing NUL is preserved so legacy C interop that
         // wants a cstring (e.g. `puts` callers) still works against

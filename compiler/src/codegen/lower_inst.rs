@@ -772,27 +772,17 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     (IrType::Bool, false) => (self.runtime.print_bool, v),
                     (IrType::Bool, true) => (self.runtime.println_bool, v),
                     (IrType::Str, _) => {
-                        // The str runtime value points at the u64
-                        // len field (see ConstStr codegen above);
-                        // toy_print_str / toy_println_str expect a
-                        // NUL-terminated cstring at the byte_start.
-                        // Compute byte_start = len_field_addr - 1
-                        // (NUL) - len.
-                        let len = self.builder.ins().load(
-                            types::I64,
-                            cranelift_codegen::ir::MemFlags::new(),
-                            v,
-                            0,
-                        );
-                        let one = self.builder.ins().iconst(types::I64, 1);
-                        let nul_offset = self.builder.ins().iadd(len, one);
-                        let byte_start = self.builder.ins().isub(v, nul_offset);
+                        // The helpers take the str value as-is and read
+                        // its length field, so there is nothing to
+                        // compute here. (This used to hand them the
+                        // byte_start and let them walk to the NUL,
+                        // which truncated any str containing one.)
                         let helper = if *newline {
                             self.runtime.println_str
                         } else {
                             self.runtime.print_str
                         };
-                        (helper, byte_start)
+                        (helper, v)
                     }
                     (IrType::Unit, _) => {
                         return Err(
@@ -820,12 +810,19 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 };
                 self.builder.ins().call(helper, &[call_value]);
             }
-            InstKind::PrintStr { message, newline } => {
+            InstKind::PrintStr { message, bytes_len, newline } => {
                 let gv = *self
                     .print_imports
                     .get(message)
                     .ok_or_else(|| format!("missing print import for #{}", message.to_usize()))?;
-                let addr = self.builder.ins().symbol_value(types::I64, gv);
+                // The symbol points at the byte_start; the helper wants
+                // the handle, which is `bytes_len + 1` further on (the
+                // `+1` steps over the NUL).
+                let symbol_addr = self.builder.ins().symbol_value(types::I64, gv);
+                let addr = self
+                    .builder
+                    .ins()
+                    .iadd_imm(symbol_addr, (*bytes_len as i64) + 1);
                 let helper = if *newline {
                     self.runtime.println_str
                 } else {
@@ -878,7 +875,11 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     .raw_print_imports
                     .get(key)
                     .ok_or_else(|| format!("missing raw print import for {text:?}"))?;
-                let addr = self.builder.ins().symbol_value(types::I64, gv);
+                let symbol_addr = self.builder.ins().symbol_value(types::I64, gv);
+                let addr = self
+                    .builder
+                    .ins()
+                    .iadd_imm(symbol_addr, (text.len() as i64) + 1);
                 let helper = if *newline {
                     self.runtime.println_str
                 } else {

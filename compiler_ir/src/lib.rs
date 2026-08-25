@@ -929,7 +929,11 @@ pub enum InstKind {
     /// `print("literal")` / `println("literal")`. The string is laid
     /// out in `.rodata` by codegen and the helper is `toy_print_str` /
     /// `toy_println_str`.
-    PrintStr { message: DefaultSymbol, newline: bool },
+    ///
+    /// `bytes_len` is the literal's UTF-8 length, carried for the same
+    /// reason `ConstStr` carries it: the helpers take a str *handle*,
+    /// which sits `bytes_len + 1` past the `.rodata` symbol.
+    PrintStr { message: DefaultSymbol, bytes_len: usize, newline: bool },
     /// Materialise a `Type::Str` value pointing at the **u64 len
     /// field** of the string's `.rodata` blob (layout
     /// `[bytes][NUL][u64 len LE]`, see
@@ -1782,7 +1786,7 @@ impl fmt::Display for DisplayInst<'_> {
                 let kw = if *newline { "println" } else { "print" };
                 write!(f, "{kw} {value}: {value_ty}")
             }
-            InstKind::PrintStr { message, newline } => {
+            InstKind::PrintStr { message, newline, .. } => {
                 let kw = if *newline { "println_str" } else { "print_str" };
                 write!(f, "{kw} #{}", message.to_usize())
             }

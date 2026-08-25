@@ -510,36 +510,27 @@ pub extern "C" fn toy_println_f64(v: f64) {
     }
 }
 
-/// Walk a NUL-terminated string and return its bytes (without the
-/// terminator). str values are laid out `[bytes][NUL][u64 len]`, so
-/// every pointer the codegen hands the print helpers is terminated
-/// this way. Bounded to 1 MiB so a stray non-terminated pointer
-/// cannot loop forever.
-fn cstr_bytes<'a>(s: *const u8) -> &'a [u8] {
-    if s.is_null() {
-        return &[];
-    }
-    let mut len = 0usize;
-    let limit = 1 << 20;
-    while len < limit {
-        if unsafe { *s.add(len) } == 0 {
-            break;
-        }
-        len += 1;
-    }
-    unsafe { core::slice::from_raw_parts(s, len) }
-}
-
-/// Print a NUL-terminated string (the codegen passes the byte_start
-/// of a `[bytes][NUL][u64 len]` str value).
+/// Print a str value.
+///
+/// Takes the handle -- the address of the length field -- not the
+/// byte_start, and reads the length rather than scanning for the NUL.
+/// It used to do the latter, which meant a str containing a NUL printed
+/// only up to it: `"ab\u{0}cd"` came out as `ab` on every compiled
+/// backend while the tree-walker printed all five bytes. The length is
+/// right there in the layout; nothing had to be scanned for.
 #[unsafe(no_mangle)]
 pub extern "C" fn toy_print_str(s: *const u8) {
-    emit(cstr_bytes(s));
+    if s.is_null() {
+        return;
+    }
+    emit(str_bytes(s));
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn toy_println_str(s: *const u8) {
-    emit(cstr_bytes(s));
+    if !s.is_null() {
+        emit(str_bytes(s));
+    }
     emit(b"\n");
 }
 

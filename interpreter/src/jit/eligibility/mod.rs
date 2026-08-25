@@ -17,7 +17,7 @@ mod scalar;
 mod signature;
 
 pub(crate) use analyze::{analyze, EligibleSet};
-pub(crate) use checker::check_expr;
+pub(crate) use checker::Checker;
 pub(crate) use extern_dispatch::{
     concat_sym, enum_layout_for_codegen, jit_extern_dispatch_for, ExternDispatch,
 };

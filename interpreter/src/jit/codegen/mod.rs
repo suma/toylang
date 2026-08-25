@@ -2879,17 +2879,17 @@ impl<'a, 'b> State<'a, 'b> {
                 super::eligibility::EnumLocalInfo::new(*base, payload_ty),
             );
         }
-        super::eligibility::check_expr(
+        super::eligibility::Checker::new(
             self.program,
-            expr_ref,
-            &mut snapshot,
-            &mut compound_view,
             &empty_subs,
             self.struct_layouts,
+            &mut snapshot,
+            &mut compound_view,
             &mut callees,
             &mut hints,
             &mut reason,
         )
+        .check_expr(expr_ref)
         .ok_or_else(|| {
             reason
                 .unwrap_or_else(|| "type lookup failed in codegen".to_string())

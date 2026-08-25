@@ -20,7 +20,13 @@ impl<M: Module> CodegenSession<M> {
         func: &mut cranelift_codegen::ir::Function,
     ) -> HashMap<FuncId, cranelift_codegen::ir::FuncRef> {
         let mut imports = HashMap::with_capacity(self.fn_ids.len());
-        let entries: Vec<_> = self.fn_ids.iter().map(|(k, v)| (*k, *v)).collect();
+        // Sorted, because the order these are declared in is the order
+        // cranelift numbers them: iterating the HashMap made `fn3` in one
+        // run be `fn24` in the next, so `--emit clif` did not reproduce
+        // between two runs of the same binary and neither did the object
+        // file's import order.
+        let mut entries: Vec<_> = self.fn_ids.iter().map(|(k, v)| (*k, *v)).collect();
+        entries.sort_by_key(|(ir_id, _)| ir_id.0);
         for (ir_id, cl_id) in entries {
             let func_ref = self.declare_func_in_func_readonly(cl_id, func);
             imports.insert(ir_id, func_ref);

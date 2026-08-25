@@ -66,6 +66,28 @@ fn emit_object(dir: &Path, source: &str, name: &str, link_cache: Option<&Path>) 
     std::fs::read(&out).expect("read object")
 }
 
+/// Compile `source` to Cranelift IR text in a fresh process.
+fn emit_clif(dir: &Path, source: &str, name: &str) -> String {
+    let src_path = dir.join(format!("{name}.t"));
+    std::fs::write(&src_path, source).expect("write source");
+    let out = dir.join(format!("{name}.clif"));
+    let status = Command::new(BIN)
+        .arg(&src_path)
+        .arg("--emit=clif")
+        .arg("-o")
+        .arg(&out)
+        .arg("--core-modules")
+        .arg(core_modules_dir())
+        .output()
+        .expect("spawn compiler");
+    assert!(
+        status.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    std::fs::read_to_string(&out).expect("read clif")
+}
+
 /// A program broad enough to exercise the passes that were unordered:
 /// generic methods (which get monomorphised lazily, so their `FuncId`s
 /// follow the order bodies are lowered in), several distinct panic and
@@ -122,6 +144,34 @@ fn the_same_source_compiles_to_the_same_object_bytes() {
         first == second && second == third,
         "the same program produced different object bytes across processes; \
          something in lowering or codegen is iterating a HashMap/HashSet"
+    );
+}
+
+/// The object bytes were already reproducible when this was written; the
+/// *text* was not. `declare_imports` walked a `HashMap<FuncId, _>` and
+/// cranelift numbers imports in declaration order, so the same call came
+/// out as `fn3` in one run and `fn24` in the next, and every `call`
+/// referring to it moved with it.
+///
+/// That only ever hurt a reader -- and anyone diffing two `--emit clif`
+/// dumps to check a codegen change did not alter what is emitted, which
+/// is the one thing the dump is for.
+#[test]
+fn the_same_source_emits_the_same_clif_text() {
+    if skip_e2e() {
+        return;
+    }
+    let dir = unique_dir("clif");
+    let first = emit_clif(&dir, BROAD_PROGRAM, "a");
+    let second = emit_clif(&dir, BROAD_PROGRAM, "b");
+    let third = emit_clif(&dir, BROAD_PROGRAM, "c");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        first == second && second == third,
+        "the same program produced different CLIF text across processes; \
+         something feeding cranelift's declaration order is iterating a \
+         HashMap/HashSet"
     );
 }
 

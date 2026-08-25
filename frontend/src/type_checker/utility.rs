@@ -626,22 +626,5 @@ impl<'a> TypeCheckerVisitor<'a> {
         Ok(TypeDecl::Unit)
     }
     
-    /// Pre-scan statements for the first explicit numeric type declaration (i64 or u64).
-    /// Used to establish a type hint context for Number literal inference.
-    pub fn scan_numeric_type_hint(&self, statements: &[StmtRef]) -> Option<TypeDecl> {
-        for s in statements.iter() {
-            if let Some(stmt) = self.core.stmt_pool.get(s) {
-                match stmt {
-                    Stmt::Val(_, Some(type_decl), _) | Stmt::Var(_, Some(type_decl), _) => {
-                        if matches!(type_decl, TypeDecl::Int64 | TypeDecl::UInt64) {
-                            return Some(type_decl.clone());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        None
-    }
 
 }

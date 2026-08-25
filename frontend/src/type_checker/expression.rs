@@ -718,15 +718,12 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Clear type cache at the start of each block to limit cache scope
         self.optimization.type_cache.clear();
         
-        // Pre-scan for explicit type declarations and establish global type context
+        // NUMBER-HINT: the inherited hint is the block's numeric
+        // context. A pre-scan for the first annotated `val` in the
+        // body used to fill it in when unset, which let one binding's
+        // annotation retype unrelated literals elsewhere in the
+        // block; positions now claim their own.
         let original_hint = self.type_inference.type_hint.clone();
-        // Only override the inherited hint when it's unset, so an outer hint
-        // (e.g. the method's declared return type) isn't clobbered by a
-        // numeric-scan result from a transient `val x: u64 = ...` in the body.
-        if original_hint.is_none()
-            && let Some(numeric_type) = self.scan_numeric_type_hint(statements) {
-                self.type_inference.type_hint = Some(numeric_type);
-            }
 
         // Process each statement
         // This code assumes Block(expression) don't make nested function

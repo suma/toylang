@@ -126,6 +126,39 @@ fn main() -> u64 {
 }
 
 #[test]
+fn hole_on_an_unsuffixed_literal_answers_a_spellable_type() {
+    // NUMBER-HINT: the hole used to be answered while the literal was
+    // still the internal `Number` placeholder, printing
+    // `<Number: no source syntax>` — a name that does not parse, for a
+    // feature whose whole point is that the reader pastes the answer.
+    let source = r#"
+fn main() -> u64 {
+    val a = 42
+    val h: _ = a
+    0
+}
+"#;
+    assert_eq!(holes(source), vec!["type hole: `h` has type `u64`"]);
+}
+
+#[test]
+fn hole_on_a_literal_reports_the_type_the_program_gives_it() {
+    // The answer must be the type the literal actually ends up with,
+    // not the default it would have taken had nothing claimed it. Here
+    // `f`'s parameter claims `a`, so the hole says `i64`.
+    let source = r#"
+fn f(x: i64) -> i64 { x }
+fn main() -> u64 {
+    val a = 42
+    val h: _ = a
+    println(f(a))
+    0
+}
+"#;
+    assert_eq!(holes(source), vec!["type hole: `h` has type `i64`"]);
+}
+
+#[test]
 fn var_bindings_get_holes_too() {
     // `val` and `var` take separate paths through the checker and have
     // been out of step before, so both are pinned.

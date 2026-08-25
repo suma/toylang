@@ -16,7 +16,9 @@
   呼び出し引数 / 戻り値 (tail・`return`) が未解決リテラルの型を決める
   (narrow int 含む、範囲外は変換エラー)。`finalize_number_types` を
   関数スコープに絞り、先に検査された関数が他関数のリテラルを既定型に
-  固める挙動を解消。
+  固める挙動を解消。併せて `scan_numeric_type_hint` の関数本体先読みを
+  撤去 (兄弟の型注釈が無関係なリテラルを retype していた) し、型ホールの
+  回答を finalize 後まで遅延させて `<Number: no source syntax>` を解消。
 
 - **FOR-RANGE-END: `for i in 0u64 to n {` が parse エラーだった件** — 範囲の
   **末尾**だけ `ParseContext::Condition` で括られておらず、`n { ... }` を
@@ -911,16 +913,11 @@
 
 ### 型システム (NEW-TYPE-SYSTEM)
 
-- **NUMBER-HINT の残** ★★ — (a) `scan_numeric_type_hint` が関数本体を
-  先読みして**最初の `val x: i64|u64` を関数全体の hint にする**ため、
-  無関係な兄弟束縛が未注釈リテラルの型を変える
-  (`val a = 42` / `val b: i64 = 10` / `val d = a + 1` で `d` が i64)。
-  位置ごとの解決が入った今、この先読みは不要になっている可能性が高い。
-  (b) `TypeDecl::Number` が束縛の型として観測可能に漏れる
-  (`val h: _ = a` が `` `h` has type `<Number: no source syntax>` `` と
-  報告する) — 書けない型がユーザに見えている。
-  (c) 既定を `u64` から `i64` に変えるかの判断 (u64 減算は
-  RUNTIME-TRAP で panic するので、注釈を省いたコードが実行時に落ちる)。
+- **NUMBER-HINT の残** ★★ — 既定を `u64` から `i64` に変えるかの判断。
+  u64 減算は RUNTIME-TRAP で panic するので、注釈を省いたコードが
+  実行時に落ちる (`val a = 5` / `val b = 10` / `a - b`)。位置ベースの
+  解決が入って「最後まで決まらないリテラル」は減ったので、影響範囲を
+  測ってから決める。
 
 - **MOVE-CONDITIONAL: 分岐 / ループからの移動** ★ — 現状は E0014 で拒否。
   許すには実行時 drop flag (Rust と同じ) が要る。実プログラムで踏んだら着手。

@@ -640,8 +640,18 @@ underflow (see *Runtime traps*), so `val a = 5  val b = 10  a - b`
 panics rather than producing `-5`. Annotate when the value can go
 negative.
 
-The resolution is per function. A literal in one function is never
-decided by an annotation in another.
+The resolution is per function and per literal. A literal in one
+function is never decided by an annotation in another, and an
+annotated binding never retypes its unannotated neighbours:
+
+```
+val b: i64 = 10     # b is i64
+val a = 42          # a is still u64 — b's annotation is not contagious
+```
+
+A type hole reports the type the literal actually ends up with, not
+the fallback: in `val a = 42  val h: _ = a  f(a)` where `f` takes an
+`i64`, the hole answers `i64`.
 
 #### Numeric separators
 

@@ -1,4 +1,4 @@
-use crate::ast::{ExprRef, Stmt, StmtRef};
+use crate::ast::{Expr, ExprRef, Stmt, StmtRef};
 use crate::type_decl::TypeDecl;
 use crate::type_checker::{AcceptableExpr, TypeCheckerVisitor, TypeCheckError};
 
@@ -57,6 +57,54 @@ impl<'a> TypeCheckerVisitor<'a> {
         } else {
             Some(error)
         }
+    }
+
+    /// NUMBER-HINT: answer the type holes whose initializer was an
+    /// unresolved integer literal when the binding was registered.
+    ///
+    /// Run at the end of the function body, with its scope still
+    /// open, so the binding's type is the one finalization settled on
+    /// rather than the `Number` placeholder. A hole is a question the
+    /// reader will paste the answer to; `<Number: no source syntax>`
+    /// answered it with a name that does not parse.
+    pub fn answer_pending_number_holes(&mut self) -> Result<(), TypeCheckError> {
+        for (name, at) in std::mem::take(&mut self.pending_number_holes) {
+            let ty = self
+                .resolved_initializer_type(&at)
+                // A literal that reached no position naming a type
+                // falls back to the same default
+                // `finalize_number_types` applies.
+                .unwrap_or(TypeDecl::UInt64);
+            if let Some(err) = self.report_type_hole(name, &ty, &at) {
+                return Err(err);
+            }
+        }
+        Ok(())
+    }
+
+    /// NUMBER-HINT: read back the type a hole's initializer settled
+    /// on, once the function's literals have been resolved.
+    ///
+    /// The hole's own binding is no help — it was registered as
+    /// `Number` and nothing revisits it — so this reads the
+    /// initializer instead: a literal node, which finalization has
+    /// rewritten to its concrete width by now, or a name, whose
+    /// binding was updated when some later position claimed it.
+    /// `None` means nothing ever decided.
+    fn resolved_initializer_type(&self, at: &ExprRef) -> Option<TypeDecl> {
+        let ty = match self.core.expr_pool.get(at)? {
+            Expr::UInt64(_) => TypeDecl::UInt64,
+            Expr::Int64(_) => TypeDecl::Int64,
+            Expr::UInt8(_) => TypeDecl::UInt8,
+            Expr::UInt16(_) => TypeDecl::UInt16,
+            Expr::UInt32(_) => TypeDecl::UInt32,
+            Expr::Int8(_) => TypeDecl::Int8,
+            Expr::Int16(_) => TypeDecl::Int16,
+            Expr::Int32(_) => TypeDecl::Int32,
+            Expr::Identifier(n) => self.context.get_var(n)?,
+            _ => return None,
+        };
+        (ty != TypeDecl::Number).then_some(ty)
     }
 
     /// Attach an `as <T>` cast suggestion when the only thing wrong is

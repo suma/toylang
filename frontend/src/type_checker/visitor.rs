@@ -52,6 +52,13 @@ pub struct TypeCheckerVisitor<'a> {
     pub imported_modules: HashMap<Vec<DefaultSymbol>, Vec<DefaultSymbol>>, // alias -> full_path
     // Track transformed expressions for Number -> concrete type conversions
     pub transformed_exprs: HashMap<ExprRef, Expr>,
+    /// NUMBER-HINT: type holes (`val x: _ = ...`) whose initializer is
+    /// still an unresolved integer literal when the binding is
+    /// registered. Answering them there reported the internal
+    /// placeholder (`<Number: no source syntax>`) instead of a type
+    /// the reader could paste, so they wait until the function's
+    /// literals have been resolved.
+    pub pending_number_holes: Vec<(DefaultSymbol, ExprRef)>,
     // Builtin method registry: (TypeDecl, method_name) -> BuiltinMethod
     pub builtin_methods: HashMap<(TypeDecl, String), BuiltinMethod>,
     // Builtin function signatures table
@@ -154,6 +161,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             current_fn_return_type: None,
             tuple_struct_rewrites: TupleStructRewrites::default(),
             transformed_exprs: HashMap::new(),
+            pending_number_holes: Vec::new(),
         };
 
         // Process package and imports immediately
@@ -229,6 +237,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             current_package: None,
             imported_modules: HashMap::new(),
             transformed_exprs: HashMap::new(),
+            pending_number_holes: Vec::new(),
             builtin_methods: Self::create_builtin_method_registry(),
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
             display_types: None,
@@ -505,6 +514,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             current_fn_return_type: None,
             tuple_struct_rewrites: TupleStructRewrites::default(),
             transformed_exprs: HashMap::new(),
+            pending_number_holes: Vec::new(),
         }
     }
 
@@ -657,7 +667,11 @@ impl<'a> TypeCheckerVisitor<'a> {
             && let (Some(ty), Some(e)) = (expr_ty.as_ref(), expr.as_ref())
         {
             let ty = ty.clone();
-            if let Some(err) = self.report_type_hole(name, &ty, e) {
+            // NUMBER-HINT: see the `val` path — an unresolved literal
+            // has no answer until the function's literals are settled.
+            if ty == TypeDecl::Number {
+                self.pending_number_holes.push((name, *e));
+            } else if let Some(err) = self.report_type_hole(name, &ty, e) {
                 return Err(err);
             }
         }
@@ -860,12 +874,18 @@ impl<'a> TypeCheckerVisitor<'a> {
             self.check_contract_clause(cond, "requires")?;
         }
 
-        // Pre-scan for explicit type declarations and establish global type context
+        // The declared return type is this body's numeric context.
+        //
+        // NUMBER-HINT: a pre-scan (`scan_numeric_type_hint`) used to
+        // win over it — it walked the body for the *first* `val x:
+        // i64` / `val x: u64` and made that annotation the hint for
+        // the whole function, so an unrelated sibling binding decided
+        // the type of every unsuffixed literal after it (`val a = 42`
+        // next to a `val b: i64 = 10` made `a + 1` signed). Each
+        // position now claims its own literals, so the scan has
+        // nothing left to contribute.
         let original_hint = self.type_inference.type_hint.clone();
-        if let Some(numeric_type) = self.scan_numeric_type_hint(&statements) {
-            self.type_inference.type_hint = Some(numeric_type);
-        } else if let Some(ref return_type) = func.return_type {
-            // Use function return type as type hint for Number literals
+        if let Some(ref return_type) = func.return_type {
             self.type_inference.type_hint = Some(return_type.clone());
         }
 
@@ -893,10 +913,6 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
         let body_had_errors = self.errors.len() > errors_before_body;
-        self.pop_context();
-        self.context.current_fn_generic_bounds = prev_bounds;
-        self.function_checking.call_depth -= 1;
-        self.current_fn_return_type = prev_fn_return;
 
         // Restore original type hint
         self.type_inference.type_hint = original_hint;
@@ -925,6 +941,19 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.apply_expr_transformations();
 
         self.type_inference.visited_numbers = outer_visited_numbers;
+
+        // NUMBER-HINT: the body's scope is still open here on
+        // purpose. Finalization resolves a literal by consulting the
+        // type its binding ended up with, and answering a deferred
+        // type hole needs the same lookup — both used to run after
+        // `pop_context`, against a scope that no longer held the
+        // function's variables.
+        self.answer_pending_number_holes()?;
+
+        self.pop_context();
+        self.context.current_fn_generic_bounds = prev_bounds;
+        self.function_checking.call_depth -= 1;
+        self.current_fn_return_type = prev_fn_return;
 
         // Check if the function body type matches the declared return type.
         // LLM-LOOP P1: skipped when the body already reported an error --

@@ -30,6 +30,7 @@ mod tests {
             current_package: None,
             imported_modules: HashMap::new(),
             transformed_exprs: HashMap::new(),
+            pending_number_holes: Vec::new(),
             builtin_methods: TypeCheckerVisitor::create_builtin_method_registry(),
             current_fn_return_type: None,
             tuple_struct_rewrites: Default::default(),

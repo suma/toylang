@@ -162,8 +162,14 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Restore previous type hint
         self.type_inference.type_hint = old_hint;
 
-        if is_hole && let Some(err) = self.report_type_hole(name, &final_type, &expr_ref) {
-            return Err(err);
+        if is_hole {
+            // NUMBER-HINT: an unresolved literal has no answer yet —
+            // wait until the function's literals are settled.
+            if final_type == TypeDecl::Number {
+                self.pending_number_holes.push((name, expr_ref));
+            } else if let Some(err) = self.report_type_hole(name, &final_type, &expr_ref) {
+                return Err(err);
+            }
         }
 
         Ok(TypeDecl::Unit)

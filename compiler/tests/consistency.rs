@@ -11034,3 +11034,21 @@ fn unsuffixed_literals_reach_narrow_parameters_across_backends() {
     "#;
     assert_consistent(src, "unsuffixed_literal_narrow");
 }
+
+#[test]
+fn an_annotated_sibling_does_not_retype_neighbouring_literals() {
+    // NUMBER-HINT: `total` is unannotated, so its literals default to
+    // `u64` — a neighbouring `val step: i64` must not make them
+    // signed. The difference is runtime-observable (`u64` subtraction
+    // traps where `i64` wraps), so all three backends must agree on
+    // which type each binding got.
+    let src = r#"
+        fn main() -> i64 {
+            val step: i64 = 3i64
+            val total = 10
+            val doubled = total * 2
+            (doubled as i64) + step
+        }
+    "#;
+    assert_consistent(src, "unsuffixed_literal_sibling_annotation");
+}

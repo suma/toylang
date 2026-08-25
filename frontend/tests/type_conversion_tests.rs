@@ -144,6 +144,41 @@ mod numeric_literal_conversion {
     }
 
     #[test]
+    fn test_annotated_sibling_does_not_retype_an_unannotated_literal() {
+        // NUMBER-HINT: a pre-scan used to walk the body for the first
+        // `val x: i64` / `val x: u64` and make that annotation the
+        // numeric hint for the *whole function*, so an unrelated
+        // sibling binding decided the type of every unsuffixed literal
+        // after it. Here `b`'s `i64` made `a + 1` signed, and the u64
+        // return type then rejected the body.
+        let source = r#"
+            fn main() -> u64 {
+                val a = 42
+                val b: i64 = 10
+                val d = a + 1
+                println(b)
+                d
+            }
+        "#;
+        assert!(parse_and_check(source).is_ok());
+    }
+
+    #[test]
+    fn test_annotated_sibling_before_does_not_retype_either() {
+        // Same check with the annotated binding first — the old
+        // pre-scan was order-sensitive, so both orders are pinned.
+        let source = r#"
+            fn main() -> u64 {
+                val b: i64 = 10
+                val a = 42
+                println(b)
+                a + 1
+            }
+        "#;
+        assert!(parse_and_check(source).is_ok());
+    }
+
+    #[test]
     fn test_bare_number_in_explicit_return() {
         // `return 0` names the same position as the tail expression.
         let source = r#"

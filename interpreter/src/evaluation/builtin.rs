@@ -487,10 +487,6 @@ impl EvaluationContext<'_> {
             // MEMORY_PROFILING M2: the same packed `(line << 32) |
             // column` the compiled backends pass, read from the same
             // location pool, so attribution matches without a shared
-            // id table.
-            // MEMORY_PROFILING M2: the same packed `(line << 32) |
-            // column` the compiled backends pass, read from the same
-            // location pool, so attribution matches without a shared
             // id table. `site` is already the call's own position.
             let packed = site
                 .map(|loc| ((loc.line as u64) << 32) | (loc.column as u64))

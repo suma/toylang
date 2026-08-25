@@ -6,47 +6,13 @@
 //!
 //! Target: src/type_checker/type_conversion.rs (479 lines, 0 existing tests)
 
-use frontend::ParserWithInterner;
-use frontend::type_checker::TypeCheckerVisitor;
 
-mod helpers {
-    use super::*;
-
-    /// Helper function to parse and type-check source code
-    pub fn parse_and_check(source: &str) -> Result<(), String> {
-        let mut parser = ParserWithInterner::new(source);
-        match parser.parse_program() {
-            Ok(mut program) => {
-                if program.statement.is_empty() && program.function.is_empty() {
-                    return Err("No statements or functions found".to_string());
-                }
-
-                let functions = program.function.clone();
-                let string_interner = parser.get_string_interner();
-                let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
-                let mut errors = Vec::new();
-
-                for func in functions.iter() {
-                    if let Err(e) = type_checker.type_check(func.clone()) {
-                        errors.push(format!("{:?}", e));
-                    }
-                }
-
-                if !errors.is_empty() {
-                    Err(errors.join("\n"))
-                } else {
-                    Ok(())
-                }
-            }
-            Err(e) => Err(format!("Parse error: {:?}", e))
-        }
-    }
-}
+use crate::common::type_check_functions as parse_and_check;
 
 mod numeric_literal_conversion {
     //! Tests for bare number literal conversion to concrete types
 
-    use super::helpers::parse_and_check;
+    use super::parse_and_check;
 
     #[test]
     fn test_bare_number_with_u64_annotation() {
@@ -323,7 +289,7 @@ mod numeric_literal_conversion {
 mod numeric_type_resolution {
     //! Tests for resolve_numeric_types: Number+concrete type interactions
 
-    use super::helpers::parse_and_check;
+    use super::parse_and_check;
 
     #[test]
     fn test_number_plus_u64_resolves_to_u64() {
@@ -390,7 +356,7 @@ mod numeric_type_resolution {
 mod type_mismatch_errors {
     //! Tests for type mismatch detection in numeric operations
 
-    use super::helpers::parse_and_check;
+    use super::parse_and_check;
 
     #[test]
     fn test_u64_plus_i64_mixed_error() {
@@ -435,7 +401,7 @@ mod type_mismatch_errors {
 mod implicit_conversion {
     //! Tests for implicit type conversion in various contexts
 
-    use super::helpers::parse_and_check;
+    use super::parse_and_check;
 
     #[test]
     fn test_val_declaration_implicit_conversion() {
@@ -520,7 +486,7 @@ mod implicit_conversion {
 mod type_conversion_errors {
     //! Tests for conversion error cases
 
-    use super::helpers::parse_and_check;
+    use super::parse_and_check;
 
     #[test]
     fn test_bool_to_u64_assignment_error() {

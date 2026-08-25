@@ -6,47 +6,13 @@
 //!
 //! Target: src/type_checker/collections.rs (803 lines, indirect tests only)
 
-use frontend::ParserWithInterner;
-use frontend::type_checker::TypeCheckerVisitor;
 
-mod helpers {
-    use super::*;
-
-    /// Helper function to parse and type-check source code
-    pub fn parse_and_check(source: &str) -> Result<(), String> {
-        let mut parser = ParserWithInterner::new(source);
-        match parser.parse_program() {
-            Ok(mut program) => {
-                if program.statement.is_empty() && program.function.is_empty() {
-                    return Err("No statements or functions found".to_string());
-                }
-
-                let functions = program.function.clone();
-                let string_interner = parser.get_string_interner();
-                let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
-                let mut errors = Vec::new();
-
-                for func in functions.iter() {
-                    if let Err(e) = type_checker.type_check(func.clone()) {
-                        errors.push(format!("{:?}", e));
-                    }
-                }
-
-                if !errors.is_empty() {
-                    Err(errors.join("\n"))
-                } else {
-                    Ok(())
-                }
-            }
-            Err(e) => Err(format!("Parse error: {:?}", e))
-        }
-    }
-}
+use crate::common::type_check_functions as parse_and_check;
 
 mod array_literal_type_checking {
     //! Tests for array literal type validation
 
-    use super::helpers::parse_and_check;
+    use super::parse_and_check;
 
     #[test]
     fn test_u64_array_literal() {
@@ -143,7 +109,7 @@ mod array_literal_type_checking {
 mod dict_type_checking {
     //! Tests for dictionary type validation
 
-    use super::helpers::parse_and_check;
+    use super::parse_and_check;
 
     #[test]
     fn test_string_string_dict() {
@@ -195,7 +161,7 @@ mod dict_type_checking {
 mod cast_type_checking {
     //! Tests for cast expression type validation
 
-    use super::helpers::parse_and_check;
+    use super::parse_and_check;
 
     #[test]
     fn test_i64_to_u64_cast() {
@@ -258,7 +224,7 @@ mod cast_type_checking {
 mod slice_access_type_checking {
     //! Tests for array slice and element access type validation
 
-    use super::helpers::parse_and_check;
+    use super::parse_and_check;
 
     #[test]
     fn test_single_element_access() {

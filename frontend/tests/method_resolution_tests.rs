@@ -5,62 +5,13 @@
 //!
 //! Target: src/type_checker/method.rs (267 lines, limited tests)
 
-use frontend::ParserWithInterner;
-use frontend::type_checker::TypeCheckerVisitor;
 
-mod helpers {
-    use super::*;
-    use frontend::ast::{StmtRef, Stmt};
-
-    /// Enhanced helper that processes StructDecl and ImplBlock statements
-    /// before type-checking functions, so generic params and methods are registered.
-    pub fn parse_and_check(source: &str) -> Result<(), String> {
-        let mut parser = ParserWithInterner::new(source);
-        match parser.parse_program() {
-            Ok(mut program) => {
-                if program.statement.is_empty() && program.function.is_empty() {
-                    return Err("No statements or functions found".to_string());
-                }
-
-                let functions = program.function.clone();
-                let stmt_count = program.statement.len();
-                let string_interner = parser.get_string_interner();
-                let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
-
-                // Process only StructDecl and ImplBlock statements
-                for i in 0..stmt_count {
-                    let stmt_ref = StmtRef(i as u32);
-                    let should_visit = type_checker.core.stmt_pool.get(&stmt_ref)
-                        .map(|stmt| matches!(stmt, Stmt::StructDecl { .. } | Stmt::ImplBlock { .. }))
-                        .unwrap_or(false);
-                    if should_visit
-                        && let Err(e) = type_checker.visit_stmt(&stmt_ref) {
-                            return Err(format!("{:?}", e));
-                        }
-                }
-
-                let mut errors = Vec::new();
-                for func in functions.iter() {
-                    if let Err(e) = type_checker.type_check(func.clone()) {
-                        errors.push(format!("{:?}", e));
-                    }
-                }
-
-                if !errors.is_empty() {
-                    Err(errors.join("\n"))
-                } else {
-                    Ok(())
-                }
-            }
-            Err(e) => Err(format!("Parse error: {:?}", e))
-        }
-    }
-}
+use crate::common::type_check_with_declarations as parse_and_check;
 
 mod self_type_resolution {
     //! Tests for Self type resolution in impl blocks
 
-    use super::helpers::parse_and_check;
+    use super::parse_and_check;
 
     #[test]
     fn test_self_resolves_to_struct_type() {
@@ -167,7 +118,7 @@ mod self_type_resolution {
 mod argument_checking {
     //! Tests for method argument count and type validation
 
-    use super::helpers::parse_and_check;
+    use super::parse_and_check;
 
     #[test]
     fn test_correct_argument_count() {
@@ -258,7 +209,7 @@ mod argument_checking {
 mod return_type_validation {
     //! Tests for method return type checking
 
-    use super::helpers::parse_and_check;
+    use super::parse_and_check;
 
     #[test]
     fn test_matching_return_type() {
@@ -328,7 +279,7 @@ mod return_type_validation {
 mod builtin_methods {
     //! Tests for builtin method resolution
 
-    use super::helpers::parse_and_check;
+    use super::parse_and_check;
 
     #[test]
     fn test_str_len() {

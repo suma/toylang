@@ -22,13 +22,6 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// positions resolve too. Skips conflicting bindings — the caller is
     /// trusted to only feed compatible (declared, arg) pairs.
     ///
-    /// Walk a declared `TypeDecl` against the actual `arg_ty`, populating
-    /// `out` with `Generic(P) -> ConcreteType` mappings whenever a generic
-    /// param `P` (one of `params`) appears in `declared`. Recurses through
-    /// `Struct(_, args)` / `Enum(_, args)` / `Tuple(_)` so nested generic
-    /// positions resolve too. Skips conflicting bindings — the caller is
-    /// trusted to only feed compatible (declared, arg) pairs.
-    ///
     /// Uses raw symbol *values* (`u32`) for matching so that parser-level
     /// `string_interner` inconsistencies (where `resolve()` returns the
     /// wrong string for a symbol) are harmless. The `params` set holds the

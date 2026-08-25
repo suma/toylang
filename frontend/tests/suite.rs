@@ -12,6 +12,8 @@
 //! file as a prefix. Filters keep working.
 
 
+mod common;
+
 #[path = "closure_parser_tests.rs"]
 mod closure_parser_tests;
 

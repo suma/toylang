@@ -11,47 +11,13 @@
 //! - Type error detection and propagation
 //! - Advanced type inference scenarios (conditional, loops, bidirectional)
 
-use frontend::ParserWithInterner;
-use frontend::type_checker::TypeCheckerVisitor;
 
-mod helpers {
-    use super::*;
-
-    /// Helper function to parse and type-check source code
-    pub fn parse_and_check(source: &str) -> Result<(), String> {
-        let mut parser = ParserWithInterner::new(source);
-        match parser.parse_program() {
-            Ok(mut program) => {
-                if program.statement.is_empty() && program.function.is_empty() {
-                    return Err("No statements or functions found".to_string());
-                }
-
-                let functions = program.function.clone();
-                let string_interner = parser.get_string_interner();
-                let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
-                let mut errors = Vec::new();
-
-                for func in functions.iter() {
-                    if let Err(e) = type_checker.type_check(func.clone()) {
-                        errors.push(format!("{:?}", e));
-                    }
-                }
-
-                if !errors.is_empty() {
-                    Err(errors.join("\n"))
-                } else {
-                    Ok(())
-                }
-            }
-            Err(e) => Err(format!("Parse error: {:?}", e))
-        }
-    }
-}
+use crate::common::type_check_functions as parse_and_check;
 
 mod basic_functionality {
     //! Basic type inference tests with explicit types
 
-    use super::helpers::parse_and_check;
+    use super::parse_and_check;
 
     #[test]
     fn test_basic_type_inference() {
@@ -160,7 +126,7 @@ mod basic_functionality {
 mod advanced_scenarios {
     //! Complex type interactions and multi-feature scenarios
 
-    use super::helpers::parse_and_check;
+    use super::parse_and_check;
 
     #[test]
     fn test_nested_function_call_inference() {
@@ -273,7 +239,7 @@ mod advanced_scenarios {
 mod error_cases {
     //! Error detection and type mismatch validation
 
-    use super::helpers::parse_and_check;
+    use super::parse_and_check;
 
     #[test]
     fn test_conflicting_type_constraints() {

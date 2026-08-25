@@ -298,94 +298,29 @@ fn dyn_struct_leaf_layout(module: &Module, ty: Type) -> Option<Vec<(u64, Type)>>
 
 
 
-pub fn lower_program(
-    program: &File,
-    interner: &DefaultStringInterner,
-    contract_msgs: &crate::ContractMessages,
-    release: bool,
-) -> Result<Module, String> {
-    let mut module = Module::new();
+/// The read-only inputs the declaration passes share.
+///
+/// `lower_program` used to keep all of this in scope and hand each piece
+/// to the passes individually; four of them travel together everywhere,
+/// so they travel as one thing.
+struct DeclCtx<'a> {
+    program: &'a File,
+    interner: &'a DefaultStringInterner,
+    struct_defs: &'a StructDefs,
+    enum_defs: &'a EnumDefs,
+}
 
-    // Phase 5 (汎用 RAII): collect every struct that has an
-    // `impl Drop for <Struct>` block. The lowering pass uses
-    // this set when registering each `Binding::Struct` to
-    // decide whether to track the binding for scope-exit
-    // auto-drop. Stored on the IR `Module` so all `FunctionLower`
-    // instances see it through `module.drop_trait_structs`.
-    //
-    // The toylang stdlib `Arena` / `FixedBuffer` reimplementation
-    // makes their `drop()` idempotent, so they participate in the
-    // generic auto-drop story together with user-defined `impl Drop`
-    // structs. Explicit `arena.drop()` calls are still safe — the
-    // second invocation at scope exit is a no-op.
-    if let Some(drop_sym) = interner.get("Drop") {
-        for i in 0..program.statement.len() {
-            let stmt_ref = frontend::ast::StmtRef(i as u32);
-            if let Some(frontend::ast::Stmt::ImplBlock {
-                target_type,
-                trait_name: Some(trait_sym),
-                ..
-            }) = program.statement.get(&stmt_ref)
-                && trait_sym == drop_sym {
-                    module.drop_trait_structs.insert(target_type);
-                }
-        }
-    }
-
-    // Collect struct definitions before lowering any function bodies.
-    // The compiler MVP supports only struct fields whose declared types
-    // are scalars (`i64`, `u64`, `bool`); nested / generic struct fields
-    // are deferred. Each struct is decomposed into a list of (field,
-    // scalar) pairs and recorded by symbol so the body lowering can
-    // expand `Point { x: 1, y: 2 }` and `p.x` into per-field local
-    // slots without ever needing a `Type::Struct` to flow through the
-    // IR's value graph.
-    // Struct templates stay in the lowering pass; the IR module's
-    // `struct_defs` Vec is populated lazily by `instantiate_struct`
-    // each time a concrete `(base_name, type_args)` is seen.
-    let struct_defs = collect_struct_defs(program, interner)?;
-
-    // Same idea for enums. Each enum decl maps to an ordered list of
-    // variants (variant index = canonical tag value). Generic enums
-    // and enums whose payloads contain anything other than i64 / u64
-    // / bool are rejected at this stage so body lowering can rely on
-    // the stored shape unconditionally.
-    // Enum templates stay in the lowering pass — they hold AST-shape
-    // payload TypeDecls that get monomorphised by `instantiate_enum`
-    // at each (base_name, type_args) usage site. The IR module's
-    // `enum_defs` Vec is populated by those instantiation calls.
-    let enum_defs = collect_enum_defs(program, interner)?;
-
-    // Compile-time evaluate every top-level `const`. The compiler MVP
-    // accepts literal initialisers and references to earlier consts;
-    // anything else (function calls, complex expressions) is rejected
-    // with a clear message. Each evaluated value is stashed in a map
-    // that function-body lowering consults when it sees an Identifier
-    // referring to a const symbol.
-    let const_values = evaluate_consts(program, interner)?;
-
-    // Generic functions stay outside the IR module's `function_index`
-    // until a call site instantiates them with concrete type args. We
-    // collect them into a side table keyed by name; the call lowerer
-    // reaches in here via `instantiate_generic_function` on demand.
-    let mut generic_funcs: HashMap<DefaultSymbol, Rc<frontend::ast::Function>> =
-        HashMap::new();
-
-    // Inherent / trait methods. Pre-scan all `impl` blocks (Phase R1
-    // accepts only non-generic methods on non-generic structs) and
-    // build (target_struct_symbol, method_name) → MethodFunction so
-    // call-site lookup (`p.sum()` style) can resolve and the second
-    // declaration pass below can mint a FuncId per method.
-    let method_registry: MethodRegistry = collect_method_decls(program)?;
-
-    // TEST-PERF: `FuncId` → source for every non-generic function /
-    // method, so a reachable call site can defer the body lowering.
-    // `scheduled` is the set of `FuncId`s that are already queued for
-    // body lowering (or already lowered) — the reachability scan uses
-    // it to enqueue each declared-but-bodyless function at most once.
-    let mut plain_sources: HashMap<FuncId, PlainSource> = HashMap::new();
-    let mut scheduled: HashSet<FuncId> = HashSet::new();
-
+/// First pass: declare every non-generic function so call sites -- which
+/// may name a function defined later in the file -- can resolve to a
+/// `FuncId` during body lowering. Generic functions go into
+/// `generic_funcs` instead, to be monomorphised on demand.
+fn declare_plain_functions(
+    ctx: &DeclCtx<'_>,
+    module: &mut Module,
+    generic_funcs: &mut HashMap<DefaultSymbol, Rc<frontend::ast::Function>>,
+    plain_sources: &mut HashMap<FuncId, PlainSource>,
+) -> Result<(), String> {
+    let DeclCtx { program, interner, struct_defs, enum_defs } = *ctx;
     // First pass: declare every non-generic function so call sites
     // (which may refer to functions defined later in the file) can
     // resolve to a `FuncId` during the body lowering pass. Generic
@@ -444,7 +379,7 @@ pub fn lower_program(
             };
             let mut params: Vec<Type> = Vec::with_capacity(func.parameter.len());
             for (pname, pty) in &func.parameter {
-                let lowered = lower_param_or_return_type(pty, &struct_defs, &enum_defs, &mut module, interner).ok_or_else(|| {
+                let lowered = lower_param_or_return_type(pty, struct_defs, enum_defs, module, interner).ok_or_else(|| {
                     unlowerable_type_message(|| {
                         format!(
                             "compiler MVP cannot lower extern fn parameter `{}: {:?}`",
@@ -456,7 +391,7 @@ pub fn lower_program(
                 params.push(lowered);
             }
             let ret = match &func.return_type {
-                Some(ty) => lower_param_or_return_type(ty, &struct_defs, &enum_defs, &mut module, interner).ok_or_else(
+                Some(ty) => lower_param_or_return_type(ty, struct_defs, enum_defs, module, interner).ok_or_else(
                     || {
                         unlowerable_type_message(|| {
                             format!("compiler MVP cannot lower extern fn return type `{:?}`", ty)
@@ -477,7 +412,7 @@ pub fn lower_program(
         }
         let mut params: Vec<Type> = Vec::with_capacity(func.parameter.len());
         for (name, ty) in &func.parameter {
-            let lowered = lower_param_or_return_type(ty, &struct_defs, &enum_defs, &mut module, interner).ok_or_else(|| {
+            let lowered = lower_param_or_return_type(ty, struct_defs, enum_defs, module, interner).ok_or_else(|| {
                 unlowerable_type_message(|| {
                     format!(
                         "compiler MVP cannot lower parameter `{}: {:?}` yet",
@@ -489,7 +424,7 @@ pub fn lower_program(
             params.push(lowered);
         }
         let ret = match &func.return_type {
-            Some(ty) => lower_param_or_return_type(ty, &struct_defs, &enum_defs, &mut module, interner).ok_or_else(
+            Some(ty) => lower_param_or_return_type(ty, struct_defs, enum_defs, module, interner).ok_or_else(
                 || {
                     unlowerable_type_message(|| {
                         format!("compiler MVP cannot lower return type `{:?}` yet", ty)
@@ -605,13 +540,43 @@ pub fn lower_program(
                 continue;
             }
             let param_ty = module.function(func_id).params[pi];
-            flatten_compound_leaf_types(&module, param_ty, &mut writeback_types);
+            flatten_compound_leaf_types(module, param_ty, &mut writeback_types);
         }
         if !writeback_types.is_empty() {
             module.function_mut(func_id).self_writeback_types = writeback_types;
         }
     }
+    Ok(())
+}
 
+
+/// What `declare_methods` hands back: the six tables the method
+/// declaration pass builds, which the body-lowering loop then drains and
+/// consults.
+struct MethodDecls {
+    method_func_ids: MethodFuncIds,
+    generic_methods: GenericMethods,
+    method_instances: MethodInstances,
+    pending_method_work: Vec<PendingMethodInstance>,
+    pending_thunk_work: Vec<super::PendingThunkBody>,
+}
+
+/// Declare each non-generic method as a regular IR function, and record
+/// the generic ones for on-demand monomorphisation.
+///
+/// A method's first parameter is `self: Self`, resolved here to the
+/// impl's target struct type. Generic methods (`impl<T> Cell<T> { fn
+/// get(self: Self) -> T }`) are deferred into `generic_methods` and
+/// instantiated by call sites, the same shape
+/// `declare_plain_functions` uses for generic free functions.
+fn declare_methods(
+    ctx: &DeclCtx<'_>,
+    module: &mut Module,
+    method_registry: &MethodRegistry,
+    plain_sources: &mut HashMap<FuncId, PlainSource>,
+    scheduled: &mut HashSet<FuncId>,
+) -> Result<MethodDecls, String> {
+    let DeclCtx { program, interner, struct_defs, enum_defs } = *ctx;
     // Declare each non-generic method as a regular IR function. The
     // method's first parameter is `self: Self`; we resolve `Self` to
     // the impl's target struct type. Generic methods (e.g.
@@ -620,8 +585,8 @@ pub fn lower_program(
     // by call sites — same shape as Phase L for generic functions.
     let mut method_func_ids: MethodFuncIds = HashMap::new();
     let mut generic_methods: GenericMethods = HashMap::new();
-    let mut method_instances: MethodInstances = HashMap::new();
-    let mut pending_method_work: Vec<PendingMethodInstance> = Vec::new();
+    let method_instances: MethodInstances = HashMap::new();
+    let pending_method_work: Vec<PendingMethodInstance> = Vec::new();
     // A5-P2-MVP-B: dyn-trait dispatch thunk queue. Each entry pre-declares
     // a `(U64 data_ptr, ...user_args) -> R` thunk that, at drain time,
     // reads the receiver struct's leaves via PtrRead and forwards to
@@ -696,9 +661,9 @@ pub fn lower_program(
         {
             let self_lowered = lower_param_or_return_type(
                 &self_decl,
-                &struct_defs,
-                &enum_defs,
-                &mut module,
+                struct_defs,
+                enum_defs,
+                module,
                 interner,
             )
             .ok_or_else(|| {
@@ -722,9 +687,9 @@ pub fn lower_program(
             };
             let lowered = lower_param_or_return_type(
                 &resolved,
-                &struct_defs,
-                &enum_defs,
-                &mut module,
+                struct_defs,
+                enum_defs,
+                module,
                 interner,
             )
             .ok_or_else(|| {
@@ -747,9 +712,9 @@ pub fn lower_program(
                 };
                 lower_param_or_return_type(
                     &resolved,
-                    &struct_defs,
-                    &enum_defs,
-                    &mut module,
+                    struct_defs,
+                    enum_defs,
+                    module,
                     interner,
                 )
                 .ok_or_else(|| {
@@ -772,9 +737,9 @@ pub fn lower_program(
         for arg_decl in &target_type_args_decl {
             let lowered = lower_param_or_return_type(
                 arg_decl,
-                &struct_defs,
-                &enum_defs,
-                &mut module,
+                struct_defs,
+                enum_defs,
+                module,
                 interner,
             )
             .ok_or_else(|| {
@@ -811,7 +776,7 @@ pub fn lower_program(
         // writeback shape so callers compiled before the method's
         // body see the correct trailing-return layout. Same
         // helper used by generic-method instantiation.
-        populate_method_writeback_types(&mut module, func_id, method);
+        populate_method_writeback_types(module, func_id, method);
         method_func_ids
             .entry((*target_sym, *method_sym))
             .or_default()
@@ -883,9 +848,9 @@ pub fn lower_program(
                                 }
                                 match lower_param_or_return_type(
                                     pty,
-                                    &struct_defs,
-                                    &enum_defs,
-                                    &mut module,
+                                    struct_defs,
+                                    enum_defs,
+                                    module,
                                     interner,
                                 ) {
                                     Some(t) => user_param_tys.push(t),
@@ -904,9 +869,9 @@ pub fn lower_program(
                                 .unwrap_or(TypeDecl::Unit);
                             let ret_ty = match lower_param_or_return_type(
                                 &ret_decl,
-                                &struct_defs,
-                                &enum_defs,
-                                &mut module,
+                                struct_defs,
+                                enum_defs,
+                                module,
                                 interner,
                             ) {
                                 Some(t) => t,
@@ -927,13 +892,13 @@ pub fn lower_program(
         // will surface a clean missing-vtable error.
         let self_ir_ty = lower_param_or_return_type(
             &TypeDecl::Identifier(target_type),
-            &struct_defs,
-            &enum_defs,
-            &mut module,
+            struct_defs,
+            enum_defs,
+            module,
             interner,
         );
         let struct_leaves: Option<Vec<(u64, Type)>> =
-            self_ir_ty.and_then(|t| dyn_struct_leaf_layout(&module, t));
+            self_ir_ty.and_then(|t| dyn_struct_leaf_layout(module, t));
         let struct_leaves = match struct_leaves {
             Some(v) => v,
             None => continue, // unsupported field shape — skip this impl's vtable
@@ -1009,6 +974,131 @@ pub fn lower_program(
             module.vtables.insert((trait_sym, target_type), vtable_funcs);
         }
     }
+
+    Ok(MethodDecls {
+        method_func_ids,
+        generic_methods,
+        method_instances,
+        pending_method_work,
+        pending_thunk_work,
+    })
+}
+
+
+pub fn lower_program(
+    program: &File,
+    interner: &DefaultStringInterner,
+    contract_msgs: &crate::ContractMessages,
+    release: bool,
+) -> Result<Module, String> {
+    let mut module = Module::new();
+
+    // Phase 5 (汎用 RAII): collect every struct that has an
+    // `impl Drop for <Struct>` block. The lowering pass uses
+    // this set when registering each `Binding::Struct` to
+    // decide whether to track the binding for scope-exit
+    // auto-drop. Stored on the IR `Module` so all `FunctionLower`
+    // instances see it through `module.drop_trait_structs`.
+    //
+    // The toylang stdlib `Arena` / `FixedBuffer` reimplementation
+    // makes their `drop()` idempotent, so they participate in the
+    // generic auto-drop story together with user-defined `impl Drop`
+    // structs. Explicit `arena.drop()` calls are still safe — the
+    // second invocation at scope exit is a no-op.
+    if let Some(drop_sym) = interner.get("Drop") {
+        for i in 0..program.statement.len() {
+            let stmt_ref = frontend::ast::StmtRef(i as u32);
+            if let Some(frontend::ast::Stmt::ImplBlock {
+                target_type,
+                trait_name: Some(trait_sym),
+                ..
+            }) = program.statement.get(&stmt_ref)
+                && trait_sym == drop_sym {
+                    module.drop_trait_structs.insert(target_type);
+                }
+        }
+    }
+
+    // Collect struct definitions before lowering any function bodies.
+    // The compiler MVP supports only struct fields whose declared types
+    // are scalars (`i64`, `u64`, `bool`); nested / generic struct fields
+    // are deferred. Each struct is decomposed into a list of (field,
+    // scalar) pairs and recorded by symbol so the body lowering can
+    // expand `Point { x: 1, y: 2 }` and `p.x` into per-field local
+    // slots without ever needing a `Type::Struct` to flow through the
+    // IR's value graph.
+    // Struct templates stay in the lowering pass; the IR module's
+    // `struct_defs` Vec is populated lazily by `instantiate_struct`
+    // each time a concrete `(base_name, type_args)` is seen.
+    let struct_defs = collect_struct_defs(program, interner)?;
+
+    // Same idea for enums. Each enum decl maps to an ordered list of
+    // variants (variant index = canonical tag value). Generic enums
+    // and enums whose payloads contain anything other than i64 / u64
+    // / bool are rejected at this stage so body lowering can rely on
+    // the stored shape unconditionally.
+    // Enum templates stay in the lowering pass — they hold AST-shape
+    // payload TypeDecls that get monomorphised by `instantiate_enum`
+    // at each (base_name, type_args) usage site. The IR module's
+    // `enum_defs` Vec is populated by those instantiation calls.
+    let enum_defs = collect_enum_defs(program, interner)?;
+
+    // Compile-time evaluate every top-level `const`. The compiler MVP
+    // accepts literal initialisers and references to earlier consts;
+    // anything else (function calls, complex expressions) is rejected
+    // with a clear message. Each evaluated value is stashed in a map
+    // that function-body lowering consults when it sees an Identifier
+    // referring to a const symbol.
+    let const_values = evaluate_consts(program, interner)?;
+
+    // Generic functions stay outside the IR module's `function_index`
+    // until a call site instantiates them with concrete type args. We
+    // collect them into a side table keyed by name; the call lowerer
+    // reaches in here via `instantiate_generic_function` on demand.
+    let mut generic_funcs: HashMap<DefaultSymbol, Rc<frontend::ast::Function>> =
+        HashMap::new();
+
+    // Inherent / trait methods. Pre-scan all `impl` blocks (Phase R1
+    // accepts only non-generic methods on non-generic structs) and
+    // build (target_struct_symbol, method_name) → MethodFunction so
+    // call-site lookup (`p.sum()` style) can resolve and the second
+    // declaration pass below can mint a FuncId per method.
+    let method_registry: MethodRegistry = collect_method_decls(program)?;
+
+    // TEST-PERF: `FuncId` → source for every non-generic function /
+    // method, so a reachable call site can defer the body lowering.
+    // `scheduled` is the set of `FuncId`s that are already queued for
+    // body lowering (or already lowered) — the reachability scan uses
+    // it to enqueue each declared-but-bodyless function at most once.
+    let mut plain_sources: HashMap<FuncId, PlainSource> = HashMap::new();
+    let mut scheduled: HashSet<FuncId> = HashSet::new();
+
+    let decl_ctx = DeclCtx {
+        program,
+        interner,
+        struct_defs: &struct_defs,
+        enum_defs: &enum_defs,
+    };
+    declare_plain_functions(
+        &decl_ctx,
+        &mut module,
+        &mut generic_funcs,
+        &mut plain_sources,
+    )?;
+
+    let MethodDecls {
+        method_func_ids,
+        generic_methods,
+        mut method_instances,
+        mut pending_method_work,
+        mut pending_thunk_work,
+    } = declare_methods(
+        &decl_ctx,
+        &mut module,
+        &method_registry,
+        &mut plain_sources,
+        &mut scheduled,
+    )?;
 
     // Second pass: lower bodies for the reachable transitive closure
     // from the entry points (`main` + `test` blocks) instead of every

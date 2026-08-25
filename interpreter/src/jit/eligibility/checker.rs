@@ -1620,6 +1620,100 @@ impl<'a> Checker<'a> {
     pub(crate) fn check_expr(&mut self, expr_ref: &ExprRef) -> Option<ScalarTy> {
         let expr = self.program.expression.get(expr_ref)?;
         match expr {
+            // Phase JE-1b: unit-variant constructor (`Color::Red`).
+            // Reduce to `ScalarTy::U64` so the rest of eligibility +
+            // codegen treats the value as just the tag — that's the
+            // entire representation for unit variants. Generic enums
+            // and enums with payload variants miss the layout map and
+            // fall through to the catch-all reject.
+            Expr::QualifiedIdentifier(path)
+                if path.len() == 2
+                    && enum_layout_for(path[0])
+                        .and_then(|l| l.variant_tag(path[1]))
+                        .is_some() =>
+            {
+                Some(ScalarTy::U64)
+            }
+            Expr::Int64(..)
+            | Expr::UInt64(..)
+            | Expr::Int8(..)
+            | Expr::Int16(..)
+            | Expr::Int32(..)
+            | Expr::UInt8(..)
+            | Expr::UInt16(..)
+            | Expr::UInt32(..)
+            | Expr::Float64(..)
+            | Expr::True
+            | Expr::False
+            | Expr::String(..)
+            | Expr::Identifier(..) => self.check_literals_and_identifiers(expr),
+            Expr::Match(..) => self.check_match_expr(expr),
+            Expr::Binary(..)
+            | Expr::Unary(..) => self.check_operators(expr),
+            Expr::Block(..)
+            | Expr::IfElifElse(..)
+            | Expr::Assign(..) => self.check_blocks_and_assignment(expr),
+            Expr::AssociatedFunctionCall(..)
+            | Expr::Call(..) => self.check_calls(expr, expr_ref),
+            Expr::BuiltinCall(..) => self.check_builtins(expr, expr_ref),
+            Expr::With(..) => self.check_with_scope(expr),
+            Expr::MethodCall(..) => self.check_method_calls(expr, expr_ref),
+            Expr::FieldAccess(..)
+            | Expr::TupleAccess(..) => self.check_member_access(expr),
+            Expr::Cast(..) => self.check_casts(expr),
+            other => {
+                // Phase JE-1a: a `QualifiedIdentifier` whose head is a
+                // JIT-eligible enum (non-generic, unit-only) corresponds
+                // to a unit-variant constructor like `Color::Red`. The
+                // tag layout is already in `enum_layouts`; the missing
+                // piece is constructor + match codegen (Phase JE-1b).
+                // Surface a precise "infra ready, codegen pending"
+                // message instead of the generic "qualified identifier"
+                // catch-all so the next phase knows which programs to
+                // enable.
+                let precise = match &other {
+                    Expr::QualifiedIdentifier(path)
+                        if path.len() == 2
+                            && enum_layout_for(path[0])
+                                .and_then(|l| l.variant_tag(path[1]))
+                                .is_some() =>
+                    {
+                        "JIT enum support pending: unit-variant constructor codegen \
+                         (Phase JE-1b will lower this via the existing tag layout)"
+                            .to_string()
+                    }
+                    Expr::QualifiedIdentifier(path)
+                        if !path.is_empty()
+                            && enum_decl_lookup_by_name(self.program, path[0]).is_some() =>
+                    {
+                        "JIT does not yet model enum values \
+                         (constructors / match / methods)"
+                            .to_string()
+                    }
+                    // Closures Phase 4: explicit reject reason. The JIT
+                    // doesn't model `Object::Closure` values — each
+                    // closure literal would need a captured-environment
+                    // representation + indirect-call dispatch the JIT
+                    // doesn't have. The interpreter handles closures
+                    // natively (Phase 3); JIT-eligible programs simply
+                    // fall back to interpretation when they contain a
+                    // closure literal.
+                    Expr::Closure { .. } => {
+                        "JIT does not yet support closure / lambda values \
+                         (interpreter handles them; AOT support is a later phase)"
+                            .to_string()
+                    }
+                    _ => format!("uses unsupported expression {}", expr_kind_name(&other)),
+                };
+                self.reject(move || precise);
+                None
+            }
+        }
+    }
+
+    /// Literals of every width, string literals, and a bare name.
+    fn check_literals_and_identifiers(&mut self, expr: Expr) -> Option<ScalarTy> {
+        match expr {
             Expr::Int64(_) => Some(ScalarTy::I64),
             Expr::UInt64(_) => Some(ScalarTy::U64),
             // NUM-W narrow integer literals.
@@ -1650,20 +1744,13 @@ impl<'a> Checker<'a> {
                 }
                 None
             }
-            // Phase JE-1b: unit-variant constructor (`Color::Red`).
-            // Reduce to `ScalarTy::U64` so the rest of eligibility +
-            // codegen treats the value as just the tag — that's the
-            // entire representation for unit variants. Generic enums
-            // and enums with payload variants miss the layout map and
-            // fall through to the catch-all reject.
-            Expr::QualifiedIdentifier(path)
-                if path.len() == 2
-                    && enum_layout_for(path[0])
-                        .and_then(|l| l.variant_tag(path[1]))
-                        .is_some() =>
-            {
-                Some(ScalarTy::U64)
-            }
+            _ => unreachable!("check_literals_and_identifiers was handed an expression it does not own"),
+        }
+    }
+
+    /// Pattern matching.
+    fn check_match_expr(&mut self, expr: Expr) -> Option<ScalarTy> {
+        match expr {
             // Phase JE-1b: `match scrutinee { ... }` for scalar / unit-
             // enum-tag scrutinees. Each arm's body must produce a
             // value-typed result; all arms must agree on the result
@@ -1721,6 +1808,13 @@ impl<'a> Checker<'a> {
                 }
                 result_ty
             }
+            _ => unreachable!("check_match_expr was handed an expression it does not own"),
+        }
+    }
+
+    /// Binary and unary operators.
+    fn check_operators(&mut self, expr: Expr) -> Option<ScalarTy> {
+        match expr {
             Expr::Binary(op, lhs, rhs) => {
                 let lt = self.check_expr(&lhs)?;
                 let rt = self.check_expr(&rhs)?;
@@ -1824,6 +1918,13 @@ impl<'a> Checker<'a> {
                     UnaryOp::Borrow | UnaryOp::BorrowMut => Some(t),
                 }
             }
+            _ => unreachable!("check_operators was handed an expression it does not own"),
+        }
+    }
+
+    /// Blocks, `if` / `elif` / `else`, and assignment.
+    fn check_blocks_and_assignment(&mut self, expr: Expr) -> Option<ScalarTy> {
+        match expr {
             Expr::Block(stmts) => self.in_block_scope(|scope| {
                 let mut last_ty = ScalarTy::Unit;
                 for s in &stmts {
@@ -1916,6 +2017,13 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            _ => unreachable!("check_blocks_and_assignment was handed an expression it does not own"),
+        }
+    }
+
+    /// Free-function and associated-function calls.
+    fn check_calls(&mut self, expr: Expr, expr_ref: &ExprRef) -> Option<ScalarTy> {
+        match expr {
             Expr::AssociatedFunctionCall(struct_name, function_name, args) => {
                 // Phase JE-2b: tuple-variant enum constructor in expression
                 // position (`Status::Ok(x + x)` as a match arm body). When
@@ -1996,6 +2104,13 @@ impl<'a> Checker<'a> {
 
                 self.check_plain_call(expr_ref, name, &arg_list)
             }
+            _ => unreachable!("check_calls was handed an expression it does not own"),
+        }
+    }
+
+    /// The `__builtin_*` surface.
+    fn check_builtins(&mut self, expr: Expr, expr_ref: &ExprRef) -> Option<ScalarTy> {
+        match expr {
             Expr::BuiltinCall(func, args) => {
                 match func {
                     BuiltinFunction::Panic => {
@@ -2370,6 +2485,13 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            _ => unreachable!("check_builtins was handed an expression it does not own"),
+        }
+    }
+
+    /// The `with allocator = ...` scope.
+    fn check_with_scope(&mut self, expr: Expr) -> Option<ScalarTy> {
+        match expr {
             Expr::With(allocator_expr, body_expr) => {
                 // Validate the allocator producer first; it must yield an
                 // Allocator handle.
@@ -2386,6 +2508,13 @@ impl<'a> Checker<'a> {
                 // each early-exit terminator.
                 self.check_expr(&body_expr)
             }
+            _ => unreachable!("check_with_scope was handed an expression it does not own"),
+        }
+    }
+
+    /// Method calls, including the stdlib receivers.
+    fn check_method_calls(&mut self, expr: Expr, expr_ref: &ExprRef) -> Option<ScalarTy> {
+        match expr {
             Expr::MethodCall(receiver, method_name, args) => {
                 // STR-INTERP-INTERP-JIT: `s.concat(t)` where the receiver
                 // and arg are str. Codegen emits a direct call to the
@@ -2839,6 +2968,13 @@ impl<'a> Checker<'a> {
                     None => Some(ScalarTy::Unit),
                 }
             }
+            _ => unreachable!("check_method_calls was handed an expression it does not own"),
+        }
+    }
+
+    /// Struct field and tuple element reads.
+    fn check_member_access(&mut self, expr: Expr) -> Option<ScalarTy> {
+        match expr {
             Expr::FieldAccess(receiver, field_name) => {
                 // Read access on a struct local: returns the field's scalar
                 // type. Anything else (FieldAccess on a function call result,
@@ -2901,6 +3037,13 @@ impl<'a> Checker<'a> {
                 }
                 Some(shape[idx])
             }
+            _ => unreachable!("check_member_access was handed an expression it does not own"),
+        }
+    }
+
+    /// `as` casts between the scalar widths.
+    fn check_casts(&mut self, expr: Expr) -> Option<ScalarTy> {
+        match expr {
             Expr::Cast(inner, target) => {
                 // Casts allowed: any-width int ↔ any-width int (sextend /
                 // uextend / ireduce in codegen), and i64/u64 ↔ f64 (real
@@ -2931,55 +3074,10 @@ impl<'a> Checker<'a> {
                 Some(target_ty)
             }
             // Everything else is unsupported in this iteration.
-            other => {
-                // Phase JE-1a: a `QualifiedIdentifier` whose head is a
-                // JIT-eligible enum (non-generic, unit-only) corresponds
-                // to a unit-variant constructor like `Color::Red`. The
-                // tag layout is already in `enum_layouts`; the missing
-                // piece is constructor + match codegen (Phase JE-1b).
-                // Surface a precise "infra ready, codegen pending"
-                // message instead of the generic "qualified identifier"
-                // catch-all so the next phase knows which programs to
-                // enable.
-                let precise = match &other {
-                    Expr::QualifiedIdentifier(path)
-                        if path.len() == 2
-                            && enum_layout_for(path[0])
-                                .and_then(|l| l.variant_tag(path[1]))
-                                .is_some() =>
-                    {
-                        "JIT enum support pending: unit-variant constructor codegen \
-                         (Phase JE-1b will lower this via the existing tag layout)"
-                            .to_string()
-                    }
-                    Expr::QualifiedIdentifier(path)
-                        if !path.is_empty()
-                            && enum_decl_lookup_by_name(self.program, path[0]).is_some() =>
-                    {
-                        "JIT does not yet model enum values \
-                         (constructors / match / methods)"
-                            .to_string()
-                    }
-                    // Closures Phase 4: explicit reject reason. The JIT
-                    // doesn't model `Object::Closure` values — each
-                    // closure literal would need a captured-environment
-                    // representation + indirect-call dispatch the JIT
-                    // doesn't have. The interpreter handles closures
-                    // natively (Phase 3); JIT-eligible programs simply
-                    // fall back to interpretation when they contain a
-                    // closure literal.
-                    Expr::Closure { .. } => {
-                        "JIT does not yet support closure / lambda values \
-                         (interpreter handles them; AOT support is a later phase)"
-                            .to_string()
-                    }
-                    _ => format!("uses unsupported expression {}", expr_kind_name(&other)),
-                };
-                self.reject(move || precise);
-                None
-            }
+            _ => unreachable!("check_casts was handed an expression it does not own"),
         }
     }
+
 
     /// Shared eligibility check for plain function calls. Used by both
     /// `Expr::Call(name, ExprList(args))` (the bare-name form) and

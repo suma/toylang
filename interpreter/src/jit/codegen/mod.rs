@@ -747,6 +747,41 @@ impl<'a, 'b> State<'a, 'b> {
             .get(expr_ref)
             .ok_or_else(|| format!("expression not found: {:?}", expr_ref))?;
         match expr {
+            Expr::Int64(..)
+            | Expr::UInt64(..)
+            | Expr::Int8(..)
+            | Expr::Int16(..)
+            | Expr::Int32(..)
+            | Expr::UInt8(..)
+            | Expr::UInt16(..)
+            | Expr::UInt32(..)
+            | Expr::Float64(..)
+            | Expr::True
+            | Expr::False
+            | Expr::String(..)
+            | Expr::Identifier(..) => self.gen_literals_and_identifiers(expr),
+            Expr::Binary(..)
+            | Expr::Unary(..) => self.gen_operators(expr),
+            Expr::Block(..)
+            | Expr::IfElifElse(..)
+            | Expr::Assign(..)
+            | Expr::With(..) => self.gen_blocks_and_assignment(expr),
+            Expr::FieldAccess(..)
+            | Expr::TupleAccess(..) => self.gen_member_access(expr),
+            Expr::BuiltinCall(..) => self.gen_builtins(expr, expr_ref),
+            Expr::Cast(..) => self.gen_casts(expr),
+            Expr::Call(..)
+            | Expr::MethodCall(..)
+            | Expr::AssociatedFunctionCall(..)
+            | Expr::QualifiedIdentifier(..) => self.gen_calls(expr, expr_ref),
+            Expr::Match(..) => self.gen_match_expr(expr),
+            _ => Err("unsupported expression in JIT codegen".to_string()),
+        }
+    }
+
+    /// Literals of every width, string literals, and a bare name.
+    fn gen_literals_and_identifiers(&mut self, expr: Expr) -> Result<Option<Value>, String> {
+        match expr {
             Expr::Int64(v) => Ok(Some(self.builder.ins().iconst(types::I64, v))),
             Expr::UInt64(v) => Ok(Some(self.builder.ins().iconst(types::I64, v as i64))),
             // NUM-W: narrow integer literals. cranelift `iconst` takes
@@ -788,6 +823,14 @@ impl<'a, 'b> State<'a, 'b> {
                 }
                 Err("unresolved identifier in JIT".to_string())
             }
+            _ => unreachable!("gen_literals_and_identifiers was handed an expression it does not own"),
+        }
+    }
+
+    /// Binary and unary operators, including the `==` / `!=` dispatch to
+    /// `toy_str_eq` for str operands.
+    fn gen_operators(&mut self, expr: Expr) -> Result<Option<Value>, String> {
+        match expr {
             Expr::Binary(op, lhs_ref, rhs_ref) => {
                 if matches!(op, Operator::LogicalAnd | Operator::LogicalOr) {
                     return Ok(Some(self.gen_short_circuit(&op, &lhs_ref, &rhs_ref)?));
@@ -958,6 +1001,14 @@ impl<'a, 'b> State<'a, 'b> {
                 };
                 Ok(Some(result))
             }
+            _ => unreachable!("gen_operators was handed an expression it does not own"),
+        }
+    }
+
+    /// Blocks, `if` / `elif` / `else`, assignment, and the `with allocator`
+    /// scope.
+    fn gen_blocks_and_assignment(&mut self, expr: Expr) -> Result<Option<Value>, String> {
+        match expr {
             Expr::Block(stmts) => self.gen_block(&stmts),
             Expr::IfElifElse(cond, then_block, elif_pairs, else_block) => {
                 self.gen_if(cond, then_block, &elif_pairs, else_block)
@@ -1022,6 +1073,13 @@ impl<'a, 'b> State<'a, 'b> {
                 self.with_depth -= 1;
                 Ok(body_value)
             }
+            _ => unreachable!("gen_blocks_and_assignment was handed an expression it does not own"),
+        }
+    }
+
+    /// Struct field and tuple element reads.
+    fn gen_member_access(&mut self, expr: Expr) -> Result<Option<Value>, String> {
+        match expr {
             Expr::FieldAccess(receiver, field_name) => {
                 let recv_expr = self
                     .program
@@ -1058,6 +1116,17 @@ impl<'a, 'b> State<'a, 'b> {
                     .ok_or_else(|| "tuple access index out of bounds".to_string())?;
                 Ok(Some(self.builder.use_var(var)))
             }
+            _ => unreachable!("gen_member_access was handed an expression it does not own"),
+        }
+    }
+
+    /// The `__builtin_*` surface.
+    fn gen_builtins(
+        &mut self,
+        expr: Expr,
+        expr_ref: &ExprRef,
+    ) -> Result<Option<Value>, String> {
+        match expr {
             Expr::BuiltinCall(func, args) => {
                 match func {
                     BuiltinFunction::Format => {
@@ -1423,6 +1492,13 @@ impl<'a, 'b> State<'a, 'b> {
                     }
                 }
             }
+            _ => unreachable!("gen_builtins was handed an expression it does not own"),
+        }
+    }
+
+    /// `as` casts between the scalar widths.
+    fn gen_casts(&mut self, expr: Expr) -> Result<Option<Value>, String> {
+        match expr {
             Expr::Cast(inner, target) => {
                 // i64 ↔ u64 share cranelift's I64 backing storage so those
                 // casts are no-ops. f64 ↔ integer casts emit fcvt instructions
@@ -1477,6 +1553,23 @@ impl<'a, 'b> State<'a, 'b> {
                 };
                 Ok(Some(result))
             }
+            _ => unreachable!("gen_casts was handed an expression it does not own"),
+        }
+    }
+
+    /// Calls -- free functions, methods, associated functions -- and the
+    /// two-segment qualified name that resolves to one.
+    ///
+    /// The fallback here repeats the outer error rather than being
+    /// `unreachable!`: `QualifiedIdentifier` is matched with a guard
+    /// (`path.len() == 2`), so a longer path is routed to this group by
+    /// the dispatch and has to land on the same message it always did.
+    fn gen_calls(
+        &mut self,
+        expr: Expr,
+        expr_ref: &ExprRef,
+    ) -> Result<Option<Value>, String> {
+        match expr {
             Expr::Call(_, _) | Expr::MethodCall(_, _, _) | Expr::AssociatedFunctionCall(_, _, _) => {
                 // STR-INTERP-INTERP-JIT: str.concat(t) doesn't go
                 // through the user-method registry; it's a builtin
@@ -1562,6 +1655,13 @@ impl<'a, 'b> State<'a, 'b> {
                     path
                 ))
             }
+            _ => Err("unsupported expression in JIT codegen".to_string()),
+        }
+    }
+
+    /// Pattern matching.
+    fn gen_match_expr(&mut self, expr: Expr) -> Result<Option<Value>, String> {
+        match expr {
             // Phase JE-1b: `match scrutinee { ... }`. Lower as a
             // brif chain across per-arm blocks, terminating in a
             // common `cont` block whose block-param carries the
@@ -1740,7 +1840,7 @@ impl<'a, 'b> State<'a, 'b> {
                 self.terminated = false;
                 Ok(result_param.map(|_| self.builder.block_params(cont)[0]))
             }
-            _ => Err("unsupported expression in JIT codegen".to_string()),
+            _ => unreachable!("gen_match_expr was handed an expression it does not own"),
         }
     }
 

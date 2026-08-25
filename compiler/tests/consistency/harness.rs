@@ -834,3 +834,48 @@ pub(super) fn assert_renders(source: &str, stem: &str, expected: &str) {
         "rendered output changed"
     );
 }
+
+/// Run `source` on the interpreter's own JIT and assert two things: that
+/// the JIT actually compiled it, and that its stdout matches the
+/// tree-walker's.
+///
+/// The second half is what `assert_stdout_consistent` already does. The
+/// first half is what it cannot do. That helper's lite path returns as
+/// soon as the tree-walker, the AOT binary and the *compiler*-side JIT
+/// agree, so the interpreter's JIT column is only reached on the full
+/// path -- and even there, a program the JIT declines silently falls
+/// back to the tree-walker, which makes the comparison
+/// tree-walker-versus-tree-walker and passes for the wrong reason.
+///
+/// Asserting on the verbose "JIT compiled:" line closes that: if
+/// eligibility starts rejecting the program, the test fails instead of
+/// quietly stopping to test anything.
+pub(super) fn assert_jit_compiled_and_matches(source: &str, stem: &str) {
+    if skip_e2e() {
+        return;
+    }
+    let core = core_modules_dir();
+    let mut options = RunOptions::default();
+    options.jit = true;
+    options.core_modules_dir = Some(core.as_path());
+
+    let (result, jit_stdout, stderr) =
+        interpreter::output::with_stdout_stderr_capture(|| {
+            interpreter::jit::with_jit_verbose_override(true, || {
+                interpreter::run_source(source, "test.t", &options)
+            })
+        });
+    result.unwrap_or_else(|e| panic!("interpreter JIT run for `{stem}`: {e:?}"));
+
+    assert!(
+        stderr.contains("JIT compiled:"),
+        "`{stem}` never reached the JIT, so this test compared the \
+         tree-walker with itself. stderr:\n{stderr}",
+    );
+
+    let interp = interpreter_stdout(source, stem, true);
+    assert_eq!(
+        interp, jit_stdout,
+        "interpreter vs its own JIT stdout mismatch for `{stem}`:\n{source}",
+    );
+}

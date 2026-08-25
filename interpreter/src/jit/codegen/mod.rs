@@ -805,8 +805,9 @@ impl<'a, 'b> State<'a, 'b> {
                     } else {
                         IntCC::Equal
                     };
-                    // `jit_str_eq` returns 0/1 in an i64; narrow it to
-                    // the i8 the rest of the JIT uses for bool.
+                    // `toy_str_eq` returns 0/1 in an i8; the compare
+                    // against 0 turns it into the i8 the rest of the
+                    // JIT uses for bool, and inverts it for `!=`.
                     return Ok(Some(self.builder.ins().icmp_imm(cc, eq, 0)));
                 }
                 if lhs_ty == ScalarTy::F64 {
@@ -1173,9 +1174,9 @@ impl<'a, 'b> State<'a, 'b> {
                             (false, ScalarTy::U32) => HelperKind::PrintU32,
                             (true, ScalarTy::U32) => HelperKind::PrintlnU32,
                             // STR-INTERP-INTERP-JIT: print of a str
-                            // value (interpolation chain result, etc.)
-                            // routes through the dedicated runtime
-                            // helper that walks back to byte_start.
+                            // value (interpolation chain result, etc.).
+                            // The helper takes the str value as-is and
+                            // reads its length field.
                             (false, ScalarTy::Str) => HelperKind::PrintStrValue,
                             (true, ScalarTy::Str) => HelperKind::PrintlnStrValue,
                             _ => return Err("print arg type unsupported in JIT".into()),

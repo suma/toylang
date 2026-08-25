@@ -1021,6 +1021,84 @@ fn comparison_chain_three_ops_round_trip() {
 // for the four canonical cases.
 // ---------------------------------------------------------------------
 
+// RUNTIME-SHARED: the interpreter's JIT and the AOT binary now call the
+// same `toylang_rt` helpers for print / println / __builtin_to_string /
+// str concat / str equality -- 35 symbols that used to be written twice.
+// These tests cover that surface from the one column
+// `assert_stdout_consistent` cannot reach on its own.
+
+#[test]
+fn the_shared_runtime_prints_every_width_the_same_way() {
+    // One `println` per print helper. If the two runtimes drift on any
+    // width -- or if the str helpers' byte_start-versus-handle calling
+    // convention is got wrong at a call site -- a line changes.
+    let src = r#"
+        fn main() -> u64 {
+            println(1i64)
+            println(2u64)
+            println(3i8)
+            println(4i16)
+            println(5i32)
+            println(6u8)
+            println(7u16)
+            println(8u32)
+            println(true)
+            println(false)
+            println(9.5f64)
+            println(10f64)
+            println("a str literal")
+            0u64
+        }
+    "#;
+    assert_jit_compiled_and_matches(src, "shared_runtime_print");
+    assert_stdout_consistent(src, "shared_runtime_print_all");
+}
+
+#[test]
+fn the_shared_runtime_renders_every_width_the_same_way() {
+    // The interpolation path -- `__builtin_to_string` rather than
+    // `print` -- for the same set. This is the one that had drifted:
+    // `jit_to_string_f64` tested `v == (v as i64) as f64`, which
+    // saturates, so a large integral f64 lost its `.0` and its digits.
+    // The two large values below are past i64's range.
+    let src = r#"
+        fn main() -> u64 {
+            var big: f64 = 1f64
+            for i in 0u64 to 30u64 {
+                big = big * 10f64
+            }
+            println("{1i64} {2u64} {3i8} {4i16} {5i32}")
+            println("{6u8} {7u16} {8u32} {true} {false}")
+            println("{9.5f64} {10f64} {big}")
+            0u64
+        }
+    "#;
+    assert_jit_compiled_and_matches(src, "shared_runtime_to_string");
+    assert_stdout_consistent(src, "shared_runtime_to_string_all");
+}
+
+#[test]
+fn the_shared_runtime_concatenates_and_compares_strs_the_same_way() {
+    // `toy_str_concat` and `toy_str_eq`. Equality has to compare bytes
+    // rather than handles, so the built-up string must equal the
+    // literal even though they are different allocations -- and
+    // `toy_str_eq` returns i8, which the JIT's helper signature has to
+    // declare correctly or the comparison reads a garbage register.
+    let src = r#"
+        fn main() -> u64 {
+            val a = "ab".concat("cd")
+            val b = "abcd"
+            println(a)
+            println("{a}{b}")
+            if a == b { println("eq") } else { println("ne") }
+            if a == "zz" { println("bad") } else { println("ok") }
+            0u64
+        }
+    "#;
+    assert_jit_compiled_and_matches(src, "shared_runtime_str_ops");
+    assert_stdout_consistent(src, "shared_runtime_str_ops_all");
+}
+
 #[test]
 fn a_str_containing_a_nul_prints_all_of_itself() {
     // `toy_print_str` used to take the byte_start of the str layout and
@@ -1040,7 +1118,8 @@ fn a_str_containing_a_nul_prints_all_of_itself() {
             0u64
         }
     "#;
-    assert_stdout_consistent(src, "str_with_nul");
+    assert_jit_compiled_and_matches(src, "str_with_nul");
+    assert_stdout_consistent(src, "str_with_nul_all");
 }
 
 #[test]
@@ -1058,5 +1137,6 @@ fn a_printed_literal_containing_a_nul_survives_the_rodata_path() {
             0u64
         }
     "#;
-    assert_stdout_consistent(src, "literal_with_nul");
+    assert_jit_compiled_and_matches(src, "literal_with_nul");
+    assert_stdout_consistent(src, "literal_with_nul_all");
 }

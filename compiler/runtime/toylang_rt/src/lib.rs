@@ -1237,7 +1237,10 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
 // ---------------------------------------------------------------------------
 
 /// Lay out a fresh heap str.
-fn toy_str_alloc(bytes: &[u8]) -> *const u8 {
+///
+/// Public so the interpreter's own JIT can materialise string literals
+/// in the same shape rather than keeping a second copy of the layout.
+pub fn toy_str_alloc(bytes: &[u8]) -> *const u8 {
     let len = bytes.len();
     let base = unsafe { malloc(len + 1 + 8) };
     if base.is_null() {

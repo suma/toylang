@@ -35,21 +35,48 @@ fn primitive_type_canonical_name(kind: &Kind) -> Option<&'static str> {
     })
 }
 
+/// The top-level declarations one `parse_program` run accumulates, plus
+/// the source span they cover.
+///
+/// These were five locals threaded through a 770-line loop, two of them
+/// reachable only through closures -- `update_start_pos` /
+/// `update_end_pos` captured `start_pos` / `end_pos` mutably, which is
+/// what kept the loop body from being lifted out at all.
+struct TopLevel {
+    functions: Vec<Rc<Function>>,
+    consts: Vec<ConstDecl>,
+    tests: Vec<TestCase>,
+    start_pos: Option<usize>,
+    end_pos: Option<usize>,
+}
+
+impl TopLevel {
+    fn new() -> Self {
+        TopLevel {
+            functions: Vec::new(),
+            consts: Vec::new(),
+            tests: Vec::new(),
+            start_pos: None,
+            end_pos: None,
+        }
+    }
+
+    /// Record a declaration's start. Keeps the *later* of the two, which
+    /// is what the closure this replaces did.
+    fn saw_start(&mut self, start: usize) {
+        if self.start_pos.is_none() || self.start_pos.unwrap() < start {
+            self.start_pos = Some(start);
+        }
+    }
+
+    fn saw_end(&mut self, end: usize) {
+        self.end_pos = Some(end);
+    }
+}
+
 impl<'a> Parser<'a> {
     pub fn parse_program(&mut self) -> ParserResult<File> {
-        let mut start_pos: Option<usize> = None;
-        let mut end_pos: Option<usize> = None;
-        let mut update_start_pos = |start: usize| {
-            if start_pos.is_none() || start_pos.unwrap() < start {
-                start_pos = Some(start);
-            }
-        };
-        let mut update_end_pos = |end: usize| {
-            end_pos = Some(end);
-        };
-        let mut def_func = vec![];
-        let mut consts: Vec<ConstDecl> = vec![];
-        let mut tests: Vec<TestCase> = vec![];
+        let mut out = TopLevel::new();
 
         // Parse package declaration (optional, at beginning of file)
         let package_decl = if matches!(self.peek(), Some(Kind::Package)) {
@@ -118,7 +145,7 @@ impl<'a> Parser<'a> {
             {
                 let test_start_pos = self.peek_position_n(0).unwrap().start;
                 let location = self.current_source_location();
-                update_start_pos(test_start_pos);
+                out.saw_start(test_start_pos);
                 self.next(); // consume `test`
                 let display_name = match self.peek() {
                     Some(Kind::String(s)) => s.clone(),
@@ -127,14 +154,14 @@ impl<'a> Parser<'a> {
                 self.next(); // consume the name
                 let block = super::expr::parse_block(self)?;
                 let test_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
-                update_end_pos(test_end_pos);
+                out.saw_end(test_end_pos);
 
                 // Lowered to a regular function so the type checker and
                 // every backend need no test-specific handling.
                 let fn_name = self
                     .string_interner
-                    .get_or_intern(format!("__test_{}", tests.len()));
-                def_func.push(Rc::new(Function {
+                    .get_or_intern(format!("__test_{}", out.tests.len()));
+                out.functions.push(Rc::new(Function {
                     node: Node::new(test_start_pos, test_end_pos),
                     name: fn_name,
                     generic_params: vec![],
@@ -151,7 +178,7 @@ impl<'a> Parser<'a> {
                     extern_link: None,
                     visibility: Visibility::Private,
                 }));
-                tests.push(TestCase {
+                out.tests.push(TestCase {
                     name: display_name,
                     function: fn_name,
                     line: location.line,
@@ -160,651 +187,14 @@ impl<'a> Parser<'a> {
             }
 
             match self.peek() {
-                Some(Kind::Extern) => {
-                    // `extern fn name(params) -> ret` — declares a
-                    // function whose body is provided by the runtime
-                    // / linker (interpreter registry / JIT helper /
-                    // libm). No body block; no contract clauses.
-                    let fn_start_pos = self.peek_position_n(0).unwrap().start;
-                    let location = self.current_source_location();
-                    update_start_pos(fn_start_pos);
-                    self.next(); // consume 'extern'
-                    if !matches!(self.peek(), Some(Kind::Function)) {
-                        self.collect_error("expected `fn` after `extern`");
-                        continue;
-                    }
-                    self.next(); // consume 'fn'
-                    let fn_name = match self.peek() {
-                        Some(Kind::Identifier(s)) => {
-                            let s = s.to_string();
-                            let n = self.string_interner.get_or_intern(s);
-                            self.next();
-                            n
-                        }
-                        _ => {
-                            self.collect_error("expected function name after `extern fn`");
-                            self.next();
-                            continue;
-                        }
-                    };
-                    // #195: optional generic params on extern fn
-                    // (`extern fn pick<T>(a: T, b: T) -> T`).  Parsed
-                    // here so the AST shape matches non-extern fns,
-                    // but each backend's actual dispatch decides
-                    // whether to accept the call: the interpreter
-                    // walks the typed args at call time (works
-                    // unconditionally), the JIT and AOT compiler
-                    // need name-mangled monomorph entries (rejected
-                    // with a clear error until they're wired).
-                    let (generic_params, generic_bounds) = if matches!(self.peek(), Some(Kind::LT)) {
-                        self.parse_generic_params()?
-                    } else {
-                        (vec![], std::collections::HashMap::new())
-                    };
-                    self.expect_err(&Kind::ParenOpen)?;
-                    let params = self.parse_param_def_list_with_generic_context(vec![], &generic_params)?;
-                    self.expect_err(&Kind::ParenClose)?;
-                    let mut ret_ty: Option<TypeDecl> = None;
-                    if let Some(Kind::Arrow) = self.peek() {
-                        self.expect_err(&Kind::Arrow)?;
-                        let generic_context: HashSet<DefaultSymbol> = generic_params.iter().cloned().collect();
-                        ret_ty = Some(self.parse_type_declaration_with_generic_context(
-                            &generic_context,
-                        )?);
-                    }
-                    self.skip_newlines();
-                    // FFI_PLAN P1: `from "lib" [as "sym"]` — the
-                    // declaration carries the linker symbol instead of
-                    // relying on the backend's built-in dispatch.
-                    // `from` is a contextual keyword here (it stays an
-                    // ordinary identifier everywhere else), `as` is
-                    // the existing keyword.
-                    let mut extern_link = None;
-                    let starts_with_from =
-                        matches!(self.peek(), Some(Kind::Identifier(s)) if s == "from");
-                    if starts_with_from {
-                        self.next(); // consume `from`
-                        // Extract the literal text before interning:
-                        // `self.peek()` holds a borrow of the token
-                        // stream, which `get_or_intern` (a `&mut self`
-                        // call) must not overlap.
-                        let lib_text = match self.peek() {
-                            Some(Kind::String(s)) => Some(s.clone()),
-                            _ => None,
-                        };
-                        let lib = match lib_text {
-                            Some(text) => {
-                                let sym = self.string_interner.get_or_intern(text);
-                                self.next();
-                                sym
-                            }
-                            None => {
-                                self.collect_error(
-                                    "expected a string literal after `from` (e.g. `from \"mylib\"`)",
-                                );
-                                self.next();
-                                continue;
-                            }
-                        };
-                        let as_next = matches!(self.peek(), Some(Kind::As));
-                        let symbol = if as_next {
-                            self.next(); // consume `as`
-                            let sym_text = match self.peek() {
-                                Some(Kind::String(s)) => Some(s.clone()),
-                                _ => None,
-                            };
-                            match sym_text {
-                                Some(text) => {
-                                    let sym = self.string_interner.get_or_intern(text);
-                                    self.next();
-                                    Some(sym)
-                                }
-                                None => {
-                                    self.collect_error(
-                                        "expected a string literal after `as` (e.g. `as \"sym\"`)",
-                                    );
-                                    self.next();
-                                    continue;
-                                }
-                            }
-                        } else {
-                            None
-                        };
-                        extern_link = Some(ExternLink { lib, symbol });
-                    }
-                    let fn_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
-                    update_end_pos(fn_end_pos);
-                    // Use a placeholder `Stmt::Break` as the body slot.
-                    // Backends consult `is_extern` before walking it, so
-                    // the placeholder never executes.
-                    let placeholder_body_expr = self
-                        .ast_builder
-                        .add_expr(crate::ast::Expr::Block(vec![]));
-                    let placeholder_body = self
-                        .ast_builder
-                        .expression_stmt(placeholder_body_expr, Some(location));
-                    def_func.push(Rc::new(Function {
-                        node: Node::new(fn_start_pos, fn_end_pos),
-                        name: fn_name,
-                        generic_params,
-                        generic_bounds,
-                        parameter: params,
-                        return_type: ret_ty,
-                        requires: vec![],
-                        ensures: vec![],
-                        ensures_kinds: vec![],
-                        // NEVER-ALLOCATES: on an `extern fn` this is a
-                        // declaration, not a check — the body is
-                        // outside the language, so the compiler takes
-                        // the author's word and lets a
-                        // `never_allocates` caller through.
-                        never_allocates,
-                        old_exprs: vec![],
-                        code: placeholder_body,
-                        is_extern: true,
-                        extern_link,
-                        visibility,
-                    }));
-                }
-                Some(Kind::Function) => {
-                    let fn_start_pos = self.peek_position_n(0).unwrap().start;
-                    let location = self.current_source_location();
-                    update_start_pos(fn_start_pos);
-                    self.next();
-                    match self.peek() {
-                        Some(Kind::Identifier(s)) => {
-                            let s = s.to_string();
-                            let fn_name = self.string_interner.get_or_intern(s);
-                            self.next();
-
-                            // Parse generic parameters if present: <T> or <A: Allocator>
-                            let (generic_params, generic_bounds) = if matches!(self.peek(), Some(Kind::LT)) {
-                                self.parse_generic_params()?
-                            } else {
-                                (vec![], std::collections::HashMap::new())
-                            };
-
-                            self.expect_err(&Kind::ParenOpen)?;
-                            let params = self.parse_param_def_list_with_generic_context(vec![], &generic_params)?;
-                            self.expect_err(&Kind::ParenClose)?;
-                            let mut ret_ty: Option<TypeDecl> = None;
-                            if let Some(Kind::Arrow) = self.peek() {
-                                self.expect_err(&Kind::Arrow)?;
-                                // Convert to HashSet for generic context
-                                let generic_context: HashSet<DefaultSymbol> = generic_params.iter().cloned().collect();
-                                ret_ty = Some(self.parse_type_declaration_with_generic_context(&generic_context)?);
-                            }
-                            // Design-by-Contract clauses live between the
-                            // return type and the body block, mirroring how
-                            // `<T: Bound>` annotates a generic param. They are
-                            // optional and may repeat; multiple clauses of the
-                            // same kind are AND-composed by the type checker.
-                            let clauses = self.parse_contract_clauses()?;
-                            let block = super::expr::parse_block(self)?;
-                            let fn_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
-                            update_end_pos(fn_end_pos);
-
-                            def_func.push(Rc::new(Function {
-                                node: Node::new(fn_start_pos, fn_end_pos),
-                                name: fn_name,
-                                generic_params,
-                                generic_bounds,
-                                parameter: params,
-                                return_type: ret_ty,
-                                requires: clauses.requires,
-                                ensures: clauses.ensures,
-                                ensures_kinds: clauses.ensures_kinds,
-                                never_allocates,
-                                old_exprs: clauses.old_exprs,
-                                code: self.ast_builder.expression_stmt(block, Some(location)),
-                                is_extern: false,
-                                extern_link: None,
-                                visibility,
-                            }));
-                        }
-                        _ => {
-                            self.collect_error("expected function name");
-                            self.next(); // Skip invalid token and continue
-                        }
-                    }
-                }
-                Some(Kind::Const) => {
-                    // Top-level `const NAME: Type = expr` declaration. Type
-                    // annotation is mandatory (no inference) so that const
-                    // signatures stay greppable. The value expression goes
-                    // through the regular expression parser, which lets it
-                    // see other const names that have already been declared
-                    // (forward references are not allowed).
-                    let const_start_pos = self.peek_position_n(0).unwrap().start;
-                    update_start_pos(const_start_pos);
-                    self.next(); // consume `const`
-
-                    let const_name = match self.peek().cloned() {
-                        Some(Kind::Identifier(s)) => {
-                            let sym = self.string_interner.get_or_intern(s);
-                            self.next();
-                            sym
-                        }
-                        _ => {
-                            self.collect_error("expected identifier after `const`");
-                            self.next();
-                            continue;
-                        }
-                    };
-
-                    self.expect_err(&Kind::Colon)?;
-                    let const_ty = self.parse_type_declaration()?;
-                    self.expect_err(&Kind::Equal)?;
-                    let value = self.parse_expr_impl()?;
-                    let const_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
-                    update_end_pos(const_end_pos);
-
-                    consts.push(ConstDecl {
-                        node: Node::new(const_start_pos, const_end_pos),
-                        name: const_name,
-                        type_decl: const_ty,
-                        value,
-                        visibility,
-                    });
-                }
-                Some(Kind::Type) => {
-                    // `type Name = TargetType` — top-level alias.
-                    // Optional generic parameters `type Name<T, U> = ...`
-                    // turn the alias parameterised: occurrences of
-                    // `Name<i64>` substitute `T` -> `i64` in the target
-                    // at parse time. Bounds on the parameters are
-                    // accepted but ignored — they don't make sense for
-                    // a pure substitution alias.
-                    let alias_start_pos = self.peek_position_n(0).unwrap().start;
-                    let location = self.current_source_location();
-                    update_start_pos(alias_start_pos);
-                    self.next(); // consume `type`
-
-                    let alias_name = match self.peek().cloned() {
-                        Some(Kind::Identifier(s)) => {
-                            let sym = self.string_interner.get_or_intern(s);
-                            self.next();
-                            sym
-                        }
-                        _ => {
-                            self.collect_error("expected identifier after `type`");
-                            self.next();
-                            continue;
-                        }
-                    };
-
-                    let alias_generic_params: Vec<DefaultSymbol> = if matches!(self.peek(), Some(Kind::LT)) {
-                        // `parse_generic_params` consumes the leading
-                        // `<` and the trailing `>` itself, so no
-                        // bracket-balancing required here.
-                        let (params, _bounds) = self.parse_generic_params()?;
-                        params
-                    } else {
-                        Vec::new()
-                    };
-
-                    self.expect_err(&Kind::Equal)?;
-                    let generic_context: HashSet<DefaultSymbol> =
-                        alias_generic_params.iter().copied().collect();
-                    let target_ty =
-                        self.parse_type_declaration_with_generic_context(&generic_context)?;
-                    let alias_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
-                    update_end_pos(alias_end_pos);
-
-                    // Register before emitting so the AST node carries
-                    // the already-resolved target (anonymous alias chains
-                    // — `type A = u8; type B = A` — collapse to the
-                    // leaf). Generic aliases keep `Generic(T)` markers
-                    // in the target; the substitution happens at the
-                    // use site.
-                    self.type_aliases.insert(alias_name, (alias_generic_params.clone(), target_ty.clone()));
-                    self.ast_builder.add_stmt_with_location(Stmt::TypeAlias {
-                        name: alias_name,
-                        generic_params: alias_generic_params,
-                        target: target_ty,
-                        visibility,
-                    }, Some(location));
-                }
-                Some(Kind::Struct) => {
-                    let struct_start_pos = self.peek_position_n(0).unwrap().start;
-                    let location = self.current_source_location();
-                    update_start_pos(struct_start_pos);
-                    self.next();
-                    match self.peek() {
-                        Some(Kind::Identifier(s)) => {
-                            let s_copy = s.clone();
-                            let struct_symbol = self.string_interner.get_or_intern(&s_copy);
-                            self.next();
-
-                            // Parse generic parameters if present: struct Foo<T> or struct Foo<A: Allocator>
-                            let (generic_params, generic_bounds) = if matches!(self.peek(), Some(Kind::LT)) {
-                                self.parse_generic_params()?
-                            } else {
-                                (vec![], std::collections::HashMap::new())
-                            };
-
-                            if !generic_params.is_empty() {
-                                self.declared_type_generics
-                                    .insert(struct_symbol, generic_params.clone());
-                            }
-                            // NEWTYPE: `struct Meters(i64)` is sugar for a
-                            // struct whose fields are named by position
-                            // (`"0"`, `"1"`, ...). Everything downstream --
-                            // the type checker's struct registry, all three
-                            // backends, drop glue, `--api` -- then handles it
-                            // as an ordinary struct. The two sugared *uses*
-                            // (`Meters(v)` construction and `m.0` access) are
-                            // rewritten in the type checker, which is where
-                            // the struct table is available.
-                            let fields = if matches!(self.peek(), Some(Kind::ParenOpen)) {
-                                super::stmt::parse_tuple_struct_fields(self, &generic_params)?
-                            } else {
-                                self.expect_err(&Kind::BraceOpen)?;
-                                let fields = super::stmt::parse_struct_fields_with_generic_context(self, vec![], &generic_params)?;
-                                self.expect_err(&Kind::BraceClose)?;
-                                fields
-                            };
-                            let struct_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
-                            update_end_pos(struct_end_pos);
-
-                            self.ast_builder.struct_decl_stmt(struct_symbol, generic_params, generic_bounds, fields, visibility, Some(location));
-                        }
-                        _ => {
-                            self.collect_error("expected struct name");
-                            self.next(); // Skip invalid token and continue
-                        }
-                    }
-                }
-                Some(Kind::Enum) => {
-                    let enum_start_pos = self.peek_position_n(0).unwrap().start;
-                    let location = self.current_source_location();
-                    update_start_pos(enum_start_pos);
-                    self.next(); // consume 'enum'
-                    match self.peek() {
-                        Some(Kind::Identifier(s)) => {
-                            let s_copy = s.clone();
-                            let enum_symbol = self.string_interner.get_or_intern(&s_copy);
-                            self.next();
-                            // Optional generic parameters: `enum Name<T, U>`.
-                            // Bounds aren't meaningful for enums yet; we drop
-                            // the bounds map returned by parse_generic_params.
-                            let generic_params: Vec<DefaultSymbol> = if matches!(self.peek(), Some(Kind::LT)) {
-                                let (params, _bounds) = self.parse_generic_params()?;
-                                params
-                            } else {
-                                Vec::new()
-                            };
-                            if !generic_params.is_empty() {
-                                self.declared_type_generics
-                                    .insert(enum_symbol, generic_params.clone());
-                            }
-                            let generic_context: HashSet<DefaultSymbol> = generic_params.iter().cloned().collect();
-                            self.expect_err(&Kind::BraceOpen)?;
-                            self.skip_newlines();
-                            let mut variants: Vec<crate::ast::EnumVariantDef> = Vec::new();
-                            loop {
-                                self.skip_newlines();
-                                match self.peek() {
-                                    Some(Kind::BraceClose) => break,
-                                    Some(Kind::Identifier(name)) => {
-                                        let variant_name = name.clone();
-                                        let variant_sym = self.string_interner.get_or_intern(&variant_name);
-                                        self.next();
-                                        // Optional tuple payload: `Name(Type, Type, ...)`.
-                                        let mut payload_types: Vec<TypeDecl> = Vec::new();
-                                        if matches!(self.peek(), Some(Kind::ParenOpen)) {
-                                            self.next(); // consume '('
-                                            loop {
-                                                self.skip_newlines();
-                                                if matches!(self.peek(), Some(Kind::ParenClose)) {
-                                                    break;
-                                                }
-                                                let ty = self.parse_type_declaration_with_generic_context(&generic_context)?;
-                                                payload_types.push(ty);
-                                                self.skip_newlines();
-                                                if matches!(self.peek(), Some(Kind::Comma)) {
-                                                    self.next();
-                                                } else {
-                                                    break;
-                                                }
-                                            }
-                                            self.expect_err(&Kind::ParenClose)?;
-                                        }
-                                        variants.push(crate::ast::EnumVariantDef {
-                                            name: variant_sym,
-                                            payload_types,
-                                        });
-                                        self.skip_newlines();
-                                        if matches!(self.peek(), Some(Kind::Comma)) {
-                                            self.next();
-                                            self.skip_newlines();
-                                        }
-                                    }
-                                    other => {
-                                        let other_str = format!("{:?}", other);
-                                        self.collect_error(&format!(
-                                            "expected variant name in enum body, got {}", other_str
-                                        ));
-                                        break;
-                                    }
-                                }
-                            }
-                            self.expect_err(&Kind::BraceClose)?;
-                            let enum_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
-                            update_end_pos(enum_end_pos);
-                            self.ast_builder.add_stmt_with_location(Stmt::EnumDecl {
-                                name: enum_symbol,
-                                generic_params,
-                                variants,
-                                visibility,
-                            }, Some(location));
-                        }
-                        _ => {
-                            self.collect_error("expected enum name");
-                            self.next();
-                        }
-                    }
-                }
-                Some(Kind::Impl) => {
-                    let impl_start_pos = self.peek_position_n(0).unwrap().start;
-                    let location = self.current_source_location();
-                    update_start_pos(impl_start_pos);
-                    self.next();
-
-                    // Parse optional generic parameters: impl<T> or impl<A: Allocator>
-                    let (generic_params, generic_bounds) = if self.peek() == Some(&Kind::LT) {
-                        self.parse_generic_params()?
-                    } else {
-                        (vec![], std::collections::HashMap::new())
-                    };
-
-                    match self.peek() {
-                        Some(Kind::Identifier(s)) => {
-                            let s_copy = s.clone();
-                            let first_ident_symbol = self.string_interner.get_or_intern(&s_copy);
-                            self.next();
-
-                            // CONCRETE-IMPL Phase 2 follow-up: capture
-                            // type args on the *first* identifier too so
-                            // inherent `impl Vec<u8>` (no `for`) ends up
-                            // with `target_type_args = [u8]`, parallel to
-                            // the trait-impl branch below. Without this,
-                            // the inherent path falls back to
-                            // `skip_until_matching_gt` and CONCRETE-IMPL
-                            // dispatch loses its key. Trait impls
-                            // overwrite this from the parsed `Type<...>`
-                            // following `for` (the first identifier was
-                            // the trait name, not the target).
-                            let generic_params_set: std::collections::HashSet<DefaultSymbol> = generic_params.iter().copied().collect();
-                            let mut first_target_args = if self.peek() == Some(&Kind::LT) {
-                                self.next(); // consume '<'
-                                self.parse_type_args_after_lt(&generic_params_set)?
-                            } else {
-                                Vec::new()
-                            };
-                            // Implicit type-parameter list: `impl
-                            // Container<T>` re-uses what `struct
-                            // Container<T>` declared, as the language
-                            // reference specifies.
-                            //
-                            // Decided *after* parsing the args, on the
-                            // args themselves: a name is a type
-                            // parameter only if the declaration lists
-                            // it. `u8` in `impl Vec<u8>` lexes as a
-                            // type keyword and can never match, so the
-                            // concrete-args form (CONCRETE-IMPL) is
-                            // untouched — and `impl C<i64>` alongside
-                            // `impl C<u8>` keeps dispatching to two
-                            // separate specs. Adopting the declaration
-                            // wholesale instead would turn those into
-                            // generic templates and lose the methods.
-                            let mut generic_params = generic_params;
-                            if generic_params.is_empty()
-                                && let Some(declared) =
-                                    self.declared_type_generics.get(&first_ident_symbol)
-                            {
-                                let declared = declared.clone();
-                                let implicit: Vec<DefaultSymbol> = first_target_args
-                                    .iter()
-                                    .filter_map(|a| match a {
-                                        TypeDecl::Identifier(sym) if declared.contains(sym) => {
-                                            Some(*sym)
-                                        }
-                                        _ => None,
-                                    })
-                                    .collect();
-                                if !implicit.is_empty() {
-                                    for arg in first_target_args.iter_mut() {
-                                        if let TypeDecl::Identifier(sym) = arg
-                                            && implicit.contains(sym)
-                                        {
-                                            *arg = TypeDecl::Generic(*sym);
-                                        }
-                                    }
-                                    generic_params = implicit;
-                                }
-                            }
-
-                            // `impl Trait for Type` — the `for` keyword is
-                            // contextually reused here. If present, the
-                            // identifier we just consumed was the trait name
-                            // and the next identifier (or primitive type
-                            // keyword) is the target type. Primitive types
-                            // (`i64`, `f64`, …) interned by their canonical
-                            // name string so the same `DefaultSymbol`
-                            // identifies the impl target across the
-                            // type-checker / interpreter / compiler — they
-                            // are reserved keywords so there's no clash with
-                            // a user struct of the same name.
-                            // ITER-PROTOCOL-TRAIT: when `for` follows,
-                            // `first_target_args` actually carries the
-                            // trait's concrete type args (`<i64>` in
-                            // `impl Iterator<i64> for Counter`). Pass
-                            // them through as `trait_type_args` so the
-                            // type checker can substitute the trait's
-                            // generic params at conformance time.
-                            let (trait_name, trait_type_args, target_type_symbol, target_type_args) =
-                                if matches!(self.peek(), Some(Kind::For)) {
-                                    self.next(); // consume `for`
-                                    let (target_sym, target_args) = match self.peek() {
-                                        Some(Kind::Identifier(name)) => {
-                                            let name_copy = name.clone();
-                                            let sym = self.string_interner.get_or_intern(&name_copy);
-                                            self.next();
-                                            let args = if self.peek() == Some(&Kind::LT) {
-                                                self.next(); // consume '<'
-                                                self.parse_type_args_after_lt(&generic_params_set)?
-                                            } else {
-                                                Vec::new()
-                                            };
-                                            (sym, args)
-                                        }
-                                        Some(kind) if primitive_type_canonical_name(kind).is_some() => {
-                                            let name = primitive_type_canonical_name(kind).unwrap();
-                                            let sym = self.string_interner.get_or_intern(name);
-                                            self.next();
-                                            (sym, Vec::new())
-                                        }
-                                        _ => {
-                                            self.collect_error("expected target type after `for` in impl-trait");
-                                            self.next();
-                                            continue;
-                                        }
-                                    };
-                                    (Some(first_ident_symbol), first_target_args, target_sym, target_args)
-                                } else {
-                                    // Inherent impl: first identifier is the
-                                    // target type; its `<...>` (if any) was
-                                    // captured into `first_target_args`.
-                                    (None, Vec::new(), first_ident_symbol, first_target_args)
-                                };
-
-                            self.expect_err(&Kind::BraceOpen)?;
-                            let methods = super::stmt::parse_impl_methods_with_generic_context(self, vec![], &generic_params, &generic_bounds)?;
-                            self.expect_err(&Kind::BraceClose)?;
-                            let impl_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
-                            update_end_pos(impl_end_pos);
-
-                            self.ast_builder.impl_block_stmt_with_trait_args(
-                                target_type_symbol,
-                                target_type_args,
-                                methods,
-                                trait_name,
-                                trait_type_args,
-                                Some(location),
-                            );
-                        }
-                        _ => {
-                            self.collect_error("expected type name for impl block");
-                            self.next(); // Skip invalid token and continue
-                        }
-                    }
-                }
-                Some(Kind::Trait) => {
-                    let trait_start_pos = self.peek_position_n(0).unwrap().start;
-                    let location = self.current_source_location();
-                    update_start_pos(trait_start_pos);
-                    self.next(); // consume `trait`
-                    match self.peek() {
-                        Some(Kind::Identifier(s)) => {
-                            let s_copy = s.clone();
-                            let trait_symbol = self.string_interner.get_or_intern(&s_copy);
-                            self.next();
-                            // ITER-PROTOCOL-TRAIT: optional generic
-                            // parameter list `<T, U, ...>`. We discard
-                            // any per-parameter bounds here — trait
-                            // generics don't (yet) participate in the
-                            // bound-check pipeline; treating them as
-                            // unbounded is identical to how struct
-                            // generics start out.
-                            let (trait_generic_params, _trait_generic_bounds) =
-                                if matches!(self.peek(), Some(Kind::LT)) {
-                                    self.parse_generic_params()?
-                                } else {
-                                    (Vec::new(), std::collections::HashMap::new())
-                                };
-                            self.expect_err(&Kind::BraceOpen)?;
-                            let methods = super::stmt::parse_trait_method_signatures_with_generics(
-                                self,
-                                &trait_generic_params,
-                            )?;
-                            self.expect_err(&Kind::BraceClose)?;
-                            let trait_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
-                            update_end_pos(trait_end_pos);
-                            self.ast_builder.trait_decl_stmt_with_generics(
-                                trait_symbol,
-                                trait_generic_params,
-                                methods,
-                                visibility,
-                                Some(location),
-                            );
-                        }
-                        _ => {
-                            self.collect_error("expected trait name");
-                            self.next();
-                        }
-                    }
-                }
+                Some(Kind::Extern) => self.parse_toplevel_extern_decl(&mut out, visibility, never_allocates)?,
+                Some(Kind::Function) => self.parse_toplevel_function(&mut out, visibility, never_allocates)?,
+                Some(Kind::Const) => self.parse_toplevel_const_decl(&mut out, visibility)?,
+                Some(Kind::Type) => self.parse_toplevel_type_alias(&mut out, visibility)?,
+                Some(Kind::Struct) => self.parse_toplevel_struct_decl(&mut out, visibility)?,
+                Some(Kind::Enum) => self.parse_toplevel_enum_decl(&mut out, visibility)?,
+                Some(Kind::Impl) => self.parse_toplevel_impl_block(&mut out)?,
+                Some(Kind::Trait) => self.parse_toplevel_trait_decl(&mut out, visibility)?,
                 Some(Kind::NewLine) => {
                     self.next()
                 }
@@ -849,16 +239,16 @@ impl<'a> Parser<'a> {
         let mut ast_builder = AstBuilder::new();
         std::mem::swap(&mut ast_builder, &mut self.ast_builder);
         let (expr, stmt, location_pool) = ast_builder.extract_pools();
-        let function_module_paths = vec![None; def_func.len()];
+        let function_module_paths = vec![None; out.functions.len()];
         Ok(File {
             id: crate::ast::program::next_file_id(),
-            node: Node::new(start_pos.unwrap_or(0usize), end_pos.unwrap_or(0usize)),
+            node: Node::new(out.start_pos.unwrap_or(0usize), out.end_pos.unwrap_or(0usize)),
             package_decl,
             imports,
-            function: def_func,
+            function: out.functions,
             function_module_paths,
-            consts,
-            tests,
+            consts: out.consts,
+            tests: out.tests,
             transferred_bindings: std::collections::HashSet::new(),
             statement: stmt,
             expression: expr,
@@ -866,7 +256,709 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parse program with multiple error collection
+
+    /// An `extern fn` declaration.
+    fn parse_toplevel_extern_decl(
+        &mut self,
+        out: &mut TopLevel,
+        visibility: Visibility,
+        never_allocates: bool,
+    ) -> ParserResult<()> {
+        // `extern fn name(params) -> ret` — declares a
+        // function whose body is provided by the runtime
+        // / linker (interpreter registry / JIT helper /
+        // libm). No body block; no contract clauses.
+        let fn_start_pos = self.peek_position_n(0).unwrap().start;
+        let location = self.current_source_location();
+        out.saw_start(fn_start_pos);
+        self.next(); // consume 'extern'
+        if !matches!(self.peek(), Some(Kind::Function)) {
+            self.collect_error("expected `fn` after `extern`");
+            return Ok(());
+        }
+        self.next(); // consume 'fn'
+        let fn_name = match self.peek() {
+            Some(Kind::Identifier(s)) => {
+                let s = s.to_string();
+                let n = self.string_interner.get_or_intern(s);
+                self.next();
+                n
+            }
+            _ => {
+                self.collect_error("expected function name after `extern fn`");
+                self.next();
+                return Ok(());
+            }
+        };
+        // #195: optional generic params on extern fn
+        // (`extern fn pick<T>(a: T, b: T) -> T`).  Parsed
+        // here so the AST shape matches non-extern fns,
+        // but each backend's actual dispatch decides
+        // whether to accept the call: the interpreter
+        // walks the typed args at call time (works
+        // unconditionally), the JIT and AOT compiler
+        // need name-mangled monomorph entries (rejected
+        // with a clear error until they're wired).
+        let (generic_params, generic_bounds) = if matches!(self.peek(), Some(Kind::LT)) {
+            self.parse_generic_params()?
+        } else {
+            (vec![], std::collections::HashMap::new())
+        };
+        self.expect_err(&Kind::ParenOpen)?;
+        let params = self.parse_param_def_list_with_generic_context(vec![], &generic_params)?;
+        self.expect_err(&Kind::ParenClose)?;
+        let mut ret_ty: Option<TypeDecl> = None;
+        if let Some(Kind::Arrow) = self.peek() {
+            self.expect_err(&Kind::Arrow)?;
+            let generic_context: HashSet<DefaultSymbol> = generic_params.iter().cloned().collect();
+            ret_ty = Some(self.parse_type_declaration_with_generic_context(
+                &generic_context,
+            )?);
+        }
+        self.skip_newlines();
+        // FFI_PLAN P1: `from "lib" [as "sym"]` — the
+        // declaration carries the linker symbol instead of
+        // relying on the backend's built-in dispatch.
+        // `from` is a contextual keyword here (it stays an
+        // ordinary identifier everywhere else), `as` is
+        // the existing keyword.
+        let mut extern_link = None;
+        let starts_with_from =
+            matches!(self.peek(), Some(Kind::Identifier(s)) if s == "from");
+        if starts_with_from {
+            self.next(); // consume `from`
+            // Extract the literal text before interning:
+            // `self.peek()` holds a borrow of the token
+            // stream, which `get_or_intern` (a `&mut self`
+            // call) must not overlap.
+            let lib_text = match self.peek() {
+                Some(Kind::String(s)) => Some(s.clone()),
+                _ => None,
+            };
+            let lib = match lib_text {
+                Some(text) => {
+                    let sym = self.string_interner.get_or_intern(text);
+                    self.next();
+                    sym
+                }
+                None => {
+                    self.collect_error(
+                        "expected a string literal after `from` (e.g. `from \"mylib\"`)",
+                    );
+                    self.next();
+                    return Ok(());
+                }
+            };
+            let as_next = matches!(self.peek(), Some(Kind::As));
+            let symbol = if as_next {
+                self.next(); // consume `as`
+                let sym_text = match self.peek() {
+                    Some(Kind::String(s)) => Some(s.clone()),
+                    _ => None,
+                };
+                match sym_text {
+                    Some(text) => {
+                        let sym = self.string_interner.get_or_intern(text);
+                        self.next();
+                        Some(sym)
+                    }
+                    None => {
+                        self.collect_error(
+                            "expected a string literal after `as` (e.g. `as \"sym\"`)",
+                        );
+                        self.next();
+                        return Ok(());
+                    }
+                }
+            } else {
+                None
+            };
+            extern_link = Some(ExternLink { lib, symbol });
+        }
+        let fn_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+        out.saw_end(fn_end_pos);
+        // Use a placeholder `Stmt::Break` as the body slot.
+        // Backends consult `is_extern` before walking it, so
+        // the placeholder never executes.
+        let placeholder_body_expr = self
+            .ast_builder
+            .add_expr(crate::ast::Expr::Block(vec![]));
+        let placeholder_body = self
+            .ast_builder
+            .expression_stmt(placeholder_body_expr, Some(location));
+        out.functions.push(Rc::new(Function {
+            node: Node::new(fn_start_pos, fn_end_pos),
+            name: fn_name,
+            generic_params,
+            generic_bounds,
+            parameter: params,
+            return_type: ret_ty,
+            requires: vec![],
+            ensures: vec![],
+            ensures_kinds: vec![],
+            // NEVER-ALLOCATES: on an `extern fn` this is a
+            // declaration, not a check — the body is
+            // outside the language, so the compiler takes
+            // the author's word and lets a
+            // `never_allocates` caller through.
+            never_allocates,
+            old_exprs: vec![],
+            code: placeholder_body,
+            is_extern: true,
+            extern_link,
+            visibility,
+        }));
+        Ok(())
+    }
+
+    /// A `fn` definition.
+    fn parse_toplevel_function(
+        &mut self,
+        out: &mut TopLevel,
+        visibility: Visibility,
+        never_allocates: bool,
+    ) -> ParserResult<()> {
+        let fn_start_pos = self.peek_position_n(0).unwrap().start;
+        let location = self.current_source_location();
+        out.saw_start(fn_start_pos);
+        self.next();
+        match self.peek() {
+            Some(Kind::Identifier(s)) => {
+                let s = s.to_string();
+                let fn_name = self.string_interner.get_or_intern(s);
+                self.next();
+
+                // Parse generic parameters if present: <T> or <A: Allocator>
+                let (generic_params, generic_bounds) = if matches!(self.peek(), Some(Kind::LT)) {
+                    self.parse_generic_params()?
+                } else {
+                    (vec![], std::collections::HashMap::new())
+                };
+
+                self.expect_err(&Kind::ParenOpen)?;
+                let params = self.parse_param_def_list_with_generic_context(vec![], &generic_params)?;
+                self.expect_err(&Kind::ParenClose)?;
+                let mut ret_ty: Option<TypeDecl> = None;
+                if let Some(Kind::Arrow) = self.peek() {
+                    self.expect_err(&Kind::Arrow)?;
+                    // Convert to HashSet for generic context
+                    let generic_context: HashSet<DefaultSymbol> = generic_params.iter().cloned().collect();
+                    ret_ty = Some(self.parse_type_declaration_with_generic_context(&generic_context)?);
+                }
+                // Design-by-Contract clauses live between the
+                // return type and the body block, mirroring how
+                // `<T: Bound>` annotates a generic param. They are
+                // optional and may repeat; multiple clauses of the
+                // same kind are AND-composed by the type checker.
+                let clauses = self.parse_contract_clauses()?;
+                let block = super::expr::parse_block(self)?;
+                let fn_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+                out.saw_end(fn_end_pos);
+
+                out.functions.push(Rc::new(Function {
+                    node: Node::new(fn_start_pos, fn_end_pos),
+                    name: fn_name,
+                    generic_params,
+                    generic_bounds,
+                    parameter: params,
+                    return_type: ret_ty,
+                    requires: clauses.requires,
+                    ensures: clauses.ensures,
+                    ensures_kinds: clauses.ensures_kinds,
+                    never_allocates,
+                    old_exprs: clauses.old_exprs,
+                    code: self.ast_builder.expression_stmt(block, Some(location)),
+                    is_extern: false,
+                    extern_link: None,
+                    visibility,
+                }));
+            }
+            _ => {
+                self.collect_error("expected function name");
+                self.next(); // Skip invalid token and continue
+            }
+        }
+        Ok(())
+    }
+
+    /// A top-level `const`.
+    fn parse_toplevel_const_decl(
+        &mut self,
+        out: &mut TopLevel,
+        visibility: Visibility,
+    ) -> ParserResult<()> {
+        // Top-level `const NAME: Type = expr` declaration. Type
+        // annotation is mandatory (no inference) so that const
+        // signatures stay greppable. The value expression goes
+        // through the regular expression parser, which lets it
+        // see other const names that have already been declared
+        // (forward references are not allowed).
+        let const_start_pos = self.peek_position_n(0).unwrap().start;
+        out.saw_start(const_start_pos);
+        self.next(); // consume `const`
+
+        let const_name = match self.peek().cloned() {
+            Some(Kind::Identifier(s)) => {
+                let sym = self.string_interner.get_or_intern(s);
+                self.next();
+                sym
+            }
+            _ => {
+                self.collect_error("expected identifier after `const`");
+                self.next();
+                return Ok(());
+            }
+        };
+
+        self.expect_err(&Kind::Colon)?;
+        let const_ty = self.parse_type_declaration()?;
+        self.expect_err(&Kind::Equal)?;
+        let value = self.parse_expr_impl()?;
+        let const_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+        out.saw_end(const_end_pos);
+
+        out.consts.push(ConstDecl {
+            node: Node::new(const_start_pos, const_end_pos),
+            name: const_name,
+            type_decl: const_ty,
+            value,
+            visibility,
+        });
+        Ok(())
+    }
+
+    /// A `type` alias.
+    fn parse_toplevel_type_alias(
+        &mut self,
+        out: &mut TopLevel,
+        visibility: Visibility,
+    ) -> ParserResult<()> {
+        // `type Name = TargetType` — top-level alias.
+        // Optional generic parameters `type Name<T, U> = ...`
+        // turn the alias parameterised: occurrences of
+        // `Name<i64>` substitute `T` -> `i64` in the target
+        // at parse time. Bounds on the parameters are
+        // accepted but ignored — they don't make sense for
+        // a pure substitution alias.
+        let alias_start_pos = self.peek_position_n(0).unwrap().start;
+        let location = self.current_source_location();
+        out.saw_start(alias_start_pos);
+        self.next(); // consume `type`
+
+        let alias_name = match self.peek().cloned() {
+            Some(Kind::Identifier(s)) => {
+                let sym = self.string_interner.get_or_intern(s);
+                self.next();
+                sym
+            }
+            _ => {
+                self.collect_error("expected identifier after `type`");
+                self.next();
+                return Ok(());
+            }
+        };
+
+        let alias_generic_params: Vec<DefaultSymbol> = if matches!(self.peek(), Some(Kind::LT)) {
+            // `parse_generic_params` consumes the leading
+            // `<` and the trailing `>` itself, so no
+            // bracket-balancing required here.
+            let (params, _bounds) = self.parse_generic_params()?;
+            params
+        } else {
+            Vec::new()
+        };
+
+        self.expect_err(&Kind::Equal)?;
+        let generic_context: HashSet<DefaultSymbol> =
+            alias_generic_params.iter().copied().collect();
+        let target_ty =
+            self.parse_type_declaration_with_generic_context(&generic_context)?;
+        let alias_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+        out.saw_end(alias_end_pos);
+
+        // Register before emitting so the AST node carries
+        // the already-resolved target (anonymous alias chains
+        // — `type A = u8; type B = A` — collapse to the
+        // leaf). Generic aliases keep `Generic(T)` markers
+        // in the target; the substitution happens at the
+        // use site.
+        self.type_aliases.insert(alias_name, (alias_generic_params.clone(), target_ty.clone()));
+        self.ast_builder.add_stmt_with_location(Stmt::TypeAlias {
+            name: alias_name,
+            generic_params: alias_generic_params,
+            target: target_ty,
+            visibility,
+        }, Some(location));
+        Ok(())
+    }
+
+    /// A `struct` declaration.
+    fn parse_toplevel_struct_decl(
+        &mut self,
+        out: &mut TopLevel,
+        visibility: Visibility,
+    ) -> ParserResult<()> {
+        let struct_start_pos = self.peek_position_n(0).unwrap().start;
+        let location = self.current_source_location();
+        out.saw_start(struct_start_pos);
+        self.next();
+        match self.peek() {
+            Some(Kind::Identifier(s)) => {
+                let s_copy = s.clone();
+                let struct_symbol = self.string_interner.get_or_intern(&s_copy);
+                self.next();
+
+                // Parse generic parameters if present: struct Foo<T> or struct Foo<A: Allocator>
+                let (generic_params, generic_bounds) = if matches!(self.peek(), Some(Kind::LT)) {
+                    self.parse_generic_params()?
+                } else {
+                    (vec![], std::collections::HashMap::new())
+                };
+
+                if !generic_params.is_empty() {
+                    self.declared_type_generics
+                        .insert(struct_symbol, generic_params.clone());
+                }
+                // NEWTYPE: `struct Meters(i64)` is sugar for a
+                // struct whose fields are named by position
+                // (`"0"`, `"1"`, ...). Everything downstream --
+                // the type checker's struct registry, all three
+                // backends, drop glue, `--api` -- then handles it
+                // as an ordinary struct. The two sugared *uses*
+                // (`Meters(v)` construction and `m.0` access) are
+                // rewritten in the type checker, which is where
+                // the struct table is available.
+                let fields = if matches!(self.peek(), Some(Kind::ParenOpen)) {
+                    super::stmt::parse_tuple_struct_fields(self, &generic_params)?
+                } else {
+                    self.expect_err(&Kind::BraceOpen)?;
+                    let fields = super::stmt::parse_struct_fields_with_generic_context(self, vec![], &generic_params)?;
+                    self.expect_err(&Kind::BraceClose)?;
+                    fields
+                };
+                let struct_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+                out.saw_end(struct_end_pos);
+
+                self.ast_builder.struct_decl_stmt(struct_symbol, generic_params, generic_bounds, fields, visibility, Some(location));
+            }
+            _ => {
+                self.collect_error("expected struct name");
+                self.next(); // Skip invalid token and continue
+            }
+        }
+        Ok(())
+    }
+
+    /// An `enum` declaration.
+    fn parse_toplevel_enum_decl(
+        &mut self,
+        out: &mut TopLevel,
+        visibility: Visibility,
+    ) -> ParserResult<()> {
+        let enum_start_pos = self.peek_position_n(0).unwrap().start;
+        let location = self.current_source_location();
+        out.saw_start(enum_start_pos);
+        self.next(); // consume 'enum'
+        match self.peek() {
+            Some(Kind::Identifier(s)) => {
+                let s_copy = s.clone();
+                let enum_symbol = self.string_interner.get_or_intern(&s_copy);
+                self.next();
+                // Optional generic parameters: `enum Name<T, U>`.
+                // Bounds aren't meaningful for enums yet; we drop
+                // the bounds map returned by parse_generic_params.
+                let generic_params: Vec<DefaultSymbol> = if matches!(self.peek(), Some(Kind::LT)) {
+                    let (params, _bounds) = self.parse_generic_params()?;
+                    params
+                } else {
+                    Vec::new()
+                };
+                if !generic_params.is_empty() {
+                    self.declared_type_generics
+                        .insert(enum_symbol, generic_params.clone());
+                }
+                let generic_context: HashSet<DefaultSymbol> = generic_params.iter().cloned().collect();
+                self.expect_err(&Kind::BraceOpen)?;
+                self.skip_newlines();
+                let mut variants: Vec<crate::ast::EnumVariantDef> = Vec::new();
+                loop {
+                    self.skip_newlines();
+                    match self.peek() {
+                        Some(Kind::BraceClose) => break,
+                        Some(Kind::Identifier(name)) => {
+                            let variant_name = name.clone();
+                            let variant_sym = self.string_interner.get_or_intern(&variant_name);
+                            self.next();
+                            // Optional tuple payload: `Name(Type, Type, ...)`.
+                            let mut payload_types: Vec<TypeDecl> = Vec::new();
+                            if matches!(self.peek(), Some(Kind::ParenOpen)) {
+                                self.next(); // consume '('
+                                loop {
+                                    self.skip_newlines();
+                                    if matches!(self.peek(), Some(Kind::ParenClose)) {
+                                        break;
+                                    }
+                                    let ty = self.parse_type_declaration_with_generic_context(&generic_context)?;
+                                    payload_types.push(ty);
+                                    self.skip_newlines();
+                                    if matches!(self.peek(), Some(Kind::Comma)) {
+                                        self.next();
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                self.expect_err(&Kind::ParenClose)?;
+                            }
+                            variants.push(crate::ast::EnumVariantDef {
+                                name: variant_sym,
+                                payload_types,
+                            });
+                            self.skip_newlines();
+                            if matches!(self.peek(), Some(Kind::Comma)) {
+                                self.next();
+                                self.skip_newlines();
+                            }
+                        }
+                        other => {
+                            let other_str = format!("{:?}", other);
+                            self.collect_error(&format!(
+                                "expected variant name in enum body, got {}", other_str
+                            ));
+                            break;
+                        }
+                    }
+                }
+                self.expect_err(&Kind::BraceClose)?;
+                let enum_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+                out.saw_end(enum_end_pos);
+                self.ast_builder.add_stmt_with_location(Stmt::EnumDecl {
+                    name: enum_symbol,
+                    generic_params,
+                    variants,
+                    visibility,
+                }, Some(location));
+            }
+            _ => {
+                self.collect_error("expected enum name");
+                self.next();
+            }
+        }
+        Ok(())
+    }
+
+    /// An `impl` block.
+    fn parse_toplevel_impl_block(
+        &mut self,
+        out: &mut TopLevel,
+    ) -> ParserResult<()> {
+        let impl_start_pos = self.peek_position_n(0).unwrap().start;
+        let location = self.current_source_location();
+        out.saw_start(impl_start_pos);
+        self.next();
+
+        // Parse optional generic parameters: impl<T> or impl<A: Allocator>
+        let (generic_params, generic_bounds) = if self.peek() == Some(&Kind::LT) {
+            self.parse_generic_params()?
+        } else {
+            (vec![], std::collections::HashMap::new())
+        };
+
+        match self.peek() {
+            Some(Kind::Identifier(s)) => {
+                let s_copy = s.clone();
+                let first_ident_symbol = self.string_interner.get_or_intern(&s_copy);
+                self.next();
+
+                // CONCRETE-IMPL Phase 2 follow-up: capture
+                // type args on the *first* identifier too so
+                // inherent `impl Vec<u8>` (no `for`) ends up
+                // with `target_type_args = [u8]`, parallel to
+                // the trait-impl branch below. Without this,
+                // the inherent path falls back to
+                // `skip_until_matching_gt` and CONCRETE-IMPL
+                // dispatch loses its key. Trait impls
+                // overwrite this from the parsed `Type<...>`
+                // following `for` (the first identifier was
+                // the trait name, not the target).
+                let generic_params_set: std::collections::HashSet<DefaultSymbol> = generic_params.iter().copied().collect();
+                let mut first_target_args = if self.peek() == Some(&Kind::LT) {
+                    self.next(); // consume '<'
+                    self.parse_type_args_after_lt(&generic_params_set)?
+                } else {
+                    Vec::new()
+                };
+                // Implicit type-parameter list: `impl
+                // Container<T>` re-uses what `struct
+                // Container<T>` declared, as the language
+                // reference specifies.
+                //
+                // Decided *after* parsing the args, on the
+                // args themselves: a name is a type
+                // parameter only if the declaration lists
+                // it. `u8` in `impl Vec<u8>` lexes as a
+                // type keyword and can never match, so the
+                // concrete-args form (CONCRETE-IMPL) is
+                // untouched — and `impl C<i64>` alongside
+                // `impl C<u8>` keeps dispatching to two
+                // separate specs. Adopting the declaration
+                // wholesale instead would turn those into
+                // generic templates and lose the methods.
+                let mut generic_params = generic_params;
+                if generic_params.is_empty()
+                    && let Some(declared) =
+                        self.declared_type_generics.get(&first_ident_symbol)
+                {
+                    let declared = declared.clone();
+                    let implicit: Vec<DefaultSymbol> = first_target_args
+                        .iter()
+                        .filter_map(|a| match a {
+                            TypeDecl::Identifier(sym) if declared.contains(sym) => {
+                                Some(*sym)
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    if !implicit.is_empty() {
+                        for arg in first_target_args.iter_mut() {
+                            if let TypeDecl::Identifier(sym) = arg
+                                && implicit.contains(sym)
+                            {
+                                *arg = TypeDecl::Generic(*sym);
+                            }
+                        }
+                        generic_params = implicit;
+                    }
+                }
+
+                // `impl Trait for Type` — the `for` keyword is
+                // contextually reused here. If present, the
+                // identifier we just consumed was the trait name
+                // and the next identifier (or primitive type
+                // keyword) is the target type. Primitive types
+                // (`i64`, `f64`, …) interned by their canonical
+                // name string so the same `DefaultSymbol`
+                // identifies the impl target across the
+                // type-checker / interpreter / compiler — they
+                // are reserved keywords so there's no clash with
+                // a user struct of the same name.
+                // ITER-PROTOCOL-TRAIT: when `for` follows,
+                // `first_target_args` actually carries the
+                // trait's concrete type args (`<i64>` in
+                // `impl Iterator<i64> for Counter`). Pass
+                // them through as `trait_type_args` so the
+                // type checker can substitute the trait's
+                // generic params at conformance time.
+                let (trait_name, trait_type_args, target_type_symbol, target_type_args) =
+                    if matches!(self.peek(), Some(Kind::For)) {
+                        self.next(); // consume `for`
+                        let (target_sym, target_args) = match self.peek() {
+                            Some(Kind::Identifier(name)) => {
+                                let name_copy = name.clone();
+                                let sym = self.string_interner.get_or_intern(&name_copy);
+                                self.next();
+                                let args = if self.peek() == Some(&Kind::LT) {
+                                    self.next(); // consume '<'
+                                    self.parse_type_args_after_lt(&generic_params_set)?
+                                } else {
+                                    Vec::new()
+                                };
+                                (sym, args)
+                            }
+                            Some(kind) if primitive_type_canonical_name(kind).is_some() => {
+                                let name = primitive_type_canonical_name(kind).unwrap();
+                                let sym = self.string_interner.get_or_intern(name);
+                                self.next();
+                                (sym, Vec::new())
+                            }
+                            _ => {
+                                self.collect_error("expected target type after `for` in impl-trait");
+                                self.next();
+                                return Ok(());
+                            }
+                        };
+                        (Some(first_ident_symbol), first_target_args, target_sym, target_args)
+                    } else {
+                        // Inherent impl: first identifier is the
+                        // target type; its `<...>` (if any) was
+                        // captured into `first_target_args`.
+                        (None, Vec::new(), first_ident_symbol, first_target_args)
+                    };
+
+                self.expect_err(&Kind::BraceOpen)?;
+                let methods = super::stmt::parse_impl_methods_with_generic_context(self, vec![], &generic_params, &generic_bounds)?;
+                self.expect_err(&Kind::BraceClose)?;
+                let impl_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+                out.saw_end(impl_end_pos);
+
+                self.ast_builder.impl_block_stmt_with_trait_args(
+                    target_type_symbol,
+                    target_type_args,
+                    methods,
+                    trait_name,
+                    trait_type_args,
+                    Some(location),
+                );
+            }
+            _ => {
+                self.collect_error("expected type name for impl block");
+                self.next(); // Skip invalid token and continue
+            }
+        }
+        Ok(())
+    }
+
+    /// A `trait` declaration.
+    fn parse_toplevel_trait_decl(
+        &mut self,
+        out: &mut TopLevel,
+        visibility: Visibility,
+    ) -> ParserResult<()> {
+        let trait_start_pos = self.peek_position_n(0).unwrap().start;
+        let location = self.current_source_location();
+        out.saw_start(trait_start_pos);
+        self.next(); // consume `trait`
+        match self.peek() {
+            Some(Kind::Identifier(s)) => {
+                let s_copy = s.clone();
+                let trait_symbol = self.string_interner.get_or_intern(&s_copy);
+                self.next();
+                // ITER-PROTOCOL-TRAIT: optional generic
+                // parameter list `<T, U, ...>`. We discard
+                // any per-parameter bounds here — trait
+                // generics don't (yet) participate in the
+                // bound-check pipeline; treating them as
+                // unbounded is identical to how struct
+                // generics start out.
+                let (trait_generic_params, _trait_generic_bounds) =
+                    if matches!(self.peek(), Some(Kind::LT)) {
+                        self.parse_generic_params()?
+                    } else {
+                        (Vec::new(), std::collections::HashMap::new())
+                    };
+                self.expect_err(&Kind::BraceOpen)?;
+                let methods = super::stmt::parse_trait_method_signatures_with_generics(
+                    self,
+                    &trait_generic_params,
+                )?;
+                self.expect_err(&Kind::BraceClose)?;
+                let trait_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+                out.saw_end(trait_end_pos);
+                self.ast_builder.trait_decl_stmt_with_generics(
+                    trait_symbol,
+                    trait_generic_params,
+                    methods,
+                    visibility,
+                    Some(location),
+                );
+            }
+            _ => {
+                self.collect_error("expected trait name");
+                self.next();
+            }
+        }
+        Ok(())
+    }
+
     pub fn parse_program_multiple_errors(&mut self) -> MultipleParserResult<File> {
         self.errors.clear();
 

@@ -909,6 +909,50 @@ pub fn execute_program(program: &File, string_interner: &DefaultStringInterner, 
     execute_entry(program, string_interner, source_code, filename, main_function)
 }
 
+/// Run `main` on the **tree-walking evaluator only**, skipping the JIT
+/// and IR VM fast paths [`execute_program`] would take.
+///
+/// This exists so a caller can have an engine that shares nothing with
+/// the compiled backends. `execute_program` runs whichever engine is
+/// eligible, and the IR VM is eligible for most programs — so a test
+/// that ran "the interpreter" and "the AOT" and found them in
+/// agreement was, much of the time, comparing one lowering against
+/// itself. MATCH-STRUCT-ARM (a struct-producing `if` / `match` in
+/// return position returning a zero-filled value) is what that blind
+/// spot cost: every lane shared the defect, so the whole consistency
+/// suite agreed on the wrong answer.
+pub fn execute_program_tree_walking(
+    program: &File,
+    string_interner: &DefaultStringInterner,
+    source_code: Option<&str>,
+    filename: Option<&str>,
+) -> Result<RcObject, String> {
+    let main_function = match find_main_function(program, string_interner) {
+        Ok(func) => func,
+        Err(e) => return Err(format!("Runtime Error: {e}")),
+    };
+    execute_entry_with_values(
+        program,
+        string_interner,
+        source_code,
+        filename,
+        main_function,
+        None,
+        FastPaths::Skip,
+    )
+    .map_err(|e| e.either())
+}
+
+/// Whether [`execute_entry_with_values`] may hand the run to the JIT
+/// or the IR VM before falling back to the tree-walker.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FastPaths {
+    /// Normal execution: fastest eligible engine wins.
+    Allow,
+    /// Tree-walker only — see [`execute_program_tree_walking`].
+    Skip,
+}
+
 /// Run `entry` with a freshly built evaluation context.
 ///
 /// LLM-LOOP P4: split out of `execute_program` so a `test` block can be
@@ -922,8 +966,16 @@ fn execute_entry(
     filename: Option<&str>,
     main_function: Rc<Function>,
 ) -> Result<RcObject, String> {
-    execute_entry_with_values(program, string_interner, source_code, filename, main_function, None)
-        .map_err(|e| e.either())
+    execute_entry_with_values(
+        program,
+        string_interner,
+        source_code,
+        filename,
+        main_function,
+        None,
+        FastPaths::Allow,
+    )
+    .map_err(|e| e.either())
 }
 
 /// Error from [`execute_entry_with_values`]: either an already-rendered
@@ -957,6 +1009,7 @@ fn execute_entry_with_values(
     filename: Option<&str>,
     main_function: Rc<Function>,
     args: Option<&[crate::value::Value]>,
+    fast_paths: FastPaths,
 ) -> Result<RcObject, EntryError> {
     // MEMORY_PROFILING M4: the allocation counters describe one run.
     //
@@ -1022,7 +1075,7 @@ fn execute_entry_with_values(
     // The `main` fast paths only apply to the argument-less entry;
     // a property trial calls an arbitrary function with values.
     #[cfg(feature = "jit")]
-    if args.is_none() {
+    if args.is_none() && fast_paths == FastPaths::Allow {
         if let Some(result) = jit::try_execute_main(program, string_interner) {
             return Ok(result);
         }
@@ -1041,7 +1094,7 @@ fn execute_entry_with_values(
     // would appear twice. So stdout is captured for the attempt and only
     // replayed when the VM actually finished the run — a fallback discards
     // the partial output rather than emitting it alongside the retry's.
-    if args.is_none() {
+    if args.is_none() && fast_paths == FastPaths::Allow {
         let (result, captured) = crate::output::with_capture(|| {
             ir_vm::lift::run_main_via_ir_vm(program, string_interner)
         });
@@ -1238,8 +1291,16 @@ pub fn execute_function_with_values(
     function: Rc<Function>,
     args: &[crate::value::Value],
 ) -> Result<crate::value::Value, InterpreterError> {
-    execute_entry_with_values(program, string_interner, None, None, function, Some(args))
-        .map(crate::value::Value::from)
+    execute_entry_with_values(
+        program,
+        string_interner,
+        None,
+        None,
+        function,
+        Some(args),
+        FastPaths::Allow,
+    )
+    .map(crate::value::Value::from)
         .map_err(|e| match e {
             EntryError::Raw(err) => *err,
             EntryError::Rendered(msg) => InterpreterError::InternalError(msg),

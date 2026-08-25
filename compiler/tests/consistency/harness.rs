@@ -169,9 +169,20 @@ pub(super) fn ast_lanes(source: &str, core_dir: Option<PathBuf>) -> Option<(u64,
         )
         .ok()?;
 
-        // Tree-walker lane.
-        let result =
-            interpreter::execute_program(&program, interner, Some(source), Some("test.t")).ok()?;
+        // Tree-walker lane. `execute_program` would hand the run to
+        // whichever engine is eligible, and the IR VM is eligible for
+        // most programs — which made this lane and the IR VM lane
+        // below the same engine, and the 4-way agreement three copies
+        // of one lowering plus the AOT. MATCH-STRUCT-ARM lived in that
+        // blind spot: a struct-producing `if` / `match` in return
+        // position returned a zero-filled value and every lane agreed.
+        let result = interpreter::execute_program_tree_walking(
+            &program,
+            interner,
+            Some(source),
+            Some("test.t"),
+        )
+        .ok()?;
         let value = match &*result.borrow() {
             Object::UInt64(n) => *n,
             Object::Int64(n) => *n as u64,
@@ -247,7 +258,9 @@ pub(super) fn checked_program<'a>(
 }
 
 pub(super) fn checked_interpreter_value(checked: &CheckedProgram, source: &str) -> u64 {
-    let result = interpreter::execute_program(
+    // Tree-walker, not "whichever engine is eligible" — see the note
+    // in `ast_lanes`.
+    let result = interpreter::execute_program_tree_walking(
         &checked.program,
         checked.interner,
         Some(source),
@@ -335,7 +348,7 @@ pub(super) fn checked_compiler_run(checked: &CheckedProgram, stem: &str) -> (i32
 
 pub(super) fn checked_interpreter_stdout(checked: &CheckedProgram, source: &str) -> String {
     let (result, captured) = interpreter::output::with_capture(|| {
-        interpreter::execute_program(
+        interpreter::execute_program_tree_walking(
             &checked.program,
             checked.interner,
             Some(source),
@@ -514,6 +527,50 @@ pub(super) fn assert_consistent(source: &str, stem: &str) {
             interp & 0xff,
             (ir_vm as u64) & 0xff,
             "interpreter={interp} ir_vm={ir_vm} for source:\n{source}",
+        );
+    }
+}
+
+/// Like [`assert_consistent`], for a program the **tree-walker cannot
+/// run**: the compiled lanes and the IR VM must agree, and the
+/// tree-walker is left out with its reason spelled at the call site.
+///
+/// Reach for this only when the tree-walker's gap is the thing being
+/// documented. It is deliberately two-directional, like the skip lists
+/// in `example_consistency.rs`: the assertion below fails once the
+/// tree-walker learns the shape, so the opt-out cannot outlive the gap
+/// it describes.
+pub(super) fn assert_consistent_without_tree_walker(source: &str, stem: &str, why: &str) {
+    if skip_e2e() {
+        return;
+    }
+    let core = core_modules_dir();
+    let mut parser = frontend::ParserWithInterner::new(source);
+    let checked = checked_program(source, &mut parser, Some(core.as_path()))
+        .expect("interpreter type-check (with core)");
+    let tree_walker = interpreter::execute_program_tree_walking(
+        &checked.program,
+        checked.interner,
+        Some(source),
+        Some("test.t"),
+    );
+    assert!(
+        tree_walker.is_err(),
+        "the tree-walker now runs this program ({why}) — drop the opt-out          and use `assert_consistent` for source:\n{source}",
+    );
+    let (compiled, _) = checked_compiler_run(&checked, stem);
+    let compiled = compiled as u64;
+    let jit = checked_jit_exit_code(&checked, source) as u64;
+    assert_eq!(
+        compiled & 0xff,
+        jit & 0xff,
+        "compiler={compiled} jit={jit} for source:\n{source}",
+    );
+    if let Some(ir_vm) = checked_ir_vm_value(&checked) {
+        assert_eq!(
+            compiled & 0xff,
+            (ir_vm as u64) & 0xff,
+            "compiler={compiled} ir_vm={ir_vm} for source:\n{source}",
         );
     }
 }

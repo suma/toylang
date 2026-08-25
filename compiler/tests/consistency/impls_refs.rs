@@ -117,7 +117,15 @@ fn concrete_associated_call_picks_the_spec_from_the_annotation() {
             total
         }
     "#;
-    assert_consistent(src, "concrete_associated_hint");
+    // The tree-walker keeps one spec per (struct, associated fn) name,
+    // so `C::make` under both `impl C<u8>` and `impl C<i64>` resolves
+    // to neither. Recorded as TREE-WALKER-CONCRETE-IMPL in
+    // design-docs/todo.md.
+    assert_consistent_without_tree_walker(
+        src,
+        "concrete_associated_hint",
+        "annotation-driven associated-function dispatch across concrete impls",
+    );
 }
 
 #[test]

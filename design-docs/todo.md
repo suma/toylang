@@ -12,6 +12,15 @@
 
 ### 2026-08-25
 
+- **MATCH-STRUCT-ARM: composite tail の struct / tuple 戻り値がゼロになる**
+  — `fn f(n) -> P { if .. { P { .. } } else { P { .. } } }` が、走った枝と
+  無関係にゼロ埋めの struct を返していた (match でも同じ)。lowering が
+  枝ごとに別の locals へ書き、戻りは lowering が最後に見た枝の locals を
+  読んでいたため。enum は `lower_into_enum_storage` で解決済みだったので、
+  合流ロジックを `CompoundTarget` で共有して struct / tuple にも広げた。
+  **同時に consistency harness の「tree-walker レーン」が実際には IR VM
+  だったのを直した** — このバグが 4 レーン一致で通っていた理由。
+
 - **STRUCT-UPDATE: `P { x: 5i64, ..base }`** — 省略フィールドを base から
   埋める。型検査器が `base.field` に展開して普通の `StructLiteral` に
   書き換えるのでバックエンドは砂糖を見ない。path base は 3 backend、
@@ -881,6 +890,17 @@
 
 ### バックエンドのカバレッジ
 
+- **TREE-WALKER-NUM-W** ★ — narrow int の配列アクセスが tree-walker で
+  `Expr::Number should be transformed to concrete type` になる
+  (`compiler/tests/consistency/compound_values.rs` の
+  `narrow_int_array_packing_round_trip` が
+  `assert_consistent_without_tree_walker` で明示的に除外している)。
+- **TREE-WALKER-CONCRETE-IMPL** ★ — `impl C<u8>` と `impl C<i64>` の
+  両方に同名の associated function があると tree-walker が spec を
+  1 つしか持たず解決できない (`concrete_associated_hint` を同様に除外)。
+  method 版と「concrete + generic」の組合せは動く。
+  どちらも 2026-08-25 に tree-walker レーンを本物にして初めて見えた。
+
 - **JIT-INTERP-COVERAGE (residual)** ★ — interpreter 側 JIT が silent
   fallback する残り: (a) impl block ではなく **method 固有の generic**
   (`fn map<U>(..)`) と **phantom 型パラメータ** (どのフィールドも触れない
@@ -1104,17 +1124,9 @@
 
 ### 既知の不具合
 
-- **MATCH-STRUCT-ARM: 非 wildcard arm が struct を返すとゼロ値になる** —
-  `match n { 1i64 => P { x: 10i64, y: 11i64 }, _ => P { .. } }` を n=1 で
-  評価すると `P { x: 0, y: 0 }` が返る。`_` arm は正しい。scalar を返す
-  同形の match は正しい。**3 バックエンド一致で誤り**なので原因は
-  共有側 (frontend か lowering の共通経路) にある。2026-08-25 に
-  STRUCT-UPDATE の位置テストを書いていて発見、struct update とは無関係で
-  master でも再現する。
-
-過去にここへ挙がった 2 件 (f64 の print が
-3 バックエンドで食い違う / `if` の条件が型検査されない) は 2026-08-16 に
-どちらも解消し、経緯は git log と完了済み節にある。**直った項目をこの節に
+現時点で未解決のものは無い。過去にここへ挙がった 3 件 (f64 の print が
+3 バックエンドで食い違う / `if` の条件が型検査されない / MATCH-STRUCT-ARM)
+はいずれも解消し、経緯は git log と完了済み節にある。**直った項目をこの節に
 段落で残さないこと** — 常時読まれるファイルが changelog になる。
 
 ### パーサーの既知制限事項

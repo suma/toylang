@@ -208,6 +208,13 @@ clippy は**無警告が既定状態**。警告が出たら、それは今回の
   `assert_consistent` を使ったテストを必ず追加する。ここは
   **機能別のモジュール群**なので、近い機能のファイルに足す
   (`harness.rs` が全レーンと共有ヘルパ、`mod.rs` が目次)
+- **「独立」なのは tree-walker だけ。** `interpreter` の既定エンジンは
+  **IR VM** で、これは AOT / JIT と同じ `compiler_lower` を通る。つまり
+  `execute_program` を呼ぶ「インタプリタ」レーンは、たいていのプログラムで
+  lowering をもう一度走らせているだけになる。**オラクルが要る場面では
+  `execute_program_tree_walking` を使うこと** (consistency harness は
+  これを使う)。2026-08-25 の MATCH-STRUCT-ARM はこの取り違えのせいで
+  4 レーン全一致のまま誤答していた
 - `compiler/tests/example_consistency.rs` が
   **`interpreter/example/` の全プログラムを 3 バックエンドで突き合わせる**ので、
   example を追加すればカバレッジは自動で増える。

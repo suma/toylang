@@ -2076,10 +2076,40 @@ impl<'a> FunctionLower<'a> {
         // same approach that powers `val s = if ... { Enum::A } else
         // { ... }`). The implicit-return path then reads from the
         // pending channel.
+        //
+        // MATCH-STRUCT-ARM: struct and tuple returns need the same
+        // treatment for the same reason, but only when the tail is a
+        // composite. Left to `lower_expr`, each branch of a
+        // struct-producing `if` / `match` lowered its own literal into
+        // its own locals and set the `pending_struct_value` channel to
+        // whichever branch the lowering visited last; the return then
+        // read that branch's locals whichever branch actually ran, so
+        // taking any other one returned a zero-filled struct — no
+        // diagnostic, wrong answer, and identical on all three
+        // backends because they share this lowering. A non-composite
+        // tail (a literal, a binding, a call) still goes through
+        // `lower_expr`: those set the channel to storage that is
+        // genuinely written on the path that reaches the return, and
+        // routing them through a pre-allocated target would only add a
+        // copy.
         let body_value = if let Type::Enum(enum_id) = ret_ty {
             let storage = self.allocate_enum_storage(enum_id);
             self.pending_enum_value = Some(storage.clone());
             self.lower_into_enum_storage(&body_expr, &storage)?;
+            None
+        } else if let Type::Struct(struct_id) = ret_ty
+            && self.tail_is_composite(&body_expr)
+        {
+            let fields = self.allocate_struct_fields(struct_id);
+            self.lower_into_struct_fields(&body_expr, struct_id, &fields)?;
+            self.pending_struct_value = Some(fields);
+            None
+        } else if let Type::Tuple(tuple_id) = ret_ty
+            && self.tail_is_composite(&body_expr)
+        {
+            let elements = self.allocate_tuple_elements(tuple_id)?;
+            self.lower_into_tuple_elements(&body_expr, &elements)?;
+            self.pending_tuple_value = Some(elements);
             None
         } else {
             self.lower_expr(&body_expr)?
@@ -2093,6 +2123,26 @@ impl<'a> FunctionLower<'a> {
             self.emit_implicit_return(ret_ty, body_value, &func.name)?;
         }
         Ok(())
+    }
+
+    /// Whether the value an expression produces comes from more than
+    /// one place — an `if` chain or a `match`, possibly behind a
+    /// block's tail. Those are the shapes that need a pre-allocated
+    /// target so every branch writes the same locals; everything else
+    /// produces its value in one spot and can stay on the ordinary
+    /// `lower_expr` path.
+    pub(super) fn tail_is_composite(&self, expr_ref: &ExprRef) -> bool {
+        match self.program.expression.get(expr_ref) {
+            Some(frontend::ast::Expr::IfElifElse(..)) | Some(frontend::ast::Expr::Match(..)) => true,
+            Some(frontend::ast::Expr::Block(stmts)) => match stmts.last() {
+                Some(last) => match self.program.statement.get(last) {
+                    Some(Stmt::Expression(e)) => self.tail_is_composite(&e),
+                    _ => false,
+                },
+                None => false,
+            },
+            _ => false,
+        }
     }
 
     /// Emit the trailing-position return for the function body. Handles

@@ -42,7 +42,164 @@ use crate::ir::{
     BlockId, Const, EnumId, InstKind, LocalId, StructId, Terminator, Type, ValueId,
 };
 
+/// Where a compound-producing expression should leave its value.
+///
+/// The three kinds share their control-flow walkers: an `if` chain or
+/// a `match` merges the same way whichever compound its branches
+/// produce, and they differ only in what one branch writes into. That
+/// sharing is the point — the struct and tuple sides used to have no
+/// walker at all, so every branch of a struct-producing `if` wrote
+/// into *its own* freshly-allocated locals and the merge read whichever
+/// set the lowering happened to see last. A taken branch other than
+/// that one left the read locals untouched, and the function returned
+/// a zero-filled struct with no diagnostic (MATCH-STRUCT-ARM).
+#[derive(Clone)]
+pub(super) enum CompoundTarget {
+    Enum(EnumStorage),
+    Struct {
+        struct_id: StructId,
+        fields: Vec<FieldBinding>,
+    },
+    Tuple {
+        elements: Vec<TupleElementBinding>,
+    },
+}
+
 impl<'a> FunctionLower<'a> {
+    /// Thread a compound-producing expression into pre-allocated
+    /// storage, whatever kind of compound that is.
+    pub(super) fn lower_into_compound_target(
+        &mut self,
+        expr_ref: &ExprRef,
+        target: &CompoundTarget,
+    ) -> Result<(), String> {
+        match target {
+            CompoundTarget::Enum(storage) => self.lower_into_enum_storage(expr_ref, storage),
+            CompoundTarget::Struct { struct_id, fields } => {
+                self.lower_into_struct_fields(expr_ref, *struct_id, fields)
+            }
+            CompoundTarget::Tuple { elements } => {
+                self.lower_into_tuple_elements(expr_ref, elements)
+            }
+        }
+    }
+
+    /// Struct counterpart of `lower_into_enum_storage`: composite
+    /// shapes recurse so every branch converges on `fields`, and
+    /// anything else is a leaf that `store_struct_value_into_fields`
+    /// already knows how to build (literal, binding, field chain,
+    /// function / associated-function / method call).
+    pub(super) fn lower_into_struct_fields(
+        &mut self,
+        expr_ref: &ExprRef,
+        struct_id: StructId,
+        fields: &[FieldBinding],
+    ) -> Result<(), String> {
+        let expr = self
+            .program
+            .expression
+            .get(expr_ref)
+            .ok_or_else(|| "struct-target expression missing".to_string())?;
+        let target = CompoundTarget::Struct {
+            struct_id,
+            fields: fields.to_vec(),
+        };
+        match expr {
+            Expr::Block(stmts) => self.lower_block_into_compound(&stmts, &target),
+            Expr::IfElifElse(cond, then_body, elif_pairs, else_body) => self
+                .lower_if_chain_into_compound(
+                    &cond,
+                    &then_body,
+                    &elif_pairs,
+                    &else_body,
+                    &target,
+                ),
+            Expr::Match(scrutinee, arms) => {
+                self.lower_match_into_compound(&scrutinee, &arms, &target)
+            }
+            // Same for a branch that panics: lowering it as an
+            // expression emits the trap and marks the block
+            // unreachable, which is all the merge needs.
+            Expr::BuiltinCall(frontend::ast::BuiltinFunction::Panic, _) => {
+                self.lower_expr(expr_ref)?;
+                Ok(())
+            }
+            _ => self.store_struct_value_into_fields(struct_id, fields, expr_ref),
+        }
+    }
+
+    /// Tuple counterpart of `lower_into_struct_fields`.
+    pub(super) fn lower_into_tuple_elements(
+        &mut self,
+        expr_ref: &ExprRef,
+        elements: &[TupleElementBinding],
+    ) -> Result<(), String> {
+        let expr = self
+            .program
+            .expression
+            .get(expr_ref)
+            .ok_or_else(|| "tuple-target expression missing".to_string())?;
+        let target = CompoundTarget::Tuple {
+            elements: elements.to_vec(),
+        };
+        match expr {
+            Expr::Block(stmts) => self.lower_block_into_compound(&stmts, &target),
+            Expr::IfElifElse(cond, then_body, elif_pairs, else_body) => self
+                .lower_if_chain_into_compound(
+                    &cond,
+                    &then_body,
+                    &elif_pairs,
+                    &else_body,
+                    &target,
+                ),
+            Expr::Match(scrutinee, arms) => {
+                self.lower_match_into_compound(&scrutinee, &arms, &target)
+            }
+            // Same for a branch that panics: lowering it as an
+            // expression emits the trap and marks the block
+            // unreachable, which is all the merge needs.
+            Expr::BuiltinCall(frontend::ast::BuiltinFunction::Panic, _) => {
+                self.lower_expr(expr_ref)?;
+                Ok(())
+            }
+            _ => self.store_tuple_value_into_elements(elements, expr_ref),
+        }
+    }
+
+    /// A block produces its tail expression's value, so the leading
+    /// statements are lowered as themselves and only the tail is
+    /// threaded into the target.
+    pub(super) fn lower_block_into_compound(
+        &mut self,
+        stmts: &[frontend::ast::StmtRef],
+        target: &CompoundTarget,
+    ) -> Result<(), String> {
+        if stmts.is_empty() {
+            return Err("empty block cannot produce a compound value".to_string());
+        }
+        for (i, stmt_ref) in stmts.iter().enumerate() {
+            let is_last = i + 1 == stmts.len();
+            let stmt = self
+                .program
+                .statement
+                .get(stmt_ref)
+                .ok_or_else(|| "missing block stmt".to_string())?;
+            if is_last
+                && let Stmt::Expression(e) = stmt
+            {
+                return self.lower_into_compound_target(&e, target);
+            }
+            let _ = self.lower_stmt(stmt_ref)?;
+            // A branch that leaves through a `return` never reaches
+            // the merge, so it has no value to write into the target
+            // and no tail expression to demand one from.
+            if self.is_unreachable() {
+                return Ok(());
+            }
+        }
+        Err("block has no compound-producing tail expression".to_string())
+    }
+
     pub(super) fn allocate_enum_storage(&mut self, enum_id: EnumId) -> EnumStorage {
         let enum_def = self.module.enum_def(enum_id).clone();
         let tag_local = self
@@ -408,29 +565,24 @@ impl<'a> FunctionLower<'a> {
                 Ok(())
             }
             Expr::Block(stmts) => {
-                let stmts = stmts.clone();
-                if stmts.is_empty() {
-                    return Err("empty block cannot produce an enum value".to_string());
-                }
-                for (i, stmt_ref) in stmts.iter().enumerate() {
-                    let is_last = i + 1 == stmts.len();
-                    let stmt = self
-                        .program
-                        .statement
-                        .get(stmt_ref)
-                        .ok_or_else(|| "missing block stmt".to_string())?;
-                    if is_last
-                        && let Stmt::Expression(e) = stmt {
-                            return self.lower_into_enum_storage(&e, target);
-                        }
-                    let _ = self.lower_stmt(stmt_ref)?;
-                }
-                Err("block has no enum-producing tail expression".to_string())
+                self.lower_block_into_compound(&stmts, &CompoundTarget::Enum(target.clone()))
             }
             Expr::IfElifElse(cond, then_body, elif_pairs, else_body) => self
-                .lower_if_chain_into_enum(&cond, &then_body, &elif_pairs, &else_body, target),
-            Expr::Match(scrutinee, arms) => {
-                self.lower_match_into_enum(&scrutinee, &arms, target)
+                .lower_if_chain_into_compound(
+                    &cond,
+                    &then_body,
+                    &elif_pairs,
+                    &else_body,
+                    &CompoundTarget::Enum(target.clone()),
+                ),
+            Expr::Match(scrutinee, arms) => self.lower_match_into_compound(
+                &scrutinee,
+                &arms,
+                &CompoundTarget::Enum(target.clone()),
+            ),
+            Expr::BuiltinCall(frontend::ast::BuiltinFunction::Panic, _) => {
+                self.lower_expr(expr_ref)?;
+                Ok(())
             }
             other => Err(format!(
                 "compiler MVP cannot lower `{:?}` as an enum-producing expression in this position",
@@ -686,13 +838,13 @@ impl<'a> FunctionLower<'a> {
     /// paths converge on the same target locals. There is no separate
     /// merge-block result load — the binding's locals already hold
     /// the merged value once cranelift seals the merge.
-    pub(super) fn lower_if_chain_into_enum(
+    pub(super) fn lower_if_chain_into_compound(
         &mut self,
         cond: &ExprRef,
         then_body: &ExprRef,
         elif_pairs: &Vec<(ExprRef, ExprRef)>,
         else_body: &ExprRef,
-        target: &EnumStorage,
+        target: &CompoundTarget,
     ) -> Result<(), String> {
         let merge = self.fresh_block();
         let mut cond_blocks: Vec<BlockId> = Vec::with_capacity(elif_pairs.len());
@@ -718,7 +870,7 @@ impl<'a> FunctionLower<'a> {
 
         // then
         self.switch_to(then_blk);
-        self.lower_into_enum_storage(then_body, target)?;
+        self.lower_into_compound_target(then_body, target)?;
         if !self.is_unreachable() {
             self.terminate(Terminator::Jump(merge));
         }
@@ -741,14 +893,14 @@ impl<'a> FunctionLower<'a> {
                 else_blk: next,
             });
             self.switch_to(body_blk);
-            self.lower_into_enum_storage(elif_body, target)?;
+            self.lower_into_compound_target(elif_body, target)?;
             if !self.is_unreachable() {
                 self.terminate(Terminator::Jump(merge));
             }
         }
         // else
         self.switch_to(else_blk);
-        self.lower_into_enum_storage(else_body, target)?;
+        self.lower_into_compound_target(else_body, target)?;
         if !self.is_unreachable() {
             self.terminate(Terminator::Jump(merge));
         }
@@ -762,11 +914,11 @@ impl<'a> FunctionLower<'a> {
     /// merging through a scalar result_local. Restrictions match the
     /// scalar `lower_match`: enum-binding scrutinee with EnumVariant
     /// patterns, scalar scrutinee with literal patterns, and so on.
-    pub(super) fn lower_match_into_enum(
+    pub(super) fn lower_match_into_compound(
         &mut self,
         scrutinee: &ExprRef,
         arms: &Vec<MatchArm>,
-        target: &EnumStorage,
+        target: &CompoundTarget,
     ) -> Result<(), String> {
         let scrut = self.classify_match_scrutinee(scrutinee)?;
         let merge = self.fresh_block();
@@ -788,7 +940,7 @@ impl<'a> FunctionLower<'a> {
                 });
                 self.switch_to(body_blk);
             }
-            self.lower_into_enum_storage(&arm.body, target)?;
+            self.lower_into_compound_target(&arm.body, target)?;
             if !self.is_unreachable() {
                 self.terminate(Terminator::Jump(merge));
             }

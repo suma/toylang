@@ -249,7 +249,7 @@ post-P2-MVP-C.
 ## Test plan
 
 Each MVP slice gets its own 3-way consistency test in
-`compiler/tests/consistency.rs` (interpreter / cranelift JIT / AOT
+`compiler/tests/consistency/` (interpreter / cranelift JIT / AOT
 agreement), parallel to the existing
 `trait_default_body_*` / `multi_bound_*` tests.
 

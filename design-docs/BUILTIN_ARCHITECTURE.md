@@ -271,7 +271,7 @@ integrate される (詳細は [`docs/language.md` → Modules → Core modules
 6. **stdlib wrapper (任意)**: user-facing にしたい場合は
    `core/std/*.t` に `pub fn` / `pub trait` / `impl` を追加。auto-load
    経由で全プログラムに自動 integrate される。
-7. **テスト**: 3 backend が同じ結果を返すか `compiler/tests/consistency.rs`
+7. **テスト**: 3 backend が同じ結果を返すか `compiler/tests/consistency/`
    の `assert_consistent` で pin。stdlib wrapper を追加した場合は
    interpreter のみのテストを `interpreter/tests/` に追加。
 

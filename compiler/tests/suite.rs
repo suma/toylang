@@ -19,7 +19,7 @@
 #[path = "all_backends_cli.rs"]
 mod all_backends_cli;
 
-#[path = "consistency.rs"]
+#[path = "consistency/mod.rs"]
 mod consistency;
 
 #[path = "e2e.rs"]

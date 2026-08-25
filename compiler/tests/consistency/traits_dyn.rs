@@ -1,0 +1,689 @@
+//! The `?` operator, trait default bodies, multi-bounds, `From` /
+//! `Into`, and `dyn Trait` dispatch.
+
+use super::harness::*;
+
+#[test]
+fn try_op_result_ok_path_round_trip() {
+    let src = r#"
+        fn divide(a: u64, b: u64) -> Result<u64, u64> {
+            if b == 0u64 {
+                Result::Err(99u64)
+            } else {
+                Result::Ok(a / b)
+            }
+        }
+
+        fn compute() -> Result<u64, u64> {
+            val x = divide(100u64, 5u64)?
+            val y = divide(20u64, 2u64)?
+            Result::Ok(x + y)
+        }
+
+        fn main() -> u64 {
+            val r = compute()
+            match r {
+                Result::Ok(v) => v,
+                Result::Err(_) => 255u64,
+            }
+        }
+    "#;
+    assert_consistent(src, "try_op_result_ok_path");
+}
+
+#[test]
+fn try_op_result_err_propagates_round_trip() {
+    let src = r#"
+        fn divide(a: u64, b: u64) -> Result<u64, u64> {
+            if b == 0u64 {
+                Result::Err(7u64)
+            } else {
+                Result::Ok(a / b)
+            }
+        }
+
+        fn compute(d: u64) -> Result<u64, u64> {
+            val x = divide(100u64, d)?
+            Result::Ok(x + 1u64)
+        }
+
+        fn main() -> u64 {
+            val r = compute(0u64)
+            match r {
+                Result::Ok(v) => v,
+                Result::Err(e) => e,
+            }
+        }
+    "#;
+    assert_consistent(src, "try_op_result_err_propagates");
+}
+
+#[test]
+fn try_op_option_some_path_round_trip() {
+    let src = r#"
+        fn first_positive(a: u64, b: u64) -> Option<u64> {
+            if a > 0u64 {
+                Option::Some(a)
+            } elif b > 0u64 {
+                Option::Some(b)
+            } else {
+                Option::None
+            }
+        }
+
+        fn chain() -> Option<u64> {
+            val x = first_positive(3u64, 0u64)?
+            val y = first_positive(x, 7u64)?
+            Option::Some(y + 1u64)
+        }
+
+        fn main() -> u64 {
+            val r = chain()
+            match r {
+                Option::Some(v) => v,
+                Option::None => 99u64,
+            }
+        }
+    "#;
+    assert_consistent(src, "try_op_option_some_path");
+}
+
+#[test]
+fn try_op_option_none_propagates_round_trip() {
+    let src = r#"
+        fn first_positive(a: u64, b: u64) -> Option<u64> {
+            if a > 0u64 {
+                Option::Some(a)
+            } elif b > 0u64 {
+                Option::Some(b)
+            } else {
+                Option::None
+            }
+        }
+
+        fn chain() -> Option<u64> {
+            val x = first_positive(0u64, 0u64)?
+            Option::Some(x + 1u64)
+        }
+
+        fn main() -> u64 {
+            val r = chain()
+            match r {
+                Option::Some(v) => v,
+                Option::None => 42u64,
+            }
+        }
+    "#;
+    assert_consistent(src, "try_op_option_none_propagates");
+}
+
+#[test]
+fn trait_default_body_inherited_round_trip() {
+    // A1: trait method `doubled` carries a default body that calls
+    // `value`; impl provides only `value`. All three backends must
+    // dispatch the inherited default and agree on the result.
+    let src = r#"
+        trait Num {
+            fn value(self: Self) -> u64
+            fn doubled(self: Self) -> u64 { self.value() + self.value() }
+        }
+        struct Cell { v: u64 }
+        impl Num for Cell {
+            fn value(self: Self) -> u64 { self.v }
+        }
+        fn main() -> u64 {
+            val c = Cell { v: 7u64 }
+            c.doubled()
+        }
+    "#;
+    assert_consistent(src, "trait_default_inherited");
+}
+
+#[test]
+fn trait_default_body_override_round_trip() {
+    // A1: impl overrides the default; backends must respect the
+    // override (return 100, not the default's 14).
+    let src = r#"
+        trait Num {
+            fn value(self: Self) -> u64
+            fn doubled(self: Self) -> u64 { self.value() + self.value() }
+        }
+        struct Cell { v: u64 }
+        impl Num for Cell {
+            fn value(self: Self) -> u64 { self.v }
+            fn doubled(self: Self) -> u64 { 100u64 }
+        }
+        fn main() -> u64 {
+            val c = Cell { v: 7u64 }
+            c.doubled()
+        }
+    "#;
+    assert_consistent(src, "trait_default_override");
+}
+
+#[test]
+fn trait_default_body_calls_default_round_trip() {
+    // A1: two defaults where one calls the other. After expansion both
+    // are inherent methods on the impl; backends must agree on the
+    // chained dispatch.
+    let src = r#"
+        trait Math {
+            fn base(self: Self) -> u64
+            fn doubled(self: Self) -> u64 { self.base() + self.base() }
+            fn quadrupled(self: Self) -> u64 { self.doubled() + self.doubled() }
+        }
+        struct N { v: u64 }
+        impl Math for N {
+            fn base(self: Self) -> u64 { self.v }
+        }
+        fn main() -> u64 {
+            val n = N { v: 3u64 }
+            n.quadrupled()
+        }
+    "#;
+    assert_consistent(src, "trait_default_chained");
+}
+
+#[test]
+fn multi_bound_dispatch_round_trip() {
+    // A2: `<T: A + B>` exercising one method from each trait. All three
+    // backends must agree on the result of calling through the
+    // intersection bound.
+    let src = r#"
+        trait A {
+            fn a(self: Self) -> u64
+        }
+        trait B {
+            fn b(self: Self) -> u64
+        }
+        struct S { v: u64 }
+        impl A for S { fn a(self: Self) -> u64 { 10u64 } }
+        impl B for S { fn b(self: Self) -> u64 { self.v } }
+        fn both<T: A + B>(x: T) -> u64 { x.a() + x.b() }
+        fn main() -> u64 {
+            val s = S { v: 32u64 }
+            both(s)
+        }
+    "#;
+    assert_consistent(src, "multi_bound_dispatch");
+}
+
+#[test]
+fn generic_trait_bound_dispatch_round_trip() {
+    // TRAIT-BOUND: a generic-trait bound (`I: Iter<i64>`) is checked
+    // against the impl's concrete type args at the call site, and the
+    // trait method's return type is resolved with those args substituted.
+    // All three backends must agree.
+    let src = r#"
+        trait Iter<T> {
+            fn next(&mut self) -> Option<T>
+        }
+        struct Counter { n: i64 }
+        impl Iter<i64> for Counter {
+            fn next(&mut self) -> Option<i64> {
+                self.n = self.n + 1i64
+                Option::Some(self.n)
+            }
+        }
+        fn collect<I: Iter<i64>>(it: I) -> i64 {
+            val r = it.next()
+            r.unwrap_or(0i64)
+        }
+        fn main() -> u64 {
+            val c = Counter { n: 40i64 }
+            collect(c) as u64
+        }
+    "#;
+    assert_consistent(src, "generic_trait_bound_dispatch");
+}
+
+#[test]
+fn generic_trait_bound_passthrough_round_trip() {
+    // TRAIT-BOUND: a bounded generic forwards to another function with
+    // the same generic-trait bound; the pass-through must satisfy the
+    // callee's bound without naming a concrete struct.
+    let src = r#"
+        trait Iter<T> {
+            fn next(&mut self) -> Option<T>
+        }
+        struct Counter { n: i64 }
+        impl Iter<i64> for Counter {
+            fn next(&mut self) -> Option<i64> {
+                self.n = self.n + 1i64
+                Option::Some(self.n)
+            }
+        }
+        fn collect<I: Iter<i64>>(it: I) -> i64 {
+            val r = it.next()
+            r.unwrap_or(0i64)
+        }
+        fn passthrough<X: Iter<i64>>(x: X) -> i64 {
+            collect(x)
+        }
+        fn main() -> u64 {
+            val c = Counter { n: 40i64 }
+            passthrough(c) as u64
+        }
+    "#;
+    assert_consistent(src, "generic_trait_bound_passthrough");
+}
+
+#[test]
+fn into_string_round_trip() {
+    // From/Into: `"hi".into()` with a `String` annotation rewrites to
+    // `String::from("hi")`. All three backends must run the rewritten
+    // call and agree on the byte count.
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = "hi".into()
+            s.size()
+        }
+    "#;
+    assert_consistent(src, "into_string");
+}
+
+#[test]
+fn into_user_struct_round_trip() {
+    // From/Into on a user type: `300i64.into()` with a `Kelvin`
+    // annotation dispatches to `impl From<i64> for Kelvin`.
+    let src = r#"
+        struct Kelvin { k: i64 }
+        impl From<i64> for Kelvin {
+            fn from(value: i64) -> Kelvin {
+                val r: Kelvin = Kelvin { k: value }
+                r
+            }
+        }
+        fn main() -> u64 {
+            val t: Kelvin = 300i64.into()
+            t.k as u64
+        }
+    "#;
+    assert_consistent(src, "into_user_struct");
+}
+
+#[test]
+fn try_cross_error_conversion_round_trip() {
+    // From/Into `?` cross-error conversion: `inner()?` inside a
+    // function returning `Result<i64, ErrWrap>` converts the `str`
+    // error through `ErrWrap: From<str>` before re-returning it.
+    // All three backends must agree on the converted payload.
+    let src = r#"
+        struct ErrWrap { code: u64 }
+
+        impl From<str> for ErrWrap {
+            fn from(value: str) -> ErrWrap {
+                val r: ErrWrap = ErrWrap { code: 42u64 }
+                r
+            }
+        }
+
+        fn inner() -> Result<i64, str> {
+            Result::Err("boom")
+        }
+
+        fn outer() -> Result<i64, ErrWrap> {
+            val x = inner()?
+            Result::Ok(x)
+        }
+
+        fn main() -> u64 {
+            match outer() {
+                Result::Err(w) => w.code,
+                Result::Ok(v) => v as u64,
+            }
+        }
+    "#;
+    assert_consistent(src, "try_cross_error_conversion");
+}
+
+#[test]
+fn multi_bound_three_traits_round_trip() {
+    // A2: `<T: A + B + C>` — longer bound list across 3 backends.
+    let src = r#"
+        trait A { fn a(self: Self) -> u64 }
+        trait B { fn b(self: Self) -> u64 }
+        trait C { fn c(self: Self) -> u64 }
+        struct S { v: u64 }
+        impl A for S { fn a(self: Self) -> u64 { 1u64 } }
+        impl B for S { fn b(self: Self) -> u64 { 2u64 } }
+        impl C for S { fn c(self: Self) -> u64 { self.v } }
+        fn sum<T: A + B + C>(x: T) -> u64 { x.a() + x.b() + x.c() }
+        fn main() -> u64 {
+            val s = S { v: 39u64 }
+            sum(s)
+        }
+    "#;
+    assert_consistent(src, "multi_bound_three_traits");
+}
+
+#[test]
+fn dyn_trait_empty_struct_round_trip() {
+    // A5-P2-MVP-A: `&dyn Trait` dispatch on an empty struct. All
+    // three backends must agree:
+    // - interpreter (A5-P1, type-erased method registry)
+    // - cranelift JIT (silent fallback to interpreter — Dyn type
+    //   is rejected by eligibility, so this leg actually runs the
+    //   interpreter too)
+    // - AOT (P2-MVP-A: fat pointer + vtable + CallIndirectFn)
+    let src = r#"
+        trait Animal {
+            fn sound(self: Self) -> i64
+        }
+        struct Dog {}
+        impl Animal for Dog {
+            fn sound(self: Self) -> i64 { 7i64 }
+        }
+        fn describe(a: &dyn Animal) -> i64 {
+            a.sound()
+        }
+        fn main() -> u64 {
+            val d = Dog {}
+            describe(d) as u64
+        }
+    "#;
+    assert_consistent(src, "dyn_empty_struct");
+}
+
+#[test]
+fn dyn_trait_heterogeneous_dispatch_round_trip() {
+    // A5-P2-MVP-A: same `&dyn Trait` parameter, two different
+    // concrete empty structs. Vtable per-impl is exercised: Dog
+    // dispatches to Dog::tone(), Cat dispatches to Cat::tone(),
+    // sum is 1 + 2 = 3.
+    let src = r#"
+        trait Animal {
+            fn tone(self: Self) -> i64
+        }
+        struct Dog {}
+        struct Cat {}
+        impl Animal for Dog { fn tone(self: Self) -> i64 { 1i64 } }
+        impl Animal for Cat { fn tone(self: Self) -> i64 { 2i64 } }
+        fn pick(a: &dyn Animal) -> i64 {
+            a.tone()
+        }
+        fn main() -> u64 {
+            val d = Dog {}
+            val c = Cat {}
+            (pick(d) + pick(c)) as u64
+        }
+    "#;
+    assert_consistent(src, "dyn_hetero_dispatch");
+}
+
+#[test]
+fn dyn_trait_scalar_field_round_trip() {
+    // A5-P2-MVP-B: `&dyn Trait` dispatch on a struct with one scalar
+    // field. The fat pointer's data_ptr now references a caller-frame
+    // stack slot holding the field value; the dispatched thunk reads
+    // it back via PtrRead before forwarding to the impl method.
+    let src = r#"
+        trait Num {
+            fn get(self: Self) -> u64
+        }
+        struct Cell { v: u64 }
+        impl Num for Cell {
+            fn get(self: Self) -> u64 { self.v }
+        }
+        fn use_dyn(n: &dyn Num) -> u64 {
+            n.get()
+        }
+        fn main() -> u64 {
+            val c = Cell { v: 42u64 }
+            use_dyn(c)
+        }
+    "#;
+    assert_consistent(src, "dyn_scalar_field");
+}
+
+#[test]
+fn dyn_trait_two_scalar_fields_round_trip() {
+    // A5-P2-MVP-B: struct with two scalar fields of mixed types.
+    // Tests the natural-sum byte offset accounting (i64=8, u64=8
+    // → leaf2 at offset 8) for both coercion-site PtrWrite and
+    // thunk-side PtrRead. Result = x + y = 10 + 32 = 42.
+    let src = r#"
+        trait Pair {
+            fn sum(self: Self) -> u64
+        }
+        struct Pt { x: u64, y: u64 }
+        impl Pair for Pt {
+            fn sum(self: Self) -> u64 { self.x + self.y }
+        }
+        fn use_dyn(p: &dyn Pair) -> u64 {
+            p.sum()
+        }
+        fn main() -> u64 {
+            val p = Pt { x: 10u64, y: 32u64 }
+            use_dyn(p)
+        }
+    "#;
+    assert_consistent(src, "dyn_two_scalar_fields");
+}
+
+#[test]
+fn dyn_trait_heterogeneous_field_round_trip() {
+    // A5-P2-MVP-B: two concrete types with different scalar fields
+    // both routed through the same `&dyn Trait` param. Cell uses
+    // i64, Pad uses u64 — different per-impl thunks but the
+    // dispatch site sees a uniform call signature.
+    let src = r#"
+        trait Show {
+            fn payload(self: Self) -> u64
+        }
+        struct Cell { v: u64 }
+        struct Pad { w: u64 }
+        impl Show for Cell { fn payload(self: Self) -> u64 { self.v } }
+        impl Show for Pad  { fn payload(self: Self) -> u64 { self.w + 1u64 } }
+        fn pick(s: &dyn Show) -> u64 { s.payload() }
+        fn main() -> u64 {
+            val c = Cell { v: 5u64 }
+            val p = Pad { w: 7u64 }
+            pick(c) + pick(p)
+        }
+    "#;
+    assert_consistent(src, "dyn_hetero_field");
+}
+
+#[test]
+fn dyn_trait_nested_struct_round_trip() {
+    // A5-P2-MVP-C: `&dyn Trait` dispatch on a struct whose field
+    // is itself a struct. Recursive `flatten_struct_locals` and
+    // `flatten_compound_leaf_types` agree on the leaf order, so
+    // the same `(byte_offset, leaf_ty)` list drives the
+    // coercion-site PtrWrite and the thunk PtrRead. Result =
+    // inner.v + tag = 100 + 7 = 107.
+    let src = r#"
+        trait Show {
+            fn read(self: Self) -> i64
+        }
+        struct Inner { v: i64 }
+        struct Outer { inner: Inner, tag: u64 }
+        impl Show for Outer {
+            fn read(self: Self) -> i64 { self.inner.v + self.tag as i64 }
+        }
+        fn use_dyn(s: &dyn Show) -> i64 {
+            s.read()
+        }
+        fn main() -> u64 {
+            val o = Outer { inner: Inner { v: 100i64 }, tag: 7u64 }
+            use_dyn(o) as u64
+        }
+    "#;
+    assert_consistent(src, "dyn_nested_struct");
+}
+
+#[test]
+fn dyn_trait_mut_self_round_trip() {
+    // A5-P2-MVP-C: `&mut dyn Trait` writeback. The trait method
+    // `bump(&mut self)` mutates the struct; the per-impl thunk
+    // captures the writeback via `CallWithSelfWriteback` and
+    // writes it back to `data_ptr` (the caller's stack slot).
+    // After the outer call, the dispatch site reads the slot
+    // leaves back into the caller's struct binding, so the
+    // second `bump()` sees the first call's mutation
+    // (a = 11, b = 12, a + b = 23).
+    let src = r#"
+        trait Counter {
+            fn bump(&mut self) -> i64
+        }
+        struct Tick { n: i64 }
+        impl Counter for Tick {
+            fn bump(&mut self) -> i64 {
+                self.n = self.n + 1i64
+                self.n
+            }
+        }
+        fn pump(c: &mut dyn Counter) -> i64 {
+            c.bump()
+        }
+        fn main() -> u64 {
+            var t = Tick { n: 10i64 }
+            val a = pump(&mut t)
+            val b = pump(&mut t)
+            (a + b) as u64
+        }
+    "#;
+    assert_consistent(src, "dyn_mut_self");
+}
+
+#[test]
+fn dyn_trait_struct_return_round_trip() {
+    // A5-P2-MVP-D: `&dyn Trait` dispatch where the trait method
+    // returns a struct. The thunk's `Call(impl)` becomes
+    // `CallStruct` so cranelift's multi-result call lands in
+    // pre-allocated leaf locals, the thunk's `Return` emits them
+    // all, and the caller's `CallIndirectFnStruct` fans the
+    // results into the let-binding's per-field locals.
+    // p.x + p.y = self.v + (self.v + 1) = 2*v + 1 = 21 for v=10.
+    let src = r#"
+        trait Make {
+            fn build(self: Self) -> Pair
+        }
+        struct Pair { x: i64, y: i64 }
+        struct Cell { v: i64 }
+        impl Make for Cell {
+            fn build(self: Self) -> Pair {
+                Pair { x: self.v, y: self.v + 1i64 }
+            }
+        }
+        fn use_dyn(m: &dyn Make) -> i64 {
+            val p = m.build()
+            p.x + p.y
+        }
+        fn main() -> u64 {
+            val c = Cell { v: 10i64 }
+            use_dyn(c) as u64
+        }
+    "#;
+    assert_consistent(src, "dyn_struct_return");
+}
+
+#[test]
+fn dyn_trait_tuple_return_round_trip() {
+    // A5-P2-MVP-E: `&dyn Trait` dispatch where the trait method
+    // returns a tuple. The thunk's `Call(impl)` becomes
+    // `CallTuple` so cranelift's multi-result lands in
+    // pre-allocated leaf locals; the caller's
+    // `CallIndirectFnTuple` fans the results into the
+    // let-binding's per-element locals via the standard
+    // `pending_tuple_value` channel. Result = 10 + 42 = 52.
+    let src = r#"
+        trait Paired {
+            fn get_pair(self: Self) -> (i64, u64)
+        }
+        struct Maker { x: i64 }
+        impl Paired for Maker {
+            fn get_pair(self: Self) -> (i64, u64) {
+                (self.x, 42u64)
+            }
+        }
+        fn extract(b: &dyn Paired) -> u64 {
+            val (a, c) = b.get_pair()
+            (a as u64) + c
+        }
+        fn main() -> u64 {
+            val m = Maker { x: 10i64 }
+            extract(m)
+        }
+    "#;
+    assert_consistent(src, "dyn_tuple_return");
+}
+
+#[test]
+fn dyn_trait_enum_return_round_trip() {
+    // A5-P2-MVP-E: `&dyn Trait` dispatch where the trait method
+    // returns an enum (`Option<i64>`). The thunk uses `CallEnum`
+    // to capture `[tag, Some_payload, ...]`; the caller's
+    // `CallIndirectFnEnum` fans the results into a fresh
+    // `EnumStorage` via the `pending_enum_value` channel. Result
+    // = 42 (Some branch).
+    let src = r#"
+        trait Optional {
+            fn maybe(self: Self) -> Option<i64>
+        }
+        struct Wrapper { n: i64 }
+        impl Optional for Wrapper {
+            fn maybe(self: Self) -> Option<i64> {
+                if self.n > 0i64 {
+                    Option::Some(self.n)
+                } else {
+                    Option::None
+                }
+            }
+        }
+        fn check(w: &dyn Optional) -> i64 {
+            val r = w.maybe()
+            match r {
+                Option::Some(v) => v,
+                Option::None => 0i64,
+            }
+        }
+        fn main() -> u64 {
+            val w = Wrapper { n: 42i64 }
+            check(w) as u64
+        }
+    "#;
+    assert_consistent(src, "dyn_enum_return");
+}
+
+#[test]
+fn dyn_trait_mut_self_struct_return_round_trip() {
+    // A5-P2-MVP-F: `&mut dyn Trait` dispatch where the trait
+    // method is `&mut self` AND returns a struct. The thunk
+    // routes through `CallWithSelfWritebackCompound` to capture
+    // both the user-visible return leaves and the writeback
+    // leaves in one call, then PtrWrites the writeback half
+    // back to `data_ptr` and returns the user half through the
+    // multi-value Return terminator. The caller's `&mut dyn`
+    // drain (MVP-C) reads the mutated leaves out of the slot
+    // after the outer call so the second `step()` sees the
+    // first call's increment.
+    // After two steps starting from n=10:
+    //   step1: n=11, Pair{x:11, y:22}
+    //   step2: n=12, Pair{x:12, y:24}
+    //   sum = 11 + 22 + 12 + 24 = 69
+    let src = r#"
+        trait Pump {
+            fn step(&mut self) -> Pair
+        }
+        struct Pair { x: i64, y: i64 }
+        struct Cell { n: i64 }
+        impl Pump for Cell {
+            fn step(&mut self) -> Pair {
+                self.n = self.n + 1i64
+                Pair { x: self.n, y: self.n * 2i64 }
+            }
+        }
+        fn drive(c: &mut dyn Pump) -> i64 {
+            val p1 = c.step()
+            val p2 = c.step()
+            p1.x + p1.y + p2.x + p2.y
+        }
+        fn main() -> u64 {
+            var c = Cell { n: 10i64 }
+            drive(&mut c) as u64
+        }
+    "#;
+    assert_consistent(src, "dyn_mut_self_struct_return");
+}

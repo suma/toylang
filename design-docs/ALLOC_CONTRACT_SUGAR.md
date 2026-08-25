@@ -258,7 +258,7 @@ Contract violation: `retains` budget exceeded in `outer`
 - **文言が 2 箇所に増えた** — `compiler_ir::format_alloc_budget_violation`
   (interpreter / IR VM) と `toylang_rt` の複製 (no_std で依存を持てない)。
   `frontend::format_spec` と `toylang_rt` の `Spec` と同じ関係で、
-  drift は `consistency.rs` の
+  drift は `consistency/` の
   `an_allocation_budget_reports_the_same_numbers_on_every_backend` が
   stderr を突き合わせて検出する
 - **複合述語は budget 節にしない** — `ensures retains(0u64) && result > 0u64`

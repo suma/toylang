@@ -204,8 +204,10 @@ clippy は**無警告が既定状態**。警告が出たら、それは今回の
 **同じ意味論が 3 バックエンド (tree-walker / IR VM・AOT / JIT) に独立実装されている。**
 型チェッカだけ直すと「型は通るが答えが間違う」状態になりうる。
 
-- 意味論を変える修正には `compiler/tests/consistency.rs` の
-  `assert_consistent` を使ったテストを必ず追加する
+- 意味論を変える修正には `compiler/tests/consistency/` の
+  `assert_consistent` を使ったテストを必ず追加する。ここは
+  **機能別のモジュール群**なので、近い機能のファイルに足す
+  (`harness.rs` が全レーンと共有ヘルパ、`mod.rs` が目次)
 - `compiler/tests/example_consistency.rs` が
   **`interpreter/example/` の全プログラムを 3 バックエンドで突き合わせる**ので、
   example を追加すればカバレッジは自動で増える。
@@ -354,7 +356,7 @@ fn main() -> u64 {
   - 算術: `+`, `-`, `*`, `/`, `%`（剰余・truncated remainder で `(-7) % 3 == -1`）
   - **実行時トラップ (RUNTIME-TRAP)**: `u64` 減算のアンダーフロー / 整数の 0 除算 /
     符号付き `MIN / -1` / 配列添字の境界外は **`panic`**（4 バックエンド一致、
-    `compiler/tests/consistency.rs` が pin）。一方 `+` / `*` / 符号付き `-` の
+    `compiler/tests/consistency/` が pin）。一方 `+` / `*` / 符号付き `-` の
     overflow は **wrap**（ビルドプロファイルに依らず 1 つの意味論）。逃げ道は
     `core/std/checked.t` の `checked_*` → `Option<T>` / `saturating_*`
     (`u64` / `i64` のみ、レシーバは名前束縛、enum 結果は `val` 束縛してから `match`)

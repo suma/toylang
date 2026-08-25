@@ -27,7 +27,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 
 `compiler_lower` に置いた変更は **IR VM / AOT / compiler 側 JIT の 3 つ**に
 効く。tree-walker と interpreter 側 JIT は別途対応が要る。
-意味論を変えたら `compiler/tests/consistency.rs::assert_consistent` を使った
+意味論を変えたら `compiler/tests/consistency/` の `assert_consistent` を使った
 テストを追加すること。
 
 ---
@@ -140,7 +140,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 |---|---|
 | `test` ブロック (P4) | `parser/program_parser.rs` (contextual), `interpreter/src/lib.rs::run_tests` |
 | 契約プロパティテスト (P5) | `interpreter/src/property.rs` |
-| バックエンド一致 (単発) | `compiler/tests/consistency.rs::assert_consistent` |
+| バックエンド一致 (単発) | `compiler/tests/consistency/` の `assert_consistent` |
 | バックエンド一致 (全 example 掃引) | `compiler/tests/example_consistency.rs` |
 | バックエンド一致 (CLI・D6) | `compiler/src/all_backends.rs` (`compiler f.t --all-backends`) |
 | コード生成の再現性 | `compiler/tests/reproducible_build.rs` (**lowering / codegen で HashMap を反復すると link cache が全ミスになる**) |

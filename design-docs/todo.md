@@ -282,7 +282,7 @@
   (1) `compiler::compile_checked_program` を新設 — `compile_file` から
   parse + type-check 部分を分離し、`program` / interner / `ContractMessages`
   を受け取って lower + codegen + link だけを行う (CLI 挙動は不変)。
-  (2) `consistency.rs` に `CheckedProgram` (program + interner +
+  (2) `consistency/` に `CheckedProgram` (program + interner +
   contract_msgs) を導入し、`assert_consistent` / `assert_stdout_consistent`
   の full path が parse + type-check を **1 回**にして tree-walker / IR VM /
   JIT / AOT の 4 レーンに配る (IR VM は MEMORY_PROFILING M4 の

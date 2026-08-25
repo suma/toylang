@@ -423,7 +423,7 @@ interpreter のベンチ (`println` ループ) が許容範囲内 (基準は移�
 
 | 何を守るか | 手段 |
 |---|---|
-| 3 バックエンドの出力一致 | `compiler/tests/consistency.rs` / `example_consistency.rs` |
+| 3 バックエンドの出力一致 | `compiler/tests/consistency/` / `example_consistency.rs` |
 | メモリ計数の一致 | `--profile=mem` / `--profile-format=json` の 3 者比較 |
 | リンクキャッシュが効き続けること | `compiler/tests/reproducible_build.rs` |
 | f64 の乖離が再発しないこと | `f64_display_agrees_across_backends` (実測 1 の 3 式 + 境界値、R1 で追加) |

@@ -1,0 +1,594 @@
+//! `--profile=mem`: counters, attribution, layout reports, and the JSON
+//! form -- all required to agree across backends.
+
+use std::process::Command;
+
+use compiler::{compile_file, CompilerOptions};
+use interpreter::RunOptions;
+
+use super::harness::*;
+
+#[test]
+fn neither_heap_reuses_addresses() {
+    // DROP-GLUE: the compiled runtime's bump region never reuses a
+    // freed address either, so a drop-glue walk that reaches the same
+    // boxed node twice reads the block's original contents on the
+    // second visit (the free is an idempotent no-op). This used to be
+    // a documented interpreter-vs-AOT divergence (the AOT was libc
+    // malloc); the glue made reuse observable through crashes, so the
+    // AOT heap now mirrors the interpreter's bump allocator.
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val a: ptr = __builtin_heap_alloc(64u64)
+            __builtin_heap_free(a)
+            val b: ptr = __builtin_heap_alloc(64u64)
+            if __builtin_ptr_eq(a, b) { 1u64 } else { 0u64 }
+        }
+    "#;
+    assert_eq!(
+        interpreter_value(src),
+        0,
+        "the interpreter heap is a bump allocator; if this now reuses, \
+         MEMORY_PROFILING's reasoning about address-derived metrics needs revisiting"
+    );
+    assert_eq!(
+        compiler_exit_code(src, "heap_addr_reuse", false),
+        0,
+        "the AOT bump region must not reuse a freed address either"
+    );
+}
+
+// --- MEMORY_PROFILING M1: allocation totals across backends ---------
+//
+// The phase's acceptance criterion. Every counter is defined on the
+// sizes and order the program requested, so the backends have to agree
+// on them even though their heaps behave differently (see
+// `interpreter_heap_does_not_reuse_addresses_but_the_aot_heap_does`).
+//
+// These compare through the `--all-backends --profile=mem` path, which
+// is also what a user runs.
+
+
+#[test]
+fn allocation_totals_agree_for_raw_heap_builtins() {
+    memory_profiles_agree(
+        r#"
+        fn main() -> u64 {
+            val a: ptr = __builtin_heap_alloc(64u64)
+            val b: ptr = __builtin_heap_alloc(96u64)
+            __builtin_heap_free(a)
+            val c: ptr = __builtin_heap_realloc(b, 160u64)
+            __builtin_heap_free(c)
+            0u64
+        }
+        "#,
+        "prof_raw_builtins",
+    );
+}
+
+#[test]
+fn allocation_totals_agree_for_a_growing_vec() {
+    // A `Vec` that outgrows its capacity several times exercises the
+    // realloc accounting, which is where the definitions bite: this
+    // implementation moves the block, and the numbers must not say so.
+    memory_profiles_agree(
+        r#"
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            var i: u64 = 0u64
+            while i < 40u64 {
+                v.push(i)
+                i = i + 1u64
+            }
+            v.size()
+        }
+        "#,
+        "prof_vec_growth",
+    );
+}
+
+/// `String::from_str` on a literal used to diverge: the interpreter
+/// materialised the str literal on its heap (one extra allocation),
+/// while the compiled backends pointed into `.rodata` and allocated
+/// nothing (STR-PTR-LEN). The IR VM now materialises literals
+/// counter-free, so the accounting agrees once more — this used to be
+/// recorded as a known difference, and its disappearance is the test.
+#[test]
+fn string_literals_no_longer_allocate_differently_across_backends() {
+    memory_profiles_agree(
+        "fn main() -> u64 {\n    val s = String::from_str(\"hello world\")\n    s.len()\n}\n",
+        "prof_string_from_str",
+    );
+}
+
+// --- MEMORY_PROFILING M2: attribution -------------------------------
+//
+// The site identifier *is* the allocation's source position, packed as
+// `(line << 32) | column`. Every backend reads it from the same
+// location pool, so the leak report has to name the same place without
+// any shared table of ids to keep in step.
+
+#[test]
+fn leaks_are_attributed_to_the_same_source_position_on_every_backend() {
+    // `memory_profiles_agree` fails on any disagreement, and the
+    // `--all-backends` path compares the leak sections as well as the
+    // totals.
+    memory_profiles_agree(
+        r#"
+        fn main() -> u64 {
+            val a: ptr = __builtin_heap_alloc(64u64)
+            val b: ptr = __builtin_heap_alloc(32u64)
+            __builtin_heap_free(a)
+            0u64
+        }
+        "#,
+        "prof_leak_sites",
+    );
+}
+
+#[test]
+fn allocations_from_one_site_reached_by_several_callers_aggregate_together() {
+    // Attribution is per allocation *site*, not per call path: both
+    // calls to `keep` land on the same line and are reported as one
+    // site. Recording the granularity so a later phase that adds call
+    // paths has something to change deliberately.
+    memory_profiles_agree(
+        r#"
+        fn keep(n: u64) -> ptr {
+            __builtin_heap_alloc(n)
+        }
+
+        fn main() -> u64 {
+            val a: ptr = keep(16u64)
+            val b: ptr = keep(24u64)
+            val c: ptr = __builtin_heap_alloc(48u64)
+            __builtin_heap_free(c)
+            0u64
+        }
+        "#,
+        "prof_site_aggregation",
+    );
+}
+
+// --- MEMORY_PROFILING M3: layout reporting --------------------------
+//
+// Fragmentation is a property of an allocator's layout, so `trait
+// Alloc` reports it and the profiler only collects. The default is
+// "not reported", which is not the same as "zero fragmentation" —
+// `Global`, `Arena` and `FixedBuffer` all answer that way because none
+// of them owns a region: each forwards individual allocations to the
+// default allocator and keeps bookkeeping on the side.
+
+#[test]
+fn allocators_without_a_region_report_no_layout() {
+    let src = r#"
+        fn main() -> u64 {
+            val a = Arena::new()
+            val fb = FixedBuffer::new(1024u64)
+            val g = Global::new()
+            # Bound first: chained method calls are not lowerable by
+            # the AOT MVP.
+            val la = a.layout_report()
+            val lf = fb.layout_report()
+            val lg = g.layout_report()
+            var known: u64 = 0u64
+            if la.is_known() { known = known + 1u64 }
+            if lf.is_known() { known = known + 1u64 }
+            if lg.is_known() { known = known + 1u64 }
+            known
+        }
+    "#;
+    assert_consistent(src, "layout_opaque");
+}
+
+#[test]
+fn a_region_owning_allocator_reports_its_layout() {
+    // 8 slots of 16 bytes; two live, and freeing the middle one splits
+    // the free space into two runs.
+    let src = r#"
+        fn main() -> u64 {
+            var r = SlotRegion::new(16u64, 8u64)
+            val a = r.alloc(16u64)
+            val b = r.alloc(16u64)
+            val c = r.alloc(16u64)
+            r.free(b)
+            val l = r.layout_report()
+            l.managed() + l.live() * 1000u64
+                + l.blocks() * 1000000u64 + l.largest() * 10000000u64
+        }
+    "#;
+    // managed 128, live 32, 2 free runs, largest run 5 slots = 80 bytes.
+    assert_consistent(src, "layout_region");
+}
+
+#[test]
+fn fragmentation_is_reported_and_actually_bites() {
+    // Freeing every other slot leaves 48 bytes free with no run longer
+    // than 16, so a 48-byte request fails. A number that did not
+    // predict that would be decoration.
+    let src = r#"
+        fn main() -> u64 {
+            var r = SlotRegion::new(16u64, 6u64)
+            val a = r.alloc(16u64)
+            val b = r.alloc(16u64)
+            val c = r.alloc(16u64)
+            val d = r.alloc(16u64)
+            val e = r.alloc(16u64)
+            val f = r.alloc(16u64)
+            r.free(b)
+            r.free(d)
+            r.free(f)
+            val l = r.layout_report()
+            val big = r.alloc(48u64)
+            var code: u64 = 0u64
+            if __builtin_ptr_is_null(big) { code = code + 1u64 }
+            code + l.largest() * 10u64 + l.external_fragmentation_permille() * 1000u64
+        }
+    "#;
+    // 1 (the request failed) + 16 * 10 + 666 * 1000.
+    assert_consistent(src, "layout_fragmentation");
+}
+
+// --- MEMORY_PROFILING M4: the report as JSON -------------------------
+//
+// The phase's acceptance criterion is that the report is byte-identical
+// between runs, which is what makes it diffable and assertable. These
+// check that, and that the C runtime's hand-written mirror produces the
+// same bytes as the shared Rust one — the two are written out
+// separately (see `MemoryStats::report_json`), so nothing but a test
+// keeps them together.
+
+
+
+
+#[test]
+fn the_json_report_is_identical_between_runs() {
+    let first = interpreter_json_profile(JSON_PROFILE_PROGRAM);
+    let second = interpreter_json_profile(JSON_PROFILE_PROGRAM);
+    assert_eq!(
+        first, second,
+        "the same program produced two different reports; a report that \
+         is not reproducible cannot be diffed or asserted on"
+    );
+    assert_eq!(first, JSON_PROFILE_EXPECTED);
+}
+
+#[test]
+fn the_aot_json_report_is_byte_identical_to_the_shared_one() {
+    if skip_e2e() {
+        return;
+    }
+    let src_path = unique_path("prof_json.t");
+    std::fs::write(&src_path, JSON_PROFILE_PROGRAM).expect("write source");
+    let exe_path = unique_path("prof_json");
+    let mut options = CompilerOptions::new(src_path.clone());
+    options.output = Some(exe_path.clone());
+    options.link_cache_dir = Some(link_cache_dir_for_tests());
+    compile_file(&options).expect("compile");
+
+    let run = || {
+        let output = Command::new(&exe_path)
+            .env("TOY_PROFILE_MEM", "json")
+            .output()
+            .expect("spawn binary");
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    };
+    let first = run();
+    let second = run();
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&exe_path);
+
+    assert_eq!(first, second, "the compiled runtime's report is not reproducible");
+    assert_eq!(
+        first, JSON_PROFILE_EXPECTED,
+        "the C runtime's JSON has drifted from `MemoryStats::report_json`"
+    );
+}
+
+#[test]
+fn nothing_leaked_is_an_empty_array_not_a_missing_section() {
+    // The text report omits the leak section entirely when there is
+    // nothing to say, which is right for a human and wrong for a
+    // consumer: absence would have to be told apart from a producer
+    // that predates leak reporting.
+    let src = "fn main() -> u64 {\n\
+        \x20   val p: ptr = __builtin_heap_alloc(16u64)\n\
+        \x20   __builtin_heap_free(p)\n\
+        \x20   0u64\n\
+        }\n";
+    let json = interpreter_json_profile(src);
+    assert!(
+        json.contains("\"leaks\": [],\n"),
+        "expected an empty leaks array, got:\n{json}"
+    );
+    assert!(json.contains("\"live_bytes\": 0,"), "got:\n{json}");
+}
+
+// --- MEMORY_PROFILING M4: reading the counters from the program ------
+//
+// The point of the phase: `requires` / `ensures` and `test` blocks can
+// assert on memory, which only works if the counters answer truthfully
+// in an ordinary run. The compiled runtime counts nothing unless asked,
+// so lowering emits a `MemStatEnable` at the top of `main` when the
+// program reads a counter — these check that it actually took effect,
+// because a backend that answered 0 would make every such contract
+// pass while checking nothing.
+
+#[test]
+fn every_backend_agrees_on_what_the_counters_say() {
+    let src = r#"
+        fn main() -> u64 {
+            val before: u64 = __builtin_live_bytes()
+            val p: ptr = __builtin_heap_alloc(64u64)
+            val during: u64 = __builtin_live_bytes()
+            __builtin_heap_free(p)
+            val after: u64 = __builtin_live_bytes()
+            val n: u64 = __builtin_alloc_count()
+            val peak: u64 = __builtin_peak_live_bytes()
+            # before=0, during=64, after=0, n=1, peak=64
+            before + during + after * 100u64 + n * 1000u64 + peak * 10000u64
+        }
+    "#;
+    assert_consistent(src, "mem_stat_read");
+}
+
+#[test]
+fn the_compiled_binary_counts_without_being_asked_to_profile() {
+    // The one that would silently rot: `TOY_PROFILE_MEM` is unset here,
+    // so the C runtime's counting is off unless `main` turned it on.
+    // Written as a direct exit-code check rather than through
+    // `assert_consistent` so the failure says "the AOT answered 0"
+    // rather than "the backends disagree".
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val p: ptr = __builtin_heap_alloc(64u64)
+            val live: u64 = __builtin_live_bytes()
+            __builtin_heap_free(p)
+            live
+        }
+    "#;
+    assert_eq!(
+        compiler_exit_code(src, "mem_stat_unprofiled", false),
+        64,
+        "the compiled binary reported no live bytes; `MemStatEnable` is \
+         not reaching `toy_prof_force_counting`"
+    );
+}
+
+#[test]
+fn a_program_that_reads_no_counter_does_not_ask_for_counting() {
+    // The other half of the bargain: an unprofiled run has to allocate
+    // exactly what it did before the profiler existed, so the enable
+    // call appears only when something reads a counter.
+    let with_read = "fn main() -> u64 { __builtin_live_bytes() }\n";
+    let without = "fn main() -> u64 {\n    val p: ptr = __builtin_heap_alloc(8u64)\n    __builtin_heap_free(p)\n    0u64\n}\n";
+    assert!(
+        lowered_ir(with_read).contains("mem_stat_enable"),
+        "a program that reads a counter must enable counting"
+    );
+    assert!(
+        !lowered_ir(without).contains("mem_stat_enable"),
+        "a program that reads no counter must not pay for counting"
+    );
+}
+
+// --- MEMORY_PROFILING M3 residual: allocator layout in the report ----
+//
+// A region-owning allocator registers its final layout from `Drop`, and
+// `--profile=mem` folds it into the report. The numbers are hand-checked
+// here, and the section is byte-identical across the interpreter and the
+// C runtime (the counter totals deliberately are *not* compared: the
+// `"SlotRegion"` str literal is materialised on the interpreter's heap
+// but lives in `.rodata` for the compiler — the same known difference as
+// `string_literals_allocate_on_the_interpreter_but_not_when_compiled`).
+
+
+
+
+#[test]
+fn allocator_layouts_are_reported_in_the_memory_profile() {
+    let report = interpreter_layout_report(LAYOUT_PROFILE_PROGRAM);
+    assert_eq!(
+        report, LAYOUT_PROFILE_EXPECTED,
+        "the layout section drifted from the hand-computed numbers"
+    );
+}
+
+#[test]
+fn the_aot_layout_report_is_byte_identical_to_the_shared_one() {
+    if skip_e2e() {
+        return;
+    }
+    let src_path = unique_path("prof_layout.t");
+    std::fs::write(&src_path, LAYOUT_PROFILE_PROGRAM).expect("write source");
+    let exe_path = unique_path("prof_layout");
+    let mut options = CompilerOptions::new(src_path.clone());
+    options.output = Some(exe_path.clone());
+    options.core_modules_dir = Some(core_modules_dir());
+    options.link_cache_dir = Some(link_cache_dir_for_tests());
+    compile_file(&options).expect("compile");
+
+    let output = Command::new(&exe_path)
+        .env("TOY_PROFILE_MEM", "1")
+        .output()
+        .expect("spawn binary");
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&exe_path);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let aot_layouts = stderr
+        .split("allocator layouts\n")
+        .nth(1)
+        .unwrap_or_default();
+    let aot_layouts = format!("allocator layouts\n{aot_layouts}");
+
+    assert_eq!(
+        aot_layouts, LAYOUT_PROFILE_EXPECTED,
+        "the C runtime's layout report has drifted from the shared one"
+    );
+    assert_eq!(
+        interpreter_layout_report(LAYOUT_PROFILE_PROGRAM),
+        aot_layouts,
+        "the interpreter and the C runtime disagree on the layout report"
+    );
+}
+
+#[test]
+fn allocators_without_a_region_still_report_no_layout() {
+    // `Arena` / `FixedBuffer` / `Global` forward everything to the
+    // default allocator and own no region, so none of them implements
+    // a `Drop` that registers a layout — the report is simply absent.
+    let src = "fn main() -> u64 {\n\
+        \x20   val a = Arena::new()\n\
+        \x20   val fb = FixedBuffer::new(1024u64)\n\
+        \x20   a.bytes_used() + fb.used()\n\
+        }\n";
+    let report = interpreter_layout_report(src);
+    assert_eq!(
+        report, "",
+        "allocators without a region must not register a layout, got:\n{report}"
+    );
+}
+
+// --- Pointer arithmetic: interior pointers (MEMORY-PROFILING M3 residual) ---
+//
+// `__builtin_ptr_offset(base, offset)` makes a pointer into the middle of
+// an allocation. That is the primitive an offset-based free-list / region
+// allocator is built on: allocate one block, hand out sub-blocks.
+
+#[test]
+fn interior_pointers_read_and_write_independently() {
+    // One 64-byte block split into two 32-byte cells. Writes through the
+    // two interior pointers must land in disjoint regions, and a write
+    // through one must be visible at the same offset of the base block.
+    let src = r#"
+        fn main() -> u64 {
+            val block: ptr = __builtin_heap_alloc(64u64)
+            val cell0: ptr = __builtin_ptr_offset(block, 0u64)
+            val cell1: ptr = __builtin_ptr_offset(block, 32u64)
+            __builtin_ptr_write(cell0, 0u64, 111u64)
+            __builtin_ptr_write(cell1, 0u64, 222u64)
+            val a: u64 = __builtin_ptr_read(cell0, 0u64)
+            val b: u64 = __builtin_ptr_read(cell1, 0u64)
+            # The interior pointer of cell1 aliases base + 32.
+            val c: u64 = __builtin_ptr_read(block, 32u64)
+            __builtin_heap_free(block)
+            a + b + c
+        }
+    "#;
+    // 111 + 222 + 222.
+    assert_consistent(src, "ptr_offset_cells");
+}
+
+#[test]
+fn interior_pointers_compose() {
+    // Offset from an interior pointer reaches the same address as the
+    // equivalent offset from the base — the value is plain addition.
+    let src = r#"
+        fn main() -> u64 {
+            val block: ptr = __builtin_heap_alloc(64u64)
+            val half: ptr = __builtin_ptr_offset(block, 32u64)
+            val quarter: ptr = __builtin_ptr_offset(half, 16u64)
+            __builtin_ptr_write(quarter, 0u64, 99u64)
+            val v: u64 = __builtin_ptr_read(block, 48u64)
+            v
+        }
+    "#;
+    assert_consistent(src, "ptr_offset_compose");
+}
+
+#[test]
+fn a_struct_returned_from_its_constructor_is_not_dropped() {
+    // The constructor's local `var r` must be moved out, not dropped:
+    // dropping it would free `r.ptrs`, and the caller's binding drop
+    // would then free the same pointer a second time (use-after-free
+    // that crashed the AOT). A clean single free on every backend is
+    // the pass condition.
+    let src = r#"
+        struct Region { ptrs: ptr }
+
+        impl Region {
+            fn new() -> Self {
+                var r = Region { ptrs: __builtin_null_ptr() }
+                with allocator = __builtin_default_allocator() {
+                    r.ptrs = __builtin_heap_alloc(16u64)
+                }
+                r
+            }
+        }
+
+        impl Drop for Region {
+            fn drop(&mut self) {
+                __builtin_heap_free(self.ptrs)
+            }
+        }
+
+        fn main() -> u64 {
+            val r = Region::new()
+            42u64
+        }
+    "#;
+    assert_consistent(src, "drop_returned_binding");
+}
+
+
+
+
+
+#[test]
+fn an_abandoned_execution_attempt_is_not_counted_against_the_next_one() {
+    // A run tries the IR VM before the tree-walker, and an engine that
+    // fails partway has already allocated. Rolling the counters back at
+    // the fallback is what keeps a memory contract pointing at the
+    // function that broke it.
+    //
+    // Here `tidy` frees what it takes and `hoggy` does not. Under the
+    // IR VM, `hoggy` violates its bound and the run restarts on the
+    // tree-walker — with `hoggy`'s 4096 bytes still counted as live,
+    // `tidy` was the first to fail on the way through, and the message
+    // named the one function that was behaving.
+    let src = "fn tidy(n: u64) -> u64\n\
+        \x20   ensures __builtin_live_bytes() <= 128u64\n\
+        {\n\
+        \x20   val p: ptr = __builtin_heap_alloc(n)\n\
+        \x20   __builtin_heap_free(p)\n\
+        \x20   n\n\
+        }\n\
+        \n\
+        fn hoggy(n: u64) -> u64\n\
+        \x20   ensures __builtin_live_bytes() <= 128u64\n\
+        {\n\
+        \x20   val p: ptr = __builtin_heap_alloc(n)\n\
+        \x20   n\n\
+        }\n\
+        \n\
+        fn main() -> u64 {\n\
+        \x20   val a: u64 = tidy(64u64)\n\
+        \x20   val b: u64 = hoggy(4096u64)\n\
+        \x20   a + b\n\
+        }\n";
+    let options = RunOptions::default();
+    let err = interpreter::run_source(src, "test.t", &options)
+        .expect_err("hoggy leaks 4096 bytes against a 128-byte bound");
+    assert!(
+        err.contains("function `hoggy`"),
+        "the violation should name the function that leaked, got: {err}"
+    );
+}
+
+// --- `Display` (core/std/display.t) ---------------------------------
+//
+// A type with a `to_str(&self) -> str` method controls what `print` /
+// `println` write and what string interpolation splices in. The type
+// checker rewrites the argument of those builtins to call it, so every
+// backend sees an ordinary method call.
+//
+// Each test pins the text as well as cross-backend agreement.
+// `assert_stdout_consistent` alone would not: with the dispatch turned
+// off, every backend renders structurally and they still agree with
+// each other, so the test would pass while the feature did nothing.

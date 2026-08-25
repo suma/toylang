@@ -271,7 +271,7 @@ LLM がテストを 1 行も書かずに反例を得られる。これは他言�
 
 **回帰テスト**: `interpreter/tests/closure_tests.rs` に 4 件
 (shadowing / stdlib 衝突 / stdlib HOF の正しい dispatch / 非関数値は shadow しない)、
-`compiler/tests/consistency.rs` に 3-way 一致テスト 3 件
+`compiler/tests/consistency/` に 3-way 一致テスト 3 件
 (non-capturing / capturing / 非関数ローカル)。1587 → 1594 tests pass。
 
 ### P1 — 診断の一括報告 (✅ 2026-08-09 完了)

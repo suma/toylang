@@ -20,7 +20,7 @@ toylang は 1 つのフロントエンド（lexer / parser / type checker）の�
 - **AOT / IR VM** は共有 IR (`compiler_ir`) を入力にするため、`compiler_lower` の
   lowering 1 箇所を直せば両方に反映される。
 - **JIT** だけは歴史的経緯で AST → cranelift 直結の独立経路。
-- 4 バックエンドの一致は `compiler/tests/consistency.rs` の `assert_consistent`
+- 4 バックエンドの一致は `compiler/tests/consistency/` の `assert_consistent`
   で常時検証している（後述）。
 
 > **背景**: もともと tree-walker / AOT / JIT の 3 経路が各々独立に言語仕様を
@@ -281,7 +281,7 @@ execute_program(File, interner, ...) -> RcObject
 
 ## 整合性検証
 
-### 4-way consistency（`compiler/tests/consistency.rs`）
+### 4-way consistency（`compiler/tests/consistency/`）
 
 `assert_consistent(source, stem)` が **interpreter（tree-walker） / AOT / JIT / IR VM** の
 exit code を `& 0xff` で比較。IR VM lane は `ir_vm_supported` が eligible のときのみ参加

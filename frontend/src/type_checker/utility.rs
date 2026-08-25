@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use crate::ast::*;
 use crate::type_decl::*;
 use crate::type_checker::{TypeCheckerVisitor, TypeCheckError};
-use crate::type_checker::error_handling::ErrorHandling;
 
 /// From/Into: the `From` trait and its `fn from` method, declared in
 /// `core/std/convert.t`. Shared by the `.into()` rewrite and the `?`
@@ -228,6 +227,105 @@ impl<'a> TypeCheckerVisitor<'a> {
         Ok(())
     }
 
+    /// The type checker's prose rendering of a type, for messages that
+    /// read as sentences rather than as source. It differs from
+    /// `TypeDecl::spell_with` deliberately: an unresolved name comes out
+    /// as `Identifier(Ord)` and a type parameter as `Generic(T)`, so a
+    /// message can say which of the two it is. `named_type_for_error`
+    /// below unwraps the first of those where the distinction is noise.
+    ///
+    /// (`type_decl.rs` names this as the third rendering alongside
+    /// `display_name` and `source_name`.)
+    pub(crate) fn format_type_for_error(&self, type_decl: &TypeDecl) -> String {
+        match type_decl {
+            TypeDecl::Int64 => "i64".to_string(),
+            TypeDecl::UInt64 => "u64".to_string(),
+            TypeDecl::Int32 => "i32".to_string(),
+            TypeDecl::UInt32 => "u32".to_string(),
+            TypeDecl::Int16 => "i16".to_string(),
+            TypeDecl::UInt16 => "u16".to_string(),
+            TypeDecl::Int8 => "i8".to_string(),
+            TypeDecl::UInt8 => "u8".to_string(),
+            TypeDecl::Float64 => "f64".to_string(),
+            TypeDecl::Bool => "bool".to_string(),
+            TypeDecl::String => "str".to_string(),
+            TypeDecl::Unit => "()".to_string(),
+            TypeDecl::Array(element_types, size) => {
+                if element_types.len() == 1 {
+                    format!("[{}; {}]", self.format_type_for_error(&element_types[0]), size)
+                } else {
+                    format!("[mixed; {}]", size)
+                }
+            },
+            TypeDecl::Tuple(types) => {
+                let type_strs: Vec<String> = types.iter()
+                    .map(|t| self.format_type_for_error(t))
+                    .collect();
+                format!("({})", type_strs.join(", "))
+            },
+            TypeDecl::Dict(key_type, value_type) => {
+                format!("Dict<{}, {}>", 
+                       self.format_type_for_error(key_type), 
+                       self.format_type_for_error(value_type))
+            },
+            TypeDecl::Struct(name, type_params) => {
+                let name_str = self.resolve_symbol_name(*name);
+                if type_params.is_empty() {
+                    name_str.to_string()
+                } else {
+                    let param_strs: Vec<String> = type_params.iter()
+                        .map(|t| self.format_type_for_error(t))
+                        .collect();
+                    format!("{}<{}>", name_str, param_strs.join(", "))
+                }
+            },
+            TypeDecl::Generic(param) => {
+                let param_str = self.resolve_symbol_name(*param);
+                format!("Generic({})", param_str)
+            },
+            TypeDecl::Self_ => "Self".to_string(),
+            TypeDecl::Identifier(name) => {
+                let name_str = self.resolve_symbol_name(*name);
+                format!("Identifier({})", name_str)
+            },
+            TypeDecl::Unknown => "Unknown".to_string(),
+            TypeDecl::Number => "Number".to_string(),
+            TypeDecl::Ptr => "Ptr".to_string(),
+            TypeDecl::Allocator => "Allocator".to_string(),
+            TypeDecl::Enum(name, type_params) => {
+                let name_str = self.resolve_symbol_name(*name);
+                if type_params.is_empty() {
+                    name_str.to_string()
+                } else {
+                    let param_strs: Vec<String> = type_params.iter()
+                        .map(|t| self.format_type_for_error(t))
+                        .collect();
+                    format!("{}<{}>", name_str, param_strs.join(", "))
+                }
+            },
+            TypeDecl::Range(inner) => format!("Range<{}>", self.format_type_for_error(inner)),
+            TypeDecl::Ref { is_mut, inner } => {
+                let prefix = if *is_mut { "&mut " } else { "&" };
+                format!("{}{}", prefix, self.format_type_for_error(inner))
+            }
+            TypeDecl::Function(params, ret) => {
+                let param_strs: Vec<String> = params.iter()
+                    .map(|t| self.format_type_for_error(t))
+                    .collect();
+                format!("({}) -> {}", param_strs.join(", "), self.format_type_for_error(ret))
+            }
+            TypeDecl::TraitIntersection(traits) => {
+                let name_strs: Vec<String> = traits.iter()
+                    .map(|t| self.resolve_symbol_name(*t).to_string())
+                    .collect();
+                name_strs.join(" + ")
+            }
+            TypeDecl::Dyn(trait_sym) => {
+                format!("dyn {}", self.resolve_symbol_name(*trait_sym))
+            }
+            TypeDecl::Hole => "_".to_string(),
+        }
+    }
     /// `format_type_for_error` wraps an unresolved-but-named type as
     /// `Identifier(Ord)`, which reads as noise in a bound-violation
     /// message where every operand is a name. Unwrap that one case;

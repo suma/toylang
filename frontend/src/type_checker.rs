@@ -48,7 +48,6 @@ mod error_helpers;
 mod scope;
 mod struct_registry;
 mod method;
-mod error_handling;
 mod type_conversion;
 mod tests;
 

@@ -187,7 +187,6 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
     /// Check if current access is within the same module
-    #[allow(dead_code)]
     fn is_same_module_access(&self) -> bool {
         // For Phase 3 initial implementation, assume same module access
         // TODO: Implement proper module context tracking

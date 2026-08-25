@@ -956,23 +956,18 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
     }
 
-    /// Whether `lhs` and `rhs` are both the same struct type and that struct
-    /// has an `eq` method registered. Drives the Phase B operator-overload
-    /// path that lets `s == t` dispatch to `s.eq(t)` for nominal struct
-    /// values (e.g. `String` / `Vec<u8>`). Generic struct args must also
-    /// match so `Vec<u8> == Vec<u8>` compares but `Vec<u8> == Vec<i64>`
-    /// continues to bail with the standard mismatch error.
-    #[allow(dead_code)]
-    fn struct_eq_compatible(&self, lhs: &TypeDecl, rhs: &TypeDecl) -> bool {
-        self.struct_method_compatible(lhs, rhs, "eq")
-    }
-
-    /// Generalised version of `struct_eq_compatible` for arithmetic
-    /// operator overloading (Phase B continuation). `+` / `-` / `*`
-    /// / `/` / `%` dispatch to `add` / `sub` / `mul` / `div` / `rem`
-    /// methods on the matching struct. Same nominal-identity rule
-    /// as `eq`: same struct name + same generic args, otherwise
-    /// fall through to the standard mismatch diagnostic.
+    /// Whether `lhs` and `rhs` are the same struct type and that struct
+    /// has `method_name` registered — the Phase B operator-overload test.
+    ///
+    /// `==` was the first operator to use it, dispatching `s == t` to
+    /// `s.eq(t)` for nominal structs like `String` / `Vec<u8>`; the
+    /// arithmetic operators followed, with `+` / `-` / `*` / `/` / `%`
+    /// going to `add` / `sub` / `mul` / `div` / `rem`.
+    ///
+    /// The nominal-identity rule is the same either way: same struct name
+    /// *and* same generic args, so `Vec<u8> == Vec<u8>` compares while
+    /// `Vec<u8> == Vec<i64>` falls through to the standard mismatch
+    /// diagnostic.
     fn struct_method_compatible(
         &self,
         lhs: &TypeDecl,

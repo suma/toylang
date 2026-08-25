@@ -363,31 +363,19 @@ impl<'a> AstIntegrationContext<'a> {
             TypeDecl::Identifier(s) => TypeDecl::Identifier(self.remap_type_symbol(*s)?),
             TypeDecl::Generic(s) => TypeDecl::Generic(self.remap_symbol(*s)?),
             TypeDecl::Struct(s, args) => {
-                let mut new_args = Vec::with_capacity(args.len());
-                for a in args {
-                    new_args.push(self.remap_type_decl(a)?);
-                }
+                let new_args = self.remap_type_decls(args)?;
                 TypeDecl::Struct(self.remap_type_symbol(*s)?, new_args)
             }
             TypeDecl::Enum(s, args) => {
-                let mut new_args = Vec::with_capacity(args.len());
-                for a in args {
-                    new_args.push(self.remap_type_decl(a)?);
-                }
+                let new_args = self.remap_type_decls(args)?;
                 TypeDecl::Enum(self.remap_type_symbol(*s)?, new_args)
             }
             TypeDecl::Tuple(elems) => {
-                let mut new_elems = Vec::with_capacity(elems.len());
-                for e in elems {
-                    new_elems.push(self.remap_type_decl(e)?);
-                }
+                let new_elems = self.remap_type_decls(elems)?;
                 TypeDecl::Tuple(new_elems)
             }
             TypeDecl::Array(elems, n) => {
-                let mut new_elems = Vec::with_capacity(elems.len());
-                for e in elems {
-                    new_elems.push(self.remap_type_decl(e)?);
-                }
+                let new_elems = self.remap_type_decls(elems)?;
                 TypeDecl::Array(new_elems, *n)
             }
             TypeDecl::Dict(k, v) => TypeDecl::Dict(
@@ -403,10 +391,7 @@ impl<'a> AstIntegrationContext<'a> {
                 inner: Box::new(self.remap_type_decl(inner)?),
             },
             TypeDecl::Function(params, ret) => {
-                let mut new_params = Vec::with_capacity(params.len());
-                for p in params {
-                    new_params.push(self.remap_type_decl(p)?);
-                }
+                let new_params = self.remap_type_decls(params)?;
                 TypeDecl::Function(new_params, Box::new(self.remap_type_decl(ret)?))
             }
             // A2 multi-bound: each symbol is a trait name living in the
@@ -553,16 +538,8 @@ impl<'a> AstIntegrationContext<'a> {
                 // this module's own impl block) reach the stdlib
                 // decl via the aliased name.
                 let new_name = self.remap_type_symbol(*name)?;
-                let mut new_generic_params = Vec::with_capacity(generic_params.len());
-                for g in generic_params {
-                    new_generic_params.push(self.remap_symbol(*g)?);
-                }
-                let mut new_generic_bounds: std::collections::HashMap<DefaultSymbol, TypeDecl> =
-                    std::collections::HashMap::with_capacity(generic_bounds.len());
-                for (sym, bound) in generic_bounds {
-                    new_generic_bounds
-                        .insert(self.remap_symbol(*sym)?, self.remap_type_decl(bound)?);
-                }
+                let new_generic_params = self.remap_symbols(generic_params)?;
+                let new_generic_bounds = self.remap_generic_bounds(generic_bounds)?;
                 let mut new_fields: Vec<StructField> = Vec::with_capacity(fields.len());
                 for f in fields {
                     new_fields.push(StructField {
@@ -611,17 +588,11 @@ impl<'a> AstIntegrationContext<'a> {
                 // CONCRETE-IMPL: target_type_args' TypeDecls carry symbols
                 // (struct names, generic param names) interned in the
                 // module's interner; route them through remap_type_decl.
-                let mut new_target_type_args = Vec::with_capacity(target_type_args.len());
-                for arg in target_type_args {
-                    new_target_type_args.push(self.remap_type_decl(arg)?);
-                }
+                let new_target_type_args = self.remap_type_decls(target_type_args)?;
                 // ITER-PROTOCOL-TRAIT: trait_type_args symbols are
                 // interned in the module's interner — same reasoning
                 // as target_type_args above.
-                let mut new_trait_type_args = Vec::with_capacity(trait_type_args.len());
-                for arg in trait_type_args {
-                    new_trait_type_args.push(self.remap_type_decl(arg)?);
-                }
+                let new_trait_type_args = self.remap_type_decls(trait_type_args)?;
                 Ok(Stmt::ImplBlock {
                     target_type: new_target,
                     target_type_args: new_target_type_args,
@@ -649,17 +620,11 @@ impl<'a> AstIntegrationContext<'a> {
                 // version through the alias. Mirrors how StructDecl
                 // and ImplBlock above handle the same shadow case.
                 let new_name = self.remap_type_symbol(*name)?;
-                let mut new_generics = Vec::with_capacity(generic_params.len());
-                for g in generic_params {
-                    new_generics.push(self.remap_symbol(*g)?);
-                }
+                let new_generics = self.remap_symbols(generic_params)?;
                 let mut new_variants = Vec::with_capacity(variants.len());
                 for v in variants {
                     let v_name = self.remap_symbol(v.name)?;
-                    let mut new_payloads = Vec::with_capacity(v.payload_types.len());
-                    for ty in &v.payload_types {
-                        new_payloads.push(self.remap_type_decl(ty)?);
-                    }
+                    let new_payloads = self.remap_type_decls(&v.payload_types)?;
                     new_variants.push(EnumVariantDef {
                         name: v_name,
                         payload_types: new_payloads,
@@ -695,14 +660,8 @@ impl<'a> AstIntegrationContext<'a> {
                     for g in &sig.generic_params {
                         remapped_generic_params.push(self.remap_symbol(*g)?);
                     }
-                    let mut remapped_generic_bounds: std::collections::HashMap<
-                        DefaultSymbol,
-                        TypeDecl,
-                    > = std::collections::HashMap::with_capacity(sig.generic_bounds.len());
-                    for (gsym, bound) in &sig.generic_bounds {
-                        remapped_generic_bounds
-                            .insert(self.remap_symbol(*gsym)?, self.remap_type_decl(bound)?);
-                    }
+                    let remapped_generic_bounds =
+                        self.remap_generic_bounds(&sig.generic_bounds)?;
                     let remapped_return_type = match &sig.return_type {
                         Some(t) => Some(self.remap_type_decl(t)?),
                         None => None,
@@ -736,10 +695,7 @@ impl<'a> AstIntegrationContext<'a> {
                 // the main interner so subsequent generic
                 // substitution at conformance time sees the same
                 // DefaultSymbol the impl side does.
-                let mut new_generic_params = Vec::with_capacity(generic_params.len());
-                for g in generic_params {
-                    new_generic_params.push(self.remap_symbol(*g)?);
-                }
+                let new_generic_params = self.remap_symbols(generic_params)?;
                 Ok(Stmt::TraitDecl {
                     name: new_name,
                     generic_params: new_generic_params,
@@ -755,10 +711,7 @@ impl<'a> AstIntegrationContext<'a> {
                 // alias references that survived parsing in other
                 // modules.
                 let new_name = self.remap_symbol(*name)?;
-                let mut new_params = Vec::with_capacity(generic_params.len());
-                for p in generic_params {
-                    new_params.push(self.remap_symbol(*p)?);
-                }
+                let new_params = self.remap_symbols(generic_params)?;
                 let new_target = self.remap_type_decl(target)?;
                 Ok(Stmt::TypeAlias {
                     name: new_name,
@@ -768,6 +721,38 @@ impl<'a> AstIntegrationContext<'a> {
                 })
             }
         }
+    }
+
+    /// Remap a list of symbols. Written out at each of its call sites
+    /// before this existed, as a `with_capacity` + `for` + `push`.
+    fn remap_symbols(&mut self, symbols: &[DefaultSymbol]) -> Result<Vec<DefaultSymbol>, String> {
+        let mut out = Vec::with_capacity(symbols.len());
+        for s in symbols {
+            out.push(self.remap_symbol(*s)?);
+        }
+        Ok(out)
+    }
+
+    /// Remap a list of type declarations.
+    fn remap_type_decls(&mut self, types: &[TypeDecl]) -> Result<Vec<TypeDecl>, String> {
+        let mut out = Vec::with_capacity(types.len());
+        for t in types {
+            out.push(self.remap_type_decl(t)?);
+        }
+        Ok(out)
+    }
+
+    /// Remap a `<T: Bound>` map: the parameter symbols and the bounds
+    /// they name both cross the interner.
+    fn remap_generic_bounds(
+        &mut self,
+        bounds: &std::collections::HashMap<DefaultSymbol, TypeDecl>,
+    ) -> Result<std::collections::HashMap<DefaultSymbol, TypeDecl>, String> {
+        let mut out = std::collections::HashMap::with_capacity(bounds.len());
+        for (sym, bound) in bounds {
+            out.insert(self.remap_symbol(*sym)?, self.remap_type_decl(bound)?);
+        }
+        Ok(out)
     }
 
     /// Remap a symbol from module to main program's string interner.
@@ -866,16 +851,8 @@ impl<'a> AstIntegrationContext<'a> {
         // function declared `fn f<A: Allocator>(...)` in a module
         // keeps `A` and `Allocator` symbols pointing at the module
         // interner and the type checker can't resolve the bound.
-        let mut new_generic_params = Vec::with_capacity(function.generic_params.len());
-        for g in &function.generic_params {
-            new_generic_params.push(self.remap_symbol(*g)?);
-        }
-        let mut new_generic_bounds: std::collections::HashMap<DefaultSymbol, TypeDecl> =
-            std::collections::HashMap::with_capacity(function.generic_bounds.len());
-        for (gsym, bound) in &function.generic_bounds {
-            new_generic_bounds
-                .insert(self.remap_symbol(*gsym)?, self.remap_type_decl(bound)?);
-        }
+        let new_generic_params = self.remap_symbols(&function.generic_params)?;
+        let new_generic_bounds = self.remap_generic_bounds(&function.generic_bounds)?;
         let new_return_type = match &function.return_type {
             Some(t) => Some(self.remap_type_decl(t)?),
             None => None,
@@ -931,14 +908,8 @@ impl<'a> AstIntegrationContext<'a> {
     fn remap_method_function(&mut self, method: &MethodFunction) -> Result<Rc<MethodFunction>, String> {
         let new_name = self.remap_symbol(method.name)?;
 
-        let mut new_generic_params = Vec::with_capacity(method.generic_params.len());
-        for g in &method.generic_params {
-            new_generic_params.push(self.remap_symbol(*g)?);
-        }
-        let mut new_generic_bounds = std::collections::HashMap::new();
-        for (sym, bound) in &method.generic_bounds {
-            new_generic_bounds.insert(self.remap_symbol(*sym)?, self.remap_type_decl(bound)?);
-        }
+        let new_generic_params = self.remap_symbols(&method.generic_params)?;
+        let new_generic_bounds = self.remap_generic_bounds(&method.generic_bounds)?;
 
         let mut new_parameters = Vec::new();
         for (param_symbol, param_type) in &method.parameter {

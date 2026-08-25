@@ -332,6 +332,46 @@ aot could not run the program:
 > テストを書くことを誰も思いつかなかった領域にあった。
 > D7 の狙いはまさにそこで、規約 (D4) では届かない。
 
+### D8 — リファクタが何も変えていないことの確かめ方 (✅ 2026-08-25)
+
+**テストが緑なだけでは足りない。** このリポジトリの 3 つの層はどれも
+「壊れても緑になる」経路を持つ:
+
+- **JIT は silent fallback する。** eligibility が拒否すると tree-walker に
+  落ちるだけなので、`check_expr` を全面的に壊しても全テストが通る
+  (tree-walker 同士を比べることになる)。
+- **パーサはエラー経路が別。** 通るプログラムの AST が同じでも、
+  診断が変わっていることがある。
+- **codegen は出力を直接見ないと分からない。** 意味が同じでも命令列が
+  変わっていれば、それは意図した変更か確認すべきこと。
+
+2026-08-25 のリファクタ一巡で実際に効いた確認は次の 3 つ:
+
+```bash
+# (1) 生成物の突き合わせ — 全 example で before/after
+for f in interpreter/example/*.t; do
+  ./target/debug/compiler "$f" --emit ir -o /tmp/x.ir && md5 -q /tmp/x.ir
+done
+# `--emit clif` も同様 (2026-08-25 に run 間で再現するようになった)
+
+# (2) JIT が本当にコンパイルしているか — silent fallback を検出できる唯一の手段
+INTERPRETER_JIT=1 ./target/debug/interpreter "$f" -v   # → "JIT compiled: main, fib"
+# 採択関数の集合とスキップ理由を before/after で突き合わせる
+# (集合で比べること。列挙順は HashMap 順で run ごとに変わる)
+
+# (3) 不正プログラムの診断文言 — パーサ / 型検査を触ったとき
+```
+
+テスト側では `compiler/tests/consistency/harness.rs` の
+`assert_jit_compiled_and_matches` が (2) を自動化している
+(`assert_stdout_consistent` は lite path が interpreter 側 JIT を
+通らないので、これの代わりにはならない)。
+
+**「非決定的な出力を疑う」のも手順のうち。** `--emit clif` は
+`sigN` 採番が HashMap 順で、同一バイナリの 2 回実行でも一致しなかった
+(2026-08-25 に修正)。before/after で全件不一致に見えたときは、
+まず同一バイナリで 2 回走らせて確かめること。
+
 ## 原則のまとめ
 
 新しいツール・テスト・ドキュメントを足すときの判断基準。

@@ -10,6 +10,18 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-08-25
+
+- **リファクタリング一巡** — 巨大関数 6 本を機能別に分割
+  (`lower_program` / `lower_builtin_call` / `lower_instruction` /
+  `evaluate_builtin_call` / `gen_expr` + `check_expr` / `parse_program`)、
+  JIT eligibility に `Checker` 導入 (18 関数 × 9〜11 引数 → 1〜4)、
+  interpreter JIT のランタイム 35 シンボルを `toylang_rt` に統合、
+  `consistency.rs` 11k 行を機能別 14 モジュールに分割、
+  デッドコード (`ErrorHandling` trait 291 行) 削除。
+  同時に見つけた実バグ 3 件も修正 (JIT の補間 f64 / narrow int の単項
+  `-` `~` / str 出力の NUL 切り落とし) と `--emit clif` の再現性。
+
 ### 2026-08-24
 
 - **NUMBER-HINT: 既定は `u64` で確定 + 位置の網羅** — 型を名指しする位置を
@@ -903,8 +915,9 @@
   確認してから。
 
 - **NUM-W-ENUMERATION** ★ — 整数型の列挙 (`Int8|Int16|...|UInt32`) が
-  **43 ファイル 586 箇所**に散っている。型を 1 つ足すコストがそのまま
-  43 ファイル。`TypeDecl::is_numeric` / `is_integer` / `is_signed_integer`
+  **42 ファイル 625 箇所**に散っている (2026-08-25 の `gen_expr` /
+  `check_expr` 分割でディスパッチ側に 12 箇所増えた)。型を 1 つ足すコストが
+  そのまま 42 ファイル。`TypeDecl::is_numeric` / `is_integer` / `is_signed_integer`
   と `ScalarTy` の同名メソッドが「再列挙しない」入口なので、残りの
   match arm もそこへ寄せられる。**この列挙が実際にバグを産んだ実例**:
   単項 `-` / `~` が narrow int を拒否していた (型検査が
@@ -1014,6 +1027,27 @@
 - **65. frontend リファクタリング** — (a)〜(g) は完了。残: doc コメント拡充、プロパティベーステスト追加。
 - **property test の generator が仕様と drift しないか** — `valid_identifier()` は lexer に問い合わせる形にした (2026-08-10)。他の generator (リテラル / 演算子) はまだ手書きなので、同種の drift が起きうる。
 - **26. ドキュメント整備** — 残: API リファレンス、advanced topics。
+
+### リファクタリングの残り (2026-08-25 の一巡で見送った分)
+
+> 巨大関数と重複の一巡は済んでいる。以下は「踏んでから」で保留した分。
+
+- **`remap_statement` 249 行** ★ — `Stmt` の variant ごとにフィールドを
+  1 つずつ写す構造コピーで、分岐ロジックではない。コレクションの
+  remap ヘルパ化は済み。これ以上分けても行が移るだけ。
+
+- **`execute_builtin_method` の引数チェック 4 箇所** ★ —
+  `evaluate_builtin_call` は `expect_args` に寄せたが、str メソッド側は
+  文言が別系統 (`"concat(str) takes exactly one string argument"`)。
+  揃えるとユーザ向けメッセージが変わるので手を付けていない。
+
+- **AOT 実行ファイルの非再現性** ★ — オブジェクトと CLIF は再現的
+  (`reproducible_build.rs` が両方 pin)。実行ファイルだけ run ごとに
+  変わる。macOS リンカの LC_UUID あたりと踏んでいるが未調査。
+  リンクキャッシュは content-addressed なので実害は出ていない。
+
+> リファクタ時の等価性の確かめ方は
+> [`COMPILER_DEV_LOOP.md`](COMPILER_DEV_LOOP.md) の D8 にある。
 
 ## 検討中の機能
 

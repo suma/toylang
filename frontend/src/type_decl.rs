@@ -94,6 +94,28 @@ impl TypeDecl {
         )
     }
 
+    /// Whether `self` is one of the eight integer widths -- the set the
+    /// bitwise operators accept. `Float64` and `Bool` are excluded.
+    pub fn is_integer(&self) -> bool {
+        matches!(
+            self,
+            TypeDecl::Int64 | TypeDecl::UInt64
+                | TypeDecl::Int32 | TypeDecl::UInt32
+                | TypeDecl::Int16 | TypeDecl::UInt16
+                | TypeDecl::Int8 | TypeDecl::UInt8
+        )
+    }
+
+    /// Whether `self` is a *signed* integer width -- what unary minus
+    /// accepts, alongside `Float64`. Negating an unsigned value is
+    /// rejected rather than wrapped.
+    pub fn is_signed_integer(&self) -> bool {
+        matches!(
+            self,
+            TypeDecl::Int64 | TypeDecl::Int32 | TypeDecl::Int16 | TypeDecl::Int8
+        )
+    }
+
     /// Check if two types are equivalent for function argument checking.
     /// This considers Identifier(symbol) and Struct(symbol) as equivalent when they have the same symbol.
     pub fn is_equivalent(&self, other: &TypeDecl) -> bool {

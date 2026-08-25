@@ -1104,3 +1104,60 @@ fn a_str_built_from_bytes_survives_the_buffer_changing() {
     "#;
     assert_stdout_consistent(src, "str_from_bytes_copies");
 }
+
+#[test]
+fn narrow_int_unary_operators_agree_across_backends() {
+    // NUM-W: `docs/language.md` says the narrow widths "work identically
+    // to `u64` / `i64` ... the type checker / interpreter / JIT / AOT
+    // compiler all carry the width through end-to-end". Unary `-` and `~`
+    // did not: the type checker's unary arm tested `== TypeDecl::Int64`
+    // and `== TypeDecl::UInt64` rather than asking whether the type was an
+    // integer, so `-a` for `a: i32` and `~c` for `c: u8` were type errors.
+    //
+    // The width matters to the answer, not just to the annotation: `~` has
+    // to complement at the operand's own width, so `~3u8` is `252` and not
+    // a widened `18446744073709551612`.
+    let src = r#"
+        fn main() -> u64 {
+            val a: i8 = 5i8
+            val b: i16 = 300i16
+            val c: i32 = 70000i32
+            val d: u8 = 3u8
+            val e: u16 = 300u16
+            val f: u32 = 70000u32
+            println(-a)
+            println(-b)
+            println(-c)
+            println(~d)
+            println(~e)
+            println(~f)
+            println(~a)
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "narrow_int_unary");
+}
+
+#[test]
+fn negating_an_unsigned_value_is_still_rejected() {
+    // The widening above is to the *signed* widths only. `-x` on an
+    // unsigned type has no value to take, so it stays a type error at
+    // every width rather than wrapping.
+    for src in [
+        "fn main() -> u64 { val a: u8 = 3u8
+ val b: u8 = -a
+ 0u64 }",
+        "fn main() -> u64 { val a: u32 = 3u32
+ val b: u32 = -a
+ 0u64 }",
+        "fn main() -> u64 { val a: u64 = 3u64
+ val b: u64 = -a
+ 0u64 }",
+    ] {
+        let errors = type_check_errors(src);
+        assert!(
+            errors.iter().any(|e| e.contains("unary minus")),
+            "expected a unary-minus rejection for:\n{src}\ngot: {errors:?}"
+        );
+    }
+}

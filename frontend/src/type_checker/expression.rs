@@ -244,10 +244,12 @@ impl<'a> TypeCheckerVisitor<'a> {
     ) -> Result<TypeDecl, TypeCheckError> {
         match op {
             UnaryOp::BitwiseNot => {
-                if *resolved_ty == TypeDecl::UInt64 {
-                    Ok(TypeDecl::UInt64)
-                } else if *resolved_ty == TypeDecl::Int64 {
-                    Ok(TypeDecl::Int64)
+                // NUM-W: every integer width, not just the 64-bit pair.
+                // `docs/language.md` promises the narrow widths behave
+                // identically to `u64` / `i64`, and `~` is an integer
+                // operator, so `~x` for `x: u8` has to type-check.
+                if resolved_ty.is_integer() {
+                    Ok(resolved_ty.clone())
                 } else {
                     Err(self.error_with_location(
                         TypeCheckError::type_mismatch_operation("bitwise NOT", resolved_ty.clone(), TypeDecl::Unit),
@@ -266,10 +268,10 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
             }
             UnaryOp::Negate => {
-                if *resolved_ty == TypeDecl::Int64 {
-                    Ok(TypeDecl::Int64)
-                } else if *resolved_ty == TypeDecl::Float64 {
-                    Ok(TypeDecl::Float64)
+                // NUM-W: any *signed* width, plus f64. Unsigned stays
+                // rejected -- there is no value for `-x` to take.
+                if resolved_ty.is_signed_integer() || *resolved_ty == TypeDecl::Float64 {
+                    Ok(resolved_ty.clone())
                 } else {
                     Err(self.error_with_location(
                         TypeCheckError::type_mismatch_operation("unary minus", resolved_ty.clone(), TypeDecl::Int64),

@@ -1792,7 +1792,10 @@ impl<'a> Checker<'a> {
                 let t = self.check_expr(&operand)?;
                 match op {
                     UnaryOp::BitwiseNot => {
-                        if matches!(t, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Bool) {
+                        // NUM-W: every integer width, matching what the
+                        // type checker now accepts. Cranelift's `bnot`
+                        // is width-generic, so nothing downstream cares.
+                        if t.is_integer() || t == ScalarTy::Bool {
                             Some(t)
                         } else {
                             None
@@ -1806,9 +1809,10 @@ impl<'a> Checker<'a> {
                         }
                     }
                     UnaryOp::Negate => {
-                        // Negation of u64 is rejected at the type-check phase
-                        // already. Allow i64 and f64 (cranelift `fneg`).
-                        if matches!(t, ScalarTy::I64 | ScalarTy::F64) {
+                        // Negation of an unsigned width is rejected at the
+                        // type-check phase already. Allow the signed widths
+                        // and f64 (cranelift `fneg`).
+                        if t.is_signed_integer() || t == ScalarTy::F64 {
                             Some(t)
                         } else {
                             None

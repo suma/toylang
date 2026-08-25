@@ -55,6 +55,27 @@ impl ScalarTy {
     /// (the panicking branch never produces a value at runtime, so the
     /// other branch determines the if-expression's value type). Returns
     /// `None` when two concrete types disagree.
+    /// Whether this is one of the eight integer widths -- what the
+    /// bitwise operators accept. Mirrors `TypeDecl::is_integer`.
+    pub fn is_integer(self) -> bool {
+        matches!(
+            self,
+            ScalarTy::I64 | ScalarTy::U64
+                | ScalarTy::I32 | ScalarTy::U32
+                | ScalarTy::I16 | ScalarTy::U16
+                | ScalarTy::I8 | ScalarTy::U8
+        )
+    }
+
+    /// Whether this is a signed integer width -- what unary minus
+    /// accepts, alongside `F64`. Mirrors `TypeDecl::is_signed_integer`.
+    pub fn is_signed_integer(self) -> bool {
+        matches!(
+            self,
+            ScalarTy::I64 | ScalarTy::I32 | ScalarTy::I16 | ScalarTy::I8
+        )
+    }
+
     pub fn unify_branch(a: ScalarTy, b: ScalarTy) -> Option<ScalarTy> {
         match (a, b) {
             (ScalarTy::Never, t) | (t, ScalarTy::Never) => Some(t),

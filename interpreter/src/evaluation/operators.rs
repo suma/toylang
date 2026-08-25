@@ -446,6 +446,15 @@ impl EvaluationContext<'_> {
             UnaryOp::BitwiseNot => match &operand_v {
                 Value::UInt64(v) => Value::UInt64(!*v),
                 Value::Int64(v) => Value::Int64(!*v),
+                // NUM-W: the narrow widths complement at their own
+                // width, so `~0u8` is `255u8` and not a widened
+                // `18446744073709551615`.
+                Value::UInt32(v) => Value::UInt32(!*v),
+                Value::UInt16(v) => Value::UInt16(!*v),
+                Value::UInt8(v) => Value::UInt8(!*v),
+                Value::Int32(v) => Value::Int32(!*v),
+                Value::Int16(v) => Value::Int16(!*v),
+                Value::Int8(v) => Value::Int8(!*v),
                 _ => return Err(InterpreterError::TypeError {
                     expected: TypeDecl::UInt64,
                     found: operand_v.get_type(),
@@ -460,10 +469,14 @@ impl EvaluationContext<'_> {
                     message: format!("Logical NOT requires boolean type, got {:?}", operand_v),
                 }),
             },
-            // `wrapping_neg` mirrors the type checker: it only accepts Int64,
-            // and the wrapping form avoids panics on `-i64::MIN`.
+            // `wrapping_neg` mirrors the type checker: signed widths and
+            // f64 only, and the wrapping form avoids panics on
+            // `-i64::MIN` (and `-i8::MIN`, and so on down).
             UnaryOp::Negate => match &operand_v {
                 Value::Int64(v) => Value::Int64(v.wrapping_neg()),
+                Value::Int32(v) => Value::Int32(v.wrapping_neg()),
+                Value::Int16(v) => Value::Int16(v.wrapping_neg()),
+                Value::Int8(v) => Value::Int8(v.wrapping_neg()),
                 Value::Float64(v) => Value::Float64(-*v),
                 _ => return Err(InterpreterError::TypeError {
                     expected: TypeDecl::Int64,

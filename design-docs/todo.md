@@ -902,6 +902,15 @@
   どちらも「実プログラムで書いていて guard がホットパスにある」を
   確認してから。
 
+- **NUM-W-ENUMERATION** ★ — 整数型の列挙 (`Int8|Int16|...|UInt32`) が
+  **43 ファイル 586 箇所**に散っている。型を 1 つ足すコストがそのまま
+  43 ファイル。`TypeDecl::is_numeric` / `is_integer` / `is_signed_integer`
+  と `ScalarTy` の同名メソッドが「再列挙しない」入口なので、残りの
+  match arm もそこへ寄せられる。**この列挙が実際にバグを産んだ実例**:
+  単項 `-` / `~` が narrow int を拒否していた (型検査が
+  `== TypeDecl::Int64` で書かれていた、2026-08-25 修正)。ただし macro 化は
+  4 バックエンドの意味論に触れるので、**同種の穴をもう 1 件踏んでから**。
+
 - **RUNTIME-TRAP-NARROW: narrow int の `checked_*` / `saturating_*`** ★ —
   `core/std/checked.t` は `u64` / `i64` だけ。`u8`〜`u32` / `i8`〜`i32` は
   未提供。トラップ自体 (0 除算 / `MIN / -1`) は全幅で効いているので、

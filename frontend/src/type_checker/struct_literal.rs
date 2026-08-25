@@ -666,3 +666,183 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
     }
 }
+
+/// STRUCT-UPDATE: `P { x: 1i64, ..base }`.
+impl<'a> TypeCheckerVisitor<'a> {
+    /// Whether an expression is a *path* — a name, or a chain of
+    /// field / tuple accesses rooted at one. Reading a path twice
+    /// costs nothing and cannot be observed, which is what lets the
+    /// struct-update desugar skip its temporary and hand every filled
+    /// field the same base `ExprRef`.
+    fn is_path_expr(&self, expr_ref: &ExprRef) -> bool {
+        match self.core.expr_pool.get(expr_ref) {
+            Some(Expr::Identifier(_)) => true,
+            Some(Expr::FieldAccess(obj, _)) | Some(Expr::TupleAccess(obj, _)) => {
+                self.is_path_expr(&obj)
+            }
+            _ => false,
+        }
+    }
+
+    /// STRUCT-UPDATE's dispatch point. Returns `Some(type)` when
+    /// `expr_ref` held a struct update (now rewritten), `None` when it
+    /// held anything else.
+    ///
+    /// Unlike `Try`, this cannot live only in `visit_expr`: the checker
+    /// reaches expressions through `accept_expr` from several call
+    /// sites that skip it (`check_expr_located` for statement bodies
+    /// and impl-block methods, the `return` arm, the operand arms),
+    /// and a function whose tail expression *is* the struct update
+    /// (`fn with_x(p: P) -> P { P { x: n, ..p } }`) goes through one
+    /// of those. A node that slipped past reached the backends
+    /// undesugared, which is a runtime "unexpected expr", so every
+    /// route in calls this.
+    pub fn intercept_struct_update(
+        &mut self,
+        expr_ref: &ExprRef,
+    ) -> Result<Option<TypeDecl>, TypeCheckError> {
+        if !matches!(
+            self.core.expr_pool.get(expr_ref),
+            Some(Expr::StructUpdate { .. })
+        ) {
+            return Ok(None);
+        }
+        self.desugar_struct_update(*expr_ref).map(Some)
+    }
+
+    /// Desugar a struct update into a plain struct literal.
+    ///
+    /// ```text
+    /// P { x: 1i64, ..base }
+    /// // becomes:
+    /// {
+    ///     val __su_N = base
+    ///     P { x: 1i64, y: __su_N.y, z: __su_N.z }
+    /// }
+    /// ```
+    ///
+    /// The rewrite happens here rather than in the parser because the
+    /// omitted field names come from `P`'s declaration, which the
+    /// parser has not necessarily seen yet (`P` may be declared later
+    /// in the file, or imported). It rewrites the pool entry in place,
+    /// so every backend observes only the `Block` — the same trick
+    /// `?` uses.
+    ///
+    /// **Evaluation order**: the base is evaluated before the written
+    /// field values, because the `val` binding precedes the literal.
+    /// The binding is what makes `P { x: f(), ..make() }` call `make`
+    /// exactly once no matter how many fields it fills.
+    ///
+    /// A base that is a plain path (`..a`, `..self.inner`) skips the
+    /// binding and the surrounding block entirely — re-reading a path
+    /// is free and unobservable, so the result is an ordinary struct
+    /// literal. That matters beyond tidiness: a block that produces a
+    /// struct is not something the AOT / JIT lowering accepts as a
+    /// `val` rhs yet (the same gap as
+    /// `val p = if c { P { .. } } else { P { .. } }`), so the block
+    /// form runs on the interpreter only.
+    pub fn desugar_struct_update(
+        &mut self,
+        update_ref: ExprRef,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        let (struct_name, written, base, base_binding) =
+            match self.core.expr_pool.get(&update_ref) {
+                Some(Expr::StructUpdate { type_name, fields, base, base_binding }) => {
+                    (type_name, fields, base, base_binding)
+                }
+                _ => {
+                    return Err(TypeCheckError::generic_error(
+                        "desugar_struct_update: pool entry no longer a StructUpdate node",
+                    ));
+                }
+            };
+
+        // The declaration is the only source of the omitted names.
+        let struct_definition = self
+            .context
+            .get_struct_definition(struct_name)
+            .ok_or_else(|| {
+                TypeCheckError::not_found("Struct", &self.resolve_symbol_name(struct_name))
+            })?
+            .clone();
+
+        // `..base` only makes sense between two values of the same
+        // struct. Checking it here means the failure names the base,
+        // instead of surfacing as N confusing field-type mismatches.
+        let base_type = self.visit_expr(&base)?;
+        let base_names_struct = match &base_type {
+            TypeDecl::Struct(name, _) | TypeDecl::Identifier(name) => *name == struct_name,
+            _ => false,
+        };
+        if !base_names_struct {
+            // Anchor at the literal. This desugar is intercepted
+            // ahead of `visit_expr`'s generic error-location pass, so
+            // an error leaving here with no location would surface on
+            // the enclosing statement instead.
+            let mut error = TypeCheckError::type_mismatch(
+                TypeDecl::Struct(struct_name, vec![]),
+                base_type,
+            );
+            error.location = self.get_expr_location(&update_ref);
+            return Err(error);
+        }
+
+        // The root every filled field reads from: the base path
+        // itself when re-reading it is free, else the temporary.
+        let base_is_path = self.is_path_expr(&base);
+
+        let mut fields = written.clone();
+        for def in &struct_definition.fields {
+            // The declaration interned every field name, so `get`
+            // (which only needs `&self`) always finds it.
+            let Some(field_sym) = self.core.string_interner.get(def.name.as_str()) else {
+                return Err(TypeCheckError::generic_error(&format!(
+                    "struct update: field `{}` of `{}` is not interned",
+                    def.name,
+                    self.resolve_symbol_name(struct_name)
+                )));
+            };
+            if written.iter().any(|(name, _)| *name == field_sym) {
+                continue;
+            }
+            let root = if base_is_path {
+                base
+            } else {
+                self.core.expr_pool.add(Expr::Identifier(base_binding))
+            };
+            let field_access = self
+                .core
+                .expr_pool
+                .add(Expr::FieldAccess(root, field_sym));
+            fields.push((field_sym, field_access));
+        }
+
+        if base_is_path {
+            // No temporary needed: the literal reads the base path
+            // directly, so this slot becomes a plain struct literal
+            // and every backend sees the hand-written form.
+            self.core
+                .expr_pool
+                .update(&update_ref, Expr::StructLiteral(struct_name, fields));
+            return self.visit_expr(&update_ref);
+        }
+
+        let literal = self
+            .core
+            .expr_pool
+            .add(Expr::StructLiteral(struct_name, fields));
+        let bind_stmt = self
+            .core
+            .stmt_pool
+            .add(Stmt::Val(base_binding, None, base));
+        let literal_stmt = self.core.stmt_pool.add(Stmt::Expression(literal));
+
+        self.core
+            .expr_pool
+            .update(&update_ref, Expr::Block(vec![bind_stmt, literal_stmt]));
+
+        // Re-visit: the cache never held an entry for `update_ref`, so
+        // this picks up the rewritten `Block`.
+        self.visit_expr(&update_ref)
+    }
+}

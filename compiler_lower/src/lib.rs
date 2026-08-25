@@ -807,6 +807,14 @@ impl<'a> FunctionLower<'a> {
             Expr::Try { inner, .. } => {
                 self.walk_closure_for_captures(&inner, bound, out, seen);
             }
+            // `P { x: e, ..base }` — same story: the type checker
+            // rewrites it to a `Block` before lowering.
+            Expr::StructUpdate { fields, base, .. } => {
+                for (_, value) in &fields {
+                    self.walk_closure_for_captures(value, bound, out, seen);
+                }
+                self.walk_closure_for_captures(&base, bound, out, seen);
+            }
             Expr::QualifiedIdentifier(_)
             | Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_)
             | Expr::Int8(_) | Expr::Int16(_) | Expr::Int32(_)

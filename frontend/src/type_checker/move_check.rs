@@ -409,6 +409,18 @@ impl MoveCheck<'_> {
                     self.walk_expr(*value, Use::Transfer, conditional);
                 }
             }
+            // Defence-in-depth: the type checker rewrites this to a
+            // `Block` holding a plain `StructLiteral` before the move
+            // check runs, so this arm should be unreachable. The base
+            // is a read — the desugar copies fields out of it by
+            // field access, which is the same alias-not-move shape
+            // MOVE-ALIAS-GAP describes.
+            Expr::StructUpdate { fields, base, .. } => {
+                for (_, value) in &fields {
+                    self.walk_expr(*value, Use::Transfer, conditional);
+                }
+                self.walk_expr(base, Use::Read, conditional);
+            }
             Expr::TupleLiteral(elements) | Expr::ArrayLiteral(elements) => {
                 for e in &elements {
                     self.walk_expr(*e, Use::Transfer, conditional);

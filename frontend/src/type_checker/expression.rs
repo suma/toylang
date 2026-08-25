@@ -75,6 +75,11 @@ impl<'a> TypeCheckerVisitor<'a> {
             return self.desugar_try_expr(*expr, *inner);
         }
 
+        if let Some(result) = self.intercept_struct_update(expr)? {
+            return Ok(result);
+        }
+
+
         // From/Into: `expr.into()` rewrites to `Target::from(expr)`
         // when the expected type is known. Like `Try`, this needs the
         // MethodCall's own ExprRef to rewrite the pool entry in place;
@@ -1706,6 +1711,15 @@ impl<'a> TypeCheckerVisitor<'a> {
             // defence-in-depth in case the order ever changes.
             Expr::Try { inner, .. } => {
                 self.collect_closure_free_vars(inner, bound, out, seen);
+            }
+            // `P { x: e, ..base }` — same defence-in-depth as `Try`:
+            // the desugar normally runs first, but the written field
+            // values and the base are ordinary expressions.
+            Expr::StructUpdate { fields, base, .. } => {
+                for (_, value) in &fields {
+                    self.collect_closure_free_vars(*value, bound, out, seen);
+                }
+                self.collect_closure_free_vars(base, bound, out, seen);
             }
             Expr::QualifiedIdentifier(_)
             | Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_)

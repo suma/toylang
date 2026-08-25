@@ -82,6 +82,15 @@ pub trait ExprVisitor {
     fn visit_try(&mut self, _inner: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         Ok(TypeDecl::Unknown)
     }
+    /// `P { x: 1i64, ..base }` — struct update syntax.
+    fn visit_struct_update(
+        &mut self,
+        _type_name: &DefaultSymbol,
+        _fields: &Vec<(DefaultSymbol, ExprRef)>,
+        _base: &ExprRef,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        Ok(TypeDecl::Unknown)
+    }
 }
 
 /// Trait for visiting statement AST nodes.

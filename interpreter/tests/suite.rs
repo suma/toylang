@@ -103,6 +103,9 @@ mod never_allocates_tests;
 #[path = "pattern_struct_tests.rs"]
 mod pattern_struct_tests;
 
+#[path = "struct_update_tests.rs"]
+mod struct_update_tests;
+
 #[path = "oop_tests.rs"]
 mod oop_tests;
 

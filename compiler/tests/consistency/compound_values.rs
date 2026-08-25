@@ -885,3 +885,101 @@ fn hash_trait_dispatch_on_all_primitives() {
     "#;
     assert_consistent(src, "hash_trait_dispatch_on_all_primitives");
 }
+
+// ---------------------------------------------------------------
+// STRUCT-UPDATE: `P { x: 1i64, ..base }`
+// ---------------------------------------------------------------
+
+#[test]
+fn struct_update_fills_omitted_fields_from_the_base() {
+    // The type checker rewrites the update into an ordinary literal,
+    // so what the three backends have to agree on is the field-by-field
+    // copy: `x` and `z` from `a`, `y` as written.
+    let src = r#"
+        struct P { x: u64, y: u64, z: u64 }
+
+        fn main() -> u64 {
+            val a = P { x: 1u64, y: 2u64, z: 3u64 }
+            val b = P { y: 20u64, ..a }
+            b.x * 100u64 + b.y * 10u64 + b.z
+        }
+    "#;
+    assert_consistent(src, "struct_update_fills_omitted_fields_from_the_base");
+}
+
+#[test]
+fn struct_update_carries_a_struct_typed_field() {
+    // The base fills `i`, a struct-typed field, by field access. That
+    // shape used to be a lowering error on both compiled backends
+    // ("cannot build a struct-typed value from FieldAccess") — the
+    // tuple counterpart accepted it and the struct one did not, so a
+    // hand-written `Outer { i: o.i, .. }` failed the same way.
+    let src = r#"
+        struct Inner { a: u64, b: u64 }
+        struct Outer { i: Inner, n: u64 }
+
+        fn main() -> u64 {
+            val o = Outer { i: Inner { a: 1u64, b: 2u64 }, n: 3u64 }
+            val u = Outer { n: 30u64, ..o }
+            u.i.a + u.i.b + u.n
+        }
+    "#;
+    assert_consistent(src, "struct_update_carries_a_struct_typed_field");
+}
+
+#[test]
+fn struct_update_takes_self_as_its_base() {
+    // A method whose tail expression is the update. That route reaches
+    // the type checker through `check_expr_located`, which skips
+    // `visit_expr` — where an un-intercepted update would have reached
+    // the backends undesugared.
+    let src = r#"
+        struct P { x: u64, y: u64 }
+
+        impl P {
+            fn with_x(&self, nx: u64) -> P {
+                P { x: nx, ..self }
+            }
+        }
+
+        fn main() -> u64 {
+            val a = P { x: 1u64, y: 2u64 }
+            val b = a.with_x(7u64)
+            b.x * 10u64 + b.y
+        }
+    "#;
+    assert_consistent(src, "struct_update_takes_self_as_its_base");
+}
+
+#[test]
+fn struct_update_on_a_generic_struct() {
+    let src = r#"
+        struct Wrap<T> { v: T, n: u64 }
+
+        fn main() -> u64 {
+            val w: Wrap<u64> = Wrap { v: 5u64, n: 1u64 }
+            val u: Wrap<u64> = Wrap { n: 2u64, ..w }
+            u.v * 10u64 + u.n
+        }
+    "#;
+    assert_consistent(src, "struct_update_on_a_generic_struct");
+}
+
+#[test]
+fn struct_update_copies_rather_than_aliases() {
+    // Compound bindings alias in this language (`val q = p` names the
+    // same leaf locals), so the thing worth pinning is that an update
+    // does *not*: writing through the copy must leave the base alone
+    // on every backend.
+    let src = r#"
+        struct P { x: u64, y: u64 }
+
+        fn main() -> u64 {
+            var a: P = P { x: 1u64, y: 2u64 }
+            var b: P = P { y: 9u64, ..a }
+            b.x = 99u64
+            a.x * 100u64 + b.x
+        }
+    "#;
+    assert_consistent(src, "struct_update_copies_rather_than_aliases");
+}

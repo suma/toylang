@@ -145,6 +145,24 @@ impl AstBuilder {
         expr_ref
     }
 
+    pub fn struct_update_expr(
+        &mut self,
+        type_name: DefaultSymbol,
+        fields: Vec<(DefaultSymbol, ExprRef)>,
+        base: ExprRef,
+        base_binding: DefaultSymbol,
+        location: Option<SourceLocation>,
+    ) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::StructUpdate {
+            type_name,
+            fields,
+            base,
+            base_binding,
+        });
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
+
     // --- Complex statement builders that need custom body ---
 
     pub fn struct_decl_stmt(

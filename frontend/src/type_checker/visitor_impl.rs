@@ -60,6 +60,9 @@ impl AcceptableExpr for Expr {
                 visitor.visit_closure(params, return_type, body)
             }
             Expr::Try { inner, .. } => visitor.visit_try(inner),
+            Expr::StructUpdate { type_name, fields, base, .. } => {
+                visitor.visit_struct_update(type_name, fields, base)
+            }
         }
     }
 }

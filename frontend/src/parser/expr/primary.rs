@@ -473,12 +473,34 @@ fn parse_primary_after_identifier(
         }
         Some(Kind::BraceOpen) if struct_literal_allowed => {
             parser.next();
-            let fields = parse_struct_literal_fields(parser, vec![])?;
+            let (fields, base) = parse_struct_literal_fields(parser, vec![])?;
             parser.expect_err(&Kind::BraceClose)?;
             // From the type name through the closing brace, so the
             // caret covers `P { x: 1u64 }` rather than the `{`.
             let location = parser.span_to_cursor(name_location);
-            Ok(parser.ast_builder.struct_literal_expr(name, fields, Some(location)))
+            match base {
+                // STRUCT-UPDATE: `P { x: 1i64, ..base }`. The parser
+                // cannot fill in the omitted fields (the struct may be
+                // declared later, or imported), so it emits a node the
+                // type checker desugars once it knows the field list.
+                // The synthetic binding is pre-interned here because
+                // the type checker holds an immutable interner.
+                Some(base) => {
+                    let counter = parser.synthetic_counter;
+                    parser.synthetic_counter += 1;
+                    let base_binding = parser
+                        .string_interner
+                        .get_or_intern(format!("__su_{}", counter).as_str());
+                    Ok(parser.ast_builder.struct_update_expr(
+                        name,
+                        fields,
+                        base,
+                        base_binding,
+                        Some(location),
+                    ))
+                }
+                None => Ok(parser.ast_builder.struct_literal_expr(name, fields, Some(location))),
+            }
         }
         _ => {
             // LLM-LOOP P2 (completing it): the name was consumed by the
@@ -694,17 +716,30 @@ pub fn parse_array_elements(parser: &mut Parser, mut elements: Vec<ExprRef>) -> 
     }
 }
 
-/// Parse struct literal fields.
-pub(crate) fn parse_struct_literal_fields(parser: &mut Parser, fields: Vec<(DefaultSymbol, ExprRef)>) -> ParserResult<Vec<(DefaultSymbol, ExprRef)>> {
+/// Parse struct literal fields, plus the optional `..base` tail
+/// (STRUCT-UPDATE). The second element of the result is `Some(base)`
+/// exactly when the literal ended with `..expr`.
+pub(crate) fn parse_struct_literal_fields(parser: &mut Parser, fields: Vec<(DefaultSymbol, ExprRef)>) -> ParserResult<(Vec<(DefaultSymbol, ExprRef)>, Option<ExprRef>)> {
     
     parse_struct_literal_fields_impl(parser, fields)
 }
 
-fn parse_struct_literal_fields_impl(parser: &mut Parser, mut fields: Vec<(DefaultSymbol, ExprRef)>) -> ParserResult<Vec<(DefaultSymbol, ExprRef)>> {
+fn parse_struct_literal_fields_impl(parser: &mut Parser, mut fields: Vec<(DefaultSymbol, ExprRef)>) -> ParserResult<(Vec<(DefaultSymbol, ExprRef)>, Option<ExprRef>)> {
     loop {
         parser.skip_newlines();
         match parser.peek() {
-            Some(Kind::BraceClose) | Some(Kind::EOF) | None => return Ok(fields),
+            Some(Kind::BraceClose) | Some(Kind::EOF) | None => return Ok((fields, None)),
+            // `..base` — the struct update tail. It must come last, so
+            // the only thing accepted after it is the closing brace.
+            Some(Kind::DotDot) => {
+                parser.next();
+                let base = parser.parse_expr_impl()?;
+                parser.skip_newlines();
+                if let Some(Kind::Comma) = parser.peek() {
+                    parser.collect_error("`..base` must be the last item in a struct literal");
+                }
+                return Ok((fields, Some(base)));
+            }
             _ => (),
         }
         let field_name = match parser.peek() {
@@ -721,7 +756,7 @@ fn parse_struct_literal_fields_impl(parser: &mut Parser, mut fields: Vec<(Defaul
             x => {
                 let x_cloned = x.cloned();
                 parser.collect_error(&format!("expected field name in struct literal, got {:?}", x_cloned));
-                return Ok(fields);
+                return Ok((fields, None));
             }
         };
         parser.expect_err(&Kind::Colon)?;
@@ -731,10 +766,10 @@ fn parse_struct_literal_fields_impl(parser: &mut Parser, mut fields: Vec<(Defaul
             Some(Kind::Comma) => {
                 parser.next();
             }
-            Some(Kind::BraceClose) | Some(Kind::EOF) | None => return Ok(fields),
+            Some(Kind::BraceClose) | Some(Kind::EOF) | None => return Ok((fields, None)),
             _ => {
                 parser.collect_error("expected ',' or '}' in struct literal");
-                return Ok(fields);
+                return Ok((fields, None));
             }
         }
     }

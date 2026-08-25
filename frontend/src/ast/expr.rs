@@ -319,6 +319,31 @@ pub enum Expr {
         /// reconstructed `Result::Err(E2)` (`__try_err_<n>`).
         result_binding: DefaultSymbol,
     },
+    /// `P { x: 1i64, ..base }` — struct update syntax. The parser emits
+    /// this node; the type checker rewrites it in place (it is the only
+    /// place that knows `P`'s full field list) into
+    ///
+    /// ```text
+    /// {
+    ///     val __su_N = base
+    ///     P { x: 1i64, y: __su_N.y, z: __su_N.z }
+    /// }
+    /// ```
+    ///
+    /// so backends only ever observe a `Block` holding an ordinary
+    /// `StructLiteral`. The binding exists so a base with side effects
+    /// (`P { x: 1i64, ..make() }`) is evaluated exactly once; like
+    /// `Try`, its symbol is pre-interned by the parser because the type
+    /// checker holds an immutable `&DefaultStringInterner`.
+    StructUpdate {
+        type_name: DefaultSymbol,
+        /// Explicitly written fields, in source order. Fields absent
+        /// here are taken from `base`.
+        fields: Vec<(DefaultSymbol, ExprRef)>,
+        base: ExprRef,
+        /// Synthetic `val` binding for `base` (`__su_<n>`).
+        base_binding: DefaultSymbol,
+    },
 }
 
 impl Expr {

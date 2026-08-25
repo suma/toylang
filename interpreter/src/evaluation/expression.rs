@@ -421,6 +421,14 @@ impl EvaluationContext<'_> {
             Expr::Try { inner, .. } => {
                 self.collect_closure_captures(inner, bound, out, seen);
             }
+            // `P { x: e, ..base }` — likewise rewritten to a `Block`
+            // holding a plain `StructLiteral` before evaluation.
+            Expr::StructUpdate { fields, base, .. } => {
+                for (_, value) in fields {
+                    self.collect_closure_captures(value, bound, out, seen);
+                }
+                self.collect_closure_captures(base, bound, out, seen);
+            }
             Expr::QualifiedIdentifier(_)
             | Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_)
             | Expr::Int8(_) | Expr::Int16(_) | Expr::Int32(_)

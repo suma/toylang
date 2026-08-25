@@ -245,6 +245,12 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// consults the type cache and rewrites `Expr::Try`, neither of
     /// which every caller wants.
     pub fn check_expr_located(&mut self, expr_ref: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        // STRUCT-UPDATE has to be intercepted on this route too: a
+        // function's tail expression arrives here, and that is exactly
+        // where `P { x: n, ..base }` is most often written.
+        if let Some(ty) = self.intercept_struct_update(expr_ref)? {
+            return Ok(ty);
+        }
         let expr_obj = self.core.expr_pool.get(expr_ref)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference"))?;
         match expr_obj.clone().accept_expr(self) {

@@ -1911,6 +1911,49 @@ var q = p
 q.x = 5i64                          # write to a `var`
 ```
 
+### Struct update
+
+A struct literal may end with `..base`, which fills every field the
+literal does not write from `base`:
+
+```rust
+val a = Point { x: 1i64, y: 2i64 }
+val b = Point { y: 20i64, ..a }     # x: 1, y: 20
+val c = Point { ..a }               # a plain copy
+```
+
+- `base` must be a value of **the same struct**. A different struct is
+  a type error naming both, even when the fields would have lined up.
+- `..base` is the **last** item in the literal; a field after it is a
+  parse error.
+- The result is a **new value**, not a second name for `base` —
+  writing through it does not reach `base`. (A plain `val q = p`
+  between compound values *is* an alias; this is the form that copies.)
+- A field whose type is itself a struct, a tuple, or an enum is
+  carried over whole.
+- `base` may be any expression, and is evaluated **once** however many
+  fields it fills. It is evaluated **before** the written field values.
+- Positional fields cannot be written explicitly (a field name has to
+  lex as an identifier), so on a tuple struct the form only copies:
+  `Pair { ..p }`.
+
+The omitted names come from the declaration, so the rewrite happens in
+the type checker rather than the parser — `Point` may be declared
+further down the file, or imported. Backends only ever see the
+equivalent hand-written literal.
+
+> **Backend coverage.** A base that is a name or a field path (`..a`,
+> `..self`, `..o.inner`) works on all three backends: re-reading a path
+> is free, so no temporary is needed and the literal is the whole
+> rewrite. A base that is any other expression (`..make_config()`)
+> needs that temporary, and binding a struct through a block-valued
+> `val` rhs is not something the AOT / JIT lowering accepts yet — the
+> same limit that rejects
+> `val p = if c { P { .. } } else { P { .. } }`. That form runs on the
+> interpreter.
+
+Example: `interpreter/example/struct_update.t`.
+
 ### Generic structs
 
 ```rust

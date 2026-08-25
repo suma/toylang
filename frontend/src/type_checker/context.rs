@@ -424,13 +424,29 @@ impl TypeCheckContext {
             // Check if any extra fields are provided
             for (provided_field_name, _) in provided_fields {
                 let field_valid = definition.iter().any(|def| {
-                    let def_field_symbol = string_interner.string_interner.get(&def.name).unwrap_or_else(|| panic!("Field name not found in string interner"));
-                    def_field_symbol == *provided_field_name
+                    // A declared name the interner does not know cannot
+                    // equal a name the parser interned, so it simply
+                    // does not match — the same reasoning as the
+                    // missing-field loop above, which had its own
+                    // `panic!` removed for turning a diagnostic into a
+                    // compiler crash.
+                    string_interner.string_interner.get(&def.name)
+                        == Some(*provided_field_name)
                 });
                 if !field_valid {
+                    // Spell both names. `{:?}` on a symbol printed
+                    // `SymbolU32 { value: 47 }`, which tells a reader
+                    // nothing about which field they misspelled.
+                    let field_name_str = string_interner
+                        .string_interner
+                        .resolve(*provided_field_name)
+                        .unwrap_or("<unknown>");
+                    let struct_name_str = string_interner
+                        .string_interner
+                        .resolve(struct_name)
+                        .unwrap_or("<unknown>");
                     return Err(TypeCheckError::generic_error(&format!(
-                        "Unknown field '{:?}' in struct '{:?}'", 
-                        provided_field_name, struct_name
+                        "Unknown field '{field_name_str}' in struct '{struct_name_str}'"
                     )));
                 }
             }

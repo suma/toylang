@@ -192,6 +192,32 @@ impl<'a> FunctionLower<'a> {
                 self.copy_struct_fields(&src_fields, target_fields);
                 Ok(())
             }
+            // A struct-typed field reached by a chain (`o.i`,
+            // `pair.0.inner`). The tuple counterpart below always
+            // accepted this shape; the struct one did not, which is
+            // what made `Outer { i: o.i, .. }` — and every
+            // struct-typed field a struct update fills from its base
+            // — a lowering error.
+            Expr::FieldAccess(_, _) | Expr::TupleAccess(_, _) => {
+                match self.resolve_field_chain(value_ref)? {
+                    FieldChainResult::Struct { struct_id, fields }
+                        if self.struct_shapes_match(struct_id, target_struct_id) =>
+                    {
+                        self.copy_struct_fields(&fields, target_fields);
+                        Ok(())
+                    }
+                    FieldChainResult::Struct { struct_id, .. } => Err(format!(
+                        "field is a `{}`, but this slot holds a `{}`",
+                        self.interner
+                            .resolve(self.module.struct_def(struct_id).base_name)
+                            .unwrap_or("?"),
+                        self.interner
+                            .resolve(self.module.struct_def(target_struct_id).base_name)
+                            .unwrap_or("?"),
+                    )),
+                    _ => Err("field is not struct-typed".to_string()),
+                }
+            }
             Expr::AssociatedFunctionCall(struct_name, fn_name, args)
                 if self.struct_defs.contains_key(&struct_name) =>
             {

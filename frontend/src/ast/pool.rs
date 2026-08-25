@@ -85,6 +85,10 @@ pub enum ExprType {
     /// node; the type checker rewrites it in-place to a `Match` so
     /// backends never observe it.
     Try = 40,
+    /// `P { x: 1i64, ..base }` — struct update syntax. Like `Try`, the
+    /// parser emits it and the type checker rewrites it in place, so
+    /// backends never observe it.
+    StructUpdate = 41,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -456,6 +460,16 @@ impl ExprPool {
                 self.target_type[index] = return_type;
                 self.closure_params[index] = Some(params);
             }
+            Expr::StructUpdate { type_name, fields, base, base_binding } => {
+                // Same columns as `StructLiteral` (name + written
+                // fields), plus `lhs` for the base expression and a
+                // one-element `symbol_list` for the synthetic binding.
+                self.expr_types[index] = ExprType::StructUpdate;
+                self.symbol_val[index] = Some(type_name);
+                self.field_list[index] = Some(fields);
+                self.lhs[index] = Some(base);
+                self.symbol_list[index] = Some(vec![base_binding]);
+            }
             Expr::Try { inner, scrutinee_binding, success_binding, error_binding, panic_msg, converted_binding, result_binding } => {
                 // `lhs` holds the inner expression; the six synthetic
                 // symbols are packed into `symbol_list` in a fixed
@@ -687,6 +701,15 @@ impl ExprPool {
                     params: self.closure_params[index].clone()?,
                     return_type: self.target_type[index].clone(),
                     body: self.lhs[index]?,
+                })
+            }
+            ExprType::StructUpdate => {
+                let symbols = self.symbol_list[index].clone()?;
+                Some(Expr::StructUpdate {
+                    type_name: self.symbol_val[index]?,
+                    fields: self.field_list[index].clone()?,
+                    base: self.lhs[index]?,
+                    base_binding: *symbols.first()?,
                 })
             }
             ExprType::Try => {

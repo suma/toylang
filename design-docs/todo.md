@@ -12,6 +12,14 @@
 
 ### 2026-08-25
 
+- **STRUCT-UPDATE: `P { x: 5i64, ..base }`** — 省略フィールドを base から
+  埋める。型検査器が `base.field` に展開して普通の `StructLiteral` に
+  書き換えるのでバックエンドは砂糖を見ない。path base は 3 backend、
+  非 path base (`..make()`) は interpreter のみ (下記の残)。
+  併せて struct 型フィールドを field access から作れない AOT/JIT の
+  穴 (`Outer { i: o.i }`) と、unknown field 診断が `SymbolU32 { .. }` を
+  出していた件を修正。
+
 - **リファクタリング一巡** — 巨大関数 6 本を機能別に分割
   (`lower_program` / `lower_builtin_call` / `lower_instruction` /
   `evaluate_builtin_call` / `gen_expr` + `check_expr` / `parse_program`)、
@@ -943,6 +951,14 @@
 
 ### 型システム (NEW-TYPE-SYSTEM)
 
+- **COMPOUND-BLOCK-RHS: struct / tuple を産む block を `val` の右辺に** ★★ —
+  `val p = if c { P { .. } } else { P { .. } }` と
+  `val p = { val t = ...; P { .. } }` が AOT / JIT で
+  `val/var rhs produced no value`。enum には
+  `detect_enum_result` + `lower_let_enum_composite` があるので、struct /
+  tuple 版を同じ形で作る話。**STRUCT-UPDATE の非 path base
+  (`P { x: 1i64, ..make() }`) が interpreter 専用なのはこれが理由**。
+
 
 - **MOVE-CONDITIONAL: 分岐 / ループからの移動** ★ — 現状は E0014 で拒否。
   許すには実行時 drop flag (Rust と同じ) が要る。実プログラムで踏んだら着手。
@@ -973,8 +989,6 @@
   `fn to_str(&self, spec: str)` にするかは未決)、(b) fill 文字 / `+` /
   `#` / `$`-parameterised width、(c) interpreter JIT の
   `jit_format_<ty>` helper。いずれも踏んでから。
-- **STRUCT-UPDATE: struct update 構文 (`P { x: 5i64, ..a }`)** ★ — parse エラー。
-  「1 フィールドだけ差し替えた copy」が全フィールド列挙になる。
 
 ### インクリメンタルコンパイル
 
@@ -1090,7 +1104,15 @@
 
 ### 既知の不具合
 
-現時点で未解決のものは無い。過去にここへ挙がった 2 件 (f64 の print が
+- **MATCH-STRUCT-ARM: 非 wildcard arm が struct を返すとゼロ値になる** —
+  `match n { 1i64 => P { x: 10i64, y: 11i64 }, _ => P { .. } }` を n=1 で
+  評価すると `P { x: 0, y: 0 }` が返る。`_` arm は正しい。scalar を返す
+  同形の match は正しい。**3 バックエンド一致で誤り**なので原因は
+  共有側 (frontend か lowering の共通経路) にある。2026-08-25 に
+  STRUCT-UPDATE の位置テストを書いていて発見、struct update とは無関係で
+  master でも再現する。
+
+過去にここへ挙がった 2 件 (f64 の print が
 3 バックエンドで食い違う / `if` の条件が型検査されない) は 2026-08-16 に
 どちらも解消し、経緯は git log と完了済み節にある。**直った項目をこの節に
 段落で残さないこと** — 常時読まれるファイルが changelog になる。

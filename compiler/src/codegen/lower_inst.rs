@@ -20,6 +20,68 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
         inst: &crate::ir::Instruction,
     ) -> Result<(), String> {
         match &inst.kind {
+            InstKind::Const(..)
+            | InstKind::BinOp { .. }
+            | InstKind::UnaryOp { .. }
+            | InstKind::Cast { .. }
+            | InstKind::LoadLocal { .. }
+            | InstKind::StoreLocal { .. }
+            | InstKind::AddressOf { .. }
+            | InstKind::LoadRef { .. }
+            | InstKind::StoreRef { .. }
+            | InstKind::ArrayElemAddr { .. } => self.lower_values_and_locals(inst),
+            InstKind::Call { .. }
+            | InstKind::FuncAddr { .. }
+            | InstKind::CallIndirectFn { .. }
+            | InstKind::CallIndirectFnTuple { .. }
+            | InstKind::CallIndirectFnEnum { .. }
+            | InstKind::CallIndirectFnStruct { .. }
+            | InstKind::DynCoerceSlotAddr { .. }
+            | InstKind::VtableAddr { .. }
+            | InstKind::MakeClosure { .. } => self.lower_callee_resolution(inst),
+            InstKind::CallIndirect { .. }
+            | InstKind::CallStruct { .. }
+            | InstKind::CallTuple { .. }
+            | InstKind::CallEnum { .. } => self.lower_calls_through_values(inst),
+            InstKind::Print { .. }
+            | InstKind::PrintStr { .. }
+            | InstKind::ConstStr { .. }
+            | InstKind::ConstStrBytes { .. }
+            | InstKind::PrintRaw { .. } => self.lower_printing(inst),
+            InstKind::ArrayLoad { .. }
+            | InstKind::ArrayStore { .. } => self.lower_arrays(inst),
+            InstKind::HeapAlloc { .. }
+            | InstKind::HeapRealloc { .. }
+            | InstKind::HeapFree { .. }
+            | InstKind::PtrRead { .. }
+            | InstKind::PtrWrite { .. } => self.lower_heap_and_pointer(inst),
+            InstKind::StrLen { .. }
+            | InstKind::StrEq { .. }
+            | InstKind::StrFromBytes { .. }
+            | InstKind::StrConcat { .. }
+            | InstKind::ToString { .. }
+            | InstKind::Format { .. } => self.lower_strings(inst),
+            InstKind::MemCopy { .. }
+            | InstKind::AllocPush { .. }
+            | InstKind::AllocPop
+            | InstKind::AllocCurrent
+            | InstKind::PtrIsNull { .. }
+            | InstKind::MemStat { .. }
+            | InstKind::MemStatEnable
+            | InstKind::RecordAllocatorLayout { .. }
+            | InstKind::PtrEq { .. } => self.lower_allocator_and_memory(inst),
+            InstKind::CallWithSelfWriteback { .. }
+            | InstKind::CallWithSelfWritebackCompound { .. } => self.lower_self_writeback(inst),
+        }
+    }
+
+    /// Constants, arithmetic, casts, and the local / reference slots
+    /// values move through.
+    fn lower_values_and_locals(
+        &mut self,
+        inst: &crate::ir::Instruction,
+    ) -> Result<(), String> {
+        match &inst.kind {
             InstKind::Const(c) => {
                 let v = match c {
                     Const::I64(n) => self.builder.ins().iconst(types::I64, *n),
@@ -285,6 +347,18 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let addr = self.builder.ins().iadd(base, off);
                 self.record_result(inst, addr);
             }
+            _ => unreachable!("lower_values_and_locals was handed an instruction it does not own"),
+        }
+        Ok(())
+    }
+
+    /// Working out what to call: a direct callee, a fat pointer, a vtable
+    /// slot, or a closure.
+    fn lower_callee_resolution(
+        &mut self,
+        inst: &crate::ir::Instruction,
+    ) -> Result<(), String> {
+        match &inst.kind {
             InstKind::Call { target, args } => {
                 let func_ref = *self
                     .imports
@@ -611,6 +685,18 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 }
                 self.record_result(inst, env_ptr);
             }
+            _ => unreachable!("lower_callee_resolution was handed an instruction it does not own"),
+        }
+        Ok(())
+    }
+
+    /// Calling through a value, and the calls whose result is compound
+    /// (struct / tuple / enum) and so lands in several destinations.
+    fn lower_calls_through_values(
+        &mut self,
+        inst: &crate::ir::Instruction,
+    ) -> Result<(), String> {
+        match &inst.kind {
             InstKind::CallIndirect {
                 callee,
                 args,
@@ -739,6 +825,18 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.builder.def_var(var, *val);
                 }
             }
+            _ => unreachable!("lower_calls_through_values was handed an instruction it does not own"),
+        }
+        Ok(())
+    }
+
+    /// Everything that reaches stdout, plus the `.rodata` str blobs the
+    /// print helpers and interpolation read.
+    fn lower_printing(
+        &mut self,
+        inst: &crate::ir::Instruction,
+    ) -> Result<(), String> {
+        match &inst.kind {
             InstKind::Print { value, value_ty, newline } => {
                 let v = self.value(*value);
                 // NUM-W-AOT-pack Phase 2: dedicated narrow-int
@@ -887,6 +985,17 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 };
                 self.builder.ins().call(helper, &[addr]);
             }
+            _ => unreachable!("lower_printing was handed an instruction it does not own"),
+        }
+        Ok(())
+    }
+
+    /// Array element load and store.
+    fn lower_arrays(
+        &mut self,
+        inst: &crate::ir::Instruction,
+    ) -> Result<(), String> {
+        match &inst.kind {
             InstKind::ArrayLoad { slot, index, elem_ty } => {
                 let cl_ty = ir_to_cranelift_ty(*elem_ty)
                     .ok_or_else(|| format!("ArrayLoad: unsupported elem_ty {elem_ty:?}"))?;
@@ -941,6 +1050,17 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     0,
                 );
             }
+            _ => unreachable!("lower_arrays was handed an instruction it does not own"),
+        }
+        Ok(())
+    }
+
+    /// Heap allocation and raw pointer access.
+    fn lower_heap_and_pointer(
+        &mut self,
+        inst: &crate::ir::Instruction,
+    ) -> Result<(), String> {
+        match &inst.kind {
             // #121 Phase A: heap / pointer builtins. malloc/realloc
             // accept and return i64-sized pointers; free returns
             // void. PtrRead / PtrWrite use the IR's recorded element
@@ -1024,6 +1144,18 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     0,
                 );
             }
+            _ => unreachable!("lower_heap_and_pointer was handed an instruction it does not own"),
+        }
+        Ok(())
+    }
+
+    /// str length, equality, construction, concatenation, and rendering
+    /// (`__builtin_to_string` / `__builtin_format`).
+    fn lower_strings(
+        &mut self,
+        inst: &crate::ir::Instruction,
+    ) -> Result<(), String> {
+        match &inst.kind {
             InstKind::StrLen { value } => {
                 // O(1): the str runtime value points directly at
                 // the u64 len field (see ConstStr above).
@@ -1166,6 +1298,18 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, result);
                 }
             }
+            _ => unreachable!("lower_strings was handed an instruction it does not own"),
+        }
+        Ok(())
+    }
+
+    /// The allocator stack, allocation counters, bulk memory, and the
+    /// pointer predicates.
+    fn lower_allocator_and_memory(
+        &mut self,
+        inst: &crate::ir::Instruction,
+    ) -> Result<(), String> {
+        match &inst.kind {
             InstKind::MemCopy { src, dest, size } => {
                 // libc memcpy uses (dest, src, n) — swap from
                 // toylang's (src, dest, size) order.
@@ -1242,6 +1386,18 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, cmp);
                 }
             }
+            _ => unreachable!("lower_allocator_and_memory was handed an instruction it does not own"),
+        }
+        Ok(())
+    }
+
+    /// Calls that hand back mutated `self` leaves alongside their return
+    /// value (the `&mut self` convention).
+    fn lower_self_writeback(
+        &mut self,
+        inst: &crate::ir::Instruction,
+    ) -> Result<(), String> {
+        match &inst.kind {
             // Stage 1 of `&` references: call to a `&mut self`
             // method. The cranelift call returns
             // `(user_return_leaves..., self_writeback_leaves...)`
@@ -1311,8 +1467,10 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.builder.def_var(var, results[offset + i]);
                 }
             }
+            _ => unreachable!("lower_self_writeback was handed an instruction it does not own"),
         }
         Ok(())
     }
+
 
 }

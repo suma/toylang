@@ -36,6 +36,19 @@ use crate::ir::{BinOp, Const, EnumId, InstKind, Terminator, Type, ValueId};
 /// agree on it or every payload offset after the tag is wrong.
 const TAG_BYTE_SIZE: u64 = 8;
 
+/// Reject a builtin lowering whose arity is wrong.
+///
+/// `what` is the whole expectation phrase the arm used to spell inline --
+/// `"__builtin_heap_alloc takes 1 arg (size)"` -- so every message stays
+/// exactly as it was while the four-line `if` at the top of twenty-one
+/// arms becomes one line.
+fn expect_args(args: &[ExprRef], n: usize, what: &str) -> Result<(), String> {
+    if args.len() == n {
+        return Ok(());
+    }
+    Err(format!("{what}, got {}", args.len()))
+}
+
 impl<'a> FunctionLower<'a> {
     /// Mirror of `interpreter/src/evaluation/builtin.rs::object_byte_size`
     /// for the AOT side. `__builtin_sizeof(value)` lowers to a
@@ -1920,113 +1933,69 @@ impl<'a> FunctionLower<'a> {
         call_ref: &ExprRef,
     ) -> Result<Option<ValueId>, String> {
         match func {
-            BuiltinFunction::Panic => {
-                if args.len() != 1 {
-                    return Err(format!("panic expects 1 argument, got {}", args.len()));
-                }
-                let msg_sym = self.expect_string_literal(&args[0], "panic")?;
-                self.terminate(Terminator::Panic { message: msg_sym });
-                Ok(None)
-            }
-            BuiltinFunction::Assert => {
-                if args.len() != 2 {
-                    return Err(format!("assert expects 2 arguments, got {}", args.len()));
-                }
-                let msg_sym = self.expect_string_literal(&args[1], "assert")?;
-                let cond = self
-                    .lower_expr(&args[0])?
-                    .ok_or_else(|| "assert condition produced no value".to_string())?;
-                let pass = self.fresh_block();
-                let fail = self.fresh_block();
-                self.terminate(Terminator::Branch {
-                    cond,
-                    then_blk: pass,
-                    else_blk: fail,
-                });
-                // Failure block: panic with the assertion message.
-                self.switch_to(fail);
-                self.terminate(Terminator::Panic { message: msg_sym });
-                // Continue lowering after the assert in the success block.
-                self.switch_to(pass);
-                Ok(None)
-            }
-            BuiltinFunction::Print => self.lower_print(args, false),
-            BuiltinFunction::Println => self.lower_print(args, true),
-            BuiltinFunction::Abs => {
-                if args.len() != 1 {
-                    return Err(format!("abs expects 1 argument, got {}", args.len()));
-                }
-                let operand = self
-                    .lower_expr(&args[0])?
-                    .ok_or_else(|| "abs operand produced no value".to_string())?;
-                // Result type matches the operand: i64 -> i64,
-                // f64 -> f64. Codegen branches on the operand IR
-                // type to pick `fabs` vs the integer select chain.
-                let result_ty = self
-                    .value_ir_type_for(operand)
-                    .filter(|t| matches!(t, Type::I64 | Type::F64))
-                    .ok_or_else(|| {
-                        "abs expects an i64 or f64 operand".to_string()
-                    })?;
-                Ok(self.emit(
-                    InstKind::UnaryOp { op: crate::ir::UnaryOp::Abs, operand },
-                    Some(result_ty),
-                ))
-            }
-            // NOTE: f64 math arms (Sqrt/Pow and Sin..=Ceil) lived
-            // here before Phase 4. Each is now declared as
-            // `extern fn __extern_*_f64` in math.t and lowered
-            // through `lower/program::libm_import_name_for` —
-            // the call site emits a regular cranelift call against
-            // the imported libm symbol.
-            BuiltinFunction::Min | BuiltinFunction::Max => {
-                if args.len() != 2 {
-                    let name = if matches!(func, BuiltinFunction::Min) { "min" } else { "max" };
-                    return Err(format!("{name} expects 2 arguments, got {}", args.len()));
-                }
-                let lhs = self
-                    .lower_expr(&args[0])?
-                    .ok_or_else(|| "min/max arg0 produced no value".to_string())?;
-                let rhs = self
-                    .lower_expr(&args[1])?
-                    .ok_or_else(|| "min/max arg1 produced no value".to_string())?;
-                let result_ty = self
-                    .value_ir_type_for(lhs)
-                    .ok_or_else(|| "min/max operand type unknown".to_string())?;
-                let op = if matches!(func, BuiltinFunction::Min) {
-                    crate::ir::BinOp::Min
-                } else {
-                    crate::ir::BinOp::Max
-                };
-                Ok(self.emit(
-                    InstKind::BinOp { op, lhs, rhs },
-                    Some(result_ty),
-                ))
-            }
+            BuiltinFunction::HeapAlloc
+            | BuiltinFunction::HeapFree
+            | BuiltinFunction::HeapRealloc
+            | BuiltinFunction::PtrRead
+            | BuiltinFunction::PtrWrite
+            | BuiltinFunction::PtrOffset => self.lower_builtin_heap_and_pointer(func, args, call_ref),
+            BuiltinFunction::StrLen
+            | BuiltinFunction::StrToPtr
+            | BuiltinFunction::StrFromBytes
+            | BuiltinFunction::PtrIsNull
+            | BuiltinFunction::PtrEq
+            | BuiltinFunction::NullPtr => self.lower_builtin_str_and_ptr_conversion(func, args),
+            BuiltinFunction::MemStat(_)
+            | BuiltinFunction::RecordAllocatorLayout
+            | BuiltinFunction::MemCopy
+            | BuiltinFunction::CurrentAllocator
+            | BuiltinFunction::DefaultAllocator => self.lower_builtin_allocator_and_memory(func, args),
+            BuiltinFunction::SizeOf
+            | BuiltinFunction::ToString
+            | BuiltinFunction::Format => self.lower_builtin_reflection(func, args),
+            BuiltinFunction::Panic
+            | BuiltinFunction::Assert
+            | BuiltinFunction::Print
+            | BuiltinFunction::Println => self.lower_builtin_diagnostics(func, args),
+            BuiltinFunction::Abs
+            | BuiltinFunction::Min | BuiltinFunction::Max => self.lower_builtin_numeric(func, args),
+            other => Err(format!(
+                "compiler MVP cannot lower builtin yet: {:?}",
+                other
+            )),
+        }
+    }
+
+    /// Heap allocation and raw pointer access -- the builtins that reach
+    /// the allocator or dereference a `ptr`.
+    fn lower_builtin_heap_and_pointer(
+        &mut self,
+        func: &BuiltinFunction,
+        args: &Vec<ExprRef>,
+        call_ref: &ExprRef,
+    ) -> Result<Option<ValueId>, String> {
+        match func {
             BuiltinFunction::HeapAlloc => {
                 // #121 Phase A: lower to InstKind::HeapAlloc which
                 // codegen turns into a libc malloc call. Default
                 // global allocator only — `with allocator = ...`
                 // scope plumbing comes in a later phase.
-                if args.len() != 1 {
-                    return Err(format!(
-                        "__builtin_heap_alloc takes 1 arg (size), got {}",
-                        args.len()
-                    ));
-                }
+                expect_args(args, 1, "__builtin_heap_alloc takes 1 arg (size)")?;
                 let size = self.lower_expr(&args[0])?
                     .ok_or_else(|| "heap_alloc size produced no value".to_string())?;
                 let binding = self.classify_active_allocator_binding();
                 let site = self.alloc_site(call_ref);
                 Ok(self.emit(InstKind::HeapAlloc { size, binding, site }, Some(Type::U64)))
             }
+            BuiltinFunction::HeapFree => {
+                expect_args(args, 1, "__builtin_heap_free takes 1 arg (ptr)")?;
+                let ptr = self.lower_expr(&args[0])?
+                    .ok_or_else(|| "heap_free ptr produced no value".to_string())?;
+                let binding = self.classify_active_allocator_binding();
+                Ok(self.emit(InstKind::HeapFree { ptr, binding }, None))
+            }
             BuiltinFunction::HeapRealloc => {
-                if args.len() != 2 {
-                    return Err(format!(
-                        "__builtin_heap_realloc takes 2 args (ptr, new_size), got {}",
-                        args.len()
-                    ));
-                }
+                expect_args(args, 2, "__builtin_heap_realloc takes 2 args (ptr, new_size)")?;
                 let ptr = self.lower_expr(&args[0])?
                     .ok_or_else(|| "heap_realloc ptr produced no value".to_string())?;
                 let new_size = self.lower_expr(&args[1])?
@@ -2034,17 +2003,21 @@ impl<'a> FunctionLower<'a> {
                 let binding = self.classify_active_allocator_binding();
                 Ok(self.emit(InstKind::HeapRealloc { ptr, new_size, binding }, Some(Type::U64)))
             }
-            BuiltinFunction::HeapFree => {
-                if args.len() != 1 {
-                    return Err(format!(
-                        "__builtin_heap_free takes 1 arg (ptr), got {}",
-                        args.len()
-                    ));
-                }
-                let ptr = self.lower_expr(&args[0])?
-                    .ok_or_else(|| "heap_free ptr produced no value".to_string())?;
-                let binding = self.classify_active_allocator_binding();
-                Ok(self.emit(InstKind::HeapFree { ptr, binding }, None))
+            BuiltinFunction::PtrRead => {
+                // `__builtin_ptr_read(ptr, offset)` — return type comes
+                // from the surrounding `val`/`var` annotation. The
+                // generic version (no annotation) is rejected here so
+                // the user gets a clear error pointing at the missing
+                // type hint. The let-binding lowering path
+                // (`let_lowering.rs::lower_let`) handles
+                // `val x: T = __builtin_ptr_read(...)` directly and
+                // never reaches this arm.
+                Err(
+                    "compiler MVP requires `val NAME: TYPE = __builtin_ptr_read(...)` \
+                     (the read width is taken from the annotation; bare expression-position \
+                     uses are not supported in AOT yet)"
+                        .to_string(),
+                )
             }
             BuiltinFunction::PtrWrite => {
                 // `__builtin_ptr_write(ptr, offset, value)` — the
@@ -2065,12 +2038,7 @@ impl<'a> FunctionLower<'a> {
                 // values come from the binding's leaf locals. Pre-
                 // existing scalar callers fall through the single
                 // `PtrWrite` path unchanged.
-                if args.len() != 3 {
-                    return Err(format!(
-                        "__builtin_ptr_write takes 3 args (ptr, offset, value), got {}",
-                        args.len()
-                    ));
-                }
+                expect_args(args, 3, "__builtin_ptr_write takes 3 args (ptr, offset, value)")?;
                 let value_ty = self
                     .value_scalar(&args[2])
                     .ok_or_else(|| {
@@ -2167,6 +2135,219 @@ impl<'a> FunctionLower<'a> {
                     None,
                 ))
             }
+            BuiltinFunction::PtrOffset => {
+                // `__builtin_ptr_offset(base, offset) -> ptr` is a plain
+                // address addition: `ptr` is u64 in the IR, so lowering
+                // to `BinOp::Add` reuses every backend's integer add
+                // without a new instruction.
+                expect_args(args, 2, "__builtin_ptr_offset takes 2 args (base, offset)")?;
+                let base = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "ptr_offset base produced no value".to_string())?;
+                let offset = self
+                    .lower_expr(&args[1])?
+                    .ok_or_else(|| "ptr_offset offset produced no value".to_string())?;
+                Ok(self.emit(
+                    InstKind::BinOp {
+                        op: crate::ir::BinOp::Add,
+                        lhs: base,
+                        rhs: offset,
+                    },
+                    Some(Type::U64),
+                ))
+            }
+            _ => unreachable!("lower_builtin_heap_and_pointer was handed a builtin it does not own"),
+        }
+    }
+
+    /// The `str` <-> `ptr` boundary, plus the pointer predicates that only
+    /// look at addresses.
+    fn lower_builtin_str_and_ptr_conversion(
+        &mut self,
+        func: &BuiltinFunction,
+        args: &Vec<ExprRef>,
+    ) -> Result<Option<ValueId>, String> {
+        match func {
+            BuiltinFunction::StrLen => {
+                // `__builtin_str_len(s: str) -> u64` — emits an
+                // `InstKind::StrLen` that codegen lowers to a libc
+                // `strlen` call. The per-literal `.rodata` layout
+                // (`[bytes][NUL][u64 len]`) keeps the trailing NUL
+                // so strlen's walk terminates correctly; the stored
+                // u64 len at the layout's tail is informational
+                // for now.
+                expect_args(args, 1, "__builtin_str_len takes 1 arg (str)")?;
+                let v = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "str_len arg produced no value".to_string())?;
+                Ok(self.emit(InstKind::StrLen { value: v }, Some(Type::U64)))
+            }
+            BuiltinFunction::StrToPtr => {
+                // `__builtin_str_to_ptr(s: str) -> ptr`. AOT
+                // representation: `Type::Str` is already a pointer-
+                // sized handle (i64) into the `.rodata` blob (or a
+                // heap-allocated copy). Returning the same value
+                // with a `Type::U64` annotation is identity at
+                // cranelift level (`ir_to_cranelift_ty(Str)` = I64
+                // = `ir_to_cranelift_ty(U64)`); the user's `ptr`
+                // can then be fed into `__builtin_ptr_read(p, i)`
+                // with a `val: u8` annotation to walk the bytes.
+                expect_args(args, 1, "__builtin_str_to_ptr takes 1 arg (str)")?;
+                let v = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "str_to_ptr arg produced no value".to_string())?;
+                // The str runtime value points at the u64 len field
+                // (see ConstStr codegen). Layout `[bytes][NUL][u64
+                // len LE]`: byte_start = len_field_addr - 1 (NUL)
+                // - len. Compute as a single chain of
+                // `load.i64(s, 0)` + `iadd_imm(-1)` + `isub`.
+                let len = self
+                    .emit(InstKind::StrLen { value: v }, Some(Type::U64))
+                    .expect("StrLen returns a value");
+                let one = self
+                    .emit(
+                        InstKind::Const(crate::ir::Const::U64(1)),
+                        Some(Type::U64),
+                    )
+                    .expect("Const returns a value");
+                let nul_offset = self
+                    .emit(
+                        InstKind::BinOp {
+                            op: crate::ir::BinOp::Add,
+                            lhs: len,
+                            rhs: one,
+                        },
+                        Some(Type::U64),
+                    )
+                    .expect("Add returns a value");
+                Ok(self.emit(
+                    InstKind::BinOp {
+                        op: crate::ir::BinOp::Sub,
+                        lhs: v,
+                        rhs: nul_offset,
+                    },
+                    Some(Type::U64),
+                ))
+            }
+            BuiltinFunction::StrFromBytes => {
+                expect_args(args, 2, "__builtin_str_from_bytes takes 2 args (ptr, u64)")?;
+                let p = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "str_from_bytes ptr produced no value".to_string())?;
+                let n = self
+                    .lower_expr(&args[1])?
+                    .ok_or_else(|| "str_from_bytes len produced no value".to_string())?;
+                Ok(self.emit(InstKind::StrFromBytes { ptr: p, len: n }, Some(Type::Str)))
+            }
+            BuiltinFunction::PtrIsNull => {
+                expect_args(args, 1, "__builtin_ptr_is_null takes 1 arg (ptr)")?;
+                let p = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "ptr_is_null arg produced no value".to_string())?;
+                Ok(self.emit(InstKind::PtrIsNull { ptr: p }, Some(Type::Bool)))
+            }
+            BuiltinFunction::PtrEq => {
+                expect_args(args, 2, "__builtin_ptr_eq takes 2 args (ptr, ptr)")?;
+                let a = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "ptr_eq arg 0 produced no value".to_string())?;
+                let b = self
+                    .lower_expr(&args[1])?
+                    .ok_or_else(|| "ptr_eq arg 1 produced no value".to_string())?;
+                Ok(self.emit(InstKind::PtrEq { a, b }, Some(Type::Bool)))
+            }
+            BuiltinFunction::NullPtr => {
+                expect_args(args, 0, "__builtin_null_ptr takes no args")?;
+                Ok(self.emit(InstKind::Const(crate::ir::Const::U64(0)), Some(Type::U64)))
+            }
+            _ => unreachable!("lower_builtin_str_and_ptr_conversion was handed a builtin it does not own"),
+        }
+    }
+
+    /// Allocation counters, allocator handles, and the bulk memory
+    /// operations.
+    fn lower_builtin_allocator_and_memory(
+        &mut self,
+        func: &BuiltinFunction,
+        args: &Vec<ExprRef>,
+    ) -> Result<Option<ValueId>, String> {
+        match func {
+            BuiltinFunction::MemStat(stat) => {
+                if !args.is_empty() {
+                    return Err(format!(
+                        "{} takes no args, got {}",
+                        stat.builtin_name(),
+                        args.len()
+                    ));
+                }
+                Ok(self.emit(InstKind::MemStat { stat: stat.code() }, Some(Type::U64)))
+            }
+            BuiltinFunction::RecordAllocatorLayout => {
+                expect_args(
+                    args,
+                    5,
+                    "__builtin_record_allocator_layout takes 5 args (name, managed, live, free_blocks, largest)",
+                )?;
+                let name = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "record_allocator_layout name produced no value".to_string())?;
+                let managed = self
+                    .lower_expr(&args[1])?
+                    .ok_or_else(|| "record_allocator_layout managed produced no value".to_string())?;
+                let live = self
+                    .lower_expr(&args[2])?
+                    .ok_or_else(|| "record_allocator_layout live produced no value".to_string())?;
+                let free_blocks = self
+                    .lower_expr(&args[3])?
+                    .ok_or_else(|| "record_allocator_layout free_blocks produced no value".to_string())?;
+                let largest = self
+                    .lower_expr(&args[4])?
+                    .ok_or_else(|| "record_allocator_layout largest produced no value".to_string())?;
+                self.emit(
+                    InstKind::RecordAllocatorLayout { name, managed, live, free_blocks, largest },
+                    None,
+                );
+                Ok(None)
+            }
+            BuiltinFunction::MemCopy => {
+                // `__builtin_mem_copy(src: ptr, dest: ptr, size: u64)`
+                // — emit `InstKind::MemCopy` which codegen lowers
+                // to a libc memcpy call (with (dest, src, n)
+                // argument-order swap).
+                expect_args(args, 3, "__builtin_mem_copy takes 3 args (src, dest, size)")?;
+                let src = self.lower_expr(&args[0])?
+                    .ok_or_else(|| "mem_copy src produced no value".to_string())?;
+                let dest = self.lower_expr(&args[1])?
+                    .ok_or_else(|| "mem_copy dest produced no value".to_string())?;
+                let size = self.lower_expr(&args[2])?
+                    .ok_or_else(|| "mem_copy size produced no value".to_string())?;
+                Ok(self.emit(InstKind::MemCopy { src, dest, size }, None))
+            }
+            BuiltinFunction::CurrentAllocator => {
+                // #121 Phase B-min: read the top of the runtime
+                // active-allocator stack (or 0 when empty).
+                expect_args(args, 0, "__builtin_current_allocator takes no args")?;
+                Ok(self.emit(InstKind::AllocCurrent, Some(Type::U64)))
+            }
+            BuiltinFunction::DefaultAllocator => {
+                // #121 Phase B-min: the default global allocator is
+                // represented as the sentinel u64 = 0. The heap path
+                // already routes 0-handles to libc malloc.
+                expect_args(args, 0, "__builtin_default_allocator takes no args")?;
+                Ok(self.emit(InstKind::Const(crate::ir::Const::U64(0)), Some(Type::U64)))
+            }
+            _ => unreachable!("lower_builtin_allocator_and_memory was handed a builtin it does not own"),
+        }
+    }
+
+    /// Questions a value can answer about itself: its size, its rendering,
+    /// its formatted rendering.
+    fn lower_builtin_reflection(
+        &mut self,
+        func: &BuiltinFunction,
+        args: &Vec<ExprRef>,
+    ) -> Result<Option<ValueId>, String> {
+        match func {
             BuiltinFunction::SizeOf => {
                 // `__builtin_sizeof(value) -> u64` — at AOT we
                 // resolve the byte size at lower time from the
@@ -2178,12 +2359,7 @@ impl<'a> FunctionLower<'a> {
                 // user-space collections that drive this; reject
                 // them with a precise message rather than
                 // silently summing fields.
-                if args.len() != 1 {
-                    return Err(format!(
-                        "__builtin_sizeof takes 1 arg, got {}",
-                        args.len()
-                    ));
-                }
+                expect_args(args, 1, "__builtin_sizeof takes 1 arg")?;
                 let arg_ty = self
                     .value_scalar(&args[0])
                     .ok_or_else(|| {
@@ -2212,12 +2388,7 @@ impl<'a> FunctionLower<'a> {
                 // are emitted as `ConstStrBytes` so we don't have
                 // to round-trip them through the immutable
                 // interner.
-                if args.len() != 1 {
-                    return Err(format!(
-                        "__builtin_to_string takes 1 argument, got {}",
-                        args.len()
-                    ));
-                }
+                expect_args(args, 1, "__builtin_to_string takes 1 argument")?;
                 if let Some(Type::Struct(struct_id)) = self.value_scalar(&args[0]) {
                     return self.lower_struct_to_string(struct_id, &args[0]);
                 }
@@ -2278,12 +2449,7 @@ impl<'a> FunctionLower<'a> {
                 // immediate on the instruction rather than as a
                 // value — nothing downstream has to keep a register
                 // alive for it.
-                if args.len() != 2 {
-                    return Err(format!(
-                        "__builtin_format takes 2 arguments, got {}",
-                        args.len()
-                    ));
-                }
+                expect_args(args, 2, "__builtin_format takes 2 arguments")?;
                 let Some(Expr::UInt64(spec)) = self.program.expression.get(&args[1]) else {
                     return Err(
                         "__builtin_format: spec must be the parser-generated u64 constant"
@@ -2312,255 +2478,108 @@ impl<'a> FunctionLower<'a> {
                     Some(Type::Str),
                 ))
             }
-            BuiltinFunction::MemCopy => {
-                // `__builtin_mem_copy(src: ptr, dest: ptr, size: u64)`
-                // — emit `InstKind::MemCopy` which codegen lowers
-                // to a libc memcpy call (with (dest, src, n)
-                // argument-order swap).
-                if args.len() != 3 {
-                    return Err(format!(
-                        "__builtin_mem_copy takes 3 args (src, dest, size), got {}",
-                        args.len()
-                    ));
-                }
-                let src = self.lower_expr(&args[0])?
-                    .ok_or_else(|| "mem_copy src produced no value".to_string())?;
-                let dest = self.lower_expr(&args[1])?
-                    .ok_or_else(|| "mem_copy dest produced no value".to_string())?;
-                let size = self.lower_expr(&args[2])?
-                    .ok_or_else(|| "mem_copy size produced no value".to_string())?;
-                Ok(self.emit(InstKind::MemCopy { src, dest, size }, None))
-            }
-            BuiltinFunction::StrLen => {
-                // `__builtin_str_len(s: str) -> u64` — emits an
-                // `InstKind::StrLen` that codegen lowers to a libc
-                // `strlen` call. The per-literal `.rodata` layout
-                // (`[bytes][NUL][u64 len]`) keeps the trailing NUL
-                // so strlen's walk terminates correctly; the stored
-                // u64 len at the layout's tail is informational
-                // for now.
-                if args.len() != 1 {
-                    return Err(format!(
-                        "__builtin_str_len takes 1 arg (str), got {}",
-                        args.len()
-                    ));
-                }
-                let v = self
-                    .lower_expr(&args[0])?
-                    .ok_or_else(|| "str_len arg produced no value".to_string())?;
-                Ok(self.emit(InstKind::StrLen { value: v }, Some(Type::U64)))
-            }
-            BuiltinFunction::StrFromBytes => {
-                if args.len() != 2 {
-                    return Err(format!(
-                        "__builtin_str_from_bytes takes 2 args (ptr, u64), got {}",
-                        args.len()
-                    ));
-                }
-                let p = self
-                    .lower_expr(&args[0])?
-                    .ok_or_else(|| "str_from_bytes ptr produced no value".to_string())?;
-                let n = self
-                    .lower_expr(&args[1])?
-                    .ok_or_else(|| "str_from_bytes len produced no value".to_string())?;
-                Ok(self.emit(InstKind::StrFromBytes { ptr: p, len: n }, Some(Type::Str)))
-            }
-            BuiltinFunction::StrToPtr => {
-                // `__builtin_str_to_ptr(s: str) -> ptr`. AOT
-                // representation: `Type::Str` is already a pointer-
-                // sized handle (i64) into the `.rodata` blob (or a
-                // heap-allocated copy). Returning the same value
-                // with a `Type::U64` annotation is identity at
-                // cranelift level (`ir_to_cranelift_ty(Str)` = I64
-                // = `ir_to_cranelift_ty(U64)`); the user's `ptr`
-                // can then be fed into `__builtin_ptr_read(p, i)`
-                // with a `val: u8` annotation to walk the bytes.
-                if args.len() != 1 {
-                    return Err(format!(
-                        "__builtin_str_to_ptr takes 1 arg (str), got {}",
-                        args.len()
-                    ));
-                }
-                let v = self
-                    .lower_expr(&args[0])?
-                    .ok_or_else(|| "str_to_ptr arg produced no value".to_string())?;
-                // The str runtime value points at the u64 len field
-                // (see ConstStr codegen). Layout `[bytes][NUL][u64
-                // len LE]`: byte_start = len_field_addr - 1 (NUL)
-                // - len. Compute as a single chain of
-                // `load.i64(s, 0)` + `iadd_imm(-1)` + `isub`.
-                let len = self
-                    .emit(InstKind::StrLen { value: v }, Some(Type::U64))
-                    .expect("StrLen returns a value");
-                let one = self
-                    .emit(
-                        InstKind::Const(crate::ir::Const::U64(1)),
-                        Some(Type::U64),
-                    )
-                    .expect("Const returns a value");
-                let nul_offset = self
-                    .emit(
-                        InstKind::BinOp {
-                            op: crate::ir::BinOp::Add,
-                            lhs: len,
-                            rhs: one,
-                        },
-                        Some(Type::U64),
-                    )
-                    .expect("Add returns a value");
-                Ok(self.emit(
-                    InstKind::BinOp {
-                        op: crate::ir::BinOp::Sub,
-                        lhs: v,
-                        rhs: nul_offset,
-                    },
-                    Some(Type::U64),
-                ))
-            }
-            BuiltinFunction::PtrRead => {
-                // `__builtin_ptr_read(ptr, offset)` — return type comes
-                // from the surrounding `val`/`var` annotation. The
-                // generic version (no annotation) is rejected here so
-                // the user gets a clear error pointing at the missing
-                // type hint. The let-binding lowering path
-                // (`let_lowering.rs::lower_let`) handles
-                // `val x: T = __builtin_ptr_read(...)` directly and
-                // never reaches this arm.
-                Err(
-                    "compiler MVP requires `val NAME: TYPE = __builtin_ptr_read(...)` \
-                     (the read width is taken from the annotation; bare expression-position \
-                     uses are not supported in AOT yet)"
-                        .to_string(),
-                )
-            }
-            BuiltinFunction::DefaultAllocator => {
-                // #121 Phase B-min: the default global allocator is
-                // represented as the sentinel u64 = 0. The heap path
-                // already routes 0-handles to libc malloc.
-                if !args.is_empty() {
-                    return Err(format!(
-                        "__builtin_default_allocator takes no args, got {}",
-                        args.len()
-                    ));
-                }
-                Ok(self.emit(InstKind::Const(crate::ir::Const::U64(0)), Some(Type::U64)))
-            }
-            BuiltinFunction::CurrentAllocator => {
-                // #121 Phase B-min: read the top of the runtime
-                // active-allocator stack (or 0 when empty).
-                if !args.is_empty() {
-                    return Err(format!(
-                        "__builtin_current_allocator takes no args, got {}",
-                        args.len()
-                    ));
-                }
-                Ok(self.emit(InstKind::AllocCurrent, Some(Type::U64)))
-            }
-            BuiltinFunction::PtrIsNull => {
-                if args.len() != 1 {
-                    return Err(format!(
-                        "__builtin_ptr_is_null takes 1 arg (ptr), got {}",
-                        args.len()
-                    ));
-                }
-                let p = self
-                    .lower_expr(&args[0])?
-                    .ok_or_else(|| "ptr_is_null arg produced no value".to_string())?;
-                Ok(self.emit(InstKind::PtrIsNull { ptr: p }, Some(Type::Bool)))
-            }
-            BuiltinFunction::PtrEq => {
-                if args.len() != 2 {
-                    return Err(format!(
-                        "__builtin_ptr_eq takes 2 args (ptr, ptr), got {}",
-                        args.len()
-                    ));
-                }
-                let a = self
-                    .lower_expr(&args[0])?
-                    .ok_or_else(|| "ptr_eq arg 0 produced no value".to_string())?;
-                let b = self
-                    .lower_expr(&args[1])?
-                    .ok_or_else(|| "ptr_eq arg 1 produced no value".to_string())?;
-                Ok(self.emit(InstKind::PtrEq { a, b }, Some(Type::Bool)))
-            }
-            BuiltinFunction::NullPtr => {
-                if !args.is_empty() {
-                    return Err(format!(
-                        "__builtin_null_ptr takes no args, got {}",
-                        args.len()
-                    ));
-                }
-                Ok(self.emit(InstKind::Const(crate::ir::Const::U64(0)), Some(Type::U64)))
-            }
-            BuiltinFunction::PtrOffset => {
-                // `__builtin_ptr_offset(base, offset) -> ptr` is a plain
-                // address addition: `ptr` is u64 in the IR, so lowering
-                // to `BinOp::Add` reuses every backend's integer add
-                // without a new instruction.
-                if args.len() != 2 {
-                    return Err(format!(
-                        "__builtin_ptr_offset takes 2 args (base, offset), got {}",
-                        args.len()
-                    ));
-                }
-                let base = self
-                    .lower_expr(&args[0])?
-                    .ok_or_else(|| "ptr_offset base produced no value".to_string())?;
-                let offset = self
-                    .lower_expr(&args[1])?
-                    .ok_or_else(|| "ptr_offset offset produced no value".to_string())?;
-                Ok(self.emit(
-                    InstKind::BinOp {
-                        op: crate::ir::BinOp::Add,
-                        lhs: base,
-                        rhs: offset,
-                    },
-                    Some(Type::U64),
-                ))
-            }
-            BuiltinFunction::MemStat(stat) => {
-                if !args.is_empty() {
-                    return Err(format!(
-                        "{} takes no args, got {}",
-                        stat.builtin_name(),
-                        args.len()
-                    ));
-                }
-                Ok(self.emit(InstKind::MemStat { stat: stat.code() }, Some(Type::U64)))
-            }
-            BuiltinFunction::RecordAllocatorLayout => {
-                if args.len() != 5 {
-                    return Err(format!(
-                        "__builtin_record_allocator_layout takes 5 args (name, managed, live, free_blocks, largest), got {}",
-                        args.len()
-                    ));
-                }
-                let name = self
-                    .lower_expr(&args[0])?
-                    .ok_or_else(|| "record_allocator_layout name produced no value".to_string())?;
-                let managed = self
-                    .lower_expr(&args[1])?
-                    .ok_or_else(|| "record_allocator_layout managed produced no value".to_string())?;
-                let live = self
-                    .lower_expr(&args[2])?
-                    .ok_or_else(|| "record_allocator_layout live produced no value".to_string())?;
-                let free_blocks = self
-                    .lower_expr(&args[3])?
-                    .ok_or_else(|| "record_allocator_layout free_blocks produced no value".to_string())?;
-                let largest = self
-                    .lower_expr(&args[4])?
-                    .ok_or_else(|| "record_allocator_layout largest produced no value".to_string())?;
-                self.emit(
-                    InstKind::RecordAllocatorLayout { name, managed, live, free_blocks, largest },
-                    None,
-                );
-                Ok(None)
-            }
-            other => Err(format!(
-                "compiler MVP cannot lower builtin yet: {:?}",
-                other
-            )),
+            _ => unreachable!("lower_builtin_reflection was handed a builtin it does not own"),
         }
     }
+
+    /// Builtins that talk to the user or stop the program.
+    fn lower_builtin_diagnostics(
+        &mut self,
+        func: &BuiltinFunction,
+        args: &Vec<ExprRef>,
+    ) -> Result<Option<ValueId>, String> {
+        match func {
+            BuiltinFunction::Panic => {
+                expect_args(args, 1, "panic expects 1 argument")?;
+                let msg_sym = self.expect_string_literal(&args[0], "panic")?;
+                self.terminate(Terminator::Panic { message: msg_sym });
+                Ok(None)
+            }
+            BuiltinFunction::Assert => {
+                expect_args(args, 2, "assert expects 2 arguments")?;
+                let msg_sym = self.expect_string_literal(&args[1], "assert")?;
+                let cond = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "assert condition produced no value".to_string())?;
+                let pass = self.fresh_block();
+                let fail = self.fresh_block();
+                self.terminate(Terminator::Branch {
+                    cond,
+                    then_blk: pass,
+                    else_blk: fail,
+                });
+                // Failure block: panic with the assertion message.
+                self.switch_to(fail);
+                self.terminate(Terminator::Panic { message: msg_sym });
+                // Continue lowering after the assert in the success block.
+                self.switch_to(pass);
+                Ok(None)
+            }
+            BuiltinFunction::Print => self.lower_print(args, false),
+            BuiltinFunction::Println => self.lower_print(args, true),
+            _ => unreachable!("lower_builtin_diagnostics was handed a builtin it does not own"),
+        }
+    }
+
+    /// The numeric builtins the lowerer still handles directly.
+    fn lower_builtin_numeric(
+        &mut self,
+        func: &BuiltinFunction,
+        args: &Vec<ExprRef>,
+    ) -> Result<Option<ValueId>, String> {
+        match func {
+            BuiltinFunction::Abs => {
+                expect_args(args, 1, "abs expects 1 argument")?;
+                let operand = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "abs operand produced no value".to_string())?;
+                // Result type matches the operand: i64 -> i64,
+                // f64 -> f64. Codegen branches on the operand IR
+                // type to pick `fabs` vs the integer select chain.
+                let result_ty = self
+                    .value_ir_type_for(operand)
+                    .filter(|t| matches!(t, Type::I64 | Type::F64))
+                    .ok_or_else(|| {
+                        "abs expects an i64 or f64 operand".to_string()
+                    })?;
+                Ok(self.emit(
+                    InstKind::UnaryOp { op: crate::ir::UnaryOp::Abs, operand },
+                    Some(result_ty),
+                ))
+            }
+            // NOTE: f64 math arms (Sqrt/Pow and Sin..=Ceil) lived
+            // here before Phase 4. Each is now declared as
+            // `extern fn __extern_*_f64` in math.t and lowered
+            // through `lower/program::libm_import_name_for` —
+            // the call site emits a regular cranelift call against
+            // the imported libm symbol.
+            BuiltinFunction::Min | BuiltinFunction::Max => {
+                if args.len() != 2 {
+                    let name = if matches!(func, BuiltinFunction::Min) { "min" } else { "max" };
+                    return Err(format!("{name} expects 2 arguments, got {}", args.len()));
+                }
+                let lhs = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "min/max arg0 produced no value".to_string())?;
+                let rhs = self
+                    .lower_expr(&args[1])?
+                    .ok_or_else(|| "min/max arg1 produced no value".to_string())?;
+                let result_ty = self
+                    .value_ir_type_for(lhs)
+                    .ok_or_else(|| "min/max operand type unknown".to_string())?;
+                let op = if matches!(func, BuiltinFunction::Min) {
+                    crate::ir::BinOp::Min
+                } else {
+                    crate::ir::BinOp::Max
+                };
+                Ok(self.emit(
+                    InstKind::BinOp { op, lhs, rhs },
+                    Some(result_ty),
+                ))
+            }
+            _ => unreachable!("lower_builtin_numeric was handed a builtin it does not own"),
+        }
+    }
+
 
 }

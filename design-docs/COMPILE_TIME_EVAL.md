@@ -22,7 +22,7 @@ C++ の `constexpr` / D の `pure` + `enum` / Rust の `const fn` / Zig の
 | **C3** | driver 層の CTFE — 定数引数の呼び出しと `const` 初期化子 | ✅ 2026-08-26 |
 | **C4** | DbC 接続 — 述語の純粋性強制 + 定数引数での `requires` 静的検査 | ✅ 2026-08-26 |
 | **C5** | 型の中の値 — 配列長に `const` / `const fn` を許す | 🔶 半分 (const のみ) |
-| **C6** | 評価器の一本化 — CTFE を IR VM に載せ替える | 📋 |
+| **C6** | 評価器の一本化 — CTFE を IR VM に載せ替える | ✅ 2026-08-26 |
 
 > **実装時に変えた決定が 1 つある** — 論点 6 の「定数同士の trap は
 > コンパイルエラー」と「`if false { 1u64 / 0u64 }` はエラーにしない」は
@@ -415,32 +415,60 @@ C2 の定数畳み込みは CTFE と独立に効くので先に入れられる�
    いるものそのもの。リテラルと const 連鎖だけを読み、それ以外は
    理由を書いたエラーにしている。
 
-### C6 — 評価器の一本化 📋 (未着手)
+### C6 — 評価器の一本化 ✅ (2026-08-26)
 
-1. `interpreter/src/ir_vm/` を `Object` / `RuntimeState` / `heap` から切り離し、
-   `compiler_ir` の上のクレートとして抽出する。
-2. CTFE を tree-walker から IR VM に載せ替える。
-   **同じ lowering・同じ trap guard を通る**ので、C0 のレーンは構造的に通る。
-3. 受け入れ基準: CTFE 経路とランタイム経路が同じコードを共有する。
+**新しいクレート `compiler_vm`** が `interpreter/src/ir_vm/` の本体を引き取った
+(依存は `compiler_ir` + `frontend` + `string-interner` のみ。`compiler_ir` の
+上のクレートとして workspace に追加)。interpreter の `ir_vm` モジュールは
+`compiler_vm` の re-export + 境界層 (`host.rs` / `lift.rs`) + RT を差し込む
+エントリポイントの 3 つに縮んだ。
 
-**2026-08-26 の実測 (設計時の見積もりより結合は浅い)**: `ir_vm/` は 3,471 行だが、
-interpreter 本体への参照は **5 モジュール・約 25 箇所**しかない:
+1. **切り離し方**: 評価器を 1 本に保つための契約として `VmHost` trait
+   (`compiler_vm/src/host.rs`) を設けた。stdout / ヒープマネージャ /
+   allocator stack / カウンタの 17 メソッドが必須、str の連結・等値・整形
+   などは **default メソッドとして trait 側に 1 回だけ**実装される
+   (host が共有の str layout を再実装してずれる余地を消す)。
+   `interpreter/src/ir_vm/host.rs::InterpreterHost` が既存の
+   `RuntimeState` / `HeapManager` / `output` に委譲する — `RuntimeState` の
+   移動はしなかった (`HeapManager` の typed-slot が `Object` を名指しして
+   おり、切るには heap ごと動かすか trait 化が必要で、後者が勝った)。
+2. **CTFE の載せ替え**: `const_eval.rs` が tree-walker をやめ、fold の
+   lowering (`lower_for_fold`) + `compiler_vm::run_function` で評価する。
+   - **強制位置は synthetic wrapper** — 対象 const の初期化子を
+     `fn __ctfe_N() -> T { <初期化子> }` に移し、`program.tests` 経由で
+     entry point として lower させてから VM で実行する (式をそのまま
+     関数として走らせる唯一の方法)。
+   - **stub** — lowering は全 const の初期化子を `consts.rs` が読める
+     形で要求するので、まだ fold していない const (自身 + 後続 +
+     非リテラルな先行 const、例: str) は一時的に `0u64` で stubbing し、
+     折りたたみ対象の本体は wrapper が持つ。stub を読む body は
+     `stub_references` (reachability と同じ呼び出しグラフ歩き) で
+     **強制位置は E0017、任意位置は fold を skip** にして、
+     「stub 値がそのまま答えになる」誤コンパイルを防ぐ。
+   - **step budget を VM に追加** (`charge_back_edge`、後退ジャンプ
+     のみカウント)。非停止の初期化子は 100 万 back-edge で
+     `step budget exceeded (N loop iterations)` の E0017。
+   - プログラム全体が lower できない場合は fold 自体を静かに skip する
+     (tree-walker 時代の `SharedRunData::new` 失敗と同じ扱い)。
+   - C4 の「定数引数の `requires`」は VM の divergence 文言
+     (`requires violation`) で検出し、**bindings は call site の
+     パラメータ名 × リテラル引数から再構成**する (IR はパラメータ名を
+     持たないため)。
+3. **受け入れ基準**: CTFE 経路とランタイム経路が同じコードを共有する ✅。
+   両方とも `compiler_vm::Vm::run_loop` を通り、`const_eval.rs` の
+   tree-walker 依存 (`evaluation::EvaluationContext` 等) は消えた。
 
-| 参照先 | 箇所 | どこから |
-|---|---|---|
-| `runtime_state::RT` / `RuntimeState` | 11 | `mod.rs` / `dispatch.rs` / `heap.rs` |
-| `output::print_text` / `println_text` | 6 | `dispatch.rs` |
-| `object::` | 2 | `heap.rs` / `lift.rs` (境界層) |
-| `heap::profile` / `record_allocator_layout` | 2 | `dispatch.rs` |
-| `find_main_function` | 1 | `lift.rs` |
-
-`lift.rs` は元々 interpreter 向けの境界層なので新クレートに持って行く必要が無く、
-実質の作業は `RuntimeState` (heap manager + allocator stack) の移動と、
-`output` を trait / シンクで差し替えられるようにすること。
-
-**C3 で残った `consts.rs` は C6 では消えない** — 消えたのは「2 つ目の**評価器**」
-のほうで (C2 で `fold.rs` に委譲した)、`consts.rs` 自体は driver を通らない
-lowering 呼び出しのための literal リーダとして残る。
+**設計から変えた点**:
+- **`RuntimeState` は動かさなかった** (上記 1)。goal は「interpreter に
+  手が届かない」ことであり、host 境界で満たしている。
+- **fold は常に契約を検査する** (`lower_for_fold` は `release=false`)。
+  旧 tree-walker fold は `INTERPRETER_CONTRACTS=off` で requires 検査を
+  飛ばせたが、新 fold は検査する (強制位置の E0017 は C4 の設計どおり)。
+  `--release` は実行時 guard だけを消すスイッチであり、コンパイル時の
+  fold はその影響を受けない — これは旧 fold も同様だった。
+- `consts.rs` は C6 でも残る (driver を通らない lowering 呼び出し用の
+  literal リーダー)。消えたのは「2 つ目の評価器」のほうで、C2 で
+  `fold.rs` に委譲済み。
 
 **C5 の残り (`[i64; double(2u64)]`) は C6 の後に回すのが安い** — 上記 C5 の 2 を参照。
 

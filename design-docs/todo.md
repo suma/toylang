@@ -37,11 +37,25 @@
   narrow 幅に正規化していなかったので `200u8 * 3u8 == 88u8` が IR VM だけ
   false だった (print / cast は masking するので比較でしか見えない)。
 
+- **COMPILE-TIME-EVAL C6: 評価器の一本化** — CTFE を tree-walker から
+  **IR VM** に載せ替えた。`interpreter/src/ir_vm/` の本体を新クレート
+  `compiler_vm/` として抽出 (依存は `compiler_ir` + `frontend` のみ)。
+  切り離しは `VmHost` trait (stdout / ヒープ / allocator stack / カウンタ
+  の 17 メソッド必須、str 連結・整形は default method) — `RuntimeState` は
+  heap の typed-slot が `Object` を名指しするため動かさず、
+  `interpreter/src/ir_vm/host.rs::InterpreterHost` が既存機構に委譲する。
+  fold は const 初期化子を synthetic wrapper 関数に移して lower し、
+  `run_function` で実行する (未 fold の const は lowering 用に stub し、
+  stub を読む body は `stub_references` で拒否)。**step budget を VM に
+  追加** (後退ジャンプのみカウント、非停止の初期化子は 100 万で E0017)。
+  受け入れ基準「CTFE 経路とランタイム経路が同じコードを共有する」を満たす。
+
 - **COMPILE-TIME-EVAL C0/C1/C3: `const fn`** — コンパイル時に走らせられる
   関数。宣言の適格性検査は `never_allocates` の到達可能性歩行を
   `reachability.rs` に一般化して sink 集合を差し替えたもの (`E0017`)。
   fold は driver 層 (型検査後・lowering 前) の AST 書き換えなので
-  **バックエンドは砂糖を見ない**。評価器は tree-walker (オラクル)。
+  **バックエンドは砂糖を見ない**。評価器は C6 から IR VM
+  (それ以前は tree-walker がオラクルだった)。
   `const D: u64 = double(21u64)` が interpreter で 42・AOT でコンパイル
   エラーだった食い違いが消えた。強制位置 (const 初期化子) の失敗は
   コンパイルエラー、任意位置は畳まないだけ。
@@ -1043,10 +1057,6 @@
 - **CTFE C1: 適格性検査は既存パスの sink 差し替え** ★ —
   `frontend/src/type_checker/alloc_check.rs` (454 行) の呼び出しグラフ到達可能性が
   経路診断と opaque 呼び出しの拒否まで実装済み。新しい解析を書く話ではない。
-- **CTFE C6: 評価器の一本化** ★ — 最終形は CTFE を IR VM で走らせること
-  (同じ lowering・同じ trap guard を通るので食い違いが構造的に起きない)。
-  前提は `interpreter/src/ir_vm/` (3,428 行) を `Object` / `RuntimeState` /
-  `heap` から切り離すクレート抽出。本機能とは独立した refactor。
 
 ### デバッグ・観測性 (DEBUG-OBS)
 

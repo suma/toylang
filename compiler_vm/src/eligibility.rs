@@ -45,10 +45,10 @@ pub fn ir_vm_supported(module: &Module) -> bool {
                     return false;
                 }
             }
-            if let Some(term) = &block.terminator {
-                if !terminator_supported(term) {
-                    return false;
-                }
+            if let Some(term) = &block.terminator
+                && !terminator_supported(term)
+            {
+                return false;
             }
         }
     }

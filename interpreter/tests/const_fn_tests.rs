@@ -365,6 +365,45 @@ fn the_same_failure_in_a_const_initialiser_is_an_error() {
     assert!(err.contains("E0017"), "{err}");
 }
 
+// --- C6: the fold runs on the IR VM ------------------------------
+
+#[test]
+fn a_fold_that_would_read_a_str_const_is_refused() {
+    // A `str` const cannot be folded to a literal (scalar-only), so a
+    // const whose value depends on one cannot be known at compile
+    // time. The pre-C6 tree-walker fold answered this from its
+    // environment; the C6 fold refuses loudly instead, with the
+    // offending name — the program was already uncompilable on the
+    // compiled backends, and a silent placeholder answer would be
+    // worse than the error.
+    let err = test_program(
+        r#"
+        const S: str = "hello"
+        const fn f() -> u64 { if S == "hello" { 1u64 } else { 0u64 } }
+        const A: u64 = f()
+        fn main() -> u64 { A }
+        "#,
+    )
+    .expect_err("the value depends on a str const, which has no literal form");
+    assert!(err.contains("E0017"), "{err}");
+    assert!(err.contains("`S`"), "{err}");
+}
+
+#[test]
+fn an_unforced_fold_that_would_read_a_str_const_is_left_alone() {
+    // The same dependency in an ordinary call: nothing forces the
+    // fold, so it is skipped and run time computes the answer from
+    // the real (run-time-evaluated) const.
+    assert_program_result_u64(
+        r#"
+        const S: str = "hello"
+        const fn f() -> u64 { if S == "hello" { 1u64 } else { 0u64 } }
+        fn main() -> u64 { f() }
+        "#,
+        1,
+    );
+}
+
 // --- C5: a value inside a type -----------------------------------
 
 #[test]

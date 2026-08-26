@@ -8,7 +8,7 @@
 
 use compiler_ir::{FuncId, ValueId};
 
-use crate::ir_vm::{RawSlot, Vm};
+use crate::{RawSlot, Vm};
 
 /// Handle a direct scalar call. The caller's `result` value (if any)
 /// will be filled when the callee reaches `Terminator::Return`.

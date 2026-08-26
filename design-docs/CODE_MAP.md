@@ -21,7 +21,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | 実行系 | 実体 | 備考 |
 |---|---|---|
 | **tree-walker** | `interpreter/src/evaluation/` | 参照実装。診断が最も詳しい |
-| **IR VM** | `interpreter/src/ir_vm/` | 既定エンジン。`compiler_lower` の IR を解釈 |
+| **IR VM** | `compiler_vm/` (interpreter の `ir_vm` は re-export + `host.rs` / `lift.rs` 境界層) | 既定エンジン。`compiler_lower` の IR を解釈 |
 | **AOT** | `compiler/src/codegen/` | 同じ IR を cranelift に落とす |
 | **interpreter JIT** | `interpreter/src/jit/` | **`compiler_lower` を通らない独自経路** |
 
@@ -48,13 +48,13 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 
 | 関心事 | 型検査 | tree-walker | lowering | IR VM 実行 |
 |---|---|---|---|---|
-| 二項演算 | `type_checker/expression.rs::visit_binary` | `evaluation/operators.rs::evaluate_binary` | `compiler_lower/src/expr_ops.rs::lower_binary` | `ir_vm/dispatch.rs::eval_binop` |
+| 二項演算 | `type_checker/expression.rs::visit_binary` | `evaluation/operators.rs::evaluate_binary` | `compiler_lower/src/expr_ops.rs::lower_binary` | `compiler_vm/src/dispatch.rs::eval_binop` |
 | 実行時トラップ (RUNTIME-TRAP: u64 underflow / 0 除算 / `MIN / -1`) | — | `evaluation/operators.rs::evaluate_arithmetic_op_v` | `expr_ops.rs` の `emit_u64_underflow_guard` / `emit_div_by_zero_guard` / `emit_div_overflow_guard` (どれも `emit_trap_unless` 経由) | (guard は IR に含まれる) |
 | 添字境界の実行時トラップ | — | `evaluation/slice.rs::resolve_array_index` | `array_access.rs::emit_index_guard` (定数 index は `resolve_const_index` がコンパイル時に弾く) | (guard は IR に含まれる) |
 | 契約による guard の除去 (CONTRACT-ELISION) | — | — | `contract_facts.rs::ContractFacts::from_requires` (事実の抽出) + `expr_ops.rs` の `contract_rules_out_zero` / `contract_rules_out_underflow` (guard 発行の抑止)、失効は `let_lowering.rs` の `facts.shadowed` | — |
 | 代入 | `type_checker/expression.rs::visit_assign` | `evaluation/operators.rs` | `compiler_lower/src/assign.rs::lower_assign` | — |
 | 演算子オーバーロード | `type_checker/expression.rs::visit_arith_binary` | `evaluation/operators.rs` | `compiler_lower/src/expr_ops.rs` | — |
-| キャスト (`as`) | `type_checker/collections.rs` | `evaluation/expression.rs` | `compiler_lower/src/expr.rs` | `ir_vm/dispatch.rs` |
+| キャスト (`as`) | `type_checker/collections.rs` | `evaluation/expression.rs` | `compiler_lower/src/expr.rs` | `compiler_vm/src/dispatch.rs` |
 
 ## 束縛・スコープ
 
@@ -165,7 +165,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | 式 | `parser/expr/` (`mod.rs` / `primary.rs` / `control.rs` / `match_.rs` / `macros.rs`) |
 | `assert_eq` / `dbg` 等のマクロ desugar | `parser/expr/macros.rs` |
 | 文字列補間の desugar (`.concat` chain) | lexer 側の `{...}` 切り出しは `frontend/src/lexer.l` (`split_format_spec`)、token 合成は `parser/expr/primary.rs::parse_interpolated_string`。合成 token の位置は `StringPart::Expr.offset` + `Parser::insert_token_at` (INTERP-DIAG-SPAN) |
-| format spec (`"{x:.2}"`) の文法 / pack / 描画 | `frontend/src/format_spec.rs` (**同じ bit layout の no_std 版が `compiler/runtime/toylang_rt` の `Spec`**)、実行は interpreter `evaluation/builtin.rs::format_object` / IR VM `ir_vm/heap.rs::format_value` / AOT・JIT `toy_format_*` |
+| format spec (`"{x:.2}"`) の文法 / pack / 描画 | `frontend/src/format_spec.rs` (**同じ bit layout の no_std 版が `compiler/runtime/toylang_rt` の `Spec`**)、実行は interpreter `evaluation/builtin.rs::format_object` / IR VM `compiler_vm/src/host.rs::format_value` (default method) / AOT・JIT `toy_format_*` |
 | AST プール / 位置プール | `frontend/src/ast/pool.rs`, `frontend/src/ast/builder.rs` |
 | AST キャッシュ (schema version) | `frontend/src/cache.rs` |
 

@@ -3,14 +3,21 @@
 //! Each instruction is executed against the current `Vm` state.
 //! Terminators are handled by the caller (`run_loop`) so this
 //! function only processes non-terminator instructions.
+//!
+//! Everything the interpreter used to reach for here — stdout, the
+//! heap manager, the allocator stack, the allocation counters — now
+//! arrives through the `VmHost` (COMPILE-TIME-EVAL C6), so this
+//! module has no crate-internal dependencies beyond `compiler_ir`.
 
 use compiler_ir::{BinOp, Const, InstKind, Instruction, LocalId, Type, UnaryOp};
 use string_interner::Symbol;
 
-use crate::ir_vm::{heap, RawSlot, Vm};
+use crate::host::VmHost;
+use crate::{RawSlot, Vm};
 
 /// Execute a single non-terminator instruction.
 pub fn execute(vm: &mut Vm, inst: &Instruction) {
+    let host = vm.host();
     match &inst.kind {
         InstKind::Const(c) => {
             let slot = const_to_slot(*c);
@@ -36,7 +43,7 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
             let result = if matches!(ty, Type::Str)
                 && matches!(*op, BinOp::Eq | BinOp::Ne)
             {
-                let eq = heap::read_str(unsafe { l.u64 }) == heap::read_str(unsafe { r.u64 });
+                let eq = host.read_str(unsafe { l.u64 }) == host.read_str(unsafe { r.u64 });
                 RawSlot::from_bool(if matches!(*op, BinOp::Eq) { eq } else { !eq })
             } else {
                 eval_binop(*op, l, r, ty)
@@ -92,11 +99,11 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
         }
         InstKind::Print { value, value_ty, newline } => {
             let v = vm.read_value(*value);
-            let text = format_scalar(v, *value_ty);
+            let text = format_scalar(host, v, *value_ty);
             if *newline {
-                crate::output::println_text(&text);
+                host.println_text(&text);
             } else {
-                crate::output::print_text(&text);
+                host.print_text(&text);
             }
         }
         InstKind::PrintStr { message, newline, .. } => {
@@ -106,29 +113,29 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| format!("printstr #{}", message.to_usize()));
             if *newline {
-                crate::output::println_text(&text);
+                host.println_text(&text);
             } else {
-                crate::output::print_text(&text);
+                host.print_text(&text);
             }
         }
         InstKind::PrintRaw { text, newline } => {
             if *newline {
-                crate::output::println_text(text);
+                host.println_text(text);
             } else {
-                crate::output::print_text(text);
+                host.print_text(text);
             }
         }
         InstKind::ConstStr { message, .. } => {
             if let Some(interner) = vm.interner() {
                 let text = interner.resolve(*message).unwrap_or("");
-                let addr = heap::alloc_str_bytes(text.as_bytes());
+                let addr = host.alloc_str_bytes(text.as_bytes());
                 if let Some((vid, _)) = inst.result {
                     vm.write_value(vid, RawSlot::from_u64(addr));
                 }
             }
         }
         InstKind::ConstStrBytes { bytes } => {
-            let addr = heap::alloc_str_bytes(bytes);
+            let addr = host.alloc_str_bytes(bytes);
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }
@@ -139,7 +146,7 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
             let stride = scalar_size_bytes(*elem_ty);
             let addr = base + unsafe { idx.u64 } * stride as u64;
             if let Some((vid, _)) = inst.result {
-                let result = heap::ptr_read(addr, 0, *elem_ty);
+                let result = host.ptr_read(addr, 0, *elem_ty);
                 if let Some(slot_val) = result {
                     vm.write_value(vid, slot_val);
                 }
@@ -151,11 +158,11 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
             let base = vm.current_frame().array_bases[slot.0 as usize];
             let stride = scalar_size_bytes(*elem_ty);
             let addr = base + unsafe { idx.u64 } * stride as u64;
-            heap::ptr_write(addr, 0, val, *elem_ty);
+            host.ptr_write(addr, 0, val, *elem_ty);
         }
         InstKind::HeapAlloc { size, site, .. } => {
             let sz = vm.read_value(*size);
-            let addr = heap::heap_alloc_at(unsafe { sz.u64 }, *site);
+            let addr = host.alloc_at(unsafe { sz.u64 }, *site);
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }
@@ -163,34 +170,32 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
         InstKind::HeapRealloc { ptr, new_size, .. } => {
             let p = vm.read_value(*ptr);
             let ns = vm.read_value(*new_size);
-            let addr = heap::heap_realloc(unsafe { p.u64 }, unsafe { ns.u64 });
+            let addr = host.realloc(unsafe { p.u64 }, unsafe { ns.u64 });
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }
         }
         InstKind::HeapFree { ptr, .. } => {
             let p = vm.read_value(*ptr);
-            heap::heap_free(unsafe { p.u64 });
+            host.free(unsafe { p.u64 });
         }
         InstKind::PtrRead { ptr, offset, elem_ty } => {
             let p = vm.read_value(*ptr);
             let off = vm.read_value(*offset);
-            let result = heap::ptr_read(unsafe { p.u64 }, unsafe { off.u64 }, *elem_ty);
-            if let Some((vid, _)) = inst.result {
-                if let Some(slot) = result {
-                    vm.write_value(vid, slot);
-                }
+            let result = host.ptr_read(unsafe { p.u64 }, unsafe { off.u64 }, *elem_ty);
+            if let (Some((vid, _)), Some(slot)) = (inst.result, result) {
+                vm.write_value(vid, slot);
             }
         }
         InstKind::PtrWrite { ptr, offset, value, value_ty } => {
             let p = vm.read_value(*ptr);
             let off = vm.read_value(*offset);
             let v = vm.read_value(*value);
-            heap::ptr_write(unsafe { p.u64 }, unsafe { off.u64 }, v, *value_ty);
+            host.ptr_write(unsafe { p.u64 }, unsafe { off.u64 }, v, *value_ty);
         }
         InstKind::StrLen { value } => {
             let v = vm.read_value(*value);
-            let len = heap::string_len(unsafe { v.u64 });
+            let len = host.string_len(unsafe { v.u64 });
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, RawSlot::from_u64(len));
             }
@@ -198,7 +203,7 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
         InstKind::StrConcat { a, b } => {
             let l = vm.read_value(*a);
             let r = vm.read_value(*b);
-            let addr = heap::concat_strings(unsafe { l.u64 }, unsafe { r.u64 });
+            let addr = host.concat_strings(unsafe { l.u64 }, unsafe { r.u64 });
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }
@@ -207,20 +212,20 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
             let l = unsafe { vm.read_value(*a).u64 };
             let r = unsafe { vm.read_value(*b).u64 };
             if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_bool(heap::str_eq(l, r)));
+                vm.write_value(vid, RawSlot::from_bool(host.str_eq(l, r)));
             }
         }
         InstKind::StrFromBytes { ptr, len } => {
             let p = unsafe { vm.read_value(*ptr).u64 };
             let n = unsafe { vm.read_value(*len).u64 };
-            let addr = heap::str_from_bytes(p, n);
+            let addr = host.str_from_bytes(p, n);
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }
         }
         InstKind::ToString { value, value_ty } => {
             let v = vm.read_value(*value);
-            let addr = heap::to_string_value(v, *value_ty);
+            let addr = host.to_string_value(v, *value_ty);
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }
@@ -229,7 +234,7 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
             // STR-INTERP-FMT: same shape as ToString, plus the packed
             // spec the parser fixed at compile time.
             let v = vm.read_value(*value);
-            let addr = heap::format_value(v, *value_ty, *spec);
+            let addr = host.format_value(v, *value_ty, *spec);
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }
@@ -239,7 +244,7 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
             let s = unsafe { vm.read_value(*src).u64 };
             let d = unsafe { vm.read_value(*dest).u64 };
             let n = unsafe { vm.read_value(*size).u64 };
-            heap::mem_copy(s, d, n);
+            host.mem_copy(s, d, n);
         }
         InstKind::CallWithSelfWriteback { target, args, ret_dest, self_dests, .. } => {
             // Phase 3c: `&mut self` call. The callee returns
@@ -265,23 +270,13 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
         }
         InstKind::AllocPush { handle } => {
             let h = vm.read_value(*handle);
-            crate::runtime_state::RT.with(|s| {
-                if let Some(ref mut rt) = *s.borrow_mut() {
-                    rt.alloc_push(unsafe { h.u64 });
-                }
-            });
+            host.alloc_push(unsafe { h.u64 });
         }
         InstKind::AllocPop => {
-            crate::runtime_state::RT.with(|s| {
-                if let Some(ref mut rt) = *s.borrow_mut() {
-                    rt.alloc_pop();
-                }
-            });
+            host.alloc_pop();
         }
         InstKind::AllocCurrent => {
-            let handle = crate::runtime_state::RT.with(|s| {
-                s.borrow().as_ref().map(|rt| rt.alloc_current()).unwrap_or(0)
-            });
+            let handle = host.alloc_current();
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, RawSlot::from_u64(handle));
             }
@@ -301,13 +296,12 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
                 vm.write_value(vid, RawSlot::from_bool(eq));
             }
         }
-        // MEMORY_PROFILING M4. The VM shares the interpreter's
-        // per-thread totals, which are always being kept, so there is
-        // nothing for `MemStatEnable` to turn on here — only the
-        // compiled runtime gates counting.
+        // MEMORY_PROFILING M4. The interpreter's counters are always
+        // being kept, so there is nothing for `MemStatEnable` to turn
+        // on here — only the compiled runtime gates counting.
         InstKind::MemStat { stat } => {
             let value = frontend::ast::MemStat::from_code(*stat)
-                .map(|s| crate::heap::profile().field(s))
+                .map(|s| host.mem_stat(s))
                 .unwrap_or(0);
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, RawSlot::from_u64(value));
@@ -315,12 +309,12 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
         }
         InstKind::MemStatEnable => {}
         InstKind::RecordAllocatorLayout { name, managed, live, free_blocks, largest } => {
-            let name_str = heap::read_str(unsafe { vm.read_value(*name).u64 });
+            let name_str = host.read_str(unsafe { vm.read_value(*name).u64 });
             let managed = unsafe { vm.read_value(*managed).u64 };
             let live = unsafe { vm.read_value(*live).u64 };
             let free_blocks = unsafe { vm.read_value(*free_blocks).u64 };
             let largest = unsafe { vm.read_value(*largest).u64 };
-            crate::heap::record_allocator_layout(&name_str, managed, live, free_blocks, largest);
+            host.record_allocator_layout(&name_str, managed, live, free_blocks, largest);
         }
         InstKind::AddressOf { local } => {
             // Phase 3c: pointer to an address-taken local's backing cell.
@@ -332,7 +326,7 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
         InstKind::LoadRef { ptr, ty } => {
             // Phase 3c: dereference a pointer to read a scalar of `ty`.
             let p = unsafe { vm.read_value(*ptr).u64 };
-            let result = heap::ptr_read(p, 0, *ty).unwrap_or_default();
+            let result = host.ptr_read(p, 0, *ty).unwrap_or_default();
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, result);
             }
@@ -341,7 +335,7 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
             // Phase 3c: write a scalar through a pointer.
             let p = unsafe { vm.read_value(*ptr).u64 };
             let v = vm.read_value(*value);
-            heap::ptr_write(p, 0, v, *ty);
+            host.ptr_write(p, 0, v, *ty);
         }
         InstKind::ArrayElemAddr { slot, index, elem_ty } => {
             let idx = vm.read_value(*index);
@@ -366,11 +360,11 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
             // capture `i` at +(i+1)*8). The fn_ptr stores the FuncId so
             // CallIndirect can dispatch back into the VM.
             let env_size = ((1 + captures.len()) as u64) * 8;
-            let addr = heap::heap_alloc(env_size);
-            heap::ptr_write(addr, 0, RawSlot::from_u64(target.0 as u64), Type::U64);
+            let addr = host.alloc_at(env_size, 0);
+            host.ptr_write(addr, 0, RawSlot::from_u64(target.0 as u64), Type::U64);
             for (i, (cap, cap_ty)) in captures.iter().zip(capture_tys.iter()).enumerate() {
                 let v = vm.read_value(*cap);
-                heap::ptr_write(addr, ((i + 1) * 8) as u64, v, *cap_ty);
+                host.ptr_write(addr, ((i + 1) * 8) as u64, v, *cap_ty);
             }
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, RawSlot::from_u64(addr));
@@ -381,7 +375,8 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
             // fn_ptr lives at env+0. The lifted closure body's first
             // parameter is the env_ptr, so prepend it to the user args.
             let env_ptr = unsafe { vm.read_value(*callee).u64 };
-            let fn_ptr = heap::ptr_read(env_ptr, 0, Type::U64)
+            let fn_ptr = host
+                .ptr_read(env_ptr, 0, Type::U64)
                 .map(|s| unsafe { s.u64 })
                 .unwrap_or(0);
             let target = compiler_ir::FuncId(fn_ptr as u32);
@@ -645,7 +640,7 @@ fn eval_cast(value: RawSlot, from: Type, to: Type) -> RawSlot {
     }
 }
 
-fn format_scalar(slot: RawSlot, ty: Type) -> String {
+fn format_scalar(host: &dyn VmHost, slot: RawSlot, ty: Type) -> String {
     match ty {
         Type::I64 => format!("{}", unsafe { slot.i64 }),
         Type::U64 => format!("{}", unsafe { slot.u64 }),
@@ -655,9 +650,9 @@ fn format_scalar(slot: RawSlot, ty: Type) -> String {
         Type::U16 => format!("{}", unsafe { slot.u64 as u16 }),
         Type::I32 => format!("{}", unsafe { slot.i64 as i32 }),
         Type::U32 => format!("{}", unsafe { slot.u64 as u32 }),
-        Type::F64 => heap::format_f64(unsafe { slot.f64 }),
+        Type::F64 => crate::heap::format_f64(unsafe { slot.f64 }),
         Type::Bool => format!("{}", unsafe { slot.bool }),
-        Type::Str => heap::read_str(unsafe { slot.u64 }),
+        Type::Str => host.read_str(unsafe { slot.u64 }),
         _ => format!("{:?}", unsafe { slot.u64 }),
     }
 }

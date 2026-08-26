@@ -14,7 +14,7 @@ toylang は 1 つのフロントエンド（lexer / parser / type checker）の�
 | **Tree-walker** | `interpreter/src/evaluation/` | AST を再帰 walk、`Rc<RefCell<Object>>` 値 | 言語全機能（リファレンス実装） |
 | **AOT compiler** | `compiler/src/codegen/` | IR → cranelift → object file → リンク | compiler MVP の範囲 |
 | **Cranelift JIT** | `interpreter/src/jit/` | AST → cranelift を直結（IR を経由しない） | scalar/数値中心、未対応は silent fallback |
-| **IR VM** | `interpreter/src/ir_vm/` | 共有 IR を直接 interpret（flat slot） | lower 可能なものほぼ全部（opt-in） |
+| **IR VM** | `compiler_vm/`（interpreter の `ir_vm` は境界層のみ） | 共有 IR を直接 interpret（flat slot） | lower 可能なものほぼ全部（opt-in） |
 
 - **Tree-walker** が意味論の正本（reference oracle）。新機能はまずここで動く。
 - **AOT / IR VM** は共有 IR (`compiler_ir`) を入力にするため、`compiler_lower` の
@@ -62,7 +62,7 @@ compiler            … AOT codegen + driver + CLI。
 | `compiler/src/codegen` | ~3.3k | IR → cranelift object |
 | `interpreter/src/evaluation` | ~6k | tree-walker |
 | `interpreter/src/jit` | ~9.3k | cranelift JIT |
-| `interpreter/src/ir_vm` | ~3.1k | IR VM |
+| `compiler_vm/src` | ~3.1k | IR VM |
 
 ## パイプライン
 
@@ -79,7 +79,7 @@ type-checked File（+ core modules を auto-load して統合）
         ▼
      compiler_ir::Module
         ├──────────► AOT: codegen → cranelift IR → object → cc/ld でリンク → 実行ファイル
-        └──────────► IR VM: ir_vm::run_module → flat slot 実行
+        └──────────► IR VM: compiler_vm::run_module → flat slot 実行
 
   （JIT は別経路: AST → jit/codegen → cranelift → メモリ上の関数ポインタを直接 call）
 ```
@@ -138,7 +138,7 @@ AOT と IR VM が共有する中間表現。SSA ではなく **typed local + 明
 `Terminator`（5 variant）: `Return(Vec<ValueId>)`（multi-value 可） / `Jump(BlockId)` /
 `Branch { cond, then_blk, else_blk }` / `Panic { message: Symbol }` / `Unreachable`。
 
-> **新 `InstKind` 追加時のチェックリスト**：VM dispatch (`ir_vm/dispatch.rs`) /
+> **新 `InstKind` 追加時のチェックリスト**：VM dispatch (`compiler_vm/src/dispatch.rs`) /
 > AOT codegen (`compiler/src/codegen/lower_inst.rs`) / IR Display / IR VM eligibility
 > の 4 箇所を更新する。
 
@@ -155,8 +155,8 @@ AOT と IR VM で **byte-uniform**（`__builtin_str_to_ptr` 互換）：
 `str` 値 = len フィールドのアドレス。`byte_start = str_ptr - len - 1`。
 `StrConcat` / `ToString` / `ConstStr` も同レイアウトの heap str を返す。
 AOT は `compiler/runtime/toylang_rt.c` の `toy_str_alloc` / `toy_str_concat` /
-`toy_to_string_<ty>`、IR VM は `ir_vm/heap.rs` の `alloc_str_bytes` / `concat_strings` /
-`read_str` で対称実装。
+`toy_to_string_<ty>`、IR VM は `compiler_vm/src/host.rs::VmHost` の default method
+(`alloc_str_bytes` / `concat_strings` / `read_str`) で対称実装。
 
 ## Lowering（`compiler_lower`）
 
@@ -210,9 +210,11 @@ lowering 時に埋め込まれるため、バックエンドは Branch / Panic �
 - str は同形 layout だが **function 境界（param/return）は禁止**（Object lifecycle 整合性）。
 - `compile_to_jit_main` がキャッシュ（program ポインタ identity がキー）。
 
-### IR VM（`interpreter/src/ir_vm/`）
+### IR VM（`compiler_vm/`）
 
 `Module` を flat slot で直接 interpret する VM。**opt-in**（`TOY_IR_VM=1`）。
+C6 以降、interpreter の `ir_vm` モジュールは `compiler_vm` の re-export +
+`host.rs`（`VmHost` 実装）/ `lift.rs`（AST→IR 境界）に縮小した。
 
 モジュール構成：
 
@@ -258,7 +260,8 @@ lowering 時に埋め込まれるため、バックエンドは Branch / Panic �
 ```
 execute_program(File, interner, ...) -> RcObject
   1. #[cfg(jit)]  jit::try_execute_main      （INTERPRETER_JIT=1 のとき。JIT が勝つ）
-  2.              ir_vm::lift::run_main_via_ir_vm（Phase 4 デフォルト。compound 戻りも対応）
+  2.              ir_vm::lift::run_main_via_ir_vm（Phase 4 デフォルト。compound 戻りも対応。
+                     VM 本体は compiler_vm、host は interpreter 側）
   3.              tree-walker（eval.evaluate_function）   ← fb_lower_err / ineligible の fallback
 ```
 

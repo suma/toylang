@@ -12,6 +12,7 @@ frontend = { path = "../frontend", features = ["serde"] }
 serde_json = "1.0"
 compiler_core = { path = "../compiler_core" }
 compiler_ir = { path = "../compiler_ir" }
+compiler_vm = { path = "../compiler_vm" }
 compiler_lower = { path = "../compiler_lower" }
 toylang_rt = { path = "../compiler/runtime/toylang_rt" }
 string-interner = "0.20.0"

@@ -5,6 +5,7 @@ members = [
     "interpreter",
     "compiler_core",
     "compiler_ir",
+    "compiler_vm",
     "compiler_lower",
     "compiler",
     "compiler/runtime/toylang_rt",

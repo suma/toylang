@@ -1346,9 +1346,10 @@ no way to call it.
 - Contextual with the declaration form: `const` followed by `fn` is
   the modifier, `const` followed by a name is a binding. It combines
   with `never_allocates` in either order.
-- The evaluator is the tree-walking interpreter, so a folded value is
-  by construction the value the program would have computed —
-  including wrapping `+` / `*`, truncated signed division, and the
+- The evaluator is the IR VM (`compiler_vm`) — the same engine the
+  run-time fast path executes — so a folded value is by construction
+  the value the program would have computed: same lowering, same trap
+  guards, same wrapping `+` / `*`, truncated signed division, and
   narrow-width widths.
 
 An array length may name a `const`:

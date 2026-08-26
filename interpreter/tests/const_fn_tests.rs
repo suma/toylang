@@ -435,6 +435,90 @@ fn an_array_length_may_name_a_const_that_names_another() {
     );
 }
 
+// --- C5 (COMPILE_TIME_EVAL.md 2): a length the compiler computes ---
+
+#[test]
+fn an_array_length_may_call_a_const_fn() {
+    // `[i64; double(2u64)]`: the parser defers the length, the fold
+    // runs the call on the IR VM (it lives in the expression pool,
+    // which the fold scans), and the driver bakes the count in before
+    // lowering. Every backend therefore sees `[i64; 4]`.
+    assert_program_result_u64(
+        r#"
+        const fn double(n: u64) -> u64 { n * 2u64 }
+        fn main() -> u64 {
+            val a: [i64; double(2u64)] = [1i64, 2i64, 3i64, 4i64]
+            (a[0] + a[3]) as u64
+        }
+        "#,
+        5,
+    );
+}
+
+#[test]
+fn a_computed_length_may_combine_calls_and_arithmetic() {
+    assert_program_result_u64(
+        r#"
+        const fn double(n: u64) -> u64 { n * 2u64 }
+        fn main() -> u64 {
+            val a: [i64; double(2u64) + 1u64] = [1i64, 2i64, 3i64, 4i64, 5i64]
+            (a[0] + a[4]) as u64
+        }
+        "#,
+        6,
+    );
+}
+
+#[test]
+fn a_computed_length_may_build_on_a_const() {
+    // `N + 1u64` — no call at all, but the parser defers it and the
+    // driver's literal reader (the same one the lowering uses) folds
+    // the arithmetic.
+    assert_program_result_u64(
+        r#"
+        const N: u64 = 2u64
+        fn main() -> u64 {
+            val a: [i64; N + 1u64] = [1i64, 2i64, 3i64]
+            (a[0] + a[2]) as u64
+        }
+        "#,
+        4,
+    );
+}
+
+#[test]
+fn a_computed_length_calling_a_plain_function_is_refused() {
+    let err = test_program(
+        r#"
+        fn plain(n: u64) -> u64 { n * 2u64 }
+        fn main() -> u64 {
+            val a: [i64; plain(2u64)] = [1i64, 2i64, 3i64, 4i64]
+            a[0] as u64
+        }
+        "#,
+    )
+    .expect_err("the compiler only runs const fns while compiling");
+    assert!(err.contains("E0017"), "{err}");
+    assert!(err.contains("not declared `const fn`"), "{err}");
+}
+
+#[test]
+fn a_computed_length_with_non_constant_arguments_is_refused() {
+    let err = test_program(
+        r#"
+        const fn double(n: u64) -> u64 { n * 2u64 }
+        const N: u64 = 2u64
+        fn main() -> u64 {
+            val a: [i64; double(N)] = [1i64, 2i64, 3i64, 4i64]
+            a[0] as u64
+        }
+        "#,
+    )
+    .expect_err("the fold only runs calls whose arguments are all literals");
+    assert!(err.contains("E0017"), "{err}");
+    assert!(err.contains("arguments are not all constants"), "{err}");
+}
+
 #[test]
 fn a_length_that_needs_computing_is_refused_with_the_reason() {
     // The limit is structural rather than a missing feature: a length

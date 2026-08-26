@@ -376,7 +376,11 @@ fn reconstruct_object(
             let elem_ty = elems.first()?;
             let mut values = Vec::new();
             let mut offset = 0;
-            for _ in 0..*size {
+            // The driver's CTFE pass has resolved every length by the
+            // time a program runs; a `Deferred` size here means the
+            // program skipped the driver, and has no count to read.
+            let n = size.literal_value().unwrap_or(0);
+            for _ in 0..n {
                 let (obj, consumed) =
                     reconstruct_object(&slots[offset..], elem_ty, module, interner)?;
                 values.push(Rc::new(RefCell::new(obj)));

@@ -80,23 +80,23 @@ impl<'a> TypeCheckerVisitor<'a> {
                         let single_element_type = element_types[0].clone();
 
                         // For dynamic arrays (size 0), return a dynamic array type
-                        if _size == 0 {
+                        if matches!(_size, ArraySize::Literal(0)) {
                             // Dynamic array: return [T] (dynamic array of same element type)
-                            return Ok(TypeDecl::Array(vec![single_element_type], 0));
+                            return Ok(TypeDecl::Array(vec![single_element_type], ArraySize::Literal(0)));
                         }
 
                         // Try to calculate slice size using array size for open-ended slices
-                        let array_size = _size;
+                        let array_size = _size.literal_value().unwrap_or(0);
                         let slice_size = self.calculate_slice_size(slice_info, array_size);
 
                         // If slice_size is 0, return dynamic array type
                         if slice_size == 0 {
-                            return Ok(TypeDecl::Array(vec![single_element_type], 0));
+                            return Ok(TypeDecl::Array(vec![single_element_type], ArraySize::Literal(0)));
                         }
 
                         // Create element_types with the correct number of elements
                         let result_element_types = vec![single_element_type; slice_size];
-                        Ok(TypeDecl::Array(result_element_types, slice_size))
+                        Ok(TypeDecl::Array(result_element_types, ArraySize::Literal(slice_size)))
                     }
                 }
             }
@@ -724,7 +724,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
 
-        Ok(TypeDecl::Array(element_types, elements.len()))
+        Ok(TypeDecl::Array(element_types, ArraySize::Literal(elements.len())))
     }
 
     /// Calculate slice size from constant literals if possible

@@ -91,30 +91,38 @@ impl<'a> Parser<'a> {
                 if self.peek() == Some(&Kind::Semicolon) {
                     self.next(); // consume semicolon
 
+                    // COMPILE-TIME-EVAL C5: a length may name a
+                    // top-level `const` (value known at parse time), or
+                    // be an expression the compiler must compute —
+                    // `[i64; double(2u64)]`, `[i64; N + 1u64]` — which
+                    // is parsed into the expression pool and resolved
+                    // by the driver's CTFE pass after type checking
+                    // (`TypeDecl::ArraySize::Deferred`).
                     let size = match self.peek().cloned() {
-                        Some(Kind::UInt64(n)) => {
+                        Some(Kind::UInt64(n)) if self.peek_n(1) == Some(&Kind::BracketClose) => {
                             self.next();
-                            n as usize
+                            ArraySize::Literal(n as usize)
                         }
-                        Some(Kind::Integer(s)) => {
+                        Some(Kind::Integer(s)) if self.peek_n(1) == Some(&Kind::BracketClose) => {
                             self.next();
-                            s.parse::<usize>().map_err(|_| {
-                                let location = self.current_source_location();
-                                ParserError::generic_error(location, format!("Invalid array size: {}", s))
-                            })?
+                            ArraySize::Literal(
+                                s.parse::<usize>().map_err(|_| {
+                                    let location = self.current_source_location();
+                                    ParserError::generic_error(location, format!("Invalid array size: {}", s))
+                                })?,
+                            )
                         }
-                        // COMPILE-TIME-EVAL C5: a length may name a
-                        // top-level `const`. The value has to be known
-                        // here — `TypeDecl::Array` carries a number and
-                        // every later pass reads it as one — so the
-                        // parser resolves it against the constants it
-                        // has already met, exactly as it resolves a
-                        // `type` alias.
-                        Some(Kind::Identifier(name)) => {
+                        // `N` alone: resolve against the constants the
+                        // parser has already met, exactly as it
+                        // resolves a `type` alias. The value has to be
+                        // known here — the literal form is baked into
+                        // `TypeDecl::Array` and every later pass reads
+                        // it as a number.
+                        Some(Kind::Identifier(name)) if self.peek_n(1) == Some(&Kind::BracketClose) => {
                             let sym = self.string_interner.get_or_intern(name.clone());
                             self.next();
                             match self.const_lengths.get(&sym) {
-                                Some(size) => *size as usize,
+                                Some(size) => ArraySize::Literal(*size as usize),
                                 None => {
                                     let location = self.current_source_location();
                                     return Err(ParserError::generic_error(
@@ -128,18 +136,30 @@ impl<'a> Parser<'a> {
                                 }
                             }
                         }
+                        // Anything else — a call, arithmetic, a parenthesised
+                        // expression — is a length the compiler computes.
                         _ => {
-                            let location = self.current_source_location();
-                            return Err(ParserError::generic_error(location, "Expected array size or underscore".to_string()))
+                            let length = self.parse_expr_impl().map_err(|_| {
+                                let location = self.current_source_location();
+                                ParserError::generic_error(
+                                    location,
+                                    "Expected array size or underscore".to_string(),
+                                )
+                            })?;
+                            ArraySize::Deferred(length)
                         }
                     };
 
                     self.expect_err(&Kind::BracketClose)?;
-                    Ok(TypeDecl::Array(vec![element_type; size], size))
+                    let n = match &size {
+                        ArraySize::Literal(n) => *n,
+                        ArraySize::Deferred(_) => 1,
+                    };
+                    Ok(TypeDecl::Array(vec![element_type; n], size))
                 } else {
                     // Dynamic array type [T] with no size specified
                     self.expect_err(&Kind::BracketClose)?;
-                    Ok(TypeDecl::Array(vec![element_type], 0))
+                    Ok(TypeDecl::Array(vec![element_type], ArraySize::Literal(0)))
                 }
             }
             Some(Kind::Bool) => {

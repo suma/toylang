@@ -251,10 +251,14 @@ impl<'a> TypeCheckerVisitor<'a> {
             TypeDecl::String => "str".to_string(),
             TypeDecl::Unit => "()".to_string(),
             TypeDecl::Array(element_types, size) => {
+                let size_text = match size {
+                    ArraySize::Literal(n) => n.to_string(),
+                    ArraySize::Deferred(_) => "<computed>".to_string(),
+                };
                 if element_types.len() == 1 {
-                    format!("[{}; {}]", self.format_type_for_error(&element_types[0]), size)
+                    format!("[{}; {}]", self.format_type_for_error(&element_types[0]), size_text)
                 } else {
-                    format!("[mixed; {}]", size)
+                    format!("[mixed; {}]", size_text)
                 }
             },
             TypeDecl::Tuple(types) => {
@@ -629,13 +633,13 @@ impl<'a> TypeCheckerVisitor<'a> {
             (TypeDecl::Int64, TypeDecl::UInt64) => true,  // Allow signed/unsigned conversion
 
             // Dynamic array [T] (size 0) is compatible with fixed-size array [T; N]
-            (TypeDecl::Array(expected_elems, 0), TypeDecl::Array(actual_elems, _))
+            (TypeDecl::Array(expected_elems, ArraySize::Literal(0)), TypeDecl::Array(actual_elems, _))
                 // Dynamic array can accept any size array with compatible element type
                 if expected_elems.len() == 1 && !actual_elems.is_empty() => {
                     actual_elems.iter().all(|elem| self.are_types_compatible(&expected_elems[0], elem))
                 }
             // Fixed-size array [T; N] is compatible with dynamic array [T] (size 0)
-            (TypeDecl::Array(expected_elems, _), TypeDecl::Array(actual_elems, 0))
+            (TypeDecl::Array(expected_elems, _), TypeDecl::Array(actual_elems, ArraySize::Literal(0)))
                 // Fixed array can accept dynamic array result with compatible element type
                 if actual_elems.len() == 1 && !expected_elems.is_empty() => {
                     expected_elems.iter().all(|elem| self.are_types_compatible(elem, &actual_elems[0]))
@@ -714,7 +718,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
                 _ => {
                     return Err(TypeCheckError::type_mismatch(
-                        TypeDecl::Array(element_types.clone(), 0),
+                        TypeDecl::Array(element_types.clone(), ArraySize::Literal(0)),
                         value_type.clone()
                     ));
                 }

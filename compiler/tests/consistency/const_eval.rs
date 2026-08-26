@@ -243,3 +243,21 @@ fn a_folded_expression_still_traps_where_the_language_traps() {
         assert_ne!(compiled, 0, "the compiled binary should exit non-zero for `{expr}`");
     }
 }
+
+// --- C5: a computed array length is a literal length --------------
+
+#[test]
+fn a_computed_array_length_matches_a_literal_one() {
+    // `[i64; double(2u64)]` is resolved to `[i64; 4]` before lowering,
+    // so the two spellings must behave identically on every backend.
+    let computed = "const fn double(n: u64) -> u64 { n * 2u64 }\n\
+                    fn main() -> u64 { val a: [i64; double(2u64)] = [1i64, 2i64, 3i64, 4i64]  (a[0] + a[3]) as u64 }\n";
+    let literal = "fn main() -> u64 { val a: [i64; 4] = [1i64, 2i64, 3i64, 4i64]  (a[0] + a[3]) as u64 }\n";
+    assert_consistent(computed, "c5_computed_length");
+    assert_consistent(literal, "c5_literal_length");
+    assert_eq!(
+        interpreter_value(computed),
+        interpreter_value(literal),
+        "a computed length and the literal it resolves to must agree"
+    );
+}

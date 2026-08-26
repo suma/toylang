@@ -1,5 +1,38 @@
 use string_interner::DefaultSymbol;
 
+use crate::ast::ExprRef;
+
+/// The fixed size of an array type (COMPILE-TIME-EVAL C5).
+///
+/// Most array types carry a count baked in while parsing. A length
+/// the compiler must *compute* — `[i64; double(2u64)]`, `[i64; N +
+/// 1u64]` — is parsed into the expression pool and deferred: the
+/// driver's CTFE pass evaluates it (after the fold has folded the
+/// calls inside it) and replaces the `Deferred` form with a
+/// `Literal`. Until then the type checker treats a `Deferred` size as
+/// unknown — it validates the element type but not the count.
+#[derive(Debug, PartialEq, Clone, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ArraySize {
+    /// A concrete count.
+    Literal(usize),
+    /// An expression the compiler must evaluate before lowering,
+    /// pointing into the expression pool.
+    Deferred(ExprRef),
+}
+
+impl ArraySize {
+    /// The count, for the passes that can only run once the length
+    /// has been resolved. `None` while a `Deferred` length is still
+    /// waiting for the driver's CTFE pass.
+    pub fn literal_value(&self) -> Option<usize> {
+        match self {
+            ArraySize::Literal(n) => Some(*n),
+            ArraySize::Deferred(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TypeDecl {
@@ -22,7 +55,7 @@ pub enum TypeDecl {
     Identifier(DefaultSymbol),
     String,
     Number,  // Type-unspecified numeric literal for type inference
-    Array(Vec<TypeDecl>, usize),  // element types and fixed size
+    Array(Vec<TypeDecl>, ArraySize),  // element types and fixed size
     Struct(DefaultSymbol, Vec<TypeDecl>),  // struct type with type parameters
     Dict(Box<TypeDecl>, Box<TypeDecl>),  // Dict<K, V> - key type and value type
     Self_,  // Self type within impl blocks
@@ -202,6 +235,32 @@ impl TypeDecl {
                 e1.len() == e2.len()
                     && e1.iter().zip(e2.iter()).all(|(a, b)| a.is_equivalent(b))
             }
+            // COMPILE-TIME-EVAL C5: a computed length (`[i64;
+            // double(2u64)]`, still `Deferred` while the driver's
+            // CTFE pass resolves it) is checked for its element type
+            // but not its count. A literal length keeps the existing
+            // count comparison, which is also what catches an array
+            // literal of the wrong size against a declared type.
+            (TypeDecl::Array(xs, nx), TypeDecl::Array(ys, ny)) => {
+                let deferred = matches!(nx, ArraySize::Deferred(_))
+                    || matches!(ny, ArraySize::Deferred(_));
+                if let (ArraySize::Literal(a), ArraySize::Literal(b)) = (nx, ny)
+                    && a != b
+                {
+                    return false;
+                }
+                if deferred {
+                    // The deferred form carries a single representative
+                    // element; a literal carries one per element.
+                    match (xs.first(), ys.first()) {
+                        (Some(x), Some(y)) => x.is_equivalent(y),
+                        _ => true,
+                    }
+                } else {
+                    xs.len() == ys.len()
+                        && xs.iter().zip(ys.iter()).all(|(a, b)| a.is_equivalent(b))
+                }
+            }
             // Generic types are compatible with any type during inference
             (TypeDecl::Generic(_), _) | (_, TypeDecl::Generic(_)) => true,
             // Unknown types are compatible with any type
@@ -322,7 +381,7 @@ impl TypeDecl {
                 let new_elements = element_types.iter()
                     .map(|t| t.substitute_generics(substitutions))
                     .collect();
-                TypeDecl::Array(new_elements, *size)
+                TypeDecl::Array(new_elements, size.clone())
             },
             TypeDecl::Dict(key_type, value_type) => {
                 // Recursively substitute in dictionary key and value types
@@ -462,13 +521,16 @@ impl TypeDecl {
                 format!("{}{}", resolve(name), args(params)?)
             }
             // A zero size is how the parser records the unsized form
-            // `[T]`; a sized array keeps its length.
+            // `[T]`; a sized array keeps its length. A length the
+            // compiler computes (`[i64; double(2u64)]`) is displayed
+            // with a placeholder until the driver's CTFE pass has
+            // resolved it.
             TypeDecl::Array(elements, size) => {
                 let element = elements.first().unwrap_or(&TypeDecl::Unknown).source_name(interner)?;
-                if *size == 0 {
-                    format!("[{element}]")
-                } else {
-                    format!("[{element}; {size}]")
+                match size {
+                    ArraySize::Literal(0) => format!("[{element}]"),
+                    ArraySize::Literal(n) => format!("[{element}; {n}]"),
+                    ArraySize::Deferred(_) => format!("[{element}; <computed>]"),
                 }
             }
             TypeDecl::Dict(key, value) => format!(

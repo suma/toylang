@@ -101,11 +101,12 @@ impl ContractMessages {
     }
 }
 
-mod consts;
+pub mod consts;
+pub use consts::{eval_const_expr, eval_const_expr_in_pool};
+use consts::ConstValues;
 
 /// COMPILE-TIME-EVAL C2: what a constant operation produces.
 mod fold;
-use consts::ConstValues;
 
 mod array_layout;
 

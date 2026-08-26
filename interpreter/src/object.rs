@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use frontend::type_decl::TypeDecl;
+use frontend::type_decl::{ArraySize, TypeDecl};
 use frontend::ast::ExprRef;
 use string_interner::DefaultSymbol;
 use crate::heap::Allocator;
@@ -582,11 +582,11 @@ impl Object {
             Object::ConstString(_) | Object::String(_) => TypeDecl::String,
             Object::Array(elements) => {
                 if elements.is_empty() {
-                    TypeDecl::Array(vec![], 0)
+                    TypeDecl::Array(vec![], ArraySize::Literal(0))
                 } else {
                     let element_type = elements[0].borrow().get_type();
                     let element_types = vec![element_type; elements.len()];
-                    TypeDecl::Array(element_types, elements.len())
+                    TypeDecl::Array(element_types, ArraySize::Literal(elements.len()))
                 }
             }
             Object::Struct { type_name, .. } => {

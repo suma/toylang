@@ -374,9 +374,20 @@ impl<'a> AstIntegrationContext<'a> {
                 let new_elems = self.remap_type_decls(elems)?;
                 TypeDecl::Tuple(new_elems)
             }
-            TypeDecl::Array(elems, n) => {
+            TypeDecl::Array(elems, size) => {
                 let new_elems = self.remap_type_decls(elems)?;
-                TypeDecl::Array(new_elems, *n)
+                let new_size = match size {
+                    // COMPILE-TIME-EVAL C5: a computed length's
+                    // expression references the module's pool and
+                    // interner; remap it like any other expression.
+                    frontend::type_decl::ArraySize::Deferred(expr) => {
+                        frontend::type_decl::ArraySize::Deferred(
+                            self.map_expr(expr, "array length")?,
+                        )
+                    }
+                    other => other.clone(),
+                };
+                TypeDecl::Array(new_elems, new_size)
             }
             TypeDecl::Dict(k, v) => TypeDecl::Dict(
                 Box::new(self.remap_type_decl(k)?),

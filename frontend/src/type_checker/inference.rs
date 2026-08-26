@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 use crate::ast::ExprRef;
-use crate::type_decl::TypeDecl;
+use crate::type_decl::{ArraySize, TypeDecl};
 
 /// Information about a generic function or struct instantiation
 #[derive(Debug, Clone, PartialEq)]
@@ -336,12 +336,27 @@ impl TypeInferenceState {
                         .all(|(x, y)| Self::same_type_modulo_spelling(x, y))
             }
             (TypeDecl::Array(xs, nx), TypeDecl::Array(ys, ny)) => {
-                nx == ny
-                    && xs.len() == ys.len()
-                    && xs
-                        .iter()
-                        .zip(ys.iter())
-                        .all(|(x, y)| Self::same_type_modulo_spelling(x, y))
+                // COMPILE-TIME-EVAL C5: a `Deferred` size (a computed
+                // length awaiting the driver's CTFE pass) matches any
+                // count; only the element type is compared.
+                let deferred = matches!(nx, ArraySize::Deferred(_))
+                    || matches!(ny, ArraySize::Deferred(_));
+                if let (ArraySize::Literal(a), ArraySize::Literal(b)) = (nx, ny)
+                    && a != b
+                {
+                    return false;
+                }
+                if deferred {
+                    match (xs.first(), ys.first()) {
+                        (Some(x), Some(y)) => Self::same_type_modulo_spelling(x, y),
+                        _ => true,
+                    }
+                } else {
+                    xs.len() == ys.len()
+                        && xs.iter()
+                            .zip(ys.iter())
+                            .all(|(x, y)| Self::same_type_modulo_spelling(x, y))
+                }
             }
             (TypeDecl::Dict(ka, va), TypeDecl::Dict(kb, vb)) => {
                 Self::same_type_modulo_spelling(ka, kb)
@@ -401,9 +416,17 @@ impl TypeInferenceState {
             
             // Structural unification
             (TypeDecl::Array(left_elem, left_size), TypeDecl::Array(right_elem, right_size)) => {
-                if left_size != right_size || left_elem.len() != right_elem.len() {
+                // COMPILE-TIME-EVAL C5: a computed length is not known
+                // yet, so its count cannot constrain unification.
+                let sizes_agree = match (left_size, right_size) {
+                    (ArraySize::Literal(a), ArraySize::Literal(b)) => a == b,
+                    _ => true,
+                };
+                if !sizes_agree {
                     return Err("Array structure mismatch".to_string());
                 }
+                // The deferred form carries a single representative
+                // element; zip over the shorter side either way.
                 let mut new_constraints = Vec::new();
                 for (l_elem, r_elem) in left_elem.iter().zip(right_elem.iter()) {
                     new_constraints.push(TypeConstraint {
@@ -537,7 +560,7 @@ impl TypeInferenceState {
                     .iter()
                     .map(|elem| self.apply_solution(elem, solution))
                     .collect();
-                TypeDecl::Array(substituted_elements, *size)
+                TypeDecl::Array(substituted_elements, size.clone())
             }
             TypeDecl::Tuple(elements) => {
                 let substituted_elements: Vec<_> = elements
@@ -604,8 +627,8 @@ mod tests {
         
         // Add constraint: Array<T, 2> = Array<i64, 2>
         inference.add_constraint(
-            TypeDecl::Array(vec![TypeDecl::Generic(t_param)], 2),
-            TypeDecl::Array(vec![TypeDecl::Int64], 2),
+            TypeDecl::Array(vec![TypeDecl::Generic(t_param)], ArraySize::Literal(2)),
+            TypeDecl::Array(vec![TypeDecl::Int64], ArraySize::Literal(2)),
             ConstraintContext::Generic
         );
         
@@ -671,9 +694,9 @@ mod tests {
         assert_eq!(result, TypeDecl::UInt64);
         
         // Test array substitution
-        let array_type = TypeDecl::Array(vec![TypeDecl::Generic(t_param)], 3);
+        let array_type = TypeDecl::Array(vec![TypeDecl::Generic(t_param)], ArraySize::Literal(3));
         let result = inference.apply_solution(&array_type, &solution);
-        assert_eq!(result, TypeDecl::Array(vec![TypeDecl::UInt64], 3));
+        assert_eq!(result, TypeDecl::Array(vec![TypeDecl::UInt64], ArraySize::Literal(3)));
         
         // Test tuple substitution
         let tuple_type = TypeDecl::Tuple(vec![TypeDecl::Generic(t_param), TypeDecl::Bool]);

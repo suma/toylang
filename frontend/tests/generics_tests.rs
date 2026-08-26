@@ -11,7 +11,7 @@
 //! - Generic type unification
 //! - Instantiation recording and tracking
 
-use frontend::type_decl::TypeDecl;
+use frontend::type_decl::{ArraySize, TypeDecl};
 use string_interner::{DefaultStringInterner, StringInterner};
 
 mod generic_compilation {
@@ -47,12 +47,15 @@ mod type_substitution {
         let mut interner: DefaultStringInterner = StringInterner::new();
         let t_param = interner.get_or_intern("T");
 
-        let generic_array = TypeDecl::Array(vec![TypeDecl::Generic(t_param)], 3);
+        let generic_array = TypeDecl::Array(vec![TypeDecl::Generic(t_param)], ArraySize::Literal(3));
         let mut substitutions = std::collections::HashMap::new();
         substitutions.insert(t_param, TypeDecl::Int64);
 
         let substituted_array = generic_array.substitute_generics(&substitutions);
-        assert_eq!(substituted_array, TypeDecl::Array(vec![TypeDecl::Int64], 3));
+        assert_eq!(
+            substituted_array,
+            TypeDecl::Array(vec![TypeDecl::Int64], ArraySize::Literal(3))
+        );
     }
 
     #[test]
@@ -61,8 +64,8 @@ mod type_substitution {
         let t_param = interner.get_or_intern("T");
 
         let generic_nested = TypeDecl::Array(
-            vec![TypeDecl::Array(vec![TypeDecl::Generic(t_param)], 2)],
-            3,
+            vec![TypeDecl::Array(vec![TypeDecl::Generic(t_param)], ArraySize::Literal(2))],
+            ArraySize::Literal(3),
         );
         let mut substitutions = std::collections::HashMap::new();
         substitutions.insert(t_param, TypeDecl::UInt64);
@@ -70,7 +73,10 @@ mod type_substitution {
         let substituted = generic_nested.substitute_generics(&substitutions);
         assert_eq!(
             substituted,
-            TypeDecl::Array(vec![TypeDecl::Array(vec![TypeDecl::UInt64], 2)], 3)
+            TypeDecl::Array(
+                vec![TypeDecl::Array(vec![TypeDecl::UInt64], ArraySize::Literal(2))],
+                ArraySize::Literal(3)
+            )
         );
     }
 
@@ -253,11 +259,18 @@ mod generic_type_inference {
         let mut interner: DefaultStringInterner = StringInterner::new();
         let t_param = interner.get_or_intern("T");
 
-        let generic_array = TypeDecl::Array(vec![TypeDecl::Generic(t_param)], 5);
-        let concrete_array = TypeDecl::Array(vec![TypeDecl::Int64], 5);
+        let generic_array =
+            TypeDecl::Array(vec![TypeDecl::Generic(t_param)], ArraySize::Literal(5));
+        let concrete_array = TypeDecl::Array(vec![TypeDecl::Int64], ArraySize::Literal(5));
 
         // Element type should match for unification
-        assert_eq!(generic_array, TypeDecl::Array(vec![TypeDecl::Generic(t_param)], 5));
-        assert_eq!(concrete_array, TypeDecl::Array(vec![TypeDecl::Int64], 5));
+        assert_eq!(
+            generic_array,
+            TypeDecl::Array(vec![TypeDecl::Generic(t_param)], ArraySize::Literal(5))
+        );
+        assert_eq!(
+            concrete_array,
+            TypeDecl::Array(vec![TypeDecl::Int64], ArraySize::Literal(5))
+        );
     }
 }

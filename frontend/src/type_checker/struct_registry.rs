@@ -66,7 +66,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     .iter()
                     .map(|elem| self.substitute_type_params(elem, mapping))
                     .collect();
-                TypeDecl::Array(substituted_elements, *size)
+                TypeDecl::Array(substituted_elements, size.clone())
             }
             TypeDecl::Dict(key_type, value_type) => {
                 let substituted_key = self.substitute_type_params(key_type, mapping);

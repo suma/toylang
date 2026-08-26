@@ -200,7 +200,7 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
             BuiltinMethod::StrContains => Ok(TypeDecl::Bool),
             BuiltinMethod::StrSplit => Ok(TypeDecl::Array(
                 vec![TypeDecl::String],
-                0,
+                ArraySize::Literal(0),
             )),
         }
     }

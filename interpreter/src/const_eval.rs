@@ -79,7 +79,7 @@ use compiler_lower::ContractMessages;
 use compiler_vm::slot::RawSlot;
 use frontend::ast::{Expr, ExprRef, File, Function, Node, Stmt, StmtRef, TestCase, Visibility};
 use frontend::type_checker::error::TypeCheckError;
-use frontend::type_decl::TypeDecl;
+use frontend::type_decl::{ArraySize, TypeDecl};
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 use crate::ir_vm::host::InterpreterHost;
@@ -239,6 +239,7 @@ fn evaluate(
             &stub_ref,
             &stub_syms,
             Some((idx, decl_value, wrapper_sym)),
+            const_fns,
         ) else {
             // The program does not lower at all; the ordinary backends
             // say why, and nothing here can be folded. Reporting a
@@ -306,6 +307,7 @@ fn evaluate(
             &stub_ref,
             &stub_syms,
             None,
+            const_fns,
         ) else {
             return report;
         };
@@ -376,6 +378,12 @@ fn evaluate(
 /// synthetic zero-argument function registered as a `test` block, so
 /// the lowering treats it as an entry point and lowers its body.
 ///
+/// `const_fn_entries` registers every `const fn` as an entry point as
+/// well: the fold also runs calls that live in *type annotations*
+/// (an array length `[i64; double(2u64)]`), which no function body
+/// calls, so without this the callee's body would never be lowered
+/// and the VM could not execute it.
+///
 /// The program is restored (stubs and wrapper both) before returning;
 /// the returned module is what the fold runs.
 fn lower_for_fold(
@@ -385,6 +393,7 @@ fn lower_for_fold(
     stub_ref: &ExprRef,
     stub_syms: &HashSet<DefaultSymbol>,
     wrapper: Option<(usize, ExprRef, DefaultSymbol)>,
+    const_fn_entries: &HashSet<DefaultSymbol>,
 ) -> Option<Module> {
     // 1. Stub every const the fold does not know yet.
     let mut saved: Vec<(usize, ExprRef)> = Vec::new();
@@ -396,7 +405,10 @@ fn lower_for_fold(
     for (j, _) in &saved {
         program.consts[*j].value = *stub_ref;
     }
-    // 2. The wrapper, when this lowering is for one const's value.
+    // 2. The wrapper, when this lowering is for one const's value —
+    //    and every `const fn`, whose bodies the opportunistic pass
+    //    may need even though no function body calls them (array
+    //    lengths live in type annotations).
     if let Some((idx, original, sym)) = wrapper {
         let body = program.statement.add(Stmt::Expression(original));
         let function = Rc::new(Function {
@@ -424,11 +436,21 @@ fn lower_for_fold(
             line: 0,
         });
     }
+    for (i, sym) in const_fn_entries.iter().enumerate() {
+        program.tests.push(TestCase {
+            name: format!("__ctfe_fn_{i}"),
+            function: *sym,
+            line: 0,
+        });
+    }
     // 3. Lower.
     let module = compiler_lower::lower_program(program, interner, contract_msgs, false).ok();
     // 4. Restore (wrapper first, then the stubs).
-    if wrapper.is_some() {
+    let extra = const_fn_entries.len();
+    for _ in 0..extra + usize::from(wrapper.is_some()) {
         program.tests.pop();
+    }
+    if wrapper.is_some() {
         program.function.pop();
     }
     for (j, value) in saved {
@@ -952,4 +974,350 @@ fn err_at(program: &File, expr_ref: &ExprRef, context: &str, detail: String) -> 
         error = error.with_location(*location);
     }
     error
+}
+
+// ---------------------------------------------------------------------------
+// COMPILE-TIME-EVAL C5: computed array lengths
+// ---------------------------------------------------------------------------
+
+/// Resolve every `[T; <expr>]` length whose value the compiler can
+/// compute, replacing the parser's `ArraySize::Deferred` with a
+/// `Literal` so every later pass sees a number.
+///
+/// Runs after the fold, which has already folded the literal-argument
+/// `const fn` calls inside these expressions — they sit in the
+/// expression pool, and the fold scans the whole pool — so what is
+/// left is a tree of literals, folded consts and arithmetic.
+/// `compiler_lower::eval_const_expr`, the same literal reader the
+/// lowering uses, turns that into a count. A length that is still not
+/// constant at this point is a compile error, with the reason: the
+/// array's size has to exist before lowering, exactly like a `const`
+/// initialiser.
+pub fn resolve_array_lengths(
+    program: &mut File,
+    interner: &DefaultStringInterner,
+) -> Vec<TypeCheckError> {
+    // The consts whose initialisers the fold (or the parser) turned
+    // into literals. Built leniently: a `str` const has no scalar
+    // value and is simply absent from the map.
+    let mut const_values: HashMap<DefaultSymbol, compiler_ir::Const> = HashMap::new();
+    for c in &program.consts {
+        if let Some(v) =
+            compiler_lower::eval_const_expr(&c.value, program, &const_values, interner)
+        {
+            const_values.insert(c.name, v);
+        }
+    }
+
+    let mut errors: Vec<TypeCheckError> = Vec::new();
+    let const_fn_names: HashSet<DefaultSymbol> = program
+        .function
+        .iter()
+        .filter(|f| f.const_fn && !f.is_extern)
+        .map(|f| f.name)
+        .collect();
+
+    // Hold the pools apart from the lists being rewritten so the
+    // evaluation can borrow them while the walk mutates.
+    let File { function, consts, statement, expression, location_pool, .. } = program;
+
+    // Functions: parameters, return type, generic bounds.
+    for f in function.iter_mut() {
+        let func = Rc::make_mut(f);
+        for (_, ty) in func.parameter.iter_mut() {
+            resolve_size_in_type(ty, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+        }
+        if let Some(ret) = func.return_type.as_mut() {
+            resolve_size_in_type(ret, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+        }
+        for bound in func.generic_bounds.values_mut() {
+            resolve_size_in_type(bound, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+        }
+    }
+
+    // Top-level const declarations.
+    for c in consts.iter_mut() {
+        resolve_size_in_type(&mut c.type_decl, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+    }
+
+    // Statements — the same shapes the alias-resolver walks.
+    let n = statement.len();
+    for i in 0..n {
+        let stmt_ref = StmtRef(i as u32);
+        let Some(stmt) = statement.get(&stmt_ref) else {
+            continue;
+        };
+        let new_stmt = match stmt {
+            Stmt::Val(name, Some(ty), e) => {
+                let mut ty = ty.clone();
+                resolve_size_in_type(&mut ty, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+                Stmt::Val(name, Some(ty), e)
+            }
+            Stmt::Var(name, Some(ty), e) => {
+                let mut ty = ty.clone();
+                resolve_size_in_type(&mut ty, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+                Stmt::Var(name, Some(ty), e)
+            }
+            Stmt::StructDecl { name, generic_params, mut generic_bounds, mut fields, visibility } => {
+                for bound in generic_bounds.values_mut() {
+                    resolve_size_in_type(bound, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+                }
+                for f in fields.iter_mut() {
+                    resolve_size_in_type(&mut f.type_decl, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+                }
+                Stmt::StructDecl { name, generic_params, generic_bounds, fields, visibility }
+            }
+            Stmt::EnumDecl { name, generic_params, mut variants, visibility } => {
+                for v in variants.iter_mut() {
+                    for pt in v.payload_types.iter_mut() {
+                        resolve_size_in_type(pt, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+                    }
+                }
+                Stmt::EnumDecl { name, generic_params, variants, visibility }
+            }
+            Stmt::ImplBlock { target_type, mut target_type_args, methods, trait_name, mut trait_type_args } => {
+                for arg in target_type_args.iter_mut() {
+                    resolve_size_in_type(arg, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+                }
+                for arg in trait_type_args.iter_mut() {
+                    resolve_size_in_type(arg, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+                }
+                let mut new_methods = Vec::with_capacity(methods.len());
+                for m in methods {
+                    let mut nm = m.as_ref().clone();
+                    for (_, ty) in nm.parameter.iter_mut() {
+                        resolve_size_in_type(ty, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+                    }
+                    if let Some(ret) = nm.return_type.as_mut() {
+                        resolve_size_in_type(ret, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+                    }
+                    for bound in nm.generic_bounds.values_mut() {
+                        resolve_size_in_type(bound, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+                    }
+                    new_methods.push(Rc::new(nm));
+                }
+                Stmt::ImplBlock {
+                    target_type,
+                    target_type_args,
+                    methods: new_methods,
+                    trait_name,
+                    trait_type_args,
+                }
+            }
+            Stmt::TraitDecl { name, generic_params, mut methods, visibility } => {
+                for m in methods.iter_mut() {
+                    for (_, ty) in m.parameter.iter_mut() {
+                        resolve_size_in_type(ty, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+                    }
+                    if let Some(ret) = m.return_type.as_mut() {
+                        resolve_size_in_type(ret, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+                    }
+                    for bound in m.generic_bounds.values_mut() {
+                        resolve_size_in_type(bound, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+                    }
+                }
+                Stmt::TraitDecl { name, generic_params, methods, visibility }
+            }
+            Stmt::TypeAlias { name, generic_params, target, visibility } => {
+                let mut target = target.clone();
+                resolve_size_in_type(&mut target, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+                Stmt::TypeAlias { name, generic_params, target, visibility }
+            }
+            other => other,
+        };
+        statement.update(&stmt_ref, new_stmt);
+    }
+
+    // Expressions carrying types: casts and closure signatures.
+    let m = expression.len();
+    for i in 0..m {
+        let expr_ref = ExprRef(i as u32);
+        let Some(expr) = expression.get(&expr_ref) else {
+            continue;
+        };
+        let new_expr = match expr {
+            Expr::Cast(target, mut ty) => {
+                resolve_size_in_type(&mut ty, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+                Expr::Cast(target, ty)
+            }
+            Expr::Closure { mut params, mut return_type, body } => {
+                for (_, ty) in params.iter_mut() {
+                    resolve_size_in_type(ty, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+                }
+                if let Some(ret) = return_type.as_mut() {
+                    resolve_size_in_type(ret, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+                }
+                Expr::Closure { params, return_type, body }
+            }
+            _ => continue,
+        };
+        expression.update(&expr_ref, new_expr);
+    }
+
+    errors
+}
+
+/// Rewrite one type's `Deferred` array sizes, recursing into its
+/// compound parts.
+#[allow(clippy::too_many_arguments)]
+fn resolve_size_in_type(
+    ty: &mut TypeDecl,
+    expression: &frontend::ast::ExprPool,
+    location_pool: &frontend::ast::LocationPool,
+    const_values: &HashMap<DefaultSymbol, compiler_ir::Const>,
+    interner: &DefaultStringInterner,
+    const_fn_names: &HashSet<DefaultSymbol>,
+    errors: &mut Vec<TypeCheckError>,
+) {
+    match ty {
+        TypeDecl::Array(elems, size) => {
+            for elem in elems.iter_mut() {
+                resolve_size_in_type(elem, expression, location_pool, const_values, interner, const_fn_names, errors);
+            }
+            if let ArraySize::Deferred(expr_ref) = size {
+                let resolved = match compiler_lower::eval_const_expr_in_pool(
+                    expr_ref, expression, const_values, interner,
+                ) {
+                    Some(compiler_ir::Const::U64(n)) => Some(n as usize),
+                    Some(compiler_ir::Const::I64(n)) if n >= 0 => Some(n as usize),
+                    Some(compiler_ir::Const::Bool(_)) => {
+                        errors.push(err_at_in_pool(
+                            location_pool,
+                            expr_ref,
+                            "array length",
+                            "it evaluates to a bool, not a count".to_string(),
+                        ));
+                        None
+                    }
+                    _ => {
+                        errors.push(err_at_in_pool(
+                            location_pool,
+                            expr_ref,
+                            "array length",
+                            describe_length_failure(
+                                expression, expr_ref, interner, const_values, const_fn_names,
+                            ),
+                        ));
+                        None
+                    }
+                };
+                if let Some(n) = resolved {
+                    *size = ArraySize::Literal(n);
+                    *elems = vec![elems.first().cloned().unwrap_or(TypeDecl::Unknown); n];
+                }
+            }
+        }
+        TypeDecl::Struct(_, args) | TypeDecl::Enum(_, args) => {
+            for arg in args.iter_mut() {
+                resolve_size_in_type(arg, expression, location_pool, const_values, interner, const_fn_names, errors);
+            }
+        }
+        TypeDecl::Tuple(elems) => {
+            for elem in elems.iter_mut() {
+                resolve_size_in_type(elem, expression, location_pool, const_values, interner, const_fn_names, errors);
+            }
+        }
+        TypeDecl::Dict(k, v) => {
+            resolve_size_in_type(k, expression, location_pool, const_values, interner, const_fn_names, errors);
+            resolve_size_in_type(v, expression, location_pool, const_values, interner, const_fn_names, errors);
+        }
+        TypeDecl::Range(inner) | TypeDecl::Ref { inner, .. } => {
+            resolve_size_in_type(inner, expression, location_pool, const_values, interner, const_fn_names, errors);
+        }
+        TypeDecl::Function(params, ret) => {
+            for p in params.iter_mut() {
+                resolve_size_in_type(p, expression, location_pool, const_values, interner, const_fn_names, errors);
+            }
+            resolve_size_in_type(ret, expression, location_pool, const_values, interner, const_fn_names, errors);
+        }
+        _ => {}
+    }
+}
+
+/// Why a computed length stayed unevaluated: the first thing the walk
+/// finds that `compiler_lower::eval_const_expr` cannot fold.
+fn describe_length_failure(
+    expression: &frontend::ast::ExprPool,
+    expr_ref: &ExprRef,
+    interner: &DefaultStringInterner,
+    const_values: &HashMap<DefaultSymbol, compiler_ir::Const>,
+    const_fn_names: &HashSet<DefaultSymbol>,
+) -> String {
+    let mut found: Option<String> = None;
+    walk_pool(expression, expr_ref, &mut |expr| {
+        if found.is_some() {
+            return;
+        }
+        found = match expr {
+            Expr::Call(callee, _) if !const_fn_names.contains(callee) => Some(format!(
+                "it calls `{}`, which is not declared `const fn`",
+                interner.resolve(*callee).unwrap_or("?")
+            )),
+            Expr::Call(callee, _) => Some(format!(
+                "it calls `{}`, whose arguments are not all constants",
+                interner.resolve(*callee).unwrap_or("?")
+            )),
+            Expr::Identifier(sym) if !const_values.contains_key(sym) => Some(format!(
+                "it names `{}`, which has no constant value",
+                interner.resolve(*sym).unwrap_or("?")
+            )),
+            _ => None,
+        };
+    });
+    found.unwrap_or_else(|| "it could not be evaluated to a constant count".to_string())
+}
+
+/// Pool-scoped `err_at` for the length-resolution pass.
+fn err_at_in_pool(
+    location_pool: &frontend::ast::LocationPool,
+    expr_ref: &ExprRef,
+    context: &str,
+    detail: String,
+) -> TypeCheckError {
+    let mut error = TypeCheckError::const_eval(context.to_string(), detail);
+    if let Some(location) = location_pool.get_expr_location(expr_ref) {
+        error = error.with_location(*location);
+    }
+    error
+}
+
+/// Pool-scoped sibling of [`walk`], for the length-resolution pass.
+fn walk_pool(expression: &frontend::ast::ExprPool, expr_ref: &ExprRef, visit: &mut dyn FnMut(&Expr)) {
+    let Some(expr) = expression.get(expr_ref) else {
+        return;
+    };
+    visit(&expr);
+    let mut children: Vec<ExprRef> = Vec::new();
+    match &expr {
+        Expr::Call(_, args) => children.push(*args),
+        Expr::MethodCall(receiver, _, args) => {
+            children.push(*receiver);
+            children.extend(args.iter().copied());
+        }
+        Expr::AssociatedFunctionCall(_, _, args) | Expr::BuiltinCall(_, args) => {
+            children.extend(args.iter().copied())
+        }
+        Expr::Binary(_, lhs, rhs) => children.extend([*lhs, *rhs]),
+        Expr::Unary(_, operand) => children.push(*operand),
+        Expr::Cast(inner, _) => children.push(*inner),
+        Expr::ExprList(items)
+        | Expr::ArrayLiteral(items)
+        | Expr::TupleLiteral(items) => children.extend(items.iter().copied()),
+        Expr::StructLiteral(_, fields) => children.extend(fields.iter().map(|(_, v)| *v)),
+        Expr::FieldAccess(obj, _) | Expr::TupleAccess(obj, _) => children.push(*obj),
+        Expr::BuiltinMethodCall(receiver, _, args) => {
+            children.push(*receiver);
+            children.extend(args.iter().copied());
+        }
+        Expr::IfElifElse(cond, then_block, elifs, else_block) => {
+            children.extend([*cond, *then_block, *else_block]);
+            for (c, b) in elifs {
+                children.extend([*c, *b]);
+            }
+        }
+        _ => {}
+    }
+    for child in children {
+        walk_pool(expression, &child, visit);
+    }
 }

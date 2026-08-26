@@ -626,6 +626,14 @@ pub fn check_typing_diagnostics(
         );
     }
 
+    // COMPILE-TIME-EVAL C5: with the calls inside computed array
+    // lengths (`[i64; double(2u64)]`) folded to literals above, turn
+    // every such length into a concrete count. Only reached when the
+    // check passed, for the same reason as the fold.
+    if fn_errors.is_empty() && errors.is_empty() {
+        fn_errors.extend(crate::const_eval::resolve_array_lengths(program, string_interner));
+    }
+
     // COMPILE-TIME-EVAL C4: a contract that can do something other
     // than answer a question makes `INTERPRETER_CONTRACTS` / `--release`
     // change the program's meaning. A warning for one release

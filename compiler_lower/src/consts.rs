@@ -24,7 +24,7 @@ use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 use crate::ir::Const;
 
-pub(super) type ConstValues = HashMap<DefaultSymbol, Const>;
+pub type ConstValues = HashMap<DefaultSymbol, Const>;
 
 pub(super) fn evaluate_consts(
     program: &File,
@@ -45,14 +45,37 @@ pub(super) fn evaluate_consts(
     Ok(values)
 }
 
-fn eval_const_expr(
+/// Evaluate an expression to a scalar constant, or `None` when it is
+/// not one the compiler can fold: a call, a string, a struct, an
+/// identifier that is not an earlier const, or an operation that
+/// traps. This is the literal reader COMPILE-TIME-EVAL C3/C6 leaves
+/// in place for lowering calls that did not go through the driver —
+/// the driver's fold runs the calls on the IR VM and rewrites them to
+/// literals first, so what arrives here is normally already flat.
+///
+/// Also the evaluator behind the driver's array-length resolution
+/// (C5): after the fold, a computed length like `double(2u64) + 1u64`
+/// is a tree of literals and folded consts, and this turns it into
+/// the count.
+pub fn eval_const_expr(
     expr_ref: &ExprRef,
     program: &File,
     values: &ConstValues,
     interner: &DefaultStringInterner,
 ) -> Option<Const> {
+    eval_const_expr_in_pool(expr_ref, &program.expression, values, interner)
+}
+
+/// Pool-scoped variant of [`eval_const_expr`], for callers that hold
+/// the program's pools apart from its other fields.
+pub fn eval_const_expr_in_pool(
+    expr_ref: &ExprRef,
+    pool: &frontend::ast::ExprPool,
+    values: &ConstValues,
+    interner: &DefaultStringInterner,
+) -> Option<Const> {
     let _ = interner;
-    match program.expression.get(expr_ref)? {
+    match pool.get(expr_ref)? {
         Expr::Int64(v) => Some(Const::I64(v)),
         Expr::UInt64(v) => Some(Const::U64(v)),
         Expr::Float64(v) => Some(Const::F64(v)),
@@ -64,12 +87,12 @@ fn eval_const_expr(
         // bubble `None` up, which the caller turns into a compile
         // error.
         Expr::Binary(op, lhs, rhs) => {
-            let l = eval_const_expr(&lhs, program, values, interner)?;
-            let r = eval_const_expr(&rhs, program, values, interner)?;
+            let l = eval_const_expr_in_pool(&lhs, pool, values, interner)?;
+            let r = eval_const_expr_in_pool(&rhs, pool, values, interner)?;
             const_fold_binop(op, l, r)
         }
         Expr::Unary(op, operand) => {
-            let v = eval_const_expr(&operand, program, values, interner)?;
+            let v = eval_const_expr_in_pool(&operand, pool, values, interner)?;
             crate::fold::fold_unary(crate::fold::unaryop_for(&op)?, v)
         }
         _ => None,

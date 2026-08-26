@@ -3,7 +3,7 @@
 mod tests {
     use super::super::*;
     use std::collections::HashMap;
-    use crate::type_decl::TypeDecl;
+    use crate::type_decl::{ArraySize, TypeDecl};
     use string_interner::DefaultStringInterner;
 
     fn create_test_ast_builder() -> AstBuilder {
@@ -62,7 +62,7 @@ mod tests {
         
         match array_type {
             TypeDecl::Array(element_types, size) => {
-                assert_eq!(size, 3);
+                assert_eq!(size, ArraySize::Literal(3));
                 assert_eq!(element_types.len(), 3);
                 assert_eq!(element_types[0], TypeDecl::Bool);
                 assert_eq!(element_types[1], TypeDecl::Bool);
@@ -89,7 +89,7 @@ mod tests {
         let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Set type hint for bool array
-        type_checker.type_inference.type_hint = Some(TypeDecl::Array(vec![TypeDecl::Bool], 2));
+        type_checker.type_inference.type_hint = Some(TypeDecl::Array(vec![TypeDecl::Bool], ArraySize::Literal(2)));
         
         // Test type inference with hint
         let result = type_checker.visit_array_literal(&vec![ExprRef(0), ExprRef(1)]);
@@ -99,7 +99,7 @@ mod tests {
         
         match array_type {
             TypeDecl::Array(element_types, size) => {
-                assert_eq!(size, 2);
+                assert_eq!(size, ArraySize::Literal(2));
                 assert_eq!(element_types.len(), 2);
                 assert_eq!(element_types[0], TypeDecl::Bool);
                 assert_eq!(element_types[1], TypeDecl::Bool);
@@ -184,7 +184,7 @@ mod tests {
         let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Set wrong type hint (expecting UInt64 array)
-        type_checker.type_inference.type_hint = Some(TypeDecl::Array(vec![TypeDecl::UInt64], 2));
+        type_checker.type_inference.type_hint = Some(TypeDecl::Array(vec![TypeDecl::UInt64], ArraySize::Literal(2)));
         
         // Test type inference with wrong hint - should fail
         let result = type_checker.visit_array_literal(&vec![ExprRef(0), ExprRef(1)]);
@@ -249,7 +249,7 @@ mod tests {
         
         match array_type {
             TypeDecl::Array(element_types, size) => {
-                assert_eq!(size, 1);
+                assert_eq!(size, ArraySize::Literal(1));
                 assert_eq!(element_types.len(), 1);
                 assert_eq!(element_types[0], TypeDecl::Bool);
             },
@@ -288,7 +288,7 @@ mod tests {
         
         match array_type {
             TypeDecl::Array(element_types, size) => {
-                assert_eq!(size, 100);
+                assert_eq!(size, ArraySize::Literal(100));
                 assert_eq!(element_types.len(), 100);
                 // All elements should be Bool type
                 for element_type in &element_types {
@@ -326,7 +326,7 @@ mod tests {
         
         match array_type {
             TypeDecl::Array(element_types, size) => {
-                assert_eq!(size, 1000);
+                assert_eq!(size, ArraySize::Literal(1000));
                 assert_eq!(element_types.len(), 1000);
             },
             _ => panic!("Expected Array type, got {:?}", array_type),
@@ -389,10 +389,15 @@ mod tests {
         
         // Test array with same struct types
         let point_type = TypeDecl::Struct(point_symbol, vec![]);
-        let array_type = TypeDecl::Array(vec![point_type.clone(), point_type.clone()], 2);
+        let array_type =
+            TypeDecl::Array(vec![point_type.clone(), point_type.clone()], ArraySize::Literal(2));
         
         // This should be valid
-        assert!(matches!(array_type, TypeDecl::Array(ref types, 2) if types.len() == 2 && types[0] == point_type && types[1] == point_type));
+        assert!(matches!(
+            array_type,
+            TypeDecl::Array(ref types, ArraySize::Literal(2))
+                if types.len() == 2 && types[0] == point_type && types[1] == point_type
+        ));
     }
 
     #[test]
@@ -491,14 +496,15 @@ mod tests {
         
         // Set type hint for struct array
         let point_type = TypeDecl::Struct(point_symbol, vec![]);
-        let array_hint = TypeDecl::Array(vec![point_type.clone()], 1);
+        let array_hint = TypeDecl::Array(vec![point_type.clone()], ArraySize::Literal(1));
         type_checker.type_inference.type_hint = Some(array_hint.clone());
         
         // Verify type hint was set correctly
         assert_eq!(type_checker.type_inference.type_hint, Some(array_hint));
         
         // Test that the setup_type_hint_for_val method works with struct arrays
-        let _old_hint = type_checker.setup_type_hint_for_val(&Some(TypeDecl::Array(vec![point_type], 2)));
+        let _old_hint = type_checker
+            .setup_type_hint_for_val(&Some(TypeDecl::Array(vec![point_type], ArraySize::Literal(2))));
         assert!(type_checker.type_inference.type_hint.is_some());
     }
 

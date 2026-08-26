@@ -1359,11 +1359,29 @@ const N: u64 = 3u64
 val a: [i64; N] = [1i64, 2i64, 3i64]
 ```
 
-The `const` must be declared earlier in the file and its initialiser
-must be an integer literal (or another such `const`). A length that
-needs computing — `[i64; double(2u64)]`, or a `const` whose own
-initialiser is a call — is refused: the length is fixed while parsing,
-and compile-time evaluation needs a type-checked program.
+It may also be an expression the compiler can compute: a call to a
+`const fn` with literal arguments, or arithmetic over literals and
+`const`s. The compiler folds the call at compile time — the same fold
+that evaluates `const` initialisers — and bakes the count in before
+any backend sees it, so the computed spelling and the literal it
+resolves to behave identically everywhere:
+
+```rust
+const fn double(n: u64) -> u64 { n * 2u64 }
+val a: [i64; double(2u64) + 1u64] = [1i64, 2i64, 3i64, 4i64, 5i64]  # [i64; 5]
+const N: u64 = 2u64
+val b: [i64; N + 1u64] = [1i64, 2i64, 3i64]                        # [i64; 3]
+```
+
+A length the compiler cannot fold is refused with the reason: a call
+to a function that is not declared `const fn`, or a `const fn` call
+whose arguments are not all literals (`[i64; double(N)]` — the fold
+only runs calls it can prove constant). A length that merely names a
+`const` must be declared earlier in the file, and that const's own
+initialiser must be a literal (or another such const) — the parser
+resolves those at parse time, before the fold can run. One thing a
+computed length does not do: the element count is not cross-checked
+against the array literal that initialises it (a literal length is).
 
 Example: `interpreter/example/const_fn.t`.
 

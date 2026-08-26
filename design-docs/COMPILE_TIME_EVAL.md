@@ -16,13 +16,22 @@ C++ の `constexpr` / D の `pure` + `enum` / Rust の `const fn` / Zig の
 
 | Phase | Scope | Status |
 |---|---|---|
-| **C0** | 用語と意味論の固定 + バックエンド比較レーン | 📋 |
-| **C1** | `const fn` の宣言と適格性検査 (評価はまだしない) | 📋 |
+| **C0** | 用語と意味論の固定 + バックエンド比較レーン | ✅ 2026-08-26 |
+| **C1** | `const fn` の宣言と適格性検査 (評価はまだしない) | ✅ 2026-08-26 |
 | **C2** | IR の定数畳み込み (CTFE に依存しない最適化) | 📋 |
-| **C3** | driver 層の CTFE — 定数引数の呼び出しと `const` 初期化子 | 📋 |
+| **C3** | driver 層の CTFE — 定数引数の呼び出しと `const` 初期化子 | ✅ 2026-08-26 |
 | **C4** | DbC 接続 — 述語の純粋性強制 + 定数引数での `requires` 静的検査 | 📋 |
 | **C5** | 型の中の値 — 配列長に `const` / `const fn` を許す | 📋 |
 | **C6** | 評価器の一本化 — CTFE を IR VM に載せ替える | 📋 |
+
+> **実装時に変えた決定が 1 つある** — 論点 6 の「定数同士の trap は
+> コンパイルエラー」と「`if false { 1u64 / 0u64 }` はエラーにしない」は
+> 到達可能性を知らない畳み込みでは両立しない。C3 は代わりに
+> **強制位置 (forced) と任意位置 (opportunistic)** で線を引いた:
+> `const NAME = ...` は値が無いと先に進めないので失敗はコンパイルエラー、
+> ふつうの呼び出しの fold は最適化なので失敗したら**畳まないだけ**。
+> C++ の `constexpr` と同じ規則で、`if false` の例はこちらに落ちる。
+> 詳細は下の C3 節。
 
 ---
 
@@ -56,6 +65,9 @@ fn main() -> u64 { D }
 
 つまり「const 初期化子で関数を呼ぶ」は**もう半分実装されている**。
 片側だけが。
+
+> **✅ C3 で解消**。`const fn double` と書けば 4 実行系すべてで 42、
+> 書かなければ 4 実行系すべてでコンパイルエラー (`E0017`)。
 
 ### 実測 2: const 評価器が 2 つあり、能力が違う
 
@@ -265,23 +277,36 @@ C2 の定数畳み込みは CTFE と独立に効くので先に入れられる�
 
 ## Phase 分割
 
-### C0 — 用語と意味論の固定
+### C0 — 用語と意味論の固定 ✅
 
-- 本文書の論点 3・6 の表を「決まり」として `docs/language.md` 側にも書く。
-- `compiler/tests/consistency/` に **「コンパイル時に畳んだ結果 == 実行時に計算した結果」**
-  を検査するレーンを足す。同じ式を (i) `const fn` 経由で畳ませた版と
-  (ii) 実行時計算させた版で走らせて突き合わせる。
-- 受け入れ基準: レーンが存在し、C2 / C3 の各 landing で自動的に効く。
+- `docs/language.md` の「`const fn` — evaluation while compiling」節が正本。
+- `compiler/tests/consistency/const_eval.rs` が **「コンパイル時に畳んだ結果 ==
+  実行時に計算した結果」**を検査する。1 つの body から 2 プログラムを組み
+  (`const fn` + `const` 初期化子で畳ませた版 / 注釈なしで実行時に計算させた版)、
+  各版を 4 レーンで一致させたうえで**両版の答えを突き合わせる**。
+  ケースは手書き評価器が最もずれやすいところ — `+` / `*` の wrap、
+  符号付き除算・剰余の truncation、narrow 幅の wrap、f64。
+- **このレーンは空振りできない**: `compiler_lower::consts` は今も呼び出しを
+  評価できないので、fold が起きていなければ「畳ませた版」が JIT / AOT で
+  コンパイルできず、`assert_consistent` が落ちる。
 
-### C1 — `const fn` の宣言と適格性検査 (評価はしない)
+### C1 — `const fn` の宣言と適格性検査 ✅
 
-1. lexer / parser: 前置修飾子 1 語、`Function` に bool フィールド 1 つ (schema bump)。
-2. `alloc_check.rs` の骨格を複製せず**一般化**して、sink 集合を差し替えられる形にする。
-   `const fn` の sink: heap builtin / `extern` / IO builtin / `random` / `now` /
-   可変グローバル / 間接呼び出し (closure・`dyn`)。
-3. 診断は `never_allocates` と同じく**経路**を出す (`f` → `g` → `io::read_line`)。
-4. **自由関数のみ** — `never_allocates` と同じ制限から始める。method は後。
-5. 受け入れ基準: `const fn` を書けて、違反が経路つきで落ちる。生成コードは**変わらない**。
+1. parser: 前置修飾子。**新しい予約語は増えていない** — `const` の次の
+   トークンが `fn` なら修飾子、名前なら宣言。`never_allocates` とは
+   どちらの順でも書ける。`Function::const_fn` (schema 18 → 19)。
+2. `alloc_check.rs` を **`reachability.rs` に一般化**した。roots / sinks /
+   `extern` の扱い / `str` レシーバ免除を `Policy` が持ち、
+   `alloc_check.rs` と `const_fn_check.rs` はその Policy と診断だけ。
+3. `const fn` の sink: heap + raw pointer builtin / allocator context /
+   アロケーションカウンタ / `print` / `println`。IO・`random`・`now` は
+   `extern fn` なので Opaque として自動的に落ちる。
+   **`extern` に逃げ道は無い** — `never_allocates` と違い、純粋だと
+   申告されてもコンパイル時に**呼ぶ手段が無い**。
+   `panic` / `assert` は**許す** (強制 fold で踏んだらコンパイルエラーになる、
+   それが望ましい)。
+4. 診断は `never_allocates` と同じく経路を出す (`E0017`、`--explain` あり)。
+5. **自由関数のみ**。
 
 ### C2 — IR の定数畳み込み
 
@@ -290,15 +315,29 @@ C2 の定数畳み込みは CTFE と独立に効くので先に入れられる�
 3. `consts.rs` の手書き評価器を**この畳み込みに寄せる** (2 つ目の評価器を減らす)。
 4. 受け入れ基準: 実測 3 の IR が `ret const 7u64` になる。C0 のレーンが通る。
 
-### C3 — driver 層の CTFE
+### C3 — driver 層の CTFE ✅
 
-1. 型検査後・lowering 前のパスで、`const fn` の呼び出しのうち
-   **全引数が定数のもの**を tree-walker で評価し、リテラルに置換する。
-2. `const NAME = f(args)` を同じ経路で評価する → **実測 1 の食い違いが消える**。
-3. step budget / trap / 契約違反をコンパイルエラーとして報告する (論点 3)。
-4. CTFE 中の確保を `--profile=mem` のカウンタに**混ぜない** (コンパイラの確保であって
-   プログラムのものではない。MEMORY_PROFILING M0 の定義に従う)。
-5. 受け入れ基準: 実測 1 のプログラムが 4 実行系すべてで 42。
+`interpreter/src/const_eval.rs`。型検査の直後 (エラーが 0 のときだけ) に
+走り、`program.expression` を in-place で書き換える。
+
+1. **強制位置 (forced)**: `const NAME: T = <呼び出しを含む式>`。
+   値が無いと先に進めないので、失敗はすべて `E0017` のコンパイルエラー
+   — trap / `panic` / `requires` 違反 / step budget / **`const fn` でない
+   callee**。最後のものは実測 1 の逆側で、「interpreter だけ通る」を
+   「どこでも通らない」に揃えた (エラー文言が `const fn` を指す)。
+2. **任意位置 (opportunistic)**: 引数が**すべてリテラル**の `const fn` 呼び出し。
+   失敗したら**畳まないだけ**で、実行時の挙動は変わらない。
+   → `if false { boom(1u64) }` は合法のまま (論点 6 の要求)。
+   引数を「リテラルのみ」に絞ったのは、body 中の名前が同名の const を
+   隠したローカルでありうるため (誤コンパイルになる)。const 初期化子には
+   ローカルが無いのでそちらは式全体を評価する。
+3. 戻せるのは **scalar のみ** (`compiler_ir::Const` の形)。str / struct を
+   返す `const fn` は型検査を通り実行もできるが、畳まれない。
+4. step budget は 100 万ループ back-edge (`--check` の 10 万とは別。
+   fold は 1 回しか走らないので緩くてよい)。
+5. CTFE 中の確保は `snapshot_profile` / `restore_profile` で
+   `--profile=mem` から除外 (MEMORY_PROFILING M0)。
+6. 受け入れ基準: 実測 1 のプログラムが 4 実行系すべてで 42 ✅。
 
 ### C4 — DbC 接続
 

@@ -12,6 +12,15 @@
 
 ### 2026-08-26
 
+- **COMPILE-TIME-EVAL C0/C1/C3: `const fn`** — コンパイル時に走らせられる
+  関数。宣言の適格性検査は `never_allocates` の到達可能性歩行を
+  `reachability.rs` に一般化して sink 集合を差し替えたもの (`E0017`)。
+  fold は driver 層 (型検査後・lowering 前) の AST 書き換えなので
+  **バックエンドは砂糖を見ない**。評価器は tree-walker (オラクル)。
+  `const D: u64 = double(21u64)` が interpreter で 42・AOT でコンパイル
+  エラーだった食い違いが消えた。強制位置 (const 初期化子) の失敗は
+  コンパイルエラー、任意位置は畳まないだけ。
+
 - **COMPOUND-BLOCK-RHS: struct / tuple を産む composite を `val` の右辺に**
   — `val p = if c { P { .. } } else { P { .. } }` / `match` / block が
   3 バックエンドで動く。束縛のフィールド locals を先に確保し、

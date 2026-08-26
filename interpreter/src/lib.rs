@@ -1,3 +1,4 @@
+pub mod const_eval;
 pub mod environment;
 pub mod object;
 pub mod value;
@@ -582,6 +583,25 @@ pub fn check_typing_diagnostics(
         string_interner,
         &expr_types,
     ));
+    // COMPILE-TIME-EVAL C1: a function declared `const fn` must not be
+    // able to reach anything the compiler cannot run while compiling.
+    // Same walk, same `expr_types`, a different sink set.
+    fn_errors.extend(frontend::type_checker::check_const_fn(
+        program,
+        string_interner,
+        &expr_types,
+    ));
+    // COMPILE-TIME-EVAL C3: with the program type-checked, run the
+    // `const fn` calls that can be run now and leave literals in their
+    // place. Rewriting here — driver level, before any lowering —
+    // is what keeps the four backends from each needing a fold of
+    // their own, and from disagreeing about the answer.
+    //
+    // Only reached when nothing above failed: the fold executes user
+    // code, and code that does not type-check has no business running.
+    if fn_errors.is_empty() && errors.is_empty() {
+        fn_errors.extend(crate::const_eval::fold_const_evaluations(program, string_interner));
+    }
     // Recorded on the program so every backend's auto-drop
     // registration can skip a binding that no longer owns its value.
     program.transferred_bindings = analysis.transferred;

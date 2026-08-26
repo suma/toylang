@@ -42,3 +42,4 @@ mod match_scrutinee;
 mod memory_profiling;
 mod display_compound;
 mod format_patterns;
+mod const_eval;

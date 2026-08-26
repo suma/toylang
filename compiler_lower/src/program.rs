@@ -1775,6 +1775,8 @@ impl<'a> FunctionLower<'a> {
             ensures: method.ensures.clone(),
             ensures_kinds: method.ensures_kinds.clone(),
             never_allocates: method.never_allocates,
+            // COMPILE-TIME-EVAL C1 supports free functions only.
+            const_fn: false,
             old_exprs: method.old_exprs.clone(),
             code: method.code,
             is_extern: false,

@@ -310,6 +310,16 @@ fn main() -> u64 {
   - Multi-line comments do not support nesting
 - Don't use ';' symbol for end of statement. We can't use semicolon for separation of statements.
 - **トップレベル `const` 宣言**: `const NAME: Type = expr` を関数の外側に書ける。型注釈必須、起動時に 1 回評価して全関数から参照できる immutable な束縛になる。先行 const は参照可（前方参照は不可）。詳細は [`docs/language.md`](docs/language.md)
+- **`const fn`** (COMPILE-TIME-EVAL): `const fn double(n: u64) -> u64 { n * 2u64 }`
+  — コンパイル時に走らせられる関数。`const D: u64 = double(21u64)` は
+  **lowering 前にリテラルへ畳まれる**ので 4 実行系すべてで同じ値になる
+  (以前は interpreter だけ通っていた)。`const` の次が `fn` なら修飾子、
+  名前なら宣言。`never_allocates` とどちらの順でも書ける。
+  適格性は到達可能性で検査 (`E0017`): heap / raw pointer builtin、
+  `print` / `println`、アロケーションカウンタ、`extern`・closure・`dyn` は
+  不可。注釈のない関数は**呼べる**。強制位置 (`const` 初期化子) の失敗は
+  コンパイルエラー、それ以外は畳まないだけ。畳めるのは scalar のみ。
+  自由関数のみ (method は未対応)。例: `interpreter/example/const_fn.t`
 - **`panic("msg")` ビルトイン**: 実行を中断するメッセージ付き panic。型検査では「Unknown」を返す扱いで、`if cond { panic("...") } else { value }` のような式位置でも使える。関数全体が panic で発散する場合も戻り型と関係なく型検査が通る
 - **`test "name" { ... }` ブロック**: トップレベルに書けるテスト。`test` は contextual keyword なので `fn test(...)` や `val test = ...` は従来どおり使える。各ブロックは内部でゼロ引数関数に lower されるため型検査・バックエンドは特別扱い不要。通常実行では呼ばれず、`--test` で実行する。テストごとに独立した評価コンテキストを持つ
 - **`assert_eq(a, b)` / `assert_ne(a, b)` ビルトイン**: 失敗時に **left / right の実値**と行番号を出す。パーサマクロで一時束縛 + 比較 + メッセージ組み立てに desugar される

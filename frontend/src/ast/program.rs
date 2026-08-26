@@ -163,6 +163,17 @@ pub struct Function {
     /// `extern fn` it is a *declaration* rather than a check — the
     /// implementation lives outside the language and cannot be walked.
     pub never_allocates: bool,
+    /// COMPILE-TIME-EVAL C1: the function was declared `const fn`, so
+    /// it may be evaluated at compile time when every argument is a
+    /// constant. The type checker refuses the declaration if any path
+    /// from here reaches something that cannot run in the compiler
+    /// (the allocator, `print`, an `extern fn`, a closure call).
+    ///
+    /// The spelling is C++'s `constexpr` rather than `consteval`: it
+    /// says the function *can* be folded, never that it must be. What
+    /// forces the fold is the use site — a `const NAME = f(1u64)`
+    /// initialiser, or (later) an array length.
+    pub const_fn: bool,
     /// Body block. For `extern fn` declarations this points at a
     /// placeholder `Stmt::Break`; backends look at `is_extern`
     /// before walking the body.

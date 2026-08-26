@@ -123,6 +123,18 @@ pub enum TypeCheckErrorKind {
     /// reach the allocator, or reaches a call this check cannot
     /// follow. `path` is the chain that gets there.
     NeverAllocates { function: String, path: String, opaque: Option<&'static str> },
+    /// COMPILE-TIME-EVAL: a function declared `const fn` reaches
+    /// something the compiler cannot run while compiling. `what` names
+    /// it and `path` is the chain that gets there; `opaque` separates
+    /// "this cannot run at compile time" from "this pass cannot even
+    /// see where the call goes".
+    ConstFn { function: String, path: String, what: &'static str, opaque: bool },
+    /// COMPILE-TIME-EVAL C3: a value that *must* be known at compile
+    /// time could not be worked out. `context` names the position that
+    /// forced the evaluation (`const D`), `detail` says what went
+    /// wrong (a trap, a contract violation, a spent step budget, a
+    /// callee that is not a `const fn`).
+    ConstEval { context: String, detail: String },
 }
 
 #[derive(Debug, Clone)]
@@ -333,6 +345,34 @@ impl TypeCheckError {
         }
     }
 
+    /// COMPILE-TIME-EVAL C1: the `const fn` declaration cannot be
+    /// honoured.
+    pub fn const_fn(
+        function: String,
+        path: String,
+        what: &'static str,
+        opaque: bool,
+    ) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::ConstFn { function, path, what, opaque }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
+    /// COMPILE-TIME-EVAL C3: a forced compile-time evaluation failed.
+    pub fn const_eval(context: String, detail: String) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::ConstEval { context, detail }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
     /// TYPECHECK-LIES: a reserved literal with no runtime meaning.
     /// `alternative` names what to write instead, and is part of the
     /// message rather than a machine-applicable suggestion because the
@@ -458,6 +498,20 @@ impl TypeCheckError {
                     "`{function}` is declared `never_allocates`, but it can reach the allocator: {path}"
                 ),
             },
+            TypeCheckErrorKind::ConstFn { function, path, what, opaque } => {
+                if *opaque {
+                    format!(
+                        "`{function}` is declared `const fn`, but it makes a call this check cannot follow ({what}): {path}"
+                    )
+                } else {
+                    format!(
+                        "`{function}` is declared `const fn`, but it can reach `{what}`, which the compiler cannot run while compiling: {path}"
+                    )
+                }
+            }
+            TypeCheckErrorKind::ConstEval { context, detail } => {
+                format!("`{context}` must be known at compile time, but {detail}")
+            }
             TypeCheckErrorKind::ReservedLiteral { name, alternative } => {
                 format!(
                     "`{}` is reserved and has no runtime meaning: {}",

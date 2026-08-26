@@ -120,19 +120,41 @@ impl<'a> Parser<'a> {
                 Visibility::Private
             };
 
-            // NEVER-ALLOCATES: `never_allocates fn f()`. Contextual
-            // like `test` — only a `never_allocates` immediately
-            // followed by `fn` or `extern` is the modifier, so a
-            // program with its own `never_allocates` name is
-            // unaffected.
-            let never_allocates = if matches!(self.peek(), Some(Kind::Identifier(s)) if s == "never_allocates")
-                && matches!(self.peek_n(1), Some(Kind::Function) | Some(Kind::Extern))
-            {
-                self.next();
-                true
-            } else {
-                false
-            };
+            // Prefix modifiers on a function declaration, in either
+            // order: `never_allocates` (NEVER-ALLOCATES) and `const`
+            // (COMPILE-TIME-EVAL C1).
+            //
+            // `never_allocates` is contextual like `test` — only one
+            // immediately followed by `fn` / `extern` / the other
+            // modifier is a modifier, so a program with its own
+            // `never_allocates` name is unaffected. `const` is already
+            // a keyword, and the token after it separates the two
+            // meanings without ambiguity: a declaration names a
+            // binding (`const N: u64 = ...`), a modifier is followed
+            // by `fn`.
+            let mut never_allocates = false;
+            let mut const_fn = false;
+            loop {
+                let is_never_allocates =
+                    matches!(self.peek(), Some(Kind::Identifier(s)) if s == "never_allocates")
+                        && matches!(
+                            self.peek_n(1),
+                            Some(Kind::Function) | Some(Kind::Extern) | Some(Kind::Const)
+                        );
+                let is_const_fn = matches!(self.peek(), Some(Kind::Const))
+                    && (matches!(self.peek_n(1), Some(Kind::Function))
+                        || (matches!(self.peek_n(1), Some(Kind::Identifier(s)) if s == "never_allocates")
+                            && matches!(self.peek_n(2), Some(Kind::Function))));
+                if is_never_allocates && !never_allocates {
+                    self.next();
+                    never_allocates = true;
+                } else if is_const_fn && !const_fn {
+                    self.next();
+                    const_fn = true;
+                } else {
+                    break;
+                }
+            }
 
             // LLM-LOOP P4: `test "name" { ... }`. Recognised
             // contextually — `test` stays an ordinary identifier
@@ -172,6 +194,7 @@ impl<'a> Parser<'a> {
                     ensures: vec![],
                     ensures_kinds: vec![],
                     never_allocates: false,
+                    const_fn: false,
                     old_exprs: vec![],
                     code: self.ast_builder.expression_stmt(block, Some(location)),
                     is_extern: false,
@@ -188,7 +211,7 @@ impl<'a> Parser<'a> {
 
             match self.peek() {
                 Some(Kind::Extern) => self.parse_toplevel_extern_decl(&mut out, visibility, never_allocates)?,
-                Some(Kind::Function) => self.parse_toplevel_function(&mut out, visibility, never_allocates)?,
+                Some(Kind::Function) => self.parse_toplevel_function(&mut out, visibility, never_allocates, const_fn)?,
                 Some(Kind::Const) => self.parse_toplevel_const_decl(&mut out, visibility)?,
                 Some(Kind::Type) => self.parse_toplevel_type_alias(&mut out, visibility)?,
                 Some(Kind::Struct) => self.parse_toplevel_struct_decl(&mut out, visibility)?,
@@ -402,6 +425,9 @@ impl<'a> Parser<'a> {
             // the author's word and lets a
             // `never_allocates` caller through.
             never_allocates,
+            // An `extern fn` body is outside the language, so it can
+            // never be evaluated at compile time.
+            const_fn: false,
             old_exprs: vec![],
             code: placeholder_body,
             is_extern: true,
@@ -417,6 +443,7 @@ impl<'a> Parser<'a> {
         out: &mut TopLevel,
         visibility: Visibility,
         never_allocates: bool,
+        const_fn: bool,
     ) -> ParserResult<()> {
         let fn_start_pos = self.peek_position_n(0).unwrap().start;
         let location = self.current_source_location();
@@ -466,6 +493,7 @@ impl<'a> Parser<'a> {
                     ensures: clauses.ensures,
                     ensures_kinds: clauses.ensures_kinds,
                     never_allocates,
+                    const_fn,
                     old_exprs: clauses.old_exprs,
                     code: self.ast_builder.expression_stmt(block, Some(location)),
                     is_extern: false,

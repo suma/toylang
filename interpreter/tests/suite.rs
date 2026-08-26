@@ -34,6 +34,9 @@ mod builtin_test_and_check_tests;
 #[path = "closure_tests.rs"]
 mod closure_tests;
 
+#[path = "const_fn_tests.rs"]
+mod const_fn_tests;
+
 #[path = "collections_array_slice_tests.rs"]
 mod collections_array_slice_tests;
 

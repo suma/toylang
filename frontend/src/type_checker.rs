@@ -38,8 +38,11 @@ mod impl_block;
 mod trait_decl;
 pub use trait_decl::expand_trait_defaults_in_pool;
 
+mod reachability;
 mod alloc_check;
 pub use alloc_check::check_never_allocates;
+mod const_fn_check;
+pub use const_fn_check::check_const_fn;
 mod collections;
 mod builtin;
 mod utility;

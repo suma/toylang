@@ -888,6 +888,7 @@ impl<'a> AstIntegrationContext<'a> {
             // preserved by construction.
             ensures_kinds: source_ensures_kinds,
             never_allocates: source_never_allocates,
+            const_fn: function.const_fn,
             old_exprs: new_old_exprs,
             code: new_code,
             is_extern: function.is_extern,

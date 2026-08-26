@@ -1298,6 +1298,61 @@ fn area(r: f64) -> f64 { PI * r * r }
 Today the JIT silently falls back to the tree-walking interpreter for
 any function that references a `const` — see [`JIT.md`](../design-docs/JIT.md).
 
+### `const fn` — evaluation while compiling
+
+`const fn` marks a function the compiler may run *during compilation*:
+
+```rust
+const fn double(n: u64) -> u64 { n * 2u64 }
+
+const D: u64 = double(21u64)          # folded to 42u64 before lowering
+fn main() -> u64 { double(3u64) + D } # folded to 6u64 + 42u64
+```
+
+The spelling is C++'s `constexpr`, not `consteval`: it says the
+function **can** be folded, never that it must be. What forces a fold
+is the position the call is in.
+
+- **Forced positions** — a `const NAME: T = ...` initialiser whose
+  expression calls anything. The value has to exist before the program
+  starts, so a failure is a compile error (`E0017`): a trap, a
+  `panic`, a broken `requires`, a spent step budget, or a callee that
+  is not a `const fn`.
+- **Everywhere else** the fold is an optimisation. A call whose
+  arguments are all literals is folded when it succeeds and left alone
+  when it does not, so `if false { boom(1u64) }` stays legal and keeps
+  its run-time behaviour.
+
+A fold produces a **number or a bool** — nothing else has a literal to
+become. A `const fn` returning `str`, a struct, or a `Vec` type-checks
+and runs, but is never folded.
+
+The declaration itself is checked (`E0017`) by walking every path out
+of the function, the same way `never_allocates` is. Refused: the
+allocator and raw pointers, `print` / `println`, the allocation
+counters and the allocator context, and any call that cannot be
+followed — a closure value, a `dyn Trait` receiver, or an `extern fn`.
+Unlike `never_allocates`, `extern` gets **no escape hatch**: an
+author's word that a C function is pure still leaves the compiler with
+no way to call it.
+
+- Callees need no annotation. A `const fn` may call any function whose
+  own reachable set is clean, so the stdlib needs no `const fn` pass.
+- `panic` and `assert` are allowed on purpose. Reaching one in a
+  forced fold is reported while compiling, which beats the same call
+  certainly aborting at run time.
+- Free functions only for now; methods are not yet declarable
+  `const fn`.
+- Contextual with the declaration form: `const` followed by `fn` is
+  the modifier, `const` followed by a name is a binding. It combines
+  with `never_allocates` in either order.
+- The evaluator is the tree-walking interpreter, so a folded value is
+  by construction the value the program would have computed —
+  including wrapping `+` / `*`, truncated signed division, and the
+  narrow-width widths.
+
+Example: `interpreter/example/const_fn.t`.
+
 ### Top-level `type` declarations
 
 `type Name = TargetType` declares a top-level type alias. See

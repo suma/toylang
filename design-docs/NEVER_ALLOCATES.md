@@ -102,7 +102,7 @@ pub never_allocates fn triangle(n: u64) -> u64 { ... }
 |---|---|
 | **closure / 関数値の間接呼び出し** | `never_allocates` 関数内で**禁止**。呼び先が実行時に決まるので追えない |
 | **`dyn Trait` の動的ディスパッチ** | 同上。禁止 |
-| **`extern fn`** | 実装が Rust / C 側にあり追えない。既定は禁止。ただし `io::` 系が丸ごと使えなくなるので、宣言側で「確保しない」と申告できる逃げ道が要る: `extern never_allocates fn getchar() -> i32 from "c"`。これは**信頼ベース**で、検査ではなく宣言 |
+| **`extern fn`** | 実装が Rust / C 側にあり追えない。既定は禁止。ただし `io::` 系が丸ごと使えなくなるので、宣言側で「確保しない」と申告できる逃げ道が要る: `never_allocates extern fn getchar() -> i32 from "c"`。これは**信頼ベース**で、検査ではなく宣言 |
 | **再帰** | 到達可能性の探索では自然に扱える (訪問済み集合で止める) |
 | **generic 関数** | 呼び出しグラフは monomorph 前でも辿れる。ただし型引数によって呼び先が変わる場合 (trait method) は、bound から到達しうる impl をすべて見る必要がある。**保守的に全 impl を見る**のが安全 |
 

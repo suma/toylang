@@ -62,6 +62,7 @@ const ENTRIES: &[Entry] = &[
     (codes::MOVED_VALUE, E0014),
     (codes::RESERVED_LITERAL, E0015),
     (codes::NEVER_ALLOCATES, E0016),
+    (codes::CONST_FN, E0017),
 ];
 
 const E0001: &str = "\
@@ -531,12 +532,55 @@ A closure value, a `dyn Trait` receiver, or an `extern fn` lands
 somewhere with no body to walk. Assuming such a call is
 allocation-free would make the whole guarantee worthless, so it is
 refused instead. For `extern`, the author can take responsibility with
-`extern never_allocates fn getchar() -> i32 from \"c\"`, which is a
+`never_allocates extern fn getchar() -> i32 from \"c\"`, which is a
 declaration rather than a proof.
 
 To fix: remove the allocating call, take a buffer as a parameter
 instead of building one, or drop the `never_allocates` and state the
 weaker runtime bound with `ensures allocates(0u64)`.";
+
+const E0017: &str = "\
+E0017: a function declared `const fn` cannot be evaluated at compile time
+
+`const fn` says the function *may* be run while compiling — so that
+`const N: u64 = double(21u64)` becomes `42` before any backend sees
+it. The compiler checks the promise by following every path out of the
+function, the same walk `never_allocates` uses, and refuses anything
+it could not actually run.
+
+    const fn double(n: u64) -> u64 { n * 2u64 }   # fine
+    const D: u64 = double(21u64)                  # folded to 42u64
+
+    const fn noisy(n: u64) -> u64 {
+        println(\"hello\")                          # E0017: noisy -> println
+        n
+    }
+
+What is refused, and why:
+
+  - the allocator and raw pointers — a folded result has to fit in a
+    scalar constant, so nothing reachable may build a heap value
+  - `print` / `println` — they would write to the *compiler's* stdout,
+    and whether they ran at all would depend on whether the fold
+    happened
+  - the allocation counters and `__builtin_current_allocator` — they
+    answer questions about a run, and there is no run yet
+  - `extern fn`, closure calls, and `dyn Trait` receivers — there is no
+    body to walk and no way to call the implementation while compiling.
+    Unlike `never_allocates`, `extern` gets no escape hatch here: the
+    author's word that a C function is pure still does not let the
+    compiler run it
+
+Calling an *unannotated* function is fine. This is a reachability
+check, not an attribute that has to be propagated, so a `const fn` may
+call any function whose own reachable set is clean.
+
+`panic` and `assert` are allowed on purpose: reaching one during a
+fold is reported as a compile error, which is better than the same
+call certainly aborting at run time.
+
+To fix: move the printing or the allocation to the caller, or drop the
+`const fn` and let the call happen at run time.";
 
 #[cfg(test)]
 mod tests {

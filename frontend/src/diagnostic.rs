@@ -210,6 +210,9 @@ pub mod codes {
     /// A function declared `never_allocates` that can reach the
     /// allocator (NEVER-ALLOCATES).
     pub const NEVER_ALLOCATES: &str = "E0016";
+    /// A function declared `const fn` that reaches something the
+    /// compiler cannot run while compiling (COMPILE-TIME-EVAL).
+    pub const CONST_FN: &str = "E0017";
 
     /// Every code, in order. `crate::explain` is checked against this
     /// list by a test, so a new code cannot ship without prose.
@@ -230,6 +233,7 @@ pub mod codes {
         MOVED_VALUE,
         RESERVED_LITERAL,
         NEVER_ALLOCATES,
+        CONST_FN,
     ];
 }
 
@@ -251,6 +255,9 @@ fn code_for(kind: &TypeCheckErrorKind) -> &'static str {
         | TypeCheckErrorKind::ConditionalMove { .. } => codes::MOVED_VALUE,
         TypeCheckErrorKind::ReservedLiteral { .. } => codes::RESERVED_LITERAL,
         TypeCheckErrorKind::NeverAllocates { .. } => codes::NEVER_ALLOCATES,
+        TypeCheckErrorKind::ConstFn { .. } | TypeCheckErrorKind::ConstEval { .. } => {
+            codes::CONST_FN
+        }
     }
 }
 

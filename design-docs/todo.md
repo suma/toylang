@@ -985,6 +985,37 @@
   compiled 側は `the method receiver must be a struct or enum binding`
   で受け付けない (`String` の同名 method には制限なし)。
 
+### デバッグ・観測性 (DEBUG-OBS)
+
+> 2026-08-26 に backtrace / 行番号 / ファイル名を 4 実行系で実際に叩いて
+> 洗い出した節。設計は [`DEBUG_OBSERVABILITY.md`](DEBUG_OBSERVABILITY.md)
+> (現状調査 8 件 + 論点 6 + Phase D0〜D6)。
+
+- **DEBUG-OBS D1: interpreter の backtrace の穴** ★★ — (a) `call_expr` が
+  引数リストに `None` の位置を積むので `(called at line N)` が**到達しない
+  死にコード**、(b) `call_stack.push` が `Expr::Call` の 1 箇所だけで
+  method / associated / closure / `dyn` のフレームが載らない (最内が消える)、
+  (c) `main` が載らない、(d) 再帰が畳まれず深さ上限も無い。依存なし・低コスト。
+- **DEBUG-OBS D2: `FileId` / `SourceMap`** ★★ — `SourceLocation` / `Span` に
+  ファイル identity が無く、`integrate()` が `location_pool` を追記しないので
+  stdlib のノードは位置を持たない。この 2 つは互いの被害を隠しており、
+  **片方だけ直すと他人のファイルの行をユーザのソースで描く**。
+- **DEBUG-OBS D3: IR の `SiteId`** ★★ — `Terminator::Panic` が位置を持たないため、
+  AOT / JIT / IR VM は `panic: msg` しか出せない。interpreter の豊かな診断は
+  「IR VM が diverge → tree-walker が再実行」の副産物 (プログラムが 2 回走る)。
+  `HeapAlloc { site: u64 }` を `SiteId` に寄せると `--profile=mem` の
+  リーク報告にファイル名が付く (MEMORY_PROFILING M2 の積み残し)。
+- **DEBUG-OBS D4: shadow stack (`-g`)** ★ — AOT / JIT の backtrace。
+  位置は静的なので release でも残せるが、backtrace だけがランタイムコストを持つ。
+- **DEBUG-OBS D0: 診断の比較レーン** ★★ — `--all-backends` も
+  `compiler/tests/consistency/` も **panic 時の stderr を突き合わせていない**
+  (終了コードと stdout のみ)。これを先に入れないと以降の Phase が
+  「バックエンドごとに違う診断」を量産する。
+- **DEBUG-OBS D6: 再帰深度 / stdlib の境界** ★ — 無限再帰は 60 秒無出力で
+  タイムアウトするだけ (stack overflow 診断が無い)。`Vec::get` は無チェックで、
+  範囲外は**ホストの Rust panic** (`value not defined`) になり toylang 側の
+  文脈が全部消える。組み込み配列は RUNTIME-TRAP で panic するのに `Vec` は外れている。
+
 ### 型システム (NEW-TYPE-SYSTEM)
 
 - **MOVE-CONDITIONAL: 分岐 / ループからの移動** ★ — 現状は E0014 で拒否。

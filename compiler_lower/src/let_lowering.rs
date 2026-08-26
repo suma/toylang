@@ -140,6 +140,28 @@ impl<'a> FunctionLower<'a> {
         if let Some(base_name) = self.detect_enum_result(rhs_ref) {
             return self.lower_let_enum_composite(name, annotation, rhs_ref, base_name);
         }
+        // COMPOUND-BLOCK-RHS: the same for a struct- or tuple-producing
+        // `if` chain, `match`, or block. Restricted to those three
+        // shapes on purpose — a literal, a binding or a call produces
+        // its value in one place and the paths below bind it without
+        // an intermediate copy. Before this, every one of these was
+        // `val/var rhs produced no value`, because each branch lowered
+        // into its own locals and none of them was the binding's.
+        if matches!(
+            rhs,
+            Expr::IfElifElse(..) | Expr::Match(..) | Expr::Block(..)
+        ) {
+            if let Some(crate::compound_storage::BranchShape::Produces(base_name)) =
+                self.detect_struct_result(rhs_ref)
+            {
+                return self.lower_let_struct_composite(name, annotation, rhs_ref, base_name);
+            }
+            if let Some(crate::compound_storage::BranchShape::Produces(shape)) =
+                self.detect_tuple_result(rhs_ref)
+            {
+                return self.lower_let_tuple_composite(name, rhs_ref, shape);
+            }
+        }
         // Struct-literal RHS: allocate one local per field (recursing
         // into nested struct fields), evaluate each field expression,
         // store into the matching local. The IR layer never sees a
@@ -1481,6 +1503,71 @@ impl<'a> FunctionLower<'a> {
         self.bindings
             .insert(name, Binding::Enum(storage.clone()));
         self.lower_into_enum_storage(rhs_ref, &storage)?;
+        Ok(None)
+    }
+
+    /// COMPOUND-BLOCK-RHS: struct counterpart of
+    /// `lower_let_enum_composite`. Pre-allocates the binding's field
+    /// locals and threads every branch into them, so the branches
+    /// converge on the locals the name is bound to rather than each
+    /// writing its own set.
+    fn lower_let_struct_composite(
+        &mut self,
+        name: DefaultSymbol,
+        annotation: Option<&TypeDecl>,
+        rhs_ref: &ExprRef,
+        base_name: DefaultSymbol,
+    ) -> Result<Option<ValueId>, String> {
+        let struct_id = self.resolve_struct_instance(base_name, annotation)?;
+        let fields = self.allocate_struct_fields(struct_id);
+        // The binding owns the value whichever branch built it, so it
+        // gets the same auto-drop registration a literal rhs would —
+        // see `lower_let_struct_literal`.
+        self.register_drop_for_struct_binding(struct_id, &fields);
+        self.bindings.insert(
+            name,
+            Binding::Struct {
+                struct_id,
+                fields: fields.clone(),
+            },
+        );
+        self.lower_into_struct_fields(rhs_ref, struct_id, &fields)?;
+        Ok(None)
+    }
+
+    /// Tuple counterpart of `lower_let_struct_composite`. The element
+    /// shapes come from whichever branch detection could read them
+    /// off; every branch then writes those same locals.
+    fn lower_let_tuple_composite(
+        &mut self,
+        name: DefaultSymbol,
+        rhs_ref: &ExprRef,
+        shape: crate::compound_storage::TupleShapeSource,
+    ) -> Result<Option<ValueId>, String> {
+        use crate::compound_storage::TupleShapeSource;
+        let elements = match shape {
+            TupleShapeSource::Binding(elements) => elements,
+            TupleShapeSource::Interned(tuple_id) => self.allocate_tuple_elements(tuple_id)?,
+            TupleShapeSource::Literal(elems) => {
+                let mut out: Vec<TupleElementBinding> = Vec::with_capacity(elems.len());
+                for (i, elem_ref) in elems.iter().enumerate() {
+                    let elem_ty = self.infer_tuple_element_type(elem_ref).ok_or_else(|| {
+                        format!("compiler MVP could not infer type for tuple element #{i}")
+                    })?;
+                    let shape = self.allocate_tuple_element_shape(elem_ty)?;
+                    out.push(TupleElementBinding { index: i, shape });
+                }
+                out
+            }
+        };
+        self.register_drop_for_tuple_binding(&elements);
+        self.bindings.insert(
+            name,
+            Binding::Tuple {
+                elements: elements.clone(),
+            },
+        );
+        self.lower_into_tuple_elements(rhs_ref, &elements)?;
         Ok(None)
     }
 

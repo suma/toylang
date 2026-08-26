@@ -736,11 +736,8 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// A base that is a plain path (`..a`, `..self.inner`) skips the
     /// binding and the surrounding block entirely — re-reading a path
     /// is free and unobservable, so the result is an ordinary struct
-    /// literal. That matters beyond tidiness: a block that produces a
-    /// struct is not something the AOT / JIT lowering accepts as a
-    /// `val` rhs yet (the same gap as
-    /// `val p = if c { P { .. } } else { P { .. } }`), so the block
-    /// form runs on the interpreter only.
+    /// literal, which is both tidier and one less shape for a backend
+    /// to carry. Both forms run everywhere.
     pub fn desugar_struct_update(
         &mut self,
         update_ref: ExprRef,

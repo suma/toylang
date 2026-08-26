@@ -65,13 +65,12 @@ fn main() -> u64 {
     println(bold.bg.a)
     println(bold.weight)
 
-    # The base may be any expression, not just a name -- a call is
-    # evaluated once no matter how many fields it fills. That form
-    # needs a temporary, which the compiled backends cannot yet bind a
-    # struct through, so it is exercised in the interpreter tests
-    # rather than here (see STRUCT-UPDATE in design-docs/todo.md):
-    #
-    #     val fresh = Config { verbose: true, ..defaults() }
+    # The base may be any expression, not just a name. A call is
+    # evaluated once no matter how many fields it fills -- that is what
+    # the temporary this form keeps is for.
+    val fresh = Config { verbose: true, ..defaults() }
+    println(fresh.host)
+    println(fresh.verbose)
 
     0u64
 }

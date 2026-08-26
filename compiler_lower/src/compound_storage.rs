@@ -65,7 +65,177 @@ pub(super) enum CompoundTarget {
     },
 }
 
+/// What `detect_struct_result` / `detect_tuple_result` learned about
+/// one branch of a composite.
+pub(super) enum BranchShape<T> {
+    /// The branch produces the compound, and this identifies which.
+    Produces(T),
+    /// The branch never reaches the merge (`panic(..)`), so it neither
+    /// supplies a shape nor rules the composite out.
+    Diverges,
+}
+
+/// How a tuple-producing branch tells us its shape. Tuples have no
+/// name to look up — unlike a struct or an enum, the shape *is* the
+/// identity — so detection has to carry back enough to allocate from.
+pub(super) enum TupleShapeSource {
+    /// A literal: the element types come from its elements.
+    Literal(Vec<ExprRef>),
+    /// An existing tuple binding: adopt its element list wholesale.
+    Binding(Vec<TupleElementBinding>),
+    /// A call: the callee's interned return shape.
+    Interned(crate::ir::TupleId),
+}
+
 impl<'a> FunctionLower<'a> {
+    /// Peek-only: does `expr_ref` always evaluate to a value of one
+    /// struct, and which? Mirrors `detect_enum_result` — `lower_let`
+    /// asks before deciding to pre-allocate a target, and a `None`
+    /// leaves the existing paths to handle (or reject) the rhs.
+    pub(super) fn detect_struct_result(
+        &self,
+        expr_ref: &ExprRef,
+    ) -> Option<BranchShape<DefaultSymbol>> {
+        let expr = self.program.expression.get(expr_ref)?;
+        match expr {
+            Expr::StructLiteral(name, _) if self.struct_defs.contains_key(&name) => {
+                Some(BranchShape::Produces(name))
+            }
+            Expr::Identifier(sym) => match self.bindings.get(&sym) {
+                Some(Binding::Struct { struct_id, .. }) => Some(BranchShape::Produces(
+                    self.module.struct_def(*struct_id).base_name,
+                )),
+                _ => None,
+            },
+            // A call is worth recognising here even though the enum
+            // version stops short of it: `if c { mk(1u64) } else {
+            // mk(2u64) }` is the shape people write, and the callee's
+            // declared return type says which struct it is.
+            Expr::Call(fn_name, _) => match self.module.lookup_function(None, fn_name) {
+                Some(func_id) => match self.module.function(func_id).return_type {
+                    Type::Struct(struct_id) => Some(BranchShape::Produces(
+                        self.module.struct_def(struct_id).base_name,
+                    )),
+                    _ => None,
+                },
+                None => None,
+            },
+            // `Box::new(..)` / `Vec::new()` and friends. The name the
+            // call is qualified by is the struct it builds; when that
+            // struct is generic, `resolve_struct_instance` will ask
+            // for the annotation, exactly as `val v: Vec<u8> =
+            // Vec::new()` already does.
+            Expr::AssociatedFunctionCall(struct_name, _, _)
+                if self.struct_defs.contains_key(&struct_name) =>
+            {
+                Some(BranchShape::Produces(struct_name))
+            }
+            Expr::BuiltinCall(frontend::ast::BuiltinFunction::Panic, _) => {
+                Some(BranchShape::Diverges)
+            }
+            Expr::IfElifElse(_, then_body, elif_pairs, else_body) => {
+                let mut bodies = vec![then_body, else_body];
+                bodies.extend(elif_pairs.iter().map(|(_, b)| *b));
+                self.agree_on_struct(&bodies)
+            }
+            Expr::Match(_, arms) => {
+                let bodies: Vec<ExprRef> = arms.iter().map(|a| a.body).collect();
+                self.agree_on_struct(&bodies)
+            }
+            Expr::Block(stmts) => {
+                let last = stmts.last()?;
+                match self.program.statement.get(last)? {
+                    Stmt::Expression(e) => self.detect_struct_result(&e),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Every branch must produce the same struct (or diverge), and at
+    /// least one must produce.
+    fn agree_on_struct(&self, bodies: &[ExprRef]) -> Option<BranchShape<DefaultSymbol>> {
+        let mut found: Option<DefaultSymbol> = None;
+        for body in bodies {
+            match self.detect_struct_result(body)? {
+                BranchShape::Diverges => {}
+                BranchShape::Produces(name) => match found {
+                    Some(seen) if seen != name => return None,
+                    _ => found = Some(name),
+                },
+            }
+        }
+        found.map(BranchShape::Produces)
+    }
+
+    /// Tuple counterpart of `detect_struct_result`.
+    pub(super) fn detect_tuple_result(
+        &self,
+        expr_ref: &ExprRef,
+    ) -> Option<BranchShape<TupleShapeSource>> {
+        let expr = self.program.expression.get(expr_ref)?;
+        match expr {
+            Expr::TupleLiteral(elems) => {
+                Some(BranchShape::Produces(TupleShapeSource::Literal(elems)))
+            }
+            Expr::Identifier(sym) => match self.bindings.get(&sym) {
+                Some(Binding::Tuple { elements }) => Some(BranchShape::Produces(
+                    TupleShapeSource::Binding(elements.clone()),
+                )),
+                _ => None,
+            },
+            Expr::Call(fn_name, _) => match self.module.lookup_function(None, fn_name) {
+                Some(func_id) => match self.module.function(func_id).return_type {
+                    Type::Tuple(tuple_id) => {
+                        Some(BranchShape::Produces(TupleShapeSource::Interned(tuple_id)))
+                    }
+                    _ => None,
+                },
+                None => None,
+            },
+            Expr::BuiltinCall(frontend::ast::BuiltinFunction::Panic, _) => {
+                Some(BranchShape::Diverges)
+            }
+            Expr::IfElifElse(_, then_body, elif_pairs, else_body) => {
+                let mut bodies = vec![then_body, else_body];
+                bodies.extend(elif_pairs.iter().map(|(_, b)| *b));
+                self.agree_on_tuple(&bodies)
+            }
+            Expr::Match(_, arms) => {
+                let bodies: Vec<ExprRef> = arms.iter().map(|a| a.body).collect();
+                self.agree_on_tuple(&bodies)
+            }
+            Expr::Block(stmts) => {
+                let last = stmts.last()?;
+                match self.program.statement.get(last)? {
+                    Stmt::Expression(e) => self.detect_tuple_result(&e),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Every branch must be tuple-producing (or diverge); the first
+    /// one that produces supplies the shape. Tuples are structural and
+    /// the type checker has already agreed the branches share a type,
+    /// so there is nothing further to compare.
+    fn agree_on_tuple(&self, bodies: &[ExprRef]) -> Option<BranchShape<TupleShapeSource>> {
+        let mut found: Option<TupleShapeSource> = None;
+        for body in bodies {
+            match self.detect_tuple_result(body)? {
+                BranchShape::Diverges => {}
+                BranchShape::Produces(source) => {
+                    if found.is_none() {
+                        found = Some(source);
+                    }
+                }
+            }
+        }
+        found.map(BranchShape::Produces)
+    }
+
     /// Thread a compound-producing expression into pre-allocated
     /// storage, whatever kind of compound that is.
     pub(super) fn lower_into_compound_target(

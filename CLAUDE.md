@@ -322,9 +322,8 @@ fn main() -> u64 {
   (`val q = p` の alias とは別物)。型検査器が省略フィールドを
   `base.field` に展開して普通の `StructLiteral` に書き換えるので
   **バックエンドは砂糖を見ない**。base が名前 / フィールドパス
-  (`..a` / `..self` / `..o.inner`) なら 3 backend 対応。それ以外の式
-  (`..make()`) は一時束縛が要り、struct を産む block を `val` の右辺に
-  取る lowering が未対応なので interpreter のみ。
+  (`..a` / `..self` / `..o.inner`) なら一時束縛すら要らず、それ以外の式
+  (`..make()`) は一時束縛を持つ。どちらも 3 backend 対応。
   例: `interpreter/example/struct_update.t`
 - **タプル struct (NEWTYPE)**: `struct Meters(i64)` — フィールドを位置で宣言する。
   パーサが `"0"` / `"1"` ... という名前のフィールドを持つ通常の struct に desugar し、

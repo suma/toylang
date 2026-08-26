@@ -1187,3 +1187,190 @@ fn a_diverging_branch_in_a_struct_returning_composite() {
     // 1 + 7 + 1 = 9.
     assert_consistent(src, "diverging_branch_struct_composite");
 }
+
+// ---------------------------------------------------------------
+// COMPOUND-BLOCK-RHS: composite `val` right-hand sides
+// ---------------------------------------------------------------
+
+#[test]
+fn a_struct_producing_if_chain_can_be_a_val_rhs() {
+    // `val/var rhs produced no value` until the binding pre-allocates
+    // its fields and every branch writes those. The `if`-chain half of
+    // the enum machinery's struct counterpart.
+    let src = r#"
+        struct P { x: u64, y: u64 }
+
+        fn main() -> u64 {
+            val a = if true { P { x: 1u64, y: 2u64 } } else { P { x: 30u64, y: 40u64 } }
+            val b = if false { P { x: 1u64, y: 2u64 } } else { P { x: 30u64, y: 40u64 } }
+            a.x + a.y + b.x + b.y
+        }
+    "#;
+    // 3 + 70 = 73.
+    assert_consistent(src, "struct_if_chain_val_rhs");
+}
+
+#[test]
+fn a_struct_producing_match_can_be_a_val_rhs() {
+    let src = r#"
+        struct P { x: u64, y: u64 }
+
+        fn main() -> u64 {
+            val n = 1u64
+            val p = match n {
+                0u64 => P { x: 10u64, y: 11u64 },
+                _ => P { x: 20u64, y: 21u64 }
+            }
+            p.x + p.y
+        }
+    "#;
+    // 41.
+    assert_consistent(src, "struct_match_val_rhs");
+}
+
+#[test]
+fn a_block_rhs_binds_the_struct_its_tail_produces() {
+    // The plain-block half: leading statements run, the tail supplies
+    // the value. This is also the shape a struct update with a
+    // side-effecting base desugars to.
+    let src = r#"
+        struct P { x: u64, y: u64 }
+
+        fn mk(v: u64) -> P { P { x: v, y: v + 1u64 } }
+
+        fn main() -> u64 {
+            val p = {
+                val t = mk(50u64)
+                P { x: t.x, y: t.y }
+            }
+            p.x + p.y
+        }
+    "#;
+    // 101.
+    assert_consistent(src, "block_val_rhs_struct");
+}
+
+#[test]
+fn a_struct_update_with_a_call_base_runs_on_every_backend() {
+    // STRUCT-UPDATE's non-path base keeps a temporary, which puts a
+    // block holding a struct literal on the rhs — the shape this
+    // change made bindable. The base must still be evaluated exactly
+    // once however many fields it fills, which is what the temporary
+    // is for; `a_side_effecting_base_is_evaluated_once` in
+    // `interpreter/tests/struct_update_tests.rs` pins the count.
+    let src = r#"
+        struct P { x: u64, y: u64, z: u64 }
+
+        fn defaults() -> P { P { x: 1u64, y: 2u64, z: 3u64 } }
+
+        fn main() -> u64 {
+            val u = P { x: 10u64, ..defaults() }
+            u.x + u.y + u.z
+        }
+    "#;
+    // 10 + 2 + 3 = 15.
+    assert_consistent(src, "struct_update_call_base");
+}
+
+#[test]
+fn a_tuple_producing_composite_can_be_a_val_rhs() {
+    let src = r#"
+        fn mk(v: u64) -> (u64, u64) { (v, v + 1u64) }
+
+        fn main() -> u64 {
+            val a = if true { (1u64, 2u64) } else { (30u64, 40u64) }
+            val b = if false { mk(5u64) } else { mk(50u64) }
+            a.0 + a.1 + b.0 + b.1
+        }
+    "#;
+    // 3 + 101 = 104.
+    assert_consistent(src, "tuple_composite_val_rhs");
+}
+
+#[test]
+fn a_composite_val_rhs_covers_branches_that_do_not_produce() {
+    // A branch may panic instead of producing; detection must not read
+    // that as "not a struct" and give up on the whole rhs.
+    let src = r#"
+        struct P { x: u64, y: u64 }
+
+        fn main() -> u64 {
+            val p = if true { P { x: 5u64, y: 6u64 } } else { panic("nope") }
+            p.x + p.y
+        }
+    "#;
+    // 11.
+    assert_consistent(src, "composite_val_rhs_diverging_branch");
+}
+
+#[test]
+fn a_composite_val_rhs_nests_and_carries_compound_fields() {
+    // A `match` inside an `if`, a struct-typed field filled from a
+    // call, and a `var` written through afterwards — the binding owns
+    // its locals, so the write must not reach whatever the branch
+    // built from.
+    let src = r#"
+        struct Inner { a: u64, b: u64 }
+        struct Outer { i: Inner, n: u64 }
+
+        fn mk(v: u64) -> Inner { Inner { a: v, b: v + 1u64 } }
+
+        fn main() -> u64 {
+            val n = 1u64
+            var o: Outer = if true {
+                match n {
+                    0u64 => Outer { i: mk(1u64), n: 10u64 },
+                    _ => Outer { i: mk(2u64), n: 20u64 }
+                }
+            } else {
+                Outer { i: mk(3u64), n: 30u64 }
+            }
+            o.n = 100u64
+            o.i.a + o.i.b + o.n
+        }
+    "#;
+    // 2 + 3 + 100 = 105.
+    assert_consistent(src, "composite_val_rhs_nested");
+}
+
+#[test]
+fn a_generic_struct_composite_val_rhs_takes_its_args_from_the_annotation() {
+    // The pre-allocated target has to be the *monomorphised* instance,
+    // and an associated-call-free composite has nothing but the
+    // annotation to pick it from — the same rule
+    // `resolve_struct_instance` applies everywhere else.
+    let src = r#"
+        struct Wrap<T> { v: T, n: u64 }
+
+        fn main() -> u64 {
+            val w: Wrap<u64> = if true { Wrap { v: 1u64, n: 2u64 } } else { Wrap { v: 3u64, n: 4u64 } }
+            w.v + w.n
+        }
+    "#;
+    // 3.
+    assert_consistent(src, "generic_struct_composite_val_rhs");
+}
+
+#[test]
+fn a_composite_val_rhs_binds_an_associated_call_and_still_drops() {
+    // `Box::new(..)` in a branch is an associated call, so detection
+    // has to recognise that shape too — and the binding owns whatever
+    // the taken branch built, so it needs the same auto-drop
+    // registration a literal rhs gets. Without it the box would leak
+    // in the compiled backends while the tree-walker freed it, which
+    // is a divergence the exit code alone would not show.
+    let src = r#"
+        fn main() -> u64 {
+            val n = {
+                val b: Box<i64> = if true { Box::new(7i64) } else { Box::new(8i64) }
+                b.get()
+            }
+            val after = __builtin_live_bytes()
+            (n as u64) + after
+        }
+    "#;
+    // 7 when the box was freed on the way out of the inner scope, 15
+    // when it leaked — so the allocation counter, not just the value,
+    // is what this pins.
+    assert_consistent(src, "composite_val_rhs_associated_call");
+}

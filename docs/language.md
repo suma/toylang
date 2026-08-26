@@ -1942,15 +1942,12 @@ the type checker rather than the parser — `Point` may be declared
 further down the file, or imported. Backends only ever see the
 equivalent hand-written literal.
 
-> **Backend coverage.** A base that is a name or a field path (`..a`,
-> `..self`, `..o.inner`) works on all three backends: re-reading a path
-> is free, so no temporary is needed and the literal is the whole
-> rewrite. A base that is any other expression (`..make_config()`)
-> needs that temporary, and binding a struct through a block-valued
-> `val` rhs is not something the AOT / JIT lowering accepts yet — the
-> same limit that rejects
-> `val p = if c { P { .. } } else { P { .. } }`. That form runs on the
-> interpreter.
+> **Backend coverage.** Every form works on all three backends. A base
+> that is a name or a field path (`..a`, `..self`, `..o.inner`) needs
+> no temporary at all — re-reading a path is free, so the literal is
+> the whole rewrite. Any other base (`..make_config()`) keeps one, and
+> a binding whose right-hand side is a block is bound the same way an
+> `if` chain or a `match` is.
 
 Example: `interpreter/example/struct_update.t`.
 

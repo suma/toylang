@@ -10,6 +10,17 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-08-26
+
+- **COMPOUND-BLOCK-RHS: struct / tuple を産む composite を `val` の右辺に**
+  — `val p = if c { P { .. } } else { P { .. } }` / `match` / block が
+  3 バックエンドで動く。束縛のフィールド locals を先に確保し、
+  MATCH-STRUCT-ARM で作った `CompoundTarget` に全枝を流し込む
+  (`detect_struct_result` / `detect_tuple_result` は enum 版と同形、
+  ただし関数呼び出し・associated call・発散枝も見る)。auto-drop
+  登録も literal 右辺と同じ。**STRUCT-UPDATE の非 path base
+  (`P { x: 1i64, ..make() }`) も同時に 3 バックエンド化**。
+
 ### 2026-08-25
 
 - **MATCH-STRUCT-ARM: composite tail の struct / tuple 戻り値がゼロになる**
@@ -890,6 +901,11 @@
 
 ### バックエンドのカバレッジ
 
+- **COMPOUND-BLOCK-RHS の残: method call の枝** ★ —
+  `val p = if c { x.twin() } else { .. }` は
+  `detect_struct_result` が method の戻り型を安く引けないので検出されず、
+  従来どおり「compound-returning method を式の位置で使えない、`val` で
+  束縛せよ」というエラーになる。誘導が具体的なので実害は小さい。
 - **TREE-WALKER-NUM-W** ★ — narrow int の配列アクセスが tree-walker で
   `Expr::Number should be transformed to concrete type` になる
   (`compiler/tests/consistency/compound_values.rs` の
@@ -970,15 +986,6 @@
   で受け付けない (`String` の同名 method には制限なし)。
 
 ### 型システム (NEW-TYPE-SYSTEM)
-
-- **COMPOUND-BLOCK-RHS: struct / tuple を産む block を `val` の右辺に** ★★ —
-  `val p = if c { P { .. } } else { P { .. } }` と
-  `val p = { val t = ...; P { .. } }` が AOT / JIT で
-  `val/var rhs produced no value`。enum には
-  `detect_enum_result` + `lower_let_enum_composite` があるので、struct /
-  tuple 版を同じ形で作る話。**STRUCT-UPDATE の非 path base
-  (`P { x: 1i64, ..make() }`) が interpreter 専用なのはこれが理由**。
-
 
 - **MOVE-CONDITIONAL: 分岐 / ループからの移動** ★ — 現状は E0014 で拒否。
   許すには実行時 drop flag (Rust と同じ) が要る。実プログラムで踏んだら着手。

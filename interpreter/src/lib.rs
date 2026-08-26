@@ -364,6 +364,7 @@ pub fn check_typing_with_core_modules(
     core_modules_dir: Option<&std::path::Path>,
 ) -> Result<(), Vec<String>> {
     check_typing_diagnostics(program, string_interner, source_code, filename, core_modules_dir)
+        .map(|_warnings| ())
         .map_err(|diagnostics| {
             let formatter = ErrorFormatter::new(
                 source_code.unwrap_or(""),
@@ -378,15 +379,25 @@ pub fn check_typing_with_core_modules(
 /// LLM-LOOP P3: the text rendering is a projection of this, not the
 /// other way round. Tools that need a span, a code, or an applicable
 /// fix take this and skip parsing formatted output.
+///
+/// `Ok` carries the **warnings** — diagnostics that do not stop the
+/// program. The first ones are COMPILE-TIME-EVAL C4's: a contract
+/// predicate that is not pure, and a call the compiler can already
+/// prove breaks its own precondition. Both have to be warnings for a
+/// release — the first would refuse existing programs outright, and
+/// the second cannot tell a call in dead code from one that runs. A
+/// caller with nowhere to show them drops the vector; the two CLI
+/// drivers print it.
 pub fn check_typing_diagnostics(
     program: &mut File,
     string_interner: &mut DefaultStringInterner,
     source_code: Option<&str>,
     filename: Option<&str>,
     core_modules_dir: Option<&std::path::Path>,
-) -> Result<(), Vec<Diagnostic>> {
+) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
     let diag_file = filename.unwrap_or("<input>");
     let mut errors: Vec<Diagnostic> = vec![];
+    let mut warnings: Vec<Diagnostic> = vec![];
 
     // Snapshot user-function count BEFORE integration so we can
     // re-extract the user-authored slice once integration + alias
@@ -600,7 +611,32 @@ pub fn check_typing_diagnostics(
     // Only reached when nothing above failed: the fold executes user
     // code, and code that does not type-check has no business running.
     if fn_errors.is_empty() && errors.is_empty() {
-        fn_errors.extend(crate::const_eval::fold_const_evaluations(program, string_interner));
+        let folded = crate::const_eval::fold_const_evaluations(program, string_interner);
+        fn_errors.extend(folded.errors);
+        // COMPILE-TIME-EVAL C4: calls the fold proved break their own
+        // `requires`. A warning rather than an error for the same
+        // reason a folded trap is not an error — nothing here knows
+        // whether the call is ever reached, and with the contract
+        // checks switched off it would not even fail.
+        warnings.extend(
+            folded
+                .warnings
+                .iter()
+                .map(|e| Diagnostic::from_type_check_error(e, diag_file, Some(&*string_interner))),
+        );
+    }
+
+    // COMPILE-TIME-EVAL C4: a contract that can do something other
+    // than answer a question makes `INTERPRETER_CONTRACTS` / `--release`
+    // change the program's meaning. A warning for one release
+    // (`COMPILE_TIME_EVAL.md` C4).
+    warnings.extend(
+        frontend::type_checker::check_contract_purity(program, string_interner, &expr_types)
+            .iter()
+            .map(|e| Diagnostic::from_type_check_error(e, diag_file, Some(&*string_interner))),
+    );
+    for warning in &mut warnings {
+        warning.severity = frontend::diagnostic::Severity::Warning;
     }
     // Recorded on the program so every backend's auto-drop
     // registration can skip a binding that no longer owns its value.
@@ -623,7 +659,7 @@ pub fn check_typing_diagnostics(
     }
 
     if errors.is_empty() {
-        Ok(())
+        Ok(warnings)
     } else {
         Err(errors)
     }
@@ -1511,23 +1547,40 @@ pub fn run_source(
             return Err(format!("{} parse error(s)", errors.len()));
         }
     };
-    if let Err(diagnostics) = check_typing_diagnostics(
+    match check_typing_diagnostics(
         &mut program,
         session.string_interner_mut(),
         Some(source),
         Some(filename),
         options.core_modules_dir,
     ) {
-        if options.diagnostics_json {
-            emit_diagnostics_json(&diagnostics);
-        } else {
-            let rendered: Vec<String> = diagnostics
-                .iter()
-                .map(|d| formatter.format_diagnostic(d))
-                .collect();
-            formatter.display_type_check_errors(&rendered);
+        Err(diagnostics) => {
+            if options.diagnostics_json {
+                emit_diagnostics_json(&diagnostics);
+            } else {
+                let rendered: Vec<String> = diagnostics
+                    .iter()
+                    .map(|d| formatter.format_diagnostic(d))
+                    .collect();
+                formatter.display_type_check_errors(&rendered);
+            }
+            return Err(format!("{} type-check error(s)", diagnostics.len()));
         }
-        return Err(format!("{} type-check error(s)", diagnostics.len()));
+        // COMPILE-TIME-EVAL C4: warnings ride the same channel as
+        // errors and are rendered the same way; only the outcome
+        // differs, since the program still runs.
+        Ok(warnings) if !warnings.is_empty() => {
+            if options.diagnostics_json {
+                emit_diagnostics_json(&warnings);
+            } else {
+                let rendered: Vec<String> = warnings
+                    .iter()
+                    .map(|d| formatter.format_diagnostic(d))
+                    .collect();
+                formatter.display_warnings(&rendered);
+            }
+        }
+        Ok(_) => {}
     }
 
     #[cfg(feature = "jit")]

@@ -43,6 +43,8 @@ mod alloc_check;
 pub use alloc_check::check_never_allocates;
 mod const_fn_check;
 pub use const_fn_check::check_const_fn;
+mod contract_purity;
+pub use contract_purity::check_contract_purity;
 mod collections;
 mod builtin;
 mod utility;

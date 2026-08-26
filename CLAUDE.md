@@ -365,6 +365,11 @@ fn main() -> u64 {
   - **`dyn Trait`** — `&dyn TraitName` による動的ディスパッチ。interpreter / AOT / compiler 側 JIT で動作 (empty struct / scalar field / nested field、`&mut dyn` writeback、struct / tuple / enum return の全組合せ)。interpreter 側 JIT は silent fallback。fat pointer ABI と vtable の設計は [`design-docs/DYN_TRAIT_AOT.md`](design-docs/DYN_TRAIT_AOT.md)
   - **未対応**: trait 継承 (A3)、associated types (A4)、interpreter 側 JIT の `dyn Trait` 対応 (compiler 側 JIT は対応済み)、`Box<dyn Trait>`、generic trait body 内での T 参照
 - **クロージャ / ラムダ** — `fn(params) -> R { body }` の anonymous function literal。関数型は `fn (T1, T2) -> R` (推奨) / `(T1, T2) -> R` (bare)。parameter / return / `val` 注釈 / struct field 型に書ける。capture は生成時スナップショット。interpreter は full support、AOT は env-based ABI で capturing / non-capturing 両対応、JIT は silent fallback。詳細は [`docs/language.md`](docs/language.md)
+- **契約述語は副作用を持てない** (COMPILE-TIME-EVAL C4、`E0018`、**現状は警告**):
+  `requires` / `ensures` から heap 確保 / free / ptr write / `print` /
+  追えない呼び出し (`extern` / closure / `dyn`) に到達すると警告。
+  カウンタ読みは許す。**定数引数の呼び出しが自分の `requires` を破る**
+  場合も同じコードで警告 (値つき)。`const` 初期化子ではエラー (`E0017`)
 - **Design by Contract キーワード**: `requires`（事前条件）, `ensures`（事後条件）。
   `ensures` 内では **`old(expr)`** が「関数入口時点の値」を指す (ALLOC-CONTRACT、3 backend)。
   **`requires` は RUNTIME-TRAP の guard を消す** (CONTRACT-ELISION): `requires b != 0`

@@ -135,6 +135,14 @@ pub enum TypeCheckErrorKind {
     /// wrong (a trap, a contract violation, a spent step budget, a
     /// callee that is not a `const fn`).
     ConstEval { context: String, detail: String },
+    /// COMPILE-TIME-EVAL C4: a `requires` / `ensures` clause can do
+    /// something other than answer a question, so switching the
+    /// contract checks off would change what the program does.
+    /// A warning for now (see `contract_purity`).
+    ContractPurity { clause: String, path: String, what: &'static str, opaque: bool },
+    /// COMPILE-TIME-EVAL C4: a call whose arguments are all constants,
+    /// whose precondition the compiler evaluated, and which was false.
+    BrokenPrecondition { function: String, detail: String },
 }
 
 #[derive(Debug, Clone)]
@@ -373,6 +381,34 @@ impl TypeCheckError {
         }
     }
 
+    /// COMPILE-TIME-EVAL C4: an impure contract predicate.
+    pub fn contract_purity(
+        clause: String,
+        path: String,
+        what: &'static str,
+        opaque: bool,
+    ) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::ContractPurity { clause, path, what, opaque }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
+    /// COMPILE-TIME-EVAL C4: a constant call that breaks its own
+    /// `requires`.
+    pub fn broken_precondition(function: String, detail: String) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::BrokenPrecondition { function, detail }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
     /// TYPECHECK-LIES: a reserved literal with no runtime meaning.
     /// `alternative` names what to write instead, and is part of the
     /// message rather than a machine-applicable suggestion because the
@@ -511,6 +547,25 @@ impl TypeCheckError {
             }
             TypeCheckErrorKind::ConstEval { context, detail } => {
                 format!("`{context}` must be known at compile time, but {detail}")
+            }
+            TypeCheckErrorKind::ContractPurity { clause, path, what, opaque } => {
+                if *opaque {
+                    format!(
+                        "{clause} makes a call this check cannot follow ({what}), so it cannot be \
+                         shown to be free of effects: {path}"
+                    )
+                } else {
+                    format!(
+                        "{clause} can reach `{what}`, so switching the contract checks off would \
+                         change what the program does: {path}"
+                    )
+                }
+            }
+            TypeCheckErrorKind::BrokenPrecondition { function, detail } => {
+                format!(
+                    "this call to `{function}` breaks its own precondition, and every argument is \
+                     a constant, so it breaks it on every run: {detail}"
+                )
             }
             TypeCheckErrorKind::ReservedLiteral { name, alternative } => {
                 format!(

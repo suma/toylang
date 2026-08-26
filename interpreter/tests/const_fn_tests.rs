@@ -242,3 +242,125 @@ fn folding_covers_every_scalar_width() {
         12,
     );
 }
+
+// --- C4: the contract connection ---------------------------------
+
+/// Warnings do not stop the program, so they are collected from the
+/// structured type-check result rather than from a failure.
+fn warnings_for(source: &str) -> Vec<String> {
+    let mut session = compiler_core::CompilerSession::new();
+    let mut program = session
+        .parse_program_all_errors(source, "test.t")
+        .expect("parse");
+    let core = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../core"));
+    interpreter::check_typing_diagnostics(
+        &mut program,
+        session.string_interner_mut(),
+        Some(source),
+        Some("test.t"),
+        Some(core.as_path()),
+    )
+    .expect("the program type-checks; the findings are warnings")
+    .iter()
+    .map(|d| format!("[{}] {}", d.code, d.message))
+    .collect()
+}
+
+#[test]
+fn an_impure_contract_predicate_is_warned_about() {
+    // COMPILE_TIME_EVAL.md 実測 6: this program printed `checking`
+    // with `INTERPRETER_CONTRACTS=off`, because the switch is read by
+    // the tree-walker while the default engine has the checks lowered
+    // into the IR. A contract has to be a statement about the program
+    // rather than a part of it.
+    let warnings = warnings_for(
+        r#"
+        fn noisy(n: u64) -> bool {
+            println("checking")
+            n > 0u64
+        }
+        fn f(n: u64) -> u64 requires noisy(n) { n }
+        fn main() -> u64 { f(3u64) }
+        "#,
+    );
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("E0018"), "{warnings:?}");
+    assert!(warnings[0].contains("f` -> noisy -> println"), "{warnings:?}");
+}
+
+#[test]
+fn a_pure_contract_predicate_is_not_warned_about() {
+    // Reachability, not annotation: `is_even` needs no `const fn` to
+    // be an acceptable predicate.
+    assert!(
+        warnings_for(
+            r#"
+            fn is_even(n: u64) -> bool { n % 2u64 == 0u64 }
+            fn half(n: u64) -> u64 requires is_even(n) { n / 2u64 }
+            fn main() -> u64 { half(8u64) }
+            "#,
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn reading_the_allocation_counters_from_a_contract_stays_legal() {
+    // ALLOC-CONTRACT exists to let a contract talk about memory. A
+    // counter read changes nothing, so it is not an effect.
+    assert!(
+        warnings_for(
+            r#"
+            fn quiet(n: u64) -> u64
+                ensures __builtin_live_bytes() == old(__builtin_live_bytes())
+            { n }
+            fn main() -> u64 { quiet(1u64) }
+            "#,
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_constant_call_that_breaks_its_precondition_is_warned_about() {
+    let warnings = warnings_for(
+        r#"
+        const fn half(n: u64) -> u64 requires n % 2u64 == 0u64 { n / 2u64 }
+        fn main() -> u64 { half(3u64) }
+        "#,
+    );
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("E0018"), "{warnings:?}");
+    assert!(warnings[0].contains("breaks its own precondition"), "{warnings:?}");
+    // The value the predicate saw, so the reader need not work it out.
+    assert!(warnings[0].contains("n = 3"), "{warnings:?}");
+}
+
+#[test]
+fn a_constant_call_that_keeps_its_precondition_is_quiet() {
+    assert!(
+        warnings_for(
+            r#"
+            const fn half(n: u64) -> u64 requires n % 2u64 == 0u64 { n / 2u64 }
+            fn main() -> u64 { half(4u64) }
+            "#,
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn the_same_failure_in_a_const_initialiser_is_an_error() {
+    // The forced / opportunistic split: a `const` has to have a value,
+    // so there the identical failure stops the compile (E0017) rather
+    // than warning (E0018).
+    let err = test_program(
+        r#"
+        const fn half(n: u64) -> u64 requires n % 2u64 == 0u64 { n / 2u64 }
+        const D: u64 = half(3u64)
+        fn main() -> u64 { D }
+        "#,
+    )
+    .expect_err("a const initialiser cannot be left for run time");
+    assert!(err.contains("E0017"), "{err}");
+}

@@ -176,9 +176,19 @@ pub fn render(file: &File, interner: &DefaultStringInterner, source: Option<&str
         .filter(|(i, _)| file.function_module_paths.get(*i).is_none_or(Option::is_none));
     for (_, f) in own_functions {
         let extern_kw = if f.is_extern { "extern " } else { "" };
+        // The prefix modifiers are part of what a caller can rely on:
+        // `never_allocates` is a promise about the callee's memory
+        // behaviour, and `const fn` says the call may be folded — and
+        // is therefore usable in a `const` initialiser. A signature
+        // list that dropped them would answer "what can I call" while
+        // hiding where it can be called from.
+        let never_allocates_kw = if f.never_allocates { "never_allocates " } else { "" };
+        let const_kw = if f.const_fn { "const " } else { "" };
         out.push_str(&format!(
-            "{}{}fn {}{}({}){}\n",
+            "{}{}{}{}fn {}{}({}){}\n",
             r.vis(f.visibility),
+            never_allocates_kw,
+            const_kw,
             extern_kw,
             r.sym(f.name),
             r.generics(&f.generic_params, &f.generic_bounds),

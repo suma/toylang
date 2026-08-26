@@ -3845,6 +3845,43 @@ reaches, not for what it is missing.
   not recoverable, every same-named body is walked instead — the
   direction that refuses too much rather than missing an allocation.
 
+### Contract predicates must be free of effects
+
+A contract is a statement *about* the program, not a part of it:
+switching the checks off must not change what the program does. The
+compiler follows every path out of a `requires` / `ensures` clause and
+reports one that allocates, frees, writes through a pointer, or
+prints, naming the chain (`E0018`):
+
+```rust
+fn noisy(n: u64) -> bool { println("checking")  n > 0u64 }
+fn f(n: u64) -> u64 requires noisy(n) { n }    # E0018
+```
+
+- Reads are fine, the allocation counters included —
+  `ensures __builtin_live_bytes() == old(__builtin_live_bytes())` is
+  what allocation contracts are made of.
+- Callees need no annotation: a predicate may call any function whose
+  own reachable set is clean.
+- A call the check cannot follow — an `extern fn`, a closure value, a
+  `dyn Trait` receiver — is reported too. An implementation outside
+  the language cannot be shown to do nothing.
+- **Reported as a warning today.** It becomes an error in a later
+  release; the warning is the migration window.
+
+`E0018` also covers the other direction. When every argument of a call
+is a constant, the compiler evaluates the precondition itself:
+
+```rust
+const fn half(n: u64) -> u64 requires n % 2u64 == 0u64 { n / 2u64 }
+val b: u64 = half(3u64)                        # E0018, with `n = 3`
+```
+
+That stays a warning even after the migration, because nothing at that
+point knows whether the call is reached. In a position that *forces* a
+value — a `const` initialiser — the same failure is an error
+(`E0017`).
+
 ### Runtime gating
 
 The `INTERPRETER_CONTRACTS` environment variable selects which clauses

@@ -776,7 +776,7 @@ fn str_plus_str_is_rejected_by_the_type_checker() {
         Some("test.t"),
         Some(core.as_path()),
     ) {
-        Ok(()) => panic!("`str + str` must be a type error (no backend implements it)"),
+        Ok(_) => panic!("`str + str` must be a type error (no backend implements it)"),
         Err(diagnostics) => {
             // TYPECHECK-LIES: this used to fall out as E0002
             // "incompatible types str and str", which reads like a

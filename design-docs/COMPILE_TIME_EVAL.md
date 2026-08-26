@@ -20,7 +20,7 @@ C++ の `constexpr` / D の `pure` + `enum` / Rust の `const fn` / Zig の
 | **C1** | `const fn` の宣言と適格性検査 (評価はまだしない) | ✅ 2026-08-26 |
 | **C2** | IR の定数畳み込み (CTFE に依存しない最適化) | ✅ 2026-08-26 |
 | **C3** | driver 層の CTFE — 定数引数の呼び出しと `const` 初期化子 | ✅ 2026-08-26 |
-| **C4** | DbC 接続 — 述語の純粋性強制 + 定数引数での `requires` 静的検査 | 📋 |
+| **C4** | DbC 接続 — 述語の純粋性強制 + 定数引数での `requires` 静的検査 | ✅ 2026-08-26 |
 | **C5** | 型の中の値 — 配列長に `const` / `const fn` を許す | 📋 |
 | **C6** | 評価器の一本化 — CTFE を IR VM に載せ替える | 📋 |
 
@@ -360,14 +360,34 @@ C2 の定数畳み込みは CTFE と独立に効くので先に入れられる�
    `--profile=mem` から除外 (MEMORY_PROFILING M0)。
 6. 受け入れ基準: 実測 1 のプログラムが 4 実行系すべてで 42 ✅。
 
-### C4 — DbC 接続
+### C4 — DbC 接続 ✅ (item 4 は次リリース)
 
-1. 契約述語から呼べるのは `const fn` だけ、を **warn で導入** (論点 5-1)。
-2. 定数引数の呼び出しで `requires` を静的に検査 (論点 5-2)。
-   診断は P6-2 の値キャプチャの文言を流用する。
-3. `--api` / `--explain` に反映。
-4. 次のリリースで warn → error に上げる。
-5. 受け入れ基準: `half(3u64)` (`requires is_even(n)`) が**型検査で**落ちる。
+**この言語には warning という出力が無かった**ので、まずそれを作った。
+`check_typing_diagnostics` の `Ok` が `Vec<Diagnostic>` (= warnings) を
+運ぶようになり、2 つの CLI driver が表示する
+(`Severity::Warning` は今回初めて実際に使われた)。
+
+1. **述語の純粋性** (`frontend/src/type_checker/contract_purity.rs`、`E0018`、warn)。
+   **設計から変えた点**: 「`const fn` しか呼べない」ではなく
+   **到達可能性で純粋性そのものを検査**する。前者は stdlib に注釈を
+   付けて回る作業を生むが、それは `never_allocates` / `const fn` が
+   両方とも意図的に避けた道で、しかも保証は増えない。
+   sink は heap alloc/free/realloc・ptr write・mem copy/move/set・
+   `print` / `println` と、追えない呼び出し (`extern` / closure / `dyn`)。
+   **カウンタ読みは許す** (ALLOC-CONTRACT がまさにそれ)。
+   実測: `core/std/*.t` に契約は 1 つも無く、`interpreter/example/*.t`
+   の契約付き 6 本すべてで警告 0 — 移行コストはこのリポジトリでは 0。
+2. **定数引数の `requires` 静的検査** (`E0018`、warn)。fold が
+   `ContractViolation { kind: "requires" }` を観測したら報告する。
+   値キャプチャ (`with n = 3`) はそのまま流用。
+   **設計から変えた点**: 型検査**エラー**ではなく警告。到達可能性を
+   知らない以上 `if false { half(3u64) }` を落とせないのと、
+   `INTERPRETER_CONTRACTS=off` では実際に成功するため。
+   **強制位置 (`const` 初期化子) では従来どおりエラー (`E0017`)** なので、
+   受け入れ基準の「型検査で落ちる」はそちらで満たしている。
+3. `--api` に `const fn` / `never_allocates` を出す (どちらも出ていなかった)。
+   `--explain E0018` を追加。
+4. warn → error は次リリース (未実施)。
 
 ### C5 — 型の中の値
 

@@ -71,16 +71,27 @@ use crate::object::Object;
 /// to finish.
 const FOLD_STEP_BUDGET: u64 = 1_000_000;
 
+/// What one fold pass found.
+#[derive(Default)]
+pub struct FoldReport {
+    /// A value that had to be known at compile time and was not.
+    pub errors: Vec<TypeCheckError>,
+    /// COMPILE-TIME-EVAL C4: a call whose arguments are all constants
+    /// and whose `requires` the fold watched fail. Nothing here knows
+    /// whether the call is reached, so it is reported rather than
+    /// refused.
+    pub warnings: Vec<TypeCheckError>,
+}
+
 /// Fold what can be folded, and report what had to be and could not.
 ///
-/// Returns an empty vector for the overwhelming majority of programs:
-/// with no `const fn` declared and no call in a `const` initialiser
-/// there is nothing to do, and the scan that establishes that is a
-/// pass over the function list.
+/// Returns nothing for the overwhelming majority of programs: with no
+/// `const fn` declared and no `const` at all there is nothing to do,
+/// and the scan that establishes that is a pass over two lists.
 pub fn fold_const_evaluations(
     program: &mut File,
     string_interner: &DefaultStringInterner,
-) -> Vec<TypeCheckError> {
+) -> FoldReport {
     let const_fns: HashSet<DefaultSymbol> = program
         .function
         .iter()
@@ -89,7 +100,7 @@ pub fn fold_const_evaluations(
         .collect();
 
     if const_fns.is_empty() && program.consts.is_empty() {
-        return Vec::new();
+        return FoldReport::default();
     }
 
     // MEMORY_PROFILING M0: the compiler's own allocations are not the
@@ -101,11 +112,11 @@ pub fn fold_const_evaluations(
     let result = evaluate(program, string_interner, &const_fns);
     crate::heap::restore_profile(profile_before);
 
-    let (rewrites, errors) = result;
+    let (rewrites, report) = result;
     for (expr_ref, literal) in rewrites {
         program.expression.update(&expr_ref, literal);
     }
-    errors
+    report
 }
 
 /// Everything that needs the evaluation context, kept in one scope so
@@ -114,9 +125,9 @@ fn evaluate(
     program: &File,
     string_interner: &DefaultStringInterner,
     const_fns: &HashSet<DefaultSymbol>,
-) -> (Vec<(ExprRef, Expr)>, Vec<TypeCheckError>) {
+) -> (Vec<(ExprRef, Expr)>, FoldReport) {
     let mut rewrites: Vec<(ExprRef, Expr)> = Vec::new();
-    let mut errors: Vec<TypeCheckError> = Vec::new();
+    let mut report = FoldReport::default();
 
     let mut interner = string_interner.clone();
     let shared = match crate::SharedRunData::new(program, &mut interner) {
@@ -124,7 +135,7 @@ fn evaluate(
         // The program does not even have a runnable shape; the
         // ordinary diagnostics say why, and folding is not the place
         // to repeat it.
-        Err(_) => return (rewrites, errors),
+        Err(_) => return (rewrites, report),
     };
     let mut eval = crate::evaluation::EvaluationContext::new_with_shared(
         &program.statement,
@@ -159,14 +170,14 @@ fn evaluate(
         // call the evaluator cannot even reach (an `extern`) there
         // would be no message at all.
         if let Some(detail) = uncallable_reason(program, &decl.value, const_fns, string_interner) {
-            errors.push(err_at(program, &decl.value, &context, detail));
+            report.errors.push(err_at(program, &decl.value, &context, detail));
             break;
         }
 
         let value = match eval.evaluate(&decl.value) {
             Ok(EvaluationResult::Value(v)) => v.into_rc(),
             Ok(_) => {
-                errors.push(err_at(
+                report.errors.push(err_at(
                     program,
                     &decl.value,
                     &context,
@@ -175,7 +186,7 @@ fn evaluate(
                 break;
             }
             Err(e) => {
-                errors.push(err_at(program, &decl.value, &context, describe(&e)));
+                report.errors.push(err_at(program, &decl.value, &context, describe(&e)));
                 break;
             }
         };
@@ -200,19 +211,65 @@ fn evaluate(
             if !const_fns.contains(&callee) || !all_literal_args(program, &args) {
                 continue;
             }
-            let Ok(EvaluationResult::Value(v)) = eval.evaluate(&expr_ref) else {
-                // Opportunistic: a fold that traps, panics, or runs
-                // out of budget leaves the call in place and lets run
-                // time have the same behaviour it always had.
-                continue;
+            let value = match eval.evaluate(&expr_ref) {
+                Ok(EvaluationResult::Value(v)) => v,
+                // COMPILE-TIME-EVAL C4: a precondition the compiler
+                // watched fail, with every argument a constant, fails
+                // on every run that reaches this call. Whether one
+                // does is exactly what this pass cannot see, so it is
+                // reported and the call is left alone.
+                Err(crate::error::InterpreterError::ContractViolation {
+                    kind: "requires",
+                    function,
+                    clause_index,
+                    bindings,
+                    ..
+                }) => {
+                    report.warnings.push(broken_precondition(
+                        program,
+                        &expr_ref,
+                        &function,
+                        clause_index,
+                        &bindings,
+                    ));
+                    continue;
+                }
+                // Anything else — a trap, a panic, a spent budget —
+                // leaves the call in place and lets run time have the
+                // behaviour it always had.
+                _ => continue,
             };
-            if let Some(literal) = literal_for(&v.into_rc().borrow()) {
+            if let Some(literal) = literal_for(&value.into_rc().borrow()) {
                 rewrites.push((expr_ref, literal));
             }
         }
     }
 
-    (rewrites, errors)
+    (rewrites, report)
+}
+
+/// "this call to `half` breaks its own precondition ... `requires`
+/// clause #1, with n = 3".
+fn broken_precondition(
+    program: &File,
+    expr_ref: &ExprRef,
+    function: &str,
+    clause_index: usize,
+    bindings: &[(String, String)],
+) -> TypeCheckError {
+    let values = if bindings.is_empty() {
+        String::new()
+    } else {
+        let rendered: Vec<String> =
+            bindings.iter().map(|(name, value)| format!("{name} = {value}")).collect();
+        format!(", with {}", rendered.join(", "))
+    };
+    let detail = format!("`requires` clause #{}{}", clause_index + 1, values);
+    let mut error = TypeCheckError::broken_precondition(function.to_string(), detail);
+    if let Some(location) = program.location_pool.get_expr_location(expr_ref) {
+        error = error.with_location(*location);
+    }
+    error
 }
 
 /// The literal a folded value becomes, or `None` when the value has no

@@ -106,7 +106,7 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
         }
     }
     let diagnostics_json = options.diagnostics_json;
-    interpreter::check_typing_diagnostics(
+    let warnings = interpreter::check_typing_diagnostics(
         &mut program,
         session.string_interner_mut(),
         Some(&source),
@@ -127,6 +127,23 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
             .collect();
         format!("type-check failed:\n  {}", rendered.join("\n  "))
     })?;
+
+    // COMPILE-TIME-EVAL C4: warnings do not stop the compile, but the
+    // driver is the only place a user would see them.
+    if !warnings.is_empty() {
+        if diagnostics_json {
+            interpreter::emit_diagnostics_json(&warnings);
+        } else {
+            let input_name = options.input.to_string_lossy();
+            let formatter =
+                interpreter::error_formatter::ErrorFormatter::new(&source, input_name.as_ref());
+            let rendered: Vec<String> = warnings
+                .iter()
+                .map(|d| formatter.format_diagnostic(d))
+                .collect();
+            formatter.display_warnings(&rendered);
+        }
+    }
 
     // Intern the canonical contract-violation messages now while the
     // session's interner is still mutable. The lowering pass uses

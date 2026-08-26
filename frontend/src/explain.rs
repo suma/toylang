@@ -63,6 +63,7 @@ const ENTRIES: &[Entry] = &[
     (codes::RESERVED_LITERAL, E0015),
     (codes::NEVER_ALLOCATES, E0016),
     (codes::CONST_FN, E0017),
+    (codes::CONTRACT_PURITY, E0018),
 ];
 
 const E0001: &str = "\
@@ -581,6 +582,48 @@ call certainly aborting at run time.
 
 To fix: move the printing or the allocation to the caller, or drop the
 `const fn` and let the call happen at run time.";
+
+const E0018: &str = "\
+E0018: a contract that does more than answer a question
+
+Reported as a **warning** today. `COMPILE_TIME_EVAL.md` C4 gives it one
+release at that severity before it becomes an error, because programs
+were written against a compiler that never objected.
+
+Two shapes share the code.
+
+**An impure predicate.** A contract is a statement *about* the
+program, so switching the checks off with `INTERPRETER_CONTRACTS` or
+`--release` must not change what the program does:
+
+    fn noisy(n: u64) -> bool { println(\"checking\")  n > 0u64 }
+    fn f(n: u64) -> u64 requires noisy(n) { n }    # E0018
+
+That program printed `checking` with the contracts switched off, since
+the switch is read by the tree-walker while the default engine has the
+checks lowered into the IR. The check follows every path out of the
+clause and refuses one that allocates, frees, writes through a
+pointer, or prints. Reads are fine, the allocation counters included —
+`ensures __builtin_live_bytes() == old(__builtin_live_bytes())` is
+what ALLOC-CONTRACT is for. A call it cannot follow (an `extern fn`, a
+closure value, a `dyn Trait` receiver) is reported too: an
+implementation outside the language cannot be shown to do nothing.
+
+**A constant call that breaks its own precondition.** When every
+argument is a constant, the compiler can run the check itself:
+
+    const fn half(n: u64) -> u64 requires n % 2u64 == 0u64 { n / 2u64 }
+    val b: u64 = half(3u64)                        # E0018
+
+This is a warning rather than an error even after the migration,
+because nothing here knows whether the call is reached — the same
+reason `if false { 1u64 / 0u64 }` stays legal. In a position that
+*forces* a value, like a `const` initialiser, the identical failure is
+an error instead (`E0017`).
+
+To fix: move the effect out of the predicate — compute it in the body
+and compare against a parameter — or pass an argument the contract
+accepts.";
 
 #[cfg(test)]
 mod tests {

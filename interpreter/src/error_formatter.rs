@@ -52,13 +52,19 @@ impl<'a> ErrorFormatter<'a> {
     /// LLM-LOOP P3: the text output is a projection of `Diagnostic`, so
     /// what a reader sees and what a tool consumes cannot drift apart.
     pub fn format_diagnostic(&self, diagnostic: &Diagnostic) -> String {
+        // COMPILE-TIME-EVAL C4: severity picks the leading word, so a
+        // warning does not announce itself as an error.
+        let label = match diagnostic.severity {
+            frontend::diagnostic::Severity::Warning => "Warning",
+            _ => "Error",
+        };
         let mut out = if let Some(module) = &diagnostic.origin_module {
             let position = diagnostic
                 .span
                 .map(|s| format!(" (line {} of that module)", s.line))
                 .unwrap_or_default();
             format!(
-                "[{}] Error in imported module `{module}`{position}: {}\n   \
+                "[{}] {label} in imported module `{module}`{position}: {}\n   \
                  = note: this comes from module `{module}`, not from the file being compiled",
                 diagnostic.code, diagnostic.message
             )
@@ -66,9 +72,9 @@ impl<'a> ErrorFormatter<'a> {
             let location =
                 SourceLocation::new(span.line, span.column, span.offset, span.end_offset);
             let body = format!("[{}] {}", diagnostic.code, diagnostic.message);
-            self.format_error_with_location(&body, &location)
+            self.format_labelled_with_location(label, &body, &location)
         } else {
-            format!("Error: [{}] {}", diagnostic.code, diagnostic.message)
+            format!("{label}: [{}] {}", diagnostic.code, diagnostic.message)
         };
 
         for suggestion in &diagnostic.suggestions {
@@ -113,6 +119,19 @@ impl<'a> ErrorFormatter<'a> {
     }
 
     fn format_error_with_location(&self, error_msg: &str, location: &SourceLocation) -> String {
+        self.format_labelled_with_location("Error", error_msg, location)
+    }
+
+    /// As [`Self::format_error_with_location`], with the leading word
+    /// chosen by the caller. COMPILE-TIME-EVAL C4 added warnings, and
+    /// a diagnostic that says "Error" while the program goes on to run
+    /// tells the reader the opposite of what happened.
+    fn format_labelled_with_location(
+        &self,
+        label: &str,
+        error_msg: &str,
+        location: &SourceLocation,
+    ) -> String {
         let line_number = location.line;
         let column = location.column;
 
@@ -137,7 +156,7 @@ impl<'a> ErrorFormatter<'a> {
         let caret = Self::caret_for(source_line, column, location.width());
 
         format!(
-            "Error at {}:{}:{}:\n   |\n{} | {}\n   | {} {}\n   |",
+            "{label} at {}:{}:{}:\n   |\n{} | {}\n   | {} {}\n   |",
             self.filename,
             line_number,
             column,
@@ -190,6 +209,22 @@ impl<'a> ErrorFormatter<'a> {
         eprintln!("{}", ErrorType::TypeCheck.header());
         for error in errors {
             eprintln!("{}{}", ErrorType::TypeCheck.prefix(), error);
+        }
+    }
+
+    /// Display warnings — diagnostics that do not stop the program.
+    ///
+    /// COMPILE-TIME-EVAL C4 introduced the first ones, and with them
+    /// the need for an output path that does not end in a non-zero
+    /// exit. Kept separate from the error header so a reader can tell
+    /// at a glance whether the program ran.
+    pub fn display_warnings(&self, warnings: &[String]) {
+        if warnings.is_empty() {
+            return;
+        }
+        eprintln!("Warnings found:");
+        for warning in warnings {
+            eprintln!("  {warning}");
         }
     }
 

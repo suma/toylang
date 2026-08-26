@@ -72,6 +72,27 @@ pub(super) struct Policy {
     pub(super) exempt_str_receiver: bool,
 }
 
+/// Walk each named expression and report the first reason it cannot
+/// be honoured. Used where the root is a clause rather than a body —
+/// a `requires` / `ensures` predicate (COMPILE-TIME-EVAL C4).
+pub(super) fn check_exprs(
+    program: &File,
+    interner: &DefaultStringInterner,
+    expr_types: &HashMap<ExprRef, TypeDecl>,
+    policy: Policy,
+    roots: &[(String, ExprRef)],
+) -> Vec<(String, Reason)> {
+    let mut walker = Walker::new(program, interner, expr_types, policy);
+    let mut findings = Vec::new();
+    for (name, root) in roots {
+        let mut seen = HashSet::new();
+        if let Some(reason) = walker.walk_expr(root, &mut seen) {
+            findings.push((name.clone(), reason));
+        }
+    }
+    findings
+}
+
 /// Walk every root the policy names and report the first reason each
 /// one cannot be honoured, paired with the function's display name.
 pub(super) fn check(
@@ -88,32 +109,15 @@ pub(super) fn check(
         .map(|(i, _)| i)
         .collect();
 
-    let mut by_name: HashMap<DefaultSymbol, usize> = HashMap::new();
-    for (i, f) in program.function.iter().enumerate() {
-        by_name.entry(f.name).or_insert(i);
-    }
-
-    // Methods do not live in `program.function`, so index their bodies
-    // — by owning type *and* name, so `Vec::new` is told apart from
-    // `String::new`. The type is known at a call site whenever the
-    // receiver's type is (`expr_types`) or the call names it
-    // (`Type::func()`); where it is not, every same-named body is
-    // walked instead, which errs toward refusing rather than toward
-    // letting a real allocation through.
+    // Methods carrying the modifier are roots too, and they do not
+    // live in `program.function` — they are walked by body.
     let mut declared_methods: Vec<(DefaultSymbol, DefaultSymbol, StmtRef)> = Vec::new();
-    let mut methods: HashMap<(DefaultSymbol, DefaultSymbol), Vec<StmtRef>> = HashMap::new();
-    let mut by_method_name: HashMap<DefaultSymbol, Vec<StmtRef>> = HashMap::new();
     for index in 0..program.statement.len() {
         let stmt_ref = StmtRef(index as u32);
         if let Some(Stmt::ImplBlock { target_type, methods: impl_methods, .. }) =
             program.statement.get(&stmt_ref)
         {
             for method in &impl_methods {
-                methods
-                    .entry((target_type, method.name))
-                    .or_default()
-                    .push(method.code);
-                by_method_name.entry(method.name).or_default().push(method.code);
                 if (policy.method_root)(method) {
                     declared_methods.push((target_type, method.name, method.code));
                 }
@@ -121,17 +125,7 @@ pub(super) fn check(
         }
     }
 
-    let mut walker = Walker {
-        program,
-        interner,
-        expr_types,
-        policy,
-        by_name,
-        methods,
-        by_method_name,
-        clean: HashSet::new(),
-        clean_methods: HashSet::new(),
-    };
+    let mut walker = Walker::new(program, interner, expr_types, policy);
 
     let mut findings = Vec::new();
     for index in declared {
@@ -141,8 +135,6 @@ pub(super) fn check(
             findings.push((name, reason));
         }
     }
-    // Methods carrying the modifier are roots too. Walked by body
-    // rather than by index, since they are not in `program.function`.
     for (owner, method_name, body) in declared_methods {
         let name = format!(
             "{}::{}",
@@ -201,6 +193,46 @@ struct Walker<'a> {
 }
 
 impl<'a> Walker<'a> {
+    /// Index the program once: free functions by name, method bodies
+    /// by `(owning type, name)` — so `Vec::new` is told apart from
+    /// `String::new` — and the same bodies by name alone, for the call
+    /// sites where the owning type is not recoverable.
+    fn new(
+        program: &'a File,
+        interner: &'a DefaultStringInterner,
+        expr_types: &'a HashMap<ExprRef, TypeDecl>,
+        policy: Policy,
+    ) -> Self {
+        let mut by_name: HashMap<DefaultSymbol, usize> = HashMap::new();
+        for (i, f) in program.function.iter().enumerate() {
+            by_name.entry(f.name).or_insert(i);
+        }
+        let mut methods: HashMap<(DefaultSymbol, DefaultSymbol), Vec<StmtRef>> = HashMap::new();
+        let mut by_method_name: HashMap<DefaultSymbol, Vec<StmtRef>> = HashMap::new();
+        for index in 0..program.statement.len() {
+            let stmt_ref = StmtRef(index as u32);
+            if let Some(Stmt::ImplBlock { target_type, methods: impl_methods, .. }) =
+                program.statement.get(&stmt_ref)
+            {
+                for method in &impl_methods {
+                    methods.entry((target_type, method.name)).or_default().push(method.code);
+                    by_method_name.entry(method.name).or_default().push(method.code);
+                }
+            }
+        }
+        Walker {
+            program,
+            interner,
+            expr_types,
+            policy,
+            by_name,
+            methods,
+            by_method_name,
+            clean: HashSet::new(),
+            clean_methods: HashSet::new(),
+        }
+    }
+
     fn name_of(&self, index: usize) -> String {
         self.interner
             .resolve(self.program.function[index].name)

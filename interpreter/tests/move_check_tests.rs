@@ -54,7 +54,7 @@ fn diagnose(body: &str) -> Vec<Diagnostic> {
         Some("test.t"),
         Some(core.as_path()),
     ) {
-        Ok(()) => panic!("expected the program to fail type checking:\n{source}"),
+        Ok(_) => panic!("expected the program to fail type checking:\n{source}"),
         Err(diagnostics) => diagnostics,
     }
 }

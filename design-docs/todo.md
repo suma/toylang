@@ -12,6 +12,16 @@
 
 ### 2026-08-26
 
+- **COMPILE-TIME-EVAL C4: 契約との接続 + warning 機構** — この言語に
+  warning という出力が無かったので作った (`check_typing_diagnostics` の
+  `Ok` が warnings を運ぶ)。`E0018` は 2 種: **契約述語の非純粋性**
+  (到達可能性で検査。「`const fn` しか呼べない」より弱いが保証は同じで
+  stdlib への注釈作業が要らない) と、**定数引数の呼び出しが自分の
+  `requires` を破ること** (fold が観測、値つきで報告)。どちらも warn —
+  到達可能性を知らないので `if false` を落とせない。強制位置
+  (`const` 初期化子) は従来どおり `E0017` エラー。`--api` が
+  `const fn` / `never_allocates` を出すようにした (どちらも欠けていた)。
+
 - **COMPILE-TIME-EVAL C2: IR の定数畳み込み** — `emit()` 直前に block
   ローカルで畳む。wrap するところは wrap、**trap するところは畳まない**
   (guard が実行時に落とす)。`trap_unless(true)` は guard ごと消える。

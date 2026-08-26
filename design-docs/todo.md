@@ -985,6 +985,35 @@
   compiled 側は `the method receiver must be a struct or enum binding`
   で受け付けない (`String` の同名 method には制限なし)。
 
+### コンパイル時実行 (CTFE)
+
+> 2026-08-26 に `const` / 契約 / IR を実際に叩いて洗い出した節。設計は
+> [`COMPILE_TIME_EVAL.md`](COMPILE_TIME_EVAL.md) (現状調査 7 件 + 論点 6 + Phase C0〜C6)。
+
+- **CTFE C3: const 初期化子の評価器が 2 つあり能力が違う** ★★ —
+  `const D: u64 = double(21u64)` は interpreter で **42**、JIT / AOT は
+  **コンパイルエラー** (`only literal values and references to earlier consts`)。
+  tree-walker は起動時に普通の式評価をし、`compiler_lower/src/consts.rs` は
+  リテラルと単純算術しか畳めない。同じプログラムが片方でしか動かない。
+- **CTFE C2: IR に定数畳み込みが無い** ★★ — `2u64 * 3u64 + 1u64` が
+  mul / add のまま残る。ネイティブは cranelift の opt に任せているが、
+  テストは `TOYLANG_CRANELIFT_OPT_LEVEL=none`、IR VM は毎回計算する。
+  `__builtin_sizeof` だけは lowering で畳まれている (型レベルの CTFE は既にある)。
+- **CTFE C4: 契約述語に純粋性の要求が無い** ★★ — `requires noisy(n)` の
+  `println` は **`INTERPRETER_CONTRACTS=off` でも出る**。この env var は
+  tree-walker しか読まず、既定エンジンの IR VM は述語を実行するため。
+  `off` が効いて見えるのは違反後に tree-walker が再実行するからで、
+  **契約を切っても副作用は残る**。DbC 側から見た `const fn` の一番強い動機。
+- **CTFE C5: 配列長がリテラルのみ** ★ — `val a: [i64; N]` (N は const) を
+  パーサが拒否する (`Expected array size or underscore`)。
+- **CTFE C1: 適格性検査は既存パスの sink 差し替え** ★ —
+  `frontend/src/type_checker/alloc_check.rs` (454 行) の呼び出しグラフ到達可能性が
+  経路診断と opaque 呼び出しの拒否まで実装済み。新しい解析を書く話ではない。
+- **CTFE C6: 評価器の一本化** ★ — 最終形は CTFE を IR VM で走らせること
+  (同じ lowering・同じ trap guard を通るので食い違いが構造的に起きない)。
+  前提は `interpreter/src/ir_vm/` (3,428 行) を `Object` / `RuntimeState` /
+  `heap` から切り離すクレート抽出。本機能とは独立した refactor。
+
 ### デバッグ・観測性 (DEBUG-OBS)
 
 > 2026-08-26 に backtrace / 行番号 / ファイル名を 4 実行系で実際に叩いて

@@ -18,6 +18,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 機能ごとの実装詳細・フェーズ履歴 | [`design-docs/FEATURE_NOTES.md`](design-docs/FEATURE_NOTES.md) |
 | LLM 向けの診断・テスト機能の設計 | [`design-docs/LLM_FEEDBACK_LOOP.md`](design-docs/LLM_FEEDBACK_LOOP.md) |
 | backtrace / 行番号 / ファイル名の設計 | [`design-docs/DEBUG_OBSERVABILITY.md`](design-docs/DEBUG_OBSERVABILITY.md) |
+| `const fn` / コンパイル時実行の設計 | [`design-docs/COMPILE_TIME_EVAL.md`](design-docs/COMPILE_TIME_EVAL.md) |
 | このリポジトリで LLM が作業する際の指針 | [`design-docs/COMPILER_DEV_LOOP.md`](design-docs/COMPILER_DEV_LOOP.md) |
 
 以下の「Language Syntax」節は**日常的に踏む要点の早見表**であって仕様書ではない。

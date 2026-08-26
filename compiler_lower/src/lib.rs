@@ -102,6 +102,9 @@ impl ContractMessages {
 }
 
 mod consts;
+
+/// COMPILE-TIME-EVAL C2: what a constant operation produces.
+mod fold;
 use consts::ConstValues;
 
 mod array_layout;
@@ -297,6 +300,15 @@ struct FunctionLower<'a> {
     current_block: Option<BlockId>,
     /// Monotonic counter for `ValueId`s within this function.
     next_value: u32,
+    /// COMPILE-TIME-EVAL C2: the constant each value in the **current
+    /// block** is known to hold. Cleared on every block switch, which
+    /// is what makes the fold basic-block local: it never reasons
+    /// about which branch was taken, so it cannot fold a branch away
+    /// or blame code that never runs.
+    ///
+    /// Distinct from `const_values`, which holds the program's
+    /// top-level `const` declarations keyed by name.
+    block_consts: HashMap<ValueId, compiler_ir::Const>,
     /// Inherent / trait method registry — same shape used in
     /// `lower_program` to declare each method's `FuncId`. Borrowed
     /// at call sites so `p.sum()` can resolve to the right method.
@@ -1559,7 +1571,14 @@ impl<'a> FunctionLower<'a> {
         let cur = self
             .current_block
             .expect("emit() with no current block — caller forgot to switch to a fresh block");
+        // COMPILE-TIME-EVAL C2: fold before the instruction is
+        // recorded, so what lands in the block is already a `Const`
+        // and every later instruction in this block sees it as one.
+        let kind = self.fold_kind(kind);
         let result = result_ty.map(|t| (self.fresh_value(), t));
+        if let (Some((value, _)), InstKind::Const(c)) = (result, &kind) {
+            self.block_consts.insert(value, *c);
+        }
         let inst = Instruction { result, kind };
         let blk: &mut Block = self.module.function_mut(self.func_id).block_mut(cur);
         blk.instructions.push(inst);
@@ -1583,7 +1602,46 @@ impl<'a> FunctionLower<'a> {
     }
 
     fn switch_to(&mut self, b: BlockId) {
+        // A value defined in another block is not a known constant
+        // here — see `const_values`.
+        self.block_consts.clear();
         self.current_block = Some(b);
+    }
+
+    /// COMPILE-TIME-EVAL C2: is `value` the constant `true` in this
+    /// block?
+    pub(crate) fn known_true(&self, value: ValueId) -> bool {
+        matches!(self.block_consts.get(&value), Some(compiler_ir::Const::Bool(true)))
+    }
+
+    /// COMPILE-TIME-EVAL C2: replace an instruction with the constant
+    /// it must produce, when every operand is already a known
+    /// constant in this block and [`crate::fold`] is willing to say
+    /// what it produces.
+    fn fold_kind(&self, kind: InstKind) -> InstKind {
+        match &kind {
+            InstKind::BinOp { op, lhs, rhs } => {
+                let (Some(l), Some(r)) =
+                    (self.block_consts.get(lhs), self.block_consts.get(rhs))
+                else {
+                    return kind;
+                };
+                match crate::fold::fold_binop(*op, *l, *r) {
+                    Some(folded) => InstKind::Const(folded),
+                    None => kind,
+                }
+            }
+            InstKind::UnaryOp { op, operand } => {
+                let Some(v) = self.block_consts.get(operand) else {
+                    return kind;
+                };
+                match crate::fold::fold_unary(*op, *v) {
+                    Some(folded) => InstKind::Const(folded),
+                    None => kind,
+                }
+            }
+            _ => kind,
+        }
     }
 
     fn is_unreachable(&self) -> bool {

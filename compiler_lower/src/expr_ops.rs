@@ -193,6 +193,17 @@ impl<'a> FunctionLower<'a> {
     /// operation and the location. Both say the same thing about what
     /// happened.
     pub(super) fn emit_trap_unless(&mut self, ok: ValueId, message: string_interner::DefaultSymbol) {
+        // COMPILE-TIME-EVAL C2: a guard whose condition folded to
+        // `true` cannot fire. Dropping it keeps `2u64 / 1u64` down to
+        // one instruction, and — because the block is not split — lets
+        // the fold carry on through the rest of the expression.
+        //
+        // A condition that folded to `false` is left alone: the trap
+        // has to happen, and this pass is in no position to say the
+        // block runs (see `crate::fold`).
+        if self.known_true(ok) {
+            return;
+        }
         let pass = self.fresh_block();
         let fail = self.fresh_block();
         self.terminate(Terminator::Branch {
@@ -272,25 +283,12 @@ impl<'a> FunctionLower<'a> {
             return Ok(Some(eq));
         }
 
-        let (ir_op, result_ty) = match op {
-            Operator::IAdd => (BinOp::Add, lhs_ty),
-            Operator::ISub => (BinOp::Sub, lhs_ty),
-            Operator::IMul => (BinOp::Mul, lhs_ty),
-            Operator::IDiv => (BinOp::Div, lhs_ty),
-            Operator::IMod => (BinOp::Rem, lhs_ty),
-            Operator::EQ => (BinOp::Eq, Type::Bool),
-            Operator::NE => (BinOp::Ne, Type::Bool),
-            Operator::LT => (BinOp::Lt, Type::Bool),
-            Operator::LE => (BinOp::Le, Type::Bool),
-            Operator::GT => (BinOp::Gt, Type::Bool),
-            Operator::GE => (BinOp::Ge, Type::Bool),
-            Operator::BitwiseAnd => (BinOp::BitAnd, lhs_ty),
-            Operator::BitwiseOr => (BinOp::BitOr, lhs_ty),
-            Operator::BitwiseXor => (BinOp::BitXor, lhs_ty),
-            Operator::LeftShift => (BinOp::Shl, lhs_ty),
-            Operator::RightShift => (BinOp::Shr, lhs_ty),
-            Operator::LogicalAnd | Operator::LogicalOr => unreachable!("handled above"),
-        };
+        // One operator table for the whole crate: `crate::fold` owns
+        // it, so the fold of a `const` initialiser and the lowering of
+        // a body cannot come to different conclusions about an
+        // operator.
+        let ir_op = crate::fold::binop_for(op).expect("short-circuit ops handled above");
+        let result_ty = if ir_op.produces_bool() { Type::Bool } else { lhs_ty };
         // LLM-LOOP P6-3: trap on unsigned subtraction that would wrap.
         // `0u64 - 1u64` silently becoming 18446744073709551615 is a
         // favourite way to lose an afternoon: the result looks like a

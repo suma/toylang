@@ -18,7 +18,7 @@ C++ の `constexpr` / D の `pure` + `enum` / Rust の `const fn` / Zig の
 |---|---|---|
 | **C0** | 用語と意味論の固定 + バックエンド比較レーン | ✅ 2026-08-26 |
 | **C1** | `const fn` の宣言と適格性検査 (評価はまだしない) | ✅ 2026-08-26 |
-| **C2** | IR の定数畳み込み (CTFE に依存しない最適化) | 📋 |
+| **C2** | IR の定数畳み込み (CTFE に依存しない最適化) | ✅ 2026-08-26 |
 | **C3** | driver 層の CTFE — 定数引数の呼び出しと `const` 初期化子 | ✅ 2026-08-26 |
 | **C4** | DbC 接続 — 述語の純粋性強制 + 定数引数での `requires` 静的検査 | 📋 |
 | **C5** | 型の中の値 — 配列長に `const` / `const fn` を許す | 📋 |
@@ -308,12 +308,33 @@ C2 の定数畳み込みは CTFE と独立に効くので先に入れられる�
 4. 診断は `never_allocates` と同じく経路を出す (`E0017`、`--explain` あり)。
 5. **自由関数のみ**。
 
-### C2 — IR の定数畳み込み
+### C2 — IR の定数畳み込み ✅
 
-1. `compiler_lower` に block ローカルの畳み込みを入れる (実測 3)。
-2. trap 規則は論点 6 のとおり。wrap は `wrapping_*` で。
-3. `consts.rs` の手書き評価器を**この畳み込みに寄せる** (2 つ目の評価器を減らす)。
-4. 受け入れ基準: 実測 3 の IR が `ret const 7u64` になる。C0 のレーンが通る。
+`compiler_lower/src/fold.rs`。`emit()` が命令を積む直前に、両オペランドが
+**同じ block で定数と分かっている**なら畳んで `Const` に差し替える。
+`switch_to` で表を空にするので block ローカル。
+
+1. **wrap するところは wrap する** (`wrapping_*`)。**trap するところは畳まない** —
+   `u64` underflow / 0 除算 / 符号付き `MIN / -1` / 幅を超えるシフトは
+   `None` を返し、RUNTIME-TRAP の guard がそのまま実行時に落とす。
+   ここが論点 6 の修正点で、**コンパイルエラーにはしない**
+   (この pass は到達可能性を知らないので `if false { 1u64 / 0u64 }` を
+   誤って落としてしまう)。
+2. libm 経由 (`pow` / `sqrt`) は畳まない (論点 3)。
+3. **`trap_unless` の条件が `true` に畳まれたら guard ごと消える** —
+   block が割れないので後続の畳み込みも続く。`false` のときは残す。
+4. `drop_dead_consts` が使われない `Const` 命令を消す。liveness は
+   `InstKind::for_each_operand` (compiler_ir、**catch-all 無しの網羅 match**なので
+   オペランドを持つ variant を足したらコンパイルエラーになる)。
+5. `consts.rs` の手書き評価器は `fold.rs` に委譲。演算子表も
+   `fold::binop_for` の 1 つに統合した (expr_ops.rs の重複を削除)。
+6. 受け入れ基準: 実測 3 の IR が `%v4 = const 7u64 / ret %v4` になる ✅。
+
+**副産物: IR VM の narrow int バグを 1 つ見つけて直した** (C0 のレーンが
+検出)。`eval_binop` が常に 64bit で計算して結果をそのまま置いていたので
+`200u8 * 3u8` がスロットに 600 のまま残り、print も cast も masking する
+ので見えず、**比較して初めて食い違った** (`200u8 * 3u8 == 88u8` が IR VM
+だけ false)。narrow 型の結果を毎回正規化するようにした。
 
 ### C3 — driver 層の CTFE ✅
 

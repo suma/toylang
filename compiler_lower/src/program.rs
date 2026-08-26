@@ -1458,6 +1458,12 @@ pub fn lower_program(
         }
     }
     enable_allocation_counting_if_read(&mut module);
+    // COMPILE-TIME-EVAL C2: the operands the fold made redundant.
+    // Last, so every body — including the generic instances and
+    // thunks lowered by the loops above — is covered.
+    for function in &mut module.functions {
+        crate::fold::drop_dead_consts(function);
+    }
     Ok(module)
 }
 
@@ -1611,6 +1617,7 @@ impl<'a> FunctionLower<'a> {
             current_let_stmt: None,
             current_block: None,
             next_value: 0,
+            block_consts: HashMap::new(),
             pending_struct_value: None,
             pending_tuple_value: None,
             pending_enum_value: None,

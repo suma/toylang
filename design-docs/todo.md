@@ -12,6 +12,15 @@
 
 ### 2026-08-26
 
+- **COMPILE-TIME-EVAL C2: IR の定数畳み込み** — `emit()` 直前に block
+  ローカルで畳む。wrap するところは wrap、**trap するところは畳まない**
+  (guard が実行時に落とす)。`trap_unless(true)` は guard ごと消える。
+  未使用 `Const` は `InstKind::for_each_operand` を使った DCE で除去。
+  `consts.rs` の 2 つ目の評価器と expr_ops の演算子表を `fold.rs` に統合。
+  **併せて IR VM の narrow int バグを修正** — 64bit で計算した結果を
+  narrow 幅に正規化していなかったので `200u8 * 3u8 == 88u8` が IR VM だけ
+  false だった (print / cast は masking するので比較でしか見えない)。
+
 - **COMPILE-TIME-EVAL C0/C1/C3: `const fn`** — コンパイル時に走らせられる
   関数。宣言の適格性検査は `never_allocates` の到達可能性歩行を
   `reachability.rs` に一般化して sink 集合を差し替えたもの (`E0017`)。

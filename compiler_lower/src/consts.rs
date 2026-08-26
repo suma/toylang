@@ -1,13 +1,21 @@
-//! Compile-time evaluation of top-level `const` initialisers.
+//! Compile-time evaluation of top-level `const` initialisers, for the
+//! backends that consume the IR.
 //!
-//! Each `const NAME: Type = expr` is folded into an IR `Const` value
-//! once per program; the resulting `ConstValues` map is consulted by
-//! body lowering when a bare identifier resolves to a top-level
-//! constant rather than a local binding. The fold supports literal
-//! values, references to earlier consts, simple unary/binary
-//! arithmetic, and logical-not on bool — anything else is rejected
-//! with a clear error so the user knows to bind the value at the
-//! function level instead.
+//! **Mostly historical now.** Since COMPILE-TIME-EVAL C3 the driver
+//! evaluates every `const` initialiser on the tree-walker before
+//! lowering and rewrites the scalar ones to literals, so what arrives
+//! here is normally already a literal. This pass stays because
+//! `lower_program` can be called on an AST that did not go through
+//! that driver, and because non-scalar initialisers (a `str`) are
+//! deliberately left alone by it.
+//!
+//! What it must **not** do is have arithmetic of its own. Having a
+//! second, weaker evaluator here is what made `const D: u64 =
+//! double(21u64)` mean 42 on the tree-walker and "cannot evaluate the
+//! initialiser" everywhere else, and what made `const X: u64 = 3u64 -
+//! 5u64` a run-time trap on one engine and a silently wrapped number
+//! on the other three. The operators below therefore delegate to
+//! [`crate::fold`], the same table body lowering folds with.
 
 use std::collections::HashMap;
 
@@ -62,43 +70,12 @@ fn eval_const_expr(
         }
         Expr::Unary(op, operand) => {
             let v = eval_const_expr(&operand, program, values, interner)?;
-            match (op, v) {
-                (frontend::ast::UnaryOp::Negate, Const::I64(n)) => Some(Const::I64(-n)),
-                (frontend::ast::UnaryOp::Negate, Const::F64(n)) => Some(Const::F64(-n)),
-                (frontend::ast::UnaryOp::LogicalNot, Const::Bool(b)) => Some(Const::Bool(!b)),
-                _ => None,
-            }
+            crate::fold::fold_unary(crate::fold::unaryop_for(&op)?, v)
         }
         _ => None,
     }
 }
 
 fn const_fold_binop(op: frontend::ast::Operator, l: Const, r: Const) -> Option<Const> {
-    use frontend::ast::Operator;
-    match (l, r) {
-        (Const::I64(a), Const::I64(b)) => match op {
-            Operator::IAdd => Some(Const::I64(a.wrapping_add(b))),
-            Operator::ISub => Some(Const::I64(a.wrapping_sub(b))),
-            Operator::IMul => Some(Const::I64(a.wrapping_mul(b))),
-            Operator::IDiv if b != 0 => Some(Const::I64(a.wrapping_div(b))),
-            Operator::IMod if b != 0 => Some(Const::I64(a.wrapping_rem(b))),
-            _ => None,
-        },
-        (Const::U64(a), Const::U64(b)) => match op {
-            Operator::IAdd => Some(Const::U64(a.wrapping_add(b))),
-            Operator::ISub => Some(Const::U64(a.wrapping_sub(b))),
-            Operator::IMul => Some(Const::U64(a.wrapping_mul(b))),
-            Operator::IDiv if b != 0 => Some(Const::U64(a.wrapping_div(b))),
-            Operator::IMod if b != 0 => Some(Const::U64(a.wrapping_rem(b))),
-            _ => None,
-        },
-        (Const::F64(a), Const::F64(b)) => match op {
-            Operator::IAdd => Some(Const::F64(a + b)),
-            Operator::ISub => Some(Const::F64(a - b)),
-            Operator::IMul => Some(Const::F64(a * b)),
-            Operator::IDiv => Some(Const::F64(a / b)),
-            _ => None,
-        },
-        _ => None,
-    }
+    crate::fold::fold_binop(crate::fold::binop_for(&op)?, l, r)
 }

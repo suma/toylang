@@ -151,3 +151,95 @@ fn a_fold_reads_an_earlier_const() {
     assert_consistent(src, "ctfe_const_chain");
     assert_eq!(interpreter_value(src), 18);
 }
+
+// --- C2: the fold inside a basic block ---------------------------
+
+/// `lhs op rhs` computed twice inside one program: once from literals
+/// (which C2 folds while lowering) and once through `var` bindings
+/// holding the same values (which it cannot fold, since a local's
+/// contents are not a block constant). The program returns 0 when the
+/// two agree.
+fn assert_ir_fold_matches_locals(ty: &str, lhs: &str, rhs: &str, op: &str, stem: &str) {
+    let src = format!(
+        "fn main() -> u64 {{\n    \
+         var a: {ty} = {lhs}\n    \
+         var b: {ty} = {rhs}\n    \
+         val folded: {ty} = {lhs} {op} {rhs}\n    \
+         val live: {ty} = a {op} b\n    \
+         if folded == live {{ 0u64 }} else {{ 1u64 }}\n\
+         }}\n"
+    );
+    assert_consistent(&src, stem);
+    assert_eq!(
+        interpreter_value(&src),
+        0,
+        "the folded answer differs from the computed one:\n{src}"
+    );
+}
+
+#[test]
+fn folding_wraps_where_the_language_wraps() {
+    assert_ir_fold_matches_locals(
+        "u64",
+        "18446744073709551615u64",
+        "3u64",
+        "+",
+        "c2_wrap_add",
+    );
+    assert_ir_fold_matches_locals(
+        "u64",
+        "18446744073709551615u64",
+        "4u64",
+        "*",
+        "c2_wrap_mul",
+    );
+    assert_ir_fold_matches_locals("u8", "200u8", "3u8", "*", "c2_wrap_narrow");
+}
+
+#[test]
+fn folding_keeps_signed_division_truncating() {
+    assert_ir_fold_matches_locals("i64", "0i64 - 7i64", "3i64", "/", "c2_sdiv");
+    assert_ir_fold_matches_locals("i64", "0i64 - 7i64", "3i64", "%", "c2_srem");
+}
+
+#[test]
+fn folding_keeps_shifts_and_bitwise_ops() {
+    assert_ir_fold_matches_locals("u64", "1u64", "40u64", "<<", "c2_shl");
+    assert_ir_fold_matches_locals("u64", "18446744073709551615u64", "40u64", ">>", "c2_shr");
+    assert_ir_fold_matches_locals("u64", "12u64", "10u64", "^", "c2_xor");
+}
+
+#[test]
+fn folding_keeps_float_arithmetic() {
+    assert_ir_fold_matches_locals("f64", "3.5f64", "0.1f64", "*", "c2_fmul");
+    assert_ir_fold_matches_locals("f64", "1.0f64", "3.0f64", "/", "c2_fdiv");
+}
+
+#[test]
+fn a_folded_expression_still_traps_where_the_language_traps() {
+    // The other half of the rule: the fold *declines* where the
+    // language traps, so RUNTIME-TRAP's guard survives and every
+    // backend refuses the operation instead of inventing a value.
+    // Written out rather than through `assert_consistent`, which
+    // requires each backend to succeed before comparing.
+    if skip_e2e() {
+        return;
+    }
+    for (expr, stem) in [
+        ("3u64 - 5u64", "c2_trap_underflow"),
+        ("10u64 / 0u64", "c2_trap_div"),
+        ("10u64 % 0u64", "c2_trap_rem"),
+    ] {
+        let src = format!("fn main() -> u64 {{ {expr} }}\n");
+        let core = core_modules_dir();
+        let mut opts = interpreter::RunOptions::default();
+        opts.core_modules_dir = Some(core.as_path());
+        assert!(
+            interpreter::run_source(&src, "trap.t", &opts).is_err(),
+            "the interpreter should refuse `{expr}`"
+        );
+        let compiled = try_compiler_exit_code(&src, stem, true)
+            .expect("the program still compiles — the guard is a run-time trap");
+        assert_ne!(compiled, 0, "the compiled binary should exit non-zero for `{expr}`");
+    }
+}

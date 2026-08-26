@@ -452,7 +452,40 @@ fn is_unsigned(ty: Type) -> bool {
     matches!(ty, Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::Bool)
 }
 
+/// NUM-W: a narrow integer slot always holds its value normalised —
+/// zero-extended when unsigned, sign-extended when signed — so a
+/// later `eq` compares the numbers rather than whatever bits happened
+/// to survive a 64-bit computation.
+///
+/// The arithmetic below is done at 64 bits whatever the operand type
+/// is, which left `200u8 * 3u8` sitting in the slot as 600. It printed
+/// as 88 (the printer masks) and cast to 88, so the mistake was
+/// invisible until something compared it: `200u8 * 3u8 == 88u8` was
+/// **false** on the IR VM and true on the tree-walker, the JIT and the
+/// AOT binary, all three of which work at the narrow width natively.
+/// Found by the COMPILE-TIME-EVAL C0 lane, which compares a folded
+/// constant against the same computation done at run time.
+fn normalise_narrow(raw: RawSlot, ty: Type) -> RawSlot {
+    match int_desc(ty) {
+        Some((bits, signed)) if bits < 64 => {
+            encode_int(decode_int(unsafe { raw.u64 }, bits, signed), bits, signed)
+        }
+        _ => raw,
+    }
+}
+
 fn eval_binop(op: BinOp, lhs: RawSlot, rhs: RawSlot, ty: Type) -> RawSlot {
+    let raw = eval_binop_raw(op, lhs, rhs, ty);
+    // A comparison produces a `bool` regardless of the operand width;
+    // everything else produces a value of the operand type.
+    if op.produces_bool() {
+        raw
+    } else {
+        normalise_narrow(raw, ty)
+    }
+}
+
+fn eval_binop_raw(op: BinOp, lhs: RawSlot, rhs: RawSlot, ty: Type) -> RawSlot {
     use compiler_ir::BinOp::*;
     let is_f64 = matches!(ty, Type::F64);
     let unsigned = is_unsigned(ty);
@@ -505,6 +538,16 @@ fn eval_binop(op: BinOp, lhs: RawSlot, rhs: RawSlot, ty: Type) -> RawSlot {
 }
 
 fn eval_unaryop(op: UnaryOp, operand: RawSlot, ty: Type) -> RawSlot {
+    // Same reason as `eval_binop`: `~0u8` is 255, not 18446744073709551615.
+    let raw = eval_unaryop_raw(op, operand, ty);
+    if matches!(op, UnaryOp::LogicalNot) {
+        raw
+    } else {
+        normalise_narrow(raw, ty)
+    }
+}
+
+fn eval_unaryop_raw(op: UnaryOp, operand: RawSlot, ty: Type) -> RawSlot {
     use compiler_ir::UnaryOp::*;
     match op {
         Neg if matches!(ty, Type::F64) => RawSlot::from_f64(unsafe { -(operand.f64) }),

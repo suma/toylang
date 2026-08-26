@@ -118,6 +118,29 @@ fn generic_type_alias_round_trip() {
 }
 
 #[test]
+fn narrow_arithmetic_compares_at_its_own_width() {
+    // NUM-W. The IR VM did every operation at 64 bits and left the
+    // result there, so `200u8 * 3u8` sat in the slot as 600. Printing
+    // masked it and casting masked it, so the only way to see the
+    // difference was to compare: this program returned 1 on the IR VM
+    // and 0 on the tree-walker, the JIT and the AOT binary, all three
+    // of which work at the narrow width natively.
+    let src = r#"
+        fn main() -> u64 {
+            var a: u8 = 200u8
+            var b: u8 = 3u8
+            var c: i8 = 100i8
+            if a * b != 88u8 { return 1u64 }
+            if a + b != 203u8 { return 2u64 }
+            if c + c != -56i8 { return 3u64 }
+            if ~a != 55u8 { return 4u64 }
+            0u64
+        }
+    "#;
+    assert_consistent(src, "narrow_arithmetic_compares_at_its_own_width");
+}
+
+#[test]
 fn narrow_int_jit_phase_c_cast_sizeof_round_trip() {
     // NUM-W-JIT Phase C: integer-width casts (`u8 as u16`,
     // `i32 as u32`, `u8 as u64`) lower to cranelift `sextend` /

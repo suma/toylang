@@ -27,10 +27,14 @@
 //!
 //! Two positions ask for a fold, and they treat failure differently:
 //!
-//! - **Forced** — a `const NAME: T = ...` initialiser that calls a
-//!   function. The value has to exist before the program runs, so a
-//!   trap, a panic, a spent step budget, or a callee that is not a
-//!   `const fn` is a **compile error**.
+//! - **Forced** — a `const NAME: T = ...` initialiser. Every one of
+//!   them: the value has to exist before the program runs, so a trap,
+//!   a panic, a spent step budget, or a callee that is not a
+//!   `const fn` is a **compile error**. Before this, an initialiser
+//!   that traps was a run-time panic on the tree-walker and a
+//!   silently wrapped value on the other three, because
+//!   `compiler_lower::consts` folded it with the host's wrapping
+//!   arithmetic and no guard.
 //! - **Opportunistic** — an ordinary call with constant arguments.
 //!   Folding it is an optimisation, so a failure just means the call
 //!   stays and runs at run time, with whatever behaviour it would
@@ -84,12 +88,7 @@ pub fn fold_const_evaluations(
         .map(|f| f.name)
         .collect();
 
-    // Const initialisers that call something are in scope even when no
-    // `const fn` exists — that is the case the error message is for.
-    let forced_consts: Vec<usize> = (0..program.consts.len())
-        .filter(|i| contains_call(program, &program.consts[*i].value))
-        .collect();
-    if const_fns.is_empty() && forced_consts.is_empty() {
+    if const_fns.is_empty() && program.consts.is_empty() {
         return Vec::new();
     }
 
@@ -99,7 +98,7 @@ pub fn fold_const_evaluations(
     // across a type-check, so the snapshot is restored rather than
     // relied upon.
     let profile_before = crate::heap::snapshot_profile();
-    let result = evaluate(program, string_interner, &const_fns, &forced_consts);
+    let result = evaluate(program, string_interner, &const_fns);
     crate::heap::restore_profile(profile_before);
 
     let (rewrites, errors) = result;
@@ -115,7 +114,6 @@ fn evaluate(
     program: &File,
     string_interner: &DefaultStringInterner,
     const_fns: &HashSet<DefaultSymbol>,
-    forced_consts: &[usize],
 ) -> (Vec<(ExprRef, Expr)>, Vec<TypeCheckError>) {
     let mut rewrites: Vec<(ExprRef, Expr)> = Vec::new();
     let mut errors: Vec<TypeCheckError> = Vec::new();
@@ -138,61 +136,52 @@ fn evaluate(
     crate::initialize_module_environment(&mut eval, program);
     eval.set_step_budget(Some(FOLD_STEP_BUDGET));
 
-    // Pass 1 — top-level consts, in declaration order. Every one is
-    // evaluated (a later initialiser may name an earlier const), but
-    // only the ones that call something are rewritten: a plain
-    // `const N: u64 = 3u64` is already a literal, and a `str` const
-    // has no literal form to fold to.
-    let forced: HashSet<usize> = forced_consts.iter().copied().collect();
-    for (index, decl) in program.consts.iter().enumerate() {
+    // Pass 1 — top-level consts, in declaration order (a later
+    // initialiser may name an earlier one). All of them are forced:
+    // the program cannot start without the value.
+    //
+    // A scalar result replaces the initialiser, so every backend gets
+    // a literal and `compiler_lower::consts` has nothing left to
+    // evaluate. A `str` (or any other non-scalar) is left as written —
+    // there is no literal for it to become, and it was never the
+    // shape that drifted.
+    //
+    // The loop stops at the first failure rather than reporting the
+    // rest: consts chain, so one broken initialiser makes every later
+    // one that names it fail too, and the cascade would bury the
+    // cause.
+    for decl in program.consts.iter() {
         let name = string_interner.resolve(decl.name).unwrap_or("?").to_string();
         let context = format!("const {name}");
 
-        if forced.contains(&index) {
-            // Check the callees first: "not a `const fn`" is a far
-            // better message than whatever the evaluator would say,
-            // and for a call the evaluator cannot even reach (an
-            // `extern`) there would be no message at all.
-            if let Some(detail) = uncallable_reason(program, &decl.value, const_fns, string_interner)
-            {
-                errors.push(err_at(program, &decl.value, &context, detail));
-                continue;
-            }
+        // Check the callees first: "not a `const fn`" is a far better
+        // message than whatever the evaluator would say, and for a
+        // call the evaluator cannot even reach (an `extern`) there
+        // would be no message at all.
+        if let Some(detail) = uncallable_reason(program, &decl.value, const_fns, string_interner) {
+            errors.push(err_at(program, &decl.value, &context, detail));
+            break;
         }
 
         let value = match eval.evaluate(&decl.value) {
             Ok(EvaluationResult::Value(v)) => v.into_rc(),
             Ok(_) => {
-                if forced.contains(&index) {
-                    errors.push(err_at(
-                        program,
-                        &decl.value,
-                        &context,
-                        "its initialiser does not produce a value".to_string(),
-                    ));
-                }
-                continue;
-            }
-            Err(e) => {
-                if forced.contains(&index) {
-                    errors.push(err_at(program, &decl.value, &context, describe(&e)));
-                }
-                continue;
-            }
-        };
-
-        if forced.contains(&index) {
-            match literal_for(&value.borrow()) {
-                Some(literal) => rewrites.push((decl.value, literal)),
-                None => errors.push(err_at(
+                errors.push(err_at(
                     program,
                     &decl.value,
                     &context,
-                    "compile-time evaluation can only produce a number or a bool \
-                     (`COMPILE_TIME_EVAL.md` non-goals)"
-                        .to_string(),
-                )),
+                    "its initialiser does not produce a value".to_string(),
+                ));
+                break;
             }
+            Err(e) => {
+                errors.push(err_at(program, &decl.value, &context, describe(&e)));
+                break;
+            }
+        };
+
+        if let Some(literal) = literal_for(&value.borrow()) {
+            rewrites.push((decl.value, literal));
         }
         eval.environment.set_val(decl.name, value.into());
     }
@@ -276,20 +265,6 @@ fn all_literal_args(program: &File, args: &ExprRef) -> bool {
     })
 }
 
-/// Does this expression call anything at all?
-fn contains_call(program: &File, expr_ref: &ExprRef) -> bool {
-    let mut found = false;
-    walk(program, expr_ref, &mut |expr| {
-        if matches!(
-            expr,
-            Expr::Call(..) | Expr::MethodCall(..) | Expr::AssociatedFunctionCall(..)
-        ) {
-            found = true;
-        }
-    });
-    found
-}
-
 /// Why this expression cannot be evaluated at compile time, judged by
 /// the calls it makes rather than by running it. `None` means every
 /// call in it names a `const fn`.
@@ -311,7 +286,7 @@ fn uncallable_reason(
             )),
             Expr::MethodCall(_, name, _) | Expr::AssociatedFunctionCall(_, name, _) => {
                 Some(format!(
-                    "it calls the method `{}`, and `const fn` covers free functions only",
+                    "it calls `{}`, and only free functions can be declared `const fn`",
                     interner.resolve(*name).unwrap_or("?")
                 ))
             }

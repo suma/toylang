@@ -1453,6 +1453,127 @@ pub enum BinOp {
     Pow,
 }
 
+impl InstKind {
+    /// Every `ValueId` this instruction reads, in no particular order.
+    ///
+    /// The match is deliberately exhaustive with no catch-all arm: a
+    /// new variant that carries an operand is a **compile error** here
+    /// until it is listed. Consumers use this to decide whether a
+    /// value is live, and a silently missed operand would let a live
+    /// definition be deleted — a miscompile with no diagnostic, which
+    /// is precisely what a `_ => {}` arm would buy.
+    pub fn for_each_operand(&self, f: &mut impl FnMut(ValueId)) {
+        let mut one = |v: &ValueId| f(*v);
+        match self {
+            InstKind::BinOp { lhs, rhs, .. } => {
+                one(lhs);
+                one(rhs);
+            }
+            InstKind::UnaryOp { operand, .. } => one(operand),
+            InstKind::StoreLocal { src, .. } => one(src),
+            InstKind::Cast { value, .. }
+            | InstKind::Print { value, .. }
+            | InstKind::StrLen { value }
+            | InstKind::ToString { value, .. }
+            | InstKind::Format { value, .. } => one(value),
+            InstKind::Call { args, .. }
+            | InstKind::CallStruct { args, .. }
+            | InstKind::CallTuple { args, .. }
+            | InstKind::CallEnum { args, .. }
+            | InstKind::CallWithSelfWriteback { args, .. }
+            | InstKind::CallWithSelfWritebackCompound { args, .. } => args.iter().for_each(one),
+            InstKind::ArrayLoad { index, .. } | InstKind::ArrayElemAddr { index, .. } => one(index),
+            InstKind::ArrayStore { index, value, .. } => {
+                one(index);
+                one(value);
+            }
+            InstKind::HeapAlloc { size, .. } => one(size),
+            InstKind::HeapRealloc { ptr, new_size, .. } => {
+                one(ptr);
+                one(new_size);
+            }
+            InstKind::HeapFree { ptr, .. }
+            | InstKind::PtrIsNull { ptr }
+            | InstKind::LoadRef { ptr, .. }
+            | InstKind::AllocPush { handle: ptr } => one(ptr),
+            InstKind::PtrRead { ptr, offset, .. } => {
+                one(ptr);
+                one(offset);
+            }
+            InstKind::PtrWrite { ptr, offset, value, .. } => {
+                one(ptr);
+                one(offset);
+                one(value);
+            }
+            InstKind::StoreRef { ptr, value, .. } => {
+                one(ptr);
+                one(value);
+            }
+            InstKind::StrConcat { a, b } | InstKind::StrEq { a, b } | InstKind::PtrEq { a, b } => {
+                one(a);
+                one(b);
+            }
+            InstKind::StrFromBytes { ptr, len } => {
+                one(ptr);
+                one(len);
+            }
+            InstKind::MemCopy { src, dest, size } => {
+                one(src);
+                one(dest);
+                one(size);
+            }
+            InstKind::RecordAllocatorLayout { name, managed, live, free_blocks, largest } => {
+                one(name);
+                one(managed);
+                one(live);
+                one(free_blocks);
+                one(largest);
+            }
+            InstKind::CallIndirect { callee, args, .. }
+            | InstKind::CallIndirectFn { callee, args, .. }
+            | InstKind::CallIndirectFnStruct { callee, args, .. }
+            | InstKind::CallIndirectFnTuple { callee, args, .. }
+            | InstKind::CallIndirectFnEnum { callee, args, .. } => {
+                one(callee);
+                args.iter().for_each(one);
+            }
+            InstKind::MakeClosure { captures, .. } => captures.iter().for_each(one),
+            // Reads nothing.
+            InstKind::Const(_)
+            | InstKind::LoadLocal(_)
+            | InstKind::PrintStr { .. }
+            | InstKind::ConstStr { .. }
+            | InstKind::ConstStrBytes { .. }
+            | InstKind::PrintRaw { .. }
+            | InstKind::AllocPop
+            | InstKind::AllocCurrent
+            | InstKind::MemStat { .. }
+            | InstKind::MemStatEnable
+            | InstKind::AddressOf { .. }
+            | InstKind::FuncAddr { .. }
+            | InstKind::VtableAddr { .. }
+            | InstKind::DynCoerceSlotAddr { .. } => {}
+        }
+    }
+}
+
+impl Terminator {
+    /// Every `ValueId` this terminator reads. Exhaustive for the same
+    /// reason as [`InstKind::for_each_operand`].
+    pub fn for_each_operand(&self, f: &mut impl FnMut(ValueId)) {
+        match self {
+            Terminator::Return(values) => values.iter().for_each(|v| f(*v)),
+            Terminator::Branch { cond, .. } => f(*cond),
+            Terminator::PanicAllocBudget { entry, current, limit, .. } => {
+                f(*entry);
+                f(*current);
+                f(*limit);
+            }
+            Terminator::Jump(_) | Terminator::Panic { .. } | Terminator::Unreachable => {}
+        }
+    }
+}
+
 impl BinOp {
     pub fn produces_bool(self) -> bool {
         matches!(

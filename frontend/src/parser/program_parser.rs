@@ -545,6 +545,12 @@ impl<'a> Parser<'a> {
         let const_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
         out.saw_end(const_end_pos);
 
+        // COMPILE-TIME-EVAL C5: remember the value if it is one an
+        // array length could use. See `Parser::const_lengths`.
+        if let Some(length) = self.const_length_of(&value) {
+            self.const_lengths.insert(const_name, length);
+        }
+
         out.consts.push(ConstDecl {
             node: Node::new(const_start_pos, const_end_pos),
             name: const_name,
@@ -553,6 +559,28 @@ impl<'a> Parser<'a> {
             visibility,
         });
         Ok(())
+    }
+
+    /// COMPILE-TIME-EVAL C5: the non-negative integer a `const`
+    /// initialiser names outright, or `None` when working it out would
+    /// take an evaluator.
+    fn const_length_of(&self, value: &ExprRef) -> Option<u64> {
+        match self.ast_builder.get_expr_pool().get(value)? {
+            Expr::UInt64(v) => Some(v),
+            Expr::UInt8(v) => Some(v as u64),
+            Expr::UInt16(v) => Some(v as u64),
+            Expr::UInt32(v) => Some(v as u64),
+            Expr::Int64(v) => u64::try_from(v).ok(),
+            Expr::Int8(v) => u64::try_from(v).ok(),
+            Expr::Int16(v) => u64::try_from(v).ok(),
+            Expr::Int32(v) => u64::try_from(v).ok(),
+            // A suffix-less literal: the type checker decides its type
+            // later, but the digits are already here.
+            Expr::Number(sym) => self.string_interner.resolve(sym)?.parse::<u64>().ok(),
+            // `const M: u64 = N` — one more hop, still no arithmetic.
+            Expr::Identifier(sym) => self.const_lengths.get(&sym).copied(),
+            _ => None,
+        }
     }
 
     /// A `type` alias.

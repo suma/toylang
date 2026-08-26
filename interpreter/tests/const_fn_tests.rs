@@ -364,3 +364,69 @@ fn the_same_failure_in_a_const_initialiser_is_an_error() {
     .expect_err("a const initialiser cannot be left for run time");
     assert!(err.contains("E0017"), "{err}");
 }
+
+// --- C5: a value inside a type -----------------------------------
+
+#[test]
+fn an_array_length_may_name_a_const() {
+    assert_program_result_u64(
+        r#"
+        const N: u64 = 3u64
+        fn main() -> u64 {
+            val a: [i64; N] = [1i64, 2i64, 3i64]
+            (a[0] + a[2]) as u64
+        }
+        "#,
+        4,
+    );
+}
+
+#[test]
+fn an_array_length_may_name_a_const_that_names_another() {
+    assert_program_result_u64(
+        r#"
+        const N: u64 = 2u64
+        const M: u64 = N
+        fn main() -> u64 {
+            val a: [i64; M] = [5i64, 6i64]
+            a[1] as u64
+        }
+        "#,
+        6,
+    );
+}
+
+#[test]
+fn a_length_that_needs_computing_is_refused_with_the_reason() {
+    // The limit is structural rather than a missing feature: a length
+    // is baked into `TypeDecl::Array` while parsing and read as a
+    // number by every pass after, while the fold needs a type-checked
+    // program to run. `COMPILE_TIME_EVAL.md` C5 / C6 has the details.
+    let err = test_program(
+        r#"
+        const fn double(n: u64) -> u64 { n * 2u64 }
+        const K: u64 = double(2u64)
+        fn main() -> u64 {
+            val a: [i64; K] = [1i64, 2i64, 3i64, 4i64]
+            a[3] as u64
+        }
+        "#,
+    )
+    .expect_err("the length is not a literal the parser can read");
+    assert!(err.contains("array length `K`"), "{err}");
+    assert!(err.contains("before type checking"), "{err}");
+}
+
+#[test]
+fn an_unknown_array_length_names_itself() {
+    let err = test_program(
+        r#"
+        fn main() -> u64 {
+            val a: [i64; NOPE] = [1i64]
+            a[0] as u64
+        }
+        "#,
+    )
+    .expect_err("there is no such const");
+    assert!(err.contains("array length `NOPE`"), "{err}");
+}

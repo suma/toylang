@@ -221,6 +221,21 @@ pub struct Parser<'a> {
     /// target keeps `Generic(T)` placeholders that get substituted at
     /// the use site via `substitute_generics`.
     pub type_aliases: HashMap<DefaultSymbol, (Vec<DefaultSymbol>, TypeDecl)>,
+    /// COMPILE-TIME-EVAL C5: the value of each top-level `const` whose
+    /// initialiser is an integer literal, so an array length can name
+    /// it: `const N: u64 = 3u64` then `val a: [i64; N]`.
+    ///
+    /// Populated as the parser meets each declaration, and consulted
+    /// in `parse_type_declaration` — the same shape, and the same
+    /// no-forward-references rule, as `type_aliases` above. It has to
+    /// work this way round: a length is baked into `TypeDecl::Array`
+    /// while parsing, and every later pass reads it as a number.
+    ///
+    /// Only literals and chains of them. Arithmetic would mean a
+    /// fourth evaluator living in the parser, which is the thing
+    /// `COMPILE_TIME_EVAL.md` exists to prevent; a length that needs
+    /// computing is refused with a message saying so.
+    pub const_lengths: HashMap<DefaultSymbol, u64>,
     /// Generic parameters declared on each `struct` / `enum`, by type
     /// name.
     ///
@@ -289,6 +304,7 @@ impl<'a> Parser<'a> {
             old_exprs: Vec::new(),
             last_alloc_budget: None,
             type_aliases: HashMap::new(),
+            const_lengths: HashMap::new(),
             declared_type_generics: HashMap::new(),
             source_file: None,
             line_starts: build_line_starts(input),

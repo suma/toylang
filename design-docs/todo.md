@@ -12,6 +12,12 @@
 
 ### 2026-08-26
 
+- **COMPILE-TIME-EVAL C5 (半分): 配列長に `const` 識別子** —
+  `const N: u64 = 3u64` → `val a: [i64; N]` (実測 5 が解消)。パーサが
+  `type_aliases` と同じ流儀で解決。**`[i64; double(2u64)]` は未対応** —
+  配列長は parse 時に `TypeDecl::Array` に焼き込まれるのに CTFE は
+  型検査済みプログラムを要求するので、順序が逆。C6 の後にやるのが安い。
+
 - **COMPILE-TIME-EVAL C4: 契約との接続 + warning 機構** — この言語に
   warning という出力が無かったので作った (`check_typing_diagnostics` の
   `Ok` が warnings を運ぶ)。`E0018` は 2 種: **契約述語の非純粋性**

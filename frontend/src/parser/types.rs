@@ -103,6 +103,31 @@ impl<'a> Parser<'a> {
                                 ParserError::generic_error(location, format!("Invalid array size: {}", s))
                             })?
                         }
+                        // COMPILE-TIME-EVAL C5: a length may name a
+                        // top-level `const`. The value has to be known
+                        // here — `TypeDecl::Array` carries a number and
+                        // every later pass reads it as one — so the
+                        // parser resolves it against the constants it
+                        // has already met, exactly as it resolves a
+                        // `type` alias.
+                        Some(Kind::Identifier(name)) => {
+                            let sym = self.string_interner.get_or_intern(name.clone());
+                            self.next();
+                            match self.const_lengths.get(&sym) {
+                                Some(size) => *size as usize,
+                                None => {
+                                    let location = self.current_source_location();
+                                    return Err(ParserError::generic_error(
+                                        location,
+                                        format!(
+                                            "array length `{name}` is not a `const` with a literal \
+                                             value declared earlier in this file: a length is \
+                                             needed before type checking, so it cannot be computed"
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
                         _ => {
                             let location = self.current_source_location();
                             return Err(ParserError::generic_error(location, "Expected array size or underscore".to_string()))

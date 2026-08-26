@@ -28,7 +28,15 @@ const DOUBLED: u64 = double(21u64)        # 42
 const CHAINED: u64 = double(DOUBLED)      # reads the earlier const
 const FACT: u64 = factorial(10u64)        # 3628800
 
+# An array length may name a `const`. The value has to be a literal the
+# parser can read: the length is fixed while parsing, and compile-time
+# evaluation needs a type-checked program, so `[i64; factorial(3u64)]`
+# is refused rather than folded.
+const SIZE: u64 = 3u64
+
 fn main() -> u64 {
+    val row: [i64; SIZE] = [1i64, 2i64, 3i64]
+    println(row[2])                       # 3
     println(DOUBLED)                      # 42
     println(CHAINED)                      # 84
     println(FACT)                         # 3628800

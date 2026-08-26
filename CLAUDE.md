@@ -319,7 +319,11 @@ fn main() -> u64 {
   `print` / `println`、アロケーションカウンタ、`extern`・closure・`dyn` は
   不可。注釈のない関数は**呼べる**。強制位置 (`const` 初期化子) の失敗は
   コンパイルエラー、それ以外は畳まないだけ。畳めるのは scalar のみ。
-  自由関数のみ (method は未対応)。例: `interpreter/example/const_fn.t`
+  自由関数のみ (method は未対応)。**配列長に `const` 識別子を書ける**
+  (`const N: u64 = 3u64` → `val a: [i64; N]`)。ただし初期化子がリテラル
+  (または別の const) の場合のみ — 配列長は parse 時に焼き込まれるのに
+  fold は型検査後なので `[i64; double(2u64)]` は通らない。
+  例: `interpreter/example/const_fn.t`
 - **`panic("msg")` ビルトイン**: 実行を中断するメッセージ付き panic。型検査では「Unknown」を返す扱いで、`if cond { panic("...") } else { value }` のような式位置でも使える。関数全体が panic で発散する場合も戻り型と関係なく型検査が通る
 - **`test "name" { ... }` ブロック**: トップレベルに書けるテスト。`test` は contextual keyword なので `fn test(...)` や `val test = ...` は従来どおり使える。各ブロックは内部でゼロ引数関数に lower されるため型検査・バックエンドは特別扱い不要。通常実行では呼ばれず、`--test` で実行する。テストごとに独立した評価コンテキストを持つ
 - **`assert_eq(a, b)` / `assert_ne(a, b)` ビルトイン**: 失敗時に **left / right の実値**と行番号を出す。パーサマクロで一時束縛 + 比較 + メッセージ組み立てに desugar される

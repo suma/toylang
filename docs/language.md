@@ -1351,6 +1351,19 @@ no way to call it.
   including wrapping `+` / `*`, truncated signed division, and the
   narrow-width widths.
 
+An array length may name a `const`:
+
+```rust
+const N: u64 = 3u64
+val a: [i64; N] = [1i64, 2i64, 3i64]
+```
+
+The `const` must be declared earlier in the file and its initialiser
+must be an integer literal (or another such `const`). A length that
+needs computing — `[i64; double(2u64)]`, or a `const` whose own
+initialiser is a call — is refused: the length is fixed while parsing,
+and compile-time evaluation needs a type-checked program.
+
 Example: `interpreter/example/const_fn.t`.
 
 ### Top-level `type` declarations

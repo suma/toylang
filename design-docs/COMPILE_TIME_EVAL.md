@@ -415,14 +415,34 @@ C2 の定数畳み込みは CTFE と独立に効くので先に入れられる�
    いるものそのもの。リテラルと const 連鎖だけを読み、それ以外は
    理由を書いたエラーにしている。
 
-### C6 — 評価器の一本化
+### C6 — 評価器の一本化 📋 (未着手)
 
 1. `interpreter/src/ir_vm/` を `Object` / `RuntimeState` / `heap` から切り離し、
    `compiler_ir` の上のクレートとして抽出する。
 2. CTFE を tree-walker から IR VM に載せ替える。
    **同じ lowering・同じ trap guard を通る**ので、C0 のレーンは構造的に通る。
-3. 受け入れ基準: CTFE 経路とランタイム経路が同じコードを共有し、
-   `consts.rs` の手書き評価器が消える (評価器が 3 つ → 1 つ)。
+3. 受け入れ基準: CTFE 経路とランタイム経路が同じコードを共有する。
+
+**2026-08-26 の実測 (設計時の見積もりより結合は浅い)**: `ir_vm/` は 3,471 行だが、
+interpreter 本体への参照は **5 モジュール・約 25 箇所**しかない:
+
+| 参照先 | 箇所 | どこから |
+|---|---|---|
+| `runtime_state::RT` / `RuntimeState` | 11 | `mod.rs` / `dispatch.rs` / `heap.rs` |
+| `output::print_text` / `println_text` | 6 | `dispatch.rs` |
+| `object::` | 2 | `heap.rs` / `lift.rs` (境界層) |
+| `heap::profile` / `record_allocator_layout` | 2 | `dispatch.rs` |
+| `find_main_function` | 1 | `lift.rs` |
+
+`lift.rs` は元々 interpreter 向けの境界層なので新クレートに持って行く必要が無く、
+実質の作業は `RuntimeState` (heap manager + allocator stack) の移動と、
+`output` を trait / シンクで差し替えられるようにすること。
+
+**C3 で残った `consts.rs` は C6 では消えない** — 消えたのは「2 つ目の**評価器**」
+のほうで (C2 で `fold.rs` に委譲した)、`consts.rs` 自体は driver を通らない
+lowering 呼び出しのための literal リーダとして残る。
+
+**C5 の残り (`[i64; double(2u64)]`) は C6 の後に回すのが安い** — 上記 C5 の 2 を参照。
 
 ---
 

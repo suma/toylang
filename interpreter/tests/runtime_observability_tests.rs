@@ -450,3 +450,47 @@ fn a_string_read_past_the_end_is_a_toylang_failure() {
     );
     assert!(diags.contains("String::get index out of bounds"), "{diags}");
 }
+
+#[test]
+fn a_failing_program_runs_exactly_once() {
+    // 実測 2: a diverging IR VM run used to be answered by replaying
+    // the whole program on the tree-walker, which is a *second run*.
+    // `io::random` advancing twice is the cheapest way to see it: the
+    // seed is fixed, so a single run must print the first value of the
+    // sequence.
+    let source = "fn main() -> u64 {
+            io::random_seed(7u64)
+            val a: u64 = io::random()
+            println(a)
+            panic(\"stop\")
+        }";
+    let (result, out) = interpreter::output::with_capture(|| test_program(source));
+    assert!(result.is_err(), "the program is supposed to fail");
+    assert_eq!(out.lines().count(), 1, "printed once, not twice:\n{out}");
+
+    // The same seed, run to completion, must give the same first value.
+    let reference = "fn main() -> u64 {
+            io::random_seed(7u64)
+            val a: u64 = io::random()
+            println(a)
+            0u64
+        }";
+    let expected = stdout_of(reference);
+    assert_eq!(out, expected, "the failing run consumed extra randomness");
+}
+
+#[test]
+fn a_dyn_call_does_not_show_its_dispatch_thunk() {
+    // The vtable thunk is a real function in the IR, and it would
+    // otherwise appear between the method and its caller — plumbing
+    // the reader did not write.
+    let diags = runtime_failure(
+        "trait Speak { fn speak(&self) -> u64 }
+        struct Dog { v: u64 }
+        impl Speak for Dog { fn speak(&self) -> u64 { panic(\"woof\") } }
+        fn go(s: &dyn Speak) -> u64 { s.speak() }
+        fn main() -> u64 { val d = Dog { v: 1u64 } go(&d) }",
+    );
+    assert!(diags.contains("Dog::speak"), "{diags}");
+    assert!(!diags.contains("thunk"), "dispatch plumbing leaked:\n{diags}");
+}

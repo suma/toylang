@@ -58,7 +58,7 @@ fn main() -> u64 { a(0u64) }
 `compiler/tests/consistency/basics.rs:311` の trap テストも
 「全バックエンドが非ゼロで終わる」までしか pin していない。
 
-### 実測 2: 豊かな診断は「IR VM を捨てて tree-walker で再実行」の副産物
+### 実測 2: 豊かな診断は「IR VM を捨てて tree-walker で再実行」の副産物 (解消)
 
 `interpreter/src/lib.rs:1096-1105` — IR VM が `Diverged` を返すと結果は
 `None` になり、**捕らえていた stdout ごと捨てて tree-walker が同じプログラムを
@@ -732,6 +732,42 @@ D0 で「一致したら落ちる」向きを入れておいたおかげで、3 
 **これで tree-walker への replay を落とせる** — 残していた理由は
 「tree-walker だけが値を持つ文言を出す」ことだったので。実測 2 の
 「プログラムが 2 回走る」はこれで着手可能になった (未実施)。
+
+---
+
+## tree-walker への replay を落とした ✅ (2026-08-27)
+
+実測 2 の解消。IR VM が diverge したとき、interpreter は
+**プログラム全体を tree-walker で走らせ直して**豊かな診断を得ていた。
+D3/D4 と「値を持つ文言」で VM が位置も backtrace も値も自分で出せる
+ようになったので、戻る理由が消えた。
+
+- `run_main_via_ir_vm` の `Option<RcObject>` を **3 状態**
+  (`Ran` / `Diverged` / `NotEligible`) に割った。`None` が
+  「走らせられない」と「走って失敗した」を同じ顔で返していたのが元凶。
+- `compiler_vm::Divergence` が message / site / frames を**構造のまま**
+  運ぶ。replay がある間はレンダ済み文字列で足りていたが、いまはこれが
+  `--diagnostics=json` の出どころでもある。
+- 途中まで出た stdout は**プログラムの出力**として印字する
+  (replay 前提の「捨てて再実行」ではなくなった)。
+
+**ついでに出てきたこと** (どれも replay が隠していた):
+
+- `INTERPRETER_CONTRACTS` は tree-walker のつまみで、VM は常に
+  契約を検査していた。`off` が効いていたのは「VM が diverge →
+  replay が契約なしで走る」という**偶然**。lowering の
+  `release` に対応付け、半端な設定 (`pre` / `post`) は IR で
+  表現できないので `NotEligible` にして tree-walker に渡す。
+- closure のフレーム名が `main::closure_f_0` (合成関数名) だった。
+  宣言時に `display_name` を束縛名に設定。間接呼び出し経路には
+  `pending_frame_name` を足した。
+- **`dyn` dispatch の thunk がフレームに出ていた。** `Function` に
+  `hide_frame` を足して backtrace から外す — thunk は vtable の
+  スロットに置くための配管で、読者が書いたのはその上の method。
+
+**残った差**: `dyn` 越しの method フレームは呼び出し行を持たない
+(thunk からの呼び出しは合成なので site が無い)。tree-walker なら
+`(called at line N)` が付く。VM とコンパイル側は一致している。
 
 ---
 

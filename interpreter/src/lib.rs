@@ -1228,20 +1228,40 @@ fn execute_entry_with_values(
     // compiler MVP gaps do not break existing tests.  Placed *after*
     // the JIT fast-path so JIT-specific tests are not shadowed.
     //
-    // The attempt is speculative: the VM can print and *then* diverge,
-    // at which point the tree-walker re-runs the program and the output
-    // would appear twice. So stdout is captured for the attempt and only
-    // replayed when the VM actually finished the run — a fallback discards
-    // the partial output rather than emitting it alongside the retry's.
+    // The attempt is speculative only in one direction. stdout is
+    // captured so a *fallback* — the VM could not take the program —
+    // does not leave half an output in front of the tree-walker's.
+    //
+    // A program that ran and *failed* is not a fallback. Replaying it
+    // on the tree-walker used to be how the interpreter got a rich
+    // diagnostic (`DEBUG_OBSERVABILITY.md` 実測 2), and it meant the
+    // program ran twice: `io::random`'s sequence advanced again and
+    // `io::read_file` read the file a second time. The VM reports its
+    // own failure now — position, backtrace and the values a predicate
+    // saw — so there is nothing left to go back for.
     if args.is_none() && fast_paths == FastPaths::Allow {
-        let (result, captured) = crate::output::with_capture(|| {
-            ir_vm::lift::run_main_via_ir_vm(program, string_interner)
+        let (outcome, captured) = crate::output::with_capture(|| {
+            ir_vm::lift::run_main_via_ir_vm_outcome(program, string_interner)
         });
-        if let Some(obj) = result {
-            crate::output::print_text(&captured);
-            return Ok(obj);
+        match outcome {
+            ir_vm::lift::IrVmOutcome::Ran(obj) => {
+                crate::output::print_text(&captured);
+                return Ok(obj);
+            }
+            ir_vm::lift::IrVmOutcome::Diverged(failure) => {
+                // Whatever the program printed before it died is the
+                // program's output, not a partial attempt.
+                crate::output::print_text(&captured);
+                let diagnostic = ir_vm_diagnostic(&failure, filename.unwrap_or("<input>"));
+                return Err(EntryError::Rendered {
+                    text: failure.rendered,
+                    diagnostic: Box::new(diagnostic),
+                });
+            }
+            ir_vm::lift::IrVmOutcome::NotEligible => {
+                crate::heap::restore_profile(profile_before_attempt);
+            }
         }
-        crate::heap::restore_profile(profile_before_attempt);
     }
 
     if let Some(values) = args {
@@ -1337,6 +1357,40 @@ fn runtime_diagnostic(
             .map(|frame| frontend::diagnostic::BacktraceFrame {
                 function: frame.function.clone(),
                 line: frame.call_site.as_ref().map(|loc| loc.line),
+            })
+            .collect(),
+    }
+}
+
+/// The IR VM's failure in the shape a tool consumes (DEBUG-OBS D5).
+///
+/// The same fields `runtime_diagnostic` fills for the tree-walker,
+/// resolved from the module's site table instead of an
+/// `InterpreterError`.
+fn ir_vm_diagnostic(failure: &ir_vm::lift::IrVmFailure, entry_file: &str) -> Diagnostic {
+    let code = if failure.message.starts_with("Contract violation:") {
+        frontend::diagnostic::codes::CONTRACT_VIOLATION
+    } else {
+        frontend::diagnostic::codes::RUNTIME_PANIC
+    };
+    let (file, span) = match &failure.location {
+        Some((path, loc)) => (path.clone(), Some(frontend::diagnostic::Span::from(*loc))),
+        None => (entry_file.to_string(), None),
+    };
+    Diagnostic {
+        severity: frontend::diagnostic::Severity::Error,
+        code,
+        message: failure.message.clone(),
+        file,
+        span,
+        origin_module: None,
+        suggestions: Vec::new(),
+        backtrace: failure
+            .frames
+            .iter()
+            .map(|(function, line)| frontend::diagnostic::BacktraceFrame {
+                function: function.clone(),
+                line: *line,
             })
             .collect(),
     }

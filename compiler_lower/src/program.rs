@@ -952,6 +952,10 @@ fn declare_methods(
                 thunk_params,
                 ret_ty,
             );
+            // DEBUG-OBS: the thunk is dispatch plumbing, not something
+            // the user wrote. A backtrace names the method it forwards
+            // to, which sits directly above it.
+            module.hide_frame(thunk_func_id);
             // TEST-PERF: the thunk is scheduled up front with the rest
             // of the vtable machinery; only thunks whose vtable is
             // actually referenced by a reachable body get their body
@@ -1620,6 +1624,7 @@ impl<'a> FunctionLower<'a> {
             result_sym: interner.get("result"),
             facts: Default::default(),
             contract_report: None,
+            pending_frame_name: None,
             debug_frames: !release,
             current_expr: None,
             bindings: HashMap::new(),

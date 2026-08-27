@@ -444,6 +444,9 @@ impl<'a> FunctionLower<'a> {
             } else {
                 Some(ret_ty)
             };
+            // DEBUG-OBS: the frame is named after the binding, which
+            // is what the user wrote and what the tree-walker prints.
+            self.pending_frame_name = Some(fn_name);
             return Ok(self.emit(
                 InstKind::CallIndirect {
                     callee,

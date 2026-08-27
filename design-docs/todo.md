@@ -12,6 +12,20 @@
 
 ### 2026-08-27
 
+- **DEBUG-OBS: tree-walker への replay を落とした** — IR VM が diverge
+  したとき**プログラム全体を走らせ直していた**のをやめた (実測 2)。
+  `run_main_via_ir_vm` の `Option` を 3 状態
+  (`Ran` / `Diverged` / `NotEligible`) に割る — `None` が
+  「走らせられない」と「走って失敗した」を同じ顔で返していたのが元凶。
+  `compiler_vm::Divergence` が message / site / frames を構造のまま運ぶ
+  (JSON の出どころでもあるため)。**replay が隠していたものが 3 つ出た**:
+  (a) `INTERPRETER_CONTRACTS=off` が効いていたのは「VM が diverge →
+  replay が契約なしで走る」偶然で、lowering の `release` に対応付けた
+  (半端な `pre`/`post` は IR で表現できないので tree-walker に渡す)、
+  (b) closure のフレーム名が合成関数名 (`main::closure_f_0`) だった、
+  (c) **`dyn` dispatch の thunk がフレームに出ていた** (`Function::hide_frame`
+  で外す)。残る差は `dyn` 越しのフレームが呼び出し行を持たないこと。
+
 - **DEBUG-OBS: 値を持つ文言を全実行系に** — D0 の目標表が決めていた
   3 件 (`u64` underflow の `1 - 5` / 配列 OOB の `index 5, length 3` /
   契約違反の `(with n = 0)`) が全実行系で同じになり、**D0 の pin 4 件
@@ -1179,19 +1193,12 @@
 > 範囲外はホストではなく toylang の言葉で落ちる。**5 レーンは pin した
 > 全プログラムで完全一致**しており、両方向 pin の
 > `assert_diagnostic_report` は現在どこからも呼ばれていない。
-> 残りは下の 3 項目。
+> 残りは下の 2 項目。
 
 - **DEBUG-OBS D3 の残: `HeapAlloc` の `SiteId` 移行** ★ — `--profile=mem` の
   リーク報告にファイル名が付く (MEMORY_PROFILING M2 の積み残し)。診断とは
   別経路で、コンパイル済みランタイムが自前でレポートを書くため
   ファイル名表の埋め込み + 起動時登録と、M4 の JSON スキーマ変更が要る。
-- **DEBUG-OBS: IR VM diverge 時の tree-walker 再実行** ★★ — VM は位置も
-  backtrace も値を持つ文言も自分で出せるようになった (D3/D4 + 値の項)。
-  **replay を残す理由はもう無い**。落とせば実測 2 の「プログラムが
-  2 回走る」(`io::random` / `io::read_file` が 2 回目を踏む) が消える。
-  注意点は tree-walker でしか走らないプログラム
-  (TREE-WALKER-NUM-W 等) の扱いで、そこは replay ではなく
-  「VM が最初から eligible でない」判定に寄せる必要がある。
 - **DEBUG-OBS D4 の残: panic に到達しえない関数のフレームを積まない** ★ —
   backtrace に現れようのないフレームは誰も読まない。到達可能性の歩行は
   `reachability.rs` にあるので、`Terminator::Panic` を sink にすれば

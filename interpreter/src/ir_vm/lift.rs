@@ -52,6 +52,40 @@ pub fn try_execute_main(
     run_main_via_ir_vm(program, interner)
 }
 
+/// What the IR VM did with a program.
+///
+/// The three cases used to collapse into `Option<RcObject>`, and the
+/// driver answered `None` by re-running the whole program on the
+/// tree-walker. That was right for "this engine cannot run it" and
+/// wrong for "it ran and failed": the second replay is a *second run*,
+/// which `io::random` and `io::read_file` can tell apart
+/// (`DEBUG_OBSERVABILITY.md` 実測 2).
+pub enum IrVmOutcome {
+    /// Ran to completion; the value `main` produced.
+    Ran(RcObject),
+    /// Ran and failed. The failure, in the parts a driver needs.
+    Diverged(Box<IrVmFailure>),
+    /// This engine could not take the program at all — it did not
+    /// lower, the module is outside the supported subset, or `main`
+    /// returns something the VM cannot hand back. Nothing ran, so a
+    /// fallback costs nothing.
+    NotEligible,
+}
+
+/// A failure the IR VM produced, resolved against the module it ran —
+/// which lives only inside `run_main_via_ir_vm_outcome`, so the site
+/// is flattened here rather than handed out as an index.
+pub struct IrVmFailure {
+    /// What the user sees: framed excerpt plus backtrace.
+    pub rendered: String,
+    /// The message alone, for the machine-readable form.
+    pub message: String,
+    /// Where it happened, when the lowering pass knew.
+    pub location: Option<(String, frontend::type_checker::SourceLocation)>,
+    /// Frames innermost-first.
+    pub frames: Vec<(String, Option<u32>)>,
+}
+
 /// Env-independent core of [`try_execute_main`]. Exposed so tests can drive
 /// the IR VM path deterministically (and compare it against the tree-walker)
 /// without toggling a process-global env var.
@@ -59,7 +93,20 @@ pub fn run_main_via_ir_vm(
     program: &File,
     interner: &DefaultStringInterner,
 ) -> Option<RcObject> {
-    let main_fn = crate::find_main_function(program, interner).ok()?;
+    match run_main_via_ir_vm_outcome(program, interner) {
+        IrVmOutcome::Ran(obj) => Some(obj),
+        _ => None,
+    }
+}
+
+/// The full answer: ran, ran and failed, or could not take it.
+pub fn run_main_via_ir_vm_outcome(
+    program: &File,
+    interner: &DefaultStringInterner,
+) -> IrVmOutcome {
+    let Ok(main_fn) = crate::find_main_function(program, interner) else {
+        return IrVmOutcome::NotEligible;
+    };
     // Scalar (non-heap) and `str` `main` returns can be reconstructed after
     // the VM's RuntimeState teardown (`str` bytes are captured first). Other
     // compound returns (struct / tuple / enum) bail to the tree-walker.
@@ -70,26 +117,51 @@ pub fn run_main_via_ir_vm(
     // messages. Clone so the caller's interner stays immutable; the clone
     // carries every symbol the program already references plus the two new
     // ones, and is handed to the VM for panic / print symbol resolution.
+    // `INTERPRETER_CONTRACTS` is the tree-walker's knob, and lowering
+    // has only an all-or-nothing one. Both ends match it; a half
+    // setting (`pre` / `post`) has no IR shape, so the program goes to
+    // the engine that can express it rather than being run with the
+    // wrong checks. This used to work by accident: the VM checked
+    // everything, diverged, and the replay ran it again under the real
+    // setting.
+    let contracts = crate::evaluation::ContractMode::from_env();
+    let release = match (contracts.check_pre, contracts.check_post) {
+        (true, true) => false,
+        (false, false) => true,
+        _ => {
+            trace("fb_contract_mode");
+            return IrVmOutcome::NotEligible;
+        }
+    };
     let mut interner_owned = interner.clone();
     let contract_msgs = compiler_lower::ContractMessages::intern(&mut interner_owned);
-    let module = match compiler_lower::lower_program(program, &interner_owned, &contract_msgs, false)
+    let module = match compiler_lower::lower_program(
+        program,
+        &interner_owned,
+        &contract_msgs,
+        release,
+    )
     {
         Ok(m) => m,
         Err(_) => {
             trace("fb_lower_err");
-            return None;
+            return IrVmOutcome::NotEligible;
         }
     };
     if !super::eligibility::ir_vm_supported(&module) {
         trace("fb_ineligible");
-        return None;
+        return IrVmOutcome::NotEligible;
     }
     let (bits, captured_str, main_slots) =
-        match super::run_module_capturing(&module, Some(&interner_owned), returns_str) {
+        match super::run_module_capturing_reporting(&module, Some(&interner_owned), returns_str) {
             Ok(v) => v,
-            Err(_) => {
-                trace("fb_diverge");
-                return None;
+            Err(divergence) => {
+                // The program ran and failed. It is *not* a fallback:
+                // re-running it on another engine would run it twice,
+                // which `io::random` and `io::read_file` can tell
+                // apart (実測 2).
+                trace("diverged");
+                return IrVmOutcome::Diverged(Box::new(failure_from(&module, divergence)));
             }
         };
     trace("ran");
@@ -106,17 +178,51 @@ pub fn run_main_via_ir_vm(
             Some(sym) => Object::ConstString(sym),
             None => Object::String(captured_str),
         };
-        Some(Rc::new(RefCell::new(obj)))
+        IrVmOutcome::Ran(Rc::new(RefCell::new(obj)))
     } else if is_compound {
         let ret_ty = main_fn.return_type.as_ref().unwrap();
-        let (obj, consumed) = reconstruct_object(&main_slots, ret_ty, &module, &mut interner_owned)?;
+        let Some((obj, consumed)) =
+            reconstruct_object(&main_slots, ret_ty, &module, &mut interner_owned)
+        else {
+            return IrVmOutcome::NotEligible;
+        };
         if consumed != main_slots.len() {
             // mismatch in expected vs actual leaf count — safety fallback
-            return None;
+            return IrVmOutcome::NotEligible;
         }
-        Some(Rc::new(RefCell::new(obj)))
+        IrVmOutcome::Ran(Rc::new(RefCell::new(obj)))
     } else {
-        Some(wrap_scalar(bits, &main_fn))
+        IrVmOutcome::Ran(wrap_scalar(bits, &main_fn))
+    }
+}
+
+/// Resolve a divergence against the module that produced it.
+fn failure_from(
+    module: &compiler_ir::Module,
+    divergence: compiler_vm::Divergence,
+) -> IrVmFailure {
+    let rendered = divergence.render(module);
+    let location = divergence.site.and_then(|id| module.site(id)).map(|site| {
+        let path = module
+            .files
+            .get(site.file as usize)
+            .cloned()
+            .unwrap_or_else(|| "<unknown>".to_string());
+        (
+            path,
+            frontend::type_checker::SourceLocation::new(
+                site.line,
+                site.column,
+                site.offset,
+                site.offset + site.width,
+            ),
+        )
+    });
+    IrVmFailure {
+        rendered,
+        message: divergence.message,
+        location,
+        frames: divergence.frames,
     }
 }
 

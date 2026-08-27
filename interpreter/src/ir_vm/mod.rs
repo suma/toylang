@@ -42,6 +42,23 @@ pub fn run_module_with_interner(
 /// Like [`run_module_with_interner`] but, when `want_str` is set, also
 /// reads the `main` exit value as a `str`. Also returns the full flat
 /// leaf list so compound `main` returns can be reconstructed.
+/// As [`run_module_capturing`], handing back the failure in parts so
+/// the driver can both render it and serialise it.
+pub fn run_module_capturing_reporting(
+    module: &Module,
+    interner: Option<&DefaultStringInterner>,
+    want_str: bool,
+) -> Result<(i64, String, Vec<RawSlot>), compiler_vm::Divergence> {
+    with_runtime_state(|| {
+        compiler_vm::run_module_capturing_reporting(
+            module,
+            interner,
+            &host::InterpreterHost,
+            want_str,
+        )
+    })
+}
+
 pub fn run_module_capturing(
     module: &Module,
     interner: Option<&DefaultStringInterner>,

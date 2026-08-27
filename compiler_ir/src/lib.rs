@@ -199,11 +199,13 @@ impl Module {
     /// (DEBUG-OBS D3). A loop body lowered once still panics from one
     /// place; two sites that agree on file, line, column and width are
     /// the same place.
+    #[allow(clippy::too_many_arguments)]
     pub fn intern_site(
         &mut self,
         file: &str,
         line: u32,
         column: u32,
+        offset: u32,
         width: u32,
         snippet: Option<&str>,
     ) -> SiteId {
@@ -218,6 +220,7 @@ impl Module {
             file: file_idx,
             line,
             column,
+            offset,
             width,
             snippet: snippet.map(str::to_string),
         };
@@ -251,6 +254,15 @@ impl Module {
     /// Name this function by what the user wrote.
     pub fn set_display_name(&mut self, id: FuncId, name: String) {
         self.functions[id.0 as usize].display_name = Some(name);
+    }
+
+    /// Keep this function out of backtraces.
+    pub fn hide_frame(&mut self, id: FuncId) {
+        self.functions[id.0 as usize].hide_frame = true;
+    }
+
+    pub fn frame_hidden(&self, id: FuncId) -> bool {
+        self.functions[id.0 as usize].hide_frame
     }
 
     /// The backtrace name for a function.
@@ -390,6 +402,7 @@ impl Module {
             symbol,
             export_name,
             display_name: None,
+            hide_frame: false,
             linkage,
             params,
             param_is_ref: Vec::new(),
@@ -437,6 +450,7 @@ impl Module {
             symbol,
             export_name,
             display_name: None,
+            hide_frame: false,
             linkage,
             params,
             param_is_ref: Vec::new(),
@@ -732,6 +746,13 @@ pub struct Function {
     /// declaring site had nothing better to say than the mangled name,
     /// in which case [`Module::frame_name`] unmangles it.
     pub display_name: Option<String>,
+    /// Whether a backtrace should skip this function.
+    ///
+    /// True for the `dyn` dispatch thunks: they exist so a vtable slot
+    /// has something to point at, and a reader looking at a backtrace
+    /// wants the method the thunk forwarded to, which is the frame
+    /// right above it.
+    pub hide_frame: bool,
     pub linkage: Linkage,
     /// Parameter types in declaration order. The corresponding `LocalId`s
     /// are `LocalId(0)..LocalId(params.len())`.
@@ -885,6 +906,10 @@ pub struct Site {
     pub file: u32,
     pub line: u32,
     pub column: u32,
+    /// Byte offset of the span's start in the file. Carried so a
+    /// machine-readable diagnostic keeps the same shape whichever
+    /// engine produced it (DEBUG-OBS D5).
+    pub offset: u32,
     /// Width of the caret, in bytes of the source line.
     pub width: u32,
     /// The source line, when the lowering pass had it.
@@ -2666,9 +2691,9 @@ mod allocator_binding_tests {
     #[test]
     fn interning_the_same_position_twice_yields_one_site() {
         let mut m = Module::new();
-        let a = m.intern_site("a.t", 3, 9, 5, Some("    panic(\"x\")"));
-        let b = m.intern_site("a.t", 3, 9, 5, Some("    panic(\"x\")"));
-        let c = m.intern_site("a.t", 4, 9, 5, Some("    panic(\"x\")"));
+        let a = m.intern_site("a.t", 3, 9, 40, 5, Some("    panic(\"x\")"));
+        let b = m.intern_site("a.t", 3, 9, 40, 5, Some("    panic(\"x\")"));
+        let c = m.intern_site("a.t", 4, 9, 60, 5, Some("    panic(\"x\")"));
         assert_eq!(a, b, "one position is one site");
         assert_ne!(a, c);
         assert_eq!(m.files.len(), 1, "one file, however many sites");
@@ -2682,7 +2707,7 @@ mod allocator_binding_tests {
         // learns at run time, then suffix — and the result has to be
         // byte-identical to what a static panic lays down in one blob.
         let mut m = Module::new();
-        let site = Some(m.intern_site("a.t", 2, 5, 4, Some("    boom")));
+        let site = Some(m.intern_site("a.t", 2, 5, 10, 4, Some("    boom")));
         let whole = m.render_stderr_text(site, "panic: gone wrong");
         let assembled = format!(
             "{}panic: gone wrong{}",

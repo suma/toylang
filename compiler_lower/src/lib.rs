@@ -113,6 +113,20 @@ mod array_layout;
 mod contract_facts;
 use contract_facts::ContractFacts;
 
+/// Whether an instruction transfers control to something with a body,
+/// directly or through a pointer. Used to decide which instructions
+/// deserve a backtrace frame.
+fn is_call_kind(kind: &InstKind) -> bool {
+    matches!(
+        kind,
+        InstKind::CallIndirect { .. }
+            | InstKind::CallIndirectFn { .. }
+            | InstKind::CallIndirectFnStruct { .. }
+            | InstKind::CallIndirectFnTuple { .. }
+            | InstKind::CallIndirectFnEnum { .. }
+    )
+}
+
 mod types;
 
 mod templates;
@@ -252,6 +266,14 @@ struct FunctionLower<'a> {
     /// Set once per function body. `None` while lowering something
     /// with no contracts to report — drop glue, a synthetic wrapper.
     contract_report: Option<ContractReport>,
+    /// DEBUG-OBS: the name to give the next indirect call's frame.
+    ///
+    /// A direct call names its frame from the callee; a call through a
+    /// function pointer has no callee to ask, so the name comes from
+    /// what the user wrote at the call site — the binding they called
+    /// through, which is what the tree-walker prints too. Set right
+    /// before the call is emitted, and cleared by `emit`.
+    pending_frame_name: Option<DefaultSymbol>,
     /// DEBUG-OBS D4: whether calls record a backtrace frame.
     ///
     /// Off under `--release`, which is the one axis this language
@@ -620,9 +642,14 @@ impl<'a> FunctionLower<'a> {
         let bind_name = self.interner.resolve(name).unwrap_or("anon");
         let counter = self.closure_bindings.len();
         let export_name = format!("{outer_name}__closure_{bind_name}_{counter}");
+        let display_name = bind_name.to_string();
         let func_id = self
             .module
             .declare_function_anon(export_name, crate::ir::Linkage::Local, ir_params, ir_ret);
+        // DEBUG-OBS: a backtrace names a closure after the binding the
+        // user called through, not the synthetic function the lowering
+        // made for it.
+        self.module.set_display_name(func_id, display_name);
         // Phase 6b: emit `MakeClosure` for every closure (even
         // non-capturing — the env still needs to carry fn_ptr at
         // offset 0 so HOF call sites can recover it). For
@@ -998,6 +1025,8 @@ impl<'a> FunctionLower<'a> {
         let func_id = self
             .module
             .declare_function_anon(export_name, crate::ir::Linkage::Local, ir_params, ir_ret);
+        // An inline closure has no binding to be named after.
+        self.module.set_display_name(func_id, "<closure>".to_string());
         // Phase 6b: build the env on the heap. Resolve each
         // capture from the outer-scope binding map and emit
         // `MakeClosure` so the resulting env_ptr is the value
@@ -1617,12 +1646,24 @@ impl<'a> FunctionLower<'a> {
         // DEBUG-OBS D4: a direct call records which frame it enters.
         // Done here, at the one place instructions are built, rather
         // than at the dozens of sites that emit a call.
+        let pending_name = self.pending_frame_name.take();
         let frame = if self.debug_frames {
-            Module::direct_call_target(&kind).map(|target| {
-                let name = self.module.frame_name(target);
-                let site = self.current_site();
-                self.module.intern_frame(&name, site)
-            })
+            match Module::direct_call_target(&kind) {
+                Some(target) if !self.module.frame_hidden(target) => {
+                    let name = self.module.frame_name(target);
+                    let site = self.current_site();
+                    Some(self.module.intern_frame(&name, site))
+                }
+                Some(_) => None,
+                // An indirect call names its frame after the binding
+                // it went through, when the caller said which.
+                None if is_call_kind(&kind) => pending_name.map(|sym| {
+                    let name = self.interner.resolve(sym).unwrap_or("<closure>").to_string();
+                    let site = self.current_site();
+                    self.module.intern_frame(&name, site)
+                }),
+                None => None,
+            }
         } else {
             None
         };

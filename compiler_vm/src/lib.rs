@@ -35,6 +35,40 @@ use frame::CallFrame;
 use host::VmHost;
 use slot::RawSlot;
 
+/// A run that ended in a failure, with the parts a caller needs to
+/// both *show* it and *report* it.
+///
+/// A rendered string was enough while the interpreter answered a
+/// divergence by replaying the whole program on the tree-walker and
+/// printing that engine's diagnostic. Without the replay this *is* the
+/// diagnostic, so it has to carry what `--diagnostics=json` wants too.
+#[derive(Debug, Clone)]
+pub struct Divergence {
+    /// The message, `panic: `-prefixed where that applies.
+    pub message: String,
+    pub site: Option<compiler_ir::SiteId>,
+    /// Frames innermost-first: the function and the line it was
+    /// entered from (`None` for the entry function).
+    pub frames: Vec<(String, Option<u32>)>,
+}
+
+impl Divergence {
+    /// The text a user sees: the framed excerpt (when the site is
+    /// known) followed by the backtrace.
+    pub fn render(&self, module: &Module) -> String {
+        let entries: Vec<compiler_ir::BacktraceEntry<'_>> = self
+            .frames
+            .iter()
+            .map(|(name, line)| compiler_ir::BacktraceEntry { name, line: *line })
+            .collect();
+        format!(
+            "{}{}",
+            module.render_diagnostic(self.site, &self.message),
+            compiler_ir::render_backtrace(&entries)
+        )
+    }
+}
+
 /// Result of executing a module.
 pub enum VmResult {
     /// Normal termination with an exit code.
@@ -171,11 +205,15 @@ impl<'a> Vm<'a> {
     /// it. The bottom frame is the entry function, which nothing
     /// called, so it renders without a line — the same shape the
     /// tree-walker produces.
-    pub(crate) fn backtrace_text(&self) -> String {
-        let names: Vec<(String, Option<u32>)> = self
-            .frames
+    /// The backtrace as data, innermost first (DEBUG-OBS D5).
+    pub(crate) fn backtrace_frames(&self) -> Vec<(String, Option<u32>)> {
+        self.frames
             .iter()
             .rev()
+            // DEBUG-OBS: `dyn` dispatch thunks are plumbing. The
+            // method they forward to is the frame above them, and it
+            // is the one the reader wrote.
+            .filter(|f| !self.module.frame_hidden(f.func_id))
             .map(|f| match f.frame {
                 Some(id) => (
                     self.module
@@ -186,8 +224,12 @@ impl<'a> Vm<'a> {
                 ),
                 None => (self.module.frame_name(f.func_id), None),
             })
-            .collect();
-        let entries: Vec<compiler_ir::BacktraceEntry<'_>> = names
+            .collect()
+    }
+
+    pub(crate) fn backtrace_text(&self) -> String {
+        let frames = self.backtrace_frames();
+        let entries: Vec<compiler_ir::BacktraceEntry<'_>> = frames
             .iter()
             .map(|(name, line)| compiler_ir::BacktraceEntry { name, line: *line })
             .collect();
@@ -623,6 +665,21 @@ pub fn run_module_capturing(
     host: &dyn VmHost,
     want_str: bool,
 ) -> Result<(i64, String, Vec<RawSlot>), String> {
+    run_module_capturing_reporting(module, interner, host, want_str)
+        .map_err(|d| d.render(module))
+}
+
+/// As [`run_module_capturing`], handing back the failure in parts.
+///
+/// The interpreter needs them: without the tree-walker replay this is
+/// the diagnostic a user sees *and* the one `--diagnostics=json`
+/// serialises, and a rendered string cannot answer the second.
+pub fn run_module_capturing_reporting(
+    module: &Module,
+    interner: Option<&DefaultStringInterner>,
+    host: &dyn VmHost,
+    want_str: bool,
+) -> Result<(i64, String, Vec<RawSlot>), Divergence> {
     // Find main by export_name (works for both single-function and multi-function modules).
     let main_id = module
         .functions
@@ -630,7 +687,11 @@ pub fn run_module_capturing(
         .enumerate()
         .find(|(_, f)| f.export_name == "main")
         .map(|(i, _)| FuncId(i as u32))
-        .ok_or("no main function")?;
+        .ok_or_else(|| Divergence {
+            message: "no main function".to_string(),
+            site: None,
+            frames: Vec::new(),
+        })?;
 
     {
         let mut vm = match interner {
@@ -657,13 +718,13 @@ pub fn run_module_capturing(
             // terminator because the compile-time fold shares that
             // code and reports a failed `const` initialiser in its own
             // words (`[E0017] ... evaluating it failed: <message>`).
-            VmResult::Diverged { message, site, backtrace, needs_panic_prefix } => {
+            VmResult::Diverged { message, site, needs_panic_prefix, .. } => {
                 let message = if needs_panic_prefix {
                     format!("panic: {message}")
                 } else {
                     message
                 };
-                Err(format!("{}{backtrace}", module.render_diagnostic(site, &message)))
+                Err(Divergence { message, site, frames: vm.backtrace_frames() })
             }
         }
     }

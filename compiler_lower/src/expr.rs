@@ -1320,6 +1320,7 @@ impl<'a> FunctionLower<'a> {
             path,
             loc.line,
             loc.column,
+            loc.offset,
             loc.end_offset.saturating_sub(loc.offset),
             snippet.as_deref(),
         ))

@@ -32,12 +32,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// offset.
     pub fn node_to_source_location(&self, node: &Node) -> SourceLocation {
         let (line, column) = self.calculate_line_col_from_offset(node.start);
-        SourceLocation {
-            line,
-            column,
-            offset: node.start as u32,
-            end_offset: node.end as u32,
-        }
+        SourceLocation::new(line, column, node.start as u32, node.end as u32)
     }
 
     /// Look up the `SourceLocation` for an expression, if one was

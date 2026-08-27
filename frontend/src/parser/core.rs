@@ -173,7 +173,10 @@ pub struct Parser<'a> {
     /// Index into `errors` marking where the current top-level
     /// declaration started. See [`Parser::report_error`].
     decl_error_floor: usize,
-    input: &'a str,
+    /// The text being parsed. Also seeds the program's `SourceMap`
+    /// entry slot (DEBUG-OBS D2) so an excerpt can be drawn from a
+    /// module whose file is long gone.
+    pub(super) input: &'a str,
     recursion_depth: u32,
     max_recursion_depth: u32,
     /// Context for format-independent token processing
@@ -428,23 +431,13 @@ impl<'a> Parser<'a> {
             // gets a caret the width of the token rather than a guess.
             let end = position.end;
             let (line, column) = self.offset_to_line_col(offset);
-            SourceLocation {
-                line,
-                column,
-                offset: offset as u32,
-                end_offset: end as u32,
-            }
+            SourceLocation::new(line, column, offset as u32, end as u32)
         } else {
             // Default location when no position is available (e.g., at EOF)
             let input_len = self.input.len();
             let (line, column) = self.offset_to_line_col(input_len);
-            SourceLocation {
-                line,
-                column,
-                offset: input_len as u32,
-                // Nothing left to underline at EOF.
-                end_offset: input_len as u32,
-            }
+            // Nothing left to underline at EOF.
+            SourceLocation::new(line, column, input_len as u32, input_len as u32)
         }
     }
 

@@ -17,6 +17,7 @@
 //!   numbers for different meanings would be worse than having none.
 
 use crate::parser::error::{ParserError, ParserErrorKind};
+use crate::source_map::FileId;
 use crate::type_checker::{SourceLocation, TypeCheckError, TypeCheckErrorKind};
 use crate::type_decl::TypeDecl;
 
@@ -53,6 +54,16 @@ pub enum Applicability {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Span {
+    /// Which file the span is in (DEBUG-OBS D2).
+    ///
+    /// Not serialized: a `FileId` is an index into *this* program's
+    /// `SourceMap` and means nothing to a reader of the JSON. What a
+    /// consumer needs is the path, and putting that on the wire is
+    /// D5's job — together with the rest of the runtime-side
+    /// machine-readable output. Until then `Diagnostic::origin_module`
+    /// stays the signal that a span is not in `Diagnostic::file`.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub file: FileId,
     pub line: u32,
     pub column: u32,
     pub offset: u32,
@@ -62,6 +73,7 @@ pub struct Span {
 impl From<SourceLocation> for Span {
     fn from(loc: SourceLocation) -> Self {
         Span {
+            file: loc.file,
             line: loc.line,
             column: loc.column,
             offset: loc.offset,

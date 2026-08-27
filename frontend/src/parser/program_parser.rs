@@ -2,6 +2,7 @@ use std::rc::Rc;
 use std::collections::HashSet;
 use string_interner::DefaultSymbol;
 use crate::ast::*;
+use crate::source_map::SourceMap;
 use crate::type_decl::TypeDecl;
 use crate::token::Kind;
 use crate::parser::error::{ParserError, ParserResult, MultipleParserResult};
@@ -276,6 +277,13 @@ impl<'a> Parser<'a> {
             statement: stmt,
             expression: expr,
             location_pool,
+            // DEBUG-OBS D2: the parser knows the text but not what it
+            // is called, so the entry slot is seeded with the source
+            // and an empty path for the driver to name. Carrying the
+            // text here is what lets an integrated module's excerpt be
+            // drawn from a *cached* parse, where nothing re-reads the
+            // file from disk.
+            source_map: SourceMap::with_entry(String::new(), self.input),
         })
     }
 

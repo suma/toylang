@@ -315,7 +315,13 @@ fn a_module_flagged_diagnostic_is_never_rendered_against_the_local_file() {
         message: "Type mismatch: expected Bool, but got UInt64".to_string(),
         file: "main.t".to_string(),
         // Offsets into *another* file that happen to be valid here.
-        span: Some(Span { line: 2, column: 5, offset: 22, end_offset: 26 }),
+        span: Some(Span {
+            file: frontend::source_map::FileId::ENTRY,
+            line: 2,
+            column: 5,
+            offset: 22,
+            end_offset: 26,
+        }),
         origin_module: Some("helper".to_string()),
         suggestions: Vec::new(),
     };

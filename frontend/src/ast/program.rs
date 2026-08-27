@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use string_interner::DefaultSymbol;
 use crate::type_decl::TypeDecl;
+use crate::source_map::SourceMap;
 use crate::type_checker::SourceLocation;
 use crate::ast::MemStat;
 use super::{StmtRef, ExprRef, StmtPool, ExprPool, LocationPool, Expr};
@@ -67,6 +68,14 @@ pub struct File {
     pub statement: StmtPool,
     pub expression: ExprPool,
     pub location_pool: LocationPool,
+    /// Every file this program was built from (DEBUG-OBS D2).
+    ///
+    /// Empty as the parser leaves it — a parser is handed text, not a
+    /// path. The driver fills in [`FileId::ENTRY`] once it knows what
+    /// the user called the file, and `module_integration` adds one
+    /// entry per module it copies in. Anything drawing an excerpt
+    /// resolves a location's `file` here.
+    pub source_map: SourceMap,
 }
 
 /// A `test "name" { ... }` block, paired with the synthesized function
@@ -409,12 +418,7 @@ impl Node {
     }
 
     pub fn to_source_location(&self, line: u32, column: u32) -> SourceLocation {
-        SourceLocation {
-            line,
-            column,
-            offset: self.start as u32,
-            end_offset: self.end as u32,
-        }
+        SourceLocation::new(line, column, self.start as u32, self.end as u32)
     }
 }
 

@@ -172,3 +172,53 @@ aot (stdout):
 "#,
     );
 }
+
+/// A panic raised inside the stdlib (DEBUG-OBS D2).
+///
+/// The tree-walker names `core/std/option.t` and quotes that file's
+/// line — before D2 it had no position for an imported node at all.
+/// The other four engines say the message and nothing else, which is
+/// what D3 changes: they carry no site, so they cannot name a file
+/// they were never told about.
+#[test]
+fn panic_inside_the_stdlib() {
+    let source = r#"
+fn main() -> u64 {
+    val o: Option<u64> = Option::None
+    val v: u64 = o.unwrap()
+    v
+}
+"#;
+    assert_diagnostic_report(
+        source,
+        "panic_inside_the_stdlib",
+        r#"tree-walker (stderr):
+  Runtime error occurred:
+  Error at core/std/option.t:57:29:
+     |
+  57 |             Option::None => panic("Option::unwrap on None"),
+     |                             ^^^^^ panic: Option::unwrap on None
+     |
+     = backtrace (innermost first):
+         Option::unwrap (called at line 4)
+         main
+ir-vm (stderr):
+  Runtime error occurred:
+  Option::unwrap on None
+interpreter-jit (stderr):
+  Runtime error occurred:
+  Error at core/std/option.t:57:29:
+     |
+  57 |             Option::None => panic("Option::unwrap on None"),
+     |                             ^^^^^ panic: Option::unwrap on None
+     |
+     = backtrace (innermost first):
+         Option::unwrap (called at line 4)
+         main
+compiler-jit (stdout):
+  panic: Option::unwrap on None
+aot (stdout):
+  panic: Option::unwrap on None
+"#,
+    );
+}

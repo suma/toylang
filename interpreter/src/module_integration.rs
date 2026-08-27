@@ -22,6 +22,7 @@
 use std::rc::Rc;
 use frontend::ast::*;
 use frontend::ast::module_interface::ModuleInterface;
+use frontend::source_map::FileId;
 use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol, Symbol};
 
@@ -88,6 +89,13 @@ pub(crate) struct AstIntegrationContext<'a> {
     /// broke any cross-module stdlib reference into a shadowed type
     /// (DICT-CROSS-MODULE-OPTION).
     shadowed_stdlib_types: std::collections::HashSet<String>,
+    /// Which file the copied positions belong to (DEBUG-OBS D2).
+    ///
+    /// The module was parsed on its own, so every location in it says
+    /// `FileId::ENTRY` — true of the module while it was its own
+    /// program, and false the moment it is copied into someone else's.
+    /// `integrate` re-anchors each one to this id.
+    module_file: FileId,
 }
 
 impl<'a> AstIntegrationContext<'a> {
@@ -97,6 +105,7 @@ impl<'a> AstIntegrationContext<'a> {
         main_string_interner: &'a mut DefaultStringInterner,
         module_string_interner: &'a DefaultStringInterner,
         shadowed_stdlib_types: std::collections::HashSet<String>,
+        module_file: FileId,
     ) -> Self {
         Self {
             main_program,
@@ -108,6 +117,7 @@ impl<'a> AstIntegrationContext<'a> {
             symbol_cache: vec![None; module_string_interner.len()],
             type_symbol_cache: vec![None; module_string_interner.len()],
             shadowed_stdlib_types,
+            module_file,
         }
     }
 
@@ -1009,6 +1019,17 @@ impl<'a> AstIntegrationContext<'a> {
                 })?;
             let remapped_expr = self.remap_expression(&expr)?;
             self.main_program.expression.add(remapped_expr);
+            // DEBUG-OBS D2: locations are appended in the same step as
+            // the expressions they belong to. Skipping this used to
+            // leave the main location pool shorter than the main
+            // expression pool — every imported node position-less, and
+            // the two pools no longer index-aligned (実測 5).
+            let location = self
+                .module_program
+                .location_pool
+                .get_expr_location(&module_expr_ref)
+                .map(|loc| loc.in_file(self.module_file));
+            self.main_program.location_pool.add_expr_location(location);
         }
 
         for index in 0..self.module_program.statement.len() {
@@ -1022,6 +1043,12 @@ impl<'a> AstIntegrationContext<'a> {
                 })?;
             let remapped_stmt = self.remap_statement(&stmt)?;
             self.main_program.statement.add(remapped_stmt);
+            let location = self
+                .module_program
+                .location_pool
+                .get_stmt_location(&module_stmt_ref)
+                .map(|loc| loc.in_file(self.module_file));
+            self.main_program.location_pool.add_stmt_location(location);
         }
 
         // Functions only. StructDecl statements are already added
@@ -1091,6 +1118,7 @@ pub(crate) fn load_and_integrate_module(
                 true,
                 Some(import.module_path.clone()),
                 shadowed_stdlib_types.clone(),
+                path,
             );
         }
     }
@@ -1110,6 +1138,15 @@ pub(crate) fn load_and_integrate_module(
 pub struct DiscoveredCoreModule {
     pub segments: Vec<String>,
     pub source: String,
+    /// What a diagnostic calls this file (DEBUG-OBS D2):
+    /// `core/std/collections/vec.t` — the path relative to the modules
+    /// root, with the root's own name in front.
+    ///
+    /// Not the absolute path on purpose. The root is wherever the
+    /// binary found it (an exe-relative directory, a `--core-modules`
+    /// flag), so an absolute path would make one machine's diagnostic
+    /// text differ from another's for the same program.
+    pub display_path: String,
 }
 
 /// Recursively walk a core-modules directory and collect every
@@ -1148,7 +1185,12 @@ pub fn discover_core_modules(
         return Ok(hit);
     }
     let mut out: Vec<DiscoveredCoreModule> = Vec::new();
-    walk_core_dir(dir, &mut Vec::new(), &mut out)?;
+    let root_name = dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("core")
+        .to_string();
+    walk_core_dir(dir, &mut Vec::new(), &mut out, &root_name)?;
     out.sort_by(|a, b| a.segments.cmp(&b.segments));
     cache.lock().unwrap().insert(key, out.clone());
     Ok(out)
@@ -1158,6 +1200,7 @@ fn walk_core_dir(
     dir: &std::path::Path,
     prefix: &mut Vec<String>,
     out: &mut Vec<DiscoveredCoreModule>,
+    root_name: &str,
 ) -> Result<(), String> {
     let read = std::fs::read_dir(dir)
         .map_err(|e| format!("read_dir {}: {}", dir.display(), e))?;
@@ -1185,7 +1228,18 @@ fn walk_core_dir(
         segments.push(stem);
         let source = std::fs::read_to_string(&path)
             .map_err(|e| format!("read {}: {}", path.display(), e))?;
-        out.push(DiscoveredCoreModule { segments, source });
+        let file_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("<module>");
+        let mut display = String::from(root_name);
+        for segment in prefix.iter() {
+            display.push('/');
+            display.push_str(segment);
+        }
+        display.push('/');
+        display.push_str(file_name);
+        out.push(DiscoveredCoreModule { segments, source, display_path: display });
     }
     // Subdirectories recurse. Each subdir contributes its name to
     // the segment prefix for the next level. The legacy
@@ -1195,7 +1249,7 @@ fn walk_core_dir(
     // own segment to the prefix.
     for (sub_name, sub_path) in subdirs {
         prefix.push(sub_name);
-        walk_core_dir(&sub_path, prefix, out)?;
+        walk_core_dir(&sub_path, prefix, out, root_name)?;
         prefix.pop();
     }
     Ok(())
@@ -1324,6 +1378,9 @@ pub fn integrate_module_into_program_with_options(
         enforce_namespace,
         None,
         std::collections::HashSet::new(),
+        // Back-compat entry point: the caller kept no path, so the
+        // module can only be named for what it is.
+        "<module>",
     )
 }
 
@@ -1339,6 +1396,7 @@ pub fn integrate_module_into_program_with_options_full(
     _enforce_namespace: bool,
     module_path: Option<Vec<DefaultSymbol>>,
     shadowed_stdlib_types: std::collections::HashSet<String>,
+    display_path: &str,
 ) -> Result<(), String> {
     // === Phase 4 fast path: try the on-disk Full AST cache ===
     //
@@ -1358,6 +1416,8 @@ pub fn integrate_module_into_program_with_options_full(
                 main_string_interner,
                 module_path.as_deref(),
                 &shadowed_stdlib_types,
+                display_path,
+                source,
             );
         }
     }
@@ -1374,12 +1434,16 @@ pub fn integrate_module_into_program_with_options_full(
     let module_interner_snapshot = parser.get_string_interner().clone();
     let module_string_interner = parser.get_string_interner();
 
+    // DEBUG-OBS D2: the module's text is registered before its
+    // positions are copied, so they have somewhere to point.
+    let module_file = main_program.source_map.add(display_path, source);
     let mut integration_context = AstIntegrationContext::new(
         main_program,
         &module_program,
         main_string_interner,
         module_string_interner,
         shadowed_stdlib_types,
+        module_file,
     );
 
     let integrated_functions = integration_context.integrate()?;
@@ -1422,13 +1486,20 @@ pub(crate) fn integrate_cached_module(
     main_string_interner: &mut DefaultStringInterner,
     module_path: Option<&[DefaultSymbol]>,
     shadowed_stdlib_types: &std::collections::HashSet<String>,
+    display_path: &str,
+    source: &str,
 ) -> Result<(), String> {
+    // DEBUG-OBS D2: `source` is the text the cache was keyed on, so a
+    // warm start draws the same excerpt a cold one does — without it,
+    // a cache hit would produce positions that resolve to nothing.
+    let module_file = main_program.source_map.add(display_path, source);
     let mut integration_context = AstIntegrationContext::new(
         main_program,
         &cached.file,
         main_string_interner,
         &cached.interner,
         shadowed_stdlib_types.clone(),
+        module_file,
     );
     let integrated_functions = integration_context.integrate()?;
     for function in integrated_functions {
@@ -1581,6 +1652,7 @@ pub(crate) fn integrate_preparsed_core_module(
     main_string_interner: &mut DefaultStringInterner,
     module_path: Option<&[DefaultSymbol]>,
     shadowed_stdlib_types: &std::collections::HashSet<String>,
+    display_path: &str,
 ) -> Result<(), String> {
     match preparsed.payload {
         PreparsedPayload::Cached(SendCachedModule(cached)) => integrate_cached_module(
@@ -1589,17 +1661,21 @@ pub(crate) fn integrate_preparsed_core_module(
             main_string_interner,
             module_path,
             shadowed_stdlib_types,
+            display_path,
+            &preparsed.source,
         ),
         PreparsedPayload::Parsed {
             file: SendFile(file),
             interner,
         } => {
+            let module_file = main_program.source_map.add(display_path, &preparsed.source);
             let mut integration_context = AstIntegrationContext::new(
                 main_program,
                 &file,
                 main_string_interner,
                 &interner,
                 shadowed_stdlib_types.clone(),
+                module_file,
             );
             let integrated_functions = integration_context.integrate()?;
             for function in integrated_functions {

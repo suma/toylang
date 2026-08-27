@@ -15,7 +15,7 @@ D2 を飛ばして D3 だけが landing し、**ファイル名の無い行番�
 |---|---|---|
 | **D0** | 出力形式の固定 + バックエンド間で診断を突き合わせるレーン | ✅ 2026-08-27 |
 | **D1** | interpreter の backtrace の穴埋め (method / closure / `main` / 行番号 / 折り畳み) | ✅ 2026-08-27 |
-| **D2** | `FileId` + `SourceMap` — 位置に「どのファイルか」を持たせる | 📋 |
+| **D2** | `FileId` + `SourceMap` — 位置に「どのファイルか」を持たせる | ✅ 2026-08-27 |
 | **D3** | IR の `SiteId` — 4 実行系すべてが panic 位置を言う (release でもコスト 0) | 📋 |
 | **D4** | shadow stack (`-g`) — AOT / JIT の backtrace | 📋 |
 | **D5** | ユーザから触れる API と機械可読出力 | 📋 |
@@ -113,7 +113,7 @@ self.location_pool.add_expr_location(None); // args_ref location
 **常に `None`**。実測 1・3 の出力に行番号が 1 つも無いのはこれ。
 1 行の修正で生き返る死にコードが、機能一覧の側では「実装済み」に見えている。
 
-### 実測 5: 位置に file identity が無く、module の位置はそもそも運ばれない
+### 実測 5: 位置に file identity が無く、module の位置はそもそも運ばれない (D2 で解消)
 
 ```rust
 pub struct SourceLocation { line, column, offset, end_offset }   // file が無い
@@ -427,18 +427,64 @@ pin されている 4 プログラム (panic / underflow / 配列範囲外 /
 frame は積まれているので運ぶだけだが、エラー型に触るので D5 で
 機械可読化と一緒にやる。
 
-### D2 — `FileId` と `SourceMap`
+### D2 — `FileId` と `SourceMap` ✅ (2026-08-27)
 
-1. `SourceLocation` に `file: FileId`、`new_in` を追加 (`new` は `FileId(0)`)。
-2. `SourceMap { files: Vec<(PathBuf, Rc<str>)> }` を frontend に置き、
-   パーサ / `ModuleResolver` が 1 ファイル 1 id を割り当てる。
+1. `SourceLocation` に `file: FileId`、`new_in` / `in_file` を追加
+   (`new` は `FileId::ENTRY`)。
+2. `SourceMap` を `frontend/src/source_map.rs` に置き、
+   `File` が 1 つ持つ。
 3. **`integrate()` が `location_pool` を追記する** (実測 5)。位置は
-   自分のファイル内の絶対位置のままでよい — `FileId` が曖昧さを取る。
+   自分のファイル内の絶対位置のままで、`in_file` で id だけ付け替える。
 4. `ErrorFormatter` を `SourceMap` ベースに。`Span` に `file` を追加。
-5. `FULL_AST_CACHE_SCHEMA_VERSION` を上げる。
+5. `FULL_AST_CACHE_SCHEMA_VERSION` を 20 → 21。
 
 受け入れ基準: stdlib の関数で失敗したとき、抜粋が
-**`core/std/...` の実際の行**で描かれる。ユーザソースの同じ行番号ではない。
+**`core/std/...` の実際の行**で描かれる。→ 満たした:
+
+```
+Runtime error occurred:
+Error at core/std/option.t:57:29:
+   |
+57 |             Option::None => panic("Option::unwrap on None"),
+   |                             ^^^^^ panic: Option::unwrap on None
+   |
+   = backtrace (innermost first):
+       Option::unwrap (called at line 4)
+       main
+```
+
+実装で決めたこと:
+
+- **`SourceMap` はテキストを所有する** (借用しない)。エントリの
+  ソースは実行中ずっと生きているが、モジュールのそれは読んで
+  parse して integrate した時点で捨てられる — 抜粋を描きたいのは
+  そのあとである。
+- **パーサが entry スロットにテキストを入れる。** パーサはパスを
+  知らない (与えられるのは文字列だけ) ので名前は空のまま、
+  ドライバ (`check_typing_diagnostics`) が名付ける。テキストを
+  ここで運ぶことの効き目は **warm cache** に出る: `.toycache` から
+  復元したモジュールは誰もファイルを読み直さないので、
+  `File.source_map` が唯一のテキストの出どころになる。
+  cold / warm が同じ抜粋を出すことは実測した。
+- **エントリファイルの名前はフォーマッタの呼び出し側が決める。**
+  `ErrorFormatter::with_source_map(source, filename, map)` の
+  `filename` が `FileId::ENTRY` を名指し、map はそれ以外
+  (= import されたファイル、呼び出し側が渡しようのないもの) に
+  答える。map 側にも entry のパスは入っているが、**2 つの名前が
+  争う**状況を作らないためにこの順にした (consistency harness が
+  型検査時 `test.t` / 実行時 `<stem>.t` と 2 通りに名乗っていて、
+  最初の実装はそれで揺れた)。
+- **core モジュールの表示名は modules root からの相対パス**
+  (`core/std/option.t`)。絶対パスはマシンごとに違う文字列を
+  診断に埋めるので、同じプログラムの診断が環境で変わる。
+- `Span::file` は **JSON に出さない**。`FileId` はこのプログラムの
+  `SourceMap` への添字でしかなく、外の読み手には意味がない。
+  パスを載せるのは D5 (実行時診断の機械可読化) と一緒にやる。
+
+**副産物**: prelude が `<module>` という名無しで整合されていたのを
+`<prelude>` に。あと、EOF の位置は「最終行 + 1」を指すことがある
+(パーサが `input_len` に錨を打つ) — D2 のテストが最初に落ちた理由で、
+バグではないが知っておく値打ちがある。
 
 ### D3 — IR の `SiteId` (ここで「行番号表示」が 4 実行系で揃う)
 

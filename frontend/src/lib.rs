@@ -10,6 +10,7 @@ pub mod token;
 pub mod format_spec;
 pub mod type_checker;
 pub mod diagnostic;
+pub mod source_map;
 pub mod explain;
 pub mod parser;
 pub mod visitor;

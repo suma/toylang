@@ -1,3 +1,4 @@
+use crate::source_map::FileId;
 use crate::type_decl::TypeDecl;
 
 /// A position in a source file, with the extent of what it covers.
@@ -10,6 +11,13 @@ use crate::type_decl::TypeDecl;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub struct SourceLocation {
+    /// Which file the position is in (DEBUG-OBS D2).
+    ///
+    /// [`FileId::ENTRY`] unless something re-anchored it, which is why
+    /// every existing producer stayed correct when this was added:
+    /// only `module_integration` copies positions across a file
+    /// boundary, and it now says so.
+    pub file: FileId,
     pub line: u32,
     pub column: u32,
     pub offset: u32,
@@ -29,15 +37,33 @@ pub struct SourceLocation {
 }
 
 impl SourceLocation {
+    /// A position in the file the user ran. The overwhelming majority
+    /// of producers want this; a parser does not know, and should not
+    /// need to know, that its output will be integrated into someone
+    /// else's program.
     pub fn new(line: u32, column: u32, offset: u32, end_offset: u32) -> Self {
-        Self { line, column, offset, end_offset }
+        Self { file: FileId::ENTRY, line, column, offset, end_offset }
+    }
+
+    /// A position in a named file.
+    pub fn new_in(file: FileId, line: u32, column: u32, offset: u32, end_offset: u32) -> Self {
+        Self { file, line, column, offset, end_offset }
+    }
+
+    /// The same position, said to belong to `file`.
+    ///
+    /// What integration applies to every location it copies out of a
+    /// module: the line and column are already right *for that
+    /// module's text*, and this is the missing half.
+    pub fn in_file(self, file: FileId) -> Self {
+        Self { file, ..self }
     }
 
     /// A location with no known extent -- the formatter falls back to a
     /// one-column caret. Use only where the producer genuinely cannot
     /// say how far the construct reaches.
     pub fn point(line: u32, column: u32, offset: u32) -> Self {
-        Self { line, column, offset, end_offset: offset }
+        Self { file: FileId::ENTRY, line, column, offset, end_offset: offset }
     }
 
     /// Same span, re-anchored to a recomputed line/column. The driver

@@ -106,7 +106,9 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | テキスト描画 (caret / snippet) | `interpreter/src/error_formatter.rs` |
 | パースエラー収集・1 宣言 1 件 | `parser/core.rs::report_error`, `parser/program_parser.rs::parse_program` |
 | 型検査ドライバ (全件報告) | `interpreter/src/lib.rs::check_typing_diagnostics` |
-| panic の位置・backtrace (P6-1) | `interpreter/src/error.rs` (`CallFrame`), `evaluation/call.rs` |
+| どのファイルの位置か (DEBUG-OBS D2) | `frontend/src/source_map.rs` (`FileId` / `SourceMap`)。map は `File.source_map`、モジュールの位置の付け替えは `module_integration.rs::integrate` |
+| panic の位置・backtrace (P6-1, D1) | `interpreter/src/error.rs` (`CallFrame`)、frame を積むのは `evaluation/call.rs` の `call_method` / `call_associated_method` / 閉包 2 箇所と `evaluate_function_call`、描画は `lib.rs::render_backtrace` (折り畳み + 深さ上限) |
+| バックエンド間の診断比較 (DEBUG-OBS D0) | `compiler/tests/consistency/diagnostics.rs` + `harness.rs::diagnostic_lanes` |
 | 契約違反時の値 (P6-2) | `evaluation/call.rs::capture_contract_bindings` |
 | 型ホール `val x: _` (P7) | `parser/stmt.rs::parse_var_def` (受理), `parser/types.rs` (他位置で拒否), `type_checker/error_helpers.rs::report_type_hole` |
 | 型のソース表記 | `frontend/src/type_decl.rs::TypeDecl::source_name` (**散文用の `type_name_for_error` とは別物** — 貼り戻せる表記を返す) |

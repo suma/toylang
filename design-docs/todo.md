@@ -12,6 +12,18 @@
 
 ### 2026-08-27
 
+- **DEBUG-OBS D2: `FileId` と `SourceMap`** — 位置が「どのファイルか」を
+  持つようになった (`SourceLocation.file`)。`SourceMap` は `File` が 1 つ
+  持ち、パーサが entry スロットにテキストを入れ (パスはドライバが後で
+  名付ける)、`integrate()` が**モジュールの位置を追記しながら
+  `in_file` で id を付け替える**。`ErrorFormatter` は位置ごとに
+  ファイルを引くので、stdlib の panic が `core/std/option.t:57` の
+  実際の行で描かれる。entry の名前は map ではなく**フォーマッタの
+  呼び出し側**が決める (2 つの名前が争わないように)。`.toycache` は
+  schema 20 → 21、モジュールのテキストごと載るので warm cache でも
+  同じ抜粋が出る (実測済み)。表示名は modules root からの相対パスで
+  絶対パスにしない (診断が環境で変わるため)。
+
 - **DEBUG-OBS D1: interpreter の backtrace の穴埋め** — (a) `call_expr` が
   引数リストに `None` を積んでいたせいで `(called at line N)` が
   **到達しない死にコード**だったのを直し、(b) frame を `call_method` /
@@ -1084,13 +1096,10 @@
 > (現状調査 9 件 + 論点 6 + Phase D0〜D6)。**D0 は landing 済み** —
 > 目標文言はそこに固定され、現状の食い違いは
 > `compiler/tests/consistency/diagnostics.rs` に pin されている。
-> **D1 も landing 済み** — tree-walker の backtrace の穴 (最内フレーム /
-> 行番号 / `main` / 折り畳み / 深さ上限) は塞がった。
+> **D1 / D2 も landing 済み** — tree-walker の backtrace の穴 (最内フレーム /
+> 行番号 / `main` / 折り畳み / 深さ上限) は塞がり、位置は
+> どのファイルのものかを持つようになった。
 
-- **DEBUG-OBS D2: `FileId` / `SourceMap`** ★★ — `SourceLocation` / `Span` に
-  ファイル identity が無く、`integrate()` が `location_pool` を追記しないので
-  stdlib のノードは位置を持たない。この 2 つは互いの被害を隠しており、
-  **片方だけ直すと他人のファイルの行をユーザのソースで描く**。
 - **DEBUG-OBS D3: IR の `SiteId`** ★★ — `Terminator::Panic` が位置を持たないため、
   AOT / JIT / IR VM は `panic: msg` しか出せない。**しかも `puts` 経由なので
   stdout に出る** (D0 の実測 9) — 位置と一緒にストリームも直す。interpreter の豊かな診断は

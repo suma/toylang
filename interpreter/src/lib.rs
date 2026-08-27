@@ -151,12 +151,19 @@ fn integrate_modules(
     // prelude has no `import` line, so it cannot itself depend on
     // user code or other modules — the integration order doesn't
     // need to fixpoint here.
-    if let Err(err) = module_integration::integrate_module_into_program_with_options(
+    if let Err(err) = module_integration::integrate_module_into_program_with_options_full(
         PRELUDE_SOURCE,
         program,
         string_interner,
-        false, // enforce_namespace = false: prelude bodies must be
-               // able to call their own extern fns by bare name
+        // enforce_namespace = false: prelude bodies must be able to
+        // call their own extern fns by bare name
+        false,
+        None,
+        std::collections::HashSet::new(),
+        // DEBUG-OBS D2: the prelude is compiled into the binary, so
+        // this names the source file it was built from rather than a
+        // path that exists at run time.
+        "<prelude>",
     ) {
         errors.push(format!("Prelude integration error: {}", err));
     }
@@ -263,6 +270,7 @@ fn integrate_modules(
                 string_interner,
                 Some(&path_syms),
                 &shadowed_stdlib_types,
+                &module.display_path,
             ) {
                 errors.push(format!(
                     "Core module `{}` integration error: {}",
@@ -366,9 +374,10 @@ pub fn check_typing_with_core_modules(
     check_typing_diagnostics(program, string_interner, source_code, filename, core_modules_dir)
         .map(|_warnings| ())
         .map_err(|diagnostics| {
-            let formatter = ErrorFormatter::new(
+            let formatter = ErrorFormatter::with_source_map(
                 source_code.unwrap_or(""),
                 filename.unwrap_or("<input>"),
+                &program.source_map,
             );
             diagnostics.iter().map(|d| formatter.format_diagnostic(d)).collect()
         })
@@ -396,6 +405,20 @@ pub fn check_typing_diagnostics(
     core_modules_dir: Option<&std::path::Path>,
 ) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
     let diag_file = filename.unwrap_or("<input>");
+    // DEBUG-OBS D2: name the entry file. The parser seeded the slot
+    // with the text but had no path to put on it; this is the first
+    // point that knows both, and it runs before integration adds the
+    // modules behind it.
+    program.source_map.set_entry(
+        diag_file,
+        source_code.map(str::to_string).unwrap_or_else(|| {
+            program
+                .source_map
+                .source(frontend::source_map::FileId::ENTRY)
+                .unwrap_or("")
+                .to_string()
+        }),
+    );
     let mut errors: Vec<Diagnostic> = vec![];
     let mut warnings: Vec<Diagnostic> = vec![];
 
@@ -1192,7 +1215,9 @@ fn execute_entry_with_values(
                 _ => (None, [].as_slice()),
             };
             let formatted_error = if let (Some(source), Some(file)) = (source_code, filename) {
-                let formatter = ErrorFormatter::new(source, file);
+                // DEBUG-OBS D2: a panic inside an imported module is
+                // drawn from *that* module's text.
+                let formatter = ErrorFormatter::with_source_map(source, file, &program.source_map);
                 let mut out = formatter
                     .format_runtime_error(&runtime_error.to_string(), location.as_ref());
                 out.push_str(&render_backtrace(backtrace));

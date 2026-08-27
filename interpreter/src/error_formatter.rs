@@ -1,5 +1,6 @@
 use frontend::parser::error::ParserError;
 use frontend::diagnostic::Diagnostic;
+use frontend::source_map::{FileId, SourceMap};
 use frontend::type_checker::{SourceLocation, TypeCheckError};
 
 /// Enum for different types of errors that can occur
@@ -33,6 +34,14 @@ impl ErrorType {
 pub struct ErrorFormatter<'a> {
     source_code: &'a str,
     filename: &'a str,
+    /// Every file the program was built from (DEBUG-OBS D2).
+    ///
+    /// `None` for the callers that have one source string and nothing
+    /// else — a parse error, a `--api` query — and those cannot
+    /// produce a position outside it anyway. With a map, a location
+    /// picks its own file, which is what stops a stdlib line number
+    /// from being drawn against the user's source (実測 5).
+    source_map: Option<&'a SourceMap>,
 }
 
 impl<'a> ErrorFormatter<'a> {
@@ -40,6 +49,39 @@ impl<'a> ErrorFormatter<'a> {
         Self {
             source_code,
             filename,
+            source_map: None,
+        }
+    }
+
+    /// A formatter that can draw an excerpt from any file the program
+    /// was built from. The `source_code` / `filename` pair stays as
+    /// the fallback for locations whose file the map does not know.
+    pub fn with_source_map(
+        source_code: &'a str,
+        filename: &'a str,
+        source_map: &'a SourceMap,
+    ) -> Self {
+        Self {
+            source_code,
+            filename,
+            source_map: Some(source_map),
+        }
+    }
+
+    /// The name and text a location should be rendered against.
+    ///
+    /// The constructor's pair *is* the entry file: a driver that hands
+    /// the formatter a source and a name is naming the file the user
+    /// ran, and it is the caller closest to knowing what to call it.
+    /// The map answers for everything else — the imported files, which
+    /// no caller could have passed in.
+    fn file_for(&self, file: FileId) -> (&str, &str) {
+        if file == FileId::ENTRY {
+            return (self.filename, self.source_code);
+        }
+        match self.source_map.and_then(|map| map.get(file)) {
+            Some(f) => (f.path.as_str(), f.source.as_str()),
+            None => (self.filename, self.source_code),
         }
     }
 
@@ -69,8 +111,13 @@ impl<'a> ErrorFormatter<'a> {
                 diagnostic.code, diagnostic.message
             )
         } else if let Some(span) = diagnostic.span {
-            let location =
-                SourceLocation::new(span.line, span.column, span.offset, span.end_offset);
+            let location = SourceLocation::new_in(
+                span.file,
+                span.line,
+                span.column,
+                span.offset,
+                span.end_offset,
+            );
             let body = format!("[{}] {}", diagnostic.code, diagnostic.message);
             self.format_labelled_with_location(label, &body, &location)
         } else {
@@ -134,9 +181,10 @@ impl<'a> ErrorFormatter<'a> {
     ) -> String {
         let line_number = location.line;
         let column = location.column;
+        let (filename, source_code) = self.file_for(location.file);
 
         // Get the source line
-        let lines: Vec<&str> = self.source_code.lines().collect();
+        let lines: Vec<&str> = source_code.lines().collect();
         let source_line = if (line_number as usize) <= lines.len() && line_number > 0 {
             lines[(line_number as usize) - 1]
         } else {
@@ -157,7 +205,7 @@ impl<'a> ErrorFormatter<'a> {
 
         format!(
             "{label} at {}:{}:{}:\n   |\n{} | {}\n   | {} {}\n   |",
-            self.filename,
+            filename,
             line_number,
             column,
             line_display,

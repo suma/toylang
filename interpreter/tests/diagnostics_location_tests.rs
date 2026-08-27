@@ -13,6 +13,15 @@
 
 use crate::common::test_program;
 
+/// Run a program expected to fail *at runtime* and return what the
+/// binary would have printed.
+fn runtime_diagnostics(source: &str) -> String {
+    match test_program(source) {
+        Ok(v) => panic!("expected a runtime failure, got {v:?}"),
+        Err(e) => e,
+    }
+}
+
 fn diagnostics(source: &str) -> String {
     match test_program(source) {
         Ok(_) => panic!("expected the program to fail type checking:\n{source}"),
@@ -358,4 +367,101 @@ fn a_malformed_format_spec_points_at_its_literal() {
         diags.contains("line: 3"),
         "the spec is written on line 3:\n{diags}"
     );
+}
+
+// --- DEBUG-OBS D2: a position knows which file it is in -------------
+//
+// Item 3 of this file's header — "errors raised inside an imported
+// module carried a location that pointed into a *different file* while
+// being rendered against this one" — was papered over rather than
+// fixed: `module_integration` dropped module positions on the floor,
+// so there was nothing to render wrongly. Now positions survive
+// integration, and each one says which file it belongs to.
+
+#[test]
+fn a_failure_inside_the_stdlib_quotes_the_stdlib() {
+    let diags = runtime_diagnostics(
+        "fn main() -> u64 {
+            val o: Option<u64> = Option::None
+            val v: u64 = o.unwrap()
+            v
+        }",
+    );
+    assert!(
+        diags.contains("core/std/option.t:"),
+        "the panic is in the stdlib and should say so:\n{diags}"
+    );
+    assert!(
+        !diags.contains("test.t:"),
+        "the user's file is not where this failed:\n{diags}"
+    );
+    // The excerpt has to come from option.t's text. Before D2 the
+    // formatter had one source string and would have drawn whatever
+    // sat at that line number in the user's program.
+    assert!(
+        diags.contains("=> panic("),
+        "the quoted line should be the module's own:\n{diags}"
+    );
+}
+
+#[test]
+fn a_failure_in_the_users_file_is_still_named_by_the_driver() {
+    // The other direction of the same rule: the entry file is named by
+    // whoever ran it, not by anything the map recorded.
+    let diags = runtime_diagnostics(
+        "fn main() -> u64 { panic(\"mine\") }",
+    );
+    assert!(diags.contains("test.t:1:"), "{diags}");
+}
+
+#[test]
+fn integrated_positions_name_a_file_the_map_can_resolve() {
+    // The structural half: every position copied out of a module is
+    // re-anchored, and the id it carries resolves to a real file. An
+    // id that resolved to nothing would put us back to drawing module
+    // lines against the entry source.
+    let source = "fn main() -> u64 {\n    val o: Option<u64> = Option::None\n    0u64\n}\n";
+    let mut parser = frontend::ParserWithInterner::new(source);
+    let mut program = parser.parse_program().expect("parse");
+    interpreter::check_typing_with_core_modules(
+        &mut program,
+        parser.get_string_interner(),
+        Some(source),
+        Some("test.t"),
+        Some(&crate::common::core_modules_dir()),
+    )
+    .expect("type check");
+
+    assert!(
+        program.source_map.len() > 1,
+        "the stdlib modules should be registered, got {} file(s)",
+        program.source_map.len()
+    );
+    let foreign: Vec<_> = program
+        .location_pool
+        .expr_locations
+        .iter()
+        .flatten()
+        .filter(|loc| loc.file != frontend::source_map::FileId::ENTRY)
+        .collect();
+    assert!(
+        !foreign.is_empty(),
+        "integration copied module expressions but no positions with them"
+    );
+    for loc in foreign {
+        let file = program
+            .source_map
+            .get(loc.file)
+            .unwrap_or_else(|| panic!("location names {:?}, which the map does not have", loc.file));
+        assert!(!file.path.is_empty(), "an integrated file with no name");
+        // `+ 1`: the parser anchors an end-of-input location one line
+        // past the last, which is a position in that file even though
+        // no text sits there.
+        assert!(
+            (loc.line as usize) <= file.source.lines().count() + 1,
+            "line {} is past the end of {}",
+            loc.line,
+            file.path
+        );
+    }
 }

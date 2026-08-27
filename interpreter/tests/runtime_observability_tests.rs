@@ -184,3 +184,142 @@ fn u64_addition_still_wraps() {
         4,
     );
 }
+
+// --- DEBUG-OBS D1: the backtrace's holes ---------------------------
+//
+// Every test below failed before D1: the frame was missing, the line
+// was missing, or the same frame was printed seven times. The gaps
+// were invisible because the assertions above only ask that *some*
+// frames appear in the right order.
+
+#[test]
+fn a_method_frame_is_named_by_its_receiver_type() {
+    // 実測 3: the innermost frame — the one that actually panicked —
+    // was absent entirely, because frames were pushed on the
+    // `Expr::Call` branch alone.
+    let diags = runtime_failure(
+        "struct S { v: i64 }
+        impl S { fn boom(&self) -> i64 { panic(\"method boom\") } }
+        fn go(s: S) -> i64 { s.boom() }
+        fn main() -> u64 {
+            val s = S { v: 1i64 }
+            val r: i64 = go(s)
+            0u64
+        }",
+    );
+    assert!(
+        diags.contains("S::boom"),
+        "the panicking method should be the innermost frame, qualified by its type:\n{diags}"
+    );
+    let boom_at = diags.find("S::boom").unwrap();
+    let go_at = diags.find("\n       go").unwrap_or_else(|| panic!("no `go` frame:\n{diags}"));
+    assert!(boom_at < go_at, "innermost first:\n{diags}");
+}
+
+#[test]
+fn the_entry_function_is_a_frame() {
+    let diags = runtime_failure(
+        "fn boom() -> u64 { panic(\"x\") }
+        fn main() -> u64 { boom() }",
+    );
+    let boom_at = diags.find("\n       boom").unwrap_or_else(|| panic!("no `boom`:\n{diags}"));
+    let main_at = diags
+        .find("\n       main")
+        .unwrap_or_else(|| panic!("`main` should close the backtrace:\n{diags}"));
+    assert!(boom_at < main_at, "`main` is outermost:\n{diags}");
+}
+
+#[test]
+fn every_frame_says_where_it_was_called_from() {
+    // 実測 4: `(called at line N)` was unreachable code — the builder
+    // pushed `None` for the argument list the call site is read from.
+    let diags = runtime_failure(
+        "fn inner(n: u64) -> u64 { panic(\"deep\") }
+        fn middle(n: u64) -> u64 { inner(n) }
+        fn main() -> u64 { middle(3u64) }",
+    );
+    assert!(
+        diags.contains("inner (called at line 2)"),
+        "`inner` is called on line 2:\n{diags}"
+    );
+    assert!(
+        diags.contains("middle (called at line 3)"),
+        "`middle` is called on line 3:\n{diags}"
+    );
+}
+
+#[test]
+fn a_closure_call_gets_a_frame() {
+    let diags = runtime_failure(
+        "fn main() -> u64 {
+            val f = fn(n: u64) -> u64 { panic(\"in closure\") }
+            f(1u64)
+        }",
+    );
+    assert!(diags.contains("in closure"), "{diags}");
+    assert!(
+        diags.contains("\n       f (called at line 3)"),
+        "the closure's binding names its frame:\n{diags}"
+    );
+}
+
+#[test]
+fn an_associated_function_frame_is_qualified() {
+    let diags = runtime_failure(
+        "struct S { v: i64 }
+        impl S { fn make(n: i64) -> S { panic(\"no S for you\") } }
+        fn main() -> u64 {
+            val s: S = S::make(1i64)
+            0u64
+        }",
+    );
+    assert!(
+        diags.contains("S::make"),
+        "an associated function is named `Type::fn`:\n{diags}"
+    );
+}
+
+#[test]
+fn repeated_frames_are_folded_with_a_count() {
+    // 実測 6: seven identical lines, none of which said anything the
+    // first did not.
+    let diags = runtime_failure(
+        "fn f(n: u64) -> u64 {
+            if n == 0u64 { panic(\"bottom\") }
+            f(n - 1u64)
+        }
+        fn main() -> u64 { f(7u64) }",
+    );
+    assert!(
+        diags.contains("f (x7, called at line 3)"),
+        "the recursive run should fold to one line with its count:\n{diags}"
+    );
+    assert_eq!(
+        diags.matches("\n       f ").count(),
+        2,
+        "one folded line for the recursion, one for the call from `main`:\n{diags}"
+    );
+}
+
+#[test]
+fn a_deep_backtrace_says_how_much_it_left_out() {
+    // Mutual recursion: no two adjacent frames are the same call, so
+    // folding cannot shorten it and the depth cap is what keeps the
+    // message from scrolling away.
+    let diags = runtime_failure(
+        "fn f(n: u64) -> u64 {
+            if n == 0u64 { panic(\"bottom\") }
+            g(n)
+        }
+        fn g(n: u64) -> u64 { f(n - 1u64) }
+        fn main() -> u64 { f(13u64) }",
+    );
+    assert!(
+        diags.contains("frames elided"),
+        "a stack past the cap says so rather than being silently cut:\n{diags}"
+    );
+    assert!(
+        diags.contains("\n       main"),
+        "the outermost frames survive the elision:\n{diags}"
+    );
+}

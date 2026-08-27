@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use frontend::ast::*;
+use frontend::type_checker::SourceLocation;
 use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 use crate::object::{Object, RcObject};
@@ -338,7 +339,21 @@ impl EvaluationContext<'_> {
         }
     }
 
-    pub(super) fn call_method(&mut self, method: Rc<MethodFunction>, self_obj: RcObject, args: Vec<RcObject>) -> Result<EvaluationResult, InterpreterError> {
+    pub(super) fn call_method(
+        &mut self,
+        method: Rc<MethodFunction>,
+        self_obj: RcObject,
+        args: Vec<RcObject>,
+        call_site: Option<SourceLocation>,
+    ) -> Result<EvaluationResult, InterpreterError> {
+        // DEBUG-OBS D1: this is the choke point every method reaches —
+        // `s.boom()`, an operator overload, a `dyn` dispatch, drop
+        // glue — so the frame goes here rather than at each of the
+        // callers that used to leave the innermost frame off the
+        // backtrace entirely (実測 3).
+        let frame = self.method_frame_name(&self_obj, method.name);
+        self.push_frame(frame, call_site);
+
         // Create new scope for method execution
         self.environment.enter_block();
 
@@ -437,8 +452,28 @@ impl EvaluationContext<'_> {
 
         // Clean up scope
         self.environment.exit_block();
+        if result.is_ok() {
+            self.pop_frame();
+        }
 
         result
+    }
+
+    /// `S::boom` — a method frame named by the receiver's *runtime*
+    /// type, so a `dyn Trait` call says which impl actually ran and a
+    /// bare `boom` never appears on its own.
+    fn method_frame_name(&self, self_obj: &RcObject, method: DefaultSymbol) -> String {
+        let method_name = self.string_interner.resolve(method).unwrap_or("<unknown>");
+        let obj = self_obj.borrow();
+        let owner = match &*obj {
+            Object::Struct { type_name, .. } => Some(*type_name),
+            Object::EnumVariant { enum_name, .. } => Some(*enum_name),
+            other => primitive_target_symbol(other, self.string_interner),
+        };
+        match owner.and_then(|sym| self.string_interner.resolve(sym)) {
+            Some(owner) => format!("{owner}::{method_name}"),
+            None => method_name.to_string(),
+        }
     }
 
     /// Values the failing predicate was looking at: every parameter,
@@ -615,7 +650,23 @@ impl EvaluationContext<'_> {
     }
 
     /// Call an associated method (without self parameter)
-    pub(super) fn call_associated_method(&mut self, method: Rc<MethodFunction>, args: Vec<RcObject>) -> Result<EvaluationResult, InterpreterError> {
+    pub(super) fn call_associated_method(
+        &mut self,
+        method: Rc<MethodFunction>,
+        args: Vec<RcObject>,
+        owner: Option<DefaultSymbol>,
+        call_site: Option<SourceLocation>,
+    ) -> Result<EvaluationResult, InterpreterError> {
+        // DEBUG-OBS D1. No receiver to read a type off, so the owner
+        // comes from the call site (`String::from_str` was written
+        // that way); unqualified only when the caller had none.
+        let name = self.string_interner.resolve(method.name).unwrap_or("<unknown>").to_string();
+        let frame = match owner.and_then(|sym| self.string_interner.resolve(sym)) {
+            Some(owner) => format!("{owner}::{name}"),
+            None => name,
+        };
+        self.push_frame(frame, call_site);
+
         // Create new scope for method execution
         self.environment.enter_block();
 
@@ -685,6 +736,9 @@ impl EvaluationContext<'_> {
 
         // Clean up scope
         self.environment.exit_block();
+        if result.is_ok() {
+            self.pop_frame();
+        }
 
         result
     }
@@ -820,16 +874,13 @@ impl EvaluationContext<'_> {
                         .resolve(*name)
                         .unwrap_or("<unknown>")
                         .to_string();
-                    self.call_stack.push(crate::error::CallFrame {
-                        function: fn_name,
-                        call_site,
-                    });
+                    self.push_frame(fn_name, call_site);
 
                     // Call function with pre-evaluated arguments and collect
                     // post-body `&mut T` parameter values.
                     let (ret_val, writebacks) = self
                         .evaluate_function_with_values_writeback(func, &evaluated_args)?;
-                    self.call_stack.pop();
+                    self.pop_frame();
 
                     // REF-Stage-2 (i)+(iii): apply writebacks. Each
                     // entry pairs the caller-side target (identifier
@@ -939,11 +990,22 @@ impl EvaluationContext<'_> {
         let body_expr = self.expr_pool.get(&body).ok_or_else(|| {
             InterpreterError::InternalError("closure body ExprRef not in pool".to_string())
         })?;
+        // DEBUG-OBS D1, as in `evaluate_indirect_call`. The frame is
+        // the field the closure was reached through.
+        let frame = self
+            .string_interner
+            .resolve(field_name)
+            .unwrap_or("<closure-field>")
+            .to_string();
+        self.push_frame(frame, args.first().and_then(|a| self.expr_location(a)));
         let result = match body_expr {
             Expr::Block(stmts) => self.evaluate_block(&stmts),
             _ => self.evaluate(&body),
         };
         self.environment.exit_block();
+        if result.is_ok() {
+            self.pop_frame();
+        }
         match result {
             Ok(EvaluationResult::Value(v)) => Ok(EvaluationResult::Value(v)),
             Ok(EvaluationResult::Return(v)) => {
@@ -960,6 +1022,7 @@ impl EvaluationContext<'_> {
         callee_name: &DefaultSymbol,
         args: &ExprRef,
     ) -> Result<EvaluationResult, InterpreterError> {
+        let call_site = self.expr_location(args);
         let args_list = match self.expr_pool.get(args) {
             Some(Expr::ExprList(args)) => args,
             _ => return Err(InterpreterError::InternalError(
@@ -1032,11 +1095,24 @@ impl EvaluationContext<'_> {
         let body_expr = self.expr_pool.get(&body).ok_or_else(|| {
             InterpreterError::InternalError("closure body ExprRef not in pool".to_string())
         })?;
+        // DEBUG-OBS D1: a closure frame is named by the binding the
+        // user called through — `f(x)` reads as `f` in the backtrace
+        // whether `f` is a fn or a closure, which is the distinction
+        // the reader does *not* need at that moment.
+        let frame = self
+            .string_interner
+            .resolve(*callee_name)
+            .unwrap_or("<closure>")
+            .to_string();
+        self.push_frame(frame, call_site);
         let result = match body_expr {
             Expr::Block(stmts) => self.evaluate_block(&stmts),
             _ => self.evaluate(&body),
         };
         self.environment.exit_block();
+        if result.is_ok() {
+            self.pop_frame();
+        }
         // Convert a Return result back into a plain Value at the
         // closure boundary — the body's `return` shouldn't leak
         // into the caller's control flow.
@@ -1083,6 +1159,10 @@ impl EvaluationContext<'_> {
 
     /// Evaluates method call expressions
     pub(super) fn evaluate_method_call(&mut self, obj: &ExprRef, method: &DefaultSymbol, args: &[ExprRef]) -> Result<EvaluationResult, InterpreterError> {
+        // DEBUG-OBS D1: the receiver's position is the call's position
+        // — `s.boom()` puts both on one line — and it is the only
+        // location this layer is handed.
+        let call_site = self.expr_location(obj);
         let obj_val = self.evaluate(obj)?;
         let obj_val = try_value!(Ok(obj_val));
         let obj_borrowed = obj_val.borrow();
@@ -1126,7 +1206,7 @@ impl EvaluationContext<'_> {
                     let arg_val = try_value!(Ok(arg_val));
                     arg_values.push(arg_val);
                 }
-                return self.call_method(method_func, obj_val, arg_values);
+                return self.call_method(method_func, obj_val, arg_values, call_site);
             }
         }
 
@@ -1340,7 +1420,7 @@ impl EvaluationContext<'_> {
                     }
 
                     // Call method with self as first argument
-                    self.call_method(method_func, obj_val, arg_values)
+                    self.call_method(method_func, obj_val, arg_values, call_site)
                 } else {
                     // Closures Phase 8: when no method matches,
                     // try the field-call fallback. If the struct
@@ -1387,7 +1467,7 @@ impl EvaluationContext<'_> {
                         let arg_val = try_value!(Ok(arg_val));
                         arg_values.push(arg_val);
                     }
-                    self.call_method(method_func, obj_val, arg_values)
+                    self.call_method(method_func, obj_val, arg_values, call_site)
                 } else {
                     Err(InterpreterError::InternalError(format!(
                         "Method '{method_name}' not found for enum '{enum_name:?}'"
@@ -1442,6 +1522,11 @@ impl EvaluationContext<'_> {
 
     /// Evaluates associated function calls (like Container::new)
     pub(super) fn evaluate_associated_function_call(&mut self, struct_name: &DefaultSymbol, function_name: &DefaultSymbol, args: &[ExprRef]) -> Result<EvaluationResult, InterpreterError> {
+        // DEBUG-OBS D1: `S::make(x)` has no receiver expression, so the
+        // first argument's position is the closest thing to the call's
+        // own; an argument-less call keeps `None` (D2/D3 give this
+        // layer a real site).
+        let call_site = args.first().and_then(|a| self.expr_location(a));
         // Enum tuple-variant construction: `Enum::Variant(args)` shares parse
         // structure with associated function calls. Intercept it here before
         // falling through to struct method dispatch.
@@ -1487,7 +1572,14 @@ impl EvaluationContext<'_> {
 
         // Call the associated function as if it's a static method
         // This is similar to call_struct_method but without self
-        self.call_associated_function(*struct_name, *function_name, &arg_values, &struct_name_str, &function_name_str)
+        self.call_associated_function(
+            *struct_name,
+            *function_name,
+            &arg_values,
+            &struct_name_str,
+            &function_name_str,
+            call_site,
+        )
     }
 
     /// Look up an `extern fn` in the registry and invoke it. Surfaces
@@ -1665,7 +1757,9 @@ impl EvaluationContext<'_> {
         args: &[crate::value::Value],
     ) -> Result<crate::value::Value, InterpreterError> {
         let rc_args: Vec<RcObject> = args.iter().map(crate::value::Value::clone_to_rc).collect();
-        let result = self.call_method(method, self_obj, rc_args)?;
+        // No syntactic call site: the property checker invents the
+        // call, so there is no line in the user's source to name.
+        let result = self.call_method(method, self_obj, rc_args, None)?;
         Ok(match result {
             EvaluationResult::Value(v) => v,
             EvaluationResult::Return(Some(v)) => v,
@@ -1800,15 +1894,23 @@ impl EvaluationContext<'_> {
         object: RcObject,
         method_name: DefaultSymbol,
         args: &[RcObject],
-        struct_name: &str
+        struct_name: &str,
+        call_site: Option<SourceLocation>,
     ) -> Result<EvaluationResult, InterpreterError> {
         // Look for the method in the function map first
         if let Some(method_func) = self.function.get(&method_name).cloned() {
             // This is a regular function, call it directly. Convert
             // legacy `RcObject` arguments to `Value` at the boundary.
+            let object_for_frame = object.clone();
             let mut method_args: Vec<crate::value::Value> = vec![object.into()];
             method_args.extend(args.iter().cloned().map(Into::into));
+            // DEBUG-OBS D1: a method that resolved to a plain function
+            // still entered user code, so it still gets a frame — the
+            // shape of the dispatch is not the reader's problem.
+            let frame = self.method_frame_name(&object_for_frame, method_name);
+            self.push_frame(frame, call_site);
             let result = self.evaluate_function_with_values(method_func, &method_args)?;
+            self.pop_frame();
             return Ok(EvaluationResult::Value(result));
         }
 
@@ -1827,7 +1929,7 @@ impl EvaluationContext<'_> {
 
         if let Some(method) = self.get_method(struct_symbol, method_name, &receiver_type_args) {
             let method_args = args.to_vec();
-            return self.call_method(method, object, method_args);
+            return self.call_method(method, object, method_args, call_site);
         }
 
         Err(InterpreterError::FunctionNotFound(
@@ -1844,7 +1946,8 @@ impl EvaluationContext<'_> {
         function_name: DefaultSymbol,
         args: &[RcObject],
         struct_name_str: &str,
-        function_name_str: &str
+        function_name_str: &str,
+        call_site: Option<SourceLocation>,
     ) -> Result<EvaluationResult, InterpreterError> {
         // Look for the associated function in the function map first
         // (as a regular function). #193b: try the module-qualified
@@ -1861,7 +1964,10 @@ impl EvaluationContext<'_> {
             // This is a regular function, call it directly without self.
             // Bridge `RcObject` args to `Value` at the boundary.
             let value_args: Vec<crate::value::Value> = args.iter().cloned().map(Into::into).collect();
+            // DEBUG-OBS D1, same reasoning as `call_struct_method`.
+            self.push_frame(format!("{struct_name_str}::{function_name_str}"), call_site);
             let result = self.evaluate_function_with_values(func, &value_args)?;
+            self.pop_frame();
             return Ok(EvaluationResult::Value(result));
         }
 
@@ -1873,7 +1979,7 @@ impl EvaluationContext<'_> {
         // (`var v: Vec<u8> = ...`) isn't threaded into this layer
         // yet — that's a Phase 2b refinement.
         if let Some(method) = self.get_method(struct_name, function_name, &[]) {
-            return self.call_associated_method(method, args.to_vec());
+            return self.call_associated_method(method, args.to_vec(), Some(struct_name), call_site);
         }
 
         Err(InterpreterError::FunctionNotFound(

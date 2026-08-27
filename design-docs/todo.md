@@ -12,6 +12,19 @@
 
 ### 2026-08-27
 
+- **DEBUG-OBS D1: interpreter の backtrace の穴埋め** — (a) `call_expr` が
+  引数リストに `None` を積んでいたせいで `(called at line N)` が
+  **到達しない死にコード**だったのを直し、(b) frame を `call_method` /
+  `call_associated_method` という**user code に入る絞り**に置いて
+  method / associated / closure / `dyn` / operator overload / drop glue を
+  まとめて載せ (frame 名は receiver の実行時型で `S::boom` と修飾)、
+  (c) `main` を積み、(d) 同一 (関数, 行) の連続フレームを
+  `f (x7, called at line 3)` に畳み、(e) 折り畳み後 10+5 行の上限と
+  `... N frames elided` を入れた。call site は context の暗黙状態では
+  なく**明示の引数**で運ぶ (引数評価中の内側呼び出しが先に消費して
+  静かに壊れるため)。契約違反は `Panic` ではないので依然 backtrace が
+  無い — D5 で機械可読化と一緒に。
+
 - **DEBUG-OBS D0: 診断の比較レーン** — 実行時の失敗の**文言**を
   突き合わせるレーンを `compiler/tests/consistency/diagnostics.rs` に
   作り、目標文言を `DEBUG_OBSERVABILITY.md` に固定した。5 レーン
@@ -1071,12 +1084,9 @@
 > (現状調査 9 件 + 論点 6 + Phase D0〜D6)。**D0 は landing 済み** —
 > 目標文言はそこに固定され、現状の食い違いは
 > `compiler/tests/consistency/diagnostics.rs` に pin されている。
+> **D1 も landing 済み** — tree-walker の backtrace の穴 (最内フレーム /
+> 行番号 / `main` / 折り畳み / 深さ上限) は塞がった。
 
-- **DEBUG-OBS D1: interpreter の backtrace の穴** ★★ — (a) `call_expr` が
-  引数リストに `None` の位置を積むので `(called at line N)` が**到達しない
-  死にコード**、(b) `call_stack.push` が `Expr::Call` の 1 箇所だけで
-  method / associated / closure / `dyn` のフレームが載らない (最内が消える)、
-  (c) `main` が載らない、(d) 再帰が畳まれず深さ上限も無い。依存なし・低コスト。
 - **DEBUG-OBS D2: `FileId` / `SourceMap`** ★★ — `SourceLocation` / `Span` に
   ファイル identity が無く、`integrate()` が `location_pool` を追記しないので
   stdlib のノードは位置を持たない。この 2 つは互いの被害を隠しており、

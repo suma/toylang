@@ -425,6 +425,7 @@ impl EvaluationContext<'_> {
                                 method,
                                 operand_rc.clone(),
                                 vec![],
+                                self.expr_location(operand),
                             )?;
                             let result_v = match result {
                                 EvaluationResult::Value(v) => v,
@@ -579,6 +580,7 @@ impl EvaluationContext<'_> {
                                 method,
                                 lhs_rc.clone(),
                                 vec![rhs_rc.clone()],
+                                self.expr_location(lhs),
                             )?;
                             let result_v = match result {
                                 EvaluationResult::Value(v) => v,

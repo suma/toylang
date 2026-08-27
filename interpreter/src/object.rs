@@ -1079,7 +1079,7 @@ impl ExplicitDestructor for RcObject {
         let drop_method = evaluator.string_interner.get_or_intern("drop");
 
         // Try to call `drop` method
-        match evaluator.call_struct_method(self.clone(), drop_method, &[], &struct_name_str) {
+        match evaluator.call_struct_method(self.clone(), drop_method, &[], &struct_name_str, None) {
             Ok(_) => {
                 // Log successful `drop` call
                 destruction_log!(format!("Called drop method for struct_{:?}", type_name));

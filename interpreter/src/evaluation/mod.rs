@@ -289,6 +289,48 @@ impl<'a> EvaluationContext<'a> {
         InterpreterError::Panic { message, location, backtrace }
     }
 
+    /// Enter a toylang call frame (DEBUG-OBS D1).
+    ///
+    /// `function` is what the user wrote at the call site, qualified
+    /// by the receiver's runtime type for methods (`S::boom`), and
+    /// `call_site` is where the call was written. Every path that
+    /// enters user code pairs this with [`Self::pop_frame`] — a bare
+    /// `panic:` line with no backtrace was the interpreter's answer
+    /// for method / associated / closure / `dyn` calls until this
+    /// existed, because the one push site lived on the `Expr::Call`
+    /// branch alone (`DEBUG_OBSERVABILITY.md` 実測 3).
+    pub(crate) fn push_frame(
+        &mut self,
+        function: String,
+        call_site: Option<frontend::type_checker::SourceLocation>,
+    ) {
+        self.call_stack.push(crate::error::CallFrame { function, call_site });
+    }
+
+    /// Push the entry function's own frame (DEBUG-OBS D1).
+    ///
+    /// `main` never appeared in a backtrace because nothing *calls*
+    /// it — the frames were pushed by the call evaluator, and the
+    /// entry is entered directly. A backtrace that stops one frame
+    /// short of the bottom reads as if it were truncated.
+    pub(crate) fn push_entry_frame(&mut self, function: DefaultSymbol) {
+        let name = self
+            .string_interner
+            .resolve(function)
+            .unwrap_or("<entry>")
+            .to_string();
+        self.push_frame(name, None);
+    }
+
+    /// Leave a call frame that returned normally.
+    ///
+    /// Deliberately *not* called on the error path: a panic unwinds to
+    /// the top, and the stack as it stood at the failure is exactly
+    /// what the report needs.
+    pub(crate) fn pop_frame(&mut self) {
+        self.call_stack.pop();
+    }
+
     pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'a ExprPool, string_interner: &'a mut DefaultStringInterner, function: HashMap<DefaultSymbol, Rc<Function>>) -> Self {
         Self::new_with_qualified(stmt_pool, expr_pool, string_interner, function, HashMap::new())
     }
@@ -859,7 +901,9 @@ impl<'a> EvaluationContext<'a> {
         // call_method takes (method, self_obj, args). No extra args
         // for `Drop::drop`. Result envelope is discarded — drop is
         // unit-returning by convention.
-        self.call_method(method, value.clone(), Vec::new())?;
+        // Auto-drop is not written anywhere in the source, so the
+        // frame carries no call site (DEBUG-OBS D1).
+        self.call_method(method, value.clone(), Vec::new(), None)?;
         Ok(())
     }
 

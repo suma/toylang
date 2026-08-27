@@ -148,7 +148,7 @@ impl EvaluationContext<'_> {
 
                             // Call __getitem__(self, index)
                             let args = vec![start_obj];
-                            self.call_struct_method(object_obj, getitem_method, &args, &struct_name_str)
+                            self.call_struct_method(object_obj, getitem_method, &args, &struct_name_str, self.expr_location(object))
                         } else {
                             Err(InterpreterError::InternalError("Struct access requires index".to_string()))
                         }
@@ -178,7 +178,7 @@ impl EvaluationContext<'_> {
                         let getslice_method = self.string_interner.get_or_intern("__getslice__");
 
                         let args = vec![start_obj, end_obj];
-                        self.call_struct_method(object_obj, getslice_method, &args, &struct_name_str)
+                        self.call_struct_method(object_obj, getslice_method, &args, &struct_name_str, self.expr_location(object))
                     }
                 }
             }
@@ -294,7 +294,7 @@ impl EvaluationContext<'_> {
 
                         // Call __getitem__(self, index)
                         let args = vec![start_obj];
-                        self.call_struct_method(object_obj, getitem_method, &args, &struct_name_str)
+                        self.call_struct_method(object_obj, getitem_method, &args, &struct_name_str, self.expr_location(object))
                     } else {
                         Err(InterpreterError::InternalError("Struct access requires index".to_string()))
                     }
@@ -323,7 +323,7 @@ impl EvaluationContext<'_> {
                     let getslice_method = self.string_interner.get_or_intern("__getslice__");
 
                     let args = vec![start_obj, end_obj];
-                    self.call_struct_method(object_obj, getslice_method, &args, &struct_name_str)
+                    self.call_struct_method(object_obj, getslice_method, &args, &struct_name_str, self.expr_location(object))
                 }
             }
             _ => Err(InterpreterError::InternalError(
@@ -418,7 +418,7 @@ impl EvaluationContext<'_> {
 
                         // Call __setitem__(self, index, value)
                         let args = vec![start_obj, value_obj.clone()];
-                        self.call_struct_method(object_obj, setitem_method, &args, &struct_name_str)?;
+                        self.call_struct_method(object_obj, setitem_method, &args, &struct_name_str, self.expr_location(object))?;
 
                         // Return the assigned value
                         Ok(EvaluationResult::Value(value_obj.into()))
@@ -448,7 +448,7 @@ impl EvaluationContext<'_> {
 
                     // Call __setslice__(self, start, end, value)
                     let args = vec![start_obj, end_obj, value_obj.clone()];
-                    self.call_struct_method(object_obj, setslice_method, &args, &struct_name_str)?;
+                    self.call_struct_method(object_obj, setslice_method, &args, &struct_name_str, self.expr_location(object))?;
 
                     Ok(EvaluationResult::Value(value_obj.into()))
                 }

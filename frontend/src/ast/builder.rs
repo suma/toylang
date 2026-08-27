@@ -97,7 +97,13 @@ impl AstBuilder {
 
     pub fn call_expr(&mut self, fn_name: DefaultSymbol, args: Vec<ExprRef>, location: Option<SourceLocation>) -> ExprRef {
         let args_ref = self.expr_pool.add(Expr::ExprList(args));
-        self.location_pool.add_expr_location(None); // args_ref location
+        // DEBUG-OBS D1: the argument list carries the call's own
+        // location, not `None`. `evaluate_function_call` reads the
+        // frame's call site off this node, so the `None` that used to
+        // be pushed here made `(called at line N)` in the backtrace
+        // unreachable code — a rendering branch that could never fire
+        // (`DEBUG_OBSERVABILITY.md` 実測 4).
+        self.location_pool.add_expr_location(location);
         let expr_ref = self.expr_pool.add(Expr::Call(fn_name, args_ref));
         self.location_pool.add_expr_location(location);
         expr_ref

@@ -49,9 +49,10 @@ fn main() -> u64 { a(0u64) }
      |                                      ^^^^^ panic: boom in c
      |
      = backtrace (innermost first):
-         c
-         b
-         a
+         c (called at line 3)
+         b (called at line 4)
+         a (called at line 5)
+         main
 ir-vm (stderr):
   Runtime error occurred:
   boom in c
@@ -87,7 +88,8 @@ fn main() -> u64 { sub(1u64, 5u64) }
      |                                 ^ panic: u64 subtraction underflowed: 1 - 5
      |
      = backtrace (innermost first):
-         sub
+         sub (called at line 3)
+         main
 ir-vm (stderr):
   Runtime error occurred:
   u64 subtraction underflowed (left operand is smaller than the right)

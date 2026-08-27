@@ -14,7 +14,7 @@ D2 を飛ばして D3 だけが landing し、**ファイル名の無い行番�
 | Phase | Scope | Status |
 |---|---|---|
 | **D0** | 出力形式の固定 + バックエンド間で診断を突き合わせるレーン | ✅ 2026-08-27 |
-| **D1** | interpreter の backtrace の穴埋め (method / closure / `main` / 行番号 / 折り畳み) | 📋 |
+| **D1** | interpreter の backtrace の穴埋め (method / closure / `main` / 行番号 / 折り畳み) | ✅ 2026-08-27 |
 | **D2** | `FileId` + `SourceMap` — 位置に「どのファイルか」を持たせる | 📋 |
 | **D3** | IR の `SiteId` — 4 実行系すべてが panic 位置を言う (release でもコスト 0) | 📋 |
 | **D4** | shadow stack (`-g`) — AOT / JIT の backtrace | 📋 |
@@ -379,16 +379,53 @@ pin されている 4 プログラム (panic / underflow / 配列範囲外 /
 受け入れ基準: 実測 1 のプログラムで 5 レーンの食い違いがテキストとして
 出ること。→ 満たした。
 
-### D1 — interpreter の backtrace の穴埋め (依存なし・低コスト)
+### D1 — interpreter の backtrace の穴埋め ✅ (2026-08-27)
 
 1. `call_expr` が引数リストにも位置を積む → `(called at line N)` が生き返る (実測 4)。
 2. `call_stack.push` を method / associated function / closure / `dyn` 経路にも置く (実測 3)。
    frame 名は `S::boom` のように**型名で修飾する**。
 3. `main` を frame として積む。
-4. 同一 (関数, サイト) の連続フレームを折り畳む: `f (×7, called at line 3)` (実測 6)。
+4. 同一 (関数, サイト) の連続フレームを折り畳む: `f (x7, called at line 3)` (実測 6)。
 5. 深さ上限 + `... N frames elided`。
 
-受け入れ基準: 実測 3 のプログラムが `S::boom` → `go` → `main` を行番号付きで出す。
+受け入れ基準: 実測 3 のプログラムが `S::boom` → `go` → `main` を行番号付きで出す。→ 満たした:
+
+```
+   = backtrace (innermost first):
+       S::boom (called at line 3)
+       go (called at line 6)
+       main
+```
+
+実装で決めたこと:
+
+- **frame を積む場所は「call 式の評価器」ではなく「user code に入る
+  絞り」**。`call_method` / `call_associated_method` の 2 つに置くと、
+  `s.boom()` / operator overload / `dyn` dispatch / drop glue /
+  property checker が**まとめて**乗る。以前は `Expr::Call` の枝
+  1 箇所だけだったので、最も知りたい最内フレームが落ちていた。
+- **call site は明示の引数で運ぶ** (`call_method(.., call_site)`)。
+  context に「次の call site」を持たせる案は、引数の評価中に現れる
+  内側の呼び出しが先に消費するので**静かに壊れる**。9 箇所を
+  コンパイラに列挙させる方を採った。
+- method frame の型名は **receiver の実行時型**から取る
+  (`Object::Struct { type_name }` / `EnumVariant` / primitive)。
+  `dyn Trait` 越しの呼び出しが「どの impl が走ったか」を言うのは
+  この選択の結果。
+- **closure の frame 名は呼び出しに書かれた束縛名** (`f`)。
+  fn か closure かは、その瞬間の読者が必要としない区別。
+- **pop は成功時のみ**。panic は最上位まで巻き戻るので、失敗時点の
+  スタックがそのまま報告に要るもの (既存の 1 箇所の方針を踏襲)。
+- 折り畳みは `(関数, 呼び出し行)` が同じ**連続**フレームのみ。
+  深さ上限は**折り畳んだ後**の 10 + 5 行で、超えた分は
+  `... N frames elided`。tree-walker の `max_call_depth` が 30 なので
+  今は相互再帰でしか発火しないが、描画は D4 の shadow stack (1024) と
+  共有する。
+
+**やらなかったこと**: 契約違反 (`ContractViolation`) は
+`InterpreterError::Panic` ではないので依然 backtrace を持たない。
+frame は積まれているので運ぶだけだが、エラー型に触るので D5 で
+機械可読化と一緒にやる。
 
 ### D2 — `FileId` と `SourceMap`
 

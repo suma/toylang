@@ -235,6 +235,15 @@ struct FunctionLower<'a> {
     /// preconditions themselves are not emitted — see
     /// `contract_facts`.
     facts: ContractFacts,
+    /// DEBUG-OBS D3: the expression whose lowering is in progress.
+    ///
+    /// Saved and restored around every `lower_expr`, so a guard emitted
+    /// while lowering `a - b` is attributed to the subtraction rather
+    /// than to whichever operand happened to be lowered last. `None`
+    /// for code lowering synthesizes — drop glue, contract clauses
+    /// entered from the function header — which is the honest answer
+    /// for a line nobody wrote.
+    current_expr: Option<ExprRef>,
     /// `result` symbol — used to bind the return value during
     /// ensures evaluation. The interpreter / type-checker rely on the
     /// same name. We resolve it lazily because the symbol may not

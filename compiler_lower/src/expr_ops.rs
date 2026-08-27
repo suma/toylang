@@ -125,8 +125,10 @@ impl<'a> FunctionLower<'a> {
             else_blk: cont,
         });
         self.switch_to(fail);
+        let site = self.current_site();
         self.terminate(Terminator::Panic {
             message: self.contract_msgs.div_overflow,
+            site,
         });
         self.switch_to(cont);
         Ok(())
@@ -212,7 +214,8 @@ impl<'a> FunctionLower<'a> {
             else_blk: fail,
         });
         self.switch_to(fail);
-        self.terminate(Terminator::Panic { message });
+        let site = self.current_site();
+        self.terminate(Terminator::Panic { message, site });
         self.switch_to(pass);
     }
 
@@ -289,6 +292,13 @@ impl<'a> FunctionLower<'a> {
         // operator.
         let ir_op = crate::fold::binop_for(op).expect("short-circuit ops handled above");
         let result_ty = if ir_op.produces_bool() { Type::Bool } else { lhs_ty };
+        // DEBUG-OBS D3: a trapping binary operation is reported at its
+        // **left operand's** position, which is where the tree-walker
+        // has always put it. The whole expression would arguably be a
+        // better caret, but a diagnostic that differs by engine is one
+        // a reader cannot trust — and the tree-walker's is the wording
+        // D0 fixed as the target.
+        let trap_site = self.current_expr.replace(*lhs);
         // LLM-LOOP P6-3: trap on unsigned subtraction that would wrap.
         // `0u64 - 1u64` silently becoming 18446744073709551615 is a
         // favourite way to lose an afternoon: the result looks like a
@@ -315,6 +325,7 @@ impl<'a> FunctionLower<'a> {
                 self.emit_div_overflow_guard(l, r, lhs_ty)?;
             }
         }
+        self.current_expr = trap_site;
 
         Ok(self.emit(
             InstKind::BinOp {

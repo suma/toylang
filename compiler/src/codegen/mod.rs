@@ -299,6 +299,9 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_str_from_bytes: cranelift_module::FuncId,
     rt_prof_stat: cranelift_module::FuncId,
     rt_panic_alloc_budget: cranelift_module::FuncId,
+    /// DEBUG-OBS D3: `toy_panic_at(text)` — write a pre-rendered
+    /// diagnostic to stderr and exit.
+    rt_panic_at: cranelift_module::FuncId,
     rt_prof_force_counting: cranelift_module::FuncId,
     // MEMORY_PROFILING M3 residual: register an allocator's layout for
     // the report. `(name: str-ptr, managed, live, free_blocks, largest)`
@@ -333,7 +336,15 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_format_str: cranelift_module::FuncId,
     /// `panic`-message symbol → data id of `.rodata` blob holding
     /// `"panic: <msg>\0"`. Layout differs from print strings.
-    panic_strings: HashMap<DefaultSymbol, DataId>,
+    /// DEBUG-OBS D3: keyed by `(message, site)`, not by message alone.
+    /// The blob is the whole diagnostic — header, position, excerpt,
+    /// caret, message — so the same sentence panicked from two lines
+    /// needs two blobs.
+    panic_strings: HashMap<(DefaultSymbol, Option<compiler_ir::SiteId>), DataId>,
+    /// DEBUG-OBS D3: the two static halves of a diagnostic frame,
+    /// per site, for the one diverging terminator whose message is
+    /// computed at run time (a violated allocation budget).
+    frame_strings: HashMap<Option<compiler_ir::SiteId>, (DataId, DataId)>,
     /// `print`/`println` string-literal symbol → data id holding
     /// `"<msg>\0"`. The literal is unprefixed because the user is
     /// already supplying the exact bytes they want printed.
@@ -627,12 +638,24 @@ impl<M: Module> CodegenSession<M> {
         // the raw readings rather than a formatted string because
         // `Terminator::Panic` can only carry a static one, which is
         // the whole reason this path exists.
+        //
+        // DEBUG-OBS D3 added the two frame halves: the readings are
+        // formatted between a static prefix and suffix so the result
+        // sits inside the same `Error at file:line:col` frame every
+        // other diagnostic uses.
         let mut alloc_budget_sig = Signature::new(call_conv);
-        for _ in 0..4 {
+        for _ in 0..6 {
             alloc_budget_sig.params.push(AbiParam::new(types::I64));
         }
         let rt_panic_alloc_budget =
             declare_helper(&mut module, "toy_panic_alloc_budget", &alloc_budget_sig)?;
+
+        // DEBUG-OBS D3. `toy_panic_at(text)` writes an already-rendered
+        // diagnostic to stderr and exits. The whole text is static, so
+        // the helper takes one pointer and does no formatting.
+        let mut panic_at_sig = Signature::new(call_conv);
+        panic_at_sig.params.push(AbiParam::new(types::I64));
+        let rt_panic_at = declare_helper(&mut module, "toy_panic_at", &panic_at_sig)?;
 
         // MEMORY_PROFILING M3 residual. `toy_record_allocator_layout`
         // takes the str name as an i64 pointer (the `[bytes][NUL][u64
@@ -797,6 +820,7 @@ impl<M: Module> CodegenSession<M> {
             rt_str_from_bytes,
             rt_prof_stat,
             rt_panic_alloc_budget,
+            rt_panic_at,
             rt_prof_force_counting,
             rt_record_allocator_layout,
             rt_str_concat,
@@ -817,6 +841,7 @@ impl<M: Module> CodegenSession<M> {
             rt_format_bool,
             rt_format_str,
             panic_strings: HashMap::new(),
+            frame_strings: HashMap::new(),
             print_strings: HashMap::new(),
             raw_print_strings: HashMap::new(),
             const_str_bytes: HashMap::new(),
@@ -908,14 +933,19 @@ impl<M: Module> CodegenSession<M> {
         // is itself stable run to run — the emitted symbol *names*
         // (`toy_panic_msg_<id>`) already matched across runs; only the
         // order they were defined in did not.
-        let mut panic_needed: std::collections::BTreeSet<DefaultSymbol> =
+        let mut panic_needed: std::collections::BTreeSet<(DefaultSymbol, Option<compiler_ir::SiteId>)> =
             std::collections::BTreeSet::new();
         let mut print_needed: std::collections::BTreeSet<DefaultSymbol> =
             std::collections::BTreeSet::new();
+        let mut budget_sites: std::collections::BTreeSet<Option<compiler_ir::SiteId>> =
+            std::collections::BTreeSet::new();
         for func in &ir_module.functions {
             for blk in &func.blocks {
-                if let Some(Terminator::Panic { message }) = &blk.terminator {
-                    panic_needed.insert(*message);
+                if let Some(Terminator::Panic { message, site }) = &blk.terminator {
+                    panic_needed.insert((*message, *site));
+                }
+                if let Some(Terminator::PanicAllocBudget { site, .. }) = &blk.terminator {
+                    budget_sites.insert(*site);
                 }
                 for inst in &blk.instructions {
                     if let InstKind::PrintStr { message, .. } = &inst.kind {
@@ -927,8 +957,11 @@ impl<M: Module> CodegenSession<M> {
                 }
             }
         }
-        for sym in panic_needed {
-            self.declare_panic_string(sym, interner)?;
+        for (sym, site) in panic_needed {
+            self.declare_panic_string(sym, site, ir_module, interner)?;
+        }
+        for site in budget_sites {
+            self.declare_frame_strings(site, ir_module)?;
         }
         for sym in print_needed {
             self.declare_print_string(sym, interner)?;
@@ -1188,24 +1221,75 @@ impl<M: Module> CodegenSession<M> {
     /// `"panic: "` prefix (matching the interpreter's output format),
     /// the user-supplied message, and a trailing NUL. `puts` adds the
     /// final newline at run-time.
+    /// Lay down the frame around a run-time-computed message
+    /// (DEBUG-OBS D3).
+    fn declare_frame_strings(
+        &mut self,
+        site: Option<compiler_ir::SiteId>,
+        ir_module: &IrModule,
+    ) -> Result<(), String> {
+        if self.frame_strings.contains_key(&site) {
+            return Ok(());
+        }
+        let tag = site.map(|s| s.0).unwrap_or(u32::MAX);
+        let prefix = self.declare_blob(
+            &format!("toy_frame_pre_{tag}"),
+            ir_module.render_stderr_prefix(site).into_bytes(),
+        )?;
+        let suffix = self.declare_blob(
+            &format!("toy_frame_suf_{tag}"),
+            ir_module.render_stderr_suffix(site).into_bytes(),
+        )?;
+        self.frame_strings.insert(site, (prefix, suffix));
+        Ok(())
+    }
+
+    /// Define one NUL-terminated `.rodata` blob under `name`.
+    fn declare_blob(&mut self, name: &str, mut bytes: Vec<u8>) -> Result<DataId, String> {
+        bytes.push(0);
+        let data_id = self
+            .module
+            .declare_data(name, CLinkage::Local, false /* writable */, false /* tls */)
+            .map_err(|e| format!("declare data {name}: {e}"))?;
+        let mut desc = DataDescription::new();
+        desc.define(bytes.into_boxed_slice());
+        self.module
+            .define_data(data_id, &desc)
+            .map_err(|e| format!("define data {name}: {e}"))?;
+        Ok(data_id)
+    }
+
+    /// Lay down the exact bytes a panic at this site writes to stderr
+    /// (DEBUG-OBS D3).
+    ///
+    /// The whole diagnostic is static — the message is an interned
+    /// literal and the position is fixed at compile time — so it is
+    /// rendered once, here, and the runtime does nothing but write it.
+    /// That is also why the compiled binary never reads the source at
+    /// run time: the excerpt travelled with the site.
     fn declare_panic_string(
         &mut self,
         sym: DefaultSymbol,
+        site: Option<compiler_ir::SiteId>,
+        ir_module: &IrModule,
         interner: &DefaultStringInterner,
     ) -> Result<(), String> {
-        if self.panic_strings.contains_key(&sym) {
+        if self.panic_strings.contains_key(&(sym, site)) {
             return Ok(());
         }
         let msg = interner.resolve(sym).unwrap_or("<unknown>");
-        let mut bytes = Vec::with_capacity(msg.len() + 8);
-        bytes.extend_from_slice(b"panic: ");
-        bytes.extend_from_slice(msg.as_bytes());
+        let text = ir_module.render_stderr_text(site, &format!("panic: {msg}"));
+        let mut bytes = text.into_bytes();
         bytes.push(0);
         // Local linkage keeps the symbol from leaking to other objects;
         // the message is private to this compilation. Naming embeds the
-        // symbol id so the linker doesn't see duplicate symbols when
-        // multiple panic sites share a message.
-        let name = format!("toy_panic_msg_{}", sym.to_usize());
+        // symbol id and the site so the linker doesn't see duplicate
+        // symbols when multiple panic sites share a message.
+        let name = format!(
+            "toy_panic_msg_{}_{}",
+            sym.to_usize(),
+            site.map(|s| s.0).unwrap_or(u32::MAX)
+        );
         let data_id = self
             .module
             .declare_data(&name, CLinkage::Local, false /* writable */, false /* tls */)
@@ -1215,7 +1299,7 @@ impl<M: Module> CodegenSession<M> {
         self.module
             .define_data(data_id, &desc)
             .map_err(|e| format!("define data {name}: {e}"))?;
-        self.panic_strings.insert(sym, data_id);
+        self.panic_strings.insert((sym, site), data_id);
         Ok(())
     }
 
@@ -1333,6 +1417,7 @@ impl<M: Module> CodegenSession<M> {
         // module mid-emission.
         let imports = self.declare_imports(&mut ctx.func);
         let panic_imports = self.declare_panic_imports(ir_module, func_id, &mut ctx.func);
+        let frame_imports = self.declare_frame_imports(ir_module, func_id, &mut ctx.func);
         let print_imports = self.declare_print_imports(ir_module, func_id, &mut ctx.func);
         let raw_print_imports =
             self.declare_raw_print_imports(ir_module, func_id, &mut ctx.func);
@@ -1350,6 +1435,7 @@ impl<M: Module> CodegenSession<M> {
                 func_id,
                 &imports,
                 &panic_imports,
+                &frame_imports,
                 &print_imports,
                 &raw_print_imports,
                 &const_str_bytes_imports,
@@ -1396,6 +1482,7 @@ impl<M: Module> CodegenSession<M> {
         );
         let imports = self.declare_imports(&mut ctx.func);
         let panic_imports = self.declare_panic_imports(ir_module, func_id, &mut ctx.func);
+        let frame_imports = self.declare_frame_imports(ir_module, func_id, &mut ctx.func);
         let print_imports = self.declare_print_imports(ir_module, func_id, &mut ctx.func);
         let raw_print_imports =
             self.declare_raw_print_imports(ir_module, func_id, &mut ctx.func);
@@ -1413,6 +1500,7 @@ impl<M: Module> CodegenSession<M> {
                 func_id,
                 &imports,
                 &panic_imports,
+                &frame_imports,
                 &print_imports,
                 &raw_print_imports,
                 &const_str_bytes_imports,
@@ -1455,6 +1543,7 @@ impl<M: Module> CodegenSession<M> {
         );
         let imports = self.declare_imports(&mut ctx.func);
         let panic_imports = self.declare_panic_imports(ir_module, func_id, &mut ctx.func);
+        let frame_imports = self.declare_frame_imports(ir_module, func_id, &mut ctx.func);
         let print_imports = self.declare_print_imports(ir_module, func_id, &mut ctx.func);
         let raw_print_imports =
             self.declare_raw_print_imports(ir_module, func_id, &mut ctx.func);
@@ -1472,6 +1561,7 @@ impl<M: Module> CodegenSession<M> {
                 func_id,
                 &imports,
                 &panic_imports,
+                &frame_imports,
                 &print_imports,
                 &raw_print_imports,
                 &const_str_bytes_imports,
@@ -1546,6 +1636,7 @@ struct RuntimeRefs {
     str_from_bytes: cranelift_codegen::ir::FuncRef,
     prof_stat: cranelift_codegen::ir::FuncRef,
     panic_alloc_budget: cranelift_codegen::ir::FuncRef,
+    panic_at: cranelift_codegen::ir::FuncRef,
     prof_force_counting: cranelift_codegen::ir::FuncRef,
     record_allocator_layout: cranelift_codegen::ir::FuncRef,
     pow: cranelift_codegen::ir::FuncRef,
@@ -1683,9 +1774,19 @@ struct LowerCtx<'a, 'b> {
     ir_module: &'a IrModule,
     func_id: FuncId,
     imports: &'a HashMap<FuncId, cranelift_codegen::ir::FuncRef>,
-    /// Pre-declared global-value handles for each panic-message symbol
-    /// reachable from this function. Filled in by `declare_panic_imports`.
-    panic_imports: &'a HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue>,
+    /// Pre-declared global-value handles for each panic blob reachable
+    /// from this function, keyed by `(message, site)`. Filled in by
+    /// `declare_panic_imports`.
+    panic_imports: &'a HashMap<
+        (DefaultSymbol, Option<compiler_ir::SiteId>),
+        cranelift_codegen::ir::GlobalValue,
+    >,
+    /// Same idea for the frame halves around a budget violation's
+    /// computed message (DEBUG-OBS D3).
+    frame_imports: &'a HashMap<
+        Option<compiler_ir::SiteId>,
+        (cranelift_codegen::ir::GlobalValue, cranelift_codegen::ir::GlobalValue),
+    >,
     /// Same idea, for `print`/`println` string-literal arguments.
     print_imports: &'a HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue>,
     /// Same idea, for codegen-synthesised `PrintRaw` fragments. Keyed
@@ -1762,7 +1863,14 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
         ir_module: &'a IrModule,
         func_id: FuncId,
         imports: &'a HashMap<FuncId, cranelift_codegen::ir::FuncRef>,
-        panic_imports: &'a HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue>,
+        panic_imports: &'a HashMap<
+            (DefaultSymbol, Option<compiler_ir::SiteId>),
+            cranelift_codegen::ir::GlobalValue,
+        >,
+        frame_imports: &'a HashMap<
+            Option<compiler_ir::SiteId>,
+            (cranelift_codegen::ir::GlobalValue, cranelift_codegen::ir::GlobalValue),
+        >,
         print_imports: &'a HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue>,
         raw_print_imports: &'a HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue>,
         const_str_bytes_imports: &'a HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue>,
@@ -1775,6 +1883,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             func_id,
             imports,
             panic_imports,
+            frame_imports,
             print_imports,
             raw_print_imports,
             const_str_bytes_imports,
@@ -1924,7 +2033,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let else_b = *self.block_map.get(&else_blk.0).expect("else block");
                 self.builder.ins().brif(c, then_b, &[], else_b, &[]);
             }
-            Terminator::PanicAllocBudget { stat, entry, current, limit } => {
+            Terminator::PanicAllocBudget { stat, entry, current, limit, site } => {
                 // ALLOC-CONTRACT-SUGAR: hand the three readings to the
                 // runtime, which formats and exits. Same trailing trap
                 // as `Panic` — the helper does not return, but
@@ -1933,29 +2042,42 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let entry_v = self.value(*entry);
                 let current_v = self.value(*current);
                 let limit_v = self.value(*limit);
+                // DEBUG-OBS D3: the readings are formatted between the
+                // two static halves of the frame, so a budget violation
+                // reads like every other diagnostic.
+                let (pre_gv, suf_gv) = *self
+                    .frame_imports
+                    .get(site)
+                    .ok_or_else(|| "missing frame import for a budget site".to_string())?;
+                let pre = self.builder.ins().symbol_value(types::I64, pre_gv);
+                let suf = self.builder.ins().symbol_value(types::I64, suf_gv);
                 self.builder.ins().call(
                     self.runtime.panic_alloc_budget,
-                    &[which, entry_v, current_v, limit_v],
+                    &[which, entry_v, current_v, limit_v, pre, suf],
                 );
                 self.builder
                     .ins()
                     .trap(cranelift_codegen::ir::TrapCode::user(1).expect("non-zero"));
             }
-            Terminator::Panic { message } => {
-                // Materialise the address of the message in `.rodata`,
-                // hand it to libc `puts`, then `exit(1)`. We always
-                // follow the `exit` call with a `trap` so cranelift sees
-                // a real terminator on the block — `exit` is `noreturn`
-                // in C, but cranelift has no `noreturn` attribute, and
-                // the trap is dead code at runtime.
+            Terminator::Panic { message, site } => {
+                // DEBUG-OBS D3: the whole diagnostic — header, position,
+                // excerpt, caret, message — is already in `.rodata`, so
+                // this hands its address to the runtime helper, which
+                // writes it to **stderr** and exits.
+                //
+                // It used to be `puts`, which put the panic on *stdout*,
+                // in the middle of whatever the program had printed
+                // (実測 9). We always follow the call with a `trap` so
+                // cranelift sees a real terminator on the block — the
+                // helper is `noreturn`, but cranelift has no such
+                // attribute, and the trap is dead code at runtime.
+                let key = (*message, *site);
                 let gv = *self
                     .panic_imports
-                    .get(message)
+                    .get(&key)
                     .ok_or_else(|| format!("missing panic import for #{}", message.to_usize()))?;
                 let addr = self.builder.ins().symbol_value(types::I64, gv);
-                self.builder.ins().call(self.runtime.puts, &[addr]);
-                let one = self.builder.ins().iconst(types::I32, 1);
-                self.builder.ins().call(self.runtime.exit, &[one]);
+                self.builder.ins().call(self.runtime.panic_at, &[addr]);
                 self.builder
                     .ins()
                     .trap(cranelift_codegen::ir::TrapCode::user(1).unwrap());

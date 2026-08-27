@@ -774,6 +774,45 @@ pub extern "C" fn toy_prof_force_counting() {
     thread_state().prof_forced = true;
 }
 
+/// DEBUG-OBS D3: write a pre-rendered diagnostic to stderr and stop.
+///
+/// `text` is a NUL-terminated blob the compiler laid in `.rodata`,
+/// holding the *entire* message a failing run prints — header,
+/// `Error at file:line:column:`, the quoted source line, the caret and
+/// the message. All of it is static (an interned literal at a fixed
+/// position), so there is nothing to format here and nothing to look
+/// up: this binary never reads the source it was built from.
+///
+/// It replaces a `puts` call, which put panics on **stdout** — in the
+/// middle of whatever the program had already printed, and out of
+/// reach of a `2>` redirect (`DEBUG_OBSERVABILITY.md` 実測 9).
+///
+/// # Safety
+/// `text` must point at a NUL-terminated byte string that outlives the
+/// call. Codegen only ever passes the address of a `.rodata` blob.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_panic_at(text: *const u8) -> ! {
+    unsafe { write_cstr_fd(2, text) };
+    unsafe { exit(1) };
+}
+
+/// Write a NUL-terminated string to `fd`.
+///
+/// # Safety
+/// `p` must point at a NUL-terminated byte string.
+unsafe fn write_cstr_fd(fd: i32, p: *const u8) {
+    if p.is_null() {
+        return;
+    }
+    let mut len = 0usize;
+    // Bounded so a blob that somehow lost its terminator cannot walk
+    // the address space; no diagnostic this crate emits is near it.
+    while len < 1 << 20 && unsafe { *p.add(len) } != 0 {
+        len += 1;
+    }
+    write_fd(fd, unsafe { core::slice::from_raw_parts(p, len) });
+}
+
 /// ALLOC-CONTRACT-SUGAR: report a violated allocation budget and stop.
 ///
 /// `Terminator::Panic` can only carry a static message, so a compiled
@@ -788,37 +827,50 @@ pub extern "C" fn toy_prof_force_counting() {
 /// comparing stderr across backends.
 ///
 /// `stat` is `frontend::ast::MemStat::code()`.
+/// # Safety
+/// `prefix` and `suffix` must each be NUL-terminated or null. They are
+/// the static halves of the diagnostic frame around the computed
+/// message (DEBUG-OBS D3); codegen passes `.rodata` addresses.
 #[unsafe(no_mangle)]
-pub extern "C" fn toy_panic_alloc_budget(stat: u64, entry: u64, current: u64, limit: u64) -> ! {
+pub unsafe extern "C" fn toy_panic_alloc_budget(
+    stat: u64,
+    entry: u64,
+    current: u64,
+    limit: u64,
+    prefix: *const u8,
+    suffix: *const u8,
+) -> ! {
     let used = current.saturating_sub(entry);
     let budget = limit.saturating_sub(entry);
+    unsafe { write_cstr_fd(2, prefix) };
     let mut buf = StackBuf::<128>::new();
     let written = match stat {
         // MemStat::CumulativeBytes
         3 => core::fmt::write(
             &mut buf,
-            format_args!("panic: requested {used} bytes, budget {budget} bytes\n"),
+            format_args!("panic: requested {used} bytes, budget {budget} bytes"),
         ),
         // MemStat::LiveBytes
         4 => core::fmt::write(
             &mut buf,
-            format_args!("panic: retained {used} bytes, budget {budget} bytes\n"),
+            format_args!("panic: retained {used} bytes, budget {budget} bytes"),
         ),
         // MemStat::AllocCount
         0 => core::fmt::write(
             &mut buf,
-            format_args!("panic: made {used} allocations, budget {budget}\n"),
+            format_args!("panic: made {used} allocations, budget {budget}"),
         ),
         _ => core::fmt::write(
             &mut buf,
-            format_args!("panic: allocation budget exceeded: {used} over {budget}\n"),
+            format_args!("panic: allocation budget exceeded: {used} over {budget}"),
         ),
     };
     if written.is_ok() {
         write_fd(2, buf.as_slice());
     } else {
-        err_write("panic: allocation budget exceeded\n");
+        err_write("panic: allocation budget exceeded");
     }
+    unsafe { write_cstr_fd(2, suffix) };
     unsafe { exit(1) };
 }
 

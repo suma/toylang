@@ -16,7 +16,7 @@ D2 を飛ばして D3 だけが landing し、**ファイル名の無い行番�
 | **D0** | 出力形式の固定 + バックエンド間で診断を突き合わせるレーン | ✅ 2026-08-27 |
 | **D1** | interpreter の backtrace の穴埋め (method / closure / `main` / 行番号 / 折り畳み) | ✅ 2026-08-27 |
 | **D2** | `FileId` + `SourceMap` — 位置に「どのファイルか」を持たせる | ✅ 2026-08-27 |
-| **D3** | IR の `SiteId` — 4 実行系すべてが panic 位置を言う (release でもコスト 0) | 📋 |
+| **D3** | IR の `SiteId` — 4 実行系すべてが panic 位置を言う (release でもコスト 0) | ✅ 2026-08-27 |
 | **D4** | shadow stack (`-g`) — AOT / JIT の backtrace | 📋 |
 | **D5** | ユーザから触れる API と機械可読出力 | 📋 |
 | **D6** | 再帰深度の診断 / stdlib の境界チェック | 📋 |
@@ -37,7 +37,7 @@ stdlib を**縦に貫く**。どこか 1 層で欠けると、上の層は嘘を
 
 ## 現状調査 (2026-08-26 実測)
 
-### 実測 1: panic 診断は実行系ごとに別物
+### 実測 1: panic 診断は実行系ごとに別物 (D3 で位置まで一致)
 
 ```rust
 fn c(n: u64) -> u64 { if n == 0u64 { panic("boom in c") } n - 1u64 }
@@ -161,7 +161,7 @@ toylang 側の位置も backtrace も一切残らない。
 JSON は型検査 / パースの診断だけを扱う。LLM ループ (P1〜P7) の観点では、
 **機械可読になっていないのは実行時の失敗だけ**という状態。
 
-### 実測 9: コンパイル済みバックエンドは panic を **stdout** に書く (2026-08-27、D0 で判明)
+### 実測 9: コンパイル済みバックエンドは panic を **stdout** に書く (2026-08-27、D0 で判明 / D3 で解消)
 
 AOT / compiler JIT の panic 経路は `libc_puts`
 (`compiler/src/codegen/mod.rs`) なので、診断が **fd 1** に出る。
@@ -486,18 +486,60 @@ Error at core/std/option.t:57:29:
 (パーサが `input_len` に錨を打つ) — D2 のテストが最初に落ちた理由で、
 バグではないが知っておく値打ちがある。
 
-### D3 — IR の `SiteId` (ここで「行番号表示」が 4 実行系で揃う)
+### D3 — IR の `SiteId` ✅ (2026-08-27)
 
-1. `compiler_ir::Module` に `files` / `sites`、`SiteId` を導入。
+1. `compiler_ir` に `Site` / `SiteId` と `Module::files` / `sites`。
 2. `Terminator::Panic` / RUNTIME-TRAP guard / `PanicAllocBudget` が `SiteId` を持つ。
-   `HeapAlloc { site: u64 }` を `SiteId` に移行 (`--profile=mem` にファイル名が付く)。
-3. IR VM: `VmResult::Diverged { message, site }` →
-   **tree-walker の再実行に頼らずに**位置付き診断を出す (実測 2 の解消)。
-4. AOT / compiler JIT: サイト表を `.rodata` に出し、`toy_panic(site_id, msg)` が
-   `Error at file:line:col:` + 埋め込み抜粋を書く。
-5. interpreter JIT: `jit_panic` に `SiteId` を渡す。
+3. IR VM: `VmResult::Diverged { message, site }` で**自分で**位置付き診断を出す。
+4. AOT / compiler JIT: **診断を丸ごと `.rodata` に置き**、
+   `toy_panic_at(text)` が **stderr** に書いて exit する。
+5. interpreter JIT: `jit_panic` にフレームの前後半を渡す。
 
-受け入れ基準: D0 のレーンが**位置まで**一致して通る。backtrace はまだ差がある。
+受け入れ基準: D0 のレーンが**位置まで**一致して通る。→ 満たした。
+5 レーンすべてが `Error at f.t:2:38:` + 抜粋 + caret + `panic: ...` を
+**stderr** に出す。残る差は backtrace (D4) と、値を持つ 2 つの文言
+(`1 - 5` / 契約の実引数) だけ。
+
+実装で決めたこと:
+
+- **サイト表ではなく「描画済みテキスト」を `.rodata` に置いた。**
+  `Terminator::Panic` の message は interned literal で、位置は
+  コンパイル時に確定している — **診断全体が静的**なので、実行時に
+  組み立てるものが何も無い。サイト表 + フォーマッタをランタイムに
+  持たせるより小さく、速く、そして「コンパイル済みバイナリが実行時に
+  ソースを読みに行かない」という論点 3 の要求をそのまま満たす。
+  `Site::snippet` が運ぶのはそのためのソース行。
+- **例外は `PanicAllocBudget` だけ** — 数値が実行時にしか分からない。
+  フレームを **prefix / suffix の 2 つの静的ブロブ**に割り、
+  `toy_panic_alloc_budget(..., prefix, suffix)` が間に計算した文を書く。
+  `compiler_ir` の unit test が「prefix + message + suffix ==
+  render_stderr_text」を pin している (C ABI 越しに崩れると気づけないため)。
+- **`puts` をやめて stderr に**した (実測 9)。AOT の panic が
+  プログラムの stdout を汚さなくなり、`2>` で取れるようになった。
+  `e2e.rs` は stdout が**空である**ことも確認する。
+- **フレームの描画は 1 箇所** (`compiler_ir::format_diagnostic_frame`)。
+  interpreter の `ErrorFormatter` もこれを呼ぶ — この書式が 2 箇所に
+  あったことが、そもそも診断が実行系ごとに割れた原因だった。
+- **二項演算の trap は「左オペランドの位置」**に付ける。式全体の方が
+  caret としては良いが、tree-walker が昔からそこを指しており、
+  D0 が正としたのは tree-walker の文言。エンジンごとに違う caret を
+  作るより合わせる方を採った。
+- **`panic: ` の接頭辞は VM の終端子ではなく消費側**で付ける。
+  同じコードを CTFE の fold が共有していて、そちらは
+  `[E0017] ... evaluating it failed: <message>` と自分の言葉で報告するため。
+
+**やらなかったこと** (理由つき):
+
+- **`HeapAlloc { site: u64 }` の `SiteId` 移行** — `--profile=mem` の
+  リーク報告にファイル名を付ける件。診断とは独立の経路で、
+  コンパイル済みランタイムが自前でレポートを書く (`TOY_PROFILE_MEM=1`)
+  ため、ファイル名表をバイナリに出して起動時に登録する仕組みと、
+  MEMORY_PROFILING M4 の JSON スキーマ変更が要る。D3 の受け入れ基準に
+  は掛からないので分けた。
+- **実測 2 の replay** — IR VM は自分で位置付き診断を出せるように
+  なった (item 3 は満たした) が、interpreter は依然 diverge 時に
+  tree-walker で再実行する。tree-walker の方が backtrace と契約の実値を
+  持つからで、これを落とすのは VM が backtrace を出せる D4 と一緒。
 
 ### D4 — shadow stack (`-g`)
 

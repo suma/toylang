@@ -43,21 +43,55 @@ impl<M: Module> CodegenSession<M> {
         ir_module: &IrModule,
         func_id: FuncId,
         func: &mut cranelift_codegen::ir::Function,
-    ) -> HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue> {
-        let mut imports: HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue> =
-            HashMap::new();
+    ) -> HashMap<(DefaultSymbol, Option<compiler_ir::SiteId>), cranelift_codegen::ir::GlobalValue>
+    {
+        let mut imports: HashMap<
+            (DefaultSymbol, Option<compiler_ir::SiteId>),
+            cranelift_codegen::ir::GlobalValue,
+        > = HashMap::new();
         let ir_func = ir_module.function(func_id);
         for blk in &ir_func.blocks {
-            if let Some(Terminator::Panic { message }) = &blk.terminator {
-                if imports.contains_key(message) {
+            if let Some(Terminator::Panic { message, site }) = &blk.terminator {
+                let key = (*message, *site);
+                if imports.contains_key(&key) {
                     continue;
                 }
-                let data_id = match self.panic_strings.get(message).copied() {
+                let data_id = match self.panic_strings.get(&key).copied() {
                     Some(id) => id,
                     None => continue,
                 };
                 let gv = self.declare_data_in_func_readonly(data_id, func);
-                imports.insert(*message, gv);
+                imports.insert(key, gv);
+            }
+        }
+        imports
+    }
+
+    /// DEBUG-OBS D3 per-function GV map for the frame halves a budget
+    /// violation writes around its computed message. Mirrors
+    /// `declare_panic_imports`.
+    pub(super) fn declare_frame_imports(
+        &self,
+        ir_module: &IrModule,
+        func_id: FuncId,
+        func: &mut cranelift_codegen::ir::Function,
+    ) -> HashMap<
+        Option<compiler_ir::SiteId>,
+        (cranelift_codegen::ir::GlobalValue, cranelift_codegen::ir::GlobalValue),
+    > {
+        let mut imports = HashMap::new();
+        let ir_func = ir_module.function(func_id);
+        for blk in &ir_func.blocks {
+            if let Some(Terminator::PanicAllocBudget { site, .. }) = &blk.terminator {
+                if imports.contains_key(site) {
+                    continue;
+                }
+                let Some((prefix, suffix)) = self.frame_strings.get(site).copied() else {
+                    continue;
+                };
+                let prefix_gv = self.declare_data_in_func_readonly(prefix, func);
+                let suffix_gv = self.declare_data_in_func_readonly(suffix, func);
+                imports.insert(*site, (prefix_gv, suffix_gv));
             }
         }
         imports
@@ -244,6 +278,7 @@ impl<M: Module> CodegenSession<M> {
             prof_stat: self.declare_func_in_func_readonly(self.rt_prof_stat, func),
             panic_alloc_budget: self
                 .declare_func_in_func_readonly(self.rt_panic_alloc_budget, func),
+            panic_at: self.declare_func_in_func_readonly(self.rt_panic_at, func),
             prof_force_counting: self
                 .declare_func_in_func_readonly(self.rt_prof_force_counting, func),
             record_allocator_layout: self

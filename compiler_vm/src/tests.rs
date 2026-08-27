@@ -1428,7 +1428,7 @@ fn vm_panic_resolves_message_via_interner() {
     });
     e.terminator = Some(Terminator::Branch { cond: ValueId(0), then_blk: entry, else_blk: fail });
     let f = func.block_mut(fail);
-    f.terminator = Some(Terminator::Panic { message: msg_sym });
+    f.terminator = Some(Terminator::Panic { message: msg_sym, site: None });
 
     // Run with interner so the panic message resolves.
     let host = TestHost::new();
@@ -1436,7 +1436,7 @@ fn vm_panic_resolves_message_via_interner() {
     vm.call_function(main_id, Vec::new(), None, Vec::new());
     let res = vm.run_loop();
     match res {
-        VmResult::Diverged { message } => {
+        VmResult::Diverged { message, .. } => {
             assert_eq!(message, "requires violated: b != 0");
         }
         _ => panic!("expected divergence"),
@@ -1517,7 +1517,7 @@ fn step_budget_stops_a_hot_loop() {
     vm.set_step_budget(Some(10));
     vm.call_function(main_id, Vec::new(), None, Vec::new());
     match vm.run_loop() {
-        VmResult::Diverged { message } => {
+        VmResult::Diverged { message, .. } => {
             assert!(message.contains("step budget exceeded"), "{message}");
             assert!(message.contains("10 loop iterations"), "{message}");
         }
@@ -1574,6 +1574,6 @@ fn step_budget_does_not_count_forward_jumps() {
     vm.call_function(main_id, Vec::new(), None, Vec::new());
     match vm.run_loop() {
         VmResult::ExitCode(code) => assert_eq!(code, 7),
-        VmResult::Diverged { message } => panic!("unexpected divergence: {message}"),
+        VmResult::Diverged { message, .. } => panic!("unexpected divergence: {message}"),
     }
 }

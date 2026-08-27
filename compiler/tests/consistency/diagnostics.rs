@@ -55,14 +55,32 @@ fn main() -> u64 { a(0u64) }
          main
 ir-vm (stderr):
   Runtime error occurred:
-  boom in c
+  Error at panic_three_calls_deep.t:2:38:
+     |
+   2 | fn c(n: u64) -> u64 { if n == 0u64 { panic("boom in c") } n - 1u64 }
+     |                                      ^^^^^ panic: boom in c
+     |
 interpreter-jit (stderr):
   Runtime error occurred:
-  panic: boom in c
-compiler-jit (stdout):
-  panic: boom in c
-aot (stdout):
-  panic: boom in c
+  Error at panic_three_calls_deep.t:2:38:
+     |
+   2 | fn c(n: u64) -> u64 { if n == 0u64 { panic("boom in c") } n - 1u64 }
+     |                                      ^^^^^ panic: boom in c
+     |
+compiler-jit (stderr):
+  Runtime error occurred:
+  Error at panic_three_calls_deep.t:2:38:
+     |
+   2 | fn c(n: u64) -> u64 { if n == 0u64 { panic("boom in c") } n - 1u64 }
+     |                                      ^^^^^ panic: boom in c
+     |
+aot (stderr):
+  Runtime error occurred:
+  Error at panic_three_calls_deep.t:2:38:
+     |
+   2 | fn c(n: u64) -> u64 { if n == 0u64 { panic("boom in c") } n - 1u64 }
+     |                                      ^^^^^ panic: boom in c
+     |
 "#,
     );
 }
@@ -92,14 +110,32 @@ fn main() -> u64 { sub(1u64, 5u64) }
          main
 ir-vm (stderr):
   Runtime error occurred:
-  u64 subtraction underflowed (left operand is smaller than the right)
+  Error at u64_underflow_trap.t:2:33:
+     |
+   2 | fn sub(a: u64, b: u64) -> u64 { a - b }
+     |                                 ^ panic: u64 subtraction underflowed (left operand is smaller than the right)
+     |
 interpreter-jit (stderr):
   Runtime error occurred:
-  panic: u64 subtraction underflowed (left operand is smaller than the right)
-compiler-jit (stdout):
-  panic: u64 subtraction underflowed (left operand is smaller than the right)
-aot (stdout):
-  panic: u64 subtraction underflowed (left operand is smaller than the right)
+  Error at u64_underflow_trap.t:2:33:
+     |
+   2 | fn sub(a: u64, b: u64) -> u64 { a - b }
+     |                                 ^ panic: u64 subtraction underflowed (left operand is smaller than the right)
+     |
+compiler-jit (stderr):
+  Runtime error occurred:
+  Error at u64_underflow_trap.t:2:33:
+     |
+   2 | fn sub(a: u64, b: u64) -> u64 { a - b }
+     |                                 ^ panic: u64 subtraction underflowed (left operand is smaller than the right)
+     |
+aot (stderr):
+  Runtime error occurred:
+  Error at u64_underflow_trap.t:2:33:
+     |
+   2 | fn sub(a: u64, b: u64) -> u64 { a - b }
+     |                                 ^ panic: u64 subtraction underflowed (left operand is smaller than the right)
+     |
 "#,
     );
 }
@@ -126,14 +162,28 @@ fn main() -> u64 {
   Array index 5 out of bounds for array of size 3
 ir-vm (stderr):
   Runtime error occurred:
-  array index out of bounds (index is at or past the array's length)
+  Error at array_index_out_of_bounds.t:5:18:
+     |
+   5 |     val v: i64 = arr[i]
+     |                  ^^^^^^ panic: array index out of bounds (index is at or past the array's length)
+     |
 interpreter-jit (stderr):
   Runtime error occurred:
   Array index 5 out of bounds for array of size 3
-compiler-jit (stdout):
-  panic: array index out of bounds (index is at or past the array's length)
-aot (stdout):
-  panic: array index out of bounds (index is at or past the array's length)
+compiler-jit (stderr):
+  Runtime error occurred:
+  Error at array_index_out_of_bounds.t:5:18:
+     |
+   5 |     val v: i64 = arr[i]
+     |                  ^^^^^^ panic: array index out of bounds (index is at or past the array's length)
+     |
+aot (stderr):
+  Runtime error occurred:
+  Error at array_index_out_of_bounds.t:5:18:
+     |
+   5 |     val v: i64 = arr[i]
+     |                  ^^^^^^ panic: array index out of bounds (index is at or past the array's length)
+     |
 "#,
     );
 }
@@ -161,14 +211,28 @@ fn main() -> u64 { f(0u64) }
   Contract violation: `requires` clause #1 of function `f` evaluated to false (with n = 0)
 ir-vm (stderr):
   Runtime error occurred:
-  requires violation
+  Error at requires_violation.t:3:14:
+     |
+   3 |     requires n > 0u64
+     |              ^^^^^^^^ panic: requires violation
+     |
 interpreter-jit (stderr):
   Runtime error occurred:
   Contract violation: `requires` clause #1 of function `f` evaluated to false (with n = 0)
-compiler-jit (stdout):
-  panic: requires violation
-aot (stdout):
-  panic: requires violation
+compiler-jit (stderr):
+  Runtime error occurred:
+  Error at requires_violation.t:3:14:
+     |
+   3 |     requires n > 0u64
+     |              ^^^^^^^^ panic: requires violation
+     |
+aot (stderr):
+  Runtime error occurred:
+  Error at requires_violation.t:3:14:
+     |
+   3 |     requires n > 0u64
+     |              ^^^^^^^^ panic: requires violation
+     |
 "#,
     );
 }
@@ -204,7 +268,11 @@ fn main() -> u64 {
          main
 ir-vm (stderr):
   Runtime error occurred:
-  Option::unwrap on None
+  Error at core/std/option.t:57:29:
+     |
+  57 |             Option::None => panic("Option::unwrap on None"),
+     |                             ^^^^^ panic: Option::unwrap on None
+     |
 interpreter-jit (stderr):
   Runtime error occurred:
   Error at core/std/option.t:57:29:
@@ -215,10 +283,20 @@ interpreter-jit (stderr):
      = backtrace (innermost first):
          Option::unwrap (called at line 4)
          main
-compiler-jit (stdout):
-  panic: Option::unwrap on None
-aot (stdout):
-  panic: Option::unwrap on None
+compiler-jit (stderr):
+  Runtime error occurred:
+  Error at core/std/option.t:57:29:
+     |
+  57 |             Option::None => panic("Option::unwrap on None"),
+     |                             ^^^^^ panic: Option::unwrap on None
+     |
+aot (stderr):
+  Runtime error occurred:
+  Error at core/std/option.t:57:29:
+     |
+  57 |             Option::None => panic("Option::unwrap on None"),
+     |                             ^^^^^ panic: Option::unwrap on None
+     |
 "#,
     );
 }

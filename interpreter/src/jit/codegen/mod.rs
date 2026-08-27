@@ -829,6 +829,65 @@ impl<'a, 'b> State<'a, 'b> {
 
     /// Binary and unary operators, including the `==` / `!=` dispatch to
     /// `toy_str_eq` for str operands.
+    /// The two static halves of a diagnostic frame for `expr_ref`
+    /// (DEBUG-OBS D3), as `'static` slices the compiled code can point
+    /// at.
+    ///
+    /// Leaked on purpose. The JIT's code lives for the process, and so
+    /// must anything it holds a raw pointer to; the AOT equivalent is a
+    /// `.rodata` blob, which is permanent by construction. The number
+    /// of leaks is bounded by the number of compiled trap sites.
+    fn frame_halves(&self, expr_ref: &ExprRef) -> (&'static str, &'static str) {
+        let Some(loc) = self.program.location_pool.get_expr_location(expr_ref).copied() else {
+            return ("Runtime error occurred:\n", "\n");
+        };
+        let file = self.program.source_map.get(loc.file);
+        let path = match file.map(|f| f.path.as_str()) {
+            Some("") | None => "<input>",
+            Some(path) => path,
+        };
+        let snippet =
+            file.and_then(|f| f.source.lines().nth(loc.line.saturating_sub(1) as usize));
+        let prefix = format!(
+            "Runtime error occurred:\n{}",
+            compiler_ir::format_diagnostic_frame_prefix(
+                "Error",
+                path,
+                loc.line,
+                loc.column,
+                loc.end_offset.saturating_sub(loc.offset),
+                snippet,
+            )
+        );
+        (
+            Box::leak(prefix.into_boxed_str()),
+            Box::leak(format!("{}\n", compiler_ir::FRAME_SUFFIX).into_boxed_str()),
+        )
+    }
+
+    /// The five arguments `jit_panic` takes: the message symbol plus
+    /// the frame halves as (pointer, length) pairs.
+    fn frame_args(&mut self, at: &ExprRef, sym_v: Value) -> Vec<Value> {
+        let (prefix, suffix) = self.frame_halves(at);
+        let pre_ptr = self.builder.ins().iconst(types::I64, prefix.as_ptr() as i64);
+        let pre_len = self.builder.ins().iconst(types::I64, prefix.len() as i64);
+        let suf_ptr = self.builder.ins().iconst(types::I64, suffix.as_ptr() as i64);
+        let suf_len = self.builder.ins().iconst(types::I64, suffix.len() as i64);
+        vec![sym_v, pre_ptr, pre_len, suf_ptr, suf_len]
+    }
+
+    /// Emit a call that writes a fully-known diagnostic and exits.
+    /// Used by the RUNTIME-TRAP guards, whose messages are constants.
+    fn panic_with_text(&mut self, at: &ExprRef, message: &str) -> Result<(), String> {
+        let (prefix, suffix) = self.frame_halves(at);
+        let text: &'static str =
+            Box::leak(format!("{prefix}panic: {message}{suffix}").into_boxed_str());
+        let ptr = self.builder.ins().iconst(types::I64, text.as_ptr() as i64);
+        let len = self.builder.ins().iconst(types::I64, text.len() as i64);
+        self.call_helper(HelperKind::PanicText, &[ptr, len])?;
+        Ok(())
+    }
+
     fn gen_operators(&mut self, expr: Expr) -> Result<Option<Value>, String> {
         match expr {
             Expr::Binary(op, lhs_ref, rhs_ref) => {
@@ -889,7 +948,10 @@ impl<'a, 'b> State<'a, 'b> {
                     let cont_blk = self.builder.create_block();
                     self.brif(ok, cont_blk, fail_blk);
                     self.switch_to(fail_blk);
-                    self.call_helper(HelperKind::PanicU64Underflow, &[])?;
+                    self.panic_with_text(
+                        &lhs_ref,
+                        "u64 subtraction underflowed (left operand is smaller than the right)",
+                    )?;
                     self.builder.ins().trap(TrapCode::user(1).expect("non-zero"));
                     self.switch_to(cont_blk);
                 }
@@ -904,7 +966,7 @@ impl<'a, 'b> State<'a, 'b> {
                     let cont_blk = self.builder.create_block();
                     self.brif(ok, cont_blk, fail_blk);
                     self.switch_to(fail_blk);
-                    self.call_helper(HelperKind::PanicDivByZero, &[])?;
+                    self.panic_with_text(&lhs_ref, "integer division by zero")?;
                     self.builder.ins().trap(TrapCode::user(1).expect("non-zero"));
                     self.switch_to(cont_blk);
                 }
@@ -921,7 +983,10 @@ impl<'a, 'b> State<'a, 'b> {
                     let fail_blk = self.builder.create_block();
                     self.brif(is_min, fail_blk, cont_blk);
                     self.switch_to(fail_blk);
-                    self.call_helper(HelperKind::PanicDivOverflow, &[])?;
+                    self.panic_with_text(
+                        &lhs_ref,
+                        "integer division overflowed (most negative value divided by -1)",
+                    )?;
                     self.builder.ins().trap(TrapCode::user(1).expect("non-zero"));
                     self.switch_to(cont_blk);
                 }
@@ -1155,7 +1220,13 @@ impl<'a, 'b> State<'a, 'b> {
                         };
                         let sym_u64 = sym.to_usize() as u64;
                         let sym_v = self.builder.ins().iconst(types::I64, sym_u64 as i64);
-                        self.call_helper(HelperKind::Panic, &[sym_v])?;
+                        // DEBUG-OBS D3: the message is an interned
+                        // symbol the codegen cannot resolve (it has no
+                        // interner), so the helper still does that —
+                        // but the frame around it is rendered here,
+                        // where the position is known.
+                        let args = self.frame_args(expr_ref, sym_v);
+                        self.call_helper(HelperKind::Panic, &args)?;
                         // The helper exits the process, but cranelift can't
                         // know that. Emit a trap to satisfy the verifier:
                         // every basic block must end in a terminator. The
@@ -1198,7 +1269,8 @@ impl<'a, 'b> State<'a, 'b> {
                         self.switch_to(fail_blk);
                         let sym_u64 = msg_sym.to_usize() as u64;
                         let sym_v = self.builder.ins().iconst(types::I64, sym_u64 as i64);
-                        self.call_helper(HelperKind::Panic, &[sym_v])?;
+                        let call_args = self.frame_args(expr_ref, sym_v);
+                        self.call_helper(HelperKind::Panic, &call_args)?;
                         self.builder.ins().trap(TrapCode::user(1).expect("non-zero"));
                         // Mark fail_blk as terminated; we do NOT propagate
                         // that to the surrounding state because control

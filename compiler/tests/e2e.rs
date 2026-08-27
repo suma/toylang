@@ -179,12 +179,23 @@ fn panic_prints_message_and_exits_one() {
     "#;
     let out = compile_and_capture(src, "panic_basic");
     assert_eq!(out.status.code(), Some(1), "panic should exit with status 1");
+    // DEBUG-OBS D3: panics go to **stderr**, framed with their
+    // position, the same as every other engine. They used to go
+    // through libc `puts` — that is, onto stdout, in the middle of the
+    // program's own output (実測 9).
+    let stderr = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // Compiler routes panic through libc `puts`, which writes to stdout
-    // (the interpreter writes to stderr — documented divergence).
     assert!(
-        stdout.contains("panic: kaboom"),
-        "panic output should contain the message; got stdout={stdout:?}"
+        stderr.contains("panic: kaboom"),
+        "panic output should contain the message; got stderr={stderr:?}"
+    );
+    assert!(
+        stderr.contains("Error at"),
+        "a panic should say where it happened; got stderr={stderr:?}"
+    );
+    assert!(
+        stdout.is_empty(),
+        "a diagnostic must not land on the program's stdout; got {stdout:?}"
     );
 }
 
@@ -225,10 +236,10 @@ fn assert_fires_on_false() {
     "#;
     let out = compile_and_capture(src, "assert_fail");
     assert_eq!(out.status.code(), Some(1));
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stdout.contains("panic: divide: divisor must be non-zero"),
-        "failed assert should print the message; got stdout={stdout:?}"
+        stderr.contains("panic: divide: divisor must be non-zero"),
+        "failed assert should print the message; got stderr={stderr:?}"
     );
 }
 
@@ -573,10 +584,11 @@ fn dbc_requires_violation_panics() {
     "#;
     let out = compile_and_capture(src, "dbc_requires_fail");
     assert_eq!(out.status.code(), Some(1));
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    // DEBUG-OBS D3: on stderr, framed with the clause's position.
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stdout.contains("requires violation"),
-        "expected 'requires violation' in stdout, got: {stdout:?}"
+        stderr.contains("requires violation"),
+        "expected 'requires violation' in stderr, got: {stderr:?}"
     );
 }
 
@@ -603,10 +615,11 @@ fn dbc_ensures_violation_panics() {
     "#;
     let out = compile_and_capture(src, "dbc_ensures_fail");
     assert_eq!(out.status.code(), Some(1));
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    // DEBUG-OBS D3: on stderr, framed with the clause's position.
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stdout.contains("ensures violation"),
-        "expected 'ensures violation' in stdout, got: {stdout:?}"
+        stderr.contains("ensures violation"),
+        "expected 'ensures violation' in stderr, got: {stderr:?}"
     );
 }
 

@@ -141,8 +141,10 @@ impl<'a> FunctionLower<'a> {
         // sees a real terminator and the runtime gets a clear message
         // if exhaustiveness ever drifts.
         if !self.is_unreachable() {
+            let site = self.current_site();
             self.terminate(Terminator::Panic {
                 message: self.contract_msgs.requires_violation,
+                site,
             });
         }
         self.switch_to(merge);

@@ -1121,8 +1121,10 @@ impl<'a> FunctionLower<'a> {
         // treatment as scalar `lower_match`: panic so the runtime
         // gets a clear signal if the type-checker missed a case.
         if !self.is_unreachable() {
+            let site = self.current_site();
             self.terminate(Terminator::Panic {
                 message: self.contract_msgs.requires_violation,
+                site,
             });
         }
         self.switch_to(merge);

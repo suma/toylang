@@ -109,6 +109,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | どのファイルの位置か (DEBUG-OBS D2) | `frontend/src/source_map.rs` (`FileId` / `SourceMap`)。map は `File.source_map`、モジュールの位置の付け替えは `module_integration.rs::integrate` |
 | panic の位置・backtrace (P6-1, D1) | `interpreter/src/error.rs` (`CallFrame`)、frame を積むのは `evaluation/call.rs` の `call_method` / `call_associated_method` / 閉包 2 箇所と `evaluate_function_call`、描画は `lib.rs::render_backtrace` (折り畳み + 深さ上限) |
 | バックエンド間の診断比較 (DEBUG-OBS D0) | `compiler/tests/consistency/diagnostics.rs` + `harness.rs::diagnostic_lanes` |
+| 実行時診断の位置 (DEBUG-OBS D3) | `compiler_ir` の `Site` / `SiteId` / `Module::intern_site` / `render_stderr_text`、書式は `format_diagnostic_frame` (interpreter の `ErrorFormatter` も呼ぶ)。site を付けるのは `compiler_lower` の `current_site` / `site_of`、AOT の blob は `codegen/mod.rs::declare_panic_string`、書き出しは `toylang_rt::toy_panic_at` |
 | 契約違反時の値 (P6-2) | `evaluation/call.rs::capture_contract_bindings` |
 | 型ホール `val x: _` (P7) | `parser/stmt.rs::parse_var_def` (受理), `parser/types.rs` (他位置で拒否), `type_checker/error_helpers.rs::report_type_hole` |
 | 型のソース表記 | `frontend/src/type_decl.rs::TypeDecl::source_name` (**散文用の `type_name_for_error` とは別物** — 貼り戻せる表記を返す) |

@@ -40,7 +40,13 @@ pub enum VmResult {
     /// Normal termination with an exit code.
     ExitCode(i64),
     /// Divergence (panic, assert failure, or unreachable hit).
-    Diverged { message: String },
+    ///
+    /// `site` is where it happened (DEBUG-OBS D3), when the lowering
+    /// pass knew. Callers on the run-time path render it through
+    /// `Module::render_diagnostic`; the compile-time fold keeps the
+    /// bare message, since a `const` initialiser's failure is reported
+    /// as a compile error with its own position.
+    Diverged { message: String, site: Option<compiler_ir::SiteId> },
 }
 
 /// VM execution engine.
@@ -118,6 +124,7 @@ impl<'a> Vm<'a> {
         if main_id.0 as usize >= self.module.functions.len() {
             return VmResult::Diverged {
                 message: "no main function".to_string(),
+                site: None,
             };
         }
         self.call_function(main_id, Vec::new(), None, Vec::new());
@@ -138,6 +145,7 @@ impl<'a> Vm<'a> {
             // would otherwise panic.
             let Some(block) = func.blocks.get(block_id.0 as usize) else {
                 return VmResult::Diverged {
+                    site: None,
                     message: format!(
                         "ir_vm: cannot execute body-less function `{}` (extern?)",
                         func.export_name
@@ -200,7 +208,7 @@ impl<'a> Vm<'a> {
                     }
                     Terminator::Jump(target) => {
                         if let Some(message) = self.charge_back_edge(target) {
-                            return VmResult::Diverged { message };
+                            return VmResult::Diverged { message, site: None };
                         }
                         {
                             let frame = self.frames.last_mut().expect("frame vanished");
@@ -213,7 +221,7 @@ impl<'a> Vm<'a> {
                         let taken = unsafe { cond_slot.bool };
                         let target = if taken { then_blk } else { else_blk };
                         if let Some(message) = self.charge_back_edge(target) {
-                            return VmResult::Diverged { message };
+                            return VmResult::Diverged { message, site: None };
                         }
                         {
                             let frame = self.frames.last_mut().expect("frame vanished");
@@ -221,18 +229,18 @@ impl<'a> Vm<'a> {
                             frame.pc = 0;
                         }
                     }
-                    Terminator::Panic { message } => {
+                    Terminator::Panic { message, site } => {
                         let text = self
                             .interner
                             .and_then(|i| i.resolve(message))
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| format!("panic #{}", message.to_usize()));
-                        return VmResult::Diverged { message: text };
+                        return VmResult::Diverged { message: text, site };
                     }
                     // ALLOC-CONTRACT-SUGAR: the numbers, not a fixed
                     // string. Same wording the tree-walker and the
                     // compiled binary produce.
-                    Terminator::PanicAllocBudget { stat, entry, current, limit } => {
+                    Terminator::PanicAllocBudget { stat, entry, current, limit, site } => {
                         let entry = unsafe { self.read_value(entry).u64 };
                         let current = unsafe { self.read_value(current).u64 };
                         let limit = unsafe { self.read_value(limit).u64 };
@@ -240,11 +248,13 @@ impl<'a> Vm<'a> {
                             message: compiler_ir::format_alloc_budget_violation(
                                 stat, entry, current, limit,
                             ),
+                            site,
                         };
                     }
                     Terminator::Unreachable => {
                         return VmResult::Diverged {
                             message: "unreachable".to_string(),
+                            site: None,
                         };
                     }
                 }
@@ -252,6 +262,7 @@ impl<'a> Vm<'a> {
                 // Block ended without terminator — shouldn't happen for valid IR.
                 return VmResult::Diverged {
                     message: "unterminated block".to_string(),
+                    site: None,
                 };
             }
         }
@@ -499,7 +510,17 @@ pub fn run_module_capturing(
                 };
                 Ok((code, s, vm.main_return_slots))
             }
-            VmResult::Diverged { message } => Err(message),
+            // DEBUG-OBS D3: the run-time path renders the position
+            // into the diagnostic here, so the IR VM no longer depends
+            // on a tree-walker replay to say where a panic happened.
+            //
+            // The `panic: ` prefix goes on here rather than at the
+            // terminator because the compile-time fold shares that
+            // code and reports a failed `const` initialiser in its own
+            // words (`[E0017] ... evaluating it failed: <message>`).
+            VmResult::Diverged { message, site } => {
+                Err(module.render_diagnostic(site, &format!("panic: {message}")))
+            }
         }
     }
 }
@@ -527,6 +548,8 @@ pub fn run_function(
     vm.call_function(func_id, args, None, Vec::new());
     match vm.run_loop() {
         VmResult::ExitCode(_) => Ok(vm.main_return_slots),
-        VmResult::Diverged { message } => Err(message),
+        // The compile-time fold reports its own position (the `const`
+        // initialiser), so the bare message is what it wants.
+        VmResult::Diverged { message, .. } => Err(message),
     }
 }

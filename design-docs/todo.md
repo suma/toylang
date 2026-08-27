@@ -12,6 +12,21 @@
 
 ### 2026-08-27
 
+- **DEBUG-OBS D3: IR の `SiteId`** — 4 実行系すべてが panic の位置を
+  言うようになった (D0 のレーンが**位置まで**一致)。`compiler_ir` に
+  `Site` / `SiteId` / `Module::files` / `sites`。決め手は
+  **サイト表ではなく描画済みテキストを `.rodata` に置いた**こと —
+  message は interned literal、位置はコンパイル時に確定なので
+  **診断全体が静的**で、実行時に組み立てるものが無い。実行時に数値が
+  決まる `PanicAllocBudget` だけフレームを prefix / suffix の 2 ブロブに
+  割った (合成が崩れないことは `compiler_ir` の unit test が pin)。
+  **`puts` をやめて stderr に**したので panic がプログラムの stdout を
+  汚さなくなった (実測 9 の解消)。フレームの描画は
+  `compiler_ir::format_diagnostic_frame` の 1 箇所で、interpreter の
+  `ErrorFormatter` もこれを呼ぶ。二項演算の trap は tree-walker に
+  合わせて**左オペランドの位置**。**残り**: `HeapAlloc` の `SiteId`
+  移行 (`--profile=mem` のファイル名) は別経路なので分けた。
+
 - **DEBUG-OBS D2: `FileId` と `SourceMap`** — 位置が「どのファイルか」を
   持つようになった (`SourceLocation.file`)。`SourceMap` は `File` が 1 つ
   持ち、パーサが entry スロットにテキストを入れ (パスはドライバが後で
@@ -1096,16 +1111,19 @@
 > (現状調査 9 件 + 論点 6 + Phase D0〜D6)。**D0 は landing 済み** —
 > 目標文言はそこに固定され、現状の食い違いは
 > `compiler/tests/consistency/diagnostics.rs` に pin されている。
-> **D1 / D2 も landing 済み** — tree-walker の backtrace の穴 (最内フレーム /
-> 行番号 / `main` / 折り畳み / 深さ上限) は塞がり、位置は
-> どのファイルのものかを持つようになった。
+> **D1 / D2 / D3 も landing 済み** — tree-walker の backtrace の穴は塞がり、
+> 位置はどのファイルのものかを持ち、4 実行系すべてが panic の位置を
+> stderr に同じ書式で出す。残る差は backtrace (D4) と、値を持つ 2 つの文言。
 
-- **DEBUG-OBS D3: IR の `SiteId`** ★★ — `Terminator::Panic` が位置を持たないため、
-  AOT / JIT / IR VM は `panic: msg` しか出せない。**しかも `puts` 経由なので
-  stdout に出る** (D0 の実測 9) — 位置と一緒にストリームも直す。interpreter の豊かな診断は
-  「IR VM が diverge → tree-walker が再実行」の副産物 (プログラムが 2 回走る)。
-  `HeapAlloc { site: u64 }` を `SiteId` に寄せると `--profile=mem` の
-  リーク報告にファイル名が付く (MEMORY_PROFILING M2 の積み残し)。
+- **DEBUG-OBS D3 の残: `HeapAlloc` の `SiteId` 移行** ★ — `--profile=mem` の
+  リーク報告にファイル名が付く (MEMORY_PROFILING M2 の積み残し)。診断とは
+  別経路で、コンパイル済みランタイムが自前でレポートを書くため
+  ファイル名表の埋め込み + 起動時登録と、M4 の JSON スキーマ変更が要る。
+- **DEBUG-OBS: IR VM diverge 時の tree-walker 再実行** ★ — VM は D3 で
+  自分の診断を出せるようになったが、interpreter は依然 replay する
+  (tree-walker の方が backtrace と契約の実値を持つため)。プログラムが
+  2 回走るので `io::random` / `io::read_file` は 2 回目を踏む (実測 2)。
+  落とすのは VM が backtrace を出せる D4 と一緒に。
 - **DEBUG-OBS D4: shadow stack (`-g`)** ★ — AOT / JIT の backtrace。
   位置は静的なので release でも残せるが、backtrace だけがランタイムコストを持つ。
 - **DEBUG-OBS D6: 再帰深度 / stdlib の境界** ★ — 無限再帰は 60 秒無出力で

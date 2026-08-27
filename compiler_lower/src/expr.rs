@@ -1277,7 +1277,55 @@ impl<'a> FunctionLower<'a> {
 
     // -- expression lowering -------------------------------------------------------
 
+    /// Lower one expression, remembering which it is for DEBUG-OBS D3.
+    ///
+    /// The site of a diverging terminator is "wherever we are now", and
+    /// this is the only layer that knows. Restoring the previous value
+    /// on the way out is what makes it a stack rather than a
+    /// last-writer-wins field: without it, `a - b`'s underflow guard
+    /// would be attributed to `b`.
     pub(super) fn lower_expr(&mut self, expr_ref: &ExprRef) -> Result<Option<ValueId>, String> {
+        let previous = self.current_expr.replace(*expr_ref);
+        let result = self.lower_expr_here(expr_ref);
+        self.current_expr = previous;
+        result
+    }
+
+    /// Source position of the expression being lowered, recorded in the
+    /// module's site table (DEBUG-OBS D3).
+    ///
+    /// The snippet is copied out of the program's `SourceMap` now,
+    /// because a compiled binary cannot go looking for the file later
+    /// — see `compiler_ir::Site`.
+    pub(super) fn current_site(&mut self) -> Option<crate::ir::SiteId> {
+        let expr_ref = self.current_expr?;
+        self.site_of(&expr_ref)
+    }
+
+    /// As [`Self::current_site`], for a named expression.
+    pub(super) fn site_of(&mut self, expr_ref: &ExprRef) -> Option<crate::ir::SiteId> {
+        let loc = *self.program.location_pool.get_expr_location(expr_ref)?;
+        let file = self.program.source_map.get(loc.file);
+        let path = match file.map(|f| f.path.as_str()) {
+            // The driver names the entry file after type-checking, so
+            // an empty name means nobody did — say so rather than
+            // inventing one.
+            Some("") | None => "<input>",
+            Some(path) => path,
+        };
+        let snippet = file
+            .and_then(|f| f.source.lines().nth(loc.line.saturating_sub(1) as usize))
+            .map(str::to_string);
+        Some(self.module.intern_site(
+            path,
+            loc.line,
+            loc.column,
+            loc.end_offset.saturating_sub(loc.offset),
+            snippet.as_deref(),
+        ))
+    }
+
+    fn lower_expr_here(&mut self, expr_ref: &ExprRef) -> Result<Option<ValueId>, String> {
         let expr = self
             .program
             .expression
@@ -2492,7 +2540,8 @@ impl<'a> FunctionLower<'a> {
             BuiltinFunction::Panic => {
                 expect_args(args, 1, "panic expects 1 argument")?;
                 let msg_sym = self.expect_string_literal(&args[0], "panic")?;
-                self.terminate(Terminator::Panic { message: msg_sym });
+                let site = self.current_site();
+                self.terminate(Terminator::Panic { message: msg_sym, site });
                 Ok(None)
             }
             BuiltinFunction::Assert => {
@@ -2510,7 +2559,8 @@ impl<'a> FunctionLower<'a> {
                 });
                 // Failure block: panic with the assertion message.
                 self.switch_to(fail);
-                self.terminate(Terminator::Panic { message: msg_sym });
+                let site = self.current_site();
+                self.terminate(Terminator::Panic { message: msg_sym, site });
                 // Continue lowering after the assert in the success block.
                 self.switch_to(pass);
                 Ok(None)

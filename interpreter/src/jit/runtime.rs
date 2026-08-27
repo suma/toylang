@@ -338,7 +338,26 @@ extern "C" fn jit_string_literal(sym_id: u64) -> u64 {
     toylang_rt::toy_str_alloc(bytes.as_bytes()) as u64
 }
 
-extern "C" fn jit_panic(sym_id: u64) {
+/// Write an already-rendered diagnostic to stderr and exit
+/// (DEBUG-OBS D3).
+///
+/// The text is a `&'static str` the codegen leaked when it compiled
+/// the trap site: its position was known then, and the message is a
+/// constant, so nothing is left to format here. The pointer is valid
+/// for the life of the process, which is exactly as long as the
+/// compiled code that holds it.
+///
+/// # Safety
+/// `ptr` / `len` must describe a live UTF-8 slice.
+extern "C" fn jit_panic_text(ptr: u64, len: u64) {
+    let text = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(ptr as *const u8, len as usize))
+    };
+    eprint!("{text}");
+    std::process::exit(1);
+}
+
+extern "C" fn jit_panic(sym_id: u64, pre_ptr: u64, pre_len: u64, suf_ptr: u64, suf_len: u64) {
     let resolved = JIT_STRING_INTERNER.with(|slot| {
         let p = *slot.borrow();
         p.and_then(|raw| {
@@ -356,39 +375,34 @@ extern "C" fn jit_panic(sym_id: u64) {
         })
     });
     let msg = resolved.unwrap_or_else(|| "<panic message unavailable>".to_string());
-    eprintln!("Runtime error occurred:");
-    eprintln!("panic: {}", msg);
+    // DEBUG-OBS D3: the message is only known here (it is an interned
+    // symbol), but the frame around it was rendered at compile time —
+    // so the two static halves come in as leaked slices and this
+    // writes prefix, message, suffix.
+    let borrow = |ptr: u64, len: u64| -> &'static str {
+        if ptr == 0 {
+            return "";
+        }
+        unsafe {
+            core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+                ptr as *const u8,
+                len as usize,
+            ))
+        }
+    };
+    eprint!(
+        "{}panic: {}{}",
+        borrow(pre_ptr, pre_len),
+        msg,
+        borrow(suf_ptr, suf_len)
+    );
     std::process::exit(1);
 }
 
 /// LLM-LOOP P6-3: abort on unsigned subtraction that would wrap.
 ///
-/// A fixed message rather than an interned symbol: the text is the
-/// compiler's, not the program's, so there is nothing in the interner
-/// to point at.
-extern "C" fn jit_panic_u64_underflow() {
-    eprintln!("Runtime error occurred:");
-    eprintln!("panic: u64 subtraction underflowed (left operand is smaller than the right)");
-    std::process::exit(1);
-}
 
-/// RUNTIME-TRAP: abort on integer division / remainder by zero.
-/// Same fixed-message shape as the underflow helper above, and the
-/// same text `compiler_lower`'s guard interns for the other three
-/// backends.
-extern "C" fn jit_panic_div_by_zero() {
-    eprintln!("Runtime error occurred:");
-    eprintln!("panic: integer division by zero");
-    std::process::exit(1);
-}
 
-/// RUNTIME-TRAP: abort on signed `MIN / -1`, whose result is not
-/// representable.
-extern "C" fn jit_panic_div_overflow() {
-    eprintln!("Runtime error occurred:");
-    eprintln!("panic: integer division overflowed (most negative value divided by -1)");
-    std::process::exit(1);
-}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum HelperKind {
@@ -417,9 +431,7 @@ pub(crate) enum HelperKind {
     PrintU32,
     PrintlnU32,
     Panic,
-    PanicU64Underflow,
-    PanicDivByZero,
-    PanicDivOverflow,
+    PanicText,
     HeapAlloc,
     HeapFree,
     HeapRealloc,
@@ -508,9 +520,7 @@ impl HelperKind {
             HelperKind::PrintU32 => "toy_print_u32",
             HelperKind::PrintlnU32 => "toy_println_u32",
             HelperKind::Panic => "jit_panic",
-            HelperKind::PanicU64Underflow => "jit_panic_u64_underflow",
-            HelperKind::PanicDivByZero => "jit_panic_div_by_zero",
-            HelperKind::PanicDivOverflow => "jit_panic_div_overflow",
+            HelperKind::PanicText => "jit_panic_text",
             HelperKind::HeapAlloc => "jit_heap_alloc",
             HelperKind::HeapFree => "jit_heap_free",
             HelperKind::HeapRealloc => "jit_heap_realloc",
@@ -579,9 +589,7 @@ impl HelperKind {
             HelperKind::PrintU32 => toylang_rt::toy_print_u32 as *const u8,
             HelperKind::PrintlnU32 => toylang_rt::toy_println_u32 as *const u8,
             HelperKind::Panic => jit_panic as *const u8,
-            HelperKind::PanicU64Underflow => jit_panic_u64_underflow as *const u8,
-            HelperKind::PanicDivByZero => jit_panic_div_by_zero as *const u8,
-            HelperKind::PanicDivOverflow => jit_panic_div_overflow as *const u8,
+            HelperKind::PanicText => jit_panic_text as *const u8,
             HelperKind::HeapAlloc => jit_heap_alloc as *const u8,
             HelperKind::HeapFree => jit_heap_free as *const u8,
             HelperKind::HeapRealloc => jit_heap_realloc as *const u8,
@@ -640,10 +648,10 @@ impl HelperKind {
             HelperKind::PrintU16 | HelperKind::PrintlnU16 => (vec![types::I16], None),
             HelperKind::PrintI32 | HelperKind::PrintlnI32 => (vec![types::I32], None),
             HelperKind::PrintU32 | HelperKind::PrintlnU32 => (vec![types::I32], None),
-            HelperKind::Panic => (vec![types::I64], None),
-            HelperKind::PanicU64Underflow
-            | HelperKind::PanicDivByZero
-            | HelperKind::PanicDivOverflow => (vec![], None),
+            // (message symbol, frame prefix ptr/len, frame suffix ptr/len)
+            HelperKind::Panic => (vec![types::I64; 5], None),
+            // (text ptr, len)
+            HelperKind::PanicText => (vec![types::I64, types::I64], None),
             HelperKind::HeapAlloc => (vec![types::I64], Some(types::I64)),
             HelperKind::HeapFree => (vec![types::I64], None),
             HelperKind::HeapRealloc => (vec![types::I64, types::I64], Some(types::I64)),
@@ -698,7 +706,7 @@ impl HelperKind {
         }
     }
 
-    pub(crate) const ALL: [HelperKind; 66] = [
+    pub(crate) const ALL: [HelperKind; 64] = [
         HelperKind::PrintI64,
         HelperKind::PrintlnI64,
         HelperKind::PrintU64,
@@ -720,9 +728,7 @@ impl HelperKind {
         HelperKind::PrintU32,
         HelperKind::PrintlnU32,
         HelperKind::Panic,
-        HelperKind::PanicU64Underflow,
-        HelperKind::PanicDivByZero,
-        HelperKind::PanicDivOverflow,
+        HelperKind::PanicText,
         HelperKind::HeapAlloc,
         HelperKind::HeapFree,
         HelperKind::HeapRealloc,

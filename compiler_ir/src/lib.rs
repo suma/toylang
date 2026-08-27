@@ -133,6 +133,15 @@ pub struct Module {
     /// Populated after method declarations are minted, so every
     /// `FuncId` referenced here exists in `module.functions`.
     pub vtables: HashMap<(DefaultSymbol, DefaultSymbol), Vec<FuncId>>,
+    /// DEBUG-OBS D3: the files this module was lowered from, in the
+    /// order sites first referenced them. `Site::file` indexes here.
+    ///
+    /// A copy of the driver's `SourceMap` paths would be simpler, but
+    /// most of those files contribute no failing site at all; the IR
+    /// only carries what a diagnostic could actually name.
+    pub files: Vec<String>,
+    /// Every position a diverging terminator can report.
+    pub sites: Vec<Site>,
 }
 
 /// One struct's full shape — fields keep their declared order
@@ -174,6 +183,120 @@ pub struct EnumVariant {
 impl Module {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Record a position and return its id, reusing an identical one
+    /// (DEBUG-OBS D3). A loop body lowered once still panics from one
+    /// place; two sites that agree on file, line, column and width are
+    /// the same place.
+    pub fn intern_site(
+        &mut self,
+        file: &str,
+        line: u32,
+        column: u32,
+        width: u32,
+        snippet: Option<&str>,
+    ) -> SiteId {
+        let file_idx = match self.files.iter().position(|f| f == file) {
+            Some(i) => i as u32,
+            None => {
+                self.files.push(file.to_string());
+                self.files.len() as u32 - 1
+            }
+        };
+        let site = Site {
+            file: file_idx,
+            line,
+            column,
+            width,
+            snippet: snippet.map(str::to_string),
+        };
+        match self.sites.iter().position(|s| *s == site) {
+            Some(i) => SiteId(i as u32),
+            None => {
+                self.sites.push(site);
+                SiteId(self.sites.len() as u32 - 1)
+            }
+        }
+    }
+
+    pub fn site(&self, id: SiteId) -> Option<&Site> {
+        self.sites.get(id.0 as usize)
+    }
+
+    /// The diagnostic body for a diverging site: the framed excerpt
+    /// when the position is known, the bare message when it is not.
+    ///
+    /// No header and no trailing newline — the same shape the
+    /// tree-walker's `execute_program_tree_walking` hands back, so the
+    /// two can be compared directly and printed by the same code.
+    pub fn render_diagnostic(&self, site: Option<SiteId>, message: &str) -> String {
+        match site.and_then(|id| self.site(id)) {
+            Some(site) => {
+                let file = self
+                    .files
+                    .get(site.file as usize)
+                    .map(String::as_str)
+                    .unwrap_or("<unknown>");
+                format_diagnostic_frame(
+                    "Error",
+                    file,
+                    site.line,
+                    site.column,
+                    site.width,
+                    site.snippet.as_deref(),
+                    message,
+                )
+            }
+            None => message.to_string(),
+        }
+    }
+
+    /// Exactly the bytes a failing run writes to stderr, header
+    /// included. Used by the compiled backends, which have no
+    /// formatter to hand and lay this down as a `.rodata` blob.
+    pub fn render_stderr_text(&self, site: Option<SiteId>, message: &str) -> String {
+        format!(
+            "{}{message}{}",
+            self.render_stderr_prefix(site),
+            self.render_stderr_suffix(site)
+        )
+    }
+
+    /// The static head of a stderr diagnostic, up to where the message
+    /// starts (see [`format_diagnostic_frame_prefix`]).
+    pub fn render_stderr_prefix(&self, site: Option<SiteId>) -> String {
+        let header = "Runtime error occurred:\n";
+        match site.and_then(|id| self.site(id)) {
+            Some(site) => {
+                let file = self
+                    .files
+                    .get(site.file as usize)
+                    .map(String::as_str)
+                    .unwrap_or("<unknown>");
+                format!(
+                    "{header}{}",
+                    format_diagnostic_frame_prefix(
+                        "Error",
+                        file,
+                        site.line,
+                        site.column,
+                        site.width,
+                        site.snippet.as_deref(),
+                    )
+                )
+            }
+            None => header.to_string(),
+        }
+    }
+
+    /// The static tail: closes the frame when there is one, and ends
+    /// the line either way.
+    pub fn render_stderr_suffix(&self, site: Option<SiteId>) -> String {
+        match site.and_then(|id| self.site(id)) {
+            Some(_) => format!("{FRAME_SUFFIX}\n"),
+            None => "\n".to_string(),
+        }
     }
 
     pub fn declare_function(
@@ -663,6 +786,104 @@ pub fn format_alloc_budget_violation(stat: u64, entry: u64, current: u64, limit:
         _ => format!("allocation budget exceeded: {used} over {budget}"),
     }
 }
+
+/// One source position a diverging site can name (DEBUG-OBS D3).
+///
+/// The interesting field is `snippet`. A compiled binary has no
+/// business reading the source at run time — the file may have moved,
+/// changed, or never existed on that machine — so the line it needs to
+/// quote travels with it. Only sites that can actually fail carry one,
+/// which is a bounded set: panics, trap guards, budget checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Site {
+    /// Index into [`Module::files`].
+    pub file: u32,
+    pub line: u32,
+    pub column: u32,
+    /// Width of the caret, in bytes of the source line.
+    pub width: u32,
+    /// The source line, when the lowering pass had it.
+    pub snippet: Option<String>,
+}
+
+/// Index into [`Module::sites`].
+///
+/// `Option<SiteId>` rather than a sentinel: lowering synthesizes plenty
+/// of code (drop glue, desugarings) that corresponds to no line anyone
+/// wrote, and pretending otherwise would put a confident wrong position
+/// in a diagnostic — which `DEBUG_OBSERVABILITY.md` 実測 5 already
+/// showed is worse than none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SiteId(pub u32);
+
+/// The `   ^^^^` marker: `column` (1-based) spaces of padding followed
+/// by `width` carets, clamped so it never runs past the line.
+///
+/// Shared so a caret drawn by the tree-walker and one drawn by a
+/// compiled binary land on the same column.
+pub fn caret_for(source_line: &str, column: u32, width: u32) -> String {
+    if column == 0 {
+        return "^".to_string();
+    }
+    let line_len = source_line.chars().count();
+    let start = (column as usize).saturating_sub(1).min(line_len);
+    let width = (width.max(1) as usize).min(line_len.saturating_sub(start)).max(1);
+    format!("{:pad$}{}", "", "^".repeat(width), pad = start)
+}
+
+/// The framed diagnostic every engine prints (DEBUG-OBS D0's target
+/// wording):
+///
+/// ```text
+/// Error at file.t:3:9:
+///    |
+///  3 |     panic("boom")
+///    |     ^^^^^ panic: boom
+///    |
+/// ```
+///
+/// One function so the four engines cannot drift. `source_line` is
+/// `None` when the text is unavailable, in which case the excerpt says
+/// so rather than quoting a line that may be from a different file.
+pub fn format_diagnostic_frame(
+    label: &str,
+    file: &str,
+    line: u32,
+    column: u32,
+    width: u32,
+    source_line: Option<&str>,
+    message: &str,
+) -> String {
+    format!(
+        "{}{message}{FRAME_SUFFIX}",
+        format_diagnostic_frame_prefix(label, file, line, column, width, source_line),
+    )
+}
+
+/// Everything in the frame *before* the message, ending in the space
+/// that separates the caret from it.
+///
+/// Split out for the one diagnostic whose message is not known until
+/// run time — a violated allocation budget reports its readings — so a
+/// compiled binary can lay the two static halves in `.rodata` and
+/// write the computed middle between them.
+pub fn format_diagnostic_frame_prefix(
+    label: &str,
+    file: &str,
+    line: u32,
+    column: u32,
+    width: u32,
+    source_line: Option<&str>,
+) -> String {
+    let source_line = source_line.unwrap_or("<line not available>");
+    format!(
+        "{label} at {file}:{line}:{column}:\n   |\n{line:2} | {source_line}\n   | {} ",
+        caret_for(source_line, column, width),
+    )
+}
+
+/// Closes a frame: the trailing gutter line under the caret.
+pub const FRAME_SUFFIX: &str = "\n   |";
 
 pub const MEM_STAT_NAMES: [&str; 6] = [
     "alloc_count",
@@ -1627,7 +1848,7 @@ pub enum Terminator {
     /// segment, calls `puts` to print it, and `exit(1)` to terminate.
     /// `assert(cond, "msg")` is lowered to a `Branch` followed by a
     /// `Panic` block.
-    Panic { message: DefaultSymbol },
+    Panic { message: DefaultSymbol, site: Option<SiteId> },
     /// ALLOC-CONTRACT-SUGAR: diverge on a violated allocation budget,
     /// reporting the numbers rather than a fixed string.
     ///
@@ -1646,6 +1867,7 @@ pub enum Terminator {
         entry: ValueId,
         current: ValueId,
         limit: ValueId,
+        site: Option<SiteId>,
     },
     /// Generic divergence — not currently emitted by lowering, but kept
     /// as a fall-through for future codegen needs (e.g. the unreachable
@@ -2098,8 +2320,8 @@ impl fmt::Display for DisplayTerm<'_> {
             // because the IR doesn't carry an interner reference. The
             // codegen pass reaches into the program's interner anyway,
             // so this is mostly cosmetic.
-            Terminator::Panic { message } => write!(f, "panic #{}", message.to_usize()),
-            Terminator::PanicAllocBudget { stat, entry, current, limit } => write!(
+            Terminator::Panic { message, .. } => write!(f, "panic #{}", message.to_usize()),
+            Terminator::PanicAllocBudget { stat, entry, current, limit, .. } => write!(
                 f,
                 "panic_alloc_budget {} entry={entry} current={current} limit={limit}",
                 MEM_STAT_NAMES
@@ -2114,7 +2336,7 @@ impl fmt::Display for DisplayTerm<'_> {
 
 #[cfg(test)]
 mod allocator_binding_tests {
-    use super::AllocatorBinding;
+    use super::{caret_for, AllocatorBinding, Module};
     use string_interner::DefaultSymbol;
 
     #[test]
@@ -2156,5 +2378,52 @@ mod allocator_binding_tests {
             AllocatorBinding::Static(1),
         );
         assert_ne!(AllocatorBinding::Ambient, AllocatorBinding::Static(0));
+    }
+
+    // --- DEBUG-OBS D3: the site table and the shared renderer -------
+
+    #[test]
+    fn interning_the_same_position_twice_yields_one_site() {
+        let mut m = Module::new();
+        let a = m.intern_site("a.t", 3, 9, 5, Some("    panic(\"x\")"));
+        let b = m.intern_site("a.t", 3, 9, 5, Some("    panic(\"x\")"));
+        let c = m.intern_site("a.t", 4, 9, 5, Some("    panic(\"x\")"));
+        assert_eq!(a, b, "one position is one site");
+        assert_ne!(a, c);
+        assert_eq!(m.files.len(), 1, "one file, however many sites");
+        assert_eq!(m.sites.len(), 2);
+    }
+
+    #[test]
+    fn the_frame_halves_compose_into_the_whole_text() {
+        // The invariant the compiled backends depend on: a violated
+        // allocation budget writes prefix, then a message it only
+        // learns at run time, then suffix — and the result has to be
+        // byte-identical to what a static panic lays down in one blob.
+        let mut m = Module::new();
+        let site = Some(m.intern_site("a.t", 2, 5, 4, Some("    boom")));
+        let whole = m.render_stderr_text(site, "panic: gone wrong");
+        let assembled = format!(
+            "{}panic: gone wrong{}",
+            m.render_stderr_prefix(site),
+            m.render_stderr_suffix(site)
+        );
+        assert_eq!(whole, assembled);
+
+        // And with no position, both shapes are the bare message.
+        assert_eq!(
+            m.render_stderr_text(None, "panic: gone wrong"),
+            "Runtime error occurred:\npanic: gone wrong\n"
+        );
+    }
+
+    #[test]
+    fn a_caret_never_runs_past_its_line() {
+        assert_eq!(caret_for("ab", 1, 99), "^^");
+        assert_eq!(caret_for("abcd", 3, 2), "  ^^");
+        // A column past the end still draws one caret rather than
+        // nothing, so the reader gets a position either way.
+        assert_eq!(caret_for("ab", 9, 3), "  ^");
+        assert_eq!(caret_for("ab", 0, 3), "^");
     }
 }

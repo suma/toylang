@@ -240,12 +240,27 @@ pub(super) fn checked_program<'a>(
     parser: &'a mut frontend::ParserWithInterner,
     core_dir: Option<&std::path::Path>,
 ) -> Option<CheckedProgram<'a>> {
+    checked_program_named(source, parser, core_dir, "test.t")
+}
+
+/// [`checked_program`] with the file name spelled out.
+///
+/// DEBUG-OBS D3 made this matter: the entry file's name is baked into
+/// every compiled panic site, so a lane that type-checks as `test.t`
+/// and runs as `foo.t` reports two different files for one program —
+/// a disagreement invented by the harness rather than by the engines.
+pub(super) fn checked_program_named<'a>(
+    source: &str,
+    parser: &'a mut frontend::ParserWithInterner,
+    core_dir: Option<&std::path::Path>,
+    file_name: &str,
+) -> Option<CheckedProgram<'a>> {
     let mut program = parser.parse_program().ok()?;
     interpreter::check_typing_with_core_modules(
         &mut program,
         parser.get_string_interner(),
         Some(source),
-        Some("test.t"),
+        Some(file_name),
         core_dir,
     )
     .ok()?;
@@ -1036,7 +1051,7 @@ pub(super) fn diagnostic_lanes(source: &str, stem: &str) -> Vec<DiagnosticLane> 
 
     let core = core_modules_dir();
     let mut parser = frontend::ParserWithInterner::new(source);
-    let checked = checked_program(source, &mut parser, Some(core.as_path()))
+    let checked = checked_program_named(source, &mut parser, Some(core.as_path()), &file_name)
         .unwrap_or_else(|| panic!("type-check failed for the diagnostic lane program `{stem}`"));
 
     let tree_walker = match interpreter::execute_program_tree_walking(

@@ -44,7 +44,11 @@ fn unique_dir(stem: &str) -> PathBuf {
 
 /// Compile `source` to an object file in a fresh process.
 fn emit_object(dir: &Path, source: &str, name: &str, link_cache: Option<&Path>) -> Vec<u8> {
-    let src_path = dir.join(format!("{name}.t"));
+    // One source path for every call. DEBUG-OBS D3 embeds the file
+    // name in each panic site's `.rodata` diagnostic, so compiling
+    // `a.t` and `b.t` would differ in the bytes that name the file —
+    // which is correct, and not what this test is asking about.
+    let src_path = dir.join("prog.t");
     std::fs::write(&src_path, source).expect("write source");
     let out = dir.join(format!("{name}.o"));
     let mut cmd = Command::new(BIN);
@@ -68,7 +72,7 @@ fn emit_object(dir: &Path, source: &str, name: &str, link_cache: Option<&Path>) 
 
 /// Compile `source` to Cranelift IR text in a fresh process.
 fn emit_clif(dir: &Path, source: &str, name: &str) -> String {
-    let src_path = dir.join(format!("{name}.t"));
+    let src_path = dir.join("prog.t");
     std::fs::write(&src_path, source).expect("write source");
     let out = dir.join(format!("{name}.clif"));
     let status = Command::new(BIN)

@@ -1609,6 +1609,7 @@ impl<'a> FunctionLower<'a> {
             ensures_kinds: Vec::new(),
             result_sym: interner.get("result"),
             facts: Default::default(),
+            current_expr: None,
             bindings: HashMap::new(),
             loop_stack: Vec::new(),
             with_scope_depth: 0,
@@ -2272,7 +2273,10 @@ impl<'a> FunctionLower<'a> {
                 else_blk: fail,
             });
             self.switch_to(fail);
-            self.terminate(Terminator::Panic { message });
+            // The clause expression is the closest thing a contract
+            // violation has to a position: it is what evaluated false.
+            let site = self.site_of(clause);
+            self.terminate(Terminator::Panic { message, site });
             self.switch_to(pass);
         }
         Ok(())
@@ -2390,11 +2394,16 @@ impl<'a> FunctionLower<'a> {
         let fail = self.fresh_block();
         self.terminate(Terminator::Branch { cond: ok, then_blk: pass, else_blk: fail });
         self.switch_to(fail);
+        // The clause is the position, same as a plain contract
+        // violation — nothing is being lowered when this fires, so
+        // `current_site` would say nothing at all.
+        let site = self.site_of(clause);
         self.terminate(Terminator::PanicAllocBudget {
             stat: stat.code(),
             entry,
             current,
             limit,
+            site,
         });
         self.switch_to(pass);
         Ok(())

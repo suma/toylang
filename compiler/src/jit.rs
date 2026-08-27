@@ -181,11 +181,16 @@ pub fn compile_to_jit_main_with_options(
 
     let core_modules_dir =
         crate::resolve_core_modules_dir(options.core_modules_dir.clone());
+    // DEBUG-OBS D3: the input's name, not `None`. It is what every
+    // panic site in the compiled code will print, and a JIT run that
+    // says `<input>` while the AOT run of the same program names the
+    // file is a disagreement nobody meant to introduce.
+    let display_name = options.input.display().to_string();
     interpreter::check_typing_with_core_modules(
         &mut program,
         session.string_interner_mut(),
         Some(source),
-        None,
+        Some(&display_name),
         core_modules_dir.as_deref(),
     )
     .map_err(|errors| format!("type-check failed:\n  {}", errors.join("\n  ")))?;
@@ -384,6 +389,8 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
         "toy_panic_alloc_budget",
         toylang_rt::toy_panic_alloc_budget as *const u8,
     );
+    // DEBUG-OBS D3.
+    jit_builder.symbol("toy_panic_at", toylang_rt::toy_panic_at as *const u8);
     jit_builder.symbol("toy_prof_force_counting", toylang_rt::toy_prof_force_counting as *const u8);
     jit_builder.symbol("toy_record_allocator_layout", toylang_rt::toy_record_allocator_layout as *const u8);
     // RUNTIME-IO: stdlib I/O externs (core/std/io.t).

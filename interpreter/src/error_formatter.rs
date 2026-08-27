@@ -191,9 +191,6 @@ impl<'a> ErrorFormatter<'a> {
             "<line not available>"
         };
 
-        // Create line number display
-        let line_display = format!("{line_number:2}");
-
         // LLM-LOOP P2: the caret is derived from the location's span.
         // This used to guess -- it pulled the first single-quoted name
         // out of the message and searched the source line for it, so a
@@ -201,31 +198,20 @@ impl<'a> ErrorFormatter<'a> {
         // to a fixed two-column marker at the reported column, and a
         // message that quoted a name appearing twice underlined the
         // wrong one.
-        let caret = Self::caret_for(source_line, column, location.width());
-
-        format!(
-            "{label} at {}:{}:{}:\n   |\n{} | {}\n   | {} {}\n   |",
+        //
+        // DEBUG-OBS D3: the frame itself is drawn by `compiler_ir`,
+        // which is also what a compiled binary lays into `.rodata` for
+        // its own panics. Two copies of this format is exactly how the
+        // engines' diagnostics drifted apart in the first place.
+        compiler_ir::format_diagnostic_frame(
+            label,
             filename,
             line_number,
             column,
-            line_display,
-            source_line,
-            caret,
-            error_msg
+            location.width() as u32,
+            Some(source_line),
+            error_msg,
         )
-    }
-
-    /// Build the `   ^^^^` marker: `column` (1-based) spaces of padding
-    /// followed by `width` carets, clamped so the marker never runs past
-    /// the end of the line it annotates.
-    fn caret_for(source_line: &str, column: u32, width: usize) -> String {
-        if column == 0 {
-            return "^".to_string();
-        }
-        let line_len = source_line.chars().count();
-        let start = (column as usize).saturating_sub(1).min(line_len);
-        let width = width.min(line_len.saturating_sub(start)).max(1);
-        format!("{:pad$}{}", "", "^".repeat(width), pad = start)
     }
 
     pub fn format_simple_error(&self, error_msg: &str) -> String {

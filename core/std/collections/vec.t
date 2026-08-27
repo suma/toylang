@@ -16,10 +16,9 @@
 # API:
 #   - `Vec::new() -> Self`
 #   - `v.push(value)` (`&mut self`) — append, geometric grow
-#   - `v.pop() -> T` (`&mut self`) — remove last (caller ensures
-#     non-empty; reads garbage when called on empty Vec)
-#   - `v.get(i) -> T` — random read (no bounds check)
-#   - `v.set(i, value)` (`&mut self`) — random write (no bounds
+#   - `v.pop() -> T` (`&mut self`) — remove last (panics when empty)
+#   - `v.get(i) -> T` — random read (bounds-checked; panics)
+#   - `v.set(i, value)` (`&mut self`) — random write (bounds
 #     check)
 #   - `v.size() -> u64` — current element count
 #   - `v.capacity() -> u64` — allocated slots
@@ -71,26 +70,33 @@ impl<T> Vec<T> {
         self.len = self.len + 1u64
     }
 
-    # Remove and return the last element. Pre: `self.len > 0u64`
-    # (caller's responsibility). Calling on an empty Vec reads
-    # garbage from the slot at offset 0 and underflows `self.len`
-    # to `u64::MAX`.
+    # Remove and return the last element. Panics on an empty Vec
+    # (DEBUG-OBS D6) — it used to read whatever sat at offset 0 and
+    # underflow `self.len` to `u64::MAX`, which turned one mistake
+    # into a Vec that reports 18 quintillion elements.
     fn pop(&mut self) -> T {
+        if self.len == 0u64 { panic("Vec::pop on an empty Vec") }
         self.len = self.len - 1u64
         val v: T = __builtin_ptr_read(self.data, self.len * self.elem_size)
         v
     }
 
-    # Random-access read. No bounds check — caller is responsible
-    # for `index < self.len`. Returns whatever bytes happen to live
-    # at the slot when called out-of-range.
+    # Random-access read, bounds-checked (DEBUG-OBS D6).
+    #
+    # A built-in array traps on an out-of-range index (RUNTIME-TRAP);
+    # this used to be the one indexed read that did not, and reading
+    # past the end reached the host — `value not defined` from inside
+    # the IR VM, with no toylang position or backtrace left.
     fn get(&self, index: u64) -> T {
+        if index >= self.len { panic("Vec::get index out of bounds") }
         val v: T = __builtin_ptr_read(self.data, index * self.elem_size)
         v
     }
 
-    # Random-access write. No bounds check.
+    # Random-access write, bounds-checked. `push` writes through the
+    # raw pointer, so appending is not affected by this.
     fn set(&mut self, index: u64, value: T) {
+        if index >= self.len { panic("Vec::set index out of bounds") }
         __builtin_ptr_write(self.data, index * self.elem_size, value)
     }
 

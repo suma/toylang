@@ -438,6 +438,8 @@ pub(crate) enum HelperKind {
     PrintlnU32,
     Panic,
     PanicText,
+    /// DEBUG-OBS D6.
+    PanicRecursion,
     HeapAlloc,
     HeapFree,
     HeapRealloc,
@@ -527,6 +529,7 @@ impl HelperKind {
             HelperKind::PrintlnU32 => "toy_println_u32",
             HelperKind::Panic => "jit_panic",
             HelperKind::PanicText => "jit_panic_text",
+            HelperKind::PanicRecursion => "toy_panic_recursion",
             HelperKind::HeapAlloc => "jit_heap_alloc",
             HelperKind::HeapFree => "jit_heap_free",
             HelperKind::HeapRealloc => "jit_heap_realloc",
@@ -596,6 +599,7 @@ impl HelperKind {
             HelperKind::PrintlnU32 => toylang_rt::toy_println_u32 as *const u8,
             HelperKind::Panic => jit_panic as *const u8,
             HelperKind::PanicText => jit_panic_text as *const u8,
+            HelperKind::PanicRecursion => toylang_rt::toy_panic_recursion as *const u8,
             HelperKind::HeapAlloc => jit_heap_alloc as *const u8,
             HelperKind::HeapFree => jit_heap_free as *const u8,
             HelperKind::HeapRealloc => jit_heap_realloc as *const u8,
@@ -658,6 +662,7 @@ impl HelperKind {
             HelperKind::Panic => (vec![types::I64; 5], None),
             // (text ptr, len)
             HelperKind::PanicText => (vec![types::I64, types::I64], None),
+            HelperKind::PanicRecursion => (vec![], None),
             HelperKind::HeapAlloc => (vec![types::I64], Some(types::I64)),
             HelperKind::HeapFree => (vec![types::I64], None),
             HelperKind::HeapRealloc => (vec![types::I64, types::I64], Some(types::I64)),
@@ -712,7 +717,7 @@ impl HelperKind {
         }
     }
 
-    pub(crate) const ALL: [HelperKind; 64] = [
+    pub(crate) const ALL: [HelperKind; 65] = [
         HelperKind::PrintI64,
         HelperKind::PrintlnI64,
         HelperKind::PrintU64,
@@ -735,6 +740,7 @@ impl HelperKind {
         HelperKind::PrintlnU32,
         HelperKind::Panic,
         HelperKind::PanicText,
+        HelperKind::PanicRecursion,
         HelperKind::HeapAlloc,
         HelperKind::HeapFree,
         HelperKind::HeapRealloc,

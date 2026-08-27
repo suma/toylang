@@ -956,6 +956,38 @@ unsafe fn cstr_as_str<'a>(p: *const u8) -> &'a str {
     unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(p, len)) }
 }
 
+/// DEBUG-OBS D6: report a runaway recursion and stop.
+///
+/// Called from a function's prologue when the shadow stack says it is
+/// already `TOY_RECURSION_LIMIT` deep. Before this, an infinite
+/// recursion in a compiled binary was a `SIGSEGV` with nothing on
+/// stderr — the machine stack ran out and the process vanished.
+///
+/// The wording is duplicated from
+/// `compiler_ir::recursion_limit_message`; this crate is deliberately
+/// dependency-free, the same pairing `format_alloc_budget_violation`
+/// has, and `compiler/tests/e2e.rs` pins the two by reading the text.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_panic_recursion() -> ! {
+    err_write("Runtime error occurred:\npanic: ");
+    let mut buf = StackBuf::<96>::new();
+    if core::fmt::write(
+        &mut buf,
+        format_args!("recursion limit exceeded ({TOY_RECURSION_LIMIT} frames deep)"),
+    )
+    .is_ok()
+    {
+        err_write(buf.as_str());
+    }
+    write_backtrace();
+    err_write("\n");
+    unsafe { exit(1) };
+}
+
+/// Mirror of `compiler_ir::RECURSION_LIMIT`. Codegen emits the
+/// comparison against its own copy; this one only spells the message.
+pub const TOY_RECURSION_LIMIT: u64 = 1024;
+
 /// DEBUG-OBS D5: the current backtrace as a toylang `str`.
 ///
 /// `__builtin_backtrace()` lowers to a call here. The text is the same

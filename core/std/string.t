@@ -95,19 +95,24 @@ impl String {
     # Remove and return the last byte. Pre: `self.len > 0u64`
     # (caller's responsibility).
     fn pop(&mut self) -> u8 {
+        if self.len == 0u64 { panic("String::pop on an empty String") }
         self.len = self.len - 1u64
         val b: u8 = __builtin_ptr_read(self.data, self.len)
         b
     }
 
-    # Random read (no bounds check).
+    # Random read, bounds-checked (DEBUG-OBS D6). Reading past the end
+    # used to reach the host rather than fail as a toylang program.
     fn get(&self, i: u64) -> u8 {
+        if i >= self.len { panic("String::get index out of bounds") }
         val b: u8 = __builtin_ptr_read(self.data, i)
         b
     }
 
-    # Random write (no bounds check).
+    # Random write, bounds-checked. `push` writes through the raw
+    # pointer, so appending is not affected by this.
     fn set(&mut self, i: u64, b: u8) {
+        if i >= self.len { panic("String::set index out of bounds") }
         __builtin_ptr_write(self.data, i, b)
     }
 

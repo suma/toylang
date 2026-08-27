@@ -65,6 +65,11 @@ pub struct Vm<'a> {
     /// DEBUG-OBS D4: the backtrace frame of the call instruction being
     /// dispatched, consumed by the `call_function` it reaches.
     pending_frame: Option<compiler_ir::FrameId>,
+    /// DEBUG-OBS D6: set when a call was refused for depth. Checked by
+    /// the run loop, which is the only place that can unwind cleanly —
+    /// `call_function` returns `()` and is called from deep inside
+    /// instruction dispatch.
+    recursion_limit_hit: bool,
     /// Optional interner for resolving string symbols.
     interner: Option<&'a DefaultStringInterner>,
     /// Everything the VM cannot do itself: stdout, heap, allocator
@@ -92,6 +97,7 @@ impl<'a> Vm<'a> {
             module,
             frames: Vec::new(),
             pending_frame: None,
+            recursion_limit_hit: false,
             interner: None,
             host,
             vtable_addrs: HashMap::new(),
@@ -110,6 +116,7 @@ impl<'a> Vm<'a> {
             module,
             frames: Vec::new(),
             pending_frame: None,
+            recursion_limit_hit: false,
             interner: Some(interner),
             host,
             vtable_addrs: HashMap::new(),
@@ -182,6 +189,16 @@ impl<'a> Vm<'a> {
 
     fn run_loop(&mut self) -> VmResult {
         loop {
+            if self.recursion_limit_hit {
+                let backtrace = self.backtrace_text();
+                return VmResult::Diverged {
+                    message: compiler_ir::recursion_limit_message(
+                        compiler_ir::RECURSION_LIMIT,
+                    ),
+                    site: None,
+                    backtrace,
+                };
+            }
             // Snapshot frame info so we can drop the borrow before dispatch.
             let (func_id, block_id, pc) = match self.frames.last() {
                 Some(f) => (f.func_id, f.block, f.pc),
@@ -425,6 +442,13 @@ impl<'a> Vm<'a> {
         return_dest: Option<ValueId>,
         return_dests: Vec<LocalId>,
     ) {
+        // DEBUG-OBS D6: a runaway recursion used to grow this `Vec`
+        // until the process was killed — 60 seconds of silence, which
+        // is the least useful way a program can fail.
+        if self.frames.len() as u64 >= compiler_ir::RECURSION_LIMIT {
+            self.recursion_limit_hit = true;
+            return;
+        }
         let func = &self.module.functions[func_id.0 as usize];
         let total_locals = func.locals.len().max(func.params.len());
         let mut frame = CallFrame::new(func_id, total_locals);

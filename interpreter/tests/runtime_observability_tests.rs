@@ -389,3 +389,64 @@ fn a_contract_violation_says_which_call_broke_it() {
         "a contract violation carries a backtrace like any other failure:\n{diags}"
     );
 }
+
+// --- DEBUG-OBS D6: runaway recursion and stdlib bounds --------------
+
+#[test]
+fn a_runaway_recursion_says_so_instead_of_hanging() {
+    // 実測 6: this used to run for 60 seconds and produce nothing —
+    // the IR VM's frame vector grew until the process was killed.
+    let diags = runtime_failure(
+        "fn f(n: u64) -> u64 { f(n + 1u64) }
+        fn main() -> u64 { f(0u64) }",
+    );
+    assert!(diags.contains("recursion limit exceeded"), "{diags}");
+    // The folding earns its keep here: a thousand identical frames
+    // would bury the message that explains them.
+    assert!(
+        diags.contains("f (x"),
+        "the repeated frame should fold to one line:\n{diags}"
+    );
+    assert!(diags.lines().count() < 12, "one screen, not a thousand:\n{diags}");
+}
+
+#[test]
+fn a_vec_read_past_the_end_is_a_toylang_failure() {
+    // 実測 7: `value not defined`, a Rust panic from inside the IR VM,
+    // with no toylang position or backtrace left.
+    let diags = runtime_failure(
+        "fn main() -> u64 {
+            var v: Vec<i64> = Vec::new()
+            v.push(1i64)
+            val x: i64 = v.get(5u64)
+            0u64
+        }",
+    );
+    assert!(diags.contains("Vec::get index out of bounds"), "{diags}");
+    assert!(diags.contains("core/std/collections/vec.t:"), "{diags}");
+    assert!(diags.contains("Vec::get (called at line 4)"), "{diags}");
+}
+
+#[test]
+fn popping_an_empty_vec_says_what_happened() {
+    let diags = runtime_failure(
+        "fn main() -> u64 {
+            var v: Vec<i64> = Vec::new()
+            val x: i64 = v.pop()
+            0u64
+        }",
+    );
+    assert!(diags.contains("Vec::pop on an empty Vec"), "{diags}");
+}
+
+#[test]
+fn a_string_read_past_the_end_is_a_toylang_failure() {
+    let diags = runtime_failure(
+        "fn main() -> u64 {
+            val s: String = String::from_str(\"hi\")
+            val c: u8 = s.get(99u64)
+            0u64
+        }",
+    );
+    assert!(diags.contains("String::get index out of bounds"), "{diags}");
+}

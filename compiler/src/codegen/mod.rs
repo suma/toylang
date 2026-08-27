@@ -304,6 +304,9 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_panic_at: cranelift_module::FuncId,
     /// DEBUG-OBS D5: `toy_backtrace_str() -> str`.
     rt_backtrace_str: cranelift_module::FuncId,
+    /// DEBUG-OBS D6: `toy_panic_recursion()` — report a runaway
+    /// recursion and exit.
+    rt_panic_recursion: cranelift_module::FuncId,
     rt_prof_force_counting: cranelift_module::FuncId,
     // MEMORY_PROFILING M3 residual: register an allocator's layout for
     // the report. `(name: str-ptr, managed, live, free_blocks, largest)`
@@ -724,6 +727,11 @@ impl<M: Module> CodegenSession<M> {
         let rt_backtrace_str =
             declare_helper(&mut module, "toy_backtrace_str", &backtrace_sig)?;
 
+        // DEBUG-OBS D6.
+        let recursion_sig = Signature::new(call_conv);
+        let rt_panic_recursion =
+            declare_helper(&mut module, "toy_panic_recursion", &recursion_sig)?;
+
         // MEMORY_PROFILING M3 residual. `toy_record_allocator_layout`
         // takes the str name as an i64 pointer (the `[bytes][NUL][u64
         // len]` layout, NUL-terminated so C can read it as `const char*`)
@@ -889,6 +897,7 @@ impl<M: Module> CodegenSession<M> {
             rt_panic_alloc_budget,
             rt_panic_at,
             rt_backtrace_str,
+            rt_panic_recursion,
             rt_prof_force_counting,
             rt_record_allocator_layout,
             rt_str_concat,
@@ -1768,6 +1777,7 @@ struct RuntimeRefs {
     panic_alloc_budget: cranelift_codegen::ir::FuncRef,
     panic_at: cranelift_codegen::ir::FuncRef,
     backtrace_str: cranelift_codegen::ir::FuncRef,
+    panic_recursion: cranelift_codegen::ir::FuncRef,
     prof_force_counting: cranelift_codegen::ir::FuncRef,
     record_allocator_layout: cranelift_codegen::ir::FuncRef,
     pow: cranelift_codegen::ir::FuncRef,
@@ -2150,6 +2160,30 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     found
                 };
                 if pushes {
+                    // DEBUG-OBS D6: one comparison per *activation*,
+                    // not per call — the prologue already exists and
+                    // the depth is already in a register. A runaway
+                    // recursion used to be a `SIGSEGV` with nothing on
+                    // stderr; now it says so and shows the loop,
+                    // folded, in the backtrace.
+                    //
+                    // A function with no calls cannot recurse, and
+                    // skips this along with the rest of the prologue.
+                    let over = self.builder.ins().icmp_imm(
+                        cranelift_codegen::ir::condcodes::IntCC::UnsignedGreaterThanOrEqual,
+                        my_depth,
+                        compiler_ir::RECURSION_LIMIT as i64,
+                    );
+                    let fail = self.builder.create_block();
+                    let cont = self.builder.create_block();
+                    self.builder.ins().brif(over, fail, &[], cont, &[]);
+                    self.builder.switch_to_block(fail);
+                    self.builder.ins().call(self.runtime.panic_recursion, &[]);
+                    self.builder
+                        .ins()
+                        .trap(cranelift_codegen::ir::TrapCode::user(1).expect("non-zero"));
+                    self.builder.switch_to_block(cont);
+
                     let slot = shadow_slot(self.builder, stack_addr, my_depth);
                     let inner_depth = self.builder.ins().iadd_imm(my_depth, 1);
                     self.shadow_prologue = Some(ShadowPrologue {

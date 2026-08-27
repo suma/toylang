@@ -1822,12 +1822,21 @@ impl EvaluationContext<'_> {
         self.call_depth += 1;
         if self.call_depth > self.max_call_depth {
             self.call_depth -= 1;
-            return Err(InterpreterError::InternalError(format!(
-                "Maximum call depth exceeded ({}) - possible infinite recursion; \
-                 the IR VM runs deep recursion on the heap, so this only fires \
-                 on the tree-walker fallback path",
-                self.max_call_depth
-            )));
+            // DEBUG-OBS D6: reported as a panic, not an internal
+            // error. It is a program that ran away, not a defect in
+            // the interpreter — and going through `panic_error` is
+            // what gives it the backtrace, which folds a runaway
+            // recursion into one line with its count.
+            //
+            // The ceiling is lower here than `compiler_ir::
+            // RECURSION_LIMIT` on purpose: this engine spends a *host*
+            // stack frame per toylang call and dies around 200 in a
+            // debug build, so the limit that keeps it from aborting
+            // has to sit under that.
+            return Err(self.panic_error(
+                compiler_ir::recursion_limit_message(self.max_call_depth as u64),
+                None,
+            ));
         }
 
         self.environment.enter_block();

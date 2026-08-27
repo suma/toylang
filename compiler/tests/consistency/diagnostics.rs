@@ -313,3 +313,23 @@ fn main() -> u64 {
 "#;
     super::harness::assert_stdout_consistent(source, "the_backtrace_builtin_agrees_across_backends");
 }
+
+/// Reading past the end of a `Vec` (DEBUG-OBS D6).
+///
+/// A built-in array traps on an out-of-range index; this was the one
+/// indexed read that did not, and it failed *through the host* —
+/// `value not defined` from inside the IR VM, with nothing left of the
+/// toylang program. Now it is an ordinary panic, and every engine
+/// reports it the same way.
+#[test]
+fn a_vec_read_past_the_end() {
+    let source = r#"
+fn main() -> u64 {
+    var v: Vec<i64> = Vec::new()
+    v.push(1i64)
+    val x: i64 = v.get(5u64)
+    0u64
+}
+"#;
+    assert_diagnostic_consistent(source, "a_vec_read_past_the_end");
+}

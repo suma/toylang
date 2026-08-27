@@ -513,5 +513,9 @@ fn main() -> Box {
 }
 "#;
     let err = test_program(source).expect_err("deep tree-walker recursion must stop with an error");
-    assert!(err.contains("Maximum call depth exceeded"), "{err}");
+    // DEBUG-OBS D6: reported as a panic rather than an internal error —
+    // it is a program that ran away, not a defect in the interpreter —
+    // and it comes with the backtrace, folded to one line.
+    assert!(err.contains("recursion limit exceeded"), "{err}");
+    assert!(err.contains("backtrace"), "{err}");
 }

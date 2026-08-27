@@ -12,6 +12,22 @@
 
 ### 2026-08-27
 
+- **DEBUG-OBS D6: 再帰深度と stdlib の境界** — 無限再帰が
+  `panic: recursion limit exceeded (N frames deep)` + 折り畳んだ
+  backtrace を出すようになった (実測 6。それまでは interpreter が
+  60 秒無出力、AOT が SIGSEGV、interpreter JIT が Rust の
+  stack overflow abort)。**「全実行系で同じ上限」は実測してから諦めた** —
+  tree-walker はホストスタックが深さ 200 で溢れる (既存の 30 は妥当な
+  保守値だった) ので、同じ数字にすると IR VM や AOT なら走りきれる
+  正当な再帰を落とす。上限は言語ではなく**エンジンが載っている
+  スタックの性質**なので、文言は 1 つ・上限はエンジンごと
+  (tree-walker 30 / 他 1024) にし、数字を文言に入れた。AOT の検査は
+  **1 活性化につき 1 比較** (D4 のプロローグに深さが既に載っている)
+  で fib は +88% → +90%。`--release` はカウンタが無いので今も SIGSEGV。
+  `Vec` / `String` の `get` / `set` / `pop` に境界チェック (実測 7 —
+  ホストの Rust panic `value not defined` で落ちていた)。
+  `get_unchecked()` との分割はしない (まず既定を安全側に揃える)。
+
 - **DEBUG-OBS D5: ユーザ API と機械可読出力** — (a)
   `__builtin_function_name()` (パーサ置換、実行時コスト 0、名前は
   backtrace のフレームと同じ `S::boom` 流儀)、(b)
@@ -1137,23 +1153,23 @@
 
 > 2026-08-26 に backtrace / 行番号 / ファイル名を 4 実行系で実際に叩いて
 > 洗い出した節。設計は [`DEBUG_OBSERVABILITY.md`](DEBUG_OBSERVABILITY.md)
-> (現状調査 9 件 + 論点 6 + Phase D0〜D6)。**D0 は landing 済み** —
-> 目標文言はそこに固定され、現状の食い違いは
+> (現状調査 9 件 + 論点 6 + Phase D0〜D6)。
+> **D0〜D6 はすべて landing 済み** — 目標文言は D0 で固定され、現状は
 > `compiler/tests/consistency/diagnostics.rs` に pin されている。
-> **D0〜D5 が landing 済み** — backtrace の穴は塞がり、位置はどのファイルの
-> ものかを持ち、5 実行系すべてが panic の位置と backtrace を stderr に
-> 同じ書式で出し、実行時の失敗は `--diagnostics=json` にも載る。
-> 残る差は**値を持つ文言だけ**。次は D6。
+> backtrace の穴は塞がり、位置はどのファイルのものかを持ち、5 実行系
+> すべてが panic の位置と backtrace を stderr に同じ書式で出し、
+> 実行時の失敗は `--diagnostics=json` にも載り、無限再帰と stdlib の
+> 範囲外はホストではなく toylang の言葉で落ちる。残りは下の 4 項目。
 
 - **DEBUG-OBS D3 の残: `HeapAlloc` の `SiteId` 移行** ★ — `--profile=mem` の
   リーク報告にファイル名が付く (MEMORY_PROFILING M2 の積み残し)。診断とは
   別経路で、コンパイル済みランタイムが自前でレポートを書くため
   ファイル名表の埋め込み + 起動時登録と、M4 の JSON スキーマ変更が要る。
-- **DEBUG-OBS: IR VM diverge 時の tree-walker 再実行** ★ — VM は D3 で
-  自分の診断を出せるようになったが、interpreter は依然 replay する
-  (tree-walker の方が backtrace と契約の実値を持つため)。プログラムが
-  2 回走るので `io::random` / `io::read_file` は 2 回目を踏む (実測 2)。
-  落とすのは VM が backtrace を出せる D4 と一緒に。
+- **DEBUG-OBS: IR VM diverge 時の tree-walker 再実行** ★ — VM は D3/D4 で
+  位置も backtrace も自分で出せるようになった。まだ replay しているのは
+  **tree-walker だけが値を持つ文言を出す**から (次項)。それが揃えば
+  replay は落とせる。プログラムが 2 回走るので `io::random` /
+  `io::read_file` は 2 回目を踏む (実測 2)。
 - **DEBUG-OBS D4 の残: panic に到達しえない関数のフレームを積まない** ★ —
   backtrace に現れようのないフレームは誰も読まない。到達可能性の歩行は
   `reachability.rs` にあるので、`Terminator::Panic` を sink にすれば
@@ -1166,10 +1182,6 @@
   (trap ヘルパにオペランドを渡す、契約は実引数を運ぶ)。
   残る 3 つの pin (`u64_underflow_trap` / `array_index_out_of_bounds` /
   `requires_violation`) がそのまま作業リスト。
-- **DEBUG-OBS D6: 再帰深度 / stdlib の境界** ★ — 無限再帰は 60 秒無出力で
-  タイムアウトするだけ (stack overflow 診断が無い)。`Vec::get` は無チェックで、
-  範囲外は**ホストの Rust panic** (`value not defined`) になり toylang 側の
-  文脈が全部消える。組み込み配列は RUNTIME-TRAP で panic するのに `Vec` は外れている。
 
 ### 型システム (NEW-TYPE-SYSTEM)
 

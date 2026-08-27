@@ -981,6 +981,28 @@ pub fn format_diagnostic_frame_prefix(
 /// Closes a frame: the trailing gutter line under the caret.
 pub const FRAME_SUFFIX: &str = "\n   |";
 
+/// How many nested calls an engine allows before it reports a runaway
+/// recursion (DEBUG-OBS D6).
+///
+/// Not a property of the language — a property of the stack the engine
+/// runs on, which is why the tree-walker's own ceiling is lower (it
+/// spends a *host* frame per toylang call and dies around 200 in a
+/// debug build; measured). The IR VM's frames are heap-allocated and
+/// the compiled backends' are small, so both can afford this. Python
+/// ships 1000 for the same reason, and it is the shadow stack's
+/// capacity, so hitting the limit is also where a backtrace would
+/// start losing frames.
+pub const RECURSION_LIMIT: u64 = 1024;
+
+/// The one place the runaway-recursion sentence is written.
+///
+/// The number is in it because it is what tells a reader whether their
+/// program is legitimately deep or looping: the ceiling differs by
+/// engine, and hiding that would leave them guessing.
+pub fn recursion_limit_message(limit: u64) -> String {
+    format!("recursion limit exceeded ({limit} frames deep)")
+}
+
 /// One line of a backtrace: a function and the line it was entered
 /// from (DEBUG-OBS D1 / D4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

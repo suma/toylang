@@ -19,7 +19,7 @@ D2 を飛ばして D3 だけが landing し、**ファイル名の無い行番�
 | **D3** | IR の `SiteId` — 4 実行系すべてが panic 位置を言う (release でもコスト 0) | ✅ 2026-08-27 |
 | **D4** | shadow stack — AOT / JIT の backtrace | ✅ 2026-08-27 |
 | **D5** | ユーザから触れる API と機械可読出力 | ✅ 2026-08-27 |
-| **D6** | 再帰深度の診断 / stdlib の境界チェック | 📋 |
+| **D6** | 再帰深度の診断 / stdlib の境界チェック | ✅ 2026-08-27 |
 
 ---
 
@@ -131,7 +131,7 @@ pub struct Span            { line, column, offset, end_offset }  // JSON 側も�
 **D2 を飛ばして「stdlib フレームにも位置を付ける」を実装した瞬間、
 `core/std/vec.t:88` の行番号がユーザのソースに対して描画される。**
 
-### 実測 6: 再帰は畳まれず、無限再帰に診断が無い
+### 実測 6: 再帰は畳まれず、無限再帰に診断が無い (D1 / D6 で解消)
 
 深さ 7 の再帰は `f` が 7 行並ぶ (区別する情報が無い)。
 無限再帰 (`fn f(n: u64) -> u64 { f(n + 1u64) }`) は **60 秒で無出力・タイムアウト** —
@@ -139,7 +139,7 @@ IR VM の `frames: Vec<CallFrame>` が伸び続けるだけで、
 「stack overflow」も「recursion limit」も出ない。
 ステップ予算 (`CHECK-NONTERMINATION`) は `--check` にしか無い。
 
-### 実測 7: stdlib の範囲外アクセスがホストの Rust panic になる
+### 実測 7: stdlib の範囲外アクセスがホストの Rust panic になる (D6 で解消)
 
 ```rust
 fn main() -> u64 { var v: Vec<i64> = Vec::new() v.push(1i64) val x: i64 = v.get(5u64) 0u64 }
@@ -643,13 +643,53 @@ Error at core/std/option.t:57:29:
   位置を足したらこの enum が `Err` 型として大きくなりすぎ、clippy が
   127 箇所で鳴った。一番幅の広い variant を箱に入れるのが正解。
 
-### D6 — 再帰深度と stdlib の境界
+### D6 — 再帰深度と stdlib の境界 ✅ (2026-08-27)
 
-1. 再帰深度の上限と `[E00xx] recursion limit exceeded` (実測 6)。
-   backtrace は折り畳み済みで出す。IR VM / tree-walker / AOT で同じ上限。
-2. `Vec::get` / `String::get` 等に境界チェックを入れるか、
-   `at()` (チェック有り) と `get_unchecked()` に分けるかを決める (実測 7)。
-   **少なくともホストの Rust panic で落ちるのはやめる。**
+1. 再帰深度の上限と `panic: recursion limit exceeded (N frames deep)`
+   (実測 6)。backtrace は折り畳み済みで出す。
+2. `Vec` / `String` の `get` / `set` / `pop` に境界チェックを入れた
+   (実測 7)。
+
+#### 「全実行系で同じ上限」は諦めた (実測してから)
+
+設計時は同じ上限を置くつもりだったが、**tree-walker のホストスタックが
+深さ 200 で溢れる** (debug ビルドで実測。100 は通り 200 は
+`fatal runtime error: stack overflow`)。既存の `max_call_depth = 30` は
+паранойアではなく妥当な保守値だった。
+
+同じ数字にするなら全実行系を 30 にするしかなく、それは
+**IR VM や AOT なら走りきれる正当な再帰を落とす**。上限は言語の性質では
+なく**そのエンジンが載っているスタックの性質**なので、
+**文言は 1 つ、上限はエンジンごと**にした。数字を文言に入れているのは、
+読み手が「自分のプログラムが深いのか、ループしているのか」を
+判断できるようにするため。
+
+| 実行系 | 上限 | 何に律速されるか |
+|---|---|---|
+| tree-walker | 30 | ホストスタック (1 toylang call = 1 host frame) |
+| IR VM | 1024 | 無し (frame はヒープ) — 明示的に置いた |
+| AOT / compiler JIT / interpreter JIT | 1024 | shadow stack の深さカウンタ |
+
+`--release` は shadow stack を持たないのでカウンタも無く、
+**無限再帰は今も SIGSEGV** (C と同じ)。契約や backtrace と同じ軸。
+
+#### コスト
+
+AOT の検査は **1 活性化につき 1 比較** — D4 のプロローグに既に深さが
+レジスタで載っているので、そこに `icmp` と分岐を足すだけ。呼び出し
+ごとではない。呼び出しを持たない関数 (= 再帰しえない) はプロローグ
+ごと出ない。fib(32) で D4 の +88% が **+90%** になった (実測、+2 points)。
+interpreter JIT だけは呼び出しごと (巻き上げるプロローグが無いため)。
+
+#### stdlib の境界
+
+`Vec::get` / `set` / `pop`、`String::get` / `set` / `pop` を
+`panic` するようにした。**`get_unchecked()` との分割はしていない** —
+組み込み配列は既に RUNTIME-TRAP で落ちるのに `Vec` だけが外れていた、
+というのが実測 7 の中身で、まず既定を安全側に揃えるのが順番。
+逃げ道は「速度が要ると実測してから」足す。`push` は生ポインタ経由で
+書くので追加のチェックは掛からない。`Dict::get` は元から
+`Option<V>` を返すので対象外。
 
 ---
 

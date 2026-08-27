@@ -4031,6 +4031,21 @@ the same input; `compiler/tests/consistency.rs` pins that.
 | `a / b` or `a % b` where `a` is the type's most negative value and `b == -1` | `integer division overflowed` |
 | `arr[i]` / `arr[i] = v` where `i` is at or past the array's length | `array index out of bounds` |
 
+Two more failures stop the program the same way, though they come from
+the standard library and from the engine rather than from an operator:
+
+| Situation | Message |
+|---|---|
+| `v.get(i)` / `v.set(i, x)` / `s.get(i)` past the end, `v.pop()` on an empty `Vec` | `Vec::get index out of bounds`, … |
+| More nested calls than the engine's stack allows | `recursion limit exceeded (N frames deep)` |
+
+The recursion ceiling is a property of the engine, not of the language:
+the tree-walker spends a host stack frame per toylang call and stops at
+30, while the IR VM and the compiled backends stop at 1024. The number
+is in the message so a reader can tell a legitimately deep program from
+a runaway one. A `--release` build keeps no depth counter, so an
+infinite recursion there ends the way C's does.
+
 What is deliberately **not** a trap:
 
 - **`+`, `*` and signed `-` overflow** — these wrap (see *Numeric

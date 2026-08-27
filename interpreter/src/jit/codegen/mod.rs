@@ -867,6 +867,7 @@ impl<'a, 'b> State<'a, 'b> {
 
     fn emit_frame_push(&mut self, record: *const u8) -> Value {
         let flags = cranelift_codegen::ir::MemFlags::trusted();
+        self.emit_recursion_check();
         let stack_addr = self.builder.ins().iconst(
             types::I64,
             (&raw const toylang_rt::toy_shadow_stack) as i64,
@@ -887,6 +888,36 @@ impl<'a, 'b> State<'a, 'b> {
         let next = self.builder.ins().iadd_imm(depth, 1);
         self.builder.ins().store(flags, next, depth_addr, 0);
         depth
+    }
+
+    /// DEBUG-OBS D6: refuse a call that would go past the shared
+    /// recursion limit.
+    ///
+    /// Emitted per call rather than per activation (the compiled
+    /// backends hoist it into a prologue): this JIT pushes frames one
+    /// call site at a time and has no prologue to hoist into. Before
+    /// this, a runaway recursion here was `fatal runtime error: stack
+    /// overflow` — Rust's message about its own stack, with nothing
+    /// about the toylang program that filled it.
+    fn emit_recursion_check(&mut self) {
+        let flags = cranelift_codegen::ir::MemFlags::trusted();
+        let depth_addr = self
+            .builder
+            .ins()
+            .iconst(types::I64, (&raw const toylang_rt::toy_shadow_depth) as i64);
+        let depth = self.builder.ins().load(types::I64, flags, depth_addr, 0);
+        let over = self.builder.ins().icmp_imm(
+            IntCC::UnsignedGreaterThanOrEqual,
+            depth,
+            compiler_ir::RECURSION_LIMIT as i64,
+        );
+        let fail = self.builder.create_block();
+        let cont = self.builder.create_block();
+        self.brif(over, fail, cont);
+        self.switch_to(fail);
+        let _ = self.call_helper(HelperKind::PanicRecursion, &[]);
+        self.builder.ins().trap(TrapCode::user(1).expect("non-zero"));
+        self.switch_to(cont);
     }
 
     /// Restore the depth this call found. The callee has already

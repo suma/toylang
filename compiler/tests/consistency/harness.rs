@@ -936,3 +936,357 @@ pub(super) fn assert_jit_compiled_and_matches(source: &str, stem: &str) {
         "interpreter vs its own JIT stdout mismatch for `{stem}`:\n{source}",
     );
 }
+
+// ---------------------------------------------------------------------
+// DEBUG-OBS D0: the diagnostic lane.
+//
+// Everything above compares *answers* — an exit code, stdout, an
+// allocation total. None of it looks at what a backend says when the
+// program fails, which is why the four engines drifted into four
+// different renderings of the same panic without a test noticing
+// (`DEBUG_OBSERVABILITY.md`, 実測 1).
+//
+// The lane below compares the **text a user sees on stderr** when a
+// program dies. It is deliberately the last thing added rather than
+// folded into `assert_consistent`: a panicking program has no answer
+// to compare, so the two assertions never apply to the same source.
+// ---------------------------------------------------------------------
+
+/// The engines a runtime failure is rendered by, in report order.
+///
+/// Five names for the four rows of `DEBUG_OBSERVABILITY.md` 実測 1:
+/// the AOT binary and this crate's JIT share `toylang_rt`, so their
+/// wording can only diverge through a codegen bug — which is exactly
+/// the kind this lane should catch rather than assume away.
+pub(super) const DIAGNOSTIC_LANES: [&str; 5] =
+    ["tree-walker", "ir-vm", "interpreter-jit", "compiler-jit", "aot"];
+
+/// Full path of the child test the process-exiting lanes re-enter.
+///
+/// `jit_panic` and the compiled runtime's panic both end in
+/// `process::exit(1)`, so their diagnostics cannot be observed from
+/// inside the test process — the test binary would exit with them.
+/// Both lanes therefore run in a child, which is this same binary
+/// re-invoked on one no-op test that only does something when
+/// `TOY_DIAG_LANE` is set. Keep in sync with the function's module
+/// path in `diagnostics.rs`.
+pub(super) const DIAGNOSTIC_CHILD_TEST: &str = "consistency::diagnostics::diagnostic_lane_child";
+
+/// Env var carrying the lane name into the child.
+pub(super) const DIAGNOSTIC_LANE_ENV: &str = "TOY_DIAG_LANE";
+/// Env var carrying the path of the program to run in the child.
+pub(super) const DIAGNOSTIC_SOURCE_ENV: &str = "TOY_DIAG_SOURCE";
+
+/// What one lane wrote when the program failed, normalized (see
+/// [`normalize_diagnostic`]).
+///
+/// `stream` is part of the comparison, not decoration: the compiled
+/// runtimes print their panic with `puts`, so it lands on **stdout**,
+/// in the middle of whatever the program had already printed. Two
+/// engines that say the same sentence on different file descriptors
+/// have not agreed.
+pub(super) struct DiagnosticLane {
+    pub(super) name: &'static str,
+    pub(super) stream: &'static str,
+    pub(super) text: String,
+}
+
+/// Placeholder text for a lane that ran the program to completion.
+///
+/// Spelled out rather than left empty so a lane that stops failing is
+/// visible in the report instead of looking like an empty diagnostic.
+const NO_DIAGNOSTIC: &str = "(ran to completion — no diagnostic)";
+
+/// Render an in-process lane's error string the way the binaries do.
+///
+/// `ErrorFormatter::display_runtime_error` prints the header and then
+/// the diagnostic; the library calls hand back only the second half.
+/// The two process lanes capture real stderr, so the in-process ones
+/// have to put the header back or every comparison would be a
+/// header-shaped false positive.
+fn as_user_sees_it(diagnostic: &str) -> String {
+    format!("Runtime error occurred:\n{diagnostic}")
+}
+
+/// Strip what is about *this run* rather than about the diagnostic:
+/// the temp directory the program was written into, trailing blanks,
+/// and the surrounding empty lines. Line, column, message and frame
+/// order are all kept — those are the content (`DEBUG_OBSERVABILITY.md`
+/// 論点 5).
+fn normalize_diagnostic(text: &str, dir: &std::path::Path) -> String {
+    let dir_prefix = format!("{}/", dir.display());
+    let text = text.replace(&dir_prefix, "").replace(&dir.display().to_string(), "");
+    text.lines()
+        .map(|l| l.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_matches('\n')
+        .to_string()
+}
+
+/// Run `source` on every engine and collect what each says when it
+/// fails. `stem` names the temp file, so it is also the file name the
+/// diagnostics quote.
+pub(super) fn diagnostic_lanes(source: &str, stem: &str) -> Vec<DiagnosticLane> {
+    let dir = unique_path(stem);
+    std::fs::create_dir_all(&dir).expect("create temp dir for the diagnostic lane");
+    let file_name = format!("{stem}.t");
+    let path = dir.join(&file_name);
+    std::fs::write(&path, source).expect("write the diagnostic lane's program");
+
+    let core = core_modules_dir();
+    let mut parser = frontend::ParserWithInterner::new(source);
+    let checked = checked_program(source, &mut parser, Some(core.as_path()))
+        .unwrap_or_else(|| panic!("type-check failed for the diagnostic lane program `{stem}`"));
+
+    let tree_walker = match interpreter::execute_program_tree_walking(
+        &checked.program,
+        checked.interner,
+        Some(source),
+        Some(&file_name),
+    ) {
+        Ok(_) => ("none", NO_DIAGNOSTIC.to_string()),
+        Err(rendered) => ("stderr", as_user_sees_it(&rendered)),
+    };
+
+    let ir_vm = ir_vm_diagnostic(&checked);
+    let interpreter_jit = lane_in_child("interpreter-jit", &path);
+    let compiler_jit = lane_in_child("compiler-jit", &path);
+    let aot = aot_diagnostic(&checked, stem);
+
+    let lanes = [tree_walker, ir_vm, interpreter_jit, compiler_jit, aot];
+    let out = DIAGNOSTIC_LANES
+        .iter()
+        .zip(lanes)
+        .map(|(name, (stream, text))| DiagnosticLane {
+            name,
+            stream,
+            text: normalize_diagnostic(&text, &dir),
+        })
+        .collect();
+    let _ = std::fs::remove_dir_all(&dir);
+    out
+}
+
+/// Pick the diagnostic out of a finished process' two streams.
+///
+/// The compiled runtimes `puts` their panic, so a lane's output can
+/// arrive on either descriptor — and which one it was is exactly what
+/// the report should show.
+fn streams_of(stdout: &str, stderr: &str) -> (&'static str, String) {
+    match (stdout.trim().is_empty(), stderr.trim().is_empty()) {
+        (true, true) => ("none", NO_DIAGNOSTIC.to_string()),
+        (true, false) => ("stderr", stderr.to_string()),
+        (false, true) => ("stdout", stdout.to_string()),
+        (false, false) => ("stderr+stdout", format!("{stderr}{stdout}")),
+    }
+}
+
+/// Marker the child prints before handing over to the lane.
+///
+/// The compiled runtimes write their panic with `puts`, so it lands on
+/// the child's stdout — mixed in with libtest's own banner, and on the
+/// *same line* as it, since `test <name> ... ` is printed without a
+/// newline. Cutting at a marker the child itself emits is exact where
+/// filtering by line prefix silently ate the diagnostic.
+const DIAGNOSTIC_CHILD_MARKER: &str = "---toy-diagnostic-lane---";
+
+/// Keep only what the lane itself wrote to the child's stdout.
+fn cut_child_stdout(lane: &str, stdout: &str) -> String {
+    let after = match stdout.split_once(DIAGNOSTIC_CHILD_MARKER) {
+        Some((_, rest)) => rest.trim_start_matches('\n'),
+        None => panic!(
+            "the `{lane}` child never reached the lane — is `DIAGNOSTIC_CHILD_TEST` \
+             still the right test path? Its stdout was:\n{stdout}"
+        ),
+    };
+    // A lane that returns instead of exiting lets libtest finish the
+    // line it left open and print its summary afterwards.
+    let mut lines: Vec<&str> = after.lines().collect();
+    while let Some(last) = lines.last() {
+        let t = last.trim();
+        if t.is_empty()
+            || t == "ok"
+            || t == "FAILED"
+            || t.starts_with("test result:")
+            || t.starts_with("failures")
+        {
+            lines.pop();
+        } else {
+            break;
+        }
+    }
+    lines.iter().map(|l| format!("{l}\n")).collect()
+}
+
+/// The IR VM's rendering, as it *would* reach a user.
+///
+/// It never does today: `execute_entry_with_values` throws a diverging
+/// IR VM run away and replays the program on the tree-walker, so what
+/// the terminal shows is always the tree-walker's text (実測 2). The
+/// message is still the one every non-tree-walkable program would get,
+/// so the lane reports it rather than the replay it currently hides
+/// behind.
+fn ir_vm_diagnostic(checked: &CheckedProgram) -> (&'static str, String) {
+    let Ok(module) = compiler::lower::lower_program(
+        &checked.program,
+        checked.interner,
+        &checked.contract_msgs,
+        false,
+    ) else {
+        return ("none", "(lane not eligible: lowering failed)".to_string());
+    };
+    if !interpreter::ir_vm::eligibility::ir_vm_supported(&module) {
+        return ("none", "(lane not eligible: outside the IR VM's supported subset)".to_string());
+    }
+    match interpreter::ir_vm::run_module_with_interner(&module, Some(checked.interner)) {
+        Ok(_) => ("none", NO_DIAGNOSTIC.to_string()),
+        Err(message) => ("stderr", as_user_sees_it(&message)),
+    }
+}
+
+fn aot_diagnostic(checked: &CheckedProgram, stem: &str) -> (&'static str, String) {
+    let exe_path = unique_path(stem);
+    let mut options = CompilerOptions::new(PathBuf::from("<checked>"));
+    options.output = Some(exe_path.clone());
+    options.core_modules_dir = Some(core_modules_dir());
+    options.link_cache_dir = Some(link_cache_dir_for_tests());
+    if let Err(e) = compiler::compile_checked_program(
+        &checked.program,
+        checked.interner,
+        &checked.contract_msgs,
+        &options,
+    ) {
+        return ("none", format!("(lane not eligible: {e})"));
+    }
+    let output = Command::new(&exe_path).output().expect("spawn binary");
+    let _ = std::fs::remove_file(&exe_path);
+    streams_of(
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+    )
+}
+
+/// Run one process-exiting lane in a child copy of this test binary.
+fn lane_in_child(lane: &str, source_path: &std::path::Path) -> (&'static str, String) {
+    let exe = std::env::current_exe().expect("path of the running test binary");
+    let output = Command::new(exe)
+        // `--nocapture` matters: libtest's capture buffer is dropped
+        // when the lane calls `process::exit`, so without it the
+        // diagnostic would never reach the pipe.
+        .args(["--exact", DIAGNOSTIC_CHILD_TEST, "--nocapture", "--test-threads=1"])
+        .env(DIAGNOSTIC_LANE_ENV, lane)
+        .env(DIAGNOSTIC_SOURCE_ENV, source_path)
+        .output()
+        .expect("spawn the diagnostic lane child");
+    streams_of(
+        &cut_child_stdout(lane, &String::from_utf8_lossy(&output.stdout)),
+        &String::from_utf8_lossy(&output.stderr),
+    )
+}
+
+/// The body of the child test. Returns `false` when this process is a
+/// normal test run (no lane requested), so the test can pass trivially.
+pub(super) fn run_diagnostic_lane_child() -> bool {
+    let Ok(lane) = std::env::var(DIAGNOSTIC_LANE_ENV) else {
+        return false;
+    };
+    let path = PathBuf::from(std::env::var(DIAGNOSTIC_SOURCE_ENV).expect("child needs a program"));
+    let source = std::fs::read_to_string(&path).expect("read the child's program");
+    // Everything the parent keeps from this process' stdout starts
+    // after this line.
+    println!("{DIAGNOSTIC_CHILD_MARKER}");
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("program file name")
+        .to_string();
+    let core = core_modules_dir();
+    match lane.as_str() {
+        "interpreter-jit" => {
+            let mut options = RunOptions::default();
+            options.jit = true;
+            options.core_modules_dir = Some(core.as_path());
+            // `run_source` writes the diagnostic to stderr itself, the
+            // way the `interpreter` binary does; a JIT-compiled panic
+            // never gets that far and exits from `jit_panic` instead.
+            let _ = interpreter::run_source(&source, &file_name, &options);
+        }
+        "compiler-jit" => {
+            let mut options = CompilerOptions::new(path);
+            options.core_modules_dir = Some(core);
+            match compiler::compile_to_jit_main_with_options(&source, &options) {
+                Ok(program) => {
+                    program.run();
+                }
+                Err(e) => eprintln!("(lane not eligible: {e})"),
+            }
+        }
+        other => panic!("unknown diagnostic lane `{other}`"),
+    }
+    true
+}
+
+/// Render the lanes as one block, so a mismatch is read as a table
+/// rather than as five separate assertion failures.
+fn diagnostic_report(lanes: &[DiagnosticLane]) -> String {
+    let mut out = String::new();
+    for lane in lanes {
+        out.push_str(&format!("{} ({}):\n", lane.name, lane.stream));
+        for line in lane.text.lines() {
+            out.push_str(&format!("  {line}\n"));
+        }
+    }
+    out
+}
+
+/// The target state (`DEBUG_OBSERVABILITY.md` D0): every engine renders
+/// the same failure the same way.
+#[allow(dead_code)]
+pub(super) fn assert_diagnostic_consistent(source: &str, stem: &str) {
+    if skip_e2e() {
+        return;
+    }
+    let lanes = diagnostic_lanes(source, stem);
+    let first = &lanes[0];
+    for lane in &lanes[1..] {
+        assert!(
+            first.text == lane.text && first.stream == lane.stream,
+            "`{}` and `{}` render this failure differently:\n{}",
+            first.name,
+            lane.name,
+            diagnostic_report(&lanes),
+        );
+    }
+}
+
+/// Pin the divergence that exists **today**, so the gap D1–D4 close is
+/// a number in the test output rather than a paragraph in a design doc.
+///
+/// Two-directional, like the tree-walker opt-out above and the skip
+/// lists in `example_consistency.rs`: it fails when a lane's wording
+/// changes *and* when the lanes converge, at which point the call site
+/// should become [`assert_diagnostic_consistent`]. Keeping it green
+/// while the gap exists is deliberate — `CLAUDE.md`'s six-line green
+/// run is what makes a real failure visible, and a permanently red
+/// suite would spend that.
+pub(super) fn assert_diagnostic_report(source: &str, stem: &str, expected: &str) {
+    if skip_e2e() {
+        return;
+    }
+    let lanes = diagnostic_lanes(source, stem);
+    let agree = lanes
+        .iter()
+        .all(|l| l.text == lanes[0].text && l.stream == lanes[0].stream);
+    let report = diagnostic_report(&lanes);
+    assert!(
+        !agree,
+        "the engines now agree on this diagnostic — replace \
+         `assert_diagnostic_report` with `assert_diagnostic_consistent` for `{stem}`:\n{report}",
+    );
+    assert_eq!(
+        expected.trim_end(),
+        report.trim_end(),
+        "the pinned diagnostics for `{stem}` moved",
+    );
+}

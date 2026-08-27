@@ -10,6 +10,19 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-08-27
+
+- **DEBUG-OBS D0: 診断の比較レーン** — 実行時の失敗の**文言**を
+  突き合わせるレーンを `compiler/tests/consistency/diagnostics.rs` に
+  作り、目標文言を `DEBUG_OBSERVABILITY.md` に固定した。5 レーン
+  (tree-walker / IR VM / interpreter JIT / compiler JIT / AOT)。
+  `process::exit` で死ぬ 2 レーンはテストバイナリ自身を再実行した
+  子プロセスで走らせる。**新しい実測が 1 件** — コンパイル済み
+  バックエンドは panic を `puts` で書くので診断が **stdout** に出る
+  (実測 9)。そのためレーンはストリームも比較対象に含める。現状の
+  食い違いは failing test ではなく**両方向 pin** (一致したら
+  「`assert_diagnostic_consistent` に置き換えよ」と言って落ちる)。
+
 ### 2026-08-26
 
 - **COMPILE-TIME-EVAL C5: 配列長に `const` / `const fn` / 式** —
@@ -1055,7 +1068,9 @@
 
 > 2026-08-26 に backtrace / 行番号 / ファイル名を 4 実行系で実際に叩いて
 > 洗い出した節。設計は [`DEBUG_OBSERVABILITY.md`](DEBUG_OBSERVABILITY.md)
-> (現状調査 8 件 + 論点 6 + Phase D0〜D6)。
+> (現状調査 9 件 + 論点 6 + Phase D0〜D6)。**D0 は landing 済み** —
+> 目標文言はそこに固定され、現状の食い違いは
+> `compiler/tests/consistency/diagnostics.rs` に pin されている。
 
 - **DEBUG-OBS D1: interpreter の backtrace の穴** ★★ — (a) `call_expr` が
   引数リストに `None` の位置を積むので `(called at line N)` が**到達しない
@@ -1067,16 +1082,13 @@
   stdlib のノードは位置を持たない。この 2 つは互いの被害を隠しており、
   **片方だけ直すと他人のファイルの行をユーザのソースで描く**。
 - **DEBUG-OBS D3: IR の `SiteId`** ★★ — `Terminator::Panic` が位置を持たないため、
-  AOT / JIT / IR VM は `panic: msg` しか出せない。interpreter の豊かな診断は
+  AOT / JIT / IR VM は `panic: msg` しか出せない。**しかも `puts` 経由なので
+  stdout に出る** (D0 の実測 9) — 位置と一緒にストリームも直す。interpreter の豊かな診断は
   「IR VM が diverge → tree-walker が再実行」の副産物 (プログラムが 2 回走る)。
   `HeapAlloc { site: u64 }` を `SiteId` に寄せると `--profile=mem` の
   リーク報告にファイル名が付く (MEMORY_PROFILING M2 の積み残し)。
 - **DEBUG-OBS D4: shadow stack (`-g`)** ★ — AOT / JIT の backtrace。
   位置は静的なので release でも残せるが、backtrace だけがランタイムコストを持つ。
-- **DEBUG-OBS D0: 診断の比較レーン** ★★ — `--all-backends` も
-  `compiler/tests/consistency/` も **panic 時の stderr を突き合わせていない**
-  (終了コードと stdout のみ)。これを先に入れないと以降の Phase が
-  「バックエンドごとに違う診断」を量産する。
 - **DEBUG-OBS D6: 再帰深度 / stdlib の境界** ★ — 無限再帰は 60 秒無出力で
   タイムアウトするだけ (stack overflow 診断が無い)。`Vec::get` は無チェックで、
   範囲外は**ホストの Rust panic** (`value not defined`) になり toylang 側の

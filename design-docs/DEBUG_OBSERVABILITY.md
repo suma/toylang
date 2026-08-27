@@ -13,7 +13,7 @@ D2 を飛ばして D3 だけが landing し、**ファイル名の無い行番�
 
 | Phase | Scope | Status |
 |---|---|---|
-| **D0** | 出力形式の固定 + バックエンド間で診断を突き合わせるレーン | 📋 |
+| **D0** | 出力形式の固定 + バックエンド間で診断を突き合わせるレーン | ✅ 2026-08-27 |
 | **D1** | interpreter の backtrace の穴埋め (method / closure / `main` / 行番号 / 折り畳み) | 📋 |
 | **D2** | `FileId` + `SourceMap` — 位置に「どのファイルか」を持たせる | 📋 |
 | **D3** | IR の `SiteId` — 4 実行系すべてが panic 位置を言う (release でもコスト 0) | 📋 |
@@ -161,6 +161,21 @@ toylang 側の位置も backtrace も一切残らない。
 JSON は型検査 / パースの診断だけを扱う。LLM ループ (P1〜P7) の観点では、
 **機械可読になっていないのは実行時の失敗だけ**という状態。
 
+### 実測 9: コンパイル済みバックエンドは panic を **stdout** に書く (2026-08-27、D0 で判明)
+
+AOT / compiler JIT の panic 経路は `libc_puts`
+(`compiler/src/codegen/mod.rs`) なので、診断が **fd 1** に出る。
+つまりプログラム自身の出力の途中に診断が挟まる — リダイレクトすると
+`prog > out.txt` の中に `panic: ...` が入り、`2>` では取れない。
+tree-walker / IR VM / interpreter JIT は stderr。
+
+`--all-backends` が stdout を比較しているので、**panic するプログラムでは
+「診断の文言の違い」が「stdout の違い」として現れる**。これまで表面化して
+いないのは、interpreter レーンが先に失敗して比較に到達しないため (実測 1)。
+
+D0 のレーンは、この理由で**どのストリームに出たかを比較対象に含める**。
+同じ文を別の fd に書く 2 つのエンジンは一致していない。
+
 ### 参考: 既にある足場
 
 - **`LocationPool` + `ErrorFormatter`** — 位置から抜粋 + caret を描く経路は完成している
@@ -276,14 +291,93 @@ D0 で**先に**文言を固定し、`compiler/tests/consistency/` に
 
 ## Phase 分割
 
-### D0 — 文言の固定と比較レーン
+### D0 — 文言の固定と比較レーン ✅ (2026-08-27)
 
-- 4 実行系が出す panic 診断の**目標文言**をこの文書に書き、
-  `assert_diagnostic_consistent` を `harness.rs` に足す。
-- 現状の食い違い (実測 1) を **failing test として先に置く**か、
-  D3 まで `#[ignore]` で置くかを決める。前者を推す —
-  「今どれだけずれているか」がテスト出力に出る。
-- 受け入れ基準: 新レーンが実測 1 のプログラムで**落ちる**こと。
+#### 目標文言
+
+**実行時の失敗は、どの実行系でも次の 1 つの形で stderr に出す。**
+
+```
+Runtime error occurred:
+Error at <file>:<line>:<column>:
+   |
+ N | <失敗した式を含むソース行>
+   |   ^^^^ panic: <message>
+   |
+   = backtrace (innermost first):
+       S::boom (called at line 12)
+       go (called at line 20)
+       main
+```
+
+決めたこと:
+
+- **ストリームは stderr** (実測 9)。`puts` 経路は D3 で置き換える。
+  プログラム自身の stdout に診断を混ぜない。
+- **ヘッダ `Runtime error occurred:` は全実行系**。今は AOT /
+  compiler JIT だけが欠いている。
+- **message は tree-walker の文言が正**。最も情報量が多く、既存の
+  テストが pin しているのもこちらなので、コンパイル側を寄せる。
+  値を持つ文 (`u64 subtraction underflowed: 1 - 5`、
+  `Contract violation: ... (with n = 0)`) は**値ごと**移す —
+  「どの引数で破れたか」が契約の診断の中身であって、
+  `panic: requires violation` は同じ情報を持たない。
+- 例外は **`panic:` 接頭辞と位置を欠いている 2 件**で、ここだけは
+  tree-walker 側を直す:
+
+  | 失敗 | 目標文言 |
+  |---|---|
+  | `panic("boom in c")` | `panic: boom in c` |
+  | `u64` underflow | `panic: u64 subtraction underflowed: 1 - 5` |
+  | 0 除算 | `panic: integer division by zero` |
+  | `MIN / -1` | `panic: integer division overflowed (most negative value divided by -1)` |
+  | 配列の範囲外 | `panic: array index out of bounds: index 5, length 3` |
+  | `requires` 違反 | ``Contract violation: `requires` clause #1 of function `f` evaluated to false (with n = 0)`` |
+
+- backtrace は最内が先。**panic した関数自身も 1 フレーム**として載り
+  (実測 3 で欠けているもの)、`main` で終わる。呼び出し元の行は
+  `(called at line N)`、最内フレームは自身の位置が上の `Error at` に
+  出ているので付けない。
+
+#### 比較レーン
+
+`compiler/tests/consistency/diagnostics.rs` + `harness.rs` の
+`diagnostic_lanes` / `assert_diagnostic_consistent` /
+`assert_diagnostic_report`。**5 レーン** — tree-walker / IR VM /
+interpreter JIT / compiler JIT / AOT (実測 1 の 4 行のうち最後の行を
+2 つに割った。同じ `toylang_rt` を共有しているという理由で片方を
+省くと、codegen のバグがちょうどそこに落ちる)。
+
+正規化で落とすもの: 一時ディレクトリのパス、行末の空白、前後の空行、
+子プロセスの libtest 自身の出力。**落とさないもの**: ストリーム
+(stdout / stderr)、行、桁、メッセージ、抜粋、フレームの並び。
+
+実装上の要点が 2 つある。
+
+- **process を殺すレーンは子プロセスで走らせる。** `jit_panic` と
+  コンパイル済みランタイムの panic はどちらも `process::exit(1)` で
+  終わるので、in-process では**テストバイナリごと落ちる**。
+  interpreter JIT / compiler JIT の 2 レーンは、テストバイナリ自身を
+  `--exact consistency::diagnostics::diagnostic_lane_child --nocapture`
+  で再実行した子で走らせる (`--nocapture` は必須 — libtest の捕捉
+  バッファは `exit` で捨てられる)。
+- **IR VM レーンは「もし表に出たら」の文言**を報告する。実際には
+  実測 2 の replay があるので端末には出ない。
+
+#### 現状の食い違いは failing test にしなかった
+
+設計時は failing test を推していたが、**pin して green** にした。
+理由: `CLAUDE.md` が意図的に作った「グリーンなら 6 行」の実行結果が
+本物の失敗を見つける唯一の手段で、恒常的に赤い suite はそれを潰す。
+代わりに `assert_diagnostic_report` が**両方向に**検査する —
+文言が動けば落ち、5 レーンが一致したときも
+「`assert_diagnostic_consistent` に置き換えよ」と言って落ちる
+(`example_consistency.rs` の skip リストと同じ流儀)。
+pin されている 4 プログラム (panic / underflow / 配列範囲外 /
+`requires` 違反) のテキストがそのまま D1〜D4 の作業リストになる。
+
+受け入れ基準: 実測 1 のプログラムで 5 レーンの食い違いがテキストとして
+出ること。→ 満たした。
 
 ### D1 — interpreter の backtrace の穴埋め (依存なし・低コスト)
 

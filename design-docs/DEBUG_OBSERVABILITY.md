@@ -765,6 +765,15 @@ D3/D4 と「値を持つ文言」で VM が位置も backtrace も値も自分�
   `hide_frame` を足して backtrace から外す — thunk は vtable の
   スロットに置くための配管で、読者が書いたのはその上の method。
 
+**もう 1 つ隠れていた**: `ensures allocates(N)` 違反の文言。
+tree-walker は `Contract violation: \`ensures\` clause #1 of function
+\`leaky\`: retained 128 bytes, budget 0 bytes` と言うのに、VM と
+コンパイル側は `panic: retained ...` しか言えなかった (replay が
+隠していた)。静的な前半を `Terminator::PanicAllocBudget` の `head` で
+運び、`.rodata` の prefix ブロブに足して閉じた。この節だけ
+`(with ...)` の引数一覧を落とす — **実測値そのものが答え**で、
+引数の値はそこに足すものが無く、しかも他のエンジンには出せない。
+
 **残った差**: `dyn` 越しの method フレームは呼び出し行を持たない
 (thunk からの呼び出しは合成なので site が無い)。tree-walker なら
 `(called at line N)` が付く。VM とコンパイル側は一致している。

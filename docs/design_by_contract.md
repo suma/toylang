@@ -58,17 +58,35 @@ fn average(total: u64, count: u64) -> u64
 ```
 $ cargo run -q -p interpreter -- broken.t
 Runtime error occurred:
-Contract violation: `ensures` clause #1 of function `f` evaluated to false (with a = 1, b = 5, result = -4)
+Error at broken.t:2:13:
+   |
+ 2 |     ensures result > 0i64
+   |             ^^^^^^^^^^^^^ Contract violation: `ensures` clause #1 of function `f` evaluated to false (with a = 1, b = 5, result = -4)
+   |
+   = backtrace (innermost first):
+       f (called at line 6)
+       main
 ```
 
 `with ...` はそのとき実際に入っていた値で、これが原因究明のほぼ全部を
 持っていく。`clause #1` は**その種類の中での順番**なので、`requires` が
 2 つ `ensures` が 2 つある関数の `ensures` 2 番目は `#2` と出る。
 
-> **注意**: `&self` / `&mut self` と書いたメソッドでは、`with ...` に
-> **`self` の値が出ない**（引数は出る）。暗黙形の receiver は
-> パラメータリストに入らないため。`self: Self` と明示した形なら
-> `self = C { n: 1 }` のように表示される。
+破れた節の**位置**と、そこに至った**呼び出しの道**も出る。`requires`
+違反は呼び出し側の欠陥なので、後者は「どの呼び出しがその引数を渡したか」
+という問いにそのまま答える。
+
+**この 4 実行系すべてが同じ文言を出す** — tree-walker / IR VM /
+JIT / AOT。以前はコンパイル済みバイナリだけが
+`panic: requires violation` としか言えなかった。
+
+> **注意**: `with ...` に出るのは **scalar の引数だけ** (整数 / `f64` /
+> `bool` / 文字列)。struct・tuple・enum を受ける引数は出ない。
+> 全実行系で同じ文にするための規則で、片方がフィールドを並べ他方が
+> 省くくらいなら、どちらも出さない方がよいという判断による。
+> したがって `self` は基本的に出ない — `&self` / `&mut self` の暗黙形は
+> そもそもパラメータリストに入らず、`self: Self` と明示した形でも
+> 受け手が struct なら scalar ではないため。
 
 ---
 
@@ -137,7 +155,11 @@ fn scratch(n: u64) -> u64
 Contract violation: `ensures` clause #1 of function `leaky`: retained 128 bytes, budget 0 bytes
 ```
 
-これは 3 バックエンドで同じ文言になる（コンパイル済みバイナリも同じ）。
+これは 4 実行系すべてで同じ文言になる（コンパイル済みバイナリも同じ）。
+数値だけが実行時に決まるので、文の静的な前半はバイナリの `.rodata` に
+置かれ、ランタイムが間に実測値を書く。この節に限っては `with ...` の
+引数一覧が付かない — **実測値そのものが答え**であって、引数の値は
+そこに足すものが無いため。
 
 ### 生の式でも書ける
 
@@ -232,7 +254,7 @@ $ cargo run -q -p interpreter -- --check example.t
 FAILED  divide
     minimal counterexample: a = 1i64, b = 2i64
     Contract violation: `ensures` clause #1 of function `divide` evaluated to false (with a = 1, b = 2, result = 0)
-1 contracted function(s) checked, 1 failed  (seed: 0x18cdd50397c3b698; replay with --check --seed=0x18cdd50397c3b698)
+1 contracted function(s)/method(s) checked, 0 case(s), 1 failed  (seed: 0x18cdd50397c3b698; replay with --check --seed=0x18cdd50397c3b698)
 ```
 
 **書いた契約は必ず `--check` にかけること。** もっともらしい事後条件ほど
@@ -353,6 +375,12 @@ cranelift `speed`）。cranelift 自身にはこれができない — 事実は
 意図と範囲を限った例外にとどめる。
 
 なお `panic` / `assert` は**設計上どのモードでも常に有効**で、切る手段は無い。
+
+> **実装メモ**: `all` と `off` は IR にそのまま写る (lowering の
+> `release` フラグ) が、`pre` / `post` は写らない — IR には
+> 「事前だけ検査する」形が無い。その 2 つを指定したプログラムは
+> **IR VM ではなく tree-walker で走る**。速度は落ちるが、間違った
+> 検査で走らせるよりよい。
 
 ---
 

@@ -3974,6 +3974,12 @@ run (the equivalent of D's `-release`):
 
 Unrecognised values print a warning and fall back to `all`.
 
+`all` and `off` map straight onto the IR (they are the same switch
+`--release` throws). `pre` and `post` do not — the IR has no shape for
+"check only the preconditions" — so a program run under either of them
+executes on the tree-walker rather than the IR VM. It is slower, and it
+is the only way to run the checks the setting actually asked for.
+
 > **Operational guidance.** Keep `INTERPRETER_CONTRACTS=all` in
 > production unless a clause has measurable performance cost. Disabling
 > contracts (`pre` / `post` / `off`) is the very condition that tends
@@ -4010,8 +4016,43 @@ See [`JIT.md`](../design-docs/JIT.md) for the supported subset and limitations.
 
 ### Errors
 
-Runtime errors are formatted with source-location context where
-possible. Categories include: `TypeError`, `UndefinedVariable`,
+A failure that happens while the program runs prints the same thing
+whichever engine ran it — the position, the source line with a caret
+under what failed, and the path that reached it:
+
+```text
+Runtime error occurred:
+Error at demo.t:2:20:
+   |
+ 2 |     if n == 0u64 { panic("bottom") }
+   |                    ^^^^^ panic: bottom
+   |
+   = backtrace (innermost first):
+       f (x7, called at line 3)
+       main
+```
+
+The backtrace is innermost-first. Repeated frames — the same call from
+the same line — fold into one line with a count, so a deep recursion
+does not bury the message that explains it. Frames beyond a display
+budget are dropped from the middle with a count of what went missing,
+never silently.
+
+A failure inside an imported module names *that* file, not the one
+being run:
+
+```text
+Error at core/std/option.t:57:29:
+```
+
+`--release` keeps the position and drops the backtrace: the position is
+`.rodata` the program never reads unless it dies, while the backtrace
+costs a store per call.
+
+`--diagnostics=json` reports the same failure as data (see *Errors*
+under the CLI, above).
+
+Categories include: `TypeError`, `UndefinedVariable`,
 `ImmutableAssignment`, `IndexOutOfBounds`, `NullDereference`,
 `ContractViolation`, and a generic `InternalError` reserved for
 interpreter bugs.

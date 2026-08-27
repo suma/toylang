@@ -24,7 +24,13 @@
   (半端な `pre`/`post` は IR で表現できないので tree-walker に渡す)、
   (b) closure のフレーム名が合成関数名 (`main::closure_f_0`) だった、
   (c) **`dyn` dispatch の thunk がフレームに出ていた** (`Function::hide_frame`
-  で外す)。残る差は `dyn` 越しのフレームが呼び出し行を持たないこと。
+  で外す)、(d) `ensures allocates(N)` 違反の文言がコンパイル側だけ
+  短かった (静的な前半を `PanicAllocBudget` の `head` で運んで閉じた。
+  この節は `(with ...)` を落とす — 実測値そのものが答えなので)。
+  残る差は `dyn` 越しのフレームが呼び出し行を持たないこと。
+  **docs も更新** (`docs/design_by_contract.md` の診断例と scalar 限定の
+  規則、`docs/language.md` の実行時失敗の書式と `pre`/`post` が
+  tree-walker で走ること)。
 
 - **DEBUG-OBS: 値を持つ文言を全実行系に** — D0 の目標表が決めていた
   3 件 (`u64` underflow の `1 - 5` / 配列 OOB の `index 5, length 3` /

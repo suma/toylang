@@ -355,7 +355,7 @@ pub(crate) struct CodegenSession<M: Module> {
     /// DEBUG-OBS D3: the two static halves of a diagnostic frame,
     /// per site, for the one diverging terminator whose message is
     /// computed at run time (a violated allocation budget).
-    frame_strings: HashMap<Option<compiler_ir::SiteId>, (DataId, DataId)>,
+    frame_strings: HashMap<(Option<compiler_ir::SiteId>, Option<String>), (DataId, DataId)>,
     /// DEBUG-OBS D4: one `.rodata` record per backtrace frame —
     /// `{ u64 line; name bytes; 0 }`. The generated code pushes the
     /// record's address onto the shadow stack around each call.
@@ -1041,18 +1041,26 @@ impl<M: Module> CodegenSession<M> {
             std::collections::BTreeSet::new();
         let mut print_needed: std::collections::BTreeSet<DefaultSymbol> =
             std::collections::BTreeSet::new();
-        let mut budget_sites: std::collections::BTreeSet<Option<compiler_ir::SiteId>> =
-            std::collections::BTreeSet::new();
+        let mut budget_sites: std::collections::BTreeSet<(
+            Option<compiler_ir::SiteId>,
+            Option<String>,
+        )> = std::collections::BTreeSet::new();
         for func in &ir_module.functions {
             for blk in &func.blocks {
                 if let Some(Terminator::Panic { message, site }) = &blk.terminator {
                     panic_needed.insert((*message, *site));
                 }
                 match &blk.terminator {
-                    Some(Terminator::PanicAllocBudget { site, .. })
-                    | Some(Terminator::PanicValues { site, .. })
+                    // The head is part of the key: a budget violation
+                    // names its clause, and two clauses at one site
+                    // (there are none today, but nothing forbids it)
+                    // would otherwise share one blob.
+                    Some(Terminator::PanicAllocBudget { site, head, .. }) => {
+                        budget_sites.insert((*site, head.clone()));
+                    }
+                    Some(Terminator::PanicValues { site, .. })
                     | Some(Terminator::PanicStr { site, .. }) => {
-                        budget_sites.insert(*site);
+                        budget_sites.insert((*site, None));
                     }
                     _ => {}
                 }
@@ -1069,8 +1077,8 @@ impl<M: Module> CodegenSession<M> {
         for (sym, site) in panic_needed {
             self.declare_panic_string(sym, site, ir_module, interner)?;
         }
-        for site in budget_sites {
-            self.declare_frame_strings(site, ir_module)?;
+        for (site, head) in budget_sites {
+            self.declare_frame_strings(site, head.as_deref(), ir_module)?;
         }
         self.declare_shadow_frames(ir_module)?;
         for sym in print_needed {
@@ -1388,21 +1396,28 @@ impl<M: Module> CodegenSession<M> {
     fn declare_frame_strings(
         &mut self,
         site: Option<compiler_ir::SiteId>,
+        head: Option<&str>,
         ir_module: &IrModule,
     ) -> Result<(), String> {
-        if self.frame_strings.contains_key(&site) {
+        let key = (site, head.map(str::to_string));
+        if self.frame_strings.contains_key(&key) {
             return Ok(());
         }
         let tag = site.map(|s| s.0).unwrap_or(u32::MAX);
+        let suffix_id = self.frame_strings.len();
+        let mut prefix_bytes = ir_module.render_stderr_prefix(site).into_bytes();
+        // The static head of a budget violation's sentence rides in
+        // front of the readings the helper formats.
+        prefix_bytes.extend_from_slice(head.unwrap_or("").as_bytes());
         let prefix = self.declare_blob(
-            &format!("toy_frame_pre_{tag}"),
-            ir_module.render_stderr_prefix(site).into_bytes(),
+            &format!("toy_frame_pre_{tag}_{suffix_id}"),
+            prefix_bytes,
         )?;
         let suffix = self.declare_blob(
-            &format!("toy_frame_suf_{tag}"),
+            &format!("toy_frame_suf_{tag}_{suffix_id}"),
             ir_module.render_stderr_suffix(site).into_bytes(),
         )?;
-        self.frame_strings.insert(site, (prefix, suffix));
+        self.frame_strings.insert(key, (prefix, suffix));
         Ok(())
     }
 
@@ -1956,7 +1971,7 @@ struct LowerCtx<'a, 'b> {
     /// Same idea for the frame halves around a budget violation's
     /// computed message (DEBUG-OBS D3).
     frame_imports: &'a HashMap<
-        Option<compiler_ir::SiteId>,
+        (Option<compiler_ir::SiteId>, Option<String>),
         (cranelift_codegen::ir::GlobalValue, cranelift_codegen::ir::GlobalValue),
     >,
     /// DEBUG-OBS D4: shadow-stack globals and frame records, or `None`
@@ -2045,7 +2060,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             cranelift_codegen::ir::GlobalValue,
         >,
         frame_imports: &'a HashMap<
-            Option<compiler_ir::SiteId>,
+            (Option<compiler_ir::SiteId>, Option<String>),
             (cranelift_codegen::ir::GlobalValue, cranelift_codegen::ir::GlobalValue),
         >,
         shadow: &'a Option<ShadowImports>,
@@ -2287,7 +2302,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let msg = self.value(*message);
                 let (pre_gv, suf_gv) = *self
                     .frame_imports
-                    .get(site)
+                    .get(&(*site, None))
                     .ok_or_else(|| "missing frame import for a dynamic panic".to_string())?;
                 let pre = self.builder.ins().symbol_value(types::I64, pre_gv);
                 let suf = self.builder.ins().symbol_value(types::I64, suf_gv);
@@ -2304,7 +2319,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let b_v = self.value(*b);
                 let (pre_gv, suf_gv) = *self
                     .frame_imports
-                    .get(site)
+                    .get(&(*site, None))
                     .ok_or_else(|| "missing frame import for a value trap".to_string())?;
                 let pre = self.builder.ins().symbol_value(types::I64, pre_gv);
                 let suf = self.builder.ins().symbol_value(types::I64, suf_gv);
@@ -2315,7 +2330,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     .ins()
                     .trap(cranelift_codegen::ir::TrapCode::user(1).expect("non-zero"));
             }
-            Terminator::PanicAllocBudget { stat, entry, current, limit, site } => {
+            Terminator::PanicAllocBudget { stat, entry, current, limit, site, head } => {
                 // ALLOC-CONTRACT-SUGAR: hand the three readings to the
                 // runtime, which formats and exits. Same trailing trap
                 // as `Panic` — the helper does not return, but
@@ -2329,7 +2344,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 // reads like every other diagnostic.
                 let (pre_gv, suf_gv) = *self
                     .frame_imports
-                    .get(site)
+                    .get(&(*site, head.clone()))
                     .ok_or_else(|| "missing frame import for a budget site".to_string())?;
                 let pre = self.builder.ins().symbol_value(types::I64, pre_gv);
                 let suf = self.builder.ins().symbol_value(types::I64, suf_gv);

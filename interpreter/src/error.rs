@@ -133,7 +133,13 @@ impl fmt::Display for InterpreterError {
                 // LLM-LOOP P6: the values the predicate saw. Which
                 // clause failed is only half the answer; this is the
                 // other half, and it is the half that says what to fix.
-                if !bindings.is_empty() {
+                //
+                // Not for a clause the compiler wrote (DEBUG-OBS): a
+                // budget violation's `detail` already *is* the values
+                // that matter, and appending the parameter list on top
+                // adds noise — noise no other engine can produce, so
+                // the sentence would differ by engine on top of that.
+                if detail.is_none() && !bindings.is_empty() {
                     let rendered = bindings
                         .iter()
                         .map(|(name, value)| format!("{name} = {value}"))

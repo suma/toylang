@@ -2508,12 +2508,23 @@ impl<'a> FunctionLower<'a> {
         // violation — nothing is being lowered when this fires, so
         // `current_site` would say nothing at all.
         let site = self.site_of(clause);
+        // DEBUG-OBS: the same sentence the tree-walker writes. The
+        // static half — which clause of which function — travels with
+        // the terminator; the runtime helper fills in the readings.
+        let head = self.contract_report.as_ref().map(|r| {
+            format!(
+                "Contract violation: `ensures` clause #{} of function `{}`: ",
+                clause_index + 1,
+                r.function
+            )
+        });
         self.terminate(Terminator::PanicAllocBudget {
             stat: stat.code(),
             entry,
             current,
             limit,
             site,
+            head,
         });
         self.switch_to(pass);
         Ok(())

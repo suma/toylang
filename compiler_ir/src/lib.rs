@@ -2169,6 +2169,10 @@ pub enum Terminator {
         current: ValueId,
         limit: ValueId,
         site: Option<SiteId>,
+        /// The static half of the sentence — which clause of which
+        /// function — since only the readings are computed at run
+        /// time. `None` when the lowering pass had no name to give it.
+        head: Option<String>,
     },
     /// Generic divergence — not currently emitted by lowering, but kept
     /// as a fall-through for future codegen needs (e.g. the unreachable

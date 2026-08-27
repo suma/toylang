@@ -1182,6 +1182,11 @@ unsafe fn write_cstr_fd(fd: i32, p: *const u8) {
 
 /// ALLOC-CONTRACT-SUGAR: report a violated allocation budget and stop.
 ///
+/// The `panic: ` prefix is *not* written here: the caller's `prefix`
+/// blob carries the sentence's static head — which clause of which
+/// function — and that already announces itself the way the
+/// tree-walker's does (DEBUG-OBS).
+///
 /// `Terminator::Panic` can only carry a static message, so a compiled
 /// binary could say "ensures violation" and nothing else; this takes
 /// the readings and formats them the way the interpreter does.
@@ -1215,27 +1220,27 @@ pub unsafe extern "C" fn toy_panic_alloc_budget(
         // MemStat::CumulativeBytes
         3 => core::fmt::write(
             &mut buf,
-            format_args!("panic: requested {used} bytes, budget {budget} bytes"),
+            format_args!("requested {used} bytes, budget {budget} bytes"),
         ),
         // MemStat::LiveBytes
         4 => core::fmt::write(
             &mut buf,
-            format_args!("panic: retained {used} bytes, budget {budget} bytes"),
+            format_args!("retained {used} bytes, budget {budget} bytes"),
         ),
         // MemStat::AllocCount
         0 => core::fmt::write(
             &mut buf,
-            format_args!("panic: made {used} allocations, budget {budget}"),
+            format_args!("made {used} allocations, budget {budget}"),
         ),
         _ => core::fmt::write(
             &mut buf,
-            format_args!("panic: allocation budget exceeded: {used} over {budget}"),
+            format_args!("allocation budget exceeded: {used} over {budget}"),
         ),
     };
     if written.is_ok() {
         write_fd(2, buf.as_slice());
     } else {
-        err_write("panic: allocation budget exceeded");
+        err_write("allocation budget exceeded");
     }
     unsafe { write_cstr_fd(2, suffix) };
     write_backtrace();

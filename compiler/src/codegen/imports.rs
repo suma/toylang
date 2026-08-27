@@ -76,29 +76,27 @@ impl<M: Module> CodegenSession<M> {
         func_id: FuncId,
         func: &mut cranelift_codegen::ir::Function,
     ) -> HashMap<
-        Option<compiler_ir::SiteId>,
+        (Option<compiler_ir::SiteId>, Option<String>),
         (cranelift_codegen::ir::GlobalValue, cranelift_codegen::ir::GlobalValue),
     > {
         let mut imports = HashMap::new();
         let ir_func = ir_module.function(func_id);
         for blk in &ir_func.blocks {
-            let site = match &blk.terminator {
-                Some(Terminator::PanicAllocBudget { site, .. })
-                | Some(Terminator::PanicValues { site, .. })
-                | Some(Terminator::PanicStr { site, .. }) => site,
+            let key = match &blk.terminator {
+                Some(Terminator::PanicAllocBudget { site, head, .. }) => (*site, head.clone()),
+                Some(Terminator::PanicValues { site, .. })
+                | Some(Terminator::PanicStr { site, .. }) => (*site, None),
                 _ => continue,
             };
-            {
-                if imports.contains_key(site) {
-                    continue;
-                }
-                let Some((prefix, suffix)) = self.frame_strings.get(site).copied() else {
-                    continue;
-                };
-                let prefix_gv = self.declare_data_in_func_readonly(prefix, func);
-                let suffix_gv = self.declare_data_in_func_readonly(suffix, func);
-                imports.insert(*site, (prefix_gv, suffix_gv));
+            if imports.contains_key(&key) {
+                continue;
             }
+            let Some((prefix, suffix)) = self.frame_strings.get(&key).copied() else {
+                continue;
+            };
+            let prefix_gv = self.declare_data_in_func_readonly(prefix, func);
+            let suffix_gv = self.declare_data_in_func_readonly(suffix, func);
+            imports.insert(key, (prefix_gv, suffix_gv));
         }
         imports
     }

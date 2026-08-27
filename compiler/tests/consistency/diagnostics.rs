@@ -190,3 +190,24 @@ fn main() -> u64 {
 "#;
     assert_diagnostic_consistent(source, "a_vec_read_past_the_end");
 }
+
+/// A violated allocation budget (ALLOC-CONTRACT-SUGAR).
+///
+/// The only diagnostic whose numbers are not known until it fires, so
+/// its sentence is assembled from a static head laid in `.rodata` and
+/// readings the runtime formats between it and the frame's tail. That
+/// seam is exactly where the engines could drift apart, and nothing
+/// but a comparison would notice.
+#[test]
+fn a_violated_allocation_budget() {
+    let source = r#"
+fn grow() -> u64
+    ensures allocates(0u64)
+{
+    val p: ptr = __builtin_heap_alloc(64u64)
+    1u64
+}
+fn main() -> u64 { grow() }
+"#;
+    assert_diagnostic_consistent(source, "a_violated_allocation_budget");
+}

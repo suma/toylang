@@ -15,7 +15,60 @@ use crate::ir::{BinOp, Const, InstKind, Type as IrType, UnaryOp};
 use super::{flatten_struct_to_cranelift_tys, ir_to_cranelift_ty, LowerCtx};
 
 impl<'a, 'b> LowerCtx<'a, 'b> {
+    /// DEBUG-OBS D4: keep the shadow stack around this instruction.
+    ///
+    /// Wrapping here rather than in each of the call arms is the point:
+    /// there are eleven of them, and one forgetting to push is a frame
+    /// missing from a backtrace with nothing to make it obvious.
     pub(super) fn lower_instruction(
+        &mut self,
+        inst: &crate::ir::Instruction,
+    ) -> Result<(), String> {
+        let saved_depth = inst.frame.and_then(|id| self.emit_frame_push(id));
+        let result = self.lower_instruction_inner(inst);
+        if let Some(depth) = saved_depth {
+            self.emit_frame_pop(depth);
+        }
+        result
+    }
+
+    /// `slot = &record; depth = mine + 1` — two stores, both to
+    /// addresses computed once in the prologue.
+    ///
+    /// The first shape did the whole computation per call (load the
+    /// depth, mask it, scale it, add it to the base, store, increment,
+    /// store) and cost **48% on `fib(32)`**, an order over the 5%
+    /// budget `DEBUG_OBSERVABILITY.md` D4 set. Everything but the two
+    /// stores is loop-invariant across a function body, because a
+    /// callee restores the depth it found: one function activation
+    /// occupies one slot no matter how many calls it makes. Hoisting
+    /// that into [`ShadowPrologue`] leaves two stores here and one in
+    /// the pop.
+    fn emit_frame_push(
+        &mut self,
+        frame: compiler_ir::FrameId,
+    ) -> Option<cranelift_codegen::ir::Value> {
+        let shadow = self.shadow.as_ref()?;
+        let record = *shadow.frames.get(&frame)?;
+        let prologue = self.shadow_prologue?;
+        let flags = cranelift_codegen::ir::MemFlags::trusted();
+        let record_addr = self.builder.ins().symbol_value(types::I64, record);
+        self.builder.ins().store(flags, record_addr, prologue.slot, 0);
+        self.builder
+            .ins()
+            .store(flags, prologue.inner_depth, prologue.depth_addr, 0);
+        Some(prologue.my_depth)
+    }
+
+    fn emit_frame_pop(&mut self, my_depth: cranelift_codegen::ir::Value) {
+        let Some(prologue) = self.shadow_prologue else { return };
+        let flags = cranelift_codegen::ir::MemFlags::trusted();
+        self.builder
+            .ins()
+            .store(flags, my_depth, prologue.depth_addr, 0);
+    }
+
+    fn lower_instruction_inner(
         &mut self,
         inst: &crate::ir::Instruction,
     ) -> Result<(), String> {

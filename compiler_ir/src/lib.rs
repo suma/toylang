@@ -142,6 +142,10 @@ pub struct Module {
     pub files: Vec<String>,
     /// Every position a diverging terminator can report.
     pub sites: Vec<Site>,
+    /// DEBUG-OBS D4: every frame a backtrace can name. Populated only
+    /// when the lowering pass was asked for debug info; a `--release`
+    /// build leaves it empty and emits no shadow-stack traffic.
+    pub frames: Vec<Frame>,
 }
 
 /// One struct's full shape — fields keep their declared order
@@ -224,6 +228,53 @@ impl Module {
         self.sites.get(id.0 as usize)
     }
 
+    /// Record a backtrace frame and return its id, reusing an
+    /// identical one — the same call written once is one frame however
+    /// many times it runs.
+    pub fn intern_frame(&mut self, name: &str, site: Option<SiteId>) -> FrameId {
+        let frame = Frame { name: name.to_string(), site };
+        match self.frames.iter().position(|f| *f == frame) {
+            Some(i) => FrameId(i as u32),
+            None => {
+                self.frames.push(frame);
+                FrameId(self.frames.len() as u32 - 1)
+            }
+        }
+    }
+
+    /// Name this function by what the user wrote.
+    pub fn set_display_name(&mut self, id: FuncId, name: String) {
+        self.functions[id.0 as usize].display_name = Some(name);
+    }
+
+    /// The backtrace name for a function.
+    ///
+    /// Falls back to unmangling the export name: `toy_` comes off the
+    /// front and `__` becomes `::`, which turns `toy_io__read_line`
+    /// into `io::read_line` and leaves `main` alone. Sites that mangle
+    /// type arguments into the name set [`Function::display_name`]
+    /// instead, because there is no unmangling those.
+    pub fn frame_name(&self, id: FuncId) -> String {
+        let func = &self.functions[id.0 as usize];
+        if let Some(name) = &func.display_name {
+            return name.clone();
+        }
+        func.export_name
+            .strip_prefix("toy_")
+            .unwrap_or(&func.export_name)
+            .replace("__", "::")
+    }
+
+    pub fn frame(&self, id: FrameId) -> Option<&Frame> {
+        self.frames.get(id.0 as usize)
+    }
+
+    /// The line a frame was entered from, if its site is known.
+    pub fn frame_line(&self, id: FrameId) -> Option<u32> {
+        let frame = self.frame(id)?;
+        Some(self.site(frame.site?)?.line)
+    }
+
     /// The diagnostic body for a diverging site: the framed excerpt
     /// when the position is known, the bare message when it is not.
     ///
@@ -252,9 +303,13 @@ impl Module {
         }
     }
 
-    /// Exactly the bytes a failing run writes to stderr, header
-    /// included. Used by the compiled backends, which have no
+    /// Exactly the bytes a failing run writes to stderr *before* its
+    /// backtrace. Used by the compiled backends, which have no
     /// formatter to hand and lay this down as a `.rodata` blob.
+    ///
+    /// No trailing newline: the runtime writes the backtrace (which
+    /// may be empty) and then closes the line, so a compiled panic and
+    /// an interpreted one end the same way (DEBUG-OBS D4).
     pub fn render_stderr_text(&self, site: Option<SiteId>, message: &str) -> String {
         format!(
             "{}{message}{}",
@@ -290,12 +345,13 @@ impl Module {
         }
     }
 
-    /// The static tail: closes the frame when there is one, and ends
-    /// the line either way.
+    /// The static tail: closes the frame when there is one, and
+    /// nothing otherwise. The newline is the runtime's, written after
+    /// the backtrace.
     pub fn render_stderr_suffix(&self, site: Option<SiteId>) -> String {
         match site.and_then(|id| self.site(id)) {
-            Some(_) => format!("{FRAME_SUFFIX}\n"),
-            None => "\n".to_string(),
+            Some(_) => FRAME_SUFFIX.to_string(),
+            None => String::new(),
         }
     }
 
@@ -327,6 +383,7 @@ impl Module {
         self.functions.push(Function {
             symbol,
             export_name,
+            display_name: None,
             linkage,
             params,
             param_is_ref: Vec::new(),
@@ -373,6 +430,7 @@ impl Module {
         self.functions.push(Function {
             symbol,
             export_name,
+            display_name: None,
             linkage,
             params,
             param_is_ref: Vec::new(),
@@ -472,6 +530,22 @@ impl Module {
             }
         }
         seen
+    }
+
+    /// The callee of a direct call, if the instruction is one.
+    ///
+    /// Distinct from [`Self::call_edges`], which also answers for
+    /// things that merely *take* a function's address.
+    pub fn direct_call_target(kind: &InstKind) -> Option<FuncId> {
+        match kind {
+            InstKind::Call { target, .. }
+            | InstKind::CallStruct { target, .. }
+            | InstKind::CallTuple { target, .. }
+            | InstKind::CallEnum { target, .. }
+            | InstKind::CallWithSelfWriteback { target, .. }
+            | InstKind::CallWithSelfWritebackCompound { target, .. } => Some(*target),
+            _ => None,
+        }
     }
 
     /// The `FuncId`s an instruction can transfer control to (statically).
@@ -647,6 +721,11 @@ pub struct Function {
     /// so the system runtime invokes it as the entry point; everything
     /// else gets a `toy_` prefix to avoid colliding with libc symbols.
     pub export_name: String,
+    /// DEBUG-OBS D4: what a backtrace calls this function — `S::boom`
+    /// where the mangled name is `toy_S__boom`. `None` when the
+    /// declaring site had nothing better to say than the mangled name,
+    /// in which case [`Module::frame_name`] unmangles it.
+    pub display_name: Option<String>,
     pub linkage: Linkage,
     /// Parameter types in declaration order. The corresponding `LocalId`s
     /// are `LocalId(0)..LocalId(params.len())`.
@@ -806,6 +885,23 @@ pub struct Site {
     pub snippet: Option<String>,
 }
 
+/// One entry a backtrace can show (DEBUG-OBS D4).
+///
+/// `name` is what the user calls the function — `S::boom`, not the
+/// mangled `toy_S__boom` — and `site` is the position of the *call*,
+/// so a frame reads "this function, entered from that line". That
+/// pairing is why frames are recorded at call sites rather than at
+/// function entries: the callee cannot know where it was called from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Frame {
+    pub name: String,
+    pub site: Option<SiteId>,
+}
+
+/// Index into [`Module::frames`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FrameId(pub u32);
+
 /// Index into [`Module::sites`].
 ///
 /// `Option<SiteId>` rather than a sentinel: lowering synthesizes plenty
@@ -884,6 +980,75 @@ pub fn format_diagnostic_frame_prefix(
 
 /// Closes a frame: the trailing gutter line under the caret.
 pub const FRAME_SUFFIX: &str = "\n   |";
+
+/// One line of a backtrace: a function and the line it was entered
+/// from (DEBUG-OBS D1 / D4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BacktraceEntry<'a> {
+    pub name: &'a str,
+    /// `None` for a frame nothing called — the entry function.
+    pub line: Option<u32>,
+}
+
+/// How many folded frames a backtrace shows at each end before the
+/// middle is elided. Shared so every engine cuts in the same place.
+pub const BACKTRACE_HEAD: usize = 10;
+pub const BACKTRACE_TAIL: usize = 5;
+
+/// Render a backtrace, innermost first.
+///
+/// Consecutive frames that are the same call from the same line are
+/// folded into one line with a count: a recursion of depth 7 says so
+/// once instead of seven times. Past the head/tail budget the middle
+/// is dropped with a count of what went missing — never silently.
+///
+/// The single implementation for the tree-walker, the IR VM and (in a
+/// hand-copied no_std form) the compiled runtime.
+pub fn render_backtrace(entries: &[BacktraceEntry<'_>]) -> String {
+    if entries.is_empty() {
+        return String::new();
+    }
+    let folded = fold_backtrace(entries);
+    let mut out = String::from("\n   = backtrace (innermost first):");
+    let elided = folded.len().saturating_sub(BACKTRACE_HEAD + BACKTRACE_TAIL);
+    for (i, line) in folded.iter().enumerate() {
+        if elided > 0 && i == BACKTRACE_HEAD {
+            out.push_str(&format!("\n       ... {elided} frames elided"));
+        }
+        if elided > 0 && i >= BACKTRACE_HEAD && i < BACKTRACE_HEAD + elided {
+            continue;
+        }
+        out.push_str(&format!("\n       {line}"));
+    }
+    out
+}
+
+/// Collapse runs of the same (function, line) into one rendered line.
+fn fold_backtrace(entries: &[BacktraceEntry<'_>]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < entries.len() {
+        let entry = entries[i];
+        let mut repeats = 1;
+        while i + repeats < entries.len() && entries[i + repeats] == entry {
+            repeats += 1;
+        }
+        out.push(format_backtrace_line(entry.name, entry.line, repeats));
+        i += repeats;
+    }
+    out
+}
+
+/// One backtrace line: `f`, `f (called at line 3)`, `f (x7, called at
+/// line 3)`.
+pub fn format_backtrace_line(name: &str, line: Option<u32>, repeats: usize) -> String {
+    match (line, repeats) {
+        (Some(line), 1) => format!("{name} (called at line {line})"),
+        (Some(line), n) => format!("{name} (x{n}, called at line {line})"),
+        (None, 1) => name.to_string(),
+        (None, n) => format!("{name} (x{n})"),
+    }
+}
 
 pub const MEM_STAT_NAMES: [&str; 6] = [
     "alloc_count",
@@ -1084,6 +1249,15 @@ pub struct Instruction {
     /// "void" instructions (e.g. `StoreLocal`).
     pub result: Option<(ValueId, Type)>,
     pub kind: InstKind,
+    /// DEBUG-OBS D4: for a call, the frame it enters. `None` for
+    /// everything else, and for calls with no statically known callee
+    /// (a closure, a `dyn` dispatch) — a frame nobody can name is
+    /// better left off than guessed at.
+    ///
+    /// Deliberately on `Instruction` rather than inside each of the
+    /// eleven call variants: one field, one place to set it, and the
+    /// IR's printed form is unchanged.
+    pub frame: Option<FrameId>,
 }
 
 #[derive(Debug, Clone)]
@@ -2413,7 +2587,7 @@ mod allocator_binding_tests {
         // And with no position, both shapes are the bare message.
         assert_eq!(
             m.render_stderr_text(None, "panic: gone wrong"),
-            "Runtime error occurred:\npanic: gone wrong\n"
+            "Runtime error occurred:\npanic: gone wrong"
         );
     }
 

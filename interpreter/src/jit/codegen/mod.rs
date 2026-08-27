@@ -36,6 +36,7 @@ use self::ty::ir_type;
 pub fn translate_function<M: Module>(
     module: &mut M,
     program: &File,
+    interner: &string_interner::DefaultStringInterner,
     source: &MonomorphSource,
     sig: &FuncSignature,
     func_signatures: &HashMap<MonoKey, FuncSignature>,
@@ -168,6 +169,7 @@ pub fn translate_function<M: Module>(
 
     let mut state = State {
         program,
+        interner,
         builder,
         local_types: &mut local_types,
         local_vars: &mut local_vars,
@@ -188,6 +190,16 @@ pub fn translate_function<M: Module>(
         terminated: false,
         with_depth: 0,
     };
+
+    // DEBUG-OBS D4: the entry function pushes its own frame. Nothing
+    // calls `main`, so no call site does it, and a backtrace that
+    // stopped one frame short of the bottom would read as truncated.
+    if let MonomorphSource::Function(f) = source {
+        if interner.resolve(f.name) == Some("main") {
+            let record = super::frame_record("main", 0);
+            state.emit_frame_push(record);
+        }
+    }
 
     // Struct returns take a different path: the body's last expression
     // must produce a struct value (Identifier of a struct local, or a
@@ -624,6 +636,9 @@ fn gather_struct_values(
 
 struct State<'a, 'b> {
     program: &'a File,
+    /// DEBUG-OBS D4: needed to name a backtrace frame after what the
+    /// user wrote (`S::boom`), which only the interner can say.
+    interner: &'a string_interner::DefaultStringInterner,
     builder: FunctionBuilder<'b>,
     local_types: &'a mut HashMap<DefaultSymbol, ScalarTy>,
     local_vars: &'a mut HashMap<DefaultSymbol, Variable>,
@@ -829,6 +844,63 @@ impl<'a, 'b> State<'a, 'b> {
 
     /// Binary and unary operators, including the `==` / `!=` dispatch to
     /// `toy_str_eq` for str operands.
+    /// DEBUG-OBS D4: keep the runtime's shadow stack up to date across
+    /// one call, so a panic underneath it can name this frame.
+    ///
+    /// Writes the same globals `toylang_rt` exposes to the AOT
+    /// backend — one shadow stack, one renderer, whichever engine is
+    /// running. The addresses go in as constants because this JIT has
+    /// no data objects at all; everything static it needs is a leaked
+    /// allocation and an `iconst`.
+    fn push_frame(&mut self, call: &ExprRef) -> Option<Value> {
+        let key = self.call_targets.get(call)?;
+        let name = super::frame_name_for(self.interner, key);
+        let line = self
+            .program
+            .location_pool
+            .get_expr_location(call)
+            .map(|loc| loc.line)
+            .unwrap_or(0);
+        let record = super::frame_record(&name, line);
+        Some(self.emit_frame_push(record))
+    }
+
+    fn emit_frame_push(&mut self, record: *const u8) -> Value {
+        let flags = cranelift_codegen::ir::MemFlags::trusted();
+        let stack_addr = self.builder.ins().iconst(
+            types::I64,
+            (&raw const toylang_rt::toy_shadow_stack) as i64,
+        );
+        let depth_addr = self
+            .builder
+            .ins()
+            .iconst(types::I64, (&raw const toylang_rt::toy_shadow_depth) as i64);
+        let record_v = self.builder.ins().iconst(types::I64, record as i64);
+        let depth = self.builder.ins().load(types::I64, flags, depth_addr, 0);
+        let masked = self
+            .builder
+            .ins()
+            .band_imm(depth, (toylang_rt::TOY_SHADOW_CAP as i64) - 1);
+        let offset = self.builder.ins().imul_imm(masked, 8);
+        let slot = self.builder.ins().iadd(stack_addr, offset);
+        self.builder.ins().store(flags, record_v, slot, 0);
+        let next = self.builder.ins().iadd_imm(depth, 1);
+        self.builder.ins().store(flags, next, depth_addr, 0);
+        depth
+    }
+
+    /// Restore the depth this call found. The callee has already
+    /// undone its own pushes, so there is nothing to re-read.
+    fn pop_frame(&mut self, saved: Option<Value>) {
+        let Some(saved) = saved else { return };
+        let flags = cranelift_codegen::ir::MemFlags::trusted();
+        let depth_addr = self
+            .builder
+            .ins()
+            .iconst(types::I64, (&raw const toylang_rt::toy_shadow_depth) as i64);
+        self.builder.ins().store(flags, saved, depth_addr, 0);
+    }
+
     /// The two static halves of a diagnostic frame for `expr_ref`
     /// (DEBUG-OBS D3), as `'static` slices the compiled code can point
     /// at.
@@ -839,7 +911,7 @@ impl<'a, 'b> State<'a, 'b> {
     /// of leaks is bounded by the number of compiled trap sites.
     fn frame_halves(&self, expr_ref: &ExprRef) -> (&'static str, &'static str) {
         let Some(loc) = self.program.location_pool.get_expr_location(expr_ref).copied() else {
-            return ("Runtime error occurred:\n", "\n");
+            return ("Runtime error occurred:\n", "");
         };
         let file = self.program.source_map.get(loc.file);
         let path = match file.map(|f| f.path.as_str()) {
@@ -861,7 +933,7 @@ impl<'a, 'b> State<'a, 'b> {
         );
         (
             Box::leak(prefix.into_boxed_str()),
-            Box::leak(format!("{}\n", compiler_ir::FRAME_SUFFIX).into_boxed_str()),
+            Box::leak(compiler_ir::FRAME_SUFFIX.to_string().into_boxed_str()),
         )
     }
 
@@ -1702,7 +1774,9 @@ impl<'a, 'b> State<'a, 'b> {
                     .func_refs
                     .get(&target_key)
                     .ok_or_else(|| "unresolved function reference in JIT".to_string())?;
+                let saved = self.push_frame(expr_ref);
                 let call = self.builder.ins().call(func_ref, &arg_values);
+                self.pop_frame(saved);
                 let results = self.builder.inst_results(call).to_vec();
                 if results.is_empty() {
                     Ok(None)
@@ -2417,7 +2491,9 @@ impl<'a, 'b> State<'a, 'b> {
                     .func_refs
                     .get(&target_key)
                     .ok_or_else(|| "unresolved function reference in JIT".to_string())?;
+                let saved = self.push_frame(value_ref);
                 let call = self.builder.ins().call(func_ref, &arg_values);
+                self.pop_frame(saved);
                 let results = self.builder.inst_results(call).to_vec();
                 if results.len() != fields.len() {
                     return Err(
@@ -2511,7 +2587,9 @@ impl<'a, 'b> State<'a, 'b> {
                     .func_refs
                     .get(&target_key)
                     .ok_or_else(|| "unresolved function reference in JIT".to_string())?;
+                let saved = self.push_frame(value_ref);
                 let call = self.builder.ins().call(func_ref, &arg_values);
+                self.pop_frame(saved);
                 let results = self.builder.inst_results(call).to_vec();
                 if results.len() != element_tys.len() {
                     return Err(

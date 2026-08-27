@@ -17,7 +17,7 @@ D2 を飛ばして D3 だけが landing し、**ファイル名の無い行番�
 | **D1** | interpreter の backtrace の穴埋め (method / closure / `main` / 行番号 / 折り畳み) | ✅ 2026-08-27 |
 | **D2** | `FileId` + `SourceMap` — 位置に「どのファイルか」を持たせる | ✅ 2026-08-27 |
 | **D3** | IR の `SiteId` — 4 実行系すべてが panic 位置を言う (release でもコスト 0) | ✅ 2026-08-27 |
-| **D4** | shadow stack (`-g`) — AOT / JIT の backtrace | 📋 |
+| **D4** | shadow stack — AOT / JIT の backtrace | ✅ 2026-08-27 |
 | **D5** | ユーザから触れる API と機械可読出力 | 📋 |
 | **D6** | 再帰深度の診断 / stdlib の境界チェック | 📋 |
 
@@ -541,16 +541,71 @@ Error at core/std/option.t:57:29:
   tree-walker で再実行する。tree-walker の方が backtrace と契約の実値を
   持つからで、これを落とすのは VM が backtrace を出せる D4 と一緒。
 
-### D4 — shadow stack (`-g`)
+### D4 — shadow stack ✅ (2026-08-27)
 
-1. `toylang_rt` にスレッドローカルの `SiteId` 配列 + 深さ。
-2. codegen が呼び出しの前後で push/pop を出す (`-g` のときだけ)。
-3. `toy_panic` が shadow stack を D1 と同じ規則 (折り畳み・上限) で描く。
-4. **コストを測って本文書に記録する** — `fib` / `example/` の代表 3 本で
-   `-g` 有無の実行時間。5% を超えるなら push/pop の形を見直す。
+1. `toylang_rt` に frame ポインタ配列 + 深さ (`toy_shadow_stack` /
+   `toy_shadow_depth`)。**スレッドローカルではなく素の static** —
+   この言語にスレッドは無い。増えたらここが `#[thread_local]` になり、
+   codegen のアドレッシングも一緒に変わる。
+2. codegen が呼び出しの前後で push/pop を出す (`--release` では出さない)。
+3. `toy_panic_at` / `toy_panic_alloc_budget` が shadow stack を D1 と
+   同じ規則 (折り畳み・上限) で描く。
+4. コストを測った (下記)。
 
-受け入れ基準: D0 のレーンが backtrace まで含めて全レーン一致。
-`--release` では backtrace 行が消え、位置は残る。
+受け入れ基準: D0 のレーンが backtrace まで含めて全レーン一致。→ 満たした。
+`panic_three_calls_deep` / `panic_inside_the_stdlib` は
+**5 レーン完全一致**になり、pin が両方向検査で「一致したので
+`assert_diagnostic_consistent` に置き換えよ」と言って落ちた (D0 の設計どおり)。
+`--release` では backtrace 行が消え、位置は残る (`e2e.rs` が pin)。
+
+実装で決めたこと:
+
+- **frame は呼び出し側で積む。** 積む中身は「呼ばれる関数の名前 +
+  呼び出しの行」で、後者は callee には分からない。おかげで
+  レンダリングは D1 の tree-walker と同形になる
+  (`c (called at line 3)` → ... → `main`)。
+- **`Instruction` に `frame: Option<FrameId>` を 1 つ足した。**
+  call の IR variant は 11 個あり、そのどれかで push を忘れるのは
+  「backtrace からフレームが 1 つ消えるが誰も気づかない」という、
+  この Phase がまさに潰したい壊れ方。1 フィールド 1 箇所にすれば
+  忘れようがない。IR の印字も変わらない。
+- **名前は `Module::frame_name`** — `display_name` が set されていれば
+  それ、無ければ export 名を戻す (`toy_` を剥がして `__` → `::`)。
+  method は monomorph の型引数が名前に入るので **宣言時に
+  `display_name` を set** している。
+- **IR VM は shadow stack を使わない** — 自前の `frames` を持っているので、
+  各フレームが「どの call で入ったか」を覚えるだけで済む。
+- **interpreter JIT は同じ runtime globals を書く。** レンダラは 1 つ。
+- **`main` は自分でフレームを積む** (誰も呼ばないので)。
+
+#### コスト (実測、2026-08-27)
+
+`--release` (frame 無し) を基準に、契約を持たないプログラムで比較。
+
+| プログラム | 既定 | `--release` | 差 |
+|---|---|---|---|
+| `fib(32)` (呼び出しだけ) | 26.1 ms | 13.3 ms | **+96%** |
+| collatz 30 万件 (再帰 + 算術) | 262 ms | 212 ms | **+24%** |
+| `Vec` push/get 20 万件 (呼び出しが薄い) | 4.2 ms | 4.2 ms | **+1%** |
+
+**5% の予算は呼び出し密度の高いコードでは達成できない。** 文書の指示
+どおり push/pop の形を見直し、不変部分 (スロットのアドレス、深さの
+2 値) を関数プロローグに巻き上げて呼び出しあたり 7 命令 → 2 ストアに
+した — が、**測定値はほぼ変わらなかった** (26.08 → 25.93 ms)。
+コストは算術ではなく、**グローバルへの store と、次の callee が
+それを load することで生じる直列な依存鎖**だからで、これは
+「callee が自分の深さを知る必要がある」という shadow stack の
+定義そのものから出てくる。B 案 (frame pointer unwind) に替えても
+行番号のために line table が要る (論点 3)。
+
+なので**既定 on のまま**にした。debug ビルドの目的は診断であり、
+「クラッシュしてから `-g` を付けて取り直す」は D1〜D4 が潰そうとした
+失敗そのもの。速度が要る場面には `--release` がある。
+
+**次に効く手** (未実装): **panic に到達しえない関数へのフレームは
+積まない**。backtrace に現れようのないフレームは誰も読まない。
+到達可能性の歩行は `reachability.rs` に既にあるので、IR の
+`Terminator::Panic` を sink にすれば同じ形で書ける。
 
 ### D5 — ユーザ API と機械可読出力
 

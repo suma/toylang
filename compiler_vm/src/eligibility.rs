@@ -161,6 +161,7 @@ mod tests {
         func.entry = entry;
         let block = func.block_mut(entry);
         block.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(0), Type::U64)),
             kind: compiler_ir::InstKind::Const(Const::U64(42)),
         });
@@ -185,10 +186,12 @@ mod tests {
         func.entry = entry;
         let block = func.block_mut(entry);
         block.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(0), Type::U64)),
             kind: compiler_ir::InstKind::Const(Const::U64(8)),
         });
         block.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(1), Type::U64)),
             kind: compiler_ir::InstKind::AddressOf {
                 local: LocalId(0),
@@ -215,10 +218,12 @@ mod tests {
         func.entry = entry;
         let block = func.block_mut(entry);
         block.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(0), Type::U64)),
             kind: compiler_ir::InstKind::Const(Const::U64(8)),
         });
         block.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(1), Type::U64)),
             kind: compiler_ir::InstKind::HeapAlloc {
                 size: ValueId(0),

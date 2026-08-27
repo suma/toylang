@@ -11,7 +11,9 @@
 //! one becomes an `assert_diagnostic_consistent` call the moment the
 //! engines agree — `assert_diagnostic_report` fails and says so.
 
-use super::harness::{assert_diagnostic_report, run_diagnostic_lane_child};
+use super::harness::{
+    assert_diagnostic_consistent, assert_diagnostic_report, run_diagnostic_lane_child,
+};
 
 /// Re-entry point for the two lanes that end in `process::exit`.
 ///
@@ -38,51 +40,7 @@ fn b(n: u64) -> u64 { c(n) }
 fn a(n: u64) -> u64 { b(n) }
 fn main() -> u64 { a(0u64) }
 "#;
-    assert_diagnostic_report(
-        source,
-        "panic_three_calls_deep",
-        r#"tree-walker (stderr):
-  Runtime error occurred:
-  Error at panic_three_calls_deep.t:2:38:
-     |
-   2 | fn c(n: u64) -> u64 { if n == 0u64 { panic("boom in c") } n - 1u64 }
-     |                                      ^^^^^ panic: boom in c
-     |
-     = backtrace (innermost first):
-         c (called at line 3)
-         b (called at line 4)
-         a (called at line 5)
-         main
-ir-vm (stderr):
-  Runtime error occurred:
-  Error at panic_three_calls_deep.t:2:38:
-     |
-   2 | fn c(n: u64) -> u64 { if n == 0u64 { panic("boom in c") } n - 1u64 }
-     |                                      ^^^^^ panic: boom in c
-     |
-interpreter-jit (stderr):
-  Runtime error occurred:
-  Error at panic_three_calls_deep.t:2:38:
-     |
-   2 | fn c(n: u64) -> u64 { if n == 0u64 { panic("boom in c") } n - 1u64 }
-     |                                      ^^^^^ panic: boom in c
-     |
-compiler-jit (stderr):
-  Runtime error occurred:
-  Error at panic_three_calls_deep.t:2:38:
-     |
-   2 | fn c(n: u64) -> u64 { if n == 0u64 { panic("boom in c") } n - 1u64 }
-     |                                      ^^^^^ panic: boom in c
-     |
-aot (stderr):
-  Runtime error occurred:
-  Error at panic_three_calls_deep.t:2:38:
-     |
-   2 | fn c(n: u64) -> u64 { if n == 0u64 { panic("boom in c") } n - 1u64 }
-     |                                      ^^^^^ panic: boom in c
-     |
-"#,
-    );
+    assert_diagnostic_consistent(source, "panic_three_calls_deep");
 }
 
 /// A `u64` underflow trap: the engines disagree about the *message*,
@@ -115,6 +73,9 @@ ir-vm (stderr):
    2 | fn sub(a: u64, b: u64) -> u64 { a - b }
      |                                 ^ panic: u64 subtraction underflowed (left operand is smaller than the right)
      |
+     = backtrace (innermost first):
+         sub (called at line 3)
+         main
 interpreter-jit (stderr):
   Runtime error occurred:
   Error at u64_underflow_trap.t:2:33:
@@ -122,6 +83,9 @@ interpreter-jit (stderr):
    2 | fn sub(a: u64, b: u64) -> u64 { a - b }
      |                                 ^ panic: u64 subtraction underflowed (left operand is smaller than the right)
      |
+     = backtrace (innermost first):
+         sub (called at line 3)
+         main
 compiler-jit (stderr):
   Runtime error occurred:
   Error at u64_underflow_trap.t:2:33:
@@ -129,6 +93,9 @@ compiler-jit (stderr):
    2 | fn sub(a: u64, b: u64) -> u64 { a - b }
      |                                 ^ panic: u64 subtraction underflowed (left operand is smaller than the right)
      |
+     = backtrace (innermost first):
+         sub (called at line 3)
+         main
 aot (stderr):
   Runtime error occurred:
   Error at u64_underflow_trap.t:2:33:
@@ -136,6 +103,9 @@ aot (stderr):
    2 | fn sub(a: u64, b: u64) -> u64 { a - b }
      |                                 ^ panic: u64 subtraction underflowed (left operand is smaller than the right)
      |
+     = backtrace (innermost first):
+         sub (called at line 3)
+         main
 "#,
     );
 }
@@ -167,6 +137,8 @@ ir-vm (stderr):
    5 |     val v: i64 = arr[i]
      |                  ^^^^^^ panic: array index out of bounds (index is at or past the array's length)
      |
+     = backtrace (innermost first):
+         main
 interpreter-jit (stderr):
   Runtime error occurred:
   Array index 5 out of bounds for array of size 3
@@ -216,6 +188,9 @@ ir-vm (stderr):
    3 |     requires n > 0u64
      |              ^^^^^^^^ panic: requires violation
      |
+     = backtrace (innermost first):
+         f (called at line 7)
+         main
 interpreter-jit (stderr):
   Runtime error occurred:
   Contract violation: `requires` clause #1 of function `f` evaluated to false (with n = 0)
@@ -226,6 +201,9 @@ compiler-jit (stderr):
    3 |     requires n > 0u64
      |              ^^^^^^^^ panic: requires violation
      |
+     = backtrace (innermost first):
+         f (called at line 7)
+         main
 aot (stderr):
   Runtime error occurred:
   Error at requires_violation.t:3:14:
@@ -233,6 +211,9 @@ aot (stderr):
    3 |     requires n > 0u64
      |              ^^^^^^^^ panic: requires violation
      |
+     = backtrace (innermost first):
+         f (called at line 7)
+         main
 "#,
     );
 }
@@ -253,50 +234,48 @@ fn main() -> u64 {
     v
 }
 "#;
-    assert_diagnostic_report(
-        source,
-        "panic_inside_the_stdlib",
-        r#"tree-walker (stderr):
-  Runtime error occurred:
-  Error at core/std/option.t:57:29:
-     |
-  57 |             Option::None => panic("Option::unwrap on None"),
-     |                             ^^^^^ panic: Option::unwrap on None
-     |
-     = backtrace (innermost first):
-         Option::unwrap (called at line 4)
-         main
-ir-vm (stderr):
-  Runtime error occurred:
-  Error at core/std/option.t:57:29:
-     |
-  57 |             Option::None => panic("Option::unwrap on None"),
-     |                             ^^^^^ panic: Option::unwrap on None
-     |
-interpreter-jit (stderr):
-  Runtime error occurred:
-  Error at core/std/option.t:57:29:
-     |
-  57 |             Option::None => panic("Option::unwrap on None"),
-     |                             ^^^^^ panic: Option::unwrap on None
-     |
-     = backtrace (innermost first):
-         Option::unwrap (called at line 4)
-         main
-compiler-jit (stderr):
-  Runtime error occurred:
-  Error at core/std/option.t:57:29:
-     |
-  57 |             Option::None => panic("Option::unwrap on None"),
-     |                             ^^^^^ panic: Option::unwrap on None
-     |
-aot (stderr):
-  Runtime error occurred:
-  Error at core/std/option.t:57:29:
-     |
-  57 |             Option::None => panic("Option::unwrap on None"),
-     |                             ^^^^^ panic: Option::unwrap on None
-     |
-"#,
-    );
+    assert_diagnostic_consistent(source, "panic_inside_the_stdlib");
+}
+
+/// A recursive panic (DEBUG-OBS D4).
+///
+/// The folding is where the two backtrace renderers could most easily
+/// drift: one is `compiler_ir::render_backtrace`, the other is its
+/// hand-copied no_std twin in `toylang_rt` (this crate is
+/// dependency-free by design, the same pairing
+/// `format_alloc_budget_violation` already has). Nothing but a test
+/// like this would notice them disagreeing.
+#[test]
+fn a_recursive_panic_folds_the_same_everywhere() {
+    let source = r#"
+fn f(n: u64) -> u64 {
+    if n == 0u64 { panic("bottom") }
+    f(n - 1u64)
+}
+fn main() -> u64 { f(7u64) }
+"#;
+    assert_diagnostic_consistent(source, "a_recursive_panic_folds_the_same_everywhere");
+}
+
+/// A method's frame is named by its type in every engine.
+///
+/// The compiled backends get that name from the IR's `display_name`,
+/// set where the method is declared — the mangled `toy_S__boom` has
+/// the monomorph's type arguments in it and would read as neither the
+/// tree-walker's `S::boom` nor anything a user wrote.
+#[test]
+fn a_method_frame_is_named_the_same_everywhere() {
+    let source = r#"
+struct S { v: i64 }
+impl S {
+    fn boom(&self) -> i64 { panic("method boom") }
+}
+fn go(s: S) -> i64 { s.boom() }
+fn main() -> u64 {
+    val s = S { v: 1i64 }
+    val r: i64 = go(s)
+    0u64
+}
+"#;
+    assert_diagnostic_consistent(source, "a_method_frame_is_named_the_same_everywhere");
 }

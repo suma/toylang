@@ -12,6 +12,21 @@
 
 ### 2026-08-27
 
+- **DEBUG-OBS D4: shadow stack** — AOT / compiler JIT / interpreter JIT が
+  backtrace を出すようになり、**D0 のレーンが backtrace まで一致**した
+  (`panic_three_calls_deep` / `panic_inside_the_stdlib` は 5 レーン完全一致で、
+  pin が両方向検査で「一致したので `assert_diagnostic_consistent` に
+  置き換えよ」と落ちた)。frame は**呼び出し側**で積む (中身が
+  「呼ばれる関数 + 呼び出しの行」で、後者は callee に分からないため)。
+  `Instruction` に `frame: Option<FrameId>` を 1 つ足して**1 箇所で**
+  stamp する — call の IR variant は 11 個あり、どれかで忘れるのが
+  この Phase の潰したい壊れ方そのもの。IR VM は自前の frames を使い、
+  interpreter JIT と AOT は同じ runtime globals とレンダラを共有。
+  **コスト実測**: fib(32) **+96%** / collatz **+24%** / Vec ループ **+1%**。
+  5% 予算は呼び出し密度の高いコードでは達成不能 (グローバルへの store と
+  callee の load が作る直列依存が本体で、不変部分をプロローグに
+  巻き上げても変わらなかった)。既定 on のまま、`--release` で消える。
+
 - **DEBUG-OBS D3: IR の `SiteId`** — 4 実行系すべてが panic の位置を
   言うようになった (D0 のレーンが**位置まで**一致)。`compiler_ir` に
   `Site` / `SiteId` / `Module::files` / `sites`。決め手は
@@ -1111,9 +1126,9 @@
 > (現状調査 9 件 + 論点 6 + Phase D0〜D6)。**D0 は landing 済み** —
 > 目標文言はそこに固定され、現状の食い違いは
 > `compiler/tests/consistency/diagnostics.rs` に pin されている。
-> **D1 / D2 / D3 も landing 済み** — tree-walker の backtrace の穴は塞がり、
-> 位置はどのファイルのものかを持ち、4 実行系すべてが panic の位置を
-> stderr に同じ書式で出す。残る差は backtrace (D4) と、値を持つ 2 つの文言。
+> **D0〜D4 が landing 済み** — backtrace の穴は塞がり、位置はどのファイルの
+> ものかを持ち、5 実行系すべてが panic の位置と backtrace を stderr に
+> 同じ書式で出す。残る差は**値を持つ文言だけ**。
 
 - **DEBUG-OBS D3 の残: `HeapAlloc` の `SiteId` 移行** ★ — `--profile=mem` の
   リーク報告にファイル名が付く (MEMORY_PROFILING M2 の積み残し)。診断とは
@@ -1124,8 +1139,18 @@
   (tree-walker の方が backtrace と契約の実値を持つため)。プログラムが
   2 回走るので `io::random` / `io::read_file` は 2 回目を踏む (実測 2)。
   落とすのは VM が backtrace を出せる D4 と一緒に。
-- **DEBUG-OBS D4: shadow stack (`-g`)** ★ — AOT / JIT の backtrace。
-  位置は静的なので release でも残せるが、backtrace だけがランタイムコストを持つ。
+- **DEBUG-OBS D4 の残: panic に到達しえない関数のフレームを積まない** ★ —
+  backtrace に現れようのないフレームは誰も読まない。到達可能性の歩行は
+  `reachability.rs` にあるので、`Terminator::Panic` を sink にすれば
+  同じ形。shadow stack のコスト (fib +96%) が実際に効く場面を踏んでから。
+- **DEBUG-OBS: 値を持つ文言を全実行系に** ★★ — 位置と backtrace は
+  D3/D4 で揃ったが、**message だけ**まだ割れている:
+  tree-walker は `u64 subtraction underflowed: 1 - 5` /
+  `Contract violation: ... (with n = 0)` / 配列 OOB の独自文言を出し、
+  コンパイル側は定型文。D0 の目標表は「値ごと移す」と決めている
+  (trap ヘルパにオペランドを渡す、契約は実引数を運ぶ)。
+  残る 3 つの pin (`u64_underflow_trap` / `array_index_out_of_bounds` /
+  `requires_violation`) がそのまま作業リスト。
 - **DEBUG-OBS D6: 再帰深度 / stdlib の境界** ★ — 無限再帰は 60 秒無出力で
   タイムアウトするだけ (stack overflow 診断が無い)。`Vec::get` は無チェックで、
   範囲外は**ホストの Rust panic** (`value not defined`) になり toylang 側の

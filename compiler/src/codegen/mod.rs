@@ -345,6 +345,17 @@ pub(crate) struct CodegenSession<M: Module> {
     /// per site, for the one diverging terminator whose message is
     /// computed at run time (a violated allocation budget).
     frame_strings: HashMap<Option<compiler_ir::SiteId>, (DataId, DataId)>,
+    /// DEBUG-OBS D4: one `.rodata` record per backtrace frame —
+    /// `{ u64 line; name bytes; 0 }`. The generated code pushes the
+    /// record's address onto the shadow stack around each call.
+    frame_blobs: HashMap<compiler_ir::FrameId, DataId>,
+    /// The entry function's own frame. Nothing calls `main`, so no
+    /// call site pushes it; its prologue does.
+    entry_frame_blob: Option<DataId>,
+    /// `toy_shadow_stack` / `toy_shadow_depth`, imported from the
+    /// runtime. `None` when the module has no frames to record — a
+    /// `--release` build imports neither.
+    shadow_globals: Option<(DataId, DataId)>,
     /// `print`/`println` string-literal symbol → data id holding
     /// `"<msg>\0"`. The literal is unprefixed because the user is
     /// already supplying the exact bytes they want printed.
@@ -373,6 +384,53 @@ pub(crate) struct CodegenSession<M: Module> {
     /// Cached data declarations (colocated flag) for
     /// `declare_data_in_func_readonly`.
     data_decls: HashMap<cranelift_module::DataId, bool>,
+}
+
+/// DEBUG-OBS D4: the per-activation shadow-stack values, computed once
+/// in a function's prologue.
+///
+/// One function activation owns exactly one shadow slot: a callee
+/// restores the depth it found, so every call this function makes
+/// pushes at the same place. That makes the address and the two depth
+/// values loop-invariant, and hoisting them is the difference between
+/// seven instructions per call and two.
+#[derive(Clone, Copy)]
+pub(super) struct ShadowPrologue {
+    /// Address of `toy_shadow_depth`.
+    depth_addr: cranelift_codegen::ir::Value,
+    /// Address of this activation's slot in `toy_shadow_stack`.
+    slot: cranelift_codegen::ir::Value,
+    /// The depth while this function runs — what a pop restores.
+    my_depth: cranelift_codegen::ir::Value,
+    /// The depth while a callee runs.
+    inner_depth: cranelift_codegen::ir::Value,
+}
+
+/// DEBUG-OBS D4: the global values one function needs to keep the
+/// shadow stack up to date.
+pub(super) struct ShadowImports {
+    pub stack: cranelift_codegen::ir::GlobalValue,
+    pub depth: cranelift_codegen::ir::GlobalValue,
+    /// The entry function's own frame record.
+    pub entry: Option<cranelift_codegen::ir::GlobalValue>,
+    pub frames: HashMap<compiler_ir::FrameId, cranelift_codegen::ir::GlobalValue>,
+}
+
+/// `&toy_shadow_stack[depth & (CAP-1)]`.
+///
+/// A mask rather than a bounds check: past the cap the *oldest* frames
+/// scroll out, which is the right end to lose — a reader wants the
+/// innermost ones, and the runtime says how many went missing.
+fn shadow_slot(
+    builder: &mut cranelift_frontend::FunctionBuilder<'_>,
+    stack_addr: cranelift_codegen::ir::Value,
+    depth: cranelift_codegen::ir::Value,
+) -> cranelift_codegen::ir::Value {
+    let masked = builder
+        .ins()
+        .band_imm(depth, (toylang_rt::TOY_SHADOW_CAP as i64) - 1);
+    let offset = builder.ins().ishl_imm(masked, 3);
+    builder.ins().iadd(stack_addr, offset)
 }
 
 /// Resolve cranelift's `opt_level` flag from the environment, defaulting
@@ -842,6 +900,9 @@ impl<M: Module> CodegenSession<M> {
             rt_format_str,
             panic_strings: HashMap::new(),
             frame_strings: HashMap::new(),
+            frame_blobs: HashMap::new(),
+            entry_frame_blob: None,
+            shadow_globals: None,
             print_strings: HashMap::new(),
             raw_print_strings: HashMap::new(),
             const_str_bytes: HashMap::new(),
@@ -963,6 +1024,7 @@ impl<M: Module> CodegenSession<M> {
         for site in budget_sites {
             self.declare_frame_strings(site, ir_module)?;
         }
+        self.declare_shadow_frames(ir_module)?;
         for sym in print_needed {
             self.declare_print_string(sym, interner)?;
         }
@@ -1221,6 +1283,58 @@ impl<M: Module> CodegenSession<M> {
     /// `"panic: "` prefix (matching the interpreter's output format),
     /// the user-supplied message, and a trailing NUL. `puts` adds the
     /// final newline at run-time.
+    /// Lay down one `.rodata` record per backtrace frame, plus the
+    /// entry function's, and import the runtime's shadow-stack globals
+    /// (DEBUG-OBS D4).
+    ///
+    /// Nothing at all happens when the module carries no frames, which
+    /// is what a `--release` lowering produces: no records, no
+    /// imports, and no push/pop in any generated function.
+    fn declare_shadow_frames(&mut self, ir_module: &IrModule) -> Result<(), String> {
+        if ir_module.frames.is_empty() {
+            return Ok(());
+        }
+        for (i, frame) in ir_module.frames.iter().enumerate() {
+            let id = compiler_ir::FrameId(i as u32);
+            let line = ir_module.frame_line(id).unwrap_or(0);
+            let data = self.declare_frame_record(&format!("toy_bt_{i}"), &frame.name, line)?;
+            self.frame_blobs.insert(id, data);
+        }
+        let entry = ir_module
+            .functions
+            .iter()
+            .position(|f| f.export_name == "main")
+            .map(|i| ir_module.frame_name(FuncId(i as u32)))
+            .unwrap_or_else(|| "main".to_string());
+        self.entry_frame_blob = Some(self.declare_frame_record("toy_bt_entry", &entry, 0)?);
+
+        // The runtime owns the stack itself; this side only writes to
+        // it. `writable` matters — it is `.bss`, not `.rodata`.
+        let stack = self
+            .module
+            .declare_data("toy_shadow_stack", CLinkage::Import, true, false)
+            .map_err(|e| format!("declare toy_shadow_stack: {e}"))?;
+        let depth = self
+            .module
+            .declare_data("toy_shadow_depth", CLinkage::Import, true, false)
+            .map_err(|e| format!("declare toy_shadow_depth: {e}"))?;
+        self.shadow_globals = Some((stack, depth));
+        Ok(())
+    }
+
+    /// `{ u64 line }{ name bytes }{ 0 }` — the layout
+    /// `toylang_rt::ToyFrameInfo` reads back.
+    fn declare_frame_record(
+        &mut self,
+        name: &str,
+        display: &str,
+        line: u32,
+    ) -> Result<DataId, String> {
+        let mut bytes = (line as u64).to_le_bytes().to_vec();
+        bytes.extend_from_slice(display.as_bytes());
+        self.declare_blob(name, bytes)
+    }
+
     /// Lay down the frame around a run-time-computed message
     /// (DEBUG-OBS D3).
     fn declare_frame_strings(
@@ -1418,6 +1532,7 @@ impl<M: Module> CodegenSession<M> {
         let imports = self.declare_imports(&mut ctx.func);
         let panic_imports = self.declare_panic_imports(ir_module, func_id, &mut ctx.func);
         let frame_imports = self.declare_frame_imports(ir_module, func_id, &mut ctx.func);
+        let shadow = self.declare_shadow_imports(ir_module, func_id, &mut ctx.func);
         let print_imports = self.declare_print_imports(ir_module, func_id, &mut ctx.func);
         let raw_print_imports =
             self.declare_raw_print_imports(ir_module, func_id, &mut ctx.func);
@@ -1436,6 +1551,7 @@ impl<M: Module> CodegenSession<M> {
                 &imports,
                 &panic_imports,
                 &frame_imports,
+                &shadow,
                 &print_imports,
                 &raw_print_imports,
                 &const_str_bytes_imports,
@@ -1483,6 +1599,7 @@ impl<M: Module> CodegenSession<M> {
         let imports = self.declare_imports(&mut ctx.func);
         let panic_imports = self.declare_panic_imports(ir_module, func_id, &mut ctx.func);
         let frame_imports = self.declare_frame_imports(ir_module, func_id, &mut ctx.func);
+        let shadow = self.declare_shadow_imports(ir_module, func_id, &mut ctx.func);
         let print_imports = self.declare_print_imports(ir_module, func_id, &mut ctx.func);
         let raw_print_imports =
             self.declare_raw_print_imports(ir_module, func_id, &mut ctx.func);
@@ -1501,6 +1618,7 @@ impl<M: Module> CodegenSession<M> {
                 &imports,
                 &panic_imports,
                 &frame_imports,
+                &shadow,
                 &print_imports,
                 &raw_print_imports,
                 &const_str_bytes_imports,
@@ -1544,6 +1662,7 @@ impl<M: Module> CodegenSession<M> {
         let imports = self.declare_imports(&mut ctx.func);
         let panic_imports = self.declare_panic_imports(ir_module, func_id, &mut ctx.func);
         let frame_imports = self.declare_frame_imports(ir_module, func_id, &mut ctx.func);
+        let shadow = self.declare_shadow_imports(ir_module, func_id, &mut ctx.func);
         let print_imports = self.declare_print_imports(ir_module, func_id, &mut ctx.func);
         let raw_print_imports =
             self.declare_raw_print_imports(ir_module, func_id, &mut ctx.func);
@@ -1562,6 +1681,7 @@ impl<M: Module> CodegenSession<M> {
                 &imports,
                 &panic_imports,
                 &frame_imports,
+                &shadow,
                 &print_imports,
                 &raw_print_imports,
                 &const_str_bytes_imports,
@@ -1787,6 +1907,11 @@ struct LowerCtx<'a, 'b> {
         Option<compiler_ir::SiteId>,
         (cranelift_codegen::ir::GlobalValue, cranelift_codegen::ir::GlobalValue),
     >,
+    /// DEBUG-OBS D4: shadow-stack globals and frame records, or `None`
+    /// when this build records no backtrace.
+    pub(super) shadow: &'a Option<ShadowImports>,
+    /// Filled in by the prologue when this function pushes any frame.
+    pub(super) shadow_prologue: Option<ShadowPrologue>,
     /// Same idea, for `print`/`println` string-literal arguments.
     print_imports: &'a HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue>,
     /// Same idea, for codegen-synthesised `PrintRaw` fragments. Keyed
@@ -1871,6 +1996,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             Option<compiler_ir::SiteId>,
             (cranelift_codegen::ir::GlobalValue, cranelift_codegen::ir::GlobalValue),
         >,
+        shadow: &'a Option<ShadowImports>,
         print_imports: &'a HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue>,
         raw_print_imports: &'a HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue>,
         const_str_bytes_imports: &'a HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue>,
@@ -1884,6 +2010,8 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             imports,
             panic_imports,
             frame_imports,
+            shadow,
+            shadow_prologue: None,
             print_imports,
             raw_print_imports,
             const_str_bytes_imports,
@@ -1975,6 +2103,52 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 .copied()
                 .expect("param local not declared");
             self.builder.def_var(var, *val);
+        }
+
+        // 2c. DEBUG-OBS D4: the shadow-stack prologue.
+        //
+        //     Skipped entirely for a function that pushes nothing —
+        //     which is every leaf function, and every function at all
+        //     under `--release`.
+        if let Some(shadow) = self.shadow {
+            let is_entry = func.export_name == "main";
+            let pushes = func
+                .blocks
+                .iter()
+                .any(|b| b.instructions.iter().any(|i| i.frame.is_some()));
+            if is_entry || pushes {
+                let flags = cranelift_codegen::ir::MemFlags::trusted();
+                let stack_addr = self.builder.ins().symbol_value(types::I64, shadow.stack);
+                let depth_addr = self.builder.ins().symbol_value(types::I64, shadow.depth);
+                let found = self.builder.ins().load(types::I64, flags, depth_addr, 0);
+                // The entry function pushes its own frame here: nothing
+                // calls `main`, so no call site would, and a backtrace
+                // that stopped one frame short of the bottom reads as
+                // truncated. Never popped — the process is leaving
+                // either way.
+                let my_depth = if is_entry {
+                    if let Some(entry_record) = shadow.entry {
+                        let slot = shadow_slot(self.builder, stack_addr, found);
+                        let addr = self.builder.ins().symbol_value(types::I64, entry_record);
+                        self.builder.ins().store(flags, addr, slot, 0);
+                    }
+                    let next = self.builder.ins().iadd_imm(found, 1);
+                    self.builder.ins().store(flags, next, depth_addr, 0);
+                    next
+                } else {
+                    found
+                };
+                if pushes {
+                    let slot = shadow_slot(self.builder, stack_addr, my_depth);
+                    let inner_depth = self.builder.ins().iadd_imm(my_depth, 1);
+                    self.shadow_prologue = Some(ShadowPrologue {
+                        depth_addr,
+                        slot,
+                        my_depth,
+                        inner_depth,
+                    });
+                }
+            }
         }
 
         // 3. Walk the IR blocks in order, filling each with instructions

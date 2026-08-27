@@ -774,6 +774,155 @@ pub extern "C" fn toy_prof_force_counting() {
     thread_state().prof_forced = true;
 }
 
+// ---------------------------------------------------------------------------
+// DEBUG-OBS D4: the shadow stack.
+//
+// A compiled binary has no call stack it can read back — the machine
+// one carries return addresses, and turning those into function names
+// and lines needs a line table this project decided not to emit
+// (`DEBUG_OBSERVABILITY.md` 論点 3). So the generated code keeps its
+// own: one pointer per live call, pushed at the call site because that
+// is where the *caller's* line is known.
+//
+// The globals are plain statics rather than thread-locals: toylang has
+// no threads. If it ever grows them, this becomes a `#[thread_local]`
+// and codegen's addressing changes with it.
+// ---------------------------------------------------------------------------
+
+/// Slots in the shadow stack. A power of two so the index is a mask
+/// rather than a branch; deeper than this and the *oldest* frames
+/// scroll out, since the innermost ones are what a reader wants.
+pub const TOY_SHADOW_CAP: usize = 1024;
+
+/// One frame, as codegen lays it in `.rodata`: the line the call was
+/// written on (`0` = the entry function, which nothing called),
+/// immediately followed by the NUL-terminated name.
+///
+/// The name is inline rather than a pointer so the blob needs no
+/// relocation — one fewer thing for a linker to disagree about, and
+/// the address codegen materialises is the whole record.
+#[repr(C)]
+pub struct ToyFrameInfo {
+    pub line: u64,
+}
+
+/// Where the name starts inside a frame record.
+const FRAME_NAME_OFFSET: usize = 8;
+
+#[unsafe(no_mangle)]
+pub static mut toy_shadow_stack: [*const ToyFrameInfo; TOY_SHADOW_CAP] =
+    [core::ptr::null(); TOY_SHADOW_CAP];
+
+/// Live call depth. Counts every push, including the ones past
+/// `TOY_SHADOW_CAP` that had nowhere to go, so the report can say how
+/// many frames it is not showing.
+#[unsafe(no_mangle)]
+pub static mut toy_shadow_depth: u64 = 0;
+
+/// Write the backtrace for the current shadow stack, innermost first.
+///
+/// The folding and the head/tail budget are hand-copied from
+/// `compiler_ir::render_backtrace` — this crate is deliberately
+/// dependency-free, the same pairing `format_alloc_budget_violation`
+/// already has. `compiler/tests/consistency/diagnostics.rs` pins the
+/// two against each other by comparing stderr across engines.
+/// Write the shadow stack's backtrace to stderr, or nothing when it is
+/// empty.
+///
+/// Exported because the *interpreter's* JIT keeps the same shadow
+/// stack — one runtime, one renderer — but panics through its own
+/// helpers rather than `toy_panic_at`.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_write_backtrace() {
+    write_backtrace();
+}
+
+fn write_backtrace() {
+    let depth = unsafe { toy_shadow_depth } as usize;
+    if depth == 0 {
+        return;
+    }
+    let shown = if depth > TOY_SHADOW_CAP { TOY_SHADOW_CAP } else { depth };
+    let lost = depth - shown;
+    err_write("\n   = backtrace (innermost first):");
+
+    // Fold runs of the same frame, then apply the same head/tail
+    // budget the other engines use. Both passes walk innermost-first.
+    let mut folded_index = 0usize;
+    let mut i = 0usize;
+    // First pass: how many folded lines there will be, so the elision
+    // count is known before anything is written.
+    let mut total = 0usize;
+    while i < shown {
+        let mut run = 1;
+        while i + run < shown && frame_at(depth, i + run) == frame_at(depth, i) {
+            run += 1;
+        }
+        total += 1;
+        i += run;
+    }
+    let elided = total.saturating_sub(BACKTRACE_HEAD + BACKTRACE_TAIL);
+    i = 0;
+    while i < shown {
+        let mut run = 1;
+        while i + run < shown && frame_at(depth, i + run) == frame_at(depth, i) {
+            run += 1;
+        }
+        if elided > 0 && folded_index == BACKTRACE_HEAD {
+            let mut buf = StackBuf::<64>::new();
+            if core::fmt::write(&mut buf, format_args!("\n       ... {elided} frames elided")).is_ok()
+            {
+                write_fd(2, buf.as_slice());
+            }
+        }
+        if elided == 0 || folded_index < BACKTRACE_HEAD || folded_index >= BACKTRACE_HEAD + elided {
+            write_frame_line(frame_at(depth, i), run);
+        }
+        folded_index += 1;
+        i += run;
+    }
+    if lost > 0 {
+        let mut buf = StackBuf::<64>::new();
+        if core::fmt::write(
+            &mut buf,
+            format_args!("\n       ... {lost} outermost frames not recorded"),
+        )
+        .is_ok()
+        {
+            write_fd(2, buf.as_slice());
+        }
+    }
+}
+
+const BACKTRACE_HEAD: usize = 10;
+const BACKTRACE_TAIL: usize = 5;
+
+/// The `i`-th frame counting inwards from the top of the stack.
+fn frame_at(depth: usize, i: usize) -> *const ToyFrameInfo {
+    let slot = (depth - 1 - i) & (TOY_SHADOW_CAP - 1);
+    unsafe { toy_shadow_stack[slot] }
+}
+
+fn write_frame_line(frame: *const ToyFrameInfo, repeats: usize) {
+    if frame.is_null() {
+        return;
+    }
+    let line = unsafe { (*frame).line };
+    let name = unsafe { (frame as *const u8).add(FRAME_NAME_OFFSET) };
+    err_write("\n       ");
+    unsafe { write_cstr_fd(2, name) };
+    let mut buf = StackBuf::<64>::new();
+    let written = match (line, repeats) {
+        (0, 1) => Ok(()),
+        (0, n) => core::fmt::write(&mut buf, format_args!(" (x{n})")),
+        (l, 1) => core::fmt::write(&mut buf, format_args!(" (called at line {l})")),
+        (l, n) => core::fmt::write(&mut buf, format_args!(" (x{n}, called at line {l})")),
+    };
+    if written.is_ok() {
+        write_fd(2, buf.as_slice());
+    }
+}
+
 /// DEBUG-OBS D3: write a pre-rendered diagnostic to stderr and stop.
 ///
 /// `text` is a NUL-terminated blob the compiler laid in `.rodata`,
@@ -793,6 +942,8 @@ pub extern "C" fn toy_prof_force_counting() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn toy_panic_at(text: *const u8) -> ! {
     unsafe { write_cstr_fd(2, text) };
+    write_backtrace();
+    err_write("\n");
     unsafe { exit(1) };
 }
 
@@ -871,6 +1022,8 @@ pub unsafe extern "C" fn toy_panic_alloc_budget(
         err_write("panic: allocation budget exceeded");
     }
     unsafe { write_cstr_fd(2, suffix) };
+    write_backtrace();
+    err_write("\n");
     unsafe { exit(1) };
 }
 

@@ -763,6 +763,8 @@ fn declare_methods(
         let export_name = format!("toy_{}{}__{}", target_str, args_suffix, method_str);
         let func_id =
             module.declare_function_anon(export_name, Linkage::Local, params, ret);
+        // DEBUG-OBS D4, as in `method_call.rs`.
+        module.set_display_name(func_id, format!("{target_str}::{method_str}"));
         // TEST-PERF: defer this method's body until a reachable call
         // site dispatches to it.
         plain_sources.insert(
@@ -1552,7 +1554,11 @@ fn enable_allocation_counting_if_read(module: &mut crate::ir::Module) {
     if let Some(block) = main.blocks.iter_mut().find(|b| b.id == entry) {
         block.instructions.insert(
             0,
-            crate::ir::Instruction { result: None, kind: InstKind::MemStatEnable },
+            crate::ir::Instruction {
+                result: None,
+                kind: InstKind::MemStatEnable,
+                frame: None,
+            },
         );
     }
 }
@@ -1609,6 +1615,7 @@ impl<'a> FunctionLower<'a> {
             ensures_kinds: Vec::new(),
             result_sym: interner.get("result"),
             facts: Default::default(),
+            debug_frames: !release,
             current_expr: None,
             bindings: HashMap::new(),
             loop_stack: Vec::new(),

@@ -235,6 +235,14 @@ struct FunctionLower<'a> {
     /// preconditions themselves are not emitted — see
     /// `contract_facts`.
     facts: ContractFacts,
+    /// DEBUG-OBS D4: whether calls record a backtrace frame.
+    ///
+    /// Off under `--release`, which is the one axis this language
+    /// already had for "checks the user asked not to pay for". The
+    /// *position* of a failure stays in a release build — that costs
+    /// only `.rodata` — but the shadow stack costs a store and two
+    /// adds per call, so it goes.
+    debug_frames: bool,
     /// DEBUG-OBS D3: the expression whose lowering is in progress.
     ///
     /// Saved and restored around every `lower_expr`, so a guard emitted
@@ -1589,7 +1597,19 @@ impl<'a> FunctionLower<'a> {
         if let (Some((value, _)), InstKind::Const(c)) = (result, &kind) {
             self.block_consts.insert(value, *c);
         }
-        let inst = Instruction { result, kind };
+        // DEBUG-OBS D4: a direct call records which frame it enters.
+        // Done here, at the one place instructions are built, rather
+        // than at the dozens of sites that emit a call.
+        let frame = if self.debug_frames {
+            Module::direct_call_target(&kind).map(|target| {
+                let name = self.module.frame_name(target);
+                let site = self.current_site();
+                self.module.intern_frame(&name, site)
+            })
+        } else {
+            None
+        };
+        let inst = Instruction { result, kind, frame };
         let blk: &mut Block = self.module.function_mut(self.func_id).block_mut(cur);
         blk.instructions.push(inst);
         result.map(|(v, _)| v)

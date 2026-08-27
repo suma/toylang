@@ -12,7 +12,7 @@ use string_interner::DefaultSymbol;
 
 use crate::ir::{FuncId, InstKind, Module as IrModule, Terminator};
 
-use super::{CodegenSession, RuntimeRefs};
+use super::{ShadowImports, CodegenSession, RuntimeRefs};
 
 impl<M: Module> CodegenSession<M> {
     pub(super) fn declare_imports(
@@ -95,6 +95,41 @@ impl<M: Module> CodegenSession<M> {
             }
         }
         imports
+    }
+
+    /// DEBUG-OBS D4 per-function GVs: the shadow-stack globals plus
+    /// one per frame record this function pushes. `None` when the
+    /// module carries no frames (a `--release` build).
+    pub(super) fn declare_shadow_imports(
+        &self,
+        ir_module: &IrModule,
+        func_id: FuncId,
+        func: &mut cranelift_codegen::ir::Function,
+    ) -> Option<ShadowImports> {
+        let (stack, depth) = self.shadow_globals?;
+        let mut frames = HashMap::new();
+        let ir_func = ir_module.function(func_id);
+        for blk in &ir_func.blocks {
+            for inst in &blk.instructions {
+                let Some(id) = inst.frame else { continue };
+                if frames.contains_key(&id) {
+                    continue;
+                }
+                let Some(data) = self.frame_blobs.get(&id).copied() else {
+                    continue;
+                };
+                frames.insert(id, self.declare_data_in_func_readonly(data, func));
+            }
+        }
+        let entry = self
+            .entry_frame_blob
+            .map(|data| self.declare_data_in_func_readonly(data, func));
+        Some(ShadowImports {
+            stack: self.declare_data_in_func_readonly(stack, func),
+            depth: self.declare_data_in_func_readonly(depth, func),
+            entry,
+            frames,
+        })
     }
 
     /// A5-P2 per-function GV map for vtable globals. Mirrors

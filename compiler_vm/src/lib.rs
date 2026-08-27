@@ -46,7 +46,15 @@ pub enum VmResult {
     /// `Module::render_diagnostic`; the compile-time fold keeps the
     /// bare message, since a `const` initialiser's failure is reported
     /// as a compile error with its own position.
-    Diverged { message: String, site: Option<compiler_ir::SiteId> },
+    ///
+    /// `backtrace` is already rendered (DEBUG-OBS D4) — it has to be
+    /// captured while the frames are still on the stack, and by the
+    /// time a caller sees this they are gone.
+    Diverged {
+        message: String,
+        site: Option<compiler_ir::SiteId>,
+        backtrace: String,
+    },
 }
 
 /// VM execution engine.
@@ -54,6 +62,9 @@ pub struct Vm<'a> {
     module: &'a Module,
     /// Call stack. The bottom frame is the entry function.
     frames: Vec<CallFrame>,
+    /// DEBUG-OBS D4: the backtrace frame of the call instruction being
+    /// dispatched, consumed by the `call_function` it reaches.
+    pending_frame: Option<compiler_ir::FrameId>,
     /// Optional interner for resolving string symbols.
     interner: Option<&'a DefaultStringInterner>,
     /// Everything the VM cannot do itself: stdout, heap, allocator
@@ -80,6 +91,7 @@ impl<'a> Vm<'a> {
         Self {
             module,
             frames: Vec::new(),
+            pending_frame: None,
             interner: None,
             host,
             vtable_addrs: HashMap::new(),
@@ -97,6 +109,7 @@ impl<'a> Vm<'a> {
         Self {
             module,
             frames: Vec::new(),
+            pending_frame: None,
             interner: Some(interner),
             host,
             vtable_addrs: HashMap::new(),
@@ -125,10 +138,46 @@ impl<'a> Vm<'a> {
             return VmResult::Diverged {
                 message: "no main function".to_string(),
                 site: None,
+                backtrace: String::new(),
             };
         }
         self.call_function(main_id, Vec::new(), None, Vec::new());
         self.run_loop()
+    }
+
+    /// DEBUG-OBS D4: stash the frame of the call about to be made.
+    pub fn set_pending_frame(&mut self, frame: Option<compiler_ir::FrameId>) {
+        self.pending_frame = frame;
+    }
+
+    /// The backtrace as it stands, innermost first (DEBUG-OBS D4).
+    ///
+    /// Built from the VM's own call stack rather than a shadow stack:
+    /// it already has one, and each frame remembers which call entered
+    /// it. The bottom frame is the entry function, which nothing
+    /// called, so it renders without a line — the same shape the
+    /// tree-walker produces.
+    fn backtrace(&self) -> String {
+        let names: Vec<(String, Option<u32>)> = self
+            .frames
+            .iter()
+            .rev()
+            .map(|f| match f.frame {
+                Some(id) => (
+                    self.module
+                        .frame(id)
+                        .map(|fr| fr.name.clone())
+                        .unwrap_or_else(|| self.module.frame_name(f.func_id)),
+                    self.module.frame_line(id),
+                ),
+                None => (self.module.frame_name(f.func_id), None),
+            })
+            .collect();
+        let entries: Vec<compiler_ir::BacktraceEntry<'_>> = names
+            .iter()
+            .map(|(name, line)| compiler_ir::BacktraceEntry { name, line: *line })
+            .collect();
+        compiler_ir::render_backtrace(&entries)
     }
 
     fn run_loop(&mut self) -> VmResult {
@@ -146,6 +195,7 @@ impl<'a> Vm<'a> {
             let Some(block) = func.blocks.get(block_id.0 as usize) else {
                 return VmResult::Diverged {
                     site: None,
+                    backtrace: String::new(),
                     message: format!(
                         "ir_vm: cannot execute body-less function `{}` (extern?)",
                         func.export_name
@@ -208,7 +258,8 @@ impl<'a> Vm<'a> {
                     }
                     Terminator::Jump(target) => {
                         if let Some(message) = self.charge_back_edge(target) {
-                            return VmResult::Diverged { message, site: None };
+                            let backtrace = self.backtrace();
+                            return VmResult::Diverged { message, site: None, backtrace };
                         }
                         {
                             let frame = self.frames.last_mut().expect("frame vanished");
@@ -221,7 +272,8 @@ impl<'a> Vm<'a> {
                         let taken = unsafe { cond_slot.bool };
                         let target = if taken { then_blk } else { else_blk };
                         if let Some(message) = self.charge_back_edge(target) {
-                            return VmResult::Diverged { message, site: None };
+                            let backtrace = self.backtrace();
+                            return VmResult::Diverged { message, site: None, backtrace };
                         }
                         {
                             let frame = self.frames.last_mut().expect("frame vanished");
@@ -235,7 +287,8 @@ impl<'a> Vm<'a> {
                             .and_then(|i| i.resolve(message))
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| format!("panic #{}", message.to_usize()));
-                        return VmResult::Diverged { message: text, site };
+                        let backtrace = self.backtrace();
+                        return VmResult::Diverged { message: text, site, backtrace };
                     }
                     // ALLOC-CONTRACT-SUGAR: the numbers, not a fixed
                     // string. Same wording the tree-walker and the
@@ -244,17 +297,21 @@ impl<'a> Vm<'a> {
                         let entry = unsafe { self.read_value(entry).u64 };
                         let current = unsafe { self.read_value(current).u64 };
                         let limit = unsafe { self.read_value(limit).u64 };
+                        let backtrace = self.backtrace();
                         return VmResult::Diverged {
                             message: compiler_ir::format_alloc_budget_violation(
                                 stat, entry, current, limit,
                             ),
                             site,
+                            backtrace,
                         };
                     }
                     Terminator::Unreachable => {
+                        let backtrace = self.backtrace();
                         return VmResult::Diverged {
                             message: "unreachable".to_string(),
                             site: None,
+                            backtrace,
                         };
                     }
                 }
@@ -263,6 +320,7 @@ impl<'a> Vm<'a> {
                 return VmResult::Diverged {
                     message: "unterminated block".to_string(),
                     site: None,
+                    backtrace: String::new(),
                 };
             }
         }
@@ -370,6 +428,7 @@ impl<'a> Vm<'a> {
         let func = &self.module.functions[func_id.0 as usize];
         let total_locals = func.locals.len().max(func.params.len());
         let mut frame = CallFrame::new(func_id, total_locals);
+        frame.frame = self.pending_frame.take();
         frame.return_dest = return_dest;
         frame.return_dests = return_dests;
         // Allocate each array slot from the shared heap.
@@ -518,9 +577,10 @@ pub fn run_module_capturing(
             // terminator because the compile-time fold shares that
             // code and reports a failed `const` initialiser in its own
             // words (`[E0017] ... evaluating it failed: <message>`).
-            VmResult::Diverged { message, site } => {
-                Err(module.render_diagnostic(site, &format!("panic: {message}")))
-            }
+            VmResult::Diverged { message, site, backtrace } => Err(format!(
+                "{}{backtrace}",
+                module.render_diagnostic(site, &format!("panic: {message}"))
+            )),
         }
     }
 }

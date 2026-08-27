@@ -209,6 +209,7 @@ fn vm_returns_constant_u64() {
     func.entry = entry;
     let block = func.block_mut(entry);
     block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(0), Type::U64)),
         kind: compiler_ir::InstKind::Const(Const::U64(42)),
     });
@@ -236,6 +237,7 @@ fn vm_returns_constant_i64() {
     func.entry = entry;
     let block = func.block_mut(entry);
     block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(0), Type::I64)),
         kind: compiler_ir::InstKind::Const(Const::I64(-7)),
     });
@@ -263,14 +265,17 @@ fn vm_adds_two_constants() {
     func.entry = entry;
     let block = func.block_mut(entry);
     block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(0), Type::U64)),
         kind: compiler_ir::InstKind::Const(Const::U64(10)),
     });
     block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(1), Type::U64)),
         kind: compiler_ir::InstKind::Const(Const::U64(32)),
     });
     block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(2), Type::U64)),
         kind: compiler_ir::InstKind::BinOp {
             op: compiler_ir::BinOp::Add,
@@ -306,6 +311,7 @@ fn vm_branch_takes_true_arm() {
     // entry: cond = true; br cond, then, else
     let entry_block = func.block_mut(entry);
     entry_block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(0), Type::Bool)),
         kind: compiler_ir::InstKind::Const(Const::Bool(true)),
     });
@@ -318,6 +324,7 @@ fn vm_branch_takes_true_arm() {
     // then: return 1
     let then_block = func.block_mut(then_blk);
     then_block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(1), Type::U64)),
         kind: compiler_ir::InstKind::Const(Const::U64(1)),
     });
@@ -326,6 +333,7 @@ fn vm_branch_takes_true_arm() {
     // else: return 2
     let else_block = func.block_mut(else_blk);
     else_block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(2), Type::U64)),
         kind: compiler_ir::InstKind::Const(Const::U64(2)),
     });
@@ -364,14 +372,17 @@ fn vm_calls_function() {
         let block = func.block_mut(entry);
         // params are @l0 and @l1
         block.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(0), Type::U64)),
             kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
         });
         block.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(1), Type::U64)),
             kind: compiler_ir::InstKind::LoadLocal(LocalId(1)),
         });
         block.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(2), Type::U64)),
             kind: compiler_ir::InstKind::BinOp {
                 op: compiler_ir::BinOp::Add,
@@ -388,14 +399,17 @@ fn vm_calls_function() {
         func.entry = entry;
         let block = func.block_mut(entry);
         block.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(0), Type::U64)),
             kind: compiler_ir::InstKind::Const(Const::U64(10)),
         });
         block.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(1), Type::U64)),
             kind: compiler_ir::InstKind::Const(Const::U64(32)),
         });
         block.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(2), Type::U64)),
             kind: compiler_ir::InstKind::Call {
                 target: add_id,
@@ -435,14 +449,17 @@ fn vm_while_loop_counts_down() {
     // entry: acc = 0; n = 5; jump body
     let entry_block = func.block_mut(entry);
     entry_block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(0), Type::U64)),
         kind: compiler_ir::InstKind::Const(Const::U64(0)),
     });
     entry_block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(1), Type::U64)),
         kind: compiler_ir::InstKind::Const(Const::U64(5)),
     });
     entry_block.instructions.push(Instruction {
+            frame: None,
         result: None,
         kind: compiler_ir::InstKind::StoreLocal {
             dst: LocalId(0),
@@ -450,6 +467,7 @@ fn vm_while_loop_counts_down() {
         },
     });
     entry_block.instructions.push(Instruction {
+            frame: None,
         result: None,
         kind: compiler_ir::InstKind::StoreLocal {
             dst: LocalId(1),
@@ -464,14 +482,17 @@ fn vm_while_loop_counts_down() {
     // body: load n; cond = n > 0; br cond, loop_body, after_loop
     let body_block = func.block_mut(body);
     body_block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(2), Type::U64)),
         kind: compiler_ir::InstKind::LoadLocal(LocalId(1)),
     });
     body_block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(3), Type::U64)),
         kind: compiler_ir::InstKind::Const(Const::U64(0)),
     });
     body_block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(4), Type::Bool)),
         kind: compiler_ir::InstKind::BinOp {
             op: compiler_ir::BinOp::Gt,
@@ -488,14 +509,17 @@ fn vm_while_loop_counts_down() {
     // loop_body: acc = acc + n; n = n - 1; jump body
     let lb = func.block_mut(loop_body);
     lb.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(5), Type::U64)),
         kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
     });
     lb.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(6), Type::U64)),
         kind: compiler_ir::InstKind::LoadLocal(LocalId(1)),
     });
     lb.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(7), Type::U64)),
         kind: compiler_ir::InstKind::BinOp {
             op: compiler_ir::BinOp::Add,
@@ -504,6 +528,7 @@ fn vm_while_loop_counts_down() {
         },
     });
     lb.instructions.push(Instruction {
+            frame: None,
         result: None,
         kind: compiler_ir::InstKind::StoreLocal {
             dst: LocalId(0),
@@ -511,14 +536,17 @@ fn vm_while_loop_counts_down() {
         },
     });
     lb.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(8), Type::U64)),
         kind: compiler_ir::InstKind::LoadLocal(LocalId(1)),
     });
     lb.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(9), Type::U64)),
         kind: compiler_ir::InstKind::Const(Const::U64(1)),
     });
     lb.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(10), Type::U64)),
         kind: compiler_ir::InstKind::BinOp {
             op: compiler_ir::BinOp::Sub,
@@ -527,6 +555,7 @@ fn vm_while_loop_counts_down() {
         },
     });
     lb.instructions.push(Instruction {
+            frame: None,
         result: None,
         kind: compiler_ir::InstKind::StoreLocal {
             dst: LocalId(1),
@@ -538,6 +567,7 @@ fn vm_while_loop_counts_down() {
     // after_loop: load acc; return acc
     let al = func.block_mut(after_loop);
     al.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(11), Type::U64)),
         kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
     });
@@ -573,14 +603,17 @@ fn vm_factorial_via_loop() {
     // entry: result = 1; i = 5; jump header
     let e = func.block_mut(entry);
     e.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(0), Type::U64)),
         kind: compiler_ir::InstKind::Const(Const::U64(1)),
     });
     e.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(1), Type::U64)),
         kind: compiler_ir::InstKind::Const(Const::U64(5)),
     });
     e.instructions.push(Instruction {
+            frame: None,
         result: None,
         kind: compiler_ir::InstKind::StoreLocal {
             dst: LocalId(0),
@@ -588,6 +621,7 @@ fn vm_factorial_via_loop() {
         },
     });
     e.instructions.push(Instruction {
+            frame: None,
         result: None,
         kind: compiler_ir::InstKind::StoreLocal {
             dst: LocalId(1),
@@ -599,14 +633,17 @@ fn vm_factorial_via_loop() {
     // header: load i; cond = i > 0; br cond, body, exit
     let h = func.block_mut(header);
     h.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(2), Type::U64)),
         kind: compiler_ir::InstKind::LoadLocal(LocalId(1)),
     });
     h.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(3), Type::U64)),
         kind: compiler_ir::InstKind::Const(Const::U64(0)),
     });
     h.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(4), Type::Bool)),
         kind: compiler_ir::InstKind::BinOp {
             op: compiler_ir::BinOp::Gt,
@@ -623,14 +660,17 @@ fn vm_factorial_via_loop() {
     // body: result = result * i; i = i - 1; jump header
     let b = func.block_mut(body);
     b.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(5), Type::U64)),
         kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
     });
     b.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(6), Type::U64)),
         kind: compiler_ir::InstKind::LoadLocal(LocalId(1)),
     });
     b.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(7), Type::U64)),
         kind: compiler_ir::InstKind::BinOp {
             op: compiler_ir::BinOp::Mul,
@@ -639,6 +679,7 @@ fn vm_factorial_via_loop() {
         },
     });
     b.instructions.push(Instruction {
+            frame: None,
         result: None,
         kind: compiler_ir::InstKind::StoreLocal {
             dst: LocalId(0),
@@ -646,14 +687,17 @@ fn vm_factorial_via_loop() {
         },
     });
     b.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(8), Type::U64)),
         kind: compiler_ir::InstKind::LoadLocal(LocalId(1)),
     });
     b.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(9), Type::U64)),
         kind: compiler_ir::InstKind::Const(Const::U64(1)),
     });
     b.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(10), Type::U64)),
         kind: compiler_ir::InstKind::BinOp {
             op: compiler_ir::BinOp::Sub,
@@ -662,6 +706,7 @@ fn vm_factorial_via_loop() {
         },
     });
     b.instructions.push(Instruction {
+            frame: None,
         result: None,
         kind: compiler_ir::InstKind::StoreLocal {
             dst: LocalId(1),
@@ -673,6 +718,7 @@ fn vm_factorial_via_loop() {
     // exit: load result; return result
     let x = func.block_mut(exit);
     x.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(11), Type::U64)),
         kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
     });
@@ -701,10 +747,12 @@ fn vm_store_local_and_reload() {
     func.entry = entry;
     let block = func.block_mut(entry);
     block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(0), Type::U64)),
         kind: compiler_ir::InstKind::Const(Const::U64(7)),
     });
     block.instructions.push(Instruction {
+            frame: None,
         result: None,
         kind: compiler_ir::InstKind::StoreLocal {
             dst: LocalId(0),
@@ -712,14 +760,17 @@ fn vm_store_local_and_reload() {
         },
     });
     block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(1), Type::U64)),
         kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
     });
     block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(2), Type::U64)),
         kind: compiler_ir::InstKind::Const(Const::U64(3)),
     });
     block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(3), Type::U64)),
         kind: compiler_ir::InstKind::BinOp {
             op: compiler_ir::BinOp::Add,
@@ -728,6 +779,7 @@ fn vm_store_local_and_reload() {
         },
     });
     block.instructions.push(Instruction {
+            frame: None,
         result: None,
         kind: compiler_ir::InstKind::StoreLocal {
             dst: LocalId(0),
@@ -735,6 +787,7 @@ fn vm_store_local_and_reload() {
         },
     });
     block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(4), Type::U64)),
         kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
     });
@@ -762,10 +815,12 @@ fn vm_cast_i64_to_f64_and_back() {
     func.entry = entry;
     let block = func.block_mut(entry);
     block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(0), Type::I64)),
         kind: compiler_ir::InstKind::Const(Const::I64(42)),
     });
     block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(1), Type::F64)),
         kind: compiler_ir::InstKind::Cast {
             value: ValueId(0),
@@ -774,6 +829,7 @@ fn vm_cast_i64_to_f64_and_back() {
         },
     });
     block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(2), Type::I64)),
         kind: compiler_ir::InstKind::Cast {
             value: ValueId(1),
@@ -820,14 +876,17 @@ fn vm_recursive_fib() {
 
         let e = func.block_mut(entry);
         e.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(0), Type::U64)),
             kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
         });
         e.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(1), Type::U64)),
             kind: compiler_ir::InstKind::Const(Const::U64(1)),
         });
         e.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(2), Type::Bool)),
             kind: compiler_ir::InstKind::BinOp {
                 op: compiler_ir::BinOp::Le,
@@ -843,6 +902,7 @@ fn vm_recursive_fib() {
 
         let b = func.block_mut(base);
         b.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(3), Type::U64)),
             kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
         });
@@ -850,14 +910,17 @@ fn vm_recursive_fib() {
 
         let r = func.block_mut(recurse);
         r.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(4), Type::U64)),
             kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
         });
         r.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(5), Type::U64)),
             kind: compiler_ir::InstKind::Const(Const::U64(1)),
         });
         r.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(6), Type::U64)),
             kind: compiler_ir::InstKind::BinOp {
                 op: compiler_ir::BinOp::Sub,
@@ -866,6 +929,7 @@ fn vm_recursive_fib() {
             },
         });
         r.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(7), Type::U64)),
             kind: compiler_ir::InstKind::Call {
                 target: fib_id,
@@ -873,14 +937,17 @@ fn vm_recursive_fib() {
             },
         });
         r.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(8), Type::U64)),
             kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
         });
         r.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(9), Type::U64)),
             kind: compiler_ir::InstKind::Const(Const::U64(2)),
         });
         r.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(10), Type::U64)),
             kind: compiler_ir::InstKind::BinOp {
                 op: compiler_ir::BinOp::Sub,
@@ -889,6 +956,7 @@ fn vm_recursive_fib() {
             },
         });
         r.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(11), Type::U64)),
             kind: compiler_ir::InstKind::Call {
                 target: fib_id,
@@ -896,6 +964,7 @@ fn vm_recursive_fib() {
             },
         });
         r.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(12), Type::U64)),
             kind: compiler_ir::InstKind::BinOp {
                 op: compiler_ir::BinOp::Add,
@@ -913,10 +982,12 @@ fn vm_recursive_fib() {
         func.entry = entry;
         let block = func.block_mut(entry);
         block.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(0), Type::U64)),
             kind: compiler_ir::InstKind::Const(Const::U64(6)),
         });
         block.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(1), Type::U64)),
             kind: compiler_ir::InstKind::Call {
                 target: fib_id,
@@ -961,10 +1032,12 @@ fn vm_call_struct_returns_two_fields() {
         func.entry = entry;
         let block = func.block_mut(entry);
         block.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(0), Type::U64)),
             kind: compiler_ir::InstKind::Const(Const::U64(10)),
         });
         block.instructions.push(Instruction {
+            frame: None,
             result: None,
             kind: compiler_ir::InstKind::StoreLocal {
                 dst: LocalId(0),
@@ -972,10 +1045,12 @@ fn vm_call_struct_returns_two_fields() {
             },
         });
         block.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(1), Type::U64)),
             kind: compiler_ir::InstKind::Const(Const::U64(20)),
         });
         block.instructions.push(Instruction {
+            frame: None,
             result: None,
             kind: compiler_ir::InstKind::StoreLocal {
                 dst: LocalId(1),
@@ -983,10 +1058,12 @@ fn vm_call_struct_returns_two_fields() {
             },
         });
         block.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(2), Type::U64)),
             kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
         });
         block.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(3), Type::U64)),
             kind: compiler_ir::InstKind::LoadLocal(LocalId(1)),
         });
@@ -1002,6 +1079,7 @@ fn vm_call_struct_returns_two_fields() {
         func.entry = entry;
         let block = func.block_mut(entry);
         block.instructions.push(Instruction {
+            frame: None,
             result: None,
             kind: compiler_ir::InstKind::CallStruct {
                 target: make_id,
@@ -1010,14 +1088,17 @@ fn vm_call_struct_returns_two_fields() {
             },
         });
         block.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(0), Type::U64)),
             kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
         });
         block.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(1), Type::U64)),
             kind: compiler_ir::InstKind::LoadLocal(LocalId(1)),
         });
         block.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(2), Type::U64)),
             kind: compiler_ir::InstKind::BinOp {
                 op: compiler_ir::BinOp::Add,
@@ -1053,10 +1134,12 @@ fn vm_heap_alloc_ptr_write_read() {
 
     // ptr = heap_alloc(8)
     block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(0), Type::U64)),
         kind: compiler_ir::InstKind::Const(Const::U64(8)),
     });
     block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(1), Type::U64)),
         kind: compiler_ir::InstKind::HeapAlloc {
             size: ValueId(0),
@@ -1065,6 +1148,7 @@ fn vm_heap_alloc_ptr_write_read() {
         },
     });
     block.instructions.push(Instruction {
+            frame: None,
         result: None,
         kind: compiler_ir::InstKind::StoreLocal {
             dst: LocalId(0),
@@ -1074,14 +1158,17 @@ fn vm_heap_alloc_ptr_write_read() {
 
     // ptr_write(ptr, 0, 42u64)
     block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(2), Type::U64)),
         kind: compiler_ir::InstKind::Const(Const::U64(42)),
     });
     block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(3), Type::U64)),
         kind: compiler_ir::InstKind::Const(Const::U64(0)),
     });
     block.instructions.push(Instruction {
+            frame: None,
         result: None,
         kind: compiler_ir::InstKind::PtrWrite {
             ptr: ValueId(1),
@@ -1093,14 +1180,17 @@ fn vm_heap_alloc_ptr_write_read() {
 
     // val = ptr_read(ptr, 0, U64)
     block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(4), Type::U64)),
         kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
     });
     block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(5), Type::U64)),
         kind: compiler_ir::InstKind::Const(Const::U64(0)),
     });
     block.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(6), Type::U64)),
         kind: compiler_ir::InstKind::PtrRead {
             ptr: ValueId(4),
@@ -1145,14 +1235,17 @@ fn vm_capturing_closure_via_make_and_call_indirect() {
         func.entry = entry;
         let b = func.block_mut(entry);
         b.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(0), Type::U64)),
             kind: InstKind::LoadLocal(LocalId(0)),
         });
         b.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(1), Type::U64)),
             kind: InstKind::Const(Const::U64(8)),
         });
         b.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(2), Type::I64)),
             kind: InstKind::PtrRead {
                 ptr: ValueId(0),
@@ -1161,10 +1254,12 @@ fn vm_capturing_closure_via_make_and_call_indirect() {
             },
         });
         b.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(3), Type::I64)),
             kind: InstKind::LoadLocal(LocalId(1)),
         });
         b.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(4), Type::I64)),
             kind: InstKind::BinOp {
                 op: BinOp::Add,
@@ -1182,10 +1277,12 @@ fn vm_capturing_closure_via_make_and_call_indirect() {
         func.entry = entry;
         let m = func.block_mut(entry);
         m.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(0), Type::I64)),
             kind: InstKind::Const(Const::I64(10)),
         });
         m.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(1), Type::U64)),
             kind: InstKind::MakeClosure {
                 target: body_id,
@@ -1194,10 +1291,12 @@ fn vm_capturing_closure_via_make_and_call_indirect() {
             },
         });
         m.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(2), Type::I64)),
             kind: InstKind::Const(Const::I64(5)),
         });
         m.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(3), Type::I64)),
             kind: InstKind::CallIndirect {
                 callee: ValueId(1),
@@ -1255,6 +1354,7 @@ fn vm_dyn_dispatch_via_vtable() {
         func.entry = entry;
         let b = func.block_mut(entry);
         b.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(0), Type::I64)),
             kind: InstKind::Const(Const::I64(7)),
         });
@@ -1268,14 +1368,17 @@ fn vm_dyn_dispatch_via_vtable() {
         func.entry = entry;
         let m = func.block_mut(entry);
         m.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(0), Type::U64)),
             kind: InstKind::VtableAddr { trait_sym, struct_sym },
         });
         m.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(1), Type::U64)),
             kind: InstKind::Const(Const::U64(0)),
         });
         m.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(2), Type::U64)),
             kind: InstKind::PtrRead {
                 ptr: ValueId(0),
@@ -1285,10 +1388,12 @@ fn vm_dyn_dispatch_via_vtable() {
         });
         // data_ptr = 0 (empty struct sentinel)
         m.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(3), Type::U64)),
             kind: InstKind::Const(Const::U64(0)),
         });
         m.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(4), Type::I64)),
             kind: InstKind::CallIndirectFn {
                 callee: ValueId(2),
@@ -1337,26 +1442,32 @@ fn vm_mut_ref_propagates_across_call() {
         func.entry = entry;
         let b = func.block_mut(entry);
         b.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(0), Type::U64)),
             kind: InstKind::LoadLocal(LocalId(0)),
         });
         b.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(1), Type::I64)),
             kind: InstKind::LoadRef { ptr: ValueId(0), ty: Type::I64 },
         });
         b.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(2), Type::I64)),
             kind: InstKind::Const(Const::I64(1)),
         });
         b.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(3), Type::I64)),
             kind: InstKind::BinOp { op: BinOp::Add, lhs: ValueId(1), rhs: ValueId(2) },
         });
         b.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(4), Type::U64)),
             kind: InstKind::LoadLocal(LocalId(0)),
         });
         b.instructions.push(Instruction {
+            frame: None,
             result: None,
             kind: InstKind::StoreRef { ptr: ValueId(4), value: ValueId(3), ty: Type::I64 },
         });
@@ -1372,22 +1483,27 @@ fn vm_mut_ref_propagates_across_call() {
         func.entry = entry;
         let m = func.block_mut(entry);
         m.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(0), Type::I64)),
             kind: InstKind::Const(Const::I64(41)),
         });
         m.instructions.push(Instruction {
+            frame: None,
             result: None,
             kind: InstKind::StoreLocal { dst: v, src: ValueId(0) },
         });
         m.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(1), Type::U64)),
             kind: InstKind::AddressOf { local: v },
         });
         m.instructions.push(Instruction {
+            frame: None,
             result: None,
             kind: InstKind::Call { target: inc_id, args: vec![ValueId(1)] },
         });
         m.instructions.push(Instruction {
+            frame: None,
             result: Some((ValueId(2), Type::I64)),
             kind: InstKind::LoadLocal(v),
         });
@@ -1423,6 +1539,7 @@ fn vm_panic_resolves_message_via_interner() {
     // entry: cond = false; br cond, <unused>, fail
     let e = func.block_mut(entry);
     e.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(0), Type::Bool)),
         kind: InstKind::Const(Const::Bool(false)),
     });
@@ -1492,10 +1609,12 @@ fn step_budget_stops_a_hot_loop() {
     // entry: i = 0; jump header
     let e = func.block_mut(entry);
     e.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(0), Type::U64)),
         kind: InstKind::Const(Const::U64(0)),
     });
     e.instructions.push(Instruction {
+            frame: None,
         result: None,
         kind: InstKind::StoreLocal { dst: LocalId(0), src: ValueId(0) },
     });
@@ -1504,6 +1623,7 @@ fn step_budget_stops_a_hot_loop() {
     // header: br true, header, exit  (the always-taken back-edge)
     let h = func.block_mut(header);
     h.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(1), Type::Bool)),
         kind: InstKind::Const(Const::Bool(true)),
     });
@@ -1549,6 +1669,7 @@ fn step_budget_does_not_count_forward_jumps() {
 
     let e = func.block_mut(entry);
     e.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(0), Type::Bool)),
         kind: InstKind::Const(Const::Bool(true)),
     });
@@ -1556,6 +1677,7 @@ fn step_budget_does_not_count_forward_jumps() {
 
     let t = func.block_mut(then_blk);
     t.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(1), Type::U64)),
         kind: InstKind::Const(Const::U64(42)),
     });
@@ -1563,6 +1685,7 @@ fn step_budget_does_not_count_forward_jumps() {
 
     let j = func.block_mut(join);
     j.instructions.push(Instruction {
+            frame: None,
         result: Some((ValueId(2), Type::U64)),
         kind: InstKind::Const(Const::U64(7)),
     });

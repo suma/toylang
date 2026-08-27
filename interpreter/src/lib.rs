@@ -1230,78 +1230,26 @@ fn execute_entry_with_values(
     }
 }
 
-/// How many rendered frames a backtrace shows before eliding the
-/// middle (DEBUG-OBS D1).
-///
-/// Counted *after* folding, so an ordinary deep recursion collapses to
-/// one line and never reaches the limit; what this bounds is a stack
-/// deep in *distinct* frames — mutual recursion, where no two adjacent
-/// frames are the same call. Both ends are kept because the innermost
-/// frames say what failed and the outermost say which path got there.
-///
-/// The tree-walker's own `max_call_depth` (30) means this can only
-/// fire in a narrow band today. It is written for the rendering, not
-/// for that ceiling: D4's shadow stack raises the depth to 1024 and
-/// shares this function.
-const BACKTRACE_HEAD: usize = 10;
-const BACKTRACE_TAIL: usize = 5;
-
 /// Render a panic backtrace, innermost call first.
 ///
 /// LLM-LOOP P6: names alone are enough to disambiguate which path
 /// reached the failure, which is the question a bare message leaves
 /// unanswered. Call-site lines are included when the frame recorded one.
 ///
-/// DEBUG-OBS D1: consecutive frames that are the same call written at
-/// the same place are one line with a repeat count. A recursion of
-/// depth 7 used to print seven identical lines carrying no information
-/// beyond the first (実測 6), and the depth cap below keeps a deep
-/// stack from burying the message that caused it.
+/// DEBUG-OBS D4: the folding and the depth cap moved into
+/// `compiler_ir::render_backtrace`, which the IR VM also calls and the
+/// compiled runtime hand-copies. A backtrace that reads differently
+/// depending on which engine ran the program is worth less than one
+/// that reads the same everywhere.
 fn render_backtrace(frames: &[crate::error::CallFrame]) -> String {
-    if frames.is_empty() {
-        return String::new();
-    }
-    let folded = fold_frames(frames);
-    let mut out = String::from("\n   = backtrace (innermost first):");
-    let elided = folded.len().saturating_sub(BACKTRACE_HEAD + BACKTRACE_TAIL);
-    for (i, line) in folded.iter().enumerate() {
-        if elided > 0 && i == BACKTRACE_HEAD {
-            out.push_str(&format!("\n       ... {elided} frames elided"));
-        }
-        if elided > 0 && i >= BACKTRACE_HEAD && i < BACKTRACE_HEAD + elided {
-            continue;
-        }
-        out.push_str(&format!("\n       {line}"));
-    }
-    out
-}
-
-/// Collapse runs of the same (function, call site) into one line.
-fn fold_frames(frames: &[crate::error::CallFrame]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut i = 0;
-    while i < frames.len() {
-        let frame = &frames[i];
-        let site = frame.call_site.as_ref().map(|loc| loc.line);
-        let mut repeats = 1;
-        while i + repeats < frames.len() {
-            let next = &frames[i + repeats];
-            if next.function != frame.function
-                || next.call_site.as_ref().map(|loc| loc.line) != site
-            {
-                break;
-            }
-            repeats += 1;
-        }
-        out.push(match (site, repeats) {
-            (Some(line), 1) => format!("{} (called at line {line})", frame.function),
-            (Some(line), n) => format!("{} (x{n}, called at line {line})", frame.function),
-            (None, 1) => frame.function.clone(),
-            (None, n) => format!("{} (x{n})", frame.function),
-        });
-        i += repeats;
-    }
-    out
+    let entries: Vec<compiler_ir::BacktraceEntry<'_>> = frames
+        .iter()
+        .map(|f| compiler_ir::BacktraceEntry {
+            name: f.function.as_str(),
+            line: f.call_site.as_ref().map(|loc| loc.line),
+        })
+        .collect();
+    compiler_ir::render_backtrace(&entries)
 }
 
 

@@ -965,3 +965,50 @@ fn struct_with_tuple_field_read_and_print() {
 // floor / ceil). The transcendentals lower to libm calls; floor / ceil
 // use cranelift's native instructions.
 // ----------------------------------------------------------------------------
+
+/// DEBUG-OBS D4: `--release` drops the backtrace and keeps the position.
+///
+/// The two halves are on different sides of the cost line. A position
+/// is `.rodata` the program never reads unless it dies, so a release
+/// build keeps it; the shadow stack costs a store per call, so it goes
+/// — the same axis `--release` already uses for contracts.
+#[test]
+fn release_drops_the_backtrace_but_keeps_the_position() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn inner() -> u64 { panic("deep") }
+        fn main() -> u64 { inner() }
+    "#;
+    let src_path = unique_path("rel_bt.t");
+    std::fs::write(&src_path, src).unwrap();
+
+    let mut outputs = Vec::new();
+    for release in [false, true] {
+        let exe = unique_path(if release { "rel_bt_r" } else { "rel_bt_d" });
+        let mut opts = CompilerOptions::new(src_path.clone());
+        opts.output = Some(exe.clone());
+        opts.release = release;
+        opts.link_cache_dir = Some(link_cache_dir_for_tests());
+        compile_file(&opts).expect("compile");
+        let out = Command::new(&exe).output().expect("spawn");
+        let _ = std::fs::remove_file(&exe);
+        outputs.push(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    let _ = std::fs::remove_file(&src_path);
+    let (debug, release) = (&outputs[0], &outputs[1]);
+
+    for text in [debug, release] {
+        assert!(text.contains("panic: deep"), "{text}");
+        assert!(text.contains("Error at"), "a position costs nothing to keep:\n{text}");
+    }
+    assert!(
+        debug.contains("backtrace (innermost first)") && debug.contains("inner"),
+        "a default build should say how it got there:\n{debug}"
+    );
+    assert!(
+        !release.contains("backtrace"),
+        "a release build should not be paying for one:\n{release}"
+    );
+}

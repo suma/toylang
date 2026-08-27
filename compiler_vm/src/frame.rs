@@ -13,6 +13,10 @@ use super::slot::RawSlot;
 pub struct CallFrame {
     /// The function being executed.
     pub func_id: FuncId,
+    /// DEBUG-OBS D4: the backtrace frame this call entered, carried
+    /// from the calling instruction. `None` for the entry function,
+    /// which nothing called.
+    pub frame: Option<compiler_ir::FrameId>,
     /// Flat local slot array. Indices `0..func.params.len()` are parameters.
     pub locals: Vec<RawSlot>,
     /// Current basic block.
@@ -53,6 +57,7 @@ impl CallFrame {
     pub fn new(func_id: FuncId, total_locals: usize) -> Self {
         Self {
             func_id,
+            frame: None,
             locals: vec![RawSlot::default(); total_locals],
             block: BlockId(0),
             pc: 0,

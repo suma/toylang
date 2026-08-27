@@ -1257,7 +1257,6 @@ fn diagnostic_report(lanes: &[DiagnosticLane]) -> String {
 
 /// The target state (`DEBUG_OBSERVABILITY.md` D0): every engine renders
 /// the same failure the same way.
-#[allow(dead_code)]
 pub(super) fn assert_diagnostic_consistent(source: &str, stem: &str) {
     if skip_e2e() {
         return;

@@ -354,6 +354,10 @@ extern "C" fn jit_panic_text(ptr: u64, len: u64) {
         core::str::from_utf8_unchecked(core::slice::from_raw_parts(ptr as *const u8, len as usize))
     };
     eprint!("{text}");
+    // DEBUG-OBS D4: the shadow stack is the runtime's, and so is the
+    // rendering — this JIT shares both with the compiled backends.
+    toylang_rt::toy_write_backtrace();
+    eprintln!();
     std::process::exit(1);
 }
 
@@ -396,6 +400,8 @@ extern "C" fn jit_panic(sym_id: u64, pre_ptr: u64, pre_len: u64, suf_ptr: u64, s
         msg,
         borrow(suf_ptr, suf_len)
     );
+    toylang_rt::toy_write_backtrace();
+    eprintln!();
     std::process::exit(1);
 }
 
@@ -1026,6 +1032,7 @@ fn build_cache_entry(
         codegen::translate_function(
             &mut module,
             program,
+            interner,
             source,
             sig,
             &eligible.signatures,

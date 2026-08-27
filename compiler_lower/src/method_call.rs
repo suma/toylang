@@ -299,6 +299,10 @@ impl<'a> FunctionLower<'a> {
         let func_id = self
             .module
             .declare_function_anon(export_name, Linkage::Local, params, ret);
+        // DEBUG-OBS D4: the mangled name has the monomorph's type
+        // arguments in it; a backtrace wants what the user wrote.
+        self.module
+            .set_display_name(func_id, format!("{target_str}::{method_str}"));
         // REF-Stage-2 (ii-method): pre-populate the writeback shape
         // for this generic method instance so callers compiled
         // before the body see the correct trailing-return layout.

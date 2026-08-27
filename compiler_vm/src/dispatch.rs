@@ -17,6 +17,12 @@ use crate::{RawSlot, Vm};
 
 /// Execute a single non-terminator instruction.
 pub fn execute(vm: &mut Vm, inst: &Instruction) {
+    // DEBUG-OBS D4: hand the calling instruction's backtrace frame to
+    // whichever `call_function` this dispatch reaches. Set here rather
+    // than in each of the call arms — they all end in the same place,
+    // and one of them forgetting is exactly the kind of hole this
+    // phase exists to close.
+    vm.set_pending_frame(inst.frame);
     let host = vm.host();
     match &inst.kind {
         InstKind::Const(c) => {

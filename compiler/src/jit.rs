@@ -391,6 +391,16 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     );
     // DEBUG-OBS D3.
     jit_builder.symbol("toy_panic_at", toylang_rt::toy_panic_at as *const u8);
+    // DEBUG-OBS D4: the shadow stack is *data*, not a function, and
+    // the generated code writes to it directly rather than calling in.
+    jit_builder.symbol(
+        "toy_shadow_stack",
+        (&raw const toylang_rt::toy_shadow_stack) as *const u8,
+    );
+    jit_builder.symbol(
+        "toy_shadow_depth",
+        (&raw const toylang_rt::toy_shadow_depth) as *const u8,
+    );
     jit_builder.symbol("toy_prof_force_counting", toylang_rt::toy_prof_force_counting as *const u8);
     jit_builder.symbol("toy_record_allocator_layout", toylang_rt::toy_record_allocator_layout as *const u8);
     // RUNTIME-IO: stdlib I/O externs (core/std/io.t).

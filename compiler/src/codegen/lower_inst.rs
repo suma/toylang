@@ -1137,24 +1137,42 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 // along as a constant. An extra register argument is
                 // cheaper than a separate call to set it, and codegen
                 // cannot know whether profiling will be on at run time.
-                let site_v = self.builder.ins().iconst(types::I64, *site as i64);
-                let call = self
-                    .builder
-                    .ins()
-                    .call(self.runtime.dispatched_alloc, &[handle_v, size_v, site_v]);
+                //
+                // The file name goes the same way, as a pointer to a
+                // `.rodata` blob — which is how the leak report can
+                // name a file the binary never opens.
+                let packed = self.ir_module.packed_site(*site);
+                let site_v = self.builder.ins().iconst(types::I64, packed as i64);
+                let file_v = match self.alloc_file_imports.get(self.ir_module.site_file(*site)) {
+                    Some(gv) => self.builder.ins().symbol_value(types::I64, *gv),
+                    None => self.builder.ins().iconst(types::I64, 0),
+                };
+                let call = self.builder.ins().call(
+                    self.runtime.dispatched_alloc,
+                    &[handle_v, size_v, site_v, file_v],
+                );
                 let result = self.builder.inst_results(call)[0];
                 if let Some((vid, _)) = inst.result {
                     self.values.insert(vid.0, result);
                 }
             }
-            InstKind::HeapRealloc { ptr, new_size, binding: _ } => {
+            InstKind::HeapRealloc { ptr, new_size, binding: _, site } => {
                 let ptr_v = self.value(*ptr);
                 let size_v = self.value(*new_size);
                 let handle_call = self.builder.ins().call(self.runtime.alloc_current, &[]);
                 let handle_v = self.builder.inst_results(handle_call)[0];
+                // The site rides along as a constant, used only when
+                // the runtime sees a null `ptr` (M2 + D2) — the file
+                // name as a `.rodata` pointer, like `HeapAlloc`'s.
+                let packed = self.ir_module.packed_site(*site);
+                let site_v = self.builder.ins().iconst(types::I64, packed as i64);
+                let file_v = match self.alloc_file_imports.get(self.ir_module.site_file(*site)) {
+                    Some(gv) => self.builder.ins().symbol_value(types::I64, *gv),
+                    None => self.builder.ins().iconst(types::I64, 0),
+                };
                 let call = self.builder.ins().call(
                     self.runtime.dispatched_realloc,
-                    &[handle_v, ptr_v, size_v],
+                    &[handle_v, ptr_v, size_v, site_v, file_v],
                 );
                 let result = self.builder.inst_results(call)[0];
                 if let Some((vid, _)) = inst.result {

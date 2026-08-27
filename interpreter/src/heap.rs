@@ -150,6 +150,16 @@ impl MemoryStats {
     /// prints, so the three implementations stay comparable verbatim.
     /// Sites are emitted in source order; a hash order would make the
     /// report differ between runs of the same program.
+    /// `file:line:column`, or `line:column` when the site has no file.
+    fn site_label(site: u64, stats: &SiteStats) -> String {
+        let position = format!("{}:{}", site >> 32, site & 0xffff_ffff);
+        if stats.file.is_empty() {
+            position
+        } else {
+            format!("{}:{position}", stats.file)
+        }
+    }
+
     pub fn leak_report(sites: &[(u64, SiteStats)]) -> String {
         let leaked: Vec<&(u64, SiteStats)> =
             sites.iter().filter(|(_, s)| s.live_count > 0).collect();
@@ -164,9 +174,8 @@ impl MemoryStats {
         );
         for (site, s) in leaked {
             out.push_str(&format!(
-                "  {}:{}  {} allocations  {} bytes\n",
-                site >> 32,
-                site & 0xffff_ffff,
+                "  {}  {} allocations  {} bytes\n",
+                Self::site_label(*site, s),
                 s.live_count,
                 s.live_bytes
             ));
@@ -212,7 +221,8 @@ impl MemoryStats {
             for (i, (site, s)) in leaked.iter().enumerate() {
                 let comma = if i + 1 == leaked.len() { "" } else { "," };
                 out.push_str(&format!(
-                    "    {{\n      \"line\": {},\n      \"column\": {},\n      \"allocations\": {},\n      \"bytes\": {}\n    }}{comma}\n",
+                    "    {{\n      \"file\": \"{}\",\n      \"line\": {},\n      \"column\": {},\n      \"allocations\": {},\n      \"bytes\": {}\n    }}{comma}\n",
+                    s.file,
                     site >> 32,
                     site & 0xffff_ffff,
                     s.live_count,
@@ -295,8 +305,15 @@ thread_local! {
 }
 
 /// What one allocation site did (MEMORY_PROFILING M2).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+///
+/// No longer `Copy`: the file name is part of it, and a name is the
+/// point of the entry — a leak report that says `88:20` leaves the
+/// reader to guess which of eleven stdlib files that is.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SiteStats {
+    /// MEMORY_PROFILING M2 + DEBUG-OBS D2: the file the site is in.
+    /// Empty when the position carried none.
+    pub file: String,
     pub alloc_count: u64,
     pub cumulative_bytes: u64,
     /// Allocations from this site that were never freed, and their
@@ -444,8 +461,28 @@ thread_local! {
 /// position. A `BTreeMap` rather than a hash map so the report is
 /// emitted in a stable order — a hash-ordered report would not be
 /// diffable, which is the property the whole design rests on.
+/// Remember which file an allocation site is in
+/// (MEMORY_PROFILING M2 + DEBUG-OBS D2).
+///
+/// Kept beside the counters rather than in the key: the key is the
+/// packed position, which is what makes the tree-walker and the
+/// compiled backends attribute an allocation to the same place without
+/// a shared id table. The name only matters to the report.
+pub fn note_site_file(site: u64, file: &str) {
+    if file.is_empty() {
+        return;
+    }
+    PROFILE_SITES.with(|m| {
+        let mut sites = m.borrow_mut();
+        let entry = sites.entry(site).or_default();
+        if entry.file.is_empty() {
+            entry.file = file.to_string();
+        }
+    });
+}
+
 pub fn profile_sites() -> Vec<(u64, SiteStats)> {
-    PROFILE_SITES.with(|m| m.borrow().iter().map(|(k, v)| (*k, *v)).collect())
+    PROFILE_SITES.with(|m| m.borrow().iter().map(|(k, v)| (*k, v.clone())).collect())
 }
 
 /// Clear the per-thread totals. The profiling CLI calls this before a

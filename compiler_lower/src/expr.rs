@@ -1962,17 +1962,15 @@ impl<'a> FunctionLower<'a> {
     /// restricted to a string-literal message because the codegen lays
     /// the message bytes into a static data segment; non-literal
     /// messages would require formatting at runtime.
-    /// Source position of an allocation site, packed as
-    /// `(line << 32) | column` (MEMORY_PROFILING M2).
+    /// Source position of an allocation site (MEMORY_PROFILING M2).
     ///
-    /// Read from the same `location_pool` the tree-walker consults, so
-    /// a compiled run and an interpreted one attribute an allocation to
-    /// the same place without a shared id table.
-    pub(super) fn alloc_site(&self, call_ref: &ExprRef) -> u64 {
-        match self.program.location_pool.get_expr_location(call_ref) {
-            Some(loc) => ((loc.line as u64) << 32) | (loc.column as u64),
-            None => 0,
-        }
+    /// A `SiteId` rather than a packed position, so the report can
+    /// name the *file* too: the packed form both runtimes key on is
+    /// derived from it at the point of recording, and the tree-walker
+    /// — which has no module — computes the same number from the same
+    /// location pool.
+    pub(super) fn alloc_site(&mut self, call_ref: &ExprRef) -> Option<crate::ir::SiteId> {
+        self.site_of(call_ref)
     }
 
     pub(super) fn lower_builtin_call(
@@ -2051,7 +2049,13 @@ impl<'a> FunctionLower<'a> {
                 let new_size = self.lower_expr(&args[1])?
                     .ok_or_else(|| "heap_realloc new_size produced no value".to_string())?;
                 let binding = self.classify_active_allocator_binding();
-                Ok(self.emit(InstKind::HeapRealloc { ptr, new_size, binding }, Some(Type::U64)))
+                // The site attributes a *null* resize — the allocation
+                // shape stdlib collections grow through (M2 + D2).
+                let site = self.alloc_site(call_ref);
+                Ok(self.emit(
+                    InstKind::HeapRealloc { ptr, new_size, binding, site },
+                    Some(Type::U64),
+                ))
             }
             BuiltinFunction::PtrRead => {
                 // `__builtin_ptr_read(ptr, offset)` — return type comes

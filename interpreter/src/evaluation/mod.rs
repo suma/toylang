@@ -160,6 +160,10 @@ pub struct EvaluationContext<'a> {
     /// LLM-LOOP P6: the interpreter had no access to positions at all,
     /// so a runtime failure could not say where it happened.
     pub location_pool: Option<&'a frontend::ast::LocationPool>,
+    /// The program's source map, when the caller supplied it. The
+    /// memory profile wants the *file* an allocation site is in, and a
+    /// `SourceLocation` carries a `FileId`, not a name (DEBUG-OBS D2).
+    pub source_map: Option<&'a frontend::source_map::SourceMap>,
     /// Toylang call stack, innermost last. Used to build panic
     /// backtraces; empty when nothing is running.
     pub(super) call_stack: Vec<crate::error::CallFrame>,
@@ -361,6 +365,7 @@ impl<'a> EvaluationContext<'a> {
             method_registry: Rc::new(HashMap::new()),
             null_object: Rc::new(RefCell::new(Object::null_unknown())),
             location_pool: None,
+            source_map: None,
             call_stack: Vec::new(),
             recursion_depth: 0,
             max_recursion_depth: 1000, // Increased to support deeper recursion like fib(20)
@@ -423,6 +428,7 @@ impl<'a> EvaluationContext<'a> {
             method_registry: shared.method_registry.clone(),
             null_object: Rc::new(RefCell::new(Object::null_unknown())),
             location_pool: None,
+            source_map: None,
             call_stack: Vec::new(),
             recursion_depth: 0,
             max_recursion_depth: 1000,

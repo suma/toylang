@@ -150,6 +150,9 @@ struct ProfSlot {
     key: *mut u8,
     size: u64,
     site: u64, // packed (line << 32) | column, MEMORY_PROFILING M2
+    /// The site's file, so a free / realloc can carry it back to the
+    /// per-site entry without the caller knowing it.
+    file: *const u8,
     state: u8, // 0 empty, 1 occupied, 2 tombstone
 }
 
@@ -157,6 +160,10 @@ struct ProfSlot {
 #[derive(Clone, Copy)]
 struct ProfSite {
     site: u64,
+    /// MEMORY_PROFILING M2: the file the site is in, as a pointer to a
+    /// `.rodata` blob codegen laid down. Null when the site had no
+    /// file — a synthesized allocation with no line to point at.
+    file: *const u8,
     alloc_count: u64,
     cumulative_bytes: u64,
     live_count: u64,
@@ -165,6 +172,7 @@ struct ProfSite {
 
 const PROF_SITE_ZERO: ProfSite = ProfSite {
     site: 0,
+    file: core::ptr::null(),
     alloc_count: 0,
     cumulative_bytes: 0,
     live_count: 0,
@@ -206,6 +214,9 @@ pub struct RtMemoryStats {
 /// Per-site totals, mirroring `interpreter::heap::SiteStats`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RtSiteStats {
+    /// MEMORY_PROFILING M2: the site's file, as the `.rodata` pointer
+    /// codegen passed at the allocation.
+    pub file: *const u8,
     pub alloc_count: u64,
     pub cumulative_bytes: u64,
     pub live_count: u64,
@@ -665,7 +676,7 @@ fn prof_enabled() -> bool {
     st.prof_state != 0
 }
 
-fn prof_put(p: *mut u8, size: u64, site: u64) {
+fn prof_put(p: *mut u8, size: u64, site: u64, file: *const u8) {
     let grow = {
         let st = thread_state();
         st.prof_tab_cap == 0 || (st.prof_tab_occupied + 1) * 4 >= st.prof_tab_cap * 3
@@ -689,6 +700,7 @@ fn prof_put(p: *mut u8, size: u64, site: u64) {
         (*tab.add(i as usize)).key = p;
         (*tab.add(i as usize)).size = size;
         (*tab.add(i as usize)).site = site;
+        (*tab.add(i as usize)).file = file;
         (*tab.add(i as usize)).state = 1;
     }
 }
@@ -712,7 +724,7 @@ fn prof_tab_grow() {
     for i in 0..old_cap as usize {
         if unsafe { (*old.add(i)).state } == 1 {
             let slot = unsafe { *old.add(i) };
-            prof_put(slot.key, slot.size, slot.site);
+            prof_put(slot.key, slot.size, slot.site, slot.file);
         }
     }
     if !old.is_null() {
@@ -722,10 +734,10 @@ fn prof_tab_grow() {
 
 /// Remove `p` and return the size it held, or 0 if it was not tracked
 /// (a double free, or a pointer this runtime never handed out).
-fn prof_take(p: *mut u8) -> (u64, u64) {
+fn prof_take(p: *mut u8) -> (u64, u64, *const u8) {
     let st = thread_state();
     if st.prof_tab_cap == 0 {
-        return (0, 0);
+        return (0, 0, core::ptr::null());
     }
     let mask = st.prof_tab_cap - 1;
     let mut i = prof_hash(p) & mask;
@@ -737,14 +749,14 @@ fn prof_take(p: *mut u8) -> (u64, u64) {
             let slot = unsafe { *tab.add(i as usize) };
             unsafe { (*tab.add(i as usize)).state = 2 };
             st.prof_tab_occupied -= 1;
-            return (slot.size, slot.site);
+            return (slot.size, slot.site, slot.file);
         }
         i = (i + 1) & mask;
     }
-    (0, 0)
+    (0, 0, core::ptr::null())
 }
 
-fn prof_site_for(st: &mut ThreadState, site: u64) -> *mut ProfSite {
+fn prof_site_for(st: &mut ThreadState, site: u64, file: *const u8) -> *mut ProfSite {
     for i in 0..st.prof_site_len {
         if st.prof_sites[i].site == site {
             return &mut st.prof_sites[i];
@@ -756,6 +768,7 @@ fn prof_site_for(st: &mut ThreadState, site: u64) -> *mut ProfSite {
     let e = &mut st.prof_sites[st.prof_site_len];
     st.prof_site_len += 1;
     e.site = site;
+    e.file = file;
     e
 }
 
@@ -947,8 +960,11 @@ fn write_frame_line(sink: &mut dyn BacktraceSink, frame: *const ToyFrameInfo, re
 
 /// # Safety
 /// `p` must point at a NUL-terminated UTF-8 string that outlives the
-/// borrow.
-unsafe fn cstr_as_str<'a>(p: *const u8) -> &'a str {
+/// borrow. Null is read as `""`.
+pub unsafe fn cstr_as_str<'a>(p: *const u8) -> &'a str {
+    if p.is_null() {
+        return "";
+    }
     let mut len = 0usize;
     while len < 1 << 20 && unsafe { *p.add(len) } != 0 {
         len += 1;
@@ -1373,6 +1389,7 @@ fn leak_sites_sorted() -> Vec<(u64, RtSiteStats)> {
             leaked.push((
                 s.site,
                 RtSiteStats {
+                    file: s.file,
                     alloc_count: s.alloc_count,
                     cumulative_bytes: s.cumulative_bytes,
                     live_count: s.live_count,
@@ -1397,8 +1414,13 @@ fn prof_report_leaks() {
         leaked.len()
     ));
     for (site, s) in &leaked {
+        // MEMORY_PROFILING M2: the file comes first when the site has
+        // one, so a leak in the stdlib says which stdlib file.
+        let name = unsafe { cstr_as_str(s.file) };
+        let prefix = if name.is_empty() { "" } else { name };
+        let sep = if name.is_empty() { "" } else { ":" };
         err_write(&format!(
-            "  {}:{}  {} allocations  {} bytes\n",
+            "  {prefix}{sep}{}:{}  {} allocations  {} bytes\n",
             site >> 32,
             site & 0xffff_ffff,
             s.live_count,
@@ -1426,8 +1448,10 @@ fn prof_report_json() {
         err_write("  \"leaks\": [\n");
         for (i, (site, s)) in leaked.iter().enumerate() {
             let comma = if i + 1 == leaked.len() { "" } else { "," };
+            let name = unsafe { cstr_as_str(s.file) };
             err_write(&format!(
-                "    {{\n      \"line\": {},\n      \"column\": {},\n      \"allocations\": {},\n      \"bytes\": {}\n    }}{}\n",
+                "    {{\n      \"file\": \"{}\",\n      \"line\": {},\n      \"column\": {},\n      \"allocations\": {},\n      \"bytes\": {}\n    }}{}\n",
+                name,
                 site >> 32,
                 site & 0xffff_ffff,
                 s.live_count,
@@ -1513,7 +1537,12 @@ pub fn profiler_layouts() -> Vec<RtLayout> {
 // ---------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub extern "C" fn toy_dispatched_alloc(_handle: u64, size: u64, site: u64) -> *mut u8 {
+pub extern "C" fn toy_dispatched_alloc(
+    _handle: u64,
+    size: u64,
+    site: u64,
+    file: *const u8,
+) -> *mut u8 {
     // A zero-size request yields the null pointer and is not counted,
     // matching the interpreter. libc would hand back a unique
     // non-null pointer here, which would then differ.
@@ -1525,12 +1554,12 @@ pub extern "C" fn toy_dispatched_alloc(_handle: u64, size: u64, site: u64) -> *m
         // DROP-GLUE: the size table is maintained even when no report
         // was asked for — an always-on registry is what makes
         // `toy_dispatched_free` idempotent (see below).
-        prof_put(p, size, site);
+        prof_put(p, size, site, file);
         if prof_enabled() {
             let st = thread_state();
             st.stats.alloc_count += 1;
             prof_obtained(st, size);
-            let e = prof_site_for(st, site);
+            let e = prof_site_for(st, site, file);
             if !e.is_null() {
                 unsafe {
                     (*e).alloc_count += 1;
@@ -1558,7 +1587,7 @@ pub extern "C" fn toy_dispatched_free(_handle: u64, p: *mut u8) {
     if p.is_null() {
         return; // freeing null is a no-op and is not counted
     }
-    let (size, site) = prof_take(p);
+    let (size, site, file) = prof_take(p);
     if size == 0 {
         return; // already freed, or not this runtime's memory
     }
@@ -1566,7 +1595,7 @@ pub extern "C" fn toy_dispatched_free(_handle: u64, p: *mut u8) {
         let st = thread_state();
         st.stats.free_count += 1;
         prof_released(st, size);
-        let e = prof_site_for(st, site);
+        let e = prof_site_for(st, site, file);
         if !e.is_null() {
             unsafe {
                 (*e).live_count = (*e).live_count.saturating_sub(1);
@@ -1586,9 +1615,14 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
     _handle: u64,
     p: *mut u8,
     new_size: u64,
+    site: u64,
+    file: *const u8,
 ) -> *mut u8 {
     if p.is_null() {
-        return toy_dispatched_alloc(_handle, new_size, 0);
+        // A null resize is an allocation, and is attributed to the
+        // call site — most stdlib collections grow through this shape
+        // (MEMORY_PROFILING M2 + DEBUG-OBS D2).
+        return toy_dispatched_alloc(_handle, new_size, site, file);
     }
     if new_size == 0 {
         toy_dispatched_free(_handle, p);
@@ -1598,7 +1632,7 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
     // `toy_dispatched_free`), so the old-size lookup is unconditional
     // too — a resize of an untracked pointer is a no-op bookkeeping
     // wise.
-    let (old_size, site) = prof_take(p);
+    let (old_size, site, file) = prof_take(p);
     if prof_enabled() {
         let st = thread_state();
         st.stats.realloc_count += 1;
@@ -1609,7 +1643,7 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
         }
         // A resize keeps the site its block already had, so a leak
         // still points at where the memory came from.
-        let e = prof_site_for(st, site);
+        let e = prof_site_for(st, site, file);
         if !e.is_null() {
             unsafe {
                 if new_size > old_size {
@@ -1626,7 +1660,7 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
     // block left in place (it is never reused).
     let np = bump_alloc_raw(new_size as usize);
     if np.is_null() {
-        prof_put(p, old_size, site); // restore tracking on failure
+        prof_put(p, old_size, site, file); // restore tracking on failure
         return core::ptr::null_mut();
     }
     if old_size > 0 {
@@ -1634,7 +1668,7 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
             memcpy(np, p, (old_size.min(new_size)) as usize);
         }
     }
-    prof_put(np, new_size, site);
+    prof_put(np, new_size, site, file);
     np
 }
 
@@ -2640,9 +2674,9 @@ mod tests {
     #[test]
     fn dispatched_alloc_free_is_idempotent() {
         profiler_reset();
-        let p = toy_dispatched_alloc(0, 64, 1 << 32);
+        let p = toy_dispatched_alloc(0, 64, 1 << 32, core::ptr::null());
         assert!(!p.is_null());
-        let q = toy_dispatched_alloc(0, 32, 2 << 32);
+        let q = toy_dispatched_alloc(0, 32, 2 << 32, core::ptr::null());
         assert!(!q.is_null());
         toy_dispatched_free(0, p);
         toy_dispatched_free(0, p); // double free is a no-op
@@ -2651,15 +2685,15 @@ mod tests {
         assert_eq!(stats.alloc_count, 2);
         assert_eq!(stats.free_count, 2);
         // The bump region never reuses a freed address.
-        let r = toy_dispatched_alloc(0, 64, 3 << 32);
+        let r = toy_dispatched_alloc(0, 64, 3 << 32, core::ptr::null());
         assert_ne!(r, p);
     }
 
     #[test]
     fn realloc_accounts_as_one_resize() {
         profiler_reset();
-        let p = toy_dispatched_alloc(0, 64, 1 << 32);
-        let r = unsafe { toy_dispatched_realloc(0, p, 160) };
+        let p = toy_dispatched_alloc(0, 64, 1 << 32, core::ptr::null());
+        let r = unsafe { toy_dispatched_realloc(0, p, 160, 0, core::ptr::null()) };
         assert!(!r.is_null());
         let stats = profiler_stats();
         assert_eq!(stats.realloc_count, 1);

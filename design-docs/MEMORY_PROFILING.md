@@ -358,9 +358,17 @@ site = (line << 32) | column
   を読むので、ID を突き合わせる仕組み自体が不要
 - 単独で走る AOT バイナリも `3:18` と位置を出せる
 
-`HeapAlloc` だけが site を運ぶ。`realloc` は**ブロックが既に持っている
-site を維持**する (同じ論理的な確保なので、リークは「最後に伸ばした場所」
-ではなく「どこから来たか」を指すべき)。`free` は解放する確保に帰属する。
+`HeapAlloc` と、null ポインタに対する `HeapRealloc` (stdlib コレクション
+が最初のブロックを取る主要経路) が site を運ぶ。それ以外の `realloc` は
+**ブロックが既に持っている site を維持**する (同じ論理的な確保なので、
+リークは「最後に伸ばした場所」ではなく「どこから来たか」を指すべき)。
+`free` は解放する確保に帰属する。
+
+**site は位置だけを持ち、ファイル名は隣に持つ** (DEBUG-OBS D2)。
+`packed (line << 32) | column` が全バックエンド共通のキーで、ファイル名は
+レポートを書く側が site ごとに 1 回覚える。コンパイル済みランタイムは
+`.rodata` の NUL 終端 blob へのポインタを `toy_dispatched_alloc` /
+`toy_dispatched_realloc` に渡す。
 
 ```
 $ interpreter --profile=mem leak.t
@@ -368,11 +376,14 @@ memory profile
   alloc_count       2
   ...
 leaks (1 sites, 1 allocations, 32 bytes)
-  3:18  1 allocations  32 bytes
+  leak.t:3:18  1 allocations  32 bytes
 ```
 
-interpreter / JIT / AOT で **byte-identical**。`--all-backends --profile=mem`
-は総計とリーク節の両方を突き合わせる。
+ファイル名は**モジュール表示名** (stdlib なら `core/std/string.t` の
+相対パス) なので、別ディレクトリで走ってもレポートは変わらない。
+site にファイルが無い (合成された確保など) 場合は従来どおり
+`line:column` だけになる。interpreter / JIT / AOT で **byte-identical**。
+`--all-backends --profile=mem` は総計とリーク節の両方を突き合わせる。
 
 **帰属の粒度は「確保サイト」であって「呼び出しパス」ではない。**
 `keep()` を 2 箇所から呼べば、両方の確保が `keep` 内の 1 サイトに

@@ -237,6 +237,28 @@ impl Module {
         self.sites.get(id.0 as usize)
     }
 
+    /// A site's position packed as `(line << 32) | column`
+    /// (MEMORY_PROFILING M2).
+    ///
+    /// The allocation profiler keys on this rather than on a `SiteId`
+    /// so the tree-walker — which has positions but no module and no
+    /// id table — attributes an allocation to the same place the
+    /// compiled backends do.
+    pub fn packed_site(&self, id: Option<SiteId>) -> u64 {
+        match id.and_then(|i| self.site(i)) {
+            Some(site) => ((site.line as u64) << 32) | (site.column as u64),
+            None => 0,
+        }
+    }
+
+    /// The file a site is in, or `""` when it has none.
+    pub fn site_file(&self, id: Option<SiteId>) -> &str {
+        id.and_then(|i| self.site(i))
+            .and_then(|site| self.files.get(site.file as usize))
+            .map(String::as_str)
+            .unwrap_or("")
+    }
+
     /// Record a backtrace frame and return its id, reusing an
     /// identical one — the same call written once is one frame however
     /// many times it runs.
@@ -1498,12 +1520,18 @@ pub enum InstKind {
     /// Only `HeapAlloc` carries one — a `realloc` keeps the site its
     /// block already had, and a `free` is attributed to the allocation
     /// it releases.
-    HeapAlloc { size: ValueId, binding: AllocatorBinding, site: u64 },
+    HeapAlloc { size: ValueId, binding: AllocatorBinding, site: Option<SiteId> },
     /// `__builtin_heap_realloc(ptr, new_size)` — resize the allocation
     /// at `ptr` to `new_size` bytes through the active allocator
     /// (which accepts a null `ptr` and behaves like `malloc`).
     /// Returns the (possibly moved) address as U64.
-    HeapRealloc { ptr: ValueId, new_size: ValueId, binding: AllocatorBinding },
+    ///
+    /// The site is only used when `ptr` is null — a resize keeps the
+    /// site its block already had, and only the null form allocates
+    /// (MEMORY_PROFILING M2 + DEBUG-OBS D2). Most stdlib collections
+    /// grow through exactly this `realloc(null, n)` shape, so a leak
+    /// report would otherwise attribute their first block to `0:0`.
+    HeapRealloc { ptr: ValueId, new_size: ValueId, binding: AllocatorBinding, site: Option<SiteId> },
     /// `__builtin_heap_free(ptr)` — release the allocation at `ptr`
     /// through the active allocator. Returns no value.
     HeapFree { ptr: ValueId, binding: AllocatorBinding },
@@ -2459,10 +2487,19 @@ impl fmt::Display for DisplayInst<'_> {
                 write!(f, "array_store slot#{}, {index} <- {value}: {elem_ty}", slot.0)
             }
             InstKind::HeapAlloc { size, binding, site } => {
-                write!(f, "{prefix}heap_alloc {size}  ; {binding} @{}:{}", site >> 32, site & 0xffff_ffff)
+                // The site is printed as its id: the position behind it
+                // lives in the module's table, which this `Display` has
+                // no reference to.
+                match site {
+                    Some(id) => write!(f, "{prefix}heap_alloc {size}  ; {binding} @site#{}", id.0),
+                    None => write!(f, "{prefix}heap_alloc {size}  ; {binding}"),
+                }
             }
-            InstKind::HeapRealloc { ptr, new_size, binding } => {
-                write!(f, "{prefix}heap_realloc {ptr}, {new_size}  ; {binding}")
+            InstKind::HeapRealloc { ptr, new_size, binding, site } => {
+                match site {
+                    Some(id) => write!(f, "{prefix}heap_realloc {ptr}, {new_size}  ; {binding} @site#{}", id.0),
+                    None => write!(f, "{prefix}heap_realloc {ptr}, {new_size}  ; {binding}"),
+                }
             }
             InstKind::HeapFree { ptr, binding } => {
                 write!(f, "heap_free {ptr}  ; {binding}")

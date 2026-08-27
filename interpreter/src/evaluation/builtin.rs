@@ -492,6 +492,14 @@ impl EvaluationContext<'_> {
             let packed = site
                 .map(|loc| ((loc.line as u64) << 32) | (loc.column as u64))
                 .unwrap_or(0);
+            // MEMORY_PROFILING M2 + DEBUG-OBS D2: the position is the
+            // key; the file is remembered beside it so the report can
+            // say which file `88:20` is in.
+            if let Some(loc) = site {
+                if let Some(path) = self.source_map.and_then(|m| m.path(loc.file)) {
+                    crate::heap::note_site_file(packed, path);
+                }
+            }
             let addr = allocator.alloc_at(size as usize, packed);
             Ok(EvaluationResult::Value((Object::Pointer(addr)).into()))
         }
@@ -529,7 +537,25 @@ impl EvaluationContext<'_> {
                 .last()
                 .expect("allocator_stack must always contain the global allocator")
                 .clone();
-            let new_addr = allocator.realloc(old_addr, new_size as usize);
+            // A null resize is an allocation, and gets the call site
+            // the way `heap_alloc` does (M2 + D2): most stdlib
+            // collections grow through exactly this shape, so a leak
+            // report would otherwise attribute their first block to
+            // `0:0`. A real resize keeps the site its block already
+            // had.
+            let new_addr = if old_addr == 0 {
+                let packed = site
+                    .map(|loc| ((loc.line as u64) << 32) | (loc.column as u64))
+                    .unwrap_or(0);
+                if let Some(loc) = site {
+                    if let Some(path) = self.source_map.and_then(|m| m.path(loc.file)) {
+                        crate::heap::note_site_file(packed, path);
+                    }
+                }
+                allocator.alloc_at(new_size as usize, packed)
+            } else {
+                allocator.realloc(old_addr, new_size as usize)
+            };
             Ok(EvaluationResult::Value((Object::Pointer(new_addr)).into()))
         }
 

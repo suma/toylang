@@ -1175,6 +1175,9 @@ fn execute_entry_with_values(
     // LLM-LOOP P6: give the runtime access to source positions so a
     // panic can report where it happened.
     eval.location_pool = Some(&program.location_pool);
+    // DEBUG-OBS D2: and the names those positions live in, so the
+    // memory profile can say which file an allocation site is in.
+    eval.source_map = Some(&program.source_map);
 
     // Initialize module system
     initialize_module_environment(&mut eval, program);
@@ -1450,6 +1453,7 @@ pub fn execute_function_with_values_shared(
         shared,
     );
     eval.location_pool = Some(&shared.program.location_pool);
+    eval.source_map = Some(&shared.program.source_map);
     initialize_module_environment(&mut eval, shared.program);
 
     for c in &shared.program.consts {
@@ -1507,6 +1511,7 @@ pub fn execute_method_with_values_shared(
         shared,
     );
     eval.location_pool = Some(&shared.program.location_pool);
+    eval.source_map = Some(&shared.program.source_map);
     initialize_module_environment(&mut eval, shared.program);
 
     for c in &shared.program.consts {

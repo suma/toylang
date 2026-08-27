@@ -50,6 +50,15 @@ pub trait VmHost {
 
     fn alloc_at(&self, size: u64, site: u64) -> u64;
 
+    /// Remember which file an allocation site is in
+    /// (MEMORY_PROFILING M2 + DEBUG-OBS D2).
+    ///
+    /// Separate from `alloc_at` because the name is only wanted by the
+    /// report, not by the allocator: the position stays the key, so
+    /// nothing on the allocation path changes shape. The default does
+    /// nothing, for hosts that keep no profile.
+    fn note_alloc_site_file(&self, _site: u64, _file: &str) {}
+
     fn realloc(&self, ptr: u64, new_size: u64) -> u64;
 
     fn free(&self, ptr: u64);

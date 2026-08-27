@@ -136,6 +136,38 @@ impl<M: Module> CodegenSession<M> {
         })
     }
 
+    /// MEMORY_PROFILING M2 per-function GV map: the file-name blob for
+    /// each allocation site this function contains.
+    pub(super) fn declare_alloc_file_imports(
+        &self,
+        ir_module: &IrModule,
+        func_id: FuncId,
+        func: &mut cranelift_codegen::ir::Function,
+    ) -> HashMap<String, cranelift_codegen::ir::GlobalValue> {
+        let mut imports = HashMap::new();
+        let ir_func = ir_module.function(func_id);
+        for blk in &ir_func.blocks {
+            for inst in &blk.instructions {
+                // Both allocation forms carry a site: `HeapAlloc` for
+                // itself, `HeapRealloc` for its null-ptr allocation.
+                let site = match &inst.kind {
+                    InstKind::HeapAlloc { site, .. } => *site,
+                    InstKind::HeapRealloc { site, .. } => *site,
+                    _ => continue,
+                };
+                let file = ir_module.site_file(site);
+                if file.is_empty() || imports.contains_key(file) {
+                    continue;
+                }
+                let Some(data) = self.alloc_file_blobs.get(file).copied() else {
+                    continue;
+                };
+                imports.insert(file.to_string(), self.declare_data_in_func_readonly(data, func));
+            }
+        }
+        imports
+    }
+
     /// A5-P2 per-function GV map for vtable globals. Mirrors
     /// `declare_panic_imports`: walk this function's `VtableAddr`
     /// instructions, look up each `(trait_sym, struct_sym)` pair in

@@ -230,6 +230,10 @@ pub struct Site {
 - `Terminator::Panic { message, site }` / trap guard / `PanicAllocBudget` が `SiteId` を持つ。
 - **既存の `HeapAlloc { site: u64 }` も `SiteId` に寄せる** — `--profile=mem` の
   リーク報告に初めてファイル名が付く (M2 の積み残しの解消)。
+  ✅ 2026-08-27 landing: `HeapAlloc` / `HeapRealloc` (null リサイズ) が
+  `Option<SiteId>` を持ち、リーク報告は `core/std/string.t:71:25` の形で
+  ファイル名を出す。キーは相変わらず `(line << 32) | column` の packed
+  位置 (全バックエンド共通) で、ファイル名は隣に持つだけ。
 
 `snippet` を表に埋めるのは、コンパイル済みバイナリが実行時にソースを
 読みに行かなくても抜粋を描けるようにするため。**実行環境に依存しない**

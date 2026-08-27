@@ -483,6 +483,7 @@ pub fn memory_profile_sites() -> Vec<(u64, interpreter::heap::SiteStats)> {
             (
                 site,
                 interpreter::heap::SiteStats {
+                    file: unsafe { toylang_rt::cstr_as_str(s.file) }.to_string(),
                     alloc_count: s.alloc_count,
                     cumulative_bytes: s.cumulative_bytes,
                     live_count: s.live_count,

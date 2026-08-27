@@ -12,6 +12,16 @@
 
 ### 2026-08-27
 
+- **DEBUG-OBS D3 の残: `HeapAlloc` の `SiteId` 移行** —
+  `--profile=mem` のリーク報告が `core/std/string.t:71:25` のように
+  ファイル名を出すようになった (HeapAlloc / HeapRealloc の null
+  リサイズ = stdlib コレクションの主要経路を呼び出し位置に帰属)。
+  **対の D4 の残 (panic に到達しえない関数のフレームを積まない) は
+  実測して作らない** — guard 除去が効くのは panic に到達しない関数
+  だが、そこは元から debug/release 差 2% で、90% が出る深い再帰 (fib)
+  は u64 減算 guard のせいで panic に到達し、再帰ゆえ深さカウンタで
+  結局積む必要がある。効く場面が無い。
+
 - **DEBUG-OBS: tree-walker への replay を落とした** — IR VM が diverge
   したとき**プログラム全体を走らせ直していた**のをやめた (実測 2)。
   `run_main_via_ir_vm` の `Option` を 3 状態
@@ -1199,16 +1209,13 @@
 > 範囲外はホストではなく toylang の言葉で落ちる。**5 レーンは pin した
 > 全プログラムで完全一致**しており、両方向 pin の
 > `assert_diagnostic_report` は現在どこからも呼ばれていない。
-> 残りは下の 2 項目。
 
-- **DEBUG-OBS D3 の残: `HeapAlloc` の `SiteId` 移行** ★ — `--profile=mem` の
-  リーク報告にファイル名が付く (MEMORY_PROFILING M2 の積み残し)。診断とは
-  別経路で、コンパイル済みランタイムが自前でレポートを書くため
-  ファイル名表の埋め込み + 起動時登録と、M4 の JSON スキーマ変更が要る。
-- **DEBUG-OBS D4 の残: panic に到達しえない関数のフレームを積まない** ★ —
-  backtrace に現れようのないフレームは誰も読まない。到達可能性の歩行は
-  `reachability.rs` にあるので、`Terminator::Panic` を sink にすれば
-  同じ形。shadow stack のコスト (fib +96%) が実際に効く場面を踏んでから。
+- **DEBUG-OBS D4 の残: panic に到達しえない関数のフレームを積まない** —
+  **実測の結論: 作らない** (2026-08-27)。guard 除去が効くのは panic に
+  到達しない関数だが、そこは debug/release 差 2% で、90% が出る fib の
+  ような深い再帰は u64 減算 guard のせいで panic に到達し、かつ再帰な
+  ので深さカウンタのために結局積む必要がある。効く場面が無いので
+  条件 (「実際に効く場面を踏んでから」) が満たされないまま記録に留める。
 
 ### 型システム (NEW-TYPE-SYSTEM)
 

@@ -1143,7 +1143,7 @@ fn vm_heap_alloc_ptr_write_read() {
         result: Some((ValueId(1), Type::U64)),
         kind: compiler_ir::InstKind::HeapAlloc {
             size: ValueId(0),
-            site: 0,
+            site: None,
             binding: compiler_ir::AllocatorBinding::Ambient,
         },
     });

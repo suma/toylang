@@ -360,6 +360,9 @@ pub(crate) struct CodegenSession<M: Module> {
     /// `{ u64 line; name bytes; 0 }`. The generated code pushes the
     /// record's address onto the shadow stack around each call.
     frame_blobs: HashMap<compiler_ir::FrameId, DataId>,
+    /// MEMORY_PROFILING M2: one NUL-terminated `.rodata` blob per file
+    /// an allocation site lives in, so a leak report can name it.
+    alloc_file_blobs: HashMap<String, DataId>,
     /// The entry function's own frame. Nothing calls `main`, so no
     /// call site pushes it; its prologue does.
     entry_frame_blob: Option<DataId>,
@@ -666,9 +669,12 @@ impl<M: Module> CodegenSession<M> {
 
         // Dispatched alloc / realloc / free.
         // Signatures: (handle: u64, ...) -> ptr (or void for free).
-        // (handle, size, site) -> ptr. `site` is MEMORY_PROFILING M2's
-        // packed source position; ignored unless profiling is enabled.
+        // (handle, size, site, file) -> ptr. `site` is MEMORY_PROFILING
+        // M2's packed source position; `file` the `.rodata` name of the
+        // site's file (DEBUG-OBS D2), null when the site has none.
+        // Both ignored unless profiling is enabled.
         let mut dispatched_alloc_sig = Signature::new(call_conv);
+        dispatched_alloc_sig.params.push(AbiParam::new(types::I64));
         dispatched_alloc_sig.params.push(AbiParam::new(types::I64));
         dispatched_alloc_sig.params.push(AbiParam::new(types::I64));
         dispatched_alloc_sig.params.push(AbiParam::new(types::I64));
@@ -677,6 +683,11 @@ impl<M: Module> CodegenSession<M> {
 
         let mut dispatched_realloc_sig = Signature::new(call_conv);
         dispatched_realloc_sig.params.push(AbiParam::new(types::I64));
+        dispatched_realloc_sig.params.push(AbiParam::new(types::I64));
+        dispatched_realloc_sig.params.push(AbiParam::new(types::I64));
+        // The site and its file, used only when `ptr` is null — a
+        // resize keeps the site its block already had, and the null
+        // form is an allocation (M2 + D2).
         dispatched_realloc_sig.params.push(AbiParam::new(types::I64));
         dispatched_realloc_sig.params.push(AbiParam::new(types::I64));
         dispatched_realloc_sig.returns.push(AbiParam::new(types::I64));
@@ -944,6 +955,7 @@ impl<M: Module> CodegenSession<M> {
             panic_strings: HashMap::new(),
             frame_strings: HashMap::new(),
             frame_blobs: HashMap::new(),
+            alloc_file_blobs: HashMap::new(),
             entry_frame_blob: None,
             shadow_globals: None,
             print_strings: HashMap::new(),
@@ -1081,6 +1093,7 @@ impl<M: Module> CodegenSession<M> {
             self.declare_frame_strings(site, head.as_deref(), ir_module)?;
         }
         self.declare_shadow_frames(ir_module)?;
+        self.declare_alloc_files(ir_module)?;
         for sym in print_needed {
             self.declare_print_string(sym, interner)?;
         }
@@ -1339,6 +1352,38 @@ impl<M: Module> CodegenSession<M> {
     /// `"panic: "` prefix (matching the interpreter's output format),
     /// the user-supplied message, and a trailing NUL. `puts` adds the
     /// final newline at run-time.
+    /// One blob per file that contains an allocation site.
+    ///
+    /// Keyed by name rather than by site: a file with a hundred
+    /// allocations needs one string, and the profiler already keys its
+    /// counters on the position.
+    fn declare_alloc_files(&mut self, ir_module: &IrModule) -> Result<(), String> {
+        let mut needed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for func in &ir_module.functions {
+            for blk in &func.blocks {
+                for inst in &blk.instructions {
+                    // Both allocation forms carry a site (`HeapAlloc`
+                    // for itself, `HeapRealloc` for its null-ptr
+                    // allocation), and both may name a file.
+                    let site = match &inst.kind {
+                        InstKind::HeapAlloc { site, .. } => *site,
+                        InstKind::HeapRealloc { site, .. } => *site,
+                        _ => continue,
+                    };
+                    let file = ir_module.site_file(site);
+                    if !file.is_empty() {
+                        needed.insert(file.to_string());
+                    }
+                }
+            }
+        }
+        for (i, file) in needed.into_iter().enumerate() {
+            let data = self.declare_blob(&format!("toy_alloc_file_{i}"), file.clone().into_bytes())?;
+            self.alloc_file_blobs.insert(file, data);
+        }
+        Ok(())
+    }
+
     /// Lay down one `.rodata` record per backtrace frame, plus the
     /// entry function's, and import the runtime's shadow-stack globals
     /// (DEBUG-OBS D4).
@@ -1596,6 +1641,7 @@ impl<M: Module> CodegenSession<M> {
         let panic_imports = self.declare_panic_imports(ir_module, func_id, &mut ctx.func);
         let frame_imports = self.declare_frame_imports(ir_module, func_id, &mut ctx.func);
         let shadow = self.declare_shadow_imports(ir_module, func_id, &mut ctx.func);
+        let alloc_file_imports = self.declare_alloc_file_imports(ir_module, func_id, &mut ctx.func);
         let print_imports = self.declare_print_imports(ir_module, func_id, &mut ctx.func);
         let raw_print_imports =
             self.declare_raw_print_imports(ir_module, func_id, &mut ctx.func);
@@ -1615,6 +1661,7 @@ impl<M: Module> CodegenSession<M> {
                 &panic_imports,
                 &frame_imports,
                 &shadow,
+                &alloc_file_imports,
                 &print_imports,
                 &raw_print_imports,
                 &const_str_bytes_imports,
@@ -1663,6 +1710,7 @@ impl<M: Module> CodegenSession<M> {
         let panic_imports = self.declare_panic_imports(ir_module, func_id, &mut ctx.func);
         let frame_imports = self.declare_frame_imports(ir_module, func_id, &mut ctx.func);
         let shadow = self.declare_shadow_imports(ir_module, func_id, &mut ctx.func);
+        let alloc_file_imports = self.declare_alloc_file_imports(ir_module, func_id, &mut ctx.func);
         let print_imports = self.declare_print_imports(ir_module, func_id, &mut ctx.func);
         let raw_print_imports =
             self.declare_raw_print_imports(ir_module, func_id, &mut ctx.func);
@@ -1682,6 +1730,7 @@ impl<M: Module> CodegenSession<M> {
                 &panic_imports,
                 &frame_imports,
                 &shadow,
+                &alloc_file_imports,
                 &print_imports,
                 &raw_print_imports,
                 &const_str_bytes_imports,
@@ -1726,6 +1775,7 @@ impl<M: Module> CodegenSession<M> {
         let panic_imports = self.declare_panic_imports(ir_module, func_id, &mut ctx.func);
         let frame_imports = self.declare_frame_imports(ir_module, func_id, &mut ctx.func);
         let shadow = self.declare_shadow_imports(ir_module, func_id, &mut ctx.func);
+        let alloc_file_imports = self.declare_alloc_file_imports(ir_module, func_id, &mut ctx.func);
         let print_imports = self.declare_print_imports(ir_module, func_id, &mut ctx.func);
         let raw_print_imports =
             self.declare_raw_print_imports(ir_module, func_id, &mut ctx.func);
@@ -1745,6 +1795,7 @@ impl<M: Module> CodegenSession<M> {
                 &panic_imports,
                 &frame_imports,
                 &shadow,
+                &alloc_file_imports,
                 &print_imports,
                 &raw_print_imports,
                 &const_str_bytes_imports,
@@ -1977,6 +2028,9 @@ struct LowerCtx<'a, 'b> {
     /// DEBUG-OBS D4: shadow-stack globals and frame records, or `None`
     /// when this build records no backtrace.
     pub(super) shadow: &'a Option<ShadowImports>,
+    /// MEMORY_PROFILING M2: file-name blobs for this function's
+    /// allocation sites, keyed by name.
+    pub(super) alloc_file_imports: &'a HashMap<String, cranelift_codegen::ir::GlobalValue>,
     /// Filled in by the prologue when this function pushes any frame.
     pub(super) shadow_prologue: Option<ShadowPrologue>,
     /// Same idea, for `print`/`println` string-literal arguments.
@@ -2064,6 +2118,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             (cranelift_codegen::ir::GlobalValue, cranelift_codegen::ir::GlobalValue),
         >,
         shadow: &'a Option<ShadowImports>,
+        alloc_file_imports: &'a HashMap<String, cranelift_codegen::ir::GlobalValue>,
         print_imports: &'a HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue>,
         raw_print_imports: &'a HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue>,
         const_str_bytes_imports: &'a HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue>,
@@ -2078,6 +2133,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             panic_imports,
             frame_imports,
             shadow,
+            alloc_file_imports,
             shadow_prologue: None,
             print_imports,
             raw_print_imports,

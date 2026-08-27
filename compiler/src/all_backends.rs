@@ -333,13 +333,19 @@ fn parse_memory_report(stderr: &str) -> Option<interpreter::heap::MemoryStats> {
 fn parse_leak_report(stderr: &str) -> Vec<(u64, interpreter::heap::SiteStats)> {
     let mut out = Vec::new();
     for line in stderr.lines() {
-        // `  <line>:<col>  <n> allocations  <b> bytes`
+        // `  [<file>:]<line>:<col>  <n> allocations  <b> bytes`
+        // The file is optional and may itself contain colons (a path),
+        // so the position is split from the right.
         let t = line.trim();
         let Some((pos, rest)) = t.split_once("  ") else {
             continue;
         };
-        let Some((l, c)) = pos.split_once(':') else {
+        let Some((pos2, c)) = pos.rsplit_once(':') else {
             continue;
+        };
+        let (file, l) = match pos2.rsplit_once(':') {
+            Some((file, l)) => (Some(file), l),
+            None => (None, pos2),
         };
         let (Ok(l), Ok(c)) = (l.parse::<u64>(), c.parse::<u64>()) else {
             continue;
@@ -354,6 +360,7 @@ fn parse_leak_report(stderr: &str) -> Vec<(u64, interpreter::heap::SiteStats)> {
         out.push((
             (l << 32) | c,
             interpreter::heap::SiteStats {
+                file: file.unwrap_or("").to_string(),
                 live_count: count,
                 live_bytes: bytes,
                 ..Default::default()

@@ -282,8 +282,14 @@ fn the_aot_json_report_is_byte_identical_to_the_shared_one() {
     let _ = std::fs::remove_file(&exe_path);
 
     assert_eq!(first, second, "the compiled runtime's report is not reproducible");
+    // The compiled binary names the entry after the input path, which
+    // this test's is a temp file — so the comparison lane has to agree
+    // on that name rather than on `JSON_PROFILE_EXPECTED`'s `test.t`.
+    // The run above already proved reproducibility; this proves the two
+    // implementations still render the report byte for byte.
+    let shared = interpreter_json_profile_as(JSON_PROFILE_PROGRAM, src_path.to_string_lossy().as_ref());
     assert_eq!(
-        first, JSON_PROFILE_EXPECTED,
+        first, shared,
         "the C runtime's JSON has drifted from `MemoryStats::report_json`"
     );
 }

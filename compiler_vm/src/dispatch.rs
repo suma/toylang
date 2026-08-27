@@ -177,15 +177,32 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
         }
         InstKind::HeapAlloc { size, site, .. } => {
             let sz = vm.read_value(*size);
-            let addr = host.alloc_at(unsafe { sz.u64 }, *site);
+            let packed = vm.module().packed_site(*site);
+            // The file is noted rather than passed: the profiler keys
+            // on the position so every engine agrees, and only the
+            // report wants the name.
+            host.note_alloc_site_file(packed, vm.module().site_file(*site));
+            let addr = host.alloc_at(unsafe { sz.u64 }, packed);
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }
         }
-        InstKind::HeapRealloc { ptr, new_size, .. } => {
+        InstKind::HeapRealloc { ptr, new_size, site, .. } => {
             let p = vm.read_value(*ptr);
             let ns = vm.read_value(*new_size);
-            let addr = host.realloc(unsafe { p.u64 }, unsafe { ns.u64 });
+            let (p_u64, ns_u64) = (unsafe { p.u64 }, unsafe { ns.u64 });
+            let addr = if p_u64 == 0 {
+                // A null resize is an allocation, and gets the call
+                // site the way `HeapAlloc` does (M2 + D2) — most
+                // stdlib collections grow through this shape, so a
+                // report that cannot name it names nothing.
+                let packed = vm.module().packed_site(*site);
+                host.note_alloc_site_file(packed, vm.module().site_file(*site));
+                host.alloc_at(ns_u64, packed)
+            } else {
+                // A real resize keeps the site its block already had.
+                host.realloc(p_u64, ns_u64)
+            };
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }

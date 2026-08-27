@@ -778,6 +778,7 @@ pub(super) const JSON_PROFILE_EXPECTED: &str = r#"{
   },
   "leaks": [
     {
+      "file": "test.t",
       "line": 2,
       "column": 18,
       "allocations": 1,
@@ -789,11 +790,19 @@ pub(super) const JSON_PROFILE_EXPECTED: &str = r#"{
 "#;
 
 /// Run `source` on the tree-walker and render the JSON report, the way
-/// `interpreter --profile=mem --profile-format=json` does.
+/// `interpreter --profile=mem --profile-format=json` does. The entry
+/// file is named `test.t`, matching [`JSON_PROFILE_EXPECTED`].
 pub(super) fn interpreter_json_profile(source: &str) -> String {
+    interpreter_json_profile_as(source, "test.t")
+}
+
+/// As [`interpreter_json_profile`], with an explicit entry file name.
+/// The compiled lanes name the entry after the input path, so a
+/// byte-identical comparison against them has to use that name too.
+pub(super) fn interpreter_json_profile_as(source: &str, filename: &str) -> String {
     interpreter::heap::reset_profile();
     let options = RunOptions::default();
-    interpreter::run_source(source, "test.t", &options).expect("interpreter run");
+    interpreter::run_source(source, filename, &options).expect("interpreter run");
     interpreter::heap::profile().report_json(
         &interpreter::heap::profile_sites(),
         &interpreter::heap::allocator_layouts(),

@@ -956,6 +956,87 @@ unsafe fn cstr_as_str<'a>(p: *const u8) -> &'a str {
     unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(p, len)) }
 }
 
+/// Report a message the program built at run time, and stop.
+///
+/// `Terminator::Panic` carries an interned literal, which is enough
+/// for every diagnostic whose shape is fixed. A contract violation's
+/// is not: it names the values its predicate saw, and how many there
+/// are is a property of the function. The failing block builds the
+/// string with the ordinary string machinery and hands it here.
+///
+/// # Safety
+/// `msg` is a toylang `str` (`[bytes][NUL][u64 len]`, pointer at the
+/// length); `prefix` and `suffix` are NUL-terminated or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_panic_dynamic(
+    msg: *const u8,
+    prefix: *const u8,
+    suffix: *const u8,
+) -> ! {
+    unsafe { write_cstr_fd(2, prefix) };
+    if !msg.is_null() {
+        let len = unsafe { (msg as *const u64).read_unaligned() } as usize;
+        let bytes = unsafe { core::slice::from_raw_parts(msg.sub(len + 1), len) };
+        write_fd(2, bytes);
+    }
+    unsafe { write_cstr_fd(2, suffix) };
+    write_backtrace();
+    err_write("\n");
+    unsafe { exit(1) };
+}
+
+/// A trap whose *values* are the diagnostic, reported and stopped.
+///
+/// `Terminator::Panic` carries an interned literal, so a compiled
+/// `a - b` underflow could say what happened but not with what, while
+/// the tree-walker — holding the operands — printed them. This takes
+/// the two values and the frame around them, so both say `1 - 5`.
+///
+/// The wording is duplicated from `compiler_ir::panic_values_message`;
+/// this crate is dependency-free, the same pairing
+/// `format_alloc_budget_violation` has, and
+/// `compiler/tests/consistency/diagnostics.rs` pins the two by
+/// comparing stderr across engines.
+///
+/// # Safety
+/// `prefix` and `suffix` must be NUL-terminated or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_panic_values(
+    kind: u64,
+    a: i64,
+    b: u64,
+    prefix: *const u8,
+    suffix: *const u8,
+) -> ! {
+    unsafe { write_cstr_fd(2, prefix) };
+    let mut buf = StackBuf::<128>::new();
+    let written = match kind {
+        // panic_kind::U64_UNDERFLOW
+        0 => {
+            let a = a as u64;
+            core::fmt::write(
+                &mut buf,
+                format_args!("panic: u64 subtraction underflowed: {a} - {b}"),
+            )
+        }
+        // panic_kind::INDEX_OUT_OF_BOUNDS
+        1 => core::fmt::write(
+            &mut buf,
+            format_args!("panic: array index out of bounds: index {a}, length {b}"),
+        ),
+        _ => core::fmt::write(&mut buf, format_args!("panic: trap")),
+    };
+    if written.is_ok() {
+        write_fd(2, buf.as_slice());
+    } else {
+        err_write("panic: trap");
+    }
+    unsafe { write_cstr_fd(2, suffix) };
+    write_backtrace();
+    err_write("\n");
+    unsafe { exit(1) };
+}
+
 /// DEBUG-OBS D6: report a runaway recursion and stop.
 ///
 /// Called from a function's prologue when the shadow stack says it is

@@ -42,7 +42,10 @@ impl<'a> FunctionLower<'a> {
                 Some(Type::Bool),
             )
             .ok_or_else(|| "underflow guard produced no value".to_string())?;
-        self.emit_trap_unless(ok, self.contract_msgs.u64_underflow);
+        // The operands travel with the trap: `1 - 5` is the whole
+        // diagnostic, and a fixed sentence about which side was
+        // smaller is the same information minus the answer.
+        self.emit_trap_values_unless(ok, crate::ir::panic_kind::U64_UNDERFLOW, lhs, rhs);
         Ok(())
     }
 
@@ -194,6 +197,31 @@ impl<'a> FunctionLower<'a> {
     /// values to hand, includes them; the lowered backends report the
     /// operation and the location. Both say the same thing about what
     /// happened.
+    /// As [`Self::emit_trap_unless`], for a trap whose message is
+    /// built from two runtime values.
+    pub(super) fn emit_trap_values_unless(
+        &mut self,
+        ok: ValueId,
+        kind: u64,
+        a: ValueId,
+        b: ValueId,
+    ) {
+        if self.known_true(ok) {
+            return;
+        }
+        let pass = self.fresh_block();
+        let fail = self.fresh_block();
+        self.terminate(Terminator::Branch {
+            cond: ok,
+            then_blk: pass,
+            else_blk: fail,
+        });
+        self.switch_to(fail);
+        let site = self.current_site();
+        self.terminate(Terminator::PanicValues { kind, a, b, site });
+        self.switch_to(pass);
+    }
+
     pub(super) fn emit_trap_unless(&mut self, ok: ValueId, message: string_interner::DefaultSymbol) {
         // COMPILE-TIME-EVAL C2: a guard whose condition folded to
         // `true` cannot fire. Dropping it keeps `2u64 / 1u64` down to

@@ -54,6 +54,12 @@ pub enum VmResult {
         message: String,
         site: Option<compiler_ir::SiteId>,
         backtrace: String,
+        /// Whether the run-time path should prefix `panic: `.
+        ///
+        /// `false` for a message the program built itself — a contract
+        /// violation already reads as a full sentence, and "panic:
+        /// Contract violation: ..." would announce it twice.
+        needs_panic_prefix: bool,
     },
 }
 
@@ -146,6 +152,7 @@ impl<'a> Vm<'a> {
                 message: "no main function".to_string(),
                 site: None,
                 backtrace: String::new(),
+                needs_panic_prefix: true,
             };
         }
         self.call_function(main_id, Vec::new(), None, Vec::new());
@@ -197,6 +204,7 @@ impl<'a> Vm<'a> {
                     ),
                     site: None,
                     backtrace,
+                    needs_panic_prefix: true,
                 };
             }
             // Snapshot frame info so we can drop the borrow before dispatch.
@@ -213,6 +221,7 @@ impl<'a> Vm<'a> {
                 return VmResult::Diverged {
                     site: None,
                     backtrace: String::new(),
+                    needs_panic_prefix: true,
                     message: format!(
                         "ir_vm: cannot execute body-less function `{}` (extern?)",
                         func.export_name
@@ -276,7 +285,12 @@ impl<'a> Vm<'a> {
                     Terminator::Jump(target) => {
                         if let Some(message) = self.charge_back_edge(target) {
                             let backtrace = self.backtrace_text();
-                            return VmResult::Diverged { message, site: None, backtrace };
+                            return VmResult::Diverged {
+                                message,
+                                site: None,
+                                backtrace,
+                                needs_panic_prefix: true,
+                            };
                         }
                         {
                             let frame = self.frames.last_mut().expect("frame vanished");
@@ -290,7 +304,12 @@ impl<'a> Vm<'a> {
                         let target = if taken { then_blk } else { else_blk };
                         if let Some(message) = self.charge_back_edge(target) {
                             let backtrace = self.backtrace_text();
-                            return VmResult::Diverged { message, site: None, backtrace };
+                            return VmResult::Diverged {
+                                message,
+                                site: None,
+                                backtrace,
+                                needs_panic_prefix: true,
+                            };
                         }
                         {
                             let frame = self.frames.last_mut().expect("frame vanished");
@@ -305,7 +324,41 @@ impl<'a> Vm<'a> {
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| format!("panic #{}", message.to_usize()));
                         let backtrace = self.backtrace_text();
-                        return VmResult::Diverged { message: text, site, backtrace };
+                        return VmResult::Diverged {
+                            message: text,
+                            site,
+                            backtrace,
+                            needs_panic_prefix: true,
+                        };
+                    }
+                    // The message was built by the failing block; the
+                    // VM only has to read it back off the heap.
+                    Terminator::PanicStr { message, site } => {
+                        let addr = unsafe { self.read_value(message).u64 };
+                        let text = self.host.read_str(addr);
+                        let backtrace = self.backtrace_text();
+                        return VmResult::Diverged {
+                            message: text,
+                            site,
+                            backtrace,
+                            // Already a full sentence — a contract
+                            // violation announces itself.
+                            needs_panic_prefix: false,
+                        };
+                    }
+                    // DEBUG-OBS: the values are the diagnostic here —
+                    // `1 - 5` says what "the left operand was smaller"
+                    // cannot.
+                    Terminator::PanicValues { kind, a, b, site } => {
+                        let a = unsafe { self.read_value(a).i64 };
+                        let b = unsafe { self.read_value(b).u64 };
+                        let backtrace = self.backtrace_text();
+                        return VmResult::Diverged {
+                            message: compiler_ir::panic_values_message(kind, a, b),
+                            site,
+                            backtrace,
+                            needs_panic_prefix: true,
+                        };
                     }
                     // ALLOC-CONTRACT-SUGAR: the numbers, not a fixed
                     // string. Same wording the tree-walker and the
@@ -321,6 +374,7 @@ impl<'a> Vm<'a> {
                             ),
                             site,
                             backtrace,
+                            needs_panic_prefix: true,
                         };
                     }
                     Terminator::Unreachable => {
@@ -329,6 +383,7 @@ impl<'a> Vm<'a> {
                             message: "unreachable".to_string(),
                             site: None,
                             backtrace,
+                            needs_panic_prefix: true,
                         };
                     }
                 }
@@ -338,6 +393,7 @@ impl<'a> Vm<'a> {
                     message: "unterminated block".to_string(),
                     site: None,
                     backtrace: String::new(),
+                    needs_panic_prefix: true,
                 };
             }
         }
@@ -601,10 +657,14 @@ pub fn run_module_capturing(
             // terminator because the compile-time fold shares that
             // code and reports a failed `const` initialiser in its own
             // words (`[E0017] ... evaluating it failed: <message>`).
-            VmResult::Diverged { message, site, backtrace } => Err(format!(
-                "{}{backtrace}",
-                module.render_diagnostic(site, &format!("panic: {message}"))
-            )),
+            VmResult::Diverged { message, site, backtrace, needs_panic_prefix } => {
+                let message = if needs_panic_prefix {
+                    format!("panic: {message}")
+                } else {
+                    message
+                };
+                Err(format!("{}{backtrace}", module.render_diagnostic(site, &message)))
+            }
         }
     }
 }

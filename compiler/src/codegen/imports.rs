@@ -82,7 +82,13 @@ impl<M: Module> CodegenSession<M> {
         let mut imports = HashMap::new();
         let ir_func = ir_module.function(func_id);
         for blk in &ir_func.blocks {
-            if let Some(Terminator::PanicAllocBudget { site, .. }) = &blk.terminator {
+            let site = match &blk.terminator {
+                Some(Terminator::PanicAllocBudget { site, .. })
+                | Some(Terminator::PanicValues { site, .. })
+                | Some(Terminator::PanicStr { site, .. }) => site,
+                _ => continue,
+            };
+            {
                 if imports.contains_key(site) {
                     continue;
                 }
@@ -318,6 +324,9 @@ impl<M: Module> CodegenSession<M> {
                 .declare_func_in_func_readonly(self.rt_backtrace_str, func),
             panic_recursion: self
                 .declare_func_in_func_readonly(self.rt_panic_recursion, func),
+            panic_values: self.declare_func_in_func_readonly(self.rt_panic_values, func),
+            panic_dynamic: self
+                .declare_func_in_func_readonly(self.rt_panic_dynamic, func),
             prof_force_counting: self
                 .declare_func_in_func_readonly(self.rt_prof_force_counting, func),
             record_allocator_layout: self

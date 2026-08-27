@@ -994,6 +994,10 @@ pub fn lower_program(
     release: bool,
 ) -> Result<Module, String> {
     let mut module = Module::new();
+    // DEBUG-OBS D4/D6: the shadow stack exists in a default build and
+    // not under `--release`, and the backends need to know which even
+    // when the program makes no calls.
+    module.debug_frames = !release;
 
     // Phase 5 (汎用 RAII): collect every struct that has an
     // `impl Drop for <Struct>` block. The lowering pass uses
@@ -1615,6 +1619,7 @@ impl<'a> FunctionLower<'a> {
             ensures_kinds: Vec::new(),
             result_sym: interner.get("result"),
             facts: Default::default(),
+            contract_report: None,
             debug_frames: !release,
             current_expr: None,
             bindings: HashMap::new(),
@@ -2051,7 +2056,19 @@ impl<'a> FunctionLower<'a> {
         // entirely — the contracts effectively disappear from the
         // compiled binary.
         if !self.release {
-            self.emit_contract_checks(&func.requires, self.contract_msgs.requires_violation)?;
+            // DEBUG-OBS: what a violation says about *this* function.
+            // The name is the bare one the tree-walker prints, not the
+            // backtrace's qualified form — the sentence already says
+            // "of function", so the type would read twice.
+            self.contract_report = Some(crate::ContractReport {
+                function: self
+                    .interner
+                    .resolve(func.name)
+                    .unwrap_or("<unknown>")
+                    .to_string(),
+                params: func.parameter.iter().map(|(name, _)| *name).collect(),
+            });
+            self.emit_contract_checks(&func.requires, "requires", 0)?;
             // CONTRACT-ELISION: the preconditions are now checked, so
             // what they prove about the parameters can stand in for a
             // RUNTIME-TRAP guard further down. Built here rather than
@@ -2266,9 +2283,10 @@ impl<'a> FunctionLower<'a> {
     fn emit_contract_checks(
         &mut self,
         clauses: &[ExprRef],
-        message: DefaultSymbol,
+        kind: &str,
+        index_base: usize,
     ) -> Result<(), String> {
-        for clause in clauses {
+        for (offset, clause) in clauses.iter().enumerate() {
             let cond = self
                 .lower_expr(clause)?
                 .ok_or_else(|| "contract clause produced no value".to_string())?;
@@ -2283,10 +2301,91 @@ impl<'a> FunctionLower<'a> {
             // The clause expression is the closest thing a contract
             // violation has to a position: it is what evaluated false.
             let site = self.site_of(clause);
-            self.terminate(Terminator::Panic { message, site });
+            // DEBUG-OBS: the values the predicate saw. Built here, in
+            // the block that only runs when the contract is broken, so
+            // a satisfied contract pays nothing for it.
+            let clause_number = index_base + offset + 1;
+            match self.build_contract_message(kind, clause_number, kind == "ensures") {
+                Some(message) => self.terminate(Terminator::PanicStr { message, site }),
+                None => {
+                    let message = if kind == "requires" {
+                        self.contract_msgs.requires_violation
+                    } else {
+                        self.contract_msgs.ensures_violation
+                    };
+                    self.terminate(Terminator::Panic { message, site });
+                }
+            }
             self.switch_to(pass);
         }
         Ok(())
+    }
+
+    /// Build `Contract violation: `requires` clause #1 of function
+    /// `f` evaluated to false (with n = 0)` in the failing block.
+    ///
+    /// `None` when there is nothing to build it from — no report
+    /// context — in which case the caller falls back to the interned
+    /// sentence without the values.
+    ///
+    /// Only scalar parameters contribute a value. The rule is shared
+    /// with the tree-walker rather than being a lowering limitation:
+    /// a diagnostic that lists a struct's fields on one engine and
+    /// omits them on another is worse than one that consistently
+    /// names what it can render.
+    fn build_contract_message(
+        &mut self,
+        kind: &str,
+        clause_number: usize,
+        include_result: bool,
+    ) -> Option<ValueId> {
+        let report = self.contract_report.clone()?;
+        let head = format!(
+            "Contract violation: `{kind}` clause #{clause_number} of function `{}` evaluated to false",
+            report.function
+        );
+        let mut value = self.emit_const_str_bytes(head.as_bytes())?;
+
+        let mut names: Vec<DefaultSymbol> = report.params.clone();
+        if let Some(result_sym) = self.result_sym.filter(|_| include_result) {
+            names.push(result_sym);
+        }
+        let mut first = true;
+        for name in names {
+            let Some(Binding::Scalar { local, ty }) = self.bindings.get(&name).cloned() else {
+                continue;
+            };
+            let loaded = self.emit(InstKind::LoadLocal(local), Some(ty))?;
+            let rendered = self.emit(
+                InstKind::ToString { value: loaded, value_ty: ty },
+                Some(Type::Str),
+            )?;
+            let label = format!(
+                "{} {} = ",
+                if first { " (with" } else { "," },
+                self.interner.resolve(name).unwrap_or("?")
+            );
+            let label_v = self.emit_const_str_bytes(label.as_bytes())?;
+            value = self.emit_str_concat(value, label_v)?;
+            value = self.emit_str_concat(value, rendered)?;
+            first = false;
+        }
+        if !first {
+            let close = self.emit_const_str_bytes(b")")?;
+            value = self.emit_str_concat(value, close)?;
+        }
+        Some(value)
+    }
+
+    fn emit_const_str_bytes(&mut self, bytes: &[u8]) -> Option<ValueId> {
+        self.emit(
+            InstKind::ConstStrBytes { bytes: bytes.to_vec() },
+            Some(Type::Str),
+        )
+    }
+
+    fn emit_str_concat(&mut self, a: ValueId, b: ValueId) -> Option<ValueId> {
+        self.emit(InstKind::StrConcat { a, b }, Some(Type::Str))
     }
 
     /// ALLOC-CONTRACT: evaluate the `old(...)` expressions on entry
@@ -2338,7 +2437,6 @@ impl<'a> FunctionLower<'a> {
         }
         let clauses: Vec<ExprRef> = self.ensures.clone();
         let kinds = self.ensures_kinds.clone();
-        let message = self.contract_msgs.ensures_violation;
         for (index, clause) in clauses.iter().enumerate() {
             // ALLOC-CONTRACT-SUGAR: a budget clause diverges through a
             // terminator that carries the readings, so the compiled
@@ -2346,9 +2444,9 @@ impl<'a> FunctionLower<'a> {
             // Everything else takes the ordinary static-message path.
             match kinds.get(index) {
                 Some(frontend::ast::EnsuresKind::AllocBudget { stat, old_index }) => {
-                    self.emit_alloc_budget_check(clause, *stat, *old_index, message)?;
+                    self.emit_alloc_budget_check(clause, *stat, *old_index, index)?;
                 }
-                _ => self.emit_contract_checks(std::slice::from_ref(clause), message)?,
+                _ => self.emit_contract_checks(std::slice::from_ref(clause), "ensures", index)?,
             }
         }
         Ok(())
@@ -2368,18 +2466,18 @@ impl<'a> FunctionLower<'a> {
         clause: &ExprRef,
         stat: frontend::ast::MemStat,
         old_index: usize,
-        message: DefaultSymbol,
+        clause_index: usize,
     ) -> Result<(), String> {
         use frontend::ast::{Expr, Operator};
 
         let Some(Expr::Binary(Operator::LE, lhs, rhs)) = self.program.expression.get(clause) else {
-            return self.emit_contract_checks(std::slice::from_ref(clause), message);
+            return self.emit_contract_checks(std::slice::from_ref(clause), "ensures", clause_index);
         };
         let Some(entry_sym) = self.interner.get(format!("__old_{old_index}")) else {
-            return self.emit_contract_checks(std::slice::from_ref(clause), message);
+            return self.emit_contract_checks(std::slice::from_ref(clause), "ensures", clause_index);
         };
         let Some(Binding::Scalar { local, ty }) = self.bindings.get(&entry_sym).cloned() else {
-            return self.emit_contract_checks(std::slice::from_ref(clause), message);
+            return self.emit_contract_checks(std::slice::from_ref(clause), "ensures", clause_index);
         };
 
         let current = self

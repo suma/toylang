@@ -307,6 +307,12 @@ pub(crate) struct CodegenSession<M: Module> {
     /// DEBUG-OBS D6: `toy_panic_recursion()` — report a runaway
     /// recursion and exit.
     rt_panic_recursion: cranelift_module::FuncId,
+    /// `toy_panic_values(kind, a, b, prefix, suffix)` — a trap whose
+    /// operands are part of the message.
+    rt_panic_values: cranelift_module::FuncId,
+    /// `toy_panic_dynamic(msg, prefix, suffix)` — a panic whose text
+    /// the program built.
+    rt_panic_dynamic: cranelift_module::FuncId,
     rt_prof_force_counting: cranelift_module::FuncId,
     // MEMORY_PROFILING M3 residual: register an allocator's layout for
     // the report. `(name: str-ptr, managed, live, free_blocks, largest)`
@@ -732,6 +738,22 @@ impl<M: Module> CodegenSession<M> {
         let rt_panic_recursion =
             declare_helper(&mut module, "toy_panic_recursion", &recursion_sig)?;
 
+        // A value-carrying trap: kind, the two operands, and the two
+        // static halves of the frame around the message.
+        let mut panic_values_sig = Signature::new(call_conv);
+        for _ in 0..5 {
+            panic_values_sig.params.push(AbiParam::new(types::I64));
+        }
+        let rt_panic_values =
+            declare_helper(&mut module, "toy_panic_values", &panic_values_sig)?;
+
+        let mut panic_dynamic_sig = Signature::new(call_conv);
+        for _ in 0..3 {
+            panic_dynamic_sig.params.push(AbiParam::new(types::I64));
+        }
+        let rt_panic_dynamic =
+            declare_helper(&mut module, "toy_panic_dynamic", &panic_dynamic_sig)?;
+
         // MEMORY_PROFILING M3 residual. `toy_record_allocator_layout`
         // takes the str name as an i64 pointer (the `[bytes][NUL][u64
         // len]` layout, NUL-terminated so C can read it as `const char*`)
@@ -898,6 +920,8 @@ impl<M: Module> CodegenSession<M> {
             rt_panic_at,
             rt_backtrace_str,
             rt_panic_recursion,
+            rt_panic_values,
+            rt_panic_dynamic,
             rt_prof_force_counting,
             rt_record_allocator_layout,
             rt_str_concat,
@@ -1024,8 +1048,13 @@ impl<M: Module> CodegenSession<M> {
                 if let Some(Terminator::Panic { message, site }) = &blk.terminator {
                     panic_needed.insert((*message, *site));
                 }
-                if let Some(Terminator::PanicAllocBudget { site, .. }) = &blk.terminator {
-                    budget_sites.insert(*site);
+                match &blk.terminator {
+                    Some(Terminator::PanicAllocBudget { site, .. })
+                    | Some(Terminator::PanicValues { site, .. })
+                    | Some(Terminator::PanicStr { site, .. }) => {
+                        budget_sites.insert(*site);
+                    }
+                    _ => {}
                 }
                 for inst in &blk.instructions {
                     if let InstKind::PrintStr { message, .. } = &inst.kind {
@@ -1310,7 +1339,7 @@ impl<M: Module> CodegenSession<M> {
     /// is what a `--release` lowering produces: no records, no
     /// imports, and no push/pop in any generated function.
     fn declare_shadow_frames(&mut self, ir_module: &IrModule) -> Result<(), String> {
-        if ir_module.frames.is_empty() {
+        if !ir_module.debug_frames {
             return Ok(());
         }
         for (i, frame) in ir_module.frames.iter().enumerate() {
@@ -1778,6 +1807,8 @@ struct RuntimeRefs {
     panic_at: cranelift_codegen::ir::FuncRef,
     backtrace_str: cranelift_codegen::ir::FuncRef,
     panic_recursion: cranelift_codegen::ir::FuncRef,
+    panic_values: cranelift_codegen::ir::FuncRef,
+    panic_dynamic: cranelift_codegen::ir::FuncRef,
     prof_force_counting: cranelift_codegen::ir::FuncRef,
     record_allocator_layout: cranelift_codegen::ir::FuncRef,
     pow: cranelift_codegen::ir::FuncRef,
@@ -2251,6 +2282,38 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let then_b = *self.block_map.get(&then_blk.0).expect("then block");
                 let else_b = *self.block_map.get(&else_blk.0).expect("else block");
                 self.builder.ins().brif(c, then_b, &[], else_b, &[]);
+            }
+            Terminator::PanicStr { message, site } => {
+                let msg = self.value(*message);
+                let (pre_gv, suf_gv) = *self
+                    .frame_imports
+                    .get(site)
+                    .ok_or_else(|| "missing frame import for a dynamic panic".to_string())?;
+                let pre = self.builder.ins().symbol_value(types::I64, pre_gv);
+                let suf = self.builder.ins().symbol_value(types::I64, suf_gv);
+                self.builder
+                    .ins()
+                    .call(self.runtime.panic_dynamic, &[msg, pre, suf]);
+                self.builder
+                    .ins()
+                    .trap(cranelift_codegen::ir::TrapCode::user(1).expect("non-zero"));
+            }
+            Terminator::PanicValues { kind, a, b, site } => {
+                let kind_v = self.builder.ins().iconst(types::I64, *kind as i64);
+                let a_v = self.value(*a);
+                let b_v = self.value(*b);
+                let (pre_gv, suf_gv) = *self
+                    .frame_imports
+                    .get(site)
+                    .ok_or_else(|| "missing frame import for a value trap".to_string())?;
+                let pre = self.builder.ins().symbol_value(types::I64, pre_gv);
+                let suf = self.builder.ins().symbol_value(types::I64, suf_gv);
+                self.builder
+                    .ins()
+                    .call(self.runtime.panic_values, &[kind_v, a_v, b_v, pre, suf]);
+                self.builder
+                    .ins()
+                    .trap(cranelift_codegen::ir::TrapCode::user(1).expect("non-zero"));
             }
             Terminator::PanicAllocBudget { stat, entry, current, limit, site } => {
                 // ALLOC-CONTRACT-SUGAR: hand the three readings to the

@@ -21,6 +21,28 @@ use std::collections::HashMap as HashMapStd;
 /// `"i64"` was never interned, so there is no symbol and no registry
 /// entry to find. Falling back to `None` keeps the dispatch cost a
 /// single hashmap probe per primitive method call.
+/// Whether a value's rendering is the same in every engine
+/// (DEBUG-OBS). The compiled backends report a contract's values
+/// through `InstKind::ToString` on a scalar local; anything held as a
+/// compound has no single value to hand a formatter there.
+fn is_scalar_for_contract_report(obj: &Object) -> bool {
+    matches!(
+        obj,
+        Object::Bool(_)
+            | Object::Int64(_)
+            | Object::UInt64(_)
+            | Object::Int8(_)
+            | Object::Int16(_)
+            | Object::Int32(_)
+            | Object::UInt8(_)
+            | Object::UInt16(_)
+            | Object::UInt32(_)
+            | Object::Float64(_)
+            | Object::String(_)
+            | Object::ConstString(_)
+    )
+}
+
 fn primitive_target_symbol(
     obj: &Object,
     interner: &DefaultStringInterner,
@@ -496,10 +518,18 @@ impl EvaluationContext<'_> {
             .filter_map(|sym| {
                 let value = self.environment.get_val(sym)?;
                 let name = self.string_interner.resolve(sym)?.to_string();
-                let rendered = value
-                    .into_rc()
-                    .borrow()
-                    .to_display_string(self.string_interner);
+                let obj = value.into_rc();
+                let borrowed = obj.borrow();
+                // DEBUG-OBS: scalars only, matching what the compiled
+                // backends can put in the same sentence. The rule is
+                // shared rather than a limitation of one engine — a
+                // diagnostic that lists a struct's fields here and
+                // omits them there is worse than one that consistently
+                // names what every engine can render.
+                if !is_scalar_for_contract_report(&borrowed) {
+                    return None;
+                }
+                let rendered = borrowed.to_display_string(self.string_interner);
                 Some((name, rendered))
             })
             .collect()

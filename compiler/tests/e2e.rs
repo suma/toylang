@@ -584,11 +584,17 @@ fn dbc_requires_violation_panics() {
     "#;
     let out = compile_and_capture(src, "dbc_requires_fail");
     assert_eq!(out.status.code(), Some(1));
-    // DEBUG-OBS D3: on stderr, framed with the clause's position.
+    // DEBUG-OBS D3: on stderr, framed with the clause's position, and
+    // naming the values the predicate saw — the same sentence every
+    // other engine writes.
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("requires violation"),
-        "expected 'requires violation' in stderr, got: {stderr:?}"
+        stderr.contains("Contract violation: `requires` clause #1"),
+        "expected a `requires` violation in stderr, got: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("with a = 10, b = 0"),
+        "the values the predicate saw should be in it: {stderr:?}"
     );
 }
 
@@ -615,11 +621,13 @@ fn dbc_ensures_violation_panics() {
     "#;
     let out = compile_and_capture(src, "dbc_ensures_fail");
     assert_eq!(out.status.code(), Some(1));
-    // DEBUG-OBS D3: on stderr, framed with the clause's position.
+    // DEBUG-OBS D3: on stderr, framed with the clause's position, and
+    // naming the values the predicate saw — the same sentence every
+    // other engine writes.
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("ensures violation"),
-        "expected 'ensures violation' in stderr, got: {stderr:?}"
+        stderr.contains("Contract violation: `ensures` clause #1"),
+        "expected a `ensures` violation in stderr, got: {stderr:?}"
     );
 }
 

@@ -13,11 +13,32 @@ impl EvaluationContext<'_> {
     /// permits `b == array_len`); `false` is a single-element access
     /// (`arr[i]` requires `i < array_len`). The check is the only
     /// difference between the two callers, so it lives here.
+    /// An out-of-range index, reported the way every other trap is
+    /// (DEBUG-OBS): a panic carrying the position and the backtrace,
+    /// with the two numbers in the message. It used to be a bare
+    /// `IndexOutOfBounds` error, which arrived with neither.
+    fn index_out_of_bounds(
+        &self,
+        index: isize,
+        size: usize,
+        site: Option<frontend::type_checker::SourceLocation>,
+    ) -> InterpreterError {
+        self.panic_error(
+            compiler_ir::panic_values_message(
+                compiler_ir::panic_kind::INDEX_OUT_OF_BOUNDS,
+                index as i64,
+                size as u64,
+            ),
+            site,
+        )
+    }
+
     fn resolve_array_index(
         &self,
         index_obj: &RcObject,
         array_len: usize,
         allow_len: bool,
+        site: Option<frontend::type_checker::SourceLocation>,
     ) -> Result<usize, InterpreterError> {
         let in_range = |idx: usize| if allow_len { idx <= array_len } else { idx < array_len };
         let borrowed = index_obj.borrow();
@@ -25,10 +46,7 @@ impl EvaluationContext<'_> {
             Object::UInt64(idx) => {
                 let idx = *idx as usize;
                 if !in_range(idx) {
-                    return Err(InterpreterError::IndexOutOfBounds {
-                        index: idx as isize,
-                        size: array_len
-                    });
+                    return Err(self.index_out_of_bounds(idx as isize, array_len, site));
                 }
                 Ok(idx)
             }
@@ -37,20 +55,14 @@ impl EvaluationContext<'_> {
                     // Positive i64, treat as u64
                     let idx = *idx as usize;
                     if !in_range(idx) {
-                        return Err(InterpreterError::IndexOutOfBounds {
-                            index: idx as isize,
-                            size: array_len
-                        });
+                        return Err(self.index_out_of_bounds(idx as isize, array_len, site));
                     }
                     Ok(idx)
                 } else {
                     // Negative index: convert to positive
                     let abs_idx = (-*idx) as usize;
                     if abs_idx > array_len {
-                        return Err(InterpreterError::IndexOutOfBounds {
-                            index: *idx as isize,
-                            size: array_len
-                        });
+                        return Err(self.index_out_of_bounds(*idx as isize, array_len, site));
                     }
                     Ok(array_len - abs_idx)
                 }
@@ -59,7 +71,20 @@ impl EvaluationContext<'_> {
         }
     }
 
-    pub(super) fn evaluate_slice_access_with_info(&mut self, object: &ExprRef, slice_info: &SliceInfo) -> Result<EvaluationResult, InterpreterError> {
+    pub(super) fn evaluate_slice_access_with_info(
+        &mut self,
+        object: &ExprRef,
+        slice_info: &SliceInfo,
+        whole: Option<ExprRef>,
+    ) -> Result<EvaluationResult, InterpreterError> {
+        // DEBUG-OBS: the whole `arr[i]`, which is what the compiled
+        // backends attribute their bounds trap to. Falling back
+        // through the object and then the index keeps the older
+        // callers (which have neither) reporting *something*.
+        let site = whole
+            .and_then(|e| self.expr_location(&e))
+            .or_else(|| self.expr_location(object))
+            .or_else(|| slice_info.start.and_then(|e| self.expr_location(&e)));
         let object_val = self.evaluate(object)?;
         let object_obj = try_value!(Ok(object_val));
 
@@ -72,7 +97,7 @@ impl EvaluationContext<'_> {
                 let start_idx = if let Some(start_expr) = &slice_info.start {
                     let start_val = self.evaluate(start_expr)?;
                     let start_obj = try_value!(Ok(start_val));
-                    self.resolve_array_index(&start_obj, array_len, false)?
+                    self.resolve_array_index(&start_obj, array_len, false, site)?
                 } else {
                     0
                 };
@@ -81,23 +106,17 @@ impl EvaluationContext<'_> {
                 let end_idx = if let Some(end_expr) = &slice_info.end {
                     let end_val = self.evaluate(end_expr)?;
                     let end_obj = try_value!(Ok(end_val));
-                    self.resolve_array_index(&end_obj, array_len, true)?
+                    self.resolve_array_index(&end_obj, array_len, true, site)?
                 } else {
                     array_len
                 };
 
                 // Validate indices
                 if start_idx > array_len {
-                    return Err(InterpreterError::IndexOutOfBounds {
-                        index: start_idx as isize,
-                        size: array_len
-                    });
+                    return Err(self.index_out_of_bounds(start_idx as isize, array_len, site));
                 }
                 if end_idx > array_len {
-                    return Err(InterpreterError::IndexOutOfBounds {
-                        index: end_idx as isize,
-                        size: array_len
-                    });
+                    return Err(self.index_out_of_bounds(end_idx as isize, array_len, site));
                 }
                 if start_idx > end_idx {
                     return Err(InterpreterError::InternalError(
@@ -110,10 +129,7 @@ impl EvaluationContext<'_> {
                     SliceType::SingleElement => {
                         // Single element access: arr[i] returns the element directly
                         if start_idx >= array_len {
-                            return Err(InterpreterError::IndexOutOfBounds {
-                                index: start_idx as isize,
-                                size: array_len
-                            });
+                            return Err(self.index_out_of_bounds(start_idx as isize, array_len, site));
                         }
                         Ok(EvaluationResult::Value(elements[start_idx].clone().into()))
                     }
@@ -189,6 +205,9 @@ impl EvaluationContext<'_> {
     }
 
     fn evaluate_slice_access(&mut self, object: &ExprRef, start: &Option<ExprRef>, end: &Option<ExprRef>) -> Result<EvaluationResult, InterpreterError> {
+        // DEBUG-OBS: the indexed expression's position, which the
+        // compiled backends attribute their bounds trap to as well.
+        let site = self.expr_location(object);
         let object_val = self.evaluate(object)?;
         let object_obj = try_value!(Ok(object_val));
 
@@ -201,7 +220,7 @@ impl EvaluationContext<'_> {
                 let start_idx = if let Some(start_expr) = start {
                     let start_val = self.evaluate(start_expr)?;
                     let start_obj = try_value!(Ok(start_val));
-                    self.resolve_array_index(&start_obj, array_len, false)?
+                    self.resolve_array_index(&start_obj, array_len, false, site)?
                 } else {
                     0
                 };
@@ -210,23 +229,17 @@ impl EvaluationContext<'_> {
                 let end_idx = if let Some(end_expr) = end {
                     let end_val = self.evaluate(end_expr)?;
                     let end_obj = try_value!(Ok(end_val));
-                    self.resolve_array_index(&end_obj, array_len, true)?
+                    self.resolve_array_index(&end_obj, array_len, true, site)?
                 } else {
                     array_len
                 };
 
                 // Validate indices
                 if start_idx > array_len {
-                    return Err(InterpreterError::IndexOutOfBounds {
-                        index: start_idx as isize,
-                        size: array_len
-                    });
+                    return Err(self.index_out_of_bounds(start_idx as isize, array_len, site));
                 }
                 if end_idx > array_len {
-                    return Err(InterpreterError::IndexOutOfBounds {
-                        index: end_idx as isize,
-                        size: array_len
-                    });
+                    return Err(self.index_out_of_bounds(end_idx as isize, array_len, site));
                 }
                 if start_idx > end_idx {
                     return Err(InterpreterError::InternalError(
@@ -238,10 +251,7 @@ impl EvaluationContext<'_> {
                 if start.is_some() && end.is_none() {
                     // Single element access: arr[i] returns the element directly
                     if start_idx >= array_len {
-                        return Err(InterpreterError::IndexOutOfBounds {
-                            index: start_idx as isize,
-                            size: array_len
-                        });
+                        return Err(self.index_out_of_bounds(start_idx as isize, array_len, site));
                     }
                     Ok(EvaluationResult::Value(elements[start_idx].clone().into()))
                 } else {
@@ -351,9 +361,12 @@ impl EvaluationContext<'_> {
                 if start.is_some() && end.is_none() {
                     // Single element assignment: arr[i] = value
                     if let Some(start_expr) = start {
+                        let site = self
+                            .expr_location(object)
+                            .or_else(|| self.expr_location(start_expr));
                         let start_val = self.evaluate(start_expr)?;
                         let start_obj = try_value!(Ok(start_val));
-                        let resolved_idx = self.resolve_array_index(&start_obj, array_len, false)?;
+                        let resolved_idx = self.resolve_array_index(&start_obj, array_len, false, site)?;
 
                         let mut obj_borrowed = object_obj.borrow_mut();
                         if let Object::Array(elements) = &mut *obj_borrowed {

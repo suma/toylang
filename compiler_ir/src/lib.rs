@@ -146,6 +146,12 @@ pub struct Module {
     /// when the lowering pass was asked for debug info; a `--release`
     /// build leaves it empty and emits no shadow-stack traffic.
     pub frames: Vec<Frame>,
+    /// Whether this module records backtraces at all.
+    ///
+    /// Distinct from `frames.is_empty()`, which is also true of a
+    /// debug build whose program makes no calls — and that program
+    /// still has an entry frame worth naming when it fails.
+    pub debug_frames: bool,
 }
 
 /// One struct's full shape — fields keep their declared order
@@ -993,6 +999,40 @@ pub const FRAME_SUFFIX: &str = "\n   |";
 /// capacity, so hitting the limit is also where a backtrace would
 /// start losing frames.
 pub const RECURSION_LIMIT: u64 = 1024;
+
+/// Which sentence a [`Terminator::PanicValues`] carries.
+///
+/// A small closed set rather than a message per site: these are the
+/// failures whose *values* are the point (`1 - 5` says more than "the
+/// left operand was smaller"), and there is exactly one way each of
+/// them can be phrased.
+pub mod panic_kind {
+    /// `u64 subtraction underflowed: {a} - {b}`
+    pub const U64_UNDERFLOW: u64 = 0;
+    /// `array index out of bounds: index {a}, length {b}`
+    pub const INDEX_OUT_OF_BOUNDS: u64 = 1;
+}
+
+/// The sentence for a value-carrying trap.
+///
+/// The tree-walker has had the values all along and printed them; the
+/// compiled backends could only manage a fixed string, because
+/// `Terminator::Panic` carries an interned symbol. One formatter, so
+/// the four engines cannot phrase the same failure differently.
+///
+/// `a` is signed because an array index can be negative before the
+/// end-relative rewrite applies.
+pub fn panic_values_message(kind: u64, a: i64, b: u64) -> String {
+    match kind {
+        panic_kind::U64_UNDERFLOW => {
+            format!("u64 subtraction underflowed: {} - {b}", a as u64)
+        }
+        panic_kind::INDEX_OUT_OF_BOUNDS => {
+            format!("array index out of bounds: index {a}, length {b}")
+        }
+        _ => "trap".to_string(),
+    }
+}
 
 /// The one place the runaway-recursion sentence is written.
 ///
@@ -1995,6 +2035,11 @@ impl Terminator {
                 f(*current);
                 f(*limit);
             }
+            Terminator::PanicValues { a, b, .. } => {
+                f(*a);
+                f(*b);
+            }
+            Terminator::PanicStr { message, .. } => f(*message),
             Terminator::Jump(_) | Terminator::Panic { .. } | Terminator::Unreachable => {}
         }
     }
@@ -2054,6 +2099,32 @@ pub enum Terminator {
     /// `assert(cond, "msg")` is lowered to a `Branch` followed by a
     /// `Panic` block.
     Panic { message: DefaultSymbol, site: Option<SiteId> },
+    /// Diverge with a message computed at run time.
+    ///
+    /// The escape hatch from `Panic`'s interned literal, for the one
+    /// diagnostic whose shape is not fixed: a contract violation names
+    /// the values its predicate saw, and how many there are and what
+    /// types they have is a property of the function. The failure
+    /// block builds the string with the same `ToString` / `StrConcat`
+    /// instructions string interpolation uses, so nothing new runs on
+    /// the passing path.
+    PanicStr {
+        message: ValueId,
+        site: Option<SiteId>,
+    },
+    /// Diverge with a sentence built from two runtime values.
+    ///
+    /// `Panic` can only carry an interned literal, which is why a
+    /// compiled `a - b` underflow could say what happened but not with
+    /// what — while the tree-walker, holding the operands, printed
+    /// them. The two are one diagnostic now (`kind` picks the
+    /// sentence; see `panic_values_message`).
+    PanicValues {
+        kind: u64,
+        a: ValueId,
+        b: ValueId,
+        site: Option<SiteId>,
+    },
     /// ALLOC-CONTRACT-SUGAR: diverge on a violated allocation budget,
     /// reporting the numbers rather than a fixed string.
     ///
@@ -2527,6 +2598,10 @@ impl fmt::Display for DisplayTerm<'_> {
             // codegen pass reaches into the program's interner anyway,
             // so this is mostly cosmetic.
             Terminator::Panic { message, .. } => write!(f, "panic #{}", message.to_usize()),
+            Terminator::PanicValues { kind, a, b, .. } => {
+                write!(f, "panic_values #{kind} {a}, {b}")
+            }
+            Terminator::PanicStr { message, .. } => write!(f, "panic_str {message}"),
             Terminator::PanicAllocBudget { stat, entry, current, limit, .. } => write!(
                 f,
                 "panic_alloc_budget {} entry={entry} current={current} limit={limit}",

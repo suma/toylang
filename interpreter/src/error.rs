@@ -108,7 +108,16 @@ impl fmt::Display for InterpreterError {
                 write!(f, "Object error: {err:?}")
             }
             InterpreterError::IndexOutOfBounds { index, size } => {
-                write!(f, "Array index {index} out of bounds for array of size {size}")
+                // DEBUG-OBS: same sentence the compiled backends write.
+                write!(
+                    f,
+                    "{}",
+                    compiler_ir::panic_values_message(
+                        compiler_ir::panic_kind::INDEX_OUT_OF_BOUNDS,
+                        *index as i64,
+                        *size as u64,
+                    )
+                )
             }
             InterpreterError::ContractViolation(v) => {
                 let ContractViolation { kind, function, clause_index, bindings, detail, .. } = &**v;

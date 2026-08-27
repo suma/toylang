@@ -4026,10 +4026,23 @@ the same input; `compiler/tests/consistency.rs` pins that.
 
 | Operation | Trap |
 |---|---|
-| `a - b` on `u64` where `a < b` | `u64 subtraction underflowed` |
+| `a - b` on `u64` where `a < b` | `u64 subtraction underflowed: 1 - 5` |
 | `a / b` or `a % b` where `b == 0` (any integer width) | `integer division by zero` |
 | `a / b` or `a % b` where `a` is the type's most negative value and `b == -1` | `integer division overflowed` |
-| `arr[i]` / `arr[i] = v` where `i` is at or past the array's length | `array index out of bounds` |
+| `arr[i]` / `arr[i] = v` where `i` is at or past the array's length | `array index out of bounds: index 5, length 3` |
+
+The two that have values report them, in every engine. So does a
+contract violation:
+
+```text
+Contract violation: `requires` clause #1 of function `f` evaluated to
+false (with n = 0)
+```
+
+The values listed are the **scalar** parameters (and `result` for an
+`ensures`). A parameter held as a struct, tuple or enum is left out —
+the same rule everywhere, so the sentence does not depend on which
+engine ran the program.
 
 Two more failures stop the program the same way, though they come from
 the standard library and from the engine rather than from an operator:

@@ -1274,8 +1274,15 @@ pub(super) fn assert_diagnostic_consistent(source: &str, stem: &str) {
     }
 }
 
-/// Pin the divergence that exists **today**, so the gap D1–D4 close is
-/// a number in the test output rather than a paragraph in a design doc.
+/// Pin a divergence that exists **today**, so a gap is a number in the
+/// test output rather than a paragraph in a design doc.
+///
+/// Unused right now: every engine agrees on every pinned program, so
+/// each call site became an [`assert_diagnostic_consistent`] — which
+/// is what this helper's second direction is for, and how each of them
+/// found out. Kept because the alternative, when the next divergence
+/// arrives, is weakening the consistent assertion instead.
+#[allow(dead_code)]
 ///
 /// Two-directional, like the tree-walker opt-out above and the skip
 /// lists in `example_consistency.rs`: it fails when a lane's wording

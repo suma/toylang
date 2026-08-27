@@ -979,6 +979,24 @@ impl<'a, 'b> State<'a, 'b> {
         vec![sym_v, pre_ptr, pre_len, suf_ptr, suf_len]
     }
 
+    /// Emit a call that writes a trap whose message is built from two
+    /// runtime values, and exits. Shares `toy_panic_values` with the
+    /// compiled backends — one formatter for the sentence.
+    fn panic_with_values(
+        &mut self,
+        at: &ExprRef,
+        kind: u64,
+        a: Value,
+        b: Value,
+    ) -> Result<(), String> {
+        let (prefix, suffix) = self.frame_halves(at);
+        let kind_v = self.builder.ins().iconst(types::I64, kind as i64);
+        let pre = self.builder.ins().iconst(types::I64, prefix.as_ptr() as i64);
+        let suf = self.builder.ins().iconst(types::I64, suffix.as_ptr() as i64);
+        self.call_helper(HelperKind::PanicValues, &[kind_v, a, b, pre, suf])?;
+        Ok(())
+    }
+
     /// Emit a call that writes a fully-known diagnostic and exits.
     /// Used by the RUNTIME-TRAP guards, whose messages are constants.
     fn panic_with_text(&mut self, at: &ExprRef, message: &str) -> Result<(), String> {
@@ -1051,9 +1069,13 @@ impl<'a, 'b> State<'a, 'b> {
                     let cont_blk = self.builder.create_block();
                     self.brif(ok, cont_blk, fail_blk);
                     self.switch_to(fail_blk);
-                    self.panic_with_text(
+                    // The operands travel with the trap, so this says
+                    // `1 - 5` like every other engine.
+                    self.panic_with_values(
                         &lhs_ref,
-                        "u64 subtraction underflowed (left operand is smaller than the right)",
+                        compiler_ir::panic_kind::U64_UNDERFLOW,
+                        l,
+                        r,
                     )?;
                     self.builder.ins().trap(TrapCode::user(1).expect("non-zero"));
                     self.switch_to(cont_blk);

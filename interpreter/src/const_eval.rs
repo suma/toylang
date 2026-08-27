@@ -269,7 +269,10 @@ fn evaluate(
             }
             // COMPILE-TIME-EVAL C4: a `requires` the fold watched
             // fail, with the offending values in the message.
-            Err(message) if message == "requires violation" => {
+            // The sentence now carries the values (DEBUG-OBS), so this
+            // matches on what it starts with rather than on the whole
+            // of it.
+            Err(message) if is_requires_violation(&message) => {
                 report.errors.push(err_at(
                     program,
                     &decl_value,
@@ -352,7 +355,7 @@ fn evaluate(
                 // on every run that reaches this call. Whether one
                 // does is exactly what this pass cannot see, so it is
                 // reported and the call is left alone.
-                Err(message) if message == "requires violation" => {
+                Err(message) if is_requires_violation(&message) => {
                     report.warnings.push(broken_precondition(
                         program,
                         &expr_ref,
@@ -1320,4 +1323,16 @@ fn walk_pool(expression: &frontend::ast::ExprPool, expr_ref: &ExprRef, visit: &m
     for child in children {
         walk_pool(expression, &child, visit);
     }
+}
+
+/// Whether a compile-time evaluation failed because a `requires`
+/// clause was false.
+///
+/// The interned `"requires violation"` was the whole message until the
+/// compiled backends learned to report the values a predicate saw; now
+/// it is the prefix of a longer sentence, and both spellings reach
+/// here depending on whether the parameters were renderable.
+fn is_requires_violation(message: &str) -> bool {
+    message == "requires violation"
+        || message.starts_with("Contract violation: `requires`")
 }

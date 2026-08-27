@@ -11,9 +11,7 @@
 //! one becomes an `assert_diagnostic_consistent` call the moment the
 //! engines agree — `assert_diagnostic_report` fails and says so.
 
-use super::harness::{
-    assert_diagnostic_consistent, assert_diagnostic_report, run_diagnostic_lane_child,
-};
+use super::harness::{assert_diagnostic_consistent, run_diagnostic_lane_child};
 
 /// Re-entry point for the two lanes that end in `process::exit`.
 ///
@@ -53,61 +51,7 @@ fn u64_underflow_trap() {
 fn sub(a: u64, b: u64) -> u64 { a - b }
 fn main() -> u64 { sub(1u64, 5u64) }
 "#;
-    assert_diagnostic_report(
-        source,
-        "u64_underflow_trap",
-        r#"tree-walker (stderr):
-  Runtime error occurred:
-  Error at u64_underflow_trap.t:2:33:
-     |
-   2 | fn sub(a: u64, b: u64) -> u64 { a - b }
-     |                                 ^ panic: u64 subtraction underflowed: 1 - 5
-     |
-     = backtrace (innermost first):
-         sub (called at line 3)
-         main
-ir-vm (stderr):
-  Runtime error occurred:
-  Error at u64_underflow_trap.t:2:33:
-     |
-   2 | fn sub(a: u64, b: u64) -> u64 { a - b }
-     |                                 ^ panic: u64 subtraction underflowed (left operand is smaller than the right)
-     |
-     = backtrace (innermost first):
-         sub (called at line 3)
-         main
-interpreter-jit (stderr):
-  Runtime error occurred:
-  Error at u64_underflow_trap.t:2:33:
-     |
-   2 | fn sub(a: u64, b: u64) -> u64 { a - b }
-     |                                 ^ panic: u64 subtraction underflowed (left operand is smaller than the right)
-     |
-     = backtrace (innermost first):
-         sub (called at line 3)
-         main
-compiler-jit (stderr):
-  Runtime error occurred:
-  Error at u64_underflow_trap.t:2:33:
-     |
-   2 | fn sub(a: u64, b: u64) -> u64 { a - b }
-     |                                 ^ panic: u64 subtraction underflowed (left operand is smaller than the right)
-     |
-     = backtrace (innermost first):
-         sub (called at line 3)
-         main
-aot (stderr):
-  Runtime error occurred:
-  Error at u64_underflow_trap.t:2:33:
-     |
-   2 | fn sub(a: u64, b: u64) -> u64 { a - b }
-     |                                 ^ panic: u64 subtraction underflowed (left operand is smaller than the right)
-     |
-     = backtrace (innermost first):
-         sub (called at line 3)
-         main
-"#,
-    );
+    assert_diagnostic_consistent(source, "u64_underflow_trap");
 }
 
 /// An out-of-bounds array index: three different sentences for one
@@ -124,40 +68,7 @@ fn main() -> u64 {
     0u64
 }
 "#;
-    assert_diagnostic_report(
-        source,
-        "array_index_out_of_bounds",
-        r#"tree-walker (stderr):
-  Runtime error occurred:
-  Array index 5 out of bounds for array of size 3
-ir-vm (stderr):
-  Runtime error occurred:
-  Error at array_index_out_of_bounds.t:5:18:
-     |
-   5 |     val v: i64 = arr[i]
-     |                  ^^^^^^ panic: array index out of bounds (index is at or past the array's length)
-     |
-     = backtrace (innermost first):
-         main
-interpreter-jit (stderr):
-  Runtime error occurred:
-  Array index 5 out of bounds for array of size 3
-compiler-jit (stderr):
-  Runtime error occurred:
-  Error at array_index_out_of_bounds.t:5:18:
-     |
-   5 |     val v: i64 = arr[i]
-     |                  ^^^^^^ panic: array index out of bounds (index is at or past the array's length)
-     |
-aot (stderr):
-  Runtime error occurred:
-  Error at array_index_out_of_bounds.t:5:18:
-     |
-   5 |     val v: i64 = arr[i]
-     |                  ^^^^^^ panic: array index out of bounds (index is at or past the array's length)
-     |
-"#,
-    );
+    assert_diagnostic_consistent(source, "array_index_out_of_bounds");
 }
 
 /// A `requires` violation. Contracts are the feature this language
@@ -175,61 +86,7 @@ fn f(n: u64) -> u64
 }
 fn main() -> u64 { f(0u64) }
 "#;
-    assert_diagnostic_report(
-        source,
-        "requires_violation",
-        r#"tree-walker (stderr):
-  Runtime error occurred:
-  Error at requires_violation.t:3:14:
-     |
-   3 |     requires n > 0u64
-     |              ^^^^^^^^ Contract violation: `requires` clause #1 of function `f` evaluated to false (with n = 0)
-     |
-     = backtrace (innermost first):
-         f (called at line 7)
-         main
-ir-vm (stderr):
-  Runtime error occurred:
-  Error at requires_violation.t:3:14:
-     |
-   3 |     requires n > 0u64
-     |              ^^^^^^^^ panic: requires violation
-     |
-     = backtrace (innermost first):
-         f (called at line 7)
-         main
-interpreter-jit (stderr):
-  Runtime error occurred:
-  Error at requires_violation.t:3:14:
-     |
-   3 |     requires n > 0u64
-     |              ^^^^^^^^ Contract violation: `requires` clause #1 of function `f` evaluated to false (with n = 0)
-     |
-     = backtrace (innermost first):
-         f (called at line 7)
-         main
-compiler-jit (stderr):
-  Runtime error occurred:
-  Error at requires_violation.t:3:14:
-     |
-   3 |     requires n > 0u64
-     |              ^^^^^^^^ panic: requires violation
-     |
-     = backtrace (innermost first):
-         f (called at line 7)
-         main
-aot (stderr):
-  Runtime error occurred:
-  Error at requires_violation.t:3:14:
-     |
-   3 |     requires n > 0u64
-     |              ^^^^^^^^ panic: requires violation
-     |
-     = backtrace (innermost first):
-         f (called at line 7)
-         main
-"#,
-    );
+    assert_diagnostic_consistent(source, "requires_violation");
 }
 
 /// A panic raised inside the stdlib (DEBUG-OBS D2).

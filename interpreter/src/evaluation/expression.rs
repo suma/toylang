@@ -93,7 +93,12 @@ impl EvaluationContext<'_> {
                 self.evaluate_slice_assign(&object, &start, &end, &value)
             }
             Expr::SliceAccess(object, slice_info) => {
-                self.evaluate_slice_access_with_info(&object, &slice_info)
+                // DEBUG-OBS: `e` is the whole `arr[i]`, which is what
+                // the compiled backends attribute a bounds trap to.
+                // The object alone is not enough — the type checker
+                // rewrites some accesses in place, and a rewritten
+                // node carries no position.
+                self.evaluate_slice_access_with_info(&object, &slice_info, Some(*e))
             }
             Expr::DictLiteral(entries) => {
                 self.evaluate_dict_literal(&entries)

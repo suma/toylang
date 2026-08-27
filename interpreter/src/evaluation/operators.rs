@@ -363,7 +363,13 @@ impl EvaluationContext<'_> {
                 // with the location and backtrace P6-1 added.
                 if matches!(op, ArithmeticOp::Sub) && *l < *r {
                     return Err(self.panic_error(
-                        format!("u64 subtraction underflowed: {l} - {r}"),
+                        // One formatter, so the four engines cannot
+                        // phrase this differently.
+                        compiler_ir::panic_values_message(
+                            compiler_ir::panic_kind::U64_UNDERFLOW,
+                            *l as i64,
+                            *r,
+                        ),
                         site,
                     ));
                 }

@@ -693,6 +693,48 @@ interpreter JIT だけは呼び出しごと (巻き上げるプロローグが�
 
 ---
 
+## 値を持つ文言 ✅ (2026-08-27)
+
+D0 の目標表が「値ごと移す」と決めていた 3 件。位置と backtrace が
+D3/D4 で揃ったあと、**5 レーンで唯一残っていた差**だった。
+
+| 失敗 | 全実行系の文言 |
+|---|---|
+| `u64` underflow | `panic: u64 subtraction underflowed: 1 - 5` |
+| 配列の範囲外 | `panic: array index out of bounds: index 5, length 3` |
+| `requires` 違反 | ``Contract violation: `requires` clause #1 of function `f` evaluated to false (with n = 0)`` |
+
+**pin 4 件すべてが `assert_diagnostic_consistent` になった** —
+`assert_diagnostic_report` (両方向 pin) は呼ばれていない。
+D0 で「一致したら落ちる」向きを入れておいたおかげで、3 件とも
+「一致したので置き換えよ」というテスト失敗として現れた。
+
+実装で決めたこと:
+
+- **形の違う 2 つを別の仕組みにした。** trap は
+  `Terminator::PanicValues { kind, a, b }` — 形が固定 (2 値) なので
+  ランタイムヘルパ 1 本で足り、**compiler_lower を通らない
+  interpreter JIT も同じシンボルを呼べる**。契約違反は
+  `Terminator::PanicStr { message }` — 引数の数も型も関数ごとなので、
+  **失敗ブロックで文字列補間と同じ `ToString` / `StrConcat` を使って
+  組み立てる**。契約が満たされる限り 1 命令も走らない。
+- **値を出すのは scalar 引数だけ**、という規則を**両エンジンに**入れた。
+  lowering の制限としてではなく規則として — 片方が struct の
+  フィールドを並べ、もう片方が省く診断は、どちらも出さない診断より悪い。
+- **`panic: ` を付けるかは終端子が決める** (`needs_panic_prefix`)。
+  契約違反はそれ自体が完結した文で、
+  `panic: Contract violation: ...` は同じことを 2 度言う。
+- 配列の範囲外は tree-walker 側も**位置を持つ panic**にした
+  (以前は位置も backtrace も無い別のエラー型)。位置は
+  `arr[i]` 全体 — 型検査が書き換えたノードは位置を持たないので、
+  評価器に**式そのものの `ExprRef`** を渡すようにした。
+
+**これで tree-walker への replay を落とせる** — 残していた理由は
+「tree-walker だけが値を持つ文言を出す」ことだったので。実測 2 の
+「プログラムが 2 回走る」はこれで着手可能になった (未実施)。
+
+---
+
 ## 非目標
 
 - **DWARF 生成 / gdb・lldb 連携**、ステップ実行デバッガ。D4 の B 案が入れば

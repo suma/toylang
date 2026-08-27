@@ -195,6 +195,16 @@ pub(crate) enum WithScopeCleanup {
 // new local ids / block ids / value ids as it walks the AST.
 // ---------------------------------------------------------------------------
 
+/// The static half of a contract-violation message.
+#[derive(Clone)]
+struct ContractReport {
+    function: String,
+    /// Parameter names in declaration order, plus `result` for an
+    /// `ensures`. Only the ones whose values can be rendered appear in
+    /// the message — see `build_contract_message`.
+    params: Vec<DefaultSymbol>,
+}
+
 struct FunctionLower<'a> {
     module: &'a mut Module,
     func_id: FuncId,
@@ -235,6 +245,13 @@ struct FunctionLower<'a> {
     /// preconditions themselves are not emitted — see
     /// `contract_facts`.
     facts: ContractFacts,
+    /// What a contract violation reports besides the clause number
+    /// (DEBUG-OBS): the function's name as the user wrote it, and the
+    /// parameters whose values the predicate saw.
+    ///
+    /// Set once per function body. `None` while lowering something
+    /// with no contracts to report — drop glue, a synthetic wrapper.
+    contract_report: Option<ContractReport>,
     /// DEBUG-OBS D4: whether calls record a backtrace frame.
     ///
     /// Off under `--release`, which is the one axis this language

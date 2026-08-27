@@ -395,6 +395,8 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_backtrace_str", toylang_rt::toy_backtrace_str as *const u8);
     // DEBUG-OBS D6.
     jit_builder.symbol("toy_panic_recursion", toylang_rt::toy_panic_recursion as *const u8);
+    jit_builder.symbol("toy_panic_values", toylang_rt::toy_panic_values as *const u8);
+    jit_builder.symbol("toy_panic_dynamic", toylang_rt::toy_panic_dynamic as *const u8);
     // DEBUG-OBS D4: the shadow stack is *data*, not a function, and
     // the generated code writes to it directly rather than calling in.
     jit_builder.symbol(

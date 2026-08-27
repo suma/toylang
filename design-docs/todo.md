@@ -12,6 +12,23 @@
 
 ### 2026-08-27
 
+- **DEBUG-OBS: 値を持つ文言を全実行系に** — D0 の目標表が決めていた
+  3 件 (`u64` underflow の `1 - 5` / 配列 OOB の `index 5, length 3` /
+  契約違反の `(with n = 0)`) が全実行系で同じになり、**D0 の pin 4 件
+  すべてが `assert_diagnostic_consistent`** になった (両方向 pin が
+  「一致したので置き換えよ」と落ちて教えてくれた)。形の違う 2 つを
+  別の仕組みに: trap は `Terminator::PanicValues { kind, a, b }`
+  (形が固定なのでランタイムヘルパ 1 本、compiler_lower を通らない
+  interpreter JIT も同じシンボルを呼べる)、契約違反は
+  `Terminator::PanicStr { message }` (引数の数も型も関数ごとなので
+  **失敗ブロックで文字列補間と同じ `ToString`/`StrConcat` を使って
+  組み立てる** — 満たされる限り 1 命令も走らない)。**値を出すのは
+  scalar 引数だけ**という規則を両エンジンに入れた (片方が struct の
+  フィールドを並べ他方が省く診断は、どちらも出さないより悪い)。
+  配列 OOB は tree-walker 側も位置つき panic に (以前は位置も
+  backtrace も無い別のエラー型で、位置は `arr[i]` 全体を渡すよう
+  評価器に式の `ExprRef` を通した)。
+
 - **DEBUG-OBS D6: 再帰深度と stdlib の境界** — 無限再帰が
   `panic: recursion limit exceeded (N frames deep)` + 折り畳んだ
   backtrace を出すようになった (実測 6。それまでは interpreter が
@@ -1159,29 +1176,26 @@
 > backtrace の穴は塞がり、位置はどのファイルのものかを持ち、5 実行系
 > すべてが panic の位置と backtrace を stderr に同じ書式で出し、
 > 実行時の失敗は `--diagnostics=json` にも載り、無限再帰と stdlib の
-> 範囲外はホストではなく toylang の言葉で落ちる。残りは下の 4 項目。
+> 範囲外はホストではなく toylang の言葉で落ちる。**5 レーンは pin した
+> 全プログラムで完全一致**しており、両方向 pin の
+> `assert_diagnostic_report` は現在どこからも呼ばれていない。
+> 残りは下の 3 項目。
 
 - **DEBUG-OBS D3 の残: `HeapAlloc` の `SiteId` 移行** ★ — `--profile=mem` の
   リーク報告にファイル名が付く (MEMORY_PROFILING M2 の積み残し)。診断とは
   別経路で、コンパイル済みランタイムが自前でレポートを書くため
   ファイル名表の埋め込み + 起動時登録と、M4 の JSON スキーマ変更が要る。
-- **DEBUG-OBS: IR VM diverge 時の tree-walker 再実行** ★ — VM は D3/D4 で
-  位置も backtrace も自分で出せるようになった。まだ replay しているのは
-  **tree-walker だけが値を持つ文言を出す**から (次項)。それが揃えば
-  replay は落とせる。プログラムが 2 回走るので `io::random` /
-  `io::read_file` は 2 回目を踏む (実測 2)。
+- **DEBUG-OBS: IR VM diverge 時の tree-walker 再実行** ★★ — VM は位置も
+  backtrace も値を持つ文言も自分で出せるようになった (D3/D4 + 値の項)。
+  **replay を残す理由はもう無い**。落とせば実測 2 の「プログラムが
+  2 回走る」(`io::random` / `io::read_file` が 2 回目を踏む) が消える。
+  注意点は tree-walker でしか走らないプログラム
+  (TREE-WALKER-NUM-W 等) の扱いで、そこは replay ではなく
+  「VM が最初から eligible でない」判定に寄せる必要がある。
 - **DEBUG-OBS D4 の残: panic に到達しえない関数のフレームを積まない** ★ —
   backtrace に現れようのないフレームは誰も読まない。到達可能性の歩行は
   `reachability.rs` にあるので、`Terminator::Panic` を sink にすれば
   同じ形。shadow stack のコスト (fib +96%) が実際に効く場面を踏んでから。
-- **DEBUG-OBS: 値を持つ文言を全実行系に** ★★ — 位置と backtrace は
-  D3/D4 で揃ったが、**message だけ**まだ割れている:
-  tree-walker は `u64 subtraction underflowed: 1 - 5` /
-  `Contract violation: ... (with n = 0)` / 配列 OOB の独自文言を出し、
-  コンパイル側は定型文。D0 の目標表は「値ごと移す」と決めている
-  (trap ヘルパにオペランドを渡す、契約は実引数を運ぶ)。
-  残る 3 つの pin (`u64_underflow_trap` / `array_index_out_of_bounds` /
-  `requires_violation`) がそのまま作業リスト。
 
 ### 型システム (NEW-TYPE-SYSTEM)
 

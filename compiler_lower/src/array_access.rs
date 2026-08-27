@@ -280,7 +280,17 @@ impl<'a> FunctionLower<'a> {
                     Some(Type::Bool),
                 )
                 .expect("BinOp returns a value");
-            self.emit_trap_unless(non_negative, self.contract_msgs.index_out_of_bounds);
+            // The length is materialised before the guard so both
+            // out-of-range directions report the same pair of numbers.
+            let len_v = self
+                .emit(InstKind::Const(len_const), Some(idx_ty))
+                .expect("Const returns a value");
+            self.emit_trap_values_unless(
+                non_negative,
+                crate::ir::panic_kind::INDEX_OUT_OF_BOUNDS,
+                idx,
+                len_v,
+            );
         }
         let len_v = self
             .emit(InstKind::Const(len_const), Some(idx_ty))
@@ -291,7 +301,12 @@ impl<'a> FunctionLower<'a> {
                 Some(Type::Bool),
             )
             .expect("BinOp returns a value");
-        self.emit_trap_unless(in_bounds, self.contract_msgs.index_out_of_bounds);
+        self.emit_trap_values_unless(
+            in_bounds,
+            crate::ir::panic_kind::INDEX_OUT_OF_BOUNDS,
+            idx,
+            len_v,
+        );
         Ok(idx)
     }
 

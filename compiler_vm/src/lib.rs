@@ -157,7 +157,7 @@ impl<'a> Vm<'a> {
     /// it. The bottom frame is the entry function, which nothing
     /// called, so it renders without a line — the same shape the
     /// tree-walker produces.
-    fn backtrace(&self) -> String {
+    pub(crate) fn backtrace_text(&self) -> String {
         let names: Vec<(String, Option<u32>)> = self
             .frames
             .iter()
@@ -258,7 +258,7 @@ impl<'a> Vm<'a> {
                     }
                     Terminator::Jump(target) => {
                         if let Some(message) = self.charge_back_edge(target) {
-                            let backtrace = self.backtrace();
+                            let backtrace = self.backtrace_text();
                             return VmResult::Diverged { message, site: None, backtrace };
                         }
                         {
@@ -272,7 +272,7 @@ impl<'a> Vm<'a> {
                         let taken = unsafe { cond_slot.bool };
                         let target = if taken { then_blk } else { else_blk };
                         if let Some(message) = self.charge_back_edge(target) {
-                            let backtrace = self.backtrace();
+                            let backtrace = self.backtrace_text();
                             return VmResult::Diverged { message, site: None, backtrace };
                         }
                         {
@@ -287,7 +287,7 @@ impl<'a> Vm<'a> {
                             .and_then(|i| i.resolve(message))
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| format!("panic #{}", message.to_usize()));
-                        let backtrace = self.backtrace();
+                        let backtrace = self.backtrace_text();
                         return VmResult::Diverged { message: text, site, backtrace };
                     }
                     // ALLOC-CONTRACT-SUGAR: the numbers, not a fixed
@@ -297,7 +297,7 @@ impl<'a> Vm<'a> {
                         let entry = unsafe { self.read_value(entry).u64 };
                         let current = unsafe { self.read_value(current).u64 };
                         let limit = unsafe { self.read_value(limit).u64 };
-                        let backtrace = self.backtrace();
+                        let backtrace = self.backtrace_text();
                         return VmResult::Diverged {
                             message: compiler_ir::format_alloc_budget_violation(
                                 stat, entry, current, limit,
@@ -307,7 +307,7 @@ impl<'a> Vm<'a> {
                         };
                     }
                     Terminator::Unreachable => {
-                        let backtrace = self.backtrace();
+                        let backtrace = self.backtrace_text();
                         return VmResult::Diverged {
                             message: "unreachable".to_string(),
                             site: None,

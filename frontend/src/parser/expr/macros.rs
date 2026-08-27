@@ -36,6 +36,16 @@ pub(crate) fn try_intercept_parser_macro(
         let sym = parser.string_interner.get_or_intern(path);
         return Ok(Some(parser.ast_builder.string_expr(sym, Some(location))));
     }
+    if name == symbols.function_name {
+        parser.next();
+        parser.expect_err(&Kind::ParenClose)?;
+        let name = parser
+            .current_function
+            .clone()
+            .unwrap_or_else(|| "<toplevel>".to_string());
+        let sym = parser.string_interner.get_or_intern(name);
+        return Ok(Some(parser.ast_builder.string_expr(sym, Some(location))));
+    }
     if name == symbols.dbg {
         return Ok(Some(parse_dbg_macro(parser, location)?));
     }

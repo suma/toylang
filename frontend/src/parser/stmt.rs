@@ -1028,7 +1028,20 @@ pub fn parse_impl_methods_with_generic_context(
                         }
 
                         let clauses = parser.parse_contract_clauses()?;
+                        // DEBUG-OBS D5: a method names itself the way a
+                        // backtrace frame does.
+                        let method_str = parser
+                            .string_interner
+                            .resolve(method_name)
+                            .unwrap_or("<method>")
+                            .to_string();
+                        let qualified = match &parser.current_impl_target {
+                            Some(target) => format!("{target}::{method_str}"),
+                            None => method_str,
+                        };
+                        let outer_function = parser.current_function.replace(qualified);
                         let block = super::expr::parse_block(parser)?;
+                        parser.current_function = outer_function;
                         let fn_end_pos = parser.peek_position_n(0).unwrap_or(&std::ops::Range {start: 0, end: 0}).end;
 
                         // Method-level bounds layer on top of the impl-level

@@ -385,7 +385,7 @@ fn run_trial(
     );
     match outcome {
         Ok(_) => Trial::Ok,
-        Err(InterpreterError::ContractViolation { kind: "requires", .. }) => Trial::Discarded,
+        Err(InterpreterError::ContractViolation(v)) if v.kind == "requires" => Trial::Discarded,
         Err(InterpreterError::StepBudgetExceeded { .. }) => Trial::Exhausted,
         Err(e) => Trial::Failed(e.to_string()),
     }
@@ -434,7 +434,7 @@ fn run_method_trial(
     );
     match outcome {
         Ok(_) => Trial::Ok,
-        Err(InterpreterError::ContractViolation { kind: "requires", .. }) => Trial::Discarded,
+        Err(InterpreterError::ContractViolation(v)) if v.kind == "requires" => Trial::Discarded,
         Err(InterpreterError::StepBudgetExceeded { .. }) => Trial::Exhausted,
         Err(e) => Trial::Failed(e.to_string()),
     }

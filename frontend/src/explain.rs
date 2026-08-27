@@ -64,6 +64,8 @@ const ENTRIES: &[Entry] = &[
     (codes::NEVER_ALLOCATES, E0016),
     (codes::CONST_FN, E0017),
     (codes::CONTRACT_PURITY, E0018),
+    (codes::RUNTIME_PANIC, E0019),
+    (codes::CONTRACT_VIOLATION, E0020),
 ];
 
 const E0001: &str = "\
@@ -624,6 +626,72 @@ an error instead (`E0017`).
 To fix: move the effect out of the predicate — compute it in the body
 and compare against a parameter — or pass an argument the contract
 accepts.";
+
+const E0019: &str = "\
+E0019: the program stopped while it was running
+
+Not a defect the compiler found — a failure the program reached. Three
+things carry this code:
+
+- `panic(\"...\")`, which the program asked for;
+- a failed `assert(cond, \"...\")`;
+- a RUNTIME-TRAP guard: `u64` subtraction that would wrap, integer
+  division by zero, signed `MIN / -1`, an array index past the end.
+
+All four execution engines report it the same way — the position, the
+source line with a caret under the failing expression, and a backtrace
+innermost-first:
+
+    Runtime error occurred:
+    Error at demo.t:2:20:
+       |
+     2 |     if n == 0u64 { panic(\"bottom\") }
+       |                    ^^^^^ panic: bottom
+       |
+       = backtrace (innermost first):
+           f (x7, called at line 3)
+           main
+
+`--diagnostics=json` gives the same failure with `span` and
+`backtrace` as data. A `--release` build keeps the position and drops
+the backtrace, which is the only part with a run-time cost.
+
+To fix: the trap cases have checked forms in `core/std/checked.t`
+(`checked_sub` / `checked_div` return `Option<T>`); the `panic` cases
+are the program's own decision, so the fix is wherever the value that
+reached it came from — which is what the backtrace is for.";
+
+const E0020: &str = "\
+E0020: a contract was false at run time
+
+A `requires` clause was false on entry, or an `ensures` clause was
+false on exit. Unlike E0018, which is about the *shape* of a contract,
+this is the contract doing its job.
+
+    fn half(n: u64) -> u64
+        requires n % 2u64 == 0u64
+    {
+        n / 2u64
+    }
+    fn main() -> u64 { half(3u64) }   # E0020
+
+The report names the clause, the function, and the values the
+predicate saw:
+
+    Contract violation: `requires` clause #1 of function `half`
+    evaluated to false (with n = 3)
+
+An `ensures allocates(N)` / `retains(N)` clause reports the measured
+amount against the budget instead of a bare false.
+
+A `requires` violation is the *caller\'s* defect: the backtrace names
+the call that passed the argument. An `ensures` violation is the
+function\'s own.
+
+To fix: check the precondition before calling, or widen the contract if
+the value was legal after all. `INTERPRETER_CONTRACTS=off` and
+`--release` switch the checks off, which hides the report without
+making the program correct.";
 
 #[cfg(test)]
 mod tests {

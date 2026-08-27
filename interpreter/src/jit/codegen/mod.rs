@@ -1273,6 +1273,11 @@ impl<'a, 'b> State<'a, 'b> {
                         Err("__builtin_format is not supported in the interpreter JIT"
                             .to_string())
                     }
+                    BuiltinFunction::Backtrace => {
+                        // Rejected by eligibility; unreachable here.
+                        Err("__builtin_backtrace is not supported in the interpreter JIT"
+                            .to_string())
+                    }
                     BuiltinFunction::Panic => {
                         // Eligibility already validated args.len() == 1 and
                         // that args[0] is `Expr::String(sym)`. We pass the

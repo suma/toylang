@@ -12,6 +12,20 @@
 
 ### 2026-08-27
 
+- **DEBUG-OBS D5: ユーザ API と機械可読出力** — (a)
+  `__builtin_function_name()` (パーサ置換、実行時コスト 0、名前は
+  backtrace のフレームと同じ `S::boom` 流儀)、(b)
+  `__builtin_backtrace() -> str` (各エンジンが自前のスタックを読み、
+  1 つの共有フォーマッタで描く。`toylang_rt` に sink 抽象を足して
+  stderr 経路と str 経路で折り畳み規則を 2 度書かずに済ませた。
+  interpreter JIT だけは断って tree-walker に落ちる)、(c) 契約違反に
+  位置と backtrace、(d) **`--diagnostics=json` に実行時の失敗**
+  (実測 8 の解消、`backtrace` は配列データ、`file` は**失敗した側の
+  ファイル** — stdlib の panic なら stdlib)、(e) `--explain` に
+  **`E0019`** (panic / trap) と **`E0020`** (契約違反)。
+  `InterpreterError::ContractViolation` は Box に (enum が `Err` 型
+  として大きくなりすぎ clippy が 127 箇所で鳴った)。
+
 - **DEBUG-OBS D4: shadow stack** — AOT / compiler JIT / interpreter JIT が
   backtrace を出すようになり、**D0 のレーンが backtrace まで一致**した
   (`panic_three_calls_deep` / `panic_inside_the_stdlib` は 5 レーン完全一致で、
@@ -1126,9 +1140,10 @@
 > (現状調査 9 件 + 論点 6 + Phase D0〜D6)。**D0 は landing 済み** —
 > 目標文言はそこに固定され、現状の食い違いは
 > `compiler/tests/consistency/diagnostics.rs` に pin されている。
-> **D0〜D4 が landing 済み** — backtrace の穴は塞がり、位置はどのファイルの
+> **D0〜D5 が landing 済み** — backtrace の穴は塞がり、位置はどのファイルの
 > ものかを持ち、5 実行系すべてが panic の位置と backtrace を stderr に
-> 同じ書式で出す。残る差は**値を持つ文言だけ**。
+> 同じ書式で出し、実行時の失敗は `--diagnostics=json` にも載る。
+> 残る差は**値を持つ文言だけ**。次は D6。
 
 - **DEBUG-OBS D3 の残: `HeapAlloc` の `SiteId` 移行** ★ — `--profile=mem` の
   リーク報告にファイル名が付く (MEMORY_PROFILING M2 の積み残し)。診断とは

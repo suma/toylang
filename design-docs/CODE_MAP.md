@@ -109,6 +109,8 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | どのファイルの位置か (DEBUG-OBS D2) | `frontend/src/source_map.rs` (`FileId` / `SourceMap`)。map は `File.source_map`、モジュールの位置の付け替えは `module_integration.rs::integrate` |
 | panic の位置・backtrace (P6-1, D1) | `interpreter/src/error.rs` (`CallFrame`)、frame を積むのは `evaluation/call.rs` の `call_method` / `call_associated_method` / 閉包 2 箇所と `evaluate_function_call`、描画は `lib.rs::render_backtrace` (折り畳み + 深さ上限) |
 | バックエンド間の診断比較 (DEBUG-OBS D0) | `compiler/tests/consistency/diagnostics.rs` + `harness.rs::diagnostic_lanes` |
+| ユーザ向け診断 API (DEBUG-OBS D5) | `__builtin_function_name` はパーサ置換 (`parser/expr/macros.rs`)、`__builtin_backtrace` は `InstKind::Backtrace` → tree-walker `evaluation/builtin.rs` / VM `dispatch.rs` / AOT `toylang_rt::toy_backtrace_str` |
+| 実行時失敗の JSON (DEBUG-OBS D5) | `interpreter/src/lib.rs::runtime_diagnostic` + `Diagnostic::backtrace`、コードは `E0019` / `E0020` (`frontend/src/explain.rs`) |
 | backtrace のフレーム (DEBUG-OBS D4) | `compiler_ir` の `Frame` / `FrameId` / `Instruction::frame` / `render_backtrace`、stamp は `compiler_lower/src/lib.rs::emit`、shadow stack は `toylang_rt` の `toy_shadow_stack` / `toy_shadow_depth` / `write_backtrace`、codegen は `codegen/mod.rs::ShadowPrologue` + `lower_inst.rs::emit_frame_push` |
 | 実行時診断の位置 (DEBUG-OBS D3) | `compiler_ir` の `Site` / `SiteId` / `Module::intern_site` / `render_stderr_text`、書式は `format_diagnostic_frame` (interpreter の `ErrorFormatter` も呼ぶ)。site を付けるのは `compiler_lower` の `current_site` / `site_of`、AOT の blob は `codegen/mod.rs::declare_panic_string`、書き出しは `toylang_rt::toy_panic_at` |
 | 契約違反時の値 (P6-2) | `evaluation/call.rs::capture_contract_bindings` |

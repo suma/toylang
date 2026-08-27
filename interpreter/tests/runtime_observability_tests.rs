@@ -10,6 +10,13 @@ use crate::common;
 
 use crate::common::test_program;
 
+/// Run a program and return what it printed.
+fn stdout_of(source: &str) -> String {
+    let (result, out) = interpreter::output::with_capture(|| test_program(source));
+    result.unwrap_or_else(|e| panic!("expected the program to run:\n{e}"));
+    out
+}
+
 /// Run a program expected to fail at runtime and return the diagnostic.
 fn runtime_failure(source: &str) -> String {
     match test_program(source) {
@@ -321,5 +328,64 @@ fn a_deep_backtrace_says_how_much_it_left_out() {
     assert!(
         diags.contains("\n       main"),
         "the outermost frames survive the elision:\n{diags}"
+    );
+}
+
+// --- DEBUG-OBS D5: what a program can ask, and what a tool can read --
+
+#[test]
+fn a_function_can_name_itself() {
+    // Parser-level, so it costs nothing at run time — and it agrees
+    // with the name a backtrace frame uses, which is the point of
+    // having it at all.
+    let source = "struct S { v: i64 }
+        impl S { fn who(&self) -> str { __builtin_function_name() } }
+        fn free_fn() -> str { __builtin_function_name() }
+        fn main() -> u64 {
+            println(free_fn())
+            val s = S { v: 1i64 }
+            println(s.who())
+            println(__builtin_function_name())
+            0u64
+        }";
+    let out = stdout_of(source);
+    assert_eq!(out, "free_fn\nS::who\nmain\n", "{out}");
+}
+
+#[test]
+fn a_program_can_ask_how_it_got_here() {
+    let source = "fn inner() -> str { __builtin_backtrace() }
+        fn outer() -> str { inner() }
+        fn main() -> u64 {
+            println(outer())
+            0u64
+        }";
+    let out = stdout_of(source);
+    assert!(out.contains("inner (called at line 2)"), "{out}");
+    assert!(out.contains("outer (called at line 4)"), "{out}");
+    assert!(out.trim_end().ends_with("main"), "the entry frame closes it:\n{out}");
+}
+
+#[test]
+fn a_contract_violation_says_which_call_broke_it() {
+    // The question a contract report leaves open: not "what was
+    // false", which it always said, but "who passed that argument".
+    let diags = runtime_failure(
+        "fn half(n: u64) -> u64
+            requires n % 2u64 == 0u64
+        {
+            n / 2u64
+        }
+        fn caller() -> u64 { half(3u64) }
+        fn main() -> u64 { caller() }",
+    );
+    assert!(diags.contains("with n = 3"), "{diags}");
+    assert!(
+        diags.contains("test.t:2:"),
+        "the failing clause has a position:\n{diags}"
+    );
+    assert!(
+        diags.contains("half (called at line 6)") && diags.contains("caller (called at line 7)"),
+        "a contract violation carries a backtrace like any other failure:\n{diags}"
     );
 }

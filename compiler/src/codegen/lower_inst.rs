@@ -113,6 +113,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             | InstKind::StrFromBytes { .. }
             | InstKind::StrConcat { .. }
             | InstKind::ToString { .. }
+            | InstKind::Backtrace
             | InstKind::Format { .. } => self.lower_strings(inst),
             InstKind::MemCopy { .. }
             | InstKind::AllocPush { .. }
@@ -1254,6 +1255,15 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let result = self.builder.inst_results(call)[0];
                 if let Some((vid, _)) = inst.result {
                     self.values.insert(vid.0, result);
+                }
+            }
+            // DEBUG-OBS D5: the runtime walks the shadow stack and
+            // builds the str; nothing here is known at compile time.
+            InstKind::Backtrace => {
+                let call = self.builder.ins().call(self.runtime.backtrace_str, &[]);
+                let result = self.builder.inst_results(call)[0];
+                if let Some((v, _)) = inst.result {
+                    self.values.insert(v.0, result);
                 }
             }
             InstKind::ToString { value, value_ty } => {

@@ -581,14 +581,37 @@ front-end driver (`interpreter::check_typing*` /
 `compile_file`) routes errors through `ErrorFormatter` for the
 caret-pointer formatting visible in test output.
 
-Every diagnostic carries a stable code (`E0001`…`E0014`). These are
+Every diagnostic carries a stable code (`E0001`…`E0020`). These are
 toylang's own numbering, not Rust's — identical-looking identifiers with
 different meanings would be worse than none. `interpreter --explain
 <CODE>` prints the category, a program that triggers it, and the fix;
 `interpreter --explain` with no argument lists them all.
 
+Failures that happen *while the program runs* carry codes too: `E0019`
+for a panic, a failed `assert` or a runtime trap, and `E0020` for a
+violated `requires` / `ensures`.
+
 `--diagnostics=json` emits the same diagnostics on stderr in machine
-form, including spans and any machine-applicable fix.
+form, including spans and any machine-applicable fix. A runtime
+failure adds a `backtrace` array — `function` plus the `line` it was
+called from, innermost first, with no `line` on the entry frame:
+
+```json
+{
+  "severity": "error",
+  "code": "E0019",
+  "message": "panic: boom",
+  "file": "core/std/option.t",
+  "span": { "line": 57, "column": 29, "offset": 1893, "end_offset": 1898 },
+  "backtrace": [
+    { "function": "Option::unwrap", "line": 4 },
+    { "function": "main" }
+  ]
+}
+```
+
+`file` is the *failure's* file, which is not necessarily the one being
+run: a panic inside the stdlib names the stdlib.
 
 ---
 
@@ -3128,13 +3151,36 @@ unchanged.
 __builtin_source_file()    -> str   # path of the current source file
 __builtin_source_line()    -> u64   # call-site line, 1-indexed
 __builtin_source_column()  -> u64   # call-site column, 1-indexed
+__builtin_function_name()  -> str   # enclosing function, e.g. "S::boom"
 __builtin_dbg(value: T)    -> T     # print "[file:line] expr = value", return value
+__builtin_backtrace()      -> str   # how the program got here
 ```
 
-The four entries are all parser-level macros — none of them reach
-the type checker or the backends. The three `__builtin_source_*`
-calls are substituted in-place with a literal of the matching type
-at parse time. `__builtin_dbg(EXPR)` captures `EXPR`'s source text
+The first five are parser-level macros — none of them reach the type
+checker or the backends. The four `__builtin_source_*` /
+`__builtin_function_name` calls are substituted in-place with a
+literal of the matching type at parse time.
+
+`__builtin_function_name()` names a method the way a backtrace frame
+does (`S::boom`, not `boom`), and reads `<toplevel>` outside any
+function body.
+
+`__builtin_backtrace()` is the one that is *not* a macro: only the
+running program knows its own call stack. It returns the same text a
+panic prints, so a program that reports its own failures says what the
+runtime would have:
+
+```text
+   = backtrace (innermost first):
+       inner (called at line 2)
+       outer (called at line 4)
+       main
+```
+
+Every execution engine answers it from whatever stack it keeps, and a
+`--release` build — which records no frames — returns just the entry
+frame. The interpreter's own JIT declines the builtin and falls back to
+the tree-walker, which is not observable beyond speed. `__builtin_dbg(EXPR)` captures `EXPR`'s source text
 verbatim from the input buffer and rewrites the call to:
 
 ```text

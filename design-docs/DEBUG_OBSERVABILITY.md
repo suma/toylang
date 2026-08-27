@@ -18,7 +18,7 @@ D2 を飛ばして D3 だけが landing し、**ファイル名の無い行番�
 | **D2** | `FileId` + `SourceMap` — 位置に「どのファイルか」を持たせる | ✅ 2026-08-27 |
 | **D3** | IR の `SiteId` — 4 実行系すべてが panic 位置を言う (release でもコスト 0) | ✅ 2026-08-27 |
 | **D4** | shadow stack — AOT / JIT の backtrace | ✅ 2026-08-27 |
-| **D5** | ユーザから触れる API と機械可読出力 | 📋 |
+| **D5** | ユーザから触れる API と機械可読出力 | ✅ 2026-08-27 |
 | **D6** | 再帰深度の診断 / stdlib の境界チェック | 📋 |
 
 ---
@@ -155,7 +155,7 @@ value not defined
 `Vec` はそこから外れている。しかも失敗の出方が**ホストの内部 panic**なので、
 toylang 側の位置も backtrace も一切残らない。
 
-### 実測 8: 実行時の失敗は `--diagnostics=json` に載らない
+### 実測 8: 実行時の失敗は `--diagnostics=json` に載らない (D5 で解消)
 
 `--diagnostics=json` を付けても panic はテキストのまま出る。
 JSON は型検査 / パースの診断だけを扱う。LLM ループ (P1〜P7) の観点では、
@@ -607,13 +607,41 @@ Error at core/std/option.t:57:29:
 到達可能性の歩行は `reachability.rs` に既にあるので、IR の
 `Terminator::Panic` を sink にすれば同じ形で書ける。
 
-### D5 — ユーザ API と機械可読出力
+### D5 — ユーザ API と機械可読出力 ✅ (2026-08-27)
 
 1. `__builtin_function_name()`、`__builtin_backtrace()`。
-2. `ContractViolation` にも backtrace を付ける (P6-2 の値キャプチャと並べる)。
-3. `--diagnostics=json` に**実行時の失敗**を載せる (実測 8):
-   `{ "severity": "error", "kind": "panic", "message", "span" { file, line, column }, "backtrace": [...] }`。
-4. `--explain` に panic / trap のコード (`E0xxx`) を足すかを判断。
+2. `ContractViolation` にも位置と backtrace を付けた。
+3. `--diagnostics=json` に**実行時の失敗**を載せた (実測 8 の解消)。
+4. `--explain` にコードを 2 つ足した: **`E0019`** (panic / assert /
+   RUNTIME-TRAP)、**`E0020`** (契約違反)。
+
+実装で決めたこと:
+
+- **`__builtin_function_name()` はパーサ置換** — `__builtin_source_*`
+  と同じ。実行時コスト 0 で、名前は backtrace のフレームと同じ流儀
+  (`S::boom`)。2 つが別々に名乗ったら、どちらを信じるかという
+  問いが生まれてしまう。
+- **`__builtin_backtrace()` だけは本物の builtin。** 自分の呼び出し
+  スタックは走っているプログラムしか知らない。各エンジンが自前の
+  スタック (tree-walker の frames / VM の frames / shadow stack) を
+  読み、**1 つの共有フォーマッタ**で描く。
+  `toylang_rt` 側は sink 抽象 (`ErrSink` / `ByteCounter` /
+  `BufWriter`) を足して、stderr へ書く経路と `str` を作る経路で
+  折り畳み規則を 2 度書かずに済ませた。長さは 2 パス — 一発の広めの
+  malloc は深いスタックを黙って切るので採らない。
+- **interpreter JIT はこの builtin を断る** (silent fallback)。
+  shadow stack は持っているが str を作るヘルパが無い。tree-walker が
+  答えるので観測可能な差は速度だけ。
+- **JSON は既存の `Diagnostic` に相乗り**。`backtrace` を
+  `skip_serializing_if = "Vec::is_empty"` で足したので、
+  型検査の診断を読んでいるツールの形は変わらない。`file` は
+  **失敗した側のファイル** (stdlib の panic なら stdlib) — D2 が
+  位置に持たせた identity が、ここで初めて外に出る。
+  `Span::file` は依然 JSON に出さない (`FileId` は外の読み手に
+  意味がない)。
+- **`InterpreterError::ContractViolation` を Box にした。** backtrace と
+  位置を足したらこの enum が `Err` 型として大きくなりすぎ、clippy が
+  127 箇所で鳴った。一番幅の広い variant を箱に入れるのが正解。
 
 ### D6 — 再帰深度と stdlib の境界
 

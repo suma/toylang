@@ -423,6 +423,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg_types: vec![TypeDecl::Unknown],
                 return_type: TypeDecl::String,
             },
+            // DEBUG-OBS D5: `__builtin_backtrace() -> str`.
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::Backtrace,
+                arg_count: 0,
+                arg_types: vec![],
+                return_type: TypeDecl::String,
+            },
             // STR-INTERP-FMT: `__builtin_format(value, spec)` renders
             // `value` under the packed spec in its second argument.
             // The value type stays Unknown at signature level like

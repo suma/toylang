@@ -324,6 +324,7 @@ fn a_module_flagged_diagnostic_is_never_rendered_against_the_local_file() {
         }),
         origin_module: Some("helper".to_string()),
         suggestions: Vec::new(),
+        backtrace: Vec::new(),
     };
 
     let rendered = ErrorFormatter::new(local_source, "main.t").format_diagnostic(&diagnostic);
@@ -332,4 +333,80 @@ fn a_module_flagged_diagnostic_is_never_rendered_against_the_local_file() {
         !rendered.contains("0u64"),
         "quoted a line from the local file for a foreign span:\n{rendered}"
     );
+}
+
+// --- DEBUG-OBS D5: runtime failures on the JSON channel ------------
+//
+// 実測 8: `--diagnostics=json` covered parse and type-check failures
+// only. The one thing left in plain text was the failure that happens
+// while the program runs — the one an LLM loop reads most often.
+
+/// Run a program expected to fail at runtime with JSON diagnostics on,
+/// and return what landed on stderr.
+fn runtime_json(source: &str) -> serde_json::Value {
+    let core = crate::common::core_modules_dir();
+    let mut options = interpreter::RunOptions::default();
+    options.diagnostics_json = true;
+    options.core_modules_dir = Some(core.as_path());
+    let (result, stderr) = interpreter::output::with_stderr_capture(|| {
+        interpreter::run_source(source, "test.t", &options)
+    });
+    assert!(result.is_err(), "expected a runtime failure");
+    serde_json::from_str(&stderr).unwrap_or_else(|e| panic!("not JSON ({e}):\n{stderr}"))
+}
+
+#[test]
+fn a_panic_is_reported_as_json() {
+    let value = runtime_json(
+        "fn inner() -> u64 { panic(\"deep\") }
+fn main() -> u64 { inner() }",
+    );
+    let d = &value[0];
+    assert_eq!(d["severity"], "error");
+    assert_eq!(d["code"], "E0019");
+    assert_eq!(d["message"], "panic: deep");
+    assert_eq!(d["file"], "test.t");
+    assert_eq!(d["span"]["line"], 1);
+    // The backtrace is data, not a string a consumer has to re-parse.
+    assert_eq!(d["backtrace"][0]["function"], "inner");
+    assert_eq!(d["backtrace"][0]["line"], 2);
+    assert_eq!(d["backtrace"][1]["function"], "main");
+    assert!(
+        d["backtrace"][1].get("line").is_none(),
+        "the entry frame was not called from anywhere: {d}"
+    );
+}
+
+#[test]
+fn a_contract_violation_gets_its_own_code() {
+    let value = runtime_json(
+        "fn half(n: u64) -> u64
+    requires n % 2u64 == 0u64
+{
+    n / 2u64
+}
+fn main() -> u64 { half(3u64) }",
+    );
+    let d = &value[0];
+    assert_eq!(d["code"], "E0020", "{d}");
+    assert!(
+        d["message"].as_str().unwrap_or("").contains("with n = 3"),
+        "{d}"
+    );
+}
+
+#[test]
+fn a_failure_inside_the_stdlib_names_the_stdlib_file() {
+    // DEBUG-OBS D2 put the file on the position; this is where a tool
+    // reads it. `file` is the *failure's* file, not the entry one.
+    let value = runtime_json(
+        "fn main() -> u64 {
+    val o: Option<u64> = Option::None
+    val v: u64 = o.unwrap()
+    v
+}",
+    );
+    let d = &value[0];
+    assert_eq!(d["file"], "core/std/option.t", "{d}");
+    assert_eq!(d["backtrace"][0]["function"], "Option::unwrap", "{d}");
 }

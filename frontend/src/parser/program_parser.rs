@@ -175,7 +175,11 @@ impl<'a> Parser<'a> {
                     _ => unreachable!("peeked above"),
                 };
                 self.next(); // consume the name
+                let outer_function = self
+                    .current_function
+                    .replace(format!("test \"{display_name}\""));
                 let block = super::expr::parse_block(self)?;
+                self.current_function = outer_function;
                 let test_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
                 out.saw_end(test_end_pos);
 
@@ -486,7 +490,13 @@ impl<'a> Parser<'a> {
                 // optional and may repeat; multiple clauses of the
                 // same kind are AND-composed by the type checker.
                 let clauses = self.parse_contract_clauses()?;
+                // DEBUG-OBS D5: `__builtin_function_name()` inside the
+                // body resolves to this.
+                let outer_function = self
+                    .current_function
+                    .replace(self.string_interner.resolve(fn_name).unwrap_or("<fn>").to_string());
                 let block = super::expr::parse_block(self)?;
+                self.current_function = outer_function;
                 let fn_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
                 out.saw_end(fn_end_pos);
 
@@ -949,7 +959,14 @@ impl<'a> Parser<'a> {
                     };
 
                 self.expect_err(&Kind::BraceOpen)?;
+                let outer_target = self.current_impl_target.replace(
+                    self.string_interner
+                        .resolve(target_type_symbol)
+                        .unwrap_or("<impl>")
+                        .to_string(),
+                );
                 let methods = super::stmt::parse_impl_methods_with_generic_context(self, vec![], &generic_params, &generic_bounds)?;
+                self.current_impl_target = outer_target;
                 self.expect_err(&Kind::BraceClose)?;
                 let impl_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
                 out.saw_end(impl_end_pos);

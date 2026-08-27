@@ -314,6 +314,8 @@ impl<M: Module> CodegenSession<M> {
             panic_alloc_budget: self
                 .declare_func_in_func_readonly(self.rt_panic_alloc_budget, func),
             panic_at: self.declare_func_in_func_readonly(self.rt_panic_at, func),
+            backtrace_str: self
+                .declare_func_in_func_readonly(self.rt_backtrace_str, func),
             prof_force_counting: self
                 .declare_func_in_func_readonly(self.rt_prof_force_counting, func),
             record_allocator_layout: self

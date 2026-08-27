@@ -180,7 +180,14 @@ fn main() -> u64 { f(0u64) }
         "requires_violation",
         r#"tree-walker (stderr):
   Runtime error occurred:
-  Contract violation: `requires` clause #1 of function `f` evaluated to false (with n = 0)
+  Error at requires_violation.t:3:14:
+     |
+   3 |     requires n > 0u64
+     |              ^^^^^^^^ Contract violation: `requires` clause #1 of function `f` evaluated to false (with n = 0)
+     |
+     = backtrace (innermost first):
+         f (called at line 7)
+         main
 ir-vm (stderr):
   Runtime error occurred:
   Error at requires_violation.t:3:14:
@@ -193,7 +200,14 @@ ir-vm (stderr):
          main
 interpreter-jit (stderr):
   Runtime error occurred:
-  Contract violation: `requires` clause #1 of function `f` evaluated to false (with n = 0)
+  Error at requires_violation.t:3:14:
+     |
+   3 |     requires n > 0u64
+     |              ^^^^^^^^ Contract violation: `requires` clause #1 of function `f` evaluated to false (with n = 0)
+     |
+     = backtrace (innermost first):
+         f (called at line 7)
+         main
 compiler-jit (stderr):
   Runtime error occurred:
   Error at requires_violation.t:3:14:
@@ -278,4 +292,24 @@ fn main() -> u64 {
 }
 "#;
     assert_diagnostic_consistent(source, "a_method_frame_is_named_the_same_everywhere");
+}
+
+/// `__builtin_backtrace()` reads the same stack in every engine
+/// (DEBUG-OBS D5).
+///
+/// Pinned through the *stdout* lane rather than the diagnostic one:
+/// the program prints the answer and lives, so this is an ordinary
+/// consistency check — and it catches the two backtrace renderers
+/// disagreeing from the other direction than a panic does.
+#[test]
+fn the_backtrace_builtin_agrees_across_backends() {
+    let source = r#"
+fn inner() -> str { __builtin_backtrace() }
+fn outer() -> str { inner() }
+fn main() -> u64 {
+    println(outer())
+    0u64
+}
+"#;
+    super::harness::assert_stdout_consistent(source, "the_backtrace_builtin_agrees_across_backends");
 }

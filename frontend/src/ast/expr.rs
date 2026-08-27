@@ -532,6 +532,14 @@ pub enum BuiltinFunction {
     // accepted; type-check side reports `str` regardless of the
     // argument's type.
     ToString,
+    /// `__builtin_backtrace() -> str` — how the program got here
+    /// (DEBUG-OBS D5).
+    ///
+    /// The same text a panic prints, available without dying. Each
+    /// engine reads its own call stack — the tree-walker's frames, the
+    /// IR VM's, or the shadow stack the compiled backends keep — and
+    /// renders through the one shared formatter.
+    Backtrace,
 
     // STR-INTERP-FMT: `__builtin_format(value, spec: u64) -> str`.
     // Same rendering as `ToString`, plus width / alignment /
@@ -633,6 +641,15 @@ pub struct BuiltinFunctionSymbols {
     pub source_file: DefaultSymbol,
     pub source_line: DefaultSymbol,
     pub source_column: DefaultSymbol,
+    /// DEBUG-OBS D5: the enclosing function's name, substituted at
+    /// parse time like the three above. Costs nothing at run time —
+    /// the parser already knows which body it is inside, and the
+    /// answer is a string literal by the time any backend sees it.
+    pub function_name: DefaultSymbol,
+    /// DEBUG-OBS D5: `__builtin_backtrace()`. Unlike the three above
+    /// this one is a real builtin — the answer is only known while the
+    /// program runs.
+    pub backtrace: DefaultSymbol,
 
     // `__builtin_dbg(expr)` — parser-level macro that captures the
     // source text of `expr` and lowers to a print + return-value
@@ -700,6 +717,8 @@ impl BuiltinFunctionSymbols {
             source_file: interner.get_or_intern("__builtin_source_file"),
             source_line: interner.get_or_intern("__builtin_source_line"),
             source_column: interner.get_or_intern("__builtin_source_column"),
+            function_name: interner.get_or_intern("__builtin_function_name"),
+            backtrace: interner.get_or_intern("__builtin_backtrace"),
             dbg: interner.get_or_intern("__builtin_dbg"),
             assert_eq: interner.get_or_intern("assert_eq"),
             assert_ne: interner.get_or_intern("assert_ne"),
@@ -730,6 +749,7 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.assert { Some(BuiltinFunction::Assert) }
         else if symbol == self.sizeof { Some(BuiltinFunction::SizeOf) }
         else if symbol == self.to_string { Some(BuiltinFunction::ToString) }
+        else if symbol == self.backtrace { Some(BuiltinFunction::Backtrace) }
         else if symbol == self.format { Some(BuiltinFunction::Format) }
         else if symbol == self.record_allocator_layout { Some(BuiltinFunction::RecordAllocatorLayout) }
         else if symbol == self.abs { Some(BuiltinFunction::Abs) }

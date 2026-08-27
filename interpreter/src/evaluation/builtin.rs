@@ -448,6 +448,7 @@ impl EvaluationContext<'_> {
             | BuiltinFunction::DefaultAllocator => self.builtin_allocator_and_memory(func, args),
             BuiltinFunction::SizeOf
             | BuiltinFunction::ToString
+            | BuiltinFunction::Backtrace
             | BuiltinFunction::Format => self.builtin_reflection(func, args),
             BuiltinFunction::Panic
             | BuiltinFunction::Assert
@@ -991,6 +992,26 @@ impl EvaluationContext<'_> {
                 ))
             })?;
             Ok(EvaluationResult::Value((Object::UInt64(size)).into()))
+        }
+
+        // DEBUG-OBS D5: the same text a panic prints, without dying.
+        // Read straight off the frames the panic path would have used,
+        // and rendered by the one shared formatter.
+        BuiltinFunction::Backtrace => {
+            Self::expect_args("__builtin_backtrace", args, 0)?;
+            let mut frames = self.call_stack.clone();
+            frames.reverse();
+            let entries: Vec<compiler_ir::BacktraceEntry<'_>> = frames
+                .iter()
+                .map(|f| compiler_ir::BacktraceEntry {
+                    name: f.function.as_str(),
+                    line: f.call_site.as_ref().map(|loc| loc.line),
+                })
+                .collect();
+            let text = compiler_ir::render_backtrace(&entries);
+            Ok(EvaluationResult::Value(
+                Object::String(text.trim_start_matches('\n').to_string()).into(),
+            ))
         }
 
         BuiltinFunction::ToString => {

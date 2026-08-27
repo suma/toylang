@@ -255,6 +255,17 @@ pub struct Parser<'a> {
     /// uses the implicit form. The explicit `impl<T> Container<T>`
     /// has no such ordering requirement.
     pub declared_type_generics: HashMap<DefaultSymbol, Vec<DefaultSymbol>>,
+    /// Enclosing function, for `__builtin_function_name()`
+    /// (DEBUG-OBS D5).
+    ///
+    /// Qualified the way a backtrace frame is (`S::boom`) so the two
+    /// name the same thing. `None` outside any function body — a
+    /// top-level `const` initialiser, say — where the macro reports
+    /// `<toplevel>` rather than inventing a caller.
+    pub current_function: Option<String>,
+    /// The type an `impl` block is for, so a method body can name
+    /// itself `S::boom` (DEBUG-OBS D5).
+    pub current_impl_target: Option<String>,
     /// Source file path for `__builtin_source_file()` substitution.
     /// `None` defaults to `"<source>"`. Set via `set_source_file` when
     /// the entry point knows the on-disk path (e.g. `interpreter` CLI,
@@ -310,6 +321,8 @@ impl<'a> Parser<'a> {
             const_lengths: HashMap::new(),
             declared_type_generics: HashMap::new(),
             source_file: None,
+            current_function: None,
+            current_impl_target: None,
             line_starts: build_line_starts(input),
         }
     }

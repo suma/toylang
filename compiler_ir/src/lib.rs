@@ -1270,6 +1270,13 @@ pub enum InstKind {
     /// Direct call to a function known at module build time. The optional
     /// `result` is `Some` when the callee returns a value-producing type.
     Call { target: FuncId, args: Vec<ValueId> },
+    /// DEBUG-OBS D5: `__builtin_backtrace()` — the current call stack
+    /// as a `str`.
+    ///
+    /// Produced at run time from whatever stack the engine keeps (the
+    /// VM's frames, the compiled backends' shadow stack), so unlike
+    /// `__builtin_source_line()` it cannot be a constant.
+    Backtrace,
     /// `expr as Target` — a numeric type conversion. The pair `(from,
     /// to)` decides whether the codegen emits a no-op (i64↔u64), an
     /// integer-to-float `fcvt_from_*`, a float-to-integer
@@ -1865,6 +1872,8 @@ impl InstKind {
                 one(rhs);
             }
             InstKind::UnaryOp { operand, .. } => one(operand),
+            // Reads a stack the IR does not model; no operands.
+            InstKind::Backtrace => {}
             InstKind::StoreLocal { src, .. } => one(src),
             InstKind::Cast { value, .. }
             | InstKind::Print { value, .. }
@@ -2264,6 +2273,7 @@ impl fmt::Display for DisplayInst<'_> {
             InstKind::BinOp { op, lhs, rhs } => write!(f, "{prefix}{op} {lhs}, {rhs}"),
             InstKind::UnaryOp { op, operand } => write!(f, "{prefix}{op} {operand}"),
             InstKind::LoadLocal(l) => write!(f, "{prefix}load {l}"),
+            InstKind::Backtrace => write!(f, "{prefix}backtrace"),
             InstKind::StoreLocal { dst, src } => write!(f, "store {dst}, {src}"),
             InstKind::Call { target, args } => {
                 let argstr: Vec<String> = args.iter().map(|a| a.to_string()).collect();

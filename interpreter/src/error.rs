@@ -22,18 +22,11 @@ pub enum InterpreterError {
     /// the parameters, plus `result` for an `ensures`. Without them the
     /// report says which clause failed but not why, so reproducing the
     /// failure meant instrumenting the call and running again.
-    ContractViolation {
-        kind: &'static str,
-        function: String,
-        clause_index: usize,
-        bindings: Vec<(String, String)>,
-        /// ALLOC-CONTRACT-SUGAR: what the clause was actually about,
-        /// when the clause is one the compiler wrote. A budget
-        /// violation reports the amount and the allowance ("retained
-        /// 128 bytes, budget 0 bytes") — the numbers a plain bool
-        /// predicate cannot give a reader.
-        detail: Option<String>,
-    },
+    /// Boxed because it is the widest variant by some way, and
+    /// `InterpreterError` is the `Err` of nearly every function in the
+    /// crate: DEBUG-OBS D5 added a backtrace and a position to it, and
+    /// the whole enum grew with it.
+    ContractViolation(Box<ContractViolation>),
     /// Explicit user-triggered abort via the `panic("msg")` builtin.
     /// The message is exactly what the user passed.
     ///
@@ -67,6 +60,29 @@ pub struct CallFrame {
     pub call_site: Option<SourceLocation>,
 }
 
+/// A `requires` / `ensures` clause that was false at run time.
+#[derive(Debug)]
+pub struct ContractViolation {
+    pub kind: &'static str,
+    pub function: String,
+    pub clause_index: usize,
+    pub bindings: Vec<(String, String)>,
+    /// ALLOC-CONTRACT-SUGAR: what the clause was actually about, when
+    /// the clause is one the compiler wrote. A budget violation
+    /// reports the amount and the allowance ("retained 128 bytes,
+    /// budget 0 bytes") — the numbers a plain bool predicate cannot
+    /// give a reader.
+    pub detail: Option<String>,
+    /// DEBUG-OBS D5: how the call that broke the contract was reached.
+    /// Rendered by the same code a `Panic` uses — a reader asking
+    /// "which call passed the bad argument" is asking the same
+    /// question either way, and until this it was the one runtime
+    /// failure that answered it for panics only.
+    pub backtrace: Vec<CallFrame>,
+    /// Where the failing clause is.
+    pub location: Option<SourceLocation>,
+}
+
 impl fmt::Display for InterpreterError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -94,7 +110,8 @@ impl fmt::Display for InterpreterError {
             InterpreterError::IndexOutOfBounds { index, size } => {
                 write!(f, "Array index {index} out of bounds for array of size {size}")
             }
-            InterpreterError::ContractViolation { kind, function, clause_index, bindings, detail } => {
+            InterpreterError::ContractViolation(v) => {
+                let ContractViolation { kind, function, clause_index, bindings, detail, .. } = &**v;
                 match detail {
                     Some(detail) => write!(
                         f,

@@ -996,6 +996,44 @@ pub fn execute_program(program: &File, string_interner: &DefaultStringInterner, 
     execute_entry(program, string_interner, source_code, filename, main_function)
 }
 
+/// As [`execute_program`], but handing back the failure in both shapes
+/// (DEBUG-OBS D5).
+///
+/// `execute_program` renders and drops the structure; a driver that
+/// might be asked for `--diagnostics=json` needs it kept.
+pub fn execute_program_reporting(
+    program: &File,
+    string_interner: &DefaultStringInterner,
+    source_code: Option<&str>,
+    filename: Option<&str>,
+) -> Result<RcObject, (String, Box<Diagnostic>)> {
+    let main_function = match find_main_function(program, string_interner) {
+        Ok(func) => func,
+        Err(e) => {
+            let text = format!("Runtime Error: {e}");
+            let diagnostic = Diagnostic::message_only(text.clone(), filename.unwrap_or("<input>"));
+            return Err((text, Box::new(diagnostic)));
+        }
+    };
+    execute_entry_with_values(
+        program,
+        string_interner,
+        source_code,
+        filename,
+        main_function,
+        None,
+        FastPaths::Allow,
+    )
+    .map_err(|e| match e {
+        EntryError::Rendered { text, diagnostic } => (text, diagnostic),
+        EntryError::Raw(err) => {
+            let text = format!("Runtime Error: {err}");
+            let diagnostic = Diagnostic::message_only(text.clone(), filename.unwrap_or("<input>"));
+            (text, Box::new(diagnostic))
+        }
+    })
+}
+
 /// Run `main` on the **tree-walking evaluator only**, skipping the JIT
 /// and IR VM fast paths [`execute_program`] would take.
 ///
@@ -1068,14 +1106,28 @@ fn execute_entry(
 /// Error from [`execute_entry_with_values`]: either an already-rendered
 /// diagnostic, or the raw interpreter error when the caller asked for it.
 pub enum EntryError {
-    Rendered(String),
+    /// The text a user sees, paired with the same failure in the shape
+    /// a tool consumes (DEBUG-OBS D5). Both are built at the point of
+    /// failure because that is the only place the backtrace is still
+    /// on the stack.
+    Rendered { text: String, diagnostic: Box<Diagnostic> },
     Raw(Box<InterpreterError>),
 }
 
 impl EntryError {
+    /// A failure with nothing structured behind it — setup errors that
+    /// happen before any user code runs, so there is no position and
+    /// no backtrace to report.
+    fn plain(text: String) -> Self {
+        EntryError::Rendered {
+            diagnostic: Box::new(Diagnostic::message_only(text.clone(), "<input>")),
+            text,
+        }
+    }
+
     fn either(self) -> String {
         match self {
-            EntryError::Rendered(s) => s,
+            EntryError::Rendered { text, .. } => text,
             EntryError::Raw(e) => format!("Runtime Error: {e}"),
         }
     }
@@ -1111,7 +1163,7 @@ fn execute_entry_with_values(
 
     let mut string_interner_mut = string_interner.clone();
     let shared = SharedRunData::new(program, &mut string_interner_mut)
-        .map_err(|e| EntryError::Rendered(format!("Runtime Error: {e}")))?;
+        .map_err(|e| EntryError::plain(format!("Runtime Error: {e}")))?;
 
     let mut eval = EvaluationContext::new_with_shared(
         &program.statement,
@@ -1136,13 +1188,13 @@ fn execute_entry_with_values(
         let value = match value_result {
             Ok(crate::evaluation::EvaluationResult::Value(v)) => v.into_rc(),
             Ok(_) => {
-                return Err(EntryError::Rendered(format!(
+                return Err(EntryError::plain(format!(
                     "Const initializer for `{}` produced a non-value result",
                     string_interner.resolve(c.name).unwrap_or("<unknown>")
                 )));
             }
             Err(e) => {
-                return Err(EntryError::Rendered(format!(
+                return Err(EntryError::plain(format!(
                     "Const initializer for `{}` failed: {e}",
                     string_interner.resolve(c.name).unwrap_or("<unknown>")
                 )));
@@ -1212,6 +1264,11 @@ fn execute_entry_with_values(
                 InterpreterError::Panic { location, backtrace, .. } => {
                     (*location, backtrace.as_slice())
                 }
+                // DEBUG-OBS D5: a contract violation is a runtime
+                // failure like any other, and the question it leaves —
+                // which call passed the argument that broke it — is
+                // the one a backtrace answers.
+                InterpreterError::ContractViolation(v) => (v.location, v.backtrace.as_slice()),
                 _ => (None, [].as_slice()),
             };
             let formatted_error = if let (Some(source), Some(file)) = (source_code, filename) {
@@ -1225,8 +1282,63 @@ fn execute_entry_with_values(
             } else {
                 format!("Runtime Error: {runtime_error}{}", render_backtrace(backtrace))
             };
-            Err(EntryError::Rendered(formatted_error))
+            let diagnostic = runtime_diagnostic(
+                &runtime_error,
+                location,
+                backtrace,
+                program,
+                filename.unwrap_or("<input>"),
+            );
+            Err(EntryError::Rendered {
+                text: formatted_error,
+                diagnostic: Box::new(diagnostic),
+            })
         }
+    }
+}
+
+/// The same runtime failure, in the shape a tool consumes
+/// (DEBUG-OBS D5, 実測 8).
+///
+/// Until this, `--diagnostics=json` covered parse and type-check
+/// failures only — the one thing left in plain text was the failure
+/// that happens while the program runs, which is the one an LLM loop
+/// most often has to read.
+fn runtime_diagnostic(
+    error: &InterpreterError,
+    location: Option<frontend::type_checker::SourceLocation>,
+    backtrace: &[crate::error::CallFrame],
+    program: &File,
+    entry_file: &str,
+) -> Diagnostic {
+    let code = match error {
+        InterpreterError::ContractViolation(_) => {
+            frontend::diagnostic::codes::CONTRACT_VIOLATION
+        }
+        _ => frontend::diagnostic::codes::RUNTIME_PANIC,
+    };
+    // The failure's own file, which is not necessarily the entry one:
+    // a panic inside `core/std/option.t` belongs to option.t (D2).
+    let file = location
+        .and_then(|loc| program.source_map.path(loc.file))
+        .filter(|path| !path.is_empty())
+        .unwrap_or(entry_file)
+        .to_string();
+    Diagnostic {
+        severity: frontend::diagnostic::Severity::Error,
+        code,
+        message: error.to_string(),
+        file,
+        span: location.map(frontend::diagnostic::Span::from),
+        origin_module: None,
+        suggestions: Vec::new(),
+        backtrace: backtrace
+            .iter()
+            .map(|frame| frontend::diagnostic::BacktraceFrame {
+                function: frame.function.clone(),
+                line: frame.call_site.as_ref().map(|loc| loc.line),
+            })
+            .collect(),
     }
 }
 
@@ -1393,7 +1505,7 @@ pub fn execute_function_with_values(
     .map(crate::value::Value::from)
         .map_err(|e| match e {
             EntryError::Raw(err) => *err,
-            EntryError::Rendered(msg) => InterpreterError::InternalError(msg),
+            EntryError::Rendered { text, .. } => InterpreterError::InternalError(text),
         })
 }
 
@@ -1620,20 +1732,28 @@ pub fn run_source(
     #[cfg(feature = "jit")]
     let exec_result = jit::with_jit_override(options.jit, || {
         crate::evaluation::extern_io::set_program_args(options.args.clone());
-        execute_program(&program, session.string_interner(), Some(source), Some(filename))
+        execute_program_reporting(&program, session.string_interner(), Some(source), Some(filename))
     });
     #[cfg(not(feature = "jit"))]
     let exec_result = {
         let _ = options.jit;
         crate::evaluation::extern_io::set_program_args(options.args.clone());
-        execute_program(&program, session.string_interner(), Some(source), Some(filename))
+        execute_program_reporting(&program, session.string_interner(), Some(source), Some(filename))
     };
 
     let result = match exec_result {
         Ok(r) => r,
-        Err(diagnostic) => {
-            formatter.display_runtime_error(&diagnostic);
-            return Err(diagnostic);
+        Err((text, diagnostic)) => {
+            // DEBUG-OBS D5 (実測 8): a runtime failure goes down the
+            // same channel a type error does. It was the last thing
+            // `--diagnostics=json` did not cover, and the one an LLM
+            // loop reads most.
+            if options.diagnostics_json {
+                emit_diagnostics_json(std::slice::from_ref(&*diagnostic));
+            } else {
+                formatter.display_runtime_error(&text);
+            }
+            return Err(text);
         }
     };
     let exit_code = match &*result.borrow() {

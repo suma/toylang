@@ -62,6 +62,7 @@ fn inst_supported(kind: &InstKind) -> bool {
         | InstKind::UnaryOp { .. }
         | InstKind::LoadLocal(_)
         | InstKind::StoreLocal { .. }
+        | InstKind::Backtrace
         | InstKind::Call { .. }
         | InstKind::CallStruct { .. }
         | InstKind::CallTuple { .. }

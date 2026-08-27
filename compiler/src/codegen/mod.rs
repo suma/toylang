@@ -302,6 +302,8 @@ pub(crate) struct CodegenSession<M: Module> {
     /// DEBUG-OBS D3: `toy_panic_at(text)` — write a pre-rendered
     /// diagnostic to stderr and exit.
     rt_panic_at: cranelift_module::FuncId,
+    /// DEBUG-OBS D5: `toy_backtrace_str() -> str`.
+    rt_backtrace_str: cranelift_module::FuncId,
     rt_prof_force_counting: cranelift_module::FuncId,
     // MEMORY_PROFILING M3 residual: register an allocator's layout for
     // the report. `(name: str-ptr, managed, live, free_blocks, largest)`
@@ -715,6 +717,13 @@ impl<M: Module> CodegenSession<M> {
         panic_at_sig.params.push(AbiParam::new(types::I64));
         let rt_panic_at = declare_helper(&mut module, "toy_panic_at", &panic_at_sig)?;
 
+        // DEBUG-OBS D5. `toy_backtrace_str()` returns a toylang `str`
+        // built from the shadow stack.
+        let mut backtrace_sig = Signature::new(call_conv);
+        backtrace_sig.returns.push(AbiParam::new(types::I64));
+        let rt_backtrace_str =
+            declare_helper(&mut module, "toy_backtrace_str", &backtrace_sig)?;
+
         // MEMORY_PROFILING M3 residual. `toy_record_allocator_layout`
         // takes the str name as an i64 pointer (the `[bytes][NUL][u64
         // len]` layout, NUL-terminated so C can read it as `const char*`)
@@ -879,6 +888,7 @@ impl<M: Module> CodegenSession<M> {
             rt_prof_stat,
             rt_panic_alloc_budget,
             rt_panic_at,
+            rt_backtrace_str,
             rt_prof_force_counting,
             rt_record_allocator_layout,
             rt_str_concat,
@@ -1757,6 +1767,7 @@ struct RuntimeRefs {
     prof_stat: cranelift_codegen::ir::FuncRef,
     panic_alloc_budget: cranelift_codegen::ir::FuncRef,
     panic_at: cranelift_codegen::ir::FuncRef,
+    backtrace_str: cranelift_codegen::ir::FuncRef,
     prof_force_counting: cranelift_codegen::ir::FuncRef,
     record_allocator_layout: cranelift_codegen::ir::FuncRef,
     pow: cranelift_codegen::ir::FuncRef,

@@ -350,6 +350,12 @@ impl<const N: usize> StackBuf<N> {
     const fn new() -> Self {
         StackBuf { buf: [0; N], len: 0 }
     }
+    /// The bytes as text. Everything written here is ASCII from
+    /// `format_args!` on integers, so the conversion cannot fail.
+    fn as_str(&self) -> &str {
+        core::str::from_utf8(self.as_slice()).unwrap_or("")
+    }
+
     fn as_slice(&self) -> &[u8] {
         &self.buf[..self.len]
     }
@@ -838,20 +844,35 @@ pub extern "C" fn toy_write_backtrace() {
 }
 
 fn write_backtrace() {
+    render_backtrace_into(&mut ErrSink, true);
+}
+
+/// Render the shadow stack into `sink`, innermost first.
+///
+/// Folding and the head/tail budget are hand-copied from
+/// `compiler_ir::render_backtrace` — this crate is deliberately
+/// dependency-free, the same pairing `format_alloc_budget_violation`
+/// already has. `compiler/tests/consistency/diagnostics.rs` pins the
+/// two against each other by comparing stderr across engines.
+fn render_backtrace_into(sink: &mut dyn BacktraceSink, leading_newline: bool) {
     let depth = unsafe { toy_shadow_depth } as usize;
     if depth == 0 {
         return;
     }
     let shown = if depth > TOY_SHADOW_CAP { TOY_SHADOW_CAP } else { depth };
     let lost = depth - shown;
-    err_write("\n   = backtrace (innermost first):");
+    // The diagnostic path needs the blank separator; the `str` a
+    // program asks for does not, and the interpreter's does not have
+    // one either.
+    sink.put(if leading_newline {
+        "\n   = backtrace (innermost first):"
+    } else {
+        "   = backtrace (innermost first):"
+    });
 
-    // Fold runs of the same frame, then apply the same head/tail
-    // budget the other engines use. Both passes walk innermost-first.
-    let mut folded_index = 0usize;
+    // Two walks: the first counts the folded lines so the elision
+    // count is known before anything is written, the second emits.
     let mut i = 0usize;
-    // First pass: how many folded lines there will be, so the elision
-    // count is known before anything is written.
     let mut total = 0usize;
     while i < shown {
         let mut run = 1;
@@ -862,6 +883,7 @@ fn write_backtrace() {
         i += run;
     }
     let elided = total.saturating_sub(BACKTRACE_HEAD + BACKTRACE_TAIL);
+    let mut folded_index = 0usize;
     i = 0;
     while i < shown {
         let mut run = 1;
@@ -872,11 +894,11 @@ fn write_backtrace() {
             let mut buf = StackBuf::<64>::new();
             if core::fmt::write(&mut buf, format_args!("\n       ... {elided} frames elided")).is_ok()
             {
-                write_fd(2, buf.as_slice());
+                sink.put(buf.as_str());
             }
         }
         if elided == 0 || folded_index < BACKTRACE_HEAD || folded_index >= BACKTRACE_HEAD + elided {
-            write_frame_line(frame_at(depth, i), run);
+            write_frame_line(sink, frame_at(depth, i), run);
         }
         folded_index += 1;
         i += run;
@@ -889,7 +911,7 @@ fn write_backtrace() {
         )
         .is_ok()
         {
-            write_fd(2, buf.as_slice());
+            sink.put(buf.as_str());
         }
     }
 }
@@ -903,14 +925,14 @@ fn frame_at(depth: usize, i: usize) -> *const ToyFrameInfo {
     unsafe { toy_shadow_stack[slot] }
 }
 
-fn write_frame_line(frame: *const ToyFrameInfo, repeats: usize) {
+fn write_frame_line(sink: &mut dyn BacktraceSink, frame: *const ToyFrameInfo, repeats: usize) {
     if frame.is_null() {
         return;
     }
     let line = unsafe { (*frame).line };
     let name = unsafe { (frame as *const u8).add(FRAME_NAME_OFFSET) };
-    err_write("\n       ");
-    unsafe { write_cstr_fd(2, name) };
+    sink.put("\n       ");
+    sink.put(unsafe { cstr_as_str(name) });
     let mut buf = StackBuf::<64>::new();
     let written = match (line, repeats) {
         (0, 1) => Ok(()),
@@ -919,7 +941,88 @@ fn write_frame_line(frame: *const ToyFrameInfo, repeats: usize) {
         (l, n) => core::fmt::write(&mut buf, format_args!(" (x{n}, called at line {l})")),
     };
     if written.is_ok() {
-        write_fd(2, buf.as_slice());
+        sink.put(buf.as_str());
+    }
+}
+
+/// # Safety
+/// `p` must point at a NUL-terminated UTF-8 string that outlives the
+/// borrow.
+unsafe fn cstr_as_str<'a>(p: *const u8) -> &'a str {
+    let mut len = 0usize;
+    while len < 1 << 20 && unsafe { *p.add(len) } != 0 {
+        len += 1;
+    }
+    unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(p, len)) }
+}
+
+/// DEBUG-OBS D5: the current backtrace as a toylang `str`.
+///
+/// `__builtin_backtrace()` lowers to a call here. The text is the same
+/// one a panic prints, so a program that reports its own failures says
+/// what the runtime would have.
+///
+/// The str layout is the one every compiled `str` uses —
+/// `[bytes][NUL][u64 len]`, with the pointer at the length — so the
+/// result flows through `print`, `concat` and the rest unchanged.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_backtrace_str() -> *const u8 {
+    // Two passes: the first measures, the second fills. A single
+    // generous allocation would be simpler and would truncate a deep
+    // stack, which is the one thing a backtrace must not do quietly.
+    let mut counter = ByteCounter { len: 0 };
+    render_backtrace_into(&mut counter, false);
+    let total = counter.len;
+    let base = unsafe { malloc(total + 1 + 8) };
+    if base.is_null() {
+        fatal("toy_backtrace_str: out of memory\n");
+    }
+    let mut writer = BufWriter { base, offset: 0, cap: total };
+    render_backtrace_into(&mut writer, false);
+    unsafe {
+        *base.add(total) = 0;
+        (base.add(total + 1) as *mut u64).write_unaligned(total as u64);
+    }
+    unsafe { base.add(total + 1) }
+}
+
+/// Somewhere backtrace text can go: stderr, a length, or a buffer.
+///
+/// One renderer, three destinations — the alternative is three copies
+/// of the folding rules, which is how the engines' diagnostics drifted
+/// apart before D0.
+trait BacktraceSink {
+    fn put(&mut self, s: &str);
+}
+
+struct ErrSink;
+impl BacktraceSink for ErrSink {
+    fn put(&mut self, s: &str) {
+        err_write(s);
+    }
+}
+
+struct ByteCounter {
+    len: usize,
+}
+impl BacktraceSink for ByteCounter {
+    fn put(&mut self, s: &str) {
+        self.len += s.len();
+    }
+}
+
+struct BufWriter {
+    base: *mut u8,
+    offset: usize,
+    cap: usize,
+}
+impl BacktraceSink for BufWriter {
+    fn put(&mut self, s: &str) {
+        let n = s.len().min(self.cap - self.offset);
+        if n > 0 {
+            unsafe { memcpy(self.base.add(self.offset), s.as_ptr(), n) };
+            self.offset += n;
+        }
     }
 }
 

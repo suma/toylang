@@ -2113,6 +2113,19 @@ impl<'a> Checker<'a> {
         match expr {
             Expr::BuiltinCall(func, args) => {
                 match func {
+                    // DEBUG-OBS D5: `__builtin_backtrace()` reads the
+                    // shadow stack, which this JIT keeps but has no
+                    // str-returning helper for. Declining sends the
+                    // program to the tree-walker, which answers it —
+                    // a silent fallback, like the rest of this JIT's
+                    // gaps, and not an observable difference.
+                    BuiltinFunction::Backtrace => {
+                        self.reject(|| {
+                            "__builtin_backtrace is not supported in the interpreter JIT"
+                                .to_string()
+                        });
+                        None
+                    }
                     BuiltinFunction::Panic => {
                         // `panic("literal")` is the only form the JIT can lower:
                         // the message has to be a parse-time `Expr::String(sym)`

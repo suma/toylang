@@ -140,6 +140,15 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
                 }
             }
         }
+        // DEBUG-OBS D5: the VM has a call stack of its own, so the
+        // answer is the same walk the panic path makes.
+        InstKind::Backtrace => {
+            let text = vm.backtrace_text();
+            let addr = host.alloc_str_bytes(text.trim_start_matches('\n').as_bytes());
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
+        }
         InstKind::ConstStrBytes { bytes } => {
             let addr = host.alloc_str_bytes(bytes);
             if let Some((vid, _)) = inst.result {

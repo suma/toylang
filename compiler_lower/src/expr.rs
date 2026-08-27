@@ -2000,6 +2000,7 @@ impl<'a> FunctionLower<'a> {
             | BuiltinFunction::DefaultAllocator => self.lower_builtin_allocator_and_memory(func, args),
             BuiltinFunction::SizeOf
             | BuiltinFunction::ToString
+            | BuiltinFunction::Backtrace
             | BuiltinFunction::Format => self.lower_builtin_reflection(func, args),
             BuiltinFunction::Panic
             | BuiltinFunction::Assert
@@ -2419,6 +2420,12 @@ impl<'a> FunctionLower<'a> {
                     )
                 })?;
                 Ok(self.emit(InstKind::Const(crate::ir::Const::U64(size)), Some(Type::U64)))
+            }
+            BuiltinFunction::Backtrace => {
+                // DEBUG-OBS D5. The engines each read their own stack;
+                // the IR only says "ask for it here".
+                expect_args(args, 0, "__builtin_backtrace takes no arguments")?;
+                Ok(self.emit(InstKind::Backtrace, Some(Type::Str)))
             }
             BuiltinFunction::ToString => {
                 // STR-INTERP-AOT: lower to `InstKind::ToString`,

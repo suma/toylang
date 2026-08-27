@@ -135,6 +135,25 @@ pub struct Diagnostic {
     /// `file`. Consumers must not resolve the span against `file`.
     pub origin_module: Option<String>,
     pub suggestions: Vec<Suggestion>,
+    /// How the failure was reached, innermost first (DEBUG-OBS D5).
+    ///
+    /// Only a *runtime* failure has one — a type error is not reached,
+    /// it is found. Empty for everything else, and omitted from the
+    /// JSON entirely so the shape a tool already parses is unchanged.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub backtrace: Vec<BacktraceFrame>,
+}
+
+/// One rendered backtrace frame, in the shape a tool consumes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct BacktraceFrame {
+    /// What the user calls the function — `S::boom`, not a mangled name.
+    pub function: String,
+    /// The line the call was written on. Absent for the entry
+    /// function, which nothing called.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub line: Option<u32>,
 }
 
 impl Diagnostic {
@@ -150,6 +169,7 @@ impl Diagnostic {
             span: None,
             origin_module: None,
             suggestions: Vec::new(),
+            backtrace: Vec::new(),
         }
     }
 
@@ -169,6 +189,7 @@ impl Diagnostic {
             span: error.location.map(Span::from),
             origin_module: error.origin_module.clone(),
             suggestions: error.suggestions.clone(),
+            backtrace: Vec::new(),
         }
     }
 
@@ -187,6 +208,7 @@ impl Diagnostic {
             span: Some(Span::from(error.location)),
             origin_module: None,
             suggestions: Vec::new(),
+            backtrace: Vec::new(),
         }
     }
 }
@@ -229,6 +251,12 @@ pub mod codes {
     /// a constant call that breaks its own precondition
     /// (COMPILE-TIME-EVAL C4). Reported as a warning for one release.
     pub const CONTRACT_PURITY: &str = "E0018";
+    /// The program stopped while running: a `panic`, a failed
+    /// `assert`, or a RUNTIME-TRAP guard (DEBUG-OBS D5).
+    pub const RUNTIME_PANIC: &str = "E0019";
+    /// A `requires` / `ensures` clause was false at run time
+    /// (DEBUG-OBS D5).
+    pub const CONTRACT_VIOLATION: &str = "E0020";
 
     /// Every code, in order. `crate::explain` is checked against this
     /// list by a test, so a new code cannot ship without prose.
@@ -251,6 +279,8 @@ pub mod codes {
         NEVER_ALLOCATES,
         CONST_FN,
         CONTRACT_PURITY,
+        RUNTIME_PANIC,
+        CONTRACT_VIOLATION,
     ];
 }
 

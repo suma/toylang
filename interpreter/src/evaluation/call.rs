@@ -528,13 +528,19 @@ impl EvaluationContext<'_> {
             let cond_obj = self.unwrap_value(cond_res)?;
             let passed = cond_obj.borrow().try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
             if !passed {
-                return Err(InterpreterError::ContractViolation {
+                let mut backtrace = self.call_stack.clone();
+                backtrace.reverse();
+                return Err(InterpreterError::ContractViolation(Box::new(
+                    crate::error::ContractViolation {
                     detail: None,
                     kind: "requires",
                     function: self.string_interner.resolve(fn_name).unwrap_or("<unknown>").to_string(),
                     clause_index: idx,
                     bindings: self.capture_contract_bindings(params, false),
-                });
+                    backtrace,
+                    location: self.expr_location(cond),
+                    },
+                )));
             }
         }
         Ok(())
@@ -591,13 +597,19 @@ impl EvaluationContext<'_> {
                     }
                     _ => None,
                 };
-                return Err(InterpreterError::ContractViolation {
+                let mut backtrace = self.call_stack.clone();
+                backtrace.reverse();
+                return Err(InterpreterError::ContractViolation(Box::new(
+                    crate::error::ContractViolation {
                     detail,
                     kind: "ensures",
                     function: self.string_interner.resolve(fn_name).unwrap_or("<unknown>").to_string(),
                     clause_index: idx,
                     bindings: self.capture_contract_bindings(params, true),
-                });
+                    backtrace,
+                    location: self.expr_location(cond),
+                    },
+                )));
             }
         }
         Ok(())

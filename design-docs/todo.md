@@ -1231,10 +1231,13 @@
   - **A5-P4: `Box<dyn Trait>`** — owned trait object + `Vec<Box<dyn Trait>>`。**前提**: `Box<T>` 自体が未実装。
   - **A5 残作業** — `&dyn Trait` の return / struct field 位置 (REF-Stage-2 の escape rule が阻む)、`dyn A + B`、`dyn Iterator<T>`、generic trait の default body 内での `T` 参照。
 - **`must_use` / unused-Result 警告** ★★ — `?` の補完。**警告の emit 経路が無い**ので (`Severity::Warning` は型としては存在するが未使用)、そこから作る必要がある。
-- **CLOSURE-CAPTURE: capture 意味論の拡張** ★★ — 現状は**生成時スナップショット
-  のみ**なので「カウンタを閉じ込めて更新する」基本形が書けない。`&mut` capture に
-  するか明示 capture list にするかは言語の性格を決める判断なので、closure の
-  利用が増える前に決めたい。
+- **CLOSURE-CAPTURE: capture 意味論** ★★ — 設計は
+  [`CLOSURE_CAPTURE.md`](CLOSURE_CAPTURE.md) (現状調査 7 件 + 論点 6 +
+  Phase E0〜E6)。**捕捉した `var` への代入は今日どの実行系でも正しくない** —
+  compiled 系 4 つは黙って誤答し、tree-walker は「`var` を `val` だ」と
+  嘘の理由で止まる (実測 1)。capture mode が値の形でも変わる (実測 3)。
+  方針は「まず代入を診断して黙った誤答を止め、その上で `var` の可変捕捉を
+  既定にする」(論点 1 の A→B)。明示 capture list は採らない。
 - **slice 型 `&[T]`** ★ — 配列 borrow を first-class に。中〜大。
 - **const generics** ★ — `struct Array<T, const N: usize>`。大規模。
 

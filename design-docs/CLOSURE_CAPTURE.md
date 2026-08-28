@@ -1,0 +1,363 @@
+# CLOSURE_CAPTURE.md — closure が外側の束縛をどう掴むかを決める
+
+`ALLOCATOR_PLAN.md` / `MEMORY_PROFILING.md` / `DEBUG_OBSERVABILITY.md` と
+同じ手順 (現状調査 → 論点決定 → Phase 分割 → MVP 刻みで landing) で、
+closure の capture 意味論を設計する。
+
+**きっかけは機能の不足ではなく、黙った誤答である。** 「カウンタを閉じ込めて
+更新する」という closure の基本形が、今日 **5 実行系のどれでも正しく動かず、
+かつ 4 つは何も言わずに間違った答えを返す** (実測 1)。todo.md が
+CLOSURE-CAPTURE を ★★ で「closure の利用が増える前に決めたい」と書いていたのは
+この状態を指している。
+
+## Status snapshot
+
+| Phase | Scope | Status |
+|---|---|---|
+| **E0** | 目標文言の固定 + 5 レーンを pin する consistency テスト | 未着手 |
+| **E1** | 捕捉した束縛への代入を診断する (黙った誤答を止める) | 未着手 |
+| **E2** | capture mode の形依存を解消する (scalar コピー / compound alias) | 未着手 |
+| **E3** | 直接呼び出しの closure を可変捕捉にする (env の sync-in / sync-out) | 未着手 |
+| **E4** | HOF / escape する closure の可変捕捉 | 未着手 |
+| **E5** | compiled レーンの compound capture と診断の統一 | 未着手 |
+| **E6** | docs (`docs/language.md` の Captures 節) | 未着手 |
+
+---
+
+## なぜ設計文書が要るか
+
+理由は 2 つあり、どちらも「先に実装すると戻れない」種類である。
+
+1. **capture mode は言語の性格を決める判断**である。スナップショットか、
+   参照捕捉か、明示 capture list か。後から変えると、それまでに書かれた
+   closure の意味が変わる。今は `interpreter/example/` に closure を使う
+   プログラムが 5 本しかないので、決めるなら今が最も安い。
+2. **同じ意味論を 5 実行系が独立に実装している**。capture は
+   tree-walker (`Object::Closure { captures }`)、compiled 側
+   (`MakeClosure` + env slot)、interpreter JIT の 3 実装があり、
+   実測 1 のとおり**既に食い違っている**。片方だけ直すと、
+   数値が合わない状態が残る。
+
+---
+
+## 現状調査 (2026-08-28 実測)
+
+プローブは `fn() -> u64 { count = count + 1u64  count }` を軸に 17 本。
+レーンは IR VM (既定) / tree-walker / interpreter JIT / compiler JIT / AOT。
+tree-walker は `INTERPRETER_CONTRACTS=pre` で IR VM を `NotEligible` に
+落として観測した (半端な契約設定は IR で表現できないので tree-walker に回る)。
+
+### 実測 1: 捕捉した `var` への代入は、どの実行系も正しくない
+
+```rust
+fn main() -> u64 {
+    var count: u64 = 0u64
+    val bump = fn() -> u64 { count = count + 1u64  count }
+    println(bump())   # 期待 1
+    println(bump())   # 期待 2
+    println(count)    # 期待 2
+    0u64
+}
+```
+
+| 実行系 | 出力 | 何が起きているか |
+|---|---|---|
+| IR VM | `1` / `1` / `0` | env にコピーした値を書き換えて捨てる |
+| interpreter JIT | `1` / `1` / `0` | 同上 |
+| compiler JIT | `1` / `1` / `0` | 同上 |
+| AOT | `1` / `1` / `0` | 同上 |
+| tree-walker | **実行時エラー** | `Cannot assign to immutable variable: Variable count already defined as immutable (val)` |
+
+**正しい実行系が 1 つも無い。** しかも 2 通りの間違え方をしている:
+
+- compiled 系 4 つは**黙って誤答する**。型検査も通り、警告も出ず、
+  `--all-backends` は「all 3 backends agree」と言う (比較対象に
+  tree-walker が居ないため)。
+- tree-walker は実行時に**嘘の理由で**止まる。`count` は `var` で宣言されて
+  いるのに「immutable (val) として定義済み」と言う。これは capture を
+  `Environment::set_val` で束縛している (`interpreter/src/evaluation/call.rs:1025`)
+  ことの副作用で、ユーザの書いた `var` / `val` とは無関係である。
+
+### 実測 2: pin する仕組みは既にあり、この場合を pin していないだけ
+
+`assert_consistent` は tree-walker を第 1 レーンに持つので、実測 1 の
+プログラムを渡すと**落ちる** (一時テストで確認: `interpreter execute
+(checked program): "Cannot assign to immutable variable: ..."`)。
+つまり検査機構の不足ではなく、**capture への書き込みが 1 件も pin されて
+いない**。`compiler/tests/consistency/dicts_closures.rs` の closure テストは
+Phase 5a/5b/6b/6c の**読み取り**だけを覆っている。
+
+### 実測 3: capture mode が値の形で変わる (scalar はコピー、compound は alias)
+
+```rust
+struct P { x: i64 }
+var p = P { x: 1i64 }
+val f = fn() -> i64 { p.x = p.x + 1i64  p.x }
+println(f())     # 2
+println(p.x)     # 2 ← 外側が書き換わっている
+```
+
+interpreter の 3 レーンは `2` / `2` を出す。**scalar の書き込みは消えるのに、
+compound のフィールド書き込みは外へ通る。** 意図的な実装ではある
+(`evaluate_closure_literal` の doc comment が「primitives はフレッシュな
+セル、compound は既存の Rc セルを保つ」と書いている) が、**ユーザから見ると
+「捕捉した値を書き換えられるかどうかが値の形で決まる」**という規則になる。
+`val b = a` が compound で alias になるのと同根だが、あちらは `b` を通した
+書き込みが見えるのが自然なのに対し、こちらは「消える / 消えない」の差になる。
+
+なお compiler JIT / AOT はこのプログラムをそもそもコンパイルできない
+(実測 5)。**「形で意味が変わる」上に「形でコンパイルできるかも変わる」。**
+
+### 実測 4: 型検査は捕捉した `val` への代入だけを捕まえる
+
+```rust
+val n: u64 = 1u64
+val f = fn() -> u64 { n = n + 1u64  n }
+```
+
+これは 5 レーンすべてが同じ型エラーで止まる:
+
+```
+[E0010] cannot assign to `n`: binding is immutable
+        (declared with `val`; use `var` to allow reassignment)
+```
+
+**つまり型検査器は closure 本体の中の代入を見ており、外側の束縛も解決できて
+いる。** 見ていないのは「その束縛が closure の外にある」という一点だけで、
+`var` なら通してしまう。`record_closure_captures`
+(`frontend/src/type_checker/expression.rs:1504`) が既に free variable を
+列挙し、`collect_closure_free_vars` は `Expr::Assign(Identifier, _)` も
+辿っている。**E1 に必要な足場は揃っている。**
+
+### 実測 5: compiled レーンは compound を捕捉できず、診断が形で変わる
+
+| 捕捉する値 | compiler JIT / AOT の言うこと |
+|---|---|
+| `str` | `compiler MVP: capturing closure can only capture primitive scalars; \`s\` has type Str` |
+| struct | **`undefined identifier \`p\`**` |
+| `Box<i64>` | `compiler MVP needs an explicit type annotation to instantiate generic struct \`Box\`` |
+
+`str` は名指しの MVP メッセージだが、struct は**capture の話だと分からない
+メッセージ**になる。原因は `lift_closure_binding` の capture ループが
+`bindings.get(cap_name)` に `Binding::Scalar` を期待し、compound 束縛は
+そこまで到達せず body の lowering 側で「未定義の識別子」として落ちること。
+interpreter は 3 レーンとも動くので、**同じプログラムが「動く / 意味不明な
+エラー」に割れる**。
+
+### 実測 6: 読み取りだけなら 5 レーン一致で、docs どおり
+
+- 捕捉した値の読み (`x + base`)、生成後に外側を書き換える
+  (`n = 99u64` の後に closure が古い値を見る)、ループ内生成、
+  シャドウイング、nested closure、HOF 経由 — **すべて 5 レーン一致**。
+- `docs/language.md:1861` の「Free variables in the body are captured at
+  closure-creation time」は、**読み取りについては正しい**。書き込みに
+  ついては何も書いていない。
+
+### 実測 7: escape する closure は今日動く
+
+```rust
+fn make() -> fn () -> u64 {
+    var n: u64 = 41u64
+    n = n + 1u64
+    fn() -> u64 { n }
+}
+```
+
+5 レーンとも `42`。**スナップショットだからこそ成り立っている** —
+参照捕捉に切り替えると、この形は「死んだスタックフレームのローカルを指す」
+ことになる。論点 2 が扱う。
+
+### 参考: 既にある足場
+
+- `record_closure_captures` / `collect_closure_free_vars` (型検査) —
+  free variable の列挙と、代入位置の識別子の走査。
+- `Object::Closure { captures: Vec<(Symbol, RcObject)> }` (tree-walker) —
+  capture ごとに `RcObject`。compound は Rc 共有、scalar は新しいセル。
+- `MakeClosure { target, captures, capture_tys }` + env slot (compiled) —
+  生成時に値を env に**コピー**し、body 入口で env から自分のローカルへ
+  ロードする。**書き戻す経路は無い。**
+- `CallWithSelfWriteback` (compiled) — `&mut self` メソッドが呼び出し後に
+  レジスタを書き戻す既存の仕組み。E3 が下敷きにできる。
+- `assert_consistent` の tree-walker レーン (実測 2)。
+
+---
+
+## 論点と決定
+
+### 論点 1: capture mode をどうするか
+
+| 案 | 内容 | 代償 |
+|---|---|---|
+| **A** | 現状維持 + 捕捉した束縛への代入を**型エラー**にする | カウンタは書けないまま。ただし黙った誤答は消える |
+| **B** | **参照捕捉** — 捕捉した `var` への書き込みが外に通る | escape の寿命問題 (論点 2)、compiled 側は env にアドレスか writeback が要る |
+| **C** | **明示 capture list** (`fn[&mut count]() -> u64 { ... }`) | 構文追加。書く側の負担。判断を毎回書かせる |
+| **D** | 形に依らず全部 alias (scalar も Rc セル共有) | tree-walker は簡単だが compiled 側のコストは B と同じ。かつ「読むだけ」の closure まで参照コストを払う |
+
+**決定 (案): A を先に landing し、その上で B を既定にする。C は採らない。**
+
+- A は**単独で価値がある** (実測 1 の黙った誤答が止まる) 上に、B の前提でも
+  ある。B が扱えない形 (escape、HOF 越え) は結局 A の診断に落ちるので、
+  A で書く診断は捨てにならない。
+- C を採らない理由は言語の既存の性格に合わないため。この言語は `&self` /
+  `&mut self` を**書かせる**が、capture については `val` / `var` という
+  既存の宣言が既に意図を持っている。`var` を捕捉して書けば可変捕捉、
+  `val` なら読み取り — 追加構文なしで同じ情報が取れる。
+- D を採らない理由は、**読むだけの closure に代価を払わせる**から。
+  実測 6 のとおり読み取りは 5 レーン一致で正しく動いており、
+  ここを触る理由が無い。
+
+### 論点 2: escape する closure の寿命をどうするか
+
+参照捕捉は「捕捉した束縛が生きている間だけ」健全である。実測 7 の
+`make()` は closure を返すので、参照捕捉にすると死んだフレームを指す。
+
+| 案 | 内容 |
+|---|---|
+| **箱にする** | 可変捕捉された束縛をヒープセルに移す (JS / Python 方式) |
+| **escape したら値捕捉に戻す** | escape する closure では書き込みを型エラーにする |
+
+**決定 (案): 後者。** この言語は `never_allocates` 契約とアロケーション
+カウンタを持ち、**確保が見えることを機能にしている**。closure を書いただけで
+黙ってヒープを掴む方式はその性格に反する (`never_allocates fn` の中で
+closure が書けなくなる)。
+
+escape の判定は保守的な構文規則で足りる: **`fn` の戻り値になる / struct
+フィールド・配列・dict・enum payload に入る closure は escape**、
+`val` に束縛してその関数の中で呼ぶだけなら escape しない。判定に迷う形は
+escape 側に倒す (診断が出るだけで、誤答にはならない)。
+
+### 論点 3: compiled 側で可変捕捉をどう表現するか
+
+env は生成時のコピーで、書き戻す経路が無い (実測 5 の参考)。2 通りある。
+
+| 案 | 内容 | 効く範囲 |
+|---|---|---|
+| **sync-in / sync-out** | 呼び出しの直前に外側ローカル → env、直後に env → 外側ローカル | 呼び出し位置から外側ローカルが見える場合のみ = **直接呼び出し** |
+| **アドレス捕捉** | env にローカルのアドレスを入れる (cranelift の explicit stack slot) | HOF 越しでも効く |
+
+**決定 (案): E3 で sync-in / sync-out、E4 でアドレス捕捉。** 前者は
+`CallWithSelfWriteback` という**既にある writeback の仕組みの隣**に置けて、
+アドレスを取る必要がない (= どのローカルをスタックに落とすかの判断が要らない)。
+そして実測で踏む形の大半は「`val f = fn() ...` を同じ関数の中で呼ぶ」である。
+HOF 越しの可変捕捉は E4 まで**診断で拒否**する — 黙って誤答するより良い。
+
+### 論点 4: 形依存 (実測 3) をどちらに寄せるか
+
+compound のフィールド書き込みが外に通るのは、**A の下では偶然の一貫性違反**に
+なる (scalar は診断で止まるのに compound は通る)。B が landing すれば
+「どちらも通る」で揃うので、E2 の仕事は**「E1 の診断を compound にも同じ
+規則で当てる」**ことになる。つまり `p.x = ...` も「捕捉した束縛への書き込み」
+として扱う。
+
+**移行の代償を明示しておく**: 実測 3 のプログラムは今日 interpreter で
+動いており、E1 で一度**エラーになる**。ただしこれは compiler JIT / AOT で
+コンパイルできないプログラムなので、**移植可能なコードは 1 行も失われない**。
+
+### 論点 5: 何を先に landing するか
+
+**黙った誤答を止めるのが最優先**で、機能追加はその後。順序は
+E0 (pin) → E1 (診断) → E2 (形依存) → E3 (直接呼び出しの可変捕捉) →
+E4 (HOF / escape) → E5 (compound capture) → E6 (docs)。
+
+E1 まで入れば「間違った答えを返すプログラムは書けない」状態になる。
+E3 まで入れば「カウンタを閉じ込めて更新する」が書ける。
+
+### 論点 6: 診断コードを新設するか
+
+新設する。既存の `E0010` (immutable への代入) は理由が違う —
+ユーザが `var` と書いているのに拒否するので、`E0010` の文言
+(「`var` を使え」) をそのまま出すと**直しようのない指示**になる。
+新コードは「なぜ書けないか」と「今どう書くか」を言う。
+
+---
+
+## Phase 分割
+
+### E0 — 文言の固定と比較レーン
+
+capture の書き込みについて、**何が起きるべきか**を先に表にして、5 レーンを
+突き合わせるテストを置く。DEBUG-OBS D0 と同じ形 (目標を決めてから実装する)。
+
+- `compiler/tests/consistency/dicts_closures.rs` に capture **書き込み**の
+  テスト群を新設 (現状は読み取りだけ)。E1 が landing するまでは
+  `#[ignore]` ではなく**現状を pin する** — 実測 1 の食い違いはテストとして
+  赤である方が正しいので、E0 は「E1 の期待値」を書いて E1 と同時に緑にする。
+- 目標表 (E1 後):
+
+  | プログラム | 期待 |
+  |---|---|
+  | 捕捉した `var` への代入 (直接呼び出し) | E3 まで: 新コードの型エラー / E3 以降: 動く |
+  | 捕捉した `val` への代入 | `E0010` (現状維持) |
+  | 捕捉した compound のフィールド代入 | 捕捉した `var` と同じ扱い |
+  | 読み取りのみ | 5 レーン一致 (現状維持) |
+
+### E1 — 捕捉した束縛への代入を診断する
+
+- 型検査器: closure 本体を検査する間、**代入対象が closure スコープの外で
+  解決されたか**を見る。`push_context` の境界を記録すれば足りる
+  (`record_closure_captures` が既に free variable を列挙している)。
+- 新診断コード + `--explain`。文言は「なぜ」と「今どう書くか」を持つ
+  (戻り値で返して呼び出し側で代入する / compound を返す)。
+- tree-walker の `set_val` 由来の嘘メッセージ
+  (`already defined as immutable (val)`) はこの経路が消えるので到達不能に
+  なるが、**内部エラーとして残す**か capture 専用の文言にするかは実装時に決める。
+
+### E2 — 形依存の解消
+
+- 実測 3 の compound フィールド書き込みを E1 と同じ規則に載せる。
+- `evaluate_closure_literal` の「primitive は新セル / compound は Rc 共有」
+  という分岐は、**capture が読み取り専用である限り観測できない**ので、
+  E3 まではそのままでよい。E2 が閉じるのは**診断の穴**。
+
+### E3 — 直接呼び出しの可変捕捉 (sync-in / sync-out)
+
+- 型検査: 捕捉した `var` への書き込みを許可 (escape しない closure に限る)。
+  escape 判定は論点 2 の保守的な構文規則。
+- tree-walker: capture を `set_val` ではなく可変束縛にし、呼び出し後に
+  外側へ書き戻す (capture セルを共有するだけでも足りるか実装時に判断)。
+- compiled: 呼び出しサイトで env に store → call → env から load して
+  外側ローカルへ store。`CallWithSelfWriteback` の隣。
+- interpreter JIT: 同形にできなければ silent fallback (既存の方針)。
+- `interpreter/example/closure_counter.t` を追加し、
+  `example_consistency` に自動で載せる。
+
+### E4 — HOF / escape 越しの可変捕捉
+
+- env にアドレスを持たせる。cranelift 側で対象ローカルを explicit stack
+  slot に落とす判断が要る。
+- escape する closure は**この Phase でも拒否のまま** (論点 2 の決定)。
+  E4 が広げるのは「別の関数に渡した closure が捕捉を書き換える」形だけ。
+- **着手条件**: 実プログラムで踏んでから。E3 で書ける範囲がどれだけ実用に
+  足りるかを見てから決める。
+
+### E5 — compiled レーンの compound capture
+
+- 実測 5 の「struct を捕捉すると `undefined identifier`」を、少なくとも
+  **capture の話だと分かる診断**にする (E5 の最低ライン)。
+- env に compound を載せる (leaf 展開) のは、`AOT-COMPOUND-PTR-RW` と
+  同じ手が使えるか実装時に確認する。
+
+### E6 — docs
+
+- `docs/language.md` の Captures 節に**書き込みの規則**を書く
+  (今は読み取りしか書いていない、実測 6)。
+- `CLAUDE.md` の closure の行を更新。
+
+---
+
+## 非目標
+
+- **capture list 構文** (論点 1 の C)。
+- **closure の生存期間を追う本物の借用検査**。escape は保守的な構文規則で
+  判定し、迷えば拒否する。
+- **可変捕捉のための暗黙のヒープ確保** (論点 2)。
+- **generic closure** — 既存の制限 (`generic-parameterised closures are not
+  yet supported`) はこの設計の範囲外。
+
+## 関連
+
+- [`todo.md`](todo.md) の CLOSURE-CAPTURE (★★)
+- [`DEBUG_OBSERVABILITY.md`](DEBUG_OBSERVABILITY.md) — 「5 レーンで同じことを
+  言う」ための足場 (`assert_consistent` / `assert_diagnostic_consistent`)
+- [`COMPILER_DEV_LOOP.md`](COMPILER_DEV_LOOP.md) — 横断的変更の確かめ方
+- `docs/language.md` の Closures / Captures 節 (正本)

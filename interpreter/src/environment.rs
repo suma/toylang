@@ -62,6 +62,34 @@ impl Environment {
         self.var.pop();
     }
 
+    /// How many scopes are open. CLOSURE-CAPTURE E3 records this when
+    /// a sharing closure is built, so the call can put the body back
+    /// in the scope it was written in.
+    pub fn scope_depth(&self) -> usize {
+        self.var.len()
+    }
+
+    /// Set the open scopes aside down to `depth`, returning them.
+    ///
+    /// A sharing closure reads and writes the scopes around the
+    /// closure literal, not the ones around the call. Those are the
+    /// same scopes plus whatever the caller opened in between —
+    /// hiding the difference for the duration of the call is what
+    /// makes the lookup lexical. Pass the result back to
+    /// [`Self::restore_scopes`]; the closure body's own pushes and
+    /// pops are balanced above it.
+    pub fn detach_scopes_above(&mut self, depth: usize) -> Vec<HashMap<DefaultSymbol, VariableValue>> {
+        if depth >= self.var.len() {
+            return Vec::new();
+        }
+        self.var.split_off(depth)
+    }
+
+    /// Put back what [`Self::detach_scopes_above`] set aside.
+    pub fn restore_scopes(&mut self, scopes: Vec<HashMap<DefaultSymbol, VariableValue>>) {
+        self.var.extend(scopes);
+    }
+
     pub fn set_val(&mut self, name: DefaultSymbol, value: Value) {
         if let Some(last) = self.var.last_mut() {
             last.insert(name,

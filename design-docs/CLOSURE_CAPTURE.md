@@ -387,9 +387,16 @@ capture の書き込みについて、**何が起きるべきか**を先に表�
   型検査器は同じ 1 回の走査で body ref の集合も返し、自分はそれを使う
   (visitor は closure node ではなく body を渡されるため)。
 - **tree-walker**: 共有 closure は **capture を 1 つも snapshot しない**。
-  呼び出しはそれを所有するスコープの上に新しいスコープを開くので、
   shadow しなければ名前は外へ解決し、`Environment::set_var` は
-  スコープスタックを遡って**その束縛のフレームに書く**。1 行で済んだ。
+  スコープスタックを遡って**その束縛のフレームに書く**。
+  ただしこれだけでは**動的スコープになる**: closure literal と呼び出しの
+  間で同名を宣言すると、その束縛が body を捕まえる。実測したところ
+  tree-walker が 199、コンパイル側 (外側ローカルのアドレスを持つので
+  正しい) が 101 に割れた。closure に**生成時のスコープ深さ**を持たせ、
+  呼び出しの間だけそれより上のスコープを退避する
+  (`detach_scopes_above` / `restore_scopes`) ことで lexical に戻した —
+  「closure は書かれた場所のスコープで走る」という定義そのもの。
+  `compiler/tests/consistency/dicts_closures.rs` に読み / 書き 2 件で pin。
 - **compiled (IR VM / compiler JIT / AOT)**: env スロットに値ではなく
   **`AddressOf(outer_local)`** を入れ (`address_taken_locals` に登録)、
   body 側は `Binding::RefScalar { pointee_ty, is_mut: true }` で束縛する。

@@ -979,13 +979,14 @@ impl EvaluationContext<'_> {
         field_name: DefaultSymbol,
         args: &[ExprRef],
     ) -> Result<EvaluationResult, InterpreterError> {
-        let (params, body, captures) = {
+        let (params, body, captures, shared_scope) = {
             let borrowed = callee.borrow();
             match &*borrowed {
-                Object::Closure { params, body, captures, .. } => (
+                Object::Closure { params, body, captures, shared_scope, .. } => (
                     params.clone(),
                     *body,
                     captures.clone(),
+                    *shared_scope,
                 ),
                 _ => return Err(InterpreterError::InternalError(
                     "evaluate_field_closure_call: callee was not a closure".to_string(),
@@ -1021,6 +1022,13 @@ impl EvaluationContext<'_> {
             };
             evaluated.push(v);
         }
+        // A closure reached through a struct field has been stored,
+        // so it is one that copies (CLOSURE-CAPTURE E3) — the match
+        // is here so the two dispatch paths stay the same shape.
+        let hidden = match shared_scope {
+            Some(depth) => self.environment.detach_scopes_above(depth),
+            None => Vec::new(),
+        };
         self.environment.enter_block();
         for (name, val) in &captures {
             self.environment
@@ -1045,6 +1053,7 @@ impl EvaluationContext<'_> {
             _ => self.evaluate(&body),
         };
         self.environment.exit_block();
+        self.environment.restore_scopes(hidden);
         if result.is_ok() {
             self.pop_frame();
         }
@@ -1073,13 +1082,14 @@ impl EvaluationContext<'_> {
         };
         // Snapshot closure parts under a borrow + drop pattern so we
         // can mutate the environment afterwards without reborrowing.
-        let (params, body, captures) = {
+        let (params, body, captures, shared_scope) = {
             let borrowed = callee.borrow();
             match &*borrowed {
-                Object::Closure { params, body, captures, .. } => (
+                Object::Closure { params, body, captures, shared_scope, .. } => (
                     params.clone(),
                     *body,
                     captures.clone(),
+                    *shared_scope,
                 ),
                 _ => return Err(InterpreterError::InternalError(
                     "evaluate_indirect_call: callee was not a closure".to_string(),
@@ -1120,6 +1130,17 @@ impl EvaluationContext<'_> {
             };
             evaluated.push(v);
         }
+        // CLOSURE-CAPTURE E3: a sharing closure runs in the scopes
+        // that were open where it was written, so anything the caller
+        // opened since is set aside for the call. Otherwise a name
+        // shadowed at the *call* site would reach into the body,
+        // which is dynamic scoping — a closure over `n` called inside
+        // a block declaring its own `n` answered with the block's.
+        // `captures` is empty for these, so the loop below is a no-op.
+        let hidden = match shared_scope {
+            Some(depth) => self.environment.detach_scopes_above(depth),
+            None => Vec::new(),
+        };
         // Open a fresh scope and bind captures + params. Args take
         // precedence (a param shadowing a captured name is fine) —
         // params are inserted last so they win on lookup.
@@ -1152,6 +1173,7 @@ impl EvaluationContext<'_> {
             _ => self.evaluate(&body),
         };
         self.environment.exit_block();
+        self.environment.restore_scopes(hidden);
         if result.is_ok() {
             self.pop_frame();
         }

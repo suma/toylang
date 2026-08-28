@@ -95,6 +95,16 @@ pub enum Object {
         return_ty: TypeDecl,
         body: ExprRef,
         captures: Vec<(DefaultSymbol, RcObject)>,
+        /// CLOSURE-CAPTURE E3: `Some(depth)` when this closure shares
+        /// the bindings it captured instead of copying them. Then
+        /// `captures` is empty and the body reads the enclosing
+        /// scopes directly — `depth` is how many scopes were open
+        /// when the closure was built, and the call hides everything
+        /// opened since. Without that a name shadowed at the *call*
+        /// site would capture the body, which is dynamic scoping: a
+        /// closure over `n` called inside a block that declares its
+        /// own `n` answered with the block's.
+        shared_scope: Option<usize>,
     },
 }
 

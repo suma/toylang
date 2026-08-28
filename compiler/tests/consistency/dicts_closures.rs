@@ -808,3 +808,46 @@ fn main() -> i64 {
         "expected the refusal to name the capture, got: {err}"
     );
 }
+
+// A shared capture resolves where the closure was written, not where
+// it is called. The tree-walker reached the sharing by simply not
+// shadowing the captured name in the call's scope, which made a name
+// declared between the literal and the call capture the body — this
+// program answered 199 there and 101 on the compiled engines, which
+// hold the outer local's address and were right.
+#[test]
+fn a_shared_capture_ignores_a_name_shadowed_at_the_call_site_round_trip() {
+    let src = r#"
+fn main() -> u64 {
+    var n: u64 = 1u64
+    val f = fn() -> u64 { n }
+    var total: u64 = f()
+    if true {
+        val n: u64 = 99u64
+        total = total + f() + n
+    }
+    total
+}
+"#;
+    assert_consistent(src, "closure_shared_capture_shadowed_at_call");
+}
+
+// The same question for a write: the closure must update the binding
+// it was written over, not one that happens to be nearer at the call.
+#[test]
+fn a_shared_write_reaches_the_binding_the_closure_was_written_over_round_trip() {
+    let src = r#"
+fn main() -> u64 {
+    var n: u64 = 0u64
+    val bump = fn() -> u64 { n = n + 1u64  n }
+    if true {
+        var n: u64 = 50u64
+        bump()
+        bump()
+        n = n + 1u64
+    }
+    n
+}
+"#;
+    assert_consistent(src, "closure_shared_write_shadowed_at_call");
+}

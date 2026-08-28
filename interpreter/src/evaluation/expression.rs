@@ -273,15 +273,20 @@ impl EvaluationContext<'_> {
         let mut seen: std::collections::HashSet<DefaultSymbol> =
             std::collections::HashSet::new();
         // CLOSURE-CAPTURE E3: a closure that shares its captures takes
-        // no snapshot at all. The call opens a scope on top of the one
-        // that owns them, so an unshadowed name resolves outward — a
-        // read sees the current value and `set_var` walks out to the
-        // frame that holds the binding and writes there. The type
-        // checker has already established that this closure is only
-        // ever called from that function, so the frame is present.
-        if !captures_by_ref {
+        // no snapshot at all. The call reopens the scopes that were
+        // open here and puts its own frame on top, so an unshadowed
+        // name resolves outward — a read sees the current value and
+        // `set_var` walks out to the frame that holds the binding and
+        // writes there. The depth recorded now is what makes that
+        // lookup lexical rather than dynamic. The type checker has
+        // already established that this closure is only ever called
+        // from this function, so those scopes are still open.
+        let shared_scope = if captures_by_ref {
+            Some(self.environment.scope_depth())
+        } else {
             self.collect_closure_captures(*body, &bound, &mut captures, &mut seen);
-        }
+            None
+        };
 
         let return_ty = return_type.clone().unwrap_or(TypeDecl::Unknown);
         let closure_obj = Object::Closure {
@@ -289,6 +294,7 @@ impl EvaluationContext<'_> {
             return_ty,
             body: *body,
             captures,
+            shared_scope,
         };
         Ok(EvaluationResult::Value(crate::value::Value::heap(closure_obj)))
     }

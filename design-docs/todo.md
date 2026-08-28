@@ -1236,8 +1236,8 @@
   (escape しない closure は捕捉した束縛を共有し、escape するものはコピーを
   持って書き込みが `E0021`)。残りは (a) **E4: HOF / escape 越しの可変捕捉** —
   寿命の判断が要るので「実プログラムで踏んでから」、(b) **E5: compiled
-  レーンの compound capture** — struct を捕捉すると `undefined identifier`
-  という capture と分からない診断で落ちる (interpreter は動く)。
+  レーンの compound capture** — 診断は直した (capture の話だと分かる文言に
+  なった) が、env に compound を載せるのは未着手。interpreter は動く。
 - **slice 型 `&[T]`** ★ — 配列 borrow を first-class に。中〜大。
 - **const generics** ★ — `struct Array<T, const N: usize>`。大規模。
 

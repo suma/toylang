@@ -759,17 +759,33 @@ impl<'a> FunctionLower<'a> {
     ) -> Result<Vec<(DefaultSymbol, Type)>, String> {
         use std::collections::HashSet;
         let mut bound: HashSet<DefaultSymbol> = params.iter().map(|(n, _)| *n).collect();
-        let mut out: Vec<(DefaultSymbol, Type)> = Vec::new();
+        let mut out: Vec<(DefaultSymbol, Option<Type>)> = Vec::new();
         let mut seen: HashSet<DefaultSymbol> = HashSet::new();
         self.walk_closure_for_captures(body_ref, &mut bound, &mut out, &mut seen);
-        Ok(out)
+        // CLOSURE-CAPTURE E5: a name the enclosing scope holds in a
+        // shape the env cannot carry used to be dropped here in
+        // silence, and the body then failed on it as an undefined
+        // identifier — a message with nothing to do with captures,
+        // for a program the interpreter runs.
+        let mut captures = Vec::with_capacity(out.len());
+        for (name, ty) in out {
+            let Some(ty) = ty else {
+                return Err(format!(
+                    "compiler MVP: capturing closure cannot capture `{}` — only primitive \
+                     scalars fit a closure env yet, and this binding is a compound",
+                    self.interner.resolve(name).unwrap_or("?")
+                ));
+            };
+            captures.push((name, ty));
+        }
+        Ok(captures)
     }
 
     fn walk_closure_for_captures(
         &self,
         expr_ref: &frontend::ast::ExprRef,
         bound: &mut std::collections::HashSet<DefaultSymbol>,
-        out: &mut Vec<(DefaultSymbol, Type)>,
+        out: &mut Vec<(DefaultSymbol, Option<Type>)>,
         seen: &mut std::collections::HashSet<DefaultSymbol>,
     ) {
         use frontend::ast::Expr;
@@ -778,17 +794,31 @@ impl<'a> FunctionLower<'a> {
             None => return,
         };
         let record = |s: DefaultSymbol,
-                          out: &mut Vec<(DefaultSymbol, Type)>,
+                          out: &mut Vec<(DefaultSymbol, Option<Type>)>,
                           seen: &mut std::collections::HashSet<DefaultSymbol>| {
             if bound.contains(&s) || seen.contains(&s) {
                 return;
             }
-            // Only record when the outer scope holds a Scalar
-            // binding for this name; other shapes are not valid
-            // capture sources in Phase 6.
-            if let Some(bindings::Binding::Scalar { ty, .. }) = self.bindings.get(&s) {
-                seen.insert(s);
-                out.push((s, *ty));
+            // A Scalar binding is a capture the env can carry. A
+            // compound one is recorded as `None` so the caller can
+            // say so; anything the outer scope does not bind at all
+            // is not a capture (a function name, a constant), and
+            // the body resolves it on its own.
+            match self.bindings.get(&s) {
+                Some(bindings::Binding::Scalar { ty, .. }) => {
+                    seen.insert(s);
+                    out.push((s, Some(*ty)));
+                }
+                Some(
+                    bindings::Binding::Struct { .. }
+                    | bindings::Binding::Tuple { .. }
+                    | bindings::Binding::Enum(_)
+                    | bindings::Binding::Array { .. },
+                ) => {
+                    seen.insert(s);
+                    out.push((s, None));
+                }
+                _ => {}
             }
         };
         match expr {
@@ -926,7 +956,7 @@ impl<'a> FunctionLower<'a> {
         &self,
         stmt: &frontend::ast::Stmt,
         bound: &mut std::collections::HashSet<DefaultSymbol>,
-        out: &mut Vec<(DefaultSymbol, Type)>,
+        out: &mut Vec<(DefaultSymbol, Option<Type>)>,
         seen: &mut std::collections::HashSet<DefaultSymbol>,
     ) {
         use frontend::ast::Stmt;

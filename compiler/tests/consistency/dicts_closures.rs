@@ -784,3 +784,27 @@ fn main() -> i64 {
 // as an undefined identifier (CLOSURE-CAPTURE E5). The interpreter
 // engines do run it. Pin it when E5 lands rather than recording the
 // gap as if it were the design.
+
+// CLOSURE-CAPTURE E5 (partial) — a compound capture still does not
+// fit a closure env, but it now says so. It used to be dropped from
+// the capture set in silence, and the body then failed on the name as
+// an undefined identifier: a message with nothing to do with
+// captures, for a program the interpreter runs.
+#[test]
+fn capturing_a_compound_reports_the_capture() {
+    let src = r#"
+struct P { x: i64, y: i64 }
+fn main() -> i64 {
+    val p = P { x: 3i64, y: 4i64 }
+    val f = fn() -> i64 { p.x + p.y }
+    f()
+}
+"#;
+    let Err(err) = compile_jit_lite(src) else {
+        panic!("a compound capture is still out of reach for the compiled engines");
+    };
+    assert!(
+        err.contains("capture `p`") && err.contains("compound"),
+        "expected the refusal to name the capture, got: {err}"
+    );
+}

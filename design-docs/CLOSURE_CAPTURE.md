@@ -19,7 +19,7 @@ CLOSURE-CAPTURE を ★★ で「closure の利用が増える前に決めたい
 | **E2** | capture mode の形依存を解消する (scalar コピー / compound alias) | ✅ 2026-08-28 |
 | **E3** | escape しない closure の捕捉を共有にする | ✅ 2026-08-28 |
 | **E4** | HOF / escape する closure の可変捕捉 | 未着手 |
-| **E5** | compiled レーンの compound capture と診断の統一 | 未着手 |
+| **E5** | compiled レーンの compound capture と診断の統一 | 🟡 診断のみ 2026-08-28 |
 | **E6** | docs (`docs/language.md` の Captures 節) | ✅ 2026-08-28 (E3 と同時) |
 
 ---
@@ -411,12 +411,16 @@ capture の書き込みについて、**何が起きるべきか**を先に表�
 - **着手条件**: 実プログラムで踏んでから。E3 で書ける範囲がどれだけ実用に
   足りるかを見てから決める。
 
-### E5 — compiled レーンの compound capture
+### E5 — compiled レーンの compound capture 🟡 (最低ラインのみ 2026-08-28)
 
-- 実測 5 の「struct を捕捉すると `undefined identifier`」を、少なくとも
-  **capture の話だと分かる診断**にする (E5 の最低ライン)。
-- env に compound を載せる (leaf 展開) のは、`AOT-COMPOUND-PTR-RW` と
-  同じ手が使えるか実装時に確認する。
+- **診断は landing 済み。** `walk_closure_for_captures` の `record` は
+  Scalar 以外の束縛を**黙って捨てて**おり、body の lowering がその名前を
+  「未定義の識別子」として落としていた (実測 5)。capture 集合を
+  `Option<Type>` にして、compound を `None` で記録し、
+  `collect_closure_captures` が名前つきで拒否する。
+- **残り**: env に compound を載せる (leaf 展開)。`AOT-COMPOUND-PTR-RW` と
+  同じ手が使えるか実装時に確認する。interpreter は読み取りなら動くので、
+  塞がっているのは compiled レーンのカバレッジだけ。
 
 ### E6 — docs
 

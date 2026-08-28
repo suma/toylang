@@ -779,15 +779,14 @@ fn narrow_int_array_packing_round_trip() {
             42u64
         }
     "#;
-    // The tree-walker does not resolve the unsuffixed index literals
-    // this program's narrow-int array access produces — they reach the
-    // evaluator as `Expr::Number` and it dies. Recorded as
-    // TREE-WALKER-NUM-W in design-docs/todo.md.
-    assert_consistent_without_tree_walker(
-        src,
-        "narrow_int_array_packing_round_trip",
-        "narrow-int array access leaves an unresolved Number literal",
-    );
+    // The tree-walker used to be left out here: the unsuffixed index
+    // literals in `u8a[1] = 50u8` reached the evaluator still carrying
+    // the `Number` placeholder and it died (TREE-WALKER-NUM-W). The
+    // index of an indexed *assignment* was simply never visited by the
+    // type checker — only the dict branch looked at it — so nothing
+    // ever resolved it. Fixed while landing CLOSURE-CAPTURE E3, which
+    // is where the same hole stopped being survivable.
+    assert_consistent(src, "narrow_int_array_packing_round_trip");
 }
 
 #[test]

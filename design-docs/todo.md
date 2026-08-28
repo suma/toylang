@@ -10,6 +10,22 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-08-28
+
+- **CLOSURE-CAPTURE E0〜E3 / E5 (診断) / E6** — closure が捕捉した束縛を
+  どう掴むかを決めて 5 実行系で揃えた。設計は
+  [`CLOSURE_CAPTURE.md`](CLOSURE_CAPTURE.md)。`val f = fn(...)` に束縛して
+  同じ関数の中で呼ぶだけの closure は**束縛を共有**し (カウンタが書ける、
+  読みも live)、値として渡す / 返す / struct に入れる / 別の closure から
+  呼ぶものは**コピー**を持ち、そこへの書き込みは `E0021`。
+  途中で拾った副産物が 2 つ: **添字代入の添字式が型検査で一度も visit
+  されていなかった** (dict の枝だけが見ていた) ので `a[0] = v` の `0` が
+  `Number` のままバックエンドに届いていた — これを直したことで
+  **TREE-WALKER-NUM-W が解消**し、`narrow_int_array_packing_round_trip` の
+  tree-walker 除外を外した。もう 1 つは共有 capture の**動的スコープ**
+  (closure literal と呼び出しの間で同名を宣言すると body が持って
+  いかれる) で、生成時のスコープ深さを持たせて塞いだ。
+
 ### 2026-08-27
 
 - **DEBUG-OBS D3 の残: `HeapAlloc` の `SiteId` 移行** —
@@ -1105,16 +1121,13 @@
   `detect_struct_result` が method の戻り型を安く引けないので検出されず、
   従来どおり「compound-returning method を式の位置で使えない、`val` で
   束縛せよ」というエラーになる。誘導が具体的なので実害は小さい。
-- **TREE-WALKER-NUM-W** ★ — narrow int の配列アクセスが tree-walker で
-  `Expr::Number should be transformed to concrete type` になる
-  (`compiler/tests/consistency/compound_values.rs` の
-  `narrow_int_array_packing_round_trip` が
-  `assert_consistent_without_tree_walker` で明示的に除外している)。
 - **TREE-WALKER-CONCRETE-IMPL** ★ — `impl C<u8>` と `impl C<i64>` の
   両方に同名の associated function があると tree-walker が spec を
-  1 つしか持たず解決できない (`concrete_associated_hint` を同様に除外)。
+  1 つしか持たず解決できない (`concrete_associated_hint` を
+  `assert_consistent_without_tree_walker` で除外)。
   method 版と「concrete + generic」の組合せは動く。
-  どちらも 2026-08-25 に tree-walker レーンを本物にして初めて見えた。
+  2026-08-25 に tree-walker レーンを本物にして初めて見えた
+  (対だった TREE-WALKER-NUM-W は 2026-08-28 に解消)。
 
 - **JIT-INTERP-COVERAGE (residual)** ★ — interpreter 側 JIT が silent
   fallback する残り: (a) impl block ではなく **method 固有の generic**

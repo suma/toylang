@@ -168,6 +168,17 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         match object_type {
             TypeDecl::Array(ref element_types, _size) => {
+                // The index is an expression like any other and has to
+                // be visited: an unsuffixed literal that nothing looks
+                // at keeps the `Number` placeholder, and the backends
+                // meet it as an internal error
+                // ("Expr::Number should be transformed to concrete
+                // type"). Only the dict branch below used to do this,
+                // so `a[0] = v` survived on the function-level
+                // default and failed inside a closure body.
+                for bound in [start, end].iter().copied().flatten() {
+                    self.visit_expr(bound)?;
+                }
                 self.handle_array_slice_assign(element_types, start, end, &value_type)
             }
             TypeDecl::Dict(ref key_type, ref dict_value_type) => {

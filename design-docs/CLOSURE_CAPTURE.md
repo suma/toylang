@@ -409,6 +409,25 @@ capture の書き込みについて、**何が起きるべきか**を先に表�
 - 例: `interpreter/example/closure_counter.t` (`example_consistency`
   が自動で 3 バックエンド突き合わせに載せる)。
 
+**landing 後に実測で 2 件出た** (どちらもプローブを全レーンで流し直して
+見つけた。片方はテストが緑のままだった)。
+
+1. **共有 capture の中で作った closure が compiled で落ちた** —
+   共有 capture は body 側で `RefScalar` になるので、その中の closure が
+   同じ名前を捕捉しようとしたとき capture 走査が `Scalar` しか見ておらず
+   黙って落とし、body が `undefined identifier` になった。`RefScalar` を
+   pointee 型で記録し、内側も共有ならポインタをそのまま渡し、コピーなら
+   `LoadRef` で現在値を読むようにした。
+2. **添字代入の添字リテラルが `Number` のままだった** —
+   `visit_slice_assign_impl` が **dict の枝でしか添字を visit していない**
+   ので、`a[0] = v` の `0` は誰にも見られず placeholder のまま
+   バックエンドに届いていた。関数直下では既定値に倒れて生き延びていたが、
+   closure 本体では内部エラーになる。E2 の診断がこれを隠していて、E3 で
+   共有 closure が通るようになった瞬間に露出した。添字を visit するよう
+   直したところ、**TREE-WALKER-NUM-W (未実装節にあった別項目) も同時に
+   解消**した — 両方向 pin の `assert_consistent_without_tree_walker` が
+   「tree-walker が通るようになったので除外を外せ」と落ちて教えてくれた。
+
 ### E4 — HOF / escape 越しの可変捕捉
 
 - env にアドレスを持たせる。cranelift 側で対象ローカルを explicit stack

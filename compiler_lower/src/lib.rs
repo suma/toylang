@@ -684,6 +684,33 @@ impl<'a> FunctionLower<'a> {
                     cap_ty
                 ));
             }
+            // A capture the enclosing scope holds behind a pointer —
+            // a `&mut x` parameter, or a capture this function itself
+            // shares (CLOSURE-CAPTURE E3, so a closure inside a
+            // sharing closure). The pointer already names the
+            // storage: pass it on when the inner closure shares too,
+            // and read through it when the inner one takes a copy.
+            if let Some(bindings::Binding::RefScalar { local, pointee_ty, .. }) =
+                self.bindings.get(cap_name).cloned()
+            {
+                let ptr = self
+                    .emit(crate::ir::InstKind::LoadLocal(local), Some(Type::U64))
+                    .ok_or_else(|| "capture ptr LoadLocal returned no value".to_string())?;
+                if captures_by_ref {
+                    capture_vals.push(ptr);
+                    capture_tys.push(Type::U64);
+                } else {
+                    let v = self
+                        .emit(
+                            crate::ir::InstKind::LoadRef { ptr, ty: pointee_ty },
+                            Some(pointee_ty),
+                        )
+                        .ok_or_else(|| "capture LoadRef returned no value".to_string())?;
+                    capture_vals.push(v);
+                    capture_tys.push(pointee_ty);
+                }
+                continue;
+            }
             let local = match self.bindings.get(cap_name) {
                 Some(bindings::Binding::Scalar { local, .. }) => *local,
                 other => {
@@ -808,6 +835,13 @@ impl<'a> FunctionLower<'a> {
                 Some(bindings::Binding::Scalar { ty, .. }) => {
                     seen.insert(s);
                     out.push((s, Some(*ty)));
+                }
+                // Behind a pointer, but a scalar all the same: a
+                // `&mut x` parameter or a capture this function
+                // shares (CLOSURE-CAPTURE E3).
+                Some(bindings::Binding::RefScalar { pointee_ty, .. }) => {
+                    seen.insert(s);
+                    out.push((s, Some(*pointee_ty)));
                 }
                 Some(
                     bindings::Binding::Struct { .. }

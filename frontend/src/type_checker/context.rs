@@ -137,6 +137,15 @@ pub struct TypeCheckContext {
     /// collision-free. The `ExprPool` is append-only so indices stay
     /// stable across the type-check pass.
     pub closure_captures: HashMap<crate::ast::ExprRef, Vec<(DefaultSymbol, TypeDecl)>>,
+    /// CLOSURE-CAPTURE E1: for each closure body currently being
+    /// type-checked, the `vars` index of the scope that closure's own
+    /// parameters live in (innermost on top). A name that resolves
+    /// *below* the top entry belongs to an enclosing scope, so a
+    /// reference to it is a capture rather than a local. The body is
+    /// checked in a scope pushed on top of the enclosing one — which
+    /// is what lets a capture's type be looked up directly — so this
+    /// index is the only thing that distinguishes the two.
+    pub closure_scope_floors: Vec<usize>,
     /// LABEL: stack of currently-active loop labels (innermost on top).
     /// `Some(sym)` for `@label: while`, `None` for an unlabelled loop.
     /// `visit_break_impl` / `visit_continue_impl` walk this stack
@@ -173,6 +182,7 @@ impl TypeCheckContext {
             struct_trait_impls: HashMap::new(),
             trait_impl_type_args: HashMap::new(),
             closure_captures: HashMap::new(),
+            closure_scope_floors: Vec::new(),
             loop_label_stack: Vec::new(),
         }
     }
@@ -213,6 +223,26 @@ impl TypeCheckContext {
             }
         }
         None
+    }
+
+    /// CLOSURE-CAPTURE E1: is `name` a binding the closure currently
+    /// being checked captured from an enclosing scope?
+    ///
+    /// False when no closure body is open, and false for the closure's
+    /// own parameters and for anything it binds itself — those live at
+    /// or above the floor. A name that resolves nowhere is not a
+    /// capture either; the caller's own "unknown identifier" path
+    /// reports that.
+    pub fn is_captured_binding(&self, name: DefaultSymbol) -> bool {
+        let Some(floor) = self.closure_scope_floors.last() else {
+            return false;
+        };
+        for (index, scope) in self.vars.iter().enumerate().rev() {
+            if scope.contains_key(&name) {
+                return index < *floor;
+            }
+        }
+        false
     }
 
     /// Backwards-compatible: registers under `(None, name)` (the

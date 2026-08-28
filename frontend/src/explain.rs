@@ -66,6 +66,7 @@ const ENTRIES: &[Entry] = &[
     (codes::CONTRACT_PURITY, E0018),
     (codes::RUNTIME_PANIC, E0019),
     (codes::CONTRACT_VIOLATION, E0020),
+    (codes::CAPTURED_ASSIGN, E0021),
 ];
 
 const E0001: &str = "\
@@ -692,6 +693,38 @@ To fix: check the precondition before calling, or widen the contract if
 the value was legal after all. `INTERPRETER_CONTRACTS=off` and
 `--release` switch the checks off, which hides the report without
 making the program correct.";
+
+const E0021: &str = "\
+E0021: a closure assigns to a binding it captured
+
+A closure captures the free variables in its body when it is *created*,
+by value. The captured copy is the closure\'s own, so assigning to it
+inside the body reaches nothing outside:
+
+    var count: u64 = 0u64
+    val bump = fn() -> u64 { count = count + 1u64  count }   # E0021
+
+Without this check that program answered `1`, `1`, `0` on four of the
+five engines — each call started from the same snapshot and the writes
+were discarded — while the tree-walker stopped it at run time claiming
+`count` had been declared `val`, which it had not.
+
+The rule is about *where the binding is*, not how it was declared:
+`var` and `val` are refused alike, and the advice attached to the `val`
+rule (\"use `var`\") would be a dead end here. Reading a capture is
+fine, and so is assigning to a binding the closure declares itself:
+
+    val step: u64 = 2u64
+    val f = fn(x: u64) -> u64 { var acc = x  acc = acc + step  acc }
+
+To fix: return the value and assign it at the call site.
+
+    var count: u64 = 0u64
+    val bump = fn(n: u64) -> u64 { n + 1u64 }
+    count = bump(count)
+
+Mutable capture is planned (`design-docs/CLOSURE_CAPTURE.md`, E3); this
+code is what the compiler says until it lands.";
 
 #[cfg(test)]
 mod tests {

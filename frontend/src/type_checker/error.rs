@@ -169,6 +169,13 @@ pub enum TypeCheckErrorKind {
     /// COMPILE-TIME-EVAL C4: a call whose arguments are all constants,
     /// whose precondition the compiler evaluated, and which was false.
     BrokenPrecondition { function: String, detail: String },
+    /// CLOSURE-CAPTURE E1: a closure body assigns to a binding that
+    /// belongs to an enclosing scope. A capture is a snapshot taken
+    /// when the closure was created, so the write reaches nothing —
+    /// four of the five engines used to discard it silently and the
+    /// tree-walker used to reject it at run time claiming the `var`
+    /// had been declared `val`.
+    CapturedAssign { name: String },
 }
 
 #[derive(Debug, Clone)]
@@ -435,6 +442,17 @@ impl TypeCheckError {
         }
     }
 
+    /// CLOSURE-CAPTURE E1: a write to a captured binding.
+    pub fn captured_assign(name: String) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::CapturedAssign { name }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
     /// TYPECHECK-LIES: a reserved literal with no runtime meaning.
     /// `alternative` names what to write instead, and is part of the
     /// message rather than a machine-applicable suggestion because the
@@ -591,6 +609,13 @@ impl TypeCheckError {
                 format!(
                     "this call to `{function}` breaks its own precondition, and every argument is \
                      a constant, so it breaks it on every run: {detail}"
+                )
+            }
+            TypeCheckErrorKind::CapturedAssign { name } => {
+                format!(
+                    "cannot assign to `{name}` from inside a closure: a capture is a snapshot \
+                     taken when the closure was created, so the write would not be seen by \
+                     anything outside the closure"
                 )
             }
             TypeCheckErrorKind::ReservedLiteral { name, alternative } => {

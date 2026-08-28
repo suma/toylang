@@ -14,8 +14,8 @@ CLOSURE-CAPTURE を ★★ で「closure の利用が増える前に決めたい
 
 | Phase | Scope | Status |
 |---|---|---|
-| **E0** | 目標文言の固定 + 5 レーンを pin する consistency テスト | 未着手 |
-| **E1** | 捕捉した束縛への代入を診断する (黙った誤答を止める) | 未着手 |
+| **E0** | 目標文言の固定 + 5 レーンを pin する consistency テスト | ✅ 2026-08-28 |
+| **E1** | 捕捉した束縛への代入を診断する (黙った誤答を止める) | ✅ 2026-08-28 |
 | **E2** | capture mode の形依存を解消する (scalar コピー / compound alias) | 未着手 |
 | **E3** | 直接呼び出しの closure を可変捕捉にする (env の sync-in / sync-out) | 未着手 |
 | **E4** | HOF / escape する closure の可変捕捉 | 未着手 |
@@ -286,21 +286,38 @@ capture の書き込みについて、**何が起きるべきか**を先に表�
 
   | プログラム | 期待 |
   |---|---|
-  | 捕捉した `var` への代入 (直接呼び出し) | E3 まで: 新コードの型エラー / E3 以降: 動く |
-  | 捕捉した `val` への代入 | `E0010` (現状維持) |
-  | 捕捉した compound のフィールド代入 | 捕捉した `var` と同じ扱い |
+  | 捕捉した `var` への代入 (直接呼び出し) | E3 まで: `E0021` / E3 以降: 動く |
+  | 捕捉した `val` への代入 | **`E0021`** (草案の `E0010` 現状維持から変更、下記) |
+  | 捕捉した compound のフィールド代入 | 捕捉した `var` と同じ扱い (E2) |
   | 読み取りのみ | 5 レーン一致 (現状維持) |
 
-### E1 — 捕捉した束縛への代入を診断する
+  **草案から 1 つ変えた**: 捕捉した `val` への代入は `E0010` を維持する
+  つもりだったが、`E0010` の助言 (「`var` を使え」) は capture の下では
+  **行き止まり**になる — `var` に直しても `E0021` で拒否されるので、
+  1 つのエラーを別のエラーに直させることになる。規則は「束縛がどこに
+  あるか」であって「どう宣言されたか」ではないので、`val` / `var` を
+  同じコードで拒否する。
 
-- 型検査器: closure 本体を検査する間、**代入対象が closure スコープの外で
-  解決されたか**を見る。`push_context` の境界を記録すれば足りる
-  (`record_closure_captures` が既に free variable を列挙している)。
-- 新診断コード + `--explain`。文言は「なぜ」と「今どう書くか」を持つ
-  (戻り値で返して呼び出し側で代入する / compound を返す)。
+### E1 — 捕捉した束縛への代入を診断する ✅ (2026-08-28)
+
+- `TypeCheckContext::closure_scope_floors` — closure 本体を検査する間、
+  その closure の**パラメータが載っているスコープの index** を積む。
+  本体は enclosing スコープの上で検査される (capture の型を引けるのは
+  そのおかげ) ので、**深さだけが local と capture を分ける**。
+  `is_captured_binding` が名前を解決したフレームの index と床を比べる。
+- 新コード **`E0021`** + `--explain`。caret は代入対象に付ける
+  (`error_with_location` に lhs を渡す。付けないと文の recovery が
+  ブロックの末尾式に打つ)。
+- 既存の `val` 規則より**先**に判定する (上表の理由)。
+- 5 レーンとも同じ診断で止まる (検査が共有 frontend にあるため、
+  エンジンごとにずれる余地が構造的に無い)。
 - tree-walker の `set_val` 由来の嘘メッセージ
-  (`already defined as immutable (val)`) はこの経路が消えるので到達不能に
-  なるが、**内部エラーとして残す**か capture 専用の文言にするかは実装時に決める。
+  (`already defined as immutable (val)`) はこの経路が型検査で止まるので
+  到達しなくなった。E3 で capture の束縛方法を変えるときに消す。
+- テスト: `frontend/tests/closure_type_checking_tests.rs` に 7 件
+  (counter / 捕捉した `val` / パラメータ / closure ローカルの `var` /
+  読み取り / nested の床 / 床が closure より長生きしないこと)、
+  `compiler/tests/consistency/dicts_closures.rs` に 2 件。
 
 ### E2 — 形依存の解消
 

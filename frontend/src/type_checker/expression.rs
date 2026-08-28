@@ -859,13 +859,29 @@ impl<'a> TypeCheckerVisitor<'a> {
         // reject it uniformly, before execution. Only bare-identifier
         // targets are checked here — field / slice assignment mutability is
         // handled on their own paths.
-        if let Some(Expr::Identifier(name)) = self.core.expr_pool.get(&lhs)
-            && self.context.is_var_mutable(name) == Some(false)
-        {
-            let name_str = self.resolve_symbol_name(name);
-            return Err(TypeCheckError::generic_error(&format!(
-                "cannot assign to `{name_str}`: binding is immutable (declared with `val`; use `var` to allow reassignment)"
-            )));
+        if let Some(Expr::Identifier(name)) = self.core.expr_pool.get(&lhs) {
+            // CLOSURE-CAPTURE E1: a write to a binding the closure
+            // captured reaches nothing, so it is an error rather than
+            // a silently discarded store. Checked *before* the `val`
+            // rule because that rule's advice ("use `var`") would be a
+            // dead end here — a captured `var` cannot be written
+            // either, so the author would fix one error into another.
+            if self.context.is_captured_binding(name) {
+                let name_str = self.resolve_symbol_name(name);
+                // Anchored on the target rather than left for the
+                // statement-level recovery to place, which lands the
+                // caret on whatever the block's tail expression is.
+                return Err(self.error_with_location(
+                    TypeCheckError::captured_assign(name_str),
+                    &lhs,
+                ));
+            }
+            if self.context.is_var_mutable(name) == Some(false) {
+                let name_str = self.resolve_symbol_name(name);
+                return Err(TypeCheckError::generic_error(&format!(
+                    "cannot assign to `{name_str}`: binding is immutable (declared with `val`; use `var` to allow reassignment)"
+                )));
+            }
         }
 
         let lhs_ty = {
@@ -1416,12 +1432,21 @@ impl<'a> TypeCheckerVisitor<'a> {
         // type-checks).
         Self::reject_generic_in_closure_signature(params, return_type)?;
 
-        // Push a fresh scope and bind each parameter.
+        // Push a fresh scope and bind each parameter. CLOSURE-CAPTURE
+        // E1: remember which scope that is, so an assignment in the
+        // body can tell a local apart from a capture. The body is
+        // checked on top of the *enclosing* scope (that is how a
+        // capture's type is looked up), so the depth is the only
+        // thing that separates them.
         self.push_context();
+        self.context
+            .closure_scope_floors
+            .push(self.context.vars.len() - 1);
         for (name, ty) in params {
             self.context.set_var(*name, ty.clone());
         }
         let body_result = self.visit_expr(body);
+        self.context.closure_scope_floors.pop();
         let body_ty = match body_result {
             Ok(ty) => {
                 // NUMBER-HINT: the closure's declared return type is

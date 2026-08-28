@@ -244,3 +244,142 @@ fn closure_with_no_free_vars_records_empty_capture_set() {
         .expect("captures entry missing");
     assert!(captures.is_empty(), "expected no captures, got {:?}", captures);
 }
+
+// ---------------------------------------------------------------
+// CLOSURE-CAPTURE E1 — writing to a captured binding.
+//
+// A capture is a snapshot taken when the closure is created, so a
+// store into it reaches nothing. Before this check the four compiled
+// engines discarded the write silently (a counter closure answered
+// 1, 1, 0) and the tree-walker rejected it at run time claiming the
+// `var` had been declared `val`. The rule is about *where* the
+// binding lives, not how it was declared.
+// ---------------------------------------------------------------
+
+/// The shape that motivated the whole check: a counter closed over a
+/// mutable outer binding.
+#[test]
+fn assigning_to_a_captured_var_is_rejected() {
+    let err = parse_and_type_check(
+        "fn main() -> u64 {
+            var count: u64 = 0u64
+            val bump = fn() -> u64 { count = count + 1u64  count }
+            bump()
+        }",
+    )
+    .expect_err("expected a write to a captured `var` to be rejected");
+    assert!(
+        err.contains("CapturedAssign") && err.contains("count"),
+        "expected a CapturedAssign error naming `count`, got: {err}"
+    );
+}
+
+/// A captured `val` gets the same error rather than the immutability
+/// one. "Use `var`" would be a dead end: the `var` spelling is
+/// rejected too, so the advice would fix one error into another.
+#[test]
+fn assigning_to_a_captured_val_reports_the_capture_not_the_immutability() {
+    let err = parse_and_type_check(
+        "fn main() -> u64 {
+            val n: u64 = 1u64
+            val f = fn() -> u64 { n = n + 1u64  n }
+            f()
+        }",
+    )
+    .expect_err("expected a write to a captured `val` to be rejected");
+    assert!(
+        err.contains("CapturedAssign"),
+        "expected CapturedAssign rather than the immutable-binding error, got: {err}"
+    );
+}
+
+/// The closure's own parameters are not captures.
+#[test]
+fn assigning_to_a_closure_parameter_is_not_a_capture() {
+    let err = parse_and_type_check(
+        "fn main() -> u64 {
+            val f = fn(x: u64) -> u64 { x = x + 1u64  x }
+            f(1u64)
+        }",
+    )
+    .expect_err("a parameter is still an immutable binding");
+    assert!(
+        !err.contains("CapturedAssign"),
+        "a parameter is local to the closure, not captured: {err}"
+    );
+}
+
+/// Nor is anything the closure body declares itself.
+#[test]
+fn assigning_to_a_closure_local_var_is_allowed() {
+    parse_and_type_check(
+        "fn main() -> u64 {
+            val step: u64 = 2u64
+            val f = fn(x: u64) -> u64 { var acc: u64 = x  acc = acc + step  acc }
+            f(1u64)
+        }",
+    )
+    .expect("a `var` declared inside the closure is not a capture");
+}
+
+/// Reading a capture is untouched — that half is consistent across
+/// every engine and is what the language documents.
+#[test]
+fn reading_a_captured_binding_still_type_checks() {
+    parse_and_type_check(
+        "fn main() -> u64 {
+            var n: u64 = 1u64
+            val f = fn() -> u64 { n }
+            f()
+        }",
+    )
+    .expect("reading a capture is legal");
+}
+
+/// The floor is per-closure: an inner closure's own bindings are
+/// local to it, and the outer function's are captured by both.
+#[test]
+fn nested_closures_each_get_their_own_capture_floor() {
+    parse_and_type_check(
+        "fn main() -> u64 {
+            val a: u64 = 1u64
+            val outer = fn(b: u64) -> u64 {
+                val inner = fn(c: u64) -> u64 { var t: u64 = a  t = t + b + c  t }
+                inner(3u64)
+            }
+            outer(2u64)
+        }",
+    )
+    .expect("locals of the inner closure are not captures");
+
+    let err = parse_and_type_check(
+        "fn main() -> u64 {
+            var a: u64 = 1u64
+            val outer = fn(b: u64) -> u64 {
+                val inner = fn(c: u64) -> u64 { a = a + b + c  a }
+                inner(3u64)
+            }
+            outer(2u64)
+        }",
+    )
+    .expect_err("the outer function's binding is captured twice over");
+    assert!(
+        err.contains("CapturedAssign"),
+        "expected CapturedAssign from the inner closure, got: {err}"
+    );
+}
+
+/// Once the closure is closed, assignment in the enclosing function
+/// is ordinary again — the floor must be popped.
+#[test]
+fn assignment_after_the_closure_is_unaffected() {
+    parse_and_type_check(
+        "fn main() -> u64 {
+            var n: u64 = 1u64
+            val f = fn() -> u64 { n }
+            n = 5u64
+            f()
+        }",
+    )
+    .expect("the capture floor must not outlive the closure body");
+}

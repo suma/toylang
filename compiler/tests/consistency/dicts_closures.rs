@@ -645,3 +645,49 @@ fn closure_phase6c_all_narrow_widths_captured_round_trip() {
     "#;
     assert_consistent(src, "closure_phase6c_all_narrow_widths");
 }
+
+// CLOSURE-CAPTURE E0/E1 — writes to a captured binding.
+//
+// The closure tests above cover *reads* only (phases 5a/5b/6b/6c),
+// which is how a counter closure came to answer `1, 1, 0` on the IR
+// VM, both JITs and AOT while the tree-walker rejected it at run time
+// with a reason that was not true. The rejection now lives in the
+// shared frontend, so the disagreement cannot come back one engine at
+// a time.
+#[test]
+fn writing_to_a_captured_binding_is_rejected_before_any_engine_runs() {
+    let src = r#"
+fn main() -> u64 {
+    var count: u64 = 0u64
+    val bump = fn() -> u64 { count = count + 1u64  count }
+    bump()
+    bump()
+    count
+}
+"#;
+    let errors = type_check_errors(src);
+    assert!(
+        errors.iter().any(|e| e.contains("count") && e.contains("closure")),
+        "expected the write to `count` to be rejected as a capture, got: {errors:?}"
+    );
+}
+
+// Reading a capture and writing to a binding the closure owns are
+// both still legal, and every engine agrees on the answer. Pinned
+// together with the rejection above so a future mutable-capture
+// phase (E3) cannot widen the rule past what it means to widen.
+#[test]
+fn closure_local_write_over_a_captured_read_round_trip() {
+    let src = r#"
+fn main() -> u64 {
+    val step: u64 = 2u64
+    val f = fn(x: u64) -> u64 {
+        var acc: u64 = x
+        acc = acc + step
+        acc
+    }
+    f(1u64) + f(10u64)
+}
+"#;
+    assert_consistent(src, "closure_local_write_over_captured_read");
+}

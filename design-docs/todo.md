@@ -1257,6 +1257,22 @@
 ### 構文糖衣の候補 (NEW-FEATURES、未着手)
 
 - **OP-OVERLOAD-CHAIN** — `a + b + c` の chained position。現状は let-rhs のみ。binary struct literal operand も対象外。
+- **COMPOUND-ASSIGN-BITWISE: ビット系の複合代入 5 種** ★ —
+  `&=` / `|=` / `^=` / `<<=` / `>>=`。算術の 5 種 (`+= -= *= /= %=`) は
+  landing 済みで、LHS も identifier / field / index / tuple access の
+  4 形すべて対応している (2026-08-28 実測)。ビット系は 5 つとも
+  `unexpected token in primary expression: Some(Equal)` で parse エラー。
+  **コストは小さい**: `Operator::BitwiseAnd` / `BitwiseOr` / `BitwiseXor` /
+  `LeftShift` / `RightShift` は既にあるので、`lexer.l` に 5 行 + `Kind` に
+  5 variant + `parser/expr/mod.rs::parse_assign` の 2 箇所の match に
+  5 arm ずつ。desugar (`lhs op= rhs` → `lhs = lhs op rhs`) 後は普通の
+  `Assign` + `Binary` なので**型検査もバックエンドも触らない**。
+  オーバーロード (`bitand` / `bitor` / `bitxor` / `shl` / `shr`) も
+  `+=` が `add` を経由するのと同じ経路で付いてくるはず (要テスト)。
+  **確認が要る 2 点**: lexer の最長一致で `>>=` が `>>` + `=` に割れないこと、
+  `&=` がジェネリクスや `&mut` の文脈を壊さないこと。
+  `&&=` / `||=` は short-circuit なので追加しない (Rust も持たない)、
+  `??=` は `??` 自体が下記のとおり未実装。
 - **`??` (null-coalesce)** ★ — `opt ?? default` で `unwrap_or` の糖衣。
 - **raw / multi-line string literal** ★ — `r"\path"` / `"""..."""`。lexer 拡張のみ。
 - **STR-INTERP-FMT の残** ★ — (a) user 型に spec を渡す API

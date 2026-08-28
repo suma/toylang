@@ -1231,13 +1231,13 @@
   - **A5-P4: `Box<dyn Trait>`** — owned trait object + `Vec<Box<dyn Trait>>`。**前提**: `Box<T>` 自体が未実装。
   - **A5 残作業** — `&dyn Trait` の return / struct field 位置 (REF-Stage-2 の escape rule が阻む)、`dyn A + B`、`dyn Iterator<T>`、generic trait の default body 内での `T` 参照。
 - **`must_use` / unused-Result 警告** ★★ — `?` の補完。**警告の emit 経路が無い**ので (`Severity::Warning` は型としては存在するが未使用)、そこから作る必要がある。
-- **CLOSURE-CAPTURE: capture 意味論** ★★ — 設計は
-  [`CLOSURE_CAPTURE.md`](CLOSURE_CAPTURE.md) (現状調査 7 件 + 論点 6 +
-  Phase E0〜E6)。**捕捉した `var` への代入は今日どの実行系でも正しくない** —
-  compiled 系 4 つは黙って誤答し、tree-walker は「`var` を `val` だ」と
-  嘘の理由で止まる (実測 1)。capture mode が値の形でも変わる (実測 3)。
-  方針は「まず代入を診断して黙った誤答を止め、その上で `var` の可変捕捉を
-  既定にする」(論点 1 の A→B)。明示 capture list は採らない。
+- **CLOSURE-CAPTURE の残: E4 / E5** ★ — 設計は
+  [`CLOSURE_CAPTURE.md`](CLOSURE_CAPTURE.md)。**E0〜E3 + E6 は landing 済み**
+  (escape しない closure は捕捉した束縛を共有し、escape するものはコピーを
+  持って書き込みが `E0021`)。残りは (a) **E4: HOF / escape 越しの可変捕捉** —
+  寿命の判断が要るので「実プログラムで踏んでから」、(b) **E5: compiled
+  レーンの compound capture** — struct を捕捉すると `undefined identifier`
+  という capture と分からない診断で落ちる (interpreter は動く)。
 - **slice 型 `&[T]`** ★ — 配列 borrow を first-class に。中〜大。
 - **const generics** ★ — `struct Array<T, const N: usize>`。大規模。
 

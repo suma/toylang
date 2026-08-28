@@ -233,8 +233,8 @@ impl EvaluationContext<'_> {
                 }
                 result
             }
-            Expr::Closure { params, return_type, body } => {
-                self.evaluate_closure_literal(&params, &return_type, &body)
+            Expr::Closure { params, return_type, body, captures_by_ref } => {
+                self.evaluate_closure_literal(&params, &return_type, &body, captures_by_ref)
             }
             // Block as a value-position expression: needed for match arm
             // bodies (`Some(x) => { ... }`) and the iterator-protocol
@@ -265,13 +265,23 @@ impl EvaluationContext<'_> {
         params: &ParameterList,
         return_type: &Option<TypeDecl>,
         body: &ExprRef,
+        captures_by_ref: bool,
     ) -> Result<EvaluationResult, InterpreterError> {
         let bound: std::collections::HashSet<DefaultSymbol> =
             params.iter().map(|(n, _)| *n).collect();
         let mut captures: Vec<(DefaultSymbol, RcObject)> = Vec::new();
         let mut seen: std::collections::HashSet<DefaultSymbol> =
             std::collections::HashSet::new();
-        self.collect_closure_captures(*body, &bound, &mut captures, &mut seen);
+        // CLOSURE-CAPTURE E3: a closure that shares its captures takes
+        // no snapshot at all. The call opens a scope on top of the one
+        // that owns them, so an unshadowed name resolves outward — a
+        // read sees the current value and `set_var` walks out to the
+        // frame that holds the binding and writes there. The type
+        // checker has already established that this closure is only
+        // ever called from that function, so the frame is present.
+        if !captures_by_ref {
+            self.collect_closure_captures(*body, &bound, &mut captures, &mut seen);
+        }
 
         let return_ty = return_type.clone().unwrap_or(TypeDecl::Unknown);
         let closure_obj = Object::Closure {

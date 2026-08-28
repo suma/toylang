@@ -1428,7 +1428,7 @@ impl<'a> FunctionLower<'a> {
             // parameter slot. Captures are still unsupported —
             // body lowering will fail with "undefined identifier"
             // if the closure body references an outer-scope local.
-            Expr::Closure { params, return_type, body } => {
+            Expr::Closure { params, return_type, body, .. } => {
                 self.lift_closure_inline(&params, &return_type, &body)
             }
             other => Err(format!(

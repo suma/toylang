@@ -866,7 +866,9 @@ impl<'a> TypeCheckerVisitor<'a> {
         loop {
             match self.core.expr_pool.get(&cursor)? {
                 Expr::Identifier(name) => {
-                    if !self.context.is_captured_binding(name) {
+                    // E3: a shared capture is written like any other
+                    // binding, so only a copied one is reported.
+                    if self.context.capture_of_open_closure(name) != Some(false) {
                         return None;
                     }
                     let root = self.resolve_symbol_name(name);
@@ -908,12 +910,17 @@ impl<'a> TypeCheckerVisitor<'a> {
         // handled on their own paths.
         if let Some(Expr::Identifier(name)) = self.core.expr_pool.get(&lhs) {
             // CLOSURE-CAPTURE E1: a write to a binding the closure
-            // captured reaches nothing, so it is an error rather than
-            // a silently discarded store. Checked *before* the `val`
+            // copied reaches nothing, so it is an error rather than a
+            // silently discarded store. Checked *before* the `val`
             // rule because that rule's advice ("use `var`") would be a
-            // dead end here — a captured `var` cannot be written
+            // dead end for a copy — a captured `var` cannot be written
             // either, so the author would fix one error into another.
-            if self.context.is_captured_binding(name) {
+            //
+            // E3: a closure that shares its captures is exempt. The
+            // write reaches the outer binding, so the only question
+            // left is the ordinary one below — whether that binding
+            // is mutable, where "use `var`" is the right advice again.
+            if self.context.capture_of_open_closure(name) == Some(false) {
                 let name_str = self.resolve_symbol_name(name);
                 // Anchored on the target rather than left for the
                 // statement-level recovery to place, which lands the
@@ -1499,9 +1506,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         // capture's type is looked up), so the depth is the only
         // thing that separates them.
         self.push_context();
+        let by_ref = self.context.closure_by_ref_bodies.contains(body);
         self.context
             .closure_scope_floors
-            .push(self.context.vars.len() - 1);
+            .push(crate::type_checker::context::ClosureFrame {
+                floor: self.context.vars.len() - 1,
+                by_ref,
+            });
         for (name, ty) in params {
             self.context.set_var(*name, ty.clone());
         }

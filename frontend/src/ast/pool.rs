@@ -451,14 +451,17 @@ impl ExprPool {
                 self.lhs[index] = Some(start);
                 self.rhs[index] = Some(end);
             }
-            Expr::Closure { params, return_type, body } => {
+            Expr::Closure { params, return_type, body, captures_by_ref } => {
                 // body ExprRef stored in lhs; declared return type
                 // (optional) in target_type; params in the dedicated
-                // closure_params slot.
+                // closure_params slot; the E3 capture mode in the
+                // shared `boolean_val` column (no other variant that
+                // reaches this arm uses it).
                 self.expr_types[index] = ExprType::Closure;
                 self.lhs[index] = Some(body);
                 self.target_type[index] = return_type;
                 self.closure_params[index] = Some(params);
+                self.boolean_val[index] = Some(captures_by_ref);
             }
             Expr::StructUpdate { type_name, fields, base, base_binding } => {
                 // Same columns as `StructLiteral` (name + written
@@ -701,6 +704,9 @@ impl ExprPool {
                     params: self.closure_params[index].clone()?,
                     return_type: self.target_type[index].clone(),
                     body: self.lhs[index]?,
+                    // Absent in a cache written before E3: a closure
+                    // that took copies, which is the safe default.
+                    captures_by_ref: self.boolean_val[index].unwrap_or(false),
                 })
             }
             ExprType::StructUpdate => {

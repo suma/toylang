@@ -246,39 +246,74 @@ fn closure_with_no_free_vars_records_empty_capture_set() {
 }
 
 // ---------------------------------------------------------------
-// CLOSURE-CAPTURE E1 — writing to a captured binding.
+// CLOSURE-CAPTURE E1/E2/E3 — what a closure may do to what it
+// captured.
 //
-// A capture is a snapshot taken when the closure is created, so a
-// store into it reaches nothing. Before this check the four compiled
-// engines discarded the write silently (a counter closure answered
-// 1, 1, 0) and the tree-walker rejected it at run time claiming the
-// `var` had been declared `val`. The rule is about *where* the
-// binding lives, not how it was declared.
+// A closure that is only called where it is defined shares its
+// captures: reads see the current value, writes reach the outer
+// binding. One that can outlive them keeps a copy, and a write to a
+// copy reaches nothing — that write is E0021. Before the rule
+// existed the four compiled engines discarded it silently (a counter
+// closure answered 1, 1, 0) and the tree-walker rejected it at run
+// time claiming the `var` had been declared `val`.
 // ---------------------------------------------------------------
 
-/// The shape that motivated the whole check: a counter closed over a
-/// mutable outer binding.
+/// The shape that motivated the whole thing: a counter closed over a
+/// mutable outer binding, called where it was defined.
 #[test]
-fn assigning_to_a_captured_var_is_rejected() {
-    let err = parse_and_type_check(
+fn a_counter_closure_type_checks() {
+    parse_and_type_check(
         "fn main() -> u64 {
             var count: u64 = 0u64
             val bump = fn() -> u64 { count = count + 1u64  count }
             bump()
+            bump()
+            count
         }",
     )
-    .expect_err("expected a write to a captured `var` to be rejected");
+    .expect("a closure that is only called here shares its captures");
+}
+
+/// Handing the closure to someone else puts it where the frame may
+/// already have gone, so it keeps a copy and the write is refused.
+#[test]
+fn assigning_to_a_capture_of_an_escaping_closure_is_rejected() {
+    let err = parse_and_type_check(
+        "fn run(g: fn () -> u64) -> u64 { g() }
+        fn main() -> u64 {
+            var count: u64 = 0u64
+            val bump = fn() -> u64 { count = count + 1u64  count }
+            run(bump)
+        }",
+    )
+    .expect_err("expected a write in an escaping closure to be rejected");
     assert!(
         err.contains("CapturedAssign") && err.contains("count"),
         "expected a CapturedAssign error naming `count`, got: {err}"
     );
 }
 
-/// A captured `val` gets the same error rather than the immutability
-/// one. "Use `var`" would be a dead end: the `var` spelling is
-/// rejected too, so the advice would fix one error into another.
+/// Returning it is the other way out of the frame. The literal is not
+/// even bound to a name here, which is enough on its own.
 #[test]
-fn assigning_to_a_captured_val_reports_the_capture_not_the_immutability() {
+fn assigning_to_a_capture_of_a_returned_closure_is_rejected() {
+    let err = parse_and_type_check(
+        "fn make() -> fn () -> u64 {
+            var count: u64 = 0u64
+            fn() -> u64 { count = count + 1u64  count }
+        }",
+    )
+    .expect_err("expected a write in a returned closure to be rejected");
+    assert!(
+        err.contains("CapturedAssign"),
+        "expected CapturedAssign for the returned closure, got: {err}"
+    );
+}
+
+/// A shared capture of a `val` is refused for the ordinary reason,
+/// and "use `var`" is now advice that works.
+#[test]
+fn assigning_to_a_shared_capture_of_a_val_reports_the_immutability() {
     let err = parse_and_type_check(
         "fn main() -> u64 {
             val n: u64 = 1u64
@@ -286,7 +321,25 @@ fn assigning_to_a_captured_val_reports_the_capture_not_the_immutability() {
             f()
         }",
     )
-    .expect_err("expected a write to a captured `val` to be rejected");
+    .expect_err("a `val` is not assignable however it is captured");
+    assert!(
+        !err.contains("CapturedAssign") && err.contains("immutable"),
+        "expected the immutable-binding error, got: {err}"
+    );
+}
+
+/// In an escaping closure the immutability is beside the point: the
+/// write reaches nothing whichever way the binding was declared, so
+/// "use `var`" would fix one error into another.
+#[test]
+fn assigning_to_a_copied_capture_of_a_val_reports_the_capture() {
+    let err = parse_and_type_check(
+        "fn make() -> fn () -> u64 {
+            val n: u64 = 1u64
+            fn() -> u64 { n = n + 1u64  n }
+        }",
+    )
+    .expect_err("expected a write in a returned closure to be rejected");
     assert!(
         err.contains("CapturedAssign"),
         "expected CapturedAssign rather than the immutable-binding error, got: {err}"
@@ -322,8 +375,7 @@ fn assigning_to_a_closure_local_var_is_allowed() {
     .expect("a `var` declared inside the closure is not a capture");
 }
 
-/// Reading a capture is untouched — that half is consistent across
-/// every engine and is what the language documents.
+/// Reading a capture is legal under either mode.
 #[test]
 fn reading_a_captured_binding_still_type_checks() {
     parse_and_type_check(
@@ -352,6 +404,9 @@ fn nested_closures_each_get_their_own_capture_floor() {
     )
     .expect("locals of the inner closure are not captures");
 
+    // The inner closure is declared inside another closure, so it is
+    // not a candidate for sharing — the frame it would reach out to
+    // is the outer closure's, which runs whenever *that* is called.
     let err = parse_and_type_check(
         "fn main() -> u64 {
             var a: u64 = 1u64
@@ -362,7 +417,7 @@ fn nested_closures_each_get_their_own_capture_floor() {
             outer(2u64)
         }",
     )
-    .expect_err("the outer function's binding is captured twice over");
+    .expect_err("a closure nested in a closure keeps its copies");
     assert!(
         err.contains("CapturedAssign"),
         "expected CapturedAssign from the inner closure, got: {err}"
@@ -385,26 +440,24 @@ fn assignment_after_the_closure_is_unaffected() {
 }
 
 // ---------------------------------------------------------------
-// CLOSURE-CAPTURE E2 — writing *through* a capture.
-//
-// A captured compound keeps its cell rather than being copied, so
-// `p.x = ...` reached the outer binding on the three interpreter
-// engines while the two compiled ones could not build the program at
-// all. The shape of the value decided the meaning; now the rule is
-// the same for both.
+// E2 — writing *through* a capture follows the same rule as writing
+// to it. A captured compound kept its cell, so `p.x = ...` reached
+// the outer binding on the three interpreter engines while the two
+// compiled ones could not build the program at all.
 // ---------------------------------------------------------------
 
 #[test]
-fn assigning_to_a_field_of_a_captured_struct_is_rejected() {
+fn assigning_to_a_field_of_a_copied_captured_struct_is_rejected() {
     let err = parse_and_type_check(
         "struct P { x: i64 }
+        fn run(g: fn () -> i64) -> i64 { g() }
         fn main() -> i64 {
             var p = P { x: 1i64 }
             val f = fn() -> i64 { p.x = p.x + 1i64  p.x }
-            f()
+            run(f)
         }",
     )
-    .expect_err("expected a write through a captured struct to be rejected");
+    .expect_err("expected a write through a copied capture to be rejected");
     assert!(
         err.contains("CapturedAssign") && err.contains("p.x"),
         "expected CapturedAssign naming the whole path, got: {err}"
@@ -418,13 +471,14 @@ fn a_nested_path_names_the_captured_root() {
     let err = parse_and_type_check(
         "struct Inner { v: i64 }
         struct Outer { inner: Inner }
+        fn run(g: fn () -> i64) -> i64 { g() }
         fn main() -> i64 {
             var o = Outer { inner: Inner { v: 1i64 } }
             val f = fn() -> i64 { o.inner.v = 7i64  o.inner.v }
-            f()
+            run(f)
         }",
     )
-    .expect_err("expected a write through a captured struct to be rejected");
+    .expect_err("expected a write through a copied capture to be rejected");
     assert!(
         err.contains("o.inner.v") && err.contains("root: \"o\""),
         "expected the path as target and `o` as root, got: {err}"
@@ -435,15 +489,16 @@ fn a_nested_path_names_the_captured_root() {
 /// slice target, so it needs the rule applied on its own path. It
 /// used to reach the backends and die as an internal error.
 #[test]
-fn assigning_into_a_captured_array_is_rejected() {
+fn assigning_into_a_copied_captured_array_is_rejected() {
     let err = parse_and_type_check(
-        "fn main() -> i64 {
+        "fn run(g: fn () -> i64) -> i64 { g() }
+        fn main() -> i64 {
             var a: [i64; 3] = [1i64, 2i64, 3i64]
             val f = fn() -> i64 { a[0] = 9i64  a[0] }
-            f()
+            run(f)
         }",
     )
-    .expect_err("expected a write into a captured array to be rejected");
+    .expect_err("expected a write into a copied captured array to be rejected");
     assert!(
         err.contains("CapturedAssign") && err.contains("a[..]"),
         "expected CapturedAssign for the indexed write, got: {err}"

@@ -17,6 +17,17 @@ pub struct VarState {
     pub is_mut: bool,
 }
 
+/// CLOSURE-CAPTURE E1/E3: one open closure body, while the type
+/// checker is inside it.
+#[derive(Debug, Clone, Copy)]
+pub struct ClosureFrame {
+    /// `vars` index of the scope holding this closure's parameters.
+    /// A name that resolves below it belongs to an enclosing scope.
+    pub floor: usize,
+    /// Does this closure share its captures with that scope?
+    pub by_ref: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct StructDefinition {
     pub fields: Vec<StructField>,
@@ -145,7 +156,14 @@ pub struct TypeCheckContext {
     /// checked in a scope pushed on top of the enclosing one — which
     /// is what lets a capture's type be looked up directly — so this
     /// index is the only thing that distinguishes the two.
-    pub closure_scope_floors: Vec<usize>,
+    pub closure_scope_floors: Vec<ClosureFrame>,
+    /// CLOSURE-CAPTURE E3: bodies of the closures in the function
+    /// being checked that share their captures with the enclosing
+    /// scope. Filled by `mark_by_ref_closures` before the body walk;
+    /// the same walk writes the answer onto the closure nodes for the
+    /// backends. Keyed by body ref because that is what the visitor
+    /// is handed.
+    pub closure_by_ref_bodies: std::collections::HashSet<crate::ast::ExprRef>,
     /// LABEL: stack of currently-active loop labels (innermost on top).
     /// `Some(sym)` for `@label: while`, `None` for an unlabelled loop.
     /// `visit_break_impl` / `visit_continue_impl` walk this stack
@@ -183,6 +201,7 @@ impl TypeCheckContext {
             trait_impl_type_args: HashMap::new(),
             closure_captures: HashMap::new(),
             closure_scope_floors: Vec::new(),
+            closure_by_ref_bodies: std::collections::HashSet::new(),
             loop_label_stack: Vec::new(),
         }
     }
@@ -234,15 +253,20 @@ impl TypeCheckContext {
     /// capture either; the caller's own "unknown identifier" path
     /// reports that.
     pub fn is_captured_binding(&self, name: DefaultSymbol) -> bool {
-        let Some(floor) = self.closure_scope_floors.last() else {
-            return false;
-        };
+        self.capture_of_open_closure(name).is_some()
+    }
+
+    /// The capture, with the mode of the closure that holds it.
+    /// `Some(true)` means the closure shares the binding, so a write
+    /// through it is an ordinary write (CLOSURE-CAPTURE E3).
+    pub fn capture_of_open_closure(&self, name: DefaultSymbol) -> Option<bool> {
+        let frame = self.closure_scope_floors.last()?;
         for (index, scope) in self.vars.iter().enumerate().rev() {
             if scope.contains_key(&name) {
-                return index < *floor;
+                return (index < frame.floor).then_some(frame.by_ref);
             }
         }
-        false
+        None
     }
 
     /// Backwards-compatible: registers under `(None, name)` (the

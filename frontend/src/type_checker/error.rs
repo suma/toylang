@@ -175,14 +175,10 @@ pub enum TypeCheckErrorKind {
     /// captured binding it reaches (`count`, `p`, `a`); they are equal
     /// for a bare rebind.
     ///
-    /// The two cases fail differently without the check, which is why
-    /// the message distinguishes them. A bare rebind is discarded:
-    /// four of the five engines answered a counter closure `1, 1, 0`
-    /// and the tree-walker rejected it at run time claiming the `var`
-    /// had been declared `val`. A write *through* a capture reaches
-    /// the outer binding on the three interpreter engines (a captured
-    /// compound keeps its `Rc` cell) and does not compile at all on
-    /// the two compiled ones.
+    /// Only closures that capture by *copy* reach here: one that
+    /// shares its captures (E3) writes to the outer binding like any
+    /// other code, and the only question left is whether that binding
+    /// is mutable.
     CapturedAssign { target: String, root: String },
 }
 
@@ -620,16 +616,18 @@ impl TypeCheckError {
                 )
             }
             TypeCheckErrorKind::CapturedAssign { target, root } => {
+                let shared = "a closure that is only called where it is defined shares its \
+                              captures instead";
                 if target == root {
                     format!(
-                        "cannot assign to `{target}` from inside a closure: a capture is a \
-                         snapshot taken when the closure was created, so the write would not be \
-                         seen by anything outside the closure"
+                        "cannot assign to `{target}` from inside a closure: this closure can \
+                         outlive `{target}`, so it captured a copy and the write would reach \
+                         nothing ({shared})"
                     )
                 } else {
                     format!(
-                        "cannot assign to `{target}` from inside a closure: `{root}` is captured, \
-                         and a closure cannot write through a binding it captured"
+                        "cannot assign to `{target}` from inside a closure: this closure can \
+                         outlive `{root}`, so it captured a copy of it ({shared})"
                     )
                 }
             }

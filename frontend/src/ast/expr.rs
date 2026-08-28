@@ -258,6 +258,17 @@ pub enum Expr {
         params: ParameterList,
         return_type: Option<TypeDecl>,
         body: ExprRef,
+        /// CLOSURE-CAPTURE E3: does this closure share its captured
+        /// bindings with the scope that owns them, rather than taking
+        /// a copy of each?
+        ///
+        /// The parser always writes `false`; the type checker sets it
+        /// after deciding the closure cannot outlive those bindings
+        /// (`closure_escape`). Backends read it rather than repeating
+        /// the analysis — the three independent copies of the *capture
+        /// scan* are what let the engines disagree about writes in the
+        /// first place.
+        captures_by_ref: bool,
     },
     /// `expr?` — postfix early-return operator. The parser emits this
     /// node; the type checker rewrites it to a `match` over the

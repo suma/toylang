@@ -6,8 +6,8 @@
 //   - higher-order functions accept closure arguments
 //   - free variables are captured at closure-creation time and
 //     stay live after the outer scope exits
-//   - mutating the outer binding after capture doesn't disturb the
-//     captured snapshot for primitives
+//   - a closure only called where it is defined shares its captures
+//     (CLOSURE-CAPTURE E3); one that can outlive them keeps a copy
 //   - closures can return closures (nested)
 //   - argument-count and arg-type mismatches surface as errors
 //
@@ -79,10 +79,12 @@ fn closure_zero_args_returns_constant() {
 }
 
 #[test]
-fn closure_capture_snapshot_is_independent_of_post_capture_mutation() {
-    // Primitives are captured by value (the closure holds its own
-    // `Object::Int64(...)` cell), so reassigning the outer binding
-    // after capture must not change the closure's behaviour.
+fn a_shared_capture_follows_the_binding_after_reassignment() {
+    // This used to answer 42: a primitive was captured by value into
+    // the closure's own cell, so reassigning the outer binding left
+    // the closure on the old one. CLOSURE-CAPTURE E3 made a closure
+    // that is only called where it is defined share its captures, so
+    // the read sees 100.
     assert_program_result_i64(
         "fn main() -> i64 {
             var n: i64 = 10i64
@@ -90,7 +92,39 @@ fn closure_capture_snapshot_is_independent_of_post_capture_mutation() {
             n = 100i64
             add_n(32i64)
         }",
+        132,
+    );
+}
+
+#[test]
+fn a_copied_capture_keeps_the_value_it_was_built_from() {
+    // The other half of the same rule. `add_n` is handed to `run`, so
+    // it can outlive `n` and keeps a copy — the reassignment after it
+    // was built is not visible to it.
+    assert_program_result_i64(
+        "fn run(g: fn (i64) -> i64, v: i64) -> i64 { g(v) }
+        fn main() -> i64 {
+            var n: i64 = 10i64
+            val add_n = fn(x: i64) -> i64 { x + n }
+            n = 100i64
+            run(add_n, 32i64)
+        }",
         42,
+    );
+}
+
+#[test]
+fn a_counter_closure_updates_the_binding_it_captured() {
+    assert_program_result_u64(
+        "fn main() -> u64 {
+            var count: u64 = 0u64
+            val bump = fn() -> u64 { count = count + 1u64  count }
+            bump()
+            bump()
+            bump()
+            count
+        }",
+        3,
     );
 }
 

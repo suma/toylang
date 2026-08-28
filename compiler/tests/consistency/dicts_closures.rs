@@ -392,12 +392,14 @@ fn closure_phase6_multi_capture_direct_call_round_trip() {
 }
 
 #[test]
-fn closure_phase6_capture_snapshot_independent_of_post_capture_mutation() {
-    // Primitives are captured by value at lift time — `MakeClosure`
-    // stores the current binding's loaded value into the env, so
-    // a subsequent reassignment of the outer `n` doesn't affect
-    // the closure's behaviour. Mirrors the interpreter Phase 3
-    // semantics.
+fn closure_phase6_capture_follows_the_binding_after_reassignment() {
+    // This used to pin the opposite: `MakeClosure` stored the loaded
+    // value, so reassigning the outer `n` afterwards left the closure
+    // on the old one and the answer was 42. CLOSURE-CAPTURE E3 made a
+    // closure that is only called where it is defined share its
+    // captures, so the env slot holds `n`'s address and the read sees
+    // 100. The pin stays because all five engines have to agree on
+    // which of the two it is.
     let src = r#"
         fn main() -> i64 {
             var n: i64 = 10i64
@@ -406,7 +408,7 @@ fn closure_phase6_capture_snapshot_independent_of_post_capture_mutation() {
             add_n(32i64)
         }
     "#;
-    assert_consistent(src, "closure_phase6_capture_snapshot");
+    assert_consistent(src, "closure_phase6_capture_after_reassign");
 }
 
 #[test]
@@ -646,16 +648,14 @@ fn closure_phase6c_all_narrow_widths_captured_round_trip() {
     assert_consistent(src, "closure_phase6c_all_narrow_widths");
 }
 
-// CLOSURE-CAPTURE E0/E1 — writes to a captured binding.
+// CLOSURE-CAPTURE E0/E1/E3 — writes to a captured binding.
 //
 // The closure tests above cover *reads* only (phases 5a/5b/6b/6c),
 // which is how a counter closure came to answer `1, 1, 0` on the IR
 // VM, both JITs and AOT while the tree-walker rejected it at run time
-// with a reason that was not true. The rejection now lives in the
-// shared frontend, so the disagreement cannot come back one engine at
-// a time.
+// with a reason that was not true.
 #[test]
-fn writing_to_a_captured_binding_is_rejected_before_any_engine_runs() {
+fn counter_closure_round_trip() {
     let src = r#"
 fn main() -> u64 {
     var count: u64 = 0u64
@@ -665,17 +665,81 @@ fn main() -> u64 {
     count
 }
 "#;
+    assert_consistent(src, "closure_counter");
+}
+
+// A closure that shares its captures reads them live too, so a write
+// between calls is visible on the next one.
+#[test]
+fn shared_capture_sees_the_current_value_round_trip() {
+    let src = r#"
+fn main() -> u64 {
+    var n: u64 = 1u64
+    val show = fn() -> u64 { n }
+    val first = show()
+    n = 40u64
+    first + show()
+}
+"#;
+    assert_consistent(src, "closure_shared_capture_live_read");
+}
+
+// Widths other than the machine word go through the same pointer, so
+// the store and the load have to agree on the narrow width.
+#[test]
+fn shared_capture_of_a_narrow_int_round_trip() {
+    let src = r#"
+fn main() -> i64 {
+    var acc: i32 = 1i32
+    val step = fn(by: i32) -> i32 { acc = acc + by  acc }
+    step(2i32)
+    step(4i32)
+    acc as i64
+}
+"#;
+    assert_consistent(src, "closure_shared_capture_narrow");
+}
+
+// A closure handed to someone else can outlive the frame that owns
+// its captures, so it keeps a copy and the write is refused. The
+// rejection lives in the shared frontend, so the five engines cannot
+// drift apart on it one at a time.
+#[test]
+fn writing_to_a_capture_of_an_escaping_closure_is_rejected() {
+    let src = r#"
+fn run(g: fn () -> u64) -> u64 { g() }
+fn main() -> u64 {
+    var count: u64 = 0u64
+    val bump = fn() -> u64 { count = count + 1u64  count }
+    run(bump)
+}
+"#;
     let errors = type_check_errors(src);
     assert!(
-        errors.iter().any(|e| e.contains("count") && e.contains("closure")),
-        "expected the write to `count` to be rejected as a capture, got: {errors:?}"
+        errors.iter().any(|e| e.contains("count") && e.contains("outlive")),
+        "expected the write to `count` to be rejected as a copy, got: {errors:?}"
+    );
+}
+
+// Returning the closure is the other way out of the frame.
+#[test]
+fn writing_to_a_capture_of_a_returned_closure_is_rejected() {
+    let src = r#"
+fn make() -> fn () -> u64 {
+    var count: u64 = 0u64
+    fn() -> u64 { count = count + 1u64  count }
+}
+fn main() -> u64 { val f = make()  f() }
+"#;
+    let errors = type_check_errors(src);
+    assert!(
+        errors.iter().any(|e| e.contains("count") && e.contains("outlive")),
+        "expected the write in the returned closure to be rejected, got: {errors:?}"
     );
 }
 
 // Reading a capture and writing to a binding the closure owns are
-// both still legal, and every engine agrees on the answer. Pinned
-// together with the rejection above so a future mutable-capture
-// phase (E3) cannot widen the rule past what it means to widen.
+// both still legal, and every engine agrees on the answer.
 #[test]
 fn closure_local_write_over_a_captured_read_round_trip() {
     let src = r#"
@@ -698,19 +762,20 @@ fn main() -> u64 {
 // undefined identifier. The shape of the value decided the meaning;
 // the rule is now the same for both shapes.
 #[test]
-fn writing_through_a_captured_compound_is_rejected_before_any_engine_runs() {
+fn writing_through_a_captured_compound_of_an_escaping_closure_is_rejected() {
     let src = r#"
 struct P { x: i64 }
+fn run(g: fn () -> i64) -> i64 { g() }
 fn main() -> i64 {
     var p = P { x: 1i64 }
     val f = fn() -> i64 { p.x = p.x + 1i64  p.x }
-    f()
+    run(f)
 }
 "#;
     let errors = type_check_errors(src);
     assert!(
-        errors.iter().any(|e| e.contains("p.x") && e.contains("captured")),
-        "expected the write through `p` to be rejected as a capture, got: {errors:?}"
+        errors.iter().any(|e| e.contains("p.x") && e.contains("outlive")),
+        "expected the write through `p` to be rejected as a copy, got: {errors:?}"
     );
 }
 

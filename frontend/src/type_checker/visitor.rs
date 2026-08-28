@@ -847,6 +847,20 @@ impl<'a> TypeCheckerVisitor<'a> {
             _ => return Err(TypeCheckError::generic_error("type_check: expected block statement")),
         };
 
+        // CLOSURE-CAPTURE E3: decide each closure's capture mode
+        // before the body is checked, so an assignment to a capture
+        // knows whether it reaches anything. Writing the answer onto
+        // the closure node is what lets the backends read it without
+        // repeating the analysis.
+        let prev_by_ref = std::mem::replace(
+            &mut self.context.closure_by_ref_bodies,
+            crate::type_checker::mark_by_ref_closures(
+                self.core.expr_pool,
+                self.core.stmt_pool,
+                &statements,
+            ),
+        );
+
         self.push_context();
         // Install this function's generic-param bounds (e.g. `<A: Allocator>`)
         // so that the body can look up bounds on `TypeDecl::Generic(A)` during
@@ -915,6 +929,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 Err(e) => {
                     // Restore bounds so a following type-check doesn't inherit them.
                     self.context.current_fn_generic_bounds = prev_bounds;
+                    self.context.closure_by_ref_bodies = prev_by_ref;
                     return Err(e);
                 }
             }
@@ -959,6 +974,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         self.pop_context();
         self.context.current_fn_generic_bounds = prev_bounds;
+        self.context.closure_by_ref_bodies = prev_by_ref;
         self.function_checking.call_depth -= 1;
         self.current_fn_return_type = prev_fn_return;
 

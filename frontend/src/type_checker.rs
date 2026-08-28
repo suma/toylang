@@ -65,6 +65,9 @@ pub use move_check::check_moves;
 mod contains_drop;
 pub use contains_drop::{type_contains_drop, DropAnalysis};
 
+mod closure_escape;
+pub use closure_escape::mark_by_ref_closures;
+
 mod visitor;
 mod visitor_impl;
 mod module_access;

@@ -1858,28 +1858,53 @@ The empty-parameter form `fn () -> R` (and `() -> R`) is valid
 
 ### Captures
 
-Free variables in the body are captured at closure-creation time.
-Primitives are captured by value (a snapshot of the current
-binding); compound values (`struct`, `array`, `dict`, …) share the
-existing reference so mutations through the original are visible
-in the closure. This matches how every other binding behaves in
-the interpreter.
+Free variables in the body are captured when the closure is
+created. *How* they are captured depends on whether the closure can
+outlive them.
+
+**A closure that is only called where it is defined shares them.**
+Reads see the current value and writes reach the outer binding, so a
+counter can live inside a closure:
 
 ```rust
-val n: i64 = 10i64
+var count: u64 = 0u64
+val bump = fn() -> u64 { count = count + 1u64  count }
+bump()                        # 1
+bump()                        # 2
+count                         # 2 — the closure wrote to this binding
+```
+
+```rust
+var n: i64 = 10i64
 val add_n = fn(x: i64) -> i64 { x + n }
-add_n(32i64)                  # 42
+n = 100i64
+add_n(32i64)                  # 132 — the read is live
 ```
 
-Reassigning the outer binding after capture does not disturb the
-closure's snapshot for primitives:
+**A closure that can outlive them takes a copy.** The frame that owns
+the bindings may be gone by the time such a closure runs, so it
+carries their values instead of their storage:
 
 ```rust
-var n: i64 = 1i64
-val show_n = fn() -> i64 { n }
-n = 999i64
-show_n()                      # 1 — captured the original value
+fn run(g: fn (i64) -> i64, v: i64) -> i64 { g(v) }
+
+var n: i64 = 10i64
+val add_n = fn(x: i64) -> i64 { x + n }
+n = 100i64
+run(add_n, 32i64)             # 42 — built from the value `n` had
 ```
+
+Writing to a copy would reach nothing, so it is rejected
+(`[E0021]`, `--explain E0021`). This applies to writing *through* a
+capture too (`p.x = ...`, `a[i] = ...`).
+
+A closure escapes by being used as a value rather than called:
+returned, passed to a function, stored in a struct, or called from
+inside another closure. The judgement is syntactic and deliberately
+blunt — being wrong that way costs a diagnostic, being wrong the
+other way would read a frame that is gone.
+
+Example: `interpreter/example/closure_counter.t`.
 
 ### Type-checker rules
 
@@ -1914,7 +1939,11 @@ show_n()                      # 1 — captured the original value
   recovers the fn-pointer from `env+0` and prepends env to
   the user-visible args. Captures support both 8-byte scalars
   (i64 / u64 / f64 / bool) and narrow ints (u8 / u16 / u32 /
-  i8 / i16 / i32). Stdlib HOF methods on generic enums
+  i8 / i16 / i32). A *shared* capture puts the address of the
+  outer local in the env slot instead of its value, and the
+  body binds it as a borrow — the same machinery a `&mut`
+  argument uses, so reads and writes go through the pointer.
+  Stdlib HOF methods on generic enums
   (`Option::map` / `Result::map` / `map_err` /
   `unwrap_or_else`) work on every backend. The remaining gap
   is the same shape on a *user-defined* generic enum, where

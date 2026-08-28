@@ -1401,7 +1401,12 @@ pub fn lower_program(
                 &mut pending_glue_work,
                 &mut scheduled,
             )?;
-            builder.lower_closure_body(&work.parameter, &work.body, &work.captures)?;
+            builder.lower_closure_body(
+                &work.parameter,
+                &work.body,
+                &work.captures,
+                work.captures_by_ref,
+            )?;
             schedule_from_ir(
                 &module,
                 work.func_id,

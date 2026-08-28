@@ -122,7 +122,14 @@ impl AstBuilder {
         body: ExprRef,
         location: Option<SourceLocation>,
     ) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::Closure { params, return_type, body });
+        let expr_ref = self.expr_pool.add(Expr::Closure {
+            params,
+            return_type,
+            body,
+            // CLOSURE-CAPTURE E3: the parser cannot know whether the
+            // closure outlives its captures; the type checker decides.
+            captures_by_ref: false,
+        });
         self.location_pool.add_expr_location(location);
         expr_ref
     }

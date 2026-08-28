@@ -19,6 +19,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | LLM 向けの診断・テスト機能の設計 | [`design-docs/LLM_FEEDBACK_LOOP.md`](design-docs/LLM_FEEDBACK_LOOP.md) |
 | backtrace / 行番号 / ファイル名の設計 | [`design-docs/DEBUG_OBSERVABILITY.md`](design-docs/DEBUG_OBSERVABILITY.md) |
 | `const fn` / コンパイル時実行の設計 | [`design-docs/COMPILE_TIME_EVAL.md`](design-docs/COMPILE_TIME_EVAL.md) |
+| closure が捕捉した束縛をどう掴むかの設計 | [`design-docs/CLOSURE_CAPTURE.md`](design-docs/CLOSURE_CAPTURE.md) |
 | このリポジトリで LLM が作業する際の指針 | [`design-docs/COMPILER_DEV_LOOP.md`](design-docs/COMPILER_DEV_LOOP.md) |
 
 以下の「Language Syntax」節は**日常的に踏む要点の早見表**であって仕様書ではない。
@@ -371,7 +372,7 @@ fn main() -> u64 {
   - **多重 trait bound `<T: A + B>`** — call-site の bound check は AND (全 trait 必須)、method dispatch は OR (最初に持つ trait を採用)。3 backend で動作
   - **`dyn Trait`** — `&dyn TraitName` による動的ディスパッチ。interpreter / AOT / compiler 側 JIT で動作 (empty struct / scalar field / nested field、`&mut dyn` writeback、struct / tuple / enum return の全組合せ)。interpreter 側 JIT は silent fallback。fat pointer ABI と vtable の設計は [`design-docs/DYN_TRAIT_AOT.md`](design-docs/DYN_TRAIT_AOT.md)
   - **未対応**: trait 継承 (A3)、associated types (A4)、interpreter 側 JIT の `dyn Trait` 対応 (compiler 側 JIT は対応済み)、`Box<dyn Trait>`、generic trait body 内での T 参照
-- **クロージャ / ラムダ** — `fn(params) -> R { body }` の anonymous function literal。関数型は `fn (T1, T2) -> R` (推奨) / `(T1, T2) -> R` (bare)。parameter / return / `val` 注釈 / struct field 型に書ける。capture は生成時スナップショット。interpreter は full support、AOT は env-based ABI で capturing / non-capturing 両対応、JIT は silent fallback。詳細は [`docs/language.md`](docs/language.md)
+- **クロージャ / ラムダ** — `fn(params) -> R { body }` の anonymous function literal。関数型は `fn (T1, T2) -> R` (推奨) / `(T1, T2) -> R` (bare)。parameter / return / `val` 注釈 / struct field 型に書ける。**capture の仕方は closure が捕捉した束縛より長生きしうるかで決まる** (CLOSURE-CAPTURE): `val f = fn(...)` に束縛して**同じ関数の中で呼ぶだけ**なら束縛を共有し (読みは live、書きは外へ通る — カウンタが書ける)、値として渡す / 返す / struct に入れる / 別の closure から呼ぶなら**コピー**を持つ (書き込みは `[E0021]`)。interpreter は full support、AOT は env-based ABI で capturing / non-capturing 両対応、JIT は silent fallback。詳細は [`docs/language.md`](docs/language.md) と [`design-docs/CLOSURE_CAPTURE.md`](design-docs/CLOSURE_CAPTURE.md)
 - **契約述語は副作用を持てない** (COMPILE-TIME-EVAL C4、`E0018`、**現状は警告**):
   `requires` / `ensures` から heap 確保 / free / ptr write / `print` /
   追えない呼び出し (`extern` / closure / `dyn`) に到達すると警告。

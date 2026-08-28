@@ -695,49 +695,49 @@ the value was legal after all. `INTERPRETER_CONTRACTS=off` and
 making the program correct.";
 
 const E0021: &str = "\
-E0021: a closure assigns to a binding it captured
+E0021: a closure assigns to a binding it captured by copy
 
-A closure captures the free variables in its body when it is *created*,
-by value. The captured copy is the closure\'s own, so assigning to it
-inside the body reaches nothing outside:
+A closure that is only ever called where it is defined *shares* the
+bindings it captures: reads see the current value and writes reach the
+outer binding.
 
     var count: u64 = 0u64
-    val bump = fn() -> u64 { count = count + 1u64  count }   # E0021
+    val bump = fn() -> u64 { count = count + 1u64  count }
+    bump()                      # 1
+    bump()                      # 2
+    count                       # 2
 
-Without this check that program answered `1`, `1`, `0` on four of the
-five engines — each call started from the same snapshot and the writes
-were discarded — while the tree-walker stopped it at run time claiming
-`count` had been declared `val`, which it had not.
+A closure that can outlive those bindings cannot share them — the
+frame that owns them may be gone by the time it runs — so it captures
+a copy, and writing to a copy reaches nothing. That is this error:
 
-Writing *through* a capture is refused for the same reason, even
-though it used to appear to work:
+    fn make() -> fn () -> u64 {
+        var count: u64 = 0u64
+        fn() -> u64 { count = count + 1u64  count }     # E0021
+    }
 
-    var p = P { x: 1i64 }
-    val f = fn() -> i64 { p.x = p.x + 1i64  p.x }           # E0021
+A closure escapes by being used as a value rather than called:
+returned, passed to a function, stored in a struct, or called from
+inside another closure. The judgement is syntactic and deliberately
+blunt — being wrong this way costs a diagnostic, being wrong the other
+way reads a dead frame.
 
-A captured compound keeps its cell rather than being copied, so on the
-three interpreter engines that write did reach `p` — while the two
-compiled engines could not build the program at all, reporting `p` as
-an undefined identifier. The shape of the value decided the meaning.
-`a[i] = v` through a capture is the same rule; it used to fail as an
-internal error on every engine.
+Writing *through* a capture (`p.x = ...`, `a[i] = ...`) follows the
+same rule as writing to it. Before the rule existed the shape of the
+value decided the meaning: a captured compound kept its cell, so the
+write reached the outer binding on the three interpreter engines,
+while the two compiled engines could not build the program at all.
 
-The rule is about *where the binding is*, not how it was declared:
-`var` and `val` are refused alike, and the advice attached to the `val`
-rule (\"use `var`\") would be a dead end here. Reading a capture is
-fine, and so is assigning to a binding the closure declares itself:
-
-    val step: u64 = 2u64
-    val f = fn(x: u64) -> u64 { var acc = x  acc = acc + step  acc }
-
-To fix: return the value and assign it at the call site.
+To fix an escaping closure: return the value and assign it at the call
+site, or keep the closure where its captures live.
 
     var count: u64 = 0u64
     val bump = fn(n: u64) -> u64 { n + 1u64 }
     count = bump(count)
 
-Mutable capture is planned (`design-docs/CLOSURE_CAPTURE.md`, E3); this
-code is what the compiler says until it lands.";
+The rule is about *where the binding is*, not how it was declared. A
+`val` capture is refused for the same reason a `var` one is, so \"use
+`var`\" is not the fix.";
 
 #[cfg(test)]
 mod tests {

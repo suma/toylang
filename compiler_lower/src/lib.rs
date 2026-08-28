@@ -503,6 +503,11 @@ pub(crate) struct PendingClosureBody {
     pub(crate) parameter: frontend::ast::ParameterList,
     pub(crate) body: frontend::ast::ExprRef,
     pub(crate) captures: Vec<(DefaultSymbol, Type)>,
+    /// CLOSURE-CAPTURE E3: the env slots hold the *addresses* of the
+    /// outer locals rather than copies of them, so the body binds
+    /// each capture as a `RefScalar` and reads / writes through the
+    /// pointer. Decided by the type checker (`closure_escape`).
+    pub(crate) captures_by_ref: bool,
 }
 
 /// A5-P2-MVP-E: which multi-result IR variant a compound-returning
@@ -603,6 +608,7 @@ impl<'a> FunctionLower<'a> {
         params: &frontend::ast::ParameterList,
         return_type: &Option<frontend::type_decl::TypeDecl>,
         body: &frontend::ast::ExprRef,
+        captures_by_ref: bool,
     ) -> Result<Option<crate::ir::ValueId>, String> {
         // Phase 6b: every closure body — capturing or not —
         // takes an implicit `env: U64` first parameter so a
@@ -688,6 +694,23 @@ impl<'a> FunctionLower<'a> {
                     ));
                 }
             };
+            if captures_by_ref {
+                // CLOSURE-CAPTURE E3: the slot carries the address of
+                // the outer local, so reads see its current value and
+                // writes land on it. The same machinery `&mut x`
+                // arguments use — the local moves to a stack slot and
+                // the body binds a `RefScalar`.
+                self.module
+                    .function_mut(self.func_id)
+                    .address_taken_locals
+                    .insert(local);
+                let v = self
+                    .emit(crate::ir::InstKind::AddressOf { local }, Some(Type::U64))
+                    .ok_or_else(|| "capture AddressOf returned no value".to_string())?;
+                capture_vals.push(v);
+                capture_tys.push(Type::U64);
+                continue;
+            }
             let v = self
                 .emit(crate::ir::InstKind::LoadLocal(local), Some(*cap_ty))
                 .ok_or_else(|| "capture LoadLocal returned no value".to_string())?;
@@ -716,6 +739,7 @@ impl<'a> FunctionLower<'a> {
             parameter: params.clone(),
             body: *body,
             captures,
+            captures_by_ref,
         });
         Ok(None)
     }
@@ -1075,6 +1099,10 @@ impl<'a> FunctionLower<'a> {
             parameter: params.clone(),
             body: *body,
             captures,
+            // An inline closure literal is being handed to someone
+            // else, which is exactly the shape that can outlive the
+            // frame — it takes copies.
+            captures_by_ref: false,
         });
         Ok(self.emit(
             crate::ir::InstKind::MakeClosure {
@@ -1499,6 +1527,7 @@ impl<'a> FunctionLower<'a> {
         parameter: &frontend::ast::ParameterList,
         body_expr_ref: &frontend::ast::ExprRef,
         captures: &[(DefaultSymbol, Type)],
+        captures_by_ref: bool,
     ) -> Result<(), String> {
         let param_types: Vec<Type> = self.module.function(self.func_id).params.clone();
         // Phase 6b: every closure body has env: U64 as IR
@@ -1551,25 +1580,39 @@ impl<'a> FunctionLower<'a> {
                         Some(Type::U64),
                     )
                     .ok_or_else(|| "capture load: offset const returned no value".to_string())?;
+                // CLOSURE-CAPTURE E3: a shared capture's slot holds
+                // the address of the outer local, so the slot is read
+                // as a pointer and the name binds to it. Every read
+                // and write in the body then goes through `LoadRef` /
+                // `StoreRef` — the outer binding *is* the storage,
+                // which is what makes the value live rather than a
+                // copy taken when the closure was built.
+                let slot_ty = if captures_by_ref { Type::U64 } else { *cap_ty };
                 let v = self
                     .emit(
                         crate::ir::InstKind::PtrRead {
                             ptr: env_v,
                             offset: offset_v,
-                            elem_ty: *cap_ty,
+                            elem_ty: slot_ty,
                         },
-                        Some(*cap_ty),
+                        Some(slot_ty),
                     )
                     .ok_or_else(|| "capture load: PtrRead returned no value".to_string())?;
-                let local = self.module.function_mut(self.func_id).add_local(*cap_ty);
+                let local = self.module.function_mut(self.func_id).add_local(slot_ty);
                 self.emit(
                     crate::ir::InstKind::StoreLocal { dst: local, src: v },
                     None,
                 );
-                self.bindings.insert(
-                    *cap_name,
-                    bindings::Binding::Scalar { local, ty: *cap_ty },
-                );
+                let binding = if captures_by_ref {
+                    bindings::Binding::RefScalar {
+                        local,
+                        pointee_ty: *cap_ty,
+                        is_mut: true,
+                    }
+                } else {
+                    bindings::Binding::Scalar { local, ty: *cap_ty }
+                };
+                self.bindings.insert(*cap_name, binding);
             }
         }
         let body_value = self.lower_expr(body_expr_ref)?;

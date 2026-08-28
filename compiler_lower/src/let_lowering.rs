@@ -68,8 +68,14 @@ impl<'a> FunctionLower<'a> {
         // `name(args)` call resolves to a direct `Call`. Captures
         // are rejected up-front because Phase 5a can't pass them
         // into the lifted body — those land in Phase 6.
-        if let Expr::Closure { params, return_type, body } = rhs.clone() {
-            return self.lift_closure_binding(name, &params, &return_type, &body);
+        if let Expr::Closure { params, return_type, body, captures_by_ref } = rhs.clone() {
+            return self.lift_closure_binding(
+                name,
+                &params,
+                &return_type,
+                &body,
+                captures_by_ref,
+            );
         }
         // Tuple-literal RHS: allocate one local per element. Like
         // structs, tuples never flow through the IR's value graph;

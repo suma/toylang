@@ -1143,14 +1143,14 @@ pub fn resolve_array_lengths(
                 resolve_size_in_type(&mut ty, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
                 Expr::Cast(target, ty)
             }
-            Expr::Closure { mut params, mut return_type, body } => {
+            Expr::Closure { mut params, mut return_type, body, captures_by_ref } => {
                 for (_, ty) in params.iter_mut() {
                     resolve_size_in_type(ty, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
                 }
                 if let Some(ret) = return_type.as_mut() {
                     resolve_size_in_type(ret, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
                 }
-                Expr::Closure { params, return_type, body }
+                Expr::Closure { params, return_type, body, captures_by_ref }
             }
             _ => continue,
         };

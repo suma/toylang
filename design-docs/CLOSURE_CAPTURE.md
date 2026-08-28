@@ -17,10 +17,10 @@ CLOSURE-CAPTURE を ★★ で「closure の利用が増える前に決めたい
 | **E0** | 目標文言の固定 + 5 レーンを pin する consistency テスト | ✅ 2026-08-28 |
 | **E1** | 捕捉した束縛への代入を診断する (黙った誤答を止める) | ✅ 2026-08-28 |
 | **E2** | capture mode の形依存を解消する (scalar コピー / compound alias) | ✅ 2026-08-28 |
-| **E3** | 直接呼び出しの closure を可変捕捉にする (env の sync-in / sync-out) | 未着手 |
+| **E3** | escape しない closure の捕捉を共有にする | ✅ 2026-08-28 |
 | **E4** | HOF / escape する closure の可変捕捉 | 未着手 |
 | **E5** | compiled レーンの compound capture と診断の統一 | 未着手 |
-| **E6** | docs (`docs/language.md` の Captures 節) | 未着手 |
+| **E6** | docs (`docs/language.md` の Captures 節) | ✅ 2026-08-28 (E3 と同時) |
 
 ---
 
@@ -235,11 +235,18 @@ env は生成時のコピーで、書き戻す経路が無い (実測 5 の参�
 | **sync-in / sync-out** | 呼び出しの直前に外側ローカル → env、直後に env → 外側ローカル | 呼び出し位置から外側ローカルが見える場合のみ = **直接呼び出し** |
 | **アドレス捕捉** | env にローカルのアドレスを入れる (cranelift の explicit stack slot) | HOF 越しでも効く |
 
-**決定 (案): E3 で sync-in / sync-out、E4 でアドレス捕捉。** 前者は
-`CallWithSelfWriteback` という**既にある writeback の仕組みの隣**に置けて、
-アドレスを取る必要がない (= どのローカルをスタックに落とすかの判断が要らない)。
-そして実測で踏む形の大半は「`val f = fn() ...` を同じ関数の中で呼ぶ」である。
-HOF 越しの可変捕捉は E4 まで**診断で拒否**する — 黙って誤答するより良い。
+**実装したのはアドレス捕捉の方** (草案は sync-in / sync-out を先に置いていた)。
+理由は 2 つ。(a) **足場が既にあった** — `AddressOf` +
+`address_taken_locals` + `Binding::RefScalar` (`LoadRef` / `StoreRef`) が
+REF-Stage-2 の `&mut` 引数のために揃っていて、closure の env スロットに
+値の代わりにアドレスを入れ、body 側で `RefScalar` に束縛するだけで
+読み書きが通る。(b) **論点 7 で読みも live にしたので sync-in / sync-out
+では足りない** — 呼び出しの前後で同期する方式は「呼び出し中に外から
+書き換わらない」ことに依存しており、読みが live という約束を
+表現できない。アドレスなら読みも書きも定義どおりになる。
+
+HOF 越し (E4) が残るのは lowering の都合ではなく**寿命の判断**の方
+(論点 2) で、そこは今も診断で拒否する。
 
 ### 論点 4: 形依存 (実測 3) をどちらに寄せるか
 
@@ -252,6 +259,27 @@ compound のフィールド書き込みが外に通るのは、**A の下では�
 **移行の代償を明示しておく**: 実測 3 のプログラムは今日 interpreter で
 動いており、E1 で一度**エラーになる**。ただしこれは compiler JIT / AOT で
 コンパイルできないプログラムなので、**移植可能なコードは 1 行も失われない**。
+
+### 論点 7: 共有 closure の**読み**も live にするか (E3 で追加)
+
+書き込みを外へ通すと決めた時点で、読みをどうするかが別の判断として残る。
+
+| 案 | 内容 |
+|---|---|
+| **書く capture だけ live** | 代入する capture だけ共有、読むだけの capture は従来どおり snapshot |
+| **escape しないなら全部 live** | 共有 closure の capture は読み書きとも外側と同じ束縛 |
+
+**決定: 後者** (2026-08-28、利用者判断)。前者は同じ関数の中で
+「`f` は 1 を返し `g` は進む」が並ぶことになり、**closure が何をするかで
+読みの意味が変わる**。後者なら規則は「escape するかどうか」の 1 本になる。
+
+代償は既存の pin と docs を書き換えたこと: `add_n` の例が
+**42 → 132** になった (`closure_phase6_capture_snapshot_...` /
+`closure_capture_snapshot_...` の 2 件と `docs/language.md` の
+Captures 節)。どちらも「snapshot が仕様である」と書いていたので、
+文言ごと差し替えた。**escape する closure は今も snapshot** なので、
+同じ `add_n` を `run(add_n, 32i64)` に渡す形は 42 のまま — その対比を
+docs と example に両方載せてある。
 
 ### 論点 5: 何を先に landing するか
 
@@ -344,17 +372,35 @@ capture の書き込みについて、**何が起きるべきか**を先に表�
 - 実測 5 の「compound を捕捉すると `undefined identifier`」は**読み取りにも
   当たる**ので、compiled レーンでの compound capture は E5 のまま。
 
-### E3 — 直接呼び出しの可変捕捉 (sync-in / sync-out)
+### E3 — escape しない closure の捕捉を共有にする ✅ (2026-08-28)
 
-- 型検査: 捕捉した `var` への書き込みを許可 (escape しない closure に限る)。
-  escape 判定は論点 2 の保守的な構文規則。
-- tree-walker: capture を `set_val` ではなく可変束縛にし、呼び出し後に
-  外側へ書き戻す (capture セルを共有するだけでも足りるか実装時に判断)。
-- compiled: 呼び出しサイトで env に store → call → env から load して
-  外側ローカルへ store。`CallWithSelfWriteback` の隣。
-- interpreter JIT: 同形にできなければ silent fallback (既存の方針)。
-- `interpreter/example/closure_counter.t` を追加し、
-  `example_consistency` に自動で載せる。
+- **escape 判定** (`frontend/src/type_checker/closure_escape.rs`):
+  `val NAME = fn(...)` でこの関数の本体に束縛され、`NAME` の言及が
+  **すべて同じ入れ子での直接呼び出し**なら共有。callee は
+  `Expr::Call(symbol, args)` で symbol なので、**`Identifier(NAME)` が
+  1 つでも現れたら値として使われている** = escape。closure の中からの
+  呼び出しも escape (その closure 自体がフレームより長生きしうる)。
+  同名の 2 回束縛も escape。
+- **答えの置き場所は `Expr::Closure::captures_by_ref`** (AST)。5 実行系
+  すべてが要るうえ、**capture 走査の独立実装が 3 つあることが
+  そもそも今回のずれの原因**なので、解析まで 3 重にはしない。
+  型検査器は同じ 1 回の走査で body ref の集合も返し、自分はそれを使う
+  (visitor は closure node ではなく body を渡されるため)。
+- **tree-walker**: 共有 closure は **capture を 1 つも snapshot しない**。
+  呼び出しはそれを所有するスコープの上に新しいスコープを開くので、
+  shadow しなければ名前は外へ解決し、`Environment::set_var` は
+  スコープスタックを遡って**その束縛のフレームに書く**。1 行で済んだ。
+- **compiled (IR VM / compiler JIT / AOT)**: env スロットに値ではなく
+  **`AddressOf(outer_local)`** を入れ (`address_taken_locals` に登録)、
+  body 側は `Binding::RefScalar { pointee_ty, is_mut: true }` で束縛する。
+  読み書きが `LoadRef` / `StoreRef` になり、外側のローカルが**そのまま
+  記憶域**になる。`value_scalar` が `RefScalar` を pointee 型として
+  答えるようにする必要があった (narrow int の `as` cast が落ちた)。
+- **`.toycache` の schema version を 24 に**。古いキャッシュは
+  `captures_by_ref = false` として読めるので、失うのは共有であって
+  誤って共有することはない。
+- 例: `interpreter/example/closure_counter.t` (`example_consistency`
+  が自動で 3 バックエンド突き合わせに載せる)。
 
 ### E4 — HOF / escape 越しの可変捕捉
 

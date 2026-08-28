@@ -240,6 +240,11 @@ impl<'a> FunctionLower<'a> {
                 // `val g = f` infer the correct slot type when `f`
                 // is a closure binding.
                 Some(Binding::FunctionPtr { .. }) => Some(Type::U64),
+                // A borrow reads as its pointee: `&mut n` and a
+                // shared closure capture (CLOSURE-CAPTURE E3) both
+                // hold a pointer in the IR, but every read of the
+                // name yields the value behind it.
+                Some(Binding::RefScalar { pointee_ty, .. }) => Some(*pointee_ty),
                 Some(_) => None,
                 None => self.const_values.get(&sym).map(|c| c.ty()),
             },

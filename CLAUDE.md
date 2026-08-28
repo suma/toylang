@@ -372,7 +372,7 @@ fn main() -> u64 {
   - **多重 trait bound `<T: A + B>`** — call-site の bound check は AND (全 trait 必須)、method dispatch は OR (最初に持つ trait を採用)。3 backend で動作
   - **`dyn Trait`** — `&dyn TraitName` による動的ディスパッチ。interpreter / AOT / compiler 側 JIT で動作 (empty struct / scalar field / nested field、`&mut dyn` writeback、struct / tuple / enum return の全組合せ)。interpreter 側 JIT は silent fallback。fat pointer ABI と vtable の設計は [`design-docs/DYN_TRAIT_AOT.md`](design-docs/DYN_TRAIT_AOT.md)
   - **未対応**: trait 継承 (A3)、associated types (A4)、interpreter 側 JIT の `dyn Trait` 対応 (compiler 側 JIT は対応済み)、`Box<dyn Trait>`、generic trait body 内での T 参照
-- **クロージャ / ラムダ** — `fn(params) -> R { body }` の anonymous function literal。関数型は `fn (T1, T2) -> R` (推奨) / `(T1, T2) -> R` (bare)。parameter / return / `val` 注釈 / struct field 型に書ける。**capture の仕方は closure が捕捉した束縛より長生きしうるかで決まる** (CLOSURE-CAPTURE): `val f = fn(...)` に束縛して**同じ関数の中で呼ぶだけ**なら束縛を共有し (読みは live、書きは外へ通る — カウンタが書ける)、値として渡す / 返す / struct に入れる / 別の closure から呼ぶなら**コピー**を持つ (書き込みは `[E0021]`)。interpreter は full support、AOT は env-based ABI で capturing / non-capturing 両対応、JIT は silent fallback。詳細は [`docs/language.md`](docs/language.md) と [`design-docs/CLOSURE_CAPTURE.md`](design-docs/CLOSURE_CAPTURE.md)
+- **クロージャ / ラムダ** — `fn(params) -> R { body }` の anonymous function literal。関数型は `fn (T1, T2) -> R` (推奨) / `(T1, T2) -> R` (bare)。parameter / return / `val` 注釈 / struct field 型に書ける。**capture の仕方は closure が捕捉した束縛より長生きしうるかで決まる** (CLOSURE-CAPTURE): `val f = fn(...)` に束縛して**同じ関数の中で呼ぶだけ**なら束縛を共有し (読みは live、書きは外へ通る — カウンタが書ける)、値として渡す / 返す / struct に入れる / 別の closure から呼ぶなら**コピー**を持つ (書き込みは `[E0021]`)。共有 capture は**書かれたスコープで解決する** (呼び出し側で同名を宣言しても持っていかれない)。interpreter は full support、AOT は env-based ABI で capturing / non-capturing 両対応だが **capture できるのは scalar だけ** (struct / tuple / array / dict の capture は名前つきで拒否、interpreter でのみ動く)、JIT は silent fallback。詳細は [`docs/language.md`](docs/language.md) と [`design-docs/CLOSURE_CAPTURE.md`](design-docs/CLOSURE_CAPTURE.md)
 - **契約述語は副作用を持てない** (COMPILE-TIME-EVAL C4、`E0018`、**現状は警告**):
   `requires` / `ensures` から heap 確保 / free / ptr write / `print` /
   追えない呼び出し (`extern` / closure / `dyn`) に到達すると警告。
@@ -409,7 +409,7 @@ fn main() -> u64 {
     - ビット: `&` / `|` / `^` / `<<` / `>>` → `bitand` / `bitor` / `bitxor` / `shl` / `shr` (Self 戻り)
     - 単項: `-` / `~` / `!` → `neg` / `bitnot` / `not` (`(&self) -> Self`)
     - **scope 外**: `&&` / `||` (short-circuit semantics)、chain (`a + b + c`)、binary struct literal operand (`a & Foo { ... }`)
-  - 複合代入: `+=`, `-=`, `*=`, `/=`, `%=`（パーサで `lhs op= rhs` を `lhs = lhs op rhs` に desugar。LHS は identifier / フィールドアクセス対応）
+  - 複合代入: `+=`, `-=`, `*=`, `/=`, `%=` の**算術 5 種のみ**（パーサで `lhs op= rhs` を `lhs = lhs op rhs` に desugar。LHS は identifier / フィールド / タプル添字 / 添字の 4 形）。ビット系 5 種 (`&=` / `|=` / `^=` / `<<=` / `>>=`) は**未実装で parse error** (todo.md の COMPOUND-ASSIGN-BITWISE)
   - 範囲: `..`（例: `0..10`）式として使用可能。`for i in 0..10 { ... }` と `val r = 0..10` の両方が書ける。`for i in 0 to 10` の旧形式も引き続き有効
   - スコープ解決: `::`
   - match arm の区切り: `=>`

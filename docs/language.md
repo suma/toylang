@@ -581,7 +581,7 @@ front-end driver (`interpreter::check_typing*` /
 `compile_file`) routes errors through `ErrorFormatter` for the
 caret-pointer formatting visible in test output.
 
-Every diagnostic carries a stable code (`E0001`…`E0020`). These are
+Every diagnostic carries a stable code (`E0001`…`E0021`). These are
 toylang's own numbering, not Rust's — identical-looking identifiers with
 different meanings would be worse than none. `interpreter --explain
 <CODE>` prints the category, a program that triggers it, and the fix;
@@ -1041,8 +1041,11 @@ Listed lowest precedence first:
 | `[...]` | Indexing / slicing (arrays, dicts, structs with `__getitem__`) |
 
 Compound assignment desugars at parse time: `x += 1` is rewritten to
-`x = x + 1`. Supported forms: `+=`, `-=`, `*=`, `/=`, `%=`. The lhs may
-be an identifier or a field/index access.
+`x = x + 1`. Supported forms are the arithmetic five — `+=`, `-=`,
+`*=`, `/=`, `%=`. The bitwise forms (`&=`, `|=`, `^=`, `<<=`, `>>=`)
+are **not** accepted: each is a parse error, so write `x = x & m`.
+The lhs may be an identifier, a field access (`p.x += 1i64`), a tuple
+index (`t.0 += 1u64`) or an index (`a[i] *= 2u64`).
 
 ### Comparison chain
 
@@ -1904,6 +1907,31 @@ inside another closure. The judgement is syntactic and deliberately
 blunt — being wrong that way costs a diagnostic, being wrong the
 other way would read a frame that is gone.
 
+A shared capture resolves in the scope the closure was *written* in,
+not the one it is called from. A binding declared between the literal
+and the call does not come between them:
+
+```rust
+var n: u64 = 1u64
+val f = fn() -> u64 { n }
+if true {
+    val n: u64 = 99u64
+    f() + n                   # 100 — `f` reads the outer `n`, not this one
+}
+```
+
+*Which shapes* may be captured depends on the backend. The interpreter
+captures a binding of any shape; the compiled backends carry only
+primitive scalars in a closure env and refuse anything else by name:
+
+```
+compiler MVP: capturing closure cannot capture `p` — only primitive
+scalars fit a closure env yet, and this binding is a compound
+```
+
+So a closure that captures a struct, tuple, array or dict runs in the
+interpreter but cannot be AOT-compiled.
+
 Example: `interpreter/example/closure_counter.t`.
 
 ### Type-checker rules
@@ -1942,7 +1970,12 @@ Example: `interpreter/example/closure_counter.t`.
   i8 / i16 / i32). A *shared* capture puts the address of the
   outer local in the env slot instead of its value, and the
   body binds it as a borrow — the same machinery a `&mut`
-  argument uses, so reads and writes go through the pointer.
+  argument uses, so reads and writes go through the pointer. A
+  closure written inside a sharing closure works too: it is
+  handed the same pointer when it shares, and reads through it
+  when it takes a copy. A capture of any other shape (struct,
+  tuple, array, dict) is refused by name rather than lowered —
+  see *Captures* above.
   Stdlib HOF methods on generic enums
   (`Option::map` / `Result::map` / `map_err` /
   `unwrap_or_else`) work on every backend. The remaining gap
@@ -4319,7 +4352,9 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   closures stored in struct fields — capturing and
   non-capturing alike — via a unified env-based ABI
   (Phase 6b/8). Captures support 8-byte scalars and narrow
-  ints. Stdlib HOF methods on generic enums (`Option::map`,
+  ints; a compound capture (struct, tuple, array, dict) is
+  interpreter-only and the compiled backends refuse it by
+  name. Stdlib HOF methods on generic enums (`Option::map`,
   `Result::map`, `map_err`, `unwrap_or_else`) work on every
   backend. The remaining gap is that same shape on a
   *user-defined* generic enum. See

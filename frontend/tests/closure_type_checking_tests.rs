@@ -383,3 +383,98 @@ fn assignment_after_the_closure_is_unaffected() {
     )
     .expect("the capture floor must not outlive the closure body");
 }
+
+// ---------------------------------------------------------------
+// CLOSURE-CAPTURE E2 — writing *through* a capture.
+//
+// A captured compound keeps its cell rather than being copied, so
+// `p.x = ...` reached the outer binding on the three interpreter
+// engines while the two compiled ones could not build the program at
+// all. The shape of the value decided the meaning; now the rule is
+// the same for both.
+// ---------------------------------------------------------------
+
+#[test]
+fn assigning_to_a_field_of_a_captured_struct_is_rejected() {
+    let err = parse_and_type_check(
+        "struct P { x: i64 }
+        fn main() -> i64 {
+            var p = P { x: 1i64 }
+            val f = fn() -> i64 { p.x = p.x + 1i64  p.x }
+            f()
+        }",
+    )
+    .expect_err("expected a write through a captured struct to be rejected");
+    assert!(
+        err.contains("CapturedAssign") && err.contains("p.x"),
+        "expected CapturedAssign naming the whole path, got: {err}"
+    );
+}
+
+/// The message quotes what was written but the rule is about the root,
+/// so a nested path names the binding that is actually captured.
+#[test]
+fn a_nested_path_names_the_captured_root() {
+    let err = parse_and_type_check(
+        "struct Inner { v: i64 }
+        struct Outer { inner: Inner }
+        fn main() -> i64 {
+            var o = Outer { inner: Inner { v: 1i64 } }
+            val f = fn() -> i64 { o.inner.v = 7i64  o.inner.v }
+            f()
+        }",
+    )
+    .expect_err("expected a write through a captured struct to be rejected");
+    assert!(
+        err.contains("o.inner.v") && err.contains("root: \"o\""),
+        "expected the path as target and `o` as root, got: {err}"
+    );
+}
+
+/// `a[i] = v` is its own expression rather than an `Assign` with a
+/// slice target, so it needs the rule applied on its own path. It
+/// used to reach the backends and die as an internal error.
+#[test]
+fn assigning_into_a_captured_array_is_rejected() {
+    let err = parse_and_type_check(
+        "fn main() -> i64 {
+            var a: [i64; 3] = [1i64, 2i64, 3i64]
+            val f = fn() -> i64 { a[0] = 9i64  a[0] }
+            f()
+        }",
+    )
+    .expect_err("expected a write into a captured array to be rejected");
+    assert!(
+        err.contains("CapturedAssign") && err.contains("a[..]"),
+        "expected CapturedAssign for the indexed write, got: {err}"
+    );
+}
+
+/// Reading through a capture is untouched.
+#[test]
+fn reading_through_a_capture_still_type_checks() {
+    parse_and_type_check(
+        "struct P { x: i64, y: i64 }
+        fn main() -> i64 {
+            val p = P { x: 3i64, y: 4i64 }
+            val f = fn() -> i64 { p.x + p.y }
+            f()
+        }",
+    )
+    .expect("reading a capture's field is legal");
+}
+
+/// A compound the closure declares itself is not a capture, so
+/// writing through it is ordinary.
+#[test]
+fn writing_through_a_closure_local_compound_is_allowed() {
+    parse_and_type_check(
+        "struct P { x: i64 }
+        fn main() -> i64 {
+            val bump: i64 = 1i64
+            val f = fn() -> i64 { var p = P { x: 0i64 }  p.x = p.x + bump  p.x }
+            f()
+        }",
+    )
+    .expect("a struct built inside the closure is local to it");
+}

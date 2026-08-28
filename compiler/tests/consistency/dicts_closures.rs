@@ -691,3 +691,31 @@ fn main() -> u64 {
 "#;
     assert_consistent(src, "closure_local_write_over_captured_read");
 }
+
+// CLOSURE-CAPTURE E2 — writing through a capture. A captured compound
+// kept its cell, so `p.x = ...` reached the outer binding on the three
+// interpreter engines while the two compiled ones reported `p` as an
+// undefined identifier. The shape of the value decided the meaning;
+// the rule is now the same for both shapes.
+#[test]
+fn writing_through_a_captured_compound_is_rejected_before_any_engine_runs() {
+    let src = r#"
+struct P { x: i64 }
+fn main() -> i64 {
+    var p = P { x: 1i64 }
+    val f = fn() -> i64 { p.x = p.x + 1i64  p.x }
+    f()
+}
+"#;
+    let errors = type_check_errors(src);
+    assert!(
+        errors.iter().any(|e| e.contains("p.x") && e.contains("captured")),
+        "expected the write through `p` to be rejected as a capture, got: {errors:?}"
+    );
+}
+
+// Reading *through* a capture is not pinned across engines here: the
+// compiled lanes cannot capture a compound at all yet, and report `p`
+// as an undefined identifier (CLOSURE-CAPTURE E5). The interpreter
+// engines do run it. Pin it when E5 lands rather than recording the
+// gap as if it were the design.

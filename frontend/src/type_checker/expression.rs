@@ -848,6 +848,53 @@ impl<'a> TypeCheckerVisitor<'a> {
         Ok(result_ty)
     }
 
+    /// CLOSURE-CAPTURE E1/E2: is this assignment target a binding the
+    /// enclosing closure captured, or a path into one?
+    ///
+    /// Returns `(target, root)` — what was written and the captured
+    /// binding it reaches — or `None` when no closure body is open,
+    /// the root is local to the closure, or the target is not rooted
+    /// in a plain binding at all (`f().x = ...`).
+    ///
+    /// The root is what matters: a capture is one binding, and
+    /// reaching into it does not change which binding is being
+    /// written. Rendering the whole path is only so the message can
+    /// quote what the author wrote.
+    pub(crate) fn captured_assign_target(&self, lhs: &ExprRef) -> Option<(String, String)> {
+        let mut path: Vec<String> = Vec::new();
+        let mut cursor = *lhs;
+        loop {
+            match self.core.expr_pool.get(&cursor)? {
+                Expr::Identifier(name) => {
+                    if !self.context.is_captured_binding(name) {
+                        return None;
+                    }
+                    let root = self.resolve_symbol_name(name);
+                    let mut target = root.clone();
+                    for segment in path.iter().rev() {
+                        target.push_str(segment);
+                    }
+                    return Some((target, root));
+                }
+                Expr::FieldAccess(obj, field) => {
+                    path.push(format!(".{}", self.resolve_symbol_name(field)));
+                    cursor = obj;
+                }
+                Expr::TupleAccess(obj, index) => {
+                    path.push(format!(".{index}"));
+                    cursor = obj;
+                }
+                Expr::SliceAccess(obj, _) => {
+                    path.push("[..]".to_string());
+                    cursor = obj;
+                }
+                // Anything else (a call, a literal) is not rooted in a
+                // binding, so there is no capture to speak of.
+                _ => return None,
+            }
+        }
+    }
+
     /// Type check assignment expressions
     pub fn visit_assign(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let lhs = *lhs;
@@ -872,7 +919,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 // statement-level recovery to place, which lands the
                 // caret on whatever the block's tail expression is.
                 return Err(self.error_with_location(
-                    TypeCheckError::captured_assign(name_str),
+                    TypeCheckError::captured_assign(name_str.clone(), name_str),
                     &lhs,
                 ));
             }
@@ -882,6 +929,19 @@ impl<'a> TypeCheckerVisitor<'a> {
                     "cannot assign to `{name_str}`: binding is immutable (declared with `val`; use `var` to allow reassignment)"
                 )));
             }
+        }
+
+        // CLOSURE-CAPTURE E2: the same rule for a write *through* a
+        // capture (`p.x = ...`). Without it the shape of the value
+        // decided the semantics — a captured compound keeps its `Rc`
+        // cell, so the interpreter engines let the write reach the
+        // outer binding while a bare rebind of a scalar was discarded,
+        // and the compiled engines could not build either.
+        if let Some((target, root)) = self.captured_assign_target(&lhs) {
+            return Err(self.error_with_location(
+                TypeCheckError::captured_assign(target, root),
+                &lhs,
+            ));
         }
 
         let lhs_ty = {

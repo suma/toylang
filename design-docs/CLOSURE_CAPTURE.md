@@ -16,7 +16,7 @@ CLOSURE-CAPTURE を ★★ で「closure の利用が増える前に決めたい
 |---|---|---|
 | **E0** | 目標文言の固定 + 5 レーンを pin する consistency テスト | ✅ 2026-08-28 |
 | **E1** | 捕捉した束縛への代入を診断する (黙った誤答を止める) | ✅ 2026-08-28 |
-| **E2** | capture mode の形依存を解消する (scalar コピー / compound alias) | 未着手 |
+| **E2** | capture mode の形依存を解消する (scalar コピー / compound alias) | ✅ 2026-08-28 |
 | **E3** | 直接呼び出しの closure を可変捕捉にする (env の sync-in / sync-out) | 未着手 |
 | **E4** | HOF / escape する closure の可変捕捉 | 未着手 |
 | **E5** | compiled レーンの compound capture と診断の統一 | 未着手 |
@@ -319,12 +319,30 @@ capture の書き込みについて、**何が起きるべきか**を先に表�
   読み取り / nested の床 / 床が closure より長生きしないこと)、
   `compiler/tests/consistency/dicts_closures.rs` に 2 件。
 
-### E2 — 形依存の解消
+### E2 — 形依存の解消 ✅ (2026-08-28)
 
-- 実測 3 の compound フィールド書き込みを E1 と同じ規則に載せる。
+- `captured_assign_target` — 代入先の式を根まで辿り
+  (`FieldAccess` / `TupleAccess` / `SliceAccess`)、根が capture なら
+  `(書かれた形, 捕捉された束縛)` を返す。`p.x` / `o.inner.v` / `a[..]` が
+  同じ規則で `E0021` になる。**規則は根について**で、書かれた path は
+  文言が引用するためだけに組み立てる。
+- 文言は 2 通り持つ。**理由が違うため** — bare な再束縛は捨てられる
+  (snapshot)、path 越しの書き込みは 3 レーンで外に届いていた。
+  「どちらも同じ理由」と書くと嘘になる。
+- **`a[i] = v` は `Assign` ではなく `SliceAssign` という別の式**なので
+  `visit_slice_assign_impl` にも同じ判定が要る。これが無いと
+  バックエンドまで到達し、**全レーンで内部エラー**
+  (`Expr::Number should be transformed to concrete type`) になっていた —
+  closure の外なら同じ書き込みが普通に動くのに。
+  index 式を caret の anchor に使う (添字される識別子は位置を持たないので
+  そのままだとブロックの末尾式に打たれる)。
 - `evaluate_closure_literal` の「primitive は新セル / compound は Rc 共有」
-  という分岐は、**capture が読み取り専用である限り観測できない**ので、
-  E3 まではそのままでよい。E2 が閉じるのは**診断の穴**。
+  という分岐は、**capture が読み取り専用である限り観測できない**ので
+  E3 まではそのまま。E2 が閉じたのは**診断の穴**。
+- 移行の代償は 0 だった: 全 2348 テストが緑のまま (stdlib も example も
+  capture 越しに書いていない)。
+- 実測 5 の「compound を捕捉すると `undefined identifier`」は**読み取りにも
+  当たる**ので、compiled レーンでの compound capture は E5 のまま。
 
 ### E3 — 直接呼び出しの可変捕捉 (sync-in / sync-out)
 

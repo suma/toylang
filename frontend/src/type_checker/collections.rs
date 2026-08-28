@@ -147,6 +147,22 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     /// Type check slice assignment - implementation
     pub fn visit_slice_assign_impl(&mut self, object: &ExprRef, start: &Option<ExprRef>, end: &Option<ExprRef>, value: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        // CLOSURE-CAPTURE E2: `a[i] = v` is its own expression rather
+        // than an `Assign` with a slice target, so the capture rule
+        // has to be applied here too. Without it this shape reached
+        // the backends and died as an internal error on every engine
+        // ("Expr::Number should be transformed to concrete type"),
+        // even though the identical write outside a closure works.
+        if let Some((_, root)) = self.captured_assign_target(object) {
+            let target = format!("{root}[..]");
+            let err = TypeCheckError::captured_assign(target, root);
+            // The indexed identifier carries no recorded position, so
+            // anchoring on it is a no-op and the statement recovery
+            // puts the caret on the block's tail expression instead.
+            // The index does carry one, and it is inside the target.
+            let anchor = start.filter(|s| self.get_expr_location(s).is_some());
+            return Err(self.error_with_location(err, anchor.as_ref().unwrap_or(object)));
+        }
         let object_type = self.visit_expr(object)?;
         let value_type = self.visit_expr(value)?;
 

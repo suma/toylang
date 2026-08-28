@@ -709,6 +709,19 @@ five engines — each call started from the same snapshot and the writes
 were discarded — while the tree-walker stopped it at run time claiming
 `count` had been declared `val`, which it had not.
 
+Writing *through* a capture is refused for the same reason, even
+though it used to appear to work:
+
+    var p = P { x: 1i64 }
+    val f = fn() -> i64 { p.x = p.x + 1i64  p.x }           # E0021
+
+A captured compound keeps its cell rather than being copied, so on the
+three interpreter engines that write did reach `p` — while the two
+compiled engines could not build the program at all, reporting `p` as
+an undefined identifier. The shape of the value decided the meaning.
+`a[i] = v` through a capture is the same rule; it used to fail as an
+internal error on every engine.
+
 The rule is about *where the binding is*, not how it was declared:
 `var` and `val` are refused alike, and the advice attached to the `val`
 rule (\"use `var`\") would be a dead end here. Reading a capture is

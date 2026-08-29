@@ -404,6 +404,49 @@ pub fn check_typing_diagnostics(
     filename: Option<&str>,
     core_modules_dir: Option<&std::path::Path>,
 ) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
+    check_typing_collecting(program, string_interner, source_code, filename, core_modules_dir, None)
+}
+
+/// What one declaration in the entry file can do (EFFECTS, `--effects`).
+pub struct FunctionEffects {
+    /// `add`, or `Counter::bump` for a method.
+    pub name: String,
+    pub effects: frontend::type_checker::EffectSet,
+}
+
+/// As [`check_typing_diagnostics`], and additionally record what every
+/// declaration in the entry file can reach.
+///
+/// A separate entry point rather than an extra parameter on the one
+/// above: the effect walk is not free, and every other caller —
+/// running a program, checking one, the property runner — wants the
+/// diagnostics alone.
+pub fn check_typing_effects(
+    program: &mut File,
+    string_interner: &mut DefaultStringInterner,
+    source_code: Option<&str>,
+    filename: Option<&str>,
+    core_modules_dir: Option<&std::path::Path>,
+    effects: &mut Vec<FunctionEffects>,
+) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
+    check_typing_collecting(
+        program,
+        string_interner,
+        source_code,
+        filename,
+        core_modules_dir,
+        Some(effects),
+    )
+}
+
+fn check_typing_collecting(
+    program: &mut File,
+    string_interner: &mut DefaultStringInterner,
+    source_code: Option<&str>,
+    filename: Option<&str>,
+    core_modules_dir: Option<&std::path::Path>,
+    mut collect_effects: Option<&mut Vec<FunctionEffects>>,
+) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
     let diag_file = filename.unwrap_or("<input>");
     // DEBUG-OBS D2: name the entry file. The parser seeded the slot
     // with the text but had no path to put on it; this is the first
@@ -625,6 +668,12 @@ pub fn check_typing_diagnostics(
         string_interner,
         &expr_types,
     ));
+    // EFFECTS: the same walk the two checks above just ran, asked for
+    // the whole answer rather than one mask. Only when someone is
+    // listening (`--effects`).
+    if let Some(sink) = collect_effects.as_mut() {
+        collect_entry_effects(program, string_interner, &expr_types, user_func_count, sink);
+    }
     // COMPILE-TIME-EVAL C3: with the program type-checked, run the
     // `const fn` calls that can be run now and leave literals in their
     // place. Rewriting here — driver level, before any lowering —
@@ -696,6 +745,55 @@ pub fn check_typing_diagnostics(
     }
 }
 
+
+
+/// Every declaration the entry file wrote, with what it can reach.
+///
+/// Only the entry file: integration appends the stdlib's functions
+/// after the user's (hence `user_func_count`) and its `impl` blocks
+/// into the same statement pool, where the file each method came from
+/// is what tells them apart. A listing of the whole prelude would bury
+/// the answer the caller asked for.
+fn collect_entry_effects(
+    program: &File,
+    string_interner: &DefaultStringInterner,
+    expr_types: &HashMap<frontend::ast::ExprRef, frontend::type_decl::TypeDecl>,
+    user_func_count: usize,
+    out: &mut Vec<FunctionEffects>,
+) {
+    use frontend::ast::{Stmt, StmtRef};
+    use frontend::type_checker::EffectTable;
+
+    let mut table = EffectTable::new(program, string_interner, expr_types);
+    for index in 0..user_func_count.min(program.function.len()) {
+        let name = table.function_name(index);
+        let effects = table.of_function(index).set();
+        out.push(FunctionEffects { name, effects });
+    }
+    for index in 0..program.statement.len() {
+        let stmt_ref = StmtRef(index as u32);
+        let Some(Stmt::ImplBlock { target_type, methods, .. }) = program.statement.get(&stmt_ref)
+        else {
+            continue;
+        };
+        for method in &methods {
+            let from_entry = program
+                .location_pool
+                .get_stmt_location(&method.code)
+                .is_some_and(|loc| loc.file == frontend::source_map::FileId::ENTRY);
+            if !from_entry {
+                continue;
+            }
+            let name = format!(
+                "{}::{}",
+                string_interner.resolve(target_type).unwrap_or("?"),
+                string_interner.resolve(method.name).unwrap_or("?")
+            );
+            let effects = table.of_body(&method.code).set();
+            out.push(FunctionEffects { name, effects });
+        }
+    }
+}
 
 fn calculate_line_col_from_offset(source: &str, offset: usize) -> (u32, u32) {
     let mut line = 1u32;
@@ -1663,6 +1761,43 @@ pub fn run_tests_from_source(
         Some(source),
         Some(filename),
     ))
+}
+
+/// EFFECTS: what every declaration in `source` can reach.
+///
+/// Parses and type-checks like a normal run, then reports the effect
+/// set of each function and method the file itself declares. Answers
+/// "what does this do besides compute" without reading the bodies —
+/// the same question `--api` answers for shapes.
+pub fn effects_from_source(
+    source: &str,
+    filename: &str,
+    options: &RunOptions<'_>,
+) -> Result<Vec<FunctionEffects>, String> {
+    let formatter = ErrorFormatter::new(source, filename);
+    let mut session = compiler_core::CompilerSession::new();
+    let mut program = match session.parse_program_all_errors(source, filename) {
+        Ok(p) => p,
+        Err(errors) => {
+            formatter.display_parse_errors(&errors);
+            return Err(format!("{} parse error(s)", errors.len()));
+        }
+    };
+    let mut effects = Vec::new();
+    if let Err(diagnostics) = check_typing_effects(
+        &mut program,
+        session.string_interner_mut(),
+        Some(source),
+        Some(filename),
+        options.core_modules_dir,
+        &mut effects,
+    ) {
+        let rendered: Vec<String> =
+            diagnostics.iter().map(|d| formatter.format_diagnostic(d)).collect();
+        formatter.display_type_check_errors(&rendered);
+        return Err(format!("{} type-check error(s)", diagnostics.len()));
+    }
+    Ok(effects)
 }
 
 /// Options for [`run_source`]: parameters that the `interpreter` binary

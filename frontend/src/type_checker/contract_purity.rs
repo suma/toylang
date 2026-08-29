@@ -14,6 +14,14 @@
 //! precondition for C4's other half: a predicate the compiler can run
 //! is a predicate it can check against constant arguments.
 //!
+//! ## Which effects
+//!
+//! The ones that *change* something: `Alloc`, `Free`, `RawWrite`, `Io`.
+//! Reading is fine, which is why `RawRead` and `AllocCtx` are absent —
+//! `ensures __builtin_live_bytes() == old(__builtin_live_bytes())` is
+//! the whole point of ALLOC-CONTRACT, and a counter read changes
+//! nothing.
+//!
 //! ## Why this is a warning
 //!
 //! Because existing programs wrote impure predicates and the compiler
@@ -29,19 +37,19 @@
 //! guarantee the reachability walk does not already give. So the rule
 //! is the guarantee itself: nothing reachable from a clause may
 //! allocate, free, write through a pointer, or print.
-//!
-//! Reading is fine, including the allocation counters: `ensures
-//! __builtin_live_bytes() == old(__builtin_live_bytes())` is the
-//! whole point of ALLOC-CONTRACT, and a counter read changes nothing.
 
 use std::collections::HashMap;
 
 use string_interner::DefaultStringInterner;
 
-use crate::ast::{BuiltinFunction, ExprRef, File, Stmt, StmtRef};
+use crate::ast::{ExprRef, File, Stmt, StmtRef};
 use crate::type_decl::TypeDecl;
+use crate::type_checker::effects::{render_path, Effect, EffectSet, EffectTable};
 use crate::type_checker::error::TypeCheckError;
-use crate::type_checker::reachability::{self, Policy, Reason, render_path};
+
+/// What makes a predicate more than a question.
+const FORBIDDEN: EffectSet =
+    EffectSet::of(&[Effect::Alloc, Effect::Free, Effect::RawWrite, Effect::Io]);
 
 pub fn check_contract_purity(
     program: &File,
@@ -70,67 +78,29 @@ pub fn check_contract_purity(
         return Vec::new();
     }
 
-    let policy = Policy {
-        // Roots are clauses, not bodies; `check_exprs` takes them
-        // directly and never consults these.
-        root: |_| false,
-        method_root: |_| false,
-        sink: |func| effect_of(func),
-        // An `extern` body is outside the language, so its effects
-        // cannot be seen. `never_allocates` is no help here: it says
-        // the implementation does not allocate, not that it does
-        // nothing — `getchar` consumes an input either way.
-        extern_declared: |_| false,
-        exempt_str_receiver: true,
-    };
-    let by_name: HashMap<String, ExprRef> = roots.iter().cloned().collect();
-    reachability::check_exprs(program, interner, expr_types, policy, &roots)
-        .into_iter()
-        .map(|(name, reason)| {
-            let path = render_path(&name, reason.path());
-            let clause = by_name.get(&name).copied();
-            let error = match reason {
-                Reason::Sink { what, .. } => {
-                    TypeCheckError::contract_purity(name, path, what, false)
-                }
-                Reason::Opaque { what, .. } => {
-                    TypeCheckError::contract_purity(name, path, what, true)
-                }
-            };
-            // Point at the clause itself: the effect is usually
-            // several calls away, and the path in the message is what
-            // covers the distance.
-            match clause.and_then(|c| program.location_pool.get_expr_location(&c)) {
-                Some(location) => error.with_location(*location),
-                None => error,
-            }
-        })
-        .collect()
+    let mut table = EffectTable::new(program, interner, expr_types);
+    let mut errors = Vec::new();
+    for (name, clause) in &roots {
+        let effects = table.of_expr(clause);
+        let Some((_, witness)) = effects.first(FORBIDDEN) else {
+            continue;
+        };
+        let path = render_path(name, &witness.path);
+        let error =
+            TypeCheckError::contract_purity(name.clone(), path, witness.what(), witness.is_opaque());
+        // Point at the clause itself: the effect is usually several
+        // calls away, and the path in the message is what covers the
+        // distance.
+        errors.push(match program.location_pool.get_expr_location(clause) {
+            Some(location) => error.with_location(*location),
+            None => error,
+        });
+    }
+    errors
 }
 
 fn collect(roots: &mut Vec<(String, ExprRef)>, owner: &str, kind: &str, clauses: &[ExprRef]) {
     for (index, clause) in clauses.iter().enumerate() {
         roots.push((format!("`{kind}` clause #{} of `{owner}`", index + 1), *clause));
     }
-}
-
-/// The builtins that make a predicate more than a question, and the
-/// name to blame. Reads are absent on purpose — `__builtin_ptr_read`,
-/// `__builtin_sizeof` and the allocation counters all answer without
-/// changing anything.
-fn effect_of(func: BuiltinFunction) -> Option<&'static str> {
-    use BuiltinFunction::*;
-    Some(match func {
-        HeapAlloc => "__builtin_heap_alloc",
-        HeapFree => "__builtin_heap_free",
-        HeapRealloc => "__builtin_heap_realloc",
-        PtrWrite => "__builtin_ptr_write",
-        MemCopy => "__builtin_mem_copy",
-        MemMove => "__builtin_mem_move",
-        MemSet => "__builtin_mem_set",
-        RecordAllocatorLayout => "__builtin_record_allocator_layout",
-        Print => "print",
-        Println => "println",
-        _ => return None,
-    })
 }

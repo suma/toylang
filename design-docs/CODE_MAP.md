@@ -51,7 +51,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | 二項演算 | `type_checker/expression.rs::visit_binary` | `evaluation/operators.rs::evaluate_binary` | `compiler_lower/src/expr_ops.rs::lower_binary` | `compiler_vm/src/dispatch.rs::eval_binop` |
 | 実行時トラップ (RUNTIME-TRAP: u64 underflow / 0 除算 / `MIN / -1`) | — | `evaluation/operators.rs::evaluate_arithmetic_op_v` | `expr_ops.rs` の `emit_u64_underflow_guard` / `emit_div_by_zero_guard` / `emit_div_overflow_guard` (どれも `emit_trap_unless` 経由) | (guard は IR に含まれる) |
 | 添字境界の実行時トラップ | — | `evaluation/slice.rs::resolve_array_index` | `array_access.rs::emit_index_guard` (定数 index は `resolve_const_index` がコンパイル時に弾く) | (guard は IR に含まれる) |
-| `const fn` / CTFE (COMPILE-TIME-EVAL) | 適格性検査: `type_checker/const_fn_check.rs` (reachability.rs の sink 差し替え) | — | fold の評価器は **`compiler_vm` (IR VM)** — `interpreter/src/const_eval.rs` が driver 層で fold (`fold_const_evaluations`) + 配列長の解決 (`resolve_array_lengths`)、`compiler_lower/src/consts.rs::eval_const_expr` が literal リーダー (fold.rs の共通テーブル)。配列長の型は `type_decl.rs::ArraySize` (Literal / Deferred) | — |
+| `const fn` / CTFE (COMPILE-TIME-EVAL) | 適格性検査: `type_checker/const_fn_check.rs` (`type_checker/effects.rs` のマスク) | — | fold の評価器は **`compiler_vm` (IR VM)** — `interpreter/src/const_eval.rs` が driver 層で fold (`fold_const_evaluations`) + 配列長の解決 (`resolve_array_lengths`)、`compiler_lower/src/consts.rs::eval_const_expr` が literal リーダー (fold.rs の共通テーブル)。配列長の型は `type_decl.rs::ArraySize` (Literal / Deferred) | — |
 | 契約による guard の除去 (CONTRACT-ELISION) | — | — | `contract_facts.rs::ContractFacts::from_requires` (事実の抽出) + `expr_ops.rs` の `contract_rules_out_zero` / `contract_rules_out_underflow` (guard 発行の抑止)、失効は `let_lowering.rs` の `facts.shadowed` | — |
 | 代入 | `type_checker/expression.rs::visit_assign` | `evaluation/operators.rs` | `compiler_lower/src/assign.rs::lower_assign` | — |
 | 演算子オーバーロード | `type_checker/expression.rs::visit_arith_binary` | `evaluation/operators.rs` | `compiler_lower/src/expr_ops.rs` | — |
@@ -139,7 +139,8 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | アロケーション契約の糖衣 (ALLOC-CONTRACT-SUGAR) | `parser/expr/primary.rs::parse_alloc_budget` (`allocates` / `retains` / `allocations` → `counter() <= old(counter()) + N`)。語の対応は同ファイルの `alloc_budget_stat` |
 | 契約節の種別 | `ast/program.rs::EnsuresKind` (`ensures` と並列の `ensures_kinds`)。budget 判定は `parser/declarations.rs` の `last_alloc_budget` 比較 |
 | budget 違反の診断 | 文言は `compiler_ir::format_alloc_budget_violation` (**no_std 複製が `toylang_rt::toy_panic_alloc_budget`**)、tree-walker は `evaluation/call.rs::alloc_budget_detail`、lowering は `program.rs::emit_alloc_budget_check` → `Terminator::PanicAllocBudget` |
-| 静的な確保検査 (NEVER-ALLOCATES) | `type_checker/alloc_check.rs::check_never_allocates` (呼び出しグラフの到達可能性)。修飾子の parse は `parser/program_parser.rs` の `pub` 直後、診断は `E0016` |
+| 静的な確保検査 (NEVER-ALLOCATES) | `type_checker/alloc_check.rs::check_never_allocates` (`type_checker/effects.rs` の `Alloc` マスク)。修飾子の parse は `parser/program_parser.rs` の `pub` 直後、診断は `E0016` |
+| エフェクト推論 (EFFECT-SYSTEM) | `type_checker/effects.rs` — builtin → エフェクトの表 (`builtin_effect`) と呼び出しグラフの歩行 (`EffectTable`)。3 検査 (`alloc_check` / `const_fn_check` / `contract_purity`) はここへのマスク。一覧は `--effects` (`interpreter/src/main.rs::run_effects` → `lib.rs::effects_from_source`)。設計は [`EFFECT_SYSTEM.md`](EFFECT_SYSTEM.md) |
 | trait 契約の impl への継承 (DBC-TRAIT-INHERIT) | `type_checker/trait_decl.rs::inherit_trait_contracts` (引数名の一致は `check_trait_conformance_with_args` が強制) |
 
 ## テスト・検証機構

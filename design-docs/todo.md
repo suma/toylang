@@ -10,6 +10,16 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-08-29
+
+- **EFFECT-SYSTEM** — 到達可能性で判定する 3 つの検査
+  (`never_allocates` / `const fn` / 契約の純粋性) が各自持っていた
+  「禁止 builtin」テーブルを 1 つのエフェクト格子に統合し、各検査を
+  マスク 1 行にした。設計は [`EFFECT_SYSTEM.md`](EFFECT_SYSTEM.md)。
+  `--effects <file>` でファイルの各宣言が何をしうるかを一覧できる
+  (`pure` / `alloc, io` 等)。挙動は 1 点だけ意図的に変更 —
+  `__builtin_backtrace()` が `const fn` から呼べなくなった。
+
 ### 2026-08-28
 
 - **CLOSURE-CAPTURE E0〜E3 / E5 (診断) / E6** — closure が捕捉した束縛を

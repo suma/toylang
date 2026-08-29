@@ -77,6 +77,10 @@ cargo run -q -p interpreter -- --explain          # 全コードの 1 行要約
 # `core/std/*.t` を grep する代わりに使う
 cargo run -q -p interpreter -- --api core/std/string.t
 
+# 各宣言が計算以外に何をしうるか (EFFECT-SYSTEM)。`pure` / `alloc, io` 等。
+# --api と違い型検査を通すので、実行できるプログラムを渡す
+cargo run -q -p interpreter -- --effects prog.t
+
 # 3 バックエンド (interpreter / JIT / AOT) を 1 コマンドで実行し、
 # 不一致だけ報告する。一致なら stderr に 1 行
 cargo run -q -p compiler -- <source_file.t> --all-backends

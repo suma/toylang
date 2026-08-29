@@ -89,6 +89,8 @@ enum Query {
     Explain(Option<String>),
     /// `--api <FILE>`: the signatures a module provides.
     Api(String),
+    /// `--effects <FILE>`: what each declaration can reach.
+    Effects(String),
 }
 
 struct CliArgs {
@@ -140,6 +142,12 @@ fn parse_query(raw: &[String]) -> Result<Option<Query>, String> {
                     .or_else(|| iter.clone().next().cloned())
                     .ok_or_else(|| "--api needs a module path".to_string())?;
                 return Ok(Some(Query::Api(value)));
+            }
+            "--effects" => {
+                let value = inline
+                    .or_else(|| iter.clone().next().cloned())
+                    .ok_or_else(|| "--effects needs a program path".to_string())?;
+                return Ok(Some(Query::Effects(value)));
             }
             _ => {}
         }
@@ -232,6 +240,7 @@ fn main() {
     match parse_query(&raw) {
         Ok(Some(Query::Explain(code))) => process::exit(run_explain(code.as_deref())),
         Ok(Some(Query::Api(path))) => process::exit(run_api(&path)),
+        Ok(Some(Query::Effects(path))) => process::exit(run_effects(&path)),
         Ok(None) => {}
         Err(msg) => {
             eprintln!("{msg}");
@@ -249,6 +258,7 @@ fn main() {
             println!("  {exe} <file> [-v] [--test] [--check [--seed=N]] [--core-modules <DIR>] [--diagnostics=text|json]");
             println!("  {exe} --explain [<CODE>]   # what a diagnostic code means");
             println!("  {exe} --api <file>         # signatures a module provides");
+            println!("  {exe} --effects <file>     # what each declaration can reach");
             println!("  {exe} --profile=mem [--profile-format=text|json] <file>  # allocation totals after the run");
             println!("  (use `-` as <file> to read the program from stdin)");
             return;
@@ -377,6 +387,40 @@ fn run_api(path: &str) -> i32 {
         "{}",
         frontend::api::render(&program, session.string_interner(), Some(&source))
     );
+    0
+}
+
+/// `--effects <FILE>` (EFFECTS).
+///
+/// Print what each of the file's own declarations can reach:
+/// `alloc`, `io`, `panic` and the rest, or `pure` for a function that
+/// only computes. Unlike `--api` this type-checks the program, because
+/// the answer depends on types — the receiver is what separates a
+/// `concat` on `str` (runtime-internal) from one on `String` (stdlib
+/// code that allocates) — so it takes a runnable program rather than
+/// any module.
+fn run_effects(path: &str) -> i32 {
+    let source = match read_source(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to read {path}: {e}");
+            return 1;
+        }
+    };
+    let display_name = if path == "-" { "<stdin>" } else { path };
+    // `--core-modules` is parsed with the run flags, which this query
+    // runs before; the env var fallback still applies.
+    let core_modules_dir = resolve_core_modules_dir(None);
+    let mut options = interpreter::RunOptions::default();
+    options.core_modules_dir = core_modules_dir.as_deref();
+    let listing = match interpreter::effects_from_source(&source, display_name, &options) {
+        Ok(listing) => listing,
+        Err(_) => return 1,
+    };
+    let width = listing.iter().map(|f| f.name.chars().count()).max().unwrap_or(0);
+    for entry in &listing {
+        println!("{:width$}  {}", entry.name, entry.effects, width = width);
+    }
     0
 }
 

@@ -8,55 +8,72 @@
 //!
 //! ## What counts as allocating
 //!
-//! Reaching `__builtin_heap_alloc` or `__builtin_heap_realloc` —
-//! exactly what the allocation counters count (MEM-COUNTER-INTERP-DRIFT
-//! settled that definition). Memory the language runtime spends to hold
-//! a `str` is not the program's allocation and is not counted here
-//! either, so `println("{x}")` is fine inside a `never_allocates`
-//! function.
+//! [`Effect::Alloc`] — reaching `__builtin_heap_alloc` or
+//! `__builtin_heap_realloc`, exactly what the allocation counters
+//! count (MEM-COUNTER-INTERP-DRIFT settled that definition). Memory
+//! the language runtime spends to hold a `str` is not the program's
+//! allocation and is not counted here either, so `println("{x}")` is
+//! fine inside a `never_allocates` function.
 //!
-//! The walk itself lives in [`super::reachability`], which the
-//! `const fn` check shares; this module is the sink set, the roots,
-//! and the diagnostic.
+//! The walk and the effect table live in [`super::effects`]; this
+//! module is one mask, the roots, and the diagnostic.
 
 use std::collections::HashMap;
 
 use string_interner::DefaultStringInterner;
 
-use crate::ast::{BuiltinFunction, ExprRef, File};
+use crate::ast::{ExprRef, File, Stmt, StmtRef};
 use crate::type_decl::TypeDecl;
+use crate::type_checker::effects::{render_path, Effect, EffectTable};
 use crate::type_checker::error::TypeCheckError;
-use crate::type_checker::reachability::{self, Policy, Reason, render_path};
 
 pub fn check_never_allocates(
     program: &File,
     interner: &DefaultStringInterner,
     expr_types: &HashMap<ExprRef, TypeDecl>,
 ) -> Vec<TypeCheckError> {
-    let policy = Policy {
-        root: |f| f.never_allocates,
-        method_root: |m| m.never_allocates,
-        sink: |func| match func {
-            BuiltinFunction::HeapAlloc => Some("__builtin_heap_alloc"),
-            BuiltinFunction::HeapRealloc => Some("__builtin_heap_realloc"),
-            _ => None,
-        },
-        // An `extern fn` is opaque, but the author may have declared it
-        // allocation-free — that is the escape hatch, and taking it is
-        // the point at which this becomes a promise rather than a proof.
-        extern_declared: |f| f.never_allocates,
-        exempt_str_receiver: true,
-    };
-    reachability::check(program, interner, expr_types, policy)
-        .into_iter()
-        .map(|(name, reason)| {
-            let path = render_path(&name, reason.path());
-            match reason {
-                Reason::Sink { .. } => TypeCheckError::never_allocates(name, path, None),
-                Reason::Opaque { what, .. } => {
-                    TypeCheckError::never_allocates(name, path, Some(what))
-                }
+    let mut table = EffectTable::new(program, interner, expr_types);
+    let mut errors = Vec::new();
+
+    for index in 0..program.function.len() {
+        let function = &program.function[index];
+        if !function.never_allocates || function.is_extern {
+            continue;
+        }
+        let name = table.function_name(index);
+        let effects = table.of_function(index);
+        if let Some(witness) = effects.witness(Effect::Alloc) {
+            let path = render_path(&name, &witness.path);
+            let opaque = witness.is_opaque().then(|| witness.what());
+            errors.push(TypeCheckError::never_allocates(name, path, opaque));
+        }
+    }
+
+    // Methods carrying the modifier are roots too, and they do not
+    // live in `program.function` — they are walked by body.
+    for index in 0..program.statement.len() {
+        let stmt_ref = StmtRef(index as u32);
+        let Some(Stmt::ImplBlock { target_type, methods, .. }) = program.statement.get(&stmt_ref)
+        else {
+            continue;
+        };
+        for method in &methods {
+            if !method.never_allocates {
+                continue;
             }
-        })
-        .collect()
+            let name = format!(
+                "{}::{}",
+                interner.resolve(target_type).unwrap_or("?"),
+                interner.resolve(method.name).unwrap_or("?")
+            );
+            let effects = table.of_body(&method.code);
+            if let Some(witness) = effects.witness(Effect::Alloc) {
+                let path = render_path(&name, &witness.path);
+                let opaque = witness.is_opaque().then(|| witness.what());
+                errors.push(TypeCheckError::never_allocates(name, path, opaque));
+            }
+        }
+    }
+
+    errors
 }

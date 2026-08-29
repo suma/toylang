@@ -608,7 +608,7 @@ Error at core/std/option.t:57:29:
 
 **次に効く手** (未実装): **panic に到達しえない関数へのフレームは
 積まない**。backtrace に現れようのないフレームは誰も読まない。
-到達可能性の歩行は `reachability.rs` に既にあるので、IR の
+到達可能性の歩行は `effects.rs` に既にあるので、IR の
 `Terminator::Panic` を sink にすれば同じ形で書ける。
 
 ### D5 — ユーザ API と機械可読出力 ✅ (2026-08-27)

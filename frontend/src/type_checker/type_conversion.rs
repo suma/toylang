@@ -537,6 +537,28 @@ impl<'a> TypeCheckerVisitor<'a> {
                 Ok((resolved_lhs.clone(), resolved_rhs.clone()))
             },
 
+            // A user type written in an annotation arrives as the bare
+            // `Identifier(name)` — the parser cannot tell a struct from
+            // an enum — while a *value* of that type carries the
+            // resolved `Struct(name, args)` / `Enum(name, args)` form.
+            // `is_equivalent` already unifies the pair, but the strict
+            // `==` fallback below did not, so a binary expression with
+            // exactly one annotated side was rejected as
+            // "expected P, but got P" (`val h: P = f + P { .. }`, and
+            // through the desugar every `f += P { .. }`). Adopt the
+            // resolved form on both sides so the operator-overload
+            // dispatch downstream sees the type arguments.
+            (TypeDecl::Identifier(s1), TypeDecl::Struct(s2, _) | TypeDecl::Enum(s2, _))
+                if s1 == s2 =>
+            {
+                Ok((resolved_rhs.clone(), resolved_rhs.clone()))
+            },
+            (TypeDecl::Struct(s1, _) | TypeDecl::Enum(s1, _), TypeDecl::Identifier(s2))
+                if s1 == s2 =>
+            {
+                Ok((resolved_lhs.clone(), resolved_lhs.clone()))
+            },
+
             // Allocator handle vs generic parameter bounded by Allocator — pass through so
             // the caller's comparison/op logic can validate (e.g. `current_allocator() == a`
             // inside a `<A: Allocator>` function body).

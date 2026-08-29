@@ -363,6 +363,45 @@ fn struct_unary_logical_not_dispatch() {
 }
 
 #[test]
+fn an_annotated_operand_still_reaches_the_overload() {
+    // A user type written in an annotation is `Identifier(Vec3)`;
+    // a struct literal produces `Struct(Vec3, [])`. The two are
+    // the same type and `is_equivalent` says so, but
+    // `resolve_numeric_types` — which runs *before* the overload
+    // short-circuit in `visit_binary` — compared them with `==` and
+    // reported "Type mismatch: expected Vec3, but got Vec3".
+    // Whether the operand was annotated therefore decided whether
+    // the overload was reachable at all.
+    let src = vec3_program(r#"
+        fn main() -> u64 {
+            val a: Vec3 = Vec3 { x: 1i64, y: 2i64, z: 3i64 }
+            val sum: Vec3 = a + Vec3 { x: 10i64, y: 20i64, z: 30i64 }
+            val expected: Vec3 = Vec3 { x: 11i64, y: 22i64, z: 33i64 }
+            assert(sum == expected, "annotated operand dispatch")
+            42u64
+        }
+    "#);
+    assert_program_result_u64(&src, 42);
+}
+
+#[test]
+fn an_annotated_target_still_reaches_the_compound_overload() {
+    // The same gap through the `+=` desugar, which is how most
+    // people hit it: `a += Vec3 { .. }` becomes
+    // `a = a + Vec3 { .. }`.
+    let src = vec3_program(r#"
+        fn main() -> u64 {
+            var a: Vec3 = Vec3 { x: 1i64, y: 2i64, z: 3i64 }
+            a += Vec3 { x: 10i64, y: 20i64, z: 30i64 }
+            val expected: Vec3 = Vec3 { x: 11i64, y: 22i64, z: 33i64 }
+            assert(a == expected, "annotated target dispatch")
+            42u64
+        }
+    "#);
+    assert_program_result_u64(&src, 42);
+}
+
+#[test]
 fn struct_compound_add_assign_dispatch() {
     let src = vec3_program(r#"
         fn main() -> u64 {

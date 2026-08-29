@@ -469,6 +469,7 @@ fn const_to_slot(c: Const) -> RawSlot {
         Const::I32(v) => RawSlot::from_i64(v as i64),
         Const::U32(v) => RawSlot::from_u64(v as u64),
         Const::F64(v) => RawSlot::from_f64(v),
+        Const::F32(v) => RawSlot::from_f32(v),
         Const::Bool(v) => RawSlot::from_bool(v),
     }
 }
@@ -515,6 +516,7 @@ fn eval_binop(op: BinOp, lhs: RawSlot, rhs: RawSlot, ty: Type) -> RawSlot {
 fn eval_binop_raw(op: BinOp, lhs: RawSlot, rhs: RawSlot, ty: Type) -> RawSlot {
     use compiler_ir::BinOp::*;
     let is_f64 = matches!(ty, Type::F64);
+    let is_f32 = matches!(ty, Type::F32);
     let unsigned = is_unsigned(ty);
     match op {
         // Arithmetic: result type == operand type.
@@ -523,6 +525,13 @@ fn eval_binop_raw(op: BinOp, lhs: RawSlot, rhs: RawSlot, ty: Type) -> RawSlot {
         Mul if is_f64 => RawSlot::from_f64(unsafe { lhs.f64 * rhs.f64 }),
         Div if is_f64 => RawSlot::from_f64(unsafe { lhs.f64 / rhs.f64 }),
         Rem if is_f64 => RawSlot::from_f64(unsafe { lhs.f64 % rhs.f64 }),
+        // SIMD-F32: single precision, values stored as zero-extended
+        // bit patterns (see `RawSlot::from_f32`).
+        Add if is_f32 => RawSlot::from_f32(lhs.read_f32() + rhs.read_f32()),
+        Sub if is_f32 => RawSlot::from_f32(lhs.read_f32() - rhs.read_f32()),
+        Mul if is_f32 => RawSlot::from_f32(lhs.read_f32() * rhs.read_f32()),
+        Div if is_f32 => RawSlot::from_f32(lhs.read_f32() / rhs.read_f32()),
+        Rem if is_f32 => RawSlot::from_f32(lhs.read_f32() % rhs.read_f32()),
         Add => RawSlot::from_i64(unsafe { lhs.i64.wrapping_add(rhs.i64) }),
         Sub => RawSlot::from_i64(unsafe { lhs.i64.wrapping_sub(rhs.i64) }),
         Mul => RawSlot::from_i64(unsafe { lhs.i64.wrapping_mul(rhs.i64) }),
@@ -537,6 +546,12 @@ fn eval_binop_raw(op: BinOp, lhs: RawSlot, rhs: RawSlot, ty: Type) -> RawSlot {
         Le if is_f64 => RawSlot::from_bool(unsafe { lhs.f64 <= rhs.f64 }),
         Gt if is_f64 => RawSlot::from_bool(unsafe { lhs.f64 > rhs.f64 }),
         Ge if is_f64 => RawSlot::from_bool(unsafe { lhs.f64 >= rhs.f64 }),
+        Eq if is_f32 => RawSlot::from_bool(lhs.read_f32() == rhs.read_f32()),
+        Ne if is_f32 => RawSlot::from_bool(lhs.read_f32() != rhs.read_f32()),
+        Lt if is_f32 => RawSlot::from_bool(lhs.read_f32() < rhs.read_f32()),
+        Le if is_f32 => RawSlot::from_bool(lhs.read_f32() <= rhs.read_f32()),
+        Gt if is_f32 => RawSlot::from_bool(lhs.read_f32() > rhs.read_f32()),
+        Ge if is_f32 => RawSlot::from_bool(lhs.read_f32() >= rhs.read_f32()),
         Eq => RawSlot::from_bool(unsafe { lhs.u64 == rhs.u64 }),
         Ne => RawSlot::from_bool(unsafe { lhs.u64 != rhs.u64 }),
         Lt if unsigned => RawSlot::from_bool(unsafe { lhs.u64 < rhs.u64 }),
@@ -556,6 +571,8 @@ fn eval_binop_raw(op: BinOp, lhs: RawSlot, rhs: RawSlot, ty: Type) -> RawSlot {
         Shr => RawSlot::from_i64(unsafe { lhs.i64.wrapping_shr(rhs.u64 as u32) }),
         Min if is_f64 => RawSlot::from_f64(unsafe { lhs.f64.min(rhs.f64) }),
         Max if is_f64 => RawSlot::from_f64(unsafe { lhs.f64.max(rhs.f64) }),
+        Min if is_f32 => RawSlot::from_f32(lhs.read_f32().min(rhs.read_f32())),
+        Max if is_f32 => RawSlot::from_f32(lhs.read_f32().max(rhs.read_f32())),
         Min if unsigned => RawSlot::from_u64(unsafe { lhs.u64.min(rhs.u64) }),
         Max if unsigned => RawSlot::from_u64(unsafe { lhs.u64.max(rhs.u64) }),
         Min => RawSlot::from_i64(unsafe { lhs.i64.min(rhs.i64) }),
@@ -578,10 +595,12 @@ fn eval_unaryop_raw(op: UnaryOp, operand: RawSlot, ty: Type) -> RawSlot {
     use compiler_ir::UnaryOp::*;
     match op {
         Neg if matches!(ty, Type::F64) => RawSlot::from_f64(unsafe { -(operand.f64) }),
+        Neg if matches!(ty, Type::F32) => RawSlot::from_f32(-operand.read_f32()),
         Neg => RawSlot::from_i64(unsafe { -(operand.i64) }),
         BitNot => RawSlot::from_u64(unsafe { !(operand.u64) }),
         LogicalNot => RawSlot::from_bool(unsafe { !(operand.bool) }),
         Abs if matches!(ty, Type::F64) => RawSlot::from_f64(unsafe { operand.f64.abs() }),
+        Abs if matches!(ty, Type::F32) => RawSlot::from_f32(operand.read_f32().abs()),
         Abs => RawSlot::from_i64(unsafe { operand.i64.wrapping_abs() }),
         Sqrt => RawSlot::from_f64(unsafe { operand.f64.sqrt() }),
         Floor => RawSlot::from_f64(unsafe { operand.f64.floor() }),
@@ -662,12 +681,32 @@ fn eval_cast(value: RawSlot, from: Type, to: Type) -> RawSlot {
             let v = decode_int(unsafe { value.u64 }, fb, fs);
             RawSlot::from_f64(v as f64)
         }
+        // int -> f32 (SIMD-F32): round-to-nearest.
+        (Some((fb, fs)), None, _, Type::F32) => {
+            let v = decode_int(unsafe { value.u64 }, fb, fs);
+            RawSlot::from_f32(v as f32)
+        }
         // f64 -> int (truncate toward zero)
         (None, Some((tb, ts)), Type::F64, _) => {
             let f = unsafe { value.f64 };
             encode_int(f as i128, tb, ts)
         }
-        // f64 -> f64 and any other shape: pass through.
+        // f64 -> f32 (SIMD-F32): demote, round-to-nearest.
+        (None, None, Type::F64, Type::F32) => {
+            RawSlot::from_f32(unsafe { value.f64 as f32 })
+        }
+        // f32 -> int (SIMD-F32): truncate toward zero via f64 — every
+        // f32 is exactly representable as f64, so the saturating
+        // encode matches a native f32 conversion.
+        (None, Some((tb, ts)), Type::F32, _) => {
+            let f = value.read_f32();
+            encode_int(f as f64 as i128, tb, ts)
+        }
+        // f32 -> f64 (SIMD-F32): promote, exact.
+        (None, None, Type::F32, Type::F64) => {
+            RawSlot::from_f64(value.read_f32() as f64)
+        }
+        // float -> float same width, and any other shape: pass through.
         _ => value,
     }
 }
@@ -683,6 +722,7 @@ fn format_scalar(host: &dyn VmHost, slot: RawSlot, ty: Type) -> String {
         Type::I32 => format!("{}", unsafe { slot.i64 as i32 }),
         Type::U32 => format!("{}", unsafe { slot.u64 as u32 }),
         Type::F64 => crate::heap::format_f64(unsafe { slot.f64 }),
+        Type::F32 => crate::heap::format_f32(slot.read_f32()),
         Type::Bool => format!("{}", unsafe { slot.bool }),
         Type::Str => host.read_str(unsafe { slot.u64 }),
         _ => format!("{:?}", unsafe { slot.u64 }),
@@ -696,6 +736,8 @@ fn scalar_size_bytes(ty: Type) -> u32 {
         Type::I8 | Type::U8 => 1,
         Type::I16 | Type::U16 => 2,
         Type::I32 | Type::U32 => 4,
+        // SIMD-F32: native single-precision width.
+        Type::F32 => 4,
         Type::I64 | Type::U64 | Type::F64 | Type::Bool | Type::Str => 8,
         Type::Unit => 0,
         _ => 8, // Struct / Tuple / Enum stored as pointer-sized handles

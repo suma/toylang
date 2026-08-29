@@ -68,6 +68,7 @@ pub enum ExprType {
     Match = 30,
     Range = 31,
     Float64 = 32,
+    Float32 = 43,
     // NUM-W narrow integer literal discriminants. Storage
     // piggybacks on the existing `int64_val` / `uint64_val`
     // arrays (the lexer already validates the value fits at the
@@ -131,6 +132,7 @@ pub struct ExprPool {
     pub int64_val: Vec<Option<i64>>,
     pub uint64_val: Vec<Option<u64>>,
     pub float64_val: Vec<Option<f64>>,
+    pub float32_val: Vec<Option<f32>>,
     pub symbol_val: Vec<Option<DefaultSymbol>>,    // For identifiers, strings, numbers, function names, etc.
     pub boolean_val: Vec<Option<bool>>,            // For true/false
 
@@ -174,6 +176,7 @@ impl ExprPool {
             int64_val: Vec::new(),
             uint64_val: Vec::new(),
             float64_val: Vec::new(),
+            float32_val: Vec::new(),
             symbol_val: Vec::new(),
             boolean_val: Vec::new(),
             expr_list: Vec::new(),
@@ -203,6 +206,7 @@ impl ExprPool {
             int64_val: Vec::with_capacity(cap),
             uint64_val: Vec::with_capacity(cap),
             float64_val: Vec::with_capacity(cap),
+            float32_val: Vec::with_capacity(cap),
             symbol_val: Vec::with_capacity(cap),
             boolean_val: Vec::with_capacity(cap),
             expr_list: Vec::with_capacity(cap),
@@ -234,6 +238,7 @@ impl ExprPool {
             self.int64_val.resize(current_len + extend_count, None);
             self.uint64_val.resize(current_len + extend_count, None);
             self.float64_val.resize(current_len + extend_count, None);
+            self.float32_val.resize(current_len + extend_count, None);
             self.symbol_val.resize(current_len + extend_count, None);
             self.boolean_val.resize(current_len + extend_count, None);
             self.expr_list.resize(current_len + extend_count, None);
@@ -305,6 +310,10 @@ impl ExprPool {
             Expr::Float64(value) => {
                 self.expr_types[index] = ExprType::Float64;
                 self.float64_val[index] = Some(value);
+            }
+            Expr::Float32(value) => {
+                self.expr_types[index] = ExprType::Float32;
+                self.float32_val[index] = Some(value);
             }
             Expr::Int64(value) => {
                 self.expr_types[index] = ExprType::Int64;
@@ -526,6 +535,7 @@ impl ExprPool {
         self.int64_val[index] = None;
         self.uint64_val[index] = None;
         self.float64_val[index] = None;
+        self.float32_val[index] = None;
         self.symbol_val[index] = None;
         self.boolean_val[index] = None;
         self.expr_list[index] = None;
@@ -586,6 +596,9 @@ impl ExprPool {
             }
             ExprType::Float64 => {
                 Some(Expr::Float64(self.float64_val[index]?))
+            }
+            ExprType::Float32 => {
+                Some(Expr::Float32(self.float32_val[index]?))
             }
             ExprType::UInt64 => {
                 Some(Expr::UInt64(self.uint64_val[index]?))

@@ -41,6 +41,8 @@ pub(super) fn lower_scalar(ty: &TypeDecl) -> Option<Type> {
         TypeDecl::Int32 => Some(Type::I32),
         TypeDecl::UInt32 => Some(Type::U32),
         TypeDecl::Float64 => Some(Type::F64),
+        // SIMD-F32: single-precision scalar lowering.
+        TypeDecl::Float32 => Some(Type::F32),
         TypeDecl::Bool => Some(Type::Bool),
         TypeDecl::Unit => Some(Type::Unit),
         TypeDecl::String => Some(Type::Str),

@@ -275,9 +275,10 @@ fn main() -> u64 {
 
 - Functions require explicit return types
 - Variables: `val` (immutable), `var` (mutable)
-- Types: `u64`, `i64`, `f64`, `bool`, `str`, `ptr`, `usize`, `dict`, `Self`
+- Types: `u64`, `i64`, `f64`, `f32`, `bool`, `str`, `ptr`, `usize`, `dict`, `Self`
   (`null` は**予約済みで型検査が拒否する** — `[E0015]`。不在は `Option<T>`、生ポインタは `__builtin_null_ptr()`)
 - Narrow ints (NUM-W): `u8` / `u16` / `u32` / `i8` / `i16` / `i32` (literal suffix `42u8` / `0xFFi32` 等)。`as` cast で wide ↔ narrow 変換 (暗黙 widening は無し)
+- **`f32` (SIMD-F32)**: 単精度 float (SIMD の `f32x4` 前提、論点 1 解決)。literal suffix `1.5f32` / `42f32`。算術・比較・単項 `-` は IEEE 754 単精度で f64 と同じ trap 無し。**暗黙 widening は無し** — f32 ↔ f64 / 整数は `as` で明示 (`f64 → f32` は demote、`f32 → int` は f64 同様の saturating)。`__builtin_sizeof(f32値) == 4`。print / 補間は f64 と同じ「整数値に `.0`」規約の単精度版。**format spec (`{x:.2}`) は f32 未対応**。3 バックエンド対応 (interpreter JIT は silent fallback)。例: `interpreter/example/float32.t`
 - Stdlib types:
   - `char = u32` (Unicode codepoint alias、char literal `'a'` / `'\u{1F600}'` は lexer で `Kind::UInt32` に lex)
   - `String` (`core/std/string.t`) — heap-managed byte buffer の **nominal struct** (`type` alias ではなく独立 struct、`Vec<u8>` と同 memory layout だが nominal identity は別)。inherent method (`new` / `from_str(s)` / `push` / `pop` / `get` / `set` / `size` / `len` / `as_ptr` / `capacity` / `is_empty` / `clear` / `extend_bytes` / `push_str` / `push_char` / `eq` / `to_string`) + 拡張 trait impl (`Substring` / `Trim` / `CaseConvert` / `Concat<String>` / `Contains<String>` / `Split<String, Vec<String>>` from `core/std/str_ops.t`) で `s.len()` / `s.substring(...)` / `s.trim()` / `s.concat(other)` / `s.split(sep)` 等が `str` と同じ call shape で動く (3 backend)。

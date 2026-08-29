@@ -226,6 +226,7 @@ pub enum Expr {
     UInt16(u16),
     UInt32(u32),
     Float64(f64),
+    Float32(f32),
     Number(DefaultSymbol),
     Identifier(DefaultSymbol),
     Null,

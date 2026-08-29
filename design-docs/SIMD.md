@@ -2,6 +2,8 @@
 
 > **状態: 設計のみ (未実装)**。前提は [`DATA_ORIENTED.md`](DATA_ORIENTED.md)
 > の Phase 0 (`soa` 配列) と slice `&[T]`。
+> **論点 1 は解決済み (2026-08-30)**: `f32` を言語に足した (SIMD-F32)。
+> `f32x4` は lane 型の 1 つになり、Phase 2 の型の組は下記の 10 種。
 > 関連: [`EFFECT_SYSTEM.md`](EFFECT_SYSTEM.md) (intrinsic のエフェクト)、
 > [`GUARD_ELISION.md`](GUARD_ELISION.md) (ベクトル化の前提条件)、
 > [`BUILTIN_ARCHITECTURE.md`](BUILTIN_ARCHITECTURE.md) (builtin を足すコスト)。
@@ -60,14 +62,16 @@ x86-64 の SSE2 と aarch64 の NEON は**無条件に存在する**ので、128
 限る限り**可搬性の問題がゼロ**になる。これが幅を絞る最大の理由 (AVX2 /
 SVE は Phase 4)。
 
-lane 型は既存 primitive に対応させて 9 種:
+lane 型は既存 primitive に対応させて 10 種:
 
 ```
-i8x16  u8x16   i16x8  u16x8   i32x4  u32x4   i64x2  u64x2   f64x2
+i8x16  u8x16   i16x8  u16x8   i32x4  u32x4   i64x2  u64x2   f32x4   f64x2
 ```
 
-- **`f32` が言語に無いので `f32x4` が出てこない。** SIMD の主戦場は
-  `f32x4` なので、これは実用上の制約として大きい (下の「決めていない論点」)。
+- **`f32` は 2026-08-30 に言語に足された** (論点 1 の解決)。scalar `f32`
+  の算術・比較・`as` cast・print が 3 バックエンド一致で動く
+  (example: `interpreter/example/float32.t`、pin:
+  `compiler/tests/consistency/float32.rs`)。`f32x4` が SIMD の主戦場。
 - `TypeDecl::Vector { lane, lanes }` を 1 つ足す。`Simd<f64, 2>` にしないのは
   const generics が未実装だから。`f64x2` を lexer で primitive 型名として
   認識するのが最小。
@@ -227,15 +231,18 @@ gcc の `-fopt-info-vec-missed` に相当するが、**言語側の直し方 (`s
 |---|---|---|---|
 | **0** | `soa [T; N]` | 小 | — (DATA_ORIENTED.md) |
 | **1** | slice `&[T]` | 中 | — |
-| **2** | vector 型 9 種 + lane-wise 演算子 + intrinsic 10 個 (128bit のみ) | 中〜大 | Phase 1 |
+| **2** | vector 型 10 種 (f32x4 含む) + lane-wise 演算子 + intrinsic 10 個 (128bit のみ) | 中〜大 | Phase 1 |
 | **3** | stdlib kernel の置換 (戦略 B) + `--simd-report` (戦略 D) | 中 | Phase 2 |
 | **4** | 限定自動ベクトル化 (戦略 C) / 256bit + feature detection | 大 | Phase 3 |
 
 ## 決めていない論点
 
-1. **`f32` を言語に足すか。** SIMD の主戦場は `f32x4`。足さないなら SIMD の
-   用途は整数・バイト処理と `f64x2` に限られる。**Phase 2 より前に決める必要がある** —
-   後から足すと lane 型の組が変わり、型名と intrinsic の綴りが増える。
+1. ~~**`f32` を言語に足すか。**~~ **解決済み (2026-08-30): 足した。**
+   SIMD の主戦場である `f32x4` を lane 型に含めるため、scalar `f32`
+   を primitive として追加 (lexer `1.5f32` / `TypeDecl::Float32` /
+   IR `Type::F32` / cranelift `F32`)。暗黙 widening は無し (`as` で明示、
+   NUM-W と同じ流儀)。残りは f32x4 の intrinsic 名に `f32x4` が増える
+   だけ。
 2. **256bit (AVX2) をどう入れるか。** `cranelift-native` はホストの ISA を
    見るので、AOT バイナリの可搬性と衝突する。選択肢は (a) `--target-cpu` で
    明示、(b) runtime dispatch (関数の multi-versioning が要る)、(c) やらない。

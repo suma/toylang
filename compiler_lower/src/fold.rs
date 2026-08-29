@@ -80,6 +80,7 @@ pub(crate) fn fold_binop(op: BinOp, lhs: Const, rhs: Const) -> Option<Const> {
     match (lhs, rhs) {
         (Const::Bool(a), Const::Bool(b)) => fold_bool(op, a, b),
         (Const::F64(a), Const::F64(b)) => fold_f64(op, a, b),
+        (Const::F32(a), Const::F32(b)) => fold_f32(op, a, b),
         (Const::I64(a), Const::I64(b)) => signed(op, a, b, i64::MIN, Const::I64),
         (Const::I32(a), Const::I32(b)) => {
             signed(op, a as i64, b as i64, i32::MIN as i64, |v| Const::I32(v as i32))
@@ -107,6 +108,7 @@ pub(crate) fn fold_unary(op: UnaryOp, operand: Const) -> Option<Const> {
         (UnaryOp::Neg, Const::I16(v)) => Const::I16(v.wrapping_neg()),
         (UnaryOp::Neg, Const::I8(v)) => Const::I8(v.wrapping_neg()),
         (UnaryOp::Neg, Const::F64(v)) => Const::F64(-v),
+        (UnaryOp::Neg, Const::F32(v)) => Const::F32(-v),
         (UnaryOp::BitNot, Const::I64(v)) => Const::I64(!v),
         (UnaryOp::BitNot, Const::I32(v)) => Const::I32(!v),
         (UnaryOp::BitNot, Const::I16(v)) => Const::I16(!v),
@@ -187,6 +189,24 @@ fn fold_bool(op: BinOp, a: bool, b: bool) -> Option<Const> {
         BinOp::BitXor => a ^ b,
         _ => return None,
     }))
+}
+
+// SIMD-F32: single-precision fold. Same rules as `fold_f64` — IEEE
+// arithmetic folds, `Rem` and `Pow` do not.
+fn fold_f32(op: BinOp, a: f32, b: f32) -> Option<Const> {
+    Some(match op {
+        BinOp::Add => Const::F32(a + b),
+        BinOp::Sub => Const::F32(a - b),
+        BinOp::Mul => Const::F32(a * b),
+        BinOp::Div => Const::F32(a / b),
+        BinOp::Eq => Const::Bool(a == b),
+        BinOp::Ne => Const::Bool(a != b),
+        BinOp::Lt => Const::Bool(a < b),
+        BinOp::Le => Const::Bool(a <= b),
+        BinOp::Gt => Const::Bool(a > b),
+        BinOp::Ge => Const::Bool(a >= b),
+        _ => return None,
+    })
 }
 
 fn fold_f64(op: BinOp, a: f64, b: f64) -> Option<Const> {

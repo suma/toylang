@@ -12,7 +12,7 @@ use crate::type_checker::{TypeCheckerVisitor, TypeCheckError, BuiltinMethod};
 fn is_supported_impl_signature_shape(ty: &TypeDecl) -> bool {
     matches!(
         ty,
-        TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Float64 | TypeDecl::Bool |
+        TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Float64 | TypeDecl::Float32 | TypeDecl::Bool |
         TypeDecl::String | TypeDecl::Ptr |
         // NUM-W: narrow ints valid as method param types so
         // `impl Hash for u8 { fn hash(self: Self) -> u64 }`

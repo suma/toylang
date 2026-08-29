@@ -244,6 +244,7 @@ fn is_scalar_return(ty: &Option<TypeDecl>) -> bool {
                 | TypeDecl::Int64
                 | TypeDecl::UInt64
                 | TypeDecl::Float64
+                | TypeDecl::Float32
                 | TypeDecl::Bool
                 | TypeDecl::Int8
                 | TypeDecl::Int16
@@ -262,6 +263,7 @@ fn wrap_scalar(bits: i64, main_fn: &Rc<Function>) -> RcObject {
         Some(TypeDecl::Int64) => Object::Int64(bits),
         Some(TypeDecl::UInt64) => Object::UInt64(u),
         Some(TypeDecl::Float64) => Object::Float64(f64::from_bits(u)),
+        Some(TypeDecl::Float32) => Object::Float32(f32::from_bits(u as u32)),
         Some(TypeDecl::Bool) => Object::Bool(u != 0),
         Some(TypeDecl::Int8) => Object::Int8(u as u8 as i8),
         Some(TypeDecl::Int16) => Object::Int16(u as u16 as i16),
@@ -290,6 +292,7 @@ fn type_decl_to_ir_type(
         TypeDecl::Int64 => compiler_ir::Type::I64,
         TypeDecl::UInt64 => compiler_ir::Type::U64,
         TypeDecl::Float64 => compiler_ir::Type::F64,
+        TypeDecl::Float32 => compiler_ir::Type::F32,
         TypeDecl::Bool => compiler_ir::Type::Bool,
         TypeDecl::Int8 => compiler_ir::Type::I8,
         TypeDecl::UInt8 => compiler_ir::Type::U8,
@@ -353,6 +356,7 @@ fn ir_type_to_type_decl(
         compiler_ir::Type::I64 => TypeDecl::Int64,
         compiler_ir::Type::U64 => TypeDecl::UInt64,
         compiler_ir::Type::F64 => TypeDecl::Float64,
+        compiler_ir::Type::F32 => TypeDecl::Float32,
         compiler_ir::Type::Bool => TypeDecl::Bool,
         compiler_ir::Type::I8 => TypeDecl::Int8,
         compiler_ir::Type::U8 => TypeDecl::UInt8,
@@ -408,6 +412,9 @@ fn reconstruct_object(
         TypeDecl::UInt64 => Some((Object::UInt64(unsafe { slots[0].u64 }), 1)),
         TypeDecl::Float64 => {
             Some((Object::Float64(f64::from_bits(unsafe { slots[0].u64 })), 1))
+        }
+        TypeDecl::Float32 => {
+            Some((Object::Float32(f32::from_bits(unsafe { slots[0].u64 } as u32)), 1))
         }
         TypeDecl::Bool => Some((Object::Bool(unsafe { slots[0].u64 } != 0), 1)),
         TypeDecl::Int8 => Some((Object::Int8(unsafe { slots[0].u64 } as u8 as i8), 1)),

@@ -129,7 +129,7 @@ Type ::= '&' ('mut')? Type             # reference (immutable / mutable)
        | 'dict' '[' Type ',' Type ']'  # dict[K, V]
        | '(' Type (',' Type)* ')'      # tuple
        | '(' ')'                       # unit
-       | PrimitiveKeyword              # bool / u8..u64 / i8..i64 / f64 / str / ptr
+       | PrimitiveKeyword              # bool / u8..u64 / i8..i64 / f32 / f64 / str / ptr
        | 'Allocator'                   # opaque allocator handle
        | 'Self'                        # enclosing impl target
        | Identifier ('<' Type (',' Type)* '>')?
@@ -144,6 +144,7 @@ Primitive / built-in types:
 | `u8` / `u16` / `u32` / `u64` | unsigned integers (8/16/32/64-bit) |
 | `i8` / `i16` / `i32` / `i64` | signed integers (8/16/32/64-bit) |
 | `f64` | IEEE 754 double-precision float |
+| `f32` | IEEE 754 single-precision float (SIMD-F32; added for `f32x4` — see [SIMD](../../design-docs/SIMD.md)) |
 | `str` | UTF-8 string handle (interned literal or `.rodata` reference) |
 | `ptr` | Raw heap pointer (0 = null) |
 | `usize` | Reserved keyword, used in some builtin signatures |
@@ -725,14 +726,19 @@ AST / IR / runtime never see the underscore.
 
 ### Float literals
 
-Float literals always require the `f64` suffix to disambiguate them from
-tuple-access syntax (`outer.0.1`):
+Float literals always require an explicit `f64` or `f32` suffix to
+disambiguate them from tuple-access syntax (`outer.0.1`):
 
 ```
 3.14f64
 42f64       # = 42.0f64
 -2.5f64
+3.14f32     # single precision (SIMD-F32)
+42f32       # = 42.0f32
 ```
+
+The decimal text is parsed as f64 then narrowed to f32 by rounding;
+a value outside f32's range becomes ±inf, matching Rust's `1e40f32`.
 
 A bare `1.5` is **not** a valid token in this language. Exponent
 notation is not part of the grammar either — `1.0e300f64` is a lex
@@ -1036,7 +1042,7 @@ Listed lowest precedence first:
 | Unary `!` | Logical not (`bool`) |
 | Unary `~` | Bitwise not (`u64`, `i64`) |
 | Unary `&` / `&mut` | Borrow expression — produces `&T` / `&mut T`. `&mut` requires the operand to be a bare `var`-declared identifier; see [Reference types](#reference-types) |
-| `as` | Type cast (i64 ↔ u64, i64/u64 ↔ f64) |
+| `as` | Type cast (any numeric primitive ↔ any other: i64 ↔ u64, i64/u64 ↔ f64/f32, f64 ↔ f32) |
 | Postfix `?` | Early-return on `Result::Err` / `Option::None`; see [`?` operator](#-operator-early-return) |
 | `.field` `.0` `.method(...)` | Field / tuple-index / method access |
 | `[...]` | Indexing / slicing (arrays, dicts, structs with `__getitem__`) |
@@ -1341,12 +1347,19 @@ at the call site, like any other unsatisfied bound (see
   produce is a plausible-looking number that surfaces far from the
   mistake. See *Runtime traps*.
 - **Float arithmetic**: standard IEEE 754. NaN compares false against
-  everything (matching Rust's `PartialOrd`).
+  everything (matching Rust's `PartialOrd`). `f32` (SIMD-F32) has the
+  same semantics at single precision — including `%` (`0.1f32 % 0.3f32`
+  is an IEEE remainder, no trap); there are no float traps in any
+  width. Mixing `f32` with `f64` (or with an integer) is a type error;
+  cross-width moves go through `as`.
 - **`as` casts**:
   - `i64 ↔ u64`: bit-preserving reinterpretation.
   - `f64 → i64/u64`: truncate toward zero, saturate on out-of-range,
     NaN becomes 0 (matching Rust's `as` since 1.45).
   - `i64/u64 → f64`: nearest-rounding conversion.
+  - `f32 → int`: same saturating rule as `f64`, at single precision.
+  - `f64 → f32`: demote (nearest-rounding); `f32 → f64`: promote
+    (exact — every f32 is representable in f64).
 
 ### Control flow as expression
 
@@ -3253,6 +3266,12 @@ trailing `.0` so floats stay visually distinct from ints (`1f64`
 prints as `1.0`). This is a change from the old AOT runtime, which
 used C's `%g` (6 significant digits: `1234567.75` used to print as
 `1.23457e+06`).
+
+`f32` rendering (SIMD-F32) follows the same rule at single precision:
+Rust's `Display` on the `f32` value (shortest round-trip), with the
+trailing `.0` convention for integral values (`1.0f32` prints `1.0`).
+Format *specs* (`{x:.2}`) are not accepted on `f32` yet — the
+formattable set is unchanged — so write `{v}` or convert first.
 
 ### I/O module (`io::`)
 

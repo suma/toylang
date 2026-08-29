@@ -283,7 +283,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             UnaryOp::Negate => {
                 // NUM-W: any *signed* width, plus f64. Unsigned stays
                 // rejected -- there is no value for `-x` to take.
-                if resolved_ty.is_signed_integer() || *resolved_ty == TypeDecl::Float64 {
+                if resolved_ty.is_signed_integer() || *resolved_ty == TypeDecl::Float64 || *resolved_ty == TypeDecl::Float32 {
                     Ok(resolved_ty.clone())
                 } else {
                     Err(self.error_with_location(
@@ -1919,6 +1919,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
             Expr::QualifiedIdentifier(_)
             | Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_)
+            | Expr::Float32(_)
             | Expr::Int8(_) | Expr::Int16(_) | Expr::Int32(_)
             | Expr::UInt8(_) | Expr::UInt16(_) | Expr::UInt32(_)
             | Expr::Number(_) | Expr::String(_)
@@ -2011,6 +2012,10 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     pub fn visit_float64_literal(&mut self, _value: &f64) -> Result<TypeDecl, TypeCheckError> {
         Ok(TypeDecl::Float64)
+    }
+
+    pub fn visit_float32_literal(&mut self, _value: &f32) -> Result<TypeDecl, TypeCheckError> {
+        Ok(TypeDecl::Float32)
     }
 
     pub fn visit_number_literal(&mut self, _value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {

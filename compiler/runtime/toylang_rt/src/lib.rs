@@ -1895,6 +1895,37 @@ pub extern "C" fn toy_to_string_f64(v: f64) -> *const u8 {
     }
 }
 
+// SIMD-F32: single-precision print / to_string. Rust's `{}` on `f32`
+// gives the f32 shortest round-trip representation — the same text the
+// interpreter's `Object::to_display_string` produces — with the
+// "always a decimal point" convention applied to integral values.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_print_f32(v: f32) {
+    if v.is_finite() && v % 1.0 == 0.0 {
+        emit_fmt(format_args!("{v:.1}"), false);
+    } else {
+        emit_fmt(format_args!("{v}"), false);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_println_f32(v: f32) {
+    if v.is_finite() && v % 1.0 == 0.0 {
+        emit_fmt(format_args!("{v:.1}"), true);
+    } else {
+        emit_fmt(format_args!("{v}"), true);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_to_string_f32(v: f32) -> *const u8 {
+    if v.is_finite() && v % 1.0 == 0.0 {
+        to_string_fmt(format_args!("{v:.1}"))
+    } else {
+        to_string_fmt(format_args!("{v}"))
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn toy_to_string_bool(v: u8) -> *const u8 {
     if v != 0 {

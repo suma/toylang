@@ -41,6 +41,12 @@ pub enum TypeDecl {
     Int64,
     UInt64,
     Float64,
+    /// SIMD-F32: the single-precision float. Exists so `f32x4` can be
+    /// the SIMD mainstay (SIMD.md's undecided point 1); arithmetic is
+    /// IEEE-754 single precision with the same wrap-free / trap-free
+    /// semantics `f64` has, and no implicit widening to `f64` — cross
+    /// width moves go through `as`.
+    Float32,
     Bool,
     // NUM-W: narrow integer types. The lexer maps the keywords
     // `u8` / `u16` / `u32` / `i8` / `i16` / `i32` to these
@@ -124,6 +130,7 @@ impl TypeDecl {
                 | TypeDecl::Int16 | TypeDecl::UInt16
                 | TypeDecl::Int8 | TypeDecl::UInt8
                 | TypeDecl::Float64
+                | TypeDecl::Float32
         )
     }
 
@@ -451,6 +458,7 @@ impl TypeDecl {
             TypeDecl::Int8 => "i8".to_string(),
             TypeDecl::UInt8 => "u8".to_string(),
             TypeDecl::Float64 => "f64".to_string(),
+            TypeDecl::Float32 => "f32".to_string(),
             TypeDecl::String => "str".to_string(),
             TypeDecl::Ptr => "ptr".to_string(),
             TypeDecl::Self_ => "Self".to_string(),
@@ -505,6 +513,7 @@ impl TypeDecl {
             TypeDecl::Int64 => "i64".to_string(),
             TypeDecl::UInt64 => "u64".to_string(),
             TypeDecl::Float64 => "f64".to_string(),
+            TypeDecl::Float32 => "f32".to_string(),
             TypeDecl::Int8 => "i8".to_string(),
             TypeDecl::Int16 => "i16".to_string(),
             TypeDecl::Int32 => "i32".to_string(),

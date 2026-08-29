@@ -482,6 +482,10 @@ impl<'a> TypeCheckerVisitor<'a> {
             (TypeDecl::UInt64, TypeDecl::UInt64) => Ok((TypeDecl::UInt64, TypeDecl::UInt64)),
             (TypeDecl::Int64, TypeDecl::Int64) => Ok((TypeDecl::Int64, TypeDecl::Int64)),
             (TypeDecl::Float64, TypeDecl::Float64) => Ok((TypeDecl::Float64, TypeDecl::Float64)),
+            // SIMD-F32: same-width float pair. Mixing f32 with f64 (or
+            // with any integer) stays rejected — cross-width moves go
+            // through an explicit `as`, matching the NUM-W rule.
+            (TypeDecl::Float32, TypeDecl::Float32) => Ok((TypeDecl::Float32, TypeDecl::Float32)),
             (TypeDecl::Bool, TypeDecl::Bool) => Ok((TypeDecl::Bool, TypeDecl::Bool)),
             (TypeDecl::String, TypeDecl::String) => Ok((TypeDecl::String, TypeDecl::String)),
 

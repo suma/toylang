@@ -47,6 +47,7 @@ pub trait ExprVisitor {
         Ok(TypeDecl::UInt32)
     }
     fn visit_float64_literal(&mut self, value: &f64) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_float32_literal(&mut self, value: &f32) -> Result<TypeDecl, TypeCheckError>;
     fn visit_number_literal(&mut self, value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError>;
     fn visit_string_literal(&mut self, value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError>;
     fn visit_boolean_literal(&mut self, value: &Expr) -> Result<TypeDecl, TypeCheckError>;

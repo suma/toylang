@@ -187,6 +187,10 @@ pub(super) fn ast_lanes(source: &str, core_dir: Option<PathBuf>) -> Option<(u64,
             Object::UInt64(n) => *n,
             Object::Int64(n) => *n as u64,
             Object::Bool(b) => *b as u64,
+            // SIMD-F32: a f32 main return is compared by its bit
+            // pattern, so float tests either return u64/bool or pin
+            // the exact bits they expect.
+            Object::Float32(f) => f.to_bits() as u64,
             other => panic!("unexpected interpreter result: {other:?}"),
         };
 
@@ -286,6 +290,7 @@ pub(super) fn checked_interpreter_value(checked: &CheckedProgram, source: &str) 
         Object::UInt64(n) => *n,
         Object::Int64(n) => *n as u64,
         Object::Bool(b) => *b as u64,
+        Object::Float32(f) => f.to_bits() as u64,
         other => panic!("unexpected interpreter result: {other:?}"),
     }
 }

@@ -35,7 +35,7 @@ pub(super) const ARRAY_LEAF_STRIDE: u32 = 8;
 /// recursively flatten through their fields / elements.
 pub(super) fn leaf_scalar_count(module: &Module, ty: Type) -> usize {
     match ty {
-        Type::I64 | Type::U64 | Type::F64 | Type::Bool | Type::Str => 1,
+        Type::I64 | Type::U64 | Type::F64 | Type::F32 | Type::Bool | Type::Str => 1,
         // NUM-W-AOT: narrow ints occupy one leaf slot just like
         // their wide siblings — they share the 8-byte stride
         // currently hard-coded by `ARRAY_LEAF_STRIDE`. Future
@@ -79,6 +79,8 @@ pub(super) fn elem_stride_bytes(ty: Type, _module: &Module) -> u32 {
         Type::I8 | Type::U8 | Type::Bool => 1,
         Type::I16 | Type::U16 => 2,
         Type::I32 | Type::U32 => 4,
+        // SIMD-F32: native 4-byte stride for f32 element arrays.
+        Type::F32 => 4,
         Type::I64 | Type::U64 | Type::F64 | Type::Str => 8,
         // Compound element arrays still use the uniform 8-byte
         // per-leaf slot — see Phase 2 plan above.

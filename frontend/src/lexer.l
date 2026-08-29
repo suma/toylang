@@ -206,6 +206,7 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
 "u64"       return Ok(token!(self, Kind::U64));
 "i64"       return Ok(token!(self, Kind::I64));
 "f64"       return Ok(token!(self, Kind::F64));
+"f32"       return Ok(token!(self, Kind::F32));
 "u8"        return Ok(token!(self, Kind::U8));
 "u16"       return Ok(token!(self, Kind::U16));
 "u32"       return Ok(token!(self, Kind::U32));
@@ -270,6 +271,39 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
 "/"         return Ok(token!(self, Kind::IDiv));
 "%"         return Ok(token!(self, Kind::IMod));
 
+
+-?[0-9][0-9_]*"."[0-9][0-9_]*"f32"  {
+                        // SIMD-F32: single-precision float literal. Same
+                        // shape as the `f64` rules — separators allowed
+                        // between digits, stripped before `str::parse`.
+                        // The text parses as f64 first (the decimal
+                        // grammar is the same), then narrows to f32 by
+                        // rounding; a value outside f32's range becomes
+                        // ±inf exactly like Rust's `1e40f32` literal.
+                        let mut text = self.yytext();
+                        let drain = text.drain(0..(text.len() - 3));
+                        let s: String = drain.collect::<String>().replace("_", "");
+                        match s.parse::<f64>() {
+                            Ok(value) => return Ok(token!(self, Kind::Float32(value as f32))),
+                            Err(_) => {
+                                self.get_last_lex_error().replace(LexErrorKind::MalformedNumber);
+                                return Err(Error::Unmatch);
+                            }
+                        }
+                    }
+
+-?[0-9][0-9_]*"f32"       {
+                        let mut text = self.yytext();
+                        let drain = text.drain(0..(text.len() - 3));
+                        let s: String = drain.collect::<String>().replace("_", "");
+                        match s.parse::<f64>() {
+                            Ok(value) => return Ok(token!(self, Kind::Float32(value as f32))),
+                            Err(_) => {
+                                self.get_last_lex_error().replace(LexErrorKind::MalformedNumber);
+                                return Err(Error::Unmatch);
+                            }
+                        }
+                    }
 
 -?[0-9][0-9_]*"."[0-9][0-9_]*"f64"  {
                         // Numeric literal separators (`1_000_000.5_f64`):

@@ -64,6 +64,8 @@ impl<'a> FunctionLower<'a> {
             Type::Bool | Type::I8 | Type::U8 => Some(1),
             Type::I16 | Type::U16 => Some(2),
             Type::I32 | Type::U32 => Some(4),
+            // SIMD-F32: native single-precision width.
+            Type::F32 => Some(4),
             Type::I64 | Type::U64 | Type::F64 | Type::Str => Some(8),
             Type::Unit => Some(0),
             Type::Struct(struct_id) => {
@@ -652,7 +654,7 @@ impl<'a> FunctionLower<'a> {
             Type::Bool | Type::I8 | Type::U8
             | Type::I16 | Type::U16
             | Type::I32 | Type::U32
-            | Type::I64 | Type::U64 | Type::F64 | Type::Str => {
+            | Type::I64 | Type::U64 | Type::F64 | Type::F32 | Type::Str => {
                 out.push((*offset, ty));
                 *offset = offset.saturating_add(self.compute_byte_size(ty)?);
                 Some(())
@@ -1382,6 +1384,8 @@ impl<'a> FunctionLower<'a> {
             Expr::Int64(v) => Ok(self.emit(InstKind::Const(Const::I64(v)), Some(Type::I64))),
             Expr::UInt64(v) => Ok(self.emit(InstKind::Const(Const::U64(v)), Some(Type::U64))),
             Expr::Float64(v) => Ok(self.emit(InstKind::Const(Const::F64(v)), Some(Type::F64))),
+            // SIMD-F32: single-precision literal.
+            Expr::Float32(v) => Ok(self.emit(InstKind::Const(Const::F32(v)), Some(Type::F32))),
             Expr::Number(_) => Err(
                 "compiler MVP requires explicit numeric type annotations or suffixes".to_string(),
             ),

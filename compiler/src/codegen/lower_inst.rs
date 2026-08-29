@@ -151,6 +151,8 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     Const::I8(n) => self.builder.ins().iconst(types::I8, *n as i64),
                     Const::U8(n) => self.builder.ins().iconst(types::I8, *n as i64),
                     Const::F64(n) => self.builder.ins().f64const(*n),
+                    // SIMD-F32: single-precision constant.
+                    Const::F32(n) => self.builder.ins().f32const(*n),
                     Const::Bool(b) => self.builder.ins().iconst(types::I8, *b as i64),
                 };
                 self.record_result(inst, v);
@@ -294,7 +296,9 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let operand_ty = self.value_ir_type(*operand);
                 let result = match op {
                     UnaryOp::Neg => {
-                        if matches!(operand_ty, Some(IrType::F64)) {
+                        // SIMD-F32: fneg covers both float widths
+                        // (cranelift dispatches by the value's type).
+                        if matches!(operand_ty, Some(IrType::F64) | Some(IrType::F32)) {
                             self.builder.ins().fneg(v)
                         } else {
                             self.builder.ins().ineg(v)
@@ -312,7 +316,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                         // direct equivalent, so we emit
                         // `select(x < 0, -x, x)` which folds to a
                         // conditional move.
-                        if matches!(operand_ty, Some(IrType::F64)) {
+                        if matches!(operand_ty, Some(IrType::F64) | Some(IrType::F32)) {
                             self.builder.ins().fabs(v)
                         } else {
                             let zero = self.builder.ins().iconst(types::I64, 0);
@@ -921,6 +925,11 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     (IrType::U8, true) => (self.runtime.println_u8, v),
                     (IrType::F64, false) => (self.runtime.print_f64, v),
                     (IrType::F64, true) => (self.runtime.println_f64, v),
+                    // SIMD-F32: single-precision helpers take the f32
+                    // at its native width and format it with the same
+                    // "always a decimal point" convention.
+                    (IrType::F32, false) => (self.runtime.print_f32, v),
+                    (IrType::F32, true) => (self.runtime.println_f32, v),
                     (IrType::Bool, false) => (self.runtime.print_bool, v),
                     (IrType::Bool, true) => (self.runtime.println_bool, v),
                     (IrType::Str, _) => {
@@ -1294,6 +1303,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     IrType::I64 => self.runtime.to_string_i64,
                     IrType::U64 => self.runtime.to_string_u64,
                     IrType::F64 => self.runtime.to_string_f64,
+                    IrType::F32 => self.runtime.to_string_f32,
                     IrType::Bool => self.runtime.to_string_bool,
                     IrType::Str => self.runtime.to_string_str,
                     IrType::I8 => self.runtime.to_string_i8,
@@ -1364,6 +1374,18 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                         (self.runtime.format_u64, vec![widened, spec_v, bits_v])
                     }
                     IrType::F64 => (self.runtime.format_f64, vec![v, spec_v]),
+                    // SIMD-F32: a format spec on `f32` is rejected by the
+                    // type checker (same formattable set as before f32
+                    // existed), so reaching here is a lowering bug — the
+                    // promoted-through-f64 rendering would not be
+                    // byte-identical to Rust's f32 formatting.
+                    IrType::F32 => {
+                        return Err(
+                            "internal error: __builtin_format of f32 reached codegen \
+                             (the type checker rejects format specs on f32)"
+                                .to_string(),
+                        );
+                    }
                     IrType::Bool => (self.runtime.format_bool, vec![v, spec_v]),
                     IrType::Str => (self.runtime.format_str, vec![v, spec_v]),
                     IrType::Unit | IrType::Struct(_) | IrType::Tuple(_) | IrType::Enum(_) => {

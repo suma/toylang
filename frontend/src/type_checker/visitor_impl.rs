@@ -28,6 +28,7 @@ impl AcceptableExpr for Expr {
             Expr::UInt16(val) => visitor.visit_uint16_literal(val),
             Expr::UInt32(val) => visitor.visit_uint32_literal(val),
             Expr::Float64(val) => visitor.visit_float64_literal(val),
+            Expr::Float32(val) => visitor.visit_float32_literal(val),
             Expr::Number(val) => visitor.visit_number_literal(*val),
             Expr::String(val) => visitor.visit_string_literal(*val),
             Expr::True | Expr::False => visitor.visit_boolean_literal(self),
@@ -261,6 +262,10 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
 
     fn visit_float64_literal(&mut self, _value: &f64) -> Result<TypeDecl, TypeCheckError> {
         self.visit_float64_literal(_value)
+    }
+
+    fn visit_float32_literal(&mut self, _value: &f32) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_float32_literal(_value)
     }
 
     fn visit_number_literal(&mut self, _value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {

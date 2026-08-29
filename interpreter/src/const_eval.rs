@@ -484,7 +484,8 @@ fn stub_syms_for(program: &File, idx: usize) -> HashSet<DefaultSymbol> {
 fn is_const_literal(program: &File, value: ExprRef) -> bool {
     matches!(
         program.expression.get(&value),
-        Some(Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_) | Expr::True | Expr::False)
+        Some(Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_) | Expr::Float32(_)
+            | Expr::True | Expr::False)
     )
 }
 
@@ -511,6 +512,7 @@ fn slot_to_literal(slots: &[RawSlot], ty: Type) -> Option<Expr> {
         Type::I32 => Expr::Int32(unsafe { slot.i64 as i32 }),
         Type::U32 => Expr::UInt32(unsafe { slot.u64 as u32 }),
         Type::F64 => Expr::Float64(unsafe { slot.f64 }),
+        Type::F32 => Expr::Float32(slot.read_f32()),
         _ => return None,
     })
 }
@@ -528,6 +530,7 @@ fn literal_slot(program: &File, item: &ExprRef) -> Option<RawSlot> {
         Some(Expr::Int64(v)) => Some(RawSlot::from_i64(v)),
         Some(Expr::UInt64(v)) => Some(RawSlot::from_u64(v)),
         Some(Expr::Float64(v)) => Some(RawSlot::from_f64(v)),
+        Some(Expr::Float32(v)) => Some(RawSlot::from_f32(v)),
         Some(Expr::True) => Some(RawSlot::from_bool(true)),
         Some(Expr::False) => Some(RawSlot::from_bool(false)),
         Some(Expr::Int8(v)) => Some(RawSlot::from_i64(v as i64)),
@@ -547,6 +550,7 @@ fn literal_text(program: &File, item: &ExprRef) -> Option<String> {
         Some(Expr::Int64(v)) => Some(v.to_string()),
         Some(Expr::UInt64(v)) => Some(v.to_string()),
         Some(Expr::Float64(v)) => Some(v.to_string()),
+        Some(Expr::Float32(v)) => Some(v.to_string()),
         Some(Expr::True) => Some("true".to_string()),
         Some(Expr::False) => Some("false".to_string()),
         Some(Expr::Int8(v)) => Some(v.to_string()),

@@ -22,6 +22,7 @@ fn primitive_type_canonical_name(kind: &Kind) -> Option<&'static str> {
         Kind::U64 => "u64",
         Kind::I64 => "i64",
         Kind::F64 => "f64",
+        Kind::F32 => "f32",
         Kind::USize => "usize",
         Kind::Str => "str",
         Kind::Ptr => "ptr",

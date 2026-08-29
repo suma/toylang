@@ -79,6 +79,8 @@ pub fn eval_const_expr_in_pool(
         Expr::Int64(v) => Some(Const::I64(v)),
         Expr::UInt64(v) => Some(Const::U64(v)),
         Expr::Float64(v) => Some(Const::F64(v)),
+        // SIMD-F32: single-precision const initialisers.
+        Expr::Float32(v) => Some(Const::F32(v)),
         Expr::True => Some(Const::Bool(true)),
         Expr::False => Some(Const::Bool(false)),
         Expr::Identifier(sym) => values.get(&sym).copied(),

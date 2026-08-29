@@ -32,6 +32,7 @@ pub enum Object {
     UInt16(u16),
     UInt32(u32),
     Float64(f64),
+    Float32(f32),
     ConstString(DefaultSymbol),  // String literals and interned strings (immutable, memory efficient)
     String(String),              // Runtime generated strings (mutable, direct data storage)
     Array(Box<Vec<RcObject>>),
@@ -211,6 +212,7 @@ impl Ord for ObjectKey {
             // Bit-pattern ordering on f64 — gives a total order (consistent with `Eq` above)
             // so f64 can act as a Dict key. Not the same as numeric `<` ordering.
             (Object::Float64(a), Object::Float64(b)) => a.to_bits().cmp(&b.to_bits()),
+            (Object::Float32(a), Object::Float32(b)) => a.to_bits().cmp(&b.to_bits()),
             (Object::ConstString(a), Object::ConstString(b)) => a.cmp(b),
             (Object::String(a), Object::String(b)) => a.cmp(b),
             (Object::Pointer(a), Object::Pointer(b)) => a.cmp(b),
@@ -237,6 +239,8 @@ impl Ord for ObjectKey {
             (_, Object::UInt32(_)) => Ordering::Greater,
             (Object::Float64(_), _) => Ordering::Less,
             (_, Object::Float64(_)) => Ordering::Greater,
+            (Object::Float32(_), _) => Ordering::Less,
+            (_, Object::Float32(_)) => Ordering::Greater,
             (Object::ConstString(_), _) => Ordering::Less,
             (_, Object::ConstString(_)) => Ordering::Greater,
             (Object::String(_), _) => Ordering::Less,
@@ -300,6 +304,7 @@ impl PartialEq for Object {
             // Note this differs from IEEE 754 `==` (NaN bit patterns compare equal here);
             // arithmetic comparison via the Operator path uses IEEE 754 semantics.
             (Object::Float64(a), Object::Float64(b)) => a.to_bits() == b.to_bits(),
+            (Object::Float32(a), Object::Float32(b)) => a.to_bits() == b.to_bits(),
             (Object::ConstString(a), Object::ConstString(b)) => a == b,
             (Object::String(a), Object::String(b)) => a == b,
             (Object::Array(a), Object::Array(b)) => {
@@ -384,6 +389,10 @@ impl Hash for Object {
             }
             Object::Float64(v) => {
                 15u8.hash(state);
+                v.to_bits().hash(state);
+            }
+            Object::Float32(v) => {
+                45u8.hash(state);
                 v.to_bits().hash(state);
             }
             Object::ConstString(v) => {
@@ -511,6 +520,7 @@ fn format_type_decl_for_display(
         TypeDecl::Int64 => "i64".to_string(),
         TypeDecl::UInt64 => "u64".to_string(),
         TypeDecl::Float64 => "f64".to_string(),
+        TypeDecl::Float32 => "f32".to_string(),
         TypeDecl::Bool => "bool".to_string(),
         TypeDecl::String => "str".to_string(),
         TypeDecl::Unit => "()".to_string(),
@@ -589,6 +599,7 @@ impl Object {
             Object::UInt8(_) => TypeDecl::UInt8,
             Object::Int8(_) => TypeDecl::Int8,
             Object::Float64(_) => TypeDecl::Float64,
+            Object::Float32(_) => TypeDecl::Float32,
             Object::ConstString(_) | Object::String(_) => TypeDecl::String,
             Object::Array(elements) => {
                 if elements.is_empty() {
@@ -654,6 +665,7 @@ impl Object {
         (unwrap_int64,   try_unwrap_int64,   Object::Int64,       i64,           TypeDecl::Int64,   "int64"),
         (unwrap_uint64,  try_unwrap_uint64,  Object::UInt64,      u64,           TypeDecl::UInt64,  "uint64"),
         (unwrap_float64, try_unwrap_float64, Object::Float64,     f64,           TypeDecl::Float64, "float64"),
+        (unwrap_float32, try_unwrap_float32, Object::Float32,     f32,           TypeDecl::Float32, "float32"),
         (unwrap_pointer, try_unwrap_pointer, Object::Pointer,     usize,         TypeDecl::Ptr,     "pointer"),
         (unwrap_string,  try_unwrap_string,  Object::ConstString, DefaultSymbol, TypeDecl::String,  "ConstString"),
     }
@@ -693,6 +705,16 @@ impl Object {
             Object::UInt16(v) => v.to_string(),
             Object::UInt32(v) => v.to_string(),
             Object::Float64(v) => {
+                // Match Rust's default `{}` formatting except always show a
+                // decimal point so floats are visually distinct from ints
+                // (`1.0` not `1`).
+                if v.is_finite() && v.fract() == 0.0 {
+                    format!("{:.1}", v)
+                } else {
+                    v.to_string()
+                }
+            }
+            Object::Float32(v) => {
                 // Match Rust's default `{}` formatting except always show a
                 // decimal point so floats are visually distinct from ints
                 // (`1.0` not `1`).

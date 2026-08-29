@@ -85,6 +85,12 @@ pub struct TypeCheckerVisitor<'a> {
     /// collected while checking and applied by
     /// `apply_tuple_struct_rewrites`.
     pub tuple_struct_rewrites: TupleStructRewrites,
+    /// NULL-COALESCE: the checked left-operand type and resolved
+    /// success type of `a ?? b` nodes, keyed by the operand ref (the
+    /// one ref every visit route holds). The post-pass rewrite reads
+    /// both back from here — the checker's own type cache is
+    /// per-function and gone by the time it runs.
+    pub null_coalesce_lhs_types: HashMap<ExprRef, (TypeDecl, TypeDecl)>,
 }
 
 /// NEWTYPE: the deferred half of the tuple-struct desugar.
@@ -160,6 +166,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             display_types: None,
             current_fn_return_type: None,
             tuple_struct_rewrites: TupleStructRewrites::default(),
+            null_coalesce_lhs_types: HashMap::new(),
             transformed_exprs: HashMap::new(),
             pending_number_holes: Vec::new(),
         };
@@ -243,6 +250,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             display_types: None,
             current_fn_return_type: None,
             tuple_struct_rewrites: TupleStructRewrites::default(),
+            null_coalesce_lhs_types: HashMap::new(),
         }
     }
 
@@ -520,6 +528,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             display_types: None,
             current_fn_return_type: None,
             tuple_struct_rewrites: TupleStructRewrites::default(),
+            null_coalesce_lhs_types: HashMap::new(),
             transformed_exprs: HashMap::new(),
             pending_number_holes: Vec::new(),
         }

@@ -266,6 +266,8 @@ fn scalar_byte_size(ty: Type) -> Option<u64> {
         Type::Bool | Type::I8 | Type::U8 => Some(1),
         Type::I16 | Type::U16 => Some(2),
         Type::I32 | Type::U32 => Some(4),
+        // SIMD-F32: native 4-byte width.
+        Type::F32 => Some(4),
         Type::I64 | Type::U64 | Type::F64 | Type::Str => Some(8),
         _ => None,
     }
@@ -1853,6 +1855,7 @@ impl<'a> FunctionLower<'a> {
                         Type::I64 | Type::U64 | Type::F64 | Type::Bool
                             | Type::I8 | Type::U8 | Type::I16 | Type::U16
                             | Type::I32 | Type::U32
+                            | Type::F32
                     ) {
                         // The IR Type for the local that holds the
                         // pointer is U64 regardless of the pointee.
@@ -1941,7 +1944,7 @@ impl<'a> FunctionLower<'a> {
                 }
                 scalar @ (Type::I64 | Type::U64 | Type::F64 | Type::Bool | Type::Str
                     | Type::I8 | Type::U8 | Type::I16 | Type::U16
-                    | Type::I32 | Type::U32) => {
+                    | Type::I32 | Type::U32 | Type::F32) => {
                     let local = self.module.function_mut(self.func_id).add_local(scalar);
                     self.bindings.insert(
                         *name,

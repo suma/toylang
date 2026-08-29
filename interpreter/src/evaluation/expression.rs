@@ -34,7 +34,7 @@ impl EvaluationContext<'_> {
             Expr::Unary(op, operand) => {
                 self.evaluate_unary(&op, &operand)
             }
-            Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_) | Expr::String(_) | Expr::True | Expr::False
+            Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_) | Expr::Float32(_) | Expr::String(_) | Expr::True | Expr::False
             | Expr::Int8(_) | Expr::Int16(_) | Expr::Int32(_)
             | Expr::UInt8(_) | Expr::UInt16(_) | Expr::UInt32(_) => {
                 self.evaluate_literal(&expr)
@@ -458,6 +458,7 @@ impl EvaluationContext<'_> {
             }
             Expr::QualifiedIdentifier(_)
             | Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_)
+            | Expr::Float32(_)
             | Expr::Int8(_) | Expr::Int16(_) | Expr::Int32(_)
             | Expr::UInt8(_) | Expr::UInt16(_) | Expr::UInt32(_)
             | Expr::Number(_) | Expr::String(_)
@@ -725,7 +726,7 @@ impl EvaluationContext<'_> {
                 return Ok(EvaluationResult::Value(value_obj.into()));
             }
         }
-        enum NumForm { Signed(i128), Unsigned(u128), Float(f64) }
+        enum NumForm { Signed(i128), Unsigned(u128), Float(f64), Float32(f32) }
         let from = match &*borrowed {
             Object::Int64(v) => NumForm::Signed(*v as i128),
             Object::Int32(v) => NumForm::Signed(*v as i128),
@@ -736,6 +737,7 @@ impl EvaluationContext<'_> {
             Object::UInt16(v) => NumForm::Unsigned(*v as u128),
             Object::UInt8(v) => NumForm::Unsigned(*v as u128),
             Object::Float64(v) => NumForm::Float(*v),
+            Object::Float32(v) => NumForm::Float32(*v),
             // Bool / pointer / string casts are intentionally
             // not part of this matrix; the type checker rejects
             // them upstream.
@@ -754,16 +756,31 @@ impl EvaluationContext<'_> {
             NumForm::Signed(v) => *v as i64,
             NumForm::Unsigned(v) => *v as i64,
             NumForm::Float(v) => *v as i64,
+            // f32 values are exactly representable in f64, so routing
+            // the single-precision source through f64 keeps the
+            // saturating result identical to a native `f32 as i64`.
+            NumForm::Float32(v) => *v as f64 as i64,
         }};
         let to_u64 = |n: &NumForm| -> u64 { match n {
             NumForm::Signed(v) => *v as u64,
             NumForm::Unsigned(v) => *v as u64,
             NumForm::Float(v) => *v as u64,
+            NumForm::Float32(v) => *v as f64 as u64,
         }};
         let to_f64 = |n: &NumForm| -> f64 { match n {
             NumForm::Signed(v) => *v as f64,
             NumForm::Unsigned(v) => *v as f64,
             NumForm::Float(v) => *v,
+            NumForm::Float32(v) => *v as f64,
+        }};
+        // SIMD-F32: single-precision targets. int→f32 and f64→f32 both
+        // round-to-nearest, matching Rust's `as f32` and cranelift's
+        // `fcvt_to_float` / `demote`.
+        let to_f32 = |n: &NumForm| -> f32 { match n {
+            NumForm::Signed(v) => *v as f32,
+            NumForm::Unsigned(v) => *v as f32,
+            NumForm::Float(v) => *v as f32,
+            NumForm::Float32(v) => *v,
         }};
         let result = match target_type {
             TypeDecl::Int64 => Object::Int64(to_i64(&from)),
@@ -775,6 +792,7 @@ impl EvaluationContext<'_> {
             TypeDecl::Int8 => Object::Int8(to_i64(&from) as i8),
             TypeDecl::UInt8 => Object::UInt8(to_u64(&from) as u8),
             TypeDecl::Float64 => Object::Float64(to_f64(&from)),
+            TypeDecl::Float32 => Object::Float32(to_f32(&from)),
             other => {
                 return Err(InterpreterError::InternalError(format!(
                     "Invalid cast from {:?} to {:?}",

@@ -48,7 +48,7 @@ pub fn flatten_compound_leaf_types(module: &Module, ty: Type, out: &mut Vec<Type
         }
         // Scalars contribute themselves directly.
         Type::I64 | Type::U64 | Type::I8 | Type::U8 | Type::I16 | Type::U16
-        | Type::I32 | Type::U32 | Type::F64 | Type::Bool | Type::Str => out.push(ty),
+        | Type::I32 | Type::U32 | Type::F64 | Type::F32 | Type::Bool | Type::Str => out.push(ty),
         Type::Unit => {} // skip
     }
 }

@@ -375,6 +375,7 @@ impl AstBuilder {
     simple_expr_builder!(uint64_expr, UInt64, u64);
     simple_expr_builder!(int64_expr,  Int64,  i64);
     simple_expr_builder!(float64_expr, Float64, f64);
+    simple_expr_builder!(float32_expr, Float32, f32);
 
     // NUM-W narrow-integer literal builders. Same shape as
     // int64_expr / uint64_expr; the parser hands the lexer-validated

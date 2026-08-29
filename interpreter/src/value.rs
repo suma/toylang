@@ -47,6 +47,7 @@ pub enum Value {
     UInt16(u16),
     UInt32(u32),
     Float64(f64),
+    Float32(f32),
     /// Interned literal string. Cloning is a `DefaultSymbol` (u32) copy.
     ConstString(DefaultSymbol),
     /// Raw heap pointer (0 is the null pointer).
@@ -69,6 +70,7 @@ impl Value {
     pub fn int64(v: i64) -> Self { Value::Int64(v) }
     pub fn uint64(v: u64) -> Self { Value::UInt64(v) }
     pub fn float64(v: f64) -> Self { Value::Float64(v) }
+    pub fn float32(v: f32) -> Self { Value::Float32(v) }
     pub fn const_string(sym: DefaultSymbol) -> Self { Value::ConstString(sym) }
     pub fn pointer(addr: usize) -> Self { Value::Pointer(addr) }
     pub fn unit() -> Self { Value::Unit }
@@ -132,6 +134,7 @@ impl Value {
             Value::UInt16(v) => Rc::new(RefCell::new(Object::UInt16(v))),
             Value::UInt32(v) => Rc::new(RefCell::new(Object::UInt32(v))),
             Value::Float64(v) => Rc::new(RefCell::new(Object::Float64(v))),
+            Value::Float32(v) => Rc::new(RefCell::new(Object::Float32(v))),
             Value::ConstString(sym) => Rc::new(RefCell::new(Object::ConstString(sym))),
             Value::Pointer(addr) => Rc::new(RefCell::new(Object::Pointer(addr))),
             Value::Null(td) => Rc::new(RefCell::new(Object::Null(td))),
@@ -163,6 +166,7 @@ impl Value {
             Value::UInt8(_) => TypeDecl::UInt8,
             Value::Int8(_) => TypeDecl::Int8,
             Value::Float64(_) => TypeDecl::Float64,
+            Value::Float32(_) => TypeDecl::Float32,
             Value::ConstString(_) => TypeDecl::String,
             Value::Pointer(_) => TypeDecl::Ptr,
             Value::Heap(rc) => rc.borrow().get_type(),
@@ -229,6 +233,16 @@ impl Value {
         }
     }
 
+    pub fn try_unwrap_float32(&self) -> Result<f32, ObjectError> {
+        match self {
+            Value::Float32(v) => Ok(*v),
+            _ => Err(ObjectError::TypeMismatch {
+                expected: TypeDecl::Float32,
+                found: self.get_type(),
+            }),
+        }
+    }
+
     pub fn try_unwrap_pointer(&self) -> Result<usize, ObjectError> {
         match self {
             Value::Pointer(v) => Ok(*v),
@@ -289,6 +303,7 @@ fn lift_primitive(obj: &Object) -> Option<Value> {
         Object::UInt16(v) => Some(Value::UInt16(*v)),
         Object::UInt32(v) => Some(Value::UInt32(*v)),
         Object::Float64(v) => Some(Value::Float64(*v)),
+        Object::Float32(v) => Some(Value::Float32(*v)),
         Object::ConstString(sym) => Some(Value::ConstString(*sym)),
         Object::Pointer(addr) => Some(Value::Pointer(*addr)),
         Object::Null(td) => Some(Value::Null(td.clone())),

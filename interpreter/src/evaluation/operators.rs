@@ -122,6 +122,18 @@ impl ArithmeticOp {
             ArithmeticOp::Mod => l % r,
         }
     }
+
+    // SIMD-F32: same IEEE-754 semantics, single precision. Floats never
+    // take the trap guards above — `0.0f32 / 0.0f32` is NaN, not a panic.
+    fn apply_f32(&self, l: f32, r: f32) -> f32 {
+        match self {
+            ArithmeticOp::Add => l + r,
+            ArithmeticOp::Sub => l - r,
+            ArithmeticOp::Mul => l * r,
+            ArithmeticOp::Div => l / r,
+            ArithmeticOp::Mod => l % r,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -200,6 +212,18 @@ impl ComparisonOp {
         }
     }
 
+    // SIMD-F32: standard IEEE 754 ordering, single precision.
+    fn apply_f32(&self, l: f32, r: f32) -> bool {
+        match self {
+            ComparisonOp::Eq => l == r,
+            ComparisonOp::Ne => l != r,
+            ComparisonOp::Lt => l < r,
+            ComparisonOp::Le => l <= r,
+            ComparisonOp::Gt => l > r,
+            ComparisonOp::Ge => l >= r,
+        }
+    }
+
     fn apply_string(&self, l: DefaultSymbol, r: DefaultSymbol) -> bool {
         match self {
             ComparisonOp::Eq => l == r,
@@ -233,6 +257,7 @@ impl EvaluationContext<'_> {
             (Value::Int8(l), Value::Int8(r)) => Value::Bool(op.apply_i8(*l, *r)),
             (Value::UInt8(l), Value::UInt8(r)) => Value::Bool(op.apply_u8(*l, *r)),
             (Value::Float64(l), Value::Float64(r)) => Value::Bool(op.apply_f64(*l, *r)),
+            (Value::Float32(l), Value::Float32(r)) => Value::Bool(op.apply_f32(*l, *r)),
             (Value::Bool(l), Value::Bool(r)) => match op {
                 ComparisonOp::Eq => Value::Bool(l == r),
                 ComparisonOp::Ne => Value::Bool(l != r),
@@ -386,6 +411,7 @@ impl EvaluationContext<'_> {
             (Value::Int8(l), Value::Int8(r)) => Value::Int8(op.apply_i8(*l, *r)),
             (Value::UInt8(l), Value::UInt8(r)) => Value::UInt8(op.apply_u8(*l, *r)),
             (Value::Float64(l), Value::Float64(r)) => Value::Float64(op.apply_f64(*l, *r)),
+            (Value::Float32(l), Value::Float32(r)) => Value::Float32(op.apply_f32(*l, *r)),
             _ => return Err(InterpreterError::TypeError {
                 expected: lhs.get_type(),
                 found: rhs.get_type(),
@@ -485,10 +511,11 @@ impl EvaluationContext<'_> {
                 Value::Int16(v) => Value::Int16(v.wrapping_neg()),
                 Value::Int8(v) => Value::Int8(v.wrapping_neg()),
                 Value::Float64(v) => Value::Float64(-*v),
+                Value::Float32(v) => Value::Float32(-*v),
                 _ => return Err(InterpreterError::TypeError {
                     expected: TypeDecl::Int64,
                     found: operand_v.get_type(),
-                    message: format!("Unary minus requires i64 or f64, got {:?}", operand_v),
+                    message: format!("Unary minus requires i64, f64, or f32, got {:?}", operand_v),
                 }),
             },
             // REF-Stage-2: explicit borrow expressions are erased at

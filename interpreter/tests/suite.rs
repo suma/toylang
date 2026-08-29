@@ -103,6 +103,9 @@ mod move_check_tests;
 #[path = "null_coalesce_tests.rs"]
 mod null_coalesce_tests;
 
+#[path = "float32_tests.rs"]
+mod float32_tests;
+
 #[path = "region_tests.rs"]
 mod region_tests;
 

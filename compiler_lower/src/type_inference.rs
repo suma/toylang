@@ -207,6 +207,8 @@ impl<'a> FunctionLower<'a> {
             Expr::Int32(_) => Some(Type::I32),
             Expr::UInt32(_) => Some(Type::U32),
             Expr::Float64(_) => Some(Type::F64),
+            // SIMD-F32: single-precision literal.
+            Expr::Float32(_) => Some(Type::F32),
             Expr::String(_) => Some(Type::Str),
             Expr::True | Expr::False => Some(Type::Bool),
             // #121 Phase B-min: a `with allocator = ... { body }`

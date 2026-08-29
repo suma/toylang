@@ -38,6 +38,8 @@ fn object_byte_size(ctx: &EvaluationContext<'_>, value: &Object) -> Option<u64> 
         // the caller's concern.
         Object::Int8(_) | Object::UInt8(_) => Some(1),
         Object::Int16(_) | Object::UInt16(_) => Some(2),
+        // SIMD-F32: native single-precision width.
+        Object::Float32(_) => Some(4),
         Object::Int32(_) | Object::UInt32(_) => Some(4),
         Object::Bool(_) => Some(1),
         Object::Unit => Some(0),

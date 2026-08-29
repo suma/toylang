@@ -106,6 +106,10 @@ impl<'a> FunctionLower<'a> {
                     Type::U64 => self
                         .emit(InstKind::Const(Const::U64(0)), Some(Type::U64))
                         .unwrap(),
+                    // SIMD-F32: zero-init for single precision.
+                    Type::F32 => self
+                        .emit(InstKind::Const(Const::F32(0.0)), Some(Type::F32))
+                        .unwrap(),
                     // NUM-W-AOT: zero-init for narrow widths.
                     Type::I32 => self
                         .emit(InstKind::Const(Const::I32(0)), Some(Type::I32)).unwrap(),

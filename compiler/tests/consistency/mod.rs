@@ -43,4 +43,5 @@ mod memory_profiling;
 mod display_compound;
 mod format_patterns;
 mod const_eval;
+mod float32;
 mod diagnostics;

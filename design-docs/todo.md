@@ -12,6 +12,20 @@
 
 ### 2026-08-30
 
+- **SIMD-F32 — `f32` を primitive 型として追加 (SIMD.md 論点 1 解決)** —
+  lexer (`1.5f32` リテラル + `f32` 型キーワード) / `TypeDecl::Float32` /
+  `Expr::Float32` / IR `Type::F32` / cranelift `F32` まで直列に接続。
+  算術・比較・単項 `-` は IEEE 754 単精度 (trap 無し、`%` は IR VM と
+  tree-walker のみ — AOT は f64 と同じく cranelift に fmod が無いので
+  拒否)。cast 行列は f32 ↔ f64 (demote / promote) と f32 → 整数
+  (saturating) を含む。const 初期化子の fold も f32 対応。
+  print は `toy_print_f32` / `toy_to_string_f32` を toylang_rt に追加し
+  f64 と同じ「整数値に `.0`」規約の単精度版で 3 バックエンド一致。
+  format spec は f32 未対応 (promote 経由では最下位桁が変わるため意図的に
+  拒否)。interpreter JIT は silent fallback (`ScalarTy` に F32 無し)。
+  consistency pin 6 件 + テスト 6 件 + example
+  (`interpreter/example/float32.t`)。
+
 - **NULL-COALESCE — `a ?? b` 演算子** — `Option::Some` / `Result::Ok` なら
   中身、`None` / `Err` なら default。**default は遅延評価** (`match` への
   desugar なので None / Err パスでのみ走る)。右結合、比較より密で shift 未満。
@@ -1348,6 +1362,14 @@
   (安い、誤解を減らす)、(2) 一時束縛を lowering 側で作って
   非 let-rhs 位置を通す、の順。
 
+- **SIMD-F32 の残** ★ — (a) **format spec 未対応**: `{x:.2}` の
+  formattable 集合に f32 を入れるには `toy_format_f32` が要る
+  (promote して f64 で整形すると最下位桁が変わるので専用ヘルパ)。
+  (b) **f32 の math intrinsics** (`math::sqrt_f32` 等) は未提供 —
+  `x as f64 → math::sqrt → as f32` の橋渡しで代替できるが、
+  cranelift の `sqrt` は F32 を受けるので unary op 経路の supplied helper
+  を増やせば direct にできる。(c) **`f32` の `min` / `max` 演算子**は
+  f64 同様 AOT 未対応 (cranelift の fmin / fmax で入れられる)。
 - **NUM-W-AOT-pack Phase 3** ★ — compound element 配列の tighter layout (`[PackedRgba; N]` が 4 バイト相当のところ 32 バイト消費)。メモリ効率のみで機能差はない。
 - **195b. `extern fn` の monomorph 化** ★ — generic extern は現状 interpreter の type-erased registry でのみ動く。JIT / AOT には mangled symbol の emit と Rust 側実装の登録が要る。実需要なし。
 - **185残. 3+ part qualified call** ★ — `std::math::abs(x)`。現状は `import std.math` 経由のみ (parser が last 名だけを採る)。auto-load があるので実害は限定的。

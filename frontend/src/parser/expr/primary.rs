@@ -555,6 +555,10 @@ fn parse_primary_atom_or_form(parser: &mut Parser) -> ParserResult<ExprRef> {
             let location = parser.current_source_location();
             parser.ast_builder.float64_expr(num, Some(location))
         }
+        Some(&Kind::Float32(num)) => {
+            let location = parser.current_source_location();
+            parser.ast_builder.float32_expr(num, Some(location))
+        }
         Some(&Kind::Null) => {
             let location = parser.current_source_location();
             parser.ast_builder.null_expr(Some(location))

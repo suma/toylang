@@ -128,6 +128,15 @@ fn sample(rng: &mut Rng, ty: &TypeDecl) -> Option<Value> {
                 Value::Float64((raw % 2_000) as f64 - 1_000.0)
             }
         }
+        // SIMD-F32: same shape as the f64 sampler at single precision.
+        TypeDecl::Float32 => {
+            if pick_edge {
+                const EDGES: [f32; 5] = [0.0, 1.0, -1.0, f32::MAX, f32::MIN];
+                Value::Float32(EDGES[(raw >> 2) as usize % EDGES.len()])
+            } else {
+                Value::Float32((raw % 2_000) as f32 - 1_000.0)
+            }
+        }
         _ => return None,
     })
 }
@@ -250,6 +259,15 @@ fn shrink(value: &Value) -> Vec<Value> {
             out.push(Value::Float64(v / 2.0));
             out
         }
+        Value::Float32(v) if *v == 0.0 => vec![],
+        Value::Float32(v) => {
+            let mut out = vec![Value::Float32(0.0)];
+            if *v < 0.0 {
+                out.push(Value::Float32(-v));
+            }
+            out.push(Value::Float32(v / 2.0));
+            out
+        }
         // A struct receiver shrinks field by field: one candidate per
         // field whose value has a simpler form, so a counterexample
         // whose failure depends on `self` can be minimised too.
@@ -282,6 +300,7 @@ fn render(value: &Value, interner: &DefaultStringInterner) -> String {
         Value::Int64(v) => format!("{v}i64"),
         Value::UInt64(v) => format!("{v}u64"),
         Value::Float64(v) => format!("{v}f64"),
+        Value::Float32(v) => format!("{v}f32"),
         // Struct receivers render like `println` would (field names
         // resolved through the interner), not as `Object` debug output
         // full of symbol ids.

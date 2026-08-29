@@ -730,6 +730,7 @@ impl<'a> FunctionLower<'a> {
             Type::I8 => "i8".to_string(),
             Type::U8 => "u8".to_string(),
             Type::F64 => "f64".to_string(),
+            Type::F32 => "f32".to_string(),
             Type::Bool => "bool".to_string(),
             Type::Unit => "()".to_string(),
             Type::Struct(id) => self.format_struct_header(id),

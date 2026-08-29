@@ -1,0 +1,96 @@
+// SIMD-F32: the single-precision primitive across all three backends.
+//
+// `f32` is a first-class scalar: literals (`1.5f32`), lane-wise IEEE
+// arithmetic, comparisons, unary minus, the `as` cast matrix (f32 ↔
+// f64 ↔ every integer width), `const` initialisers, and print
+// formatting ("always a decimal point" — `1.0f32` prints `1.0`).
+// The interpreter JIT takes its usual silent fallback; the other
+// three lanes must agree byte-for-byte.
+
+use super::harness::*;
+
+#[test]
+fn f32_arithmetic_and_literals_agree() {
+    // f32 bit patterns are not wired through the process exit code,
+    // so the result is compared in-language and reported as u64.
+    let src = r#"
+        fn compute() -> f32 {
+            val a: f32 = 1.5f32
+            val b: f32 = 2.25f32
+            a * b + 0.5f32 - 1f32
+        }
+        fn main() -> u64 {
+            if compute() == 2.875f32 { 44u64 } else { 0u64 }
+        }
+    "#;
+    assert_consistent(src, "f32_arithmetic_and_literals_agree");
+}
+
+#[test]
+fn f32_precision_is_single_not_double() {
+    // `0.1f32 + 0.2f32 == 0.3f32` is TRUE at single precision (the
+    // f64 experiment famously fails this). Pinning it here proves the
+    // backend evaluates in f32, not by promoting through f64.
+    let src = r#"
+        fn main() -> u64 {
+            if 0.1f32 + 0.2f32 == 0.3f32 { 7u64 } else { 0u64 }
+        }
+    "#;
+    assert_consistent(src, "f32_precision_is_single_not_double");
+}
+
+#[test]
+fn f32_comparison_and_unary_minus_agree() {
+    let src = r#"
+        fn main() -> u64 {
+            val a: f32 = 1.5f32
+            val b: f32 = -a
+            if a < 2f32 && b > -2f32 { (a - b) as u64 } else { 0u64 }
+        }
+    "#;
+    assert_consistent(src, "f32_comparison_and_unary_minus_agree");
+}
+
+#[test]
+fn f32_cast_matrix_round_trips() {
+    // f32 ↔ f64 promote / demote and f32 → int (saturating) through
+    // every compiled lane.
+    let src = r#"
+        fn main() -> u64 {
+            val w: f64 = 3.875f32 as f64
+            val back: f32 = w as f32
+            val big: f32 = 3000000000f32
+            val i: u64 = big as u64
+            val tiny: i64 = back as i64
+            val same: u64 = if back == 3.875f32 { 1u64 } else { 0u64 }
+            same * 1_000_000u64 + i + tiny as u64
+        }
+    "#;
+    assert_consistent(src, "f32_cast_matrix_round_trips");
+}
+
+#[test]
+fn f32_const_initialiser_folds() {
+    // The driver-layer CTFE folds `1.5f32 * 2f32` to `3.0f32` before
+    // lowering, so every backend sees the same literal.
+    let src = r#"
+        const G: f32 = 1.5f32 * 2f32
+        fn main() -> u64 {
+            if G == 3.0f32 { 7u64 } else { 0u64 }
+        }
+    "#;
+    assert_consistent(src, "f32_const_initialiser_folds");
+}
+
+#[test]
+fn f32_print_formatting_agrees() {
+    let src = r#"
+        fn main() -> u64 {
+            println(1.0f32)
+            println(0.5f32)
+            println(-2.25f32)
+            0u64
+        }
+    "#;
+    assert_consistent(src, "f32_print_formatting_agrees");
+}

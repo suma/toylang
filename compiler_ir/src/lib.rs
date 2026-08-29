@@ -1227,6 +1227,9 @@ pub enum Type {
     I32,
     U32,
     F64,
+    /// SIMD-F32: IEEE-754 single precision. Lowers to cranelift's
+    /// `F32`; same deferral rules as `F64`.
+    F32,
     Bool,
     Unit,
     Struct(StructId),
@@ -1259,7 +1262,7 @@ impl Type {
     }
 
     pub fn is_float(self) -> bool {
-        matches!(self, Type::F64)
+        matches!(self, Type::F64 | Type::F32)
     }
 
     /// Whether values of this type are integers of any width and
@@ -1851,6 +1854,8 @@ pub enum Const {
     /// avoided in the IR layer — the type-checker has already enforced
     /// shape, and codegen translates literally.
     F64(f64),
+    /// SIMD-F32: single-precision constant, stored as `f32`.
+    F32(f32),
     Bool(bool),
 }
 
@@ -1932,6 +1937,7 @@ impl Const {
             Const::I32(_) => Type::I32,
             Const::U32(_) => Type::U32,
             Const::F64(_) => Type::F64,
+            Const::F32(_) => Type::F32,
             Const::Bool(_) => Type::Bool,
         }
     }
@@ -2261,6 +2267,7 @@ impl fmt::Display for Type {
             Type::I8 => f.write_str("i8"),
             Type::U8 => f.write_str("u8"),
             Type::F64 => f.write_str("f64"),
+            Type::F32 => f.write_str("f32"),
             Type::Bool => f.write_str("bool"),
             Type::Unit => f.write_str("unit"),
             // The IR doesn't carry an interner, so render the raw
@@ -2310,6 +2317,7 @@ impl fmt::Display for Const {
             Const::I8(v) => write!(f, "{v}i8"),
             Const::U8(v) => write!(f, "{v}u8"),
             Const::F64(v) => write!(f, "{v}f64"),
+            Const::F32(v) => write!(f, "{v}f32"),
             Const::Bool(true) => f.write_str("true"),
             Const::Bool(false) => f.write_str("false"),
         }

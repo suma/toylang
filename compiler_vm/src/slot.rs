@@ -31,6 +31,15 @@ impl RawSlot {
     pub fn from_f64(v: f64) -> Self {
         Self { f64: v }
     }
+    /// SIMD-F32: single-precision value stored in an 8-byte slot. The
+    /// upper 4 bytes stay zero (write the zero-extended bit pattern)
+    /// so a stray read via `.u64` sees the value, not garbage.
+    pub fn from_f32(v: f32) -> Self {
+        Self { u64: v.to_bits() as u64 }
+    }
+    pub fn read_f32(&self) -> f32 {
+        f32::from_bits((unsafe { self.u64 }) as u32)
+    }
     pub fn from_bool(v: bool) -> Self {
         // Zero-extend into the full 8 bytes so reads via `.u64` / `.i64`
         // (e.g. exit-code extraction, scalar-result wrapping) see a clean

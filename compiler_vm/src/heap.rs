@@ -14,3 +14,14 @@ pub fn format_f64(v: f64) -> String {
         format!("{v}")
     }
 }
+
+/// SIMD-F32: same "always a decimal point" convention as `format_f64`,
+/// applied to single precision so `println(1.0f32)` is `1.0` on every
+/// backend.
+pub fn format_f32(v: f32) -> String {
+    if v == v.trunc() && v.is_finite() {
+        format!("{v:.1}")
+    } else {
+        format!("{v}")
+    }
+}

@@ -264,6 +264,8 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_println_str: cranelift_module::FuncId,
     rt_print_f64: cranelift_module::FuncId,
     rt_println_f64: cranelift_module::FuncId,
+    rt_print_f32: cranelift_module::FuncId,
+    rt_println_f32: cranelift_module::FuncId,
     // NUM-W-AOT-pack Phase 2: dedicated narrow-int helpers. The
     // AOT path now calls these directly instead of widening the
     // value with sextend/uextend and routing through
@@ -328,6 +330,7 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_to_string_i64: cranelift_module::FuncId,
     rt_to_string_u64: cranelift_module::FuncId,
     rt_to_string_f64: cranelift_module::FuncId,
+    rt_to_string_f32: cranelift_module::FuncId,
     rt_to_string_bool: cranelift_module::FuncId,
     rt_to_string_str: cranelift_module::FuncId,
     rt_to_string_i8: cranelift_module::FuncId,
@@ -616,6 +619,13 @@ impl<M: Module> CodegenSession<M> {
         f64_sig.params.push(AbiParam::new(types::F64));
         let rt_print_f64 = declare_helper(&mut module, "toy_print_f64", &f64_sig)?;
         let rt_println_f64 = declare_helper(&mut module, "toy_println_f64", &f64_sig)?;
+        // SIMD-F32: single-precision print helpers take the f32 at its
+        // native cranelift width (a promoted f64 argument would change
+        // the rendered digits).
+        let mut f32_sig = Signature::new(call_conv);
+        f32_sig.params.push(AbiParam::new(types::F32));
+        let rt_print_f32 = declare_helper(&mut module, "toy_print_f32", &f32_sig)?;
+        let rt_println_f32 = declare_helper(&mut module, "toy_println_f32", &f32_sig)?;
 
         // NUM-W-AOT-pack Phase 2 narrow-int helper signatures.
         // Each takes its native cranelift width (I8/I16/I32) so the
@@ -818,6 +828,11 @@ impl<M: Module> CodegenSession<M> {
         to_string_f64_sig.params.push(AbiParam::new(types::F64));
         to_string_f64_sig.returns.push(AbiParam::new(types::I64));
         let rt_to_string_f64 = declare_helper(&mut module, "toy_to_string_f64", &to_string_f64_sig)?;
+        // SIMD-F32: to_string takes the f32 at its native width.
+        let mut to_string_f32_sig = Signature::new(call_conv);
+        to_string_f32_sig.params.push(AbiParam::new(types::F32));
+        to_string_f32_sig.returns.push(AbiParam::new(types::I64));
+        let rt_to_string_f32 = declare_helper(&mut module, "toy_to_string_f32", &to_string_f32_sig)?;
 
         let mut to_string_bool_sig = Signature::new(call_conv);
         to_string_bool_sig.params.push(AbiParam::new(types::I8).uext());
@@ -906,6 +921,8 @@ impl<M: Module> CodegenSession<M> {
             rt_println_str,
             rt_print_f64,
             rt_println_f64,
+            rt_print_f32,
+            rt_println_f32,
             rt_print_i8,
             rt_println_i8,
             rt_print_u8,
@@ -939,6 +956,7 @@ impl<M: Module> CodegenSession<M> {
             rt_to_string_i64,
             rt_to_string_u64,
             rt_to_string_f64,
+            rt_to_string_f32,
             rt_to_string_bool,
             rt_to_string_str,
             rt_to_string_i8,
@@ -1846,6 +1864,8 @@ struct RuntimeRefs {
     println_str: cranelift_codegen::ir::FuncRef,
     print_f64: cranelift_codegen::ir::FuncRef,
     println_f64: cranelift_codegen::ir::FuncRef,
+    print_f32: cranelift_codegen::ir::FuncRef,
+    println_f32: cranelift_codegen::ir::FuncRef,
     // NUM-W-AOT-pack Phase 2: dedicated narrow-int print helpers.
     print_i8: cranelift_codegen::ir::FuncRef,
     println_i8: cranelift_codegen::ir::FuncRef,
@@ -1889,6 +1909,7 @@ struct RuntimeRefs {
     to_string_i64: cranelift_codegen::ir::FuncRef,
     to_string_u64: cranelift_codegen::ir::FuncRef,
     to_string_f64: cranelift_codegen::ir::FuncRef,
+    to_string_f32: cranelift_codegen::ir::FuncRef,
     to_string_bool: cranelift_codegen::ir::FuncRef,
     to_string_str: cranelift_codegen::ir::FuncRef,
     to_string_i8: cranelift_codegen::ir::FuncRef,
@@ -1913,6 +1934,8 @@ struct RuntimeRefs {
 fn ir_type_byte_size(t: IrType) -> u32 {
     match t {
         IrType::I64 | IrType::U64 | IrType::F64 | IrType::Str => 8,
+        // SIMD-F32: native single-precision width.
+        IrType::F32 => 4,
         IrType::I32 | IrType::U32 => 4,
         IrType::I16 | IrType::U16 => 2,
         IrType::I8 | IrType::U8 | IrType::Bool => 1,
@@ -1934,6 +1957,8 @@ fn ir_to_cranelift_ty(t: IrType) -> Option<types::Type> {
         IrType::I16 | IrType::U16 => Some(types::I16),
         IrType::I32 | IrType::U32 => Some(types::I32),
         IrType::F64 => Some(types::F64),
+        // SIMD-F32: cranelift's native single-precision type.
+        IrType::F32 => Some(types::F32),
         IrType::Bool => Some(types::I8),
         IrType::Unit => None,
         // Compound types have no single cranelift representation —
@@ -2515,9 +2540,16 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
         // Float-to-int and int-to-float go through directly to the
         // target width to preserve cranelift's saturating /
         // sign-aware behaviour.
-        if from == F64 {
-            // Float → integer. Saturating + sign-aware to match
-            // Rust's `as` semantics.
+        if from == F64 || from == F32 {
+            // SIMD-F32: F32 joins the float cast matrix. Float → int
+            // is saturating + sign-aware (fcvt_to_*_sat accepts both
+            // float widths); cross-width float casts promote / demote.
+            if to == F32 {
+                return Ok(self.builder.ins().fdemote(types::F32, v));
+            }
+            if to == F64 {
+                return Ok(self.builder.ins().fpromote(types::F64, v));
+            }
             return Ok(match to {
                 I64 => self.builder.ins().fcvt_to_sint_sat(types::I64, v),
                 U64 => self.builder.ins().fcvt_to_uint_sat(types::I64, v),
@@ -2527,7 +2559,33 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 U16 => self.builder.ins().fcvt_to_uint_sat(types::I16, v),
                 I8 => self.builder.ins().fcvt_to_sint_sat(types::I8, v),
                 U8 => self.builder.ins().fcvt_to_uint_sat(types::I8, v),
-                _ => return Err(format!("invalid f64 → {:?} cast", to)),
+                _ => return Err(format!("invalid f64/f32 → {:?} cast", to)),
+            });
+        }
+        if to == F32 {
+            // SIMD-F32: int → f32 (sign vs unsign by source) and the
+            // f64 → f32 demote.
+            if from == F64 {
+                return Ok(self.builder.ins().fdemote(types::F32, v));
+            }
+            return Ok(match from {
+                I64 | I32 | I16 | I8 => {
+                    let widened = if from == I64 {
+                        v
+                    } else {
+                        self.builder.ins().sextend(types::I64, v)
+                    };
+                    self.builder.ins().fcvt_from_sint(types::F32, widened)
+                }
+                U64 | U32 | U16 | U8 => {
+                    let widened = if from == U64 {
+                        v
+                    } else {
+                        self.builder.ins().uextend(types::I64, v)
+                    };
+                    self.builder.ins().fcvt_from_uint(types::F32, widened)
+                }
+                _ => return Err(format!("invalid {:?} → f32 cast", from)),
             });
         }
         if to == F64 {

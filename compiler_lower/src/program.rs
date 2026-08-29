@@ -35,7 +35,7 @@ use super::method_registry::{
     MethodRegistry, MethodTemplateSpec, PendingMethodInstance,
 };
 use super::templates::{
-    collect_enum_defs, collect_struct_defs, lower_param_or_return_type,
+    collect_enum_defs, collect_struct_defs, lower_param_or_return_type, substitute_self,
     unlowerable_type_message, EnumDefs, StructDefs,
 };
 use super::FunctionLower;
@@ -675,16 +675,9 @@ fn declare_methods(
             params.push(self_lowered);
         }
         for (pname, pty) in &method.parameter {
-            // `self: Self` — substitute Self for the impl's target.
-            // The parser emits `TypeDecl::Self_` for the literal
-            // `Self` keyword.
-            let resolved = match pty {
-                TypeDecl::Self_ => self_decl.clone(),
-                TypeDecl::Identifier(sym) if interner.resolve(*sym) == Some("Self") => {
-                    self_decl.clone()
-                }
-                other => other.clone(),
-            };
+            // `self: Self` / `other: &Self` — substitute Self for the
+            // impl's target, at any depth (`substitute_self`).
+            let resolved = substitute_self(pty, &self_decl, interner);
             let lowered = lower_param_or_return_type(
                 &resolved,
                 struct_defs,
@@ -703,13 +696,7 @@ fn declare_methods(
         }
         let ret = match &method.return_type {
             Some(ty) => {
-                let resolved = match ty {
-                    TypeDecl::Self_ => self_decl.clone(),
-                    TypeDecl::Identifier(sym) if interner.resolve(*sym) == Some("Self") => {
-                        self_decl.clone()
-                    }
-                    other => other.clone(),
-                };
+                let resolved = substitute_self(ty, &self_decl, interner);
                 lower_param_or_return_type(
                     &resolved,
                     struct_defs,
@@ -1753,18 +1740,7 @@ impl<'a> FunctionLower<'a> {
         let mut parameter: Vec<(DefaultSymbol, TypeDecl)> = method
             .parameter
             .iter()
-            .map(|(n, t)| {
-                let resolved = match t {
-                    TypeDecl::Self_ => self_decl.clone(),
-                    TypeDecl::Identifier(sym)
-                        if self.interner.resolve(*sym) == Some("Self") =>
-                    {
-                        self_decl.clone()
-                    }
-                    other => other.clone(),
-                };
-                (*n, resolved)
-            })
+            .map(|(n, t)| (*n, substitute_self(t, &self_decl, self.interner)))
             .collect();
         // Stage 1 of `&` references: implicit `&self` / `&mut self`
         // receivers don't appear in `method.parameter` (the parser

@@ -861,6 +861,46 @@ pub(super) fn unlowerable_type_message(fallback: impl FnOnce() -> String) -> Str
     take_pending_refusal().unwrap_or_else(fallback)
 }
 
+/// Replace every `Self` inside `ty` with the impl target's type.
+///
+/// The substitution used to be written inline as a top-level `match`,
+/// which resolved `Self` for `self: Self` and `-> Self` but not for
+/// anything wrapping it. `other: &Self` — the spelling `docs/language.md`
+/// gives for every binary operator overload — therefore reached
+/// `lower_param_or_return_type` still holding `Ref { inner: Self_ }` and
+/// failed as "cannot lower method parameter", so the compiled lanes
+/// rejected the documented form while accepting `other: &Vec3`.
+/// Recurse through the type constructors instead.
+pub(super) fn substitute_self(
+    ty: &TypeDecl,
+    self_decl: &TypeDecl,
+    interner: &DefaultStringInterner,
+) -> TypeDecl {
+    let sub = |t: &TypeDecl| substitute_self(t, self_decl, interner);
+    match ty {
+        TypeDecl::Self_ => self_decl.clone(),
+        // The parser spells the keyword as a bare identifier when it
+        // appears where a user type could go.
+        TypeDecl::Identifier(sym) if interner.resolve(*sym) == Some("Self") => self_decl.clone(),
+        TypeDecl::Ref { is_mut, inner } => TypeDecl::Ref {
+            is_mut: *is_mut,
+            inner: Box::new(sub(inner)),
+        },
+        TypeDecl::Array(elems, size) => {
+            TypeDecl::Array(elems.iter().map(&sub).collect(), size.clone())
+        }
+        TypeDecl::Tuple(elems) => TypeDecl::Tuple(elems.iter().map(&sub).collect()),
+        TypeDecl::Struct(name, args) => TypeDecl::Struct(*name, args.iter().map(&sub).collect()),
+        TypeDecl::Enum(name, args) => TypeDecl::Enum(*name, args.iter().map(&sub).collect()),
+        TypeDecl::Dict(k, v) => TypeDecl::Dict(Box::new(sub(k)), Box::new(sub(v))),
+        TypeDecl::Range(inner) => TypeDecl::Range(Box::new(sub(inner))),
+        TypeDecl::Function(params, ret) => {
+            TypeDecl::Function(params.iter().map(&sub).collect(), Box::new(sub(ret)))
+        }
+        other => other.clone(),
+    }
+}
+
 pub(super) fn lower_param_or_return_type(
     ty: &TypeDecl,
     struct_defs: &StructDefs,

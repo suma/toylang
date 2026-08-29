@@ -806,6 +806,78 @@ fn struct_bitwise_compound_assign_operator_overload_round_trip() {
 }
 
 #[test]
+fn operator_overload_written_with_self_round_trip() {
+    // `docs/language.md` spells every overload as
+    // `fn op(&self, other: &Self) -> Self`, but the compiled lanes
+    // used to reject exactly that: the `Self` substitution in
+    // `compiler_lower` was a top-level match, so `&Self` arrived at
+    // `lower_param_or_return_type` as `Ref { inner: Self_ }` and
+    // failed with "cannot lower method parameter". Only the
+    // `other: &Flags` spelling worked. Pinned 3-way so the
+    // documented form stays runnable everywhere.
+    let src = r#"
+        struct Flags { bits: u64 }
+
+        impl Flags {
+            fn bitand(&self, other: &Self) -> Self { Flags { bits: self.bits & other.bits } }
+            fn bitor(&self, other: &Self) -> Self { Flags { bits: self.bits | other.bits } }
+            fn add(&self, other: &Self) -> Self { Flags { bits: self.bits + other.bits } }
+            fn eq(&self, other: &Self) -> bool { self.bits == other.bits }
+        }
+
+        fn main() -> u64 {
+            var f: Flags = Flags { bits: 0x0Cu64 }
+            val mask: Flags = Flags { bits: 0x0Au64 }
+            val one: Flags = Flags { bits: 0x01u64 }
+            val expect: Flags = Flags { bits: 0x09u64 }
+            f &= mask
+            f |= one
+            if !(f == expect) { return 1u64 }
+            val sum: Flags = f + one
+            val expect_sum: Flags = Flags { bits: 0x0Au64 }
+            if !(sum == expect_sum) { return 2u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "operator_overload_written_with_self_round_trip");
+}
+
+#[test]
+fn self_inside_a_by_value_and_mutable_reference_position_round_trip() {
+    // The same substitution now recurses, so `&mut Self` and a
+    // by-value `Self` argument lower too — including the trait-method
+    // form, where `Self` is the only way to name the type.
+    let src = r#"
+        struct P { v: u64 }
+
+        trait Doubler {
+            fn twice(self: Self) -> Self
+        }
+
+        impl Doubler for P {
+            fn twice(self: Self) -> Self { P { v: self.v * 2u64 } }
+        }
+
+        impl P {
+            fn combine(&self, other: Self) -> Self { P { v: self.v + other.v } }
+            fn bump(&mut self, other: &mut Self) { self.v = self.v + other.v }
+        }
+
+        fn main() -> u64 {
+            val a: P = P { v: 3u64 }
+            val b: P = P { v: 4u64 }
+            val c: P = a.combine(b)
+            val d: P = c.twice()
+            var e: P = P { v: 1u64 }
+            var g: P = P { v: 2u64 }
+            e.bump(&mut g)
+            d.v + e.v
+        }
+    "#;
+    assert_consistent(src, "self_inside_a_by_value_and_mutable_reference_position_round_trip");
+}
+
+#[test]
 fn struct_arith_operator_overload_round_trip() {
     // Operator overload (Phase B continuation): `+` / `-` / `*` /
     // `/` / `%` between matching struct values dispatch to the

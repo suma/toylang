@@ -12,6 +12,23 @@
 
 ### 2026-08-29
 
+- **注釈の有無で operator overload の到達可否が変わっていたのを修正** —
+  `val h: P = f + P { .. }` が `[E0001] Type mismatch: expected P, but got P`
+  で落ちていた (`+=` の desugar 経由でも同じ)。注釈で書いた user 型は
+  `Identifier(P)`、値は `Struct(P, [])` になるが、overload dispatch より
+  **前**に走る `resolve_numeric_types` が両者を `==` で比べていた。
+  `is_equivalent` と同じ緩さの arm を足し、型引数を持つ側に寄せて返す
+  (dispatch は receiver の具体型引数を見るため)。同名でない型は従来どおり
+  拒否され、overload の無い組 (enum の `==` 等) も演算子ごとの
+  診断で拒否されるので、通る範囲は overload に届く形だけ広がる。
+- **`&Self` / `&mut Self` を compiled レーンが lower できるようにした** —
+  `docs/language.md` が overload の推奨形として書いている
+  `fn op(&self, other: &Self) -> Self` を AOT / JIT が
+  `cannot lower method parameter other: Ref { inner: Self_ }` で拒否して
+  いた。`compiler_lower` の `Self` 置換が**トップレベルの match** だったので
+  `Self` を包む型 (`&Self` / `&mut Self` / `Vec<Self>` ...) に届いて
+  いなかった。再帰する `substitute_self` に統一し、3 箇所の写経を消した。
+
 - **COMPOUND-ASSIGN-BITWISE** — ビット系の複合代入 5 種
   (`&=` / `|=` / `^=` / `<<=` / `>>=`) を足した。算術 5 種と同じく
   パーサが `lhs op= rhs` を `lhs = lhs op rhs` に desugar するだけなので、

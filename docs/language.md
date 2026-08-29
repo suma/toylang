@@ -1160,6 +1160,13 @@ type-check rule, so overloaded operators don't conflict with
 the primitive paths (`i64 + i64` continues to lower as a
 direct `BinOp::Add`).
 
+**Structs only.** A struct with no matching method does not get the
+operator, and the type checker says which method is missing. Enums do
+not overload operators at all — including `==` — so two enum values
+are compared by matching on their variants; writing an `eq` in
+`impl SomeEnum` does not change that, and the checker says so rather
+than accepting a comparison nothing dispatches.
+
 | Operator | Method signature | Result |
 |---|---|---|
 | `==` `!=` | `fn eq(&self, other: &Self) -> bool` | `bool` (`!=` negates) |
@@ -1202,6 +1209,18 @@ if a == b { ... }   # uses eq
   - a field of the result (`(a + b).x`)
   - an argument position (`take(a + b)`)
   - a condition position (`if (a + b) == c`)
+- Enum receivers. No engine dispatches an operator method on an
+  enum, so the checker rejects the comparison rather than letting
+  it fail at run time. Match on the variants instead — note that a
+  tuple scrutinee (`match (a, b)`) is itself outside the AOT
+  subset, so nest the matches or compare a scalar tag:
+
+  ```rust
+  val same: bool = match a {
+      Color::Red => match b { Color::Red => true, Color::Green => false },
+      Color::Green => match b { Color::Green => true, Color::Red => false },
+  }
+  ```
 
 ### `Ord` and `Vec::sort` (STDLIB-ORD)
 

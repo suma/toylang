@@ -12,6 +12,22 @@
 
 ### 2026-08-29
 
+- **ENUM-EQ-ESCAPES-TYPECHECK** — 実際には enum 固有ではなかった。
+  `visit_compare_binary` の「両辺が同じ generic パラメータ」の arm が
+  **同名の `Identifier` すべて**に当たっており、注釈で書いた user 型も
+  その形で来る。つまり**両辺に注釈を付ければ、`eq` の無い struct でも
+  enum でも `==` が型を通り**、実行時に `evaluate_eq: Bad types` で
+  落ちていた (同じ型名を 2 回並べた文言で)。注釈の無い綴りは元から
+  compile error だったので、**注釈の有無が受理を決めていた**という点で
+  今日直した 2 件と同じ形。宣言済みの型は generic パラメータではないので
+  arm から除外し、overload 検査に渡す。併せて overload 検査自体を
+  **宣言済み struct に限定**した — enum の `impl` に `eq` を書いても
+  どのバックエンドも dispatch しないので、通せば実行時に落ちるだけになる。
+  診断は `incompatible types P and P` をやめ、struct には
+  「`fn eq(&self, other: &P) -> bool` を書け」、enum には
+  「variant を match しろ」と出す (E0004、`--explain` にも追記)。
+  **enum の operator overload 自体は未実装のまま** (下記)。
+
 - **METHOD-ARG-AUTOBORROW** — frontend が認める `T` → `&T` の
   auto-borrow を lowering が実体化していなかったので、値がポインタの
   スロットに入り、**IR VM は誤答・compiled は SIGSEGV** していた。
@@ -1225,6 +1241,14 @@
   は scalar フィールドのみ)。どれも correctness 問題ではない。
 - **160. タプルの JIT 対応 (ネスト)** ★ — `((a,b),c)` と tuple-of-struct。`ParamTy::Tuple(Vec<ScalarTy>)` を tree 構造にする 100+ 箇所の refactor。(inline tuple literal を call 引数に渡す件は 2026-08-23 に CALL-ARG-COMPOUND-LITERAL で解消)
 - **FROM-INTO-ENUM-ERR** ★ — enum エラー型への `From` 変換 (`?` の cross-error 経路) が interpreter のみ。AOT/JIT が enum の associated call (`MyErr::from(e)`) を lower できないため。struct エラー型は 3 バックエンドで動く。
+- **OP-OVERLOAD-ENUM: enum の operator overload** ★ — `impl SomeEnum` に
+  `eq` を書いても効かない。型検査は 2026-08-29 に「宣言済み struct のみ」へ
+  絞ったので通らないし、通したとしても interpreter の
+  `overload_method_name` 経路が `(Object::Struct, Object::Struct)` しか
+  見ず、AOT の `try_lower_struct_cmp` も struct 前提。enum 同士の比較は
+  今のところ variant を match する (tuple scrutinee は AOT 非対応なので
+  ネストするか scalar tag に落とす)。実プログラムで踏んでから。
+
 - **OP-OVERLOAD-CHAIN: operator overload が compiled レーンでは
   let-rhs 位置でしか動かない** ★★ — **interpreter は全形を通し、
   AOT / JIT は全形を拒否する**。2026-08-29 に `struct V` +
@@ -1502,15 +1526,7 @@ changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 
 食い違う / `if` の条件が型検査されない / MATCH-STRUCT-ARM) はいずれも解消し、
 経緯は git log と完了済み節にある。
 
-- **ENUM-EQ-ESCAPES-TYPECHECK: enum の `==` が型検査をすり抜ける** ★★ —
-  同じ enum 型の**束縛どうし**を `==` で比べると型検査を通り、実行時に
-  `evaluate_eq: Bad types for binary '==' operation` で落ちる
-  (`val a: Color = ..` / `val b: Color = ..` に対する `a == b`)。
-  片側が variant リテラル (`a == Color::Green`) なら compile error に
-  なるので、抜けるのは両側が束縛のときだけ。enum に `==` を実装するか、
-  型検査で拒否して `match` に誘導するかの判断が要る。診断は現状どちらの
-  経路でも同名の型を 2 回並べる (`incompatible types Color and Color`)
-  ので、拒否するなら文言も直すこと。2026-08-29 発見。
+現時点で未解決のものは無い。
 
 ### パーサーの既知制限事項
 - bare `self` 非対応 — `self: Self` / `&self` / `&mut self` のいずれかを書く。

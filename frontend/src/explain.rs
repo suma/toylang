@@ -172,6 +172,15 @@ Other sources:
     a type the checker does not accept in that position
   * field access through `Self` in an `impl` block where `Self` resolved
     to something without that field
+  * an operator the type does not define. Operator overloading is a
+    struct feature and needs the method written out, so `a == b` on a
+    struct wants `fn eq(&self, other: &P) -> bool` in `impl P`. Enums
+    do not overload operators at all — match on the variants:
+
+        val same: bool = match a {
+            Color::Red => match b { Color::Red => true, Color::Green => false },
+            Color::Green => match b { Color::Green => true, Color::Red => false },
+        }
 
 Two nearby failures that are *not* this code:
 

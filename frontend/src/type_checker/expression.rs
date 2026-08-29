@@ -552,12 +552,23 @@ impl<'a> TypeCheckerVisitor<'a> {
         // concrete same-type check at every instantiation. This rule
         // had to exist all along; unchecked if/while conditions were
         // hiding its absence.
+        // `Identifier` on both sides is the ambiguous case: it is
+        // equally how a *user type* named in an annotation arrives.
+        // Accepting any matching pair therefore let `a == b` through
+        // for two operands annotated with the same struct or enum,
+        // with no `eq` behind it and before the overload check below
+        // could say so — the comparison then failed at run time with
+        // `evaluate_eq: Bad types`, naming the same type twice. A
+        // declared type is not a generic parameter, so exclude it and
+        // let the overload check have the case.
         if matches!(op, Operator::EQ | Operator::NE)
             && match (l, r) {
                 (TypeDecl::Generic(a), TypeDecl::Generic(b))
                 | (TypeDecl::Generic(a), TypeDecl::Identifier(b))
-                | (TypeDecl::Identifier(a), TypeDecl::Generic(b))
-                | (TypeDecl::Identifier(a), TypeDecl::Identifier(b)) => a == b,
+                | (TypeDecl::Identifier(a), TypeDecl::Generic(b)) => a == b,
+                (TypeDecl::Identifier(a), TypeDecl::Identifier(b)) => {
+                    a == b && !self.names_a_declared_type(*a)
+                }
                 _ => false,
             }
         {
@@ -583,10 +594,62 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
 
+        // TYPECHECK-LIES: when both sides are the same user type,
+        // "incompatible types P and P" names it twice and reads like a
+        // compiler bug. What is actually missing is the comparison
+        // itself, so say which one and how to supply it.
+        if let Some(method_name) = Self::struct_cmp_method_name(op)
+            && let (Some(ln), Some(rn)) = (Self::user_type_name(l), Self::user_type_name(r))
+            && ln == rn
+            && self.names_a_declared_type(ln)
+        {
+            let name = self.resolve_symbol_name(ln);
+            let symbol = Self::comparison_operator_symbol(op);
+            let advice = if self.context.enum_definitions.contains_key(&ln) {
+                // Overloading is a struct feature — no backend
+                // dispatches a comparison on an enum receiver — so
+                // pointing at `eq` here would be advice that compiles
+                // and then fails.
+                format!("`{symbol}` on an enum (match on the variants instead)")
+            } else {
+                format!(
+                    "`{symbol}` (define `fn {method_name}(&self, other: &{name}) -> bool` in `impl {name}`)"
+                )
+            };
+            return Err(self.error_with_location(
+                TypeCheckError::unsupported_operation(&advice, l.clone()),
+                lhs,
+            ));
+        }
+
         Err(self.error_with_location(
             TypeCheckError::type_mismatch_operation("comparison", l.clone(), r.clone()),
             lhs,
         ))
+    }
+
+    /// The user-facing spelling of a comparison operator, for
+    /// diagnostics that quote it back.
+    fn comparison_operator_symbol(op: &Operator) -> &'static str {
+        match op {
+            Operator::EQ => "==",
+            Operator::NE => "!=",
+            Operator::LT => "<",
+            Operator::LE => "<=",
+            Operator::GT => ">",
+            Operator::GE => ">=",
+            _ => "<comparison>",
+        }
+    }
+
+    /// The name a user-defined type carries, in any of the three
+    /// shapes the parser and checker produce for one.
+    fn user_type_name(ty: &TypeDecl) -> Option<DefaultSymbol> {
+        match ty {
+            TypeDecl::Identifier(name) => Some(*name),
+            TypeDecl::Struct(name, _) | TypeDecl::Enum(name, _) => Some(*name),
+            _ => None,
+        }
     }
 
     /// Result-type rule for `&& ||`: bool only. (No struct overload —
@@ -1047,6 +1110,17 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
     }
 
+    /// Whether `sym` names a struct or enum the program declares.
+    ///
+    /// `TypeDecl::Identifier` is the parser's shape for both a user
+    /// type mentioned in an annotation and a generic parameter, and
+    /// several rules mean only one of the two. This is the question
+    /// that separates them.
+    fn names_a_declared_type(&self, sym: DefaultSymbol) -> bool {
+        self.context.struct_definitions.contains_key(&sym)
+            || self.context.enum_definitions.contains_key(&sym)
+    }
+
     /// Whether `lhs` and `rhs` are the same struct type and that struct
     /// has `method_name` registered — the Phase B operator-overload test.
     ///
@@ -1088,6 +1162,15 @@ impl<'a> TypeCheckerVisitor<'a> {
             None => return false,
         };
         if lhs_name != rhs_name || lhs_args != rhs_args {
+            return false;
+        }
+        // The parser cannot tell an enum from a struct, so both arrive
+        // as `Identifier(name)` (and a generic one as `Struct(name,
+        // args)`). Operator overloading is a struct feature — no
+        // backend dispatches an enum receiver here — so an `eq` written
+        // in `impl SomeEnum` must not make the comparison type-check
+        // and then fail at run time.
+        if !self.context.struct_definitions.contains_key(&lhs_name) {
             return false;
         }
         let method_sym = match self.core.string_interner.get(method_name) {

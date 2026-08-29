@@ -12,7 +12,146 @@
 // "incompatible types" diagnostic doesn't preempt the overload.
 
 
-use crate::common::assert_program_result_u64;
+use crate::common::{assert_program_result_u64, core_modules_dir};
+use frontend::diagnostic::Diagnostic;
+
+/// Type-check `source` and return the diagnostics, failing the test if
+/// it compiled. Mirrors the `str + str` TYPECHECK-LIES probe in
+/// `string_stdlib_tests`.
+fn type_check_errors(source: &str, why: &str) -> Vec<Diagnostic> {
+    let mut parser = frontend::ParserWithInterner::new(source);
+    parser.set_source_file("test.t");
+    let mut program = parser.parse_program().expect("parse");
+    let string_interner = parser.get_string_interner();
+    let core = core_modules_dir();
+    match interpreter::check_typing_diagnostics(
+        &mut program,
+        string_interner,
+        Some(source),
+        Some("test.t"),
+        Some(core.as_path()),
+    ) {
+        Ok(_) => panic!("{why}"),
+        Err(diagnostics) => diagnostics,
+    }
+}
+
+/// Assert the diagnostics carry an `E0004` whose message contains
+/// `needle`.
+fn assert_unsupported_operation(diagnostics: &[Diagnostic], needle: &str) {
+    let unsupported: Vec<&Diagnostic> =
+        diagnostics.iter().filter(|d| d.code == "E0004").collect();
+    assert!(
+        !unsupported.is_empty(),
+        "expected an E0004 unsupported-operation error, got: {diagnostics:?}"
+    );
+    assert!(
+        unsupported.iter().any(|d| d.message.contains(needle)),
+        "expected a message containing {needle:?}, got: {unsupported:?}"
+    );
+}
+
+#[test]
+fn comparing_a_struct_without_eq_is_rejected_however_it_is_spelled() {
+    // ENUM-EQ-ESCAPES-TYPECHECK. `visit_compare_binary`'s "same
+    // generic parameter on both sides" rule matched any two
+    // `Identifier`s with one symbol — which is also how a *user type*
+    // named in an annotation arrives. Annotating both operands
+    // therefore made `==` type-check with no `eq` behind it, and the
+    // comparison failed at run time with `evaluate_eq: Bad types`,
+    // naming the same type twice. The unannotated spelling of the
+    // same program was rejected at compile time all along.
+    for (label, decl) in [("annotated", "val a: P = P { v: 1u64 }
+            val b: P = P { v: 2u64 }"),
+                          ("inferred", "val a = P { v: 1u64 }
+            val b = P { v: 2u64 }")] {
+        let source = format!(
+            r#"
+        struct P {{ v: u64 }}
+        fn main() -> u64 {{
+            {decl}
+            if a == b {{ 1u64 }} else {{ 0u64 }}
+        }}
+        "#
+        );
+        let diagnostics = type_check_errors(
+            &source,
+            &format!("`==` on a struct with no `eq` must be a type error ({label})"),
+        );
+        assert_unsupported_operation(&diagnostics, "define `fn eq(&self, other: &P) -> bool`");
+    }
+}
+
+#[test]
+fn comparing_two_enum_values_points_at_match() {
+    // Overloading is a struct feature: no backend dispatches a
+    // comparison on an enum receiver. So the advice here must not be
+    // "define `eq`" — that would compile and then fail.
+    let source = r#"
+        enum Color { Red, Green }
+        fn main() -> u64 {
+            val a: Color = Color::Red
+            val b: Color = Color::Green
+            if a == b { 1u64 } else { 0u64 }
+        }
+    "#;
+    let diagnostics = type_check_errors(source, "`==` on an enum must be a type error");
+    assert_unsupported_operation(&diagnostics, "on an enum (match on the variants instead)");
+}
+
+#[test]
+fn an_eq_written_on_an_enum_does_not_make_the_comparison_compile() {
+    // The method exists, but nothing dispatches it, so accepting the
+    // program would only move the failure to run time.
+    let source = r#"
+        enum Color { Red, Green }
+        impl Color {
+            fn tag(self: Self) -> u64 { match self { Color::Red => 0u64, Color::Green => 1u64 } }
+            fn eq(&self, other: &Color) -> bool { self.tag() == other.tag() }
+        }
+        fn main() -> u64 {
+            val a: Color = Color::Red
+            val b: Color = Color::Green
+            if a == b { 1u64 } else { 0u64 }
+        }
+    "#;
+    let diagnostics = type_check_errors(source, "an enum `eq` must not make `==` compile");
+    assert_unsupported_operation(&diagnostics, "on an enum (match on the variants instead)");
+}
+
+#[test]
+fn an_annotated_struct_pair_with_eq_still_compares() {
+    // The other half of the same rule: narrowing it must not take the
+    // overload away from the spelling that carries an annotation.
+    let src = vec3_program(r#"
+        fn main() -> u64 {
+            val a: Vec3 = Vec3 { x: 1i64, y: 2i64, z: 3i64 }
+            val b: Vec3 = Vec3 { x: 1i64, y: 2i64, z: 3i64 }
+            assert(a == b, "annotated eq dispatch")
+            42u64
+        }
+    "#);
+    assert_program_result_u64(&src, 42);
+}
+
+#[test]
+fn a_generic_parameter_still_compares_against_itself() {
+    // The rule exists for `Dict::get`'s `existing == key`, where both
+    // sides are the one generic parameter. A generic parameter is not
+    // a declared type, so it keeps the arm.
+    assert_program_result_u64(
+        r#"
+        fn same<T>(a: T, b: T) -> bool { a == b }
+        fn main() -> u64 {
+            if !same(1u64, 1u64) { return 1u64 }
+            if same(1i64, 2i64) { return 2u64 }
+            42u64
+        }
+        "#,
+        42,
+    );
+}
+
 
 const VEC3_DECL: &str = r#"
 struct Vec3 { x: i64, y: i64, z: i64 }

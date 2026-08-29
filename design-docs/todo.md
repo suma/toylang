@@ -1460,10 +1460,39 @@
 
 ### 既知の不具合
 
-現時点で未解決のものは無い。過去にここへ挙がった 3 件 (f64 の print が
-3 バックエンドで食い違う / `if` の条件が型検査されない / MATCH-STRUCT-ARM)
-はいずれも解消し、経緯は git log と完了済み節にある。**直った項目をこの節に
-段落で残さないこと** — 常時読まれるファイルが changelog になる。
+**直った項目をこの節に段落で残さないこと** — 常時読まれるファイルが
+changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 バックエンドで
+食い違う / `if` の条件が型検査されない / MATCH-STRUCT-ARM) はいずれも解消し、
+経緯は git log と完了済み節にある。
+
+- **METHOD-ARG-AUTOBORROW: scalar `&T` の method 引数で auto-borrow が
+  効かない** ★★★ — **interpreter は誤答、AOT / JIT は SIGSEGV**。
+  `impl W { fn plus(&self, other: &i64) -> i64 { self.v + other } }` に
+  `a.plus(22i64)` / `a.plus(y)` と渡すと 20 が返る (`other` が 0 として
+  読まれる)。compiled 側は値をポインタとみなして参照するので落ちる。
+  `docs/language.md` は `T` → `&T` の auto-borrow を
+  `is_arg_compatible` の規則として約束しており、型検査は実際に通す —
+  抜けているのは **method call site で借用を実体化する側**。
+  効く範囲が 3 つの軸で切れることを実測した:
+  - **自由関数は正しい** — `fn plus(a: &i64, b: &i64)` に `plus(x, y)` は
+    3 バックエンドで 42。
+  - **compound の `&T` は正しい** — `other: &W` に値の `b` を渡すのは
+    3 バックエンドで 42。これが効いているので operator overload
+    (`&Self` / `&Vec3`) は全部無事だった。壊れるのは **scalar** の
+    `&T` だけで、REF-Stage-2 が scalar 参照にだけ本物のポインタ slot
+    (`Type::U64`) を与え、compound は erase しているのと符合する。
+  - **明示すれば正しい** — `a.plus(&y)` は全レーンで 42。
+  2026-08-29 に operator overload の調査中に発見。
+
+- **ENUM-EQ-ESCAPES-TYPECHECK: enum の `==` が型検査をすり抜ける** ★★ —
+  同じ enum 型の**束縛どうし**を `==` で比べると型検査を通り、実行時に
+  `evaluate_eq: Bad types for binary '==' operation` で落ちる
+  (`val a: Color = ..` / `val b: Color = ..` に対する `a == b`)。
+  片側が variant リテラル (`a == Color::Green`) なら compile error に
+  なるので、抜けるのは両側が束縛のときだけ。enum に `==` を実装するか、
+  型検査で拒否して `match` に誘導するかの判断が要る。診断は現状どちらの
+  経路でも同名の型を 2 回並べる (`incompatible types Color and Color`)
+  ので、拒否するなら文言も直すこと。2026-08-29 発見。
 
 ### パーサーの既知制限事項
 - bare `self` 非対応 — `self: Self` / `&self` / `&mut self` のいずれかを書く。

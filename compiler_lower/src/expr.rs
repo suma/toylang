@@ -847,28 +847,87 @@ impl<'a> FunctionLower<'a> {
         Ok(vec![v])
     }
 
+    /// REF-Stage-2 (iv): produce the pointer a scalar `&T` parameter
+    /// expects, for one argument.
+    ///
+    /// `pointee` is the callee's `param_ref_pointee` entry for this
+    /// slot: `None` means the slot is not a scalar reference, and the
+    /// caller's existing paths handle it. Otherwise the argument has
+    /// to arrive as an address, and there are three ways to get one:
+    ///
+    /// - a `RefScalar` binding already holds one — forward it
+    /// - a `Scalar` binding has a home — take its address
+    /// - anything else (`f(22i64)`, `f(a + b)`, `f(p.x)`) has no home,
+    ///   so give it one: spill the value into a fresh local and take
+    ///   that local's address. Without this last case the *value* was
+    ///   passed where a pointer was expected and the callee's first
+    ///   `LoadRef` dereferenced whatever address that number named —
+    ///   a wrong answer on the IR VM and a segfault once compiled.
+    pub(super) fn lower_scalar_ref_arg(
+        &mut self,
+        arg: &ExprRef,
+        pointee: Option<Type>,
+    ) -> Result<Option<ValueId>, String> {
+        let Some(pointee) = pointee else {
+            return Ok(None);
+        };
+        if let Some(Expr::Identifier(sym)) = self.program.expression.get(arg) {
+            if let Some(Binding::RefScalar { local, .. }) = self.bindings.get(&sym).cloned() {
+                return Ok(Some(
+                    self.emit(InstKind::LoadLocal(local), Some(Type::U64))
+                        .expect("LoadLocal returns a value"),
+                ));
+            }
+            if let Some(Binding::Scalar { local, .. }) = self.bindings.get(&sym).cloned() {
+                self.module
+                    .function_mut(self.func_id)
+                    .address_taken_locals
+                    .insert(local);
+                return Ok(Some(
+                    self.emit(InstKind::AddressOf { local }, Some(Type::U64))
+                        .expect("AddressOf returns a value"),
+                ));
+            }
+        }
+        let v = self
+            .lower_expr(arg)?
+            .ok_or_else(|| "reference argument produced no value".to_string())?;
+        let local = self.module.function_mut(self.func_id).add_local(pointee);
+        self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
+        self.module
+            .function_mut(self.func_id)
+            .address_taken_locals
+            .insert(local);
+        Ok(Some(
+            self.emit(InstKind::AddressOf { local }, Some(Type::U64))
+                .expect("AddressOf returns a value"),
+        ))
+    }
+
     pub(super) fn lower_call_args(&mut self, args_ref: &ExprRef) -> Result<Vec<ValueId>, String> {
         self.lower_call_args_with_target(args_ref, None)
     }
 
-    /// Variant that knows the callee's `param_is_ref` flags so it
-    /// can forward the pointer when a bare `RefScalar` identifier
-    /// is passed to a `&T` parameter (instead of dereferencing —
-    /// the default path that would corrupt
-    /// `outer(x: &u64) -> u64 { inner(x) }`-style chains).
+    /// Variant that knows the callee's `param_ref_pointee` types so
+    /// it can hand a `&T` parameter an address rather than a value:
+    /// forwarding the pointer a `RefScalar` identifier already holds
+    /// (dereferencing instead would corrupt
+    /// `outer(x: &u64) -> u64 { inner(x) }`-style chains), taking a
+    /// `Scalar` binding's address, or spilling a value that has no
+    /// address of its own.
     pub(super) fn lower_call_args_with_target(
         &mut self,
         args_ref: &ExprRef,
         target: Option<crate::ir::FuncId>,
     ) -> Result<Vec<ValueId>, String> {
-        let param_is_ref: Vec<bool> = target
-            .map(|t| self.module.function(t).param_is_ref.clone())
-            .unwrap_or_default();
         // The callee's declared parameter types, when the target is
         // known. A compound literal argument follows them to pick the
         // right monomorphisation.
         let param_tys: Vec<Type> = target
             .map(|t| self.module.function(t).params.clone())
+            .unwrap_or_default();
+        let param_ref_pointee: Vec<Option<Type>> = target
+            .map(|t| self.module.function(t).param_ref_pointee.clone())
             .unwrap_or_default();
         // A5-P2: per-param dyn-trait identity. `Some(trait_sym)` means
         // the slot expects a fat pointer; the call site coerces a
@@ -1177,6 +1236,19 @@ impl<'a> FunctionLower<'a> {
                 }
                 _ => *a,
             };
+            // REF-Stage-2 (iv): `T` -> `&T` auto-borrow at the boundary.
+            // The frontend type checker already approved passing a
+            // value where a `&T` is declared; the lowering has to
+            // produce the address. Placed before the identifier
+            // expansion below because a scalar-reference slot wants a
+            // pointer, never leaves.
+            if let Some(ptr) = self.lower_scalar_ref_arg(
+                &arg_expr_ref,
+                param_ref_pointee.get(arg_idx).copied().flatten(),
+            )? {
+                values.push(ptr);
+                continue;
+            }
             // Struct-typed identifier argument: expand into per-field
             // values in declaration order. Anything else flows through
             // `lower_expr`.
@@ -1212,48 +1284,6 @@ impl<'a> FunctionLower<'a> {
                     values.extend(vs);
                     continue;
                 }
-                // REF-Stage-2 (iv): bare identifier of a `RefScalar`
-                // binding being passed to a `&T` parameter — forward
-                // the pointer (not the dereferenced value). Without
-                // this, `outer(x: &u64) { inner(x) }` would `LoadRef`
-                // x to a u64 value and pass it where `inner` expects
-                // a pointer, segfaulting at the next `LoadRef`.
-                if let Some(Binding::RefScalar { local, .. }) =
-                    self.bindings.get(&sym).cloned()
-                    && param_is_ref.get(arg_idx).copied().unwrap_or(false) {
-                        let v = self
-                            .emit(InstKind::LoadLocal(local), Some(Type::U64))
-                            .expect("LoadLocal returns a value");
-                        values.push(v);
-                        continue;
-                    }
-                // REF-Stage-2 (iv): T -> &T auto-borrow at the AOT
-                // boundary. The frontend type checker already
-                // approved the conversion (passing a `T` value to a
-                // `&T` parameter); the lowering needs to materialise
-                // the address. Same shape as the explicit `&<var>`
-                // path: mark the local address-taken and emit
-                // `AddressOf`.
-                if let Some(Binding::Scalar { local, ty }) =
-                    self.bindings.get(&sym).cloned()
-                    && param_is_ref.get(arg_idx).copied().unwrap_or(false)
-                        && matches!(
-                            ty,
-                            Type::I64 | Type::U64 | Type::F64 | Type::Bool
-                                | Type::I8 | Type::U8 | Type::I16 | Type::U16
-                                | Type::I32 | Type::U32
-                        )
-                    {
-                        self.module
-                            .function_mut(self.func_id)
-                            .address_taken_locals
-                            .insert(local);
-                        let v = self
-                            .emit(InstKind::AddressOf { local }, Some(Type::U64))
-                            .expect("AddressOf returns a value");
-                        values.push(v);
-                        continue;
-                    }
             }
             // CALL-ARG-COMPOUND-LITERAL: `f(Point { .. })` /
             // `f((1i64, 2i64))` — build the literal into leaf locals

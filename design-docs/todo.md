@@ -12,6 +12,21 @@
 
 ### 2026-08-29
 
+- **METHOD-ARG-AUTOBORROW** — frontend が認める `T` → `&T` の
+  auto-borrow を lowering が実体化していなかったので、値がポインタの
+  スロットに入り、**IR VM は誤答・compiled は SIGSEGV** していた。
+  借用を作っていたのは**自由関数の呼び出しで、かつ引数が scalar local に
+  束縛された裸の識別子のとき**だけ。つまり (a) method 呼び出しは全部、
+  (b) 自分のアドレスを持たない引数 (リテラル / 計算結果 / フィールド読み)
+  は全部素通りしていた。tree-walker は参照を消すので終始正しく、
+  それが「インタプリタの誤答」と「AOT の segfault」が別のバグに
+  見えていた理由。3 つの取り方 (RefScalar は転送、Scalar はアドレスを取る、
+  それ以外は一時 local に spill してから取る) を 1 つのヘルパにまとめ、
+  両方の呼び出し site から呼ぶ。spill には pointee の**幅**が要るので
+  (`&u8` は 1 バイト読む)、IR の `param_is_ref: Vec<bool>` を
+  `param_ref_pointee: Vec<Option<Type>>` に置き換えた — 旧 bool は
+  この変更で読み手がいなくなったので消した。
+
 - **注釈の有無で operator overload の到達可否が変わっていたのを修正** —
   `val h: P = f + P { .. }` が `[E0001] Type mismatch: expected P, but got P`
   で落ちていた (`+=` の desugar 経由でも同じ)。注釈で書いた user 型は
@@ -1486,25 +1501,6 @@
 changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 バックエンドで
 食い違う / `if` の条件が型検査されない / MATCH-STRUCT-ARM) はいずれも解消し、
 経緯は git log と完了済み節にある。
-
-- **METHOD-ARG-AUTOBORROW: scalar `&T` の method 引数で auto-borrow が
-  効かない** ★★★ — **interpreter は誤答、AOT / JIT は SIGSEGV**。
-  `impl W { fn plus(&self, other: &i64) -> i64 { self.v + other } }` に
-  `a.plus(22i64)` / `a.plus(y)` と渡すと 20 が返る (`other` が 0 として
-  読まれる)。compiled 側は値をポインタとみなして参照するので落ちる。
-  `docs/language.md` は `T` → `&T` の auto-borrow を
-  `is_arg_compatible` の規則として約束しており、型検査は実際に通す —
-  抜けているのは **method call site で借用を実体化する側**。
-  効く範囲が 3 つの軸で切れることを実測した:
-  - **自由関数は正しい** — `fn plus(a: &i64, b: &i64)` に `plus(x, y)` は
-    3 バックエンドで 42。
-  - **compound の `&T` は正しい** — `other: &W` に値の `b` を渡すのは
-    3 バックエンドで 42。これが効いているので operator overload
-    (`&Self` / `&Vec3`) は全部無事だった。壊れるのは **scalar** の
-    `&T` だけで、REF-Stage-2 が scalar 参照にだけ本物のポインタ slot
-    (`Type::U64`) を与え、compound は erase しているのと符合する。
-  - **明示すれば正しい** — `a.plus(&y)` は全レーンで 42。
-  2026-08-29 に operator overload の調査中に発見。
 
 - **ENUM-EQ-ESCAPES-TYPECHECK: enum の `==` が型検査をすり抜ける** ★★ —
   同じ enum 型の**束縛どうし**を `==` で比べると型検査を通り、実行時に

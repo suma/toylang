@@ -308,15 +308,14 @@ impl<'a> FunctionLower<'a> {
         let func_id = self
             .module
             .declare_function_anon(export_name, Linkage::Local, params, ret);
-        // REF-Stage-2 (iv): mark `&T` / `&mut T` parameters so
-        // call sites can forward pointers when passing a
-        // `RefScalar` binding through unmodified.
-        let param_is_ref: Vec<bool> = template
+        // REF-Stage-2 (iv): record `&T` / `&mut T` parameters so call
+        // sites hand them an address rather than a value.
+        let param_ref_pointee: Vec<Option<crate::ir::Type>> = template
             .parameter
             .iter()
-            .map(|(_, t)| matches!(t, frontend::type_decl::TypeDecl::Ref { .. }))
+            .map(|(_, t)| crate::templates::param_ref_pointee_ty(t))
             .collect();
-        self.module.function_mut(func_id).param_is_ref = param_is_ref;
+        self.module.function_mut(func_id).param_ref_pointee = param_ref_pointee;
         self.generic_instances
             .insert((template_name, type_args), func_id);
         // TEST-PERF: this body-bearing instance is now queued; the

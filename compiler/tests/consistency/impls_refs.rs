@@ -759,7 +759,7 @@ fn ref_stage2_immutable_ref_scalar_chain_round_trip() {
     // REF-Stage-2 (iv): ref-of-ref scalar chains and `T -> &T`
     // auto-borrow at the AOT call boundary.
     //
-    // Two failure modes the new `param_is_ref`-aware
+    // Two failure modes the new `param_ref_pointee`-aware
     // `lower_call_args_with_target` fixes:
     //   1. Forwarding `RefScalar` bindings: in
     //      `outer(x: &u64) { inner(x) }`, `x` is a RefScalar
@@ -773,7 +773,7 @@ fn ref_stage2_immutable_ref_scalar_chain_round_trip() {
     //      callee as if it were a pointer (segfault).
     //
     // The fix marks `&T` / `&mut T` params on every Function in
-    // the IR via `param_is_ref`, then `lower_call_args_with_target`
+    // the IR via `param_ref_pointee`, then `lower_call_args_with_target`
     // peeks the flag per-arg and emits AddressOf (for Scalar) or
     // forwards the existing pointer (for RefScalar) instead of
     // dereferencing.
@@ -798,4 +798,82 @@ fn ref_stage2_immutable_ref_scalar_chain_round_trip() {
         }
     "#;
     assert_consistent(src, "ref_stage2_immutable_ref_scalar_chain_round_trip");
+}
+
+#[test]
+fn scalar_ref_arguments_reach_a_method_and_survive_having_no_home() {
+    // METHOD-ARG-AUTOBORROW. The `T` -> `&T` auto-borrow the frontend
+    // approves was materialised only at free-function call sites, and
+    // only for an argument that was a bare identifier bound to a
+    // scalar local. Two shapes therefore passed a *value* into a slot
+    // the callee reads through a pointer:
+    //
+    //   a.plus(y)          — every method call, even a plain binding
+    //   plus(22i64, ..)    — any argument with no address of its own
+    //
+    // The tree-walker was right throughout (it erases references), so
+    // this reproduced as a wrong answer on the IR VM — the engine the
+    // interpreter actually runs — and a segfault once compiled, which
+    // is why it looked like two separate bugs.
+    let src = r#"
+        struct W { v: i64 }
+
+        impl W {
+            fn plus(&self, other: &i64) -> i64 { self.v + other }
+        }
+
+        fn plus(a: &i64, b: &i64) -> i64 { a + b }
+
+        fn via_chain(a: &i64) -> i64 { plus(a, a) }
+
+        fn main() -> i64 {
+            val w: W = W { v: 20i64 }
+            val other: W = W { v: 22i64 }
+            val y: i64 = 22i64
+            val n: i64 = 21i64
+
+            # Method calls: a binding, a literal, and a field read.
+            if w.plus(y) != 42i64 { return 1i64 }
+            if w.plus(22i64) != 42i64 { return 2i64 }
+            if w.plus(other.v) != 42i64 { return 3i64 }
+            if w.plus(&y) != 42i64 { return 4i64 }
+
+            # Free functions: the literal / computed cases were broken
+            # here too, while the bare-identifier one already worked.
+            if plus(20i64, 22i64) != 42i64 { return 5i64 }
+            if plus(n + 1i64, n) != 42i64 { return 6i64 }
+            if plus(y, y - 2i64) != 42i64 { return 7i64 }
+
+            # A reference forwarded through another `&T` parameter must
+            # still be forwarded, not addressed a second time.
+            if via_chain(n) != 42i64 { return 8i64 }
+            if via_chain(&n) != 42i64 { return 9i64 }
+
+            42i64
+        }
+    "#;
+    assert_consistent(src, "scalar_ref_arguments_reach_a_method_and_survive_having_no_home");
+}
+
+#[test]
+fn scalar_ref_arguments_keep_their_width() {
+    // The spilled temporary has to be as wide as the pointee, not the
+    // pointer: `&u8` reads one byte back out, `&f64` eight. Getting
+    // this from the callee's own declaration is the reason
+    // `param_ref_pointee` carries a type rather than a flag.
+    let src = r#"
+        fn take_u8(x: &u8) -> u8 { x + 1u8 }
+        fn take_i16(x: &i16) -> i16 { x + 1i16 }
+        fn take_f64(x: &f64) -> f64 { x + 1.5f64 }
+        fn take_bool(x: &bool) -> bool { !x }
+
+        fn main() -> u64 {
+            if take_u8(41u8) != 42u8 { return 1u64 }
+            if take_i16(0i16 - 2i16) != (0i16 - 1i16) { return 2u64 }
+            if take_f64(40.5f64) != 42.0f64 { return 3u64 }
+            if take_bool(false) != true { return 4u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "scalar_ref_arguments_keep_their_width");
 }

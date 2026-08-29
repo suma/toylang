@@ -427,7 +427,7 @@ impl Module {
             hide_frame: false,
             linkage,
             params,
-            param_is_ref: Vec::new(),
+            param_ref_pointee: Vec::new(),
             dyn_coerce_slots: Vec::new(),
             param_dyn_trait: Vec::new(),
             return_type,
@@ -475,7 +475,7 @@ impl Module {
             hide_frame: false,
             linkage,
             params,
-            param_is_ref: Vec::new(),
+            param_ref_pointee: Vec::new(),
             dyn_coerce_slots: Vec::new(),
             param_dyn_trait: Vec::new(),
             return_type,
@@ -779,16 +779,21 @@ pub struct Function {
     /// Parameter types in declaration order. The corresponding `LocalId`s
     /// are `LocalId(0)..LocalId(params.len())`.
     pub params: Vec<Type>,
-    /// REF-Stage-2 (iv): per-parameter `&T` flag. `true` means the
-    /// caller is required to forward a pointer (the param's IR
-    /// type is `U64` for scalars regardless), `false` means the
-    /// caller passes the value (or leaf-flatten leaves for compound
-    /// types). Lets call sites disambiguate "bare identifier of a
-    /// `RefScalar` binding" — forward the pointer when true, emit
-    /// LoadRef when false (callee wants the dereferenced value).
-    /// Empty `Vec` is treated as "all false" so older code paths
-    /// stay sound.
-    pub param_is_ref: Vec<bool>,
+    /// REF-Stage-2 (iv): per-parameter pointee type. `Some(I64)`
+    /// means the slot is a `&i64` / `&mut i64` — the param's own IR
+    /// type is `U64`, and the caller must hand over an address.
+    /// `None` means the caller passes the value, which covers plain
+    /// value parameters and references to compound types (those are
+    /// leaf-flattened at the boundary, so no address is involved on
+    /// either side).
+    ///
+    /// The width matters as much as the flag: a call site whose
+    /// argument has no home of its own — a literal, an arithmetic
+    /// result — has to spill it into a local before it has an
+    /// address to take, and that local needs the pointee's width.
+    /// Empty `Vec` is treated as "all `None`" so older paths stay
+    /// sound.
+    pub param_ref_pointee: Vec<Option<Type>>,
     /// A5-P2-MVP-B: per-function stack-slot sizes for `&dyn Trait`
     /// coercion sites. When a caller passes a struct with fields
     /// through a `&dyn Trait` parameter, we allocate one entry here

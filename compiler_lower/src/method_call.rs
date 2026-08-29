@@ -1222,6 +1222,27 @@ impl<'a> FunctionLower<'a> {
                     continue;
                 }
             }
+            // REF-Stage-2 (iv): `T` -> `&T` auto-borrow, the same as
+            // at a free-function call. This was missing here
+            // entirely, so `a.plus(y)` for `fn plus(&self, other: &i64)`
+            // passed the value into a pointer slot — 20 instead of 42
+            // once the callee dereferenced it, or a segfault when the
+            // value did not happen to name mapped memory. The slot is
+            // `1 + arg_idx` for the same reason the compound-literal
+            // lookup below uses it: the receiver always occupies the
+            // first parameter.
+            if let Some(ptr) = self.lower_scalar_ref_arg(
+                &arg_expr_ref,
+                self.module
+                    .function(target)
+                    .param_ref_pointee
+                    .get(1 + arg_idx)
+                    .copied()
+                    .flatten(),
+            )? {
+                values.push(ptr);
+                continue;
+            }
             // CALL-ARG-COMPOUND-LITERAL: `g.shifted(Point { .. })`.
             // `params` carries one entry per declared parameter, and
             // the receiver is always the first of them (prepended for

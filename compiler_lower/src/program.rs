@@ -35,8 +35,8 @@ use super::method_registry::{
     MethodRegistry, MethodTemplateSpec, PendingMethodInstance,
 };
 use super::templates::{
-    collect_enum_defs, collect_struct_defs, lower_param_or_return_type, substitute_self,
-    unlowerable_type_message, EnumDefs, StructDefs,
+    collect_enum_defs, collect_struct_defs, lower_param_or_return_type, param_ref_pointee_ty,
+    substitute_self, unlowerable_type_message, EnumDefs, StructDefs,
 };
 use super::FunctionLower;
 use crate::contract_facts::ContractFacts;
@@ -236,25 +236,19 @@ pub(super) fn populate_method_writeback_types(
     if !wb_types.is_empty() {
         module.function_mut(func_id).self_writeback_types = wb_types;
     }
-    // REF-Stage-2 (iv): mirror the function-side `param_is_ref`
+    // REF-Stage-2 (iv): mirror the function-side `param_ref_pointee`
     // wiring for method params. The IR `params` list has self
-    // prepended for implicit-self methods, so we flag the
-    // self slot as ref iff the method is `&self`/`&mut self`
-    // and only then walk the user-declared params.
-    let mut param_is_ref: Vec<bool> = Vec::new();
-    let has_implicit_self = module.function(func_id).params.len() == method.parameter.len() + 1;
-    if has_implicit_self {
-        // Implicit self prepended by the declare loop. The
-        // receiver is logically a reference whenever the method
-        // has any kind of self (`&self` / `&mut self` are
-        // refs; `self: Self` here would mean explicit, which
-        // takes the other branch).
-        param_is_ref.push(true);
+    // prepended for implicit-self methods, so the entries line up
+    // only if that slot is accounted for first; the receiver is
+    // never an address the call site has to make.
+    let mut param_ref_pointee: Vec<Option<Type>> = Vec::new();
+    if module.function(func_id).params.len() == method.parameter.len() + 1 {
+        param_ref_pointee.push(None);
     }
     for (_, decl_ty) in method.parameter.iter() {
-        param_is_ref.push(matches!(decl_ty, TypeDecl::Ref { .. }));
+        param_ref_pointee.push(param_ref_pointee_ty(decl_ty));
     }
-    module.function_mut(func_id).param_is_ref = param_is_ref;
+    module.function_mut(func_id).param_ref_pointee = param_ref_pointee;
 }
 
 /// REF-Stage-2 (ii): flatten an IR `Type` (struct / tuple / enum
@@ -478,12 +472,12 @@ fn declare_plain_functions(
         // identifier — fixes ref-of-ref chains like
         // `fn outer(x: &u64) -> u64 { inner(x) }` where `inner`
         // also takes `&u64`.
-        let param_is_ref: Vec<bool> = func
+        let param_ref_pointee: Vec<Option<Type>> = func
             .parameter
             .iter()
-            .map(|(_, t)| matches!(t, TypeDecl::Ref { .. }))
+            .map(|(_, t)| param_ref_pointee_ty(t))
             .collect();
-        module.function_mut(func_id).param_is_ref = param_is_ref;
+        module.function_mut(func_id).param_ref_pointee = param_ref_pointee;
         // A5-P2: per-param dyn-trait identity + mutability. A param of
         // `&dyn TraitName` records `Some((trait_sym, false))`,
         // `&mut dyn TraitName` records `Some((trait_sym, true))`,

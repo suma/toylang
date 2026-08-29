@@ -861,6 +861,29 @@ pub(super) fn unlowerable_type_message(fallback: impl FnOnce() -> String) -> Str
     take_pending_refusal().unwrap_or_else(fallback)
 }
 
+/// The pointee's scalar IR type for a `&T` / `&mut T` parameter, or
+/// `None` for anything the boundary does not hand over as a pointer.
+///
+/// Deliberately mirrors the scalar arm of `lower_param_or_return_type`:
+/// that decides which parameters get a pointer slot, this decides
+/// which call-site arguments have to have an address made for them,
+/// and the two answers must be the same one. A compound pointee is
+/// `None` because it is leaf-flattened at the boundary — no address
+/// is involved on either side.
+pub(super) fn param_ref_pointee_ty(ty: &TypeDecl) -> Option<Type> {
+    let TypeDecl::Ref { inner, .. } = ty else {
+        return None;
+    };
+    let scalar = lower_scalar(inner)?;
+    matches!(
+        scalar,
+        Type::I64 | Type::U64 | Type::F64 | Type::Bool
+            | Type::I8 | Type::U8 | Type::I16 | Type::U16
+            | Type::I32 | Type::U32
+    )
+    .then_some(scalar)
+}
+
 /// Replace every `Self` inside `ty` with the impl target's type.
 ///
 /// The substitution used to be written inline as a top-level `match`,

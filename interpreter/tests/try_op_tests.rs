@@ -256,9 +256,11 @@ fn try_op_cross_error_converts_via_from() {
 
 #[test]
 fn try_op_cross_error_converts_enum_target() {
-    // Cross-error conversion into an enum error type. The interpreter
-    // dispatches `MyErr::from(str)`; the AOT / JIT reject enum
-    // associated calls (existing MVP limit), so this is interpreter-only.
+    // Cross-error conversion into an enum error type. FROM-INTO-ENUM-ERR
+    // (2026-08-30): the let-rhs dispatch tells variant constructions
+    // from associated functions, so `MyErr::from(...)` lowers on every
+    // backend — this is also pinned 3-way by
+    // `consistency::impls_refs::try_cross_error_into_enum_target`.
     let src = r#"
         enum MyErr {
             Fail(u64),

@@ -591,7 +591,16 @@ impl<'a> FunctionLower<'a> {
             {
                 Some(path[0])
             }
-            Expr::AssociatedFunctionCall(en, _, _) if self.enum_defs.contains_key(&en) => {
+            Expr::AssociatedFunctionCall(en, name, _)
+                if self.enum_defs.contains_key(&en)
+                    // FROM-INTO-ENUM-ERR: `Enum::Variant(args)` and
+                    // `Enum::method(args)` parse to the same shape —
+                    // only a declared variant name is a construction.
+                    // An associated function (`MyErr::from(e)`) falls
+                    // through so the let-rhs dispatch reaches the
+                    // enum-associated-call intercept.
+                    && self.enum_variant_index(&en, &name).is_some() =>
+            {
                 Some(en)
             }
             Expr::Identifier(sym) => match self.bindings.get(&sym) {

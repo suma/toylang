@@ -123,12 +123,21 @@ impl<'a> FunctionLower<'a> {
         // Either way the lowering allocates an `Enum` binding (tag local
         // + per-variant payload locals) and stores the chosen tag plus
         // the supplied arguments in this variant's payload slots.
+        //
+        // FROM-INTO-ENUM-ERR: `Enum::Variant(args)` and
+        // `Enum::method(args)` parse to the same `AssociatedFunctionCall`
+        // shape, so the tuple-variant dispatch only fires when the name
+        // is a *declared variant*; anything else falls through to the
+        // enum associated-function intercept below
+        // (`MyErr::from(e)` from the `?` cross-error conversion).
         if let Expr::QualifiedIdentifier(path) = rhs.clone()
             && path.len() == 2 && self.enum_defs.contains_key(&path[0]) {
                 return self.lower_let_enum_unit_variant(name, annotation, &path);
             }
         if let Expr::AssociatedFunctionCall(enum_name, variant_name, args) = rhs.clone()
-            && self.enum_defs.contains_key(&enum_name) {
+            && self.enum_defs.contains_key(&enum_name)
+            && self.enum_variant_index(&enum_name, &variant_name).is_some()
+        {
                 return self.lower_let_enum_tuple_variant(
                     name,
                     annotation,
@@ -214,6 +223,26 @@ impl<'a> FunctionLower<'a> {
                     name,
                     annotation,
                     struct_name,
+                    fn_name,
+                    args_vec,
+                )? {
+                    return Ok(result);
+                }
+        // FROM-INTO-ENUM-ERR: enum-target associated function RHS
+        // (`val e: MyErr = MyErr::from(s)` — exactly what the `?`
+        // cross-error conversion emits). The variant construction
+        // intercept above only fires for declared variant names now,
+        // so reaching here with an enum qualifier means the name is an
+        // associated function from an `impl ... for <Enum>` block.
+        // Same registry lookup as the struct path; the return shaping
+        // is shared with the plain compound-call path (`CallEnum`
+        // covers `from`'s enum `Self` return).
+        if let Expr::AssociatedFunctionCall(enum_name, fn_name, ref args_vec) = rhs.clone()
+            && self.enum_defs.contains_key(&enum_name)
+                && let Some(result) = self.lower_let_enum_associated_call(
+                    name,
+                    annotation,
+                    enum_name,
                     fn_name,
                     args_vec,
                 )? {
@@ -854,6 +883,92 @@ impl<'a> FunctionLower<'a> {
         } else {
             None
         }
+    }
+
+    /// The index of `variant_name` in the enum template's declared
+    /// variants, when it is one. `Enum::Variant(args)` and
+    /// `Enum::method(args)` parse to the same `AssociatedFunctionCall`
+    /// shape, so the let-rhs dispatch needs this to tell construction
+    /// from an associated function call (FROM-INTO-ENUM-ERR).
+    pub(super) fn enum_variant_index(
+        &self,
+        enum_name: &DefaultSymbol,
+        variant_name: &DefaultSymbol,
+    ) -> Option<usize> {
+        let template = self.enum_defs.get(enum_name)?;
+        template.variants.iter().position(|v| v.name == *variant_name)
+    }
+
+    /// Enum associated-function-call RHS helper (`val e: MyErr =
+    /// MyErr::from(s)`, FROM-INTO-ENUM-ERR). Mirrors
+    /// `lower_let_struct_associated_call`: resolves the enum instance
+    /// from the annotation, looks the function up in the same method
+    /// registry (generic impls of generic enums instantiate through
+    /// the same template machinery), and shapes the return through
+    /// the shared `lower_let_call_compound_target` — `from` returns
+    /// the enum itself, which is exactly the `CallEnum` case. Scalar
+    /// returns get a regular `Call` + scalar binding, mirroring the
+    /// struct helper. Returns `Ok(None)` when the registry has no
+    /// such function, so the caller falls through (and the eventual
+    /// reject names the expression).
+    fn lower_let_enum_associated_call(
+        &mut self,
+        name: DefaultSymbol,
+        annotation: Option<&TypeDecl>,
+        enum_name: DefaultSymbol,
+        fn_name: DefaultSymbol,
+        args_vec: &[ExprRef],
+    ) -> Result<Option<Option<ValueId>>, String> {
+        let enum_id = self.resolve_enum_instance(enum_name, annotation)?;
+        let recv_type_args = self.module.enum_def(enum_id).type_args.clone();
+        let func_id = match super::method_registry::resolve_method_target(
+            self.method_func_ids,
+            self.generic_methods,
+            enum_name,
+            fn_name,
+            &recv_type_args,
+        ) {
+            Some(super::method_registry::ResolvedMethodTarget::Concrete(id)) => id,
+            Some(super::method_registry::ResolvedMethodTarget::Template(template)) => {
+                self.instantiate_generic_method_with_self_type(
+                    enum_name,
+                    fn_name,
+                    &template,
+                    Type::Enum(enum_id),
+                    recv_type_args.clone(),
+                    args_vec,
+                )?
+            }
+            None => return Ok(None),
+        };
+        if let Some(result) = self.lower_let_call_compound_target(name, func_id, args_vec)? {
+            return Ok(Some(result));
+        }
+        // Scalar return — emit a regular Call.
+        let target_ret = self.module.function(func_id).return_type;
+        if target_ret.produces_value() {
+            let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());
+            for a in args_vec {
+                arg_values.extend(self.lower_arg_values(a)?);
+            }
+            let v = self
+                .emit(
+                    InstKind::Call { target: func_id, args: arg_values },
+                    Some(target_ret),
+                )
+                .expect("Call returns a value");
+            let local = self
+                .module
+                .function_mut(self.func_id)
+                .add_local(target_ret);
+            self.bindings.insert(
+                name,
+                Binding::Scalar { local, ty: target_ret },
+            );
+            self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
+            return Ok(Some(None));
+        }
+        Ok(None)
     }
 
     /// Struct/enum-receiver compound-returning method RHS helper

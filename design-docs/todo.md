@@ -12,6 +12,25 @@
 
 ### 2026-08-30
 
+- **FROM-INTO-ENUM-ERR — `?` の cross-error 変換が enum エラー型でも 3 バックエンドで動く** —
+  desugar が出す `val e: MyErr = MyErr::from(s)` を AOT/JIT が
+  lower できなかった (「unknown enum variant `MyErr::from`」)。
+  原因は 2 つで、どちらも `Enum::Variant(args)` と `Enum::method(args)`
+  が同じ `AssociatedFunctionCall` に parse されることから来る:
+  (a) `lower_let` の tuple-variant intercept が variant 名であるかの
+  判定をしておらず `from` を variant として解決しようとしていた、
+  (b) `detect_enum_result` の `AssociatedFunctionCall` arm も同じで、
+  composite gate が先に捕まえて `lower_into_enum_storage` に流していた。
+  どちらにも「宣言済み variant 名であること」の判定を入れ
+  (`enum_variant_index`)、非 variant 名は新設の
+  `lower_let_enum_associated_call` へ — struct 経路と同じ
+  method registry 解決 + 戻り型は共有の
+  `lower_let_call_compound_target` (`from` の enum 戻りは CallEnum)、
+  scalar 戻りは struct 経路と同じ regular Call。
+  expression position の enum associated call は (struct と同じく)
+  従来どおり拒否 — 「compound は val で束縛せよ」の規約のまま。
+  consistency テスト 1 件 (enum 変換 + struct 変換の対比 pin)。
+
 - **RUNTIME-IO — `read_file` / `env_var` / `read_line` が `Result<_, IoError>` を返す** —
   失敗を `IoError` variant (`NotFound` / `PermissionDenied` /
   `IsADirectory` / `ReadError` / `EndOfInput` / `Unknown`) で返す。
@@ -1287,7 +1306,6 @@
   `EnumLayout` が別実装)、(d) **enum 型の struct field** (`StructLayout`
   は scalar フィールドのみ)。どれも correctness 問題ではない。
 - **160. タプルの JIT 対応 (ネスト)** ★ — `((a,b),c)` と tuple-of-struct。`ParamTy::Tuple(Vec<ScalarTy>)` を tree 構造にする 100+ 箇所の refactor。(inline tuple literal を call 引数に渡す件は 2026-08-23 に CALL-ARG-COMPOUND-LITERAL で解消)
-- **FROM-INTO-ENUM-ERR** ★ — enum エラー型への `From` 変換 (`?` の cross-error 経路) が interpreter のみ。AOT/JIT が enum の associated call (`MyErr::from(e)`) を lower できないため。struct エラー型は 3 バックエンドで動く。
 - **OP-OVERLOAD-ENUM: enum の operator overload** ★ — `impl SomeEnum` に
   `eq` を書いても効かない。型検査は 2026-08-29 に「宣言済み struct のみ」へ
   絞ったので通らないし、通したとしても interpreter の

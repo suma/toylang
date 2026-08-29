@@ -877,3 +877,76 @@ fn scalar_ref_arguments_keep_their_width() {
     "#;
     assert_consistent(src, "scalar_ref_arguments_keep_their_width");
 }
+
+// FROM-INTO-ENUM-ERR: the `?` cross-error conversion into an ENUM
+// error type. The desugar emits `val e: MyErr = MyErr::from(s)`, which
+// previously only the interpreter lowered (the AOT / JIT read the enum
+// qualifier as a variant construction and died on "unknown enum
+// variant `MyErr::from`"). The let-rhs dispatch now tells variants
+// from associated functions and routes `from` through the same
+// `CallEnum` machinery as any enum-returning call. The struct-error
+// counterpart (`ErrWrap: From<str>`) already ran on every lane and
+// rides along here as the control group.
+#[test]
+fn try_cross_error_into_enum_target_is_consistent_across_backends() {
+    let src = r#"
+        enum MyErr {
+            Fail(u64),
+        }
+
+        impl From<str> for MyErr {
+            fn from(value: str) -> MyErr {
+                val wrapped: u64 = if value == "empty" { 7u64 } else { 9u64 }
+                MyErr::Fail(wrapped)
+            }
+        }
+
+        struct ErrWrap { code: u64 }
+
+        impl From<str> for ErrWrap {
+            fn from(value: str) -> ErrWrap {
+                ErrWrap { code: 42u64 }
+            }
+        }
+
+        fn inner(ok: bool) -> Result<i64, str> {
+            if ok {
+                Result::Ok(11i64)
+            } else {
+                Result::Err("empty")
+            }
+        }
+
+        fn outer_enum(ok: bool) -> Result<i64, MyErr> {
+            val x = inner(ok)?
+            Result::Ok(x)
+        }
+
+        fn outer_struct(ok: bool) -> Result<i64, ErrWrap> {
+            val x = inner(ok)?
+            Result::Ok(x)
+        }
+
+        fn main() -> i64 {
+            # Ok path flows through both conversions untouched.
+            val a = match outer_enum(true) {
+                Result::Ok(v) => v,
+                Result::Err(_) => -1i64,
+            }
+            # Err path converts str -> MyErr::Fail(7).
+            val b = match outer_enum(false) {
+                Result::Err(MyErr::Fail(v)) => v as i64,
+                Result::Ok(_) => -2i64,
+            }
+            # Err path converts str -> ErrWrap { code: 42 }.
+            val c = match outer_struct(false) {
+                Result::Err(w) => w.code as i64,
+                Result::Ok(_) => -3i64,
+            }
+            a + b + c
+        }
+    "#;
+    // Expected exit: 11 (Ok passthrough) + 7 (enum conversion) + 42
+    // (struct conversion) = 60.
+    assert_consistent(src, "try_cross_error_into_enum_target");
+}

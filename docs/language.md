@@ -1144,18 +1144,19 @@ fn pipeline(a: i64, b: i64, c: i64) -> Result<i64, str> {
 - The enclosing function's declared return type must match what
   the `?` propagates (`Result<_, E>` for a Result `?`, `Option<_>`
   for an Option `?`). A success-type change (`read_file(p)?` of
-  `Result<str, str>` inside a fn declared `-> Result<u64, str>`)
-  works — the desugar reconstructs the error variant against the
-  declared type. A *error*-type change requires `E2: From<E1>`
-  (below). `return` itself is checked against the declared return
-  type on every path, so `?` inside a fn returning nothing is a
-  type error rather than a silent lie.
+  `Result<str, IoError>` inside a fn declared
+  `-> Result<u64, IoError>`) works — the desugar reconstructs the
+  error variant against the declared type. An *error*-type change
+  requires `E2: From<E1>` (below). `return` itself is checked
+  against the declared return type on every path, so `?` inside a
+  fn returning nothing is a type error rather than a silent lie.
 - `?` always introduces its own binding internally, so the
   scrutinee inside the desugar is always an identifier — the
   surrounding `match`'s scrutinee rules never come into play.
 - **Cross-error conversion**: when the inner error type `E1`
   differs from the enclosing fn's `E2` and `E2: From<E1>` is
-  implemented, the error arm converts through `E2::from(e)`
+  implemented (see [From / Into](#from--into-via-the-auto-loaded-convert-module)),
+  the error arm converts through `E2::from(e)`
   before re-returning; without a `From` impl the program is a
   type error.
 - **Out of scope** (initial implementation): user-defined `Try`
@@ -1732,6 +1733,11 @@ fn divide(a: i64, b: i64) -> i64 {
 - Parameters require explicit types.
 - The last expression in the body is the return value (no implicit
   `return` statement needed).
+- A `return` value is checked against the declared return type on
+  every path — returning the wrong type is a type error, and
+  returning a value from a Unit function is rejected. `?` inside a
+  function propagates by returning, so it requires a `Result` / 
+  `Option` return type to exist; see the [`?` operator](#-operator-early-return).
 
 ### Generic parameters and bounds
 
@@ -3674,6 +3680,41 @@ Backend coverage:
   non-scalar payloads (a struct or tuple inside a variant),
   nested generic enums (`Option<Option<T>>`), and match arms with
   guards. The fallback is silent; `-v` names the reason.
+
+### `From` / `Into` (via the auto-loaded `convert` module)
+
+```rust
+trait From<T> { fn from(value: T) -> Self }
+trait Into<T> { fn into(self: Self) -> T }
+```
+
+Both traits live in `core/std/convert.t` and are auto-loaded. You
+write the `From` side only:
+
+```rust
+enum MyErr { Fail(u64) }
+
+impl From<str> for MyErr {
+    fn from(value: str) -> MyErr { MyErr::Fail(7u64) }
+}
+```
+
+and the `Into` side is derived at the call site: `expr.into()`
+rewrites to `Target::from(expr)` when the expected type `Target` —
+typically the `val` annotation or parameter type at the call site —
+implements `From<typeof(expr)>`. There is no blanket impl written
+out — the language has no `where` clauses, so the type checker
+supplies the `U: From<T> → T: Into<U>` rule syntactically.
+Conversions live in the module that owns the target type (e.g.
+`impl From<str> for String` in `core/std/string.t`).
+
+`?` consults the same impls for cross-error propagation: an inner
+`Result<T, E1>` inside a function returning `Result<T2, E2>`
+converts through `E2::from(e)` — see the [`?` operator](#-operator-early-return).
+
+Because `from` on an enum target returns a compound, bind the result
+with `val` (the compiled lanes reject compound-returning calls in
+expression position, like every other compound value).
 
 ### `Display`
 

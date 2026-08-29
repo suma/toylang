@@ -3935,8 +3935,11 @@ practice around these clauses.
 Rules:
 
 - `requires` clauses run on entry, with parameters in scope.
-- `ensures` clauses run on exit, with the same parameters in scope plus
-  the special identifier `result` bound to the return value.
+- `ensures` clauses run on **every** value-returning exit path — the
+  tail expression, an early `return`, and a `?` propagation alike —
+  with the same parameters in scope plus the special identifier
+  `result` bound to the value that exit returns (an `Err` for a `?`
+  propagation).
 - Multiple clauses of either kind are AND-composed; the failure
   diagnostic identifies the specific clause by 1-based index.
 - Each clause must type-check as `bool`.

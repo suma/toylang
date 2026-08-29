@@ -46,8 +46,14 @@ fn average(total: u64, count: u64) -> u64
 
 **契約に書くべきでないもの**は「回復可能な失敗」。ファイルが無い、入力が
 不正、といった**起きて当然の事態**は `Option<T>` / `Result<T, E>` を返して
-呼び出し側に `match` させる。契約は「起きたらプログラムが間違っている」
+呼び出し側に `match` させる（`io::read_file(p)` が `Result<str, IoError>`
+を返すのはこの規約）。契約は「起きたらプログラムが間違っている」
 事柄に使う。
+
+`?` による伝播は早期 `return` なので、その出口でも `ensures` は走る —
+そのとき `result` は `Err` 値そのもの。`Result` を返す関数の契約は
+unwrap 後の値ではなく `result` 全体（Ok と Err の両方の形）について
+述べる。`ensures result.is_ok()` は、伝播が起きるたびに違反になる。
 
 ---
 
@@ -505,6 +511,15 @@ trait 側が契約を持たない場合も同じ — 「何も要求しない」
 契約が弱すぎる。`ensures result >= 0i64` のような節は「間違った正の値」を
 全部許す。`--check` が通ったからといって実装が正しいわけではない
 （契約が言っていることだけが保証される）。
+
+**`?` を使った関数の `ensures` が、伝播しただけで違反になる**
+
+`?` による伝播は早期 `return` なので、その出口でも `ensures` は走り、
+`result` は `Err` 値を指す。`ensures result.is_ok()` と書いた関数は、
+呼ばれた側が `Err` を返した時点で違反になる — 実装のバグではなく、
+契約が `result` を unwrap 後の値だと思っているのが原因。`Result` を
+返す関数の事後条件は `result` 全体について述べる
+（例: `ensures result.is_err() || result.unwrap_or(0u64) <= limit`）。
 
 ---
 

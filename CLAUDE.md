@@ -20,6 +20,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | backtrace / 行番号 / ファイル名の設計 | [`design-docs/DEBUG_OBSERVABILITY.md`](design-docs/DEBUG_OBSERVABILITY.md) |
 | `const fn` / コンパイル時実行の設計 | [`design-docs/COMPILE_TIME_EVAL.md`](design-docs/COMPILE_TIME_EVAL.md) |
 | closure が捕捉した束縛をどう掴むかの設計 | [`design-docs/CLOSURE_CAPTURE.md`](design-docs/CLOSURE_CAPTURE.md) |
+| エフェクト格子と 3 検査の関係 | [`design-docs/EFFECT_SYSTEM.md`](design-docs/EFFECT_SYSTEM.md) |
+| allocator のリージョン脱出検査 | [`design-docs/REGIONS.md`](design-docs/REGIONS.md) |
 | このリポジトリで LLM が作業する際の指針 | [`design-docs/COMPILER_DEV_LOOP.md`](design-docs/COMPILER_DEV_LOOP.md) |
 
 以下の「Language Syntax」節は**日常的に踏む要点の早見表**であって仕様書ではない。
@@ -579,6 +581,13 @@ fn main() -> u64 {
 ### 意味論のポイント
 
 - `with` は lexical scope。ネストは push/pop、body の exit path（値・return・break・error）すべてで必ず pop される
+- **リージョン脱出は型検査で拒否 (`[E0022]`、REGION)**: スコープ付き
+  allocator (同じ関数の `val` / `var` 束縛、またはインラインの
+  `with allocator = Arena::new()`) から確保した値は、その allocator より
+  長生きする場所 (`return` / 外側スコープの束縛・代入) へ出せない。
+  スコープ内に留まるのは合法。パラメータ / フィールドの allocator は
+  対象外 (`Arena::alloc` 自身がその形)。詳細は
+  [`design-docs/REGIONS.md`](design-docs/REGIONS.md)
 - `Allocator` 値は `Rc::ptr_eq` で同値性を判定。`==` / `!=` のみサポート（順序比較は不可）
 - 関数の引数として `Allocator` を渡す形は推奨しない (関数は `with allocator = ...` の active stack を経由して暗黙的に allocator を使う)
 - arena は個別 `free` を no-op とし、`Drop` で一括解放。fixed_buffer は quota 超過で `0`（null ポインタ）を返す。両者の policy はすべて toylang stdlib (`core/std/allocator.t`) に実装され、底に default allocator が居る

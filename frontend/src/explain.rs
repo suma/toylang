@@ -67,6 +67,7 @@ const ENTRIES: &[Entry] = &[
     (codes::RUNTIME_PANIC, E0019),
     (codes::CONTRACT_VIOLATION, E0020),
     (codes::CAPTURED_ASSIGN, E0021),
+    (codes::REGION_ESCAPE, E0022),
 ];
 
 const E0001: &str = "\
@@ -738,6 +739,43 @@ site, or keep the closure where its captures live.
 The rule is about *where the binding is*, not how it was declared. A
 `val` capture is refused for the same reason a `var` one is, so \"use
 `var`\" is not the fix.";
+
+const E0022: &str = "\
+E0022: memory from a scoped allocator outlives the allocator
+
+`with allocator = arena { ... }` routes every allocation in the body
+through `arena`, and the arena hands all of it back at once when it
+goes out of scope. A pointer that leaves with a longer life than the
+arena is already dead when it is used:
+
+    fn leak() -> ptr {
+        val arena = Arena::new()
+        with allocator = arena { __builtin_heap_alloc(8u64) }   # E0022
+    }                                     # arena frees it here
+
+The value may not be returned, and it may not be bound or assigned to
+a name declared outside the arena\'s own scope. Staying inside that
+scope is fine — the arena is still alive there:
+
+    val arena = Arena::new()
+    val p = with allocator = arena { __builtin_heap_alloc(8u64) }
+    __builtin_ptr_write(p, 0u64, 7u64)          # fine
+
+This is about where the memory came from, not about the type. A `u64`
+read back out of arena memory is a copy and escapes nothing, so
+`with allocator = arena { list.get(0u64) }` is legal while
+`with allocator = arena { list }` is not.
+
+Only allocators whose life this can see are checked: one bound by a
+`val` / `var` in the same function, or one built inline. A parameter
+or a field belongs to the caller, so allocating from it and handing
+the result back — what `Arena::alloc` itself does — is correct and
+unchecked.
+
+To fix it: copy what you need out of the region before leaving it,
+allocate from an allocator that lives long enough (`with allocator =
+__builtin_default_allocator() { ... }`), or move the arena out to the
+scope the value has to reach.";
 
 #[cfg(test)]
 mod tests {

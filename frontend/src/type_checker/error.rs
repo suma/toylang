@@ -180,6 +180,10 @@ pub enum TypeCheckErrorKind {
     /// other code, and the only question left is whether that binding
     /// is mutable.
     CapturedAssign { target: String, root: String },
+    /// REGION: a value allocated inside `with allocator = <scoped>`
+    /// reaches a place that outlives the allocator. `region` names the
+    /// allocator, `place` says where the value went.
+    RegionEscape { region: String, place: String },
 }
 
 #[derive(Debug, Clone)]
@@ -446,6 +450,17 @@ impl TypeCheckError {
         }
     }
 
+    /// REGION: a value outlives the allocator it came from.
+    pub fn region_escape(region: String, place: String) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::RegionEscape { region, place }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
     /// CLOSURE-CAPTURE E1/E2: a write to, or through, a capture.
     pub fn captured_assign(target: String, root: String) -> Self {
         Self {
@@ -613,6 +628,12 @@ impl TypeCheckError {
                 format!(
                     "this call to `{function}` breaks its own precondition, and every argument is \
                      a constant, so it breaks it on every run: {detail}"
+                )
+            }
+            TypeCheckErrorKind::RegionEscape { region, place } => {
+                format!(
+                    "this value was allocated from {region}, but {place}, so it outlives the \
+                     memory: {region} frees it on the way out of the scope that owns it"
                 )
             }
             TypeCheckErrorKind::CapturedAssign { target, root } => {

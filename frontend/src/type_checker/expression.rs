@@ -686,6 +686,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     let expr_obj = self.core.expr_pool.get(&e)
                         .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in return"))?;
                     let ty = expr_obj.clone().accept_expr(self)?;
+                    self.type_inference.set_expr_type(e, ty.clone());
                     self.note_visited_number(&e, &ty);
                     // NUMBER-HINT: `return 0` inside a block names the
                     // enclosing function's return type, same as the

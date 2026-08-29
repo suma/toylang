@@ -12,6 +12,14 @@
 
 ### 2026-08-29
 
+- **REGION Phase 1 (E0022)** — スコープ付き allocator
+  (`with allocator = arena { ... }`) から確保したメモリが arena より
+  長生きする形を型検査で拒否する。設計は [`REGIONS.md`](REGIONS.md)。
+  「確保かどうか」は EFFECT-SYSTEM の `Alloc` に聞くので注釈は要らない。
+  パラメータ / フィールドの allocator は対象外 (`Arena::alloc` 自身の形)。
+  副産物: **文の末尾式と `return` 式の型が `expr_types` に記録されて
+  いなかった**のを修正 (ブロックの値がちょうど抜けていた。move check と
+  effect walk のレシーバ型も同じ穴を踏んでいた)。
 - **EFFECT-SYSTEM** — 到達可能性で判定する 3 つの検査
   (`never_allocates` / `const fn` / 契約の純粋性) が各自持っていた
   「禁止 builtin」テーブルを 1 つのエフェクト格子に統合し、各検査を

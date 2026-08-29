@@ -57,6 +57,9 @@ mod method;
 mod type_conversion;
 mod tests;
 
+mod region_check;
+pub use region_check::check_regions;
+
 mod recursive_type;
 pub use recursive_type::check_recursive_types;
 

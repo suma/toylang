@@ -100,6 +100,9 @@ mod module_property_tests;
 #[path = "move_check_tests.rs"]
 mod move_check_tests;
 
+#[path = "region_tests.rs"]
+mod region_tests;
+
 #[path = "effects_tests.rs"]
 mod effects_tests;
 

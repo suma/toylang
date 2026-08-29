@@ -668,6 +668,15 @@ fn check_typing_collecting(
         string_interner,
         &expr_types,
     ));
+    // REGION: memory taken from a scoped allocator must not outlive
+    // it. Reads the same `expr_types` and the same effect walk as the
+    // two checks above — an allocation is what the effect table says
+    // is one.
+    fn_errors.extend(frontend::type_checker::check_regions(
+        program,
+        string_interner,
+        &expr_types,
+    ));
     // EFFECTS: the same walk the two checks above just ran, asked for
     // the whole answer rather than one mask. Only when someone is
     // listening (`--effects`).

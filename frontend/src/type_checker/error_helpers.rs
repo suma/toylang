@@ -254,7 +254,16 @@ impl<'a> TypeCheckerVisitor<'a> {
         let expr_obj = self.core.expr_pool.get(expr_ref)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference"))?;
         match expr_obj.clone().accept_expr(self) {
-            Ok(ty) => Ok(ty),
+            // Record the type here as well as in `visit_expr`: this
+            // route is how a *tail* expression is checked (a statement
+            // in value position, a condition), and without this the
+            // passes that read `expr_types` — the move check, the
+            // effect walk's receiver types, the region check — saw a
+            // hole exactly where a block's value is decided.
+            Ok(ty) => {
+                self.type_inference.set_expr_type(*expr_ref, ty.clone());
+                Ok(ty)
+            }
             Err(e) => Err(self.error_with_location(e, expr_ref)),
         }
     }

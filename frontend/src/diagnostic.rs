@@ -262,6 +262,10 @@ pub mod codes {
     /// snapshot, so the write reaches nothing.
     pub const CAPTURED_ASSIGN: &str = "E0021";
 
+    /// REGION: a value allocated from a scoped allocator outlives it
+    /// (`with allocator = arena { ... }`).
+    pub const REGION_ESCAPE: &str = "E0022";
+
     /// Every code, in order. `crate::explain` is checked against this
     /// list by a test, so a new code cannot ship without prose.
     pub const ALL: &[&str] = &[
@@ -286,6 +290,7 @@ pub mod codes {
         RUNTIME_PANIC,
         CONTRACT_VIOLATION,
         CAPTURED_ASSIGN,
+        REGION_ESCAPE,
     ];
 }
 
@@ -313,6 +318,7 @@ fn code_for(kind: &TypeCheckErrorKind) -> &'static str {
         TypeCheckErrorKind::ContractPurity { .. }
         | TypeCheckErrorKind::BrokenPrecondition { .. } => codes::CONTRACT_PURITY,
         TypeCheckErrorKind::CapturedAssign { .. } => codes::CAPTURED_ASSIGN,
+        TypeCheckErrorKind::RegionEscape { .. } => codes::REGION_ESCAPE,
     }
 }
 

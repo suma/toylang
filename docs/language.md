@@ -3045,6 +3045,46 @@ arena.drop()
 - Nested `with` works as a stack; `ambient` always sees the innermost.
 - The body's type is the body block's type.
 
+### Region escape (`[E0022]`)
+
+An arena hands back everything it allocated at once, so memory taken
+from one must not outlive it. A value that came from an allocation made
+under a *scoped* allocator may not be returned, and may not be bound or
+assigned to a name declared outside that allocator's own scope:
+
+```rust
+fn leak() -> ptr {
+    val arena = Arena::new()
+    with allocator = arena { __builtin_heap_alloc(8u64) }   # [E0022]
+}                                          # arena frees it here
+```
+
+Staying inside the scope is fine — the arena is still alive there:
+
+```rust
+val arena = Arena::new()
+val p = with allocator = arena { __builtin_heap_alloc(8u64) }
+__builtin_ptr_write(p, 0u64, 7u64)                         # fine
+```
+
+What matters is where the memory came from, not the type of the value.
+A scalar read back out of arena memory is a copy and escapes nothing,
+so `with allocator = arena { list.get(0u64) }` is legal while
+`with allocator = arena { list }` is not. "Came from an allocation" is
+the same reachability answer `never_allocates` uses, so a call several
+levels deep still counts and nothing needs annotating.
+
+Only allocators whose lifetime the check can see are scoped: one bound
+by a `val` / `var` in the same function, or one built inline
+(`with allocator = Arena::new() { ... }`, which dies with the block).
+A parameter or a field belongs to the caller, so allocating from it and
+returning the result — what `Arena::alloc` itself does — is correct and
+not checked here.
+
+Not covered: a pointer stored through `__builtin_ptr_write`, one passed
+to a function that keeps it, and use after `arena.reset()` (the region
+ends at a scope boundary, not at a call).
+
 ### Pointer / memory builtins
 
 These always go through the active allocator:

@@ -1210,6 +1210,29 @@
   は scalar フィールドのみ)。どれも correctness 問題ではない。
 - **160. タプルの JIT 対応 (ネスト)** ★ — `((a,b),c)` と tuple-of-struct。`ParamTy::Tuple(Vec<ScalarTy>)` を tree 構造にする 100+ 箇所の refactor。(inline tuple literal を call 引数に渡す件は 2026-08-23 に CALL-ARG-COMPOUND-LITERAL で解消)
 - **FROM-INTO-ENUM-ERR** ★ — enum エラー型への `From` 変換 (`?` の cross-error 経路) が interpreter のみ。AOT/JIT が enum の associated call (`MyErr::from(e)`) を lower できないため。struct エラー型は 3 バックエンドで動く。
+- **OP-OVERLOAD-CHAIN: operator overload が compiled レーンでは
+  let-rhs 位置でしか動かない** ★★ — **interpreter は全形を通し、
+  AOT / JIT は全形を拒否する**。2026-08-29 に `struct V` +
+  `fn add(&self, other: &V) -> V` で 6 形を実測した:
+
+  | 書き方 | interpreter | AOT / JIT |
+  |---|---|---|
+  | `val r: V = a + b` (基準) | ✅ | ✅ |
+  | `val r: V = a + b + c` (chain) | ✅ | `arith lhs must be a bare identifier (MVP)` |
+  | `val r: V = a + V { .. }` (literal operand) | ✅ | `arith rhs must be a bare identifier (MVP)` |
+  | `(a + b).x` (結果のフィールド) | ✅ | `field-access chains rooted at a bare identifier` |
+  | `take(a + b)` (引数位置) | ✅ | `binary lhs produced no value` |
+  | `if (a + b) == c` (条件位置) | ✅ | `binary lhs produced no value` |
+
+  `docs/language.md` の「Out of scope (deliberate)」は chain と
+  literal operand しか挙げていなかったので、実測した 5 形すべてを
+  並べる形に直した (同日)。残るのは診断とスコープ:
+  引数位置 / 条件位置の `binary lhs produced no value` は原因を
+  名指ししておらず、`(MVP)` つきの他の 2 つと違って何を直せばいいか
+  分からない。着手するなら (1) その 2 つの文言を `(MVP)` つきに揃える
+  (安い、誤解を減らす)、(2) 一時束縛を lowering 側で作って
+  非 let-rhs 位置を通す、の順。
+
 - **NUM-W-AOT-pack Phase 3** ★ — compound element 配列の tighter layout (`[PackedRgba; N]` が 4 バイト相当のところ 32 バイト消費)。メモリ効率のみで機能差はない。
 - **195b. `extern fn` の monomorph 化** ★ — generic extern は現状 interpreter の type-erased registry でのみ動く。JIT / AOT には mangled symbol の emit と Rust 側実装の登録が要る。実需要なし。
 - **185残. 3+ part qualified call** ★ — `std::math::abs(x)`。現状は `import std.math` 経由のみ (parser が last 名だけを採る)。auto-load があるので実害は限定的。
@@ -1325,7 +1348,6 @@
 
 ### 構文糖衣の候補 (NEW-FEATURES、未着手)
 
-- **OP-OVERLOAD-CHAIN** — `a + b + c` の chained position。現状は let-rhs のみ。binary struct literal operand も対象外。
 - **`??` (null-coalesce)** ★ — `opt ?? default` で `unwrap_or` の糖衣。
 - **raw / multi-line string literal** ★ — `r"\path"` / `"""..."""`。lexer 拡張のみ。
 - **STR-INTERP-FMT の残** ★ — (a) user 型に spec を渡す API

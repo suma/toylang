@@ -1192,12 +1192,16 @@ if a == b { ... }   # uses eq
 - `&&` / `||` — short-circuit semantics make method dispatch
   unsound (the rhs would always evaluate). Both operators stay
   primitive-only.
-- Chained expression-position uses (`a + b + c`) — the MVP
-  routes overloads through `let_lowering.rs::Binary` /
-  `Unary`, which only triggers in let-rhs context. Bind
-  intermediates explicitly: `val tmp = a + b; val r = tmp + c`.
-- Binary operands that are inline struct literals
-  (`a & Bits { v: 1 }`) — bind via `val` first.
+- Anything but let-rhs position, on the compiled lanes. The MVP
+  routes overloads through `let_lowering.rs::Binary` / `Unary`,
+  which only triggers there; the interpreter has no such limit,
+  so these all run there and fail to compile. Bind the result
+  first (`val sum = a + b`) and use the binding:
+  - chained uses (`a + b + c`)
+  - inline struct literal operands (`a & Bits { v: 1 }`)
+  - a field of the result (`(a + b).x`)
+  - an argument position (`take(a + b)`)
+  - a condition position (`if (a + b) == c`)
 
 ### `Ord` and `Vec::sort` (STDLIB-ORD)
 

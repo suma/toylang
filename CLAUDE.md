@@ -425,7 +425,7 @@ fn main() -> u64 {
     - 順序比較: `<` / `<=` / `>` / `>=` → `lt` / `le` / `gt` / `ge` (`(&self, &Self) -> bool`)
     - ビット: `&` / `|` / `^` / `<<` / `>>` → `bitand` / `bitor` / `bitxor` / `shl` / `shr` (Self 戻り)
     - 単項: `-` / `~` / `!` → `neg` / `bitnot` / `not` (`(&self) -> Self`)
-    - **scope 外**: `&&` / `||` (short-circuit semantics)、chain (`a + b + c`)、binary struct literal operand (`a & Foo { ... }`)
+    - **scope 外**: `&&` / `||` (short-circuit semantics)。加えて compiled レーンは **let-rhs 位置以外すべて** — chain (`a + b + c`)、struct literal operand (`a & Foo { ... }`)、結果のフィールド (`(a + b).x`)、引数位置 (`take(a + b)`)、条件位置 (`if (a + b) == c`)。interpreter には制限が無いので**インタプリタで動いた形が AOT で落ちる**。`val sum = a + b` に束縛してから使う (todo.md の OP-OVERLOAD-CHAIN)
   - 複合代入: 算術 5 種 (`+=`, `-=`, `*=`, `/=`, `%=`) とビット 5 種 (`&=`, `|=`, `^=`, `<<=`, `>>=`)（パーサで `lhs op= rhs` を `lhs = lhs op rhs` に desugar するので型検査もバックエンドも触らない。LHS は identifier / フィールド / タプル添字 / 添字の 4 形）。`>>=` は 1 トークンなので `Option<Option<u64>>= ..` のような形は型引数パーサが `>` `>` `=` に割り直す（`Vec<u64>= ..` は従来どおり parse error）。short-circuit の `&&=` / `||=` は追加しない
   - 範囲: `..`（例: `0..10`）式として使用可能。`for i in 0..10 { ... }` と `val r = 0..10` の両方が書ける。`for i in 0 to 10` の旧形式も引き続き有効
   - スコープ解決: `::`

@@ -759,6 +759,53 @@ fn struct_compound_assign_operator_overload_round_trip() {
 }
 
 #[test]
+fn struct_bitwise_compound_assign_operator_overload_round_trip() {
+    // COMPOUND-ASSIGN-BITWISE: `&= |= ^= <<= >>=` desugar the same way
+    // the arithmetic five do, so they inherit the operator overload
+    // dispatch (`bitand` / `bitor` / `bitxor` / `shl` / `shr`) without
+    // the type checker or any backend learning a new shape. Pinned
+    // 3-way because that inheritance is the whole claim.
+    let src = r#"
+        struct Flags { bits: u64 }
+
+        impl Flags {
+            fn bitand(&self, other: &Flags) -> Flags { Flags { bits: self.bits & other.bits } }
+            fn bitor(&self, other: &Flags) -> Flags { Flags { bits: self.bits | other.bits } }
+            fn bitxor(&self, other: &Flags) -> Flags { Flags { bits: self.bits ^ other.bits } }
+            fn shl(&self, other: &Flags) -> Flags { Flags { bits: self.bits << other.bits } }
+            fn shr(&self, other: &Flags) -> Flags { Flags { bits: self.bits >> other.bits } }
+            fn eq(&self, other: &Flags) -> bool { self.bits == other.bits }
+        }
+
+        fn main() -> u64 {
+            var f: Flags = Flags { bits: 0x0Cu64 }
+            val mask: Flags = Flags { bits: 0x0Au64 }
+            val one: Flags = Flags { bits: 0x01u64 }
+            val low: Flags = Flags { bits: 0x0Fu64 }
+            val three: Flags = Flags { bits: 3u64 }
+            val two: Flags = Flags { bits: 2u64 }
+            val after_and: Flags = Flags { bits: 0x08u64 }
+            val after_or: Flags = Flags { bits: 0x09u64 }
+            val after_xor: Flags = Flags { bits: 0x06u64 }
+            val after_shl: Flags = Flags { bits: 0x30u64 }
+            val after_shr: Flags = Flags { bits: 0x0Cu64 }
+            f &= mask
+            if !(f == after_and) { return 1u64 }
+            f |= one
+            if !(f == after_or) { return 2u64 }
+            f ^= low
+            if !(f == after_xor) { return 3u64 }
+            f <<= three
+            if !(f == after_shl) { return 4u64 }
+            f >>= two
+            if !(f == after_shr) { return 5u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "struct_bitwise_compound_assign_operator_overload_round_trip");
+}
+
+#[test]
 fn struct_arith_operator_overload_round_trip() {
     // Operator overload (Phase B continuation): `+` / `-` / `*` /
     // `/` / `%` between matching struct values dispatch to the

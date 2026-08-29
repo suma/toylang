@@ -147,6 +147,11 @@ pub enum Kind {
     StarEqual,    // *=
     SlashEqual,   // /=
     PercentEqual, // %=
+    AndEqual,        // &=
+    OrEqual,         // |=
+    XorEqual,        // ^=
+    LeftShiftEqual,  // <<=
+    RightShiftEqual, // >>=
 
     Int64(i64),
     UInt64(u64),

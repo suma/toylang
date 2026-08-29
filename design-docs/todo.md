@@ -12,6 +12,23 @@
 
 ### 2026-08-29
 
+- **COMPOUND-ASSIGN-BITWISE** — ビット系の複合代入 5 種
+  (`&=` / `|=` / `^=` / `<<=` / `>>=`) を足した。算術 5 種と同じく
+  パーサが `lhs op= rhs` を `lhs = lhs op rhs` に desugar するだけなので、
+  型検査もバックエンドも触っていない。LHS 4 形と operator overload
+  (`bitand` / `bitor` / `bitxor` / `shl` / `shr`) は自動で付いてきた。
+  唯一の実質的な作業は `>>=` が 1 トークンになったことで、
+  `Option<Option<u64>>= ..` を型引数パーサが `>` `>` `=` に割り直す
+  (既存の `>>` → `>` `>` と同じ手口)。`Vec<u64>= ..` が `>=` で落ちるのは
+  従来どおりで、こちらは触っていない。
+- **戻り型を書かない `main` の panic を修正** — `fn main() { .. }` が
+  4 実行系すべてで `unwrap` on `None` で落ちていた。IR VM の
+  `is_scalar_return` が `Some(..)` の型宣言しか列挙しておらず、
+  `-> T` の不在 (= unit) が compound return 扱いになって、
+  戻り型を unwrap する枝に入っていた。`-> T` はパーサでは省略可能で
+  `test "..." { .. }` ブロックもこの形に lower されるので、
+  拒否ではなく unit として扱うのが正しい。
+
 - **DBC-LISKOV (E0023)** — trait method の `impl` が自分の `requires` を
   足すのを型検査で拒否するようにした。事前条件は「呼ぶ側が満たすべき
   こと」で、`&dyn Trait` / `<T: Trait>` 経由の呼び出しは trait の節しか
@@ -1292,22 +1309,6 @@
 ### 構文糖衣の候補 (NEW-FEATURES、未着手)
 
 - **OP-OVERLOAD-CHAIN** — `a + b + c` の chained position。現状は let-rhs のみ。binary struct literal operand も対象外。
-- **COMPOUND-ASSIGN-BITWISE: ビット系の複合代入 5 種** ★ —
-  `&=` / `|=` / `^=` / `<<=` / `>>=`。算術の 5 種 (`+= -= *= /= %=`) は
-  landing 済みで、LHS も identifier / field / index / tuple access の
-  4 形すべて対応している (2026-08-28 実測)。ビット系は 5 つとも
-  `unexpected token in primary expression: Some(Equal)` で parse エラー。
-  **コストは小さい**: `Operator::BitwiseAnd` / `BitwiseOr` / `BitwiseXor` /
-  `LeftShift` / `RightShift` は既にあるので、`lexer.l` に 5 行 + `Kind` に
-  5 variant + `parser/expr/mod.rs::parse_assign` の 2 箇所の match に
-  5 arm ずつ。desugar (`lhs op= rhs` → `lhs = lhs op rhs`) 後は普通の
-  `Assign` + `Binary` なので**型検査もバックエンドも触らない**。
-  オーバーロード (`bitand` / `bitor` / `bitxor` / `shl` / `shr`) も
-  `+=` が `add` を経由するのと同じ経路で付いてくるはず (要テスト)。
-  **確認が要る 2 点**: lexer の最長一致で `>>=` が `>>` + `=` に割れないこと、
-  `&=` がジェネリクスや `&mut` の文脈を壊さないこと。
-  `&&=` / `||=` は short-circuit なので追加しない (Rust も持たない)、
-  `??=` は `??` 自体が下記のとおり未実装。
 - **`??` (null-coalesce)** ★ — `opt ?? default` で `unwrap_or` の糖衣。
 - **raw / multi-line string literal** ★ — `r"\path"` / `"""..."""`。lexer 拡張のみ。
 - **STR-INTERP-FMT の残** ★ — (a) user 型に spec を渡す API

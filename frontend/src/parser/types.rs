@@ -262,6 +262,18 @@ impl<'a> Parser<'a> {
                                 self.insert_token(Kind::GT); // for this level (consumed first)
                                 break; // treat first > as closing this type argument list
                             }
+                            Some(Kind::RightShiftEqual) => {
+                                // `Vec<Vec<u64>>= expr` — the lexer's longest
+                                // match takes `>>=` as the compound assignment
+                                // operator, so split it back apart the same way.
+                                // Inserted tokens land at the front, so the
+                                // order here is the reverse of consumption.
+                                self.next(); // consume >>=
+                                self.insert_token(Kind::Equal);
+                                self.insert_token(Kind::GT); // for outer level
+                                self.insert_token(Kind::GT); // for this level
+                                break;
+                            }
                             _ => {
                                 let location = self.current_source_location();
                                 return Err(ParserError::generic_error(

@@ -57,7 +57,12 @@ impl<'a> Parser<'a> {
                 | Some(Kind::MinusEqual)
                 | Some(Kind::StarEqual)
                 | Some(Kind::SlashEqual)
-                | Some(Kind::PercentEqual) => parse_assign(self, lhs?),
+                | Some(Kind::PercentEqual)
+                | Some(Kind::AndEqual)
+                | Some(Kind::OrEqual)
+                | Some(Kind::XorEqual)
+                | Some(Kind::LeftShiftEqual)
+                | Some(Kind::RightShiftEqual) => parse_assign(self, lhs?),
                 _ => lhs,
             };
         }
@@ -105,6 +110,11 @@ pub fn parse_assign(parser: &mut Parser, mut lhs: ExprRef) -> ParserResult<ExprR
             Some(Kind::StarEqual) => Some(Operator::IMul),
             Some(Kind::SlashEqual) => Some(Operator::IDiv),
             Some(Kind::PercentEqual) => Some(Operator::IMod),
+            Some(Kind::AndEqual) => Some(Operator::BitwiseAnd),
+            Some(Kind::OrEqual) => Some(Operator::BitwiseOr),
+            Some(Kind::XorEqual) => Some(Operator::BitwiseXor),
+            Some(Kind::LeftShiftEqual) => Some(Operator::LeftShift),
+            Some(Kind::RightShiftEqual) => Some(Operator::RightShift),
             _ => None,
         };
         if let Some(op) = compound {

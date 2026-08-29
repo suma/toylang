@@ -1041,11 +1041,19 @@ Listed lowest precedence first:
 | `[...]` | Indexing / slicing (arrays, dicts, structs with `__getitem__`) |
 
 Compound assignment desugars at parse time: `x += 1` is rewritten to
-`x = x + 1`. Supported forms are the arithmetic five — `+=`, `-=`,
-`*=`, `/=`, `%=`. The bitwise forms (`&=`, `|=`, `^=`, `<<=`, `>>=`)
-are **not** accepted: each is a parse error, so write `x = x & m`.
+`x = x + 1`. Ten forms exist — the arithmetic five (`+=`, `-=`, `*=`,
+`/=`, `%=`) and the bitwise five (`&=`, `|=`, `^=`, `<<=`, `>>=`).
 The lhs may be an identifier, a field access (`p.x += 1i64`), a tuple
 index (`t.0 += 1u64`) or an index (`a[i] *= 2u64`).
+
+Because `>>=` is one token, a nested generic closed immediately before
+an `=` (`val v: Option<Option<u64>>= ..`) is split back into `>`, `>`,
+`=` by the type-argument parser — the same treatment `>>` already got.
+A single `>` in that position (`Vec<u64>= ..`) is still a parse error;
+write a space before the `=`.
+
+There are no bitwise-logical (`&&=`, `||=`) forms: short-circuiting
+makes them a different operation, not a compound assignment.
 
 ### Comparison chain
 
@@ -1158,6 +1166,7 @@ direct `BinOp::Add`).
 | `<` `<=` `>` `>=` | `fn lt/le/gt/ge(&self, other: &Self) -> bool` | `bool` |
 | `+` `-` `*` `/` `%` | `fn add/sub/mul/div/rem(&self, other: &Self) -> Self` | `Self` |
 | `+=` `-=` `*=` `/=` `%=` | (uses `add`/`sub`/`mul`/`div`/`rem` via desugar) | (mutates lhs) |
+| `&=` `\|=` `^=` `<<=` `>>=` | (uses `bitand`/`bitor`/`bitxor`/`shl`/`shr` via desugar) | (mutates lhs) |
 | `&` `\|` `^` `<<` `>>` | `fn bitand/bitor/bitxor/shl/shr(&self, other: &Self) -> Self` | `Self` |
 | `-` (unary) `~` `!` | `fn neg/bitnot/not(&self) -> Self` | `Self` |
 

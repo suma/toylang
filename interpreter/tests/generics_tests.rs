@@ -1934,6 +1934,32 @@ mod named_type_spelling {
     }
 
     #[test]
+    fn a_nested_generic_closed_right_against_the_equals_sign_still_parses() {
+        // COMPOUND-ASSIGN-BITWISE added `>>=` to the lexer, and the
+        // lexer takes the longest match — so `Option<Option<u64>>= ..`
+        // written without a space now arrives as one token where it
+        // used to arrive as `>>` followed by `=`. The type-argument
+        // parser splits it back apart, the same way it already split
+        // `>>` into two `>`.
+        expect_u64(
+            r#"
+            fn main() -> u64 {
+                val inner: Option<u64> = Option::Some(5u64)
+                val nested: Option<Option<u64>>= Option::Some(inner)
+                match nested {
+                    Option::Some(v) => match v {
+                        Option::Some(n) => n,
+                        Option::None => 0u64,
+                    },
+                    Option::None => 0u64,
+                }
+            }
+            "#,
+            5,
+        );
+    }
+
+    #[test]
     fn a_different_type_in_the_same_position_is_still_rejected() {
         // The relaxation is about spelling, not about identity: two
         // different names must not unify.

@@ -258,6 +258,11 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
 "*="        return Ok(token!(self, Kind::StarEqual));
 "/="        return Ok(token!(self, Kind::SlashEqual));
 "%="        return Ok(token!(self, Kind::PercentEqual));
+"&="        return Ok(token!(self, Kind::AndEqual));
+"|="        return Ok(token!(self, Kind::OrEqual));
+"^="        return Ok(token!(self, Kind::XorEqual));
+"<<="       return Ok(token!(self, Kind::LeftShiftEqual));
+">>="       return Ok(token!(self, Kind::RightShiftEqual));
 "+"         return Ok(token!(self, Kind::IAdd));
 "-"         return Ok(token!(self, Kind::ISub));
 "*"         return Ok(token!(self, Kind::IMul));

@@ -42,6 +42,21 @@
   `as T` で包むため `Result<str, str>` の `?` が String→String cast に
   なって InternalError だった — IR VM / AOT は元から pass-through)。
 
+- **TRY-ERR-RETYPE — `?` が success 型の変更を跨げる + `return` の型検査** —
+  desugar の error arm が「scrutinee をそのまま return」だったため、
+  内側 `Result<T1, E>` を外側 `-> Result<T2, E>` で受ける `?` は
+  checker を通ったまま compiled レーンだけ落ちる TYPECHECK-LIES だった。
+  error arm を宣言戻り型に対する再構築に変更
+  (`val __try_err: Result<T2, E> = Result::Err(__try_e); return __try_err`、
+  T1==T2 は従来の scrutinee return を維持、`Option` は `Option::None`
+  再構築)。From 変換経路の annotation も T2 基準に修正。
+  併せて **`return` 式を宣言戻り型と突き合わせる検査を新設**
+  (`visit_return` と `visit_block_stmt` の共通ヘルパ、`is_equivalent`
+  の緩さ、closure body は除外) — Unit 関数内の `return <値>` や
+  Unit 関数内の `?` も型エラーになった (Rust と同じ表面)。
+  テスト 7 件 (T1≠T2 の Ok/Err/Option、return 検査 3 件、
+  3-way consistency pin 1 件)。
+
 ### 2026-08-29
 
 - **ENUM-EQ-ESCAPES-TYPECHECK** — 実際には enum 固有ではなかった。

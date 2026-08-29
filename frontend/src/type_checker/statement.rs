@@ -186,11 +186,39 @@ impl<'a> TypeCheckerVisitor<'a> {
             // NUMBER-HINT: an explicit `return 0` names the same
             // position as the tail expression, so the enclosing
             // function's declared return type claims the literal.
-            if let Some(fn_ret) = self.current_fn_return_type.clone() {
-                return self.coerce_number_expr(e, &return_type, &fn_ret);
-            }
-            Ok(return_type)
+            let coerced = match self.current_fn_return_type.clone() {
+                Some(fn_ret) => self.coerce_number_expr(e, &return_type, &fn_ret)?,
+                None => return_type,
+            };
+            self.validate_return_type(&coerced)?;
+            Ok(coerced)
         }
+    }
+
+    /// TRY-ERR-RETYPE: the value a `return` carries must be compatible
+    /// with the enclosing function's declared return type. Before this
+    /// check the checker only coerced numbers, so `return` of the
+    /// inner `Result<T1, E>` from a fn declared `-> Result<T2, E>` (the
+    /// shape a `?` whose success type differs produces) type-checked
+    /// and then died in the compiled lanes with "not an enum binding of
+    /// the expected return type" — a TYPECHECK-LIES.
+    ///
+    /// `is_equivalent` is the right looseness: it accepts the
+    /// Identifier/Struct/Enum spelling drift the parser produces and
+    /// lets Unknown / generic parameters through. Closure bodies are
+    /// skipped — they are lifted into synthetic functions with their
+    /// own return types, and this check still sees the enclosing
+    /// function's context. (The tail expression is validated
+    /// separately by the function-level body-type check.)
+    pub(super) fn validate_return_type(&mut self, ty: &TypeDecl) -> Result<(), TypeCheckError> {
+        if self.context.closure_scope_floors.is_empty()
+            && let Some(fn_ret) = self.current_fn_return_type.clone()
+            && !fn_ret.is_equivalent(ty)
+        {
+            return Err(TypeCheckError::type_mismatch(ty.clone(), fn_ret)
+                .with_context("return statement"));
+        }
+        Ok(())
     }
 
     /// Type check for loops - internal implementation

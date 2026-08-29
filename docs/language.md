@@ -1080,7 +1080,7 @@ desugar at type-check time into:
 ```rust
 # expr : Result<T, E>
 val x = compute()?
-# behaves like:
+# behaves like (when the enclosing fn returns Result<T, E>):
 val x = {
     val __try_t = compute()
     match __try_t {
@@ -1090,6 +1090,12 @@ val x = {
         },
     }
 }
+
+# If the enclosing fn's success type differs (`Result<T2, E>` around
+# a `?` on `Result<T1, E>`), the error arm reconstructs against the
+# declared return type instead of re-returning the scrutinee:
+#       val __try_err: Result<T2, E> = Result::Err(__try_e)
+#       return __try_err
 
 # expr : Option<T>
 val x = lookup()?
@@ -1137,16 +1143,23 @@ fn pipeline(a: i64, b: i64, c: i64) -> Result<i64, str> {
   other type is a type-check error.
 - The enclosing function's declared return type must match what
   the `?` propagates (`Result<_, E>` for a Result `?`, `Option<_>`
-  for an Option `?`). Toylang's type checker validates this
-  through the standard final-expression unification rather than
-  inspecting each early `return`, so the error surface matches
-  any other "function body type mismatch" error.
+  for an Option `?`). A success-type change (`read_file(p)?` of
+  `Result<str, str>` inside a fn declared `-> Result<u64, str>`)
+  works — the desugar reconstructs the error variant against the
+  declared type. A *error*-type change requires `E2: From<E1>`
+  (below). `return` itself is checked against the declared return
+  type on every path, so `?` inside a fn returning nothing is a
+  type error rather than a silent lie.
 - `?` always introduces its own binding internally, so the
   scrutinee inside the desugar is always an identifier — the
   surrounding `match`'s scrutinee rules never come into play.
+- **Cross-error conversion**: when the inner error type `E1`
+  differs from the enclosing fn's `E2` and `E2: From<E1>` is
+  implemented, the error arm converts through `E2::from(e)`
+  before re-returning; without a `From` impl the program is a
+  type error.
 - **Out of scope** (initial implementation): user-defined `Try`
-  trait, conversion between Err types via a `From` impl
-  (Rust-style `?` for cross-error-type propagation).
+  trait.
 
 Backends: all three (interpreter / cranelift JIT / AOT) execute
 the rewritten `match` directly.

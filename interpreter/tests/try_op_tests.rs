@@ -316,3 +316,142 @@ fn try_op_cross_error_no_from_is_a_type_error() {
     "#;
     assert!(test_program(src).is_err(), "mismatched error types without From must fail");
 }
+
+// ---------------------------------------------------------------------
+// TRY-ERR-RETYPE: `?` across a *success*-type change. The error arm
+// reconstructs the error variant against the enclosing function's
+// declared return type instead of re-returning the scrutinee, so the
+// program is sound end to end.
+// ---------------------------------------------------------------------
+
+#[test]
+fn try_op_across_success_type_change_propagates_err() {
+    // `read_line-ish` shape: inner `Result<str, str>`, outer
+    // `Result<u64, str>`. The Err path must reach main with its
+    // payload intact.
+    let src = r#"
+        fn first_byte(s: str) -> Result<u64, str> {
+            val text: str = inner_text(s)?
+            Result::Ok(text.len())
+        }
+
+        fn inner_text(s: str) -> Result<str, str> {
+            if s == "" {
+                Result::Err("empty")
+            } else {
+                Result::Ok(s)
+            }
+        }
+
+        fn main() -> i64 {
+            match first_byte("") {
+                Result::Err(reason) => if reason == "empty" { -1i64 } else { -2i64 },
+                Result::Ok(_) => -3i64,
+            }
+        }
+    "#;
+    assert_program_result_i64(src, -1i64);
+}
+
+#[test]
+fn try_op_across_success_type_change_unwraps_ok() {
+    let src = r#"
+        fn text_len(s: str) -> Result<u64, str> {
+            val text: str = inner_text(s)?
+            Result::Ok(text.len())
+        }
+
+        fn inner_text(s: str) -> Result<str, str> {
+            if s == "" {
+                Result::Err("empty")
+            } else {
+                Result::Ok(s)
+            }
+        }
+
+        fn main() -> u64 {
+            match text_len("hello") {
+                Result::Ok(n) => n,
+                Result::Err(_) => 0u64,
+            }
+        }
+    "#;
+    assert_program_result_u64(src, 5u64);
+}
+
+#[test]
+fn try_op_across_success_type_change_option() {
+    // Same shape on `Option`: `Option<str>` feeding `Option<u64>`;
+    // `None` reconstructs the unit variant against the outer type.
+    let src = r#"
+        fn wrapped(s: str) -> Option<u64> {
+            val text: str = inner_opt(s)?
+            Option::Some(text.len())
+        }
+
+        fn inner_opt(s: str) -> Option<str> {
+            if s == "" {
+                Option::None
+            } else {
+                Option::Some(s)
+            }
+        }
+
+        fn main() -> u64 {
+            match wrapped("abcd") {
+                Option::Some(n) => n,
+                Option::None => 0u64,
+            }
+        }
+    "#;
+    assert_program_result_u64(src, 4u64);
+}
+
+// ---------------------------------------------------------------------
+// TRY-ERR-RETYPE: `return` is now checked against the enclosing
+// function's declared return type.
+// ---------------------------------------------------------------------
+
+#[test]
+fn return_type_mismatch_is_a_type_error() {
+    let src = r#"
+        fn bad() -> u64 {
+            return "nope"
+        }
+
+        fn main() -> u64 { bad() }
+    "#;
+    assert!(test_program(src).is_err(), "return of the wrong type must fail type checking");
+}
+
+#[test]
+fn return_in_unit_function_with_value_is_a_type_error() {
+    let src = r#"
+        fn side() {
+            return 5u64
+        }
+
+        fn main() -> u64 { side() }
+    "#;
+    assert!(test_program(src).is_err(), "returning a value from a Unit fn must fail type checking");
+}
+
+#[test]
+fn try_in_unit_function_is_a_type_error() {
+    // `?` propagates by returning the inner Result — impossible from a
+    // fn that returns nothing. Used to slip through the checker and
+    // misbehave in the backends; now a clean type error (Rust agrees).
+    let src = r#"
+        fn probe(p: str) -> Result<str, str> {
+            Result::Ok(p)
+        }
+
+        fn log_it(p: str) {
+            val x: str = probe(p)?
+            println(x)
+        }
+
+        fn main() -> u64 { 0u64 }
+    "#;
+    assert!(test_program(src).is_err(), "`?` inside a Unit fn must fail type checking");
+}

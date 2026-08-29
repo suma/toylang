@@ -758,6 +758,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         Some(fn_ret) => self.coerce_number_expr(&e, &ty, &fn_ret)?,
                         None => ty,
                     };
+                    self.validate_return_type(&ty)?;
                     if *last_empty {
                         *last_empty = false;
                         Ok(ty)
@@ -2349,11 +2350,15 @@ impl<'a> TypeCheckerVisitor<'a> {
         };
 
         let mut error_stmts: Vec<StmtRef> = if conversion_stmts.is_empty() {
-            // Plain propagation: `return <scrutinee>` — the scrutinee
-            // is already the error variant, and a bare identifier
-            // keeps the AOT's `return <ident>` constraint satisfied.
-            let return_value = self.core.expr_pool.add(Expr::Identifier(t_sym));
-            vec![self.core.stmt_pool.add(Stmt::Return(Some(return_value)))]
+            self.plain_error_return_stmts(
+                &inner_ty,
+                t_sym,
+                e_sym,
+                err_sym,
+                enum_name,
+                error_sym,
+                error_is_unit,
+            )
         } else {
             conversion_stmts
         };
@@ -2417,6 +2422,99 @@ impl<'a> TypeCheckerVisitor<'a> {
         // miss (no prior cache entry for try_ref), so it fetches the
         // updated Expr (now `Block`) and processes it normally.
         self.visit_expr(&try_ref)
+    }
+
+    /// Fallback error-arm shape: `return <scrutinee>` — the scrutinee
+    /// is already the error variant, and a bare identifier keeps the
+    /// return shape the backends have always lowered.
+    fn scrutinee_return_stmts(&mut self, t_sym: DefaultSymbol) -> Vec<StmtRef> {
+        let return_value = self.core.expr_pool.add(Expr::Identifier(t_sym));
+        vec![self.core.stmt_pool.add(Stmt::Return(Some(return_value)))]
+    }
+
+    /// Plain `?` error arm (no `From` conversion applies): build the
+    /// statements that propagate the error to the enclosing function.
+    ///
+    /// When the enclosing function's return type names the same enum
+    /// family with a *different success type* — `read_file(p)?` of
+    /// `Result<str, str>` inside a fn declared `-> Result<u64, str>`
+    /// (RUNTIME-IO) — re-returning the scrutinee would hand back the
+    /// inner spelling: unsound at the type level, and the compiled
+    /// lanes reject it ("not an enum binding of the expected return
+    /// type"). Reconstruct the error variant against the declared
+    /// return type instead:
+    ///
+    /// ```text
+    /// val __try_err_N: Result<u64, str> = Result::Err(__try_e_N)
+    /// return __try_err_N
+    /// panic("?-unreachable")
+    /// ```
+    ///
+    /// (`Option` reconstructs the unit variant `Option::None` the same
+    /// way.) The reconstruction lives in an annotated `val` binding —
+    /// the annotation is what pins the generic enum's type args, which
+    /// a bare `Result::Err(...)` cannot infer from its payload alone —
+    /// and the `return` stays a bare identifier. When the success
+    /// types agree (or either side is unresolved), the scrutinee
+    /// return is kept: one fewer synthetic binding for the common
+    /// shape. An empty `Vec` also means "keep the scrutinee return".
+    fn plain_error_return_stmts(
+        &mut self,
+        inner_ty: &TypeDecl,
+        t_sym: DefaultSymbol,
+        e_sym: DefaultSymbol,
+        err_sym: DefaultSymbol,
+        enum_name: DefaultSymbol,
+        error_sym: DefaultSymbol,
+        error_is_unit: bool,
+    ) -> Vec<StmtRef> {
+        // The declared return type must name the same enum family with
+        // the matching arity, or there is nothing to reconstruct
+        // against (Unit returns, `Unknown`, unrelated enums — the
+        // scrutinee return keeps the pre-existing shape there).
+        let fn_ret_ty = match self.current_fn_return_type.as_ref() {
+            Some(ty) => ty.clone(),
+            None => return self.scrutinee_return_stmts(t_sym),
+        };
+        let (inner_name, inner_args) = match inner_ty {
+            TypeDecl::Enum(n, a) | TypeDecl::Struct(n, a) => (*n, a.clone()),
+            _ => return self.scrutinee_return_stmts(t_sym),
+        };
+        let (fn_name, fn_args) = match &fn_ret_ty {
+            TypeDecl::Enum(n, a) | TypeDecl::Struct(n, a) => (*n, a.clone()),
+            _ => return self.scrutinee_return_stmts(t_sym),
+        };
+        if inner_name != fn_name || inner_args.len() != fn_args.len() || fn_args.is_empty() {
+            return self.scrutinee_return_stmts(t_sym);
+        }
+        if TypeDecl::is_equivalent(&inner_args[0], &fn_args[0]) {
+            return self.scrutinee_return_stmts(t_sym);
+        }
+        // `val __try_err_N: <fn return type> = <error variant>`
+        let construct = if error_is_unit {
+            self.core
+                .expr_pool
+                .add(Expr::QualifiedIdentifier(vec![enum_name, error_sym]))
+        } else {
+            let e_ident = self.core.expr_pool.add(Expr::Identifier(e_sym));
+            self.core
+                .expr_pool
+                .add(Expr::AssociatedFunctionCall(
+                    enum_name,
+                    error_sym,
+                    vec![e_ident],
+                ))
+        };
+        let err_stmt = self
+            .core
+            .stmt_pool
+            .add(Stmt::Val(err_sym, Some(fn_ret_ty), construct));
+        let err_ident = self.core.expr_pool.add(Expr::Identifier(err_sym));
+        let return_stmt = self
+            .core
+            .stmt_pool
+            .add(Stmt::Return(Some(err_ident)));
+        vec![err_stmt, return_stmt]
     }
 
     /// From/Into `?` cross-error conversion. Returns the statement
@@ -2504,19 +2602,12 @@ impl<'a> TypeCheckerVisitor<'a> {
             .add(Stmt::Val(conv_sym, conv_annotation, conv_call));
 
         // `val __try_err_N = Result::Err(__try_conv_N)` — annotation
-        // `Result<T, E2>` with T taken from the inner expression's
-        // success type.
-        let success_ty = match inner_ty {
-            TypeDecl::Enum(_, args) | TypeDecl::Struct(_, args) if args.len() == 2 => {
-                args[0].clone()
-            }
-            _ => TypeDecl::Unknown,
-        };
-        let err_annotation = match &inner_ty {
-            TypeDecl::Enum(name, _) => TypeDecl::Enum(*name, vec![success_ty, target_err_ty]),
-            TypeDecl::Struct(name, _) => TypeDecl::Struct(*name, vec![success_ty, target_err_ty]),
-            _ => TypeDecl::Unknown,
-        };
+        // is the enclosing function's declared return type
+        // `Result<T2, E2>`: the arm returns from THAT function, so
+        // reconstructing with the inner success type T1 would
+        // re-introduce the very mismatch the conversion exists to
+        // bridge (same reasoning as `plain_error_return_stmts`).
+        let err_annotation = fn_ret;
         let conv_ident = self.core.expr_pool.add(Expr::Identifier(conv_sym));
         let err_construct = self.core.expr_pool.add(Expr::AssociatedFunctionCall(
             enum_name,

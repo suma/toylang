@@ -739,6 +739,80 @@ fn io_externs_are_consistent_across_backends() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// RUNTIME-IO + `?`: the canonical consumption shape. `expr?` in a
+// function returning the same `Result<str, IoError>` propagates the
+// Err (the desugar re-returns the scrutinee binding) and unwraps the
+// Ok through the identity str cast the desugar emits.
+#[test]
+fn io_read_file_try_operator_is_consistent_across_backends() {
+    let dir = unique_path("io_try_fixture");
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("data.txt");
+    std::fs::write(&path, "payload").expect("write fixture");
+    let src = format!(
+        r#"
+        fn load_text(p: str) -> Result<str, IoError> {{
+            val text: str = io::read_file(p)?
+            Result::Ok(text)
+        }}
+        fn main() -> u64 {{
+            val ok = load_text("{}")
+            val err = load_text("{}/missing.t")
+            val a = match ok {{
+                Result::Ok(text) => if text == "payload" {{ 1u64 }} else {{ 0u64 }},
+                Result::Err(_) => 0u64,
+            }}
+            val b = match err {{
+                Result::Err(IoError::NotFound) => 10u64,
+                _ => 0u64,
+            }}
+            a + b
+        }}
+        "#,
+        path.display(),
+        dir.display(),
+    );
+    assert_consistent(&src, "io_try");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// TRY-ERR-RETYPE: `?` across a *success*-type change. The inner
+// `Result<str, IoError>` feeds a fn declared `-> Result<u64, IoError>`;
+// the desugar reconstructs the Err variant against the declared return
+// type (previously it re-returned the scrutinee, which only compiled
+// on the interpreter). Ok and Err paths both pinned.
+#[test]
+fn io_read_file_try_across_success_type_is_consistent_across_backends() {
+    let dir = unique_path("io_try_retype_fixture");
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("data.txt");
+    std::fs::write(&path, "payload").expect("write fixture");
+    let src = format!(
+        r#"
+        fn byte_len(p: str) -> Result<u64, IoError> {{
+            val text: str = io::read_file(p)?
+            Result::Ok(text.len())
+        }}
+        fn main() -> u64 {{
+            val ok = byte_len("{}")
+            val err = byte_len("{}/missing.t")
+            val a = match ok {{
+                Result::Ok(n) => if n == 7u64 {{ 1u64 }} else {{ 0u64 }},
+                Result::Err(_) => 0u64,
+            }}
+            val b = match err {{
+                Result::Err(IoError::NotFound) => 10u64,
+                _ => 0u64,
+            }}
+            a + b
+        }}
+        "#,
+        path.display(),
+        dir.display(),
+    );
+    assert_consistent(&src, "io_try_retype");
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
 // The RUNTIME-IO extensions: seeded `random` (deterministic), UTC
 // `strftime` and the environment list. All are deterministic once

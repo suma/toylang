@@ -1472,12 +1472,57 @@
 
 ### 構文糖衣の候補 (NEW-FEATURES、未着手)
 
-- **raw / multi-line string literal** ★ — `r"\path"` / `"""..."""`。lexer 拡張のみ。
+- **`??` (null-coalesce)** — 2026-08-30 に landing 済み (完了済み節)。
+- **raw / multi-line string literal** ★ — `r"..."` と `"""..."""`。
+  lexer 拡張のみで AST / 型検査 / バックエンドは無変更。設計メモ:
+  (a) `r"..."` は**生文字列** — エスケープ処理も文字列補間もしない
+  (正規表現・パス向け。`{{` / `}}` の二重化も不要になる)、
+  改行を含めてよい。内容に `"` を含めるには Rust の `r#"..."#` 形が
+  理想だが MVP は省略可 (現行の通常文字列も `\"` を越えられないので
+  制限は同じ)。(b) `"""..."""` は**複数行** — エスケープ処理は通常
+  文字列と同じで、閉じは `"""` のみ。改行をそのまま値に含めるので、
+  lexer が `line_count` を数えることを忘れないこと (現行の単一行
+  ルール `"[^"]*"` は改行を含まない)。both とも `Kind::String` に落とす
+  ので parser 以降は何も変わらない。
+- **f64 リテラルのサフィックス必須を緩和** ★ — 現状 `1.5` 単体は
+  **parse エラーですらない** (実測 2026-08-30): lexer が `1` / `.` /
+  `5` に分割し、parser が tuple access `1.5` (literal `1` への index 5)
+  と解釈して `[E0010] Cannot access index 5 on non-tuple type Number`
+  になる。緩和の本体は lexer に `-?[0-9][0-9_]*"."[0-9][0-9_]*`
+  ルールを足すことだが、**`a.0.1` (tuple access 連鎖) との曖昧性**を
+  Rust と同じ手口で解く必要がある: 直前のトークンが `.` のときだけ
+  小数部を読まない (rflex は `zz_marked_pos` を巻き戻せる —
+  `skip_current_char` と同じ機構で、整数部だけ返して `.` から
+  再走査する)。`0..10` は `.` の後が数字でないので浮動小数ルールに
+  入らない (既存の曖昧性なし)。`Kind::Float64` に落とせば
+  suffix 付き `1.5f64` と同じ AST になり、f64 は唯一の float 型なので
+  NUMBER-HINT の型確定機構は不要。
+- **ENUM-DISCRIMINANT: enum の明示 discriminant + `as u64`** ★ —
+  `enum Color { Red = 1u64, Green = 4u64 }` (unit variant のみに `= <整数
+  リテラル>` を許す。data-carrying variant は不可、未指定は Rust 規約
+  (先頭 0、以降 +1) で自動採番、重複は型エラー)。**layout / match
+  dispatch は現状のまま** (tag = variant index) — discriminant は
+  `as u64` の射影としてだけ存在する。`as u64` は**型検査器が match に
+  書き換える** (`E::A as u64` ならリテラルへ直接畳み、式なら
+  `match e { E::A => 1u64, ... }` の網羅 match — バックエンドは砂糖を
+  見ない)。`as` は全 variant が unit の enum に限る (Rust と同じ)。
+  [`RUNTIME_LIBRARY.md`](RUNTIME_LIBRARY.md) の P4 (FFI P2 で C に
+  enum を渡す / bitflags) の前提になる。
 - **STR-INTERP-FMT の残** ★ — (a) user 型に spec を渡す API
   (`Display` の `to_str(&self)` は引数を取らない規約なので、
   `fn to_str(&self, spec: str)` にするかは未決)、(b) fill 文字 / `+` /
   `#` / `$`-parameterised width、(c) interpreter JIT の
   `jit_format_<ty>` helper。いずれも踏んでから。
+- **TRY-OPERAND-GAP: `?` が binary operand / 条件 / tail 位置で
+  desugar されない** ★ — 2026-08-30 に `??` (NULL-COALESCE) の
+  実装中に実測: `(r? == 1u64)` や `if r? { .. }` は `visit_try` が
+  trait 既定 (`Unknown`) を返すため**型検査が黙って Unknown を返し**、
+  個所によっては「expected bool, but got Unknown」のような本質でない
+  エラーになる。val rhs は動く (`visit_expr` の intercept が効く)。
+  `??` が取った解決策 — direct `accept_expr` dispatch の位置では
+  型だけ付けて pool 書き換えを post-pass (`apply_null_coalesce_rewrites`)
+  に回す — を `?` にもそのまま適用できる (`check_expr_located` と
+  `visit_binary` の operand 経路に intercept を足す形)。
 
 ### インクリメンタルコンパイル
 

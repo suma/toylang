@@ -10,6 +10,38 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-08-30
+
+- **RUNTIME-IO — `read_file` / `env_var` / `read_line` が `Result<_, IoError>` を返す** —
+  失敗を `IoError` variant (`NotFound` / `PermissionDenied` /
+  `IsADirectory` / `ReadError` / `EndOfInput` / `Unknown`) で返す。
+  variant match は網羅性が効き、`Display` (`to_str`) で
+  `println(err)` が `not found` 等を出す。最初は str 理由文字列
+  (`"not found"` 比較) だったが、typo が暗黙に else に落ちるのと
+  From 変換への依存を避けるため同日に enum へ張り替え。
+  extern 境界は scalar のまま: payload を運ぶ extern が
+  失敗 status を runtime 側に記録し (interpreter は `extern_io` の
+  thread_local、compiled は `toylang_rt` の `ThreadState`)、ペアの
+  `__extern_io_*_status` extern が直後に読む — stdlib wrapper
+  (`io.t`) が enum を組み立てるのでバックエンドの enum 機構には新規なし。
+  付随して compiled レーンの MVP 制約を 3 つ解消:
+  **module 修飾付き compound 戻り呼び出しの let-rhs**
+  (`val r = io::read_file(p)` — `lower_let` に修飾付きの中継を追加、
+  素の呼び出しと `Call{Tuple,Enum,Struct}` 経路を共有)、
+  **明示 `return` での enum 構築** (`return Result::Err(msg)` —
+  タプルの pending パターンと同じく `lower_into_enum_storage` に通す)、
+  **enum 注釈付き let への enum 値を産む match**
+  (`val e: IoError = match r { Result::Err(e) => e, ... }` —
+  arm 本体がパターン束縛の識別子だと `detect_enum_result` が
+  見通せないので、注釈を信頼するフォールバックを composite gate に追加)。
+  既知の残: 非 UTF-8 ファイルの中身は interpreter が `ReadError` に
+  落とすが compiled は生バイトを読む ( UTF-8 検証の divergence、
+  docs/language.md に記載)。`status` 記録は 1 操作 1 スロットなので
+  `read_file` と `env_var` のペアリングは混線しない。付随修正:
+  **tree-walker の同一型 str cast を素通しに** (`?` desugar が Ok 値を
+  `as T` で包むため `Result<str, str>` の `?` が String→String cast に
+  なって InternalError だった — IR VM / AOT は元から pass-through)。
+
 ### 2026-08-29
 
 - **ENUM-EQ-ESCAPES-TYPECHECK** — 実際には enum 固有ではなかった。
@@ -1281,14 +1313,19 @@
 ### 標準ライブラリ・実行環境 (STDLIB-RUNTIME)
 
 > 2026-08-16 に「言語機能として何が残っているか」を実際に叩いて洗い出した結果。
-> 言語のコアはほぼ揃っており、**実プログラムを書けなくしているのはこの節**。
+> RUNTIME-IO (Result を返す IO) は 2026-08-29 に landing 済み (完了済み節)。
+> 実プログラムを書けなくしている残りは下記。
 
-- **RUNTIME-IO: `Result` を返す IO** ★ — 失敗理由付き `read_file` 等。
-  extern 境界が compound return を運べないため未対応 — 将来 FFI の
-  struct-return 対応か builtin 化で (2026-08-18 に乱数シード / 時刻
-  フォーマット / 環境変数一覧は landing 済み)。
 - **STDLIB-ORD: `str` の `Ord` impl** ★ — byte 比較が heap copy を要求し、
   generic context で AOT が表現できないため未提供 (`String` は提供済み)。
+- **io.t の範囲外 `""` 既定の厳格化** ★ — `arg(i)` / `env_name(i)` /
+  `env_value(i)` は範囲外で `""` を返す (ドキュメント化済みの既定)。
+  `arg(i)` の `""` は「実際に空文字列の引数」と区別がつかない。
+  `argc()` / `env_count()` で範囲チェックできるので設計上は許容だが、
+  厳格化するなら `Result<_, IoError>` 化 (`IoError` に
+  `OutOfRange` variant を足す) か `Option` 化。RUNTIME-IO と同じ
+  ペア status extern の仕組みで境界変更なしにできる。実プログラムで
+  困ってから。
 
 ### 実行時の意味論 (RUNTIME-TRAP)
 

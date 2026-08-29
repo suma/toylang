@@ -255,11 +255,12 @@ impl<'a> FunctionLower<'a> {
                     return Ok(None);
                 }
                 // Enum returns: rhs must be a bare identifier of an
-                // Enum binding for the matching enum (or a tail-form
-                // construction we route through the implicit-return
-                // helper). Same pattern as struct/tuple — explicit
-                // `return Enum::Variant(args)` is handled via
-                // lower_expr setting pending_enum_value below.
+                // Enum binding for the matching enum, or an enum
+                // construction / composite (`return Result::Err(msg)`,
+                // RUNTIME-IO) that we route through
+                // `lower_into_enum_storage` — the same helper the
+                // implicit-return tail uses, and the same pattern the
+                // tuple-literal arm above follows.
                 if let (Type::Enum(ret_enum_id), Some(er)) = (ret_ty, &e) {
                     let rhs_expr = self
                         .program
@@ -281,10 +282,12 @@ impl<'a> FunctionLower<'a> {
                         self.terminate_return(values);
                         return Ok(None);
                     }
-                    return Err(
-                        "explicit `return` of an enum value must be a bare identifier in the compiler MVP"
-                            .to_string(),
-                    );
+                    let storage = self.allocate_enum_storage(ret_enum_id);
+                    self.lower_into_enum_storage(er, &storage)?;
+                    let values = self.load_enum_locals(&storage);
+                    self.emit_ensures_checks(&values)?;
+                    self.terminate_return(values);
+                    return Ok(None);
                 }
                 let val = match e {
                     Some(er) => self.lower_expr(&er)?,

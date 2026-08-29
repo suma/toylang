@@ -83,6 +83,7 @@ unsafe extern "C" {
     fn ftell(f: *mut u8) -> i64;
     fn rewind(f: *mut u8);
     fn fread(dest: *mut u8, size: usize, count: usize, f: *mut u8) -> usize;
+    fn ferror(f: *mut u8) -> i32;
     fn strlen(s: *const u8) -> usize;
     fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8;
     fn pthread_key_create(key: *mut usize, destructor: Option<unsafe extern "C" fn(*mut u8)>) -> i32;
@@ -94,10 +95,49 @@ unsafe extern "C" {
 unsafe extern "C" {
     fn _NSGetArgc() -> *const i32;
     fn _NSGetArgv() -> *const *mut *mut u8;
+    fn __error() -> *mut i32;
+}
+
+#[cfg(not(target_os = "macos"))]
+unsafe extern "C" {
+    fn __errno_location() -> *mut i32;
 }
 
 const SEEK_END: i32 = 2;
 const F_OK: i32 = 0;
+
+// RUNTIME-IO: failure status codes for the payload-carrying I/O
+// externs (`toy_io_read_file` / `toy_io_env`). The paired
+// `toy_io_*_status` externs hand the code to the stdlib wrapper in
+// `core/std/io.t`, which maps it to a reason string. The same codes
+// are produced by the interpreter's `extern_io` registry, so the
+// backends agree on the reason for the same failure.
+const IO_OK: u64 = 0;
+const IO_NOT_FOUND: u64 = 1;
+const IO_PERMISSION_DENIED: u64 = 2;
+const IO_IS_A_DIRECTORY: u64 = 3;
+const IO_READ_ERROR: u64 = 4;
+
+#[cfg(target_os = "macos")]
+fn current_errno() -> i32 {
+    unsafe { *__error() }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn current_errno() -> i32 {
+    unsafe { *__errno_location() }
+}
+
+/// Map a libc errno to the RUNTIME-IO status vocabulary. The values
+/// (ENOENT 2, EPERM 1, EACCES 13, EISDIR 21) agree on macOS and Linux.
+fn io_status_from_errno(err: i32) -> u64 {
+    match err {
+        2 => IO_NOT_FOUND,
+        1 | 13 => IO_PERMISSION_DENIED,
+        21 => IO_IS_A_DIRECTORY,
+        _ => IO_READ_ERROR,
+    }
+}
 
 fn write_fd(fd: i32, bytes: &[u8]) {
     if bytes.is_empty() {
@@ -268,6 +308,13 @@ struct ThreadState {
     // with 0 is honoured rather than re-derived.
     random_state: u64,
     random_seeded: bool,
+    // RUNTIME-IO (Result-returning stdlib): the failure status of the
+    // most recent payload-carrying call, read back by the paired
+    // `toy_io_read_file_status` / `toy_io_env_status` externs that the
+    // stdlib wrapper calls immediately after. One slot per operation
+    // kind, so a `read_file` does not clobber an `env_var` pairing.
+    read_file_status: u64,
+    env_status: u64,
 }
 
 impl Default for ThreadState {
@@ -292,6 +339,8 @@ impl Default for ThreadState {
             io_args_len: 0,
             random_state: 0,
             random_seeded: false,
+            read_file_status: IO_OK,
+            env_status: IO_OK,
         }
     }
 }
@@ -2191,34 +2240,46 @@ pub extern "C" fn toy_io_arg(i: u64) -> *const u8 {
 }
 
 /// The value of the environment variable named by the toylang str
-/// `name`; `""` when unset.
+/// `name`. The failure status (unset) is recorded for the paired
+/// `toy_io_env_status` (RUNTIME-IO); the stdlib wrapper turns it into
+/// a `Result` and maps the code to a reason string.
 #[unsafe(no_mangle)]
 pub extern "C" fn toy_io_env(name: *const u8) -> *const u8 {
     let key = str_to_cstring(name);
     let v = unsafe { getenv(key.as_ptr()) };
     if v.is_null() {
+        thread_state().env_status = IO_NOT_FOUND;
         return toy_str_alloc(&[]);
     }
     let len = unsafe { strlen(v) };
     let bytes = unsafe { core::slice::from_raw_parts(v, len) };
+    thread_state().env_status = IO_OK;
     toy_str_alloc(bytes)
 }
 
-/// The contents of the file at the toylang str `path`; `""` when it
-/// cannot be read.
+/// The contents of the file at the toylang str `path`. The failure
+/// status is recorded for the paired `toy_io_read_file_status`
+/// (RUNTIME-IO); the stdlib wrapper turns it into a `Result` and maps
+/// the code to a reason string (`IO_*` constants above).
 #[unsafe(no_mangle)]
 pub extern "C" fn toy_io_read_file(path: *const u8) -> *const u8 {
+    let st = thread_state();
     let p = str_to_cstring(path);
     let f = unsafe { fopen(p.as_ptr(), c"rb".as_ptr().cast()) };
     if f.is_null() {
+        // Opening a directory fails outright on macOS (EISDIR); on
+        // Linux it succeeds and the `fread` below reports it.
+        st.read_file_status = io_status_from_errno(current_errno());
         return toy_str_alloc(&[]);
     }
     if unsafe { fseek(f, 0, SEEK_END) } != 0 {
+        st.read_file_status = io_status_from_errno(current_errno());
         unsafe { fclose(f) };
         return toy_str_alloc(&[]);
     }
     let n = unsafe { ftell(f) };
     if n < 0 {
+        st.read_file_status = io_status_from_errno(current_errno());
         unsafe { fclose(f) };
         return toy_str_alloc(&[]);
     }
@@ -2229,9 +2290,35 @@ pub extern "C" fn toy_io_read_file(path: *const u8) -> *const u8 {
     } else {
         0
     };
+    let failed = unsafe { ferror(f) } != 0;
+    if failed {
+        // Read errno before `fclose`, which may clobber it.
+        st.read_file_status = io_status_from_errno(current_errno());
+    }
     unsafe { fclose(f) };
+    if failed {
+        return toy_str_alloc(&[]);
+    }
     buf.truncate(got);
+    st.read_file_status = IO_OK;
     toy_str_alloc(&buf)
+}
+
+/// RUNTIME-IO: the status of the most recent `toy_io_read_file` call
+/// on this thread. The stdlib `read_file` wrapper calls this
+/// immediately after the payload call, so the pair is atomic from
+/// toylang's point of view (no interleaving toylang code runs between
+/// them).
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_io_read_file_status() -> u64 {
+    thread_state().read_file_status
+}
+
+/// RUNTIME-IO: the status of the most recent `toy_io_env` call on this
+/// thread. Paired with `toy_io_env` like `toy_io_read_file_status`.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_io_env_status() -> u64 {
+    thread_state().env_status
 }
 
 /// Whether the file at the toylang str `path` exists.

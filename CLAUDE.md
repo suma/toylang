@@ -531,9 +531,16 @@ fn main() -> u64 {
   `now()` / `random()` / `random_seed(seed)` / `strftime(fmt, secs)` /
   `env_count()` / `env_name(i)` / `env_value(i)`。`extern fn` 宣言 +
   バックエンド別実装 (interpreter: `extern_io::build_io_registry`、
-  AOT/JIT: `toylang_rt` の `toy_io_*` シンボル)。失敗は `""` 返し +
-  `file_exists` プローブ (`Result` は extern 境界が compound return を
-  運べないため不可)。`random()` は非決定的だが、`random_seed(s)` で
+  AOT/JIT: `toylang_rt` の `toy_io_*` シンボル)。`read_file` / `env_var` /
+  `read_line` は `Result<_, IoError>` を返す (RUNTIME-IO): payload を運ぶ
+  extern が失敗 status を runtime 側に記録し、ペアの
+  `__extern_io_*_status` extern が直後に読む (境界は scalar のまま)。
+  `Err` は `IoError` variant (`NotFound` / `PermissionDenied` /
+  `IsADirectory` / `ReadError` / `EndOfInput` / `Unknown`) — 網羅的な
+  match で処理し、`Display` で `println(err)` が `not found` 等の
+  文言を出す。compound 戻りなので `val` で受ける (compiled レーンは
+  式位置の compound 呼び出しを拒否)。
+  `random()` は非決定的だが、`random_seed(s)` で
   再現可能になる (0 も literal に保持、シーケンスは 3 バックエンド一致)。
   `strftime(fmt, secs)` は C `strftime` の文書化された部分集合で
   **UTC 固定** (ローカル時刻にしない、`docs/language.md` の

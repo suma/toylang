@@ -18,10 +18,17 @@
 #   `extern fn` boundary cannot dereference C pointers (argv, FILE*)
 #   on every backend.
 #
-# Failure convention: `read_file` / `env_var` return `""` when the
-# file or variable does not exist. An `extern fn` boundary cannot
-# carry a `Result` (compound returns do not cross it), so probe with
-# `file_exists` when the empty string is a valid payload.
+# Failure convention (RUNTIME-IO): `read_file` / `env_var` /
+# `read_line` return a `Result<_, IoError>` whose `Err` names the
+# failure as an `IoError` variant (exhaustively matchable; rendered
+# through `Display` as `not found` / `permission denied` / ...). The
+# payload-carrying extern records a failure status in the runtime;
+# the paired `__extern_io_*_status` extern hands it back, so the two
+# calls together are atomic from toylang's point of view — the
+# boundary itself still carries only scalars. The status codes are
+# produced identically by the interpreter registry (`extern_io.rs`)
+# and `toylang_rt`; `file_exists` remains an independent query, not a
+# failure probe.
 #
 # `random()` is deliberately non-deterministic (seeded from the clock
 # and process id) — programs that print it cannot be compared across
@@ -33,7 +40,9 @@ extern fn time(t: ptr) -> i64 from "c"
 extern fn __extern_io_argc_u64() -> u64 from "toylang_rt" as "toy_io_argc"
 extern fn __extern_io_arg_str(i: u64) -> str from "toylang_rt" as "toy_io_arg"
 extern fn __extern_io_env_str(name: str) -> str from "toylang_rt" as "toy_io_env"
+extern fn __extern_io_env_status() -> u64 from "toylang_rt" as "toy_io_env_status"
 extern fn __extern_io_read_file_str(path: str) -> str from "toylang_rt" as "toy_io_read_file"
+extern fn __extern_io_read_file_status() -> u64 from "toylang_rt" as "toy_io_read_file_status"
 extern fn __extern_io_file_exists_bool(path: str) -> bool from "toylang_rt" as "toy_io_file_exists"
 extern fn __extern_io_random_u64() -> u64 from "toylang_rt" as "toy_io_random"
 extern fn __extern_io_random_seed(seed: u64) from "toylang_rt" as "toy_io_random_seed"
@@ -42,21 +51,67 @@ extern fn __extern_io_env_count_u64() -> u64 from "toylang_rt" as "toy_io_env_co
 extern fn __extern_io_env_name_str(i: u64) -> str from "toylang_rt" as "toy_io_env_name"
 extern fn __extern_io_env_value_str(i: u64) -> str from "toylang_rt" as "toy_io_env_value"
 
+# The reason an I/O operation failed. `?` propagates it unchanged, and
+# a `match` over it is exhaustive — handle every variant or fall back
+# to `_`. Rendering goes through `Display`: `println(err)` prints the
+# reason text (`not found`, `permission denied`, ...).
+pub enum IoError {
+    NotFound,          # the path / variable does not exist
+    PermissionDenied,  # the OS denied the access
+    IsADirectory,      # the path names a directory
+    ReadError,         # any other read failure
+    EndOfInput,        # `read_line`: EOF before any byte was read
+    Unknown,           # a failure with no errno behind it
+}
+
+impl Display for IoError {
+    fn to_str(&self) -> str {
+        match self {
+            IoError::NotFound => "not found",
+            IoError::PermissionDenied => "permission denied",
+            IoError::IsADirectory => "is a directory",
+            IoError::ReadError => "read error",
+            IoError::EndOfInput => "end of input",
+            IoError::Unknown => "unknown error",
+        }
+    }
+}
+
+# Map a failure status code (recorded by the runtime alongside the
+# payload-carrying call, see the extern declarations above) to its
+# `IoError` variant. The codes are produced identically by the
+# interpreter registry (`extern_io.rs`) and `toylang_rt`, so the same
+# failure reads the same on every backend.
+fn io_error_from_status(status: u64) -> IoError {
+    if status == 1u64 { IoError::NotFound }
+    elif status == 2u64 { IoError::PermissionDenied }
+    elif status == 3u64 { IoError::IsADirectory }
+    elif status == 4u64 { IoError::ReadError }
+    else { IoError::Unknown }
+}
+
 # Read one line from stdin, without the trailing newline (`\n`, or
-# `\r\n`). `""` at EOF.
-pub fn read_line() -> str {
+# `\r\n`). `Err(IoError::EndOfInput)` at EOF — raised only before any
+# byte was read, so a final line without a newline is still an `Ok`.
+# An empty line is `Ok("")`.
+pub fn read_line() -> Result<str, IoError> {
+    val first: i32 = getchar()
+    if first == -1i32 {
+        return Result::Err(IoError::EndOfInput)
+    }
     var buf: Vec<u8> = Vec::new()
+    var c: i32 = first
     loop {
-        val c: i32 = getchar()
-        if c == -1i32 { break }      # EOF
         if c == 10i32 { break }      # '\n'
         buf.push(c as u8)
+        c = getchar()
+        if c == -1i32 { break }      # EOF mid-line: the line is what we have
     }
     if buf.size() > 0u64 {
         val last: u8 = buf.get(buf.size() - 1u64)
         if last == 13u8 { buf.pop() }   # strip '\r'
     }
-    __builtin_str_from_bytes(buf.as_ptr(), buf.size())
+    Result::Ok(__builtin_str_from_bytes(buf.as_ptr(), buf.size()))
 }
 
 # Number of program arguments (excluding the program name).
@@ -69,14 +124,30 @@ pub fn arg(i: u64) -> str {
     __extern_io_arg_str(i)
 }
 
-# The value of the environment variable `name`; `""` when unset.
-pub fn env_var(name: str) -> str {
-    __extern_io_env_str(name)
+# The value of the environment variable `name`; `Err(IoError::NotFound)`
+# when unset. An empty value is a valid `Ok("")`.
+pub fn env_var(name: str) -> Result<str, IoError> {
+    val value: str = __extern_io_env_str(name)
+    val status: u64 = __extern_io_env_status()
+    if status == 0u64 {
+        Result::Ok(value)
+    } else {
+        val err: IoError = io_error_from_status(status)
+        Result::Err(err)
+    }
 }
 
-# The contents of the file at `path`; `""` when it cannot be read.
-pub fn read_file(path: str) -> str {
-    __extern_io_read_file_str(path)
+# The contents of the file at `path`; `Err(err)` when it cannot be
+# read (variants from `io_error_from_status`).
+pub fn read_file(path: str) -> Result<str, IoError> {
+    val contents: str = __extern_io_read_file_str(path)
+    val status: u64 = __extern_io_read_file_status()
+    if status == 0u64 {
+        Result::Ok(contents)
+    } else {
+        val err: IoError = io_error_from_status(status)
+        Result::Err(err)
+    }
 }
 
 # Whether the file at `path` exists.

@@ -3183,11 +3183,11 @@ used C's `%g` (6 significant digits: `1234567.75` used to print as
 module, auto-loaded like the rest of the stdlib:
 
 ```rust
-io::read_line() -> str          # one line from stdin, no trailing newline; "" at EOF
+io::read_line() -> Result<str, IoError>  # one line from stdin, no trailing newline; Err(IoError::EndOfInput) at EOF
 io::argc() -> u64               # number of program arguments (excluding program name)
 io::arg(i: u64) -> str          # the i-th argument; "" out of range
-io::env_var(name: str) -> str   # the environment variable; "" when unset
-io::read_file(path: str) -> str # file contents; "" when unreadable
+io::env_var(name: str) -> Result<str, IoError>   # the environment variable; Err(IoError::NotFound) when unset
+io::read_file(path: str) -> Result<str, IoError> # file contents; Err(err) when unreadable
 io::file_exists(path: str) -> bool
 io::now() -> u64                # seconds since the Unix epoch
 io::random() -> u64             # pseudo-random; not reproducible
@@ -3200,9 +3200,33 @@ io::env_value(i: u64) -> str    # the i-th environment variable's value
 
 Each function delegates to an `extern fn`; see [Linking to real C
 libraries](#linking-to-real-c-libraries) for the
-boundary rules. Failure
-convention is `""`-return plus a `file_exists` probe — an `extern fn`
-boundary cannot carry a `Result`.
+boundary rules. An `extern fn` boundary carries only scalars, so the
+payload-carrying call records a failure status in the runtime and a
+paired `__extern_io_*_status` call reads it back immediately after —
+from toylang's point of view the pair is atomic, and the stdlib
+wrapper turns it into a `Result<_, IoError>`. `read_line` raises
+`Err(IoError::EndOfInput)` only before any byte was read (a final
+line without a newline is still an `Ok`, an empty line is `Ok("")`);
+an empty environment value is a valid `Ok("")`. The `IoError`
+variants (declared in `core/std/io.t`):
+
+| Variant | Failure |
+|---|---|
+| `IoError::NotFound` | the path does not exist |
+| `IoError::PermissionDenied` | the OS denied the open |
+| `IoError::IsADirectory` | the path names a directory |
+| `IoError::ReadError` | any other read failure (also non-UTF-8 contents on the interpreter — the compiled backends read raw bytes and do not validate UTF-8, which stays a known divergence for invalid files) |
+| `IoError::EndOfInput` | `read_line`: EOF before any byte |
+| `IoError::Unknown` | a failure with no errno behind it |
+
+A `match` over the variants is exhaustive — handle every case or fall
+back to `_` (compare that with the string API this replaces, where a
+misspelled `reason == "not found"` silently took the else branch).
+`IoError` implements `Display`, so `println(err)` prints the reason
+text (`not found`, ...). Because these functions return a compound,
+bind the result with `val` (the compiled lanes reject
+compound-returning calls in expression position, like every other
+compound value).
 
 Determinism: `random()` is seeded from the clock and process id, so it
 is not reproducible across runs — but `random_seed(s)` makes the

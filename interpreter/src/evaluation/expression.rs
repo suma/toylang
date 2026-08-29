@@ -707,6 +707,18 @@ impl EvaluationContext<'_> {
         //      `as`-style truncation. Float-to-int saturates and
         //      NaN→0 because that's the existing Rust `as`
         //      semantics already documented above.
+        // str → str identity passes through unchanged, matching the
+        // compiled lanes (`lower_cast` in codegen passes same-type
+        // casts through). The `?` desugar wraps the unwrapped value
+        // in `as T` to pin the static type for AOT inference, so
+        // `val s: str = io::read_file(p)?` reaches this as a
+        // String-to-String cast.
+        if matches!(target_type, TypeDecl::String) {
+            if let Object::String(_) = &*borrowed {
+                drop(borrowed);
+                return Ok(EvaluationResult::Value(value_obj.into()));
+            }
+        }
         enum NumForm { Signed(i128), Unsigned(u128), Float(f64) }
         let from = match &*borrowed {
             Object::Int64(v) => NumForm::Signed(*v as i128),

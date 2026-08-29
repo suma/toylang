@@ -61,8 +61,16 @@ fn env_var_reads_the_environment() {
     let r = run_with_args(
         "fn main() -> u64 {
             val v = io::env_var(\"TOYLANG_IO_TEST_VAR\")
+            val v_ok = match v {
+                Result::Ok(text) => text == \"hello\",
+                Result::Err(_) => false,
+            }
             val missing = io::env_var(\"TOYLANG_IO_TEST_VAR_DOES_NOT_EXIST\")
-            if v == \"hello\" && missing == \"\" { 1u64 } else { 0u64 }
+            val missing_ok = match missing {
+                Result::Err(IoError::NotFound) => true,
+                _ => false,
+            }
+            if v_ok && missing_ok { 1u64 } else { 0u64 }
         }",
         vec![],
     )
@@ -82,11 +90,21 @@ fn read_file_and_file_exists() {
             val yes = io::file_exists(\"{}\")
             val no = io::file_exists(\"{}/missing.t\")
             val f = io::read_file(\"{}\")
-            if yes && !no && f == \"hello io\\n\" {{ 1u64 }} else {{ 0u64 }}
+            val f_ok = match f {{
+                Result::Ok(text) => text == \"hello io\\n\",
+                Result::Err(_) => false,
+            }}
+            val miss = io::read_file(\"{}/missing.t\")
+            val miss_ok = match miss {{
+                Result::Err(IoError::NotFound) => true,
+                _ => false,
+            }}
+            if yes && !no && f_ok && miss_ok {{ 1u64 }} else {{ 0u64 }}
         }}",
         path.display(),
         dir.display(),
         path.display(),
+        dir.display(),
     );
     let r = run_with_args(&src, vec![]).expect("run");
     let _ = std::fs::remove_dir_all(&dir);

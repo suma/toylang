@@ -920,6 +920,27 @@ impl<'a> FunctionLower<'a> {
         args_ref: &ExprRef,
         target: Option<crate::ir::FuncId>,
     ) -> Result<Vec<ValueId>, String> {
+        let args_expr = self
+            .program
+            .expression
+            .get(args_ref)
+            .ok_or_else(|| "call args missing".to_string())?;
+        let items: Vec<ExprRef> = match args_expr {
+            Expr::ExprList(items) => items,
+            _ => return Err("call arguments must be an ExprList".to_string()),
+        };
+        self.lower_call_arg_items(&items, target)
+    }
+
+    /// Per-item call-argument lowering, shared by the pool-backed
+    /// call sites (`Expr::ExprList` args) and the let-lowering
+    /// compound intercepts whose `Vec<ExprRef>` args never live in
+    /// the expression pool (module-qualified calls, RUNTIME-IO).
+    pub(super) fn lower_call_arg_items(
+        &mut self,
+        items: &[ExprRef],
+        target: Option<crate::ir::FuncId>,
+    ) -> Result<Vec<ValueId>, String> {
         // The callee's declared parameter types, when the target is
         // known. A compound literal argument follows them to pick the
         // right monomorphisation.
@@ -935,15 +956,6 @@ impl<'a> FunctionLower<'a> {
         let param_dyn_trait: Vec<Option<(DefaultSymbol, bool)>> = target
             .map(|t| self.module.function(t).param_dyn_trait.clone())
             .unwrap_or_default();
-        let args_expr = self
-            .program
-            .expression
-            .get(args_ref)
-            .ok_or_else(|| "call args missing".to_string())?;
-        let items: Vec<ExprRef> = match args_expr {
-            Expr::ExprList(items) => items,
-            _ => return Err("call arguments must be an ExprList".to_string()),
-        };
         let mut values: Vec<ValueId> = Vec::with_capacity(items.len());
         for (arg_idx, a) in items.iter().enumerate() {
             // A5-P2: dyn-trait coercion at the call site. When the

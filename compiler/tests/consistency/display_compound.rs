@@ -683,6 +683,12 @@ fn iterating_a_vec_of_boxes_frees_every_slot_once() {
 // Deterministic functions only: `argc` (no args in the harness), the
 // environment, file probes. `now` / `random` are non-deterministic by
 // design and are covered by loose interpreter tests instead.
+//
+// RUNTIME-IO: `read_file` / `env_var` return `Result<_, IoError>`; the
+// Ok and the Err paths are both pinned. The Err variant is matched
+// exhaustively (nested `Result::Err(IoError::NotFound)` patterns) and
+// rendered through `Display`, with the reason text produced
+// identically by the interpreter registry and `toylang_rt`.
 
 #[test]
 fn io_externs_are_consistent_across_backends() {
@@ -698,16 +704,41 @@ fn io_externs_are_consistent_across_backends() {
             val yes = io::file_exists("{}")
             val no = io::file_exists("{}/missing.t")
             val f = io::read_file("{}")
-            if n == 0u64 && home != "" && yes && !no && f == "hello io\n" {{ 1u64 }} else {{ 0u64 }}
+            val miss = io::read_file("{}/missing.t")
+            val f_ok = match f {{
+                Result::Ok(text) => text == "hello io\n",
+                Result::Err(_) => false,
+            }}
+            val miss_ok = match miss {{
+                Result::Err(IoError::NotFound) => true,
+                _ => false,
+            }}
+            val novar = io::env_var("TOYLANG_CONSISTENCY_NO_SUCH_VAR")
+            val novar_ok = match novar {{
+                Result::Err(IoError::NotFound) => true,
+                _ => false,
+            }}
+            # `Display` renders the variant through `to_str`, on every
+            # backend (also pins the exhaustiveness of the match).
+            val miss_err: IoError = match miss {{
+                Result::Err(e) => e,
+                Result::Ok(_) => IoError::Unknown,
+            }}
+            println(miss_err)
+            if n == 0u64 && home.is_ok() && yes && !no && f_ok
+                && miss_ok
+                && novar_ok {{ 1u64 }} else {{ 0u64 }}
         }}
         "#,
         path.display(),
         dir.display(),
         path.display(),
+        dir.display(),
     );
     assert_consistent(&src, "io_externs");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
 
 // The RUNTIME-IO extensions: seeded `random` (deterministic), UTC
 // `strftime` and the environment list. All are deterministic once

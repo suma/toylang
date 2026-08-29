@@ -143,7 +143,29 @@ impl<'a> FunctionLower<'a> {
         // shared target locals once and have each branch write into
         // them; cranelift's `def_var` walk turns the per-branch
         // writes into proper SSA at the merge.
-        if let Some(base_name) = self.detect_enum_result(rhs_ref) {
+        //
+        // RUNTIME-IO: when detection cannot see through a branch, the
+        // annotation takes over — `val e: IoError = match r {
+        // Result::Err(e) => e, ... }` (the canonical "extract the
+        // error value" shape) has an arm body that is a bare
+        // pattern-bound identifier, and arm bindings are not in scope
+        // at detection time. The checker has already unified every
+        // arm against the annotation, so committing to the enum
+        // composite path on its say-so is sound; at lowering time the
+        // arm binding exists and the identifier arm becomes a plain
+        // storage copy. Restricted to the composite shapes on purpose
+        // — calls and literals have their own paths further down.
+        let enum_base = match self.detect_enum_result(rhs_ref) {
+            Some(base) => Some(base),
+            None => {
+                if matches!(rhs, Expr::Match(..) | Expr::IfElifElse(..) | Expr::Block(..)) {
+                    self.annotation_enum_base(annotation)
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some(base_name) = enum_base {
             return self.lower_let_enum_composite(name, annotation, rhs_ref, base_name);
         }
         // COMPOUND-BLOCK-RHS: the same for a struct- or tuple-producing
@@ -295,6 +317,23 @@ impl<'a> FunctionLower<'a> {
         if let Expr::Call(fn_name, args_ref) = rhs
             && let Some(result) =
                 self.lower_let_call_struct(name, fn_name, &args_ref)?
+            {
+                return Ok(result);
+            }
+        // RUNTIME-IO: module-qualified compound-returning call RHS
+        // (`val r = io::read_file(p)`). `Expr::AssociatedFunctionCall`
+        // with a non-struct qualifier is a module call; the
+        // expression-position path (`lower_expr_associated_call`)
+        // rejects compound returns, and without this intercept the
+        // let-rhs fell through to it even though the bare-name form
+        // above works. Resolve through the module path and reuse the
+        // exact same Call{Tuple,Enum,Struct} routing.
+        if let Expr::AssociatedFunctionCall(qualifier, fn_name, ref args_vec) = rhs.clone()
+            && !self.struct_defs.contains_key(&qualifier)
+            && !self.enum_defs.contains_key(&qualifier)
+            && let Some(target_id) = self.module.lookup_function(Some(qualifier), fn_name)
+            && let Some(result) =
+                self.lower_let_call_compound_target(name, target_id, args_vec)?
             {
                 return Ok(result);
             }
@@ -650,62 +689,124 @@ impl<'a> FunctionLower<'a> {
         args_ref: &ExprRef,
     ) -> Result<Option<Option<ValueId>>, String> {
         if let Some(target_id) = self.module.lookup_function(None, fn_name) {
-            let target_ret = self.module.function(target_id).return_type;
-            if let Type::Tuple(tuple_id) = target_ret {
-                let element_bindings = self.allocate_tuple_elements(tuple_id)?;
-                let mut dests: Vec<LocalId> = flatten_tuple_element_locals(&element_bindings)
-                    .into_iter()
-                    .map(|(local, _)| local)
-                    .collect();
-                // REF-Stage-2 (ii-let-rhs): if the callee declares
-                // writeback returns from compound `&mut T` params,
-                // append those dests so the caller-side bindings
-                // receive the modified leaves alongside the
-                // tuple result.
-                if !self.module.function(target_id).self_writeback_types.is_empty() {
-                    dests.extend(self.collect_compound_writeback_dests(args_ref)?);
-                }
-                self.bindings.insert(
-                    name,
-                    Binding::Tuple { elements: element_bindings },
-                );
-                let arg_values = self.lower_call_args(args_ref)?;
-                self.emit(
-                    InstKind::CallTuple {
-                        target: target_id,
-                        args: arg_values,
-                        dests,
-                    },
-                    None,
-                );
-                return Ok(Some(None));
+            let items: Vec<ExprRef> = self.call_arg_items(args_ref)?;
+            return self.lower_let_call_compound_target(name, target_id, &items);
+        }
+        Ok(None)
+    }
+
+    /// Shared tail of the compound-returning call intercepts (bare
+    /// calls and RUNTIME-IO's module-qualified calls alike): given a
+    /// resolved callee whose return type is a tuple / enum / struct,
+    /// allocate the matching binding shape and emit the matching
+    /// `Call*` so codegen routes the multi-return values into the
+    /// binding's leaf locals. Returns `Ok(None)` when the return type
+    /// is scalar, so the caller falls through to the next intercept.
+    fn lower_let_call_compound_target(
+        &mut self,
+        name: DefaultSymbol,
+        target_id: crate::ir::FuncId,
+        args_items: &[ExprRef],
+    ) -> Result<Option<Option<ValueId>>, String> {
+        let target_ret = self.module.function(target_id).return_type;
+        if let Type::Tuple(tuple_id) = target_ret {
+            let element_bindings = self.allocate_tuple_elements(tuple_id)?;
+            let mut dests: Vec<LocalId> = flatten_tuple_element_locals(&element_bindings)
+                .into_iter()
+                .map(|(local, _)| local)
+                .collect();
+            // REF-Stage-2 (ii-let-rhs): if the callee declares
+            // writeback returns from compound `&mut T` params,
+            // append those dests so the caller-side bindings
+            // receive the modified leaves alongside the
+            // tuple result.
+            if !self.module.function(target_id).self_writeback_types.is_empty() {
+                dests.extend(self.collect_compound_writeback_dests_slice(args_items)?);
             }
-            if let Type::Enum(enum_id) = target_ret {
-                // Enum-returning call: pre-allocate the binding's
-                // storage tree, flatten it into the CallEnum dest
-                // list (tag first, then each variant's payloads
-                // in declaration order, recursing through nested
-                // enum slots). Codegen then routes the multi-
-                // return slots straight into our locals.
-                let storage = self.allocate_enum_storage(enum_id);
-                let mut dests = Self::flatten_enum_dests(&storage);
-                // REF-Stage-2 (ii-let-rhs): see Tuple branch.
-                if !self.module.function(target_id).self_writeback_types.is_empty() {
-                    dests.extend(self.collect_compound_writeback_dests(args_ref)?);
-                }
-                self.bindings
-                    .insert(name, Binding::Enum(storage));
-                let arg_values = self.lower_call_args(args_ref)?;
-                self.emit(
-                    InstKind::CallEnum {
-                        target: target_id,
-                        args: arg_values,
-                        dests,
-                    },
-                    None,
-                );
-                return Ok(Some(None));
+            self.bindings.insert(
+                name,
+                Binding::Tuple { elements: element_bindings },
+            );
+            let arg_values = self.lower_call_arg_items(args_items, None)?;
+            self.emit(
+                InstKind::CallTuple {
+                    target: target_id,
+                    args: arg_values,
+                    dests,
+                },
+                None,
+            );
+            return Ok(Some(None));
+        }
+        if let Type::Enum(enum_id) = target_ret {
+            // Enum-returning call: pre-allocate the binding's
+            // storage tree, flatten it into the CallEnum dest
+            // list (tag first, then each variant's payloads
+            // in declaration order, recursing through nested
+            // enum slots). Codegen then routes the multi-
+            // return slots straight into our locals.
+            let storage = self.allocate_enum_storage(enum_id);
+            let mut dests = Self::flatten_enum_dests(&storage);
+            // REF-Stage-2 (ii-let-rhs): see Tuple branch.
+            if !self.module.function(target_id).self_writeback_types.is_empty() {
+                dests.extend(self.collect_compound_writeback_dests_slice(args_items)?);
             }
+            self.bindings
+                .insert(name, Binding::Enum(storage));
+            let arg_values = self.lower_call_arg_items(args_items, None)?;
+            self.emit(
+                InstKind::CallEnum {
+                    target: target_id,
+                    args: arg_values,
+                    dests,
+                },
+                None,
+            );
+            return Ok(Some(None));
+        }
+        if let Type::Struct(struct_id) = target_ret {
+            let field_bindings = self.allocate_struct_fields(struct_id);
+            // CallStruct dests are the leaf scalar locals in
+            // declaration order — exactly what the cranelift
+            // multi-result call gives us back.
+            let mut dests: Vec<LocalId> = flatten_struct_locals(&field_bindings)
+                .into_iter()
+                .map(|(l, _)| l)
+                .collect();
+            // REF-Stage-2 (ii-let-rhs): if the callee declares
+            // writeback returns from compound `&mut T` params,
+            // append those dests after the struct fields so
+            // the caller-side `&mut <var>` bindings absorb
+            // the modified leaves in the canonical order
+            // (`flatten_compound_leaf_types` ensures both
+            // sides use the same shape).
+            if !self.module.function(target_id).self_writeback_types.is_empty() {
+                dests.extend(self.collect_compound_writeback_dests_slice(args_items)?);
+            }
+            self.register_drop_for_struct_binding(struct_id, &field_bindings);
+            self.bindings.insert(
+                name,
+                Binding::Struct {
+                    struct_id,
+                    fields: field_bindings,
+                },
+            );
+            // Lower the args separately so we can hand them to
+            // `CallStruct` directly. The argument expressions
+            // themselves are scalar (struct args resolve via
+            // identifiers; cross-struct call args are handled by
+            // the regular `lower_call` path below if they show up
+            // in this position).
+            let arg_values = self.lower_call_arg_items(args_items, None)?;
+            self.emit(
+                InstKind::CallStruct {
+                    target: target_id,
+                    args: arg_values,
+                    dests,
+                },
+                None,
+            );
+            return Ok(Some(None));
         }
         Ok(None)
     }
@@ -720,53 +821,39 @@ impl<'a> FunctionLower<'a> {
         args_ref: &ExprRef,
     ) -> Result<Option<Option<ValueId>>, String> {
         if let Some(target_id) = self.module.lookup_function(None, fn_name) {
-            let target_ret = self.module.function(target_id).return_type;
-            if let Type::Struct(struct_id) = target_ret {
-                let field_bindings = self.allocate_struct_fields(struct_id);
-                // CallStruct dests are the leaf scalar locals in
-                // declaration order — exactly what the cranelift
-                // multi-result call gives us back.
-                let mut dests: Vec<LocalId> = flatten_struct_locals(&field_bindings)
-                    .into_iter()
-                    .map(|(l, _)| l)
-                    .collect();
-                // REF-Stage-2 (ii-let-rhs): if the callee declares
-                // writeback returns from compound `&mut T` params,
-                // append those dests after the struct fields so
-                // the caller-side `&mut <var>` bindings absorb
-                // the modified leaves in the canonical order
-                // (`flatten_compound_leaf_types` ensures both
-                // sides use the same shape).
-                if !self.module.function(target_id).self_writeback_types.is_empty() {
-                    dests.extend(self.collect_compound_writeback_dests(args_ref)?);
-                }
-                self.register_drop_for_struct_binding(struct_id, &field_bindings);
-                self.bindings.insert(
-                    name,
-                    Binding::Struct {
-                        struct_id,
-                        fields: field_bindings,
-                    },
-                );
-                // Lower the args separately so we can hand them to
-                // `CallStruct` directly. The argument expressions
-                // themselves are scalar (struct args resolve via
-                // identifiers; cross-struct call args are handled by
-                // the regular `lower_call` path below if they show up
-                // in this position).
-                let arg_values = self.lower_call_args(args_ref)?;
-                self.emit(
-                    InstKind::CallStruct {
-                        target: target_id,
-                        args: arg_values,
-                        dests,
-                    },
-                    None,
-                );
-                return Ok(Some(None));
-            }
+            let items: Vec<ExprRef> = self.call_arg_items(args_ref)?;
+            return self.lower_let_call_compound_target(name, target_id, &items);
         }
         Ok(None)
+    }
+
+    /// Extract a call's argument list as plain items. The plain-call
+    /// RHS shapes carry their args as an `Expr::ExprList` in the
+    /// expression pool; the module-qualified shape carries a
+    /// `Vec<ExprRef>` directly. Both funnel into
+    /// `lower_call_arg_items`.
+    fn call_arg_items(&self, args_ref: &ExprRef) -> Result<Vec<ExprRef>, String> {
+        match self.program.expression.get(args_ref) {
+            Some(Expr::ExprList(items)) => Ok(items.clone()),
+            _ => Err("call args missing".to_string()),
+        }
+    }
+
+    /// The enum a `val` annotation names, when any (`val e: IoError =
+    /// match ...`). The parser emits `Struct(Name<...>)` for any
+    /// `Name<...>` spelling and `Identifier(Name)` for bare names, so
+    /// all three spellings are checked against the enum table.
+    fn annotation_enum_base(&self, annotation: Option<&TypeDecl>) -> Option<DefaultSymbol> {
+        let ty = annotation?;
+        let sym = match ty {
+            TypeDecl::Enum(sym, _) | TypeDecl::Struct(sym, _) | TypeDecl::Identifier(sym) => *sym,
+            _ => return None,
+        };
+        if self.enum_defs.contains_key(&sym) {
+            Some(sym)
+        } else {
+            None
+        }
     }
 
     /// Struct/enum-receiver compound-returning method RHS helper

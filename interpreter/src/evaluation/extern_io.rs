@@ -15,12 +15,16 @@
 //!
 //! Return-value convention: `str` results use the language's str
 //! representation (a `String` object here; a pointer to the trailing
-//! `u64 len` field in the compiled backends). Failure convention:
-//! read / env lookups return `""` for "not found / unreadable" — an
-//! `extern fn` boundary cannot carry a `Result` (compound returns do
-//! not cross it), so callers probe with `file_exists` / `env` instead.
+//! `u64 len` field in the compiled backends). RUNTIME-IO: the
+//! payload-carrying calls whose empty string was ambiguous
+//! (`read_file` / `env_var`) record a failure status in per-operation
+//! thread-local slots, which the paired `__extern_io_*_status`
+//! registry entries hand back to the stdlib wrapper in `core/std/io.t`
+//! right after the payload call — from toylang's point of view the
+//! pair is atomic, and the wrapper turns it into a `Result<str, str>`.
+//! The status codes are the same numbers `toylang_rt` produces.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -42,6 +46,36 @@ thread_local! {
     static RANDOM_STATE: RefCell<Option<u64>> = const { RefCell::new(None) };
 }
 
+// RUNTIME-IO: failure status of the most recent payload-carrying call,
+// one slot per operation kind. `0` = success; the failure vocabulary
+// matches `toylang_rt`'s `IO_*` constants and is mapped to reason
+// strings in `core/std/io.t`.
+thread_local! {
+    static READ_FILE_STATUS: Cell<u64> = const { Cell::new(0) };
+    static ENV_STATUS: Cell<u64> = const { Cell::new(0) };
+}
+
+const IO_OK: u64 = 0;
+const IO_NOT_FOUND: u64 = 1;
+const IO_PERMISSION_DENIED: u64 = 2;
+const IO_IS_A_DIRECTORY: u64 = 3;
+const IO_READ_ERROR: u64 = 4;
+
+/// Map an `std::io::Error` to the RUNTIME-IO status vocabulary. The
+/// errno values (ENOENT 2, EPERM 1, EACCES 13, EISDIR 21) agree with
+/// `toylang_rt`'s `io_status_from_errno`. Errors without a raw errno
+/// (e.g. non-UTF-8 contents, `InvalidData`) count as read errors —
+/// the compiled backends do not validate UTF-8, which stays a
+/// documented divergence for invalid files.
+fn status_from_io_error(err: &std::io::Error) -> u64 {
+    match err.raw_os_error() {
+        Some(2) => IO_NOT_FOUND,
+        Some(1) | Some(13) => IO_PERMISSION_DENIED,
+        Some(21) => IO_IS_A_DIRECTORY,
+        _ => IO_READ_ERROR,
+    }
+}
+
 pub fn set_program_args(args: Vec<String>) {
     IO_ARGS.with(|a| *a.borrow_mut() = args);
 }
@@ -58,7 +92,9 @@ pub fn build_io_registry() -> HashMap<&'static str, ExternFn> {
     m.insert("__extern_io_argc_u64", io_argc);
     m.insert("__extern_io_arg_str", io_arg);
     m.insert("__extern_io_env_str", io_env);
+    m.insert("__extern_io_env_status", io_env_status);
     m.insert("__extern_io_read_file_str", io_read_file);
+    m.insert("__extern_io_read_file_status", io_read_file_status);
     m.insert("__extern_io_file_exists_bool", io_file_exists);
     m.insert("__extern_io_random_u64", io_random);
     m.insert("__extern_io_random_seed", io_random_seed);
@@ -164,7 +200,9 @@ fn io_arg(args: &[Value]) -> Result<Value, InterpreterError> {
     Ok(str_result(text))
 }
 
-/// The value of the environment variable `name`; `""` when unset.
+/// The value of the environment variable `name`. RUNTIME-IO: records
+/// the failure status (unset) for the paired `io_env_status`, which
+/// the stdlib wrapper reads to build the `Result`.
 fn io_env(args: &[Value]) -> Result<Value, InterpreterError> {
     if args.len() != 1 {
         return Err(InterpreterError::FunctionParameterMismatch {
@@ -174,10 +212,33 @@ fn io_env(args: &[Value]) -> Result<Value, InterpreterError> {
         });
     }
     let name = str_arg(&args[0], "__extern_io_env_str")?;
-    Ok(str_result(std::env::var(&name).unwrap_or_default()))
+    match std::env::var(&name) {
+        Ok(value) => {
+            ENV_STATUS.with(|s| s.set(IO_OK));
+            Ok(str_result(value))
+        }
+        Err(std::env::VarError::NotPresent) => {
+            ENV_STATUS.with(|s| s.set(IO_NOT_FOUND));
+            Ok(str_result(String::new()))
+        }
+        Err(std::env::VarError::NotUnicode(_)) => {
+            ENV_STATUS.with(|s| s.set(IO_READ_ERROR));
+            Ok(str_result(String::new()))
+        }
+    }
 }
 
-/// The contents of the file at `path`; `""` when it cannot be read.
+/// RUNTIME-IO: the status of the most recent `io_env` call on this
+/// thread. The stdlib wrapper calls this immediately after the
+/// payload call, so the pair is atomic from toylang's point of view.
+fn io_env_status(_args: &[Value]) -> Result<Value, InterpreterError> {
+    Ok(u64_result(ENV_STATUS.with(|s| s.get())))
+}
+
+/// The contents of the file at `path`. RUNTIME-IO: records the failure
+/// status for the paired `io_read_file_status`, which the stdlib
+/// wrapper reads to build the `Result`. A non-UTF-8 file is a read
+/// error (the compiled backends read raw bytes; see the module docs).
 fn io_read_file(args: &[Value]) -> Result<Value, InterpreterError> {
     if args.len() != 1 {
         return Err(InterpreterError::FunctionParameterMismatch {
@@ -187,7 +248,22 @@ fn io_read_file(args: &[Value]) -> Result<Value, InterpreterError> {
         });
     }
     let path = str_arg(&args[0], "__extern_io_read_file_str")?;
-    Ok(str_result(std::fs::read_to_string(&path).unwrap_or_default()))
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => {
+            READ_FILE_STATUS.with(|s| s.set(IO_OK));
+            Ok(str_result(contents))
+        }
+        Err(err) => {
+            READ_FILE_STATUS.with(|s| s.set(status_from_io_error(&err)));
+            Ok(str_result(String::new()))
+        }
+    }
+}
+
+/// RUNTIME-IO: the status of the most recent `io_read_file` call on
+/// this thread. Paired with `io_read_file` like `io_env_status`.
+fn io_read_file_status(_args: &[Value]) -> Result<Value, InterpreterError> {
+    Ok(u64_result(READ_FILE_STATUS.with(|s| s.get())))
 }
 
 /// Whether the file at `path` exists.

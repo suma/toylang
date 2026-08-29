@@ -332,7 +332,7 @@ pub fn parse_equality(parser: &mut Parser) -> ParserResult<ExprRef> {
 }
 
 pub fn parse_relational(parser: &mut Parser) -> ParserResult<ExprRef> {
-    let lhs = parse_shift(parser)?;
+    let lhs = parse_null_coalesce(parser)?;
     let op1 = match parser.peek() {
         Some(Kind::LT) => Operator::LT,
         Some(Kind::LE) => Operator::LE,
@@ -343,7 +343,7 @@ pub fn parse_relational(parser: &mut Parser) -> ParserResult<ExprRef> {
 
     let op_location = parser.current_source_location();
     parser.next();
-    let rhs1 = parse_shift(parser)?;
+    let rhs1 = parse_null_coalesce(parser)?;
 
     // Single comparison: no chain → plain binary expr. Spanned over the
     // whole comparison for the same reason as `parse_binary_impl`.
@@ -390,7 +390,7 @@ pub fn parse_relational(parser: &mut Parser) -> ParserResult<ExprRef> {
             _ => break,
         };
         parser.next();
-        let rhs = parse_shift(parser)?;
+        let rhs = parse_null_coalesce(parser)?;
 
         let counter = parser.synthetic_counter;
         parser.synthetic_counter += 1;
@@ -437,6 +437,58 @@ pub fn parse_relational(parser: &mut Parser) -> ParserResult<ExprRef> {
     stmts.push(result_stmt);
 
     Ok(parser.ast_builder.block_expr(stmts, Some(location)))
+}
+
+/// `a ?? b` — null-coalesce. Sits between the comparison operators
+/// (which bind tighter) and the shift operators (which bind looser),
+/// so `a ?? b == c` groups as `(a ?? b) == c` — coalesce to get the
+/// value, then compare. Right-associative: `a ?? b ?? c` groups as
+/// `a ?? (b ?? c)`, which is the only typing that chains.
+///
+/// The node itself is sugar: the type checker rewrites it to a lazy
+/// `match` (see `Expr::NullCoalesce`), so the default operand `b` is
+/// only evaluated when `a` is `None` / `Err` — `unwrap_or`'s shape,
+/// not its eager call.
+pub fn parse_null_coalesce(parser: &mut Parser) -> ParserResult<ExprRef> {
+    parser.check_and_increment_recursion()?;
+    let result = parse_null_coalesce_impl(parser);
+    parser.decrement_recursion();
+    result
+}
+
+fn parse_null_coalesce_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
+    let lhs = parse_shift(parser)?;
+    if parser.peek() != Some(&Kind::DoubleQuestion) {
+        return Ok(lhs);
+    }
+    // A `??` that starts a new line begins a fresh expression, not a
+    // continuation of this one — the same rule as binary `-`.
+    if parser.has_newline_before_current_token() {
+        return Ok(lhs);
+    }
+    let location = parser.current_source_location();
+    parser.next();
+    // Right-associativity: recurse at this level for the rhs.
+    let rhs = parse_null_coalesce(parser)?;
+    let counter = parser.synthetic_counter;
+    parser.synthetic_counter += 1;
+    let t_sym = parser
+        .string_interner
+        .get_or_intern(format!("__coalesce_t_{}", counter).as_str());
+    let v_sym = parser
+        .string_interner
+        .get_or_intern(format!("__coalesce_v_{}", counter).as_str());
+    let e_sym = parser
+        .string_interner
+        .get_or_intern(format!("__coalesce_e_{}", counter).as_str());
+    Ok(parser.ast_builder.null_coalesce_expr(
+        lhs,
+        rhs,
+        t_sym,
+        v_sym,
+        e_sym,
+        Some(location),
+    ))
 }
 
 pub fn parse_shift(parser: &mut Parser) -> ParserResult<ExprRef> {

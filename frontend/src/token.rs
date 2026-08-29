@@ -112,6 +112,7 @@ pub enum Kind {
     Exclamation, // !
     At,          // @ — labelled-loop prefix (`@outer: while ...`, `break @outer`)
     Question,    // ? — postfix early-return operator (`expr?` for Result / Option)
+    DoubleQuestion, // ?? — null-coalesce (`opt ?? default`, desugared to a lazy match)
 
     Equal,
 

@@ -330,6 +330,21 @@ pub enum Expr {
         /// reconstructed `Result::Err(E2)` (`__try_err_<n>`).
         result_binding: DefaultSymbol,
     },
+    /// `a ?? b` — null-coalesce. The parser pre-interns three synthetic
+    /// symbols (scrutinee / success / error bindings) because the type
+    /// checker holds an immutable `&DefaultStringInterner` and can't
+    /// intern new strings itself. The type checker rewrites the node
+    /// in place to `Block { val t = a; match t { Some(v) => v, None => b } }`
+    /// (analogously `Ok` / `Err` for `Result`), so backends never
+    /// observe the NullCoalesce node and the default operand stays
+    /// lazy — it is only evaluated on the `None` / `Err` path.
+    NullCoalesce {
+        lhs: ExprRef,
+        rhs: ExprRef,
+        scrutinee_binding: DefaultSymbol,
+        success_binding: DefaultSymbol,
+        error_binding: DefaultSymbol,
+    },
     /// `P { x: 1i64, ..base }` — struct update syntax. The parser emits
     /// this node; the type checker rewrites it in place (it is the only
     /// place that knows `P`'s full field list) into

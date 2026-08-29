@@ -34,6 +34,7 @@ mod tests {
             builtin_methods: TypeCheckerVisitor::create_builtin_method_registry(),
             current_fn_return_type: None,
             tuple_struct_rewrites: Default::default(),
+            null_coalesce_lhs_types: HashMap::new(),
         }
     }
 

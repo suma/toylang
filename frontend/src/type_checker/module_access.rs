@@ -55,6 +55,11 @@ impl<'a> TypeCheckerVisitor<'a> {
         // that every body has been checked.
         self.apply_tuple_struct_rewrites();
 
+        // NULL-COALESCE: replace the `a ?? b` nodes that surfaced
+        // through direct `accept_expr` dispatch (and were typed but not
+        // rewritten) with their lazy `val` + `match` blocks.
+        self.apply_null_coalesce_rewrites();
+
         // Report in source order. Functions are checked in declaration
         // order but a call site can pull a callee's body forward
         // (`type_check_forward_ref`), so collection order doesn't match

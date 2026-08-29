@@ -100,6 +100,9 @@ mod module_property_tests;
 #[path = "move_check_tests.rs"]
 mod move_check_tests;
 
+#[path = "null_coalesce_tests.rs"]
+mod null_coalesce_tests;
+
 #[path = "region_tests.rs"]
 mod region_tests;
 

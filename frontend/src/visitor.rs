@@ -82,6 +82,16 @@ pub trait ExprVisitor {
     fn visit_try(&mut self, _inner: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         Ok(TypeDecl::Unknown)
     }
+    /// `a ?? b` — null-coalesce. Intercepted in `visit_expr` (the
+    /// desugar needs the node's own `ExprRef` to rewrite in place),
+    /// so this default is only reached through direct dispatch.
+    fn visit_null_coalesce(
+        &mut self,
+        _lhs: &ExprRef,
+        _rhs: &ExprRef,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        Ok(TypeDecl::Unknown)
+    }
     /// `P { x: 1i64, ..base }` — struct update syntax.
     fn visit_struct_update(
         &mut self,

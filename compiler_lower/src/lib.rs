@@ -969,6 +969,12 @@ impl<'a> FunctionLower<'a> {
             Expr::Try { inner, .. } => {
                 self.walk_closure_for_captures(&inner, bound, out, seen);
             }
+            // `a ?? b` — both operands are ordinary expressions; same
+            // defence-in-depth (the desugar runs before lowering).
+            Expr::NullCoalesce { lhs, rhs, .. } => {
+                self.walk_closure_for_captures(&lhs, bound, out, seen);
+                self.walk_closure_for_captures(&rhs, bound, out, seen);
+            }
             // `P { x: e, ..base }` — same story: the type checker
             // rewrites it to a `Block` before lowering.
             Expr::StructUpdate { fields, base, .. } => {

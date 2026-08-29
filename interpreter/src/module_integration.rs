@@ -352,6 +352,17 @@ impl<'a> AstIntegrationContext<'a> {
                     self.map_exprs(args, "MethodCall argument")?,
                 ))
             }
+            Expr::NullCoalesce { lhs, rhs, scrutinee_binding, success_binding, error_binding } => {
+                // `a ?? b` — both operands and the three synthetic
+                // binding symbols carry module-local interned ids.
+                Ok(Expr::NullCoalesce {
+                    lhs: self.map_expr(lhs, "NullCoalesce lhs")?,
+                    rhs: self.map_expr(rhs, "NullCoalesce rhs")?,
+                    scrutinee_binding: self.remap_symbol(*scrutinee_binding)?,
+                    success_binding: self.remap_symbol(*success_binding)?,
+                    error_binding: self.remap_symbol(*error_binding)?,
+                })
+            }
             // Add other expression types as needed
             _ => Err(format!("Unsupported expression type for remapping: {:?}", expr))
         }

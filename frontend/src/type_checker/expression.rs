@@ -75,6 +75,14 @@ impl<'a> TypeCheckerVisitor<'a> {
             return self.desugar_try_expr(*expr, *inner);
         }
 
+        // `a ?? b` — null-coalesce. Same in-place rewrite contract as
+        // `Try` above: the desugar needs the node's own ExprRef, and
+        // after rewriting the same ExprRef holds a `Block` (val +
+        // match) that every later visitor sees.
+        if let Expr::NullCoalesce { lhs, rhs, .. } = &expr_obj {
+            return self.desugar_null_coalesce(*expr, *lhs, *rhs);
+        }
+
         if let Some(result) = self.intercept_struct_update(expr)? {
             return Ok(result);
         }
@@ -1893,6 +1901,13 @@ impl<'a> TypeCheckerVisitor<'a> {
             Expr::Try { inner, .. } => {
                 self.collect_closure_free_vars(inner, bound, out, seen);
             }
+            // `a ?? b` — both operands are ordinary expressions (the
+            // desugar moves them into a `val` + `match`); same
+            // defence-in-depth as `Try`.
+            Expr::NullCoalesce { lhs, rhs, .. } => {
+                self.collect_closure_free_vars(lhs, bound, out, seen);
+                self.collect_closure_free_vars(rhs, bound, out, seen);
+            }
             // `P { x: e, ..base }` — same defence-in-depth as `Try`:
             // the desugar normally runs first, but the written field
             // values and the base are ordinary expressions.
@@ -2264,7 +2279,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let success_body = self
             .core
             .expr_pool
-            .add(Expr::Cast(v_ident, success_type));
+            .add(Expr::Cast(v_ident, success_type.clone()));
         let success_arm = MatchArm {
             pattern: success_pattern,
             guard: None,
@@ -2422,6 +2437,367 @@ impl<'a> TypeCheckerVisitor<'a> {
         // miss (no prior cache entry for try_ref), so it fetches the
         // updated Expr (now `Block`) and processes it normally.
         self.visit_expr(&try_ref)
+    }
+
+    /// `??` operator desugar. The parser emits `Expr::NullCoalesce`;
+    /// we rewrite the pool entry in place so backends only ever see
+    /// the resulting `Block`. The desugar depends on the left type:
+    ///
+    /// ```text
+    /// a ?? b    where a : Option<T>
+    /// // becomes:
+    /// {
+    ///     val __coalesce_t_N = a
+    ///     match __coalesce_t_N {
+    ///         Option::Some(__coalesce_v_N) => __coalesce_v_N as T,
+    ///         Option::None => b,
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// (and analogously for `Result<T, E>` with `Ok` / `Err(e)`, the
+    /// error binding unused). The rewrite makes the default operand
+    /// lazy — `b` only evaluates on the `None` / `Err` path, which a
+    /// plain `a.unwrap_or(b)` call could not promise. The `as T` on
+    /// the success arm pins the arm's static type for the AOT's
+    /// `value_scalar` inference, the same trick `?` uses.
+    pub fn desugar_null_coalesce(
+        &mut self,
+        nc_ref: ExprRef,
+        lhs: ExprRef,
+        rhs: ExprRef,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        self.desugar_null_coalesce_inner(nc_ref, lhs, rhs, true)
+    }
+
+    /// Post-pass variant: rewrite without the re-visit. Runs after all
+    /// bodies have been checked, when the checker's function scopes
+    /// are gone — re-visiting could not resolve the operands' names
+    /// anyway. Arm compatibility was already enforced by
+    /// `visit_null_coalesce` during checking.
+    pub fn rewrite_null_coalesce_only(
+        &mut self,
+        nc_ref: ExprRef,
+        lhs: ExprRef,
+        rhs: ExprRef,
+    ) -> Result<(), TypeCheckError> {
+        self.desugar_null_coalesce_inner(nc_ref, lhs, rhs, false).map(|_| ())
+    }
+
+    fn desugar_null_coalesce_inner(
+        &mut self,
+        nc_ref: ExprRef,
+        lhs: ExprRef,
+        rhs: ExprRef,
+        revisit: bool,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        // Pull the pre-interned synthetic symbols out of the node
+        // before visiting the operands (visiting may mutate
+        // `expr_pool` and invalidate clones taken later).
+        let (t_sym, v_sym, e_sym) = match self.core.expr_pool.get(&nc_ref) {
+            Some(Expr::NullCoalesce {
+                scrutinee_binding,
+                success_binding,
+                error_binding,
+                ..
+            }) => (scrutinee_binding, success_binding, error_binding),
+            _ => {
+                return Err(TypeCheckError::generic_error(
+                    "desugar_null_coalesce: pool entry no longer a NullCoalesce node",
+                ));
+            }
+        };
+
+        // Visit both operands first: lhs for its type, rhs so its
+        // internals are checked and its type participates in the
+        // standard match-arm unification on the re-visit. The
+        // post-pass path (`revisit == false`) skips this — scopes are
+        // gone by then — and reads the checked lhs type back from
+        // `null_coalesce_lhs_types` instead (the checker's type cache
+        // is per-function and already cleared).
+        let lhs_ty = if revisit {
+            let lhs_ty = self.visit_expr(&lhs)?;
+            self.visit_expr(&rhs)?;
+            lhs_ty
+        } else {
+            self.null_coalesce_lhs_types.get(&lhs).map(|(t, _)| t.clone()).ok_or_else(|| {
+                TypeCheckError::generic_error(
+                    "desugar_null_coalesce: left operand was never typed",
+                )
+            })?
+        };
+
+        // Resolve the enum name (same three spellings the rest of the
+        // type checker accepts).
+        let enum_name = match &lhs_ty {
+            TypeDecl::Enum(name, _) => *name,
+            TypeDecl::Identifier(name) if self.context.enum_definitions.contains_key(name) => *name,
+            TypeDecl::Struct(name, _) if self.context.enum_definitions.contains_key(name) => *name,
+            _ => {
+                return Err(TypeCheckError::generic_error(&format!(
+                    "`??` requires Option<T> or Result<T, E>, got `{}`",
+                    self.type_name_for_error(&lhs_ty)
+                )));
+            }
+        };
+        let enum_name_str = self
+            .core
+            .string_interner
+            .resolve(enum_name)
+            .unwrap_or("?")
+            .to_string();
+        let (success_variant, failure_variant, failure_is_unit) = match enum_name_str.as_str() {
+            "Option" => ("Some", "None", true),
+            "Result" => ("Ok", "Err", false),
+            _ => {
+                return Err(TypeCheckError::generic_error(&format!(
+                    "`??` requires Option or Result, got enum `{}`",
+                    enum_name_str
+                )));
+            }
+        };
+
+        // The success arm yields the Option/Result's first type arg.
+        // An unresolved one (e.g. the lhs is a bare `Option::None`)
+        // is decided by the default operand, whose arms must match it
+        // anyway. The resolved pair is recorded for the post-pass,
+        // which re-derives nothing on its own.
+        let rhs_ty_in_revisit = if revisit {
+            self.get_cached_type(&rhs).cloned().unwrap_or(TypeDecl::Unknown)
+        } else {
+            TypeDecl::Unknown
+        };
+        let mut success_type = match &lhs_ty {
+            TypeDecl::Enum(_, args) | TypeDecl::Struct(_, args) if !args.is_empty() => {
+                args[0].clone()
+            }
+            _ => TypeDecl::Unknown,
+        };
+        let decided_ty = |ty: &TypeDecl| {
+            !matches!(ty, TypeDecl::Unknown | TypeDecl::Number | TypeDecl::Generic(_))
+        };
+        if revisit {
+            if !decided_ty(&success_type) && decided_ty(&rhs_ty_in_revisit) {
+                success_type = rhs_ty_in_revisit;
+            }
+            self.null_coalesce_lhs_types
+                .insert(lhs, (lhs_ty.clone(), success_type.clone()));
+        } else if let Some((_, stored_success)) = self.null_coalesce_lhs_types.get(&lhs) {
+            success_type = stored_success.clone();
+        }
+
+        // The scrutinee binding's annotation: the lhs type with its
+        // success-type parameter replaced by the resolved
+        // `success_type`. A bare `Option::None` lhs arrives as
+        // `Option<Generic(T)>`, and an annotation that still says
+        // Generic would make the pattern binding `Generic(T)` — which
+        // then cannot cast to the default's concrete type.
+        let success_decided =
+            !matches!(success_type, TypeDecl::Unknown | TypeDecl::Number | TypeDecl::Generic(_));
+        let scrutinee_ty = if success_decided {
+            match &lhs_ty {
+                TypeDecl::Enum(name, args) if !args.is_empty() => {
+                    let mut new_args = args.clone();
+                    new_args[0] = success_type.clone();
+                    TypeDecl::Enum(*name, new_args)
+                }
+                TypeDecl::Struct(name, args) if !args.is_empty() => {
+                    let mut new_args = args.clone();
+                    new_args[0] = success_type.clone();
+                    TypeDecl::Struct(*name, new_args)
+                }
+                _ => lhs_ty.clone(),
+            }
+        } else {
+            lhs_ty.clone()
+        };
+
+        // Variant symbols are already interned by the stdlib auto-load.
+        let success_sym = self.core.string_interner.get(success_variant).ok_or_else(|| {
+            TypeCheckError::generic_error(&format!(
+                "`??` desugar: `{}` variant symbol not interned — is stdlib loaded?",
+                success_variant
+            ))
+        })?;
+        let failure_sym = self.core.string_interner.get(failure_variant).ok_or_else(|| {
+            TypeCheckError::generic_error(&format!(
+                "`??` desugar: `{}` variant symbol not interned — is stdlib loaded?",
+                failure_variant
+            ))
+        })?;
+
+        // Success arm: `Some(__coalesce_v_N) => __coalesce_v_N as T`
+        // (analogously `Ok`).
+        let success_pattern = Pattern::EnumVariant(
+            enum_name,
+            success_sym,
+            vec![Pattern::Name(v_sym)],
+        );
+        let v_ident = self.core.expr_pool.add(Expr::Identifier(v_sym));
+        let success_body = self
+            .core
+            .expr_pool
+            .add(Expr::Cast(v_ident, success_type.clone()));
+        let success_arm = MatchArm {
+            pattern: success_pattern,
+            guard: None,
+            body: success_body,
+        };
+
+        // Failure arm: `None => b` (unit pattern), or
+        // `Err(__coalesce_e_N) => b` — the error binding exists only
+        // to keep the pattern shape regular; the body never reads it.
+        let failure_pattern = if failure_is_unit {
+            Pattern::EnumVariant(enum_name, failure_sym, vec![])
+        } else {
+            Pattern::EnumVariant(enum_name, failure_sym, vec![Pattern::Name(e_sym)])
+        };
+        let failure_arm = MatchArm {
+            pattern: failure_pattern,
+            guard: None,
+            body: rhs,
+        };
+
+        // Bind the lhs to a synthetic temp before matching on it, so
+        // the scrutinee stays a bare identifier (the AOT match
+        // lowering's accepted shape — see `desugar_try_expr`). The
+        // binding carries the lhs type as its annotation: the AOT
+        // needs an explicit type to instantiate a generic enum
+        // (`Option<u64>`), and an unannotated `val t = o` gives it
+        // nothing to instantiate from.
+        let scrutinee_ident = self.core.expr_pool.add(Expr::Identifier(t_sym));
+        let bind_stmt = self
+            .core
+            .stmt_pool
+            .add(Stmt::Val(t_sym, Some(scrutinee_ty), lhs));
+        let match_expr = self.core.expr_pool.add(Expr::Match(
+            scrutinee_ident,
+            vec![success_arm, failure_arm],
+        ));
+        let match_stmt = self
+            .core
+            .stmt_pool
+            .add(Stmt::Expression(match_expr));
+
+        // Rewrite the NullCoalesce slot in place to the outer block.
+        self.core.expr_pool.update(
+            &nc_ref,
+            Expr::Block(vec![bind_stmt, match_stmt]),
+        );
+
+        // A ref reached through `check_expr_located` (conditions,
+        // tails) may already carry a cached type from the typing pass;
+        // drop it so the re-visit below actually types the rewritten
+        // Block (arm unification included) instead of returning the
+        // stale entry.
+        self.optimization.type_cache.remove(&nc_ref);
+
+        if !revisit {
+            return Ok(success_type.clone());
+        }
+
+        // Re-visit the rewritten node: the match's arm unification
+        // and the block's tail typing run through the standard paths.
+        self.visit_expr(&nc_ref)
+    }
+
+    /// `a ?? b` reached through direct `accept_expr` dispatch (binary
+    /// / unary operands, conditions, tails — the routes that bypass
+    /// `visit_expr`'s intercept). Compute the type without the
+    /// rewrite: operands are visited and the success type returned,
+    /// so the enclosing expression types correctly. The pool rewrite
+    /// itself is deferred to [`Self::apply_null_coalesce_rewrites`],
+    /// which runs once every body has been checked and replaces the
+    /// node with the lazy `val` + `match` block backends evaluate.
+    pub fn visit_null_coalesce(
+        &mut self,
+        lhs: &ExprRef,
+        rhs: &ExprRef,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        let lhs_ty = self.visit_expr(lhs)?;
+        let rhs_ty = self.visit_expr(rhs)?;
+
+        let enum_name = match &lhs_ty {
+            TypeDecl::Enum(name, _) => *name,
+            TypeDecl::Identifier(name) if self.context.enum_definitions.contains_key(name) => *name,
+            TypeDecl::Struct(name, _) if self.context.enum_definitions.contains_key(name) => *name,
+            _ => {
+                return Err(TypeCheckError::generic_error(&format!(
+                    "`??` requires Option<T> or Result<T, E>, got `{}`",
+                    self.type_name_for_error(&lhs_ty)
+                )));
+            }
+        };
+        let enum_name_str = self
+            .core
+            .string_interner
+            .resolve(enum_name)
+            .unwrap_or("?")
+            .to_string();
+        match enum_name_str.as_str() {
+            "Option" | "Result" => {}
+            _ => {
+                return Err(TypeCheckError::generic_error(&format!(
+                    "`??` requires Option or Result, got enum `{}`",
+                    enum_name_str
+                )));
+            }
+        }
+        let mut success_type = match &lhs_ty {
+            TypeDecl::Enum(_, args) | TypeDecl::Struct(_, args) if !args.is_empty() => {
+                args[0].clone()
+            }
+            _ => TypeDecl::Unknown,
+        };
+
+        // Arm compatibility, checked here because the post-pass
+        // rewrite runs after scopes are gone and cannot re-visit the
+        // desugared match. `Unknown` / `Number` operands stay
+        // undecided — the literal finalizer or the caller's context
+        // decides them later.
+        let decided = |ty: &TypeDecl| {
+            !matches!(ty, TypeDecl::Unknown | TypeDecl::Number | TypeDecl::Generic(_))
+        };
+        // An unresolved success type (e.g. the lhs is a bare
+        // `Option::None`) is decided by the default operand, whose
+        // arms must match it anyway.
+        if !decided(&success_type) && decided(&rhs_ty) {
+            success_type = rhs_ty.clone();
+        }
+        // Record the checked types for the post-pass rewrite (which
+        // runs after the per-function type cache is gone).
+        self.null_coalesce_lhs_types
+            .insert(*lhs, (lhs_ty.clone(), success_type.clone()));
+        if decided(&success_type)
+            && decided(&rhs_ty)
+            && !success_type.is_equivalent(&rhs_ty)
+        {
+            return Err(TypeCheckError::generic_error(&format!(
+                "`??` arms have incompatible types: `{}` (success) and `{}` (default)",
+                self.type_name_for_error(&success_type),
+                self.type_name_for_error(&rhs_ty),
+            )));
+        }
+        Ok(success_type)
+    }
+
+    /// Post-pass: replace every `Expr::NullCoalesce` the typing pass
+    /// did not already rewrite with the lazy `val` + `match` block.
+    /// Nodes in `visit_expr`-reached positions (val / var right-hand
+    /// sides) were rewritten during checking; the rest (operands,
+    /// conditions, tails) surface only here. Operand types are cache
+    /// hits by now, so this is cheap. Arm-mismatch errors that only
+    /// the desugared match can surface (e.g. `Option<u64> ?? str`)
+    /// are reported from here.
+    pub fn apply_null_coalesce_rewrites(&mut self) {
+        for index in 0..self.core.expr_pool.len() {
+            let expr_ref = ExprRef(index as u32);
+            if let Some(Expr::NullCoalesce { lhs, rhs, .. }) = self.core.expr_pool.get(&expr_ref)
+                && let Err(e) = self.rewrite_null_coalesce_only(expr_ref, lhs, rhs)
+            {
+                self.errors.push(e);
+            }
+        }
     }
 
     /// Fallback error-arm shape: `return <scrutinee>` — the scrutinee

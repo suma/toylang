@@ -12,6 +12,17 @@
 
 ### 2026-08-30
 
+- **NULL-COALESCE — `a ?? b` 演算子** — `Option::Some` / `Result::Ok` なら
+  中身、`None` / `Err` なら default。**default は遅延評価** (`match` への
+  desugar なので None / Err パスでのみ走る)。右結合、比較より密で shift 未満。
+  parser が `Expr::NullCoalesce` を emit、型検査が `val` + `match` Block に
+  書き換え — val rhs は visit 中に in-place、binary operand / 条件 / tail など
+  `visit_expr` を通らない位置は NEWTYPE と同じ record-then-apply の post-pass
+  (`apply_null_coalesce_rewrites`)。併せて bare `Option::None` lhs の未解決
+  success 型を default 側が決めるフォールバックと、scrutinee 注釈への焼き込み
+  (AOT の generic enum instantiate要件) を実装。テスト 11 件 + example
+  (3 バックエンド掃引)。
+
 - **FROM-INTO-ENUM-ERR — `?` の cross-error 変換が enum エラー型でも 3 バックエンドで動く** —
   desugar が出す `val e: MyErr = MyErr::from(s)` を AOT/JIT が
   lower できなかった (「unknown enum variant `MyErr::from`」)。
@@ -1461,7 +1472,6 @@
 
 ### 構文糖衣の候補 (NEW-FEATURES、未着手)
 
-- **`??` (null-coalesce)** ★ — `opt ?? default` で `unwrap_or` の糖衣。
 - **raw / multi-line string literal** ★ — `r"\path"` / `"""..."""`。lexer 拡張のみ。
 - **STR-INTERP-FMT の残** ★ — (a) user 型に spec を渡す API
   (`Display` の `to_str(&self)` は引数を取らない規約なので、

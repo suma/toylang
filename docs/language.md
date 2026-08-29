@@ -1026,6 +1026,7 @@ Listed lowest precedence first:
 | `\|\|` | Logical OR (short-circuit) |
 | `&&` | Logical AND (short-circuit) |
 | `==` `!=` `<` `<=` `>` `>=` | Comparison; result is `bool`. `str` compares **content**, not identity — `"h".concat("i") == "hi"` is true |
+| `??` | Null-coalesce; see [`??` operator](#-operator-null-coalesce) |
 | `\|` `^` `&` | Bitwise (integer) |
 | `<<` `>>` | Shift; rhs must be `u64` |
 | `..` | Range expression `start..end` (half-open) |
@@ -1164,6 +1165,63 @@ fn pipeline(a: i64, b: i64, c: i64) -> Result<i64, str> {
 
 Backends: all three (interpreter / cranelift JIT / AOT) execute
 the rewritten `match` directly.
+
+### `??` operator (null-coalesce)
+
+`a ?? b` yields `a`'s contained value when `a` is `Option::Some` /
+`Result::Ok`, and evaluates and yields `b` otherwise. It works on
+both `Option<T>` and `Result<T, E>`; the right operand must have the
+success type `T`.
+
+```rust
+val port: Option<u64> = config.get("port")
+val p = port ?? 8080u64
+
+val r: Result<u64, str> = read_count()
+val n = r ?? 0u64
+```
+
+The operator is **right-associative** (`a ?? b ?? c` groups as
+`a ?? (b ?? c)` — the only chaining that types) and binds tighter
+than the comparison operators but looser than the shift / arithmetic
+operators: `a ?? b == c` groups as `(a ?? b) == c`.
+
+Like `?`, the desugar happens in the type checker — the parser emits
+`Expr::NullCoalesce`, which is rewritten into:
+
+```text
+a ?? b
+# behaves like:
+{
+    val __coalesce_t = a
+    match __coalesce_t {
+        Option::Some(__coalesce_v) => __coalesce_v as T,
+        Option::None => b,
+    }
+}
+```
+
+(analogously `Ok(v) => v` / `Err(_) => b` for `Result`). Because the
+rewrite is a `match`, the default operand `b` is **lazy** — it only
+evaluates on the `None` / `Err` path. This is `unwrap_or`'s result
+with `unwrap_or_else`'s evaluation discipline; when the default is a
+plain value the two are equivalent.
+
+**Constraints:**
+
+- The left operand must be `Option<T>` or `Result<T, E>`. Anything
+  else (including a bare value) is a type error.
+- Both arms must have the same type: `opt ?? "str"` where
+  `opt: Option<u64>` is a type error. An unresolved success type
+  (the lhs is a bare `Option::None`) is decided by the default
+  operand.
+- The synthetic binding names are `__coalesce_t_<n>` /
+  `__coalesce_v_<n>` / `__coalesce_e_<n>`, pre-interned per instance
+  like `?`'s.
+
+Backends: all three (interpreter / cranelift JIT / AOT) execute the
+rewritten `match` directly; the example
+`interpreter/example/null_coalesce.t` is swept across all of them.
 
 ### Operator overload (struct receivers)
 

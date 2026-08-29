@@ -89,6 +89,10 @@ pub enum ExprType {
     /// parser emits it and the type checker rewrites it in place, so
     /// backends never observe it.
     StructUpdate = 41,
+    /// `a ?? b` — null-coalesce. Like `Try`, the parser emits it and
+    /// the type checker rewrites it in place to a lazy `match`, so
+    /// backends never observe it.
+    NullCoalesce = 42,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -490,6 +494,21 @@ impl ExprPool {
                     result_binding,
                 ]);
             }
+            Expr::NullCoalesce { lhs, rhs, scrutinee_binding, success_binding, error_binding } => {
+                // Same packing scheme as `Try`: both operands live in
+                // the lhs / rhs columns and the three synthetic
+                // binding symbols in `symbol_list` (scrutinee,
+                // success, error) so `get` can reconstruct without a
+                // dedicated column.
+                self.expr_types[index] = ExprType::NullCoalesce;
+                self.lhs[index] = Some(lhs);
+                self.rhs[index] = Some(rhs);
+                self.symbol_list[index] = Some(vec![
+                    scrutinee_binding,
+                    success_binding,
+                    error_binding,
+                ]);
+            }
         }
     }
 
@@ -742,6 +761,20 @@ impl ExprPool {
                         panic_msg: symbols[3],
                         converted_binding: symbols[0],
                         result_binding: symbols[0],
+                    })
+                } else {
+                    None
+                }
+            }
+            ExprType::NullCoalesce => {
+                let symbols = self.symbol_list[index].clone()?;
+                if symbols.len() == 3 {
+                    Some(Expr::NullCoalesce {
+                        lhs: self.lhs[index]?,
+                        rhs: self.rhs[index]?,
+                        scrutinee_binding: symbols[0],
+                        success_binding: symbols[1],
+                        error_binding: symbols[2],
                     })
                 } else {
                     None

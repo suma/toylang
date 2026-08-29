@@ -158,6 +158,28 @@ impl AstBuilder {
         expr_ref
     }
 
+    /// `a ?? b` — null-coalesce. Synthetic binding symbols are
+    /// pre-interned by the parser; see `Expr::NullCoalesce`.
+    pub fn null_coalesce_expr(
+        &mut self,
+        lhs: ExprRef,
+        rhs: ExprRef,
+        scrutinee_binding: DefaultSymbol,
+        success_binding: DefaultSymbol,
+        error_binding: DefaultSymbol,
+        location: Option<SourceLocation>,
+    ) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::NullCoalesce {
+            lhs,
+            rhs,
+            scrutinee_binding,
+            success_binding,
+            error_binding,
+        });
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
+
     pub fn struct_update_expr(
         &mut self,
         type_name: DefaultSymbol,

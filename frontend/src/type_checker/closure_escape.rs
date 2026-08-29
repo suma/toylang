@@ -241,6 +241,12 @@ impl<'a> Scan<'a> {
                 self.walk_expr(obj)
             }
             Expr::Cast(inner, _) | Expr::Try { inner, .. } => self.walk_expr(inner),
+            // `a ?? b` — both operands are uses as a value (the
+            // desugar moves them into a `val` + `match`).
+            Expr::NullCoalesce { lhs, rhs, .. } => {
+                self.walk_expr(lhs);
+                self.walk_expr(rhs);
+            }
             Expr::SliceAssign(object, start, end, value) => {
                 self.walk_expr(object);
                 for bound in [start, end].into_iter().flatten() {

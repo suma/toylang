@@ -491,6 +491,13 @@ impl MoveCheck<'_> {
             Expr::Cast(inner, _) | Expr::Try { inner, .. } => {
                 self.walk_expr(inner, Use::Read, conditional)
             }
+            // `a ?? b` — both operands are read (the desugar moves
+            // them into a `val` + `match`); the type checker rewrites
+            // the node before any backend sees it.
+            Expr::NullCoalesce { lhs, rhs, .. } => {
+                self.walk_expr(lhs, Use::Read, conditional);
+                self.walk_expr(rhs, Use::Read, conditional);
+            }
             Expr::Range(start, end) => {
                 self.walk_expr(start, Use::Read, conditional);
                 self.walk_expr(end, Use::Read, conditional);

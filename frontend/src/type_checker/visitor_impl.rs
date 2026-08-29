@@ -60,6 +60,7 @@ impl AcceptableExpr for Expr {
                 visitor.visit_closure(params, return_type, body)
             }
             Expr::Try { inner, .. } => visitor.visit_try(inner),
+            Expr::NullCoalesce { lhs, rhs, .. } => visitor.visit_null_coalesce(lhs, rhs),
             Expr::StructUpdate { type_name, fields, base, .. } => {
                 visitor.visit_struct_update(type_name, fields, base)
             }
@@ -216,6 +217,10 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
 
     fn visit_binary(&mut self, op: &Operator, lhs: &ExprRef, rhs: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         self.visit_binary(op, lhs, rhs)
+    }
+
+    fn visit_null_coalesce(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_null_coalesce(lhs, rhs)
     }
 
     fn visit_block(&mut self, statements: &Vec<StmtRef>) -> Result<TypeDecl, TypeCheckError> {

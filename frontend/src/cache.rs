@@ -32,7 +32,7 @@ use crate::ast::module_interface::ModuleInterface;
 ///
 /// Mismatched versions are treated as a cache miss by
 /// [`load_full_module`].
-pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 24;
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 25;
 // v2: `File` gained `id` (JIT cache key) and `tests` (LLM-LOOP P4).
 // v3: `BuiltinFunctionSymbols` interns the MEMORY_PROFILING M4 counter
 // names, shifting every later symbol id.
@@ -60,6 +60,9 @@ pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 24;
 // bindings it captured (CLOSURE-CAPTURE E3). A cache written before
 // this reads back as `false`, which is the mode that takes copies, so
 // a stale entry loses the sharing rather than misapplying it.
+// v25: `Expr::NullCoalesce` — `a ?? b` (NULL-COALESCE). The parser
+// emits the node; a stale cache never contains one, but the AST
+// enum's serde shape changes, so the version moves with it.
 // Forgetting this bump is not a subtle failure: stale entries
 // deserialize into the new layout and the program silently comes out
 // wrong — every stdlib trait reported "is not defined". The M4 bump

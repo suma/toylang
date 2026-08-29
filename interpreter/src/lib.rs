@@ -630,6 +630,11 @@ fn check_typing_collecting(
     // before the move / never-allocates passes so they walk the same
     // named-struct AST the backends will lower.
     tc.apply_tuple_struct_rewrites();
+    // NULL-COALESCE: replace the `a ?? b` nodes that surfaced through
+    // direct `accept_expr` dispatch (and were typed but not rewritten)
+    // with their lazy `val` + `match` blocks. Same placement rationale
+    // as the tuple-struct rewrites above.
+    tc.apply_null_coalesce_rewrites();
     fn_errors.append(&mut tc.errors);
 
     // Report in source order. A call site can pull a callee's body

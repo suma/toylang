@@ -442,6 +442,12 @@ impl EvaluationContext<'_> {
             Expr::Try { inner, .. } => {
                 self.collect_closure_captures(inner, bound, out, seen);
             }
+            // `a ?? b` — both operands are ordinary expressions; the
+            // desugar runs before evaluation (defence-in-depth arm).
+            Expr::NullCoalesce { lhs, rhs, .. } => {
+                self.collect_closure_captures(lhs, bound, out, seen);
+                self.collect_closure_captures(rhs, bound, out, seen);
+            }
             // `P { x: e, ..base }` — likewise rewritten to a `Block`
             // holding a plain `StructLiteral` before evaluation.
             Expr::StructUpdate { fields, base, .. } => {

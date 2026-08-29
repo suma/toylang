@@ -280,6 +280,9 @@ fn a_broken_precondition_still_stops_every_backend() {
 /// reach every backend the same way — it is copied onto the impl's
 /// `MethodFunction` before lowering, so the three engines see one
 /// method carrying both sets of clauses.
+///
+/// The impl's own clause is an `ensures`: a postcondition may be
+/// strengthened, a precondition may not (DBC-LISKOV, `E0023`).
 #[test]
 fn trait_contract_reaches_every_backend() {
     let src = r#"
@@ -293,7 +296,7 @@ fn trait_contract_reaches_every_backend() {
 
         impl Shrink for B {
             fn shrink(self: Self, by: u64) -> u64
-                requires by < 100u64
+                ensures result > 0u64
             {
                 self.n - by
             }

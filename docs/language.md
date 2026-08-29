@@ -3836,6 +3836,17 @@ Rules:
   impl must keep the trait's parameter names, since a clause is an
   expression over them — renaming is a type error when the trait
   declares a contract.
+- An `impl` may **not add a `requires` clause of its own** (`[E0023]`).
+  A precondition is what callers are told to satisfy, and a caller
+  reaching the method through `&dyn Trait` or a `<T: Trait>` bound can
+  read the trait's clauses and nothing else — so an implementation that
+  demands more breaks calls that were written correctly. This holds
+  whether or not the trait declares a precondition: a trait that says
+  nothing lets callers pass anything the types allow. Move the clause
+  to the trait, or handle the case in the body. An **inherent** `impl`
+  (no trait) is unaffected — there is no promise to break.
+- An `impl` **may** add `ensures` clauses. Promising more than the
+  trait did breaks nobody, so both sets are checked, the trait's first.
 - Failures abort the call with `ContractViolation` and propagate to the
   process exit unless caught.
 - `ensures` clauses may call `old(expr)`, which is the value `expr` had

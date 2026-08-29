@@ -12,6 +12,15 @@
 
 ### 2026-08-29
 
+- **DBC-LISKOV (E0023)** — trait method の `impl` が自分の `requires` を
+  足すのを型検査で拒否するようにした。事前条件は「呼ぶ側が満たすべき
+  こと」で、`&dyn Trait` / `<T: Trait>` 経由の呼び出しは trait の節しか
+  読めないため、impl の追加要求は**正しく書かれた呼び出しを落とす**
+  (実際に落ちることを確認してから直した)。trait 側が無契約でも同じ
+  (「何も要求しない」より強い要求はすべて強化)。事後条件は逆向きに
+  健全なので従来どおり AND で足せる。inherent impl は対象外。
+  Eiffel の `require else` (意図的な緩和) は構文を足さず、
+  「節を書かなければよい」で代替する。
 - **CONTRACT-ELISION 拡張 (制御フロー)** — RUNTIME-TRAP guard の消去が
   `requires` だけでなく **`if` の条件と `for` の範囲**からも事実を取る
   ようになった。`if b != 0u64 { a / b }`、`if a < b { 0 } else { a - b }`

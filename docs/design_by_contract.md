@@ -402,9 +402,37 @@ cranelift `speed`）。cranelift 自身にはこれができない — 事実は
 
 **4. trait に書いた契約は impl に継承される — ただし引数名を変えないこと。**
 `trait` の method シグネチャに書いた `requires` / `ensures` は、その trait
-を実装する impl の method に自動で適用される。impl 側でも節を書けば、
-**trait のものが先、impl のものが後**という順で AND される（違反時の
-`clause #N` もその順）。
+を実装する impl の method に自動で適用される。
+
+**事前条件は impl 側で足せない (`[E0023]`)。** `requires` は「呼ぶ側が
+満たすべきこと」であり、`&dyn Trait` や `<T: Trait>` 経由で呼ぶコードは
+trait の節しか読めない。impl がそれ以上を要求すると、**正しく書かれた
+呼び出しが落ちる**:
+
+```rust
+trait Shrink {
+    fn shrink(&self, by: u64) -> u64
+        requires by > 0u64
+}
+impl Shrink for B {
+    fn shrink(&self, by: u64) -> u64
+        requires by < 100u64          # [E0023]
+    { self.n - by }
+}
+fn use_it(s: &dyn Shrink) -> u64 {
+    s.shrink(200u64)                  # `by > 0u64` は満たしている
+}
+```
+
+trait 側が契約を持たない場合も同じ — 「何も要求しない」より強い要求は
+すべて強化になる。直し方は (a) **節を trait に移す**（全実装が要求すべき
+ならこれが答え）、(b) body で処理して `Option` / `Result` を返すか
+`panic` する、(c) 型を変えてその値を渡せなくする。**inherent impl**
+（trait 無し）は対象外で、そこには従来どおり `requires` を書ける。
+
+**事後条件は逆で、impl 側で足してよい。** trait より強く約束することは
+誰も壊さないので、**trait のものが先、impl のものが後**という順で AND
+される（違反時の `clause #N` もその順）。
 
 契約は引数名を使った式なので、impl が引数名を変えると節が解決できない。
 その場合は型エラーで拒否される:
@@ -487,6 +515,11 @@ cranelift `speed`）。cranelift 自身にはこれができない — 事実は
   （Tips 4）、trait と impl の**両方**が `old(...)` を使っている場合は
   継承されない（スナップショットは位置で参照されるため、連結すると
   片方の番号がずれる）
+- **事前条件の意図的な緩和 (Eiffel の `require else`) は書けない** —
+  impl 側の `requires` は強化と区別できないので一律に拒否される
+  (`[E0023]`)。緩和したいときは節を書かなければよい（trait の
+  事前条件がそのまま適用され、それより多くを受け付けることは
+  呼ぶ側を壊さない）
 - **静的検証は `never_allocates` だけ** — 他の契約は実行時にのみ検査される
 
 - **名前付きタプル返し**（`-> (q: i64, r: i64)`）が無いので、複数の戻り値

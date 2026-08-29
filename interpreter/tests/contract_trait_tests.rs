@@ -67,20 +67,61 @@ fn a_trait_postcondition_applies_to_an_impl_that_omits_it() {
     assert!(err.contains("ensures"), "{err}");
 }
 
+/// DBC-LISKOV. A precondition is what callers are told to satisfy, and
+/// a caller holding `&dyn Shrink` can read the trait's clauses and
+/// nothing else. An impl that adds one of its own breaks calls that
+/// were written correctly, so it is refused.
 #[test]
-fn an_inherited_clause_is_reported_before_the_impls_own() {
-    // Both sides may carry clauses; the trait's come first, so a
-    // violation of the obligation the trait imposed is the one named.
-    let src = r#"
+fn an_impl_may_not_strengthen_the_precondition() {
+    let err = test_program(
+        r#"
         trait Shrink {
-            fn shrink(self: Self, by: u64) -> u64
+            fn shrink(&self, by: u64) -> u64
                 requires by > 0u64
         }
 
         struct B { n: u64 }
 
         impl Shrink for B {
-            fn shrink(self: Self, by: u64) -> u64
+            fn shrink(&self, by: u64) -> u64
+                requires by < 100u64
+            {
+                self.n - by
+            }
+        }
+
+        fn use_it(s: &dyn Shrink) -> u64 { s.shrink(200u64) }
+
+        fn main() -> u64 {
+            val b = B { n: 1000u64 }
+            use_it(&b)
+        }
+        "#,
+    )
+    .expect_err("the added precondition must be refused");
+    assert!(err.contains("E0023"), "{err}");
+    assert!(err.contains("`shrink`"), "{err}");
+    // The impl is still registered as implementing the trait, so the
+    // `&dyn` coercion does not fail on top of it: one error, not two.
+    assert!(!err.contains("E0001"), "{err}");
+}
+
+/// The same rule with no contract on the trait at all — the case that
+/// actually occurs. A trait that says nothing lets callers pass
+/// anything the types allow, so any clause the impl adds is stronger
+/// than that.
+#[test]
+fn an_impl_may_not_add_a_precondition_where_the_trait_has_none() {
+    let err = test_program(
+        r#"
+        trait Shrink {
+            fn shrink(&self, by: u64) -> u64
+        }
+
+        struct B { n: u64 }
+
+        impl Shrink for B {
+            fn shrink(&self, by: u64) -> u64
                 requires by < 100u64
             {
                 self.n - by
@@ -89,16 +130,76 @@ fn an_inherited_clause_is_reported_before_the_impls_own() {
 
         fn main() -> u64 {
             val b = B { n: 1000u64 }
-            b.shrink(REPLACE)
+            b.shrink(1u64)
         }
-    "#;
-    let trait_broken = test_program(&src.replace("REPLACE", "0u64"))
-        .expect_err("the trait clause must fire");
-    assert!(trait_broken.contains("clause #1"), "{trait_broken}");
+        "#,
+    )
+    .expect_err("a precondition on an uncontracted trait method must be refused");
+    assert!(err.contains("E0023"), "{err}");
+    assert!(err.contains("asks for nothing"), "{err}");
+}
 
-    let impl_broken = test_program(&src.replace("REPLACE", "200u64"))
-        .expect_err("the impl clause must fire");
-    assert!(impl_broken.contains("clause #2"), "{impl_broken}");
+/// The other direction stays open: promising *more* than the trait did
+/// breaks nobody, so an impl may add `ensures`. Both sets are checked,
+/// the trait's first.
+#[test]
+fn an_impl_may_strengthen_the_postcondition() {
+    assert_program_result_u64(
+        r#"
+        trait Grow {
+            fn grow(self: Self, by: u64) -> u64
+                ensures result > 0u64
+        }
+
+        struct G { n: u64 }
+
+        impl Grow for G {
+            fn grow(self: Self, by: u64) -> u64
+                ensures result < 100u64
+            {
+                self.n * by
+            }
+        }
+
+        fn main() -> u64 {
+            val g = G { n: 6u64 }
+            g.grow(7u64)
+        }
+        "#,
+        42,
+    );
+}
+
+/// ...and the impl's own postcondition is really checked, after the
+/// trait's.
+#[test]
+fn an_added_postcondition_is_checked_too() {
+    let err = test_program(
+        r#"
+        trait Grow {
+            fn grow(self: Self, by: u64) -> u64
+                ensures result > 0u64
+        }
+
+        struct G { n: u64 }
+
+        impl Grow for G {
+            fn grow(self: Self, by: u64) -> u64
+                ensures result < 100u64
+            {
+                self.n * by
+            }
+        }
+
+        fn main() -> u64 {
+            val g = G { n: 50u64 }
+            g.grow(7u64)
+        }
+        "#,
+    )
+    .expect_err("the impl's own postcondition must fire");
+    assert!(err.contains("Contract violation"), "{err}");
+    assert!(err.contains("clause #2"), "{err}");
 }
 
 #[test]

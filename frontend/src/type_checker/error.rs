@@ -184,6 +184,16 @@ pub enum TypeCheckErrorKind {
     /// reaches a place that outlives the allocator. `region` names the
     /// allocator, `place` says where the value went.
     RegionEscape { region: String, place: String },
+    /// DBC-LISKOV: an `impl` of a trait method carries a `requires`
+    /// clause the trait does not, so a caller holding the trait cannot
+    /// know what to satisfy. `trait_has_precondition` distinguishes
+    /// "the trait asks for less" from "the trait asks for nothing".
+    ImplPrecondition {
+        trait_name: String,
+        type_name: String,
+        method: String,
+        trait_has_precondition: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -450,6 +460,27 @@ impl TypeCheckError {
         }
     }
 
+    /// DBC-LISKOV: an impl demands more than its trait promised.
+    pub fn impl_precondition(
+        trait_name: String,
+        type_name: String,
+        method: String,
+        trait_has_precondition: bool,
+    ) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::ImplPrecondition {
+                trait_name,
+                type_name,
+                method,
+                trait_has_precondition,
+            }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
     /// REGION: a value outlives the allocator it came from.
     pub fn region_escape(region: String, place: String) -> Self {
         Self {
@@ -628,6 +659,27 @@ impl TypeCheckError {
                 format!(
                     "this call to `{function}` breaks its own precondition, and every argument is \
                      a constant, so it breaks it on every run: {detail}"
+                )
+            }
+            TypeCheckErrorKind::ImplPrecondition {
+                trait_name,
+                type_name,
+                method,
+                trait_has_precondition,
+            } => {
+                let trait_side = if *trait_has_precondition {
+                    format!("`{trait_name}` asks for less")
+                } else {
+                    format!("`{trait_name}` asks for nothing")
+                };
+                format!(
+                    "impl {trait_name} for {type_name}: method `{method}` adds a `requires` \
+                     clause of its own, but {trait_side} — a caller reaching it through \
+                     `&dyn {trait_name}` or a `<T: {trait_name}>` bound satisfies every \
+                     precondition it can see and still fails. An implementation may inherit a \
+                     precondition, never strengthen one: move the clause to `trait \
+                     {trait_name}` if every implementation should demand it, or handle the \
+                     case in the body"
                 )
             }
             TypeCheckErrorKind::RegionEscape { region, place } => {

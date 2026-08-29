@@ -139,6 +139,10 @@ impl<'a> TypeCheckerVisitor<'a> {
             subst.insert(*p, a.clone());
         }
 
+        // DBC-LISKOV: reported after the impl is registered, so it is
+        // the only thing the program is told about.
+        let mut strengthened: Option<TypeCheckError> = None;
+
         for sig in &trait_methods {
             let provided = methods.iter().find(|m| m.name == sig.name);
             let m = match provided {
@@ -228,6 +232,36 @@ impl<'a> TypeCheckerVisitor<'a> {
                     }
                 }
             }
+            // DBC-LISKOV: an implementation may not demand more than
+            // its trait promised. The clauses the trait declares were
+            // prepended to `m.requires` by
+            // `inherit_trait_contracts`, so anything left over is the
+            // impl's own — and a caller holding `&dyn Trait` or a
+            // `<T: Trait>` bound has no way to read it. Postconditions
+            // are the other way round and stay free to strengthen:
+            // promising more than the trait did breaks nobody.
+            if strengthened.is_none()
+                && let Some(extra) = m.requires.iter().find(|r| !sig.requires.contains(r))
+            {
+                let t_str = self.core.string_interner.resolve(trait_symbol).unwrap_or("?");
+                let s_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("?");
+                let m_str = self.core.string_interner.resolve(sig.name).unwrap_or("?");
+                // Reported after the impl is recorded below, so the
+                // one thing wrong with the program is this clause —
+                // an unregistered impl would also fail every `&dyn`
+                // coercion, burying it.
+                let error = TypeCheckError::impl_precondition(
+                    t_str.to_string(),
+                    s_str.to_string(),
+                    m_str.to_string(),
+                    !sig.requires.is_empty(),
+                );
+                strengthened = Some(match self.get_expr_location(extra) {
+                    Some(location) => error.with_location(location),
+                    None => error,
+                });
+            }
+
             // Compare return types. Both sides resolve `Self`; the
             // trait side also runs through `substitute_generics`
             // for `T -> trait_type_args[i]`.
@@ -262,7 +296,10 @@ impl<'a> TypeCheckerVisitor<'a> {
             .entry((struct_symbol, trait_symbol))
             .or_default()
             .push(trait_type_args.clone());
-        Ok(())
+        match strengthened {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// A1: shim that forwards to the free `expand_trait_defaults_in_pool`

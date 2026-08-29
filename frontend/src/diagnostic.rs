@@ -266,6 +266,10 @@ pub mod codes {
     /// (`with allocator = arena { ... }`).
     pub const REGION_ESCAPE: &str = "E0022";
 
+    /// DBC-LISKOV: an `impl` of a trait method demands more than the
+    /// trait promised its callers.
+    pub const IMPL_PRECONDITION: &str = "E0023";
+
     /// Every code, in order. `crate::explain` is checked against this
     /// list by a test, so a new code cannot ship without prose.
     pub const ALL: &[&str] = &[
@@ -291,6 +295,7 @@ pub mod codes {
         CONTRACT_VIOLATION,
         CAPTURED_ASSIGN,
         REGION_ESCAPE,
+        IMPL_PRECONDITION,
     ];
 }
 
@@ -319,6 +324,7 @@ fn code_for(kind: &TypeCheckErrorKind) -> &'static str {
         | TypeCheckErrorKind::BrokenPrecondition { .. } => codes::CONTRACT_PURITY,
         TypeCheckErrorKind::CapturedAssign { .. } => codes::CAPTURED_ASSIGN,
         TypeCheckErrorKind::RegionEscape { .. } => codes::REGION_ESCAPE,
+        TypeCheckErrorKind::ImplPrecondition { .. } => codes::IMPL_PRECONDITION,
     }
 }
 

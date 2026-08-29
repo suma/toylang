@@ -144,6 +144,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | リージョン脱出検査 (REGION) | `type_checker/region_check.rs::check_regions` — `with allocator = <local>` から確保した値が allocator より長生きする形を `E0022` で拒否。「確保か」は effects の `Alloc`、「ポインタを持ちうる型か」は `expr_types`。設計は [`REGIONS.md`](REGIONS.md) |
 | エフェクト推論 (EFFECT-SYSTEM) | `type_checker/effects.rs` — builtin → エフェクトの表 (`builtin_effect`) と呼び出しグラフの歩行 (`EffectTable`)。3 検査 (`alloc_check` / `const_fn_check` / `contract_purity`) はここへのマスク。一覧は `--effects` (`interpreter/src/main.rs::run_effects` → `lib.rs::effects_from_source`)。設計は [`EFFECT_SYSTEM.md`](EFFECT_SYSTEM.md) |
 | trait 契約の impl への継承 (DBC-TRAIT-INHERIT) | `type_checker/trait_decl.rs::inherit_trait_contracts` (引数名の一致は `check_trait_conformance_with_args` が強制) |
+| 事前条件の強化拒否 (DBC-LISKOV) | `type_checker/trait_decl.rs::check_trait_conformance_with_args` の `strengthened` — impl が trait に無い `requires` を持てば `E0023`。impl 登録の**後**に返すので `&dyn` の型エラーが被さらない |
 
 ## テスト・検証機構
 

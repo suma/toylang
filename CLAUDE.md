@@ -370,7 +370,12 @@ fn main() -> u64 {
   }
   fn announce<T: Greet>(x: T) -> str { x.greet() }
   ```
-  - trait 本体には method の シグネチャを書く。`requires` / `ensures` 節も書ける
+  - trait 本体には method の シグネチャを書く。`requires` / `ensures` 節も書ける。
+    trait の契約は impl に継承される。**impl 側で `requires` を足すのは
+    `[E0023]` で拒否** (DBC-LISKOV — `&dyn Trait` / `<T: Trait>` 経由の
+    呼び出しは trait の節しか読めないので、追加要求は正しい呼び出しを落とす。
+    trait 側が無契約でも同じ)。`ensures` は逆向きに健全なので足せる。
+    inherent impl は対象外
   - `impl <Trait> for <Type> { ... }` は body 付き method を提供。型チェッカーが trait のシグネチャと比較し、不足 method や型不一致を検出
   - 型パラメータ bound `<T: SomeTrait>` を関数・struct・impl に書ける。呼び出し時に「実型がその trait を実装しているか」を検証
   - 実装メソッドは inherent method としても登録されるので `value.trait_method()` 形式で直接呼べる

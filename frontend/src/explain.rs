@@ -68,6 +68,7 @@ const ENTRIES: &[Entry] = &[
     (codes::CONTRACT_VIOLATION, E0020),
     (codes::CAPTURED_ASSIGN, E0021),
     (codes::REGION_ESCAPE, E0022),
+    (codes::IMPL_PRECONDITION, E0023),
 ];
 
 const E0001: &str = "\
@@ -776,6 +777,55 @@ To fix it: copy what you need out of the region before leaving it,
 allocate from an allocator that lives long enough (`with allocator =
 __builtin_default_allocator() { ... }`), or move the arena out to the
 scope the value has to reach.";
+
+const E0023: &str = "\
+E0023: an implementation demands more than its trait promised
+
+A `requires` clause is what callers are told to satisfy. Code that
+reaches a method through the trait — `&dyn Trait`, or a `<T: Trait>`
+bound — can read the trait\'s clauses and nothing else, so an
+implementation that adds one of its own breaks calls that were
+written correctly:
+
+    trait Shrink {
+        fn shrink(&self, by: u64) -> u64
+            requires by > 0u64
+    }
+
+    impl Shrink for B {
+        fn shrink(&self, by: u64) -> u64
+            requires by < 100u64          # E0023
+        { self.n - by }
+    }
+
+    fn use_it(s: &dyn Shrink) -> u64 {
+        s.shrink(200u64)                  # honours `by > 0u64`, still fails
+    }
+
+An implementation may inherit a precondition; it may not strengthen
+one. The same applies when the trait declares no precondition at all —
+then callers may pass anything the types allow, and any clause the
+impl adds is stronger than that.
+
+Postconditions are the other way round and stay free: an
+implementation that promises *more* than its trait breaks nobody, so
+`ensures` on an impl is added to the trait\'s and both are checked.
+
+Three ways out:
+
+* **Move the clause to the trait**, when every implementation should
+  demand it. That is the usual answer — the obligation belongs where
+  callers can read it.
+* **Handle the case in the body**, returning `Option` / `Result` or
+  panicking with a message, when only this implementation cares.
+* **Widen the type**, when the clause is really saying the parameter
+  should not have been able to hold that value.
+
+Deliberate *weakening* — an implementation that accepts more than its
+trait requires — is sound but has no syntax yet (Eiffel spells it
+`require else`). Leave the clause off: the trait\'s precondition still
+applies, and accepting more than you promised to accept breaks no
+caller.";
 
 #[cfg(test)]
 mod tests {

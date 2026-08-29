@@ -1348,6 +1348,7 @@
 > 2026-08-16 に「言語機能として何が残っているか」を実際に叩いて洗い出した結果。
 > RUNTIME-IO (Result を返す IO) は 2026-08-29 に landing 済み (完了済み節)。
 > 実プログラムを書けなくしている残りは下記。
+> 俯瞰と優先順位 ([`RUNTIME_LIBRARY.md`](RUNTIME_LIBRARY.md)、2026-08-30 実測)。
 
 - **STDLIB-ORD: `str` の `Ord` impl** ★ — byte 比較が heap copy を要求し、
   generic context で AOT が表現できないため未提供 (`String` は提供済み)。

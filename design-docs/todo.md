@@ -1453,7 +1453,10 @@
   寿命の判断が要るので「実プログラムで踏んでから」、(b) **E5: compiled
   レーンの compound capture** — 診断は直した (capture の話だと分かる文言に
   なった) が、env に compound を載せるのは未着手。interpreter は動く。
-- **slice 型 `&[T]`** ★ — 配列 borrow を first-class に。中〜大。
+- **slice 型 `&[T]`** ★★ — 配列 borrow を first-class に。中〜大。
+  **DOD / SIMD の両方がこれを待っている** ([`DATA_ORIENTED.md`](DATA_ORIENTED.md) /
+  [`SIMD.md`](SIMD.md))。SoA の列を関数に渡す窓であり、`__simd_load` の
+  引数の形でもあるので、★ から引き上げた。
 - **const generics** ★ — `struct Array<T, const N: usize>`。大規模。
 
 ### 構文糖衣の候補 (NEW-FEATURES、未着手)
@@ -1566,6 +1569,23 @@
   `pthread_key` TLS で per-thread 化済み)。ただし本体は「共有可変性を現行の
   move / Drop モデルにどう載せるか」で、`Send` 相当の判定を決めるまで
   着手できない。設計フェーズを別に取る前提。
+* データ指向の配列 layout (DOD) ★★ — `soa [Point; N]` で AoS / SoA を
+  型修飾子として選べるようにする。設計は [`DATA_ORIENTED.md`](DATA_ORIENTED.md)。
+  **変更が lowering の 2 ファイルに閉じる** — 添字式
+  (`array_access.rs` の `leaf_idx = i * leaf_count + j`) を入れ替えるだけで
+  IR も codegen も変わらない。tree-walker は観測できる差が無いので無変更、
+  つまり「`soa` の有無で答えが変わらない」オラクルが最初から手に入る。
+  副産物として NUM-W-AOT-pack Phase 2 (compound 要素の 8 バイト固定 stride) が
+  SoA 側で解ける。Phase 0 は単体で価値があり SIMD をやらなくても無駄にならない
+* SIMD ★★ — vector を型 (`f64x2` 等 9 種、128bit のみ) にして演算子を
+  lane-wise に効かせ、intrinsic は型で表せないもの 10 個に絞る。設計は
+  [`SIMD.md`](SIMD.md)。**個別 builtin を op × lane 型 × lane 数 で並べる案は
+  採らない** (cache schema bump と 4 実行系対応のコストで破綻する)。
+  着手前に決める必要があるのは (a) `f32` を言語に足すか (SIMD の主戦場は
+  `f32x4`、後から足すと型名と intrinsic の綴りが増える)、(b) reduce の
+  畳み込み順序と lane-wise 演算の trap 有無 — 4 レーン一致を守るため
+  意味論を先に固定する。費用対効果が最大なのは stdlib kernel の置換
+  (`Vec<u8>::eq` / `Contains` / `CaseConvert`) で、ユーザコードは変えずに効く
 * モジュール拡張 — バージョニング、リモートパッケージ
 * 言語内からの AST 取得・操作
 * LSP 対応 — 補完 / go-to-definition / hover / 診断 / フォーマット。frontend の AST・型チェッカ・`SourceLocation` を再利用できる。ただし**エージェントは LSP より CLI クエリを使いやすい**ので、LLM ループの観点では `--api` / 型ホール (P7 で landing 済み) の方が先だった

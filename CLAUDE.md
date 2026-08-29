@@ -23,6 +23,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | エフェクト格子と 3 検査の関係 | [`design-docs/EFFECT_SYSTEM.md`](design-docs/EFFECT_SYSTEM.md) |
 | allocator のリージョン脱出検査 | [`design-docs/REGIONS.md`](design-docs/REGIONS.md) |
 | RUNTIME-TRAP guard をどう消しているか | [`design-docs/GUARD_ELISION.md`](design-docs/GUARD_ELISION.md) |
+| 配列 layout (AoS / SoA) の設計 (未実装) | [`design-docs/DATA_ORIENTED.md`](design-docs/DATA_ORIENTED.md) |
+| SIMD intrinsic と最適化戦略の設計 (未実装) | [`design-docs/SIMD.md`](design-docs/SIMD.md) |
 | このリポジトリで LLM が作業する際の指針 | [`design-docs/COMPILER_DEV_LOOP.md`](design-docs/COMPILER_DEV_LOOP.md) |
 
 以下の「Language Syntax」節は**日常的に踏む要点の早見表**であって仕様書ではない。

@@ -370,3 +370,20 @@ pub trait Drop {
     "#
     ));
 }
+
+/// A function written without `-> T` returns unit. `is_scalar_return` only
+/// looked at `Some(..)` type declarations, so such a `main` was classified as
+/// a compound return and the reconstruction path unwrapped the absent return
+/// type — every `fn main() { .. }` panicked instead of running.
+#[test]
+fn parity_unit_main_without_return_type() {
+    assert!(assert_engine_parity(
+        r#"
+        fn main() {
+            var acc = 0u64
+            for i in 0u64..5u64 { acc = acc + i }
+            println(acc)
+        }
+    "#
+    ));
+}

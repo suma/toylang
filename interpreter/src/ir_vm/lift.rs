@@ -229,6 +229,14 @@ fn failure_from(
 /// Whether a scalar `main` return type can be faithfully wrapped from the
 /// raw 8-byte exit value. Heap-backed / compound types return `false`.
 fn is_scalar_return(ty: &Option<TypeDecl>) -> bool {
+    // `None` is a function written without `-> T`; it returns unit, so it
+    // belongs with the scalar returns. Leaving it out sent it down the
+    // compound path, which unwraps `return_type` and panicked on any
+    // `fn main() { .. }` (and on every `test "..." { .. }` block, which the
+    // parser lowers to a return-type-less function).
+    if ty.is_none() {
+        return true;
+    }
     matches!(
         ty,
         Some(

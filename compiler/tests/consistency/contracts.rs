@@ -953,3 +953,251 @@ fn contract_elision_signed_shapes_match_across_backends() {
     "#;
     assert_consistent(src, "contract_elision_signed_shapes");
 }
+
+// ---------------------------------------------------------------------
+// CONTRACT-ELISION, control-flow half: the facts a branch condition or
+// a loop range states about the code they guard.
+//
+// A `requires` is not the only place a program says what it knows —
+// `if b != 0u64 { a / b }` says the same thing, and says it where most
+// code actually says it. These facts differ from a precondition's in
+// one way that matters: they hold under `--release` too, because the
+// branch is evaluated either way.
+// ---------------------------------------------------------------------
+
+/// The guard the division would emit tests exactly what the `if`
+/// already tested.
+#[test]
+fn a_branch_that_rules_out_zero_elides_the_division_guard() {
+    let src = r#"
+        fn hot(a: u64, b: u64) -> u64 {
+            if b != 0u64 { a / b } else { 0u64 }
+        }
+
+        fn main() -> u64 { hot(9u64, 3u64) }
+    "#;
+    let ir = lowered_function(&lowered_ir(src), "hot");
+    // One `ne`: the condition itself. A second would be the guard.
+    assert_eq!(
+        ir.matches("= ne ").count(),
+        1,
+        "the division's guard tests what the branch tested:\n{ir}"
+    );
+}
+
+/// The `else` branch knows the condition failed, which is where the
+/// same program is just as often written.
+#[test]
+fn the_else_branch_reads_the_condition_the_other_way_round() {
+    let src = r#"
+        fn hot(a: u64, b: u64) -> u64 {
+            if b == 0u64 { 0u64 } else { a / b }
+        }
+
+        fn main() -> u64 { hot(9u64, 3u64) }
+    "#;
+    let ir = lowered_function(&lowered_ir(src), "hot");
+    assert_eq!(
+        ir.matches("= ne ").count(),
+        0,
+        "reaching the else means `b` is non-zero:\n{ir}"
+    );
+}
+
+/// `if a < b { 0u64 } else { a - b }` — the underflow guard is the
+/// negation of the test that got here.
+#[test]
+fn the_else_branch_rules_out_underflow() {
+    let src = r#"
+        fn take(a: u64, b: u64) -> u64 {
+            if a < b { 0u64 } else { a - b }
+        }
+
+        fn main() -> u64 { take(9u64, 3u64) }
+    "#;
+    let ir = lowered_function(&lowered_ir(src), "take");
+    assert_eq!(
+        ir.matches("= ge ").count(),
+        0,
+        "reaching the else means `a >= b`:\n{ir}"
+    );
+}
+
+/// The safety property. A parameter cannot change, but a local can —
+/// and a fact about a binding the branch reassigns would be true on
+/// entry and stale at the guard site.
+#[test]
+fn assigning_the_tested_binding_brings_the_guard_back() {
+    let src = r#"
+        fn hot(a: u64, b: u64) -> u64 {
+            var d: u64 = b
+            if d != 0u64 {
+                d = d - d
+                a / d
+            } else { 0u64 }
+        }
+
+        fn main() -> u64 { hot(9u64, 3u64) }
+    "#;
+    let ir = lowered_function(&lowered_ir(src), "hot");
+    assert_eq!(
+        ir.matches("= ne ").count(),
+        2,
+        "the branch reassigns `d`, so the guard stays:\n{ir}"
+    );
+}
+
+/// `for i in 0u64..4u64` over a `[T; 4]` states exactly what the index
+/// guard would test.
+#[test]
+fn a_literal_bounded_loop_elides_the_index_guard() {
+    let src = r#"
+        fn sum() -> u64 {
+            val arr: [u64; 4] = [1u64, 2u64, 3u64, 4u64]
+            var total: u64 = 0u64
+            for i in 0u64..4u64 {
+                total = total + arr[i]
+            }
+            total
+        }
+
+        fn main() -> u64 { sum() }
+    "#;
+    let ir = lowered_function(&lowered_ir(src), "sum");
+    // One `lt`: the loop header. A second would be the bounds check.
+    assert_eq!(
+        ir.matches("= lt ").count(),
+        1,
+        "the loop bound is the array bound:\n{ir}"
+    );
+}
+
+/// The same shape with a range that runs past the array keeps its
+/// guard — and the program still stops, which is the point.
+#[test]
+fn a_loop_that_can_overrun_keeps_the_index_guard() {
+    let src = r#"
+        fn sum() -> u64 {
+            val arr: [u64; 4] = [1u64, 2u64, 3u64, 4u64]
+            var total: u64 = 0u64
+            for i in 0u64..8u64 {
+                total = total + arr[i]
+            }
+            total
+        }
+
+        fn main() -> u64 { sum() }
+    "#;
+    let ir = lowered_function(&lowered_ir(src), "sum");
+    assert_eq!(
+        ir.matches("= lt ").count(),
+        2,
+        "the range reaches past the array, so the guard stays:\n{ir}"
+    );
+}
+
+/// A signed loop starting below zero cannot be proved non-negative, so
+/// the negative-adjustment path — which the elision would remove along
+/// with the guard — has to stay.
+#[test]
+fn a_signed_loop_from_a_negative_start_keeps_the_guard() {
+    let src = r#"
+        fn sum() -> i64 {
+            val arr: [i64; 4] = [1i64, 2i64, 3i64, 4i64]
+            var total: i64 = 0i64
+            for i in -2i64..2i64 {
+                total = total + arr[i]
+            }
+            total
+        }
+
+        fn main() -> i64 { sum() }
+    "#;
+    let ir = lowered_function(&lowered_ir(src), "sum");
+    assert!(
+        ir.contains("= lt ") && ir.matches("= lt ").count() > 1,
+        "a negative index still has to be adjusted and checked:\n{ir}"
+    );
+}
+
+/// Control-flow facts hold with the contracts switched off: the branch
+/// runs either way. This is what separates them from `requires`, whose
+/// facts vanish under `--release` along with the check that earned
+/// them.
+#[test]
+fn a_branch_fact_survives_release() {
+    let src = r#"
+        fn hot(a: u64, b: u64) -> u64 {
+            if b != 0u64 { a / b } else { 0u64 }
+        }
+
+        fn main() -> u64 { hot(9u64, 3u64) }
+    "#;
+    let released = lowered_function(&lowered_ir_with(src, true), "hot");
+    assert_eq!(
+        released.matches("= ne ").count(),
+        1,
+        "release build: the branch is still there, so the fact is too:\n{released}"
+    );
+}
+
+/// The elision must not change what a program computes, and the traps
+/// it does not remove must still fire on every backend.
+#[test]
+fn control_flow_elision_matches_across_backends() {
+    let src = r#"
+        fn guarded_div(a: u64, b: u64) -> u64 {
+            if b != 0u64 { a / b } else { 0u64 }
+        }
+
+        fn guarded_take(a: u64, b: u64) -> u64 {
+            if a < b { 0u64 } else { a - b }
+        }
+
+        fn indexed() -> u64 {
+            val arr: [u64; 4] = [10u64, 20u64, 30u64, 40u64]
+            var total: u64 = 0u64
+            for i in 0u64..4u64 {
+                total = total + arr[i]
+            }
+            total
+        }
+
+        fn main() -> u64 {
+            println(guarded_div(9u64, 0u64))
+            println(guarded_div(9u64, 3u64))
+            println(guarded_take(3u64, 9u64))
+            println(guarded_take(9u64, 3u64))
+            indexed()
+        }
+    "#;
+    assert_consistent(src, "control_flow_elision");
+}
+
+/// The trap that is still needed still stops every backend: the loop
+/// runs past the array, so the guard the elision left in place is the
+/// one that fires.
+#[test]
+fn an_overrunning_loop_still_stops_every_backend() {
+    let src = r#"
+        fn main() -> u64 {
+            val arr: [u64; 4] = [1u64, 2u64, 3u64, 4u64]
+            var total: u64 = 0u64
+            for i in 0u64..8u64 {
+                total = total + arr[i]
+            }
+            total
+        }
+    "#;
+    let core = core_modules_dir();
+    let mut interp_opts = RunOptions::default();
+    interp_opts.core_modules_dir = Some(core.as_path());
+    assert!(
+        interpreter::run_source(src, "loop_overrun.t", &interp_opts).is_err(),
+        "the index guard should still fire"
+    );
+
+    let compiled = try_compiler_exit_code(src, "loop_overrun", true)
+        .expect("the program should still compile");
+    assert_ne!(compiled, 0, "compiled binary should exit non-zero");
+}

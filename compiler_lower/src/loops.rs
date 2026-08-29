@@ -136,6 +136,16 @@ impl<'a> FunctionLower<'a> {
             else_blk: exit,
         });
 
+        // CONTRACT-ELISION (control flow): inside the body the
+        // induction variable is bounded by the range. `for i in
+        // 0u64..8u64 { a[i] }` on an `[T; 8]` states exactly what the
+        // index guard would test. Both spellings (`..` and `to`) lower
+        // to the `i < end` header above, so a literal end is the bound.
+        let saved = self.facts.clone();
+        let mutated = crate::contract_facts::mutated_names(self.program, body);
+        self.facts
+            .learn_range(self.program, self.interner, var_name, start, end, &mutated);
+
         // Body, then jump to step block (which increments + jumps to header).
         self.switch_to(body_blk);
         // #121 Phase B-rest Item 2: snapshot the with-scope depth at
@@ -146,6 +156,9 @@ impl<'a> FunctionLower<'a> {
         self.loop_stack.push((label, step, exit, self.with_scope_depth, self.drop_scopes.len()));
         let _ = self.lower_expr(body)?;
         self.loop_stack.pop();
+        // The range bound belongs to the body; everything after the
+        // loop sees the variable gone.
+        self.facts = saved;
         if !self.is_unreachable() {
             self.terminate(Terminator::Jump(step));
         }

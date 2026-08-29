@@ -178,6 +178,17 @@ impl<'a> FunctionLower<'a> {
         false
     }
 
+    /// Learn what `cond` (or its negation) states about the code in
+    /// `body`, for the duration of that body's lowering.
+    ///
+    /// The caller is responsible for restoring the previous facts:
+    /// what a branch knows is not what the code after the merge knows.
+    pub(super) fn learn_branch(&mut self, cond: &ExprRef, negated: bool, body: &ExprRef) {
+        let mutated = crate::contract_facts::mutated_names(self.program, body);
+        self.facts
+            .learn_condition(self.program, self.interner, cond, negated, &mutated);
+    }
+
     /// The symbol behind `expr` when it is written as a plain name.
     pub(super) fn parameter_name(&self, expr: &ExprRef) -> Option<DefaultSymbol> {
         if self.facts.is_empty() {
@@ -608,9 +619,19 @@ impl<'a> FunctionLower<'a> {
             Ok(())
         };
 
+        // CONTRACT-ELISION (control flow): inside a branch, the
+        // condition that led there is known. `if b != 0u64 { a / b }`
+        // states exactly what the division guard would test, and so
+        // does the `else` of `if b == 0u64 { ... }` — read the other
+        // way round. Unlike the facts from `requires`, these hold
+        // under `--release` too: the branch is evaluated either way.
+        let saved = self.facts.clone();
+
         // then
+        self.learn_branch(cond, false, then_body);
         self.switch_to(then_blk);
         emit_branch(self, then_body, result_local)?;
+        self.facts = saved.clone();
 
         // each elif: cond block then body block
         for (i, (elif_cond, elif_body)) in elif_pairs.iter().enumerate() {
@@ -631,12 +652,25 @@ impl<'a> FunctionLower<'a> {
                 else_blk: next,
             });
             self.switch_to(body_blk);
+            // Reaching this body means every earlier condition failed
+            // and this one held.
+            self.learn_branch(cond, true, elif_body);
+            for (earlier, _) in &elif_pairs[..i] {
+                self.learn_branch(earlier, true, elif_body);
+            }
+            self.learn_branch(elif_cond, false, elif_body);
             emit_branch(self, elif_body, result_local)?;
+            self.facts = saved.clone();
         }
 
-        // else
+        // else: every condition failed
+        self.learn_branch(cond, true, else_body);
+        for (earlier, _) in elif_pairs.iter() {
+            self.learn_branch(earlier, true, else_body);
+        }
         self.switch_to(else_blk);
         emit_branch(self, else_body, result_local)?;
+        self.facts = saved;
 
         // merge
         self.switch_to(merge);

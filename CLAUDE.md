@@ -22,6 +22,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | closure が捕捉した束縛をどう掴むかの設計 | [`design-docs/CLOSURE_CAPTURE.md`](design-docs/CLOSURE_CAPTURE.md) |
 | エフェクト格子と 3 検査の関係 | [`design-docs/EFFECT_SYSTEM.md`](design-docs/EFFECT_SYSTEM.md) |
 | allocator のリージョン脱出検査 | [`design-docs/REGIONS.md`](design-docs/REGIONS.md) |
+| RUNTIME-TRAP guard をどう消しているか | [`design-docs/GUARD_ELISION.md`](design-docs/GUARD_ELISION.md) |
 | このリポジトリで LLM が作業する際の指針 | [`design-docs/COMPILER_DEV_LOOP.md`](design-docs/COMPILER_DEV_LOOP.md) |
 
 以下の「Language Syntax」節は**日常的に踏む要点の早見表**であって仕様書ではない。
@@ -389,6 +390,11 @@ fn main() -> u64 {
   **`requires` は RUNTIME-TRAP の guard を消す** (CONTRACT-ELISION): `requires b != 0`
   で 0 除算 guard、`requires a >= b` で u64 underflow guard が lowering から落ちる
   (パラメータ名のみ、`--release` では契約が検査されないので guard は残る)。
+  **同じ事実を `if` の条件と `for` の範囲からも取る** (制御フロー版):
+  `if b != 0u64 { a / b }` / `if a < b { 0 } else { a - b }` (else は条件の否定) /
+  `for i in 0u64..8u64 { arr[i] }`。分岐は実際に評価されるので
+  **`--release` でも効く**。guard 対象のコードがその名前に書く
+  (代入 / 再束縛 / `&mut` / method 呼び出し) なら事実は取らない。
   アロケーションカウンタと組み合わせると**メモリ挙動をシグネチャで約束できる**。
   専用の節 **`ensures allocates(N)` / `retains(N)` / `allocations(N)`** (ALLOC-CONTRACT-SUGAR)
   があり、破れると実測値が出る (`retained 128 bytes, budget 0 bytes`、3 backend 同文言)。

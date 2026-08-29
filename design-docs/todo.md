@@ -12,6 +12,14 @@
 
 ### 2026-08-29
 
+- **CONTRACT-ELISION 拡張 (制御フロー)** — RUNTIME-TRAP guard の消去が
+  `requires` だけでなく **`if` の条件と `for` の範囲**からも事実を取る
+  ようになった。`if b != 0u64 { a / b }`、`if a < b { 0 } else { a - b }`
+  (else は条件の否定)、`for i in 0u64..8u64 { arr[i] }` が対象。
+  contract 由来と違い **`--release` でも効く** (分岐は両方の build で
+  評価される)。健全性は「guard 対象のコードがその名前に書くなら事実を
+  取らない」で担保 (代入 / 再束縛 / `&mut` 借用 / method 呼び出し)。
+  実測: 160M 回の配列読みで **0.18s → 0.13s** (AOT, cranelift speed)。
 - **REGION Phase 1 (E0022)** — スコープ付き allocator
   (`with allocator = arena { ... }`) から確保したメモリが arena より
   長生きする形を型検査で拒否する。設計は [`REGIONS.md`](REGIONS.md)。

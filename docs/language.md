@@ -3991,6 +3991,52 @@ What can be elided, and when:
   opposite of the usual arrangement: the optimisation is on in checked
   builds and off in unchecked ones.
 
+### Branches and loops say the same things
+
+A `requires` is not the only place a program states what it knows. An
+`if` states it too, and states it where most code actually does:
+
+```rust
+fn div(a: u64, b: u64) -> u64 {
+    if b != 0u64 { a / b } else { 0u64 }    # no divide-by-zero guard
+}
+
+fn take(a: u64, b: u64) -> u64 {
+    if a < b { 0u64 } else { a - b }        # no underflow guard: the
+}                                           # else means `a >= b`
+```
+
+A `for` loop states the range of its induction variable, which is
+exactly what a bounds check tests:
+
+```rust
+val arr: [u64; 8] = [...]
+for i in 0u64..8u64 {
+    total = total + arr[i]                  # no bounds check
+}
+```
+
+The same table above applies, read as conditions rather than clauses,
+and the `else` branch reads each condition negated (`if x == 0u64` gives
+`x != 0` in its `else`; `!`, and `||` under negation, are followed
+through). A `for` range gives `i >= 0` from a non-negative literal start
+and `i < N` from a literal end — both spellings (`0..N` and `0 to N`)
+are half-open, so `N` is the bound.
+
+Two differences from a precondition's facts:
+
+- **They hold under `--release`.** The branch is evaluated either way,
+  so nothing was switched off with the contract checks.
+- **They are about whatever is in scope, not only parameters** — so the
+  immutability that makes a precondition safe has to be established
+  instead. A fact is dropped when the guarded code assigns the name in
+  any way: an assignment, a re-binding, a `&mut` borrow, or a method
+  call on it. The induction variable of a `for` loop cannot be assigned
+  at all, which is what makes the loop case work.
+
+Measured on 160M array reads (8-element array, inner loop
+`0u64..8u64`, AOT, cranelift `speed`): **0.18s → 0.13s**.
+
 ### `never_allocates` — the static half
 
 `ensures allocates(0u64)` measures one call; `never_allocates` says

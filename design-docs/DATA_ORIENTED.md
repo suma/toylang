@@ -1,6 +1,6 @@
 # DATA-ORIENTED — 配列の layout をユーザが選べるようにする
 
-> **状態: Phase 0 + Phase 2 (2026-08-30 landing) / 0.5・1 未着手**。実装サイトは
+> **状態: Phase 0 + 2 (2026-08-30) + 0.5 (2026-08-31) landing / 1・3 未着手**。実装サイトは
 > [`compiler_lower/src/array_access.rs`](../compiler_lower/src/array_access.rs) と
 > [`compiler_lower/src/array_layout.rs`](../compiler_lower/src/array_layout.rs)。
 > SIMD 側の設計は [`SIMD.md`](SIMD.md) にあり、本文書の Phase 0 が
@@ -54,12 +54,15 @@ scalar 配列」という既存の形なので、`InstKind::ArrayLoad` / `ArrayS
 に閉じた (事実 2 の主張よりさらに強い)。`ArraySlotInfo` に layout
 flag を足す案はこの方式で不要になった。
 
-**ただし uniform 8 バイト列 (現行の `ARRAY_LEAF_STRIDE` 規約) は
-Phase 0 の実装範囲。** 列ごとの tight pack (事実 3) は列ごとに stride
-が違うので codegen の `ArrayLoad` / `ArrayStore` にも SoA 分岐が要る
-と設計では予想していたが、列方式では各列が独自の
-`elem_stride_bytes` を持てるので **0.5 は stride の切り替えだけ**に
-縮む (下の段階表)。
+Phase 0 は uniform 8 バイト列 (`ARRAY_LEAF_STRIDE`) のまま置き、
+**Phase 0.5 (2026-08-31) で各列を leaf の実幅に落とした**。列ごとの
+tight pack は列ごとに stride が違うので codegen の `ArrayLoad` /
+`ArrayStore` にも SoA 分岐が要ると設計では予想していたが、列方式では
+各列が独自の `elem_stride_bytes` を持てるので、実際の変更は
+`allocate_array_storage` の **1 行** (`ARRAY_LEAF_STRIDE` →
+`elem_stride_bytes(leaf_ty)`) だった。列は homogeneous scalar 配列
+そのものなので、narrow 配列 (`[u8; N]` が 1 バイト/要素) が既に
+通っている道をそのまま通る。
 
 ### 事実 3: SoA は棚上げ中の pack 問題も解く
 
@@ -70,8 +73,12 @@ Phase 0 の実装範囲。** 列ごとの tight pack (事実 3) は列ごとに 
 SoA にすると**各列が同型になる**ので、列ごとに `elem_stride_bytes` を
 その leaf の実サイズに落とせる。AoS のままでこれをやると要素内のパディングと
 アラインメントを扱う必要があるが、SoA では列ごとに独立に決められる。
-**NUM-W-AOT-pack Phase 2 (compound 要素の pack) は SoA 側では自然に解ける**
-— 本文書の段階では Phase 0.5 として回収する。
+**NUM-W-AOT-pack Phase 2 (compound 要素の pack) は SoA 側では自然に解けた**
+— Phase 0.5 (2026-08-31) で回収済み。`struct Mixed { bool, u8, f32, u64 }`
+× 3 の frame は AoS の 96 バイト (1 slot) に対し SoA は
+`[3, 3, 12, 24]` = 42 バイトで、差は**全部パディング**。
+AoS 側は `ARRAY_LEAF_STRIDE` のまま (要素内の pack は SoA と違い
+アラインメントの問題を解く必要がある)。
 
 ## 中心案: `soa` 前置修飾子 — stack と heap で別の仕組み
 
@@ -289,7 +296,7 @@ stdlib method になる (parser / checker の特別扱いは sugar 解決だけ)
 | `ps[i].f` 単列 shortcut (AoS / SoA 両対応、読み・書き・ネスト chain) | `compiler_lower/src/field_access.rs` / `assign.rs` | ✅ |
 | 範囲 slice の layout 継承・再 layout | `compiler_lower/src/let_lowering.rs` | ✅ |
 | tree-walker | 配列表現が `Vec<Object>` なので**変更不要** (観測できる差が無い) | ✅ (最初から) |
-| 列ごとの stride を leaf 実サイズに (tight pack) | `array_layout.rs` の stride 1 箇所 | Phase 0.5 |
+| 列ごとの stride を leaf 実サイズに (tight pack) | `array_layout.rs` の stride 1 箇所 | ✅ Phase 0.5 (2026-08-31) |
 
 tree-walker が変更不要なのは重要で、**layout を変えても答えが変わらない**
 ことのオラクルがそのまま手に入る。`assert_consistent` は
@@ -402,7 +409,7 @@ heap 節を参照。)
 | Phase | 内容 | 規模 |
 |---|---|---|
 | **0** | `soa [T; N]` (scalar / struct / tuple 要素)。uniform 8 バイト列。**`ps[i].f` の単列 shortcut 込み** — **landing 済み (2026-08-30)**: 列方式 (事実 2 の注記) により IR / codegen / IR VM 無変更、`consistency/soa.rs` が soa 有無一致を 4-way で pin | ✅ 小 |
-| **0.5** | 列ごとの tight pack — `allocate_array_storage` の stride を `ARRAY_LEAF_STRIDE` から leaf 実サイズへ (列方式なので codegen 分岐は不要、1 箇所の切替 + IR footprint の pin) | 小 |
+| **0.5** | 列ごとの tight pack — **landing 済み (2026-08-31)**: `allocate_array_storage` の stride を `ARRAY_LEAF_STRIDE` から leaf 実幅へ (1 行、codegen 分岐なし)。値は不変なので pin は frame テスト側 (`narrow_leaf_columns_pack_to_their_leaf_width_in_the_aot_frame` が `[24,24,24,24]` → `[3,3,12,24]`) | ✅ 小 |
 | **1** | slice `&[T]` — SoA の窓。`ps.mass` → `&[f64]` | 中 |
 | **2** | `soa Vec<T>` → `SoaVec<T>` sugar。単一領域の列分割 + builtin 2 個 — **landing 済み (2026-08-30)**: parser で砂糖を解き、IR / codegen / IR VM 無変更、`consistency/soa.rs` が値・番地・確保量・drop を pin | ✅ 中 |
 | **3** | 配列要素としての enum + tag 列の分離 | 中 |

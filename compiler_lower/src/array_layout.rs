@@ -149,11 +149,19 @@ impl<'a> FunctionLower<'a> {
     /// and the IR VM address it with the existing `index * stride`
     /// math and never learn SoA exists.
     ///
-    /// Phase 0 keeps every column at the uniform 8-byte
-    /// `ARRAY_LEAF_STRIDE`, matching the interleaved layout's
-    /// per-leaf cost so `soa` on/off changes placement only.
-    /// Phase 0.5 drops each column to its leaf's real width
-    /// (tight pack).
+    /// DATA-ORIENTED Phase 0.5: each column strides by its leaf's
+    /// real width rather than the uniform 8-byte
+    /// `ARRAY_LEAF_STRIDE` the interleaved layout still pays. A
+    /// column is homogeneous, so this is the packing
+    /// `elem_stride_bytes` already gives a scalar array
+    /// (`[u8; N]` is 1 byte per element) — nothing about the
+    /// addressing changes, and `soa [PackedRgba; N]` drops from
+    /// 32 bytes per element to 4.
+    ///
+    /// This is the one place the two layouts stop costing the
+    /// same. Values are unaffected (a column's elements are read
+    /// and written at the same stride), which is why the pin for
+    /// it is a *frame* test rather than an answer test.
     pub(super) fn allocate_array_storage(
         &mut self,
         element_ty: Type,
@@ -172,10 +180,11 @@ impl<'a> FunctionLower<'a> {
         let mut columns = Vec::with_capacity(leaf_count);
         for j in 0..leaf_count {
             let leaf_ty = leaf_type_at(self.module, element_ty, j);
+            let stride = elem_stride_bytes(leaf_ty, self.module);
             let slot = self
                 .module
                 .function_mut(self.func_id)
-                .add_array_slot(leaf_ty, length, ARRAY_LEAF_STRIDE);
+                .add_array_slot(leaf_ty, length, stride);
             columns.push(slot);
         }
         ArrayStorage::Columns(columns)

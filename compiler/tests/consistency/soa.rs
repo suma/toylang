@@ -237,6 +237,40 @@ fn narrow_and_bool_leaves_keep_their_values() {
 }
 
 #[test]
+fn a_packed_column_round_trips_every_element() {
+    // Phase 0.5 sizes a column by its leaf, so a `u8` column of 24
+    // elements is 24 bytes and its neighbour starts one byte after
+    // the last. A stride that disagreed with the slot's width would
+    // read a neighbour's byte or step off the end — values, not
+    // frames, are what catches that, so this walks enough elements
+    // for a wrong stride to show.
+    // Written out because there is no `[expr; N]` repeat literal.
+    let zeros = vec!["Pair { small: 0u8, wide: 0u64 }"; 24].join(", ");
+    let src = format!(
+        r#"
+        struct Pair {{ small: u8, wide: u64 }}
+
+        fn main() -> u64 {{
+            var ps: soa [Pair; 24] = [{zeros}]
+            for i in 0u64..24u64 {{
+                ps[i].small = (i * 7u64) as u8
+                ps[i].wide = i * 1000u64
+            }}
+            var acc: u64 = 0u64
+            for i in 0u64..24u64 {{
+                acc = acc + ps[i].small as u64 + ps[i].wide
+            }}
+            acc
+        }}
+    "#
+    );
+    // small: (7i mod 256) per element; wide: 1000i.
+    let expected: u64 = (0..24u64).map(|i| ((i * 7) % 256) + i * 1000).sum();
+    assert_eq!(interpreter_value(&src), expected);
+    assert_consistent(&src, "soa_packed_column_roundtrip");
+}
+
+#[test]
 fn aos_field_chains_below_an_element_also_work() {
     // The shortcut is not SoA-only: `aos[i].f` resolves to the one
     // interleaved leaf load (`i * leaf_count + leaf`) instead of the
@@ -349,16 +383,16 @@ fn soa_reshapes_the_aot_stack_frame() {
         "SoA frame:\n{soa}"
     );
 
-    // Phase 0 keeps every column at the uniform 8-byte
-    // `ARRAY_LEAF_STRIDE`, so the two frames cost the same bytes and
-    // only the placement differs. Phase 0.5 (tight pack) is the
-    // change that makes the SoA total smaller — this equality is the
-    // line that will move then, deliberately.
+    // `Particle` is three 8-byte leaves, so nothing here is padding
+    // in either layout and the two frames cost the same bytes — only
+    // the placement differs. An element with narrow leaves is where
+    // Phase 0.5's tight columns pull ahead; see
+    // `narrow_leaf_columns_pack_to_their_leaf_width_in_the_aot_frame`.
     let total = |slots: Vec<u32>| slots.iter().sum::<u32>();
     assert_eq!(
         total(clif_stack_slots(&aos)),
         total(clif_stack_slots(&soa)),
-        "Phase 0 columns are the same total size as the interleaved slot"
+        "8-byte leaves pad in neither layout"
     );
 }
 
@@ -434,13 +468,18 @@ fn soa_field_loop_is_a_unit_stride_column_walk_in_the_aot_frame() {
 }
 
 #[test]
-fn narrow_leaf_columns_keep_the_uniform_stride_in_the_aot_frame() {
-    // Phase 0.5's canary. Every column is `length * 8` today, whatever
-    // the leaf's real width — the same per-leaf cost the interleaved
-    // layout has always paid (`ARRAY_LEAF_STRIDE`). When the columns
-    // drop to their leaves' widths this test fails with the new sizes,
-    // which is the change being made rather than a regression: a
-    // `bool` column becomes 3 bytes, `u8` 3, `f32` 12, `u64` 24.
+fn narrow_leaf_columns_pack_to_their_leaf_width_in_the_aot_frame() {
+    // DATA-ORIENTED Phase 0.5. A column is homogeneous, so it strides
+    // by its leaf's real width — the packing a scalar array has always
+    // had. The interleaved layout still pays the uniform 8 bytes per
+    // leaf (`ARRAY_LEAF_STRIDE`), which is where the two layouts stop
+    // costing the same: this element is 20 bytes of data stored in 32
+    // interleaved and in 20 split by column.
+    //
+    // Values are untouched by the change — a column is read and
+    // written at one stride — which is exactly why this has to be a
+    // frame test. Every answer test in this file passed unchanged
+    // through Phase 0.5.
     let src = |soa: &str| {
         format!(
             r#"
@@ -466,14 +505,20 @@ fn narrow_leaf_columns_keep_the_uniform_stride_in_the_aot_frame() {
 
     // 3 elements * 4 leaves * 8 bytes, interleaved into one slot...
     assert_eq!(clif_stack_slots(&aos), vec![96], "AoS frame:\n{aos}");
-    // ...or split into four 3 * 8 columns.
+    // ...or one column per leaf, each 3 * that leaf's own width:
+    // `bool` 1, `u8` 1, `f32` 4, `u64` 8.
     assert_eq!(
         clif_stack_slots(&soa),
-        vec![24, 24, 24, 24],
+        vec![3, 3, 12, 24],
         "SoA frame:\n{soa}"
     );
-    // The `byte` loop walks its own column at unit stride even though
-    // a `u8` occupies an 8-byte slot in it.
+    // 42 bytes against 96 — and the interleaved half of that is
+    // padding, not data.
+    assert!(
+        clif_stack_slots(&soa).iter().sum::<u32>() * 2 < clif_stack_slots(&aos)[0],
+        "the split should more than halve the frame:\n{soa}"
+    );
+    // The `byte` loop walks its own column, now at a 1-byte stride.
     assert_eq!(slots_touched(&loop_block(&soa)), vec!["ss1"]);
 }
 

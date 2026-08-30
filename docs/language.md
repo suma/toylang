@@ -1084,6 +1084,12 @@ val qs: [Particle; 1024]        # element-major (AoS), the default
   annotation re-layouts in either direction).
 - A scalar element type (`soa [u64; N]`) has one leaf, one column —
   the modifier is accepted and means nothing extra.
+- **Columns pack tightly.** Each column strides by its leaf's own
+  width, where the interleaved layout pays a uniform 8 bytes per leaf:
+  `soa [Mixed; 3]` for `struct Mixed { flag: bool, byte: u8, single:
+  f32, wide: u64 }` occupies 42 bytes against the AoS spelling's 96,
+  and the difference is entirely padding. This is the one way the two
+  layouts differ in cost rather than only in placement.
 - Bounds checks behave identically to the AoS form, including
   negative constant indices (`ps[-1i64].x`).
 

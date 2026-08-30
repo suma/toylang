@@ -26,7 +26,14 @@
 never_allocates   ALLOC
 const fn          ALLOC | FREE | RAW_READ | RAW_WRITE | ALLOC_CTX | IO
 契約の純粋性       ALLOC | FREE | RAW_WRITE | IO
+unsafe fn         RAW_READ | RAW_WRITE          (直接のみ)
 ```
+
+`unsafe fn` (POINTER P6) だけ**呼び先を辿らない** — 「この body 自身が
+生メモリを触るか」を訊く。辿ると `Vec::push` を呼ぶ `main` まで
+`unsafe` になり、stdlib に生 builtin を集約する意味が消える。
+`EffectTable::new_direct_only` がその読み方を持つ
+([`unsafe_check.rs`](../frontend/src/type_checker/unsafe_check.rs))。
 
 **新しい検査はマスク 1 行、新しい builtin は表の 1 行**になった。
 
@@ -39,8 +46,8 @@ const fn          ALLOC | FREE | RAW_READ | RAW_WRITE | ALLOC_CTX | IO
 |---|---|---|
 | `Alloc` | 現在の allocator にメモリを要求 | `heap_alloc` / `heap_realloc` |
 | `Free` | 返却 | `heap_free` / `heap_realloc` |
-| `RawRead` | 生ポインタを読む・問い合わせる | `ptr_read` / `ptr_eq` / `null_ptr` / `ptr_offset` / `str_to_ptr` / `str_from_bytes` / `ptr_is_null` |
-| `RawWrite` | 生ポインタ・ランタイム状態に書く | `ptr_write` / `mem_copy` / `mem_move` / `mem_set` / `record_allocator_layout` |
+| `RawRead` | 生ポインタの**指す先**を読む | `ptr_read` / `str_from_bytes` / `__simd_load` |
+| `RawWrite` | 生ポインタの指す先・ランタイム状態に書く | `ptr_write` / `mem_copy` / `mem_move` / `mem_set` / `__simd_store` / `record_allocator_layout` |
 | `AllocCtx` | 実行中のプログラムについて訊く | `current_allocator` / `default_allocator` / アロケーションカウンタ / `backtrace` |
 | `Io` | 出力する | `print` / `println` |
 | `Panic` | 実行を中断しうる | `panic` / `assert` |
@@ -49,6 +56,14 @@ const fn          ALLOC | FREE | RAW_READ | RAW_WRITE | ALLOC_CTX | IO
 いる**(fold 中に到達したらコンパイルエラーにするのが狙い) という決定を、
 コメントではなく型に置くために variant にしてある。後述の `never_panics`
 の土台でもある。
+
+**番地を作る・比べるだけの builtin は effect 無し** (`ptr_offset` /
+`ptr_eq` / `ptr_is_null` / `null_ptr` / `str_to_ptr`)。メモリの
+*内容*に触らないので、Rust の `as_ptr` / `offset_from` が safe なのと
+同じ理由 (deref が危険な段)。POINTER P6 の `unsafe fn` 要求はこの分割の
+上に乗っている — 「null か訊く」ことは宣言を要求しない。P6 以前は
+これらも `RawRead` に入れていたので、`const fn` から番地計算が
+呼べなかった。
 
 `str` は `Alloc` ではない。カウンタが数えないもの (ランタイムが
 `str` を保持するために使うメモリ) はここでも数えない —

@@ -1,6 +1,6 @@
 # POINTER — `ptr` を型のある窓に変える
 
-> **状態: P1〜P5 landing 済み (2026-08-30)。P6 は未実装。**
+> **状態: P1〜P6 landing 済み (2026-08-30)。フェーズは全部入った。**
 > 実測は 2026-08-30。
 > 現状の `ptr` は [`frontend/src/type_decl.rs`](../frontend/src/type_decl.rs)
 > の `TypeDecl::Ptr` (型引数を持たない nullary variant)。builtin の一覧は
@@ -139,7 +139,7 @@ tree-walker が元から持っていた dispatch に揃った。
 | P3 | `core/std/ptr.t` に `Ptr<T>` (`alloc` / `get` / `set` / `offset` / `as_raw` / `__getitem__` / `__setitem__`) ✅ (2026-08-30) | 小 (stdlib のみ) | 摩擦 1〜3、6 の入口。**コンパイラ無変更** (module 統合の remap 1 箇所を除く、下記) |
 | P4 | `Span<T> = { p: Ptr<T>, len: u64 }` + 境界検査 ✅ (2026-08-30) | 中 (stdlib) | 摩擦 4。todo の **slice 型 `&[T]`** をライブラリ側で回収でき、`__simd_load` の受け口にもなる |
 | P5 | `Ptr<T>` を non-null 不変にし、不在は `Option<Ptr<T>>` ✅ (2026-08-30) | 中 | 摩擦 5。`has_next: bool` 方式が消える |
-| P6 | `unsafe fn` の宣言と強制 (effect mask 1 行) | 小〜中 | 生 builtin を直接呼べる場所を stdlib に集約。`--effects` が土台 |
+| P6 | `unsafe fn` の宣言と強制 (effect mask 1 行) ✅ (2026-08-30) | 小〜中 | 生 builtin を直接呼べる場所を stdlib に集約。`--effects` が土台 |
 
 P3 が入れば **`Box` / `Vec` / `String` / `Dict` の `data: ptr` を
 `Ptr<T>` に置き換えられる**。stdlib 全体でバイトオフセット計算が 1 か所に集まる。
@@ -175,14 +175,31 @@ enum *binding* 引数と同じ形)。niche 最適化は不可 — 16 バイト�
 (「採らない選択肢」どおり)。例:
 `interpreter/example/linked_list_typed_ptr.t`。
 
-P6 のマスクは [`EFFECT_SYSTEM.md`](EFFECT_SYSTEM.md) の表に 1 行足すだけ:
+**P6 実装メモ (2026-08-30)**: マスクは予定どおり
+[`EFFECT_SYSTEM.md`](EFFECT_SYSTEM.md) の 1 行
+(`RAW_READ | RAW_WRITE`) だが、**歩き方**が既存の 3 検査と違う —
+`unsafe fn` は「この body 自身が触るか」なので**呼び先を辿らない**
+(`EffectTable::new_direct_only`)。辿ると `Vec::push` を呼ぶ `main` まで
+`unsafe` になり、stdlib に集約する意味が消える。検査本体は
+[`frontend/src/type_checker/unsafe_check.rs`](../frontend/src/type_checker/unsafe_check.rs)
+(81 行)、診断は `[E0024]` (`--explain E0024` に 3 通りの直し方)。
 
-```text
-unsafe fn を要求   RAW_READ | RAW_WRITE
-```
+同時に **番地を作る・比べるだけの builtin を effect 無しに落とした**
+(`ptr_offset` / `ptr_eq` / `ptr_is_null` / `null_ptr` / `str_to_ptr`) —
+メモリの*内容*に触らないので、Rust の `as_ptr` / `offset_from` が safe
+なのと同じ。これがないと「null か訊く」だけで `unsafe fn` が要る。
+副作用として `const fn` から番地計算が呼べるようになった。
 
-`Ptr<T>` / `Span<T>` を経由する限り呼び出し側は safe のまま、
-生 builtin を直接叩く関数だけが宣言を要求される。
+`unsafe` は **contextual** な修飾子 (`fn` の直前だけ、`never_allocates` /
+`const` とは順不同)。trait の**シグネチャ**には body が無いので検査対象外
+だが、**default body** は omit した impl が継承するので
+`TraitMethodSignature::is_unsafe` として一緒に運ぶ。`extern fn` は
+歩ける body が無いので宣言としてのみ受理する。
+
+stdlib 側は `Vec` / `String` / `Dict` / `Box` / `Ptr` / `Span` /
+`allocator` の生 builtin を叩く method が `unsafe fn` を持ち、
+**呼び出し側は safe のまま** — これが P3〜P5 で作った窓の対価。
+テストは [`interpreter/tests/unsafe_fn_tests.rs`](../interpreter/tests/unsafe_fn_tests.rs) (11 本)。
 
 ## 採らない選択肢
 

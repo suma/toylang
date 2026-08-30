@@ -12,6 +12,15 @@
 
 ### 2026-08-30
 
+- **POINTER P6 — `unsafe fn` の宣言と強制 (`[E0024]`)** — 生メモリを
+  読み書きする body に宣言を要求する。歩き方は**直接のみ**
+  (`EffectTable::new_direct_only`) なので `unsafe fn` を呼んでも
+  呼び出し側は safe — stdlib の `Vec` / `String` / `Ptr` / `Span` が
+  生 builtin を抱え、利用側は宣言不要のまま。同時に番地を作る・比べる
+  builtin (`ptr_offset` / `ptr_eq` / `ptr_is_null` / `null_ptr` /
+  `str_to_ptr`) を effect 無しに落とした (内容に触らないので)。
+  trait の default body は `TraitMethodSignature::is_unsafe` で継承。
+  `unsafe_fn_tests.rs` 11 本 + AST 拡張につき cache schema v31。
 - **POINTER P5 — `Ptr<T>` の non-null 不変 + `Option<Ptr<T>>`** —
   `alloc(0)` を 1 バイトに丸める (全バックエンドが `heap_alloc(0)` に
   null を返すので非 null を保証)。不在は `Option<Ptr<T>>` で表す
@@ -1579,8 +1588,8 @@
   (現状の `Span` は escape 未検査)。
 - **POINTER: `ptr` を型付きにする** ★★ — 設計は [`POINTER.md`](POINTER.md)。
   P1 (`__builtin_sizeof::<T>()`)、P2 (`__getitem__` / `__setitem__`)、
-  P3 (`Ptr<T>`)、P4 (`Span<T>`)、P5 (non-null + `Option<Ptr<T>>`) は
-  2026-08-30 に landing 済み (完了済み節)。残りは P6 (`unsafe fn`)。
+  P1〜P6 すべて 2026-08-30 に landing 済み (完了済み節)。残る論点は
+  `Span<T>` の escape 検査 (POINTER.md「未解決の論点」)。
 - **const generics** ★ — `struct Array<T, const N: usize>`。大規模。
 
 ### 構文糖衣の候補 (NEW-FEATURES、未着手)

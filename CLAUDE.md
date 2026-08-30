@@ -310,6 +310,19 @@ fn main() -> u64 {
   - `Ptr<T>` (`core/std/ptr.t`, POINTER P3+P5) — **型付きポインタ窓**。`T` は field に現れず `addr: ptr` の背後にだけ居るので backend 特殊扱いゼロ (`Box<T>` と同じ手口)。`alloc(count)` (stride は `__builtin_sizeof::<T>()`、**0 要素でも 1 バイト確保して非 null を保証**) / `get` / `set` / `p[i]` / `p[i] = v` (`__getitem__` / `__setitem__`) / `offset(count)` / `as_raw()`。**window であって owner ではない** — free は呼び出し側 (`__builtin_heap_free(p.as_raw())`)、index は unchecked。**non-null 不変** (P5) — 不在は `Option<Ptr<T>>` で表す (`has_next: bool` 方式が消える、16 バイト・niche 最適化は不可)。不変は構成による規約で compiler 強制は無し (field visibility は未強制)
   - `Span<T>` (`core/std/span.t`, POINTER P4) — **境界検査つきの窓**。`Ptr<T>` + 長さのペアで、todo の slice 型 `&[T]` をライブラリ側で回収する形。`from_parts(p, len)` / `get` / `set` / `s[i]` / `s[i] = v` (範囲外は panic、文言は `Vec` と同規約) / `len` / `is_empty` / `as_ptr` / `as_raw` (`__simd_load` の受け口)。**view であって owner ではない**。**escape は未検査** (POINTER.md の既定、選択肢 1) — 参照Rule は `&T` のみなので、`Span` は指す先より長生きできる
   - `Vec<T>` (`core/std/collections/vec.t`) — generic dynamic array。`T` が compound (struct/tuple) も AOT 対応 (`__builtin_ptr_read/write` を per-leaf 展開、`AOT-COMPOUND-PTR-RW`)。**`v.sort()` (STDLIB-ORD)** — `impl<T: Ord> Vec<T>` の安定 in-place insertion sort。`Ord` trait (`core/std/ord.t`) は `fn lt(self: Self, other: Self) -> bool` だけで、primitive 全幅 / `f64` / `bool` / `String` (byte-wise) に impl。method 名が `<` 演算子オーバーロードの `lt` と同じなので `impl Ord` は `<` も自動で得る (3 backend)。`T` が Ord でない `sort()` は **call site で型エラー** (`[E0010] ... bound violation`) — impl block の generic bound は free function と同じく呼び出し側で強制される。
+- **`unsafe fn` (POINTER P6)**: **生メモリを読み書きする body は宣言が要る**
+  (`[E0024]`)。対象は「指す先」に触る builtin — `__builtin_ptr_read` /
+  `__builtin_ptr_write` / `mem_copy` / `mem_move` / `mem_set` /
+  `str_from_bytes` / `record_allocator_layout` / `__simd_load` /
+  `__simd_store`。**番地を作る・比べるだけは safe**
+  (`ptr_offset` / `ptr_eq` / `ptr_is_null` / `null_ptr` / `str_to_ptr`)、
+  `heap_alloc` / `heap_free` / `heap_realloc` も safe。
+  **検査は直接のみ** — `unsafe fn` を呼んでも呼び出し側は safe なので、
+  `Vec` / `String` / `Ptr` / `Span` を経由するコードは宣言不要
+  (stdlib 側が `unsafe fn` を持つ)。修飾子は contextual で
+  `never_allocates` / `const` と順不同、trait の default body にも書ける
+  (omit した impl が継承)。`extern fn` は宣言としてのみ受理。
+  `--explain E0024` に直し方 3 通り
 - **`==` / `!=` operator overload** (Phase B) — 同型 struct ペアで `eq(&self, other: &Self) -> bool` method に dispatch (3 backend)。`s == t` で String 比較が動く。**`eq` の無い struct と enum は型検査が拒否する** (E0004、enum は `match` に誘導)。
 - **`Vec<u8>::push_char(c: char)`** は **UTF-8 encoding 対応** (RFC 3629、1〜4 bytes、surrogate / U+110000+ は panic)。
 - **alias-qualified associated function call** も frontend で支援 (`String::from_str("...")` / `String::new()` が直接 dispatch)。

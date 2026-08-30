@@ -91,6 +91,12 @@ top level declares a test block (see [Test blocks](#test-blocks)),
 while `fn test(...)` and `val test = ...` keep working as ordinary
 identifiers.
 
+`unsafe` and `never_allocates` are **contextual** the same way: they
+are modifiers only immediately before `fn` (in either order, and
+either side of `const`), so `val unsafe = 3u64` and
+`fn never_allocates()` keep their ordinary meaning. See
+[`unsafe fn`](#unsafe-fn--raw-memory-access).
+
 `@` is reserved as the [labelled-loop](#control-flow) prefix
 (`@outer:`, `break @outer`, `continue @outer`) and cannot appear
 elsewhere — there are no decorators / attributes that share the
@@ -1996,6 +2002,70 @@ pub fn add(a: u64, b: u64) -> u64 { ... }   # exported from a module
 fn helper() -> u64 { ... }                  # private (default)
 ```
 
+### `unsafe fn` — raw memory access
+
+A function whose own body reads or writes raw memory must say so in
+its declaration:
+
+```rust
+unsafe fn load(p: ptr) -> u64 {
+    val v: u64 = __builtin_ptr_read(p, 0u64)
+    v
+}
+```
+
+Without the modifier the type checker refuses the body:
+
+```text
+[E0024] `__builtin_ptr_read` performs a raw memory access, so `load`
+        must be declared `unsafe fn load(...)` — or go through the
+        stdlib's `Ptr<T>` / `Span<T>`, which concentrate the raw
+        access behind a typed API
+```
+
+**What requires it.** The builtins that touch what a pointer points
+at: `__builtin_ptr_read` / `__builtin_ptr_write`, the `mem_*` family
+(`mem_copy` / `mem_move` / `mem_set`), `__builtin_str_from_bytes`,
+`__builtin_record_allocator_layout`, and `__simd_load` /
+`__simd_store`. Producing and comparing addresses does **not**:
+`__builtin_ptr_offset`, `__builtin_ptr_eq`, `__builtin_ptr_is_null`,
+`__builtin_null_ptr` and `__builtin_str_to_ptr` are ordinary safe
+calls, as are `__builtin_heap_alloc` / `heap_free` / `heap_realloc`
+(they are the allocator's business, tracked as `alloc` / `free` in
+[effects](../design-docs/EFFECT_SYSTEM.md)).
+
+**The check is direct.** A function is asked only what its own
+statements do, never what its callees do — calling an `unsafe fn`
+does not make the caller unsafe:
+
+```rust
+unsafe fn poke(p: ptr, v: u64) -> () { __builtin_ptr_write(p, 0u64, v) }
+
+fn main() -> u64 {          # safe: the raw write is not in this body
+    val p: ptr = __builtin_heap_alloc(8u64)
+    poke(p, 7u64)
+    0u64
+}
+```
+
+That is what lets the stdlib concentrate the raw builtins:
+`Vec<T>::push`, `String::push`, `Ptr<T>::get` and
+`Span<T>::set` carry the declaration inside `core/std/*.t`, and code
+built on them needs none of its own.
+
+The modifier applies to free functions, `impl` methods, and trait
+method **default bodies** (a signature without a body has nothing to
+check, but a default body is inherited by every impl that omits the
+method, so the declaration travels with it). On an `extern fn` it is
+accepted as a declaration and not checked — the implementation lives
+outside the language. Ordering with the other prefix modifiers is
+free: `never_allocates unsafe fn`, `unsafe const fn`.
+
+`unsafe` is a **declaration, not a permission system**: it does not
+unlock anything the language otherwise refuses, and it is not
+transitive. It marks the bodies where the raw-pointer dialect is
+actually written.
+
 ### `extern fn` declarations
 
 `extern fn name(params) -> ret` declares a function whose body is
@@ -2045,8 +2115,9 @@ extern fn my_sin(x: f64) -> f64 from "m" as "sin"          # renamed symbol
   rejected by the type checker; pass `__builtin_str_to_ptr(s)` as a
   `ptr` instead. At most 4 arguments. The declaration's signature
   must match the C function — correctness is the caller's
-  responsibility (the language has no `unsafe` keyword; raw
-  pointer operations are already unchecked).
+  responsibility, and nothing checks it (an `extern fn` may be
+  written `unsafe extern fn` as a declaration, but there is no body
+  to walk).
 - `from "toylang_rt"` names the language's own runtime crate: its
   symbols marshal internally (e.g. `str` handles), so the scalar
   restriction does not apply to them. `core/std/io.t` uses this for
@@ -3400,6 +3471,12 @@ These always go through the active allocator:
 by its surrounding context (the lhs annotation of `val v: T = ...`,
 typically). `__builtin_ptr_write` accepts any type.
 
+The builtins that dereference (`ptr_read` / `ptr_write` / the `mem_*`
+family) may only appear in a body declared
+[`unsafe fn`](#unsafe-fn--raw-memory-access); the address-arithmetic
+ones (`ptr_offset` / `ptr_eq` / `ptr_is_null` / `null_ptr`) and the
+allocator ones are safe.
+
 ### `Ptr<T>` — a typed window (stdlib)
 
 `core/std/ptr.t` wraps the raw builtins in a typed window. The
@@ -3421,8 +3498,11 @@ with no compiler special-casing and no backend differences.
 `Ptr<T>` is a **window, not an owner**: `alloc` sizes a buffer the
 caller owns (free it with `__builtin_heap_free(p.as_raw())`), the
 indexes are unchecked, and `offset` shares the allocation with the
-window it came from. See [`design-docs/POINTER.md`](../design-docs/POINTER.md)
-for the layer map (`unsafe fn` is the remaining phase).
+window it came from. `get` / `set` and the bracket forms are
+declared [`unsafe fn`](#unsafe-fn--raw-memory-access) inside the
+stdlib, so the raw access stays there and callers of `Ptr<T>` stay
+safe. See [`design-docs/POINTER.md`](../design-docs/POINTER.md) for
+the layer map.
 
 **Non-null (POINTER P5).** A `Ptr<T>` value is non-null by
 construction — every backend answers `heap_alloc(0)` with null, so

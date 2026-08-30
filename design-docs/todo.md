@@ -1484,6 +1484,17 @@
 
 ### バックエンドのカバレッジ
 
+- **compound 要素の drop glue が `f32` leaf で落ちる** ★ —
+  `Vec<S>` / `SoaVec<S>` の `S` に `f32` フィールドがあると
+  `drop glue: unsupported leaf type F32` で compiled レーンが拒否する
+  (`drop_glue.rs::drop_glue_signature`)。`f64` / narrow int は通るので
+  抜けているのは f32 だけ。SIMD-F32 が後から入った順序の名残
+  (2026-08-30 に DOD Phase 2 の作業中に発見)
+- **tuple 要素の `Vec` / `SoaVec` が AOT 不可** ★ —
+  `Vec<(i64, u64)>` は `push` の `__builtin_sizeof(value)` が
+  `could not infer arg type at AOT` になる。iterator アダプタの
+  `enumerate` / `zip` の `collect` を提供していないのと同じ制限で、
+  そちらは stdlib 側で避けている
 - **COMPOUND-BLOCK-RHS の残: method call の枝** ★ —
   `val p = if c { x.twin() } else { .. }` は
   `detect_struct_result` が method の戻り型を安く引けないので検出されず、
@@ -1840,12 +1851,28 @@
   move / Drop モデルにどう載せるか」で、`Send` 相当の判定を決めるまで
   着手できない。設計フェーズを別に取る前提。
 * データ指向の配列 layout (DOD) ★★ — Phase 0 (`soa [T; N]` + `ps[i].f`
-  単列 shortcut) と Phase 2 (`soa Vec<T>`) は 2026-08-30 landing 済み (上)。
-  残り: **Phase 0.5** (stack 側の列 tight pack — 列方式により stride 1 箇所の
-  切替に縮小。heap 側は最初から tight)、Phase 1 slice `&[T]`
-  (★→★★ 済み、下の slice 型。`ps.mass` を列 slice として渡せると
-  `SoaVec` の帯域削減がやっと届く)、Phase 3 enum 要素。設計は
-  [`DATA_ORIENTED.md`](DATA_ORIENTED.md)
+  単列 shortcut) と Phase 2 (`soa Vec<T>` → `SoaVec<T>`) は 2026-08-30
+  landing 済み (上)。設計は [`DATA_ORIENTED.md`](DATA_ORIENTED.md)。残り 3 つ:
+  * **Phase 0.5 — stack 側の列 tight pack** (小)。`allocate_array_storage` の
+    列 stride を `ARRAY_LEAF_STRIDE` (8 固定) から leaf 実幅へ。列方式なので
+    codegen 分岐は不要で**切替は 1 箇所**。heap 側 (Phase 2) は列 stride が
+    最初から leaf 実幅なので、段差が残っているのは stack だけ。
+    `consistency/soa.rs::narrow_leaf_columns_keep_the_uniform_stride_in_the_aot_frame`
+    が期待値の更新で済む canary になっている (`bool` 列 3 バイト /
+    `u8` 3 / `f32` 12 / `u64` 24 へ)
+  * **Phase 1 — slice `&[T]`** (中)。`ps.mass` → `&[f64]` の列への窓。
+    **依存が集中している所**: heap 版 SoA の帯域削減 (今の `SoaVec::get` は
+    全列を物質化する)、SIMD が列を舐める形、下の「slice 型 `&[T]`」★★ が
+    すべてここ待ち
+  * **Phase 3 — 配列要素としての enum + tag 列の分離** (中)。前提として
+    `array_layout.rs::leaf_scalar_count` の `Type::Enum(_) => 1`
+    (配列要素として未サポート) を外す必要がある。tag だけを舐めるループが
+    効く形で、Zig の `MultiArrayList` が union に対してできない所
+
+  未決 (Phase に紐づかない): **要素まるごとの書き込み `ps[i] = p`** は
+  leaf ごとに散った store になるので、要素単位更新が主のワークロードでは
+  SoA が AoS より遅い。警告を出すかは未決で、`--simd-report` と同じ
+  「聞けば答える」tooling 側に置くのが妥当 (DATA_ORIENTED.md の論点 1)
 * SIMD Phase 3 の残 / Phase 4 ★★ — Phase 2 (型 + 演算子 + intrinsic) と
   戦略 B の主要 kernel は landing 済み。残りは (a) **stdlib の残り kernel**
   — `Vec` の `sum` / `min` / `max` (**API 自体が無い**ので追加から)、

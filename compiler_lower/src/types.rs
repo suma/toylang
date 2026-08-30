@@ -1,7 +1,34 @@
 //! Small IR-level type helpers shared across the lowering pass.
 
-use crate::ir::{Module, Type, TupleId};
-use frontend::type_decl::TypeDecl;
+use crate::ir::{Module, Type, TupleId, VecTy};
+use frontend::type_decl::{TypeDecl, VectorType};
+
+/// SIMD: translate a frontend vector type into its IR twin.
+///
+/// `compiler_ir` deliberately has no `frontend` dependency, so the
+/// two enums are mirrors. This function and [`ir_to_vector`] are the
+/// single place they meet — adding a lane type means adding a row in
+/// both enums and one here.
+pub fn vector_to_ir(v: VectorType) -> VecTy {
+    match v {
+        VectorType::F64x2 => VecTy::F64x2,
+        VectorType::F32x4 => VecTy::F32x4,
+        VectorType::I32x4 => VecTy::I32x4,
+        VectorType::I64x2 => VecTy::I64x2,
+        VectorType::U8x16 => VecTy::U8x16,
+    }
+}
+
+/// The inverse of [`vector_to_ir`].
+pub fn ir_to_vector(v: VecTy) -> VectorType {
+    match v {
+        VecTy::F64x2 => VectorType::F64x2,
+        VecTy::F32x4 => VectorType::F32x4,
+        VecTy::I32x4 => VectorType::I32x4,
+        VecTy::I64x2 => VectorType::I64x2,
+        VecTy::U8x16 => VectorType::U8x16,
+    }
+}
 
 /// A5-P2: lower `&dyn Trait` to a 2-element tuple `(data_ptr: U64,
 /// vtable_ptr: U64)`. The fat-pointer layout reuses the existing
@@ -43,6 +70,9 @@ pub(super) fn lower_scalar(ty: &TypeDecl) -> Option<Type> {
         TypeDecl::Float64 => Some(Type::F64),
         // SIMD-F32: single-precision scalar lowering.
         TypeDecl::Float32 => Some(Type::F32),
+        // SIMD: a vector is a single SSA value, so it lowers here
+        // rather than through the compound paths.
+        TypeDecl::Vector(v) => Some(Type::Vector(vector_to_ir(*v))),
         TypeDecl::Bool => Some(Type::Bool),
         TypeDecl::Unit => Some(Type::Unit),
         TypeDecl::String => Some(Type::Str),

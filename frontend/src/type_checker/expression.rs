@@ -87,6 +87,19 @@ impl<'a> TypeCheckerVisitor<'a> {
             return Ok(result);
         }
 
+        // SIMD: `__simd_splat` / `__simd_load` carry no lane-type
+        // suffix, so the vector type has to come from context. Same
+        // in-place rewrite contract as `Try` above — the stamp is
+        // written into this node's own pool entry, so every backend
+        // reads the type off the argument list instead of each
+        // needing its own channel from an annotation to a builtin
+        // call. Re-enter so the rest of this routine works from the
+        // stamped node; the stamp is idempotent, so the second pass
+        // falls straight through.
+        if self.stamp_simd_call(expr, &expr_obj) {
+            return self.visit_expr(expr);
+        }
+
 
         // From/Into: `expr.into()` rewrites to `Target::from(expr)`
         // when the expected type is known. Like `Try`, this needs the
@@ -187,6 +200,12 @@ impl<'a> TypeCheckerVisitor<'a> {
             && self.struct_method_compatible(&resolved_ty, &resolved_ty, method_name) {
                 return Ok(resolved_ty);
             }
+
+        // SIMD: `-v` / `~v` are lane-wise; `!v` is rejected because a
+        // vector is not one truth value.
+        if let Some(ty) = self.simd_unary_result(&op, &operand, &resolved_ty)? {
+            return Ok(ty);
+        }
 
         self.check_unary_primitive(&op, &operand, &resolved_ty)
     }
@@ -325,10 +344,27 @@ impl<'a> TypeCheckerVisitor<'a> {
             ty
         };
 
+        // SIMD: a lane-wise operator names the vector type on the
+        // side that has one, which is how `v & __simd_splat(15u8)`
+        // knows what to splat into. Set before the rhs is visited so
+        // the intercept in `visit_expr` sees it.
+        let saved_hint = self.type_inference.type_hint.clone();
+        if let TypeDecl::Vector(v) = &lhs_ty {
+            self.type_inference.type_hint = Some(TypeDecl::Vector(*v));
+        }
         let rhs_ty = {
-            let rhs_obj = self.core.expr_pool.get(&rhs)
+            let mut rhs_obj = self.core.expr_pool.get(&rhs)
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid right-hand expression reference"))?;
-            let ty = rhs_obj.clone().accept_expr(self)?;
+            // The operands are visited through `accept_expr`, which
+            // does not pass `visit_expr`'s rewrite intercepts, so the
+            // SIMD stamp has to be applied here as well.
+            if self.stamp_simd_call(&rhs, &rhs_obj) {
+                rhs_obj = self.core.expr_pool.get(&rhs)
+                    .ok_or_else(|| TypeCheckError::generic_error("Invalid right-hand expression reference"))?;
+            }
+            let ty = rhs_obj.clone().accept_expr(self);
+            self.type_inference.type_hint = saved_hint;
+            let ty = ty?;
             self.note_visited_number(&rhs, &ty);
             ty
         };
@@ -344,6 +380,14 @@ impl<'a> TypeCheckerVisitor<'a> {
         // an internal type the user never wrote. Propagate instead.
         if lhs_ty == TypeDecl::Unknown || rhs_ty == TypeDecl::Unknown {
             return Ok(TypeDecl::Unknown);
+        }
+
+        // SIMD: a lane-wise operator answers before the scalar
+        // machinery runs. `resolve_numeric_types` has no rule that
+        // fits a vector, and a comparison produces a mask rather than
+        // the `bool` `visit_compare_binary` would report.
+        if let Some(ty) = self.simd_binary_result(&op, &lhs, &lhs_ty, &rhs_ty)? {
+            return Ok(ty);
         }
 
         // Resolve concrete types from generics / Number placeholders.

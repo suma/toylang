@@ -77,5 +77,6 @@ mod visitor_impl;
 mod module_access;
 mod pattern_match;
 mod method_call;
+mod simd;
 
 pub use visitor::TypeCheckerVisitor;

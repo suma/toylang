@@ -660,6 +660,14 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
             return Ok(arg_types[0].clone());
         }
 
+        // SIMD intrinsics (SIMD.md Phase 2). Their signatures depend
+        // on the lane type of an argument (or on the annotation at the
+        // call site), so they cannot live in the flat signature table
+        // below.
+        if let BuiltinFunction::Simd(op) = func {
+            return self.check_simd_call(*op, args);
+        }
+
         // Find matching function signature from pre-built table
         let signature = self.builtin_function_signatures.iter().find(|sig| sig.func == *func).cloned();
 

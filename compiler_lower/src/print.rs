@@ -731,6 +731,7 @@ impl<'a> FunctionLower<'a> {
             Type::U8 => "u8".to_string(),
             Type::F64 => "f64".to_string(),
             Type::F32 => "f32".to_string(),
+            Type::Vector(v) => v.source_name().to_string(),
             Type::Bool => "bool".to_string(),
             Type::Unit => "()".to_string(),
             Type::Struct(id) => self.format_struct_header(id),

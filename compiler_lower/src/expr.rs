@@ -67,6 +67,8 @@ impl<'a> FunctionLower<'a> {
             // SIMD-F32: native single-precision width.
             Type::F32 => Some(4),
             Type::I64 | Type::U64 | Type::F64 | Type::Str => Some(8),
+            // SIMD: 128 bits, whatever the lane type.
+            Type::Vector(_) => Some(16),
             Type::Unit => Some(0),
             Type::Struct(struct_id) => {
                 let def = self.module.struct_def(struct_id);
@@ -654,7 +656,9 @@ impl<'a> FunctionLower<'a> {
             Type::Bool | Type::I8 | Type::U8
             | Type::I16 | Type::U16
             | Type::I32 | Type::U32
-            | Type::I64 | Type::U64 | Type::F64 | Type::F32 | Type::Str => {
+            | Type::I64 | Type::U64 | Type::F64 | Type::F32 | Type::Str
+            // SIMD: one leaf, 16 bytes wide.
+            | Type::Vector(_) => {
                 out.push((*offset, ty));
                 *offset = offset.saturating_add(self.compute_byte_size(ty)?);
                 Some(())
@@ -2053,6 +2057,7 @@ impl<'a> FunctionLower<'a> {
             | BuiltinFunction::Println => self.lower_builtin_diagnostics(func, args),
             BuiltinFunction::Abs
             | BuiltinFunction::Min | BuiltinFunction::Max => self.lower_builtin_numeric(func, args),
+            BuiltinFunction::Simd(op) => self.lower_builtin_simd(op, args),
             other => Err(format!(
                 "compiler MVP cannot lower builtin yet: {:?}",
                 other

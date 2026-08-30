@@ -126,6 +126,14 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             | InstKind::PtrEq { .. } => self.lower_allocator_and_memory(inst),
             InstKind::CallWithSelfWriteback { .. }
             | InstKind::CallWithSelfWritebackCompound { .. } => self.lower_self_writeback(inst),
+            InstKind::SimdSplat { .. }
+            | InstKind::SimdLoad { .. }
+            | InstKind::SimdStore { .. }
+            | InstKind::SimdExtract { .. }
+            | InstKind::SimdInsert { .. }
+            | InstKind::SimdSelect { .. }
+            | InstKind::SimdReduce { .. }
+            | InstKind::SimdTest { .. } => self.lower_simd(inst),
         }
     }
 
@@ -167,6 +175,12 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 // enforced that both operands share a type, so we only
                 // need to look at the lhs.
                 let lhs_ty = self.value_ir_type(*lhs).unwrap_or(IrType::U64);
+                // SIMD: lane-wise, before the scalar dispatch below —
+                // `Type::is_float()` is false for `f64x2`, so a vector
+                // would otherwise take the integer path.
+                if let IrType::Vector(v) = lhs_ty {
+                    return self.lower_simd_binop(inst, *op, l, r, v);
+                }
                 if lhs_ty.is_float() {
                     let v = match op {
                         BinOp::Add => self.builder.ins().fadd(l, r),
@@ -294,6 +308,10 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             InstKind::UnaryOp { op, operand } => {
                 let v = self.value(*operand);
                 let operand_ty = self.value_ir_type(*operand);
+                // SIMD: lane-wise `-` / `~`.
+                if let Some(IrType::Vector(vt)) = operand_ty {
+                    return self.lower_simd_unaryop(inst, *op, v, vt);
+                }
                 let result = match op {
                     UnaryOp::Neg => {
                         // SIMD-F32: fneg covers both float widths
@@ -906,6 +924,11 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 // same digits via `%d` / `%u` of an int / unsigned
                 // arg), so this is a codegen-aesthetics + one
                 // fewer extension instruction per print site.
+                // SIMD: rendered by the one runtime helper, off a
+                // stack-slot spill (see `lower_simd_render`).
+                if let IrType::Vector(vt) = value_ty {
+                    return self.lower_simd_render(inst, v, *vt, Some(*newline));
+                }
                 let (helper, call_value) = match (value_ty, newline) {
                     (IrType::I64, false) => (self.runtime.print_i64, v),
                     (IrType::I64, true) => (self.runtime.println_i64, v),
@@ -948,6 +971,14 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     (IrType::Unit, _) => {
                         return Err(
                             "internal error: Print of Unit reached codegen".to_string(),
+                        );
+                    }
+                    // Handled by the `lower_simd_render` short-circuit
+                    // above; unreachable here.
+                    (IrType::Vector(_), _) => {
+                        return Err(
+                            "internal error: Print of a vector reached the scalar helper table"
+                                .to_string(),
                         );
                     }
                     (IrType::Struct(_), _) => {
@@ -1326,6 +1357,10 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                             value_ty
                         ));
                     }
+                    // SIMD: same helper as `print`, minus the newline.
+                    IrType::Vector(vt) => {
+                        return self.lower_simd_render(inst, v, *vt, None);
+                    }
                 };
                 let call = self.builder.ins().call(helper, &[v]);
                 let result = self.builder.inst_results(call)[0];
@@ -1388,7 +1423,12 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     }
                     IrType::Bool => (self.runtime.format_bool, vec![v, spec_v]),
                     IrType::Str => (self.runtime.format_str, vec![v, spec_v]),
-                    IrType::Unit | IrType::Struct(_) | IrType::Tuple(_) | IrType::Enum(_) => {
+                    IrType::Unit | IrType::Struct(_) | IrType::Tuple(_) | IrType::Enum(_)
+                    // SIMD: a format spec's knobs (width / precision /
+                    // radix) have no single meaning across lanes, so a
+                    // spec on a vector is rejected the same way one on
+                    // a struct is.
+                    | IrType::Vector(_) => {
                         return Err(format!(
                             "internal error: __builtin_format of {value_ty:?} reached codegen \
                              (the type checker only allows primitives)"

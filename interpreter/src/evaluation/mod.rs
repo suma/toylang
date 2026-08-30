@@ -59,6 +59,7 @@ mod statement;
 mod call;
 mod slice;
 mod builtin;
+pub(crate) mod simd;
 
 /// Whether `requires` and `ensures` clauses are evaluated at runtime. The
 /// fields default to "both on" so the interpreter has the same semantics

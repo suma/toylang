@@ -314,9 +314,14 @@ impl<'a> FunctionLower<'a> {
                 | Operator::LT
                 | Operator::LE
                 | Operator::GT
-                | Operator::GE
-                | Operator::LogicalAnd
-                | Operator::LogicalOr => Some(Type::Bool),
+                | Operator::GE => match self.value_scalar(&lhs) {
+                    // SIMD: a lane-wise comparison produces a mask,
+                    // not one `bool` — the lane count is the number of
+                    // answers.
+                    Some(Type::Vector(v)) => Some(Type::Vector(v.mask())),
+                    _ => Some(Type::Bool),
+                },
+                Operator::LogicalAnd | Operator::LogicalOr => Some(Type::Bool),
                 _ => self.value_scalar(&lhs),
             },
             Expr::Unary(op, operand) => match op {
@@ -431,6 +436,13 @@ impl<'a> FunctionLower<'a> {
                     .map(|id| self.module.function(id).return_type)
             }
             Expr::BuiltinCall(func, args) => match func {
+                // SIMD: the result of `__simd_splat` / `__simd_load`
+                // is the type stamped onto the call by
+                // `type_checker::simd::stamp_simd_result_types`;
+                // everything else reads it off an argument.
+                frontend::ast::BuiltinFunction::Simd(op) => {
+                    self.simd_result_type(&op, &args)
+                }
                 frontend::ast::BuiltinFunction::Abs => {
                     // Polymorphic: forwards the operand's type.
                     args.first().and_then(|a| self.value_scalar(a))

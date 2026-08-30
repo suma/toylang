@@ -41,6 +41,8 @@ fn object_byte_size(ctx: &EvaluationContext<'_>, value: &Object) -> Option<u64> 
         // SIMD-F32: native single-precision width.
         Object::Float32(_) => Some(4),
         Object::Int32(_) | Object::UInt32(_) => Some(4),
+        // SIMD: 128 bits, whatever the lane type.
+        Object::Simd(_) => Some(16),
         Object::Bool(_) => Some(1),
         Object::Unit => Some(0),
         Object::Struct { fields, .. } => {
@@ -459,6 +461,7 @@ impl EvaluationContext<'_> {
             BuiltinFunction::Abs
             | BuiltinFunction::Min
             | BuiltinFunction::Max => self.builtin_numeric(func, args),
+            BuiltinFunction::Simd(op) => self.builtin_simd(*op, args),
         }
     }
 

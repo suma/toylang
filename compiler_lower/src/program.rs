@@ -1944,7 +1944,11 @@ impl<'a> FunctionLower<'a> {
                 }
                 scalar @ (Type::I64 | Type::U64 | Type::F64 | Type::Bool | Type::Str
                     | Type::I8 | Type::U8 | Type::I16 | Type::U16
-                    | Type::I32 | Type::U32 | Type::F32) => {
+                    | Type::I32 | Type::U32 | Type::F32
+                    // SIMD: a vector crosses the boundary as one
+                    // value, so it binds exactly like a scalar — no
+                    // leaf decomposition, no writeback shape.
+                    | Type::Vector(_)) => {
                     let local = self.module.function_mut(self.func_id).add_local(scalar);
                     self.bindings.insert(
                         *name,

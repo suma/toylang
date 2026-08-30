@@ -12,6 +12,14 @@
 
 ### 2026-08-30
 
+- **SIMD Phase 2 — 128bit vector を型にし、演算子を lane-wise に効かせた**
+  (`SIMD.md`)。lane 型 5 種 (`f64x2` / `f32x4` / `i32x4` / `i64x2` /
+  `u8x16`)、intrinsic 13 個、3 バックエンド対応 (interpreter JIT は
+  silent fallback)。設計からの差分と残りの穴は
+  [`SIMD.md`](SIMD.md) の「Phase 2 で実際に入ったもの」。
+- **SIMD-F32 の残 (一部)** — IR VM の `to_string_value` に `F32` の行が
+  無く、`"{x}"` が生ビット (`1069547520`) を出していた。SIMD の
+  `Vector` 行を足すときに同じ関数で踏んだので直した。
 - **SIMD-F32 — `f32` を primitive 型として追加 (SIMD.md 論点 1 解決)** —
   lexer (`1.5f32` リテラル + `f32` 型キーワード) / `TypeDecl::Float32` /
   `Expr::Float32` / IR `Type::F32` / cranelift `F32` まで直列に接続。
@@ -1487,9 +1495,10 @@
   レーンの compound capture** — 診断は直した (capture の話だと分かる文言に
   なった) が、env に compound を載せるのは未着手。interpreter は動く。
 - **slice 型 `&[T]`** ★★ — 配列 borrow を first-class に。中〜大。
-  **DOD / SIMD の両方がこれを待っている** ([`DATA_ORIENTED.md`](DATA_ORIENTED.md) /
-  [`SIMD.md`](SIMD.md))。SoA の列を関数に渡す窓であり、`__simd_load` の
-  引数の形でもあるので、★ から引き上げた。
+  SoA の列を関数に渡す窓 ([`DATA_ORIENTED.md`](DATA_ORIENTED.md))。
+  **SIMD の前提ではなくなった** — `__simd_load` / `__simd_store` は
+  `ptr` + 要素 index で landing したので、slice が入ったら受け口を
+  足せばよい。
 - **const generics** ★ — `struct Array<T, const N: usize>`。大規模。
 
 ### 構文糖衣の候補 (NEW-FEATURES、未着手)
@@ -1654,15 +1663,20 @@
   つまり「`soa` の有無で答えが変わらない」オラクルが最初から手に入る。
   副産物として NUM-W-AOT-pack Phase 2 (compound 要素の 8 バイト固定 stride) が
   SoA 側で解ける。Phase 0 は単体で価値があり SIMD をやらなくても無駄にならない
-* SIMD ★★ — vector を型 (`f64x2` 等 9 種、128bit のみ) にして演算子を
-  lane-wise に効かせ、intrinsic は型で表せないもの 10 個に絞る。設計は
-  [`SIMD.md`](SIMD.md)。**個別 builtin を op × lane 型 × lane 数 で並べる案は
-  採らない** (cache schema bump と 4 実行系対応のコストで破綻する)。
-  着手前に決める必要があるのは (a) `f32` を言語に足すか (SIMD の主戦場は
-  `f32x4`、後から足すと型名と intrinsic の綴りが増える)、(b) reduce の
-  畳み込み順序と lane-wise 演算の trap 有無 — 4 レーン一致を守るため
-  意味論を先に固定する。費用対効果が最大なのは stdlib kernel の置換
-  (`Vec<u8>::eq` / `Contains` / `CaseConvert`) で、ユーザコードは変えずに効く
+* **SIMD-VM-SLOT** ★★ — SIMD のために IR VM の `RawSlot` を 8 → 16
+  バイトに広げた。ベクトルを使わないプログラムも slot 配列が倍になり、
+  `fib(30)` で **2.50s → 2.65s (約 6% 減速)** を実測 (release、5 回の
+  中央値)。消すには値 arena (`n_values + n_locals` をフレームに持ち
+  slot には index) + 呼び出し境界のコピーが要る。設計メモは
+  [`SIMD.md`](SIMD.md) の「残っている穴」
+* SIMD Phase 3/4 ★★ — Phase 2 (型 + 演算子 + intrinsic) は landing 済み。
+  残りは (a) **stdlib kernel の置換** — `Vec<u8>::eq` / `Contains` /
+  `CaseConvert` / `sum` を `__simd_*` で書き直す。**ユーザコードを一行も
+  変えずに効く**うえ処理系ではなくライブラリの変更なので、費用対効果が
+  最大。`ptr` + 要素 index の load にしたので slice を待たない、
+  (b) `--simd-report` (「なぜベクトル化されなかったか」を聞ける CLI)、
+  (c) 限定自動ベクトル化、(d) 256bit + feature detection。設計は
+  [`SIMD.md`](SIMD.md)
 * モジュール拡張 — バージョニング、リモートパッケージ
 * 言語内からの AST 取得・操作
 * LSP 対応 — 補完 / go-to-definition / hover / 診断 / フォーマット。frontend の AST・型チェッカ・`SourceLocation` を再利用できる。ただし**エージェントは LSP より CLI クエリを使いやすい**ので、LLM ループの観点では `--api` / 型ホール (P7 で landing 済み) の方が先だった

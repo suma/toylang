@@ -441,6 +441,127 @@ impl MemStat {
     }
 }
 
+/// SIMD intrinsics (SIMD.md Phase 2) — the operations a vector type
+/// and an ordinary operator cannot express.
+///
+/// Lane-wise arithmetic (`a * b + a`), comparison, and the bitwise
+/// operators are *not* here: they go through the regular binary /
+/// unary operator paths, which is the whole point of making vectors a
+/// type. What is left is construction, memory traffic, lane
+/// addressing, and horizontal reduction — thirteen names, so the AST
+/// cache schema is bumped once rather than once per lane type.
+///
+/// Spelling: no lane-type suffix. `__simd_splat` / `__simd_load`
+/// take their result type from the annotation at the call site, the
+/// way `__builtin_ptr_read` already does; every other intrinsic reads
+/// it off an argument that is already a vector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SimdOp {
+    /// `__simd_splat(x: E) -> V` — scalar into every lane.
+    Splat,
+    /// `__simd_load(p: ptr, i: u64) -> V` — the 128 bits starting at
+    /// *element* `i`, i.e. byte offset `i * lane_bytes`. `ptr` rather
+    /// than the slice SIMD.md assumed, because `&[T]` is not
+    /// implemented and the stdlib's `Vec<T>` / `String` already hold
+    /// their bytes behind a `ptr`.
+    Load,
+    /// `__simd_store(p: ptr, i: u64, v: V) -> ()` — the inverse.
+    Store,
+    /// `__simd_extract(v: V, k: u64) -> E` — lane `k`. `k` must be a
+    /// literal in range; a non-constant index is a type error rather
+    /// than a runtime bounds check.
+    Extract,
+    /// `__simd_insert(v: V, k: u64, x: E) -> V` — `v` with lane `k`
+    /// replaced. Same constant-`k` rule as `Extract`.
+    Insert,
+    /// `__simd_select(mask: M, a: V, b: V) -> V` — lane-wise
+    /// branch-free choice: `a` where the mask lane is all-ones, `b`
+    /// where it is all-zeros.
+    Select,
+    /// `__simd_reduce_add(v: V) -> E` — lane 0 through n in order.
+    /// The order is part of the language definition, not an
+    /// implementation detail: a pairwise tree would make the float
+    /// answers differ between the tree-walker and cranelift.
+    ReduceAdd,
+    /// `__simd_reduce_min(v: V) -> E`, same left-to-right fold.
+    ReduceMin,
+    /// `__simd_reduce_max(v: V) -> E`, same left-to-right fold.
+    ReduceMax,
+    /// `__simd_reduce_and(v: V) -> E` — integer lanes only.
+    ReduceAnd,
+    /// `__simd_reduce_or(v: V) -> E` — integer lanes only.
+    ReduceOr,
+    /// `__simd_any(mask: M) -> bool` — any lane non-zero.
+    Any,
+    /// `__simd_all(mask: M) -> bool` — every lane non-zero.
+    All,
+}
+
+impl SimdOp {
+    pub const ALL: [SimdOp; 13] = [
+        SimdOp::Splat,
+        SimdOp::Load,
+        SimdOp::Store,
+        SimdOp::Extract,
+        SimdOp::Insert,
+        SimdOp::Select,
+        SimdOp::ReduceAdd,
+        SimdOp::ReduceMin,
+        SimdOp::ReduceMax,
+        SimdOp::ReduceAnd,
+        SimdOp::ReduceOr,
+        SimdOp::Any,
+        SimdOp::All,
+    ];
+
+    /// The source spelling.
+    pub fn builtin_name(self) -> &'static str {
+        match self {
+            SimdOp::Splat => "__simd_splat",
+            SimdOp::Load => "__simd_load",
+            SimdOp::Store => "__simd_store",
+            SimdOp::Extract => "__simd_extract",
+            SimdOp::Insert => "__simd_insert",
+            SimdOp::Select => "__simd_select",
+            SimdOp::ReduceAdd => "__simd_reduce_add",
+            SimdOp::ReduceMin => "__simd_reduce_min",
+            SimdOp::ReduceMax => "__simd_reduce_max",
+            SimdOp::ReduceAnd => "__simd_reduce_and",
+            SimdOp::ReduceOr => "__simd_reduce_or",
+            SimdOp::Any => "__simd_any",
+            SimdOp::All => "__simd_all",
+        }
+    }
+
+    /// How many arguments the intrinsic takes.
+    pub fn arity(self) -> usize {
+        match self {
+            SimdOp::Splat
+            | SimdOp::ReduceAdd
+            | SimdOp::ReduceMin
+            | SimdOp::ReduceMax
+            | SimdOp::ReduceAnd
+            | SimdOp::ReduceOr
+            | SimdOp::Any
+            | SimdOp::All => 1,
+            SimdOp::Load | SimdOp::Extract => 2,
+            SimdOp::Store | SimdOp::Insert | SimdOp::Select => 3,
+        }
+    }
+
+    /// Whether the result type comes from the call site's annotation
+    /// rather than from an argument.
+    pub fn needs_result_annotation(self) -> bool {
+        matches!(self, SimdOp::Splat | SimdOp::Load)
+    }
+
+    /// Whether the intrinsic only makes sense on integer lanes.
+    pub fn integer_lanes_only(self) -> bool {
+        matches!(self, SimdOp::ReduceAnd | SimdOp::ReduceOr)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BuiltinFunction {
@@ -547,6 +668,10 @@ pub enum BuiltinFunction {
     // intent at call sites and a single point to disable in the future.
     Assert,
 
+    /// SIMD intrinsics (SIMD.md Phase 2). See [`SimdOp`] for the
+    /// list and for why lane-wise arithmetic is *not* in it.
+    Simd(SimdOp),
+
     // Type introspection
     SizeOf,  // __builtin_sizeof(value) -> u64 — size in bytes of the argument's type
 
@@ -639,6 +764,9 @@ pub struct BuiltinFunctionSymbols {
     /// Allocator layout registry (MEMORY_PROFILING M3 residual).
     pub record_allocator_layout: DefaultSymbol,
 
+    /// SIMD intrinsics, in `SimdOp::ALL` order.
+    pub simd_ops: Vec<DefaultSymbol>,
+
     // Output
     pub print: DefaultSymbol,
     pub println: DefaultSymbol,
@@ -721,6 +849,10 @@ impl BuiltinFunctionSymbols {
                 .map(|s| interner.get_or_intern(s.builtin_name()))
                 .collect(),
             record_allocator_layout: interner.get_or_intern("__builtin_record_allocator_layout"),
+            simd_ops: SimdOp::ALL
+                .iter()
+                .map(|op| interner.get_or_intern(op.builtin_name()))
+                .collect(),
             // I/O builtins are user-facing, so they keep the plain names
             // `print` and `println` instead of the `__builtin_` prefix used
             // for low-level memory primitives.
@@ -787,6 +919,12 @@ impl BuiltinFunctionSymbols {
                 .iter()
                 .position(|s| *s == symbol)
                 .map(|i| BuiltinFunction::MemStat(MemStat::ALL[i]))
+                .or_else(|| {
+                    self.simd_ops
+                        .iter()
+                        .position(|s| *s == symbol)
+                        .map(|i| BuiltinFunction::Simd(SimdOp::ALL[i]))
+                })
         }
     }
 }

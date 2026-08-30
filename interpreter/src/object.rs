@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use frontend::type_decl::{ArraySize, TypeDecl};
+use frontend::type_decl::{ArraySize, TypeDecl, VectorType};
 use frontend::ast::ExprRef;
 use string_interner::DefaultSymbol;
 use crate::heap::Allocator;
@@ -14,6 +14,182 @@ pub enum ObjectError {
     IndexOutOfBounds { index: usize, length: usize },
     NullDereference,
     InvalidOperation { operation: String, object_type: TypeDecl },
+}
+
+/// SIMD: the runtime value of a 128-bit vector, for the tree-walker.
+///
+/// The lanes are a typed array rather than a `Vec<Object>` because
+/// this engine is the correctness oracle the other three are checked
+/// against (`compiler/tests/consistency/`): a mixed-lane vector must
+/// not be representable here, or the oracle can disagree with itself.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SimdValue {
+    F64x2([f64; 2]),
+    F32x4([f32; 4]),
+    I32x4([i32; 4]),
+    I64x2([i64; 2]),
+    U8x16([u8; 16]),
+}
+
+impl SimdValue {
+    /// All lanes zero.
+    pub fn zeroed(ty: VectorType) -> SimdValue {
+        match ty {
+            VectorType::F64x2 => SimdValue::F64x2([0.0; 2]),
+            VectorType::F32x4 => SimdValue::F32x4([0.0; 4]),
+            VectorType::I32x4 => SimdValue::I32x4([0; 4]),
+            VectorType::I64x2 => SimdValue::I64x2([0; 2]),
+            VectorType::U8x16 => SimdValue::U8x16([0; 16]),
+        }
+    }
+
+    pub fn vector_type(&self) -> VectorType {
+        match self {
+            SimdValue::F64x2(_) => VectorType::F64x2,
+            SimdValue::F32x4(_) => VectorType::F32x4,
+            SimdValue::I32x4(_) => VectorType::I32x4,
+            SimdValue::I64x2(_) => VectorType::I64x2,
+            SimdValue::U8x16(_) => VectorType::U8x16,
+        }
+    }
+
+    pub fn lanes(&self) -> usize {
+        self.vector_type().lanes()
+    }
+
+    /// Lane `k` as a scalar object of the lane type.
+    pub fn lane(&self, k: usize) -> Object {
+        match self {
+            SimdValue::F64x2(v) => Object::Float64(v[k]),
+            SimdValue::F32x4(v) => Object::Float32(v[k]),
+            SimdValue::I32x4(v) => Object::Int32(v[k]),
+            SimdValue::I64x2(v) => Object::Int64(v[k]),
+            SimdValue::U8x16(v) => Object::UInt8(v[k]),
+        }
+    }
+
+    /// Replace lane `k`, ignoring a scalar of the wrong lane type
+    /// (the type checker has already rejected those).
+    pub fn with_lane(&self, k: usize, value: &Object) -> SimdValue {
+        let mut out = *self;
+        match (&mut out, value) {
+            (SimdValue::F64x2(v), Object::Float64(x)) => v[k] = *x,
+            (SimdValue::F32x4(v), Object::Float32(x)) => v[k] = *x,
+            (SimdValue::I32x4(v), Object::Int32(x)) => v[k] = *x,
+            (SimdValue::I64x2(v), Object::Int64(x)) => v[k] = *x,
+            (SimdValue::U8x16(v), Object::UInt8(x)) => v[k] = *x,
+            _ => {}
+        }
+        out
+    }
+
+    /// Every lane broadcast from one scalar. `None` when the scalar
+    /// is not the vector's lane type.
+    pub fn splat(ty: VectorType, value: &Object) -> Option<SimdValue> {
+        Some(match (ty, value) {
+            (VectorType::F64x2, Object::Float64(x)) => SimdValue::F64x2([*x; 2]),
+            (VectorType::F32x4, Object::Float32(x)) => SimdValue::F32x4([*x; 4]),
+            (VectorType::I32x4, Object::Int32(x)) => SimdValue::I32x4([*x; 4]),
+            (VectorType::I64x2, Object::Int64(x)) => SimdValue::I64x2([*x; 2]),
+            (VectorType::U8x16, Object::UInt8(x)) => SimdValue::U8x16([*x; 16]),
+            _ => return None,
+        })
+    }
+
+    /// Whether lane `k` is non-zero. `__simd_any` / `__simd_all` read
+    /// masks through this, so it is defined for every lane type
+    /// rather than only for the integer ones a comparison produces.
+    pub fn lane_is_set(&self, k: usize) -> bool {
+        match self {
+            SimdValue::F64x2(v) => v[k].to_bits() != 0,
+            SimdValue::F32x4(v) => v[k].to_bits() != 0,
+            SimdValue::I32x4(v) => v[k] != 0,
+            SimdValue::I64x2(v) => v[k] != 0,
+            SimdValue::U8x16(v) => v[k] != 0,
+        }
+    }
+
+    /// The 16 bytes of the vector in little-endian lane order — the
+    /// memory image `__simd_store` writes and `__simd_load` reads.
+    pub fn to_bytes(&self) -> [u8; 16] {
+        let mut out = [0u8; 16];
+        match self {
+            SimdValue::F64x2(v) => for (i, x) in v.iter().enumerate() {
+                out[i * 8..i * 8 + 8].copy_from_slice(&x.to_le_bytes());
+            },
+            SimdValue::F32x4(v) => for (i, x) in v.iter().enumerate() {
+                out[i * 4..i * 4 + 4].copy_from_slice(&x.to_le_bytes());
+            },
+            SimdValue::I32x4(v) => for (i, x) in v.iter().enumerate() {
+                out[i * 4..i * 4 + 4].copy_from_slice(&x.to_le_bytes());
+            },
+            SimdValue::I64x2(v) => for (i, x) in v.iter().enumerate() {
+                out[i * 8..i * 8 + 8].copy_from_slice(&x.to_le_bytes());
+            },
+            SimdValue::U8x16(v) => out.copy_from_slice(v),
+        }
+        out
+    }
+
+    /// The inverse of [`SimdValue::to_bytes`].
+    pub fn from_bytes(ty: VectorType, bytes: &[u8; 16]) -> SimdValue {
+        let mut out = SimdValue::zeroed(ty);
+        match &mut out {
+            SimdValue::F64x2(v) => for (i, slot) in v.iter_mut().enumerate() {
+                *slot = f64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap());
+            },
+            SimdValue::F32x4(v) => for (i, slot) in v.iter_mut().enumerate() {
+                *slot = f32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
+            },
+            SimdValue::I32x4(v) => for (i, slot) in v.iter_mut().enumerate() {
+                *slot = i32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
+            },
+            SimdValue::I64x2(v) => for (i, slot) in v.iter_mut().enumerate() {
+                *slot = i64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap());
+            },
+            SimdValue::U8x16(v) => v.copy_from_slice(bytes),
+        }
+        out
+    }
+
+    /// Build from per-lane scalars, dropping any that are not the
+    /// lane type.
+    pub fn from_lanes(ty: VectorType, lanes: &[Object]) -> SimdValue {
+        let mut out = SimdValue::zeroed(ty);
+        for (k, value) in lanes.iter().enumerate().take(ty.lanes()) {
+            out = out.with_lane(k, value);
+        }
+        out
+    }
+
+    /// The all-ones / all-zeros lane pattern a comparison produces.
+    pub fn mask_from_bools(ty: VectorType, bits: &[bool]) -> SimdValue {
+        let mut out = SimdValue::zeroed(ty.mask());
+        for (k, set) in bits.iter().enumerate().take(ty.lanes()) {
+            let lane = match ty.mask() {
+                VectorType::I32x4 => Object::Int32(if *set { -1 } else { 0 }),
+                VectorType::I64x2 => Object::Int64(if *set { -1 } else { 0 }),
+                VectorType::U8x16 => Object::UInt8(if *set { 0xFF } else { 0 }),
+                // The mask of a float vector is always an integer
+                // vector, so these two are unreachable.
+                VectorType::F64x2 => Object::Float64(0.0),
+                VectorType::F32x4 => Object::Float32(0.0),
+            };
+            out = out.with_lane(k, &lane);
+        }
+        out
+    }
+
+    /// The display form: the type name applied to its lanes, e.g.
+    /// `f64x2(1.0, 2.0)`. Same shape as a tuple struct, and the lane
+    /// scalars render exactly as they would on their own — including
+    /// the `.0` an integral float keeps.
+    pub fn display(&self, interner: &string_interner::StringInterner<string_interner::DefaultBackend>) -> String {
+        let lanes: Vec<String> = (0..self.lanes())
+            .map(|k| self.lane(k).to_display_string(interner))
+            .collect();
+        format!("{}({})", self.vector_type().source_name(), lanes.join(", "))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -33,6 +209,11 @@ pub enum Object {
     UInt32(u32),
     Float64(f64),
     Float32(f32),
+    /// SIMD: a 128-bit vector value. Unlike `Array` / `Struct` this
+    /// is not a container of `RcObject` — a vector is one value with
+    /// a fixed lane count, so sharing lanes would only invite
+    /// aliasing bugs the compiled backends cannot have.
+    Simd(SimdValue),
     ConstString(DefaultSymbol),  // String literals and interned strings (immutable, memory efficient)
     String(String),              // Runtime generated strings (mutable, direct data storage)
     Array(Box<Vec<RcObject>>),
@@ -213,6 +394,11 @@ impl Ord for ObjectKey {
             // so f64 can act as a Dict key. Not the same as numeric `<` ordering.
             (Object::Float64(a), Object::Float64(b)) => a.to_bits().cmp(&b.to_bits()),
             (Object::Float32(a), Object::Float32(b)) => a.to_bits().cmp(&b.to_bits()),
+            // A vector is not an ordered value in the language (`<`
+            // on two vectors is lane-wise and yields a mask), so this
+            // is only the total order `ObjectKey` needs to be a dict
+            // key at all: compare the memory image byte-wise.
+            (Object::Simd(a), Object::Simd(b)) => a.to_bytes().cmp(&b.to_bytes()),
             (Object::ConstString(a), Object::ConstString(b)) => a.cmp(b),
             (Object::String(a), Object::String(b)) => a.cmp(b),
             (Object::Pointer(a), Object::Pointer(b)) => a.cmp(b),
@@ -241,6 +427,8 @@ impl Ord for ObjectKey {
             (_, Object::Float64(_)) => Ordering::Greater,
             (Object::Float32(_), _) => Ordering::Less,
             (_, Object::Float32(_)) => Ordering::Greater,
+            (Object::Simd(_), _) => Ordering::Less,
+            (_, Object::Simd(_)) => Ordering::Greater,
             (Object::ConstString(_), _) => Ordering::Less,
             (_, Object::ConstString(_)) => Ordering::Greater,
             (Object::String(_), _) => Ordering::Less,
@@ -456,6 +644,10 @@ impl Hash for Object {
             Object::Unit => {
                 11u8.hash(state);
             }
+            Object::Simd(v) => {
+                12u8.hash(state);
+                v.to_bytes().hash(state);
+            }
             Object::Allocator(rc) => {
                 12u8.hash(state);
                 // Hash by Rc pointer identity to match `PartialEq::eq`'s ptr_eq.
@@ -600,6 +792,7 @@ impl Object {
             Object::Int8(_) => TypeDecl::Int8,
             Object::Float64(_) => TypeDecl::Float64,
             Object::Float32(_) => TypeDecl::Float32,
+            Object::Simd(v) => TypeDecl::Vector(v.vector_type()),
             Object::ConstString(_) | Object::String(_) => TypeDecl::String,
             Object::Array(elements) => {
                 if elements.is_empty() {
@@ -714,6 +907,7 @@ impl Object {
                     v.to_string()
                 }
             }
+            Object::Simd(v) => v.display(string_interner),
             Object::Float32(v) => {
                 // Match Rust's default `{}` formatting except always show a
                 // decimal point so floats are visually distinct from ints

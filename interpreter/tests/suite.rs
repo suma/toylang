@@ -106,6 +106,9 @@ mod null_coalesce_tests;
 #[path = "float32_tests.rs"]
 mod float32_tests;
 
+#[path = "simd_tests.rs"]
+mod simd_tests;
+
 #[path = "region_tests.rs"]
 mod region_tests;
 

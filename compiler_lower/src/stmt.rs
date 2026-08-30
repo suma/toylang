@@ -145,6 +145,17 @@ impl<'a> FunctionLower<'a> {
                             self.interner.resolve(name).unwrap_or("?")
                         ));
                     }
+                    // SIMD: there is no zero vector constant in the
+                    // IR yet, and `var v: f64x2` with no initializer
+                    // is not a shape worth one — write
+                    // `var v: f64x2 = __simd_splat(0.0f64)`.
+                    Type::Vector(_) => {
+                        return Err(format!(
+                            "var `{}` of vector type needs an initializer \
+                             (`__simd_splat(0.0f64)` zeroes every lane)",
+                            self.interner.resolve(name).unwrap_or("?")
+                        ));
+                    }
                     Type::Str => {
                         return Err(format!(
                             "var `{}` of str type cannot be declared without an initializer",

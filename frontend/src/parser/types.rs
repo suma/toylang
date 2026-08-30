@@ -206,6 +206,12 @@ impl<'a> Parser<'a> {
                 self.next();
                 Ok(TypeDecl::Float32)
             }
+            // SIMD: `f64x2` / `f32x4` / `i32x4` / `i64x2` / `u8x16`.
+            Some(Kind::Vector(v)) => {
+                let v = *v;
+                self.next();
+                Ok(TypeDecl::Vector(v))
+            }
             Some(Kind::Ptr) => {
                 self.next();
                 Ok(TypeDecl::Ptr)

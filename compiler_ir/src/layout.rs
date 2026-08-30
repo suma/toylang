@@ -46,9 +46,11 @@ pub fn flatten_compound_leaf_types(module: &Module, ty: Type, out: &mut Vec<Type
                 flatten_compound_leaf_types(module, pt, out);
             }
         }
-        // Scalars contribute themselves directly.
+        // Scalars contribute themselves directly. A vector is one
+        // SSA value too, so it is a leaf rather than 2-16 of them.
         Type::I64 | Type::U64 | Type::I8 | Type::U8 | Type::I16 | Type::U16
-        | Type::I32 | Type::U32 | Type::F64 | Type::F32 | Type::Bool | Type::Str => out.push(ty),
+        | Type::I32 | Type::U32 | Type::F64 | Type::F32 | Type::Bool | Type::Str
+        | Type::Vector(_) => out.push(ty),
         Type::Unit => {} // skip
     }
 }

@@ -162,6 +162,7 @@ pub fn assert_object_type(obj: &Object, expected_type: &str) {
         Object::UInt32(_) => "UInt32",
         Object::Float64(_) => "Float64",
         Object::Float32(_) => "Float32",
+        Object::Simd(_) => "Simd",
         Object::Bool(_) => "Bool",
         Object::String(_) => "String",
         Object::ConstString(_) => "ConstString",

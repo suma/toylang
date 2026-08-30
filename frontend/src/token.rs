@@ -80,6 +80,10 @@ pub enum Kind {
     I64,
     F64,
     F32,
+    /// SIMD: one of the 128-bit vector type keywords (`f64x2` etc.).
+    /// A single token kind carrying the type keeps the lexer / parser
+    /// tables from growing a row per lane type.
+    Vector(crate::type_decl::VectorType),
     USize,
     // Narrow integer keywords (NUM-W). Same surface shape as
     // U64/I64 — keyword + literal-suffix + value-carrying token
@@ -198,7 +202,7 @@ impl Kind {
             Kind::If | Kind::Elif | Kind::Else | Kind::For | Kind::In | Kind::To | 
             Kind::While | Kind::Loop | Kind::Break | Kind::Continue | Kind::Class | Kind::Struct |
             Kind::Trait | Kind::Impl | Kind::Function | Kind::Return | Kind::Extern | Kind::Public |
-            Kind::Val | Kind::Var | Kind::Mut | Kind::Const | Kind::With | Kind::Ambient | Kind::Enum | Kind::Match | Kind::Requires | Kind::Ensures | Kind::Type | Kind::Bool | Kind::U64 | Kind::I64 | Kind::F64 | Kind::F32 | Kind::USize |
+            Kind::Val | Kind::Var | Kind::Mut | Kind::Const | Kind::With | Kind::Ambient | Kind::Enum | Kind::Match | Kind::Requires | Kind::Ensures | Kind::Type | Kind::Bool | Kind::U64 | Kind::I64 | Kind::F64 | Kind::F32 | Kind::Vector(_) | Kind::USize |
             Kind::U8 | Kind::U16 | Kind::U32 | Kind::I8 | Kind::I16 | Kind::I32 |
             Kind::Str | Kind::Ptr | Kind::Null | Kind::Dict | Kind::Self_ | Kind::True | Kind::False
         )

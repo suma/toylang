@@ -24,7 +24,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | allocator のリージョン脱出検査 | [`design-docs/REGIONS.md`](design-docs/REGIONS.md) |
 | RUNTIME-TRAP guard をどう消しているか | [`design-docs/GUARD_ELISION.md`](design-docs/GUARD_ELISION.md) |
 | 配列 layout (AoS / SoA) の設計 (未実装) | [`design-docs/DATA_ORIENTED.md`](design-docs/DATA_ORIENTED.md) |
-| SIMD intrinsic と最適化戦略の設計 (未実装) | [`design-docs/SIMD.md`](design-docs/SIMD.md) |
+| SIMD の設計と残りのフェーズ | [`design-docs/SIMD.md`](design-docs/SIMD.md) |
 | このリポジトリで LLM が作業する際の指針 | [`design-docs/COMPILER_DEV_LOOP.md`](design-docs/COMPILER_DEV_LOOP.md) |
 
 以下の「Language Syntax」節は**日常的に踏む要点の早見表**であって仕様書ではない。
@@ -275,9 +275,33 @@ fn main() -> u64 {
 
 - Functions require explicit return types
 - Variables: `val` (immutable), `var` (mutable)
-- Types: `u64`, `i64`, `f64`, `f32`, `bool`, `str`, `ptr`, `usize`, `dict`, `Self`
+- Types: `u64`, `i64`, `f64`, `f32`, `bool`, `str`, `ptr`, `usize`, `dict`, `Self`,
+  SIMD vector (`f64x2` / `f32x4` / `i32x4` / `i64x2` / `u8x16`)
   (`null` は**予約済みで型検査が拒否する** — `[E0015]`。不在は `Option<T>`、生ポインタは `__builtin_null_ptr()`)
 - Narrow ints (NUM-W): `u8` / `u16` / `u32` / `i8` / `i16` / `i32` (literal suffix `42u8` / `0xFFi32` 等)。`as` cast で wide ↔ narrow 変換 (暗黙 widening は無し)
+- **SIMD vector (SIMD)**: 128bit の vector 型 5 種 (`f64x2` / `f32x4` /
+  `i32x4` / `i64x2` / `u8x16`)。**通常の演算子が lane-wise に効く**ので
+  intrinsic は型と演算子で表せない 13 個だけ (`__simd_splat` /
+  `__simd_load` / `__simd_store` / `__simd_extract` / `__simd_insert` /
+  `__simd_select` / `__simd_reduce_add|min|max|and|or` / `__simd_any` /
+  `__simd_all`)。128bit に限るのは SSE2 (x86-64) と NEON (aarch64) が
+  無条件に持つから (ホスト依存ゼロ)。要点:
+  - **整数 lane は wrap し trap しない** — scalar の `u64 -` / `/` は
+    panic するが (RUNTIME-TRAP)、lane ごとの guard はベクトル化の意味を
+    消すので**整数の `/` `%` は型エラー**。float の `/` は IEEE なので可
+  - **比較は mask を返す** (bool ではない) — lane 幅と同じ整数 vector で
+    全 1 / 全 0。`f64x2` の mask は `i64x2`。全体の等値は `__simd_all(a == b)`
+  - **`__simd_reduce_*` は lane 0 → n の逐次畳み込み** (仕様。pairwise
+    tree にすると f64 の答えがバックエンド間で割れる)
+  - **`__simd_load(p, i)` の `i` は要素 index** (lane k は
+    `(i + k) * lane_bytes`)。`__builtin_ptr_read` の offset が**バイト**
+    なのと対照的
+  - `<<` / `>>` の右辺は **`u64` のスカラー** (全 lane 同じ量)
+  - `__simd_splat` / `__simd_load` は**サフィックス無し**なので型は文脈
+    (注釈 / 演算子の相手) から取る。型検査器が call に焼き込むので
+    バックエンドは引数から読む
+  - 3 backend 対応 (interpreter JIT は silent fallback)。例:
+    `interpreter/example/simd.t`
 - **`f32` (SIMD-F32)**: 単精度 float (SIMD の `f32x4` 前提、論点 1 解決)。literal suffix `1.5f32` / `42f32`。算術・比較・単項 `-` は IEEE 754 単精度で f64 と同じ trap 無し。**暗黙 widening は無し** — f32 ↔ f64 / 整数は `as` で明示 (`f64 → f32` は demote、`f32 → int` は f64 同様の saturating)。`__builtin_sizeof(f32値) == 4`。print / 補間は f64 と同じ「整数値に `.0`」規約の単精度版。**format spec (`{x:.2}`) は f32 未対応**。3 バックエンド対応 (interpreter JIT は silent fallback)。例: `interpreter/example/float32.t`
 - Stdlib types:
   - `char = u32` (Unicode codepoint alias、char literal `'a'` / `'\u{1F600}'` は lexer で `Kind::UInt32` に lex)

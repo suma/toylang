@@ -365,6 +365,9 @@ fn ir_type_to_type_decl(
         compiler_ir::Type::I32 => TypeDecl::Int32,
         compiler_ir::Type::U32 => TypeDecl::UInt32,
         compiler_ir::Type::Str => TypeDecl::String,
+        compiler_ir::Type::Vector(v) => {
+            TypeDecl::Vector(compiler_lower::types::ir_to_vector(*v))
+        }
         compiler_ir::Type::Struct(id) => {
             let def = &module.struct_defs[id.0 as usize];
             let args = def

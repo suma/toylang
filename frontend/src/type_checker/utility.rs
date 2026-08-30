@@ -248,6 +248,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             TypeDecl::UInt8 => "u8".to_string(),
             TypeDecl::Float64 => "f64".to_string(),
             TypeDecl::Float32 => "f32".to_string(),
+            TypeDecl::Vector(v) => v.source_name().to_string(),
             TypeDecl::Bool => "bool".to_string(),
             TypeDecl::String => "str".to_string(),
             TypeDecl::Unit => "()".to_string(),

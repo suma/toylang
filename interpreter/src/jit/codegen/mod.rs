@@ -1326,6 +1326,11 @@ impl<'a, 'b> State<'a, 'b> {
                         Err("__builtin_format is not supported in the interpreter JIT"
                             .to_string())
                     }
+                    // Rejected by eligibility; unreachable here.
+                    BuiltinFunction::Simd(op) => Err(format!(
+                        "{} is not supported in the interpreter JIT",
+                        op.builtin_name()
+                    )),
                     BuiltinFunction::Backtrace => {
                         // Rejected by eligibility; unreachable here.
                         Err("__builtin_backtrace is not supported in the interpreter JIT"

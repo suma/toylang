@@ -17,7 +17,7 @@ use compiler_ir::Type;
 use frontend::ast::MemStat;
 use frontend::format_spec::FormatSpec;
 
-use crate::heap::format_f64;
+use crate::heap::{format_f32, format_f64};
 use crate::slot::RawSlot;
 
 /// What the VM needs from its host.
@@ -171,8 +171,14 @@ pub trait VmHost {
             Type::I32 => format!("{}", unsafe { slot.i64 as i32 }),
             Type::U32 => format!("{}", unsafe { slot.u64 as u32 }),
             Type::F64 => format_f64(unsafe { slot.f64 }),
+            // SIMD-F32: without this arm the catch-all rendered the
+            // slot's raw bits, so `"{x}"` on an `f32` printed
+            // 1069547520 in the IR VM and 1.5 everywhere else.
+            Type::F32 => format_f32(slot.read_f32()),
             Type::Bool => format!("{}", unsafe { slot.bool }),
             Type::Str => return unsafe { slot.u64 }, // identity
+            // SIMD: the same rendering `print` uses.
+            Type::Vector(v) => crate::simd::format(slot.read_v128(), v),
             _ => format!("{:?}", unsafe { slot.u64 }),
         };
         self.alloc_str_bytes(text.as_bytes())

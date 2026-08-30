@@ -1230,6 +1230,11 @@ pub enum Type {
     /// SIMD-F32: IEEE-754 single precision. Lowers to cranelift's
     /// `F32`; same deferral rules as `F64`.
     F32,
+    /// SIMD: a 128-bit vector. Unlike `Struct` / `Tuple` / `Enum`,
+    /// which exist only in signatures because lowering scalarises
+    /// them, a vector **is** one SSA value — it crosses function
+    /// boundaries and lives in a local without leaf decomposition.
+    Vector(VecTy),
     Bool,
     Unit,
     Struct(StructId),
@@ -1250,6 +1255,71 @@ pub enum Type {
     /// a `symbol_value` to materialise the address. Phase T accepts
     /// strings at function boundaries and val/var bindings.
     Str,
+}
+
+/// SIMD: the 128-bit vector types (SIMD.md Phase 2).
+///
+/// Mirrors `frontend::type_decl::VectorType` rather than reusing it,
+/// because `compiler_ir` deliberately does not depend on `frontend`.
+/// The two must agree lane for lane; `compiler_lower::types` is the
+/// single place that translates between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VecTy {
+    F64x2,
+    F32x4,
+    I32x4,
+    I64x2,
+    U8x16,
+}
+
+impl VecTy {
+    /// The scalar type one lane holds.
+    pub fn lane(self) -> Type {
+        match self {
+            VecTy::F64x2 => Type::F64,
+            VecTy::F32x4 => Type::F32,
+            VecTy::I32x4 => Type::I32,
+            VecTy::I64x2 => Type::I64,
+            VecTy::U8x16 => Type::U8,
+        }
+    }
+
+    pub fn lanes(self) -> usize {
+        match self {
+            VecTy::F64x2 | VecTy::I64x2 => 2,
+            VecTy::F32x4 | VecTy::I32x4 => 4,
+            VecTy::U8x16 => 16,
+        }
+    }
+
+    /// Bytes per lane; always `16 / lanes()`.
+    pub fn lane_bytes(self) -> usize {
+        16 / self.lanes()
+    }
+
+    pub fn is_float(self) -> bool {
+        matches!(self, VecTy::F64x2 | VecTy::F32x4)
+    }
+
+    /// The vector a comparison on `self` produces — integer lanes of
+    /// the same width, all-ones for true.
+    pub fn mask(self) -> VecTy {
+        match self {
+            VecTy::F64x2 | VecTy::I64x2 => VecTy::I64x2,
+            VecTy::F32x4 | VecTy::I32x4 => VecTy::I32x4,
+            VecTy::U8x16 => VecTy::U8x16,
+        }
+    }
+
+    pub fn source_name(self) -> &'static str {
+        match self {
+            VecTy::F64x2 => "f64x2",
+            VecTy::F32x4 => "f32x4",
+            VecTy::I32x4 => "i32x4",
+            VecTy::I64x2 => "i64x2",
+            VecTy::U8x16 => "u8x16",
+        }
+    }
 }
 
 impl Type {
@@ -1445,6 +1515,28 @@ pub enum InstKind {
     /// data segment without requiring a `Type::Str` to flow through
     /// the value graph.
     Print { value: ValueId, value_ty: Type, newline: bool },
+    /// SIMD `__simd_splat(x) -> V` — one scalar into every lane.
+    SimdSplat { value: ValueId, ty: VecTy },
+    /// SIMD `__simd_load(p, i) -> V` — the 128 bits starting at
+    /// *element* `i`, i.e. byte offset `i * ty.lane_bytes()`. Note the
+    /// element addressing: [`InstKind::PtrRead`]'s offset is a byte
+    /// count, and lowering multiplies before emitting this.
+    SimdLoad { ptr: ValueId, offset: ValueId, ty: VecTy },
+    /// SIMD `__simd_store(p, i, v)` — the inverse of `SimdLoad`,
+    /// with `offset` already in bytes.
+    SimdStore { ptr: ValueId, offset: ValueId, value: ValueId, ty: VecTy },
+    /// SIMD `__simd_extract(v, K) -> E` — `lane` is a compile-time
+    /// constant, checked in range by the type checker.
+    SimdExtract { value: ValueId, lane: u8, ty: VecTy },
+    /// SIMD `__simd_insert(v, K, x) -> V`.
+    SimdInsert { value: ValueId, lane: u8, scalar: ValueId, ty: VecTy },
+    /// SIMD `__simd_select(mask, a, b) -> V` — lane-wise, branch-free.
+    SimdSelect { mask: ValueId, a: ValueId, b: ValueId, ty: VecTy },
+    /// SIMD `__simd_reduce_*(v) -> E` — a horizontal fold in lane
+    /// order (see [`SimdReduceOp`]).
+    SimdReduce { value: ValueId, op: SimdReduceOp, ty: VecTy },
+    /// SIMD `__simd_any(m)` / `__simd_all(m) -> bool`.
+    SimdTest { value: ValueId, all: bool, ty: VecTy },
     /// `print("literal")` / `println("literal")`. The string is laid
     /// out in `.rodata` by codegen and the helper is `toy_print_str` /
     /// `toy_println_str`.
@@ -1943,6 +2035,21 @@ impl Const {
     }
 }
 
+/// SIMD: which horizontal fold [`InstKind::SimdReduce`] performs.
+///
+/// The fold is **lane 0 through n, in order** — part of the language
+/// definition rather than an implementation choice, because a
+/// pairwise tree would give a different `f64` sum in the compiled
+/// lanes than the tree-walker's loop gives (SIMD.md "意味論" 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimdReduceOp {
+    Add,
+    Min,
+    Max,
+    And,
+    Or,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     // Integer arithmetic. Division and modulo dispatch to signed or
@@ -2005,7 +2112,29 @@ impl InstKind {
             | InstKind::Print { value, .. }
             | InstKind::StrLen { value }
             | InstKind::ToString { value, .. }
-            | InstKind::Format { value, .. } => one(value),
+            | InstKind::Format { value, .. }
+            | InstKind::SimdSplat { value, .. }
+            | InstKind::SimdExtract { value, .. }
+            | InstKind::SimdReduce { value, .. }
+            | InstKind::SimdTest { value, .. } => one(value),
+            InstKind::SimdLoad { ptr, offset, .. } => {
+                one(ptr);
+                one(offset);
+            }
+            InstKind::SimdStore { ptr, offset, value, .. } => {
+                one(ptr);
+                one(offset);
+                one(value);
+            }
+            InstKind::SimdInsert { value, scalar, .. } => {
+                one(value);
+                one(scalar);
+            }
+            InstKind::SimdSelect { mask, a, b, .. } => {
+                one(mask);
+                one(a);
+                one(b);
+            }
             InstKind::Call { args, .. }
             | InstKind::CallStruct { args, .. }
             | InstKind::CallTuple { args, .. }
@@ -2268,6 +2397,7 @@ impl fmt::Display for Type {
             Type::U8 => f.write_str("u8"),
             Type::F64 => f.write_str("f64"),
             Type::F32 => f.write_str("f32"),
+            Type::Vector(v) => f.write_str(v.source_name()),
             Type::Bool => f.write_str("bool"),
             Type::Unit => f.write_str("unit"),
             // The IR doesn't carry an interner, so render the raw
@@ -2433,6 +2563,35 @@ impl fmt::Display for DisplayInst<'_> {
         };
         match &self.0.kind {
             InstKind::Const(c) => write!(f, "{prefix}const {c}"),
+            InstKind::SimdSplat { value, ty } => {
+                write!(f, "{prefix}simd.splat.{} {value}", ty.source_name())
+            }
+            InstKind::SimdLoad { ptr, offset, ty } => {
+                write!(f, "{prefix}simd.load.{} {ptr}, {offset}", ty.source_name())
+            }
+            InstKind::SimdStore { ptr, offset, value, ty } => {
+                write!(f, "simd.store.{} {ptr}, {offset}, {value}", ty.source_name())
+            }
+            InstKind::SimdExtract { value, lane, ty } => {
+                write!(f, "{prefix}simd.extract.{} {value}, {lane}", ty.source_name())
+            }
+            InstKind::SimdInsert { value, lane, scalar, ty } => {
+                write!(
+                    f,
+                    "{prefix}simd.insert.{} {value}, {lane}, {scalar}",
+                    ty.source_name()
+                )
+            }
+            InstKind::SimdSelect { mask, a, b, ty } => {
+                write!(f, "{prefix}simd.select.{} {mask}, {a}, {b}", ty.source_name())
+            }
+            InstKind::SimdReduce { value, op, ty } => {
+                write!(f, "{prefix}simd.reduce.{op:?}.{} {value}", ty.source_name())
+            }
+            InstKind::SimdTest { value, all, ty } => {
+                let which = if *all { "all" } else { "any" };
+                write!(f, "{prefix}simd.{which}.{} {value}", ty.source_name())
+            }
             InstKind::BinOp { op, lhs, rhs } => write!(f, "{prefix}{op} {lhs}, {rhs}"),
             InstKind::UnaryOp { op, operand } => write!(f, "{prefix}{op} {operand}"),
             InstKind::LoadLocal(l) => write!(f, "{prefix}load {l}"),

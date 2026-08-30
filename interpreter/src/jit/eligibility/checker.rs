@@ -2126,6 +2126,17 @@ impl<'a> Checker<'a> {
                         });
                         None
                     }
+                    // SIMD: this JIT's `ScalarTy` has no vector, so a
+                    // program that touches one goes to the tree-walker.
+                    // Same silent fallback as `dyn Trait` — a gap in
+                    // coverage, not an observable difference.
+                    BuiltinFunction::Simd(op) => {
+                        let name = op.builtin_name();
+                        self.reject(move || {
+                            format!("{name} is not supported in the interpreter JIT")
+                        });
+                        None
+                    }
                     BuiltinFunction::Panic => {
                         // `panic("literal")` is the only form the JIT can lower:
                         // the message has to be a parse-time `Expr::String(sym)`

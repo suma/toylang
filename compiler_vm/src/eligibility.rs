@@ -70,6 +70,15 @@ fn inst_supported(kind: &InstKind) -> bool {
         | InstKind::Cast { .. }
         | InstKind::Print { .. }
         | InstKind::PrintStr { .. }
+        // SIMD: all thirteen intrinsics run in the VM.
+        | InstKind::SimdSplat { .. }
+        | InstKind::SimdLoad { .. }
+        | InstKind::SimdStore { .. }
+        | InstKind::SimdExtract { .. }
+        | InstKind::SimdInsert { .. }
+        | InstKind::SimdSelect { .. }
+        | InstKind::SimdReduce { .. }
+        | InstKind::SimdTest { .. }
         | InstKind::PrintRaw { .. }
         | InstKind::HeapAlloc { .. }
         | InstKind::HeapRealloc { .. }

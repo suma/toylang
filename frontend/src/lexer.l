@@ -1,4 +1,5 @@
 use crate::token::{Token, Kind, StringPart};
+use crate::type_decl::VectorType;
 
 macro_rules! token {
     ($self: ident, $kind: expr) => {
@@ -202,6 +203,12 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
 
 "true"      return Ok(token!(self, Kind::True));
 "false"     return Ok(token!(self, Kind::False));
+
+"f64x2"     return Ok(token!(self, Kind::Vector(VectorType::F64x2)));
+"f32x4"     return Ok(token!(self, Kind::Vector(VectorType::F32x4)));
+"i32x4"     return Ok(token!(self, Kind::Vector(VectorType::I32x4)));
+"i64x2"     return Ok(token!(self, Kind::Vector(VectorType::I64x2)));
+"u8x16"     return Ok(token!(self, Kind::Vector(VectorType::U8x16)));
 
 "u64"       return Ok(token!(self, Kind::U64));
 "i64"       return Ok(token!(self, Kind::I64));

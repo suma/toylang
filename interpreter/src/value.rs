@@ -27,7 +27,7 @@ use std::rc::Rc;
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 
-use crate::object::{Object, ObjectError, RcObject};
+use crate::object::{Object, ObjectError, RcObject, SimdValue};
 
 /// Tagged interpreter value. Primitive variants store their payload
 /// inline. Composite values (everything that needs shared mutable
@@ -48,6 +48,13 @@ pub enum Value {
     UInt32(u32),
     Float64(f64),
     Float32(f32),
+    /// SIMD: a 128-bit vector. Inline rather than behind an `Rc`
+    /// because a vector is one value, not a container — nothing can
+    /// mutate a lane in place (`__simd_insert` produces a new
+    /// vector), so sharing a cell would buy nothing and would make
+    /// this engine's aliasing differ from the compiled ones, where a
+    /// vector is a single SSA value.
+    Simd(SimdValue),
     /// Interned literal string. Cloning is a `DefaultSymbol` (u32) copy.
     ConstString(DefaultSymbol),
     /// Raw heap pointer (0 is the null pointer).
@@ -135,6 +142,7 @@ impl Value {
             Value::UInt32(v) => Rc::new(RefCell::new(Object::UInt32(v))),
             Value::Float64(v) => Rc::new(RefCell::new(Object::Float64(v))),
             Value::Float32(v) => Rc::new(RefCell::new(Object::Float32(v))),
+            Value::Simd(v) => Rc::new(RefCell::new(Object::Simd(v))),
             Value::ConstString(sym) => Rc::new(RefCell::new(Object::ConstString(sym))),
             Value::Pointer(addr) => Rc::new(RefCell::new(Object::Pointer(addr))),
             Value::Null(td) => Rc::new(RefCell::new(Object::Null(td))),
@@ -166,6 +174,7 @@ impl Value {
             Value::UInt8(_) => TypeDecl::UInt8,
             Value::Int8(_) => TypeDecl::Int8,
             Value::Float64(_) => TypeDecl::Float64,
+            Value::Simd(v) => TypeDecl::Vector(v.vector_type()),
             Value::Float32(_) => TypeDecl::Float32,
             Value::ConstString(_) => TypeDecl::String,
             Value::Pointer(_) => TypeDecl::Ptr,
@@ -293,6 +302,7 @@ impl From<Object> for Value {
 /// all consult it.
 fn lift_primitive(obj: &Object) -> Option<Value> {
     match obj {
+        Object::Simd(v) => Some(Value::Simd(*v)),
         Object::Bool(b) => Some(Value::Bool(*b)),
         Object::Int64(v) => Some(Value::Int64(*v)),
         Object::UInt64(v) => Some(Value::UInt64(*v)),

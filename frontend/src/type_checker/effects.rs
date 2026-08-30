@@ -371,6 +371,16 @@ pub fn builtin_effect(func: BuiltinFunction) -> (EffectSet, &'static str) {
         Abs => (EffectSet::EMPTY, "abs"),
         Min => (EffectSet::EMPTY, "min"),
         Max => (EffectSet::EMPTY, "max"),
+
+        // SIMD (SIMD.md "エフェクト"): lane arithmetic and lane
+        // addressing touch nothing outside their operands, so they
+        // stay callable from `const fn`, from a `never_allocates`
+        // body, and from a contract predicate. The two that move
+        // memory are the exceptions, and they carry the same effects
+        // `__builtin_ptr_read` / `__builtin_ptr_write` do.
+        Simd(crate::ast::SimdOp::Load) => (EffectSet::of(&[Effect::RawRead]), "__simd_load"),
+        Simd(crate::ast::SimdOp::Store) => (EffectSet::of(&[Effect::RawWrite]), "__simd_store"),
+        Simd(op) => (EffectSet::EMPTY, op.builtin_name()),
     }
 }
 

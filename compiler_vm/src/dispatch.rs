@@ -46,7 +46,21 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
             // have distinct handles — pointer eq would always be false,
             // matching the tree-walker which compares bytes). Used by
             // `match s { "lit" => .. }` and `==` / `!=` on `str`.
-            let result = if matches!(ty, Type::Str)
+            let result = if let Type::Vector(v) = ty {
+                // SIMD: lane-wise, and a comparison yields a mask
+                // rather than a `bool`. A shift is the one operator
+                // whose right operand is a scalar amount.
+                if matches!(*op, BinOp::Shl | BinOp::Shr) {
+                    RawSlot::from_v128(crate::simd::shift(
+                        *op,
+                        l.read_v128(),
+                        unsafe { r.u64 },
+                        v,
+                    ))
+                } else {
+                    RawSlot::from_v128(crate::simd::binop(*op, l.read_v128(), r.read_v128(), v))
+                }
+            } else if matches!(ty, Type::Str)
                 && matches!(*op, BinOp::Eq | BinOp::Ne)
             {
                 let eq = host.read_str(unsafe { l.u64 }) == host.read_str(unsafe { r.u64 });
@@ -64,9 +78,94 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
                 .value_type(*operand)
                 .or_else(|| inst.result.map(|(_, t)| t))
                 .unwrap_or(Type::I64);
-            let result = eval_unaryop(*op, v, ty);
+            let result = match ty {
+                // SIMD: lane-wise `-` / `~`.
+                Type::Vector(vt) => {
+                    RawSlot::from_v128(crate::simd::unaryop(*op, v.read_v128(), vt))
+                }
+                _ => eval_unaryop(*op, v, ty),
+            };
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, result);
+            }
+        }
+        // SIMD: a vector is one slot holding its 16-byte image, so
+        // these arms are ordinary value-in / value-out instructions.
+        // The lane work itself lives in `crate::simd`.
+        InstKind::SimdSplat { value, ty } => {
+            let scalar = vm.read_value(*value);
+            let bytes = crate::simd::splat(scalar, *ty);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_v128(bytes));
+            }
+        }
+        // Lane by lane through the host's typed heap access, not as
+        // sixteen raw bytes: that is how `Vec<T>::push` put the
+        // elements there, and reading them back the same way is what
+        // makes a vector load see what the collection wrote.
+        InstKind::SimdLoad { ptr, offset, ty } => {
+            let addr = unsafe { vm.read_value(*ptr).u64 };
+            let off = unsafe { vm.read_value(*offset).u64 };
+            let lane_ty = ty.lane();
+            let width = ty.lane_bytes() as u64;
+            let mut bytes = [0u8; 16];
+            for k in 0..ty.lanes() {
+                let slot = host
+                    .ptr_read(addr, off + k as u64 * width, lane_ty)
+                    .unwrap_or_default();
+                bytes = crate::simd::insert(bytes, k, slot, *ty);
+            }
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_v128(bytes));
+            }
+        }
+        InstKind::SimdStore { ptr, offset, value, ty } => {
+            let addr = unsafe { vm.read_value(*ptr).u64 };
+            let off = unsafe { vm.read_value(*offset).u64 };
+            let bytes = vm.read_value(*value).read_v128();
+            let lane_ty = ty.lane();
+            let width = ty.lane_bytes() as u64;
+            for k in 0..ty.lanes() {
+                let lane = crate::simd::extract(bytes, k, *ty);
+                host.ptr_write(addr, off + k as u64 * width, lane, lane_ty);
+            }
+        }
+        InstKind::SimdExtract { value, lane, ty } => {
+            let bytes = vm.read_value(*value).read_v128();
+            let scalar = crate::simd::extract(bytes, *lane as usize, *ty);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, scalar);
+            }
+        }
+        InstKind::SimdInsert { value, lane, scalar, ty } => {
+            let bytes = vm.read_value(*value).read_v128();
+            let s = vm.read_value(*scalar);
+            let out = crate::simd::insert(bytes, *lane as usize, s, *ty);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_v128(out));
+            }
+        }
+        InstKind::SimdSelect { mask, a, b, ty } => {
+            let m = vm.read_value(*mask).read_v128();
+            let av = vm.read_value(*a).read_v128();
+            let bv = vm.read_value(*b).read_v128();
+            let out = crate::simd::select(m, av, bv, *ty);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_v128(out));
+            }
+        }
+        InstKind::SimdReduce { value, op, ty } => {
+            let bytes = vm.read_value(*value).read_v128();
+            let out = crate::simd::reduce(bytes, *op, *ty);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, out);
+            }
+        }
+        InstKind::SimdTest { value, all, ty } => {
+            let bytes = vm.read_value(*value).read_v128();
+            let out = crate::simd::test(bytes, *all, *ty);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_bool(out));
             }
         }
         InstKind::LoadLocal(local) => {
@@ -725,6 +824,7 @@ fn format_scalar(host: &dyn VmHost, slot: RawSlot, ty: Type) -> String {
         Type::F32 => crate::heap::format_f32(slot.read_f32()),
         Type::Bool => format!("{}", unsafe { slot.bool }),
         Type::Str => host.read_str(unsafe { slot.u64 }),
+        Type::Vector(v) => crate::simd::format(slot.read_v128(), v),
         _ => format!("{:?}", unsafe { slot.u64 }),
     }
 }
@@ -739,6 +839,8 @@ fn scalar_size_bytes(ty: Type) -> u32 {
         // SIMD-F32: native single-precision width.
         Type::F32 => 4,
         Type::I64 | Type::U64 | Type::F64 | Type::Bool | Type::Str => 8,
+        // SIMD: 128 bits, whatever the lane type.
+        Type::Vector(_) => 16,
         Type::Unit => 0,
         _ => 8, // Struct / Tuple / Enum stored as pointer-sized handles
     }

@@ -1926,6 +1926,78 @@ pub extern "C" fn toy_to_string_f32(v: f32) -> *const u8 {
     }
 }
 
+// -----------------------------------------------------------------
+// SIMD (SIMD.md Phase 2)
+// -----------------------------------------------------------------
+
+/// Render a 128-bit vector the way every engine renders it:
+/// `f64x2(1.0, 2.0)` — the type name applied to its lanes, with each
+/// lane spelled exactly as that scalar would be on its own.
+///
+/// The vector arrives as a pointer to its 16-byte little-endian
+/// memory image rather than by value: passing a vector across the C
+/// ABI would tie the helper to a specific vector calling convention,
+/// and codegen already has a stack slot to spill it to.
+///
+/// `code` is `frontend::type_decl::VectorType::code`, so the numbering
+/// is shared with the AST and must not be reshuffled.
+fn vec_to_string(bytes: *const u8, code: u64) -> String {
+    let raw = unsafe { core::slice::from_raw_parts(bytes, 16) };
+    let mut out = String::new();
+    macro_rules! lanes {
+        ($name:expr, $t:ty, $w:expr, $n:expr, $fmt:expr) => {{
+            let _ = write!(out, "{}(", $name);
+            for i in 0..$n {
+                if i > 0 {
+                    let _ = write!(out, ", ");
+                }
+                let mut buf = [0u8; $w];
+                buf.copy_from_slice(&raw[i * $w..i * $w + $w]);
+                let v = <$t>::from_le_bytes(buf);
+                #[allow(clippy::redundant_closure_call)]
+                let _ = write!(out, "{}", ($fmt)(v));
+            }
+            let _ = write!(out, ")");
+        }};
+    }
+    // Integral floats keep a trailing `.0`, the same rule
+    // `toy_print_f64` applies to a scalar.
+    let f64_lane = |v: f64| {
+        if v.is_finite() && v % 1.0 == 0.0 {
+            format!("{v:.1}")
+        } else {
+            format!("{v}")
+        }
+    };
+    let f32_lane = |v: f32| {
+        if v.is_finite() && v % 1.0 == 0.0 {
+            format!("{v:.1}")
+        } else {
+            format!("{v}")
+        }
+    };
+    match code {
+        0 => lanes!("f64x2", f64, 8, 2, f64_lane),
+        1 => lanes!("f32x4", f32, 4, 4, f32_lane),
+        2 => lanes!("i32x4", i32, 4, 4, |v: i32| format!("{v}")),
+        3 => lanes!("i64x2", i64, 8, 2, |v: i64| format!("{v}")),
+        _ => lanes!("u8x16", u8, 1, 16, |v: u8| format!("{v}")),
+    }
+    out
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_print_vec(bytes: *const u8, code: u64, newline: u8) {
+    let text = vec_to_string(bytes, code);
+    emit_fmt(format_args!("{text}"), newline != 0);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_to_string_vec(bytes: *const u8, code: u64) -> *const u8 {
+    let text = vec_to_string(bytes, code);
+    to_string_fmt(format_args!("{text}"))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn toy_to_string_bool(v: u8) -> *const u8 {
     if v != 0 {

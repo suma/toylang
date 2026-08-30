@@ -33,6 +33,128 @@ impl ArraySize {
     }
 }
 
+/// SIMD: the fixed set of 128-bit vector types (SIMD.md Phase 2).
+///
+/// Modelled as a closed enum rather than the design note's
+/// `{ lane, lanes }` pair because the width is fixed at 128 bits and
+/// the lane matrix is a table: an enum makes `f64x3` unrepresentable
+/// instead of a case every backend has to reject. The remaining five
+/// lane types from SIMD.md (`i8x16` / `i16x8` / `u16x8` / `u32x4` /
+/// `u64x2`) are additions to this enum plus rows in the tables that
+/// match on it.
+///
+/// `i64x2` is here even though the batch is nominally
+/// `f64x2` / `f32x4` / `i32x4` / `u8x16`: a comparison has to produce
+/// an integer vector of the same lane width (see [`VectorType::mask`]),
+/// and `f64x2 < f64x2` has nowhere else to land.
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum VectorType {
+    F64x2,
+    F32x4,
+    I32x4,
+    I64x2,
+    U8x16,
+}
+
+impl VectorType {
+    /// Every vector type, in the order they are spelled in SIMD.md.
+    pub const ALL: [VectorType; 5] = [
+        VectorType::F64x2,
+        VectorType::F32x4,
+        VectorType::I32x4,
+        VectorType::I64x2,
+        VectorType::U8x16,
+    ];
+
+    /// The source spelling, which is also the lexer keyword.
+    pub fn source_name(&self) -> &'static str {
+        match self {
+            VectorType::F64x2 => "f64x2",
+            VectorType::F32x4 => "f32x4",
+            VectorType::I32x4 => "i32x4",
+            VectorType::I64x2 => "i64x2",
+            VectorType::U8x16 => "u8x16",
+        }
+    }
+
+    pub fn from_source_name(name: &str) -> Option<VectorType> {
+        VectorType::ALL.into_iter().find(|v| v.source_name() == name)
+    }
+
+    /// Stable selector for the synthetic argument that carries a
+    /// vector type through the AST (see
+    /// `type_checker::simd::stamp_simd_result_types`). Every backend
+    /// reads the type back with [`VectorType::from_code`], so the
+    /// numbering must not be reshuffled.
+    pub fn code(self) -> u64 {
+        match self {
+            VectorType::F64x2 => 0,
+            VectorType::F32x4 => 1,
+            VectorType::I32x4 => 2,
+            VectorType::I64x2 => 3,
+            VectorType::U8x16 => 4,
+        }
+    }
+
+    pub fn from_code(code: u64) -> Option<VectorType> {
+        VectorType::ALL.into_iter().find(|v| v.code() == code)
+    }
+
+    /// The scalar type one lane holds.
+    pub fn lane(&self) -> TypeDecl {
+        match self {
+            VectorType::F64x2 => TypeDecl::Float64,
+            VectorType::F32x4 => TypeDecl::Float32,
+            VectorType::I32x4 => TypeDecl::Int32,
+            VectorType::I64x2 => TypeDecl::Int64,
+            VectorType::U8x16 => TypeDecl::UInt8,
+        }
+    }
+
+    /// How many lanes. Always `128 / lane bits`.
+    pub fn lanes(&self) -> usize {
+        match self {
+            VectorType::F64x2 | VectorType::I64x2 => 2,
+            VectorType::F32x4 | VectorType::I32x4 => 4,
+            VectorType::U8x16 => 16,
+        }
+    }
+
+    /// Bytes per lane; `lane_bytes() * lanes() == 16` for every entry.
+    pub fn lane_bytes(&self) -> usize {
+        match self {
+            VectorType::F64x2 | VectorType::I64x2 => 8,
+            VectorType::F32x4 | VectorType::I32x4 => 4,
+            VectorType::U8x16 => 1,
+        }
+    }
+
+    /// Whether the lanes are floating point. Float lanes admit `/`;
+    /// integer lanes do not (SIMD.md: no `__simd_div`, and a
+    /// per-lane divide-by-zero guard would defeat the point).
+    pub fn is_float(&self) -> bool {
+        matches!(self, VectorType::F64x2 | VectorType::F32x4)
+    }
+
+    /// The vector a comparison on `self` produces: integer lanes of
+    /// the same width, all-ones for true and all-zeros for false
+    /// (SIMD.md undecided point 4, resolved in favour of cranelift's
+    /// own representation, so no conversion sits between a comparison
+    /// and `__simd_select`).
+    ///
+    /// `u8x16` is its own mask because this batch has no `i8x16`; the
+    /// bit pattern is what `select` / `any` / `all` read, so the
+    /// signedness of the mask type is cosmetic.
+    pub fn mask(&self) -> VectorType {
+        match self {
+            VectorType::F64x2 | VectorType::I64x2 => VectorType::I64x2,
+            VectorType::F32x4 | VectorType::I32x4 => VectorType::I32x4,
+            VectorType::U8x16 => VectorType::U8x16,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TypeDecl {
@@ -47,6 +169,14 @@ pub enum TypeDecl {
     /// semantics `f64` has, and no implicit widening to `f64` — cross
     /// width moves go through `as`.
     Float32,
+    /// SIMD: a 128-bit vector (`f64x2` / `f32x4` / `i32x4` / `i64x2` /
+    /// `u8x16`).
+    /// Lane-wise arithmetic and comparison run through the ordinary
+    /// binary-operator paths; everything a type and an operator cannot
+    /// express is a `__simd_*` builtin. Unlike struct / tuple / enum,
+    /// a vector stays a single SSA value, so it crosses function
+    /// boundaries without leaf decomposition.
+    Vector(VectorType),
     Bool,
     // NUM-W: narrow integer types. The lexer maps the keywords
     // `u8` / `u16` / `u32` / `i8` / `i16` / `i32` to these
@@ -459,6 +589,7 @@ impl TypeDecl {
             TypeDecl::UInt8 => "u8".to_string(),
             TypeDecl::Float64 => "f64".to_string(),
             TypeDecl::Float32 => "f32".to_string(),
+            TypeDecl::Vector(v) => v.source_name().to_string(),
             TypeDecl::String => "str".to_string(),
             TypeDecl::Ptr => "ptr".to_string(),
             TypeDecl::Self_ => "Self".to_string(),
@@ -514,6 +645,7 @@ impl TypeDecl {
             TypeDecl::UInt64 => "u64".to_string(),
             TypeDecl::Float64 => "f64".to_string(),
             TypeDecl::Float32 => "f32".to_string(),
+            TypeDecl::Vector(v) => v.source_name().to_string(),
             TypeDecl::Int8 => "i8".to_string(),
             TypeDecl::Int16 => "i16".to_string(),
             TypeDecl::Int32 => "i32".to_string(),

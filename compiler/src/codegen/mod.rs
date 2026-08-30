@@ -19,6 +19,7 @@
 mod lower_inst;
 // Import / `RuntimeRefs` setup. Adds back to `CodegenSession`.
 mod imports;
+mod simd;
 
 use std::collections::HashMap;
 
@@ -265,6 +266,7 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_print_f64: cranelift_module::FuncId,
     rt_println_f64: cranelift_module::FuncId,
     rt_print_f32: cranelift_module::FuncId,
+    rt_print_vec: cranelift_module::FuncId,
     rt_println_f32: cranelift_module::FuncId,
     // NUM-W-AOT-pack Phase 2: dedicated narrow-int helpers. The
     // AOT path now calls these directly instead of widening the
@@ -331,6 +333,7 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_to_string_u64: cranelift_module::FuncId,
     rt_to_string_f64: cranelift_module::FuncId,
     rt_to_string_f32: cranelift_module::FuncId,
+    rt_to_string_vec: cranelift_module::FuncId,
     rt_to_string_bool: cranelift_module::FuncId,
     rt_to_string_str: cranelift_module::FuncId,
     rt_to_string_i8: cranelift_module::FuncId,
@@ -625,6 +628,14 @@ impl<M: Module> CodegenSession<M> {
         let mut f32_sig = Signature::new(call_conv);
         f32_sig.params.push(AbiParam::new(types::F32));
         let rt_print_f32 = declare_helper(&mut module, "toy_print_f32", &f32_sig)?;
+        // SIMD: the vector renderers take a pointer to the 16-byte
+        // image plus a type code, so one helper covers every lane
+        // type and no vector crosses the C ABI by value.
+        let mut print_vec_sig = Signature::new(call_conv);
+        print_vec_sig.params.push(AbiParam::new(types::I64));
+        print_vec_sig.params.push(AbiParam::new(types::I64));
+        print_vec_sig.params.push(AbiParam::new(types::I8));
+        let rt_print_vec = declare_helper(&mut module, "toy_print_vec", &print_vec_sig)?;
         let rt_println_f32 = declare_helper(&mut module, "toy_println_f32", &f32_sig)?;
 
         // NUM-W-AOT-pack Phase 2 narrow-int helper signatures.
@@ -833,6 +844,12 @@ impl<M: Module> CodegenSession<M> {
         to_string_f32_sig.params.push(AbiParam::new(types::F32));
         to_string_f32_sig.returns.push(AbiParam::new(types::I64));
         let rt_to_string_f32 = declare_helper(&mut module, "toy_to_string_f32", &to_string_f32_sig)?;
+        let mut to_string_vec_sig = Signature::new(call_conv);
+        to_string_vec_sig.params.push(AbiParam::new(types::I64));
+        to_string_vec_sig.params.push(AbiParam::new(types::I64));
+        to_string_vec_sig.returns.push(AbiParam::new(types::I64));
+        let rt_to_string_vec =
+            declare_helper(&mut module, "toy_to_string_vec", &to_string_vec_sig)?;
 
         let mut to_string_bool_sig = Signature::new(call_conv);
         to_string_bool_sig.params.push(AbiParam::new(types::I8).uext());
@@ -922,6 +939,7 @@ impl<M: Module> CodegenSession<M> {
             rt_print_f64,
             rt_println_f64,
             rt_print_f32,
+            rt_print_vec,
             rt_println_f32,
             rt_print_i8,
             rt_println_i8,
@@ -957,6 +975,7 @@ impl<M: Module> CodegenSession<M> {
             rt_to_string_u64,
             rt_to_string_f64,
             rt_to_string_f32,
+            rt_to_string_vec,
             rt_to_string_bool,
             rt_to_string_str,
             rt_to_string_i8,
@@ -1865,6 +1884,8 @@ struct RuntimeRefs {
     print_f64: cranelift_codegen::ir::FuncRef,
     println_f64: cranelift_codegen::ir::FuncRef,
     print_f32: cranelift_codegen::ir::FuncRef,
+    /// SIMD: `toy_print_vec(bytes, code, newline)`.
+    print_vec: cranelift_codegen::ir::FuncRef,
     println_f32: cranelift_codegen::ir::FuncRef,
     // NUM-W-AOT-pack Phase 2: dedicated narrow-int print helpers.
     print_i8: cranelift_codegen::ir::FuncRef,
@@ -1910,6 +1931,8 @@ struct RuntimeRefs {
     to_string_u64: cranelift_codegen::ir::FuncRef,
     to_string_f64: cranelift_codegen::ir::FuncRef,
     to_string_f32: cranelift_codegen::ir::FuncRef,
+    /// SIMD: `toy_to_string_vec(bytes, code)`.
+    to_string_vec: cranelift_codegen::ir::FuncRef,
     to_string_bool: cranelift_codegen::ir::FuncRef,
     to_string_str: cranelift_codegen::ir::FuncRef,
     to_string_i8: cranelift_codegen::ir::FuncRef,
@@ -1934,6 +1957,8 @@ struct RuntimeRefs {
 fn ir_type_byte_size(t: IrType) -> u32 {
     match t {
         IrType::I64 | IrType::U64 | IrType::F64 | IrType::Str => 8,
+        // SIMD: 128 bits, whatever the lane type.
+        IrType::Vector(_) => 16,
         // SIMD-F32: native single-precision width.
         IrType::F32 => 4,
         IrType::I32 | IrType::U32 => 4,
@@ -1959,6 +1984,9 @@ fn ir_to_cranelift_ty(t: IrType) -> Option<types::Type> {
         IrType::F64 => Some(types::F64),
         // SIMD-F32: cranelift's native single-precision type.
         IrType::F32 => Some(types::F32),
+        // SIMD: the 128-bit vector types, all of which exist
+        // unconditionally on x86-64 (SSE2) and aarch64 (NEON).
+        IrType::Vector(v) => Some(simd::vec_to_cranelift_ty(v)),
         IrType::Bool => Some(types::I8),
         IrType::Unit => None,
         // Compound types have no single cranelift representation —

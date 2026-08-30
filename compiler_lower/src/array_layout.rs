@@ -41,6 +41,11 @@ pub(super) fn leaf_scalar_count(module: &Module, ty: Type) -> usize {
         // currently hard-coded by `ARRAY_LEAF_STRIDE`. Future
         // tighter packing would tweak the stride in concert.
         Type::I8 | Type::U8 | Type::I16 | Type::U16 | Type::I32 | Type::U32 => 1,
+        // SIMD: a vector is one SSA value, but it does not fit an
+        // 8-byte leaf slot, so arrays of vectors are not supported.
+        // `leaf_scalar_count` is only consulted for array elements,
+        // and the type checker has no `[f64x2; N]` path yet.
+        Type::Vector(_) => 2,
         Type::Unit => 0,
         Type::Struct(id) => {
             let fields = module.struct_def(id).fields.clone();
@@ -89,6 +94,8 @@ pub(super) fn elem_stride_bytes(ty: Type, _module: &Module) -> u32 {
         // they ever reach here, the conservative 8-byte slot
         // stays correct.
         Type::Unit | Type::Enum(_) => ARRAY_LEAF_STRIDE,
+        // SIMD: 128 bits, whatever the lane type.
+        Type::Vector(_) => 16,
     }
 }
 

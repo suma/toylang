@@ -1,9 +1,13 @@
 # SIMD — vector を型にし、intrinsic を最小限にする
 
-> **状態: 設計のみ (未実装)**。前提は [`DATA_ORIENTED.md`](DATA_ORIENTED.md)
-> の Phase 0 (`soa` 配列) と slice `&[T]`。
+> **状態: Phase 2 landing 済み (2026-08-30)**。仕様の正本は
+> [`docs/language.md`](../docs/language.md) の「SIMD vectors」節。
+> **Phase 0 (`soa` 配列) / Phase 1 (slice `&[T]`) は前提から外した** —
+> `__simd_load` / `__simd_store` を `ptr` + 要素 index にしたので、
+> `Vec<T>` / `String` が既に持っている raw ポインタにそのまま乗る。
+> slice が入ったら受け口を足せばよい。
 > **論点 1 は解決済み (2026-08-30)**: `f32` を言語に足した (SIMD-F32)。
-> `f32x4` は lane 型の 1 つになり、Phase 2 の型の組は下記の 10 種。
+> `f32x4` は lane 型の 1 つになった。
 > 関連: [`EFFECT_SYSTEM.md`](EFFECT_SYSTEM.md) (intrinsic のエフェクト)、
 > [`GUARD_ELISION.md`](GUARD_ELISION.md) (ベクトル化の前提条件)、
 > [`BUILTIN_ARCHITECTURE.md`](BUILTIN_ARCHITECTURE.md) (builtin を足すコスト)。
@@ -227,13 +231,88 @@ gcc の `-fopt-info-vec-missed` に相当するが、**言語側の直し方 (`s
 
 ## 段階
 
-| Phase | 内容 | 規模 | 前提 |
-|---|---|---|---|
-| **0** | `soa [T; N]` | 小 | — (DATA_ORIENTED.md) |
-| **1** | slice `&[T]` | 中 | — |
-| **2** | vector 型 10 種 (f32x4 含む) + lane-wise 演算子 + intrinsic 10 個 (128bit のみ) | 中〜大 | Phase 1 |
-| **3** | stdlib kernel の置換 (戦略 B) + `--simd-report` (戦略 D) | 中 | Phase 2 |
-| **4** | 限定自動ベクトル化 (戦略 C) / 256bit + feature detection | 大 | Phase 3 |
+| Phase | 内容 | 状態 |
+|---|---|---|
+| **0** | `soa [T; N]` | 未着手 (DATA_ORIENTED.md)。SIMD の前提ではなくなった |
+| **1** | slice `&[T]` | 未着手。`ptr` で代替したので前提ではない |
+| **2** | vector 型 + lane-wise 演算子 + intrinsic | **landing 済み** (下記) |
+| **3** | stdlib kernel の置換 (戦略 B) + `--simd-report` (戦略 D) | 未着手 |
+| **4** | 限定自動ベクトル化 (戦略 C) / 256bit + feature detection | 未着手 |
+
+## Phase 2 で実際に入ったもの (2026-08-30)
+
+設計からの差分は 4 つ。いずれも「4 実行系が一致しなければならない」
+という制約 2 から出た。
+
+### 1. lane 型は 5 種 (10 種ではない)
+
+`f64x2` / `f32x4` / `i32x4` / `i64x2` / `u8x16`。表を全部埋めるより、
+64/32/8bit と float/signed/unsigned を一通り踏む組を先に 4 実行系で
+通した。`i64x2` が入っているのは**比較の結果型** — `f64x2 < f64x2` は
+lane 幅の等しい整数 vector を返す必要があり、他に置き場所が無い。
+残り 5 種 (`i8x16` / `i16x8` / `u16x8` / `u32x4` / `u64x2`) は
+`VectorType` / `VecTy` に行を足すだけ。
+
+型は `TypeDecl::Vector(VectorType)` — 設計note の `{ lane, lanes }`
+ではなく閉じた enum にした。幅が 128bit 固定で lane 行列が表である以上、
+enum なら `f64x3` が表現不能になり、バックエンドごとに弾く必要が無い。
+
+### 2. load / store は `ptr` + **要素 index**
+
+slice が無いので `__simd_load(p: ptr, i: u64)`。`i` は**要素**番号で、
+lane `k` は `(i + k) * lane_bytes` を読む。`__builtin_ptr_read` の
+offset が**バイト**なのとは違うので、`docs/language.md` に明記した。
+これで `Vec<T>` の `data: ptr` にそのまま載り、戦略 B (stdlib kernel の
+置換) が Phase 1 を待たずに着手できる。
+
+### 3. 型名サフィックスは付けない
+
+`__simd_splat_f64x2` ではなく `__simd_splat`。型は**型検査器が call に
+焼き込む** (`type_checker/simd.rs::stamp_simd_call` が合成の `u64`
+引数を追加する) ので、4 実行系はどれも引数リストから読むだけで済む。
+`__builtin_ptr_read` が「各 lowering で let 束縛を特別扱いする」形で
+同じ問題を解いているのに対し、AST で 1 回やる方が安い。文脈は注釈でも
+演算子の相手でもよい (`v & __simd_splat(15u8)` が通る)。
+
+intrinsic は 13 個 (`__simd_shuffle` は定数マスク配列が要るので見送り)。
+
+### 4. `<<` / `>>` の右辺はスカラー
+
+cranelift のベクタシフトは量をスカラーで取る (SIMD ISA も同じ)。
+lane ごとに違う量でシフトする形は入れていない。
+
+### 実装サイト
+
+| 層 | 場所 |
+|---|---|
+| 型・lane 表 | `frontend/src/type_decl.rs::VectorType` |
+| intrinsic 定義 | `frontend/src/ast/expr.rs::SimdOp` |
+| 型検査 + 型の焼き込み | `frontend/src/type_checker/simd.rs` |
+| tree-walker (オラクル) | `interpreter/src/evaluation/simd.rs`、値は `object.rs::SimdValue` |
+| lowering (IR VM / AOT / compiler JIT) | `compiler_lower/src/simd.rs`、IR は `compiler_ir::VecTy` + `InstKind::Simd*` |
+| IR VM 実行 | `compiler_vm/src/simd.rs` (slot は 8 → 16 バイトに拡げた) |
+| cranelift codegen | `compiler/src/codegen/simd.rs` |
+| 表示 | `compiler/runtime/toylang_rt` の `toy_print_vec` / `toy_to_string_vec` |
+| 一致テスト | `compiler/tests/consistency/simd.rs`、tree-walker 単体は `interpreter/tests/simd_tests.rs` |
+
+### 残っている穴
+
+- **`__simd_shuffle`** — 定数マスク配列の受け取りが要る
+- **lane 型 5 種の追加** — 表を埋めるだけ
+- **`[f64x2; N]`** — vector を配列要素にする経路は未整備
+  (`array_layout.rs` の 8 バイト leaf slot に収まらない)
+- **`var v: f64x2` (初期化子なし)** — ゼロ vector の IR 定数が無いので
+  拒否。`__simd_splat(0.0f64)` と書く
+- **interpreter 側 JIT** — silent fallback (`ScalarTy` に vector が無い)
+- **IR VM の slot 幅** — 8 → 16 バイト。ベクトルは IR で単一の値
+  (struct のように leaf 分解されない) なので 1 slot に収まる必要があり、
+  値 id をキーにした side table はフレームごとの reset が要るのに
+  1 フレーム内のループが新しいベクトルを作り続ける。
+  **代償はベクトルを使わないプログラムにも及ぶ**: `fib(30)` の実測で
+  2.50s → 2.65s (**約 6% 減速**、release、5 回の中央値)。
+  消すなら「値 arena を `n_values + n_locals` 分だけフレームに持ち、
+  slot にはその index を入れる」形になるが、呼び出し境界でのコピーが
+  要る。この 6% を払う価値があるかは未判断
 
 ## 決めていない論点
 
@@ -250,6 +329,8 @@ gcc の `-fopt-info-vec-missed` に相当するが、**言語側の直し方 (`s
 3. **`__toy_*` への改名を今やるか。** 合成名の衝突は現時点では実害が無い
    (ユーザが `__old_0` を定義すれば壊れるが、誰もしない)。`__` をユーザに
    開くと決めた時点で必要になる。
-4. **mask 型を分けるか。** `a < b` の結果を `bool` の vector とするか、
-   lane 型と同幅の整数 vector (全 1 / 全 0) とするか。cranelift は後者。
-   前者にすると `__simd_select` の型が綺麗になるが、変換が要る。
+4. ~~**mask 型を分けるか。**~~ **解決済み (2026-08-30): 後者。**
+   `a < b` は lane 幅と同じ整数 vector (全 1 / 全 0) を返す。cranelift の
+   表現そのままなので比較と `__simd_select` の間に変換が入らない
+   (`bitselect` に渡すときの `bitcast` は実行時 no-op)。専用 mask 型は
+   lane 型ごとに増えるうえ、変換規約を別に決める必要がある。

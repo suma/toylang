@@ -428,6 +428,13 @@ impl EvaluationContext<'_> {
         let operand_result = self.evaluate(operand);
         let operand_v = try_value_v!(operand_result);
 
+        // SIMD: `-v` / `~v` are lane-wise. `!v` never reaches here —
+        // the type checker rejects it, since a vector is not one
+        // truth value.
+        if let Value::Simd(v) = &operand_v {
+            return Ok(EvaluationResult::Value(super::simd::simd_unary(op, *v)?));
+        }
+
         // OP-OVERLOAD-EXTEND Phase 4 unary overload. `-x` / `~x`
         // / `!x` for a struct receiver dispatches to `neg` /
         // `bitnot` / `not` (each `fn (&self) -> Self`). Mirrors
@@ -574,6 +581,25 @@ impl EvaluationContext<'_> {
         // before this point — the defensive fall-through keeps
         // primitive operators routed through their existing
         // arms).
+        // SIMD: lane-wise operators answer before the struct
+        // overload table below. A vector is a `Value::Simd`, never a
+        // `Value::Heap`, so the two paths cannot collide.
+        if let (Value::Simd(a), Value::Simd(b)) = (&lhs_v, &rhs_v) {
+            return Ok(EvaluationResult::Value(super::simd::simd_binary(op, *a, *b)?));
+        }
+        // A shift is the one lane-wise operator with a scalar right
+        // operand: every lane shifts by the same amount.
+        if let Value::Simd(a) = &lhs_v {
+            if matches!(op, Operator::LeftShift | Operator::RightShift) {
+                let amount = rhs_v.clone_to_rc().borrow().try_unwrap_uint64().map_err(|_| {
+                    InterpreterError::InternalError(
+                        "a lane-wise shift takes a u64 amount".to_string(),
+                    )
+                })?;
+                return Ok(EvaluationResult::Value(super::simd::simd_shift(op, *a, amount)));
+            }
+        }
+
         let overload_method_name: Option<&'static str> = match op {
             Operator::EQ | Operator::NE => Some("eq"),
             Operator::LT => Some("lt"),

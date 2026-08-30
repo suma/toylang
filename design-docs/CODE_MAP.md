@@ -56,6 +56,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | 代入 | `type_checker/expression.rs::visit_assign` | `evaluation/operators.rs` | `compiler_lower/src/assign.rs::lower_assign` | — |
 | 演算子オーバーロード | `type_checker/expression.rs::visit_arith_binary` | `evaluation/operators.rs` | `compiler_lower/src/expr_ops.rs` | — |
 | キャスト (`as`) | `type_checker/collections.rs` | `evaluation/expression.rs` | `compiler_lower/src/expr.rs` | `compiler_vm/src/dispatch.rs` |
+| SIMD の lane-wise 演算・intrinsic (SIMD) | `type_checker/simd.rs` (型 は `type_decl.rs::VectorType`、intrinsic は `ast/expr.rs::SimdOp`) | `evaluation/simd.rs` (値は `object.rs::SimdValue`) | `compiler_lower/src/simd.rs` (IR は `compiler_ir::VecTy` + `InstKind::Simd*`)、cranelift は `compiler/src/codegen/simd.rs` | `compiler_vm/src/simd.rs` |
 
 ## 束縛・スコープ
 

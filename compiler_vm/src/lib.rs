@@ -21,6 +21,7 @@ pub mod eligibility;
 pub mod frame;
 pub mod heap;
 pub mod host;
+pub mod simd;
 pub mod slot;
 
 #[cfg(test)]

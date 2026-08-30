@@ -18,6 +18,7 @@ implementation-side details, see the companion documents:
 - [Type checker](#type-checker)
 - [Literals](#literals)
 - [Expressions](#expressions)
+- [SIMD vectors](#simd-vectors)
 - [Statements](#statements)
 - [Functions](#functions)
 - [Closures](#closures)
@@ -130,6 +131,7 @@ Type ::= '&' ('mut')? Type             # reference (immutable / mutable)
        | '(' Type (',' Type)* ')'      # tuple
        | '(' ')'                       # unit
        | PrimitiveKeyword              # bool / u8..u64 / i8..i64 / f32 / f64 / str / ptr
+       | VectorKeyword                 # f64x2 / f32x4 / i32x4 / i64x2 / u8x16
        | 'Allocator'                   # opaque allocator handle
        | 'Self'                        # enclosing impl target
        | Identifier ('<' Type (',' Type)* '>')?
@@ -144,7 +146,8 @@ Primitive / built-in types:
 | `u8` / `u16` / `u32` / `u64` | unsigned integers (8/16/32/64-bit) |
 | `i8` / `i16` / `i32` / `i64` | signed integers (8/16/32/64-bit) |
 | `f64` | IEEE 754 double-precision float |
-| `f32` | IEEE 754 single-precision float (SIMD-F32; added for `f32x4` — see [SIMD](../../design-docs/SIMD.md)) |
+| `f32` | IEEE 754 single-precision float (SIMD-F32; added for `f32x4` — see [SIMD](../design-docs/SIMD.md)) |
+| `f64x2` / `f32x4` / `i32x4` / `i64x2` / `u8x16` | 128-bit SIMD vectors. See [SIMD vectors](#simd-vectors) |
 | `str` | UTF-8 string handle (interned literal or `.rodata` reference) |
 | `ptr` | Raw heap pointer (0 = null) |
 | `usize` | Reserved keyword, used in some builtin signatures |
@@ -1346,6 +1349,11 @@ at the call site, like any other unsatisfied bound (see
   program instead of producing a value, because the value they would
   produce is a plausible-looking number that surfaces far from the
   mistake. See *Runtime traps*.
+- **SIMD lanes never trap**: the arithmetic on a vector's lanes wraps
+  in every case, and integer `/` and `%` on a vector are rejected at
+  type-check time rather than given a per-lane guard. The asymmetry
+  with the scalar rules above is deliberate — see
+  [SIMD vectors](#simd-vectors).
 - **Float arithmetic**: standard IEEE 754. NaN compares false against
   everything (matching Rust's `PartialOrd`). `f32` (SIMD-F32) has the
   same semantics at single precision — including `%` (`0.1f32 % 0.3f32`
@@ -1398,6 +1406,158 @@ with allocator = arena {
 ```
 
 See [Allocators](#allocators).
+
+---
+
+## SIMD vectors
+
+toylang has five 128-bit vector types. Ordinary operators work on them
+**lane-wise**, so the only intrinsics are the operations a type and an
+operator cannot express.
+
+| Type | Lanes | Lane type |
+|---|---|---|
+| `f64x2` | 2 | `f64` |
+| `f32x4` | 4 | `f32` |
+| `i32x4` | 4 | `i32` |
+| `i64x2` | 2 | `i64` |
+| `u8x16` | 16 | `u8` |
+
+The width stops at 128 bits deliberately: SSE2 on x86-64 and NEON on
+aarch64 both have it unconditionally, so a program that uses vectors
+runs the same everywhere and an AOT binary stays portable. There is no
+way to ask how wide the host's registers are — the width is always
+written in the source.
+
+```rust
+fn dot2(xs: ptr, ys: ptr) -> f64 {
+    val a: f64x2 = __simd_load(xs, 0u64)
+    val b: f64x2 = __simd_load(ys, 0u64)
+    __simd_reduce_add(a * b)
+}
+```
+
+A vector is a single value, not a container: unlike a struct it is not
+decomposed at a function boundary, so it can be passed and returned
+directly. `__builtin_sizeof` reports 16 for every vector type.
+
+### Lane-wise operators
+
+| Operator | Lanes | Result |
+|---|---|---|
+| `+` `-` `*` | any | same vector type |
+| `/` | float lanes only | same vector type |
+| `%` | — | rejected |
+| `&` `\|` `^` | integer lanes only | same vector type |
+| `<<` `>>` | integer lanes only, **`u64` amount on the right** | same vector type |
+| `==` `!=` `<` `<=` `>` `>=` | any | **mask** (see below) |
+| unary `-` | signed / float lanes | same vector type |
+| unary `~` | integer lanes | same vector type |
+| unary `!` | — | rejected |
+| `&&` `\|\|` | — | rejected (they short-circuit, which has no lane-wise meaning) |
+
+Both sides of a lane-wise operator must be the same vector type; a
+scalar is broadcast explicitly with `__simd_splat`, never implicitly.
+The one exception is a shift, whose right operand is a single `u64`
+applied to every lane (this is the shape SIMD hardware offers), taken
+modulo the lane width.
+
+**Integer lanes wrap and never trap.** A scalar `u64 -` panics on
+underflow and a scalar `/` panics on zero (see
+[Numeric semantics](#numeric-semantics)); checking sixteen lanes would
+cost more than the vectorisation saves, so integer `/` and `%` are
+rejected outright rather than being given a quieter failure mode. Use
+a reciprocal computed in float lanes, or a scalar loop. Float `/` is
+offered because IEEE division does not trap.
+
+### Masks
+
+A comparison answers once per lane, so it produces a **mask**: an
+integer vector of the same lane width, all-ones for true and all-zeros
+for false.
+
+| Vector | Mask |
+|---|---|
+| `f64x2`, `i64x2` | `i64x2` |
+| `f32x4`, `i32x4` | `i32x4` |
+| `u8x16` | `u8x16` |
+
+`__simd_all(a == b)` is the whole-vector equality question;
+`__simd_any` is its existential twin. A mask is an ordinary vector, so
+`~`, `&`, and `|` combine masks.
+
+### Intrinsics
+
+| Intrinsic | Signature |
+|---|---|
+| `__simd_splat(x)` | `E -> V` — the scalar in every lane |
+| `__simd_load(p, i)` | `(ptr, u64) -> V` |
+| `__simd_store(p, i, v)` | `(ptr, u64, V) -> ()` |
+| `__simd_extract(v, k)` | `(V, u64) -> E` — `k` literal, in range |
+| `__simd_insert(v, k, x)` | `(V, u64, E) -> V` |
+| `__simd_select(mask, a, b)` | `(M, V, V) -> V` — lane-wise, branch-free |
+| `__simd_reduce_add(v)` | `V -> E` |
+| `__simd_reduce_min(v)` / `__simd_reduce_max(v)` | `V -> E` |
+| `__simd_reduce_and(v)` / `__simd_reduce_or(v)` | `V -> E`, integer lanes only |
+| `__simd_any(mask)` / `__simd_all(mask)` | `M -> bool` |
+
+Every `__simd_*` intrinsic is pure except `__simd_load` / `__simd_store`,
+which carry the same effects `__builtin_ptr_read` / `__builtin_ptr_write`
+do. The pure ones are therefore callable from a `const fn`, from a
+`never_allocates` body, and from a `requires` / `ensures` predicate.
+
+**`__simd_reduce_*` folds lane 0 through lane n, in order.** That is
+part of the language, not an implementation detail: a pairwise tree
+would give a different `f64` sum on one backend than on another, and
+a reduction appears once at the end of a loop where the sequential
+form costs nothing.
+
+**`__simd_load(p, i)` addresses by *element*.** Lane `k` reads the
+bytes at `(i + k) * lane_bytes`. Note the contrast with
+`__builtin_ptr_read(p, off)`, whose `off` is a byte count — so the
+`Vec<T>` idiom `__builtin_ptr_read(self.data, i * self.elem_size)`
+becomes `__simd_load(self.data, i)` when `T` is the lane type.
+
+A lane index (`__simd_extract` / `__simd_insert`) must be a literal in
+range. The lane is part of the instruction, not a value it reads; to
+select a lane computed at run time, store the vector and read the
+element back.
+
+### Where the vector type comes from
+
+`__simd_splat` and `__simd_load` have no lane-type suffix, so the call
+alone does not say what it produces. The type is taken from context —
+an annotation, or the vector on the other side of an operator:
+
+```rust
+val a: f64x2 = __simd_splat(1.5f64)   # from the annotation
+val masked = v & __simd_splat(15u8)   # from `v`
+```
+
+Where no context names a vector type the program is rejected with an
+error saying so; bind the call to an annotated `val` first.
+
+### Printing
+
+A vector prints as its type name applied to its lanes, with each lane
+spelled exactly as that scalar would be on its own — including the
+`.0` an integral float keeps:
+
+```
+f64x2(1.5, 9.0)
+u8x16(8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8)
+```
+
+String interpolation (`"{v}"`) produces the same text. A format spec
+(`"{v:.2}"`) is rejected: width, precision, and radix have no single
+meaning across lanes.
+
+### Backend coverage
+
+Interpreter (tree-walker), IR VM, AOT, and the compiler's JIT all
+support the full surface; the interpreter's own JIT takes its usual
+silent fallback (its scalar type set has no vector). Example:
+`interpreter/example/simd.t`.
 
 ---
 

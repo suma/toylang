@@ -127,7 +127,8 @@ fn is_call_kind(kind: &InstKind) -> bool {
     )
 }
 
-mod types;
+pub mod types;
+mod simd;
 
 mod templates;
 use templates::{EnumDefs, StructDefs};

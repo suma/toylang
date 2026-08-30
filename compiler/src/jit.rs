@@ -362,6 +362,9 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_println_f64", toylang_rt::toy_println_f64 as *const u8);
     // SIMD-F32: single-precision print helpers.
     jit_builder.symbol("toy_print_f32", toylang_rt::toy_print_f32 as *const u8);
+    // SIMD: the two vector renderers.
+    jit_builder.symbol("toy_print_vec", toylang_rt::toy_print_vec as *const u8);
+    jit_builder.symbol("toy_to_string_vec", toylang_rt::toy_to_string_vec as *const u8);
     jit_builder.symbol("toy_println_f32", toylang_rt::toy_println_f32 as *const u8);
     // NUM-W-AOT-pack Phase 2: dedicated narrow-int helpers so the
     // JIT call site mirrors the AOT call site at the symbol level.

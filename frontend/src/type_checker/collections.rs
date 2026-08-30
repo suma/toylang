@@ -229,43 +229,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                 if start.is_some() && end.is_none() {
                     // Single element assignment: struct[key] = value
                     if let Some(key_expr) = start {
-                        let struct_name_str = self.core.string_interner.resolve(struct_name)
-                            .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?;
-
-                        // Type check the key and value
+                        // Type check the key, then verify the
+                        // `__setitem__` signature (POINTER P2: either
+                        // receiver spelling).
                         let key_type_result = self.visit_expr(key_expr)?;
-
-                        // Look for __setitem__ method
-                        if let Some(setitem_method) = self.context.get_method_function_by_name(struct_name_str, "__setitem__", self.core.string_interner) {
-                            // Check if method has correct signature: __setitem__(self, key: T, value: U)
-                            if setitem_method.parameter.len() >= 3 {
-                                let key_param_type = &setitem_method.parameter[1].1;
-                                let value_param_type = &setitem_method.parameter[2].1;
-
-                                // Check key type matches
-                                if key_type_result != *key_param_type {
-                                    return Err(TypeCheckError::type_mismatch(
-                                        key_param_type.clone(), key_type_result
-                                    ));
-                                }
-
-                                // Check value type matches
-                                if value_type != *value_param_type {
-                                    return Err(TypeCheckError::type_mismatch(
-                                        value_param_type.clone(), value_type
-                                    ));
-                                }
-
-                                // Assignment returns the value type
-                                Ok(value_type)
-                            } else {
-                                Err(TypeCheckError::generic_error("__setitem__ method must have at least 3 parameters (self, key, value)"))
-                            }
-                        } else {
-                            Err(TypeCheckError::generic_error(&format!(
-                                "Cannot assign to struct type {:?} - no __setitem__ method found", object_type
-                            )))
-                        }
+                        self.check_struct_setitem_access(struct_name, key_type_result, &value_type, &object_type)?;
+                        // Assignment returns the value type
+                        Ok(value_type)
                     } else {
                         Err(TypeCheckError::generic_error("Struct assignment requires key index"))
                     }
@@ -276,40 +246,12 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
             TypeDecl::Struct(struct_name, ref _type_params) => {
                 // Struct type assignment: check for __setitem__ or __setslice__ method
-                let struct_name_str = self.core.string_interner.resolve(struct_name)
-                    .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?;
-
                 if start.is_some() && end.is_none() {
                     // Single element assignment: struct[key] = value - use __setitem__
                     if let Some(key_expr) = start {
                         let key_type_result = self.visit_expr(key_expr)?;
-
-                        if let Some(setitem_method) = self.context.get_method_function_by_name(struct_name_str, "__setitem__", self.core.string_interner) {
-                            if setitem_method.parameter.len() >= 3 {
-                                let key_param_type = &setitem_method.parameter[1].1;
-                                let value_param_type = &setitem_method.parameter[2].1;
-
-                                if key_type_result != *key_param_type && !self.are_types_compatible(key_param_type, &key_type_result) {
-                                    return Err(TypeCheckError::type_mismatch(
-                                        key_param_type.clone(), key_type_result
-                                    ));
-                                }
-
-                                if value_type != *value_param_type && !self.are_types_compatible(value_param_type, &value_type) {
-                                    return Err(TypeCheckError::type_mismatch(
-                                        value_param_type.clone(), value_type
-                                    ));
-                                }
-
-                                Ok(value_type)
-                            } else {
-                                Err(TypeCheckError::generic_error("__setitem__ method must have at least 3 parameters (self, key, value)"))
-                            }
-                        } else {
-                            Err(TypeCheckError::generic_error(&format!(
-                                "Cannot assign to struct type {:?} - no __setitem__ method found", object_type
-                            )))
-                        }
+                        self.check_struct_setitem_access(struct_name, key_type_result, &value_type, &object_type)?;
+                        Ok(value_type)
                     } else {
                         Err(TypeCheckError::generic_error("Struct assignment requires key index"))
                     }

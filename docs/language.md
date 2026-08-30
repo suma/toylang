@@ -2447,6 +2447,16 @@ bag["x"]            # calls __getitem__
 bag["x"] = 1i64     # calls __setitem__
 ```
 
+The receiver may also be written in the short form — `&self` /
+`&mut self` occupy no parameter slot, so the key / value are the
+first two *user* parameters in either spelling (POINTER P2). On a
+generic struct the declared return type is substituted against the
+receiver's type arguments, so `s[0u64]` on a `Slot<u64>` is a `u64`.
+On the compiled lanes a bracket access on a struct binding lowers as
+the same method call (`monomorphisation`, contracts, and `&mut self`
+writeback included); a compound-returning `__getitem__` still has to
+be bound with `val` first.
+
 ### `drop`
 
 A struct can declare a `drop(&mut self)` method that runs at

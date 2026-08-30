@@ -514,6 +514,31 @@ impl<'a> FunctionLower<'a> {
                 };
                 match self.bindings.get(&arr_sym)? {
                     Binding::Array { element_ty, .. } => Some(*element_ty),
+                    // POINTER P2: `p[i]` on a struct / enum binding
+                    // lowers as a `__getitem__` call, so its scalar
+                    // type is that call's return type — needed by
+                    // `as` casts and any other inference consumer of
+                    // the indexed expression.
+                    Binding::Struct { struct_id, .. } => {
+                        let def = self.module.struct_def(*struct_id);
+                        let getitem = self.interner.get("__getitem__")?;
+                        self.method_call_return_type(
+                            def.base_name,
+                            Some((Type::Struct(*struct_id), def.type_args.clone())),
+                            getitem,
+                            &[],
+                        )
+                    }
+                    Binding::Enum(storage) => {
+                        let def = self.module.enum_def(storage.enum_id);
+                        let getitem = self.interner.get("__getitem__")?;
+                        self.method_call_return_type(
+                            def.base_name,
+                            Some((Type::Enum(storage.enum_id), def.type_args.clone())),
+                            getitem,
+                            &[],
+                        )
+                    }
                     _ => None,
                 }
             }

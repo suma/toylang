@@ -536,6 +536,88 @@ fn main() -> u64 {
     }
 
     #[test]
+    fn test_struct_getitem_amp_self_receiver() {
+        // POINTER P2: the `&self` short form used to be rejected with
+        // "__getitem__ method must have at least 2 parameters" — the
+        // arity check counted `parameter` slots, which an implicit
+        // receiver does not occupy.
+        let source = r#"
+struct Container {
+    value: u64
+}
+
+impl Container {
+    fn __getitem__(&self, index: u64) -> u64 {
+        self.value + index
+    }
+}
+
+fn main() -> u64 {
+    val container = Container { value: 40u64 }
+    container[2u64]
+}
+"#;
+        let result = test_program(source).expect("File should execute successfully");
+        assert_eq!(result.borrow().unwrap_uint64(), 42);
+    }
+
+    #[test]
+    fn test_struct_getitem_generic_return_substituted() {
+        // POINTER P2: `p[0u64]` on a generic struct used to return
+        // `Generic(T)` from the checker (E0001 at the use site) while
+        // `p.get(0u64)` worked — the substitution skipped the getitem
+        // path.
+        let source = r#"
+struct Slot<T> {
+    v: T,
+}
+
+impl<T> Slot<T> {
+    fn __getitem__(&self, index: u64) -> T {
+        self.v
+    }
+}
+
+fn main() -> u64 {
+    val s: Slot<u64> = Slot { v: 42u64 }
+    s[7u64]
+}
+"#;
+        let result = test_program(source).expect("File should execute successfully");
+        assert_eq!(result.borrow().unwrap_uint64(), 42);
+    }
+
+    #[test]
+    fn test_struct_setitem_amp_self_receiver_mutates() {
+        // POINTER P2: `__setitem__(&mut self, key, value)` — same
+        // arity blind spot as getitem, plus the mutation must reach
+        // the caller's binding (RefCell semantics).
+        let source = r#"
+struct Cell {
+    v: u64,
+}
+
+impl Cell {
+    fn __getitem__(&self, index: u64) -> u64 {
+        self.v
+    }
+
+    fn __setitem__(&mut self, index: u64, value: u64) {
+        self.v = value
+    }
+}
+
+fn main() -> u64 {
+    var c: Cell = Cell { v: 5u64 }
+    c[0u64] = 11u64
+    c[0u64]
+}
+"#;
+        let result = test_program(source).expect("File should execute successfully");
+        assert_eq!(result.borrow().unwrap_uint64(), 11);
+    }
+
+    #[test]
     fn test_struct_getitem_with_array_field() {
         let source = r#"
 struct MyArray {

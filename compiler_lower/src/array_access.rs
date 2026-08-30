@@ -342,20 +342,27 @@ impl<'a> FunctionLower<'a> {
                 );
             }
         };
+        // POINTER P2: a struct / enum binding is not an array — `p[i]`
+        // is a `__getitem__` call in disguise. Route through the
+        // regular method-call machinery so monomorphisation,
+        // contracts and `&mut self` writeback behave exactly like the
+        // same call written by hand. The tree-walker has always
+        // dispatched this way (slice.rs), so this is the compiled
+        // lanes catching up, not a new semantics.
+        if !matches!(
+            self.bindings.get(&arr_sym),
+            Some(Binding::Array { .. })
+        ) {
+            let getitem_sym = self
+                .interner
+                .get("__getitem__")
+                .ok_or_else(|| format!("`{}` is not an array binding and no `__getitem__` method exists", self.interner.resolve(arr_sym).unwrap_or("?")))?;
+            let args = vec![*index_ref];
+            return self.lower_method_call(obj, getitem_sym, &args);
+        }
         let (element_ty, length, slot) = match self.bindings.get(&arr_sym).cloned() {
             Some(Binding::Array { element_ty, length, slot }) => (element_ty, length, slot),
-            Some(_) => {
-                return Err(format!(
-                    "`{}` is not an array binding",
-                    self.interner.resolve(arr_sym).unwrap_or("?")
-                ));
-            }
-            None => {
-                return Err(format!(
-                    "undefined identifier `{}`",
-                    self.interner.resolve(arr_sym).unwrap_or("?")
-                ));
-            }
+            Some(_) | None => unreachable!("non-array binding was routed to __getitem__ above"),
         };
         // For compound array elements (struct), allocate a fresh
         // struct binding and load each leaf scalar into the
@@ -515,20 +522,24 @@ impl<'a> FunctionLower<'a> {
                 );
             }
         };
+        // POINTER P2: `p[i] = v` on a struct / enum binding is a
+        // `__setitem__` call — route through the regular method-call
+        // machinery (`&mut self` writeback included), exactly like
+        // the tree-walker's dispatch.
+        if !matches!(
+            self.bindings.get(&arr_sym),
+            Some(Binding::Array { .. })
+        ) {
+            let setitem_sym = self
+                .interner
+                .get("__setitem__")
+                .ok_or_else(|| format!("`{}` is not an array binding and no `__setitem__` method exists", self.interner.resolve(arr_sym).unwrap_or("?")))?;
+            let args = vec![*index_ref, *value];
+            return self.lower_method_call(obj, setitem_sym, &args);
+        }
         let (element_ty, length, slot) = match self.bindings.get(&arr_sym).cloned() {
             Some(Binding::Array { element_ty, length, slot }) => (element_ty, length, slot),
-            Some(_) => {
-                return Err(format!(
-                    "`{}` is not an array binding",
-                    self.interner.resolve(arr_sym).unwrap_or("?")
-                ));
-            }
-            None => {
-                return Err(format!(
-                    "undefined identifier `{}`",
-                    self.interner.resolve(arr_sym).unwrap_or("?")
-                ));
-            }
+            Some(_) | None => unreachable!("non-array binding was routed to __setitem__ above"),
         };
         let idx_v = match self.resolve_const_index(index_ref, length) {
             ConstIndex::Valid(i) => self

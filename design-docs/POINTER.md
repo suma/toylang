@@ -109,6 +109,8 @@ monomorph subst 下でサイズを出している
 ### 実測 3: `__getitem__` に穴が 2 つある
 
 C# の indexer 相当 (`p[i]`) を載せようとして両方踏んだ。
+**どちらも 2026-08-30 に解消** (P2、実装メモは git log の
+「POINTER P2」コミット):
 
 - `fn __getitem__(&self, i: u64)` は
   `[E0010] __getitem__ method must have at least 2 parameters` で落ちる。
@@ -119,8 +121,11 @@ C# の indexer 相当 (`p[i]`) を載せようとして両方踏んだ。
   `Generic(T)` のまま返り `E0001`。`p.get(0u64)` は通るので、
   置換が getitem 経路だけ抜けている
 
-どちらも小さい。直せば `p[i]` / `p[i] = v` がそのまま使え、
-`Vec` / `Dict` 側も同じ恩恵を受ける。
+解消に当たって 3 つ目の穴も出た: **compiled レーンは struct `p[i]` /
+`p[i] = v` を lowering できなかった** (array binding しか受けていない)。
+`lower_slice_access` / `lower_slice_assign` が struct / enum binding を
+`__getitem__` / `__setitem__` の method 呼び出しに委譲することで、
+tree-walker が元から持っていた dispatch に揃った。
 
 ## フェーズ
 
@@ -128,8 +133,8 @@ C# の indexer 相当 (`p[i]`) を載せようとして両方踏んだ。
 
 | # | やること | 規模 | 効果 |
 |---|---|---|---|
-| P1 | `__builtin_sizeof::<T>()` (型引数形) | 小 | 実測 2 の解消。`elem_size` 遅延取得も畳める |
-| P2 | `__getitem__` の `&self` 受理 + generic 戻り型の置換 | 小 | `p[i]` が書ける。`Vec` / `Dict` にも効く |
+| P1 | `__builtin_sizeof::<T>()` (型引数形) ✅ (2026-08-30) | 小 | 実測 2 の解消。`elem_size` 遅延取得も畳める |
+| P2 | `__getitem__` の `&self` 受理 + generic 戻り型の置換 ✅ (2026-08-30) | 小 | `p[i]` が書ける。`Vec` / `Dict` にも効く |
 | P3 | `core/std/ptr.t` に `Ptr<T>` (`alloc` / `get` / `set` / `offset` / `as_raw` / `__getitem__` / `__setitem__`) | 小 (stdlib のみ) | 摩擦 1〜3、6 の入口。**コンパイラ無変更** |
 | P4 | `Span<T> = { p: Ptr<T>, len: u64 }` + 境界検査 | 中 (stdlib) | 摩擦 4。todo の **slice 型 `&[T]`** をライブラリ側で回収でき、`__simd_load` の受け口にもなる |
 | P5 | `Ptr<T>` を non-null 不変にし、不在は `Option<Ptr<T>>` | 中 | 摩擦 5。`has_next: bool` 方式が消える |

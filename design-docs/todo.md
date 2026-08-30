@@ -12,6 +12,28 @@
 
 ### 2026-08-30
 
+- **POINTER P2 — `__getitem__` / `__setitem__` の 2 バグ + compiled レーン
+  dispatch** — arity 検査が `&self` 短縮形 (parameter スロットを占有しない) を
+  数えておらず `self: Self` 形しか通らなかった件と、generic struct の戻り型
+  `T` が置換されず `p[i]` だけ E0001 だった件。receiver の綴り (明示
+  `self: Self` は `parameter[0]`) で index / key / value の位置を決め、
+  戻り型は receiver の type args を zip して置換。加えて **AOT / JIT は
+  struct `p[i]` / `p[i] = v` を lowering できなかった** ので、
+  `lower_slice_access` / `lower_slice_assign` が struct / enum binding を
+  `__getitem__` / `__setitem__` の method 呼び出しに委譲
+  (tree-walker は元からこの dispatch)。3-way consistency pin 1 件 +
+  テスト 4 件。
+- **POINTER P1 — `__builtin_sizeof::<T>()` 型引数形** — 値が要らないので
+  `Ptr<T>::alloc(n)` が書ける (POINTER.md 実測 2 の解消)。parser は
+  turbofish を `BuiltinFunction::SizeOfType(TypeDecl)` に (generic context
+  無しで parse するのでパラメータは `Identifier(T)`)、型検査は generic
+  param の在り処を検証 (generic fn body が自パラメータを generic scope に
+  積むようになった)、tree-walker は呼び出し境界で generic scope を push
+  (receiver の runtime type_args / 引数値 / `val` 注釈 / 呼び出し元 scope)、
+  AOT / IR VM は monomorph subst で lower 時に畳む — **free generic 関数の
+  instance も subst を運ぶようになった** (method 版と同じ、
+  `PendingGenericInstance`)。interpreter JIT は silent fallback。
+  cache schema 27 → 28。consistency pin 1 件 + テスト 4 件。
 - **SIMD-VM-SLOT — 測って払うと決めた** — IR VM の `RawSlot` 8 → 16
   バイト化の代償を 4 ワークロードで実測: call 中心 +2.0% / ループ +5.3% /
   struct −0.5% / stdlib +2.9%。**典型 2〜3%**で、`fib` 1 本で見た 6% は
@@ -1521,10 +1543,10 @@
   stdlib struct として置く案が [`POINTER.md`](POINTER.md) の P4。
   未解決の論点は escape をどう止めるか (C# の `ref struct` 相当)。
 - **POINTER: `ptr` を型付きにする** ★★ — 設計は [`POINTER.md`](POINTER.md)。
-  `Ptr<T>` / `Span<T>` は **stdlib の struct で書ける** (`Box<T>` と同じ手口、
-  3 バックエンドで実測済み)。前提は 2 つの小さなコンパイラ変更だけ:
-  (P1) `__builtin_sizeof::<T>()` の型引数形 — 今は値しか取れないので
-  `Ptr<T>::alloc(n)` が書けない、(P2) 下の `__getitem__` の 2 件。
+  P1 (`__builtin_sizeof::<T>()`) と P2 (`__getitem__` / `__setitem__`) は
+  2026-08-30 に landing 済み (完了済み節)。残りは P3
+  (`core/std/ptr.t` の `Ptr<T>`)、P4 (`Span<T>` + 境界検査)、P5
+  (non-null 不変 + `Option<Ptr<T>>`)、P6 (`unsafe fn`)。
   その先は null を型に出す (`Option<Ptr<T>>`) と `unsafe fn`
   (effect mask 1 行)。
 - **const generics** ★ — `struct Array<T, const N: usize>`。大規模。
@@ -1729,19 +1751,11 @@
 **直った項目をこの節に段落で残さないこと** — 常時読まれるファイルが
 changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 バックエンドで
 食い違う / `if` の条件が型検査されない / MATCH-STRUCT-ARM) はいずれも解消し、
-経緯は git log と完了済み節にある。
+経緯は git log と完了済み節にある。`__getitem__` の 2 件
+(`&self` 受理 / generic 戻り型置換) も 2026-08-30 に解消
+(POINTER P2、完了済み節)。
 
-- **`__getitem__` が `&self` を受け付けない** — `fn __getitem__(&self, i: u64)`
-  は `[E0010] __getitem__ method must have at least 2 parameters` で落ち、
-  `self: Self` 形しか通らない。`check_struct_getitem_access`
-  (`frontend/src/type_checker/struct_literal.rs`) の arity 検査が `&self`
-  短縮形を数えていない。
-- **`__getitem__` の戻り型が generic struct で置換されない** — `Vec` 風の
-  `struct S<T>` で `s[i]` が `Generic(T)` のまま返り `E0001`。同じ method を
-  `s.get(i)` で呼べば通るので、置換が getitem 経路だけ抜けている。
-
-どちらも 2026-08-30 に [`POINTER.md`](POINTER.md) の検討中に踏んだもので、
-同文書の P2 がこの 2 件を指している。
+2026-08-30 時点で既知の不具合はない。
 
 ### パーサーの既知制限事項
 - bare `self` 非対応 — `self: Self` / `&self` / `&mut self` のいずれかを書く。

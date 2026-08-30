@@ -950,3 +950,61 @@ fn try_cross_error_into_enum_target_is_consistent_across_backends() {
     // (struct conversion) = 60.
     assert_consistent(src, "try_cross_error_into_enum_target");
 }
+
+#[test]
+fn getitem_setitem_magic_methods_3_backend() {
+    // POINTER P2: the two frontend holes that made `p[i]` a
+    // type-checker-only illusion — (a) the arity gate counted
+    // `parameter` slots, so the `&self` short form was rejected
+    // while `self: Self` passed, and (b) a generic struct's
+    // declared `__getitem__` return type came back as
+    // `Generic(T)`. With both fixed, the compiled lanes also
+    // needed the dispatch itself: `p[i]` / `p[i] = v` on a struct
+    // binding lower as `__getitem__` / `__setitem__` calls (the
+    // tree-walker always dispatched this way).
+    let src = r#"
+        struct Slot<T> { v: T }
+
+        impl<T> Slot<T> {
+            fn __getitem__(&self, index: u64) -> T {
+                self.v
+            }
+            fn __setitem__(&mut self, index: u64, value: T) {
+                self.v = value
+            }
+        }
+
+        struct Bytes {
+            data: ptr,
+            len: u64,
+        }
+
+        impl Bytes {
+            fn __getitem__(&self, i: u64) -> u64 {
+                val v: u64 = __builtin_ptr_read(self.data, i)
+                v
+            }
+            fn __setitem__(&mut self, i: u64, value: u64) {
+                __builtin_ptr_write(self.data, i, value)
+            }
+        }
+
+        fn main() -> u64 {
+            # &self receiver + generic return substitution.
+            val s: Slot<u64> = Slot { v: 40u64 }
+            if s[2u64] != 40u64 { return 1u64 }
+            # &mut self setitem mutating the caller's binding.
+            var m: Slot<u64> = Slot { v: 1u64 }
+            m[0u64] = 7u64
+            if m[0u64] != 7u64 { return 2u64 }
+            # Heap-backed container: the shape `Ptr<T>` wants.
+            # The index here is a raw byte offset (the method body
+            # decides), mirroring `__builtin_ptr_read`'s contract.
+            var b: Bytes = Bytes { data: __builtin_heap_alloc(16u64), len: 16u64 }
+            b[8u64] = 55u64
+            if b[8u64] != 55u64 { return 3u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "getitem_setitem_magic_methods_3_backend");
+}

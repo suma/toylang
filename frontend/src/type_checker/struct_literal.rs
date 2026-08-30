@@ -632,17 +632,112 @@ impl<'a> TypeCheckerVisitor<'a> {
                 "Cannot index into type {:?} - no __getitem__ method found", object_type
             )))?;
 
-        if getitem_method.parameter.len() < 2 {
-            return Err(TypeCheckError::generic_error("__getitem__ method must have at least 2 parameters (self, index)"));
+        // POINTER P2: `&self` / `&mut self` receivers do not occupy a
+        // `parameter` slot (the parser only flips `has_self_param`),
+        // while an explicit `self: Self` is `parameter[0]`. The index
+        // is the first *user* parameter either way, so its position
+        // depends on the receiver form — counting slots without this
+        // distinction rejected every `fn __getitem__(&self, i: u64)`.
+        let first_param_is_self = getitem_method
+            .parameter
+            .first()
+            .and_then(|(sym, _)| self.core.string_interner.resolve(*sym))
+            .map(|name| name == "self")
+            .unwrap_or(false);
+        if !first_param_is_self && !getitem_method.has_self_param {
+            return Err(TypeCheckError::generic_error(
+                "__getitem__ must take self (`&self`, `&mut self`, or `self: Self`)",
+            ));
         }
-        let index_param_type = &getitem_method.parameter[1].1;
-        if index_type != *index_param_type && !self.are_types_compatible(index_param_type, &index_type) {
-            return Err(TypeCheckError::type_mismatch(index_param_type.clone(), index_type));
+        let index_param_index = if first_param_is_self { 1 } else { 0 };
+        if getitem_method.parameter.len() < index_param_index + 1 {
+            return Err(TypeCheckError::generic_error("__getitem__ method must have at least (self, index)"));
+        }
+        let index_param_type = getitem_method.parameter[index_param_index].1.clone();
+        if index_type != index_param_type && !self.are_types_compatible(&index_param_type, &index_type) {
+            return Err(TypeCheckError::type_mismatch(index_param_type, index_type));
         }
 
-        getitem_method.return_type
+        let declared_return = getitem_method
+            .return_type
             .clone()
-            .ok_or_else(|| TypeCheckError::generic_error("__getitem__ method must have return type"))
+            .ok_or_else(|| TypeCheckError::generic_error("__getitem__ method must have return type"))?;
+
+        // POINTER P2: substitute the declared return type against the
+        // receiver's type args — `p[0u64]` on a `Ptr<u64>` used to
+        // come back `Generic(T)` and fail with E0001. The struct's
+        // `generic_params` zip the receiver's args positionally, the
+        // same walk a generic struct literal's field types take.
+        let recv_args: &[TypeDecl] = match object_type {
+            TypeDecl::Struct(_, args) | TypeDecl::Enum(_, args) => args,
+            _ => &[],
+        };
+        if recv_args.is_empty() {
+            return Ok(declared_return);
+        }
+        let generic_params = self
+            .context
+            .get_struct_generic_params(struct_name)
+            .cloned()
+            .unwrap_or_default();
+        if generic_params.len() != recv_args.len() {
+            return Ok(declared_return);
+        }
+        let subst: std::collections::HashMap<DefaultSymbol, TypeDecl> = generic_params
+            .into_iter()
+            .zip(recv_args.iter().cloned())
+            .collect();
+        Ok(declared_return.substitute_generics(&subst))
+    }
+
+    /// Shared `__setitem__` signature check for `struct[key] = value`
+    /// (POINTER P2). Both receiver spellings are accepted: `&self` /
+    /// `&mut self` (no `parameter` slot) and `self: Self`
+    /// (`parameter[0]`). The key and value are the first two *user*
+    /// parameters in either form.
+    pub fn check_struct_setitem_access(
+        &mut self,
+        struct_name: DefaultSymbol,
+        key_type: TypeDecl,
+        value_type: &TypeDecl,
+        object_type: &TypeDecl,
+    ) -> Result<(), TypeCheckError> {
+        let struct_name_str = self.core.string_interner.resolve(struct_name)
+            .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?
+            .to_string();
+        let setitem_method = self.context
+            .get_method_function_by_name(&struct_name_str, "__setitem__", self.core.string_interner)
+            .ok_or_else(|| TypeCheckError::generic_error(&format!(
+                "Cannot assign to struct type {:?} - no __setitem__ method found", object_type
+            )))?;
+        let first_param_is_self = setitem_method
+            .parameter
+            .first()
+            .and_then(|(sym, _)| self.core.string_interner.resolve(*sym))
+            .map(|name| name == "self")
+            .unwrap_or(false);
+        if !first_param_is_self && !setitem_method.has_self_param {
+            return Err(TypeCheckError::generic_error(
+                "__setitem__ must take self (`&self`, `&mut self`, or `self: Self`)",
+            ));
+        }
+        let key_param_index = if first_param_is_self { 1 } else { 0 };
+        if setitem_method.parameter.len() < key_param_index + 2 {
+            return Err(TypeCheckError::generic_error(
+                "__setitem__ method must have at least (self, key, value)",
+            ));
+        }
+        let key_param_type = setitem_method.parameter[key_param_index].1.clone();
+        let value_param_type = setitem_method.parameter[key_param_index + 1].1.clone();
+        if key_type != key_param_type && !self.are_types_compatible(&key_param_type, &key_type) {
+            return Err(TypeCheckError::type_mismatch(key_param_type, key_type));
+        }
+        if *value_type != value_param_type
+            && !self.are_types_compatible(&value_param_type, value_type)
+        {
+            return Err(TypeCheckError::type_mismatch(value_param_type, value_type.clone()));
+        }
+        Ok(())
     }
 
     /// Helper method to check __setslice__ on a struct

@@ -508,13 +508,24 @@ fn check_typing_collecting(
             .map(|e| Diagnostic::from_type_check_error(e, diag_file, Some(&*string_interner))),
     );
 
-    // Pull the user-authored function slice from the resolved
-    // `program.function`. Integration appends stdlib functions
-    // after the user ones, so the first `user_func_count` entries
-    // are the user-authored bodies — with alias substitution
-    // already applied via `Rc::make_mut`.
-    let functions: Vec<std::rc::Rc<frontend::ast::Function>> =
-        program.function.iter().take(user_func_count).cloned().collect();
+    // Every function body, the integrated stdlib's included.
+    //
+    // This used to be `take(user_func_count)` — imported modules were
+    // assumed to have been checked when they were authored. They were
+    // not: nothing checks a `core/std/*.t` free function except a
+    // program that reaches it, and the type checker does not only
+    // *check* bodies, it **rewrites** them (`?` desugaring, the
+    // `Display` `to_str` insertion, CHAR-LITERAL-NUM narrowing). A
+    // skipped body kept the pre-rewrite AST and reached the backends
+    // as one, so those features silently did nothing inside the
+    // stdlib and the failure surfaced as a runtime type error, if at
+    // all. `impl` block methods were always checked, which is why the
+    // hole stayed invisible: most of the stdlib is methods.
+    //
+    // Cost is ~2ms per process on the current stdlib (measured on a
+    // trivial program: 41.4ms -> 44.1ms), the same order as the impl
+    // blocks already checked.
+    let functions: Vec<std::rc::Rc<frontend::ast::Function>> = program.function.to_vec();
 
     // A1: expand trait default-method bodies into every
     // `impl <Trait> for <T>` block in the AST. Done in-place so the

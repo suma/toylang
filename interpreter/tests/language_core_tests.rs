@@ -3227,6 +3227,48 @@ mod enum_and_match {
         let result = execute_test_program(source).expect("should execute");
         assert!(result.contains("Int64(1)"), "got: {}", result);
     }
+
+    #[test]
+    fn an_arm_that_returns_does_not_constrain_its_siblings() {
+        // A `return` leaves the function, so the arm it sits in
+        // produces no value for the `match` to unify. Typing it as
+        // the *returned* type instead rejected the shape below as
+        // "arm 0 is u64, arm 1 is Option<u64>" — naming two types
+        // neither arm produces, and making the early-return idiom
+        // unwritable inside a match.
+        crate::common::assert_program_result_u64(
+            r#"fn checked_sum(a: u64, b: u64) -> Option<u64> {
+                var acc: u64 = 0u64
+                val first = a.checked_add(b)
+                match first {
+                    Option::Some(v) => { acc = v }
+                    Option::None => { return Option::None }
+                }
+                val doubled = acc.checked_mul(2u64)
+                match doubled {
+                    Option::Some(v) => { acc = v }
+                    Option::None => { return Option::None }
+                }
+                Option::Some(acc)
+            }
+
+            fn main() -> u64 {
+                val ok = checked_sum(3u64, 4u64)
+                val overflowed = checked_sum(18446744073709551615u64, 1u64)
+                var code: u64 = 0u64
+                match ok {
+                    Option::Some(v) => { code = code + v }
+                    Option::None => { code = code + 100u64 }
+                }
+                match overflowed {
+                    Option::Some(_) => { code = code + 200u64 }
+                    Option::None => { code = code + 1u64 }
+                }
+                code
+            }"#,
+            15, // (3 + 4) * 2, plus 1 for the None the overflow took
+        );
+    }
 }
 
 

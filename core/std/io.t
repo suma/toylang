@@ -108,14 +108,14 @@ pub unsafe fn read_line() -> Result<str, IoError> {
     var buf: Vec<u8> = Vec::new()
     var c: i32 = first
     loop {
-        if c == 10i32 { break }      # '\n'
+        if c == '\n' { break }
         buf.push(c as u8)
         c = getchar()
         if c == -1i32 { break }      # EOF mid-line: the line is what we have
     }
     if buf.size() > 0u64 {
         val last: u8 = buf.get(buf.size() - 1u64)
-        if last == 13u8 { buf.pop() }   # strip '\r'
+        if last == '\r' { buf.pop() }   # strip the CR of a CRLF
     }
     Result::Ok(__builtin_str_from_bytes(buf.as_ptr(), buf.size()))
 }

@@ -132,6 +132,32 @@ fn escapes_carry_their_code_point() {
 }
 
 #[test]
+fn the_narrowing_reaches_stdlib_free_functions() {
+    // `core/std/parse.t` scans bytes against `'0'` / `'9'` / `'+'`,
+    // in free functions rather than `impl` blocks. Those bodies were
+    // not type-checked until this landed, so the literals stayed
+    // `u32` and the comparison failed at run time — the same hole
+    // would have swallowed a `?` or a `Display` insertion there.
+    assert_program_result_u64(
+        r#"fn main() -> u64 {
+            val n = parse::to_u64("+9")
+            val bad = parse::to_u64("x")
+            var code: u64 = 0u64
+            match n {
+                Result::Ok(v) => { code = code + v }
+                Result::Err(_) => { code = code + 100u64 }
+            }
+            match bad {
+                Result::Ok(_) => { code = code + 200u64 }
+                Result::Err(_) => { code = code + 1u64 }
+            }
+            code
+        }"#,
+        10,
+    );
+}
+
+#[test]
 fn a_character_works_as_a_match_pattern_on_its_own_width() {
     // `match` over a `u32` scrutinee: the pattern is a char literal
     // of the same width. (A `u8` scrutinee is a separate gap — the

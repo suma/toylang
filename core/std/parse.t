@@ -67,10 +67,10 @@ fn digits_to_u64(b: String, start: u64, end: u64) -> Result<u64, ParseError> {
     var i: u64 = start
     while i < end {
         val c: u8 = b.get(i)
-        if c < 48u8 || c > 57u8 {
+        if c < '0' || c > '9' {
             return Result::Err(ParseError::Invalid)
         }
-        val digit: u64 = (c - 48u8) as u64
+        val digit: u64 = (c - '0') as u64
         val scaled = acc.checked_mul(10u64)
         match scaled {
             Option::Some(v) => { acc = v }
@@ -96,7 +96,7 @@ pub fn to_u64(s: str) -> Result<u64, ParseError> {
         return Result::Err(ParseError::Empty)
     }
     var start: u64 = 0u64
-    if b.get(0u64) == 43u8 {   # '+'
+    if b.get(0u64) == '+' {
         start = 1u64
     }
     val r: Result<u64, ParseError> = digits_to_u64(b, start, n)
@@ -116,10 +116,10 @@ pub fn to_i64(s: str) -> Result<i64, ParseError> {
     val first: u8 = b.get(0u64)
     var start: u64 = 0u64
     var negative: bool = false
-    if first == 45u8 {         # '-'
+    if first == '-' {
         negative = true
         start = 1u64
-    } elif first == 43u8 {     # '+'
+    } elif first == '+' {
         start = 1u64
     }
     val magnitude: Result<u64, ParseError> = digits_to_u64(b, start, n)
@@ -154,7 +154,7 @@ fn all_digits(b: String, start: u64, end: u64) -> bool {
     var i: u64 = start
     while i < end {
         val c: u8 = b.get(i)
-        if c < 48u8 || c > 57u8 {
+        if c < '0' || c > '9' {
             return false
         }
         i = i + 1u64
@@ -173,14 +173,14 @@ fn is_decimal(b: String, n: u64) -> bool {
         return false
     }
     val first: u8 = b.get(0u64)
-    if first == 43u8 || first == 45u8 {
+    if first == '+' || first == '-' {
         i = 1u64
     }
     # Mantissa: digits, then optionally `.` and more digits.
     var int_end: u64 = i
     while int_end < n {
         val c: u8 = b.get(int_end)
-        if c < 48u8 || c > 57u8 {
+        if c < '0' || c > '9' {
             break
         }
         int_end = int_end + 1u64
@@ -188,12 +188,12 @@ fn is_decimal(b: String, n: u64) -> bool {
     val int_digits: u64 = int_end - i
     var cursor: u64 = int_end
     var frac_digits: u64 = 0u64
-    if cursor < n && b.get(cursor) == 46u8 {   # '.'
+    if cursor < n && b.get(cursor) == '.' {
         cursor = cursor + 1u64
         var frac_end: u64 = cursor
         while frac_end < n {
             val c: u8 = b.get(frac_end)
-            if c < 48u8 || c > 57u8 {
+            if c < '0' || c > '9' {
                 break
             }
             frac_end = frac_end + 1u64
@@ -207,13 +207,13 @@ fn is_decimal(b: String, n: u64) -> bool {
     # Exponent: `e` / `E`, an optional sign, then at least one digit.
     if cursor < n {
         val e: u8 = b.get(cursor)
-        if e != 101u8 && e != 69u8 {           # 'e' / 'E'
+        if e != 'e' && e != 'E' {
             return false
         }
         cursor = cursor + 1u64
         if cursor < n {
             val sign: u8 = b.get(cursor)
-            if sign == 43u8 || sign == 45u8 {
+            if sign == '+' || sign == '-' {
                 cursor = cursor + 1u64
             }
         }

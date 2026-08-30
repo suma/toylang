@@ -806,13 +806,29 @@ impl<'a> TypeCheckerVisitor<'a> {
         &mut self,
         s: &StmtRef,
         last_empty: &mut bool,
-        last: &Option<TypeDecl>,
     ) -> Result<TypeDecl, TypeCheckError> {
         let stmt = self.core.stmt_pool.get(s)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference in block"))?;
 
         match stmt {
-            Stmt::Return(None) => Ok(TypeDecl::Unit),
+            // A `return` **diverges**: control leaves the enclosing
+            // function, so the block it sits in produces no value for
+            // whatever surrounds it. Reporting the returned type
+            // instead made a `match` arm that returns clash with its
+            // siblings —
+            //
+            //     match acc.checked_mul(10u64) {
+            //         Option::Some(v) => { acc = v }
+            //         Option::None => { return Result::Err(e) }
+            //     }
+            //
+            // was rejected as "arm 0 is UInt64, arm 1 is
+            // Result<...>", naming two types neither arm produces.
+            // `Unknown` is the checker's existing divergence marker
+            // (what `panic(...)` yields), and it is compatible with
+            // any surrounding type. The returned value is still
+            // checked against the function's return type below.
+            Stmt::Return(None) => Ok(TypeDecl::Unknown),
             Stmt::Return(ret_ty) => {
                 if let Some(e) = ret_ty {
                     let expr_obj = self.core.expr_pool.get(&e)
@@ -830,18 +846,10 @@ impl<'a> TypeCheckerVisitor<'a> {
                     self.validate_return_type(&ty)?;
                     if *last_empty {
                         *last_empty = false;
-                        Ok(ty)
-                    } else if let Some(last_ty) = last.clone() {
-                        if last_ty == ty {
-                            Ok(ty)
-                        } else {
-                            Err(TypeCheckError::type_mismatch(last_ty, ty).with_context("return statement"))
-                        }
-                    } else {
-                        Ok(ty)
                     }
+                    Ok(TypeDecl::Unknown)
                 } else {
-                    Ok(TypeDecl::Unit)
+                    Ok(TypeDecl::Unknown)
                 }
             }
             _ => {
@@ -870,7 +878,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // This code assumes Block(expression) don't make nested function
         // so `return` expression always return for this context.
         for s in statements.iter() {
-            match self.visit_block_stmt(s, &mut last_empty, &last) {
+            match self.visit_block_stmt(s, &mut last_empty) {
                 Ok(def_ty) => last = Some(def_ty),
                 // LLM-LOOP P1: record and move on to the next statement so
                 // one bad statement doesn't hide the rest of the block.

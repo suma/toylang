@@ -1965,8 +1965,10 @@ fn divide(a: i64, b: i64) -> i64 {
 }
 ```
 
-- Return type is required (use `()` implicitly by omitting the trailing
-  expression to return Unit).
+- Return type is required. A function that produces no value either
+  omits the `->` clause or writes `-> ()` — both mean Unit, and `()`
+  written as a type *is* the unit type rather than a zero-element
+  tuple.
 - Parameters require explicit types.
 - The last expression in the body is the return value (no implicit
   `return` statement needed).

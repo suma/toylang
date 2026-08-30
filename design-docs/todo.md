@@ -12,6 +12,13 @@
 
 ### 2026-08-30
 
+- **`fn f() -> ()` が書けるようになった** — 型としての `()` を parser が
+  空 tuple にしていたので、Unit を返す body と突き合わせて必ず
+  `expected (), but got ()` で落ちていた (省略形 `fn f()` は従来どおり
+  動いていたので気づかれていなかった)。型は `TypeDecl::Unit` に、
+  空 tuple *リテラル* は `Tuple([])` のまま (`val x: () = ()` は
+  `is_equivalent` が繋ぐ)。equivalence だけ足す案は「型は通るが
+  compiled レーンが compound 戻りとして拒否する」状態になるので採らず。
 - **RUNTIME-LIB P0-B — `core/std/parse.t` (`parse::to_u64` / `to_i64` /
   `to_f64` / `to_bool`)** — 文字列 → 数値。整数と bool は**純 toylang**
   (`checked_mul` / `checked_add` が範囲チェックを担う)、extern が要るのは

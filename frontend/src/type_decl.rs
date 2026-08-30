@@ -294,6 +294,14 @@ impl TypeDecl {
         }
         
         match (self, other) {
+            // `()` written as a type parses as the empty tuple, while
+            // a body that produces no value infers `Unit`. They name
+            // the same thing — without this, `fn f() -> ()` could not
+            // be written at all, and said so as
+            // "expected (), but got ()".
+            (TypeDecl::Unit, TypeDecl::Tuple(t)) | (TypeDecl::Tuple(t), TypeDecl::Unit) => {
+                t.is_empty()
+            }
             // A generic parameter and a bare identifier of the same
             // name are the same type: declarations write `k: K` as
             // `Generic(K)` while identifier uses resolve to

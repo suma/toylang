@@ -400,7 +400,15 @@ impl<'a> Parser<'a> {
                         let ret = self.parse_type_declaration_with_generic_context(generic_params)?;
                         return Ok(TypeDecl::Function(vec![], Box::new(ret)));
                     }
-                    return Ok(TypeDecl::Tuple(vec![]));
+                    // `()` as a *type* is the unit type, not a
+                    // zero-element tuple: a body that produces no
+                    // value infers `Unit`, and the compiled lanes
+                    // treat a tuple return as a compound (which `()`
+                    // is not). The empty tuple *literal* still types
+                    // as `Tuple([])`, and `TypeDecl::is_equivalent`
+                    // unifies the two so `val x: () = ()` keeps
+                    // working.
+                    return Ok(TypeDecl::Unit);
                 }
 
                 let mut element_types = Vec::new();

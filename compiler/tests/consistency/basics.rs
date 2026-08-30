@@ -387,6 +387,33 @@ fn integer_division_by_zero_traps_on_every_backend() {
 /// on — the one trap where the backends disagreed on whether the
 /// program even survived.
 #[test]
+fn a_function_may_write_its_unit_return_type() {
+    // `()` as a type is the unit type. Written out it used to be
+    // parsed as the empty *tuple*, so `fn f() -> ()` never
+    // type-checked — the diagnostic was the memorable
+    // "expected (), but got ()" — and the compiled lanes would have
+    // treated the return as a compound. Omitting the type has always
+    // worked, so this pins the written form against both failures.
+    let src = r#"
+        fn note(n: u64) -> () {
+            println("note {n}")
+        }
+
+        fn silent(n: u64) {
+            println("silent {n}")
+        }
+
+        fn main() -> u64 {
+            note(1u64)
+            silent(2u64)
+            val x: () = ()
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "unit_return_type");
+}
+
+#[test]
 fn signed_division_overflow_traps_on_every_backend() {
     for (op, stem) in [("/", "div_overflow"), ("%", "rem_overflow")] {
         let src = format!(

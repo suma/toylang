@@ -1057,6 +1057,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                         true
                     } else {
                         match (&last, expected_return_type) {
+                            // `-> ()` is the empty tuple as written,
+                            // `Unit` as inferred from a body that
+                            // produces no value.
+                            (TypeDecl::Unit, TypeDecl::Tuple(t))
+                            | (TypeDecl::Tuple(t), TypeDecl::Unit) => t.is_empty(),
                             (TypeDecl::Struct(a, params_a), TypeDecl::Identifier(b))
                             | (TypeDecl::Identifier(b), TypeDecl::Struct(a, params_a)) => {
                                 a == b && params_a.is_empty()

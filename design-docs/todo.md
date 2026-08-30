@@ -1517,6 +1517,16 @@
   **SIMD の前提ではなくなった** — `__simd_load` / `__simd_store` は
   `ptr` + 要素 index で landing したので、slice が入ったら受け口を
   足せばよい。
+  **ライブラリ側で回収できる可能性がある** — `Span<T> = (Ptr<T>, len)` を
+  stdlib struct として置く案が [`POINTER.md`](POINTER.md) の P4。
+  未解決の論点は escape をどう止めるか (C# の `ref struct` 相当)。
+- **POINTER: `ptr` を型付きにする** ★★ — 設計は [`POINTER.md`](POINTER.md)。
+  `Ptr<T>` / `Span<T>` は **stdlib の struct で書ける** (`Box<T>` と同じ手口、
+  3 バックエンドで実測済み)。前提は 2 つの小さなコンパイラ変更だけ:
+  (P1) `__builtin_sizeof::<T>()` の型引数形 — 今は値しか取れないので
+  `Ptr<T>::alloc(n)` が書けない、(P2) 下の `__getitem__` の 2 件。
+  その先は null を型に出す (`Option<Ptr<T>>`) と `unsafe fn`
+  (effect mask 1 行)。
 - **const generics** ★ — `struct Array<T, const N: usize>`。大規模。
 
 ### 構文糖衣の候補 (NEW-FEATURES、未着手)
@@ -1721,7 +1731,17 @@ changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 
 食い違う / `if` の条件が型検査されない / MATCH-STRUCT-ARM) はいずれも解消し、
 経緯は git log と完了済み節にある。
 
-現時点で未解決のものは無い。
+- **`__getitem__` が `&self` を受け付けない** — `fn __getitem__(&self, i: u64)`
+  は `[E0010] __getitem__ method must have at least 2 parameters` で落ち、
+  `self: Self` 形しか通らない。`check_struct_getitem_access`
+  (`frontend/src/type_checker/struct_literal.rs`) の arity 検査が `&self`
+  短縮形を数えていない。
+- **`__getitem__` の戻り型が generic struct で置換されない** — `Vec` 風の
+  `struct S<T>` で `s[i]` が `Generic(T)` のまま返り `E0001`。同じ method を
+  `s.get(i)` で呼べば通るので、置換が getitem 経路だけ抜けている。
+
+どちらも 2026-08-30 に [`POINTER.md`](POINTER.md) の検討中に踏んだもので、
+同文書の P2 がこの 2 件を指している。
 
 ### パーサーの既知制限事項
 - bare `self` 非対応 — `self: Self` / `&self` / `&mut self` のいずれかを書く。

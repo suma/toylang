@@ -543,3 +543,246 @@ fn an_unannotated_range_slice_inherits_the_source_layout_in_the_aot_frame() {
     }
     assert_consistent(&src(""), "soa_slice_inherits_layout");
 }
+
+// ---------------------------------------------------------------
+// DATA-ORIENTED Phase 2 — `soa Vec<T>` / `SoaVec<T>`.
+//
+// The heap form cannot be a flag on `Vec<T>` the way the stack form
+// is a flag on `[T; N]`: a heap buffer's layout is observable (what a
+// grow has to move, what `as_ptr` would point at, what `retains(N)`
+// reports), so `soa Vec<T>` is sugar for a *separate* stdlib type,
+// rewritten in the parser. What these pin, therefore, is a pair of
+// claims:
+//
+//   * the two types answer identically — same values, same allocation
+//     totals, same drops — so a program can be moved between them;
+//   * and the memory really is different, which for a heap buffer
+//     shows up in the emitted address arithmetic rather than in a
+//     stack frame.
+// ---------------------------------------------------------------
+
+/// The same program in both layouts. `{vec}` is the type's name and
+/// `{new}` its constructor, which is the whole difference.
+fn vec_program(ty: &str, new: &str) -> String {
+    format!(
+        r#"
+        struct Particle {{ x: i64, y: i64, mass: i64 }}
+
+        fn main() -> i64 {{
+            var ps: {ty} = {new}
+            var i: i64 = 0i64
+            while i < 6i64 {{
+                ps.push(Particle {{ x: i, y: i * 2i64, mass: 10i64 + i }})
+                i = i + 1i64
+            }}
+            # one field over every element — the shape the layout is for
+            var total: i64 = 0i64
+            for p in ps.iter() {{
+                total = total + p.mass
+            }}
+            # random access reads the whole element back
+            val third: Particle = ps.get(2i64 as u64)
+            ps.set(0u64, Particle {{ x: 100i64, y: 200i64, mass: 1i64 }})
+            val first: Particle = ps.get(0u64)
+            val popped: Particle = ps.pop()
+            total + third.y + first.x + popped.mass + ps.size() as i64
+        }}
+    "#
+    )
+}
+
+#[test]
+fn soa_vec_answers_exactly_as_vec_does() {
+    // 75 + 4 + 100 + 15 + 5 = 199. Both types must land there, and
+    // each must agree across the tree-walker, the IR VM, the JIT and
+    // the AOT binary. The loop grows the vec twice (0 -> 4 -> 8), so
+    // this also covers the re-placement a column split needs instead
+    // of a realloc.
+    let aos = vec_program("Vec<Particle>", "Vec::new()");
+    let soa = vec_program("soa Vec<Particle>", "SoaVec::new()");
+    assert_eq!(interpreter_value(&aos) & 0xff, 199, "AoS: {aos}");
+    assert_eq!(interpreter_value(&soa) & 0xff, 199, "SoA: {soa}");
+    assert_consistent(&aos, "vec_particles_aos");
+    assert_consistent(&soa, "vec_particles_soa");
+}
+
+#[test]
+fn the_soa_vec_spelling_is_the_stdlib_type() {
+    // `soa Vec<T>` is rewritten to `SoaVec<T>` in the parser, so the
+    // two spellings are the *same* type, not two types that behave
+    // alike: what gets lowered are `SoaVec`'s monomorphised methods,
+    // and a value written one way passes where the other is declared.
+    let sugar = vec_program("soa Vec<Particle>", "SoaVec::new()");
+    let ir = lowered_ir(&sugar);
+    assert!(
+        ir.contains("toy_SoaVec__push__Struct") && ir.contains("toy_SoaVec__get__Struct"),
+        "the sugar should lower SoaVec's methods:\n{ir}"
+    );
+
+    let crosses = r#"
+        struct P { x: i64, y: i64 }
+
+        fn total(ps: SoaVec<P>) -> i64 {
+            var acc: i64 = 0i64
+            for p in ps.iter() { acc = acc + p.x + p.y }
+            acc
+        }
+
+        fn main() -> i64 {
+            var ps: soa Vec<P> = SoaVec::new()
+            ps.push(P { x: 1i64, y: 2i64 })
+            ps.push(P { x: 3i64, y: 4i64 })
+            total(ps)
+        }
+    "#;
+    assert_eq!(interpreter_value(crosses) & 0xff, 10);
+
+    // And the layouts stay apart where the stack form's do not: a
+    // `soa Vec<T>` is not a `Vec<T>`, because for a heap container the
+    // layout *is* observable. This is the deliberate asymmetry with
+    // `soa [T; N]`, which is the same type as `[T; N]`.
+    let mismatched = r#"
+        struct P { x: i64, y: i64 }
+
+        fn total(ps: Vec<P>) -> i64 { ps.size() as i64 }
+
+        fn main() -> i64 {
+            var ps: soa Vec<P> = SoaVec::new()
+            ps.push(P { x: 1i64, y: 2i64 })
+            total(ps)
+        }
+    "#;
+    let errors = type_check_errors(mismatched);
+    assert!(
+        errors.iter().any(|e| e.contains("total")),
+        "expected the call to be rejected, got: {errors:?}"
+    );
+}
+
+#[test]
+fn soa_vec_addresses_columns_where_vec_strides_elements() {
+    // The layout claim itself, read off what the compiled lanes emit.
+    // `Particle` is three 8-byte leaves, so:
+    //
+    //   Vec::get     one `mul` (index * elem_size), then the leaves
+    //                at +0 / +8 / +16 from it — one element's worth
+    //                of memory touched, three fields apart.
+    //   SoaVec::get  a `mul` per leaf (index * 8, its own stride) and
+    //                a `mul` per non-zero column base (8 * cap,
+    //                16 * cap) — three columns, each addressed on its
+    //                own, which is what lets a caller walk one of
+    //                them without the others.
+    let aos = lowered_function_starting_with(
+        &lowered_ir(&vec_program("Vec<Particle>", "Vec::new()")),
+        "Vec__get__Struct",
+    );
+    let soa = lowered_function_starting_with(
+        &lowered_ir(&vec_program("soa Vec<Particle>", "SoaVec::new()")),
+        "SoaVec__get__Struct",
+    );
+
+    assert_eq!(aos.matches(" = mul ").count(), 1, "Vec::get:\n{aos}");
+    assert_eq!(aos.matches(" = add ").count(), 2, "Vec::get:\n{aos}");
+    // The interleaved leaf offsets are constants added to the one
+    // element base.
+    assert!(aos.contains("const 8u64") && aos.contains("const 16u64"), "Vec::get:\n{aos}");
+
+    // Three index scalings plus two column bases.
+    assert_eq!(soa.matches(" = mul ").count(), 5, "SoaVec::get:\n{soa}");
+    assert_eq!(soa.matches(" = add ").count(), 2, "SoaVec::get:\n{soa}");
+    // Both read three leaves; only where they read them differs.
+    assert_eq!(aos.matches("ptr_read").count(), 3, "Vec::get:\n{aos}");
+    assert_eq!(soa.matches("ptr_read").count(), 3, "SoaVec::get:\n{soa}");
+}
+
+#[test]
+fn a_scalar_element_has_nothing_to_split() {
+    // One leaf is one column, so `SoaVec<u64>` addresses
+    // `index * 8` — byte-for-byte what `Vec<u64>` does. The type
+    // stays distinct (it is a different nominal type), but the memory
+    // is the same, exactly as `soa [u64; N]` degenerates to the AoS
+    // slot in Phase 0.
+    let src = |ty: &str, new: &str| {
+        format!(
+            r#"
+        fn main() -> u64 {{
+            var xs: {ty} = {new}
+            var i: u64 = 0u64
+            while i < 6u64 {{
+                xs.push(i * 2u64)
+                i = i + 1u64
+            }}
+            var acc: u64 = 0u64
+            for x in xs.iter() {{ acc = acc + x }}
+            acc + xs.get(3u64) + xs.capacity()
+        }}
+    "#
+        )
+    };
+    let aos = src("Vec<u64>", "Vec::new()");
+    let soa = src("soa Vec<u64>", "SoaVec::new()");
+    // 30 + 6 + 8 = 44.
+    assert_eq!(interpreter_value(&aos) & 0xff, 44);
+    assert_eq!(interpreter_value(&soa) & 0xff, 44);
+    assert_consistent(&soa, "soa_vec_scalar");
+
+    let aos_get = lowered_function_starting_with(&lowered_ir(&aos), "Vec__get__U64");
+    let soa_get = lowered_function_starting_with(&lowered_ir(&soa), "SoaVec__get__U64");
+    assert_eq!(aos_get.matches("ptr_read").count(), 1);
+    assert_eq!(soa_get.matches("ptr_read").count(), 1);
+    assert_eq!(soa_get.matches(" = mul ").count(), 1, "SoaVec::get:\n{soa_get}");
+    assert_eq!(soa_get.matches(" = add ").count(), 0, "SoaVec::get:\n{soa_get}");
+}
+
+#[test]
+fn soa_vec_allocates_exactly_what_vec_allocates() {
+    // Columns are tight from the start — each strides by its leaf's
+    // own width, and their total is `__builtin_sizeof::<T>()` — so a
+    // `SoaVec` of `cap` elements is the same number of bytes as the
+    // `Vec`. (This is where the stack form still differs: Phase 0
+    // pads every column to 8 bytes and Phase 0.5 is the change that
+    // closes it.) The grow path allocates a fresh buffer and frees
+    // the old one where `Vec` reallocs, which the counters do record
+    // — as one alloc plus one free instead of one realloc.
+    memory_profiles_agree(
+        &vec_program("soa Vec<Particle>", "SoaVec::new()"),
+        "prof_soa_vec_growth",
+    );
+}
+
+#[test]
+fn soa_vec_drop_glue_releases_owning_elements() {
+    // A `SoaVec<Box<i64>>` owns its boxes: the backend's glue walks
+    // the columns (`drop_glue.rs` shares the walk with `Vec`, which
+    // has the same four fields) and frees each element before the
+    // buffer. Without the column-aware walk the boxes would leak
+    // silently — the values would still be right.
+    let src = r#"
+        fn main() -> i64 {
+            var bs: soa Vec<Box<i64>> = SoaVec::new()
+            val b1: Box<i64> = Box::new(1i64)
+            val b2: Box<i64> = Box::new(2i64)
+            val b3: Box<i64> = Box::new(3i64)
+            bs.push(b1)
+            bs.push(b2)
+            bs.push(b3)
+            var total: i64 = 0i64
+            var i: u64 = 0u64
+            while i < bs.size() {
+                val b: Box<i64> = bs.get(i)
+                total = total + b.get()
+                i = i + 1u64
+            }
+            total
+        }
+    "#;
+    assert_eq!(interpreter_value(src) & 0xff, 6);
+    assert_consistent(src, "soa_vec_boxes");
+    // Every box and the buffer are freed: nothing outlives `main`,
+    // on any of the lanes (the report is the one all three agreed on).
+    let report = memory_profile_report(src, "prof_soa_vec_boxes");
+    assert!(
+        report.contains("live_bytes        0"),
+        "something leaked:\n{report}"
+    );
+}

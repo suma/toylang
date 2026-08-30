@@ -1,6 +1,6 @@
 # DATA-ORIENTED — 配列の layout をユーザが選べるようにする
 
-> **状態: Phase 0 (2026-08-30 landing) / 0.5 未着手**。実装サイトは
+> **状態: Phase 0 + Phase 2 (2026-08-30 landing) / 0.5・1 未着手**。実装サイトは
 > [`compiler_lower/src/array_access.rs`](../compiler_lower/src/array_access.rs) と
 > [`compiler_lower/src/array_layout.rs`](../compiler_lower/src/array_layout.rs)。
 > SIMD 側の設計は [`SIMD.md`](SIMD.md) にあり、本文書の Phase 0 が
@@ -180,7 +180,28 @@ struct SoaVec<T> {
 Drop / `with allocator` / REGION / move check は `Vec<T>` と同一に動く
 (確保 1 本、解放 1 本)。
 
-#### builtin 3 個: `__builtin_soa_read` / `__builtin_soa_write` / `__builtin_soa_grow`
+#### builtin は 2 個で足りた (`__builtin_soa_read` / `__builtin_soa_write`)
+
+**landing 時の変更点**: 設計では grow も builtin (`__builtin_soa_grow`)
+にする予定だったが、**stdlib 側の要素ごとコピーで書けた**ので入れていない:
+
+```rust
+val fresh = __builtin_heap_alloc(new_cap * self.elem_size)
+while i < self.len {
+    val moved: T = __builtin_soa_read(self.data, i, self.cap)
+    __builtin_soa_write(fresh, i, new_cap, moved)   # 新しい cap の番地へ
+    i = i + 1u64
+}
+```
+
+列ごとの `mem_copy` より遅い (要素ごと・leaf ごとの load/store) が、
+**新しい builtin は「T の型引数を runtime に渡す」問題を持ち込む** —
+read は注釈、write は値から `T` が取れるのに、grow だけは
+`__builtin_soa_grow::<T>(...)` のような型引数形が要り、
+`SizeOfType(TypeDecl)` と同じ AST 変種 + cache schema + 5 バックエンドの
+分岐が付いてくる。速度が要るとわかってから足す方が安い。
+
+以下は当初の設計 (grow builtin を含む形) の記録。
 
 erased generic な stdlib には per-leaf offset が書けない (下の
 「採らない案」の通り)。だが AOT-COMPOUND-PTR-RW の monomorph 展開
@@ -207,6 +228,32 @@ stdlib method になる (parser / checker の特別扱いは sugar 解決だけ)
 > `FULL_AST_CACHE_SCHEMA_VERSION` を上げること (`.toycache` の
 > intern 順破壊対策 — CLAUDE.md 参照)。
 
+#### 実装 (Phase 2 として landing 済み — 2026-08-30)
+
+| 変更点 | 場所 | 状態 |
+|---|---|---|
+| `soa Vec<T>` → `SoaVec<T>` の書き換え | `frontend/src/parser/types.rs` (**parser** で解決。checker より前なので下流は砂糖を見ない) | ✅ |
+| `SoaVec<T>` / `SoaVecIter<T>` (`Vec` と同一 call surface) | `core/std/collections/soa_vec.t` | ✅ |
+| `__builtin_soa_read` / `__builtin_soa_write` | `frontend/src/ast/expr.rs` ほか (cache schema v36) | ✅ |
+| 列の番地計算 + AoS/SoA 共通の leaf offset | `compiler_lower/src/soa.rs` (`BufferAddress`) | ✅ |
+| 読み (注釈から `T`) / 書き (値から `T`) の per-leaf 展開 | `let_lowering.rs` / `expr.rs` — **既存の `PtrRead` / `PtrWrite` に落ちるので IR / codegen / IR VM 無変更** | ✅ |
+| 要素を持つ `SoaVec<Box<T>>` の drop glue | `drop_glue.rs` (`Vec` と walk を共有、番地だけ差し替え) | ✅ |
+| tree-walker | typed-slot map なので**列を持たない** (要素 1 個 = 1 slot、`cap` は無視)。`soa [T; N]` と同じくオラクル側は layout を持たない | ✅ |
+| interpreter 側 JIT | silent fallback (POINTER P1 / SIMD と同じ) | ✅ |
+
+**設計から動いた点** (上の節に詳細):
+
+1. builtin は 3 個ではなく **2 個** — grow は stdlib の要素ごとコピー
+2. 砂糖の解決は型検査器ではなく **parser**。`soa Vec<T>` は
+   `TypeDecl::Struct(SoaVec, [T])` になるので、checker 以降は
+   `SoaVec<T>` と書いたのと**同一の AST**
+3. **tight pack は最初から効いている** — 列の stride は leaf の実幅で、
+   合計は `__builtin_sizeof::<T>()`。つまり `retains(N)` は AoS と一致する
+   (「tight pack 後に食い違う」という上の予想は stack 版 Phase 0.5 の話で、
+   heap 版には最初から段差が無い)
+4. 「`soa` を付け外して測る」は**注釈 + コンストラクタの 2 箇所**の編集
+   (`Vec::new()` → `SoaVec::new()`)。型が別なので構築子も別名になる
+
 #### 恩恵の本丸は Phase 1 slice 経由
 
 `ps[i].x` の単列 shortcut は SoaVec では `__getitem__` 経由 (全 leaf 物質化)
@@ -216,12 +263,19 @@ stdlib method になる (parser / checker の特別扱いは sugar 解決だけ)
 
 #### 検証
 
-SoaVec は別型なので「付け外して測る」は型注釈の差し替え
-(`val ps: soa Vec<P>` ↔ `val ps: Vec<P>`) で、同じく 3 バックエンド
-`assert_consistent` で pin する。確保回数は `Vec` と同一 (grow 1 回につき
-1 確保) なので `allocations(N)` 契約はそのまま動く。バイト量契約
-(`retains`) は tight pack 後に AoS/SoA で値が食い違う — layout が観測可能
-であることの帰結で、別型にした理由の裏付け。
+`compiler/tests/consistency/soa.rs` の Phase 2 節が pin しているもの:
+
+- 同じプログラムを `Vec` / `soa Vec` で書いて**同じ答え** (4 レーン)
+- **番地計算が違うこと** — `Vec::get` は `mul` 1 回 (`i * elem_size`) +
+  leaf ごとの定数加算、`SoaVec::get` は leaf ごとの `mul` (`i * stride`) と
+  列ベースの `mul` (`prefix * cap`)。答えの一致だけでは
+  「黙って interleaved に落ちた実装」を弾けないので、Phase 0 の
+  stack frame テストと同じ理由でこちらも要る
+- `soa Vec<T>` が **`SoaVec<T>` そのもの**であること (関数境界を越える) と、
+  `Vec<T>` とは**別型**であること (型エラーになる)
+- 確保総量が `Vec` と一致すること (`memory_profiles_agree`)
+- `soa Vec<Box<i64>>` が箱を全部解放すること (`live_bytes 0`)
+- scalar 要素 (`soa Vec<u64>`) が AoS と同じ番地計算に潰れること
 
 ### 実装の見込み (stack 配列 — Phase 0 として landing 済み)
 
@@ -350,7 +404,7 @@ heap 節を参照。)
 | **0** | `soa [T; N]` (scalar / struct / tuple 要素)。uniform 8 バイト列。**`ps[i].f` の単列 shortcut 込み** — **landing 済み (2026-08-30)**: 列方式 (事実 2 の注記) により IR / codegen / IR VM 無変更、`consistency/soa.rs` が soa 有無一致を 4-way で pin | ✅ 小 |
 | **0.5** | 列ごとの tight pack — `allocate_array_storage` の stride を `ARRAY_LEAF_STRIDE` から leaf 実サイズへ (列方式なので codegen 分岐は不要、1 箇所の切替 + IR footprint の pin) | 小 |
 | **1** | slice `&[T]` — SoA の窓。`ps.mass` → `&[f64]` | 中 |
-| **2** | `soa Vec<T>` → `SoaVec<T>` sugar。単一領域の列分割 + builtin 3 個 | 中 |
+| **2** | `soa Vec<T>` → `SoaVec<T>` sugar。単一領域の列分割 + builtin 2 個 — **landing 済み (2026-08-30)**: parser で砂糖を解き、IR / codegen / IR VM 無変更、`consistency/soa.rs` が値・番地・確保量・drop を pin | ✅ 中 |
 | **3** | 配列要素としての enum + tag 列の分離 | 中 |
 
 **Phase 0 は単体で価値があり、SIMD をやらなくても無駄にならない。**

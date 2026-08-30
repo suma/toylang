@@ -11,29 +11,45 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_type_declaration_with_generic_context(&mut self, generic_params: &HashSet<DefaultSymbol>) -> ParserResult<TypeDecl> {
-        // DATA-ORIENTED Phase 0: `soa [T; N]` — the prefix layout
-        // modifier. Contextual exactly like `test`: `soa` is a
-        // modifier only when the next token opens an array type, so
-        // `val soa = ...` / `fn soa()` / a user `struct soa` keep
-        // parsing as the plain identifier (`soa Vec<T>` is the
-        // Phase 2 heap-container spelling and does not parse yet).
+        // DATA-ORIENTED: `soa [T; N]` (Phase 0) and `soa Vec<T>`
+        // (Phase 2) — the prefix layout modifier. Contextual exactly
+        // like `test`: `soa` is a modifier only when the next token
+        // opens an array type or names one, so `val soa = ...` /
+        // `fn soa()` / a user `struct soa` keep parsing as the plain
+        // identifier.
         if let Some(Kind::Identifier(name)) = self.peek()
             && name.as_str() == "soa"
-            && self.peek_n(1) == Some(&Kind::BracketOpen)
+            && matches!(
+                self.peek_n(1),
+                Some(&Kind::BracketOpen) | Some(&Kind::Identifier(_))
+            )
         {
             self.next(); // consume `soa`
             let location = self.current_source_location();
             let inner = self.parse_type_declaration_with_generic_context(generic_params)?;
             return match inner {
+                // The stack form: layout is a flag on the *same*
+                // type, so `soa [P; N]` and `[P; N]` interchange.
                 TypeDecl::Array(elems, size, _) => Ok(TypeDecl::Array(elems, size, true)),
-                // `soa [T]` (unsized) parses as Array too, so this
-                // arm is only reachable if the inner parse stops
-                // being an array by construction — kept for the
-                // day other containers join.
+                // The heap form is sugar for the stdlib `SoaVec<T>`
+                // (`core/std/collections/soa_vec.t`) — rewritten here,
+                // so nothing downstream (checker, lowering, any
+                // backend) ever sees the `soa` spelling. It cannot be
+                // a flag the way the stack form is: a heap buffer's
+                // layout is observable through what `as_ptr` points
+                // at, what a grow must copy, and what `retains(N)`
+                // reports, so the two need distinct identities. See
+                // `design-docs/DATA_ORIENTED.md`.
+                TypeDecl::Struct(name, type_args)
+                    if self.string_interner.resolve(name) == Some("Vec") =>
+                {
+                    let soa_vec = self.string_interner.get_or_intern("SoaVec");
+                    Ok(TypeDecl::Struct(soa_vec, type_args))
+                }
                 other => Err(ParserError::generic_error(
                     location,
                     format!(
-                        "`soa` modifies an array type (`soa [T; N]`), not {other:?}"
+                        "`soa` modifies an array type (`soa [T; N]`) or a vec                          (`soa Vec<T>`), not {other:?}"
                     ),
                 )),
             };

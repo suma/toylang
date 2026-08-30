@@ -1339,6 +1339,13 @@ impl<'a, 'b> State<'a, 'b> {
                         Err("__builtin_backtrace is not supported in the interpreter JIT"
                             .to_string())
                     }
+                    // Rejected by eligibility (DATA-ORIENTED Phase 2);
+                    // unreachable here.
+                    BuiltinFunction::SoaRead | BuiltinFunction::SoaWrite => {
+                        Err("__builtin_soa_read / __builtin_soa_write are not supported in \
+                             the interpreter JIT"
+                            .to_string())
+                    }
                     // Rejected by eligibility (POINTER P1); unreachable here.
                     BuiltinFunction::SizeOfType(_) => {
                         Err("__builtin_sizeof::<T> is not supported in the interpreter JIT"

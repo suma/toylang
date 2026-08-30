@@ -444,7 +444,9 @@ impl EvaluationContext<'_> {
             | BuiltinFunction::HeapRealloc
             | BuiltinFunction::PtrRead
             | BuiltinFunction::PtrWrite
-            | BuiltinFunction::PtrOffset => self.builtin_heap_and_pointer(func, args, site),
+            | BuiltinFunction::PtrOffset
+            | BuiltinFunction::SoaRead
+            | BuiltinFunction::SoaWrite => self.builtin_heap_and_pointer(func, args, site),
             BuiltinFunction::StrLen
             | BuiltinFunction::StrToPtr
             | BuiltinFunction::StrFromBytes
@@ -635,6 +637,72 @@ impl EvaluationContext<'_> {
             if matches!(value_type, TypeDecl::UInt64) && !bytes_written {
                 return Err(InterpreterError::InternalError("Invalid memory access in ptr_write".to_string()));
             }
+            Ok(EvaluationResult::Value((Object::Unit).into()))
+        }
+
+        // DATA-ORIENTED Phase 2: the `SoaVec<T>` column accessors.
+        //
+        // The compiled lanes split the buffer into one column per leaf
+        // scalar and address leaf `j` of element `i` at
+        // `prefix_j * cap + i * stride_j`. The tree-walker has no
+        // bytes to split — its heap is a map from `(addr, offset)` to
+        // whole `Object`s, which is also why `[T; N]` is a
+        // `Vec<Object>` here and why `soa [T; N]` needed no
+        // tree-walker change at all (Phase 0). So an element is one
+        // slot keyed by its index, and `cap` is accepted and ignored:
+        // it is a *layout* parameter, and layout is what this engine
+        // deliberately does not model. What it must agree on is
+        // values, and it does — every consistency test runs the
+        // tree-walker against the three lanes that do split columns.
+        //
+        // Keying on the index rather than a byte offset also means a
+        // grow does not move anything: `SoaVec::push` copies element
+        // by element into the new buffer, and the new buffer's keys
+        // are the same indices.
+        BuiltinFunction::SoaRead => {
+            Self::expect_args("soa_read", args, 3)?;
+            let ptr_result = self.evaluate(&args[0])?;
+            let ptr_obj = try_value!(Ok(ptr_result));
+            let addr = ptr_obj.borrow().try_unwrap_pointer().map_err(|_| {
+                InterpreterError::InternalError("soa_read expects pointer as first argument".to_string())
+            })?;
+            let index_result = self.evaluate(&args[1])?;
+            let index_obj = try_value!(Ok(index_result));
+            let index = index_obj.borrow().try_unwrap_uint64().map_err(|_| {
+                InterpreterError::InternalError("soa_read expects u64 index as second argument".to_string())
+            })? as usize;
+            // `cap` is evaluated (a side-effecting capacity expression
+            // must behave the same on every engine) and then dropped.
+            let cap_result = self.evaluate(&args[2])?;
+            let _cap = try_value!(Ok(cap_result));
+            match self.heap_manager.borrow().typed_read(addr, index) {
+                Some(value) => Ok(EvaluationResult::Value(value.into())),
+                // An unwritten element. `Vec::get` / `pop` guard the
+                // length before reading, so reaching this means the
+                // caller read past what it wrote.
+                None => Err(InterpreterError::InternalError(
+                    "Invalid memory access in soa_read (element never written)".to_string(),
+                )),
+            }
+        }
+
+        BuiltinFunction::SoaWrite => {
+            Self::expect_args("soa_write", args, 4)?;
+            let ptr_result = self.evaluate(&args[0])?;
+            let ptr_obj = try_value!(Ok(ptr_result));
+            let addr = ptr_obj.borrow().try_unwrap_pointer().map_err(|_| {
+                InterpreterError::InternalError("soa_write expects pointer as first argument".to_string())
+            })?;
+            let index_result = self.evaluate(&args[1])?;
+            let index_obj = try_value!(Ok(index_result));
+            let index = index_obj.borrow().try_unwrap_uint64().map_err(|_| {
+                InterpreterError::InternalError("soa_write expects u64 index as second argument".to_string())
+            })? as usize;
+            let cap_result = self.evaluate(&args[2])?;
+            let _cap = try_value!(Ok(cap_result));
+            let value_result = self.evaluate(&args[3])?;
+            let value_obj = try_value!(Ok(value_result));
+            self.heap_manager.borrow_mut().typed_write(addr, index, value_obj);
             Ok(EvaluationResult::Value((Object::Unit).into()))
         }
 

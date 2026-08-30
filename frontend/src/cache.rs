@@ -32,7 +32,7 @@ use crate::ast::module_interface::ModuleInterface;
 ///
 /// Mismatched versions are treated as a cache miss by
 /// [`load_full_module`].
-pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 35;
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 36;
 // v2: `File` gained `id` (JIT cache key) and `tests` (LLM-LOOP P4).
 // v3: `BuiltinFunctionSymbols` interns the MEMORY_PROFILING M4 counter
 // names, shifting every later symbol id.
@@ -89,6 +89,13 @@ pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 35;
 // wrong — every stdlib trait reported "is not defined". The M4 bump
 // was found the same way: an unrelated `val a: u64 = 5u64` started
 // failing with three type errors from the stdlib.
+// v35: DATA-ORIENTED Phase 0 — `TypeDecl::Array` gained the `soa`
+// flag, so a v34 entry's array types deserialize one field short.
+// (Recorded after the fact; the bump itself shipped with the phase.)
+// v36: DATA-ORIENTED Phase 2 — `BuiltinFunctionSymbols::new` interns
+// `__builtin_soa_read` / `__builtin_soa_write`, which shifts every
+// symbol id after them, and `core/std/collections/soa_vec.t` joins
+// the auto-loaded stdlib.
 
 /// Bincode options for the AST cache.
 ///

@@ -592,6 +592,28 @@ pub enum BuiltinFunction {
     NullPtr,      // __builtin_null_ptr() -> ptr — portable null pointer constant
     PtrOffset,    // __builtin_ptr_offset(base: ptr, offset: u64) -> ptr — interior pointer
 
+    // DATA-ORIENTED Phase 2: the column-split heap buffer behind
+    // `SoaVec<T>` (`core/std/collections/soa_vec.t`). One allocation
+    // is divided into one column per leaf scalar of `T`, so leaf `j`
+    // of element `i` lives at
+    //
+    //     byte_off = prefix_j * cap + i * stride_j
+    //
+    // where `stride_j` is the leaf's own width and `prefix_j` the sum
+    // of the widths before it — both constants once `T` is
+    // monomorphised, with only `cap` arriving at runtime. That keeps
+    // leaf *selection* a compile-time decision, which is what the
+    // rejected reflection builtins (`__builtin_field_offset(T, i)`)
+    // could not promise; see `design-docs/DATA_ORIENTED.md`.
+    //
+    // Both expand into the same per-leaf `PtrRead` / `PtrWrite` the
+    // compound `__builtin_ptr_read` / `__builtin_ptr_write` already
+    // emit, so the IR, codegen and the IR VM learn nothing about SoA.
+    SoaRead,  // __builtin_soa_read(base: ptr, index: u64, cap: u64) -> T
+              // `T` comes from the annotation, exactly as for
+              // `__builtin_ptr_read`.
+    SoaWrite, // __builtin_soa_write(base: ptr, index: u64, cap: u64, value: T) -> unit
+
     // String → pointer conversion. Returns a pointer to the string's
     // UTF-8 bytes (NUL-terminated). The pointer is valid for the
     // lifetime of the string. Backend semantics:
@@ -774,6 +796,10 @@ pub struct BuiltinFunctionSymbols {
     pub null_ptr: DefaultSymbol,
     pub ptr_offset: DefaultSymbol,
 
+    // DATA-ORIENTED Phase 2: the `SoaVec<T>` column accessors.
+    pub soa_read: DefaultSymbol,
+    pub soa_write: DefaultSymbol,
+
     // String → pointer conversion (interop with raw byte access).
     pub str_to_ptr: DefaultSymbol,
     pub str_len: DefaultSymbol,
@@ -868,6 +894,8 @@ impl BuiltinFunctionSymbols {
             ptr_eq: interner.get_or_intern("__builtin_ptr_eq"),
             null_ptr: interner.get_or_intern("__builtin_null_ptr"),
             ptr_offset: interner.get_or_intern("__builtin_ptr_offset"),
+            soa_read: interner.get_or_intern("__builtin_soa_read"),
+            soa_write: interner.get_or_intern("__builtin_soa_write"),
             str_to_ptr: interner.get_or_intern("__builtin_str_to_ptr"),
             str_len: interner.get_or_intern("__builtin_str_len"),
             str_from_bytes: interner.get_or_intern("__builtin_str_from_bytes"),
@@ -928,6 +956,8 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.ptr_eq { Some(BuiltinFunction::PtrEq) }
         else if symbol == self.null_ptr { Some(BuiltinFunction::NullPtr) }
         else if symbol == self.ptr_offset { Some(BuiltinFunction::PtrOffset) }
+        else if symbol == self.soa_read { Some(BuiltinFunction::SoaRead) }
+        else if symbol == self.soa_write { Some(BuiltinFunction::SoaWrite) }
         else if symbol == self.str_to_ptr { Some(BuiltinFunction::StrToPtr) }
         else if symbol == self.str_len { Some(BuiltinFunction::StrLen) }
         else if symbol == self.str_from_bytes { Some(BuiltinFunction::StrFromBytes) }

@@ -129,6 +129,9 @@ fn is_call_kind(kind: &InstKind) -> bool {
 
 pub mod types;
 mod simd;
+/// DATA-ORIENTED Phase 2: the column arithmetic `__builtin_soa_read`
+/// / `__builtin_soa_write` expand into.
+mod soa;
 
 mod templates;
 use templates::{EnumDefs, StructDefs};

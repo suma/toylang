@@ -726,8 +726,18 @@ pub(super) const ITER_COUNTER_PRELUDE: &str = r#"
 "#;
 
 pub(super) fn memory_profiles_agree(source: &str, stem: &str) {
+    let _ = memory_profile_report(source, stem);
+}
+
+/// The `--all-backends --profile=mem` report for `source`, having
+/// asserted that the lanes agreed on it. Empty when e2e is skipped.
+///
+/// Splitting this out of `memory_profiles_agree` lets a caller assert
+/// on the numbers themselves (`live_bytes 0` for a drop-glue test)
+/// without running the program a second time.
+pub(super) fn memory_profile_report(source: &str, stem: &str) -> String {
     if skip_e2e() {
-        return;
+        return String::new();
     }
     let dir = unique_path(stem);
     std::fs::create_dir_all(&dir).expect("create temp dir");
@@ -751,6 +761,7 @@ pub(super) fn memory_profiles_agree(source: &str, stem: &str) {
         stderr.contains("alloc_count"),
         "no profile was produced:\n{stderr}"
     );
+    stderr.into_owned()
 }
 
 /// A program with a predictable allocation history: raw builtins only,
@@ -935,12 +946,17 @@ pub(super) fn lowered_ir_with(source: &str, release: bool) -> String {
     let mut parser = frontend::ParserWithInterner::new(source);
     let mut program = parser.parse_program().expect("parse");
     let interner = parser.get_string_interner();
+    // Hand the core modules over when the program needs them: a
+    // stdlib-using source (`Vec`, `SoaVec`, ...) has nothing to lower
+    // without them, and the probe `None` would fall back to is not
+    // reachable from inside a test binary.
+    let core = core_modules_dir();
     interpreter::check_typing_with_core_modules(
         &mut program,
         interner,
         Some(source),
         Some("test.t"),
-        None,
+        needs_core(source).then_some(core.as_path()),
     )
     .expect("type check");
     let contract_msgs = compiler_lower::ContractMessages::intern(interner);
@@ -956,6 +972,23 @@ pub(super) fn lowered_function(ir: &str, name: &str) -> String {
     let start = ir
         .find(&head)
         .unwrap_or_else(|| panic!("no function `{name}` in:\n{ir}"));
+    let rest = &ir[start..];
+    let end = rest.find("\n}").expect("function end") + 2;
+    rest[..end].to_string()
+}
+
+/// The rendered body of one lowered function named by *prefix*.
+///
+/// A monomorphised stdlib method carries its instantiation in its
+/// name (`SoaVec__get__Struct(StructId(11))`), and the id depends on
+/// how many struct definitions the stdlib happened to register first
+/// — a number no test should be pinning. The prefix
+/// (`SoaVec__get__`) is the part that means something.
+pub(super) fn lowered_function_starting_with(ir: &str, prefix: &str) -> String {
+    let head = format!("local function toy_{prefix}");
+    let start = ir
+        .find(&head)
+        .unwrap_or_else(|| panic!("no function starting `{prefix}` in:\n{ir}"));
     let rest = &ir[start..];
     let end = rest.find("\n}").expect("function end") + 2;
     rest[..end].to_string()
@@ -1394,12 +1427,17 @@ pub(super) fn aot_clif(source: &str) -> String {
     let mut parser = frontend::ParserWithInterner::new(source);
     let mut program = parser.parse_program().expect("parse");
     let interner = parser.get_string_interner();
+    // Hand the core modules over when the program needs them: a
+    // stdlib-using source (`Vec`, `SoaVec`, ...) has nothing to lower
+    // without them, and the probe `None` would fall back to is not
+    // reachable from inside a test binary.
+    let core = core_modules_dir();
     interpreter::check_typing_with_core_modules(
         &mut program,
         interner,
         Some(source),
         Some("test.t"),
-        None,
+        needs_core(source).then_some(core.as_path()),
     )
     .expect("type check");
     let contract_msgs = compiler_lower::ContractMessages::intern(interner);

@@ -2138,6 +2138,19 @@ impl<'a> Checker<'a> {
                         });
                         None
                     }
+                    // DATA-ORIENTED Phase 2: the `SoaVec<T>` accessors
+                    // expand to one read / write per leaf of `T`, which
+                    // needs the monomorphised layout this JIT does not
+                    // carry. Same silent fallback as `dyn Trait` — the
+                    // function runs on the tree-walker instead.
+                    BuiltinFunction::SoaRead | BuiltinFunction::SoaWrite => {
+                        self.reject(|| {
+                            "__builtin_soa_read / __builtin_soa_write are not supported in \
+                             the interpreter JIT (silently falls back)"
+                                .to_string()
+                        });
+                        None
+                    }
                     BuiltinFunction::SizeOfType(_) => {
                         // POINTER P1: the type-argument form. Resolving
                         // the written `TypeDecl` through the monomorph

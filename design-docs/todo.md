@@ -22,6 +22,15 @@
   が SliceAccess root を拒否、tree-walker だけ動いた) ので、読み・書き・
   ネスト chain を AoS / SoA 両対応で新規実装 — `nested_struct_array_test.t`
   / `struct_array_test.t` が ERROR_EXAMPLES から復活。
+- **DOD Phase 2 — `soa Vec<T>` landing** — heap 側は stdlib `SoaVec<T>`
+  (`core/std/collections/soa_vec.t`) への **parser 砂糖**。1 確保を leaf ごとの
+  列に区切り、`prefix_j * cap + i * stride_j` で番地を作る builtin
+  `__builtin_soa_read` / `__builtin_soa_write` (**2 個** — grow は stdlib の
+  要素ごとコピーで済んだ) が既存の `PtrRead` / `PtrWrite` に展開されるので
+  IR / codegen / IR VM 無変更。stack 版と違い **`Vec<T>` とは別型**
+  (heap は layout が観測可能)。列 stride は leaf 実幅なので確保総量は
+  `Vec` と一致、drop glue は列を歩いて要素を解放。cache schema v36。
+  `consistency/soa.rs` が値 / 番地計算 / 確保量 / leaks / 別型性を pin。
   **前提として直した既存バグ 2 件**: (a) 注釈付き struct 要素配列リテラル
   (`val ps: [P; 2] = [...]`) が要素型の `Identifier` vs `Struct(name, [])`
   綴り違いで拒否、(b) struct フィールド型 whitelist に f64 / f32 /
@@ -1831,11 +1840,12 @@
   move / Drop モデルにどう載せるか」で、`Send` 相当の判定を決めるまで
   着手できない。設計フェーズを別に取る前提。
 * データ指向の配列 layout (DOD) ★★ — Phase 0 (`soa [T; N]` + `ps[i].f`
-  単列 shortcut) は 2026-08-30 landing 済み (上)。残り:
-  **Phase 0.5** (列 tight pack — 列方式により stride 1 箇所の切替に縮小)、
-  Phase 1 slice `&[T]` (★→★★ 済み、下の slice 型)、Phase 2
-  `soa Vec<T>` → `SoaVec<T>` sugar、Phase 3 enum 要素。設計は
-  [`DATA_ORIENTED.md`](DATA_ORIENTED.md) (未決 1・2 を 2026-08-30 に閉じた)
+  単列 shortcut) と Phase 2 (`soa Vec<T>`) は 2026-08-30 landing 済み (上)。
+  残り: **Phase 0.5** (stack 側の列 tight pack — 列方式により stride 1 箇所の
+  切替に縮小。heap 側は最初から tight)、Phase 1 slice `&[T]`
+  (★→★★ 済み、下の slice 型。`ps.mass` を列 slice として渡せると
+  `SoaVec` の帯域削減がやっと届く)、Phase 3 enum 要素。設計は
+  [`DATA_ORIENTED.md`](DATA_ORIENTED.md)
 * SIMD Phase 3 の残 / Phase 4 ★★ — Phase 2 (型 + 演算子 + intrinsic) と
   戦略 B の主要 kernel は landing 済み。残りは (a) **stdlib の残り kernel**
   — `Vec` の `sum` / `min` / `max` (**API 自体が無い**ので追加から)、

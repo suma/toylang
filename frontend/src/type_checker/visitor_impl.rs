@@ -565,7 +565,11 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
         // method with a `T` return type being visited under its hint),
         // surface the hint as the result so nested expressions pick up
         // the right element type. Fall back to u64 for backward compat.
-        if matches!(func, BuiltinFunction::PtrRead) {
+        //
+        // `__builtin_soa_read` (DATA-ORIENTED Phase 2) answers the same
+        // way: its element type is the annotation's, never the
+        // buffer's — the buffer is a column split and holds no shape.
+        if matches!(func, BuiltinFunction::PtrRead | BuiltinFunction::SoaRead) {
             if let Some(hint) = &self.type_inference.type_hint
                 && matches!(hint,
                     TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool

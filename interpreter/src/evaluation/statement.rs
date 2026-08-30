@@ -279,9 +279,15 @@ impl EvaluationContext<'_> {
         // slot's owner frees it when it dies), so the binding must not
         // register a drop — otherwise `Box::get()` on a `Box<Box<i64>>`
         // frees the inner slot while the outer box still owns it.
+        // DATA-ORIENTED Phase 2: `__builtin_soa_read` copies out of a
+        // column-split buffer the same way, and is an alias for the
+        // same reason.
         let from_ptr_read = matches!(
             self.expr_pool.get(expr),
-            Some(Expr::BuiltinCall(frontend::ast::BuiltinFunction::PtrRead, _))
+            Some(Expr::BuiltinCall(
+                frontend::ast::BuiltinFunction::PtrRead | frontend::ast::BuiltinFunction::SoaRead,
+                _
+            ))
         );
         if !from_ptr_read {
             // Phase 5 (汎用 RAII): record the binding for auto-drop
@@ -319,7 +325,11 @@ impl EvaluationContext<'_> {
         let from_ptr_read = expr.is_some_and(|e| {
             matches!(
                 self.expr_pool.get(&e),
-                Some(Expr::BuiltinCall(frontend::ast::BuiltinFunction::PtrRead, _))
+                Some(Expr::BuiltinCall(
+                    frontend::ast::BuiltinFunction::PtrRead
+                        | frontend::ast::BuiltinFunction::SoaRead,
+                    _
+                ))
             )
         });
         if !from_ptr_read {

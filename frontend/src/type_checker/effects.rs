@@ -344,6 +344,13 @@ pub fn builtin_effect(func: BuiltinFunction) -> (EffectSet, &'static str) {
         StrFromBytes => (EffectSet::of(&[Effect::RawRead]), "__builtin_str_from_bytes"),
 
         PtrWrite => (EffectSet::of(&[Effect::RawWrite]), "__builtin_ptr_write"),
+        // DATA-ORIENTED Phase 2: the same raw memory, addressed by
+        // column. `unsafe fn` follows from these (POINTER P6 reads
+        // the `RawRead | RawWrite` mask), which is what puts the
+        // declaration on `SoaVec`'s accessors and keeps its callers
+        // safe.
+        SoaRead => (EffectSet::of(&[Effect::RawRead]), "__builtin_soa_read"),
+        SoaWrite => (EffectSet::of(&[Effect::RawWrite]), "__builtin_soa_write"),
         MemCopy => (EffectSet::of(&[Effect::RawWrite]), "__builtin_mem_copy"),
         MemMove => (EffectSet::of(&[Effect::RawWrite]), "__builtin_mem_move"),
         MemSet => (EffectSet::of(&[Effect::RawWrite]), "__builtin_mem_set"),

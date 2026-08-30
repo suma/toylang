@@ -286,6 +286,25 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64, TypeDecl::UInt64],
                 return_type: TypeDecl::Unit,
             },
+            // DATA-ORIENTED Phase 2: the `SoaVec<T>` column
+            // accessors. Like `__builtin_ptr_read`, the declared
+            // return type is only the fallback — the annotation on
+            // the `val` decides the element type (see
+            // `visit_builtin_call_impl`), and the value argument of
+            // `soa_write` is any type at all, so its slot here is
+            // nominal.
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::SoaRead,
+                arg_count: 3,
+                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64, TypeDecl::UInt64],
+                return_type: TypeDecl::UInt64,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::SoaWrite,
+                arg_count: 4,
+                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64, TypeDecl::UInt64, TypeDecl::UInt64],
+                return_type: TypeDecl::Unit,
+            },
             BuiltinFunctionSignature {
                 func: BuiltinFunction::PtrIsNull,
                 arg_count: 1,

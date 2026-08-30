@@ -198,7 +198,13 @@ impl<'a> FunctionLower<'a> {
             return self.glue_box_contents(struct_id, &def, &all_locals);
         }
         if self.interner.resolve(base) == Some("Vec") {
-            return self.glue_vec_elements(struct_id, &def, &all_locals);
+            return self.glue_vec_elements(struct_id, &def, &all_locals, false);
+        }
+        // DATA-ORIENTED Phase 2: `SoaVec<T>` holds the same four
+        // fields and owns its elements the same way — only where a
+        // leaf lives differs, so the walk is shared.
+        if self.interner.resolve(base) == Some("SoaVec") {
+            return self.glue_vec_elements(struct_id, &def, &all_locals, true);
         }
         if self.module.drop_trait_structs.contains(&base) {
             self.emit_user_drop_for_struct(struct_id, &all_locals)?;
@@ -260,18 +266,25 @@ impl<'a> FunctionLower<'a> {
     /// Vec elements: iterate `data[i * elem_size]` for `i in
     /// 0..len`, reading each element per-leaf, recursing into each,
     /// then free the buffer via the user drop.
+    ///
+    /// With `soa` set the buffer is `SoaVec<T>`'s column split
+    /// instead, so leaf `j` of element `i` is read from
+    /// `prefix_j * cap + i * stride_j` (DATA-ORIENTED Phase 2). The
+    /// loop, the recursion and the final free are identical — an
+    /// owning element must be released wherever it is stored.
     fn glue_vec_elements(
         &mut self,
         struct_id: crate::ir::StructId,
         def: &crate::ir::StructDef,
         all_locals: &[(LocalId, Type)],
+        soa: bool,
     ) -> Result<(), String> {
         let elem_ty = *def
             .type_args
             .first()
             .ok_or_else(|| "drop glue: Vec has no type argument".to_string())?;
-        let leaves = self
-            .compute_leaf_layout(elem_ty)
+        let columns = self
+            .soa_columns(elem_ty)
             .ok_or_else(|| format!("drop glue: no leaf layout for vec element {elem_ty:?}"))?;
         // Locals: 0 = data, 1 = len, 2 = cap, 3 = elem_size (field
         // declaration order — `Vec { data, len, cap, elem_size }`).
@@ -284,6 +297,9 @@ impl<'a> FunctionLower<'a> {
         let elem_size_local = *all_locals
             .get(3)
             .ok_or_else(|| "drop glue: Vec has no elem_size field".to_string())?;
+        let cap_local = *all_locals
+            .get(2)
+            .ok_or_else(|| "drop glue: Vec has no cap field".to_string())?;
         let data_v = self
             .emit(InstKind::LoadLocal(data_local.0), Some(Type::U64))
             .ok_or_else(|| "drop glue: vec data LoadLocal returned no value".to_string())?;
@@ -293,6 +309,9 @@ impl<'a> FunctionLower<'a> {
         let elem_size_v = self
             .emit(InstKind::LoadLocal(elem_size_local.0), Some(Type::U64))
             .ok_or_else(|| "drop glue: vec elem_size LoadLocal returned no value".to_string())?;
+        let cap_v = self
+            .emit(InstKind::LoadLocal(cap_local.0), Some(Type::U64))
+            .ok_or_else(|| "drop glue: vec cap LoadLocal returned no value".to_string())?;
 
         // i = 0; loop header: i < len ?
         let i_local = self.module.function_mut(self.func_id).add_local(Type::U64);
@@ -326,8 +345,9 @@ impl<'a> FunctionLower<'a> {
 
         self.switch_to(body);
         let glue_id = self.ensure_drop_glue(elem_ty)?;
-        let mut read_vals: Vec<ValueId> = Vec::with_capacity(leaves.len());
-        for (leaf_off, leaf_ty) in leaves {
+        let address = if soa {
+            crate::soa::BufferAddress::Columns { index: i_v, cap: cap_v }
+        } else {
             let base_off = self
                 .emit(
                     InstKind::BinOp {
@@ -338,32 +358,19 @@ impl<'a> FunctionLower<'a> {
                     Some(Type::U64),
                 )
                 .ok_or_else(|| "drop glue: vec element offset Mul returned no value".to_string())?;
-            let off_v = if leaf_off == 0 {
-                base_off
-            } else {
-                let leaf_off_v = self
-                    .emit(InstKind::Const(Const::U64(leaf_off)), Some(Type::U64))
-                    .ok_or_else(|| {
-                        "drop glue: vec leaf offset Const returned no value".to_string()
-                    })?;
-                self.emit(
-                    InstKind::BinOp {
-                        op: BinOp::Add,
-                        lhs: base_off,
-                        rhs: leaf_off_v,
-                    },
-                    Some(Type::U64),
-                )
-                .ok_or_else(|| "drop glue: vec leaf offset Add returned no value".to_string())?
-            };
+            crate::soa::BufferAddress::Interleaved { base: base_off }
+        };
+        let mut read_vals: Vec<ValueId> = Vec::with_capacity(columns.len());
+        for column in &columns {
+            let off_v = self.emit_leaf_offset(&address, column);
             let v = self
                 .emit(
                     InstKind::PtrRead {
                         ptr: data_v,
                         offset: off_v,
-                        elem_ty: leaf_ty,
+                        elem_ty: column.2,
                     },
-                    Some(leaf_ty),
+                    Some(column.2),
                 )
                 .ok_or_else(|| "drop glue: vec element PtrRead returned no value".to_string())?;
             read_vals.push(v);

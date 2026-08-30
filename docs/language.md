@@ -133,6 +133,7 @@ in `frontend/src/type_decl.rs`:
 ```
 Type ::= '&' ('mut')? Type             # reference (immutable / mutable)
        | 'soa' '[' Type (';' INT)? ']' # SoA-layout array (see "Array layout: soa")
+       | 'soa' 'Vec' '<' Type '>'      # sugar for SoaVec<T> (see "Vec layout: soa Vec<T>")
        | '[' Type (';' INT)? ']'       # array: [T; N] or dynamic [T]
        | 'dict' '[' Type ',' Type ']'  # dict[K, V]
        | '(' Type (',' Type)* ')'      # tuple
@@ -162,6 +163,7 @@ Primitive / built-in types:
 | `dict[K, V]` | Hash dictionary, any `Object`-keyable type as `K` |
 | `[T; N]` | Fixed-size array of `T` with length `N` |
 | `soa [T; N]` | The same type as `[T; N]` with SoA storage — see [Array layout: `soa`](#array-layout-soa) |
+| `soa Vec<T>` | Sugar for the stdlib `SoaVec<T>` — a *distinct* type from `Vec<T>`; see [Vec layout: `soa Vec<T>`](#vec-layout-soa-vect) |
 | `[T]` | Dynamic-array slice (returned by slicing) |
 | `(T1, T2, ...)` | Tuple — heterogeneous, fixed-arity |
 | `Self` | The enclosing struct/enum type within an `impl` block |
@@ -1094,6 +1096,57 @@ IR VM; the tree-walking interpreter does not observe the layout at
 all, which is what makes "same program, `soa` on and off, same
 answer" the pinned contract across all backends. Design notes:
 [`DATA_ORIENTED.md`](../design-docs/DATA_ORIENTED.md).
+
+### Vec layout: `soa Vec<T>`
+
+The heap counterpart. `soa Vec<T>` is **sugar for the stdlib
+`SoaVec<T>`** (`core/std/collections/soa_vec.t`), rewritten in the
+parser, so nothing downstream sees the `soa` spelling:
+
+```rust
+var ps: soa Vec<Particle> = SoaVec::new()   # column-major
+var qs: Vec<Particle>     = Vec::new()      # element-major
+```
+
+`SoaVec<T>`'s call surface is `Vec<T>`'s — `push` / `pop` / `get` /
+`set` / `size` / `capacity` / `is_empty` / `clear` / `iter` — so the
+loops around it do not change when the layout does. One allocation is
+divided into one column per leaf scalar of `T`; leaf `j` of element
+`i` lives at `prefix_j * cap + i * stride_j`, where `stride_j` is the
+leaf's own width and `prefix_j` the sum of the widths before it.
+
+Unlike the stack form, **this is a distinct type, not a layout flag**:
+
+- `soa Vec<T>` and `Vec<T>` do not assign to each other, and a
+  function declared to take one refuses the other. A heap buffer's
+  layout is observable — through what a grow has to move, through
+  what a raw pointer into it would address — so a single type would
+  need a runtime tag and a branch in every accessor.
+- Switching a program between them is therefore two edits (the
+  annotation and the constructor), not one.
+- `as_ptr` is deliberately absent from `SoaVec<T>`: the bytes mean
+  something different here.
+- Growing cannot resize in place (every column but the first moves),
+  so a grow allocates a fresh buffer and re-places the elements. The
+  allocation *totals* still match `Vec<T>`: columns stride by their
+  leaf's real width, so `cap` elements cost `cap * sizeof(T)` bytes
+  in both layouts.
+- A scalar `T` (`soa Vec<u64>`) has one column, whose addressing is
+  byte-for-byte the AoS one.
+- Elements that own memory are released with the vec: the drop glue
+  walks the columns the way it walks `Vec`'s interleaved buffer, so a
+  `soa Vec<Box<i64>>` frees every box.
+
+The column arithmetic lives in two builtins, `__builtin_soa_read(base,
+index, cap)` and `__builtin_soa_write(base, index, cap, value)`, which
+expand to one ordinary pointer read / write per column — the IR,
+codegen and the IR VM learn nothing about SoA. Both are `unsafe`
+builtins (raw memory), which is why `SoaVec`'s accessors are
+`unsafe fn` and its callers are not. `__builtin_soa_read` takes its
+element type from the annotation, exactly as `__builtin_ptr_read`
+does. The interpreter's own JIT falls back silently on both.
+
+Design notes: [`DATA_ORIENTED.md`](../design-docs/DATA_ORIENTED.md).
 
 ---
 

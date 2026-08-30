@@ -23,7 +23,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | エフェクト格子と 3 検査の関係 | [`design-docs/EFFECT_SYSTEM.md`](design-docs/EFFECT_SYSTEM.md) |
 | allocator のリージョン脱出検査 | [`design-docs/REGIONS.md`](design-docs/REGIONS.md) |
 | RUNTIME-TRAP guard をどう消しているか | [`design-docs/GUARD_ELISION.md`](design-docs/GUARD_ELISION.md) |
-| 配列 layout (AoS / SoA) の設計 (未実装) | [`design-docs/DATA_ORIENTED.md`](design-docs/DATA_ORIENTED.md) |
+| 配列 / Vec の layout (AoS / SoA) の設計 (Phase 0・2 landing 済み) | [`design-docs/DATA_ORIENTED.md`](design-docs/DATA_ORIENTED.md) |
 | `ptr` を型付きにする設計 (未実装) | [`design-docs/POINTER.md`](design-docs/POINTER.md) |
 | SIMD の設計と残りのフェーズ | [`design-docs/SIMD.md`](design-docs/SIMD.md) |
 | このリポジトリで LLM が作業する際の指針 | [`design-docs/COMPILER_DEV_LOOP.md`](design-docs/COMPILER_DEV_LOOP.md) |
@@ -280,7 +280,7 @@ fn main() -> u64 {
   SIMD vector (`f64x2` / `f32x4` / `i32x4` / `i64x2` / `u8x16`)
   (`null` は**予約済みで型検査が拒否する** — `[E0015]`。不在は `Option<T>`、生ポインタは `__builtin_null_ptr()`)
 - Narrow ints (NUM-W): `u8` / `u16` / `u32` / `i8` / `i16` / `i32` (literal suffix `42u8` / `0xFFi32` 等)。`as` cast で wide ↔ narrow 変換 (暗黙 widening は無し)
-- **`soa [T; N]` (DOD Phase 0)**: 配列型の前置修飾子で **SoA (列ごと配置) を選ぶ**。**same-type** — `soa [P; N]` と `[P; N]` は同じ型 (付け外して計測できる)。`ps[i].f` 読み書き・`val p = ps[i]`・range slice は AoS と同書式 (`ps[i] = p` の compound 一括書き込みは不可)。`soa` は contextual keyword (`val soa = 5u64` は従来どおり)。**`ps[i].f` は compiled lane では SoA 以前に未対応だった** ので、AoS 配列でも `arr[i].field` が新規に動く。実装は列方式 (leaf ごとに slot) で IR / codegen / IR VM 無変更。例: `interpreter/example/soa.t`
+- **`soa [T; N]` (DOD Phase 0)**: 配列型の前置修飾子で **SoA (列ごと配置) を選ぶ**。**same-type** — `soa [P; N]` と `[P; N]` は同じ型 (付け外して計測できる)。`ps[i].f` 読み書き・`val p = ps[i]`・range slice は AoS と同書式 (`ps[i] = p` の compound 一括書き込みは不可)。`soa` は contextual keyword (`val soa = 5u64` は従来どおり)。**`ps[i].f` は compiled lane では SoA 以前に未対応だった** ので、AoS 配列でも `arr[i].field` が新規に動く。実装は列方式 (leaf ごとに slot) で IR / codegen / IR VM 無変更。例: `interpreter/example/soa.t`。heap 版は `soa Vec<T>` (下の `SoaVec<T>`)
 - **SIMD vector (SIMD)**: 128bit の vector 型 5 種 (`f64x2` / `f32x4` /
   `i32x4` / `i64x2` / `u8x16`)。**通常の演算子が lane-wise に効く**ので
   intrinsic は型と演算子で表せない 13 個だけ (`__simd_splat` /
@@ -322,6 +322,7 @@ fn main() -> u64 {
     `core/std/parse.t` の `c < '0' || c > '9'` のような書き方が
     stdlib 内でも効く
   - `String` (`core/std/string.t`) — heap-managed byte buffer の **nominal struct** (`type` alias ではなく独立 struct、`Vec<u8>` と同 memory layout だが nominal identity は別)。inherent method (`new` / `from_str(s)` / `push` / `pop` / `get` / `set` / `size` / `len` / `as_ptr` / `capacity` / `is_empty` / `clear` / `extend_bytes` / `push_str` / `push_char` / `eq` / `to_string`) + 拡張 trait impl (`Substring` / `Trim` / `CaseConvert` / `Concat<String>` / `Contains<String>` / `Split<String, Vec<String>>` from `core/std/str_ops.t`) で `s.len()` / `s.substring(...)` / `s.trim()` / `s.concat(other)` / `s.split(sep)` 等が `str` と同じ call shape で動く (3 backend)。
+  - **`SoaVec<T>` (`core/std/collections/soa_vec.t`, DOD Phase 2)** — `Vec<T>` と同じ call surface (`push` / `pop` / `get` / `set` / `size` / `capacity` / `is_empty` / `clear` / `iter`) で、**1 確保を leaf ごとの列に区切る**動的配列。`soa Vec<T>` と書くと parser が `SoaVec<T>` に書き換える (砂糖は checker より前で消える)。stack の `soa [T; N]` と違い **`Vec<T>` とは別型** (heap は layout が観測可能なので付け外しは注釈 + コンストラクタの 2 箇所)。番地は `__builtin_soa_read` / `__builtin_soa_write` が `prefix_j * cap + i * stride_j` で作り、既存の `PtrRead` / `PtrWrite` に展開されるので IR / codegen / IR VM は SoA を知らない。確保総量は `Vec` と一致 (列 stride = leaf 実幅)、drop glue は列を歩く。例: `interpreter/example/soa_vec.t`
   - `Ptr<T>` (`core/std/ptr.t`, POINTER P3+P5) — **型付きポインタ窓**。`T` は field に現れず `addr: ptr` の背後にだけ居るので backend 特殊扱いゼロ (`Box<T>` と同じ手口)。`alloc(count)` (stride は `__builtin_sizeof::<T>()`、**0 要素でも 1 バイト確保して非 null を保証**) / `get` / `set` / `p[i]` / `p[i] = v` (`__getitem__` / `__setitem__`) / `offset(count)` / `as_raw()`。**window であって owner ではない** — free は呼び出し側 (`__builtin_heap_free(p.as_raw())`)、index は unchecked。**non-null 不変** (P5) — 不在は `Option<Ptr<T>>` で表す (`has_next: bool` 方式が消える、16 バイト・niche 最適化は不可)。不変は構成による規約で compiler 強制は無し (field visibility は未強制)
   - `Span<T>` (`core/std/span.t`, POINTER P4) — **境界検査つきの窓**。`Ptr<T>` + 長さのペアで、todo の slice 型 `&[T]` をライブラリ側で回収する形。`from_parts(p, len)` / `get` / `set` / `s[i]` / `s[i] = v` (範囲外は panic、文言は `Vec` と同規約) / `len` / `is_empty` / `as_ptr` / `as_raw` (`__simd_load` の受け口)。**view であって owner ではない**。**escape は未検査** (POINTER.md の既定、選択肢 1) — 参照Rule は `&T` のみなので、`Span` は指す先より長生きできる
   - `Vec<T>` (`core/std/collections/vec.t`) — generic dynamic array。`T` が compound (struct/tuple) も AOT 対応 (`__builtin_ptr_read/write` を per-leaf 展開、`AOT-COMPOUND-PTR-RW`)。**`v.sort()` (STDLIB-ORD)** — `impl<T: Ord> Vec<T>` の安定 in-place insertion sort。`Ord` trait (`core/std/ord.t`) は `fn lt(self: Self, other: Self) -> bool` だけで、primitive 全幅 / `f64` / `bool` / `String` (byte-wise) に impl。method 名が `<` 演算子オーバーロードの `lt` と同じなので `impl Ord` は `<` も自動で得る (3 backend)。`T` が Ord でない `sort()` は **call site で型エラー** (`[E0010] ... bound violation`) — impl block の generic bound は free function と同じく呼び出し側で強制される。

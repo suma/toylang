@@ -398,7 +398,18 @@ impl<'a> FunctionLower<'a> {
         if let Expr::BuiltinCall(frontend::ast::BuiltinFunction::PtrRead, args) = rhs.clone()
             && args.len() == 2
                 && let Some(result) =
-                    self.lower_let_builtin_ptr_read(name, annotation, &args)?
+                    self.lower_let_builtin_ptr_read(name, annotation, &args, false)?
+                {
+                    return Ok(result);
+                }
+        // DATA-ORIENTED Phase 2: `val name: T = __builtin_soa_read(p, i, cap)`
+        // is the same read against a column-split buffer — same
+        // annotation convention, same per-leaf expansion, different
+        // arithmetic for where each leaf lives (`soa.rs`).
+        if let Expr::BuiltinCall(frontend::ast::BuiltinFunction::SoaRead, args) = rhs.clone()
+            && args.len() == 3
+                && let Some(result) =
+                    self.lower_let_builtin_ptr_read(name, annotation, &args, true)?
                 {
                     return Ok(result);
                 }
@@ -529,12 +540,21 @@ impl<'a> FunctionLower<'a> {
     /// through the original single-PtrRead path. Returns
     /// `Ok(Some(_))` if it dispatched, `Ok(None)` if the
     /// annotation didn't resolve to a usable element type.
+    ///
+    /// With `soa` set this is `__builtin_soa_read(p, index, cap)`
+    /// instead (DATA-ORIENTED Phase 2): same annotation convention and
+    /// the same per-leaf expansion, but each leaf is addressed inside
+    /// its own column rather than inside the element. Only the offset
+    /// differs, so the two share every other line — see
+    /// `soa::BufferAddress`.
     fn lower_let_builtin_ptr_read(
         &mut self,
         name: DefaultSymbol,
         annotation: Option<&TypeDecl>,
         args: &[ExprRef],
+        soa: bool,
     ) -> Result<Option<Option<ValueId>>, String> {
+        let who = if soa { "__builtin_soa_read" } else { "__builtin_ptr_read" };
         // Resolve the annotation type with the active
         // monomorphisation substitution applied. Without
         // the subst, an annotation that names a generic
@@ -556,18 +576,13 @@ impl<'a> FunctionLower<'a> {
         };
         if let Some(elem_ty) = elem_ty {
             if matches!(elem_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
-                let leaves = self.compute_leaf_layout(elem_ty).ok_or_else(|| {
-                    format!(
-                        "__builtin_ptr_read: unable to compute leaf layout for {:?}",
-                        elem_ty
-                    )
+                let columns = self.soa_columns(elem_ty).ok_or_else(|| {
+                    format!("{who}: unable to compute leaf layout for {elem_ty:?}")
                 })?;
                 let ptr = self
                     .lower_expr(&args[0])?
-                    .ok_or_else(|| "ptr_read ptr produced no value".to_string())?;
-                let base_offset = self
-                    .lower_expr(&args[1])?
-                    .ok_or_else(|| "ptr_read offset produced no value".to_string())?;
+                    .ok_or_else(|| format!("{who}: base produced no value"))?;
+                let address = self.lower_buffer_address(args, soa)?;
                 // Allocate the destination binding's leaf
                 // locals up front so we can store each
                 // PtrRead value straight into them in
@@ -599,37 +614,21 @@ impl<'a> FunctionLower<'a> {
                     }
                     _ => unreachable!("guarded above"),
                 };
-                if leaf_locals.len() != leaves.len() {
+                if leaf_locals.len() != columns.len() {
                     return Err(format!(
-                        "__builtin_ptr_read: leaf count mismatch ({} locals vs {} layout entries) for {:?}",
+                        "{who}: leaf count mismatch ({} locals vs {} layout entries) for {:?}",
                         leaf_locals.len(),
-                        leaves.len(),
+                        columns.len(),
                         elem_ty
                     ));
                 }
-                for ((leaf_off, leaf_ty), (local, _local_ty)) in
-                    leaves.iter().zip(leaf_locals.iter())
-                {
-                    let leaf_off_v = self
-                        .emit(
-                            InstKind::Const(crate::ir::Const::U64(*leaf_off)),
-                            Some(Type::U64),
-                        )
-                        .expect("Const returns a value");
-                    let off_v = self
-                        .emit(
-                            InstKind::BinOp {
-                                op: crate::ir::BinOp::Add,
-                                lhs: base_offset,
-                                rhs: leaf_off_v,
-                            },
-                            Some(Type::U64),
-                        )
-                        .expect("BinOp returns a value");
+                for (column, (local, _local_ty)) in columns.iter().zip(leaf_locals.iter()) {
+                    let leaf_ty = column.2;
+                    let off_v = self.emit_leaf_offset(&address, column);
                     let v = self
                         .emit(
-                            InstKind::PtrRead { ptr, offset: off_v, elem_ty: *leaf_ty },
-                            Some(*leaf_ty),
+                            InstKind::PtrRead { ptr, offset: off_v, elem_ty: leaf_ty },
+                            Some(leaf_ty),
                         )
                         .expect("PtrRead returns a value");
                     self.emit(
@@ -642,10 +641,13 @@ impl<'a> FunctionLower<'a> {
             }
             let ptr = self
                 .lower_expr(&args[0])?
-                .ok_or_else(|| "ptr_read ptr produced no value".to_string())?;
-            let offset = self
-                .lower_expr(&args[1])?
-                .ok_or_else(|| "ptr_read offset produced no value".to_string())?;
+                .ok_or_else(|| format!("{who}: base produced no value"))?;
+            // A scalar element is one column with `prefix = 0`, so the
+            // SoA address collapses to `index * sizeof(T)` — the same
+            // byte the interleaved layout would use. Nothing to split.
+            let address = self.lower_buffer_address(args, soa)?;
+            let column = (0u64, self.compute_byte_size(elem_ty).unwrap_or(0), elem_ty);
+            let offset = self.emit_leaf_offset(&address, &column);
             let v = self.emit(
                 InstKind::PtrRead { ptr, offset, elem_ty },
                 Some(elem_ty),

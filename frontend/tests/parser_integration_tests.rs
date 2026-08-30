@@ -1212,6 +1212,38 @@ mod soa_layout_modifier {
         assert!(!aos.is_soa());
     }
 
+    /// DATA-ORIENTED Phase 2: `soa Vec<T>` is rewritten to the
+    /// stdlib `SoaVec<T>` in the parser, so nothing downstream sees
+    /// the `soa` spelling of a heap container.
+    #[test]
+    fn soa_vec_annotation_rewrites_to_the_stdlib_type() {
+        let mut parser = ParserWithInterner::new("val v: soa Vec<u64> = 0u64");
+        let stmt = parser.parse_stmt().expect("parse");
+        let Some(frontend::ast::Stmt::Val(_, Some(TypeDecl::Struct(name, args)), _)) =
+            parser.get_stmt_pool().get(&stmt)
+        else {
+            panic!("expected a `val` with a struct annotation");
+        };
+        assert_eq!(parser.get_string_interner().resolve(name), Some("SoaVec"));
+        assert_eq!(args, vec![TypeDecl::UInt64]);
+    }
+
+    /// The rewrite is spelled for `Vec` alone: `soa` on anything else
+    /// is a type error naming both accepted forms, not a silently
+    /// ignored modifier.
+    #[test]
+    fn soa_rejects_containers_that_have_no_column_form() {
+        for input in ["val d: soa Dict<u64, u64> = 0u64", "val n: soa Point = 0u64"] {
+            let mut parser = ParserWithInterner::new(input);
+            let err = parser.parse_stmt().expect_err(&format!("expected a rejection: {input}"));
+            let text = format!("{err:?}");
+            assert!(
+                text.contains("soa [T; N]") && text.contains("soa Vec<T>"),
+                "message should name both accepted forms, got: {text}"
+            );
+        }
+    }
+
     /// The flag survives a generic substitution, so a `type` alias
     /// of a soa array keeps its storage shape.
     #[test]

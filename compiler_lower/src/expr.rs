@@ -141,6 +141,50 @@ impl<'a> FunctionLower<'a> {
         Some(leaves)
     }
 
+    /// The leaf locals a compound value lives in, in the order
+    /// `collect_leaves` walks its type.
+    ///
+    /// Shared by the compound `__builtin_ptr_write` expansion and its
+    /// DATA-ORIENTED Phase 2 sibling `__builtin_soa_write`: both write
+    /// one leaf at a time and differ only in the offset each leaf goes
+    /// to, so the "where do the leaves live" half belongs in one
+    /// place. `who` names the caller in the diagnostics.
+    pub(super) fn compound_leaf_locals(
+        &self,
+        value_ref: &ExprRef,
+        who: &str,
+    ) -> Result<Vec<(crate::ir::LocalId, Type)>, String> {
+        let value_expr = self
+            .program
+            .expression
+            .get(value_ref)
+            .ok_or_else(|| format!("{who}: value expr missing"))?;
+        match value_expr {
+            Expr::Identifier(sym) => match self.bindings.get(&sym).cloned() {
+                Some(super::bindings::Binding::Struct { fields, .. }) => {
+                    Ok(super::bindings::flatten_struct_locals(&fields))
+                }
+                Some(super::bindings::Binding::Tuple { elements }) => {
+                    Ok(super::bindings::flatten_tuple_element_locals(&elements))
+                }
+                // PTR-READ-ENUM: an enum binding's locals flatten to
+                // tag-then-every-variant, the same order
+                // `collect_leaves` walks the type in.
+                Some(super::bindings::Binding::Enum(storage)) => {
+                    Ok(super::bindings::flatten_enum_storage_locals(&storage))
+                }
+                other => Err(format!(
+                    "{who}: compound value identifier needs struct/tuple/enum binding, got {:?}",
+                    other.is_some()
+                )),
+            },
+            other => Err(format!(
+                "{who}: compound value must be a bare identifier, got {:?}",
+                std::mem::discriminant(&other)
+            )),
+        }
+    }
+
     /// STR-INTERP-COMPOUND struct-arm body. Builds the formatted
     /// string `"TypeName { name: <to_string(value)>, ... }"`
     /// inline, matching the interpreter's
@@ -2068,7 +2112,9 @@ impl<'a> FunctionLower<'a> {
             | BuiltinFunction::HeapRealloc
             | BuiltinFunction::PtrRead
             | BuiltinFunction::PtrWrite
-            | BuiltinFunction::PtrOffset => self.lower_builtin_heap_and_pointer(func, args, call_ref),
+            | BuiltinFunction::PtrOffset
+            | BuiltinFunction::SoaRead
+            | BuiltinFunction::SoaWrite => self.lower_builtin_heap_and_pointer(func, args, call_ref),
             BuiltinFunction::StrLen
             | BuiltinFunction::StrToPtr
             | BuiltinFunction::StrFromBytes
@@ -2187,7 +2233,7 @@ impl<'a> FunctionLower<'a> {
                             .to_string()
                     })?;
                 if matches!(value_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
-                    let leaves = self.compute_leaf_layout(value_ty).ok_or_else(|| {
+                    let columns = self.soa_columns(value_ty).ok_or_else(|| {
                         format!(
                             "__builtin_ptr_write: unable to compute leaf layout for {:?}",
                             value_ty
@@ -2197,69 +2243,27 @@ impl<'a> FunctionLower<'a> {
                     // and pull leaf locals via `flatten_struct_locals`
                     // / `flatten_tuple_element_locals` (same paths
                     // method-call argument flattening uses).
-                    let value_expr = self.program.expression.get(&args[2])
-                        .ok_or_else(|| "ptr_write value expr missing".to_string())?;
-                    let leaf_locals: Vec<(crate::ir::LocalId, Type)> = match value_expr {
-                        Expr::Identifier(sym) => match self.bindings.get(&sym).cloned() {
-                            Some(super::bindings::Binding::Struct { fields, .. }) => {
-                                super::bindings::flatten_struct_locals(&fields)
-                            }
-                            Some(super::bindings::Binding::Tuple { elements }) => {
-                                super::bindings::flatten_tuple_element_locals(&elements)
-                            }
-                            // PTR-READ-ENUM: an enum binding's locals
-                            // flatten to tag-then-every-variant, the
-                            // same order `collect_leaves` walks the
-                            // type in.
-                            Some(super::bindings::Binding::Enum(storage)) => {
-                                super::bindings::flatten_enum_storage_locals(&storage)
-                            }
-                            other => return Err(format!(
-                                "__builtin_ptr_write: compound value identifier needs struct/tuple/enum binding, got {:?}",
-                                other.is_some()
-                            )),
-                        },
-                        other => return Err(format!(
-                            "__builtin_ptr_write: compound value must be a bare identifier, got {:?}",
-                            std::mem::discriminant(&other)
-                        )),
-                    };
-                    if leaf_locals.len() != leaves.len() {
+                    let leaf_locals =
+                        self.compound_leaf_locals(&args[2], "__builtin_ptr_write")?;
+                    if leaf_locals.len() != columns.len() {
                         return Err(format!(
                             "__builtin_ptr_write: leaf count mismatch ({} locals vs {} layout entries) — binding likely doesn't match the type-checker's view of {:?}",
                             leaf_locals.len(),
-                            leaves.len(),
+                            columns.len(),
                             value_ty
                         ));
                     }
                     let ptr = self.lower_expr(&args[0])?
                         .ok_or_else(|| "ptr_write ptr produced no value".to_string())?;
-                    let base_offset = self.lower_expr(&args[1])?
-                        .ok_or_else(|| "ptr_write offset produced no value".to_string())?;
-                    for ((leaf_off, leaf_ty), (local, _local_ty)) in
-                        leaves.iter().zip(leaf_locals.iter())
-                    {
-                        let leaf_off_v = self
-                            .emit(
-                                InstKind::Const(crate::ir::Const::U64(*leaf_off)),
-                                Some(Type::U64),
-                            )
-                            .expect("Const returns a value");
-                        let off_v = self
-                            .emit(
-                                InstKind::BinOp {
-                                    op: crate::ir::BinOp::Add,
-                                    lhs: base_offset,
-                                    rhs: leaf_off_v,
-                                },
-                                Some(Type::U64),
-                            )
-                            .expect("BinOp returns a value");
+                    let address = self.lower_buffer_address(args, false)?;
+                    for (column, (local, _local_ty)) in columns.iter().zip(leaf_locals.iter()) {
+                        let leaf_ty = column.2;
+                        let off_v = self.emit_leaf_offset(&address, column);
                         let value = self
-                            .emit(InstKind::LoadLocal(*local), Some(*leaf_ty))
+                            .emit(InstKind::LoadLocal(*local), Some(leaf_ty))
                             .expect("LoadLocal returns a value");
                         self.emit(
-                            InstKind::PtrWrite { ptr, offset: off_v, value, value_ty: *leaf_ty },
+                            InstKind::PtrWrite { ptr, offset: off_v, value, value_ty: leaf_ty },
                             None,
                         );
                     }
@@ -2275,6 +2279,77 @@ impl<'a> FunctionLower<'a> {
                     InstKind::PtrWrite { ptr, offset, value, value_ty },
                     None,
                 ))
+            }
+            // DATA-ORIENTED Phase 2: `__builtin_soa_read(p, i, cap)` in
+            // expression position. Like `__builtin_ptr_read`, the
+            // element type is the annotation's, so the useful form is
+            // the let binding `let_lowering.rs` intercepts; anything
+            // else has no shape to read into.
+            BuiltinFunction::SoaRead => Err(
+                "compiler MVP requires `val NAME: TYPE = __builtin_soa_read(...)` \
+                 (the element type is taken from the annotation, exactly as for \
+                 __builtin_ptr_read)"
+                    .to_string(),
+            ),
+            // `__builtin_soa_write(p, i, cap, value)` — one `PtrWrite`
+            // per column of `value`'s type, at
+            // `prefix_j * cap + i * stride_j` (see `soa.rs`). The
+            // scalar case is one column with `prefix = 0`, which is
+            // the plain `i * sizeof(T)` address.
+            BuiltinFunction::SoaWrite => {
+                expect_args(
+                    args,
+                    4,
+                    "__builtin_soa_write takes 4 args (base, index, cap, value)",
+                )?;
+                let value_ty = self.value_scalar(&args[3]).ok_or_else(|| {
+                    "__builtin_soa_write value type unsupported (needs scalar or struct/tuple/enum)"
+                        .to_string()
+                })?;
+                let columns = self.soa_columns(value_ty).ok_or_else(|| {
+                    format!(
+                        "__builtin_soa_write: unable to compute column layout for {value_ty:?}"
+                    )
+                })?;
+                let ptr = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "soa_write base produced no value".to_string())?;
+                let address = self.lower_buffer_address(args, true)?;
+                // A compound value already lives in leaf locals (the
+                // same ones the compound `__builtin_ptr_write`
+                // expansion reads); a scalar is one value.
+                let leaf_values: Vec<ValueId> =
+                    if matches!(value_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
+                        let leaf_locals =
+                            self.compound_leaf_locals(&args[3], "__builtin_soa_write")?;
+                        if leaf_locals.len() != columns.len() {
+                            return Err(format!(
+                                "__builtin_soa_write: leaf count mismatch ({} locals vs {} columns) for {value_ty:?}",
+                                leaf_locals.len(),
+                                columns.len()
+                            ));
+                        }
+                        leaf_locals
+                            .iter()
+                            .zip(columns.iter())
+                            .map(|((local, _), (_, _, leaf_ty))| {
+                                self.emit(InstKind::LoadLocal(*local), Some(*leaf_ty))
+                                    .expect("LoadLocal returns a value")
+                            })
+                            .collect()
+                    } else {
+                        vec![self
+                            .lower_expr(&args[3])?
+                            .ok_or_else(|| "soa_write value produced no value".to_string())?]
+                    };
+                for (column, value) in columns.iter().zip(leaf_values.iter()) {
+                    let offset = self.emit_leaf_offset(&address, column);
+                    self.emit(
+                        InstKind::PtrWrite { ptr, offset, value: *value, value_ty: column.2 },
+                        None,
+                    );
+                }
+                Ok(None)
             }
             BuiltinFunction::PtrOffset => {
                 // `__builtin_ptr_offset(base, offset) -> ptr` is a plain

@@ -89,7 +89,8 @@ pub fn analyze(
     // drive the JIT). Every one of them is auto-loaded, so without the
     // list the JIT would be off for every program in the language.
     //
-    // DROP-GLUE: `Box` and `Vec` are allow-listed for the same reason
+    // DROP-GLUE: `Box`, `Vec` and its DATA-ORIENTED Phase 2 sibling
+    // `SoaVec` are allow-listed for the same reason
     // as the allocator wrappers. The interpreter-side JIT compiles the
     // user functions but not the scope-exit drop machinery, so their
     // storage leaks at exit under the JIT — the documented convention
@@ -99,7 +100,7 @@ pub fn analyze(
     // --profile=mem` compares them byte-for-byte regardless.
     if let Some(drop_sym) = interner.get("Drop") {
         let stdlib_owning: Vec<DefaultSymbol> =
-            ["Arena", "FixedBuffer", "SlotRegion", "Box", "Vec"]
+            ["Arena", "FixedBuffer", "SlotRegion", "Box", "Vec", "SoaVec"]
                 .iter()
                 .filter_map(|name| interner.get(name))
                 .collect();

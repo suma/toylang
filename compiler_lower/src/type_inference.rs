@@ -458,6 +458,9 @@ impl<'a> FunctionLower<'a> {
                 | frontend::ast::BuiltinFunction::HeapRealloc => Some(Type::U64),
                 // DICT-AOT-NEW Phase C: __builtin_sizeof returns u64.
                 frontend::ast::BuiltinFunction::SizeOf => Some(Type::U64),
+                // POINTER P1: the type-argument form answers the same
+                // question, also as u64.
+                frontend::ast::BuiltinFunction::SizeOfType(_) => Some(Type::U64),
                 // #121 Phase B-min: allocator handles are u64
                 // sentinel values.
                 frontend::ast::BuiltinFunction::DefaultAllocator

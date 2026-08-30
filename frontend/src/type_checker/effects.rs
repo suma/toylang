@@ -366,6 +366,9 @@ pub fn builtin_effect(func: BuiltinFunction) -> (EffectSet, &'static str) {
         // lowering anyway), string length and formatting.
         StrLen => (EffectSet::EMPTY, "__builtin_str_len"),
         SizeOf => (EffectSet::EMPTY, "__builtin_sizeof"),
+        // POINTER P1: the type-argument form answers the same question
+        // from a written type; pure like the value form.
+        SizeOfType(_) => (EffectSet::EMPTY, "__builtin_sizeof"),
         ToString => (EffectSet::EMPTY, "__builtin_to_string"),
         Format => (EffectSet::EMPTY, "__builtin_format"),
         Abs => (EffectSet::EMPTY, "abs"),

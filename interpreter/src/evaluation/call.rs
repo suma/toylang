@@ -156,6 +156,26 @@ fn collect_generic_bindings(
     }
 }
 
+/// POINTER P1: the generic-parameter scope a call's *arguments*
+/// determine — each declared parameter type matched against its
+/// runtime value through [`collect_generic_bindings`]. This is the
+/// tree-walker's counterpart of what the compiled lanes do when they
+/// infer a generic instantiation from argument types.
+///
+/// `params` must be aligned with `args` — the caller strips an
+/// explicit `self: Self` entry first, exactly like the binding loop
+/// it sits next to.
+fn args_generic_scope(
+    params: &[(DefaultSymbol, TypeDecl)],
+    args: &[RcObject],
+) -> HashMap<DefaultSymbol, TypeDecl> {
+    let mut bindings: HashMapStd<DefaultSymbol, TypeDecl> = HashMapStd::new();
+    for ((_, declared), value) in params.iter().zip(args.iter()) {
+        collect_generic_bindings(declared, &value.borrow(), &mut bindings);
+    }
+    bindings
+}
+
 /// REF-Stage-2 (i)+(iii): caller-side target of an explicit
 /// `&mut <lvalue>` borrow argument. Captured at the call site so
 /// the post-body parameter value can flow back into the caller's
@@ -426,12 +446,36 @@ impl EvaluationContext<'_> {
             param_index += 1;
         }
 
+        // POINTER P1: the generic-parameter scope this call can see —
+        // the receiver's runtime `type_args` (`impl<T> Ptr<T>` methods
+        // get `T` from the value), the arguments (method-only
+        // generics, `fn map<U>`), then the caller's own scope for
+        // anything still unbound. Pushed for the whole body so
+        // `__builtin_sizeof::<T>()` inside it answers what this
+        // instance was instantiated with. Non-generic callees push an
+        // empty scope so every exit path can pop unconditionally.
+        let mut generic_scope = self.receiver_generic_scope(&self_obj.borrow());
+        if !method.generic_params.is_empty() {
+            let arg_params: &[(DefaultSymbol, TypeDecl)] = if first_param_is_self {
+                &method.parameter[1..]
+            } else {
+                &method.parameter
+            };
+            for (param, ty) in args_generic_scope(arg_params, &args) {
+                generic_scope.entry(param).or_insert(ty);
+            }
+            self.fill_scope_from_caller(&mut generic_scope, &method.generic_params);
+        }
+        self.push_generic_type_scope(generic_scope);
+
         // Pre-body `requires` checks. `self` and named args are visible above.
         if let Err(e) = self.evaluate_requires_clauses(method.name, &method.requires, &method.parameter) {
+            self.pop_generic_type_scope();
             self.environment.exit_block();
             return Err(e);
         }
         if let Err(e) = self.evaluate_old_snapshots(&method.old_exprs) {
+            self.pop_generic_type_scope();
             self.environment.exit_block();
             return Err(e);
         }
@@ -443,6 +487,7 @@ impl EvaluationContext<'_> {
         // produced value. Skip if the body already errored or propagated a
         // non-value flow (e.g. break/continue would be a bug at this layer
         // anyway, but we don't want to mask the original error).
+        self.pop_generic_type_scope();
         let result = match result {
             Ok(EvaluationResult::Value(v)) => {
                 if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, &method.ensures_kinds, v.clone_to_rc(), &method.parameter) {
@@ -740,20 +785,52 @@ impl EvaluationContext<'_> {
             param_index += 1;
         }
 
+        // POINTER P1: the generic-parameter scope this call can see —
+        // arguments first (`Box::new(value)` binds `T` from the
+        // value), then the pending `val` / `var` annotation
+        // (`val h: Holder<u64> = Holder::make(n)` — `T` appears only
+        // in the return type, so the annotation is the one source,
+        // exactly what the compiled lanes' let-lowering reads), then
+        // the caller's scope. Pushed for the whole body so
+        // `__builtin_sizeof::<T>()` inside it resolves. Non-generic
+        // callees push an empty scope so every exit path can pop
+        // unconditionally.
+        let mut generic_scope = HashMap::new();
+        if !method.generic_params.is_empty() {
+            for (param, ty) in args_generic_scope(
+                if skip_self { &method.parameter[1..] } else { &method.parameter },
+                &args,
+            ) {
+                generic_scope.insert(param, ty);
+            }
+            if let Some(owner) = owner {
+                let anno_scope =
+                    self.annotation_generic_scope(owner, self.pending_annotation.as_ref());
+                for (param, ty) in anno_scope {
+                    generic_scope.entry(param).or_insert(ty);
+                }
+            }
+            self.fill_scope_from_caller(&mut generic_scope, &method.generic_params);
+        }
+        self.push_generic_type_scope(generic_scope);
+
         // Same contract evaluation flow as `call_method`. Associated functions
         // have no `self`, but `requires` / `ensures` predicates may still
         // reference the named parameters and `result`.
         if let Err(e) = self.evaluate_requires_clauses(method.name, &method.requires, &method.parameter) {
+            self.pop_generic_type_scope();
             self.environment.exit_block();
             return Err(e);
         }
         if let Err(e) = self.evaluate_old_snapshots(&method.old_exprs) {
+            self.pop_generic_type_scope();
             self.environment.exit_block();
             return Err(e);
         }
 
         let result = self.evaluate_method(&method);
 
+        self.pop_generic_type_scope();
         let result = match result {
             Ok(EvaluationResult::Value(v)) => {
                 if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, &method.ensures_kinds, v.clone_to_rc(), &method.parameter) {
@@ -1912,21 +1989,41 @@ impl EvaluationContext<'_> {
             }
         }
 
+        // POINTER P1: the generic-parameter scope the arguments
+        // determine (`fn id<T>(x: T)` called with a u64 binds `T`),
+        // with the caller's scope filling anything the arguments
+        // cannot name. The compiled lanes monomorphise with the same
+        // two sources. Non-generic functions skip the walk entirely
+        // (the empty scope costs nothing) so ordinary calls — the
+        // `--check` trial hot path — pay for none of this.
+        let mut generic_scope = HashMap::new();
+        if !function.generic_params.is_empty() {
+            let rc_args: Vec<RcObject> = args.iter().map(crate::value::Value::clone_to_rc).collect();
+            for (param, ty) in args_generic_scope(&function.parameter, &rc_args) {
+                generic_scope.entry(param).or_insert(ty);
+            }
+            self.fill_scope_from_caller(&mut generic_scope, &function.generic_params);
+        }
+        self.push_generic_type_scope(generic_scope);
+
         // Pre-body `requires` checks. Shares the same helper as the method
         // path, so contract evaluation behaves identically across function
         // and method calls.
         if let Err(e) = self.evaluate_requires_clauses(function.name, &function.requires, &function.parameter) {
+            self.pop_generic_type_scope();
             self.environment.exit_block();
             self.call_depth -= 1;
             return Err(e);
         }
         if let Err(e) = self.evaluate_old_snapshots(&function.old_exprs) {
+            self.pop_generic_type_scope();
             self.environment.exit_block();
             self.call_depth -= 1;
             return Err(e);
         }
 
         let res = self.evaluate_block(&block)?;
+        self.pop_generic_type_scope();
 
         let return_value: crate::value::Value = if function.return_type.as_ref().is_none_or(|t| *t == TypeDecl::Unit) {
             crate::value::Value::Unit

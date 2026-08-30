@@ -264,7 +264,14 @@ impl EvaluationContext<'_> {
         expr: &ExprRef,
     ) -> Result<EvaluationResult, InterpreterError> {
         use crate::try_value_v;
+        // POINTER P1: make the annotation visible while the rhs
+        // evaluates — `val h: Holder<u64> = Holder::make(n)` derives
+        // the callee body's `T` from it. Restored before the flow
+        // check so an early `return` in the rhs cannot leak it.
+        let prev_annotation = self.pending_annotation.take();
+        self.pending_annotation = annotation.cloned();
         let value = self.evaluate(expr);
+        self.pending_annotation = prev_annotation;
         let value = try_value_v!(value);
         let value = apply_annotation_type_args(value, annotation);
         // DROP-GLUE: `val v: T = __builtin_ptr_read(...)` copies the
@@ -295,12 +302,17 @@ impl EvaluationContext<'_> {
         expr: &Option<ExprRef>,
     ) -> Result<EvaluationResult, InterpreterError> {
         use crate::try_value_v;
-        let value: crate::value::Value = if let Some(e) = expr {
-            let res = self.evaluate(e);
-            try_value_v!(res)
-        } else {
-            self.null_object.clone().into()
-        };
+        // POINTER P1: same pending-annotation window as `val`.
+        let prev_annotation = self.pending_annotation.take();
+        self.pending_annotation = annotation.cloned();
+        let evaluated: Result<crate::evaluation::EvaluationResult, InterpreterError> =
+            if let Some(e) = expr {
+                self.evaluate(e)
+            } else {
+                Ok(crate::evaluation::EvaluationResult::Value(self.null_object.clone().into()))
+            };
+        self.pending_annotation = prev_annotation;
+        let value: crate::value::Value = try_value_v!(evaluated);
         let value = apply_annotation_type_args(value, annotation);
         // DROP-GLUE: same ptr_read alias rule as `val` — see
         // `handle_val_declaration`.

@@ -258,6 +258,29 @@ pub struct EvaluationContext<'a> {
     /// scope. The depth mirrors `Environment::var` so block enter
     /// / exit and function call boundaries stay in lock-step.
     pub(super) drop_scopes: Vec<Vec<DropEntry>>,
+    /// POINTER P1: active generic type-argument scopes, innermost
+    /// last. `__builtin_sizeof::<T>()` needs to know what `T` was
+    /// instantiated with, and the tree-walker — unlike the compiled
+    /// backends, which monomorphise with a substitution table — has
+    /// no such table. Call boundaries that *do* know the arguments
+    /// push a scope:
+    ///   - a method call maps the receiver's runtime `type_args`
+    ///     onto the declaring struct / enum's `generic_params`;
+    ///   - an associated call / free function call maps the
+    ///     callee's generic params from the argument values, and —
+    ///     for a `Self`-returning associated call — from the
+    ///     pending `val` / `var` annotation.
+    ///
+    /// `sizeof::<T>()` reads the merged stack; an unbound parameter
+    /// is a runtime error rather than a silent guess.
+    pub(super) generic_type_scopes: Vec<HashMap<DefaultSymbol, TypeDecl>>,
+    /// POINTER P1: the annotation of the `val` / `var` currently
+    /// being bound, visible while its rhs evaluates. `val h:
+    /// Holder<u64> = Holder::make(n)` puts `T` only in the return
+    /// type, so the annotation is the one place that knows it — the
+    /// same information the compiled lanes' let-lowering uses when
+    /// it instantiates the call. Cleared when the binding finishes.
+    pub(super) pending_annotation: Option<TypeDecl>,
 }
 
 /// Phase 5 (汎用 RAII): one auto-drop record. `name` is just for
@@ -399,6 +422,8 @@ impl<'a> EvaluationContext<'a> {
             drop_trait_structs: Rc::new(std::collections::HashSet::new()),
             transferred_bindings: Rc::new(std::collections::HashSet::new()),
             drop_scopes: vec![Vec::new()],
+            generic_type_scopes: Vec::new(),
+            pending_annotation: None,
         }
     }
 
@@ -452,6 +477,8 @@ impl<'a> EvaluationContext<'a> {
             drop_trait_structs: shared.drop_trait_structs.clone(),
             transferred_bindings: shared.transferred_bindings.clone(),
             drop_scopes: vec![Vec::new()],
+            generic_type_scopes: Vec::new(),
+            pending_annotation: None,
         }
     }
 
@@ -525,6 +552,120 @@ impl<'a> EvaluationContext<'a> {
 
     pub fn register_enum(&mut self, name: DefaultSymbol, entry: EnumRegistryEntry) {
         Rc::make_mut(&mut self.enum_definitions).insert(name, entry);
+    }
+
+    // -------------------------------------------------------------
+    // POINTER P1: generic type-argument scopes for `sizeof::<T>()`.
+    // -------------------------------------------------------------
+
+    /// Push a generic type-argument scope for the duration of one
+    /// call body. Paired with [`Self::pop_generic_type_scope`] on
+    /// every exit path of the call site that pushed it.
+    pub(super) fn push_generic_type_scope(&mut self, scope: HashMap<DefaultSymbol, TypeDecl>) {
+        self.generic_type_scopes.push(scope);
+    }
+
+    pub(super) fn pop_generic_type_scope(&mut self) {
+        self.generic_type_scopes.pop();
+    }
+
+    /// Merged view of every active scope, innermost winning. The
+    /// per-frame maps are small (one entry per generic parameter),
+    /// so a fresh merge per `sizeof::<T>()` is cheaper than keeping
+    /// the merged form incrementally in sync.
+    pub(super) fn merged_generic_scope(&self) -> HashMap<DefaultSymbol, TypeDecl> {
+        let mut merged = HashMap::new();
+        for scope in &self.generic_type_scopes {
+            for (param, ty) in scope {
+                merged.insert(*param, ty.clone());
+            }
+        }
+        merged
+    }
+
+    /// The generic-parameter scope a *receiver* determines: the
+    /// declaring struct / enum's `generic_params` zipped with the
+    /// runtime `type_args` the value carries. A `Ptr<u64>` receiver
+    /// therefore speaks for `T -> UInt64` inside every method body
+    /// `impl<T> Ptr<T>` runs on it.
+    pub(super) fn receiver_generic_scope(&self, obj: &Object) -> HashMap<DefaultSymbol, TypeDecl> {
+        let (type_args, generic_params) = match obj {
+            Object::Struct { type_name, type_args, .. } => (
+                type_args,
+                self.struct_definitions.get(type_name).map(|e| e.generic_params.clone()),
+            ),
+            Object::EnumVariant { enum_name, type_args, .. } => (
+                type_args,
+                self.enum_definitions.get(enum_name).map(|e| e.generic_params.clone()),
+            ),
+            _ => return HashMap::new(),
+        };
+        let Some(generic_params) = generic_params else {
+            return HashMap::new();
+        };
+        generic_params
+            .into_iter()
+            .zip(type_args.iter().cloned())
+            .collect()
+    }
+
+    /// The generic-parameter scope a `val` / `var` annotation
+    /// determines for an associated call on `owner`:
+    /// `val h: Holder<u64> = Holder::make(n)` puts `T` only in the
+    /// return type, so the annotation is what the callee's body
+    /// needs. Mirrors the compiled lanes' let-lowering, which
+    /// resolves the same call's instantiation from the same
+    /// annotation.
+    pub(super) fn annotation_generic_scope(
+        &self,
+        owner: DefaultSymbol,
+        annotation: Option<&TypeDecl>,
+    ) -> HashMap<DefaultSymbol, TypeDecl> {
+        let Some(anno) = annotation else {
+            return HashMap::new();
+        };
+        let anno_args: &[TypeDecl] = match anno {
+            TypeDecl::Struct(name, args) | TypeDecl::Enum(name, args) if *name == owner => args,
+            _ => return HashMap::new(),
+        };
+        // The owner is normally a struct (`impl<T> Ptr<T>`); an
+        // `impl ... for <Enum>` with a `Self`-returning associated
+        // fn takes the same path through the enum table.
+        let generic_params = if let Some(entry) = self.struct_definitions.get(&owner) {
+            &entry.generic_params
+        } else if let Some(entry) = self.enum_definitions.get(&owner) {
+            &entry.generic_params
+        } else {
+            return HashMap::new();
+        };
+        generic_params
+            .iter()
+            .copied()
+            .zip(anno_args.iter().cloned())
+            .collect()
+    }
+
+    /// Fill the generic parameters a call's own evidence left
+    /// unbound from the *caller's* active scope (`fn outer<T>() {
+    /// inner() }` — the callee's `T` is the caller's `T`, exactly
+    /// what the compiled lanes' monomorph substitution does).
+    /// Parameters the caller also cannot name stay unbound; reading
+    /// `sizeof::<T>()` with one of those is a runtime error, not a
+    /// silent guess.
+    pub(super) fn fill_scope_from_caller(
+        &mut self,
+        scope: &mut HashMap<DefaultSymbol, TypeDecl>,
+        generic_params: &[DefaultSymbol],
+    ) {
+        if generic_params.iter().all(|p| scope.contains_key(p)) {
+            return;
+        }
+        let caller = self.merged_generic_scope();
+        for p in generic_params {
+            if let Some(ty) = caller.get(p) {
+                scope.entry(*p).or_insert_with(|| ty.clone());
+            }
+        }
     }
 
     pub fn register_struct(

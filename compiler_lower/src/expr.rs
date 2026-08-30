@@ -2048,6 +2048,7 @@ impl<'a> FunctionLower<'a> {
             | BuiltinFunction::CurrentAllocator
             | BuiltinFunction::DefaultAllocator => self.lower_builtin_allocator_and_memory(func, args),
             BuiltinFunction::SizeOf
+            | BuiltinFunction::SizeOfType(_)
             | BuiltinFunction::ToString
             | BuiltinFunction::Backtrace
             | BuiltinFunction::Format => self.lower_builtin_reflection(func, args),
@@ -2473,6 +2474,39 @@ impl<'a> FunctionLower<'a> {
                 let size = self.compute_byte_size(arg_ty).ok_or_else(|| {
                     format!(
                         "compiler MVP cannot lower __builtin_sizeof of type {arg_ty:?}"
+                    )
+                })?;
+                Ok(self.emit(InstKind::Const(crate::ir::Const::U64(size)), Some(Type::U64)))
+            }
+            BuiltinFunction::SizeOfType(ty_decl) => {
+                // POINTER P1: `__builtin_sizeof::<T>() -> u64` — the
+                // type argument form. The written type resolves
+                // through the active monomorph subst (a generic
+                // parameter becomes the concrete argument this
+                // instance was instantiated with) and the size is a
+                // compile-time constant, exactly like the value form.
+                // Compound types instantiate on demand through
+                // `lower_type_with_subst`, so `sizeof::<Point>()` and
+                // `sizeof::<Cell<u64>>()` answer from the module's
+                // instantiated defs.
+                if !args.is_empty() {
+                    return Err(format!(
+                        "__builtin_sizeof::<T> takes no arguments, got {}",
+                        args.len()
+                    ));
+                }
+                let subst = self.active_subst.clone();
+                let ty = self
+                    .lower_type_with_subst(ty_decl, &subst)
+                    .ok_or_else(|| {
+                        format!(
+                            "__builtin_sizeof::<T>: cannot lower the type argument {ty_decl:?} \
+                             at AOT (unknown type or unresolvable generic parameter)"
+                        )
+                    })?;
+                let size = self.compute_byte_size(ty).ok_or_else(|| {
+                    format!(
+                        "compiler MVP cannot lower __builtin_sizeof of type {ty_decl:?}"
                     )
                 })?;
                 Ok(self.emit(InstKind::Const(crate::ir::Const::U64(size)), Some(Type::U64)))

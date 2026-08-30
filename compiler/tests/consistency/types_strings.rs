@@ -581,6 +581,52 @@ fn builtin_sizeof_struct_value_round_trip() {
 }
 
 #[test]
+fn sizeof_type_arg_round_trip() {
+    // POINTER P1: `__builtin_sizeof::<T>()` — the type-argument form
+    // must answer the same widths on all 3 backends. Covers the four
+    // places a generic parameter can be resolved from: a concrete
+    // written type, a generic free function's call arguments, a
+    // generic method's receiver, and a `Self`-returning associated
+    // call whose `T` exists only in the `val` annotation.
+    let src = r#"
+        struct Slice2<T> { data: ptr, len: u64 }
+
+        impl<T> Slice2<T> {
+            fn alloc(len: u64, proto: T) -> Self {
+                val p: ptr = __builtin_heap_alloc(__builtin_sizeof::<T>() * len)
+                __builtin_ptr_write(p, 0u64, proto)
+                Slice2 { data: p, len: len }
+            }
+            fn get(&self, i: u64) -> T {
+                val v: T = __builtin_ptr_read(self.data, i * __builtin_sizeof::<T>())
+                v
+            }
+        }
+
+        fn elem_size<T>(probe: T) -> u64 {
+            __builtin_sizeof::<T>()
+        }
+
+        fn main() -> u64 {
+            # Concrete written types.
+            if __builtin_sizeof::<u64>() != 8u64 { return 1u64 }
+            if __builtin_sizeof::<u8>() != 1u64 { return 2u64 }
+            if __builtin_sizeof::<(i64, bool)>() != 9u64 { return 3u64 }
+            # Generic free function: T from the call arguments.
+            if elem_size(0u64) != 8u64 { return 4u64 }
+            if elem_size(1i8) != 1u64 { return 5u64 }
+            # Generic method: T from the receiver; associated call: T
+            # from the val annotation (no T-bearing argument exists).
+            val s: Slice2<u64> = Slice2::alloc(2u64, 7u64)
+            if s.get(0u64) != 7u64 { return 6u64 }
+            if __builtin_sizeof::<Slice2<u64>>() != 16u64 { return 7u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "sizeof_type_arg_round_trip");
+}
+
+#[test]
 fn vec_of_vec_round_trip() {
     // AOT-COMPOUND-PTR-RW: `Vec<T>` for compound `T` (struct
     // here) round-trips through the heap buffer because

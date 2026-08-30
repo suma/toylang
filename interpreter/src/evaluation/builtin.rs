@@ -451,6 +451,7 @@ impl EvaluationContext<'_> {
             | BuiltinFunction::CurrentAllocator
             | BuiltinFunction::DefaultAllocator => self.builtin_allocator_and_memory(func, args),
             BuiltinFunction::SizeOf
+            | BuiltinFunction::SizeOfType(_)
             | BuiltinFunction::ToString
             | BuiltinFunction::Backtrace
             | BuiltinFunction::Format => self.builtin_reflection(func, args),
@@ -1020,6 +1021,24 @@ impl EvaluationContext<'_> {
                 InterpreterError::InternalError(format!(
                     "__builtin_sizeof: size of value {:?} is not supported",
                     value.borrow()
+                ))
+            })?;
+            Ok(EvaluationResult::Value((Object::UInt64(size)).into()))
+        }
+
+        BuiltinFunction::SizeOfType(ty) => {
+            // POINTER P1: `__builtin_sizeof::<T>()` — the size comes
+            // from the written type, resolved through the active
+            // generic scopes the call boundaries pushed (a `Ptr<u64>`
+            // receiver, the arguments of a generic call, the pending
+            // `val` annotation). An unbound generic parameter fails
+            // loudly rather than guessing a width.
+            Self::expect_args("__builtin_sizeof", args, 0)?;
+            let merged = self.merged_generic_scope();
+            let size = self.type_decl_byte_size(ty, &merged).ok_or_else(|| {
+                InterpreterError::InternalError(format!(
+                    "__builtin_sizeof::<T>: cannot resolve the byte size of {ty:?} \
+                     (unbound generic parameter or unsupported shape)"
                 ))
             })?;
             Ok(EvaluationResult::Value((Object::UInt64(size)).into()))

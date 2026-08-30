@@ -1245,6 +1245,12 @@ pub fn lower_program(
                 &mut pending_glue_work,
                 &mut scheduled,
             )?;
+            // POINTER P1: install the per-monomorph subst so body
+            // paths that read a generic parameter out of the AST
+            // (`__builtin_sizeof::<T>()`, substituted annotations)
+            // resolve for this instance — the same treatment the
+            // method path below gives its instances.
+            builder.set_active_subst(work.subst.clone());
             builder.lower_body(&template)?;
             schedule_from_ir(
                 &module,
@@ -1564,14 +1570,19 @@ pub(super) type GenericFuncs = HashMap<DefaultSymbol, Rc<frontend::ast::Function
 pub(super) type GenericInstances = HashMap<(DefaultSymbol, Vec<Type>), FuncId>;
 
 /// One queued generic-function instantiation: the freshly-declared
-/// `FuncId` and the template name. The body is lowered later from the
-/// template AST (held in `GenericFuncs`); the body trusts the
-/// pre-substituted parameter / return types stored on the FuncId and
-/// the type-checker's annotations on each binding, so no separate
-/// `subst` table needs to flow with the queue entry.
+/// `FuncId`, the template name, and the monomorph substitution. The
+/// body trusts the pre-substituted parameter / return types stored on
+/// the FuncId and the type-checker's annotations on each binding; the
+/// substitution exists for the lowering paths that *do* read a
+/// generic parameter out of the body AST — `__builtin_sizeof::<T>()`
+/// (POINTER P1) and the `active_subst`-based annotation resolution,
+/// mirroring what `PendingMethodInstance` carries for methods.
 pub(super) struct PendingGenericInstance {
     pub(super) func_id: FuncId,
     pub(super) template_name: DefaultSymbol,
+    /// Generic-param symbol → concrete IR type for this monomorph,
+    /// applied with `set_active_subst` before the body lowers.
+    pub(super) subst: Vec<(DefaultSymbol, Type)>,
 }
 
 impl<'a> FunctionLower<'a> {

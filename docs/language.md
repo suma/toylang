@@ -3618,9 +3618,10 @@ a path), `__builtin_source_file()` returns `"<source>"`.
 
 ```rust
 __builtin_sizeof(value: T) -> u64
+__builtin_sizeof::<T>() -> u64
 ```
 
-Returns the byte size of the argument's type. Primitives use fixed
+Both answer the byte size of a type. Primitives use fixed
 widths (`u64`/`i64`/`f64`/`ptr` = 8, `bool` = 1); structs sum their
 fields; tuples and arrays sum their elements; an enum is a `u64` tag
 plus **every** variant's payload laid end to end.
@@ -3631,6 +3632,20 @@ what makes it usable as a stride: `Vec<T>` takes its element size from
 the first element pushed, so a per-variant answer would give a
 `Vec<Option<i64>>` a different layout depending on which element
 happened to arrive first.
+
+The **type-argument form** (POINTER P1) takes no value: the written
+type is the whole call, so an allocator can size a slot without a
+representative value in hand
+(`__builtin_heap_alloc(__builtin_sizeof::<T>() * n)`). `T` may be a
+primitive, a tuple, a declared struct / enum (with type arguments), or
+a generic parameter in scope — inside a generic function the
+parameter resolves from the call site's arguments, inside a generic
+impl method from the receiver, and in a `Self`-returning associated
+call from the `val` / `var` annotation
+(`val s: Slice2<u64> = Slice2::alloc(n)`). Arrays, dicts, function
+types and trait objects have no size to report. The interpreter-side
+JIT silently falls back for the type-argument form (the value form is
+supported).
 
 ### Allocation counters
 

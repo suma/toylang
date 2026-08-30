@@ -3130,6 +3130,105 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.display_types().contains(&name)
     }
 
+    /// POINTER P1: type-check `__builtin_sizeof::<T>()`. Returns u64
+    /// when the written type is something every backend can answer
+    /// for; the result size itself is computed at evaluation /
+    /// lowering time, not here.
+    pub(super) fn check_sizeof_type_arg(&mut self, ty: &TypeDecl) -> Result<TypeDecl, TypeCheckError> {
+        self.validate_sizeof_type(ty)?;
+        Ok(TypeDecl::UInt64)
+    }
+
+    /// One type in a `__builtin_sizeof::<...>` argument, recursively
+    /// for the compound shapes.
+    ///
+    /// A generic parameter arrives as `TypeDecl::Identifier(T)` (the
+    /// turbofish type is parsed without generic context) or as
+    /// `TypeDecl::Generic(T)` when a future caller reuses this from a
+    /// context that had one; both are accepted when the parameter is
+    /// in the checker's generic scope or the enclosing impl's
+    /// parameter list. A bare name that is not a parameter must
+    /// declare a struct or an enum.
+    fn validate_sizeof_type(&self, ty: &TypeDecl) -> Result<(), TypeCheckError> {
+        match ty {
+            // Fixed-width scalars and the pointer-width opaque handles.
+            TypeDecl::Bool
+            | TypeDecl::Int8 | TypeDecl::UInt8
+            | TypeDecl::Int16 | TypeDecl::UInt16
+            | TypeDecl::Int32 | TypeDecl::UInt32
+            | TypeDecl::Int64 | TypeDecl::UInt64
+            | TypeDecl::Float32 | TypeDecl::Float64
+            | TypeDecl::Number
+            | TypeDecl::Ptr | TypeDecl::String | TypeDecl::Allocator
+            | TypeDecl::Unit => Ok(()),
+            TypeDecl::Vector(_) => Ok(()),
+            TypeDecl::Generic(p) | TypeDecl::Identifier(p) => {
+                if self.type_inference.lookup_generic_type(*p).is_some()
+                    || self
+                        .context
+                        .current_impl_generic_params
+                        .as_ref()
+                        .is_some_and(|params| params.contains(p))
+                {
+                    return Ok(());
+                }
+                if self.context.struct_definitions.contains_key(p)
+                    || self.context.enum_definitions.contains_key(p)
+                {
+                    return Ok(());
+                }
+                let shown = self
+                    .core
+                    .string_interner
+                    .resolve(*p)
+                    .unwrap_or("?")
+                    .to_string();
+                Err(TypeCheckError::generic_error(&format!(
+                    "unknown type `{shown}` in `__builtin_sizeof::<{shown}>` — the type \
+                     argument must be a declared type or a generic parameter in scope"
+                )))
+            }
+            TypeDecl::Struct(name, args) | TypeDecl::Enum(name, args) => {
+                if !self.context.struct_definitions.contains_key(name)
+                    && !self.context.enum_definitions.contains_key(name)
+                {
+                    let shown = self
+                        .core
+                        .string_interner
+                        .resolve(*name)
+                        .unwrap_or("?")
+                        .to_string();
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "unknown type `{shown}` in `__builtin_sizeof` — the type \
+                         argument must be a declared type or a generic parameter in scope"
+                    )));
+                }
+                for a in args {
+                    self.validate_sizeof_type(a)?;
+                }
+                Ok(())
+            }
+            TypeDecl::Tuple(elems) => {
+                for e in elems {
+                    self.validate_sizeof_type(e)?;
+                }
+                Ok(())
+            }
+            TypeDecl::Ref { inner, .. } => self.validate_sizeof_type(inner),
+            // Widths no backend answers for: the value form cannot ask
+            // a runtime `str` its byte size either, and a size that
+            // exists only on some backends is not a size.
+            TypeDecl::Array(..) | TypeDecl::Dict(..) | TypeDecl::Range(_)
+            | TypeDecl::Function(..) | TypeDecl::Dyn(_) | TypeDecl::Self_
+            | TypeDecl::TraitIntersection(_)
+            | TypeDecl::Hole | TypeDecl::Unknown => Err(TypeCheckError::generic_error(
+                "`__builtin_sizeof::<T>` supports primitives, `ptr`, vectors, tuples and \
+                 declared struct / enum types — arrays, dicts, function and trait-object \
+                 types have no size to report",
+            )),
+        }
+    }
+
     /// Every type with a `to_str(&self) -> str`, collected from the
     /// statement pool once.
     ///

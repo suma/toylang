@@ -1935,6 +1935,97 @@ mod heap_operations {
         let result = execute_test_program(source).expect("should execute");
         assert!(result.contains("UInt64(42)"), "got: {}", result);
     }
+
+    #[test]
+    fn test_sizeof_type_arg_primitives_and_compounds() {
+        // POINTER P1: `__builtin_sizeof::<T>()` — the type-argument
+        // form. The written type is the whole call, so an allocator
+        // can size a slot without a representative value in hand.
+        // Widths match the value form: 8 / 1 / 16 / 9 below.
+        let source = r#"
+            struct Point {
+                x: i64,
+                y: i64,
+            }
+
+            fn main() -> u64 {
+                val a: u64 = __builtin_sizeof::<u64>()
+                val b: u64 = __builtin_sizeof::<u8>()
+                val c: u64 = __builtin_sizeof::<Point>()
+                val d: u64 = __builtin_sizeof::<(i64, bool)>()
+                a + b + c + d
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("UInt64(34)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_sizeof_type_arg_through_generic_function() {
+        // POINTER P1: the turbofish inside a generic free function.
+        // The call site determines `T` from the arguments; the size
+        // answers from the instantiated type, not from a probe value.
+        let source = r#"
+            fn elem_size<T>(probe: T) -> u64 {
+                __builtin_sizeof::<T>()
+            }
+
+            fn main() -> u64 {
+                elem_size(0u64) + elem_size(1i8)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("UInt64(9)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_sizeof_type_arg_in_generic_impl_method() {
+        // POINTER P1: the flagship shape — a `Slice2::alloc` that
+        // sizes a slot with `sizeof::<T>() * len` instead of taking a
+        // representative `proto` value for `__builtin_sizeof`. `T`
+        // reaches the body through the receiver (interpreter) and the
+        // monomorph subst (compiled lanes); the second method shows
+        // the same resolution on a read.
+        let source = r#"
+            struct Slice2<T> {
+                data: ptr,
+                len: u64,
+            }
+
+            impl<T> Slice2<T> {
+                fn alloc(len: u64, proto: T) -> Self {
+                    val p: ptr = __builtin_heap_alloc(__builtin_sizeof::<T>() * len)
+                    __builtin_ptr_write(p, 0u64, proto)
+                    Slice2 { data: p, len: len }
+                }
+
+                fn get(&self, i: u64) -> T {
+                    val v: T = __builtin_ptr_read(self.data, i * __builtin_sizeof::<T>())
+                    v
+                }
+            }
+
+            fn main() -> u64 {
+                val s: Slice2<u64> = Slice2::alloc(2u64, 7u64)
+                s.get(0u64) + __builtin_sizeof::<Slice2<u64>>()
+            }
+        "#;
+        // get(0) = 7, sizeof::<Slice2<u64>>() = ptr + u64 = 16.
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("UInt64(23)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_sizeof_type_arg_unknown_type_is_rejected() {
+        // The type argument must be a declared type or a generic
+        // parameter in scope; `Nope` is neither.
+        let source = r#"
+            fn main() -> u64 {
+                __builtin_sizeof::<Nope>()
+            }
+        "#;
+        assert!(execute_test_program(source).is_err());
+    }
 }
 
 mod enum_and_match {

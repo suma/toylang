@@ -407,6 +407,37 @@ fn parse_primary_after_identifier(
         }
     }
     if parser.peek() == Some(&Kind::DoubleColon) {
+        // POINTER P1: the builtin type-argument form,
+        // `__builtin_sizeof::<T>()`. Only `sizeof` takes a type
+        // argument today, so the interception is keyed on the builtin
+        // symbol: any other `name::<` still flows into the
+        // qualified-path branch below and reports its own error.
+        // The type is parsed without generic context, so a generic
+        // parameter arrives as `TypeDecl::Identifier(T)` — every
+        // backend resolves that through its active substitution, the
+        // same way a named type argument resolves through the
+        // struct / enum tables.
+        if parser.peek_n(1) == Some(&Kind::LT)
+            && matches!(
+                parser.builtin_symbols.symbol_to_builtin(name),
+                Some(BuiltinFunction::SizeOf)
+            )
+        {
+            parser.next(); // consume `::`
+            parser.next(); // consume `<`
+            let empty_generic_context = std::collections::HashSet::new();
+            let ty = parser.parse_type_declaration_with_generic_context(&empty_generic_context)?;
+            parser.expect_err(&Kind::GT)?;
+            parser.expect_err(&Kind::ParenOpen)?;
+            parser.expect_err(&Kind::ParenClose)?;
+            // Span the whole `__builtin_sizeof::<T>()`, not just the name.
+            let location = parser.span_to_cursor(name_location);
+            return Ok(parser.ast_builder.builtin_call_expr(
+                BuiltinFunction::SizeOfType(ty),
+                vec![],
+                Some(location),
+            ));
+        }
         let mut qualified_path = vec![name];
         while parser.peek() == Some(&Kind::DoubleColon) {
             parser.next();

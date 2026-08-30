@@ -668,6 +668,20 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
             return self.check_simd_call(*op, args);
         }
 
+        // POINTER P1: `__builtin_sizeof::<T>()`. The written type is
+        // the whole call, so it is validated here rather than through
+        // the flat signature table (whose lookup compares the payload
+        // too). A generic parameter must be in scope — the turbofish
+        // type is parsed without generic context, so a parameter
+        // arrives as `Identifier(T)` and is matched against the
+        // checker's generic scope / impl parameters the same way a
+        // `Generic(T)` annotation would be. Everything else must
+        // resolve to a declared struct / enum; primitives and the
+        // opaque `Allocator` always pass.
+        if let BuiltinFunction::SizeOfType(ty) = func {
+            return self.check_sizeof_type_arg(ty);
+        }
+
         // Find matching function signature from pre-built table
         let signature = self.builtin_function_signatures.iter().find(|sig| sig.func == *func).cloned();
 

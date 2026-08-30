@@ -879,6 +879,21 @@ impl<'a> TypeCheckerVisitor<'a> {
             &mut self.context.current_fn_generic_bounds,
             func.generic_bounds.clone(),
         );
+        // POINTER P1: install the body's own generic parameters as a
+        // generic scope, so `__builtin_sizeof::<T>()` inside resolves
+        // its written parameter the way an impl method body already
+        // can (`impl_block.rs` pushes the impl's parameters the same
+        // way). Aborting exits leave the scope on the stack — the
+        // check is over anyway; the two ordinary exits pop it.
+        let pushed_generic_scope = !func.generic_params.is_empty();
+        if pushed_generic_scope {
+            self.type_inference.push_generic_scope(
+                func.generic_params
+                    .iter()
+                    .map(|p| (*p, TypeDecl::Generic(*p)))
+                    .collect(),
+            );
+        }
         // Define variable of argument for this `func`. REF-Stage-2:
         // a `&mut T` parameter is mutable through the reference —
         // use `set_mutable_var` so assignments inside the body
@@ -939,6 +954,9 @@ impl<'a> TypeCheckerVisitor<'a> {
                     // Restore bounds so a following type-check doesn't inherit them.
                     self.context.current_fn_generic_bounds = prev_bounds;
                     self.context.closure_by_ref_bodies = prev_by_ref;
+                    if pushed_generic_scope {
+                        self.type_inference.pop_generic_scope();
+                    }
                     return Err(e);
                 }
             }
@@ -984,6 +1002,9 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.pop_context();
         self.context.current_fn_generic_bounds = prev_bounds;
         self.context.closure_by_ref_bodies = prev_by_ref;
+        if pushed_generic_scope {
+            self.type_inference.pop_generic_scope();
+        }
         self.function_checking.call_depth -= 1;
         self.current_fn_return_type = prev_fn_return;
 

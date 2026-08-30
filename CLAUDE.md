@@ -601,7 +601,7 @@ fn main() -> u64 {
 | `ambient` | 現在の allocator（式として使える糖衣） |
 | `__builtin_current_allocator()` | 現在の allocator（スタック top） |
 | `__builtin_default_allocator()` | プロセス全体の global allocator |
-| `__builtin_sizeof(value)` | 値のバイトサイズ（u64）。primitive に加え struct（フィールド合計）/ tuple / array（要素合計）/ **enum（u64 タグ + 全 variant の payload 連結）** をサポート。enum のサイズは**型の性質で、手元の variant に依存しない** (`Vec<T>` の stride がこれ)。generic `T` の実体サイズ取得に使う |
+| `__builtin_sizeof(value)` / `__builtin_sizeof::<T>()` | 値 / 型引数のバイトサイズ（u64）。primitive に加え struct（フィールド合計）/ tuple / array（要素合計）/ **enum（u64 タグ + 全 variant の payload 連結）** をサポート。enum のサイズは**型の性質で、手元の variant に依存しない** (`Vec<T>` の stride がこれ)。generic `T` の実体サイズ取得に使う。型引数形 (POINTER P1) は値なしで型から答え、generic は呼び出し引数 / レシーバ / `val` 注釈から解決（interpreter JIT は silent fallback） |
 | `__builtin_ptr_eq(a: ptr, b: ptr) -> bool` | 2 ポインタの addr 等値比較。stdlib `Arena` / `FixedBuffer` の追跡表検索に使用 |
 | `__builtin_null_ptr() -> ptr` | null pointer (addr 0)。`__builtin_heap_alloc(0u64)` は AOT で libc malloc に委譲するため非 null を返しうる; 移植性のあるコードは本 builtin を使う |
 | `with allocator = a { ... }` | scope 内で allocator を有効化、内部の `__builtin_heap_alloc` 等が経由する |

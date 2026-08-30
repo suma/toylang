@@ -1632,8 +1632,8 @@ impl<'a> Checker<'a> {
                         .and_then(|l| l.variant_tag(path[1]))
                         .is_some() =>
             {
-                Some(ScalarTy::U64)
-            }
+                        Some(ScalarTy::U64)
+                    }
             Expr::Int64(..)
             | Expr::UInt64(..)
             | Expr::Int8(..)
@@ -2134,6 +2134,20 @@ impl<'a> Checker<'a> {
                         let name = op.builtin_name();
                         self.reject(move || {
                             format!("{name} is not supported in the interpreter JIT")
+                        });
+                        None
+                    }
+                    BuiltinFunction::SizeOfType(_) => {
+                        // POINTER P1: the type-argument form. Resolving
+                        // the written `TypeDecl` through the monomorph
+                        // substitution at codegen time would need a
+                        // second resolver alongside the AST's own type
+                        // info, so this falls back instead — the
+                        // function simply runs on the tree-walker.
+                        self.reject(|| {
+                            "__builtin_sizeof::<T> is not supported in JIT (silently \
+                             falls back)"
+                                .to_string()
                         });
                         None
                     }

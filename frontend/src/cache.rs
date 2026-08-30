@@ -32,7 +32,7 @@ use crate::ast::module_interface::ModuleInterface;
 ///
 /// Mismatched versions are treated as a cache miss by
 /// [`load_full_module`].
-pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 27;
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 28;
 // v2: `File` gained `id` (JIT cache key) and `tests` (LLM-LOOP P4).
 // v3: `BuiltinFunctionSymbols` interns the MEMORY_PROFILING M4 counter
 // names, shifting every later symbol id.
@@ -65,6 +65,10 @@ pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 27;
 // enum's serde shape changes, so the version moves with it.
 // v26: `Expr::Float32` / `TypeDecl::Float32` / `Kind::Float32` — the
 // f32 primitive (SIMD-F32). Same serde-shape reasoning as v25.
+// v28: `BuiltinFunction::SizeOfType(TypeDecl)` — the
+// `__builtin_sizeof::<T>()` type-argument form (POINTER P1). The
+// enum's serde shape changes, so a stale entry would deserialize
+// into the wrong variant order.
 // Forgetting this bump is not a subtle failure: stale entries
 // deserialize into the new layout and the program silently comes out
 // wrong — every stdlib trait reported "is not defined". The M4 bump

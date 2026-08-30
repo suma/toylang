@@ -674,6 +674,15 @@ pub enum BuiltinFunction {
 
     // Type introspection
     SizeOf,  // __builtin_sizeof(value) -> u64 — size in bytes of the argument's type
+    // POINTER P1: the type-argument form, `__builtin_sizeof::<T>() -> u64`.
+    // Carries the written type instead of a probe value, so an allocator
+    // can size a slot without a representative value in hand
+    // (`__builtin_heap_alloc(__builtin_sizeof::<T>() * n)`). A generic
+    // parameter arrives as `TypeDecl::Identifier(T)` (the turbofish type
+    // is parsed without generic context) and resolves through the
+    // backend's active substitution; a named type resolves through the
+    // struct / enum tables. The value form stays for probe-style reads.
+    SizeOfType(TypeDecl),
 
     // Display formatting. `__builtin_to_string(value) -> str`
     // produces the same display string `print` / `println` would

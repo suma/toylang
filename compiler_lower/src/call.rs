@@ -324,6 +324,11 @@ impl<'a> FunctionLower<'a> {
         self.pending_generic_work.push(PendingGenericInstance {
             func_id,
             template_name,
+            // POINTER P1: the monomorph subst rides with the queue
+            // entry so the body can resolve a written generic
+            // parameter (`__builtin_sizeof::<T>()`), the same way
+            // `PendingMethodInstance` carries it for methods.
+            subst: subst.iter().map(|(k, v)| (*k, *v)).collect(),
         });
         Ok(func_id)
     }

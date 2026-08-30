@@ -38,6 +38,17 @@ pub trait VmHost {
         self.print_text("\n");
     }
 
+    /// RUNTIME-LIB P0-A: the same, on the error stream (`eprint` /
+    /// `eprintln`). Required rather than defaulted to `print_text`,
+    /// because a host that silently merged the two streams would
+    /// disagree with the compiled backends without failing to build.
+    fn eprint_text(&self, text: &str);
+
+    fn eprintln_text(&self, text: &str) {
+        self.eprint_text(text);
+        self.eprint_text("\n");
+    }
+
     // --- allocator stack ------------------------------------------
 
     fn alloc_push(&self, handle: u64);

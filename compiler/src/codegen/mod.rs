@@ -256,6 +256,7 @@ pub(crate) struct CodegenSession<M: Module> {
     /// builds it as a staticlib and links it next to the toylang object;
     /// these FuncIds are how codegen reaches them.
     rt_print_i64: cranelift_module::FuncId,
+    rt_print_stream: cranelift_module::FuncId,
     rt_println_i64: cranelift_module::FuncId,
     rt_print_u64: cranelift_module::FuncId,
     rt_println_u64: cranelift_module::FuncId,
@@ -636,6 +637,13 @@ impl<M: Module> CodegenSession<M> {
         let rt_println_u64 = declare_helper(&mut module, "toy_println_u64", &int_sig)?;
         let rt_print_bool = declare_helper(&mut module, "toy_print_bool", &bool_sig)?;
         let rt_println_bool = declare_helper(&mut module, "toy_println_bool", &bool_sig)?;
+        // RUNTIME-LIB P0-A: the stream selector. The print helpers
+        // themselves are not duplicated for stderr — a print
+        // instruction marked `stderr` is bracketed by two calls to
+        // this, which flips the runtime's per-thread stream. That
+        // keeps one helper per (type, newline) pair instead of two,
+        // and costs the stdout path nothing.
+        let rt_print_stream = declare_helper(&mut module, "toy_print_stream", &bool_sig)?;
         let rt_print_str = declare_helper(&mut module, "toy_print_str", &ptr_sig)?;
         let rt_println_str = declare_helper(&mut module, "toy_println_str", &ptr_sig)?;
 
@@ -950,6 +958,7 @@ impl<M: Module> CodegenSession<M> {
             libm_log2,
             libm_exp,
             rt_print_i64,
+            rt_print_stream,
             rt_println_i64,
             rt_print_u64,
             rt_println_u64,
@@ -1888,6 +1897,8 @@ impl<M: Module> CodegenSession<M> {
 #[allow(dead_code)]
 struct RuntimeRefs {
     puts: cranelift_codegen::ir::FuncRef,
+    /// RUNTIME-LIB P0-A: `toy_print_stream(stderr)`.
+    print_stream: cranelift_codegen::ir::FuncRef,
     exit: cranelift_codegen::ir::FuncRef,
     // #121 Phase A: libc malloc/realloc/free FuncRefs.
     malloc: cranelift_codegen::ir::FuncRef,

@@ -112,6 +112,107 @@ fn read_file_and_file_exists() {
 }
 
 #[test]
+fn write_file_then_read_it_back() {
+    // RUNTIME-LIB P0-A. The count in `Ok(n)` is the number of bytes
+    // written, which is what makes a zero-byte write distinguishable
+    // from a failure without consulting the status.
+    let dir = std::env::temp_dir().join(format!("toylang_write_test_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("out.txt");
+    let src = format!(
+        r#"fn main() -> u64 {{
+            val w = io::write_file("{p}", "hello")
+            val n = match w {{
+                Result::Ok(n) => n,
+                Result::Err(_) => 99u64,
+            }}
+            val back = io::read_file("{p}")
+            val same = match back {{
+                Result::Ok(text) => text == "hello",
+                Result::Err(_) => false,
+            }}
+            val empty = io::write_file("{p}", "")
+            val zero = match empty {{
+                Result::Ok(k) => k == 0u64,
+                Result::Err(_) => false,
+            }}
+            if same && zero {{ n }} else {{ 0u64 }}
+        }}"#,
+        p = path.display(),
+    );
+    let r = run_with_args(&src, vec![]).expect("run");
+    // The file exists and is empty after the second, zero-byte write.
+    let left = std::fs::read_to_string(&path).expect("read back");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(r, 5);
+    assert_eq!(left, "");
+}
+
+#[test]
+fn append_file_adds_to_the_end_and_creates_what_is_missing() {
+    let dir = std::env::temp_dir().join(format!("toylang_append_test_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("log.txt");
+    let src = format!(
+        r#"fn main() -> u64 {{
+            val a = io::append_file("{p}", "one ")
+            val b = io::append_file("{p}", "two")
+            val back = io::read_file("{p}")
+            match back {{
+                Result::Ok(text) => if text == "one two" {{ 1u64 }} else {{ 2u64 }},
+                Result::Err(_) => 3u64,
+            }}
+        }}"#,
+        p = path.display(),
+    );
+    let r = run_with_args(&src, vec![]).expect("run");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(r, 1);
+}
+
+#[test]
+fn a_write_that_cannot_happen_names_the_reason() {
+    // A missing directory is `NotFound`; a directory in place of a
+    // file is not (the OS refuses the open for its own reason), so
+    // only the first is asserted by variant.
+    let src = r#"fn main() -> u64 {
+        val w = io::write_file("/no/such/directory/toylang.txt", "x")
+        match w {
+            Result::Ok(_) => 0u64,
+            Result::Err(IoError::NotFound) => 1u64,
+            Result::Err(_) => 2u64,
+        }
+    }"#;
+    let r = run_with_args(src, vec![]).expect("run");
+    assert_eq!(r, 1);
+}
+
+#[test]
+fn exit_ends_the_process_with_the_given_code() {
+    // `io::exit` does not return in any backend, so it is tested in a
+    // child: an in-process lane would take the test runner with it.
+    let dir = std::env::temp_dir().join(format!("toylang_exit_test_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("exit.t");
+    std::fs::write(
+        &path,
+        "fn main() -> u64 {\n    println(\"before\")\n    io::exit(7u64)\n    println(\"after\")\n    0u64\n}\n",
+    )
+    .expect("write program");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_interpreter"))
+        .arg(&path)
+        .output()
+        .expect("spawn interpreter");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(out.status.code(), Some(7), "exit code");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "before\n",
+        "output written before the exit is flushed, and nothing after it runs"
+    );
+}
+
+#[test]
 fn now_is_a_plausible_unix_timestamp() {
     let r = run_with_args("fn main() -> u64 { io::now() }", vec![]).expect("run");
     // 2020-01-01 .. 2100-01-01 — generous bounds, no clock assumption.

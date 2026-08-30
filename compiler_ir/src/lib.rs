@@ -1155,6 +1155,20 @@ fn fold_backtrace(entries: &[BacktraceEntry<'_>]) -> Vec<String> {
 
 /// One backtrace line: `f`, `f (called at line 3)`, `f (x7, called at
 /// line 3)`.
+/// The mnemonic an IR dump uses for a print instruction: the base
+/// name, `ln` when it appends a newline, and an `e` prefix for the
+/// stderr stream — `print`, `println`, `eprint`, `eprintln_str`, ...
+/// Kept in one place so the three print instructions cannot drift
+/// apart in a dump.
+fn print_keyword(base: &str, newline: bool, stderr: bool) -> String {
+    let (head, tail) = base.split_at(5); // "print" + any suffix
+    format!(
+        "{}{head}{}{tail}",
+        if stderr { "e" } else { "" },
+        if newline { "ln" } else { "" }
+    )
+}
+
 pub fn format_backtrace_line(name: &str, line: Option<u32>, repeats: usize) -> String {
     match (line, repeats) {
         (Some(line), 1) => format!("{name} (called at line {line})"),
@@ -1514,7 +1528,12 @@ pub enum InstKind {
     /// separately via `PrintStr` so the message can ride a static
     /// data segment without requiring a `Type::Str` to flow through
     /// the value graph.
-    Print { value: ValueId, value_ty: Type, newline: bool },
+    /// RUNTIME-LIB P0-A: `stderr` selects the stream — `eprint` /
+    /// `eprintln` emit the same instructions with it set. The field
+    /// travels on every print instruction rather than being a mode
+    /// the backends carry, so an instruction still says on its own
+    /// where its bytes go.
+    Print { value: ValueId, value_ty: Type, newline: bool, stderr: bool },
     /// SIMD `__simd_splat(x) -> V` — one scalar into every lane.
     SimdSplat { value: ValueId, ty: VecTy },
     /// SIMD `__simd_load(p, i) -> V` — the 128 bits starting at
@@ -1544,7 +1563,7 @@ pub enum InstKind {
     /// `bytes_len` is the literal's UTF-8 length, carried for the same
     /// reason `ConstStr` carries it: the helpers take a str *handle*,
     /// which sits `bytes_len + 1` past the `.rodata` symbol.
-    PrintStr { message: DefaultSymbol, bytes_len: usize, newline: bool },
+    PrintStr { message: DefaultSymbol, bytes_len: usize, newline: bool, stderr: bool },
     /// Materialise a `Type::Str` value pointing at the **u64 len
     /// field** of the string's `.rodata` blob (layout
     /// `[bytes][NUL][u64 len LE]`, see
@@ -1595,7 +1614,7 @@ pub enum InstKind {
     /// for the leaf scalars. Like `PrintStr`, the bytes ride a
     /// `.rodata` blob; codegen interns by content so identical
     /// fragments share a single data symbol.
-    PrintRaw { text: String, newline: bool },
+    PrintRaw { text: String, newline: bool, stderr: bool },
     // ---- #121: heap / pointer builtins (Phase A, default global
     // allocator only — `with allocator = ...` scope plumbing comes
     // later). Each lowers to a libc call (malloc / realloc / free)
@@ -2631,12 +2650,12 @@ impl fmt::Display for DisplayInst<'_> {
                     deststr.join(", ")
                 )
             }
-            InstKind::Print { value, value_ty, newline } => {
-                let kw = if *newline { "println" } else { "print" };
+            InstKind::Print { value, value_ty, newline, stderr } => {
+                let kw = print_keyword("print", *newline, *stderr);
                 write!(f, "{kw} {value}: {value_ty}")
             }
-            InstKind::PrintStr { message, newline, .. } => {
-                let kw = if *newline { "println_str" } else { "print_str" };
+            InstKind::PrintStr { message, newline, stderr, .. } => {
+                let kw = print_keyword("print_str", *newline, *stderr);
                 write!(f, "{kw} #{}", message.to_usize())
             }
             InstKind::ConstStr { message, .. } => {
@@ -2645,8 +2664,8 @@ impl fmt::Display for DisplayInst<'_> {
             InstKind::ConstStrBytes { bytes } => {
                 write!(f, "{prefix}const_str_bytes len={}", bytes.len())
             }
-            InstKind::PrintRaw { text, newline } => {
-                let kw = if *newline { "println_raw" } else { "print_raw" };
+            InstKind::PrintRaw { text, newline, stderr } => {
+                let kw = print_keyword("print_raw", *newline, *stderr);
                 write!(f, "{kw} {text:?}")
             }
             InstKind::Cast { value, from, to } => {

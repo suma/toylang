@@ -869,6 +869,60 @@ pub(super) fn compiled_run_output(source: &str, stem: &str) -> Option<(i32, Stri
     result
 }
 
+/// Run `source` on the tree-walker with both streams captured
+/// in-process (RUNTIME-LIB P0-A).
+///
+/// The stdout-only [`interpreter_stdout`] cannot see which descriptor
+/// a line came out of, and the compiled lanes' stderr goes through
+/// the runtime's own sink rather than Rust's — so the two halves of
+/// an `eprint` comparison are collected by different helpers.
+pub(super) fn interpreter_streams(source: &str) -> (String, String) {
+    let core = core_modules_dir();
+    let mut parser = frontend::ParserWithInterner::new(source);
+    let checked = checked_program(source, &mut parser, Some(core.as_path()))
+        .expect("interpreter type-check (with core)");
+    let (result, out, err) = interpreter::output::with_stdout_stderr_capture(|| {
+        interpreter::execute_program_tree_walking(
+            &checked.program,
+            checked.interner,
+            Some(source),
+            Some("test.t"),
+        )
+    });
+    result.expect("tree-walker run");
+    (out, err)
+}
+
+/// Compile `source`, run it, and hand back both streams plus the exit
+/// code.
+///
+/// [`compiled_run_output`] keeps only stderr, which cannot answer the
+/// question RUNTIME-LIB P0-A asks — whether a given line came out on
+/// stdout or stderr. Two engines that print the same words on
+/// different descriptors have not agreed.
+pub(super) fn compiled_run_streams(source: &str, stem: &str) -> Option<(i32, String, String)> {
+    let src_path = unique_path(&format!("{stem}.t"));
+    std::fs::write(&src_path, source).expect("write source");
+    let exe_path = unique_path(stem);
+    let mut options = CompilerOptions::new(src_path.clone());
+    options.output = Some(exe_path.clone());
+    options.core_modules_dir = Some(core_modules_dir());
+    options.link_cache_dir = Some(link_cache_dir_for_tests());
+    let result = if compile_file(&options).is_ok() {
+        let out = Command::new(&exe_path).output().expect("spawn binary");
+        Some((
+            out.status.code().expect("exit code"),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        ))
+    } else {
+        None
+    };
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&exe_path);
+    result
+}
+
 /// The IR `lower_program` produces for `source`, rendered.
 pub(super) fn lowered_ir(source: &str) -> String {
     lowered_ir_with(source, false)

@@ -59,6 +59,10 @@ impl VmHost for TestHost {
 
     fn println_text(&self, _text: &str) {}
 
+    fn eprint_text(&self, _text: &str) {}
+
+    fn eprintln_text(&self, _text: &str) {}
+
     fn alloc_push(&self, _handle: u64) {}
 
     fn alloc_pop(&self) {}

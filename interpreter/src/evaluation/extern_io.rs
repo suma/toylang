@@ -53,6 +53,7 @@ thread_local! {
 thread_local! {
     static READ_FILE_STATUS: Cell<u64> = const { Cell::new(0) };
     static ENV_STATUS: Cell<u64> = const { Cell::new(0) };
+    static WRITE_FILE_STATUS: Cell<u64> = const { Cell::new(0) };
 }
 
 const IO_OK: u64 = 0;
@@ -60,6 +61,7 @@ const IO_NOT_FOUND: u64 = 1;
 const IO_PERMISSION_DENIED: u64 = 2;
 const IO_IS_A_DIRECTORY: u64 = 3;
 const IO_READ_ERROR: u64 = 4;
+const IO_WRITE_ERROR: u64 = 5;
 
 /// Map an `std::io::Error` to the RUNTIME-IO status vocabulary. The
 /// errno values (ENOENT 2, EPERM 1, EACCES 13, EISDIR 21) agree with
@@ -95,6 +97,8 @@ pub fn build_io_registry() -> HashMap<&'static str, ExternFn> {
     m.insert("__extern_io_env_status", io_env_status);
     m.insert("__extern_io_read_file_str", io_read_file);
     m.insert("__extern_io_read_file_status", io_read_file_status);
+    m.insert("__extern_io_write_file_u64", io_write_file);
+    m.insert("__extern_io_write_file_status", io_write_file_status);
     m.insert("__extern_io_file_exists_bool", io_file_exists);
     m.insert("__extern_io_random_u64", io_random);
     m.insert("__extern_io_random_seed", io_random_seed);
@@ -105,6 +109,7 @@ pub fn build_io_registry() -> HashMap<&'static str, ExternFn> {
     // RUNTIME-PORT R2: the libc names `core/std/io.t` now declares
     // `from "c"`. `read_line` / `now` are implemented in toylang on
     // top of these.
+    m.insert("__extern_io_exit", io_exit);
     m.insert("getchar", io_getchar);
     m.insert("time", io_time);
     m.insert("getpid", io_getpid);
@@ -129,12 +134,60 @@ fn str_arg(value: &Value, name: &str) -> Result<String, InterpreterError> {
     }
 }
 
+/// Extract a `bool` argument. Booleans cross the extern boundary as
+/// the inline `Value::Bool`; the heap shape is accepted for the same
+/// robustness reason `str_arg` accepts its fallback.
+fn bool_arg(value: &Value, name: &str) -> Result<bool, InterpreterError> {
+    match value {
+        Value::Bool(b) => Ok(*b),
+        Value::Heap(rc) => match &*rc.borrow() {
+            Object::Bool(b) => Ok(*b),
+            other => Err(InterpreterError::InternalError(format!(
+                "extern fn `{name}`: expected a bool argument, got {other:?}"
+            ))),
+        },
+        other => Err(InterpreterError::InternalError(format!(
+            "extern fn `{name}`: expected a bool argument, got {other:?}"
+        ))),
+    }
+}
+
 fn str_result(text: String) -> Value {
     Object::String(text).into()
 }
 
 fn u64_result(v: u64) -> Value {
     Object::UInt64(v).into()
+}
+
+/// `exit(code)` — end the process now, as libc's `exit` does for the
+/// compiled backends. There is no unwinding to a `RunOutcome`: the
+/// call does not return in any backend, so an embedder (the test
+/// suite included) that runs a program calling `io::exit` ends with
+/// it. Buffered output is flushed first, since the process is not
+/// coming back to do it.
+fn io_exit(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_io_exit` takes 1 argument".to_string(),
+            expected: 1,
+            found: args.len(),
+        });
+    }
+    let code = match args[0] {
+        Value::Int32(v) => v,
+        Value::Int64(v) => v as i32,
+        Value::UInt64(v) => v as i32,
+        _ => {
+            return Err(InterpreterError::InternalError(
+                "extern fn `__extern_io_exit`: expected an i32 code".to_string(),
+            ));
+        }
+    };
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    std::process::exit(code)
 }
 
 /// `getchar()` — one byte from stdin, `-1` (EOF) when exhausted.
@@ -264,6 +317,57 @@ fn io_read_file(args: &[Value]) -> Result<Value, InterpreterError> {
 /// this thread. Paired with `io_read_file` like `io_env_status`.
 fn io_read_file_status(_args: &[Value]) -> Result<Value, InterpreterError> {
     Ok(u64_result(READ_FILE_STATUS.with(|s| s.get())))
+}
+
+/// Write `contents` to the file at `path`, truncating it or appending
+/// to its end. Returns the number of bytes written and records the
+/// failure status for the paired `io_write_file_status` — the count
+/// alone cannot report a failure, since a zero-byte write is
+/// legitimate. Mirrors `toylang_rt::toy_io_write_file`.
+fn io_write_file(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 3 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_io_write_file_u64` takes 3 arguments".to_string(),
+            expected: 3,
+            found: args.len(),
+        });
+    }
+    let path = str_arg(&args[0], "__extern_io_write_file_u64")?;
+    let contents = str_arg(&args[1], "__extern_io_write_file_u64")?;
+    let append = bool_arg(&args[2], "__extern_io_write_file_u64")?;
+    let opened = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .append(append)
+        .truncate(!append)
+        .open(&path);
+    let result = opened.and_then(|mut f| {
+        use std::io::Write;
+        f.write_all(contents.as_bytes())?;
+        // `write_all` returns before the data is durable; a failure at
+        // flush time is still this call's failure.
+        f.flush()
+    });
+    match result {
+        Ok(()) => {
+            WRITE_FILE_STATUS.with(|s| s.set(IO_OK));
+            Ok(u64_result(contents.len() as u64))
+        }
+        Err(err) => {
+            let status = status_from_io_error(&err);
+            // `status_from_io_error` names read failures; a write that
+            // failed for an unclassified reason says so instead.
+            let status = if status == IO_READ_ERROR { IO_WRITE_ERROR } else { status };
+            WRITE_FILE_STATUS.with(|s| s.set(status));
+            Ok(u64_result(0))
+        }
+    }
+}
+
+/// RUNTIME-IO: the status of the most recent `io_write_file` call on
+/// this thread. Paired with `io_write_file` like `io_env_status`.
+fn io_write_file_status(_args: &[Value]) -> Result<Value, InterpreterError> {
+    Ok(u64_result(WRITE_FILE_STATUS.with(|s| s.get())))
 }
 
 /// Whether the file at `path` exists.

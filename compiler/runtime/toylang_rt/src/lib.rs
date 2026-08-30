@@ -83,6 +83,7 @@ unsafe extern "C" {
     fn ftell(f: *mut u8) -> i64;
     fn rewind(f: *mut u8);
     fn fread(dest: *mut u8, size: usize, count: usize, f: *mut u8) -> usize;
+    fn fwrite(src: *const u8, size: usize, count: usize, f: *mut u8) -> usize;
     fn ferror(f: *mut u8) -> i32;
     fn strlen(s: *const u8) -> usize;
     fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8;
@@ -117,6 +118,7 @@ const IO_NOT_FOUND: u64 = 1;
 const IO_PERMISSION_DENIED: u64 = 2;
 const IO_IS_A_DIRECTORY: u64 = 3;
 const IO_READ_ERROR: u64 = 4;
+const IO_WRITE_ERROR: u64 = 5;
 
 #[cfg(target_os = "macos")]
 fn current_errno() -> i32 {
@@ -169,6 +171,19 @@ extern "C" fn default_sink(bytes: *const u8, len: usize) {
     if len > 0 && !bytes.is_null() {
         unsafe {
             write(1, bytes, len);
+        }
+    }
+}
+
+/// RUNTIME-LIB P0-A: the error stream's counterpart to
+/// [`default_sink`]. A separate sink rather than an fd argument, so a
+/// host that captures program output (the JIT) can capture the two
+/// streams apart — or capture one and let the other through, which is
+/// what an AOT binary's behaviour looks like from a test.
+extern "C" fn default_err_sink(bytes: *const u8, len: usize) {
+    if len > 0 && !bytes.is_null() {
+        unsafe {
+            write(2, bytes, len);
         }
     }
 }
@@ -315,6 +330,14 @@ struct ThreadState {
     // kind, so a `read_file` does not clobber an `env_var` pairing.
     read_file_status: u64,
     env_status: u64,
+    write_file_status: u64,
+    /// RUNTIME-LIB P0-A: where program output goes, and the sink it
+    /// goes through when `print_stderr` is set. The compiled backends
+    /// flip the flag around a print instruction marked `stderr`
+    /// (`toy_print_stream`) instead of calling a mirrored set of
+    /// helpers.
+    err_sink: SinkFn,
+    print_stderr: bool,
 }
 
 impl Default for ThreadState {
@@ -341,6 +364,9 @@ impl Default for ThreadState {
             random_seeded: false,
             read_file_status: IO_OK,
             env_status: IO_OK,
+            write_file_status: IO_OK,
+            err_sink: default_err_sink,
+            print_stderr: false,
         }
     }
 }
@@ -389,10 +415,28 @@ pub fn set_sink(f: Option<SinkFn>) {
     thread_state().sink = f.unwrap_or(default_sink);
 }
 
-/// Emit program output through the current sink.
+/// Replace the calling thread's error-output sink. `None` restores
+/// the libc-`write` default (fd 2) used by AOT binaries.
+pub fn set_err_sink(f: Option<SinkFn>) {
+    thread_state().err_sink = f.unwrap_or(default_err_sink);
+}
+
+/// Emit program output through the current sink — the error sink
+/// while `toy_print_stream(1)` is in effect (RUNTIME-LIB P0-A).
 fn emit(bytes: &[u8]) {
-    let sink = thread_state().sink;
+    let st = thread_state();
+    let sink = if st.print_stderr { st.err_sink } else { st.sink };
     sink(bytes.as_ptr(), bytes.len());
+}
+
+/// Select the stream the print helpers write to on this thread:
+/// non-zero for stderr, 0 for stdout. The compiled backends bracket
+/// an `eprint` / `eprintln` sequence with a pair of these calls, so
+/// every `toy_print_*` helper stays single-stream and the stdout path
+/// pays nothing.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_print_stream(stderr: u8) {
+    thread_state().print_stderr = stderr != 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -2415,6 +2459,59 @@ pub extern "C" fn toy_io_read_file(path: *const u8) -> *const u8 {
 #[unsafe(no_mangle)]
 pub extern "C" fn toy_io_read_file_status() -> u64 {
     thread_state().read_file_status
+}
+
+/// Write the toylang str `contents` to the file at the toylang str
+/// `path`, truncating it (`append == 0`) or adding to its end
+/// (`append != 0`). Returns the number of bytes written, and records
+/// the failure status for the paired `toy_io_write_file_status`
+/// (RUNTIME-IO) — the count alone cannot report a failure, since a
+/// zero-byte write is legitimate.
+///
+/// The length comes from the str handle, not from `strlen`, so
+/// embedded NUL bytes are written like any other byte.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_io_write_file(path: *const u8, contents: *const u8, append: u8) -> u64 {
+    let st = thread_state();
+    let p = str_to_cstring(path);
+    let mode = if append != 0 { c"ab" } else { c"wb" };
+    let f = unsafe { fopen(p.as_ptr(), mode.as_ptr().cast()) };
+    if f.is_null() {
+        st.write_file_status = io_status_from_errno(current_errno());
+        return 0;
+    }
+    let bytes = if contents.is_null() { &[][..] } else { str_bytes(contents) };
+    let written = if bytes.is_empty() {
+        0
+    } else {
+        unsafe { fwrite(bytes.as_ptr(), 1, bytes.len(), f) }
+    };
+    // A short write is a failure even when `ferror` is not set.
+    let failed = unsafe { ferror(f) } != 0 || written != bytes.len();
+    if failed {
+        // Read errno before `fclose`, which may clobber it.
+        let err = current_errno();
+        st.write_file_status = if err == 0 { IO_WRITE_ERROR } else { io_status_from_errno(err) };
+    }
+    let closed = unsafe { fclose(f) };
+    if failed {
+        return written as u64;
+    }
+    if closed != 0 {
+        // Buffered data can fail to reach the file at close time.
+        st.write_file_status = IO_WRITE_ERROR;
+        return written as u64;
+    }
+    st.write_file_status = IO_OK;
+    written as u64
+}
+
+/// RUNTIME-IO: the status of the most recent `toy_io_write_file` call
+/// on this thread. Paired with `toy_io_write_file` like
+/// `toy_io_read_file_status`.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_io_write_file_status() -> u64 {
+    thread_state().write_file_status
 }
 
 /// RUNTIME-IO: the status of the most recent `toy_io_env` call on this

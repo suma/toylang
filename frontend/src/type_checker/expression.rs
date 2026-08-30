@@ -3089,7 +3089,11 @@ impl<'a> TypeCheckerVisitor<'a> {
     ) -> Result<(), TypeCheckError> {
         if !matches!(
             func,
-            BuiltinFunction::ToString | BuiltinFunction::Print | BuiltinFunction::Println
+            BuiltinFunction::ToString
+                | BuiltinFunction::Print
+                | BuiltinFunction::Println
+                | BuiltinFunction::EPrint
+                | BuiltinFunction::EPrintln
         ) {
             return Ok(());
         }

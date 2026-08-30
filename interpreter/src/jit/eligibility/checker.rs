@@ -2203,6 +2203,17 @@ impl<'a> Checker<'a> {
                         }
                         Some(ScalarTy::Unit)
                     }
+                    // RUNTIME-LIB P0-A: this JIT's print helpers are
+                    // stdout-only, so a program that writes to stderr
+                    // goes to the tree-walker — a silent fallback like
+                    // the rest of this JIT's gaps.
+                    BuiltinFunction::EPrint | BuiltinFunction::EPrintln => {
+                        self.reject(|| {
+                            "eprint / eprintln are not supported in the interpreter JIT"
+                                .to_string()
+                        });
+                        None
+                    }
                     BuiltinFunction::Print | BuiltinFunction::Println => {
                         if args.len() != 1 {
                             return None;

@@ -1421,6 +1421,10 @@ impl<'a, 'b> State<'a, 'b> {
                         self.switch_to(cont_blk);
                         Ok(None)
                     }
+                    // Rejected by eligibility; unreachable here.
+                    BuiltinFunction::EPrint | BuiltinFunction::EPrintln => Err(
+                        "eprint / eprintln are not supported in the interpreter JIT".to_string(),
+                    ),
                     BuiltinFunction::Print | BuiltinFunction::Println => {
                         let arg_ref = args
                             .first()

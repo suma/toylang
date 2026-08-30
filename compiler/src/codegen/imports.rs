@@ -307,6 +307,7 @@ impl<M: Module> CodegenSession<M> {
     ) -> RuntimeRefs {
         RuntimeRefs {
             puts: self.declare_func_in_func_readonly(self.libc_puts, func),
+            print_stream: self.declare_func_in_func_readonly(self.rt_print_stream, func),
             exit: self.declare_func_in_func_readonly(self.libc_exit, func),
             malloc: self.declare_func_in_func_readonly(self.libc_malloc, func),
             realloc: self.declare_func_in_func_readonly(self.libc_realloc, func),

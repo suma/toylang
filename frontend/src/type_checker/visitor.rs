@@ -391,6 +391,19 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg_types: vec![TypeDecl::Unknown],
                 return_type: TypeDecl::Unit,
             },
+            // RUNTIME-LIB P0-A: the stderr pair, same shape.
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::EPrint,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::Unknown],
+                return_type: TypeDecl::Unit,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::EPrintln,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::Unknown],
+                return_type: TypeDecl::Unit,
+            },
             // `panic(msg: str)` aborts the run. The "return type" is Unknown
             // so the call expression unifies with any surrounding context
             // (e.g. `if c { panic("...") } else { 5i64 }`); the value is

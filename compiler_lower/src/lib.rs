@@ -283,6 +283,14 @@ struct FunctionLower<'a> {
     /// only `.rodata` — but the shadow stack costs a store and two
     /// adds per call, so it goes.
     debug_frames: bool,
+    /// RUNTIME-LIB P0-A: which stream the print sequence being
+    /// lowered writes to. `eprint` / `eprintln` set it for the length
+    /// of one call; every `Print` / `PrintStr` / `PrintRaw` this
+    /// module emits stamps it onto the instruction. It rides the
+    /// lowering context rather than a parameter because a compound
+    /// value's rendering fans out through a dozen emitters, and the
+    /// stream is a property of the call, not of each fragment.
+    print_stderr: bool,
     /// DEBUG-OBS D3: the expression whose lowering is in progress.
     ///
     /// Saved and restored around every `lower_expr`, so a guard emitted

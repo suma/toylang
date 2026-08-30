@@ -30,6 +30,14 @@ impl VmHost for InterpreterHost {
         crate::output::println_text(text);
     }
 
+    fn eprint_text(&self, text: &str) {
+        crate::output::eprint_text(text);
+    }
+
+    fn eprintln_text(&self, text: &str) {
+        crate::output::eprintln_text(text);
+    }
+
     fn alloc_push(&self, handle: u64) {
         crate::runtime_state::RT.with(|s| {
             if let Some(ref mut rt) = *s.borrow_mut() {

@@ -655,6 +655,13 @@ pub enum BuiltinFunction {
     // everyday user-facing operations, not low-level intrinsics).
     Print,   // print(value) -> unit (no trailing newline)
     Println, // println(value) -> unit (trailing newline)
+    // RUNTIME-LIB P0-A: the same two on the error stream. Same
+    // formatting (`Display` / `to_str` dispatch included) and the same
+    // any-type argument — only the stream differs, which is why they
+    // are builtins beside `print` rather than `str`-taking functions
+    // in `core/std/io.t`.
+    EPrint,   // eprint(value) -> unit (stderr, no trailing newline)
+    EPrintln, // eprintln(value) -> unit (stderr, trailing newline)
 
     // Abrupt termination. `panic(msg: str)` aborts the current run with
     // the supplied message; the type-checker pretends the call returns a
@@ -779,6 +786,8 @@ pub struct BuiltinFunctionSymbols {
     // Output
     pub print: DefaultSymbol,
     pub println: DefaultSymbol,
+    pub eprint: DefaultSymbol,
+    pub eprintln: DefaultSymbol,
 
     // Termination
     pub panic: DefaultSymbol,
@@ -867,6 +876,8 @@ impl BuiltinFunctionSymbols {
             // for low-level memory primitives.
             print: interner.get_or_intern("print"),
             println: interner.get_or_intern("println"),
+            eprint: interner.get_or_intern("eprint"),
+            eprintln: interner.get_or_intern("eprintln"),
             panic: interner.get_or_intern("panic"),
             assert: interner.get_or_intern("assert"),
             sizeof: interner.get_or_intern("__builtin_sizeof"),
@@ -913,6 +924,8 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.default_allocator { Some(BuiltinFunction::DefaultAllocator) }
         else if symbol == self.print { Some(BuiltinFunction::Print) }
         else if symbol == self.println { Some(BuiltinFunction::Println) }
+        else if symbol == self.eprint { Some(BuiltinFunction::EPrint) }
+        else if symbol == self.eprintln { Some(BuiltinFunction::EPrintln) }
         else if symbol == self.panic { Some(BuiltinFunction::Panic) }
         else if symbol == self.assert { Some(BuiltinFunction::Assert) }
         else if symbol == self.sizeof { Some(BuiltinFunction::SizeOf) }

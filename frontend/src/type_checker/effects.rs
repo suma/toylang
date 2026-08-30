@@ -364,6 +364,8 @@ pub fn builtin_effect(func: BuiltinFunction) -> (EffectSet, &'static str) {
 
         Print => (EffectSet::of(&[Effect::Io]), "print"),
         Println => (EffectSet::of(&[Effect::Io]), "println"),
+        EPrint => (EffectSet::of(&[Effect::Io]), "eprint"),
+        EPrintln => (EffectSet::of(&[Effect::Io]), "eprintln"),
 
         Panic => (EffectSet::of(&[Effect::Panic]), "panic"),
         Assert => (EffectSet::of(&[Effect::Panic]), "assert"),

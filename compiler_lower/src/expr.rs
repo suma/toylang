@@ -2074,7 +2074,9 @@ impl<'a> FunctionLower<'a> {
             BuiltinFunction::Panic
             | BuiltinFunction::Assert
             | BuiltinFunction::Print
-            | BuiltinFunction::Println => self.lower_builtin_diagnostics(func, args),
+            | BuiltinFunction::Println
+            | BuiltinFunction::EPrint
+            | BuiltinFunction::EPrintln => self.lower_builtin_diagnostics(func, args),
             BuiltinFunction::Abs
             | BuiltinFunction::Min | BuiltinFunction::Max => self.lower_builtin_numeric(func, args),
             BuiltinFunction::Simd(op) => self.lower_builtin_simd(op, args),
@@ -2683,6 +2685,18 @@ impl<'a> FunctionLower<'a> {
             }
             BuiltinFunction::Print => self.lower_print(args, false),
             BuiltinFunction::Println => self.lower_print(args, true),
+            // RUNTIME-LIB P0-A: the same rendering, stamped for the
+            // error stream. `print_stderr` is restored afterwards
+            // because a compound value's rendering fans out through
+            // many emitters and nothing else may inherit the flag.
+            BuiltinFunction::EPrint | BuiltinFunction::EPrintln => {
+                let newline = matches!(func, BuiltinFunction::EPrintln);
+                let saved = self.print_stderr;
+                self.print_stderr = true;
+                let result = self.lower_print(args, newline);
+                self.print_stderr = saved;
+                result
+            }
             _ => unreachable!("lower_builtin_diagnostics was handed a builtin it does not own"),
         }
     }

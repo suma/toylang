@@ -466,7 +466,9 @@ impl EvaluationContext<'_> {
             BuiltinFunction::Panic
             | BuiltinFunction::Assert
             | BuiltinFunction::Print
-            | BuiltinFunction::Println => self.builtin_diagnostics(func, args, site),
+            | BuiltinFunction::Println
+            | BuiltinFunction::EPrint
+            | BuiltinFunction::EPrintln => self.builtin_diagnostics(func, args, site),
             BuiltinFunction::Abs
             | BuiltinFunction::Min
             | BuiltinFunction::Max => self.builtin_numeric(func, args),
@@ -1162,16 +1164,27 @@ impl EvaluationContext<'_> {
             Err(self.panic_error(message, site))
         }
 
-        BuiltinFunction::Print | BuiltinFunction::Println => {
-            let name = if matches!(func, BuiltinFunction::Print) { "print" } else { "println" };
+        BuiltinFunction::Print
+        | BuiltinFunction::Println
+        | BuiltinFunction::EPrint
+        | BuiltinFunction::EPrintln => {
+            // RUNTIME-LIB P0-A: the stderr pair renders identically —
+            // only the sink differs.
+            let name = match func {
+                BuiltinFunction::Print => "print",
+                BuiltinFunction::Println => "println",
+                BuiltinFunction::EPrint => "eprint",
+                _ => "eprintln",
+            };
             Self::expect_args(name, args, 1)?;
             let value = self.evaluate(&args[0])?;
             let value = try_value!(Ok(value));
             let rendered = value.borrow().to_display_string(self.string_interner);
-            if matches!(func, BuiltinFunction::Println) {
-                crate::output::println_text(&rendered);
-            } else {
-                crate::output::print_text(&rendered);
+            match func {
+                BuiltinFunction::Print => crate::output::print_text(&rendered),
+                BuiltinFunction::Println => crate::output::println_text(&rendered),
+                BuiltinFunction::EPrint => crate::output::eprint_text(&rendered),
+                _ => crate::output::eprintln_text(&rendered),
             }
             Ok(EvaluationResult::Value((Object::Unit).into()))
         }

@@ -44,7 +44,7 @@ impl<'a> FunctionLower<'a> {
         if let Some(Expr::String(sym)) = self.program.expression.get(&args[0]) {
             let bytes_len = self.interner.resolve(sym).unwrap_or("").len();
             self.emit(
-                InstKind::PrintStr { message: sym, bytes_len, newline },
+                InstKind::PrintStr { message: sym, bytes_len, newline, stderr: self.print_stderr },
                 None,
             );
             return Ok(None);
@@ -89,6 +89,7 @@ impl<'a> FunctionLower<'a> {
                             InstKind::PrintRaw {
                                 text: format!("<closure/{}>", param_tys.len()),
                                 newline,
+                                stderr: self.print_stderr,
                             },
                             None,
                         );
@@ -502,6 +503,7 @@ impl<'a> FunctionLower<'a> {
                 value: v,
                 value_ty,
                 newline,
+                stderr: self.print_stderr,
             },
             None,
         );
@@ -566,6 +568,7 @@ impl<'a> FunctionLower<'a> {
                             value: v,
                             value_ty: *ty,
                             newline: false,
+                            stderr: self.print_stderr,
                         },
                         None,
                     );
@@ -613,6 +616,7 @@ impl<'a> FunctionLower<'a> {
                             value: v,
                             value_ty: *ty,
                             newline: false,
+                            stderr: self.print_stderr,
                         },
                         None,
                     );
@@ -636,7 +640,7 @@ impl<'a> FunctionLower<'a> {
     }
 
     pub(super) fn emit_print_raw_text(&mut self, text: String, newline: bool) {
-        self.emit(InstKind::PrintRaw { text, newline }, None);
+        self.emit(InstKind::PrintRaw { text, newline, stderr: self.print_stderr }, None);
     }
 
     /// Render an array binding as `[a, b, c]`, matching the
@@ -669,6 +673,7 @@ impl<'a> FunctionLower<'a> {
                     value: v,
                     value_ty: element_ty,
                     newline: false,
+                    stderr: self.print_stderr,
                 },
                 None,
             );
@@ -862,6 +867,7 @@ impl<'a> FunctionLower<'a> {
             InstKind::PrintRaw {
                 text: header,
                 newline: unit && newline,
+                stderr: self.print_stderr,
             },
             None,
         );
@@ -872,6 +878,7 @@ impl<'a> FunctionLower<'a> {
             InstKind::PrintRaw {
                 text: "(".to_string(),
                 newline: false,
+                stderr: self.print_stderr,
             },
             None,
         );
@@ -882,6 +889,7 @@ impl<'a> FunctionLower<'a> {
                     InstKind::PrintRaw {
                         text: ", ".to_string(),
                         newline: false,
+                        stderr: self.print_stderr,
                     },
                     None,
                 );
@@ -896,6 +904,7 @@ impl<'a> FunctionLower<'a> {
                             value: v,
                             value_ty: *ty,
                             newline: false,
+                            stderr: self.print_stderr,
                         },
                         None,
                     );
@@ -919,6 +928,7 @@ impl<'a> FunctionLower<'a> {
             InstKind::PrintRaw {
                 text: ")".to_string(),
                 newline,
+                stderr: self.print_stderr,
             },
             None,
         );

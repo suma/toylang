@@ -36,6 +36,7 @@
 
 extern fn getchar() -> i32 from "c"
 extern fn time(t: ptr) -> i64 from "c"
+extern fn __extern_io_exit(code: i32) from "c" as "exit"
 
 extern fn __extern_io_argc_u64() -> u64 from "toylang_rt" as "toy_io_argc"
 extern fn __extern_io_arg_str(i: u64) -> str from "toylang_rt" as "toy_io_arg"
@@ -43,6 +44,8 @@ extern fn __extern_io_env_str(name: str) -> str from "toylang_rt" as "toy_io_env
 extern fn __extern_io_env_status() -> u64 from "toylang_rt" as "toy_io_env_status"
 extern fn __extern_io_read_file_str(path: str) -> str from "toylang_rt" as "toy_io_read_file"
 extern fn __extern_io_read_file_status() -> u64 from "toylang_rt" as "toy_io_read_file_status"
+extern fn __extern_io_write_file_u64(path: str, contents: str, append: bool) -> u64 from "toylang_rt" as "toy_io_write_file"
+extern fn __extern_io_write_file_status() -> u64 from "toylang_rt" as "toy_io_write_file_status"
 extern fn __extern_io_file_exists_bool(path: str) -> bool from "toylang_rt" as "toy_io_file_exists"
 extern fn __extern_io_random_u64() -> u64 from "toylang_rt" as "toy_io_random"
 extern fn __extern_io_random_seed(seed: u64) from "toylang_rt" as "toy_io_random_seed"
@@ -60,6 +63,7 @@ pub enum IoError {
     PermissionDenied,  # the OS denied the access
     IsADirectory,      # the path names a directory
     ReadError,         # any other read failure
+    WriteError,        # any other write failure
     EndOfInput,        # `read_line`: EOF before any byte was read
     Unknown,           # a failure with no errno behind it
 }
@@ -71,6 +75,7 @@ impl Display for IoError {
             IoError::PermissionDenied => "permission denied",
             IoError::IsADirectory => "is a directory",
             IoError::ReadError => "read error",
+            IoError::WriteError => "write error",
             IoError::EndOfInput => "end of input",
             IoError::Unknown => "unknown error",
         }
@@ -87,6 +92,7 @@ fn io_error_from_status(status: u64) -> IoError {
     elif status == 2u64 { IoError::PermissionDenied }
     elif status == 3u64 { IoError::IsADirectory }
     elif status == 4u64 { IoError::ReadError }
+    elif status == 5u64 { IoError::WriteError }
     else { IoError::Unknown }
 }
 
@@ -148,6 +154,47 @@ pub fn read_file(path: str) -> Result<str, IoError> {
         val err: IoError = io_error_from_status(status)
         Result::Err(err)
     }
+}
+
+# Write `contents` to the file at `path`, replacing what was there
+# (the file is created when it does not exist). `Ok(n)` is the number
+# of bytes written — always `contents`' length on success — and
+# `Err(err)` names why the write failed.
+pub fn write_file(path: str, contents: str) -> Result<u64, IoError> {
+    val r: Result<u64, IoError> = write_file_with_mode(path, contents, false)
+    r
+}
+
+# Add `contents` to the end of the file at `path`, keeping what was
+# there (the file is created when it does not exist). Same result
+# convention as `write_file`.
+pub fn append_file(path: str, contents: str) -> Result<u64, IoError> {
+    val r: Result<u64, IoError> = write_file_with_mode(path, contents, true)
+    r
+}
+
+# The shared body: the extern carries the mode as a flag so the two
+# entry points are one symbol, and the byte count and the status come
+# back as the usual RUNTIME-IO pair (a zero-byte write is legitimate,
+# so the count alone cannot report a failure).
+fn write_file_with_mode(path: str, contents: str, append: bool) -> Result<u64, IoError> {
+    val written: u64 = __extern_io_write_file_u64(path, contents, append)
+    val status: u64 = __extern_io_write_file_status()
+    if status == 0u64 {
+        Result::Ok(written)
+    } else {
+        val err: IoError = io_error_from_status(status)
+        Result::Err(err)
+    }
+}
+
+# End the process now with `code` as its exit status, without
+# returning to the caller. This is the normal-path counterpart to
+# `panic`: nothing is printed, no `Drop` runs, and buffered output is
+# flushed first. The low 8 bits are what a shell sees (`exit(256u64)`
+# reports 0), the same truncation `main`'s return value goes through.
+pub fn exit(code: u64) {
+    __extern_io_exit(code as i32)
 }
 
 # Whether the file at `path` exists.

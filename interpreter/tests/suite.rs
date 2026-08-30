@@ -124,6 +124,9 @@ mod pattern_struct_tests;
 #[path = "struct_update_tests.rs"]
 mod struct_update_tests;
 
+#[path = "output_streams_tests.rs"]
+mod output_streams_tests;
+
 #[path = "oop_tests.rs"]
 mod oop_tests;
 

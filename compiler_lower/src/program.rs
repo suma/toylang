@@ -1625,6 +1625,7 @@ impl<'a> FunctionLower<'a> {
             contract_report: None,
             pending_frame_name: None,
             debug_frames: !release,
+            print_stderr: false,
             current_expr: None,
             bindings: HashMap::new(),
             loop_stack: Vec::new(),

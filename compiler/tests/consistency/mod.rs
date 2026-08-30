@@ -46,3 +46,4 @@ mod const_eval;
 mod float32;
 mod simd;
 mod diagnostics;
+mod runtime_io;

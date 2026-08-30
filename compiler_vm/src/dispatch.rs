@@ -202,33 +202,21 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
                 vm.write_value(vid, result);
             }
         }
-        InstKind::Print { value, value_ty, newline } => {
+        InstKind::Print { value, value_ty, newline, stderr } => {
             let v = vm.read_value(*value);
             let text = format_scalar(host, v, *value_ty);
-            if *newline {
-                host.println_text(&text);
-            } else {
-                host.print_text(&text);
-            }
+            emit_text(host, &text, *newline, *stderr);
         }
-        InstKind::PrintStr { message, newline, .. } => {
+        InstKind::PrintStr { message, newline, stderr, .. } => {
             let text = vm
                 .interner()
                 .and_then(|i| i.resolve(*message))
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| format!("printstr #{}", message.to_usize()));
-            if *newline {
-                host.println_text(&text);
-            } else {
-                host.print_text(&text);
-            }
+            emit_text(host, &text, *newline, *stderr);
         }
-        InstKind::PrintRaw { text, newline } => {
-            if *newline {
-                host.println_text(text);
-            } else {
-                host.print_text(text);
-            }
+        InstKind::PrintRaw { text, newline, stderr } => {
+            emit_text(host, text, *newline, *stderr);
         }
         InstKind::ConstStr { message, .. } => {
             if let Some(interner) = vm.interner() {
@@ -807,6 +795,18 @@ fn eval_cast(value: RawSlot, from: Type, to: Type) -> RawSlot {
         }
         // float -> float same width, and any other shape: pass through.
         _ => value,
+    }
+}
+
+/// RUNTIME-LIB P0-A: one place where a print instruction's two flags
+/// pick the host call, so the three print instructions cannot drift
+/// apart on which stream they use.
+fn emit_text(host: &dyn VmHost, text: &str, newline: bool, stderr: bool) {
+    match (stderr, newline) {
+        (false, false) => host.print_text(text),
+        (false, true) => host.println_text(text),
+        (true, false) => host.eprint_text(text),
+        (true, true) => host.eprintln_text(text),
     }
 }
 

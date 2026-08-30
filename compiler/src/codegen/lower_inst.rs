@@ -906,14 +906,48 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
         Ok(())
     }
 
-    /// Everything that reaches stdout, plus the `.rodata` str blobs the
-    /// print helpers and interpolation read.
+    /// Everything that reaches stdout or stderr, plus the `.rodata`
+    /// str blobs the print helpers and interpolation read.
+    ///
+    /// RUNTIME-LIB P0-A: an instruction marked `stderr` is bracketed
+    /// by `toy_print_stream(1)` / `toy_print_stream(0)` rather than
+    /// routed to a second set of helpers — one selector call pair per
+    /// stderr print instead of a mirrored `toy_eprint_*` table, and
+    /// the stdout path is untouched.
     fn lower_printing(
         &mut self,
         inst: &crate::ir::Instruction,
     ) -> Result<(), String> {
+        let stderr = match &inst.kind {
+            InstKind::Print { stderr, .. }
+            | InstKind::PrintStr { stderr, .. }
+            | InstKind::PrintRaw { stderr, .. } => *stderr,
+            _ => false,
+        };
+        if stderr {
+            self.set_print_stream(true);
+        }
+        let result = self.lower_printing_inner(inst);
+        if stderr {
+            self.set_print_stream(false);
+        }
+        result
+    }
+
+    /// Point the runtime's per-thread print stream at stderr (`on`)
+    /// or back at stdout.
+    fn set_print_stream(&mut self, on: bool) {
+        let flag = self.builder.ins().iconst(cranelift_codegen::ir::types::I8, on as i64);
+        let helper = self.runtime.print_stream;
+        self.builder.ins().call(helper, &[flag]);
+    }
+
+    fn lower_printing_inner(
+        &mut self,
+        inst: &crate::ir::Instruction,
+    ) -> Result<(), String> {
         match &inst.kind {
-            InstKind::Print { value, value_ty, newline } => {
+            InstKind::Print { value, value_ty, newline, stderr: _ } => {
                 let v = self.value(*value);
                 // NUM-W-AOT-pack Phase 2: dedicated narrow-int
                 // helpers (`toy_print_{i,u}{8,16,32}`) take the
@@ -1002,7 +1036,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 };
                 self.builder.ins().call(helper, &[call_value]);
             }
-            InstKind::PrintStr { message, bytes_len, newline } => {
+            InstKind::PrintStr { message, bytes_len, newline, stderr: _ } => {
                 let gv = *self
                     .print_imports
                     .get(message)
@@ -1061,7 +1095,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, addr);
                 }
             }
-            InstKind::PrintRaw { text, newline } => {
+            InstKind::PrintRaw { text, newline, stderr: _ } => {
                 let key = text.as_bytes();
                 let gv = *self
                     .raw_print_imports

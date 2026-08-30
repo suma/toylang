@@ -189,7 +189,7 @@ fn expand_slots(slots: Vec<Vec<crate::ast::Pattern>>) -> Vec<Vec<crate::ast::Pat
 fn pattern_starts_a_range(parser: &mut Parser) -> bool {
     let starts_literal = matches!(
         parser.peek(),
-        Some(Kind::UInt64(_) | Kind::Int64(_) | Kind::Integer(_))
+        Some(Kind::UInt64(_) | Kind::Int64(_) | Kind::Integer(_) | Kind::CharLiteral(_))
     );
     starts_literal && matches!(parser.peek_n(1), Some(Kind::DotDot))
 }
@@ -459,6 +459,15 @@ fn parse_pattern_literal(parser: &mut Parser) -> ParserResult<Option<crate::ast:
             parser.next();
             let sym = parser.string_interner.get_or_intern(s_copy);
             parser.ast_builder.number_expr(sym, Some(location))
+        }
+        // CHAR-LITERAL-NUM: `match b { 'h' => ... }` over a string's
+        // bytes. The literal is `u32` like anywhere else, and the
+        // type checker narrows it to the scrutinee's width when the
+        // code point fits.
+        Some(&Kind::CharLiteral(n)) => {
+            let location = parser.current_source_location();
+            parser.next();
+            parser.ast_builder.char_literal_expr(n, Some(location))
         }
         Some(&Kind::True) => {
             let location = parser.current_source_location();

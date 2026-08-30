@@ -69,6 +69,12 @@ pub enum ExprType {
     Range = 31,
     Float64 = 32,
     Float32 = 43,
+    /// `'a'` — a char literal. Stored like `UInt32` (the code point
+    /// in `uint64_val`) but discriminated, because the type checker
+    /// treats the two differently: a char literal may take a
+    /// different integer type when the position asks for one and the
+    /// value fits, while `42u32` may not.
+    CharLiteral = 44,
     // NUM-W narrow integer literal discriminants. Storage
     // piggybacks on the existing `int64_val` / `uint64_val`
     // arrays (the lexer already validates the value fits at the
@@ -350,6 +356,10 @@ impl ExprPool {
                 self.expr_types[index] = ExprType::UInt32;
                 self.uint64_val[index] = Some(value as u64);
             }
+            Expr::CharLiteral(value) => {
+                self.expr_types[index] = ExprType::CharLiteral;
+                self.uint64_val[index] = Some(value as u64);
+            }
             Expr::Number(symbol) => {
                 self.expr_types[index] = ExprType::Number;
                 self.symbol_val[index] = Some(symbol);
@@ -612,6 +622,7 @@ impl ExprPool {
             ExprType::UInt8 => Some(Expr::UInt8(self.uint64_val[index]? as u8)),
             ExprType::UInt16 => Some(Expr::UInt16(self.uint64_val[index]? as u16)),
             ExprType::UInt32 => Some(Expr::UInt32(self.uint64_val[index]? as u32)),
+            ExprType::CharLiteral => Some(Expr::CharLiteral(self.uint64_val[index]? as u32)),
             ExprType::Number => {
                 Some(Expr::Number(self.symbol_val[index]?))
             }

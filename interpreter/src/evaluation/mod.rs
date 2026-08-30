@@ -1152,7 +1152,7 @@ pub fn convert_object(e: &Expr) -> Result<Object, InterpreterError> {
         Expr::Int32(v) => Ok(Object::Int32(*v)),
         Expr::UInt8(v) => Ok(Object::UInt8(*v)),
         Expr::UInt16(v) => Ok(Object::UInt16(*v)),
-        Expr::UInt32(v) => Ok(Object::UInt32(*v)),
+        Expr::UInt32(v) | Expr::CharLiteral(v) => Ok(Object::UInt32(*v)),
         Expr::Float64(v) => Ok(Object::Float64(*v)),
         Expr::Float32(v) => Ok(Object::Float32(*v)),
         Expr::String(v) => Ok(Object::ConstString(*v)),

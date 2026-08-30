@@ -205,7 +205,7 @@ impl<'a> FunctionLower<'a> {
             Expr::Int16(_) => Some(Type::I16),
             Expr::UInt16(_) => Some(Type::U16),
             Expr::Int32(_) => Some(Type::I32),
-            Expr::UInt32(_) => Some(Type::U32),
+            Expr::UInt32(_) | Expr::CharLiteral(_) => Some(Type::U32),
             Expr::Float64(_) => Some(Type::F64),
             // SIMD-F32: single-precision literal.
             Expr::Float32(_) => Some(Type::F32),

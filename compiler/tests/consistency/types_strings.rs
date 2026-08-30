@@ -1355,3 +1355,55 @@ fn negating_an_unsigned_value_is_still_rejected() {
         );
     }
 }
+
+// CHAR-LITERAL-NUM: a char literal is a `u32`, and a position naming
+// another integer width may take it when the code point fits. The
+// three backends have to agree on both halves — the width the value
+// ends up at, and the arithmetic done on it.
+
+#[test]
+fn char_literals_take_the_width_the_position_asks_for() {
+    let src = r#"
+        fn as_byte(b: u8) -> u64 { b as u64 }
+
+        fn main() -> u64 {
+            val kept: u32 = 'a'
+            val narrowed: u8 = '0'
+            val widened: i64 = '\n'
+            val inferred = 'z'
+            as_byte('A')
+                + (kept as u64)
+                + (narrowed as u64)
+                + (widened as u64)
+                + (inferred as u64)
+                + (__builtin_sizeof(inferred))
+        }
+    "#;
+    // 65 + 97 + 48 + 10 + 122 + 4 (the inferred literal is a u32).
+    assert_consistent(src, "char_literal_widths");
+}
+
+#[test]
+fn a_strings_bytes_compare_against_characters() {
+    let src = r#"
+        fn main() -> u64 {
+            val s = String::from_str("hello 42")
+            var ells: u64 = 0u64
+            for b in s.iter() {
+                if b == 'l' { ells = ells + 1u64 }
+            }
+            var digits: u64 = 0u64
+            var i: u64 = 0u64
+            while i < s.size() {
+                val c: u8 = s.get(i)
+                if c >= '0' && c <= '9' {
+                    digits = digits * 10u64 + ((c - '0') as u64)
+                }
+                i = i + 1u64
+            }
+            ells * 100u64 + digits
+        }
+    "#;
+    // Two `l`s, and the digits read back as 42.
+    assert_consistent(src, "char_literal_bytes");
+}

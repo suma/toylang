@@ -177,6 +177,7 @@ impl<'a> AstIntegrationContext<'a> {
             Expr::UInt8(v) => Ok(Expr::UInt8(*v)),
             Expr::UInt16(v) => Ok(Expr::UInt16(*v)),
             Expr::UInt32(v) => Ok(Expr::UInt32(*v)),
+            Expr::CharLiteral(v) => Ok(Expr::CharLiteral(*v)),
             Expr::Float64(v) => Ok(Expr::Float64(*v)),
             Expr::Float32(v) => Ok(Expr::Float32(*v)),
             Expr::Number(symbol) => Ok(Expr::Number(self.remap_symbol(*symbol)?)),

@@ -36,6 +36,22 @@ fn split_format_spec(segment: &str) -> (&str, Option<&str>) {
     (segment, None)
 }
 
+/// The token a char literal produces: [`Kind::CharLiteral`], holding
+/// the code point in 32 bits.
+///
+/// The literal's type is `u32` (the `char` alias) — that is what it
+/// is *held* as, and what `val c = 'a'` infers. What the dedicated
+/// token buys is the other half: a char literal is the one integer
+/// literal that a position naming a different integer type may take
+/// without an `as` cast, provided the value fits, so a string's bytes
+/// can be compared against `'0'` instead of against `48u8` with the
+/// character in a comment. A suffixed literal (`42u32`) keeps the
+/// strict NUM-W rule — its suffix already named its type.
+#[allow(dead_code)]
+fn char_literal_token(code_point: u32) -> Kind {
+    Kind::CharLiteral(code_point)
+}
+
 /// One ASCII hex digit `0-9 a-f A-F` -> nibble value `0..=15`.
 /// Used by both the `'\xHH'` char literal rule and the `\xHH`
 /// escape inside string literals.
@@ -867,7 +883,7 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                                 return Err(Error::Unmatch);
                             }
                         }
-                        return Ok(token!(self, Kind::UInt32(cp)));
+                        return Ok(token!(self, char_literal_token(cp)));
                     }
 
 '\\x[0-9a-fA-F][0-9a-fA-F]'      {
@@ -879,7 +895,7 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                         let hi = hex_digit(bytes[3]).ok_or(Error::Unmatch)?;
                         let lo = hex_digit(bytes[4]).ok_or(Error::Unmatch)?;
                         let value: u32 = ((hi << 4) | lo) as u32;
-                        return Ok(token!(self, Kind::UInt32(value)));
+                        return Ok(token!(self, char_literal_token(value)));
                     }
 
 '\\.'               {
@@ -907,7 +923,7 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                                 return Err(Error::Unmatch);
                             }
                         };
-                        return Ok(token!(self, Kind::UInt32(value)));
+                        return Ok(token!(self, char_literal_token(value)));
                     }
 
 '[ -&(-~]'          {
@@ -920,7 +936,7 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                         // `u32` — same shape as `<n>u32` literals.
                         let text = self.yytext();
                         let value = text.as_bytes()[1] as u32;
-                        return Ok(token!(self, Kind::UInt32(value)));
+                        return Ok(token!(self, char_literal_token(value)));
                     }
 
 [0-9][A-Za-z_0-9]*      {

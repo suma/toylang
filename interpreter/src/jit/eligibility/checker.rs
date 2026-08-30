@@ -1642,6 +1642,7 @@ impl<'a> Checker<'a> {
             | Expr::UInt8(..)
             | Expr::UInt16(..)
             | Expr::UInt32(..)
+            | Expr::CharLiteral(..)
             | Expr::Float64(..)
             | Expr::True
             | Expr::False
@@ -1722,7 +1723,7 @@ impl<'a> Checker<'a> {
             Expr::Int32(_) => Some(ScalarTy::I32),
             Expr::UInt8(_) => Some(ScalarTy::U8),
             Expr::UInt16(_) => Some(ScalarTy::U16),
-            Expr::UInt32(_) => Some(ScalarTy::U32),
+            Expr::UInt32(_) | Expr::CharLiteral(_) => Some(ScalarTy::U32),
             Expr::Float64(_) => Some(ScalarTy::F64),
             Expr::True | Expr::False => Some(ScalarTy::Bool),
             // STR-INTERP-INTERP-JIT: a string literal in an expression

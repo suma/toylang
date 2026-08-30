@@ -386,6 +386,7 @@ impl AstBuilder {
     simple_expr_builder!(uint8_expr,  UInt8,  u8);
     simple_expr_builder!(uint16_expr, UInt16, u16);
     simple_expr_builder!(uint32_expr, UInt32, u32);
+    simple_expr_builder!(char_literal_expr, CharLiteral, u32);
 
     unit_expr_builder!(bool_true_expr,  True);
     unit_expr_builder!(bool_false_expr, False);

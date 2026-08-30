@@ -533,6 +533,7 @@ impl MoveCheck<'_> {
             | Expr::UInt8(_)
             | Expr::UInt16(_)
             | Expr::UInt32(_)
+            | Expr::CharLiteral(_)
             | Expr::Float64(_)
             | Expr::Float32(_)
             | Expr::Number(_)

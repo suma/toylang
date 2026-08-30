@@ -36,7 +36,9 @@ impl EvaluationContext<'_> {
             }
             Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_) | Expr::Float32(_) | Expr::String(_) | Expr::True | Expr::False
             | Expr::Int8(_) | Expr::Int16(_) | Expr::Int32(_)
-            | Expr::UInt8(_) | Expr::UInt16(_) | Expr::UInt32(_) => {
+            | Expr::UInt8(_) | Expr::UInt16(_) | Expr::UInt32(_)
+            // A char literal the checker left alone is a `u32`.
+            | Expr::CharLiteral(_) => {
                 self.evaluate_literal(&expr)
             }
             Expr::Number(_v) => {
@@ -461,6 +463,7 @@ impl EvaluationContext<'_> {
             | Expr::Float32(_)
             | Expr::Int8(_) | Expr::Int16(_) | Expr::Int32(_)
             | Expr::UInt8(_) | Expr::UInt16(_) | Expr::UInt32(_)
+            | Expr::CharLiteral(_)
             | Expr::Number(_) | Expr::String(_)
             | Expr::True | Expr::False | Expr::Null => {}
         }

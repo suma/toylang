@@ -136,6 +136,9 @@ mod oop_tests;
 #[path = "operator_overload_tests.rs"]
 mod operator_overload_tests;
 
+#[path = "char_literal_tests.rs"]
+mod char_literal_tests;
+
 #[path = "checked_arith_tests.rs"]
 mod checked_arith_tests;
 

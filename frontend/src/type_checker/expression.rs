@@ -390,6 +390,23 @@ impl<'a> TypeCheckerVisitor<'a> {
             return Ok(ty);
         }
 
+        // CHAR-LITERAL-NUM: a char literal meets the width of the
+        // value on the other side, so a string's bytes can be
+        // compared against `'0'` rather than against `48u8` with the
+        // character in a comment. Only the literal moves — the other
+        // operand keeps its type — and only when the code point fits.
+        let (lhs_ty, rhs_ty) = {
+            let lhs_ty = match self.coerce_char_literal(&lhs, &rhs_ty)? {
+                Some(t) => t,
+                None => lhs_ty,
+            };
+            let rhs_ty = match self.coerce_char_literal(&rhs, &lhs_ty)? {
+                Some(t) => t,
+                None => rhs_ty,
+            };
+            (lhs_ty, rhs_ty)
+        };
+
         // Resolve concrete types from generics / Number placeholders.
         // Shift ops get their own resolver because the rhs must be UInt64
         // regardless of any Number context hint.
@@ -1965,7 +1982,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             | Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_)
             | Expr::Float32(_)
             | Expr::Int8(_) | Expr::Int16(_) | Expr::Int32(_)
-            | Expr::UInt8(_) | Expr::UInt16(_) | Expr::UInt32(_)
+            | Expr::UInt8(_) | Expr::UInt16(_) | Expr::UInt32(_) | Expr::CharLiteral(_)
             | Expr::Number(_) | Expr::String(_)
             | Expr::True | Expr::False | Expr::Null => {}
         }

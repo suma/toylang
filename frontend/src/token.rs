@@ -173,6 +173,13 @@ pub enum Kind {
     UInt8(u8),
     UInt16(u16),
     UInt32(u32),
+    /// A char literal — `'a'` / `'\n'` / `'\x41'` / `'\u{1F600}'`.
+    /// Carries the code point in 32 bits: the literal's type is
+    /// `u32` (the `char` alias), and it is the only integer literal
+    /// a *narrower or wider* integer position may take without an
+    /// `as` cast, provided the value fits — see
+    /// `type_checker::coerce_char_literal`.
+    CharLiteral(u32),
     String(String),
     /// String interpolation literal — `"hello {name}, sum={a + b}"`.
     /// Each `StringPart::Literal(s)` is a verbatim segment (escapes

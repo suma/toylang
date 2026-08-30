@@ -379,12 +379,12 @@ impl CaseConvert for String {
     # a compound-returning method in expression position, so the
     # result has to be named before it is returned.
     fn to_upper(&self) -> String {
-        val r: String = self.fold_ascii_case(0x61u8, 0x7Au8, true)
+        val r: String = self.fold_ascii_case('a', 'z', true)
         r
     }
 
     fn to_lower(&self) -> String {
-        val r: String = self.fold_ascii_case(0x41u8, 0x5Au8, false)
+        val r: String = self.fold_ascii_case('A', 'Z', false)
         r
     }
 }

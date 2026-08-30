@@ -1477,7 +1477,11 @@ impl<'a> FunctionLower<'a> {
             Expr::Int16(n) => Ok(self.emit(InstKind::Const(Const::I16(n)), Some(Type::I16))),
             Expr::UInt16(n) => Ok(self.emit(InstKind::Const(Const::U16(n)), Some(Type::U16))),
             Expr::Int32(n) => Ok(self.emit(InstKind::Const(Const::I32(n)), Some(Type::I32))),
-            Expr::UInt32(n) => Ok(self.emit(InstKind::Const(Const::U32(n)), Some(Type::U32))),
+            // CHAR-LITERAL-NUM: a char literal the type checker
+            // did not narrow is a plain `u32` literal.
+            Expr::UInt32(n) | Expr::CharLiteral(n) => {
+                Ok(self.emit(InstKind::Const(Const::U32(n)), Some(Type::U32)))
+            }
             // #121 Phase B-rest Item 2: `with allocator = expr { body }`.
             // Push the allocator handle, increment the with-scope
             // depth so `terminate_return` / `break` / `continue`

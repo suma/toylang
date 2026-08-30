@@ -494,6 +494,19 @@ impl<'a> TypeCheckerVisitor<'a> {
             (TypeDecl::UInt64, TypeDecl::Number) => Ok((TypeDecl::UInt64, TypeDecl::UInt64)),
             (TypeDecl::Number, TypeDecl::Int64) => Ok((TypeDecl::Int64, TypeDecl::Int64)),
             (TypeDecl::Int64, TypeDecl::Number) => Ok((TypeDecl::Int64, TypeDecl::Int64)),
+            // NUM-W: the same for the narrow widths. A suffix-less
+            // literal takes the width of the value it meets, so a
+            // byte can be compared against `'0'` or `48` rather than
+            // only against `48u8`. Without this arm the pair fell
+            // through to the strict `==` below and reported
+            // "expected u8, but got Number" — a type the user never
+            // wrote, on the operand that was not the literal. The
+            // literal's value is range-checked when
+            // `transform_numeric_expr` narrows the AST node, so
+            // `b == 300` on a `u8` is still an error.
+            (TypeDecl::Number, other) | (other, TypeDecl::Number) if other.is_integer() => {
+                Ok((other.clone(), other.clone()))
+            }
             // Number is integer-flavored; mixing with Float64 is rejected so users
             // are forced to write `1.0f64` or cast explicitly. This avoids surprise
             // when an integer literal silently becomes a float on the other side.
@@ -656,12 +669,80 @@ impl<'a> TypeCheckerVisitor<'a> {
     ///
     /// Returns the type the expression now has: `target` when the
     /// coercion applied, `ty` unchanged otherwise.
+    /// A char literal takes the integer type the position asks for,
+    /// as long as its code point fits (CHAR-LITERAL-NUM).
+    ///
+    /// A char literal is held as `u32` — that is what `val c = 'a'`
+    /// infers and what the `char` alias names — but a position that
+    /// wants another integer width may have it: `val b: u8 = '0'`,
+    /// `byte == 'h'`, a `i64` parameter. This is the one exception to
+    /// the NUM-W rule that integer types never convert implicitly,
+    /// and it is deliberately narrow: only a literal *written as a
+    /// character* qualifies. A suffixed literal still needs an `as`,
+    /// because its suffix already named its type — nothing was left
+    /// to decide.
+    ///
+    /// The node is rewritten to the concrete width, so backends see
+    /// an ordinary literal of the target type. `Ok(None)` means the
+    /// expression was not a char literal, or the target was not an
+    /// integer type to claim it.
+    pub fn coerce_char_literal(
+        &mut self,
+        expr_ref: &ExprRef,
+        target: &TypeDecl,
+    ) -> Result<Option<TypeDecl>, TypeCheckError> {
+        let Some(Expr::CharLiteral(code_point)) = self.core.expr_pool.get(expr_ref) else {
+            return Ok(None);
+        };
+        if !Self::is_integer_target(target) || *target == TypeDecl::UInt32 {
+            return Ok(None);
+        }
+        let value = code_point as i128;
+        let fits = match target {
+            TypeDecl::UInt64 | TypeDecl::Int64 => true,
+            TypeDecl::UInt16 => value <= u16::MAX as i128,
+            TypeDecl::UInt8 => value <= u8::MAX as i128,
+            TypeDecl::Int32 => value <= i32::MAX as i128,
+            TypeDecl::Int16 => value <= i16::MAX as i128,
+            TypeDecl::Int8 => value <= i8::MAX as i128,
+            _ => false,
+        };
+        if !fits {
+            // The same report an out-of-range integer literal gets:
+            // the value, and the type it will not fit in.
+            return Err(TypeCheckError::conversion_error(
+                &code_point.to_string(),
+                &format!("{:?}", target),
+            ));
+        }
+        let rewritten = match target {
+            TypeDecl::UInt64 => Expr::UInt64(code_point as u64),
+            TypeDecl::UInt16 => Expr::UInt16(code_point as u16),
+            TypeDecl::UInt8 => Expr::UInt8(code_point as u8),
+            TypeDecl::Int64 => Expr::Int64(code_point as i64),
+            TypeDecl::Int32 => Expr::Int32(code_point as i32),
+            TypeDecl::Int16 => Expr::Int16(code_point as i16),
+            TypeDecl::Int8 => Expr::Int8(code_point as i8),
+            _ => return Ok(None),
+        };
+        self.core.expr_pool.update(expr_ref, rewritten);
+        self.type_inference.set_expr_type(*expr_ref, target.clone());
+        self.optimization.cache_type(*expr_ref, target.clone());
+        Ok(Some(target.clone()))
+    }
+
     pub fn coerce_number_expr(
         &mut self,
         expr_ref: &ExprRef,
         ty: &TypeDecl,
         target: &TypeDecl,
     ) -> Result<TypeDecl, TypeCheckError> {
+        // CHAR-LITERAL-NUM: a char literal arrives with a concrete
+        // `u32` type rather than `Number`, and the position still
+        // gets to claim it when the code point fits.
+        if let Some(coerced) = self.coerce_char_literal(expr_ref, target)? {
+            return Ok(coerced);
+        }
         if *ty != TypeDecl::Number {
             return Ok(ty.clone());
         }

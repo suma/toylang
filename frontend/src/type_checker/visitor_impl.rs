@@ -27,6 +27,11 @@ impl AcceptableExpr for Expr {
             Expr::UInt8(val) => visitor.visit_uint8_literal(val),
             Expr::UInt16(val) => visitor.visit_uint16_literal(val),
             Expr::UInt32(val) => visitor.visit_uint32_literal(val),
+            // A char literal is held as `u32`; what makes it
+            // different from `42u32` is handled where a position
+            // asks for another integer type
+            // (`coerce_char_literal`), not here.
+            Expr::CharLiteral(val) => visitor.visit_uint32_literal(val),
             Expr::Float64(val) => visitor.visit_float64_literal(val),
             Expr::Float32(val) => visitor.visit_float32_literal(val),
             Expr::Number(val) => visitor.visit_number_literal(*val),

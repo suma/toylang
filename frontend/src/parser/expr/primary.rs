@@ -562,6 +562,10 @@ fn parse_primary_atom_or_form(parser: &mut Parser) -> ParserResult<ExprRef> {
             let location = parser.current_source_location();
             parser.ast_builder.uint32_expr(num, Some(location))
         }
+        Some(&Kind::CharLiteral(num)) => {
+            let location = parser.current_source_location();
+            parser.ast_builder.char_literal_expr(num, Some(location))
+        }
         Some(&Kind::Int32(num)) => {
             let location = parser.current_source_location();
             parser.ast_builder.int32_expr(num, Some(location))

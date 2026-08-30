@@ -770,6 +770,7 @@ impl<'a, 'b> State<'a, 'b> {
             | Expr::UInt8(..)
             | Expr::UInt16(..)
             | Expr::UInt32(..)
+            | Expr::CharLiteral(..)
             | Expr::Float64(..)
             | Expr::True
             | Expr::False
@@ -808,7 +809,9 @@ impl<'a, 'b> State<'a, 'b> {
             Expr::Int32(v) => Ok(Some(self.builder.ins().iconst(types::I32, v as i64))),
             Expr::UInt8(v) => Ok(Some(self.builder.ins().iconst(types::I8, v as i64))),
             Expr::UInt16(v) => Ok(Some(self.builder.ins().iconst(types::I16, v as i64))),
-            Expr::UInt32(v) => Ok(Some(self.builder.ins().iconst(types::I32, v as i64))),
+            Expr::UInt32(v) | Expr::CharLiteral(v) => {
+                Ok(Some(self.builder.ins().iconst(types::I32, v as i64)))
+            }
             Expr::Float64(v) => Ok(Some(self.builder.ins().f64const(v))),
             Expr::True => Ok(Some(self.builder.ins().iconst(types::I8, 1))),
             Expr::False => Ok(Some(self.builder.ins().iconst(types::I8, 0))),

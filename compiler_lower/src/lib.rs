@@ -997,6 +997,7 @@ impl<'a> FunctionLower<'a> {
             | Expr::Float32(_)
             | Expr::Int8(_) | Expr::Int16(_) | Expr::Int32(_)
             | Expr::UInt8(_) | Expr::UInt16(_) | Expr::UInt32(_)
+            | Expr::CharLiteral(_)
             | Expr::Number(_) | Expr::String(_)
             | Expr::True | Expr::False | Expr::Null => {}
         }

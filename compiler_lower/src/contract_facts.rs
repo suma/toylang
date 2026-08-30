@@ -479,7 +479,7 @@ fn integer_literal_value(
         Expr::Int64(v) => Some(v as i128),
         Expr::UInt8(v) => Some(v as i128),
         Expr::UInt16(v) => Some(v as i128),
-        Expr::UInt32(v) => Some(v as i128),
+        Expr::UInt32(v) | Expr::CharLiteral(v) => Some(v as i128),
         Expr::Int8(v) => Some(v as i128),
         Expr::Int16(v) => Some(v as i128),
         Expr::Int32(v) => Some(v as i128),

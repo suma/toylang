@@ -212,7 +212,7 @@ impl<'a> FunctionLower<'a> {
         let k = match self.program.expression.get(arg) {
             Some(frontend::ast::Expr::UInt64(v)) => v,
             Some(frontend::ast::Expr::Int64(v)) if v >= 0 => v as u64,
-            Some(frontend::ast::Expr::UInt32(v)) => v as u64,
+            Some(frontend::ast::Expr::UInt32(v) | frontend::ast::Expr::CharLiteral(v)) => v as u64,
             Some(frontend::ast::Expr::UInt8(v)) => v as u64,
             _ => {
                 return Err(format!(

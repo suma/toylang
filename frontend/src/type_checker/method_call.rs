@@ -124,11 +124,41 @@ impl<'a> TypeCheckerVisitor<'a> {
             _ => obj_type_deref.clone(),
         };
         
-        // Type check arguments
+        // Type check arguments.
+        //
+        // NUMBER-HINT: a method's declared parameter types are the
+        // hint for suffix-less literal arguments, the same way a free
+        // function's are (`expression.rs::check_call_arguments`).
+        // Without this a literal argument defaulted to `u64` however
+        // the parameter was declared, so `s.push_char('a')` — a `u32`
+        // parameter — reached the compiled backends as an i64 and the
+        // cranelift verifier rejected the call.
+        let declared_params = self.declared_method_param_types(&resolved_obj_type, method, args.len());
+        let saved_hint = self.type_inference.type_hint.clone();
         let mut arg_types = Vec::new();
-        for arg in args {
-            arg_types.push(self.visit_expr(arg)?);
+        for (i, arg) in args.iter().enumerate() {
+            let expected = declared_params.as_ref().and_then(|p| p.get(i).cloned().flatten());
+            self.type_inference.type_hint = expected.clone().or_else(|| saved_hint.clone());
+            let arg_ty = match self.visit_expr(arg) {
+                Ok(t) => t,
+                Err(e) => {
+                    self.type_inference.type_hint = saved_hint;
+                    return Err(e);
+                }
+            };
+            let arg_ty = match expected {
+                Some(expected) => match self.coerce_number_expr(arg, &arg_ty, &expected) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        self.type_inference.type_hint = saved_hint;
+                        return Err(e);
+                    }
+                },
+                None => arg_ty,
+            };
+            arg_types.push(arg_ty);
         }
+        self.type_inference.type_hint = saved_hint;
         
         // Check for builtin methods
         let method_str = self.resolve_symbol_name(*method);
@@ -226,6 +256,47 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
     /// Helper method to handle method calls on a specific type
+    /// The declared parameter types of `obj_type::method`, aligned to
+    /// the *call's* argument list.
+    ///
+    /// Only concrete types are reported: a `Generic(P)` / `Self_`
+    /// parameter is left as `None` for that position, since binding it
+    /// is the job of the substitution collection further down and a
+    /// literal must not be narrowed to a type parameter's name.
+    /// `None` overall when the receiver is not a struct / enum whose
+    /// method table can be consulted here (builtin methods, trait
+    /// objects, closures in fields) — those keep the previous
+    /// hint-free behaviour.
+    fn declared_method_param_types(
+        &self,
+        obj_type: &TypeDecl,
+        method: &DefaultSymbol,
+        arg_count: usize,
+    ) -> Option<Vec<Option<TypeDecl>>> {
+        let (name, type_args) = match obj_type {
+            TypeDecl::Struct(name, args) | TypeDecl::Enum(name, args) => (*name, args.clone()),
+            _ => return None,
+        };
+        let method_func = self
+            .context
+            .get_struct_method(name, *method, &type_args)
+            .or_else(|| self.context.get_struct_method(name, *method, &[]))?;
+        // A by-value `self: Self` receiver occupies parameter slot 0;
+        // `&self` / `&mut self` receivers are kept out of the list.
+        let offset = if method_func.parameter.len() > arg_count { 1 } else { 0 };
+        Some(
+            (0..arg_count)
+                .map(|i| {
+                    method_func
+                        .parameter
+                        .get(i + offset)
+                        .map(|(_, ty)| ty.clone())
+                        .filter(|ty| !matches!(ty, TypeDecl::Generic(_) | TypeDecl::Self_))
+                })
+                .collect(),
+        )
+    }
+
     pub fn visit_method_call_on_type(&mut self, obj_type: &TypeDecl, method: &DefaultSymbol, args: &Vec<ExprRef>, _arg_types: &[TypeDecl]) -> Result<TypeDecl, TypeCheckError> {
         let method_name = self.resolve_symbol_name(*method);
 

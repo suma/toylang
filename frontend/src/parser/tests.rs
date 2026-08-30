@@ -252,9 +252,12 @@ mod lexer_tests{
             );
         }
         // ASCII stays accepted, and `'\xff'` as a *char* literal is
-        // unaffected — it yields a `u32` code point, not str bytes.
+        // unaffected — it yields a code point, not str bytes.
+        // CHAR-LITERAL-NUM: char literals carry their own token
+        // (still 32 bits) so the type checker can tell them from a
+        // `42u32` whose suffix already named its type.
         assert_token("\"\\x41\"", Kind::String("A".to_string()));
-        assert_token("'\\xff'", Kind::UInt32(0xff));
+        assert_token("'\\xff'", Kind::CharLiteral(0xff));
     }
 
     #[test]

@@ -225,6 +225,20 @@ pub enum Expr {
     UInt8(u8),
     UInt16(u16),
     UInt32(u32),
+    /// A char literal — `'a'` / `'\n'` / `'\u{1F600}'`.
+    ///
+    /// Its type is `u32` (the `char` alias): 32 bits is what a code
+    /// point is held in, and `val c = 'a'` infers `u32`. It is a
+    /// variant of its own rather than a `UInt32` because it is the
+    /// one integer literal a position naming a *different* integer
+    /// type may take without an `as` cast — `val b: u8 = '0'`,
+    /// `byte == 'h'` — as long as the value fits. A suffixed literal
+    /// keeps the strict NUM-W rule, since its suffix already named
+    /// its type; telling the two apart needs the distinction to
+    /// survive parsing. The type checker rewrites the node to the
+    /// concrete width when a position asks for one, so a backend
+    /// that sees this node is looking at a plain `u32` literal.
+    CharLiteral(u32),
     Float64(f64),
     Float32(f32),
     Number(DefaultSymbol),

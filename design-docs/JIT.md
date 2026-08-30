@@ -84,7 +84,7 @@ variants are zero-extended at function-call boundaries via
 | `Assign(Identifier, expr)` | only to a previously declared local |
 | `Call(name, args)` | callee must itself be JIT-eligible |
 | `Cast(expr, T)` | `i64` ↔ `u64` (no-op at the IR level); `i64`/`u64` → `f64` via `fcvt_from_sint`/`fcvt_from_uint`; `f64` → `i64`/`u64` via `fcvt_to_sint_sat`/`fcvt_to_uint_sat` (saturating, NaN → 0; matches Rust `as`) |
-| `__builtin_sizeof(probe)` | scalar probe; result is a compile-time iconst |
+| `__builtin_sizeof(probe)` | scalar probe; result is a compile-time iconst. The type-argument form `__builtin_sizeof::<T>()` (POINTER P1) is **not** supported — eligibility rejects it and the function runs on the tree-walker |
 | `__builtin_heap_alloc / heap_free / heap_realloc` | route through `HeapManager` |
 | `__builtin_ptr_is_null` | inline `icmp_imm(Equal, p, 0)` |
 | `__builtin_mem_copy / mem_move / mem_set` | route through `HeapManager` |

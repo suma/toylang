@@ -1,6 +1,7 @@
 # POINTER — `ptr` を型のある窓に変える
 
-> **状態: 設計のみ (未実装)**。実測は 2026-08-30。
+> **状態: P1〜P3 landing 済み (2026-08-30)。P4〜P6 は未実装。**
+> 実測は 2026-08-30。
 > 現状の `ptr` は [`frontend/src/type_decl.rs`](../frontend/src/type_decl.rs)
 > の `TypeDecl::Ptr` (型引数を持たない nullary variant)。builtin の一覧は
 > [`../docs/language.md`](../docs/language.md) の「Heap and pointer builtins」、

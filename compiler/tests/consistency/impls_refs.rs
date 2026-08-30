@@ -1008,3 +1008,50 @@ fn getitem_setitem_magic_methods_3_backend() {
     "#;
     assert_consistent(src, "getitem_setitem_magic_methods_3_backend");
 }
+
+#[test]
+fn stdlib_ptr_typed_window_3_backend() {
+    // POINTER P3: `core/std/ptr.t`'s `Ptr<T>` — a typed window over
+    // raw memory, implemented as an ordinary struct + impl on the raw
+    // builtins (no backend special-casing, the `Box<T>` approach).
+    // The stride comes from `__builtin_sizeof::<T>()`, the read/write
+    // shape from the pointee type, and `p[i]` / `p[i] = v` are the
+    // `__getitem__` / `__setitem__` sugar. Instantiations cover both
+    // `Ptr::alloc` shapes: T from the `val` annotation (no T-bearing
+    // argument exists) and T from the receiver.
+    let src = r#"
+        fn sum_through_window(p: Ptr<u64>, count: u64) -> u64 {
+            var total: u64 = 0u64
+            var i: u64 = 0u64
+            while i < count {
+                total = total + p[i]
+                i = i + 1u64
+            }
+            total
+        }
+
+        fn main() -> u64 {
+            val p: Ptr<u64> = Ptr::alloc(4u64)
+            p.set(0u64, 7u64)
+            p[1u64] = 9u64
+            p[2u64] = 11u64
+            p[3u64] = 13u64
+            if p[0u64] != 7u64 { return 1u64 }
+            if p[1u64] != 9u64 { return 2u64 }
+            # offset: a window 2 elements forward, same allocation.
+            val q: Ptr<u64> = p.offset(2u64)
+            if q[0u64] != 11u64 { return 3u64 }
+            if sum_through_window(p, 4u64) != 40u64 { return 4u64 }
+            # as_raw hands the address to the raw builtins.
+            if __builtin_ptr_is_null(p.as_raw()) { return 5u64 }
+            # A second instantiation: the stride follows the type arg.
+            val t: Ptr<i64> = Ptr::alloc(2u64)
+            t.set(0u64, -5i64)
+            t.set(1u64, 3i64)
+            if t[0u64] != -5i64 { return 6u64 }
+            if t[1u64] != 3i64 { return 7u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "stdlib_ptr_typed_window_3_backend");
+}

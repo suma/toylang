@@ -12,6 +12,18 @@
 
 ### 2026-08-30
 
+- **POINTER P3 — `core/std/ptr.t` の `Ptr<T>`** — 型付きポインタ窓
+  (`alloc` / `get` / `set` / `p[i]` / `p[i] = v` / `offset` / `as_raw`)。
+  struct + impl だけで書ける (`Box<T>` と同じ手口、backend 特殊扱いゼロ)。
+  stride は P1 の `__builtin_sizeof::<T>()`、`p[i]` は P2 の
+  `__getitem__`。**実装で見つかった穴**: module 統合の remap が
+  `SizeOfType(TypeDecl)` の payload を素通りさせ、stdlib body 内の
+  turbofish `T` だけ module-interner symbol に残って subst が解けない —
+  `map_expr` の 1 arm で解消。`Ptr::alloc` は `val` 注釈から T を取る
+  (tree-walker は pending-annotation scope、AOT は既存の let-lowering)。
+  cache schema 28 → 29 (新 stdlib ファイルの intern 名シフト、convert.t
+  の v9 と同じ理由)。example `interpreter/example/typed_ptr.t` +
+  3-way consistency pin 1 件。
 - **POINTER P2 — `__getitem__` / `__setitem__` の 2 バグ + compiled レーン
   dispatch** — arity 検査が `&self` 短縮形 (parameter スロットを占有しない) を
   数えておらず `self: Self` 形しか通らなかった件と、generic struct の戻り型

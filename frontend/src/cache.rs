@@ -32,7 +32,7 @@ use crate::ast::module_interface::ModuleInterface;
 ///
 /// Mismatched versions are treated as a cache miss by
 /// [`load_full_module`].
-pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 28;
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 29;
 // v2: `File` gained `id` (JIT cache key) and `tests` (LLM-LOOP P4).
 // v3: `BuiltinFunctionSymbols` interns the MEMORY_PROFILING M4 counter
 // names, shifting every later symbol id.
@@ -69,6 +69,9 @@ pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 28;
 // `__builtin_sizeof::<T>()` type-argument form (POINTER P1). The
 // enum's serde shape changes, so a stale entry would deserialize
 // into the wrong variant order.
+// v29: `core/std/ptr.t` (`Ptr<T>`, POINTER P3) joins the auto-loaded
+// stdlib; its new names (`Ptr`, `offset`, `as_raw`, ...) shift every
+// symbol interned after them — the same reason convert.t bumped v9.
 // Forgetting this bump is not a subtle failure: stale entries
 // deserialize into the new layout and the program silently comes out
 // wrong — every stdlib trait reported "is not defined". The M4 bump

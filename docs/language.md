@@ -3400,6 +3400,31 @@ These always go through the active allocator:
 by its surrounding context (the lhs annotation of `val v: T = ...`,
 typically). `__builtin_ptr_write` accepts any type.
 
+### `Ptr<T>` — a typed window (stdlib)
+
+`core/std/ptr.t` wraps the raw builtins in a typed window. The
+pointee lives in the type, so the stride and the read/write shape
+both come from `T` instead of being hand-multiplied and
+hand-annotated at every access:
+
+```rust
+val p: Ptr<u64> = Ptr::alloc(4u64)   # 4 * sizeof::<u64>() bytes
+p.set(0u64, 7u64)                    # or p[0u64] = 7u64
+val v: u64 = p.get(1u64)             # or p[1u64]
+val q: Ptr<u64> = p.offset(2u64)     # window 2 elements forward
+val raw: ptr = p.as_raw()            # the bare address
+```
+
+It is an ordinary struct + impl (`addr: ptr` is its only field;
+`T` appears in no field, the same rule that makes `Box<T>` legal),
+with no compiler special-casing and no backend differences.
+`Ptr<T>` is a **window, not an owner**: `alloc` sizes a buffer the
+caller owns (free it with `__builtin_heap_free(p.as_raw())`), the
+indexes are unchecked, and `offset` shares the allocation with the
+window it came from. See [`design-docs/POINTER.md`](../design-docs/POINTER.md)
+for the layer map (`Span<T>`, `Option<Ptr<T>>`, `unsafe fn` are the
+later phases).
+
 Converting to and from `str`:
 
 | Builtin | Signature |

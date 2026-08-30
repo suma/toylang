@@ -135,13 +135,23 @@ tree-walker が元から持っていた dispatch に揃った。
 |---|---|---|---|
 | P1 | `__builtin_sizeof::<T>()` (型引数形) ✅ (2026-08-30) | 小 | 実測 2 の解消。`elem_size` 遅延取得も畳める |
 | P2 | `__getitem__` の `&self` 受理 + generic 戻り型の置換 ✅ (2026-08-30) | 小 | `p[i]` が書ける。`Vec` / `Dict` にも効く |
-| P3 | `core/std/ptr.t` に `Ptr<T>` (`alloc` / `get` / `set` / `offset` / `as_raw` / `__getitem__` / `__setitem__`) | 小 (stdlib のみ) | 摩擦 1〜3、6 の入口。**コンパイラ無変更** |
+| P3 | `core/std/ptr.t` に `Ptr<T>` (`alloc` / `get` / `set` / `offset` / `as_raw` / `__getitem__` / `__setitem__`) ✅ (2026-08-30) | 小 (stdlib のみ) | 摩擦 1〜3、6 の入口。**コンパイラ無変更** (module 統合の remap 1 箇所を除く、下記) |
 | P4 | `Span<T> = { p: Ptr<T>, len: u64 }` + 境界検査 | 中 (stdlib) | 摩擦 4。todo の **slice 型 `&[T]`** をライブラリ側で回収でき、`__simd_load` の受け口にもなる |
 | P5 | `Ptr<T>` を non-null 不変にし、不在は `Option<Ptr<T>>` | 中 | 摩擦 5。`has_next: bool` 方式が消える |
 | P6 | `unsafe fn` の宣言と強制 (effect mask 1 行) | 小〜中 | 生 builtin を直接呼べる場所を stdlib に集約。`--effects` が土台 |
 
 P3 が入れば **`Box` / `Vec` / `String` / `Dict` の `data: ptr` を
 `Ptr<T>` に置き換えられる**。stdlib 全体でバイトオフセット計算が 1 か所に集まる。
+
+**P3 実装メモ (2026-08-30)**: `core/std/ptr.t` は「コンパイラ無変更」の
+予定だったが、1 箇所だけ触った — **module 統合の remap が
+`BuiltinFunction::SizeOfType(TypeDecl)` の payload を素通りさせていた**。
+`__builtin_sizeof::<T>()` を stdlib モジュールの body に書くと、turbofish
+の `T` だけ module-interner の symbol に残り、monomorph subst
+(remap 済みの `generic_params` が鍵) が見つけられない。interpreter の
+`module_integration.rs::map_expr` が BuiltinCall の payload を
+`remap_type_decl` する 1 arm で解消 (compiler の AOT / IR VM は同じ
+統合 pass を使うので 1 箇所で全レーン直る)。
 
 P6 のマスクは [`EFFECT_SYSTEM.md`](EFFECT_SYSTEM.md) の表に 1 行足すだけ:
 

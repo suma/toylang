@@ -242,11 +242,22 @@ impl<'a> AstIntegrationContext<'a> {
             }
             Expr::BuiltinCall(func, args) => {
                 // BuiltinFunction variants are universal (no symbol
-                // table dependency), so the variant survives the
-                // remap untouched. Only the per-arg ExprRefs need
-                // re-pointing into the main program's pools.
+                // table dependency) — except `SizeOfType(TypeDecl)`
+                // (POINTER P1), whose written type carries
+                // module-interner symbols that must re-point at the
+                // main interner like any annotation. Without this, a
+                // stdlib `__builtin_sizeof::<T>()` keeps a `T` the
+                // monomorph subst (keyed by the remapped
+                // `generic_params`) cannot see, and the turbofish
+                // fails to resolve in every integrated module.
+                let new_func = match func {
+                    frontend::ast::BuiltinFunction::SizeOfType(ty) => {
+                        frontend::ast::BuiltinFunction::SizeOfType(self.remap_type_decl(ty)?)
+                    }
+                    other => other.clone(),
+                };
                 Ok(Expr::BuiltinCall(
-                    func.clone(),
+                    new_func,
                     self.map_exprs(args, "BuiltinCall argument")?,
                 ))
             }

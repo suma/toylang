@@ -1769,11 +1769,13 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2178 テスト** (100% 成功、2026-08-24 時点)。
+- 合計 **2483 テスト** (100% 成功、2026-08-30 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
-- テスト実行はワークスペース全体で **~6.5s** (warm、20 コア。2026-08-19、
-  AOT demand-driven lowering で 7.8s → 6.5s。内訳と削り代は TEST-PERF、
-  ビルド時間は BUILD-PERF)。`compiler/build.rs` が `toylang_rt` を rustc で
+- テスト実行はワークスペース全体で **~11.5s** (2026-08-30 実測、nextest
+  の既定 profile 出力)。2026-08-19 頃の ~6.5s からはテスト数の増加
+  (1999 → 2483) と stdlib の肥大 (整合性レーンの core ロード) 分。
+  内訳と削り代は TEST-PERF、ビルド時間は BUILD-PERF。
+  `compiler/build.rs` が `toylang_rt` を rustc で
   staticlib pre-build し、リンク結果は `TOY_LINK_CACHE_DIR` で
   content-addressed にキャッシュされる (キャッシュが効くにはコード生成が
   決定的である必要がある — `compiler/tests/reproducible_build.rs` が pin)。

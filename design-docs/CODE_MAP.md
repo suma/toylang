@@ -57,6 +57,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | 演算子オーバーロード | `type_checker/expression.rs::visit_arith_binary` | `evaluation/operators.rs` | `compiler_lower/src/expr_ops.rs` | — |
 | キャスト (`as`) | `type_checker/collections.rs` | `evaluation/expression.rs` | `compiler_lower/src/expr.rs` | `compiler_vm/src/dispatch.rs` |
 | SIMD の lane-wise 演算・intrinsic (SIMD) | `type_checker/simd.rs` (型 は `type_decl.rs::VectorType`、intrinsic は `ast/expr.rs::SimdOp`) | `evaluation/simd.rs` (値は `object.rs::SimdValue`) | `compiler_lower/src/simd.rs` (IR は `compiler_ir::VecTy` + `InstKind::Simd*`)、cranelift は `compiler/src/codegen/simd.rs` | `compiler_vm/src/simd.rs` |
+| `__builtin_sizeof` (値形式 + 型引数形式 `::<T>`、POINTER P1) | turbofish の parse は `parser/expr/primary.rs` (`BuiltinFunction::SizeOfType(TypeDecl)`、generic context 無しで parse するのでパラメータは `Identifier(T)`)、妥当性検査は `type_checker/expression.rs::validate_sizeof_type`。**generic fn body が自パラメータを generic scope に積む**のは `type_checker/visitor.rs::type_check_body` | `evaluation/builtin.rs::builtin_reflection` (型引数形式は `evaluation/call.rs` の呼び出し境界が push する generic scope で解決 — receiver の runtime type_args / 引数値 / `val` 注釈 / 呼び出し元 scope、ヘルパは `evaluation/mod.rs`) | lower 時に畳む — `compiler_lower/src/expr.rs::lower_builtin_reflection` の `SizeOfType` arm (active monomorph subst + `compute_byte_size`)。subst は `PendingGenericInstance` (free fn) / `PendingMethodInstance` (method) が運ぶ。**module 統合の remap が payload を 通る**のは `interpreter/src/module_integration.rs::map_expr` の `SizeOfType` arm | silent fallback (`jit/eligibility/checker.rs`) |
 
 ## 束縛・スコープ
 
@@ -83,7 +84,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | or パターン (PATTERN-EXTEND) | `parser/expr/match_.rs::parse_match_pattern` (全 sub-pattern 位置がここを通る) + `expand_slots` の直積。alternative ごとに arm を複製する (body / guard は共有) ので型検査・バックエンドに専用の分岐は無い。alternative 間で束縛名が食い違うと parse エラー (`check_alternatives_bind_alike`)、展開数の上限は `MAX_PATTERN_ALTERNATIVES` |
 | `@` / 範囲 パターン (`Pattern::Binding` / `Pattern::Range`) | どちらも実 pattern 形。parse は `parse_match_pattern` (任意の深さ)、`@` を剥がすのは `type_checker/pattern_match.rs::peel_bindings` (網羅性・到達性は内側の pattern のもの)、範囲の被覆判定は同ファイルの `IntCoverage` (literal と range を 1 つの区間集合で持ち、隣接区間を merge するので型を分割する arm 群は `_` 不要)。interpreter は `evaluation/expression.rs::try_match_pattern`、AOT/JIT は `match_lowering.rs::dispatch_arm_pattern` / `emit_range_branch` / `bind_payload_sub_pattern` / `dispatch_field_shape_pattern`。interpreter 側 JIT は eligibility で reject |
 | match 実行 | `evaluation/expression.rs` |
-| compound (struct / tuple / enum) が call 引数を渡るとき | **1 値では渡らない — leaf ごとの local に materialize してその値を並べる**。binding 引数は `expr.rs::lower_call_args_with_target` / `lower_arg_values` / `method_call.rs::build_method_call_values` の identifier 展開、literal 引数は `expr.rs::lower_compound_literal_arg` (CALL-ARG-COMPOUND-LITERAL)。generic の monomorph は callee の**引数スロットの型** (`Function::params`、宣言 1 個 = entry 1 個) から採り、literal と食い違うスロットは信用せず名前ベースに落ちる |
+| compound (struct / tuple / enum) が call 引数を渡るとき | **1 値では渡らない — leaf ごとの local に materialize してその値を並べる**。binding 引数は `expr.rs::lower_call_args_with_target` / `lower_arg_values` / `method_call.rs::build_method_call_values` の identifier 展開、literal 引数は `expr.rs::lower_compound_literal_arg` (CALL-ARG-COMPOUND-LITERAL)、**enum-typed field を引数位置で直接読む** (`has_next(node.next)`) は `lower_call_arg_items` の `FieldChainResult::Enum` arm (POINTER P5)。generic の monomorph は callee の**引数スロットの型** (`Function::params`、宣言 1 個 = entry 1 個) から採り、literal と食い違うスロットは信用せず名前ベースに落ちる |
 | match lowering + scrutinee 制約 | `compiler_lower/src/match_lowering.rs`。compound scrutinee (struct / tuple) は `classify_match_scrutinee` が `MatchScrutinee::Struct` / `Tuple` を返し、照合は `dispatch_struct_pattern` / `dispatch_tuple_pattern` / `dispatch_field_shape_pattern`。**arm body の型推論にも束縛が要る** (`bind_*_for_inference`) — 無いと result local が作られない |
 
 ## trait / dyn
@@ -165,6 +166,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 |---|---|
 | heap builtin (`__builtin_heap_*` / `ptr_*`) | `evaluation/builtin.rs` |
 | `__builtin_ptr_read` の**型注釈の解釈** | **2 箇所ある**: 型検査は `type_checker/visitor_impl.rs::visit_builtin_call` の hint 許容リスト、lowering は `compiler_lower/src/let_lowering.rs::lower_let_builtin_ptr_read` (名前解決は `lower_type_arg`)。片方だけ足すと「型は通るが lower できない」/「lower はできるが型で落ちる」になる |
+| `Ptr<T>` / `Span<T>` (POINTER P3/P4) | **stdlib のみ** — `core/std/ptr.t` / `core/std/span.t` (`Box<T>` と同じ手口、backend 特殊扱いゼロ)。bracket sugar (`p[i]` / `s[i] = v`) の compiled レーン dispatch だけは `array_access.rs::lower_slice_access` / `lower_slice_assign` (struct binding を `__getitem__` / `__setitem__` 呼び出しに委譲、checker 側の arity / generic 戻り型は `type_checker/struct_literal.rs::check_struct_getitem_access` / `check_struct_setitem_access`)。tree-walker の struct 経由 bracket は `evaluation/slice.rs` |
 | allocator スタック (`with allocator =`) | `evaluation/builtin.rs`, `interpreter/src/runtime_state.rs` |
 | stdlib 側の policy | `core/std/allocator.t` |
 

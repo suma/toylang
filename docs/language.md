@@ -3422,8 +3422,7 @@ with no compiler special-casing and no backend differences.
 caller owns (free it with `__builtin_heap_free(p.as_raw())`), the
 indexes are unchecked, and `offset` shares the allocation with the
 window it came from. See [`design-docs/POINTER.md`](../design-docs/POINTER.md)
-for the layer map (`Span<T>`, `Option<Ptr<T>>`, `unsafe fn` are the
-later phases).
+for the layer map (`unsafe fn` is the remaining phase).
 
 **Non-null (POINTER P5).** A `Ptr<T>` value is non-null by
 construction — every backend answers `heap_alloc(0)` with null, so

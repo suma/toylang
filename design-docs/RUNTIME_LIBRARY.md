@@ -42,7 +42,7 @@ read_file / strftime) / panic・backtrace (shadow stack) / 出力シンク
 - ~~**ファイル書き込み / 追記**~~ — `write_file` / `append_file` が入った (P0-A)
 - ~~**stderr への user 出力**~~ — `eprint` / `eprintln` が入った (P0-A)
 - ~~**`exit(code)`**~~ — `io::exit(code)` が入った (P0-A)
-- **str → 数値のパース** — `read_line` / `arg` / `read_file` の結果が数値にできず、入出力の往復が閉じない
+- ~~**str → 数値のパース**~~ — `core/std/parse.t` が入った (P0-B)
 - **単調時計 / sleep** — `now()` は libc `time` の wall 秒のみ
 - **`Set<T>` / 優先度付きキュー / deque**
 - **ログ**
@@ -79,7 +79,7 @@ read_file / strftime) / panic・backtrace (shadow stack) / 出力シンク
 | 優先度 | ライブラリ | 内容 | 経路 | 状態 |
 |---|---|---|---|---|
 | **P0** | io 書き込み系 | `write_file` / `append_file` / `eprint` / `io::exit(code)` | extern | ✅ 2026-08-30 (P0-A) |
-| **P0** | str パース | `parse_i64/u64/f64/bool(str) -> Result<_, ParseError>` | extern | 未着手 |
+| **P0** | str パース | `parse::to_i64/to_u64/to_f64/to_bool(str) -> Result<_, ParseError>` | 純 toylang + extern 1 本 | ✅ 2026-08-30 (P0-B) |
 | **P0** | 衛生項目 | `str` の `Ord` (STDLIB-ORD) / narrow int の `checked_*` (RUNTIME-TRAP-NARROW) / `arg(i)` 等の範囲外 `Result` 化 | 混在 | todo 既載 |
 | **P1** | Dict hash 化 | 線形探索 → open addressing。`hash.t` の mixer 更新を含む | 純 toylang | 未着手 |
 | **P1** | `Set<T>` | hash 化した表を共有 | 純 toylang | 未着手 |
@@ -124,10 +124,29 @@ pin する形にした。
 (書き込み専用 variant が要るかどうかだけ)。panic 経路の stderr 直書き
 (`err_write`) が既にあるので Rust 側の下地は揃っている。
 
+**P0-B 実装メモ (2026-08-30、landing 済み)** — `ParseError` は想定どおり
+`Empty` / `Invalid` / `Overflow` の 3 variant。着手時に決めるとしていた
+3 点は **すべて「厳しい側」**に倒し `docs/language.md` の
+「Parsing numbers」に固定した: **trim しない** (呼び出し側が
+`.trim()` できるが、勝手に trim すると厳しくできない)、**`+` / `-` は
+受理** (`to_u64` の `-1` は wrap ではなく `Invalid`)、**`0x` / `_` は
+不可** (あれはソースリテラルの構文で入力の構文ではない)。
+
+**経路は表の「extern」から変わった** — 整数と bool のパーサは
+**純 toylang** で書けた (`checked_mul` / `checked_add` が
+オーバーフローを見てくれるので、範囲チェックが `Option` の match に
+なる)。extern が要るのは `to_f64` の 10 進 → 2 進変換だけで、これは
+正しく丸める実装を toylang で書き直すものではない。ただし
+**文法の判定は toylang 側**に置いた: そうしないと interpreter の
+Rust `str::parse` と compiled 側の libc `strtod` で受理する文字列が
+食い違う (`inf` / hex float / 先頭空白)。変換に渡るのは両者が同じに
+解釈する文字列だけになる。オーバーフローは status extern が
+「結果が無限大か」で報告する (`1e999` は `Ok(inf)` ではなく
+`Err(Overflow)`)。
+
 **P0 str パース** — `ParseError` は `Empty` / `Invalid` / `Overflow` の
 3 variant を想定 (u64 パースのオーバーフローは `Invalid` と区別が要る。
-`checked_*` と同じ理由)。空白の扱い (trim するか)、符号、`0x` 前置きを
-受理するかは Phase 着手時に docs/language.md に固定する。
+`checked_*` と同じ理由)。
 
 **P1 Dict hash 化** — 並列配列 (keys/vals + 要素幅) の現 layout は
 open addressing と相性が良い。論点は 3 つ:
@@ -164,7 +183,7 @@ reader は文字列走査のパーサで、`String` / `StringIter` の上に純 
 | Phase | 内容 | 受け入れ基準 |
 |---|---|---|
 | **P0-A** ✅ | `write_file` / `append_file` / `eprint` / `exit` | 3 バックエンド一致テスト (書き込み先は tempfile fixture)。`exit` は終了コード pin |
-| **P0-B** | `parse_*` 4 種 | 3 バックエンド一致 + `ParseError` の網羅 match pin。境界 (空文字 / MAX+1 / 先頭空白) の単体テスト |
+| **P0-B** ✅ | `parse_*` 4 種 | 3 バックエンド一致 + `ParseError` の網羅 match pin。境界 (空文字 / MAX+1 / 先頭空白) の単体テスト |
 | **P0-C** | 衛生項目 3 件 | todo.md の該当項目を解消済みとして移動 |
 | **P1-A** | Dict hash 化 | 既存 dict テスト全 green (意味論不変) + 反復順の仕様固定 + 性能実測 (n=1e4 insert/get の前後比較) |
 | **P1-B** | `Set<T>` | Dict と共通の表実装で 3 バックエンド一致 |

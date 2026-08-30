@@ -177,6 +177,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 |---|---|
 | `print` / `println` / `eprint` / `eprintln` | builtin の解決は `frontend/src/ast/expr.rs::BuiltinFunctionSymbols`、`Display` への書き換えは `type_checker/expression.rs::apply_display_dispatch`。tree-walker は `evaluation/builtin.rs::builtin_diagnostics` → `interpreter/src/output.rs`、lowering は `compiler_lower/src/print.rs` (compound は `PrintRaw` + `Print` の列に展開) |
 | **どちらの流れに出るか** (RUNTIME-LIB P0-A) | IR の `Print` / `PrintStr` / `PrintRaw` が持つ `stderr` フラグ。lowering は `FunctionLower::print_stderr` (`expr.rs` の `EPrint` / `EPrintln` arm が 1 呼び出しの間だけ立てる)、IR VM は `compiler_vm/src/dispatch.rs::emit_text`、AOT / compiler JIT は `codegen/lower_inst.rs::lower_printing` が `toy_print_stream(1/0)` で挟む (`toy_print_*` ヘルパは stdout 専用のまま 1 セット)。runtime のシンクは 2 本 — `toylang_rt` の `sink` / `err_sink` |
+| str → 数値 (RUNTIME-LIB P0-B) | `core/std/parse.t` — 整数 / bool は純 toylang、`to_f64` だけ `toy_parse_f64` + ペアの status extern (interpreter は `evaluation/extern_io.rs::parse_f64`)。**文法の判定は toylang 側の `is_decimal`** — host 任せにすると `inf` / hex float / 先頭空白で受理集合がバックエンド間で割れる |
 | `io::` の extern 実装 | 宣言は `core/std/io.t` (`from "toylang_rt" as "toy_io_*"` / `from "c"`)、interpreter は `evaluation/extern_io.rs::build_io_registry`、AOT / JIT は `toylang_rt` の `toy_io_*` (JIT のシンボル登録は `compiler/src/jit.rs`)。失敗は payload extern + ペアの `__extern_io_*_status` で運ぶ (RUNTIME-IO) |
 
 ## パーサ

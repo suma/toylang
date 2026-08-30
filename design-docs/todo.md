@@ -12,6 +12,15 @@
 
 ### 2026-08-30
 
+- **RUNTIME-LIB P0-B — `core/std/parse.t` (`parse::to_u64` / `to_i64` /
+  `to_f64` / `to_bool`)** — 文字列 → 数値。整数と bool は**純 toylang**
+  (`checked_mul` / `checked_add` が範囲チェックを担う)、extern が要るのは
+  `to_f64` の 10 進 → 2 進変換だけ。ただし**文法の判定は toylang 側**に
+  置いた — でないと Rust `str::parse` と libc `strtod` で受理する文字列が
+  食い違う (`inf` / hex float / 先頭空白)。文法は厳しい側に固定
+  (trim しない / `0x` 不可 / `to_u64("-1")` は `Invalid` / `1e999` は
+  `Err(Overflow)`)。`ParseError` は `Empty` / `Invalid` / `Overflow`。
+  cache schema v33 (stdlib モジュールが 1 つ増えた)。
 - **RUNTIME-LIB P0-A — io 書き込み系 (`write_file` / `append_file` /
   `eprint` / `eprintln` / `io::exit`)** — 前 3 つは
   [`RUNTIME_LIBRARY.md`](RUNTIME_LIBRARY.md) の P0 一行目。ファイル

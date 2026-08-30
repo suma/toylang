@@ -570,6 +570,15 @@ fn main() -> u64 {
 
 ## 入出力ビルトイン
 
+- **`parse::` モジュール** (`core/std/parse.t`、RUNTIME-LIB P0-B) —
+  `to_u64` / `to_i64` / `to_f64` / `to_bool` が
+  `Result<_, ParseError>` (`Empty` / `Invalid` / `Overflow`) を返す。
+  **文法は厳しい側**: trim しない / 10 進のみ (`0x` も `_` も不可) /
+  `to_u64("-1")` は `Invalid` / `1e999` は `Err(Overflow)` (無限大に
+  しない) / `to_bool` は `true` `false` のみ。整数と bool は純 toylang、
+  `to_f64` だけ extern (10 進 → 2 進変換) だが**文法判定は toylang 側**
+  (でないと Rust `str::parse` と libc `strtod` で受理集合が食い違う)。
+  詳細は `docs/language.md` の「Parsing numbers」
 - **`io::` モジュール** (`core/std/io.t`) — `read_line()` / `argc()` /
   `arg(i)` / `env_var(name)` / `read_file(path)` /
   **`write_file(path, contents)`** / **`append_file(path, contents)`** /

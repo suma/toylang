@@ -3691,6 +3691,72 @@ byte-identical). The environment list (`env_count` / `env_name` /
 `env_value`) iterates `environ` order, which the interpreter's
 `std::env::vars` matches.
 
+### Parsing numbers (`parse::`)
+
+`core/std/parse.t` reads numbers back out of text — the direction
+`__builtin_to_string` and [string interpolation](#string-interpolation)
+do not cover, and what `io::read_line()` / `io::arg(i)` /
+`io::read_file(path)` need to be useful:
+
+```rust
+parse::to_u64(s: str) -> Result<u64, ParseError>
+parse::to_i64(s: str) -> Result<i64, ParseError>
+parse::to_f64(s: str) -> Result<f64, ParseError>
+parse::to_bool(s: str) -> Result<bool, ParseError>
+```
+
+```rust
+val n = parse::to_u64(io::arg(0u64))
+match n {
+    Result::Ok(v) => v,
+    Result::Err(e) => { eprintln("not a number: {e}") 0u64 }
+}
+```
+
+| `ParseError` | Meaning |
+|---|---|
+| `ParseError::Empty` | the input had no characters |
+| `ParseError::Invalid` | the input is not in the grammar below |
+| `ParseError::Overflow` | the value does not fit the target type |
+
+`ParseError` implements `Display` (`empty input`, `invalid number`,
+`out of range`), and `?` propagates it like any other `Result`.
+
+**The grammar is narrow on purpose**, and identical on every backend:
+
+- **No surrounding whitespace.** `" 42"` is `Err(Invalid)`; call
+  `.trim()` first when the input is a line of text. A parser that
+  trims silently cannot be made strict again by its caller.
+- **Decimal only.** No `0x` / `0b` prefixes and no `_` separators —
+  those are *source literal* syntax, not input syntax.
+- **Sign.** `to_i64` / `to_f64` accept `+` and `-`; `to_u64` accepts a
+  leading `+` and reads `"-1"` as `Err(Invalid)` rather than wrapping.
+- **Bounds are checked, not wrapped.** `"18446744073709551616"` is
+  `Err(Overflow)`, and `to_i64("-9223372036854775808")` succeeds —
+  the magnitude is read first and compared against the bound for its
+  sign, so the one value whose positive form does not fit is not lost.
+- **Floats** are `[+-]? ( digits ('.' digits?)? | '.' digits ) ([eE]
+  [+-]? digits)?` — so `"3"`, `".5"`, `"5."`, `"2.5e3"` and `"25E-1"`
+  are all accepted, and exponents are reachable even though the
+  language has no exponent *literal*. There is no `inf` / `nan`
+  spelling and no hex float: a value too large to represent is
+  `Err(Overflow)`, never `Ok(infinity)`. Underflow is not an error —
+  the nearest representable value is `0.0`.
+- **`to_bool`** takes exactly `true` or `false`. No case folding, no
+  `1` / `0` / `yes`.
+
+The integer and bool parsers are written in toylang and need no
+runtime support. `to_f64` validates the grammar in toylang and then
+hands the accepted string to the host's decimal → binary conversion
+(`str::parse` in the interpreter, `strtod` in the compiled runtime):
+both are correctly rounded, and deciding the grammar *before* the
+call is what keeps a C `strtod`'s extra spellings (`inf`, hex floats,
+leading whitespace) from being accepted on one backend only.
+
+Round-tripping holds in the direction that matters: whatever the
+language prints for a `u64` / `i64` / `f64`, `parse::` reads back to
+the same value.
+
 ### Termination
 
 ```rust

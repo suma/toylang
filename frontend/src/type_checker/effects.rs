@@ -330,11 +330,17 @@ pub fn builtin_effect(func: BuiltinFunction) -> (EffectSet, &'static str) {
         HeapFree => (EffectSet::of(&[Effect::Free]), "__builtin_heap_free"),
 
         PtrRead => (EffectSet::of(&[Effect::RawRead]), "__builtin_ptr_read"),
-        PtrIsNull => (EffectSet::of(&[Effect::RawRead]), "__builtin_ptr_is_null"),
-        PtrEq => (EffectSet::of(&[Effect::RawRead]), "__builtin_ptr_eq"),
-        NullPtr => (EffectSet::of(&[Effect::RawRead]), "__builtin_null_ptr"),
-        PtrOffset => (EffectSet::of(&[Effect::RawRead]), "__builtin_ptr_offset"),
-        StrToPtr => (EffectSet::of(&[Effect::RawRead]), "__builtin_str_to_ptr"),
+        // The address-arithmetic / comparison builtins are pure: they
+        // never touch memory *contents*, only the addresses as values
+        // (Rust's `as_ptr` / `offset_from` are safe the same way —
+        // dereferencing is the unsafe step). POINTER P6 leans on this
+        // split: the `unsafe fn` requirement fires on the deref
+        // builtins, not on asking whether a pointer is null.
+        PtrIsNull => (EffectSet::EMPTY, "__builtin_ptr_is_null"),
+        PtrEq => (EffectSet::EMPTY, "__builtin_ptr_eq"),
+        NullPtr => (EffectSet::EMPTY, "__builtin_null_ptr"),
+        PtrOffset => (EffectSet::EMPTY, "__builtin_ptr_offset"),
+        StrToPtr => (EffectSet::EMPTY, "__builtin_str_to_ptr"),
         StrFromBytes => (EffectSet::of(&[Effect::RawRead]), "__builtin_str_from_bytes"),
 
         PtrWrite => (EffectSet::of(&[Effect::RawWrite]), "__builtin_ptr_write"),
@@ -417,6 +423,14 @@ pub struct EffectTable<'a> {
     /// cycle contributed nothing — so it is used but not memoised.
     cycles: u32,
     order: u32,
+    /// POINTER P6: when set, the walk does **not** descend into
+    /// callees — `Expr::Call` / `MethodCall` /
+    /// `AssociatedFunctionCall` contribute their arguments' effects
+    /// only. This is the "what does this function's own body do"
+    /// reading the `unsafe fn` requirement uses: calling an `unsafe
+    /// fn` must not make the caller unsafe, or every program that
+    /// calls `Vec::push` would need the declaration.
+    direct_only: bool,
 }
 
 impl<'a> EffectTable<'a> {
@@ -455,7 +469,20 @@ impl<'a> EffectTable<'a> {
             in_progress: HashSet::new(),
             cycles: 0,
             order: 0,
+            direct_only: false,
         }
+    }
+
+    /// A table that answers "what does this body's own statements
+    /// do" — callee bodies are not descended into (POINTER P6).
+    pub fn new_direct_only(
+        program: &'a File,
+        interner: &'a DefaultStringInterner,
+        expr_types: &'a HashMap<ExprRef, TypeDecl>,
+    ) -> Self {
+        let mut table = Self::new(program, interner, expr_types);
+        table.direct_only = true;
+        table
     }
 
     /// The name a diagnostic gives the function at `index`.
@@ -481,6 +508,15 @@ impl<'a> EffectTable<'a> {
     /// rather than a body — a `requires` / `ensures` predicate.
     pub fn of_expr(&mut self, expr: &ExprRef) -> Effects {
         self.walk_expr(expr)
+    }
+
+    /// POINTER P6: what this body does **itself** — raw memory
+    /// access in its own statements, without following calls. Only
+    /// meaningful on a `direct_only` table (on a transitive one the
+    /// answer would be the full reachability set).
+    pub fn of_body_direct(&mut self, body: &StmtRef) -> Effects {
+        debug_assert!(self.direct_only, "of_body_direct needs a direct_only table");
+        self.walk_stmt(body)
     }
 
     fn next_order(&mut self) -> u32 {
@@ -588,8 +624,13 @@ impl<'a> EffectTable<'a> {
             }
             Expr::Call(callee, args) => {
                 let mut effects = self.walk_expr(&args);
-                let callee_effects = self.enter(None, &callee);
-                effects.merge(&callee_effects);
+                // POINTER P6: in direct_only mode the callee's body is
+                // not descended into — calling an `unsafe fn` does not
+                // make the caller unsafe.
+                if !self.direct_only {
+                    let callee_effects = self.enter(None, &callee);
+                    effects.merge(&callee_effects);
+                }
                 effects
             }
             Expr::MethodCall(receiver, method, args) => {
@@ -606,15 +647,20 @@ impl<'a> EffectTable<'a> {
                     return effects;
                 }
                 let owner = self.expr_types.get(&receiver).and_then(receiver_type_name);
-                let callee_effects = self.enter(owner, &method);
-                effects.merge(&callee_effects);
+                if !self.direct_only {
+                    let callee_effects = self.enter(owner, &method);
+                    effects.merge(&callee_effects);
+                }
                 effects
             }
             Expr::AssociatedFunctionCall(type_name, function, args) => {
                 let mut effects = self.walk_all(&args);
-                // `Type::func()` names its owner outright.
-                let callee_effects = self.enter(Some(type_name), &function);
-                effects.merge(&callee_effects);
+                // `Type::func()` names its owner outright. Direct-only
+                // mode skips the descent, same as the two arms above.
+                if !self.direct_only {
+                    let callee_effects = self.enter(Some(type_name), &function);
+                    effects.merge(&callee_effects);
+                }
                 effects
             }
             Expr::Binary(_, lhs, rhs) => self.walk_each(&[lhs, rhs]),

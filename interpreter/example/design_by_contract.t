@@ -47,7 +47,7 @@ impl Counter {
 # The allocation counters are readable from contracts, so a function's
 # memory behaviour can be part of its signature. This one promises to
 # hand back everything it takes.
-fn scratch(n: u64) -> u64
+unsafe fn scratch(n: u64) -> u64
     ensures __builtin_cumulative_bytes() - old(__builtin_cumulative_bytes()) <= 256u64
     ensures __builtin_live_bytes() == old(__builtin_live_bytes())
 {

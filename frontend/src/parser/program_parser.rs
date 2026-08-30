@@ -122,37 +122,44 @@ impl<'a> Parser<'a> {
                 Visibility::Private
             };
 
-            // Prefix modifiers on a function declaration, in either
-            // order: `never_allocates` (NEVER-ALLOCATES) and `const`
-            // (COMPILE-TIME-EVAL C1).
+            // Prefix modifiers on a function declaration, in any
+            // order: `never_allocates` (NEVER-ALLOCATES), `const`
+            // (COMPILE-TIME-EVAL C1), and `unsafe` (POINTER P6).
             //
             // `never_allocates` is contextual like `test` — only one
-            // immediately followed by `fn` / `extern` / the other
+            // immediately followed by `fn` / `extern` / another
             // modifier is a modifier, so a program with its own
             // `never_allocates` name is unaffected. `const` is already
             // a keyword, and the token after it separates the two
             // meanings without ambiguity: a declaration names a
             // binding (`const N: u64 = ...`), a modifier is followed
-            // by `fn`.
+            // by `fn`. `unsafe` is contextual the same way, so a
+            // program may still name a binding `unsafe`. The shared
+            // gate is "the token after this one still leads to `fn`",
+            // which covers every order (`unsafe const fn`,
+            // `never_allocates unsafe fn`, ...).
             let mut never_allocates = false;
             let mut const_fn = false;
+            let mut is_unsafe = false;
             loop {
+                let next_leads_to_fn = matches!(
+                    self.peek_n(1),
+                    Some(Kind::Function) | Some(Kind::Extern) | Some(Kind::Const)
+                ) || matches!(self.peek_n(1), Some(Kind::Identifier(s)) if s == "never_allocates" || s == "unsafe");
                 let is_never_allocates =
-                    matches!(self.peek(), Some(Kind::Identifier(s)) if s == "never_allocates")
-                        && matches!(
-                            self.peek_n(1),
-                            Some(Kind::Function) | Some(Kind::Extern) | Some(Kind::Const)
-                        );
-                let is_const_fn = matches!(self.peek(), Some(Kind::Const))
-                    && (matches!(self.peek_n(1), Some(Kind::Function))
-                        || (matches!(self.peek_n(1), Some(Kind::Identifier(s)) if s == "never_allocates")
-                            && matches!(self.peek_n(2), Some(Kind::Function))));
-                if is_never_allocates && !never_allocates {
+                    matches!(self.peek(), Some(Kind::Identifier(s)) if s == "never_allocates");
+                let is_unsafe_mod =
+                    matches!(self.peek(), Some(Kind::Identifier(s)) if s == "unsafe");
+                let is_const_mod = matches!(self.peek(), Some(Kind::Const));
+                if next_leads_to_fn && is_never_allocates && !never_allocates {
                     self.next();
                     never_allocates = true;
-                } else if is_const_fn && !const_fn {
+                } else if next_leads_to_fn && is_const_mod && !const_fn {
                     self.next();
                     const_fn = true;
+                } else if next_leads_to_fn && is_unsafe_mod && !is_unsafe {
+                    self.next();
+                    is_unsafe = true;
                 } else {
                     break;
                 }
@@ -201,6 +208,10 @@ impl<'a> Parser<'a> {
                     ensures_kinds: vec![],
                     never_allocates: false,
                     const_fn: false,
+                    // POINTER P6: `unsafe test "..." { ... }` — the
+                    // modifier is parsed by the shared loop above and
+                    // rides on the synthesized function.
+                    is_unsafe,
                     old_exprs: vec![],
                     code: self.ast_builder.expression_stmt(block, Some(location)),
                     is_extern: false,
@@ -216,8 +227,8 @@ impl<'a> Parser<'a> {
             }
 
             match self.peek() {
-                Some(Kind::Extern) => self.parse_toplevel_extern_decl(&mut out, visibility, never_allocates)?,
-                Some(Kind::Function) => self.parse_toplevel_function(&mut out, visibility, never_allocates, const_fn)?,
+                Some(Kind::Extern) => self.parse_toplevel_extern_decl(&mut out, visibility, never_allocates, is_unsafe)?,
+                Some(Kind::Function) => self.parse_toplevel_function(&mut out, visibility, never_allocates, is_unsafe, const_fn)?,
                 Some(Kind::Const) => self.parse_toplevel_const_decl(&mut out, visibility)?,
                 Some(Kind::Type) => self.parse_toplevel_type_alias(&mut out, visibility)?,
                 Some(Kind::Struct) => self.parse_toplevel_struct_decl(&mut out, visibility)?,
@@ -299,6 +310,7 @@ impl<'a> Parser<'a> {
         out: &mut TopLevel,
         visibility: Visibility,
         never_allocates: bool,
+        is_unsafe: bool,
     ) -> ParserResult<()> {
         // `extern fn name(params) -> ret` — declares a
         // function whose body is provided by the runtime
@@ -438,6 +450,9 @@ impl<'a> Parser<'a> {
             // the author's word and lets a
             // `never_allocates` caller through.
             never_allocates,
+            // POINTER P6: on an `extern fn` this is a declaration,
+            // not a check — the body is outside the language.
+            is_unsafe,
             // An `extern fn` body is outside the language, so it can
             // never be evaluated at compile time.
             const_fn: false,
@@ -456,6 +471,7 @@ impl<'a> Parser<'a> {
         out: &mut TopLevel,
         visibility: Visibility,
         never_allocates: bool,
+        is_unsafe: bool,
         const_fn: bool,
     ) -> ParserResult<()> {
         let fn_start_pos = self.peek_position_n(0).unwrap().start;
@@ -512,6 +528,7 @@ impl<'a> Parser<'a> {
                     ensures: clauses.ensures,
                     ensures_kinds: clauses.ensures_kinds,
                     never_allocates,
+                    is_unsafe,
                     const_fn,
                     old_exprs: clauses.old_exprs,
                     code: self.ast_builder.expression_stmt(block, Some(location)),

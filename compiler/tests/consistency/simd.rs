@@ -163,7 +163,7 @@ fn simd_load_and_store_address_by_element() {
     // addressing conventions have to line up or the lanes come back
     // shifted.
     let src = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val p = __builtin_heap_alloc(64u64)
             __builtin_ptr_write(p, 0u64, 1.5f64)
             __builtin_ptr_write(p, 8u64, 2.5f64)

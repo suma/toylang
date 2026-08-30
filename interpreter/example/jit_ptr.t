@@ -4,7 +4,7 @@
 # annotation so the JIT can route to the right helper.
 #
 # Final exit code = 1 + 2 + (1 if true else 0) + 99 = 103
-fn main() -> u64 {
+unsafe fn main() -> u64 {
     val p: ptr = __builtin_heap_alloc(64u64)
 
     __builtin_ptr_write(p, 0u64, 1i64)

@@ -183,6 +183,14 @@ pub struct Function {
     /// forces the fold is the use site — a `const NAME = f(1u64)`
     /// initialiser, or (later) an array length.
     pub const_fn: bool,
+    /// POINTER P6: the function was declared `unsafe fn` — it may
+    /// perform raw memory access (`__builtin_ptr_read` /
+    /// `__builtin_ptr_write` / the mem-move family) in its own body.
+    /// The checker refuses a body that reaches a `RawRead` / `RawWrite`
+    /// builtin without the declaration; going through the stdlib's
+    /// `Ptr<T>` / `Span<T>` keeps the caller safe. Direct calls only —
+    /// calling an `unsafe fn` does not make the caller unsafe.
+    pub is_unsafe: bool,
     /// Body block. For `extern fn` declarations this points at a
     /// placeholder `Stmt::Break`; backends look at `is_extern`
     /// before walking the body.
@@ -324,6 +332,14 @@ pub struct TraitMethodSignature {
     /// `extern fn` it is a *declaration* rather than a check — the
     /// implementation lives outside the language and cannot be walked.
     pub never_allocates: bool,
+    /// POINTER P6: the signature was declared `unsafe fn`. A trait
+    /// signature has no body of its own, so this only travels: a
+    /// default body inherits it, and an impl that omits the method
+    /// gets a method declared the same way. An impl writing its own
+    /// override declares `unsafe` itself — conformance does not
+    /// compare the two, because the check is about a body, not a
+    /// signature.
+    pub is_unsafe: bool,
     pub has_self_param: bool,
     /// `true` when the receiver was written `&mut self` (mutable
     /// reference). Only meaningful when `has_self_param == true`.
@@ -380,6 +396,10 @@ pub struct MethodFunction {
     /// `extern fn` it is a *declaration* rather than a check — the
     /// implementation lives outside the language and cannot be walked.
     pub never_allocates: bool,
+    /// POINTER P6: the method was declared `unsafe fn` — its own body
+    /// may reach a raw-memory builtin. Enforced like the free-function
+    /// form; see [`Function::is_unsafe`].
+    pub is_unsafe: bool,
     pub code: StmtRef,
     pub has_self_param: bool, // true if first parameter is &self
     /// `true` when the receiver was written `&mut self` (mutable

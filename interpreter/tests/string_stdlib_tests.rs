@@ -185,7 +185,7 @@ fn string_as_ptr_round_trip() {
     // `s.as_ptr()` returns the heap pointer; round-trip through
     // `__builtin_ptr_read` to confirm bytes match.
     let src = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val s: String = String::from_str("ABC")
             val p: ptr = s.as_ptr()
             val b0: u8 = __builtin_ptr_read(p, 0u64)

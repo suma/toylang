@@ -103,7 +103,7 @@ fn load_and_store_address_by_element() {
     // place `__simd_*` departs from `__builtin_ptr_read`, whose
     // offset is a byte count.
     let src = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val p = __builtin_heap_alloc(64u64)
             __builtin_ptr_write(p, 0u64, 10i32)
             __builtin_ptr_write(p, 4u64, 20i32)
@@ -121,7 +121,7 @@ fn load_and_store_address_by_element() {
 #[test]
 fn store_round_trips_through_ptr_read() {
     let src = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val p = __builtin_heap_alloc(64u64)
             val v: f64x2 = __simd_splat(2.5f64)
             __simd_store(p, 1u64, v)

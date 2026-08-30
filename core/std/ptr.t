@@ -76,7 +76,7 @@ impl<T> Ptr<T> {
     # Element read. The annotation is the read's shape; the stride is
     # the type's, so the two can no longer disagree the way
     # `val v: f64 = __builtin_ptr_read(vec.data, i * 8u64)` could.
-    fn get(&self, i: u64) -> T {
+    unsafe fn get(&self, i: u64) -> T {
         val v: T = __builtin_ptr_read(self.addr, i * __builtin_sizeof::<T>())
         v
     }
@@ -84,7 +84,7 @@ impl<T> Ptr<T> {
     # Element write. `set` does not touch the struct's own fields, so
     # a shared `&self` is honest — the write goes through the raw
     # address, and every window over the same allocation sees it.
-    fn set(&self, i: u64, value: T) {
+    unsafe fn set(&self, i: u64, value: T) {
         __builtin_ptr_write(self.addr, i * __builtin_sizeof::<T>(), value)
     }
 
@@ -103,12 +103,12 @@ impl<T> Ptr<T> {
 
     # Bracket sugar. `p[i]` and `p.set` are the same operations; the
     # compiled lanes lower the bracket forms to these calls (P2).
-    fn __getitem__(&self, i: u64) -> T {
+    unsafe fn __getitem__(&self, i: u64) -> T {
         val v: T = __builtin_ptr_read(self.addr, i * __builtin_sizeof::<T>())
         v
     }
 
-    fn __setitem__(&self, i: u64, value: T) {
+    unsafe fn __setitem__(&self, i: u64, value: T) {
         __builtin_ptr_write(self.addr, i * __builtin_sizeof::<T>(), value)
     }
 }

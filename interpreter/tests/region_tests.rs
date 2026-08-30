@@ -118,7 +118,7 @@ fn main() -> u64 {
 fn a_scalar_read_out_of_region_memory_is_a_copy() {
     // The value that leaves is a `u64`, not a pointer into the arena.
     let source = r#"
-fn main() -> u64 {
+unsafe fn main() -> u64 {
     val arena = Arena::new()
     with allocator = arena {
         val p = __builtin_heap_alloc(8u64)
@@ -133,7 +133,7 @@ fn main() -> u64 {
 #[test]
 fn staying_inside_the_allocators_scope_is_fine() {
     let source = r#"
-fn main() -> u64 {
+unsafe fn main() -> u64 {
     val arena = Arena::new()
     val p = with allocator = arena {
         __builtin_heap_alloc(8u64)
@@ -170,20 +170,20 @@ fn a_user_defined_list_may_be_used_inside_the_arena() {
     let source = r#"
 struct List { data: ptr, len: u64, cap: u64 }
 impl List {
-    fn push(self: Self, value: u64) -> u64 {
+    unsafe fn push(self: Self, value: u64) -> u64 {
         self.data = __builtin_heap_realloc(self.data, (self.len + 1u64) * 8u64)
         __builtin_ptr_write(self.data, self.len * 8u64, value)
         self.len = self.len + 1u64
         self.len
     }
-    fn get(self: Self, index: u64) -> u64 {
+    unsafe fn get(self: Self, index: u64) -> u64 {
         __builtin_ptr_read(self.data, index * 8u64)
     }
 }
-fn make_list() -> List {
+unsafe fn make_list() -> List {
     List { data: __builtin_heap_alloc(0u64), len: 0u64, cap: 0u64 }
 }
-fn main() -> u64 {
+unsafe fn main() -> u64 {
     val arena = Arena::new()
     with allocator = arena {
         val list = make_list()

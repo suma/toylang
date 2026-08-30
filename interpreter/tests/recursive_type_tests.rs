@@ -260,13 +260,13 @@ fn a_node_can_be_read_back_through_its_ptr_field() {
     has_next: bool,
 }
 
-fn cons(v: i64, rest: Node) -> Node {
+unsafe fn cons(v: i64, rest: Node) -> Node {
     val p: ptr = __builtin_heap_alloc(__builtin_sizeof(rest))
     __builtin_ptr_write(p, 0u64, rest)
     Node { v: v, next: p, has_next: true }
 }
 
-fn sum(n: Node) -> i64 {
+unsafe fn sum(n: Node) -> i64 {
     if n.has_next {
         val rest: Node = __builtin_ptr_read(n.next, 0u64)
         n.v + sum(rest)

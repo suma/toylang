@@ -22,7 +22,7 @@
 # able to hold a `u64`: `__builtin_ptr_write` stores 8 bytes at the
 # offset, and the interpreter rejects a write that would run past the
 # block (AOT would silently overflow — the strict side wins here).
-fn scratch(size: u64) -> u64
+unsafe fn scratch(size: u64) -> u64
     requires size >= 8u64
     requires size <= 4096u64
     ensures __builtin_live_bytes() == 0u64

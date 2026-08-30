@@ -65,7 +65,7 @@ impl String {
     # Bulk-copy a `str`'s UTF-8 bytes onto a fresh String. The
     # trailing NUL terminator is intentionally NOT copied
     # (`size()` matches `s.len()` exactly).
-    fn from_str(s: str) -> Self {
+    unsafe fn from_str(s: str) -> Self {
         val n: u64 = s.len()
         val raw: ptr = __builtin_heap_alloc(0u64)
         val data: ptr = __builtin_heap_realloc(raw, n)
@@ -80,7 +80,7 @@ impl String {
 
     # Append. Geometric grow: 0 -> 4 -> 8 -> 16 -> ... amortised
     # O(1) per call.
-    fn push(&mut self, b: u8) {
+    unsafe fn push(&mut self, b: u8) {
         if self.cap == 0u64 {
             self.cap = 4u64
             self.data = __builtin_heap_realloc(self.data, self.cap)
@@ -94,7 +94,7 @@ impl String {
 
     # Remove and return the last byte. Pre: `self.len > 0u64`
     # (caller's responsibility).
-    fn pop(&mut self) -> u8 {
+    unsafe fn pop(&mut self) -> u8 {
         if self.len == 0u64 { panic("String::pop on an empty String") }
         self.len = self.len - 1u64
         val b: u8 = __builtin_ptr_read(self.data, self.len)
@@ -103,7 +103,7 @@ impl String {
 
     # Random read, bounds-checked (DEBUG-OBS D6). Reading past the end
     # used to reach the host rather than fail as a toylang program.
-    fn get(&self, i: u64) -> u8 {
+    unsafe fn get(&self, i: u64) -> u8 {
         if i >= self.len { panic("String::get index out of bounds") }
         val b: u8 = __builtin_ptr_read(self.data, i)
         b
@@ -111,7 +111,7 @@ impl String {
 
     # Random write, bounds-checked. `push` writes through the raw
     # pointer, so appending is not affected by this.
-    fn set(&mut self, i: u64, b: u8) {
+    unsafe fn set(&mut self, i: u64, b: u8) {
         if i >= self.len { panic("String::set index out of bounds") }
         __builtin_ptr_write(self.data, i, b)
     }
@@ -156,7 +156,7 @@ impl String {
     # Append `count` bytes from `src` to the end of the buffer.
     # Per-byte `push` so geometric grow kicks in without needing
     # pointer-arithmetic builtins.
-    fn extend_bytes(&mut self, src: ptr, count: u64) {
+    unsafe fn extend_bytes(&mut self, src: ptr, count: u64) {
         var i: u64 = 0u64
         while i < count {
             val b: u8 = __builtin_ptr_read(src, i)
@@ -203,7 +203,7 @@ impl String {
     # buffer. Operator overload (`==` / `!=`) routes here via the
     # `eq` method dispatch (frontend's struct_eq_compatible
     # check).
-    fn eq(&self, other: &String) -> bool {
+    unsafe fn eq(&self, other: &String) -> bool {
         val n: u64 = self.len
         if n != other.len {
             return false
@@ -240,7 +240,7 @@ impl String {
     #
     # `up` picks the direction: subtract to reach uppercase, add to
     # reach lowercase.
-    fn fold_ascii_case(&self, lo: u8, hi: u8, up: bool) -> String {
+    unsafe fn fold_ascii_case(&self, lo: u8, hi: u8, up: bool) -> String {
         val n: u64 = self.len
         val raw: ptr = __builtin_heap_alloc(0u64)
         val data: ptr = __builtin_heap_realloc(raw, n)
@@ -290,7 +290,7 @@ impl String {
     # trait-conformance canonicalisation in mixed
     # `Identifier(String)` / `Struct(String, [])` shapes; the
     # inherent form is functionally equivalent at the call site.
-    fn to_string(&self) -> String {
+    unsafe fn to_string(&self) -> String {
         var result: String = String::new()
         var i: u64 = 0u64
         while i < self.len {
@@ -310,7 +310,7 @@ impl String {
 # `__builtin_str_from_bytes` copies, so the result does not alias the
 # buffer and is unaffected by a later `push`.
 impl Display for String {
-    fn to_str(&self) -> str {
+    unsafe fn to_str(&self) -> str {
         __builtin_str_from_bytes(self.data, self.len)
     }
 }
@@ -319,7 +319,7 @@ impl Display for String {
 # Both indices are byte offsets, not codepoint counts. Out-of-range
 # / inverted ranges panic via `assert(...)`.
 impl Substring for String {
-    fn substring(&self, start: u64, end: u64) -> String {
+    unsafe fn substring(&self, start: u64, end: u64) -> String {
         assert(start <= end, "substring: start must be <= end")
         assert(end <= self.len, "substring: end out of range")
         var result: String = String::new()
@@ -340,7 +340,7 @@ impl Substring for String {
 # sidesteps the AOT MVP limitation where compound-returning
 # instance methods can't sit in expression position.
 impl Trim for String {
-    fn trim(&self) -> String {
+    unsafe fn trim(&self) -> String {
         val n: u64 = self.len
         var start: u64 = 0u64
         while start < n {
@@ -396,7 +396,7 @@ impl CaseConvert for String {
 # accesses — a combination the AOT lower can't round-trip
 # cleanly today.
 impl Concat<String> for String {
-    fn concat(&self, other: &String) -> String {
+    unsafe fn concat(&self, other: &String) -> String {
         var result: String = String::new()
         var i: u64 = 0u64
         while i < self.len {
@@ -423,7 +423,7 @@ impl Concat<String> for String {
 # lane in that window equals it, all sixteen positions can be
 # discarded at once.
 impl Contains<String> for String {
-    fn contains(&self, needle: &String) -> bool {
+    unsafe fn contains(&self, needle: &String) -> bool {
         val n: u64 = self.len
         val m: u64 = needle.len
         if m == 0u64 {
@@ -473,7 +473,7 @@ impl Contains<String> for String {
 # encounter order (including a trailing empty slice if the input
 # ends with `sep`, matching Rust's `str::split` shape).
 impl Split<String, Vec<String>> for String {
-    fn split(&self, sep: &String) -> Vec<String> {
+    unsafe fn split(&self, sep: &String) -> Vec<String> {
         assert(sep.len > 0u64, "split: separator must be non-empty")
         var result: Vec<String> = Vec::new()
         val n: u64 = self.len
@@ -542,7 +542,7 @@ impl String {
 impl StringIter {
     # Advance by one byte. Returns `None` once `index` has walked
     # past `len`.
-    fn next(&mut self) -> Option<u8> {
+    unsafe fn next(&mut self) -> Option<u8> {
         if self.index >= self.len {
             Option::None
         } else {
@@ -570,7 +570,7 @@ struct StringMapIter<U> {
 
 impl<U> StringMapIter<U> {
     # Apply `f` to each byte on the way out.
-    fn next(&mut self) -> Option<U> {
+    unsafe fn next(&mut self) -> Option<U> {
         match self.source.next() {
             Option::Some(b) => Option::Some(self.f(b)),
             Option::None => Option::None,
@@ -608,7 +608,7 @@ struct StringFilterIter {
 
 impl StringFilterIter {
     # Yield only the bytes for which `pred` returns true.
-    fn next(&mut self) -> Option<u8> {
+    unsafe fn next(&mut self) -> Option<u8> {
         loop {
             match self.source.next() {
                 Option::Some(b) => {
@@ -658,7 +658,7 @@ struct StringEnumerateIter {
 
 impl StringEnumerateIter {
     # Yield `(index, byte)` pairs, starting at 0.
-    fn next(&mut self) -> Option<(u64, u8)> {
+    unsafe fn next(&mut self) -> Option<(u64, u8)> {
         match self.source.next() {
             Option::Some(b) => {
                 val i = self.index

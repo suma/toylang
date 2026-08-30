@@ -42,7 +42,7 @@ fn test_regression_val_struct_literal_bug() {
 #[test]
 fn test_regression_val_heap_operations() {
     let source = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val heap_ptr = __builtin_heap_alloc(8u64)
             val is_null = __builtin_ptr_is_null(heap_ptr)
             if is_null {

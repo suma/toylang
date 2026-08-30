@@ -75,7 +75,7 @@ fn allocation_contract_violation_stops_on_every_backend() {
 #[test]
 fn allocation_contract_satisfied_match() {
     let src = r#"
-        fn scratch(n: u64) -> u64
+        unsafe fn scratch(n: u64) -> u64
             ensures __builtin_live_bytes() == old(__builtin_live_bytes())
         {
             val p: ptr = __builtin_heap_alloc(128u64)
@@ -85,7 +85,7 @@ fn allocation_contract_satisfied_match() {
             v
         }
 
-        fn main() -> u64 { scratch(7u64) }
+        unsafe fn main() -> u64 { scratch(7u64) }
     "#;
     assert_consistent(src, "alloc_contract_ok");
 }
@@ -396,7 +396,7 @@ fn an_allocation_budget_reports_the_same_numbers_on_every_backend() {
 #[test]
 fn satisfied_allocation_budgets_match() {
     let src = r#"
-        fn scratch(n: u64) -> u64
+        unsafe fn scratch(n: u64) -> u64
             ensures allocates(256u64)
             ensures retains(0u64)
             ensures allocations(1u64)
@@ -408,14 +408,14 @@ fn satisfied_allocation_budgets_match() {
             v
         }
 
-        fn freer(p: ptr) -> u64
+        unsafe fn freer(p: ptr) -> u64
             ensures retains(0u64)
         {
             __builtin_heap_free(p)
             7u64
         }
 
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             println(scratch(35u64))
             val q: ptr = __builtin_heap_alloc(64u64)
             freer(q)

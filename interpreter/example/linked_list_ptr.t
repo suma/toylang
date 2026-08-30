@@ -23,13 +23,13 @@ struct Node {
 }
 
 # Copy `rest` onto the heap and return a node pointing at it.
-fn cons(v: i64, rest: Node) -> Node {
+unsafe fn cons(v: i64, rest: Node) -> Node {
     val p: ptr = __builtin_heap_alloc(__builtin_sizeof(rest))
     __builtin_ptr_write(p, 0u64, rest)
     Node { v: v, next: p, has_next: true }
 }
 
-fn sum(n: Node) -> i64 {
+unsafe fn sum(n: Node) -> i64 {
     if n.has_next {
         # The annotation is what gives the read its shape: it names the
         # type whose leaves are pulled back out of the buffer.

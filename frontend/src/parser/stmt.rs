@@ -851,17 +851,7 @@ pub fn parse_trait_method_signatures_with_generics(
             return Ok(methods);
         }
 
-        // NEVER-ALLOCATES: same contextual rule as the free-function
-        // form — only a `never_allocates` immediately before `fn` is
-        // the modifier.
-        let never_allocates = if matches!(parser.peek(), Some(Kind::Identifier(s)) if s == "never_allocates")
-            && matches!(parser.peek_n(1), Some(Kind::Function))
-        {
-            parser.next();
-            true
-        } else {
-            false
-        };
+        let (never_allocates, is_unsafe) = parse_method_modifiers(parser);
 
         match parser.peek() {
             Some(Kind::Function) => {
@@ -925,7 +915,8 @@ pub fn parse_trait_method_signatures_with_generics(
                     requires: clauses.requires,
                     ensures: clauses.ensures,
                     ensures_kinds: clauses.ensures_kinds,
-                                never_allocates,
+                    never_allocates,
+                    is_unsafe,
                     old_exprs: clauses.old_exprs,
                     has_self_param: has_self,
                     self_is_mut,
@@ -966,17 +957,7 @@ pub fn parse_impl_methods_with_generic_context(
             crate::ast::Visibility::Private
         };
 
-        // NEVER-ALLOCATES: same contextual rule as the free-function
-        // form — only a `never_allocates` immediately before `fn` is
-        // the modifier.
-        let never_allocates = if matches!(parser.peek(), Some(Kind::Identifier(s)) if s == "never_allocates")
-            && matches!(parser.peek_n(1), Some(Kind::Function))
-        {
-            parser.next();
-            true
-        } else {
-            false
-        };
+        let (never_allocates, is_unsafe) = parse_method_modifiers(parser);
 
         match parser.peek() {
             Some(Kind::Function) => {
@@ -1061,7 +1042,8 @@ pub fn parse_impl_methods_with_generic_context(
                             requires: clauses.requires,
                             ensures: clauses.ensures,
                             ensures_kinds: clauses.ensures_kinds,
-                                never_allocates,
+                            never_allocates,
+                            is_unsafe,
                             old_exprs: clauses.old_exprs,
                             code: parser.ast_builder.expression_stmt(block, Some(location)),
                             has_self_param: has_self,
@@ -1177,4 +1159,31 @@ pub fn parse_param_def_list_impl_with_generic_context(parser: &mut Parser, mut a
             }
         }
     }
+}
+/// NEVER-ALLOCATES + POINTER P6 `unsafe`: the method-form modifier
+/// loop. Same contextual rule as the free-function form — only a
+/// modifier immediately before `fn` (in either order) counts, so a
+/// method named `never_allocates` / `unsafe` is unaffected.
+fn parse_method_modifiers(
+    parser: &mut Parser,
+) -> (bool, bool) {
+    let mut never_allocates = false;
+    let mut is_unsafe = false;
+    loop {
+        let next_leads_to_fn = matches!(parser.peek_n(1), Some(Kind::Function));
+        let is_never_allocates =
+            matches!(parser.peek(), Some(Kind::Identifier(s)) if s == "never_allocates");
+        let is_unsafe_mod =
+            matches!(parser.peek(), Some(Kind::Identifier(s)) if s == "unsafe");
+        if next_leads_to_fn && is_never_allocates && !never_allocates {
+            parser.next();
+            never_allocates = true;
+        } else if next_leads_to_fn && is_unsafe_mod && !is_unsafe {
+            parser.next();
+            is_unsafe = true;
+        } else {
+            break;
+        }
+    }
+    (never_allocates, is_unsafe)
 }

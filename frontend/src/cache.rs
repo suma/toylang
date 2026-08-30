@@ -32,7 +32,7 @@ use crate::ast::module_interface::ModuleInterface;
 ///
 /// Mismatched versions are treated as a cache miss by
 /// [`load_full_module`].
-pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 30;
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 31;
 // v2: `File` gained `id` (JIT cache key) and `tests` (LLM-LOOP P4).
 // v3: `BuiltinFunctionSymbols` interns the MEMORY_PROFILING M4 counter
 // names, shifting every later symbol id.
@@ -74,6 +74,9 @@ pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 30;
 // symbol interned after them — the same reason convert.t bumped v9.
 // v30: `core/std/span.t` (`Span<T>`, POINTER P4) for the same reason
 // (`Span`, `from_parts`).
+// v31: POINTER P6 — `Function`, `MethodFunction` and
+// `TraitMethodSignature` gained `is_unsafe`, so a v30 entry
+// deserializes one field short and every field after it slides.
 // Forgetting this bump is not a subtle failure: stale entries
 // deserialize into the new layout and the program silently comes out
 // wrong — every stdlib trait reported "is not defined". The M4 bump

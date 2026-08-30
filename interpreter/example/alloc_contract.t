@@ -37,7 +37,7 @@ fn triangle(n: u64) -> u64
 # "Requests at most 256 bytes, in one go, and hands them all back."
 # A violated budget reports the measurement — `retained 128 bytes,
 # budget 0 bytes` — which a hand-written predicate cannot.
-fn scratch(n: u64) -> u64
+unsafe fn scratch(n: u64) -> u64
     ensures allocates(256u64)
     ensures allocations(1u64)
     ensures retains(0u64)

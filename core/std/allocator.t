@@ -83,15 +83,15 @@ impl AllocLayout {
 }
 
 pub trait Alloc {
-    fn alloc(&mut self, size: u64) -> ptr
-    fn free(&mut self, p: ptr)
-    fn realloc(&mut self, p: ptr, new_size: u64) -> ptr
+    unsafe fn alloc(&mut self, size: u64) -> ptr
+    unsafe fn free(&mut self, p: ptr)
+    unsafe fn realloc(&mut self, p: ptr, new_size: u64) -> ptr
 
     # Default: report nothing. An allocator that does not manage a
     # region has no layout to describe, and saying so is the correct
     # answer — inventing zeros would put a fabricated fragmentation
     # figure in front of the reader.
-    fn layout_report(&self) -> AllocLayout {
+    unsafe fn layout_report(&self) -> AllocLayout {
         # Written out rather than calling `AllocLayout::opaque()`: an
         # associated-function call in a trait default body is not
         # lowerable by the AOT MVP yet.
@@ -111,25 +111,25 @@ pub struct Global {
 }
 
 impl Global {
-    fn new() -> Self {
+    unsafe fn new() -> Self {
         Global { h: __builtin_default_allocator() }
     }
 }
 
 impl Alloc for Global {
-    fn alloc(&mut self, size: u64) -> ptr {
+    unsafe fn alloc(&mut self, size: u64) -> ptr {
         with allocator = self.h {
             __builtin_heap_alloc(size)
         }
     }
 
-    fn free(&mut self, p: ptr) {
+    unsafe fn free(&mut self, p: ptr) {
         with allocator = self.h {
             __builtin_heap_free(p)
         }
     }
 
-    fn realloc(&mut self, p: ptr, new_size: u64) -> ptr {
+    unsafe fn realloc(&mut self, p: ptr, new_size: u64) -> ptr {
         with allocator = self.h {
             __builtin_heap_realloc(p, new_size)
         }
@@ -159,7 +159,7 @@ pub struct Arena {
 }
 
 impl Arena {
-    fn new() -> Self {
+    unsafe fn new() -> Self {
         Arena {
             _h: __builtin_default_allocator(),
             addrs: __builtin_null_ptr(),
@@ -177,7 +177,7 @@ impl Arena {
     # Bulk-free every tracked allocation. The arena stays valid
     # for further use after `reset()` — call sites can keep
     # alloc'ing through it.
-    fn reset(&mut self) {
+    unsafe fn reset(&mut self) {
         var i = 0u64
         while i < self.count {
             val a: ptr = __builtin_ptr_read(self.addrs, i * 8u64)
@@ -205,7 +205,7 @@ impl Arena {
 
     # Internal: linear search for `p` in `addrs`. Returns the
     # index, or `count` (one past end) if not found.
-    fn _find(&self, p: ptr) -> u64 {
+    unsafe fn _find(&self, p: ptr) -> u64 {
         var i = 0u64
         while i < self.count {
             val a: ptr = __builtin_ptr_read(self.addrs, i * 8u64)
@@ -223,7 +223,7 @@ impl Drop for Arena {
     # then a goes out of scope) and for inline temporaries
     # (`with allocator = Arena::new() { ... }` once the auto-drop
     # hook routes through the user Drop method).
-    fn drop(&mut self) {
+    unsafe fn drop(&mut self) {
         # Bulk-free runtime tracking + zero our counters.
         self.reset()
         # Release the metadata arrays themselves (allocated via
@@ -241,7 +241,7 @@ impl Drop for Arena {
 }
 
 impl Alloc for Arena {
-    fn alloc(&mut self, size: u64) -> ptr {
+    unsafe fn alloc(&mut self, size: u64) -> ptr {
         # Size 0 short-circuits to a null pointer; binding a null
         # pointer to a `val` and re-reading it is rejected by the
         # interpreter's identifier lookup, so handle the
@@ -262,12 +262,12 @@ impl Alloc for Arena {
         p
     }
 
-    fn free(&mut self, p: ptr) {
+    unsafe fn free(&mut self, p: ptr) {
         # Arena policy: per-pointer free is a no-op; everything is
         # released in bulk via `reset()` or `drop()`.
     }
 
-    fn realloc(&mut self, p: ptr, new_size: u64) -> ptr {
+    unsafe fn realloc(&mut self, p: ptr, new_size: u64) -> ptr {
         if new_size == 0u64 {
             # Arena policy keeps the existing allocation tracked until reset.
             return __builtin_null_ptr()
@@ -308,7 +308,7 @@ pub struct FixedBuffer {
 }
 
 impl FixedBuffer {
-    fn new(capacity: u64) -> Self {
+    unsafe fn new(capacity: u64) -> Self {
         FixedBuffer {
             _h: __builtin_default_allocator(),
             cap: capacity,
@@ -331,7 +331,7 @@ impl FixedBuffer {
     }
     fn is_empty(&self) -> bool { self.used_bytes == 0u64 }
 
-    fn reset(&mut self) {
+    unsafe fn reset(&mut self) {
         var i = 0u64
         while i < self.count {
             val a: ptr = __builtin_ptr_read(self.addrs, i * 8u64)
@@ -355,7 +355,7 @@ impl FixedBuffer {
         }
     }
 
-    fn _find(&self, p: ptr) -> u64 {
+    unsafe fn _find(&self, p: ptr) -> u64 {
         var i = 0u64
         while i < self.count {
             val a: ptr = __builtin_ptr_read(self.addrs, i * 8u64)
@@ -369,7 +369,7 @@ impl FixedBuffer {
 
     # Internal: remove entry at `idx` by swapping with the last
     # entry and decrementing count.
-    fn _swap_remove(&mut self, idx: u64) {
+    unsafe fn _swap_remove(&mut self, idx: u64) {
         val last = self.count - 1u64
         if idx != last {
             val last_addr: ptr = __builtin_ptr_read(self.addrs, last * 8u64)
@@ -382,7 +382,7 @@ impl FixedBuffer {
 }
 
 impl Drop for FixedBuffer {
-    fn drop(&mut self) {
+    unsafe fn drop(&mut self) {
         self.reset()
         if self.cap_slots != 0u64 {
             with allocator = __builtin_default_allocator() {
@@ -397,7 +397,7 @@ impl Drop for FixedBuffer {
 }
 
 impl Alloc for FixedBuffer {
-    fn alloc(&mut self, size: u64) -> ptr {
+    unsafe fn alloc(&mut self, size: u64) -> ptr {
         # Quota check + zero-size both produce a null pointer.
         # Return early so we never bind a null pointer to a
         # local `val` (the interpreter's identifier lookup
@@ -420,7 +420,7 @@ impl Alloc for FixedBuffer {
         p
     }
 
-    fn free(&mut self, p: ptr) {
+    unsafe fn free(&mut self, p: ptr) {
         val idx = self._find(p)
         if idx < self.count {
             val sz: u64 = __builtin_ptr_read(self.sizes, idx * 8u64)
@@ -432,7 +432,7 @@ impl Alloc for FixedBuffer {
         }
     }
 
-    fn realloc(&mut self, p: ptr, new_size: u64) -> ptr {
+    unsafe fn realloc(&mut self, p: ptr, new_size: u64) -> ptr {
         if new_size == 0u64 {
             self.free(p)
             return __builtin_null_ptr()
@@ -499,7 +499,7 @@ pub struct SlotRegion {
 }
 
 impl SlotRegion {
-    fn new(slot_bytes: u64, slot_count: u64) -> Self {
+    unsafe fn new(slot_bytes: u64, slot_count: u64) -> Self {
         # Build the backing arrays in plain pointer locals (not a
         # `SlotRegion` value) so returning the struct literal below does
         # not fire a transient `Drop` that would register a spurious,
@@ -539,7 +539,7 @@ impl SlotRegion {
     }
 
     # True when `n` slots starting at `at` are all free.
-    fn _run_free(&self, at: u64, n: u64) -> bool {
+    unsafe fn _run_free(&self, at: u64, n: u64) -> bool {
         if at + n > self.slot_count { return false }
         var i: u64 = at
         var ok: bool = true
@@ -553,7 +553,7 @@ impl SlotRegion {
 }
 
 impl Alloc for SlotRegion {
-    fn alloc(&mut self, size: u64) -> ptr {
+    unsafe fn alloc(&mut self, size: u64) -> ptr {
         if size == 0u64 { return __builtin_null_ptr() }
         val need: u64 = self._slots_for(size)
         if need > self.slot_count { return __builtin_null_ptr() }
@@ -584,7 +584,7 @@ impl Alloc for SlotRegion {
         slot_ptr
     }
 
-    fn free(&mut self, p: ptr) {
+    unsafe fn free(&mut self, p: ptr) {
         if __builtin_ptr_is_null(p) { return }
         var i: u64 = 0u64
         var at: u64 = self.slot_count
@@ -608,7 +608,7 @@ impl Alloc for SlotRegion {
         self.live_slots = self.live_slots - n
     }
 
-    fn realloc(&mut self, p: ptr, new_size: u64) -> ptr {
+    unsafe fn realloc(&mut self, p: ptr, new_size: u64) -> ptr {
         if new_size == 0u64 {
             self.free(p)
             return __builtin_null_ptr()
@@ -622,7 +622,7 @@ impl Alloc for SlotRegion {
     # The point of M3: this allocator owns a layout, so it can
     # describe one. A free "block" is a run of consecutive free slots,
     # which is exactly the unit a request has to fit into.
-    fn layout_report(&self) -> AllocLayout {
+    unsafe fn layout_report(&self) -> AllocLayout {
         var blocks: u64 = 0u64
         var largest: u64 = 0u64
         var run: u64 = 0u64
@@ -658,7 +658,7 @@ impl Alloc for SlotRegion {
 # is a statement about the intact region, and it stops meaning anything
 # the moment the underlying slots are gone.
 impl Drop for SlotRegion {
-    fn drop(&mut self) {
+    unsafe fn drop(&mut self) {
         val l = self.layout_report()
         __builtin_record_allocator_layout("SlotRegion", l.managed(), l.live(), l.blocks(), l.largest())
         var i: u64 = 0u64

@@ -755,7 +755,7 @@ pub(super) fn memory_profiles_agree(source: &str, stem: &str) {
 
 /// A program with a predictable allocation history: raw builtins only,
 /// no stdlib, one 32-byte block deliberately left live.
-pub(super) const JSON_PROFILE_PROGRAM: &str = "fn keep() -> u64 {\n\
+pub(super) const JSON_PROFILE_PROGRAM: &str = "unsafe fn keep() -> u64 {\n\
     \x20   val p: ptr = __builtin_heap_alloc(32u64)\n\
     \x20   __builtin_ptr_write(p, 0u64, 7u64)\n\
     \x20   val v: u64 = __builtin_ptr_read(p, 0u64)\n\

@@ -165,3 +165,6 @@ mod trait_tests;
 
 #[path = "try_op_tests.rs"]
 mod try_op_tests;
+
+#[path = "unsafe_fn_tests.rs"]
+mod unsafe_fn_tests;

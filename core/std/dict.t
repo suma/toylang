@@ -46,7 +46,7 @@ impl<K, V> Dict<K, V> {
     # append path below. The early `return` from inside the
     # while loop relies on the DICT-RETURN-WHILE fix to the
     # interpreter loop evaluator (`88d9af6` predecessor).
-    fn insert(&mut self, key: K, value: V) {
+    unsafe fn insert(&mut self, key: K, value: V) {
         if self.key_size == 0u64 {
             self.key_size = __builtin_sizeof(key)
             self.val_size = __builtin_sizeof(value)
@@ -77,7 +77,7 @@ impl<K, V> Dict<K, V> {
     # Look up `key`; on hit return the stored value, on miss
     # return `default`. Early-return from the loop body now
     # works (DICT-RETURN-WHILE).
-    fn get_or(self: Self, key: K, default: V) -> V {
+    unsafe fn get_or(self: Self, key: K, default: V) -> V {
         var i: u64 = 0u64
         while i < self.count {
             val existing: K = __builtin_ptr_read(self.keys, i * self.key_size)
@@ -92,7 +92,7 @@ impl<K, V> Dict<K, V> {
 
     # Option-returning lookup. Returns `Option::Some(v)` on hit,
     # `Option::None` on miss.
-    fn get(self: Self, key: K) -> Option<V> {
+    unsafe fn get(self: Self, key: K) -> Option<V> {
         var i: u64 = 0u64
         while i < self.count {
             val existing: K = __builtin_ptr_read(self.keys, i * self.key_size)
@@ -105,7 +105,7 @@ impl<K, V> Dict<K, V> {
         Option::None
     }
 
-    fn contains_key(self: Self, key: K) -> bool {
+    unsafe fn contains_key(self: Self, key: K) -> bool {
         var i: u64 = 0u64
         while i < self.count {
             val existing: K = __builtin_ptr_read(self.keys, i * self.key_size)
@@ -123,7 +123,7 @@ impl<K, V> Dict<K, V> {
 
     # Remove `key` if present. On hit: swap-remove with the
     # last slot and return true. On miss: return false.
-    fn remove(&mut self, key: K) -> bool {
+    unsafe fn remove(&mut self, key: K) -> bool {
         var i: u64 = 0u64
         while i < self.count {
             val existing: K = __builtin_ptr_read(self.keys, i * self.key_size)
@@ -186,7 +186,7 @@ impl<K, V> DictIter<K, V> {
     # past `count`. Keys and values are read as copies out of the
     # buffers — like `Dict::get`, compound entries alias the stored
     # values.
-    fn next(&mut self) -> Option<(K, V)> {
+    unsafe fn next(&mut self) -> Option<(K, V)> {
         if self.index >= self.count {
             Option::None
         } else {
@@ -229,7 +229,7 @@ impl<K, V, U> DictMapIter<K, V, U> {
     # the key and value as separate scalar args: an AOT closure cannot
     # receive a tuple parameter, so the adapter destructures the pair
     # before calling.
-    fn next(&mut self) -> Option<U> {
+    unsafe fn next(&mut self) -> Option<U> {
         val count = self.count_index >> 32u64
         val index = self.count_index & 0xFFFFFFFFu64
         if index >= count {
@@ -267,7 +267,7 @@ struct DictFilterIter<K, V> {
 
 impl<K, V> DictFilterIter<K, V> {
     # Yield only the pairs for which `pred` returns true.
-    fn next(&mut self) -> Option<(K, V)> {
+    unsafe fn next(&mut self) -> Option<(K, V)> {
         loop {
             val count = self.count_index >> 32u64
             val index = self.count_index & 0xFFFFFFFFu64

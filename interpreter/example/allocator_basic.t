@@ -7,7 +7,7 @@
 # Run: cargo run example/allocator_basic.t
 # Expected result: UInt64(42)
 
-fn main() -> u64 {
+unsafe fn main() -> u64 {
     val arena = Arena::new()
     val p: ptr = arena.alloc(16u64)
     __builtin_ptr_write(p, 0u64, 42u64)

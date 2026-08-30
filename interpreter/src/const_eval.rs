@@ -423,6 +423,7 @@ fn lower_for_fold(
             return_type: Some(program.consts[idx].type_decl.clone()),
             requires: Vec::new(),
             ensures: Vec::new(),
+            is_unsafe: false,
             old_exprs: Vec::new(),
             ensures_kinds: Vec::new(),
             never_allocates: false,

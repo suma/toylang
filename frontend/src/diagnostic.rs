@@ -270,6 +270,10 @@ pub mod codes {
     /// trait promised its callers.
     pub const IMPL_PRECONDITION: &str = "E0023";
 
+    /// POINTER P6: a body reaches a raw-memory builtin without the
+    /// `unsafe fn` declaration.
+    pub const UNSAFE_REQUIRED: &str = "E0024";
+
     /// Every code, in order. `crate::explain` is checked against this
     /// list by a test, so a new code cannot ship without prose.
     pub const ALL: &[&str] = &[
@@ -296,6 +300,7 @@ pub mod codes {
         CAPTURED_ASSIGN,
         REGION_ESCAPE,
         IMPL_PRECONDITION,
+        UNSAFE_REQUIRED,
     ];
 }
 
@@ -325,6 +330,7 @@ fn code_for(kind: &TypeCheckErrorKind) -> &'static str {
         TypeCheckErrorKind::CapturedAssign { .. } => codes::CAPTURED_ASSIGN,
         TypeCheckErrorKind::RegionEscape { .. } => codes::REGION_ESCAPE,
         TypeCheckErrorKind::ImplPrecondition { .. } => codes::IMPL_PRECONDITION,
+        TypeCheckErrorKind::UnsafeRequired { .. } => codes::UNSAFE_REQUIRED,
     }
 }
 

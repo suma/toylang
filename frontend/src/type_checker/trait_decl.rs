@@ -573,6 +573,10 @@ fn synthesize_default_method(sig: &TraitMethodSignature, body: StmtRef) -> Rc<Me
         return_type: sig.return_type.clone(),
         requires: sig.requires.clone(),
         ensures: sig.ensures.clone(),
+        // POINTER P6: the default body is the signature's body, so it
+        // is checked under the signature's own declaration. An impl
+        // that writes an override declares `unsafe` for itself.
+        is_unsafe: sig.is_unsafe,
         ensures_kinds: sig.ensures_kinds.clone(),
         never_allocates: sig.never_allocates,
         old_exprs: sig.old_exprs.clone(),

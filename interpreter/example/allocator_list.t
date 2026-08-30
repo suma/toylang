@@ -26,7 +26,7 @@ impl List {
         List { data: __builtin_heap_alloc(0u64), len: 0u64, cap: 0u64 }
     }
 
-    fn push(self: Self, value: u64) -> u64 {
+    unsafe fn push(self: Self, value: u64) -> u64 {
         if self.cap == 0u64 {
             self.cap = 8u64
             self.data = __builtin_heap_realloc(self.data, self.cap * 8u64)
@@ -39,7 +39,7 @@ impl List {
         self.len
     }
 
-    fn get(self: Self, index: u64) -> u64 {
+    unsafe fn get(self: Self, index: u64) -> u64 {
         __builtin_ptr_read(self.data, index * 8u64)
     }
 }

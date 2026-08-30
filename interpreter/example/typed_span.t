@@ -27,7 +27,7 @@ fn sum(s: Span<u64>) -> u64 {
     total
 }
 
-fn main() -> u64 {
+unsafe fn main() -> u64 {
     val p: Ptr<u64> = Ptr::alloc(4u64)
     p.set(0u64, 7u64)
     p.set(1u64, 9u64)

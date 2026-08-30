@@ -55,7 +55,7 @@ impl<T> Vec<T> {
 
     # Append. Geometric grow: 0 → 4 → 8 → 16 → ... so `n`
     # consecutive `push`es cost amortised O(1).
-    fn push(&mut self, value: T) {
+    unsafe fn push(&mut self, value: T) {
         if self.elem_size == 0u64 {
             self.elem_size = __builtin_sizeof(value)
         }
@@ -74,7 +74,7 @@ impl<T> Vec<T> {
     # (DEBUG-OBS D6) — it used to read whatever sat at offset 0 and
     # underflow `self.len` to `u64::MAX`, which turned one mistake
     # into a Vec that reports 18 quintillion elements.
-    fn pop(&mut self) -> T {
+    unsafe fn pop(&mut self) -> T {
         if self.len == 0u64 { panic("Vec::pop on an empty Vec") }
         self.len = self.len - 1u64
         val v: T = __builtin_ptr_read(self.data, self.len * self.elem_size)
@@ -87,7 +87,7 @@ impl<T> Vec<T> {
     # this used to be the one indexed read that did not, and reading
     # past the end reached the host — `value not defined` from inside
     # the IR VM, with no toylang position or backtrace left.
-    fn get(&self, index: u64) -> T {
+    unsafe fn get(&self, index: u64) -> T {
         if index >= self.len { panic("Vec::get index out of bounds") }
         val v: T = __builtin_ptr_read(self.data, index * self.elem_size)
         v
@@ -95,7 +95,7 @@ impl<T> Vec<T> {
 
     # Random-access write, bounds-checked. `push` writes through the
     # raw pointer, so appending is not affected by this.
-    fn set(&mut self, index: u64, value: T) {
+    unsafe fn set(&mut self, index: u64, value: T) {
         if index >= self.len { panic("Vec::set index out of bounds") }
         __builtin_ptr_write(self.data, index * self.elem_size, value)
     }
@@ -212,7 +212,7 @@ impl<T> VecIter<T> {
     # past `len`. The element is read as a copy out of the buffer —
     # exactly like `Vec::get`, so compound `T` (including `Box`) is
     # an alias of the stored value.
-    fn next(&mut self) -> Option<T> {
+    unsafe fn next(&mut self) -> Option<T> {
         if self.index >= self.len {
             Option::None
         } else {
@@ -249,7 +249,7 @@ impl Vec<u8> {
     # The `heap_alloc(0) + heap_realloc(p, n)` pair handles
     # `n == 0` gracefully (realloc(p, 0) returns a freed/null-
     # equivalent pointer; mem_copy with size 0 is a no-op).
-    fn from_str(s: str) -> Self {
+    unsafe fn from_str(s: str) -> Self {
         val n: u64 = s.len()
         val raw: ptr = __builtin_heap_alloc(0u64)
         val data: ptr = __builtin_heap_realloc(raw, n)
@@ -271,7 +271,7 @@ impl Vec<u8> {
     # `__builtin_ptr_offset` exists today). For typical demo
     # workloads this is fine; a future bulk-`mem_copy` form
     # would be a perf optimisation.
-    fn extend_bytes(&mut self, src: ptr, count: u64) {
+    unsafe fn extend_bytes(&mut self, src: ptr, count: u64) {
         var i: u64 = 0u64
         while i < count {
             val b: u8 = __builtin_ptr_read(src, i)
@@ -335,7 +335,7 @@ impl Vec<u8> {
     # walking the buffer. Both receivers are immutable references
     # — callers may pass either `Vec<u8>` (i.e. `String`) or
     # `&Vec<u8>` thanks to auto-borrow.
-    fn eq(&self, other: &Vec<u8>) -> bool {
+    unsafe fn eq(&self, other: &Vec<u8>) -> bool {
         val n: u64 = self.size()
         if n != other.size() {
             return false
@@ -393,7 +393,7 @@ struct MapIter<T, U> {
 
 impl<T, U> MapIter<T, U> {
     # Apply `f` to each element on the way out.
-    fn next(&mut self) -> Option<U> {
+    unsafe fn next(&mut self) -> Option<U> {
         match self.source.next() {
             Option::Some(v) => Option::Some(self.f(v)),
             Option::None => Option::None,
@@ -437,7 +437,7 @@ struct FilterIter<T> {
 
 impl<T> FilterIter<T> {
     # Yield only the elements for which `pred` returns true.
-    fn next(&mut self) -> Option<T> {
+    unsafe fn next(&mut self) -> Option<T> {
         loop {
             match self.source.next() {
                 Option::Some(v) => {
@@ -488,7 +488,7 @@ struct EnumerateIter<T> {
 
 impl<T> EnumerateIter<T> {
     # Yield `(index, element)` pairs, starting at 0.
-    fn next(&mut self) -> Option<(u64, T)> {
+    unsafe fn next(&mut self) -> Option<(u64, T)> {
         match self.source.next() {
             Option::Some(v) => {
                 val i = self.index
@@ -526,7 +526,7 @@ impl<A, B> ZipIter<A, B> {
     # (`a_elem << 32 | b_elem`) so the struct fits in the backend's
     # receiver-writeback register budget (the same trick `DictIter`
     # uses for its key/value sizes).
-    fn next(&mut self) -> Option<(A, B)> {
+    unsafe fn next(&mut self) -> Option<(A, B)> {
         if self.index >= self.min_len {
             Option::None
         } else {

@@ -1513,7 +1513,7 @@ mod heap_operations {
     #[test]
     fn test_val_heap_integration() {
         let source = r#"
-            fn main() -> u64 {
+            unsafe fn main() -> u64 {
                 val heap_ptr = __builtin_heap_alloc(8u64)
                 val is_null = __builtin_ptr_is_null(heap_ptr)
                 if is_null {
@@ -1534,7 +1534,7 @@ mod heap_operations {
     #[test]
     fn test_val_heap_complex_operations() {
         let source = r#"
-            fn main() -> u64 {
+            unsafe fn main() -> u64 {
                 val src = __builtin_heap_alloc(16u64)
                 val dst = __builtin_heap_alloc(16u64)
 
@@ -1560,7 +1560,7 @@ mod heap_operations {
     #[test]
     fn test_val_heap_realloc() {
         let source = r#"
-            fn main() -> u64 {
+            unsafe fn main() -> u64 {
                 val heap_ptr1 = __builtin_heap_alloc(8u64)
                 __builtin_ptr_write(heap_ptr1, 0u64, 200u64)
 
@@ -1579,7 +1579,7 @@ mod heap_operations {
     #[test]
     fn test_val_heap_memory_operations() {
         let source = r#"
-            fn main() -> u64 {
+            unsafe fn main() -> u64 {
                 val heap_ptr = __builtin_heap_alloc(16u64)
 
                 # Set memory to a specific value
@@ -1607,7 +1607,7 @@ mod heap_operations {
     #[test]
     fn test_val_complex_heap_scenario() {
         let source = r#"
-            fn allocate_and_fill(size: u64, value: u64) -> u64 {
+            unsafe fn allocate_and_fill(size: u64, value: u64) -> u64 {
                 val heap_ptr = __builtin_heap_alloc(size)
                 val is_null = __builtin_ptr_is_null(heap_ptr)
 
@@ -1621,7 +1621,7 @@ mod heap_operations {
                 }
             }
 
-            fn main() -> u64 {
+            unsafe fn main() -> u64 {
                 val test1 = allocate_and_fill(8u64, 111u64)
                 val test2 = allocate_and_fill(8u64, 222u64)
                 val test3 = allocate_and_fill(8u64, 333u64)
@@ -1646,7 +1646,7 @@ mod heap_operations {
             }
 
             impl List {
-                fn push(self: Self, value: u64) -> Self {
+                unsafe fn push(self: Self, value: u64) -> Self {
                     val elem_size: u64 = __builtin_sizeof(value)
                     var new_cap: u64 = self.cap
                     if self.cap == 0u64 {
@@ -1662,12 +1662,12 @@ mod heap_operations {
                     List { data: new_data, len: self.len + 1u64, cap: new_cap, alloc: self.alloc }
                 }
 
-                fn get(self: Self, index: u64) -> u64 {
+                unsafe fn get(self: Self, index: u64) -> u64 {
                     __builtin_ptr_read(self.data, index * 8u64)
                 }
             }
 
-            fn main() -> u64 {
+            unsafe fn main() -> u64 {
                 val arena = __builtin_default_allocator()
                 with allocator = arena {
                     val empty: List<u64, Allocator> = List {
@@ -1698,7 +1698,7 @@ mod heap_operations {
             }
 
             impl List {
-                fn push(self: Self, value: i64) -> Self {
+                unsafe fn push(self: Self, value: i64) -> Self {
                     val elem_size: u64 = __builtin_sizeof(value)
                     var new_cap: u64 = self.cap
                     if self.cap == 0u64 {
@@ -1714,13 +1714,13 @@ mod heap_operations {
                     List { data: new_data, len: self.len + 1u64, cap: new_cap, alloc: self.alloc }
                 }
 
-                fn get(self: Self, index: u64) -> i64 {
+                unsafe fn get(self: Self, index: u64) -> i64 {
                     val v: i64 = __builtin_ptr_read(self.data, index * 8u64)
                     v
                 }
             }
 
-            fn main() -> i64 {
+            unsafe fn main() -> i64 {
                 val arena = __builtin_default_allocator()
                 with allocator = arena {
                     val empty: List<i64, Allocator> = List {
@@ -1749,7 +1749,7 @@ mod heap_operations {
             }
 
             impl List {
-                fn push(self: Self, value: bool) -> Self {
+                unsafe fn push(self: Self, value: bool) -> Self {
                     val elem_size: u64 = __builtin_sizeof(value)
                     var new_cap: u64 = self.cap
                     if self.cap == 0u64 {
@@ -1765,13 +1765,13 @@ mod heap_operations {
                     List { data: new_data, len: self.len + 1u64, cap: new_cap, alloc: self.alloc }
                 }
 
-                fn get(self: Self, index: u64) -> bool {
+                unsafe fn get(self: Self, index: u64) -> bool {
                     val v: bool = __builtin_ptr_read(self.data, index)
                     v
                 }
             }
 
-            fn main() -> u64 {
+            unsafe fn main() -> u64 {
                 val arena = __builtin_default_allocator()
                 with allocator = arena {
                     val empty: List<bool, Allocator> = List {
@@ -1923,7 +1923,7 @@ mod heap_operations {
     fn test_sizeof_with_heap_alloc_sizing() {
         // Realistic usage: allocate space for one element using sizeof.
         let source = r#"
-            fn main() -> u64 {
+            unsafe fn main() -> u64 {
                 val arena = __builtin_default_allocator()
                 with allocator = arena {
                     val p = __builtin_heap_alloc(__builtin_sizeof(0u64))
@@ -1993,19 +1993,19 @@ mod heap_operations {
             }
 
             impl<T> Slice2<T> {
-                fn alloc(len: u64, proto: T) -> Self {
+                unsafe fn alloc(len: u64, proto: T) -> Self {
                     val p: ptr = __builtin_heap_alloc(__builtin_sizeof::<T>() * len)
                     __builtin_ptr_write(p, 0u64, proto)
                     Slice2 { data: p, len: len }
                 }
 
-                fn get(&self, i: u64) -> T {
+                unsafe fn get(&self, i: u64) -> T {
                     val v: T = __builtin_ptr_read(self.data, i * __builtin_sizeof::<T>())
                     v
                 }
             }
 
-            fn main() -> u64 {
+            unsafe fn main() -> u64 {
                 val s: Slice2<u64> = Slice2::alloc(2u64, 7u64)
                 s.get(0u64) + __builtin_sizeof::<Slice2<u64>>()
             }

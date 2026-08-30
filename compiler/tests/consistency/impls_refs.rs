@@ -246,7 +246,7 @@ fn string_from_str_round_trip() {
     // pointer returned by `String::as_ptr()`, checking
     // 'h'=104 / 'e'=101 / 'l'=108 / 'l'=108 / 'o'=111 + len=5.
     let src = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val s: String = String::from_str("hello")
             val n: u64 = s.size()
             val p: ptr = s.as_ptr()
@@ -288,7 +288,7 @@ fn string_push_str_round_trip() {
     // pins interpreter / JIT silent fallback / AOT all see the
     // same exit code (42 on success).
     let src = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             var s: String = String::from_str("hello")
             val sp: String = String::from_str(" ")
             val w: String = String::from_str("world")
@@ -341,21 +341,21 @@ fn ref_stage2_explicit_borrow_and_mut_ref_round_trip() {
     // 3-way `assert_consistent` across interpreter / JIT /
     // AOT — all should agree on exit code 42.
     let src = r#"
-        fn len_of(s: &String) -> u64 {
+        unsafe fn len_of(s: &String) -> u64 {
             s.size()
         }
 
-        fn first_byte(s: &String) -> u8 {
+        unsafe fn first_byte(s: &String) -> u8 {
             val b: u8 = __builtin_ptr_read(s.as_ptr(), 0u64)
             b
         }
 
-        fn first_byte_mut(s: &mut String) -> u8 {
+        unsafe fn first_byte_mut(s: &mut String) -> u8 {
             val b: u8 = __builtin_ptr_read(s.as_ptr(), 0u64)
             b
         }
 
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             var s: String = String::from_str("hello")
             # auto-borrow: bare String -> &String (immutable only)
             if len_of(s) != 5u64 { return 1u64 }
@@ -966,10 +966,10 @@ fn getitem_setitem_magic_methods_3_backend() {
         struct Slot<T> { v: T }
 
         impl<T> Slot<T> {
-            fn __getitem__(&self, index: u64) -> T {
+            unsafe fn __getitem__(&self, index: u64) -> T {
                 self.v
             }
-            fn __setitem__(&mut self, index: u64, value: T) {
+            unsafe fn __setitem__(&mut self, index: u64, value: T) {
                 self.v = value
             }
         }
@@ -980,16 +980,16 @@ fn getitem_setitem_magic_methods_3_backend() {
         }
 
         impl Bytes {
-            fn __getitem__(&self, i: u64) -> u64 {
+            unsafe fn __getitem__(&self, i: u64) -> u64 {
                 val v: u64 = __builtin_ptr_read(self.data, i)
                 v
             }
-            fn __setitem__(&mut self, i: u64, value: u64) {
+            unsafe fn __setitem__(&mut self, i: u64, value: u64) {
                 __builtin_ptr_write(self.data, i, value)
             }
         }
 
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             # &self receiver + generic return substitution.
             val s: Slot<u64> = Slot { v: 40u64 }
             if s[2u64] != 40u64 { return 1u64 }

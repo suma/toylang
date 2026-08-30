@@ -728,6 +728,7 @@ impl<'a> AstIntegrationContext<'a> {
                         ensures: sig.ensures.clone(),
                         ensures_kinds: sig.ensures_kinds.clone(),
                         never_allocates: sig.never_allocates,
+                        is_unsafe: sig.is_unsafe,
                         old_exprs: sig.old_exprs.clone(),
                         has_self_param: sig.has_self_param,
                         self_is_mut: sig.self_is_mut,
@@ -932,6 +933,7 @@ impl<'a> AstIntegrationContext<'a> {
             // preserved by construction.
             ensures_kinds: source_ensures_kinds,
             never_allocates: source_never_allocates,
+            is_unsafe: function.is_unsafe,
             const_fn: function.const_fn,
             old_exprs: new_old_exprs,
             code: new_code,
@@ -996,6 +998,8 @@ impl<'a> AstIntegrationContext<'a> {
             // preserved by construction.
             ensures_kinds: source_ensures_kinds,
             never_allocates: source_never_allocates,
+            // A bool carries no symbols — no remap needed.
+            is_unsafe: method.is_unsafe,
             old_exprs: new_old_exprs,
             code: new_code,
             has_self_param: method.has_self_param,

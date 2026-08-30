@@ -56,14 +56,14 @@ impl<T> Span<T> {
     # Bounds-checked element read. Panics naming the length on an
     # out-of-range index — the message shape is the same on every
     # backend (the `Vec::get` convention).
-    fn get(&self, i: u64) -> T {
+    unsafe fn get(&self, i: u64) -> T {
         if i >= self.count { panic("Span::get index out of bounds") }
         val v: T = __builtin_ptr_read(self.data.addr, i * __builtin_sizeof::<T>())
         v
     }
 
     # Bounds-checked element write.
-    fn set(&self, i: u64, value: T) {
+    unsafe fn set(&self, i: u64, value: T) {
         if i >= self.count { panic("Span::set index out of bounds") }
         __builtin_ptr_write(self.data.addr, i * __builtin_sizeof::<T>(), value)
     }
@@ -91,13 +91,13 @@ impl<T> Span<T> {
 
     # Bracket sugar — the same bounds-checked operations under
     # indexing syntax.
-    fn __getitem__(&self, i: u64) -> T {
+    unsafe fn __getitem__(&self, i: u64) -> T {
         if i >= self.count { panic("Span::get index out of bounds") }
         val v: T = __builtin_ptr_read(self.data.addr, i * __builtin_sizeof::<T>())
         v
     }
 
-    fn __setitem__(&self, i: u64, value: T) {
+    unsafe fn __setitem__(&self, i: u64, value: T) {
         if i >= self.count { panic("Span::set index out of bounds") }
         __builtin_ptr_write(self.data.addr, i * __builtin_sizeof::<T>(), value)
     }

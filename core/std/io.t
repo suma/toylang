@@ -94,7 +94,7 @@ fn io_error_from_status(status: u64) -> IoError {
 # `\r\n`). `Err(IoError::EndOfInput)` at EOF — raised only before any
 # byte was read, so a final line without a newline is still an `Ok`.
 # An empty line is `Ok("")`.
-pub fn read_line() -> Result<str, IoError> {
+pub unsafe fn read_line() -> Result<str, IoError> {
     val first: i32 = getchar()
     if first == -1i32 {
         return Result::Err(IoError::EndOfInput)

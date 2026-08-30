@@ -5,7 +5,7 @@
 # pop runs at the end of the body.
 #
 # Expected exit: 12345
-fn main() -> u64 {
+unsafe fn main() -> u64 {
     val arena = Arena::new()
     val total: u64 = with allocator = arena {
         val p: ptr = __builtin_heap_alloc(8u64)

@@ -9,7 +9,7 @@
 #   realloc(p, 128) -> non-null
 #   set + free succeeds
 # Exit code: 42
-fn main() -> u64 {
+unsafe fn main() -> u64 {
     val p: ptr = __builtin_heap_alloc(64u64)
     val p_ok: bool = !__builtin_ptr_is_null(p)
     __builtin_mem_set(p, 0u64, 64u64)

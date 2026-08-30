@@ -69,6 +69,7 @@ const ENTRIES: &[Entry] = &[
     (codes::CAPTURED_ASSIGN, E0021),
     (codes::REGION_ESCAPE, E0022),
     (codes::IMPL_PRECONDITION, E0023),
+    (codes::UNSAFE_REQUIRED, E0024),
 ];
 
 const E0001: &str = "\
@@ -835,6 +836,42 @@ trait requires — is sound but has no syntax yet (Eiffel spells it
 `require else`). Leave the clause off: the trait\'s precondition still
 applies, and accepting more than you promised to accept breaks no
 caller.";
+
+const E0024: &str = "\
+E0024: raw memory access needs an `unsafe fn` declaration
+
+The body calls a builtin that reads or writes raw memory
+(`__builtin_ptr_read`, `__builtin_ptr_write`, the `mem_*` family,
+`__simd_load` / `__simd_store`, ...) but is not declared `unsafe fn`.
+The declaration is what makes a raw-pointer dialect visible at the
+signature level — `--effects` answers the same question as
+`raw_read` / `raw_write`:
+
+    fn get(&self, i: u64) -> T {          # E0024: __builtin_ptr_read ...
+        val v: T = __builtin_ptr_read(self.addr, i * 8u64)
+        v
+    }
+
+    unsafe fn get(&self, i: u64) -> T {   # fine
+        val v: T = __builtin_ptr_read(self.addr, i * 8u64)
+        v
+    }
+
+The check is **direct**: a function is asked only about its own body,
+not about what its callees do — calling an `unsafe fn` (or anything
+the stdlib hides behind `Ptr<T>` / `Span<T>`) keeps the caller safe,
+which is the point of those types. Ordering with the other prefix
+modifiers is free (`never_allocates unsafe fn`, `unsafe const fn`).
+
+Three ways out:
+
+* **Declare the function `unsafe fn`**, when the raw access is the
+  function's job.
+* **Go through `Ptr<T>` / `Span<T>`** (`core/std/ptr.t` /
+  `core/std/span.t`), which concentrate the raw builtins in the
+  stdlib — the caller stays safe.
+* **Delete the access**, when a plain binding or a `Vec<T>` says the
+  same thing without leaving the language.";
 
 #[cfg(test)]
 mod tests {

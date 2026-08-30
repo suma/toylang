@@ -24,19 +24,19 @@ const OWNING_TYPE: &str = r#"
 struct Cell<T> { p: ptr }
 
 impl<T> Cell<T> {
-    fn new(v: T) -> Self {
+    unsafe fn new(v: T) -> Self {
         val p: ptr = __builtin_heap_alloc(__builtin_sizeof(v))
         __builtin_ptr_write(p, 0u64, v)
         Cell { p: p }
     }
-    fn get(&self) -> T {
+    unsafe fn get(&self) -> T {
         val v: T = __builtin_ptr_read(self.p, 0u64)
         v
     }
 }
 
 impl<T> Drop for Cell<T> {
-    fn drop(&mut self) { __builtin_heap_free(self.p) }
+    unsafe fn drop(&mut self) { __builtin_heap_free(self.p) }
 }
 "#;
 

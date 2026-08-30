@@ -673,6 +673,15 @@ fn check_typing_collecting(
         string_interner,
         &expr_types,
     ));
+    // POINTER P6: a body that performs a raw memory access must be
+    // declared `unsafe fn`. Direct body walk — calling an `unsafe fn`
+    // does not make the caller unsafe, which is what lets the stdlib
+    // concentrate the raw builtins behind `Ptr<T>` / `Span<T>`.
+    fn_errors.extend(frontend::type_checker::check_unsafe_declarations(
+        program,
+        string_interner,
+        &expr_types,
+    ));
     // REGION: memory taken from a scoped allocator must not outlive
     // it. Reads the same `expr_types` and the same effect walk as the
     // two checks above — an allocation is what the effect table says

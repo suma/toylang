@@ -50,7 +50,7 @@ struct Box<T> {
 }
 
 impl<T> Box<T> {
-    fn new(value: T) -> Self {
+    unsafe fn new(value: T) -> Self {
         val p: ptr = __builtin_heap_alloc(__builtin_sizeof(value))
         __builtin_ptr_write(p, 0u64, value)
         Box { data: p }
@@ -58,12 +58,12 @@ impl<T> Box<T> {
 
     # A copy of the boxed value. The annotation is what gives the read
     # its shape, so it cannot be dropped.
-    fn get(&self) -> T {
+    unsafe fn get(&self) -> T {
         val v: T = __builtin_ptr_read(self.data, 0u64)
         v
     }
 
-    fn set(&mut self, value: T) {
+    unsafe fn set(&mut self, value: T) {
         __builtin_ptr_write(self.data, 0u64, value)
     }
 

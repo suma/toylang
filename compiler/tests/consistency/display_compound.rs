@@ -201,13 +201,13 @@ fn ptr_read_into_a_named_struct_round_trips() {
             has_next: bool,
         }
 
-        fn cons(v: i64, rest: Node) -> Node {
+        unsafe fn cons(v: i64, rest: Node) -> Node {
             val p: ptr = __builtin_heap_alloc(__builtin_sizeof(rest))
             __builtin_ptr_write(p, 0u64, rest)
             Node { v: v, next: p, has_next: true }
         }
 
-        fn sum(n: Node) -> i64 {
+        unsafe fn sum(n: Node) -> i64 {
             if n.has_next {
                 val rest: Node = __builtin_ptr_read(n.next, 0u64)
                 n.v + sum(rest)
@@ -216,7 +216,7 @@ fn ptr_read_into_a_named_struct_round_trips() {
             }
         }
 
-        fn main() -> i64 {
+        unsafe fn main() -> i64 {
             val nil = Node { v: 0i64, next: __builtin_null_ptr(), has_next: false }
             val a = cons(3i64, nil)
             val b = cons(2i64, a)
@@ -276,13 +276,13 @@ fn an_enum_through_a_ptr_round_trips() {
             Nil,
         }
 
-        fn cons(v: i64, rest: List) -> List {
+        unsafe fn cons(v: i64, rest: List) -> List {
             val p: ptr = __builtin_heap_alloc(__builtin_sizeof(rest))
             __builtin_ptr_write(p, 0u64, rest)
             List::Cons(v, p)
         }
 
-        fn sum(l: List) -> i64 {
+        unsafe fn sum(l: List) -> i64 {
             match l {
                 List::Cons(v, p) => {
                     val rest: List = __builtin_ptr_read(p, 0u64)
@@ -292,7 +292,7 @@ fn an_enum_through_a_ptr_round_trips() {
             }
         }
 
-        fn main() -> i64 {
+        unsafe fn main() -> i64 {
             val nil: List = List::Nil
             val a = cons(3i64, nil)
             val b = cons(2i64, a)
@@ -383,22 +383,22 @@ fn a_transferred_value_is_not_freed_by_the_binding_that_built_it() {
         struct Cell<T> { p: ptr }
 
         impl<T> Cell<T> {
-            fn new(v: T) -> Self {
+            unsafe fn new(v: T) -> Self {
                 val p: ptr = __builtin_heap_alloc(__builtin_sizeof(v))
                 __builtin_ptr_write(p, 0u64, v)
                 Cell { p: p }
             }
-            fn get(&self) -> T {
+            unsafe fn get(&self) -> T {
                 val v: T = __builtin_ptr_read(self.p, 0u64)
                 v
             }
         }
 
         impl<T> Drop for Cell<T> {
-            fn drop(&mut self) { __builtin_heap_free(self.p) }
+            unsafe fn drop(&mut self) { __builtin_heap_free(self.p) }
         }
 
-        fn main() -> i64 {
+        unsafe fn main() -> i64 {
             var store: Vec<Cell<i64>> = Vec::new()
             val c: Cell<i64> = Cell::new(7i64)
             store.push(c)
@@ -418,7 +418,7 @@ fn a_value_that_was_never_transferred_still_drops() {
         struct Cell { p: ptr }
 
         impl Cell {
-            fn new(v: i64) -> Self {
+            unsafe fn new(v: i64) -> Self {
                 val p: ptr = __builtin_heap_alloc(8u64)
                 __builtin_ptr_write(p, 0u64, v)
                 Cell { p: p }
@@ -426,13 +426,13 @@ fn a_value_that_was_never_transferred_still_drops() {
         }
 
         impl Drop for Cell {
-            fn drop(&mut self) {
+            unsafe fn drop(&mut self) {
                 println("freed")
                 __builtin_heap_free(self.p)
             }
         }
 
-        fn main() -> i64 {
+        unsafe fn main() -> i64 {
             val c = Cell::new(7i64)
             0i64
         }

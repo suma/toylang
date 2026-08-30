@@ -149,6 +149,9 @@ pub enum TypeCheckErrorKind {
     /// reach the allocator, or reaches a call this check cannot
     /// follow. `path` is the chain that gets there.
     NeverAllocates { function: String, path: String, opaque: Option<&'static str> },
+    /// POINTER P6: the body performs a raw memory access without the
+    /// `unsafe fn` declaration.
+    UnsafeRequired { function: String, builtin: String },
     /// COMPILE-TIME-EVAL: a function declared `const fn` reaches
     /// something the compiler cannot run while compiling. `what` names
     /// it and `path` is the chain that gets there; `opaque` separates
@@ -404,6 +407,18 @@ impl TypeCheckError {
         }
     }
 
+    /// POINTER P6: a raw-memory builtin was reached without
+    /// declaring the function `unsafe fn`.
+    pub fn unsafe_required(function: String, builtin: String) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::UnsafeRequired { function, builtin }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
     /// COMPILE-TIME-EVAL C1: the `const fn` declaration cannot be
     /// honoured.
     pub fn const_fn(
@@ -628,6 +643,13 @@ impl TypeCheckError {
                     "`{function}` is declared `never_allocates`, but it can reach the allocator: {path}"
                 ),
             },
+            TypeCheckErrorKind::UnsafeRequired { function, builtin } => {
+                format!(
+                    "`{builtin}` performs a raw memory access, so `{function}` must be declared \
+                     `unsafe fn {function}(...)` — or go through the stdlib's `Ptr<T>` / \
+                     `Span<T>`, which concentrate the raw access behind a typed API"
+                )
+            }
             TypeCheckErrorKind::ConstFn { function, path, what, opaque } => {
                 if *opaque {
                     format!(

@@ -7,7 +7,7 @@ use crate::common::test_program;
 #[test]
 fn test_val_heap_alloc_free_cycle() {
     let source = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val iterations = 5u64
             var i = 0u64
             var success_count = 0u64
@@ -46,7 +46,7 @@ fn test_val_heap_alloc_free_cycle() {
 #[test]
 fn test_val_heap_memory_consistency() {
     let source = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val heap_ptr1 = __builtin_heap_alloc(16u64)
             val heap_ptr2 = __builtin_heap_alloc(16u64)
 
@@ -86,7 +86,7 @@ fn test_val_heap_memory_consistency() {
 #[test]
 fn test_val_heap_realloc_preserve_data() {
     let source = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val original_heap_ptr = __builtin_heap_alloc(8u64)
             val test_value = 1311768467463790319u64
 
@@ -120,7 +120,7 @@ fn test_val_heap_realloc_preserve_data() {
 #[test]
 fn test_val_heap_mem_copy_operations() {
     let source = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val src_heap_ptr = __builtin_heap_alloc(32u64)
             val dst_heap_ptr = __builtin_heap_alloc(32u64)
 
@@ -164,7 +164,7 @@ fn test_val_heap_mem_copy_operations() {
 #[test]
 fn test_val_heap_mem_set_operations() {
     let source = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val heap_ptr = __builtin_heap_alloc(16u64)
             val fill_byte = 170u64  # 170 = 0xAA in binary: 10101010
 
@@ -197,7 +197,7 @@ fn test_val_heap_mem_set_operations() {
 #[test]
 fn test_val_heap_null_pointer_safety() {
     let source = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             # Test null pointer detection
             val null_heap_ptr = __builtin_heap_alloc(0u64)  # Should return null for 0-size allocation
             val is_null = __builtin_ptr_is_null(null_heap_ptr)
@@ -234,7 +234,7 @@ fn test_val_heap_null_pointer_safety() {
 #[test]
 fn test_val_heap_stress_small_allocations() {
     let source = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             var success_count = 0u64
             var iteration = 0u64
             val max_iterations = 10u64
@@ -459,7 +459,7 @@ fn test_arena_alloc_read_write_cycle() {
     // allocator, so the body's raw heap_alloc lands on the
     // shared HeapManager).
     let source = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val arena = Arena::new()
             with allocator = arena {
                 val p = __builtin_heap_alloc(8u64)
@@ -583,7 +583,7 @@ const USER_LIST_SOURCE: &str = r#"
     }
 
     impl List {
-        fn push(self: Self, value: u64) -> Self {
+        unsafe fn push(self: Self, value: u64) -> Self {
             var new_cap: u64 = self.cap
             if self.cap == 0u64 {
                 new_cap = 8u64
@@ -598,12 +598,12 @@ const USER_LIST_SOURCE: &str = r#"
             List { data: new_data, len: self.len + 1u64, cap: new_cap }
         }
 
-        fn get(self: Self, index: u64) -> u64 {
+        unsafe fn get(self: Self, index: u64) -> u64 {
             __builtin_ptr_read(self.data, index * 8u64)
         }
     }
 
-    fn make_list() -> List {
+    unsafe fn make_list() -> List {
         List { data: __builtin_heap_alloc(0u64), len: 0u64, cap: 0u64 }
     }
 "#;

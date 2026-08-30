@@ -23,7 +23,7 @@ fn aot_heap_alloc_round_trip() {
     // 3-way `assert_consistent` checks interpreter / JIT
     // (silent fallback) / AOT all agree on exit code 42.
     let src = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val p: ptr = __builtin_heap_alloc(16u64)
             __builtin_ptr_write(p, 0u64, 17u64)
             __builtin_ptr_write(p, 8u64, 25u64)
@@ -148,7 +148,7 @@ fn aot_heap_realloc_grows_buffer() {
     // available bytes and read everything back to verify both the
     // pre-grow and post-grow contents survived.
     let src = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             var p: ptr = __builtin_heap_alloc(8u64)
             __builtin_ptr_write(p, 0u64, 100u64)
             p = __builtin_heap_realloc(p, 24u64)

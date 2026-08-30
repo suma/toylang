@@ -9,7 +9,7 @@
 # their type from the annotation at the call site, or from the vector
 # on the other side of an operator.
 
-fn dot(xs: ptr, ys: ptr, pairs: u64) -> f64 {
+unsafe fn dot(xs: ptr, ys: ptr, pairs: u64) -> f64 {
     var total: f64 = 0f64
     var i: u64 = 0u64
     while i < pairs {
@@ -24,7 +24,7 @@ fn dot(xs: ptr, ys: ptr, pairs: u64) -> f64 {
     total
 }
 
-fn main() -> u64 {
+unsafe fn main() -> u64 {
     # --- lane-wise operators ---------------------------------------
     val a: f64x2 = __simd_splat(1.5f64)
     val b: f64x2 = __simd_splat(2.0f64)

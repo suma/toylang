@@ -272,13 +272,13 @@ fn parity_drop_glue_frees_a_binding() {
     assert!(assert_engine_parity(
         r#"
 pub trait Drop {
-    fn drop(&mut self)
+    unsafe fn drop(&mut self)
 }
 
         struct Cell { p: ptr }
 
         impl Cell {
-            fn new(v: i64) -> Self {
+            unsafe fn new(v: i64) -> Self {
                 val p: ptr = __builtin_heap_alloc(8u64)
                 __builtin_ptr_write(p, 0u64, v)
                 Cell { p: p }
@@ -286,10 +286,10 @@ pub trait Drop {
         }
 
         impl Drop for Cell {
-            fn drop(&mut self) { __builtin_heap_free(self.p) }
+            unsafe fn drop(&mut self) { __builtin_heap_free(self.p) }
         }
 
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val c: Cell = Cell::new(7i64)
             __builtin_free_count()
         }
@@ -305,13 +305,13 @@ fn parity_drop_glue_frees_a_holding_struct() {
     assert!(assert_engine_parity(
         r#"
 pub trait Drop {
-    fn drop(&mut self)
+    unsafe fn drop(&mut self)
 }
 
         struct Cell { p: ptr }
 
         impl Cell {
-            fn new(v: i64) -> Self {
+            unsafe fn new(v: i64) -> Self {
                 val p: ptr = __builtin_heap_alloc(8u64)
                 __builtin_ptr_write(p, 0u64, v)
                 Cell { p: p }
@@ -319,12 +319,12 @@ pub trait Drop {
         }
 
         impl Drop for Cell {
-            fn drop(&mut self) { __builtin_heap_free(self.p) }
+            unsafe fn drop(&mut self) { __builtin_heap_free(self.p) }
         }
 
         struct Holder { c: Cell, tag: i64 }
 
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val c: Cell = Cell::new(7i64)
             val h = Holder { c: c, tag: 3i64 }
             __builtin_free_count()
@@ -340,13 +340,13 @@ fn parity_drop_glue_frees_an_enum_payload() {
     assert!(assert_engine_parity(
         r#"
 pub trait Drop {
-    fn drop(&mut self)
+    unsafe fn drop(&mut self)
 }
 
         struct Cell { p: ptr }
 
         impl Cell {
-            fn new(v: i64) -> Self {
+            unsafe fn new(v: i64) -> Self {
                 val p: ptr = __builtin_heap_alloc(8u64)
                 __builtin_ptr_write(p, 0u64, v)
                 Cell { p: p }
@@ -354,7 +354,7 @@ pub trait Drop {
         }
 
         impl Drop for Cell {
-            fn drop(&mut self) { __builtin_heap_free(self.p) }
+            unsafe fn drop(&mut self) { __builtin_heap_free(self.p) }
         }
 
         enum Boxed {
@@ -362,7 +362,7 @@ pub trait Drop {
             Empty,
         }
 
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val c: Cell = Cell::new(7i64)
             val b = Boxed::Put(c)
             __builtin_free_count()

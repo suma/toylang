@@ -482,7 +482,7 @@ fn string_as_ptr_via_trait_round_trip() {
     // returned pointer addresses the buffer's first byte in every
     // backend.
     let src = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val s: String = String::from_str("Z")
             val p: ptr = s.as_ptr()
             val b: u8 = __builtin_ptr_read(p, 0u64)
@@ -592,12 +592,12 @@ fn sizeof_type_arg_round_trip() {
         struct Slice2<T> { data: ptr, len: u64 }
 
         impl<T> Slice2<T> {
-            fn alloc(len: u64, proto: T) -> Self {
+            unsafe fn alloc(len: u64, proto: T) -> Self {
                 val p: ptr = __builtin_heap_alloc(__builtin_sizeof::<T>() * len)
                 __builtin_ptr_write(p, 0u64, proto)
                 Slice2 { data: p, len: len }
             }
-            fn get(&self, i: u64) -> T {
+            unsafe fn get(&self, i: u64) -> T {
                 val v: T = __builtin_ptr_read(self.data, i * __builtin_sizeof::<T>())
                 v
             }
@@ -607,7 +607,7 @@ fn sizeof_type_arg_round_trip() {
             __builtin_sizeof::<T>()
         }
 
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             # Concrete written types.
             if __builtin_sizeof::<u64>() != 8u64 { return 1u64 }
             if __builtin_sizeof::<u8>() != 1u64 { return 2u64 }
@@ -1179,7 +1179,7 @@ fn str_as_ptr_extension_method_round_trip() {
     // Walks "hi" byte-by-byte through the method form. Exit 42
     // means each byte ('h'=104, 'i'=105, NUL=0) matched.
     let src = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val s = "hi"
             val p: ptr = s.as_ptr()
             val a: u8 = __builtin_ptr_read(p, 0u64)
@@ -1214,7 +1214,7 @@ fn str_to_ptr_byte_walk_round_trip() {
     // Walks "hi" byte-by-byte, checking 'h'=104, 'i'=105, NUL=0.
     // Exit 42 means every byte matched.
     let src = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val s = "hi"
             val p: ptr = __builtin_str_to_ptr(s)
             val a: u8 = __builtin_ptr_read(p, 0u64)
@@ -1240,7 +1240,7 @@ fn str_to_ptr_byte_walk_round_trip() {
 #[test]
 fn str_from_bytes_round_trips_through_a_buffer() {
     let src = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val src_str = "hi"
             val p: ptr = __builtin_str_to_ptr(src_str)
             val back: str = __builtin_str_from_bytes(p, 2u64)
@@ -1263,7 +1263,7 @@ fn str_from_bytes_reads_bytes_the_engines_store_differently() {
     // `HeapManager::read_byte_at` is the one place that knows where a
     // byte actually lives.
     let src = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val p: ptr = __builtin_heap_alloc(5u64)
             __builtin_ptr_write(p, 0u64, 104u8)
             __builtin_ptr_write(p, 1u64, 101u8)
@@ -1286,7 +1286,7 @@ fn a_str_built_from_bytes_survives_the_buffer_changing() {
     // the interpreter stores an owned String, the compiled backends
     // malloc a fresh block.
     let src = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val p: ptr = __builtin_heap_alloc(2u64)
             __builtin_ptr_write(p, 0u64, 104u8)
             __builtin_ptr_write(p, 1u64, 105u8)

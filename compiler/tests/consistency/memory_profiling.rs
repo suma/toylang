@@ -473,7 +473,7 @@ fn interior_pointers_read_and_write_independently() {
     // two interior pointers must land in disjoint regions, and a write
     // through one must be visible at the same offset of the base block.
     let src = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val block: ptr = __builtin_heap_alloc(64u64)
             val cell0: ptr = __builtin_ptr_offset(block, 0u64)
             val cell1: ptr = __builtin_ptr_offset(block, 32u64)
@@ -496,7 +496,7 @@ fn interior_pointers_compose() {
     // Offset from an interior pointer reaches the same address as the
     // equivalent offset from the base — the value is plain addition.
     let src = r#"
-        fn main() -> u64 {
+        unsafe fn main() -> u64 {
             val block: ptr = __builtin_heap_alloc(64u64)
             val half: ptr = __builtin_ptr_offset(block, 32u64)
             val quarter: ptr = __builtin_ptr_offset(half, 16u64)

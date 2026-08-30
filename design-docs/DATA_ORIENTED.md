@@ -1,6 +1,6 @@
 # DATA-ORIENTED — 配列の layout をユーザが選べるようにする
 
-> **状態: 設計のみ (未実装)**。実装サイトの見込みは
+> **状態: Phase 0 (2026-08-30 landing) / 0.5 未着手**。実装サイトは
 > [`compiler_lower/src/array_access.rs`](../compiler_lower/src/array_access.rs) と
 > [`compiler_lower/src/array_layout.rs`](../compiler_lower/src/array_layout.rs)。
 > SIMD 側の設計は [`SIMD.md`](SIMD.md) にあり、本文書の Phase 0 が
@@ -43,18 +43,23 @@ toylang には、この API 変更を**避けられる構造上の理由**があ
 
 ```
 AoS: leaf_idx = i * leaf_count + j
-SoA: leaf_idx = j * length     + i
+SoA: slot = columns[j], index = i
 ```
 
-に入れ替えるだけになる。**`InstKind::ArrayLoad` / `ArrayStore` の形も
-codegen も一切変わらない** — codegen は leaf index を受け取って stride 倍
-するだけで、要素の切り方を知らないため。変更は lowering の 2 ファイルに
-閉じる。
+に入れ替えるだけになる。**Phase 0 の実装はこの形をさらに単純化した**:
+単一 slot に layout flag を持たせる代わりに **leaf ごとに独立した
+`ArraySlotId` (列) を確保**する。各列は「その leaf 型の homogeneous
+scalar 配列」という既存の形なので、`InstKind::ArrayLoad` / `ArrayStore`
+も codegen も IR VM も**一切変わらない** — 変更は `compiler_lower` だけ
+に閉じた (事実 2 の主張よりさらに強い)。`ArraySlotInfo` に layout
+flag を足す案はこの方式で不要になった。
 
-**ただしこれは uniform 8 バイト列 (現行の `ARRAY_LEAF_STRIDE` 規約) に
-限る。** 列ごとの tight pack (事実 3) は列ごとに stride が違うので
-codegen の `ArrayLoad` / `ArrayStore` にも SoA 分岐が要る — だから
-Phase 0.5 として分離した (下の段階表)。
+**ただし uniform 8 バイト列 (現行の `ARRAY_LEAF_STRIDE` 規約) は
+Phase 0 の実装範囲。** 列ごとの tight pack (事実 3) は列ごとに stride
+が違うので codegen の `ArrayLoad` / `ArrayStore` にも SoA 分岐が要る
+と設計では予想していたが、列方式では各列が独自の
+`elem_stride_bytes` を持てるので **0.5 は stride の切り替えだけ**に
+縮む (下の段階表)。
 
 ### 事実 3: SoA は棚上げ中の pack 問題も解く
 
@@ -113,8 +118,17 @@ field access が該当 local を拾う (`array_access.rs` の per-leaf ループ
 
 `ps[i].x` は FieldAccess(SliceAccess) の chain として降ってくるので、
 field 名 → leaf `j` を compile time に解き、**1 本の `ArrayLoad`**
-(`index = j * length + i`) に落とす経路を Phase 0 に含める。特定 field だけ
-を舐めるループが速くなるのはこれが効いてからで、DoD の実利の本体。
+(SoA: 列 slot `j` + 要素 index / AoS: `i * leaf_count + j`) に落とす。
+特定 field だけを舐めるループが速くなるのはこれが効いてからで、DoD の
+実利の本体。
+
+**実装時に判明した事実**: `ps[i].f` は compiled lane では SoA 以前に
+**一切動いていなかった** (`resolve_field_chain` が SliceAccess root を
+拒否 — tree-walker だけが対応)。だから shortcut は AoS / SoA 両対応の
+新規機能であり、AoS 側には `nested_struct_array_test.t` /
+`struct_array_test.t` という「動くはずの example が ERROR_EXAMPLES
+行き」だった分があった (Phase 0 landing で両方復活し skip list から
+外した)。
 
 ### `soa Vec<T>` — stdlib `SoaVec<T>` への sugar (Phase 2)
 
@@ -209,21 +223,36 @@ SoaVec は別型なので「付け外して測る」は型注釈の差し替え
 (`retains`) は tight pack 後に AoS/SoA で値が食い違う — layout が観測可能
 であることの帰結で、別型にした理由の裏付け。
 
-### 実装の見込み (stack 配列)
+### 実装の見込み (stack 配列 — Phase 0 として landing 済み)
 
-| 変更点 | 場所 | Phase |
+| 変更点 | 場所 | 状態 |
 |---|---|---|
-| `soa` トークンと配列型パーサ | `frontend/src/lexer.l`, `frontend/src/parser/types.rs` | 0 |
-| `TypeDecl` に layout (wrapper `Soa(Box<TypeDecl>)` か `Array` への flag) | `frontend/src/type_decl.rs` (`source_name` も対応) | 0 |
-| `ArraySlotInfo` に `layout: Aos \| Soa` | `compiler_ir/src/lib.rs` (0.5 まで codegen は消費しない) | 0 |
-| 添字式の分岐 (`i * leaf_count + j` ↔ `j * length + i`) | `compiler_lower/src/array_access.rs` | 0 |
-| `ps[i].f` 単列 shortcut (chain FieldAccess → 1 本の load) | `compiler_lower/src/array_access.rs` | 0 |
-| 列ごとの stride / base offset (tight pack) | `compiler_lower/src/array_layout.rs` + codegen の `ArrayLoad` / `ArrayStore` | 0.5 |
-| tree-walker | 配列表現が `Vec<Object>` なので**変更不要** (観測できる差が無い) | — |
+| `soa [` contextual 修飾子 (`soa` + 次が `[` のときだけ) | `frontend/src/parser/types.rs` (lexer 変更なし) | ✅ |
+| `TypeDecl::Array(elems, size, soa)` 第 3 field (`is_equivalent` は無視) | `frontend/src/type_decl.rs` ほか arity 更新 | ✅ |
+| `Binding::Array { storage: Interleaved \| Columns<Vec<slot>> }` | `compiler_lower/src/bindings.rs` | ✅ |
+| `allocate_array_storage` — 列ごとに homogeneous slot | `compiler_lower/src/array_layout.rs` | ✅ |
+| 添字式の分岐 (`i * leaf_count + j` ↔ 列 slot + 要素 index) | `compiler_lower/src/array_access.rs` ほか | ✅ |
+| `ps[i].f` 単列 shortcut (AoS / SoA 両対応、読み・書き・ネスト chain) | `compiler_lower/src/field_access.rs` / `assign.rs` | ✅ |
+| 範囲 slice の layout 継承・再 layout | `compiler_lower/src/let_lowering.rs` | ✅ |
+| tree-walker | 配列表現が `Vec<Object>` なので**変更不要** (観測できる差が無い) | ✅ (最初から) |
+| 列ごとの stride を leaf 実サイズに (tight pack) | `array_layout.rs` の stride 1 箇所 | Phase 0.5 |
 
 tree-walker が変更不要なのは重要で、**layout を変えても答えが変わらない**
 ことのオラクルがそのまま手に入る。`assert_consistent` は
-「同じプログラムを `soa` 有り / 無しで走らせて一致」を pin すればよい。
+「同じプログラムを `soa` 有り / 無しで走らせて一致」を pin する
+(`compiler/tests/consistency/soa.rs` が 4-way で固定)。
+
+**実装時に踏んだ既存バグ 2 件 (Phase 0 の前提として修正)**:
+
+1. `val ps: [Point; 2] = [Point {...}, ...]` — 注釈付き struct 要素
+   配列リテラルが checker で拒否されていた (要素型の `Identifier` と
+   `Struct(name, [])` の綴り違いを unify していなかった。
+   `collections.rs::visit_array_literal_impl`)
+2. struct フィールド型の whitelist に f64 / f32 / narrow int が入って
+   おらず `struct S { b: u8 }` / `struct P { x: f64 }` が宣言時に拒否
+   されていた (`struct_literal.rs::visit_struct_decl_impl` — どちらも
+   「それ以外の位置では全部動く型」で、scalar 幅の struct フィールドを
+   書いた者がいなかった)
 
 ### enum の SoA
 
@@ -294,8 +323,8 @@ heap 節を参照。)
 
 | Phase | 内容 | 規模 |
 |---|---|---|
-| **0** | `soa [T; N]` (scalar / struct / tuple 要素)。uniform 8 バイト列 — 事実 2 の「codegen 無変更」が成立する範囲。**`ps[i].f` の単列 shortcut 込み** | 小 |
-| **0.5** | 列ごとの tight pack — `ArraySlotInfo` の layout 消費 + 列 stride、codegen の `ArrayLoad` / `ArrayStore` に SoA 分岐 (事実 3 / NUM-W-AOT-pack Phase 2 を回収) | 小〜中 |
+| **0** | `soa [T; N]` (scalar / struct / tuple 要素)。uniform 8 バイト列。**`ps[i].f` の単列 shortcut 込み** — **landing 済み (2026-08-30)**: 列方式 (事実 2 の注記) により IR / codegen / IR VM 無変更、`consistency/soa.rs` が soa 有無一致を 4-way で pin | ✅ 小 |
+| **0.5** | 列ごとの tight pack — `allocate_array_storage` の stride を `ARRAY_LEAF_STRIDE` から leaf 実サイズへ (列方式なので codegen 分岐は不要、1 箇所の切替 + IR footprint の pin) | 小 |
 | **1** | slice `&[T]` — SoA の窓。`ps.mass` → `&[f64]` | 中 |
 | **2** | `soa Vec<T>` → `SoaVec<T>` sugar。単一領域の列分割 + builtin 3 個 | 中 |
 | **3** | 配列要素としての enum + tag 列の分離 | 中 |

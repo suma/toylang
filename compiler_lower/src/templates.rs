@@ -909,8 +909,8 @@ pub(super) fn substitute_self(
             is_mut: *is_mut,
             inner: Box::new(sub(inner)),
         },
-        TypeDecl::Array(elems, size) => {
-            TypeDecl::Array(elems.iter().map(&sub).collect(), size.clone())
+        TypeDecl::Array(elems, size, soa) => {
+            TypeDecl::Array(elems.iter().map(&sub).collect(), size.clone(), *soa)
         }
         TypeDecl::Tuple(elems) => TypeDecl::Tuple(elems.iter().map(&sub).collect()),
         TypeDecl::Struct(name, args) => TypeDecl::Struct(*name, args.iter().map(&sub).collect()),

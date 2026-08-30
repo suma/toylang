@@ -11,6 +11,33 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_type_declaration_with_generic_context(&mut self, generic_params: &HashSet<DefaultSymbol>) -> ParserResult<TypeDecl> {
+        // DATA-ORIENTED Phase 0: `soa [T; N]` — the prefix layout
+        // modifier. Contextual exactly like `test`: `soa` is a
+        // modifier only when the next token opens an array type, so
+        // `val soa = ...` / `fn soa()` / a user `struct soa` keep
+        // parsing as the plain identifier (`soa Vec<T>` is the
+        // Phase 2 heap-container spelling and does not parse yet).
+        if let Some(Kind::Identifier(name)) = self.peek()
+            && name.as_str() == "soa"
+            && self.peek_n(1) == Some(&Kind::BracketOpen)
+        {
+            self.next(); // consume `soa`
+            let location = self.current_source_location();
+            let inner = self.parse_type_declaration_with_generic_context(generic_params)?;
+            return match inner {
+                TypeDecl::Array(elems, size, _) => Ok(TypeDecl::Array(elems, size, true)),
+                // `soa [T]` (unsized) parses as Array too, so this
+                // arm is only reachable if the inner parse stops
+                // being an array by construction — kept for the
+                // day other containers join.
+                other => Err(ParserError::generic_error(
+                    location,
+                    format!(
+                        "`soa` modifies an array type (`soa [T; N]`), not {other:?}"
+                    ),
+                )),
+            };
+        }
         match self.peek() {
             // Closures: `fn (T1, T2) -> R` is the explicit form of
             // a function type. Equivalent to the bare `(T1, T2) -> R`
@@ -155,11 +182,11 @@ impl<'a> Parser<'a> {
                         ArraySize::Literal(n) => *n,
                         ArraySize::Deferred(_) => 1,
                     };
-                    Ok(TypeDecl::Array(vec![element_type; n], size))
+                    Ok(TypeDecl::Array(vec![element_type; n], size, false))
                 } else {
                     // Dynamic array type [T] with no size specified
                     self.expect_err(&Kind::BracketClose)?;
-                    Ok(TypeDecl::Array(vec![element_type], ArraySize::Literal(0)))
+                    Ok(TypeDecl::Array(vec![element_type], ArraySize::Literal(0), false))
                 }
             }
             Some(Kind::Bool) => {

@@ -331,7 +331,7 @@ fn type_decl_to_ir_type(
             let id = *module.enum_index.get(&(*name, ir_args))?;
             compiler_ir::Type::Enum(id)
         }
-        TypeDecl::Array(elems, _size) => {
+        TypeDecl::Array(elems, _size, _) => {
             // IR doesn't have a dedicated Array type; lowering flattens it.
             // For reconstruction we keep walking the TypeDecl shape.
             for elem in elems {
@@ -496,7 +496,7 @@ fn reconstruct_object(
                 offset,
             ))
         }
-        TypeDecl::Array(elems, size) => {
+        TypeDecl::Array(elems, size, _) => {
             let elem_ty = elems.first()?;
             let mut values = Vec::new();
             let mut offset = 0;

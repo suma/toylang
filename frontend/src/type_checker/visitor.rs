@@ -1029,7 +1029,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             && !body_had_errors {
             let types_match = match (&last, expected_return_type) {
                 // Special case for arrays: if actual type has size 0 (dynamic), check if element types are compatible
-                (TypeDecl::Array(actual_elements, ArraySize::Literal(0)), TypeDecl::Array(expected_elements, _)) => {
+                (TypeDecl::Array(actual_elements, ArraySize::Literal(0), _), TypeDecl::Array(expected_elements, _, _)) => {
                     // For dynamic arrays (slice results), check if element types are compatible
                     if expected_elements.is_empty() {
                         // Empty array expected - this is always compatible with dynamic slice

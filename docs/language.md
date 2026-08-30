@@ -132,6 +132,7 @@ in `frontend/src/type_decl.rs`:
 
 ```
 Type ::= '&' ('mut')? Type             # reference (immutable / mutable)
+       | 'soa' '[' Type (';' INT)? ']' # SoA-layout array (see "Array layout: soa")
        | '[' Type (';' INT)? ']'       # array: [T; N] or dynamic [T]
        | 'dict' '[' Type ',' Type ']'  # dict[K, V]
        | '(' Type (',' Type)* ')'      # tuple
@@ -141,7 +142,7 @@ Type ::= '&' ('mut')? Type             # reference (immutable / mutable)
        | 'Allocator'                   # opaque allocator handle
        | 'Self'                        # enclosing impl target
        | Identifier ('<' Type (',' Type)* '>')?
-                                       # struct / enum / type alias, optionally generic
+                                        # struct / enum / type alias, optionally generic
 ```
 
 Primitive / built-in types:
@@ -160,6 +161,7 @@ Primitive / built-in types:
 | `()` | Unit (no value); function with no return type produces this |
 | `dict[K, V]` | Hash dictionary, any `Object`-keyable type as `K` |
 | `[T; N]` | Fixed-size array of `T` with length `N` |
+| `soa [T; N]` | The same type as `[T; N]` with SoA storage — see [Array layout: `soa`](#array-layout-soa) |
 | `[T]` | Dynamic-array slice (returned by slicing) |
 | `(T1, T2, ...)` | Tuple — heterogeneous, fixed-arity |
 | `Self` | The enclosing struct/enum type within an `impl` block |
@@ -1052,6 +1054,46 @@ val arr: [i64; 3] = [1i64, 2i64, 3i64]
 val tup           = (1u64, true, 3.5f64)
 val dict          = dict{"a": 1u64, "b": 2u64}
 ```
+
+### Array layout: `soa`
+
+A fixed-size array annotation may carry the prefix modifier `soa`:
+
+```rust
+struct Particle { x: f64, y: f64, mass: f64 }
+
+val ps: soa [Particle; 1024]    # x[0..1024] | y[0..1024] | mass[0..1024]
+val qs: [Particle; 1024]        # element-major (AoS), the default
+```
+
+`soa` chooses the **placement** of the elements, not their meaning:
+
+- **It is not part of type identity.** `soa [T; N]` and `[T; N]` are
+  the same type everywhere types are compared — the two spellings
+  assign to each other, and no API splits. The modifier exists so a
+  program can be measured with and without it by editing annotations
+  only.
+- `soa` is a contextual keyword: it is a modifier only when the next
+  token opens an array type, so `val soa = 5u64` keeps parsing.
+- Reads and writes are spelled exactly as the AoS form:
+  `ps[i].mass` (one leaf), `ps[i].mass = 2.0f64` (one leaf),
+  `val p = ps[i]` (whole element), `ps[1..3]` (range slice — with no
+  annotation the slice keeps the source's layout; an explicit
+  annotation re-layouts in either direction).
+- A scalar element type (`soa [u64; N]`) has one leaf, one column —
+  the modifier is accepted and means nothing extra.
+- Bounds checks behave identically to the AoS form, including
+  negative constant indices (`ps[-1i64].x`).
+
+Writing a whole compound element (`ps[i] = p`) is not supported —
+write individual leaves (`ps[i].x = ...`) instead.
+
+The lowering gives each leaf scalar its own slot (`ArraySlotId`), so
+the columns are ordinary scalar arrays to the IR, codegen, and the
+IR VM; the tree-walking interpreter does not observe the layout at
+all, which is what makes "same program, `soa` on and off, same
+answer" the pinned contract across all backends. Design notes:
+[`DATA_ORIENTED.md`](../design-docs/DATA_ORIENTED.md).
 
 ---
 

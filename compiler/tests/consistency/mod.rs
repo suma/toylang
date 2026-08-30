@@ -45,6 +45,7 @@ mod format_patterns;
 mod const_eval;
 mod float32;
 mod simd;
+mod soa;
 mod diagnostics;
 mod runtime_io;
 mod parse_numbers;

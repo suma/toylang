@@ -408,7 +408,7 @@ impl<'a> AstIntegrationContext<'a> {
                 let new_elems = self.remap_type_decls(elems)?;
                 TypeDecl::Tuple(new_elems)
             }
-            TypeDecl::Array(elems, size) => {
+            TypeDecl::Array(elems, size, soa) => {
                 let new_elems = self.remap_type_decls(elems)?;
                 let new_size = match size {
                     // COMPILE-TIME-EVAL C5: a computed length's
@@ -421,7 +421,7 @@ impl<'a> AstIntegrationContext<'a> {
                     }
                     other => other.clone(),
                 };
-                TypeDecl::Array(new_elems, new_size)
+                TypeDecl::Array(new_elems, new_size, *soa)
             }
             TypeDecl::Dict(k, v) => TypeDecl::Dict(
                 Box::new(self.remap_type_decl(k)?),

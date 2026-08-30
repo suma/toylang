@@ -28,10 +28,10 @@ use frontend::ast::{Expr, ExprRef};
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 
-use super::array_layout::{elem_stride_bytes, leaf_scalar_count, leaf_type_at};
+use super::array_layout::{leaf_scalar_count, leaf_type_at};
 use super::bindings::{
-    flatten_enum_storage_locals, flatten_struct_locals, flatten_tuple_element_locals, Binding,
-    FieldChainResult, TupleElementBinding,
+    flatten_enum_storage_locals, flatten_struct_locals, flatten_tuple_element_locals, ArrayStorage,
+    Binding, FieldChainResult, TupleElementBinding,
 };
 use super::FunctionLower;
 use crate::ir::{Const, InstKind, LocalId, Type, ValueId};
@@ -94,12 +94,14 @@ impl<'a> FunctionLower<'a> {
         // Range-slice array read: `val sub = arr[start..end]`.
         // Phase Y2 supports constant bounds only — both endpoints
         // must fold via `try_constant_index`. The result is a fresh
-        // fixed-length array binding whose stack slot mirrors the
-        // source slot's leaf layout. Each leaf scalar is copied with
-        // an `ArrayLoad` + `ArrayStore` pair.
+        // fixed-length array binding whose backing slots mirror the
+        // source layout (an explicit annotation decides otherwise —
+        // DATA-ORIENTED: `val sub: [P; 2] = soa_ps[1..3]` re-layouts,
+        // no annotation keeps the source's placement).
         if let Expr::SliceAccess(arr_obj, info) = rhs.clone()
             && matches!(info.slice_type, frontend::ast::SliceType::RangeSlice) {
-                return self.lower_let_range_slice(name, arr_obj, info);
+                let dst_soa = annotation.map(|a| a.is_soa());
+                return self.lower_let_range_slice(name, arr_obj, info, dst_soa);
             }
         // Compound-element array read: `val p: Point = arr[i]`.
         // Allocate the right binding shape and load each leaf
@@ -115,7 +117,12 @@ impl<'a> FunctionLower<'a> {
                     return Ok(result);
                 }
         if let Expr::ArrayLiteral(elems) = rhs.clone() {
-            return self.lower_let_array_literal(name, elems);
+            // DATA-ORIENTED: a `soa [T; N]` annotation chooses the
+            // binding's backing-storage shape. Layout is not type
+            // identity, so the checker has already accepted the pair
+            // either way; this is the one place the flag matters.
+            let soa = annotation.is_some_and(|a| a.is_soa());
+            return self.lower_let_array_literal(name, elems, soa);
         }
         // Enum-construction RHS. `Enum::Variant` (unit) parses as a
         // `QualifiedIdentifier(vec![enum, variant])`; `Enum::Variant(args)`
@@ -450,6 +457,14 @@ impl<'a> FunctionLower<'a> {
                 }
                 _ => None,
             });
+        }
+        // DATA-ORIENTED: a field / tuple chain rooted at an array
+        // element (`val b = ps[i].y`) names a *scalar leaf*, not a
+        // compound — `resolve_field_chain` would reject the
+        // SliceAccess root outright. Fall through to the scalar
+        // path, whose FieldAccess arm lowers it as one leaf load.
+        if self.resolve_array_element_leaf(rhs_ref)?.is_some() {
+            return Ok(None);
         }
         match self.resolve_field_chain(rhs_ref)? {
             FieldChainResult::Struct { struct_id, fields } => {
@@ -1779,14 +1794,15 @@ impl<'a> FunctionLower<'a> {
         Ok(None)
     }
 
-    /// Array-literal RHS helper (`val arr = [a, b, c]`).
-    /// Allocates a fresh stack slot sized for the element
-    /// stride and stores each element through
-    /// `store_array_element`.
+    /// Array-literal RHS helper (`val arr = [a, b, c]`). Allocates
+    /// the backing storage (interleaved, or one slot per leaf for a
+    /// `soa` annotation — `allocate_array_storage`) and stores each
+    /// element through `store_array_element`.
     fn lower_let_array_literal(
         &mut self,
         name: DefaultSymbol,
         elems: Vec<ExprRef>,
+        soa: bool,
     ) -> Result<Option<ValueId>, String> {
         if elems.is_empty() {
             return Err(
@@ -1816,28 +1832,17 @@ impl<'a> FunctionLower<'a> {
                 "compiler MVP only supports scalar / struct / tuple array elements; got {elem_ty:?}"
             ));
         }
-        // For homogeneous scalar element arrays the stride is
-        // the scalar's actual byte size (1/2/4/8 — see
-        // `array_layout::elem_stride_bytes`); for compound
-        // elements each leaf gets a uniform 8-byte slot in the
-        // same buffer. The slot's `length` therefore counts
-        // leaves, not elements.
         let leaf_count = leaf_scalar_count(self.module, elem_ty);
-        let stride = elem_stride_bytes(elem_ty, self.module);
-        let slot_len = elems.len() * leaf_count;
-        let slot = self
-            .module
-            .function_mut(self.func_id)
-            .add_array_slot(elem_ty, slot_len, stride);
+        let storage = self.allocate_array_storage(elem_ty, elems.len(), soa);
         for (i, e) in elems.iter().enumerate() {
-            self.store_array_element(slot, elem_ty, i, leaf_count, e)?;
+            self.store_array_element(&storage, elem_ty, i, leaf_count, e)?;
         }
         self.bindings.insert(
             name,
             Binding::Array {
                 element_ty: elem_ty,
                 length: elems.len(),
-                slot,
+                storage,
             },
         );
         Ok(None)
@@ -1847,12 +1852,18 @@ impl<'a> FunctionLower<'a> {
     /// Constant bounds only — both endpoints must fold via
     /// `try_constant_index`. Allocates a fresh fixed-length
     /// array binding and copies each leaf scalar with an
-    /// `ArrayLoad` + `ArrayStore` pair.
+    /// `ArrayLoad` + `ArrayStore` pair. DATA-ORIENTED: the
+    /// destination layout is the annotation's when it names one,
+    /// the source's otherwise — the per-leaf copy goes through
+    /// leaf slots either way, so a re-layouting slice
+    /// (`val sub: [P; 2] = soa_ps[1..3]`) is the same
+    /// materialise-and-restore path any cross-layout copy is.
     fn lower_let_range_slice(
         &mut self,
         name: DefaultSymbol,
         arr_obj: ExprRef,
         info: frontend::ast::SliceInfo,
+        dst_soa: Option<bool>,
     ) -> Result<Option<ValueId>, String> {
         let arr_expr = self
             .program
@@ -1868,9 +1879,9 @@ impl<'a> FunctionLower<'a> {
                 );
             }
         };
-        let (element_ty, length, src_slot) = match self.bindings.get(&arr_sym).cloned() {
-            Some(Binding::Array { element_ty, length, slot }) => {
-                (element_ty, length, slot)
+        let (element_ty, length, src_storage) = match self.bindings.get(&arr_sym).cloned() {
+            Some(Binding::Array { element_ty, length, storage }) => {
+                (element_ty, length, storage)
             }
             _ => {
                 return Err(format!(
@@ -1901,16 +1912,26 @@ impl<'a> FunctionLower<'a> {
         }
         let new_len = end - start;
         let leaf_count = leaf_scalar_count(self.module, element_ty);
-        let stride = elem_stride_bytes(element_ty, self.module);
-        let dst_slot = self
-            .module
-            .function_mut(self.func_id)
-            .add_array_slot(element_ty, new_len * leaf_count, stride);
+        let soa = dst_soa.unwrap_or(match &src_storage {
+            ArrayStorage::Columns(_) => true,
+            ArrayStorage::Interleaved(_) => false,
+        });
+        let dst_storage = self.allocate_array_storage(element_ty, new_len, soa);
         for i in 0..new_len {
             for j in 0..leaf_count {
-                let src_idx = (start + i) * leaf_count + j;
-                let dst_idx = i * leaf_count + j;
                 let leaf_ty = leaf_type_at(self.module, element_ty, j);
+                // Source leaf position under the source layout, then
+                // the destination position under the destination
+                // layout — the pair is what makes a re-layouting
+                // slice the same code as a preserving one.
+                let (src_slot, src_idx) = match &src_storage {
+                    ArrayStorage::Interleaved(slot) => (*slot, (start + i) * leaf_count + j),
+                    ArrayStorage::Columns(cols) => (cols[j], start + i),
+                };
+                let (dst_slot, dst_idx) = match &dst_storage {
+                    ArrayStorage::Interleaved(slot) => (*slot, i * leaf_count + j),
+                    ArrayStorage::Columns(cols) => (cols[j], i),
+                };
                 let src_idx_v = self
                     .emit(
                         InstKind::Const(Const::U64(src_idx as u64)),
@@ -1949,7 +1970,7 @@ impl<'a> FunctionLower<'a> {
             Binding::Array {
                 element_ty,
                 length: new_len,
-                slot: dst_slot,
+                storage: dst_storage,
             },
         );
         Ok(None)

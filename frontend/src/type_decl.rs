@@ -191,7 +191,14 @@ pub enum TypeDecl {
     Identifier(DefaultSymbol),
     String,
     Number,  // Type-unspecified numeric literal for type inference
-    Array(Vec<TypeDecl>, ArraySize),  // element types and fixed size
+    /// Fixed-size array type. The third field is the DATA-ORIENTED
+    /// layout modifier: `soa [T; N]` parses to `soa: true`, a plain
+    /// `[T; N]` to `false`. **Layout is not part of type identity** —
+    /// `is_equivalent` ignores the flag, so a `soa` array and its AoS
+    /// spelling assign to each other and no API splits. The flag only
+    /// survives for the lowering, which turns it into the binding's
+    /// backing-storage shape; the tree-walker never reads it.
+    Array(Vec<TypeDecl>, ArraySize, bool),
     Struct(DefaultSymbol, Vec<TypeDecl>),  // struct type with type parameters
     Dict(Box<TypeDecl>, Box<TypeDecl>),  // Dict<K, V> - key type and value type
     Self_,  // Self type within impl blocks
@@ -274,6 +281,13 @@ impl TypeDecl {
                 | TypeDecl::Int16 | TypeDecl::UInt16
                 | TypeDecl::Int8 | TypeDecl::UInt8
         )
+    }
+
+    /// DATA-ORIENTED: whether this is a `soa [T; N]` array type. Only
+    /// the lowering consumes this — everywhere else `soa` arrays are
+    /// the same type as their AoS spelling.
+    pub fn is_soa(&self) -> bool {
+        matches!(self, TypeDecl::Array(_, _, true))
     }
 
     /// Whether `self` is a *signed* integer width -- what unary minus
@@ -386,7 +400,11 @@ impl TypeDecl {
             // but not its count. A literal length keeps the existing
             // count comparison, which is also what catches an array
             // literal of the wrong size against a declared type.
-            (TypeDecl::Array(xs, nx), TypeDecl::Array(ys, ny)) => {
+            // DATA-ORIENTED: the `soa` flag is deliberately absent —
+            // layout is not type identity, so `soa [T; N]` and
+            // `[T; N]` remain interchangeable everywhere types are
+            // compared.
+            (TypeDecl::Array(xs, nx, _), TypeDecl::Array(ys, ny, _)) => {
                 let deferred = matches!(nx, ArraySize::Deferred(_))
                     || matches!(ny, ArraySize::Deferred(_));
                 if let (ArraySize::Literal(a), ArraySize::Literal(b)) = (nx, ny)
@@ -476,7 +494,7 @@ impl TypeDecl {
     pub fn contains_ref(&self) -> bool {
         match self {
             TypeDecl::Ref { .. } => true,
-            TypeDecl::Array(elems, _) => elems.iter().any(|t| t.contains_ref()),
+            TypeDecl::Array(elems, _, _) => elems.iter().any(|t| t.contains_ref()),
             TypeDecl::Dict(k, v) => k.contains_ref() || v.contains_ref(),
             TypeDecl::Tuple(elems) => elems.iter().any(|t| t.contains_ref()),
             TypeDecl::Struct(_, args) => args.iter().any(|t| t.contains_ref()),
@@ -500,7 +518,7 @@ impl TypeDecl {
     pub fn contains_generic(&self) -> bool {
         match self {
             TypeDecl::Generic(_) => true,
-            TypeDecl::Array(elems, _) => elems.iter().any(|t| t.contains_generic()),
+            TypeDecl::Array(elems, _, _) => elems.iter().any(|t| t.contains_generic()),
             TypeDecl::Dict(k, v) => k.contains_generic() || v.contains_generic(),
             TypeDecl::Tuple(elems) => elems.iter().any(|t| t.contains_generic()),
             TypeDecl::Struct(_, args) => args.iter().any(|t| t.contains_generic()),
@@ -521,12 +539,15 @@ impl TypeDecl {
                 // If we have a substitution for this generic parameter, use it
                 substitutions.get(param).cloned().unwrap_or_else(|| self.clone())
             },
-            TypeDecl::Array(element_types, size) => {
-                // Recursively substitute in array element types
+            TypeDecl::Array(element_types, size, soa) => {
+                // Recursively substitute in array element types. The
+                // layout flag is placement, not identity, but it must
+                // survive the rewrite so a `type` alias of a `soa`
+                // array keeps its storage shape.
                 let new_elements = element_types.iter()
                     .map(|t| t.substitute_generics(substitutions))
                     .collect();
-                TypeDecl::Array(new_elements, size.clone())
+                TypeDecl::Array(new_elements, size.clone(), *soa)
             },
             TypeDecl::Dict(key_type, value_type) => {
                 // Recursively substitute in dictionary key and value types
@@ -673,14 +694,16 @@ impl TypeDecl {
             // `[T]`; a sized array keeps its length. A length the
             // compiler computes (`[i64; double(2u64)]`) is displayed
             // with a placeholder until the driver's CTFE pass has
-            // resolved it.
-            TypeDecl::Array(elements, size) => {
+            // resolved it. The `soa` modifier prefixes the spelling
+            // it was written with.
+            TypeDecl::Array(elements, size, soa) => {
                 let element = elements.first().unwrap_or(&TypeDecl::Unknown).source_name(interner)?;
-                match size {
+                let base = match size {
                     ArraySize::Literal(0) => format!("[{element}]"),
                     ArraySize::Literal(n) => format!("[{element}; {n}]"),
                     ArraySize::Deferred(_) => format!("[{element}; <computed>]"),
-                }
+                };
+                if *soa { format!("soa {base}") } else { base }
             }
             TypeDecl::Dict(key, value) => format!(
                 "dict<{}, {}>",

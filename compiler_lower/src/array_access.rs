@@ -19,11 +19,11 @@ use frontend::ast::{Expr, ExprRef, UnaryOp};
 
 use super::array_layout::leaf_scalar_count;
 use super::bindings::{
-    flatten_struct_locals, flatten_tuple_element_locals, Binding, FieldBinding,
+    flatten_struct_locals, flatten_tuple_element_locals, ArrayStorage, Binding, FieldBinding,
     TupleElementBinding,
 };
 use super::FunctionLower;
-use crate::ir::{ArraySlotId, BinOp, Const, InstKind, LocalId, Terminator, Type, ValueId};
+use crate::ir::{BinOp, Const, InstKind, LocalId, Terminator, Type, ValueId};
 
 /// Result of folding a constant array index against the array length.
 pub(super) enum ConstIndex {
@@ -37,6 +37,45 @@ pub(super) enum ConstIndex {
 
 impl<'a> FunctionLower<'a> {
 
+    /// Emit one leaf store at (element `i`, leaf `j`) honouring the
+    /// binding's layout — DATA-ORIENTED's two indexings:
+    ///
+    /// ```text
+    /// AoS: leaf_idx = i * leaf_count + j   (one interleaved slot)
+    /// SoA: slot = columns[j], index = i    (one slot per column)
+    /// ```
+    ///
+    /// Both shapes hand codegen an ordinary `ArrayStore` against a
+    /// scalar `elem_ty`, which is why nothing downstream changes.
+    pub(super) fn emit_array_leaf_store(
+        &mut self,
+        storage: &ArrayStorage,
+        leaf_count: usize,
+        i: usize,
+        j: usize,
+        value: ValueId,
+        leaf_ty: Type,
+    ) {
+        let (slot, leaf_idx) = match storage {
+            ArrayStorage::Interleaved(slot) => (*slot, i * leaf_count + j),
+            ArrayStorage::Columns(cols) => (cols[j], i),
+        };
+        let idx_v = self
+            .emit(
+                InstKind::Const(Const::U64(leaf_idx as u64)),
+                Some(Type::U64),
+            )
+            .expect("Const returns a value");
+        self.emit(
+            InstKind::ArrayStore {
+                slot,
+                index: idx_v,
+                value,
+                elem_ty: leaf_ty,
+            },
+            None,
+        );
+    }
     /// Determine the IR `Type` of an array element from its first
     /// literal. Scalars use `value_scalar`; struct / tuple literals
     /// resolve via `infer_tuple_element_type` (which already handles
@@ -48,14 +87,14 @@ impl<'a> FunctionLower<'a> {
         Err("compiler MVP could not infer type for array element".to_string())
     }
 
-    /// Lower one element value into the array's stack slot at the
-    /// right leaf-index range. Scalar elements take a single
-    /// `ArrayStore` at index `i * leaf_count + 0`; struct elements
-    /// decompose into per-leaf `ArrayStore`s starting at
-    /// `i * leaf_count`.
+    /// Lower one element value into the array's backing storage at
+    /// the right leaf position. Scalar elements take a single
+    /// `ArrayStore`; struct / tuple elements decompose into per-leaf
+    /// `ArrayStore`s — the slot + index pair per leaf comes from the
+    /// binding's layout (`emit_array_leaf_store`).
     pub(super) fn store_array_element(
         &mut self,
-        slot: ArraySlotId,
+        storage: &ArrayStorage,
         elem_ty: Type,
         index: usize,
         leaf_count: usize,
@@ -97,22 +136,7 @@ impl<'a> FunctionLower<'a> {
                     let v = self
                         .emit(InstKind::LoadLocal(*local), Some(*ty))
                         .expect("LoadLocal returns a value");
-                    let leaf_idx = index * leaf_count + j;
-                    let idx_v = self
-                        .emit(
-                            InstKind::Const(Const::U64(leaf_idx as u64)),
-                            Some(Type::U64),
-                        )
-                        .expect("Const returns a value");
-                    self.emit(
-                        InstKind::ArrayStore {
-                            slot,
-                            index: idx_v,
-                            value: v,
-                            elem_ty: *ty,
-                        },
-                        None,
-                    );
+                    self.emit_array_leaf_store(storage, leaf_count, index, j, v, *ty);
                 }
                 Ok(())
             }
@@ -151,22 +175,7 @@ impl<'a> FunctionLower<'a> {
                     let v = self
                         .emit(InstKind::LoadLocal(*local), Some(*ty))
                         .expect("LoadLocal returns a value");
-                    let leaf_idx = index * leaf_count + j;
-                    let idx_v = self
-                        .emit(
-                            InstKind::Const(Const::U64(leaf_idx as u64)),
-                            Some(Type::U64),
-                        )
-                        .expect("Const returns a value");
-                    self.emit(
-                        InstKind::ArrayStore {
-                            slot,
-                            index: idx_v,
-                            value: v,
-                            elem_ty: *ty,
-                        },
-                        None,
-                    );
+                    self.emit_array_leaf_store(storage, leaf_count, index, j, v, *ty);
                 }
                 Ok(())
             }
@@ -174,17 +183,7 @@ impl<'a> FunctionLower<'a> {
                 let v = self.lower_expr(expr_ref)?.ok_or_else(|| {
                     format!("array element #{index} produced no value")
                 })?;
-                let leaf_idx = index * leaf_count;
-                let idx_v = self
-                    .emit(
-                        InstKind::Const(Const::U64(leaf_idx as u64)),
-                        Some(Type::U64),
-                    )
-                    .expect("Const returns a value");
-                self.emit(
-                    InstKind::ArrayStore { slot, index: idx_v, value: v, elem_ty },
-                    None,
-                );
+                self.emit_array_leaf_store(storage, leaf_count, index, 0, v, elem_ty);
                 Ok(())
             }
         }
@@ -208,7 +207,7 @@ impl<'a> FunctionLower<'a> {
     /// bounds, which is why the signed path needs the second
     /// comparison; on the unsigned path the single `idx < length` test
     /// is sufficient.
-    fn emit_index_guard(
+    pub(super) fn emit_index_guard(
         &mut self,
         index_ref: &ExprRef,
         idx: ValueId,
@@ -360,8 +359,10 @@ impl<'a> FunctionLower<'a> {
             let args = vec![*index_ref];
             return self.lower_method_call(obj, getitem_sym, &args);
         }
-        let (element_ty, length, slot) = match self.bindings.get(&arr_sym).cloned() {
-            Some(Binding::Array { element_ty, length, slot }) => (element_ty, length, slot),
+        let (element_ty, length, storage) = match self.bindings.get(&arr_sym).cloned() {
+            Some(Binding::Array { element_ty, length, storage }) => {
+                (element_ty, length, storage)
+            }
             Some(_) | None => unreachable!("non-array binding was routed to __getitem__ above"),
         };
         // For compound array elements (struct), allocate a fresh
@@ -396,64 +397,103 @@ impl<'a> FunctionLower<'a> {
                 }
                 _ => unreachable!(),
             }
-            // Element-base leaf index: const-fold or `imul(idx, leaf_count)`.
-            let base_v = match self.resolve_const_index(index_ref, length) {
-                ConstIndex::Valid(i) => self
-                    .emit(
-                        InstKind::Const(Const::U64((i * leaf_count) as u64)),
-                        Some(Type::U64),
-                    )
-                    .expect("Const returns a value"),
+            // The guarded element index, lowered once and shared by
+            // every leaf. DATA-ORIENTED: under SoA each leaf's load
+            // uses this value directly against its own column slot;
+            // under AoS it is the element base the per-leaf offsets
+            // add onto.
+            let const_elem_idx = match self.resolve_const_index(index_ref, length) {
+                ConstIndex::Valid(i) => Some(i),
                 ConstIndex::OutOfBounds => {
                     return Err(format!("array index out of bounds (length {length})"));
                 }
-                ConstIndex::NotConstant => {
-                let raw_idx = self
-                    .lower_expr(index_ref)?
-                    .ok_or_else(|| "array index produced no value".to_string())?;
-                let idx_ty = self.value_scalar(index_ref).unwrap_or(Type::U64);
-                let raw_idx = self.emit_index_guard(index_ref, raw_idx, idx_ty, length)?;
-                let leaf_count_v = self
-                    .emit(
-                        InstKind::Const(Const::U64(leaf_count as u64)),
-                        Some(Type::U64),
-                    )
-                    .expect("Const returns a value");
-                self.emit(
-                    InstKind::BinOp {
-                        op: BinOp::Mul,
-                        lhs: raw_idx,
-                        rhs: leaf_count_v,
-                    },
-                    Some(Type::U64),
-                )
-                .expect("imul returns")
+                ConstIndex::NotConstant => None,
+            };
+            let elem_idx_v = match const_elem_idx {
+                Some(i) => self
+                    .emit(InstKind::Const(Const::U64(i as u64)), Some(Type::U64))
+                    .expect("Const returns a value"),
+                None => {
+                    let raw_idx = self
+                        .lower_expr(index_ref)?
+                        .ok_or_else(|| "array index produced no value".to_string())?;
+                    let idx_ty = self.value_scalar(index_ref).unwrap_or(Type::U64);
+                    self.emit_index_guard(index_ref, raw_idx, idx_ty, length)?
                 }
             };
-            for (j, (local, ty)) in leaves.iter().enumerate() {
-                let leaf_idx_v = if j == 0 {
-                    base_v
-                } else {
-                    let off_v = self
+            // Under AoS with a runtime index, the element base
+            // `i * leaf_count` is shared by every leaf — compute it
+            // once, before the per-leaf loads. (`None` when the
+            // index folded to a constant, or the layout is SoA,
+            // where each leaf uses the element index directly.)
+            let aos_base_v = match (&storage, const_elem_idx) {
+                (ArrayStorage::Interleaved(_), None) => {
+                    let leaf_count_v = self
                         .emit(
-                            InstKind::Const(Const::U64(j as u64)),
+                            InstKind::Const(Const::U64(leaf_count as u64)),
                             Some(Type::U64),
                         )
-                        .expect("Const returns");
-                    self.emit(
-                        InstKind::BinOp {
-                            op: BinOp::Add,
-                            lhs: base_v,
-                            rhs: off_v,
-                        },
-                        Some(Type::U64),
+                        .expect("Const returns a value");
+                    Some(
+                        self.emit(
+                            InstKind::BinOp {
+                                op: BinOp::Mul,
+                                lhs: elem_idx_v,
+                                rhs: leaf_count_v,
+                            },
+                            Some(Type::U64),
+                        )
+                        .expect("imul returns"),
                     )
-                    .expect("iadd returns")
+                }
+                _ => None,
+            };
+            for (j, (local, ty)) in leaves.iter().enumerate() {
+                // AoS: leaf index = i * leaf_count + j — fully folded
+                // into one `Const` when the element index folded,
+                // otherwise the shared base plus the constant offset.
+                // SoA: column slot j, element index as-is.
+                let (load_slot, leaf_idx_v) = match &storage {
+                    ArrayStorage::Columns(cols) => (cols[j], elem_idx_v),
+                    ArrayStorage::Interleaved(slot) => {
+                        let leaf_idx_v = match (const_elem_idx, aos_base_v, j) {
+                            (Some(i), _, _) => self
+                                .emit(
+                                    InstKind::Const(
+                                        Const::U64((i * leaf_count + j) as u64),
+                                    ),
+                                    Some(Type::U64),
+                                )
+                                .expect("Const returns a value"),
+                            (None, Some(base), 0) => base,
+                            (None, Some(base), _) => {
+                                let off_v = self
+                                    .emit(
+                                        InstKind::Const(Const::U64(j as u64)),
+                                        Some(Type::U64),
+                                    )
+                                    .expect("Const returns");
+                                self.emit(
+                                    InstKind::BinOp {
+                                        op: BinOp::Add,
+                                        lhs: base,
+                                        rhs: off_v,
+                                    },
+                                    Some(Type::U64),
+                                )
+                                .expect("iadd returns")
+                            }
+                            (None, None, _) => unreachable!(
+                                "AoS runtime path always computes the element base"
+                            ),
+                        };
+                        (*slot, leaf_idx_v)
+                    }
                 };
                 let v = self
                     .emit(
                         InstKind::ArrayLoad {
-                            slot,
+                            slot: load_slot,
                             index: leaf_idx_v,
                             elem_ty: *ty,
                         },
@@ -487,7 +527,11 @@ impl<'a> FunctionLower<'a> {
             }
         };
         Ok(self.emit(
-            InstKind::ArrayLoad { slot, index: idx_v, elem_ty: element_ty },
+            InstKind::ArrayLoad {
+                slot: storage.scalar_slot(),
+                index: idx_v,
+                elem_ty: element_ty,
+            },
             Some(element_ty),
         ))
     }
@@ -537,10 +581,23 @@ impl<'a> FunctionLower<'a> {
             let args = vec![*index_ref, *value];
             return self.lower_method_call(obj, setitem_sym, &args);
         }
-        let (element_ty, length, slot) = match self.bindings.get(&arr_sym).cloned() {
-            Some(Binding::Array { element_ty, length, slot }) => (element_ty, length, slot),
+        let (element_ty, length, storage) = match self.bindings.get(&arr_sym).cloned() {
+            Some(Binding::Array { element_ty, length, storage }) => {
+                (element_ty, length, storage)
+            }
             Some(_) | None => unreachable!("non-array binding was routed to __setitem__ above"),
         };
+        // Compound-element whole writes (`ps[i] = p`) are not
+        // supported yet — the value graph never carries a compound,
+        // and scattering one leaf-by-leaf is DATA-ORIENTED's
+        // undecided point 3. A scalar element has a single backing
+        // slot under either layout.
+        if leaf_scalar_count(self.module, element_ty) != 1 {
+            return Err(
+                "compiler MVP cannot write a whole compound array element (`ps[i] = p`); write individual leaves via `ps[i].field = v`".to_string(),
+            );
+        }
+        let slot = storage.scalar_slot();
         let idx_v = match self.resolve_const_index(index_ref, length) {
             ConstIndex::Valid(i) => self
                 .emit(InstKind::Const(Const::U64(i as u64)), Some(Type::U64))

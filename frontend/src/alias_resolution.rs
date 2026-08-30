@@ -254,9 +254,9 @@ pub fn resolve_in_type(aliases: &AliasMap, ty: &TypeDecl) -> TypeDecl {
             let new_args: Vec<TypeDecl> = args.iter().map(|a| resolve_in_type(aliases, a)).collect();
             TypeDecl::Enum(*name, new_args)
         }
-        TypeDecl::Array(elems, n) => {
+        TypeDecl::Array(elems, n, soa) => {
             let new_elems: Vec<TypeDecl> = elems.iter().map(|e| resolve_in_type(aliases, e)).collect();
-            TypeDecl::Array(new_elems, n.clone())
+            TypeDecl::Array(new_elems, n.clone(), *soa)
         }
         TypeDecl::Tuple(elems) => {
             let new_elems: Vec<TypeDecl> = elems.iter().map(|e| resolve_in_type(aliases, e)).collect();

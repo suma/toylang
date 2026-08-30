@@ -69,6 +69,16 @@ impl<'a> TypeCheckerVisitor<'a> {
                     // user code can hold heap-allocated buffers; `Allocator` is
                     // needed for generic allocator-aware structs.
                 },
+                // NUM-W / SIMD-F32: the remaining primitive scalar
+                // widths. The arm list above predates the narrow ints
+                // and the single-precision float, so a
+                // `struct S { b: u8 }` / `struct P { x: f64 }` was
+                // rejected *here* while the same types worked in
+                // every other position — nothing exercised a scalar
+                // struct field until the soa array tests did.
+                TypeDecl::Float64 | TypeDecl::Float32
+                | TypeDecl::Int8 | TypeDecl::Int16 | TypeDecl::Int32
+                | TypeDecl::UInt8 | TypeDecl::UInt16 | TypeDecl::UInt32 => {},
                 // Closures Phase 8: function-typed field
                 // (`f: fn (T1, T2) -> R`). Storing a closure in a
                 // struct enables strategy / vtable / callback
@@ -97,7 +107,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         return Err(self.undefined_field_type(type_name));
                     }
                 },
-                TypeDecl::Array(element_types, _) => {
+                TypeDecl::Array(element_types, _, _) => {
                     // Validate array element types
                     for element_type in element_types {
                         match element_type {

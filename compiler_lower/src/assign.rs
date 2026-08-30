@@ -319,6 +319,10 @@ impl<'a> FunctionLower<'a> {
             Expr::TupleAccess(tuple, index) => {
                 // `t.N = rhs`. Resolve to the tuple element local
                 // and store. Mirrors struct field assignment.
+                // DATA-ORIENTED: `ts[i].N = rhs` — one leaf store.
+                if let Some(v) = self.try_lower_array_element_leaf_store(lhs, rhs)? {
+                    return Ok(v);
+                }
                 let local = self.resolve_tuple_element_local(&tuple, index)?;
                 let rhs_val = self
                     .lower_expr(rhs)?
@@ -335,6 +339,11 @@ impl<'a> FunctionLower<'a> {
                 if let Some(storage) = self.resolve_field_enum_storage(&obj, field) {
                     self.lower_into_enum_storage(rhs, &storage)?;
                     return Ok(None);
+                }
+                // DATA-ORIENTED: `ps[i].f = rhs` — one leaf store
+                // instead of a whole-element materialise + rewrite.
+                if let Some(v) = self.try_lower_array_element_leaf_store(lhs, rhs)? {
+                    return Ok(v);
                 }
                 // `obj.field = rhs`. Resolve obj statically to a struct
                 // binding, then store rhs into that field's local.

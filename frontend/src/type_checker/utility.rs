@@ -252,7 +252,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             TypeDecl::Bool => "bool".to_string(),
             TypeDecl::String => "str".to_string(),
             TypeDecl::Unit => "()".to_string(),
-            TypeDecl::Array(element_types, size) => {
+            TypeDecl::Array(element_types, size, _) => {
                 let size_text = match size {
                     ArraySize::Literal(n) => n.to_string(),
                     ArraySize::Deferred(_) => "<computed>".to_string(),
@@ -635,13 +635,13 @@ impl<'a> TypeCheckerVisitor<'a> {
             (TypeDecl::Int64, TypeDecl::UInt64) => true,  // Allow signed/unsigned conversion
 
             // Dynamic array [T] (size 0) is compatible with fixed-size array [T; N]
-            (TypeDecl::Array(expected_elems, ArraySize::Literal(0)), TypeDecl::Array(actual_elems, _))
+            (TypeDecl::Array(expected_elems, ArraySize::Literal(0), _), TypeDecl::Array(actual_elems, _, _))
                 // Dynamic array can accept any size array with compatible element type
                 if expected_elems.len() == 1 && !actual_elems.is_empty() => {
                     actual_elems.iter().all(|elem| self.are_types_compatible(&expected_elems[0], elem))
                 }
             // Fixed-size array [T; N] is compatible with dynamic array [T] (size 0)
-            (TypeDecl::Array(expected_elems, _), TypeDecl::Array(actual_elems, ArraySize::Literal(0)))
+            (TypeDecl::Array(expected_elems, _, _), TypeDecl::Array(actual_elems, ArraySize::Literal(0), _))
                 // Fixed array can accept dynamic array result with compatible element type
                 if actual_elems.len() == 1 && !expected_elems.is_empty() => {
                     expected_elems.iter().all(|elem| self.are_types_compatible(elem, &actual_elems[0]))
@@ -704,7 +704,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             // Range assignment: arr[start..end] = value or arr[start..] = value
             // Value must be an array with compatible element types
             match value_type {
-                TypeDecl::Array(value_elements, _) => {
+                TypeDecl::Array(value_elements, _, _) => {
                     // Same reasoning as above: compare representatives
                     // rather than demanding single-entry element lists.
                     if let (Some(element_type), Some(value_element)) =
@@ -720,7 +720,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
                 _ => {
                     return Err(TypeCheckError::type_mismatch(
-                        TypeDecl::Array(element_types.clone(), ArraySize::Literal(0)),
+                        TypeDecl::Array(element_types.clone(), ArraySize::Literal(0), false),
                         value_type.clone()
                     ));
                 }

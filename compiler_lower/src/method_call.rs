@@ -1157,36 +1157,36 @@ impl<'a> FunctionLower<'a> {
                     // `&mut <name>[i]` — array element address.
                     if let Some(Expr::SliceAccess(arr_expr, info)) =
                         self.program.expression.get(&inner)
-                        && matches!(info.slice_type, frontend::ast::SliceType::SingleElement)
-                            && let Some(Expr::Identifier(arr_sym)) =
-                                self.program.expression.get(&arr_expr)
-                                && let Some(Binding::Array { element_ty, slot, .. }) =
-                                    self.bindings.get(&arr_sym).cloned()
-                                    && matches!(
-                                        element_ty,
-                                        Type::I64 | Type::U64 | Type::F64 | Type::Bool
-                                            | Type::I8 | Type::U8 | Type::I16 | Type::U16
-                                            | Type::I32 | Type::U32
-                                    )
-                                        && let Some(idx_ref) = info.start {
-                                            let idx_v = self
-                                                .lower_expr(&idx_ref)?
-                                                .ok_or_else(|| {
-                                                    "array index produced no value".to_string()
-                                                })?;
-                                            let v = self
-                                                .emit(
-                                                    InstKind::ArrayElemAddr {
-                                                        slot,
-                                                        index: idx_v,
-                                                        elem_ty: element_ty,
-                                                    },
-                                                    Some(Type::U64),
-                                                )
-                                                .expect("ArrayElemAddr returns a value");
-                                            values.push(v);
-                                            continue;
-                                        }
+                            && matches!(info.slice_type, frontend::ast::SliceType::SingleElement)
+                                && let Some(Expr::Identifier(arr_sym)) =
+                                    self.program.expression.get(&arr_expr)
+                                        && let Some(Binding::Array { element_ty, storage, .. }) =
+                                            self.bindings.get(&arr_sym).cloned()
+                                            && matches!(
+                                                element_ty,
+                                                Type::I64 | Type::U64 | Type::F64 | Type::Bool
+                                                    | Type::I8 | Type::U8 | Type::I16 | Type::U16
+                                                    | Type::I32 | Type::U32
+                                            )
+                                                && let Some(idx_ref) = info.start {
+                                                    let idx_v = self
+                                                        .lower_expr(&idx_ref)?
+                                                        .ok_or_else(|| {
+                                                            "array index produced no value".to_string()
+                                                        })?;
+                                                    let v = self
+                                                        .emit(
+                                                            InstKind::ArrayElemAddr {
+                                                                slot: storage.scalar_slot(),
+                                                                index: idx_v,
+                                                                elem_ty: element_ty,
+                                                            },
+                                                            Some(Type::U64),
+                                                        )
+                                                        .expect("ArrayElemAddr returns a value");
+                                                    values.push(v);
+                                                    continue;
+                                                }
                 }
             // Peel any explicit borrow so compound borrows
             // (`&p` / `&mut p` of a struct/tuple/enum binding) flow

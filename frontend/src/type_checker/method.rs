@@ -21,7 +21,7 @@ fn is_supported_impl_signature_shape(ty: &TypeDecl) -> bool {
         TypeDecl::Int8 | TypeDecl::Int16 | TypeDecl::Int32 |
         TypeDecl::UInt8 | TypeDecl::UInt16 | TypeDecl::UInt32 |
         TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_, _) |
-        TypeDecl::Array(_, _) | TypeDecl::Dict(_, _) | TypeDecl::Tuple(_) |
+        TypeDecl::Array(..) | TypeDecl::Dict(_, _) | TypeDecl::Tuple(_) |
         // Closures Phase 7: `fn (T1, T2) -> R` parameter
         // type is valid for HOF methods. The impl-block
         // validator only checks shape — the body
@@ -201,6 +201,7 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
             BuiltinMethod::StrSplit => Ok(TypeDecl::Array(
                 vec![TypeDecl::String],
                 ArraySize::Literal(0),
+                false,
             )),
         }
     }

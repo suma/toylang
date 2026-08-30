@@ -38,7 +38,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             let normalized = self.normalize_generic_identifier(decl_in);
             let decl = &normalized;
             match decl {
-                TypeDecl::Array(element_types, _)
+                TypeDecl::Array(element_types, _, _)
                     // For array types (including struct arrays), set the array type as hint for array literal processing
                     if !element_types.is_empty() => {
                         self.type_inference.type_hint = Some(decl.clone());

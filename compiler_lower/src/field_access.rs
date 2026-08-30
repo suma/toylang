@@ -20,11 +20,109 @@
 //!   nested compound shape.
 
 use frontend::ast::{Expr, ExprRef};
-use string_interner::DefaultSymbol;
+use string_interner::{DefaultStringInterner, DefaultSymbol};
 
+use super::array_layout::leaf_scalar_count;
 use super::bindings::{Binding, EnumStorage, FieldChainResult, FieldShape, TupleElementShape};
 use super::FunctionLower;
-use crate::ir::{InstKind, LocalId, ValueId};
+use crate::ir::{BinOp, Const, InstKind, LocalId, Type, ValueId};
+
+/// One step of a field / tuple access chain below an array-element
+/// read — see [`FunctionLower::resolve_array_element_leaf`].
+#[derive(Clone, Copy)]
+enum AccessStep {
+    Field(DefaultSymbol),
+    TupleIdx(usize),
+}
+
+/// A field / tuple chain rooted at an array element, resolved to the
+/// single leaf scalar it names: `ps[i].x`, `ps[i].pos.y`,
+/// `ts[i].0.x`. `leaf` is the leaf's index within one element in
+/// declaration order — the same walk `flatten_struct_locals`
+/// produces — and `leaf_ty` its IR type.
+pub(super) struct ArrayElementLeaf {
+    pub(super) arr_sym: DefaultSymbol,
+    pub(super) index_ref: ExprRef,
+    pub(super) leaf: usize,
+    pub(super) leaf_ty: Type,
+}
+
+/// Walk `steps` (innermost first) through `ty` and return the leaf
+/// index + type they land on. `Ok(None)` for a shape the walk cannot
+/// follow; `Err` for one it can follow to something that is not a
+/// scalar leaf.
+fn resolve_leaf_path(
+    module: &crate::ir::Module,
+    mut ty: Type,
+    steps: impl Iterator<Item = AccessStep>,
+    interner: &DefaultStringInterner,
+) -> Result<Option<(usize, Type)>, String> {
+    let mut acc = 0usize;
+    for step in steps {
+        match (ty, step) {
+            (Type::Struct(id), AccessStep::Field(field)) => {
+                // IR struct fields are keyed by *name string*
+                // (`StructDef::fields: Vec<(String, Type)>`), so the
+                // symbol resolves through the interner — the same
+                // convention `lower_field_access` uses.
+                let field_name = interner
+                    .resolve(field)
+                    .ok_or_else(|| "field name missing in interner".to_string())?;
+                let fields = module.struct_def(id).fields.clone();
+                let mut found = None;
+                for (name, ft) in &fields {
+                    if name == field_name {
+                        found = Some(*ft);
+                        break;
+                    }
+                    acc += leaf_scalar_count(module, *ft);
+                }
+                match found {
+                    Some(ft) => ty = ft,
+                    None => {
+                        return Err(format!(
+                            "struct has no field `{field_name}`"
+                        ))
+                    }
+                }
+            }
+            (Type::Tuple(id), AccessStep::TupleIdx(idx)) => {
+                let elems = module.tuple_defs[id.0 as usize].clone();
+                match idx < elems.len() {
+                    true => {
+                        acc += elems[..idx]
+                            .iter()
+                            .map(|t| leaf_scalar_count(module, *t))
+                            .sum::<usize>();
+                        ty = elems[idx];
+                    }
+                    false => return Err(format!("tuple has no element at index {idx}")),
+                }
+            }
+            _ => {
+                // e.g. `ps[i].0` on a struct element, or a field name
+                // on a tuple — report it rather than silently
+                // dropping the access.
+                return Ok(None);
+            }
+        }
+    }
+    match ty {
+        // The chain lands on a scalar leaf — the shortcut's target.
+        Type::I64 | Type::U64 | Type::F64 | Type::F32 | Type::Bool
+        | Type::I8 | Type::U8 | Type::I16 | Type::U16 | Type::I32 | Type::U32
+        | Type::Str => Ok(Some((acc, ty))),
+        // A compound value the chain stops short of: reading it
+        // whole needs the pending-compound channel, so point the
+        // user at the element-binding form instead.
+        Type::Struct(_) | Type::Tuple(_) | Type::Enum(_) => Err(
+            "field chain names a whole compound value; bind the element first (`val p = ps[i]`) \
+             and access fields on the binding"
+                .to_string(),
+        ),
+        _ => Ok(None),
+    }
+}
 
 impl<'a> FunctionLower<'a> {
     /// Read `obj.field` where `obj` resolves to either a struct
@@ -321,5 +419,295 @@ impl<'a> FunctionLower<'a> {
             FieldShape::Enum(storage) => Some((**storage).clone()),
             _ => None,
         }
+    }
+
+    /// DATA-ORIENTED Phase 0: resolve a field / tuple access chain
+    /// rooted at an array element (`ps[i].x`, `ps[i].pos.y`,
+    /// `ts[i].0.x`) down to `(array binding, index expression, leaf
+    /// index, leaf type)`. `Ok(None)` when the expression is not
+    /// that shape — the regular struct-binding paths take over — so
+    /// callers can use this as a try-first probe. The chain must
+    /// land on a *scalar* leaf: a compound stopover keeps the
+    /// pending-compound channel shape (`val p = ps[i]` then `p.x`).
+    pub(super) fn resolve_array_element_leaf(
+        &self,
+        expr: &ExprRef,
+    ) -> Result<Option<ArrayElementLeaf>, String> {
+        // Collect the steps outside-in, then walk them innermost
+        // first against the element type.
+        let mut steps: Vec<AccessStep> = Vec::new();
+        let mut cursor = *expr;
+        let index_ref;
+        let arr_sym;
+        loop {
+            let e = self
+                .program
+                .expression
+                .get(&cursor)
+                .ok_or_else(|| "field-chain expression missing".to_string())?;
+            match e {
+                Expr::FieldAccess(inner, field) => {
+                    steps.push(AccessStep::Field(field));
+                    cursor = inner;
+                }
+                Expr::TupleAccess(inner, idx) => {
+                    steps.push(AccessStep::TupleIdx(idx));
+                    cursor = inner;
+                }
+                Expr::SliceAccess(obj, info) => {
+                    if !matches!(info.slice_type, frontend::ast::SliceType::SingleElement) {
+                        return Ok(None);
+                    }
+                    let Some(index) = info.start else {
+                        return Ok(None);
+                    };
+                    let Some(Expr::Identifier(sym)) =
+                        self.program.expression.get(&obj)
+                    else {
+                        return Ok(None);
+                    };
+                    index_ref = index;
+                    arr_sym = sym;
+                    break;
+                }
+                _ => return Ok(None),
+            }
+        }
+        let Some(Binding::Array { element_ty, .. }) = self.bindings.get(&arr_sym).cloned() else {
+            return Ok(None);
+        };
+        // A scalar element has no fields to name; leave it to the
+        // slice-access path (which also produces the right error for
+        // `flags[i].x`-style mistakes).
+        if !matches!(element_ty, Type::Struct(_) | Type::Tuple(_)) {
+            return Ok(None);
+        }
+        let (leaf, leaf_ty) = match resolve_leaf_path(
+            self.module,
+            element_ty,
+            steps.iter().rev().copied(),
+            self.interner,
+        )? {
+            Some(pair) => pair,
+            None => return Ok(None),
+        };
+        Ok(Some(ArrayElementLeaf {
+            arr_sym,
+            index_ref,
+            leaf,
+            leaf_ty,
+        }))
+    }
+
+    /// The guarded, lowered element index for an array-element leaf
+    /// access — shared by the read and write shortcuts. Returns
+    /// `(runtime index value, const-folded index if it folded)`.
+    fn lower_array_element_index(
+        &mut self,
+        info: &ArrayElementLeaf,
+        length: usize,
+    ) -> Result<(ValueId, Option<usize>), String> {
+        match self.resolve_const_index(&info.index_ref, length) {
+            super::array_access::ConstIndex::Valid(i) => {
+                let idx_v = self
+                    .emit(
+                        InstKind::Const(Const::U64(i as u64)),
+                        Some(Type::U64),
+                    )
+                    .expect("Const returns a value");
+                Ok((idx_v, Some(i)))
+            }
+            super::array_access::ConstIndex::OutOfBounds => {
+                Err(format!("array index out of bounds (length {length})"))
+            }
+            super::array_access::ConstIndex::NotConstant => {
+                let raw_idx = self
+                    .lower_expr(&info.index_ref)?
+                    .ok_or_else(|| "array index produced no value".to_string())?;
+                let idx_ty = self.value_scalar(&info.index_ref).unwrap_or(Type::U64);
+                let idx_v = self.emit_index_guard(&info.index_ref, raw_idx, idx_ty, length)?;
+                Ok((idx_v, None))
+            }
+        }
+    }
+
+    /// `ps[i].f` read — one `ArrayLoad` of the named leaf, honouring
+    /// the binding's layout. This is DATA-ORIENTED's single-column
+    /// shortcut and the reason SoA pays: a loop over one field
+    /// touches one column instead of materialising every leaf of
+    /// every element. `Ok(None)` when the expression is not an
+    /// array-element leaf chain.
+    pub(super) fn try_lower_array_element_leaf(
+        &mut self,
+        expr: &ExprRef,
+    ) -> Result<Option<Option<ValueId>>, String> {
+        let Some(info) = self.resolve_array_element_leaf(expr)? else {
+            return Ok(None);
+        };
+        self.emit_array_element_leaf_load(&info)
+    }
+
+    /// The load half of the shortcut, split out so the write path
+    /// lowers the *same* leaf index (identical guard, identical
+    /// fold) instead of a second implementation drifting.
+    fn emit_array_element_leaf_load(
+        &mut self,
+        info: &ArrayElementLeaf,
+    ) -> Result<Option<Option<ValueId>>, String> {
+        let Some(Binding::Array { element_ty, length, storage, .. }) =
+            self.bindings.get(&info.arr_sym).cloned()
+        else {
+            return Ok(None);
+        };
+        let leaf_count = leaf_scalar_count(self.module, element_ty);
+        let (idx_v, const_i) = self.lower_array_element_index(info, length)?;
+        // AoS: flat leaf index `i * leaf_count + leaf` (folded when
+        // the element index folded). SoA: the leaf's own column slot
+        // at the element index — one load, no arithmetic.
+        let (slot, leaf_idx_v) = match &storage {
+            super::bindings::ArrayStorage::Columns(cols) => (cols[info.leaf], idx_v),
+            super::bindings::ArrayStorage::Interleaved(slot) => {
+                let leaf_idx_v = match const_i {
+                    Some(i) => self
+                        .emit(
+                            InstKind::Const(Const::U64((i * leaf_count + info.leaf) as u64)),
+                            Some(Type::U64),
+                        )
+                        .expect("Const returns a value"),
+                    None => {
+                        let base_v = {
+                            let leaf_count_v = self
+                                .emit(
+                                    InstKind::Const(Const::U64(leaf_count as u64)),
+                                    Some(Type::U64),
+                                )
+                                .expect("Const returns a value");
+                            self.emit(
+                                InstKind::BinOp {
+                                    op: BinOp::Mul,
+                                    lhs: idx_v,
+                                    rhs: leaf_count_v,
+                                },
+                                Some(Type::U64),
+                            )
+                            .expect("imul returns")
+                        };
+                        let off_v = self
+                            .emit(
+                                InstKind::Const(Const::U64(info.leaf as u64)),
+                                Some(Type::U64),
+                            )
+                            .expect("Const returns a value");
+                        self.emit(
+                            InstKind::BinOp {
+                                op: BinOp::Add,
+                                lhs: base_v,
+                                rhs: off_v,
+                            },
+                            Some(Type::U64),
+                        )
+                        .expect("iadd returns")
+                    }
+                };
+                (*slot, leaf_idx_v)
+            }
+        };
+        let v = self
+            .emit(
+                InstKind::ArrayLoad {
+                    slot,
+                    index: leaf_idx_v,
+                    elem_ty: info.leaf_ty,
+                },
+                Some(info.leaf_ty),
+            )
+            .expect("ArrayLoad returns");
+        // A scalar value leaves the pending-compound channels, same
+        // as the scalar paths in `lower_field_access`.
+        self.pending_struct_value = None;
+        self.pending_tuple_value = None;
+        Ok(Some(Some(v)))
+    }
+
+    /// `ps[i].f = v` write — the store half of the shortcut: one
+    /// `ArrayStore` of the named leaf. `Ok(None)` when the lhs is
+    /// not an array-element leaf chain. Yields the stored value so
+    /// assignment-as-expression keeps its meaning.
+    pub(super) fn try_lower_array_element_leaf_store(
+        &mut self,
+        lhs: &ExprRef,
+        rhs: &ExprRef,
+    ) -> Result<Option<Option<ValueId>>, String> {
+        let Some(info) = self.resolve_array_element_leaf(lhs)? else {
+            return Ok(None);
+        };
+        let Some(Binding::Array { element_ty, length, storage, .. }) =
+            self.bindings.get(&info.arr_sym).cloned()
+        else {
+            return Ok(None);
+        };
+        let leaf_count = leaf_scalar_count(self.module, element_ty);
+        let (idx_v, const_i) = self.lower_array_element_index(&info, length)?;
+        let v = self
+            .lower_expr(rhs)?
+            .ok_or_else(|| "field assignment rhs produced no value".to_string())?;
+        let (slot, leaf_idx_v) = match &storage {
+            super::bindings::ArrayStorage::Columns(cols) => (cols[info.leaf], idx_v),
+            super::bindings::ArrayStorage::Interleaved(slot) => {
+                let leaf_idx_v = match const_i {
+                    Some(i) => self
+                        .emit(
+                            InstKind::Const(Const::U64((i * leaf_count + info.leaf) as u64)),
+                            Some(Type::U64),
+                        )
+                        .expect("Const returns a value"),
+                    None => {
+                        let base_v = {
+                            let leaf_count_v = self
+                                .emit(
+                                    InstKind::Const(Const::U64(leaf_count as u64)),
+                                    Some(Type::U64),
+                                )
+                                .expect("Const returns a value");
+                            self.emit(
+                                InstKind::BinOp {
+                                    op: BinOp::Mul,
+                                    lhs: idx_v,
+                                    rhs: leaf_count_v,
+                                },
+                                Some(Type::U64),
+                            )
+                            .expect("imul returns")
+                        };
+                        let off_v = self
+                            .emit(
+                                InstKind::Const(Const::U64(info.leaf as u64)),
+                                Some(Type::U64),
+                            )
+                            .expect("Const returns a value");
+                        self.emit(
+                            InstKind::BinOp {
+                                op: BinOp::Add,
+                                lhs: base_v,
+                                rhs: off_v,
+                            },
+                            Some(Type::U64),
+                        )
+                        .expect("iadd returns")
+                    }
+                };
+                (*slot, leaf_idx_v)
+            }
+        };
+        self.emit(
+            InstKind::ArrayStore {
+                slot,
+                index: leaf_idx_v,
+                value: v,
+                elem_ty: info.leaf_ty,
+            },
+            None,
+        );
+        Ok(Some(Some(v)))
     }
 }

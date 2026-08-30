@@ -280,6 +280,7 @@ fn main() -> u64 {
   SIMD vector (`f64x2` / `f32x4` / `i32x4` / `i64x2` / `u8x16`)
   (`null` は**予約済みで型検査が拒否する** — `[E0015]`。不在は `Option<T>`、生ポインタは `__builtin_null_ptr()`)
 - Narrow ints (NUM-W): `u8` / `u16` / `u32` / `i8` / `i16` / `i32` (literal suffix `42u8` / `0xFFi32` 等)。`as` cast で wide ↔ narrow 変換 (暗黙 widening は無し)
+- **`soa [T; N]` (DOD Phase 0)**: 配列型の前置修飾子で **SoA (列ごと配置) を選ぶ**。**same-type** — `soa [P; N]` と `[P; N]` は同じ型 (付け外して計測できる)。`ps[i].f` 読み書き・`val p = ps[i]`・range slice は AoS と同書式 (`ps[i] = p` の compound 一括書き込みは不可)。`soa` は contextual keyword (`val soa = 5u64` は従来どおり)。**`ps[i].f` は compiled lane では SoA 以前に未対応だった** ので、AoS 配列でも `arr[i].field` が新規に動く。実装は列方式 (leaf ごとに slot) で IR / codegen / IR VM 無変更。例: `interpreter/example/soa.t`
 - **SIMD vector (SIMD)**: 128bit の vector 型 5 種 (`f64x2` / `f32x4` /
   `i32x4` / `i64x2` / `u8x16`)。**通常の演算子が lane-wise に効く**ので
   intrinsic は型と演算子で表せない 13 個だけ (`__simd_splat` /

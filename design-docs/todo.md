@@ -12,6 +12,21 @@
 
 ### 2026-08-30
 
+- **DOD Phase 0 — `soa [T; N]` landing** — 前置修飾子で stack 配列の
+  layout を選べる。**same-type**: `TypeDecl::Array` の第 3 field で
+  `is_equivalent` は無視、tree-walker は読まないので「soa 有無で答えが
+  変わらない」を `consistency/soa.rs` が 4-way で pin。実装は
+  **列方式** (leaf ごとに `ArraySlotId`、`ArraySlotInfo` / codegen /
+  IR VM 無変更 — 設計 doc の単一 slot + layout flag 案を上回った)。
+  **`ps[i].f` 単列 shortcut は AoS でも未対応だった** (`resolve_field_chain`
+  が SliceAccess root を拒否、tree-walker だけ動いた) ので、読み・書き・
+  ネスト chain を AoS / SoA 両対応で新規実装 — `nested_struct_array_test.t`
+  / `struct_array_test.t` が ERROR_EXAMPLES から復活。
+  **前提として直した既存バグ 2 件**: (a) 注釈付き struct 要素配列リテラル
+  (`val ps: [P; 2] = [...]`) が要素型の `Identifier` vs `Struct(name, [])`
+  綴り違いで拒否、(b) struct フィールド型 whitelist に f64 / f32 /
+  narrow int が無く `struct S { b: u8 }` が宣言拒否。cache schema v35。
+  Phase 0.5 (列 tight pack) は stride 1 箇所の切替に縮んだ
 - **STDLIB-FREE-FN-UNCHECKED 解消 — stdlib の free function body も
   型検査する** — `interpreter/src/lib.rs` の `take(user_func_count)` を
   外した。**型検査器は body を検査するだけでなく書き換える** (`?` の
@@ -1815,19 +1830,12 @@
   `pthread_key` TLS で per-thread 化済み)。ただし本体は「共有可変性を現行の
   move / Drop モデルにどう載せるか」で、`Send` 相当の判定を決めるまで
   着手できない。設計フェーズを別に取る前提。
-* データ指向の配列 layout (DOD) ★★ — `soa [Point; N]` / `soa Vec<T>` の
-  前置修飾子で AoS / SoA を選べるようにする。設計は
-  [`DATA_ORIENTED.md`](DATA_ORIENTED.md) (未決 1・2 を 2026-08-30 に閉じた)。
-  stack 配列は同じ型 + binding の layout フラグ — 添字式
-  (`array_access.rs` の `leaf_idx = i * leaf_count + j`) の入れ替えと
-  `ps[i].f` の単列 shortcut だけで、Phase 0 (uniform 8 バイト列) では
-  IR も codegen も変わらない。tight pack は Phase 0.5 として分離 (ここは
-  codegen を触る)。heap は `soa Vec<T>` → stdlib `SoaVec<T>` 別型への
-  sugar (Phase 2)。tree-walker は観測できる差が無いので無変更、つまり
-  「`soa` の有無で答えが変わらない」オラクルが最初から手に入る。
-  副産物として NUM-W-AOT-pack Phase 2 (compound 要素の 8 バイト固定 stride) が
-  SoA 側で解ける (Phase 0.5)。Phase 0 は単体で価値があり SIMD を
-  やらなくても無駄にならない
+* データ指向の配列 layout (DOD) ★★ — Phase 0 (`soa [T; N]` + `ps[i].f`
+  単列 shortcut) は 2026-08-30 landing 済み (上)。残り:
+  **Phase 0.5** (列 tight pack — 列方式により stride 1 箇所の切替に縮小)、
+  Phase 1 slice `&[T]` (★→★★ 済み、下の slice 型)、Phase 2
+  `soa Vec<T>` → `SoaVec<T>` sugar、Phase 3 enum 要素。設計は
+  [`DATA_ORIENTED.md`](DATA_ORIENTED.md) (未決 1・2 を 2026-08-30 に閉じた)
 * SIMD Phase 3 の残 / Phase 4 ★★ — Phase 2 (型 + 演算子 + intrinsic) と
   戦略 B の主要 kernel は landing 済み。残りは (a) **stdlib の残り kernel**
   — `Vec` の `sum` / `min` / `max` (**API 自体が無い**ので追加から)、

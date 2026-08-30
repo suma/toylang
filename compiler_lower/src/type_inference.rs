@@ -251,6 +251,14 @@ impl<'a> FunctionLower<'a> {
                 None => self.const_values.get(&sym).map(|c| c.ty()),
             },
             Expr::FieldAccess(obj, field) => {
+                // DATA-ORIENTED: a chain rooted at an array element
+                // (`ps[i].y`) names a leaf scalar — the same
+                // resolution the load lowering emits, so report the
+                // leaf's type instead of failing on the SliceAccess
+                // root `resolve_field_chain` cannot walk.
+                if let Ok(Some(leaf)) = self.resolve_array_element_leaf(expr_ref) {
+                    return Some(leaf.leaf_ty);
+                }
                 let inner = self.resolve_field_chain(&obj).ok()?;
                 let fields = match inner {
                     FieldChainResult::Struct { fields, .. } => fields,
@@ -280,6 +288,11 @@ impl<'a> FunctionLower<'a> {
                     })
             }
             Expr::TupleAccess(tuple, index) => {
+                // DATA-ORIENTED: same as the FieldAccess arm above —
+                // `ts[i].0` names a leaf of an array element.
+                if let Ok(Some(leaf)) = self.resolve_array_element_leaf(expr_ref) {
+                    return Some(leaf.leaf_ty);
+                }
                 let elements = self.resolve_tuple_chain_elements(&tuple).ok()?;
                 elements
                     .iter()

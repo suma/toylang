@@ -17,10 +17,33 @@ use string_interner::DefaultSymbol;
 
 use crate::ir::{ArraySlotId, EnumId, LocalId, StructId, TupleId, Type, ValueId};
 
+/// Backing slots of one array binding — see `Binding::Array`.
+#[derive(Debug, Clone)]
+pub(super) enum ArrayStorage {
+    /// AoS: a single slot of `length * leaf_count` leaves,
+    /// element-major (`leaf_idx = i * leaf_count + j`).
+    Interleaved(ArraySlotId),
+    /// SoA: one homogeneous slot per leaf scalar, each `length`
+    /// long (`leaf j of element i` lives at `columns[j][i]`).
+    Columns(Vec<ArraySlotId>),
+}
+
+impl ArrayStorage {
+    /// The one slot behind a *scalar*-element array — the AoS slot,
+    /// or the single column a one-leaf SoA array degenerates to.
+    /// Callers guard on the element type being scalar, so any other
+    /// shape here is a lowering bug.
+    pub(super) fn scalar_slot(&self) -> ArraySlotId {
+        match self {
+            ArrayStorage::Interleaved(slot) => *slot,
+            ArrayStorage::Columns(cols) => cols[0],
+        }
+    }
+}
+
 /// Top-level binding shape attached to each user-visible name.
 #[derive(Debug, Clone)]
-pub(super) enum Binding {
-    Scalar {
+pub(super) enum Binding {    Scalar {
         local: LocalId,
         ty: Type,
     },
@@ -53,13 +76,22 @@ pub(super) enum Binding {
     /// Enum bindings carry an `EnumStorage` tree: a tag local plus
     /// per-variant payload slots.
     Enum(EnumStorage),
-    /// Fixed-size array binding. Backed by a per-function stack
-    /// slot (Phase Y); both constant and runtime indices lower to
-    /// `ArrayLoad` / `ArrayStore` against this slot.
+    /// Fixed-size array binding (Phase Y). Backed by one or more
+    /// per-function stack slots; both constant and runtime indices
+    /// lower to `ArrayLoad` / `ArrayStore` against them.
     Array {
         element_ty: Type,
         length: usize,
-        slot: ArraySlotId,
+        /// DATA-ORIENTED: the backing slots. `Interleaved` is the
+        /// classic AoS shape — one slot holding `length * leaf_count`
+        /// leaves, element-major, addressed by the flat leaf index
+        /// `i * leaf_count + j`. `Columns` is SoA — one slot per leaf
+        /// scalar, each a homogeneous array of `length` elements,
+        /// so leaf `j` of element `i` is just `columns[j][i]`.
+        /// Columns reuse the existing scalar-array slot machinery
+        /// unchanged, which is why neither `ArraySlotInfo`, the
+        /// codegen, nor the IR VM knows SoA exists.
+        storage: ArrayStorage,
     },
     /// Closures Phase 5b: function-pointer binding. The `local`
     /// holds a `Type::U64` value that is the runtime address of a

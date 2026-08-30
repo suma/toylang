@@ -1795,7 +1795,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     fn type_mentions_any_generic(ty: &TypeDecl) -> bool {
         match ty {
             TypeDecl::Generic(_) => true,
-            TypeDecl::Array(elems, _) | TypeDecl::Tuple(elems) => {
+            TypeDecl::Array(elems, _, _) | TypeDecl::Tuple(elems) => {
                 elems.iter().any(Self::type_mentions_any_generic)
             }
             TypeDecl::Dict(k, v) => {

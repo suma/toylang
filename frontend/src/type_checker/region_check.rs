@@ -575,7 +575,7 @@ fn type_may_hold_pointer(ty: &TypeDecl) -> bool {
         | TypeDecl::Enum(..)
         | TypeDecl::Dyn(_)
         | TypeDecl::Unknown => true,
-        TypeDecl::Array(elements, _) | TypeDecl::Tuple(elements) => {
+        TypeDecl::Array(elements, _, _) | TypeDecl::Tuple(elements) => {
             elements.iter().any(type_may_hold_pointer)
         }
         TypeDecl::Dict(key, value) => {

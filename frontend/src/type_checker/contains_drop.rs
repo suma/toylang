@@ -184,7 +184,7 @@ impl DropAnalysis {
             TypeDecl::Tuple(elems) => elems
                 .iter()
                 .any(|e| self.contains_drop_inner(e, outer, depth + 1)),
-            TypeDecl::Array(elems, _) => elems
+            TypeDecl::Array(elems, _, _) => elems
                 .iter()
                 .any(|e| self.contains_drop_inner(e, outer, depth + 1)),
             TypeDecl::Dict(k, v) => {

@@ -1178,7 +1178,7 @@ fn resolve_size_in_type(
     errors: &mut Vec<TypeCheckError>,
 ) {
     match ty {
-        TypeDecl::Array(elems, size) => {
+        TypeDecl::Array(elems, size, _) => {
             for elem in elems.iter_mut() {
                 resolve_size_in_type(elem, expression, location_pool, const_values, interner, const_fn_names, errors);
             }

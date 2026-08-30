@@ -1214,36 +1214,36 @@ impl<'a> FunctionLower<'a> {
                     // visible.
                     if let Some(Expr::SliceAccess(arr_expr, info)) =
                         self.program.expression.get(&inner)
-                        && matches!(info.slice_type, frontend::ast::SliceType::SingleElement)
-                            && let Some(Expr::Identifier(arr_sym)) =
-                                self.program.expression.get(&arr_expr)
-                                && let Some(Binding::Array { element_ty, slot, .. }) =
-                                    self.bindings.get(&arr_sym).cloned()
-                                    && matches!(
-                                        element_ty,
-                                        Type::I64 | Type::U64 | Type::F64 | Type::Bool
-                                            | Type::I8 | Type::U8 | Type::I16 | Type::U16
-                                            | Type::I32 | Type::U32
-                                    )
-                                        && let Some(idx_ref) = info.start {
-                                            let idx_v = self
-                                                .lower_expr(&idx_ref)?
-                                                .ok_or_else(|| {
-                                                    "array index produced no value".to_string()
-                                                })?;
-                                            let v = self
-                                                .emit(
-                                                    InstKind::ArrayElemAddr {
-                                                        slot,
-                                                        index: idx_v,
-                                                        elem_ty: element_ty,
-                                                    },
-                                                    Some(Type::U64),
-                                                )
-                                                .expect("ArrayElemAddr returns a value");
-                                            values.push(v);
-                                            continue;
-                                        }
+                            && matches!(info.slice_type, frontend::ast::SliceType::SingleElement)
+                                && let Some(Expr::Identifier(arr_sym)) =
+                                    self.program.expression.get(&arr_expr)
+                                        && let Some(Binding::Array { element_ty, storage, .. }) =
+                                            self.bindings.get(&arr_sym).cloned()
+                                            && matches!(
+                                                element_ty,
+                                                Type::I64 | Type::U64 | Type::F64 | Type::Bool
+                                                    | Type::I8 | Type::U8 | Type::I16 | Type::U16
+                                                    | Type::I32 | Type::U32
+                                            )
+                                                && let Some(idx_ref) = info.start {
+                                                    let idx_v = self
+                                                        .lower_expr(&idx_ref)?
+                                                        .ok_or_else(|| {
+                                                            "array index produced no value".to_string()
+                                                        })?;
+                                                    let v = self
+                                                        .emit(
+                                                            InstKind::ArrayElemAddr {
+                                                                slot: storage.scalar_slot(),
+                                                                index: idx_v,
+                                                                elem_ty: element_ty,
+                                                            },
+                                                            Some(Type::U64),
+                                                        )
+                                                        .expect("ArrayElemAddr returns a value");
+                                                    values.push(v);
+                                                    continue;
+                                                }
                 }
             // REF-Stage-2: fall back — peel an explicit borrow so the
             // same identifier-expansion path below runs (compound
@@ -1418,10 +1418,20 @@ impl<'a> FunctionLower<'a> {
             Expr::Identifier(sym) => self.lower_expr_identifier(sym),
             Expr::FieldAccess(obj, field) => {
                 self.pending_struct_value = None;
+                // DATA-ORIENTED: `ps[i].x` — a field chain rooted at
+                // an array element lowers to one leaf load instead of
+                // materialising the whole element.
+                if let Some(v) = self.try_lower_array_element_leaf(expr_ref)? {
+                    return Ok(v);
+                }
                 self.lower_field_access(&obj, field)
             }
             Expr::TupleAccess(tuple, index) => {
                 self.pending_struct_value = None;
+                // Same shortcut for `ts[i].0`-shaped chains.
+                if let Some(v) = self.try_lower_array_element_leaf(expr_ref)? {
+                    return Ok(v);
+                }
                 self.lower_tuple_access(&tuple, index)
             }
             Expr::TupleLiteral(elems) => {

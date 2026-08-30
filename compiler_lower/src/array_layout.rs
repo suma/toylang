@@ -13,6 +13,9 @@
 
 use crate::ir::{Module, Type};
 
+use super::bindings::ArrayStorage;
+use super::FunctionLower;
+
 /// Per-leaf byte stride for *compound* element arrays
 /// (`[Point; N]`, `[(i64, bool); N]`). Each leaf scalar in a
 /// compound element occupies one slot of this width regardless of
@@ -131,5 +134,50 @@ pub(super) fn leaf_type_at(module: &Module, element_ty: Type, j: usize) -> Type 
             element_ty
         }
         _ => element_ty,
+    }
+}
+
+impl<'a> FunctionLower<'a> {
+    /// DATA-ORIENTED Phase 0: allocate the backing slots for one
+    /// array binding of `element_ty` x `length`.
+    ///
+    /// AoS (or `soa` with a scalar element -- one leaf is one
+    /// column, so the two layouts coincide) takes the historical
+    /// single interleaved slot. `soa` with a compound element takes
+    /// one homogeneous slot per leaf scalar, each `length` long --
+    /// a column is just an ordinary scalar array slot, so codegen
+    /// and the IR VM address it with the existing `index * stride`
+    /// math and never learn SoA exists.
+    ///
+    /// Phase 0 keeps every column at the uniform 8-byte
+    /// `ARRAY_LEAF_STRIDE`, matching the interleaved layout's
+    /// per-leaf cost so `soa` on/off changes placement only.
+    /// Phase 0.5 drops each column to its leaf's real width
+    /// (tight pack).
+    pub(super) fn allocate_array_storage(
+        &mut self,
+        element_ty: Type,
+        length: usize,
+        soa: bool,
+    ) -> ArrayStorage {
+        let leaf_count = leaf_scalar_count(self.module, element_ty);
+        if !soa || leaf_count == 1 {
+            let stride = elem_stride_bytes(element_ty, self.module);
+            let slot = self
+                .module
+                .function_mut(self.func_id)
+                .add_array_slot(element_ty, length * leaf_count, stride);
+            return ArrayStorage::Interleaved(slot);
+        }
+        let mut columns = Vec::with_capacity(leaf_count);
+        for j in 0..leaf_count {
+            let leaf_ty = leaf_type_at(self.module, element_ty, j);
+            let slot = self
+                .module
+                .function_mut(self.func_id)
+                .add_array_slot(leaf_ty, length, ARRAY_LEAF_STRIDE);
+            columns.push(slot);
+        }
+        ArrayStorage::Columns(columns)
     }
 }

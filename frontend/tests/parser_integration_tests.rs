@@ -1158,3 +1158,67 @@ mod array_indexing_parsing {
     }
 }
 
+
+mod soa_layout_modifier {
+    use super::*;
+    use frontend::type_decl::{ArraySize, TypeDecl};
+
+    /// `soa [T; N]` parses as an array type carrying the layout
+    /// flag, and a program using it type-checks end to end.
+    #[test]
+    fn soa_array_annotation_parses_and_checks() {
+        let src = r#"
+            struct Point { x: u64, y: u64 }
+            fn main() -> u64 {
+                val ps: soa [Point; 2] = [
+                    Point { x: 1u64, y: 2u64 },
+                    Point { x: 3u64, y: 4u64 },
+                ]
+                ps[0u64].x + ps[1u64].y
+            }
+        "#;
+        assert!(helpers::parse_and_type_check(src).is_ok());
+    }
+
+    /// `soa` is contextual: away from an array type it stays a plain
+    /// identifier, so existing programs naming a binding (or a
+    /// function) `soa` keep parsing.
+    #[test]
+    fn soa_stays_a_plain_identifier_away_from_arrays() {
+        for input in ["val soa = 5u64", "val x: soa = 5u64"] {
+            let mut parser = ParserWithInterner::new(input);
+            let result = parser.parse_stmt();
+            // `val x: soa = ...` parses (the checker reports the
+            // unknown type later, as it would for any made-up name) —
+            // the point is the parser does not reject the *name*.
+            assert!(result.is_ok(), "failed to parse: {input}");
+        }
+        // And a binding *named* `soa` survives a full check.
+        let src = "fn main() -> u64 {\n    val soa = 5u64\n    soa\n}\n";
+        assert!(helpers::parse_and_type_check(src).is_ok());
+    }
+
+    /// Layout is not type identity: `soa [T; N]` and `[T; N]` are
+    /// equivalent everywhere types are compared.
+    #[test]
+    fn soa_flag_is_not_type_identity() {
+        let soa = TypeDecl::Array(vec![TypeDecl::Int64], ArraySize::Literal(2), true);
+        let aos = TypeDecl::Array(vec![TypeDecl::Int64], ArraySize::Literal(2), false);
+        assert!(soa.is_equivalent(&aos));
+        assert!(aos.is_equivalent(&soa));
+        // ... while `is_soa` still tells the two spellings apart for
+        // the one consumer that cares (the lowering).
+        assert!(soa.is_soa());
+        assert!(!aos.is_soa());
+    }
+
+    /// The flag survives a generic substitution, so a `type` alias
+    /// of a soa array keeps its storage shape.
+    #[test]
+    fn soa_flag_survives_substitution() {
+        use std::collections::HashMap;
+        let soa = TypeDecl::Array(vec![TypeDecl::Int64], ArraySize::Literal(2), true);
+        let subst = HashMap::new();
+        assert!(soa.substitute_generics(&subst).is_soa());
+    }
+}

@@ -15,7 +15,7 @@ use super::bindings::{
 };
 use super::FunctionLower;
 use crate::ir::{
-    ArraySlotId, BinOp, Const, EnumId, InstKind, LocalId, StructId, Terminator, Type, ValueId,
+    BinOp, Const, EnumId, InstKind, LocalId, StructId, Terminator, Type, ValueId,
 };
 
 impl<'a> FunctionLower<'a> {
@@ -77,8 +77,8 @@ impl<'a> FunctionLower<'a> {
                         self.emit_print_enum(&storage, newline)?;
                         return Ok(None);
                     }
-                    Binding::Array { element_ty, length, slot } => {
-                        self.emit_print_array(element_ty, length, slot, newline);
+                    Binding::Array { element_ty, length, storage } => {
+                        self.emit_print_array(element_ty, length, &storage, newline);
                         return Ok(None);
                     }
                     Binding::FunctionPtr { param_tys, .. } => {
@@ -646,14 +646,32 @@ impl<'a> FunctionLower<'a> {
     /// Render an array binding as `[a, b, c]`, matching the
     /// interpreter's `to_display_string` format for `Object::Array`.
     /// Element type is uniform across the binding (Phase S enforces
-    /// this at construction time).
+    /// this at construction time). DATA-ORIENTED: a scalar element
+    /// has one backing slot under either layout, so printing works
+    /// unchanged; a compound element was never printable in the
+    /// compiled lanes (the value graph cannot carry it) and SoA does
+    /// not change that — say so instead of emitting a nonsense load.
     pub(super) fn emit_print_array(
         &mut self,
         element_ty: Type,
         length: usize,
-        slot: ArraySlotId,
+        storage: &super::bindings::ArrayStorage,
         newline: bool,
     ) {
+        let slot = match storage {
+            super::bindings::ArrayStorage::Interleaved(slot) => *slot,
+            super::bindings::ArrayStorage::Columns(cols) => {
+                if cols.len() != 1 {
+                    self.emit_print_raw_text(
+                        "<compound-element array: print an element or a field instead>"
+                            .to_string(),
+                        newline,
+                    );
+                    return;
+                }
+                cols[0]
+            }
+        };
         self.emit_print_raw_text("[".to_string(), false);
         for i in 0..length {
             if i > 0 {

@@ -13,7 +13,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let object_type = self.visit_expr(object)?;
 
         match object_type {
-            TypeDecl::Array(ref element_types, _size) => {
+            TypeDecl::Array(ref element_types, _size, _) => {
                 // Simplified type checking for slice indices
                 match slice_info.slice_type {
                     SliceType::SingleElement => {
@@ -82,7 +82,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         // For dynamic arrays (size 0), return a dynamic array type
                         if matches!(_size, ArraySize::Literal(0)) {
                             // Dynamic array: return [T] (dynamic array of same element type)
-                            return Ok(TypeDecl::Array(vec![single_element_type], ArraySize::Literal(0)));
+                            return Ok(TypeDecl::Array(vec![single_element_type], ArraySize::Literal(0), false));
                         }
 
                         // Try to calculate slice size using array size for open-ended slices
@@ -91,12 +91,12 @@ impl<'a> TypeCheckerVisitor<'a> {
 
                         // If slice_size is 0, return dynamic array type
                         if slice_size == 0 {
-                            return Ok(TypeDecl::Array(vec![single_element_type], ArraySize::Literal(0)));
+                            return Ok(TypeDecl::Array(vec![single_element_type], ArraySize::Literal(0), false));
                         }
 
                         // Create element_types with the correct number of elements
                         let result_element_types = vec![single_element_type; slice_size];
-                        Ok(TypeDecl::Array(result_element_types, ArraySize::Literal(slice_size)))
+                        Ok(TypeDecl::Array(result_element_types, ArraySize::Literal(slice_size), false))
                     }
                 }
             }
@@ -167,7 +167,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let value_type = self.visit_expr(value)?;
 
         match object_type {
-            TypeDecl::Array(ref element_types, _size) => {
+            TypeDecl::Array(ref element_types, _size, _) => {
                 // The index is an expression like any other and has to
                 // be visited: an unsuffixed literal that nothing looks
                 // at keeps the `Number` placeholder, and the backends
@@ -505,9 +505,12 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn visit_array_literal_impl(&mut self, elements: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         // Save the original type hint to restore later
         let original_hint = self.type_inference.type_hint.clone();
+        if std::env::var("TOY_DEBUG_ARRAY_HINT").is_ok() {
+            eprintln!("[debug] array literal hint: {:?}", original_hint);
+        }
 
         // If we have a type hint for the array element type, use it for element type inference
-        let element_type_hint = if let Some(TypeDecl::Array(element_types, _)) = &self.type_inference.type_hint {
+        let element_type_hint = if let Some(TypeDecl::Array(element_types, _, _)) = &self.type_inference.type_hint {
             if !element_types.is_empty() {
                 Some(element_types[0].clone())
             } else {
@@ -548,15 +551,15 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
 
         // If we have array type hint, handle type inference for all elements
-        if let Some(TypeDecl::Array(ref expected_element_types, _)) = original_hint
+        if let Some(TypeDecl::Array(ref expected_element_types, _, _)) = original_hint
             && !expected_element_types.is_empty() {
                 let expected_element_type = &expected_element_types[0];
 
                 // Nesting level mismatch detection: if the hint expects array elements
                 // but actual elements are scalars, the hint is for an outer array, so skip
-                let hint_expects_array = matches!(expected_element_type, TypeDecl::Array(_, _));
+                let hint_expects_array = matches!(expected_element_type, TypeDecl::Array(..));
                 let actual_has_non_array = !element_types.is_empty()
-                    && !matches!(&element_types[0], TypeDecl::Array(_, _));
+                    && !matches!(&element_types[0], TypeDecl::Array(..));
 
                 if hint_expects_array && actual_has_non_array {
                     // Skip: hint is for an outer array, not applicable to this inner array
@@ -579,15 +582,23 @@ impl<'a> TypeCheckerVisitor<'a> {
                                 )));
                             },
                         TypeDecl::Identifier(actual_struct) => {
-                            // Struct literals - check type compatibility
-                            if let TypeDecl::Identifier(expected_struct) = expected_element_type {
-                                if actual_struct != expected_struct {
-                                    return Err(TypeCheckError::array_error(&format!(
-                                        "Array element {} has struct type {:?} but expected {:?}",
-                                        i, actual_struct, expected_struct
-                                    )));
+                            // Struct literals - check type compatibility.
+                            // An annotation names a user type as
+                            // `Identifier(name)` while a literal's
+                            // inferred type may spell the same thing
+                            // `Struct(name, [])` / `Enum(name, [])`
+                            // (or vice versa) — the two spellings the
+                            // return-type check and `is_equivalent`
+                            // already unify.
+                            let spelled_same = match expected_element_type {
+                                TypeDecl::Identifier(expected_struct)
+                                | TypeDecl::Struct(expected_struct, _)
+                                | TypeDecl::Enum(expected_struct, _) => {
+                                    actual_struct == expected_struct
                                 }
-                            } else {
+                                _ => false,
+                            };
+                            if !spelled_same {
                                 return Err(TypeCheckError::array_error(&format!(
                                     "Array element {} has struct type {:?} but expected {:?}",
                                     i, actual_struct, expected_element_type
@@ -623,6 +634,29 @@ impl<'a> TypeCheckerVisitor<'a> {
                                         return Err(TypeCheckError::array_error(&format!(
                                             "Array element {} has struct type {:?} but expected {:?}",
                                             i, struct1, struct2
+                                        )));
+                                    }
+                                },
+                                // Same user type in its two spellings
+                                // (`Struct(name, [])` inferred vs
+                                // `Identifier(name)` annotated) —
+                                // accept, mirroring the arm above and
+                                // `is_equivalent`.
+                                (TypeDecl::Struct(a, params), TypeDecl::Identifier(b))
+                                | (TypeDecl::Identifier(b), TypeDecl::Struct(a, params)) => {
+                                    if !(a == b && params.is_empty()) {
+                                        return Err(TypeCheckError::array_error(&format!(
+                                            "Cannot mix struct type {:?} with {:?} in array. Element {} has incompatible type",
+                                            b, TypeDecl::Struct(*a, params.clone()), i
+                                        )));
+                                    }
+                                },
+                                (TypeDecl::Enum(a, params), TypeDecl::Identifier(b))
+                                | (TypeDecl::Identifier(b), TypeDecl::Enum(a, params)) => {
+                                    if !(a == b && params.is_empty()) {
+                                        return Err(TypeCheckError::array_error(&format!(
+                                            "Cannot mix enum type {:?} with {:?} in array. Element {} has incompatible type",
+                                            b, TypeDecl::Enum(*a, params.clone()), i
                                         )));
                                     }
                                 },
@@ -693,7 +727,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
 
-        Ok(TypeDecl::Array(element_types, ArraySize::Literal(elements.len())))
+        Ok(TypeDecl::Array(element_types, ArraySize::Literal(elements.len()), false))
     }
 
     /// Calculate slice size from constant literals if possible

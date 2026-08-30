@@ -287,7 +287,7 @@ fn mark_by_value(
                 }
             }
         }
-        TypeDecl::Array(elements, _) | TypeDecl::Tuple(elements) => {
+        TypeDecl::Array(elements, _, _) | TypeDecl::Tuple(elements) => {
             for e in elements {
                 mark_by_value(e, owner, decls, index, flags, changed);
             }
@@ -341,7 +341,7 @@ fn collect_value_refs(
                 }
             }
         }
-        TypeDecl::Array(elements, _) | TypeDecl::Tuple(elements) => {
+        TypeDecl::Array(elements, _, _) | TypeDecl::Tuple(elements) => {
             for e in elements {
                 collect_value_refs(e, index, by_value, out);
             }

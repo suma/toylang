@@ -56,11 +56,9 @@ const ERROR_EXAMPLES: &[&str] = &[
     // rejected with E0013. They never ran — constructing one aborted
     // the process — so they demonstrate the diagnostic instead.
     "mutual_struct_test.t",
-    "nested_struct_array_test.t",
-    "null_assignment_test.t",
+        "null_assignment_test.t",
     "struct_array_error_test.t",
-    "struct_array_test.t",
-    "struct_cross_ref_test.t",
+        "struct_cross_ref_test.t",
     "struct_field_error_test.t",
     "type_error_test_new.t",
     "type_error_test.t",

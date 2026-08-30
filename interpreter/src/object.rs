@@ -796,11 +796,11 @@ impl Object {
             Object::ConstString(_) | Object::String(_) => TypeDecl::String,
             Object::Array(elements) => {
                 if elements.is_empty() {
-                    TypeDecl::Array(vec![], ArraySize::Literal(0))
+                    TypeDecl::Array(vec![], ArraySize::Literal(0), false)
                 } else {
                     let element_type = elements[0].borrow().get_type();
                     let element_types = vec![element_type; elements.len()];
-                    TypeDecl::Array(element_types, ArraySize::Literal(elements.len()))
+                    TypeDecl::Array(element_types, ArraySize::Literal(elements.len()), false)
                 }
             }
             Object::Struct { type_name, .. } => {

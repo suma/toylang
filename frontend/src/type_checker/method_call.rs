@@ -658,7 +658,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
 
         // Check array methods
-        if let TypeDecl::Array(_, _) = obj_type
+        if let TypeDecl::Array(..) = obj_type
             && method_name == "len" {
                 // Array len() returns u64
                 return Ok(TypeDecl::UInt64);

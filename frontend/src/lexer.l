@@ -856,10 +856,11 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
 '\\u"{"[0-9a-fA-F]+"}"'            {
                         // char literal Unicode escape `'\u{HEX}'` —
                         // 1 to 6 hex digits encoding a Unicode code
-                        // point (max 0x10FFFF). Lexes to
-                        // `Kind::UInt32(<code point>)` so the value
-                        // travels through the existing u32 literal
-                        // pipeline. Out-of-range / surrogate code
+                        // point (max 0x10FFFF). Decoded here: the
+                        // token carries the code point
+                        // (`char_literal_token`), never the escape
+                        // text, so no later layer re-reads a
+                        // backslash. Out-of-range / surrogate code
                         // points (which `char::from_u32` rejects)
                         // bail as `Unmatch` so the user gets a parse
                         // error rather than a corrupted value.
@@ -900,13 +901,20 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
 
 '\\.'               {
                         // char literal escape — `'\n'` / `'\t'` / `'\r'`
-                        // / `'\0'` / `'\\'` / `'\''` / `'\"'`. Lexes
-                        // straight to `Kind::UInt32(<code point>)` so
-                        // every downstream layer (parser / type
-                        // checker / IR / 3 backends) reuses the
-                        // existing `u32` literal pipeline. Unknown
-                        // escapes (e.g. `'\x'` without 2 digits) bail
-                        // out with `Error::Unmatch`.
+                        // / `'\0'` / `'\\'` / `'\''` / `'\"'`. The
+                        // escape is decoded here and the token carries
+                        // the resulting code point
+                        // (`char_literal_token`), so every downstream
+                        // layer (parser / type checker / IR / 3
+                        // backends) sees a number and never a
+                        // backslash. The table is pinned value by
+                        // value in `parser/tests.rs`
+                        // (`lexer_decodes_char_literal_escapes`); it
+                        // matches the string-literal table above, plus
+                        // `\"` which a string literal cannot reach.
+                        // Unknown escapes (e.g. `'\x'` without 2 hex
+                        // digits) bail out with `Error::Unmatch`
+                        // rather than yielding the bare character.
                         let text = self.yytext();
                         let escape_byte = text.as_bytes()[2];
                         let value: u32 = match escape_byte {

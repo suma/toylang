@@ -118,16 +118,45 @@ fn a_suffixed_literal_is_still_strict() {
 
 #[test]
 fn escapes_carry_their_code_point() {
+    // The lexer decodes the escape and the token carries the code
+    // point, so what reaches the program is a number — the whole
+    // table, end to end.
     assert_program_result_u64(
         r#"fn main() -> u64 {
             val nl: u8 = '\n'
             val tab: u8 = '\t'
+            val cr: u8 = '\r'
+            val nul: u8 = '\0'
+            val backslash: u8 = '\\'
             val quote: u8 = '\''
+            val dquote: u8 = '\"'
             val hex: u8 = '\x41'
             val uni: u32 = '\u{1F600}'
-            (nl as u64) + (tab as u64) + (quote as u64) + (hex as u64) + (uni as u64)
+            (nl as u64) + (tab as u64) + (cr as u64) + (nul as u64)
+                + (backslash as u64) + (quote as u64) + (dquote as u64)
+                + (hex as u64) + (uni as u64)
         }"#,
-        10 + 9 + 39 + 65 + 128512,
+        // 10 + 9 + 13 + `\0` + 92 + 39 + 34 + 65 + 128512
+        10 + 9 + 13 + 92 + 39 + 34 + 65 + 128512,
+    );
+}
+
+#[test]
+fn an_escape_reads_as_one_character_not_two() {
+    // `'\n'` is the line feed, not the letter `n`; `'\\'` is one
+    // backslash. The distinction is the reason the decoding happens
+    // in the lexer rather than being left to a later pass.
+    assert_program_result_u64(
+        r#"fn main() -> u64 {
+            var code: u64 = 0u64
+            if '\n' != 'n' { code = code + 1u64 }
+            if '\t' != 't' { code = code + 2u64 }
+            if '\0' != '0' { code = code + 4u64 }
+            val s = String::from_str("a\nb")
+            if s.size() == 3u64 && s.get(1u64) == '\n' { code = code + 8u64 }
+            code
+        }"#,
+        15,
     );
 }
 

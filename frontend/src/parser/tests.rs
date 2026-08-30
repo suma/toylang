@@ -261,6 +261,46 @@ mod lexer_tests{
     }
 
     #[test]
+    fn lexer_decodes_char_literal_escapes() {
+        // The escape is decoded *here*, in the lexer, and the token
+        // carries the resulting code point — no later layer sees the
+        // backslash. Pinned value by value because a table like this
+        // is exactly the kind that drifts silently: a wrong entry
+        // still lexes, still type-checks, and only shows up as a
+        // program comparing bytes against the wrong number.
+        assert_token(r"'\n'", Kind::CharLiteral(10));
+        assert_token(r"'\t'", Kind::CharLiteral(9));
+        assert_token(r"'\r'", Kind::CharLiteral(13));
+        assert_token(r"'\0'", Kind::CharLiteral(0));
+        assert_token(r"'\\'", Kind::CharLiteral(92));
+        assert_token(r"'\''", Kind::CharLiteral(39));
+        assert_token("'\\\"'", Kind::CharLiteral(34));
+        // Hex and Unicode escapes decode the same way.
+        assert_token(r"'\x41'", Kind::CharLiteral(65));
+        assert_token(r"'\x00'", Kind::CharLiteral(0));
+        assert_token(r"'\u{1F600}'", Kind::CharLiteral(0x1F600));
+        assert_token(r"'\u{41}'", Kind::CharLiteral(65));
+        // A bare character is its own code point.
+        assert_token("'A'", Kind::CharLiteral(65));
+        assert_token("' '", Kind::CharLiteral(32));
+        assert_token("'~'", Kind::CharLiteral(126));
+    }
+
+    #[test]
+    fn lexer_rejects_escapes_the_char_table_does_not_have() {
+        // An unknown escape is a lex error rather than the escaped
+        // character verbatim: `'\q'` is a typo, and reading it as `q`
+        // would hide it.
+        for input in [r"'\q'", r"'\e'", r"'\x'", r"'\x4'", r"'\u{}'", r"'\u{110000}'"] {
+            let mut l = lexer::Lexer::new(input, 1u64, None);
+            assert!(
+                l.yylex().is_err(),
+                "expected `{input}` to be rejected as a char literal"
+            );
+        }
+    }
+
+    #[test]
     fn lexer_records_why_yylex_failed() {
         // rflex's `Error::Unmatch` carries no reason; every failing
         // rule action records one in `last_lex_error` so the parser's

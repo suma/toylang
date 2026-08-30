@@ -51,6 +51,11 @@ codegen も一切変わらない** — codegen は leaf index を受け取って
 するだけで、要素の切り方を知らないため。変更は lowering の 2 ファイルに
 閉じる。
 
+**ただしこれは uniform 8 バイト列 (現行の `ARRAY_LEAF_STRIDE` 規約) に
+限る。** 列ごとの tight pack (事実 3) は列ごとに stride が違うので
+codegen の `ArrayLoad` / `ArrayStore` にも SoA 分岐が要る — だから
+Phase 0.5 として分離した (下の段階表)。
+
 ### 事実 3: SoA は棚上げ中の pack 問題も解く
 
 `array_layout.rs::ARRAY_LEAF_STRIDE` のコメントにある通り、compound 要素の
@@ -60,19 +65,29 @@ codegen も一切変わらない** — codegen は leaf index を受け取って
 SoA にすると**各列が同型になる**ので、列ごとに `elem_stride_bytes` を
 その leaf の実サイズに落とせる。AoS のままでこれをやると要素内のパディングと
 アラインメントを扱う必要があるが、SoA では列ごとに独立に決められる。
-**Phase 2 は SoA 側では自然に解ける。**
+**NUM-W-AOT-pack Phase 2 (compound 要素の pack) は SoA 側では自然に解ける**
+— 本文書の段階では Phase 0.5 として回収する。
 
-## 中心案: `soa` を配列型の修飾子にする
+## 中心案: `soa` 前置修飾子 — stack と heap で別の仕組み
 
 ```rust
-struct Point { x: f64, y: f64, mass: f64 }
+struct Particle { x: f64, y: f64, mass: f64 }
 
-val ps: soa [Point; 1024]      # SoA: x[0..1024] | y[0..1024] | mass[0..1024]
-val qs: [Point; 1024]          # AoS: 従来どおり
+val ps: soa [Particle; 1024]    # 静的・スタック slot・確保なし (Phase 0)
+val qs: [Particle; 1024]        # AoS: 従来どおり
+val bodies: soa Vec<Particle>   # 動的・単一ヒープ領域を列に区切る (Phase 2)
 
-ps[i].x = 1.0f64               # 書き方は同一
-val p = ps[i]                  # 要素まるごとの取り出しも同一 (事実 1)
+ps[i].x = 1.0f64                # 書き方はどれも同一
+val p = ps[i]                   # 要素まるごとの取り出しも同一 (事実 1)
 ```
+
+**構文は 1 つでも、下げ先の仕組みは 2 つ**に分ける (未決 1・2 を閉じた、
+2026-08-30)。判断の原則:
+
+> **layout は、値が API を越えないなら binding の属性、
+> 越えるなら nominal identity の一部。**
+
+### `soa [T; N]` — 同じ型 + binding の layout フラグ (Phase 0)
 
 **型検査から見て `soa [Point; N]` と `[Point; N]` は同じ型**にする。
 要素型は `Point` のままで、`soa` は値の意味ではなく置き方の指定。したがって
@@ -81,16 +96,130 @@ val p = ps[i]                  # 要素まるごとの取り出しも同一 (事
 - ユーザは `soa` を付け外しして計測できる (DoD の実務そのもの)
 - 誤って「SoA 型」と「AoS 型」の 2 つの型ができて API が割れることがない
 
-### 実装の見込み
+これが成立するのは **layout 情報が関数の外に出ないから**。すべての
+アクセスサイトが同じ関数内にあり、`Binding::Array` のフラグが唯一の
+情報源になる。配列全体が別の binding / 別の関数へ渡る経路は要素ごとの
+物質化 (leaf local に詰めて詰め直す) を通るものとする — **layout が違う
+2 つの binding 間で backing slot を共有すると相互に誤読する**ので禁止。
+混在コピーが頻出するプログラムはそもそも AoS で書くべきで、物質化経路は
+「遅いが正しい」だけで十分。
 
-| 変更点 | 場所 |
-|---|---|
-| `soa` トークンと配列型パーサ | `frontend/src/lexer.l`, `frontend/src/parser/types.rs` |
-| `TypeDecl::Array` に layout フラグ | `frontend/src/type_decl.rs` (`source_name` も対応) |
-| `ArraySlotInfo` に `layout: Aos \| Soa` | `compiler_ir/src/lib.rs` |
-| 添字式の分岐 | `compiler_lower/src/array_access.rs` |
-| 列ごとの stride / base offset | `compiler_lower/src/array_layout.rs` |
-| tree-walker | 配列表現が `Vec<Object>` なので**変更不要** (観測できる差が無い) |
+#### Phase 0 の性能の核心: `ps[i].f` の単列 shortcut
+
+現状 `lower_slice_access` は compound 要素を**全 leaf 読み込み**してから
+field access が該当 local を拾う (`array_access.rs` の per-leaf ループ)。
+このまま SoA にしても 1 要素アクセスが全列に触れるので**帯域は減らない**
+(メモリ削減だけの SoA になる)。
+
+`ps[i].x` は FieldAccess(SliceAccess) の chain として降ってくるので、
+field 名 → leaf `j` を compile time に解き、**1 本の `ArrayLoad`**
+(`index = j * length + i`) に落とす経路を Phase 0 に含める。特定 field だけ
+を舐めるループが速くなるのはこれが効いてからで、DoD の実利の本体。
+
+### `soa Vec<T>` — stdlib `SoaVec<T>` への sugar (Phase 2)
+
+`soa Vec<Particle>` は型検査器が stdlib (`core/std/collections/soa_vec.t`)
+の `SoaVec<T>` に書き換える — `?` / `??` / struct update と同じ流儀で
+**バックエンドは砂糖を見ない**。call surface (`get` / `set` / `push` /
+`pop` / `size` / `__getitem__` / `__setitem__` / iter) を `Vec<T>` と同一形に
+保つので、「`soa` を付け外して測る」は型注釈 1 行の差で済み、API は割れない。
+
+#### same-type にできない理由 (未決 2 の決定)
+
+`Vec` は値が関数境界を越え、layout が**観測可能**になる:
+
+- `as_ptr()` の返す番地の意味 (AoS の要素先頭か、列区切りの先頭か)
+- grow 時のコピー方法 (下記 — 単純 realloc は列を撒き散らす)
+- Drop が解放する領域
+- `retains(N)` / `--profile=mem` のバイト数 (tight pack 後は AoS/SoA で値が違う)
+
+same-type にすると全 receiver が両 layout を扱う runtime tag と分岐を要求
+する。stack 配列が same-type で済むのは上の観測可能性が無いからで、heap は
+原則の逆の側に落ちる。よって **`Vec<T>` に layout パラメータ (const generics
+相当) を持たせる案は採らず、別 nominal 型 + sugar** とする。
+
+#### 「列ごとに確保」ではなく単一領域の列分割
+
+列ごとの独立確保は列数 = leaf 数だけ `ptr` field を要し、**field 数が
+T 依存の struct** になる。`Box<T>` / `Vec<T>` / iterator 群が
+「T を field に現さない」規律を守っているのは per-monomorph struct layout
+を避けるためで、ここで破るわけにはいかない。Zig `MultiArrayList` と同じ
+**1 確保を列に区切る**方式:
+
+```
+buffer: [col_0 × cap][col_1 × cap]...[col_{k-1} × cap]
+leaf j of elem i  →  byte_off = prefix_j * cap + i * stride_j
+```
+
+`prefix_j` (前方列の stride 累積) と `stride_j` は monomorph 時点の定数、
+`cap` だけ runtime。struct は `Vec` と同じ 4 field のまま:
+
+```rust
+struct SoaVec<T> {
+    data: ptr,       # 単一バッファ、列に区切る
+    len: u64,
+    cap: u64,
+    elem_size: u64,  # AoS 換算の 1 要素バイト数 (総量計算用)
+}
+```
+
+Drop / `with allocator` / REGION / move check は `Vec<T>` と同一に動く
+(確保 1 本、解放 1 本)。
+
+#### builtin 3 個: `__builtin_soa_read` / `__builtin_soa_write` / `__builtin_soa_grow`
+
+erased generic な stdlib には per-leaf offset が書けない (下の
+「採らない案」の通り)。だが AOT-COMPOUND-PTR-RW の monomorph 展開
+(`compute_leaf_layout` — compound `__builtin_ptr_read/write` を per-leaf に
+展開する機構、`let_lowering.rs` / `expr.rs`) がまさにこのための鉤:
+
+- `val v: T = __builtin_soa_read(p, elem_index, cap)` — `T` は注釈から
+  (`__builtin_ptr_read` と同じ規約)。展開は leaf `j` を
+  `prefix_j * cap + elem_index * stride_j` の `PtrRead` に
+- `__builtin_soa_write(p, elem_index, cap, value)` — 同じ形の store
+- `__builtin_soa_grow(old, old_cap, new_cap) -> ptr` — 新領域確保 →
+  **列ごとに** copy → 旧領域解放。単純 realloc は列区切りの移動を扱えない
+  (旧 `[x×4][y×4][m×4]` を memcpy すると新 `[x×8][y×8][m×8]` の y が
+  ずれた位置に載る)。列 base は compile time、要素数は runtime
+
+「採らない案」のリフレクション拒否と**矛盾しない**: あれは leaf 選択が
+runtime に決まる形が `__builtin_ptr_read` の型注釈規約と衝突する話で、
+こちらは leaf 選択が compile time のまま、runtime 引数は `cap` だけ。
+
+`SoaVec<T>` の `get` / `set` / `push` / `pop` はこれらを呼ぶ普通の
+stdlib method になる (parser / checker の特別扱いは sugar 解決だけ)。
+
+> `__builtin_soa_*` を `BuiltinFunctionSymbols::new` に足したら
+> `FULL_AST_CACHE_SCHEMA_VERSION` を上げること (`.toycache` の
+> intern 順破壊対策 — CLAUDE.md 参照)。
+
+#### 恩恵の本丸は Phase 1 slice 経由
+
+`ps[i].x` の単列 shortcut は SoaVec では `__getitem__` 経由 (全 leaf 物質化)
+になるので stack 配列のようには効かない。heap 版の帯域削減は
+`ps.mass` → 列の `&[f64]` (Phase 1。checker が field 名 → leaf `j` を解いて
+列 slice を構築) で初めて届く。**実装順 0 → 1 → 2 を変えない理由**。
+
+#### 検証
+
+SoaVec は別型なので「付け外して測る」は型注釈の差し替え
+(`val ps: soa Vec<P>` ↔ `val ps: Vec<P>`) で、同じく 3 バックエンド
+`assert_consistent` で pin する。確保回数は `Vec` と同一 (grow 1 回につき
+1 確保) なので `allocations(N)` 契約はそのまま動く。バイト量契約
+(`retains`) は tight pack 後に AoS/SoA で値が食い違う — layout が観測可能
+であることの帰結で、別型にした理由の裏付け。
+
+### 実装の見込み (stack 配列)
+
+| 変更点 | 場所 | Phase |
+|---|---|---|
+| `soa` トークンと配列型パーサ | `frontend/src/lexer.l`, `frontend/src/parser/types.rs` | 0 |
+| `TypeDecl` に layout (wrapper `Soa(Box<TypeDecl>)` か `Array` への flag) | `frontend/src/type_decl.rs` (`source_name` も対応) | 0 |
+| `ArraySlotInfo` に `layout: Aos \| Soa` | `compiler_ir/src/lib.rs` (0.5 まで codegen は消費しない) | 0 |
+| 添字式の分岐 (`i * leaf_count + j` ↔ `j * length + i`) | `compiler_lower/src/array_access.rs` | 0 |
+| `ps[i].f` 単列 shortcut (chain FieldAccess → 1 本の load) | `compiler_lower/src/array_access.rs` | 0 |
+| 列ごとの stride / base offset (tight pack) | `compiler_lower/src/array_layout.rs` + codegen の `ArrayLoad` / `ArrayStore` | 0.5 |
+| tree-walker | 配列表現が `Vec<Object>` なので**変更不要** (観測できる差が無い) | — |
 
 tree-walker が変更不要なのは重要で、**layout を変えても答えが変わらない**
 ことのオラクルがそのまま手に入る。`assert_consistent` は
@@ -133,6 +262,10 @@ allocator を stdlib に置いたのと同じ流儀で SoA コンテナをユー
 (`let_lowering.rs::lower_let_builtin_ptr_read`) なので、実行時に決まる
 field index で読み書きする形が表現できない。コアに `soa` を入れる方が素直。
 
+(Phase 2 の `__builtin_soa_*` はこの拒否の範囲外 — leaf 選択が
+compile time に留まり、runtime 引数は `cap` だけなので上の規約と衝突しない。
+heap 節を参照。)
+
 ### hot / cold フィールド分割の属性
 
 属性構文そのものが言語に無い。`soa` があれば用途の大半を吸収する。
@@ -143,13 +276,28 @@ field index で読み書きする形が表現できない。コアに `soa` を�
 `interpreter/example/linked_list_arena.t` が既に arena + index の形。
 必要になったら `core/std/slotmap.t` を置く話であって、本文書の範囲外。
 
+## 構文の細部 (未決 1 を閉じた — 2026-08-30)
+
+- **前置で確定**: `soa [T; N]` / `soa Vec<T>`。「置き方の修飾」に読め、
+  宣言修飾子 (`unsafe fn` / `const fn` / `never_allocates fn`) と同じ位置感
+- `soa` は contextual keyword (`test` と同じ)。型位置では `soa` の次が
+  `[` か型名なら曖昧ゼロ。`struct soa` をユーザが宣言していたらそちらを
+  優先して解除
+- AST の持ち方は実装時に選ぶ: wrapper (`Soa(Box<TypeDecl>)`) は
+  `soa Vec<T>` の sugar 解決と `soa soa` 拒否を 1 箇所で済ませるが
+  `TypeDecl` の match 箇所が増え、`Array` への flag は差分が小さい。
+  どちらでも Phase 0 の規模「小」は崩れない
+- `soa` を認めるのは `[T; N]` と `Vec<T>` の位置のみ。他 (`soa dict` /
+  ネスト `soa [soa [P; 4]; 8]`) は型エラーで拒否
+
 ## 段階
 
 | Phase | 内容 | 規模 |
 |---|---|---|
-| **0** | `soa [T; N]` (scalar / struct / tuple 要素)。列ごとの tight pack 込み | 小 |
-| **1** | slice `&[T]` — SoA の窓 | 中 |
-| **2** | `soa` な heap コンテナ (`SoaVec<T>`) — Phase 1 + generics の上に stdlib で | 中 |
+| **0** | `soa [T; N]` (scalar / struct / tuple 要素)。uniform 8 バイト列 — 事実 2 の「codegen 無変更」が成立する範囲。**`ps[i].f` の単列 shortcut 込み** | 小 |
+| **0.5** | 列ごとの tight pack — `ArraySlotInfo` の layout 消費 + 列 stride、codegen の `ArrayLoad` / `ArrayStore` に SoA 分岐 (事実 3 / NUM-W-AOT-pack Phase 2 を回収) | 小〜中 |
+| **1** | slice `&[T]` — SoA の窓。`ps.mass` → `&[f64]` | 中 |
+| **2** | `soa Vec<T>` → `SoaVec<T>` sugar。単一領域の列分割 + builtin 3 個 | 中 |
 | **3** | 配列要素としての enum + tag 列の分離 | 中 |
 
 **Phase 0 は単体で価値があり、SIMD をやらなくても無駄にならない。**
@@ -158,11 +306,11 @@ field index で読み書きする形が表現できない。コアに `soa` を�
 
 ## 決めていない論点
 
-1. **`soa` の綴りと位置** — `soa [Point; N]` (前置) か `[Point; N] soa` (後置) か。
-   前置は「置き方の修飾」に読め、後置は既存の型構文を壊さない。
-2. **`soa` を heap コンテナへどう伝えるか** — Phase 2 で `Vec<T>` と
-   `SoaVec<T>` を別型にするのか、`Vec` に layout パラメータを持たせるのか。
-   後者は const generics 相当が要る。
-3. **要素まるごとの書き込み (`ps[i] = p`)** — leaf ごとに散らばった store に
-   なる。SoA で「要素単位の更新が主」なワークロードは AoS より遅くなるので、
-   `--simd-report` (SIMD.md) と同じ流儀で**警告を出すか**は未決。
+1. **要素まるごとの書き込み (`ps[i] = p`)** — leaf ごとに散らばった store に
+   なる。SoA で「要素単位の更新が主」なワークロードは AoS より遅くなる。
+   警告を出すかは未決だが、`--simd-report` (SIMD.md 戦略 D) と同じ
+   「聞けば答える」tooling の側に置くのが妥当で、Phase 0 には入れない。
+
+(未決 1「綴りと位置」は前置で決着、未決 2「heap コンテナへの伝達」は
+`SoaVec<T>` 別型 + sugar (Phase 2) で決着 — いずれも 2026-08-30。本文中の
+「構文の細部」「`soa Vec<T>`」節を参照。)

@@ -1815,14 +1815,19 @@
   `pthread_key` TLS で per-thread 化済み)。ただし本体は「共有可変性を現行の
   move / Drop モデルにどう載せるか」で、`Send` 相当の判定を決めるまで
   着手できない。設計フェーズを別に取る前提。
-* データ指向の配列 layout (DOD) ★★ — `soa [Point; N]` で AoS / SoA を
-  型修飾子として選べるようにする。設計は [`DATA_ORIENTED.md`](DATA_ORIENTED.md)。
-  **変更が lowering の 2 ファイルに閉じる** — 添字式
-  (`array_access.rs` の `leaf_idx = i * leaf_count + j`) を入れ替えるだけで
-  IR も codegen も変わらない。tree-walker は観測できる差が無いので無変更、
-  つまり「`soa` の有無で答えが変わらない」オラクルが最初から手に入る。
+* データ指向の配列 layout (DOD) ★★ — `soa [Point; N]` / `soa Vec<T>` の
+  前置修飾子で AoS / SoA を選べるようにする。設計は
+  [`DATA_ORIENTED.md`](DATA_ORIENTED.md) (未決 1・2 を 2026-08-30 に閉じた)。
+  stack 配列は同じ型 + binding の layout フラグ — 添字式
+  (`array_access.rs` の `leaf_idx = i * leaf_count + j`) の入れ替えと
+  `ps[i].f` の単列 shortcut だけで、Phase 0 (uniform 8 バイト列) では
+  IR も codegen も変わらない。tight pack は Phase 0.5 として分離 (ここは
+  codegen を触る)。heap は `soa Vec<T>` → stdlib `SoaVec<T>` 別型への
+  sugar (Phase 2)。tree-walker は観測できる差が無いので無変更、つまり
+  「`soa` の有無で答えが変わらない」オラクルが最初から手に入る。
   副産物として NUM-W-AOT-pack Phase 2 (compound 要素の 8 バイト固定 stride) が
-  SoA 側で解ける。Phase 0 は単体で価値があり SIMD をやらなくても無駄にならない
+  SoA 側で解ける (Phase 0.5)。Phase 0 は単体で価値があり SIMD を
+  やらなくても無駄にならない
 * SIMD Phase 3 の残 / Phase 4 ★★ — Phase 2 (型 + 演算子 + intrinsic) と
   戦略 B の主要 kernel は landing 済み。残りは (a) **stdlib の残り kernel**
   — `Vec` の `sum` / `min` / `max` (**API 自体が無い**ので追加から)、

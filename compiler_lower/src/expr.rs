@@ -1303,6 +1303,25 @@ impl<'a> FunctionLower<'a> {
                     continue;
                 }
             }
+            // JIT-enum-1 residue: an enum-typed field read directly
+            // in argument position (`has_next(node.next)`). The read
+            // leaves the value graph like every compound read — the
+            // field's `EnumStorage` (tag local + per-variant payload
+            // slots) already lives in the receiver's binding, so
+            // expand its leaves here exactly as the enum *binding*
+            // arm above does. Checked on the un-peeled argument so an
+            // explicit `&mut <enum field>` borrow keeps falling
+            // through to the compound-borrow rejection.
+            if matches!(
+                self.program.expression.get(a),
+                Some(Expr::FieldAccess(..))
+            ) && let Ok(super::bindings::FieldChainResult::Enum(storage)) =
+                self.resolve_field_chain(a)
+            {
+                let vs = self.load_enum_locals(&storage);
+                values.extend(vs);
+                continue;
+            }
             // CALL-ARG-COMPOUND-LITERAL: `f(Point { .. })` /
             // `f((1i64, 2i64))` — build the literal into leaf locals
             // and pass those, the same shape a compound binding gets.

@@ -138,7 +138,7 @@ tree-walker が元から持っていた dispatch に揃った。
 | P2 | `__getitem__` の `&self` 受理 + generic 戻り型の置換 ✅ (2026-08-30) | 小 | `p[i]` が書ける。`Vec` / `Dict` にも効く |
 | P3 | `core/std/ptr.t` に `Ptr<T>` (`alloc` / `get` / `set` / `offset` / `as_raw` / `__getitem__` / `__setitem__`) ✅ (2026-08-30) | 小 (stdlib のみ) | 摩擦 1〜3、6 の入口。**コンパイラ無変更** (module 統合の remap 1 箇所を除く、下記) |
 | P4 | `Span<T> = { p: Ptr<T>, len: u64 }` + 境界検査 ✅ (2026-08-30) | 中 (stdlib) | 摩擦 4。todo の **slice 型 `&[T]`** をライブラリ側で回収でき、`__simd_load` の受け口にもなる |
-| P5 | `Ptr<T>` を non-null 不変にし、不在は `Option<Ptr<T>>` | 中 | 摩擦 5。`has_next: bool` 方式が消える |
+| P5 | `Ptr<T>` を non-null 不変にし、不在は `Option<Ptr<T>>` ✅ (2026-08-30) | 中 | 摩擦 5。`has_next: bool` 方式が消える |
 | P6 | `unsafe fn` の宣言と強制 (effect mask 1 行) | 小〜中 | 生 builtin を直接呼べる場所を stdlib に集約。`--effects` が土台 |
 
 P3 が入れば **`Box` / `Vec` / `String` / `Dict` の `data: ptr` を
@@ -160,6 +160,20 @@ P3 が入れば **`Box` / `Vec` / `String` / `Dict` の `data: ptr` を
 `self.data.addr` (2 段 field chain) に `__builtin_sizeof::<T>()` を掛ける
 だけで、**コンパイラ無変更**。関数境界は struct by-value の既存
 flatten に乗る (`fn sum(s: Span<u64>) -> u64` が 3 バックエンド)。
+
+**P5 実装メモ (2026-08-30)**: 不変は**構成による規約**で、compiler 強制は
+入れなかった — field visibility は「記録はするが未強制」
+(`frontend/src/parser/stmt.rs` の注記) なので、強制には別の機能が要る。
+`alloc(0)` は 1 バイトに丸める (全バックエンドが `heap_alloc(0)` に null を
+返すので、丸めないと non-null 不変の穴になる)。不在は `Option<Ptr<T>>`
+— **全レーンで動く** (再帰 struct `Node { next: Option<Ptr<Node>> }`、
+enum payload の struct、match、enum-typed field の引数位置読み)。
+ただし引数位置の enum field 読み (`has_next(node.next)`) は
+compiled レーンが `pending_enum_value` を消費していなかったので、
+`lower_call_arg_items` に 1 arm 足した (`load_enum_locals` で展開、
+enum *binding* 引数と同じ形)。niche 最適化は不可 — 16 バイトのまま受け入れる
+(「採らない選択肢」どおり)。例:
+`interpreter/example/linked_list_typed_ptr.t`。
 
 P6 のマスクは [`EFFECT_SYSTEM.md`](EFFECT_SYSTEM.md) の表に 1 行足すだけ:
 

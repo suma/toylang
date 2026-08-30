@@ -12,6 +12,19 @@
 
 ### 2026-08-30
 
+- **POINTER P5 — `Ptr<T>` の non-null 不変 + `Option<Ptr<T>>`** —
+  `alloc(0)` を 1 バイトに丸める (全バックエンドが `heap_alloc(0)` に
+  null を返すので非 null を保証)。不在は `Option<Ptr<T>>` で表す
+  (`has_next: bool` 方式が消える、16 バイト・niche 最適化は不可)。
+  不変は構成による規約 (field visibility は未強制のまま、docs に明記)。
+  **付随修正**: enum-typed field を引数位置で直接読む
+  (`has_next(node.next)`) と compiled レーンが
+  `call argument produced no value` で落ちる — `lower_call_arg_items` が
+  enum *binding* 引数の展開と同じ形で field の `EnumStorage` leaves を
+  展開する 1 arm。`Option<Ptr<Node>>` は再帰 struct / enum payload の
+  struct / match / 引数位置の field 読みまで全レーンで動く。
+  example `interpreter/example/linked_list_typed_ptr.t` +
+  3-way consistency pin 1 件。
 - **POINTER P4 — `core/std/span.t` の `Span<T>`** — `Ptr<T>` + 長さの
   境界検査つきの窓 (`from_parts` / `get` / `set` / `s[i]` / `s[i] = v` /
   `len` / `is_empty` / `as_ptr` / `as_raw`)。todo の **slice 型 `&[T]`** を
@@ -1566,8 +1579,8 @@
   (現状の `Span` は escape 未検査)。
 - **POINTER: `ptr` を型付きにする** ★★ — 設計は [`POINTER.md`](POINTER.md)。
   P1 (`__builtin_sizeof::<T>()`)、P2 (`__getitem__` / `__setitem__`)、
-  P3 (`Ptr<T>`)、P4 (`Span<T>`) は 2026-08-30 に landing 済み (完了済み節)。
-  残りは P5 (non-null 不変 + `Option<Ptr<T>>`)、P6 (`unsafe fn`)。
+  P3 (`Ptr<T>`)、P4 (`Span<T>`)、P5 (non-null + `Option<Ptr<T>>`) は
+  2026-08-30 に landing 済み (完了済み節)。残りは P6 (`unsafe fn`)。
 - **const generics** ★ — `struct Array<T, const N: usize>`。大規模。
 
 ### 構文糖衣の候補 (NEW-FEATURES、未着手)

@@ -1103,3 +1103,61 @@ fn stdlib_span_typed_window_3_backend() {
     "#;
     assert_consistent(src, "stdlib_span_typed_window_3_backend");
 }
+
+#[test]
+fn option_of_typed_ptr_3_backend() {
+    // POINTER P5: `Ptr<T>` is non-null by construction, so absence
+    // is `Option<Ptr<T>>` — the `next: ptr` + `has_next: bool`
+    // pairing a raw-`ptr` list needs dies, and the match arm is the
+    // truth. The enum payload carries a struct whose field is a
+    // raw `ptr`, the struct is recursive through the option, and an
+    // enum-typed field read feeds a call argument directly (the
+    // compiled lanes expand the field's EnumStorage leaves in
+    // argument position). `Option<Ptr<T>>` is 16 bytes: u64 tag +
+    // payload, no niche optimisation (the enum layout is fixed).
+    let src = r#"
+        struct Node {
+            v: i64,
+            next: Option<Ptr<Node>>,
+        }
+
+        fn total(n: Option<Ptr<Node>>) -> i64 {
+            match n {
+                Option::None => 0i64,
+                Option::Some(p) => {
+                    val node: Node = p.get(0u64)
+                    node.v + total(node.next)
+                }
+            }
+        }
+
+        fn cons(v: i64, rest: Option<Ptr<Node>>) -> Ptr<Node> {
+            val p: Ptr<Node> = Ptr::alloc(1u64)
+            p.set(0u64, Node { v: v, next: rest })
+            p
+        }
+
+        fn main() -> u64 {
+            val empty: Option<Ptr<Node>> = Option::None
+            # Non-null: an empty request still yields an address.
+            val z: Ptr<u64> = Ptr::alloc(0u64)
+            if __builtin_ptr_is_null(z.as_raw()) { return 1u64 }
+            val n1: Ptr<Node> = cons(1i64, empty)
+            val some_n1: Option<Ptr<Node>> = Option::Some(n1)
+            val n2: Ptr<Node> = cons(2i64, some_n1)
+            val some_n2: Option<Ptr<Node>> = Option::Some(n2)
+            val head: Ptr<Node> = cons(3i64, some_n2)
+            val some_head: Option<Ptr<Node>> = Option::Some(head)
+            if total(some_head) != 6i64 { return 2u64 }
+            if total(empty) != 0i64 { return 3u64 }
+            val node: Node = head.get(0u64)
+            val has_next: u64 = match node.next {
+                Option::None => 0u64,
+                Option::Some(_) => 1u64,
+            }
+            if has_next != 1u64 { return 4u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "option_of_typed_ptr_3_backend");
+}

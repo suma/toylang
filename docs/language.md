@@ -3425,6 +3425,26 @@ window it came from. See [`design-docs/POINTER.md`](../design-docs/POINTER.md)
 for the layer map (`Span<T>`, `Option<Ptr<T>>`, `unsafe fn` are the
 later phases).
 
+**Non-null (POINTER P5).** A `Ptr<T>` value is non-null by
+construction — every backend answers `heap_alloc(0)` with null, so
+`alloc` rounds an empty request up to one byte and never hands back
+address 0. Absence is modelled one level up, as `Option<Ptr<T>>`:
+
+```rust
+struct Node { v: i64, next: Option<Ptr<Node>> }
+
+val empty: Option<Ptr<Node>> = Option::None
+val head: Ptr<Node> = cons(1i64, empty)
+```
+
+The `next: ptr` + `has_next: bool` pairing a raw-`ptr` list needs
+disappears — the match arm is the truth. The trade is size: the
+enum layout is a `u64` tag plus every variant's payload with no
+slot sharing, so `Option<Ptr<T>>` is 16 bytes, not 8. The invariant
+is by construction in `ptr.t`, not compiler-enforced (struct field
+visibility is recorded but unenforced); a hand-written
+`Ptr { addr: ... }` literal is the raw-pointer escape hatch.
+
 ### `Span<T>` — a bounds-checked view (stdlib)
 
 `core/std/span.t` pairs a `Ptr<T>` window with a length, so a
@@ -4786,6 +4806,23 @@ val p: ptr = __builtin_heap_alloc(__builtin_sizeof(rest))
 __builtin_ptr_write(p, 0u64, rest)
 val rest: Node = __builtin_ptr_read(n.next, 0u64)
 ```
+
+or — with the stdlib's typed window — make the edge an
+`Option<Ptr<Node>>` (`core/std/ptr.t`): the pointer is non-null by
+construction and the match arm is the truth, so the `has_next` flag
+disappears:
+
+```rust
+struct Node { v: i64, next: Option<Ptr<Node>> }
+
+match node.next {
+    Option::None => 0i64,
+    Option::Some(p) => { val n: Node = p.get(0u64) ... }
+}
+```
+
+`interpreter/example/linked_list_ptr.t` and
+`linked_list_typed_ptr.t` are the two shapes side by side.
 
 The annotation on the read is not optional: it names the type whose
 leaves are pulled back out of the buffer, and the read has no other way

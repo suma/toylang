@@ -25,10 +25,23 @@
 #   the raw builtins underneath. `Span<T>` (P4) is the bounds-checked
 #   sibling.
 #
+# ## Non-null
+#
+# A `Ptr<T>` value is **non-null** — the module's constructors keep
+# it that way (`alloc` rounds an empty request up so the address is
+# never 0, and every backend answers `heap_alloc(0)` with null).
+# Absence is modelled one level up, as `Option<Ptr<T>>` (POINTER P5)
+# — the `next: ptr` + `has_next: bool` pairing a raw-`ptr` linked
+# list needs is exactly what that replaces. The invariant is by
+# construction here, not compiler-enforced: struct field visibility
+# is recorded but not enforced, so a hand-written
+# `Ptr { addr: ... }` literal is the raw-pointer escape hatch.
+#
 # ## API
 #
 #   - `Ptr::alloc(count) -> Self` — heap buffer for `count` elements
-#     (`count * sizeof::<T>()` bytes). The caller owns it.
+#     (`count * sizeof::<T>()` bytes, at least 1 byte). The caller
+#     owns it.
 #   - `p.get(i) -> T` / `p.set(i, value)` — element read / write at
 #     element index `i` (byte offset `i * sizeof::<T>()`).
 #   - `p[i]` / `p[i] = v` — same thing through bracket syntax.
@@ -48,8 +61,15 @@ impl<T> Ptr<T> {
     # from the written type, so no representative value is needed
     # (`__builtin_sizeof` with a value used to force `alloc` to take a
     # `proto: T` argument — POINTER.md 実測 2).
+    #
+    # Non-null (P5): every backend answers `heap_alloc(0)` with null,
+    # so an empty request is rounded up to one byte. `sizeof::<T>()`
+    # never under-counts for a real element type; the `== 0` guard
+    # only fires for `count == 0` (or a hypothetical zero-width `T`).
     fn alloc(count: u64) -> Self {
-        val p: ptr = __builtin_heap_alloc(__builtin_sizeof::<T>() * count)
+        val bytes: u64 = __builtin_sizeof::<T>() * count
+        val n: u64 = if bytes == 0u64 { 1u64 } else { bytes }
+        val p: ptr = __builtin_heap_alloc(n)
         Ptr { addr: p }
     }
 

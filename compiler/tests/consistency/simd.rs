@@ -366,3 +366,42 @@ fn stdlib_contains_skips_whole_chunks() {
     "#;
     assert_simd(src, "stdlib_contains_skips_whole_chunks", 95u64);
 }
+
+#[test]
+fn stdlib_split_skips_whole_chunks() {
+    // The separator's first byte is absent from the first 30 bytes,
+    // so the skip advances 16 at a time before the naive compare
+    // runs. `start` must not move while skipping, or the parts come
+    // out with the wrong boundaries -- which is the whole risk of
+    // adding a skip to a loop that also tracks a slice origin.
+    let src = r#"
+        fn part_len(h: &String, s: str, k: u64) -> u64 {
+            val sep = String::from_str(s)
+            val parts = h.split(sep)
+            val p = parts.get(k)
+            p.len()
+        }
+        fn count(h: &String, s: str) -> u64 {
+            val sep = String::from_str(s)
+            val parts = h.split(sep)
+            parts.size()
+        }
+        fn main() -> u64 {
+            val a = String::from_str("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaZq tail Zq end")
+            val b = String::from_str("a,b,c")
+            val c = String::from_str("no-separator-here-at-all-long-enough")
+            if count(a, "Zq") == 3u64
+                && part_len(a, "Zq", 0u64) == 30u64
+                && part_len(a, "Zq", 1u64) == 6u64
+                && part_len(a, "Zq", 2u64) == 4u64
+                && count(b, ",") == 3u64
+                && count(c, "|") == 1u64
+            {
+                97u64
+            } else {
+                0u64
+            }
+        }
+    "#;
+    assert_simd(src, "stdlib_split_skips_whole_chunks", 97u64);
+}

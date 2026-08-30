@@ -196,24 +196,30 @@ JIT (`jit.rs`) は `cranelift_native` のまま — 生成コードがそのマ�
 |---|---|---|
 | `String::eq` / `Vec<u8>::eq` | `string.t` / `collections/vec.t` | 16 バイト比較 + `__simd_all` |
 | `CaseConvert` (`to_upper` / `to_lower`) | `string.t::fold_ascii_case` | ASCII 大小変換は完全に lane-wise |
-| `Contains` | `string.t` | needle 先頭バイトを 16 バイトずつ走査 (memchr) |
+| `Contains` / `Split` | `string.t` | needle / sep の先頭バイトを 16 バイトずつ走査 (memchr) |
 
-**実測** (AOT、4096 バイトの文字列 × 100000 回、aarch64):
+**実測** (AOT、4096 バイトの文字列、aarch64、中央値):
 
 | kernel | scalar | SIMD | |
 |---|---|---|---|
 | `eq` | 0.26s | 0.02s | **13x** |
 | `to_upper` | 1.38s | 0.08s | **17x** |
-| `contains` | 0.43s | 0.28s | 1.5x |
+| `contains` (先頭バイトが稀) | 1.93s | 0.12s | **16x** |
+| `contains` (先頭バイトが 26 バイト周期) | 0.43s | 0.28s | 1.5x |
+| `split` | 0.93s | 0.63s | 1.5x |
 
-`to_upper` の 17x は SIMD だけの効果ではない。内訳は
+読み方に注意が要る数字が 2 つある。
+
+**`to_upper` の 17x は SIMD だけの効果ではない。** 内訳は
 scalar 1.38s → **一括確保 + `mem_copy` に変えて 0.71s** (1.9x) →
 **lane-wise fold で 0.08s** (さらに 8.9x)。byte ごとの `push` を
 やめないとベクタ経路に届かないので、この 2 つは分離できない。
 
-`contains` の伸びが小さいのは、ベンチの haystack が 26 バイト周期で
-needle 先頭バイトを含むため skip がほとんど発火しないから。needle が
-稀なバイトで始まるときはもっと効く。
+**memchr 形 (`contains` / `split`) は入力で 10 倍変わる。** skip は
+「16 バイトの窓に先頭バイトが 1 つも無ければ窓ごと捨てる」ので、
+先頭バイトが稀なら 16x、密なら naive 比較に落ちて 1.5x。`split` の
+1.5x はさらに part ごとの `substring` 確保が支配的なため
+(走査自体はもっと速くなっている)。
 
 **全テストの実行時間は変わらない** (10.64s → 10.50s、ノイズの範囲)。
 テスト中の文字列はほぼ 16 バイト未満で、ベクタ経路に入らない。
@@ -224,7 +230,6 @@ needle 先頭バイトを含むため skip がほとんど発火しないから�
 
 | 対象 | 場所 | 形 |
 |---|---|---|
-| `Split` | `string.t` | `Contains` と同じ memchr 形 |
 | `sum` / `min` / `max` | `collections/vec.t` | reduce。**そもそも API が無い**ので追加から |
 | `Vec<T>::sort` の小配列部分 | 同上 | 分岐削減 |
 
@@ -328,6 +333,30 @@ intrinsic は 13 個 (`__simd_shuffle` は定数マスク配列が要るので�
 cranelift のベクタシフトは量をスカラーで取る (SIMD ISA も同じ)。
 lane ごとに違う量でシフトする形は入れていない。
 
+### IR VM の slot 幅を 16 バイトにした件 — 測って払うと決めた
+
+ベクトルは IR で単一の値 (struct のように leaf 分解されない) なので
+1 slot に収まる必要があり、`RawSlot` を 8 → 16 バイトに広げた。
+**代償はベクトルを使わないプログラムにも及ぶ**ので、4 種のワークロードで
+実測した (IR VM、release、中央値):
+
+| workload | 8 byte | 16 byte | 差 |
+|---|---|---|---|
+| call 中心 (`fib(30)`) | 2.52s | 2.57s | +2.0% |
+| ループ + 算術 | 2.43s | 2.56s | **+5.3%** |
+| struct 中心 | 1.95s | 1.94s | −0.5% |
+| stdlib (`Vec` push/get) | 1.05s | 1.08s | +2.9% |
+
+**典型 2〜3%、最悪 5.3%。** 最初に `fib` 1 本で見た「6%」は上振れだった。
+
+消す場合の設計は「値 arena を `n_values + n_locals` 分だけフレームに持ち、
+slot にはその index を入れる」形だが、**呼び出し境界でベクトルをコピーする
+必要があり**、フレーム局所の index が呼び出しを跨ぐという新しいバグの
+クラスを持ち込む。2〜3% と引き換えにする価値は無いと判断した。
+
+再考する条件: IR VM がプロファイルの主役になったとき、または
+lane 型が増えて 16 バイトを超える幅 (256bit) を入れるとき。
+
 ### 実装サイト
 
 | 層 | 場所 |
@@ -351,15 +380,7 @@ lane ごとに違う量でシフトする形は入れていない。
 - **`var v: f64x2` (初期化子なし)** — ゼロ vector の IR 定数が無いので
   拒否。`__simd_splat(0.0f64)` と書く
 - **interpreter 側 JIT** — silent fallback (`ScalarTy` に vector が無い)
-- **IR VM の slot 幅** — 8 → 16 バイト。ベクトルは IR で単一の値
-  (struct のように leaf 分解されない) なので 1 slot に収まる必要があり、
-  値 id をキーにした side table はフレームごとの reset が要るのに
-  1 フレーム内のループが新しいベクトルを作り続ける。
-  **代償はベクトルを使わないプログラムにも及ぶ**: `fib(30)` の実測で
-  2.50s → 2.65s (**約 6% 減速**、release、5 回の中央値)。
-  消すなら「値 arena を `n_values + n_locals` 分だけフレームに持ち、
-  slot にはその index を入れる」形になるが、呼び出し境界でのコピーが
-  要る。この 6% を払う価値があるかは未判断
+- ~~**IR VM の slot 幅**~~ — **測って払うと決めた (2026-08-30)**。
 
 ## 決めていない論点
 

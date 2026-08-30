@@ -12,11 +12,16 @@
 
 ### 2026-08-30
 
+- **SIMD-VM-SLOT — 測って払うと決めた** — IR VM の `RawSlot` 8 → 16
+  バイト化の代償を 4 ワークロードで実測: call 中心 +2.0% / ループ +5.3% /
+  struct −0.5% / stdlib +2.9%。**典型 2〜3%**で、`fib` 1 本で見た 6% は
+  上振れだった。値 arena は呼び出し境界のコピーを持ち込むので割に合わない。
+  数値と再考条件は [`SIMD.md`](SIMD.md)。
 - **SIMD Phase 3 (戦略 B) — stdlib kernel を SIMD 化** — `String::eq` /
-  `Vec<u8>::eq` / `CaseConvert` / `Contains`。**ユーザコードは無変更**。
-  AOT 実測 (4096 バイト × 100000 回) で eq 13x / to_upper 17x /
-  contains 1.5x。to_upper の内訳は「一括確保 + mem_copy」で 1.9x、
-  そこから lane-wise fold で 8.9x。**全テストの実行時間は不変**
+  `Vec<u8>::eq` / `CaseConvert` / `Contains` / `Split`。**ユーザコードは無変更**。
+  AOT 実測 (4096 バイト) で eq 13x / to_upper 17x / contains 1.5〜16x /
+  split 1.5x。to_upper の内訳は「一括確保 + mem_copy」で 1.9x、そこから
+  lane-wise fold で 8.9x。memchr 形は先頭バイトの出現頻度で 10 倍変わる。**全テストの実行時間は不変**
   (10.64s → 10.50s) — テスト中の文字列が短くベクタ経路に入らないため。
   数値と残り候補は [`SIMD.md`](SIMD.md) の戦略 B。
 - **AOT の ISA を baseline 固定に** — `make_object_module()` が
@@ -1676,16 +1681,10 @@
   つまり「`soa` の有無で答えが変わらない」オラクルが最初から手に入る。
   副産物として NUM-W-AOT-pack Phase 2 (compound 要素の 8 バイト固定 stride) が
   SoA 側で解ける。Phase 0 は単体で価値があり SIMD をやらなくても無駄にならない
-* **SIMD-VM-SLOT** ★★ — SIMD のために IR VM の `RawSlot` を 8 → 16
-  バイトに広げた。ベクトルを使わないプログラムも slot 配列が倍になり、
-  `fib(30)` で **2.50s → 2.65s (約 6% 減速)** を実測 (release、5 回の
-  中央値)。消すには値 arena (`n_values + n_locals` をフレームに持ち
-  slot には index) + 呼び出し境界のコピーが要る。設計メモは
-  [`SIMD.md`](SIMD.md) の「残っている穴」
 * SIMD Phase 3 の残 / Phase 4 ★★ — Phase 2 (型 + 演算子 + intrinsic) と
   戦略 B の主要 kernel は landing 済み。残りは (a) **stdlib の残り kernel**
-  — `Split` (`Contains` と同じ memchr 形)、`Vec` の `sum` / `min` / `max`
-  (**API 自体が無い**ので追加から)、`Vec<T>::sort` の小配列部分、
+  — `Vec` の `sum` / `min` / `max` (**API 自体が無い**ので追加から)、
+  `Vec<T>::sort` の小配列部分、
   (b) `--simd-report` (「なぜベクトル化されなかったか」を聞ける CLI)、
   (c) 限定自動ベクトル化、(d) **256bit + runtime dispatch** — baseline を
   超えるのはここが最初で、cranelift の ISA フラグはモジュール単位なので

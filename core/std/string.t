@@ -466,8 +466,9 @@ impl Contains<String> for String {
     }
 }
 
-# `split(sep)` — naive O(n * m) byte-loop split. Empty `sep`
-# panics. Each part is a fresh `String` allocated through the
+# `split(sep)` — O(n * m) worst case, with the scan for a candidate
+# separator done 16 bytes at a time (the same memchr trick
+# `contains` uses). Empty `sep` panics. Each part is a fresh `String` allocated through the
 # active allocator; the outer `Vec<String>` holds them in
 # encounter order (including a trailing empty slice if the input
 # ends with `sep`, matching Rust's `str::split` shape).
@@ -477,9 +478,23 @@ impl Split<String, Vec<String>> for String {
         var result: Vec<String> = Vec::new()
         val n: u64 = self.len
         val m: u64 = sep.len
+        val first: u8 = __builtin_ptr_read(sep.data, 0u64)
+        val first_v: u8x16 = __simd_splat(first)
         var start: u64 = 0u64
         var i: u64 = 0u64
         while i + m <= n {
+            # Same memchr-style skip `contains` uses: a match must
+            # begin with the separator's first byte, so a 16-byte
+            # window containing none of it can be discarded whole.
+            # `start` is untouched -- it only moves on a match -- so
+            # skipping does not disturb the part boundaries.
+            if i + 16u64 <= n {
+                val chunk: u8x16 = __simd_load(self.data, i)
+                if !__simd_any(chunk == first_v) {
+                    i = i + 16u64
+                    continue
+                }
+            }
             var matched: bool = true
             var j: u64 = 0u64
             while j < m {

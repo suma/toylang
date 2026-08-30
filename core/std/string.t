@@ -208,7 +208,19 @@ impl String {
         if n != other.len {
             return false
         }
+        # SIMD: 16 bytes per comparison while a whole chunk fits.
+        # The bound is `i + 16 <= n`, never `i < n`, because a
+        # vector load reads all 16 bytes -- a chunk that straddles
+        # the end of the buffer would read past the allocation.
         var i: u64 = 0u64
+        while i + 16u64 <= n {
+            val a: u8x16 = __simd_load(self.data, i)
+            val b: u8x16 = __simd_load(other.data, i)
+            if !__simd_all(a == b) {
+                return false
+            }
+            i = i + 16u64
+        }
         while i < n {
             val a: u8 = __builtin_ptr_read(self.data, i)
             val b: u8 = __builtin_ptr_read(other.data, i)
@@ -218,6 +230,57 @@ impl String {
             i = i + 1u64
         }
         true
+    }
+
+    # Shared body of `to_upper` / `to_lower` (CaseConvert). Copies
+    # the bytes, then adds or subtracts 0x20 on every byte inside
+    # `[lo, hi]`, leaving the rest untouched -- so bytes outside
+    # `a-z` / `A-Z`, including every continuation byte of a
+    # multi-byte UTF-8 sequence, pass through unchanged.
+    #
+    # `up` picks the direction: subtract to reach uppercase, add to
+    # reach lowercase.
+    fn fold_ascii_case(&self, lo: u8, hi: u8, up: bool) -> String {
+        val n: u64 = self.len
+        val raw: ptr = __builtin_heap_alloc(0u64)
+        val data: ptr = __builtin_heap_realloc(raw, n)
+        __builtin_mem_copy(self.data, data, n)
+        # SIMD: 16 bytes per pass while a whole chunk fits. The bound
+        # is `i + 16 <= n` -- a vector load reads all 16 bytes, so a
+        # chunk straddling the end would read past the allocation.
+        val lo_v: u8x16 = __simd_splat(lo)
+        val hi_v: u8x16 = __simd_splat(hi)
+        val delta: u8x16 = __simd_splat(0x20u8)
+        var i: u64 = 0u64
+        while i + 16u64 <= n {
+            val v: u8x16 = __simd_load(data, i)
+            # `>=` and `<=` each answer per lane, so the two masks
+            # combine with a bitwise `&` rather than `&&`.
+            val in_range = (v >= lo_v) & (v <= hi_v)
+            var folded: u8x16 = v + delta
+            if up {
+                folded = v - delta
+            }
+            __simd_store(data, i, __simd_select(in_range, folded, v))
+            i = i + 16u64
+        }
+        while i < n {
+            val b: u8 = __builtin_ptr_read(data, i)
+            if b >= lo && b <= hi {
+                if up {
+                    __builtin_ptr_write(data, i, b - 0x20u8)
+                } else {
+                    __builtin_ptr_write(data, i, b + 0x20u8)
+                }
+            }
+            i = i + 1u64
+        }
+        String {
+            data: data,
+            len: n,
+            cap: n,
+            elem_size: 1u64,
+        }
     }
 
     # Inherent `to_string()` — clone `self` into a fresh String.
@@ -305,35 +368,24 @@ impl Trim for String {
 # `to_upper()` / `to_lower()` — ASCII-only case folding. Bytes
 # outside `b'a'..=b'z'` / `b'A'..=b'Z'` are copied unchanged so
 # multi-byte UTF-8 sequences pass through as-is.
+# ASCII case folding is entirely lane-wise -- add or subtract 0x20
+# where the byte falls in the letter range, leave it alone otherwise
+# -- so both directions copy the bytes once and then fold them 16 at
+# a time. Building the buffer up front (rather than `push`-ing byte
+# by byte) is what makes the vector path reachable: `push` would
+# force a per-byte round trip through the geometric grow.
 impl CaseConvert for String {
+    # The `val` binding is not decoration: the compiled lanes reject
+    # a compound-returning method in expression position, so the
+    # result has to be named before it is returned.
     fn to_upper(&self) -> String {
-        var result: String = String::new()
-        var i: u64 = 0u64
-        while i < self.len {
-            val b: u8 = __builtin_ptr_read(self.data, i)
-            if b >= 0x61u8 && b <= 0x7Au8 {
-                result.push(b - 0x20u8)
-            } else {
-                result.push(b)
-            }
-            i = i + 1u64
-        }
-        result
+        val r: String = self.fold_ascii_case(0x61u8, 0x7Au8, true)
+        r
     }
 
     fn to_lower(&self) -> String {
-        var result: String = String::new()
-        var i: u64 = 0u64
-        while i < self.len {
-            val b: u8 = __builtin_ptr_read(self.data, i)
-            if b >= 0x41u8 && b <= 0x5Au8 {
-                result.push(b + 0x20u8)
-            } else {
-                result.push(b)
-            }
-            i = i + 1u64
-        }
-        result
+        val r: String = self.fold_ascii_case(0x41u8, 0x5Au8, false)
+        r
     }
 }
 
@@ -362,9 +414,14 @@ impl Concat<String> for String {
     }
 }
 
-# `contains(needle)` — naive O(n * m) byte loop. Empty `needle`
-# matches at position 0 (Rust / libc convention). Sufficient for
-# short needles, the typical user-code case.
+# `contains(needle)` — O(n * m) worst case, but the scan for a
+# candidate start is done 16 bytes at a time (memchr's trick).
+# Empty `needle` matches at position 0 (Rust / libc convention).
+#
+# The skip is sound because a match starting anywhere in
+# `[i, i+16)` would have to begin with `needle`'s first byte: if no
+# lane in that window equals it, all sixteen positions can be
+# discarded at once.
 impl Contains<String> for String {
     fn contains(&self, needle: &String) -> bool {
         val n: u64 = self.len
@@ -375,8 +432,20 @@ impl Contains<String> for String {
         if m > n {
             return false
         }
+        val first: u8 = __builtin_ptr_read(needle.data, 0u64)
+        val first_v: u8x16 = __simd_splat(first)
         var i: u64 = 0u64
         while i + m <= n {
+            # Only when a whole chunk fits: a vector load reads all
+            # 16 bytes, so a chunk straddling the end of the buffer
+            # would read past the allocation.
+            if i + 16u64 <= n {
+                val chunk: u8x16 = __simd_load(self.data, i)
+                if !__simd_any(chunk == first_v) {
+                    i = i + 16u64
+                    continue
+                }
+            }
             var matched: bool = true
             var j: u64 = 0u64
             while j < m {

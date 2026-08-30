@@ -342,7 +342,19 @@ impl Vec<u8> {
         }
         val pa: ptr = self.as_ptr()
         val pb: ptr = other.as_ptr()
+        # SIMD: 16 bytes per comparison while a whole chunk fits.
+        # The bound is `i + 16 <= n`, never `i < n` -- a vector load
+        # reads all 16 bytes, so a chunk straddling the end of the
+        # buffer would read past the allocation.
         var i: u64 = 0u64
+        while i + 16u64 <= n {
+            val va: u8x16 = __simd_load(pa, i)
+            val vb: u8x16 = __simd_load(pb, i)
+            if !__simd_all(va == vb) {
+                return false
+            }
+            i = i + 16u64
+        }
         while i < n {
             val a: u8 = __builtin_ptr_read(pa, i)
             val b: u8 = __builtin_ptr_read(pb, i)

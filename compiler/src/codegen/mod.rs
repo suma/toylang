@@ -472,9 +472,30 @@ pub(crate) fn cranelift_opt_level() -> &'static str {
 /// Pulled out of `CodegenSession::new` so the JIT path can build a
 /// `JITModule` with its own ISA settings and still funnel into the
 /// same generic `CodegenSession::new(module)`.
+///
+/// The ISA is the host **architecture** at its **baseline** feature
+/// set, not the build machine's own feature set.
+/// `cranelift_native::builder()` would detect and enable whatever the
+/// machine happens to have (AVX2, BMI, ...), and the emitted binary
+/// would then require a CPU at least as new as the one that compiled
+/// it — a binary built on a recent x86-64 could fault on an older
+/// one. Producing one binary that runs anywhere on its architecture
+/// is worth more here than the last few percent from a wider
+/// instruction set.
+///
+/// This costs the SIMD feature nothing: the language's vectors stop
+/// at 128 bits precisely because SSE2 (x86-64) and NEON (aarch64) are
+/// both part of their architecture's baseline (SIMD.md "まず 128bit
+/// 幅だけ"). Going wider — 256-bit AVX2 — is what would need runtime
+/// dispatch, and that is deferred (SIMD.md 論点 2).
+///
+/// The JIT keeps `cranelift_native` in `jit.rs`: its code never
+/// leaves the machine that generated it, so there is nothing to stay
+/// portable for.
 pub(crate) fn make_object_module() -> Result<ObjectModule, String> {
-    let isa_builder = cranelift_native::builder()
-        .map_err(|e| format!("host ISA detection failed: {e}"))?;
+    let triple = target_lexicon::Triple::host();
+    let isa_builder = cranelift_codegen::isa::lookup(triple)
+        .map_err(|e| format!("host ISA lookup failed: {e}"))?;
     let mut flag_builder = settings::builder();
     flag_builder
         .set("opt_level", cranelift_opt_level())

@@ -237,29 +237,34 @@ impl<'a> EvaluationContext<'a> {
     /// `HeapManager::read_byte_at` documents.
     fn simd_read(&self, ty: VectorType, addr: usize, index: u64) -> SimdValue {
         let stride = ty.lane_bytes();
-        let mut bytes = [0u8; 16];
+        // Fast path: every lane has a typed slot of the lane's own
+        // type, which is what `Vec<T>::push` and an earlier
+        // `__simd_store` leave behind.
         let mut lanes: Vec<Object> = Vec::with_capacity(ty.lanes());
-        let mut all_typed = true;
         for k in 0..ty.lanes() {
             let offset = (index as usize + k) * stride;
             match self.heap_manager.borrow().typed_read(addr, offset) {
                 Some(slot) if slot.borrow().get_type() == ty.lane() => {
                     lanes.push(slot.borrow().clone());
                 }
-                _ => {
-                    all_typed = false;
-                    for b in 0..stride {
-                        bytes[k * stride + b] =
-                            self.heap_manager.borrow().read_byte_at(addr, offset + b);
-                    }
-                }
+                _ => break,
             }
         }
-        if all_typed {
-            SimdValue::from_lanes(ty, &lanes)
-        } else {
-            SimdValue::from_bytes(ty, &bytes)
+        if lanes.len() == ty.lanes() {
+            return SimdValue::from_lanes(ty, &lanes);
         }
+        // Otherwise read the whole vector as bytes. Every lane goes
+        // through `read_byte_at`, including the ones that did have a
+        // typed slot: mixing the two would leave the typed lanes as
+        // zeros in `bytes`.
+        let mut bytes = [0u8; 16];
+        for (i, byte) in bytes.iter_mut().enumerate() {
+            *byte = self
+                .heap_manager
+                .borrow()
+                .read_byte_at(addr, index as usize * stride + i);
+        }
+        SimdValue::from_bytes(ty, &bytes)
     }
 
     /// Write one vector into the heap, lane by lane, updating both the

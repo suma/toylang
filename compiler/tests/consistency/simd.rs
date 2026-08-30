@@ -275,3 +275,94 @@ fn simd_printing_agrees_across_backends() {
     "#;
     assert_stdout_consistent(src, "simd_printing_agrees_across_backends");
 }
+
+// ---------------------------------------------------------------------
+// Stdlib kernels (SIMD.md 戦略 B).
+//
+// `String::eq`, `String::to_upper` / `to_lower`, and
+// `String::contains` process 16 bytes at a time. Every input here is
+// deliberately longer than 16 bytes, with a tail that is not a
+// multiple of 16 -- the rest of the suite works on short strings and
+// never reaches the vector path at all, so a chunk/tail boundary bug
+// would go unnoticed.
+// ---------------------------------------------------------------------
+
+#[test]
+fn stdlib_string_eq_spans_chunks_and_tail() {
+    // 43 bytes: two full 16-byte chunks plus an 11-byte tail. The
+    // difference in the third pair sits in the tail, and the one in
+    // the fourth sits inside the first chunk, so both halves of the
+    // kernel have to be right.
+    let src = r#"
+        fn main() -> u64 {
+            val a = String::from_str("the quick brown fox jumps over the lazy dog")
+            val b = String::from_str("the quick brown fox jumps over the lazy dog")
+            val tail = String::from_str("the quick brown fox jumps over the lazy dig")
+            val head = String::from_str("The quick brown fox jumps over the lazy dog")
+            val longer = String::from_str("the quick brown fox jumps over the lazy dogs")
+            val empty = String::from_str("")
+            val empty2 = String::from_str("")
+            if a == b && !(a == tail) && !(a == head) && !(a == longer) && empty == empty2 {
+                91u64
+            } else {
+                0u64
+            }
+        }
+    "#;
+    assert_simd(src, "stdlib_string_eq_spans_chunks_and_tail", 91u64);
+}
+
+#[test]
+fn stdlib_case_folding_spans_chunks_and_tail() {
+    // Non-letters (digits, punctuation, spaces) must pass through the
+    // lane-wise fold untouched, and the 5-byte tail is handled by the
+    // scalar loop.
+    let src = r#"
+        fn main() -> u64 {
+            val mixed = String::from_str("Hello, World! 123 The Quick Brown Fox xyzXY")
+            val up = mixed.to_upper()
+            val lo = mixed.to_lower()
+            val want_up = String::from_str("HELLO, WORLD! 123 THE QUICK BROWN FOX XYZXY")
+            val want_lo = String::from_str("hello, world! 123 the quick brown fox xyzxy")
+            val empty = String::from_str("")
+            val eu = empty.to_upper()
+            if up == want_up && lo == want_lo && eu.len() == 0u64 {
+                93u64
+            } else {
+                0u64
+            }
+        }
+    "#;
+    assert_simd(src, "stdlib_case_folding_spans_chunks_and_tail", 93u64);
+}
+
+#[test]
+fn stdlib_contains_skips_whole_chunks() {
+    // The needle's first byte is absent from the first 30 bytes, so
+    // the memchr-style skip advances 16 at a time before the naive
+    // compare ever runs. A match that starts inside the final partial
+    // chunk exercises the non-vector path of the same loop.
+    let src = r#"
+        fn find(h: &String, s: str) -> bool {
+            val needle = String::from_str(s)
+            h.contains(needle)
+        }
+        fn main() -> u64 {
+            val h = String::from_str("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaZq tail")
+            val plain = String::from_str("the quick brown fox jumps over the lazy dog")
+            if find(h, "Zq")
+                && find(h, "tail")
+                && !find(h, "Zz")
+                && find(plain, "quick")
+                && find(plain, "dog")
+                && !find(plain, "cat")
+                && find(plain, "")
+            {
+                95u64
+            } else {
+                0u64
+            }
+        }
+    "#;
+    assert_simd(src, "stdlib_contains_skips_whole_chunks", 95u64);
+}

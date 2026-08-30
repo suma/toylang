@@ -12,6 +12,19 @@
 
 ### 2026-08-30
 
+- **SIMD Phase 3 (戦略 B) — stdlib kernel を SIMD 化** — `String::eq` /
+  `Vec<u8>::eq` / `CaseConvert` / `Contains`。**ユーザコードは無変更**。
+  AOT 実測 (4096 バイト × 100000 回) で eq 13x / to_upper 17x /
+  contains 1.5x。to_upper の内訳は「一括確保 + mem_copy」で 1.9x、
+  そこから lane-wise fold で 8.9x。**全テストの実行時間は不変**
+  (10.64s → 10.50s) — テスト中の文字列が短くベクタ経路に入らないため。
+  数値と残り候補は [`SIMD.md`](SIMD.md) の戦略 B。
+- **AOT の ISA を baseline 固定に** — `make_object_module()` が
+  `cranelift_native::builder()` (ビルドマシンの CPU 機能を検出) から
+  `isa::lookup(Triple::host())` に。**SIMD とは無関係に元からあった穴**で、
+  新しい x86-64 で作ったバイナリが古い x86-64 で落ちうる状態だった。
+  128bit ベクタは SSE2 / NEON の baseline に含まれるので SIMD は無傷。
+  JIT はそのマシンから出ないので `cranelift_native` のまま。
 - **SIMD Phase 2 — 128bit vector を型にし、演算子を lane-wise に効かせた**
   (`SIMD.md`)。lane 型 5 種 (`f64x2` / `f32x4` / `i32x4` / `i64x2` /
   `u8x16`)、intrinsic 13 個、3 バックエンド対応 (interpreter JIT は
@@ -1669,13 +1682,14 @@
   中央値)。消すには値 arena (`n_values + n_locals` をフレームに持ち
   slot には index) + 呼び出し境界のコピーが要る。設計メモは
   [`SIMD.md`](SIMD.md) の「残っている穴」
-* SIMD Phase 3/4 ★★ — Phase 2 (型 + 演算子 + intrinsic) は landing 済み。
-  残りは (a) **stdlib kernel の置換** — `Vec<u8>::eq` / `Contains` /
-  `CaseConvert` / `sum` を `__simd_*` で書き直す。**ユーザコードを一行も
-  変えずに効く**うえ処理系ではなくライブラリの変更なので、費用対効果が
-  最大。`ptr` + 要素 index の load にしたので slice を待たない、
+* SIMD Phase 3 の残 / Phase 4 ★★ — Phase 2 (型 + 演算子 + intrinsic) と
+  戦略 B の主要 kernel は landing 済み。残りは (a) **stdlib の残り kernel**
+  — `Split` (`Contains` と同じ memchr 形)、`Vec` の `sum` / `min` / `max`
+  (**API 自体が無い**ので追加から)、`Vec<T>::sort` の小配列部分、
   (b) `--simd-report` (「なぜベクトル化されなかったか」を聞ける CLI)、
-  (c) 限定自動ベクトル化、(d) 256bit + feature detection。設計は
+  (c) 限定自動ベクトル化、(d) **256bit + runtime dispatch** — baseline を
+  超えるのはここが最初で、cranelift の ISA フラグはモジュール単位なので
+  関数の multi-versioning をどう作るかが論点 (SIMD.md 論点 2)。設計は
   [`SIMD.md`](SIMD.md)
 * モジュール拡張 — バージョニング、リモートパッケージ
 * 言語内からの AST 取得・操作

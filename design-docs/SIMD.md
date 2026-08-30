@@ -118,7 +118,25 @@ cranelift の縮約命令で f64 の結果が変わる。
 `+` / `*` の overflow を「ビルドプロファイルに依らず wrap」と決めた前例と
 同じ流儀。非対称なので `docs/language.md` の RUNTIME-TRAP 節に併記する。
 
-### 3. native lane width を問う API を作らない
+### 3. AOT の ISA は baseline 固定 (native ではない)
+
+`make_object_module()` は `cranelift_native::builder()` ではなく
+`isa::lookup(Triple::host())` を使う。前者は**ビルドマシンの CPU 機能を
+検出して有効化する** (AVX2 / BMI 等) ので、生成物が「ビルドしたマシン
+以上の CPU」を要求しうる — 新しい x86-64 で作ったバイナリが古い
+x86-64 で落ちる、という形になる。**これは SIMD とは無関係に元から
+あった穴**だが、stdlib が SIMD を使うようになって表面化しやすくなった。
+
+baseline にしても**この言語のベクタは何も失わない**: 128bit で止めた
+のは SSE2 (x86-64) と NEON (aarch64) がどちらも baseline だからで、
+実際 baseline ISA でも `fmul.2d` / `bsl.16b` は出る。baseline を超える
+のは 256bit (AVX2) のときで、そこで初めて runtime dispatch が要る
+(論点 2)。
+
+JIT (`jit.rs`) は `cranelift_native` のまま — 生成コードがそのマシンから
+出ないので、可搬性を守る相手が居ない。
+
+### 4. native lane width を問う API を作らない
 
 `__simd_native_lanes()` のようなものを入れると値がホストとバックエンドで
 変わり、`assert_consistent` が壊れる。**幅は常にソースに書く。**
@@ -167,18 +185,47 @@ cranelift の縮約命令で f64 の結果が変わる。
 上記の型と intrinsic。まずここだけを landing させ、正しさを
 `assert_consistent` で固める。
 
-### B. stdlib kernel の SIMD 化 — 費用対効果が最大
+### B. stdlib kernel の SIMD 化 — 費用対効果が最大 (landing 済み)
 
 **ユーザコードを一行も変えずに効く。** stdlib は toylang で書かれているので、
-これは処理系ではなくライブラリの変更になる。現在スカラーループで書かれて
-いる明白な候補:
+これは処理系ではなくライブラリの変更になる。
+
+置換したもの (2026-08-30):
 
 | 対象 | 場所 | 形 |
 |---|---|---|
-| `Vec<u8>::eq` | `core/std/collections/vec.t` | 16 バイト比較 + `__simd_all` |
-| `Contains` / `Split` | `core/std/str_ops.t` | memchr 相当 |
-| `CaseConvert` | `core/std/string.t` | ASCII 大小変換は完全に lane-wise |
-| `sum` / `min` / `max` | `core/std/collections/vec.t` | reduce |
+| `String::eq` / `Vec<u8>::eq` | `string.t` / `collections/vec.t` | 16 バイト比較 + `__simd_all` |
+| `CaseConvert` (`to_upper` / `to_lower`) | `string.t::fold_ascii_case` | ASCII 大小変換は完全に lane-wise |
+| `Contains` | `string.t` | needle 先頭バイトを 16 バイトずつ走査 (memchr) |
+
+**実測** (AOT、4096 バイトの文字列 × 100000 回、aarch64):
+
+| kernel | scalar | SIMD | |
+|---|---|---|---|
+| `eq` | 0.26s | 0.02s | **13x** |
+| `to_upper` | 1.38s | 0.08s | **17x** |
+| `contains` | 0.43s | 0.28s | 1.5x |
+
+`to_upper` の 17x は SIMD だけの効果ではない。内訳は
+scalar 1.38s → **一括確保 + `mem_copy` に変えて 0.71s** (1.9x) →
+**lane-wise fold で 0.08s** (さらに 8.9x)。byte ごとの `push` を
+やめないとベクタ経路に届かないので、この 2 つは分離できない。
+
+`contains` の伸びが小さいのは、ベンチの haystack が 26 バイト周期で
+needle 先頭バイトを含むため skip がほとんど発火しないから。needle が
+稀なバイトで始まるときはもっと効く。
+
+**全テストの実行時間は変わらない** (10.64s → 10.50s、ノイズの範囲)。
+テスト中の文字列はほぼ 16 バイト未満で、ベクタ経路に入らない。
+長い入力の pin は `compiler/tests/consistency/simd.rs` の
+「Stdlib kernels」節にある (chunk 境界と tail の両方を踏む)。
+
+**まだ手を付けていない候補**:
+
+| 対象 | 場所 | 形 |
+|---|---|---|
+| `Split` | `string.t` | `Contains` と同じ memchr 形 |
+| `sum` / `min` / `max` | `collections/vec.t` | reduce。**そもそも API が無い**ので追加から |
 | `Vec<T>::sort` の小配列部分 | 同上 | 分岐削減 |
 
 退行は `compiler/tests/example_consistency.rs` (全 example を 3 バックエンドで
@@ -236,7 +283,7 @@ gcc の `-fopt-info-vec-missed` に相当するが、**言語側の直し方 (`s
 | **0** | `soa [T; N]` | 未着手 (DATA_ORIENTED.md)。SIMD の前提ではなくなった |
 | **1** | slice `&[T]` | 未着手。`ptr` で代替したので前提ではない |
 | **2** | vector 型 + lane-wise 演算子 + intrinsic | **landing 済み** (下記) |
-| **3** | stdlib kernel の置換 (戦略 B) + `--simd-report` (戦略 D) | 未着手 |
+| **3** | stdlib kernel の置換 (戦略 B) | **landing 済み** (下記)。`--simd-report` (戦略 D) は未着手 |
 | **4** | 限定自動ベクトル化 (戦略 C) / 256bit + feature detection | 未着手 |
 
 ## Phase 2 で実際に入ったもの (2026-08-30)

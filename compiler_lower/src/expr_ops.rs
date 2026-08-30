@@ -330,7 +330,14 @@ impl<'a> FunctionLower<'a> {
         // a body cannot come to different conclusions about an
         // operator.
         let ir_op = crate::fold::binop_for(op).expect("short-circuit ops handled above");
-        let result_ty = if ir_op.produces_bool() { Type::Bool } else { lhs_ty };
+        // SIMD: a lane-wise comparison answers once per lane, so it
+        // produces a mask of the same lane width rather than one
+        // `bool`.
+        let result_ty = match (ir_op.produces_bool(), lhs_ty) {
+            (true, Type::Vector(v)) => Type::Vector(v.mask()),
+            (true, _) => Type::Bool,
+            (false, _) => lhs_ty,
+        };
         // DEBUG-OBS D3: a trapping binary operation is reported at its
         // **left operand's** position, which is where the tree-walker
         // has always put it. The whole expression would arguably be a

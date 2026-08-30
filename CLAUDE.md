@@ -316,9 +316,10 @@ fn main() -> u64 {
     収まらなければ範囲エラー (`'\u{1F600}'` → u8 は不可)。
     **stdlib の使い分け**: バイト単位のアクセス / イテレーションは `u8`
     (`String::get` / `String::iter`)、文字単位の API は `u32`
-    (`push_char(c: char)`)。**注意**: 型検査器が節点を書き換える方式なので、
-    **型検査されない body (stdlib の free function、`user_func_count`
-    より後ろ) では効かない** — impl block の method は効く
+    (`push_char(c: char)`)。実装は型検査器が節点を書き換える方式
+    (`coerce_char_literal`) で、**stdlib の body も検査対象**なので
+    `core/std/parse.t` の `c < '0' || c > '9'` のような書き方が
+    stdlib 内でも効く
   - `String` (`core/std/string.t`) — heap-managed byte buffer の **nominal struct** (`type` alias ではなく独立 struct、`Vec<u8>` と同 memory layout だが nominal identity は別)。inherent method (`new` / `from_str(s)` / `push` / `pop` / `get` / `set` / `size` / `len` / `as_ptr` / `capacity` / `is_empty` / `clear` / `extend_bytes` / `push_str` / `push_char` / `eq` / `to_string`) + 拡張 trait impl (`Substring` / `Trim` / `CaseConvert` / `Concat<String>` / `Contains<String>` / `Split<String, Vec<String>>` from `core/std/str_ops.t`) で `s.len()` / `s.substring(...)` / `s.trim()` / `s.concat(other)` / `s.split(sep)` 等が `str` と同じ call shape で動く (3 backend)。
   - `Ptr<T>` (`core/std/ptr.t`, POINTER P3+P5) — **型付きポインタ窓**。`T` は field に現れず `addr: ptr` の背後にだけ居るので backend 特殊扱いゼロ (`Box<T>` と同じ手口)。`alloc(count)` (stride は `__builtin_sizeof::<T>()`、**0 要素でも 1 バイト確保して非 null を保証**) / `get` / `set` / `p[i]` / `p[i] = v` (`__getitem__` / `__setitem__`) / `offset(count)` / `as_raw()`。**window であって owner ではない** — free は呼び出し側 (`__builtin_heap_free(p.as_raw())`)、index は unchecked。**non-null 不変** (P5) — 不在は `Option<Ptr<T>>` で表す (`has_next: bool` 方式が消える、16 バイト・niche 最適化は不可)。不変は構成による規約で compiler 強制は無し (field visibility は未強制)
   - `Span<T>` (`core/std/span.t`, POINTER P4) — **境界検査つきの窓**。`Ptr<T>` + 長さのペアで、todo の slice 型 `&[T]` をライブラリ側で回収する形。`from_parts(p, len)` / `get` / `set` / `s[i]` / `s[i] = v` (範囲外は panic、文言は `Vec` と同規約) / `len` / `is_empty` / `as_ptr` / `as_raw` (`__simd_load` の受け口)。**view であって owner ではない**。**escape は未検査** (POINTER.md の既定、選択肢 1) — 参照Rule は `&T` のみなので、`Span` は指す先より長生きできる
@@ -698,6 +699,17 @@ fn main() -> u64 {
 - `ambient` 糖衣、`with allocator = ...` 経由の active stack dispatch 完了
 - stdlib (`core/std/allocator.t`) に `trait Alloc` + Wrapper 構造体 (`Global` / `Arena` / `FixedBuffer`) 完了
 - AOT native codegen 完了 (#121 Phase A / B-min / B-rest Items 1+3 + Item 2 cleanup + arena_drop)
+
+## 型検査の対象
+
+**型検査器は body を検査するだけでなく書き換える** (`?` の desugar、
+`Display` の `to_str` 挿入、char リテラルの narrowing)。したがって
+**検査しない body は書き換え前の AST のままバックエンドに流れる**。
+2026-08-30 に `interpreter/src/lib.rs` の `take(user_func_count)` を
+外し、**integrate 後の全関数 (stdlib 含む) を検査する**ようにした
+(impl block の method は元から検査対象)。コストは trivial program で
+~2ms / process。stdlib に新しい機能を使うコードを書くときは、
+これに依存していることを意識すること。
 
 ## テスト計画
 

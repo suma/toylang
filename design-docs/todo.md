@@ -12,6 +12,22 @@
 
 ### 2026-08-30
 
+- **STDLIB-FREE-FN-UNCHECKED 解消 — stdlib の free function body も
+  型検査する** — `interpreter/src/lib.rs` の `take(user_func_count)` を
+  外した。**型検査器は body を検査するだけでなく書き換える** (`?` の
+  desugar、`Display` の `to_str` 挿入、CHAR-LITERAL-NUM の narrowing) ので、
+  検査しない body は書き換え前の AST のままバックエンドに流れていた —
+  impl block の method は検査されるため、穴は「stdlib の大半が method」
+  という理由で見えていなかった。コストは trivial program 実測で
+  41.4ms → 44.1ms (~2ms、impl block と同オーダー)。
+  **前提として直した**: **`return` を含む match arm が兄弟 arm の型を
+  縛っていた** — `return` は発散するので arm は値を産まないのに、
+  返した型を arm の型として報告していた (`{ return Result::Err(e) }` が
+  `Result<...>`)。結果 `Option::Some(v) => { acc = v }` と並べると
+  「arm 0 is UInt64, arm 1 is Result<...>」で拒否され、**early return の
+  定型が match の中に書けなかった**。`panic` と同じ `Unknown` を返す形に。
+  この 2 つで `core/std/parse.t` / `io.t` のバイト比較を char リテラルで
+  書けるようになった (`c < '0' || c > '9'`、`if c == '\n' { break }`)。
 - **CHAR-LITERAL-NUM — char リテラルが位置の整数型を取る** — `'a'` は
   **32bit (u32) で保持**したまま (`val c = 'a'` は u32)、**他の整数型を
   名指しする位置では値が収まればその型になる** (`val b: u8 = '0'` /
@@ -1548,16 +1564,6 @@
   UInt8`)。pattern 側は char リテラルを受けるようになったので、残るのは
   scrutinee の型リスト + 網羅性 + 4 バックエンドの lowering。
   byte 走査を書いていて実際に困ってから。
-
-- **STDLIB-FREE-FN-UNCHECKED: stdlib の free function body が型検査を
-  通らない** ★★ — `interpreter/src/lib.rs` が `take(user_func_count)`
-  で user の関数だけ検査するので、**型検査器が body を書き換える機能は
-  stdlib の free function で無言で効かない** (`?` の desugar、`Display`
-  の `to_str` 挿入、CHAR-LITERAL-NUM の narrowing)。impl block の method
-  は検査される。2026-08-30 に char リテラルで実際に踏んだ (実行時
-  `Type error: expected UInt8, found UInt32`)。直すなら stdlib の free
-  function も検査対象にする (TEST-PERF の実測では impl block 2.5ms 相当の
-  コスト増) か、書き換え系の機能を lowering 側に寄せる。
 
 - **NUM-W-ENUMERATION** ★ — 整数型の列挙 (`Int8|Int16|...|UInt32`) が
   **42 ファイル 625 箇所**に散っている (2026-08-25 の `gen_expr` /

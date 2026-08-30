@@ -1999,7 +1999,11 @@ fn divide(a: i64, b: i64) -> i64 {
   `return` statement needed).
 - A `return` value is checked against the declared return type on
   every path — returning the wrong type is a type error, and
-  returning a value from a Unit function is rejected. `?` inside a
+  returning a value from a Unit function is rejected. A `return`
+  **diverges**: the block it sits in produces no value, so an early
+  return inside a `match` arm does not have to agree with its
+  siblings (`Option::None => { return Option::None }` beside
+  `Option::Some(v) => { acc = v }` is fine). `?` inside a
   function propagates by returning, so it requires a `Result` / 
   `Option` return type to exist; see the [`?` operator](#-operator-early-return).
 

@@ -32,7 +32,7 @@ use crate::ast::module_interface::ModuleInterface;
 ///
 /// Mismatched versions are treated as a cache miss by
 /// [`load_full_module`].
-pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 32;
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 33;
 // v2: `File` gained `id` (JIT cache key) and `tests` (LLM-LOOP P4).
 // v3: `BuiltinFunctionSymbols` interns the MEMORY_PROFILING M4 counter
 // names, shifting every later symbol id.
@@ -79,6 +79,9 @@ pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 32;
 // deserializes one field short and every field after it slides.
 // v32: RUNTIME-LIB P0-A — `BuiltinFunctionSymbols::new` interns
 // `eprint` / `eprintln`, shifting every symbol id after them.
+// v33: RUNTIME-LIB P0-B — `core/std/parse.t` joins the auto-loaded
+// stdlib, shifting every symbol interned after its names (the same
+// reason ptr.t bumped v29).
 // Forgetting this bump is not a subtle failure: stale entries
 // deserialize into the new layout and the program silently comes out
 // wrong — every stdlib trait reported "is not defined". The M4 bump

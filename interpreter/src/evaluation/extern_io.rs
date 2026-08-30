@@ -51,6 +51,7 @@ thread_local! {
 // matches `toylang_rt`'s `IO_*` constants and is mapped to reason
 // strings in `core/std/io.t`.
 thread_local! {
+    static PARSE_F64_STATUS: Cell<u64> = const { Cell::new(0) };
     static READ_FILE_STATUS: Cell<u64> = const { Cell::new(0) };
     static ENV_STATUS: Cell<u64> = const { Cell::new(0) };
     static WRITE_FILE_STATUS: Cell<u64> = const { Cell::new(0) };
@@ -62,6 +63,12 @@ const IO_PERMISSION_DENIED: u64 = 2;
 const IO_IS_A_DIRECTORY: u64 = 3;
 const IO_READ_ERROR: u64 = 4;
 const IO_WRITE_ERROR: u64 = 5;
+
+// RUNTIME-LIB P0-B: `parse::to_f64`'s status vocabulary, matching
+// `toylang_rt`'s `PARSE_*` constants.
+const PARSE_OK: u64 = 0;
+const PARSE_INVALID: u64 = 1;
+const PARSE_OVERFLOW: u64 = 2;
 
 /// Map an `std::io::Error` to the RUNTIME-IO status vocabulary. The
 /// errno values (ENOENT 2, EPERM 1, EACCES 13, EISDIR 21) agree with
@@ -110,6 +117,11 @@ pub fn build_io_registry() -> HashMap<&'static str, ExternFn> {
     // `from "c"`. `read_line` / `now` are implemented in toylang on
     // top of these.
     m.insert("__extern_io_exit", io_exit);
+    // RUNTIME-LIB P0-B: the one parser that needs the host's
+    // decimal -> binary conversion. The integer and bool parsers are
+    // written in toylang and reach no registry.
+    m.insert("__extern_parse_f64", parse_f64);
+    m.insert("__extern_parse_f64_status", parse_f64_status);
     m.insert("getchar", io_getchar);
     m.insert("time", io_time);
     m.insert("getpid", io_getpid);
@@ -158,6 +170,41 @@ fn str_result(text: String) -> Value {
 
 fn u64_result(v: u64) -> Value {
     Object::UInt64(v).into()
+}
+
+/// `parse::to_f64` — decimal string to `f64`, after `core/std/parse.t`
+/// has checked the grammar. Rust's `str::parse` and the compiled
+/// backends' `strtod` are both correctly rounded, and the validator
+/// keeps the two from ever seeing an input where their *grammars*
+/// differ (`inf`, hex floats, leading whitespace).
+fn parse_f64(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_parse_f64` takes 1 argument".to_string(),
+            expected: 1,
+            found: args.len(),
+        });
+    }
+    let text = str_arg(&args[0], "__extern_parse_f64")?;
+    match text.parse::<f64>() {
+        Ok(v) if v.is_infinite() => {
+            PARSE_F64_STATUS.with(|s| s.set(PARSE_OVERFLOW));
+            Ok(Object::Float64(v).into())
+        }
+        Ok(v) => {
+            PARSE_F64_STATUS.with(|s| s.set(PARSE_OK));
+            Ok(Object::Float64(v).into())
+        }
+        Err(_) => {
+            PARSE_F64_STATUS.with(|s| s.set(PARSE_INVALID));
+            Ok(Object::Float64(0.0).into())
+        }
+    }
+}
+
+/// RUNTIME-LIB P0-B: the status of the most recent `parse_f64`.
+fn parse_f64_status(_args: &[Value]) -> Result<Value, InterpreterError> {
+    Ok(u64_result(PARSE_F64_STATUS.with(|s| s.get())))
 }
 
 /// `exit(code)` — end the process now, as libc's `exit` does for the

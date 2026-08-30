@@ -118,6 +118,9 @@ mod effects_tests;
 #[path = "never_allocates_tests.rs"]
 mod never_allocates_tests;
 
+#[path = "parse_tests.rs"]
+mod parse_tests;
+
 #[path = "pattern_struct_tests.rs"]
 mod pattern_struct_tests;
 

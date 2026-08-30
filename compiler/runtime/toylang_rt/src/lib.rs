@@ -86,6 +86,7 @@ unsafe extern "C" {
     fn fwrite(src: *const u8, size: usize, count: usize, f: *mut u8) -> usize;
     fn ferror(f: *mut u8) -> i32;
     fn strlen(s: *const u8) -> usize;
+    fn strtod(s: *const u8, end: *mut *const u8) -> f64;
     fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8;
     fn pthread_key_create(key: *mut usize, destructor: Option<unsafe extern "C" fn(*mut u8)>) -> i32;
     fn pthread_getspecific(key: usize) -> *mut u8;
@@ -119,6 +120,13 @@ const IO_PERMISSION_DENIED: u64 = 2;
 const IO_IS_A_DIRECTORY: u64 = 3;
 const IO_READ_ERROR: u64 = 4;
 const IO_WRITE_ERROR: u64 = 5;
+
+// RUNTIME-LIB P0-B: `toy_parse_f64`'s status vocabulary, mirrored by
+// the interpreter's `extern_parse` registry and mapped to
+// `ParseError` variants in `core/std/parse.t`.
+const PARSE_OK: u64 = 0;
+const PARSE_INVALID: u64 = 1;
+const PARSE_OVERFLOW: u64 = 2;
 
 #[cfg(target_os = "macos")]
 fn current_errno() -> i32 {
@@ -338,6 +346,9 @@ struct ThreadState {
     /// helpers.
     err_sink: SinkFn,
     print_stderr: bool,
+    /// RUNTIME-LIB P0-B: the status of the most recent
+    /// `toy_parse_f64`, read back by the paired status extern.
+    parse_f64_status: u64,
 }
 
 impl Default for ThreadState {
@@ -367,6 +378,7 @@ impl Default for ThreadState {
             write_file_status: IO_OK,
             err_sink: default_err_sink,
             print_stderr: false,
+            parse_f64_status: PARSE_OK,
         }
     }
 }
@@ -2504,6 +2516,55 @@ pub extern "C" fn toy_io_write_file(path: *const u8, contents: *const u8, append
     }
     st.write_file_status = IO_OK;
     written as u64
+}
+
+/// RUNTIME-LIB P0-B: decimal string -> `f64`.
+///
+/// The grammar is checked in `core/std/parse.t` before the call, so
+/// this only has to convert — which is worth crossing the boundary
+/// for, since a correctly rounded decimal-to-binary conversion is not
+/// something to hand-write in toylang. `strtod` would also accept
+/// `inf`, `nan`, hex floats and leading whitespace; none of those
+/// reach here.
+///
+/// A value too large to represent comes back as an infinity, which
+/// the paired status reports as an overflow rather than letting a
+/// caller mistake it for a very large number.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_parse_f64(s: *const u8) -> f64 {
+    let st = thread_state();
+    let text = str_to_cstring(s);
+    if text.len() <= 1 {
+        st.parse_f64_status = PARSE_INVALID;
+        return 0.0;
+    }
+    let mut end: *const u8 = core::ptr::null();
+    let v = unsafe { strtod(text.as_ptr(), &mut end) };
+    // Nothing consumed, or something left over: the validator and
+    // this disagree, which is a bug rather than a user error — report
+    // it as invalid rather than returning a half-read number.
+    let consumed = if end.is_null() {
+        0
+    } else {
+        (end as usize).saturating_sub(text.as_ptr() as usize)
+    };
+    if consumed == 0 || consumed != text.len() - 1 {
+        st.parse_f64_status = PARSE_INVALID;
+        return 0.0;
+    }
+    if v.is_infinite() {
+        st.parse_f64_status = PARSE_OVERFLOW;
+        return v;
+    }
+    st.parse_f64_status = PARSE_OK;
+    v
+}
+
+/// RUNTIME-LIB P0-B: the status of the most recent `toy_parse_f64` on
+/// this thread. Paired with it like the `toy_io_*_status` externs.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_parse_f64_status() -> u64 {
+    thread_state().parse_f64_status
 }
 
 /// RUNTIME-IO: the status of the most recent `toy_io_write_file` call

@@ -12,6 +12,16 @@
 
 ### 2026-08-30
 
+- **RUNTIME-LIB P0-A — io 書き込み系 (`write_file` / `append_file` /
+  `eprint` / `eprintln` / `io::exit`)** — 前 3 つは
+  [`RUNTIME_LIBRARY.md`](RUNTIME_LIBRARY.md) の P0 一行目。ファイル
+  書き込みと `exit` は extern 境界で済むが、stderr は print 経路その
+  ものなので IR の 3 命令に `stderr` フラグを足した。`toy_print_*`
+  ヘルパは二重化せず `toy_print_stream(stderr)` 1 つで挟む形にし、
+  runtime のシンクを 2 本 (`sink` / `err_sink`) にした。`IoError` に
+  `WriteError` variant、interpreter JIT は eprint で silent fallback、
+  `exit` は in-process レーンを道連れにするので子プロセスで pin。
+  cache schema v32 (builtin symbol が 2 つ増えた)。
 - **POINTER P6 — `unsafe fn` の宣言と強制 (`[E0024]`)** — 生メモリを
   読み書きする body に宣言を要求する。歩き方は**直接のみ**
   (`EffectTable::new_direct_only`) なので `unsafe fn` を呼んでも

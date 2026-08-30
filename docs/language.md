@@ -3575,11 +3575,25 @@ responsibility, as with every other raw-pointer builtin.
 ```rust
 print(value)        # to stdout, no newline
 println(value)      # to stdout + newline
+eprint(value)       # to stderr, no newline
+eprintln(value)     # to stderr + newline
 ```
 
-Both accept any type; rendering goes through `Object::to_display_string`
-(strings are unquoted, structs/dicts deterministic via sorted keys).
-These are user-facing names without the `__builtin_` prefix.
+All four accept any type; rendering goes through
+`Object::to_display_string` (strings are unquoted, structs/dicts
+deterministic via sorted keys). These are user-facing names without
+the `__builtin_` prefix.
+
+`eprint` / `eprintln` (RUNTIME-LIB P0-A) differ from their stdout
+counterparts in the descriptor and nothing else: the same any-type
+argument, the same rendering, the same [`Display`](#display)
+dispatch, the same `io` effect. Write a program's *output* with
+`print` and its *diagnostics* with `eprint`, so a caller can pipe one
+without the other. The two streams are separate all the way down —
+each print instruction carries which stream it belongs to, and every
+backend keeps them apart (the interpreter's own JIT declines a
+program that uses them and falls back to the tree-walker, which is
+not observable).
 
 f64 rendering (the same rule every backend shares, since RUNTIME_PORT
 R1): Rust's `Display` (shortest round-trip, so `0.1f64 + 0.2f64`
@@ -3606,7 +3620,10 @@ io::argc() -> u64               # number of program arguments (excluding program
 io::arg(i: u64) -> str          # the i-th argument; "" out of range
 io::env_var(name: str) -> Result<str, IoError>   # the environment variable; Err(IoError::NotFound) when unset
 io::read_file(path: str) -> Result<str, IoError> # file contents; Err(err) when unreadable
+io::write_file(path: str, contents: str) -> Result<u64, IoError>  # replace the file; Ok(bytes written)
+io::append_file(path: str, contents: str) -> Result<u64, IoError> # add to the end; Ok(bytes written)
 io::file_exists(path: str) -> bool
+io::exit(code: u64)             # end the process now with this status
 io::now() -> u64                # seconds since the Unix epoch
 io::random() -> u64             # pseudo-random; not reproducible
 io::random_seed(seed: u64)      # re-seed `random()`; reproducible afterwards
@@ -3634,6 +3651,7 @@ variants (declared in `core/std/io.t`):
 | `IoError::PermissionDenied` | the OS denied the open |
 | `IoError::IsADirectory` | the path names a directory |
 | `IoError::ReadError` | any other read failure (also non-UTF-8 contents on the interpreter — the compiled backends read raw bytes and do not validate UTF-8, which stays a known divergence for invalid files) |
+| `IoError::WriteError` | any other write failure (a short write, or a failure at close time) |
 | `IoError::EndOfInput` | `read_line`: EOF before any byte |
 | `IoError::Unknown` | a failure with no errno behind it |
 
@@ -3645,6 +3663,22 @@ text (`not found`, ...). Because these functions return a compound,
 bind the result with `val` (the compiled lanes reject
 compound-returning calls in expression position, like every other
 compound value).
+
+`write_file` replaces what the file held and `append_file` adds to
+its end; both create the file when it is missing, and both answer
+with the number of bytes written — always `contents`' length on
+success, which is why a zero-byte write is `Ok(0)` rather than
+indistinguishable from a failure. A path whose directory does not
+exist fails as `NotFound`, not as a write error.
+
+`io::exit(code)` ends the process immediately with `code` as its
+status: nothing is printed, no `Drop` runs, buffered output is
+flushed, and the call does not return in any backend (an embedder
+running a program that calls it ends with it). The low 8 bits are
+what a shell sees, the same truncation
+[`main`'s return value](#process-exit-code) goes through. Use it for
+a normal-path exit status; a failure that should say why is a
+[`panic`](#termination).
 
 Determinism: `random()` is seeded from the clock and process id, so it
 is not reproducible across runs — but `random_seed(s)` makes the
@@ -4699,6 +4733,9 @@ See [`JIT.md`](../design-docs/JIT.md) for the supported subset and limitations.
 
 - `Object::UInt64(v)` or `Object::Int64(v)` → `v as i32`.
 - Other return types → 0.
+
+[`io::exit(code)`](#io-module-io) ends the run earlier with a chosen
+status; a [`panic`](#termination) exits non-zero with a diagnostic.
 
 ### Errors
 

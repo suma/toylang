@@ -571,7 +571,9 @@ fn main() -> u64 {
 ## 入出力ビルトイン
 
 - **`io::` モジュール** (`core/std/io.t`) — `read_line()` / `argc()` /
-  `arg(i)` / `env_var(name)` / `read_file(path)` / `file_exists(path)` /
+  `arg(i)` / `env_var(name)` / `read_file(path)` /
+  **`write_file(path, contents)`** / **`append_file(path, contents)`** /
+  `file_exists(path)` / **`exit(code)`** /
   `now()` / `random()` / `random_seed(seed)` / `strftime(fmt, secs)` /
   `env_count()` / `env_name(i)` / `env_value(i)`。`extern fn` 宣言 +
   バックエンド別実装 (interpreter: `extern_io::build_io_registry`、
@@ -579,8 +581,13 @@ fn main() -> u64 {
   `read_line` は `Result<_, IoError>` を返す (RUNTIME-IO): payload を運ぶ
   extern が失敗 status を runtime 側に記録し、ペアの
   `__extern_io_*_status` extern が直後に読む (境界は scalar のまま)。
+  `write_file` / `append_file` も同じ形 (`Ok(n)` は書けたバイト数、
+  0 バイト書き込みは `Ok(0)`。ディレクトリが無い path は `NotFound`)。
+  **`io::exit(code)`** は即座にプロセスを終える (`Drop` は走らない、
+  どのバックエンドでも戻らない — in-process の埋め込みは道連れになる)。
   `Err` は `IoError` variant (`NotFound` / `PermissionDenied` /
-  `IsADirectory` / `ReadError` / `EndOfInput` / `Unknown`) — 網羅的な
+  `IsADirectory` / `ReadError` / `WriteError` / `EndOfInput` /
+  `Unknown`) — 網羅的な
   match で処理し、`Display` で `println(err)` が `not found` 等の
   文言を出す。compound 戻りなので `val` で受ける (compiled レーンは
   式位置の compound 呼び出しを拒否)。
@@ -594,6 +601,13 @@ fn main() -> u64 {
   引数、`RunOptions.args` で注入。
 - `print(value)` — stdout に値を出力（改行なし）
 - `println(value)` — stdout に値を出力 + 改行
+- **`eprint(value)` / `eprintln(value)` (RUNTIME-LIB P0-A)** — 同じ整形で
+  **stderr** に出す (`Display` dispatch も同じ、effect も `io`)。
+  出力とdiagnosticsを分けたいときに使う。**IR の 3 つの print 命令が
+  `stderr` フラグを持つ**形で通しており、AOT / JIT は
+  `toy_print_stream(stderr)` で挟む (ヘルパは二重化していない)。
+  runtime のシンクは 2 本 (`sink` / `err_sink`)。
+  **interpreter 側 JIT は silent fallback**
 - 任意の型を受け取り、`Object::to_display_string` で整形。文字列は引用符なし、構造体 / dict はフィールド名順にソートして決定的な出力
 - ユーザ向けの日常的な I/O なので、`heap_alloc` 等の低レベル builtin と違って `__builtin_` prefix は付けない
 - **`Display`**: `fn to_str(&self) -> str` を持つ型は `print` / `println` /

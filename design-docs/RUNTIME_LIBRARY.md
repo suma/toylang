@@ -39,9 +39,9 @@ read_file / strftime) / panic・backtrace (shadow stack) / 出力シンク
 
 ### 無いもの (実測)
 
-- **ファイル書き込み / 追記** — `read_file` の対が無い
-- **stderr への user 出力** — `print`/`println` は stdout のみ
-- **`exit(code)`** — 正常系の終了コード指定ができない (panic のみ非ゼロ)
+- ~~**ファイル書き込み / 追記**~~ — `write_file` / `append_file` が入った (P0-A)
+- ~~**stderr への user 出力**~~ — `eprint` / `eprintln` が入った (P0-A)
+- ~~**`exit(code)`**~~ — `io::exit(code)` が入った (P0-A)
 - **str → 数値のパース** — `read_line` / `arg` / `read_file` の結果が数値にできず、入出力の往復が閉じない
 - **単調時計 / sleep** — `now()` は libc `time` の wall 秒のみ
 - **`Set<T>` / 優先度付きキュー / deque**
@@ -78,7 +78,7 @@ read_file / strftime) / panic・backtrace (shadow stack) / 出力シンク
 
 | 優先度 | ライブラリ | 内容 | 経路 | 状態 |
 |---|---|---|---|---|
-| **P0** | io 書き込み系 | `write_file` / `append_file` / `eprint` / `io::exit(code)` | extern | 未着手 |
+| **P0** | io 書き込み系 | `write_file` / `append_file` / `eprint` / `io::exit(code)` | extern | ✅ 2026-08-30 (P0-A) |
 | **P0** | str パース | `parse_i64/u64/f64/bool(str) -> Result<_, ParseError>` | extern | 未着手 |
 | **P0** | 衛生項目 | `str` の `Ord` (STDLIB-ORD) / narrow int の `checked_*` (RUNTIME-TRAP-NARROW) / `arg(i)` 等の範囲外 `Result` 化 | 混在 | todo 既載 |
 | **P1** | Dict hash 化 | 線形探索 → open addressing。`hash.t` の mixer 更新を含む | 純 toylang | 未着手 |
@@ -93,6 +93,28 @@ read_file / strftime) / panic・backtrace (shadow stack) / 出力シンク
 | 保留 | プロセス spawn / ネットワーク / regex / 多倍長 | 需要未確認 | — | 下記「非目標」 |
 
 ### 各項目の論点
+
+**P0-A 実装メモ (2026-08-30、landing 済み)** — 3 つのうち `eprint` /
+`eprintln` だけが**バックエンドの変更**になった。ファイル書き込みと
+`exit` は extern 境界で済む (`toy_io_write_file` + ペアの status
+extern、`exit` は libc をそのまま呼ぶ) 一方、stderr は print 経路その
+ものにあるので:
+
+- IR の 3 命令 (`Print` / `PrintStr` / `PrintRaw`) に **`stderr` フラグ**
+  を足した。命令が自分でどちらの流れに出るかを言う形で、モードを
+  バックエンドが持ち回る形にはしていない
+- `toy_print_*` ヘルパは**二重化していない** (24 個が 48 個になる)。
+  代わりに runtime に **`toy_print_stream(stderr)`** を 1 つ足し、
+  AOT / JIT は stderr の print 命令をこの呼び出しで挟む。stdout 経路の
+  命令数は不変
+- runtime のシンクは 2 本になった (`sink` / `err_sink`)。JIT が stdout を
+  捕捉しても stderr は素通りする — AOT バイナリと同じ見え方
+- interpreter 側 JIT は `eprint` / `eprintln` を **silent fallback**
+  (この JIT の print ヘルパは stdout 専用)
+
+`exit` は in-process のレーンを道連れにするので consistency harness に
+乗せられない (テストランナーごと落ちる)。子プロセスで exit コードを
+pin する形にした。
 
 **P0 io 書き込み系** — `exit` は `panic` と違い stderr に何も出さず、
 指定コードで process exit する。`eprint` は `print` と同じ整形
@@ -141,7 +163,7 @@ reader は文字列走査のパーサで、`String` / `StringIter` の上に純 
 
 | Phase | 内容 | 受け入れ基準 |
 |---|---|---|
-| **P0-A** | `write_file` / `append_file` / `eprint` / `exit` | 3 バックエンド一致テスト (書き込み先は tempfile fixture)。`exit` は終了コード pin |
+| **P0-A** ✅ | `write_file` / `append_file` / `eprint` / `exit` | 3 バックエンド一致テスト (書き込み先は tempfile fixture)。`exit` は終了コード pin |
 | **P0-B** | `parse_*` 4 種 | 3 バックエンド一致 + `ParseError` の網羅 match pin。境界 (空文字 / MAX+1 / 先頭空白) の単体テスト |
 | **P0-C** | 衛生項目 3 件 | todo.md の該当項目を解消済みとして移動 |
 | **P1-A** | Dict hash 化 | 既存 dict テスト全 green (意味論不変) + 反復順の仕様固定 + 性能実測 (n=1e4 insert/get の前後比較) |

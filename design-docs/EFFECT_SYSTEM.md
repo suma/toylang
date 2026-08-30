@@ -49,7 +49,7 @@ unsafe fn         RAW_READ | RAW_WRITE          (直接のみ)
 | `RawRead` | 生ポインタの**指す先**を読む | `ptr_read` / `str_from_bytes` / `__simd_load` |
 | `RawWrite` | 生ポインタの指す先・ランタイム状態に書く | `ptr_write` / `mem_copy` / `mem_move` / `mem_set` / `__simd_store` / `record_allocator_layout` |
 | `AllocCtx` | 実行中のプログラムについて訊く | `current_allocator` / `default_allocator` / アロケーションカウンタ / `backtrace` |
-| `Io` | 出力する | `print` / `println` |
+| `Io` | 出力する | `print` / `println` / `eprint` / `eprintln` |
 | `Panic` | 実行を中断しうる | `panic` / `assert` |
 
 `Panic` はどの検査もマスクしていない。`const fn` が**意図的に許して

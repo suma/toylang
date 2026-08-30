@@ -119,6 +119,14 @@ impl EvaluationContext<'_> {
             TypeDecl::Int16 | TypeDecl::UInt16 => Some(2),
             TypeDecl::Int32 | TypeDecl::UInt32 => Some(4),
             TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Number | TypeDecl::Float64 => Some(8),
+            // SIMD-F32: native single-precision width.
+            TypeDecl::Float32 => Some(4),
+            // SIMD: 128 bits, whatever the lane type. The value form
+            // answers the same through `Object::Simd` (16), and the
+            // compiled lanes' `compute_byte_size` has the matching
+            // `Type::Vector` arm — without this the type-argument
+            // form (POINTER P1) disagreed between engines.
+            TypeDecl::Vector(_) => Some(16),
             // Pointer-width handles. `str` is one too on the compiler
             // side (`Type::Str` is an address into the string blob), so
             // it has a width *as a member* even though a `str` value on

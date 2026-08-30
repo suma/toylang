@@ -612,6 +612,12 @@ fn sizeof_type_arg_round_trip() {
             if __builtin_sizeof::<u64>() != 8u64 { return 1u64 }
             if __builtin_sizeof::<u8>() != 1u64 { return 2u64 }
             if __builtin_sizeof::<(i64, bool)>() != 9u64 { return 3u64 }
+            # SIMD-F32 / SIMD: the tree-walker's declared-type walk
+            # used to miss these two widths (the value form answered
+            # them via the runtime Object, so only the type form
+            # diverged).
+            if __builtin_sizeof::<f32>() != 4u64 { return 8u64 }
+            if __builtin_sizeof::<f64x2>() != 16u64 { return 9u64 }
             # Generic free function: T from the call arguments.
             if elem_size(0u64) != 8u64 { return 4u64 }
             if elem_size(1i8) != 1u64 { return 5u64 }

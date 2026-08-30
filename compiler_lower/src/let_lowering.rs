@@ -100,7 +100,16 @@ impl<'a> FunctionLower<'a> {
         // no annotation keeps the source's placement).
         if let Expr::SliceAccess(arr_obj, info) = rhs.clone()
             && matches!(info.slice_type, frontend::ast::SliceType::RangeSlice) {
-                let dst_soa = annotation.map(|a| a.is_soa());
+                // Only an *array* annotation has an opinion on
+                // placement. An unannotated `val` carries
+                // `TypeDecl::Unknown` rather than `None`, so asking
+                // `is_soa()` about every annotation answers "AoS" for
+                // the no-annotation case and silently drops the
+                // source's layout on the floor.
+                let dst_soa = annotation.and_then(|a| match a {
+                    TypeDecl::Array(_, _, soa) => Some(*soa),
+                    _ => None,
+                });
                 return self.lower_let_range_slice(name, arr_obj, info, dst_soa);
             }
         // Compound-element array read: `val p: Point = arr[i]`.

@@ -242,6 +242,23 @@ tree-walker が変更不要なのは重要で、**layout を変えても答え�
 「同じプログラムを `soa` 有り / 無しで走らせて一致」を pin する
 (`compiler/tests/consistency/soa.rs` が 4-way で固定)。
 
+**ただし答えの一致だけでは「SoA になっている」ことを示せない** —
+黙って interleaved に落ちる実装でも全部通る。そこで同じファイルに
+**AOT の stack frame を読む test 群**を置いた: `aot_clif` (harness、
+`--emit=clif` と同じ codegen をインプロセスで走らせる) で cranelift の
+`explicit_slot` 宣言と `stack_addr` / `imul` の連鎖を見る。
+
+| pin | AoS | SoA |
+|---|---|---|
+| `[Particle; 4]` (3 leaf) の frame | slot 1 個 96 バイト | 列 3 本 × 32 バイト |
+| `ps[i].mass` ループの番地計算 | `(i * 3 + 2) * 8` (`imul` 2 回) | `i * 8` で mass 列だけ (`imul` 1 回、他列に触らない) |
+| narrow leaf (`bool` / `u8` / `f32` / `u64`) | 96 バイト 1 slot | 24 バイト × 4 列 (Phase 0.5 の canary) |
+| `soa [u64; N]` | — | AoS と**バイト一致** (1 leaf = 1 列) |
+
+frame を読むので命令選択やレジスタ割付には依存せず、変わるのは
+placement の決定だけ。Phase 0.5 (tight pack) では narrow leaf の行が
+意図的に落ちる (期待値の更新がそのまま変更の記録になる)。
+
 **実装時に踏んだ既存バグ 2 件 (Phase 0 の前提として修正)**:
 
 1. `val ps: [Point; 2] = [Point {...}, ...]` — 注釈付き struct 要素
@@ -253,6 +270,13 @@ tree-walker が変更不要なのは重要で、**layout を変えても答え�
    されていた (`struct_literal.rs::visit_struct_decl_impl` — どちらも
    「それ以外の位置では全部動く型」で、scalar 幅の struct フィールドを
    書いた者がいなかった)
+3. (2026-08-30、frame test で発覚) **注釈なしの範囲 slice が layout を
+   継承していなかった** — 注釈なしの `val` は `None` ではなく
+   `TypeDecl::Unknown` を持つので、`annotation.map(|a| a.is_soa())` が
+   「AoS 指定あり」と答え、`val sub = soa_ps[1..3]` が interleaved に
+   落ちていた。答えはどちらでも同じなので consistency test では
+   見えない (frame を読んで初めて分かる)。array 注釈のときだけ
+   意見を持つよう修正 (`let_lowering.rs::lower_let`)
 
 ### enum の SoA
 

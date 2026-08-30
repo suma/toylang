@@ -1379,3 +1379,73 @@ pub(super) fn assert_diagnostic_report(source: &str, stem: &str, expected: &str)
         "the pinned diagnostics for `{stem}` moved",
     );
 }
+
+/// The Cranelift IR the AOT backend emits for `source` — the text
+/// `--emit=clif` writes, produced in-process (no object file, no
+/// linker).
+///
+/// This is the one view a test has of the *AOT* memory layout. The
+/// mid-level IR (`lowered_ir`) names array slots but says nothing
+/// about their size or their address arithmetic; the stack frame the
+/// compiled binary actually runs on is decided here, in cranelift's
+/// `explicit_slot` declarations and the `stack_addr` / `imul` chain
+/// each access lowers to.
+pub(super) fn aot_clif(source: &str) -> String {
+    let mut parser = frontend::ParserWithInterner::new(source);
+    let mut program = parser.parse_program().expect("parse");
+    let interner = parser.get_string_interner();
+    interpreter::check_typing_with_core_modules(
+        &mut program,
+        interner,
+        Some(source),
+        Some("test.t"),
+        None,
+    )
+    .expect("type check");
+    let contract_msgs = compiler_lower::ContractMessages::intern(interner);
+    let options = CompilerOptions::new(PathBuf::from("<clif>"));
+    compiler::codegen::emit_clif_text(&program, interner, &contract_msgs, &options)
+        .expect("emit clif")
+}
+
+/// The Cranelift text of one function, so a test can read a frame
+/// without matching the rest of the module. `emit_clif_text` prefixes
+/// each body with `; --- <export name> ---`.
+pub(super) fn clif_function(clif: &str, name: &str) -> String {
+    let head = format!("; --- {name} ---\n");
+    let start = clif
+        .find(&head)
+        .unwrap_or_else(|| panic!("no function `{name}` in:\n{clif}"))
+        + head.len();
+    let rest = &clif[start..];
+    let end = rest.find("\n}\n").map(|i| i + 3).unwrap_or(rest.len());
+    rest[..end].to_string()
+}
+
+/// The sizes, in bytes and in declaration order, of the
+/// `explicit_slot`s in one function's Cranelift text — the shape of
+/// the AOT stack frame.
+pub(super) fn clif_stack_slots(clif_fn: &str) -> Vec<u32> {
+    clif_fn
+        .lines()
+        .filter_map(|line| {
+            let (_, rest) = line.trim().split_once("= explicit_slot ")?;
+            // Cranelift may append attributes (`, align = 8`); the
+            // size is the first token.
+            rest.split(|c: char| c == ',' || c.is_whitespace())
+                .next()?
+                .parse()
+                .ok()
+        })
+        .collect()
+}
+
+/// The body of the Cranelift block that contains `needle`, without the
+/// label line. Used to read one loop's address arithmetic in isolation.
+pub(super) fn clif_block_containing(clif_fn: &str, needle: &str) -> String {
+    clif_fn
+        .split("\n\n")
+        .find(|block| block.contains(needle))
+        .unwrap_or_else(|| panic!("no block containing `{needle}` in:\n{clif_fn}"))
+        .to_string()
+}

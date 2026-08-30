@@ -1055,3 +1055,51 @@ fn stdlib_ptr_typed_window_3_backend() {
     "#;
     assert_consistent(src, "stdlib_ptr_typed_window_3_backend");
 }
+
+#[test]
+fn stdlib_span_typed_window_3_backend() {
+    // POINTER P4: `core/std/span.t`'s `Span<T>` — a bounds-checked
+    // view over a `Ptr<T>` window. The struct holds a `Ptr<T>` field
+    // (a generic struct as a field type with the outer `T` as its
+    // argument), element math goes through `self.data.addr`, and a
+    // span crosses function boundaries by value the way a slice
+    // would. Escape is deliberately unchecked (POINTER.md 選択肢 1).
+    let src = r#"
+        fn sum(s: Span<u64>) -> u64 {
+            var total: u64 = 0u64
+            var i: u64 = 0u64
+            while i < s.len() {
+                total = total + s[i]
+                i = i + 1u64
+            }
+            total
+        }
+
+        fn main() -> u64 {
+            val p: Ptr<u64> = Ptr::alloc(4u64)
+            p.set(0u64, 7u64)
+            p.set(1u64, 9u64)
+            p.set(2u64, 11u64)
+            p.set(3u64, 13u64)
+            val s: Span<u64> = Span::from_parts(p, 4u64)
+            if s.get(0u64) != 7u64 { return 1u64 }
+            s.set(1u64, 20u64)
+            # The span and the window share memory.
+            if p[1u64] != 20u64 { return 2u64 }
+            if s.len() != 4u64 { return 3u64 }
+            if s.is_empty() { return 4u64 }
+            if sum(s) != 51u64 { return 5u64 }
+            # A sub-window: offset the pointer, shrink the count.
+            val p2: Ptr<u64> = p.offset(2u64)
+            val tail: Span<u64> = Span::from_parts(p2, 2u64)
+            if tail[0u64] != 11u64 { return 6u64 }
+            if sum(tail) != 24u64 { return 7u64 }
+            # A second instantiation: the stride follows the type arg.
+            val fp: Ptr<f64> = Ptr::alloc(2u64)
+            val fs: Span<f64> = Span::from_parts(fp, 2u64)
+            if fs.len() != 2u64 { return 8u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "stdlib_span_typed_window_3_backend");
+}

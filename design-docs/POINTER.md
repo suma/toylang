@@ -137,7 +137,7 @@ tree-walker が元から持っていた dispatch に揃った。
 | P1 | `__builtin_sizeof::<T>()` (型引数形) ✅ (2026-08-30) | 小 | 実測 2 の解消。`elem_size` 遅延取得も畳める |
 | P2 | `__getitem__` の `&self` 受理 + generic 戻り型の置換 ✅ (2026-08-30) | 小 | `p[i]` が書ける。`Vec` / `Dict` にも効く |
 | P3 | `core/std/ptr.t` に `Ptr<T>` (`alloc` / `get` / `set` / `offset` / `as_raw` / `__getitem__` / `__setitem__`) ✅ (2026-08-30) | 小 (stdlib のみ) | 摩擦 1〜3、6 の入口。**コンパイラ無変更** (module 統合の remap 1 箇所を除く、下記) |
-| P4 | `Span<T> = { p: Ptr<T>, len: u64 }` + 境界検査 | 中 (stdlib) | 摩擦 4。todo の **slice 型 `&[T]`** をライブラリ側で回収でき、`__simd_load` の受け口にもなる |
+| P4 | `Span<T> = { p: Ptr<T>, len: u64 }` + 境界検査 ✅ (2026-08-30) | 中 (stdlib) | 摩擦 4。todo の **slice 型 `&[T]`** をライブラリ側で回収でき、`__simd_load` の受け口にもなる |
 | P5 | `Ptr<T>` を non-null 不変にし、不在は `Option<Ptr<T>>` | 中 | 摩擦 5。`has_next: bool` 方式が消える |
 | P6 | `unsafe fn` の宣言と強制 (effect mask 1 行) | 小〜中 | 生 builtin を直接呼べる場所を stdlib に集約。`--effects` が土台 |
 
@@ -153,6 +153,13 @@ P3 が入れば **`Box` / `Vec` / `String` / `Dict` の `data: ptr` を
 `module_integration.rs::map_expr` が BuiltinCall の payload を
 `remap_type_decl` する 1 arm で解消 (compiler の AOT / IR VM は同じ
 統合 pass を使うので 1 箇所で全レーン直る)。
+
+**P4 実装メモ (2026-08-30)**: `Span<T>` は `Ptr<T>` を field に持つ
+(generic struct を field 型に、外側の `T` を型引数として —
+`substitute_field_type` がそのままで通る)。要素アクセスは
+`self.data.addr` (2 段 field chain) に `__builtin_sizeof::<T>()` を掛ける
+だけで、**コンパイラ無変更**。関数境界は struct by-value の既存
+flatten に乗る (`fn sum(s: Span<u64>) -> u64` が 3 バックエンド)。
 
 P6 のマスクは [`EFFECT_SYSTEM.md`](EFFECT_SYSTEM.md) の表に 1 行足すだけ:
 
@@ -186,4 +193,7 @@ REGIONS (`E0022`) は arena 由来の値を捕まえるが、**default allocator
    `TypeDecl::contains_ref()` と同じ形の再帰判定で拾えるが、
    「どこまでを escape とみなすか」は REF-Stage-2 の規則を再利用できる
 
-P4 に着手する時点で決める。それまでは 1 を既定とする。
+**P4 で 1 を採用した (2026-08-30)** — `core/std/span.t` のヘッダと
+`docs/language.md` に「escape は未検査」と明記して進む。
+選択肢 2 は、実際に dangling span が実プログラムで問題になったときの
+着手候補として残る。

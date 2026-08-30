@@ -12,6 +12,15 @@
 
 ### 2026-08-30
 
+- **POINTER P4 — `core/std/span.t` の `Span<T>`** — `Ptr<T>` + 長さの
+  境界検査つきの窓 (`from_parts` / `get` / `set` / `s[i]` / `s[i] = v` /
+  `len` / `is_empty` / `as_ptr` / `as_raw`)。todo の **slice 型 `&[T]`** を
+  ライブラリ側で回収、`as_raw()` が `__simd_load` の受け口。範囲外は
+  panic (`Vec` と同規約の文言)。**escape は未検査** (未解決論点の
+  選択肢 1 を採用、span.t ヘッダと docs に明記)。`Ptr<T>` を field に
+  持つ generic struct は既存機構でそのまま下り、**コンパイラ無変更**。
+  cache schema 29 → 30。example `interpreter/example/typed_span.t` +
+  3-way consistency pin 1 件 + テスト 4 件。
 - **POINTER P3 — `core/std/ptr.t` の `Ptr<T>`** — 型付きポインタ窓
   (`alloc` / `get` / `set` / `p[i]` / `p[i] = v` / `offset` / `as_raw`)。
   struct + impl だけで書ける (`Box<T>` と同じ手口、backend 特殊扱いゼロ)。
@@ -1551,16 +1560,14 @@
   **SIMD の前提ではなくなった** — `__simd_load` / `__simd_store` は
   `ptr` + 要素 index で landing したので、slice が入ったら受け口を
   足せばよい。
-  **ライブラリ側で回収できる可能性がある** — `Span<T> = (Ptr<T>, len)` を
-  stdlib struct として置く案が [`POINTER.md`](POINTER.md) の P4。
-  未解決の論点は escape をどう止めるか (C# の `ref struct` 相当)。
+  **ライブラリ側で回収済み** — `Span<T>` が `core/std/span.t` として
+  2026-08-30 に landing (POINTER P4、完了済み節)。言語の `&[T]` 型を
+  足うる需要は「first-class な escape 検査つきの窓」に縮小された
+  (現状の `Span` は escape 未検査)。
 - **POINTER: `ptr` を型付きにする** ★★ — 設計は [`POINTER.md`](POINTER.md)。
-  P1 (`__builtin_sizeof::<T>()`) と P2 (`__getitem__` / `__setitem__`) は
-  2026-08-30 に landing 済み (完了済み節)。残りは P3
-  (`core/std/ptr.t` の `Ptr<T>`)、P4 (`Span<T>` + 境界検査)、P5
-  (non-null 不変 + `Option<Ptr<T>>`)、P6 (`unsafe fn`)。
-  その先は null を型に出す (`Option<Ptr<T>>`) と `unsafe fn`
-  (effect mask 1 行)。
+  P1 (`__builtin_sizeof::<T>()`)、P2 (`__getitem__` / `__setitem__`)、
+  P3 (`Ptr<T>`)、P4 (`Span<T>`) は 2026-08-30 に landing 済み (完了済み節)。
+  残りは P5 (non-null 不変 + `Option<Ptr<T>>`)、P6 (`unsafe fn`)。
 - **const generics** ★ — `struct Array<T, const N: usize>`。大規模。
 
 ### 構文糖衣の候補 (NEW-FEATURES、未着手)

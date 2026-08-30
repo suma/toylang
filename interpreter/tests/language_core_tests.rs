@@ -3327,3 +3327,77 @@ fn main() -> u64 {
         assert!(!err.contains("Number"), "leaked the Number placeholder: {err}");
     }
 }
+
+mod typed_span_tests {
+    //! POINTER P4: `core/std/span.t` — the bounds-checked view over
+    //! a `Ptr<T>` window. The 3-backend agreement lives in
+    //! `compiler/tests/consistency/impls_refs.rs`; this module pins
+    //! the panics.
+
+    use crate::common::test_program;
+
+    #[test]
+    fn test_span_get_set_and_len() {
+        let source = r#"
+            fn main() -> u64 {
+                val p: Ptr<u64> = Ptr::alloc(3u64)
+                val s: Span<u64> = Span::from_parts(p, 3u64)
+                s.set(0u64, 7u64)
+                s[2u64] = 9u64
+                s.get(0u64) + s[2u64] + s.len()
+            }
+        "#;
+        let result = test_program(source).expect("should execute");
+        assert!(result.borrow().unwrap_uint64() == 19, "got: {result:?}");
+    }
+
+    #[test]
+    fn test_span_get_out_of_bounds_panics() {
+        let source = r#"
+            fn main() -> u64 {
+                val p: Ptr<u64> = Ptr::alloc(2u64)
+                val s: Span<u64> = Span::from_parts(p, 2u64)
+                s.get(2u64)
+            }
+        "#;
+        let err = test_program(source).expect_err("expected an out-of-bounds panic");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("panic:") && msg.contains("Span::get index out of bounds"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_span_index_out_of_bounds_panics() {
+        let source = r#"
+            fn main() -> u64 {
+                val p: Ptr<u64> = Ptr::alloc(1u64)
+                val s: Span<u64> = Span::from_parts(p, 1u64)
+                s[1u64] = 5u64
+                0u64
+            }
+        "#;
+        let err = test_program(source).expect_err("expected an out-of-bounds panic");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("panic:") && msg.contains("Span::set index out of bounds"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_span_is_empty_and_empty_view() {
+        let source = r#"
+            fn main() -> u64 {
+                val p: Ptr<u64> = Ptr::alloc(1u64)
+                val empty: Span<u64> = Span::from_parts(p, 0u64)
+                if !empty.is_empty() { return 1u64 }
+                if empty.len() != 0u64 { return 2u64 }
+                42u64
+            }
+        "#;
+        let result = test_program(source).expect("should execute");
+        assert!(result.borrow().unwrap_uint64() == 42, "got: {result:?}");
+    }
+}

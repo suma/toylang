@@ -3425,6 +3425,34 @@ window it came from. See [`design-docs/POINTER.md`](../design-docs/POINTER.md)
 for the layer map (`Span<T>`, `Option<Ptr<T>>`, `unsafe fn` are the
 later phases).
 
+### `Span<T>` — a bounds-checked view (stdlib)
+
+`core/std/span.t` pairs a `Ptr<T>` window with a length, so a
+parameter carries the element type *and* the bounds — the library
+answer to a slice type:
+
+```rust
+val p: Ptr<u64> = Ptr::alloc(4u64)
+val s: Span<u64> = Span::from_parts(p, 4u64)
+s.set(0u64, 7u64)
+val v: u64 = s[2u64]        # or s.get(2u64)
+s.len()                     # 4
+__simd_load(s.as_raw(), 0u64)   # element-indexed addressing
+```
+
+`get` / `set` (and the bracket sugar) panic on an out-of-range
+index, the same contract a built-in array's trap has. A span is a
+**view, not an owner** — `from_parts` copies a `(Ptr<T>, len)` pair
+and nothing is allocated or freed; sub-windows are
+`Span::from_parts(p.offset(k), shorter_len)`. A span crosses
+function boundaries by value (`fn sum(s: Span<u64>) -> u64`).
+
+**Escape is not checked** (POINTER.md's recorded default): nothing
+stops a `Span<T>` from outliving the memory it views — the escape
+rule applies to `&T` only, and the region check chases
+scoped-allocator origins. A dangling span reads whatever sits at
+the address, same as a dangling raw `ptr`.
+
 Converting to and from `str`:
 
 | Builtin | Signature |

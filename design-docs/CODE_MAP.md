@@ -185,6 +185,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | 関心事 | 場所 |
 |---|---|
 | トークン定義 / lexer 生成元 | `frontend/src/token.rs`, `frontend/src/lexer.l` |
+| char リテラル (CHAR-LITERAL-NUM) | lex は `frontend/src/lexer.l` の 4 規則 (`char_literal_token` → `Kind::CharLiteral`)、AST は `Expr::CharLiteral` (pool の discriminant は `ExprType::CharLiteral`)、型は `visitor_impl.rs` が `u32` として返す。**位置の型を取る**書き換えは `type_checker/type_conversion.rs::coerce_char_literal` — `coerce_number_expr` (val / 引数 / 戻り) と `expression.rs::visit_binary` (比較・算術) の 2 経路から呼ぶ。pattern 位置は `parser/expr/match_.rs::parse_pattern_literal` |
 | トップレベル宣言 | `parser/program_parser.rs` |
 | 文 | `parser/stmt.rs` |
 | 式 | `parser/expr/` (`mod.rs` / `primary.rs` / `control.rs` / `match_.rs` / `macros.rs`) |

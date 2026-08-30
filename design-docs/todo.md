@@ -12,6 +12,26 @@
 
 ### 2026-08-30
 
+- **CHAR-LITERAL-NUM — char リテラルが位置の整数型を取る** — `'a'` は
+  **32bit (u32) で保持**したまま (`val c = 'a'` は u32)、**他の整数型を
+  名指しする位置では値が収まればその型になる** (`val b: u8 = '0'` /
+  `s.get(i) == 'h'` / `c - '0'`)。NUM-W の暗黙変換禁止の唯一の例外で、
+  対象は**文字として書かれたリテラルだけ** (`42u32` は従来どおり厳格)。
+  実装は `Kind::CharLiteral` / `Expr::CharLiteral` を新設し、型検査器が
+  位置の型に合わせて節点を書き換える (`coerce_char_literal`、
+  `coerce_number_expr` と `visit_binary` から呼ぶ)。match pattern にも
+  書ける。cache schema v34。
+  **付随して直した 2 件**: (a) `resolve_numeric_types` に narrow int の
+  Number 統合が無く `b == 105` (b: u8) が「expected u8, but got Number」で
+  落ちていた、(b) **method 引数に NUMBER-HINT が効いていなかった** —
+  free function は `coerce_number_expr` を通すのに method は通さず、
+  `s.push_char(65)` が compiled レーンで cranelift verifier エラー
+  (`arg 4 has type i64, expected i32`) になっていた。
+  **踏んだ罠**: 型検査器の書き換えに依る機能は **stdlib の free function
+  body には効かない** (`interpreter/src/lib.rs` の `user_func_count`
+  以降は body を検査しない、TEST-PERF に既出の穴)。`core/std/parse.t` の
+  バイト比較を char リテラルに書き換えたら実行時型エラーになったので
+  戻した。impl block の method は検査されるので効く (`String::to_upper`)。
 - **`fn f() -> ()` が書けるようになった** — 型としての `()` を parser が
   空 tuple にしていたので、Unit を返す body と突き合わせて必ず
   `expected (), but got ()` で落ちていた (省略形 `fn f()` は従来どおり
@@ -1521,6 +1541,23 @@
   param-param のみ)、(b) `x != MIN` の形 (lhs 側の `MIN / -1` 条件)。
   どちらも「実プログラムで書いていて guard がホットパスにある」を
   確認してから。
+
+- **CHAR-LITERAL-MATCH: narrow int の match scrutinee** ★ —
+  `match byte { 'h' => ... }` は書けない (`match scrutinee must be an
+  enum, struct, primitive (bool / i64 / u64 / str), or tuple, got
+  UInt8`)。pattern 側は char リテラルを受けるようになったので、残るのは
+  scrutinee の型リスト + 網羅性 + 4 バックエンドの lowering。
+  byte 走査を書いていて実際に困ってから。
+
+- **STDLIB-FREE-FN-UNCHECKED: stdlib の free function body が型検査を
+  通らない** ★★ — `interpreter/src/lib.rs` が `take(user_func_count)`
+  で user の関数だけ検査するので、**型検査器が body を書き換える機能は
+  stdlib の free function で無言で効かない** (`?` の desugar、`Display`
+  の `to_str` 挿入、CHAR-LITERAL-NUM の narrowing)。impl block の method
+  は検査される。2026-08-30 に char リテラルで実際に踏んだ (実行時
+  `Type error: expected UInt8, found UInt32`)。直すなら stdlib の free
+  function も検査対象にする (TEST-PERF の実測では impl block 2.5ms 相当の
+  コスト増) か、書き換え系の機能を lowering 側に寄せる。
 
 - **NUM-W-ENUMERATION** ★ — 整数型の列挙 (`Int8|Int16|...|UInt32`) が
   **42 ファイル 625 箇所**に散っている (2026-08-25 の `gen_expr` /

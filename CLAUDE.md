@@ -305,7 +305,20 @@ fn main() -> u64 {
     `interpreter/example/simd.t`
 - **`f32` (SIMD-F32)**: 単精度 float (SIMD の `f32x4` 前提、論点 1 解決)。literal suffix `1.5f32` / `42f32`。算術・比較・単項 `-` は IEEE 754 単精度で f64 と同じ trap 無し。**暗黙 widening は無し** — f32 ↔ f64 / 整数は `as` で明示 (`f64 → f32` は demote、`f32 → int` は f64 同様の saturating)。`__builtin_sizeof(f32値) == 4`。print / 補間は f64 と同じ「整数値に `.0`」規約の単精度版。**format spec (`{x:.2}`) は f32 未対応**。3 バックエンド対応 (interpreter JIT は silent fallback)。例: `interpreter/example/float32.t`
 - Stdlib types:
-  - `char = u32` (Unicode codepoint alias、char literal `'a'` / `'\u{1F600}'` は lexer で `Kind::UInt32` に lex)
+  - `char = u32` (Unicode codepoint alias)。**char リテラル (CHAR-LITERAL-NUM)**:
+    `'a'` / `'\n'` / `'\x41'` / `'\u{1F600}'` は **32bit (u32) で保持**
+    (`val c = 'a'` は u32、`__builtin_sizeof(c) == 4`)。ただし
+    **他の整数型を名指しする位置では、値が収まるならその型を取る** —
+    `val b: u8 = '0'` / `s.get(i) == 'h'` / `c - '0'` / `take_i64('\n')`。
+    NUM-W の「整数型は暗黙変換しない」規則の**唯一の例外**で、
+    対象は**文字として書かれたリテラルだけ** (`42u32` は従来どおり
+    `as` が要る — サフィックスが既に型を名乗っているため)。
+    収まらなければ範囲エラー (`'\u{1F600}'` → u8 は不可)。
+    **stdlib の使い分け**: バイト単位のアクセス / イテレーションは `u8`
+    (`String::get` / `String::iter`)、文字単位の API は `u32`
+    (`push_char(c: char)`)。**注意**: 型検査器が節点を書き換える方式なので、
+    **型検査されない body (stdlib の free function、`user_func_count`
+    より後ろ) では効かない** — impl block の method は効く
   - `String` (`core/std/string.t`) — heap-managed byte buffer の **nominal struct** (`type` alias ではなく独立 struct、`Vec<u8>` と同 memory layout だが nominal identity は別)。inherent method (`new` / `from_str(s)` / `push` / `pop` / `get` / `set` / `size` / `len` / `as_ptr` / `capacity` / `is_empty` / `clear` / `extend_bytes` / `push_str` / `push_char` / `eq` / `to_string`) + 拡張 trait impl (`Substring` / `Trim` / `CaseConvert` / `Concat<String>` / `Contains<String>` / `Split<String, Vec<String>>` from `core/std/str_ops.t`) で `s.len()` / `s.substring(...)` / `s.trim()` / `s.concat(other)` / `s.split(sep)` 等が `str` と同じ call shape で動く (3 backend)。
   - `Ptr<T>` (`core/std/ptr.t`, POINTER P3+P5) — **型付きポインタ窓**。`T` は field に現れず `addr: ptr` の背後にだけ居るので backend 特殊扱いゼロ (`Box<T>` と同じ手口)。`alloc(count)` (stride は `__builtin_sizeof::<T>()`、**0 要素でも 1 バイト確保して非 null を保証**) / `get` / `set` / `p[i]` / `p[i] = v` (`__getitem__` / `__setitem__`) / `offset(count)` / `as_raw()`。**window であって owner ではない** — free は呼び出し側 (`__builtin_heap_free(p.as_raw())`)、index は unchecked。**non-null 不変** (P5) — 不在は `Option<Ptr<T>>` で表す (`has_next: bool` 方式が消える、16 バイト・niche 最適化は不可)。不変は構成による規約で compiler 強制は無し (field visibility は未強制)
   - `Span<T>` (`core/std/span.t`, POINTER P4) — **境界検査つきの窓**。`Ptr<T>` + 長さのペアで、todo の slice 型 `&[T]` をライブラリ側で回収する形。`from_parts(p, len)` / `get` / `set` / `s[i]` / `s[i] = v` (範囲外は panic、文言は `Vec` と同規約) / `len` / `is_empty` / `as_ptr` / `as_raw` (`__simd_load` の受け口)。**view であって owner ではない**。**escape は未検査** (POINTER.md の既定、選択肢 1) — 参照Rule は `&T` のみなので、`Span` は指す先より長生きできる

@@ -787,10 +787,10 @@ method is refused for the same reason — see [`is_null`](#is_null).
 
 ### Char literals
 
-A single-quoted single character lexes to a `u32` value carrying
-the character's Unicode code point. The same shape as a numeric
-literal — every backend treats it through the existing `u32`
-literal pipeline.
+A single-quoted single character is a `u32` value carrying the
+character's Unicode code point. `val c = 'a'` infers `u32` and
+`__builtin_sizeof(c)` is 4 — a code point is held in 32 bits, which
+is what the `char` alias names.
 
 ```rust
 'A'           # 65u32
@@ -808,14 +808,39 @@ literal pipeline.
 '\u{1F600}'   # 😀 = 128512u32
 ```
 
+**A position naming another integer type gets it** (CHAR-LITERAL-NUM).
+This is the one exception to the [NUM-W](#integer-literals) rule that
+integer types never convert implicitly:
+
+```rust
+val b: u8 = '0'          # 48u8
+val i: i64 = '\n'        # 10i64
+val big: u8 = '\u{1F600}' # error: 128512 does not fit a u8
+val f: u8 = 42u32        # error: a suffixed literal is not a character
+```
+
+The exception exists because a string's bytes are `u8` while a
+character is a code point: `s.get(i) == 'h'`, `c >= '0' && c <= '9'`
+and `c - '0'` are the shape byte-scanning code takes, and requiring
+`48u8` with the character in a comment is how that code looked
+before. Only a literal *written as a character* moves — a suffixed
+literal already named its type, so nothing is left to decide — and
+only when the code point fits, so nothing is truncated silently.
+
+The two levels stay distinct in the standard library: **byte-wise
+access and iteration yield `u8`** (`String::get(i)`, `String::iter()`,
+`Vec<u8>`), while the **character-level API takes the `u32` code
+point** (`push_char(c: char)`, which UTF-8 encodes it into 1-4
+bytes). A char literal meets either without a cast.
+
 Multi-byte UTF-8 between bare quotes (`'あ'`) is **not** accepted at
 the lexer surface today — use `'\u{3042}'` instead. (The constraint
 comes from the rflex regex backend not supporting `\xNN` byte
 ranges in character classes; the lexer comment block at the rule
 site has the details.)
 
-The companion alias `core/std/char.t::type char = u32` makes
-`char` a Unicode scalar value. Use it at signature sites that want
+The companion alias `core/std/char.t::type char = u32` names the
+code point type. Use it at signature sites that want
 to document "this is a codepoint" rather than a raw integer.
 `Vec<u8>::push_char(c: char)` UTF-8 encodes the codepoint into 1-4
 bytes following RFC 3629; surrogate codepoints (U+D800..U+DFFF) and

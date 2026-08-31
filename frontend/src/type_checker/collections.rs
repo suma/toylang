@@ -660,6 +660,28 @@ impl<'a> TypeCheckerVisitor<'a> {
                                         )));
                                     }
                                 },
+                                // DATA-ORIENTED Phase 3: a *generic*
+                                // user type in its two spellings. The
+                                // parser writes an annotation's
+                                // `Option<i64>` as `Struct(Option,
+                                // [i64])` — it cannot tell a struct
+                                // from an enum — while the literal's
+                                // inferred type is `Enum(Option,
+                                // [i64])`. The arms above unify the
+                                // two only when the type arguments
+                                // are empty, which left an annotated
+                                // array of a generic enum unusable.
+                                (TypeDecl::Enum(a, a_params), TypeDecl::Struct(b, b_params))
+                                | (TypeDecl::Struct(b, b_params), TypeDecl::Enum(a, a_params)) => {
+                                    if !(a == b && a_params == b_params) {
+                                        return Err(TypeCheckError::array_error(&format!(
+                                            "Cannot mix enum type {:?} with {:?} in array. Element {} has incompatible type",
+                                            TypeDecl::Enum(*a, a_params.clone()),
+                                            TypeDecl::Struct(*b, b_params.clone()),
+                                            i
+                                        )));
+                                    }
+                                },
                                 (TypeDecl::Identifier(struct_name), other_type) | (other_type, TypeDecl::Identifier(struct_name)) => {
                                     return Err(TypeCheckError::array_error(&format!(
                                         "Cannot mix struct type {:?} with {:?} in array. Element {} has incompatible type",

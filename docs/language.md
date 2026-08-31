@@ -1085,6 +1085,14 @@ val qs: [Particle; 1024]        # element-major (AoS), the default
   annotation re-layouts in either direction).
 - A scalar element type (`soa [u64; N]`) has one leaf, one column —
   the modifier is accepted and means nothing extra.
+- **An enum element** flattens to its tag followed by every variant's
+  payload (`__builtin_sizeof`'s rule), so `soa [Shape; N]` gives the
+  tag a column of its own. An enum element is also the one compound
+  element that can be **written whole** (`ss[i] = Shape::Point`): a
+  variant has no field names to assign through the way a struct
+  element's `ps[i].x = v` does. A generic enum takes its
+  instantiation from the annotation (`soa [Option<i64>; 3]`), since
+  `Option::Some(1i64)` names the enum but not its type argument.
 - **Columns pack tightly.** Each column strides by its leaf's own
   width, where the interleaved layout pays a uniform 8 bytes per leaf:
   `soa [Mixed; 3]` for `struct Mixed { flag: bool, byte: u8, single:

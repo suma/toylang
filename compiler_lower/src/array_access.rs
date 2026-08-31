@@ -76,13 +76,90 @@ impl<'a> FunctionLower<'a> {
             None,
         );
     }
+    /// The guarded element index for an array access, constant-folded
+    /// when it can be.
+    pub(super) fn lower_element_index(
+        &mut self,
+        index_ref: &ExprRef,
+        length: usize,
+    ) -> Result<ValueId, String> {
+        match self.resolve_const_index(index_ref, length) {
+            ConstIndex::Valid(i) => Ok(self
+                .emit(InstKind::Const(Const::U64(i as u64)), Some(Type::U64))
+                .expect("Const returns a value")),
+            ConstIndex::OutOfBounds => {
+                Err(format!("array index out of bounds (length {length})"))
+            }
+            ConstIndex::NotConstant => {
+                let raw_idx = self
+                    .lower_expr(index_ref)?
+                    .ok_or_else(|| "array index produced no value".to_string())?;
+                let idx_ty = self.value_scalar(index_ref).unwrap_or(Type::U64);
+                self.emit_index_guard(index_ref, raw_idx, idx_ty, length)
+            }
+        }
+    }
+
+    /// Where leaf `j` of the element at (runtime) index `elem_idx`
+    /// lives — the same two indexings `emit_array_leaf_store` spells
+    /// for a constant index.
+    fn leaf_store_target(
+        &mut self,
+        storage: &ArrayStorage,
+        leaf_count: usize,
+        elem_idx: ValueId,
+        j: usize,
+    ) -> (crate::ir::ArraySlotId, ValueId) {
+        match storage {
+            ArrayStorage::Columns(cols) => (cols[j], elem_idx),
+            ArrayStorage::Interleaved(slot) => {
+                let leaf_count_v = self
+                    .emit(InstKind::Const(Const::U64(leaf_count as u64)), Some(Type::U64))
+                    .expect("Const returns a value");
+                let base = self
+                    .emit(
+                        InstKind::BinOp { op: BinOp::Mul, lhs: elem_idx, rhs: leaf_count_v },
+                        Some(Type::U64),
+                    )
+                    .expect("imul returns");
+                if j == 0 {
+                    return (*slot, base);
+                }
+                let off_v = self
+                    .emit(InstKind::Const(Const::U64(j as u64)), Some(Type::U64))
+                    .expect("Const returns a value");
+                let idx = self
+                    .emit(
+                        InstKind::BinOp { op: BinOp::Add, lhs: base, rhs: off_v },
+                        Some(Type::U64),
+                    )
+                    .expect("iadd returns");
+                (*slot, idx)
+            }
+        }
+    }
+
     /// Determine the IR `Type` of an array element from its first
     /// literal. Scalars use `value_scalar`; struct / tuple literals
     /// resolve via `infer_tuple_element_type` (which already handles
     /// both, including interning new tuple shapes).
-    pub(super) fn infer_array_element_type(&mut self, expr_ref: &ExprRef) -> Result<Type, String> {
+    pub(super) fn infer_array_element_type(
+        &mut self,
+        expr_ref: &ExprRef,
+        annotation: Option<&frontend::type_decl::TypeDecl>,
+    ) -> Result<Type, String> {
         if let Some(t) = self.infer_tuple_element_type(expr_ref) {
             return Ok(t);
+        }
+        // DATA-ORIENTED Phase 3: a generic enum element names its
+        // enum but not its instantiation (`Option::Some(1i64)` could
+        // be an `Option<i64>` or, one day, an `Option<T>` under a
+        // substitution), so the annotation decides — the same rule
+        // `val x: Option<i64> = Option::Some(1i64)` follows.
+        if let Some(annotation) = annotation
+            && let Some(id) = self.lower_type_arg(annotation)
+        {
+            return Ok(id);
         }
         Err("compiler MVP could not infer type for array element".to_string())
     }
@@ -132,6 +209,25 @@ impl<'a> FunctionLower<'a> {
                     }
                 }
                 let leaves = flatten_struct_locals(&fields);
+                for (j, (local, ty)) in leaves.iter().enumerate() {
+                    let v = self
+                        .emit(InstKind::LoadLocal(*local), Some(*ty))
+                        .expect("LoadLocal returns a value");
+                    self.emit_array_leaf_store(storage, leaf_count, index, j, v, *ty);
+                }
+                Ok(())
+            }
+            // DATA-ORIENTED Phase 3: an enum element goes through the
+            // same three steps as a struct — allocate the destination
+            // shape, lower the value into it, then push every leaf
+            // into the array. `lower_into_enum_storage` is the same
+            // helper a `val s: Shape = Shape::Circle(2i64)` binding
+            // uses, so a variant written into an array and one
+            // written into a local are built identically.
+            Type::Enum(enum_id) => {
+                let value = self.allocate_enum_storage(enum_id);
+                self.lower_into_enum_storage(expr_ref, &value)?;
+                let leaves = super::bindings::flatten_enum_storage_locals(&value);
                 for (j, (local, ty)) in leaves.iter().enumerate() {
                     let v = self
                         .emit(InstKind::LoadLocal(*local), Some(*ty))
@@ -373,7 +469,7 @@ impl<'a> FunctionLower<'a> {
         // emit a single `ArrayLoad` and return the resulting
         // value as before.
         let leaf_count = leaf_scalar_count(self.module, element_ty);
-        if matches!(element_ty, Type::Struct(_) | Type::Tuple(_)) {
+        if matches!(element_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
             // Allocate the right binding shape, then load each leaf
             // scalar into its local via per-leaf `ArrayLoad`. The
             // result flows through `pending_struct_value` /
@@ -382,18 +478,34 @@ impl<'a> FunctionLower<'a> {
             let leaves: Vec<(LocalId, Type)>;
             let pending_struct: Option<Vec<FieldBinding>>;
             let pending_tuple: Option<Vec<TupleElementBinding>>;
+            let pending_enum: Option<super::bindings::EnumStorage>;
             match element_ty {
                 Type::Struct(struct_id) => {
                     let fields = self.allocate_struct_fields(struct_id);
                     leaves = flatten_struct_locals(&fields);
                     pending_struct = Some(fields);
                     pending_tuple = None;
+                    pending_enum = None;
                 }
                 Type::Tuple(tuple_id) => {
                     let elements = self.allocate_tuple_elements(tuple_id)?;
                     leaves = flatten_tuple_element_locals(&elements);
                     pending_struct = None;
                     pending_tuple = Some(elements);
+                    pending_enum = None;
+                }
+                // DATA-ORIENTED Phase 3: the tag and every variant's
+                // payload, in the one order the whole lowering agrees
+                // on. Reading fills the inactive variants' slots with
+                // whatever the array holds there — harmless, and the
+                // same rule `__builtin_ptr_read` follows for an enum:
+                // the tag decides which slots a `match` looks at.
+                Type::Enum(enum_id) => {
+                    let storage = self.allocate_enum_storage(enum_id);
+                    leaves = super::bindings::flatten_enum_storage_locals(&storage);
+                    pending_struct = None;
+                    pending_tuple = None;
+                    pending_enum = Some(storage);
                 }
                 _ => unreachable!(),
             }
@@ -504,6 +616,7 @@ impl<'a> FunctionLower<'a> {
             }
             self.pending_struct_value = pending_struct;
             self.pending_tuple_value = pending_tuple;
+            self.pending_enum_value = pending_enum;
             return Ok(None);
         }
         // Scalar element path. Constant index folds into a Const at
@@ -587,11 +700,37 @@ impl<'a> FunctionLower<'a> {
             }
             Some(_) | None => unreachable!("non-array binding was routed to __setitem__ above"),
         };
+        // DATA-ORIENTED Phase 3: an enum element *must* be written
+        // whole. A struct's leaves each have a name to assign through
+        // (`ps[i].x = v`), but a variant is not a set of fields —
+        // without this, an array of enums would be write-once.
+        //
+        // The cost is the one DATA-ORIENTED's undecided point 3
+        // names: under SoA these stores scatter across the columns.
+        // That is inherent to writing a whole element by column, and
+        // it is what the layout trades for the reads.
+        if let Type::Enum(enum_id) = element_ty {
+            let leaf_count = leaf_scalar_count(self.module, element_ty);
+            let value_storage = self.allocate_enum_storage(enum_id);
+            self.lower_into_enum_storage(value, &value_storage)?;
+            let leaves = super::bindings::flatten_enum_storage_locals(&value_storage);
+            let elem_idx_v = self.lower_element_index(index_ref, length)?;
+            for (j, (local, ty)) in leaves.iter().enumerate() {
+                let v = self
+                    .emit(InstKind::LoadLocal(*local), Some(*ty))
+                    .expect("LoadLocal returns a value");
+                let (slot, index) = self.leaf_store_target(&storage, leaf_count, elem_idx_v, j);
+                self.emit(
+                    InstKind::ArrayStore { slot, index, value: v, elem_ty: *ty },
+                    None,
+                );
+            }
+            return Ok(None);
+        }
         // Compound-element whole writes (`ps[i] = p`) are not
-        // supported yet — the value graph never carries a compound,
-        // and scattering one leaf-by-leaf is DATA-ORIENTED's
-        // undecided point 3. A scalar element has a single backing
-        // slot under either layout.
+        // supported for structs and tuples — the value graph never
+        // carries a compound, and their leaves can be written one at
+        // a time by name instead.
         if leaf_scalar_count(self.module, element_ty) != 1 {
             return Err(
                 "compiler MVP cannot write a whole compound array element (`ps[i] = p`); write individual leaves via `ps[i].field = v`".to_string(),

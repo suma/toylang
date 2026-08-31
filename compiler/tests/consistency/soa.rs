@@ -1021,3 +1021,163 @@ fn a_column_of_a_compound_field_is_refused() {
         "expected the compound-field refusal, got: {errors:?}"
     );
 }
+
+// ---------------------------------------------------------------
+// DATA-ORIENTED Phase 3 — enum array elements, and the tag's column.
+//
+// An enum was not a legal array element on the compiled lanes at all
+// ("could not infer type for array element"), which is why the layout
+// question came with it: `__builtin_sizeof`'s enum rule — a u64 tag
+// followed by every variant's payload — is already flat, so an enum
+// drops straight into the leaf machinery. Under `soa` that puts the
+// tag in a column of its own.
+// ---------------------------------------------------------------
+
+/// A three-variant enum walked out of an array, with the layout as
+/// the parameter.
+fn enum_array_program(layout: &str) -> String {
+    format!(
+        r#"
+        enum Shape {{ Circle(i64), Rect(i64, i64), Point }}
+
+        fn main() -> i64 {{
+            val ss: {layout}[Shape; 4] = [
+                Shape::Circle(2i64),
+                Shape::Rect(3i64, 4i64),
+                Shape::Point,
+                Shape::Circle(5i64),
+            ]
+            var total: i64 = 0i64
+            for i in 0u64..4u64 {{
+                val s: Shape = ss[i]
+                val v = match s {{
+                    Shape::Circle(r) => r * r,
+                    Shape::Rect(w, h) => w * h,
+                    Shape::Point => 100i64,
+                }}
+                total = total + v
+            }}
+            total
+        }}
+    "#
+    )
+}
+
+#[test]
+fn an_enum_can_be_an_array_element() {
+    // 4 + 12 + 100 + 25 = 141, whichever way the array is laid out.
+    let soa = enum_array_program("soa ");
+    let aos = enum_array_program("");
+    assert_eq!(interpreter_value(&aos), 141, "aos: {aos}");
+    assert_eq!(interpreter_value(&soa), 141, "soa: {soa}");
+    assert_consistent(&aos, "enum_array_aos");
+    assert_consistent(&soa, "enum_array_soa");
+}
+
+#[test]
+fn the_tag_gets_a_column_of_its_own() {
+    // `Shape` is four leaves: the tag, `Circle`'s payload, and
+    // `Rect`'s two. Interleaved that is one 4 * 4 * 8 slot; split by
+    // column it is four 4 * 8 ones, the first holding nothing but
+    // tags. That column is what a "which variant is this" scan would
+    // walk — the case a tagged union cannot offer, since its tag and
+    // payload share a cache line by construction.
+    let aos = clif_function(&aot_clif(&enum_array_program("")), "main");
+    let soa = clif_function(&aot_clif(&enum_array_program("soa ")), "main");
+    assert_eq!(clif_stack_slots(&aos), vec![128], "AoS frame:\n{aos}");
+    assert_eq!(clif_stack_slots(&soa), vec![32, 32, 32, 32], "SoA frame:\n{soa}");
+}
+
+#[test]
+fn an_enum_element_can_be_written_whole() {
+    // The one compound element that *must* be written whole: a
+    // struct's leaves each have a name to assign through
+    // (`ps[i].x = v`), a variant has none. Without this an array of
+    // enums would be write-once.
+    let src = r#"
+        enum Shape { Circle(i64), Rect(i64, i64), Point }
+
+        fn main() -> i64 {
+            var ss: soa [Shape; 4] = [Shape::Point, Shape::Point, Shape::Point, Shape::Point]
+            for i in 0u64..4u64 {
+                ss[i] = Shape::Circle(i as i64)
+            }
+            ss[2u64] = Shape::Rect(3i64, 4i64)
+            var total: i64 = 0i64
+            for i in 0u64..4u64 {
+                val s: Shape = ss[i]
+                val v = match s {
+                    Shape::Circle(r) => r,
+                    Shape::Rect(w, h) => w * h,
+                    Shape::Point => 1000i64,
+                }
+                total = total + v
+            }
+            total
+        }
+    "#;
+    // 0 + 1 + 12 + 3 = 16 — every `Point` was overwritten.
+    assert_eq!(interpreter_value(src), 16);
+    assert_consistent(src, "enum_array_element_write");
+}
+
+#[test]
+fn an_enum_payload_may_itself_be_compound() {
+    // A struct inside a variant flattens further, so `Branch` is
+    // three leaves and the enum is five. Nothing special happens —
+    // which is the point of reusing `collect_leaves`' order.
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        enum Node { Leaf(i64), Branch(Point, i64), Empty }
+
+        fn main() -> i64 {
+            val ns: soa [Node; 3] = [
+                Node::Leaf(5i64),
+                Node::Branch(Point { x: 2i64, y: 3i64 }, 7i64),
+                Node::Empty,
+            ]
+            var total: i64 = 0i64
+            for i in 0u64..3u64 {
+                val n: Node = ns[i]
+                val v = match n {
+                    Node::Leaf(a) => a,
+                    Node::Branch(p, b) => p.x * p.y + b,
+                    Node::Empty => 100i64,
+                }
+                total = total + v
+            }
+            total
+        }
+    "#;
+    // 5 + 13 + 100 = 118.
+    assert_eq!(interpreter_value(src), 118);
+    assert_consistent(src, "enum_array_compound_payload");
+}
+
+#[test]
+fn a_generic_enum_element_takes_its_instantiation_from_the_annotation() {
+    // `Option::Some(1i64)` names the enum but not `Option<i64>`, and
+    // an array literal has nowhere else to look — so the element type
+    // comes from the annotation, exactly as `val x: Option<i64> =
+    // Option::Some(1i64)` does. The checker also had to learn that an
+    // annotation spells a generic user type `Struct(Option, [i64])`
+    // (the parser cannot tell a struct from an enum) while the
+    // literal infers `Enum(Option, [i64])`.
+    let src = r#"
+        fn main() -> i64 {
+            val os: soa [Option<i64>; 3] = [Option::Some(1i64), Option::None, Option::Some(3i64)]
+            var total: i64 = 0i64
+            for i in 0u64..3u64 {
+                val o: Option<i64> = os[i]
+                val add = match o {
+                    Option::Some(v) => v,
+                    Option::None => 100i64,
+                }
+                total = total + add
+            }
+            total
+        }
+    "#;
+    assert_eq!(interpreter_value(src), 104);
+    assert_consistent(src, "enum_array_generic");
+}

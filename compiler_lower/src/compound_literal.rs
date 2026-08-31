@@ -684,6 +684,21 @@ impl<'a> FunctionLower<'a> {
                 let id = self.resolve_struct_instance(name, None).ok()?;
                 Some(Type::Struct(id))
             }
+            // DATA-ORIENTED Phase 3: enum elements. A unit variant
+            // arrives as `Enum::Variant` and a tuple variant as a
+            // call, and either names the enum in its first path
+            // segment — which is all an *element type* needs.
+            // Generic enums are left out: their type arguments come
+            // from the payload, and an array literal has no
+            // annotation to reconcile that against.
+            Expr::QualifiedIdentifier(path)
+                if path.len() == 2 && self.enum_defs.contains_key(&path[0]) =>
+            {
+                self.resolve_enum_instance(path[0], None).ok().map(Type::Enum)
+            }
+            Expr::AssociatedFunctionCall(base, _, _) if self.enum_defs.contains_key(&base) => {
+                self.resolve_enum_instance(base, None).ok().map(Type::Enum)
+            }
             Expr::Identifier(sym) => match self.bindings.get(&sym) {
                 Some(Binding::Scalar { ty, .. }) => Some(*ty),
                 Some(Binding::RefScalar { pointee_ty, .. }) => Some(*pointee_ty),
@@ -704,7 +719,7 @@ impl<'a> FunctionLower<'a> {
                     let id = intern_tuple(self.module, element_tys);
                     Some(Type::Tuple(id))
                 }
-                Some(Binding::Enum(_)) => None,
+                Some(Binding::Enum(storage)) => Some(Type::Enum(storage.enum_id)),
                 Some(Binding::Array { .. }) => None,
                 Some(Binding::FunctionPtr { .. }) => Some(Type::U64),
                 // A5-P2: dyn-trait identifiers don't have a single

@@ -131,7 +131,15 @@ impl<'a> FunctionLower<'a> {
             // identity, so the checker has already accepted the pair
             // either way; this is the one place the flag matters.
             let soa = annotation.is_some_and(|a| a.is_soa());
-            return self.lower_let_array_literal(name, elems, soa);
+            // The element annotation, when there is one: a *generic*
+            // enum element (`[Option<i64>; 3]`) cannot be resolved
+            // from the literal alone — `Option::Some(1i64)` names the
+            // enum but not its instantiation.
+            let element_annotation = match annotation {
+                Some(TypeDecl::Array(elements, _, _)) => elements.first().cloned(),
+                _ => None,
+            };
+            return self.lower_let_array_literal(name, elems, soa, element_annotation);
         }
         // Enum-construction RHS. `Enum::Variant` (unit) parses as a
         // `QualifiedIdentifier(vec![enum, variant])`; `Enum::Variant(args)`
@@ -1842,6 +1850,7 @@ impl<'a> FunctionLower<'a> {
         name: DefaultSymbol,
         elems: Vec<ExprRef>,
         soa: bool,
+        element_annotation: Option<TypeDecl>,
     ) -> Result<Option<ValueId>, String> {
         if elems.is_empty() {
             return Err(
@@ -1851,7 +1860,7 @@ impl<'a> FunctionLower<'a> {
         // Element type comes from the first element. Scalars
         // resolve via `value_scalar`; struct literals resolve
         // through the struct table.
-        let elem_ty = self.infer_array_element_type(&elems[0])?;
+        let elem_ty = self.infer_array_element_type(&elems[0], element_annotation.as_ref())?;
         if !matches!(
             elem_ty,
             Type::I64
@@ -1866,9 +1875,14 @@ impl<'a> FunctionLower<'a> {
                 | Type::U32
                 | Type::Struct(_)
                 | Type::Tuple(_)
+                // DATA-ORIENTED Phase 3: an enum element is the tag
+                // plus every variant's payload, flattened the way
+                // `collect_leaves` already flattens one.
+                | Type::Enum(_)
         ) {
             return Err(format!(
-                "compiler MVP only supports scalar / struct / tuple array elements; got {elem_ty:?}"
+                "compiler MVP only supports scalar / struct / tuple / enum array elements; \
+                 got {elem_ty:?}"
             ));
         }
         let leaf_count = leaf_scalar_count(self.module, elem_ty);
@@ -2063,6 +2077,19 @@ impl<'a> FunctionLower<'a> {
                                 name,
                                 Binding::Tuple { elements },
                             );
+                            return Ok(Some(None));
+                        }
+                    }
+                    // DATA-ORIENTED Phase 3: `val s: Shape = ss[i]`
+                    // arrives with its tag and payload slots already
+                    // filled, and binds like any other enum value —
+                    // so `match s { ... }` is the ordinary path from
+                    // here on.
+                    Type::Enum(_) => {
+                        self.pending_enum_value = None;
+                        let _ = self.lower_slice_access(&arr_obj, &info)?;
+                        if let Some(storage) = self.pending_enum_value.take() {
+                            self.bindings.insert(name, Binding::Enum(storage));
                             return Ok(Some(None));
                         }
                     }

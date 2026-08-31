@@ -12,6 +12,21 @@
 
 ### 2026-08-31
 
+- **DOD Phase 3 — 配列要素としての enum + tag 列** — enum を配列要素に
+  できるようになった (compiled lane では**一切動いていなかった**)。
+  `__builtin_sizeof` の enum 規約 (u64 tag + 全 variant payload) が
+  既にフラットなので `leaf_scalar_count` / `leaf_type_at` に腕を
+  足すだけで leaf 機構に乗り、IR / codegen 無変更。要素の推論・格納・
+  読み出し (`val s: Shape = ss[i]` → `pending_enum_value`) を実装し、
+  **enum 要素だけは丸ごと書ける** (`ss[i] = Shape::Point` — variant には
+  leaf の名前が無く、禁止すると write-once になる)。`soa` では
+  **tag が独立した列**になる (要素 4 個の 4-leaf enum で AoS 128 バイト
+  1 slot ↔ SoA 32 バイト × 4 列)。generic enum は注釈から実体を取る
+  (`soa [Option<i64>; 3]`) — ついでに checker のバグを 1 件修正:
+  注釈の `Option<i64>` は `Struct(Option, [i64])` と綴られるのに literal は
+  `Enum(Option, [i64])` を推論し、型引数つきの綴り違いが unify されて
+  いなかった。**tag 専用 scan の読み手は未実装** (下の未実装節)。
+
 - **DOD Phase 1 — 列の窓 `ps.mass`** — 1 フィールドを関数に渡せる
   ようになった。言語の `&[T]` ではなく **stdlib `Column<T>`**
   (`core/std/column.t`、addr + len + stride) で回収 — slice 型が
@@ -1884,18 +1899,22 @@
   着手できない。設計フェーズを別に取る前提。
 * データ指向の配列 layout (DOD) ★★ — Phase 0 (`soa [T; N]` + `ps[i].f`
   単列 shortcut) と Phase 2 (`soa Vec<T>` → `SoaVec<T>`) は 2026-08-30、
-  Phase 0.5 (列 tight pack) と Phase 1 (列の窓 `Column<T>`) は
-  2026-08-31 landing 済み (上)。設計は
-  [`DATA_ORIENTED.md`](DATA_ORIENTED.md)。残り 1 つ:
-  * **Phase 3 — 配列要素としての enum + tag 列の分離** (中)。前提として
-    `array_layout.rs::leaf_scalar_count` の `Type::Enum(_) => 1`
-    (配列要素として未サポート) を外す必要がある。tag だけを舐めるループが
-    効く形で、Zig の `MultiArrayList` が union に対してできない所
+  Phase 0.5 (列 tight pack) / Phase 1 (列の窓 `Column<T>`) /
+  Phase 3 (配列要素としての enum) は 2026-08-31 landing 済み (上) —
+  **設計 doc の Phase は全部埋まった**。設計は
+  [`DATA_ORIENTED.md`](DATA_ORIENTED.md)。残っているのは 1 つ:
+  * **tag 専用 scan の読み手** (小〜中)。Phase 3 で `soa [Shape; N]` の
+    tag は独立した列になったが、`val s = ss[i]` は全 leaf を読むので
+    「どの variant か」だけを舐める形がまだ書けない。(a) payload を
+    束縛しない match が tag だけを読む最適化、(b) tag 列に名前を与える
+    (Phase 1 の `Column` を discriminant に向ける) のどちらか。
+    どちらも設計を決めるのが先
 
   未決 (Phase に紐づかない): **要素まるごとの書き込み `ps[i] = p`** は
   leaf ごとに散った store になるので、要素単位更新が主のワークロードでは
-  SoA が AoS より遅い。警告を出すかは未決で、`--simd-report` と同じ
-  「聞けば答える」tooling 側に置くのが妥当 (DATA_ORIENTED.md の論点 1)
+  SoA が AoS より遅い (enum 要素だけは代替が無いので Phase 3 で許可した)。
+  警告を出すかは未決で、`--simd-report` と同じ「聞けば答える」tooling 側に
+  置くのが妥当 (DATA_ORIENTED.md の論点 1)
 * SIMD Phase 3 の残 / Phase 4 ★★ — Phase 2 (型 + 演算子 + intrinsic) と
   戦略 B の主要 kernel は landing 済み。残りは (a) **stdlib の残り kernel**
   — `Vec` の `sum` / `min` / `max` (**API 自体が無い**ので追加から)、

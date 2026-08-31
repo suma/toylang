@@ -61,7 +61,29 @@ pub(super) fn leaf_scalar_count(module: &Module, ty: Type) -> usize {
             let elems = module.tuple_defs[id.0 as usize].clone();
             elems.iter().map(|t| leaf_scalar_count(module, *t)).sum()
         }
-        Type::Enum(_) => 1, // not supported as array element yet
+        // DATA-ORIENTED Phase 3: an enum element flattens the way
+        // `collect_leaves` and `flatten_enum_storage_locals` already
+        // flatten one — the u64 tag, then every variant's payload in
+        // declaration order. `__builtin_sizeof`'s enum rule is the
+        // same shape, which is why an enum needed no new layout
+        // thinking to become an array element: it was already flat.
+        //
+        // Under `soa` that puts the tag in a column of its own, so a
+        // loop that only asks *which variant* touches one byte per
+        // element instead of the whole payload — the case a tagged
+        // union cannot give you at all.
+        Type::Enum(enum_id) => {
+            let def = module.enum_def(enum_id);
+            let payloads: Vec<Type> = def
+                .variants
+                .iter()
+                .flat_map(|v| v.payload_types.iter().copied())
+                .collect();
+            1 + payloads
+                .iter()
+                .map(|t| leaf_scalar_count(module, *t))
+                .sum::<usize>()
+        }
     }
 }
 
@@ -128,6 +150,29 @@ pub(super) fn leaf_type_at(module: &Module, element_ty: Type, j: usize) -> Type 
                 let cnt = leaf_scalar_count(module, *et);
                 if j < acc + cnt {
                     return leaf_type_at(module, *et, j - acc);
+                }
+                acc += cnt;
+            }
+            element_ty
+        }
+        // DATA-ORIENTED Phase 3: leaf 0 is the tag; the rest walk the
+        // variants' payloads in the order `collect_leaves` writes
+        // them.
+        Type::Enum(enum_id) => {
+            if j == 0 {
+                return Type::U64;
+            }
+            let def = module.enum_def(enum_id);
+            let payloads: Vec<Type> = def
+                .variants
+                .iter()
+                .flat_map(|v| v.payload_types.iter().copied())
+                .collect();
+            let mut acc = 1usize;
+            for pt in &payloads {
+                let cnt = leaf_scalar_count(module, *pt);
+                if j < acc + cnt {
+                    return leaf_type_at(module, *pt, j - acc);
                 }
                 acc += cnt;
             }

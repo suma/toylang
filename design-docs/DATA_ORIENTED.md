@@ -1,6 +1,6 @@
 # DATA-ORIENTED — 配列の layout をユーザが選べるようにする
 
-> **状態: Phase 0 + 2 (2026-08-30) + 0.5 + 1 (2026-08-31) landing / 3 未着手**。実装サイトは
+> **状態: Phase 0〜3 すべて landing (0・2 が 2026-08-30、0.5・1・3 が 2026-08-31)**。実装サイトは
 > [`compiler_lower/src/array_access.rs`](../compiler_lower/src/array_access.rs) と
 > [`compiler_lower/src/array_layout.rs`](../compiler_lower/src/array_layout.rs)。
 > SIMD 側の設計は [`SIMD.md`](SIMD.md) にあり、本文書の Phase 0 が
@@ -339,16 +339,44 @@ placement の決定だけ。Phase 0.5 (tight pack) では narrow leaf の行が
    見えない (frame を読んで初めて分かる)。array 注釈のときだけ
    意見を持つよう修正 (`let_lowering.rs::lower_let`)
 
-### enum の SoA
+### enum の SoA — Phase 3 (2026-08-31 landing)
 
 `soa [Shape; N]` は tag 列と payload 列が分離する。`__builtin_sizeof` の
 enum 規約 (u64 タグ + 全 variant の payload 連結) が既にフラットなので、
-leaf 分解の枠にそのまま乗る。**tag だけを舐めるループ**が cache 効率で
-効き、Zig の `MultiArrayList` が union に対してできないところを超えられる。
+leaf 分解の枠にそのまま乗った — `leaf_scalar_count` / `leaf_type_at` に
+enum の腕を足しただけで、IR も codegen も無変更。
 
-ただし `leaf_scalar_count` は現在 `Type::Enum(_) => 1` (配列要素として
-未サポート) なので、これは配列要素としての enum 対応とセットになる。
-Phase 0 のスコープ外。
+`enum Shape { Circle(i64), Rect(i64, i64), Point }` は 4 leaf
+(tag + Circle の 1 + Rect の 2)。要素 4 個で AoS は 128 バイト 1 slot、
+SoA は 32 バイト × 4 列で、**先頭列は tag しか入っていない**。
+tagged union が構造上できない形 (tag と payload が同じ cache line に
+乗る) を超えられるのはここ。
+
+**実装の要点**:
+
+- **配列要素としての enum は compiled lane で一切動いていなかった**
+  (`compiler MVP could not infer type for array element`)。要素型の推論
+  (`Enum::Variant` / `Enum::Variant(args)` / enum 束縛)、literal からの
+  格納、要素読み出し (`val s: Shape = ss[i]` は `pending_enum_value`
+  経由で普通の enum 束縛になる) を新規に足した
+- **enum 要素だけは丸ごと書ける** (`ss[i] = Shape::Point`)。struct 要素は
+  leaf ごとに名前があるので `ps[i].x = v` と書けるが、variant には
+  名前が無い — 禁止すると enum 配列が write-once になってしまう。
+  論点 1 の「散った store」のコストはそのまま負う
+- **generic enum は注釈から実体を取る** (`soa [Option<i64>; 3]`)。
+  `Option::Some(1i64)` は enum は名乗るが `Option<i64>` かどうかは
+  言わないため。**checker 側のバグも 1 件**: 注釈の `Option<i64>` は
+  parser が `Struct(Option, [i64])` と綴る (struct と enum を区別できない)
+  のに literal は `Enum(Option, [i64])` を推論するので、型引数つきの
+  綴り違いが unify されず配列注釈が使えなかった (Phase 0 で直した
+  `Identifier` vs `Struct(name, [])` と同種)
+
+**残り**: 「tag だけを舐めるループ」は**列としては用意できたが、
+読み手がまだ無い**。`val s = ss[i]` は全 leaf を読むので、tag 専用の
+scan には (a) payload を束縛しない match が tag だけを読む最適化か、
+(b) tag 列に名前を与える形 (Phase 1 の `Column` を discriminant に
+向ける) のどちらかが要る。どちらも設計を決める必要があり、Phase 3 の
+スコープ外に置いた。
 
 ## 列の窓 — Phase 1 (2026-08-31 landing)
 
@@ -450,7 +478,7 @@ heap 節を参照。)
 | **0.5** | 列ごとの tight pack — **landing 済み (2026-08-31)**: `allocate_array_storage` の stride を `ARRAY_LEAF_STRIDE` から leaf 実幅へ (1 行、codegen 分岐なし)。値は不変なので pin は frame テスト側 (`narrow_leaf_columns_pack_to_their_leaf_width_in_the_aot_frame` が `[24,24,24,24]` → `[3,3,12,24]`) | ✅ 小 |
 | **1** | 列の窓 — **landing 済み (2026-08-31)**: `ps.mass` → stdlib `Column<T>` (addr + len + stride)。stack / heap 両対応、AoS でも strided window として通る。tree-walker は「配列 + field 名」で表現し 4 メソッドを横取り | ✅ 中 |
 | **2** | `soa Vec<T>` → `SoaVec<T>` sugar。単一領域の列分割 + builtin 2 個 — **landing 済み (2026-08-30)**: parser で砂糖を解き、IR / codegen / IR VM 無変更、`consistency/soa.rs` が値・番地・確保量・drop を pin | ✅ 中 |
-| **3** | 配列要素としての enum + tag 列の分離 | 中 |
+| **3** | 配列要素としての enum + tag 列の分離 — **landing 済み (2026-08-31)**: `leaf_scalar_count` / `leaf_type_at` に enum の腕を足し、要素の推論・格納・読み出し・**丸ごと書き込み**を実装。generic enum は注釈から実体を取る。tag 専用 scan の読み手は未着手 (上) | ✅ 中 |
 
 **Phase 0 は単体で価値があり、SIMD をやらなくても無駄にならない。**
 事実 2 のおかげで変更が lowering の 2 ファイルに閉じ、

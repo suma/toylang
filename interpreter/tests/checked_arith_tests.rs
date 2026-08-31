@@ -261,3 +261,174 @@ fn i64_saturating_clamps_at_both_bounds() {
         1,
     );
 }
+
+// --- RUNTIME-TRAP-NARROW: the same seven methods at the other six
+// widths. The two traits that named `u64` / `i64` concretely became
+// one `trait Checked` over `Self` with an impl per width; the bodies
+// are the same shapes with each width's own `MAX` / `MIN` literals.
+//
+// The 4-lane agreement and the full per-width bound table live in
+// `compiler/tests/consistency/checked_narrow.rs`. These are the
+// interpreter-side value tests, one per width family, and they are
+// where a wrong *bound* (as opposed to a wrong shape) shows up with
+// the width in the test name.
+
+#[test]
+fn u8_reports_and_clamps_at_255() {
+    assert_checked_u64(
+        r#"
+            val mx: u8 = 255u8
+            val one: u8 = 1u8
+            val two: u8 = 2u8
+            val over = mx.checked_add(one)
+            val a = match over {
+                Option::Some(v) => 0u64,
+                Option::None => 1u64,
+            }
+            val fits = mx.checked_div(two)
+            val b = match fits {
+                Option::Some(v) => if v == 127u8 { 1u64 } else { 0u64 },
+                Option::None => 0u64,
+            }
+            val c = if mx.saturating_add(one) == mx { 1u64 } else { 0u64 }
+            val d = if mx.saturating_mul(two) == mx { 1u64 } else { 0u64 }
+            a + b + c + d
+        "#,
+        4,
+    );
+}
+
+#[test]
+fn u16_and_u32_report_and_clamp_at_their_own_max() {
+    assert_checked_u64(
+        r#"
+            val m16: u16 = 65535u16
+            val one16: u16 = 1u16
+            val m32: u32 = 4294967295u32
+            val one32: u32 = 1u32
+            val over16 = m16.checked_add(one16)
+            val a = match over16 {
+                Option::Some(v) => 0u64,
+                Option::None => 1u64,
+            }
+            val over32 = m32.checked_add(one32)
+            val b = match over32 {
+                Option::Some(v) => 0u64,
+                Option::None => 1u64,
+            }
+            # A `u32` bound written one width too wide would let this
+            # through, so the clamped values are checked as well.
+            val c = if m16.saturating_add(one16) == m16 { 1u64 } else { 0u64 }
+            val d = if m32.saturating_add(one32) == m32 { 1u64 } else { 0u64 }
+            a + b + c + d
+        "#,
+        4,
+    );
+}
+
+#[test]
+fn u8_subtraction_wraps_so_checked_sub_is_the_only_report() {
+    // Unlike `u64`, narrow unsigned `-` below zero does not trap — it
+    // wraps to 251 and the program carries on. `checked_sub` is what
+    // turns that into an answer the caller has to look at.
+    assert_checked_u64(
+        r#"
+            val a: u8 = 5u8
+            val b: u8 = 10u8
+            val wrapped = a - b
+            val under = a.checked_sub(b)
+            val reported = match under {
+                Option::Some(v) => 0u64,
+                Option::None => 1u64,
+            }
+            val clamped = if a.saturating_sub(b) == 0u8 { 1u64 } else { 0u64 }
+            (wrapped as u64) + reported + clamped
+        "#,
+        253,
+    );
+}
+
+#[test]
+fn i8_reports_at_both_bounds_and_covers_both_division_traps() {
+    assert_checked_u64(
+        r#"
+            val mx: i8 = 127i8
+            val mn: i8 = -128i8
+            val one: i8 = 1i8
+            val minus_one: i8 = -1i8
+            val zero: i8 = 0i8
+            val hi = mx.checked_add(one)
+            val a = match hi {
+                Option::Some(v) => 0u64,
+                Option::None => 1u64,
+            }
+            val lo = mn.checked_sub(one)
+            val b = match lo {
+                Option::Some(v) => 0u64,
+                Option::None => 1u64,
+            }
+            # Both traps `/` raises at this width: a zero divisor and
+            # `MIN / -1`, whose quotient 128 is not an `i8`.
+            val by_zero = mx.checked_div(zero)
+            val c = match by_zero {
+                Option::Some(v) => 0u64,
+                Option::None => 1u64,
+            }
+            val overflowing = mn.checked_div(minus_one)
+            val d = match overflowing {
+                Option::Some(v) => 0u64,
+                Option::None => 1u64,
+            }
+            val e = match mn.checked_mul(minus_one) {
+                Option::Some(v) => 0u64,
+                Option::None => 1u64,
+            }
+            a + b + c + d + e
+        "#,
+        5,
+    );
+}
+
+#[test]
+fn i16_and_i32_clamp_to_their_own_bounds() {
+    assert_checked_u64(
+        r#"
+            val mx16: i16 = 32767i16
+            val mn16: i16 = -32768i16
+            val seven16: i16 = 7i16
+            val mx32: i32 = 2147483647i32
+            val mn32: i32 = -2147483648i32
+            val seven32: i32 = 7i32
+            val a = if mx16.saturating_add(seven16) == mx16 { 1u64 } else { 0u64 }
+            val b = if mn16.saturating_sub(seven16) == mn16 { 1u64 } else { 0u64 }
+            val c = if mx32.saturating_add(seven32) == mx32 { 1u64 } else { 0u64 }
+            val d = if mn32.saturating_sub(seven32) == mn32 { 1u64 } else { 0u64 }
+            a + b + c + d
+        "#,
+        4,
+    );
+}
+
+#[test]
+fn signed_saturating_mul_picks_the_bound_the_product_ran_past() {
+    // The one method with no predecessor: `CheckedI64` stopped at
+    // `saturating_sub`. `MIN * -1` clamps *up* to `MAX` while
+    // `MIN * 3` clamps down, so a body that named one bound for every
+    // overflow would fail here rather than at a single edge.
+    assert_checked_u64(
+        r#"
+            val mn: i64 = -9223372036854775808i64
+            val mx: i64 = 9223372036854775807i64
+            val minus_one: i64 = -1i64
+            val three: i64 = 3i64
+            val small: i64 = 100i64
+            val a = if mn.saturating_mul(minus_one) == mx { 1u64 } else { 0u64 }
+            val b = if mn.saturating_mul(three) == mn { 1u64 } else { 0u64 }
+            val c = if mx.saturating_mul(three) == mx { 1u64 } else { 0u64 }
+            val d = if small.saturating_mul(three) == 300i64 { 1u64 } else { 0u64 }
+            val e = if small.saturating_mul(minus_one) == -100i64 { 1u64 } else { 0u64 }
+            a + b + c + d + e
+        "#,
+        5,
+    );
+}

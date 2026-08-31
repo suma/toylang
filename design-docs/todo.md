@@ -10,6 +10,23 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-31
+- **RUNTIME-TRAP-NARROW — `checked_*` / `saturating_*` が全 8 幅で使える**
+  — `CheckedU64` / `CheckedI64` の 2 trait を **`Checked` 1 本 (`Self` 上)**
+  に統合し、`u8`〜`u64` / `i8`〜`i64` に impl。signed の
+  `saturating_mul` は前身が無く新規 (積の符号で寄せる先を選ぶ)。
+  **コンパイラ側の変更はゼロ** — 前提の 2 つ (`Option<Self>` を返す
+  trait method、narrow レシーバの dispatch) が同日に landing していた。
+  8 幅 × 15 ケースを Rust の `checked_*` / `saturating_*` と突き合わせて
+  全一致を確認。**プロセス固定費が +3.7ms (44.5 → 48.2ms、debug、
+  trivial プログラム 60 回の平均)** — stdlib はプロセス毎に全部読まれる
+  ので、この増分は `checked` を一度も呼ばないプログラムも払う
+  (TEST-PERF の「core module のロード 27ms/プロセス」参照)。
+  無関係なテスト 172 本の A/B で 0.457s → 0.484s (+6%)。
+  **stdlib を足すたびに全プログラムが払う**という一般的な性質で、
+  横断的な解は INCREMENTAL-COMPILATION 側の「型検査済み core を
+  プロセスを跨いで再利用する」にある。
+  実測した副産物: **narrow unsigned の減算は trap せず wrap する**
+  (未実装節の NARROW-UNSIGNED-SUB)。
 - **NET N0 — プラットフォーム切り替えの足場** — `#[cfg_attr(path)] mod sys;`
   1 箇所で epoll / kqueue を選び、未対応 OS は `compile_error!` で落ちる。
   手書きの定数 39 個は **C の probe を `cc` でビルドして突き合わせる**
@@ -832,15 +849,18 @@
   **到達不能**になり、診断は幅にも impl にも触れなかった。1 箇所は
   共通関数に寄せたが、残り 3 箇所は健在。**着手条件は満たされている**。
 
-- **RUNTIME-TRAP-NARROW: narrow int の `checked_*` / `saturating_*`** ★ —
-  `core/std/checked.t` は `u64` / `i64` だけ。`u8`〜`u32` / `i8`〜`i32` は
-  未提供。トラップ自体 (0 除算 / `MIN / -1`) は全幅で効いているので、
-  足りないのは逃げ道の API だけ。**2026-08-31 に阻害要因が消えた** —
-  `Option<Self>` を返す trait method と narrow int レシーバの
-  dispatch が両方動くようになったので、`trait Checked { fn checked_add(
-  self: Self, other: Self) -> Option<Self> }` を 1 本書いて幅ごとに
-  impl すれば済む (2 つに割れている現在の trait も統合できる)。
-  **コンパイラ側の作業は無く、stdlib の編集だけ**。
+- **NARROW-UNSIGNED-SUB: `u8` / `u16` / `u32` の減算は
+  アンダーフローで trap せず wrap する** ★ — RUNTIME-TRAP-NARROW の
+  作業中に実測 (2026-08-31、4 レーン一致で `5u8 - 10u8` == `251u8`)。
+  trap するのは `u64` だけで、0 除算と `MIN / -1` は全幅で効いている。
+  `docs/language.md` の Runtime traps 表は元から `u64` としか書いて
+  いないので**嘘ではない**が、幅で意味論が割れているのが意図なのかは
+  決まっていない。揃えるなら (a) narrow unsigned も trap させる
+  (guard が 3 幅分増える、RUNTIME-TRAP の「wrap した答えが誤解を招く」
+  基準は narrow でも同じ) か、(b) 現状を明示的な決定として書く。
+  **今は (b) の書き方にしてある** — 「トラップでないもの」の一覧に
+  narrow unsigned の減算を足し、`core/std/checked.t` の doc comment が
+  「narrow 幅では `checked_sub` だけが報告する」と説明する
 
 - **TYPECHECK-LIES 残: `str.substring` / `str.split` の AOT/JIT 対応** ★ —
   2026-08-20 に 3 件を実測したところ、**本物の嘘は `null` だけ**だった
@@ -1132,11 +1152,11 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2573 テスト** (100% 成功、2026-08-31 時点)。
+- 合計 **2601 テスト** (100% 成功、2026-08-31 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
-- テスト実行はワークスペース全体で **~11s** (2026-08-31 実測、nextest
-  の既定 profile 出力)。2026-08-19 頃の ~6.5s からはテスト数の増加
-  (1999 → 2573) と stdlib の肥大 (整合性レーンの core ロード) 分。
+- テスト実行はワークスペース全体で **~12s** (2026-08-31 実測、warm、
+  nextest の既定 profile 出力)。2026-08-19 頃の ~6.5s からはテスト数の
+  増加 (1999 → 2601) と stdlib の肥大 (整合性レーンの core ロード) 分。
   内訳と削り代は TEST-PERF、ビルド時間は BUILD-PERF。
   `compiler/build.rs` が `toylang_rt` を rustc で
   staticlib pre-build し、リンク結果は `TOY_LINK_CACHE_DIR` で

@@ -32,7 +32,7 @@ use crate::ast::module_interface::ModuleInterface;
 ///
 /// Mismatched versions are treated as a cache miss by
 /// [`load_full_module`].
-pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 36;
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 37;
 // v2: `File` gained `id` (JIT cache key) and `tests` (LLM-LOOP P4).
 // v3: `BuiltinFunctionSymbols` interns the MEMORY_PROFILING M4 counter
 // names, shifting every later symbol id.
@@ -96,6 +96,12 @@ pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 36;
 // `__builtin_soa_read` / `__builtin_soa_write`, which shifts every
 // symbol id after them, and `core/std/collections/soa_vec.t` joins
 // the auto-loaded stdlib.
+// v37: RUNTIME-TRAP-NARROW — `core/std/checked.t` replaces the two
+// traits `CheckedU64` / `CheckedI64` with one `Checked`. A module
+// whose *own* source changed misses on its hash anyway; the bump is
+// for every module interned after it, whose unchanged entries would
+// otherwise be read back against the old intern order (the same
+// reason convert.t bumped v9 and parse.t v33).
 
 /// Bincode options for the AST cache.
 ///

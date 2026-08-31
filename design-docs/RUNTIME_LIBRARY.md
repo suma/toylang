@@ -26,7 +26,7 @@ stdlib は機能別に必要に応じて landing してきた (Vec → String �
 | `allocator.t` | `trait Alloc` + `Global`/`Arena`/`FixedBuffer` | introspection API 付き |
 | `io.t` | `read_line`/`argc`/`arg`/`env_*`/`read_file`/`file_exists`/`now`/`random`/`strftime` | **読み取り専用**。`Result<_, IoError>` 化済み |
 | `math.t` | f64 libm intrinsics + min/max/abs | extern 形の模範実装 |
-| `checked.t` | `checked_*` / `saturating_*` | **u64/i64 のみ** |
+| `checked.t` | `trait Checked` の `checked_*` / `saturating_*` | **全 8 幅** (`u8`〜`u64` / `i8`〜`i64`、2026-08-31) |
 | `hash.t` | `trait Hash { fn hash() -> u64 }` | primitive のみ、identity/parity の簡易実装。open addressing 用 mixer は将来と明記済み |
 | `ord.t` / `str_ops.t` / `display.t` / `option.t` / `result.t` / `convert.t` / `drop.t` / `iter.t` | 契約と拡張 trait | `convert.t` は `From`/`Into` のみ、**パース関数は存在しない** |
 
@@ -80,7 +80,7 @@ read_file / strftime) / panic・backtrace (shadow stack) / 出力シンク
 |---|---|---|---|---|
 | **P0** | io 書き込み系 | `write_file` / `append_file` / `eprint` / `io::exit(code)` | extern | ✅ 2026-08-30 (P0-A) |
 | **P0** | str パース | `parse::to_i64/to_u64/to_f64/to_bool(str) -> Result<_, ParseError>` | 純 toylang + extern 1 本 | ✅ 2026-08-30 (P0-B) |
-| **P0** | 衛生項目 | `str` の `Ord` (STDLIB-ORD) / narrow int の `checked_*` (RUNTIME-TRAP-NARROW) / `arg(i)` 等の範囲外 `Result` 化 | 混在 | todo 既載 |
+| **P0** | 衛生項目 | ~~narrow int の `checked_*` (RUNTIME-TRAP-NARROW)~~ ✅ 2026-08-31 / `str` の `Ord` (STDLIB-ORD) / `arg(i)` 等の範囲外 `Result` 化 | 混在 | 残りは todo 既載 |
 | **P1** | Dict hash 化 | 線形探索 → open addressing。`hash.t` の mixer 更新を含む | 純 toylang | 未着手 |
 | **P1** | `Set<T>` | hash 化した表を共有 | 純 toylang | 未着手 |
 | **P1** | Vec 拡張 | `insert`/`remove`/`contains`/`index_of`/`reverse`/`sort_by` | 純 toylang | 未着手 |

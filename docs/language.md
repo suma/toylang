@@ -2835,8 +2835,12 @@ Current limitations:
 ### Extension traits over primitives
 
 `impl <Trait> for <PrimitiveType> { ... }` is allowed for every
-primitive built into the language (`i64`, `u64`, `f64`, `bool`,
-`str`, `ptr`, `usize`). The impl methods become callable through
+primitive built into the language: `i64`, `u64`, the six narrow ints
+(`u8` / `u16` / `u32` / `i8` / `i16` / `i32`), `f64`, `f32`, `bool`,
+`str`, `ptr` and `usize`. The narrow widths and `f32` parsed and
+type-checked but were unreachable until 2026-08-31 — the
+receiver-type-to-target-name mapping had four copies and each one that
+omitted a width disabled it silently. The impl methods become callable through
 the regular `value.method(args)` syntax — there's no special
 machinery for primitive receivers; they participate in the same
 `method_registry` dispatch struct methods use.
@@ -4233,25 +4237,35 @@ match sum {
 val clamped = five.saturating_sub(ten)   # -> 0u64, not a huge number
 ```
 
-| | `u64` | `i64` |
-|---|---|---|
-| `checked_add` / `checked_sub` / `checked_mul` / `checked_div` | yes | yes |
-| `saturating_add` / `saturating_sub` | yes | yes |
-| `saturating_mul` | yes | — |
+One trait, `Checked`, with an impl for **every integer width** —
+`u8` / `u16` / `u32` / `u64` and `i8` / `i16` / `i32` / `i64`:
+
+| | signature |
+|---|---|
+| `checked_add` / `checked_sub` / `checked_mul` / `checked_div` | `(self: Self, other: Self) -> Option<Self>` |
+| `saturating_add` / `saturating_sub` / `saturating_mul` | `(self: Self, other: Self) -> Self` |
+
+Each impl clamps to its own type's bounds, so the same call reads the
+same way at every width: `saturating_add` on a `u8` gives `255u8`
+where the `u64` impl gives `u64::MAX`.
 
 `checked_div` answers `Option::None` for both traps the `/` operator
-raises — a zero divisor and `i64::MIN / -1` — so it is the way to
-divide by a value that might be either.
+raises — a zero divisor and `MIN / -1` — so it is the way to divide by
+a value that might be either.
+
+Narrow widths differ from `u64` in one way worth knowing: `a - b`
+below zero **wraps** on `u8` / `u16` / `u32`, where the same
+expression on `u64` traps (*Runtime traps* lists that trap for `u64`
+only). So at a narrow width `checked_sub` / `saturating_sub` are not
+a nicer spelling of something the operator would have caught — they
+are the only thing that reports the underflow at all.
 
 Two call shapes matter for the compiled backends: the **receiver must
 be a name**, not a literal (`five.checked_add(...)`, not
 `5u64.checked_add(...)`), and an enum result must be **bound with
-`val` before it is matched**. Both are existing compiler-MVP limits
-rather than anything specific to this module.
-
-Widths other than 64-bit are not covered yet, and the traits are split
-per type (`CheckedU64` / `CheckedI64`) because a trait method
-returning `Option<Self>` does not survive lowering.
+`val` before it is matched** (or folded with `??`, which the type
+checker rewrites into that binding for you). Both are existing
+compiler-MVP limits rather than anything specific to this module.
 
 ### Math (via the `math` module)
 
@@ -5091,6 +5105,11 @@ What is deliberately **not** a trap:
   wrapped result is actively misleading rather than merely modular.
 - **`f64` division by zero** — IEEE-754 defines it as an infinity,
   which is a value.
+- **`a - b` below zero on `u8` / `u16` / `u32`** — the trap in the
+  table above is `u64`'s alone; the narrow unsigned widths wrap, so
+  `5u8 - 10u8` is `251u8` and the program carries on. `checked_sub` /
+  `saturating_sub` (*Overflow-aware arithmetic*) are what report it at
+  those widths.
 
 A `requires` clause that already rules a trap out **removes the
 guard** — see *Contracts and traps* below.

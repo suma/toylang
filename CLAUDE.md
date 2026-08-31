@@ -479,8 +479,13 @@ fn main() -> u64 {
     符号付き `MIN / -1` / 配列添字の境界外は **`panic`**（4 バックエンド一致、
     `compiler/tests/consistency/` が pin）。一方 `+` / `*` / 符号付き `-` の
     overflow は **wrap**（ビルドプロファイルに依らず 1 つの意味論）。逃げ道は
-    `core/std/checked.t` の `checked_*` → `Option<T>` / `saturating_*`
-    (`u64` / `i64` のみ、レシーバは名前束縛、enum 結果は `val` 束縛してから `match`)
+    `core/std/checked.t` の `trait Checked` — `checked_add|sub|mul|div` →
+    `Option<Self>` / `saturating_add|sub|mul` → `Self` を**全 8 幅**
+    (`u8`〜`u64` / `i8`〜`i64`) に impl (レシーバは名前束縛、enum 結果は
+    `val` 束縛してから `match`、または `??` で畳む)。
+    **narrow unsigned の `-` はアンダーフローで trap せず wrap する**
+    (`5u8 - 10u8` は `251u8`) — trap するのは `u64` だけなので、
+    narrow 幅では `checked_sub` だけが報告する
   - 比較: `==`, `!=`, `<`, `<=`, `>`, `>=`。`==` / `!=` は同型 struct ペアで **operator overload** — その struct に `eq(&self, other: &Self) -> bool` method があれば dispatch (3 backend)。`s == t` で String/Vec<u8> 等の比較が動く
   - **全 binary / unary operator overload** (Phase B + OP-OVERLOAD-ARITH + OP-OVERLOAD-EXTEND Phase 1-4): 同型 struct ペアで以下に dispatch (3 backend、let-rhs context):
     - 算術: `+` / `-` / `*` / `/` / `%` → `add` / `sub` / `mul` / `div` / `rem` (`(&self, &Self) -> Self`)

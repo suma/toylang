@@ -26,29 +26,232 @@ package std.checked
 # directly by a call cannot be a `match` scrutinee in the compiled
 # backends yet (see `docs/language.md` -> "Known limitations").
 #
-# The traits are split per type rather than written once over `Self`
-# for a reason that no longer holds: `Option<Self>` used to be
-# rejected as a method return type by the AOT / JIT lanes, so naming
-# the concrete payload was the only way to keep all three backends on
-# one path. Since 2026-08-31 a single `trait Checked { fn checked_add(
-# self: Self, other: Self) -> Option<Self> }` with one impl per width
-# lowers on every backend, and narrow receivers dispatch too. Merging
-# the two traits and covering u8..i32 is now a stdlib edit with no
-# compiler work behind it (todo: RUNTIME-TRAP-NARROW). Widths other
-# than 64-bit are still not covered.
+# One trait over `Self`, one impl per width. It used to be two traits
+# naming `u64` / `i64` concretely, because `Option<Self>` as a method
+# return type did not survive lowering and narrow receivers were
+# missing from the dispatch tables; both were fixed on 2026-08-31, so
+# the widths below are a stdlib edit with no compiler work behind
+# them (RUNTIME-TRAP-NARROW).
+#
+# The bodies are mechanical per width — the same seven bodies with
+# the width's own `MAX` / `MIN` literals substituted — so read one
+# unsigned impl and one signed impl and the rest follow. Two of them
+# are worth knowing:
+#
+#   - unsigned `checked_mul` divides `MAX` by `other` rather than
+#     multiplying, so the test itself cannot overflow;
+#   - signed `checked_mul` multiplies and divides back, with
+#     `MIN * -1` taken out first because that division would trap.
+#
+# Narrow widths differ from `u64` in one place worth naming: `a - b`
+# below zero **wraps** on `u8` / `u16` / `u32` where the same
+# expression on `u64` traps (`docs/language.md` -> "Runtime traps"
+# lists the trap for `u64` only). `checked_sub` / `saturating_sub`
+# therefore report a narrow underflow that the operator would have
+# silently wrapped past.
 
-trait CheckedU64 {
-    fn checked_add(self: Self, other: Self) -> Option<u64>
-    fn checked_sub(self: Self, other: Self) -> Option<u64>
-    fn checked_mul(self: Self, other: Self) -> Option<u64>
-    fn checked_div(self: Self, other: Self) -> Option<u64>
+trait Checked {
+    fn checked_add(self: Self, other: Self) -> Option<Self>
+    fn checked_sub(self: Self, other: Self) -> Option<Self>
+    fn checked_mul(self: Self, other: Self) -> Option<Self>
+    fn checked_div(self: Self, other: Self) -> Option<Self>
     fn saturating_add(self: Self, other: Self) -> Self
     fn saturating_sub(self: Self, other: Self) -> Self
     fn saturating_mul(self: Self, other: Self) -> Self
 }
 
-impl CheckedU64 for u64 {
-    fn checked_add(self: Self, other: Self) -> Option<u64> {
+
+impl Checked for u8 {
+    fn checked_add(self: Self, other: Self) -> Option<Self> {
+        # `MAX - other` cannot underflow: `other` is itself a u8.
+        if self > 255u8 - other {
+            Option::None
+        } else {
+            Option::Some(self + other)
+        }
+    }
+
+    fn checked_sub(self: Self, other: Self) -> Option<Self> {
+        if self < other {
+            Option::None
+        } else {
+            Option::Some(self - other)
+        }
+    }
+
+    fn checked_mul(self: Self, other: Self) -> Option<Self> {
+        if other == 0u8 {
+            Option::Some(0u8)
+        } elif self > 255u8 / other {
+            Option::None
+        } else {
+            Option::Some(self * other)
+        }
+    }
+
+    fn checked_div(self: Self, other: Self) -> Option<Self> {
+        if other == 0u8 {
+            Option::None
+        } else {
+            Option::Some(self / other)
+        }
+    }
+
+    fn saturating_add(self: Self, other: Self) -> Self {
+        if self > 255u8 - other {
+            255u8
+        } else {
+            self + other
+        }
+    }
+
+    fn saturating_sub(self: Self, other: Self) -> Self {
+        if self < other {
+            0u8
+        } else {
+            self - other
+        }
+    }
+
+    fn saturating_mul(self: Self, other: Self) -> Self {
+        if other == 0u8 {
+            0u8
+        } elif self > 255u8 / other {
+            255u8
+        } else {
+            self * other
+        }
+    }
+}
+
+impl Checked for u16 {
+    fn checked_add(self: Self, other: Self) -> Option<Self> {
+        # `MAX - other` cannot underflow: `other` is itself a u16.
+        if self > 65535u16 - other {
+            Option::None
+        } else {
+            Option::Some(self + other)
+        }
+    }
+
+    fn checked_sub(self: Self, other: Self) -> Option<Self> {
+        if self < other {
+            Option::None
+        } else {
+            Option::Some(self - other)
+        }
+    }
+
+    fn checked_mul(self: Self, other: Self) -> Option<Self> {
+        if other == 0u16 {
+            Option::Some(0u16)
+        } elif self > 65535u16 / other {
+            Option::None
+        } else {
+            Option::Some(self * other)
+        }
+    }
+
+    fn checked_div(self: Self, other: Self) -> Option<Self> {
+        if other == 0u16 {
+            Option::None
+        } else {
+            Option::Some(self / other)
+        }
+    }
+
+    fn saturating_add(self: Self, other: Self) -> Self {
+        if self > 65535u16 - other {
+            65535u16
+        } else {
+            self + other
+        }
+    }
+
+    fn saturating_sub(self: Self, other: Self) -> Self {
+        if self < other {
+            0u16
+        } else {
+            self - other
+        }
+    }
+
+    fn saturating_mul(self: Self, other: Self) -> Self {
+        if other == 0u16 {
+            0u16
+        } elif self > 65535u16 / other {
+            65535u16
+        } else {
+            self * other
+        }
+    }
+}
+
+impl Checked for u32 {
+    fn checked_add(self: Self, other: Self) -> Option<Self> {
+        # `MAX - other` cannot underflow: `other` is itself a u32.
+        if self > 4294967295u32 - other {
+            Option::None
+        } else {
+            Option::Some(self + other)
+        }
+    }
+
+    fn checked_sub(self: Self, other: Self) -> Option<Self> {
+        if self < other {
+            Option::None
+        } else {
+            Option::Some(self - other)
+        }
+    }
+
+    fn checked_mul(self: Self, other: Self) -> Option<Self> {
+        if other == 0u32 {
+            Option::Some(0u32)
+        } elif self > 4294967295u32 / other {
+            Option::None
+        } else {
+            Option::Some(self * other)
+        }
+    }
+
+    fn checked_div(self: Self, other: Self) -> Option<Self> {
+        if other == 0u32 {
+            Option::None
+        } else {
+            Option::Some(self / other)
+        }
+    }
+
+    fn saturating_add(self: Self, other: Self) -> Self {
+        if self > 4294967295u32 - other {
+            4294967295u32
+        } else {
+            self + other
+        }
+    }
+
+    fn saturating_sub(self: Self, other: Self) -> Self {
+        if self < other {
+            0u32
+        } else {
+            self - other
+        }
+    }
+
+    fn saturating_mul(self: Self, other: Self) -> Self {
+        if other == 0u32 {
+            0u32
+        } elif self > 4294967295u32 / other {
+            4294967295u32
+        } else {
+            self * other
+        }
+    }
+}
+
+impl Checked for u64 {
+    fn checked_add(self: Self, other: Self) -> Option<Self> {
         # `MAX - other` cannot underflow: `other` is itself a u64.
         if self > 18446744073709551615u64 - other {
             Option::None
@@ -57,7 +260,7 @@ impl CheckedU64 for u64 {
         }
     }
 
-    fn checked_sub(self: Self, other: Self) -> Option<u64> {
+    fn checked_sub(self: Self, other: Self) -> Option<Self> {
         if self < other {
             Option::None
         } else {
@@ -65,7 +268,7 @@ impl CheckedU64 for u64 {
         }
     }
 
-    fn checked_mul(self: Self, other: Self) -> Option<u64> {
+    fn checked_mul(self: Self, other: Self) -> Option<Self> {
         if other == 0u64 {
             Option::Some(0u64)
         } elif self > 18446744073709551615u64 / other {
@@ -75,7 +278,7 @@ impl CheckedU64 for u64 {
         }
     }
 
-    fn checked_div(self: Self, other: Self) -> Option<u64> {
+    fn checked_div(self: Self, other: Self) -> Option<Self> {
         if other == 0u64 {
             Option::None
         } else {
@@ -110,17 +313,284 @@ impl CheckedU64 for u64 {
     }
 }
 
-trait CheckedI64 {
-    fn checked_add(self: Self, other: Self) -> Option<i64>
-    fn checked_sub(self: Self, other: Self) -> Option<i64>
-    fn checked_mul(self: Self, other: Self) -> Option<i64>
-    fn checked_div(self: Self, other: Self) -> Option<i64>
-    fn saturating_add(self: Self, other: Self) -> Self
-    fn saturating_sub(self: Self, other: Self) -> Self
+impl Checked for i8 {
+    fn checked_add(self: Self, other: Self) -> Option<Self> {
+        # Each bound is computed on the side that cannot overflow:
+        # `MAX - other` only when `other` is positive, `MIN - other`
+        # only when it is negative.
+        if other > 0i8 && self > 127i8 - other {
+            Option::None
+        } elif other < 0i8 && self < -128i8 - other {
+            Option::None
+        } else {
+            Option::Some(self + other)
+        }
+    }
+
+    fn checked_sub(self: Self, other: Self) -> Option<Self> {
+        if other < 0i8 && self > 127i8 + other {
+            Option::None
+        } elif other > 0i8 && self < -128i8 + other {
+            Option::None
+        } else {
+            Option::Some(self - other)
+        }
+    }
+
+    fn checked_mul(self: Self, other: Self) -> Option<Self> {
+        # `MIN * -1` is the one product the division test below
+        # cannot check, because the check itself would divide `MIN`
+        # by `-1` and trap.
+        if other == 0i8 {
+            Option::Some(0i8)
+        } elif self == -128i8 && other == -1i8 {
+            Option::None
+        } else {
+            val product = self * other
+            if product / other == self {
+                Option::Some(product)
+            } else {
+                Option::None
+            }
+        }
+    }
+
+    fn checked_div(self: Self, other: Self) -> Option<Self> {
+        if other == 0i8 {
+            Option::None
+        } elif self == -128i8 && other == -1i8 {
+            Option::None
+        } else {
+            Option::Some(self / other)
+        }
+    }
+
+    fn saturating_add(self: Self, other: Self) -> Self {
+        if other > 0i8 && self > 127i8 - other {
+            127i8
+        } elif other < 0i8 && self < -128i8 - other {
+            -128i8
+        } else {
+            self + other
+        }
+    }
+
+    fn saturating_sub(self: Self, other: Self) -> Self {
+        if other < 0i8 && self > 127i8 + other {
+            127i8
+        } elif other > 0i8 && self < -128i8 + other {
+            -128i8
+        } else {
+            self - other
+        }
+    }
+
+    fn saturating_mul(self: Self, other: Self) -> Self {
+        # Neither operand is zero past the first arm, so the sign of
+        # the true product decides which bound an overflow clamps to.
+        if other == 0i8 {
+            0i8
+        } elif self == -128i8 && other == -1i8 {
+            127i8
+        } else {
+            val product = self * other
+            if product / other == self {
+                product
+            } elif (self < 0i8 && other < 0i8) || (self > 0i8 && other > 0i8) {
+                127i8
+            } else {
+                -128i8
+            }
+        }
+    }
 }
 
-impl CheckedI64 for i64 {
-    fn checked_add(self: Self, other: Self) -> Option<i64> {
+impl Checked for i16 {
+    fn checked_add(self: Self, other: Self) -> Option<Self> {
+        # Each bound is computed on the side that cannot overflow:
+        # `MAX - other` only when `other` is positive, `MIN - other`
+        # only when it is negative.
+        if other > 0i16 && self > 32767i16 - other {
+            Option::None
+        } elif other < 0i16 && self < -32768i16 - other {
+            Option::None
+        } else {
+            Option::Some(self + other)
+        }
+    }
+
+    fn checked_sub(self: Self, other: Self) -> Option<Self> {
+        if other < 0i16 && self > 32767i16 + other {
+            Option::None
+        } elif other > 0i16 && self < -32768i16 + other {
+            Option::None
+        } else {
+            Option::Some(self - other)
+        }
+    }
+
+    fn checked_mul(self: Self, other: Self) -> Option<Self> {
+        # `MIN * -1` is the one product the division test below
+        # cannot check, because the check itself would divide `MIN`
+        # by `-1` and trap.
+        if other == 0i16 {
+            Option::Some(0i16)
+        } elif self == -32768i16 && other == -1i16 {
+            Option::None
+        } else {
+            val product = self * other
+            if product / other == self {
+                Option::Some(product)
+            } else {
+                Option::None
+            }
+        }
+    }
+
+    fn checked_div(self: Self, other: Self) -> Option<Self> {
+        if other == 0i16 {
+            Option::None
+        } elif self == -32768i16 && other == -1i16 {
+            Option::None
+        } else {
+            Option::Some(self / other)
+        }
+    }
+
+    fn saturating_add(self: Self, other: Self) -> Self {
+        if other > 0i16 && self > 32767i16 - other {
+            32767i16
+        } elif other < 0i16 && self < -32768i16 - other {
+            -32768i16
+        } else {
+            self + other
+        }
+    }
+
+    fn saturating_sub(self: Self, other: Self) -> Self {
+        if other < 0i16 && self > 32767i16 + other {
+            32767i16
+        } elif other > 0i16 && self < -32768i16 + other {
+            -32768i16
+        } else {
+            self - other
+        }
+    }
+
+    fn saturating_mul(self: Self, other: Self) -> Self {
+        # Neither operand is zero past the first arm, so the sign of
+        # the true product decides which bound an overflow clamps to.
+        if other == 0i16 {
+            0i16
+        } elif self == -32768i16 && other == -1i16 {
+            32767i16
+        } else {
+            val product = self * other
+            if product / other == self {
+                product
+            } elif (self < 0i16 && other < 0i16) || (self > 0i16 && other > 0i16) {
+                32767i16
+            } else {
+                -32768i16
+            }
+        }
+    }
+}
+
+impl Checked for i32 {
+    fn checked_add(self: Self, other: Self) -> Option<Self> {
+        # Each bound is computed on the side that cannot overflow:
+        # `MAX - other` only when `other` is positive, `MIN - other`
+        # only when it is negative.
+        if other > 0i32 && self > 2147483647i32 - other {
+            Option::None
+        } elif other < 0i32 && self < -2147483648i32 - other {
+            Option::None
+        } else {
+            Option::Some(self + other)
+        }
+    }
+
+    fn checked_sub(self: Self, other: Self) -> Option<Self> {
+        if other < 0i32 && self > 2147483647i32 + other {
+            Option::None
+        } elif other > 0i32 && self < -2147483648i32 + other {
+            Option::None
+        } else {
+            Option::Some(self - other)
+        }
+    }
+
+    fn checked_mul(self: Self, other: Self) -> Option<Self> {
+        # `MIN * -1` is the one product the division test below
+        # cannot check, because the check itself would divide `MIN`
+        # by `-1` and trap.
+        if other == 0i32 {
+            Option::Some(0i32)
+        } elif self == -2147483648i32 && other == -1i32 {
+            Option::None
+        } else {
+            val product = self * other
+            if product / other == self {
+                Option::Some(product)
+            } else {
+                Option::None
+            }
+        }
+    }
+
+    fn checked_div(self: Self, other: Self) -> Option<Self> {
+        if other == 0i32 {
+            Option::None
+        } elif self == -2147483648i32 && other == -1i32 {
+            Option::None
+        } else {
+            Option::Some(self / other)
+        }
+    }
+
+    fn saturating_add(self: Self, other: Self) -> Self {
+        if other > 0i32 && self > 2147483647i32 - other {
+            2147483647i32
+        } elif other < 0i32 && self < -2147483648i32 - other {
+            -2147483648i32
+        } else {
+            self + other
+        }
+    }
+
+    fn saturating_sub(self: Self, other: Self) -> Self {
+        if other < 0i32 && self > 2147483647i32 + other {
+            2147483647i32
+        } elif other > 0i32 && self < -2147483648i32 + other {
+            -2147483648i32
+        } else {
+            self - other
+        }
+    }
+
+    fn saturating_mul(self: Self, other: Self) -> Self {
+        # Neither operand is zero past the first arm, so the sign of
+        # the true product decides which bound an overflow clamps to.
+        if other == 0i32 {
+            0i32
+        } elif self == -2147483648i32 && other == -1i32 {
+            2147483647i32
+        } else {
+            val product = self * other
+            if product / other == self {
+                product
+            } elif (self < 0i32 && other < 0i32) || (self > 0i32 && other > 0i32) {
+                2147483647i32
+            } else {
+                -2147483648i32
+            }
+        }
+    }
+}
+
+impl Checked for i64 {
+    fn checked_add(self: Self, other: Self) -> Option<Self> {
         # Each bound is computed on the side that cannot overflow:
         # `MAX - other` only when `other` is positive, `MIN - other`
         # only when it is negative.
@@ -133,7 +603,7 @@ impl CheckedI64 for i64 {
         }
     }
 
-    fn checked_sub(self: Self, other: Self) -> Option<i64> {
+    fn checked_sub(self: Self, other: Self) -> Option<Self> {
         if other < 0i64 && self > 9223372036854775807i64 + other {
             Option::None
         } elif other > 0i64 && self < -9223372036854775808i64 + other {
@@ -143,7 +613,7 @@ impl CheckedI64 for i64 {
         }
     }
 
-    fn checked_mul(self: Self, other: Self) -> Option<i64> {
+    fn checked_mul(self: Self, other: Self) -> Option<Self> {
         # `MIN * -1` is the one product the division test below
         # cannot check, because the check itself would divide `MIN`
         # by `-1` and trap.
@@ -161,7 +631,7 @@ impl CheckedI64 for i64 {
         }
     }
 
-    fn checked_div(self: Self, other: Self) -> Option<i64> {
+    fn checked_div(self: Self, other: Self) -> Option<Self> {
         if other == 0i64 {
             Option::None
         } elif self == -9223372036854775808i64 && other == -1i64 {
@@ -190,4 +660,24 @@ impl CheckedI64 for i64 {
             self - other
         }
     }
+
+    fn saturating_mul(self: Self, other: Self) -> Self {
+        # Neither operand is zero past the first arm, so the sign of
+        # the true product decides which bound an overflow clamps to.
+        if other == 0i64 {
+            0i64
+        } elif self == -9223372036854775808i64 && other == -1i64 {
+            9223372036854775807i64
+        } else {
+            val product = self * other
+            if product / other == self {
+                product
+            } elif (self < 0i64 && other < 0i64) || (self > 0i64 && other > 0i64) {
+                9223372036854775807i64
+            } else {
+                -9223372036854775808i64
+            }
+        }
+    }
 }
+

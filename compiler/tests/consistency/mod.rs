@@ -54,3 +54,4 @@ mod primitive_receivers;
 mod conv_span;
 mod extern_buf;
 mod net;
+mod checked_narrow;

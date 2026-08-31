@@ -3,6 +3,11 @@
 # overflow instead — as an `Option` (`checked_*`) or by clamping to
 # the type's bound (`saturating_*`).
 #
+# One trait, `Checked`, with an impl per integer width: `u8` / `u16` /
+# `u32` / `u64` and `i8` / `i16` / `i32` / `i64`. The bounds each impl
+# clamps to are its own type's, so the same call reads the same way at
+# every width.
+#
 # Two shapes are load-bearing for the compiled backends: the receiver
 # is a name rather than a literal, and an enum result is bound with
 # `val` before it is matched.
@@ -63,6 +68,47 @@ fn main() -> u64 {
 
     val floor = i_min.saturating_sub(two)
     println(floor)
+
+    # The same calls at a narrow width (RUNTIME-TRAP-NARROW). `u8`
+    # differs from `u64` in one way worth seeing: the operator `-`
+    # below zero *wraps* here rather than trapping, so `checked_sub`
+    # is reporting an underflow the program would otherwise have run
+    # past with 251 in hand.
+    val byte: u8 = 5u8
+    val bigger: u8 = 10u8
+    println(byte - bigger)
+
+    val byte_diff = byte.checked_sub(bigger)
+    match byte_diff {
+        Option::Some(v) => println(v),
+        Option::None => println("u8 sub underflows"),
+    }
+    println(byte.saturating_sub(bigger))
+
+    val byte_max: u8 = 255u8
+    val byte_sum = byte_max.checked_add(byte)
+    match byte_sum {
+        Option::Some(v) => println(v),
+        Option::None => println("u8 add overflows"),
+    }
+    println(byte_max.saturating_mul(byte))
+
+    # `saturating_mul` is the one method the split traits never had
+    # for a signed type. It clamps to whichever bound the true
+    # product ran past, so `MIN * -1` lands on MAX rather than
+    # wrapping back to MIN.
+    val small_min: i16 = -32768i16
+    val minus_one_16: i16 = -1i16
+    val three_16: i16 = 3i16
+    println(small_min.saturating_mul(minus_one_16))
+    println(small_min.saturating_mul(three_16))
+
+    val quad: i32 = 2147483647i32
+    val quad_over = quad.checked_mul(three_16 as i32)
+    match quad_over {
+        Option::Some(v) => println(v),
+        Option::None => println("i32 mul overflows"),
+    }
 
     0u64
 }

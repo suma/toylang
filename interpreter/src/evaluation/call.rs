@@ -59,6 +59,11 @@ fn primitive_target_symbol(
         Object::UInt16(_) => "u16",
         Object::UInt32(_) => "u32",
         Object::Float64(_) => "f64",
+        // SIMD-F32: `f32` was missing from every primitive-dispatch
+        // table (this one, the two in the type checker, and the
+        // lowering's), so `impl <Trait> for f32` was accepted by the
+        // parser and unreachable afterwards.
+        Object::Float32(_) => "f32",
         Object::ConstString(_) | Object::String(_) => "str",
         Object::Pointer(_) => "ptr",
         _ => return None,

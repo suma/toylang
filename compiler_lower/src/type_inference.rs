@@ -608,9 +608,19 @@ impl<'a> FunctionLower<'a> {
                         &args,
                     );
                 }
-                let recv_sym = match obj_expr {
-                    Expr::Identifier(s) => s,
-                    _ => return None,
+                // A primitive receiver that is not a name — a literal
+                // (`21u8.twice()`), an arithmetic result, a cast. The
+                // primitive dispatch path lowers the receiver as an
+                // ordinary expression, so it needs no binding; without
+                // this arm the type was simply unknown here and a cast
+                // over the call reported "could not infer source scalar
+                // type for `as` cast", about a receiver the user can
+                // see the type of.
+                let Expr::Identifier(recv_sym) = obj_expr else {
+                    let ty = self.value_scalar(&obj)?;
+                    let target_sym =
+                        super::method_call::primitive_target_sym_for_ir_type(ty, self.interner)?;
+                    return self.method_call_return_type(target_sym, None, method, &args);
                 };
                 // Track receiver self-type and per-receiver type
                 // args separately so the generic-method peek path
@@ -637,28 +647,18 @@ impl<'a> FunctionLower<'a> {
                         // the canonical-name symbol; the rest of the
                         // lookup falls through into the same
                         // `method_func_ids` branch struct receivers use.
+                        //
+                        // This used to spell the mapping out again. It
+                        // was the fourth copy of one table, and each
+                        // copy that missed a width disabled the feature
+                        // for it silently -- `f32` was absent from
+                        // every one of them, so `impl <Trait> for f32`
+                        // parsed and then vanished (NUM-W-ENUMERATION).
                         Binding::Scalar { ty, .. } => {
-                            let name = match ty {
-                                Type::Bool => "bool",
-                                Type::I64 => "i64",
-                                Type::U64 => "u64",
-                                Type::F64 => "f64",
-                                // `core/std/str.t::AsPtr` and
-                                // `core/std/hash.t::Hash for str`
-                                // dispatch through this path.
-                                Type::Str => "str",
-                                // Narrow int extension traits live
-                                // in `core/std/hash.t` (`Hash for
-                                // u8 / u16 / u32 / i8 / i16 / i32`).
-                                Type::U8 => "u8",
-                                Type::U16 => "u16",
-                                Type::U32 => "u32",
-                                Type::I8 => "i8",
-                                Type::I16 => "i16",
-                                Type::I32 => "i32",
-                                _ => return None,
-                            };
-                            let sym = self.interner.get(name)?;
+                            let sym = super::method_call::primitive_target_sym_for_ir_type(
+                                *ty,
+                                self.interner,
+                            )?;
                             (sym, None)
                         }
                         _ => return None,

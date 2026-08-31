@@ -47,6 +47,22 @@ pub(super) fn primitive_target_sym_for_ir_type(
         Type::I64 => "i64",
         Type::U64 => "u64",
         Type::F64 => "f64",
+        // NUM-W / SIMD-F32: the narrow widths dispatch like any other
+        // primitive receiver. Registration already handled them
+        // (`primitive_type_decl_for_target_sym`, NUM-W-AOT T5), so
+        // leaving them out here meant an `impl <Trait> for u8` was
+        // lowered and then unreachable: the call fell past this
+        // function to the struct/enum binding path and failed with
+        // "the method receiver must be a struct or enum binding",
+        // which names neither the width nor the impl. One more
+        // instance of the enumeration NUM-W-ENUMERATION tracks.
+        Type::I8 => "i8",
+        Type::U8 => "u8",
+        Type::I16 => "i16",
+        Type::U16 => "u16",
+        Type::I32 => "i32",
+        Type::U32 => "u32",
+        Type::F32 => "f32",
         // `Type::Str` is a pointer-sized opaque handle in IR
         // (Phase T). Extension-trait dispatch (`s.hash()` from
         // `core/std/hash.t`'s `impl Hash for str`) routes through

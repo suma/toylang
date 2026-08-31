@@ -10,6 +10,11 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-31
+- **primitive レシーバの method call が全幅で動く** — narrow int
+  (`u8`〜`i32`) は lowering の dispatch 表から、`f32` は 4 表すべてから
+  漏れていて、`impl <Trait> for u8` が到達不能だった。式レシーバ
+  (`21u8.twice()` / `a.neg().neg()`) も型付けできるようになり、
+  `extension_trait_chained.t` が AOT skip リストから外れた。
 - **GENERIC-IN-ENUM-PAYLOAD / SELF-IN-TYPE-ARG — `Option<Ptr<T>>` が
   書けるようになった** — 「注釈の一番外側しか見ない」という同じ欠陥が
   型検査・lowering・tree-walker の 3 層にあり、`Option<Self>` は
@@ -774,16 +779,23 @@
   と `ScalarTy` の同名メソッドが「再列挙しない」入口なので、残りの
   match arm もそこへ寄せられる。**この列挙が実際にバグを産んだ実例**:
   単項 `-` / `~` が narrow int を拒否していた (型検査が
-  `== TypeDecl::Int64` で書かれていた、2026-08-25 修正)。ただし macro 化は
-  4 バックエンドの意味論に触れるので、**同種の穴をもう 1 件踏んでから**。
+  `== TypeDecl::Int64` で書かれていた、2026-08-25 修正)。
+  **2 件目と 3 件目を 2026-08-31 に踏んだ** — 「primitive レシーバ →
+  対象型名」の対応表が **4 箇所**に複製されていて、lowering の dispatch
+  側が narrow int 全幅を、4 箇所すべてが `f32` を落としていた。結果
+  `impl <Trait> for u8` は parse も型検査も lowering も通ったうえで
+  **到達不能**になり、診断は幅にも impl にも触れなかった。1 箇所は
+  共通関数に寄せたが、残り 3 箇所は健在。**着手条件は満たされている**。
 
 - **RUNTIME-TRAP-NARROW: narrow int の `checked_*` / `saturating_*`** ★ —
   `core/std/checked.t` は `u64` / `i64` だけ。`u8`〜`u32` / `i8`〜`i32` は
   未提供。トラップ自体 (0 除算 / `MIN / -1`) は全幅で効いているので、
-  足りないのは逃げ道の API だけ。**trait を型ごとに分ける必要がある** —
-  trait method の戻り型 `Option<Self>` は lower できず
-  (`compiler MVP cannot lower method return type Struct(.., [Self_])`)、
-  幅ごとに `Option<u8>` 等を書き下すことになる。踏んでから。
+  足りないのは逃げ道の API だけ。**2026-08-31 に阻害要因が消えた** —
+  `Option<Self>` を返す trait method と narrow int レシーバの
+  dispatch が両方動くようになったので、`trait Checked { fn checked_add(
+  self: Self, other: Self) -> Option<Self> }` を 1 本書いて幅ごとに
+  impl すれば済む (2 つに割れている現在の trait も統合できる)。
+  **コンパイラ側の作業は無く、stdlib の編集だけ**。
 
 - **TYPECHECK-LIES 残: `str.substring` / `str.split` の AOT/JIT 対応** ★ —
   2026-08-20 に 3 件を実測したところ、**本物の嘘は `null` だけ**だった

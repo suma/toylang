@@ -27,10 +27,15 @@ package std.checked
 # backends yet (see `docs/language.md` -> "Known limitations").
 #
 # The traits are split per type rather than written once over `Self`
-# because a trait method returning `Option<Self>` does not survive
-# lowering — the AOT / JIT lanes reject `Option<Self_>` as a method
-# return type. Naming the concrete payload keeps all three backends
-# on the same path. Widths other than 64-bit are not covered yet.
+# for a reason that no longer holds: `Option<Self>` used to be
+# rejected as a method return type by the AOT / JIT lanes, so naming
+# the concrete payload was the only way to keep all three backends on
+# one path. Since 2026-08-31 a single `trait Checked { fn checked_add(
+# self: Self, other: Self) -> Option<Self> }` with one impl per width
+# lowers on every backend, and narrow receivers dispatch too. Merging
+# the two traits and covering u8..i32 is now a stdlib edit with no
+# compiler work behind it (todo: RUNTIME-TRAP-NARROW). Widths other
+# than 64-bit are still not covered.
 
 trait CheckedU64 {
     fn checked_add(self: Self, other: Self) -> Option<u64>

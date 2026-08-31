@@ -153,6 +153,9 @@ pub(super) fn primitive_type_decl_for_target_sym(
         "i8" => TypeDecl::Int8,
         "i16" => TypeDecl::Int16,
         "i32" => TypeDecl::Int32,
+        // SIMD-F32: completes the set the two tables above and
+        // `primitive_target_sym_for_ir_type` share.
+        "f32" => TypeDecl::Float32,
         _ => return None,
     })
 }

@@ -546,6 +546,12 @@ impl<'a> TypeCheckerVisitor<'a> {
             TypeDecl::UInt16 => "u16",
             TypeDecl::UInt32 => "u32",
             TypeDecl::Float64 => "f64",
+            // SIMD-F32: same reason as the narrow ints above. Without
+            // it `impl <Trait> for f32` type-checks as an impl on an
+            // unknown identifier, and `self` inside the body compares
+            // unequal to `f32` — the diagnostic reads "expected f32,
+            // but got f32", one side being `Identifier("f32")`.
+            TypeDecl::Float32 => "f32",
             TypeDecl::String => "str",
             TypeDecl::Ptr => "ptr",
             _ => return None,
@@ -571,6 +577,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             "i8" => TypeDecl::Int8,
             "i16" => TypeDecl::Int16,
             "i32" => TypeDecl::Int32,
+            "f32" => TypeDecl::Float32,
             "str" => TypeDecl::String,
             "ptr" => TypeDecl::Ptr,
             _ => return None,

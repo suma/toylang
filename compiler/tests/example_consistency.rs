@@ -77,7 +77,6 @@ const AOT_UNSUPPORTED: &[&str] = &[
     "array_type_only.t",
     "const_decls.t",
     "contracts.t",
-    "extension_trait_chained.t",
     "extern_generic_identity.t",
     "float64.t",
     "if_val.t",

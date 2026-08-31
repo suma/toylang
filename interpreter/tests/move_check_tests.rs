@@ -311,3 +311,89 @@ fn main() -> i64 {
         diagnostic.message
     );
 }
+
+// --- The pass has to walk impl-block methods too --------------------
+//
+// `check_moves` iterated `program.function`, which does not contain
+// impl-block methods, so nothing inside one was analysed. That is not
+// a missing diagnostic: `transferred` is what tells the backends a
+// local was handed away and must not be dropped again at scope exit,
+// so an unanalysed method's locals were **always** dropped. A method
+// that moved an owning value into its return handed the caller a
+// value whose `Drop` had already run.
+//
+// Free functions were analysed, which is exactly why this stayed
+// hidden — the same code one indentation level out worked.
+
+#[test]
+fn a_value_returned_from_an_impl_method_is_not_dropped_on_the_way_out() {
+    // `drop` parks the field at -1, so a premature drop is visible in
+    // the value the caller receives rather than as a crash.
+    let source = r#"
+struct Fd { n: i64 }
+
+impl Drop for Fd {
+    fn drop(&mut self) {
+        self.n = -1i64
+    }
+}
+
+impl Fd {
+    fn open(n: i64) -> Result<Fd, i64> {
+        val f = Fd { n: n }
+        Result::Ok(f)
+    }
+    fn open_early(n: i64) -> Result<Fd, i64> {
+        if n < 0i64 {
+            return Result::Err(n)
+        }
+        val f = Fd { n: n }
+        return Result::Ok(f)
+    }
+}
+
+fn free_open(n: i64) -> Result<Fd, i64> {
+    val f = Fd { n: n }
+    Result::Ok(f)
+}
+
+fn main() -> i64 {
+    val a = match Fd::open(7i64) { Result::Ok(f) => f.n, Result::Err(e) => e }
+    val b = match Fd::open_early(9i64) { Result::Ok(f) => f.n, Result::Err(e) => e }
+    val c = match free_open(11i64) { Result::Ok(f) => f.n, Result::Err(e) => e }
+    a * 10000i64 + b * 100i64 + c
+}
+"#;
+    let result = test_program(source).expect("program should run");
+    let v = result.borrow().unwrap_int64();
+    // 7, 9, 11 — all three intact. Before the fix the two impl-block
+    // forms answered -1 and only the free function was right.
+    assert_eq!(v, 7 * 10000 + 9 * 100 + 11);
+}
+
+#[test]
+fn a_value_moved_into_a_container_from_an_impl_method_is_still_alive() {
+    let source = format!(
+        "{OWNING_TYPE}\n{}",
+        r#"
+struct Filler { tag: i64 }
+
+impl Filler {
+    fn fill(&self, out: &mut Vec<Cell<i64>>) {
+        val c = Cell::new(41i64)
+        out.push(c)
+    }
+}
+
+fn main() -> i64 {
+    var v: Vec<Cell<i64>> = Vec::new()
+    val f = Filler { tag: 0i64 }
+    f.fill(&mut v)
+    val held = v.get(0u64)
+    held.get() + 1i64
+}
+"#
+    );
+    let result = test_program(&source).expect("program should run");
+    assert_eq!(result.borrow().unwrap_int64(), 42);
+}

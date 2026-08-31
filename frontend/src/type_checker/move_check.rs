@@ -108,6 +108,28 @@ pub fn check_moves(
         }
         checker.run_function(&function.parameter, function.code);
     }
+    // Impl-block methods, which `program.function` does not contain.
+    //
+    // Leaving them out did not merely miss diagnostics — it broke
+    // *code*. `transferred` is what tells the backends that a local
+    // was handed away and must not be dropped again at scope exit, so
+    // a method that moved an owning value into its return
+    // (`val s = TcpStream { .. }  Result::Ok(s)`) had the move go
+    // unrecorded, and the drop glue then ran on `s` at the end of the
+    // method. The caller received a value whose resources were
+    // already released: a `Drop` that zeroes a field handed back a
+    // zeroed field, and one that closes a descriptor handed back a
+    // closed socket. The identical code in a free function worked,
+    // which is what kept it hidden.
+    for i in 0..program.statement.len() {
+        let stmt_ref = StmtRef(i as u32);
+        let Some(Stmt::ImplBlock { methods, .. }) = program.statement.get(&stmt_ref) else {
+            continue;
+        };
+        for m in &methods {
+            checker.run_function(&m.parameter, m.code);
+        }
+    }
     MoveAnalysis { errors: checker.errors, transferred: checker.transferred }
 }
 

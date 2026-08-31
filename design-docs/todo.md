@@ -9,6 +9,19 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-09-01
+- **IMPL-BLOCK-VISIBILITY — impl メソッドから stdlib が見えるようになった**
+  — impl block の body 検査とメソッド登録が 1 パスで、しかも statement
+  順だったため、**メソッドは自分より後ろの block からしか見えなかった**。
+  `integrate_modules` は stdlib をユーザの statement の**後ろ**に足すので、
+  結果としてユーザの `impl` から `Vec::new()` も `Span<u8>` の
+  メソッドも呼べなかった (`Associated function 'new' not found`)。
+  **同じコードが自由関数では動く** — 自由関数は後段のパスで検査され、
+  その時点では全部登録済みだから。この非対称が発見を遅らせた: stdlib は
+  ほぼ impl block だが、各 block は自分より上の block しか必要と
+  しなかった。登録を独立したパス (pass 1) に分けた。
+  NETWORK_IO N1 の `TcpStream::read(&self, buf: Span<u8>)` で踏んだ。
+
 ### 2026-08-31
 - **RUNTIME-TRAP-NARROW — `checked_*` / `saturating_*` が全 8 幅で使える**
   — `CheckedU64` / `CheckedI64` の 2 trait を **`Checked` 1 本 (`Self` 上)**

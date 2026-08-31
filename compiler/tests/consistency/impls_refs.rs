@@ -1161,3 +1161,95 @@ fn option_of_typed_ptr_3_backend() {
     "#;
     assert_consistent(src, "option_of_typed_ptr_3_backend");
 }
+
+// --- IMPL-BLOCK-VISIBILITY: an impl method sees every other impl -----------
+//
+// Method bodies used to be checked and registered in one sweep, block
+// by block in statement order, so a method was visible only to blocks
+// that came *after* its own. `integrate_modules` appends the stdlib
+// behind the user's statements, which meant a user `impl` could not
+// reach the stdlib at all — `Vec::new()` inside one was "Associated
+// function 'new' not found for struct", and a `Span<u8>` parameter had
+// no methods. The identical code in a free function worked, because
+// free functions are checked in a later pass with everything already
+// registered, and that asymmetry is what kept this hidden: the stdlib
+// itself is nearly all impl blocks, and each one only ever needed the
+// blocks above it.
+//
+// Registration is now its own pass over every block, ahead of any body.
+
+/// The stdlib, reached from inside a user `impl` method: an
+/// associated function, a method on the value it returns, and a
+/// generic stdlib struct as a parameter type.
+#[test]
+fn an_impl_method_can_use_stdlib_types() {
+    let src = r#"
+        struct Bag { tag: u64 }
+
+        impl Bag {
+            fn collect(&self) -> u64 {
+                var v: Vec<u64> = Vec::new()
+                v.push(7u64)
+                v.push(35u64)
+                var total: u64 = 0u64
+                for x in v.iter() {
+                    total = total + x
+                }
+                total
+            }
+
+            # A stdlib struct as a parameter type: the receiver is the
+            # parameter, not `self`, which is the shape `TcpStream::read`
+            # (NETWORK_IO N1) needs and the one that failed first.
+            fn measure(&self, s: String) -> u64 {
+                s.len()
+            }
+        }
+
+        fn main() -> u64 {
+            val b = Bag { tag: 0u64 }
+            val s = String::from_str("abc")
+            b.collect() + b.measure(s)
+        }
+    "#;
+    // 7 + 35 + 3.
+    assert_eq!(interpreter_value(src) & 0xff, 45);
+    assert_consistent(src, "impl_method_uses_stdlib");
+}
+
+/// Two user impl blocks calling each other, in both directions. The
+/// backward one is what a single registering sweep could never do —
+/// `First` is declared before `Second`, so `Second`'s methods did not
+/// exist yet when `First`'s body was checked.
+#[test]
+fn impl_blocks_can_call_each_other_in_either_direction() {
+    let src = r#"
+        struct First { n: u64 }
+        struct Second { n: u64 }
+
+        impl First {
+            fn forward(&self) -> u64 {
+                val s = Second { n: self.n }
+                s.doubled()
+            }
+            fn base(&self) -> u64 { self.n }
+        }
+
+        impl Second {
+            fn doubled(&self) -> u64 { self.n * 2u64 }
+            fn backward(&self) -> u64 {
+                val f = First { n: self.n }
+                f.base() + 1u64
+            }
+        }
+
+        fn main() -> u64 {
+            val f = First { n: 10u64 }
+            val s = Second { n: 4u64 }
+            f.forward() + s.backward()
+        }
+    "#;
+    // 20 + 5.
+    assert_eq!(interpreter_value(src) & 0xff, 25);
+    assert_consistent(src, "impl_blocks_mutual");
+}

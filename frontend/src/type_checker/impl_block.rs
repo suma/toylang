@@ -9,6 +9,41 @@ use crate::type_checker::method::MethodProcessing;
 
 /// Implementation block type checking
 impl<'a> TypeCheckerVisitor<'a> {
+    /// Register one impl block's method *signatures*, without looking
+    /// at any body.
+    ///
+    /// Bodies used to be checked and registered in the same sweep, one
+    /// block at a time, in statement order. That made a method visible
+    /// only to blocks *after* its own — and since `integrate_modules`
+    /// appends the stdlib behind the user's statements, it meant a
+    /// user `impl` could not call `Vec::new()` or take a `Span<u8>`
+    /// parameter and use it, while the identical code in a free
+    /// function worked (free functions are checked in a later pass,
+    /// by which point everything is registered). The error named the
+    /// method rather than the ordering: "Associated function 'new' not
+    /// found for struct".
+    ///
+    /// Calling this over every block before any body is checked is
+    /// what makes impl methods see the same world free functions do.
+    /// Re-registering is harmless — `register_struct_method` replaces
+    /// a spec with matching type args rather than appending — so the
+    /// registration the checking pass still does is a no-op repeat.
+    pub fn register_impl_block_methods(
+        &mut self,
+        target_type: DefaultSymbol,
+        target_type_args: &[TypeDecl],
+        methods: &[Rc<MethodFunction>],
+    ) {
+        for method in methods {
+            self.context.register_struct_method(
+                target_type,
+                method.name,
+                target_type_args.to_vec(),
+                method.clone(),
+            );
+        }
+    }
+
     /// Type check implementation blocks. `trait_name` is `Some(name)` when this
     /// block is `impl <Trait> for <Type>` and `None` for an inherent impl. For
     /// trait impls we additionally validate that every trait method is provided

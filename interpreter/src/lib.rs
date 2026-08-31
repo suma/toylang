@@ -329,6 +329,24 @@ fn process_impl_blocks_extracted(
 ) -> Vec<TypeCheckError> {
     let mut errors = Vec::new();
 
+    // Pass 1: register every block's method signatures. Nothing is
+    // type-checked here.
+    //
+    // The two passes are what let one impl block's method call
+    // another block's, in either direction. A single sweep that
+    // registered a method only after checking its body made
+    // visibility follow statement order, and `integrate_modules` puts
+    // the stdlib *after* the user's statements — so a user `impl`
+    // could not reach `Vec::new()` or use a `Span<u8>` parameter,
+    // while the same code in a free function could (free functions
+    // are checked in a later pass, with everything already
+    // registered). See `register_impl_block_methods`.
+    for (target_type, target_type_args, methods, _trait_name, _trait_type_args) in impl_blocks {
+        tc.register_impl_block_methods(*target_type, target_type_args, methods);
+    }
+
+    // Pass 2: check the bodies.
+    //
     // ITER-PROTOCOL-TRAIT: route through the trait-args-aware
     // visitor entry so generic-trait impls
     // (`impl Iterator<i64> for Counter`) substitute `T -> i64`

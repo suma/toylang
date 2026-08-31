@@ -76,6 +76,7 @@ fn primitive_target_symbol(
 fn derive_struct_type_args(
     entry: &StructRegistryEntry,
     field_values: &std::collections::HashMap<DefaultSymbol, RcObject>,
+    active_scope: &HashMapStd<DefaultSymbol, TypeDecl>,
 ) -> Vec<TypeDecl> {
     if entry.generic_params.is_empty() {
         return Vec::new();
@@ -89,7 +90,27 @@ fn derive_struct_type_args(
     entry
         .generic_params
         .iter()
-        .map(|p| bindings.get(p).cloned().unwrap_or(TypeDecl::Unknown))
+        .map(|p| {
+            bindings
+                .get(p)
+                .cloned()
+                // A *phantom* parameter — one no field mentions, like
+                // `Ptr<T>`'s, which keeps `T` in the type and only an
+                // untyped address in the struct — cannot be read back
+                // off the field values. Ask the scope the literal is
+                // being evaluated in: inside `impl<T> Ptr<T>` that is
+                // the instance's own `T`, so the value carries the
+                // argument its constructor was instantiated with.
+                //
+                // Without this the value is tagged `Unknown` and every
+                // later method whose `T` appears only in the *return*
+                // type (`fn get(&self, i: u64) -> T`) fails on an
+                // unbound parameter — reachable as soon as the value
+                // arrives through something other than an annotated
+                // binding, e.g. out of an `Option<Ptr<T>>` payload.
+                .or_else(|| active_scope.get(p).cloned())
+                .unwrap_or(TypeDecl::Unknown)
+        })
         .collect()
 }
 
@@ -1698,10 +1719,11 @@ impl EvaluationContext<'_> {
             field_values.insert(*field_name, field_value);
         }
 
+        let active_scope = self.merged_generic_scope();
         let type_args = self
             .struct_definitions
             .get(struct_name)
-            .map(|entry| derive_struct_type_args(entry, &field_values))
+            .map(|entry| derive_struct_type_args(entry, &field_values, &active_scope))
             .unwrap_or_default();
         let struct_obj = Object::Struct {
             type_name: *struct_name,

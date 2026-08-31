@@ -49,3 +49,4 @@ mod soa;
 mod diagnostics;
 mod runtime_io;
 mod parse_numbers;
+mod generic_enum_payload;

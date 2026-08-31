@@ -329,13 +329,15 @@ String ──as_ptr()──> ptr ──?──> Ptr<u8> ──from_parts()──
 **これを繋ぐのが本項の作業**で、`Span<u8>` を受け口にする本設計の API
 (§3) はこれが無いと 1 行も書けない。追加するのは 4 つ:
 
+**`Ptr::try_from_raw` は 2026-08-31 に landing 済み** — `Option<Ptr<T>>`
+という戻り型自体がコンパイラの 3 層で通らなかったので、そこを先に直した
+(todo の GENERIC-IN-ENUM-PAYLOAD / SELF-IN-TYPE-ARG)。残りは下の 3 つ。
+
 ```rust
 # core/std/ptr.t — lift a raw address into a typed window. Checked
 # rather than unsafe-by-fiat: `Ptr<T>` is non-null by construction
 # (POINTER P5), and a null here would break that invariant silently.
-fn try_from_raw(p: ptr) -> Option<Ptr<T>>
-unsafe fn from_raw(p: ptr) -> Ptr<T>     # panics on null; for callers
-                                         # that already know it is not
+fn try_from_raw(p: ptr) -> Option<Self>      # ✅ landed 2026-08-31
 
 # core/std/span.t — the two-step above, in one call.
 unsafe fn from_raw_parts(p: ptr, len: u64) -> Span<T>

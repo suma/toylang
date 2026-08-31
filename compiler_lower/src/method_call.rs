@@ -119,8 +119,10 @@ impl<'a> FunctionLower<'a> {
             }
             // For struct / enum / tuple shapes that may contain
             // generic params, walk recursively and rebuild via the
-            // boundary lowerer once everything is concrete.
-            _ => self.lower_type_with_subst(ty, subst),
+            // boundary lowerer once everything is concrete. `Self`
+            // rides along so it resolves at any depth
+            // (`-> Option<Self>`, SELF-IN-TYPE-ARG).
+            _ => self.lower_type_with_subst_self(ty, subst, Some(self_type)),
         }
     }
 

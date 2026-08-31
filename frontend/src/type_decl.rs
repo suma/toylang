@@ -533,6 +533,104 @@ impl TypeDecl {
     }
 
     /// Substitute generic type parameters with concrete types
+    /// The type arguments of the first `name`-carrying node **inside**
+    /// this type, at any depth.
+    ///
+    /// Every layer that instantiates a generic type reads its
+    /// arguments off a `val` / `var` annotation, and each did so by
+    /// matching the annotation's outermost node. That covers
+    /// `val v: Ptr<u64> = Ptr::alloc(2u64)` and nothing else: wrap the
+    /// result in an enum — `val v: Option<Ptr<u64>> =
+    /// Ptr::try_from_raw(p)` — and the annotation looked like it said
+    /// nothing about `Ptr`, so the three layers each failed in their
+    /// own vocabulary (an unactionable "needs an explicit type
+    /// annotation" from the monomorphiser, and an unbound `T` in
+    /// `__builtin_sizeof::<T>()` from the tree-walker) about an
+    /// annotation that was already fully explicit
+    /// (GENERIC-IN-ENUM-PAYLOAD).
+    ///
+    /// Only nodes that *carry* arguments match, so a bare
+    /// `Identifier(name)` deeper in the tree cannot silently resolve a
+    /// generic type to zero arguments.
+    ///
+    /// This is a search, not unification: a function whose declared
+    /// return type names a different instance than its owner
+    /// (`impl<T> Win<T> { fn zero() -> Option<Win<u64>> }`) resolves the
+    /// owner to `Win<u64>`. The top-level matches this backs up have
+    /// always had the same weakness for `-> Win<u64>`, so descending
+    /// does not widen it.
+    pub fn nested_type_args(&self, name: DefaultSymbol) -> Option<Vec<TypeDecl>> {
+        match self {
+            TypeDecl::Struct(n, args) | TypeDecl::Enum(n, args) => {
+                if *n == name && !args.is_empty() {
+                    return Some(args.clone());
+                }
+                args.iter().find_map(|a| a.nested_type_args(name))
+            }
+            TypeDecl::Array(elems, _, _) | TypeDecl::Tuple(elems) => {
+                elems.iter().find_map(|e| e.nested_type_args(name))
+            }
+            TypeDecl::Dict(k, v) => k
+                .nested_type_args(name)
+                .or_else(|| v.nested_type_args(name)),
+            TypeDecl::Range(inner) | TypeDecl::Ref { inner, .. } => inner.nested_type_args(name),
+            TypeDecl::Function(params, ret) => params
+                .iter()
+                .find_map(|p| p.nested_type_args(name))
+                .or_else(|| ret.nested_type_args(name)),
+            _ => None,
+        }
+    }
+
+    /// Replace every `Self` in this type with `replacement`, at any
+    /// depth.
+    ///
+    /// The normalisation sites for an `impl` block's `Self` used to
+    /// match only the top level, so `-> Self` resolved but
+    /// `-> Option<Self>` did not: the caller saw a literal
+    /// `Option<Self>` and rejected an otherwise correct
+    /// `val o: Option<Win<u64>> = Win::make()` with "expected
+    /// Option<Win<u64>>, but got Option<Self>" (SELF-IN-TYPE-ARG).
+    /// `Self` is not a generic parameter, so `substitute_generics`
+    /// (keyed by symbol) cannot express it.
+    pub fn substitute_self(&self, replacement: &TypeDecl) -> TypeDecl {
+        match self {
+            TypeDecl::Self_ => replacement.clone(),
+            TypeDecl::Array(elements, size, soa) => TypeDecl::Array(
+                elements.iter().map(|t| t.substitute_self(replacement)).collect(),
+                size.clone(),
+                *soa,
+            ),
+            TypeDecl::Dict(key, value) => TypeDecl::Dict(
+                Box::new(key.substitute_self(replacement)),
+                Box::new(value.substitute_self(replacement)),
+            ),
+            TypeDecl::Tuple(elements) => TypeDecl::Tuple(
+                elements.iter().map(|t| t.substitute_self(replacement)).collect(),
+            ),
+            TypeDecl::Struct(name, params) => TypeDecl::Struct(
+                *name,
+                params.iter().map(|t| t.substitute_self(replacement)).collect(),
+            ),
+            TypeDecl::Enum(name, params) => TypeDecl::Enum(
+                *name,
+                params.iter().map(|t| t.substitute_self(replacement)).collect(),
+            ),
+            TypeDecl::Ref { is_mut, inner } => TypeDecl::Ref {
+                is_mut: *is_mut,
+                inner: Box::new(inner.substitute_self(replacement)),
+            },
+            TypeDecl::Range(inner) => {
+                TypeDecl::Range(Box::new(inner.substitute_self(replacement)))
+            }
+            TypeDecl::Function(params, ret) => TypeDecl::Function(
+                params.iter().map(|t| t.substitute_self(replacement)).collect(),
+                Box::new(ret.substitute_self(replacement)),
+            ),
+            _ => self.clone(),
+        }
+    }
+
     pub fn substitute_generics(&self, substitutions: &std::collections::HashMap<DefaultSymbol, TypeDecl>) -> TypeDecl {
         match self {
             TypeDecl::Generic(param) => {

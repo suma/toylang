@@ -323,10 +323,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                     .return_type
                     .clone()
                     .unwrap_or(TypeDecl::Unit);
-                let resolved = match return_type {
-                    TypeDecl::Self_ => obj_type.clone(),
-                    other => other,
-                };
+                // SELF-IN-TYPE-ARG: `Self` also appears inside a type
+                // argument (`-> Option<Self>`, the shape a checked
+                // arithmetic trait wants), which a top-level match
+                // leaves unresolved for the caller to trip over.
+                let resolved = return_type.substitute_self(obj_type);
                 return Ok(resolved);
             }
 
@@ -342,10 +343,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             && let Some(sig) = self.context.get_trait_method(*trait_sym, *method).cloned()
         {
             let ret = sig.return_type.clone().unwrap_or(TypeDecl::Unit);
-            let resolved = match ret {
-                TypeDecl::Self_ => obj_type.clone(),
-                other => other,
-            };
+            let resolved = ret.substitute_self(obj_type);
             return Ok(resolved);
         }
 
@@ -495,6 +493,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                         .unwrap_or(TypeDecl::Generic(p)),
                     ref other => other.substitute_generics(&substitutions),
                 };
+                // SELF-IN-TYPE-ARG: a `Self` nested in a type argument
+                // survives the arms above; the `Self_` arm has already
+                // produced a concrete type, so this is a no-op there.
+                let resolved =
+                    resolved.substitute_self(&TypeDecl::Enum(*enum_name, type_params.clone()));
                 return Ok(resolved);
             }
         }
@@ -587,6 +590,9 @@ impl<'a> TypeCheckerVisitor<'a> {
                         },
                         other => other.substitute_generics(&substitutions)
                     };
+                    // SELF-IN-TYPE-ARG (see the enum path above).
+                    let resolved_return_type = resolved_return_type
+                        .substitute_self(&TypeDecl::Struct(*struct_name, type_params.clone()));
                     
                     
                     return Ok(resolved_return_type);
@@ -647,6 +653,10 @@ impl<'a> TypeCheckerVisitor<'a> {
                         {
                             TypeDecl::Struct(name, vec![])
                         }
+                        // SELF-IN-TYPE-ARG (see the enum path above).
+                        ref other if !matches!(other, TypeDecl::Generic(_)) => other
+                            .substitute_self(&TypeDecl::Struct(*struct_name, vec![]))
+                            .substitute_generics(&substitutions),
                         TypeDecl::Generic(p) => {
                             substitutions.get(&p).cloned().unwrap_or(TypeDecl::Generic(p))
                         }
@@ -1027,15 +1037,22 @@ impl<'a> TypeCheckerVisitor<'a> {
         // instead, so the caller's expected type matches.
         let return_ty = method.return_type.clone().unwrap_or(TypeDecl::Unit);
         let is_enum_target = self.context.enum_definitions.contains_key(&struct_name);
+        // SELF-IN-TYPE-ARG: `Self` also appears *inside* a type
+        // argument (`-> Option<Self>`), where a top-level-only match
+        // left it unresolved and the caller compared
+        // `Option<Win<u64>>` against a literal `Option<Self>`.
+        let self_ty = if is_enum_target {
+            TypeDecl::Enum(struct_name, vec![])
+        } else {
+            TypeDecl::Struct(struct_name, vec![])
+        };
         let return_ty = match return_ty {
-            TypeDecl::Self_ if is_enum_target => TypeDecl::Enum(struct_name, vec![]),
-            TypeDecl::Self_ => TypeDecl::Struct(struct_name, vec![]),
             TypeDecl::Identifier(name)
                 if self.context.struct_definitions.contains_key(&name) =>
             {
                 TypeDecl::Struct(name, vec![])
             }
-            other => other,
+            other => other.substitute_self(&self_ty),
         };
         Ok(return_ty)
     }

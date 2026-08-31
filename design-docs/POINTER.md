@@ -242,7 +242,11 @@ String ──as_ptr()──> ptr ──✗──> Ptr<u8> ──from_parts()─�
 `Span<T>` を「`&[T]` のライブラリ側の答え」と位置づけている以上、
 これは穴 (2026-08-31 に [`NETWORK_IO.md`](NETWORK_IO.md) の設計中に発見)。
 
-足すもの: `Ptr::try_from_raw(p) -> Option<Ptr<T>>` (**非 null 不変 (P5) を
-壊さないため既定はこちら**) と `unsafe fn from_raw(p) -> Ptr<T>`、
-`Span::from_raw_parts(p: ptr, len: u64)`、`String::as_span()` /
+**`Ptr::try_from_raw(p) -> Option<Self>` は 2026-08-31 に landing** —
+非 null 不変 (P5) を壊さないので既定はこちら。`Option<Ptr<T>>` という
+戻り型自体が型検査 / lowering / tree-walker の 3 層で通らなかったため、
+先にそれを直している (todo 完了済みの GENERIC-IN-ENUM-PAYLOAD /
+SELF-IN-TYPE-ARG)。
+
+残り: `Span::from_raw_parts(p: ptr, len: u64)`、`String::as_span()` /
 `Vec<T>::as_span()`。状態は `todo.md` の NET (CONV-SPAN)。

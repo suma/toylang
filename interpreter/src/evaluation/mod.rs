@@ -626,9 +626,24 @@ impl<'a> EvaluationContext<'a> {
         let Some(anno) = annotation else {
             return HashMap::new();
         };
+        // The annotation names the owner at its top level in the
+        // common case (`val p: Ptr<u64> = Ptr::alloc(2u64)`), but it
+        // also reaches the binding wrapped in another type
+        // (`val p: Option<Ptr<u64>> = Ptr::try_from_raw(raw)`). Look
+        // inside before giving up, or the callee builds its value with
+        // no type arguments and a later `__builtin_sizeof::<T>()` in a
+        // method body fails on an unbound `T`
+        // (GENERIC-IN-ENUM-PAYLOAD).
+        let nested;
         let anno_args: &[TypeDecl] = match anno {
             TypeDecl::Struct(name, args) | TypeDecl::Enum(name, args) if *name == owner => args,
-            _ => return HashMap::new(),
+            other => match other.nested_type_args(owner) {
+                Some(args) => {
+                    nested = args;
+                    &nested
+                }
+                None => return HashMap::new(),
+            },
         };
         // The owner is normally a struct (`impl<T> Ptr<T>`); an
         // `impl ... for <Enum>` with a `Self`-returning associated

@@ -95,6 +95,26 @@ impl<T> Ptr<T> {
         Ptr { addr: shifted }
     }
 
+    # Lift an existing address into a typed window (CONV-SPAN).
+    #
+    # `alloc` used to be the only way to obtain a `Ptr<T>`, so a buffer
+    # that already existed -- `String::as_ptr()`, `Vec::as_ptr()`, an
+    # address handed over by a C library -- could not be viewed through
+    # one, and `Span<T>` (which is built out of a `Ptr<T>`) was
+    # unreachable for exactly the buffers it is most useful for.
+    #
+    # `None` for a null address, so the non-null invariant (P5) holds
+    # for every `Ptr<T>` that exists rather than by convention. The
+    # window does **not** own the memory: freeing stays with whoever
+    # allocated it, and nothing checks that `p` outlives the window.
+    fn try_from_raw(p: ptr) -> Option<Self> {
+        if __builtin_ptr_is_null(p) {
+            Option::None
+        } else {
+            Option::Some(Ptr { addr: p })
+        }
+    }
+
     # The bare address, for code (or a `Span<T>`) that wants to carry
     # it without the type.
     fn as_raw(self: Self) -> ptr {

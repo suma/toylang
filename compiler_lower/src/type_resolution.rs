@@ -115,7 +115,10 @@ impl<'a> FunctionLower<'a> {
         let args = match anno {
             TypeDecl::Struct(name, args) if *name == base_name => args.clone(),
             TypeDecl::Identifier(name) if *name == base_name => Vec::new(),
-            _ => return None,
+            // The annotation does not name the struct at its top
+            // level, but may still carry it further in
+            // (GENERIC-IN-ENUM-PAYLOAD).
+            _ => anno.nested_type_args(base_name)?,
         };
         let mut out: Vec<Type> = Vec::with_capacity(args.len());
         for a in &args {
@@ -274,7 +277,7 @@ impl<'a> FunctionLower<'a> {
         let args = match anno {
             TypeDecl::Enum(name, args) if *name == base_name => args.clone(),
             TypeDecl::Struct(name, args) if *name == base_name => args.clone(),
-            _ => return None,
+            _ => anno.nested_type_args(base_name)?,
         };
         let mut out: Vec<Type> = Vec::with_capacity(args.len());
         for a in &args {

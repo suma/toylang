@@ -10,6 +10,14 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-31
+- **GENERIC-IN-ENUM-PAYLOAD / SELF-IN-TYPE-ARG — `Option<Ptr<T>>` が
+  書けるようになった** — 「注釈の一番外側しか見ない」という同じ欠陥が
+  型検査・lowering・tree-walker の 3 層にあり、`Option<Self>` は
+  型検査で、`Option<Win<T>>` は monomorphize で落ちていた。
+  `TypeDecl::substitute_self` / `nested_type_args` を frontend に置いて
+  3 層で共有し、enum を返す associated call の束縛と、phantom 型引数
+  (`Ptr<T>`) の構築時記録も直した。CONV-SPAN の `Ptr::try_from_raw` が
+  landing。
 - **DOD Phase 3 — 配列要素としての enum + tag 列** — compiled lane で
   一切動いていなかった enum 配列が動くようになり、`soa` では tag が
   独立した列になる。enum 要素だけは丸ごと書ける (`ss[i] = Shape::Point`)。

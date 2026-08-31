@@ -341,10 +341,35 @@ impl<'a> FunctionLower<'a> {
         t: &TypeDecl,
         subst: &HashMap<DefaultSymbol, Type>,
     ) -> Option<Type> {
+        self.lower_type_with_subst_self(t, subst, None)
+    }
+
+    /// `lower_type_with_subst` plus the receiver type `Self` stands
+    /// for, so a `Self` nested in a type argument resolves the same
+    /// way a top-level one does.
+    ///
+    /// The method paths used to handle `Self` only at the outermost
+    /// level, which is why `-> Self` lowered and `-> Option<Self>`
+    /// failed with "cannot lower generic method return type
+    /// `Struct(.., [Self_])` after subst" (SELF-IN-TYPE-ARG).
+    /// `None` keeps the old behaviour for callers with no receiver in
+    /// hand — a `Self` there is still unlowerable, which is correct.
+    pub(super) fn lower_type_with_subst_self(
+        &mut self,
+        t: &TypeDecl,
+        subst: &HashMap<DefaultSymbol, Type>,
+        self_type: Option<Type>,
+    ) -> Option<Type> {
         if let Some(s) = lower_scalar(t) {
             return Some(s);
         }
         match t {
+            TypeDecl::Self_ => self_type,
+            TypeDecl::Identifier(sym)
+                if self_type.is_some() && self.interner.resolve(*sym) == Some("Self") =>
+            {
+                self_type
+            }
             TypeDecl::Generic(g) => subst.get(g).copied(),
             TypeDecl::Identifier(name) => {
                 if let Some(ty) = subst.get(name).copied() {
@@ -379,7 +404,7 @@ impl<'a> FunctionLower<'a> {
             TypeDecl::Struct(name, args) if self.struct_defs.contains_key(name) => {
                 let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
                 for a in args {
-                    concrete.push(self.lower_type_with_subst(a, subst)?);
+                    concrete.push(self.lower_type_with_subst_self(a, subst, self_type)?);
                 }
                 instantiate_struct(
                     self.module,
@@ -397,7 +422,7 @@ impl<'a> FunctionLower<'a> {
             {
                 let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
                 for a in args {
-                    concrete.push(self.lower_type_with_subst(a, subst)?);
+                    concrete.push(self.lower_type_with_subst_self(a, subst, self_type)?);
                 }
                 instantiate_enum(
                     self.module,
@@ -415,7 +440,7 @@ impl<'a> FunctionLower<'a> {
             TypeDecl::Tuple(elems) => {
                 let mut concrete: Vec<Type> = Vec::with_capacity(elems.len());
                 for e in elems {
-                    concrete.push(self.lower_type_with_subst(e, subst)?);
+                    concrete.push(self.lower_type_with_subst_self(e, subst, self_type)?);
                 }
                 Some(Type::Tuple(super::types::intern_tuple(self.module, concrete)))
             }

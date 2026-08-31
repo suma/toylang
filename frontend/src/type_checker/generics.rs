@@ -343,6 +343,22 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
             }
             _ => substituted_return_type
         };
+        // SELF-IN-TYPE-ARG: same reason as the associated-function
+        // path — `Self` nested in a type argument (`-> Option<Self>`)
+        // needs the same replacement the top-level arm makes.
+        let resolved_return_type = {
+            let self_ty = if generic_params.is_empty() {
+                TypeDecl::Struct(struct_name, vec![])
+            } else {
+                let type_params: Vec<TypeDecl> = generic_params.iter().map(|param| {
+                    substitutions.get(param).cloned()
+                        .or_else(|| self.type_inference.lookup_generic_type(*param))
+                        .unwrap_or(TypeDecl::Generic(*param))
+                }).collect();
+                TypeDecl::Struct(struct_name, type_params)
+            };
+            resolved_return_type.substitute_self(&self_ty)
+        };
         
         
         Ok(resolved_return_type)
@@ -454,6 +470,23 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
             }
             _ => substituted_return_type
         };
+        // SELF-IN-TYPE-ARG: the arms above only see `Self` at the top
+        // level, so `-> Option<Self>` reached the caller unresolved and
+        // failed against a perfectly explicit `val o: Option<Win<u64>>`.
+        // The `Self_` arm has already produced a concrete type, so this
+        // is a no-op there.
+        let self_ty = {
+            let mut type_params = Vec::new();
+            for generic_param in &generic_params {
+                if let Some(concrete_type) = substitutions.get(generic_param) {
+                    type_params.push(concrete_type.clone());
+                } else {
+                    type_params.push(TypeDecl::Generic(*generic_param));
+                }
+            }
+            TypeDecl::Struct(struct_name, type_params)
+        };
+        let resolved_return_type = resolved_return_type.substitute_self(&self_ty);
 
         // Record struct instance types for method calls (if needed)
         // This functionality can be implemented later for persistent type storage

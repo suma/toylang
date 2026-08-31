@@ -1617,6 +1617,33 @@ impl<'a> FunctionLower<'a> {
             );
             return Ok(Some(None));
         }
+        // Enum return — `fn try_from_raw(p: ptr) -> Option<Self>` and
+        // friends. Same shape as the plain compound-call path's enum
+        // branch: pre-allocate the binding's storage tree, flatten it
+        // into the `CallEnum` dest list, bind as an enum so a later
+        // `match` sees an enum scrutinee. Without this arm the
+        // associated call fell through to a path that bound the name
+        // as the *receiver* struct, and the `match` failed with
+        // "enum-variant pattern is only valid against an enum
+        // scrutinee" (GENERIC-IN-ENUM-PAYLOAD).
+        if let Type::Enum(ret_enum_id) = target_ret {
+            let storage = self.allocate_enum_storage(ret_enum_id);
+            let dests = Self::flatten_enum_dests(&storage);
+            self.bindings.insert(name, Binding::Enum(storage));
+            let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());
+            for a in args_vec {
+                arg_values.extend(self.lower_arg_values(a)?);
+            }
+            self.emit(
+                InstKind::CallEnum {
+                    target: func_id,
+                    args: arg_values,
+                    dests,
+                },
+                None,
+            );
+            return Ok(Some(None));
+        }
         // Scalar return — emit a regular Call.
         if target_ret.produces_value() {
             let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());

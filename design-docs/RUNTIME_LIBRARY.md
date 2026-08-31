@@ -198,9 +198,15 @@ landing するのが効率的。**P1-A の反復順の論点だけは P0 と並�
 
 ## 非目標
 
-- **ネットワーク / async runtime / プロセス spawn** — 需要が未確認。加えて
-  bump ヒープ (never-reuse) と `fork` の相性 (COW 後の冪等 free は
-  保たれるが fd・TLS の扱い) を検討する前に着手しない。
+- **async runtime / プロセス spawn** — bump ヒープ (never-reuse) と `fork` の
+  相性 (COW 後の冪等 free は保たれるが fd・TLS の扱い) を検討する前に
+  着手しない。async runtime は言語に並行性が入る前にランタイムだけ
+  先行させない。
+  **ネットワークはここから外した (2026-08-31)** — 「需要が未確認」と
+  していたが、nonblocking socket + epoll/kqueue は**単一スレッドで
+  完結する**ので P3 並行性を待つ必要がないと分かった。設計は
+  [`NETWORK_IO.md`](NETWORK_IO.md) / [`EVENT_POLLING.md`](EVENT_POLLING.md)、
+  状態は `todo.md` の NET。
 - **str 系ヘルパの toylang 化** — RUNTIME-PORT R3/R4 で実測却下済み。
   Layer 1 (Rust) に置くのが確定。
 - **regex / 多倍長 / 直列化フレームワーク** — toy 言語の用途に対して

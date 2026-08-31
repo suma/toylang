@@ -1026,6 +1026,37 @@
   超えるのはここが最初で、cranelift の ISA フラグはモジュール単位なので
   関数の multi-versioning をどう作るかが論点 (SIMD.md 論点 2)。設計は
   [`SIMD.md`](SIMD.md)
+* ネットワーク IO (NET) ★★ — **並行性を待たずにサーバが書ける形**。
+  nonblocking socket + epoll/kqueue は単一スレッドで完結するので、
+  CONCURRENCY (`Send` 相当の判定が要る) の前に landing できる。設計は
+  [`NETWORK_IO.md`](NETWORK_IO.md) (socket ラッパー + `#[cfg_attr(path)]
+  mod sys` によるコンパイル時切り替え + ABI probe テスト + errno の OS 差表)
+  と [`EVENT_POLLING.md`](EVENT_POLLING.md) (epoll/kqueue の統一形、
+  決定 6 件)。着手前に効く前提が 2 つある:
+  * **CONV-SPAN** — **`Ptr<T>` は `Ptr::alloc` でしか作れない**。
+    `String::as_ptr()` / `Vec::as_ptr()` の生 `ptr` を `Ptr<u8>` /
+    `Span<u8>` に持ち上げる口が無いので、`Span` を受け口にする API が
+    1 行も書けない。`Ptr::try_from_raw` / `from_raw` /
+    `Span::from_raw_parts` / `String::as_span` / `Vec::as_span` を足す。
+    **net と独立に価値がある** (`Span<T>` は「`&[T]` のライブラリ側の
+    答え」なのに構築の口が 1 つしか無かった) ので単独で landing できる
+  * **EXTERN-BUF** — extern 境界がバッファを運べない (interpreter の
+    registry `fn(&[Value])` がヒープに触れない)。`send` / `recv` に要る。
+    compiled レーンは `ptr` 引数を既に通すので tree-walker だけの作業。
+    **コピー API ではなく借用 API にする** — `HeapManager::memory` は
+    連続した `Vec<u8>` で `get_memory_slice_mut` (囲む allocation に
+    対して境界検査済み) が既にあるので、`recv(2)` に toylang の
+    バッファを直接渡せる。**全レーンでバイト列のコピーが 0 回**になる
+  * **確保しない受信ループのための stdlib** — `Span::slice(offset, len)`
+    (部分窓、アプリ側 zero-copy の本体)、`Vec::with_capacity(n)`、
+    `Vec::set_size(n)` (recv が埋めたバイト数を Vec に知らせる口)。
+    いずれも現状の `core/std` に無く、無いとバッファの使い回しが
+    書けない。net の extern を `never_allocates` で宣言すると、
+    **確保しないことが E0016 で検査される**
+  * **`compiler/build.rs` の `rerun-if-changed` が `lib.rs` 単体** —
+    `toylang_rt` をモジュール分割すると AOT の staticlib だけ古いまま
+    残る。分割と同じコミットでディレクトリ監視に変える
+
 * モジュール拡張 — バージョニング、リモートパッケージ
 * 言語内からの AST 取得・操作
 * LSP 対応 — 補完 / go-to-definition / hover / 診断 / フォーマット。frontend の AST・型チェッカ・`SourceLocation` を再利用できる。ただし**エージェントは LSP より CLI クエリを使いやすい**ので、LLM ループの観点では `--api` / 型ホール (P7 で landing 済み) の方が先だった

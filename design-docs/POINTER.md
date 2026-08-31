@@ -228,3 +228,21 @@ REGIONS (`E0022`) は arena 由来の値を捕まえるが、**default allocator
 `docs/language.md` に「escape は未検査」と明記して進む。
 選択肢 2 は、実際に dangling span が実プログラムで問題になったときの
 着手候補として残る。
+
+**`Ptr<T>` を生 `ptr` から作れない (CONV-SPAN)。** 公開関数は
+`alloc` / `get` / `set` / `offset` / `as_raw` / `__getitem__` /
+`__setitem__` の 7 つで、**構築の口が `Ptr::alloc` しか無い**。
+一方 `String::as_ptr()` / `Vec::as_ptr()` は生 `ptr` を返すので、
+
+```
+String ──as_ptr()──> ptr ──✗──> Ptr<u8> ──from_parts()──> Span<u8>
+```
+
+が繋がらず、**既にあるバッファに対して `Span<T>` を作れない**。
+`Span<T>` を「`&[T]` のライブラリ側の答え」と位置づけている以上、
+これは穴 (2026-08-31 に [`NETWORK_IO.md`](NETWORK_IO.md) の設計中に発見)。
+
+足すもの: `Ptr::try_from_raw(p) -> Option<Ptr<T>>` (**非 null 不変 (P5) を
+壊さないため既定はこちら**) と `unsafe fn from_raw(p) -> Ptr<T>`、
+`Span::from_raw_parts(p: ptr, len: u64)`、`String::as_span()` /
+`Vec<T>::as_span()`。状態は `todo.md` の NET (CONV-SPAN)。

@@ -98,9 +98,16 @@ pub fn analyze(
     // JIT (and the IR VM / AOT) run the full lowered module including
     // the synthesized drop-glue functions, so `--all-backends
     // --profile=mem` compares them byte-for-byte regardless.
+    // NETWORK_IO N1: `TcpStream` joins the list for the same reason —
+    // it is stdlib, not the user's. Without it, adding a socket type
+    // to the auto-loaded stdlib would have switched this JIT off for
+    // **every program in the language**, since the check looks at
+    // which impl blocks exist rather than at which ones a program can
+    // reach. Its descriptor is closed by the interpreter's own
+    // scope-exit path, exactly like the allocator wrappers' storage.
     if let Some(drop_sym) = interner.get("Drop") {
         let stdlib_owning: Vec<DefaultSymbol> =
-            ["Arena", "FixedBuffer", "SlotRegion", "Box", "Vec", "SoaVec"]
+            ["Arena", "FixedBuffer", "SlotRegion", "Box", "Vec", "SoaVec", "TcpStream"]
                 .iter()
                 .filter_map(|name| interner.get(name))
                 .collect();

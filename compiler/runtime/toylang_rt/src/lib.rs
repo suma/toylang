@@ -128,6 +128,28 @@ unsafe extern "C" {
     fn pthread_setspecific(key: usize, value: *mut u8) -> i32;
 }
 
+// Sockets (NETWORK_IO). Separate block only for grouping: these are
+// spelled the same on both platforms, which is why they live here
+// rather than in `sys_*.rs`. What differs is *how they are called* —
+// that is what `sys` holds.
+//
+// `fcntl` is declared variadic on purpose. It really is `int fcntl(int,
+// int, ...)`, and on Apple aarch64 variadic arguments go on the stack
+// while fixed ones go in registers; a three-fixed-argument declaration
+// would put the flags in the wrong place and quietly set nothing.
+unsafe extern "C" {
+    fn socket(domain: i32, ty: i32, protocol: i32) -> i32;
+    fn connect(fd: i32, addr: *const u8, len: u32) -> i32;
+    fn send(fd: i32, buf: *const u8, len: usize, flags: i32) -> isize;
+    fn recv(fd: i32, buf: *mut u8, len: usize, flags: i32) -> isize;
+    fn shutdown(fd: i32, how: i32) -> i32;
+    fn close(fd: i32) -> i32;
+    fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+    fn setsockopt(fd: i32, level: i32, name: i32, val: *const u8, len: u32) -> i32;
+    fn getsockopt(fd: i32, level: i32, name: i32, val: *mut u8, len: *mut u32) -> i32;
+    fn inet_pton(af: i32, src: *const u8, dst: *mut u8) -> i32;
+}
+
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn _NSGetArgc() -> *const i32;
@@ -156,6 +178,37 @@ const IO_IS_A_DIRECTORY: u64 = 3;
 const IO_READ_ERROR: u64 = 4;
 const IO_WRITE_ERROR: u64 = 5;
 
+// NETWORK_IO: the status vocabulary the net externs report through
+// `toy_net_status`, mapped to `NetError` variants in
+// `core/std/net.t`. **These numbers are OS-independent** — that is
+// their whole job. The errno values behind them are not (EAGAIN is 11
+// on Linux and 35 on the BSDs, ECONNREFUSED 111 against 61), so the
+// translation lives in `sys::status_from_errno`, one table per
+// platform, rather than in a single shared match like
+// `io_status_from_errno`.
+//
+// `WOULD_BLOCK` and `IN_PROGRESS` are *not* failures. A non-blocking
+// socket answers with them constantly and an event loop treats them
+// as "ask again"; they are in the same enum as the real errors only
+// because that is what the syscall hands back.
+pub(crate) const NET_OK: u64 = 0;
+pub(crate) const NET_WOULD_BLOCK: u64 = 1;
+pub(crate) const NET_IN_PROGRESS: u64 = 2;
+pub(crate) const NET_INTERRUPTED: u64 = 3;
+pub(crate) const NET_CONNECTION_REFUSED: u64 = 4;
+pub(crate) const NET_CONNECTION_RESET: u64 = 5;
+pub(crate) const NET_CONNECTION_ABORTED: u64 = 6;
+pub(crate) const NET_BROKEN_PIPE: u64 = 7;
+pub(crate) const NET_NOT_CONNECTED: u64 = 8;
+pub(crate) const NET_ADDR_IN_USE: u64 = 9;
+pub(crate) const NET_ADDR_NOT_AVAILABLE: u64 = 10;
+pub(crate) const NET_NETWORK_UNREACHABLE: u64 = 11;
+pub(crate) const NET_HOST_UNREACHABLE: u64 = 12;
+pub(crate) const NET_TIMED_OUT: u64 = 13;
+pub(crate) const NET_TOO_MANY_OPEN_FILES: u64 = 14;
+pub(crate) const NET_INVALID_INPUT: u64 = 15;
+pub(crate) const NET_UNKNOWN: u64 = 16;
+
 // RUNTIME-LIB P0-B: `toy_parse_f64`'s status vocabulary, mirrored by
 // the interpreter's `extern_parse` registry and mapped to
 // `ParseError` variants in `core/std/parse.t`.
@@ -164,13 +217,27 @@ const PARSE_INVALID: u64 = 1;
 const PARSE_OVERFLOW: u64 = 2;
 
 #[cfg(target_os = "macos")]
-fn current_errno() -> i32 {
+pub(crate) fn current_errno() -> i32 {
     unsafe { *__error() }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn current_errno() -> i32 {
+pub(crate) fn current_errno() -> i32 {
     unsafe { *__errno_location() }
+}
+
+/// Put an errno back. Used when unwinding a half-built socket: the
+/// `close` that tidies up can fail on its own, and its errno would
+/// otherwise replace the one that explains why we are unwinding.
+#[cfg(target_os = "macos")]
+pub(crate) fn set_errno(err: i32) {
+    unsafe { *__error() = err };
+}
+
+#[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
+pub(crate) fn set_errno(err: i32) {
+    unsafe { *__errno_location() = err };
 }
 
 /// Map a libc errno to the RUNTIME-IO status vocabulary. The values
@@ -384,6 +451,12 @@ struct ThreadState {
     /// RUNTIME-LIB P0-B: the status of the most recent
     /// `toy_parse_f64`, read back by the paired status extern.
     parse_f64_status: u64,
+    /// NETWORK_IO: the status of the most recent net call, read back
+    /// by `toy_net_status`. One slot for all of them, unlike the I/O
+    /// side's slot-per-operation: every `net.t` wrapper reads it on
+    /// the line after the call it belongs to, so nothing can
+    /// interleave between the two.
+    net_status: u64,
 }
 
 impl Default for ThreadState {
@@ -414,6 +487,7 @@ impl Default for ThreadState {
             err_sink: default_err_sink,
             print_stderr: false,
             parse_f64_status: PARSE_OK,
+            net_status: NET_OK,
         }
     }
 }
@@ -2686,6 +2760,220 @@ pub fn net_backend_name() -> &'static str {
 #[unsafe(no_mangle)]
 pub extern "C" fn toy_net_backend_name() -> *const u8 {
     toy_str_alloc(sys::BACKEND_NAME.as_bytes())
+}
+
+// ---------------------------------------------------------------------------
+// Sockets (NETWORK_IO N1).
+//
+// Each operation exists twice: a plain-Rust `net_*` that does the work
+// and a `toy_net_*` extern that unpacks toylang's calling convention
+// and forwards. The interpreter's tree-walker calls the Rust half
+// directly rather than reimplementing the syscalls on `std::net`
+// (NETWORK_IO.md §7), so no two engines can disagree about which errno
+// became which `NetError` — there is only one table, and it is the
+// one the compiled binaries use.
+//
+// The convention: a call answers with its payload and records why in
+// the thread's status slot, which `toy_net_status` hands back. A
+// `Result` cannot cross the extern boundary — only scalars can — and
+// `net.t` reads the status on the line after the call, so nothing
+// interleaves between the two.
+// ---------------------------------------------------------------------------
+
+/// The status of the most recent net call on this thread.
+pub fn net_status() -> u64 {
+    thread_state().net_status
+}
+
+/// Record the outcome of a syscall that answers with `-1` and an
+/// errno, returning whether it succeeded.
+fn net_record(ok: bool) -> bool {
+    let st = thread_state();
+    st.net_status = if ok { NET_OK } else { sys::status_from_errno(current_errno()) };
+    ok
+}
+
+/// A new non-blocking TCP socket, or `-1`.
+///
+/// Non-blocking from birth is the decision in NETWORK_IO.md 論点 1:
+/// blocking is a property of the fd, so a program that wants it asks
+/// with `net_set_blocking`, and the default cannot wedge a
+/// single-threaded event loop.
+pub fn net_socket() -> i32 {
+    let fd = sys::socket_stream(sys::AF_INET);
+    net_record(fd >= 0);
+    fd
+}
+
+/// Connect `fd` to `addr:port`, where `addr` is a numeric IPv4
+/// address.
+///
+/// On a non-blocking socket this normally answers `NET_IN_PROGRESS`
+/// rather than `NET_OK` — the caller waits for writability and then
+/// asks [`net_take_error`]. Over loopback it often completes straight
+/// away, so both outcomes are ordinary and neither is a failure.
+pub fn net_connect(fd: i32, addr: &[u8], port: u64) -> u64 {
+    let st = thread_state();
+    if port > u16::MAX as u64 {
+        st.net_status = NET_INVALID_INPUT;
+        return NET_INVALID_INPUT;
+    }
+    let mut sa = [0u8; SOCKADDR_MAX_BYTES];
+    if sys::sockaddr_from_str(addr, port as u16, sys::AF_INET, sa.as_mut_ptr()) != 0 {
+        st.net_status = NET_INVALID_INPUT;
+        return NET_INVALID_INPUT;
+    }
+    let rc = unsafe { connect(fd, sa.as_ptr(), sys::SOCKADDR_IN_BYTES as u32) };
+    net_record(rc == 0);
+    thread_state().net_status
+}
+
+/// Send from the caller's buffer, answering how many bytes the kernel
+/// took. A short write is normal on a non-blocking socket and is
+/// **not** an error: the status stays `NET_OK`.
+pub fn net_send(fd: i32, buf: &[u8]) -> u64 {
+    let n = sys::send_nosignal(fd, buf.as_ptr(), buf.len());
+    if net_record(n >= 0) { n as u64 } else { 0 }
+}
+
+/// Receive into the caller's buffer, answering how many bytes
+/// arrived.
+///
+/// **`0` with `NET_OK` means the peer closed** — end of stream, not
+/// an error, which is why the count and the status have to be read
+/// together.
+pub fn net_recv(fd: i32, buf: &mut [u8]) -> u64 {
+    let n = unsafe { recv(fd, buf.as_mut_ptr(), buf.len(), 0) };
+    if net_record(n >= 0) { n as u64 } else { 0 }
+}
+
+/// Close `fd`. A negative fd is accepted and does nothing: `net.t`
+/// parks the field at `-1` after closing (NETWORK_IO.md 論点 2), so a
+/// second `close()` cannot shut down whatever unrelated file has
+/// since been handed that number.
+pub fn net_close(fd: i32) -> u64 {
+    if fd < 0 {
+        thread_state().net_status = NET_OK;
+        return NET_OK;
+    }
+    let rc = unsafe { close(fd) };
+    net_record(rc == 0);
+    thread_state().net_status
+}
+
+/// Turn blocking mode on or off for `fd`.
+pub fn net_set_blocking(fd: i32, on: bool) -> u64 {
+    let rc = sys::set_blocking(fd, on);
+    net_record(rc == 0);
+    thread_state().net_status
+}
+
+/// Read and clear `SO_ERROR` — how a non-blocking `connect` reports
+/// what happened once the socket becomes writable. `NET_OK` means the
+/// connection is up.
+pub fn net_take_error(fd: i32) -> u64 {
+    let mut err: i32 = 0;
+    let mut len: u32 = core::mem::size_of::<i32>() as u32;
+    let rc = unsafe {
+        getsockopt(
+            fd,
+            sys::SOL_SOCKET,
+            sys::SO_ERROR,
+            (&mut err as *mut i32).cast(),
+            &mut len,
+        )
+    };
+    if rc != 0 {
+        net_record(false);
+        return thread_state().net_status;
+    }
+    // The socket-level error is *reported*, not raised: it is not in
+    // errno, so it goes through the same table by hand.
+    let st = thread_state();
+    st.net_status = if err == 0 { NET_OK } else { sys::status_from_errno(err) };
+    st.net_status
+}
+
+/// Half-close the write side, so the peer's next read returns 0.
+/// Ends a request without giving up the descriptor the reply arrives
+/// on.
+pub fn net_shutdown_write(fd: i32) -> u64 {
+    // SHUT_WR is 1 on every platform this runtime targets, which is
+    // why it is not in `sys`.
+    let rc = unsafe { shutdown(fd, 1) };
+    net_record(rc == 0);
+    thread_state().net_status
+}
+
+/// The largest sockaddr the runtime builds on its stack. IPv4 needs
+/// 16; the constant is separate so adding AF_INET6 (28) widens the
+/// buffer without touching a signature (NETWORK_IO.md 論点 4).
+const SOCKADDR_MAX_BYTES: usize = 28;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_net_status() -> u64 {
+    net_status()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_net_socket() -> i32 {
+    net_socket()
+}
+
+/// # Safety
+///
+/// `addr` must be a toylang str handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_net_connect(fd: i32, addr: *const u8, port: u64) -> u64 {
+    if addr.is_null() {
+        thread_state().net_status = NET_INVALID_INPUT;
+        return NET_INVALID_INPUT;
+    }
+    net_connect(fd, str_bytes(addr), port)
+}
+
+/// # Safety
+///
+/// `buf` must point at `len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_net_send(fd: i32, buf: *const u8, len: u64) -> u64 {
+    if buf.is_null() {
+        thread_state().net_status = if len == 0 { NET_OK } else { NET_INVALID_INPUT };
+        return 0;
+    }
+    net_send(fd, unsafe { core::slice::from_raw_parts(buf, len as usize) })
+}
+
+/// # Safety
+///
+/// `buf` must point at `len` writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_net_recv(fd: i32, buf: *mut u8, len: u64) -> u64 {
+    if buf.is_null() {
+        thread_state().net_status = if len == 0 { NET_OK } else { NET_INVALID_INPUT };
+        return 0;
+    }
+    net_recv(fd, unsafe { core::slice::from_raw_parts_mut(buf, len as usize) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_net_close(fd: i32) -> u64 {
+    net_close(fd)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_net_set_blocking(fd: i32, on: bool) -> u64 {
+    net_set_blocking(fd, on)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_net_take_error(fd: i32) -> u64 {
+    net_take_error(fd)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_net_shutdown_write(fd: i32) -> u64 {
+    net_shutdown_write(fd)
 }
 
 /// RUNTIME-IO: the status of the most recent `toy_io_read_file` call

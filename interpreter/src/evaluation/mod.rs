@@ -11,6 +11,7 @@ use crate::error::InterpreterError;
 use crate::heap::{Allocator, GlobalAllocator, HeapManager};
 
 pub mod extern_io;
+pub mod extern_net;
 pub mod extern_math;
 pub mod extern_ffi;
 use extern_io::ExternBufFn;
@@ -431,9 +432,14 @@ impl<'a> EvaluationContext<'a> {
             extern_registry: {
                 let mut registry = extern_math::build_default_registry();
                 registry.extend(extern_io::build_io_registry());
+                registry.extend(extern_net::build_net_registry());
                 registry
             },
-            extern_buf_registry: extern_io::build_io_buf_registry(),
+            extern_buf_registry: {
+                let mut registry = extern_io::build_io_buf_registry();
+                registry.extend(extern_net::build_net_buf_registry());
+                registry
+            },
             drop_trait_structs: Rc::new(std::collections::HashSet::new()),
             transferred_bindings: Rc::new(std::collections::HashSet::new()),
             drop_scopes: vec![Vec::new()],
@@ -487,9 +493,14 @@ impl<'a> EvaluationContext<'a> {
             extern_registry: {
                 let mut registry = extern_math::build_default_registry();
                 registry.extend(extern_io::build_io_registry());
+                registry.extend(extern_net::build_net_registry());
                 registry
             },
-            extern_buf_registry: extern_io::build_io_buf_registry(),
+            extern_buf_registry: {
+                let mut registry = extern_io::build_io_buf_registry();
+                registry.extend(extern_net::build_net_buf_registry());
+                registry
+            },
             drop_trait_structs: shared.drop_trait_structs.clone(),
             transferred_bindings: shared.transferred_bindings.clone(),
             drop_scopes: vec![Vec::new()],

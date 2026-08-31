@@ -12,7 +12,7 @@
 |---|---|---|
 | **N0** | `sys` 切り替え機構 + ABI probe テスト + `backend_name()` | ✅ 完了 (2026-08-31) |
 | **N0.5** | CONV-SPAN + 確保しないための stdlib (`Span::slice` / `Vec::with_capacity` / `set_size`) | ✅ 完了 (2026-08-31) |
-| **N1** | ~~EXTERN-BUF~~ ✅ (2026-08-31) + TCP client (`socket`/`connect`/`send`/`recv`/`close`) + `NetError` + blocking 切り替え | 部分完了 |
+| **N1** | ~~EXTERN-BUF~~ ✅ + TCP client (`socket`/`connect`/`send`/`recv`/`close`) + `NetError` + blocking 切り替え | ✅ 完了 (2026-09-01)。**tree-walker のみ** — 下記 |
 | **N2** | TCP server (`bind`/`listen`/`accept`) + nonblocking | 未着手 |
 | **N3** | イベント通知 ([`EVENT_POLLING.md`](EVENT_POLLING.md)) | 未着手 |
 | **N4** | UDP + socket option (timeout / nodelay) + `local_addr` / `peer_addr` | 未着手 |
@@ -658,11 +658,37 @@ EISDIR 21 は macOS と Linux で一致する」ことに依存している。
 |---|---|---|
 | **N0** ✅ | `mod sys` 切り替え + `sys_epoll.rs` / `sys_kqueue.rs` の骨、`build.rs` の rerun 修正、ABI probe テスト、`net::backend_name()` | **完了 (2026-08-31)**。`compiler/tests/net_abi_tests.rs` が C の probe と 39 個の定数を突き合わせ、`consistency/net.rs` が 3 レーンの一致を pin。**`sys_epoll.rs` は macOS の toolchain では 1 行もコンパイルされない** — Linux CI が初回の実テストになる |
 | **N0.5** ✅ | CONV-SPAN + `Span::slice` / `Vec::with_capacity` / `Vec::set_size` / `Vec::capacity_span` | **完了 (2026-08-31)**。net と独立に landing した。`compiler/tests/consistency/conv_span.rs` が 5 件 pin: slice が窓であって複製でないこと、null に窓が無いこと、確保済みの空きに書いてから `set_size` で live にする形、`Vec::new()` と「確保済みで空」の区別、`String` のバイト列の書き換えが元に通ること |
-| **N1** | EXTERN-BUF + TCP client + `NetError` + `set_blocking` | テスト側が Rust の `std::net` でエコーサーバを立て、toylang が接続して往復。3 レーン一致。**バイト列が `str` を経由しない**ことを非 UTF-8 のペイロードで pin。**blocking と nonblocking の両方で同じ答え**になること。`ensures allocations(0)` で受信ループが確保しないことを pin (**コピー回数は観測できないので、確保 0 と「借用で書いた」ことをコードレビューで担保する**) |
+| **N1** ✅ | EXTERN-BUF + TCP client + `NetError` + `set_blocking` | **完了 (2026-09-01)**。`interpreter/tests/net_tests.rs` が `std::net` のエコーサーバをこのプロセスのスレッドに立て、7 件 pin: 往復、非 UTF-8 ペイロード (`str` を経由しないことの証拠)、`ConnectionRefused` が名前で返ること、ホスト名が `InvalidInput` になること、`close` の冪等性と閉じた stream の read 失敗、独立した 2 ポート、`shutdown_write` 後も返信が読めること。**3 レーン一致ではない** — 下記 |
 | **N2** | `bind` / `listen` / `accept` / nonblocking | **1 プロセス内で自己完結**: 同じプログラムが listener と client を持ち、nonblocking で往復する。外部の peer が要らないので完全に決定的 |
 | **N3** | Poller | [`EVENT_POLLING.md`](EVENT_POLLING.md) |
 | **N4** | UDP / socket option / `local_addr` / `peer_addr` | 同上の自己完結形 |
 | **N5** | `getaddrinfo` | `localhost` の解決のみ pin (DNS は非決定なのでテストしない) |
+
+### N1 で設計から変えた 2 点と、compiled レーンが動かない理由
+
+**(1) `connect` は blocking にした。** 設計は「非 blocking のまま
+`Err(NetError::InProgress)` を返し、呼び出し側が writability を待って
+`take_error` を呼ぶ」と書いていたが、**これは書けない** — `Err` が
+唯一の stream 参照を持ち去るので、`take_error` を呼ぶ相手が残らない。
+`connect` は socket を blocking にしてから繋ぐ形にし (N3 が無い今
+唯一使える形)、イベントループ用に
+`connect_nonblocking` を別に置いた。後者は「繋がった」と「進行中」の
+どちらでも `Ok(stream)` を返し、状態は stream に聞く。
+
+**(2) `Result<(), NetError>` が書けない。** 成否だけを返す
+`take_error` / `shutdown_write` / `set_blocking` / `close` は
+`Result<bool, NetError>` になっている (payload は常に `true`)。
+**compiled レーンが `()` 型引数を lower できない** — 自由関数でも
+methods でも同じ (todo: UNIT-TYPE-ARG)。穴が塞がれば
+`Result<(), NetError>` に戻せて、`Ok` / `Err` を見る match は
+そのまま動く。
+
+**compiled レーンで動かないのは socket と無関係の 2 つの穴。**
+`var s = match conn { Result::Ok(s) => s, ... }` — `Result` を返す
+コンストラクタが必ず取る形 — が COMPOUND-BLOCK-RHS で lower できず、
+`Result<(), E>` が上記。どちらも net が作った制約ではなく、
+**net を書いて初めて実プログラムで踏んだ**もの。N2 に進む前に
+どちらかを塞ぐかは判断が要る。
 
 ### テストの決定性
 

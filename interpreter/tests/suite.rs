@@ -73,6 +73,9 @@ mod incremental_compilation_tests;
 #[path = "io_tests.rs"]
 mod io_tests;
 
+#[path = "net_tests.rs"]
+mod net_tests;
+
 #[path = "ir_vm_engine_parity.rs"]
 mod ir_vm_engine_parity;
 

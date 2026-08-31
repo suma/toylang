@@ -705,8 +705,8 @@ fn declare_methods(
                 )
                 .ok_or_else(|| {
                     format!(
-                        "compiler MVP cannot lower method return type `{:?}` yet",
-                        ty
+                        "compiler MVP cannot lower method return type `{}` yet",
+                        resolved.spell_with(Some(interner))
                     )
                 })?
             }

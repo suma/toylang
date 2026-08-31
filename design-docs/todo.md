@@ -10,6 +10,24 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-01
+- **NET N1 — TCP client (tree-walker のみ)** — `TcpStream` /
+  `NetError` / `connect` / `read` / `write` / `close` /
+  `shutdown_write` / `take_error` / `set_blocking`。runtime は
+  `net_*` (Rust 入口) と `toy_net_*` (extern 薄皮) の二段で、
+  **tree-walker は toylang_rt を直接呼ぶ**ので errno → `NetError` の
+  表が 1 つしかない。バイト列は `Span<u8>` を借用して渡すので
+  **全レーンでコピー 0**。`interpreter/tests/net_tests.rs` が
+  `std::net` のエコーサーバをスレッドに立てて 7 件 pin。
+  **compiled レーンは動かない** — 原因は socket と無関係の
+  COMPOUND-BLOCK-RHS と UNIT-TYPE-ARG (下)。設計から変えた 2 点は
+  [`NETWORK_IO.md`](NETWORK_IO.md) の N1 節。
+- **EXTERN-BUF の借用が typed slot を見ていなかった** — `push` で
+  作った buffer (`String` / `Vec<u8>`) を `extern fn` に渡すと
+  **正しい長さのゼロ**が渡っていた (tree-walker のみ、レーン不一致)。
+- **impl メソッドの move が解析されていなかった** — `check_moves` が
+  `program.function` しか歩かず、impl メソッドの局所は**常に** drop
+  されていた。`Result` に包んで返した値は呼び出し側に届く前に
+  `Drop` 済みだった。
 - **IMPL-BLOCK-VISIBILITY — impl メソッドから stdlib が見えるようになった**
   — impl block の body 検査とメソッド登録が 1 パスで、しかも statement
   順だったため、**メソッドは自分より後ろの block からしか見えなかった**。
@@ -861,6 +879,16 @@
   `impl <Trait> for u8` は parse も型検査も lowering も通ったうえで
   **到達不能**になり、診断は幅にも impl にも触れなかった。1 箇所は
   共通関数に寄せたが、残り 3 箇所は健在。**着手条件は満たされている**。
+
+- **UNIT-TYPE-ARG: `Result<(), E>` / `Option<()>` が lower できない** ★★ —
+  型引数が `()` の generic enum は compiled レーンが拒否する
+  (`lower_param_or_return_type` の `if matches!(l, Type::Unit) { return None }`)。
+  **自由関数でも method でも同じ**なので method 固有ではない。
+  2026-09-01 に NET N1 で踏んだ — 「成否だけを返す」API の自然な形が
+  これで、`core/std/net.t` は `Result<bool, NetError>` (payload は
+  常に `true`) で回避している。enum の payload は unit variant が
+  既に 0 バイトなので、layout 側は足りている可能性が高い
+  (guard を外すだけでは通らなかった — `instantiate_enum` 側も要調査)。
 
 - **NARROW-UNSIGNED-SUB: `u8` / `u16` / `u32` の減算は
   アンダーフローで trap せず wrap する** ★ — RUNTIME-TRAP-NARROW の

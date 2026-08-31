@@ -120,3 +120,141 @@ pub const ETIMEDOUT: i32 = 110;
 pub const ECONNREFUSED: i32 = 111;
 pub const EHOSTUNREACH: i32 = 113;
 pub const EINPROGRESS: i32 = 115;
+
+// ---------------------------------------------------------------------------
+// Socket operations whose *shape* differs from the BSDs' (NETWORK_IO.md
+// §2). Everything above this layer calls these names and never a
+// syscall directly, so the two `sys_*.rs` files are the only place a
+// platform difference is spelled.
+// ---------------------------------------------------------------------------
+
+use crate::{
+    close, fcntl, inet_pton, send, NET_ADDR_IN_USE, NET_ADDR_NOT_AVAILABLE,
+    NET_BROKEN_PIPE, NET_CONNECTION_ABORTED, NET_CONNECTION_REFUSED, NET_CONNECTION_RESET,
+    NET_HOST_UNREACHABLE, NET_IN_PROGRESS, NET_INTERRUPTED, NET_INVALID_INPUT,
+    NET_NETWORK_UNREACHABLE, NET_NOT_CONNECTED, NET_TIMED_OUT, NET_TOO_MANY_OPEN_FILES,
+    NET_UNKNOWN, NET_WOULD_BLOCK,
+};
+
+/// `SOCK_NONBLOCK` / `SOCK_CLOEXEC` fold the two properties a fresh
+/// socket needs into the `socket()` / `accept4()` type argument. The
+/// BSDs have neither and pay for both with extra `fcntl` calls.
+pub const SOCK_NONBLOCK: i32 = 0o4000;
+pub const SOCK_CLOEXEC: i32 = 0o2000000;
+
+/// A new stream socket, already non-blocking. Returns `-1` with errno
+/// set, like the syscall it wraps.
+///
+/// One call, because Linux lets the type argument carry the flags.
+/// SIGPIPE is not addressed here at all: there is no `SO_NOSIGPIPE`
+/// on this platform, so [`send_nosignal`] passes `MSG_NOSIGNAL` per
+/// call instead. Either way a `write` to a hung-up peer comes back as
+/// `BrokenPipe` rather than killing the process, which is what
+/// `net.t` relies on.
+pub fn socket_stream(family: i32) -> i32 {
+    unsafe { crate::socket(family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0) }
+}
+
+
+/// `send(2)` that cannot raise SIGPIPE. The flag is per call here;
+/// the BSDs put the equivalent on the socket at creation.
+pub fn send_nosignal(fd: i32, buf: *const u8, len: usize) -> isize {
+    unsafe { send(fd, buf, len, MSG_NOSIGNAL) }
+}
+
+/// Turn blocking mode on or off. `0` on success, `-1` with errno set.
+///
+/// Blocking is a property of the fd rather than of the call
+/// (NETWORK_IO.md 論点 1), so this is what decides whether `accept` /
+/// `read` / `write` return `WouldBlock` or wait.
+pub fn set_blocking(fd: i32, on: bool) -> i32 {
+    let flags = unsafe { fcntl(fd, F_GETFL, 0) };
+    if flags < 0 {
+        return -1;
+    }
+    let next = if on { flags & !O_NONBLOCK } else { flags | O_NONBLOCK };
+    if unsafe { fcntl(fd, F_SETFL, next) } < 0 {
+        -1
+    } else {
+        0
+    }
+}
+
+/// Fill `out` (at least [`SOCKADDR_IN_BYTES`] writable bytes) with a
+/// `sockaddr_in` for `text:port`. `0` on success, `-1` when the text
+/// is not a numeric address of this family.
+///
+/// **This is why toylang never sees a sockaddr.** Linux opens the
+/// struct with a two-byte `sin_family` and no length field; the BSDs
+/// split those same two bytes into `sin_len` and a one-byte
+/// `sin_family`. Both structs are 16 bytes, so a caller handing over
+/// a buffer cannot tell — and only because the writing happens here.
+pub fn sockaddr_from_str(text: &[u8], port: u16, family: i32, out: *mut u8) -> i32 {
+    if family != AF_INET {
+        return -1;
+    }
+    // `inet_pton` wants a C string; addresses are short, and a text
+    // longer than this buffer cannot be a dotted quad anyway.
+    let mut cstr = [0u8; 64];
+    if text.len() >= cstr.len() {
+        return -1;
+    }
+    cstr[..text.len()].copy_from_slice(text);
+    let mut octets = [0u8; 4];
+    if unsafe { inet_pton(AF_INET, cstr.as_ptr(), octets.as_mut_ptr()) } != 1 {
+        return -1;
+    }
+    unsafe {
+        core::ptr::write_bytes(out, 0, SOCKADDR_IN_BYTES);
+        let fam = (AF_INET as u16).to_ne_bytes();
+        *out = fam[0];
+        *out.add(1) = fam[1];
+        let be = port.to_be_bytes();
+        *out.add(2) = be[0];
+        *out.add(3) = be[1];
+        core::ptr::copy_nonoverlapping(octets.as_ptr(), out.add(4), 4);
+    }
+    0
+}
+
+
+/// Map an errno to the OS-independent status vocabulary toylang sees.
+///
+/// This has to live per-platform because the *values* disagree:
+/// EAGAIN is 11 here and 35 on the BSDs, EADDRINUSE 98 against 48,
+/// ECONNREFUSED 111 against 61. The four the existing file I/O relies
+/// on (ENOENT / EPERM / EACCES / EISDIR) happen to match, which is
+/// exactly why `io_status_from_errno` could be written once and this
+/// cannot.
+pub fn status_from_errno(err: i32) -> u64 {
+    match err {
+        EAGAIN => NET_WOULD_BLOCK,
+        EINPROGRESS => NET_IN_PROGRESS,
+        EINTR => NET_INTERRUPTED,
+        ECONNREFUSED => NET_CONNECTION_REFUSED,
+        ECONNRESET => NET_CONNECTION_RESET,
+        ECONNABORTED => NET_CONNECTION_ABORTED,
+        EPIPE => NET_BROKEN_PIPE,
+        ENOTCONN => NET_NOT_CONNECTED,
+        EADDRINUSE => NET_ADDR_IN_USE,
+        EADDRNOTAVAIL => NET_ADDR_NOT_AVAILABLE,
+        ENETUNREACH => NET_NETWORK_UNREACHABLE,
+        EHOSTUNREACH => NET_HOST_UNREACHABLE,
+        ETIMEDOUT => NET_TIMED_OUT,
+        EMFILE => NET_TOO_MANY_OPEN_FILES,
+        EINVAL => NET_INVALID_INPUT,
+        _ => NET_UNKNOWN,
+    }
+}
+
+/// Close `fd` without disturbing the errno the caller is about to
+/// report. Unused on this platform — `socket_stream` and
+/// `accept_nonblocking` are single calls that never have a
+/// half-built fd to unwind — but named here so the porting contract
+/// stays symmetric.
+#[allow(dead_code)]
+fn close_preserving_errno(fd: i32) {
+    let saved = crate::current_errno();
+    unsafe { close(fd) };
+    crate::set_errno(saved);
+}

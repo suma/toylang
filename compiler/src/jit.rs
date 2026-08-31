@@ -424,6 +424,26 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
         "toy_net_backend_name",
         toylang_rt::toy_net_backend_name as *const u8,
     );
+    // NETWORK_IO N1. The AOT lane needs no equivalent — these live in
+    // the staticlib and the linker finds them.
+    jit_builder.symbol("toy_net_status", toylang_rt::toy_net_status as *const u8);
+    jit_builder.symbol("toy_net_socket", toylang_rt::toy_net_socket as *const u8);
+    jit_builder.symbol("toy_net_connect", toylang_rt::toy_net_connect as *const u8);
+    jit_builder.symbol("toy_net_send", toylang_rt::toy_net_send as *const u8);
+    jit_builder.symbol("toy_net_recv", toylang_rt::toy_net_recv as *const u8);
+    jit_builder.symbol("toy_net_close", toylang_rt::toy_net_close as *const u8);
+    jit_builder.symbol(
+        "toy_net_set_blocking",
+        toylang_rt::toy_net_set_blocking as *const u8,
+    );
+    jit_builder.symbol(
+        "toy_net_take_error",
+        toylang_rt::toy_net_take_error as *const u8,
+    );
+    jit_builder.symbol(
+        "toy_net_shutdown_write",
+        toylang_rt::toy_net_shutdown_write as *const u8,
+    );
     jit_builder.symbol("toy_io_read_file", toylang_rt::toy_io_read_file as *const u8);
     jit_builder.symbol(
         "toy_io_read_file_into",

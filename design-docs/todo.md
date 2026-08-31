@@ -917,6 +917,51 @@
   ので深さカウンタのために結局積む必要がある。効く場面が無いので
   条件 (「実際に効く場面を踏んでから」) が満たされないまま記録に留める。
 
+- **DIAG-SYMBOL-NAME: 診断が `SymbolU32 { value: 63 }` を直に出す** ★ —
+  `frontend` の一部の診断が `DefaultSymbol` / `TypeDecl` を
+  `{:?}` で整形しているため、**読み手に何も伝えない内部表現が
+  そのままユーザに出る**:
+
+  ```
+  [E0010] Associated function 'new' not found for struct 'SymbolU32 { value: 60 }'
+  [E0010] impl T for Q: method 'f' return type mismatch
+          (expected UInt64, found Struct(SymbolU32 { value: 60 }, []))
+  ```
+
+  正しくは前者が `struct 'P'`、後者が `expected u64, found Q`。
+  interner を持つ整形手段は既にある — 名前は
+  `resolve_symbol_name(sym)`、型は
+  `format_type_for_error(&TypeDecl)` (`type_checker/utility.rs`)。
+  `type_mismatch` 経由の診断はこれを通るので既に正しく出る
+  (`Type mismatch: expected u64, but got P`)。**残っているのは
+  `format!` で自前に組み立てている診断**で、`{:?}` を直に使っている。
+  既知の site:
+
+  - `type_checker/method_call.rs:968` / `:996` — 冒頭の例。
+    `not_found("Struct", &format!("{:?}", struct_name))` と
+    `Associated function '{}' not found for struct '{:?}'`
+  - `type_checker/method_call.rs:718` / `:734` — `field '{}' on struct '{:?}'`
+  - `type_checker/struct_literal.rs:45` / `:142` / `:396` —
+    `Duplicate field '{}' in struct '{:?}'` など
+  - `type_checker/trait_decl.rs:209` / `:278` — 上の 2 例目 (`TypeDecl` を `{:?}`)
+  - `type_checker/module_access.rs:147` — `Member '{}' not found in module '{:?}'`
+  - `type_checker/context.rs:510` / `type_checker/method.rs:228` /
+    `type_checker/error.rs:611` / `type_checker/expression.rs:1626` `:1711` `:2288` /
+    `type_checker/pattern_match.rs` の型を出す各所 /
+    `type_checker/inference.rs:213` (シグネチャのキー生成)
+
+  **同じ間違いは 2 回直っている** — `context.rs:491` と
+  `struct_literal.rs:21` のコメントが「`{:?}` は
+  `SymbolU32 { value: 47 }` を出して何も伝えない」と書いており、
+  そこだけ個別に直した形。**site ごとに潰すのではなく、`{:?}` を
+  使えなくする**のが本筋: `DefaultSymbol` と `TypeDecl` を
+  interner 込みで包む表示ラッパ (`self.display(sym)` /
+  `self.display_ty(&ty)`) を用意して全 site を移し、
+  以後は grep 一発 (`{:?}` が診断文字列に残っていないこと) で
+  再発を止める。テストは既存の診断テストが文字列一致で
+  拾えるが、`SymbolU32` という語が診断に出ないことを
+  直接見る回帰テストを 1 本置くのが確実。
+
 ### 型システム (NEW-TYPE-SYSTEM)
 
 - **MOVE-CONDITIONAL: 分岐 / ループからの移動** ★ — 現状は E0014 で拒否。

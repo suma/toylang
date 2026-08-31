@@ -164,6 +164,7 @@ Primitive / built-in types:
 | `[T; N]` | Fixed-size array of `T` with length `N` |
 | `soa [T; N]` | The same type as `[T; N]` with SoA storage — see [Array layout: `soa`](#array-layout-soa) |
 | `soa Vec<T>` | Sugar for the stdlib `SoaVec<T>` — a *distinct* type from `Vec<T>`; see [Vec layout: `soa Vec<T>`](#vec-layout-soa-vect) |
+| `Column<T>` | A window onto one field of every element (`ps.mass`); see [Column windows](#column-windows-psfield) |
 | `[T]` | Dynamic-array slice (returned by slicing) |
 | `(T1, T2, ...)` | Tuple — heterogeneous, fixed-arity |
 | `Self` | The enclosing struct/enum type within an `impl` block |
@@ -1102,6 +1103,60 @@ IR VM; the tree-walking interpreter does not observe the layout at
 all, which is what makes "same program, `soa` on and off, same
 answer" the pinned contract across all backends. Design notes:
 [`DATA_ORIENTED.md`](../design-docs/DATA_ORIENTED.md).
+
+### Column windows: `ps.field`
+
+A field name on an *array* (or on a `soa Vec<T>`) is the column
+window: every element's copy of that field, as a `Column<T>`
+(`core/std/column.t`).
+
+```rust
+struct Particle { x: f64, y: f64, mass: f64 }
+
+fn total_mass(ms: Column<f64>) -> f64 {
+    var total: f64 = 0.0f64
+    var i: u64 = 0u64
+    while i < ms.len() {
+        total = total + ms.get(i)
+        i = i + 1u64
+    }
+    total
+}
+
+val ps: soa [Particle; 1024] = ...
+val ms = ps.mass            # Column<f64>, 1024 long
+total_mass(ms)
+```
+
+This is what makes a column *passable*: `ps[i].mass` already reads one
+field cheaply, but before windows there was no way to hand "the masses"
+to a function.
+
+- The window is `get` / `set` / `len` / `is_empty`. `set` writes
+  through — it is a **view**, and the array behind it changes.
+- It carries a stride, so the **same type describes either layout**:
+  under `soa` the values are contiguous, interleaved they are one
+  element apart. A function taking a column keeps compiling while the
+  modifier is added and removed, which is the measurement `soa` exists
+  for. The stride itself is not readable (see below).
+- A `soa Vec<T>`'s column windows its **live elements** — `len`, not
+  capacity.
+- The field must be a scalar. A compound field occupies as many
+  columns as it has leaves, and a window reads one value per stride.
+- Columns are numbered in leaves: in `struct Body { pos: Point, mass:
+  f64 }`, `mass` is the third column, because `pos` is two of them.
+- A window is a view and owns nothing; like `Span<T>` it must not
+  outlive what it points at (unchecked — see
+  [`REGIONS.md`](../design-docs/REGIONS.md) for the checked case).
+- There is deliberately no `as_ptr` / `as_raw` / `stride`. A column is
+  addressable on the compiled lanes and not on the tree-walking
+  interpreter, which holds arrays as values rather than as memory;
+  keeping the address in is what lets one type mean the same thing on
+  every engine.
+- **Compiled-lane limit**: the window must be bound before it is
+  passed (`val ms = ps.mass` then `total_mass(ms)`), the same rule
+  every other compound-producing expression follows. The interpreter
+  accepts `total_mass(ps.mass)` directly.
 
 ### Vec layout: `soa Vec<T>`
 

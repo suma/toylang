@@ -29,6 +29,8 @@
 //! IR already has, so codegen and the IR VM learn nothing about SoA —
 //! the same property Phase 0 has at the stack-slot level.
 
+use string_interner::DefaultSymbol;
+
 use crate::ir::{InstKind, Type, ValueId};
 
 use super::FunctionLower;
@@ -180,5 +182,282 @@ impl FunctionLower<'_> {
             Some(Type::U64),
         )
         .expect("BinOp returns a value")
+    }
+}
+
+/// DATA-ORIENTED Phase 1: `ps.mass` — the column window.
+///
+/// A `Column<T>` (`core/std/column.t`) is three scalars: the address
+/// the field's values start at, how many there are, and how far apart
+/// they sit. Which is to say it is a *strided* window, and that is
+/// what lets one type describe a column of either layout:
+///
+/// | layout | address of element 0's leaf `j` | stride |
+/// |---|---|---|
+/// | `soa` | column `j`'s own slot, offset 0 | that leaf's width |
+/// | interleaved | the array's slot at leaf index `j` | one element's leaves |
+///
+/// The address is the reason this is compiler-side rather than a
+/// library call: a stack array's storage has no source-level name.
+/// Once built, everything the window does is ordinary stdlib toylang
+/// reading through `__builtin_ptr_read`.
+impl FunctionLower<'_> {
+    /// The leaf index and IR type of `field` within `element_ty`, or
+    /// `None` if the element is not a struct with that field.
+    ///
+    /// Counts *leaves*, not fields: a compound field ahead of the one
+    /// asked for occupies as many columns as it has leaves, so
+    /// `struct S { pos: Pos, mass: f64 }` puts `mass` at leaf 2.
+    pub(super) fn column_leaf_of_field(
+        &self,
+        element_ty: Type,
+        field: DefaultSymbol,
+    ) -> Option<(usize, Type)> {
+        let Type::Struct(struct_id) = element_ty else {
+            return None;
+        };
+        // IR struct fields carry their names as text (the interner a
+        // monomorph was built from is not this one), so the lookup
+        // resolves the symbol rather than comparing ids.
+        let wanted = self.interner.resolve(field)?.to_string();
+        let fields = self.module.struct_def(struct_id).fields.clone();
+        let mut leaf = 0usize;
+        for (name, field_ty) in &fields {
+            if *name == wanted {
+                return Some((leaf, *field_ty));
+            }
+            leaf += super::array_layout::leaf_scalar_count(self.module, *field_ty);
+        }
+        None
+    }
+}
+
+impl FunctionLower<'_> {
+    /// `val ms = ps.mass` — bind a `Column<T>` over one field of every
+    /// element.
+    ///
+    /// Returns `Ok(None)` when the field is not one of the element's
+    /// (the caller then falls through to the ordinary field-access
+    /// paths, so an array-typed *struct field* keeps working).
+    pub(super) fn lower_let_column_window(
+        &mut self,
+        name: DefaultSymbol,
+        element_ty: Type,
+        length: usize,
+        storage: &super::bindings::ArrayStorage,
+        field: DefaultSymbol,
+    ) -> Result<Option<Option<ValueId>>, String> {
+        let Some((leaf, leaf_ty)) = self.column_leaf_of_field(element_ty, field) else {
+            return Ok(None);
+        };
+        // The checker refuses a compound field (a column window reads
+        // one value per stride, and a compound occupies several
+        // columns); this is the lowering's half of that rule.
+        if matches!(leaf_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
+            return Err(format!(
+                "column window `{}`: a compound field occupies several columns",
+                self.interner.resolve(field).unwrap_or("?")
+            ));
+        }
+        let leaf_count = super::array_layout::leaf_scalar_count(self.module, element_ty);
+        let (slot, index, stride) = match storage {
+            // One column per leaf: the window is that column's whole
+            // slot, and its values are adjacent (Phase 0.5 sized each
+            // column by its leaf).
+            super::bindings::ArrayStorage::Columns(columns) => {
+                let stride =
+                    super::array_layout::elem_stride_bytes(leaf_ty, self.module) as u64;
+                (columns[leaf], 0u64, stride)
+            }
+            // Interleaved: the leaf sits `leaf` slots into element 0,
+            // and the next element's copy is a whole element further
+            // on. Every leaf of a compound element occupies one
+            // `ARRAY_LEAF_STRIDE` slot, which is what makes both
+            // numbers multiples of it.
+            super::bindings::ArrayStorage::Interleaved(slot) => (
+                *slot,
+                leaf as u64,
+                leaf_count as u64 * super::array_layout::ARRAY_LEAF_STRIDE as u64,
+            ),
+        };
+        // `ArrayElemAddr` scales by the *element type it is given*, so
+        // the interleaved case asks in whole leaf slots (`U64`, 8
+        // bytes) rather than in the narrow leaf's own width.
+        let addr_elem_ty = match storage {
+            super::bindings::ArrayStorage::Columns(_) => leaf_ty,
+            super::bindings::ArrayStorage::Interleaved(_) => Type::U64,
+        };
+        let index_v = self
+            .emit(InstKind::Const(crate::ir::Const::U64(index)), Some(Type::U64))
+            .expect("Const returns a value");
+        let addr = self
+            .emit(
+                InstKind::ArrayElemAddr { slot, index: index_v, elem_ty: addr_elem_ty },
+                Some(Type::U64),
+            )
+            .expect("ArrayElemAddr returns a value");
+        let len_v = self
+            .emit(
+                InstKind::Const(crate::ir::Const::U64(length as u64)),
+                Some(Type::U64),
+            )
+            .expect("Const returns a value");
+        let stride_v = self
+            .emit(InstKind::Const(crate::ir::Const::U64(stride)), Some(Type::U64))
+            .expect("Const returns a value");
+
+        // `Column<T>` is a stdlib struct with no field of type `T`
+        // (the `Box` / `Vec` discipline), so one monomorph per leaf
+        // type is all this needs.
+        let column_sym = self
+            .interner
+            .get("Column")
+            .ok_or_else(|| "column window: the stdlib `Column<T>` is not loaded".to_string())?;
+        let column_id = super::templates::instantiate_struct(
+            self.module,
+            self.struct_defs,
+            self.enum_defs,
+            column_sym,
+            vec![leaf_ty],
+            self.interner,
+        )?;
+        let fields = self.allocate_struct_fields(column_id);
+        let locals = super::bindings::flatten_struct_locals(&fields);
+        let expected = [addr, len_v, stride_v];
+        if locals.len() != expected.len() {
+            return Err(format!(
+                "column window: `Column` should have {} scalar fields, found {}",
+                expected.len(),
+                locals.len()
+            ));
+        }
+        for ((local, _), value) in locals.iter().zip(expected.iter()) {
+            self.emit(InstKind::StoreLocal { dst: *local, src: *value }, None);
+        }
+        self.bindings
+            .insert(name, super::bindings::Binding::Struct { struct_id: column_id, fields });
+        Ok(Some(None))
+    }
+}
+
+impl FunctionLower<'_> {
+    /// `val ms = vs.mass` where `vs: SoaVec<T>` — the heap column
+    /// window (DATA-ORIENTED Phase 1 over Phase 2's buffer).
+    ///
+    /// The buffer is one allocation split into columns, so column `j`
+    /// starts `prefix_j * cap` bytes in and its values are `stride_j`
+    /// apart — the same arithmetic `__builtin_soa_read` uses, minus
+    /// the element index. Unlike the stack form, the address is a
+    /// runtime value: `cap` is only known while the program runs.
+    ///
+    /// Returns `Ok(None)` unless the binding really is a `SoaVec`
+    /// whose element has this field, so ordinary field access on any
+    /// other struct falls through untouched.
+    pub(super) fn lower_let_soa_vec_column(
+        &mut self,
+        name: DefaultSymbol,
+        struct_id: crate::ir::StructId,
+        fields: &[super::bindings::FieldBinding],
+        field: DefaultSymbol,
+    ) -> Result<Option<Option<ValueId>>, String> {
+        let def = self.module.struct_def(struct_id).clone();
+        if self.interner.resolve(def.base_name) != Some("SoaVec") {
+            return Ok(None);
+        }
+        let Some(element_ty) = def.type_args.first().copied() else {
+            return Ok(None);
+        };
+        let Some((leaf, leaf_ty)) = self.column_leaf_of_field(element_ty, field) else {
+            return Ok(None);
+        };
+        if matches!(leaf_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
+            return Err(format!(
+                "column window `{}`: a compound field occupies several columns",
+                self.interner.resolve(field).unwrap_or("?")
+            ));
+        }
+        let columns = self.soa_columns(element_ty).ok_or_else(|| {
+            format!("column window: unable to compute the column layout for {element_ty:?}")
+        })?;
+        let (prefix, stride, _) = columns[leaf];
+
+        // `SoaVec { data, len, cap, elem_size }` — the leaf locals are
+        // in declaration order, as everywhere else in the lowering.
+        let locals = super::bindings::flatten_struct_locals(fields);
+        let data_local = locals.first().ok_or("column window: SoaVec has no data field")?.0;
+        let len_local = locals.get(1).ok_or("column window: SoaVec has no len field")?.0;
+        let cap_local = locals.get(2).ok_or("column window: SoaVec has no cap field")?.0;
+        let data = self
+            .emit(InstKind::LoadLocal(data_local), Some(Type::U64))
+            .expect("LoadLocal returns a value");
+        let len = self
+            .emit(InstKind::LoadLocal(len_local), Some(Type::U64))
+            .expect("LoadLocal returns a value");
+        let cap = self
+            .emit(InstKind::LoadLocal(cap_local), Some(Type::U64))
+            .expect("LoadLocal returns a value");
+        let prefix_v = self
+            .emit(InstKind::Const(crate::ir::Const::U64(prefix)), Some(Type::U64))
+            .expect("Const returns a value");
+        let column_offset = self
+            .emit(
+                InstKind::BinOp { op: crate::ir::BinOp::Mul, lhs: prefix_v, rhs: cap },
+                Some(Type::U64),
+            )
+            .expect("BinOp returns a value");
+        let addr = self
+            .emit(
+                InstKind::BinOp { op: crate::ir::BinOp::Add, lhs: data, rhs: column_offset },
+                Some(Type::U64),
+            )
+            .expect("BinOp returns a value");
+        let stride_v = self
+            .emit(InstKind::Const(crate::ir::Const::U64(stride)), Some(Type::U64))
+            .expect("Const returns a value");
+        // The window is over the *live* elements, not the capacity:
+        // `len` is what a caller may read.
+        self.bind_column(name, leaf_ty, addr, len, stride_v)?;
+        Ok(Some(None))
+    }
+
+    /// Bind `name` to a `Column<T>` made of these three scalars.
+    /// Shared by the stack and heap constructions, which differ only
+    /// in how they arrive at them.
+    fn bind_column(
+        &mut self,
+        name: DefaultSymbol,
+        leaf_ty: Type,
+        addr: ValueId,
+        len: ValueId,
+        stride: ValueId,
+    ) -> Result<(), String> {
+        let column_sym = self
+            .interner
+            .get("Column")
+            .ok_or_else(|| "column window: the stdlib `Column<T>` is not loaded".to_string())?;
+        let column_id = super::templates::instantiate_struct(
+            self.module,
+            self.struct_defs,
+            self.enum_defs,
+            column_sym,
+            vec![leaf_ty],
+            self.interner,
+        )?;
+        let fields = self.allocate_struct_fields(column_id);
+        let locals = super::bindings::flatten_struct_locals(&fields);
+        let values = [addr, len, stride];
+        if locals.len() != values.len() {
+            return Err(format!(
+                "column window: `Column` should have {} scalar fields, found {}",
+                values.len(),
+                locals.len()
+            ));
+        }
+        for ((local, _), value) in locals.iter().zip(values.iter()) {
+            self.emit(InstKind::StoreLocal { dst: *local, src: *value }, None);
+        }
+        self.bindings
+            .insert(name, super::bindings::Binding::Struct { struct_id: column_id, fields });
+        Ok(())
     }
 }

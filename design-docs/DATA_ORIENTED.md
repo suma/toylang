@@ -1,6 +1,6 @@
 # DATA-ORIENTED — 配列の layout をユーザが選べるようにする
 
-> **状態: Phase 0 + 2 (2026-08-30) + 0.5 (2026-08-31) landing / 1・3 未着手**。実装サイトは
+> **状態: Phase 0 + 2 (2026-08-30) + 0.5 + 1 (2026-08-31) landing / 3 未着手**。実装サイトは
 > [`compiler_lower/src/array_access.rs`](../compiler_lower/src/array_access.rs) と
 > [`compiler_lower/src/array_layout.rs`](../compiler_lower/src/array_layout.rs)。
 > SIMD 側の設計は [`SIMD.md`](SIMD.md) にあり、本文書の Phase 0 が
@@ -261,12 +261,12 @@ stdlib method になる (parser / checker の特別扱いは sugar 解決だけ)
 4. 「`soa` を付け外して測る」は**注釈 + コンストラクタの 2 箇所**の編集
    (`Vec::new()` → `SoaVec::new()`)。型が別なので構築子も別名になる
 
-#### 恩恵の本丸は Phase 1 slice 経由
+#### 恩恵の本丸は Phase 1 の列窓 (2026-08-31 に届いた)
 
-`ps[i].x` の単列 shortcut は SoaVec では `__getitem__` 経由 (全 leaf 物質化)
-になるので stack 配列のようには効かない。heap 版の帯域削減は
-`ps.mass` → 列の `&[f64]` (Phase 1。checker が field 名 → leaf `j` を解いて
-列 slice を構築) で初めて届く。**実装順 0 → 1 → 2 を変えない理由**。
+`ps[i].x` の単列 shortcut は SoaVec では `get` 経由 (全 leaf 物質化)
+なので stack 配列のようには効かない。heap 版の帯域削減は
+`vs.mass` → `Column<T>` (Phase 1) で初めて届く。checker が field 名 →
+型を解き、lowering が leaf → 列の番地 (`prefix_j * cap`) を作る。
 
 #### 検証
 
@@ -350,19 +350,57 @@ leaf 分解の枠にそのまま乗る。**tag だけを舐めるループ**が 
 未サポート) なので、これは配列要素としての enum 対応とセットになる。
 Phase 0 のスコープ外。
 
-## slice が前提条件になる
+## 列の窓 — Phase 1 (2026-08-31 landing)
 
-「x 列だけを関数に渡す」「2 要素ずつ読む」時点で `&[T]`
-(todo.md の `slice 型 &[T]` ★) が要る。
+「x 列だけを関数に渡す」には窓が要る。**言語の `&[T]` ではなく
+stdlib の `Column<T>` (`core/std/column.t`) で回収した** — todo.md の
+slice 型が `Span<T>` で回収されたのと同じ流儀:
 
 ```rust
-fn total_mass(ms: &[f64]) -> f64 { ... }
-total_mass(ps.mass)      # SoA なら連続。AoS では stride が合わず型エラー
+fn total_mass(ms: Column<f64>) -> f64 { ... }
+val ms = ps.mass          # Column<f64>
+total_mass(ms)
 ```
 
-**SoA も SIMD も slice を待っている**ので、todo.md の優先度を ★ から ★★ に
-引き上げるのが妥当。「SoA でしか書けない関数」が型で表現できることが、
-SoA を単なる最適化フラグ以上のものにする。
+`Column<T>` は (addr, len, stride) の 3 スカラー。`ps.mass` は
+**コンパイラが作る** (stack 配列の記憶域にはソースレベルの名前が無い)
+が、作った後は普通の stdlib toylang。
+
+**設計から動いた点**:
+
+1. **AoS も型エラーにしない。** 当初の `&[f64]` は連続性が型の一部
+   だったので「AoS では stride が合わず型エラー」と書いていたが、
+   窓が stride を持てば **同じ型で両 layout を指せる**。`soa` を
+   付け外しても関数シグネチャが変わらない方が、DoD の計測という
+   目的に合う (AoS では stride = 要素サイズ、SoA では leaf 幅)
+2. **heap 側も同時に入った。** `soa Vec<T>` の列も同じ `Column<T>`
+   (`vs.mass`)。Phase 2 の「恩恵の本丸は Phase 1 経由」がこれで届く —
+   `SoaVec::get` は全列を物質化するが、窓は 1 列しか読まない
+3. **`as_raw` / `stride` を API に置かない。** 列は compiled lane では
+   番地だが tree-walker では番地を持たない (配列を値として持つ engine
+   なので)。番地を出す API を 1 つでも置くと、そこだけレーンで答えが
+   割れる。SIMD の受け口 (`__simd_load` を列に) は 4 レーンで番地の
+   話が片付いてからになる
+4. **tree-walker の表現は「配列 (or SoaVec) + field 名」**。`Rc` を
+   共有するので `ms.set(i, v)` が `ps[i].f` から見える。`Column` の
+   4 メソッドは method dispatch で横取りして、stdlib body
+   (`self.addr` を読む) に届く前に答える
+5. **compiled lane は束縛必須** — `total_mass(ps.mass)` は
+   「まず `val` に束縛せよ」のエラー (compound を産む式の既存規則と
+   同じ)。tree-walker は直接書ける
+
+**実装中に見つけた既存バグ 2 件** (どちらも列の窓が最初の読み手):
+
+- IR VM の `ptr_write` が **u64 / i64 のバイトしか焼いていなかった**。
+  narrow / f32 は typed-slot だけに入るので、`(addr, offset)` の
+  割り方が書き手と違う読み手 (窓、`Ptr::offset`) から 0 に見えた。
+  全スカラー幅を焼くように修正 (`ir_vm/host.rs`、`F32` が
+  `scalar_byte_width` の表から漏れていたのも同時に)
+- typed-slot の**キーを正規化していなかった**。同じバイトが
+  `(base, 40)` と `(base+32, 8)` の 2 通りに書け、後者で**書いた**とき
+  前者のエントリが stale なまま残り、読み手はそちらを優先していた。
+  `(block base, 絶対 offset)` に正規化 (`heap.rs::typed_slot_key`、
+  base 直指定は従来どおり 1 ハッシュ)
 
 ## 採らない案
 
@@ -410,7 +448,7 @@ heap 節を参照。)
 |---|---|---|
 | **0** | `soa [T; N]` (scalar / struct / tuple 要素)。uniform 8 バイト列。**`ps[i].f` の単列 shortcut 込み** — **landing 済み (2026-08-30)**: 列方式 (事実 2 の注記) により IR / codegen / IR VM 無変更、`consistency/soa.rs` が soa 有無一致を 4-way で pin | ✅ 小 |
 | **0.5** | 列ごとの tight pack — **landing 済み (2026-08-31)**: `allocate_array_storage` の stride を `ARRAY_LEAF_STRIDE` から leaf 実幅へ (1 行、codegen 分岐なし)。値は不変なので pin は frame テスト側 (`narrow_leaf_columns_pack_to_their_leaf_width_in_the_aot_frame` が `[24,24,24,24]` → `[3,3,12,24]`) | ✅ 小 |
-| **1** | slice `&[T]` — SoA の窓。`ps.mass` → `&[f64]` | 中 |
+| **1** | 列の窓 — **landing 済み (2026-08-31)**: `ps.mass` → stdlib `Column<T>` (addr + len + stride)。stack / heap 両対応、AoS でも strided window として通る。tree-walker は「配列 + field 名」で表現し 4 メソッドを横取り | ✅ 中 |
 | **2** | `soa Vec<T>` → `SoaVec<T>` sugar。単一領域の列分割 + builtin 2 個 — **landing 済み (2026-08-30)**: parser で砂糖を解き、IR / codegen / IR VM 無変更、`consistency/soa.rs` が値・番地・確保量・drop を pin | ✅ 中 |
 | **3** | 配列要素としての enum + tag 列の分離 | 中 |
 

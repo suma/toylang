@@ -12,6 +12,25 @@
 
 ### 2026-08-31
 
+- **DOD Phase 1 — 列の窓 `ps.mass`** — 1 フィールドを関数に渡せる
+  ようになった。言語の `&[T]` ではなく **stdlib `Column<T>`**
+  (`core/std/column.t`、addr + len + stride) で回収 — slice 型が
+  `Span<T>` で回収されたのと同じ流儀。**stride を持つので AoS でも
+  通る** (当初設計の「AoS は型エラー」を変更: `soa` を付け外しても
+  関数シグネチャが変わらない方が計測に合う)。stack 配列と
+  `soa Vec<T>` の両方が対象で、heap 側は Phase 2 が待っていた帯域削減
+  (`SoaVec::get` は全列を物質化、窓は 1 列)。窓は view で `set` が
+  配列に通る。`as_raw` / `stride` は **API に置かない** — 列は
+  compiled lane では番地だが tree-walker では番地を持たない
+  (tree-walker の表現は「配列 or SoaVec + field 名」で、`Column` の
+  4 メソッドを dispatch で横取り)。compiled lane は `val` 束縛必須。
+  **既存バグ 2 件を道連れに修正**: IR VM の `ptr_write` が u64/i64 の
+  バイトしか焼いておらず narrow / f32 が窓から 0 に見えた
+  (`F32` が `scalar_byte_width` から漏れていたのも同時に)、
+  typed-slot のキーが正規化されておらず同じバイトを別の
+  `(addr, offset)` で書くと stale なエントリが読み手に勝っていた
+  (`heap.rs::typed_slot_key`)。
+
 - **DOD Phase 0.5 — 列の tight pack** — `soa [T; N]` の各列が leaf の
   実幅で stride するようになった (`allocate_array_storage` の 1 行、
   `ARRAY_LEAF_STRIDE` → `elem_stride_bytes(leaf_ty)`)。列は homogeneous
@@ -1699,9 +1718,10 @@
   `ptr` + 要素 index で landing したので、slice が入ったら受け口を
   足せばよい。
   **ライブラリ側で回収済み** — `Span<T>` が `core/std/span.t` として
-  2026-08-30 に landing (POINTER P4、完了済み節)。言語の `&[T]` 型を
-  足うる需要は「first-class な escape 検査つきの窓」に縮小された
-  (現状の `Span` は escape 未検査)。
+  2026-08-30 に landing (POINTER P4、完了済み節)、配列の列を渡す
+  `Column<T>` (`core/std/column.t`) が 2026-08-31 (DOD Phase 1)。
+  言語の `&[T]` 型を足す需要は「first-class な escape 検査つきの窓」に
+  縮小された (`Span` も `Column` も escape 未検査)。
 - **POINTER: `ptr` を型付きにする** ★★ — 設計は [`POINTER.md`](POINTER.md)。
   P1 (`__builtin_sizeof::<T>()`)、P2 (`__getitem__` / `__setitem__`)、
   P1〜P6 すべて 2026-08-30 に landing 済み (完了済み節)。残る論点は
@@ -1864,12 +1884,9 @@
   着手できない。設計フェーズを別に取る前提。
 * データ指向の配列 layout (DOD) ★★ — Phase 0 (`soa [T; N]` + `ps[i].f`
   単列 shortcut) と Phase 2 (`soa Vec<T>` → `SoaVec<T>`) は 2026-08-30、
-  Phase 0.5 (列 tight pack) は 2026-08-31 landing 済み (上)。設計は
-  [`DATA_ORIENTED.md`](DATA_ORIENTED.md)。残り 2 つ:
-  * **Phase 1 — slice `&[T]`** (中)。`ps.mass` → `&[f64]` の列への窓。
-    **依存が集中している所**: heap 版 SoA の帯域削減 (今の `SoaVec::get` は
-    全列を物質化する)、SIMD が列を舐める形、下の「slice 型 `&[T]`」★★ が
-    すべてここ待ち
+  Phase 0.5 (列 tight pack) と Phase 1 (列の窓 `Column<T>`) は
+  2026-08-31 landing 済み (上)。設計は
+  [`DATA_ORIENTED.md`](DATA_ORIENTED.md)。残り 1 つ:
   * **Phase 3 — 配列要素としての enum + tag 列の分離** (中)。前提として
     `array_layout.rs::leaf_scalar_count` の `Type::Enum(_) => 1`
     (配列要素として未サポート) を外す必要がある。tag だけを舐めるループが

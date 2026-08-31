@@ -98,11 +98,19 @@ impl VmHost for InterpreterHost {
         let obj = slot_to_object(value, ty);
         let _ = with_heap(|h| {
             h.typed_write(addr as usize, offset as usize, RcObject::new(RefCell::new(obj)));
-            // Also stamp the byte buffer for types that have a natural 8-byte
-            // representation so raw u64 consumers keep working.
-            if ty == Type::U64 || ty == Type::I64 {
-                let v = unsafe { value.u64 };
-                h.write_u64(addr as usize, offset as usize, v);
+            // Stamp the byte buffer too, at the scalar's own width.
+            //
+            // The typed-slot map is keyed on the exact `(addr, offset)`
+            // pair a write used, so a read that splits the same byte
+            // differently — a window onto the middle of a buffer, an
+            // offset pointer — misses it and falls back to these
+            // bytes. Only `u64` / `i64` were stamped before, which is
+            // why that fallback worked for a wide field and returned
+            // zero for a narrow one (DATA-ORIENTED Phase 1's column
+            // windows are the reader that found it).
+            let width = scalar_byte_width(ty);
+            if width > 0 {
+                h.write_scalar_bytes(addr as usize, offset as usize, width, unsafe { value.u64 });
             }
         });
     }
@@ -174,7 +182,11 @@ fn scalar_byte_width(ty: Type) -> usize {
     match ty {
         Type::I8 | Type::U8 | Type::Bool => 1,
         Type::I16 | Type::U16 => 2,
-        Type::I32 | Type::U32 => 4,
+        // SIMD-F32: single precision is 4 bytes here as everywhere
+        // else. Missing from this table, an `f32` written through a
+        // pointer left no bytes behind and only the typed slot — see
+        // `ptr_write`.
+        Type::I32 | Type::U32 | Type::F32 => 4,
         Type::I64 | Type::U64 | Type::F64 => 8,
         _ => 0,
     }
@@ -189,6 +201,7 @@ fn byte_value_to_slot(raw: u64, ty: Type) -> RawSlot {
         Type::I64 => RawSlot::from_i64(raw as i64),
         Type::U8 | Type::U16 | Type::U32 | Type::U64 => RawSlot::from_u64(raw),
         Type::F64 => RawSlot::from_f64(f64::from_bits(raw)),
+        Type::F32 => RawSlot::from_f32(f32::from_bits(raw as u32)),
         Type::Bool => RawSlot::from_bool(raw != 0),
         _ => RawSlot::from_u64(raw),
     }

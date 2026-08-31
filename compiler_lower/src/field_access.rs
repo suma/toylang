@@ -218,8 +218,14 @@ impl<'a> FunctionLower<'a> {
                     "compiler MVP cannot use tuple `{}` in a field-access chain",
                     self.interner.resolve(sym).unwrap_or("?")
                 )),
+                // DATA-ORIENTED Phase 1: `ps.mass` *is* meaningful on
+                // an array — it is the column window — but only the
+                // let-binding path builds one (`soa.rs`), the same
+                // rule every other compound-producing expression
+                // follows here.
                 Some(Binding::Array { .. }) => Err(format!(
-                    "compiler MVP cannot use array `{}` in a field-access chain",
+                    "compiler MVP cannot use array `{}` in a field-access chain: bind the column window first (`val ms = {}.<field>`) and pass that",
+                    self.interner.resolve(sym).unwrap_or("?"),
                     self.interner.resolve(sym).unwrap_or("?")
                 )),
                 Some(Binding::Enum { .. }) => Err(format!(

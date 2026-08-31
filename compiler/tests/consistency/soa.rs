@@ -831,3 +831,193 @@ fn soa_vec_drop_glue_releases_owning_elements() {
         "something leaked:\n{report}"
     );
 }
+
+// ---------------------------------------------------------------
+// DATA-ORIENTED Phase 1 — column windows (`ps.mass`).
+//
+// Phase 0 made a *loop* over one field cheap; this makes that field
+// passable. `ps.mass` is a `Column<T>` (`core/std/column.t`): the
+// address the field's values start at, how many there are, and how
+// far apart they sit. The stride is what lets one type describe a
+// column of either layout — contiguous under `soa`, one element apart
+// interleaved — so a function taking a column keeps compiling while
+// the modifier is added and removed, which is the measurement DoD is
+// actually about.
+//
+// The window is compiler-built (a stack array's storage has no
+// source-level name) and everything it does afterwards is ordinary
+// stdlib toylang. On the tree-walker it is the array plus a field
+// name instead of an address — that engine holds arrays as values,
+// not as memory — so these tests are also what keeps the two
+// representations answering alike.
+// ---------------------------------------------------------------
+
+/// `total` over a column, with the array's layout as the parameter.
+fn column_program(layout: &str) -> String {
+    format!(
+        r#"
+        struct Particle {{ x: i64, y: i64, mass: i64 }}
+
+        fn total(ms: Column<i64>) -> i64 {{
+            var acc: i64 = 0i64
+            var i: u64 = 0u64
+            while i < ms.len() {{
+                acc = acc + ms.get(i)
+                i = i + 1u64
+            }}
+            acc
+        }}
+
+        fn main() -> i64 {{
+            val ps: {layout}[Particle; 3] = [
+                Particle {{ x: 1i64, y: 2i64, mass: 10i64 }},
+                Particle {{ x: 3i64, y: 4i64, mass: 20i64 }},
+                Particle {{ x: 5i64, y: 6i64, mass: 30i64 }},
+            ]
+            val ms = ps.mass
+            val xs = ps.x
+            total(ms) + total(xs) + ms.len() as i64
+        }}
+    "#
+    )
+}
+
+#[test]
+fn a_column_window_reads_one_field_of_every_element() {
+    // 60 + 9 + 3 = 72, and the layout must not change it: the SoA
+    // window walks a contiguous column, the interleaved one strides
+    // over the neighbouring fields, and both are the same three
+    // values.
+    let soa = column_program("soa ");
+    let aos = column_program("");
+    assert_eq!(interpreter_value(&soa) & 0xff, 72, "soa: {soa}");
+    assert_eq!(interpreter_value(&aos) & 0xff, 72, "aos: {aos}");
+    assert_consistent(&soa, "column_window_soa");
+    assert_consistent(&aos, "column_window_aos");
+}
+
+#[test]
+fn a_column_window_writes_through_to_its_array() {
+    // A window is a view, not a copy: `ms.set` is seen by `ps[i].mass`
+    // and by a second window taken afterwards. The tree-walker shares
+    // the array's `Rc` to get this; the compiled lanes write the
+    // array's own memory.
+    let src = r#"
+        struct Cell { tag: u8, value: i64 }
+
+        fn main() -> i64 {
+            var cs: soa [Cell; 4] = [
+                Cell { tag: 1u8, value: 10i64 },
+                Cell { tag: 2u8, value: 20i64 },
+                Cell { tag: 3u8, value: 30i64 },
+                Cell { tag: 4u8, value: 40i64 },
+            ]
+            var vs = cs.value
+            vs.set(0u64, 100i64)
+            var acc: i64 = 0i64
+            var i: u64 = 0u64
+            while i < vs.len() {
+                acc = acc + vs.get(i)
+                i = i + 1u64
+            }
+            val tags = cs.tag
+            acc + tags.get(3u64) as i64 + cs[0i64].value
+        }
+    "#;
+    // 190 + 4 + 100 = 294.
+    assert_eq!(interpreter_value(src) & 0xff, 294 & 0xff);
+    assert_eq!(interpreter_value(src), 294);
+    assert_consistent(src, "column_window_writeback");
+}
+
+#[test]
+fn a_column_finds_its_leaf_past_a_compound_field() {
+    // Columns are numbered in *leaves*, not fields: `pos` is two of
+    // them, so `mass` is column 2. Getting this wrong reads `pos.y`
+    // and still type-checks, which is why the values here differ per
+    // field. `f32` also exercises a 4-byte column stride.
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        struct Body { pos: Point, mass: f32 }
+
+        fn main() -> i64 {
+            val bs: soa [Body; 3] = [
+                Body { pos: Point { x: 1i64, y: 2i64 }, mass: 1.5f32 },
+                Body { pos: Point { x: 3i64, y: 4i64 }, mass: 2.5f32 },
+                Body { pos: Point { x: 5i64, y: 6i64 }, mass: 4.0f32 },
+            ]
+            val ms = bs.mass
+            var total: f32 = 0.0f32
+            var i: u64 = 0u64
+            while i < ms.len() {
+                total = total + ms.get(i)
+                i = i + 1u64
+            }
+            total as i64
+        }
+    "#;
+    assert_eq!(interpreter_value(src) & 0xff, 8);
+    assert_consistent(src, "column_window_after_compound");
+}
+
+#[test]
+fn a_soa_vec_column_windows_the_live_elements() {
+    // The heap form, and the reason Phase 2's layout pays off at all:
+    // `SoaVec::get` materialises every column of an element, while a
+    // window reads one. Its length is the vec's `len`, not its
+    // capacity — the elements a caller may read.
+    let src = r#"
+        struct Particle { x: i64, mass: i64 }
+
+        fn total(ms: Column<i64>) -> i64 {
+            var acc: i64 = 0i64
+            var i: u64 = 0u64
+            while i < ms.len() {
+                acc = acc + ms.get(i)
+                i = i + 1u64
+            }
+            acc
+        }
+
+        fn main() -> i64 {
+            var ps: soa Vec<Particle> = SoaVec::new()
+            var i: i64 = 0i64
+            while i < 6i64 {
+                ps.push(Particle { x: i, mass: 10i64 + i })
+                i = i + 1i64
+            }
+            var ms = ps.mass
+            # a view: the write is seen through the vec itself
+            ms.set(0u64, 100i64)
+            val back: Particle = ps.get(0u64)
+            # 6 live elements although the capacity is 8
+            total(ms) + back.mass + ms.len() as i64 - ps.capacity() as i64
+        }
+    "#;
+    // masses 100,11,12,13,14,15 = 165; + 100 + 6 - 8 = 263.
+    assert_eq!(interpreter_value(src), 263);
+    assert_consistent(src, "column_window_soa_vec");
+}
+
+#[test]
+fn a_column_of_a_compound_field_is_refused() {
+    // One value per stride is what a window reads; a struct field
+    // occupies as many columns as it has leaves. Refused in the
+    // checker so every engine refuses the same program, rather than
+    // in the lowering where the tree-walker would have accepted it.
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        struct Body { pos: Point, mass: i64 }
+
+        fn main() -> i64 {
+            val bs: soa [Body; 1] = [Body { pos: Point { x: 1i64, y: 2i64 }, mass: 3i64 }]
+            val ps = bs.pos
+            0i64
+        }
+    "#;
+    let errors = type_check_errors(src);
+    assert!(
+        errors.iter().any(|e| e.contains("several columns")),
+        "expected the compound-field refusal, got: {errors:?}"
+    );
+}

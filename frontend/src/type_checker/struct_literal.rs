@@ -173,6 +173,63 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
     /// Type check field access - implementation
+    /// The type of `array.field` — DATA-ORIENTED Phase 1's column
+    /// window, `Column<T>` for a field of type `T`.
+    ///
+    /// Restricted to a scalar field of a struct element in this phase.
+    /// A compound field would be a column of columns: the window's
+    /// `get` reads one value at one stride, and a struct's leaves live
+    /// in as many columns as it has. Both restrictions are reported
+    /// here rather than surfacing as a lowering failure, so the
+    /// tree-walker and the compiled lanes refuse the same programs.
+    fn column_window_type(
+        &mut self,
+        element_type: Option<&TypeDecl>,
+        field: DefaultSymbol,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        let field_name = self.resolve_symbol_name(field);
+        let element_type = element_type.ok_or_else(|| {
+            TypeCheckError::generic_error(&format!(
+                "cannot take the column `{field_name}`: the array has no element type"
+            ))
+        })?;
+        let struct_symbol = match element_type {
+            TypeDecl::Identifier(sym) | TypeDecl::Struct(sym, _) => *sym,
+            other => {
+                return Err(TypeCheckError::generic_error(&format!(
+                    "cannot take the column `{field_name}` of an array of `{other:?}`: \
+                     a column window needs struct elements"
+                )));
+            }
+        };
+        let struct_fields = self.context.get_struct_fields(struct_symbol).ok_or_else(|| {
+            let name = self.resolve_symbol_name(struct_symbol);
+            TypeCheckError::not_found("struct", &name)
+        })?;
+        let field_type = struct_fields
+            .iter()
+            .find(|f| f.name == field_name)
+            .map(|f| f.type_decl.clone())
+            .ok_or_else(|| TypeCheckError::not_found("field", &field_name))?;
+        if !is_column_leaf(&field_type) {
+            return Err(TypeCheckError::generic_error(&format!(
+                "cannot take the column `{field_name}`: its type is not a scalar, and a \
+                 compound field occupies several columns (DATA-ORIENTED Phase 1 windows \
+                 one)"
+            )));
+        }
+        // `Column` is a stdlib type, so its name is already interned
+        // by the time user code is checked. Missing means the core
+        // modules were not loaded, which is worth saying plainly
+        // rather than reporting an unknown struct.
+        let column = self.core.string_interner.get("Column").ok_or_else(|| {
+            TypeCheckError::generic_error(
+                "a column window needs the stdlib `Column<T>`                  (`core/std/column.t`), which this program did not load",
+            )
+        })?;
+        Ok(TypeDecl::Struct(column, vec![field_type]))
+    }
+
     pub fn visit_field_access_impl(&mut self, obj: &ExprRef, field: &DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
         // Check recursion depth to prevent stack overflow
         if self.type_inference.recursion_depth >= self.type_inference.max_recursion_depth {
@@ -208,6 +265,16 @@ impl<'a> TypeCheckerVisitor<'a> {
         let obj_type = obj_type_result?;
 
         match obj_type {
+            // DATA-ORIENTED Phase 1: a field name on an *array* is the
+            // column window — `ps.mass` is every element's `mass`,
+            // typed `Column<f64>` (`core/std/column.t`). Accepted for
+            // either layout: the window carries a stride, so the
+            // interleaved spelling gives a strided view rather than a
+            // type error, and a program keeps compiling while `soa` is
+            // added and removed.
+            TypeDecl::Array(ref elements, _, _) => {
+                self.column_window_type(elements.first(), *field)
+            }
             TypeDecl::Identifier(struct_name) => {
                 if let Some(struct_fields) = self.context.get_struct_fields(struct_name) {
                     let field_name = self.resolve_symbol_name(*field);
@@ -232,6 +299,17 @@ impl<'a> TypeCheckerVisitor<'a> {
                             let substituted_type = self.substitute_type_params(&struct_field.type_decl, &mapping);
                             return Ok(substituted_type);
                         }
+                    }
+                    // DATA-ORIENTED Phase 1: `vs.mass` on a
+                    // `SoaVec<Particle>` is the heap column window —
+                    // the same `Column<T>` an array's field gives, and
+                    // the reason the heap layout pays off at all (its
+                    // `get` materialises every column; a window reads
+                    // one). Reached only after the vec's own fields
+                    // have been ruled out, so `v.len` still means the
+                    // field.
+                    if self.resolve_symbol_name(struct_symbol) == "SoaVec" {
+                        return self.column_window_type(type_params.first(), *field);
                     }
                     Err(TypeCheckError::not_found("field", &field_name))
                 } else {
@@ -947,4 +1025,25 @@ impl<'a> TypeCheckerVisitor<'a> {
         // this picks up the rewritten `Block`.
         self.visit_expr(&update_ref)
     }
+}
+
+/// Whether `ty` is a single scalar — the field types a `Column<T>`
+/// window can address, one value per stride.
+fn is_column_leaf(ty: &TypeDecl) -> bool {
+    matches!(
+        ty,
+        TypeDecl::Bool
+            | TypeDecl::UInt64
+            | TypeDecl::Int64
+            | TypeDecl::Float64
+            | TypeDecl::Float32
+            | TypeDecl::UInt8
+            | TypeDecl::UInt16
+            | TypeDecl::UInt32
+            | TypeDecl::Int8
+            | TypeDecl::Int16
+            | TypeDecl::Int32
+            | TypeDecl::Ptr
+            | TypeDecl::String
+    )
 }

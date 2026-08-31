@@ -575,16 +575,43 @@ impl HeapManager {
         self.stats
     }
 
+    /// The canonical key for a typed slot: the enclosing allocation's
+    /// base and the byte offset from it.
+    ///
+    /// The same byte can be named two ways — `(base, 40)` by whoever
+    /// filled the buffer, `(base + 32, 8)` by a window onto the middle
+    /// of it (`Ptr::offset`, DATA-ORIENTED's column windows). Keyed on
+    /// the pair as written, the second read misses the first write,
+    /// and — worse — a *write* through the second name leaves the
+    /// first name's entry behind as a stale value that later reads
+    /// prefer over the freshly stamped bytes. Normalising here is what
+    /// makes the two names one slot.
+    ///
+    /// A base address is already canonical (the common case, and the
+    /// only one before interior pointers existed), so it costs one
+    /// hash lookup; an interior address pays the scan in
+    /// `resolve_block`.
+    fn typed_slot_key(&self, addr: usize, offset: usize) -> (usize, usize) {
+        if self.allocations.contains_key(&addr) {
+            return (addr, offset);
+        }
+        match self.resolve_block(addr) {
+            Some((base, _)) => (base, addr - base + offset),
+            None => (addr, offset),
+        }
+    }
+
     /// Record a typed slot so a later `typed_read` can return the exact Rc.
     pub fn typed_write(&mut self, addr: usize, offset: usize, value: crate::object::RcObject) {
         if addr != 0 {
-            self.typed_slots.insert((addr, offset), value);
+            let key = self.typed_slot_key(addr, offset);
+            self.typed_slots.insert(key, value);
         }
     }
 
     /// Look up a previously-stored typed value, if any.
     pub fn typed_read(&self, addr: usize, offset: usize) -> Option<crate::object::RcObject> {
-        self.typed_slots.get(&(addr, offset)).cloned()
+        self.typed_slots.get(&self.typed_slot_key(addr, offset)).cloned()
     }
 
     /// One byte of a buffer, wherever it happens to live.
@@ -867,6 +894,46 @@ impl HeapManager {
 
     /// Raw, base-agnostic byte write. `addr` may be interior; the caller is
     /// responsible for the region being within an allocation it owns.
+    /// Stamp `width` (1/2/4/8) little-endian bytes of `bits` at
+    /// `addr + offset`. The write counterpart of
+    /// [`read_scalar_bytes`], and bounds-checked the same way.
+    ///
+    /// Every scalar a program writes through a pointer lands here as
+    /// well as in the typed-slot map, so a later read finds it however
+    /// it splits the address: the map is keyed on the exact
+    /// `(addr, offset)` pair used, and a window into the middle of a
+    /// buffer (DATA-ORIENTED's column windows, `Ptr::offset`) splits
+    /// it differently from the write that filled it. Bytes have no
+    /// such ambiguity.
+    pub fn write_scalar_bytes(
+        &mut self,
+        addr: usize,
+        offset: usize,
+        width: usize,
+        bits: u64,
+    ) -> bool {
+        if addr == 0 || width == 0 || width > 8 {
+            return false;
+        }
+        let Some((base, size)) = self.resolve_block(addr) else {
+            return false;
+        };
+        let within = addr - base;
+        let Some(end) = within.checked_add(offset).and_then(|s| s.checked_add(width)) else {
+            return false;
+        };
+        if end > size {
+            return false;
+        }
+        let start = addr - 1 + offset;
+        let bytes = bits.to_le_bytes();
+        let Some(slice) = self.memory.get_mut(start..start + width) else {
+            return false;
+        };
+        slice.copy_from_slice(&bytes[..width]);
+        true
+    }
+
     pub fn write_bytes_raw(&mut self, addr: usize, bytes: &[u8]) -> bool {
         if addr == 0 {
             return false;

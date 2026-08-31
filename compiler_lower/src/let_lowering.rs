@@ -402,6 +402,34 @@ impl<'a> FunctionLower<'a> {
                 {
                     return Ok(result);
                 }
+        // DATA-ORIENTED Phase 1: `val ms = ps.mass` — the column
+        // window. A field name on an *array* is every element's copy
+        // of that field, handed back as a `Column<T>`
+        // (`core/std/column.t`). Compiler-side because a stack
+        // array's storage has no source-level name to point at.
+        if let Expr::FieldAccess(base, field) = rhs.clone()
+            && let Some(Expr::Identifier(source_sym)) = self.program.expression.get(&base)
+        {
+            match self.bindings.get(&source_sym).cloned() {
+                Some(Binding::Array { element_ty, length, storage }) => {
+                    if let Some(result) =
+                        self.lower_let_column_window(name, element_ty, length, &storage, field)?
+                    {
+                        return Ok(result);
+                    }
+                }
+                // The heap form: the same window over one column of a
+                // `SoaVec<T>`'s buffer.
+                Some(Binding::Struct { struct_id, fields }) => {
+                    if let Some(result) =
+                        self.lower_let_soa_vec_column(name, struct_id, &fields, field)?
+                    {
+                        return Ok(result);
+                    }
+                }
+                _ => {}
+            }
+        }
         // DATA-ORIENTED Phase 2: `val name: T = __builtin_soa_read(p, i, cap)`
         // is the same read against a column-split buffer — same
         // annotation convention, same per-leaf expansion, different

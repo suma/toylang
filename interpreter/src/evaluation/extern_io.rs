@@ -119,7 +119,11 @@ pub(crate) fn with_bytes<R>(
     f: impl FnOnce(&[u8]) -> R,
 ) -> Result<R, InterpreterError> {
     let addr = ptr_arg(p, name)?;
-    let heap = ctx.heap_manager.borrow();
+    // Mutable even though this is the read direction: the borrow
+    // flushes the typed-slot map into the raw bytes first, because a
+    // buffer built with `push` lives there and an address-taking
+    // callee cannot consult it (see `HeapManager::borrow_bytes`).
+    let mut heap = ctx.heap_manager.borrow_mut();
     let bytes = heap.borrow_bytes(addr, len as usize).ok_or_else(|| {
         InterpreterError::InternalError(format!(
             "extern fn `{name}`: buffer of {len} bytes is not inside a live allocation"

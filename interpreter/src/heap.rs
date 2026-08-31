@@ -1111,8 +1111,70 @@ impl HeapManager {
     /// The borrow must not outlive the call — `memory` grows on
     /// allocation, so a pointer kept across one dangles. Callers get
     /// that for free by taking a closure.
-    pub(crate) fn borrow_bytes(&self, addr: usize, size: usize) -> Option<&[u8]> {
+    pub(crate) fn borrow_bytes(&mut self, addr: usize, size: usize) -> Option<&[u8]> {
+        self.materialize_typed_slots(addr, size);
         self.get_memory_slice(addr, size)
+    }
+
+    /// Copy whatever the typed-slot map holds for this range into the
+    /// raw byte buffer, so the two views agree before the range is
+    /// lent out.
+    ///
+    /// A byte buffer on this engine can live in *either* place. A
+    /// `__builtin_ptr_write` of a narrow integer — which is what every
+    /// `String::push` and `Vec<u8>::push` becomes — is recorded only
+    /// as a typed slot; the raw buffer is stamped for 64-bit writes
+    /// alone. `read_byte_at` is the reader that knows to consult both,
+    /// and every toylang-side read goes through it.
+    ///
+    /// A borrow handed to an `extern fn` does not, and cannot: the
+    /// callee gets an address. Without this, `io::write_file_bytes` on
+    /// a `String` wrote **zeros** — the length was right, the content
+    /// was gone — and did so silently, on the tree-walker only.
+    ///
+    /// The slots are left in place. This flushes them *into* memory
+    /// rather than moving them out, so nothing that reads through the
+    /// typed path afterwards is disturbed; only the write-direction
+    /// borrow drops them, and it drops them after this has run so the
+    /// bytes the callee does not overwrite survive.
+    fn materialize_typed_slots(&mut self, addr: usize, size: usize) {
+        if self.typed_slots.is_empty() || size == 0 {
+            return;
+        }
+        let Some((base, _)) = self.resolve_block(addr) else {
+            return;
+        };
+        let from = addr - base;
+        let Some(to) = from.checked_add(size) else {
+            return;
+        };
+        // One pass over the map rather than a lookup per byte: a
+        // receive buffer is tens of kilobytes and almost all of it
+        // holds no slot at all.
+        let pending: Vec<(usize, u8)> = self
+            .typed_slots
+            .iter()
+            .filter(|((a, off), _)| *a == base && *off >= from && *off < to)
+            .map(|((_, off), value)| (*off, Self::slot_byte(value)))
+            .collect();
+        for (off, byte) in pending {
+            if let Some(slot) = self.memory.get_mut(base + off - 1) {
+                *slot = byte;
+            }
+        }
+    }
+
+    /// The byte a typed slot stands for. Mirrors [`read_byte_at`]'s
+    /// conversion exactly — including the truncation of a slot written
+    /// through a wider type — so a borrowed range shows a callee the
+    /// same bytes toylang would read one at a time.
+    fn slot_byte(value: &crate::object::RcObject) -> u8 {
+        let b = value.borrow();
+        match &*b {
+            crate::object::Object::UInt8(x) => *x,
+            crate::object::Object::Int8(x) => *x as u8,
+            other => other.try_unwrap_uint64().unwrap_or(0) as u8,
+        }
     }
 
     /// Borrow `size` bytes at `addr` for writing (EXTERN-BUF).
@@ -1123,6 +1185,10 @@ impl HeapManager {
     /// This is the same hazard `copy_memory` handles by copying the
     /// slots along — here there is nothing to copy, so they go.
     pub(crate) fn borrow_bytes_mut(&mut self, addr: usize, size: usize) -> Option<&mut [u8]> {
+        // Flush before dropping: a callee that fills part of the range
+        // (a `recv` into a 64 KB buffer) leaves the rest as it was,
+        // and "as it was" has to mean the bytes toylang put there.
+        self.materialize_typed_slots(addr, size);
         // Resolve first: `get_memory_slice_mut` borrows `self`
         // mutably for the rest of the function.
         let (base, _) = self.resolve_block(addr)?;

@@ -144,3 +144,70 @@ fn a_missing_file_reports_the_same_reason_it_does_for_read_file() {
     assert_eq!(interpreter_value(&src) & 0xff, 1);
     assert_consistent(&src, "extern_buf_missing");
 }
+
+/// A buffer built by `push` — the shape every `String` has — reaches
+/// an `extern fn` with its bytes intact.
+///
+/// The tree-walker keeps a byte buffer in one of two places. A
+/// `__builtin_ptr_write` of a narrow integer, which is what
+/// `String::push` becomes, is recorded only as a typed slot; the raw
+/// byte vector is stamped for 64-bit writes alone. Every toylang-side
+/// read consults both (`HeapManager::read_byte_at`), but a borrow
+/// handed to an `extern fn` cannot — the callee gets an address.
+///
+/// So `io::write_file_bytes` on a `String` wrote the **right number of
+/// zeros**: the length was correct and the content was gone, on that
+/// lane only. The borrow now flushes the typed slots into the raw
+/// bytes first.
+///
+/// The test above does not cover this: it fills its buffer with
+/// `Span::set`, which lands in the raw bytes, so both views already
+/// agreed.
+#[test]
+fn a_buffer_built_by_push_reaches_an_extern_with_its_bytes() {
+    let path = scratch_path("extern_buf_push");
+    let src = format!(
+        r#"
+        fn main() -> u64 {{
+            var s = String::new()
+            s.push(104u8)
+            s.push(105u8)
+            val window: Option<Span<u8>> = s.as_span()
+            var acc: u64 = 0u64
+            match window {{
+                Option::Some(src) => {{
+                    val w: Result<u64, IoError> = io::write_file_bytes("{path}", src)
+                    val written = match w {{
+                        Result::Ok(k) => k,
+                        Result::Err(_) => 900u64,
+                    }}
+                    acc = acc + written
+                }}
+                Option::None => {{ acc = acc + 900u64 }}
+            }}
+            var back: Vec<u8> = Vec::with_capacity(8u64)
+            val space: Option<Span<u8>> = back.capacity_span()
+            match space {{
+                Option::Some(dst) => {{
+                    val r: Result<u64, IoError> = io::read_file_into("{path}", dst)
+                    val n = match r {{
+                        Result::Ok(k) => k,
+                        Result::Err(_) => 900u64,
+                    }}
+                    back.set_size(n)
+                    acc = acc + back.get(0u64) as u64 + back.get(1u64) as u64
+                }}
+                Option::None => {{ acc = acc + 900u64 }}
+            }}
+            acc
+        }}
+    "#,
+        path = path.display()
+    );
+    // 2 written + 'h' + 'i'. Before the fix the tree-walker answered
+    // 2 — the bytes were zeros — while the compiled lanes answered
+    // 211, so this disagrees rather than merely being wrong.
+    assert_eq!(interpreter_value(&src) & 0xffff, 211);
+    assert_consistent(&src, "extern_buf_push");
+    let _ = std::fs::remove_file(&path);
+}

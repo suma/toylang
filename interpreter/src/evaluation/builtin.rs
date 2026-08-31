@@ -423,6 +423,73 @@ impl EvaluationContext<'_> {
     /// Every arm below used to spell this out: a seven-line `if
     /// args.len() != n` returning a `FunctionParameterMismatch` whose
     /// message restated the name and the count already in the condition.
+    /// The width and bit pattern of a fixed-width scalar, for the
+    /// byte-buffer mirror in `PtrWrite` (EXTERN-BUF). `None` for
+    /// anything whose bytes this engine does not model (strings,
+    /// structs, enums — they live in the typed-slot map alone).
+    fn scalar_bits(obj: &crate::object::Object) -> Option<(usize, u64)> {
+        use crate::object::Object;
+        Some(match obj {
+            Object::Bool(b) => (1, *b as u64),
+            Object::UInt8(v) => (1, *v as u64),
+            Object::Int8(v) => (1, *v as u8 as u64),
+            Object::UInt16(v) => (2, *v as u64),
+            Object::Int16(v) => (2, *v as u16 as u64),
+            Object::UInt32(v) => (4, *v as u64),
+            Object::Int32(v) => (4, *v as u32 as u64),
+            Object::UInt64(v) => (8, *v),
+            Object::Int64(v) => (8, *v as u64),
+            Object::Float64(v) => (8, v.to_bits()),
+            Object::Float32(v) => (4, v.to_bits() as u64),
+            _ => return None,
+        })
+    }
+
+    /// EXTERN-BUF: read a scalar of the width the pending `val`
+    /// annotation asks for straight out of the byte buffer.
+    ///
+    /// The typed-slot map is this engine's normal record of what a
+    /// `__builtin_ptr_write` stored, and reads consult it first. Bytes
+    /// that arrived some other way — a native extern filling a
+    /// caller-owned buffer — leave no slot, and the only fallback was
+    /// an 8-byte read, so a `Vec<u8>` filled that way was unreadable
+    /// here while the other engines managed fine.
+    ///
+    /// `None` when the annotation is missing or is not a fixed-width
+    /// scalar, so the caller keeps its existing behaviour.
+    fn read_annotated_scalar_bytes(&self, addr: usize, offset: usize) -> Option<crate::object::Object> {
+        use crate::object::Object;
+        let annotation = self.pending_annotation.clone()?;
+        // Inside a generic body the annotation is the parameter
+        // (`val v: T = ...` in `Vec::get`), so resolve it the way
+        // `__builtin_sizeof::<T>()` does.
+        let resolved = match &annotation {
+            TypeDecl::Generic(g) | TypeDecl::Identifier(g) => self
+                .merged_generic_scope()
+                .get(g)
+                .cloned()
+                .unwrap_or(annotation.clone()),
+            other => other.clone(),
+        };
+        let (width, build): (usize, fn(u64) -> Object) = match resolved {
+            TypeDecl::Bool => (1, |v| Object::Bool(v != 0)),
+            TypeDecl::UInt8 => (1, |v| Object::UInt8(v as u8)),
+            TypeDecl::Int8 => (1, |v| Object::Int8(v as i8)),
+            TypeDecl::UInt16 => (2, |v| Object::UInt16(v as u16)),
+            TypeDecl::Int16 => (2, |v| Object::Int16(v as i16)),
+            TypeDecl::UInt32 => (4, |v| Object::UInt32(v as u32)),
+            TypeDecl::Int32 => (4, |v| Object::Int32(v as i32)),
+            TypeDecl::Int64 => (8, |v| Object::Int64(v as i64)),
+            TypeDecl::UInt64 => (8, Object::UInt64),
+            _ => return None,
+        };
+        let raw = self
+            .heap_manager
+            .borrow()
+            .read_scalar_bytes(addr, offset, width)?;
+        Some(build(raw))
+    }
+
     fn expect_args(name: &str, args: &[ExprRef], n: usize) -> Result<(), InterpreterError> {
         if args.len() == n {
             return Ok(());
@@ -628,6 +695,17 @@ impl EvaluationContext<'_> {
             if let Some(value) = self.heap_manager.borrow().typed_read(addr, offset as usize) {
                 return Ok(EvaluationResult::Value(value.into()));
             }
+            // EXTERN-BUF: bytes a native `extern fn` wrote have no
+            // typed slot — it deposited raw bytes and the stale slots
+            // over the range were dropped, or there never were any.
+            // Read the width the annotation asks for. Without this the
+            // only fallback was an 8-byte read, so a `Vec<u8>` filled
+            // by `io::read_file_into` could not be read back on this
+            // engine while the IR VM (which has the same fallback in
+            // `ir_vm::host`) and the compiled lanes could.
+            if let Some(value) = self.read_annotated_scalar_bytes(addr, offset as usize) {
+                return Ok(EvaluationResult::Value(value.into()));
+            }
             match self.heap_manager.borrow().read_u64(addr, offset as usize) {
                 Some(value) => Ok(EvaluationResult::Value((Object::UInt64(value)).into())),
                 None => Err(InterpreterError::InternalError("Invalid memory access in ptr_read".to_string())),
@@ -659,6 +737,21 @@ impl EvaluationContext<'_> {
                 let v = value_obj.borrow().try_unwrap_uint64().unwrap();
                 self.heap_manager.borrow_mut().write_u64(addr, offset as usize, v)
             };
+            // EXTERN-BUF: mirror narrower scalars into the byte buffer
+            // too. Reads take the typed slot first, so this changes
+            // nothing for toylang code — but a native `extern fn`
+            // lent the same range (`io::write_file_bytes`) sees only
+            // the bytes, and used to find zeros where a `u8` had been
+            // written. The u64 case above already did this, for the
+            // same reason.
+            if !bytes_written {
+                let scalar = Self::scalar_bits(&value_obj.borrow());
+                if let Some((width, bits)) = scalar {
+                    self.heap_manager
+                        .borrow_mut()
+                        .write_scalar_bytes(addr, offset as usize, width, bits);
+                }
+            }
             // For typed reads we always store into the slot map so
             // subsequent `ptr_read` calls can recover the original
             // `RcObject` (needed for bool / i64 / user structs / enums).

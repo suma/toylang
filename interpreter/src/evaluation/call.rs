@@ -1819,6 +1819,22 @@ impl EvaluationContext<'_> {
     /// registered for the declared name. Shared by both the
     /// `evaluate_function` (RcObject-result) and
     /// `evaluate_function_with_values` (Value-result) call paths.
+    /// Materialise a literal `str` argument as a heap String before it
+    /// crosses into a registry implementation, which has no interner
+    /// to resolve a `ConstString` symbol with. Shared by both extern
+    /// tables so they see the same value shapes (RUNTIME-IO).
+    fn normalize_extern_args(&self, args: &[crate::value::Value]) -> Vec<crate::value::Value> {
+        args.iter()
+            .map(|a| match a {
+                crate::value::Value::ConstString(sym) => {
+                    let text = self.string_interner.resolve(*sym).unwrap_or("").to_string();
+                    crate::value::Value::from(crate::object::Object::String(text))
+                }
+                other => other.clone(),
+            })
+            .collect()
+    }
+
     fn dispatch_extern_fn(
         &mut self,
         function: &Rc<Function>,
@@ -1830,6 +1846,14 @@ impl EvaluationContext<'_> {
             .ok_or_else(|| InterpreterError::InternalError(
                 "extern fn name failed to resolve in interner".to_string(),
             ))?;
+        // EXTERN-BUF: an extern that reaches toylang memory needs the
+        // context, so it lives in its own table and is looked up
+        // first. The argument normalisation below applies here too —
+        // these take a `str` path alongside the buffer.
+        if let Some(impl_fn) = self.extern_buf_registry.get(name).copied() {
+            let normalized = self.normalize_extern_args(args);
+            return impl_fn(self, &normalized);
+        }
         match self.extern_registry.get(name) {
             Some(impl_fn) => {
                 // Normalise `str` arguments: a literal arrives as a
@@ -1837,20 +1861,7 @@ impl EvaluationContext<'_> {
                 // have no interner to resolve. Materialise it as a
                 // heap String so every backend's extern sees the same
                 // value shape (RUNTIME-IO).
-                let normalized: Vec<crate::value::Value> = args
-                    .iter()
-                    .map(|a| match a {
-                        crate::value::Value::ConstString(sym) => {
-                            let text = self
-                                .string_interner
-                                .resolve(*sym)
-                                .unwrap_or("")
-                                .to_string();
-                            crate::value::Value::from(crate::object::Object::String(text))
-                        }
-                        other => other.clone(),
-                    })
-                    .collect();
+                let normalized = self.normalize_extern_args(args);
                 impl_fn(&normalized)
             }
             // FFI_PLAN P1: a `from`-declared extern the registry does

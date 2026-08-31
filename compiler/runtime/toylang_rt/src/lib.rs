@@ -2463,6 +2463,88 @@ pub extern "C" fn toy_io_read_file(path: *const u8) -> *const u8 {
     toy_str_alloc(&buf)
 }
 
+/// EXTERN-BUF: read the file at `path` into the caller's buffer,
+/// returning how many bytes landed in it.
+///
+/// `buf` is a toylang buffer address, so `fread` writes **straight
+/// into it** — no staging allocation and no copy, which is the point
+/// of the buffer-taking shape. A file longer than `cap` fills the
+/// buffer and stops; the count is what fit, the way `read(2)`
+/// behaves, not a failure. The status goes to the same slot
+/// `toy_io_read_file` uses, so `toy_io_read_file_status` serves both.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_io_read_file_into(path: *const u8, buf: *mut u8, cap: u64) -> u64 {
+    let st = thread_state();
+    let p = str_to_cstring(path);
+    let f = unsafe { fopen(p.as_ptr(), c"rb".as_ptr().cast()) };
+    if f.is_null() {
+        st.read_file_status = io_status_from_errno(current_errno());
+        return 0;
+    }
+    let got = if cap > 0 && !buf.is_null() {
+        unsafe { fread(buf, 1, cap as usize, f) }
+    } else {
+        0
+    };
+    let failed = unsafe { ferror(f) } != 0;
+    if failed {
+        // Read errno before `fclose`, which may clobber it.
+        st.read_file_status = io_status_from_errno(current_errno());
+    }
+    unsafe { fclose(f) };
+    if failed {
+        return 0;
+    }
+    st.read_file_status = IO_OK;
+    got as u64
+}
+
+/// EXTERN-BUF: write `len` bytes of the caller's buffer to `path`,
+/// truncating (`append == 0`) or adding to the end.
+///
+/// The counterpart of [`toy_io_read_file_into`]: `fwrite` reads
+/// straight out of toylang memory. Unlike `toy_io_write_file` the
+/// payload is a byte range rather than a `str`, so embedded NULs and
+/// non-UTF-8 content are ordinary data. Shares
+/// `toy_io_write_file_status`.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_io_write_file_bytes(
+    path: *const u8,
+    buf: *const u8,
+    len: u64,
+    append: u8,
+) -> u64 {
+    let st = thread_state();
+    let p = str_to_cstring(path);
+    let mode = if append != 0 { c"ab" } else { c"wb" };
+    let f = unsafe { fopen(p.as_ptr(), mode.as_ptr().cast()) };
+    if f.is_null() {
+        st.write_file_status = io_status_from_errno(current_errno());
+        return 0;
+    }
+    let written = if len > 0 && !buf.is_null() {
+        unsafe { fwrite(buf, 1, len as usize, f) }
+    } else {
+        0
+    };
+    // A short write is a failure even when `ferror` is not set.
+    let failed = unsafe { ferror(f) } != 0 || written as u64 != len;
+    if failed {
+        let err = current_errno();
+        st.write_file_status = if err == 0 { IO_WRITE_ERROR } else { io_status_from_errno(err) };
+    }
+    let closed = unsafe { fclose(f) };
+    if failed {
+        return written as u64;
+    }
+    if closed != 0 {
+        st.write_file_status = IO_WRITE_ERROR;
+        return written as u64;
+    }
+    st.write_file_status = IO_OK;
+    written as u64
+}
+
 /// RUNTIME-IO: the status of the most recent `toy_io_read_file` call
 /// on this thread. The stdlib `read_file` wrapper calls this
 /// immediately after the payload call, so the pair is atomic from

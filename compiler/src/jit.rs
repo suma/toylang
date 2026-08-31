@@ -421,6 +421,14 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_io_env", toylang_rt::toy_io_env as *const u8);
     jit_builder.symbol("toy_io_env_status", toylang_rt::toy_io_env_status as *const u8);
     jit_builder.symbol("toy_io_read_file", toylang_rt::toy_io_read_file as *const u8);
+    jit_builder.symbol(
+        "toy_io_read_file_into",
+        toylang_rt::toy_io_read_file_into as *const u8,
+    );
+    jit_builder.symbol(
+        "toy_io_write_file_bytes",
+        toylang_rt::toy_io_write_file_bytes as *const u8,
+    );
     jit_builder.symbol("toy_io_read_file_status", toylang_rt::toy_io_read_file_status as *const u8);
     jit_builder.symbol("toy_print_stream", toylang_rt::toy_print_stream as *const u8);
     jit_builder.symbol("toy_parse_f64", toylang_rt::toy_parse_f64 as *const u8);

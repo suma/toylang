@@ -1099,6 +1099,40 @@ impl HeapManager {
         None
     }
     
+    /// Borrow `size` bytes at `addr` for reading (EXTERN-BUF).
+    ///
+    /// This is how a native `extern fn` reaches a toylang buffer
+    /// without copying it: the compiled lanes hand the OS the real
+    /// address, and this gives the tree-walker the same call. The
+    /// bounds are checked against the *enclosing allocation*, so a
+    /// bad `(ptr, len)` fails as a toylang error instead of reading
+    /// into the neighbouring block.
+    ///
+    /// The borrow must not outlive the call — `memory` grows on
+    /// allocation, so a pointer kept across one dangles. Callers get
+    /// that for free by taking a closure.
+    pub(crate) fn borrow_bytes(&self, addr: usize, size: usize) -> Option<&[u8]> {
+        self.get_memory_slice(addr, size)
+    }
+
+    /// Borrow `size` bytes at `addr` for writing (EXTERN-BUF).
+    ///
+    /// Also drops any typed slot covering the range: a foreign write
+    /// deposits raw bytes, and reads consult the typed-slot map
+    /// first, so a stale slot would shadow what was just written.
+    /// This is the same hazard `copy_memory` handles by copying the
+    /// slots along — here there is nothing to copy, so they go.
+    pub(crate) fn borrow_bytes_mut(&mut self, addr: usize, size: usize) -> Option<&mut [u8]> {
+        // Resolve first: `get_memory_slice_mut` borrows `self`
+        // mutably for the rest of the function.
+        let (base, _) = self.resolve_block(addr)?;
+        let from = addr - base;
+        let to = from.checked_add(size)?;
+        self.typed_slots
+            .retain(|(a, off), _| *a != base || *off < from || *off >= to);
+        self.get_memory_slice_mut(addr, size)
+    }
+
     fn get_memory_slice(&self, addr: usize, size: usize) -> Option<&[u8]> {
         let (base, alloc_size) = self.resolve_block(addr)?;
         let within = addr - base;

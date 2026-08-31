@@ -13,6 +13,7 @@ use crate::heap::{Allocator, GlobalAllocator, HeapManager};
 pub mod extern_io;
 pub mod extern_math;
 pub mod extern_ffi;
+use extern_io::ExternBufFn;
 use extern_math::ExternFn;
 
 /// Per-enum entry registered with the evaluation context. Carries
@@ -239,6 +240,17 @@ pub struct EvaluationContext<'a> {
     /// `evaluation/builtin.rs` for any function the user declares as
     /// `extern fn`.
     pub(super) extern_registry: HashMap<&'static str, ExternFn>,
+    /// EXTERN-BUF: the externs that need to reach toylang memory.
+    ///
+    /// `ExternFn` takes only the argument values, which is enough for
+    /// everything that crosses the boundary as a scalar or a `str`.
+    /// An extern handed a `(ptr, len)` buffer cannot work from those
+    /// alone: in this engine a `ptr` is an index into `HeapManager`,
+    /// not a host address, so the implementation needs the context to
+    /// resolve it. Rather than widen every entry, buffer externs get
+    /// their own table; the compiled lanes need nothing extra, since
+    /// there the pointer already *is* the address.
+    pub(super) extern_buf_registry: HashMap<&'static str, ExternBufFn>,
     /// Phase 5 (汎用 RAII): set of struct symbols that have an
     /// `impl Drop for <Struct>` block. Populated at startup from
     /// `build_method_registry` (we record the trait_name field of
@@ -421,6 +433,7 @@ impl<'a> EvaluationContext<'a> {
                 registry.extend(extern_io::build_io_registry());
                 registry
             },
+            extern_buf_registry: extern_io::build_io_buf_registry(),
             drop_trait_structs: Rc::new(std::collections::HashSet::new()),
             transferred_bindings: Rc::new(std::collections::HashSet::new()),
             drop_scopes: vec![Vec::new()],
@@ -476,6 +489,7 @@ impl<'a> EvaluationContext<'a> {
                 registry.extend(extern_io::build_io_registry());
                 registry
             },
+            extern_buf_registry: extern_io::build_io_buf_registry(),
             drop_trait_structs: shared.drop_trait_structs.clone(),
             transferred_bindings: shared.transferred_bindings.clone(),
             drop_scopes: vec![Vec::new()],

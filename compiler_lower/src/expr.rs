@@ -1805,14 +1805,17 @@ impl<'a> FunctionLower<'a> {
                     self.interner.resolve(fn_name).unwrap_or("?"),
                 ));
             }
+            // Flatten compound arguments into their leaf values, the
+            // way every other call site does. Lowering each argument
+            // as a single expression instead meant a module function
+            // could not take a struct at all (`io::read_file_into(p,
+            // span)` reported "module function arg produced no
+            // value", naming neither the argument nor the shape),
+            // while the identical call to a top-level function
+            // worked.
             let mut arg_values: Vec<ValueId> = Vec::with_capacity(args.len());
             for a in &args {
-                let v = self
-                    .lower_expr(a)?
-                    .ok_or_else(|| {
-                        "module function arg produced no value".to_string()
-                    })?;
-                arg_values.push(v);
+                arg_values.extend(self.lower_arg_values(a)?);
             }
             let result_ty = if ret_ty.produces_value() {
                 Some(ret_ty)

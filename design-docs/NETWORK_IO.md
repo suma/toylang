@@ -12,7 +12,7 @@
 |---|---|---|
 | **N0** | `sys` 切り替え機構 + ABI probe テスト + `backend_name()` | 未着手 |
 | **N0.5** | CONV-SPAN + 確保しないための stdlib (`Span::slice` / `Vec::with_capacity` / `set_size`) | ✅ 完了 (2026-08-31) |
-| **N1** | EXTERN-BUF + TCP client (`socket`/`connect`/`send`/`recv`/`close`) + `NetError` + blocking 切り替え | 未着手 |
+| **N1** | ~~EXTERN-BUF~~ ✅ (2026-08-31) + TCP client (`socket`/`connect`/`send`/`recv`/`close`) + `NetError` + blocking 切り替え | 部分完了 |
 | **N2** | TCP server (`bind`/`listen`/`accept`) + nonblocking | 未着手 |
 | **N3** | イベント通知 ([`EVENT_POLLING.md`](EVENT_POLLING.md)) | 未着手 |
 | **N4** | UDP + socket option (timeout / nodelay) + `local_addr` / `peer_addr` | 未着手 |
@@ -388,7 +388,7 @@ pub type ExternFn = fn(&[Value]) -> Result<Value, InterpreterError>;
 |---|---|---|
 | (a) `str` で運ぶ | `recv(fd, max) -> str` | **却下**。interpreter の `str` は Rust の `String` = UTF-8 必須。compiled レーンの `[bytes][NUL][u64 len]` は元からバイナリ安全なので、**この案はレーン間で答えが割れる** (`read_file` の非 UTF-8 が interpreter でだけ read error になるのと同じ穴を、ソケットで日常的に踏む) |
 | (b) 1 バイトずつの extern | `recv_byte(i) -> u8` | **却下**。正しいが 64KB で 65,536 回。tree-walker では実用にならない |
-| (c) **registry にコンテキストを渡す** | `ExternCtxFn = fn(&mut EvaluationContext, &[Value])` を 2 本目の registry として足す | **採用** |
+| (c) **registry にコンテキストを渡す** | `ExternBufFn = fn(&mut EvaluationContext, &[Value])` を 2 本目の registry として足す | **採用** (2026-08-31 landing) |
 
 `dispatch_extern_fn` は既に `&mut self` を持ち、`ConstString` を
 `Object::String` へ正規化してから registry を呼んでいる。同じ場所で

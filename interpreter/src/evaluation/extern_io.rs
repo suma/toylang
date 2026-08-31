@@ -29,6 +29,7 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::InterpreterError;
+use crate::evaluation::EvaluationContext;
 use crate::object::Object;
 use crate::value::Value;
 
@@ -93,6 +94,76 @@ pub fn set_program_args(args: Vec<String>) {
 /// shape as `extern_math::ExternFn`.
 pub type ExternFn = fn(&[Value]) -> Result<Value, InterpreterError>;
 
+/// EXTERN-BUF: an `extern fn` that reaches toylang memory.
+///
+/// The extra `&mut EvaluationContext` is what makes a `(ptr, len)`
+/// buffer usable here. In the compiled lanes such an extern needs
+/// nothing special — the pointer is a real address and the callee
+/// writes through it — but this engine's `ptr` is an index into
+/// `HeapManager`, so resolving it takes the context.
+pub type ExternBufFn =
+    fn(&mut EvaluationContext<'_>, &[Value]) -> Result<Value, InterpreterError>;
+
+/// Borrow `len` bytes of toylang memory at the address `p` names, for
+/// reading, and run `f` on them (EXTERN-BUF).
+///
+/// The closure form is the safety condition, not a convenience: the
+/// heap's byte vector grows on allocation, so a borrow kept across
+/// one dangles. Taking a closure makes "the borrow does not outlive
+/// the call" a fact about the type rather than a rule to remember.
+pub(crate) fn with_bytes<R>(
+    ctx: &EvaluationContext<'_>,
+    p: &Value,
+    len: u64,
+    name: &str,
+    f: impl FnOnce(&[u8]) -> R,
+) -> Result<R, InterpreterError> {
+    let addr = ptr_arg(p, name)?;
+    let heap = ctx.heap_manager.borrow();
+    let bytes = heap.borrow_bytes(addr, len as usize).ok_or_else(|| {
+        InterpreterError::InternalError(format!(
+            "extern fn `{name}`: buffer of {len} bytes is not inside a live allocation"
+        ))
+    })?;
+    Ok(f(bytes))
+}
+
+/// [`with_bytes`] for writing. Any typed slot covering the range is
+/// dropped, so the bytes the callee leaves behind are what a later
+/// read sees (`HeapManager::borrow_bytes_mut`).
+pub(crate) fn with_bytes_mut<R>(
+    ctx: &mut EvaluationContext<'_>,
+    p: &Value,
+    len: u64,
+    name: &str,
+    f: impl FnOnce(&mut [u8]) -> R,
+) -> Result<R, InterpreterError> {
+    let addr = ptr_arg(p, name)?;
+    let mut heap = ctx.heap_manager.borrow_mut();
+    let bytes = heap.borrow_bytes_mut(addr, len as usize).ok_or_else(|| {
+        InterpreterError::InternalError(format!(
+            "extern fn `{name}`: buffer of {len} bytes is not inside a live allocation"
+        ))
+    })?;
+    Ok(f(bytes))
+}
+
+/// Extract the heap address a `ptr` argument carries.
+fn ptr_arg(value: &Value, name: &str) -> Result<usize, InterpreterError> {
+    match value {
+        Value::Pointer(addr) => Ok(*addr),
+        Value::Heap(rc) => match &*rc.borrow() {
+            Object::Pointer(addr) => Ok(*addr),
+            other => Err(InterpreterError::InternalError(format!(
+                "extern fn `{name}`: expected a ptr argument, got {other:?}"
+            ))),
+        },
+        other => Err(InterpreterError::InternalError(format!(
+            "extern fn `{name}`: expected a ptr argument, got {other:?}"
+        ))),
+    }
+}
+
 /// Build the registry of I/O extern fn implementations available at
 /// interpreter startup. Keyed by the `extern fn` declaration's name
 /// as written in the source program (see `core/std/io.t`).
@@ -126,6 +197,142 @@ pub fn build_io_registry() -> HashMap<&'static str, ExternFn> {
     m.insert("time", io_time);
     m.insert("getpid", io_getpid);
     m
+}
+
+/// EXTERN-BUF: the buffer-taking I/O externs (`core/std/io.t`).
+///
+/// Kept separate from `build_io_registry` because the signature
+/// differs, not because the implementations are unrelated — these are
+/// the same file operations as `read_file` / `write_file`, addressed
+/// through a caller-owned buffer instead of through a `str`. That is
+/// what makes them binary-safe: a `str` here is a Rust `String` and
+/// cannot hold arbitrary bytes, which is why `read_file` reports a
+/// non-UTF-8 file as a read error on this engine alone.
+pub fn build_io_buf_registry() -> HashMap<&'static str, ExternBufFn> {
+    let mut m: HashMap<&'static str, ExternBufFn> = HashMap::new();
+    m.insert("__extern_io_read_file_into", io_read_file_into);
+    m.insert("__extern_io_write_file_bytes", io_write_file_bytes);
+    m
+}
+
+/// `io::read_file_into` — fill the caller's buffer from a file,
+/// returning how many bytes landed in it.
+///
+/// The read goes **straight into toylang memory**: `with_bytes_mut`
+/// lends the buffer and `Read::read` fills it, so there is no staging
+/// copy on this lane either (the compiled lanes hand `fread` the same
+/// address). A file longer than the buffer fills it and stops — the
+/// count is what fits, the way `read(2)` behaves, not an error.
+fn io_read_file_into(
+    ctx: &mut EvaluationContext<'_>,
+    args: &[Value],
+) -> Result<Value, InterpreterError> {
+    if args.len() != 3 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_io_read_file_into` takes 3 arguments".to_string(),
+            expected: 3,
+            found: args.len(),
+        });
+    }
+    let path = str_arg(&args[0], "__extern_io_read_file_into")?;
+    let cap = u64_arg(&args[2], "__extern_io_read_file_into")?;
+    let mut file = match std::fs::File::open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            READ_FILE_STATUS.with(|s| s.set(status_from_io_error(&e)));
+            return Ok(u64_result(0));
+        }
+    };
+    let outcome = with_bytes_mut(ctx, &args[1], cap, "__extern_io_read_file_into", |buf| {
+        use std::io::Read;
+        let mut filled = 0usize;
+        loop {
+            if filled == buf.len() {
+                break Ok(filled);
+            }
+            match file.read(&mut buf[filled..]) {
+                Ok(0) => break Ok(filled),
+                Ok(n) => filled += n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => break Err(e),
+            }
+        }
+    })?;
+    match outcome {
+        Ok(filled) => {
+            READ_FILE_STATUS.with(|s| s.set(IO_OK));
+            Ok(u64_result(filled as u64))
+        }
+        Err(e) => {
+            READ_FILE_STATUS.with(|s| s.set(status_from_io_error(&e)));
+            Ok(u64_result(0))
+        }
+    }
+}
+
+/// `io::write_file_bytes` — write the caller's buffer to a file,
+/// truncating or appending. Reads straight out of toylang memory.
+fn io_write_file_bytes(
+    ctx: &mut EvaluationContext<'_>,
+    args: &[Value],
+) -> Result<Value, InterpreterError> {
+    if args.len() != 4 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_io_write_file_bytes` takes 4 arguments".to_string(),
+            expected: 4,
+            found: args.len(),
+        });
+    }
+    let path = str_arg(&args[0], "__extern_io_write_file_bytes")?;
+    let len = u64_arg(&args[2], "__extern_io_write_file_bytes")?;
+    let append = bool_arg(&args[3], "__extern_io_write_file_bytes")?;
+    let opened = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .append(append)
+        .truncate(!append)
+        .open(&path);
+    let mut file = match opened {
+        Ok(f) => f,
+        Err(e) => {
+            WRITE_FILE_STATUS.with(|s| s.set(status_from_io_error(&e)));
+            return Ok(u64_result(0));
+        }
+    };
+    let outcome = with_bytes(ctx, &args[1], len, "__extern_io_write_file_bytes", |bytes| {
+        use std::io::Write;
+        file.write_all(bytes).map(|()| bytes.len())
+    })?;
+    match outcome {
+        Ok(written) => {
+            WRITE_FILE_STATUS.with(|s| s.set(IO_OK));
+            Ok(u64_result(written as u64))
+        }
+        Err(e) => {
+            let status = match e.raw_os_error() {
+                Some(_) => status_from_io_error(&e),
+                None => IO_WRITE_ERROR,
+            };
+            WRITE_FILE_STATUS.with(|s| s.set(status));
+            Ok(u64_result(0))
+        }
+    }
+}
+
+/// Extract a `u64` argument.
+fn u64_arg(value: &Value, name: &str) -> Result<u64, InterpreterError> {
+    match value {
+        Value::UInt64(v) => Ok(*v),
+        Value::Heap(rc) => match &*rc.borrow() {
+            Object::UInt64(v) => Ok(*v),
+            other => Err(InterpreterError::InternalError(format!(
+                "extern fn `{name}`: expected a u64 argument, got {other:?}"
+            ))),
+        },
+        other => Err(InterpreterError::InternalError(format!(
+            "extern fn `{name}`: expected a u64 argument, got {other:?}"
+        ))),
+    }
 }
 
 /// Extract a `str` argument from the value it crosses the extern

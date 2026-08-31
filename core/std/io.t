@@ -44,6 +44,8 @@ extern fn __extern_io_env_str(name: str) -> str from "toylang_rt" as "toy_io_env
 extern fn __extern_io_env_status() -> u64 from "toylang_rt" as "toy_io_env_status"
 extern fn __extern_io_read_file_str(path: str) -> str from "toylang_rt" as "toy_io_read_file"
 extern fn __extern_io_read_file_status() -> u64 from "toylang_rt" as "toy_io_read_file_status"
+extern fn __extern_io_read_file_into(path: str, buf: ptr, cap: u64) -> u64 from "toylang_rt" as "toy_io_read_file_into"
+extern fn __extern_io_write_file_bytes(path: str, buf: ptr, len: u64, append: bool) -> u64 from "toylang_rt" as "toy_io_write_file_bytes"
 extern fn __extern_io_write_file_u64(path: str, contents: str, append: bool) -> u64 from "toylang_rt" as "toy_io_write_file"
 extern fn __extern_io_write_file_status() -> u64 from "toylang_rt" as "toy_io_write_file_status"
 extern fn __extern_io_file_exists_bool(path: str) -> bool from "toylang_rt" as "toy_io_file_exists"
@@ -118,6 +120,72 @@ pub unsafe fn read_line() -> Result<str, IoError> {
         if last == '\r' { buf.pop() }   # strip the CR of a CRLF
     }
     Result::Ok(__builtin_str_from_bytes(buf.as_ptr(), buf.size()))
+}
+
+# Read the file at `path` into `buf`, returning how many bytes landed
+# in it (EXTERN-BUF).
+#
+# The bytes go **straight into the caller's buffer** — nothing is
+# allocated here and nothing is copied through an intermediate, on any
+# backend. That is the difference from `read_file`, which hands back a
+# fresh `str`:
+#
+#     var v: Vec<u8> = Vec::with_capacity(4096u64)
+#     match v.capacity_span() {
+#         Option::Some(room) => {
+#             val n = io::read_file_into(path, room)?
+#             v.set_size(n)
+#         }
+#         Option::None => { }
+#     }
+#
+# It is also the binary-safe way to read a file: a `str` cannot hold
+# arbitrary bytes on the tree-walker, so `read_file` reports a
+# non-UTF-8 file as a read error there while the compiled lanes accept
+# it. Bytes have no such split.
+#
+# A file longer than the span fills it and stops — the count is what
+# fit, not a failure. Compare it with `buf.len()` to notice.
+pub fn read_file_into(path: str, buf: Span<u8>) -> Result<u64, IoError> {
+    val n: u64 = __extern_io_read_file_into(path, buf.as_raw(), buf.len())
+    val status: u64 = __extern_io_read_file_status()
+    if status == 0u64 {
+        Result::Ok(n)
+    } else {
+        # Bound first: an enum-producing call cannot be a payload
+        # expression in the compiled lanes (`env_var` above does the
+        # same).
+        val err: IoError = io_error_from_status(status)
+        Result::Err(err)
+    }
+}
+
+# Write `buf`'s bytes to `path`, replacing what was there. Reads
+# straight out of the caller's buffer (EXTERN-BUF), and carries
+# arbitrary bytes — embedded NULs included — unlike the `str`-taking
+# `write_file`.
+pub fn write_file_bytes(path: str, buf: Span<u8>) -> Result<u64, IoError> {
+    # Bound rather than returned directly, like `write_file` above: an
+    # enum-producing call is not lowerable in tail position.
+    val r: Result<u64, IoError> = write_bytes_at(path, buf, false)
+    r
+}
+
+# `write_file_bytes` that adds to the end of the file instead.
+pub fn append_file_bytes(path: str, buf: Span<u8>) -> Result<u64, IoError> {
+    val r: Result<u64, IoError> = write_bytes_at(path, buf, true)
+    r
+}
+
+fn write_bytes_at(path: str, buf: Span<u8>, append: bool) -> Result<u64, IoError> {
+    val n: u64 = __extern_io_write_file_bytes(path, buf.as_raw(), buf.len(), append)
+    val status: u64 = __extern_io_write_file_status()
+    if status == 0u64 {
+        Result::Ok(n)
+    } else {
+        val err: IoError = io_error_from_status(status)
+        Result::Err(err)
+    }
 }
 
 # Number of program arguments (excluding the program name).

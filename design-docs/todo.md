@@ -10,6 +10,16 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-31
+- **EXTERN-BUF — `extern fn` が toylang のメモリに届く** — registry を
+  「値だけ」と「コンテキストも取る」の 2 本に分け、`(ptr, len)` を
+  **コピーではなく借用**で渡す (`HeapManager::borrow_bytes{,_mut}`、
+  クロージャ渡しで借用が呼び出しを越えないことを型で保証)。最初の利用者は
+  `io::read_file_into` / `write_file_bytes` / `append_file_bytes` で、
+  **バイナリ安全なファイル IO**でもある (`str` は tree-walker で
+  UTF-8 必須なので `read_file` は非 UTF-8 をレーンごとに違う扱いにする)。
+  併せて 3 件直した: module 修飾の呼び出しが compound 引数を取れなかった件、
+  tree-walker の `ptr_read` に narrow 幅のバイト読み出しが無かった件、
+  narrow の `ptr_write` がバイト列を更新していなかった件。
 - **CONV-SPAN — 既にあるバッファを `Span<T>` として見られるようになった**
   — `Ptr::try_from_raw` / `Span::try_from_raw_parts` / `Span::slice` /
   `Vec::with_capacity` / `Vec::set_size` / `Vec::as_span` /

@@ -10,7 +10,7 @@
 
 | Phase | Scope | Status |
 |---|---|---|
-| **N0** | `sys` 切り替え機構 + ABI probe テスト + `backend_name()` | 未着手 |
+| **N0** | `sys` 切り替え機構 + ABI probe テスト + `backend_name()` | ✅ 完了 (2026-08-31) |
 | **N0.5** | CONV-SPAN + 確保しないための stdlib (`Span::slice` / `Vec::with_capacity` / `set_size`) | ✅ 完了 (2026-08-31) |
 | **N1** | ~~EXTERN-BUF~~ ✅ (2026-08-31) + TCP client (`socket`/`connect`/`send`/`recv`/`close`) + `NetError` + blocking 切り替え | 部分完了 |
 | **N2** | TCP server (`bind`/`listen`/`accept`) + nonblocking | 未着手 |
@@ -656,7 +656,7 @@ EISDIR 21 は macOS と Linux で一致する」ことに依存している。
 
 | Phase | 内容 | 受け入れ基準 |
 |---|---|---|
-| **N0** | `mod sys` 切り替え + `sys_epoll.rs` / `sys_kqueue.rs` の骨、`build.rs` の rerun 修正、ABI probe テスト、`net::backend_name()` | probe テストが green。3 レーンが `backend_name()` に同じ答えを返す |
+| **N0** ✅ | `mod sys` 切り替え + `sys_epoll.rs` / `sys_kqueue.rs` の骨、`build.rs` の rerun 修正、ABI probe テスト、`net::backend_name()` | **完了 (2026-08-31)**。`compiler/tests/net_abi_tests.rs` が C の probe と 39 個の定数を突き合わせ、`consistency/net.rs` が 3 レーンの一致を pin。**`sys_epoll.rs` は macOS の toolchain では 1 行もコンパイルされない** — Linux CI が初回の実テストになる |
 | **N0.5** ✅ | CONV-SPAN + `Span::slice` / `Vec::with_capacity` / `Vec::set_size` / `Vec::capacity_span` | **完了 (2026-08-31)**。net と独立に landing した。`compiler/tests/consistency/conv_span.rs` が 5 件 pin: slice が窓であって複製でないこと、null に窓が無いこと、確保済みの空きに書いてから `set_size` で live にする形、`Vec::new()` と「確保済みで空」の区別、`String` のバイト列の書き換えが元に通ること |
 | **N1** | EXTERN-BUF + TCP client + `NetError` + `set_blocking` | テスト側が Rust の `std::net` でエコーサーバを立て、toylang が接続して往復。3 レーン一致。**バイト列が `str` を経由しない**ことを非 UTF-8 のペイロードで pin。**blocking と nonblocking の両方で同じ答え**になること。`ensures allocations(0)` で受信ループが確保しないことを pin (**コピー回数は観測できないので、確保 0 と「借用で書いた」ことをコードレビューで担保する**) |
 | **N2** | `bind` / `listen` / `accept` / nonblocking | **1 プロセス内で自己完結**: 同じプログラムが listener と client を持ち、nonblocking で往復する。外部の peer が要らないので完全に決定的 |

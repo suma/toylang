@@ -48,6 +48,41 @@
 
 extern crate alloc;
 
+// ---------------------------------------------------------------------------
+// The platform switch (NETWORK_IO.md §2).
+//
+// Exactly one `sys` module is compiled, and the *file* is the porting
+// contract: anything the networking code calls has to exist in every
+// `sys_*.rs`, or that target fails to build. Per-function `#[cfg]`
+// would scatter the switch and let one platform's implementation lag
+// silently, which is the failure this shape is chosen to prevent.
+// Keep `#[cfg]` out of the callers.
+// ---------------------------------------------------------------------------
+#[cfg_attr(target_os = "linux", path = "sys_epoll.rs")]
+#[cfg_attr(
+    any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ),
+    path = "sys_kqueue.rs"
+)]
+mod sys;
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+)))]
+compile_error!(
+    "toylang_rt: no event-notification backend for this target (expected epoll on Linux \
+     or kqueue on a BSD). See design-docs/NETWORK_IO.md; adding one is a new sys_*.rs \
+     plus an arm on the switch in lib.rs."
+);
+
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
@@ -2472,8 +2507,15 @@ pub extern "C" fn toy_io_read_file(path: *const u8) -> *const u8 {
 /// buffer and stops; the count is what fit, the way `read(2)`
 /// behaves, not a failure. The status goes to the same slot
 /// `toy_io_read_file` uses, so `toy_io_read_file_status` serves both.
+///
+/// # Safety
+///
+/// `path` must be a toylang str handle, and `buf` must point at at
+/// least `cap` writable bytes. The lowering guarantees both: the
+/// stdlib wrapper takes a `Span<u8>` and passes its address and its
+/// length together.
 #[unsafe(no_mangle)]
-pub extern "C" fn toy_io_read_file_into(path: *const u8, buf: *mut u8, cap: u64) -> u64 {
+pub unsafe extern "C" fn toy_io_read_file_into(path: *const u8, buf: *mut u8, cap: u64) -> u64 {
     let st = thread_state();
     let p = str_to_cstring(path);
     let f = unsafe { fopen(p.as_ptr(), c"rb".as_ptr().cast()) };
@@ -2507,8 +2549,13 @@ pub extern "C" fn toy_io_read_file_into(path: *const u8, buf: *mut u8, cap: u64)
 /// payload is a byte range rather than a `str`, so embedded NULs and
 /// non-UTF-8 content are ordinary data. Shares
 /// `toy_io_write_file_status`.
+///
+/// # Safety
+///
+/// As [`toy_io_read_file_into`], with `buf` needing `len` *readable*
+/// bytes.
 #[unsafe(no_mangle)]
-pub extern "C" fn toy_io_write_file_bytes(
+pub unsafe extern "C" fn toy_io_write_file_bytes(
     path: *const u8,
     buf: *const u8,
     len: u64,
@@ -2543,6 +2590,102 @@ pub extern "C" fn toy_io_write_file_bytes(
     }
     st.write_file_status = IO_OK;
     written as u64
+}
+
+/// The platform numbers this build was compiled with, as
+/// `(name, value)` pairs (NETWORK_IO.md N0).
+///
+/// The crate is dependency-free, so every socket / poll constant is
+/// transcribed from the system headers by hand — a wrong one compiles
+/// cleanly and misbehaves at run time, which is the worst shape a bug
+/// can have. `compiler/tests/net_abi_tests.rs` compiles a C probe
+/// that prints the real values and compares them against this list,
+/// so the transcription is checked rather than trusted. It is also
+/// what keeps the constants from reading as dead code before the
+/// networking phases use them.
+pub fn net_abi_values() -> Vec<(&'static str, i64)> {
+    vec![
+        ("BACKEND", if sys::BACKEND_NAME == "epoll" { 1 } else { 2 }),
+        ("AF_INET", sys::AF_INET as i64),
+        ("SOCK_STREAM", sys::SOCK_STREAM as i64),
+        ("SOCK_DGRAM", sys::SOCK_DGRAM as i64),
+        ("SOL_SOCKET", sys::SOL_SOCKET as i64),
+        ("SO_REUSEADDR", sys::SO_REUSEADDR as i64),
+        ("SO_RCVTIMEO", sys::SO_RCVTIMEO as i64),
+        ("SO_SNDTIMEO", sys::SO_SNDTIMEO as i64),
+        ("SO_ERROR", sys::SO_ERROR as i64),
+        ("O_NONBLOCK", sys::O_NONBLOCK as i64),
+        ("F_GETFL", sys::F_GETFL as i64),
+        ("F_SETFL", sys::F_SETFL as i64),
+        ("TIMEVAL_USEC_BYTES", sys::TIMEVAL_USEC_BYTES as i64),
+        ("SOCKADDR_IN_BYTES", sys::SOCKADDR_IN_BYTES as i64),
+        ("EVENT_STRUCT_BYTES", sys::EVENT_STRUCT_BYTES as i64),
+        ("EINTR", sys::EINTR as i64),
+        ("EAGAIN", sys::EAGAIN as i64),
+        ("EINVAL", sys::EINVAL as i64),
+        ("EMFILE", sys::EMFILE as i64),
+        ("EPIPE", sys::EPIPE as i64),
+        ("EADDRINUSE", sys::EADDRINUSE as i64),
+        ("EADDRNOTAVAIL", sys::EADDRNOTAVAIL as i64),
+        ("ENETUNREACH", sys::ENETUNREACH as i64),
+        ("ECONNABORTED", sys::ECONNABORTED as i64),
+        ("ECONNRESET", sys::ECONNRESET as i64),
+        ("ENOTCONN", sys::ENOTCONN as i64),
+        ("ETIMEDOUT", sys::ETIMEDOUT as i64),
+        ("ECONNREFUSED", sys::ECONNREFUSED as i64),
+        ("EHOSTUNREACH", sys::EHOSTUNREACH as i64),
+        ("EINPROGRESS", sys::EINPROGRESS as i64),
+    ]
+}
+
+/// The backend-specific half of [`net_abi_values`]: the flags whose
+/// very names exist on one platform only.
+pub fn net_abi_backend_values() -> Vec<(&'static str, i64)> {
+    #[cfg(target_os = "linux")]
+    {
+        vec![
+            ("EPOLLIN", sys::EPOLLIN as i64),
+            ("EPOLLOUT", sys::EPOLLOUT as i64),
+            ("EPOLLERR", sys::EPOLLERR as i64),
+            ("EPOLLHUP", sys::EPOLLHUP as i64),
+            ("EPOLLRDHUP", sys::EPOLLRDHUP as i64),
+            ("EPOLLONESHOT", sys::EPOLLONESHOT as i64),
+            ("EPOLLET", sys::EPOLLET as i64),
+            ("EPOLL_CTL_ADD", sys::EPOLL_CTL_ADD as i64),
+            ("EPOLL_CTL_DEL", sys::EPOLL_CTL_DEL as i64),
+            ("EPOLL_CTL_MOD", sys::EPOLL_CTL_MOD as i64),
+            ("MSG_NOSIGNAL", sys::MSG_NOSIGNAL as i64),
+        ]
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        vec![
+            ("EVFILT_READ", sys::EVFILT_READ as i64),
+            ("EVFILT_WRITE", sys::EVFILT_WRITE as i64),
+            ("EV_ADD", sys::EV_ADD as i64),
+            ("EV_DELETE", sys::EV_DELETE as i64),
+            ("EV_ONESHOT", sys::EV_ONESHOT as i64),
+            ("EV_CLEAR", sys::EV_CLEAR as i64),
+            ("EV_EOF", sys::EV_EOF as i64),
+            ("EV_ERROR", sys::EV_ERROR as i64),
+            ("SO_NOSIGPIPE", sys::SO_NOSIGPIPE as i64),
+        ]
+    }
+}
+
+/// The name [`net_abi_values`]'s `BACKEND` row stands for.
+pub fn net_backend_name() -> &'static str {
+    sys::BACKEND_NAME
+}
+
+/// Which event-notification backend this build selected, as a toylang
+/// `str` (NETWORK_IO.md N0). Not a diagnostic nicety: it is the one
+/// observable that says the compile-time switch resolved, so the
+/// consistency tests can assert every lane agrees before anything is
+/// built on top of it.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_net_backend_name() -> *const u8 {
+    toy_str_alloc(sys::BACKEND_NAME.as_bytes())
 }
 
 /// RUNTIME-IO: the status of the most recent `toy_io_read_file` call

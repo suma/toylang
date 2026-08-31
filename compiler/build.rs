@@ -29,7 +29,13 @@ use std::process::Command;
 
 fn main() {
     let runtime_src = "runtime/toylang_rt/src/lib.rs";
-    println!("cargo:rerun-if-changed={runtime_src}");
+    // Watch the whole source directory, not just the crate root. The
+    // runtime is one file no longer: `lib.rs` pulls in a
+    // platform-selected `sys_*.rs`, and naming only the root here
+    // meant editing one of those rebuilt the JIT's rlib (cargo tracks
+    // it) while leaving the AOT staticlib stale — a backend
+    // disagreement whose cause is nowhere near where it shows up.
+    println!("cargo:rerun-if-changed=runtime/toylang_rt/src");
     println!("cargo:rerun-if-changed=build.rs");
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR set by cargo"));

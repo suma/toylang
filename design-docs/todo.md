@@ -10,6 +10,14 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-31
+- **NET N0 — プラットフォーム切り替えの足場** — `#[cfg_attr(path)] mod sys;`
+  1 箇所で epoll / kqueue を選び、未対応 OS は `compile_error!` で落ちる。
+  手書きの定数 39 個は **C の probe を `cc` でビルドして突き合わせる**
+  (`compiler/tests/net_abi_tests.rs`) ので、転記ミスが実行時ではなく
+  テストで出る。`net::backend_name()` が 3 レーンで一致することを pin。
+  `compiler/build.rs` の `rerun-if-changed` をディレクトリ監視に変更
+  (これを忘れると AOT の staticlib だけ古いまま残る)。
+  **`sys_epoll.rs` はこのホストではコンパイルされない** — 未検証。
 - **EXTERN-BUF — `extern fn` が toylang のメモリに届く** — registry を
   「値だけ」と「コンテキストも取る」の 2 本に分け、`(ptr, len)` を
   **コピーではなく借用**で渡す (`HeapManager::borrow_bytes{,_mut}`、

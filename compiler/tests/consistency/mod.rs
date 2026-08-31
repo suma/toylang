@@ -53,3 +53,4 @@ mod generic_enum_payload;
 mod primitive_receivers;
 mod conv_span;
 mod extern_buf;
+mod net;

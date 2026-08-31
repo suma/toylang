@@ -169,6 +169,12 @@ fn ptr_arg(value: &Value, name: &str) -> Result<usize, InterpreterError> {
 /// as written in the source program (see `core/std/io.t`).
 pub fn build_io_registry() -> HashMap<&'static str, ExternFn> {
     let mut m: HashMap<&'static str, ExternFn> = HashMap::new();
+    // NETWORK_IO N0: the compile-time platform switch, made visible.
+    // Served from `toylang_rt` rather than reimplemented, so this
+    // engine cannot disagree with the compiled lanes about which
+    // backend was selected — the answer *is* the one the runtime was
+    // built with.
+    m.insert("__extern_net_backend_name", net_backend_name);
     m.insert("__extern_io_argc_u64", io_argc);
     m.insert("__extern_io_arg_str", io_arg);
     m.insert("__extern_io_env_str", io_env);
@@ -197,6 +203,19 @@ pub fn build_io_registry() -> HashMap<&'static str, ExternFn> {
     m.insert("time", io_time);
     m.insert("getpid", io_getpid);
     m
+}
+
+/// `net::backend_name()` — which event-notification backend the
+/// runtime was compiled with.
+fn net_backend_name(args: &[Value]) -> Result<Value, InterpreterError> {
+    if !args.is_empty() {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_net_backend_name` takes no arguments".to_string(),
+            expected: 0,
+            found: args.len(),
+        });
+    }
+    Ok(str_result(toylang_rt::net_backend_name().to_string()))
 }
 
 /// EXTERN-BUF: the buffer-taking I/O externs (`core/std/io.t`).

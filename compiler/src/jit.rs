@@ -420,6 +420,10 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_io_arg", toylang_rt::toy_io_arg as *const u8);
     jit_builder.symbol("toy_io_env", toylang_rt::toy_io_env as *const u8);
     jit_builder.symbol("toy_io_env_status", toylang_rt::toy_io_env_status as *const u8);
+    jit_builder.symbol(
+        "toy_net_backend_name",
+        toylang_rt::toy_net_backend_name as *const u8,
+    );
     jit_builder.symbol("toy_io_read_file", toylang_rt::toy_io_read_file as *const u8);
     jit_builder.symbol(
         "toy_io_read_file_into",

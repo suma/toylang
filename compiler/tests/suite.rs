@@ -34,6 +34,9 @@ mod example_consistency;
 #[path = "ffi_tests.rs"]
 mod ffi_tests;
 
+#[path = "net_abi_tests.rs"]
+mod net_abi_tests;
+
 #[path = "jit_smoke.rs"]
 mod jit_smoke;
 

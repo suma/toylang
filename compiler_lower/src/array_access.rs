@@ -25,6 +25,22 @@ use super::bindings::{
 use super::FunctionLower;
 use crate::ir::{BinOp, Const, InstKind, LocalId, Terminator, Type, ValueId};
 
+/// Where the leaves of one array element live, prepared once for the
+/// whole element (see `begin_leaf_addressing`).
+pub(super) struct LeafAddressing {
+    storage: ArrayStorage,
+    leaf_count: usize,
+    /// The element index as a value — SoA addresses columns with it
+    /// directly.
+    elem_idx: ValueId,
+    /// Set when the index folded, which lets AoS fold the whole leaf
+    /// index into one constant.
+    const_elem_idx: Option<usize>,
+    /// AoS with a runtime index: `i * leaf_count`, shared by the
+    /// element's leaves.
+    aos_base: Option<ValueId>,
+}
+
 /// Result of folding a constant array index against the array length.
 pub(super) enum ConstIndex {
     /// Folded, negative-adjusted, in-bounds index.
@@ -100,41 +116,81 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
-    /// Where leaf `j` of the element at (runtime) index `elem_idx`
-    /// lives — the same two indexings `emit_array_leaf_store` spells
-    /// for a constant index.
-    fn leaf_store_target(
+    /// Prepare to address every leaf of one element, hoisting the
+    /// part they share.
+    ///
+    /// Under SoA a leaf is its own column at the element index, so
+    /// there is nothing to share. Under AoS the leaf index is
+    /// `i * leaf_count + j`: a constant when `i` folded, otherwise
+    /// one multiply that every leaf then offsets from — computed
+    /// here, once, rather than per leaf.
+    pub(super) fn begin_leaf_addressing(
         &mut self,
         storage: &ArrayStorage,
         leaf_count: usize,
         elem_idx: ValueId,
-        j: usize,
-    ) -> (crate::ir::ArraySlotId, ValueId) {
-        match storage {
-            ArrayStorage::Columns(cols) => (cols[j], elem_idx),
-            ArrayStorage::Interleaved(slot) => {
+        const_elem_idx: Option<usize>,
+    ) -> LeafAddressing {
+        let aos_base = match (storage, const_elem_idx) {
+            (ArrayStorage::Interleaved(_), None) => {
                 let leaf_count_v = self
                     .emit(InstKind::Const(Const::U64(leaf_count as u64)), Some(Type::U64))
                     .expect("Const returns a value");
-                let base = self
-                    .emit(
+                Some(
+                    self.emit(
                         InstKind::BinOp { op: BinOp::Mul, lhs: elem_idx, rhs: leaf_count_v },
                         Some(Type::U64),
                     )
-                    .expect("imul returns");
-                if j == 0 {
-                    return (*slot, base);
-                }
-                let off_v = self
-                    .emit(InstKind::Const(Const::U64(j as u64)), Some(Type::U64))
-                    .expect("Const returns a value");
-                let idx = self
-                    .emit(
-                        InstKind::BinOp { op: BinOp::Add, lhs: base, rhs: off_v },
-                        Some(Type::U64),
-                    )
-                    .expect("iadd returns");
-                (*slot, idx)
+                    .expect("imul returns"),
+                )
+            }
+            _ => None,
+        };
+        LeafAddressing {
+            storage: storage.clone(),
+            leaf_count,
+            elem_idx,
+            const_elem_idx,
+            aos_base,
+        }
+    }
+
+    /// The `(slot, index)` an `ArrayLoad` / `ArrayStore` of leaf `j`
+    /// addresses. Both directions go through here, so a read and the
+    /// write it mirrors cannot drift apart.
+    pub(super) fn leaf_target(
+        &mut self,
+        addressing: &LeafAddressing,
+        j: usize,
+    ) -> (crate::ir::ArraySlotId, ValueId) {
+        match &addressing.storage {
+            ArrayStorage::Columns(cols) => (cols[j], addressing.elem_idx),
+            ArrayStorage::Interleaved(slot) => {
+                let index = match (addressing.const_elem_idx, addressing.aos_base, j) {
+                    (Some(i), _, _) => self
+                        .emit(
+                            InstKind::Const(
+                                Const::U64((i * addressing.leaf_count + j) as u64),
+                            ),
+                            Some(Type::U64),
+                        )
+                        .expect("Const returns a value"),
+                    (None, Some(base), 0) => base,
+                    (None, Some(base), _) => {
+                        let off_v = self
+                            .emit(InstKind::Const(Const::U64(j as u64)), Some(Type::U64))
+                            .expect("Const returns");
+                        self.emit(
+                            InstKind::BinOp { op: BinOp::Add, lhs: base, rhs: off_v },
+                            Some(Type::U64),
+                        )
+                        .expect("iadd returns")
+                    }
+                    (None, None, _) => {
+                        unreachable!("AoS runtime path always computes the element base")
+                    }
+                };
+                (*slot, index)
             }
         }
     }
@@ -533,75 +589,10 @@ impl<'a> FunctionLower<'a> {
                     self.emit_index_guard(index_ref, raw_idx, idx_ty, length)?
                 }
             };
-            // Under AoS with a runtime index, the element base
-            // `i * leaf_count` is shared by every leaf — compute it
-            // once, before the per-leaf loads. (`None` when the
-            // index folded to a constant, or the layout is SoA,
-            // where each leaf uses the element index directly.)
-            let aos_base_v = match (&storage, const_elem_idx) {
-                (ArrayStorage::Interleaved(_), None) => {
-                    let leaf_count_v = self
-                        .emit(
-                            InstKind::Const(Const::U64(leaf_count as u64)),
-                            Some(Type::U64),
-                        )
-                        .expect("Const returns a value");
-                    Some(
-                        self.emit(
-                            InstKind::BinOp {
-                                op: BinOp::Mul,
-                                lhs: elem_idx_v,
-                                rhs: leaf_count_v,
-                            },
-                            Some(Type::U64),
-                        )
-                        .expect("imul returns"),
-                    )
-                }
-                _ => None,
-            };
+            let addressing =
+                self.begin_leaf_addressing(&storage, leaf_count, elem_idx_v, const_elem_idx);
             for (j, (local, ty)) in leaves.iter().enumerate() {
-                // AoS: leaf index = i * leaf_count + j — fully folded
-                // into one `Const` when the element index folded,
-                // otherwise the shared base plus the constant offset.
-                // SoA: column slot j, element index as-is.
-                let (load_slot, leaf_idx_v) = match &storage {
-                    ArrayStorage::Columns(cols) => (cols[j], elem_idx_v),
-                    ArrayStorage::Interleaved(slot) => {
-                        let leaf_idx_v = match (const_elem_idx, aos_base_v, j) {
-                            (Some(i), _, _) => self
-                                .emit(
-                                    InstKind::Const(
-                                        Const::U64((i * leaf_count + j) as u64),
-                                    ),
-                                    Some(Type::U64),
-                                )
-                                .expect("Const returns a value"),
-                            (None, Some(base), 0) => base,
-                            (None, Some(base), _) => {
-                                let off_v = self
-                                    .emit(
-                                        InstKind::Const(Const::U64(j as u64)),
-                                        Some(Type::U64),
-                                    )
-                                    .expect("Const returns");
-                                self.emit(
-                                    InstKind::BinOp {
-                                        op: BinOp::Add,
-                                        lhs: base,
-                                        rhs: off_v,
-                                    },
-                                    Some(Type::U64),
-                                )
-                                .expect("iadd returns")
-                            }
-                            (None, None, _) => unreachable!(
-                                "AoS runtime path always computes the element base"
-                            ),
-                        };
-                        (*slot, leaf_idx_v)
-                    }
-                };
+                let (load_slot, leaf_idx_v) = self.leaf_target(&addressing, j);
                 let v = self
                     .emit(
                         InstKind::ArrayLoad {
@@ -714,12 +705,21 @@ impl<'a> FunctionLower<'a> {
             let value_storage = self.allocate_enum_storage(enum_id);
             self.lower_into_enum_storage(value, &value_storage)?;
             let leaves = super::bindings::flatten_enum_storage_locals(&value_storage);
+            let const_elem_idx = match self.resolve_const_index(index_ref, length) {
+                ConstIndex::Valid(i) => Some(i),
+                ConstIndex::OutOfBounds => {
+                    return Err(format!("array index out of bounds (length {length})"));
+                }
+                ConstIndex::NotConstant => None,
+            };
             let elem_idx_v = self.lower_element_index(index_ref, length)?;
+            let addressing =
+                self.begin_leaf_addressing(&storage, leaf_count, elem_idx_v, const_elem_idx);
             for (j, (local, ty)) in leaves.iter().enumerate() {
                 let v = self
                     .emit(InstKind::LoadLocal(*local), Some(*ty))
                     .expect("LoadLocal returns a value");
-                let (slot, index) = self.leaf_store_target(&storage, leaf_count, elem_idx_v, j);
+                let (slot, index) = self.leaf_target(&addressing, j);
                 self.emit(
                     InstKind::ArrayStore { slot, index, value: v, elem_ty: *ty },
                     None,

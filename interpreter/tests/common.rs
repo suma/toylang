@@ -112,7 +112,7 @@ fn assert_program_result_array<T: PartialEq + std::fmt::Debug>(
             for (i, elem) in elements.iter().enumerate() {
                 let elem_borrowed = elem.borrow();
                 let Some(actual) = extract(&elem_borrowed) else {
-                    panic!("Expected element at index {} but got {:?}", i, &elem_borrowed);
+                    panic!("Expected element at index {i} but got {elem_borrowed:?}");
                 };
                 assert_eq!(actual, expected[i], "Element {} mismatch", i);
             }

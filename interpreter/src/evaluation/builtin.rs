@@ -26,6 +26,36 @@ const ENUM_TAG_BYTE_SIZE: u64 = 8;
 /// declaration instead, so `Shape::Point` and `Shape::Rect(1, 2)`
 /// report the same width. They did not — the tree-walker returned 1 and
 /// 17 for those two while the compiler returned 17 for both — and
+/// The `(base, index)` pair both DATA-ORIENTED Phase 2 accessors open
+/// with: evaluate the pointer, the element index, and the capacity.
+///
+/// A macro rather than a method because the argument evaluation uses
+/// `try_value!`, which returns an `EvaluationResult` from the
+/// *enclosing* function when an argument hits control flow — a helper
+/// would have to invent a way to hand that back.
+///
+/// `cap` is evaluated and dropped: this engine keys an element on its
+/// index rather than on a byte offset (see the arms that use this),
+/// but a side-effecting capacity expression must still behave the
+/// same here as on the lanes that need the number.
+macro_rules! soa_buffer_slot {
+    ($self:expr, $args:expr, $who:literal) => {{
+        let ptr_result = $self.evaluate(&$args[0])?;
+        let ptr_obj = try_value!(Ok(ptr_result));
+        let addr = ptr_obj.borrow().try_unwrap_pointer().map_err(|_| {
+            InterpreterError::InternalError(concat!($who, " expects pointer as first argument").to_string())
+        })?;
+        let index_result = $self.evaluate(&$args[1])?;
+        let index_obj = try_value!(Ok(index_result));
+        let index = index_obj.borrow().try_unwrap_uint64().map_err(|_| {
+            InterpreterError::InternalError(concat!($who, " expects u64 index as second argument").to_string())
+        })? as usize;
+        let cap_result = $self.evaluate(&$args[2])?;
+        let _cap = try_value!(Ok(cap_result));
+        (addr, index)
+    }};
+}
+
 /// `core/std/collections/vec.t` takes its `elem_size` from whichever
 /// element happened to be pushed first, so a `Vec<Option<T>>` built
 /// `None`-first got a different stride than one built `Some`-first
@@ -661,20 +691,7 @@ impl EvaluationContext<'_> {
         // are the same indices.
         BuiltinFunction::SoaRead => {
             Self::expect_args("soa_read", args, 3)?;
-            let ptr_result = self.evaluate(&args[0])?;
-            let ptr_obj = try_value!(Ok(ptr_result));
-            let addr = ptr_obj.borrow().try_unwrap_pointer().map_err(|_| {
-                InterpreterError::InternalError("soa_read expects pointer as first argument".to_string())
-            })?;
-            let index_result = self.evaluate(&args[1])?;
-            let index_obj = try_value!(Ok(index_result));
-            let index = index_obj.borrow().try_unwrap_uint64().map_err(|_| {
-                InterpreterError::InternalError("soa_read expects u64 index as second argument".to_string())
-            })? as usize;
-            // `cap` is evaluated (a side-effecting capacity expression
-            // must behave the same on every engine) and then dropped.
-            let cap_result = self.evaluate(&args[2])?;
-            let _cap = try_value!(Ok(cap_result));
+            let (addr, index) = soa_buffer_slot!(self, args, "soa_read");
             match self.heap_manager.borrow().typed_read(addr, index) {
                 Some(value) => Ok(EvaluationResult::Value(value.into())),
                 // An unwritten element. `Vec::get` / `pop` guard the
@@ -688,18 +705,7 @@ impl EvaluationContext<'_> {
 
         BuiltinFunction::SoaWrite => {
             Self::expect_args("soa_write", args, 4)?;
-            let ptr_result = self.evaluate(&args[0])?;
-            let ptr_obj = try_value!(Ok(ptr_result));
-            let addr = ptr_obj.borrow().try_unwrap_pointer().map_err(|_| {
-                InterpreterError::InternalError("soa_write expects pointer as first argument".to_string())
-            })?;
-            let index_result = self.evaluate(&args[1])?;
-            let index_obj = try_value!(Ok(index_result));
-            let index = index_obj.borrow().try_unwrap_uint64().map_err(|_| {
-                InterpreterError::InternalError("soa_write expects u64 index as second argument".to_string())
-            })? as usize;
-            let cap_result = self.evaluate(&args[2])?;
-            let _cap = try_value!(Ok(cap_result));
+            let (addr, index) = soa_buffer_slot!(self, args, "soa_write");
             let value_result = self.evaluate(&args[3])?;
             let value_obj = try_value!(Ok(value_result));
             self.heap_manager.borrow_mut().typed_write(addr, index, value_obj);

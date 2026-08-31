@@ -190,6 +190,19 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
+    /// "`name` (a tuple / an array / ...) cannot root a field-access
+    /// chain", with an optional hint appended.
+    ///
+    /// Only a struct binding can, and every other binding shape said
+    /// so in its own `format!` — six copies of one sentence, which is
+    /// how the array arm's wording drifted from the rest.
+    fn not_a_chain_root(&self, sym: DefaultSymbol, kind: &str, hint: &str) -> String {
+        format!(
+            "compiler MVP cannot use {kind} `{}` in a field-access chain{hint}",
+            self.interner.resolve(sym).unwrap_or("?")
+        )
+    }
+
     /// Helper that walks a (possibly nested) field-access chain and
     /// returns either the leaf scalar (LocalId + Type) or the inner
     /// `FieldBinding` list of a struct sub-binding. Pure / immutable
@@ -206,40 +219,31 @@ impl<'a> FunctionLower<'a> {
                     local: *local,
                     ty: *ty,
                 }),
-                Some(Binding::RefScalar { .. }) => Err(format!(
-                    "compiler MVP cannot use reference scalar `{}` as a field-access chain root",
-                    self.interner.resolve(sym).unwrap_or("?")
-                )),
                 Some(Binding::Struct { struct_id, fields }) => Ok(FieldChainResult::Struct {
                     struct_id: *struct_id,
                     fields: fields.clone(),
                 }),
-                Some(Binding::Tuple { .. }) => Err(format!(
-                    "compiler MVP cannot use tuple `{}` in a field-access chain",
-                    self.interner.resolve(sym).unwrap_or("?")
-                )),
+                Some(Binding::RefScalar { .. }) => {
+                    Err(self.not_a_chain_root(sym, "reference scalar", ""))
+                }
+                Some(Binding::Tuple { .. }) => Err(self.not_a_chain_root(sym, "tuple", "")),
                 // DATA-ORIENTED Phase 1: `ps.mass` *is* meaningful on
                 // an array — it is the column window — but only the
                 // let-binding path builds one (`soa.rs`), the same
                 // rule every other compound-producing expression
                 // follows here.
-                Some(Binding::Array { .. }) => Err(format!(
-                    "compiler MVP cannot use array `{}` in a field-access chain: bind the column window first (`val ms = {}.<field>`) and pass that",
-                    self.interner.resolve(sym).unwrap_or("?"),
-                    self.interner.resolve(sym).unwrap_or("?")
+                Some(Binding::Array { .. }) => Err(self.not_a_chain_root(
+                    sym,
+                    "array",
+                    ": bind the column window first (`val ms = <array>.<field>`) and pass that",
                 )),
-                Some(Binding::Enum { .. }) => Err(format!(
-                    "compiler MVP cannot use enum `{}` in a field-access chain",
-                    self.interner.resolve(sym).unwrap_or("?")
-                )),
-                Some(Binding::FunctionPtr { .. }) => Err(format!(
-                    "compiler MVP cannot use function value `{}` in a field-access chain",
-                    self.interner.resolve(sym).unwrap_or("?")
-                )),
-                Some(Binding::DynTraitObj { .. }) => Err(format!(
-                    "compiler MVP cannot use dyn-trait `{}` in a field-access chain",
-                    self.interner.resolve(sym).unwrap_or("?")
-                )),
+                Some(Binding::Enum { .. }) => Err(self.not_a_chain_root(sym, "enum", "")),
+                Some(Binding::FunctionPtr { .. }) => {
+                    Err(self.not_a_chain_root(sym, "function value", ""))
+                }
+                Some(Binding::DynTraitObj { .. }) => {
+                    Err(self.not_a_chain_root(sym, "dyn-trait", ""))
+                }
                 None => Err(format!(
                     "undefined identifier `{}`",
                     self.interner.resolve(sym).unwrap_or("?")

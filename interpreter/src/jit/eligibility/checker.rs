@@ -690,13 +690,11 @@ impl<'a> Checker<'a> {
             .find(|f| f.name == callee_name)
             .cloned()?;
         // Only proceed when the callee's return is a tuple of scalars.
-        let element_tys = match &callee.return_type {
-            Some(td) => match resolve_param_ty(td, self.substitutions, self.struct_layouts) {
+        let element_tys =
+            match resolve_param_ty(callee.return_type.as_ref()?, self.substitutions, self.struct_layouts) {
                 Some(ParamTy::Tuple(t)) => t,
                 _ => return None,
-            },
-            None => return None,
-        };
+            };
         // Reuse the regular Call analysis for argument validation and
         // monomorph recording.
         let saved_callees_len = self.callees.len();
@@ -791,16 +789,13 @@ impl<'a> Checker<'a> {
             .find(|f| f.name == callee_name)
             .cloned()?;
         // Only proceed when the callee returns a known struct.
-        let ret_td = match &callee.return_type {
-            Some(td) => match td {
-                TypeDecl::Identifier(s) | TypeDecl::Struct(s, _)
-                    if self.struct_layouts.contains_key(s) =>
-                {
-                    td.clone()
-                }
-                _ => return None,
-            },
-            None => return None,
+        let ret_td = match callee.return_type.as_ref()? {
+            td @ (TypeDecl::Identifier(s) | TypeDecl::Struct(s, _))
+                if self.struct_layouts.contains_key(s) =>
+            {
+                td.clone()
+            }
+            _ => return None,
         };
         // Reuse the regular Call analysis by delegating to check_expr; it
         // populates self.callees/call_targets and validates arguments. The
@@ -876,46 +871,43 @@ impl<'a> Checker<'a> {
         // `payload_ty_from_annotation`.
         // Note the parser-ambiguous `Struct(name, args)` form for
         // user-named types.
-        let (ret_enum, ret_payload_ty) = match &callee.return_type {
-            Some(td) => match td {
-                TypeDecl::Identifier(s) if enum_layout_for(*s).is_some() => {
-                    let layout = enum_layout_for(*s).unwrap();
-                    (*s, layout.payload_ty())
-                }
-                TypeDecl::Enum(s, _) | TypeDecl::Struct(s, _)
-                    if enum_layout_for(*s).is_some() =>
+        let (ret_enum, ret_payload_ty) = match callee.return_type.as_ref()? {
+            TypeDecl::Identifier(s) if enum_layout_for(*s).is_some() => {
+                let layout = enum_layout_for(*s).unwrap();
+                (*s, layout.payload_ty())
+            }
+            td @ (TypeDecl::Enum(s, _) | TypeDecl::Struct(s, _))
+                if enum_layout_for(*s).is_some() =>
+            {
+                let layout = enum_layout_for(*s).unwrap();
+                // Synthesize a TypeDecl::Enum form so
+                // payload_ty_from_annotation resolves correctly
+                // regardless of which variant the parser emitted.
+                let synthetic_td = match td {
+                    TypeDecl::Enum(_, args) => TypeDecl::Enum(*s, args.clone()),
+                    TypeDecl::Struct(_, args) => TypeDecl::Enum(*s, args.clone()),
+                    _ => unreachable!(),
+                    };
+                let args_empty = matches!(
+                    td,
+                    TypeDecl::Enum(_, a) | TypeDecl::Struct(_, a) if a.is_empty()
+                );
+                let pty = if args_empty {
+                    layout.payload_ty()
+                } else {
+                    payload_ty_from_annotation(&synthetic_td, &layout)
+                    };
+                // For payload-bearing enums the resolution must
+                // produce a scalar — otherwise the boundary is
+                // undefined.
+                if layout.variant_payloads.iter().any(|v| v.is_some())
+                    && pty.is_none()
                 {
-                    let layout = enum_layout_for(*s).unwrap();
-                    // Synthesize a TypeDecl::Enum form so
-                    // payload_ty_from_annotation resolves correctly
-                    // regardless of which variant the parser emitted.
-                    let synthetic_td = match td {
-                        TypeDecl::Enum(_, args) => TypeDecl::Enum(*s, args.clone()),
-                        TypeDecl::Struct(_, args) => TypeDecl::Enum(*s, args.clone()),
-                        _ => unreachable!(),
-                    };
-                    let args_empty = matches!(
-                        td,
-                        TypeDecl::Enum(_, a) | TypeDecl::Struct(_, a) if a.is_empty()
-                    );
-                    let pty = if args_empty {
-                        layout.payload_ty()
-                    } else {
-                        payload_ty_from_annotation(&synthetic_td, &layout)
-                    };
-                    // For payload-bearing enums the resolution must
-                    // produce a scalar — otherwise the boundary is
-                    // undefined.
-                    if layout.variant_payloads.iter().any(|v| v.is_some())
-                        && pty.is_none()
-                    {
-                        return None;
-                    }
-                    (*s, pty)
+                    return None;
                 }
-                _ => return None,
-            },
-            None => return None,
+                (*s, pty)
+            }
+            _ => return None,
         };
         let saved_callees_len = self.callees.len();
         let result = self.check_expr(value_ref);

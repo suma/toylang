@@ -10,7 +10,11 @@ use super::token_source::{TokenProvider, LexerTokenSource, TokenNormalizationCon
 use string_interner::DefaultStringInterner;
 use crate::parser::error::{ParserError, ParserResult, MultipleParserResult};
 
-#[allow(clippy::slow_vector_initialization)]
+// rflex's output is machine-written: lint it as generated code rather
+// than chasing its style. (`clippy::question_mark` joined the list
+// when a `match ... { None => return None }` in it started being
+// flagged; there is no source file here to fix.)
+#[allow(clippy::slow_vector_initialization, clippy::question_mark)]
 pub mod lexer {
     include!(concat!(env!("OUT_DIR"), "/lexer.rs"));
 }

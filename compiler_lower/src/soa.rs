@@ -230,9 +230,7 @@ impl FunctionLower<'_> {
         }
         None
     }
-}
 
-impl FunctionLower<'_> {
     /// `val ms = ps.mass` — bind a `Column<T>` over one field of every
     /// element.
     ///
@@ -250,15 +248,7 @@ impl FunctionLower<'_> {
         let Some((leaf, leaf_ty)) = self.column_leaf_of_field(element_ty, field) else {
             return Ok(None);
         };
-        // The checker refuses a compound field (a column window reads
-        // one value per stride, and a compound occupies several
-        // columns); this is the lowering's half of that rule.
-        if matches!(leaf_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
-            return Err(format!(
-                "column window `{}`: a compound field occupies several columns",
-                self.interner.resolve(field).unwrap_or("?")
-            ));
-        }
+        self.reject_compound_column(leaf_ty, field)?;
         let leaf_count = super::array_layout::leaf_scalar_count(self.module, element_ty);
         let (slot, index, stride) = match storage {
             // One column per leaf: the window is that column's whole
@@ -305,42 +295,10 @@ impl FunctionLower<'_> {
         let stride_v = self
             .emit(InstKind::Const(crate::ir::Const::U64(stride)), Some(Type::U64))
             .expect("Const returns a value");
-
-        // `Column<T>` is a stdlib struct with no field of type `T`
-        // (the `Box` / `Vec` discipline), so one monomorph per leaf
-        // type is all this needs.
-        let column_sym = self
-            .interner
-            .get("Column")
-            .ok_or_else(|| "column window: the stdlib `Column<T>` is not loaded".to_string())?;
-        let column_id = super::templates::instantiate_struct(
-            self.module,
-            self.struct_defs,
-            self.enum_defs,
-            column_sym,
-            vec![leaf_ty],
-            self.interner,
-        )?;
-        let fields = self.allocate_struct_fields(column_id);
-        let locals = super::bindings::flatten_struct_locals(&fields);
-        let expected = [addr, len_v, stride_v];
-        if locals.len() != expected.len() {
-            return Err(format!(
-                "column window: `Column` should have {} scalar fields, found {}",
-                expected.len(),
-                locals.len()
-            ));
-        }
-        for ((local, _), value) in locals.iter().zip(expected.iter()) {
-            self.emit(InstKind::StoreLocal { dst: *local, src: *value }, None);
-        }
-        self.bindings
-            .insert(name, super::bindings::Binding::Struct { struct_id: column_id, fields });
+        self.bind_column(name, leaf_ty, addr, len_v, stride_v)?;
         Ok(Some(None))
     }
-}
 
-impl FunctionLower<'_> {
     /// `val ms = vs.mass` where `vs: SoaVec<T>` — the heap column
     /// window (DATA-ORIENTED Phase 1 over Phase 2's buffer).
     ///
@@ -370,12 +328,7 @@ impl FunctionLower<'_> {
         let Some((leaf, leaf_ty)) = self.column_leaf_of_field(element_ty, field) else {
             return Ok(None);
         };
-        if matches!(leaf_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
-            return Err(format!(
-                "column window `{}`: a compound field occupies several columns",
-                self.interner.resolve(field).unwrap_or("?")
-            ));
-        }
+        self.reject_compound_column(leaf_ty, field)?;
         let columns = self.soa_columns(element_ty).ok_or_else(|| {
             format!("column window: unable to compute the column layout for {element_ty:?}")
         })?;
@@ -418,6 +371,21 @@ impl FunctionLower<'_> {
         // `len` is what a caller may read.
         self.bind_column(name, leaf_ty, addr, len, stride_v)?;
         Ok(Some(None))
+    }
+
+    /// The lowering's half of the checker's rule: a window reads one
+    /// value per stride, and a compound field occupies as many
+    /// columns as it has leaves. The checker refuses these first (so
+    /// every engine refuses the same program); this catches a field
+    /// that only the lowering can see is compound.
+    fn reject_compound_column(&self, leaf_ty: Type, field: DefaultSymbol) -> Result<(), String> {
+        if matches!(leaf_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
+            return Err(format!(
+                "column window `{}`: a compound field occupies several columns",
+                self.interner.resolve(field).unwrap_or("?")
+            ));
+        }
+        Ok(())
     }
 
     /// Bind `name` to a `Column<T>` made of these three scalars.

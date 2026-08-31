@@ -57,6 +57,8 @@ mod operators;
 mod expression;
 mod statement;
 mod call;
+/// DATA-ORIENTED Phase 1: this engine's column windows (`ps.mass`).
+mod column;
 mod slice;
 mod builtin;
 pub(crate) mod simd;

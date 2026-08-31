@@ -113,7 +113,20 @@ fn derive_struct_type_args(
                 // unbound parameter — reachable as soon as the value
                 // arrives through something other than an annotated
                 // binding, e.g. out of an `Option<Ptr<T>>` payload.
-                .or_else(|| active_scope.get(p).cloned())
+                //
+                // The scope can itself say `T -> T`: inside a generic
+                // body that has not been instantiated, a parameter
+                // stands for itself. Recording that would make the
+                // value's own type arguments self-referential, and a
+                // later `__builtin_sizeof::<T>()` chases the binding
+                // forever. `Unknown` is the honest answer there.
+                .or_else(|| {
+                    active_scope.get(p).cloned().filter(|t| match t {
+                        TypeDecl::Generic(g) => g != p,
+                        TypeDecl::Identifier(g) => g != p,
+                        _ => true,
+                    })
+                })
                 .unwrap_or(TypeDecl::Unknown)
         })
         .collect()

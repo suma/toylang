@@ -655,10 +655,25 @@ impl<'a> EvaluationContext<'a> {
         } else {
             return HashMap::new();
         };
+        // The annotation is written in the *caller's* vocabulary, so
+        // its arguments can themselves be generic parameters:
+        // `val w: Option<Ptr<T>> = Ptr::try_from_raw(p)` inside
+        // `impl<T> Span<T>` says "Ptr's T is my T". Binding that
+        // literally would shadow the caller's own binding for `T`
+        // with `T` itself, and the value built inside would carry no
+        // usable type argument. Resolve through the active scope
+        // first; a parameter the caller cannot name either stays as
+        // it is, and the construction sites treat it as unknown.
+        let active = self.merged_generic_scope();
         generic_params
             .iter()
             .copied()
-            .zip(anno_args.iter().cloned())
+            .zip(anno_args.iter().map(|a| match a {
+                TypeDecl::Generic(g) | TypeDecl::Identifier(g) => {
+                    active.get(g).cloned().unwrap_or_else(|| a.clone())
+                }
+                _ => a.clone(),
+            }))
             .collect()
     }
 

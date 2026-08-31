@@ -116,6 +116,21 @@ impl String {
         __builtin_ptr_write(self.data, i, b)
     }
 
+    # A window over the bytes (CONV-SPAN), for code that takes a
+    # `Span<u8>` — no copy, so a write through it lands in this
+    # String's own buffer.
+    #
+    # `None` while the String has never allocated (`String::new()`
+    # with nothing pushed): there is no address to view.
+    fn as_span(&self) -> Option<Span<u8>> {
+        if __builtin_ptr_is_null(self.data) {
+            Option::None
+        } else {
+            val window: Ptr<u8> = Ptr { addr: self.data }
+            Option::Some(Span::from_parts(window, self.len))
+        }
+    }
+
     # Current byte count.
     fn size(&self) -> u64 {
         self.len

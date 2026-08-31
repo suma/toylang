@@ -10,6 +10,13 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-08-31
+- **CONV-SPAN — 既にあるバッファを `Span<T>` として見られるようになった**
+  — `Ptr::try_from_raw` / `Span::try_from_raw_parts` / `Span::slice` /
+  `Vec::with_capacity` / `Vec::set_size` / `Vec::as_span` /
+  `Vec::capacity_span` / `String::as_span`。生の番地が型に入る所は
+  `Option`、範囲外は panic、という 2 つの規則で統一。tree-walker 側の
+  generic scope も 2 件直した (phantom 型引数の自己参照と、注釈の型引数を
+  呼び出し側のスコープで解決する件)。
 - **primitive レシーバの method call が全幅で動く** — narrow int
   (`u8`〜`i32`) は lowering の dispatch 表から、`f32` は 4 表すべてから
   漏れていて、`impl <Trait> for u8` が到達不能だった。式レシーバ
@@ -672,6 +679,26 @@
   `detect_struct_result` が method の戻り型を安く引けないので検出されず、
   従来どおり「compound-returning method を式の位置で使えない、`val` で
   束縛せよ」というエラーになる。誘導が具体的なので実害は小さい。
+- **SUBDIR-ASSOC-FN: サブディレクトリのモジュールから、上位モジュールの
+  struct の associated function が呼べない** ★★ — 2026-08-31 に
+  CONV-SPAN で踏んだ。`core/std/collections/vec.t` から
+  `Span::from_parts` / `Ptr::try_from_raw` を呼ぶと
+  `[E0010] Associated function ... not found for struct`。**同じ呼び出しが
+  `core/std/string.t` (span.t と同じ階層) からは通る**ので、generic か
+  どうかではなくモジュールの階層の問題。struct literal
+  (`Ptr { addr: p }`) と method 呼び出しは通るので、効かないのは
+  associated function の解決だけ。回避策があるので `Vec::as_span` は
+  literal で書いたが、**ユーザが書く stdlib 外のサブモジュールでも同じ
+  ことが起きる**。
+
+- **CHAR-LITERAL-GENERIC-ARG: char リテラルを generic 引数に渡すと
+  compiled lane が verifier で落ちる** ★★ — `Span<u8>::set(i, 'A')` は
+  `arg 3 (v54) has type i32, expected i8` で **cranelift の verifier
+  エラー**になる (診断ではなくクラッシュ)。CHAR-LITERAL-NUM の narrowing
+  は「他の整数型を名指しする位置」で効くが、パラメータ型が `T` の
+  ときは名指しになっておらず 32bit のまま。`65u8` と書けば通る。
+  2026-08-31 に CONV-SPAN のテストで踏んだ。
+
 - **TREE-WALKER-CONCRETE-IMPL** ★ — `impl C<u8>` と `impl C<i64>` の
   両方に同名の associated function があると tree-walker が spec を
   1 つしか持たず解決できない (`concrete_associated_hint` を
@@ -1053,13 +1080,8 @@
   mod sys` によるコンパイル時切り替え + ABI probe テスト + errno の OS 差表)
   と [`EVENT_POLLING.md`](EVENT_POLLING.md) (epoll/kqueue の統一形、
   決定 6 件)。着手前に効く前提が 2 つある:
-  * **CONV-SPAN** — **`Ptr<T>` は `Ptr::alloc` でしか作れない**。
-    `String::as_ptr()` / `Vec::as_ptr()` の生 `ptr` を `Ptr<u8>` /
-    `Span<u8>` に持ち上げる口が無いので、`Span` を受け口にする API が
-    1 行も書けない。`Ptr::try_from_raw` / `from_raw` /
-    `Span::from_raw_parts` / `String::as_span` / `Vec::as_span` を足す。
-    **net と独立に価値がある** (`Span<T>` は「`&[T]` のライブラリ側の
-    答え」なのに構築の口が 1 つしか無かった) ので単独で landing できる
+  * ~~**CONV-SPAN**~~ — **2026-08-31 に landing** (完了済み節)。
+    `Span` を受け口にする API が書けるようになった
   * **EXTERN-BUF** — extern 境界がバッファを運べない (interpreter の
     registry `fn(&[Value])` がヒープに触れない)。`send` / `recv` に要る。
     compiled レーンは `ptr` 引数を既に通すので tree-walker だけの作業。

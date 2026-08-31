@@ -53,6 +53,47 @@ impl<T> Span<T> {
         Span { data: p, count: len }
     }
 
+    # Pair a *raw* address with a length (CONV-SPAN). `None` for a
+    # null address, so the window's `Ptr<T>` keeps the non-null
+    # invariant (POINTER P5) rather than holding it by convention —
+    # the same rule `Ptr::try_from_raw` follows, in one call.
+    #
+    # Nothing checks that `len` matches what the owner allocated, or
+    # that the memory outlives the span; those stay the caller's, as
+    # they are for `from_parts`.
+    fn try_from_raw_parts(p: ptr, len: u64) -> Option<Self> {
+        val window: Option<Ptr<T>> = Ptr::try_from_raw(p)
+        match window {
+            Option::Some(w) => Option::Some(Span { data: w, count: len }),
+            Option::None => Option::None,
+        }
+    }
+
+    # A sub-window: `len` elements starting at `offset`. **No copy** —
+    # the result views the same memory, so a write through it is
+    # visible through the original.
+    #
+    # This is what keeps splitting a buffer free: a parser handed
+    # `buf.slice(0u64, n)` reads the bytes where they landed instead
+    # of in a fresh `Vec`. Out-of-range bounds panic, like `get` —
+    # an index mistake is a program error, not a value to inspect.
+    fn slice(&self, offset: u64, len: u64) -> Span<T> {
+        if offset > self.count { panic("Span::slice offset out of bounds") }
+        # `self.count - offset` cannot underflow after the check
+        # above, and phrasing the test this way avoids overflowing
+        # `offset + len`.
+        if len > self.count - offset { panic("Span::slice length out of bounds") }
+        # Shift the address here rather than through
+        # `self.data.offset(...)`: a method call on a field receiver
+        # inside this generic impl sends the tree-walker into
+        # unbounded recursion (todo SPAN-FIELD-METHOD-RECURSION). The
+        # arithmetic is `Ptr::offset`'s, spelled out.
+        val shifted: ptr =
+            __builtin_ptr_offset(self.data.addr, offset * __builtin_sizeof::<T>())
+        val base: Ptr<T> = Ptr { addr: shifted }
+        Span { data: base, count: len }
+    }
+
     # Bounds-checked element read. Panics naming the length on an
     # out-of-range index — the message shape is the same on every
     # backend (the `Vec::get` convention).

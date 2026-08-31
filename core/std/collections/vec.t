@@ -53,6 +53,91 @@ impl<T> Vec<T> {
         }
     }
 
+    # A vector with room for `n` elements already reserved, so a
+    # loop that fills it allocates once instead of growing as it
+    # goes. `size()` is still 0 — the room exists, the elements do
+    # not.
+    #
+    # The stride comes from the type rather than from a first
+    # `push`, which is what lets the buffer exist before any element
+    # does. `n == 0` allocates nothing, exactly like `new()`.
+    fn with_capacity(n: u64) -> Self {
+        val stride: u64 = __builtin_sizeof::<T>()
+        Vec {
+            data: __builtin_heap_alloc(stride * n),
+            len: 0u64,
+            cap: n,
+            elem_size: stride,
+        }
+    }
+
+    # Declare that the first `n` elements are live.
+    #
+    # For buffers something *else* filled: a `recv` writing into
+    # `v.as_span()`, or any code that writes through the raw pointer
+    # without going through `push`. Without this the bytes are there
+    # and `size()` still says 0.
+    #
+    # Panics past the capacity. Elements between the old and new
+    # size are whatever the memory already held, so this is only
+    # sound after they have actually been written — the checker
+    # cannot see that, and (P6's rule being about pointee-touching
+    # builtins, which this calls none of) it is not an `unsafe fn`
+    # either.
+    fn set_size(&mut self, n: u64) {
+        if n > self.cap { panic("Vec::set_size beyond capacity") }
+        self.len = n
+    }
+
+    # A window over the elements (CONV-SPAN), for code that takes a
+    # `Span<T>` — reading, writing and sub-slicing all reach this
+    # vector's own memory, with no copy.
+    #
+    # `None` while the vector has never allocated (`Vec::new()` with
+    # nothing pushed yet): there is no address to view. A vector that
+    # allocated and was then cleared answers `Some` with a length of
+    # 0. The window does not track the vector: a later `push` can
+    # reallocate and leave it dangling (`Span`'s escape is unchecked,
+    # POINTER P4).
+    #
+    # Written with struct literals rather than `Ptr::try_from_raw` /
+    # `Span::from_parts`: this module lives in a subdirectory, and an
+    # associated function of a struct declared one level up does not
+    # resolve from here (todo SUBDIR-ASSOC-FN). The fields are the
+    # same two the constructors set.
+    fn as_span(&self) -> Option<Span<T>> {
+        if __builtin_ptr_is_null(self.data) {
+            Option::None
+        } else {
+            val window: Ptr<T> = Ptr { addr: self.data }
+            Option::Some(Span { data: window, count: self.len })
+        }
+    }
+
+    # A window over the whole *allocation*, `capacity()` elements
+    # from index 0 — not just the live ones.
+    #
+    # This is the receiving end: something writes into the reserved
+    # room, then `set_size(n)` declares how much of it is real.
+    # `as_span()` is the other half and views `size()` elements, so
+    # it is empty until then.
+    #
+    #     var buf: Vec<u8> = Vec::with_capacity(4096u64)
+    #     # ... fill buf.capacity_span() ...
+    #     buf.set_size(n)
+    #
+    # Elements at or past `size()` hold whatever the memory already
+    # did. Reading one before writing it is not a memory error — the
+    # bounds check passes — but the value is meaningless.
+    fn capacity_span(&self) -> Option<Span<T>> {
+        if __builtin_ptr_is_null(self.data) {
+            Option::None
+        } else {
+            val window: Ptr<T> = Ptr { addr: self.data }
+            Option::Some(Span { data: window, count: self.cap })
+        }
+    }
+
     # Append. Geometric grow: 0 → 4 → 8 → 16 → ... so `n`
     # consecutive `push`es cost amortised O(1).
     unsafe fn push(&mut self, value: T) {

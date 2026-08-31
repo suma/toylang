@@ -980,6 +980,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         let hint_args: Vec<TypeDecl> = match &self.type_inference.type_hint {
             Some(TypeDecl::Struct(name, a)) if *name == struct_name => a.clone(),
             Some(TypeDecl::Enum(name, a)) if *name == struct_name => a.clone(),
+            // Deliberately top-level only. This hint *selects a
+            // concrete spec* (`impl Vec<u8>` over `impl<T> Vec<T>`),
+            // so reading `u64` out of a nested `Option<Ptr<u64>>` here
+            // would ask for an `impl Ptr<u64>` that does not exist and
+            // report the generic impl as missing. The nested form is
+            // evidence for *inference*, and is read there instead
+            // (`handle_generic_associated_function_call`).
             _ => Vec::new(),
         };
         let method = self.context

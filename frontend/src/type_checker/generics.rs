@@ -423,6 +423,30 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
             }
         };
 
+        // The arguments are not the only evidence. A constructor can
+        // put `T` in the return type alone — `Ptr::try_from_raw(p:
+        // ptr) -> Option<Self>` takes nothing that mentions it — and
+        // then the expected type is what says which instance is
+        // wanted. Read it off the hint at whatever depth it appears
+        // (GENERIC-IN-ENUM-PAYLOAD), and only for parameters the
+        // arguments left unbound, so an argument always wins.
+        let mut substitutions = substitutions;
+        if generic_params.iter().any(|p| !substitutions.contains_key(p))
+            && let Some(hint) = self.type_inference.type_hint.clone()
+        {
+            let hint_args = match &hint {
+                TypeDecl::Struct(name, a) | TypeDecl::Enum(name, a) if *name == struct_name => {
+                    a.clone()
+                }
+                other => other.nested_type_args(struct_name).unwrap_or_default(),
+            };
+            for (param, ty) in generic_params.iter().zip(hint_args) {
+                if !matches!(ty, TypeDecl::Unknown) {
+                    substitutions.entry(*param).or_insert(ty);
+                }
+            }
+        }
+
         // Ensure all generic parameters have been inferred or are available in outer scope
         // If we're calling from within a generic method, the substitution might resolve to Generic(T)
         // which is valid - it means the type is still generic but will be resolved when the method is called

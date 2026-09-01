@@ -289,3 +289,160 @@ fn close_preserving_errno(fd: i32) {
     unsafe { close(fd) };
     crate::set_errno(saved);
 }
+
+// ---------------------------------------------------------------------------
+// Event notification (EVENT_POLLING.md §3). `poll.rs` above calls only
+// the four names below and never sees an `EPOLL*`.
+// ---------------------------------------------------------------------------
+
+use crate::RawEvent;
+
+unsafe extern "C" {
+    fn epoll_create1(flags: i32) -> i32;
+    fn epoll_ctl(epfd: i32, op: i32, fd: i32, event: *mut EpollEvent) -> i32;
+    fn epoll_wait(epfd: i32, events: *mut EpollEvent, maxevents: i32, timeout: i32) -> i32;
+}
+
+const EPOLL_CLOEXEC: i32 = 0o2000000;
+const EEXIST: i32 = 17;
+const ENOENT: i32 = 2;
+
+/// Platform-neutral interest bits. Same values as the kqueue file's,
+/// and deliberately not the `EPOLL*` numbers: the layer above must not
+/// be able to tell which backend it is talking to.
+pub const INTEREST_READ: u32 = 1 << 0;
+pub const INTEREST_WRITE: u32 = 1 << 1;
+pub const INTEREST_EDGE: u32 = 1 << 2;
+pub const INTEREST_ONESHOT: u32 = 1 << 3;
+
+pub const EVENT_READ: u32 = 1 << 0;
+pub const EVENT_WRITE: u32 = 1 << 1;
+/// The peer closed its end. Still readable — whatever is buffered is
+/// still there to drain.
+pub const EVENT_HUP: u32 = 1 << 2;
+pub const EVENT_ERROR: u32 = 1 << 3;
+
+/// The poller fd, close-on-exec. Negative on failure.
+///
+/// One call here; the BSDs need a second `fcntl` because `kqueue()`
+/// has no CLOEXEC variant.
+pub fn poll_create() -> i32 {
+    unsafe { epoll_create1(EPOLL_CLOEXEC) }
+}
+
+/// Register, modify, or (with `interest == 0`) unregister `fd`.
+/// `0` on success, `-1` with errno set.
+///
+/// epoll splits registration into ADD and MOD and fails the wrong one
+/// with `EEXIST` / `ENOENT`; the unified `register` is idempotent, so
+/// that split is hidden by retrying. `ENOENT` from a delete of
+/// something never registered is swallowed — "make sure this is not
+/// registered" is the caller's intent, and it is satisfied.
+pub fn poll_ctl(pfd: i32, fd: i32, token: u64, interest: u32) -> i32 {
+    if interest == 0 {
+        let mut ev = EpollEvent { events: 0, data: token };
+        if unsafe { epoll_ctl(pfd, EPOLL_CTL_DEL, fd, &mut ev) } != 0 {
+            if crate::current_errno() == ENOENT {
+                return 0;
+            }
+            return -1;
+        }
+        return 0;
+    }
+    let mut events: u32 = 0;
+    if interest & INTEREST_READ != 0 {
+        // RDHUP as well as IN: a peer that closed while we were not
+        // looking has to wake the loop, which is what EV_EOF does on
+        // the other side without being asked.
+        events |= EPOLLIN | EPOLLRDHUP;
+    }
+    if interest & INTEREST_WRITE != 0 {
+        events |= EPOLLOUT;
+    }
+    if interest & INTEREST_EDGE != 0 {
+        events |= EPOLLET;
+    }
+    if interest & INTEREST_ONESHOT != 0 {
+        events |= EPOLLONESHOT;
+    }
+    let mut ev = EpollEvent { events, data: token };
+    if unsafe { epoll_ctl(pfd, EPOLL_CTL_ADD, fd, &mut ev) } == 0 {
+        return 0;
+    }
+    if crate::current_errno() != EEXIST {
+        return -1;
+    }
+    let mut ev = EpollEvent { events, data: token };
+    if unsafe { epoll_ctl(pfd, EPOLL_CTL_MOD, fd, &mut ev) } != 0 {
+        return -1;
+    }
+    0
+}
+
+/// Wait for readiness, writing at most `cap` events into `out`.
+/// Returns the count, or `-1` with errno set.
+///
+/// No merging is needed here — epoll already reports one event per
+/// descriptor, which is the shape 決定 1 makes the BSDs match.
+pub fn poll_wait(pfd: i32, out: &mut [RawEvent], cap: usize, timeout_ms: i64) -> isize {
+    let mut raw: [EpollEvent; crate::POLL_EVENTS_CAP] =
+        [EpollEvent { events: 0, data: 0 }; crate::POLL_EVENTS_CAP];
+    let want = core::cmp::min(cap, crate::POLL_EVENTS_CAP);
+    // epoll's timeout is an i32 of milliseconds and spells "forever"
+    // as -1, so a negative ask of any size becomes exactly that.
+    let timeout: i32 = if timeout_ms < 0 {
+        -1
+    } else {
+        timeout_ms.min(i32::MAX as i64) as i32
+    };
+    let n = unsafe { epoll_wait(pfd, raw.as_mut_ptr(), want as i32, timeout) };
+    if n < 0 {
+        return -1;
+    }
+    let mut len = 0usize;
+    for ev in raw.iter().take(n as usize) {
+        let bits = ev.events;
+        let mut flags = 0u32;
+        if bits & EPOLLIN != 0 {
+            flags |= EVENT_READ;
+        }
+        if bits & EPOLLOUT != 0 {
+            flags |= EVENT_WRITE;
+        }
+        if bits & (EPOLLHUP | EPOLLRDHUP) != 0 {
+            flags |= EVENT_HUP;
+        }
+        let mut error = 0u32;
+        if bits & EPOLLERR != 0 {
+            flags |= EVENT_ERROR;
+            // EPOLLERR carries no code, unlike kqueue's `data`, so the
+            // errno has to be fetched from the socket itself.
+            error = so_error(ev.data as i32) as u32;
+        }
+        out[len] = RawEvent { token: ev.data, flags, error };
+        len += 1;
+        if len == cap {
+            break;
+        }
+    }
+    len as isize
+}
+
+/// The pending socket error, for the `EPOLLERR` path. `token` is not
+/// necessarily an fd — the caller chooses what to register — so a
+/// failure here just means "no code available" rather than an error of
+/// its own.
+fn so_error(fd: i32) -> i32 {
+    let mut err: i32 = 0;
+    let mut len: u32 = core::mem::size_of::<i32>() as u32;
+    let rc = unsafe {
+        crate::getsockopt(
+            fd,
+            SOL_SOCKET,
+            SO_ERROR,
+            (&mut err as *mut i32).cast(),
+            &mut len,
+        )
+    };
+    if rc != 0 { 0 } else { err }
+}

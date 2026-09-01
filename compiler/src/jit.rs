@@ -450,6 +450,26 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
         toylang_rt::toy_net_local_port as *const u8,
     );
     jit_builder.symbol("toy_net_accept", toylang_rt::toy_net_accept as *const u8);
+    // EVENT_POLLING N3.
+    jit_builder.symbol("toy_poll_create", toylang_rt::toy_poll_create as *const u8);
+    jit_builder.symbol("toy_poll_ctl", toylang_rt::toy_poll_ctl as *const u8);
+    jit_builder.symbol("toy_poll_wait", toylang_rt::toy_poll_wait as *const u8);
+    jit_builder.symbol(
+        "toy_poll_event_token",
+        toylang_rt::toy_poll_event_token as *const u8,
+    );
+    jit_builder.symbol(
+        "toy_poll_event_flags",
+        toylang_rt::toy_poll_event_flags as *const u8,
+    );
+    jit_builder.symbol(
+        "toy_poll_event_error",
+        toylang_rt::toy_poll_event_error as *const u8,
+    );
+    jit_builder.symbol(
+        "toy_poll_error_status",
+        toylang_rt::toy_poll_error_status as *const u8,
+    );
     jit_builder.symbol("toy_io_read_file", toylang_rt::toy_io_read_file as *const u8);
     jit_builder.symbol(
         "toy_io_read_file_into",

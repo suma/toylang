@@ -535,3 +535,319 @@ fn every_lane_stops_serving_once_the_listener_closes() {
     assert_eq!(interpreter_value(src) & 0xff, 6);
     assert_consistent(src, "net_listener_closed");
 }
+
+// --- N3: the poller -------------------------------------------------
+//
+// Also self-contained: one program is listener, client and event loop.
+// What the tests pin is the *unified* behaviour — one event per ready
+// descriptor, a timeout that is not a failure, a token the runtime
+// never interprets — because that is what a program written on one
+// platform relies on when it runs on the other, and the two backends
+// underneath do not agree about any of it on their own.
+
+/// A whole loop: watch a listener, see it become readable, accept,
+/// watch the connection instead, and read what arrives.
+#[test]
+fn every_lane_runs_an_event_loop() {
+    let src = r#"
+        fn main() -> u64 {
+            val bound = TcpListener::bind("127.0.0.1", 0u64)
+            var l = match bound {
+                Result::Ok(x) => x,
+                Result::Err(e) => { return 80u64 }
+            }
+            val p = l.local_port()
+            val port = match p { Result::Ok(n) => n, Result::Err(e) => { return 81u64 } }
+
+            val made = Poller::new()
+            var poller = match made {
+                Result::Ok(x) => x,
+                Result::Err(e) => { return 82u64 }
+            }
+            val reg = poller.register(l.as_fd(), 7u64, interest_read())
+            match reg {
+                Result::Ok(_) => { }
+                Result::Err(e) => { return 83u64 }
+            }
+
+            # Nothing has connected, so a zero timeout answers 0. That
+            # is not a failure — a loop that treated it as one would
+            # exit the first time it was idle.
+            val idle = poller.wait(0i64)
+            val idle_n = match idle {
+                Result::Ok(n) => n,
+                Result::Err(e) => { return 84u64 }
+            }
+            if idle_n != 0u64 { return 85u64 }
+
+            val conn = TcpStream::connect("127.0.0.1", port)
+            var client = match conn {
+                Result::Ok(s) => s,
+                Result::Err(e) => { return 86u64 }
+            }
+
+            val ready = poller.wait(5000i64)
+            val n = match ready {
+                Result::Ok(k) => k,
+                Result::Err(e) => { return 87u64 }
+            }
+            if n != 1u64 { return 88u64 }
+            val ev = poller.event(0u64)
+            if ev.token() != 7u64 { return 89u64 }
+            if !ev.is_readable() { return 90u64 }
+
+            val listener_blocking = l.set_blocking(true)
+            val a = l.accept()
+            var server = match a {
+                Result::Ok(s) => s,
+                Result::Err(e) => { return 91u64 }
+            }
+
+            # Swap what is watched: the connection in, the listener
+            # out. `register` on something new and `deregister` on
+            # something registered are the two halves epoll splits into
+            # ADD / DEL and kqueue into EV_ADD / EV_DELETE.
+            val reg2 = poller.register(server.as_fd(), 9u64, interest_read())
+            match reg2 {
+                Result::Ok(_) => { }
+                Result::Err(e) => { return 92u64 }
+            }
+            val dereg = poller.deregister(l.as_fd())
+            match dereg {
+                Result::Ok(_) => { }
+                Result::Err(e) => { return 93u64 }
+            }
+
+            val msg = String::from_str("hi")
+            val window = msg.as_span()
+            val out: Span<u8> = match window {
+                Option::Some(w) => w,
+                Option::None => { return 94u64 }
+            }
+            val wrote = client.write(out)
+            match wrote {
+                Result::Ok(k) => { }
+                Result::Err(e) => { return 95u64 }
+            }
+
+            val ready2 = poller.wait(5000i64)
+            val n2 = match ready2 {
+                Result::Ok(k) => k,
+                Result::Err(e) => { return 96u64 }
+            }
+            # Exactly one event, and for the connection — the listener
+            # was deregistered, so a backend that kept reporting it
+            # would answer 2 here.
+            if n2 != 1u64 { return 97u64 }
+            val ev2 = poller.event(0u64)
+            if ev2.token() != 9u64 { return 98u64 }
+
+            var buf: Vec<u8> = Vec::with_capacity(32u64)
+            val room = buf.capacity_span()
+            var got: u64 = 0u64
+            match room {
+                Option::Some(w) => {
+                    val r = server.read(w)
+                    match r {
+                        Result::Ok(k) => { got = k }
+                        Result::Err(e) => { got = 0u64 }
+                    }
+                }
+                Option::None => { got = 0u64 }
+            }
+            buf.set_size(got)
+            var sum: u64 = 0u64
+            var i: u64 = 0u64
+            while i < buf.size() {
+                sum = sum + buf.get(i) as u64
+                i = i + 1u64
+            }
+            got + sum
+        }
+    "#;
+    // 2 bytes, 'h' + 'i' = 209.
+    assert_eq!(interpreter_value(src) & 0xffff, 211);
+    assert_consistent(src, "net_event_loop");
+}
+
+/// A descriptor that is both readable and writable is **one** event
+/// with both flags, not two events (EVENT_POLLING.md 決定 1).
+///
+/// This is the decision that costs the BSD backend a merge pass, and
+/// it is worth it twice over: a loop iterates the same number of times
+/// on either platform, and a handler that closes its descriptor cannot
+/// then be handed a second event for it.
+#[test]
+fn a_ready_descriptor_is_one_event_with_merged_flags() {
+    let src = r#"
+        fn main() -> u64 {
+            val bound = TcpListener::bind("127.0.0.1", 0u64)
+            var l = match bound {
+                Result::Ok(x) => x,
+                Result::Err(e) => { return 80u64 }
+            }
+            val p = l.local_port()
+            val port = match p { Result::Ok(n) => n, Result::Err(e) => { return 81u64 } }
+            val conn = TcpStream::connect("127.0.0.1", port)
+            var client = match conn {
+                Result::Ok(s) => s,
+                Result::Err(e) => { return 82u64 }
+            }
+            val listener_blocking = l.set_blocking(true)
+            val a = l.accept()
+            var server = match a {
+                Result::Ok(s) => s,
+                Result::Err(e) => { return 83u64 }
+            }
+
+            val msg = String::from_str("x")
+            val window = msg.as_span()
+            val out: Span<u8> = match window {
+                Option::Some(w) => w,
+                Option::None => { return 84u64 }
+            }
+            val wrote = client.write(out)
+            match wrote {
+                Result::Ok(k) => { }
+                Result::Err(e) => { return 85u64 }
+            }
+
+            val made = Poller::new()
+            var poller = match made {
+                Result::Ok(x) => x,
+                Result::Err(e) => { return 86u64 }
+            }
+            # Watch the read side alone first and wait for it. A socket
+            # is writable from the moment it exists, so asking for both
+            # at once would let `wait` return before the byte had
+            # arrived — and then there would be nothing to merge. This
+            # step is what makes the assertion below about merging
+            # rather than about timing.
+            val warmup = poller.register(server.as_fd(), 5u64, interest_read())
+            match warmup {
+                Result::Ok(_) => { }
+                Result::Err(e) => { return 87u64 }
+            }
+            val arrived = poller.wait(5000i64)
+            match arrived {
+                Result::Ok(k) => { }
+                Result::Err(e) => { return 88u64 }
+            }
+
+            # Now ask for both sides. `register` on an already-watched
+            # descriptor replaces its interest, which is epoll's
+            # ADD/MOD split hidden.
+            val both: u32 = interest_read() | interest_write()
+            val reg = poller.register(server.as_fd(), 5u64, both)
+            match reg {
+                Result::Ok(_) => { }
+                Result::Err(e) => { return 94u64 }
+            }
+            val ready = poller.wait(5000i64)
+            val n = match ready {
+                Result::Ok(k) => k,
+                Result::Err(e) => { return 95u64 }
+            }
+            # One event, not two — this is the whole assertion.
+            if n != 1u64 { return 89u64 }
+            val ev = poller.event(0u64)
+            if ev.token() != 5u64 { return 90u64 }
+            if !ev.is_readable() { return 91u64 }
+            if !ev.is_writable() { return 92u64 }
+            if ev.is_error() { return 93u64 }
+            7u64
+        }
+    "#;
+    assert_eq!(interpreter_value(src) & 0xff, 7);
+    assert_consistent(src, "net_merged_event");
+}
+
+/// A peer that closed shows up as HUP — and the bytes it sent before
+/// closing are still there to read. A loop that acted on the hangup
+/// without draining would lose the last message of every connection.
+#[test]
+fn a_closed_peer_is_a_hup_that_still_has_bytes() {
+    let src = r#"
+        fn main() -> u64 {
+            val bound = TcpListener::bind("127.0.0.1", 0u64)
+            var l = match bound {
+                Result::Ok(x) => x,
+                Result::Err(e) => { return 80u64 }
+            }
+            val p = l.local_port()
+            val port = match p { Result::Ok(n) => n, Result::Err(e) => { return 81u64 } }
+            val conn = TcpStream::connect("127.0.0.1", port)
+            var client = match conn {
+                Result::Ok(s) => s,
+                Result::Err(e) => { return 82u64 }
+            }
+            val listener_blocking = l.set_blocking(true)
+            val a = l.accept()
+            var server = match a {
+                Result::Ok(s) => s,
+                Result::Err(e) => { return 83u64 }
+            }
+
+            val msg = String::from_str("bye")
+            val window = msg.as_span()
+            val out: Span<u8> = match window {
+                Option::Some(w) => w,
+                Option::None => { return 84u64 }
+            }
+            val wrote = client.write(out)
+            match wrote {
+                Result::Ok(k) => { }
+                Result::Err(e) => { return 85u64 }
+            }
+            val closed = client.close()
+            match closed {
+                Result::Ok(_) => { }
+                Result::Err(e) => { return 86u64 }
+            }
+
+            val made = Poller::new()
+            var poller = match made {
+                Result::Ok(x) => x,
+                Result::Err(e) => { return 87u64 }
+            }
+            val reg = poller.register(server.as_fd(), 3u64, interest_read())
+            match reg {
+                Result::Ok(_) => { }
+                Result::Err(e) => { return 88u64 }
+            }
+            val ready = poller.wait(5000i64)
+            val n = match ready {
+                Result::Ok(k) => k,
+                Result::Err(e) => { return 89u64 }
+            }
+            if n != 1u64 { return 90u64 }
+            val ev = poller.event(0u64)
+            if !ev.is_readable() { return 91u64 }
+
+            var buf: Vec<u8> = Vec::with_capacity(16u64)
+            val room = buf.capacity_span()
+            var got: u64 = 0u64
+            match room {
+                Option::Some(w) => {
+                    val r = server.read(w)
+                    match r {
+                        Result::Ok(k) => { got = k }
+                        Result::Err(e) => { got = 0u64 }
+                    }
+                }
+                Option::None => { got = 0u64 }
+            }
+            buf.set_size(got)
+            var sum: u64 = 0u64
+            var i: u64 = 0u64
+            while i < buf.size() {
+                sum = sum + buf.get(i) as u64
+                i = i + 1u64
+            }
+            got + sum
+        }
+    "#;
+    // 3 bytes, 'b' + 'y' + 'e' = 320.
+    assert_eq!(interpreter_value(src) & 0xffff, 323);
+    assert_consistent(src, "net_hup_has_bytes");
+}

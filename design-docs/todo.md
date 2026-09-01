@@ -10,6 +10,22 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-01
+- **NET N3 — Poller (epoll / kqueue の統一形)** — `core/std/poll.t` の
+  `Poller` / `Event`。[`EVENT_POLLING.md`](EVENT_POLLING.md) の決定
+  1〜6 をそのまま実装: **1 fd = 1 イベント** (kqueue の read/write を
+  runtime がマージするので、macOS で書いたループが Linux で同じ回数
+  回る)、**level-triggered が既定**、**`EINTR` は隠さない**、
+  **イベント配列は runtime 側に置き index で読む** (extern 境界が
+  ポインタを deref できないため)、**kqueue の `EV_ERROR` は
+  changelist 投入時に回収して同期的な失敗にする**。4 レーンで 3 件 pin、
+  すべて 1 プロセス自己完結。
+- **narrow int のビット演算が tree-walker で落ちていた** — `& | ^` の
+  Value 版 fast path に `u64` / `i64` の arm しか無く、`flags & 1u32` が
+  **「expected UInt32, found UInt32」**で失敗していた (両辺が同じ型なのに
+  型エラーを名乗るのは、比較していたのが operand 同士ではなかったから)。
+  compiled レーンは通っていたのでレーン不一致。NUM-W-ENUMERATION の
+  4 件目で、`poll.t` が narrow 幅でビット演算をした最初の stdlib コード
+  だったために出た。
 - **NET N2 — TCP server (`TcpListener`)** — `bind` / `local_port` /
   `accept` / `set_blocking` / `as_fd` / `close`。**テストは 1 プロセスで
   自己完結**する (同じプログラムが listener と client を持つ) ので
@@ -27,6 +43,20 @@
   `panic` と違って発散扱いされていなかったこと。前者は
   **scrutinee の enum が payload の型を知っている**ので復元できる。
   `break` / `continue` は型検査器も発散扱いしないので載せていない。
+- **MODULE-CONST: モジュールの top-level `const` がどこからも見えない** ★★ —
+  `pub const X: u32 = 1u32` を `core/std/poll.t` に書いても、他モジュール
+  からは修飾しても `import` しても見えず、**同じモジュールの関数本体
+  からも見えない**。統合が module の const を運んでいない
+  (`interpreter/src/lib.rs` の const 登録はユーザプログラムの
+  `program.consts` だけを見る)。2026-09-01 に NET N3 で踏み、
+  `poll.t` は `pub fn interest_read() -> u32 { 1u32 }` の形で回避した。
+  stdlib に定数を置く自然な方法が無いので、次に定数が要る機能でまた踏む。
+
+- **NUM-W-SHIFT: narrow int の `<<` / `>>` が型検査で拒否される** ★ —
+  `u8 << u8` も `u8 << u64` も「incompatible types u8 and u64」。
+  `&` / `|` / `^` は全幅で動く (2026-09-01 に tree-walker 側を修正) ので
+  shift だけが取り残されている。2026-09-01 に NET N3 のテストで踏んだ。
+
 - **UNIT-TYPE-ARG — `Result<(), E>` / `Option<()>` が 4 レーンで動く** —
   「成否だけを返す」API の自然な形が compiled レーンで書けなかった。
   拒んでいたのは 2 つの門番 (`lower_param_or_return_type` の Unit 型引数、

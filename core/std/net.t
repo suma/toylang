@@ -125,7 +125,7 @@ impl Display for NetError {
 # behind them are not (EAGAIN is 11 on Linux and 35 on the BSDs), so
 # the translation from errno happens in the runtime's per-platform
 # `sys` layer and this side only ever sees the settled vocabulary.
-fn net_error_from_status(status: u64) -> NetError {
+pub fn net_error_from_status(status: u64) -> NetError {
     if status == 1u64 { NetError::WouldBlock }
     elif status == 2u64 { NetError::InProgress }
     elif status == 3u64 { NetError::Interrupted }

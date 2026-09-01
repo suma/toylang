@@ -726,9 +726,40 @@ impl EvaluationContext<'_> {
         apply_u64: fn(u64, u64) -> u64,
         apply_i64: fn(i64, i64) -> i64,
     ) -> Result<Value, InterpreterError> {
+        // NUM-W: every width, not just the 64-bit pair. The narrow
+        // ones were missing, so `flags & 1u32` — with both sides
+        // plainly `u32` — failed with "expected UInt32, found UInt32",
+        // a message that names the same type twice because the
+        // mismatch was never between the operands. This is the
+        // enumeration NUM-W-ENUMERATION describes, caught here by
+        // `core/std/poll.t`'s flag tests.
+        //
+        // The narrow widths widen to `u64` / `i64`, apply, and
+        // truncate back: `&`, `|` and `^` cannot carry a bit out of
+        // the operands' own width, so the round trip is exact. (The
+        // shift helper below stays 64-bit-only, because the type
+        // checker refuses a narrow shift before it can get there.)
         match (lhs, rhs) {
             (Value::UInt64(l), Value::UInt64(r)) => Ok(Value::UInt64(apply_u64(*l, *r))),
             (Value::Int64(l), Value::Int64(r)) => Ok(Value::Int64(apply_i64(*l, *r))),
+            (Value::UInt32(l), Value::UInt32(r)) => {
+                Ok(Value::UInt32(apply_u64(*l as u64, *r as u64) as u32))
+            }
+            (Value::UInt16(l), Value::UInt16(r)) => {
+                Ok(Value::UInt16(apply_u64(*l as u64, *r as u64) as u16))
+            }
+            (Value::UInt8(l), Value::UInt8(r)) => {
+                Ok(Value::UInt8(apply_u64(*l as u64, *r as u64) as u8))
+            }
+            (Value::Int32(l), Value::Int32(r)) => {
+                Ok(Value::Int32(apply_i64(*l as i64, *r as i64) as i32))
+            }
+            (Value::Int16(l), Value::Int16(r)) => {
+                Ok(Value::Int16(apply_i64(*l as i64, *r as i64) as i16))
+            }
+            (Value::Int8(l), Value::Int8(r)) => {
+                Ok(Value::Int8(apply_i64(*l as i64, *r as i64) as i8))
+            }
             _ => Err(InterpreterError::TypeError {
                 expected: lhs.get_type(),
                 found: rhs.get_type(),
@@ -756,6 +787,12 @@ impl EvaluationContext<'_> {
                 message: format!("Shift amount must be UInt64, got {:?}", rhs),
             }),
         };
+        // NUM-W: narrow widths are deliberately absent, unlike in
+        // `evaluate_bitwise_v` above. The *type checker* rejects
+        // `u8 << u8` and `u8 << u64` alike ("incompatible types u8
+        // and u64"), so a narrow left operand never reaches here;
+        // arms for it would be dead code claiming a capability the
+        // language does not have (todo: NUM-W-SHIFT).
         match lhs {
             Value::UInt64(l) => Ok(Value::UInt64(apply_u64(*l, shift_amount as u32))),
             Value::Int64(l) => Ok(Value::Int64(apply_i64(*l, shift_amount as u32))),

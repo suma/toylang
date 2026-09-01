@@ -6,6 +6,20 @@
 > 本文書はそれを**前提として引く**。分けたのは、2 つの API の意味論差が
 > socket 本体より大きく、決定を 1 箇所にまとめておきたいため。
 
+## Status
+
+**実装済み (2026-09-01)。** `core/std/poll.t` に `Poller` / `Event`、
+runtime に `poll_create` / `poll_ctl` / `poll_wait` +
+`poll_event_{token,flags,error}`、`sys_kqueue.rs` / `sys_epoll.rs` に
+各バックエンドの写像。決定 1〜6 はすべてそのまま実装されている。
+`compiler/tests/consistency/net.rs` が **4 レーンで** 3 件 pin
+(イベントループ一巡、read+write が 1 イベントにマージされること、
+peer が閉じても bytes が残っていること)。すべて 1 プロセスで自己完結する。
+
+設計から変えた点が 1 つ: **interest フラグは `pub const` ではなく
+`pub fn`**。モジュールの top-level `const` は他モジュールから見えず、
+**自モジュールの関数本体からも見えない** (todo: MODULE-CONST)。
+
 ## 1. なぜ統一が難しいか
 
 epoll と kqueue は「fd を待つ」という目的が同じだけで、**登録の単位が

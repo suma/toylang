@@ -182,6 +182,25 @@ const IO_IS_A_DIRECTORY: u64 = 3;
 const IO_READ_ERROR: u64 = 4;
 const IO_WRITE_ERROR: u64 = 5;
 
+/// One ready file descriptor, already merged and translated out of the
+/// platform's own event shape (EVENT_POLLING.md 決定 1 / §3).
+///
+/// `token` is whatever the caller registered — the runtime never
+/// interprets it. `error` is an errno when `flags` has `EVENT_ERROR`,
+/// and 0 otherwise.
+#[derive(Clone, Copy, Default)]
+pub struct RawEvent {
+    pub token: u64,
+    pub flags: u32,
+    pub error: u32,
+}
+
+/// How many merged events one `wait` can report. A wait that finds
+/// more leaves the rest for the next one, which is what a
+/// level-triggered poller does anyway — nothing is lost, the loop just
+/// comes back.
+pub(crate) const POLL_EVENTS_CAP: usize = 64;
+
 // NETWORK_IO: the status vocabulary the net externs report through
 // `toy_net_status`, mapped to `NetError` variants in
 // `core/std/net.t`. **These numbers are OS-independent** — that is
@@ -455,6 +474,17 @@ struct ThreadState {
     /// RUNTIME-LIB P0-B: the status of the most recent
     /// `toy_parse_f64`, read back by the paired status extern.
     parse_f64_status: u64,
+    /// EVENT_POLLING 決定 5: the events the most recent `poll_wait`
+    /// produced, and how many.
+    ///
+    /// The array lives here rather than crossing the extern boundary
+    /// because that boundary cannot carry a pointer to dereference:
+    /// `wait` answers a count and `toy_poll_event_*` read the entries
+    /// back by index. The pair is atomic from toylang's point of view
+    /// for the same reason the I/O status pairs are — no toylang code
+    /// runs between them.
+    poll_events: [RawEvent; POLL_EVENTS_CAP],
+    poll_event_len: usize,
     /// NETWORK_IO: the status of the most recent net call, read back
     /// by `toy_net_status`. One slot for all of them, unlike the I/O
     /// side's slot-per-operation: every `net.t` wrapper reads it on
@@ -492,6 +522,8 @@ impl Default for ThreadState {
             print_stderr: false,
             parse_f64_status: PARSE_OK,
             net_status: NET_OK,
+            poll_events: [RawEvent { token: 0, flags: 0, error: 0 }; POLL_EVENTS_CAP],
+            poll_event_len: 0,
         }
     }
 }
@@ -2896,6 +2928,123 @@ pub fn net_take_error(fd: i32) -> u64 {
     let st = thread_state();
     st.net_status = if err == 0 { NET_OK } else { sys::status_from_errno(err) };
     st.net_status
+}
+
+// ---------------------------------------------------------------------------
+// Event notification (EVENT_POLLING.md N3).
+//
+// `wait` answers a count and stages the events on the thread; the
+// three `poll_event_*` readers hand them back by index (決定 5). The
+// extern boundary cannot carry a pointer to dereference, and an event
+// *array* is what both backends return — so the array stays here and
+// only indices cross.
+// ---------------------------------------------------------------------------
+
+/// A poller fd, or `-1`.
+pub fn poll_create() -> i32 {
+    let fd = sys::poll_create();
+    net_record(fd >= 0);
+    fd
+}
+
+/// Register / modify / unregister `fd`. `interest == 0` unregisters.
+///
+/// Idempotent by construction: registering something already
+/// registered replaces its interest rather than failing, which is
+/// epoll's ADD/MOD split hidden (and a no-op on kqueue, where `EV_ADD`
+/// already means that).
+pub fn poll_ctl(pfd: i32, fd: i32, token: u64, interest: u32) -> u64 {
+    net_record(sys::poll_ctl(pfd, fd, token, interest) == 0);
+    thread_state().net_status
+}
+
+/// Wait for readiness and stage the events. Returns how many are
+/// ready, or 0 with a status.
+///
+/// `timeout_ms` negative means forever, 0 means poll. `EINTR` comes
+/// back as `NET_INTERRUPTED` rather than being retried inside
+/// (決定 4): swallowing it would take away the only way a signal can
+/// break the loop.
+pub fn poll_wait(pfd: i32, timeout_ms: i64) -> u64 {
+    let st = thread_state();
+    st.poll_event_len = 0;
+    let mut staged = [RawEvent::default(); POLL_EVENTS_CAP];
+    let n = sys::poll_wait(pfd, &mut staged, POLL_EVENTS_CAP, timeout_ms);
+    if !net_record(n >= 0) {
+        return 0;
+    }
+    let len = n as usize;
+    let st = thread_state();
+    st.poll_events[..len].copy_from_slice(&staged[..len]);
+    st.poll_event_len = len;
+    len as u64
+}
+
+/// The `i`-th staged event's token, or 0 when `i` is past the end.
+pub fn poll_event_token(i: u64) -> u64 {
+    let st = thread_state();
+    let i = i as usize;
+    if i >= st.poll_event_len { 0 } else { st.poll_events[i].token }
+}
+
+/// The `i`-th staged event's flags.
+pub fn poll_event_flags(i: u64) -> u32 {
+    let st = thread_state();
+    let i = i as usize;
+    if i >= st.poll_event_len { 0 } else { st.poll_events[i].flags }
+}
+
+/// The `i`-th staged event's errno, or 0 when it carried none.
+pub fn poll_event_error(i: u64) -> u64 {
+    let st = thread_state();
+    let i = i as usize;
+    if i >= st.poll_event_len { 0 } else { st.poll_events[i].error as u64 }
+}
+
+/// Translate a poll event's errno into the `NetError` vocabulary.
+/// Separate from `toy_net_status` because it names a *socket's*
+/// failure, not the poll call's.
+pub fn poll_error_status(errno: u64) -> u64 {
+    if errno == 0 {
+        NET_OK
+    } else {
+        sys::status_from_errno(errno as i32)
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_poll_create() -> i32 {
+    poll_create()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_poll_ctl(pfd: i32, fd: i32, token: u64, interest: u32) -> u64 {
+    poll_ctl(pfd, fd, token, interest)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_poll_wait(pfd: i32, timeout_ms: i64) -> u64 {
+    poll_wait(pfd, timeout_ms)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_poll_event_token(i: u64) -> u64 {
+    poll_event_token(i)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_poll_event_flags(i: u64) -> u32 {
+    poll_event_flags(i)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_poll_event_error(i: u64) -> u64 {
+    poll_event_error(i)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_poll_error_status(errno: u64) -> u64 {
+    poll_error_status(errno)
 }
 
 /// Bind a fresh socket to `addr:port` and start listening.

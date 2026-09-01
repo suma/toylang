@@ -491,3 +491,66 @@ fn negative_runtime_index_match() {
     "#;
     assert_consistent(src, "negative_runtime_index");
 }
+
+// --- NUM-W: bitwise operators at every width -----------------------
+//
+// The tree-walker's `Value`-flavoured fast path for `& | ^ << >>` had
+// arms for `u64` and `i64` only, so `flags & 1u32` — both sides
+// plainly `u32` — failed with "expected UInt32, found UInt32", a
+// message naming the same type twice because the mismatch was never
+// between the operands. The compiled lanes were fine, so this was a
+// lane disagreement rather than a shared gap.
+//
+// That is the enumeration NUM-W-ENUMERATION describes, found by
+// `core/std/poll.t`'s interest flags — the first stdlib code to do
+// bit arithmetic at a narrow width.
+
+/// Every narrow width, through every bitwise operator, with a shift
+/// that carries bits off the top so the truncation is doing real work.
+#[test]
+fn bitwise_operators_work_at_every_integer_width() {
+    let src = r#"
+        fn main() -> u64 {
+            val a8: u8 = 12u8
+            val b8: u8 = 10u8
+            val and8 = a8 & b8
+            val or8 = a8 | b8
+            val xor8 = a8 ^ b8
+
+            val a16: u16 = 0xF0F0u16
+            val b16: u16 = 0x0FF0u16
+            val and16 = a16 & b16
+
+            val a32: u32 = 0xFFFF0000u32
+            val b32: u32 = 0x00FFFF00u32
+            val and32 = a32 & b32
+
+            val i8v: i8 = -2i8
+            val and_i8 = i8v & 0x7Fi8
+
+            val i32v: i32 = -1i32
+            val or_i32 = i32v | 0i32
+
+            # Shifts are *not* here: the type checker rejects a narrow
+            # left operand outright ("incompatible types u8 and u64"),
+            # whatever the shift amount's type, so `<<` and `>>` stay
+            # 64-bit-only for now (todo: NUM-W-SHIFT).
+
+            (and8 as u64) * 1000000u64
+                + (or8 as u64) * 100000u64
+                + (xor8 as u64) * 10000u64
+                + (and16 as u64)
+                + (and32 as u64)
+                + (and_i8 as u64)
+                + (or_i32 as i64 + 1i64) as u64
+        }
+    "#;
+    // 12 & 10 = 8, 12 | 10 = 14, 12 ^ 10 = 6,
+    // and16 = 0x00F0 = 240, and32 = 0x00FF0000 = 16711680,
+    // and_i8 = -2 & 0x7F = 0x7E = 126, or_i32 = -1 (+1 = 0).
+    assert_eq!(
+        interpreter_value(src),
+        8 * 1000000 + 14 * 100000 + 6 * 10000 + 240 + 16711680 + 126
+    );
+    assert_consistent(src, "bitwise_every_width");
+}

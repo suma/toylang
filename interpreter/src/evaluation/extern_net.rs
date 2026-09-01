@@ -41,6 +41,14 @@ pub fn build_net_registry() -> HashMap<&'static str, ExternFn> {
     m.insert("__extern_net_bind", net_bind);
     m.insert("__extern_net_local_port", net_local_port);
     m.insert("__extern_net_accept", net_accept);
+    // EVENT_POLLING N3.
+    m.insert("__extern_poll_create", poll_create);
+    m.insert("__extern_poll_ctl", poll_ctl);
+    m.insert("__extern_poll_wait", poll_wait);
+    m.insert("__extern_poll_event_token", poll_event_token);
+    m.insert("__extern_poll_event_flags", poll_event_flags);
+    m.insert("__extern_poll_event_error", poll_event_error);
+    m.insert("__extern_poll_error_status", poll_error_status);
     m
 }
 
@@ -117,6 +125,66 @@ fn net_accept(args: &[Value]) -> Result<Value, InterpreterError> {
     expect_args("__extern_net_accept", args, 1)?;
     let fd = fd_arg(&args[0], "__extern_net_accept")?;
     Ok(Value::Int32(toylang_rt::net_accept(fd)))
+}
+
+fn poll_create(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_poll_create", args, 0)?;
+    Ok(Value::Int32(toylang_rt::poll_create()))
+}
+
+fn poll_ctl(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_poll_ctl", args, 4)?;
+    let pfd = fd_arg(&args[0], "__extern_poll_ctl")?;
+    let fd = fd_arg(&args[1], "__extern_poll_ctl")?;
+    let token = u64_arg(&args[2], "__extern_poll_ctl")?;
+    let interest = u64_arg(&args[3], "__extern_poll_ctl")? as u32;
+    Ok(Value::UInt64(toylang_rt::poll_ctl(pfd, fd, token, interest)))
+}
+
+fn poll_wait(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_poll_wait", args, 2)?;
+    let pfd = fd_arg(&args[0], "__extern_poll_wait")?;
+    let timeout = i64_arg(&args[1], "__extern_poll_wait")?;
+    Ok(Value::UInt64(toylang_rt::poll_wait(pfd, timeout)))
+}
+
+fn poll_event_token(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_poll_event_token", args, 1)?;
+    let i = u64_arg(&args[0], "__extern_poll_event_token")?;
+    Ok(Value::UInt64(toylang_rt::poll_event_token(i)))
+}
+
+fn poll_event_flags(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_poll_event_flags", args, 1)?;
+    let i = u64_arg(&args[0], "__extern_poll_event_flags")?;
+    Ok(Value::UInt32(toylang_rt::poll_event_flags(i)))
+}
+
+fn poll_event_error(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_poll_event_error", args, 1)?;
+    let i = u64_arg(&args[0], "__extern_poll_event_error")?;
+    Ok(Value::UInt64(toylang_rt::poll_event_error(i)))
+}
+
+fn poll_error_status(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_poll_error_status", args, 1)?;
+    let errno = u64_arg(&args[0], "__extern_poll_error_status")?;
+    Ok(Value::UInt64(toylang_rt::poll_error_status(errno)))
+}
+
+/// A signed argument. `timeout_ms` is the only one, and its negative
+/// values are load-bearing (-1 means "wait forever").
+fn i64_arg(value: &Value, name: &str) -> Result<i64, InterpreterError> {
+    match value {
+        Value::Int64(v) => Ok(*v),
+        Value::UInt64(v) => Ok(*v as i64),
+        Value::Int32(v) => Ok(*v as i64),
+        Value::Int16(v) => Ok(*v as i64),
+        Value::Int8(v) => Ok(*v as i64),
+        other => Err(InterpreterError::InternalError(format!(
+            "extern fn `{name}`: expected a signed integer, got {other:?}"
+        ))),
+    }
 }
 
 fn net_status(args: &[Value]) -> Result<Value, InterpreterError> {

@@ -14,7 +14,7 @@
 | **N0.5** | CONV-SPAN + 確保しないための stdlib (`Span::slice` / `Vec::with_capacity` / `set_size`) | ✅ 完了 (2026-08-31) |
 | **N1** | ~~EXTERN-BUF~~ ✅ + TCP client (`socket`/`connect`/`send`/`recv`/`close`) + `NetError` + blocking 切り替え | ✅ 完了 (2026-09-01)。**4 レーン一致** |
 | **N2** | TCP server (`bind`/`listen`/`accept`) + nonblocking | ✅ 完了 (2026-09-01)。4 レーン一致 |
-| **N3** | イベント通知 ([`EVENT_POLLING.md`](EVENT_POLLING.md)) | 未着手 |
+| **N3** | イベント通知 ([`EVENT_POLLING.md`](EVENT_POLLING.md)) | ✅ 完了 (2026-09-01)。4 レーン一致 |
 | **N4** | UDP + socket option (timeout / nodelay) + `local_addr` / `peer_addr` | 未着手 |
 | **N5** | 名前解決 (`getaddrinfo`) | 未着手 |
 
@@ -660,7 +660,7 @@ EISDIR 21 は macOS と Linux で一致する」ことに依存している。
 | **N0.5** ✅ | CONV-SPAN + `Span::slice` / `Vec::with_capacity` / `Vec::set_size` / `Vec::capacity_span` | **完了 (2026-08-31)**。net と独立に landing した。`compiler/tests/consistency/conv_span.rs` が 5 件 pin: slice が窓であって複製でないこと、null に窓が無いこと、確保済みの空きに書いてから `set_size` で live にする形、`Vec::new()` と「確保済みで空」の区別、`String` のバイト列の書き換えが元に通ること |
 | **N1** ✅ | EXTERN-BUF + TCP client + `NetError` + `set_blocking` | **完了 (2026-09-01)**。`compiler/tests/consistency/net.rs` が `std::net` のエコーサーバをテストプロセスのスレッドに立て、**4 レーンで** 6 件 pin: 往復、非 UTF-8 ペイロード (`str` を経由しないことの証拠)、`ConnectionRefused` が名前で返ること、ホスト名が `InvalidInput` になること、`close` の冪等性と閉じた stream の read 失敗、`shutdown_write` 後も返信が読めること。ポートは**ソース中のリテラル**として渡す (AOT バイナリに引数を渡す口が無いため) |
 | **N2** ✅ | `bind` / `listen` / `accept` / nonblocking | **完了 (2026-09-01)**。`consistency/net.rs` に 3 件、**すべて 1 プロセスで自己完結** — 同じプログラムが listener と client を持つので thread も外部プロセスも要らない。pin したもの: 自分に繋いで往復すること、idle な非 blocking `accept` が `WouldBlock` を返すこと (サーバの平常状態であって失敗ではない)、port 0 が毎回違う番号になること、閉じた listener への接続が `ConnectionRefused` になること |
-| **N3** | Poller | [`EVENT_POLLING.md`](EVENT_POLLING.md) |
+| **N3** ✅ | Poller | **完了 (2026-09-01)**。設計と実装状況は [`EVENT_POLLING.md`](EVENT_POLLING.md) の Status |
 | **N4** | UDP / socket option / `local_addr` / `peer_addr` | 同上の自己完結形 |
 | **N5** | `getaddrinfo` | `localhost` の解決のみ pin (DNS は非決定なのでテストしない) |
 

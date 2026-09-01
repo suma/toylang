@@ -296,3 +296,207 @@ fn close_preserving_errno(fd: i32) {
     unsafe { close(fd) };
     crate::set_errno(saved);
 }
+
+// ---------------------------------------------------------------------------
+// Event notification (EVENT_POLLING.md §3). `poll.rs` above calls only
+// the four names below and never sees an `EVFILT_*` or an `EV_*`.
+// ---------------------------------------------------------------------------
+
+use crate::RawEvent;
+
+unsafe extern "C" {
+    fn kqueue() -> i32;
+    fn kevent(
+        kq: i32,
+        changelist: *const KEvent,
+        nchanges: i32,
+        eventlist: *mut KEvent,
+        nevents: i32,
+        timeout: *const TimeSpec,
+    ) -> i32;
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct TimeSpec {
+    tv_sec: i64,
+    tv_nsec: i64,
+}
+
+const F_SETFD: i32 = 2;
+const FD_CLOEXEC: i32 = 1;
+const ENOENT: i32 = 2;
+
+/// Platform-neutral interest bits. The numbers are defined *here*
+/// rather than being the raw `EVFILT_*` / `EPOLL*` ones, because the
+/// two backends disagree about those and the layer above must not
+/// have to know which it is talking to.
+pub const INTEREST_READ: u32 = 1 << 0;
+pub const INTEREST_WRITE: u32 = 1 << 1;
+pub const INTEREST_EDGE: u32 = 1 << 2;
+pub const INTEREST_ONESHOT: u32 = 1 << 3;
+
+pub const EVENT_READ: u32 = 1 << 0;
+pub const EVENT_WRITE: u32 = 1 << 1;
+/// The peer closed its end. Still readable — whatever is buffered is
+/// still there to drain.
+pub const EVENT_HUP: u32 = 1 << 2;
+pub const EVENT_ERROR: u32 = 1 << 3;
+
+/// The poller fd, close-on-exec. Negative on failure.
+///
+/// `kqueue()` has no CLOEXEC variant the way `epoll_create1` does, so
+/// the flag is a second call. A poller that survived an `exec` would
+/// hold every registered descriptor open in the child.
+pub fn poll_create() -> i32 {
+    let fd = unsafe { kqueue() };
+    if fd < 0 {
+        return -1;
+    }
+    unsafe { crate::fcntl(fd, F_SETFD, FD_CLOEXEC) };
+    fd
+}
+
+/// Register, modify, or (with `interest == 0`) unregister `fd`.
+/// `0` on success, `-1` with errno set.
+///
+/// **The failure is synchronous** (決定 6). kqueue reports a bad
+/// changelist entry as an `EV_ERROR` *event*, which would give
+/// toylang a world where `register` succeeded and the error arrived
+/// later — unlike epoll, where `epoll_ctl` fails on the spot. So the
+/// changes go in with an eventlist attached and a zero timeout, and
+/// any `EV_ERROR` is turned back into an errno here.
+///
+/// `ENOENT` from deleting a filter that was never added is swallowed:
+/// "make sure this is not registered" is the caller's intent, and it
+/// is satisfied.
+pub fn poll_ctl(pfd: i32, fd: i32, token: u64, interest: u32) -> i32 {
+    let mut flags: u16 = 0;
+    if interest & INTEREST_EDGE != 0 {
+        flags |= EV_CLEAR;
+    }
+    if interest & INTEREST_ONESHOT != 0 {
+        flags |= EV_ONESHOT;
+    }
+    let mut changes: [KEvent; 2] = [
+        change(fd, EVFILT_READ, interest & INTEREST_READ != 0, flags, token),
+        change(fd, EVFILT_WRITE, interest & INTEREST_WRITE != 0, flags, token),
+    ];
+    let mut out: [KEvent; 2] = changes;
+    let zero = TimeSpec::default();
+    let n = unsafe {
+        kevent(
+            pfd,
+            changes.as_mut_ptr(),
+            changes.len() as i32,
+            out.as_mut_ptr(),
+            out.len() as i32,
+            &zero,
+        )
+    };
+    if n < 0 {
+        return -1;
+    }
+    for ev in out.iter().take(n as usize) {
+        if ev.flags & EV_ERROR != 0 && ev.data != 0 && ev.data as i32 != ENOENT {
+            crate::set_errno(ev.data as i32);
+            return -1;
+        }
+    }
+    0
+}
+
+/// Wait for readiness, writing at most `cap` **merged** events into
+/// `out`. Returns the count, or `-1` with errno set.
+///
+/// kqueue reports the read and write sides of one fd as two events,
+/// and the merge (決定 1) happens here so nothing above sees the
+/// per-filter shape. Two reasons it is worth the linear scan: a loop
+/// written on macOS then iterates the same number of times on Linux,
+/// and a caller cannot be handed a second event for a descriptor it
+/// closed while handling the first.
+///
+/// The raw buffer holds `2 * cap` because kqueue's own limit applies
+/// *before* merging — asking for `cap` raw events could yield fewer
+/// than `cap` merged ones and leave the rest queued.
+pub fn poll_wait(pfd: i32, out: &mut [RawEvent], cap: usize, timeout_ms: i64) -> isize {
+    const RAW_CAP: usize = 2 * crate::POLL_EVENTS_CAP;
+    let mut raw: [KEvent; RAW_CAP] = [KEvent {
+        ident: 0,
+        filter: 0,
+        flags: 0,
+        fflags: 0,
+        data: 0,
+        udata: core::ptr::null_mut(),
+    }; RAW_CAP];
+    let want = core::cmp::min(cap, crate::POLL_EVENTS_CAP) * 2;
+    let ts = TimeSpec {
+        tv_sec: timeout_ms / 1000,
+        tv_nsec: (timeout_ms % 1000) * 1_000_000,
+    };
+    // A negative timeout means "forever", which kqueue spells as a
+    // null pointer rather than a negative number.
+    let ts_ptr: *const TimeSpec = if timeout_ms < 0 { core::ptr::null() } else { &ts };
+    let n = unsafe {
+        kevent(
+            pfd,
+            core::ptr::null(),
+            0,
+            raw.as_mut_ptr(),
+            want as i32,
+            ts_ptr,
+        )
+    };
+    if n < 0 {
+        return -1;
+    }
+    let mut len = 0usize;
+    for ev in raw.iter().take(n as usize) {
+        let token = ev.udata as u64;
+        let mut flags = match ev.filter {
+            EVFILT_READ => EVENT_READ,
+            EVFILT_WRITE => EVENT_WRITE,
+            _ => 0,
+        };
+        if ev.flags & EV_EOF != 0 {
+            flags |= EVENT_HUP;
+        }
+        let mut error = 0u32;
+        if ev.flags & EV_ERROR != 0 {
+            flags |= EVENT_ERROR;
+            // Unlike epoll, the errno is right here in `data` — no
+            // `SO_ERROR` round trip.
+            error = ev.data as u32;
+        }
+        // Merge into an entry for the same token if one is already
+        // staged. The scan is linear because a wait returns a handful
+        // of events, not thousands; a map would cost more to build
+        // than it saves.
+        if let Some(slot) = out[..len].iter_mut().find(|e| e.token == token) {
+            slot.flags |= flags;
+            if slot.error == 0 {
+                slot.error = error;
+            }
+            continue;
+        }
+        if len == cap {
+            break;
+        }
+        out[len] = RawEvent { token, flags, error };
+        len += 1;
+    }
+    len as isize
+}
+
+/// One changelist entry: add the filter, or delete it when the
+/// interest does not name it.
+fn change(fd: i32, filter: i16, wanted: bool, extra: u16, token: u64) -> KEvent {
+    KEvent {
+        ident: fd as usize,
+        filter,
+        flags: if wanted { EV_ADD | extra } else { EV_DELETE },
+        fflags: 0,
+        data: 0,
+        udata: token as *mut u8,
+    }
+}

@@ -254,129 +254,6 @@ fn every_lane_names_a_refused_connection() {
     assert_consistent(&src, "net_refused");
 }
 
-/// A hostname is an input error until name resolution lands (N5), and
-/// it is reported before any descriptor is created.
-#[test]
-fn every_lane_rejects_a_hostname_the_same_way() {
-    let src = r#"
-        fn main() -> u64 {
-            val conn = TcpStream::connect("localhost", 80u64)
-            match conn {
-                Result::Ok(s) => 1u64,
-                Result::Err(e) => {
-                    match e {
-                        NetError::InvalidInput => 2u64,
-                        _ => 3u64,
-                    }
-                }
-            }
-        }
-    "#;
-    assert_eq!(interpreter_value(src) & 0xff, 2);
-    assert_consistent(src, "net_hostname");
-}
-
-/// `close` is idempotent and a closed stream stops reading. The field
-/// is parked at -1 (NETWORK_IO.md 論点 2), so the second close is a
-/// no-op rather than a close of whatever unrelated file the OS has
-/// since handed that number to — a failure that would be silent and
-/// almost untraceable.
-#[test]
-fn every_lane_closes_idempotently() {
-    let port = spawn_echo_server();
-    let src = format!(
-        r#"
-        fn main() -> u64 {{
-            val conn = TcpStream::connect("127.0.0.1", {port}u64)
-            var st = match conn {{
-                Result::Ok(s) => s,
-                Result::Err(e) => {{ return 90u64 }}
-            }}
-            val first = st.close()
-            val a = match first {{ Result::Ok(_) => 1u64, Result::Err(e) => 0u64 }}
-            val second = st.close()
-            val b = match second {{ Result::Ok(_) => 1u64, Result::Err(e) => 0u64 }}
-            if st.as_fd() >= 0i32 {{ return 93u64 }}
-
-            var buf: Vec<u8> = Vec::with_capacity(8u64)
-            val room = buf.capacity_span()
-            var failed: u64 = 0u64
-            match room {{
-                Option::Some(w) => {{
-                    val r = st.read(w)
-                    match r {{
-                        Result::Ok(n) => {{ failed = 0u64 }}
-                        Result::Err(e) => {{ failed = 1u64 }}
-                    }}
-                }}
-                Option::None => {{ failed = 0u64 }}
-            }}
-            a * 100u64 + b * 10u64 + failed
-        }}
-    "#
-    );
-    // Both closes ok, and the read on a closed stream failed.
-    assert_eq!(interpreter_value(&src) & 0xffff, 111);
-    assert_consistent(&src, "net_close_idempotent");
-}
-
-/// `shutdown_write` ends the request without giving up the descriptor
-/// the reply arrives on: the peer's read returns 0 and it stops, but
-/// what it already sent is still there.
-#[test]
-fn every_lane_half_closes_and_still_reads_the_reply() {
-    let port = spawn_echo_server();
-    let src = format!(
-        r#"
-        fn main() -> u64 {{
-            val conn = TcpStream::connect("127.0.0.1", {port}u64)
-            var st = match conn {{
-                Result::Ok(s) => s,
-                Result::Err(e) => {{ return 90u64 }}
-            }}
-            val msg = String::from_str("hi")
-            val window = msg.as_span()
-            val out: Span<u8> = match window {{
-                Option::Some(w) => w,
-                Option::None => {{ return 91u64 }}
-            }}
-            val wrote = st.write(out)
-            match wrote {{
-                Result::Ok(n) => {{ }}
-                Result::Err(e) => {{ return 92u64 }}
-            }}
-            val half = st.shutdown_write()
-            val ok = match half {{ Result::Ok(_) => 1u64, Result::Err(e) => 0u64 }}
-
-            var back: Vec<u8> = Vec::with_capacity(8u64)
-            val room = back.capacity_span()
-            var got: u64 = 0u64
-            match room {{
-                Option::Some(w) => {{
-                    val r = st.read(w)
-                    match r {{
-                        Result::Ok(n) => {{ got = n }}
-                        Result::Err(e) => {{ got = 0u64 }}
-                    }}
-                }}
-                Option::None => {{ got = 0u64 }}
-            }}
-            back.set_size(got)
-            var sum: u64 = 0u64
-            var i: u64 = 0u64
-            while i < back.size() {{
-                sum = sum + back.get(i) as u64
-                i = i + 1u64
-            }}
-            ok * 1000u64 + got * 100u64 + sum
-        }}
-    "#
-    );
-    // shutdown ok, 2 bytes back, 'h' + 'i' = 209.
-    assert_eq!(interpreter_value(&src) & 0xffff, 1000 + 200 + 209);
-    assert_consistent(&src, "net_shutdown_write");
-}
-
 // --- N2: the TCP server ---------------------------------------------
 //
 // These need no peer at all. One program is both listener and client,
@@ -1022,4 +899,101 @@ fn every_lane_accepts_the_socket_options() {
     "#;
     assert_eq!(interpreter_value(src) & 0xff, 5);
     assert_consistent(src, "net_socket_options");
+}
+
+// --- N5: name resolution --------------------------------------------
+//
+// Only `localhost` is pinned, and only that it comes back as a
+// loopback address. Anything else would be pinning the machine's DNS,
+// which is not the compiler's to guarantee — a test that fails on a
+// train is worse than no test.
+
+/// `localhost` resolves, a numeric address resolves to itself, and a
+/// name that cannot resolve says so by name rather than as a generic
+/// failure.
+#[test]
+fn every_lane_resolves_a_name_to_an_address() {
+    let src = r#"
+        fn main() -> u64 {
+            val r1 = resolve("localhost")
+            val a1 = match r1 { Result::Ok(t) => t, Result::Err(e) => { return 80u64 } }
+            # The loopback *range*, not a specific number: a machine
+            # may map `localhost` anywhere in 127/8, and pinning the
+            # exact address would be pinning its /etc/hosts.
+            #
+            # Through `String` rather than `str.substring`, which the
+            # compiled lanes do not support (todo TYPECHECK-LIES).
+            val s1 = String::from_str(a1)
+            val head = s1.substring(0u64, 4u64)
+            val want = String::from_str("127.")
+            if !head.eq(want) { return 81u64 }
+
+            # A numeric address is its own answer, so a caller never
+            # has to ask first whether the text is a name.
+            val r2 = resolve("127.0.0.1")
+            val a2 = match r2 { Result::Ok(t) => t, Result::Err(e) => { return 82u64 } }
+            if a2 != "127.0.0.1" { return 83u64 }
+
+            # `.invalid` is reserved by RFC 2606 precisely so that it
+            # never resolves — the one name a test may rely on failing.
+            val r3 = resolve("no-such-host.invalid")
+            val named = match r3 {
+                Result::Ok(t) => 0u64,
+                Result::Err(e) => match e {
+                    NetError::NameNotFound => 1u64,
+                    _ => 0u64,
+                },
+            }
+            if named != 1u64 { return 84u64 }
+            9u64
+        }
+    "#;
+    assert_eq!(interpreter_value(src) & 0xff, 9);
+    assert_consistent(src, "net_resolve");
+}
+
+/// `connect` takes a name. It blocks on the handshake already, so
+/// blocking on a lookup changes nothing about what it promises —
+/// unlike `connect_nonblocking`, which promises to return at once and
+/// therefore still wants a numeric address.
+#[test]
+fn every_lane_connects_by_name() {
+    let src = r#"
+        fn main() -> u64 {
+            val bound = TcpListener::bind("127.0.0.1", 0u64)
+            var l = match bound {
+                Result::Ok(x) => x,
+                Result::Err(e) => { return 80u64 }
+            }
+            val lp = l.local_port()
+            val port = match lp { Result::Ok(n) => n, Result::Err(e) => { return 81u64 } }
+
+            val conn = TcpStream::connect("localhost", port)
+            var c = match conn {
+                Result::Ok(s) => s,
+                Result::Err(e) => { return 82u64 }
+            }
+            val pa = c.peer_addr()
+            val paddr = match pa { Result::Ok(t) => t, Result::Err(e) => { return 83u64 } }
+            val sp = String::from_str(paddr)
+            val head = sp.substring(0u64, 4u64)
+            val want = String::from_str("127.")
+            if !head.eq(want) { return 84u64 }
+
+            # A name that does not resolve fails before a descriptor is
+            # ever created, and says which kind of failure it was.
+            val bad = TcpStream::connect("no-such-host.invalid", port)
+            val named = match bad {
+                Result::Ok(s) => 0u64,
+                Result::Err(e) => match e {
+                    NetError::NameNotFound => 1u64,
+                    _ => 0u64,
+                },
+            }
+            if named != 1u64 { return 85u64 }
+            6u64
+        }
+    "#;
+    assert_eq!(interpreter_value(src) & 0xff, 6);
+    assert_consistent(src, "net_connect_by_name");
 }

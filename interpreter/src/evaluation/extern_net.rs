@@ -51,6 +51,7 @@ pub fn build_net_registry() -> HashMap<&'static str, ExternFn> {
     m.insert("__extern_net_set_dest", net_set_dest);
     m.insert("__extern_net_last_peer_addr", net_last_peer_addr);
     m.insert("__extern_net_last_peer_port", net_last_peer_port);
+    m.insert("__extern_net_resolve", net_resolve);
     // EVENT_POLLING N3.
     m.insert("__extern_poll_create", poll_create);
     m.insert("__extern_poll_ctl", poll_ctl);
@@ -303,6 +304,14 @@ fn net_recv_from(
         toylang_rt::net_recv_from(fd, bytes)
     })?;
     Ok(Value::UInt64(got))
+}
+
+fn net_resolve(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_net_resolve", args, 1)?;
+    let host = str_arg(&args[0], "__extern_net_resolve")?;
+    let mut out = [0u8; 16];
+    let n = toylang_rt::net_resolve(host.as_bytes(), &mut out);
+    Ok(str_value(String::from_utf8_lossy(&out[..n]).into_owned()))
 }
 
 /// A toylang `str` result — a `String` object on this engine.

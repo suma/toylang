@@ -16,7 +16,7 @@
 | **N2** | TCP server (`bind`/`listen`/`accept`) + nonblocking | ✅ 完了 (2026-09-01)。4 レーン一致 |
 | **N3** | イベント通知 ([`EVENT_POLLING.md`](EVENT_POLLING.md)) | ✅ 完了 (2026-09-01)。4 レーン一致 |
 | **N4** | UDP + socket option (timeout / nodelay) + `local_addr` / `peer_addr` | ✅ 完了 (2026-09-01)。4 レーン一致 |
-| **N5** | 名前解決 (`getaddrinfo`) | 未着手 |
+| **N5** | 名前解決 (`getaddrinfo`) | ✅ 完了 (2026-09-01)。4 レーン一致 |
 
 ## なぜ今これを設計するか
 
@@ -662,7 +662,7 @@ EISDIR 21 は macOS と Linux で一致する」ことに依存している。
 | **N2** ✅ | `bind` / `listen` / `accept` / nonblocking | **完了 (2026-09-01)**。`consistency/net.rs` に 3 件、**すべて 1 プロセスで自己完結** — 同じプログラムが listener と client を持つので thread も外部プロセスも要らない。pin したもの: 自分に繋いで往復すること、idle な非 blocking `accept` が `WouldBlock` を返すこと (サーバの平常状態であって失敗ではない)、port 0 が毎回違う番号になること、閉じた listener への接続が `ConnectionRefused` になること |
 | **N3** ✅ | Poller | **完了 (2026-09-01)**。設計と実装状況は [`EVENT_POLLING.md`](EVENT_POLLING.md) の Status |
 | **N4** ✅ | UDP / socket option / `local_addr` / `peer_addr` | **完了 (2026-09-01)**。`UdpSocket` (`bind` / `send_to` / `recv_from` / `last_peer_*`)、`local_addr` / `peer_addr` / `local_port` / `peer_port`、`set_nodelay` / `set_read_timeout` / `set_write_timeout`。3 件 pin、すべて 1 プロセス自己完結。**アドレスと port は別々に返す** — port は数であって、コロンを探させる理由が無い (IPv6 が来ればなおさら)。`send_to` は fd + buf + len + addr + port で **extern の 4 引数を超える**ので、宛先を直前の `set_dest` で置く 2 段にした (status ペアと同じ atomicity) |
-| **N5** | `getaddrinfo` | `localhost` の解決のみ pin (DNS は非決定なのでテストしない) |
+| **N5** ✅ | `getaddrinfo` | **完了 (2026-09-01)**。`net::resolve(host)` と、名前を受け付ける `TcpStream::connect`。pin するのは `localhost` が 127/8 に落ちること (**特定の番号ではない** — machine の `/etc/hosts` を pin することになる)、数値アドレスが自分自身に解決すること、`.invalid` (RFC 2606) が `NetError::NameNotFound` になること。**`struct addrinfo` は `ai_addr` と `ai_canonname` の順序が Linux と BSD で逆**なので、struct 宣言自体が `sys` 側にある — 間違えると sockaddr のはずの場所に名前のポインタが来て落ちる |
 
 ### N1 で設計から変えた 2 点と、compiled レーンが動かない理由
 

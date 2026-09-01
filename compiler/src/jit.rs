@@ -477,6 +477,8 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
         "toy_net_last_peer_port",
         toylang_rt::toy_net_last_peer_port as *const u8,
     );
+    // N5.
+    jit_builder.symbol("toy_net_resolve", toylang_rt::toy_net_resolve as *const u8);
     // EVENT_POLLING N3.
     jit_builder.symbol("toy_poll_create", toylang_rt::toy_poll_create as *const u8);
     jit_builder.symbol("toy_poll_ctl", toylang_rt::toy_poll_ctl as *const u8);

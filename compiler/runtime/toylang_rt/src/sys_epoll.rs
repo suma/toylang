@@ -514,3 +514,88 @@ fn so_error(fd: i32) -> i32 {
     };
     if rc != 0 { 0 } else { err }
 }
+
+// ---------------------------------------------------------------------------
+// Name resolution (NETWORK_IO.md N5).
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn getaddrinfo(
+        node: *const u8,
+        service: *const u8,
+        hints: *const AddrInfo,
+        res: *mut *mut AddrInfo,
+    ) -> i32;
+    fn freeaddrinfo(res: *mut AddrInfo);
+}
+
+/// `struct addrinfo`.
+///
+/// **The field order differs from the BSDs'**: Linux puts `ai_addr`
+/// before `ai_canonname` and they put it after. Reading the wrong one
+/// gives a pointer to a name where a sockaddr should be, which is a
+/// crash rather than a wrong answer — and it is exactly why this
+/// struct is declared per platform instead of once.
+#[repr(C)]
+struct AddrInfo {
+    ai_flags: i32,
+    ai_family: i32,
+    ai_socktype: i32,
+    ai_protocol: i32,
+    ai_addrlen: u32,
+    ai_addr: *mut u8,
+    ai_canonname: *mut u8,
+    ai_next: *mut AddrInfo,
+}
+
+/// Resolve `host` to one IPv4 address, written into `out` as a dotted
+/// quad. Returns the byte count, or 0 with `crate::set_errno` left
+/// alone — the caller distinguishes "no such name" from "no IPv4
+/// address" by the return alone, because `getaddrinfo` reports
+/// through its own `EAI_*` space rather than errno.
+///
+/// Only the first `AF_INET` result is taken. A host with several
+/// addresses is a real thing, and picking among them (or trying each
+/// in turn) is a policy decision that does not belong this far down;
+/// what this owes the layer above is one usable answer.
+pub fn resolve_ipv4(host: &[u8], out: &mut [u8]) -> usize {
+    let mut cstr = [0u8; 256];
+    if host.is_empty() || host.len() >= cstr.len() {
+        return 0;
+    }
+    cstr[..host.len()].copy_from_slice(host);
+    let hints = AddrInfo {
+        ai_flags: 0,
+        ai_family: AF_INET,
+        ai_socktype: SOCK_STREAM,
+        ai_protocol: 0,
+        ai_addrlen: 0,
+        ai_addr: core::ptr::null_mut(),
+        ai_canonname: core::ptr::null_mut(),
+        ai_next: core::ptr::null_mut(),
+    };
+    let mut res: *mut AddrInfo = core::ptr::null_mut();
+    let rc = unsafe {
+        getaddrinfo(
+            cstr.as_ptr(),
+            core::ptr::null(),
+            &hints,
+            &mut res,
+        )
+    };
+    if rc != 0 || res.is_null() {
+        return 0;
+    }
+    let mut written = 0usize;
+    let mut node = res;
+    while !node.is_null() {
+        let entry = unsafe { &*node };
+        if entry.ai_family == AF_INET && !entry.ai_addr.is_null() {
+            written = sockaddr_to_str(entry.ai_addr, out);
+            break;
+        }
+        node = entry.ai_next;
+    }
+    unsafe { freeaddrinfo(res) };
+    written
+}

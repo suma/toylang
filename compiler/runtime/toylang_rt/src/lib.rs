@@ -249,6 +249,10 @@ pub(crate) const NET_TIMED_OUT: u64 = 13;
 pub(crate) const NET_TOO_MANY_OPEN_FILES: u64 = 14;
 pub(crate) const NET_INVALID_INPUT: u64 = 15;
 pub(crate) const NET_UNKNOWN: u64 = 16;
+/// N5: the name did not resolve. Distinct from `HOST_UNREACHABLE`,
+/// which is a host that exists and cannot be reached — this is a name
+/// with no address at all, and the two want different fixes.
+pub(crate) const NET_NAME_NOT_FOUND: u64 = 17;
 
 // RUNTIME-LIB P0-B: `toy_parse_f64`'s status vocabulary, mirrored by
 // the interpreter's `extern_parse` registry and mapped to
@@ -3381,6 +3385,19 @@ pub fn net_shutdown_write(fd: i32) -> u64 {
     thread_state().net_status
 }
 
+/// Resolve `host` to one IPv4 address, as a dotted quad written into
+/// `out`. Returns the byte count; 0 means the name has no IPv4
+/// address, and the status says `NET_NAME_NOT_FOUND`.
+///
+/// A numeric address resolves to itself, so a caller need not ask
+/// first whether the text is a name.
+pub fn net_resolve(host: &[u8], out: &mut [u8]) -> usize {
+    let n = sys::resolve_ipv4(host, out);
+    let st = thread_state();
+    st.net_status = if n == 0 { NET_NAME_NOT_FOUND } else { NET_OK };
+    n
+}
+
 /// The largest sockaddr the runtime builds on its stack. IPv4 needs
 /// 16; the constant is separate so adding AF_INET6 (28) widens the
 /// buffer without touching a signature (NETWORK_IO.md 論点 4).
@@ -3584,6 +3601,23 @@ pub unsafe extern "C" fn toy_net_recv_from(fd: i32, buf: *mut u8, len: u64) -> u
 #[unsafe(no_mangle)]
 pub extern "C" fn toy_net_last_peer_port() -> u64 {
     net_last_peer_port()
+}
+
+/// The resolved address of `host`, as a toylang `str`. Empty when the
+/// name has no IPv4 address; `toy_net_status` says so.
+///
+/// # Safety
+///
+/// `host` must be a toylang str handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_net_resolve(host: *const u8) -> *const u8 {
+    if host.is_null() {
+        thread_state().net_status = NET_INVALID_INPUT;
+        return toy_str_alloc(&[]);
+    }
+    let mut out = [0u8; ADDR_TEXT_MAX];
+    let n = net_resolve(str_bytes(host), &mut out);
+    toy_str_alloc(&out[..n])
 }
 
 /// The address of the most recent datagram's sender, as a toylang

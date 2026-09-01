@@ -10,6 +10,19 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-01
+- **NET N5 — 名前解決。これで NETWORK_IO.md の N0〜N5 が全部埋まった** —
+  `net::resolve(host)` と、名前を受け付ける `TcpStream::connect`
+  (**`connect_nonblocking` は数値のみ** — 「即座に返す」と約束している
+  関数が DNS を引くわけにいかない)。`NetError::NameNotFound` を追加
+  (存在するが届かない `HostUnreachable` とは直し方が違う)。
+  **`struct addrinfo` は `ai_addr` と `ai_canonname` の順序が
+  Linux と BSD で逆**なので struct 宣言ごと `sys` 側にある —
+  間違えると sockaddr のはずの場所に名前のポインタが来て落ちる
+  (間違った答えではなくクラッシュ)。テストが pin するのは
+  `localhost` が **127/8 に入ること** (特定の番号ではない —
+  machine の `/etc/hosts` を pin することになる) と、`.invalid`
+  (RFC 2606 が「絶対に解決しない」と決めている唯一の名前) が
+  `NameNotFound` になること。4 レーンで 2 件。
 - **NET N4 — UDP / アドレス / socket option** — `UdpSocket`
   (`bind` / `send_to` / `recv_from` / `last_peer_addr` / `last_peer_port`)、
   `local_addr` / `peer_addr` / `local_port` / `peer_port`、
@@ -1267,7 +1280,9 @@
   超えるのはここが最初で、cranelift の ISA フラグはモジュール単位なので
   関数の multi-versioning をどう作るかが論点 (SIMD.md 論点 2)。設計は
   [`SIMD.md`](SIMD.md)
-* ネットワーク IO (NET) ★★ — **並行性を待たずにサーバが書ける形**。
+* ~~ネットワーク IO (NET)~~ — **N0〜N5 すべて完了 (2026-09-01)**。
+  TCP client / server、poller、UDP、名前解決が 4 レーンで動く。
+  以下は着手時の記録。**並行性を待たずにサーバが書ける形**。
   nonblocking socket + epoll/kqueue は単一スレッドで完結するので、
   CONCURRENCY (`Send` 相当の判定が要る) の前に landing できる。設計は
   [`NETWORK_IO.md`](NETWORK_IO.md) (socket ラッパー + `#[cfg_attr(path)]

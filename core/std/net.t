@@ -64,6 +64,7 @@ extern fn __extern_net_send_to(fd: i32, buf: ptr, len: u64) -> u64 from "toylang
 extern fn __extern_net_recv_from(fd: i32, buf: ptr, len: u64) -> u64 from "toylang_rt" as "toy_net_recv_from"
 extern fn __extern_net_last_peer_addr() -> str from "toylang_rt" as "toy_net_last_peer_addr"
 extern fn __extern_net_last_peer_port() -> u64 from "toylang_rt" as "toy_net_last_peer_port"
+extern fn __extern_net_resolve(host: str) -> str from "toylang_rt" as "toy_net_resolve"
 
 # Which event-notification backend this build uses: `"epoll"` on
 # Linux, `"kqueue"` on macOS and the other BSDs.
@@ -76,6 +77,31 @@ extern fn __extern_net_last_peer_port() -> u64 from "toylang_rt" as "toy_net_las
 # hope for.
 pub fn backend_name() -> str {
     __extern_net_backend_name()
+}
+
+# Resolve a host name to one IPv4 address (N5).
+#
+# A numeric address resolves to itself, so nothing has to ask first
+# whether the text is a name.
+#
+# **Only the first address is returned.** A host with several is a
+# real thing, and choosing among them — or trying each in turn — is a
+# policy this does not decide for you; what it owes you is one usable
+# answer.
+#
+# **This blocks**, possibly for as long as a DNS query takes. That is
+# `getaddrinfo`, not a choice made here, and it is why
+# `TcpStream::connect_nonblocking` does *not* call it: a function that
+# promises to return at once cannot resolve a name on the way.
+pub fn resolve(host: str) -> Result<str, NetError> {
+    val text: str = __extern_net_resolve(host)
+    val status: u64 = __extern_net_status()
+    if status == 0u64 {
+        Result::Ok(text)
+    } else {
+        val err: NetError = net_error_from_status(status)
+        Result::Err(err)
+    }
 }
 
 # What a socket call can answer with instead of a result.
@@ -104,6 +130,10 @@ pub enum NetError {
     TimedOut,
     TooManyOpenFiles,
     InvalidInput,
+    # The name has no address (N5). Distinct from `HostUnreachable`,
+    # which is a host that exists and cannot be reached — this one has
+    # nothing to reach, and the two want different fixes.
+    NameNotFound,
     Unknown,
 }
 
@@ -125,6 +155,7 @@ impl Display for NetError {
             NetError::TimedOut => "timed out",
             NetError::TooManyOpenFiles => "too many open files",
             NetError::InvalidInput => "invalid input",
+            NetError::NameNotFound => "name not found",
             NetError::Unknown => "unknown error",
         }
     }
@@ -152,6 +183,7 @@ pub fn net_error_from_status(status: u64) -> NetError {
     elif status == 13u64 { NetError::TimedOut }
     elif status == 14u64 { NetError::TooManyOpenFiles }
     elif status == 15u64 { NetError::InvalidInput }
+    elif status == 17u64 { NetError::NameNotFound }
     else { NetError::Unknown }
 }
 
@@ -300,10 +332,9 @@ impl Drop for TcpStream {
 }
 
 impl TcpStream {
-    # Connect to `addr:port` and **wait for the handshake**, where
-    # `addr` is a numeric IPv4 address (`"127.0.0.1"`). Name
-    # resolution is N5; until then a hostname is
-    # `Err(NetError::InvalidInput)`.
+    # Connect to `addr:port` and **wait for the handshake**. `addr`
+    # may be a numeric IPv4 address (`"127.0.0.1"`) or a host name,
+    # which is resolved first.
     #
     # The returned stream is in blocking mode — `read` and `write`
     # wait rather than answering `WouldBlock`. Call
@@ -314,6 +345,16 @@ impl TcpStream {
     # "in progress" and needs something to tell it when the socket
     # became writable. `connect_nonblocking` below is that form.
     pub fn connect(addr: str, port: u64) -> Result<TcpStream, NetError> {
+        # A name is resolved here (N5). This call blocks on the
+        # handshake already, so blocking on a DNS query too changes
+        # nothing about what it promises — unlike
+        # `connect_nonblocking`, which promises to return at once and
+        # therefore still wants a numeric address.
+        val resolved = resolve(addr)
+        val target: str = match resolved {
+            Result::Ok(t) => t,
+            Result::Err(e) => { return Result::Err(e) }
+        }
         val fd: i32 = __extern_net_socket()
         if fd < 0i32 {
             val status: u64 = __extern_net_status()
@@ -329,7 +370,7 @@ impl TcpStream {
             val err: NetError = net_error_from_status(mode)
             return Result::Err(err)
         }
-        val status: u64 = __extern_net_connect(fd, addr, port)
+        val status: u64 = __extern_net_connect(fd, target, port)
         if status == 0u64 {
             val s = TcpStream { fd: fd }
             return Result::Ok(s)
@@ -351,6 +392,9 @@ impl TcpStream {
     # names the failure otherwise. `Err` here is reserved for the
     # failures that are known immediately — a malformed address, no
     # descriptors left.
+    #
+    # **`addr` must be numeric.** Resolving a name blocks, and this
+    # call promises not to; call `resolve` first if you have a name.
     #
     # NETWORK_IO.md described this as `connect` answering
     # `Err(NetError::InProgress)`, which cannot work: the error would

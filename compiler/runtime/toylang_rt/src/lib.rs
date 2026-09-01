@@ -120,12 +120,51 @@ unsafe extern "C" {
     fn fread(dest: *mut u8, size: usize, count: usize, f: *mut u8) -> usize;
     fn fwrite(src: *const u8, size: usize, count: usize, f: *mut u8) -> usize;
     fn ferror(f: *mut u8) -> i32;
-    fn strlen(s: *const u8) -> usize;
+    // libc spells these two with `char` / `void`, and rustc's
+    // `suspicious_runtime_symbol_definitions` checks a declaration of a
+    // runtime symbol against that spelling. Declaring them in `u8` —
+    // which is what the rest of this crate works in, a toylang string
+    // being bytes rather than a platform `char` whose signedness varies
+    // by target — made the lint fire on every build. Declared as libc
+    // has them and renamed, with the two wrappers below doing the cast
+    // once instead of at each of the nine call sites.
+    #[link_name = "strlen"]
+    fn c_strlen(s: *const core::ffi::c_char) -> usize;
     fn strtod(s: *const u8, end: *mut *const u8) -> f64;
-    fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8;
+    #[link_name = "memcpy"]
+    fn c_memcpy(
+        dest: *mut core::ffi::c_void,
+        src: *const core::ffi::c_void,
+        n: usize,
+    ) -> *mut core::ffi::c_void;
     fn pthread_key_create(key: *mut usize, destructor: Option<unsafe extern "C" fn(*mut u8)>) -> i32;
     fn pthread_getspecific(key: usize) -> *mut u8;
     fn pthread_setspecific(key: usize, value: *mut u8) -> i32;
+}
+
+/// `strlen` in this crate's byte world. See `c_strlen` above.
+///
+/// # Safety
+/// `s` must point at a NUL-terminated buffer, as libc requires.
+#[inline]
+unsafe fn strlen(s: *const u8) -> usize {
+    unsafe { c_strlen(s as *const core::ffi::c_char) }
+}
+
+/// `memcpy` in this crate's byte world. See `c_memcpy` above.
+///
+/// # Safety
+/// The two regions must be valid for `n` bytes and must not overlap,
+/// as libc requires.
+#[inline]
+unsafe fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    unsafe {
+        c_memcpy(
+            dest as *mut core::ffi::c_void,
+            src as *const core::ffi::c_void,
+            n,
+        ) as *mut u8
+    }
 }
 
 // Sockets (NETWORK_IO). Separate block only for grouping: these are

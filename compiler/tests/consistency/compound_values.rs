@@ -1464,3 +1464,92 @@ fn a_unit_payload_prints_as_unit() {
     );
     assert_stdout_consistent(src, "unit_payload_print");
 }
+
+// --- COMPOUND-BLOCK-RHS: unwrapping a compound out of a `match` -----
+//
+// `val s = match r { Result::Ok(s) => s, Result::Err(e) => ... }` is
+// how every `Result`-returning constructor is used, and it did not
+// lower: "val/var rhs produced no value".
+//
+// Two things defeated `detect_struct_result`. An arm body that is a
+// bare *pattern-bound* name is not in `self.bindings` at detection
+// time — arm bindings only exist once the arm is being lowered — so
+// the success arm looked like an unknown identifier. And an error arm
+// that leaves through `return` was not recognised as diverging the way
+// `panic(...)` already was, so it constrained the answer instead of
+// standing aside.
+//
+// Neither is recoverable from the arm alone, but both are recoverable:
+// the scrutinee's enum says what that variant's payload is at that
+// position, and a `return` is a `return`.
+
+/// The success arm is the bound name and the error arm leaves through
+/// `return` — the shape `TcpStream::connect` and every other
+/// `Result`-returning constructor is used with. No annotation.
+#[test]
+fn a_struct_can_be_unwrapped_out_of_a_result_by_match() {
+    let src = r#"
+        struct P { v: i64 }
+        enum E { Bad }
+
+        fn mk(n: i64) -> Result<P, E> {
+            if n < 0i64 {
+                Result::Err(E::Bad)
+            } else {
+                val p = P { v: n }
+                Result::Ok(p)
+            }
+        }
+
+        fn main() -> u64 {
+            val r = mk(7i64)
+            var p = match r {
+                Result::Ok(q) => q,
+                Result::Err(e) => { return 1u64 }
+            }
+            # A `var` so the binding has to be real storage rather than
+            # an alias of the payload.
+            p.v = p.v + 1i64
+            p.v as u64
+        }
+    "#;
+    assert_eq!(interpreter_value(src) & 0xff, 8);
+    assert_consistent(src, "compound_out_of_result");
+}
+
+/// The error arm produces a struct of its own rather than diverging,
+/// so both arms have to agree — and the bound name still has to be
+/// resolved through the scrutinee to know that they do.
+#[test]
+fn both_arms_of_a_match_may_produce_the_same_struct() {
+    let src = r#"
+        struct P { v: i64 }
+        enum E { Bad }
+
+        fn mk(n: i64) -> Result<P, E> {
+            if n < 0i64 {
+                Result::Err(E::Bad)
+            } else {
+                val p = P { v: n }
+                Result::Ok(p)
+            }
+        }
+
+        fn main() -> u64 {
+            val good = mk(7i64)
+            val a = match good {
+                Result::Ok(q) => q,
+                Result::Err(e) => P { v: 100i64 },
+            }
+            val bad = mk(-1i64)
+            val b = match bad {
+                Result::Ok(q) => q,
+                Result::Err(e) => P { v: 100i64 },
+            }
+            (a.v + b.v) as u64
+        }
+    "#;
+    // 7 from the payload, 100 from the fallback.
+    assert_eq!(interpreter_value(src) & 0xff, 107);
+    assert_consistent(src, "compound_both_arms");
+}

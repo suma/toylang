@@ -138,17 +138,91 @@ impl<'a> FunctionLower<'a> {
                 bodies.extend(elif_pairs.iter().map(|(_, b)| *b));
                 self.agree_on_struct(&bodies)
             }
-            Expr::Match(_, arms) => {
-                let bodies: Vec<ExprRef> = arms.iter().map(|a| a.body).collect();
-                self.agree_on_struct(&bodies)
+            Expr::Match(scrutinee, arms) => {
+                let mut found: Option<DefaultSymbol> = None;
+                for arm in &arms {
+                    let shape = match self.detect_struct_result(&arm.body) {
+                        Some(shape) => shape,
+                        // Not a shape detection can see on its own —
+                        // try the arm's own binding.
+                        None => self.struct_of_arm_binding(&scrutinee, &arm.pattern, &arm.body)?,
+                    };
+                    match shape {
+                        BranchShape::Diverges => {}
+                        BranchShape::Produces(name) => match found {
+                            Some(seen) if seen != name => return None,
+                            _ => found = Some(name),
+                        },
+                    }
+                }
+                found.map(BranchShape::Produces)
             }
             Expr::Block(stmts) => {
                 let last = stmts.last()?;
                 match self.program.statement.get(last)? {
                     Stmt::Expression(e) => self.detect_struct_result(&e),
+                    // A block that leaves through `return` never
+                    // reaches the merge, so it says nothing about which
+                    // struct the others produce — exactly what
+                    // `panic(...)` already meant here. Without this the
+                    // single most common shape in the language
+                    // (`match r { Ok(v) => v, Err(e) => { println(...)
+                    // return 1u64 } }`) failed detection on its error
+                    // arm.
+                    //
+                    // `break` / `continue` are deliberately not listed:
+                    // the *type checker* does not treat them as
+                    // divergent either, so such an arm is rejected
+                    // before lowering ever sees it ("match arms have
+                    // incompatible types"). Adding them here would be
+                    // dead code claiming a capability the language does
+                    // not have.
+                    Stmt::Return(_) => Some(BranchShape::Diverges),
                     _ => None,
                 }
             }
+            _ => None,
+        }
+    }
+
+    /// The struct a `match` arm's pattern binds `name` to, when the
+    /// arm body is that bare name.
+    ///
+    /// `Result::Ok(s) => s` is how every `Result`-returning
+    /// constructor is unwrapped, and `s` is not in `self.bindings` at
+    /// detection time — arm bindings only exist once the arm is being
+    /// lowered. The type is recoverable anyway: the scrutinee's enum
+    /// says what that variant's payload at that position is.
+    fn struct_of_arm_binding(
+        &self,
+        scrutinee: &ExprRef,
+        pattern: &frontend::ast::Pattern,
+        body: &ExprRef,
+    ) -> Option<BranchShape<DefaultSymbol>> {
+        let Expr::Identifier(want) = self.program.expression.get(body)? else {
+            return None;
+        };
+        let frontend::ast::Pattern::EnumVariant(_, variant_name, subs) = pattern else {
+            return None;
+        };
+        let position = subs
+            .iter()
+            .position(|p| matches!(p, frontend::ast::Pattern::Name(n) if *n == want))?;
+        // The scrutinee has to be a binding whose storage we already
+        // hold; that is the shape the compiled lanes accept anyway
+        // ("bind the call with `val` first").
+        let Expr::Identifier(scrutinee_name) = self.program.expression.get(scrutinee)? else {
+            return None;
+        };
+        let Some(Binding::Enum(storage)) = self.bindings.get(&scrutinee_name) else {
+            return None;
+        };
+        let def = self.module.enum_def(storage.enum_id);
+        let variant_idx = def.variants.iter().position(|v| v.name == *variant_name)?;
+        match *def.variants[variant_idx].payload_types.get(position)? {
+            Type::Struct(struct_id) => Some(BranchShape::Produces(
+                self.module.struct_def(struct_id).base_name,
+            )),
             _ => None,
         }
     }

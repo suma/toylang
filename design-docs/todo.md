@@ -10,6 +10,16 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-01
+- **COMPOUND-BLOCK-RHS — `match` から compound を取り出せる** —
+  `val s = match r { Result::Ok(s) => s, Result::Err(e) => { return .. } }`
+  が lower できるようになった。**`Result` を返すコンストラクタの
+  使い方そのもの**で、これが通らないので NET N1 は compiled レーンで
+  動かなかった。`detect_struct_result` を敗らせていたのは 2 つ:
+  arm が束縛した名前は検出時点で `bindings` に無い (arm 束縛は
+  lowering 中にしか存在しない) のと、`return` で抜ける arm が
+  `panic` と違って発散扱いされていなかったこと。前者は
+  **scrutinee の enum が payload の型を知っている**ので復元できる。
+  `break` / `continue` は型検査器も発散扱いしないので載せていない。
 - **UNIT-TYPE-ARG — `Result<(), E>` / `Option<()>` が 4 レーンで動く** —
   「成否だけを返す」API の自然な形が compiled レーンで書けなかった。
   拒んでいたのは 2 つの門番 (`lower_param_or_return_type` の Unit 型引数、
@@ -758,6 +768,16 @@
   `detect_struct_result` が method の戻り型を安く引けないので検出されず、
   従来どおり「compound-returning method を式の位置で使えない、`val` で
   束縛せよ」というエラーになる。誘導が具体的なので実害は小さい。
+  (2026-09-01 に **match の arm 束縛** と **`return` する arm** は解消。
+  残っているのは method call の枝だけ。)
+
+- **COMPOUND-GENERIC-INSTANCE: `match` から generic struct を取り出すと
+  注釈が要る** ★ — `val out: Span<u8> = match w { Option::Some(s) => s, .. }`。
+  `BranchShape::Produces` が base name (`Span`) しか運ばないので、
+  型引数は注釈から取るしかない。`struct_of_arm_binding` は payload の
+  **具体的な `StructId` を既に持っている**ので、`BranchShape` を
+  そこまで運べるようにすれば注釈は要らなくなる。既存の
+  `val v: Vec<u8> = Vec::new()` と同じ規則なので実害は小さい。
 - **SUBDIR-ASSOC-FN: サブディレクトリのモジュールから、上位モジュールの
   struct の associated function が呼べない** ★★ — 2026-08-31 に
   CONV-SPAN で踏んだ。`core/std/collections/vec.t` から

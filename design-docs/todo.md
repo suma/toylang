@@ -845,6 +845,45 @@
   `could not infer arg type at AOT` になる。iterator アダプタの
   `enumerate` / `zip` の `collect` を提供していないのと同じ制限で、
   そちらは stdlib 側で避けている
+- **ENUM-VARIANT-ARG: `f(Enum::Variant)` が compiled レーンで落ちる** ★★★ —
+  **`take(Option::None)` が動かない。** unit variant を**引数位置**に
+  書くと `compiler MVP cannot lower expression yet:
+  QualifiedIdentifier(...)`。`val s = Shape::Circle(3i64)` (val 束縛) も
+  `W { c: Color::Red }` (struct フィールド) も通るので、効かないのは
+  引数位置だけ。**`Option` を返す / 取る API すべてが踏む**ので、
+  木や Box とは無関係に広く効く。2026-09-01 に Tree の構築を書いていて
+  発見。診断が `SymbolU32` を出すのも同じ行 (下の DIAG-SYMBOL-NAME-LOWER)
+- **ENUM-ARG-NEST: enum の payload / 引数に呼び出しを書けない** ★★ —
+  上の兄弟。`Tree::Node(Box::new(x), 1i64, Box::new(y))` は
+  `enum payload: compiler MVP cannot lower expression yet`、
+  `node(leaf(), 1i64, leaf())` は
+  `cannot use an enum-returning call in expression position`。
+  この 3 つ (ENUM-VARIANT-ARG 込み) を外すと、Box による二分木の構築が
+  **13 束縛から 1 行**になる。実測は 2026-09-01 の Tree 調査
+- **DIAG-SYMBOL-NAME-LOWER: `compiler_lower` の診断が `SymbolU32` を出す** ★ —
+  frontend 側は 2026-09-01 に決着 (`602eafb`) したが、監査したのは
+  frontend だけだった。`compiler_lower` に同種が 8 箇所以上ある
+  (`compound_storage.rs:852` / `compound_literal.rs:332,463` /
+  `call.rs:269,281` / `assign.rs:39` / `templates.rs:315` ...)。
+  frontend と同じ手口 (interner 経由の綴りに寄せ、source scan で止める)
+  がそのまま使える。**`frontend/tests/diagnostic_spelling_tests.rs` の
+  スキャナは `frontend/src/type_checker` しか見ていない**ので、
+  対象を広げるところから
+- **REF-REBORROW: `&mut` 引数を再帰呼び出しにそのまま渡せない** ★ —
+  `fn insert(arena: &mut Vec<Node>, ..)` の中で `insert(arena, ..)` は
+  `expected &mut Vec<Node>, but got Vec<Node>`。`insert(&mut arena, ..)`
+  と書き直せば 3 レーンで通る。木やグラフを書き換える関数は必ずこの形に
+  なるので毎回踏む。値渡しに逃げると今度は `[E0014] 分岐の中では move
+  できない` (MOVE-CONDITIONAL) に当たるので、回避は再借用一択
+- **UNIT-STRUCT-FIELD: struct のフィールドに `()` を書けない** ★ —
+  `struct S { u: () }` が `[E0004] Unsupported operation 'field type in
+  struct 'S'' for type ()`。`()` は戻り型 / `val` 注釈 / 引数 / 型引数
+  (`Result<(), E>` / `Vec<()>`) / リテラル (`val x = ()`) では**すべて
+  書ける**ので、フィールドだけが穴。門番は `struct_literal.rs` の
+  フィールド型検査 1 箇所で、layout 側は `flatten_compound_leaf_types`
+  が `Type::Unit` に leaf 0 個を与える扱いを既に持っている
+  (UNIT-TYPE-ARG がそれで通った)。実用途 (phantom フィールド、
+  `T = ()` の実体化) を踏んでから
 - **COMPOUND-BLOCK-RHS の残: method call の枝** ★ —
   `val p = if c { x.twin() } else { .. }` は
   `detect_struct_result` が method の戻り型を安く引けないので検出されず、

@@ -413,6 +413,7 @@ impl<'a> FunctionLower<'a> {
                     .unwrap_or_default();
                 PayloadSlot::Tuple { tuple_id, elements }
             }
+            Type::Unit => PayloadSlot::Unit,
             _ => {
                 let local = self.module.function_mut(self.func_id).add_local(ty);
                 PayloadSlot::Scalar { local, ty }
@@ -473,6 +474,12 @@ impl<'a> FunctionLower<'a> {
                         format!("enum payload arg #{i} produced no value")
                     })?;
                     self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
+                }
+                // A `()` payload stores nothing, but the argument is
+                // still an expression and may do something on the way
+                // to producing no value.
+                PayloadSlot::Unit => {
+                    self.lower_expr(arg_ref)?;
                 }
                 PayloadSlot::Enum(inner_storage) => {
                     self.lower_into_enum_storage(arg_ref, &inner_storage)?;
@@ -539,6 +546,8 @@ impl<'a> FunctionLower<'a> {
                             out.push(v);
                         }
                     }
+                    // No local, so no value to load (UNIT-TYPE-ARG).
+                    PayloadSlot::Unit => {}
                 }
             }
         }
@@ -570,6 +579,8 @@ impl<'a> FunctionLower<'a> {
                             out.push(local);
                         }
                     }
+                    // No local, so no destination (UNIT-TYPE-ARG).
+                    PayloadSlot::Unit => {}
                 }
             }
         }

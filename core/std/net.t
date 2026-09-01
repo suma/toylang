@@ -40,16 +40,6 @@
 #         Option::None => { }
 #     }
 
-# **`Result<bool, NetError>` where `Result<(), NetError>` belongs.**
-# The operations that answer only "did it work" — `take_error`,
-# `shutdown_write`, `set_blocking`, `close` — should carry no payload.
-# They carry a `bool` that is always `true` because the compiled lanes
-# cannot lower a `()` type argument: `Result<(), E>` is rejected at
-# lowering, in a free function as much as in a method (todo:
-# UNIT-TYPE-ARG). Match on `Ok` / `Err` and ignore the payload; when
-# the gap closes this becomes `Result<(), NetError>` and every such
-# match keeps working.
-
 extern fn __extern_net_backend_name() -> str from "toylang_rt" as "toy_net_backend_name"
 extern fn __extern_net_socket() -> i32 from "toylang_rt" as "toy_net_socket"
 extern fn __extern_net_connect(fd: i32, addr: str, port: u64) -> u64 from "toylang_rt" as "toy_net_connect"
@@ -288,10 +278,10 @@ impl TcpStream {
     # Read and clear the socket's pending error — how a non-blocking
     # `connect` reports its outcome once the socket becomes writable.
     # `Ok(())` means the connection is up.
-    pub fn take_error(&self) -> Result<bool, NetError> {
+    pub fn take_error(&self) -> Result<(), NetError> {
         val status: u64 = __extern_net_take_error(self.fd)
         if status == 0u64 {
-            Result::Ok(true)
+            Result::Ok(())
         } else {
             val err: NetError = net_error_from_status(status)
             Result::Err(err)
@@ -301,10 +291,10 @@ impl TcpStream {
     # Half-close the write side. The peer's next read answers 0, which
     # is how a request ends without giving up the descriptor the reply
     # arrives on.
-    pub fn shutdown_write(&self) -> Result<bool, NetError> {
+    pub fn shutdown_write(&self) -> Result<(), NetError> {
         val status: u64 = __extern_net_shutdown_write(self.fd)
         if status == 0u64 {
-            Result::Ok(true)
+            Result::Ok(())
         } else {
             val err: NetError = net_error_from_status(status)
             Result::Err(err)
@@ -314,10 +304,10 @@ impl TcpStream {
     # Switch between blocking and non-blocking. New sockets are
     # non-blocking; `set_blocking(true)` makes `read` / `write` wait
     # instead of answering `WouldBlock`.
-    pub fn set_blocking(&self, on: bool) -> Result<bool, NetError> {
+    pub fn set_blocking(&self, on: bool) -> Result<(), NetError> {
         val status: u64 = __extern_net_set_blocking(self.fd, on)
         if status == 0u64 {
-            Result::Ok(true)
+            Result::Ok(())
         } else {
             val err: NetError = net_error_from_status(status)
             Result::Err(err)
@@ -331,14 +321,14 @@ impl TcpStream {
 
     # Close now rather than at scope exit. Idempotent: the field is
     # parked at `-1`, so the `Drop` that follows does nothing.
-    pub fn close(&mut self) -> Result<bool, NetError> {
+    pub fn close(&mut self) -> Result<(), NetError> {
         if self.fd < 0i32 {
-            return Result::Ok(true)
+            return Result::Ok(())
         }
         val status: u64 = __extern_net_close(self.fd)
         self.fd = -1i32
         if status == 0u64 {
-            Result::Ok(true)
+            Result::Ok(())
         } else {
             val err: NetError = net_error_from_status(status)
             Result::Err(err)

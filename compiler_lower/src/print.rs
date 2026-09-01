@@ -939,6 +939,18 @@ impl<'a> FunctionLower<'a> {
                     let elements = elements.clone();
                     self.emit_print_tuple(&elements, false)?;
                 }
+                // UNIT-TYPE-ARG: the payload is `()` and prints as
+                // `()`, so `Ok(())` reads the same on every lane.
+                PayloadSlot::Unit => {
+                    self.emit(
+                        InstKind::PrintRaw {
+                            text: "()".to_string(),
+                            newline: false,
+                            stderr: self.print_stderr,
+                        },
+                        None,
+                    );
+                }
             }
             let _ = last_idx;
         }

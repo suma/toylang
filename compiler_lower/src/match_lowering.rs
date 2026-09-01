@@ -424,6 +424,11 @@ impl<'a> FunctionLower<'a> {
     ) -> Result<(), String> {
         match sp {
             Pattern::Name(sym) => match slot {
+                // UNIT-TYPE-ARG: `Result::Ok(v)` where the payload is
+                // `()`. There is no value to bind `v` to, and the arm
+                // that reads it would be a type error, so binding
+                // nothing is the whole job.
+                PayloadSlot::Unit => {}
                 PayloadSlot::Scalar { local, ty } => {
                     let v = self
                         .emit(InstKind::LoadLocal(local), Some(ty))
@@ -579,7 +584,8 @@ impl<'a> FunctionLower<'a> {
                 }
                 PayloadSlot::Enum(_)
                 | PayloadSlot::Struct { .. }
-                | PayloadSlot::Tuple { .. } => {
+                | PayloadSlot::Tuple { .. }
+                | PayloadSlot::Unit => {
                     return Err(
                         "literal sub-pattern is only valid against a scalar payload".to_string(),
                     );
@@ -597,7 +603,8 @@ impl<'a> FunctionLower<'a> {
                 }
                 PayloadSlot::Scalar { .. }
                 | PayloadSlot::Struct { .. }
-                | PayloadSlot::Tuple { .. } => {
+                | PayloadSlot::Tuple { .. }
+                | PayloadSlot::Unit => {
                     return Err(
                         "nested enum-variant sub-pattern requires an enum-typed payload"
                             .to_string(),
@@ -613,7 +620,8 @@ impl<'a> FunctionLower<'a> {
                 }
                 PayloadSlot::Enum(_)
                 | PayloadSlot::Struct { .. }
-                | PayloadSlot::Tuple { .. } => {
+                | PayloadSlot::Tuple { .. }
+                | PayloadSlot::Unit => {
                     return Err(
                         "range sub-pattern is only valid against a scalar payload".to_string(),
                     );

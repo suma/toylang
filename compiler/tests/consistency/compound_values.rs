@@ -1373,3 +1373,94 @@ fn a_composite_val_rhs_binds_an_associated_call_and_still_drops() {
     // is what this pins.
     assert_consistent(src, "composite_val_rhs_associated_call");
 }
+
+// --- UNIT-TYPE-ARG: `()` as a generic type argument -----------------
+//
+// `Result<(), E>` — the signature of every operation that answers only
+// "did it work" — could not be lowered on any compiled lane. Two gates
+// refused it: `lower_param_or_return_type` rejected a `Type::Unit`
+// type argument, and `is_supported_enum_payload` rejected a `()`
+// payload. The layout side was already fine —
+// `flatten_compound_leaf_types` gives `Type::Unit` zero leaves, which
+// is exactly what a unit variant already contributes — so what was
+// missing was permission, plus a `PayloadSlot::Unit` that holds no
+// local so the storage's flat value list stays aligned with the
+// function boundary's.
+//
+// `core/std/net.t` is where this was hit: `set_blocking` / `close` /
+// `shutdown_write` / `take_error` all wanted `Result<(), NetError>`.
+
+/// Both arms of a `Result<(), E>`, an `Option<()>`, and a `()`-payload
+/// result threaded through another function.
+#[test]
+fn unit_can_be_a_generic_type_argument() {
+    let src = r#"
+        enum E { Bad, Worse }
+
+        fn check(n: i64) -> Result<(), E> {
+            if n < 0i64 { Result::Err(E::Bad) }
+            elif n == 0i64 { Result::Err(E::Worse) }
+            else { Result::Ok(()) }
+        }
+
+        fn maybe(n: i64) -> Option<()> {
+            if n > 0i64 { Option::Some(()) } else { Option::None }
+        }
+
+        # The `()` result crossing a second function boundary, which is
+        # where a payload slot that wrongly held a local would put every
+        # later value one position out.
+        fn forward(n: i64) -> Result<u64, E> {
+            val c = check(n)
+            match c {
+                Result::Ok(_) => Result::Ok(42u64),
+                Result::Err(e) => Result::Err(e),
+            }
+        }
+
+        fn main() -> u64 {
+            val a = check(1i64)
+            val ra = match a { Result::Ok(_) => 1u64, Result::Err(e) => 0u64 }
+            val b = check(-1i64)
+            val rb = match b {
+                Result::Ok(_) => 0u64,
+                Result::Err(e) => match e { E::Bad => 2u64, E::Worse => 9u64 },
+            }
+            val c = maybe(5i64)
+            val rc = match c { Option::Some(_) => 4u64, Option::None => 0u64 }
+            val d = maybe(-5i64)
+            val rd = match d { Option::Some(_) => 0u64, Option::None => 8u64 }
+            val e = forward(3i64)
+            val re = match e { Result::Ok(v) => v, Result::Err(x) => 0u64 }
+            val f = forward(0i64)
+            val rf = match f { Result::Ok(v) => 0u64, Result::Err(x) => 16u64 }
+            ra + rb + rc + rd + re + rf
+        }
+    "#;
+    // 1 + 2 + 4 + 8 + 42 + 16.
+    assert_eq!(interpreter_value(src) & 0xff, 73);
+    assert_consistent(src, "unit_type_arg");
+}
+
+/// A `()` payload prints as `()`, so `Ok(())` is not mistaken for a
+/// payload-less `Ok` — and every lane spells it the same way.
+#[test]
+fn a_unit_payload_prints_as_unit() {
+    let src = r#"
+        enum E { Bad }
+        fn main() -> u64 {
+            val a: Result<(), E> = Result::Ok(())
+            println(a)
+            val b: Option<()> = Option::Some(())
+            println(b)
+            val c: Option<()> = Option::None
+            println(c)
+            0u64
+        }
+    "#;
+    assert_eq!(
+        interpreter_stdout(src, "unit_payload_print", true),
+        "Result<(), E>::Ok(())\nOption<()>::Some(())\nOption<()>::None\n"
+    );
+    assert_stdout_consistent(src, "unit_payload_print");
+}

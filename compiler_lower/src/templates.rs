@@ -370,6 +370,13 @@ pub(super) fn is_supported_enum_payload(t: Type) -> bool {
             | Type::Enum(_)
             | Type::Struct(_)
             | Type::Tuple(_)
+            // UNIT-TYPE-ARG: `Result<(), E>`'s `Ok` payload. A `()`
+            // occupies nothing — `flatten_compound_leaf_types` gives
+            // it zero leaves — so it needs no representation, only
+            // permission. Refusing it here is what made
+            // `Result<(), E>` unwritable in a compiled lane, in a
+            // free function as much as in a method.
+            | Type::Unit
     )
 }
 
@@ -1007,10 +1014,10 @@ pub(super) fn lower_param_or_return_type(
                 // a tuple type argument — `Option<(K, V)>` from
                 // `DictIter::next` — lowers instead of being rejected
                 // by `lower_scalar`.
+                // UNIT-TYPE-ARG: a `()` argument is allowed here —
+                // `Result<(), E>` — because an enum payload of no
+                // width is exactly what a unit variant already has.
                 let l = lower_param_or_return_type(a, struct_defs, enum_defs, module, interner)?;
-                if matches!(l, Type::Unit) {
-                    return None;
-                }
                 lowered_args.push(l);
             }
             instantiate_enum(module, enum_defs, struct_defs, *name, lowered_args, interner)
@@ -1024,10 +1031,10 @@ pub(super) fn lower_param_or_return_type(
             for a in args {
                 // STDLIB-ITER: recurse (see the `TypeDecl::Enum` arm
                 // above) so tuple type arguments lower.
+                // UNIT-TYPE-ARG: a `()` argument is allowed here —
+                // `Result<(), E>` — because an enum payload of no
+                // width is exactly what a unit variant already has.
                 let l = lower_param_or_return_type(a, struct_defs, enum_defs, module, interner)?;
-                if matches!(l, Type::Unit) {
-                    return None;
-                }
                 lowered_args.push(l);
             }
             instantiate_enum(module, enum_defs, struct_defs, *name, lowered_args, interner)

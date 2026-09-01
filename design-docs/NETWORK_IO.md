@@ -675,20 +675,14 @@ EISDIR 21 は macOS と Linux で一致する」ことに依存している。
 `connect_nonblocking` を別に置いた。後者は「繋がった」と「進行中」の
 どちらでも `Ok(stream)` を返し、状態は stream に聞く。
 
-**(2) `Result<(), NetError>` が書けない。** 成否だけを返す
-`take_error` / `shutdown_write` / `set_blocking` / `close` は
-`Result<bool, NetError>` になっている (payload は常に `true`)。
-**compiled レーンが `()` 型引数を lower できない** — 自由関数でも
-methods でも同じ (todo: UNIT-TYPE-ARG)。穴が塞がれば
-`Result<(), NetError>` に戻せて、`Ok` / `Err` を見る match は
-そのまま動く。
+**(2) ~~`Result<(), NetError>` が書けない~~** — **2026-09-01 に解消**
+(UNIT-TYPE-ARG)。一時的に `Result<bool, NetError>` にしていたが、
+本来の `Result<(), NetError>` に戻してある。
 
-**compiled レーンで動かないのは socket と無関係の 2 つの穴。**
+**compiled レーンで残る穴は 1 つ。**
 `var s = match conn { Result::Ok(s) => s, ... }` — `Result` を返す
-コンストラクタが必ず取る形 — が COMPOUND-BLOCK-RHS で lower できず、
-`Result<(), E>` が上記。どちらも net が作った制約ではなく、
-**net を書いて初めて実プログラムで踏んだ**もの。N2 に進む前に
-どちらかを塞ぐかは判断が要る。
+コンストラクタが必ず取る形 — が COMPOUND-BLOCK-RHS で lower できない。
+net が作った制約ではなく、**net を書いて初めて実プログラムで踏んだ**もの。
 
 ### テストの決定性
 

@@ -678,6 +678,17 @@ impl<'a> FunctionLower<'a> {
                     let elements = elements.clone();
                     self.emit_tuple_format(&elements)?
                 }
+                // UNIT-TYPE-ARG: the payload *is* `()`, and that is
+                // what it renders as — `Ok(())`, matching what the
+                // tree-walker prints and what a unit value spells
+                // anywhere else. Rendering it as nothing would make
+                // `Ok(())` and a payload-less `Ok` indistinguishable.
+                PayloadSlot::Unit => self
+                    .emit(
+                        InstKind::ConstStrBytes { bytes: b"()".to_vec() },
+                        Some(Type::Str),
+                    )
+                    .expect("ConstStrBytes returns a value"),
             };
             acc = concat(self, acc, val);
         }

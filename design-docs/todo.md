@@ -10,6 +10,19 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-01
+- **UNIT-TYPE-ARG — `Result<(), E>` / `Option<()>` が 4 レーンで動く** —
+  「成否だけを返す」API の自然な形が compiled レーンで書けなかった。
+  拒んでいたのは 2 つの門番 (`lower_param_or_return_type` の Unit 型引数、
+  `is_supported_enum_payload`) だけで、**layout 側は元から足りていた** —
+  `flatten_compound_leaf_types` が `Type::Unit` に leaf を 0 個与えるのは
+  unit variant と同じ扱い。local を持たない `PayloadSlot::Unit` を足して
+  flat な値の並びが関数境界とずれないようにした。`Ok(())` は `Ok(())` と
+  印字する (payload 無しの `Ok` と区別が付くように)。`core/std/net.t` は
+  `Result<bool, NetError>` の回避をやめて本来の形に戻した。
+  副産物: **注釈の型引数が要素ごとに反映されるようになった** —
+  `Result::Ok(v)` は `T` しか埋めないので `[T, Unknown]` という
+  混在ベクタになり、all-or-nothing の規則が触らずに `Unknown` を
+  残していた (tree-walker だけが `Result<u64, Unknown>` と印字していた)。
 - **NET N1 — TCP client (tree-walker のみ)** — `TcpStream` /
   `NetError` / `connect` / `read` / `write` / `close` /
   `shutdown_write` / `take_error` / `set_blocking`。runtime は
@@ -879,16 +892,6 @@
   `impl <Trait> for u8` は parse も型検査も lowering も通ったうえで
   **到達不能**になり、診断は幅にも impl にも触れなかった。1 箇所は
   共通関数に寄せたが、残り 3 箇所は健在。**着手条件は満たされている**。
-
-- **UNIT-TYPE-ARG: `Result<(), E>` / `Option<()>` が lower できない** ★★ —
-  型引数が `()` の generic enum は compiled レーンが拒否する
-  (`lower_param_or_return_type` の `if matches!(l, Type::Unit) { return None }`)。
-  **自由関数でも method でも同じ**なので method 固有ではない。
-  2026-09-01 に NET N1 で踏んだ — 「成否だけを返す」API の自然な形が
-  これで、`core/std/net.t` は `Result<bool, NetError>` (payload は
-  常に `true`) で回避している。enum の payload は unit variant が
-  既に 0 バイトなので、layout 側は足りている可能性が高い
-  (guard を外すだけでは通らなかった — `instantiate_enum` 側も要調査)。
 
 - **NARROW-UNSIGNED-SUB: `u8` / `u16` / `u32` の減算は
   アンダーフローで trap せず wrap する** ★ — RUNTIME-TRAP-NARROW の

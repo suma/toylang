@@ -143,6 +143,14 @@ pub(super) enum PayloadSlot {
         local: LocalId,
         ty: Type,
     },
+    /// A payload of type `()` — `Result<(), E>`'s `Ok` (UNIT-TYPE-ARG).
+    ///
+    /// It holds **no local**, deliberately. `flatten_compound_leaf_types`
+    /// gives `Type::Unit` zero leaves, so a local here would put the
+    /// storage's flat value list one entry ahead of the function
+    /// boundary's and every later payload would be read from the wrong
+    /// slot. Nothing to store, nothing to load, nothing to copy.
+    Unit,
     Enum(Box<EnumStorage>),
     /// Struct-typed payload. Stores the same `FieldBinding` tree
     /// that `Binding::Struct` uses, so all the existing struct
@@ -331,6 +339,10 @@ fn flatten_enum_storage_locals_into(storage: &EnumStorage, out: &mut Vec<(LocalI
                 PayloadSlot::Tuple { elements, .. } => {
                     out.extend(flatten_tuple_element_locals(elements));
                 }
+                // A `()` payload has no local (UNIT-TYPE-ARG); it must
+                // not appear here either, or the flat list runs ahead
+                // of the boundary's leaf order.
+                PayloadSlot::Unit => {}
             }
         }
     }

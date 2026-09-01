@@ -33,10 +33,26 @@ fn apply_annotation_type_args(value: Value, annotation: Option<&TypeDecl>) -> Va
                 // which prevents CONCRETE-IMPL Phase 2 dispatch from
                 // matching `[u8]` against `[Unknown]`. The annotation
                 // is the source of truth for `T` in that case.
-                let needs_patch = type_args.is_empty()
-                    || type_args.iter().all(|t| matches!(t, TypeDecl::Unknown));
-                if needs_patch {
+                //
+                // The merge is element-wise rather than all-or-nothing.
+                // `derive_enum_type_args` infers only from the argument
+                // values, so `Result::Ok(v)` binds `T` and leaves `E`
+                // `Unknown` — a *mixed* vector that an all-or-nothing
+                // rule refuses to touch. The compiled lanes print the
+                // declared `E` there, so the lanes disagreed on the
+                // rendering of any `Result` whose error type only the
+                // annotation knows (UNIT-TYPE-ARG surfaced it, but
+                // `Result<u64, E>` has the same shape). Concrete args
+                // already inferred from the values win; the annotation
+                // fills the holes.
+                if type_args.is_empty() {
                     *type_args = args;
+                } else {
+                    for (slot, from_anno) in type_args.iter_mut().zip(args.into_iter()) {
+                        if matches!(slot, TypeDecl::Unknown) {
+                            *slot = from_anno;
+                        }
+                    }
                 }
             }
             _ => {}

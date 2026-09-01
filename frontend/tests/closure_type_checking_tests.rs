@@ -17,6 +17,16 @@ use frontend::ast::Expr;
 use frontend::type_checker::TypeCheckerVisitor;
 use frontend::type_decl::TypeDecl;
 
+/// What the captured-assign error says, and nothing else does.
+///
+/// These assertions used to look for the *kind* name `CapturedAssign`,
+/// which only the derived `Debug` spells — so the helper below had to
+/// render errors with `{:?}` and a failure printed the whole error
+/// struct, interned symbol ids and all (DIAG-SYMBOL-NAME). The message
+/// separates this error from the immutable-binding one just as well,
+/// and pinning it means the tests pin what a user actually reads.
+const CAPTURED_ASSIGN: &str = "from inside a closure";
+
 /// Parse a complete program and run the type checker on every
 /// user-authored function. Returns Ok(()) on type-check success or a
 /// concatenated error string on first failure.
@@ -29,7 +39,11 @@ fn parse_and_type_check(source: &str) -> Result<(), String> {
     let mut errors = Vec::new();
     for f in functions.iter() {
         if let Err(e) = tc.type_check(f.clone()) {
-            errors.push(format!("{:?}", e));
+            // DIAG-SYMBOL-NAME: render the way a user would see it.
+            // `{:?}` here is the derived Debug of the whole error
+            // struct, which spells a type as
+            // `Struct(SymbolU32 { value: 60 }, [])`.
+            errors.push(e.message_with(Some(tc.core.string_interner)));
         }
     }
     if errors.is_empty() {
@@ -288,8 +302,8 @@ fn assigning_to_a_capture_of_an_escaping_closure_is_rejected() {
     )
     .expect_err("expected a write in an escaping closure to be rejected");
     assert!(
-        err.contains("CapturedAssign") && err.contains("count"),
-        "expected a CapturedAssign error naming `count`, got: {err}"
+        err.contains(CAPTURED_ASSIGN) && err.contains("count"),
+        "expected the captured-assign error naming `count`, got: {err}"
     );
 }
 
@@ -305,8 +319,8 @@ fn assigning_to_a_capture_of_a_returned_closure_is_rejected() {
     )
     .expect_err("expected a write in a returned closure to be rejected");
     assert!(
-        err.contains("CapturedAssign"),
-        "expected CapturedAssign for the returned closure, got: {err}"
+        err.contains(CAPTURED_ASSIGN),
+        "expected the captured-assign error for the returned closure, got: {err}"
     );
 }
 
@@ -323,7 +337,7 @@ fn assigning_to_a_shared_capture_of_a_val_reports_the_immutability() {
     )
     .expect_err("a `val` is not assignable however it is captured");
     assert!(
-        !err.contains("CapturedAssign") && err.contains("immutable"),
+        !err.contains(CAPTURED_ASSIGN) && err.contains("immutable"),
         "expected the immutable-binding error, got: {err}"
     );
 }
@@ -341,8 +355,8 @@ fn assigning_to_a_copied_capture_of_a_val_reports_the_capture() {
     )
     .expect_err("expected a write in a returned closure to be rejected");
     assert!(
-        err.contains("CapturedAssign"),
-        "expected CapturedAssign rather than the immutable-binding error, got: {err}"
+        err.contains(CAPTURED_ASSIGN),
+        "expected the captured-assign error rather than the immutable-binding one, got: {err}"
     );
 }
 
@@ -357,7 +371,7 @@ fn assigning_to_a_closure_parameter_is_not_a_capture() {
     )
     .expect_err("a parameter is still an immutable binding");
     assert!(
-        !err.contains("CapturedAssign"),
+        !err.contains(CAPTURED_ASSIGN),
         "a parameter is local to the closure, not captured: {err}"
     );
 }
@@ -419,8 +433,8 @@ fn nested_closures_each_get_their_own_capture_floor() {
     )
     .expect_err("a closure nested in a closure keeps its copies");
     assert!(
-        err.contains("CapturedAssign"),
-        "expected CapturedAssign from the inner closure, got: {err}"
+        err.contains(CAPTURED_ASSIGN),
+        "expected the captured-assign error from the inner closure, got: {err}"
     );
 }
 
@@ -459,8 +473,8 @@ fn assigning_to_a_field_of_a_copied_captured_struct_is_rejected() {
     )
     .expect_err("expected a write through a copied capture to be rejected");
     assert!(
-        err.contains("CapturedAssign") && err.contains("p.x"),
-        "expected CapturedAssign naming the whole path, got: {err}"
+        err.contains(CAPTURED_ASSIGN) && err.contains("p.x"),
+        "expected the captured-assign error naming the whole path, got: {err}"
     );
 }
 
@@ -480,7 +494,9 @@ fn a_nested_path_names_the_captured_root() {
     )
     .expect_err("expected a write through a copied capture to be rejected");
     assert!(
-        err.contains("o.inner.v") && err.contains("root: \"o\""),
+        // The target is the whole path; the captured root is just `o`,
+        // which the message names as the binding that can be outlived.
+        err.contains("assign to `o.inner.v`") && err.contains("outlive `o`"),
         "expected the path as target and `o` as root, got: {err}"
     );
 }
@@ -500,8 +516,8 @@ fn assigning_into_a_copied_captured_array_is_rejected() {
     )
     .expect_err("expected a write into a copied captured array to be rejected");
     assert!(
-        err.contains("CapturedAssign") && err.contains("a[..]"),
-        "expected CapturedAssign for the indexed write, got: {err}"
+        err.contains(CAPTURED_ASSIGN) && err.contains("a[..]"),
+        "expected the captured-assign error for the indexed write, got: {err}"
     );
 }
 

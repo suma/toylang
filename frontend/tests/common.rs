@@ -69,7 +69,7 @@ pub fn type_check_with_declarations(source: &str) -> Result<(), String> {
                     .unwrap_or(false);
                 if should_visit
                     && let Err(e) = type_checker.visit_stmt(&stmt_ref) {
-                        return Err(format!("{:?}", e));
+                        return Err(spell(&type_checker, &e));
                     }
             }
 
@@ -77,6 +77,17 @@ pub fn type_check_with_declarations(source: &str) -> Result<(), String> {
         }
         Err(e) => Err(format!("Parse error: {:?}", e)),
     }
+}
+
+/// Render an error the way a user sees it.
+///
+/// DIAG-SYMBOL-NAME: the derived `Debug` these helpers used to print
+/// dumps the error struct verbatim, so a type came out as
+/// `Struct(SymbolU32 { value: 60 }, [])` and a test failure said
+/// nothing about which type it meant. `message_with` is the same
+/// rendering the driver uses.
+fn spell(type_checker: &TypeCheckerVisitor<'_>, error: &frontend::type_checker::TypeCheckError) -> String {
+    error.message_with(Some(type_checker.core.string_interner))
 }
 
 /// Type-check every function, joining the failures so a test sees all of
@@ -88,7 +99,7 @@ fn collect(
     let mut errors = Vec::new();
     for func in functions.iter() {
         if let Err(e) = type_checker.type_check(func.clone()) {
-            errors.push(format!("{:?}", e));
+            errors.push(spell(type_checker, &e));
         }
     }
     if errors.is_empty() {

@@ -1,7 +1,7 @@
 use frontend::parser::error::ParserError;
 use frontend::diagnostic::Diagnostic;
 use frontend::source_map::{FileId, SourceMap};
-use frontend::type_checker::{SourceLocation, TypeCheckError};
+use frontend::type_checker::SourceLocation;
 
 /// Enum for different types of errors that can occur
 #[derive(Debug)]
@@ -131,30 +131,6 @@ impl<'a> ErrorFormatter<'a> {
             ));
         }
         out
-    }
-
-    pub fn format_type_check_error(&self, error: &TypeCheckError) -> String {
-        // LLM-LOOP P2: an error raised inside an imported module carries
-        // a location into *that* module's source. Quoting the line at
-        // that offset from the file being compiled produces a confident
-        // pointer at unrelated code -- worse than no location at all,
-        // because it sends the reader somewhere specific and wrong. Name
-        // the module and drop the snippet.
-        if let Some(module) = &error.origin_module {
-            let position = error
-                .location
-                .map(|loc| format!(" (line {} of that module)", loc.line))
-                .unwrap_or_default();
-            return format!(
-                "Error in imported module `{module}`{position}: {error}\n   \
-                 = note: this comes from module `{module}`, not from the file being compiled"
-            );
-        }
-        if let Some(location) = &error.location {
-            self.format_error_with_location(&error.to_string(), location)
-        } else {
-            format!("Error: {error}")
-        }
     }
 
     pub fn format_runtime_error(&self, error_msg: &str, location: Option<&SourceLocation>) -> String {
@@ -290,12 +266,25 @@ impl<'a> ErrorFormatter<'a> {
 mod tests {
     use super::*;
     use frontend::type_checker::{SourceLocation, TypeCheckError};
+    use string_interner::DefaultStringInterner;
+
+    /// A `TypeCheckError` reaches the reader as a `Diagnostic` — the
+    /// conversion is where the interner spells user types
+    /// (DIAG-SYMBOL-NAME). These two go through that path rather than
+    /// rendering the error directly, which is what the deleted
+    /// `format_type_check_error` did: it was reachable only from here,
+    /// and being interner-free it spelled a struct as
+    /// `Struct(SymbolU32 { value: 60 }, [])`.
+    fn diagnostic_for(error: &TypeCheckError, interner: &DefaultStringInterner) -> Diagnostic {
+        Diagnostic::from_type_check_error(error, "test.t", Some(interner))
+    }
 
     #[test]
     fn test_error_formatter_with_location() {
         let source = "fn main() -> i64 {\n    val x: i64 = \"string\"\n    x\n}";
         let formatter = ErrorFormatter::new(source, "test.t");
-        
+        let interner = DefaultStringInterner::new();
+
         let mut error = TypeCheckError::type_mismatch(
             frontend::type_decl::TypeDecl::Int64,
             frontend::type_decl::TypeDecl::String
@@ -303,20 +292,43 @@ mod tests {
         // `"string"` — the caret should span the whole literal.
         error.location = Some(SourceLocation::new(2, 18, 35, 43));
 
-        let formatted = formatter.format_type_check_error(&error);
+        let formatted = formatter.format_diagnostic(&diagnostic_for(&error, &interner));
         assert!(formatted.contains("Error at test.t:2:18:"));
         assert!(formatted.contains("val x: i64 = \"string\""));
         assert!(formatted.contains("^^^^^^^^"), "caret should match the span width: {formatted}");
+        // The types are named as they are written, not as `TypeDecl`
+        // spells them in Debug.
+        assert!(formatted.contains("expected i64"), "{formatted}");
+        assert!(formatted.contains("got str"), "{formatted}");
+    }
+
+    #[test]
+    fn a_user_type_in_a_mismatch_is_named_not_numbered() {
+        // DIAG-SYMBOL-NAME: the struct is `P`, never `SymbolU32 { .. }`.
+        let source = "fn main() -> u64 { 0u64 }";
+        let formatter = ErrorFormatter::new(source, "test.t");
+        let mut interner = DefaultStringInterner::new();
+        let p = interner.get_or_intern("P");
+
+        let error = TypeCheckError::type_mismatch(
+            frontend::type_decl::TypeDecl::UInt64,
+            frontend::type_decl::TypeDecl::Struct(p, Vec::new()),
+        );
+
+        let formatted = formatter.format_diagnostic(&diagnostic_for(&error, &interner));
+        assert!(formatted.contains("got P"), "{formatted}");
+        assert!(!formatted.contains("SymbolU32"), "{formatted}");
     }
 
     #[test] 
     fn test_error_formatter_without_location() {
         let source = "fn main() -> i64 { 42i64 }";
         let formatter = ErrorFormatter::new(source, "test.t");
-        
+        let interner = DefaultStringInterner::new();
+
         let error = TypeCheckError::generic_error("Generic error message");
-        let formatted = formatter.format_type_check_error(&error);
-        assert_eq!(formatted, "Error: Generic error message");
+        let formatted = formatter.format_diagnostic(&diagnostic_for(&error, &interner));
+        assert_eq!(formatted, "Error: [E0010] Generic error message");
     }
 
     #[test]

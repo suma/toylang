@@ -44,7 +44,11 @@ mod helpers {
                 let mut errors = Vec::new();
                 for func in functions.iter() {
                     if let Err(e) = type_checker.type_check(func.clone()) {
-                        errors.push(format!("{:?}", e));
+                        // DIAG-SYMBOL-NAME: spell names through the
+                        // interner, as the real diagnostic path does.
+                        errors.push(
+                            e.message_with(Some(type_checker.core.string_interner)),
+                        );
                     }
                 }
 

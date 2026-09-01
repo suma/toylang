@@ -407,11 +407,9 @@ fn bool_arg(value: &Value, name: &str) -> Result<bool, InterpreterError> {
         Value::Bool(b) => Ok(*b),
         Value::Heap(rc) => match &*rc.borrow() {
             Object::Bool(b) => Ok(*b),
-            other => {
-                return Err(InterpreterError::InternalError(format!(
-                    "extern fn `{name}`: expected a bool argument, got {other:?}"
-                )))
-            }
+            other => Err(InterpreterError::InternalError(format!(
+                "extern fn `{name}`: expected a bool argument, got {other:?}"
+            ))),
         },
         other => Err(InterpreterError::InternalError(format!(
             "extern fn `{name}`: expected a bool, got {other:?}"

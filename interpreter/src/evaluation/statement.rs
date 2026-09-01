@@ -48,7 +48,7 @@ fn apply_annotation_type_args(value: Value, annotation: Option<&TypeDecl>) -> Va
                 if type_args.is_empty() {
                     *type_args = args;
                 } else {
-                    for (slot, from_anno) in type_args.iter_mut().zip(args.into_iter()) {
+                    for (slot, from_anno) in type_args.iter_mut().zip(args) {
                         if matches!(slot, TypeDecl::Unknown) {
                             *slot = from_anno;
                         }

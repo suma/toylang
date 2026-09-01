@@ -180,6 +180,74 @@ pub fn accept_nonblocking(listen_fd: i32) -> i32 {
     }
 }
 
+/// A new non-blocking datagram socket, or `-1`. One call, as with
+/// [`socket_stream`].
+pub fn socket_dgram(family: i32) -> i32 {
+    unsafe { crate::socket(family, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0) }
+}
+
+/// Write `SO_RCVTIMEO` / `SO_SNDTIMEO`, which take a `struct timeval`.
+///
+/// The whole set goes through here because the payload's *layout*
+/// differs, not just the option number: `tv_usec` is 64-bit here and
+/// 32-bit on the BSDs, so a shared struct would be wrong on one of
+/// them.
+pub fn set_timeout(fd: i32, which: i32, ms: i64) -> i32 {
+    #[repr(C)]
+    struct TimeVal {
+        tv_sec: i64,
+        tv_usec: i64,
+    }
+    const _: () = assert!(core::mem::size_of::<TimeVal>() == 16);
+    let tv = TimeVal {
+        tv_sec: ms / 1000,
+        tv_usec: (ms % 1000) * 1000,
+    };
+    unsafe {
+        crate::setsockopt(
+            fd,
+            SOL_SOCKET,
+            which,
+            (&tv as *const TimeVal).cast(),
+            core::mem::size_of::<TimeVal>() as u32,
+        )
+    }
+}
+
+/// Render a `sockaddr_in`'s address into `out` as a dotted quad,
+/// returning how many bytes it wrote (0 on failure).
+///
+/// Reads the struct, so it lives here for the same reason
+/// [`sockaddr_port`] does — nothing above this layer touches a
+/// sockaddr.
+pub fn sockaddr_to_str(sa: *const u8, out: &mut [u8]) -> usize {
+    if out.len() < 16 {
+        return 0;
+    }
+    let written = unsafe {
+        crate::inet_ntop(
+            AF_INET,
+            sa.add(4),
+            out.as_mut_ptr(),
+            out.len() as u32,
+        )
+    };
+    if written.is_null() {
+        return 0;
+    }
+    // `inet_ntop` NUL-terminates; the length is up to that byte.
+    out.iter().position(|b| *b == 0).unwrap_or(out.len())
+}
+
+/// `TCP_NODELAY`, for turning Nagle's algorithm off.
+///
+/// The numbers happen to agree on both platforms, but they live here
+/// rather than in the shared layer because nothing guarantees the
+/// next platform will agree — the porting contract is that a socket
+/// constant is `sys`'s to state.
+pub const IPPROTO_TCP: i32 = 6;
+pub const TCP_NODELAY: i32 = 1;
+
 /// Read the port back out of a `sockaddr_in`. Same offset and byte
 /// order on both platforms, but it lives here because it reads the
 /// struct — the point of the layer is that nothing above it does.

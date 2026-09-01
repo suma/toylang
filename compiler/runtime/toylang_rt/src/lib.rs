@@ -152,6 +152,24 @@ unsafe extern "C" {
     fn setsockopt(fd: i32, level: i32, name: i32, val: *const u8, len: u32) -> i32;
     fn getsockopt(fd: i32, level: i32, name: i32, val: *mut u8, len: *mut u32) -> i32;
     fn inet_pton(af: i32, src: *const u8, dst: *mut u8) -> i32;
+    fn inet_ntop(af: i32, src: *const u8, dst: *mut u8, size: u32) -> *const u8;
+    fn getpeername(fd: i32, addr: *mut u8, len: *mut u32) -> i32;
+    fn sendto(
+        fd: i32,
+        buf: *const u8,
+        len: usize,
+        flags: i32,
+        addr: *const u8,
+        addrlen: u32,
+    ) -> isize;
+    fn recvfrom(
+        fd: i32,
+        buf: *mut u8,
+        len: usize,
+        flags: i32,
+        addr: *mut u8,
+        addrlen: *mut u32,
+    ) -> isize;
 }
 
 #[cfg(target_os = "macos")]
@@ -485,6 +503,16 @@ struct ThreadState {
     /// runs between them.
     poll_events: [RawEvent; POLL_EVENTS_CAP],
     poll_event_len: usize,
+    /// Who sent the most recent datagram (`net_recv_from`). Stashed
+    /// rather than returned because the extern boundary carries one
+    /// scalar and the byte count is it.
+    last_peer: [u8; 16],
+    last_peer_len: usize,
+    last_peer_port: u64,
+    /// Where the next datagram goes (`toy_net_set_dest`).
+    dest: [u8; 16],
+    dest_len: usize,
+    dest_port: u64,
     /// NETWORK_IO: the status of the most recent net call, read back
     /// by `toy_net_status`. One slot for all of them, unlike the I/O
     /// side's slot-per-operation: every `net.t` wrapper reads it on
@@ -524,6 +552,12 @@ impl Default for ThreadState {
             net_status: NET_OK,
             poll_events: [RawEvent { token: 0, flags: 0, error: 0 }; POLL_EVENTS_CAP],
             poll_event_len: 0,
+            last_peer: [0; 16],
+            last_peer_len: 0,
+            last_peer_port: 0,
+            dest: [0; 16],
+            dest_len: 0,
+            dest_port: 0,
         }
     }
 }
@@ -3098,17 +3132,223 @@ pub fn net_bind(addr: &[u8], port: u64, backlog: i32) -> i32 {
     fd
 }
 
-/// The port `fd` is actually bound to. Answers 0 with a status when it
-/// cannot be read.
+/// The port `fd` is bound to. Answers 0 with a status when it cannot
+/// be read. A thin name over [`net_addr_port`], kept because
+/// "which port did the OS give me" is what N2's listener asks and
+/// reads better than a boolean argument at the call site.
 pub fn net_local_port(fd: i32) -> u64 {
+    net_addr_port(fd, false)
+}
+
+/// Longest dotted quad plus its NUL. Widened when AF_INET6 lands
+/// (an IPv6 text form needs 46).
+const ADDR_TEXT_MAX: usize = 16;
+
+/// The address of `fd`'s local or peer end, written into `out` as a
+/// dotted quad. Returns how many bytes it wrote.
+///
+/// Splitting the address from the port (below) rather than answering
+/// `"127.0.0.1:8080"` keeps the caller from having to parse: a port
+/// is a number, and a program that wants one should not have to find
+/// the colon — especially once IPv6, whose text form is full of them,
+/// arrives.
+pub fn net_addr_text(fd: i32, peer: bool, out: &mut [u8]) -> usize {
     let mut sa = [0u8; SOCKADDR_MAX_BYTES];
     let mut len: u32 = sys::SOCKADDR_IN_BYTES as u32;
-    if unsafe { getsockname(fd, sa.as_mut_ptr(), &mut len) } != 0 {
+    let rc = if peer {
+        unsafe { getpeername(fd, sa.as_mut_ptr(), &mut len) }
+    } else {
+        unsafe { getsockname(fd, sa.as_mut_ptr(), &mut len) }
+    };
+    if rc != 0 {
+        net_record(false);
+        return 0;
+    }
+    net_record(true);
+    sys::sockaddr_to_str(sa.as_ptr(), out)
+}
+
+/// The port of `fd`'s local or peer end.
+pub fn net_addr_port(fd: i32, peer: bool) -> u64 {
+    let mut sa = [0u8; SOCKADDR_MAX_BYTES];
+    let mut len: u32 = sys::SOCKADDR_IN_BYTES as u32;
+    let rc = if peer {
+        unsafe { getpeername(fd, sa.as_mut_ptr(), &mut len) }
+    } else {
+        unsafe { getsockname(fd, sa.as_mut_ptr(), &mut len) }
+    };
+    if rc != 0 {
         net_record(false);
         return 0;
     }
     net_record(true);
     sys::sockaddr_port(sa.as_ptr()) as u64
+}
+
+/// Turn Nagle's algorithm off, so a small write goes out at once
+/// instead of waiting for more to accompany it. What a
+/// request/response protocol wants and a bulk transfer does not.
+pub fn net_set_nodelay(fd: i32, on: bool) -> u64 {
+    let flag: i32 = if on { 1 } else { 0 };
+    let rc = unsafe {
+        setsockopt(
+            fd,
+            sys::IPPROTO_TCP,
+            sys::TCP_NODELAY,
+            (&flag as *const i32).cast(),
+            core::mem::size_of::<i32>() as u32,
+        )
+    };
+    net_record(rc == 0);
+    thread_state().net_status
+}
+
+/// Bound how long a *blocking* read or write may wait. `ms == 0`
+/// removes the bound.
+///
+/// Only meaningful while blocking — a non-blocking socket answers
+/// `WouldBlock` immediately and never waits at all. This is what keeps
+/// a blocking client from hanging the whole program, which is the one
+/// real risk of blocking mode in a single-threaded language.
+pub fn net_set_timeout(fd: i32, ms: i64, write_side: bool) -> u64 {
+    let which = if write_side { sys::SO_SNDTIMEO } else { sys::SO_RCVTIMEO };
+    net_record(sys::set_timeout(fd, which, ms) == 0);
+    thread_state().net_status
+}
+
+/// A new non-blocking UDP socket bound to `addr:port`, or `-1`.
+///
+/// There is no `listen` or `accept` here: a datagram socket is ready
+/// to receive from anyone the moment it is bound.
+pub fn net_udp_bind(addr: &[u8], port: u64) -> i32 {
+    let st = thread_state();
+    if port > u16::MAX as u64 {
+        st.net_status = NET_INVALID_INPUT;
+        return -1;
+    }
+    let fd = sys::socket_dgram(sys::AF_INET);
+    if fd < 0 {
+        net_record(false);
+        return -1;
+    }
+    let mut sa = [0u8; SOCKADDR_MAX_BYTES];
+    if sys::sockaddr_from_str(addr, port as u16, sys::AF_INET, sa.as_mut_ptr()) != 0 {
+        close_quietly(fd);
+        thread_state().net_status = NET_INVALID_INPUT;
+        return -1;
+    }
+    if unsafe { bind(fd, sa.as_ptr(), sys::SOCKADDR_IN_BYTES as u32) } != 0 {
+        net_record(false);
+        close_quietly(fd);
+        return -1;
+    }
+    net_record(true);
+    fd
+}
+
+/// Send one datagram to `addr:port`. Returns the bytes sent.
+///
+/// A datagram is all-or-nothing: unlike a stream write there is no
+/// such thing as a short send, so a count below `buf.len()` means
+/// something is wrong rather than "call again with the rest".
+pub fn net_send_to(fd: i32, buf: &[u8], addr: &[u8], port: u64) -> u64 {
+    let st = thread_state();
+    if port > u16::MAX as u64 {
+        st.net_status = NET_INVALID_INPUT;
+        return 0;
+    }
+    let mut sa = [0u8; SOCKADDR_MAX_BYTES];
+    if sys::sockaddr_from_str(addr, port as u16, sys::AF_INET, sa.as_mut_ptr()) != 0 {
+        thread_state().net_status = NET_INVALID_INPUT;
+        return 0;
+    }
+    let n = unsafe {
+        sendto(
+            fd,
+            buf.as_ptr(),
+            buf.len(),
+            0,
+            sa.as_ptr(),
+            sys::SOCKADDR_IN_BYTES as u32,
+        )
+    };
+    if net_record(n >= 0) { n as u64 } else { 0 }
+}
+
+/// Receive one datagram, remembering who sent it.
+///
+/// The sender is stashed on the thread rather than returned, because
+/// the extern boundary carries one scalar and the count is it. The
+/// pair `recv_from` + `last_peer_*` is read on the next line, so
+/// nothing can interleave — the same shape as every status pair here.
+///
+/// A datagram longer than the buffer is **truncated and the rest
+/// discarded**; that is UDP, not a bug, and it is why a receive
+/// buffer for datagrams is sized to the largest message expected.
+pub fn net_recv_from(fd: i32, buf: &mut [u8]) -> u64 {
+    let mut sa = [0u8; SOCKADDR_MAX_BYTES];
+    let mut len: u32 = sys::SOCKADDR_IN_BYTES as u32;
+    let n = unsafe {
+        recvfrom(
+            fd,
+            buf.as_mut_ptr(),
+            buf.len(),
+            0,
+            sa.as_mut_ptr(),
+            &mut len,
+        )
+    };
+    if !net_record(n >= 0) {
+        let st = thread_state();
+        st.last_peer_len = 0;
+        st.last_peer_port = 0;
+        return 0;
+    }
+    let mut text = [0u8; ADDR_TEXT_MAX];
+    let written = sys::sockaddr_to_str(sa.as_ptr(), &mut text);
+    let port = sys::sockaddr_port(sa.as_ptr()) as u64;
+    let st = thread_state();
+    st.last_peer[..written].copy_from_slice(&text[..written]);
+    st.last_peer_len = written;
+    st.last_peer_port = port;
+    n as u64
+}
+
+/// The port of the most recent [`net_recv_from`]'s sender.
+pub fn net_last_peer_port() -> u64 {
+    thread_state().last_peer_port
+}
+
+/// The address of the most recent [`net_recv_from`]'s sender, as
+/// bytes. Empty when the last receive failed.
+pub fn net_last_peer_addr(out: &mut [u8]) -> usize {
+    let st = thread_state();
+    let n = st.last_peer_len.min(out.len());
+    out[..n].copy_from_slice(&st.last_peer[..n]);
+    n
+}
+
+/// Set the destination for the next datagram. `false` when the
+/// address text or port is not usable.
+pub fn net_set_dest(addr: &[u8], port: u64) -> bool {
+    let st = thread_state();
+    if port > u16::MAX as u64 || addr.len() > ADDR_TEXT_MAX {
+        st.net_status = NET_INVALID_INPUT;
+        return false;
+    }
+    st.dest[..addr.len()].copy_from_slice(addr);
+    st.dest_len = addr.len();
+    st.dest_port = port;
+    st.net_status = NET_OK;
+    true
+}
+
+/// The destination [`net_set_dest`] last named.
+pub fn net_dest(out: &mut [u8]) -> (usize, u64) {
+    let st = thread_state();
+    let n = st.dest_len.min(out.len());
+    out[..n].copy_from_slice(&st.dest[..n]);
+    (n, st.dest_port)
 }
 
 /// Take a pending connection, or `-1`.
@@ -3225,13 +3465,144 @@ pub unsafe extern "C" fn toy_net_bind(addr: *const u8, port: u64, backlog: i32) 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn toy_net_local_port(fd: i32) -> u64 {
-    net_local_port(fd)
+pub extern "C" fn toy_net_accept(fd: i32) -> i32 {
+    net_accept(fd)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn toy_net_accept(fd: i32) -> i32 {
-    net_accept(fd)
+pub extern "C" fn toy_net_local_addr(fd: i32) -> *const u8 {
+    addr_str(fd, false)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_net_peer_addr(fd: i32) -> *const u8 {
+    addr_str(fd, true)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_net_local_port(fd: i32) -> u64 {
+    net_addr_port(fd, false)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_net_peer_port(fd: i32) -> u64 {
+    net_addr_port(fd, true)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_net_set_nodelay(fd: i32, on: bool) -> u64 {
+    net_set_nodelay(fd, on)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_net_set_timeout(fd: i32, ms: i64, write_side: bool) -> u64 {
+    net_set_timeout(fd, ms, write_side)
+}
+
+/// # Safety
+///
+/// `addr` must be a toylang str handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_net_udp_bind(addr: *const u8, port: u64) -> i32 {
+    if addr.is_null() {
+        thread_state().net_status = NET_INVALID_INPUT;
+        return -1;
+    }
+    net_udp_bind(str_bytes(addr), port)
+}
+
+/// Remember where the next [`toy_net_send_to`] should go.
+///
+/// A destination is an address *and* a port, which with the fd and
+/// the buffer would be five arguments — one past what an `extern fn`
+/// can carry. So the destination is set first and consumed by the
+/// send on the next line, the same two-call shape every status pair
+/// here uses, and atomic for the same reason: no toylang code runs
+/// in between.
+///
+/// # Safety
+///
+/// `addr` must be a toylang str handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_net_set_dest(addr: *const u8, port: u64) -> u64 {
+    let st = thread_state();
+    if addr.is_null() || port > u16::MAX as u64 {
+        st.net_status = NET_INVALID_INPUT;
+        return NET_INVALID_INPUT;
+    }
+    let text = str_bytes(addr);
+    if text.len() > ADDR_TEXT_MAX {
+        st.net_status = NET_INVALID_INPUT;
+        return NET_INVALID_INPUT;
+    }
+    st.dest[..text.len()].copy_from_slice(text);
+    st.dest_len = text.len();
+    st.dest_port = port;
+    st.net_status = NET_OK;
+    NET_OK
+}
+
+/// Send one datagram to wherever [`toy_net_set_dest`] last named.
+///
+/// # Safety
+///
+/// `buf` must point at `len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_net_send_to(fd: i32, buf: *const u8, len: u64) -> u64 {
+    if buf.is_null() && len > 0 {
+        thread_state().net_status = NET_INVALID_INPUT;
+        return 0;
+    }
+    let (dest, port) = {
+        let st = thread_state();
+        (st.dest, st.dest_port)
+    };
+    let dest_len = thread_state().dest_len;
+    let bytes = if buf.is_null() {
+        &[][..]
+    } else {
+        unsafe { core::slice::from_raw_parts(buf, len as usize) }
+    };
+    net_send_to(fd, bytes, &dest[..dest_len], port)
+}
+
+/// # Safety
+///
+/// `buf` must point at `len` writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_net_recv_from(fd: i32, buf: *mut u8, len: u64) -> u64 {
+    if buf.is_null() && len > 0 {
+        thread_state().net_status = NET_INVALID_INPUT;
+        return 0;
+    }
+    if buf.is_null() {
+        return net_recv_from(fd, &mut []);
+    }
+    net_recv_from(fd, unsafe { core::slice::from_raw_parts_mut(buf, len as usize) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_net_last_peer_port() -> u64 {
+    net_last_peer_port()
+}
+
+/// The address of the most recent datagram's sender, as a toylang
+/// `str`.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_net_last_peer_addr() -> *const u8 {
+    let (buf, len) = {
+        let st = thread_state();
+        (st.last_peer, st.last_peer_len)
+    };
+    toy_str_alloc(&buf[..len])
+}
+
+/// The dotted quad of `fd`'s local or peer end, as a toylang `str`.
+/// Empty when it could not be read; `toy_net_status` says why.
+fn addr_str(fd: i32, peer: bool) -> *const u8 {
+    let mut out = [0u8; ADDR_TEXT_MAX];
+    let n = net_addr_text(fd, peer, &mut out);
+    toy_str_alloc(&out[..n])
 }
 
 /// RUNTIME-IO: the status of the most recent `toy_io_read_file` call

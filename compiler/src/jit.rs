@@ -450,6 +450,33 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
         toylang_rt::toy_net_local_port as *const u8,
     );
     jit_builder.symbol("toy_net_accept", toylang_rt::toy_net_accept as *const u8);
+    // N4.
+    jit_builder.symbol(
+        "toy_net_local_addr",
+        toylang_rt::toy_net_local_addr as *const u8,
+    );
+    jit_builder.symbol("toy_net_peer_addr", toylang_rt::toy_net_peer_addr as *const u8);
+    jit_builder.symbol("toy_net_peer_port", toylang_rt::toy_net_peer_port as *const u8);
+    jit_builder.symbol(
+        "toy_net_set_nodelay",
+        toylang_rt::toy_net_set_nodelay as *const u8,
+    );
+    jit_builder.symbol(
+        "toy_net_set_timeout",
+        toylang_rt::toy_net_set_timeout as *const u8,
+    );
+    jit_builder.symbol("toy_net_udp_bind", toylang_rt::toy_net_udp_bind as *const u8);
+    jit_builder.symbol("toy_net_set_dest", toylang_rt::toy_net_set_dest as *const u8);
+    jit_builder.symbol("toy_net_send_to", toylang_rt::toy_net_send_to as *const u8);
+    jit_builder.symbol("toy_net_recv_from", toylang_rt::toy_net_recv_from as *const u8);
+    jit_builder.symbol(
+        "toy_net_last_peer_addr",
+        toylang_rt::toy_net_last_peer_addr as *const u8,
+    );
+    jit_builder.symbol(
+        "toy_net_last_peer_port",
+        toylang_rt::toy_net_last_peer_port as *const u8,
+    );
     // EVENT_POLLING N3.
     jit_builder.symbol("toy_poll_create", toylang_rt::toy_poll_create as *const u8);
     jit_builder.symbol("toy_poll_ctl", toylang_rt::toy_poll_ctl as *const u8);

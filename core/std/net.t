@@ -53,6 +53,17 @@ extern fn __extern_net_status() -> u64 from "toylang_rt" as "toy_net_status"
 extern fn __extern_net_bind(addr: str, port: u64, backlog: i32) -> i32 from "toylang_rt" as "toy_net_bind"
 extern fn __extern_net_local_port(fd: i32) -> u64 from "toylang_rt" as "toy_net_local_port"
 extern fn __extern_net_accept(fd: i32) -> i32 from "toylang_rt" as "toy_net_accept"
+extern fn __extern_net_local_addr(fd: i32) -> str from "toylang_rt" as "toy_net_local_addr"
+extern fn __extern_net_peer_addr(fd: i32) -> str from "toylang_rt" as "toy_net_peer_addr"
+extern fn __extern_net_peer_port(fd: i32) -> u64 from "toylang_rt" as "toy_net_peer_port"
+extern fn __extern_net_set_nodelay(fd: i32, on: bool) -> u64 from "toylang_rt" as "toy_net_set_nodelay"
+extern fn __extern_net_set_timeout(fd: i32, ms: i64, write_side: bool) -> u64 from "toylang_rt" as "toy_net_set_timeout"
+extern fn __extern_net_udp_bind(addr: str, port: u64) -> i32 from "toylang_rt" as "toy_net_udp_bind"
+extern fn __extern_net_set_dest(addr: str, port: u64) -> u64 from "toylang_rt" as "toy_net_set_dest"
+extern fn __extern_net_send_to(fd: i32, buf: ptr, len: u64) -> u64 from "toylang_rt" as "toy_net_send_to"
+extern fn __extern_net_recv_from(fd: i32, buf: ptr, len: u64) -> u64 from "toylang_rt" as "toy_net_recv_from"
+extern fn __extern_net_last_peer_addr() -> str from "toylang_rt" as "toy_net_last_peer_addr"
+extern fn __extern_net_last_peer_port() -> u64 from "toylang_rt" as "toy_net_last_peer_port"
 
 # Which event-notification backend this build uses: `"epoll"` on
 # Linux, `"kqueue"` on macOS and the other BSDs.
@@ -224,6 +235,18 @@ impl TcpListener {
         val status: u64 = __extern_net_set_blocking(self.fd, on)
         if status == 0u64 {
             Result::Ok(())
+        } else {
+            val err: NetError = net_error_from_status(status)
+            Result::Err(err)
+        }
+    }
+
+    # The address this listener bound to (N4).
+    pub fn local_addr(&self) -> Result<str, NetError> {
+        val text: str = __extern_net_local_addr(self.fd)
+        val status: u64 = __extern_net_status()
+        if status == 0u64 {
+            Result::Ok(text)
         } else {
             val err: NetError = net_error_from_status(status)
             Result::Err(err)
@@ -425,6 +448,95 @@ impl TcpStream {
         }
     }
 
+    # This end's address and port (N4). Answers `("", 0)` with an
+    # `Err` when the socket is closed.
+    #
+    # Address and port come back separately rather than as one
+    # `"127.0.0.1:8080"` string, so nothing has to parse: a port is a
+    # number. It also survives IPv6, whose text form is full of
+    # colons.
+    pub fn local_addr(&self) -> Result<str, NetError> {
+        val text: str = __extern_net_local_addr(self.fd)
+        val status: u64 = __extern_net_status()
+        if status == 0u64 {
+            Result::Ok(text)
+        } else {
+            val err: NetError = net_error_from_status(status)
+            Result::Err(err)
+        }
+    }
+
+    pub fn local_port(&self) -> Result<u64, NetError> {
+        val port: u64 = __extern_net_local_port(self.fd)
+        val status: u64 = __extern_net_status()
+        if status == 0u64 {
+            Result::Ok(port)
+        } else {
+            val err: NetError = net_error_from_status(status)
+            Result::Err(err)
+        }
+    }
+
+    # The other end's address and port.
+    pub fn peer_addr(&self) -> Result<str, NetError> {
+        val text: str = __extern_net_peer_addr(self.fd)
+        val status: u64 = __extern_net_status()
+        if status == 0u64 {
+            Result::Ok(text)
+        } else {
+            val err: NetError = net_error_from_status(status)
+            Result::Err(err)
+        }
+    }
+
+    pub fn peer_port(&self) -> Result<u64, NetError> {
+        val port: u64 = __extern_net_peer_port(self.fd)
+        val status: u64 = __extern_net_status()
+        if status == 0u64 {
+            Result::Ok(port)
+        } else {
+            val err: NetError = net_error_from_status(status)
+            Result::Err(err)
+        }
+    }
+
+    # Turn Nagle's algorithm off, so a small write goes out at once
+    # instead of waiting for company. What a request/response protocol
+    # wants; a bulk transfer is better off without it.
+    pub fn set_nodelay(&self, on: bool) -> Result<(), NetError> {
+        val status: u64 = __extern_net_set_nodelay(self.fd, on)
+        if status == 0u64 {
+            Result::Ok(())
+        } else {
+            val err: NetError = net_error_from_status(status)
+            Result::Err(err)
+        }
+    }
+
+    # Bound how long a **blocking** read may wait; 0 removes the
+    # bound. A non-blocking socket never waits, so this does nothing
+    # for one — it exists to stop a blocking client hanging the whole
+    # program, which is the one real risk of blocking mode here.
+    pub fn set_read_timeout(&self, ms: u64) -> Result<(), NetError> {
+        val status: u64 = __extern_net_set_timeout(self.fd, ms as i64, false)
+        if status == 0u64 {
+            Result::Ok(())
+        } else {
+            val err: NetError = net_error_from_status(status)
+            Result::Err(err)
+        }
+    }
+
+    pub fn set_write_timeout(&self, ms: u64) -> Result<(), NetError> {
+        val status: u64 = __extern_net_set_timeout(self.fd, ms as i64, true)
+        if status == 0u64 {
+            Result::Ok(())
+        } else {
+            val err: NetError = net_error_from_status(status)
+            Result::Err(err)
+        }
+    }
+
     # The underlying descriptor, for registering with a poller (N3).
     pub fn as_fd(&self) -> i32 {
         self.fd
@@ -432,6 +544,137 @@ impl TcpStream {
 
     # Close now rather than at scope exit. Idempotent: the field is
     # parked at `-1`, so the `Drop` that follows does nothing.
+    pub fn close(&mut self) -> Result<(), NetError> {
+        if self.fd < 0i32 {
+            return Result::Ok(())
+        }
+        val status: u64 = __extern_net_close(self.fd)
+        self.fd = -1i32
+        if status == 0u64 {
+            Result::Ok(())
+        } else {
+            val err: NetError = net_error_from_status(status)
+            Result::Err(err)
+        }
+    }
+}
+
+
+# A UDP socket (N4).
+#
+# There is no listener/stream split here and no `accept`: a datagram
+# socket is ready to hear from anyone the moment it is bound, and
+# every message carries its own sender.
+#
+# Two things about datagrams that a stream reader will not expect.
+# **A send is all-or-nothing** — there is no short write to resume, so
+# a count below what you handed in means something went wrong. And a
+# datagram longer than your buffer is **truncated, with the rest
+# discarded**; that is UDP, not a failure, which is why a receive
+# buffer is sized to the largest message expected rather than grown as
+# you go.
+pub struct UdpSocket {
+    fd: i32,
+}
+
+impl Drop for UdpSocket {
+    fn drop(&mut self) {
+        if self.fd >= 0i32 {
+            val ignored: u64 = __extern_net_close(self.fd)
+            self.fd = -1i32
+        }
+    }
+}
+
+impl UdpSocket {
+    # Bind to `addr:port`. `port = 0` asks the OS for a free one; read
+    # it back with `local_port`.
+    pub fn bind(addr: str, port: u64) -> Result<UdpSocket, NetError> {
+        val fd: i32 = __extern_net_udp_bind(addr, port)
+        if fd < 0i32 {
+            val status: u64 = __extern_net_status()
+            val err: NetError = net_error_from_status(status)
+            return Result::Err(err)
+        }
+        val u = UdpSocket { fd: fd }
+        Result::Ok(u)
+    }
+
+    pub fn local_port(&self) -> Result<u64, NetError> {
+        val port: u64 = __extern_net_local_port(self.fd)
+        val status: u64 = __extern_net_status()
+        if status == 0u64 {
+            Result::Ok(port)
+        } else {
+            val err: NetError = net_error_from_status(status)
+            Result::Err(err)
+        }
+    }
+
+    # Send one datagram to `addr:port`, answering how many bytes went.
+    #
+    # The destination is set on the line before the send rather than
+    # passed with it: an fd, a buffer, a length, an address and a port
+    # are five arguments and an `extern fn` carries four. The pair is
+    # atomic in the same way every status pair here is — no other
+    # toylang code runs between them.
+    pub fn send_to(&self, buf: Span<u8>, addr: str, port: u64) -> Result<u64, NetError> {
+        val dest: u64 = __extern_net_set_dest(addr, port)
+        if dest != 0u64 {
+            val bad: NetError = net_error_from_status(dest)
+            return Result::Err(bad)
+        }
+        val n: u64 = __extern_net_send_to(self.fd, buf.as_raw(), buf.len())
+        val status: u64 = __extern_net_status()
+        if status == 0u64 {
+            Result::Ok(n)
+        } else {
+            val err: NetError = net_error_from_status(status)
+            Result::Err(err)
+        }
+    }
+
+    # Receive one datagram into `buf`, answering how many bytes it
+    # held. Ask `last_peer_addr` / `last_peer_port` on the next line
+    # for who sent it.
+    #
+    # Unlike a stream's `read`, `Ok(0)` here is an empty datagram —
+    # a real thing to receive — and not end of stream. A datagram
+    # socket has no end.
+    pub fn recv_from(&self, buf: Span<u8>) -> Result<u64, NetError> {
+        val n: u64 = __extern_net_recv_from(self.fd, buf.as_raw(), buf.len())
+        val status: u64 = __extern_net_status()
+        if status == 0u64 {
+            Result::Ok(n)
+        } else {
+            val err: NetError = net_error_from_status(status)
+            Result::Err(err)
+        }
+    }
+
+    # Who sent the most recent `recv_from`. Valid until the next one.
+    pub fn last_peer_addr(&self) -> str {
+        __extern_net_last_peer_addr()
+    }
+
+    pub fn last_peer_port(&self) -> u64 {
+        __extern_net_last_peer_port()
+    }
+
+    pub fn set_blocking(&self, on: bool) -> Result<(), NetError> {
+        val status: u64 = __extern_net_set_blocking(self.fd, on)
+        if status == 0u64 {
+            Result::Ok(())
+        } else {
+            val err: NetError = net_error_from_status(status)
+            Result::Err(err)
+        }
+    }
+
+    pub fn as_fd(&self) -> i32 {
+        self.fd
+    }
+
     pub fn close(&mut self) -> Result<(), NetError> {
         if self.fd < 0i32 {
             return Result::Ok(())

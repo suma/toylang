@@ -851,3 +851,175 @@ fn a_closed_peer_is_a_hup_that_still_has_bytes() {
     assert_eq!(interpreter_value(src) & 0xffff, 323);
     assert_consistent(src, "net_hup_has_bytes");
 }
+
+// --- N4: UDP, addresses, socket options -----------------------------
+
+/// Two UDP sockets in one process: one sends, the other receives and
+/// can say who sent it.
+///
+/// A datagram is not a stream, and two of the differences are what
+/// this pins. There is no connection to establish — a bound socket
+/// hears from anyone at once — and every message carries its sender,
+/// which is why `recv_from` has a `last_peer_*` to pair with while
+/// `read` does not.
+#[test]
+fn every_lane_carries_a_datagram_between_two_sockets() {
+    let src = r#"
+        fn main() -> u64 {
+            val abound = UdpSocket::bind("127.0.0.1", 0u64)
+            var a = match abound {
+                Result::Ok(x) => x,
+                Result::Err(e) => { return 80u64 }
+            }
+            val bbound = UdpSocket::bind("127.0.0.1", 0u64)
+            var b = match bbound {
+                Result::Ok(x) => x,
+                Result::Err(e) => { return 81u64 }
+            }
+            val bp = b.local_port()
+            val bport = match bp { Result::Ok(n) => n, Result::Err(e) => { return 82u64 } }
+            val ap = a.local_port()
+            val aport = match ap { Result::Ok(n) => n, Result::Err(e) => { return 83u64 } }
+            if aport == bport { return 84u64 }
+
+            val msg = String::from_str("udp!")
+            val window = msg.as_span()
+            val out: Span<u8> = match window {
+                Option::Some(w) => w,
+                Option::None => { return 85u64 }
+            }
+            val sent = a.send_to(out, "127.0.0.1", bport)
+            val nsent = match sent {
+                Result::Ok(n) => n,
+                Result::Err(e) => { return 86u64 }
+            }
+            # All-or-nothing: a datagram has no short send to resume.
+            if nsent != 4u64 { return 87u64 }
+
+            val blocking = b.set_blocking(true)
+            var buf: Vec<u8> = Vec::with_capacity(64u64)
+            val room = buf.capacity_span()
+            var got: u64 = 0u64
+            match room {
+                Option::Some(w) => {
+                    val r = b.recv_from(w)
+                    match r {
+                        Result::Ok(n) => { got = n }
+                        Result::Err(e) => { got = 0u64 }
+                    }
+                }
+                Option::None => { got = 0u64 }
+            }
+            buf.set_size(got)
+
+            # The sender, which a stream read has no equivalent of.
+            if b.last_peer_port() != aport { return 88u64 }
+            if b.last_peer_addr() != "127.0.0.1" { return 89u64 }
+
+            var sum: u64 = 0u64
+            var i: u64 = 0u64
+            while i < buf.size() {
+                sum = sum + buf.get(i) as u64
+                i = i + 1u64
+            }
+            got + sum
+        }
+    "#;
+    // 4 bytes, 'u' + 'd' + 'p' + '!' = 362.
+    assert_eq!(interpreter_value(src) & 0xffff, 366);
+    assert_consistent(src, "net_udp_round_trip");
+}
+
+/// Both ends of a connection can name themselves and each other, and
+/// the numbers line up: what the client calls its peer is what the
+/// listener bound.
+///
+/// Address and port come back separately rather than as one
+/// `"127.0.0.1:8080"` string — a port is a number, and nothing should
+/// have to find the colon (least of all once IPv6, whose text form is
+/// full of them, arrives).
+#[test]
+fn every_lane_reports_local_and_peer_addresses() {
+    let src = r#"
+        fn main() -> u64 {
+            val bound = TcpListener::bind("127.0.0.1", 0u64)
+            var l = match bound {
+                Result::Ok(x) => x,
+                Result::Err(e) => { return 80u64 }
+            }
+            val la = l.local_addr()
+            val laddr = match la { Result::Ok(t) => t, Result::Err(e) => { return 81u64 } }
+            if laddr != "127.0.0.1" { return 82u64 }
+            val lp = l.local_port()
+            val lport = match lp { Result::Ok(n) => n, Result::Err(e) => { return 83u64 } }
+
+            val conn = TcpStream::connect("127.0.0.1", lport)
+            var c = match conn {
+                Result::Ok(s) => s,
+                Result::Err(e) => { return 84u64 }
+            }
+            val pa = c.peer_addr()
+            val paddr = match pa { Result::Ok(t) => t, Result::Err(e) => { return 85u64 } }
+            if paddr != "127.0.0.1" { return 86u64 }
+            val pp = c.peer_port()
+            val pport = match pp { Result::Ok(n) => n, Result::Err(e) => { return 87u64 } }
+            # The client's peer is the listener.
+            if pport != lport { return 88u64 }
+
+            val ca = c.local_addr()
+            val caddr = match ca { Result::Ok(t) => t, Result::Err(e) => { return 89u64 } }
+            if caddr != "127.0.0.1" { return 90u64 }
+            val cp = c.local_port()
+            val cport = match cp { Result::Ok(n) => n, Result::Err(e) => { return 91u64 } }
+            # ...and the client's own port is an ephemeral one, not the
+            # listener's.
+            if cport == 0u64 { return 92u64 }
+            if cport == lport { return 93u64 }
+            5u64
+        }
+    "#;
+    assert_eq!(interpreter_value(src) & 0xff, 5);
+    assert_consistent(src, "net_addresses");
+}
+
+/// The socket options. What they *do* is the kernel's business and
+/// not observable from here; that they are accepted, on both
+/// platforms, through payloads whose layout differs, is.
+///
+/// `SO_RCVTIMEO` is the one worth the test: its `struct timeval` has
+/// a 32-bit `tv_usec` on the BSDs and a 64-bit one on Linux, so the
+/// whole set/get goes through `sys` and a shared struct would be
+/// wrong on one of them.
+#[test]
+fn every_lane_accepts_the_socket_options() {
+    let src = r#"
+        fn main() -> u64 {
+            val bound = TcpListener::bind("127.0.0.1", 0u64)
+            var l = match bound {
+                Result::Ok(x) => x,
+                Result::Err(e) => { return 80u64 }
+            }
+            val lp = l.local_port()
+            val lport = match lp { Result::Ok(n) => n, Result::Err(e) => { return 81u64 } }
+            val conn = TcpStream::connect("127.0.0.1", lport)
+            var c = match conn {
+                Result::Ok(s) => s,
+                Result::Err(e) => { return 82u64 }
+            }
+            val nd = c.set_nodelay(true)
+            val a = match nd { Result::Ok(_) => 1u64, Result::Err(e) => 0u64 }
+            val ndoff = c.set_nodelay(false)
+            val b = match ndoff { Result::Ok(_) => 1u64, Result::Err(e) => 0u64 }
+            val rt = c.set_read_timeout(500u64)
+            val d = match rt { Result::Ok(_) => 1u64, Result::Err(e) => 0u64 }
+            val wt = c.set_write_timeout(500u64)
+            val e2 = match wt { Result::Ok(_) => 1u64, Result::Err(e) => 0u64 }
+            # 0 removes the bound rather than meaning "expire at once".
+            val rt0 = c.set_read_timeout(0u64)
+            val f = match rt0 { Result::Ok(_) => 1u64, Result::Err(e) => 0u64 }
+            a + b + d + e2 + f
+        }
+    "#;
+    assert_eq!(interpreter_value(src) & 0xff, 5);
+    assert_consistent(src, "net_socket_options");
+}

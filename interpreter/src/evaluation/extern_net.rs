@@ -41,6 +41,16 @@ pub fn build_net_registry() -> HashMap<&'static str, ExternFn> {
     m.insert("__extern_net_bind", net_bind);
     m.insert("__extern_net_local_port", net_local_port);
     m.insert("__extern_net_accept", net_accept);
+    // N4: addresses, socket options, UDP.
+    m.insert("__extern_net_local_addr", net_local_addr);
+    m.insert("__extern_net_peer_addr", net_peer_addr);
+    m.insert("__extern_net_peer_port", net_peer_port);
+    m.insert("__extern_net_set_nodelay", net_set_nodelay);
+    m.insert("__extern_net_set_timeout", net_set_timeout);
+    m.insert("__extern_net_udp_bind", net_udp_bind);
+    m.insert("__extern_net_set_dest", net_set_dest);
+    m.insert("__extern_net_last_peer_addr", net_last_peer_addr);
+    m.insert("__extern_net_last_peer_port", net_last_peer_port);
     // EVENT_POLLING N3.
     m.insert("__extern_poll_create", poll_create);
     m.insert("__extern_poll_ctl", poll_ctl);
@@ -57,6 +67,8 @@ pub fn build_net_buf_registry() -> HashMap<&'static str, ExternBufFn> {
     let mut m: HashMap<&'static str, ExternBufFn> = HashMap::new();
     m.insert("__extern_net_send", net_send);
     m.insert("__extern_net_recv", net_recv);
+    m.insert("__extern_net_send_to", net_send_to);
+    m.insert("__extern_net_recv_from", net_recv_from);
     m
 }
 
@@ -64,9 +76,7 @@ pub fn build_net_buf_registry() -> HashMap<&'static str, ExternBufFn> {
 /// runtime was compiled with.
 fn net_backend_name(args: &[Value]) -> Result<Value, InterpreterError> {
     expect_args("__extern_net_backend_name", args, 0)?;
-    Ok(Value::Heap(std::rc::Rc::new(std::cell::RefCell::new(
-        Object::String(toylang_rt::net_backend_name().to_string()),
-    ))))
+    Ok(str_value(toylang_rt::net_backend_name().to_string()))
 }
 
 fn net_socket(args: &[Value]) -> Result<Value, InterpreterError> {
@@ -185,6 +195,119 @@ fn i64_arg(value: &Value, name: &str) -> Result<i64, InterpreterError> {
             "extern fn `{name}`: expected a signed integer, got {other:?}"
         ))),
     }
+}
+
+/// The dotted quad of one end of `fd`.
+fn addr_text(fd: i32, peer: bool) -> String {
+    let mut out = [0u8; 16];
+    let n = toylang_rt::net_addr_text(fd, peer, &mut out);
+    String::from_utf8_lossy(&out[..n]).into_owned()
+}
+
+fn net_local_addr(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_net_local_addr", args, 1)?;
+    let fd = fd_arg(&args[0], "__extern_net_local_addr")?;
+    Ok(str_value(addr_text(fd, false)))
+}
+
+fn net_peer_addr(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_net_peer_addr", args, 1)?;
+    let fd = fd_arg(&args[0], "__extern_net_peer_addr")?;
+    Ok(str_value(addr_text(fd, true)))
+}
+
+fn net_peer_port(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_net_peer_port", args, 1)?;
+    let fd = fd_arg(&args[0], "__extern_net_peer_port")?;
+    Ok(Value::UInt64(toylang_rt::net_addr_port(fd, true)))
+}
+
+fn net_set_nodelay(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_net_set_nodelay", args, 2)?;
+    let fd = fd_arg(&args[0], "__extern_net_set_nodelay")?;
+    let on = bool_arg(&args[1], "__extern_net_set_nodelay")?;
+    Ok(Value::UInt64(toylang_rt::net_set_nodelay(fd, on)))
+}
+
+fn net_set_timeout(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_net_set_timeout", args, 3)?;
+    let fd = fd_arg(&args[0], "__extern_net_set_timeout")?;
+    let ms = i64_arg(&args[1], "__extern_net_set_timeout")?;
+    let write_side = bool_arg(&args[2], "__extern_net_set_timeout")?;
+    Ok(Value::UInt64(toylang_rt::net_set_timeout(fd, ms, write_side)))
+}
+
+fn net_udp_bind(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_net_udp_bind", args, 2)?;
+    let addr = str_arg(&args[0], "__extern_net_udp_bind")?;
+    let port = u64_arg(&args[1], "__extern_net_udp_bind")?;
+    Ok(Value::Int32(toylang_rt::net_udp_bind(addr.as_bytes(), port)))
+}
+
+fn net_set_dest(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_net_set_dest", args, 2)?;
+    let addr = str_arg(&args[0], "__extern_net_set_dest")?;
+    let port = u64_arg(&args[1], "__extern_net_set_dest")?;
+    let ok = toylang_rt::net_set_dest(addr.as_bytes(), port);
+    Ok(Value::UInt64(if ok { 0 } else { toylang_rt::net_status() }))
+}
+
+fn net_last_peer_addr(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_net_last_peer_addr", args, 0)?;
+    let mut out = [0u8; 16];
+    let n = toylang_rt::net_last_peer_addr(&mut out);
+    Ok(str_value(String::from_utf8_lossy(&out[..n]).into_owned()))
+}
+
+fn net_last_peer_port(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_net_last_peer_port", args, 0)?;
+    Ok(Value::UInt64(toylang_rt::net_last_peer_port()))
+}
+
+/// `UdpSocket::send_to` — the bytes go straight out of toylang memory.
+fn net_send_to(
+    ctx: &mut EvaluationContext<'_>,
+    args: &[Value],
+) -> Result<Value, InterpreterError> {
+    expect_args("__extern_net_send_to", args, 3)?;
+    let fd = fd_arg(&args[0], "__extern_net_send_to")?;
+    let len = u64_arg(&args[2], "__extern_net_send_to")?;
+    let mut dest = [0u8; 16];
+    let (dest_len, port) = toylang_rt::net_dest(&mut dest);
+    if len == 0 {
+        return Ok(Value::UInt64(toylang_rt::net_send_to(
+            fd,
+            &[],
+            &dest[..dest_len],
+            port,
+        )));
+    }
+    let sent = with_bytes(ctx, &args[1], len, "__extern_net_send_to", |bytes| {
+        toylang_rt::net_send_to(fd, bytes, &dest[..dest_len], port)
+    })?;
+    Ok(Value::UInt64(sent))
+}
+
+/// `UdpSocket::recv_from` — `recvfrom(2)` fills the caller's buffer.
+fn net_recv_from(
+    ctx: &mut EvaluationContext<'_>,
+    args: &[Value],
+) -> Result<Value, InterpreterError> {
+    expect_args("__extern_net_recv_from", args, 3)?;
+    let fd = fd_arg(&args[0], "__extern_net_recv_from")?;
+    let len = u64_arg(&args[2], "__extern_net_recv_from")?;
+    if len == 0 {
+        return Ok(Value::UInt64(toylang_rt::net_recv_from(fd, &mut [])));
+    }
+    let got = with_bytes_mut(ctx, &args[1], len, "__extern_net_recv_from", |bytes| {
+        toylang_rt::net_recv_from(fd, bytes)
+    })?;
+    Ok(Value::UInt64(got))
+}
+
+/// A toylang `str` result — a `String` object on this engine.
+fn str_value(s: String) -> Value {
+    Value::Heap(std::rc::Rc::new(std::cell::RefCell::new(Object::String(s))))
 }
 
 fn net_status(args: &[Value]) -> Result<Value, InterpreterError> {

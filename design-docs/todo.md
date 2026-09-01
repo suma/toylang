@@ -10,6 +10,15 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-01
+- **NET N4 — UDP / アドレス / socket option** — `UdpSocket`
+  (`bind` / `send_to` / `recv_from` / `last_peer_addr` / `last_peer_port`)、
+  `local_addr` / `peer_addr` / `local_port` / `peer_port`、
+  `set_nodelay` / `set_read_timeout` / `set_write_timeout`。
+  **アドレスと port は別々に返す** (port は数であって、コロンを探させる
+  理由が無い)。`send_to` は 5 引数で **extern の 4 引数上限を超える**ので、
+  宛先を直前の `set_dest` で置く 2 段にした (status ペアと同じ理屈で
+  atomic)。`SO_RCVTIMEO` の `struct timeval` は `tv_usec` が macOS 32bit /
+  Linux 64bit なので set 全体を `sys` に置いた。4 レーンで 3 件 pin。
 - **NET N3 — Poller (epoll / kqueue の統一形)** — `core/std/poll.t` の
   `Poller` / `Event`。[`EVENT_POLLING.md`](EVENT_POLLING.md) の決定
   1〜6 をそのまま実装: **1 fd = 1 イベント** (kqueue の read/write を

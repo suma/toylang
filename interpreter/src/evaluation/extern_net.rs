@@ -38,6 +38,9 @@ pub fn build_net_registry() -> HashMap<&'static str, ExternFn> {
     m.insert("__extern_net_take_error", net_take_error);
     m.insert("__extern_net_shutdown_write", net_shutdown_write);
     m.insert("__extern_net_status", net_status);
+    m.insert("__extern_net_bind", net_bind);
+    m.insert("__extern_net_local_port", net_local_port);
+    m.insert("__extern_net_accept", net_accept);
     m
 }
 
@@ -94,6 +97,26 @@ fn net_shutdown_write(args: &[Value]) -> Result<Value, InterpreterError> {
     expect_args("__extern_net_shutdown_write", args, 1)?;
     let fd = fd_arg(&args[0], "__extern_net_shutdown_write")?;
     Ok(Value::UInt64(toylang_rt::net_shutdown_write(fd)))
+}
+
+fn net_bind(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_net_bind", args, 3)?;
+    let addr = str_arg(&args[0], "__extern_net_bind")?;
+    let port = u64_arg(&args[1], "__extern_net_bind")?;
+    let backlog = fd_arg(&args[2], "__extern_net_bind")?;
+    Ok(Value::Int32(toylang_rt::net_bind(addr.as_bytes(), port, backlog)))
+}
+
+fn net_local_port(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_net_local_port", args, 1)?;
+    let fd = fd_arg(&args[0], "__extern_net_local_port")?;
+    Ok(Value::UInt64(toylang_rt::net_local_port(fd)))
+}
+
+fn net_accept(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_net_accept", args, 1)?;
+    let fd = fd_arg(&args[0], "__extern_net_accept")?;
+    Ok(Value::Int32(toylang_rt::net_accept(fd)))
 }
 
 fn net_status(args: &[Value]) -> Result<Value, InterpreterError> {

@@ -156,6 +156,37 @@ pub fn socket_stream(family: i32) -> i32 {
 }
 
 
+/// Linux-only calls. `accept4` is the whole reason this is a separate
+/// declaration from the shared socket surface in `lib.rs`: the BSDs
+/// have no such entry point, which is why accepting a non-blocking
+/// connection is one call here and three there.
+unsafe extern "C" {
+    fn accept4(fd: i32, addr: *mut u8, len: *mut u32, flags: i32) -> i32;
+}
+
+/// Accept a pending connection, handing back a non-blocking fd.
+///
+/// `accept4` applies the flags atomically. On the BSDs the accepted
+/// socket inherits neither the listener's non-blocking flag nor its
+/// `SO_NOSIGPIPE`, so that side has to set both again.
+pub fn accept_nonblocking(listen_fd: i32) -> i32 {
+    unsafe {
+        accept4(
+            listen_fd,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+            SOCK_NONBLOCK | SOCK_CLOEXEC,
+        )
+    }
+}
+
+/// Read the port back out of a `sockaddr_in`. Same offset and byte
+/// order on both platforms, but it lives here because it reads the
+/// struct — the point of the layer is that nothing above it does.
+pub fn sockaddr_port(sa: *const u8) -> u16 {
+    unsafe { u16::from_be_bytes([*sa.add(2), *sa.add(3)]) }
+}
+
 /// `send(2)` that cannot raise SIGPIPE. The flag is per call here;
 /// the BSDs put the equivalent on the socket at creation.
 pub fn send_nosignal(fd: i32, buf: *const u8, len: usize) -> isize {

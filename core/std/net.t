@@ -50,6 +50,9 @@ extern fn __extern_net_set_blocking(fd: i32, on: bool) -> u64 from "toylang_rt" 
 extern fn __extern_net_take_error(fd: i32) -> u64 from "toylang_rt" as "toy_net_take_error"
 extern fn __extern_net_shutdown_write(fd: i32) -> u64 from "toylang_rt" as "toy_net_shutdown_write"
 extern fn __extern_net_status() -> u64 from "toylang_rt" as "toy_net_status"
+extern fn __extern_net_bind(addr: str, port: u64, backlog: i32) -> i32 from "toylang_rt" as "toy_net_bind"
+extern fn __extern_net_local_port(fd: i32) -> u64 from "toylang_rt" as "toy_net_local_port"
+extern fn __extern_net_accept(fd: i32) -> i32 from "toylang_rt" as "toy_net_accept"
 
 # Which event-notification backend this build uses: `"epoll"` on
 # Linux, `"kqueue"` on macOS and the other BSDs.
@@ -139,6 +142,114 @@ fn net_error_from_status(status: u64) -> NetError {
     elif status == 14u64 { NetError::TooManyOpenFiles }
     elif status == 15u64 { NetError::InvalidInput }
     else { NetError::Unknown }
+}
+
+# A listening TCP socket (N2).
+#
+# **Owns its fd**, the same way `TcpStream` does: `impl Drop` closes
+# it at scope exit and the move checker (E0014) reports a listener
+# that was handed away and then used again.
+#
+# The listener is non-blocking, so `accept` normally answers
+# `Err(NetError::WouldBlock)` — that is "no connection is pending yet",
+# the ordinary state of an idle server, not a failure. Call
+# `set_blocking(true)` to wait instead.
+pub struct TcpListener {
+    fd: i32,
+}
+
+impl Drop for TcpListener {
+    fn drop(&mut self) {
+        if self.fd >= 0i32 {
+            val ignored: u64 = __extern_net_close(self.fd)
+            self.fd = -1i32
+        }
+    }
+}
+
+impl TcpListener {
+    # Bind to `addr:port` and start listening.
+    #
+    # **`port = 0` asks the OS for a free port**; read it back with
+    # `local_port`. That is how a server binds without naming a
+    # number, and the only way several can run at once — which is
+    # what makes a test of one deterministic.
+    #
+    # `SO_REUSEADDR` is set before the bind, so a listener that has
+    # just closed does not hold the address through TIME_WAIT.
+    pub fn bind(addr: str, port: u64) -> Result<TcpListener, NetError> {
+        val fd: i32 = __extern_net_bind(addr, port, 128i32)
+        if fd < 0i32 {
+            val status: u64 = __extern_net_status()
+            val err: NetError = net_error_from_status(status)
+            return Result::Err(err)
+        }
+        val l = TcpListener { fd: fd }
+        Result::Ok(l)
+    }
+
+    # The port this listener actually bound to — the one the OS chose
+    # when `bind` was asked for 0.
+    pub fn local_port(&self) -> Result<u64, NetError> {
+        val port: u64 = __extern_net_local_port(self.fd)
+        val status: u64 = __extern_net_status()
+        if status == 0u64 {
+            Result::Ok(port)
+        } else {
+            val err: NetError = net_error_from_status(status)
+            Result::Err(err)
+        }
+    }
+
+    # Take a pending connection.
+    #
+    # `Err(NetError::WouldBlock)` means none is waiting — the normal
+    # answer while a non-blocking server idles. The stream that comes
+    # back is non-blocking too, whatever this listener's mode is.
+    pub fn accept(&self) -> Result<TcpStream, NetError> {
+        val fd: i32 = __extern_net_accept(self.fd)
+        if fd < 0i32 {
+            val status: u64 = __extern_net_status()
+            val err: NetError = net_error_from_status(status)
+            return Result::Err(err)
+        }
+        val s = TcpStream { fd: fd }
+        Result::Ok(s)
+    }
+
+    # Switch between blocking and non-blocking. With blocking on,
+    # `accept` waits for a connection instead of answering
+    # `WouldBlock`.
+    pub fn set_blocking(&self, on: bool) -> Result<(), NetError> {
+        val status: u64 = __extern_net_set_blocking(self.fd, on)
+        if status == 0u64 {
+            Result::Ok(())
+        } else {
+            val err: NetError = net_error_from_status(status)
+            Result::Err(err)
+        }
+    }
+
+    # The underlying descriptor, for registering with a poller (N3).
+    pub fn as_fd(&self) -> i32 {
+        self.fd
+    }
+
+    # Close now rather than at scope exit. Idempotent, like
+    # `TcpStream::close`.
+    pub fn close(&mut self) -> Result<(), NetError> {
+        if self.fd < 0i32 {
+            return Result::Ok(())
+        }
+        val status: u64 = __extern_net_close(self.fd)
+        self.fd = -1i32
+        if status == 0u64 {
+            Result::Ok(())
+        } else {
+            val err: NetError = net_error_from_status(status)
+            Result::Err(err)
+        }
+    }
 }
 
 # A connected TCP socket.

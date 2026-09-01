@@ -10,6 +10,13 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-01
+- **NET N2 — TCP server (`TcpListener`)** — `bind` / `local_port` /
+  `accept` / `set_blocking` / `as_fd` / `close`。**テストは 1 プロセスで
+  自己完結**する (同じプログラムが listener と client を持つ) ので
+  thread も外部 peer も要らず完全に決定的。`bind` は port 0 を要求して
+  `local_port` で読み戻す形なので番号を書かない。`SO_REUSEADDR` は
+  bind の前に立てる (TIME_WAIT で再起動が `AddrInUse` になるのを防ぐ)。
+  4 レーン一致で 3 件 pin。
 - **COMPOUND-BLOCK-RHS — `match` から compound を取り出せる** —
   `val s = match r { Result::Ok(s) => s, Result::Err(e) => { return .. } }`
   が lower できるようになった。**`Result` を返すコンストラクタの

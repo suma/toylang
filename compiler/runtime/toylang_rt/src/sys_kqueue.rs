@@ -121,7 +121,7 @@ pub const EINPROGRESS: i32 = 36;
 // ---------------------------------------------------------------------------
 
 use crate::{
-    close, fcntl, inet_pton, send, setsockopt, NET_ADDR_IN_USE,
+    accept, close, fcntl, inet_pton, send, setsockopt, NET_ADDR_IN_USE,
     NET_ADDR_NOT_AVAILABLE, NET_BROKEN_PIPE, NET_CONNECTION_ABORTED, NET_CONNECTION_REFUSED,
     NET_CONNECTION_RESET, NET_HOST_UNREACHABLE, NET_IN_PROGRESS, NET_INTERRUPTED,
     NET_INVALID_INPUT, NET_NETWORK_UNREACHABLE, NET_NOT_CONNECTED, NET_TIMED_OUT,
@@ -152,6 +152,34 @@ pub fn socket_stream(family: i32) -> i32 {
     fd
 }
 
+
+/// Accept a pending connection, handing back a non-blocking fd.
+///
+/// Linux does this in one `accept4()`; the BSDs inherit neither the
+/// non-blocking flag nor `SO_NOSIGPIPE` from the listener, so both
+/// are set again on the accepted socket. Forgetting either is the
+/// classic BSD bug: the listener is non-blocking, the connection is
+/// not, and the first `read` on an idle connection blocks the whole
+/// single-threaded program.
+pub fn accept_nonblocking(listen_fd: i32) -> i32 {
+    let fd = unsafe { accept(listen_fd, core::ptr::null_mut(), core::ptr::null_mut()) };
+    if fd < 0 {
+        return -1;
+    }
+    if set_blocking(fd, false) != 0 {
+        close_preserving_errno(fd);
+        return -1;
+    }
+    set_nosigpipe(fd);
+    fd
+}
+
+/// Read the port back out of a `sockaddr_in`. Same offset and byte
+/// order on both platforms, but it lives here because it reads the
+/// struct — the point of the layer is that nothing above it does.
+pub fn sockaddr_port(sa: *const u8) -> u16 {
+    unsafe { u16::from_be_bytes([*sa.add(2), *sa.add(3)]) }
+}
 
 /// `send(2)` that cannot raise SIGPIPE. The socket already carries
 /// `SO_NOSIGPIPE`, so no per-call flag is needed; Linux passes

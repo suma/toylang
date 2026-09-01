@@ -140,6 +140,10 @@ unsafe extern "C" {
 unsafe extern "C" {
     fn socket(domain: i32, ty: i32, protocol: i32) -> i32;
     fn connect(fd: i32, addr: *const u8, len: u32) -> i32;
+    fn bind(fd: i32, addr: *const u8, len: u32) -> i32;
+    fn listen(fd: i32, backlog: i32) -> i32;
+    fn accept(fd: i32, addr: *mut u8, len: *mut u32) -> i32;
+    fn getsockname(fd: i32, addr: *mut u8, len: *mut u32) -> i32;
     fn send(fd: i32, buf: *const u8, len: usize, flags: i32) -> isize;
     fn recv(fd: i32, buf: *mut u8, len: usize, flags: i32) -> isize;
     fn shutdown(fd: i32, how: i32) -> i32;
@@ -2894,6 +2898,89 @@ pub fn net_take_error(fd: i32) -> u64 {
     st.net_status
 }
 
+/// Bind a fresh socket to `addr:port` and start listening.
+///
+/// `port = 0` asks the OS for an ephemeral port; read it back with
+/// [`net_local_port`]. That pair is what lets a test bind without
+/// naming a number, which is the only way several of them can run at
+/// once.
+///
+/// `SO_REUSEADDR` is set before the bind so a listener that has just
+/// closed does not hold the address through TIME_WAIT — the reason a
+/// restarted server otherwise fails with `AddrInUse` for a minute.
+pub fn net_bind(addr: &[u8], port: u64, backlog: i32) -> i32 {
+    let st = thread_state();
+    if port > u16::MAX as u64 {
+        st.net_status = NET_INVALID_INPUT;
+        return -1;
+    }
+    let fd = sys::socket_stream(sys::AF_INET);
+    if fd < 0 {
+        net_record(false);
+        return -1;
+    }
+    let on: i32 = 1;
+    unsafe {
+        setsockopt(
+            fd,
+            sys::SOL_SOCKET,
+            sys::SO_REUSEADDR,
+            (&on as *const i32).cast(),
+            core::mem::size_of::<i32>() as u32,
+        );
+    }
+    let mut sa = [0u8; SOCKADDR_MAX_BYTES];
+    if sys::sockaddr_from_str(addr, port as u16, sys::AF_INET, sa.as_mut_ptr()) != 0 {
+        close_quietly(fd);
+        thread_state().net_status = NET_INVALID_INPUT;
+        return -1;
+    }
+    if unsafe { bind(fd, sa.as_ptr(), sys::SOCKADDR_IN_BYTES as u32) } != 0 {
+        net_record(false);
+        close_quietly(fd);
+        return -1;
+    }
+    if unsafe { listen(fd, backlog) } != 0 {
+        net_record(false);
+        close_quietly(fd);
+        return -1;
+    }
+    net_record(true);
+    fd
+}
+
+/// The port `fd` is actually bound to. Answers 0 with a status when it
+/// cannot be read.
+pub fn net_local_port(fd: i32) -> u64 {
+    let mut sa = [0u8; SOCKADDR_MAX_BYTES];
+    let mut len: u32 = sys::SOCKADDR_IN_BYTES as u32;
+    if unsafe { getsockname(fd, sa.as_mut_ptr(), &mut len) } != 0 {
+        net_record(false);
+        return 0;
+    }
+    net_record(true);
+    sys::sockaddr_port(sa.as_ptr()) as u64
+}
+
+/// Take a pending connection, or `-1`.
+///
+/// On a non-blocking listener "nothing pending" is
+/// `NET_WOULD_BLOCK` — the ordinary answer in an event loop, not a
+/// failure. The accepted socket is non-blocking too, which the BSDs
+/// do not give for free (see `sys::accept_nonblocking`).
+pub fn net_accept(fd: i32) -> i32 {
+    let got = sys::accept_nonblocking(fd);
+    net_record(got >= 0);
+    got
+}
+
+/// Close without disturbing the errno the caller is about to report.
+fn close_quietly(fd: i32) {
+    let saved = current_errno();
+    unsafe { close(fd) };
+    set_errno(saved);
+}
+
 /// Half-close the write side, so the peer's next read returns 0.
 /// Ends a request without giving up the descriptor the reply arrives
 /// on.
@@ -2974,6 +3061,28 @@ pub extern "C" fn toy_net_take_error(fd: i32) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn toy_net_shutdown_write(fd: i32) -> u64 {
     net_shutdown_write(fd)
+}
+
+/// # Safety
+///
+/// `addr` must be a toylang str handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_net_bind(addr: *const u8, port: u64, backlog: i32) -> i32 {
+    if addr.is_null() {
+        thread_state().net_status = NET_INVALID_INPUT;
+        return -1;
+    }
+    net_bind(str_bytes(addr), port, backlog)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_net_local_port(fd: i32) -> u64 {
+    net_local_port(fd)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_net_accept(fd: i32) -> i32 {
+    net_accept(fd)
 }
 
 /// RUNTIME-IO: the status of the most recent `toy_io_read_file` call

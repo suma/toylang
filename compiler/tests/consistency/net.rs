@@ -376,3 +376,162 @@ fn every_lane_half_closes_and_still_reads_the_reply() {
     assert_eq!(interpreter_value(&src) & 0xffff, 1000 + 200 + 209);
     assert_consistent(&src, "net_shutdown_write");
 }
+
+// --- N2: the TCP server ---------------------------------------------
+//
+// These need no peer at all. One program is both listener and client,
+// which is what makes them fully deterministic: no thread, no external
+// process, nothing to synchronise with. `bind` asks for port 0 and
+// `local_port` reads back what the OS chose, so nothing is hardcoded
+// and any number of these can run at once.
+
+/// Bind, connect to yourself, accept, and carry bytes across — every
+/// lane, in one process.
+#[test]
+fn every_lane_serves_itself_over_a_loopback_socket() {
+    let src = r#"
+        fn main() -> u64 {
+            val bound = TcpListener::bind("127.0.0.1", 0u64)
+            var l = match bound {
+                Result::Ok(x) => x,
+                Result::Err(e) => { return 80u64 }
+            }
+            val p = l.local_port()
+            val port = match p {
+                Result::Ok(n) => n,
+                Result::Err(e) => { return 81u64 }
+            }
+            if port == 0u64 { return 82u64 }
+
+            # Nothing has connected, so a non-blocking accept says so.
+            # `WouldBlock` is the idle state of a server, not an error,
+            # and a lane that reported it as something else would be
+            # unable to run an event loop at all.
+            val idle = l.accept()
+            val idle_ok = match idle {
+                Result::Ok(s) => 0u64,
+                Result::Err(e) => match e { NetError::WouldBlock => 1u64, _ => 0u64 },
+            }
+
+            val conn = TcpStream::connect("127.0.0.1", port)
+            var client = match conn {
+                Result::Ok(s) => s,
+                Result::Err(e) => { return 83u64 }
+            }
+
+            # The handshake is done, but the connection reaching the
+            # listener's queue is the kernel's business: a non-blocking
+            # accept can still say WouldBlock for a moment. Wait rather
+            # than race.
+            val listener_blocking = l.set_blocking(true)
+            val a = l.accept()
+            var server = match a {
+                Result::Ok(s) => s,
+                Result::Err(e) => { return 84u64 }
+            }
+
+            val msg = String::from_str("hey")
+            val window = msg.as_span()
+            val out: Span<u8> = match window {
+                Option::Some(w) => w,
+                Option::None => { return 85u64 }
+            }
+            val wrote = client.write(out)
+            match wrote {
+                Result::Ok(n) => { }
+                Result::Err(e) => { return 86u64 }
+            }
+
+            val server_blocking = server.set_blocking(true)
+            var buf: Vec<u8> = Vec::with_capacity(32u64)
+            val room = buf.capacity_span()
+            var got: u64 = 0u64
+            match room {
+                Option::Some(w) => {
+                    val r = server.read(w)
+                    match r {
+                        Result::Ok(n) => { got = n }
+                        Result::Err(e) => { got = 0u64 }
+                    }
+                }
+                Option::None => { got = 0u64 }
+            }
+            buf.set_size(got)
+            var sum: u64 = 0u64
+            var i: u64 = 0u64
+            while i < buf.size() {
+                sum = sum + buf.get(i) as u64
+                i = i + 1u64
+            }
+            idle_ok + got + sum
+        }
+    "#;
+    // 1 (idle accept blocked) + 3 bytes + 'h' + 'e' + 'y' (326).
+    assert_eq!(interpreter_value(src) & 0xffff, 330);
+    assert_consistent(src, "net_self_serve");
+}
+
+/// Two listeners, both asking for port 0, get two different ports —
+/// which is the property that lets these tests run in parallel and
+/// the reason nothing here names a number.
+#[test]
+fn every_lane_gets_a_distinct_ephemeral_port() {
+    let src = r#"
+        fn main() -> u64 {
+            val first = TcpListener::bind("127.0.0.1", 0u64)
+            var a = match first {
+                Result::Ok(x) => x,
+                Result::Err(e) => { return 80u64 }
+            }
+            val second = TcpListener::bind("127.0.0.1", 0u64)
+            var b = match second {
+                Result::Ok(x) => x,
+                Result::Err(e) => { return 81u64 }
+            }
+            val pa = a.local_port()
+            val port_a = match pa { Result::Ok(n) => n, Result::Err(e) => { return 82u64 } }
+            val pb = b.local_port()
+            val port_b = match pb { Result::Ok(n) => n, Result::Err(e) => { return 83u64 } }
+            if port_a == 0u64 { return 84u64 }
+            if port_b == 0u64 { return 85u64 }
+            if port_a == port_b { return 86u64 }
+            7u64
+        }
+    "#;
+    assert_eq!(interpreter_value(src) & 0xff, 7);
+    assert_consistent(src, "net_ephemeral_ports");
+}
+
+/// A closed listener refuses the connections it used to take, and
+/// `close` is idempotent here too.
+#[test]
+fn every_lane_stops_serving_once_the_listener_closes() {
+    let src = r#"
+        fn main() -> u64 {
+            val bound = TcpListener::bind("127.0.0.1", 0u64)
+            var l = match bound {
+                Result::Ok(x) => x,
+                Result::Err(e) => { return 80u64 }
+            }
+            val p = l.local_port()
+            val port = match p { Result::Ok(n) => n, Result::Err(e) => { return 81u64 } }
+
+            val first = l.close()
+            val a = match first { Result::Ok(_) => 1u64, Result::Err(e) => 0u64 }
+            val second = l.close()
+            val b = match second { Result::Ok(_) => 1u64, Result::Err(e) => 0u64 }
+            if l.as_fd() >= 0i32 { return 82u64 }
+
+            # The port is free again, so connecting to it is refused
+            # rather than accepted by a listener that should be gone.
+            val conn = TcpStream::connect("127.0.0.1", port)
+            val refused = match conn {
+                Result::Ok(s) => 0u64,
+                Result::Err(e) => match e { NetError::ConnectionRefused => 4u64, _ => 0u64 },
+            }
+            a + b + refused
+        }
+    "#;
+    assert_eq!(interpreter_value(src) & 0xff, 6);
+    assert_consistent(src, "net_listener_closed");
+}

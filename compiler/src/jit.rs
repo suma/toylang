@@ -444,6 +444,12 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
         "toy_net_shutdown_write",
         toylang_rt::toy_net_shutdown_write as *const u8,
     );
+    jit_builder.symbol("toy_net_bind", toylang_rt::toy_net_bind as *const u8);
+    jit_builder.symbol(
+        "toy_net_local_port",
+        toylang_rt::toy_net_local_port as *const u8,
+    );
+    jit_builder.symbol("toy_net_accept", toylang_rt::toy_net_accept as *const u8);
     jit_builder.symbol("toy_io_read_file", toylang_rt::toy_io_read_file as *const u8);
     jit_builder.symbol(
         "toy_io_read_file_into",

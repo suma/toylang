@@ -107,7 +107,7 @@ pub fn analyze(
     // scope-exit path, exactly like the allocator wrappers' storage.
     if let Some(drop_sym) = interner.get("Drop") {
         let stdlib_owning: Vec<DefaultSymbol> =
-            ["Arena", "FixedBuffer", "SlotRegion", "Box", "Vec", "SoaVec", "TcpStream"]
+            ["Arena", "FixedBuffer", "SlotRegion", "Box", "Vec", "SoaVec", "TcpStream", "TcpListener"]
                 .iter()
                 .filter_map(|name| interner.get(name))
                 .collect();

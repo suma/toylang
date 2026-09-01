@@ -57,3 +57,4 @@ mod net;
 mod checked_narrow;
 mod assignment_unit;
 mod enum_arg_position;
+mod char_literal_generic_arg;

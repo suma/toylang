@@ -10,6 +10,18 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-02
+- **CHAR-LITERAL-GENERIC-ARG — レシーバが決めた型引数を
+  パラメータ型に流すようにした** — `Span<u8>::set(i, 'A')` が
+  `arg 3 (v48) has type i32, expected i8` で **cranelift の verifier
+  クラッシュ** (型検査は通してしまう)。CHAR-LITERAL-NUM の narrowing は
+  「整数型を名指しする位置」で効くが、`fn set(&mut self, i: u64, v: T)`
+  の `T` は名指しに見えず、hint が捨てられて 32bit のままだった。
+  **具体型引数を持つレシーバは既に `T` を決めている**ので、
+  `declared_method_param_types` で `substitute_generics` してから
+  filter する形に。ついでに `v.push(65)` (サフィックス無し整数) も
+  `u64` 既定ではなく要素型に落ちるようになった。**method 自身の
+  generic (`fn pick<U>`) は据え置き** — レシーバは `U` を知らない。
+  4 レーンに 2 件 + interpreter に 1 件 pin
 - **DIAG-SYMBOL-NAME-LOWER — lowering の診断も名前を綴るようにした** —
   frontend は 2026-09-01 に決着していたが、監査は frontend だけだった。
   `compiler_lower` に 83 箇所の `{:?}` があり、`compiler MVP cannot lower
@@ -935,14 +947,6 @@
   associated function の解決だけ。回避策があるので `Vec::as_span` は
   literal で書いたが、**ユーザが書く stdlib 外のサブモジュールでも同じ
   ことが起きる**。
-
-- **CHAR-LITERAL-GENERIC-ARG: char リテラルを generic 引数に渡すと
-  compiled lane が verifier で落ちる** ★★ — `Span<u8>::set(i, 'A')` は
-  `arg 3 (v54) has type i32, expected i8` で **cranelift の verifier
-  エラー**になる (診断ではなくクラッシュ)。CHAR-LITERAL-NUM の narrowing
-  は「他の整数型を名指しする位置」で効くが、パラメータ型が `T` の
-  ときは名指しになっておらず 32bit のまま。`65u8` と書けば通る。
-  2026-08-31 に CONV-SPAN のテストで踏んだ。
 
 - **TREE-WALKER-CONCRETE-IMPL** ★ — `impl C<u8>` と `impl C<i64>` の
   両方に同名の associated function があると tree-walker が spec を

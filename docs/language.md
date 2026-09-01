@@ -832,6 +832,14 @@ before. Only a literal *written as a character* moves — a suffixed
 literal already named its type, so nothing is left to decide — and
 only when the code point fits, so nothing is truncated silently.
 
+A generic parameter counts as naming a type once the receiver has
+decided it. `Vec<u8>::push(v: T)` is declared with a `T`, but a
+`Vec<u8>` has already fixed `T` to `u8`, so `v.push('B')` and
+`s.set(0u64, 'A')` on a `Span<u8>` narrow the same way an explicitly
+`u8` parameter would. A parameter the *method* introduced
+(`fn pick<U>(other: U)`) names nothing the receiver knows, so there
+the argument still decides.
+
 The two levels stay distinct in the standard library: **byte-wise
 access and iteration yield `u8`** (`String::get(i)`, `String::iter()`,
 `Vec<u8>`), while the **character-level API takes the `u32` code

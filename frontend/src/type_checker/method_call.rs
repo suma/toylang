@@ -281,6 +281,34 @@ impl<'a> TypeCheckerVisitor<'a> {
             .context
             .get_struct_method(name, *method, &type_args)
             .or_else(|| self.context.get_struct_method(name, *method, &[]))?;
+        // CHAR-LITERAL-GENERIC-ARG: a receiver with concrete type
+        // arguments has already decided what its impl-level parameters
+        // are, so `fn set(&mut self, i: u64, v: T)` on a `Span<u8>`
+        // declares a `u8` here — not a `T` with nothing to say.
+        //
+        // Without the substitution the slot looked generic, the hint
+        // was dropped, and a char literal argument stayed the `u32` it
+        // is held as. `s.set(0u64, 'A')` then reached cranelift as an
+        // i32 against an i8 parameter: `arg 3 (v48) has type i32,
+        // expected i8` — a verifier crash rather than a diagnostic.
+        //
+        // A parameter that is still generic after this is one the
+        // *method* introduced (`fn map<U>`), and that one really does
+        // name nothing; it keeps being filtered out below.
+        let mut subst: std::collections::HashMap<DefaultSymbol, TypeDecl> =
+            std::collections::HashMap::new();
+        if !type_args.is_empty() {
+            let decl_params = self
+                .context
+                .get_struct_generic_params(name)
+                .cloned()
+                .or_else(|| self.context.enum_generic_params.get(&name).cloned());
+            if let Some(decl_params) = decl_params {
+                for (decl, concrete) in decl_params.iter().zip(type_args.iter()) {
+                    subst.insert(*decl, concrete.clone());
+                }
+            }
+        }
         // A by-value `self: Self` receiver occupies parameter slot 0;
         // `&self` / `&mut self` receivers are kept out of the list.
         let offset = if method_func.parameter.len() > arg_count { 1 } else { 0 };
@@ -290,7 +318,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                     method_func
                         .parameter
                         .get(i + offset)
-                        .map(|(_, ty)| ty.clone())
+                        .map(|(_, ty)| {
+                            if subst.is_empty() {
+                                ty.clone()
+                            } else {
+                                ty.substitute_generics(&subst)
+                            }
+                        })
                         .filter(|ty| !matches!(ty, TypeDecl::Generic(_) | TypeDecl::Self_))
                 })
                 .collect(),

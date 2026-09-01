@@ -1773,6 +1773,25 @@ Both forms require an initializer: a bare `var d` (no `=`) is a parse
 error. There is no declare-now-assign-later shape, and no implicit
 null to stand in until the first assignment.
 
+**An assignment produces no value: its type is `()`.** This holds for
+every form — `a = v`, `p.f = v`, `a[i] = v`, `d[k] = v`, a
+`__setitem__` write, and the compound operators, which desugar to
+`a = a OP b` at parse time. So a block ending in an assignment is a
+`()` block:
+
+```rust
+match x {
+    Option::Some(v) => { acc = acc + v }   # both arms are ()
+    Option::None    => {}
+}
+
+fn f() -> u64 { var a = 0u64  a = 5u64 }  # error: expected u64, got ()
+```
+
+Assignment is not usable in an expression position either: `val x = (a = b)`
+is a parse error and `a = b = c` does not run. `()` is what makes the
+three agree.
+
 ### Top-level `const` declarations
 
 A `const` is an immutable binding declared at file scope (alongside
@@ -1956,9 +1975,9 @@ Bind the struct first if you need one (`val it = MyIter { .. }`).
        }
 
    The trailing `continue` after `body` exists purely to unify the
-   match arm types at `Unit` (so the user's body may end in any
-   expression — e.g. an assignment whose rhs type would otherwise
-   clash with the `None` arm's `break`).
+   match arm types at `Unit`, so the user's body may end in any
+   expression — `for x in it { x + 1u64 }` has a `u64` that would
+   otherwise clash with the `None` arm's `break`.
 
    The protocol is **structural**, not nominal: there is no
    `trait Iterator<T>` declaration to implement, because generic

@@ -388,9 +388,13 @@ fn desugar_for_in_iterator(
     // the None-arm's `{ break }` (both Unit). The trailing
     // `continue` is a no-op semantically (the while body has
     // nothing after the match), but its `Unit` return type
-    // discards whatever the user's last statement produced
-    // — without it, `for x in iter { sum = sum + x }` fails
-    // type-check because Assign returns its rhs type.
+    // discards whatever the user's last statement produced.
+    //
+    // Assignment used to be the motivating case
+    // (`for x in iter { sum = sum + x }`), and is not any more —
+    // an assignment is `Unit`. The general one remains: a body may
+    // end in *any* expression, so `for x in it { x + 1u64 }` still
+    // needs its `u64` discarded before the arms are compared.
     let user_body_stmt = parser
         .ast_builder
         .add_stmt_with_location(Stmt::Expression(body), Some(location));

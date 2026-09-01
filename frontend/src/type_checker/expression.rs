@@ -1128,7 +1128,22 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
             }
         }
-        Ok(lhs_ty)
+        // An assignment produces no value.
+        //
+        // This returned `lhs_ty`, which made a block ending in an
+        // assignment carry that type — so
+        // `match x { Some(v) => { acc = acc + v } None => {} }` was
+        // rejected as "arm 0 is i64, arm 1 is ()", and
+        // `fn f() -> u64 { a = 5u64 }` compiled and returned 5. The
+        // spec never granted assignment a value: it cannot appear in
+        // an expression position (`val x = (a = b)` is a parse error)
+        // and `a = b = c` does not run. The value was observable only
+        // as a block's tail, which is the accident.
+        //
+        // `a[i] = v` already answered `Unit` (`handle_array_slice_assign`),
+        // so this is the inconsistency going away rather than a new rule.
+        let _ = lhs_ty;
+        Ok(TypeDecl::Unit)
     }
 
     /// Type check identifiers

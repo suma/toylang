@@ -704,6 +704,32 @@ struct State<'a, 'b> {
 /// codegen reads the payload Variable when the variant pattern binds
 /// it. The pair is created in `try_gen_enum_local` and consumed by
 /// `Match` (and, in JE-2d, by function boundary expansion).
+/// One name's entry in every per-name binding map, taken before a
+/// block redeclared it (see `FunctionCodegen::gen_block`).
+struct SavedBinding {
+    name: DefaultSymbol,
+    local_ty: Option<ScalarTy>,
+    local_var: Option<Variable>,
+    struct_local: Option<HashMap<DefaultSymbol, Variable>>,
+    struct_local_ty: Option<StructLocalInfo>,
+    tuple_local: Option<Vec<Variable>>,
+    tuple_local_ty: Option<Vec<ScalarTy>>,
+    enum_local: Option<EnumLocal>,
+    enum_local_ty: Option<DefaultSymbol>,
+}
+
+/// Put `prior` back, or remove the key when there was nothing there.
+fn restore_entry<V>(map: &mut HashMap<DefaultSymbol, V>, name: DefaultSymbol, prior: Option<V>) {
+    match prior {
+        Some(v) => {
+            map.insert(name, v);
+        }
+        None => {
+            map.remove(&name);
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct EnumLocal {
     pub(crate) tag: Variable,
@@ -2088,7 +2114,71 @@ impl<'a, 'b> State<'a, 'b> {
         }
     }
 
+    /// Lower a block, and give the names it declares back at the end.
+    ///
+    /// The binding maps are keyed by name and were never unwound, so a
+    /// `val` / `var` in a nested block permanently replaced an outer
+    /// binding of the same name: this engine answered 1011 where the
+    /// other four answered 101 for
+    ///
+    ///     var x = 100u64
+    ///     { var x = 10u64  x = x + 1000u64 }
+    ///     x = x + 1u64
+    ///     x
+    ///
+    /// It stayed hidden because `interpreter/example/scope.t` — the
+    /// example whose whole subject is this — ended on the assignment
+    /// rather than reading `x` afterwards, and an assignment's value
+    /// was the function's result until assignments became `Unit`.
     fn gen_block(&mut self, stmts: &[StmtRef]) -> Result<Option<Value>, String> {
+        let saved = self.save_block_scope(stmts);
+        let out = self.gen_block_inner(stmts);
+        self.restore_block_scope(saved);
+        out
+    }
+
+    /// The prior entry, in every per-name map, for each name this block
+    /// declares. Only those names: a block that declares nothing pays
+    /// one pass over its statements.
+    fn save_block_scope(&self, stmts: &[StmtRef]) -> Vec<SavedBinding> {
+        let mut saved = Vec::new();
+        for s in stmts {
+            let name = match self.program.statement.get(s) {
+                Some(Stmt::Val(name, _, _)) | Some(Stmt::Var(name, _, _)) => name,
+                _ => continue,
+            };
+            saved.push(SavedBinding {
+                name,
+                local_ty: self.local_types.get(&name).copied(),
+                local_var: self.local_vars.get(&name).copied(),
+                struct_local: self.struct_locals.get(&name).cloned(),
+                struct_local_ty: self.struct_local_types.get(&name).cloned(),
+                tuple_local: self.tuple_locals.get(&name).cloned(),
+                tuple_local_ty: self.tuple_local_types.get(&name).cloned(),
+                enum_local: self.enum_locals.get(&name).cloned(),
+                enum_local_ty: self.enum_local_types.get(&name).copied(),
+            });
+        }
+        saved
+    }
+
+    fn restore_block_scope(&mut self, saved: Vec<SavedBinding>) {
+        // Reverse order so a name declared twice in one block ends up
+        // with the entry that was live before the block, not the one
+        // between the two declarations.
+        for b in saved.into_iter().rev() {
+            restore_entry(self.local_types, b.name, b.local_ty);
+            restore_entry(self.local_vars, b.name, b.local_var);
+            restore_entry(self.struct_locals, b.name, b.struct_local);
+            restore_entry(self.struct_local_types, b.name, b.struct_local_ty);
+            restore_entry(self.tuple_locals, b.name, b.tuple_local);
+            restore_entry(self.tuple_local_types, b.name, b.tuple_local_ty);
+            restore_entry(self.enum_locals, b.name, b.enum_local);
+            restore_entry(self.enum_local_types, b.name, b.enum_local_ty);
+        }
+    }
+
+    fn gen_block_inner(&mut self, stmts: &[StmtRef]) -> Result<Option<Value>, String> {
         let mut last_value: Option<Value> = None;
         for s in stmts {
             let stmt = self

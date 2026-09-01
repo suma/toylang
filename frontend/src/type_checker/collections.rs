@@ -215,9 +215,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                                     self.type_name_for_error(&resolved_value_type)
                                 )));
                             }
-                            Ok(resolved_value_type)
+                            // No value: an assignment is `Unit` at
+                            // every form (see `visit_assign`).
+                            Ok(TypeDecl::Unit)
                         } else {
-                            Ok(value_type.clone())
+                            Ok(TypeDecl::Unit)
                         }
                     } else {
                         Err(TypeCheckError::generic_error("Dictionary assignment requires key index"))
@@ -237,8 +239,9 @@ impl<'a> TypeCheckerVisitor<'a> {
                         // receiver spelling).
                         let key_type_result = self.visit_expr(key_expr)?;
                         self.check_struct_setitem_access(struct_name, key_type_result, &value_type, &object_type)?;
-                        // Assignment returns the value type
-                        Ok(value_type)
+                        // No value: an assignment is `Unit` at every
+                        // form (see `visit_assign`).
+                        Ok(TypeDecl::Unit)
                     } else {
                         Err(TypeCheckError::generic_error("Struct assignment requires key index"))
                     }
@@ -254,7 +257,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     if let Some(key_expr) = start {
                         let key_type_result = self.visit_expr(key_expr)?;
                         self.check_struct_setitem_access(struct_name, key_type_result, &value_type, &object_type)?;
-                        Ok(value_type)
+                        Ok(TypeDecl::Unit)
                     } else {
                         Err(TypeCheckError::generic_error("Struct assignment requires key index"))
                     }

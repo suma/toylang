@@ -855,8 +855,101 @@ impl<'a> FunctionLower<'a> {
                     self.load_leaves(flatten_tuple_element_locals(&elements)),
                 ))
             }
+            // ENUM-VARIANT-ARG: an enum construction written straight
+            // into an argument (`take(Color::Red)`, `area(Shape::Circle(3i64))`).
+            // Same story as the struct / tuple literals above — the
+            // construction only had a home on a `val`, so every
+            // `Option`-taking API forced a binding at each call site.
+            // The unit form parses as a `QualifiedIdentifier`, the
+            // tuple form as an `AssociatedFunctionCall`; both
+            // materialise into a fresh `EnumStorage` here and the
+            // call takes its leaves, tag first.
+            Expr::QualifiedIdentifier(ref path)
+                if path.len() == 2 && self.enum_defs.contains_key(&path[0]) =>
+            {
+                // No parameter type to follow (an associated-function
+                // argument, say)? The unit form carries nothing to
+                // infer from, so fall back to the by-name path — which
+                // is enough for a non-generic enum and reports the
+                // missing annotation for a generic one.
+                let enum_id = match self.enum_instance_for_arg(path[0], param_ty) {
+                    Some(id) => id,
+                    None => self.resolve_enum_instance(path[0], None)?,
+                };
+                self.lower_enum_variant_arg(enum_id, path[0], path[1], &[])
+            }
+            Expr::AssociatedFunctionCall(enum_name, variant_name, ref args)
+                if self.enum_defs.contains_key(&enum_name)
+                    && self
+                        .enum_variant_index(&enum_name, &variant_name)
+                        .is_some() =>
+            {
+                let enum_id = match self.enum_instance_for_arg(enum_name, param_ty) {
+                    Some(id) => id,
+                    // Fall back to inferring the instantiation from
+                    // the payload values, the way a `val` RHS does.
+                    None => self.resolve_enum_instance_with_args(
+                        enum_name,
+                        variant_name,
+                        args,
+                        None,
+                    )?,
+                };
+                self.lower_enum_variant_arg(enum_id, enum_name, variant_name, args)
+            }
             _ => Ok(None),
         }
+    }
+
+    /// The `EnumId` an argument slot names, when the callee's declared
+    /// type for the slot is that very enum. This is the only source
+    /// that can instantiate a *generic* enum at a call site —
+    /// `take(Option::None)` has nothing else to say what `T` is.
+    fn enum_instance_for_arg(
+        &mut self,
+        base_name: DefaultSymbol,
+        param_ty: Option<Type>,
+    ) -> Option<crate::ir::EnumId> {
+        match param_ty {
+            Some(Type::Enum(id)) if self.module.enum_def(id).base_name == base_name => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Build one enum construction into fresh storage and load its
+    /// leaves in call-argument order.
+    fn lower_enum_variant_arg(
+        &mut self,
+        enum_id: crate::ir::EnumId,
+        enum_name: DefaultSymbol,
+        variant_name: DefaultSymbol,
+        args: &[ExprRef],
+    ) -> Result<Option<Vec<ValueId>>, String> {
+        let enum_def = self.module.enum_def(enum_id).clone();
+        let variant_idx = enum_def
+            .variants
+            .iter()
+            .position(|v| v.name == variant_name)
+            .ok_or_else(|| {
+                format!(
+                    "unknown enum variant `{}::{}`",
+                    self.interner.resolve(enum_name).unwrap_or("?"),
+                    self.interner.resolve(variant_name).unwrap_or("?"),
+                )
+            })?;
+        let expected = enum_def.variants[variant_idx].payload_types.len();
+        if args.len() != expected {
+            return Err(format!(
+                "enum variant `{}::{}` expects {} payload value(s), got {}",
+                self.interner.resolve(enum_name).unwrap_or("?"),
+                self.interner.resolve(variant_name).unwrap_or("?"),
+                expected,
+                args.len(),
+            ));
+        }
+        let storage = self.allocate_enum_storage(enum_id);
+        self.write_variant_into_storage(&storage, variant_idx, args)?;
+        Ok(Some(self.load_enum_locals(&storage)))
     }
 
     /// `LoadLocal` for each leaf, in the order a call expects them.

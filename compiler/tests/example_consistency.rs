@@ -81,7 +81,6 @@ const AOT_UNSUPPORTED: &[&str] = &[
     "contracts.t",
     "extern_generic_identity.t",
     "float64.t",
-    "if_val.t",
     "jit_heap.t",
     "jit_nested_tuple_fallback.t",
     "jit_panic_expr.t",

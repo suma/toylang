@@ -1585,7 +1585,7 @@ impl<'a> FunctionLower<'a> {
             }
             _ => unreachable!("resolve_method_target only returns struct/enum receivers"),
         }
-        for a in method_args {
+        for (arg_idx, a) in method_args.iter().enumerate() {
             // Mirror `lower_method_call`'s identifier-arg flatten path
             // so a struct / tuple / enum argument (auto-borrowed or
             // not) decomposes into leaf locals before landing in the
@@ -1626,6 +1626,23 @@ impl<'a> FunctionLower<'a> {
                     args.extend(vs);
                     continue;
                 }
+            }
+            // CALL-ARG-COMPOUND-LITERAL / ENUM-VARIANT-ARG: a compound
+            // written straight into an argument of a *compound-returning*
+            // method (`val b = z.apply(Op::Add(3u64))`). The scalar-returning
+            // sibling in `build_method_call_values` already had this;
+            // here the literal reached `lower_expr` and produced no
+            // value. The receiver occupies the first declared param,
+            // so this argument's slot is `1 + arg_idx`.
+            let param_ty = self
+                .module
+                .function(target)
+                .params
+                .get(1 + arg_idx)
+                .copied();
+            if let Some(leaves) = self.lower_compound_literal_arg(param_ty, &arg_expr_ref)? {
+                args.extend(leaves);
+                continue;
             }
             let v = self
                 .lower_expr(&arg_expr_ref)?

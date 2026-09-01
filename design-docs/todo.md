@@ -10,6 +10,15 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-01
+- **ENUM-VARIANT-ARG — enum の構築を引数位置に書けるようにした** —
+  `take(Color::Red)` / `area(Shape::Circle(3i64))` が compiled レーンで
+  `cannot lower expression yet` だった。構築に `val` 以外の居場所が
+  無かったのが理由で、struct / tuple リテラルの
+  CALL-ARG-COMPOUND-LITERAL と同じ手口 (引数位置で `EnumStorage` を
+  起こして leaf を渡す) で解消。**generic は callee のパラメータ型から
+  実体化する** — `take(Option::None)` は `T` を他に知る手が無い。
+  compound を返す method の引数経路にも同じ穴があったので同時に塞いだ。
+  `if_val.t` が AOT_UNSUPPORTED から外れた。4 レーンに 5 件 pin
 - **代入は `Unit` — ブロックの末尾に置いても値を持たない** — `visit_assign`
   が代入した値の型を返していたので、`match x { Some(v) => { acc = acc + v }
   None => {} }` が「arm 0 is i64, arm 1 is ()」で拒否され、
@@ -845,20 +854,12 @@
   `could not infer arg type at AOT` になる。iterator アダプタの
   `enumerate` / `zip` の `collect` を提供していないのと同じ制限で、
   そちらは stdlib 側で避けている
-- **ENUM-VARIANT-ARG: `f(Enum::Variant)` が compiled レーンで落ちる** ★★★ —
-  **`take(Option::None)` が動かない。** unit variant を**引数位置**に
-  書くと `compiler MVP cannot lower expression yet:
-  QualifiedIdentifier(...)`。`val s = Shape::Circle(3i64)` (val 束縛) も
-  `W { c: Color::Red }` (struct フィールド) も通るので、効かないのは
-  引数位置だけ。**`Option` を返す / 取る API すべてが踏む**ので、
-  木や Box とは無関係に広く効く。2026-09-01 に Tree の構築を書いていて
-  発見。診断が `SymbolU32` を出すのも同じ行 (下の DIAG-SYMBOL-NAME-LOWER)
 - **ENUM-ARG-NEST: enum の payload / 引数に呼び出しを書けない** ★★ —
-  上の兄弟。`Tree::Node(Box::new(x), 1i64, Box::new(y))` は
+  ENUM-VARIANT-ARG の兄弟。`Tree::Node(Box::new(x), 1i64, Box::new(y))` は
   `enum payload: compiler MVP cannot lower expression yet`、
   `node(leaf(), 1i64, leaf())` は
   `cannot use an enum-returning call in expression position`。
-  この 3 つ (ENUM-VARIANT-ARG 込み) を外すと、Box による二分木の構築が
+  これと ENUM-VARIANT-ARG (解消済み) を外すと、Box による二分木の構築が
   **13 束縛から 1 行**になる。実測は 2026-09-01 の Tree 調査
 - **DIAG-SYMBOL-NAME-LOWER: `compiler_lower` の診断が `SymbolU32` を出す** ★ —
   frontend 側は 2026-09-01 に決着 (`602eafb`) したが、監査したのは

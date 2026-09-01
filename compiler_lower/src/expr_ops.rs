@@ -61,7 +61,12 @@ impl<'a> FunctionLower<'a> {
     /// produces an infinity, which is a value rather than a fault.
     fn emit_div_by_zero_guard(&mut self, rhs: ValueId, ty: Type) -> Result<(), String> {
         let zero_const = Const::zero(ty)
-            .ok_or_else(|| format!("divide-by-zero guard needs an integer type, got {ty:?}"))?;
+            .ok_or_else(|| {
+                format!(
+                    "divide-by-zero guard needs an integer type, got `{}`",
+                    crate::spelling::spell_type(self.module, self.interner, ty)
+                )
+            })?;
         let zero = self
             .emit(InstKind::Const(zero_const), Some(ty))
             .ok_or_else(|| "divide-by-zero guard produced no zero".to_string())?;

@@ -287,6 +287,31 @@ pub(super) enum FieldShape {
     Enum(Box<EnumStorage>),
 }
 
+/// DIAG-SYMBOL-NAME-LOWER: what a diagnostic calls a field's backing
+/// shape. `{:?}` here would print the whole storage tree — every leaf
+/// local of every variant — where the reader only needs to know which
+/// of the four shapes was found.
+/// DIAG-SYMBOL-NAME-LOWER: what a diagnostic calls the shape a
+/// field-access chain landed on. Same reasoning as
+/// [`field_shape_name`].
+pub(super) fn field_chain_result_name(chain: &FieldChainResult) -> &'static str {
+    match chain {
+        FieldChainResult::Scalar { .. } => "a scalar",
+        FieldChainResult::Struct { .. } => "a struct",
+        FieldChainResult::Tuple { .. } => "a tuple",
+        FieldChainResult::Enum(_) => "an enum",
+    }
+}
+
+pub(super) fn field_shape_name(shape: &FieldShape) -> &'static str {
+    match shape {
+        FieldShape::Scalar { .. } => "a scalar field",
+        FieldShape::Struct { .. } => "a struct field",
+        FieldShape::Tuple { .. } => "a tuple field",
+        FieldShape::Enum { .. } => "an enum field",
+    }
+}
+
 /// Flatten a `FieldBinding` tree into a sequential `(LocalId, Type)`
 /// list, in declaration order. Mirrors the flat scalar walk codegen
 /// does over `Module.struct_defs` so the lowering and backend agree

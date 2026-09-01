@@ -295,9 +295,9 @@ impl<'a> FunctionLower<'a> {
                 };
                 let Type::Struct(ret_struct_id) = call.ret else {
                     return Err(format!(
-                        "method `{}` returns {:?}, but this slot holds a struct",
+                        "method `{}` returns {}, but this slot holds a struct",
                         self.interner.resolve(method_sym).unwrap_or("?"),
-                        call.ret,
+                        crate::spelling::spell_type(self.module, self.interner, call.ret),
                     ));
                 };
                 if !self.struct_shapes_match(ret_struct_id, target_struct_id) {
@@ -329,7 +329,8 @@ impl<'a> FunctionLower<'a> {
                 Ok(())
             }
             other => Err(format!(
-                "compiler MVP cannot build a struct-typed value from {other:?} — use a struct literal, an existing binding, or a struct-returning function / associated-function / method call"
+                "compiler MVP cannot build a struct-typed value from {} — use a struct literal, an existing binding, or a struct-returning function / associated-function / method call",
+                crate::spelling::describe_expr(self.interner, &other)
             )),
         }
     }
@@ -438,9 +439,9 @@ impl<'a> FunctionLower<'a> {
                 };
                 if !matches!(call.ret, Type::Tuple(_)) {
                     return Err(format!(
-                        "method `{}` returns {:?}, but this slot holds a tuple",
+                        "method `{}` returns {}, but this slot holds a tuple",
                         self.interner.resolve(method_sym).unwrap_or("?"),
-                        call.ret,
+                        crate::spelling::spell_type(self.module, self.interner, call.ret),
                     ));
                 }
                 let mut dests: Vec<crate::ir::LocalId> =
@@ -460,7 +461,8 @@ impl<'a> FunctionLower<'a> {
                 Ok(())
             }
             other => Err(format!(
-                "compiler MVP cannot build a tuple-typed value from {other:?} — use a tuple literal, an existing binding, or a tuple-returning function / associated-function / method call"
+                "compiler MVP cannot build a tuple-typed value from {} — use a tuple literal, an existing binding, or a tuple-returning function / associated-function / method call",
+                crate::spelling::describe_expr(self.interner, &other)
             )),
         }
     }
@@ -509,7 +511,10 @@ impl<'a> FunctionLower<'a> {
     ) -> Result<(), String> {
         let ret = self.module.function(func_id).return_type;
         let Type::Tuple(_) = ret else {
-            return Err(format!("callee does not return a tuple (got {ret:?})"));
+            return Err(format!(
+                "callee does not return a tuple (got {})",
+                crate::spelling::spell_type(self.module, self.interner, ret)
+            ));
         };
         let mut dests: Vec<crate::ir::LocalId> =
             super::bindings::flatten_tuple_element_locals(target_elements)
@@ -543,7 +548,10 @@ impl<'a> FunctionLower<'a> {
     ) -> Result<(), String> {
         let ret = self.module.function(func_id).return_type;
         let Type::Struct(ret_struct_id) = ret else {
-            return Err(format!("callee does not return a struct (got {ret:?})"));
+            return Err(format!(
+                "callee does not return a struct (got {})",
+                crate::spelling::spell_type(self.module, self.interner, ret)
+            ));
         };
         if !self.struct_shapes_match(ret_struct_id, target_struct_id) {
             return Err(format!(
@@ -653,6 +661,9 @@ impl<'a> FunctionLower<'a> {
             .tuple_defs
             .get(tuple_id.0 as usize)
             .cloned()
+            // DIAG-DEBUG-FMT-OK: an internal invariant, not a
+            // diagnostic — a `TupleId` with no def means the module is
+            // inconsistent, and the raw id is what a debugger wants.
             .ok_or_else(|| format!("internal error: missing tuple def for {tuple_id:?}"))?;
         let mut out: Vec<TupleElementBinding> = Vec::with_capacity(elements.len());
         for (i, ty) in elements.iter().enumerate() {

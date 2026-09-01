@@ -9,6 +9,20 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-09-02
+- **DIAG-SYMBOL-NAME-LOWER — lowering の診断も名前を綴るようにした** —
+  frontend は 2026-09-01 に決着していたが、監査は frontend だけだった。
+  `compiler_lower` に 83 箇所の `{:?}` があり、`compiler MVP cannot lower
+  expression yet: QualifiedIdentifier([SymbolU32 { value: 60 }, ...])` の
+  ように**コンパイラの語彙を読み手に見せていた**。3 つの語彙それぞれに
+  綴りを用意 (`spelling.rs`: IR `Type` / `TypeDecl` / AST)。**式は形を
+  名乗る** — 「cannot lower a range yet」「got the call `mk(...)`」。
+  再発は 2 本で止める: `frontend/tests/diagnostic_spelling_tests.rs` の
+  source scan を `compiler_lower/src` にも広げ、
+  `compiler/tests/lower_diagnostic_spelling.rs` が実際の refusal を読む。
+  ついでに `compiler` の `parse error: {e:?}` を `Display` に
+  (`ParserError { kind: ... }` が丸ごと出ていた)
+
 ### 2026-09-01
 - **ENUM-ARG-NEST — enum を返す呼び出しを引数と payload に書けるようにした** —
   `node(leaf(), 1i64, leaf())` が `cannot use an enum-returning call in
@@ -864,6 +878,15 @@
   `could not infer arg type at AOT` になる。iterator アダプタの
   `enumerate` / `zip` の `collect` を提供していないのと同じ制限で、
   そちらは stdlib 側で避けている
+- **DIAG-DEBUG-FMT の残: codegen 層** ★ — `compiler_lower` と
+  `compiler/src` の parse error は 2026-09-02 に決着したが、
+  `compiler/src/codegen/` には `{:?}` が **50 箇所以上**ある
+  (`missing import for {target:?}` / `block {b:?} unterminated` /
+  `invalid {:?} → f32 cast`)。**大半は internal error** (コンパイラの
+  バグを報告する文言で、`FuncId` や `BlockId` こそが必要な情報) なので
+  スキャナの対象に入れると偽陽性だらけになる。入れるなら
+  「ユーザに見える refusal」と「internal error」を先に分ける必要がある
+
 - **COMPOUND-ARG-CALL: struct / tuple を返す呼び出しは引数位置に書けない** ★★ —
   `take(mk())` が `cannot use a struct-returning call in expression
   position; bind the result with \`val\``。**enum は 2026-09-01 の
@@ -871,15 +894,6 @@
   残っているのは struct と tuple。同じ手口 (呼び出し先の leaf を
   引数スロットに直接書き込む) がそのまま効くはずで、`CallStruct` /
   `CallTuple` は既にある。非対称なのが分かりにくい
-- **DIAG-SYMBOL-NAME-LOWER: `compiler_lower` の診断が `SymbolU32` を出す** ★ —
-  frontend 側は 2026-09-01 に決着 (`602eafb`) したが、監査したのは
-  frontend だけだった。`compiler_lower` に同種が 8 箇所以上ある
-  (`compound_storage.rs:852` / `compound_literal.rs:332,463` /
-  `call.rs:269,281` / `assign.rs:39` / `templates.rs:315` ...)。
-  frontend と同じ手口 (interner 経由の綴りに寄せ、source scan で止める)
-  がそのまま使える。**`frontend/tests/diagnostic_spelling_tests.rs` の
-  スキャナは `frontend/src/type_checker` しか見ていない**ので、
-  対象を広げるところから
 - **REF-REBORROW: `&mut` 引数を再帰呼び出しにそのまま渡せない** ★ —
   `fn insert(arena: &mut Vec<Node>, ..)` の中で `insert(arena, ..)` は
   `expected &mut Vec<Node>, but got Vec<Node>`。`insert(&mut arena, ..)`

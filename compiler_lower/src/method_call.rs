@@ -296,9 +296,9 @@ impl<'a> FunctionLower<'a> {
                 .lower_method_param_type(pty, &subst, self_type)
                 .ok_or_else(|| {
                     format!(
-                        "compiler MVP cannot lower generic method param `{}: {:?}` after subst",
+                        "compiler MVP cannot lower generic method param `{}: {}` after subst",
                         self.interner.resolve(*pname).unwrap_or("?"),
-                        pty
+                        crate::spelling::spell_type_decl(self.interner, pty)
                     )
                 })?;
             params.push(lowered);
@@ -308,14 +308,17 @@ impl<'a> FunctionLower<'a> {
                 .lower_method_param_type(ty, &subst, self_type)
                 .ok_or_else(|| {
                     format!(
-                        "compiler MVP cannot lower generic method return type `{:?}` after subst",
-                        ty
+                        "compiler MVP cannot lower generic method return type `{}` after subst",
+                        crate::spelling::spell_type_decl(self.interner, ty)
                     )
                 })?,
             None => Type::Unit,
         };
         let target_str = self.interner.resolve(target_sym).unwrap_or("?");
         let method_str = self.interner.resolve(method_sym).unwrap_or("?");
+        // DIAG-DEBUG-FMT-OK: a linker symbol, not a diagnostic. The
+        // mangling wants a stable per-type token and nothing else
+        // reads it.
         let arg_str = inst_args
             .iter()
             .map(|t| format!("{:?}", t))
@@ -675,7 +678,8 @@ impl<'a> FunctionLower<'a> {
         for pt in &param_tys_decl {
             let lowered = self.lower_scalar_with_subst(pt).ok_or_else(|| {
                 format!(
-                    "compiler MVP: field-call closure parameter type {pt:?} is not a primitive scalar"
+                    "compiler MVP: field-call closure parameter type `{}` is not a primitive scalar",
+                    crate::spelling::spell_type_decl(self.interner, pt)
                 )
             })?;
             ir_param_tys.push(lowered);
@@ -684,8 +688,8 @@ impl<'a> FunctionLower<'a> {
             .lower_scalar_with_subst(&ret_ty_decl)
             .ok_or_else(|| {
                 format!(
-                    "compiler MVP: field-call closure return type {:?} is not a primitive scalar",
-                    ret_ty_decl
+                    "compiler MVP: field-call closure return type `{}` is not a primitive scalar",
+                    crate::spelling::spell_type_decl(self.interner, &ret_ty_decl)
                 )
             })?;
         if args.len() != ir_param_tys.len() {
@@ -1070,14 +1074,14 @@ impl<'a> FunctionLower<'a> {
                         Ok(Binding::Struct { struct_id, fields })
                     }
                     _ => Err(format!(
-                        "compiler MVP requires nested-field method receivers to resolve to a struct (got {:?})",
-                        chain
+                        "compiler MVP requires nested-field method receivers to resolve to a struct (got {})",
+                        super::bindings::field_chain_result_name(&chain)
                     )),
                 }
             }
             _ => Err(format!(
-                "compiler MVP only supports method calls on a bare identifier or a field-access chain (got {:?})",
-                obj_expr
+                "compiler MVP only supports method calls on a bare identifier or a field-access chain (got {})",
+                crate::spelling::describe_expr(self.interner, &obj_expr)
             )),
         }
     }
@@ -1315,8 +1319,9 @@ impl<'a> FunctionLower<'a> {
             .and_then(|order| order.iter().position(|m| *m == method))
             .ok_or_else(|| {
                 format!(
-                    "A5-P2: trait {:?} has no method {:?} registered in order map",
-                    trait_sym, method
+                    "A5-P2: trait `{}` has no method `{}` registered in order map",
+                    crate::spelling::name(self.interner, trait_sym),
+                    crate::spelling::name(self.interner, method)
                 )
             })?;
 
@@ -1358,8 +1363,9 @@ impl<'a> FunctionLower<'a> {
         }
         let method_param_decls = method_param_decls.ok_or_else(|| {
             format!(
-                "A5-P2: TraitDecl for {:?} does not contain method {:?}",
-                trait_sym, method
+                "A5-P2: TraitDecl for `{}` does not contain method `{}`",
+                crate::spelling::name(self.interner, trait_sym),
+                crate::spelling::name(self.interner, method)
             )
         })?;
         let method_ret_decl =
@@ -1390,8 +1396,8 @@ impl<'a> FunctionLower<'a> {
             )
             .ok_or_else(|| {
                 format!(
-                    "A5-P2: cannot lower trait method param type {:?}",
-                    pty
+                    "A5-P2: cannot lower trait method param type `{}`",
+                    crate::spelling::spell_type_decl(self.interner, pty)
                 )
             })?;
             ir_param_tys.push(lowered);
@@ -1405,8 +1411,8 @@ impl<'a> FunctionLower<'a> {
         )
         .ok_or_else(|| {
             format!(
-                "A5-P2: cannot lower trait method return type {:?}",
-                method_ret_decl
+                "A5-P2: cannot lower trait method return type `{}`",
+                crate::spelling::spell_type_decl(self.interner, &method_ret_decl)
             )
         })?;
 
@@ -1725,6 +1731,8 @@ mod primitive_target_tests {
                 assert_eq!(got, interner.get("u64"), "ptr no longer aliases u64 in IR");
                 continue;
             }
+            // DIAG-DEBUG-FMT-OK: a test assertion, and the IR type is
+            // exactly what the failure needs to name.
             assert_eq!(
                 got,
                 interner.get(*name),

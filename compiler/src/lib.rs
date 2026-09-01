@@ -89,7 +89,11 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
     let mut session = compiler_core::CompilerSession::new();
     let mut program = session
         .parse_program(&source)
-        .map_err(|e| format!("parse error: {e:?}"))?;
+        // DIAG-SYMBOL-NAME-LOWER: `ParserError` has a `Display` that
+        // says what went wrong and where; `{:?}` handed the reader the
+        // struct instead (`ParserError { kind: UnexpectedToken { .. },
+        // location: SourceLocation { file: FileId(0), .. } }`).
+        .map_err(|e| format!("parse error: {e}"))?;
 
     // Reuse the interpreter's check_typing so trait conformance, allocator
     // bounds, and contract validation all run before codegen sees the AST.

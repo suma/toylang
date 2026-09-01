@@ -312,12 +312,12 @@ fn instantiate_enum_inner(
                 .ok_or_else(|| {
                     take_pending_refusal().unwrap_or_else(|| {
                         format!(
-                            "enum `{}::{}` has unsupported payload type `{:?}` \
+                            "enum `{}::{}` has unsupported payload type `{}` \
                              (compiler MVP accepts i64 / u64 / f64 / bool, or another \
                              enum substituted from a generic parameter)",
                             interner.resolve(base_name).unwrap_or("?"),
                             interner.resolve(v.name).unwrap_or("?"),
-                            pt,
+                            crate::spelling::spell_type_decl(interner, pt),
                         )
                     })
                 })?;
@@ -597,10 +597,10 @@ fn instantiate_struct_inner(
                     .ok_or_else(|| {
                         take_pending_refusal().unwrap_or_else(|| {
                             format!(
-                                "compiler MVP cannot lower struct field `{}.{}: {:?}`",
+                                "compiler MVP cannot lower struct field `{}.{}: {}`",
                                 interner.resolve(base_name).unwrap_or("?"),
                                 fname,
-                                ftype,
+                                crate::spelling::spell_type_decl(interner, ftype),
                             )
                         })
                     })?;
@@ -1181,6 +1181,8 @@ mod tests {
         )
         .expect("Vec<Tree> is finite, so Tree is");
         let fields = &module.struct_def(id).fields;
+        // DIAG-DEBUG-FMT-OK: test assertions — the lowered field list is
+        // what a failure here needs to show.
         assert_eq!(fields.len(), 2, "both fields lowered: {fields:?}");
         assert!(
             matches!(fields[1].1, Type::Struct(_)),

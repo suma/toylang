@@ -557,7 +557,8 @@ impl<'a> FunctionLower<'a> {
             other => {
                 return Err(format!(
                     "compiler MVP only supports `Name`, `_`, literal, and \
-                     nested `EnumVariant` sub-patterns inside enum variants, got {other:?}"
+                     nested `EnumVariant` sub-patterns inside enum variants, got {}",
+                    crate::spelling::describe_pattern(self.interner, other)
                 ));
             }
         }
@@ -930,7 +931,8 @@ impl<'a> FunctionLower<'a> {
                 )
             }
             (pattern, _) => Err(format!(
-                "compiler MVP cannot match {pattern:?} against this field shape"
+                "compiler MVP cannot match {} against this field shape",
+                crate::spelling::describe_pattern(self.interner, pattern)
             )),
         }
     }

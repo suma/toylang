@@ -330,7 +330,10 @@ impl FunctionLower<'_> {
         };
         self.reject_compound_column(leaf_ty, field)?;
         let columns = self.soa_columns(element_ty).ok_or_else(|| {
-            format!("column window: unable to compute the column layout for {element_ty:?}")
+            format!(
+                "column window: unable to compute the column layout for `{}`",
+                crate::spelling::spell_type(self.module, self.interner, element_ty)
+            )
         })?;
         let (prefix, stride, _) = columns[leaf];
 

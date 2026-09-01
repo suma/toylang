@@ -36,8 +36,8 @@ impl<'a> FunctionLower<'a> {
     ) -> Result<Option<ValueId>, String> {
         let to = lower_scalar(target_ty).ok_or_else(|| {
             format!(
-                "compiler MVP only supports scalar `as` targets; `{:?}` is not supported yet",
-                target_ty
+                "compiler MVP only supports scalar `as` targets; `{}` is not supported yet",
+                crate::spelling::spell_type_decl(self.interner, target_ty)
             )
         })?;
         if matches!(to, Type::Unit) {

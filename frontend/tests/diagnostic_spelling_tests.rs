@@ -48,8 +48,20 @@ fn is_comment(line: &str) -> bool {
     t.starts_with("//") || t.starts_with("/*") || t.starts_with('*')
 }
 
-fn type_checker_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("src/type_checker")
+/// The source trees the rule covers, as (label, path) pairs.
+///
+/// It started as the type checker alone, which is where the messages
+/// a user sees are mostly built. That was too narrow: the lowering
+/// pass builds its own diagnostics by hand, and every one of them
+/// reaches the same reader (`compiler MVP cannot lower expression
+/// yet: QualifiedIdentifier([SymbolU32 { value: 60 }, ...])`). The
+/// scan follows the messages, not the crate boundary.
+fn scanned_dirs() -> Vec<(&'static str, PathBuf)> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    vec![
+        ("type_checker", root.join("src/type_checker")),
+        ("compiler_lower", root.join("../compiler_lower/src")),
+    ]
 }
 
 /// The escape hatch, spelled out at the site it applies to.
@@ -60,39 +72,41 @@ const ALLOW_MARKER: &str = "DIAG-DEBUG-FMT-OK";
 const MARKER_LOOKBACK: usize = 10;
 
 #[test]
-fn no_type_checker_diagnostic_formats_with_debug() {
+fn no_diagnostic_formats_with_debug() {
     let mut offenders = Vec::new();
 
-    let mut files: Vec<PathBuf> = std::fs::read_dir(type_checker_dir())
-        .expect("type_checker source directory")
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
-        // The checker's own unit tests print error kinds on failure,
-        // which is Debug used as Debug.
-        .filter(|p| p.file_name().is_some_and(|n| n != "tests.rs"))
-        .collect();
-    files.sort();
-    assert!(!files.is_empty(), "found no type_checker sources to scan");
+    for (label, dir) in scanned_dirs() {
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("{} source directory ({}): {e}", label, dir.display()))
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+            // The checker's own unit tests print error kinds on failure,
+            // which is Debug used as Debug.
+            .filter(|p| p.file_name().is_some_and(|n| n != "tests.rs"))
+            .collect();
+        files.sort();
+        assert!(!files.is_empty(), "found no {label} sources to scan");
 
-    for path in &files {
-        let text = std::fs::read_to_string(path).expect("read source");
-        let lines: Vec<&str> = text.lines().collect();
-        for (i, line) in lines.iter().enumerate() {
-            if is_comment(line) || !has_debug_spec(line) {
-                continue;
-            }
-            let from = i.saturating_sub(MARKER_LOOKBACK);
-            let marked = lines[from..=i].iter().any(|l| l.contains(ALLOW_MARKER));
-            if !marked {
-                let name = path.file_name().unwrap().to_string_lossy();
-                offenders.push(format!("  {}:{}  {}", name, i + 1, line.trim()));
+        for path in &files {
+            let text = std::fs::read_to_string(path).expect("read source");
+            let lines: Vec<&str> = text.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                if is_comment(line) || !has_debug_spec(line) {
+                    continue;
+                }
+                let from = i.saturating_sub(MARKER_LOOKBACK);
+                let marked = lines[from..=i].iter().any(|l| l.contains(ALLOW_MARKER));
+                if !marked {
+                    let name = path.file_name().unwrap().to_string_lossy();
+                    offenders.push(format!("  {}/{}:{}  {}", label, name, i + 1, line.trim()));
+                }
             }
         }
     }
 
     assert!(
         offenders.is_empty(),
-        "these lines format a value with `{{:?}}` inside the type checker.\n\
+        "these lines format a value with `{{:?}}` in a diagnostic-building source.\n\
          A diagnostic must spell names through the interner — use \
          `self.resolve_symbol_name(sym)` for a name and \
          `self.type_name_for_error(&ty)` for a type, or Debug will put \

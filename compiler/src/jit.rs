@@ -177,7 +177,11 @@ pub fn compile_to_jit_main_with_options(
     let mut session = compiler_core::CompilerSession::new();
     let mut program = session
         .parse_program(source)
-        .map_err(|e| format!("parse error: {e:?}"))?;
+        // DIAG-SYMBOL-NAME-LOWER: `ParserError` has a `Display` that
+        // says what went wrong and where; `{:?}` handed the reader the
+        // struct instead (`ParserError { kind: UnexpectedToken { .. },
+        // location: SourceLocation { file: FileId(0), .. } }`).
+        .map_err(|e| format!("parse error: {e}"))?;
 
     let core_modules_dir =
         crate::resolve_core_modules_dir(options.core_modules_dir.clone());

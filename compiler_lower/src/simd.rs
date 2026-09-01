@@ -178,7 +178,14 @@ impl<'a> FunctionLower<'a> {
         match self.value_ir_type_for(value) {
             Some(Type::Vector(v)) => Ok(v),
             other => Err(format!(
-                "{name} expects a vector operand, got {other:?}"
+                "{name} expects a vector operand, got {}",
+                match other {
+                    Some(t) => format!(
+                        "`{}`",
+                        crate::spelling::spell_type(self.module, self.interner, t)
+                    ),
+                    None => "a value with no type".to_string(),
+                }
             )),
         }
     }

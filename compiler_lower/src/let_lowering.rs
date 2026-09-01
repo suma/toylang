@@ -613,7 +613,10 @@ impl<'a> FunctionLower<'a> {
         if let Some(elem_ty) = elem_ty {
             if matches!(elem_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
                 let columns = self.soa_columns(elem_ty).ok_or_else(|| {
-                    format!("{who}: unable to compute leaf layout for {elem_ty:?}")
+                    format!(
+                        "{who}: unable to compute leaf layout for `{}`",
+                        crate::spelling::spell_type(self.module, self.interner, elem_ty)
+                    )
                 })?;
                 let ptr = self
                     .lower_expr(&args[0])?
@@ -652,10 +655,10 @@ impl<'a> FunctionLower<'a> {
                 };
                 if leaf_locals.len() != columns.len() {
                     return Err(format!(
-                        "{who}: leaf count mismatch ({} locals vs {} layout entries) for {:?}",
+                        "{who}: leaf count mismatch ({} locals vs {} layout entries) for `{}`",
                         leaf_locals.len(),
                         columns.len(),
-                        elem_ty
+                        crate::spelling::spell_type(self.module, self.interner, elem_ty)
                     ));
                 }
                 for (column, (local, _local_ty)) in columns.iter().zip(leaf_locals.iter()) {
@@ -1425,8 +1428,9 @@ impl<'a> FunctionLower<'a> {
                         let dest_struct_id = match target_ret {
                             Type::Struct(id) => id,
                             _ => return Err(format!(
-                                "operator overload: {} method must return Self (got {:?})",
-                                method_name, target_ret
+                                "operator overload: {} method must return Self (got `{}`)",
+                                method_name,
+                                crate::spelling::spell_type(self.module, self.interner, target_ret)
                             )),
                         };
                         let fields = self.allocate_struct_fields(dest_struct_id);
@@ -1505,8 +1509,9 @@ impl<'a> FunctionLower<'a> {
                         let dest_struct_id = match target_ret {
                             Type::Struct(id) => id,
                             _ => return Err(format!(
-                                "unary overload: {} method must return Self (got {:?})",
-                                method_name, target_ret
+                                "unary overload: {} method must return Self (got `{}`)",
+                                method_name,
+                                crate::spelling::spell_type(self.module, self.interner, target_ret)
                             )),
                         };
                         let fields = self.allocate_struct_fields(dest_struct_id);
@@ -1909,7 +1914,8 @@ impl<'a> FunctionLower<'a> {
         ) {
             return Err(format!(
                 "compiler MVP only supports scalar / struct / tuple / enum array elements; \
-                 got {elem_ty:?}"
+                 got `{}`",
+                crate::spelling::spell_type(self.module, self.interner, elem_ty)
             ));
         }
         let leaf_count = leaf_scalar_count(self.module, elem_ty);

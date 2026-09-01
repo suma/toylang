@@ -102,7 +102,10 @@ impl<'a> FunctionLower<'a> {
             | Type::U16
             | Type::I32
             | Type::U32) => Ok(vec![scalar]),
-            other => Err(format!("drop glue: unsupported leaf type {other:?}")),
+            other => Err(format!(
+                "drop glue: unsupported leaf type {}",
+                crate::spelling::spell_type(self.module, self.interner, other)
+            )),
         }
     }
 
@@ -230,7 +233,12 @@ impl<'a> FunctionLower<'a> {
             .ok_or_else(|| "drop glue: Box has no type argument".to_string())?;
         let leaves = self
             .compute_leaf_layout(elem_ty)
-            .ok_or_else(|| format!("drop glue: no leaf layout for boxed {elem_ty:?}"))?;
+            .ok_or_else(|| {
+                format!(
+                    "drop glue: no leaf layout for boxed {}",
+                    crate::spelling::spell_type(self.module, self.interner, elem_ty)
+                )
+            })?;
         let data_local = all_locals
             .first()
             .map(|(l, _)| *l)
@@ -285,7 +293,12 @@ impl<'a> FunctionLower<'a> {
             .ok_or_else(|| "drop glue: Vec has no type argument".to_string())?;
         let columns = self
             .soa_columns(elem_ty)
-            .ok_or_else(|| format!("drop glue: no leaf layout for vec element {elem_ty:?}"))?;
+            .ok_or_else(|| {
+                format!(
+                    "drop glue: no leaf layout for vec element {}",
+                    crate::spelling::spell_type(self.module, self.interner, elem_ty)
+                )
+            })?;
         // Locals: 0 = data, 1 = len, 2 = cap, 3 = elem_size (field
         // declaration order — `Vec { data, len, cap, elem_size }`).
         let data_local = *all_locals

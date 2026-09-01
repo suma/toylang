@@ -128,6 +128,8 @@ fn is_call_kind(kind: &InstKind) -> bool {
 }
 
 pub mod types;
+/// DIAG-SYMBOL-NAME-LOWER: interner-aware spellings for diagnostics.
+mod spelling;
 mod simd;
 /// DATA-ORIENTED Phase 2: the column arithmetic `__builtin_soa_read`
 /// / `__builtin_soa_write` expand into.
@@ -635,9 +637,9 @@ impl<'a> FunctionLower<'a> {
         for (pname, pty) in params {
             let lowered = types::lower_scalar(pty).ok_or_else(|| {
                 format!(
-                    "compiler MVP: closure parameter `{}: {:?}` requires a primitive scalar type",
+                    "compiler MVP: closure parameter `{}: {}` requires a primitive scalar type",
                     self.interner.resolve(*pname).unwrap_or("?"),
-                    pty
+                    crate::spelling::spell_type_decl(self.interner, pty)
                 )
             })?;
             ir_params.push(lowered);
@@ -645,8 +647,8 @@ impl<'a> FunctionLower<'a> {
         let ir_ret = match return_type {
             Some(t) => types::lower_scalar(t).ok_or_else(|| {
                 format!(
-                    "compiler MVP: closure return type `{:?}` requires a primitive scalar type",
-                    t
+                    "compiler MVP: closure return type `{}` requires a primitive scalar type",
+                    crate::spelling::spell_type_decl(self.interner, t)
                 )
             })?,
             None => {
@@ -691,9 +693,9 @@ impl<'a> FunctionLower<'a> {
                     | Type::I32 | Type::U32
             ) {
                 return Err(format!(
-                    "compiler MVP: capturing closure can only capture primitive scalars; `{}` has type {:?}",
+                    "compiler MVP: capturing closure can only capture primitive scalars; `{}` has type `{}`",
                     self.interner.resolve(*cap_name).unwrap_or("?"),
-                    cap_ty
+                    crate::spelling::spell_type(self.module, self.interner, *cap_ty)
                 ));
             }
             // A capture the enclosing scope holds behind a pointer —
@@ -727,9 +729,13 @@ impl<'a> FunctionLower<'a> {
                 Some(bindings::Binding::Scalar { local, .. }) => *local,
                 other => {
                     return Err(format!(
-                        "compiler MVP: capturing closure cannot capture `{}` (binding shape unsupported: {:?})",
+                        "compiler MVP: capturing closure cannot capture `{}` ({})",
                         self.interner.resolve(*cap_name).unwrap_or("?"),
-                        other.is_some()
+                        if other.is_some() {
+                            "a compound binding is not a scalar the env can hold"
+                        } else {
+                            "no binding of that name is in scope"
+                        }
                     ));
                 }
             };
@@ -1106,9 +1112,9 @@ impl<'a> FunctionLower<'a> {
         for (pname, pty) in params {
             let lowered = types::lower_scalar(pty).ok_or_else(|| {
                 format!(
-                    "compiler MVP: closure parameter `{}: {:?}` requires a primitive scalar type",
+                    "compiler MVP: closure parameter `{}: {}` requires a primitive scalar type",
                     self.interner.resolve(*pname).unwrap_or("?"),
-                    pty
+                    crate::spelling::spell_type_decl(self.interner, pty)
                 )
             })?;
             ir_params.push(lowered);
@@ -1116,8 +1122,8 @@ impl<'a> FunctionLower<'a> {
         let ir_ret = match return_type {
             Some(t) => types::lower_scalar(t).ok_or_else(|| {
                 format!(
-                    "compiler MVP: closure return type `{:?}` requires a primitive scalar type",
-                    t
+                    "compiler MVP: closure return type `{}` requires a primitive scalar type",
+                    crate::spelling::spell_type_decl(self.interner, t)
                 )
             })?,
             None => {
@@ -1156,9 +1162,9 @@ impl<'a> FunctionLower<'a> {
                     | Type::I32 | Type::U32
             ) {
                 return Err(format!(
-                    "compiler MVP: capturing closure can only capture primitive scalars; `{}` has type {:?}",
+                    "compiler MVP: capturing closure can only capture primitive scalars; `{}` has type `{}`",
                     self.interner.resolve(*cap_name).unwrap_or("?"),
-                    cap_ty
+                    crate::spelling::spell_type(self.module, self.interner, *cap_ty)
                 ));
             }
             let local = match self.bindings.get(cap_name) {
@@ -1639,9 +1645,9 @@ impl<'a> FunctionLower<'a> {
                 }
                 other => {
                     return Err(format!(
-                        "compiler MVP: closure parameter `{}` requires a primitive scalar type, got {:?}",
+                        "compiler MVP: closure parameter `{}` requires a primitive scalar type, got `{}`",
                         self.interner.resolve(*name).unwrap_or("?"),
-                        other
+                        crate::spelling::spell_type(self.module, self.interner, other)
                     ));
                 }
             }

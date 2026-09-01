@@ -288,6 +288,8 @@ mod tests {
     /// assertions and leaves that decision where it is.
     #[track_caller]
     fn assert_folds(actual: Option<Const>, expected: Option<Const>) {
+        // DIAG-DEBUG-FMT-OK: a test assertion, not a diagnostic — the
+        // comment above explains why the comparison goes through Debug.
         assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
     }
 

@@ -40,5 +40,8 @@ mod net_abi_tests;
 #[path = "jit_smoke.rs"]
 mod jit_smoke;
 
+#[path = "lower_diagnostic_spelling.rs"]
+mod lower_diagnostic_spelling;
+
 #[path = "reproducible_build.rs"]
 mod reproducible_build;

@@ -174,13 +174,13 @@ impl<'a> FunctionLower<'a> {
                     Ok(super::bindings::flatten_enum_storage_locals(&storage))
                 }
                 other => Err(format!(
-                    "{who}: compound value identifier needs struct/tuple/enum binding, got {:?}",
-                    other.is_some()
+                    "{who}: compound value identifier needs struct/tuple/enum binding, got {}",
+                    if other.is_some() { "a binding of another shape" } else { "no binding" }
                 )),
             },
             other => Err(format!(
-                "{who}: compound value must be a bare identifier, got {:?}",
-                std::mem::discriminant(&other)
+                "{who}: compound value must be a bare identifier, got {}",
+                crate::spelling::describe_expr(self.interner, &other)
             )),
         }
     }
@@ -525,9 +525,10 @@ impl<'a> FunctionLower<'a> {
         };
         if storage.enum_id != enum_id {
             return Err(format!(
-                "__builtin_to_string: enum id mismatch (inference said {:?} but the binding \
-                 holds {:?})",
-                enum_id, storage.enum_id
+                "__builtin_to_string: enum id mismatch (inference said `{}` but the binding \
+                 holds `{}`)",
+                crate::spelling::spell_type(self.module, self.interner, Type::Enum(enum_id)),
+                crate::spelling::spell_type(self.module, self.interner, Type::Enum(storage.enum_id))
             ));
         }
         let v = self.emit_enum_to_string(&storage)?;
@@ -1244,8 +1245,8 @@ impl<'a> FunctionLower<'a> {
                             Type::I64 | Type::U64 | Type::F64 | Type::Str => 8,
                             other => {
                                 return Err(format!(
-                                    "A5-P2-MVP-B: unsupported leaf type {:?} in &dyn coercion",
-                                    other
+                                    "A5-P2-MVP-B: unsupported leaf type {} in &dyn coercion",
+                                    crate::spelling::spell_type(self.module, self.interner, *other)
                                 ));
                             }
                         };
@@ -1685,8 +1686,8 @@ impl<'a> FunctionLower<'a> {
                 self.lift_closure_inline(&params, &return_type, &body)
             }
             other => Err(format!(
-                "compiler MVP cannot lower expression yet: {:?}",
-                other
+                "compiler MVP cannot lower {} yet",
+                crate::spelling::describe_expr(self.interner, &other)
             )),
         }
     }
@@ -1954,8 +1955,11 @@ impl<'a> FunctionLower<'a> {
             ));
         }
         Err(format!(
-            "compiler MVP cannot lower expression yet: {:?}",
-            Expr::AssociatedFunctionCall(struct_name, fn_name, args)
+            "compiler MVP cannot lower {} yet",
+            crate::spelling::describe_expr(
+                self.interner,
+                &Expr::AssociatedFunctionCall(struct_name, fn_name, args)
+            )
         ))
     }
 
@@ -1972,9 +1976,11 @@ impl<'a> FunctionLower<'a> {
         &mut self,
         method: frontend::ast::BuiltinMethod,
     ) -> Result<Option<ValueId>, String> {
+        // DIAG-DEBUG-FMT-OK: `BuiltinMethod`'s Debug spelling is the
+        // method's own name (`StrConcat`, `Substring`), which is what
+        // names the gap here.
         Err(format!(
-            "compiler MVP cannot lower builtin method yet: {:?}",
-            method
+            "compiler MVP cannot lower builtin method yet: {method:?}"
         ))
     }
 
@@ -2111,8 +2117,8 @@ impl<'a> FunctionLower<'a> {
                 super::bindings::FieldShape::Scalar { local, .. } => *local,
                 other => {
                     return Err(format!(
-                        "with: Allocator field has unexpected shape {:?}",
-                        other
+                        "with: Allocator field has unexpected shape ({})",
+                        super::bindings::field_shape_name(other)
                     ))
                 }
             };
@@ -2190,8 +2196,8 @@ impl<'a> FunctionLower<'a> {
             let local = match &fb.shape {
                 super::bindings::FieldShape::Scalar { local, .. } => *local,
                 other => return Err(format!(
-                    "with-allocator: Allocator field has unexpected shape {:?}",
-                    other
+                    "with-allocator: Allocator field has unexpected shape ({})",
+                    super::bindings::field_shape_name(other)
                 )),
             };
             self.emit(InstKind::LoadLocal(local), Some(crate::ir::Type::U64))
@@ -2269,9 +2275,10 @@ impl<'a> FunctionLower<'a> {
             BuiltinFunction::Abs
             | BuiltinFunction::Min | BuiltinFunction::Max => self.lower_builtin_numeric(func, args),
             BuiltinFunction::Simd(op) => self.lower_builtin_simd(op, args),
+            // DIAG-DEBUG-FMT-OK: `BuiltinFunction`'s Debug spelling
+            // is the builtin's own name.
             other => Err(format!(
-                "compiler MVP cannot lower builtin yet: {:?}",
-                other
+                "compiler MVP cannot lower builtin yet: {other:?}"
             )),
         }
     }
@@ -2364,8 +2371,8 @@ impl<'a> FunctionLower<'a> {
                 if matches!(value_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
                     let columns = self.soa_columns(value_ty).ok_or_else(|| {
                         format!(
-                            "__builtin_ptr_write: unable to compute leaf layout for {:?}",
-                            value_ty
+                            "__builtin_ptr_write: unable to compute leaf layout for `{}`",
+                            crate::spelling::spell_type(self.module, self.interner, value_ty)
                         )
                     })?;
                     // Resolve the value identifier to its binding
@@ -2376,10 +2383,10 @@ impl<'a> FunctionLower<'a> {
                         self.compound_leaf_locals(&args[2], "__builtin_ptr_write")?;
                     if leaf_locals.len() != columns.len() {
                         return Err(format!(
-                            "__builtin_ptr_write: leaf count mismatch ({} locals vs {} layout entries) — binding likely doesn't match the type-checker's view of {:?}",
+                            "__builtin_ptr_write: leaf count mismatch ({} locals vs {} layout entries) — binding likely doesn't match the type-checker's view of `{}`",
                             leaf_locals.len(),
                             columns.len(),
-                            value_ty
+                            crate::spelling::spell_type(self.module, self.interner, value_ty)
                         ));
                     }
                     let ptr = self.lower_expr(&args[0])?
@@ -2437,7 +2444,8 @@ impl<'a> FunctionLower<'a> {
                 })?;
                 let columns = self.soa_columns(value_ty).ok_or_else(|| {
                     format!(
-                        "__builtin_soa_write: unable to compute column layout for {value_ty:?}"
+                        "__builtin_soa_write: unable to compute column layout for `{}`",
+                        crate::spelling::spell_type(self.module, self.interner, value_ty)
                     )
                 })?;
                 let ptr = self
@@ -2453,9 +2461,10 @@ impl<'a> FunctionLower<'a> {
                             self.compound_leaf_locals(&args[3], "__builtin_soa_write")?;
                         if leaf_locals.len() != columns.len() {
                             return Err(format!(
-                                "__builtin_soa_write: leaf count mismatch ({} locals vs {} columns) for {value_ty:?}",
+                                "__builtin_soa_write: leaf count mismatch ({} locals vs {} columns) for `{}`",
                                 leaf_locals.len(),
-                                columns.len()
+                                columns.len(),
+                                crate::spelling::spell_type(self.module, self.interner, value_ty)
                             ));
                         }
                         leaf_locals
@@ -2712,7 +2721,8 @@ impl<'a> FunctionLower<'a> {
                     })?;
                 let size = self.compute_byte_size(arg_ty).ok_or_else(|| {
                     format!(
-                        "compiler MVP cannot lower __builtin_sizeof of type {arg_ty:?}"
+                        "compiler MVP cannot lower __builtin_sizeof of type `{}`",
+                        crate::spelling::spell_type(self.module, self.interner, arg_ty)
                     )
                 })?;
                 Ok(self.emit(InstKind::Const(crate::ir::Const::U64(size)), Some(Type::U64)))
@@ -2739,13 +2749,15 @@ impl<'a> FunctionLower<'a> {
                     .lower_type_with_subst(ty_decl, &subst)
                     .ok_or_else(|| {
                         format!(
-                            "__builtin_sizeof::<T>: cannot lower the type argument {ty_decl:?} \
-                             at AOT (unknown type or unresolvable generic parameter)"
+                            "__builtin_sizeof::<T>: cannot lower the type argument `{}` \
+                             at AOT (unknown type or unresolvable generic parameter)",
+                            crate::spelling::spell_type_decl(self.interner, ty_decl)
                         )
                     })?;
                 let size = self.compute_byte_size(ty).ok_or_else(|| {
                     format!(
-                        "compiler MVP cannot lower __builtin_sizeof of type {ty_decl:?}"
+                        "compiler MVP cannot lower __builtin_sizeof of type `{}`",
+                        crate::spelling::spell_type_decl(self.interner, ty_decl)
                     )
                 })?;
                 Ok(self.emit(InstKind::Const(crate::ir::Const::U64(size)), Some(Type::U64)))
@@ -2816,9 +2828,9 @@ impl<'a> FunctionLower<'a> {
                     Type::Struct(_) | Type::Tuple(_) | Type::Enum(_) | Type::Unit
                 ) {
                     return Err(format!(
-                        "compiler MVP cannot lower __builtin_to_string of compound type {:?} \
+                        "compiler MVP cannot lower __builtin_to_string of compound type `{}` \
                          yet — interpolation supports primitives + struct only at AOT",
-                        value_ty
+                        crate::spelling::spell_type(self.module, self.interner, value_ty)
                     ));
                 }
                 Ok(self.emit(
@@ -2853,8 +2865,9 @@ impl<'a> FunctionLower<'a> {
                     Type::Struct(_) | Type::Tuple(_) | Type::Enum(_) | Type::Unit
                 ) {
                     return Err(format!(
-                        "__builtin_format of compound type {value_ty:?} reached lowering \
-                         (the type checker only allows primitives)"
+                        "__builtin_format of compound type `{}` reached lowering \
+                         (the type checker only allows primitives)",
+                        crate::spelling::spell_type(self.module, self.interner, value_ty)
                     ));
                 }
                 Ok(self.emit(

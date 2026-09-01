@@ -266,11 +266,11 @@ impl<'a> FunctionLower<'a> {
         for (pname, ptype) in &template.parameter {
             let lowered = self.lower_type_with_subst(ptype, &subst).ok_or_else(|| {
                 format!(
-                    "generic function `{}`: cannot lower parameter `{}: {:?}` after \
+                    "generic function `{}`: cannot lower parameter `{}: {}` after \
                      substitution",
                     self.interner.resolve(template_name).unwrap_or("?"),
                     self.interner.resolve(*pname).unwrap_or("?"),
-                    ptype,
+                    crate::spelling::spell_type_decl(self.interner, ptype),
                 )
             })?;
             params.push(lowered);
@@ -278,10 +278,10 @@ impl<'a> FunctionLower<'a> {
         let ret = match &template.return_type {
             Some(t) => self.lower_type_with_subst(t, &subst).ok_or_else(|| {
                 format!(
-                    "generic function `{}`: cannot lower return type `{:?}` after \
+                    "generic function `{}`: cannot lower return type `{}` after \
                      substitution",
                     self.interner.resolve(template_name).unwrap_or("?"),
-                    t,
+                    crate::spelling::spell_type_decl(self.interner, t),
                 )
             })?,
             None => Type::Unit,

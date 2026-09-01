@@ -901,7 +901,7 @@ impl<'a> FunctionLower<'a> {
                     return Err(format!(
                         "`{}` returns {}, but this slot holds `{}`",
                         self.interner.resolve(fn_name).unwrap_or("?"),
-                        super::types::spell_type(self.module, self.interner, ret),
+                        super::spelling::spell_type(self.module, self.interner, ret),
                         self.interner.resolve(expected_base).unwrap_or("?"),
                     ));
                 }
@@ -926,7 +926,7 @@ impl<'a> FunctionLower<'a> {
                     return Err(format!(
                         "method `{}` returns {}, but this slot holds `{}`",
                         self.interner.resolve(method_sym).unwrap_or("?"),
-                        super::types::spell_type(self.module, self.interner, call.ret),
+                        super::spelling::spell_type(self.module, self.interner, call.ret),
                         self.interner.resolve(expected_base).unwrap_or("?"),
                     ));
                 }
@@ -943,8 +943,8 @@ impl<'a> FunctionLower<'a> {
                 Ok(())
             }
             other => Err(format!(
-                "compiler MVP cannot lower `{:?}` as an enum-producing expression in this position",
-                other
+                "compiler MVP cannot lower {} as an enum-producing expression in this position",
+                crate::spelling::describe_expr(self.interner, &other)
             )),
         }
     }

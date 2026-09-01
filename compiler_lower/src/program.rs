@@ -360,9 +360,9 @@ fn declare_plain_functions(
                 let lowered = lower_param_or_return_type(pty, struct_defs, enum_defs, module, interner).ok_or_else(|| {
                     unlowerable_type_message(|| {
                         format!(
-                            "compiler MVP cannot lower extern fn parameter `{}: {:?}`",
+                            "compiler MVP cannot lower extern fn parameter `{}: {}`",
                             interner.resolve(*pname).unwrap_or("?"),
-                            pty
+                            crate::spelling::spell_type_decl(interner, pty)
                         )
                     })
                 })?;
@@ -372,7 +372,10 @@ fn declare_plain_functions(
                 Some(ty) => lower_param_or_return_type(ty, struct_defs, enum_defs, module, interner).ok_or_else(
                     || {
                         unlowerable_type_message(|| {
-                            format!("compiler MVP cannot lower extern fn return type `{:?}`", ty)
+                            format!(
+                                "compiler MVP cannot lower extern fn return type `{}`",
+                                crate::spelling::spell_type_decl(interner, ty)
+                            )
                         })
                     },
                 )?,
@@ -393,9 +396,9 @@ fn declare_plain_functions(
             let lowered = lower_param_or_return_type(ty, struct_defs, enum_defs, module, interner).ok_or_else(|| {
                 unlowerable_type_message(|| {
                     format!(
-                        "compiler MVP cannot lower parameter `{}: {:?}` yet",
+                        "compiler MVP cannot lower parameter `{}: {}` yet",
                         interner.resolve(*name).unwrap_or("?"),
-                        ty
+                        crate::spelling::spell_type_decl(interner, ty)
                     )
                 })
             })?;
@@ -405,7 +408,10 @@ fn declare_plain_functions(
             Some(ty) => lower_param_or_return_type(ty, struct_defs, enum_defs, module, interner).ok_or_else(
                 || {
                     unlowerable_type_message(|| {
-                        format!("compiler MVP cannot lower return type `{:?}` yet", ty)
+                        format!(
+                            "compiler MVP cannot lower return type `{}` yet",
+                            crate::spelling::spell_type_decl(interner, ty)
+                        )
                     })
                 },
             )?,
@@ -646,8 +652,8 @@ fn declare_methods(
             )
             .ok_or_else(|| {
                 format!(
-                    "compiler MVP cannot lower implicit `&self` receiver type `{:?}`",
-                    self_decl
+                    "compiler MVP cannot lower implicit `&self` receiver type `{}`",
+                    crate::spelling::spell_type_decl(interner, &self_decl)
                 )
             })?;
             params.push(self_lowered);
@@ -665,9 +671,9 @@ fn declare_methods(
             )
             .ok_or_else(|| {
                 format!(
-                    "compiler MVP cannot lower method parameter `{}: {:?}` yet",
+                    "compiler MVP cannot lower method parameter `{}: {}` yet",
                     interner.resolve(*pname).unwrap_or("?"),
-                    pty
+                    crate::spelling::spell_type_decl(interner, pty)
                 )
             })?;
             params.push(lowered);
@@ -709,8 +715,10 @@ fn declare_methods(
             )
             .ok_or_else(|| {
                 format!(
-                    "compiler MVP cannot lower impl-target type arg `{:?}` for `{}::{}`",
-                    arg_decl, target_str, method_str
+                    "compiler MVP cannot lower impl-target type arg `{}` for `{}::{}`",
+                    crate::spelling::spell_type_decl(interner, arg_decl),
+                    target_str,
+                    method_str
                 )
             })?;
             target_type_args_lowered.push(lowered);
@@ -721,6 +729,8 @@ fn declare_methods(
             let mut s = String::new();
             for t in &target_type_args_lowered {
                 s.push('_');
+                // DIAG-DEBUG-FMT-OK: a linker symbol, not a diagnostic —
+                // it needs a stable per-type token and nothing reads it.
                 s.push_str(&format!("{:?}", t));
             }
             s
@@ -1909,9 +1919,9 @@ impl<'a> FunctionLower<'a> {
                     }
                 }
                 return Err(format!(
-                    "compiler MVP: function-typed parameter `{}: {:?}` requires primitive scalar param/return types",
+                    "compiler MVP: function-typed parameter `{}: {}` requires primitive scalar param/return types",
                     self.interner.resolve(*name).unwrap_or("?"),
-                    decl_ty
+                    crate::spelling::spell_type_decl(self.interner, decl_ty)
                 ));
             }
             match param_types[i] {
@@ -2080,7 +2090,12 @@ impl<'a> FunctionLower<'a> {
             .ok_or_else(|| "function body missing".to_string())?;
         let body_expr = match stmt {
             Stmt::Expression(e) => e,
-            other => return Err(format!("unexpected top-level statement shape: {other:?}")),
+            _ => {
+                return Err(
+                    "a function body must be an expression (block), and this one is not"
+                        .to_string(),
+                );
+            }
         };
 
         let ret_ty = self.module.function(self.func_id).return_type;

@@ -143,3 +143,110 @@ fn an_enum_argument_nests() {
     assert_eq!(interpreter_value(src) & 0xff, 10);
     assert_consistent(src, "enum_arg_nested");
 }
+
+/// ENUM-ARG-NEST: an enum-*returning call* in argument position.
+/// `node(leaf(), 1i64, leaf())` used to be "cannot use an
+/// enum-returning call in expression position; bind the result with
+/// `val`", which for a tree meant one binding per node and per leaf.
+#[test]
+fn an_enum_returning_call_is_an_argument() {
+    let src = r#"
+        enum Tree {
+            Leaf,
+            Node(Box<Tree>, i64, Box<Tree>),
+        }
+
+        fn leaf() -> Tree { Tree::Leaf }
+
+        fn node(l: Tree, v: i64, r: Tree) -> Tree {
+            Tree::Node(Box::new(l), v, Box::new(r))
+        }
+
+        fn sum(t: Tree) -> i64 {
+            match t {
+                Tree::Leaf => 0i64,
+                Tree::Node(l, v, r) => {
+                    val lt = l.get()
+                    val rt = r.get()
+                    sum(lt) + v + sum(rt)
+                }
+            }
+        }
+
+        fn main() -> i64 {
+            val t = node(node(leaf(), 1i64, leaf()), 2i64, node(leaf(), 3i64, leaf()))
+            sum(t)
+        }
+    "#;
+    assert_eq!(interpreter_value(src) & 0xff, 6);
+    assert_consistent(src, "enum_arg_returning_call");
+}
+
+/// ENUM-ARG-NEST: an enum-returning call as another enum's *payload*.
+/// The struct counterpart has worked since COMPOUND-BLOCK-RHS; the
+/// enum side only knew about literals, bindings and branches.
+#[test]
+fn an_enum_returning_call_is_a_payload() {
+    let src = r#"
+        enum E { A(i64), B }
+
+        fn mk(v: i64) -> E { E::A(v) }
+
+        fn val_of(e: E) -> i64 {
+            match e {
+                E::A(v) => v,
+                E::B => 0i64,
+            }
+        }
+
+        fn main() -> i64 {
+            val wrapped = Option::Some(mk(2i64))
+            match wrapped {
+                Option::Some(inner) => val_of(inner),
+                Option::None => 100i64,
+            }
+        }
+    "#;
+    assert_eq!(interpreter_value(src) & 0xff, 2);
+    assert_consistent(src, "enum_arg_call_payload");
+}
+
+/// The method form of the same slot: `Option::Some(it.next())`. The
+/// receiver is a `&mut self` iterator so the writeback dests ride
+/// along with the call's enum dests.
+#[test]
+fn an_enum_returning_method_is_a_payload() {
+    let src = r#"
+        struct Countdown { n: u64 }
+
+        impl Countdown {
+            fn next(&mut self) -> Option<u64> {
+                if self.n == 0u64 {
+                    Option::None
+                } else {
+                    self.n = self.n - 1u64
+                    Option::Some(self.n)
+                }
+            }
+        }
+
+        fn main() -> u64 {
+            var c = Countdown { n: 2u64 }
+            val first = Option::Some(c.next())
+            var acc = 0u64
+            match first {
+                Option::Some(inner) => {
+                    match inner {
+                        Option::Some(v) => { acc = acc + 10u64 + v }
+                        Option::None => { acc = acc + 1u64 }
+                    }
+                }
+                Option::None => { acc = acc + 100u64 }
+            }
+            acc + c.n
+        }
+    "#;
+    // c.next() yields Some(1) and leaves n at 1: 10 + 1 + 1.
+    assert_eq!(interpreter_value(src) & 0xff, 12);
+    assert_consistent(src, "enum_arg_method_payload");
+}

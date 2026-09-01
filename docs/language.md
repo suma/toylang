@@ -3878,9 +3878,9 @@ back to `_` (compare that with the string API this replaces, where a
 misspelled `reason == "not found"` silently took the else branch).
 `IoError` implements `Display`, so `println(err)` prints the reason
 text (`not found`, ...). Because these functions return a compound,
-bind the result with `val` (the compiled lanes reject
-compound-returning calls in expression position, like every other
-compound value).
+bind the result with `val` — see
+[Known limitations](#known-limitations) for the two positions where an
+enum-returning call needs no binding.
 
 `write_file` replaces what the file held and `append_file` adds to
 its end; both create the file when it is missing, and both answer
@@ -4455,8 +4455,8 @@ Conversions live in the module that owns the target type (e.g.
 converts through `E2::from(e)` — see the [`?` operator](#-operator-early-return).
 
 Because `from` on an enum target returns a compound, bind the result
-with `val` (the compiled lanes reject compound-returning calls in
-expression position, like every other compound value).
+with `val` — see [Known limitations](#known-limitations) for the two
+positions where an enum-returning call needs no binding.
 
 ### `Display`
 
@@ -5379,6 +5379,17 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   *Operator overload (struct receivers)*) only fire in let-rhs
   context. `a + b + c` and `a & Bits { v: 1 }` need explicit
   intermediates (`val tmp = a + b; val r = tmp + c`).
+- **Compound-returning calls in expression position** — a call that
+  returns a struct or a tuple has to be bound with `val` before its
+  value is used; the compiled lanes reject it anywhere else, because a
+  compound never travels as one SSA value and the call's leaves need a
+  home. An **enum**-returning call is the exception: it may also stand
+  in an **argument** (`sum(node(leaf(), 1i64, leaf()))`) or as another
+  enum's **payload** (`Option::Some(mk(2i64))`), where the leaves land
+  in the slot they were destined for anyway. Enum *constructions*
+  (`take(Color::Red)`, `take(Option::None)`) are unrestricted in
+  argument position. Everywhere else — a tail expression, an operand,
+  a condition — the `val` is still required.
 - **Trait limitations** — no trait inheritance; no associated
   types. Generic trait declarations (`trait Foo<T>`), default
   method bodies, multiple bounds (`<T: A + B>`) and `dyn Trait`

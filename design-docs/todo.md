@@ -10,6 +10,16 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-01
+- **ENUM-ARG-NEST — enum を返す呼び出しを引数と payload に書けるようにした** —
+  `node(leaf(), 1i64, leaf())` が `cannot use an enum-returning call in
+  expression position`、`Option::Some(mk(2i64))` が
+  `cannot lower ... as an enum-producing expression in this position`
+  だった。どちらも「呼び出しの leaf を置く先が `val` しか無い」が理由なので、
+  呼び出し先の dest をその場のスロットにして `CallEnum` を撃つ形に。
+  method 版 (`Option::Some(it.next())`、writeback 込み) も同時に通した。
+  **struct / tuple 戻りの引数位置は据え置き** (todo の COMPOUND-ARG-CALL)。
+  例: `interpreter/example/box_binary_tree.t` (二分木が 1 式で組める)。
+  4 レーンに 3 件 pin
 - **ENUM-VARIANT-ARG — enum の構築を引数位置に書けるようにした** —
   `take(Color::Red)` / `area(Shape::Circle(3i64))` が compiled レーンで
   `cannot lower expression yet` だった。構築に `val` 以外の居場所が
@@ -854,13 +864,13 @@
   `could not infer arg type at AOT` になる。iterator アダプタの
   `enumerate` / `zip` の `collect` を提供していないのと同じ制限で、
   そちらは stdlib 側で避けている
-- **ENUM-ARG-NEST: enum の payload / 引数に呼び出しを書けない** ★★ —
-  ENUM-VARIANT-ARG の兄弟。`Tree::Node(Box::new(x), 1i64, Box::new(y))` は
-  `enum payload: compiler MVP cannot lower expression yet`、
-  `node(leaf(), 1i64, leaf())` は
-  `cannot use an enum-returning call in expression position`。
-  これと ENUM-VARIANT-ARG (解消済み) を外すと、Box による二分木の構築が
-  **13 束縛から 1 行**になる。実測は 2026-09-01 の Tree 調査
+- **COMPOUND-ARG-CALL: struct / tuple を返す呼び出しは引数位置に書けない** ★★ —
+  `take(mk())` が `cannot use a struct-returning call in expression
+  position; bind the result with \`val\``。**enum は 2026-09-01 の
+  ENUM-ARG-NEST で引数位置と payload 位置が通るようになった**ので、
+  残っているのは struct と tuple。同じ手口 (呼び出し先の leaf を
+  引数スロットに直接書き込む) がそのまま効くはずで、`CallStruct` /
+  `CallTuple` は既にある。非対称なのが分かりにくい
 - **DIAG-SYMBOL-NAME-LOWER: `compiler_lower` の診断が `SymbolU32` を出す** ★ —
   frontend 側は 2026-09-01 に決着 (`602eafb`) したが、監査したのは
   frontend だけだった。`compiler_lower` に同種が 8 箇所以上ある

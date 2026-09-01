@@ -630,6 +630,38 @@ impl<'a> FunctionLower<'a> {
     /// Flatten an EnumStorage into the dest list for `CallEnum`
     /// (tag first, then each variant's payloads in declaration
     /// order, recursing through nested enums).
+    /// ENUM-ARG-NEST: emit an enum-returning call whose multi-return
+    /// slots land straight in `storage`'s leaf locals.
+    ///
+    /// An enum never flows through SSA as one value, so a call that
+    /// produces one needs somewhere to put its leaves before the call
+    /// is emitted. On a `val` RHS that somewhere is the new binding;
+    /// here it is whatever storage the caller already allocated — an
+    /// argument slot or another enum's payload — which is what lets
+    /// `node(leaf(), 1i64, leaf())` and `Option::Some(mk(2i64))` be
+    /// written without a binding per intermediate value.
+    pub(super) fn emit_enum_call_into_storage(
+        &mut self,
+        storage: &EnumStorage,
+        target_id: crate::ir::FuncId,
+        args_items: &[ExprRef],
+    ) -> Result<(), String> {
+        let mut dests = Self::flatten_enum_dests(storage);
+        if !self.module.function(target_id).self_writeback_types.is_empty() {
+            dests.extend(self.collect_compound_writeback_dests_slice(args_items)?);
+        }
+        let arg_values = self.lower_call_arg_items(args_items, Some(target_id))?;
+        self.emit(
+            InstKind::CallEnum {
+                target: target_id,
+                args: arg_values,
+                dests,
+            },
+            None,
+        );
+        Ok(())
+    }
+
     pub(super) fn flatten_enum_dests(storage: &EnumStorage) -> Vec<LocalId> {
         let mut out = Vec::new();
         Self::flatten_enum_dests_into(storage, &mut out);
@@ -846,6 +878,68 @@ impl<'a> FunctionLower<'a> {
             ),
             Expr::BuiltinCall(frontend::ast::BuiltinFunction::Panic, _) => {
                 self.lower_expr(expr_ref)?;
+                Ok(())
+            }
+            // ENUM-ARG-NEST: an enum-returning call filling this slot
+            // (`Option::Some(mk(2i64))`, or an `if` arm that calls a
+            // constructor). The struct counterpart has had this since
+            // COMPOUND-BLOCK-RHS; the enum side only knew about
+            // literals, bindings and branches, so any call had to be
+            // hoisted to its own `val` first.
+            Expr::Call(fn_name, args_ref) => {
+                let target_id = self
+                    .module
+                    .lookup_function(None, fn_name)
+                    .ok_or_else(|| {
+                        format!(
+                            "unknown function `{}` in enum-producing position",
+                            self.interner.resolve(fn_name).unwrap_or("?")
+                        )
+                    })?;
+                let ret = self.module.function(target_id).return_type;
+                if ret != Type::Enum(target_enum_id) {
+                    return Err(format!(
+                        "`{}` returns {}, but this slot holds `{}`",
+                        self.interner.resolve(fn_name).unwrap_or("?"),
+                        super::types::spell_type(self.module, self.interner, ret),
+                        self.interner.resolve(expected_base).unwrap_or("?"),
+                    ));
+                }
+                let items: Vec<ExprRef> = match self.program.expression.get(&args_ref) {
+                    Some(Expr::ExprList(items)) => items,
+                    _ => return Err("call args missing".to_string()),
+                };
+                self.emit_enum_call_into_storage(target, target_id, &items)
+            }
+            // Same for an enum-returning *method* — `val o = it.next()`
+            // worked, `Option::Some(it.next())` did not.
+            Expr::MethodCall(recv, method_sym, method_args) => {
+                let Some(call) =
+                    self.prepare_compound_method_call(&recv, method_sym, &method_args)?
+                else {
+                    return Err(format!(
+                        "`{}` is not a struct- or enum-receiver method returning a compound value",
+                        self.interner.resolve(method_sym).unwrap_or("?"),
+                    ));
+                };
+                if call.ret != Type::Enum(target_enum_id) {
+                    return Err(format!(
+                        "method `{}` returns {}, but this slot holds `{}`",
+                        self.interner.resolve(method_sym).unwrap_or("?"),
+                        super::types::spell_type(self.module, self.interner, call.ret),
+                        self.interner.resolve(expected_base).unwrap_or("?"),
+                    ));
+                }
+                let mut dests = Self::flatten_enum_dests(target);
+                dests.extend(call.writeback_dests);
+                self.emit(
+                    InstKind::CallEnum {
+                        target: call.target,
+                        args: call.args,
+                        dests,
+                    },
+                    None,
+                );
                 Ok(())
             }
             other => Err(format!(

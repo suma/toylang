@@ -897,6 +897,28 @@ impl<'a> FunctionLower<'a> {
                 };
                 self.lower_enum_variant_arg(enum_id, enum_name, variant_name, args)
             }
+            // ENUM-ARG-NEST: an enum-returning call in argument
+            // position (`node(leaf(), 1i64, leaf())`). Same reason the
+            // constructions above needed a home — the call's leaves
+            // have to land somewhere before the outer call is emitted,
+            // and on a `val` RHS that somewhere was the new binding.
+            // A scalar- (or struct- / tuple-) returning call falls
+            // through to the caller's normal path.
+            Expr::Call(fn_name, args_ref) => {
+                let Some(target_id) = self.module.lookup_function(None, fn_name) else {
+                    return Ok(None);
+                };
+                let Type::Enum(enum_id) = self.module.function(target_id).return_type else {
+                    return Ok(None);
+                };
+                let items: Vec<ExprRef> = match self.program.expression.get(&args_ref) {
+                    Some(Expr::ExprList(items)) => items,
+                    _ => return Ok(None),
+                };
+                let storage = self.allocate_enum_storage(enum_id);
+                self.emit_enum_call_into_storage(&storage, target_id, &items)?;
+                Ok(Some(self.load_enum_locals(&storage)))
+            }
             _ => Ok(None),
         }
     }

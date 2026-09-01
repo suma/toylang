@@ -41,3 +41,338 @@ fn every_lane_reports_the_same_event_backend() {
     assert_eq!(name, expected, "the switch selected the other platform's backend");
     assert_consistent(src, "net_backend_name");
 }
+
+// --- N1: the TCP client, on every lane -----------------------------
+//
+// The peer is a `std::net` echo server on a thread of the test
+// process, bound to 127.0.0.1 on port 0 so the OS picks the port —
+// the determinism rule from NETWORK_IO.md: loopback only, never a
+// fixed port (the suite runs in parallel), and nothing pinned but
+// what happened.
+//
+// The port reaches the program as a **literal in its source**, the
+// way `extern_buf.rs` embeds a file path. That is what makes these
+// four-lane: `assert_consistent` spawns an AOT binary, and there is
+// no channel for arguments, but there is one for the text.
+//
+// Each lane runs the program, so each takes a connection. The server
+// accepts until the process ends rather than counting them — a lane
+// that is skipped (no `cc`, say) would otherwise leave the next lane
+// waiting on a server that had stopped.
+
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::sync::mpsc;
+
+/// An echo server on an ephemeral loopback port. Returns the port.
+fn spawn_echo_server() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let port = listener.local_addr().expect("local_addr").port();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        tx.send(()).ok();
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if stream.write_all(&buf[..n]).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+    // The listener is bound before the thread starts, so a connect
+    // cannot lose the race; this only waits for the thread to exist.
+    rx.recv().expect("server thread started");
+    port
+}
+
+/// Connect, send four bytes, read the echo. The buffer is allocated
+/// once with `Vec::with_capacity` and filled in place by `recv` — the
+/// no-allocation shape NETWORK_IO.md §5 is about, and the one where a
+/// lane that copied through a staging buffer would still pass while a
+/// lane that lost the bytes would not.
+#[test]
+fn every_lane_completes_a_tcp_round_trip() {
+    let port = spawn_echo_server();
+    let src = format!(
+        r#"
+        fn main() -> u64 {{
+            val conn = TcpStream::connect("127.0.0.1", {port}u64)
+            var st = match conn {{
+                Result::Ok(s) => s,
+                Result::Err(e) => {{ return 90u64 }}
+            }}
+
+            val msg = String::from_str("ping")
+            val window = msg.as_span()
+            val out: Span<u8> = match window {{
+                Option::Some(w) => w,
+                Option::None => {{ return 91u64 }}
+            }}
+            val wrote = st.write(out)
+            val sent = match wrote {{
+                Result::Ok(n) => n,
+                Result::Err(e) => {{ return 92u64 }}
+            }}
+
+            var buf: Vec<u8> = Vec::with_capacity(64u64)
+            val room = buf.capacity_span()
+            var got: u64 = 0u64
+            match room {{
+                Option::Some(w) => {{
+                    val r = st.read(w)
+                    match r {{
+                        Result::Ok(n) => {{ got = n }}
+                        Result::Err(e) => {{ got = 0u64 }}
+                    }}
+                }}
+                Option::None => {{ got = 0u64 }}
+            }}
+            buf.set_size(got)
+
+            # Sum the bytes rather than count them, so a lane that
+            # handed the syscall the wrong memory — the EXTERN-BUF
+            # failure, which returned a right-length buffer of zeros —
+            # gives a wrong answer instead of a right one.
+            var sum: u64 = 0u64
+            var i: u64 = 0u64
+            while i < buf.size() {{
+                sum = sum + buf.get(i) as u64
+                i = i + 1u64
+            }}
+            sent + got + sum
+        }}
+    "#
+    );
+    // 4 sent + 4 received + 'p' + 'i' + 'n' + 'g' (430) = 438.
+    assert_eq!(interpreter_value(&src) & 0xffff, 438);
+    assert_consistent(&src, "net_round_trip");
+}
+
+/// A payload no `str` could carry on the tree-walker — a NUL, a lone
+/// 0xFF — which is why `read` / `write` take a `Span<u8>`. A
+/// `str`-shaped API would have split the lanes on exactly the
+/// payloads a network carries.
+#[test]
+fn every_lane_carries_bytes_that_are_not_utf8() {
+    let port = spawn_echo_server();
+    let src = format!(
+        r#"
+        fn main() -> u64 {{
+            val conn = TcpStream::connect("127.0.0.1", {port}u64)
+            var st = match conn {{
+                Result::Ok(s) => s,
+                Result::Err(e) => {{ return 90u64 }}
+            }}
+
+            var out: Vec<u8> = Vec::with_capacity(3u64)
+            val space = out.capacity_span()
+            match space {{
+                Option::Some(w) => {{
+                    w.set(0u64, 0u8)
+                    w.set(1u64, 255u8)
+                    w.set(2u64, 128u8)
+                }}
+                Option::None => {{ }}
+            }}
+            out.set_size(3u64)
+            val body = out.as_span()
+            val payload: Span<u8> = match body {{
+                Option::Some(w) => w,
+                Option::None => {{ return 91u64 }}
+            }}
+            val wrote = st.write(payload)
+            match wrote {{
+                Result::Ok(n) => {{ }}
+                Result::Err(e) => {{ return 92u64 }}
+            }}
+
+            var back: Vec<u8> = Vec::with_capacity(16u64)
+            val room = back.capacity_span()
+            var got: u64 = 0u64
+            match room {{
+                Option::Some(w) => {{
+                    val r = st.read(w)
+                    match r {{
+                        Result::Ok(n) => {{ got = n }}
+                        Result::Err(e) => {{ got = 0u64 }}
+                    }}
+                }}
+                Option::None => {{ got = 0u64 }}
+            }}
+            back.set_size(got)
+            var sum: u64 = 0u64
+            var i: u64 = 0u64
+            while i < back.size() {{
+                sum = sum + back.get(i) as u64
+                i = i + 1u64
+            }}
+            got + sum
+        }}
+    "#
+    );
+    // 3 bytes back, 0 + 255 + 128.
+    assert_eq!(interpreter_value(&src) & 0xffff, 386);
+    assert_consistent(&src, "net_non_utf8");
+}
+
+/// Nothing is listening, so the connect is refused — by name, not as
+/// a generic failure. The port comes from a listener closed before the
+/// program runs, which is the only way to name one that is free.
+#[test]
+fn every_lane_names_a_refused_connection() {
+    let port = {
+        let l = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        l.local_addr().expect("local_addr").port()
+    };
+    let src = format!(
+        r#"
+        fn main() -> u64 {{
+            val conn = TcpStream::connect("127.0.0.1", {port}u64)
+            match conn {{
+                Result::Ok(s) => 1u64,
+                Result::Err(e) => {{
+                    match e {{
+                        NetError::ConnectionRefused => 2u64,
+                        _ => 3u64,
+                    }}
+                }}
+            }}
+        }}
+    "#
+    );
+    // 1 = it connected to something, 3 = some other errno.
+    assert_eq!(interpreter_value(&src) & 0xff, 2);
+    assert_consistent(&src, "net_refused");
+}
+
+/// A hostname is an input error until name resolution lands (N5), and
+/// it is reported before any descriptor is created.
+#[test]
+fn every_lane_rejects_a_hostname_the_same_way() {
+    let src = r#"
+        fn main() -> u64 {
+            val conn = TcpStream::connect("localhost", 80u64)
+            match conn {
+                Result::Ok(s) => 1u64,
+                Result::Err(e) => {
+                    match e {
+                        NetError::InvalidInput => 2u64,
+                        _ => 3u64,
+                    }
+                }
+            }
+        }
+    "#;
+    assert_eq!(interpreter_value(src) & 0xff, 2);
+    assert_consistent(src, "net_hostname");
+}
+
+/// `close` is idempotent and a closed stream stops reading. The field
+/// is parked at -1 (NETWORK_IO.md 論点 2), so the second close is a
+/// no-op rather than a close of whatever unrelated file the OS has
+/// since handed that number to — a failure that would be silent and
+/// almost untraceable.
+#[test]
+fn every_lane_closes_idempotently() {
+    let port = spawn_echo_server();
+    let src = format!(
+        r#"
+        fn main() -> u64 {{
+            val conn = TcpStream::connect("127.0.0.1", {port}u64)
+            var st = match conn {{
+                Result::Ok(s) => s,
+                Result::Err(e) => {{ return 90u64 }}
+            }}
+            val first = st.close()
+            val a = match first {{ Result::Ok(_) => 1u64, Result::Err(e) => 0u64 }}
+            val second = st.close()
+            val b = match second {{ Result::Ok(_) => 1u64, Result::Err(e) => 0u64 }}
+            if st.as_fd() >= 0i32 {{ return 93u64 }}
+
+            var buf: Vec<u8> = Vec::with_capacity(8u64)
+            val room = buf.capacity_span()
+            var failed: u64 = 0u64
+            match room {{
+                Option::Some(w) => {{
+                    val r = st.read(w)
+                    match r {{
+                        Result::Ok(n) => {{ failed = 0u64 }}
+                        Result::Err(e) => {{ failed = 1u64 }}
+                    }}
+                }}
+                Option::None => {{ failed = 0u64 }}
+            }}
+            a * 100u64 + b * 10u64 + failed
+        }}
+    "#
+    );
+    // Both closes ok, and the read on a closed stream failed.
+    assert_eq!(interpreter_value(&src) & 0xffff, 111);
+    assert_consistent(&src, "net_close_idempotent");
+}
+
+/// `shutdown_write` ends the request without giving up the descriptor
+/// the reply arrives on: the peer's read returns 0 and it stops, but
+/// what it already sent is still there.
+#[test]
+fn every_lane_half_closes_and_still_reads_the_reply() {
+    let port = spawn_echo_server();
+    let src = format!(
+        r#"
+        fn main() -> u64 {{
+            val conn = TcpStream::connect("127.0.0.1", {port}u64)
+            var st = match conn {{
+                Result::Ok(s) => s,
+                Result::Err(e) => {{ return 90u64 }}
+            }}
+            val msg = String::from_str("hi")
+            val window = msg.as_span()
+            val out: Span<u8> = match window {{
+                Option::Some(w) => w,
+                Option::None => {{ return 91u64 }}
+            }}
+            val wrote = st.write(out)
+            match wrote {{
+                Result::Ok(n) => {{ }}
+                Result::Err(e) => {{ return 92u64 }}
+            }}
+            val half = st.shutdown_write()
+            val ok = match half {{ Result::Ok(_) => 1u64, Result::Err(e) => 0u64 }}
+
+            var back: Vec<u8> = Vec::with_capacity(8u64)
+            val room = back.capacity_span()
+            var got: u64 = 0u64
+            match room {{
+                Option::Some(w) => {{
+                    val r = st.read(w)
+                    match r {{
+                        Result::Ok(n) => {{ got = n }}
+                        Result::Err(e) => {{ got = 0u64 }}
+                    }}
+                }}
+                Option::None => {{ got = 0u64 }}
+            }}
+            back.set_size(got)
+            var sum: u64 = 0u64
+            var i: u64 = 0u64
+            while i < back.size() {{
+                sum = sum + back.get(i) as u64
+                i = i + 1u64
+            }}
+            ok * 1000u64 + got * 100u64 + sum
+        }}
+    "#
+    );
+    // shutdown ok, 2 bytes back, 'h' + 'i' = 209.
+    assert_eq!(interpreter_value(&src) & 0xffff, 1000 + 200 + 209);
+    assert_consistent(&src, "net_shutdown_write");
+}

@@ -39,11 +39,12 @@
   `net_*` (Rust 入口) と `toy_net_*` (extern 薄皮) の二段で、
   **tree-walker は toylang_rt を直接呼ぶ**ので errno → `NetError` の
   表が 1 つしかない。バイト列は `Span<u8>` を借用して渡すので
-  **全レーンでコピー 0**。`interpreter/tests/net_tests.rs` が
-  `std::net` のエコーサーバをスレッドに立てて 7 件 pin。
-  **compiled レーンは動かない** — 原因は socket と無関係の
-  COMPOUND-BLOCK-RHS と UNIT-TYPE-ARG (下)。設計から変えた 2 点は
-  [`NETWORK_IO.md`](NETWORK_IO.md) の N1 節。
+  **全レーンでコピー 0**。`compiler/tests/consistency/net.rs` が
+  `std::net` のエコーサーバをスレッドに立てて **4 レーンで** 6 件 pin
+  (ポートはソース中のリテラルとして渡す — AOT バイナリに引数を渡す
+  口が無いため)。当初 compiled レーンが動かなかった原因は socket と
+  無関係の COMPOUND-BLOCK-RHS と UNIT-TYPE-ARG で、同日どちらも解消
+  した。設計から変えた点は [`NETWORK_IO.md`](NETWORK_IO.md) の N1 節。
 - **EXTERN-BUF の借用が typed slot を見ていなかった** — `push` で
   作った buffer (`String` / `Vec<u8>`) を `extern fn` に渡すと
   **正しい長さのゼロ**が渡っていた (tree-walker のみ、レーン不一致)。

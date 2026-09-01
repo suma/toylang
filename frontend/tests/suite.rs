@@ -69,6 +69,9 @@ mod module_system_tests;
 #[path = "parser_integration_tests.rs"]
 mod parser_integration_tests;
 
+#[path = "primitive_target_coverage_tests.rs"]
+mod primitive_target_coverage_tests;
+
 #[path = "property_based_integration_tests.rs"]
 mod property_based_integration_tests;
 

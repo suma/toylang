@@ -69,6 +69,9 @@ impl ScalarTy {
 
     /// Whether this is a signed integer width -- what unary minus
     /// accepts, alongside `F64`. Mirrors `TypeDecl::is_signed_integer`.
+    ///
+    /// NUM-W-ENUMERATION: `is_signed_int` was a byte-identical second
+    /// copy of this and is now an alias, so the widths are listed once.
     pub fn is_signed_integer(self) -> bool {
         matches!(
             self,
@@ -151,11 +154,28 @@ impl ScalarTy {
     /// `true` for the signed integer scalar types (i8/i16/i32/i64).
     /// Drives `Sext` vs `Zext` ABI extension and signed/unsigned
     /// cmp predicate selection.
+    ///
+    /// The same question as `is_signed_integer`, kept because both
+    /// names are used across the JIT; one list answers both.
     pub fn is_signed_int(self) -> bool {
-        matches!(
-            self,
-            ScalarTy::I8 | ScalarTy::I16 | ScalarTy::I32 | ScalarTy::I64
-        )
+        self.is_signed_integer()
+    }
+
+    /// The most negative value this width holds, or `None` for a type
+    /// that is not a signed integer.
+    ///
+    /// NUM-W-ENUMERATION: the `MIN / -1` trap guard compared against
+    /// `i64::MIN` outright, which is only the right constant for
+    /// `i64`. It went unnoticed because the same codegen treated every
+    /// narrow width as unsigned, so the guard never ran for one.
+    pub fn signed_min(self) -> Option<i64> {
+        Some(match self {
+            ScalarTy::I8 => i8::MIN as i64,
+            ScalarTy::I16 => i16::MIN as i64,
+            ScalarTy::I32 => i32::MIN as i64,
+            ScalarTy::I64 => i64::MIN,
+            _ => return None,
+        })
     }
 }
 

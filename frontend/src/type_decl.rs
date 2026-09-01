@@ -738,6 +738,76 @@ impl TypeDecl {
         }
     }
 
+    /// NUM-W-ENUMERATION: every primitive that can be named as an
+    /// `impl Trait for <T>` target, paired with the name it is written
+    /// with. **The one list.**
+    ///
+    /// Four enums describe the same primitives — the lexer's `Kind`,
+    /// this `TypeDecl`, the IR's `Type`, and the interpreter JIT's
+    /// `ScalarTy` — and each layer used to spell the table out again
+    /// for itself. Six copies existed, and they disagreed: adding the
+    /// narrow widths updated some, `f32` was missing from all of them,
+    /// and the interpreter JIT still knew only five entries. The
+    /// symptom is always the same shape — an `impl Trait for u8`
+    /// parses, type-checks and lowers, and is then simply unreachable,
+    /// with a diagnostic that mentions neither the width nor the impl.
+    ///
+    /// So the projections are derived rather than restated: a layer
+    /// maps its own enum to a `TypeDecl` (or from one) and reads the
+    /// name here. `primitive_target_coverage` in the frontend tests
+    /// pins that every entry survives each projection, so adding a
+    /// width fails loudly in the layers that have to change instead of
+    /// going quietly missing in one.
+    ///
+    /// Ordering is the source order of the widths and is not
+    /// significant.
+    pub const PRIMITIVE_IMPL_TARGETS: &'static [(TypeDecl, &'static str)] = &[
+        (TypeDecl::Bool, "bool"),
+        (TypeDecl::Int8, "i8"),
+        (TypeDecl::Int16, "i16"),
+        (TypeDecl::Int32, "i32"),
+        (TypeDecl::Int64, "i64"),
+        (TypeDecl::UInt8, "u8"),
+        (TypeDecl::UInt16, "u16"),
+        (TypeDecl::UInt32, "u32"),
+        (TypeDecl::UInt64, "u64"),
+        (TypeDecl::Float32, "f32"),
+        (TypeDecl::Float64, "f64"),
+        (TypeDecl::String, "str"),
+        (TypeDecl::Ptr, "ptr"),
+    ];
+
+    /// Names that mean a primitive above without being its canonical
+    /// spelling. `usize` is the only one: the parser maps it to the
+    /// same `TypeDecl` as `u64`, so it resolves but never renders.
+    pub const PRIMITIVE_NAME_ALIASES: &'static [(&'static str, TypeDecl)] =
+        &[("usize", TypeDecl::UInt64)];
+
+    /// The name this primitive is written with, or `None` if it is not
+    /// a primitive that can be an impl target.
+    pub fn primitive_canonical_name(&self) -> Option<&'static str> {
+        TypeDecl::PRIMITIVE_IMPL_TARGETS
+            .iter()
+            .find(|(ty, _)| ty == self)
+            .map(|(_, name)| *name)
+    }
+
+    /// The primitive `name` denotes, canonical spellings and aliases
+    /// both. `None` for anything else — a user type's name reaches
+    /// here too, and must not be mistaken for a primitive.
+    pub fn from_primitive_canonical_name(name: &str) -> Option<TypeDecl> {
+        TypeDecl::PRIMITIVE_IMPL_TARGETS
+            .iter()
+            .find(|(_, n)| *n == name)
+            .map(|(ty, _)| ty.clone())
+            .or_else(|| {
+                TypeDecl::PRIMITIVE_NAME_ALIASES
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, ty)| ty.clone())
+            })
+    }
+
     /// Spell a type for a diagnostic when an interner is in hand.
     ///
     /// `source_name` gives up (returns `None`) on a type with no

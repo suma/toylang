@@ -147,13 +147,19 @@ pub(super) fn install_primitive_target_symbols(interner: &DefaultStringInterner)
     PRIMITIVE_TARGET_SYMBOLS.with(|cell| {
         let mut m = cell.borrow_mut();
         m.clear();
-        for (sty, name) in [
-            (ScalarTy::Bool, "bool"),
-            (ScalarTy::I64, "i64"),
-            (ScalarTy::U64, "u64"),
-            (ScalarTy::F64, "f64"),
-            (ScalarTy::Ptr, "ptr"),
-        ] {
+        // NUM-W-ENUMERATION: derived from `TypeDecl::PRIMITIVE_IMPL_TARGETS`
+        // rather than listed again. Listed again, this knew five entries
+        // — the narrow widths and `str` were never added — so an
+        // `impl <Trait> for u8` was invisible to the interpreter JIT
+        // however well the other lanes handled it.
+        //
+        // `ScalarTy::from_type_decl` decides what this layer can
+        // represent: `f32` has no `ScalarTy`, so it drops out here on
+        // its own instead of by omission.
+        for (decl, name) in TypeDecl::PRIMITIVE_IMPL_TARGETS {
+            let Some(sty) = ScalarTy::from_type_decl(decl) else {
+                continue;
+            };
             if let Some(sym) = interner.get(name) {
                 m.insert(sty, sym);
             }
@@ -218,19 +224,88 @@ pub(super) fn scalar_ty_for_enum_decl(td: &TypeDecl) -> Option<ScalarTy> {
 /// `TypeDecl` instead of `TypeDecl::Identifier(prim_sym)` (which
 /// `resolve_param_ty` rejects).
 pub(super) fn primitive_type_decl_for_target_sym(sym: DefaultSymbol) -> Option<TypeDecl> {
+    // NUM-W-ENUMERATION: `ScalarTy::to_type_decl` is the inverse the
+    // map was built through, so this cannot disagree with
+    // `install_primitive_target_symbols` above. It used to re-match on
+    // `ScalarTy` with a `_ => return None` arm, which silently dropped
+    // every width the installer did know about.
     PRIMITIVE_TARGET_SYMBOLS.with(|cell| {
-        cell.borrow().iter().find_map(|(sty, &s)| {
-            if s != sym {
-                return None;
-            }
-            Some(match sty {
-                ScalarTy::Bool => TypeDecl::Bool,
-                ScalarTy::I64 => TypeDecl::Int64,
-                ScalarTy::U64 => TypeDecl::UInt64,
-                ScalarTy::F64 => TypeDecl::Float64,
-                ScalarTy::Ptr => TypeDecl::Ptr,
-                _ => return None,
-            })
-        })
+        cell.borrow()
+            .iter()
+            .find(|(_, &s)| s == sym)
+            .map(|(sty, _)| sty.to_type_decl())
     })
+}
+
+#[cfg(test)]
+mod primitive_target_tests {
+    use super::*;
+
+    /// NUM-W-ENUMERATION: every primitive the JIT's `ScalarTy` can
+    /// represent is installed and looks up again.
+    ///
+    /// This table was the last copy to be found and the furthest
+    /// behind: it listed five entries — bool, i64, u64, f64, ptr — so
+    /// the narrow widths and `str` were invisible to the interpreter
+    /// JIT no matter what the other lanes did. It falls back silently,
+    /// which is exactly why nothing reported it.
+    #[test]
+    fn every_scalar_representable_primitive_installs_and_resolves() {
+        let mut interner = DefaultStringInterner::new();
+        for (_, name) in TypeDecl::PRIMITIVE_IMPL_TARGETS {
+            interner.get_or_intern(*name);
+        }
+        install_primitive_target_symbols(&interner);
+
+        for (decl, name) in TypeDecl::PRIMITIVE_IMPL_TARGETS {
+            let Some(sty) = ScalarTy::from_type_decl(decl) else {
+                // `f32` has no `ScalarTy`, so it is out of this
+                // layer's reach by construction rather than by
+                // omission. Assert that is the only such case.
+                assert_eq!(*name, "f32", "`{name}` unexpectedly has no ScalarTy");
+                continue;
+            };
+            let sym = primitive_target_sym_for_scalar(sty)
+                .unwrap_or_else(|| panic!("`{name}` was not installed"));
+            assert_eq!(interner.resolve(sym), Some(*name));
+            assert_eq!(
+                primitive_type_decl_for_target_sym(sym).as_ref(),
+                Some(decl),
+                "`{name}` does not resolve back to its own TypeDecl"
+            );
+        }
+    }
+
+    /// The narrow widths specifically — the ones that were missing.
+    #[test]
+    fn the_narrow_widths_are_installed() {
+        let mut interner = DefaultStringInterner::new();
+        for (_, name) in TypeDecl::PRIMITIVE_IMPL_TARGETS {
+            interner.get_or_intern(*name);
+        }
+        install_primitive_target_symbols(&interner);
+
+        for (sty, name) in [
+            (ScalarTy::U8, "u8"),
+            (ScalarTy::U16, "u16"),
+            (ScalarTy::U32, "u32"),
+            (ScalarTy::I8, "i8"),
+            (ScalarTy::I16, "i16"),
+            (ScalarTy::I32, "i32"),
+            (ScalarTy::Str, "str"),
+        ] {
+            let sym = primitive_target_sym_for_scalar(sty)
+                .unwrap_or_else(|| panic!("`{name}` was not installed"));
+            assert_eq!(interner.resolve(sym), Some(name));
+        }
+    }
+
+    /// A primitive whose name the program never interned stays absent,
+    /// so a program with no extension trait on it short-circuits.
+    #[test]
+    fn an_uninterned_primitive_is_not_installed() {
+        let interner = DefaultStringInterner::new();
+        install_primitive_target_symbols(&interner);
+        assert_eq!(primitive_target_sym_for_scalar(ScalarTy::U8), None);
+    }
 }

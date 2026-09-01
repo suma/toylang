@@ -125,39 +125,18 @@ pub(super) fn primitive_type_decl_for_target_sym(
     sym: DefaultSymbol,
     interner: &DefaultStringInterner,
 ) -> Option<TypeDecl> {
-    Some(match interner.resolve(sym)? {
-        "bool" => TypeDecl::Bool,
-        "i64" => TypeDecl::Int64,
-        "u64" => TypeDecl::UInt64,
-        "f64" => TypeDecl::Float64,
-        "ptr" => TypeDecl::Ptr,
-        // `usize` shares the UInt64 representation in this language.
-        "usize" => TypeDecl::UInt64,
-        // `str` is a pointer-sized opaque handle in IR
-        // (`Type::Str`, see Phase T). Adding the entry here lets
-        // `impl <Trait> for str { ... }` extension methods (e.g.
-        // `core/std/hash.t`'s `Hash for str`) reach the same
-        // method-lowering path the other primitive impls use.
-        "str" => TypeDecl::String,
-        // NUM-W Phase 6: returning the matching narrow `TypeDecl`
-        // here lets the method-registration loop above identify
-        // the impl as targeting an unsupported width and skip it
-        // cleanly. Without an entry, `self_decl` would fall
-        // through to `TypeDecl::Identifier(sym)` and the
-        // skip-check would miss the impl, leading to a hard
-        // "cannot lower method parameter" error during the
-        // boundary lowering step.
-        "u8" => TypeDecl::UInt8,
-        "u16" => TypeDecl::UInt16,
-        "u32" => TypeDecl::UInt32,
-        "i8" => TypeDecl::Int8,
-        "i16" => TypeDecl::Int16,
-        "i32" => TypeDecl::Int32,
-        // SIMD-F32: completes the set the two tables above and
-        // `primitive_target_sym_for_ir_type` share.
-        "f32" => TypeDecl::Float32,
-        _ => return None,
-    })
+    // NUM-W-ENUMERATION: the names come from
+    // `TypeDecl::PRIMITIVE_IMPL_TARGETS`. This spelled the table out
+    // itself, which is how `f32` came to be missing from it while the
+    // frontend had it.
+    //
+    // Returning the matching narrow `TypeDecl` is what lets the
+    // method-registration loop recognise an impl targeting an
+    // unsupported width and skip it cleanly (NUM-W Phase 6). Without an
+    // entry, `self_decl` falls through to `TypeDecl::Identifier(sym)`,
+    // the skip-check misses the impl, and boundary lowering dies with
+    // "cannot lower method parameter".
+    TypeDecl::from_primitive_canonical_name(interner.resolve(sym)?)
 }
 
 /// REF-Stage-2 (ii-method): pre-populate the writeback shape for

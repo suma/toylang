@@ -513,77 +513,32 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.core.string_interner.resolve(symbol).unwrap_or("<unknown>").to_string()
     }
 
-    /// Map a symbol whose interned text is the canonical name of a
-    /// primitive type (`i64`, `f64`, …) to the matching `TypeDecl`.
-    /// Returns `None` for any other symbol — including user struct
-    /// names that happen to share the lookup path. Used by the
-    /// extension-trait machinery (Step A onward) so an
-    /// `impl Trait for i64 { ... }` block can resolve `Self`
-    /// inside its method bodies to `TypeDecl::Int64` instead of
-    /// `TypeDecl::Struct(sym_for_i64, _)`.
-    /// Inverse of `primitive_type_decl_from_symbol`: map a primitive
-    /// `TypeDecl` back to the canonical-name symbol used as an
-    /// `impl Trait for <PrimitiveType>` target. Returns `None` for
-    /// non-primitive type decls and for primitives whose canonical
-    /// name has never been interned (no impl block targeted that
-    /// type — extension-trait dispatch can short-circuit).
+    /// A primitive `TypeDecl` as the canonical-name symbol used for an
+    /// `impl Trait for <PrimitiveType>` target. `None` for a
+    /// non-primitive, and for a primitive whose name was never interned
+    /// — no impl block targeted it, so extension-trait dispatch can
+    /// short-circuit.
+    ///
+    /// The names come from `TypeDecl::PRIMITIVE_IMPL_TARGETS`
+    /// (NUM-W-ENUMERATION); this used to spell the table out itself.
     pub fn primitive_target_symbol_from_type(
         &self,
         ty: &TypeDecl,
     ) -> Option<DefaultSymbol> {
-        let name = match ty {
-            TypeDecl::Bool => "bool",
-            TypeDecl::Int64 => "i64",
-            TypeDecl::UInt64 => "u64",
-            // NUM-W: narrow integer extension-trait dispatch.
-            // Mirror the i64 / u64 entries so user code can call
-            // e.g. `(7u8).hash()` and the type checker resolves
-            // it through the per-target method registry.
-            TypeDecl::Int8 => "i8",
-            TypeDecl::Int16 => "i16",
-            TypeDecl::Int32 => "i32",
-            TypeDecl::UInt8 => "u8",
-            TypeDecl::UInt16 => "u16",
-            TypeDecl::UInt32 => "u32",
-            TypeDecl::Float64 => "f64",
-            // SIMD-F32: same reason as the narrow ints above. Without
-            // it `impl <Trait> for f32` type-checks as an impl on an
-            // unknown identifier, and `self` inside the body compares
-            // unequal to `f32` — the diagnostic reads "expected f32,
-            // but got f32", one side being `Identifier("f32")`.
-            TypeDecl::Float32 => "f32",
-            TypeDecl::String => "str",
-            TypeDecl::Ptr => "ptr",
-            _ => return None,
-        };
-        self.core.string_interner.get(name)
+        self.core
+            .string_interner
+            .get(ty.primitive_canonical_name()?)
     }
 
+    /// The inverse: an impl-target symbol back to the primitive it
+    /// names. `None` for any other symbol — a user struct's name
+    /// reaches this lookup too. Lets an `impl Trait for i64 { ... }`
+    /// resolve `Self` in its method bodies to `TypeDecl::Int64` rather
+    /// than `TypeDecl::Struct(sym_for_i64, _)`.
     pub fn primitive_type_decl_from_symbol(&self, symbol: DefaultSymbol) -> Option<TypeDecl> {
-        Some(match self.core.string_interner.resolve(symbol)? {
-            "bool" => TypeDecl::Bool,
-            "u64" => TypeDecl::UInt64,
-            "i64" => TypeDecl::Int64,
-            "f64" => TypeDecl::Float64,
-            // `usize` shares the `UInt64` representation in this
-            // language; the parser maps both to the same TypeDecl.
-            "usize" => TypeDecl::UInt64,
-            // NUM-W: narrow integer reverse mapping (impl-target
-            // symbol → TypeDecl). Mirrors
-            // `primitive_target_symbol_from_type` above.
-            "u8" => TypeDecl::UInt8,
-            "u16" => TypeDecl::UInt16,
-            "u32" => TypeDecl::UInt32,
-            "i8" => TypeDecl::Int8,
-            "i16" => TypeDecl::Int16,
-            "i32" => TypeDecl::Int32,
-            "f32" => TypeDecl::Float32,
-            "str" => TypeDecl::String,
-            "ptr" => TypeDecl::Ptr,
-            _ => return None,
-        })
+        TypeDecl::from_primitive_canonical_name(self.core.string_interner.resolve(symbol)?)
     }
-    
+
     /// Handle shift operations type resolution
     pub fn resolve_shift_operand_types(&self, lhs_ty: &TypeDecl, rhs_ty: &TypeDecl) -> (TypeDecl, TypeDecl) {
         // For shift operations, right operand must be UInt64

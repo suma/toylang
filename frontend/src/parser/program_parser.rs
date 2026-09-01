@@ -16,6 +16,12 @@ use super::core::Parser;
 /// existing `DefaultSymbol`-keyed method registry without any new
 /// indirection. (Step A of the extension-trait work — full
 /// primitive method dispatch lands in Step B.)
+/// NUM-W-ENUMERATION: the one projection that cannot be derived. It
+/// starts from `Kind`, which has ~100 variants, so an exhaustive match
+/// is not the guard here — `primitive_target_coverage` in the frontend
+/// tests is: it asserts every name in
+/// `TypeDecl::PRIMITIVE_IMPL_TARGETS` is produced by some `Kind`, so a
+/// width added to the canonical list and not here fails loudly.
 fn primitive_type_canonical_name(kind: &Kind) -> Option<&'static str> {
     Some(match kind {
         Kind::Bool => "bool",

@@ -42,40 +42,48 @@ pub(super) fn primitive_target_sym_for_ir_type(
     ty: Type,
     interner: &DefaultStringInterner,
 ) -> Option<DefaultSymbol> {
-    let name = match ty {
-        Type::Bool => "bool",
-        Type::I64 => "i64",
-        Type::U64 => "u64",
-        Type::F64 => "f64",
-        // NUM-W / SIMD-F32: the narrow widths dispatch like any other
-        // primitive receiver. Registration already handled them
-        // (`primitive_type_decl_for_target_sym`, NUM-W-AOT T5), so
-        // leaving them out here meant an `impl <Trait> for u8` was
-        // lowered and then unreachable: the call fell past this
-        // function to the struct/enum binding path and failed with
-        // "the method receiver must be a struct or enum binding",
-        // which names neither the width nor the impl. One more
-        // instance of the enumeration NUM-W-ENUMERATION tracks.
-        Type::I8 => "i8",
-        Type::U8 => "u8",
-        Type::I16 => "i16",
-        Type::U16 => "u16",
-        Type::I32 => "i32",
-        Type::U32 => "u32",
-        Type::F32 => "f32",
-        // `Type::Str` is a pointer-sized opaque handle in IR
-        // (Phase T). Extension-trait dispatch (`s.hash()` from
-        // `core/std/hash.t`'s `impl Hash for str`) routes through
-        // the same per-target method registry as the numeric
-        // primitives above — `lower_program` uses the matching
-        // `"str" => TypeDecl::String` entry in
-        // `primitive_type_decl_for_target_sym`.
-        Type::Str => "str",
-        // `ptr` has no extension trait in stdlib yet; wire when
-        // exercised.
-        _ => return None,
+    // NUM-W-ENUMERATION: no `_ =>` arm. The catch-all is precisely how
+    // the narrow widths went missing here while registration already
+    // knew them — an `impl <Trait> for u8` lowered and was then
+    // unreachable, the call falling past this function to the
+    // struct/enum binding path and failing with "the method receiver
+    // must be a struct or enum binding", which names neither the width
+    // nor the impl. Spelled out, a new IR type will not compile until
+    // someone decides which side it belongs on.
+    //
+    // The names themselves come from `TypeDecl::PRIMITIVE_IMPL_TARGETS`
+    // by way of the `TypeDecl` each IR type stands for.
+    let decl = match ty {
+        Type::Bool => TypeDecl::Bool,
+        Type::I8 => TypeDecl::Int8,
+        Type::U8 => TypeDecl::UInt8,
+        Type::I16 => TypeDecl::Int16,
+        Type::U16 => TypeDecl::UInt16,
+        Type::I32 => TypeDecl::Int32,
+        Type::U32 => TypeDecl::UInt32,
+        Type::I64 => TypeDecl::Int64,
+        Type::U64 => TypeDecl::UInt64,
+        Type::F32 => TypeDecl::Float32,
+        Type::F64 => TypeDecl::Float64,
+        // `Type::Str` is a pointer-sized opaque handle in IR (Phase T).
+        // Extension-trait dispatch (`s.hash()` from `core/std/hash.t`'s
+        // `impl Hash for str`) routes through the same per-target
+        // method registry as the numeric primitives.
+        Type::Str => TypeDecl::String,
+        // `ptr` lowers to `Type::U64`, so it is indistinguishable from
+        // `u64` here and cannot be dispatched on. No stdlib extension
+        // trait targets `ptr` today; giving it its own IR type is what
+        // reaching one would take.
+        //
+        // The rest are not single SSA values and never reach a
+        // primitive receiver.
+        Type::Unit
+        | Type::Vector(_)
+        | Type::Struct(_)
+        | Type::Tuple(_)
+        | Type::Enum(_) => return None,
     };
-    interner.get(name)
+    interner.get(decl.primitive_canonical_name()?)
 }
 
 impl<'a> FunctionLower<'a> {
@@ -1664,4 +1672,69 @@ pub(super) struct CompoundMethodCall {
     /// Slots that receive `&mut` writeback, appended *after* the
     /// caller's own destination locals.
     pub writeback_dests: Vec<LocalId>,
+}
+
+#[cfg(test)]
+mod primitive_target_tests {
+    use super::*;
+    use crate::types::lower_scalar;
+
+    /// NUM-W-ENUMERATION: every primitive the IR can represent as a
+    /// scalar is dispatchable as a method receiver.
+    ///
+    /// This is the projection that failed before: registration knew the
+    /// narrow widths and dispatch did not, so `impl <Trait> for u8`
+    /// lowered and was then unreachable. Deriving the names from
+    /// `TypeDecl::PRIMITIVE_IMPL_TARGETS` does not by itself stop a
+    /// width being dropped in the `Type` match above, so that is what
+    /// this asserts.
+    #[test]
+    fn every_ir_representable_primitive_dispatches() {
+        let mut interner = DefaultStringInterner::new();
+        for (_, name) in TypeDecl::PRIMITIVE_IMPL_TARGETS {
+            interner.get_or_intern(*name);
+        }
+
+        for (decl, name) in TypeDecl::PRIMITIVE_IMPL_TARGETS {
+            let Some(ir_ty) = lower_scalar(decl) else {
+                continue;
+            };
+            let got = primitive_target_sym_for_ir_type(ir_ty, &interner);
+            if *name == "ptr" {
+                // `ptr` lowers to `Type::U64`, indistinguishable from
+                // `u64`, so it resolves to `u64` rather than to itself.
+                // Documented in the function; asserted so the day `ptr`
+                // gains its own IR type, this test says so.
+                assert_eq!(got, interner.get("u64"), "ptr no longer aliases u64 in IR");
+                continue;
+            }
+            assert_eq!(
+                got,
+                interner.get(*name),
+                "`{name}` lowers to {ir_ty:?} but does not dispatch as a receiver"
+            );
+        }
+    }
+
+    /// A program with no extension trait on a primitive never interned
+    /// its name, and dispatch short-circuits rather than inventing one.
+    #[test]
+    fn an_uninterned_primitive_name_resolves_to_nothing() {
+        let interner = DefaultStringInterner::new();
+        assert_eq!(primitive_target_sym_for_ir_type(Type::U8, &interner), None);
+    }
+
+    /// Compound IR types have no primitive receiver path.
+    #[test]
+    fn a_compound_ir_type_is_not_a_primitive_receiver() {
+        let mut interner = DefaultStringInterner::new();
+        for (_, name) in TypeDecl::PRIMITIVE_IMPL_TARGETS {
+            interner.get_or_intern(*name);
+        }
+        assert_eq!(primitive_target_sym_for_ir_type(Type::Unit, &interner), None);
+        assert_eq!(
+            primitive_target_sym_for_ir_type(Type::Struct(crate::ir::StructId(0)), &interner),
+            None
+        );
+    }
 }

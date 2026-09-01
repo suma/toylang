@@ -10,6 +10,15 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-01
+- **NUM-W-ENUMERATION — レシーバ表の 6 コピーを 1 つにし、隠れていた
+  JIT の符号バグを 3 件出した** — 「primitive レシーバ → 対象型名」が
+  4 crate に 6 コピーあって食い違っていたのを
+  `TypeDecl::PRIMITIVE_IMPL_TARGETS` からの射影に統一。interpreter JIT
+  のコピーは 5 件しか知らず narrow 幅と `str` を落としていて、埋めたら
+  **その経路の符号判定が 3 箇所とも `== ScalarTy::I64`** だったことが
+  露出した (`-1i16 < 0i16` が false、`-100i16 / -1i16` が 0)。
+  `MIN / -1` guard の即値も `i64::MIN` 固定だった。3 crate に網羅テスト、
+  4 レーンに 2 件 pin
 - **DIAG-SYMBOL-NAME — 診断が名前を綴るようにした** — 型検査器が手で
   組み立てる 80 箇所の `format!` が `DefaultSymbol` / `TypeDecl` を
   `{:?}` で出していたのを interner 経由の綴りに統一
@@ -964,20 +973,31 @@
   scrutinee の型リスト + 網羅性 + 4 バックエンドの lowering。
   byte 走査を書いていて実際に困ってから。
 
-- **NUM-W-ENUMERATION** ★ — 整数型の列挙 (`Int8|Int16|...|UInt32`) が
-  **42 ファイル 625 箇所**に散っている (2026-08-25 の `gen_expr` /
-  `check_expr` 分割でディスパッチ側に 12 箇所増えた)。型を 1 つ足すコストが
-  そのまま 42 ファイル。`TypeDecl::is_numeric` / `is_integer` / `is_signed_integer`
-  と `ScalarTy` の同名メソッドが「再列挙しない」入口なので、残りの
-  match arm もそこへ寄せられる。**この列挙が実際にバグを産んだ実例**:
-  単項 `-` / `~` が narrow int を拒否していた (型検査が
-  `== TypeDecl::Int64` で書かれていた、2026-08-25 修正)。
-  **2 件目と 3 件目を 2026-08-31 に踏んだ** — 「primitive レシーバ →
-  対象型名」の対応表が **4 箇所**に複製されていて、lowering の dispatch
-  側が narrow int 全幅を、4 箇所すべてが `f32` を落としていた。結果
-  `impl <Trait> for u8` は parse も型検査も lowering も通ったうえで
-  **到達不能**になり、診断は幅にも impl にも触れなかった。1 箇所は
-  共通関数に寄せたが、残り 3 箇所は健在。**着手条件は満たされている**。
+- **NUM-W-ENUMERATION の残り** ★ — 整数型の列挙が
+  **42 ファイル 625 箇所**に散っている。型を 1 つ足すコストがそのまま
+  42 ファイル。`TypeDecl::is_numeric` / `is_integer` /
+  `is_signed_integer` と `ScalarTy` の同名メソッドが「再列挙しない」
+  入口なので、残りの match arm もそこへ寄せられる。
+  **「primitive レシーバ → 対象型名」の 6 コピーは 2026-09-01 に決着**
+  (`TypeDecl::PRIMITIVE_IMPL_TARGETS` が正本、各層は射影)。
+  残っているのは (a) 演算・キャスト・codegen 側の幅ごとの match arm、
+  (b) `TypeDecl` と `ScalarTy` と IR `Type` の相互変換 3 組。
+  **この列挙が産んだバグは通算 6 件** — 単項 `-` / `~` が narrow を
+  拒否 (2026-08-25)、レシーバ表の narrow 欠落と `f32` 欠落
+  (2026-08-31)、tree-walker のビット演算 (2026-09-01)、
+  interpreter JIT の符号判定 3 箇所と `MIN / -1` guard の即値
+  (2026-09-01)。次に踏んだら (a) から着手する
+
+- **NUM-W-FOR-RANGE: `for` の範囲に narrow int を書くと 3 レーンで割れる** ★★ —
+  `for i in -3i32..2i32 { .. }` は **IR VM では動く** (5 回) が、
+  **tree-walker は型エラーで拒否** (`For loop range must be UInt64 or
+  Int64`)、**AOT は cranelift の verifier で落ちる**
+  (`arg 1 (v18) has type i64, expected i32` — 診断ではなくクラッシュ)。
+  型検査は通してしまうので、書けるが動かない。ループ変数の幅が
+  インクリメント側の定数 `1` に伝わっていないのが AOT の直接の原因。
+  2026-09-01 に NUM-W-ENUMERATION の作業中、interpreter JIT の
+  for-range 符号判定を直したあとテストを書いていて踏んだ
+  (JIT 側は直したが、そもそも到達しない)。
 
 - **NARROW-UNSIGNED-SUB: `u8` / `u16` / `u32` の減算は
   アンダーフローで trap せず wrap する** ★ — RUNTIME-TRAP-NARROW の

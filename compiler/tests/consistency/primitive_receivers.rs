@@ -112,3 +112,73 @@ fn a_literal_narrow_receiver_needs_no_binding() {
     assert_eq!(interpreter_value(src) & 0xff, 42);
     assert_consistent(src, "literal_narrow_receiver");
 }
+
+/// NUM-W-ENUMERATION: the narrow **signed** widths compare, divide and
+/// iterate as signed in every engine.
+///
+/// The interpreter JIT decided signedness with
+/// `matches!(ty, ScalarTy::I64)` in three places — the binary-operator
+/// path, the `min` / `max` builtin, and the `for`-range bound — so
+/// `i8` / `i16` / `i32` were treated as unsigned there and nowhere
+/// else. `-1i16 < 0i16` answered false and `-100i16 / -1i16` answered
+/// 0, in that one engine.
+///
+/// It stayed hidden because the JIT's own primitive-receiver table was
+/// missing the narrow widths, so no extension-method test could reach
+/// this code; the widths went in and the wrong answers came straight
+/// out of the existing `checked.t` suite.
+#[test]
+fn narrow_signed_widths_compare_and_divide_as_signed() {
+    let src = r#"
+        fn main() -> u64 {
+            val neg: i16 = -1i16
+            val zero: i16 = 0i16
+            val hundred: i16 = 100i16
+            println(neg < zero)
+            println(neg > zero)
+            println(neg <= zero)
+            println(neg >= zero)
+            println(hundred * neg)
+            println((hundred * neg) / neg)
+            println((hundred * neg) % 7i16)
+            val small: i8 = -5i8
+            println(small < 0i8)
+            println(small / -1i8)
+            val wide: i32 = -70000i32
+            println(wide < 0i32)
+            println(wide / -1i32)
+            0u64
+        }
+    "#;
+    assert_eq!(
+        interpreter_stdout(src, "narrow_signed_cmp", true),
+        "true\nfalse\ntrue\nfalse\n-100\n100\n-2\ntrue\n5\ntrue\n70000\n"
+    );
+    assert_stdout_consistent(src, "narrow_signed_cmp");
+    // `assert_stdout_consistent` short-circuits on its lite path for a
+    // source that needs no core, and the lite path does not include
+    // the *interpreter's* JIT — which is the engine that was wrong.
+    // This one asserts it compiled rather than fell back.
+    assert_jit_compiled_and_matches(src, "narrow_signed_cmp_jit");
+}
+
+/// `MIN / -1` traps at every signed width. The JIT's guard compared
+/// against `i64::MIN` outright, which is the wrong constant for the
+/// narrow widths — harmless only for as long as the guard never ran
+/// for one, which the signedness bug guaranteed.
+#[test]
+fn dividing_the_narrow_minimum_by_minus_one_traps() {
+    for (width, min) in [("i8", "-128i8"), ("i16", "-32768i16"), ("i32", "-2147483648i32")] {
+        let src = format!(
+            r#"
+            fn main() -> u64 {{
+                val mn: {width} = {min}
+                val neg: {width} = -1{width}
+                val q = mn / neg
+                q as u64
+            }}
+        "#
+        );
+        assert_diagnostic_consistent(&src, &format!("narrow_min_div_{width}"));
+    }
+}

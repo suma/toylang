@@ -1060,12 +1060,22 @@ impl<'a, 'b> State<'a, 'b> {
                     };
                     return Ok(Some(v));
                 }
-                let signed = matches!(lhs_ty, ScalarTy::I64);
+                // NUM-W-ENUMERATION: this asked `== ScalarTy::I64`, so
+                // `i8` / `i16` / `i32` were compared and divided as if
+                // unsigned — `-1i16 < 0i16` answered false and
+                // `-100i16 / -1i16` answered 0, in this engine only.
+                // `is_signed_int` is the one list of the signed widths.
+                let signed = lhs_ty.is_signed_int();
                 // LLM-LOOP P6-3: guard unsigned subtraction that would
                 // wrap, matching the lowered backends (the guard there
                 // is emitted in `compiler_lower`, which this JIT does
                 // not go through). Without it the JIT would be the one
                 // engine that silently produced 18446744073709551615.
+                // `U64` and not `!signed` on purpose: only `u64`
+                // subtraction traps on underflow, the narrow unsigned
+                // widths wrap (todo NARROW-UNSIGNED-SUB). Widening this
+                // to every unsigned width would make the JIT disagree
+                // with the other three engines.
                 if matches!(op, Operator::ISub) && matches!(lhs_ty, ScalarTy::U64) {
                     let ok = self.builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, l, r);
                     let fail_blk = self.builder.create_block();
@@ -1107,7 +1117,10 @@ impl<'a, 'b> State<'a, 'b> {
                     let cont_blk = self.builder.create_block();
                     self.brif(is_minus_one, check_blk, cont_blk);
                     self.switch_to(check_blk);
-                    let is_min = self.builder.ins().icmp_imm(IntCC::Equal, l, i64::MIN);
+                    let min = lhs_ty
+                        .signed_min()
+                        .expect("signed op has a signed width");
+                    let is_min = self.builder.ins().icmp_imm(IntCC::Equal, l, min);
                     let fail_blk = self.builder.create_block();
                     self.brif(is_min, fail_blk, cont_blk);
                     self.switch_to(fail_blk);
@@ -1697,7 +1710,10 @@ impl<'a, 'b> State<'a, 'b> {
                         let b = self
                             .gen_expr(&args[1])?
                             .ok_or_else(|| "min/max arg1".to_string())?;
-                        let signed = matches!(self.expr_type(&args[0])?, ScalarTy::I64);
+                        // NUM-W-ENUMERATION: `== ScalarTy::I64` here
+                        // made `min` / `max` order the narrow signed
+                        // widths as unsigned.
+                        let signed = self.expr_type(&args[0])?.is_signed_int();
                         let cc = match (matches!(func, BuiltinFunction::Min), signed) {
                             (true, true) => IntCC::SignedLessThan,
                             (false, true) => IntCC::SignedGreaterThan,
@@ -2349,7 +2365,14 @@ impl<'a, 'b> State<'a, 'b> {
         body: &ExprRef,
     ) -> Result<(), String> {
         let start_ty = self.expr_type(start)?;
-        let signed = matches!(start_ty, ScalarTy::I64);
+        // NUM-W-ENUMERATION: `== ScalarTy::I64` here would compare a
+        // narrow signed bound as unsigned, so a negative start would
+        // run zero times. Not reachable from source today — a `for`
+        // over a narrow range is rejected by the tree-walker and
+        // crashes the AOT verifier (todo NUM-W-FOR-RANGE) — but the
+        // widths belong on one list either way, and this is the shape
+        // the other two sites were actually wrong in.
+        let signed = start_ty.is_signed_int();
         let start_val = self
             .gen_expr(start)?
             .ok_or_else(|| "for start produced no value".to_string())?;

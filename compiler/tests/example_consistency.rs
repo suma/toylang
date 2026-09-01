@@ -16,8 +16,10 @@
 //! ## The two lists below are a coverage ledger, not a mute button
 //!
 //! An example is skipped only if it is named in `ERROR_EXAMPLES` (it is
-//! *meant* to fail) or `AOT_UNSUPPORTED` (the AOT backend cannot build
-//! it yet). Both are checked, in both directions:
+//! *meant* to fail), `AOT_UNSUPPORTED` (the AOT backend cannot build it
+//! yet), or `NEEDS_A_PEER` (it waits for something this harness does
+//! not provide — see that list). The first two are checked, in both
+//! directions:
 //!
 //!   * a listed example that starts working fails the test, so the list
 //!     shrinks as the backends catch up
@@ -97,6 +99,22 @@ const AOT_UNSUPPORTED: &[&str] = &[
 /// Examples that make a backend panic rather than fail cleanly. Each
 /// entry is a crash worth fixing; the sweep is what found them.
 const KNOWN_CRASHES: &[&str] = &[];
+
+/// Examples that wait for something this harness does not provide.
+///
+/// Unlike the two lists above, this one is not a ledger of work to be
+/// done — nothing about a backend would make these runnable here. A
+/// server example blocks until a peer connects or its idle budget runs
+/// out; running it would add that budget to every lane and still prove
+/// only that nobody called.
+///
+/// The API is not left uncovered by the skip:
+/// `compiler/tests/consistency/net.rs` exercises the same `bind` /
+/// `accept` / `Poller` surface across four lanes, with the client in
+/// the same process so it is deterministic. What lives here is the
+/// documentation half — a server shaped the way one is actually
+/// written, which needs a person and a terminal.
+const NEEDS_A_PEER: &[&str] = &["net_echo_server.t"];
 
 fn skip_e2e() -> bool {
     std::env::var("COMPILER_E2E").map(|v| v == "skip").unwrap_or(false)
@@ -279,6 +297,9 @@ fn check_example_isolated(path: &Path) -> Result<(), String> {
 /// Check one example. Returns a description of any disagreement.
 fn check_example(path: &Path) -> Result<(), String> {
     let name = file_name(path);
+    if NEEDS_A_PEER.contains(&name.as_str()) {
+        return Ok(());
+    }
     let source = std::fs::read_to_string(path).expect("read example");
     let expects_error = ERROR_EXAMPLES.contains(&name.as_str());
 

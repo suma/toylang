@@ -26,8 +26,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 配列 / Vec の layout (AoS / SoA) の設計 (Phase 0・2 landing 済み) | [`design-docs/DATA_ORIENTED.md`](design-docs/DATA_ORIENTED.md) |
 | `ptr` を型付きにする設計 (未実装) | [`design-docs/POINTER.md`](design-docs/POINTER.md) |
 | SIMD の設計と残りのフェーズ | [`design-docs/SIMD.md`](design-docs/SIMD.md) |
-| socket ラッパーと OS のコンパイル時切り替え (未実装) | [`design-docs/NETWORK_IO.md`](design-docs/NETWORK_IO.md) |
-| epoll / kqueue の統一形 (未実装) | [`design-docs/EVENT_POLLING.md`](design-docs/EVENT_POLLING.md) |
+| socket ラッパーと OS のコンパイル時切り替え (N0〜N5 landing 済み) | [`design-docs/NETWORK_IO.md`](design-docs/NETWORK_IO.md) |
+| epoll / kqueue の統一形 (landing 済み) | [`design-docs/EVENT_POLLING.md`](design-docs/EVENT_POLLING.md) |
+| example のビルド・実行方法 | [`interpreter/example/HOW_TO.md`](interpreter/example/HOW_TO.md) |
 | このリポジトリで LLM が作業する際の指針 | [`design-docs/COMPILER_DEV_LOOP.md`](design-docs/COMPILER_DEV_LOOP.md) |
 
 以下の「Language Syntax」節は**日常的に踏む要点の早見表**であって仕様書ではない。
@@ -231,11 +232,14 @@ clippy は**無警告が既定状態**。警告が出たら、それは今回の
   これを使う)。2026-08-25 の MATCH-STRUCT-ARM はこの取り違えのせいで
   4 レーン全一致のまま誤答していた
 - `compiler/tests/example_consistency.rs` が
-  **`interpreter/example/` の全プログラムを 3 バックエンドで突き合わせる**ので、
-  example を追加すればカバレッジは自動で増える。
-  失敗したら skip リスト (`ERROR_EXAMPLES` / `AOT_UNSUPPORTED` / `KNOWN_CRASHES`)
-  に足す前に、まず本当にバックエンドのバグでないかを確認すること —
-  リストは**両方向に検査される**ので、直ったのに残っていても失敗する
+  **`interpreter/example/` の全プログラムを interpreter / JIT / AOT で
+  突き合わせる**ので、example を追加すればカバレッジは自動で増える。
+  失敗したら skip リスト (`ERROR_EXAMPLES` / `AOT_UNSUPPORTED` /
+  `KNOWN_CRASHES` / `NEEDS_A_PEER`) に足す前に、まず本当にバックエンドの
+  バグでないかを確認すること — 前 2 者は**両方向に検査される**ので、
+  直ったのに残っていても失敗する。`NEEDS_A_PEER` だけは性質が違い
+  (peer を待つプログラムはどのバックエンドでも harness では走らない)、
+  両方向検査も掛かっていない
 
 設定用の構造体 (`CompilerOptions` / `RunOptions` / `SourceLocation`) は
 `#[non_exhaustive]` なので、構造体リテラルではなくコンストラクタを使う:
@@ -494,6 +498,12 @@ fn main() -> u64 {
     - ビット: `&` / `|` / `^` / `<<` / `>>` → `bitand` / `bitor` / `bitxor` / `shl` / `shr` (Self 戻り)
     - 単項: `-` / `~` / `!` → `neg` / `bitnot` / `not` (`(&self) -> Self`)
     - **scope 外**: `&&` / `||` (short-circuit semantics)。加えて compiled レーンは **let-rhs 位置以外すべて** — chain (`a + b + c`)、struct literal operand (`a & Foo { ... }`)、結果のフィールド (`(a + b).x`)、引数位置 (`take(a + b)`)、条件位置 (`if (a + b) == c`)。interpreter には制限が無いので**インタプリタで動いた形が AOT で落ちる**。`val sum = a + b` に束縛してから使う (todo.md の OP-OVERLOAD-CHAIN)
+  - **代入は値を持たない — 型は `()`**。`a = v` / `p.f = v` / `a[i] = v` /
+    `d[k] = v` / `__setitem__` / 複合代入のすべてが `()` なので、
+    末尾が代入のブロックは `()` ブロックになる
+    (`match x { Some(v) => { acc = acc + v } None => {} }` が通る)。
+    逆に `fn f() -> u64 { a = 5u64 }` は型エラー。式の位置には置けない
+    (`val x = (a = b)` は parse エラー、`a = b = c` は動かない)
   - 複合代入: 算術 5 種 (`+=`, `-=`, `*=`, `/=`, `%=`) とビット 5 種 (`&=`, `|=`, `^=`, `<<=`, `>>=`)（パーサで `lhs op= rhs` を `lhs = lhs op rhs` に desugar するので型検査もバックエンドも触らない。LHS は identifier / フィールド / タプル添字 / 添字の 4 形）。`>>=` は 1 トークンなので `Option<Option<u64>>= ..` のような形は型引数パーサが `>` `>` `=` に割り直す（`Vec<u64>= ..` は従来どおり parse error）。short-circuit の `&&=` / `||=` は追加しない
   - 範囲: `..`（例: `0..10`）式として使用可能。`for i in 0..10 { ... }` と `val r = 0..10` の両方が書ける。`for i in 0 to 10` の旧形式も引き続き有効
   - スコープ解決: `::`
@@ -632,6 +642,28 @@ fn main() -> u64 {
   `env_name` / `env_value` の `environ` 順アクセス (interpreter の
   `std::env::vars` も同じ順)。プログラム引数は CLI ではファイル後ろの
   引数、`RunOptions.args` で注入。
+- **`net::` モジュール** (`core/std/net.t`、NETWORK_IO N0〜N5、4 レーン対応) —
+  `TcpListener` (`bind` / `accept` / `local_port` / `local_addr` /
+  `set_blocking` / `as_fd` / `close`)、`TcpStream` (`connect` /
+  `connect_nonblocking` / `read` / `write` / `shutdown_write` /
+  `peer_addr` / `set_nodelay` / `set_read_timeout` ...)、`UdpSocket`、
+  `net::resolve(host)`、`backend_name()`。失敗は `NetError` の enum で、
+  **`WouldBlock` はサーバの平常状態であって失敗ではない**。
+  socket は既定が nonblocking。`read` / `write` は `Span<u8>` を取るので
+  確保もコピーも要らない (`Vec::with_capacity` +`capacity_span` +
+  `set_size` が受け口)。**port は 0 で bind して `local_port()` で読み戻す**
+  のが規約 (番号を書かない)。
+- **`Poller` (`core/std/poll.t`、EVENT_POLLING、4 レーン対応)** —
+  epoll (Linux) と kqueue (macOS/BSD) の統一形。`new` / `register(fd,
+  token, interest)` / `deregister` / `wait(timeout_ms)` / `event(i)`、
+  interest は `interest_read()` / `interest_write()` / `interest_edge()` /
+  `interest_oneshot()` (**`pub const` ではなく `pub fn`** — module の
+  top-level `const` が他モジュールから見えないため、todo MODULE-CONST)。
+  **ready な fd は 1 イベントで、フラグはマージ済み** (両プラットフォームで
+  ループ回数が一致する)。`wait` のタイムアウトは `Ok(0)` であって
+  エラーではない。token は runtime が中身を見ない数。
+  例: `interpreter/example/net_echo_server.t` (ビルドと実行は
+  [`interpreter/example/HOW_TO.md`](interpreter/example/HOW_TO.md))
 - `print(value)` — stdout に値を出力（改行なし）
 - `println(value)` — stdout に値を出力 + 改行
 - **`eprint(value)` / `eprintln(value)` (RUNTIME-LIB P0-A)** — 同じ整形で

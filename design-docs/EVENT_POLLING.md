@@ -1,7 +1,7 @@
 # EVENT_POLLING.md — epoll / kqueue の統一形
 
-> **状態: 未着手 (設計のみ)**。[`NETWORK_IO.md`](NETWORK_IO.md) の
-> **Phase N3**。socket 側の設計・プラットフォーム切り替えの機構
+> **状態: 実装済み (2026-09-01)** — 下の Status 節が実装の所在。
+> [`NETWORK_IO.md`](NETWORK_IO.md) の **Phase N3**。socket 側の設計・プラットフォーム切り替えの機構
 > (`#[cfg_attr(path)] mod sys;`)・extern 境界の制約は同文書にあり、
 > 本文書はそれを**前提として引く**。分けたのは、2 つの API の意味論差が
 > socket 本体より大きく、決定を 1 箇所にまとめておきたいため。
@@ -15,6 +15,11 @@ runtime に `poll_create` / `poll_ctl` / `poll_wait` +
 `compiler/tests/consistency/net.rs` が **4 レーンで** 3 件 pin
 (イベントループ一巡、read+write が 1 イベントにマージされること、
 peer が閉じても bytes が残っていること)。すべて 1 プロセスで自己完結する。
+
+**動く例**: [`interpreter/example/net_echo_server.t`](../interpreter/example/net_echo_server.t)
+— `Poller` で駆動する echo サーバ。accept も read も `wait` で待つ形で、
+ビルドと実行は [`interpreter/example/HOW_TO.md`](../interpreter/example/HOW_TO.md)。
+テストと違ってクライアントを同梱していないので、`nc` で叩く。
 
 設計から変えた点が 1 つ: **interest フラグは `pub const` ではなく
 `pub fn`**。モジュールの top-level `const` は他モジュールから見えず、

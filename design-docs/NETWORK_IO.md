@@ -18,6 +18,13 @@
 | **N4** | UDP + socket option (timeout / nodelay) + `local_addr` / `peer_addr` | ✅ 完了 (2026-09-01)。4 レーン一致 |
 | **N5** | 名前解決 (`getaddrinfo`) | ✅ 完了 (2026-09-01)。4 レーン一致 |
 
+**動く例**: [`interpreter/example/net_echo_server.t`](../interpreter/example/net_echo_server.t)
+— `Poller` で駆動する echo サーバ。ビルドと実行、および `nc` での叩き方は
+[`interpreter/example/HOW_TO.md`](../interpreter/example/HOW_TO.md)。
+テスト (`compiler/tests/consistency/net.rs`) は決定的にするために
+クライアントを同じプロセスに置いているので、**サーバの書き方**を見るなら
+example のほう。
+
 ## なぜ今これを設計するか
 
 `RUNTIME_LIBRARY.md` の非目標節は「ネットワーク / async runtime は需要が

@@ -39,7 +39,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                                 }
                                 _ => {
                                     return Err(TypeCheckError::array_error(&format!(
-                                        "Array index must be an integer type, but got {:?}", start_type
+                                        "Array index must be an integer type, but got {}",
+                                        self.type_name_for_error(&start_type)
                                     )));
                                 }
                             }
@@ -139,7 +140,8 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
             _ => {
                 Err(TypeCheckError::generic_error(&format!(
-                    "Cannot access type {:?} - only arrays, dictionaries, and structs with __getitem__ are supported", object_type
+                    "Cannot access type {} - only arrays, dictionaries, and structs with __getitem__ are supported",
+                    self.type_name_for_error(&object_type)
                 )))
             }
         }
@@ -208,8 +210,9 @@ impl<'a> TypeCheckerVisitor<'a> {
 
                             if *expected_dict_value_type != resolved_value_type {
                                 return Err(TypeCheckError::generic_error(&format!(
-                                    "Dict value type mismatch: expected {:?}, found {:?}",
-                                    expected_dict_value_type, resolved_value_type
+                                    "Dict value type mismatch: expected {}, found {}",
+                                    self.type_name_for_error(expected_dict_value_type),
+                                    self.type_name_for_error(&resolved_value_type)
                                 )));
                             }
                             Ok(resolved_value_type)
@@ -262,7 +265,8 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
             _ => {
                 Err(TypeCheckError::generic_error(&format!(
-                    "Cannot assign to type {:?} - only arrays, dictionaries, and structs with __setitem__ are supported", object_type
+                    "Cannot assign to type {} - only arrays, dictionaries, and structs with __setitem__ are supported",
+                    self.type_name_for_error(&object_type)
                 )))
             }
         }
@@ -370,14 +374,18 @@ impl<'a> TypeCheckerVisitor<'a> {
 
             if check_key_type != final_key_type {
                 return Err(TypeCheckError::generic_error(&format!(
-                    "Dict key type mismatch at entry {}: expected {:?}, found {:?}. All keys must have the same type.",
-                    entry_index + 1, final_key_type, check_key_type
+                    "Dict key type mismatch at entry {}: expected {}, found {}. All keys must have the same type.",
+                    entry_index + 1,
+                    self.type_name_for_error(&final_key_type),
+                    self.type_name_for_error(&check_key_type)
                 )));
             }
             if check_value_type != final_value_type {
                 return Err(TypeCheckError::generic_error(&format!(
-                    "Dict value type mismatch at entry {}: expected {:?}, found {:?}. All values must have the same type.",
-                    entry_index + 1, final_value_type, check_value_type
+                    "Dict value type mismatch at entry {}: expected {}, found {}. All values must have the same type.",
+                    entry_index + 1,
+                    self.type_name_for_error(&final_value_type),
+                    self.type_name_for_error(&check_value_type)
                 )));
             }
         }
@@ -453,8 +461,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                     self.visit_field_access_impl(tuple, &field_symbol)
                 }
                 None => Err(TypeCheckError::generic_error(&format!(
-                    "Cannot access index {} on non-tuple type {:?}",
-                    index, tuple_type
+                    "Cannot access index {} on non-tuple type {}",
+                    index, self.type_name_for_error(&tuple_type)
                 ))),
             },
         }
@@ -506,7 +514,11 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Save the original type hint to restore later
         let original_hint = self.type_inference.type_hint.clone();
         if std::env::var("TOY_DEBUG_ARRAY_HINT").is_ok() {
-            eprintln!("[debug] array literal hint: {:?}", original_hint);
+            let hint_str = original_hint
+                .as_ref()
+                .map(|t| self.type_name_for_error(t))
+                .unwrap_or_else(|| "none".to_string());
+            eprintln!("[debug] array literal hint: {hint_str}");
         }
 
         // If we have a type hint for the array element type, use it for element type inference
@@ -577,8 +589,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                             // Bool literals - check type compatibility
                             if expected_element_type != &TypeDecl::Bool => {
                                 return Err(TypeCheckError::array_error(&format!(
-                                    "Array element {} has type Bool but expected {:?}",
-                                    i, expected_element_type
+                                    "Array element {} has type bool but expected {}",
+                                    i, self.type_name_for_error(expected_element_type)
                                 )));
                             },
                         TypeDecl::Identifier(actual_struct) => {
@@ -600,8 +612,10 @@ impl<'a> TypeCheckerVisitor<'a> {
                             };
                             if !spelled_same {
                                 return Err(TypeCheckError::array_error(&format!(
-                                    "Array element {} has struct type {:?} but expected {:?}",
-                                    i, actual_struct, expected_element_type
+                                    "Array element {} has struct type {} but expected {}",
+                                    i,
+                                    self.resolve_symbol_name(*actual_struct),
+                                    self.type_name_for_error(expected_element_type)
                                 )));
                             }
                         },
@@ -619,21 +633,27 @@ impl<'a> TypeCheckerVisitor<'a> {
                                 (TypeDecl::Int64, TypeDecl::UInt64) |
                                 (TypeDecl::UInt64, TypeDecl::Int64) => {
                                     return Err(TypeCheckError::array_error(&format!(
-                                        "Cannot mix signed and unsigned integers in array. Element {} has type {:?} but expected {:?}",
-                                        i, actual_type, expected_element_type
+                                        "Cannot mix signed and unsigned integers in array. Element {} has type {} but expected {}",
+                                        i,
+                                        self.type_name_for_error(actual_type),
+                                        self.type_name_for_error(expected_element_type)
                                     )));
                                 },
                                 (TypeDecl::Bool, _other_type) | (_other_type, TypeDecl::Bool) => {
                                     return Err(TypeCheckError::array_error(&format!(
-                                        "Cannot mix Bool with other types in array. Element {} has type {:?} but expected {:?}",
-                                        i, actual_type, expected_element_type
+                                        "Cannot mix bool with other types in array. Element {} has type {} but expected {}",
+                                        i,
+                                        self.type_name_for_error(actual_type),
+                                        self.type_name_for_error(expected_element_type)
                                     )));
                                 },
                                 (TypeDecl::Identifier(struct1), TypeDecl::Identifier(struct2)) => {
                                     if struct1 != struct2 {
                                         return Err(TypeCheckError::array_error(&format!(
-                                            "Array element {} has struct type {:?} but expected {:?}",
-                                            i, struct1, struct2
+                                            "Array element {} has struct type {} but expected {}",
+                                            i,
+                                            self.resolve_symbol_name(*struct1),
+                                            self.resolve_symbol_name(*struct2)
                                         )));
                                     }
                                 },
@@ -646,8 +666,10 @@ impl<'a> TypeCheckerVisitor<'a> {
                                 | (TypeDecl::Identifier(b), TypeDecl::Struct(a, params)) => {
                                     if !(a == b && params.is_empty()) {
                                         return Err(TypeCheckError::array_error(&format!(
-                                            "Cannot mix struct type {:?} with {:?} in array. Element {} has incompatible type",
-                                            b, TypeDecl::Struct(*a, params.clone()), i
+                                            "Cannot mix struct type {} with {} in array. Element {} has incompatible type",
+                                            self.resolve_symbol_name(*b),
+                                            self.type_name_for_error(&TypeDecl::Struct(*a, params.clone())),
+                                            i
                                         )));
                                     }
                                 },
@@ -655,8 +677,10 @@ impl<'a> TypeCheckerVisitor<'a> {
                                 | (TypeDecl::Identifier(b), TypeDecl::Enum(a, params)) => {
                                     if !(a == b && params.is_empty()) {
                                         return Err(TypeCheckError::array_error(&format!(
-                                            "Cannot mix enum type {:?} with {:?} in array. Element {} has incompatible type",
-                                            b, TypeDecl::Enum(*a, params.clone()), i
+                                            "Cannot mix enum type {} with {} in array. Element {} has incompatible type",
+                                            self.resolve_symbol_name(*b),
+                                            self.type_name_for_error(&TypeDecl::Enum(*a, params.clone())),
+                                            i
                                         )));
                                     }
                                 },
@@ -675,17 +699,19 @@ impl<'a> TypeCheckerVisitor<'a> {
                                 | (TypeDecl::Struct(b, b_params), TypeDecl::Enum(a, a_params)) => {
                                     if !(a == b && a_params == b_params) {
                                         return Err(TypeCheckError::array_error(&format!(
-                                            "Cannot mix enum type {:?} with {:?} in array. Element {} has incompatible type",
-                                            TypeDecl::Enum(*a, a_params.clone()),
-                                            TypeDecl::Struct(*b, b_params.clone()),
+                                            "Cannot mix enum type {} with {} in array. Element {} has incompatible type",
+                                            self.type_name_for_error(&TypeDecl::Enum(*a, a_params.clone())),
+                                            self.type_name_for_error(&TypeDecl::Struct(*b, b_params.clone())),
                                             i
                                         )));
                                     }
                                 },
                                 (TypeDecl::Identifier(struct_name), other_type) | (other_type, TypeDecl::Identifier(struct_name)) => {
                                     return Err(TypeCheckError::array_error(&format!(
-                                        "Cannot mix struct type {:?} with {:?} in array. Element {} has incompatible type",
-                                        struct_name, other_type, i
+                                        "Cannot mix struct type {} with {} in array. Element {} has incompatible type",
+                                        self.resolve_symbol_name(*struct_name),
+                                        self.type_name_for_error(other_type),
+                                        i
                                     )));
                                 },
                                 _ => {
@@ -693,8 +719,10 @@ impl<'a> TypeCheckerVisitor<'a> {
                                         // Already matches
                                     } else {
                                         return Err(TypeCheckError::array_error(&format!(
-                                            "Array element {} has type {:?} but expected {:?}",
-                                            i, actual_type, expected_element_type
+                                            "Array element {} has type {} but expected {}",
+                                            i,
+                                            self.type_name_for_error(actual_type),
+                                            self.type_name_for_error(expected_element_type)
                                         )));
                                     }
                                 }
@@ -743,8 +771,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         for (i, element_type) in element_types.iter().enumerate() {
             if element_type != first_type {
                 return Err(TypeCheckError::array_error(&format!(
-                    "Array elements must have the same type, but element {} has type {:?} while first element has type {:?}",
-                    i, element_type, first_type
+                    "Array elements must have the same type, but element {} has type {} while first element has type {}",
+                    i,
+                    self.type_name_for_error(element_type),
+                    self.type_name_for_error(first_type)
                 )));
             }
         }
@@ -828,8 +858,9 @@ impl<'a> TypeCheckerVisitor<'a> {
 
             // Invalid cast
             _ => Err(TypeCheckError::generic_error(&format!(
-                "Cannot cast {:?} to {:?}",
-                expr_type, target_type
+                "Cannot cast {} to {}",
+                self.type_name_for_error(&expr_type),
+                self.type_name_for_error(target_type)
             )))
         }
     }

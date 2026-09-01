@@ -191,8 +191,8 @@ impl<'a> TypeCheckerVisitor<'a> {
             if !in_impl_scope {
                 let sym_str = self.resolve_symbol_name(*sym);
                 return Err(TypeCheckError::generic_error(&format!(
-                    "DEBUG: Method '{}' returned unresolved Generic('{}') for object type {:?}",
-                    method_name, sym_str, resolved_obj_type
+                    "DEBUG: Method '{}' returned unresolved Generic('{}') for object type {}",
+                    method_name, sym_str, self.type_name_for_error(&resolved_obj_type)
                 )));
             }
         }
@@ -715,9 +715,9 @@ impl<'a> TypeCheckerVisitor<'a> {
                         // `visit_indirect_call`'s checks.
                         if args.len() != param_tys.len() {
                             return Err(TypeCheckError::generic_error(&format!(
-                                "field '{}' on struct '{:?}' has fn type taking {} args, got {}",
+                                "field '{}' on struct '{}' has fn type taking {} args, got {}",
                                 method_name,
-                                struct_name,
+                                self.resolve_symbol_name(*struct_name),
                                 param_tys.len(),
                                 args.len()
                             )));
@@ -731,11 +731,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                             {
                                 self.type_inference.type_hint = original_hint;
                                 return Err(TypeCheckError::generic_error(&format!(
-                                    "Type error: expected {:?}, found {:?}. field '{}' on struct '{:?}' arg {} type mismatch",
-                                    expected,
-                                    arg_ty,
+                                    "Type error: expected {}, found {}. field '{}' on struct '{}' arg {} type mismatch",
+                                    self.type_name_for_error(expected),
+                                    self.type_name_for_error(&arg_ty),
                                     method_name,
-                                    struct_name,
+                                    self.resolve_symbol_name(*struct_name),
                                     idx + 1
                                 )));
                             }
@@ -892,8 +892,10 @@ impl<'a> TypeCheckerVisitor<'a> {
                                     let enum_str = self.resolve_symbol_name(struct_name);
                                     let v_str = self.resolve_symbol_name(function_name);
                                     return Err(TypeCheckError::generic_error(&format!(
-                                        "variant '{}::{}' generic parameter conflict: {:?} vs {:?}",
-                                        enum_str, v_str, prev, actual_ty
+                                        "variant '{}::{}' generic parameter conflict: {} vs {}",
+                                        enum_str, v_str,
+                                        self.type_name_for_error(prev),
+                                        self.type_name_for_error(&actual_ty)
                                     )));
                                 }
                             } else {
@@ -906,8 +908,10 @@ impl<'a> TypeCheckerVisitor<'a> {
                         let enum_str = self.resolve_symbol_name(struct_name);
                         let v_str = self.resolve_symbol_name(function_name);
                         return Err(TypeCheckError::generic_error(&format!(
-                            "variant '{}::{}' payload type mismatch: expected {:?}, found {:?}",
-                            enum_str, v_str, expected_resolved, actual_ty
+                            "variant '{}::{}' payload type mismatch: expected {}, found {}",
+                            enum_str, v_str,
+                            self.type_name_for_error(&expected_resolved),
+                            self.type_name_for_error(&actual_ty)
                         )));
                     }
                 }
@@ -965,7 +969,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         if !self.context.struct_definitions.contains_key(&struct_name)
             && !self.context.enum_definitions.contains_key(&struct_name)
         {
-            return Err(TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)));
+            return Err(TypeCheckError::not_found("Struct", &self.resolve_symbol_name(struct_name)));
         }
 
         let function_name_str = self.resolve_symbol_name(function_name);
@@ -993,8 +997,8 @@ impl<'a> TypeCheckerVisitor<'a> {
             .get_struct_method(struct_name, function_name, &hint_args)
             .cloned()
             .ok_or_else(|| TypeCheckError::generic_error(&format!(
-                "Associated function '{}' not found for struct '{:?}'",
-                function_name_str, struct_name
+                "Associated function '{}' not found for struct '{}'",
+                function_name_str, self.resolve_symbol_name(struct_name)
             )))?;
 
         if self.context.is_generic_struct(struct_name) {

@@ -42,7 +42,9 @@ impl<'a> TypeCheckerVisitor<'a> {
                     self.type_inference.pop_generic_scope();
                 }
                 return Err(TypeCheckError::generic_error(&format!(
-                    "Duplicate field '{}' in struct '{:?}'", field.name, name
+                    "Duplicate field '{}' in struct '{}'",
+                    field.name,
+                    self.resolve_symbol_name(name)
                 )));
             }
         }
@@ -139,7 +141,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                         self.type_inference.pop_generic_scope();
                     }
                     return Err(TypeCheckError::unsupported_operation(
-                        &format!("field type in struct '{:?}'", name), field.type_decl.clone()
+                        &format!("field type in struct '{}'", self.resolve_symbol_name(name)),
+                        field.type_decl.clone()
                     ));
                 }
             }
@@ -197,8 +200,10 @@ impl<'a> TypeCheckerVisitor<'a> {
             TypeDecl::Identifier(sym) | TypeDecl::Struct(sym, _) => *sym,
             other => {
                 return Err(TypeCheckError::generic_error(&format!(
-                    "cannot take the column `{field_name}` of an array of `{other:?}`: \
-                     a column window needs struct elements"
+                    "cannot take the column `{}` of an array of `{}`: \
+                     a column window needs struct elements",
+                    field_name,
+                    self.type_name_for_error(other)
                 )));
             }
         };
@@ -393,7 +398,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     fn visit_struct_literal_core(&mut self, struct_name: &DefaultSymbol, fields: &Vec<(DefaultSymbol, ExprRef)>) -> Result<TypeDecl, TypeCheckError> {
         // 1. Check if struct definition exists and clone it
         let struct_definition = self.context.get_struct_definition(*struct_name)
-            .ok_or_else(|| TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)))?
+            .ok_or_else(|| TypeCheckError::not_found("Struct", &self.resolve_symbol_name(*struct_name)))?
             .clone();
 
         // 2. Check if this is a generic struct and handle type inference
@@ -625,8 +630,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                         let param_name = self.resolve_symbol_name(*generic_param);
                         let struct_name_str = self.resolve_symbol_name(*struct_name);
                         return Err(TypeCheckError::generic_error(&format!(
-                            "Struct '{}' generic parameter '{}' bound violation: expected {:?}, got {:?}",
-                            struct_name_str, param_name, bound, inferred
+                            "Struct '{}' generic parameter '{}' bound violation: expected {}, got {}",
+                            struct_name_str,
+                            param_name,
+                            self.named_type_for_error(bound),
+                            self.named_type_for_error(inferred)
                         )));
                     }
                 }
@@ -696,7 +704,8 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         } else {
             Err(TypeCheckError::generic_error(&format!(
-                "Cannot slice type {:?} - no __getslice__ method found", object_type
+                "Cannot slice type {} - no __getslice__ method found",
+                self.type_name_for_error(object_type)
             )))
         }
     }
@@ -717,7 +726,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         let getitem_method = self.context
             .get_method_function_by_name(&struct_name_str, "__getitem__", self.core.string_interner)
             .ok_or_else(|| TypeCheckError::generic_error(&format!(
-                "Cannot index into type {:?} - no __getitem__ method found", object_type
+                "Cannot index into type {} - no __getitem__ method found",
+                self.type_name_for_error(object_type)
             )))?;
 
         // POINTER P2: `&self` / `&mut self` receivers do not occupy a
@@ -796,7 +806,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         let setitem_method = self.context
             .get_method_function_by_name(&struct_name_str, "__setitem__", self.core.string_interner)
             .ok_or_else(|| TypeCheckError::generic_error(&format!(
-                "Cannot assign to struct type {:?} - no __setitem__ method found", object_type
+                "Cannot assign to struct type {} - no __setitem__ method found",
+                self.type_name_for_error(object_type)
             )))?;
         let first_param_is_self = setitem_method
             .parameter
@@ -844,7 +855,8 @@ impl<'a> TypeCheckerVisitor<'a> {
             Ok(value_type.clone())
         } else {
             Err(TypeCheckError::generic_error(&format!(
-                "Cannot slice-assign to type {:?} - no __setslice__ method found", object_type
+                "Cannot slice-assign to type {} - no __setslice__ method found",
+                self.type_name_for_error(object_type)
             )))
         }
     }

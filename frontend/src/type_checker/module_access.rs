@@ -144,9 +144,9 @@ impl<'a> TypeCheckerVisitor<'a> {
             Ok(Some(TypeDecl::Unknown))
         } else {
             Err(TypeCheckError::generic_error(&format!(
-                "Member '{}' not found in module '{:?}'",
+                "Member '{}' not found in module '{}'",
                 member_str,
-                self.resolve_module_path_names(module_path)
+                self.resolve_module_path_names(module_path).join("::")
             )))
         }
     }

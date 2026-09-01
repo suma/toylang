@@ -240,8 +240,9 @@ impl<'a> TypeCheckerVisitor<'a> {
     ) -> Result<(), TypeCheckError> {
         let ty = self.check_expr_located(cond)?;
         if ty != TypeDecl::Bool {
+            let ty_str = self.type_name_for_error(&ty);
             let err = TypeCheckError::generic_error(
-                &format!("`{kind}` clause must be of type bool, got {ty:?}")
+                &format!("`{kind}` clause must be of type bool, got {ty_str}")
             );
             return Err(self.error_with_location(err, cond));
         }

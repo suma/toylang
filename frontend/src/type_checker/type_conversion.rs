@@ -188,7 +188,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 // Parse at the widest signed/unsigned width, then
                 // range-check, so `300` for a `u8` parameter reports a
                 // conversion error rather than silently wrapping.
-                let ty_name = format!("{:?}", target_type);
+                let ty_name = self.type_name_for_error(target_type);
                 let parse_unsigned = |max: u128| -> Result<u128, TypeCheckError> {
                     let v = if let Some(hex) = num_str.strip_prefix("0x").or_else(|| num_str.strip_prefix("0X")) {
                         u128::from_str_radix(hex, 16)
@@ -712,7 +712,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             // the value, and the type it will not fit in.
             return Err(TypeCheckError::conversion_error(
                 &code_point.to_string(),
-                &format!("{:?}", target),
+                &self.type_name_for_error(target),
             ));
         }
         let rewritten = match target {

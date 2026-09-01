@@ -206,8 +206,10 @@ impl<'a> TypeCheckerVisitor<'a> {
                     let s_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("?").to_string();
                     let m_str = self.core.string_interner.resolve(sig.name).unwrap_or("?").to_string();
                     return Err(TypeCheckError::new(format!(
-                        "impl {t_str} for {s_str}: method '{m_str}' parameter #{} type mismatch (expected {:?}, found {:?})",
-                        i + 1, s_resolved, p_resolved
+                        "impl {t_str} for {s_str}: method '{m_str}' parameter #{} type mismatch (expected {}, found {})",
+                        i + 1,
+                        self.type_name_for_error(&s_resolved),
+                        self.type_name_for_error(&p_resolved)
                     )));
                 }
             }
@@ -275,8 +277,9 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let s_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("?").to_string();
                 let m_str = self.core.string_interner.resolve(sig.name).unwrap_or("?").to_string();
                 return Err(TypeCheckError::new(format!(
-                    "impl {t_str} for {s_str}: method '{m_str}' return type mismatch (expected {:?}, found {:?})",
-                    s_ret, m_ret
+                    "impl {t_str} for {s_str}: method '{m_str}' return type mismatch (expected {}, found {})",
+                    self.type_name_for_error(&s_ret),
+                    self.type_name_for_error(&m_ret)
                 )));
             }
         }

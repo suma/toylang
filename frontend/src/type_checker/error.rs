@@ -608,7 +608,7 @@ impl TypeCheckError {
                 format!("Array error: {}", message)
             }
             TypeCheckErrorKind::MethodError(data) => {
-                format!("Method '{}' error for type {:?}: {}", data.method, data.type_name, data.reason)
+                format!("Method '{}' error for type {}: {}", data.method, spell(&data.type_name), data.reason)
             }
             TypeCheckErrorKind::InvalidLiteral { value, expected_type } => {
                 format!("Invalid {} literal: '{}'", expected_type, value)

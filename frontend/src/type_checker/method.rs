@@ -141,7 +141,11 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                 return Err(TypeCheckError::method_error(
                     method_name,
                     obj_type.clone(),
-                    &format!("self parameter type mismatch: expected {:?}, found {:?}", expected_self_type, obj_type)
+                    &format!(
+                        "self parameter type mismatch: expected {}, found {}",
+                        self.type_name_for_error(&expected_self_type),
+                        self.type_name_for_error(obj_type)
+                    )
                 ));
             }
         }
@@ -161,7 +165,12 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                     return Err(TypeCheckError::method_error(
                         method_name,
                         obj_type.clone(),
-                        &format!("argument {} type mismatch: expected {:?}, found {:?}", i + 1, resolved_param_type, arg_type)
+                        &format!(
+                            "argument {} type mismatch: expected {}, found {}",
+                            i + 1,
+                            self.type_name_for_error(&resolved_param_type),
+                            self.type_name_for_error(arg_type)
+                        )
                     ));
                 }
             }
@@ -225,7 +234,11 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                 }
                 let method_name = self.resolve_symbol_name(method.name);
                 return Err(TypeCheckError::unsupported_operation(
-                    &format!("parameter type in method '{}' for impl block '{:?}'", method_name, target_type),
+                    &format!(
+                        "parameter type in method '{}' for impl block '{}'",
+                        method_name,
+                        self.resolve_symbol_name(target_type)
+                    ),
                     resolved_type
                 ));
             }
@@ -315,8 +328,10 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                                     // instead of none at all.
                                     let loc = self.method_body_location(method);
                                     return Err(TypeCheckError::generic_error(&format!(
-                                        "method '{}' return type mismatch: expected {:?}, found {:?}",
-                                        method_name, resolved_expected_type, actual_return_type
+                                        "method '{}' return type mismatch: expected {}, found {}",
+                                        method_name,
+                                        self.type_name_for_error(&resolved_expected_type),
+                                        self.type_name_for_error(&actual_return_type)
                                     )).with_location(loc));
                                 }
                             }
@@ -327,8 +342,10 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                             let method_name = self.resolve_symbol_name(method.name);
                             let loc = self.method_body_location(method);
                             return Err(TypeCheckError::generic_error(&format!(
-                                "method '{}' return type mismatch: expected {:?}, found {:?}",
-                                method_name, resolved_expected_type, actual_return_type
+                                "method '{}' return type mismatch: expected {}, found {}",
+                                method_name,
+                                self.type_name_for_error(&resolved_expected_type),
+                                self.type_name_for_error(&actual_return_type)
                             )).with_location(loc));
                         }
                     }

@@ -26,6 +26,9 @@ mod collections_tests;
 #[path = "collections_type_checking_tests.rs"]
 mod collections_type_checking_tests;
 
+#[path = "diagnostic_spelling_tests.rs"]
+mod diagnostic_spelling_tests;
+
 #[path = "dict_index_tests.rs"]
 mod dict_index_tests;
 

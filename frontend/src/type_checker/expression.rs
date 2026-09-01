@@ -1623,9 +1623,9 @@ impl<'a> TypeCheckerVisitor<'a> {
                 self.type_inference.type_hint = original_hint;
                 let name_str = self.resolve_symbol_name(callee_name);
                 return Err(TypeCheckError::generic_error(&format!(
-                    "Type error: expected {:?}, found {:?}. Function value '{}' argument {} type mismatch",
-                    expected,
-                    arg_ty,
+                    "Type error: expected {}, found {}. Function value '{}' argument {} type mismatch",
+                    self.type_name_for_error(expected),
+                    self.type_name_for_error(&arg_ty),
                     name_str,
                     idx + 1
                 )));
@@ -1708,8 +1708,9 @@ impl<'a> TypeCheckerVisitor<'a> {
                     && body_ty != TypeDecl::Unknown
                 {
                     return Err(TypeCheckError::generic_error(&format!(
-                        "closure body returns {:?} but declared return type is {:?}",
-                        body_ty, declared
+                        "closure body returns {} but declared return type is {}",
+                        self.type_name_for_error(&body_ty),
+                        self.type_name_for_error(declared)
                     )));
                 }
                 declared.clone()
@@ -2285,8 +2286,8 @@ impl<'a> TypeCheckerVisitor<'a> {
             TypeDecl::Struct(name, _) if self.context.enum_definitions.contains_key(name) => *name,
             _ => {
                 return Err(TypeCheckError::generic_error(&format!(
-                    "`?` requires Result<T, E> or Option<T>, got {:?}",
-                    inner_ty
+                    "`?` requires Result<T, E> or Option<T>, got {}",
+                    self.type_name_for_error(&inner_ty)
                 )));
             }
         };

@@ -343,8 +343,9 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
                 if matches!(other, TypeDecl::Int64 | TypeDecl::UInt64) => other.clone(),
             _ => {
                 return Err(TypeCheckError::new(format!(
-                    "range endpoints must be matching integer types, got {:?}..{:?}",
-                    start_ty, end_ty
+                    "range endpoints must be matching integer types, got {}..{}",
+                    self.type_name_for_error(&start_ty),
+                    self.type_name_for_error(&end_ty)
                 )));
             }
         };
@@ -415,8 +416,8 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
         };
         if !is_allocator {
             return Err(TypeCheckError::new(format!(
-                "`with allocator = ...` requires an Allocator value, but got {:?}",
-                allocator_ty
+                "`with allocator = ...` requires an Allocator value, but got {}",
+                self.type_name_for_error(&allocator_ty)
             )));
         }
         self.visit_expr(body)
@@ -645,8 +646,8 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
                     TypeDecl::Float64 => return Ok(TypeDecl::Float64),
                     _ => {
                         return Err(TypeCheckError::generic_error(&format!(
-                            "abs expects an i64 or f64 argument, got {:?}",
-                            arg_types[0]
+                            "abs expects an i64 or f64 argument, got {}",
+                            self.type_name_for_error(&arg_types[0])
                         )));
                     }
                 }
@@ -655,15 +656,16 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
             if !matches!(arg_types[0], TypeDecl::Int64 | TypeDecl::UInt64) {
                 let name = if matches!(func, BuiltinFunction::Min) { "min" } else { "max" };
                 return Err(TypeCheckError::generic_error(&format!(
-                    "{name} expects integer arguments, got {:?}",
-                    arg_types[0]
+                    "{name} expects integer arguments, got {}",
+                    self.type_name_for_error(&arg_types[0])
                 )));
             }
             if arg_types[0] != arg_types[1] {
                 let name = if matches!(func, BuiltinFunction::Min) { "min" } else { "max" };
                 return Err(TypeCheckError::generic_error(&format!(
-                    "{name} arguments must agree on type: got {:?} and {:?}",
-                    arg_types[0], arg_types[1]
+                    "{name} arguments must agree on type: got {} and {}",
+                    self.type_name_for_error(&arg_types[0]),
+                    self.type_name_for_error(&arg_types[1])
                 )));
             }
             return Ok(arg_types[0].clone());

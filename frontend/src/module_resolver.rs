@@ -200,7 +200,7 @@ impl ModuleResolver {
             // Since we're using shared string_interner, we can compare symbols directly
             if package_decl.name != expected_package {
                 return Err(TypeCheckError::generic_error(&format!(
-                    "Package declaration mismatch: expected {:?}, found {:?}",
+                    "Package declaration mismatch: expected `{}`, found `{}`",
                     self.module_path_to_string(expected_package, string_interner),
                     self.module_path_to_string(&package_decl.name, string_interner)
                 )));

@@ -99,7 +99,9 @@ fn a_code_point_that_does_not_fit_is_refused() {
     )
     .expect_err("a 4-byte code point is not a byte");
     assert!(err.contains("128512"), "{err}");
-    assert!(err.contains("UInt8"), "{err}");
+    // DIAG-SYMBOL-NAME: the type is named as it is written, `u8`,
+    // not by its `TypeDecl` variant `UInt8`.
+    assert!(err.contains("u8"), "{err}");
 }
 
 #[test]

@@ -507,7 +507,11 @@ impl TypeCheckContext {
             
             Ok(())
         } else {
-            Err(TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)))
+            let struct_name_str = string_interner
+                .string_interner
+                .resolve(struct_name)
+                .unwrap_or("<unknown>");
+            Err(TypeCheckError::not_found("Struct", struct_name_str))
         }
     }
 

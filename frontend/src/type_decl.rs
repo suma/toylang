@@ -733,8 +733,81 @@ impl TypeDecl {
     /// one through `Diagnostic::from_type_check_error`.
     pub fn spell_with(&self, interner: Option<&string_interner::DefaultStringInterner>) -> String {
         match interner {
-            Some(i) => self.source_name(i).unwrap_or_else(|| self.display_name()),
+            Some(i) => self.spell_lossy(i),
             None => self.display_name(),
+        }
+    }
+
+    /// Spell a type for a diagnostic when an interner is in hand.
+    ///
+    /// `source_name` gives up (returns `None`) on a type with no
+    /// surface syntax, and it gives up for the *whole* type when any
+    /// part does — `Vec<Unknown>` is unspellable because `Unknown` is.
+    /// Falling back to `display_name` there put the Debug form in front
+    /// of the reader, symbol ids and all
+    /// (`Struct(SymbolU32 { value: 60 }, [Unknown])`). This spelling
+    /// never gives up: the head is always resolved through the
+    /// interner, and only the unspellable *leaf* degrades, to the same
+    /// placeholder the checker's prose renderer uses.
+    ///
+    /// So it is lossy in the `source_name` sense — the result may not
+    /// parse — but it always names the type the reader wrote.
+    pub fn spell_lossy(&self, interner: &string_interner::DefaultStringInterner) -> String {
+        if let Some(spelled) = self.source_name(interner) {
+            return spelled;
+        }
+        let resolve = |sym: &DefaultSymbol| interner.resolve(*sym).unwrap_or("?").to_string();
+        let args = |params: &Vec<TypeDecl>| -> String {
+            if params.is_empty() {
+                return String::new();
+            }
+            let parts: Vec<String> = params.iter().map(|p| p.spell_lossy(interner)).collect();
+            format!("<{}>", parts.join(", "))
+        };
+        // Reached only for the arms `source_name` can refuse: the four
+        // syntax-less leaves, and any composite holding one.
+        match self {
+            TypeDecl::Unknown => "Unknown".to_string(),
+            TypeDecl::Number => "Number".to_string(),
+            TypeDecl::Hole => "_".to_string(),
+            TypeDecl::Range(inner) => format!("Range<{}>", inner.spell_lossy(interner)),
+            TypeDecl::Struct(name, params) | TypeDecl::Enum(name, params) => {
+                format!("{}{}", resolve(name), args(params))
+            }
+            TypeDecl::Array(elements, size, soa) => {
+                let element = elements
+                    .first()
+                    .unwrap_or(&TypeDecl::Unknown)
+                    .spell_lossy(interner);
+                let base = match size {
+                    ArraySize::Literal(0) => format!("[{element}]"),
+                    ArraySize::Literal(n) => format!("[{element}; {n}]"),
+                    ArraySize::Deferred(_) => format!("[{element}; <computed>]"),
+                };
+                if *soa { format!("soa {base}") } else { base }
+            }
+            TypeDecl::Dict(key, value) => format!(
+                "dict<{}, {}>",
+                key.spell_lossy(interner),
+                value.spell_lossy(interner)
+            ),
+            TypeDecl::Tuple(elements) => {
+                let parts: Vec<String> =
+                    elements.iter().map(|e| e.spell_lossy(interner)).collect();
+                format!("({})", parts.join(", "))
+            }
+            TypeDecl::Ref { is_mut, inner } => {
+                let m = if *is_mut { "mut " } else { "" };
+                format!("&{m}{}", inner.spell_lossy(interner))
+            }
+            TypeDecl::Function(params, ret) => {
+                let parts: Vec<String> =
+                    params.iter().map(|p| p.spell_lossy(interner)).collect();
+                format!("fn ({}) -> {}", parts.join(", "), ret.spell_lossy(interner))
+            }
+            // Every remaining arm is spellable, so `source_name`
+            // returned above and this is unreachable in practice.
+            other => other.display_name(),
         }
     }
 

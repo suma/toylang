@@ -120,8 +120,8 @@ impl<'a> TypeCheckerVisitor<'a> {
             TypeDecl::Struct(name, _) | TypeDecl::Identifier(name) => *name,
             _ => {
                 return Err(TypeCheckError::new(format!(
-                    "struct pattern requires a struct value, got {:?}",
-                    expected_ty
+                    "struct pattern requires a struct value, got {}",
+                    self.type_name_for_error(expected_ty)
                 )));
             }
         };
@@ -195,8 +195,8 @@ impl<'a> TypeCheckerVisitor<'a> {
             Pattern::Literal(lit_expr) => {
                 if !matches!(expected_ty, TypeDecl::Bool | TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::String) {
                     return Err(TypeCheckError::new(format!(
-                        "literal pattern is only valid where a primitive value is expected, got {:?}",
-                        expected_ty
+                        "literal pattern is only valid where a primitive value is expected, got {}",
+                        self.type_name_for_error(expected_ty)
                     )));
                 }
                 let saved_hint = self.type_inference.type_hint.clone();
@@ -205,8 +205,9 @@ impl<'a> TypeCheckerVisitor<'a> {
                 self.type_inference.type_hint = saved_hint;
                 if !lit_ty.is_equivalent(expected_ty) {
                     return Err(TypeCheckError::new(format!(
-                        "literal pattern type {:?} does not match expected {:?}",
-                        lit_ty, expected_ty
+                        "literal pattern type {} does not match expected {}",
+                        self.type_name_for_error(&lit_ty),
+                        self.type_name_for_error(expected_ty)
                     )));
                 }
                 Ok(())
@@ -216,8 +217,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                     TypeDecl::Tuple(ts) => ts,
                     _ => {
                         return Err(TypeCheckError::new(format!(
-                            "tuple pattern requires a tuple value, got {:?}",
-                            expected_ty
+                            "tuple pattern requires a tuple value, got {}",
+                            self.type_name_for_error(expected_ty)
                         )));
                     }
                 };
@@ -264,8 +265,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                         if self.context.enum_definitions.contains_key(name) => (*name, Vec::new()),
                     _ => {
                         return Err(TypeCheckError::new(format!(
-                            "enum-variant sub-pattern expects an enum payload, got {:?}",
-                            expected_ty
+                            "enum-variant sub-pattern expects an enum payload, got {}",
+                            self.type_name_for_error(expected_ty)
                         )));
                     }
                 };
@@ -322,8 +323,8 @@ impl<'a> TypeCheckerVisitor<'a> {
     ) -> Result<(i128, i128), TypeCheckError> {
         if integer_type_span(expected_ty).is_none() {
             return Err(TypeCheckError::new(format!(
-                "range pattern is only valid where an integer is expected, got {:?}",
-                expected_ty
+                "range pattern is only valid where an integer is expected, got {}",
+                self.type_name_for_error(expected_ty)
             )));
         }
         let lo = self.range_endpoint(low, expected_ty)?;
@@ -352,8 +353,9 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.type_inference.type_hint = saved_hint;
         if !ty.is_equivalent(expected_ty) {
             return Err(TypeCheckError::new(format!(
-                "range endpoint type {:?} does not match {:?}",
-                ty, expected_ty
+                "range endpoint type {} does not match {}",
+                self.type_name_for_error(&ty),
+                self.type_name_for_error(expected_ty)
             )));
         }
         match self.core.expr_pool.get(endpoint) {
@@ -430,8 +432,8 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
             _ => {
                 return Err(TypeCheckError::new(format!(
-                    "match scrutinee must be an enum, struct, primitive (bool / i64 / u64 / str), or tuple, got {:?}",
-                    scrutinee_ty
+                    "match scrutinee must be an enum, struct, primitive (bool / i64 / u64 / str), or tuple, got {}",
+                    self.type_name_for_error(&scrutinee_ty)
                 )));
             }
         };
@@ -544,8 +546,9 @@ impl<'a> TypeCheckerVisitor<'a> {
                     self.type_inference.type_hint = saved_hint;
                     if !lit_ty.is_equivalent(&prim_ty) {
                         return Err(TypeCheckError::new(format!(
-                            "literal pattern type {:?} does not match scrutinee type {:?}",
-                            lit_ty, prim_ty
+                            "literal pattern type {} does not match scrutinee type {}",
+                            self.type_name_for_error(&lit_ty),
+                            self.type_name_for_error(&prim_ty)
                         )));
                     }
                     // Record the concrete literal value for duplicate /
@@ -583,6 +586,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                                 Expr::String(sym)
                                     if !covered_strings.insert(sym) => {
                                         let s = self.core.string_interner.resolve(sym).unwrap_or("?").to_string();
+                                        // DIAG-DEBUG-FMT-OK: `{:?}` here is
+                                        // on a `String`, not on a symbol:
+                                        // it re-quotes the text so the message
+                                        // shows the arm as it was written
+                                        // (`literal "hello"`).
                                         return Err(TypeCheckError::new(format!(
                                             "unreachable match arm: literal {:?} already handled by an earlier arm",
                                             s
@@ -625,8 +633,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                         TypeDecl::Tuple(ts) => ts.clone(),
                         _ => {
                             return Err(TypeCheckError::new(format!(
-                                "tuple pattern requires a tuple scrutinee, got {:?}",
-                                scrutinee_ty
+                                "tuple pattern requires a tuple scrutinee, got {}",
+                                self.type_name_for_error(&scrutinee_ty)
                             )));
                         }
                     };
@@ -653,7 +661,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                         ScrutineeKind::Enum { name, type_args, variants } => (*name, type_args.clone(), variants.clone()),
                         ScrutineeKind::Primitive(t) => {
                             return Err(TypeCheckError::new(format!(
-                                "enum-variant pattern cannot be used in a match on {:?}", t
+                                "enum-variant pattern cannot be used in a match on {}",
+                                self.type_name_for_error(t)
                             )));
                         }
                         ScrutineeKind::Struct => {
@@ -751,8 +760,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                 if !guard_ty.is_equivalent(&TypeDecl::Bool) {
                     self.context.vars.pop();
                     return Err(TypeCheckError::new(format!(
-                        "match arm guard must be of type bool, got {:?}",
-                        guard_ty
+                        "match arm guard must be of type bool, got {}",
+                        self.type_name_for_error(&guard_ty)
                     )));
                 }
             }
@@ -822,12 +831,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     {
                         // Covered — fall through to the arm-type check.
                     } else {
-                        let t_name = match t {
-                            TypeDecl::Int64 => "i64".to_string(),
-                            TypeDecl::UInt64 => "u64".to_string(),
-                            TypeDecl::String => "str".to_string(),
-                            other => format!("{:?}", other),
-                        };
+                        let t_name = self.type_name_for_error(t);
                         return Err(TypeCheckError::new(format!(
                             "non-exhaustive match on {}: the arms leave values uncovered, \
                              add a wildcard `_` arm (or ranges that span the type)",
@@ -893,8 +897,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         for (i, t) in arm_types.iter().enumerate().skip(1) {
             if !first.is_equivalent(t) {
                 return Err(TypeCheckError::new(format!(
-                    "match arms have incompatible types: arm 0 is {:?}, arm {} is {:?}",
-                    first, i, t
+                    "match arms have incompatible types: arm 0 is {}, arm {} is {}",
+                    self.type_name_for_error(&first),
+                    i,
+                    self.type_name_for_error(t)
                 )));
             }
         }
@@ -962,8 +968,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                 // the position can hide unmatched values. Be
                 // conservative and reject.
                 return Err(TypeCheckError::new(format!(
-                    "non-exhaustive match {}: position type {:?} is not fully covered — add a wildcard `_` or a bare name",
-                    context, position_type
+                    "non-exhaustive match {}: position type {} is not fully covered — add a wildcard `_` or a bare name",
+                    context, self.type_name_for_error(position_type)
                 )));
             }
         };

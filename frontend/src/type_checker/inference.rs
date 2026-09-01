@@ -207,8 +207,14 @@ impl TypeInferenceState {
         }
     }
     
-    /// Create a unique signature for an instantiation
+    /// Create a unique signature for an instantiation.
+    ///
+    /// Every `{:?}` here builds a *key*, not a message: the string only
+    /// ever reaches `instantiation_signatures` to deduplicate pending
+    /// work, so an interned id is exactly the right thing to hash on
+    /// and the interner is not needed. Nothing here is shown to a user.
     fn create_instantiation_signature(&self, instantiation: &GenericInstantiation) -> String {
+        // DIAG-DEBUG-FMT-OK: hash key, not a diagnostic.
         let mut sig = format!("{:?}:", instantiation.kind);
         sig.push_str(&format!("{:?}", instantiation.original_name));
         
@@ -217,6 +223,7 @@ impl TypeInferenceState {
         sorted_subs.sort_by_key(|(k, _)| *k);
         
         for (param, type_decl) in sorted_subs {
+            // DIAG-DEBUG-FMT-OK: hash key, not a diagnostic.
             sig.push_str(&format!("_{:?}_{:?}", param, type_decl));
         }
         

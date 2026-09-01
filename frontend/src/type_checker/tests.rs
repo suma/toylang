@@ -136,9 +136,13 @@ mod tests {
         match *error.kind {
             TypeCheckErrorKind::ArrayError { message } => {
                 assert!(message.contains("must have the same type"));
-                assert!(message.contains("Bool"));
-                // Number might be converted to UInt64, so check for either
-                assert!(message.contains("Number") || message.contains("UInt64"));
+                // DIAG-SYMBOL-NAME: types are spelled as they are
+                // written in source, so this asserts `bool` / `u64`
+                // rather than the `Bool` / `UInt64` Debug names it
+                // used to see.
+                assert!(message.contains("bool"), "message was: {message}");
+                // Number might be converted to u64, so check for either
+                assert!(message.contains("Number") || message.contains("u64"), "message was: {message}");
             },
             _ => panic!("Expected ArrayError, got {:?}", error.kind),
         }
@@ -196,8 +200,8 @@ mod tests {
         // Check that it's an array error about type mismatch
         match *error.kind {
             TypeCheckErrorKind::ArrayError { message } => {
-                assert!(message.contains("Bool"));
-                assert!(message.contains("UInt64"));
+                assert!(message.contains("bool"), "message was: {message}");
+                assert!(message.contains("u64"), "message was: {message}");
             },
             _ => panic!("Expected ArrayError about type mismatch, got {:?}", error.kind),
         }

@@ -826,9 +826,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                             .core
                             .string_interner
                             .resolve(*pname)
-                            .unwrap_or("?");
+                            .unwrap_or("?")
+                            .to_string();
+                        let pty_str = self.type_name_for_error(pty);
                         return Err(TypeCheckError::generic_error(&format!(
-                            "extern fn `{fn_name}`: parameter `{param_name}` has type `{pty:?}`, \
+                            "extern fn `{fn_name}`: parameter `{param_name}` has type `{pty_str}`, \
                              which cannot cross the C ABI boundary (FFI_PLAN P1 allows only \
                              scalars: ints, f64, bool, ptr, usize; pass `str` as \
                              `__builtin_str_to_ptr(s)`)"
@@ -839,8 +841,9 @@ impl<'a> TypeCheckerVisitor<'a> {
                     && *ret != TypeDecl::Unit
                     && !is_ffi_boundary_scalar(ret)
                 {
+                    let ret_str = self.type_name_for_error(ret);
                     return Err(TypeCheckError::generic_error(&format!(
-                        "extern fn `{fn_name}`: return type `{ret:?}` cannot cross the C ABI \
+                        "extern fn `{fn_name}`: return type `{ret_str}` cannot cross the C ABI \
                          boundary (FFI_PLAN P1 allows only scalars: ints, f64, bool, ptr, usize)"
                     )));
                 }
@@ -1136,8 +1139,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                 };
 
                 let detailed_context = format!(
-                    "function return type (function: {}, expected: {:?}, got: {:?}{})",
-                    func_name_str, expected_return_type, last, additional_info
+                    "function return type (function: {}, expected: {}, got: {}{})",
+                    func_name_str,
+                    self.type_name_for_error(expected_return_type),
+                    self.type_name_for_error(&last),
+                    additional_info
                 );
 
                 return Err(TypeCheckError::type_mismatch(
@@ -1209,8 +1215,9 @@ impl<'a> TypeCheckerVisitor<'a> {
     ) -> Result<(), TypeCheckError> {
         let ty = self.check_expr_located(cond)?;
         if ty != TypeDecl::Bool {
+            let ty_str = self.type_name_for_error(&ty);
             let err = TypeCheckError::generic_error(
-                &format!("`{kind}` clause must be of type bool, got {ty:?}")
+                &format!("`{kind}` clause must be of type bool, got {ty_str}")
             );
             return Err(self.error_with_location(err, cond));
         }

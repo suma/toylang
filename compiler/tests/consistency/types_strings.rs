@@ -526,11 +526,11 @@ fn string_trim_round_trip() {
 }
 
 #[test]
-fn string_to_upper_round_trip() {
+fn string_to_ascii_upper_round_trip() {
     let src = r#"
         fn main() -> u64 {
             val s: String = String::from_str("Hello World")
-            val u: String = s.to_upper()
+            val u: String = s.to_ascii_upper()
             val expected: String = String::from_str("HELLO WORLD")
             if !u.eq(expected) { return 1u64 }
             42u64
@@ -540,11 +540,11 @@ fn string_to_upper_round_trip() {
 }
 
 #[test]
-fn string_to_lower_round_trip() {
+fn string_to_ascii_lower_round_trip() {
     let src = r#"
         fn main() -> u64 {
             val s: String = String::from_str("Hello World")
-            val l: String = s.to_lower()
+            val l: String = s.to_ascii_lower()
             val expected: String = String::from_str("hello world")
             if !l.eq(expected) { return 1u64 }
             42u64

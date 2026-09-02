@@ -12,15 +12,22 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Universal methods (available for all types - we'll handle these specially)
         // is_null is handled separately in visit_method_call
         
-        // String methods
+        // `str` methods.
+        //
+        // STDLIB-TEXT §3: only the ones that answer without a new
+        // buffer. `str` is a borrowed handle -- it owns nothing to
+        // write into -- so `substring` / `trim` / `to_ascii_upper` /
+        // `to_ascii_lower` / `split` belong to `String`, and were
+        // removed from here. They had never worked anywhere but the
+        // tree-walker: the IR has `StrLen` and `StrConcat` and nothing
+        // else, so the compiled lanes refused them at lowering time
+        // while the type checker said yes.
+        //
+        // `contains` left too, in the other direction: it is now an
+        // extension impl in `core/std/str.t` on top of one `find`
+        // extern, which is how it reaches every backend.
         registry.insert((TypeDecl::String, "len".to_string()), BuiltinMethod::StrLen);
         registry.insert((TypeDecl::String, "concat".to_string()), BuiltinMethod::StrConcat);
-        registry.insert((TypeDecl::String, "substring".to_string()), BuiltinMethod::StrSubstring);
-        registry.insert((TypeDecl::String, "contains".to_string()), BuiltinMethod::StrContains);
-        registry.insert((TypeDecl::String, "split".to_string()), BuiltinMethod::StrSplit);
-        registry.insert((TypeDecl::String, "trim".to_string()), BuiltinMethod::StrTrim);
-        registry.insert((TypeDecl::String, "to_upper".to_string()), BuiltinMethod::StrToUpper);
-        registry.insert((TypeDecl::String, "to_lower".to_string()), BuiltinMethod::StrToLower);
 
         // NOTE: numeric value-method registrations (`i64.abs()` /
         // `f64.abs()` / `f64.sqrt()`) lived here as

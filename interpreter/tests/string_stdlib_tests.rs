@@ -328,13 +328,13 @@ fn string_trim_no_whitespace_unchanged() {
 }
 
 #[test]
-fn string_to_upper_ascii() {
+fn string_to_ascii_upper() {
     let src = r#"
         fn main() -> u64 {
             val s: String = String::from_str("Hello, World!")
-            val u: String = s.to_upper()
+            val u: String = s.to_ascii_upper()
             val expected: String = String::from_str("HELLO, WORLD!")
-            assert(u.eq(expected), "to_upper ascii")
+            assert(u.eq(expected), "to_ascii_upper")
             42u64
         }
     "#;
@@ -342,13 +342,13 @@ fn string_to_upper_ascii() {
 }
 
 #[test]
-fn string_to_lower_ascii() {
+fn string_to_ascii_lower() {
     let src = r#"
         fn main() -> u64 {
             val s: String = String::from_str("Hello, World!")
-            val l: String = s.to_lower()
+            val l: String = s.to_ascii_lower()
             val expected: String = String::from_str("hello, world!")
-            assert(l.eq(expected), "to_lower ascii")
+            assert(l.eq(expected), "to_ascii_lower")
             42u64
         }
     "#;
@@ -364,8 +364,8 @@ fn string_case_convert_preserves_high_bit_bytes() {
         fn main() -> u64 {
             var s: String = String::new()
             s.push_char(0xE9u32)
-            val u: String = s.to_upper()
-            val l: String = s.to_lower()
+            val u: String = s.to_ascii_upper()
+            val l: String = s.to_ascii_lower()
             assert(u.size() == 2u64, "upper preserves byte count")
             assert(l.size() == 2u64, "lower preserves byte count")
             assert(u.get(0u64) == 0xC3u8, "upper byte 0 unchanged")
@@ -804,64 +804,78 @@ fn str_plus_str_is_rejected_by_the_type_checker() {
 }
 
 // ---------------------------------------------------------------
-// `str` (primitive) receiver builtin methods. The type checker
-// registered `substring` / `split` but the interpreter's
-// `Object::String` dispatch arms stopped at `trim` / `to_upper` /
-// `to_lower`, so both died with "Method 'substring' not found for
-// String type" at runtime. The `String` (stdlib struct) versions
-// above never hit these arms — they dispatch through the struct
-// method registry — so the gap was `str`-receiver-only.
+// `str` (primitive) receiver methods, after STDLIB-TEXT §3.
+//
+// These used to test `substring` / `split` on a `str`. Both are gone:
+// a `str` borrows its bytes, so it has nothing to write a new string
+// into, and neither had ever worked outside the tree-walker (the IR
+// has `StrLen` and `StrConcat` and nothing else). The owned versions
+// live on `String`, and asking for them on a `str` now says so.
 // ---------------------------------------------------------------
 
 #[test]
-fn str_substring_basic() {
+fn str_cannot_produce_a_new_string() {
+    for (method, call) in [
+        ("substring", "s.substring(6u64, 11u64)"),
+        ("trim", "s.trim()"),
+        ("split", "s.split(\",\")"),
+        // Both spellings are refused: the old one because it is what
+        // people will type, the new one because `str` still has no
+        // buffer to write into.
+        ("to_upper", "s.to_upper()"),
+        ("to_ascii_upper", "s.to_ascii_upper()"),
+        ("to_lower", "s.to_lower()"),
+        ("to_ascii_lower", "s.to_ascii_lower()"),
+    ] {
+        let src = format!(
+            r#"
+            fn main() -> u64 {{
+                val s: str = "hello world"
+                val v = {call}
+                0u64
+            }}
+            "#
+        );
+        let err = crate::common::test_program(&src)
+            .expect_err("a str should not produce a new string");
+        assert!(
+            err.contains(method) && err.contains("String::from_str(s)"),
+            "`{method}` on a str should point at the owned version, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn string_substring_replaces_the_str_one() {
     let src = r#"
         fn main() -> u64 {
-            val s: str = "hello world"
-            val sub: str = s.substring(6u64, 11u64)
-            if sub != "world" { return 1u64 }
-            42u64
+            val s = String::from_str("hello world")
+            val sub: String = s.substring(6u64, 11u64)
+            val want = String::from_str("world")
+            if sub == want { 42u64 } else { 1u64 }
         }
     "#;
     assert_program_result_u64(src, 42);
 }
 
 #[test]
-fn str_substring_empty_range() {
-    // start == end yields an empty string.
+fn str_searches_without_allocating() {
+    // What a borrowed handle *can* answer: questions about its own
+    // bytes. One `find` extern underneath all four.
     let src = r#"
         fn main() -> u64 {
-            val s: str = "hello"
-            val sub: str = s.substring(2u64, 2u64)
-            if __builtin_str_len(sub) != 0u64 { return 1u64 }
-            42u64
-        }
-    "#;
-    assert_program_result_u64(src, 42);
-}
-
-#[test]
-fn str_substring_out_of_range_fails() {
-    let src = r#"
-        fn main() -> u64 {
-            val s: str = "hi"
-            val sub: str = s.substring(0u64, 10u64)
-            __builtin_str_len(sub)
-        }
-    "#;
-    assert_program_fails(src);
-}
-
-#[test]
-fn str_split_basic() {
-    let src = r#"
-        fn main() -> u64 {
-            val s: str = "a,b,c"
-            val parts: [str] = s.split(",")
-            if parts.len() != 3u64 { return 1u64 }
-            if parts[0u64] != "a" { return 2u64 }
-            if parts[1u64] != "b" { return 3u64 }
-            if parts[2u64] != "c" { return 4u64 }
+            val s: str = "hello, world"
+            if s.contains("world") == false { return 1u64 }
+            if s.contains("nope") { return 2u64 }
+            if s.starts_with("hello") == false { return 3u64 }
+            if s.ends_with("world") == false { return 4u64 }
+            if s.ends_with("hello") { return 5u64 }
+            val at = s.find("o")
+            val i = match at {
+                Option::Some(v) => v,
+                Option::None => 99u64,
+            }
+            if i != 4u64 { return 6u64 }
             42u64
         }
     "#;

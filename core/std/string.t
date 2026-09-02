@@ -29,7 +29,7 @@
 #
 # `str` superset extension: `String` carries every read-only
 # string operation (`len` / `as_ptr` / `substring` / `trim` /
-# `to_upper` / `to_lower` / `concat` / `contains` / `to_string`)
+# `to_ascii_upper` / `to_ascii_lower` / `concat` / `contains` / `to_string`)
 # as inherent methods so the call shape matches `str`'s built-in
 # methods exactly. The trait declarations in
 # `core/std/str_ops.t` (`Substring` / `Trim` / `CaseConvert` /
@@ -278,7 +278,7 @@ impl String {
         true
     }
 
-    # Shared body of `to_upper` / `to_lower` (CaseConvert). Copies
+    # Shared body of `to_ascii_upper` / `to_ascii_lower` (CaseConvert). Copies
     # the bytes, then adds or subtracts 0x20 on every byte inside
     # `[lo, hi]`, leaving the rest untouched -- so bytes outside
     # `a-z` / `A-Z`, including every continuation byte of a
@@ -473,7 +473,7 @@ impl Trim for String {
     }
 }
 
-# `to_upper()` / `to_lower()` — ASCII-only case folding. Bytes
+# `to_ascii_upper()` / `to_ascii_lower()` — ASCII-only case folding. Bytes
 # outside `b'a'..=b'z'` / `b'A'..=b'Z'` are copied unchanged so
 # multi-byte UTF-8 sequences pass through as-is.
 # ASCII case folding is entirely lane-wise -- add or subtract 0x20
@@ -486,12 +486,12 @@ impl CaseConvert for String {
     # The `val` binding is not decoration: the compiled lanes reject
     # a compound-returning method in expression position, so the
     # result has to be named before it is returned.
-    fn to_upper(&self) -> String {
+    fn to_ascii_upper(&self) -> String {
         val r: String = self.fold_ascii_case('a', 'z', true)
         r
     }
 
-    fn to_lower(&self) -> String {
+    fn to_ascii_lower(&self) -> String {
         val r: String = self.fold_ascii_case('A', 'Z', false)
         r
     }

@@ -162,6 +162,20 @@ impl<'a> TypeCheckerVisitor<'a> {
         
         // Check for builtin methods
         let method_str = self.resolve_symbol_name(*method);
+        // STDLIB-TEXT §3: these used to be accepted on `str` and work
+        // on the tree-walker only. Rather than let them fail as "no
+        // such method", say why `str` cannot have them and where the
+        // owned version lives.
+        if matches!(resolved_obj_type, TypeDecl::String)
+            && let Some(owned) = str_needs_owned_buffer(&method_str)
+        {
+            return Err(self.error_with_location(
+                TypeCheckError::generic_error(&format!(
+                    "`str` has no method `{method_str}`: it borrows its bytes, so it has no buffer to write a new string into. `String::from_str(s).{owned}` produces an owned String"
+                )),
+                obj,
+            ));
+        }
         let builtin_method = self.builtin_methods.get(&(resolved_obj_type.clone(), method_str.to_string())).cloned();
         if let Some(builtin_method) = builtin_method {
             // visit_builtin_method_call expects ExprRef, not TypeDecl
@@ -1122,5 +1136,21 @@ impl<'a> TypeCheckerVisitor<'a> {
             other => other.substitute_self(&self_ty),
         };
         Ok(return_ty)
+    }
+}
+
+/// STDLIB-TEXT §3: the `str` methods that were moved to `String`
+/// because their answer is a new buffer, paired with how the same
+/// question is spelled there. `to_upper` / `to_lower` are listed
+/// under their new names: the fold is ASCII-only, and the name is the
+/// cheapest place to say so.
+fn str_needs_owned_buffer(method: &str) -> Option<&'static str> {
+    match method {
+        "substring" => Some("substring(start, end)"),
+        "trim" => Some("trim()"),
+        "split" => Some("split(sep)"),
+        "to_upper" | "to_ascii_upper" => Some("to_ascii_upper()"),
+        "to_lower" | "to_ascii_lower" => Some("to_ascii_lower()"),
+        _ => None,
     }
 }

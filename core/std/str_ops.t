@@ -5,7 +5,7 @@
 # `Substring` / `Trim` / `CaseConvert` / `Concat` / `Contains` /
 # `Split` are implemented on `String` in `core/std/string.t` so
 # user code can call `.substring(start, end)` / `.trim()` /
-# `.to_upper()` / `.to_lower()` / `.concat(other)` /
+# `.to_ascii_upper()` / `.to_ascii_lower()` / `.concat(other)` /
 # `.contains(needle)` / `.split(sep)` against either a `str`
 # literal or a heap-allocated `String`. `str` already carries
 # the equivalent operations as builtin methods
@@ -40,9 +40,16 @@ pub trait Trim {
 # `CaseConvert` — ASCII-only case folding. High-bit-set bytes are
 # left untouched so multi-byte UTF-8 sequences pass through
 # unchanged.
+#
+# The names say `ascii` because that is all this does, and it is all
+# it will do: a Unicode fold needs tables measured in tens of
+# kilobytes and, for `ß` -> `SS` or Turkish `i`, a locale — both of
+# which this stdlib has decided against (STDLIB_TEXT §4). A method
+# called `to_upper` that quietly leaves `é` alone is a worse answer
+# than one that says which alphabet it covers.
 pub trait CaseConvert {
-    fn to_upper(&self) -> Self
-    fn to_lower(&self) -> Self
+    fn to_ascii_upper(&self) -> Self
+    fn to_ascii_lower(&self) -> Self
 }
 
 # `Concat` — append two values of the same shape, returning a new

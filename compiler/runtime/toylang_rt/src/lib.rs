@@ -3872,6 +3872,51 @@ pub extern "C" fn toy_str_hash(s: *const u8) -> u64 {
     h
 }
 
+/// Byte offset of the first occurrence of `needle` in `haystack`, or
+/// `-1` — the search half of `str`'s method set (STDLIB_TEXT §3).
+///
+/// `str` does not own a buffer, so it cannot answer anything that
+/// needs a new one; searching is the shape of question it *can*
+/// answer, and `find` is the one primitive the rest reduce to
+/// (`contains` / `starts_with` / `ends_with` are each a line on top).
+///
+/// `from` is where to start looking, which is what lets `ends_with`
+/// ask "does it match *here*" without a second, backwards-searching
+/// extern.
+///
+/// An empty needle matches at `from`, the libc / Rust convention. The
+/// offset is in bytes, like every other index into a `str`; because
+/// UTF-8 is self-synchronising, a match can only begin at a
+/// character boundary, so the result is always one.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_str_find(haystack: *const u8, needle: *const u8, from: u64) -> i64 {
+    let h = if haystack.is_null() { &[][..] } else { str_bytes(haystack) };
+    let n = if needle.is_null() { &[][..] } else { str_bytes(needle) };
+    let from = from as usize;
+    if from > h.len() {
+        return -1;
+    }
+    if n.is_empty() {
+        return from as i64;
+    }
+    if n.len() > h.len() - from {
+        return -1;
+    }
+    let last = h.len() - n.len();
+    let mut i = from;
+    while i <= last {
+        let mut k = 0usize;
+        while k < n.len() && h[i + k] == n[k] {
+            k += 1;
+        }
+        if k == n.len() {
+            return i as i64;
+        }
+        i += 1;
+    }
+    -1
+}
+
 /// Three-way byte comparison of two str handles — the `Ord for str`
 /// impl in `core/std/ord.t`. Negative / zero / positive, `memcmp`
 /// order with the shorter string first on a common prefix.

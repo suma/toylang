@@ -198,6 +198,8 @@ pub fn build_io_registry() -> HashMap<&'static str, ExternFn> {
     // ordering is a second thing that can disagree, and `Vec<str>`
     // sorted differently per backend would be exactly that.
     m.insert("__extern_str_cmp", str_cmp);
+    // STDLIB-TEXT §3: `str`'s search primitive.
+    m.insert("__extern_str_find", str_find);
     m.insert("__extern_io_random_u64", io_random);
     m.insert("__extern_io_random_seed", io_random_seed);
     m.insert("__extern_io_strftime_str", io_strftime);
@@ -653,6 +655,35 @@ fn io_write_file_status(_args: &[Value]) -> Result<Value, InterpreterError> {
 /// `core/std/hash.t`. Mirrors `toylang_rt::toy_str_hash` step for
 /// step (and `impl Hash for String` in `core/std/string.t`), so a key
 /// hashes to the same u64 on every backend.
+/// STDLIB-TEXT §3: byte offset of `needle` in `haystack` at or after
+/// `from`, or -1. Same rule as `toylang_rt::toy_str_find`: an empty
+/// needle matches at `from`, and the offset is in bytes.
+fn str_find(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 3 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_str_find` takes 3 arguments".to_string(),
+            expected: 3,
+            found: args.len(),
+        });
+    }
+    let haystack = str_arg(&args[0], "__extern_str_find")?;
+    let needle = str_arg(&args[1], "__extern_str_find")?;
+    let from = u64_arg(&args[2], "__extern_str_find")? as usize;
+    let bytes = haystack.as_bytes();
+    if from > bytes.len() {
+        return Ok(Value::Int64(-1));
+    }
+    let found = if needle.is_empty() {
+        Some(from)
+    } else {
+        bytes[from..]
+            .windows(needle.len())
+            .position(|w| w == needle.as_bytes())
+            .map(|i| i + from)
+    };
+    Ok(Value::Int64(found.map(|i| i as i64).unwrap_or(-1)))
+}
+
 /// STDLIB-TEXT §5: three-way byte comparison, forwarded to
 /// `toylang_rt::toy_str_cmp`.
 fn str_cmp(args: &[Value]) -> Result<Value, InterpreterError> {

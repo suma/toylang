@@ -1126,7 +1126,7 @@ fn string_interpolation_jit_matches_interpreter() {
     // `jit_println_str`).
     //
     // The example exercises identifier / arithmetic / multi-segment
-    // / escape-brace / `.to_upper()` follow-on cases; matching
+    // / escape-brace / `.to_ascii_upper()` follow-on cases; matching
     // stdout between the two modes pins the format byte-for-byte.
     assert_match("example/string_interpolation.t");
 }

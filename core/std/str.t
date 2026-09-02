@@ -68,3 +68,67 @@ impl Length for str {
 # `String` carries an inherent `to_string()` for the
 # String → String identity-clone case so `s.to_string()` still
 # works on `String` receivers.
+
+# ---------------------------------------------------------------------
+# Searching a `str` (STDLIB-TEXT §3).
+#
+# `str` is a borrowed handle: it does not own a buffer, so it cannot
+# answer a question whose answer is a *new* string. `substring` /
+# `trim` / `to_ascii_upper` / `to_ascii_lower` / `split` all are, and
+# they live on `String`, which owns one. What is left for `str` is the
+# questions that only read -- and those are worth having here, because
+# reaching them through `String::from_str(s)` would allocate a copy of
+# the whole string to ask about part of it.
+#
+# All four reduce to one search, so there is one extern. It is an
+# extern for the reason `Hash for str` and `Ord for str` are: the
+# tree-walker's `as_ptr()` allocates, so a byte loop written in
+# toylang would allocate once per call.
+#
+# Indices are **bytes**, like every other index into a `str`. UTF-8 is
+# self-synchronising, so a match can only start at a character
+# boundary and a returned offset is always one.
+extern fn __extern_str_find(haystack: str, needle: str, from: u64) -> i64 from "toylang_rt" as "toy_str_find"
+
+pub trait StrSearch {
+    # Byte offset of the first occurrence of `needle` at or after
+    # `from`, or `None`. An empty needle is found at `from`.
+    fn find_from(self: Self, needle: str, from: u64) -> Option<u64>
+    fn find(self: Self, needle: str) -> Option<u64>
+    fn contains(self: Self, needle: str) -> bool
+    fn starts_with(self: Self, prefix: str) -> bool
+    fn ends_with(self: Self, suffix: str) -> bool
+}
+
+impl StrSearch for str {
+    fn find_from(self: Self, needle: str, from: u64) -> Option<u64> {
+        val at: i64 = __extern_str_find(self, needle, from)
+        if at < 0i64 { Option::None } else { Option::Some(at as u64) }
+    }
+
+    fn find(self: Self, needle: str) -> Option<u64> {
+        val at: i64 = __extern_str_find(self, needle, 0u64)
+        if at < 0i64 { Option::None } else { Option::Some(at as u64) }
+    }
+
+    fn contains(self: Self, needle: str) -> bool {
+        __extern_str_find(self, needle, 0u64) >= 0i64
+    }
+
+    # `find` reports the *first* occurrence, so a hit at 0 is exactly
+    # "the needle is at the front".
+    fn starts_with(self: Self, prefix: str) -> bool {
+        __extern_str_find(self, prefix, 0u64) == 0i64
+    }
+
+    # Asked as "does it match at the one position that would reach the
+    # end", which is what `from` exists for -- a backwards search would
+    # be a second extern answering the same question.
+    fn ends_with(self: Self, suffix: str) -> bool {
+        val n: u64 = suffix.len()
+        val h: u64 = self.len()
+        if n > h { return false }
+        val at: u64 = h - n
+        __extern_str_find(self, suffix, at) == (at as i64)
+    }
+}

@@ -195,16 +195,20 @@ fn interpolation_can_be_passed_to_println() {
 
 #[test]
 fn interpolation_inside_concat_chain() {
-    // Whole interpolation chain participates in further postfix
-    // method calls — `.to_upper()` should receive the concat
-    // result and process it correctly.
+    // The whole interpolation chain participates in a further postfix
+    // method call: the concat result is what the method receives.
+    //
+    // The method used to be `.to_ascii_upper()`, which a `str` no
+    // longer has (STDLIB-TEXT §3 — it borrows its bytes and cannot
+    // produce a new string). `.concat` still lands on the same
+    // question: does the chain's result behave like any other `str`.
     let s = run_returns_owned_string(
         r#"fn main() -> str {
             val name = "world"
-            "hello {name}".to_upper()
+            "hello {name}".concat("!")
         }"#,
     );
-    assert_eq!(s, "HELLO WORLD");
+    assert_eq!(s, "hello world!");
 }
 
 // ---------------------------------------------------------------

@@ -320,12 +320,12 @@ fn stdlib_case_folding_spans_chunks_and_tail() {
     let src = r#"
         fn main() -> u64 {
             val mixed = String::from_str("Hello, World! 123 The Quick Brown Fox xyzXY")
-            val up = mixed.to_upper()
-            val lo = mixed.to_lower()
+            val up = mixed.to_ascii_upper()
+            val lo = mixed.to_ascii_lower()
             val want_up = String::from_str("HELLO, WORLD! 123 THE QUICK BROWN FOX XYZXY")
             val want_lo = String::from_str("hello, world! 123 the quick brown fox xyzxy")
             val empty = String::from_str("")
-            val eu = empty.to_upper()
+            val eu = empty.to_ascii_upper()
             if up == want_up && lo == want_lo && eu.len() == 0u64 {
                 93u64
             } else {

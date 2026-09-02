@@ -338,12 +338,12 @@ Stdlib types:
   / `eq` / `to_string`. Extension trait impls (in
   `core/std/str_ops.t`): `Substring` / `Trim` / `CaseConvert` /
   `Concat<String>` / `Contains<String>` / `Split<String,
-  Vec<String>>` — so `.substring(s, e)` / `.trim()` /
-  `.to_upper()` / `.to_lower()` / `.concat(other)` /
-  `.contains(needle)` / `.split(sep)` work on both `str` and
-  `String` with the same call shape (`str` routes through
-  builtins, `String` through trait impls). `==` / `!=` between
-  Strings dispatches to `eq` via the operator-overload path.
+  Vec<String>>` — `.substring(s, e)` / `.trim()` /
+  `.to_ascii_upper()` / `.to_ascii_lower()` / `.concat(other)` /
+  `.contains(needle)` / `.split(sep)`. **These live on `String` and
+  not on `str`**: each answers with a new buffer, and only `String`
+  owns one (see [Text](#text-str-string-char-and-u8)). `==` / `!=`
+  between Strings dispatches to `eq` via the operator-overload path.
 
   `Vec<u8>` (the generic byte vector) remains available as a
   distinct type for byte-level work that doesn't need String
@@ -4803,26 +4803,79 @@ what human-facing output wants.
 exists as the idempotent clone Rust has, and what interpolation
 concatenates is the `str` side.
 
+### Text: `str`, `String`, `char` and `u8`
+
+Four types share the work, and which one you want follows from one
+question: **does the answer need a buffer that outlives the call?**
+
+| Type | Role | Owns | Holds |
+|---|---|---|---|
+| `str` | borrowed handle; read only | no | valid UTF-8 |
+| `String` | owned, growable buffer | yes (`Drop`) | any bytes |
+| `char` | one Unicode scalar value | — | `u32` (U+0000–U+10FFFF, no surrogates) |
+| `u8` | one byte | — | 0–255 |
+
+From which two rules follow:
+
+> **`str` has no method that makes a new string.** `substring`,
+> `trim`, `to_ascii_upper`, `to_ascii_lower` and `split` each need a
+> buffer to write into, so they live on `String`. Reading — `len`,
+> `find`, `contains`, `starts_with`, `ends_with`, `lt` — stays on
+> `str`, where it costs nothing.
+
+> **`str` holds valid UTF-8; `String` holds bytes.** Crossing from
+> bytes to text is checked. `__builtin_str_from_bytes` — which
+> `String::to_str()` is built on — refuses a buffer that is not
+> UTF-8, so a `String` that came off a socket or out of a file may
+> not survive the trip. Ask first with `String::is_utf8()`.
+>
+> Binary data is not a degenerate string: carry it as `Vec<u8>` or
+> `Span<u8>`, which is what `io::read_file_into` already hands you.
+
+**Unicode goes as far as the codepoint and no further.** Encoding and
+decoding UTF-8 (RFC 3629, surrogates rejected), iterating codepoints,
+ASCII classification and case folding, and byte-order comparison are
+in. Grapheme clusters (`"e\u{301}"` counted as one character),
+normalisation (NFC/NFD/NFKC), Unicode case folding (`ß` → `SS`,
+Turkish `i`), and collation are **not**, and are not planned: the
+tables run to tens of kilobytes against a stdlib written in toylang,
+and collation needs a locale, which would undo the same determinism
+rule that pins `strftime` to UTC. A program that needs them is not
+one to write in this language.
+
 ### String methods
 
-Method-call syntax on `str` (the static-string primitive):
+Method-call syntax on `str` (the borrowed-string primitive). Every
+one of these answers a question **about** the bytes; none of them
+produces a new string, because a `str` has no buffer to write into:
 
-| Method | Signature |
-|---|---|
-| `str.len()` | `-> u64` |
-| `str.concat(other: str)` | `-> str` |
-| `str.contains(needle: str)` | `-> bool` |
-| `str.trim()` | `-> str` |
-| `str.to_upper()` | `-> str` |
-| `str.to_lower()` | `-> str` |
+| Method | Signature | |
+|---|---|---|
+| `str.len()` | `-> u64` | byte length, not codepoints |
+| `str.concat(other: str)` | `-> str` | what string interpolation desugars to |
+| `str.find(needle: str)` | `-> Option<u64>` | byte offset of the first occurrence |
+| `str.find_from(needle: str, from: u64)` | `-> Option<u64>` | same, starting at `from` |
+| `str.contains(needle: str)` | `-> bool` | |
+| `str.starts_with(prefix: str)` | `-> bool` | |
+| `str.ends_with(suffix: str)` | `-> bool` | |
+| `str.lt(other: str)` | `-> bool` | `impl Ord for str`; byte order |
+| `str.as_ptr()` | `-> ptr` | the UTF-8 bytes, NUL-terminated |
+| `str.hash()` | `-> u64` | FNV-1a |
 
-Two more shapes type-check but do **not** run: `str.substring(start,
-end)` and `str.split(sep)` reach an unimplemented arm of the
-interpreter's string dispatch and stop the program with
-`Internal error: Method '<name>' not found for String type`. Both work
-on [`String`](#string-heap-byte-buffer), through the `Substring` /
-`Split` trait impls — build one with `String::from_str(s)` when you
-need them.
+`substring` / `trim` / `to_ascii_upper` / `to_ascii_lower` / `split`
+are **not** here — they answer with a new buffer, so they belong to
+[`String`](#string-heap-byte-buffer). Asking for one on a `str` says
+so and names the owned spelling:
+
+```text
+[E0010] `str` has no method `to_upper`: it borrows its bytes, so it has no
+        buffer to write a new string into. `String::from_str(s).to_ascii_upper()`
+        produces an owned String
+```
+
+`<` is likewise not an operator on `str` — operator overloading is a
+struct feature — but the ordering exists: use `a.lt(b)`, which is
+the order `Vec<str>::sort()` uses.
 
 ### `String` (heap byte buffer)
 
@@ -4854,7 +4907,14 @@ Method dispatch:
 - Extension trait impls (in `core/std/string.t`):
   - `impl Substring for String` / `impl Trim for String` /
     `impl CaseConvert for String` (from `core/std/str_ops.t`) —
-    `.substring(s, e)`, `.trim()`, `.to_upper()`, `.to_lower()`.
+    `.substring(s, e)`, `.trim()`, `.to_ascii_upper()`,
+    `.to_ascii_lower()`. The case fold is ASCII-only and the name
+    says so: a Unicode fold needs tens of kilobytes of tables and,
+    for `ß` -> `SS` or Turkish `i`, a locale.
+  - `impl Ord for String` — `.lt(other)`, byte order.
+  - `.is_utf8()` — whether these bytes are text, and so whether
+    `to_str()` will accept them. Ask before crossing rather than
+    handling a `Result` on every string.
   - `impl Concat<String> for String` /
     `impl Contains<String> for String` /
     `impl Split<String, Vec<String>> for String` — `.concat(t)`,

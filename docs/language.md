@@ -1633,6 +1633,37 @@ An enum type argument is rejected outright: comparison overloading is a
 struct feature, so an `eq` written in `impl SomeEnum` would type-check
 and then fail to dispatch. Match on the variants instead.
 
+### `Vec<T>` methods beyond push and pop (stdlib)
+
+Alongside `push` / `pop` / `get` / `set` / `size` / `capacity` /
+`is_empty` / `clear` / `iter` / `sort`:
+
+```rust
+v.insert(1u64, 9u64)      # shift everything from index 1 up; index == size appends
+val gone: u64 = v.remove(0u64)       # shift down, keeps order, O(n)
+val any: u64 = v.swap_remove(0u64)   # last element fills the hole, O(1), reorders
+v.contains(5u64)          # bool
+v.index_of(5u64)          # Option<u64> — the first match
+v.reverse()
+v.sort_by(less)           # stable, `less(a, b)` = "a comes strictly before b"
+```
+
+`contains` and `index_of` compare with `==`, so the element type needs
+an answer for it (see [`==` on a type parameter](#-on-a-type-parameter));
+neither declares a bound. `sort_by` is the way to sort an element type
+with no `Ord` impl, or to sort one in another order:
+
+```rust
+val desc = fn(a: u64, b: u64) -> bool { b < a }
+v.sort_by(desc)
+```
+
+The comparison has to be a closure value — a top-level function's name
+is not a value in this language, so `v.sort_by(my_fn)` does not compile.
+Because an AOT closure cannot take a compound parameter, `sort_by` on
+the compiled lanes is for scalar element types; `sort` (the `Ord` one)
+is what sorts a `Vec<String>` there.
+
 ### `Set<T>` (stdlib)
 
 `core/std/collections/set.t` is the membership half of `Dict`, on the

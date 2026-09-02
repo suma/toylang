@@ -10,6 +10,12 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-03
+- **COLLECTIONS C3 — `Vec` の `insert` / `remove` / `swap_remove` /
+  `contains` / `index_of` / `reverse` / `sort_by`** — `contains` /
+  `index_of` に bound は要らない (C0(a) の性質)。`remove` は順序維持の
+  O(n)、`swap_remove` は O(1) で順序を壊す — **名前で言う**
+  (`Dict::remove` が黙って swap していた失敗の裏返し)。`sort_by` は
+  comparator を取るので `Ord` の無い型も、逆順も書ける。
 - **COLLECTIONS C2 — `Set<T>` (`core/std/collections/set.t`)** — `Dict` と
   同じ表 (probe / `hash_mix` / 7/8 成長) を持つ独立 struct。`Dict<T, ()>`
   は compiled レーンが unit 引数を拒否し、`Dict<T, bool>` は `insert` の
@@ -1026,6 +1032,13 @@
 > ★ = あると良い / ★★ = 効果が見えている / ★★★ = ロードマップ級。
 
 ### バックエンドのカバレッジ
+
+- **FN-NAME-AS-VALUE: トップレベル関数の名前を `fn` 値として渡せない**
+  ★ — `fn twice(x: u64) -> u64` があっても `apply(twice, 21u64)` は
+  `[E0001] expected fn (u64) -> u64, but got u64` (名前が値の位置で
+  u64 と型付けされている)。closure literal を `val` に束縛すれば通るので
+  回避はできるが、`Vec::sort_by(cmp)` のような comparator API は毎回
+  これを踏む。2026-09-03 に COLLECTIONS C3 で発見。
 
 
 - **compound 要素の drop glue が `f32` leaf で落ちる** ★ —

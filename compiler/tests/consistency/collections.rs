@@ -464,3 +464,103 @@ fn main() -> u64 {
 "#;
     assert_value(src, "set_str_elements", 7u64);
 }
+
+// COLLECTIONS C3: the `Vec` methods a container is expected to have.
+#[test]
+fn vec_insert_remove_and_swap_remove() {
+    let src = r#"
+fn main() -> u64 {
+    var v: Vec<u64> = Vec::new()
+    v.push(1u64)
+    v.push(2u64)
+    v.push(3u64)
+    v.insert(1u64, 9u64)         # 1 9 2 3
+    v.insert(4u64, 7u64)         # 1 9 2 3 7 — index == size appends
+    var out: u64 = 0u64
+    if v.size() == 5u64 { out = out + 1u64 }
+    if v.remove(0u64) == 1u64 { out = out + 2u64 }          # 9 2 3 7
+    if v.swap_remove(0u64) == 9u64 { out = out + 4u64 }     # 7 2 3
+    if v.get(0u64) == 7u64 { out = out + 8u64 }
+    if v.size() == 3u64 { out = out + 16u64 }
+    out
+}
+"#;
+    assert_value(src, "vec_insert_remove", 31u64);
+}
+
+#[test]
+fn vec_contains_and_index_of() {
+    let src = r#"
+fn main() -> u64 {
+    var v: Vec<u64> = Vec::new()
+    v.push(4u64)
+    v.push(5u64)
+    v.push(4u64)
+    var out: u64 = 0u64
+    if v.contains(5u64) { out = out + 1u64 }
+    if v.contains(6u64) { out = out + 2u64 }
+    # the *first* match
+    match v.index_of(4u64) {
+        Option::Some(i) => { out = out + 4u64 * (i + 1u64) }
+        Option::None => { out = out + 100u64 }
+    }
+    match v.index_of(6u64) {
+        Option::Some(i) => { out = out + 200u64 + i }
+        Option::None => { out = out + 8u64 }
+    }
+    out
+}
+"#;
+    assert_value(src, "vec_contains_index_of", 13u64);
+}
+
+// `reverse` on an empty vec must not compute `len - 1` — u64
+// subtraction traps rather than wrapping (RUNTIME-TRAP).
+#[test]
+fn vec_reverse_handles_the_empty_case() {
+    let src = r#"
+fn main() -> u64 {
+    var empty: Vec<u64> = Vec::new()
+    empty.reverse()
+
+    var v: Vec<u64> = Vec::new()
+    v.push(1u64)
+    v.push(2u64)
+    v.push(3u64)
+    v.reverse()
+    var out: u64 = 0u64
+    var i: u64 = 0u64
+    while i < v.size() {
+        out = out * 10u64 + v.get(i)
+        i = i + 1u64
+    }
+    out + empty.size()
+}
+"#;
+    assert_value(src, "vec_reverse", 321u64);
+}
+
+// `sort_by` takes the comparison, so an element type with no `Ord`
+// impl can be sorted — and one that has an `Ord` can be sorted the
+// other way round.
+#[test]
+fn vec_sort_by_takes_the_order_from_the_caller() {
+    let src = r#"
+fn main() -> u64 {
+    var v: Vec<u64> = Vec::new()
+    v.push(3u64)
+    v.push(1u64)
+    v.push(2u64)
+    val desc = fn(a: u64, b: u64) -> bool { b < a }
+    v.sort_by(desc)
+    var out: u64 = 0u64
+    var i: u64 = 0u64
+    while i < v.size() {
+        out = out * 10u64 + v.get(i)
+        i = i + 1u64
+    }
+    out
+}
+"#;
+    assert_value(src, "vec_sort_by", 321u64);
+}

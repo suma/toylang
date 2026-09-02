@@ -197,6 +197,138 @@ impl<T> Vec<T> {
     fn clear(&mut self) {
         self.len = 0u64
     }
+
+    # --- COLLECTIONS C3 ---------------------------------------------
+    #
+    # The four that need `==` on the element (`contains`, `index_of`)
+    # carry no bound: `==` between two values of a type parameter is
+    # allowed and dispatches to the element's own `eq`, and an element
+    # type with no answer for it is reported at the call site
+    # (`[E0010]`, COLLECTIONS C0(a)). There is no `Eq` trait to bound
+    # against.
+
+    # Insert `value` at `index`, shifting everything from there up one
+    # place. `index == size()` appends, which makes `insert` total over
+    # the positions a caller can name; past that it panics, like `get`.
+    unsafe fn insert(&mut self, index: u64, value: T) {
+        if index > self.len { panic("Vec::insert index out of bounds") }
+        if self.elem_size == 0u64 {
+            self.elem_size = __builtin_sizeof(value)
+        }
+        if self.cap == 0u64 {
+            self.cap = 4u64
+            self.data = __builtin_heap_realloc(self.data, self.cap * self.elem_size)
+        } elif self.len >= self.cap {
+            self.cap = self.cap * 2u64
+            self.data = __builtin_heap_realloc(self.data, self.cap * self.elem_size)
+        }
+        var i: u64 = self.len
+        while i > index {
+            val prev: T = __builtin_ptr_read(self.data, (i - 1u64) * self.elem_size)
+            __builtin_ptr_write(self.data, i * self.elem_size, prev)
+            i = i - 1u64
+        }
+        __builtin_ptr_write(self.data, index * self.elem_size, value)
+        self.len = self.len + 1u64
+    }
+
+    # Remove the element at `index` and return it, shifting the rest
+    # down. Order-preserving and O(n); `swap_remove` is the O(1) one.
+    unsafe fn remove(&mut self, index: u64) -> T {
+        if index >= self.len { panic("Vec::remove index out of bounds") }
+        val out: T = __builtin_ptr_read(self.data, index * self.elem_size)
+        var i: u64 = index
+        while i + 1u64 < self.len {
+            val next: T = __builtin_ptr_read(self.data, (i + 1u64) * self.elem_size)
+            __builtin_ptr_write(self.data, i * self.elem_size, next)
+            i = i + 1u64
+        }
+        self.len = self.len - 1u64
+        out
+    }
+
+    # Remove the element at `index` and return it, moving the last
+    # element into the hole. O(1), and it reorders — the name says so,
+    # which `Dict::remove` used not to (it swapped silently and broke
+    # iteration order).
+    unsafe fn swap_remove(&mut self, index: u64) -> T {
+        if index >= self.len { panic("Vec::swap_remove index out of bounds") }
+        val out: T = __builtin_ptr_read(self.data, index * self.elem_size)
+        val last: T = __builtin_ptr_read(self.data, (self.len - 1u64) * self.elem_size)
+        __builtin_ptr_write(self.data, index * self.elem_size, last)
+        self.len = self.len - 1u64
+        out
+    }
+
+    # Whether any element equals `value`. Linear.
+    unsafe fn contains(&self, value: T) -> bool {
+        var i: u64 = 0u64
+        while i < self.len {
+            val e: T = __builtin_ptr_read(self.data, i * self.elem_size)
+            if e == value {
+                return true
+            }
+            i = i + 1u64
+        }
+        false
+    }
+
+    # The position of the first element equal to `value`, or `None`.
+    unsafe fn index_of(&self, value: T) -> Option<u64> {
+        var i: u64 = 0u64
+        while i < self.len {
+            val e: T = __builtin_ptr_read(self.data, i * self.elem_size)
+            if e == value {
+                return Option::Some(i)
+            }
+            i = i + 1u64
+        }
+        Option::None
+    }
+
+    # Reverse in place.
+    unsafe fn reverse(&mut self) {
+        if self.len == 0u64 {
+            return
+        }
+        var i: u64 = 0u64
+        var j: u64 = self.len - 1u64
+        while i < j {
+            val a: T = __builtin_ptr_read(self.data, i * self.elem_size)
+            val b: T = __builtin_ptr_read(self.data, j * self.elem_size)
+            __builtin_ptr_write(self.data, i * self.elem_size, b)
+            __builtin_ptr_write(self.data, j * self.elem_size, a)
+            i = i + 1u64
+            j = j - 1u64
+        }
+    }
+
+    # Sort in place with a caller-supplied `less`, which must answer
+    # "does a come strictly before b". Same stable insertion sort as
+    # `sort` below, and the way to sort an element type that has no
+    # `Ord` impl — or to sort one of those in another order
+    # (`fn (a: u64, b: u64) -> bool { b < a }` for descending).
+    #
+    # An AOT closure cannot take a compound parameter, so this is
+    # scalar element types on the compiled lanes; `sort` (the `Ord`
+    # one) is what sorts a `Vec<String>` there.
+    unsafe fn sort_by(&mut self, less: fn (T, T) -> bool) {
+        var i: u64 = 1u64
+        while i < self.len {
+            val key: T = self.get(i)
+            var j: u64 = i
+            while j > 0u64 {
+                val prev: T = self.get(j - 1u64)
+                if !less(key, prev) {
+                    break
+                }
+                self.set(j, prev)
+                j = j - 1u64
+            }
+            self.set(j, key)
+            i = i + 1u64
+        }
+    }
 }
 
 # STDLIB-ORD: stable insertion sort over the `Ord` trait

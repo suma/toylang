@@ -1350,12 +1350,8 @@ impl<'a> FunctionLower<'a> {
     }
 
     /// Binary arithmetic / bitwise operator overload RHS helper
-    /// (`val c = a + b`). Resolves the user-defined method on
-    /// the lhs struct, flattens both receivers' leaf locals, and
-    /// emits `CallStruct` into a fresh binding for the compound
-    /// `Self` return. Returns `Ok(Some(_))` if it dispatched,
-    /// `Ok(None)` if the operator / lhs doesn't match the
-    /// overload shape and the caller should fall through.
+    /// (`val c = a + b`). Delegates to
+    /// [`Self::emit_binary_overload`] and binds its result.
     fn lower_let_binary_overload(
         &mut self,
         name: DefaultSymbol,
@@ -1363,6 +1359,32 @@ impl<'a> FunctionLower<'a> {
         lhs_ref: ExprRef,
         rhs_ref: ExprRef,
     ) -> Result<Option<Option<ValueId>>, String> {
+        let Some((struct_id, fields)) = self.emit_binary_overload(op, lhs_ref, rhs_ref)? else {
+            return Ok(None);
+        };
+        self.register_drop_for_struct_binding(struct_id, &fields);
+        self.bindings
+            .insert(name, Binding::Struct { struct_id, fields });
+        Ok(Some(None))
+    }
+
+    /// Resolve a struct's operator-overload method, evaluate both
+    /// operands, and emit the call into fresh leaf locals.
+    ///
+    /// Returns the destination struct instance and its field bindings,
+    /// or `Ok(None)` when the operator or the left operand's type does
+    /// not name an overload and the caller should fall through.
+    ///
+    /// The result lives in locals rather than in an SSA value because
+    /// a struct always does. Which is the whole of OP-OVERLOAD-CHAIN:
+    /// the only position that used to allocate those locals was a
+    /// `val` RHS, so `a + b` had nowhere to go anywhere else.
+    pub(super) fn emit_binary_overload(
+        &mut self,
+        op: frontend::ast::Operator,
+        lhs_ref: ExprRef,
+        rhs_ref: ExprRef,
+    ) -> Result<Option<(crate::ir::StructId, Vec<super::bindings::FieldBinding>)>, String> {
         let op_method: Option<&'static str> = match op {
             frontend::ast::Operator::IAdd => Some("add"),
             frontend::ast::Operator::ISub => Some("sub"),
@@ -1376,167 +1398,130 @@ impl<'a> FunctionLower<'a> {
             frontend::ast::Operator::RightShift => Some("shr"),
             _ => None,
         };
-        if let Some(method_name) = op_method
-            && let Some(Type::Struct(struct_id)) = self.value_scalar(&lhs_ref) {
-                let struct_def = self.module.struct_def(struct_id);
-                let target_sym = struct_def.base_name;
-                if let Some(method_sym) = self.interner.get(method_name)
-                    && let Some(func_id) = self.resolve_struct_method_func_id(
-                        target_sym, method_sym, struct_id, &[rhs_ref],
-                    )? {
-                        // Flatten both struct receivers' leaf
-                        // locals — must come from bare struct
-                        // identifier bindings, same as the
-                        // `try_lower_struct_eq` shape.
-                        let lhs_leaves = match self.program.expression.get(&lhs_ref) {
-                            Some(Expr::Identifier(sym)) => match self.bindings.get(&sym).cloned() {
-                                Some(Binding::Struct { fields, .. }) => {
-                                    flatten_struct_locals(&fields)
-                                }
-                                _ => return Err(
-                                    "operator overload: arith lhs needs struct binding (MVP)".to_string(),
-                                ),
-                            },
-                            _ => return Err(
-                                "operator overload: arith lhs must be a bare identifier (MVP)".to_string(),
-                            ),
-                        };
-                        let rhs_leaves = match self.program.expression.get(&rhs_ref) {
-                            Some(Expr::Identifier(sym)) => match self.bindings.get(&sym).cloned() {
-                                Some(Binding::Struct { fields, .. }) => {
-                                    flatten_struct_locals(&fields)
-                                }
-                                _ => return Err(
-                                    "operator overload: arith rhs needs struct binding (MVP)".to_string(),
-                                ),
-                            },
-                            _ => return Err(
-                                "operator overload: arith rhs must be a bare identifier (MVP)".to_string(),
-                            ),
-                        };
-                        let mut all_args: Vec<ValueId> =
-                            Vec::with_capacity(lhs_leaves.len() + rhs_leaves.len());
-                        for (local, ty) in lhs_leaves.iter().chain(rhs_leaves.iter()) {
-                            let v = self
-                                .emit(InstKind::LoadLocal(*local), Some(*ty))
-                                .expect("LoadLocal returns a value");
-                            all_args.push(v);
-                        }
-                        // Compound Self return — allocate dest
-                        // binding then emit `CallStruct`.
-                        let target_ret = self.module.function(func_id).return_type;
-                        let dest_struct_id = match target_ret {
-                            Type::Struct(id) => id,
-                            _ => return Err(format!(
-                                "operator overload: {} method must return Self (got `{}`)",
-                                method_name,
-                                crate::spelling::spell_type(self.module, self.interner, target_ret)
-                            )),
-                        };
-                        let fields = self.allocate_struct_fields(dest_struct_id);
-                        let dests: Vec<LocalId> =
-                            flatten_struct_locals(&fields)
-                                .into_iter()
-                                .map(|(l, _)| l)
-                                .collect();
-                        self.register_drop_for_struct_binding(dest_struct_id, &fields);
-                        self.bindings.insert(
-                            name,
-                            Binding::Struct { struct_id: dest_struct_id, fields },
-                        );
-                        self.emit(
-                            InstKind::CallStruct {
-                                target: func_id,
-                                args: all_args,
-                                dests,
-                            },
-                            None,
-                        );
-                        return Ok(Some(None));
-                    }
-            }
-        Ok(None)
+        let Some(method_name) = op_method else {
+            return Ok(None);
+        };
+        let Some(Type::Struct(struct_id)) = self.value_scalar(&lhs_ref) else {
+            return Ok(None);
+        };
+        let target_sym = self.module.struct_def(struct_id).base_name;
+        let Some(method_sym) = self.interner.get(method_name) else {
+            return Ok(None);
+        };
+        let Some(func_id) =
+            self.resolve_struct_method_func_id(target_sym, method_sym, struct_id, &[rhs_ref])?
+        else {
+            return Ok(None);
+        };
+        // OP-OVERLOAD-CHAIN: both operands go through the ordinary
+        // compound-argument path, which is what the method call they
+        // become would use anyway. It takes a binding, a literal, a
+        // compound-returning call — and, since that path knows about
+        // overloads too, another overloaded operator, which is what
+        // makes `a + b + c` work.
+        //
+        // Before this it required a bare identifier on each side, so a
+        // chain and a literal operand were both
+        // `must be a bare identifier (MVP)`.
+        let mut all_args = self.lower_arg_values(&lhs_ref)?;
+        all_args.extend(self.lower_arg_values(&rhs_ref)?);
+        let target_ret = self.module.function(func_id).return_type;
+        let Type::Struct(dest_struct_id) = target_ret else {
+            return Err(format!(
+                "operator overload: {} method must return Self (got `{}`)",
+                method_name,
+                crate::spelling::spell_type(self.module, self.interner, target_ret)
+            ));
+        };
+        let fields = self.allocate_struct_fields(dest_struct_id);
+        let dests: Vec<LocalId> = flatten_struct_locals(&fields)
+            .into_iter()
+            .map(|(l, _)| l)
+            .collect();
+        self.emit(
+            InstKind::CallStruct {
+                target: func_id,
+                args: all_args,
+                dests,
+            },
+            None,
+        );
+        Ok(Some((dest_struct_id, fields)))
     }
 
-    /// Unary operator overload RHS helper
-    /// (`val r: Vec3 = -a`). Compound `Self` return needs
-    /// `CallStruct` into a fresh binding. Returns
-    /// `Ok(Some(_))` if it dispatched, `Ok(None)` if the
-    /// operator / operand doesn't match the overload shape
-    /// and the caller should fall through.
+    /// Unary operator overload RHS helper (`val r: Vec3 = -a`).
+    /// Delegates to [`Self::emit_unary_overload`] and binds its result.
     fn lower_let_unary_overload(
         &mut self,
         name: DefaultSymbol,
         unary_op: frontend::ast::UnaryOp,
         operand_ref: ExprRef,
     ) -> Result<Option<Option<ValueId>>, String> {
+        let Some((struct_id, fields)) = self.emit_unary_overload(unary_op, operand_ref)? else {
+            return Ok(None);
+        };
+        self.register_drop_for_struct_binding(struct_id, &fields);
+        self.bindings
+            .insert(name, Binding::Struct { struct_id, fields });
+        Ok(Some(None))
+    }
+
+    /// The unary twin of [`Self::emit_binary_overload`]: resolve
+    /// `neg` / `bitnot` / `not` on the operand's struct, evaluate the
+    /// operand through the compound-argument path, and emit the call
+    /// into fresh leaf locals.
+    pub(super) fn emit_unary_overload(
+        &mut self,
+        unary_op: frontend::ast::UnaryOp,
+        operand_ref: ExprRef,
+    ) -> Result<Option<(crate::ir::StructId, Vec<super::bindings::FieldBinding>)>, String> {
         let unary_method: Option<&'static str> = match unary_op {
             frontend::ast::UnaryOp::Negate => Some("neg"),
             frontend::ast::UnaryOp::BitwiseNot => Some("bitnot"),
             frontend::ast::UnaryOp::LogicalNot => Some("not"),
             _ => None,
         };
-        if let Some(method_name) = unary_method
-            && let Some(Type::Struct(struct_id)) = self.value_scalar(&operand_ref) {
-                let struct_def = self.module.struct_def(struct_id);
-                let target_sym = struct_def.base_name;
-                if let Some(method_sym) = self.interner.get(method_name)
-                    && let Some(func_id) = self.resolve_struct_method_func_id(
-                        target_sym, method_sym, struct_id, &[],
-                    )? {
-                        let operand_leaves = match self.program.expression.get(&operand_ref) {
-                            Some(Expr::Identifier(sym)) => match self.bindings.get(&sym).cloned() {
-                                Some(Binding::Struct { fields, .. }) => {
-                                    flatten_struct_locals(&fields)
-                                }
-                                _ => return Err(
-                                    "unary overload: operand needs struct binding (MVP)".to_string(),
-                                ),
-                            },
-                            _ => return Err(
-                                "unary overload: operand must be a bare identifier (MVP)".to_string(),
-                            ),
-                        };
-                        let mut all_args: Vec<ValueId> =
-                            Vec::with_capacity(operand_leaves.len());
-                        for (local, ty) in operand_leaves.iter() {
-                            let v = self
-                                .emit(InstKind::LoadLocal(*local), Some(*ty))
-                                .expect("LoadLocal returns a value");
-                            all_args.push(v);
-                        }
-                        let target_ret = self.module.function(func_id).return_type;
-                        let dest_struct_id = match target_ret {
-                            Type::Struct(id) => id,
-                            _ => return Err(format!(
-                                "unary overload: {} method must return Self (got `{}`)",
-                                method_name,
-                                crate::spelling::spell_type(self.module, self.interner, target_ret)
-                            )),
-                        };
-                        let fields = self.allocate_struct_fields(dest_struct_id);
-                        let dests: Vec<LocalId> =
-                            flatten_struct_locals(&fields)
-                                .into_iter()
-                                .map(|(l, _)| l)
-                                .collect();
-                        self.register_drop_for_struct_binding(dest_struct_id, &fields);
-                        self.bindings.insert(
-                            name,
-                            Binding::Struct { struct_id: dest_struct_id, fields },
-                        );
-                        self.emit(
-                            InstKind::CallStruct {
-                                target: func_id,
-                                args: all_args,
-                                dests,
-                            },
-                            None,
-                        );
-                        return Ok(Some(None));
-                    }
-            }
-        Ok(None)
+        let Some(method_name) = unary_method else {
+            return Ok(None);
+        };
+        let Some(Type::Struct(struct_id)) = self.value_scalar(&operand_ref) else {
+            return Ok(None);
+        };
+        let target_sym = self.module.struct_def(struct_id).base_name;
+        let Some(method_sym) = self.interner.get(method_name) else {
+            return Ok(None);
+        };
+        let Some(func_id) =
+            self.resolve_struct_method_func_id(target_sym, method_sym, struct_id, &[])?
+        else {
+            return Ok(None);
+        };
+        // OP-OVERLOAD-CHAIN: see `emit_binary_overload` — the operand
+        // takes the ordinary compound-argument path, so `-(a + b)` and
+        // `-V { .. }` reach the same place a bare identifier did.
+        let all_args = self.lower_arg_values(&operand_ref)?;
+        let target_ret = self.module.function(func_id).return_type;
+        let Type::Struct(dest_struct_id) = target_ret else {
+            return Err(format!(
+                "unary overload: {} method must return Self (got `{}`)",
+                method_name,
+                crate::spelling::spell_type(self.module, self.interner, target_ret)
+            ));
+        };
+        let fields = self.allocate_struct_fields(dest_struct_id);
+        let dests: Vec<LocalId> = flatten_struct_locals(&fields)
+            .into_iter()
+            .map(|(l, _)| l)
+            .collect();
+        self.emit(
+            InstKind::CallStruct {
+                target: func_id,
+                args: all_args,
+                dests,
+            },
+            None,
+        );
+        Ok(Some((dest_struct_id, fields)))
     }
 
     /// Struct associated-function-call RHS helper

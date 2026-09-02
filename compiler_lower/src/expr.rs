@@ -947,6 +947,13 @@ impl<'a> FunctionLower<'a> {
                 };
                 self.lower_compound_call_arg(target_id, &items)
             }
+            // OP-OVERLOAD-CHAIN: an overloaded operator whose result
+            // is a struct (`take(a + b)`, and the inner `a + b` of
+            // `a + b + c`). The result has to live in leaf locals like
+            // any other compound, and this is the one place that hands
+            // an argument slot a set of its own.
+            Expr::Binary(op, lhs, rhs) => self.lower_binary_overload_arg(op, lhs, rhs),
+            Expr::Unary(op, operand) => self.lower_unary_overload_arg(op, operand),
             // COMPOUND-ARG-CALL: a compound-returning method
             // (`take(o.twin())`). `prepare_compound_method_call` has
             // already lowered the receiver and the arguments, so this
@@ -1020,6 +1027,37 @@ impl<'a> FunctionLower<'a> {
             // scalar return, so this is unreachable in practice.
             _ => Ok(None),
         }
+    }
+
+    /// OP-OVERLOAD-CHAIN: an overloaded binary operator standing in
+    /// an argument slot. The operator's result is a struct, so it
+    /// needs leaf locals of its own; `emit_binary_overload` allocates
+    /// them and this loads their values for the call.
+    ///
+    /// `Ok(None)` when the operator is not overloaded for this
+    /// operand type, so the caller's ordinary scalar path runs.
+    fn lower_binary_overload_arg(
+        &mut self,
+        op: frontend::ast::Operator,
+        lhs: ExprRef,
+        rhs: ExprRef,
+    ) -> Result<Option<Vec<ValueId>>, String> {
+        let Some((_, fields)) = self.emit_binary_overload(op, lhs, rhs)? else {
+            return Ok(None);
+        };
+        Ok(Some(self.load_leaves(flatten_struct_locals(&fields))))
+    }
+
+    /// The unary twin of [`Self::lower_binary_overload_arg`].
+    fn lower_unary_overload_arg(
+        &mut self,
+        op: UnaryOp,
+        operand: ExprRef,
+    ) -> Result<Option<Vec<ValueId>>, String> {
+        let Some((_, fields)) = self.emit_unary_overload(op, operand)? else {
+            return Ok(None);
+        };
+        Ok(Some(self.load_leaves(flatten_struct_locals(&fields))))
     }
 
     /// COMPOUND-ARG-CALL: materialise a compound-returning call into

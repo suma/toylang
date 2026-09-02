@@ -130,21 +130,51 @@ impl<'a> FunctionLower<'a> {
     /// Walks the chain through nested struct fields and returns
     /// either a scalar load or stashes a pending struct value (for
     /// tail-position chained struct returns).
+    /// OP-OVERLOAD-CHAIN: when `expr` is an overloaded operator whose
+    /// result is a struct, emit it and hand back the field bindings
+    /// its leaves live in. `Ok(None)` for anything else, so the
+    /// caller's ordinary chain walk runs.
+    fn emit_overload_root(
+        &mut self,
+        expr: &ExprRef,
+    ) -> Result<Option<Vec<super::bindings::FieldBinding>>, String> {
+        match self.program.expression.get(expr) {
+            Some(Expr::Binary(op, lhs, rhs)) => {
+                Ok(self.emit_binary_overload(op, lhs, rhs)?.map(|(_, f)| f))
+            }
+            Some(Expr::Unary(op, operand)) => {
+                Ok(self.emit_unary_overload(op, operand)?.map(|(_, f)| f))
+            }
+            _ => Ok(None),
+        }
+    }
+
     pub(super) fn lower_field_access(
         &mut self,
         obj: &ExprRef,
         field: DefaultSymbol,
     ) -> Result<Option<ValueId>, String> {
-        // Resolve the obj sub-expression to a `FieldChainResult`
-        // first; it must be a struct (we're stepping into one of its
-        // fields). Then look up `field` in that struct's bindings.
-        let inner = self.resolve_field_chain(obj)?;
-        let fields = match inner {
-            FieldChainResult::Struct { fields, .. } => fields,
-            FieldChainResult::Scalar { .. }
-            | FieldChainResult::Tuple { .. }
-            | FieldChainResult::Enum(_) => {
-                return Err("field access on a non-struct value".to_string());
+        // OP-OVERLOAD-CHAIN: `(a + b).x` — the root is an overloaded
+        // operator, not a binding. `resolve_field_chain` is immutable
+        // by design (reads and writes share it), so it cannot
+        // materialise the operator's result; do that here and read the
+        // field off the locals it lands in. Before this the message
+        // was "field-access chains rooted at a bare identifier", which
+        // is true of the chain walker and unhelpful about the fix.
+        let fields = match self.emit_overload_root(obj)? {
+            Some(fields) => fields,
+            None => {
+                // Resolve the obj sub-expression to a
+                // `FieldChainResult`; it must be a struct (we're
+                // stepping into one of its fields).
+                match self.resolve_field_chain(obj)? {
+                    FieldChainResult::Struct { fields, .. } => fields,
+                    FieldChainResult::Scalar { .. }
+                    | FieldChainResult::Tuple { .. }
+                    | FieldChainResult::Enum(_) => {
+                        return Err("field access on a non-struct value".to_string());
+                    }
+                }
             }
         };
         let field_str = self

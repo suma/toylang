@@ -403,8 +403,6 @@ impl<'a> FunctionLower<'a> {
         op: &Operator,
         method_name: &str,
     ) -> Result<Option<ValueId>, String> {
-        use frontend::ast::Expr;
-        use super::bindings::{flatten_struct_locals, Binding};
         let struct_def = self.module.struct_def(struct_id);
         let target_sym = struct_def.base_name;
         let method_sym = match self.interner.get(method_name) {
@@ -420,33 +418,24 @@ impl<'a> FunctionLower<'a> {
             Some(f) => f,
             None => return Ok(None),
         };
-        // Collect leaf values for both sides. Each side must be an
-        // `Expr::Identifier` resolving to a `Binding::Struct` (the
-        // typical String / Vec<u8> shape). If either side is some
-        // other expression form we fall back to the regular BinOp
-        // path — the type checker rejects most such cases up front,
-        // and the surviving ones get the standard "Bad types"
-        // diagnostic.
-        let lhs_leaves = match self.program.expression.get(lhs) {
-            Some(Expr::Identifier(sym)) => match self.bindings.get(&sym).cloned() {
-                Some(Binding::Struct { fields, .. }) => flatten_struct_locals(&fields),
-                _ => return Ok(None),
-            },
-            _ => return Ok(None),
+        // OP-OVERLOAD-CHAIN: both sides take the ordinary
+        // compound-argument path — a binding, a literal, a
+        // compound-returning call, or another overloaded operator.
+        // Restricting them to a bare identifier is what made
+        // `if (a + b) == c` fail with "binary lhs produced no value",
+        // a sentence that named neither the operand nor the rule.
+        //
+        // A side that produces no leaves at all is not this shape:
+        // fall back to the regular BinOp path, as before — the type
+        // checker rejects most such cases up front and the survivors
+        // get the standard "Bad types" diagnostic.
+        let mut args: Vec<ValueId> = match self.lower_arg_values(lhs) {
+            Ok(v) => v,
+            Err(_) => return Ok(None),
         };
-        let rhs_leaves = match self.program.expression.get(rhs) {
-            Some(Expr::Identifier(sym)) => match self.bindings.get(&sym).cloned() {
-                Some(Binding::Struct { fields, .. }) => flatten_struct_locals(&fields),
-                _ => return Ok(None),
-            },
-            _ => return Ok(None),
-        };
-        let mut args: Vec<ValueId> = Vec::with_capacity(lhs_leaves.len() + rhs_leaves.len());
-        for (local, ty) in lhs_leaves.iter().chain(rhs_leaves.iter()) {
-            let v = self
-                .emit(InstKind::LoadLocal(*local), Some(*ty))
-                .expect("LoadLocal returns a value");
-            args.push(v);
+        match self.lower_arg_values(rhs) {
+            Ok(v) => args.extend(v),
+            Err(_) => return Ok(None),
         }
         let bool_v = self
             .emit(InstKind::Call { target: func_id, args }, Some(Type::Bool))

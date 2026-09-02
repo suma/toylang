@@ -10,6 +10,19 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-02
+- **OP-OVERLOAD-CHAIN — overload の結果が普通の値になった** —
+  interpreter は 6 形すべてを通し、compiled レーンは let-rhs 位置しか
+  通していなかった (2026-08-29 の実測表)。**原因は 1 つ** — overload の
+  結果は struct で、struct は leaf local に住むが、その local を確保する
+  位置が `val` の rhs しか無かった。各サイトが別々の語彙で報告していた
+  (`arith lhs must be a bare identifier` / `field-access chains rooted at
+  a bare identifier` / `binary lhs produced no value`) が、どれも規則を
+  名指していなかった。`emit_binary_overload` / `emit_unary_overload` を
+  切り出し、(a) 引数位置、(b) field access の root、(c) `==` の operand
+  から呼べるようにした。**operand 側も一般化** — 通常の compound 引数
+  経路 (束縛 / literal / call / **別の overload**) を通すので chain が
+  そのまま動く。docs の「Out of scope」から 5 形すべてが消えた。
+  4 レーンに 4 件 pin
 - **TREE-WALKER-SELF-TYPE-ARG — 宣言戻り型が `Self` の型引数を名指すようにした** —
   `fn window(&self) -> Option<Win<u64>> { Win::try_from_raw(self.data) }`
   で返ってきた `Win` が型引数を持たず、`__builtin_sizeof::<T>()` を使う
@@ -1013,29 +1026,6 @@
   見ず、AOT の `try_lower_struct_cmp` も struct 前提。enum 同士の比較は
   今のところ variant を match する (tuple scrutinee は AOT 非対応なので
   ネストするか scalar tag に落とす)。実プログラムで踏んでから。
-
-- **OP-OVERLOAD-CHAIN: operator overload が compiled レーンでは
-  let-rhs 位置でしか動かない** ★★ — **interpreter は全形を通し、
-  AOT / JIT は全形を拒否する**。2026-08-29 に `struct V` +
-  `fn add(&self, other: &V) -> V` で 6 形を実測した:
-
-  | 書き方 | interpreter | AOT / JIT |
-  |---|---|---|
-  | `val r: V = a + b` (基準) | ✅ | ✅ |
-  | `val r: V = a + b + c` (chain) | ✅ | `arith lhs must be a bare identifier (MVP)` |
-  | `val r: V = a + V { .. }` (literal operand) | ✅ | `arith rhs must be a bare identifier (MVP)` |
-  | `(a + b).x` (結果のフィールド) | ✅ | `field-access chains rooted at a bare identifier` |
-  | `take(a + b)` (引数位置) | ✅ | `binary lhs produced no value` |
-  | `if (a + b) == c` (条件位置) | ✅ | `binary lhs produced no value` |
-
-  `docs/language.md` の「Out of scope (deliberate)」は chain と
-  literal operand しか挙げていなかったので、実測した 5 形すべてを
-  並べる形に直した (同日)。残るのは診断とスコープ:
-  引数位置 / 条件位置の `binary lhs produced no value` は原因を
-  名指ししておらず、`(MVP)` つきの他の 2 つと違って何を直せばいいか
-  分からない。着手するなら (1) その 2 つの文言を `(MVP)` つきに揃える
-  (安い、誤解を減らす)、(2) 一時束縛を lowering 側で作って
-  非 let-rhs 位置を通す、の順。
 
 - **SIMD-F32 の残** ★ — (a) **format spec 未対応**: `{x:.2}` の
   formattable 集合に f32 を入れるには `toy_format_f32` が要る

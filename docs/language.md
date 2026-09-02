@@ -1479,20 +1479,15 @@ val n: Vec3 = -a    # uses neg
 if a == b { ... }   # uses eq
 ```
 
+An overload's result is an ordinary value: it chains (`a + b + c`),
+takes literal operands (`a & Bits { v: 1 }`), and stands wherever the
+struct itself could — a field root (`(a + b).x`), an argument
+(`take(a + b)`), a condition (`if (a + b) == c`).
+
 **Out of scope** (deliberate):
 - `&&` / `||` — short-circuit semantics make method dispatch
   unsound (the rhs would always evaluate). Both operators stay
   primitive-only.
-- Anything but let-rhs position, on the compiled lanes. The MVP
-  routes overloads through `let_lowering.rs::Binary` / `Unary`,
-  which only triggers there; the interpreter has no such limit,
-  so these all run there and fail to compile. Bind the result
-  first (`val sum = a + b`) and use the binding:
-  - chained uses (`a + b + c`)
-  - inline struct literal operands (`a & Bits { v: 1 }`)
-  - a field of the result (`(a + b).x`)
-  - an argument position (`take(a + b)`)
-  - a condition position (`if (a + b) == c`)
 - Enum receivers. No engine dispatches an operator method on an
   enum, so the checker rejects the comparison rather than letting
   it fail at run time. Match on the variants instead — note that a
@@ -5385,11 +5380,6 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   setting — see "Operational guidance" above.)
 - **No raw strings or multi-line strings** — only the regular
   `"..."` literal with backslash escapes today.
-- **Operator overload — chained / literal operands** — same-shape
-  struct overloads (`+` `-` `*` `/` `%` `+=` `<` etc., see
-  *Operator overload (struct receivers)*) only fire in let-rhs
-  context. `a + b + c` and `a & Bits { v: 1 }` need explicit
-  intermediates (`val tmp = a + b; val r = tmp + c`).
 - **Compound-returning calls in expression position** — a compound
   never travels as one SSA value, so a call producing one needs
   locals to write its leaves into. Two positions have those:

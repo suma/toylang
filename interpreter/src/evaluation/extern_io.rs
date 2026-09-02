@@ -58,31 +58,32 @@ thread_local! {
     static WRITE_FILE_STATUS: Cell<u64> = const { Cell::new(0) };
 }
 
-const IO_OK: u64 = 0;
-const IO_NOT_FOUND: u64 = 1;
-const IO_PERMISSION_DENIED: u64 = 2;
-const IO_IS_A_DIRECTORY: u64 = 3;
-const IO_READ_ERROR: u64 = 4;
-const IO_WRITE_ERROR: u64 = 5;
+// ERROR_MODEL D3 / E0: the failure vocabulary is defined once, in
+// `toylang_rt`, and this registry forwards to it — the shape
+// `extern_net` already uses. The former private copy of the errno
+// table here is what let the same write failure read as `write error`
+// on the interpreter and `read error` on AOT/JIT.
+use toylang_rt::io_status::{
+    NOT_FOUND as IO_NOT_FOUND, OK as IO_OK, READ_ERROR as IO_READ_ERROR,
+    WRITE_ERROR as IO_WRITE_ERROR,
+};
+use toylang_rt::parse_status::{
+    INVALID as PARSE_INVALID, OK as PARSE_OK, OVERFLOW as PARSE_OVERFLOW,
+};
 
-// RUNTIME-LIB P0-B: `parse::to_f64`'s status vocabulary, matching
-// `toylang_rt`'s `PARSE_*` constants.
-const PARSE_OK: u64 = 0;
-const PARSE_INVALID: u64 = 1;
-const PARSE_OVERFLOW: u64 = 2;
-
-/// Map an `std::io::Error` to the RUNTIME-IO status vocabulary. The
-/// errno values (ENOENT 2, EPERM 1, EACCES 13, EISDIR 21) agree with
-/// `toylang_rt`'s `io_status_from_errno`. Errors without a raw errno
-/// (e.g. non-UTF-8 contents, `InvalidData`) count as read errors —
-/// the compiled backends do not validate UTF-8, which stays a
-/// documented divergence for invalid files.
-fn status_from_io_error(err: &std::io::Error) -> u64 {
+/// Map an `std::io::Error` to the RUNTIME-IO status vocabulary by
+/// handing its errno to `toylang_rt`.
+///
+/// `fallback` names the failure when there is no errno behind it —
+/// the caller knows which direction it was going, and the runtime's
+/// table does not. Errors without a raw errno (e.g. non-UTF-8
+/// contents, `InvalidData`) are this engine's own: the compiled
+/// backends do not validate UTF-8, a documented divergence for
+/// invalid files.
+fn status_from_io_error(err: &std::io::Error, fallback: u64) -> u64 {
     match err.raw_os_error() {
-        Some(2) => IO_NOT_FOUND,
-        Some(1) | Some(13) => IO_PERMISSION_DENIED,
-        Some(21) => IO_IS_A_DIRECTORY,
-        _ => IO_READ_ERROR,
+        Some(code) => toylang_rt::io_status::from_errno(code),
+        None => fallback,
     }
 }
 
@@ -266,7 +267,7 @@ fn io_read_file_into(
     let mut file = match std::fs::File::open(&path) {
         Ok(f) => f,
         Err(e) => {
-            READ_FILE_STATUS.with(|s| s.set(status_from_io_error(&e)));
+            READ_FILE_STATUS.with(|s| s.set(status_from_io_error(&e, IO_READ_ERROR)));
             return Ok(u64_result(0));
         }
     };
@@ -291,7 +292,7 @@ fn io_read_file_into(
             Ok(u64_result(filled as u64))
         }
         Err(e) => {
-            READ_FILE_STATUS.with(|s| s.set(status_from_io_error(&e)));
+            READ_FILE_STATUS.with(|s| s.set(status_from_io_error(&e, IO_READ_ERROR)));
             Ok(u64_result(0))
         }
     }
@@ -322,7 +323,7 @@ fn io_write_file_bytes(
     let mut file = match opened {
         Ok(f) => f,
         Err(e) => {
-            WRITE_FILE_STATUS.with(|s| s.set(status_from_io_error(&e)));
+            WRITE_FILE_STATUS.with(|s| s.set(status_from_io_error(&e, IO_WRITE_ERROR)));
             return Ok(u64_result(0));
         }
     };
@@ -336,11 +337,7 @@ fn io_write_file_bytes(
             Ok(u64_result(written as u64))
         }
         Err(e) => {
-            let status = match e.raw_os_error() {
-                Some(_) => status_from_io_error(&e),
-                None => IO_WRITE_ERROR,
-            };
-            WRITE_FILE_STATUS.with(|s| s.set(status));
+            WRITE_FILE_STATUS.with(|s| s.set(status_from_io_error(&e, IO_WRITE_ERROR)));
             Ok(u64_result(0))
         }
     }
@@ -588,7 +585,7 @@ fn io_read_file(args: &[Value]) -> Result<Value, InterpreterError> {
             Ok(str_result(contents))
         }
         Err(err) => {
-            READ_FILE_STATUS.with(|s| s.set(status_from_io_error(&err)));
+            READ_FILE_STATUS.with(|s| s.set(status_from_io_error(&err, IO_READ_ERROR)));
             Ok(str_result(String::new()))
         }
     }
@@ -635,11 +632,7 @@ fn io_write_file(args: &[Value]) -> Result<Value, InterpreterError> {
             Ok(u64_result(contents.len() as u64))
         }
         Err(err) => {
-            let status = status_from_io_error(&err);
-            // `status_from_io_error` names read failures; a write that
-            // failed for an unclassified reason says so instead.
-            let status = if status == IO_READ_ERROR { IO_WRITE_ERROR } else { status };
-            WRITE_FILE_STATUS.with(|s| s.set(status));
+            WRITE_FILE_STATUS.with(|s| s.set(status_from_io_error(&err, IO_WRITE_ERROR)));
             Ok(u64_result(0))
         }
     }

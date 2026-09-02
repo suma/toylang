@@ -127,3 +127,40 @@ fn eprint_writes_to_stderr_and_print_to_stdout() {
     assert_eq!(interp_out, stdout, "tree-walker vs AOT stdout");
     assert_eq!(interp_err, stderr, "tree-walker vs AOT stderr");
 }
+
+#[test]
+fn an_unnameable_errno_reads_the_same_everywhere() {
+    // ERROR_MODEL E0 / D3. Extending a path *through a regular file*
+    // fails with ENOTDIR, which the runtime's table does not name, so
+    // every lane has to say `unknown error` — the bug this pins had
+    // the interpreter fold it to `write error` and the compiled lanes
+    // to `read error`, one wrong name each.
+    //
+    // The scrutinee is built rather than borrowed from the system
+    // (`/etc/hosts` is not present everywhere, and its absence turns
+    // ENOTDIR into ENOENT = `not found`, quietly passing the test for
+    // the wrong reason).
+    let file = scratch_path("enotdir_anchor");
+    std::fs::write(&file, b"anchor").expect("write anchor file");
+    let through = file.join("nope.txt");
+    let src = format!(
+        r#"
+        fn main() -> u64 {{
+            val w = io::write_file("{through}", "x")
+            match w {{
+                Result::Ok(_) => {{ println("wrote") }}
+                Result::Err(e) => {{ println(e) }}
+            }}
+            val r = io::read_file("{through}")
+            match r {{
+                Result::Ok(_) => {{ println("read") }}
+                Result::Err(e) => {{ println(e) }}
+            }}
+            0u64
+        }}
+        "#,
+        through = through.display(),
+    );
+    assert_stdout_consistent(&src, "io_unnameable_errno");
+    let _ = std::fs::remove_file(&file);
+}

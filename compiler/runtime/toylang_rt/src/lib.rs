@@ -232,12 +232,43 @@ const F_OK: i32 = 0;
 // `core/std/io.t`, which maps it to a reason string. The same codes
 // are produced by the interpreter's `extern_io` registry, so the
 // backends agree on the reason for the same failure.
-const IO_OK: u64 = 0;
-const IO_NOT_FOUND: u64 = 1;
-const IO_PERMISSION_DENIED: u64 = 2;
-const IO_IS_A_DIRECTORY: u64 = 3;
-const IO_READ_ERROR: u64 = 4;
-const IO_WRITE_ERROR: u64 = 5;
+/// ERROR_MODEL D3: **the** definition of the RUNTIME-IO failure
+/// vocabulary. The interpreter's `extern_io` registry forwards to this
+/// module rather than keeping a second table (the shape `extern_net`
+/// already uses), because the same failure reaching two different
+/// names on two backends is exactly what a second table produces.
+pub mod io_status {
+    pub const OK: u64 = 0;
+    pub const NOT_FOUND: u64 = 1;
+    pub const PERMISSION_DENIED: u64 = 2;
+    pub const IS_A_DIRECTORY: u64 = 3;
+    /// A read failed for a reason with no errno behind it.
+    pub const READ_ERROR: u64 = 4;
+    /// A write failed for a reason with no errno behind it (a short
+    /// write, a close that could not flush).
+    pub const WRITE_ERROR: u64 = 5;
+    /// An errno this table does not name.
+    pub const UNKNOWN: u64 = 6;
+
+    /// Map a libc errno to the vocabulary. The values (ENOENT 2,
+    /// EPERM 1, EACCES 13, EISDIR 21) agree on macOS and Linux.
+    ///
+    /// An errno that is not in the table becomes [`UNKNOWN`], never a
+    /// neighbouring variant: reporting a full disk as `read error`
+    /// sends the reader to the wrong place, which is worse than
+    /// admitting the runtime has no name for it (ERROR_MODEL D3).
+    pub fn from_errno(err: i32) -> u64 {
+        match err {
+            2 => NOT_FOUND,
+            1 | 13 => PERMISSION_DENIED,
+            21 => IS_A_DIRECTORY,
+            _ => UNKNOWN,
+        }
+    }
+}
+
+use io_status::from_errno as io_status_from_errno;
+use io_status::{NOT_FOUND as IO_NOT_FOUND, OK as IO_OK, WRITE_ERROR as IO_WRITE_ERROR};
 
 /// One ready file descriptor, already merged and translated out of the
 /// platform's own event shape (EVENT_POLLING.md 決定 1 / §3).
@@ -296,9 +327,13 @@ pub(crate) const NET_NAME_NOT_FOUND: u64 = 17;
 // RUNTIME-LIB P0-B: `toy_parse_f64`'s status vocabulary, mirrored by
 // the interpreter's `extern_parse` registry and mapped to
 // `ParseError` variants in `core/std/parse.t`.
-const PARSE_OK: u64 = 0;
-const PARSE_INVALID: u64 = 1;
-const PARSE_OVERFLOW: u64 = 2;
+pub mod parse_status {
+    pub const OK: u64 = 0;
+    pub const INVALID: u64 = 1;
+    pub const OVERFLOW: u64 = 2;
+}
+
+use parse_status::{INVALID as PARSE_INVALID, OK as PARSE_OK, OVERFLOW as PARSE_OVERFLOW};
 
 #[cfg(target_os = "macos")]
 pub(crate) fn current_errno() -> i32 {
@@ -322,17 +357,6 @@ pub(crate) fn set_errno(err: i32) {
 #[allow(dead_code)]
 pub(crate) fn set_errno(err: i32) {
     unsafe { *__errno_location() = err };
-}
-
-/// Map a libc errno to the RUNTIME-IO status vocabulary. The values
-/// (ENOENT 2, EPERM 1, EACCES 13, EISDIR 21) agree on macOS and Linux.
-fn io_status_from_errno(err: i32) -> u64 {
-    match err {
-        2 => IO_NOT_FOUND,
-        1 | 13 => IO_PERMISSION_DENIED,
-        21 => IO_IS_A_DIRECTORY,
-        _ => IO_READ_ERROR,
-    }
 }
 
 fn write_fd(fd: i32, bytes: &[u8]) {

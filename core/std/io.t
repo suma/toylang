@@ -64,10 +64,10 @@ pub enum IoError {
     NotFound,          # the path / variable does not exist
     PermissionDenied,  # the OS denied the access
     IsADirectory,      # the path names a directory
-    ReadError,         # any other read failure
-    WriteError,        # any other write failure
+    ReadError,         # a read failed with no errno behind it
+    WriteError,        # a write failed with no errno behind it
     EndOfInput,        # `read_line`: EOF before any byte was read
-    Unknown,           # a failure with no errno behind it
+    Unknown,           # the OS reported an errno the runtime cannot name
 }
 
 impl Display for IoError {
@@ -86,16 +86,21 @@ impl Display for IoError {
 
 # Map a failure status code (recorded by the runtime alongside the
 # payload-carrying call, see the extern declarations above) to its
-# `IoError` variant. The codes are produced identically by the
-# interpreter registry (`extern_io.rs`) and `toylang_rt`, so the same
-# failure reads the same on every backend.
+# `IoError` variant. The codes have a single definition, in
+# `toylang_rt::io_status`; the interpreter registry (`extern_io.rs`)
+# forwards to it rather than keeping a second table, so the same
+# failure reads the same on every backend (ERROR_MODEL D3).
+#
+# An errno the runtime's table does not name becomes `Unknown`, never
+# a neighbouring variant: a full disk reported as `read error` sends
+# the reader to the wrong place.
 fn io_error_from_status(status: u64) -> IoError {
     if status == 1u64 { IoError::NotFound }
     elif status == 2u64 { IoError::PermissionDenied }
     elif status == 3u64 { IoError::IsADirectory }
     elif status == 4u64 { IoError::ReadError }
     elif status == 5u64 { IoError::WriteError }
-    else { IoError::Unknown }
+    else { IoError::Unknown }        # 6, and anything else the runtime adds
 }
 
 # Read one line from stdin, without the trailing newline (`\n`, or

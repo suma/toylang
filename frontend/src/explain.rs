@@ -70,6 +70,7 @@ const ENTRIES: &[Entry] = &[
     (codes::REGION_ESCAPE, E0022),
     (codes::IMPL_PRECONDITION, E0023),
     (codes::UNSAFE_REQUIRED, E0024),
+    (codes::UNUSED_RESULT, E0025),
 ];
 
 const E0001: &str = "\
@@ -872,6 +873,48 @@ Three ways out:
   stdlib — the caller stays safe.
 * **Delete the access**, when a plain binding or a `Vec<T>` says the
   same thing without leaving the language.";
+
+const E0025: &str = "\
+E0025: a `Result` was produced and discarded
+
+The statement evaluates to a `Result` and nothing reads it, so a
+failure it reports goes nowhere:
+
+    fn main() -> u64 {
+        io::write_file(\"out.txt\", body)   # E0025: the disk could be full
+        0u64
+    }
+
+That program answers success whatever happened. The language has no
+exceptions by design — a failure travels in the return value or not at
+all — so a discarded `Result` is the one shape where an error can go
+missing without anyone deciding to ignore it.
+
+Three ways out, and the third is the point:
+
+    match write_file(path, body) {        # handle it
+        Result::Ok(n) => { ... }
+        Result::Err(e) => { println(e) }
+    }
+
+    write_file(path, body)?               # propagate it
+
+    val _ignored = write_file(path, body) # ignore it, on the record
+
+No new syntax for the last one: binding the value is what says the
+result was considered and dropped on purpose, which a best-effort
+write on a shutdown path really is.
+
+The rule is narrow on purpose. Only a statement that is **not** the
+last one in its block counts — a block's last statement is its value,
+and whether that value is wanted is a question the block cannot
+answer. So every report is a place the value provably goes nowhere.
+
+`Option` is not covered. An ignored `Option` is usually a lookup whose
+absence is the answer; an ignored `Result` is an unreported failure.
+
+Reported as a warning: programs were written this way before the check
+existed, and ignoring a failure can be deliberate.";
 
 #[cfg(test)]
 mod tests {

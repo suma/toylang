@@ -48,6 +48,8 @@ pub use const_fn_check::check_const_fn;
 pub use unsafe_check::check_unsafe_declarations;
 mod contract_purity;
 pub use contract_purity::check_contract_purity;
+mod unused_result;
+pub use unused_result::check_unused_results;
 mod collections;
 mod builtin;
 mod utility;

@@ -37,6 +37,9 @@ mod closure_tests;
 #[path = "const_fn_tests.rs"]
 mod const_fn_tests;
 
+#[path = "unused_result_tests.rs"]
+mod unused_result_tests;
+
 #[path = "diagnostic_spelling_tests.rs"]
 mod diagnostic_spelling_tests;
 

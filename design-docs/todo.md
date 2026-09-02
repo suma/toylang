@@ -10,6 +10,19 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-02
+- **MUST-USE — 捨てられた `Result` を警告するようにした (`[E0025]`)** —
+  `?` は失敗が通る道を作ったが、通し忘れに気づく道が無かった。
+  例外を持たない言語では**失敗は戻り値で運ばれるか消えるか**なので、
+  `io::write_file(...)` を式文に置くだけでディスク一杯が成功として
+  報告されていた。判定は**ブロックの末尾以外の式文**に限る — 末尾は
+  ブロックの値で、要るかどうかは外側しか知らないので判断が要らない形
+  だけを見る (誤検知ゼロ、逃げ道が 1 つで足りる)。逃げ道は `match` /
+  `?` / **`val _ignored = ...`** で、**新しい構文は要らない**。
+  **`Option` は対象外** (不在が答えである検索が多い)。
+  E0018 と同じく警告 (既存コードがこう書かれている)。
+  **todo の「警告の emit 経路が無い」は古かった** — 経路は
+  `check_typing_diagnostics` に既にあり、E0018 が使っている。
+  interpreter に 8 件 (stdlib が 1 件も踏まないことの canary 込み)
 - **OP-OVERLOAD-CHAIN — overload の結果が普通の値になった** —
   interpreter は 6 形すべてを通し、compiled レーンは let-rhs 位置しか
   通していなかった (2026-08-29 の実測表)。**原因は 1 つ** — overload の
@@ -1160,7 +1173,6 @@
   - **A5-P3-interp: interpreter 側 JIT の `dyn Trait`** ★ — `ScalarTy::from_type_decl` が `TypeDecl::Dyn` で `None` を返し silent fallback。correctness 問題はなく、compiler 側 JIT が実用的な高速化を担うので優先度は低い。
   - **A5-P4: `Box<dyn Trait>`** — owned trait object + `Vec<Box<dyn Trait>>`。**前提**: `Box<T>` 自体が未実装。
   - **A5 残作業** — `&dyn Trait` の return / struct field 位置 (REF-Stage-2 の escape rule が阻む)、`dyn A + B`、`dyn Iterator<T>`、generic trait の default body 内での `T` 参照。
-- **`must_use` / unused-Result 警告** ★★ — `?` の補完。**警告の emit 経路が無い**ので (`Severity::Warning` は型としては存在するが未使用)、そこから作る必要がある。
 - **CLOSURE-CAPTURE の残: E4 / E5** ★ — 設計は
   [`CLOSURE_CAPTURE.md`](CLOSURE_CAPTURE.md)。**E0〜E3 + E6 は landing 済み**
   (escape しない closure は捕捉した束縛を共有し、escape するものはコピーを

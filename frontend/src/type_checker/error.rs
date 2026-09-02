@@ -152,6 +152,10 @@ pub enum TypeCheckErrorKind {
     /// POINTER P6: the body performs a raw memory access without the
     /// `unsafe fn` declaration.
     UnsafeRequired { function: String, builtin: String },
+    /// MUST-USE: a statement produced a `Result` and threw it away.
+    /// `ty` is how the value was spelled, `what` names what produced
+    /// it when that is knowable (`the call \`write_file(...)\``).
+    UnusedResult { ty: String, what: String },
     /// COMPILE-TIME-EVAL: a function declared `const fn` reaches
     /// something the compiler cannot run while compiling. `what` names
     /// it and `path` is the chain that gets there; `opaque` separates
@@ -419,6 +423,17 @@ impl TypeCheckError {
         }
     }
 
+    /// MUST-USE: a `Result` was produced and discarded.
+    pub fn unused_result(ty: String, what: String) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::UnusedResult { ty, what }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
     /// COMPILE-TIME-EVAL C1: the `const fn` declaration cannot be
     /// honoured.
     pub fn const_fn(
@@ -643,6 +658,13 @@ impl TypeCheckError {
                     "`{function}` is declared `never_allocates`, but it can reach the allocator: {path}"
                 ),
             },
+            TypeCheckErrorKind::UnusedResult { ty, what } => {
+                format!(
+                    "{what} produces `{ty}` and the value is discarded, so a failure here is \
+                     not reported. Handle it with `match`, propagate it with `?`, or say the \
+                     result is deliberately ignored by binding it (`val _ignored = ...`)"
+                )
+            }
             TypeCheckErrorKind::UnsafeRequired { function, builtin } => {
                 format!(
                     "`{builtin}` performs a raw memory access, so `{function}` must be declared \

@@ -4403,6 +4403,26 @@ postfix [`?` operator](#-operator-early-return): `divide(a, b)?`
 unwraps `Ok` / `Some` and short-circuits the enclosing function
 with the `Err` / `None` value on failure.
 
+**A discarded `Result` is a warning** (`[E0025]`). The language has no
+exceptions by design — a failure travels in the return value or not at
+all — so a statement that produces a `Result` and drops it reports
+success whatever happened:
+
+```rust
+fn main() -> u64 {
+    io::write_file("out.txt", body)   # E0025: the disk could be full
+    0u64
+}
+```
+
+Handle it (`match`), propagate it (`?`), or say the result is ignored
+on purpose by binding it — `val _ignored = write_file(path, body)`,
+which needs no syntax of its own. Only a statement that is *not* the
+last one in its block counts, since a block's last statement is its
+value; `Option` is not covered, because an ignored `Option` is usually
+a lookup whose absence is the answer. `--explain E0025` has the
+reasoning.
+
 User code can shadow either type by declaring a same-name local
 `enum` or `struct` — module integration silently skips the stdlib
 declaration when the user's program already defines the name, so

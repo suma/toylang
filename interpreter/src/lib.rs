@@ -767,6 +767,16 @@ fn check_typing_collecting(
             .iter()
             .map(|e| Diagnostic::from_type_check_error(e, diag_file, Some(&*string_interner))),
     );
+
+    // MUST-USE: a statement that produces a `Result` and drops it.
+    // The language has no exceptions, so a failure travels in the
+    // return value or not at all — `?` gave it a way to travel and
+    // nothing made forgetting visible.
+    warnings.extend(
+        frontend::type_checker::check_unused_results(program, string_interner, &expr_types)
+            .iter()
+            .map(|e| Diagnostic::from_type_check_error(e, diag_file, Some(&*string_interner))),
+    );
     for warning in &mut warnings {
         warning.severity = frontend::diagnostic::Severity::Warning;
     }

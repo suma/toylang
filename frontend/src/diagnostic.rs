@@ -274,6 +274,11 @@ pub mod codes {
     /// `unsafe fn` declaration.
     pub const UNSAFE_REQUIRED: &str = "E0024";
 
+    /// MUST-USE: a statement produced a `Result` and discarded it, so
+    /// a failure it reports goes unnoticed. A warning, not an error —
+    /// ignoring one can be deliberate.
+    pub const UNUSED_RESULT: &str = "E0025";
+
     /// Every code, in order. `crate::explain` is checked against this
     /// list by a test, so a new code cannot ship without prose.
     pub const ALL: &[&str] = &[
@@ -301,6 +306,7 @@ pub mod codes {
         REGION_ESCAPE,
         IMPL_PRECONDITION,
         UNSAFE_REQUIRED,
+        UNUSED_RESULT,
     ];
 }
 
@@ -331,6 +337,7 @@ fn code_for(kind: &TypeCheckErrorKind) -> &'static str {
         TypeCheckErrorKind::RegionEscape { .. } => codes::REGION_ESCAPE,
         TypeCheckErrorKind::ImplPrecondition { .. } => codes::IMPL_PRECONDITION,
         TypeCheckErrorKind::UnsafeRequired { .. } => codes::UNSAFE_REQUIRED,
+        TypeCheckErrorKind::UnusedResult { .. } => codes::UNUSED_RESULT,
     }
 }
 

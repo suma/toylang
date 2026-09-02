@@ -1633,6 +1633,26 @@ An enum type argument is rejected outright: comparison overloading is a
 struct feature, so an `eq` written in `impl SomeEnum` would type-check
 and then fail to dispatch. Match on the variants instead.
 
+### `Deque<T>` (stdlib)
+
+`core/std/collections/deque.t` is a double-ended queue on a ring
+buffer — `push_front` / `push_back` / `pop_front` / `pop_back` are all
+amortised O(1), which a `Vec` with a front index cannot give (removing
+its first element shifts everything).
+
+```rust
+var q: Deque<u64> = Deque::new()
+q.push_back(2u64)
+q.push_front(1u64)
+println(q.get(0u64))      # 1 — index 0 is the front
+println(q.pop_back())     # 2
+```
+
+`get` / `set` take a logical position (0 is the front), `size`,
+`capacity`, `is_empty` and `clear` behave as they do on `Vec`, and
+`iter()` walks front to back. `pop_front` / `pop_back` panic on an
+empty deque, like `Vec::pop`.
+
 ### `Vec<T>` methods beyond push and pop (stdlib)
 
 Alongside `push` / `pop` / `get` / `set` / `size` / `capacity` /

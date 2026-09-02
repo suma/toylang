@@ -10,6 +10,18 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-03
+- **COLLECTIONS C4 — `Deque<T>` (`core/std/collections/deque.t`)** —
+  ring buffer。`Vec` の上に載せなかったのは、`Vec` に安い前方削除が無く
+  「`pop_front` が O(n) の queue」になるため。成長は倍化 + **巻き付いた
+  前半だけを古い末尾の後ろへ動かす** ので `head` は動かさない (ここが
+  静かに壊れる経路なので、巻き付いた状態での成長を pin した)。
+  `push_front` は `head - 1` ではなく `head + cap - 1` — u64 の減算は
+  wrap ではなく trap する。
+  **`impl Drop` を持つ stdlib 型を足したら
+  `jit/eligibility/analyze.rs` の allow-list にも足すこと** —
+  interpreter JIT は「`impl Drop` が 1 つでもあれば全プログラムで諦める」
+  検査なので、Deque を足した時点で JIT が言語全体で止まった
+  (テスト 42 件が落ちて気づいた。allow-list は飾りではない)。
 - **COLLECTIONS C3 — `Vec` の `insert` / `remove` / `swap_remove` /
   `contains` / `index_of` / `reverse` / `sort_by`** — `contains` /
   `index_of` に bound は要らない (C0(a) の性質)。`remove` は順序維持の

@@ -6,7 +6,8 @@
 > 実測: 2026-09-02 (この文書の数値はすべてこの日に取った)
 > 進捗: **C0 / C1 は 2026-09-02、C2 は 2026-09-03 に完了**。C1 は 1.5 の
 > tombstone だけ採らなかった (下記「C1 で設計から外れた点」)。**C3 も
-> 2026-09-03 に完了**。次は C4
+> 2026-09-03 に完了**。**C4 の `Deque<T>` も 2026-09-03**。残るは
+> `PriorityQueue`
 
 ## Status snapshot
 
@@ -15,7 +16,8 @@
 | `Dict<K, V>` | open addressing (2026-09-02)。insert / get / contains_key が **O(1)**、remove は順序維持のため O(n) |
 | `Hash` | trait と primitive / `str` / `String` の impl + 表側の `hash_mix()` (2026-09-02)。`Dict` が使っている |
 | `Set<T>` | `core/std/collections/set.t` (2026-09-03)。`Dict` と同じ表・同じ順序保証 |
-| Deque / PriorityQueue | 無い |
+| Deque | `core/std/collections/deque.t` (2026-09-03、ring buffer) |
+| PriorityQueue | 無い |
 | `Vec<T>` の `insert` / `remove` / `swap_remove` / `contains` / `index_of` / `reverse` / `sort_by` | 揃った (2026-09-03) |
 | 組み込み `dict[K, V]` (リテラル `dict{...}`) | **interpreter のみ** (`compiler MVP cannot lower a dict literal yet`) |
 

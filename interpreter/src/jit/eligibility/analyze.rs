@@ -105,9 +105,15 @@ pub fn analyze(
     // which impl blocks exist rather than at which ones a program can
     // reach. Its descriptor is closed by the interpreter's own
     // scope-exit path, exactly like the allocator wrappers' storage.
+    // COLLECTIONS C4: `Deque` for the same reason again — its `impl
+    // Drop` frees the ring buffer, and a stdlib collection must not be
+    // the thing that turns this JIT off language-wide. The list is
+    // load-bearing rather than decorative: adding a `Drop` to any
+    // auto-loaded module without adding the type here silently drops
+    // every program to the tree-walker.
     if let Some(drop_sym) = interner.get("Drop") {
         let stdlib_owning: Vec<DefaultSymbol> =
-            ["Arena", "FixedBuffer", "SlotRegion", "Box", "Vec", "SoaVec", "TcpStream", "TcpListener", "Poller", "UdpSocket"]
+            ["Arena", "FixedBuffer", "SlotRegion", "Box", "Vec", "SoaVec", "Deque", "TcpStream", "TcpListener", "Poller", "UdpSocket"]
                 .iter()
                 .filter_map(|name| interner.get(name))
                 .collect();

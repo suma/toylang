@@ -564,3 +564,71 @@ fn main() -> u64 {
 "#;
     assert_value(src, "vec_sort_by", 321u64);
 }
+
+// COLLECTIONS C4: `Deque<T>`, a ring buffer rather than a `Vec` with a
+// front index — a vector has no cheap front removal, which is the
+// whole point of the type.
+#[test]
+fn deque_works_from_both_ends() {
+    let src = r#"
+fn main() -> u64 {
+    var q: Deque<u64> = Deque::new()
+    q.push_back(2u64)
+    q.push_back(3u64)
+    q.push_front(1u64)
+    var out: u64 = 0u64
+    if q.size() == 3u64 { out = out + 1u64 }
+    if q.get(0u64) == 1u64 { out = out + 2u64 }
+    if q.get(2u64) == 3u64 { out = out + 4u64 }
+    if q.pop_front() == 1u64 { out = out + 8u64 }
+    if q.pop_back() == 3u64 { out = out + 16u64 }
+    if q.size() == 1u64 { out = out + 32u64 }
+    if q.is_empty() { out = out + 64u64 }
+    q.clear()
+    if q.is_empty() { out = out + 128u64 }
+    out
+}
+"#;
+    assert_value(src, "deque_both_ends", 191u64);
+}
+
+// Growth while the elements are wrapped past the end of the buffer is
+// the path that goes wrong quietly: the doubling has to move the
+// wrapped run up behind the first one, or the queue reads its own
+// elements in the wrong order.
+#[test]
+fn deque_growth_survives_a_wrapped_layout() {
+    let src = r#"
+fn main() -> u64 {
+    var q: Deque<u64> = Deque::new()
+    # front pushes put the head near the end of the buffer, so the
+    # back pushes below wrap around it
+    q.push_front(3u64)
+    q.push_front(2u64)
+    q.push_front(1u64)
+    var i: u64 = 0u64
+    while i < 30u64 {
+        q.push_back(100u64 + i)
+        i = i + 1u64
+    }
+    var ok: u64 = 0u64
+    if q.get(0u64) == 1u64 { ok = ok + 1u64 }
+    if q.get(2u64) == 3u64 { ok = ok + 2u64 }
+    if q.get(3u64) == 100u64 { ok = ok + 4u64 }
+    if q.get(32u64) == 129u64 { ok = ok + 8u64 }
+    if q.size() == 33u64 { ok = ok + 16u64 }
+
+    # and the iterator walks the same sequence
+    var seq: u64 = 0u64
+    var n: u64 = 0u64
+    for v in q.iter() {
+        if n < 3u64 { seq = seq * 10u64 + v }
+        n = n + 1u64
+    }
+    if seq == 123u64 { ok = ok + 32u64 }
+    if n == 33u64 { ok = ok + 64u64 }
+    ok
+}
+"#;
+    assert_value(src, "deque_wrapped_growth", 127u64);
+}

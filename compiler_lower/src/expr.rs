@@ -3097,9 +3097,28 @@ impl<'a> FunctionLower<'a> {
         match func {
             BuiltinFunction::Panic => {
                 expect_args(args, 1, "panic expects 1 argument")?;
-                let msg_sym = self.expect_string_literal(&args[0], "panic")?;
                 let site = self.current_site();
-                self.terminate(Terminator::Panic { message: msg_sym, site });
+                // A literal keeps the interned form: the message needs
+                // no code at all, and every existing panic is one.
+                match self.expect_string_literal(&args[0], "panic") {
+                    Ok(msg_sym) => {
+                        self.terminate(Terminator::Panic { message: msg_sym, site });
+                    }
+                    // ERROR_MODEL E3: anything else is a str *value*,
+                    // which `PanicStr` already carries -- it exists so
+                    // a contract violation can name the values its
+                    // predicate saw. `expect(msg)` is the same need
+                    // from the other direction: the caller's message
+                    // is the only thing that says why the value had to
+                    // be there, and the literal-only rule was throwing
+                    // it away on every backend.
+                    Err(_) => {
+                        let msg = self
+                            .lower_expr(&args[0])?
+                            .ok_or_else(|| "panic message produced no value".to_string())?;
+                        self.terminate(Terminator::PanicStr { message: msg, site });
+                    }
+                }
                 Ok(None)
             }
             BuiltinFunction::Assert => {

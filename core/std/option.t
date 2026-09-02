@@ -42,12 +42,17 @@ impl<T> Option<T> {
         }
     }
 
-    # Extract the contained value or panic on None. Mirrors Rust's
-    # `Option::expect` shape (message is a static string literal).
+    # Extract the contained value or panic on None, reporting
+    # `message`. Mirrors Rust's `Option::expect` shape.
+    #
+    # `expect` is the one place a caller can say *why* the value had
+    # to be there, so the message is what gets printed -- a fixed
+    # `Option::expect on None` would throw away the only thing the
+    # call site contributed (ERROR_MODEL E3 / D7).
     fn expect(self: Self, message: str) -> T {
         match self {
             Option::Some(v) => v,
-            Option::None => panic("Option::expect on None"),
+            Option::None => panic(message),
         }
     }
 

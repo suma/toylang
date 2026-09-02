@@ -42,11 +42,12 @@ impl<T, E> Result<T, E> {
     }
 
     # Panic with `message` on Err, return the Ok value otherwise.
-    # Mirrors `Option::expect`.
+    # Mirrors `Option::expect` -- including that the caller's message
+    # is the one that gets printed (ERROR_MODEL E3 / D7).
     fn expect(self: Self, message: str) -> T {
         match self {
             Result::Ok(v) => v,
-            Result::Err(_) => panic("Result::expect on Err"),
+            Result::Err(_) => panic(message),
         }
     }
 

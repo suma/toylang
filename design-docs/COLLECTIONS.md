@@ -4,10 +4,10 @@
 > 状態の正本: [`todo.md`](todo.md) の **STDLIB-COLLECTIONS**
 > 俯瞰と優先順位: [`RUNTIME_LIBRARY.md`](RUNTIME_LIBRARY.md) の P1
 > 実測: 2026-09-02 (この文書の数値はすべてこの日に取った)
-> 進捗: **C0 / C1 は 2026-09-02、C2 は 2026-09-03 に完了**。C1 は 1.5 の
-> tombstone だけ採らなかった (下記「C1 で設計から外れた点」)。**C3 も
-> 2026-09-03 に完了**。**C4 の `Deque<T>` も 2026-09-03**。残るは
-> `PriorityQueue` も 2026-09-03 に完了 — **C0〜C5 すべて landing**
+> 進捗: **全フェーズ landing 済み** — C0 / C1 が 2026-09-02、C2〜C5 が
+> 2026-09-03。設計から外したのは C1 の tombstone だけ (下記「C1 で
+> 設計から外れた点」)。着手時の C4 は「Deque / PriorityQueue」1 つ
+> だったが、別々に landing したのでフェーズも 2 つに割った
 
 ## Status snapshot
 

@@ -152,6 +152,10 @@ pub enum TypeCheckErrorKind {
     /// POINTER P6: the body performs a raw memory access without the
     /// `unsafe fn` declaration.
     UnsafeRequired { function: String, builtin: String },
+    /// WINDOW-ESCAPE: a `Span<T>` / `Column<T>` reaches a place that
+    /// outlives the buffer it views. `owner` names the buffer,
+    /// `place` where the window got to.
+    WindowEscape { owner: String, place: String },
     /// MUST-USE: a statement produced a `Result` and threw it away.
     /// `ty` is how the value was spelled, `what` names what produced
     /// it when that is knowable (`the call \`write_file(...)\``).
@@ -423,6 +427,17 @@ impl TypeCheckError {
         }
     }
 
+    /// WINDOW-ESCAPE: a window outlived the buffer it views.
+    pub fn window_escape(owner: String, place: String) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::WindowEscape { owner, place }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
     /// MUST-USE: a `Result` was produced and discarded.
     pub fn unused_result(ty: String, what: String) -> Self {
         Self {
@@ -658,6 +673,13 @@ impl TypeCheckError {
                     "`{function}` is declared `never_allocates`, but it can reach the allocator: {path}"
                 ),
             },
+            TypeCheckErrorKind::WindowEscape { owner, place } => {
+                format!(
+                    "this window views {owner}, and {place} — the buffer dies first, so the \
+                     window would be left pointing at freed memory. Return the owner instead \
+                     and let the caller take the window, or copy the elements out"
+                )
+            }
             TypeCheckErrorKind::UnusedResult { ty, what } => {
                 format!(
                     "{what} produces `{ty}` and the value is discarded, so a failure here is \

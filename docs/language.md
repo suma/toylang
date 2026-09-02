@@ -3770,11 +3770,18 @@ and nothing is allocated or freed; sub-windows are
 `Span::from_parts(p.offset(k), shorter_len)`. A span crosses
 function boundaries by value (`fn sum(s: Span<u64>) -> u64`).
 
-**Escape is not checked** (POINTER.md's recorded default): nothing
-stops a `Span<T>` from outliving the memory it views — the escape
-rule applies to `&T` only, and the region check chases
-scoped-allocator origins. A dangling span reads whatever sits at
-the address, same as a dangling raw `ptr`.
+**A window may not outlive the buffer it views** (`[E0026]`). When the
+buffer is a binding in the same frame, the window cannot leave the
+frame with it — it may not be returned, nor bound or assigned outside
+the buffer's scope. Staying beside the buffer is fine, which is what a
+window is for, and a window on a *parameter* belongs to the caller, so
+handing that one back out is correct (`fn as_span(&self) ->
+Option<Span<T>>` is exactly that shape). The rule is
+[Region escape](#region-escape-e0022)'s over a different owner, and
+shares its pass; `--explain E0026` has the reasoning.
+
+Two hazards stay uncovered: a window captured by a closure, and one
+held across a `push` that reallocates. Neither is lifetime-shaped.
 
 Converting to and from `str`:
 

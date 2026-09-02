@@ -279,6 +279,10 @@ pub mod codes {
     /// ignoring one can be deliberate.
     pub const UNUSED_RESULT: &str = "E0025";
 
+    /// WINDOW-ESCAPE: a `Span<T>` / `Column<T>` outlives the buffer it
+    /// views (POINTER P4's deferred half).
+    pub const WINDOW_ESCAPE: &str = "E0026";
+
     /// Every code, in order. `crate::explain` is checked against this
     /// list by a test, so a new code cannot ship without prose.
     pub const ALL: &[&str] = &[
@@ -307,6 +311,7 @@ pub mod codes {
         IMPL_PRECONDITION,
         UNSAFE_REQUIRED,
         UNUSED_RESULT,
+        WINDOW_ESCAPE,
     ];
 }
 
@@ -338,6 +343,7 @@ fn code_for(kind: &TypeCheckErrorKind) -> &'static str {
         TypeCheckErrorKind::ImplPrecondition { .. } => codes::IMPL_PRECONDITION,
         TypeCheckErrorKind::UnsafeRequired { .. } => codes::UNSAFE_REQUIRED,
         TypeCheckErrorKind::UnusedResult { .. } => codes::UNUSED_RESULT,
+        TypeCheckErrorKind::WindowEscape { .. } => codes::WINDOW_ESCAPE,
     }
 }
 

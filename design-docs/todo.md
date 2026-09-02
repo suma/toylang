@@ -10,6 +10,19 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-02
+- **WINDOW-ESCAPE — 窓がバッファより長生きできなくなった (`[E0026]`)** —
+  POINTER.md が P4 で先送りしていた検査。着手条件 (「実プログラムで
+  dangling span が問題になる」) は満たされていた: ローカル `Vec` の窓を
+  返す関数が**通り、解放済みメモリを読んで正しい答えを返していた**
+  (never-reuse ヒープのおかげで当たるだけ)。`ref struct` マーカ
+  (POINTER.md 選択肢 2) ではなく **REGIONS の規則を owner 違いで再利用** —
+  「終わりが見えるものから派生した値はそれより長生きする場所へ行けない」を
+  allocator とローカルバッファの 2 つに適用する (`RegionKind`)。
+  マーカ構文が要らないのは、**パラメータを owner にしない**という
+  REGIONS と同じ除外で `Vec::as_span(&self)` が自動的に合法になるため。
+  `Span` (method call) と `Column` (field access) の両方が taint 源。
+  未検査で残るのは closure が捕捉した窓と realloc を跨いだ窓。
+  interpreter に 7 件 (stdlib が誤検知しないことの canary 込み)
 - **MUST-USE — 捨てられた `Result` を警告するようにした (`[E0025]`)** —
   `?` は失敗が通る道を作ったが、通し忘れに気づく道が無かった。
   例外を持たない言語では**失敗は戻り値で運ばれるか消えるか**なので、
@@ -1240,10 +1253,6 @@
   寿命の判断が要るので「実プログラムで踏んでから」、(b) **E5: compiled
   レーンの compound capture** — 診断は直した (capture の話だと分かる文言に
   なった) が、env に compound を載せるのは未着手。interpreter は動く。
-- **窓の escape 検査** ★★ — `Span<T>` / `Column<T>` は指す先より長生き
-  できる (POINTER.md「未解決の論点」、REGIONS.md の `[E0022]` は allocator
-  スコープのみ)。言語の `&[T]` 型を足す需要はここに縮小した — 窓そのものは
-  ライブラリ側で回収済み (`Span` が POINTER P4、`Column` が DOD Phase 1)。
 - **const generics** ★ — `struct Array<T, const N: usize>`。大規模。
 
 ### 構文糖衣の候補 (NEW-FEATURES、未着手)

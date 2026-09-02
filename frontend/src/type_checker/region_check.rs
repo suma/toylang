@@ -96,10 +96,30 @@ use crate::type_decl::TypeDecl;
 struct Region {
     /// How it is named in a diagnostic.
     name: String,
-    /// The scope depth of the binding that owns the allocator. A value
-    /// reaching a place shallower than this outlives the memory.
+    /// The scope depth of the binding that owns the memory. A value
+    /// reaching a place shallower than this outlives it.
     depth: usize,
+    kind: RegionKind,
 }
+
+/// What owns the memory, which decides how the escape reads.
+///
+/// The two are the same rule — a value derived from something whose
+/// end this pass can see must not outlive it — over two different
+/// owners, so they share the walk and differ only in the sentence.
+#[derive(Clone, Copy, PartialEq)]
+enum RegionKind {
+    /// REGION: a scoped allocator (`with allocator = arena { .. }`).
+    Allocator,
+    /// WINDOW-ESCAPE: a locally-owned buffer a `Span<T>` /
+    /// `Column<T>` views.
+    Buffer,
+}
+
+/// The library window types. They are ordinary structs holding a
+/// `ptr`, so nothing in the type system marks them — the name is what
+/// says "this is a view of somebody else's memory".
+const WINDOW_TYPES: &[&str] = &["Span", "Column"];
 
 /// Which region a value came from, if any. The index is into
 /// `RegionCheck::regions`, which only ever grows, so it stays valid
@@ -211,7 +231,10 @@ impl RegionCheck<'_> {
     fn report(&mut self, taint: Taint, place: &str, location: Option<SourceLocation>) {
         let Some(index) = taint else { return };
         let region = self.regions[index].name.clone();
-        let error = TypeCheckError::region_escape(region, place.to_string());
+        let error = match self.regions[index].kind {
+            RegionKind::Allocator => TypeCheckError::region_escape(region, place.to_string()),
+            RegionKind::Buffer => TypeCheckError::window_escape(region, place.to_string()),
+        };
         self.errors.push(match location {
             Some(location) => error.with_location(location),
             None => error,
@@ -331,7 +354,11 @@ impl RegionCheck<'_> {
             Expr::Cast(inner, _) => self.walk_expr(&inner),
             Expr::FieldAccess(obj, _) | Expr::TupleAccess(obj, _) => {
                 let taint = self.walk_expr(&obj);
-                self.through(expr_ref, taint)
+                let carried = self.through(expr_ref, taint);
+                // WINDOW-ESCAPE: `ps.mass` on a local array is a
+                // `Column<T>` — the other way a window is opened
+                // (DATA-ORIENTED Phase 1).
+                innermost(carried, self.window_from(expr_ref, &obj))
             }
             Expr::SliceAccess(obj, info) => {
                 let taint = self.walk_expr(&obj);
@@ -377,7 +404,11 @@ impl RegionCheck<'_> {
                 // A method can hand back part of its receiver, so the
                 // receiver's region carries over when the result could
                 // hold a pointer.
-                innermost(self.through(expr_ref, receiver_taint), self.call_result(expr_ref))
+                let carried =
+                    innermost(self.through(expr_ref, receiver_taint), self.call_result(expr_ref));
+                // WINDOW-ESCAPE: `v.as_span()` on a buffer this frame
+                // owns opens a view whose lifetime is that buffer's.
+                innermost(carried, self.window_from(expr_ref, &receiver))
             }
             Expr::AssociatedFunctionCall(_, _, args) => {
                 for arg in &args {
@@ -449,7 +480,7 @@ impl RegionCheck<'_> {
             // whatever regions are already active.
             return self.walk_expr(body);
         };
-        self.regions.push(Region { name, depth });
+        self.regions.push(Region { name, depth, kind: RegionKind::Allocator });
         let index = self.regions.len() - 1;
         self.active.push(index);
         let taint = self.walk_expr(body);
@@ -486,6 +517,63 @@ impl RegionCheck<'_> {
                 self.scopes.len(),
             )),
             _ => None,
+        }
+    }
+
+    /// WINDOW-ESCAPE: does this expression open a window onto a buffer
+    /// this frame owns? If so, register the buffer as a region and
+    /// return its taint.
+    ///
+    /// `owner` is the receiver the window came off. A **parameter** is
+    /// deliberately not an owner, for the same reason a parameter
+    /// allocator is not a scoped region: the buffer belongs to the
+    /// caller, which is exactly the shape `Vec::as_span(&self)` has —
+    /// handing a window back out of it is correct, and a rule that
+    /// refused it would refuse the API this check exists to protect.
+    fn window_from(&mut self, expr_ref: &ExprRef, owner: &ExprRef) -> Taint {
+        if !self.is_window_type(expr_ref) {
+            return None;
+        }
+        let Some(Expr::Identifier(name)) = self.program.expression.get(owner) else {
+            return None;
+        };
+        if self.params.contains(&name) {
+            return None;
+        }
+        let depth = self.depth_of(name)?;
+        let text = self.interner.resolve(name).unwrap_or("?").to_string();
+        self.regions.push(Region {
+            name: format!("`{text}`"),
+            depth,
+            kind: RegionKind::Buffer,
+        });
+        Some(self.regions.len() - 1)
+    }
+
+    /// Is this expression's type a window, or something holding one?
+    /// `Vec::as_span` answers `Option<Span<T>>`, so the search goes
+    /// through type arguments rather than looking at the head alone.
+    fn is_window_type(&self, expr_ref: &ExprRef) -> bool {
+        match self.expr_types.get(expr_ref) {
+            Some(ty) => self.names_window(ty),
+            None => false,
+        }
+    }
+
+    fn names_window(&self, ty: &TypeDecl) -> bool {
+        match ty {
+            TypeDecl::Struct(name, args) | TypeDecl::Enum(name, args) => {
+                let head = self.interner.resolve(*name).unwrap_or("");
+                WINDOW_TYPES.contains(&head) || args.iter().any(|a| self.names_window(a))
+            }
+            TypeDecl::Identifier(name) => {
+                WINDOW_TYPES.contains(&self.interner.resolve(*name).unwrap_or(""))
+            }
+            TypeDecl::Array(elements, _, _) | TypeDecl::Tuple(elements) => {
+                elements.iter().any(|e| self.names_window(e))
+            }
+            TypeDecl::Ref { inner, .. } => self.names_window(inner),
+            _ => false,
         }
     }
 

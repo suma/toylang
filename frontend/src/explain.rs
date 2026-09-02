@@ -71,6 +71,7 @@ const ENTRIES: &[Entry] = &[
     (codes::IMPL_PRECONDITION, E0023),
     (codes::UNSAFE_REQUIRED, E0024),
     (codes::UNUSED_RESULT, E0025),
+    (codes::WINDOW_ESCAPE, E0026),
 ];
 
 const E0001: &str = "\
@@ -915,6 +916,47 @@ absence is the answer; an ignored `Result` is an unreported failure.
 
 Reported as a warning: programs were written this way before the check
 existed, and ignoring a failure can be deliberate.";
+
+const E0026: &str = "\
+E0026: a window outlives the buffer it views
+
+`Span<T>` and `Column<T>` are views, not owners: they hold an address
+into somebody else's memory. When that memory belongs to a binding in
+the same frame, the window cannot leave the frame with it —
+
+    fn dangling() -> Option<Span<u8>> {
+        var v: Vec<u8> = Vec::new()
+        v.push(1u8)
+        v.as_span()                 # E0026: `v` dies at the brace below
+    }
+
+The returned window points at freed memory. Nothing else catches this:
+the move check follows values whose *type* owns a resource, and a
+`Span` owns nothing — the `Vec` does.
+
+The rule is the one REGION (`E0022`) uses for a scoped allocator, over
+a different owner: a value derived from something whose end this pass
+can see must not reach a place that outlives it. So a window may not
+be returned, and may not be bound or assigned outside the buffer's own
+scope. Staying inside it is fine — that is what a window is for.
+
+**A window on a parameter is not this shape.** The buffer belongs to
+the caller, so handing the window back out is correct, and it is
+exactly how the stdlib is written:
+
+    fn as_span(&self) -> Option<Span<T>>   # `self` is a parameter: fine
+
+Two ways out when the check fires:
+
+* **Return the owner** and let the caller take the window. The buffer
+  then lives as long as whoever asked for it.
+* **Copy what you need out** — a scalar read out of the window is a
+  copy and escapes nothing.
+
+The check does not follow a window through a closure, and it does not
+know about reallocation: a `push` that grows a `Vec` invalidates every
+window on it, which is a separate hazard the type system does not
+cover.";
 
 #[cfg(test)]
 mod tests {

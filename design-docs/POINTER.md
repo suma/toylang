@@ -225,9 +225,20 @@ REGIONS (`E0022`) は arena 由来の値を捕まえるが、**default allocator
    「どこまでを escape とみなすか」は REF-Stage-2 の規則を再利用できる
 
 **P4 で 1 を採用した (2026-08-30)** — `core/std/span.t` のヘッダと
-`docs/language.md` に「escape は未検査」と明記して進む。
-選択肢 2 は、実際に dangling span が実プログラムで問題になったときの
-着手候補として残る。
+`docs/language.md` に「escape は未検査」と明記して進んだ。
+
+**2026-09-02 に検査を入れた (`[E0026]`)。** 着手条件は満たされていた —
+`fn f() -> Option<Span<u8>> { var v = Vec::new(); ...; v.as_span() }` が
+**通ってしまい、解放済みメモリを読んで正しい答えを返す** (never-reuse
+ヒープのおかげで「たまたま」当たる) のを実測した。採ったのは選択肢 2
+ではなく **REGIONS の規則を所有者違いで再利用する**形: 「終わりが見える
+ものから派生した値は、それより長生きする場所へ到達してはならない」を
+allocator と**ローカルのバッファ**の 2 つの owner に対して適用する
+(`region_check.rs` の `RegionKind`)。マーカ構文が要らないのは、
+**パラメータを owner にしない**という REGIONS と同じ除外規則で
+`Vec::as_span(&self)` が自動的に合法になるため。
+未検査で残るのは closure が捕捉した窓と、reallocate を跨いだ窓
+(どちらも lifetime の形をしていない)。
 
 **`Ptr<T>` を生 `ptr` から作れない (CONV-SPAN)。** 公開関数は
 `alloc` / `get` / `set` / `offset` / `as_raw` / `__getitem__` /

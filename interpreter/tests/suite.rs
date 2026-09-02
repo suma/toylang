@@ -118,6 +118,9 @@ mod simd_tests;
 #[path = "region_tests.rs"]
 mod region_tests;
 
+#[path = "window_escape_tests.rs"]
+mod window_escape_tests;
+
 #[path = "effects_tests.rs"]
 mod effects_tests;
 

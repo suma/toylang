@@ -25,16 +25,18 @@
 #   `s.as_raw()` is the element-indexed address `__simd_load` /
 #   `__simd_store` want.
 #
-# ## What this is not (POINTER.md 未解決論点, 選択肢 1 = 現状の既定)
+# ## Escape (WINDOW-ESCAPE, `[E0026]`)
 #
-# **Escape is not checked.** Nothing stops a `Span<T>` from being
-# returned or stored in a field that outlives the memory it views —
-# the language's escape rule (REF-Stage-2) applies to `&T` only, and
-# the region check (REGIONS, E0022) only chases scoped-allocator
-# origins. A dangling span reads whatever sits at the address, same
-# as a dangling raw `ptr`. If that becomes a real failure mode,
-# `ref struct`-style escape markers (POINTER.md 選択肢 2) are the
-# follow-up.
+# **A window may not outlive the buffer it views.** When the buffer is
+# a binding in the same frame, the window cannot be returned, nor
+# bound or assigned outside that binding's scope. Staying beside the
+# buffer is fine — that is what a window is for — and a window on a
+# *parameter* belongs to the caller, which is why `Vec::as_span(&self)`
+# below hands one back and is correct.
+#
+# The check is REGION's (E0022) over a different owner and shares its
+# pass. Two hazards stay uncovered: a window captured by a closure,
+# and one held across a `push` that reallocates.
 
 struct Span<T> {
     # The window the elements live behind. A `Ptr<T>` field, so the

@@ -898,27 +898,198 @@ impl<'a> FunctionLower<'a> {
                 };
                 self.lower_enum_variant_arg(enum_id, enum_name, variant_name, args)
             }
-            // ENUM-ARG-NEST: an enum-returning call in argument
-            // position (`node(leaf(), 1i64, leaf())`). Same reason the
+            // COMPOUND-ARG-CALL: an associated function returning a
+            // compound (`take(P::origin())`, `f(Vec::new())`). The
+            // parameter slot picks the instance when it names one —
+            // that is the only thing that can, for a generic struct
+            // whose constructor takes no arguments.
+            Expr::AssociatedFunctionCall(struct_name, fn_name, ref args)
+                if self.struct_defs.contains_key(&struct_name) =>
+            {
+                let struct_id = match param_ty {
+                    Some(Type::Struct(id))
+                        if self.module.struct_def(id).base_name == struct_name =>
+                    {
+                        id
+                    }
+                    _ => self.resolve_struct_instance(struct_name, None)?,
+                };
+                let Some(target_id) =
+                    self.resolve_struct_method_func_id(struct_name, fn_name, struct_id, args)?
+                else {
+                    return Ok(None);
+                };
+                let ret = self.module.function(target_id).return_type;
+                if !matches!(ret, Type::Enum(_) | Type::Struct(_) | Type::Tuple(_)) {
+                    return Ok(None);
+                }
+                self.lower_compound_call_arg(target_id, args)
+            }
+            // ENUM-ARG-NEST / COMPOUND-ARG-CALL: a compound-returning
+            // call in argument position (`sum(node(leaf(), 1i64,
+            // leaf()))`, `take(mk(3i64))`). Same reason the
             // constructions above needed a home — the call's leaves
             // have to land somewhere before the outer call is emitted,
             // and on a `val` RHS that somewhere was the new binding.
-            // A scalar- (or struct- / tuple-) returning call falls
-            // through to the caller's normal path.
+            // A scalar-returning call falls through to the caller's
+            // normal path.
             Expr::Call(fn_name, args_ref) => {
                 let Some(target_id) = self.module.lookup_function(None, fn_name) else {
                     return Ok(None);
                 };
-                let Type::Enum(enum_id) = self.module.function(target_id).return_type else {
+                let ret = self.module.function(target_id).return_type;
+                if !matches!(ret, Type::Enum(_) | Type::Struct(_) | Type::Tuple(_)) {
                     return Ok(None);
-                };
+                }
                 let items: Vec<ExprRef> = match self.program.expression.get(&args_ref) {
                     Some(Expr::ExprList(items)) => items,
                     _ => return Ok(None),
                 };
+                self.lower_compound_call_arg(target_id, &items)
+            }
+            // COMPOUND-ARG-CALL: a compound-returning method
+            // (`take(o.twin())`). `prepare_compound_method_call` has
+            // already lowered the receiver and the arguments, so this
+            // only has to name somewhere for the results to land.
+            Expr::MethodCall(recv, method_sym, ref method_args) => {
+                let Some(call) =
+                    self.prepare_compound_method_call(&recv, method_sym, method_args)?
+                else {
+                    return Ok(None);
+                };
+                self.lower_compound_method_arg(call)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// COMPOUND-ARG-CALL, method form: land a prepared compound method
+    /// call's results in fresh leaf locals and yield their values.
+    fn lower_compound_method_arg(
+        &mut self,
+        call: crate::method_call::CompoundMethodCall,
+    ) -> Result<Option<Vec<ValueId>>, String> {
+        match call.ret {
+            Type::Enum(enum_id) => {
                 let storage = self.allocate_enum_storage(enum_id);
-                self.emit_enum_call_into_storage(&storage, target_id, &items)?;
+                let mut dests = Self::flatten_enum_dests(&storage);
+                dests.extend(call.writeback_dests);
+                self.emit(
+                    InstKind::CallEnum {
+                        target: call.target,
+                        args: call.args,
+                        dests,
+                    },
+                    None,
+                );
                 Ok(Some(self.load_enum_locals(&storage)))
+            }
+            Type::Struct(struct_id) => {
+                let fields = self.allocate_struct_fields(struct_id);
+                let leaves = flatten_struct_locals(&fields);
+                let mut dests: Vec<crate::ir::LocalId> =
+                    leaves.iter().map(|(l, _)| *l).collect();
+                dests.extend(call.writeback_dests);
+                self.emit(
+                    InstKind::CallStruct {
+                        target: call.target,
+                        args: call.args,
+                        dests,
+                    },
+                    None,
+                );
+                Ok(Some(self.load_leaves(leaves)))
+            }
+            Type::Tuple(tuple_id) => {
+                let elements = self.allocate_tuple_elements(tuple_id)?;
+                let leaves = flatten_tuple_element_locals(&elements);
+                let mut dests: Vec<crate::ir::LocalId> =
+                    leaves.iter().map(|(l, _)| *l).collect();
+                dests.extend(call.writeback_dests);
+                self.emit(
+                    InstKind::CallTuple {
+                        target: call.target,
+                        args: call.args,
+                        dests,
+                    },
+                    None,
+                );
+                Ok(Some(self.load_leaves(leaves)))
+            }
+            // `prepare_compound_method_call` returns `None` for a
+            // scalar return, so this is unreachable in practice.
+            _ => Ok(None),
+        }
+    }
+
+    /// COMPOUND-ARG-CALL: materialise a compound-returning call into
+    /// fresh leaf locals and hand the argument list their values.
+    ///
+    /// The three `Call*` instructions already write a call's results
+    /// straight into caller-side locals — that is how a `val` RHS
+    /// works. All an argument slot needed was locals of its own to
+    /// name, which is what the `val` was providing by hand.
+    ///
+    /// No drop is registered for the fresh storage: the value exists
+    /// to be passed by value, so ownership moves into the callee, the
+    /// same as passing a `val`-bound compound.
+    fn lower_compound_call_arg(
+        &mut self,
+        target_id: crate::ir::FuncId,
+        args_items: &[ExprRef],
+    ) -> Result<Option<Vec<ValueId>>, String> {
+        // REF-Stage-2 (ii): a callee with compound `&mut T` parameters
+        // returns their leaves behind its own result, so the caller's
+        // dest list has to carry those bindings' locals too.
+        let writeback_dests = if self
+            .module
+            .function(target_id)
+            .self_writeback_types
+            .is_empty()
+        {
+            Vec::new()
+        } else {
+            self.collect_compound_writeback_dests_slice(args_items)?
+        };
+        match self.module.function(target_id).return_type {
+            Type::Enum(enum_id) => {
+                let storage = self.allocate_enum_storage(enum_id);
+                self.emit_enum_call_into_storage(&storage, target_id, args_items)?;
+                Ok(Some(self.load_enum_locals(&storage)))
+            }
+            Type::Struct(struct_id) => {
+                let fields = self.allocate_struct_fields(struct_id);
+                let leaves = flatten_struct_locals(&fields);
+                let mut dests: Vec<crate::ir::LocalId> =
+                    leaves.iter().map(|(l, _)| *l).collect();
+                dests.extend(writeback_dests);
+                let args = self.lower_call_arg_items(args_items, Some(target_id))?;
+                self.emit(
+                    InstKind::CallStruct {
+                        target: target_id,
+                        args,
+                        dests,
+                    },
+                    None,
+                );
+                Ok(Some(self.load_leaves(leaves)))
+            }
+            Type::Tuple(tuple_id) => {
+                let elements = self.allocate_tuple_elements(tuple_id)?;
+                let leaves = flatten_tuple_element_locals(&elements);
+                let mut dests: Vec<crate::ir::LocalId> =
+                    leaves.iter().map(|(l, _)| *l).collect();
+                dests.extend(writeback_dests);
+                let args = self.lower_call_arg_items(args_items, Some(target_id))?;
+                self.emit(
+                    InstKind::CallTuple {
+                        target: target_id,
+                        args,
+                        dests,
+                    },
+                    None,
+                );
+                Ok(Some(self.load_leaves(leaves)))
             }
             _ => Ok(None),
         }

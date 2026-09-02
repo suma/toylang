@@ -5387,17 +5387,20 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   *Operator overload (struct receivers)*) only fire in let-rhs
   context. `a + b + c` and `a & Bits { v: 1 }` need explicit
   intermediates (`val tmp = a + b; val r = tmp + c`).
-- **Compound-returning calls in expression position** — a call that
-  returns a struct or a tuple has to be bound with `val` before its
-  value is used; the compiled lanes reject it anywhere else, because a
-  compound never travels as one SSA value and the call's leaves need a
-  home. An **enum**-returning call is the exception: it may also stand
-  in an **argument** (`sum(node(leaf(), 1i64, leaf()))`) or as another
-  enum's **payload** (`Option::Some(mk(2i64))`), where the leaves land
-  in the slot they were destined for anyway. Enum *constructions*
-  (`take(Color::Red)`, `take(Option::None)`) are unrestricted in
-  argument position. Everywhere else — a tail expression, an operand,
-  a condition — the `val` is still required.
+- **Compound-returning calls in expression position** — a compound
+  never travels as one SSA value, so a call producing one needs
+  locals to write its leaves into. Two positions have those:
+
+  - an **argument** — `take(mk(3i64))`, `take(o.twin())`,
+    `take(P::origin())`, `count(Vec::new())`, for a struct, a tuple
+    or an enum alike, in any of the three call shapes;
+  - an enum's **payload** — `Option::Some(mk(2i64))`.
+
+  Enum *constructions* (`take(Color::Red)`, `take(Option::None)`) are
+  unrestricted in argument position too. Everywhere else — a tail
+  expression, an operand, a condition, the right-hand side of an
+  element assignment — the call still has to be bound with `val`
+  first.
 - **Trait limitations** — no trait inheritance; no associated
   types. Generic trait declarations (`trait Foo<T>`), default
   method bodies, multiple bounds (`<T: A + B>`) and `dyn Trait`

@@ -10,6 +10,19 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-02
+- **COMPOUND-ARG-CALL — compound を返す呼び出しを引数位置に書けるようにした** —
+  `take(mk(3i64))` が `cannot use a struct-returning call in expression
+  position; bind the result with \`val\``。ENUM-ARG-NEST で enum だけ
+  通るようになっていた非対称を解消 (`Option::Some(mk())` は書けるのに
+  `take(mk())` は書けない、理由は読み手から見えない)。引数スロットが
+  自分の leaf local を確保して `CallStruct` / `CallTuple` / `CallEnum` の
+  dest をそこに向ける。**3 つの call 形すべて** — 自由関数 /
+  associated function (`take(P::origin())` / `count(Vec::new())` は
+  スロットが実体化を決める) / method (`take(o.twin())`)。
+  所有権は callee に移るので新しいストレージは drop を登録しない
+  (`val` 束縛と free 回数が一致することをテストで pin)。
+  **ネストした tuple 戻り (`((i64,i64), bool)`) は別の穴** で、
+  lowering に戻り型が無い。4 レーンに 5 件 pin
 - **CHAR-LITERAL-GENERIC-ARG — レシーバが決めた型引数を
   パラメータ型に流すようにした** — `Span<u8>::set(i, 'A')` が
   `arg 3 (v48) has type i32, expected i8` で **cranelift の verifier
@@ -899,13 +912,6 @@
   スキャナの対象に入れると偽陽性だらけになる。入れるなら
   「ユーザに見える refusal」と「internal error」を先に分ける必要がある
 
-- **COMPOUND-ARG-CALL: struct / tuple を返す呼び出しは引数位置に書けない** ★★ —
-  `take(mk())` が `cannot use a struct-returning call in expression
-  position; bind the result with \`val\``。**enum は 2026-09-01 の
-  ENUM-ARG-NEST で引数位置と payload 位置が通るようになった**ので、
-  残っているのは struct と tuple。同じ手口 (呼び出し先の leaf を
-  引数スロットに直接書き込む) がそのまま効くはずで、`CallStruct` /
-  `CallTuple` は既にある。非対称なのが分かりにくい
 - **REF-REBORROW: `&mut` 引数を再帰呼び出しにそのまま渡せない** ★ —
   `fn insert(arena: &mut Vec<Node>, ..)` の中で `insert(arena, ..)` は
   `expected &mut Vec<Node>, but got Vec<Node>`。`insert(&mut arena, ..)`

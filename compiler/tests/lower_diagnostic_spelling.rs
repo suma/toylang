@@ -57,11 +57,17 @@ fn refusal_for(source: &str) -> String {
 fn cases() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
     vec![
         (
+            // An argument slot takes one of these now
+            // (COMPOUND-ARG-CALL); an array element assignment does
+            // not, so that is where the refusal still lives.
             "struct-returning call in expression position",
             r#"struct P { x: i64 }
                fn mk() -> P { P { x: 1i64 } }
-               fn take(p: P) -> i64 { p.x }
-               fn main() -> i64 { take(mk()) }"#,
+               fn main() -> i64 {
+                 var v: [P; 2] = [P { x: 0i64 }, P { x: 0i64 }]
+                 v[0] = mk()
+                 v[0].x
+               }"#,
             vec!["struct-returning call", "`mk`"],
         ),
         (

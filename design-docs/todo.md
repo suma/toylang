@@ -1252,11 +1252,28 @@
   ラッパ + `min` / `max` / `abs` だけ。gcd / 整数 `pow` / popcount ・
   leading_zeros 等のビット演算が無い。f32 版 intrinsics は SIMD-F32 の
   残と同じ項目。乱数は `random()` の一様のみ (分布は無い)
-- **STDLIB-TIME: 単調時計と sleep** ★ — `now()` は libc `time` の wall
-  秒のみなので、ベンチも指数バックオフの再試行も書けない。
-  `now_mono()` / `sleep(ms)` は extern 4 箇所セット。**本質的に非決定**
-  なので、単調性だけを pin して値は pin しない方針を最初に書く
-  (RUNTIME_LIBRARY P2)
+- **STDLIB-TIME: 単調時計・sleep・性能カウンタ・日付** ★ — 設計は
+  [`STDLIB_TIME.md`](STDLIB_TIME.md) (2026-09-03)。`now()` は libc `time`
+  の wall 秒のみなので、ベンチも指数バックオフの再試行も書けない。
+  日付は**出力 (`strftime`) だけあって入力が無い**。測ったこと:
+  (1) `CLOCK_MONOTONIC` / `CLOCK_PROCESS_CPUTIME_ID` / `nanosleep` /
+  `clock_getres` は C の probe でこのホストで全部動く (Linux も同じ 4 本
+  なので NET のような OS 分岐は要らない)、(2) **extern 1 回は
+  interpreter で +6.7 µs / AOT で +5 ns** (1e6 ループの差分。同ループの
+  1 反復が interpreter で約 6 µs なので extern 1 回 ≒ 演算 3 個)、
+  (3) 暦 (`civil_from_days`) は既に Rust 側にあり、**interpreter の
+  extern registry が同じ関数に委譲している**ので extern は 4 レーンで
+  実装 1 つ。決定: **時計は測る区間の外でしか読まない** (`bench` は
+  最小値を取らない — 反復ごとの読みが測る対象より大きい) / **暦は
+  extern 2 本に寄せ、文法 (ISO 8601 のパース) は toylang 側**
+  (`to_f64` と同じ切り分け、`strptime` は入れない) / **PMU
+  ハードウェアカウンタは非目標** (Linux `perf_event_open` と macOS
+  kperf に共通の口が無く、権限も要る) / **`Duration` 型は作らず
+  関数名に単位を入れる** (`sleep_ms` / `elapsed_ns`)。着手順は
+  TM0 (単調時計 + sleep) → TM1 (CPU 時間 + `now_unix_ns`) →
+  TM2 (`Stopwatch` / `bench`) → TM3 (暦 + `DateTime`) →
+  TM4 (`parse_iso8601` + `TimeError`) → TM5 (整形)。テストは
+  **暦とパースは 4 レーンで値ごと pin、時計は単調性と sleep 下限だけ**
 - **STDLIB-FS-PATH: path 操作とディレクトリ列挙** ★ — `read_file` /
   `write_file` / `file_exists` はあるが、path の結合・分解 (`join` /
   `basename` / `extension`) も `ls` 相当も無い。path 操作は純 toylang

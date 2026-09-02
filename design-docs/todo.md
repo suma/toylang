@@ -10,6 +10,26 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-02
+- **ENUM-ASSOC-FN-PRODUCER — enum を返す associated function を
+  enum 生成位置に書けるようにした** —
+  `fn open(id) -> Option<Handle>` を `if` の枝 / `match` の arm /
+  tail / 別 enum の payload に置くと
+  `branch produces enum \`Span\` but the surrounding binding expects
+  \`Option\`` (Span は struct で、返っているのは Option — **文言が
+  全部間違っていた**)。`A::b(..)` を無条件に variant 構築とみなして
+  いたのが原因で、variant でなければ associated function として解決し、
+  戻り型がその enum なら `CallEnum` を撃つ形に。実体化は**対象 enum の
+  payload が名指す struct instance**から取る (`Option<Span<u8>>` の
+  スロットは `Span<u8>` を持っている — `-> Option<Self>` の `Self` を
+  決められるのはこれだけ)。4 レーンに 3 件 pin
+- **SUBDIR-ASSOC-FN は解消済みだった** — サブディレクトリの
+  `core/std/collections/vec.t` から `Span::from_parts` /
+  `Ptr::try_from_raw` が呼べないという項目は、2026-09-01 の
+  `28d8c53` (impl block の登録を独立 pass にした) が副作用で直していた。
+  原因はモジュール階層ではなく**登録が文の順序に従っていた**こと
+  (「各 block は自分より上で宣言された block しか呼べない」)。
+  `Vec::as_span` / `capacity_span` の回避コメントごと外して
+  `Span::from_parts` に戻した
 - **NUM-W-FOR-RANGE — narrow int の `for` 範囲が 4 レーンで一致した** —
   `for i in -3i32..2i32` が型検査を通ったうえで 3 通りに割れていた:
   IR VM は 5 回まわし、tree-walker は `For loop range must be UInt64 or
@@ -953,17 +973,20 @@
   **具体的な `StructId` を既に持っている**ので、`BranchShape` を
   そこまで運べるようにすれば注釈は要らなくなる。既存の
   `val v: Vec<u8> = Vec::new()` と同じ規則なので実害は小さい。
-- **SUBDIR-ASSOC-FN: サブディレクトリのモジュールから、上位モジュールの
-  struct の associated function が呼べない** ★★ — 2026-08-31 に
-  CONV-SPAN で踏んだ。`core/std/collections/vec.t` から
-  `Span::from_parts` / `Ptr::try_from_raw` を呼ぶと
-  `[E0010] Associated function ... not found for struct`。**同じ呼び出しが
-  `core/std/string.t` (span.t と同じ階層) からは通る**ので、generic か
-  どうかではなくモジュールの階層の問題。struct literal
-  (`Ptr { addr: p }`) と method 呼び出しは通るので、効かないのは
-  associated function の解決だけ。回避策があるので `Vec::as_span` は
-  literal で書いたが、**ユーザが書く stdlib 外のサブモジュールでも同じ
-  ことが起きる**。
+- **TREE-WALKER-SELF-TYPE-ARG: `-> Option<Self>` を非 generic な
+  呼び出し元から受けると tree-walker が型引数を失う** ★★ —
+  `impl<T> Win<T> { fn try_from_raw(p: ptr) -> Option<Self> }` を
+  **generic でない** impl / 関数から呼ぶと、戻り値の `Win` が型引数を
+  持たないまま束縛され、後で `__builtin_sizeof::<T>()` を使う method が
+  `unbound generic parameter` で落ちる。**compiled 3 レーンは通る**
+  (GENERIC-IN-ENUM-PAYLOAD で解決済み)。呼び出し元が
+  `impl<T>` の中なら通る (`T` が実行時に束縛されている) ので、
+  **実体化を宣言戻り型からしか取れない形だけ**が穴。
+  2026-09-02 に `String::as_span` を
+  `Span::try_from_raw_parts(self.data, self.len)` の 1 呼び出しに
+  書き換えようとして踏んだ (stdlib は 4 レーンで動く
+  `Ptr { addr } + Span::from_parts` のままにしてある)。
+  最小再現は 15 行 — `Win<T>` + 非 generic な `Holder::window()`
 
 - **TREE-WALKER-CONCRETE-IMPL** ★ — `impl C<u8>` と `impl C<i64>` の
   両方に同名の associated function があると tree-walker が spec を

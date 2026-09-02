@@ -99,18 +99,12 @@ impl<T> Vec<T> {
     # 0. The window does not track the vector: a later `push` can
     # reallocate and leave it dangling (`Span`'s escape is unchecked,
     # POINTER P4).
-    #
-    # Written with struct literals rather than `Ptr::try_from_raw` /
-    # `Span::from_parts`: this module lives in a subdirectory, and an
-    # associated function of a struct declared one level up does not
-    # resolve from here (todo SUBDIR-ASSOC-FN). The fields are the
-    # same two the constructors set.
     fn as_span(&self) -> Option<Span<T>> {
         if __builtin_ptr_is_null(self.data) {
             Option::None
         } else {
             val window: Ptr<T> = Ptr { addr: self.data }
-            Option::Some(Span { data: window, count: self.len })
+            Option::Some(Span::from_parts(window, self.len))
         }
     }
 
@@ -134,7 +128,7 @@ impl<T> Vec<T> {
             Option::None
         } else {
             val window: Ptr<T> = Ptr { addr: self.data }
-            Option::Some(Span { data: window, count: self.cap })
+            Option::Some(Span::from_parts(window, self.cap))
         }
     }
 

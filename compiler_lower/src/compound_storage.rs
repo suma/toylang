@@ -662,6 +662,55 @@ impl<'a> FunctionLower<'a> {
         Ok(())
     }
 
+    /// ENUM-ASSOC-FN-PRODUCER: the `FuncId` of an associated function
+    /// whose return type is `target_enum_id`, or `None` when
+    /// `owner::fn_name` is not one.
+    ///
+    /// The instance matters: `Span::try_from_raw_parts` is declared
+    /// `-> Option<Self>`, so which `Option` it returns depends on
+    /// which `Span<T>` it belongs to. The target enum's own payload
+    /// names that struct instance — an `Option<Span<u8>>` slot holds a
+    /// `Span<u8>` — which is the only thing here that can pick it.
+    fn resolve_enum_producing_assoc_fn(
+        &mut self,
+        owner: DefaultSymbol,
+        fn_name: DefaultSymbol,
+        target_enum_id: EnumId,
+        args: &[ExprRef],
+    ) -> Result<Option<crate::ir::FuncId>, String> {
+        if !self.struct_defs.contains_key(&owner) {
+            return Ok(None);
+        }
+        let from_payload = self
+            .module
+            .enum_def(target_enum_id)
+            .variants
+            .iter()
+            .flat_map(|v| v.payload_types.iter())
+            .find_map(|t| match t {
+                Type::Struct(id)
+                    if self.module.struct_def(*id).base_name == owner =>
+                {
+                    Some(*id)
+                }
+                _ => None,
+            });
+        let struct_id = match from_payload {
+            Some(id) => id,
+            None => self.resolve_struct_instance(owner, None)?,
+        };
+        let Some(func_id) =
+            self.resolve_struct_method_func_id(owner, fn_name, struct_id, args)?
+        else {
+            return Ok(None);
+        };
+        if self.module.function(func_id).return_type == Type::Enum(target_enum_id) {
+            Ok(Some(func_id))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub(super) fn flatten_enum_dests(storage: &EnumStorage) -> Vec<LocalId> {
         let mut out = Vec::new();
         Self::flatten_enum_dests_into(storage, &mut out);
@@ -815,37 +864,48 @@ impl<'a> FunctionLower<'a> {
                 Ok(())
             }
             Expr::AssociatedFunctionCall(en, var, args) => {
-                if en != expected_base {
-                    return Err(format!(
-                        "branch produces enum `{}` but the surrounding binding expects `{}`",
-                        self.interner.resolve(en).unwrap_or("?"),
-                        self.interner.resolve(expected_base).unwrap_or("?"),
-                    ));
-                }
+                // `Enum::Variant(payload)` — a construction of the
+                // very enum this slot holds.
                 let enum_def = self.module.enum_def(target_enum_id).clone();
-                let variant_idx = enum_def
-                    .variants
-                    .iter()
-                    .position(|v| v.name == var)
-                    .ok_or_else(|| {
-                        format!(
-                            "unknown enum variant `{}::{}`",
+                let variant_idx = if en == expected_base {
+                    enum_def.variants.iter().position(|v| v.name == var)
+                } else {
+                    None
+                };
+                if let Some(variant_idx) = variant_idx {
+                    let expected = enum_def.variants[variant_idx].payload_types.len();
+                    if args.len() != expected {
+                        return Err(format!(
+                            "enum variant `{}::{}` expects {} payload value(s), got {}",
                             self.interner.resolve(expected_base).unwrap_or("?"),
                             self.interner.resolve(var).unwrap_or("?"),
-                        )
-                    })?;
-                let expected = enum_def.variants[variant_idx].payload_types.len();
-                if args.len() != expected {
-                    return Err(format!(
-                        "enum variant `{}::{}` expects {} payload value(s), got {}",
-                        self.interner.resolve(expected_base).unwrap_or("?"),
-                        self.interner.resolve(var).unwrap_or("?"),
-                        expected,
-                        args.len(),
-                    ));
+                            expected,
+                            args.len(),
+                        ));
+                    }
+                    return self.write_variant_into_storage(target, variant_idx, &args);
                 }
-                self.write_variant_into_storage(target, variant_idx, &args)?;
-                Ok(())
+                // ENUM-ASSOC-FN-PRODUCER: otherwise this is an
+                // associated function that *returns* the enum —
+                // `Span::try_from_raw_parts(p, n) -> Option<Self>`, the
+                // one-call constructor the fallible-window API is built
+                // around. The old arm assumed any `A::b(..)` here was a
+                // variant construction, so it reported "branch produces
+                // enum `Span` but the surrounding binding expects
+                // `Option`", naming a struct as an enum and the wrong
+                // type as the product.
+                if let Some(func_id) =
+                    self.resolve_enum_producing_assoc_fn(en, var, target_enum_id, &args)?
+                {
+                    return self.emit_enum_call_into_storage(target, func_id, &args);
+                }
+                Err(format!(
+                    "`{}::{}` is neither a variant of `{}` nor an associated function \
+                     returning it",
+                    self.interner.resolve(en).unwrap_or("?"),
+                    self.interner.resolve(var).unwrap_or("?"),
+                    self.interner.resolve(expected_base).unwrap_or("?"),
+                ))
             }
             Expr::Identifier(sym) => {
                 let src = match self.bindings.get(&sym).cloned() {

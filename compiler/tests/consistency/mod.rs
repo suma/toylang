@@ -60,3 +60,4 @@ mod enum_arg_position;
 mod char_literal_generic_arg;
 mod compound_arg_call;
 mod narrow_for_range;
+mod enum_assoc_fn_producer;

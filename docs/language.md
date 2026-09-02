@@ -5399,6 +5399,11 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
     or an enum alike, in any of the three call shapes;
   - an enum's **payload** — `Option::Some(mk(2i64))`.
 
+  An enum-producing position (an `if` or `match` arm, a block tail, an
+  enum payload) also takes an **associated function that returns that
+  enum** — `Handle::open(id) -> Option<Handle>` written straight into
+  the arm, without a `val` in between.
+
   Enum *constructions* (`take(Color::Red)`, `take(Option::None)`) are
   unrestricted in argument position too. Everywhere else — a tail
   expression, an operand, a condition, the right-hand side of an

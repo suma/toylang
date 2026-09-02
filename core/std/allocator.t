@@ -276,6 +276,14 @@ impl Alloc for Arena {
         val q = with allocator = self._h {
             __builtin_heap_realloc(p, new_size)
         }
+        # ERROR_MODEL D5: a failed `realloc` leaves the original block
+        # alone, so the arena still owns `p` at its old size. Updating
+        # the table anyway forgot that address while adding the bytes
+        # it never got -- a leak plus a `bytes_used` that grew on a
+        # request that was refused.
+        if __builtin_ptr_is_null(q) {
+            return __builtin_null_ptr()
+        }
         if idx < self.count {
             val old: u64 = __builtin_ptr_read(self.sizes, idx * 8u64)
             self.bytes_used = self.bytes_used - old + new_size

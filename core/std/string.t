@@ -65,10 +65,48 @@ impl String {
     # Bulk-copy a `str`'s UTF-8 bytes onto a fresh String. The
     # trailing NUL terminator is intentionally NOT copied
     # (`size()` matches `s.len()` exactly).
+    # Move the buffer to `new_cap` bytes, or stop the program
+    # (ERROR_MODEL D5). As `Vec::grow_to`: the check is before
+    # `self.data` is assigned, because `realloc` leaves the original
+    # block alone when it fails and writing the null in first would
+    # lose it. A zero-byte request legitimately answers null
+    # (`core/std/ptr.t`), so only a non-zero one can have failed.
+    unsafe fn grow_to(&mut self, new_cap: u64) {
+        val grown: ptr = __builtin_heap_realloc(self.data, new_cap)
+        if new_cap > 0u64 && __builtin_ptr_is_null(grown) {
+            panic("String::grow: allocation failed ({new_cap} bytes)")
+        }
+        self.data = grown
+        self.cap = new_cap
+    }
+
+    # Make room for `n` more bytes than `size()`, or say why not.
+    # The point is to fail once, before a loop of `push`es that then
+    # stay within capacity -- see `core/std/alloc.t`.
+    unsafe fn try_reserve(&mut self, n: u64) -> Result<(), AllocError> {
+        val used: u64 = self.len
+        val want: Option<u64> = used.checked_add(n)
+        val need: u64 = match want {
+            Option::Some(c) => c,
+            Option::None => { return Result::Err(AllocError::SizeOverflow) }
+        }
+        if need <= self.cap { return Result::Ok(()) }
+        val grown: ptr = __builtin_heap_realloc(self.data, need)
+        if need > 0u64 && __builtin_ptr_is_null(grown) {
+            return Result::Err(AllocError::OutOfMemory)
+        }
+        self.data = grown
+        self.cap = need
+        Result::Ok(())
+    }
+
     unsafe fn from_str(s: str) -> Self {
         val n: u64 = s.len()
         val raw: ptr = __builtin_heap_alloc(0u64)
         val data: ptr = __builtin_heap_realloc(raw, n)
+        if n > 0u64 && __builtin_ptr_is_null(data) {
+            panic("String::from_str: allocation failed ({n} bytes)")
+        }
         __builtin_mem_copy(s.as_ptr(), data, n)
         String {
             data: data,
@@ -82,11 +120,9 @@ impl String {
     # O(1) per call.
     unsafe fn push(&mut self, b: u8) {
         if self.cap == 0u64 {
-            self.cap = 4u64
-            self.data = __builtin_heap_realloc(self.data, self.cap)
+            self.grow_to(4u64)
         } elif self.len >= self.cap {
-            self.cap = self.cap * 2u64
-            self.data = __builtin_heap_realloc(self.data, self.cap)
+            self.grow_to(self.cap * 2u64)
         }
         __builtin_ptr_write(self.data, self.len, b)
         self.len = self.len + 1u64
@@ -254,6 +290,9 @@ impl String {
         val n: u64 = self.len
         val raw: ptr = __builtin_heap_alloc(0u64)
         val data: ptr = __builtin_heap_realloc(raw, n)
+        if n > 0u64 && __builtin_ptr_is_null(data) {
+            panic("String::fold_ascii_case: allocation failed ({n} bytes)")
+        }
         __builtin_mem_copy(self.data, data, n)
         # SIMD: 16 bytes per pass while a whole chunk fits. The bound
         # is `i + 16 <= n` -- a vector load reads all 16 bytes, so a

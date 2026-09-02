@@ -1997,6 +1997,19 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
     // too — a resize of an untracked pointer is a no-op bookkeeping
     // wise.
     let (old_size, site, file) = prof_take(p);
+    // Bump-region move: a fresh block, old contents copied, the old
+    // block left in place (it is never reused).
+    let np = bump_alloc_raw(new_size as usize);
+    if np.is_null() {
+        prof_put(p, old_size, site, file); // restore tracking on failure
+        return core::ptr::null_mut();
+    }
+    // ERROR_MODEL D5: the accounting belongs on the success path. A
+    // refused request obtained nothing, and reporting the growth
+    // anyway showed a program using memory it was never given -- the
+    // interpreter's heap had the same bug on the other side, so the
+    // lanes disagreed about a failed resize instead of agreeing that
+    // nothing happened.
     if prof_enabled() {
         let st = thread_state();
         st.stats.realloc_count += 1;
@@ -2019,13 +2032,6 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
                 }
             }
         }
-    }
-    // Bump-region move: a fresh block, old contents copied, the old
-    // block left in place (it is never reused).
-    let np = bump_alloc_raw(new_size as usize);
-    if np.is_null() {
-        prof_put(p, old_size, site, file); // restore tracking on failure
-        return core::ptr::null_mut();
     }
     if old_size > 0 {
         unsafe {

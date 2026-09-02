@@ -694,6 +694,28 @@ impl HeapManager {
         if total > isize::MAX as usize {
             return 0;
         }
+        // The same answer for a request the *host* cannot satisfy.
+        // `resize` goes through Rust's allocator, which aborts the
+        // process on failure -- so a 256 TB request died here before
+        // any toylang code could look at the result, while the
+        // compiled lanes handed back NULL and carried on. Answering
+        // with the null pointer is what lets every lane agree that an
+        // allocation can fail (ERROR_MODEL E5).
+        //
+        // The ceiling is this engine's own, and it is not arbitrary
+        // for the reason it might look: this heap is a zero-filled
+        // `Vec<u8>` in the interpreter's address space, so serving a
+        // request means *writing* that many bytes. An overcommitting
+        // OS hands back a 32 TB reservation happily and the memset
+        // then runs for hours -- a hang is a worse answer than a
+        // refusal. `malloc` in the compiled lanes has its own limit
+        // in the same region; the two agree about the requests real
+        // programs make, and a program allocating a terabyte in one
+        // call is not one whose lanes were going to agree anyway.
+        const MAX_SINGLE_ALLOCATION: usize = 1 << 40; // 1 TiB
+        if size > MAX_SINGLE_ALLOCATION || self.memory.try_reserve(size).is_err() {
+            return 0;
+        }
 
         let addr = self.next_addr;
         self.memory.resize(total, 0);
@@ -757,6 +779,24 @@ impl HeapManager {
         }
         
         if let Some((old_size, site)) = self.allocations.get(&addr).copied() {
+            // ERROR_MODEL D5: a `realloc` that cannot be served leaves
+            // the original block alone. Everything below moves the
+            // caller's bytes and then frees the old address, so it has
+            // to happen *after* the new block exists -- otherwise a
+            // refused request destroyed the block the caller still
+            // owned, handing back a null while its old pointer went
+            // dangling and its typed slots were dropped. Nothing
+            // reached this before: the allocation used to abort the
+            // process rather than fail.
+            //
+            // The counters below are equally on the success path. A
+            // request that was refused obtained nothing, and reporting
+            // the growth anyway would show a program using memory it
+            // was never given.
+            let new_addr = self.alloc_uncounted_at(new_size, site);
+            if new_addr == 0 {
+                return 0;
+            }
             // MEMORY_PROFILING M0: one resize request, counted once and
             // in terms of the size change the program asked for. The
             // move below is this implementation's way of servicing it —
@@ -794,9 +834,6 @@ impl HeapManager {
                     e.live_bytes = e.live_bytes.saturating_sub((old_size - new_size) as u64);
                 }
             });
-            // Allocate new memory
-            let new_addr = self.alloc_uncounted_at(new_size, site);
-
             // Copy old data to new location
             let copy_size = old_size.min(new_size);
             // First get the source data to avoid borrowing conflicts

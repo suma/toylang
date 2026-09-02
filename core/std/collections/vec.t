@@ -63,12 +63,109 @@ impl<T> Vec<T> {
     # does. `n == 0` allocates nothing, exactly like `new()`.
     fn with_capacity(n: u64) -> Self {
         val stride: u64 = __builtin_sizeof::<T>()
+        val room: Option<u64> = n.checked_mul(stride)
+        val bytes: u64 = match room {
+            Option::Some(b) => b,
+            Option::None => panic("Vec::with_capacity: capacity overflows u64"),
+        }
+        val data: ptr = __builtin_heap_alloc(bytes)
+        # `heap_alloc(0)` returns null *by contract* (`core/std/ptr.t`),
+        # so only a non-zero request can have failed -- reading every
+        # null as failure would make `Vec::new()` an out-of-memory
+        # panic.
+        if bytes > 0u64 && __builtin_ptr_is_null(data) {
+            panic("Vec::with_capacity: allocation failed ({bytes} bytes)")
+        }
         Vec {
-            data: __builtin_heap_alloc(stride * n),
+            data: data,
             len: 0u64,
             cap: n,
             elem_size: stride,
         }
+    }
+
+    # `with_capacity` for a caller that has a budget to respect: the
+    # same request, answered instead of enforced (ERROR_MODEL D5).
+    # Separate from `try_reserve` because there is no value yet to
+    # call a method on.
+    fn try_with_capacity(n: u64) -> Result<Self, AllocError> {
+        val stride: u64 = __builtin_sizeof::<T>()
+        val room: Option<u64> = n.checked_mul(stride)
+        val bytes: u64 = match room {
+            Option::Some(b) => b,
+            Option::None => { return Result::Err(AllocError::SizeOverflow) }
+        }
+        val data: ptr = __builtin_heap_alloc(bytes)
+        if bytes > 0u64 && __builtin_ptr_is_null(data) {
+            return Result::Err(AllocError::OutOfMemory)
+        }
+        val v: Vec<T> = Vec {
+            data: data,
+            len: 0u64,
+            cap: n,
+            elem_size: stride,
+        }
+        Result::Ok(v)
+    }
+
+    # Make room for `n` more elements than `size()`, or say why not.
+    #
+    # The whole point is that it fails **once**, before the loop, so
+    # the pushes that follow are within capacity and cannot regrow --
+    # which is what lets `push` keep a signature that does not return
+    # a `Result`. The promise ends at that capacity: a push past it
+    # reallocates again and can panic again.
+    #
+    # `elem_size` is 0 until the first `push` on a `Vec::new()`, since
+    # that is where the stride is learned; reserving before then reads
+    # it from the type instead.
+    unsafe fn try_reserve(&mut self, n: u64) -> Result<(), AllocError> {
+        if self.elem_size == 0u64 {
+            self.elem_size = __builtin_sizeof::<T>()
+        }
+        val used: u64 = self.len
+        val want: Option<u64> = used.checked_add(n)
+        val need: u64 = match want {
+            Option::Some(c) => c,
+            Option::None => { return Result::Err(AllocError::SizeOverflow) }
+        }
+        if need <= self.cap { return Result::Ok(()) }
+        val room: Option<u64> = need.checked_mul(self.elem_size)
+        val bytes: u64 = match room {
+            Option::Some(b) => b,
+            Option::None => { return Result::Err(AllocError::SizeOverflow) }
+        }
+        val grown: ptr = __builtin_heap_realloc(self.data, bytes)
+        # `need > self.cap >= 0` and a stride of at least one byte make
+        # `bytes` non-zero here, so a null really is a failure -- the
+        # zero-request contract (`core/std/ptr.t`) cannot fire.
+        if bytes > 0u64 && __builtin_ptr_is_null(grown) {
+            return Result::Err(AllocError::OutOfMemory)
+        }
+        self.data = grown
+        self.cap = need
+        Result::Ok(())
+    }
+
+    # Move the buffer to `new_cap` elements, or stop the program.
+    #
+    # The check happens **before** `self.data` is assigned. `realloc`
+    # leaves the original block alone when it fails, so a vector that
+    # could not grow is still intact and still owns its bytes; writing
+    # the null in first would lose the old pointer -- a leak, and every
+    # later element written to address 0.
+    unsafe fn grow_to(&mut self, new_cap: u64) {
+        val room: Option<u64> = new_cap.checked_mul(self.elem_size)
+        val bytes: u64 = match room {
+            Option::Some(b) => b,
+            Option::None => panic("Vec::grow: capacity overflows u64"),
+        }
+        val grown: ptr = __builtin_heap_realloc(self.data, bytes)
+        if bytes > 0u64 && __builtin_ptr_is_null(grown) {
+            panic("Vec::grow: allocation failed ({bytes} bytes)")
+        }
+        self.data = grown
+        self.cap = new_cap
     }
 
     # Declare that the first `n` elements are live.
@@ -129,11 +226,9 @@ impl<T> Vec<T> {
             self.elem_size = __builtin_sizeof(value)
         }
         if self.cap == 0u64 {
-            self.cap = 4u64
-            self.data = __builtin_heap_realloc(self.data, self.cap * self.elem_size)
+            self.grow_to(4u64)
         } elif self.len >= self.cap {
-            self.cap = self.cap * 2u64
-            self.data = __builtin_heap_realloc(self.data, self.cap * self.elem_size)
+            self.grow_to(self.cap * 2u64)
         }
         __builtin_ptr_write(self.data, self.len * self.elem_size, value)
         self.len = self.len + 1u64
@@ -216,11 +311,9 @@ impl<T> Vec<T> {
             self.elem_size = __builtin_sizeof(value)
         }
         if self.cap == 0u64 {
-            self.cap = 4u64
-            self.data = __builtin_heap_realloc(self.data, self.cap * self.elem_size)
+            self.grow_to(4u64)
         } elif self.len >= self.cap {
-            self.cap = self.cap * 2u64
-            self.data = __builtin_heap_realloc(self.data, self.cap * self.elem_size)
+            self.grow_to(self.cap * 2u64)
         }
         var i: u64 = self.len
         while i > index {
@@ -454,6 +547,9 @@ impl Vec<u8> {
         val n: u64 = s.len()
         val raw: ptr = __builtin_heap_alloc(0u64)
         val data: ptr = __builtin_heap_realloc(raw, n)
+        if n > 0u64 && __builtin_ptr_is_null(data) {
+            panic("Vec::from_str: allocation failed ({n} bytes)")
+        }
         __builtin_mem_copy(s.as_ptr(), data, n)
         val result: Vec<u8> = Vec {
             data: data,

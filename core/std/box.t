@@ -51,7 +51,15 @@ struct Box<T> {
 
 impl<T> Box<T> {
     unsafe fn new(value: T) -> Self {
-        val p: ptr = __builtin_heap_alloc(__builtin_sizeof(value))
+        val bytes: u64 = __builtin_sizeof(value)
+        val p: ptr = __builtin_heap_alloc(bytes)
+        # ERROR_MODEL D5: notice the failure rather than writing the
+        # value through address 0. A zero-size `T` legitimately gets
+        # null back (`core/std/ptr.t`), so only a non-zero request can
+        # have failed.
+        if bytes > 0u64 && __builtin_ptr_is_null(p) {
+            panic("Box::new: allocation failed ({bytes} bytes)")
+        }
         __builtin_ptr_write(p, 0u64, value)
         Box { data: p }
     }

@@ -598,3 +598,93 @@ fn an_abandoned_execution_attempt_is_not_counted_against_the_next_one() {
 // `assert_stdout_consistent` alone would not: with the dispatch turned
 // off, every backend renders structurally and they still agree with
 // each other, so the test would pass while the feature did nothing.
+
+// ERROR_MODEL E5: an allocation that fails is noticed.
+//
+// Before this, `Vec` / `String` / `Box` did not look at what the
+// allocator handed back, so a failed request became a write through
+// address 0. Nothing could be tested about it either: the interpreter's
+// heap went through Rust's allocator, which *aborts* on failure, so the
+// four lanes could not even agree that an allocation can fail.
+
+#[test]
+fn an_allocation_that_cannot_be_served_is_reported_not_written_through() {
+    // 2^45 elements of 8 bytes = 256 TB. No allocator serves it, and
+    // asking is cheap -- nothing is touched.
+    let src = r#"
+        fn main() -> u64 {
+            val big: u64 = 1u64 << 45u64
+            val r: Result<Vec<u64>, AllocError> = Vec::try_with_capacity(big)
+            match r {
+                Result::Ok(_) => { println("unexpectedly succeeded") }
+                Result::Err(e) => { println(e) }
+            }
+            # A different fix, so a different variant: no budget makes
+            # a byte count that does not fit in u64 possible.
+            val r2: Result<Vec<u64>, AllocError> =
+                Vec::try_with_capacity(18446744073709551615u64)
+            match r2 {
+                Result::Ok(_) => { println("unexpectedly succeeded") }
+                Result::Err(e) => { println(e) }
+            }
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "alloc_failure_reported");
+}
+
+#[test]
+fn an_empty_container_is_not_an_allocation_failure() {
+    // The regression this guards is total: `heap_alloc(0)` returns null
+    // by contract, so reading every null as failure would make every
+    // `Vec::new()` and every empty `String` panic.
+    let src = r#"
+        fn main() -> u64 {
+            val v: Vec<u64> = Vec::new()
+            val w: Vec<u64> = Vec::with_capacity(0u64)
+            val s = String::new()
+            val t = String::from_str("")
+            v.size() + w.size() + s.size() + t.size()
+        }
+    "#;
+    assert_consistent(src, "empty_container_not_a_failure");
+}
+
+#[test]
+fn a_refused_reservation_leaves_the_vector_usable_and_leaks_nothing() {
+    // `realloc` leaves the original block alone when it fails, so the
+    // check has to happen before `self.data` is assigned -- otherwise
+    // the old pointer is lost (a leak) and every later element is
+    // written to address 0. The proof is that the vector still works
+    // afterwards and the run ends with nothing outstanding.
+    let src = r#"
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            v.push(1u64)
+            v.push(2u64)
+            val big: u64 = 1u64 << 45u64
+            val refused = v.try_reserve(big)
+            match refused {
+                Result::Ok(_) => { println("unexpectedly succeeded") }
+                Result::Err(e) => { println(e) }
+            }
+            # Still intact: the elements are there and it still grows.
+            v.push(3u64)
+            println(v.get(0u64) + v.get(1u64) + v.get(2u64))
+            0u64
+        }
+    "#;
+    let report = memory_profile_report(src, "refused_reservation_no_leak");
+    if report.is_empty() {
+        return;
+    }
+    let live = report
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("live_bytes"))
+        .map(|v| v.trim().to_string());
+    assert_eq!(
+        live.as_deref(),
+        Some("0"),
+        "a refused reservation lost the original buffer:\n{report}"
+    );
+}

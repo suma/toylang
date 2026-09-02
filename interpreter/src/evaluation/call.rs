@@ -906,15 +906,20 @@ impl EvaluationContext<'_> {
         let stmt = self.stmt_pool.get(&method.code)
             .ok_or_else(|| InterpreterError::InternalError("Invalid method code reference".to_string()))?;
 
-        // Execute the method body
+        // Execute the method body, with the declared return type
+        // standing in as the pending annotation
+        // (TREE-WALKER-SELF-TYPE-ARG).
+        let return_type = method.return_type.clone();
         match stmt {
             frontend::ast::Stmt::Expression(expr_ref) => {
-                if let Some(Expr::Block(statements)) = self.expr_pool.get(&expr_ref) {
-                    self.evaluate_block(&statements)
-                } else {
-                    // Single expression method body
-                    self.evaluate(&expr_ref)
-                }
+                self.with_return_annotation(return_type.as_ref(), |ctx| {
+                    if let Some(Expr::Block(statements)) = ctx.expr_pool.get(&expr_ref) {
+                        ctx.evaluate_block(&statements)
+                    } else {
+                        // Single expression method body
+                        ctx.evaluate(&expr_ref)
+                    }
+                })
             }
             _ => Err(InterpreterError::InternalError(format!("evaluate_method: unexpected method body type: {stmt:?}")))
         }
@@ -1953,18 +1958,36 @@ impl EvaluationContext<'_> {
             self.environment.set_val(name, (value).into());
         }
 
-        let res = self.evaluate_block(&block)?;
+        // TREE-WALKER-SELF-TYPE-ARG: the declared return type is the
+        // annotation for whatever the body returns.
+        let res = self
+            .with_return_annotation(function.return_type.as_ref(), |ctx| {
+                ctx.evaluate_block(&block)
+            })?;
         self.environment.exit_block();
 
         if function.return_type.as_ref().is_none_or(|t| *t == TypeDecl::Unit) {
             Ok(Rc::new(RefCell::new(Object::Unit)))
         } else {
-            Ok(match res {
-                EvaluationResult::Value(v) => v.into_rc(),
-                EvaluationResult::Return(None) => Rc::new(RefCell::new(Object::Unit)),
-                EvaluationResult::Return(v) => v.map(|x| x.into_rc()).unwrap_or_else(|| Rc::new(RefCell::new(Object::null_unknown()))),
-                EvaluationResult::Break(_) | EvaluationResult::Continue(_) | EvaluationResult::None => Rc::new(RefCell::new(Object::Unit)),
-            })
+            let value = match res {
+                EvaluationResult::Value(v) => v,
+                EvaluationResult::Return(Some(v)) => v,
+                EvaluationResult::Return(None) => crate::value::Value::Unit,
+                EvaluationResult::Break(_) | EvaluationResult::Continue(_) | EvaluationResult::None => {
+                    crate::value::Value::Unit
+                }
+            };
+            // TREE-WALKER-SELF-TYPE-ARG: stamp the declared return
+            // type's arguments onto the value leaving the function,
+            // the same way a `val`'s annotation stamps the value
+            // entering a binding. A payload built from a bare struct
+            // literal (`Option::Some(Win { addr: p })`) has no other
+            // evidence for its `T`.
+            Ok(super::statement::apply_annotation_type_args(
+                value,
+                function.return_type.as_ref(),
+            )
+            .into_rc())
         }
     }
 
@@ -2124,18 +2147,26 @@ impl EvaluationContext<'_> {
             return Err(e);
         }
 
-        let res = self.evaluate_block(&block)?;
+        // TREE-WALKER-SELF-TYPE-ARG: see the sibling path above.
+        let res = self
+            .with_return_annotation(function.return_type.as_ref(), |ctx| {
+                ctx.evaluate_block(&block)
+            })?;
         self.pop_generic_type_scope();
 
         let return_value: crate::value::Value = if function.return_type.as_ref().is_none_or(|t| *t == TypeDecl::Unit) {
             crate::value::Value::Unit
         } else {
-            match res {
+            // TREE-WALKER-SELF-TYPE-ARG: same stamping as the sibling
+            // path — the declared return type is the annotation for
+            // the value leaving the function.
+            let value = match res {
                 EvaluationResult::Value(v) => v,
                 EvaluationResult::Return(None) => crate::value::Value::Unit,
                 EvaluationResult::Return(v) => v.unwrap_or_else(crate::value::Value::null_unknown),
                 EvaluationResult::Break(_) | EvaluationResult::Continue(_) | EvaluationResult::None => crate::value::Value::Unit,
-            }
+            };
+            super::statement::apply_annotation_type_args(value, function.return_type.as_ref())
         };
 
         // Post-body `ensures` checks with `result` bound to the return value.

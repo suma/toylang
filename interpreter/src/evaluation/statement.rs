@@ -2,7 +2,7 @@ use frontend::ast::*;
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 use crate::environment::VariableSetType;
-use crate::object::Object;
+use crate::object::{Object, RcObject};
 use crate::error::InterpreterError;
 use crate::try_value;
 use crate::value::Value;
@@ -13,7 +13,7 @@ use super::{convert_object, EvaluationContext, EvaluationResult};
 /// them (e.g. unit enum variant `Option::None`). The runtime never
 /// changes the underlying object's identity — it just patches the
 /// `type_args` slot via a single `RefMut` borrow.
-fn apply_annotation_type_args(value: Value, annotation: Option<&TypeDecl>) -> Value {
+pub(super) fn apply_annotation_type_args(value: Value, annotation: Option<&TypeDecl>) -> Value {
     let Some(anno) = annotation else { return value; };
     let args: Vec<TypeDecl> = match anno {
         TypeDecl::Struct(_, args) | TypeDecl::Enum(_, args) => args.clone(),
@@ -46,9 +46,9 @@ fn apply_annotation_type_args(value: Value, annotation: Option<&TypeDecl>) -> Va
                 // already inferred from the values win; the annotation
                 // fills the holes.
                 if type_args.is_empty() {
-                    *type_args = args;
+                    *type_args = args.clone();
                 } else {
-                    for (slot, from_anno) in type_args.iter_mut().zip(args) {
+                    for (slot, from_anno) in type_args.iter_mut().zip(args.iter().cloned()) {
                         if matches!(slot, TypeDecl::Unknown) {
                             *slot = from_anno;
                         }
@@ -58,7 +58,67 @@ fn apply_annotation_type_args(value: Value, annotation: Option<&TypeDecl>) -> Va
             _ => {}
         }
     }
+    // TREE-WALKER-SELF-TYPE-ARG: reach the payload too. An
+    // `Option<Win<u64>>` says what its `Win` is, and a payload built
+    // from a bare struct literal (`Option::Some(Win { addr: p })`)
+    // has no other evidence — the three compiled lanes read the
+    // annotation there, and without this the tree-walker was the only
+    // one that could not answer `__builtin_sizeof::<T>()` on the
+    // value that came out.
+    stamp_payload_type_args(&value, &args);
     value
+}
+
+/// Fill in the type arguments of an enum value's payloads from the
+/// annotation's own arguments, matching by the type's base name.
+///
+/// `Option<Win<u64>>` carries one argument, `Win<u64>`; a payload
+/// object named `Win` takes its `[u64]` from it. Matching by name
+/// rather than by position is what makes this safe for the enums that
+/// carry more than one (`Result<Win<u64>, MyErr>`), where a payload's
+/// position in the variant says nothing about which parameter it fills.
+fn stamp_payload_type_args(value: &Value, args: &[TypeDecl]) {
+    if args.is_empty() {
+        return;
+    }
+    let Value::Heap(rc) = value else { return };
+    let payloads: Vec<RcObject> = match &*rc.borrow() {
+        Object::EnumVariant { values, .. } => values.clone(),
+        _ => return,
+    };
+    for payload in payloads {
+        // Only a payload that has nothing to say for itself. A
+        // `derive_*_type_args` that could not see `T` in the value
+        // leaves `[Unknown; N]` rather than an empty vector, and that
+        // is the same "nothing" — concrete arguments already inferred
+        // from the values win, exactly as they do at the top level.
+        let unknown = |args: &Vec<TypeDecl>| {
+            args.is_empty() || args.iter().all(|a| matches!(a, TypeDecl::Unknown))
+        };
+        let name = match &*payload.borrow() {
+            Object::Struct { type_name, type_args, .. } if unknown(type_args) => *type_name,
+            Object::EnumVariant { enum_name, type_args, .. } if unknown(type_args) => *enum_name,
+            _ => continue,
+        };
+        let Some(matching) = args.iter().find(|a| match a {
+            TypeDecl::Struct(n, inner) | TypeDecl::Enum(n, inner) => {
+                *n == name && !inner.is_empty()
+            }
+            _ => false,
+        }) else {
+            continue;
+        };
+        let inner_args = match matching {
+            TypeDecl::Struct(_, inner) | TypeDecl::Enum(_, inner) => inner.clone(),
+            _ => continue,
+        };
+        match &mut *payload.borrow_mut() {
+            Object::Struct { type_args, .. } | Object::EnumVariant { type_args, .. } => {
+                *type_args = inner_args;
+            }
+            _ => {}
+        }
+    }
 }
 
 impl EvaluationContext<'_> {

@@ -10,6 +10,20 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-02
+- **TREE-WALKER-SELF-TYPE-ARG — 宣言戻り型が `Self` の型引数を名指すようにした** —
+  `fn window(&self) -> Option<Win<u64>> { Win::try_from_raw(self.data) }`
+  で返ってきた `Win` が型引数を持たず、`__builtin_sizeof::<T>()` を使う
+  method が `unbound generic parameter` で落ちていた (compiled 3 レーンは
+  通る)。同じことを `val w: Option<Win<u64>> = ...` と書けば動いていた
+  ので、**宣言戻り型を pending annotation にする**だけで揃う。2 面:
+  (a) 本体の評価中は戻り型を annotation として見せる (tail も `return` も
+  対象。注釈つき `val` は自分の注釈で上書きするので漏れない)、
+  (b) 関数から出る値に戻り型の型引数を焼く — `Option::Some(Win { .. })`
+  のように payload が裸の struct literal だと他に手がかりが無いので、
+  `apply_annotation_type_args` を payload まで再帰させた (名前で対応付け、
+  値から推論済みの具体型が勝つ)。**これで `Vec` / `String` の `as_span` /
+  `capacity_span` が `Span::try_from_raw_parts` の 1 呼び出しになった**。
+  4 レーンに 4 件 pin
 - **ENUM-ASSOC-FN-PRODUCER — enum を返す associated function を
   enum 生成位置に書けるようにした** —
   `fn open(id) -> Option<Handle>` を `if` の枝 / `match` の arm /
@@ -973,21 +987,6 @@
   **具体的な `StructId` を既に持っている**ので、`BranchShape` を
   そこまで運べるようにすれば注釈は要らなくなる。既存の
   `val v: Vec<u8> = Vec::new()` と同じ規則なので実害は小さい。
-- **TREE-WALKER-SELF-TYPE-ARG: `-> Option<Self>` を非 generic な
-  呼び出し元から受けると tree-walker が型引数を失う** ★★ —
-  `impl<T> Win<T> { fn try_from_raw(p: ptr) -> Option<Self> }` を
-  **generic でない** impl / 関数から呼ぶと、戻り値の `Win` が型引数を
-  持たないまま束縛され、後で `__builtin_sizeof::<T>()` を使う method が
-  `unbound generic parameter` で落ちる。**compiled 3 レーンは通る**
-  (GENERIC-IN-ENUM-PAYLOAD で解決済み)。呼び出し元が
-  `impl<T>` の中なら通る (`T` が実行時に束縛されている) ので、
-  **実体化を宣言戻り型からしか取れない形だけ**が穴。
-  2026-09-02 に `String::as_span` を
-  `Span::try_from_raw_parts(self.data, self.len)` の 1 呼び出しに
-  書き換えようとして踏んだ (stdlib は 4 レーンで動く
-  `Ptr { addr } + Span::from_parts` のままにしてある)。
-  最小再現は 15 行 — `Win<T>` + 非 generic な `Holder::window()`
-
 - **TREE-WALKER-CONCRETE-IMPL** ★ — `impl C<u8>` と `impl C<i64>` の
   両方に同名の associated function があると tree-walker が spec を
   1 つしか持たず解決できない (`concrete_associated_hint` を

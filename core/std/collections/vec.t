@@ -100,12 +100,7 @@ impl<T> Vec<T> {
     # reallocate and leave it dangling (`Span`'s escape is unchecked,
     # POINTER P4).
     fn as_span(&self) -> Option<Span<T>> {
-        if __builtin_ptr_is_null(self.data) {
-            Option::None
-        } else {
-            val window: Ptr<T> = Ptr { addr: self.data }
-            Option::Some(Span::from_parts(window, self.len))
-        }
+        Span::try_from_raw_parts(self.data, self.len)
     }
 
     # A window over the whole *allocation*, `capacity()` elements
@@ -124,12 +119,7 @@ impl<T> Vec<T> {
     # did. Reading one before writing it is not a memory error — the
     # bounds check passes — but the value is meaningless.
     fn capacity_span(&self) -> Option<Span<T>> {
-        if __builtin_ptr_is_null(self.data) {
-            Option::None
-        } else {
-            val window: Ptr<T> = Ptr { addr: self.data }
-            Option::Some(Span::from_parts(window, self.cap))
-        }
+        Span::try_from_raw_parts(self.data, self.cap)
     }
 
     # Append. Geometric grow: 0 → 4 → 8 → 16 → ... so `n`

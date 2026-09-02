@@ -123,12 +123,7 @@ impl String {
     # `None` while the String has never allocated (`String::new()`
     # with nothing pushed): there is no address to view.
     fn as_span(&self) -> Option<Span<u8>> {
-        if __builtin_ptr_is_null(self.data) {
-            Option::None
-        } else {
-            val window: Ptr<u8> = Ptr { addr: self.data }
-            Option::Some(Span::from_parts(window, self.len))
-        }
+        Span::try_from_raw_parts(self.data, self.len)
     }
 
     # Current byte count.

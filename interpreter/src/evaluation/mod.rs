@@ -636,6 +636,42 @@ impl<'a> EvaluationContext<'a> {
             .collect()
     }
 
+    /// TREE-WALKER-SELF-TYPE-ARG: run a function / method body with
+    /// its **declared return type** standing in as the pending
+    /// annotation.
+    ///
+    /// `val w: Option<Win<u64>> = Win::try_from_raw(p)` already told
+    /// the callee what `Self` is, through
+    /// [`Self::annotation_generic_scope`]. The same call written in a
+    /// body's tail — `fn window(&self) -> Option<Win<u64>> {
+    /// Win::try_from_raw(self.data) }` — had nothing: the declared
+    /// return type says exactly the same thing and was not being
+    /// consulted, so the `Win` came back with no type arguments and a
+    /// later `__builtin_sizeof::<T>()` on it failed on an unbound
+    /// `T`. The compiled lanes resolve that instantiation from the
+    /// return type, so this is the tree-walker catching up.
+    ///
+    /// It covers the whole body rather than just the tail, which is
+    /// what a `return` in the middle needs too. Statements that
+    /// establish their own annotation shadow it — `handle_val_declaration`
+    /// assigns `pending_annotation` unconditionally, so an
+    /// *un*annotated `val` clears it rather than inheriting the
+    /// function's.
+    pub(super) fn with_return_annotation<R>(
+        &mut self,
+        return_type: Option<&TypeDecl>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let annotation = match return_type {
+            Some(ty) if *ty != TypeDecl::Unit => Some(ty.clone()),
+            _ => None,
+        };
+        let previous = std::mem::replace(&mut self.pending_annotation, annotation);
+        let result = f(self);
+        self.pending_annotation = previous;
+        result
+    }
+
     /// The generic-parameter scope a `val` / `var` annotation
     /// determines for an associated call on `owner`:
     /// `val h: Holder<u64> = Holder::make(n)` puts `T` only in the

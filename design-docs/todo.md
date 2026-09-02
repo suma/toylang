@@ -1315,10 +1315,28 @@
   `AlreadyExists` / `NotADirectory` / `NotEmpty` を追加。**破壊的**
   なので ERROR_MODEL の E0 が直った後) → F4 (`realpath` /
   `current_dir` / `temp_dir`) → F5 (`mkdir_all` / `copy_file`)
-- **STDLIB-LOG: レベル付きログ** ★ — `eprint` / `eprintln` が入った
-  (P0-A) ので純 toylang で書ける。決めるのは出力先を stderr 固定に
-  するかと、レベルのコンパイル時除去を `const fn` で畳めるかの 2 点
-  (RUNTIME_LIBRARY P2)
+- **STDLIB-LOG: レベル付きログ** ★ — 設計は
+  [`STDLIB_LOG.md`](STDLIB_LOG.md) (2026-09-03)。`eprint` / `eprintln` が
+  入った (P0-A) ので純 toylang で書ける。**論点 2 つの答え**: 出力先は
+  **stderr 固定** (stdout はプログラムの出力、差し替えは runtime の
+  `set_err_sink` が既に持っている)。**レベルのコンパイル時除去は
+  できない** — 理由が 3 つ積み重なっている: (1) module の `const` は
+  届かないので stdlib のログ関数から user の `const LOG_LEVEL` が
+  見えない (MODULE-CONST)、(2) **引数はレベル判定より先に評価される**
+  ので、消せるのは書き込みだけで補間の費用は残る (遅延評価は `??` の
+  右辺のように言語が知っている位置にしか作れない)、(3) `const fn` は
+  `print` / `println` を禁じているのでログ関数は定義上 `const fn` に
+  なれない。**代わりに `enabled(level)` を置き、熱いループでは
+  ループの外で 1 回読んで `bool` を持つ形を doc の先頭に書く**
+  (extern の読み・補間・書き込みの 3 つとも消える)。本題は
+  「レベルという可変な値の置き場所」で、**言語に可変なグローバルが
+  無い**ので runtime に 1 つ持ち extern で読み書きする
+  (`TOY_PROFILE_MEM` と同じ流儀、初期値は環境変数 `TOY_LOG`)。
+  **既定でタイムスタンプを付けない** (付けると 4 レーンの出力比較が
+  できなくなる。`TOY_LOG_TIME=1` で ISO 8601)。着手順は L0 (レベルと
+  5 関数。シンクを差し替えて出力を突き合わせるテスト) → L1 (不正値の
+  警告など) → L2 (タイムスタンプ。**分野をまたぐ依存はこれだけ** —
+  STDLIB_TIME の TM3 の後) → L3 (任意: `log::json`)
 - **STDLIB-SERIALIZE: JSON / hex / base64** ★ — 設計は
   [`STDLIB_SERIALIZE.md`](STDLIB_SERIALIZE.md) (2026-09-03)。構造を持った
   データを保存して読み戻す方法が 1 つも無い。測ったこと: (1) **JSON の

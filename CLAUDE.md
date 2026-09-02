@@ -31,6 +31,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 単調時計 / sleep / 性能カウンタ / 日付 (未実装) | [`design-docs/STDLIB_TIME.md`](design-docs/STDLIB_TIME.md) |
 | path の文法とディレクトリ列挙 (未実装) | [`design-docs/STDLIB_FS_PATH.md`](design-docs/STDLIB_FS_PATH.md) |
 | 整数 math / ビット演算 / 限界値 / 乱数 (未実装) | [`design-docs/STDLIB_NUMERIC.md`](design-docs/STDLIB_NUMERIC.md) |
+| JSON / hex / base64 (未実装) | [`design-docs/STDLIB_SERIALIZE.md`](design-docs/STDLIB_SERIALIZE.md) |
 | `ptr` を型付きにする設計 (未実装) | [`design-docs/POINTER.md`](design-docs/POINTER.md) |
 | SIMD の設計と残りのフェーズ | [`design-docs/SIMD.md`](design-docs/SIMD.md) |
 | socket ラッパーと OS のコンパイル時切り替え (N0〜N5 landing 済み) | [`design-docs/NETWORK_IO.md`](design-docs/NETWORK_IO.md) |

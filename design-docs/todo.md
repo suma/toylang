@@ -1319,10 +1319,29 @@
   (P0-A) ので純 toylang で書ける。決めるのは出力先を stderr 固定に
   するかと、レベルのコンパイル時除去を `const fn` で畳めるかの 2 点
   (RUNTIME_LIBRARY P2)
-- **STDLIB-SERIALIZE: JSON / hex / base64** ★ — writer は `Display`
-  (`to_str`) の上に純 toylang で書ける。reader は `StringIter` の上の
-  走査パーサで工数は writer の数倍なので、**writer 先行**・reader は
-  実需要が出てから (RUNTIME_LIBRARY P4)
+- **STDLIB-SERIALIZE: JSON / hex / base64** ★ — 設計は
+  [`STDLIB_SERIALIZE.md`](STDLIB_SERIALIZE.md) (2026-09-03)。構造を持った
+  データを保存して読み戻す方法が 1 つも無い。測ったこと: (1) **JSON の
+  値の木は今日書ける** — `enum Json { .. Array(Vec<Json>),
+  Object(Dict<String, Json>) }` が 3 レーン一致 (E0013 に当たらないのは
+  `Vec` / `Dict` がヒープの向こう側だから。`Box` を挟まなくてよい)、
+  (2) f64 の綴りは往復するが**指数形が無い** (`1e30` 相当が 31 桁)、
+  (3) **ソースに指数リテラルが書けない** (`1e300f64` は `[E0012]`。
+  一方 `parse::to_f64("1e10")` は受理する — 入力にあるのに文法に無い)、
+  (4) **module 修飾の型名が generic 型引数に書けない**
+  (`Result<f64, parse::ParseError>` が parse error。裸の `ParseError`
+  なら通る) — JSON の API はこの形を user のコードに毎回出す、
+  (5) IR VM のループは 1 反復 ≒ 6 µs なので**1 MB の base64 が
+  interpreter で約 6 秒**。決定: **`Int(i64)` と `Num(f64)` を分ける**
+  (`u64` の id を f64 に通すと 2^53 で壊れる) / **指数形は出さない**
+  (往復する唯一の綴りに寄せる) / **`NaN` / `inf` は writer が panic**
+  (書けない値を黙って `null` にしない) / **深さ上限 128 で `TooDeep`**
+  (user の入力が `recursion limit exceeded` の panic になってはいけない)
+  / **エラーは失敗位置をバイト offset で持つ** / **derive 相当は非目標**
+  (型情報が実行時に無い)。着手順は S0 (hex。いちばん小さくて分野の型を
+  確定させる) → S1 (`JsonWriter`。木を作らない) → S2 (base64) →
+  S3 (`Json` の木。出力は S1 で書くので綴りの実装が 2 つにならない) →
+  S4 (reader) → S5 (深さ / 位置つき診断)
 - **並行性 (CONCURRENCY)** は分野としては stdlib だが、本体が move /
   Drop モデルとの接合なので「検討中の機能」節に置いてある (★★★)。
   RUNTIME_LIBRARY P3 も「設計文書を別に取ってから着手」と同じ判断

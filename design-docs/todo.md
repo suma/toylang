@@ -1113,11 +1113,28 @@
   `Set` は `Dict<T, ()>` では書けない / `remove` の swap-remove で
   反復順は既に挿入順ではない)
 - **STDLIB-ERROR-MODEL: エラー型の統一規約が無い** ★★ — `IoError` /
-  `ParseError` / `NetError` が互いに無関係に増えている。決める場所が
-  無いのは 3 点: 共通の `Error` trait を置くか (`Display` の `to_str`
-  で足りるか)、`?` の `From` 連鎖をどこまで張るか (TRY-ERR-RETYPE の
-  機構は既にある)、variant の粒度 (OS errno をどこまで畳むか)。enum が
-  増えてから統一するのは高くつくので、次のエラー型を足す前に
+  `ParseError` / `NetError` が互いに無関係に増えている。設計は
+  [`ERROR_MODEL.md`](ERROR_MODEL.md) (2026-09-02。当初の 3 論点は決着:
+  共通の `Error` trait は**置かない** — enum は `dyn` に載らないので
+  型消去に使えず `<T: Display>` で足りる / `From` はアプリの集約型が
+  張り stdlib は横に張らない / errno は畳んで未知は `Unknown`、
+  隣の変種に化けさせない)。**確保の失敗は既定で `panic`**
+  (`push` の署名は変えない) **+ 復帰したい側は先に訊く**
+  (`try_reserve(n)? ` / `try_with_capacity`)。要素ごとに `Result` を
+  返す形 (`try_push`) は置かない — 全ループに分岐と `?` が生える費用の
+  ほうが重い (2026-09-02 の判断)。今日 `Vec` / `String` / `Box` は
+  確保の失敗を**誰も検査しておらず null へ書きに行く**ので、
+  まず気づくところから。
+  着手順は E0〜E5 で、**先頭 3 つは規約ではなく今日壊れているもの**: (E0) 同じ書き込み失敗が interpreter で
+  `write error`、AOT/JIT で `read error` になる — 語彙が 4 経路に
+  別々に書かれていて、`net` だけが `toylang_rt` へ forward して
+  割れないようにしてある。(E1) 1 つの型に `From` impl を 2 つ書くと
+  後が前を上書きするので、`enum AppError { Io(IoError),
+  Parse(ParseError) }` のような集約エラー型が型検査を通らない
+  (`register_struct_method` のキーに trait 側の型引数が無い)。(E2) 文の
+  位置の `?` (`f()?` を値に束縛しない形) が desugar されず、型検査を
+  通ったあと実行時に `unexpected expr: Try` で落ちる — `Result<(), E>` に
+  至っては `?` を書く方法が 1 つも無い
 - **STDLIB-TEXT: 文字列・テキストの正本が無い** ★ — `char` (= u32) /
   `String` (byte buffer) / `str` (不変) の 3 者の境界規約が各所に
   散っている (CHAR-LITERAL-NUM の例外規則、`String::get` は u8 で

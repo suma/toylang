@@ -1587,6 +1587,40 @@ Modifying a dict while iterating it is undefined: the iterator holds a
 copy of the key and value buffer pointers, which a growing `insert`
 can move.
 
+### `==` on a type parameter
+
+A generic body may compare two values of its own type parameter, with
+no bound to declare:
+
+```rust
+impl<T> Bag<T> {
+    fn contains(&self, needle: T) -> bool {
+        val e: T = self.v.get(0u64)
+        e == needle
+    }
+}
+```
+
+The comparison means whatever `==` means for the type argument: the
+primitive comparison for a primitive, byte equality for `str`, and the
+type's own `eq` method for a struct that has one (see
+[Operator overloading](#operator-overloading)). There is no `Eq` trait
+to implement and no `<T: Eq>` to write — the requirement comes from the
+body rather than from the signature.
+
+It is still a requirement, and it is checked where the type argument is
+known — the call site:
+
+```
+[E0010] Method 'contains' generic parameter 'T' compares its values
+        with `==`, but `P` has no `eq` (define
+        `fn eq(&self, other: &P) -> bool` in `impl P`)
+```
+
+An enum type argument is rejected outright: comparison overloading is a
+struct feature, so an `eq` written in `impl SomeEnum` would type-check
+and then fail to dispatch. Match on the variants instead.
+
 ### `Hash` and `mix` (stdlib)
 
 `core/std/hash.t` declares `trait Hash { fn hash(self: Self) -> u64 }`

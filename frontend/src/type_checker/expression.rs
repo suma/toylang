@@ -578,7 +578,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// matching int width, f64, bool, allocator-handle (== / != only),
     /// or struct overload (eq / lt / le / gt / ge).
     fn visit_compare_binary(
-        &self,
+        &mut self,
         op: &Operator,
         lhs: &ExprRef,
         l: &TypeDecl,
@@ -631,16 +631,23 @@ impl<'a> TypeCheckerVisitor<'a> {
         // declared type is not a generic parameter, so exclude it and
         // let the overload check have the case.
         if matches!(op, Operator::EQ | Operator::NE)
-            && match (l, r) {
+            && let Some(param) = match (l, r) {
                 (TypeDecl::Generic(a), TypeDecl::Generic(b))
                 | (TypeDecl::Generic(a), TypeDecl::Identifier(b))
-                | (TypeDecl::Identifier(a), TypeDecl::Generic(b)) => a == b,
+                | (TypeDecl::Identifier(a), TypeDecl::Generic(b)) => (a == b).then_some(*a),
                 (TypeDecl::Identifier(a), TypeDecl::Identifier(b)) => {
-                    a == b && !self.names_a_declared_type(*a)
+                    (a == b && !self.names_a_declared_type(*a)).then_some(*a)
                 }
-                _ => false,
+                _ => None,
             }
         {
+            // COLLECTIONS C0(a): accepting the comparison here is only
+            // half an answer — whether it *has* one depends on the type
+            // this body is instantiated with, which is not known until
+            // every call site has been seen. Record the requirement;
+            // `eq_requirement.rs` joins it against the call sites at the
+            // end of the program.
+            self.note_equality_requirement(param);
             return Ok(TypeDecl::Bool);
         }
 
@@ -1226,7 +1233,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// *and* same generic args, so `Vec<u8> == Vec<u8>` compares while
     /// `Vec<u8> == Vec<i64>` falls through to the standard mismatch
     /// diagnostic.
-    fn struct_method_compatible(
+    pub(crate) fn struct_method_compatible(
         &self,
         lhs: &TypeDecl,
         rhs: &TypeDecl,

@@ -513,6 +513,16 @@ impl<'a> TypeCheckerVisitor<'a> {
                     "Method",
                     &method_name_str,
                 )?;
+                // COLLECTIONS C0(a): see the note in `generics.rs` —
+                // a `==` inside the method's body is answered by the
+                // type arguments this call resolved to.
+                self.note_generic_instantiation(crate::type_checker::context::EqInstantiation {
+                    owner: crate::type_checker::context::EqOwner::Method(*enum_name, *method),
+                    substitutions: bound_subs.iter().map(|(k, v)| (*k, v.clone())).collect(),
+                    owner_kind: "Method",
+                    owner_name: method_name_str.clone(),
+                    location: args.first().and_then(|a| self.get_expr_location(a)),
+                });
                 let method_return_type = method_func
                     .return_type
                     .clone()
@@ -612,6 +622,15 @@ impl<'a> TypeCheckerVisitor<'a> {
                         "Method",
                         &method_name_str,
                     )?;
+                    // COLLECTIONS C0(a): as above — record what this
+                    // call instantiated the method with.
+                    self.note_generic_instantiation(crate::type_checker::context::EqInstantiation {
+                        owner: crate::type_checker::context::EqOwner::Method(*struct_name, *method),
+                        substitutions: bound_subs.iter().map(|(k, v)| (*k, v.clone())).collect(),
+                        owner_kind: "Method",
+                        owner_name: method_name_str.clone(),
+                        location: args.first().and_then(|a| self.get_expr_location(a)),
+                    });
 
                     // Apply substitutions to method return type
                     let method_return_type = method_func.return_type.as_ref().unwrap_or(&TypeDecl::Unit);

@@ -664,6 +664,10 @@ fn check_typing_collecting(
     // with their lazy `val` + `match` blocks. Same placement rationale
     // as the tuple-struct rewrites above.
     tc.apply_null_coalesce_rewrites();
+    // COLLECTIONS C0(a): with every body and every call site checked,
+    // join the `==`-on-a-type-parameter requirements against the types
+    // each call instantiated them with.
+    tc.report_missing_equality_impls();
     fn_errors.append(&mut tc.errors);
 
     // Report in source order. A call site can pull a callee's body

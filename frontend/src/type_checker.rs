@@ -79,6 +79,7 @@ pub use closure_escape::mark_by_ref_closures;
 mod visitor;
 mod visitor_impl;
 mod module_access;
+mod eq_requirement;
 mod pattern_match;
 mod method_call;
 mod simd;

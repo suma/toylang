@@ -134,6 +134,23 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
             self.pop_context();
             return Err(e);
         }
+
+        // COLLECTIONS C0(a): the declared bounds are not the only thing
+        // a call site owes the callee. A body that compares two values
+        // of a type parameter needs that parameter's type argument to
+        // have an answer for `==`; which arguments those are is not
+        // known until every body has been checked, so record the
+        // instantiation and let `eq_requirement.rs` join the two.
+        self.note_generic_instantiation(crate::type_checker::context::EqInstantiation {
+            owner: crate::type_checker::context::EqOwner::Function(fn_name),
+            substitutions: substitutions.iter().map(|(k, v)| (*k, v.clone())).collect(),
+            owner_kind: "Function",
+            owner_name: fn_name_str.clone(),
+            // The first argument is the closest thing to the call this
+            // path holds a reference to — the method paths point at the
+            // same place, so the two read alike.
+            location: args.first().and_then(|a| self.get_expr_location(a)),
+        });
         
         // Generate unique name for the instantiated function
         let _instantiated_name = self.generate_instantiated_name(fn_name, &substitutions);

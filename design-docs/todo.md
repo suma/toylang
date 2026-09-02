@@ -10,6 +10,17 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-02
+- **COLLECTIONS C0 (a) — generic な `==` の相手に `eq` が無いと型エラー
+  (`E0010`)** — `impl<T> Bag<T>` の `e == needle` は bound 無しで通り、
+  `T` が `eq` を持つ struct ならそれに dispatch する (この性質は維持)。
+  無い型を渡したときだけが穴で、**実行時**に
+  `expected Struct(SymbolU32 { value: 60 }, []), found Struct(...同じ...)`
+  という「同じ型を不一致と言う」診断で落ちていた。body が「この型引数を
+  `==` で比べる」ことを記録し、**全 body と全呼び出しを見終えてから**
+  突き合わせる (stdlib の body はユーザ文の後ろに integrate されるので、
+  どちらか一方の時点では判断できない — `eq_requirement.rs`)。
+  診断は呼び出し位置を指し、enum には「variant を match しろ」と言う。
+  `Dict<P, V>` (P に `eq` 無し) もこれで落ちるようになった。
 - **COLLECTIONS C0 (b)(c) — hash の土台** — `Hash for str` が 0 定数を
   やめて FNV-1a (`toylang_rt::toy_str_hash` + interpreter の
   `__extern_str_hash`)、`impl Hash for String` が同じ定数で toylang の

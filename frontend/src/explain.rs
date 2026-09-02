@@ -331,6 +331,15 @@ Frequent members, with what each actually means:
     parameter with the same trait so the bound passes through. Methods
     inherit their impl block's bounds, so `v.sort()` reports this when
     the element type has no `Ord` impl.
+  * `... generic parameter 'T' compares its values with `==`, but ...`
+    -- the body being called compares two values of that type
+    parameter, and the type argument at this call site has no answer
+    for `==`. Write `fn eq(&self, other: &T) -> bool` in an `impl T`
+    block. An enum cannot: comparison overloading is a struct feature,
+    so match on the variants instead (or carry a scalar tag). No bound
+    is involved -- the requirement comes from the body, not from the
+    signature, which is why it is reported at the call rather than at
+    the declaration.
 
 Syntax errors do not reach this code, or any code -- `else if` (write
 `elif`), a stray `;`, and other parse failures are reported separately,

@@ -6,6 +6,27 @@ use crate::type_decl::TypeDecl;
 use crate::type_checker::error::TypeCheckError;
 use crate::type_checker::core::CoreReferences;
 
+/// The generic body a `==` was written in — the key that ties an
+/// equality requirement to the call sites that instantiate it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EqOwner {
+    /// A free function, by name.
+    Function(DefaultSymbol),
+    /// A method, by the type it is declared on and its own name.
+    Method(DefaultSymbol, DefaultSymbol),
+}
+
+/// One generic call site: what it called, with which type arguments.
+#[derive(Debug, Clone)]
+pub struct EqInstantiation {
+    pub owner: EqOwner,
+    pub substitutions: Vec<(DefaultSymbol, TypeDecl)>,
+    /// How to name the callee in a diagnostic ("Function 'find'").
+    pub owner_kind: &'static str,
+    pub owner_name: String,
+    pub location: Option<crate::type_checker::error::SourceLocation>,
+}
+
 #[derive(Debug)]
 pub struct VarState {
     pub ty: TypeDecl,
@@ -89,6 +110,20 @@ pub struct TypeCheckContext {
     // Bounds for the generic parameters of the function currently being
     // type-checked (e.g. `<A: Allocator>`). Cleared between functions.
     pub current_fn_generic_bounds: HashMap<DefaultSymbol, TypeDecl>,
+    /// COLLECTIONS C0(a): which generic body is being checked, so that
+    /// a `==` between two values of a type parameter can be recorded
+    /// against it. `None` outside a function or method body.
+    pub current_eq_owner: Option<EqOwner>,
+    /// Type parameters each generic body compares with `==` / `!=`.
+    /// Filled while bodies are checked, consumed by the post-pass in
+    /// `eq_requirement.rs` once every call site is known.
+    pub eq_required_params: HashMap<EqOwner, HashSet<DefaultSymbol>>,
+    /// Every generic call site that passed its declared bounds, with
+    /// the type arguments it resolved to. Checked against
+    /// `eq_required_params` after the whole program is checked —
+    /// bodies and call sites are visited in an order that neither one
+    /// controls, so the join cannot happen at either.
+    pub eq_instantiations: Vec<EqInstantiation>,
     // Registered enum types: name -> ordered variant definitions. Each variant
     // has an optional tuple payload (empty for unit variants). Payload types
     // may reference the enum's generic parameters, recorded separately below.
@@ -191,6 +226,9 @@ impl TypeCheckContext {
             current_impl_target: None,
             current_impl_generic_params: None,
             current_fn_generic_bounds: HashMap::new(),
+            current_eq_owner: None,
+            eq_required_params: HashMap::new(),
+            eq_instantiations: Vec::new(),
             enum_definitions: HashMap::new(),
             enum_generic_params: HashMap::new(),
             enums_awaiting_decl: std::collections::HashSet::new(),

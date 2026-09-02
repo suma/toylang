@@ -90,3 +90,124 @@ fn main() -> u64 {
     assert_value(src, "hash_equal_values_agree", 15u64);
 }
 
+
+// COLLECTIONS C0(a). `==` between two values of a type parameter needs
+// no `Eq` bound — a container method written that way dispatches to
+// whatever `eq` the element type has. What has to be caught is the
+// element type that has none: before this, the program type-checked and
+// died at run time with `expected Struct(SymbolU32 { value: 60 }, []),
+// found Struct(SymbolU32 { value: 60 }, [])` — the same type printed as
+// a mismatch.
+#[test]
+fn a_type_argument_without_eq_is_rejected_at_the_call_site() {
+    let src = r#"
+struct P { x: i64 }
+struct Bag<T> { v: Vec<T> }
+
+impl<T> Bag<T> {
+    fn contains(&self, needle: T) -> bool {
+        val e: T = self.v.get(0u64)
+        e == needle
+    }
+}
+
+fn main() -> u64 {
+    var b: Bag<P> = Bag { v: Vec::new() }
+    b.v.push(P { x: 1i64 })
+    # a struct literal in an `if` condition collides with the block
+    # brace, so the probe is a binding
+    val probe: P = P { x: 1i64 }
+    if b.contains(probe) { 1u64 } else { 0u64 }
+}
+"#;
+    let errors = type_check_errors(src);
+    assert!(
+        errors.iter().any(|e| {
+            e.contains("contains") && e.contains("`==`") && e.contains("`P` has no `eq`")
+        }),
+        "expected the missing `eq` on `P` to be reported at the call, got: {errors:?}"
+    );
+}
+
+// The stdlib case the check exists for: a `Dict` key is compared with
+// `==` on every insert and lookup.
+#[test]
+fn a_dict_key_without_eq_is_rejected() {
+    let src = r#"
+struct P { x: i64 }
+
+fn main() -> u64 {
+    var d: Dict<P, u64> = Dict::new()
+    d.insert(P { x: 1i64 }, 5u64)
+    d.get_or(P { x: 1i64 }, 0u64)
+}
+"#;
+    let errors = type_check_errors(src);
+    assert!(
+        errors.iter().any(|e| e.contains("insert") && e.contains("`P` has no `eq`")),
+        "expected the `Dict` key to be rejected, got: {errors:?}"
+    );
+}
+
+// An enum cannot answer `==` at all (overloading is a struct feature),
+// so the advice has to point somewhere else than "write an `eq`".
+#[test]
+fn an_enum_type_argument_is_told_to_match_instead() {
+    let src = r#"
+enum Color { Red, Green }
+
+fn same<T>(a: T, b: T) -> bool { a == b }
+
+fn main() -> u64 {
+    val answer: bool = same(Color::Red, Color::Green)
+    if answer { 1u64 } else { 0u64 }
+}
+"#;
+    let errors = type_check_errors(src);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("`Color` is an enum") && e.contains("match on the variants")),
+        "expected the enum advice, got: {errors:?}"
+    );
+}
+
+// The other half: a type that does have `eq` still instantiates, and
+// the comparison still dispatches to it (the `eq` here looks at one
+// field only, so a structural comparison would answer differently).
+#[test]
+fn a_type_argument_with_eq_still_works_on_every_lane() {
+    let src = r#"
+struct Key { a: i64, b: i64 }
+
+impl Key {
+    fn eq(&self, other: &Key) -> bool { self.a == other.a }
+}
+
+struct Bag<T> { v: Vec<T> }
+
+impl<T> Bag<T> {
+    fn contains(&self, needle: T) -> bool {
+        var i: u64 = 0u64
+        while i < self.v.size() {
+            val e: T = self.v.get(i)
+            if e == needle { return true }
+            i = i + 1u64
+        }
+        false
+    }
+}
+
+fn main() -> u64 {
+    var b: Bag<Key> = Bag { v: Vec::new() }
+    b.v.push(Key { a: 1i64, b: 2i64 })
+    val same_a: Key = Key { a: 1i64, b: 99i64 }
+    val other_a: Key = Key { a: 5i64, b: 2i64 }
+    var out: u64 = 0u64
+    if b.contains(same_a) { out = out + 1u64 }
+    if b.contains(other_a) { out = out + 2u64 }
+    out
+}
+"#;
+    assert_value(src, "eq_dispatch_through_a_type_parameter", 1u64);
+}

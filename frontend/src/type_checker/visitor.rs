@@ -914,6 +914,12 @@ impl<'a> TypeCheckerVisitor<'a> {
             &mut self.context.current_fn_generic_bounds,
             func.generic_bounds.clone(),
         );
+        // COLLECTIONS C0(a): the body's `==` between two values of a
+        // type parameter belongs to this function, and is answered at
+        // its call sites (`eq_requirement.rs`).
+        let prev_eq_owner = self.context.current_eq_owner.replace(
+            crate::type_checker::context::EqOwner::Function(func.name),
+        );
         // POINTER P1: install the body's own generic parameters as a
         // generic scope, so `__builtin_sizeof::<T>()` inside resolves
         // its written parameter the way an impl method body already
@@ -988,6 +994,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 Err(e) => {
                     // Restore bounds so a following type-check doesn't inherit them.
                     self.context.current_fn_generic_bounds = prev_bounds;
+                    self.context.current_eq_owner = prev_eq_owner;
                     self.context.closure_by_ref_bodies = prev_by_ref;
                     if pushed_generic_scope {
                         self.type_inference.pop_generic_scope();
@@ -1036,6 +1043,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         self.pop_context();
         self.context.current_fn_generic_bounds = prev_bounds;
+        self.context.current_eq_owner = prev_eq_owner;
         self.context.closure_by_ref_bodies = prev_by_ref;
         if pushed_generic_scope {
             self.type_inference.pop_generic_scope();

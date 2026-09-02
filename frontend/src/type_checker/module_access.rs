@@ -60,6 +60,12 @@ impl<'a> TypeCheckerVisitor<'a> {
         // rewritten) with their lazy `val` + `match` blocks.
         self.apply_null_coalesce_rewrites();
 
+        // COLLECTIONS C0(a): every body and every call site has been
+        // seen, so the recorded `==`-on-a-type-parameter requirements
+        // can finally be matched against the types they were
+        // instantiated with.
+        self.report_missing_equality_impls();
+
         // Report in source order. Functions are checked in declaration
         // order but a call site can pull a callee's body forward
         // (`type_check_forward_ref`), so collection order doesn't match

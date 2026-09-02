@@ -4,8 +4,8 @@
 > 状態の正本: [`todo.md`](todo.md) の **STDLIB-COLLECTIONS**
 > 俯瞰と優先順位: [`RUNTIME_LIBRARY.md`](RUNTIME_LIBRARY.md) の P1
 > 実測: 2026-09-02 (この文書の数値はすべてこの日に取った)
-> 進捗: C0 の (b) `Hash for str` / `impl Hash for String` と (c) `mix()` は
-> 2026-09-02 に landing。残りは C0 (a) と C1 以降
+> 進捗: **C0 は 2026-09-02 に完了** ((a) missing-`eq` の型検査 / (b)
+> `Hash for str` + `impl Hash for String` / (c) `mix()`)。次は C1
 
 ## Status snapshot
 
@@ -52,7 +52,8 @@ RUNTIME_LIBRARY.md が「着手時の実測事項」としていた論点は、�
    (フィールドを構造的に比べるのではない — `a` だけ見る `eq` を書いて
    確認した)。`Vec::contains` / `index_of` / `Dict` の keyed 操作は
    bound 無しで書ける。
-2. **ただし `eq` を持たない型を渡すと実行時に壊れる。**
+2. **ただし `eq` を持たない型を渡すと実行時に壊れる** (C0 (a) で解消済み。
+   以下は着手前の記録)**。**
    `Bag<Point>` (`Point` に `eq` 無し) は**型検査を通り**、実行時に
    `Type error: expected Struct(SymbolU32 { value: 60 }, []), found
    Struct(SymbolU32 { value: 60 }, []). evaluate_eq: Bad types` で落ちる
@@ -192,7 +193,8 @@ mixer は splitmix64 の finalizer 相当 (乗算 + xorshift 3 段) を
 
 それでも bound を**付ける**。理由: bound 無しで `key.hash()` を呼ぶと、
 測定 2 と同じ「型検査を通って実行時に壊れたメッセージで落ちる」形に
-なる。`E0010` は呼び出し位置を指して「`Key` は `Hash` を実装していない」
+なる (`==` の側は C0 (a) で塞いだが、`hash()` は同じ機構に乗っていない —
+`Hash` は**実在する trait** なので、bound を書けば既存の E0010 で済む)。`E0010` は呼び出し位置を指して「`Key` は `Hash` を実装していない」
 と言える。`docs/language.md` と todo に移行手順 (`impl Hash for Key` を
 書く) を明記する。
 
@@ -259,7 +261,7 @@ API: `new` / `insert(v) -> bool` / `contains(v) -> bool` /
 
 | Phase | 内容 | 受け入れ基準 |
 |---|---|---|
-| **C0** | 前提の掃除: (a) generic `==` の missing-`eq` を**型検査で**捕まえる (実測 2、診断は DIAG-DEBUG-FMT の仲間で `{:?}` 生出力)、(b) ✅ 2026-09-02 `Hash for str` を extern 化 + `impl Hash for String`、(c) ✅ 2026-09-02 `hash.t` に `mix()` | (a) は `Bag<Point>` がコンパイルエラーになること。(b) は 3 レーンで同値 (`compiler/tests/consistency/collections.rs` が値ごと pin) |
+| **C0** ✅ | 前提の掃除: (a) ✅ 2026-09-02 generic `==` の missing-`eq` を**型検査で**捕まえる (`E0010`、呼び出し位置)、(b) ✅ 2026-09-02 `Hash for str` を extern 化 + `impl Hash for String`、(c) ✅ 2026-09-02 `hash.t` に `mix()` | (a) は `Bag<Point>` がコンパイルエラーになること。(b) は 3 レーンで同値 (`compiler/tests/consistency/collections.rs` が値ごと pin) |
 | **C1** | `Dict` の open addressing (1.1〜1.6) | 既存 dict テストが**意味論不変で** green + 反復順を `docs/language.md` に明記 + 順序の 3 レーン pin + 性能実測 (この文書の表と同じ形で前後比較) |
 | **C2** | `Set<T>` | `Dict` と同じ入力列で反復順が一致する交差テスト、3 レーン一致 |
 | **C3** | `Vec` 拡張 | method ごとの consistency テスト。`remove` と `swap_remove` の順序差を pin |

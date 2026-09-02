@@ -3798,6 +3798,25 @@ pub extern "C" fn toy_io_env_status() -> u64 {
 }
 
 /// Whether the file at the toylang str `path` exists.
+/// FNV-1a over a str handle's UTF-8 bytes — the `Hash for str` impl in
+/// `core/std/hash.t`. The interpreter's `__extern_str_hash` and
+/// `impl Hash for String` compute the same value from the same
+/// constants; a hash that disagreed between backends would put the
+/// same key in different slots of a future hash table, so the
+/// algorithm is pinned rather than chosen per backend.
+///
+/// Unseeded on purpose: a per-process seed would make a table's
+/// iteration order differ run to run.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_str_hash(s: *const u8) -> u64 {
+    let bytes = if s.is_null() { &[][..] } else { str_bytes(s) };
+    let mut h: u64 = 14695981039346656037;
+    for b in bytes {
+        h = (h ^ (*b as u64)).wrapping_mul(1099511628211);
+    }
+    h
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn toy_io_file_exists(path: *const u8) -> u8 {
     let p = str_to_cstring(path);

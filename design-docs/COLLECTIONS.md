@@ -4,12 +4,15 @@
 > 状態の正本: [`todo.md`](todo.md) の **STDLIB-COLLECTIONS**
 > 俯瞰と優先順位: [`RUNTIME_LIBRARY.md`](RUNTIME_LIBRARY.md) の P1
 > 実測: 2026-09-02 (この文書の数値はすべてこの日に取った)
+> 進捗: C0 の (b) `Hash for str` / `impl Hash for String` と (c) `mix()` は
+> 2026-09-02 に landing。残りは C0 (a) と C1 以降
 
 ## Status snapshot
 
 | 項目 | 状態 |
 |---|---|
 | `Dict<K, V>` | 線形探索。insert / get / contains_key / remove が **O(n)** |
+| `Hash` | trait と primitive / `str` / `String` の impl + 表側の `mix()` は揃った (2026-09-02)。表がまだ使っていない |
 | `Set<T>` | 無い |
 | Deque / PriorityQueue | 無い |
 | `Vec<T>` の `insert` / `remove` / `contains` / `index_of` / `reverse` / `sort_by` | 無い |
@@ -256,7 +259,7 @@ API: `new` / `insert(v) -> bool` / `contains(v) -> bool` /
 
 | Phase | 内容 | 受け入れ基準 |
 |---|---|---|
-| **C0** | 前提の掃除: (a) generic `==` の missing-`eq` を**型検査で**捕まえる (実測 2、診断は DIAG-DEBUG-FMT の仲間で `{:?}` 生出力)、(b) `Hash for str` を extern 化 + `impl Hash for String`、(c) `hash.t` に `mix()` | (a) は `Bag<Point>` がコンパイルエラーになること。(b) は 3 レーンで同値 |
+| **C0** | 前提の掃除: (a) generic `==` の missing-`eq` を**型検査で**捕まえる (実測 2、診断は DIAG-DEBUG-FMT の仲間で `{:?}` 生出力)、(b) ✅ 2026-09-02 `Hash for str` を extern 化 + `impl Hash for String`、(c) ✅ 2026-09-02 `hash.t` に `mix()` | (a) は `Bag<Point>` がコンパイルエラーになること。(b) は 3 レーンで同値 (`compiler/tests/consistency/collections.rs` が値ごと pin) |
 | **C1** | `Dict` の open addressing (1.1〜1.6) | 既存 dict テストが**意味論不変で** green + 反復順を `docs/language.md` に明記 + 順序の 3 レーン pin + 性能実測 (この文書の表と同じ形で前後比較) |
 | **C2** | `Set<T>` | `Dict` と同じ入力列で反復順が一致する交差テスト、3 レーン一致 |
 | **C3** | `Vec` 拡張 | method ごとの consistency テスト。`remove` と `swap_remove` の順序差を pin |

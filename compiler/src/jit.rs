@@ -519,6 +519,7 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_io_write_file", toylang_rt::toy_io_write_file as *const u8);
     jit_builder.symbol("toy_io_write_file_status", toylang_rt::toy_io_write_file_status as *const u8);
     jit_builder.symbol("toy_io_file_exists", toylang_rt::toy_io_file_exists as *const u8);
+    jit_builder.symbol("toy_str_hash", toylang_rt::toy_str_hash as *const u8);
     jit_builder.symbol("toy_io_random", toylang_rt::toy_io_random as *const u8);
     jit_builder.symbol("toy_io_random_seed", toylang_rt::toy_io_random_seed as *const u8);
     jit_builder.symbol("toy_io_strftime", toylang_rt::toy_io_strftime as *const u8);

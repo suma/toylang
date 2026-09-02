@@ -36,6 +36,7 @@ mod allocators_drop;
 mod types_strings;
 mod compound_values;
 mod dicts_closures;
+mod collections;
 mod interp_iterators;
 mod traits_dyn;
 mod match_scrutinee;

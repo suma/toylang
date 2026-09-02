@@ -707,6 +707,26 @@ impl From<str> for String {
 # `==` (`eq`) does but on `<`. The shorter prefix is the smaller
 # string; equal length means equal content. `Ord for String` lives
 # here (the module owning the type), matching `eq` / `concat` / etc.
+# FNV-1a over the bytes, with the constants `core/std/hash.t` pins for
+# `str`, so `String::from_str("k").hash() == "k".hash()`. Written in
+# toylang rather than routed through `__extern_str_hash`: the extern
+# takes a `str`, and reaching one from a `String` means materialising
+# a copy of the bytes — the allocation the str impl exists to avoid.
+# `get` is a typed-slot read, so this walk allocates nothing.
+impl Hash for String {
+    fn hash(self: Self) -> u64 {
+        val n: u64 = self.size()
+        var h: u64 = 14695981039346656037u64
+        var i: u64 = 0u64
+        while i < n {
+            val b: u8 = self.get(i)
+            h = (h ^ (b as u64)) * 1099511628211u64
+            i = i + 1u64
+        }
+        h
+    }
+}
+
 impl Ord for String {
     fn lt(self: Self, other: Self) -> bool {
         val n: u64 = self.size()

@@ -188,6 +188,10 @@ pub fn build_io_registry() -> HashMap<&'static str, ExternFn> {
     m.insert("__extern_io_write_file_u64", io_write_file);
     m.insert("__extern_io_write_file_status", io_write_file_status);
     m.insert("__extern_io_file_exists_bool", io_file_exists);
+    // COLLECTIONS C0: `Hash for str`. Mirrors
+    // `toylang_rt::toy_str_hash` constant for constant — the three
+    // backends have to agree on the value.
+    m.insert("__extern_str_hash", str_hash);
     m.insert("__extern_io_random_u64", io_random);
     m.insert("__extern_io_random_seed", io_random_seed);
     m.insert("__extern_io_strftime_str", io_strftime);
@@ -645,6 +649,26 @@ fn io_write_file(args: &[Value]) -> Result<Value, InterpreterError> {
 /// this thread. Paired with `io_write_file` like `io_env_status`.
 fn io_write_file_status(_args: &[Value]) -> Result<Value, InterpreterError> {
     Ok(u64_result(WRITE_FILE_STATUS.with(|s| s.get())))
+}
+
+/// FNV-1a over the UTF-8 bytes of `s` — the `Hash for str` impl in
+/// `core/std/hash.t`. Mirrors `toylang_rt::toy_str_hash` step for
+/// step (and `impl Hash for String` in `core/std/string.t`), so a key
+/// hashes to the same u64 on every backend.
+fn str_hash(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_str_hash` takes 1 argument".to_string(),
+            expected: 1,
+            found: args.len(),
+        });
+    }
+    let s = str_arg(&args[0], "__extern_str_hash")?;
+    let mut h: u64 = 14695981039346656037;
+    for b in s.as_bytes() {
+        h = (h ^ (*b as u64)).wrapping_mul(1099511628211);
+    }
+    Ok(u64_result(h))
 }
 
 /// Whether the file at `path` exists.

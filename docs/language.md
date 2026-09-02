@@ -1587,6 +1587,44 @@ Modifying a dict while iterating it is undefined: the iterator holds a
 copy of the key and value buffer pointers, which a growing `insert`
 can move.
 
+### `Hash` and `mix` (stdlib)
+
+`core/std/hash.t` declares `trait Hash { fn hash(self: Self) -> u64 }`
+with impls for every integer width, `bool`, `str`, and `String` (in
+`core/std/string.t`, the module that owns the type). `hash` promises
+one thing: equal values hash equally. It does *not* promise a spread —
+the integer impls are the identity, or a same-width cast for the
+signed widths so that `-5i8` hashes as the byte it is rather than as a
+sign-extended `u64`.
+
+Spreading is a separate step, `mix`:
+
+```rust
+val slot: u64 = mix(key.hash()) & (cap - 1u64)
+```
+
+`mix` is splitmix64's finalizer — three xor-shift-multiply rounds,
+which spread every input bit across the whole word. A table applies it
+before taking the low bits as a slot index, so that a hash written by
+user code gets the same treatment as the built-in ones.
+
+`str` and `String` hash with FNV-1a over their UTF-8 bytes, so the two
+spellings of the same text agree:
+
+```rust
+val s: String = String::from_str("k")
+s.hash() == "k".hash()          # true
+```
+
+The value is fixed, not merely consistent within a run: the
+interpreter, the JIT, and a compiled binary all produce the same u64
+for the same bytes, and there is no per-process seed (that would make
+a hash table's iteration order differ run to run, which the
+determinism rules rule out). The `str` impl runs in the runtime
+(`toylang_rt::toy_str_hash`) rather than as a toylang byte walk,
+because `str::as_ptr()` copies the bytes on every call in the
+interpreter and a hash runs once per lookup.
+
 ### Numeric semantics
 
 - **Integer arithmetic**: standard two's-complement. `+`, `*`, and

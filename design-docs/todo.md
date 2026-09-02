@@ -10,6 +10,13 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-02
+- **COLLECTIONS C0 (b)(c) — hash の土台** — `Hash for str` が 0 定数を
+  やめて FNV-1a (`toylang_rt::toy_str_hash` + interpreter の
+  `__extern_str_hash`)、`impl Hash for String` が同じ定数で toylang の
+  バイト走査、`hash.t` に splitmix64 finalizer の `pub fn mix()`。
+  mixer を impl ではなく**表側**に置いたので user の `impl Hash` も
+  同じ分散を得る。値は 3 レーンで pin (`consistency/collections.rs`)。
+  設計は [`COLLECTIONS.md`](COLLECTIONS.md)。残りは C0 (a) と C1。
 - **WINDOW-ESCAPE — 窓がバッファより長生きできなくなった (`[E0026]`)** —
   POINTER.md が P4 で先送りしていた検査。着手条件 (「実プログラムで
   dangling span が問題になる」) は満たされていた: ローカル `Vec` の窓を

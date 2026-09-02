@@ -355,3 +355,112 @@ fn main() -> u64 {
 "#;
     assert_value(src, "bump_oversized_allocation", 8u64);
 }
+
+// COLLECTIONS C2. `Set<T>` is its own struct rather than
+// `Dict<T, ()>`, which the compiled lanes reject, so `insert` can
+// answer the question a set's insert actually asks: was this new?
+#[test]
+fn set_dedups_and_keeps_insertion_order() {
+    let src = r#"
+fn main() -> u64 {
+    var s: Set<u64> = Set::new()
+    var out: u64 = 0u64
+    if s.insert(3u64) { out = out + 1u64 }
+    if s.insert(1u64) { out = out + 2u64 }
+    # already there: not new, and it keeps its place
+    if s.insert(3u64) { out = out + 4u64 }
+    s.insert(2u64)
+    s.remove(1u64)
+    var order: u64 = 0u64
+    for v in s.iter() {
+        order = order * 10u64 + v
+    }
+    # 8 (new, new, not-new) with 3 then 2 surviving in insertion order
+    out * 100u64 + order
+}
+"#;
+    assert_value(src, "set_insert_order", 332u64);
+}
+
+// Enough elements to rehash several times, then every one read back,
+// plus a gap that was never inserted.
+#[test]
+fn the_set_survives_growing() {
+    let src = r#"
+fn main() -> u64 {
+    var s: Set<u64> = Set::new()
+    var i: u64 = 0u64
+    while i < 200u64 {
+        s.insert(i * 3u64)
+        i = i + 1u64
+    }
+    var hits: u64 = 0u64
+    var j: u64 = 0u64
+    while j < 200u64 {
+        if s.contains(j * 3u64) { hits = hits + 1u64 }
+        j = j + 1u64
+    }
+    var out: u64 = 0u64
+    if hits == 200u64 { out = out + 1u64 }
+    if s.contains(1u64) { out = out + 2u64 }
+    if s.size() == 200u64 { out = out + 4u64 }
+    if s.insert(0u64) { out = out + 8u64 }
+    out
+}
+"#;
+    assert_value(src, "set_growth", 5u64);
+}
+
+// `Set` and `Dict` carry two copies of the same probe / mixer / growth
+// arithmetic — there is no cheap way to abstract "a table with an
+// optional value column" here. This is what keeps the copies honest:
+// fed the same keys in the same order, through the same growth and the
+// same removals, the two have to iterate identically.
+#[test]
+fn a_set_and_a_dict_agree_on_order() {
+    let src = r#"
+fn main() -> u64 {
+    var s: Set<u64> = Set::new()
+    var d: Dict<u64, u64> = Dict::new()
+    var i: u64 = 0u64
+    while i < 40u64 {
+        s.insert(i * 5u64)
+        d.insert(i * 5u64, i)
+        i = i + 1u64
+    }
+    s.remove(35u64)
+    d.remove(35u64)
+    s.remove(0u64)
+    d.remove(0u64)
+
+    var sset: u64 = 0u64
+    for v in s.iter() {
+        sset = sset * 31u64 + v
+    }
+    var sdict: u64 = 0u64
+    for kv in d.iter() {
+        sdict = sdict * 31u64 + kv.0
+    }
+    if sset == sdict { 1u64 } else { 0u64 }
+}
+"#;
+    assert_value(src, "set_dict_same_order", 1u64);
+}
+
+#[test]
+fn a_set_of_strs_uses_the_runtime_hash() {
+    let src = r#"
+fn main() -> u64 {
+    var s: Set<str> = Set::new()
+    s.insert("alpha")
+    s.insert("beta")
+    var out: u64 = 0u64
+    if s.insert("alpha") { out = out + 1u64 }
+    if s.contains("beta") { out = out + 2u64 }
+    if s.remove("beta") { out = out + 4u64 }
+    if s.contains("beta") { out = out + 8u64 }
+    out + s.size()
+}
+"#;
+    assert_value(src, "set_str_elements", 7u64);
+}

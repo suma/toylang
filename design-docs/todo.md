@@ -9,6 +9,15 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-09-03
+- **COLLECTIONS C2 — `Set<T>` (`core/std/collections/set.t`)** — `Dict` と
+  同じ表 (probe / `hash_mix` / 7/8 成長) を持つ独立 struct。`Dict<T, ()>`
+  は compiled レーンが unit 引数を拒否し、`Dict<T, bool>` は `insert` の
+  戻り値が「新規かどうか」にならないので採らなかった。反復順は挿入順
+  (削除後も)、`insert` は新規なら true、`clear` はバッファを保つ。
+  **同じ算術が 2 箇所にある**ので、同じキー列を入れた `Set` と `Dict` の
+  反復順が一致することを 3 レーンで pin して縛っている。
+
 ### 2026-09-02
 - **BUMP-CHUNK-OVERSIZE — 1 MiB を超える確保がチャンクをはみ出していた** —
   `toylang_rt::bump_alloc_raw` は要求が残りに入らないとき**常に

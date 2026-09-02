@@ -4,8 +4,8 @@
 > 状態の正本: [`todo.md`](todo.md) の **STDLIB-COLLECTIONS**
 > 俯瞰と優先順位: [`RUNTIME_LIBRARY.md`](RUNTIME_LIBRARY.md) の P1
 > 実測: 2026-09-02 (この文書の数値はすべてこの日に取った)
-> 進捗: **C0 と C1 は 2026-09-02 に完了**。C1 は 1.5 の tombstone だけ
-> 採らなかった (下記「C1 で設計から外れた点」)。次は C2 (`Set<T>`)
+> 進捗: **C0 / C1 は 2026-09-02、C2 は 2026-09-03 に完了**。C1 は 1.5 の
+> tombstone だけ採らなかった (下記「C1 で設計から外れた点」)。次は C3
 
 ## Status snapshot
 
@@ -13,7 +13,7 @@
 |---|---|
 | `Dict<K, V>` | open addressing (2026-09-02)。insert / get / contains_key が **O(1)**、remove は順序維持のため O(n) |
 | `Hash` | trait と primitive / `str` / `String` の impl + 表側の `hash_mix()` (2026-09-02)。`Dict` が使っている |
-| `Set<T>` | 無い |
+| `Set<T>` | `core/std/collections/set.t` (2026-09-03)。`Dict` と同じ表・同じ順序保証 |
 | Deque / PriorityQueue | 無い |
 | `Vec<T>` の `insert` / `remove` / `contains` / `index_of` / `reverse` / `sort_by` | 無い |
 | 組み込み `dict[K, V]` (リテラル `dict{...}`) | **interpreter のみ** (`compiler MVP cannot lower a dict literal yet`) |
@@ -295,7 +295,7 @@ API: `new` / `insert(v) -> bool` / `contains(v) -> bool` /
 |---|---|---|
 | **C0** ✅ | 前提の掃除: (a) ✅ 2026-09-02 generic `==` の missing-`eq` を**型検査で**捕まえる (`E0010`、呼び出し位置)、(b) ✅ 2026-09-02 `Hash for str` を extern 化 + `impl Hash for String`、(c) ✅ 2026-09-02 `hash.t` に `hash_mix()` | (a) は `Bag<Point>` がコンパイルエラーになること。(b) は 3 レーンで同値 (`compiler/tests/consistency/collections.rs` が値ごと pin) |
 | **C1** ✅ | `Dict` の open addressing (1.1〜1.6。tombstone を除く) | ✅ 既存 dict テスト green / 反復順を `docs/language.md` に明記 / 順序を 3 レーンで pin (`consistency/collections.rs` + `example/dict_hash.t`) / 実測は下記 |
-| **C2** | `Set<T>` | `Dict` と同じ入力列で反復順が一致する交差テスト、3 レーン一致 |
+| **C2** ✅ | `Set<T>` | ✅ 3 レーン一致 + `Dict` と同じ入力列で反復順が一致する交差テスト (写しが 2 つあることの縛り) |
 | **C3** | `Vec` 拡張 | method ごとの consistency テスト。`remove` と `swap_remove` の順序差を pin |
 | **C4** | `Deque` / `PriorityQueue` | 3 レーン一致。PQ は「同値要素の順序は未規定」を明記 |
 

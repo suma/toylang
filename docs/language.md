@@ -1633,6 +1633,31 @@ An enum type argument is rejected outright: comparison overloading is a
 struct feature, so an `eq` written in `impl SomeEnum` would type-check
 and then fail to dispatch. Match on the variants instead.
 
+### `Set<T>` (stdlib)
+
+`core/std/collections/set.t` is the membership half of `Dict`, on the
+same table. An element type needs the same two things a key does:
+`impl Hash` and an answer for `==`.
+
+```rust
+var seen: Set<str> = Set::new()
+seen.insert("alpha")            # true  — new
+seen.insert("alpha")            # false — already there
+println(seen.contains("alpha")) # true
+println(seen.remove("beta"))    # false — nothing removed
+println(seen.size())            # 1
+
+for v in seen.iter() {
+    println(v)
+}
+```
+
+`insert` answers whether the element was new, and leaves an element
+that was already there where it is. Iteration is in insertion order and
+stays that way across removals, exactly as `Dict`'s does — `remove` is
+O(n) for the same reason, while `insert` and `contains` are O(1)
+expected. `clear` empties the set but keeps its buffers.
+
 ### `Hash` and `hash_mix` (stdlib)
 
 `core/std/hash.t` declares `trait Hash { fn hash(self: Self) -> u64 }`

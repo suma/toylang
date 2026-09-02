@@ -3,12 +3,26 @@
 # module path from the file system (`core/std/dict.t -> ["std",
 # "dict"]`).
 #
-# Stdlib `Dict<K, V>` — user-space hash-table-shaped collection
-# implemented entirely on top of the language's pointer
-# primitives (`__builtin_heap_alloc` / `__builtin_heap_realloc` /
+# Stdlib `Dict<K, V>` — a user-space hash table implemented entirely
+# on top of the language's pointer primitives
+# (`__builtin_heap_alloc` / `__builtin_heap_realloc` /
 # `__builtin_ptr_read` / `__builtin_ptr_write` /
 # `__builtin_sizeof`). No special-casing in the parser, the type
 # checker, or any backend.
+#
+# Layout (COLLECTIONS C1, `design-docs/COLLECTIONS.md`): the entries
+# stay where they were, in insertion order in the parallel `keys` /
+# `vals` arrays, and a separate power-of-two `slots` table of u32
+# indices into them is what lookup probes. Keeping the entries apart
+# from the table is what lets iteration stay in insertion order — and
+# lets `DictIter` and its adapters keep the exact fields they had,
+# which the backends' 8-return register budget leaves no room to grow.
+#
+# Field packing: `caps` and `sizes` each hold two 32-bit numbers
+# rather than taking a field apiece. A `&mut self` method returns one
+# register per receiver leaf, so `remove(&mut self) -> bool` at six
+# leaves plus its result is close to the budget; unpacked, the struct
+# would not fit. Entry counts and byte widths are far below 2^32.
 #
 # `get(key) -> Option<V>` is the canonical lookup that surfaces
 # presence in the value (`Option::Some(v)` on hit, `Option::None`
@@ -19,73 +33,164 @@
 # integration aliases stdlib `Option` to `__std_Option` in that
 # case so dict.t's `-> Option<V>` still resolves to the stdlib
 # enum (DICT-CROSS-MODULE-OPTION fix).
+#
+# Costs: `insert` / `get` / `get_or` / `contains_key` are O(1)
+# expected. `remove` is O(n): it shifts the later entries down to
+# keep insertion order and then rebuilds the table, because every
+# index the table holds above the hole has moved. A tombstone would
+# make removal O(1), but marking an entry dead needs a liveness
+# column, and reading it would push the iterator adapters over the
+# register budget (see above). Removal is the rarest of the four;
+# that is the trade.
+#
+# `K: Hash` is a real bound, enforced at the call site like any other
+# (`[E0010]`). A struct key needs `impl Hash for K` as well as the
+# `eq` the lookup compares with — there is no derive here.
 
-struct Dict<K, V> {
-    keys: ptr,
-    vals: ptr,
-    count: u64,
-    cap: u64,
-    key_size: u64,
-    val_size: u64,
+# The reserved `slots` value for an empty slot. `pub fn` rather than
+# `pub const` because a module-level const is not visible from another
+# module (todo MODULE-CONST) — same workaround as `core/std/poll.t`.
+pub fn dict_slot_empty() -> u32 {
+    0xFFFFFFFFu32
 }
 
-impl<K, V> Dict<K, V> {
+struct Dict<K: Hash, V> {
+    keys: ptr,
+    vals: ptr,
+    # u32 index into the entries, or `dict_slot_empty()`.
+    slots: ptr,
+    count: u64,
+    # entry capacity in the high 32 bits, slot-table size in the low.
+    caps: u64,
+    # key byte width in the high 32 bits, value width in the low.
+    sizes: u64,
+}
+
+impl<K: Hash, V> Dict<K, V> {
     fn new() -> Self {
         Dict {
             keys: __builtin_heap_alloc(0u64),
             vals: __builtin_heap_alloc(0u64),
+            slots: __builtin_heap_alloc(0u64),
             count: 0u64,
-            cap: 0u64,
-            key_size: 0u64,
-            val_size: 0u64,
+            caps: 0u64,
+            sizes: 0u64,
         }
     }
 
-    # Insert or update. Linear scan; on hit, overwrite the
-    # value and return. On miss, fall through to the grow +
-    # append path below. The early `return` from inside the
-    # while loop relies on the DICT-RETURN-WHILE fix to the
-    # interpreter loop evaluator (`88d9af6` predecessor).
+    # Insert or update.
+    #
+    # Probes the table for the key: on a hit, overwrite the value in
+    # place (the entry keeps its position, so an update does not
+    # reorder iteration); on a miss, append the entry and point the
+    # empty slot the probe stopped on at it. The early `return` from
+    # inside the loop relies on the DICT-RETURN-WHILE fix to the
+    # interpreter loop evaluator.
     unsafe fn insert(&mut self, key: K, value: V) {
-        if self.key_size == 0u64 {
-            self.key_size = __builtin_sizeof(key)
-            self.val_size = __builtin_sizeof(value)
+        if self.sizes == 0u64 {
+            self.sizes = (__builtin_sizeof(key) << 32u64) | __builtin_sizeof(value)
         }
-        var i: u64 = 0u64
-        while i < self.count {
-            val existing: K = __builtin_ptr_read(self.keys, i * self.key_size)
+        val ks: u64 = self.sizes >> 32u64
+        val vs: u64 = self.sizes & 0xFFFFFFFFu64
+        var ecap: u64 = self.caps >> 32u64
+        var scap: u64 = self.caps & 0xFFFFFFFFu64
+
+        # First insert: give the table a floor of 8 slots.
+        if scap == 0u64 {
+            scap = 8u64
+            self.slots = __builtin_heap_realloc(self.slots, scap * 4u64)
+            var t: u64 = 0u64
+            while t < scap {
+                __builtin_ptr_write(self.slots, t * 4u64, dict_slot_empty())
+                t = t + 1u64
+            }
+            self.caps = (ecap << 32u64) | scap
+        }
+
+        val mask: u64 = scap - 1u64
+        var j: u64 = hash_mix(key.hash()) & mask
+        loop {
+            val s: u32 = __builtin_ptr_read(self.slots, j * 4u64)
+            if s == dict_slot_empty() {
+                break
+            }
+            val idx: u64 = s as u64
+            val existing: K = __builtin_ptr_read(self.keys, idx * ks)
             if existing == key {
-                __builtin_ptr_write(self.vals, i * self.val_size, value)
+                __builtin_ptr_write(self.vals, idx * vs, value)
                 return
             }
-            i = i + 1u64
+            j = (j + 1u64) & mask
         }
-        if self.cap == 0u64 {
-            self.cap = 4u64
-            self.keys = __builtin_heap_realloc(self.keys, self.cap * self.key_size)
-            self.vals = __builtin_heap_realloc(self.vals, self.cap * self.val_size)
-        } elif self.count >= self.cap {
-            self.cap = self.cap * 2u64
-            self.keys = __builtin_heap_realloc(self.keys, self.cap * self.key_size)
-            self.vals = __builtin_heap_realloc(self.vals, self.cap * self.val_size)
+
+        if ecap == 0u64 {
+            ecap = 4u64
+            self.keys = __builtin_heap_realloc(self.keys, ecap * ks)
+            self.vals = __builtin_heap_realloc(self.vals, ecap * vs)
+            self.caps = (ecap << 32u64) | scap
+        } elif self.count >= ecap {
+            ecap = ecap * 2u64
+            self.keys = __builtin_heap_realloc(self.keys, ecap * ks)
+            self.vals = __builtin_heap_realloc(self.vals, ecap * vs)
+            self.caps = (ecap << 32u64) | scap
         }
-        __builtin_ptr_write(self.keys, self.count * self.key_size, key)
-        __builtin_ptr_write(self.vals, self.count * self.val_size, value)
+        __builtin_ptr_write(self.keys, self.count * ks, key)
+        __builtin_ptr_write(self.vals, self.count * vs, value)
+        __builtin_ptr_write(self.slots, j * 4u64, self.count as u32)
         self.count = self.count + 1u64
+
+        # Grow the table past a 7/8 load factor. Linear probing needs
+        # the empty slots: at a full table the probe never terminates.
+        if self.count * 8u64 >= scap * 7u64 {
+            val ncap: u64 = scap * 2u64
+            self.slots = __builtin_heap_realloc(self.slots, ncap * 4u64)
+            var t2: u64 = 0u64
+            while t2 < ncap {
+                __builtin_ptr_write(self.slots, t2 * 4u64, dict_slot_empty())
+                t2 = t2 + 1u64
+            }
+            val nmask: u64 = ncap - 1u64
+            var i: u64 = 0u64
+            while i < self.count {
+                val k2: K = __builtin_ptr_read(self.keys, i * ks)
+                var p: u64 = hash_mix(k2.hash()) & nmask
+                loop {
+                    val s2: u32 = __builtin_ptr_read(self.slots, p * 4u64)
+                    if s2 == dict_slot_empty() {
+                        break
+                    }
+                    p = (p + 1u64) & nmask
+                }
+                __builtin_ptr_write(self.slots, p * 4u64, i as u32)
+                i = i + 1u64
+            }
+            self.caps = (ecap << 32u64) | ncap
+        }
     }
 
     # Look up `key`; on hit return the stored value, on miss
-    # return `default`. Early-return from the loop body now
-    # works (DICT-RETURN-WHILE).
+    # return `default`.
     unsafe fn get_or(self: Self, key: K, default: V) -> V {
-        var i: u64 = 0u64
-        while i < self.count {
-            val existing: K = __builtin_ptr_read(self.keys, i * self.key_size)
+        val scap: u64 = self.caps & 0xFFFFFFFFu64
+        if scap == 0u64 {
+            return default
+        }
+        val ks: u64 = self.sizes >> 32u64
+        val vs: u64 = self.sizes & 0xFFFFFFFFu64
+        val mask: u64 = scap - 1u64
+        var j: u64 = hash_mix(key.hash()) & mask
+        loop {
+            val s: u32 = __builtin_ptr_read(self.slots, j * 4u64)
+            if s == dict_slot_empty() {
+                break
+            }
+            val idx: u64 = s as u64
+            val existing: K = __builtin_ptr_read(self.keys, idx * ks)
             if existing == key {
-                val v: V = __builtin_ptr_read(self.vals, i * self.val_size)
+                val v: V = __builtin_ptr_read(self.vals, idx * vs)
                 return v
             }
-            i = i + 1u64
+            j = (j + 1u64) & mask
         }
         default
     }
@@ -93,26 +198,49 @@ impl<K, V> Dict<K, V> {
     # Option-returning lookup. Returns `Option::Some(v)` on hit,
     # `Option::None` on miss.
     unsafe fn get(self: Self, key: K) -> Option<V> {
-        var i: u64 = 0u64
-        while i < self.count {
-            val existing: K = __builtin_ptr_read(self.keys, i * self.key_size)
+        val scap: u64 = self.caps & 0xFFFFFFFFu64
+        if scap == 0u64 {
+            return Option::None
+        }
+        val ks: u64 = self.sizes >> 32u64
+        val vs: u64 = self.sizes & 0xFFFFFFFFu64
+        val mask: u64 = scap - 1u64
+        var j: u64 = hash_mix(key.hash()) & mask
+        loop {
+            val s: u32 = __builtin_ptr_read(self.slots, j * 4u64)
+            if s == dict_slot_empty() {
+                break
+            }
+            val idx: u64 = s as u64
+            val existing: K = __builtin_ptr_read(self.keys, idx * ks)
             if existing == key {
-                val v: V = __builtin_ptr_read(self.vals, i * self.val_size)
+                val v: V = __builtin_ptr_read(self.vals, idx * vs)
                 return Option::Some(v)
             }
-            i = i + 1u64
+            j = (j + 1u64) & mask
         }
         Option::None
     }
 
     unsafe fn contains_key(self: Self, key: K) -> bool {
-        var i: u64 = 0u64
-        while i < self.count {
-            val existing: K = __builtin_ptr_read(self.keys, i * self.key_size)
+        val scap: u64 = self.caps & 0xFFFFFFFFu64
+        if scap == 0u64 {
+            return false
+        }
+        val ks: u64 = self.sizes >> 32u64
+        val mask: u64 = scap - 1u64
+        var j: u64 = hash_mix(key.hash()) & mask
+        loop {
+            val s: u32 = __builtin_ptr_read(self.slots, j * 4u64)
+            if s == dict_slot_empty() {
+                break
+            }
+            val idx: u64 = s as u64
+            val existing: K = __builtin_ptr_read(self.keys, idx * ks)
             if existing == key {
                 return true
             }
-            i = i + 1u64
+            j = (j + 1u64) & mask
         }
         false
     }
@@ -121,45 +249,79 @@ impl<K, V> Dict<K, V> {
         self.count
     }
 
-    # Remove `key` if present. On hit: swap-remove with the
-    # last slot and return true. On miss: return false.
+    # Remove `key` if present, returning whether it was there.
     #
-    # The swap is what breaks iteration order (see the `DictIter`
-    # header below): the last entry lands in the removed key's
-    # position rather than everything after it shifting down.
-    # Shifting would add an O(n) move to the O(n) search; the
-    # ordering cost goes away with the entries/slots layout in
-    # `design-docs/COLLECTIONS.md`, not by shifting here.
+    # Order-preserving: the entries after the hole shift down one, so
+    # iteration still yields what is left in insertion order. Every
+    # index the table holds above the hole has therefore moved, which
+    # is why the table is rebuilt rather than patched — see the cost
+    # note in the file header.
     unsafe fn remove(&mut self, key: K) -> bool {
-        var i: u64 = 0u64
-        while i < self.count {
-            val existing: K = __builtin_ptr_read(self.keys, i * self.key_size)
-            if existing == key {
-                val last_idx: u64 = self.count - 1u64
-                if i != last_idx {
-                    val last_k: K = __builtin_ptr_read(self.keys, last_idx * self.key_size)
-                    val last_v: V = __builtin_ptr_read(self.vals, last_idx * self.val_size)
-                    __builtin_ptr_write(self.keys, i * self.key_size, last_k)
-                    __builtin_ptr_write(self.vals, i * self.val_size, last_v)
-                }
-                self.count = last_idx
-                return true
+        val scap: u64 = self.caps & 0xFFFFFFFFu64
+        if scap == 0u64 {
+            return false
+        }
+        val ks: u64 = self.sizes >> 32u64
+        val vs: u64 = self.sizes & 0xFFFFFFFFu64
+        val mask: u64 = scap - 1u64
+        var j: u64 = hash_mix(key.hash()) & mask
+        var found: u64 = self.count
+        loop {
+            val s: u32 = __builtin_ptr_read(self.slots, j * 4u64)
+            if s == dict_slot_empty() {
+                break
             }
+            val idx: u64 = s as u64
+            val existing: K = __builtin_ptr_read(self.keys, idx * ks)
+            if existing == key {
+                found = idx
+                break
+            }
+            j = (j + 1u64) & mask
+        }
+        if found >= self.count {
+            return false
+        }
+
+        var i: u64 = found
+        while i + 1u64 < self.count {
+            val nk: K = __builtin_ptr_read(self.keys, (i + 1u64) * ks)
+            val nv: V = __builtin_ptr_read(self.vals, (i + 1u64) * vs)
+            __builtin_ptr_write(self.keys, i * ks, nk)
+            __builtin_ptr_write(self.vals, i * vs, nv)
             i = i + 1u64
         }
-        false
+        self.count = self.count - 1u64
+
+        var t: u64 = 0u64
+        while t < scap {
+            __builtin_ptr_write(self.slots, t * 4u64, dict_slot_empty())
+            t = t + 1u64
+        }
+        var e: u64 = 0u64
+        while e < self.count {
+            val k2: K = __builtin_ptr_read(self.keys, e * ks)
+            var p: u64 = hash_mix(k2.hash()) & mask
+            loop {
+                val s2: u32 = __builtin_ptr_read(self.slots, p * 4u64)
+                if s2 == dict_slot_empty() {
+                    break
+                }
+                p = (p + 1u64) & mask
+            }
+            __builtin_ptr_write(self.slots, p * 4u64, e as u32)
+            e = e + 1u64
+        }
+        true
     }
 }
 
 # Iterator-protocol support (STDLIB-ITER): `for kv in d.iter() { ... }`
-# yields `(key, value)` tuples in the order the entries sit in the
-# parallel arrays. That is insertion order *until a key is removed*:
-# `remove` above swap-removes, moving the last entry into the hole, so
-# a deletion reorders the survivors (insert 1, 2, 3 then remove 1 and
-# the iteration yields 3, 2). Callers must not depend on the order of
-# a dict that has had a removal; making insertion order a guarantee
-# that survives `remove` is phase C1 of
-# `design-docs/COLLECTIONS.md`.
+# yields `(key, value)` tuples in insertion order, and keeps doing so
+# after a removal — `remove` shifts the survivors down rather than
+# swapping the last entry into the hole (COLLECTIONS C1). An update
+# through `insert` keeps the entry where it was; a re-insert after a
+# removal goes to the end.
 #
 # Same structural protocol as `Vec::iter` — a
 # `next(&mut self) -> Option<(K, V)>` method, no `trait Iterator` impl
@@ -180,17 +342,17 @@ struct DictIter<K, V> {
     index: u64,
 }
 
-impl<K, V> Dict<K, V> {
+impl<K: Hash, V> Dict<K, V> {
     # Borrow the dict into an iterator. `&self` keeps the caller's
     # binding alive; the returned iterator shares the key / value
-    # buffers.
+    # buffers. It walks the entries, not the slot table, which is what
+    # keeps the order the entries were inserted in.
     fn iter(&self) -> DictIter<K, V> {
-        val sizes: u64 = (self.key_size << 32u64) | self.val_size
         DictIter {
             keys: self.keys,
             vals: self.vals,
             count: self.count,
-            sizes: sizes,
+            sizes: self.sizes,
             index: 0u64,
         }
     }

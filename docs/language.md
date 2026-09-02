@@ -1561,27 +1561,39 @@ println(d.remove("b"))            # true (false when the key was absent)
 println(d.size())                 # 1
 ```
 
-Keys are compared with `==`, so any type the operator accepts works as
-a key: primitives, `str`, and a struct carrying an `eq` method (see
-[Operator overloading](#operator-overloading)). There is no `Hash`
-bound — `core/std/hash.t` exists, but the current table does not
-consult it.
+A key type needs two things: `impl Hash` (see
+[`Hash` and `hash_mix`](#hash-and-hash_mix-stdlib)) and an answer for
+`==`. Every integer width, `bool`, `str` and `String` have both. A
+struct key needs both written by hand — there is no derive:
+
+```rust
+struct Point { x: i64, y: i64 }
+
+impl Hash for Point {
+    fn hash(self: Self) -> u64 { (self.x as u64) ^ ((self.y as u64) << 1u64) }
+}
+
+impl Point {
+    fn eq(&self, other: &Point) -> bool { self.x == other.x && self.y == other.y }
+}
+```
+
+A missing `Hash` is the ordinary bound violation at the call site; a
+missing `eq` is reported the same way (see
+[`==` on a type parameter](#-on-a-type-parameter)).
 
 Two properties are worth knowing before building on it:
 
-- **Lookup is a linear scan.** `insert`, `get`, `get_or`,
-  `contains_key`, and `remove` are all O(n), so a workload is
-  quadratic in the number of keys. A thousand distinct keys inserted
-  and looked up takes about 10 seconds in the default engine and does
-  not finish inside two minutes at ten thousand. Hashing it is
-  designed in [`COLLECTIONS.md`](../design-docs/COLLECTIONS.md).
-- **Iteration order is insertion order only until something is
-  removed.** `d.iter()` walks the entries in the order they were
-  inserted, but `remove` fills the hole with the *last* entry, so a
-  deletion reorders the survivors (inserting `1, 2, 3` and removing
-  `1` iterates `3, 2`). Do not depend on the order of a dict that has
-  had a key removed. Making insertion order a guarantee that survives
-  removal is phase C1 of `COLLECTIONS.md`.
+- **Lookup is a hash probe, removal is a shift.** `insert`, `get`,
+  `get_or` and `contains_key` are O(1) expected: a power-of-two table
+  of indices sits beside the entries and is what gets probed.
+  `remove` is O(n) — it shifts the later entries down to keep the
+  iteration order below intact, and rebuilds the table because the
+  indices it holds have moved.
+- **Iteration is in insertion order, and stays that way.** `d.iter()`
+  walks the entries, not the table. An update through `insert` leaves
+  the entry where it is; a removal keeps the survivors in order; a key
+  re-inserted after a removal goes to the end.
 
 Modifying a dict while iterating it is undefined: the iterator holds a
 copy of the key and value buffer pointers, which a growing `insert`
@@ -1621,7 +1633,7 @@ An enum type argument is rejected outright: comparison overloading is a
 struct feature, so an `eq` written in `impl SomeEnum` would type-check
 and then fail to dispatch. Match on the variants instead.
 
-### `Hash` and `mix` (stdlib)
+### `Hash` and `hash_mix` (stdlib)
 
 `core/std/hash.t` declares `trait Hash { fn hash(self: Self) -> u64 }`
 with impls for every integer width, `bool`, `str`, and `String` (in
@@ -1631,13 +1643,13 @@ the integer impls are the identity, or a same-width cast for the
 signed widths so that `-5i8` hashes as the byte it is rather than as a
 sign-extended `u64`.
 
-Spreading is a separate step, `mix`:
+Spreading is a separate step, `hash_mix`:
 
 ```rust
-val slot: u64 = mix(key.hash()) & (cap - 1u64)
+val slot: u64 = hash_mix(key.hash()) & (cap - 1u64)
 ```
 
-`mix` is splitmix64's finalizer — three xor-shift-multiply rounds,
+`hash_mix` is splitmix64's finalizer — three xor-shift-multiply rounds,
 which spread every input bit across the whole word. A table applies it
 before taking the low bits as a slot index, so that a hash written by
 user code gets the same treatment as the built-in ones.

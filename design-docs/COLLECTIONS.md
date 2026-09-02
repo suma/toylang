@@ -4,15 +4,15 @@
 > 状態の正本: [`todo.md`](todo.md) の **STDLIB-COLLECTIONS**
 > 俯瞰と優先順位: [`RUNTIME_LIBRARY.md`](RUNTIME_LIBRARY.md) の P1
 > 実測: 2026-09-02 (この文書の数値はすべてこの日に取った)
-> 進捗: **C0 は 2026-09-02 に完了** ((a) missing-`eq` の型検査 / (b)
-> `Hash for str` + `impl Hash for String` / (c) `mix()`)。次は C1
+> 進捗: **C0 と C1 は 2026-09-02 に完了**。C1 は 1.5 の tombstone だけ
+> 採らなかった (下記「C1 で設計から外れた点」)。次は C2 (`Set<T>`)
 
 ## Status snapshot
 
 | 項目 | 状態 |
 |---|---|
-| `Dict<K, V>` | 線形探索。insert / get / contains_key / remove が **O(n)** |
-| `Hash` | trait と primitive / `str` / `String` の impl + 表側の `mix()` は揃った (2026-09-02)。表がまだ使っていない |
+| `Dict<K, V>` | open addressing (2026-09-02)。insert / get / contains_key が **O(1)**、remove は順序維持のため O(n) |
+| `Hash` | trait と primitive / `str` / `String` の impl + 表側の `hash_mix()` (2026-09-02)。`Dict` が使っている |
 | `Set<T>` | 無い |
 | Deque / PriorityQueue | 無い |
 | `Vec<T>` の `insert` / `remove` / `contains` / `index_of` / `reverse` / `sort_by` | 無い |
@@ -149,7 +149,7 @@ live/total が 1/2 を切ったら `entries` を詰め直し (compaction)、
 ### 1.3 mixer — 採用: **表側で掛ける。`Hash` impl は素のまま**
 
 `hash.t` の impl は identity (u64) / 符号ビット無し cast (narrow) の
-ままにして、**表が `mix(key.hash())` を掛ける**。
+ままにして、**表が `hash_mix(key.hash())` を掛ける**。
 
 理由: mixer を各 `impl Hash` に埋めると、**user が書いた `impl Hash` は
 mixer を持たない**ので、power-of-two 表で下位ビットだけを見た瞬間に
@@ -157,7 +157,7 @@ mixer を持たない**ので、power-of-two 表で下位ビットだけを見�
 `hash()` の契約は「等しい値は等しい u64」だけに保ち、分散は表の仕事にする。
 
 mixer は splitmix64 の finalizer 相当 (乗算 + xorshift 3 段) を
-`hash.t` に `pub fn mix(h: u64) -> u64` として置く。u64 の乗算は wrap
+`hash.t` に `pub fn hash_mix(h: u64) -> u64` として置く。u64 の乗算は wrap
 するので (RUNTIME-TRAP の「`+` / `*` は wrap」) 追加の guard は要らない。
 
 ### 1.4 `Hash for str` — extern にする
@@ -210,6 +210,38 @@ mixer は splitmix64 の finalizer 相当 (乗算 + xorshift 3 段) を
 **組み込み `dict` を deprecate して `Dict` に一本化するかは別途決める**
 (todo に項目を立てる)。
 
+## C1 で設計から外れた点 (2026-09-02)
+
+**tombstone を採らなかった** (1.5 の (b))。理由は**レジスタ予算**:
+エントリを「死んだ」と印すには liveness の列が要り、反復子はそれを
+読まなければならない。`DictMapIter` は既に「4 state leaf + 2 fn leaf +
+2 return leaf = 8」でぴったり予算に張り付いているので、列を 1 本足すと
+9 になって compiled レーンに乗らない。
+
+代わりに **`remove` が後続エントリを 1 つずつ詰め、表を作り直す**
+(O(n))。得たものは (a) 反復順が削除後も挿入順のまま、(b) 反復子と
+アダプタが**フィールド 1 つ変わらない**、(c) 表の状態が
+EMPTY / index の 2 値だけになり probe が単純。失ったのは O(1) 削除で、
+4 操作のうち削除がいちばん使われないという判断。
+
+**probe に DELETED 状態が無い**のもこの帰結 (探索は EMPTY で止まる)。
+
+## 実測 (2026-09-02、C1 landing 後)
+
+相異なるキーを n 個入れて n 回引く (この文書冒頭の表と同じプログラム):
+
+| n | interpreter (前 → 後) | AOT (前 → 後) |
+|---|---|---|
+| 1,000 | 10.0s → — | — |
+| 10,000 | **120s 超で終わらず → 4.7s** | 0.06s → **0.00s** |
+| 40,000 | — | 1.03s → **0.00s** |
+| 100,000 | — | — → 0.01s |
+| 200,000 | — | — → 0.02s |
+
+**400,000 は落ちる**が、これは Dict ではなく runtime の bump ヒープの
+上限 (`Vec<u64>` を 400,000 push しても同じ Bus error。`todo.md` の
+BUMP-CHUNK-OVERSIZE)。
+
 ## 2. `Set<T>`
 
 `Dict<T, ()>` は compiled レーンが拒否する (実測 4)。`Dict<T, bool>` は
@@ -261,8 +293,8 @@ API: `new` / `insert(v) -> bool` / `contains(v) -> bool` /
 
 | Phase | 内容 | 受け入れ基準 |
 |---|---|---|
-| **C0** ✅ | 前提の掃除: (a) ✅ 2026-09-02 generic `==` の missing-`eq` を**型検査で**捕まえる (`E0010`、呼び出し位置)、(b) ✅ 2026-09-02 `Hash for str` を extern 化 + `impl Hash for String`、(c) ✅ 2026-09-02 `hash.t` に `mix()` | (a) は `Bag<Point>` がコンパイルエラーになること。(b) は 3 レーンで同値 (`compiler/tests/consistency/collections.rs` が値ごと pin) |
-| **C1** | `Dict` の open addressing (1.1〜1.6) | 既存 dict テストが**意味論不変で** green + 反復順を `docs/language.md` に明記 + 順序の 3 レーン pin + 性能実測 (この文書の表と同じ形で前後比較) |
+| **C0** ✅ | 前提の掃除: (a) ✅ 2026-09-02 generic `==` の missing-`eq` を**型検査で**捕まえる (`E0010`、呼び出し位置)、(b) ✅ 2026-09-02 `Hash for str` を extern 化 + `impl Hash for String`、(c) ✅ 2026-09-02 `hash.t` に `hash_mix()` | (a) は `Bag<Point>` がコンパイルエラーになること。(b) は 3 レーンで同値 (`compiler/tests/consistency/collections.rs` が値ごと pin) |
+| **C1** ✅ | `Dict` の open addressing (1.1〜1.6。tombstone を除く) | ✅ 既存 dict テスト green / 反復順を `docs/language.md` に明記 / 順序を 3 レーンで pin (`consistency/collections.rs` + `example/dict_hash.t`) / 実測は下記 |
 | **C2** | `Set<T>` | `Dict` と同じ入力列で反復順が一致する交差テスト、3 レーン一致 |
 | **C3** | `Vec` 拡張 | method ごとの consistency テスト。`remove` と `swap_remove` の順序差を pin |
 | **C4** | `Deque` / `PriorityQueue` | 3 レーン一致。PQ は「同値要素の順序は未規定」を明記 |

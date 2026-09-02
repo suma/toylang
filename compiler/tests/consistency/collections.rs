@@ -56,14 +56,14 @@ fn mix_spreads_neighbouring_keys_across_low_bits() {
     let src = r#"
 fn main() -> u64 {
     var out: u64 = 0u64
-    val m1: u64 = mix(1u64)
-    val m2: u64 = mix(2u64)
-    val m3: u64 = mix(3u64)
+    val m1: u64 = hash_mix(1u64)
+    val m2: u64 = hash_mix(2u64)
+    val m3: u64 = hash_mix(3u64)
     if m1 != m2 { out = out + 1u64 }
     if (m1 & 15u64) != (m2 & 15u64) { out = out + 2u64 }
     if (m2 & 15u64) != (m3 & 15u64) { out = out + 4u64 }
     # a bijection: mixing is not allowed to fold two keys together
-    if mix(0u64) != m1 { out = out + 8u64 }
+    if hash_mix(0u64) != m1 { out = out + 8u64 }
     out
 }
 "#;
@@ -130,11 +130,17 @@ fn main() -> u64 {
 }
 
 // The stdlib case the check exists for: a `Dict` key is compared with
-// `==` on every insert and lookup.
+// `==` on every insert and lookup. `Hash` is a declared bound and is
+// reported by the ordinary bound check, so the key here has one — what
+// is left for this check is the `eq` nothing declares.
 #[test]
 fn a_dict_key_without_eq_is_rejected() {
     let src = r#"
 struct P { x: i64 }
+
+impl Hash for P {
+    fn hash(self: Self) -> u64 { self.x as u64 }
+}
 
 fn main() -> u64 {
     var d: Dict<P, u64> = Dict::new()
@@ -210,4 +216,121 @@ fn main() -> u64 {
 }
 "#;
     assert_value(src, "eq_dispatch_through_a_type_parameter", 1u64);
+}
+
+// COLLECTIONS C1. The table is a separate array of indices, so the
+// entries keep insertion order — including across a removal, which the
+// old swap-remove broke (1, 2, 3 minus 1 used to iterate 3, 2).
+#[test]
+fn iteration_keeps_insertion_order_across_a_removal() {
+    let src = r#"
+fn main() -> u64 {
+    var d: Dict<u64, u64> = Dict::new()
+    d.insert(1u64, 10u64)
+    d.insert(2u64, 20u64)
+    d.insert(3u64, 30u64)
+    d.remove(1u64)
+    # 2 then 3, as inserted — not 3 then 2
+    var out: u64 = 0u64
+    for kv in d.iter() {
+        out = out * 10u64 + kv.0
+    }
+    out
+}
+"#;
+    assert_value(src, "dict_order_after_remove", 23u64);
+}
+
+// An update keeps the entry where it is, and a re-insert after a
+// removal goes to the end.
+#[test]
+fn an_update_keeps_its_place_and_a_reinsert_goes_last() {
+    let src = r#"
+fn main() -> u64 {
+    var d: Dict<u64, u64> = Dict::new()
+    d.insert(1u64, 10u64)
+    d.insert(2u64, 20u64)
+    d.insert(3u64, 30u64)
+    d.insert(1u64, 11u64)
+    d.remove(2u64)
+    d.insert(2u64, 22u64)
+    var out: u64 = 0u64
+    for kv in d.iter() {
+        out = out * 10u64 + kv.0
+    }
+    out
+}
+"#;
+    assert_value(src, "dict_order_update_and_reinsert", 132u64);
+}
+
+// Enough keys to grow the slot table several times (it starts at 8 and
+// doubles past a 7/8 load), with every lookup checked afterwards. A
+// rehash that dropped or duplicated an entry shows up here.
+#[test]
+fn the_table_survives_growing() {
+    let src = r#"
+fn main() -> u64 {
+    var d: Dict<u64, u64> = Dict::new()
+    var i: u64 = 0u64
+    while i < 200u64 {
+        d.insert(i * 7u64, i)
+        i = i + 1u64
+    }
+    var hits: u64 = 0u64
+    var j: u64 = 0u64
+    while j < 200u64 {
+        if d.get_or(j * 7u64, 999u64) == j { hits = hits + 1u64 }
+        j = j + 1u64
+    }
+    # every key found, none of the gaps present, size intact
+    var out: u64 = 0u64
+    if hits == 200u64 { out = out + 1u64 }
+    if d.contains_key(1u64) { out = out + 2u64 }
+    if d.size() == 200u64 { out = out + 4u64 }
+    out
+}
+"#;
+    assert_value(src, "dict_growth", 5u64);
+}
+
+// `str` keys go through the runtime hash rather than the identity one.
+// They used to all land in the same bucket (`Hash for str` returned a
+// constant 0), which a table cannot survive.
+#[test]
+fn str_keys_find_their_own_entries() {
+    let src = r#"
+fn main() -> u64 {
+    var d: Dict<str, u64> = Dict::new()
+    d.insert("alpha", 1u64)
+    d.insert("beta", 2u64)
+    d.insert("gamma", 3u64)
+    d.remove("beta")
+    var out: u64 = 0u64
+    out = out + d.get_or("alpha", 0u64)
+    out = out + d.get_or("gamma", 0u64) * 10u64
+    out = out + d.get_or("beta", 7u64) * 100u64
+    if d.contains_key("beta") { out = out + 1000u64 }
+    out
+}
+"#;
+    assert_value(src, "dict_str_keys", 731u64);
+}
+
+// Removing a key that was never there changes nothing, and removing
+// from an empty dict is not a probe into an unallocated table.
+#[test]
+fn removing_an_absent_key_is_a_no_op() {
+    let src = r#"
+fn main() -> u64 {
+    var d: Dict<u64, u64> = Dict::new()
+    var out: u64 = 0u64
+    if d.remove(9u64) { out = out + 100u64 }
+    d.insert(1u64, 10u64)
+    if d.remove(9u64) { out = out + 200u64 }
+    out = out + d.size() + d.get_or(1u64, 0u64)
+    out
+}
+"#;
+    assert_value(src, "dict_remove_absent", 11u64);
 }

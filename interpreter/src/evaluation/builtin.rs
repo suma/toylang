@@ -99,8 +99,15 @@ fn object_byte_size(ctx: &EvaluationContext<'_>, value: &Object) -> Option<u64> 
         Object::EnumVariant { enum_name, type_args, .. } => {
             ctx.enum_byte_size(*enum_name, type_args)
         }
+        // A `str` is a pointer-sized handle on every compiled lane
+        // (`compiler_lower` answers 8 for `Type::Str`), and this walk
+        // is required to agree with it. Returning `None` here made
+        // `Dict<str, V>` — which asks for its key width on the first
+        // insert — an internal error in the tree-walker while the same
+        // program ran everywhere else.
+        Object::ConstString(_) | Object::String(_) => Some(8),
         // Opaque / non-serialisable values have no canonical byte size.
-        Object::ConstString(_) | Object::String(_) | Object::Dict(_)
+        Object::Dict(_)
         | Object::Null(_) | Object::Allocator(_) | Object::Range { .. }
         | Object::Closure { .. } => None,
     }

@@ -10,6 +10,23 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-02
+- **COLLECTIONS C1 — `Dict` が hash 表になった** — probe する slot 表
+  (power-of-two、u32 index) をエントリの脇に置く形。エントリは今までどおり
+  keys/vals の並列配列に挿入順で並ぶので、**反復順が挿入順のまま**になり
+  (削除後も。以前は swap-remove が壊していた)、`DictIter` と アダプタは
+  **フィールドが 1 つも変わらない** — 8 レジスタ返し予算に余地が無いため
+  これが layout の決め手。`K: Hash` は実 bound なので struct キーには
+  `impl Hash` が要る (**破壊的変更**、`E0010`)。tombstone は**採らなかった**:
+  liveness 列を反復子が読むと予算超過になるので、`remove` が後続を詰めて
+  表を作り直す (O(n))。実測 (n 個入れて n 回引く): interpreter n=10,000 が
+  **120s 超で終わらず → 4.7s**、AOT n=40,000 が **1.03s → 0.00s**。
+  設計と逸脱の記録は [`COLLECTIONS.md`](COLLECTIONS.md)。
+- **TREE-WALKER-SIZEOF-STR — `__builtin_sizeof` が `str` 値に答えるようになった**
+  — tree-walker だけ `None` を返して internal error にしていた
+  (compiled レーンは `Type::Str` に 8 を返す)。`Dict<str, V>` は最初の
+  insert でキー幅を聞くので、**この 1 箇所のせいで tree-walker では
+  動かなかった**。`object_byte_size` は「`compiler_lower` と一致すること」を
+  自分のコメントで要求しているのに、その一致が取れていなかった。
 - **COLLECTIONS C0 (a) — generic な `==` の相手に `eq` が無いと型エラー
   (`E0010`)** — `impl<T> Bag<T>` の `e == needle` は bound 無しで通り、
   `T` が `eq` を持つ struct ならそれに dispatch する (この性質は維持)。
@@ -24,7 +41,7 @@
 - **COLLECTIONS C0 (b)(c) — hash の土台** — `Hash for str` が 0 定数を
   やめて FNV-1a (`toylang_rt::toy_str_hash` + interpreter の
   `__extern_str_hash`)、`impl Hash for String` が同じ定数で toylang の
-  バイト走査、`hash.t` に splitmix64 finalizer の `pub fn mix()`。
+  バイト走査、`hash.t` に splitmix64 finalizer の `pub fn hash_mix()`。
   mixer を impl ではなく**表側**に置いたので user の `impl Hash` も
   同じ分散を得る。値は 3 レーンで pin (`consistency/collections.rs`)。
   設計は [`COLLECTIONS.md`](COLLECTIONS.md)。残りは C0 (a) と C1。
@@ -993,6 +1010,15 @@
 > ★ = あると良い / ★★ = 効果が見えている / ★★★ = ロードマップ級。
 
 ### バックエンドのカバレッジ
+
+- **BUMP-CHUNK-OVERSIZE: 1 MiB を超える 1 回の確保がチャンクをはみ出す**
+  ★★ — `toylang_rt` の `bump_alloc_raw` は `used + size > BUMP_CHUNK_SIZE`
+  のとき**常に `BUMP_CHUNK_SIZE` のチャンクを malloc して**先頭を返すので、
+  `size` がチャンクより大きいと呼び出し側がチャンク外に書く。
+  `Vec<u64>` を 400,000 push すると Bus error (300,000 は「たまたま」通る —
+  はみ出し先が malloc 済み領域なら黙って壊れる方が悪い)。直しは
+  「`size > BUMP_CHUNK_SIZE` なら `size` ぶんのチャンクを取る」だけ。
+  2026-09-02 に COLLECTIONS C1 の性能測定で発見。
 
 - **compound 要素の drop glue が `f32` leaf で落ちる** ★ —
   `Vec<S>` / `SoaVec<S>` の `S` に `f32` フィールドがあると

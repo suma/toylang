@@ -31,11 +31,17 @@ trait Hash {
 # code gets the same treatment as the ones below: `hash` is only
 # asked to promise that equal values hash equally.
 #
+# Named `hash_mix` rather than `mix`: stdlib functions are auto-loaded
+# into the same namespace user code writes in, and a name this short
+# collides with an ordinary program's own (`fn mix(a, b)` in the FFI
+# tests did). The prefix is the same reason `dict.t` spells its
+# reserved slot value `dict_slot_empty`.
+#
 # splitmix64's finalizer — three rounds of xor-shift-multiply, which
 # spreads every input bit over the whole word. The multiplications
 # wrap (`*` wraps on every backend and build profile), which is the
 # arithmetic this mixer wants.
-pub fn mix(h: u64) -> u64 {
+pub fn hash_mix(h: u64) -> u64 {
     var x: u64 = h
     x = (x ^ (x >> 30u64)) * 0xBF58476D1CE4E5B9u64
     x = (x ^ (x >> 27u64)) * 0x94D049BB133111EBu64

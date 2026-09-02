@@ -168,12 +168,17 @@ impl<'a> FunctionLower<'a> {
         let cur = self
             .emit(InstKind::LoadLocal(local), Some(scalar))
             .unwrap();
+        // NUM-W-FOR-RANGE: the step constant has to be in the
+        // induction variable's own type. This used to pick between
+        // `I64` and `U64` only, so a narrow range (`for i in
+        // -3i32..2i32`) added a 64-bit one to a 32-bit counter — the
+        // instruction claimed `Type::I32` while carrying a `Const::U64`
+        // and cranelift's verifier refused the `iadd`
+        // (`arg 1 (v18) has type i64, expected i32`). A crash, not a
+        // diagnostic, because the type checker had accepted the loop.
         let one = self
             .emit(
-                InstKind::Const(match scalar {
-                    Type::I64 => Const::I64(1),
-                    _ => Const::U64(1),
-                }),
+                InstKind::Const(Const::from_usize_in(scalar, 1).unwrap_or(Const::U64(1))),
                 Some(scalar),
             )
             .unwrap();

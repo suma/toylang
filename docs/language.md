@@ -1964,7 +1964,10 @@ Bind the struct first if you need one (`val it = MyIter { .. }`).
 
 1. **Integer range, `..` form** — `for i in 0i64..10i64 { ... }`.
    Bare `start..end` produces a fast-path `Stmt::For`; the body
-   sees `i` typed as the range's element type. Same for u64.
+   sees `i` typed as the range's element type. **Any integer type
+   drives a range**, narrow widths included (`for i in -3i32..2i32`,
+   `for b in 0u8..255u8`) — both ends must be the same type, since
+   integers never convert implicitly ([NUM-W](#integer-literals)).
 2. **Integer range, `to` form** — `for i in 0i64 to 10i64 { ... }`.
    Legacy spelling, semantically identical to `..`.
 3. **Iterator protocol** — `for x in EXPR { body }` where EXPR is

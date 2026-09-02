@@ -62,20 +62,25 @@ fn apply_annotation_type_args(value: Value, annotation: Option<&TypeDecl>) -> Va
 }
 
 impl EvaluationContext<'_> {
+    /// `one` is the step, passed rather than derived: `T::from(1u8)`
+    /// looked like the obvious bound until `i8` turned out not to
+    /// implement `From<u8>`, and an `i8` range is one of the widths
+    /// NUM-W-FOR-RANGE had to cover.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn execute_for_loop<T>(
         &mut self,
         loop_label: Option<DefaultSymbol>,
         identifier: DefaultSymbol,
         start: T,
         end: T,
+        one: T,
         statements: &Vec<StmtRef>,
         create_object: fn(T) -> Object,
     ) -> Result<EvaluationResult, InterpreterError>
     where
-        T: Copy + std::cmp::PartialOrd + std::ops::Add<Output = T> + From<u8>,
+        T: Copy + std::cmp::PartialOrd + std::ops::Add<Output = T>,
     {
         let mut current = start;
-        let one = T::from(1);
 
         while current < end {
             // CHECK-NONTERMINATION: the other back-edge. A range this
@@ -447,24 +452,38 @@ impl EvaluationContext<'_> {
         let block = self.expr_pool.get(block)
             .ok_or_else(|| InterpreterError::InternalError("Invalid block expression reference".to_string()))?;
         if let Expr::Block(statements) = block {
-            match start_ty {
-                TypeDecl::UInt64 => {
-                    let start_val = start_v.try_unwrap_uint64().map_err(InterpreterError::ObjectError)?;
-                    let end_val = end_v.try_unwrap_uint64().map_err(InterpreterError::ObjectError)?;
-                    self.execute_for_loop(loop_label, identifier, start_val, end_val, &statements, Object::UInt64)
-                }
-                TypeDecl::Int64 => {
-                    let start_val = start_v.try_unwrap_int64().map_err(InterpreterError::ObjectError)?;
-                    let end_val = end_v.try_unwrap_int64().map_err(InterpreterError::ObjectError)?;
-                    self.execute_for_loop(loop_label, identifier, start_val, end_val, &statements, Object::Int64)
-                }
-                _ => {
-                    Err(InterpreterError::TypeError {
-                        expected: TypeDecl::UInt64,
-                        found: start_ty,
-                        message: "For loop range must be UInt64 or Int64".to_string()
-                    })
-                }
+            // NUM-W-FOR-RANGE: every integer width drives a range, not
+            // just the two wide ones. `for i in -3i32..2i32` used to be
+            // "For loop range must be UInt64 or Int64" here while the
+            // IR VM ran it — the type checker accepts a narrow range,
+            // so the three lanes disagreed on a program that looks
+            // ordinary.
+            //
+            // Matching on the `Value` pair rather than on the declared
+            // type keeps one arm per width and no unwrap per width; the
+            // equal-types check above has already run, so a mismatched
+            // pair here can only be a non-integer range.
+            macro_rules! range_over {
+                ($start:expr, $end:expr, $one:expr, $ctor:path) => {
+                    self.execute_for_loop(
+                        loop_label, identifier, $start, $end, $one, &statements, $ctor,
+                    )
+                };
+            }
+            match (start_v, end_v) {
+                (Value::UInt64(a), Value::UInt64(b)) => range_over!(a, b, 1u64, Object::UInt64),
+                (Value::Int64(a), Value::Int64(b)) => range_over!(a, b, 1i64, Object::Int64),
+                (Value::UInt32(a), Value::UInt32(b)) => range_over!(a, b, 1u32, Object::UInt32),
+                (Value::Int32(a), Value::Int32(b)) => range_over!(a, b, 1i32, Object::Int32),
+                (Value::UInt16(a), Value::UInt16(b)) => range_over!(a, b, 1u16, Object::UInt16),
+                (Value::Int16(a), Value::Int16(b)) => range_over!(a, b, 1i16, Object::Int16),
+                (Value::UInt8(a), Value::UInt8(b)) => range_over!(a, b, 1u8, Object::UInt8),
+                (Value::Int8(a), Value::Int8(b)) => range_over!(a, b, 1i8, Object::Int8),
+                _ => Err(InterpreterError::TypeError {
+                    expected: TypeDecl::UInt64,
+                    found: start_ty,
+                    message: "For loop range must be an integer type".to_string(),
+                }),
             }
         } else {
             Err(InterpreterError::InternalError("For loop body is not a block".to_string()))

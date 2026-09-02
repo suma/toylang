@@ -10,6 +10,17 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-02
+- **NUM-W-FOR-RANGE — narrow int の `for` 範囲が 4 レーンで一致した** —
+  `for i in -3i32..2i32` が型検査を通ったうえで 3 通りに割れていた:
+  IR VM は 5 回まわし、tree-walker は `For loop range must be UInt64 or
+  Int64` で拒否し、AOT / JIT は cranelift の verifier で**クラッシュ**
+  (`arg 1 (v18) has type i64, expected i32`)。原因は層ごとに別で、
+  (a) lowering の step 定数が `I64` / `U64` の 2 択だったので 32bit の
+  カウンタに 64bit の 1 を足していた (`Const::from_usize_in` で誘導変数の
+  型に作る)、(b) tree-walker の dispatch が wide 2 種しか知らなかった
+  (`Value` のペアで match して全 8 幅)。**`i8` は `From<u8>` を持たない**
+  ので `execute_for_loop` の step は引数で渡す形に。8 幅 + `break` /
+  `continue` / `to` 形 / ネストを 4 レーンに 4 件 pin
 - **COMPOUND-ARG-CALL — compound を返す呼び出しを引数位置に書けるようにした** —
   `take(mk(3i64))` が `cannot use a struct-returning call in expression
   position; bind the result with \`val\``。ENUM-ARG-NEST で enum だけ
@@ -1068,17 +1079,6 @@
   (2026-08-31)、tree-walker のビット演算 (2026-09-01)、
   interpreter JIT の符号判定 3 箇所と `MIN / -1` guard の即値
   (2026-09-01)。次に踏んだら (a) から着手する
-
-- **NUM-W-FOR-RANGE: `for` の範囲に narrow int を書くと 3 レーンで割れる** ★★ —
-  `for i in -3i32..2i32 { .. }` は **IR VM では動く** (5 回) が、
-  **tree-walker は型エラーで拒否** (`For loop range must be UInt64 or
-  Int64`)、**AOT は cranelift の verifier で落ちる**
-  (`arg 1 (v18) has type i64, expected i32` — 診断ではなくクラッシュ)。
-  型検査は通してしまうので、書けるが動かない。ループ変数の幅が
-  インクリメント側の定数 `1` に伝わっていないのが AOT の直接の原因。
-  2026-09-01 に NUM-W-ENUMERATION の作業中、interpreter JIT の
-  for-range 符号判定を直したあとテストを書いていて踏んだ
-  (JIT 側は直したが、そもそも到達しない)。
 
 - **NARROW-UNSIGNED-SUB: `u8` / `u16` / `u32` の減算は
   アンダーフローで trap せず wrap する** ★ — RUNTIME-TRAP-NARROW の

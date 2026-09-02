@@ -1202,12 +1202,28 @@
   位置の `?` (`f()?` を値に束縛しない形) が desugar されず、型検査を
   通ったあと実行時に `unexpected expr: Try` で落ちる — `Result<(), E>` に
   至っては `?` を書く方法が 1 つも無い
-- **STDLIB-TEXT: 文字列・テキストの正本が無い** ★ — `char` (= u32) /
-  `String` (byte buffer) / `str` (不変) の 3 者の境界規約が各所に
-  散っている (CHAR-LITERAL-NUM の例外規則、`String::get` は u8 で
-  `push_char` は u32、`str_ops.t` の trait 群)。Unicode をどこまで
-  やるか (codepoint 止まりか、grapheme / 正規化まで) の線引きも
-  未決。下の STDLIB-ORD (`str` の `Ord`) はこの分野の 1 項目
+- **STDLIB-TEXT: 文字列・テキストの正本が無い** ★★ — 設計は
+  [`STDLIB_TEXT.md`](STDLIB_TEXT.md) (2026-09-03)。規約の不足だと
+  思っていたが、**測ったら 4 件は今日壊れている**ので ★★ に上げた:
+  (1) `str` の変換系 6 method (`substring` / `trim` / `to_upper` /
+  `to_lower` / `contains` / `split`) は**型検査を通り interpreter で
+  動くが compiled lane に存在しない** (IR には `StrLen` と `StrConcat`
+  しか無い) — TYPECHECK-LIES、(2) 非 UTF-8 バイト列の `to_str()` が
+  **tree-walker 6 / compiled 2** と長さから割れる (tree-walker だけ
+  `from_utf8_lossy`)、(3) `str.substring` の非 char 境界 index が
+  **Rust の生 panic** (位置も backtrace も出ない)、(4) `str < str` の
+  診断が「同じ型を不一致と言う」(`incompatible types str and str`)。
+  決定: **`str` は所有しないので新しい文字列を作る API を持たない**
+  (確保する 5 つは `String` へ、読むだけの述語は `str` に extern で)
+  / **`str` は妥当な UTF-8 を不変とする** (`str_from_bytes` が検証、
+  非 UTF-8 は `Vec<u8>` / `Span<u8>` で運ぶ) / **Unicode は codepoint
+  止まり** (grapheme / 正規化 / 照合順序は非目標、`to_upper` は
+  `to_ascii_upper` に改名)。着手順は T0 (壊れている 4 件) → T1 (役割表を
+  `docs/language.md` へ) → T2 (method 集合を絞る + `Ord for str`) →
+  T3 (`AsciiClass`) → T4 (`chars()`) → T5 (足りない API)。
+  **STDLIB-ORD は解消できる** — 「generic context で AOT が表現できない」
+  はもう成り立たず、`impl Ord for str` は 3 レーンで動くことを確認した
+  (残る論点は `as_ptr` の確保だけなので extern `toy_str_cmp` に載せる)
 - **STDLIB-TRAIT-BASE: trait 基盤の穴** ★ — `iter.t` は
   **documentation-only** (generic trait `Iterator<T>` が未対応なので
   for ループは duck typing で回っている)。`Eq` / `Default` / `Clone`

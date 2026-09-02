@@ -1274,11 +1274,28 @@
   TM2 (`Stopwatch` / `bench`) → TM3 (暦 + `DateTime`) →
   TM4 (`parse_iso8601` + `TimeError`) → TM5 (整形)。テストは
   **暦とパースは 4 レーンで値ごと pin、時計は単調性と sleep 下限だけ**
-- **STDLIB-FS-PATH: path 操作とディレクトリ列挙** ★ — `read_file` /
-  `write_file` / `file_exists` はあるが、path の結合・分解 (`join` /
-  `basename` / `extension`) も `ls` 相当も無い。path 操作は純 toylang
-  (`String` の走査)、ディレクトリ列挙は extern (`readdir`) と経路が
-  分かれる
+- **STDLIB-FS-PATH: path 操作とディレクトリ列挙** ★ — 設計は
+  [`STDLIB_FS_PATH.md`](STDLIB_FS_PATH.md) (2026-09-03)。path の結合・
+  分解も `ls` 相当も metadata も無く、ファイルを 1 つ名指しで読み書き
+  することしかできない。測ったこと: (1) **`file_exists` は「ファイルが
+  ある」ではない** — 実体は `access(F_OK)` なのでディレクトリでも true
+  (名前が実装より狭い)、(2) extern の実装を 2 つ持つと割れることを
+  この repo は既にやっている — `extern_net.rs` は「errno → enum の
+  対応表が 2 つになる」から `toylang_rt` へ転送すると書いており、
+  2 実装を持つ io 側が実際に割れている (ERROR_MODEL の E0)、
+  (3) 配列を返せない extern の先例が `Poller` にある (個数を返して
+  `event(i)` で読み戻す)。決定: **`path.t` は syscall を 1 つも呼ばない**
+  (純 toylang、ホスト非依存なのでテストの大半がここに乗る) /
+  **`fs.t` の extern は `toylang_rt` へ転送** (net の流儀) /
+  **`Path` 型は作らない** (`Duration` を作らないのと同じ判断) /
+  **列挙は「全部コピー」を正面に** (poller の index 読みは木を歩く
+  用途と衝突する) / **列挙順は未規定と書く** (決められないので
+  決められないと書き、テストは sort してから比較) /
+  **`remove_dir_all` は置かない**。着手順は F0 (`path.t`) →
+  F1 (`list_dir`) → F2 (`metadata`) → F3 (変更系 + `IoError` に
+  `AlreadyExists` / `NotADirectory` / `NotEmpty` を追加。**破壊的**
+  なので ERROR_MODEL の E0 が直った後) → F4 (`realpath` /
+  `current_dir` / `temp_dir`) → F5 (`mkdir_all` / `copy_file`)
 - **STDLIB-LOG: レベル付きログ** ★ — `eprint` / `eprintln` が入った
   (P0-A) ので純 toylang で書ける。決めるのは出力先を stderr 固定に
   するかと、レベルのコンパイル時除去を `const fn` で畳めるかの 2 点

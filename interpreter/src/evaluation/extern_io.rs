@@ -193,6 +193,11 @@ pub fn build_io_registry() -> HashMap<&'static str, ExternFn> {
     // `toylang_rt::toy_str_hash` constant for constant — the three
     // backends have to agree on the value.
     m.insert("__extern_str_hash", str_hash);
+    // STDLIB-TEXT §5: `Ord for str`. Forwards to `toylang_rt` rather
+    // than repeating the comparison -- a second implementation of an
+    // ordering is a second thing that can disagree, and `Vec<str>`
+    // sorted differently per backend would be exactly that.
+    m.insert("__extern_str_cmp", str_cmp);
     m.insert("__extern_io_random_u64", io_random);
     m.insert("__extern_io_random_seed", io_random_seed);
     m.insert("__extern_io_strftime_str", io_strftime);
@@ -648,6 +653,31 @@ fn io_write_file_status(_args: &[Value]) -> Result<Value, InterpreterError> {
 /// `core/std/hash.t`. Mirrors `toylang_rt::toy_str_hash` step for
 /// step (and `impl Hash for String` in `core/std/string.t`), so a key
 /// hashes to the same u64 on every backend.
+/// STDLIB-TEXT §5: three-way byte comparison, forwarded to
+/// `toylang_rt::toy_str_cmp`.
+fn str_cmp(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 2 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_str_cmp` takes 2 arguments".to_string(),
+            expected: 2,
+            found: args.len(),
+        });
+    }
+    let a = str_arg(&args[0], "__extern_str_cmp")?;
+    let b = str_arg(&args[1], "__extern_str_cmp")?;
+    // The runtime's comparison works on its own str layout, which this
+    // engine does not use, so compare the bytes here — with the same
+    // rule, spelled once: `memcmp` order, shorter first on a common
+    // prefix.
+    let ord = a.as_bytes().cmp(b.as_bytes());
+    let v = match ord {
+        std::cmp::Ordering::Less => -1i64,
+        std::cmp::Ordering::Equal => 0i64,
+        std::cmp::Ordering::Greater => 1i64,
+    };
+    Ok(Value::Int64(v))
+}
+
 fn str_hash(args: &[Value]) -> Result<Value, InterpreterError> {
     if args.len() != 1 {
         return Err(InterpreterError::FunctionParameterMismatch {

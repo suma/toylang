@@ -690,6 +690,27 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
 
+        // TYPECHECK-LIES: `str` has an ordering (`impl Ord for str`,
+        // which is what `Vec<str>::sort()` uses), but `<` is not an
+        // operator on it -- overloading is a struct feature. Saying
+        // "incompatible types str and str" for that reads like a
+        // compiler bug, so name the call that does work.
+        if let Some(method_name) = Self::struct_cmp_method_name(op)
+            && matches!(l, TypeDecl::String)
+            && matches!(r, TypeDecl::String)
+        {
+            let symbol = Self::comparison_operator_symbol(op);
+            return Err(self.error_with_location(
+                TypeCheckError::unsupported_operation(
+                    &format!(
+                        "`{symbol}` on `str` (compare with `a.{method_name}(b)`, the byte order `Vec<str>::sort()` uses)"
+                    ),
+                    l.clone(),
+                ),
+                lhs,
+            ));
+        }
+
         // TYPECHECK-LIES: when both sides are the same user type,
         // "incompatible types P and P" names it twice and reads like a
         // compiler bug. What is actually missing is the comparison

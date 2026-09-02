@@ -339,6 +339,65 @@ impl String {
     # trait-conformance canonicalisation in mixed
     # `Identifier(String)` / `Struct(String, [])` shapes; the
     # inherent form is functionally equivalent at the call site.
+    # Whether these bytes are valid UTF-8, and so whether `to_str()`
+    # will accept them (STDLIB-TEXT §2).
+    #
+    # `String` holds arbitrary bytes; `str` holds text. Crossing from
+    # one to the other is checked, and a `String` that came from the
+    # network or a file may not have text in it. This is the way to
+    # **ask before** crossing -- the same discipline `try_reserve` uses
+    # for allocation, and for the same reason: a per-byte `Result` from
+    # `to_str` would put a branch in every string that was always fine.
+    #
+    # RFC 3629: no over-long encodings, no surrogates (U+D800..U+DFFF),
+    # nothing above U+10FFFF.
+    unsafe fn is_utf8(&self) -> bool {
+        var i: u64 = 0u64
+        while i < self.len {
+            val b: u8 = __builtin_ptr_read(self.data, i)
+            var need: u64 = 0u64
+            var lo: u32 = 0u32
+            var hi: u32 = 0u32
+            var cp: u32 = 0u32
+            if b < 128u8 {
+                i = i + 1u64
+                continue
+            } elif b >= 194u8 && b <= 223u8 {
+                need = 1u64
+                cp = (b as u32) - 192u32
+                lo = 128u32
+                hi = 2047u32
+            } elif b >= 224u8 && b <= 239u8 {
+                need = 2u64
+                cp = (b as u32) - 224u32
+                lo = 2048u32
+                hi = 65535u32
+            } elif b >= 240u8 && b <= 244u8 {
+                need = 3u64
+                cp = (b as u32) - 240u32
+                lo = 65536u32
+                hi = 1114111u32
+            } else {
+                # 0x80..0xC1 is a stray continuation or an over-long
+                # two-byte lead; 0xF5..0xFF is past U+10FFFF.
+                return false
+            }
+            if i + need >= self.len + 1u64 { return false }
+            var k: u64 = 1u64
+            while k <= need {
+                val c: u8 = __builtin_ptr_read(self.data, i + k)
+                if c < 128u8 || c > 191u8 { return false }
+                cp = cp * 64u32 + ((c as u32) - 128u32)
+                k = k + 1u64
+            }
+            if cp < lo || cp > hi { return false }
+            # Surrogates are not scalar values, so they are not text.
+            if cp >= 55296u32 && cp <= 57343u32 { return false }
+            i = i + need + 1u64
+        }
+        true
+    }
+
     unsafe fn to_string(&self) -> String {
         var result: String = String::new()
         var i: u64 = 0u64

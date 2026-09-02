@@ -90,3 +90,21 @@ impl Ord for bool {
         if self { false } else { other }
     }
 }
+
+# str — byte order, which over UTF-8 is codepoint order.
+#
+# The comparison is an extern for the same reason `Hash for str` is
+# (`core/std/hash.t`): `str::as_ptr()` allocates on the tree-walker, so
+# a byte loop written here would allocate once per comparison and a
+# `Vec<str>::sort()` would allocate O(n log n) times.
+#
+# Three-valued underneath so a future `cmp` needs no second extern.
+# **Not a collation** -- no locale, no case folding, no accents
+# (STDLIB_TEXT §4).
+extern fn __extern_str_cmp(a: str, b: str) -> i64 from "toylang_rt" as "toy_str_cmp"
+
+impl Ord for str {
+    fn lt(self: Self, other: Self) -> bool {
+        __extern_str_cmp(self, other) < 0i64
+    }
+}

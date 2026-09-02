@@ -2140,6 +2140,18 @@ pub unsafe extern "C" fn toy_str_from_bytes(bytes: *const u8, len: u64) -> *cons
         return toy_str_alloc(&[]);
     }
     let slice = unsafe { core::slice::from_raw_parts(bytes, len as usize) };
+    // STDLIB-TEXT §2: `str` holds valid UTF-8. This is one of the
+    // three doors into the type, and the only one a program can push
+    // arbitrary bytes through, so it is where the invariant is
+    // established. The walk is free: `toy_str_alloc` already copies
+    // the bytes.
+    //
+    // The tree-walker used to substitute U+FFFD here instead, which
+    // is why one program could answer `6` there and `2` on this side.
+    // Binary data travels as `Vec<u8>` / `Span<u8>`; `str` is text.
+    if core::str::from_utf8(slice).is_err() {
+        unsafe { toy_panic_at(c"str_from_bytes: the bytes are not valid UTF-8".as_ptr().cast()) };
+    }
     toy_str_alloc(slice)
 }
 
@@ -3858,6 +3870,40 @@ pub extern "C" fn toy_str_hash(s: *const u8) -> u64 {
         h = (h ^ (*b as u64)).wrapping_mul(1099511628211);
     }
     h
+}
+
+/// Three-way byte comparison of two str handles — the `Ord for str`
+/// impl in `core/std/ord.t`. Negative / zero / positive, `memcmp`
+/// order with the shorter string first on a common prefix.
+///
+/// Byte order over UTF-8 *is* codepoint order, so this is also
+/// "sorted by codepoint". It is **not** a collation: no locale, no
+/// case folding, no accent handling. That is deliberate
+/// (STDLIB_TEXT §4) -- a collation needs tables and a locale, and the
+/// language's output rules are decided elsewhere for the same reason
+/// `strftime` is fixed to UTC.
+///
+/// Three-valued rather than a bare `lt` so that a future `cmp` needs
+/// no second extern. `Ord` itself still declares only `lt`.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_str_cmp(a: *const u8, b: *const u8) -> i64 {
+    let x = if a.is_null() { &[][..] } else { str_bytes(a) };
+    let y = if b.is_null() { &[][..] } else { str_bytes(b) };
+    let n = if x.len() < y.len() { x.len() } else { y.len() };
+    let mut i = 0usize;
+    while i < n {
+        if x[i] != y[i] {
+            return if x[i] < y[i] { -1 } else { 1 };
+        }
+        i += 1;
+    }
+    if x.len() == y.len() {
+        0
+    } else if x.len() < y.len() {
+        -1
+    } else {
+        1
+    }
 }
 
 #[unsafe(no_mangle)]

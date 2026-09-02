@@ -1407,3 +1407,114 @@ fn a_strings_bytes_compare_against_characters() {
     // Two `l`s, and the digits read back as 42.
     assert_consistent(src, "char_literal_bytes");
 }
+
+// STDLIB-TEXT T0 / §2: `str` holds valid UTF-8, and the byte -> str
+// door is where that is established.
+//
+// This used to be the clearest disagreement in the language: the same
+// program answered 6 on the tree-walker and 2 on the compiled lanes,
+// because only the tree-walker substituted U+FFFD for bytes it could
+// not decode (three bytes each, and `len()` counted them). Neither
+// answer was better than the other; what was missing was a decision
+// about what `str` holds.
+
+#[test]
+fn bytes_that_are_not_text_do_not_become_a_str() {
+    let src = r#"
+        fn main() -> u64 {
+            var s = String::new()
+            s.push(255u8)
+            s.push(254u8)
+            val t: str = s.to_str()
+            t.len()
+        }
+    "#;
+    // Every lane refuses, so there is no length to disagree about.
+    let out = compiled_run_streams(src, "str_from_bytes_invalid_utf8");
+    if let Some((code, _stdout, stderr)) = out {
+        assert_ne!(code, 0, "an invalid str was accepted");
+        assert!(
+            stderr.contains("not valid UTF-8"),
+            "the refusal does not say what was wrong:\n{stderr}"
+        );
+    }
+}
+
+#[test]
+fn a_string_can_be_asked_whether_it_is_text_first() {
+    // The discipline the rest of the stdlib uses for failures that
+    // would otherwise need a `Result` on every call: ask once, before
+    // crossing. Covers each way RFC 3629 says a sequence is invalid.
+    let src = r#"
+        fn main() -> u64 {
+            val good = String::from_str("héllo, 世界 🌏")
+            var bad = String::new()
+            bad.push(255u8)
+            var lone = String::new()
+            lone.push(226u8)          # a 3-byte lead with no continuations
+            var overlong = String::new()
+            overlong.push(192u8)      # 2-byte lead below the shortest form
+            overlong.push(175u8)
+            var surrogate = String::new()
+            surrogate.push(237u8)     # U+D800, which is not a scalar value
+            surrogate.push(160u8)
+            surrogate.push(128u8)
+            println(good.is_utf8())
+            println(bad.is_utf8())
+            println(lone.is_utf8())
+            println(overlong.is_utf8())
+            println(surrogate.is_utf8())
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "string_is_utf8");
+}
+
+#[test]
+fn strs_sort_by_bytes_which_is_codepoint_order() {
+    // STDLIB-TEXT §5. `Vec<str>::sort()` was a bound violation before
+    // there was an `Ord for str` -- the last primitive without one.
+    //
+    // The order is bytes, so uppercase sorts before lowercase and a
+    // prefix sorts before what extends it. That is not a collation and
+    // is not meant to be one.
+    let src = r#"
+        fn main() -> u64 {
+            var v: Vec<str> = Vec::new()
+            v.push("pear")
+            v.push("apple")
+            v.push("Banana")
+            v.push("apple pie")
+            v.push("Ω")
+            v.push("é")
+            v.sort()
+            var i: u64 = 0u64
+            while i < v.size() {
+                println(v.get(i))
+                i = i + 1u64
+            }
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "str_ord_sort");
+}
+
+#[test]
+fn comparing_strs_with_an_operator_names_the_call_that_works() {
+    // `str` has an ordering but `<` is not an operator on it, and
+    // "incompatible types str and str" reads like a compiler bug.
+    let errs = type_check_errors(
+        r#"
+        fn main() -> u64 {
+            val a: str = "abc"
+            val b: str = "abd"
+            if a < b { 1u64 } else { 0u64 }
+        }
+        "#,
+    );
+    let joined = errs.join("\n");
+    assert!(
+        joined.contains("a.lt(b)") && !joined.contains("incompatible types str and str"),
+        "the diagnostic does not point at the call that works:\n{joined}"
+    );
+}

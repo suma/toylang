@@ -945,11 +945,22 @@ impl EvaluationContext<'_> {
                 let hm = self.heap_manager.borrow();
                 (0..len).map(|i| hm.read_byte_at(addr, i)).collect()
             };
-            // Not UTF-8-validated: the buffer is the program's to
-            // get right, as with every other raw pointer builtin.
-            // Lossy conversion keeps a malformed buffer from
-            // aborting the run.
-            let s = String::from_utf8_lossy(&bytes).into_owned();
+            // STDLIB-TEXT §2: `str` holds valid UTF-8, and this is one
+            // of the three doors into the type. A lossy conversion
+            // here was the reason the same program answered `6` on
+            // the tree-walker and `2` on the compiled lanes: two
+            // 0xFF bytes became two U+FFFD, three bytes each, and
+            // `len()` counted them. Refusing the buffer is the answer
+            // that can be the same everywhere.
+            let s = match String::from_utf8(bytes) {
+                Ok(s) => s,
+                Err(_) => {
+                    return Err(self.panic_error(
+                        "str_from_bytes: the bytes are not valid UTF-8".to_string(),
+                        None,
+                    ));
+                }
+            };
             Ok(EvaluationResult::Value((Object::String(s)).into()))
         }
 

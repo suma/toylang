@@ -935,8 +935,21 @@ fn bump_alloc_raw(size: usize) -> *mut u8 {
     let st = thread_state();
     let chunk = st.bump_head;
     if chunk.is_null() || unsafe { (*chunk).used } + size > BUMP_CHUNK_SIZE {
+        // A request larger than a chunk gets a chunk its own size.
+        // Without this the chunk was allocated at `BUMP_CHUNK_SIZE`
+        // regardless and the pointer handed back anyway, so the caller
+        // wrote past it: a `Vec<u64>` of 400,000 elements died with a
+        // bus error, and smaller overruns landed in whatever malloc had
+        // next and corrupted it silently (BUMP-CHUNK-OVERSIZE).
+        //
+        // `used` still counts only this allocation, which for an
+        // oversized chunk *is* the whole body: the chunk is full on
+        // arrival, so the next small allocation starts a regular one
+        // rather than walking off this chunk's end. A normal chunk
+        // keeps bumping as before.
+        let body = if size > BUMP_CHUNK_SIZE { size } else { BUMP_CHUNK_SIZE };
         let fresh = unsafe {
-            malloc(core::mem::size_of::<BumpChunk>() + BUMP_CHUNK_SIZE) as *mut BumpChunk
+            malloc(core::mem::size_of::<BumpChunk>() + body) as *mut BumpChunk
         };
         if fresh.is_null() {
             return core::ptr::null_mut();

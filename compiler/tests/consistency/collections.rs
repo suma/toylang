@@ -334,3 +334,24 @@ fn main() -> u64 {
 "#;
     assert_value(src, "dict_remove_absent", 11u64);
 }
+
+// BUMP-CHUNK-OVERSIZE, found while measuring the table above. The AOT /
+// JIT runtime hands out memory from 1 MiB bump chunks, and a request
+// larger than a chunk used to get a chunk-sized allocation anyway —
+// the caller then wrote past it. 400,000 u64 is 3.2 MiB in one
+// allocation; writing at the far end of it faulted. (A smaller
+// overrun lands in whatever malloc had next and corrupts it quietly,
+// which is why the size here is one that actually crashes.)
+#[test]
+fn an_allocation_larger_than_a_bump_chunk_is_whole() {
+    let src = r#"
+fn main() -> u64 {
+    var v: Vec<u64> = Vec::with_capacity(400000u64)
+    v.set_size(400000u64)
+    v.set(0u64, 3u64)
+    v.set(399999u64, 5u64)
+    v.get(0u64) + v.get(399999u64)
+}
+"#;
+    assert_value(src, "bump_oversized_allocation", 8u64);
+}

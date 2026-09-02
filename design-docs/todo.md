@@ -10,6 +10,13 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-02
+- **BUMP-CHUNK-OVERSIZE — 1 MiB を超える確保がチャンクをはみ出していた** —
+  `toylang_rt::bump_alloc_raw` は要求が残りに入らないとき**常に
+  `BUMP_CHUNK_SIZE` (1 MiB) のチャンクを malloc して**先頭を返していたので、
+  要求がチャンクより大きいと呼び出し側がチャンク外に書いた。
+  `Vec<u64>` を 400,000 push すると Bus error、それ以下は**黙って**
+  malloc の隣を壊す。直しは「大きい要求にはその大きさのチャンクを取る」。
+  COLLECTIONS C1 の性能測定 (n=400,000) で発見。
 - **COLLECTIONS C1 — `Dict` が hash 表になった** — probe する slot 表
   (power-of-two、u32 index) をエントリの脇に置く形。エントリは今までどおり
   keys/vals の並列配列に挿入順で並ぶので、**反復順が挿入順のまま**になり
@@ -1011,14 +1018,6 @@
 
 ### バックエンドのカバレッジ
 
-- **BUMP-CHUNK-OVERSIZE: 1 MiB を超える 1 回の確保がチャンクをはみ出す**
-  ★★ — `toylang_rt` の `bump_alloc_raw` は `used + size > BUMP_CHUNK_SIZE`
-  のとき**常に `BUMP_CHUNK_SIZE` のチャンクを malloc して**先頭を返すので、
-  `size` がチャンクより大きいと呼び出し側がチャンク外に書く。
-  `Vec<u64>` を 400,000 push すると Bus error (300,000 は「たまたま」通る —
-  はみ出し先が malloc 済み領域なら黙って壊れる方が悪い)。直しは
-  「`size > BUMP_CHUNK_SIZE` なら `size` ぶんのチャンクを取る」だけ。
-  2026-09-02 に COLLECTIONS C1 の性能測定で発見。
 
 - **compound 要素の drop glue が `f32` leaf で落ちる** ★ —
   `Vec<S>` / `SoaVec<S>` の `S` に `f32` フィールドがあると

@@ -81,9 +81,9 @@ read_file / strftime) / panic・backtrace (shadow stack) / 出力シンク
 | **P0** | io 書き込み系 | `write_file` / `append_file` / `eprint` / `io::exit(code)` | extern | ✅ 2026-08-30 (P0-A) |
 | **P0** | str パース | `parse::to_i64/to_u64/to_f64/to_bool(str) -> Result<_, ParseError>` | 純 toylang + extern 1 本 | ✅ 2026-08-30 (P0-B) |
 | **P0** | 衛生項目 | ~~narrow int の `checked_*` (RUNTIME-TRAP-NARROW)~~ ✅ 2026-08-31 / `str` の `Ord` (STDLIB-ORD) / `arg(i)` 等の範囲外 `Result` 化 | 混在 | 残りは todo 既載 |
-| **P1** | Dict hash 化 | 線形探索 → open addressing。`hash.t` の mixer 更新を含む | 純 toylang | 未着手 |
-| **P1** | `Set<T>` | hash 化した表を共有 | 純 toylang | 未着手 |
-| **P1** | Vec 拡張 | `insert`/`remove`/`contains`/`index_of`/`reverse`/`sort_by` | 純 toylang | 未着手 |
+| **P1** | Dict hash 化 | 線形探索 → open addressing。`hash.t` の mixer 更新を含む | 純 toylang | 未着手 ([COLLECTIONS](COLLECTIONS.md)) |
+| **P1** | `Set<T>` | hash 化した表を共有 | 純 toylang | 未着手 ([COLLECTIONS](COLLECTIONS.md)) |
+| **P1** | Vec 拡張 | `insert`/`remove`/`contains`/`index_of`/`reverse`/`sort_by` | 純 toylang | 未着手 ([COLLECTIONS](COLLECTIONS.md)) |
 | **P2** | 時間 | `now_mono()` / `sleep(ms)` | extern | 未着手 |
 | **P2** | PriorityQueue / Deque | `Vec<T>` + `Ord` の binary heap / ring buffer | 純 toylang | 未着手 |
 | **P2** | ロギング | レベル付き `log(level, msg)` → stderr | 純 toylang | P0 の `eprint` 依存 |
@@ -159,12 +159,24 @@ open addressing にすると物理順が変わる。**挿入順を維持する**
 docs/language.md で決めてから着手する。決定性 (seed 無しの純関数 hash)
 はどちらでも保てる。
 
+**→ この 3 点は [`COLLECTIONS.md`](COLLECTIONS.md) (2026-09-02) で決着
+させた**: mixer は `Hash` impl ではなく**表側**に置く、反復順は
+**挿入順を維持して仕様に書く** (`entries` + `slots` の IndexMap 形。
+今の `remove` が swap-remove で既に順序を壊していることも実測)、
+tombstone は 3 値 `slots` + load factor 7/8。
+
 **P1 Vec 拡張** — `contains` / `index_of` / `remove` は「`T` に `==` が
 要る」境界を書く必要がある。impl block の generic bound は呼び出し側で
 強制される (E0010) ので機構は既にあるが、**operator `==` を bound で
 要求する形が書けるか** (trait `Eq` を新設するか、structural `==` を
 bound に使えるか) は着手時の実測事項。`sort_by(cmp: fn (T, T) -> bool)`
 は comparator 引数で `Ord` 境界を回避できる。
+
+**→ bound は要らないと実測で決着した** ([`COLLECTIONS.md`](COLLECTIONS.md)
+の測定 1)。generic な `T` に対する `==` は 3 レーンで動き、`T` が `eq`
+method を持つ struct ならそれに dispatch する。残る問題は逆で、`eq` を
+**持たない**型を渡すと型検査を通って実行時に壊れた診断で落ちること
+(同文書の C0)。
 
 **P3 並行性** — 最小形は `spawn(fn () -> ())` + join ハンドル + channel
 (todo CONCURRENCY)。下地は 2 つある: `toylang_rt` の `ThreadState` が

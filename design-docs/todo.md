@@ -1089,7 +1089,11 @@
   決める。`contains` / `index_of` / `remove` は `T` に `==` を要求する
   bound が今の trait 機構で書けるかが着手時の実測事項
   (→ STDLIB-TRAIT-BASE)。Dict と `Set` は表実装を共有するので、個別に
-  着手すると設計が割れる — **分野の設計文書を先に取る**
+  着手すると設計が割れる — 設計は [`COLLECTIONS.md`](COLLECTIONS.md)
+  (2026-09-02。上記の論点は実測で決着済み: generic な `==` に `Eq`
+  bound は要らない / `K: Hash` bound は動くが breaking change /
+  `Set` は `Dict<T, ()>` では書けない / `remove` の swap-remove で
+  反復順は既に挿入順ではない)
 - **STDLIB-ERROR-MODEL: エラー型の統一規約が無い** ★★ — `IoError` /
   `ParseError` / `NetError` が互いに無関係に増えている。決める場所が
   無いのは 3 点: 共通の `Error` trait を置くか (`Display` の `to_str`

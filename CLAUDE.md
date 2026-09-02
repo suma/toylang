@@ -24,6 +24,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | allocator のリージョン脱出検査 | [`design-docs/REGIONS.md`](design-docs/REGIONS.md) |
 | RUNTIME-TRAP guard をどう消しているか | [`design-docs/GUARD_ELISION.md`](design-docs/GUARD_ELISION.md) |
 | 配列 / Vec の layout (AoS / SoA) の設計 (Phase 0・2 landing 済み) | [`design-docs/DATA_ORIENTED.md`](design-docs/DATA_ORIENTED.md) |
+| Dict の hash 化 / `Set` / Deque / PQ / `Vec` 拡張の設計 (未実装) | [`design-docs/COLLECTIONS.md`](design-docs/COLLECTIONS.md) |
 | `ptr` を型付きにする設計 (未実装) | [`design-docs/POINTER.md`](design-docs/POINTER.md) |
 | SIMD の設計と残りのフェーズ | [`design-docs/SIMD.md`](design-docs/SIMD.md) |
 | socket ラッパーと OS のコンパイル時切り替え (N0〜N5 landing 済み) | [`design-docs/NETWORK_IO.md`](design-docs/NETWORK_IO.md) |

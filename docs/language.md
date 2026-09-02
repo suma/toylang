@@ -31,6 +31,7 @@ implementation-side details, see the companion documents:
 - [Built-in functions and methods](#built-in-functions-and-methods) (numeric methods + Option / Result + math + string are stdlib `core/std/*.t`)
 - [Test blocks](#test-blocks)
 - [Design by Contract](#design-by-contract)
+- [Error model](#error-model)
 - [Runtime model](#runtime-model)
 - [Known limitations](#known-limitations)
 
@@ -1377,6 +1378,19 @@ fn pipeline(a: i64, b: i64, c: i64) -> Result<i64, str> {
   the error arm converts through `E2::from(e)`
   before re-returning; without a `From` impl the program is a
   type error.
+- **Statement position works too.** `f()?` need not bind anything:
+  a call made for its effect propagates its failure and discards its
+  success value. On a `Result<(), E>` there is no success value to
+  discard, and `?` is the whole point of the call:
+
+  ```rust
+  fn setup(s: &mut Sink) -> Result<u64, E> {
+      s.reserve(64u64)?      # Result<(), E> — only the failure matters
+      s.accept(1u64)?
+      Result::Ok(s.total())
+  }
+  ```
+
 - **Out of scope** (initial implementation): user-defined `Try`
   trait.
 
@@ -5289,6 +5303,132 @@ is the only way to run the checks the setting actually asked for.
 - `invariant` clauses on `impl` blocks
 - Static verification beyond runtime checking, other than
   `never_allocates` (above).
+
+---
+
+## Error model
+
+How a failure travels is decided by **what kind of failure it is**,
+not by which module produced it.
+
+| Kind | Examples | How it travels |
+|---|---|---|
+| **A — the caller's bug** | index past the end, `pop` on empty, `unwrap` on `None`, a broken contract, an arithmetic trap | `panic`. Not catchable. |
+| **B — the world's circumstances** | the file is not there, the peer hung up, the input is not a number | `Result<T, E>` |
+| **C — the budget ran out** | an allocation failed | `panic` by default; a caller that wants to recover **asks first** |
+
+The line between A and B is one question: **can this happen to a
+correct program?** `v.get(i)` out of range cannot — the caller could
+have compared `i` against `v.size()` — so it panics. `read_file`'s
+`NotFound` can happen to anyone, so it is an `Err`.
+
+Neither direction is free to cross. Making A a `Result` would grow a
+`?` on every index in every correct program; making B a `panic` would
+kill a caller that had a plan for it.
+
+There are no exceptions in this language ([Runtime
+model](#runtime-model)): a failure is either a value you return or a
+stop. `try` / `catch` / `throw` are not accepted by the parser.
+
+### What an error type owes
+
+Exactly one thing:
+
+> **A type used as the `E` of a `Result` implements `Display`** — that
+> is, it has `fn to_str(&self) -> str`.
+
+There is no `Error` trait. A trait would be useful for erasing the
+type behind `&dyn Error`, and `dyn` does not carry enums — which is
+what error types are here. A bound is all that is left, and
+`<T: Display>` already is one. Anything else an error wants to answer
+(`code()`, `kind()`, `is_retryable()`) is an inherent method on that
+enum, where the answer actually lives.
+
+The message is **a sentence fragment**: lower case, no full stop, no
+`error:` prefix (`"not found"`, `"would block"`). The caller supplies
+the frame: `"cannot open {path}: {e}"`. `to_str` returns a `str`
+literal and allocates nothing; context that varies belongs in the
+variant's payload.
+
+`panic` messages are spelled `Type::method <what happened>` —
+`"Vec::get index out of bounds"`.
+
+### Aggregating several error types
+
+An application that calls two libraries declares one error type and
+teaches it to absorb each:
+
+```rust
+enum ConfigError { Io(IoError), Parse(ParseError) }
+
+impl From<IoError> for ConfigError {
+    fn from(value: IoError) -> Self { ConfigError::Io(value) }
+}
+impl From<ParseError> for ConfigError {
+    fn from(value: ParseError) -> Self { ConfigError::Parse(value) }
+}
+
+fn load_port(path: str) -> Result<u64, ConfigError> {
+    val text: str = io::read_file(path)?     # IoError    -> ConfigError
+    val port: u64 = parse::to_u64(text)?     # ParseError -> ConfigError
+    Result::Ok(port)
+}
+```
+
+Each `?` converts through whichever `From` impl matches the error it
+is carrying.
+
+**The stdlib does not provide conversions between its own error
+types.** `IoError -> NetError` and the rest would be n² impls, and
+which direction is correct depends on the program. A library may
+implement `From` only *into* its own types (`impl From<str> for
+String` is the one such impl in the stdlib). Aggregation is the
+application's job.
+
+Full example: `interpreter/example/error_model.t`.
+
+### An `Err` that is not a failure
+
+`NetError::WouldBlock`, `InProgress` and `Interrupted` are the normal
+course of events on a non-blocking socket. They arrive as `Err`
+because that is the shape the syscall has, and **they must not be
+propagated with `?`** — doing so reports an event loop's ordinary
+state as the program's failure.
+
+```rust
+val got = stream.read(buf)
+match got {
+    Result::Ok(n) => { ... }
+    Result::Err(e) => {
+        if e.is_retryable() { return Result::Ok(0u64) }   # back to the Poller
+        return Result::Err(e)
+    }
+}
+```
+
+`is_retryable()` and `is_pending()` say which is which. The type
+system cannot enforce this; `interpreter/example/net_echo_server.t` is
+the shape to copy.
+
+### Failure reasons are one vocabulary
+
+`IoError`, `ParseError` and `NetError` are decoded from status codes
+that the runtime defines **once** (`toylang_rt::io_status`,
+`parse_status`, and the `sys` layer's net table). Every backend
+forwards to those definitions rather than keeping its own, so the same
+failure reads the same on the interpreter, the JIT and an AOT binary.
+
+Two rules shape the vocabularies:
+
+- **Variants are split by what the reader does next.** `NotFound` and
+  `PermissionDenied` are separate because one is fixed by creating the
+  file and the other by changing a mode. There is not one variant per
+  errno.
+- **An errno the runtime cannot name becomes `Unknown`, never a
+  neighbouring variant.** Reporting a full disk as `read error` sends
+  the reader to the wrong place; a wrong specific name is worse than
+  no name. Raw errno values stay out of the vocabulary entirely —
+  being OS-independent is the reason it exists.
 
 ---
 

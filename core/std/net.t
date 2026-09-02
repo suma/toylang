@@ -137,6 +137,37 @@ pub enum NetError {
     Unknown,
 }
 
+impl NetError {
+    # Not a failure: the operation should simply be attempted again.
+    #
+    # `WouldBlock` and `Interrupted` are what a non-blocking socket
+    # answers with in the normal course of events. They arrive as
+    # `Err` because that is the shape the syscall has, not because
+    # anything went wrong -- so **do not propagate a retryable value
+    # with `?`** (ERROR_MODEL D4): that reports an event loop's
+    # ordinary state to the caller as the program's failure. Branch on
+    # it and go back to the `Poller` instead;
+    # `interpreter/example/net_echo_server.t` is the shape to copy.
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            NetError::WouldBlock => true,
+            NetError::Interrupted => true,
+            _ => false,
+        }
+    }
+
+    # Not a failure: a non-blocking `connect` is still under way. Wait
+    # for writability, then call `take_error` to learn how it ended.
+    # Separate from `is_retryable` because the answer is not "call it
+    # again" -- the call already succeeded in starting.
+    pub fn is_pending(&self) -> bool {
+        match self {
+            NetError::InProgress => true,
+            _ => false,
+        }
+    }
+}
+
 impl Display for NetError {
     fn to_str(&self) -> str {
         match self {

@@ -687,3 +687,170 @@ fn dyn_trait_mut_self_struct_return_round_trip() {
     "#;
     assert_consistent(src, "dyn_mut_self_struct_return");
 }
+
+// ERROR_MODEL E2: `?` written as a statement, and `?` on a
+// `Result<(), E>`.
+//
+// The existing tests above all bind the result (`val x = f()?`), which
+// is the only shape the desugar used to reach: a bare `f()?` type-checked
+// and then died at run time with `unexpected expr: Try`, and a
+// `Result<(), E>` had no working shape at all. The four combinations
+// below — statement / tail position, unit / non-unit success type, free
+// function / method — are pinned together because they share one rewrite.
+
+#[test]
+fn try_op_in_statement_position_round_trip() {
+    let src = r#"
+        enum E { Bad }
+
+        fn step(n: u64) -> Result<u64, E> {
+            if n == 0u64 { Result::Err(E::Bad) } else { Result::Ok(n) }
+        }
+
+        fn run(n: u64) -> Result<u64, E> {
+            step(n)?
+            val v = step(n + 1u64)?
+            Result::Ok(v)
+        }
+
+        fn main() -> u64 {
+            val ok = run(3u64)
+            val a = match ok {
+                Result::Ok(v) => v,
+                Result::Err(_) => 200u64,
+            }
+            val bad = run(0u64)
+            val b = match bad {
+                Result::Ok(_) => 100u64,
+                Result::Err(_) => 9u64,
+            }
+            a + b
+        }
+    "#;
+    // run(3) discards a 3 and binds a 4; run(0) fails at the discarded
+    // call, so the statement `?` really does propagate.
+    assert_consistent(src, "try_op_statement_position");
+}
+
+#[test]
+fn try_op_on_unit_result_round_trip() {
+    let src = r#"
+        enum E { Bad }
+
+        struct Sink { seen: u64 }
+
+        impl Sink {
+            fn accept(&mut self, n: u64) -> Result<(), E> {
+                if n == 0u64 { return Result::Err(E::Bad) }
+                self.seen = self.seen + n
+                Result::Ok(())
+            }
+        }
+
+        fn fill(s: &mut Sink, n: u64) -> Result<u64, E> {
+            s.accept(n)?
+            s.accept(n + 1u64)?
+            Result::Ok(s.seen)
+        }
+
+        fn main() -> u64 {
+            var s = Sink { seen: 0u64 }
+            val r = fill(&mut s, 5u64)
+            val total = match r {
+                Result::Ok(v) => v,
+                Result::Err(_) => 200u64,
+            }
+            var t = Sink { seen: 0u64 }
+            val bad = fill(&mut t, 0u64)
+            val code = match bad {
+                Result::Ok(_) => 100u64,
+                Result::Err(_) => 1u64,
+            }
+            total + code
+        }
+    "#;
+    // 5 + 6 = 11 on the success path, plus 1 for the failing one.
+    assert_consistent(src, "try_op_unit_result");
+}
+
+#[test]
+fn a_type_can_convert_from_several_error_types() {
+    // ERROR_MODEL E1. Two `From` impls on one aggregate error type is
+    // how a program that can fail in more than one way is written; the
+    // second impl used to replace the first in the method registry, so
+    // this did not type-check at all.
+    let src = r#"
+        enum Io { Missing }
+        enum Parse { NotANumber }
+
+        enum AppError { FromIo(Io), FromParse(Parse) }
+
+        impl From<Io> for AppError {
+            fn from(value: Io) -> Self { AppError::FromIo(value) }
+        }
+        impl From<Parse> for AppError {
+            fn from(value: Parse) -> Self { AppError::FromParse(value) }
+        }
+
+        fn read(ok: bool) -> Result<u64, Io> {
+            if ok { Result::Ok(4u64) } else { Result::Err(Io::Missing) }
+        }
+
+        fn parse(ok: bool) -> Result<u64, Parse> {
+            if ok { Result::Ok(3u64) } else { Result::Err(Parse::NotANumber) }
+        }
+
+        fn load(read_ok: bool, parse_ok: bool) -> Result<u64, AppError> {
+            val a = read(read_ok)?
+            val b = parse(parse_ok)?
+            Result::Ok(a + b)
+        }
+
+        fn code(read_ok: bool, parse_ok: bool) -> u64 {
+            val r = load(read_ok, parse_ok)
+            match r {
+                Result::Ok(v) => v,
+                Result::Err(e) => {
+                    match e {
+                        AppError::FromIo(_) => 10u64,
+                        AppError::FromParse(_) => 20u64,
+                    }
+                }
+            }
+        }
+
+        fn main() -> u64 {
+            # Both conversions survive, and each `?` picks the impl
+            # that matches the error it is carrying.
+            code(true, true) + code(false, true) + code(true, false)
+        }
+    "#;
+    // 7 + 10 + 20 = 37.
+    assert_consistent(src, "several_from_impls");
+}
+
+#[test]
+fn from_is_selected_by_the_argument_type() {
+    // The explicit-call side of the same fix: `E::from(x)` picks its
+    // impl by what `x` is, not by which impl was registered last.
+    let src = r#"
+        enum E { N(u64), B(bool) }
+
+        impl From<u64> for E {
+            fn from(value: u64) -> Self { E::N(value) }
+        }
+        impl From<bool> for E {
+            fn from(value: bool) -> Self { E::B(value) }
+        }
+
+        fn main() -> u64 {
+            val a: E = E::from(5u64)
+            val b: E = E::from(true)
+            val x = match a { E::N(n) => n, E::B(_) => 0u64 }
+            val y = match b { E::N(_) => 0u64, E::B(f) => if f { 7u64 } else { 1u64 } }
+            x + y
+        }
+    "#;
+    assert_consistent(src, "from_selected_by_argument");
+}
+

@@ -2387,16 +2387,38 @@ impl<'a> TypeCheckerVisitor<'a> {
         // pins the arm body's static type for the AOT's
         // `value_scalar` inference (otherwise a bare pattern
         // binding has no resolvable type at lowering time).
+        // ERROR_MODEL E2: `Result<(), E>` is the one success type with
+        // nothing to carry out of the arm. Binding and casting it does
+        // not work in either direction — the payload of `Ok(())` is
+        // the empty tuple while the declared success type is `Unit`,
+        // so the cast is rejected as `Invalid cast from Tuple([]) to
+        // Unit`, and dropping just the cast leaves the compiled lanes
+        // with a pattern binding they cannot resolve (`undefined
+        // identifier __try_v_3`). Which is why `?` on a
+        // `Result<(), E>` had no working spelling at all.
+        //
+        // So the unit arm binds nothing and rebuilds the value:
+        // `Result::Ok(_) => ()`. That is the same `()` the callee
+        // wrote in its own `Result::Ok(())`, so every backend already
+        // handles it.
+        let unit_success = matches!(success_type, TypeDecl::Unit);
         let success_pattern = Pattern::EnumVariant(
             enum_name,
             success_sym,
-            vec![Pattern::Name(v_sym)],
+            vec![if unit_success {
+                Pattern::Wildcard
+            } else {
+                Pattern::Name(v_sym)
+            }],
         );
-        let v_ident = self.core.expr_pool.add(Expr::Identifier(v_sym));
-        let success_body = self
-            .core
-            .expr_pool
-            .add(Expr::Cast(v_ident, success_type.clone()));
+        let success_body = if unit_success {
+            self.core.expr_pool.add(Expr::TupleLiteral(Vec::new()))
+        } else {
+            let v_ident = self.core.expr_pool.add(Expr::Identifier(v_sym));
+            self.core
+                .expr_pool
+                .add(Expr::Cast(v_ident, success_type.clone()))
+        };
         let success_arm = MatchArm {
             pattern: success_pattern,
             guard: None,

@@ -253,6 +253,19 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
         let expr_obj = self.core.expr_pool.get(expr_ref)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference"))?;
+        // ERROR_MODEL E2: `?` in statement position. This route --
+        // statements, and tail expressions -- is the one place a `Try`
+        // node is reached without going through `visit_expr`, and the
+        // desugar has to rewrite the node in the *pool*, not on the
+        // clone `accept_expr` is handed. Without this, `val v = f()?`
+        // worked while a bare `f()?` type-checked and then died at run
+        // time with `unexpected expr: Try`, on whichever line happened
+        // to execute.
+        if let Expr::Try { inner, .. } = &expr_obj {
+            let ty = self.desugar_try_expr(*expr_ref, *inner)?;
+            self.type_inference.set_expr_type(*expr_ref, ty.clone());
+            return Ok(ty);
+        }
         match expr_obj.clone().accept_expr(self) {
             // Record the type here as well as in `visit_expr`: this
             // route is how a *tail* expression is checked (a statement

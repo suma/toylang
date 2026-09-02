@@ -1,5 +1,9 @@
 # STDLIB TEXT — `str` / `String` / `char` / `u8` の境界と Unicode の線引き
 
+> **状態: T0〜T2 landing 済み (2026-09-03)。** 残りは T3 (`AsciiClass`) /
+> T4 (`chars()` / `is_utf8` の残) / T5 (足りない API)。`is_utf8` は T0 で
+> 先に入れた (§2 の検証と対で要るため)。
+
 > 対象: `core/std/str.t` / `core/std/string.t` / `core/std/str_ops.t` /
 > `core/std/char.t` (と `frontend` の `BuiltinMethod::Str*`)
 > 状態の正本: [`todo.md`](todo.md) の **STDLIB-TEXT**

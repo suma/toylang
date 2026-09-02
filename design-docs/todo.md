@@ -10,6 +10,21 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-03
+- **STDLIB-TEXT T0〜T2 + STDLIB-ORD (`str`) — `str` / `String` の境界が
+  決着** — 設計は [`STDLIB_TEXT.md`](STDLIB_TEXT.md)。**`str` は所有しないので
+  新しい文字列を作る API を持たない**: `substring` / `trim` / `to_upper` /
+  `to_lower` / `split` を型検査器の表から外し (元から compiled lane には
+  無く tree-walker だけで動いていた)、`String` 側に集約。読むだけの
+  `find` / `find_from` / `contains` / `starts_with` / `ends_with` を
+  `str` に新設 (`toy_str_find` extern 1 本の上)。**`str` は妥当な UTF-8 を
+  不変とする** — `str_from_bytes` が検証して拒否し、tree-walker の
+  `from_utf8_lossy` (同じプログラムが 6 と 2 に割れていた原因) が消えた。
+  先に訊く口は `String::is_utf8()`。**`impl Ord for str`** (`toy_str_cmp`)
+  で `Vec<str>::sort()` が動き、STDLIB-ORD の残項目が解消。
+  `CaseConvert` は `to_ascii_upper` / `to_ascii_lower` に改名
+  (ASCII しか畳まないことを名前で言う)。`docs/language.md` に役割表と
+  Unicode の線引き (codepoint 止まり) を追加。残りは T3 (`AsciiClass`) /
+  T4 (`chars()`) / T5 (足りない API)。
 - **STDLIB-ERROR-MODEL E0〜E5 — 失敗の運び方が決着** — 設計は
   [`ERROR_MODEL.md`](ERROR_MODEL.md)。(E0) I/O の失敗語彙を
   `toylang_rt::io_status` の 1 箇所に集約し interpreter は forward する。
@@ -1358,8 +1373,6 @@
   Drop モデルとの接合なので「検討中の機能」節に置いてある (★★★)。
   RUNTIME_LIBRARY P3 も「設計文書を別に取ってから着手」と同じ判断
 
-- **STDLIB-ORD: `str` の `Ord` impl** ★ — byte 比較が heap copy を要求し、
-  generic context で AOT が表現できないため未提供 (`String` は提供済み)。
 - **io.t の範囲外 `""` 既定の厳格化** ★ — `arg(i)` / `env_name(i)` /
   `env_value(i)` は範囲外で `""` を返す (ドキュメント化済みの既定)。
   `arg(i)` の `""` は「実際に空文字列の引数」と区別がつかない。

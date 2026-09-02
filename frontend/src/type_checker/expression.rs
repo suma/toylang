@@ -124,6 +124,26 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
 
+        // ERROR_MODEL E1: `Type::method(arg)` where several impls of
+        // one generic trait supply `method` (an aggregate error type's
+        // `From<IoError>` beside its `From<ParseError>`). The impls
+        // were renamed apart by the `mangle_overloaded_trait_impls`
+        // pre-pass; which one this call names is decided by the
+        // argument's type, so the node is rewritten to the winning
+        // name here — before any backend reads it, and in the pool
+        // rather than on the clone `accept_expr` gets. Same shape as
+        // the `into` rewrite above.
+        if let Expr::AssociatedFunctionCall(struct_name, function_name, args) = &expr_obj
+            && let Some(resolved) =
+                self.resolve_associated_overload(*struct_name, *function_name, args)
+        {
+            self.core.expr_pool.update(
+                expr,
+                Expr::AssociatedFunctionCall(*struct_name, resolved, args.clone()),
+            );
+            return self.visit_expr(expr);
+        }
+
         let result = expr_obj.clone().accept_expr(self);
         
         // Add location information to errors if not already present
@@ -3057,6 +3077,9 @@ impl<'a> TypeCheckerVisitor<'a> {
         };
 
         // `val __try_conv_N = E2::from(__try_e_N)`
+        // ERROR_MODEL E1: an aggregate error type has one `From` impl
+        // per source error, so the inner error's type names the impl.
+        let from_method = self.resolve_trait_overload(target_sym, from_method, &inner_err_ty);
         let e_ident = self.core.expr_pool.add(Expr::Identifier(e_sym));
         let conv_call = self.core.expr_pool.add(Expr::AssociatedFunctionCall(
             target_sym,

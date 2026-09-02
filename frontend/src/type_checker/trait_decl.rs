@@ -144,7 +144,11 @@ impl<'a> TypeCheckerVisitor<'a> {
         let mut strengthened: Option<TypeCheckError> = None;
 
         for sig in &trait_methods {
-            let provided = methods.iter().find(|m| m.name == sig.name);
+            // ERROR_MODEL E1: an overloaded impl carries a suffixed
+            // name (`from@IoError`); the trait declares the plain one.
+            let provided = methods.iter().find(|m| {
+                m.name == sig.name || self.overload_base_matches(m.name, sig.name)
+            });
             let m = match provided {
                 Some(m) => m,
                 None => {

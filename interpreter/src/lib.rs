@@ -553,6 +553,19 @@ fn check_typing_collecting(
     // declarations from imported / prelude modules are visible.
     frontend::type_checker::expand_trait_defaults_in_pool(&mut program.statement);
 
+    // ERROR_MODEL E1: give each impl of a generic trait its own method
+    // name when two of them would land in the same registry slot
+    // (`impl From<IoError> for AppError` + `impl From<ParseError> for
+    // AppError`). An AST mutation for the same reason as the pass
+    // above: the interpreter's registry and `compiler_lower`'s are
+    // built from this tree, so renaming here is the one edit that
+    // reaches all three lanes. Must run before the impl_blocks
+    // snapshot below.
+    frontend::type_checker::mangle_overloaded_trait_impls(
+        &mut program.statement,
+        string_interner,
+    );
+
     // The impl_blocks walk runs over all statements (user +
     // integrated module + prelude) so impl blocks from every source
     // contribute methods to `context.struct_methods`.

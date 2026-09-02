@@ -494,6 +494,88 @@ impl<'a> TypeCheckerVisitor<'a> {
             .unwrap_or(false)
     }
 
+    /// ERROR_MODEL E1: whether `impl_name` is `trait_name` carrying an
+    /// overload suffix (`from@IoError` against the trait's `from`).
+    pub fn overload_base_matches(
+        &self,
+        impl_name: DefaultSymbol,
+        trait_name: DefaultSymbol,
+    ) -> bool {
+        let (Some(impl_str), Some(trait_str)) = (
+            self.core.string_interner.resolve(impl_name),
+            self.core.string_interner.resolve(trait_name),
+        ) else {
+            return false;
+        };
+        impl_str != trait_str && crate::type_checker::base_method_name(impl_str) == trait_str
+    }
+
+    /// ERROR_MODEL E1: the method a `Type::method(arg)` call really
+    /// names, or `None` when the call is spelled unambiguously — which
+    /// is every call in a program that does not write two impls of one
+    /// generic trait on one type.
+    pub fn resolve_associated_overload(
+        &mut self,
+        struct_name: DefaultSymbol,
+        function_name: DefaultSymbol,
+        args: &[ExprRef],
+    ) -> Option<DefaultSymbol> {
+        // Resolution is by the single argument's type, which is what
+        // `From` needs and all the pre-pass renames.
+        if args.len() != 1 || !self.is_trait_overloaded(struct_name, function_name) {
+            return None;
+        }
+        let arg_ty = self.visit_expr(&args[0]).ok()?;
+        let resolved = self.resolve_trait_overload(struct_name, function_name, &arg_ty);
+        (resolved != function_name).then_some(resolved)
+    }
+
+    /// ERROR_MODEL E1: the method an overloaded generic-trait call
+    /// actually names, given the type of the argument that decides it.
+    ///
+    /// `method` itself when the name was never contested — which is
+    /// every call in every program that does not write two impls of
+    /// one generic trait on one type, so this costs a failed interner
+    /// lookup and nothing else.
+    pub fn resolve_trait_overload(
+        &self,
+        target: DefaultSymbol,
+        method: DefaultSymbol,
+        arg_ty: &TypeDecl,
+    ) -> DefaultSymbol {
+        let Some(method_str) = self.core.string_interner.resolve(method) else {
+            return method;
+        };
+        let arg_ty = arg_ty.deref_ref();
+        let spelled = crate::type_checker::overload_name(
+            method_str,
+            std::slice::from_ref(arg_ty),
+            self.core.string_interner,
+        );
+        let Some(sym) = self.core.string_interner.get(&spelled) else {
+            return method;
+        };
+        match self.context.struct_methods.get(&target) {
+            Some(methods) if methods.contains_key(&sym) => sym,
+            _ => method,
+        }
+    }
+
+    /// Whether `(target, method)` names an overload set at all — i.e.
+    /// whether the argument's type has to be known before the call can
+    /// be resolved.
+    pub fn is_trait_overloaded(&self, target: DefaultSymbol, method: DefaultSymbol) -> bool {
+        let Some(method_str) = self.core.string_interner.resolve(method) else {
+            return false;
+        };
+        let Some(methods) = self.context.struct_methods.get(&target) else {
+            return false;
+        };
+        let names: Vec<DefaultSymbol> = methods.keys().copied().collect();
+        !crate::type_checker::overload_candidates(&names, method_str, self.core.string_interner)
+            .is_empty()
+    }
+
     /// From/Into: the trait and method names the `.into()` rewrite and
     /// the `?` cross-error conversion look up. `FROM_TRAIT` is the
     /// `From` trait declared in `core/std/convert.t`; `FROM_METHOD` is

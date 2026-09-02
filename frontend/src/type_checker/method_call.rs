@@ -248,6 +248,9 @@ impl<'a> TypeCheckerVisitor<'a> {
             None => return false,
         };
         // Rewrite `expr.into()` -> `Target::from(expr)` in place.
+        // ERROR_MODEL E1: with several `From` impls on the target, the
+        // source type names which one.
+        let from_method = self.resolve_trait_overload(target_sym, from_method, &source_ty);
         self.core.expr_pool.update(
             &call_ref,
             Expr::AssociatedFunctionCall(target_sym, from_method, vec![obj_ref]),

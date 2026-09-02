@@ -27,6 +27,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | Dict の hash 化 / `Set` / Deque / PQ / `Vec` 拡張の設計 (未実装) | [`design-docs/COLLECTIONS.md`](design-docs/COLLECTIONS.md) |
 | 失敗の運び方 (panic / `Result` / 確保失敗) とエラー型の規約 (未実装) | [`design-docs/ERROR_MODEL.md`](design-docs/ERROR_MODEL.md) |
 | `str` / `String` / `char` の境界と Unicode の線引き (未実装) | [`design-docs/STDLIB_TEXT.md`](design-docs/STDLIB_TEXT.md) |
+| `Iterator` / `Clone` / `Default` と bound の穴 (未実装) | [`design-docs/STDLIB_TRAIT_BASE.md`](design-docs/STDLIB_TRAIT_BASE.md) |
 | `ptr` を型付きにする設計 (未実装) | [`design-docs/POINTER.md`](design-docs/POINTER.md) |
 | SIMD の設計と残りのフェーズ | [`design-docs/SIMD.md`](design-docs/SIMD.md) |
 | socket ラッパーと OS のコンパイル時切り替え (N0〜N5 landing 済み) | [`design-docs/NETWORK_IO.md`](design-docs/NETWORK_IO.md) |

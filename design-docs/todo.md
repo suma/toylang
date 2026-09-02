@@ -1224,12 +1224,30 @@
   **STDLIB-ORD は解消できる** — 「generic context で AOT が表現できない」
   はもう成り立たず、`impl Ord for str` は 3 レーンで動くことを確認した
   (残る論点は `as_ptr` の確保だけなので extern `toy_str_cmp` に載せる)
-- **STDLIB-TRAIT-BASE: trait 基盤の穴** ★ — `iter.t` は
-  **documentation-only** (generic trait `Iterator<T>` が未対応なので
-  for ループは duck typing で回っている)。`Eq` / `Default` / `Clone`
-  相当も無く、コレクションの bound が書けない
-  (STDLIB-COLLECTIONS の前提)。A4 associated types が入ると
-  `Iterator` の形が変わるので、順序は型システム側と揃える
+- **STDLIB-TRAIT-BASE: trait 基盤の穴** ★ — 設計は
+  [`STDLIB_TRAIT_BASE.md`](STDLIB_TRAIT_BASE.md) (2026-09-03)。
+  **この項目の把握自体が古かった**: `trait Iterator<T>` は
+  documentation-only ではなく、`fn f<I: Iterator<i64>>(it: I)` も
+  generic 関数の中の `for x in it` も 3 レーンで動く (ITER-PROTOCOL-TRAIT
+  が制限を外した後の状態)。本当の穴は 2 つで、どちらも bound を書いた
+  **先**にある: (1) **`Self` を返す trait method は bound 越しに呼べない**
+  (`fn dup<T: Clone>(v: &T) -> T { v.clone() }` が
+  `[E0010] DEBUG: Method 'clone' returned unresolved Generic('T')` —
+  診断に `DEBUG:` が入ったまま。直接呼び `p.clone()` は 3 レーンで動く)、
+  (2) **`&mut T` は呼び出し側で推論できない**
+  (`Cannot unify &mut T with &mut P`。`&T` は通る)。この 2 つのせいで
+  `Clone` / `Default` / 算術 trait が generic 文脈で書けず、`Ord` だけが
+  例外的に使えているのは `lt` が `bool` を返し `&mut` を取らないから。
+  加えて **stdlib の反復子 15 個が 1 つも `impl Iterator<T>` を
+  名乗っていない** (for ループが structural なので今まで困らなかった)
+  ので、反復子を取る関数が user 空間で書けない。決定: **`Eq` は
+  置かない** (C0(a) の性質で検査は 1 つも増えない) / **`Iterator<T>` の
+  形は A4 associated types を待たずに確定させる** (移す費用は 15 impl、
+  得るのは型引数を省ける事だけ)。着手順は B0 (記述の是正 + 診断 3 件。
+  trait 継承 / associated type の parse error が生のトークン名
+  `BraceOpen` しか言わない件を含む) → B1 (`Self` 戻りの置換) →
+  B2 (15 個に `impl Iterator<T>`) → B3 (`Clone`) → B4 (`&mut T`) →
+  B5 (`T::assoc()` + `Default`)
 - **STDLIB-NUMERIC: 整数側の math が無い** ★ — `math.t` は f64 の libm
   ラッパ + `min` / `max` / `abs` だけ。gcd / 整数 `pow` / popcount ・
   leading_zeros 等のビット演算が無い。f32 版 intrinsics は SIMD-F32 の

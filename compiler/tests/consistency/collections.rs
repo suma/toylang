@@ -632,3 +632,95 @@ fn main() -> u64 {
 "#;
     assert_value(src, "deque_wrapped_growth", 127u64);
 }
+
+// COLLECTIONS C5: `PriorityQueue<T: Ord>`, a binary min-heap over the
+// same `Vec` the sort uses. Pops have to come out in order however
+// they went in, which is what a wrong sift silently breaks.
+#[test]
+fn priority_queue_pops_in_order() {
+    let src = r#"
+fn main() -> u64 {
+    var q: PriorityQueue<u64> = PriorityQueue::new()
+    q.push(5u64)
+    q.push(1u64)
+    q.push(4u64)
+    q.push(1u64)
+    q.push(9u64)
+    q.push(3u64)
+    var out: u64 = 0u64
+    var peeked: u64 = 0u64
+    match q.peek() {
+        Option::Some(v) => { peeked = v }
+        Option::None => { peeked = 99u64 }
+    }
+    while !q.is_empty() {
+        match q.pop() {
+            Option::Some(v) => { out = out * 10u64 + v }
+            Option::None => { out = out * 10u64 + 8u64 }
+        }
+    }
+    # 1 1 3 4 5 9, and peek saw the first of them without removing it
+    out + peeked + q.size()
+}
+"#;
+    assert_value(src, "pq_order", 113460u64);
+}
+
+// An empty queue answers `None` rather than panicking — it is the one
+// collection here whose removal is an `Option`, because a scheduler
+// loop asks it exactly that question.
+#[test]
+fn an_empty_priority_queue_answers_none() {
+    let src = r#"
+fn main() -> u64 {
+    var q: PriorityQueue<u64> = PriorityQueue::new()
+    var out: u64 = 0u64
+    match q.pop() {
+        Option::Some(v) => { out = out + v }
+        Option::None => { out = out + 1u64 }
+    }
+    match q.peek() {
+        Option::Some(v) => { out = out + v }
+        Option::None => { out = out + 2u64 }
+    }
+    q.push(7u64)
+    q.clear()
+    match q.pop() {
+        Option::Some(v) => { out = out + v }
+        Option::None => { out = out + 4u64 }
+    }
+    out
+}
+"#;
+    assert_value(src, "pq_empty", 7u64);
+}
+
+// `Ord` carries only `lt`, so a max-heap is an element type whose `lt`
+// is turned around — the arrangement the file's header points at
+// instead of a second type or a stored comparator.
+#[test]
+fn a_reversed_ord_gives_a_max_heap() {
+    let src = r#"
+struct Desc { v: u64 }
+
+impl Ord for Desc {
+    fn lt(self: Self, other: Self) -> bool { other.v < self.v }
+}
+
+fn main() -> u64 {
+    var q: PriorityQueue<Desc> = PriorityQueue::new()
+    q.push(Desc { v: 5u64 })
+    q.push(Desc { v: 1u64 })
+    q.push(Desc { v: 9u64 })
+    var out: u64 = 0u64
+    while !q.is_empty() {
+        match q.pop() {
+            Option::Some(d) => { out = out * 10u64 + d.v }
+            Option::None => { out = out * 10u64 + 8u64 }
+        }
+    }
+    out
+}
+"#;
+    assert_value(src, "pq_max_heap", 951u64);
+}

@@ -7,7 +7,7 @@
 > 進捗: **C0 / C1 は 2026-09-02、C2 は 2026-09-03 に完了**。C1 は 1.5 の
 > tombstone だけ採らなかった (下記「C1 で設計から外れた点」)。**C3 も
 > 2026-09-03 に完了**。**C4 の `Deque<T>` も 2026-09-03**。残るは
-> `PriorityQueue`
+> `PriorityQueue` も 2026-09-03 に完了 — **C0〜C5 すべて landing**
 
 ## Status snapshot
 
@@ -17,7 +17,7 @@
 | `Hash` | trait と primitive / `str` / `String` の impl + 表側の `hash_mix()` (2026-09-02)。`Dict` が使っている |
 | `Set<T>` | `core/std/collections/set.t` (2026-09-03)。`Dict` と同じ表・同じ順序保証 |
 | Deque | `core/std/collections/deque.t` (2026-09-03、ring buffer) |
-| PriorityQueue | 無い |
+| PriorityQueue | `core/std/collections/priority_queue.t` (2026-09-03、`Vec` 上の binary min-heap) |
 | `Vec<T>` の `insert` / `remove` / `swap_remove` / `contains` / `index_of` / `reverse` / `sort_by` | 揃った (2026-09-03) |
 | 組み込み `dict[K, V]` (リテラル `dict{...}`) | **interpreter のみ** (`compiler MVP cannot lower a dict literal yet`) |
 
@@ -300,7 +300,8 @@ API: `new` / `insert(v) -> bool` / `contains(v) -> bool` /
 | **C1** ✅ | `Dict` の open addressing (1.1〜1.6。tombstone を除く) | ✅ 既存 dict テスト green / 反復順を `docs/language.md` に明記 / 順序を 3 レーンで pin (`consistency/collections.rs` + `example/dict_hash.t`) / 実測は下記 |
 | **C2** ✅ | `Set<T>` | ✅ 3 レーン一致 + `Dict` と同じ入力列で反復順が一致する交差テスト (写しが 2 つあることの縛り) |
 | **C3** ✅ | `Vec` 拡張 | ✅ method ごとの 3 レーン一致。`remove` と `swap_remove` の順序差、空 `Vec` の `reverse` (u64 の `len - 1` が trap する) を pin |
-| **C4** | `Deque` / `PriorityQueue` | 3 レーン一致。PQ は「同値要素の順序は未規定」を明記 |
+| **C4** ✅ | `Deque` | ✅ 3 レーン一致。巻き付いた状態での成長を pin |
+| **C5** ✅ | `PriorityQueue` | ✅ 3 レーン一致。**min-heap** (最小が先) と決めた。同値要素の順序は未規定。max-heap は `lt` を反転した要素型で取る (comparator field も第 2 の型も持たない) |
 
 C0 の (a) は型検査側の修正なので、C1 と**並行して進められる**
 (むしろ C1 の前に入っていないと、`K: Hash` を付けたときの

@@ -1633,6 +1633,40 @@ An enum type argument is rejected outright: comparison overloading is a
 struct feature, so an `eq` written in `impl SomeEnum` would type-check
 and then fail to dispatch. Match on the variants instead.
 
+### `PriorityQueue<T: Ord>` (stdlib)
+
+`core/std/collections/priority_queue.t` is a binary min-heap: `pop`
+and `peek` answer with the **least** element by `Ord`, and both are
+`Option<T>` so an empty queue is an answer rather than a panic.
+
+```rust
+var q: PriorityQueue<u64> = PriorityQueue::new()
+q.push(5u64)
+q.push(1u64)
+q.push(4u64)
+
+while !q.is_empty() {
+    match q.pop() {
+        Option::Some(v) => println(v),   # 1, then 4, then 5
+        Option::None => {}
+    }
+}
+```
+
+`push` and `pop` are O(log n); `peek`, `size` and `is_empty` are O(1).
+`Ord` carries only `lt`, so a max-heap is the same heap with the
+comparison turned around — give the element type a reversed `lt`
+rather than reaching for a second queue type:
+
+```rust
+struct Desc { v: u64 }
+
+impl Ord for Desc {
+    fn lt(self: Self, other: Self) -> bool { other.v < self.v }
+}
+# a PriorityQueue<Desc> now pops the largest `v` first
+```
+
 ### `Deque<T>` (stdlib)
 
 `core/std/collections/deque.t` is a double-ended queue on a ring

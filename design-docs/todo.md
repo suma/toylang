@@ -10,6 +10,14 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-03
+- **COLLECTIONS C5 — `PriorityQueue<T: Ord>`
+  (`core/std/collections/priority_queue.t`)** — `Vec<T>` 上の binary
+  min-heap (**最小が先**)。`pop` / `peek` は `Option<T>` なので空は答えで
+  あって panic ではない。`Ord` は `lt` しか持たないので **max-heap は
+  `lt` を反転した要素型**で取る (第 2 の型も comparator field も持たない)。
+  `Vec` を内側に持つので成長・境界検査・`Drop` は借りられ、**自前の
+  `impl Drop` を持たない** — JIT の allow-list を増やさずに済む形。
+  **これで COLLECTIONS は C0〜C5 すべて landing。**
 - **COLLECTIONS C4 — `Deque<T>` (`core/std/collections/deque.t`)** —
   ring buffer。`Vec` の上に載せなかったのは、`Vec` に安い前方削除が無く
   「`pop_front` が O(n) の queue」になるため。成長は倍化 + **巻き付いた

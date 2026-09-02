@@ -160,7 +160,7 @@ Primitive / built-in types:
 | `ptr` | Raw heap pointer (0 = null) |
 | `usize` | Reserved keyword, used in some builtin signatures |
 | `()` | Unit (no value); function with no return type produces this |
-| `dict[K, V]` | Hash dictionary, any `Object`-keyable type as `K` |
+| `dict[K, V]` | Built-in dictionary literal type, **interpreter-only** — the compiled lanes refuse it. The portable map is the stdlib `Dict<K, V>`; see [`Dict<K, V>`](#dictk-v-stdlib) |
 | `[T; N]` | Fixed-size array of `T` with length `N` |
 | `soa [T; N]` | The same type as `[T; N]` with SoA storage — see [Array layout: `soa`](#array-layout-soa) |
 | `soa Vec<T>` | Sugar for the stdlib `SoaVec<T>` — a *distinct* type from `Vec<T>`; see [Vec layout: `soa Vec<T>`](#vec-layout-soa-vect) |
@@ -1066,6 +1066,11 @@ val tup           = (1u64, true, 3.5f64)
 val dict          = dict{"a": 1u64, "b": 2u64}
 ```
 
+The `dict{...}` literal builds the built-in `dict[K, V]`, which **only
+the interpreter can run** — the JIT and the AOT compiler reject it with
+`compiler MVP cannot lower a dict literal yet`. Code that has to run on
+every backend uses the stdlib [`Dict<K, V>`](#dictk-v-stdlib) instead.
+
 ### Array layout: `soa`
 
 A fixed-size array annotation may carry the prefix modifier `soa`:
@@ -1533,6 +1538,54 @@ at the call site, like any other unsatisfied bound (see
 [E0010] Method 'sort' generic parameter 'T' bound violation:
         expected Ord, got P (struct `P` does not implement trait `Ord`)
 ```
+
+### `Dict<K, V>` (stdlib)
+
+`core/std/dict.t` provides `Dict<K, V>`, written in toylang on top of
+the heap builtins the same way `Vec<T>` is — no parser, type checker,
+or backend special-casing. It runs on all three backends.
+
+```rust
+var d: Dict<str, u64> = Dict::new()
+d.insert("a", 1u64)
+d.insert("b", 2u64)
+
+match d.get("a") {
+    Option::Some(v) => println(v),
+    Option::None => println("missing"),
+}
+
+println(d.get_or("c", 0u64))      # 0 — the fallback, no match needed
+println(d.contains_key("b"))      # true
+println(d.remove("b"))            # true (false when the key was absent)
+println(d.size())                 # 1
+```
+
+Keys are compared with `==`, so any type the operator accepts works as
+a key: primitives, `str`, and a struct carrying an `eq` method (see
+[Operator overloading](#operator-overloading)). There is no `Hash`
+bound — `core/std/hash.t` exists, but the current table does not
+consult it.
+
+Two properties are worth knowing before building on it:
+
+- **Lookup is a linear scan.** `insert`, `get`, `get_or`,
+  `contains_key`, and `remove` are all O(n), so a workload is
+  quadratic in the number of keys. A thousand distinct keys inserted
+  and looked up takes about 10 seconds in the default engine and does
+  not finish inside two minutes at ten thousand. Hashing it is
+  designed in [`COLLECTIONS.md`](../design-docs/COLLECTIONS.md).
+- **Iteration order is insertion order only until something is
+  removed.** `d.iter()` walks the entries in the order they were
+  inserted, but `remove` fills the hole with the *last* entry, so a
+  deletion reorders the survivors (inserting `1, 2, 3` and removing
+  `1` iterates `3, 2`). Do not depend on the order of a dict that has
+  had a key removed. Making insertion order a guarantee that survives
+  removal is phase C1 of `COLLECTIONS.md`.
+
+Modifying a dict while iterating it is undefined: the iterator holds a
+copy of the key and value buffer pointers, which a growing `insert`
+can move.
 
 ### Numeric semantics
 

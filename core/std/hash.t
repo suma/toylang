@@ -10,12 +10,15 @@
 # `core/std/dict.t`) can dispatch through the regular
 # extension-trait method-registry path.
 #
-# The implementations below are deliberately simple — they're
-# correct as identity / parity hashes for an MVP linear-scan
-# `Dict`, but a future open-addressing hash table will want a
-# real avalanching mixer (Wyhash / FxHash / SipHash). The trait
-# signature is the stable contract; the implementations can be
-# upgraded later without touching the call sites.
+# The implementations below are deliberately simple — identity for
+# the unsigned widths, a same-width cast for the signed ones. They
+# do not avalanche, and they are not meant to: an open-addressing
+# table reading the low bits of an identity hash would cluster
+# badly, so the mixing belongs on the *table* side, where it also
+# covers hashes that user code wrote (`design-docs/COLLECTIONS.md`
+# 1.3). The trait signature is the stable contract: `hash` promises
+# only that equal values hash equally; the distribution is the
+# table's problem.
 
 trait Hash {
     fn hash(self: Self) -> u64
@@ -46,16 +49,20 @@ impl Hash for bool {
     }
 }
 
-# str: placeholder constant. A real implementation needs to walk
-# the bytes and mix them, but `BuiltinMethodCall::Len` is not yet
-# lowered by the AOT compiler — calling `self.len()` here would
-# work in the interpreter but fail at compile time for the AOT
-# backend. Returning `0u64` is the worst possible distribution
-# but stays correct: the linear-scan `Dict<str, V, A>` falls back
-# to `key == probed_key` for actual equality, so every str key
-# lands in the same bucket and gets compared one by one. Replace
-# with a byte-mixing hash once `__extern_str_hash` (or AOT
-# support for `str.len()`) is in place.
+# str: placeholder constant. Returning `0u64` is the worst possible
+# distribution but stays correct: the linear-scan `Dict<str, V>`
+# falls back to `key == probed_key` for actual equality, so every
+# str key lands in the same bucket and gets compared one by one.
+#
+# The reason this file used to give — that the AOT backend cannot
+# lower `str.len()` — no longer holds; `s.len()` compiles on all
+# three backends. What blocks a toylang byte walk now is cost:
+# `str::as_ptr()` heap-allocates a copy of the bytes on every call
+# in the interpreter (see `core/std/str.t`), and a hash runs once
+# per lookup, so the walk would trade a linear scan for an
+# allocation per probe. The replacement is an extern
+# (`__extern_str_hash`) — phase C0 of
+# `design-docs/COLLECTIONS.md`.
 impl Hash for str {
     fn hash(self: Self) -> u64 {
         0u64

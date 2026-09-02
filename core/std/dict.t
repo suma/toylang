@@ -123,6 +123,13 @@ impl<K, V> Dict<K, V> {
 
     # Remove `key` if present. On hit: swap-remove with the
     # last slot and return true. On miss: return false.
+    #
+    # The swap is what breaks iteration order (see the `DictIter`
+    # header below): the last entry lands in the removed key's
+    # position rather than everything after it shifting down.
+    # Shifting would add an O(n) move to the O(n) search; the
+    # ordering cost goes away with the entries/slots layout in
+    # `design-docs/COLLECTIONS.md`, not by shifting here.
     unsafe fn remove(&mut self, key: K) -> bool {
         var i: u64 = 0u64
         while i < self.count {
@@ -145,11 +152,19 @@ impl<K, V> Dict<K, V> {
 }
 
 # Iterator-protocol support (STDLIB-ITER): `for kv in d.iter() { ... }`
-# yields `(key, value)` tuples in insertion order. Same structural
-# protocol as `Vec::iter` — a `next(&mut self) -> Option<(K, V)>`
-# method, no `trait Iterator` impl required. `K` / `V` appear in no
-# field of the iterator (like `Box<T>`), so it needs no instantiation
-# of its own.
+# yields `(key, value)` tuples in the order the entries sit in the
+# parallel arrays. That is insertion order *until a key is removed*:
+# `remove` above swap-removes, moving the last entry into the hole, so
+# a deletion reorders the survivors (insert 1, 2, 3 then remove 1 and
+# the iteration yields 3, 2). Callers must not depend on the order of
+# a dict that has had a removal; making insertion order a guarantee
+# that survives `remove` is phase C1 of
+# `design-docs/COLLECTIONS.md`.
+#
+# Same structural protocol as `Vec::iter` — a
+# `next(&mut self) -> Option<(K, V)>` method, no `trait Iterator` impl
+# required. `K` / `V` appear in no field of the iterator (like
+# `Box<T>`), so it needs no instantiation of its own.
 #
 # The two element strides are packed into one `sizes` field (key in
 # the high 32 bits, value in the low 32): the AOT's `&mut self`

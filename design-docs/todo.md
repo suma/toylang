@@ -1248,10 +1248,29 @@
   `BraceOpen` しか言わない件を含む) → B1 (`Self` 戻りの置換) →
   B2 (15 個に `impl Iterator<T>`) → B3 (`Clone`) → B4 (`&mut T`) →
   B5 (`T::assoc()` + `Default`)
-- **STDLIB-NUMERIC: 整数側の math が無い** ★ — `math.t` は f64 の libm
-  ラッパ + `min` / `max` / `abs` だけ。gcd / 整数 `pow` / popcount ・
-  leading_zeros 等のビット演算が無い。f32 版 intrinsics は SIMD-F32 の
-  残と同じ項目。乱数は `random()` の一様のみ (分布は無い)
+- **STDLIB-NUMERIC: 整数側の math が無い** ★ — 設計は
+  [`STDLIB_NUMERIC.md`](STDLIB_NUMERIC.md) (2026-09-03)。`math.t` は
+  f64 の libm ラッパ 11 本 + `abs(i64)` + `min`/`max` (**i64 と u64
+  だけ**) で、整数側は実質空。測ったこと: (1) **`u64::MAX` を書く手段が
+  無い** — `checked.t` は 8 幅ぶんの限界値を `255u8` のように直書き
+  している (associated const も module const も無いため)、(2) IEEE の端は
+  正しい (`0.0/0.0` は `NaN`、`nan == nan` は false、`-7 % 3 == -1`)
+  が `is_nan` が無く、**`NaN` / `inf` という綴りは JSON に無い**
+  (SERIALIZE へ)、(3) extern 1 回は interpreter で +6.7 µs なのに対し
+  **ビット演算を toylang のループで書くと 64 反復で約 400 µs** —
+  60 倍遅いので extern。決定: **ビット演算は u64 の extern 5 本を土台に
+  幅の補正を toylang で** (9 種 × 8 幅 = 72 本の extern を作らない) /
+  **IR 命令にはしない** (cranelift の `popcnt` は 1 命令だが、extern なら
+  実装 1 つ・IR 命令なら 3 つ。SIMD-VM-SLOT と同じ「測って払う」) /
+  **`min`/`max` は `Ord` の default body に置かない** (`Self` 戻りが
+  bound 越しに呼べない穴に当たる。TRAIT_BASE B1 の後に移す) /
+  **溢れは wrap、checked は `Checked` に足す** (3 つ目の規約を作らない)。
+  着手順は N0 (`limits.t`。**他の全部が限界値を使う**) → N1 (`bits.t`。
+  `Dict` の手書き `next_power_of_two` が利用者) → N2 (整数 math。
+  `isqrt` / `gcd` は `ensures` を書けるので `--check` のオラクルが効く)
+  → N3 (`min`/`max`/`clamp` 全幅) → N4 (f64 の 7 本 + 分類) →
+  N5 (**f32 の libm が 1 本も無い** + format spec の f32 未対応) →
+  N6 (`random.t` — 範囲は棄却法、分布は純 toylang で列を共有)
 - **STDLIB-TIME: 単調時計・sleep・性能カウンタ・日付** ★ — 設計は
   [`STDLIB_TIME.md`](STDLIB_TIME.md) (2026-09-03)。`now()` は libc `time`
   の wall 秒のみなので、ベンチも指数バックオフの再試行も書けない。

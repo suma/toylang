@@ -1,5 +1,8 @@
 # ERROR_MODEL — stdlib のエラー型の統一規約
 
+> **状態: E0〜E5 landing 済み (2026-09-03)。** 以下は決定の記録として残す。
+> 先送りにした項目は末尾の「先送り」節にある。
+
 > 対象: `core/std/io.t` / `parse.t` / `net.t` / `poll.t` / `result.t` /
 > `option.t` と、その裏の `toylang_rt` / `extern_io.rs` / `extern_net.rs`
 > 状態の正本: [`todo.md`](todo.md) の **STDLIB-ERROR-MODEL**

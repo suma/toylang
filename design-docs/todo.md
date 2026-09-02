@@ -10,6 +10,23 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-03
+- **STDLIB-ERROR-MODEL E0〜E5 — 失敗の運び方が決着** — 設計は
+  [`ERROR_MODEL.md`](ERROR_MODEL.md)。(E0) I/O の失敗語彙を
+  `toylang_rt::io_status` の 1 箇所に集約し interpreter は forward する。
+  未知の errno は `ReadError` ではなく `Unknown`。(E1) 1 つの型に
+  `From` impl を複数書けるように (前処理が `from@IoError` に改名し、
+  呼び出し側は型検査器が引数型で解決)。(E2) 文の位置の `?` と
+  `Result<(), E>` の `?`。(E3) `expect(msg)` が message を出す
+  (`panic` の非リテラルは既存の `Terminator::PanicStr` に載せた)。
+  (E4) `docs/language.md` に「Error model」節 + `NetError::is_retryable`
+  / `is_pending` + `interpreter/example/error_model.t`。(E5) 確保失敗の
+  検査と `AllocError` / `try_reserve` / `try_with_capacity`。**署名は
+  1 つも変えていない** — `push` は失敗したら panic するまま。
+  E5 は前提条件を 2 つ掘り出した: インタプリタのヒープが確保失敗で
+  **abort** していた (null を返すようにした。ただし memset が走るので
+  1 TiB の上限を明示) のと、**両方の `realloc` が失敗時に元のブロックを
+  壊していた** (interpreter は free + typed slot 破棄、両者とも得ていない
+  成長を計上) 件。D5 がまさにその保証に依存している。
 - **COLLECTIONS C5 — `PriorityQueue<T: Ord>`
   (`core/std/collections/priority_queue.t`)** — `Vec<T>` 上の binary
   min-heap (**最小が先**)。`pop` / `peek` は `Option<T>` なので空は答えで
@@ -1179,29 +1196,6 @@
   bound は要らない / `K: Hash` bound は動くが breaking change /
   `Set` は `Dict<T, ()>` では書けない / `remove` の swap-remove で
   反復順は既に挿入順ではない)
-- **STDLIB-ERROR-MODEL: エラー型の統一規約が無い** ★★ — `IoError` /
-  `ParseError` / `NetError` が互いに無関係に増えている。設計は
-  [`ERROR_MODEL.md`](ERROR_MODEL.md) (2026-09-02。当初の 3 論点は決着:
-  共通の `Error` trait は**置かない** — enum は `dyn` に載らないので
-  型消去に使えず `<T: Display>` で足りる / `From` はアプリの集約型が
-  張り stdlib は横に張らない / errno は畳んで未知は `Unknown`、
-  隣の変種に化けさせない)。**確保の失敗は既定で `panic`**
-  (`push` の署名は変えない) **+ 復帰したい側は先に訊く**
-  (`try_reserve(n)? ` / `try_with_capacity`)。要素ごとに `Result` を
-  返す形 (`try_push`) は置かない — 全ループに分岐と `?` が生える費用の
-  ほうが重い (2026-09-02 の判断)。今日 `Vec` / `String` / `Box` は
-  確保の失敗を**誰も検査しておらず null へ書きに行く**ので、
-  まず気づくところから。
-  着手順は E0〜E5 で、**先頭 3 つは規約ではなく今日壊れているもの**: (E0) 同じ書き込み失敗が interpreter で
-  `write error`、AOT/JIT で `read error` になる — 語彙が 4 経路に
-  別々に書かれていて、`net` だけが `toylang_rt` へ forward して
-  割れないようにしてある。(E1) 1 つの型に `From` impl を 2 つ書くと
-  後が前を上書きするので、`enum AppError { Io(IoError),
-  Parse(ParseError) }` のような集約エラー型が型検査を通らない
-  (`register_struct_method` のキーに trait 側の型引数が無い)。(E2) 文の
-  位置の `?` (`f()?` を値に束縛しない形) が desugar されず、型検査を
-  通ったあと実行時に `unexpected expr: Try` で落ちる — `Result<(), E>` に
-  至っては `?` を書く方法が 1 つも無い
 - **STDLIB-TEXT: 文字列・テキストの正本が無い** ★★ — 設計は
   [`STDLIB_TEXT.md`](STDLIB_TEXT.md) (2026-09-03)。規約の不足だと
   思っていたが、**測ったら 4 件は今日壊れている**ので ★★ に上げた:

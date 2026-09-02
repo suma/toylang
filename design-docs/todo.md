@@ -1710,7 +1710,31 @@ changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 
 (`&self` 受理 / generic 戻り型置換) も 2026-08-30 に解消
 (POINTER P2、完了済み節)。
 
-2026-08-30 時点で既知の不具合はない。
+- **METHOD-ARG-UNCHECKED: method 呼び出しの引数が型検査されない** ★★★ —
+  自由関数は正しく落ちる (`fn take(s: &String)` に `take("ab")` で
+  `[E0001] Type mismatch: expected &String, but got str`) のに、
+  **method は型も個数も検査していない**。2026-09-03 実測、いずれも
+  interpreter が値を出して完走する:
+
+  | 書いたもの | 宣言 | 出た値 |
+  |---|---|---|
+  | `w.take_u64(true)` | `fn take_u64(&self, n: u64)` | `1` |
+  | `w.take_str(42u64)` | `fn take_str(&self, s: str)` | `0` |
+  | `w.eat(7u64)` | `fn eat(&mut self, other: &W)` | `7` (body の `other.n` が通る) |
+  | `w.two(1u64)` | `fn two(&self, a: u64, b: u64)` | `1` (引数不足が通る) |
+
+  stdlib でも同じで、**`s.push_str("ab")` が通る** (`push_str` は
+  `&String` を取るので `String::from_str("ab")` が正しい)。結果は
+  レーンで割れる: interpreter は**黙って何もしない** (`len()` は 0 のまま)、
+  AOT は cranelift の verifier がクラッシュする
+  (`mismatched argument count ...: got 5, expected 8` /
+  `arg 1 (v14) has type i8, expected i64`)。`Vec<u8>::push_str` も同型。
+  **String に文字列を足すという最初に書く形が黙って壊れ**、compiled
+  レーンの診断は internal error の文言なので原因に辿り着けない。
+  直し方は自由関数側の検査 (`[E0001]` を出している経路) を method 呼び出しにも
+  通すこと。材料は揃っている — `declared_method_param_types` は既にあり、
+  CHAR-LITERAL-GENERIC-ARG がレシーバの型引数で置換してから hint に使っている。
+  2026-09-03 に `logsearch/` の設計 (ログ検索サービスのモデルケース) で発見。
 
 ### パーサーの既知制限事項
 - bare `self` 非対応 — `self: Self` / `&self` / `&mut self` のいずれかを書く。

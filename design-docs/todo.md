@@ -1061,6 +1061,66 @@
 > 実プログラムを書けなくしている残りは下記。
 > 俯瞰と優先順位 ([`RUNTIME_LIBRARY.md`](RUNTIME_LIBRARY.md)、2026-08-30 実測)。
 
+> 2026-09-02 に `core/std/` 全 28 ファイルを**分野で**棚卸しした。以下は
+> 分野ごとの空白で、`RUNTIME_LIBRARY.md` の P1〜P4 に対応する
+> (下の 2 件も分野で言えば TEXT と IO に属する)。
+
+- **STDLIB-COLLECTIONS: Dict の hash 化 / `Set<T>` / Deque / PriorityQueue /
+  Vec 拡張** ★★ — RUNTIME_LIBRARY の P1 が丸ごと未着手。`dict.t` の
+  insert/get は今も線形探索 (`dict.t:56`)。論点は 3 つ: (a) `hash.t` の
+  mixer 更新 (当人が「将来は Wyhash / FxHash 相当が要る」と明記。trait
+  署名は安定契約なので実装差し替えで済む)、(b) tombstone と成長閾値、
+  (c) **`DictIter` の反復順** — 現状は挿入順 (並列配列の並び) で、open
+  addressing にすると物理順が変わる。挿入順を維持する (index 配列を
+  重ねる) か「未規定」に引き下げるかを `docs/language.md` で**先に**
+  決める。`contains` / `index_of` / `remove` は `T` に `==` を要求する
+  bound が今の trait 機構で書けるかが着手時の実測事項
+  (→ STDLIB-TRAIT-BASE)。Dict と `Set` は表実装を共有するので、個別に
+  着手すると設計が割れる — **分野の設計文書を先に取る**
+- **STDLIB-ERROR-MODEL: エラー型の統一規約が無い** ★★ — `IoError` /
+  `ParseError` / `NetError` が互いに無関係に増えている。決める場所が
+  無いのは 3 点: 共通の `Error` trait を置くか (`Display` の `to_str`
+  で足りるか)、`?` の `From` 連鎖をどこまで張るか (TRY-ERR-RETYPE の
+  機構は既にある)、variant の粒度 (OS errno をどこまで畳むか)。enum が
+  増えてから統一するのは高くつくので、次のエラー型を足す前に
+- **STDLIB-TEXT: 文字列・テキストの正本が無い** ★ — `char` (= u32) /
+  `String` (byte buffer) / `str` (不変) の 3 者の境界規約が各所に
+  散っている (CHAR-LITERAL-NUM の例外規則、`String::get` は u8 で
+  `push_char` は u32、`str_ops.t` の trait 群)。Unicode をどこまで
+  やるか (codepoint 止まりか、grapheme / 正規化まで) の線引きも
+  未決。下の STDLIB-ORD (`str` の `Ord`) はこの分野の 1 項目
+- **STDLIB-TRAIT-BASE: trait 基盤の穴** ★ — `iter.t` は
+  **documentation-only** (generic trait `Iterator<T>` が未対応なので
+  for ループは duck typing で回っている)。`Eq` / `Default` / `Clone`
+  相当も無く、コレクションの bound が書けない
+  (STDLIB-COLLECTIONS の前提)。A4 associated types が入ると
+  `Iterator` の形が変わるので、順序は型システム側と揃える
+- **STDLIB-NUMERIC: 整数側の math が無い** ★ — `math.t` は f64 の libm
+  ラッパ + `min` / `max` / `abs` だけ。gcd / 整数 `pow` / popcount ・
+  leading_zeros 等のビット演算が無い。f32 版 intrinsics は SIMD-F32 の
+  残と同じ項目。乱数は `random()` の一様のみ (分布は無い)
+- **STDLIB-TIME: 単調時計と sleep** ★ — `now()` は libc `time` の wall
+  秒のみなので、ベンチも指数バックオフの再試行も書けない。
+  `now_mono()` / `sleep(ms)` は extern 4 箇所セット。**本質的に非決定**
+  なので、単調性だけを pin して値は pin しない方針を最初に書く
+  (RUNTIME_LIBRARY P2)
+- **STDLIB-FS-PATH: path 操作とディレクトリ列挙** ★ — `read_file` /
+  `write_file` / `file_exists` はあるが、path の結合・分解 (`join` /
+  `basename` / `extension`) も `ls` 相当も無い。path 操作は純 toylang
+  (`String` の走査)、ディレクトリ列挙は extern (`readdir`) と経路が
+  分かれる
+- **STDLIB-LOG: レベル付きログ** ★ — `eprint` / `eprintln` が入った
+  (P0-A) ので純 toylang で書ける。決めるのは出力先を stderr 固定に
+  するかと、レベルのコンパイル時除去を `const fn` で畳めるかの 2 点
+  (RUNTIME_LIBRARY P2)
+- **STDLIB-SERIALIZE: JSON / hex / base64** ★ — writer は `Display`
+  (`to_str`) の上に純 toylang で書ける。reader は `StringIter` の上の
+  走査パーサで工数は writer の数倍なので、**writer 先行**・reader は
+  実需要が出てから (RUNTIME_LIBRARY P4)
+- **並行性 (CONCURRENCY)** は分野としては stdlib だが、本体が move /
+  Drop モデルとの接合なので「検討中の機能」節に置いてある (★★★)。
+  RUNTIME_LIBRARY P3 も「設計文書を別に取ってから着手」と同じ判断
+
 - **STDLIB-ORD: `str` の `Ord` impl** ★ — byte 比較が heap copy を要求し、
   generic context で AOT が表現できないため未提供 (`String` は提供済み)。
 - **io.t の範囲外 `""` 既定の厳格化** ★ — `arg(i)` / `env_name(i)` /

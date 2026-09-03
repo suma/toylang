@@ -1040,6 +1040,18 @@ impl<'a> Parser<'a> {
                     } else {
                         (Vec::new(), std::collections::HashMap::new())
                     };
+                // STDLIB-TRAIT-BASE B0: `trait B: A { ... }` is not
+                // supported, and saying so beats `expect_err`'s bare
+                // `BraceOpen` -- which names the token the parser
+                // wanted and nothing about what was written.
+                if matches!(self.peek(), Some(Kind::Colon)) {
+                    let location = self.current_source_location();
+                    return Err(ParserError::generic_error(
+                        location,
+                        "trait inheritance (`trait B: A`) is not supported; declare the methods `B` needs on `B` itself, or take both bounds at the use site (`fn f<T: A + B>(...)`)"
+                            .to_string(),
+                    ));
+                }
                 self.expect_err(&Kind::BraceOpen)?;
                 let methods = super::stmt::parse_trait_method_signatures_with_generics(
                     self,

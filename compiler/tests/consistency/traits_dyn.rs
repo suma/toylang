@@ -958,3 +958,101 @@ fn cloning_a_string_gives_an_independent_buffer() {
     "#;
     assert_stdout_consistent(src, "string_clone_independent");
 }
+
+// STDLIB-TRAIT-BASE B2: the stdlib's iterators name the trait.
+//
+// Sixteen of them existed with `fn next(&mut self) -> Option<T>` as an
+// inherent method and none said `impl Iterator<T>`, because the `for`
+// loop desugar is structural and never had to ask. The cost was that a
+// function taking an iterator could not be written at all: you could
+// take a `Vec<i64>`, but not the result of `v.iter().filter(...)`.
+//
+// The methods were *moved* rather than added -- writing one in both an
+// inherent and a trait impl silently discards a body, which the
+// diagnostic below now refuses.
+
+#[test]
+fn a_function_can_take_any_stdlib_iterator() {
+    let src = r#"
+        fn total<I: Iterator<u64>>(it: I) -> u64 {
+            var sum: u64 = 0u64
+            for x in it { sum = sum + x }
+            sum
+        }
+
+        fn count<I: Iterator<u8>>(it: I) -> u64 {
+            var n: u64 = 0u64
+            for b in it { n = n + 1u64 }
+            n
+        }
+
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            v.push(1u64)
+            v.push(2u64)
+            v.push(3u64)
+            # Bound first: the compiled lanes take a generic function's
+            # type arguments from bindings, not from a call in the
+            # argument slot.
+            val vi = v.iter()
+            val a = total(vi)
+            val s = String::from_str("hello")
+            val si = s.iter()
+            val b = count(si)
+            a + b
+        }
+    "#;
+    // 6 + 5. Two different stdlib iterators, one bound each.
+    assert_consistent(src, "iterator_bound_stdlib");
+}
+
+#[test]
+fn for_loops_over_stdlib_iterators_still_work() {
+    // The move must be invisible to existing programs: the desugar
+    // looks for `next`, not for a trait.
+    let src = r#"
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            v.push(10u64)
+            v.push(20u64)
+            var sum: u64 = 0u64
+            for x in v.iter() { sum = sum + x }
+            val s = String::from_str("abc")
+            var bytes: u64 = 0u64
+            for b in s.iter() { bytes = bytes + 1u64 }
+            var chars: u64 = 0u64
+            for c in s.chars() { chars = chars + 1u64 }
+            var d: Deque<u64> = Deque::new()
+            d.push_back(5u64)
+            var dq: u64 = 0u64
+            for x in d.iter() { dq = dq + x }
+            sum + bytes + chars + dq
+        }
+    "#;
+    // 30 + 3 + 3 + 5 = 41.
+    assert_consistent(src, "iterator_for_loops_still_work");
+}
+
+#[test]
+fn writing_one_method_twice_is_refused_before_it_runs() {
+    // The registries replace on a matching key, so one of the two
+    // bodies disappears. That used to be found at run time, after the
+    // type check had passed.
+    let errs = type_check_errors(
+        r#"
+        struct Counter { n: i64 }
+        impl Counter {
+            fn next(&mut self) -> Option<i64> { Option::Some(self.n) }
+        }
+        impl Iterator<i64> for Counter {
+            fn next(&mut self) -> Option<i64> { Option::None }
+        }
+        fn main() -> u64 { 0u64 }
+        "#,
+    );
+    let joined = errs.join("\n");
+    assert!(
+        joined.contains("two impls of `next`"),
+        "a doubly-written method should be refused at check time:\n{joined}"
+    );
+}

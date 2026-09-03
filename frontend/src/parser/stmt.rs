@@ -857,6 +857,19 @@ pub fn parse_trait_method_signatures_with_generics(
 
         let (never_allocates, is_unsafe) = parse_method_modifiers(parser);
 
+        // STDLIB-TRAIT-BASE B0: an associated type is not supported.
+        // The generic error below fires on the token *after* `type`,
+        // reporting `BraceClose` for a line that plainly says
+        // `type Item` -- name the construct instead.
+        if matches!(parser.peek(), Some(Kind::Type)) {
+            let location = parser.current_source_location();
+            return Err(ParserError::generic_error(
+                location,
+                "associated types (`type Item`) are not supported; give the trait a type parameter instead (`trait Container<Item> { ... }`)"
+                    .to_string(),
+            ));
+        }
+
         match parser.peek() {
             Some(Kind::Function) => {
                 let fn_start_pos = parser.peek_position_n(0).unwrap().start;

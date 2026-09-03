@@ -673,7 +673,7 @@ impl String {
     }
 }
 
-impl StringIter {
+impl Iterator<u8> for StringIter {
     # Advance by one byte. Returns `None` once `index` has walked
     # past `len`.
     unsafe fn next(&mut self) -> Option<u8> {
@@ -687,6 +687,7 @@ impl StringIter {
         }
     }
 }
+
 
 # ---------------------------------------------------------------------
 # Searching and building (STDLIB-TEXT §8).
@@ -967,7 +968,7 @@ impl String {
     }
 }
 
-impl CharsIter {
+impl Iterator<char> for CharsIter {
     # Advance by one codepoint.
     #
     # A `String` holds arbitrary bytes, so this can meet a sequence
@@ -1034,6 +1035,7 @@ impl CharsIter {
     }
 }
 
+
 # Iterator adapters (STDLIB-ITER-ADAPT): `map` / `filter` /
 # `enumerate` / `collect` on a `StringIter` (one `u8` per byte).
 # Same design as the `VecIter` adapters in
@@ -1049,13 +1051,6 @@ struct StringMapIter<U> {
 }
 
 impl<U> StringMapIter<U> {
-    # Apply `f` to each byte on the way out.
-    unsafe fn next(&mut self) -> Option<U> {
-        match self.source.next() {
-            Option::Some(b) => Option::Some(self.f(b)),
-            Option::None => Option::None,
-        }
-    }
 
     fn collect(self: Self) -> Vec<U> {
         val out: Vec<U> = Vec::new()
@@ -1069,6 +1064,17 @@ impl<U> StringMapIter<U> {
         out
     }
 }
+
+impl<U> Iterator<U> for StringMapIter<U> {
+    # Apply `f` to each byte on the way out.
+    unsafe fn next(&mut self) -> Option<U> {
+        match self.source.next() {
+            Option::Some(b) => Option::Some(self.f(b)),
+            Option::None => Option::None,
+        }
+    }
+}
+
 
 impl StringIter {
     fn map<U>(&self, f: fn (u8) -> U) -> StringMapIter<U> {
@@ -1087,6 +1093,21 @@ struct StringFilterIter {
 }
 
 impl StringFilterIter {
+
+    fn collect(self: Self) -> Vec<u8> {
+        val out: Vec<u8> = Vec::new()
+        var it = self
+        loop {
+            match it.next() {
+                Option::Some(v) => { out.push(v) }
+                Option::None => { break }
+            }
+        }
+        out
+    }
+}
+
+impl Iterator<u8> for StringFilterIter {
     # Yield only the bytes for which `pred` returns true.
     unsafe fn next(&mut self) -> Option<u8> {
         loop {
@@ -1106,19 +1127,8 @@ impl StringFilterIter {
         val r: Option<u8> = Option::None
         r
     }
-
-    fn collect(self: Self) -> Vec<u8> {
-        val out: Vec<u8> = Vec::new()
-        var it = self
-        loop {
-            match it.next() {
-                Option::Some(v) => { out.push(v) }
-                Option::None => { break }
-            }
-        }
-        out
-    }
 }
+
 
 impl StringIter {
     fn filter(&self, pred: fn (u8) -> bool) -> StringFilterIter {
@@ -1136,7 +1146,7 @@ struct StringEnumerateIter {
     index: u64,
 }
 
-impl StringEnumerateIter {
+impl Iterator<(u64, u8)> for StringEnumerateIter {
     # Yield `(index, byte)` pairs, starting at 0.
     unsafe fn next(&mut self) -> Option<(u64, u8)> {
         match self.source.next() {
@@ -1149,6 +1159,7 @@ impl StringEnumerateIter {
         }
     }
 }
+
 
 impl StringIter {
     fn enumerate(&self) -> StringEnumerateIter {

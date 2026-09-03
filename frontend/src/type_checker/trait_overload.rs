@@ -256,3 +256,50 @@ pub fn overload_candidates(
         .copied()
         .collect()
 }
+
+/// STDLIB-TRAIT-BASE B0: two impl blocks supplying the same method for
+/// the same type under the same target type arguments.
+///
+/// The registries *replace* on a matching key, so one of the two
+/// bodies silently disappeared; the interpreter's own registry builder
+/// caught it, but only when the program ran, and only after the type
+/// check had said the program was fine. The shape that reaches this is
+/// writing a method both inherently and in a trait impl -- which is
+/// exactly what someone does when adding `impl Iterator<T> for X` to a
+/// type that already has `next`.
+///
+/// Two impls with *different* concrete target args (`impl Vec<u8>`
+/// beside `impl<T> Vec<T>`) are the specialisation the registry is
+/// built for, and are left alone.
+pub fn find_duplicate_impl_method(
+    stmt_pool: &StmtPool,
+    interner: &DefaultStringInterner,
+) -> Option<String> {
+    let mut seen: HashMap<(DefaultSymbol, DefaultSymbol, String), ()> = HashMap::new();
+    for index in 0..stmt_pool.len() {
+        let stmt_ref = StmtRef(index as u32);
+        let Some(Stmt::ImplBlock {
+            target_type,
+            target_type_args,
+            methods,
+            ..
+        }) = stmt_pool.get(&stmt_ref)
+        else {
+            continue;
+        };
+        let args_key = overload_name("", &target_type_args, interner);
+        for method in &methods {
+            let key = (target_type, method.name, args_key.clone());
+            if seen.insert(key, ()).is_some() {
+                let type_name = interner.resolve(target_type).unwrap_or("?");
+                let method_name = interner.resolve(method.name).unwrap_or("?");
+                return Some(format!(
+                    "`{type_name}` has two impls of `{method_name}`; one of them would be \
+                     silently discarded. Move the method into the trait impl rather than \
+                     writing it in both places"
+                ));
+            }
+        }
+    }
+    None
+}

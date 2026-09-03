@@ -39,7 +39,8 @@ mod trait_decl;
 pub use trait_decl::expand_trait_defaults_in_pool;
 mod trait_overload;
 pub use trait_overload::{
-    base_method_name, mangle_overloaded_trait_impls, overload_candidates, overload_name,
+    base_method_name, find_duplicate_impl_method, mangle_overloaded_trait_impls,
+    overload_candidates, overload_name,
 };
 
 pub mod effects;

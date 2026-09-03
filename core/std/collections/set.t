@@ -252,7 +252,7 @@ impl<T: Hash> Set<T> {
     }
 }
 
-impl<T> SetIter<T> {
+impl<T> Iterator<T> for SetIter<T> {
     unsafe fn next(&mut self) -> Option<T> {
         if self.index >= self.count {
             Option::None
@@ -264,3 +264,4 @@ impl<T> SetIter<T> {
         }
     }
 }
+

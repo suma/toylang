@@ -501,7 +501,7 @@ impl<T> Vec<T> {
     }
 }
 
-impl<T> VecIter<T> {
+impl<T> Iterator<T> for VecIter<T> {
     # Advance by one element. Returns `None` once `index` has walked
     # past `len`. The element is read as a copy out of the buffer —
     # exactly like `Vec::get`, so compound `T` (including `Box`) is
@@ -517,6 +517,7 @@ impl<T> VecIter<T> {
         }
     }
 }
+
 
 # Concrete-args impl: byte-vector helpers live here because the
 # inner `__builtin_ptr_read(...)` produces `u8` and `push(value)`
@@ -689,13 +690,6 @@ struct MapIter<T, U> {
 }
 
 impl<T, U> MapIter<T, U> {
-    # Apply `f` to each element on the way out.
-    unsafe fn next(&mut self) -> Option<U> {
-        match self.source.next() {
-            Option::Some(v) => Option::Some(self.f(v)),
-            Option::None => Option::None,
-        }
-    }
 
     # Drain the mapped stream into a fresh `Vec<U>`. The iterator is
     # consumed by value, so the caller's binding keeps its state
@@ -713,6 +707,17 @@ impl<T, U> MapIter<T, U> {
         out
     }
 }
+
+impl<T, U> Iterator<U> for MapIter<T, U> {
+    # Apply `f` to each element on the way out.
+    unsafe fn next(&mut self) -> Option<U> {
+        match self.source.next() {
+            Option::Some(v) => Option::Some(self.f(v)),
+            Option::None => Option::None,
+        }
+    }
+}
+
 
 impl<T> VecIter<T> {
     # `it.map(f)` yields `f(x)` for each element `x`.
@@ -733,6 +738,21 @@ struct FilterIter<T> {
 }
 
 impl<T> FilterIter<T> {
+
+    fn collect(self: Self) -> Vec<T> {
+        val out: Vec<T> = Vec::new()
+        var it = self
+        loop {
+            match it.next() {
+                Option::Some(v) => { out.push(v) }
+                Option::None => { break }
+            }
+        }
+        out
+    }
+}
+
+impl<T> Iterator<T> for FilterIter<T> {
     # Yield only the elements for which `pred` returns true.
     unsafe fn next(&mut self) -> Option<T> {
         loop {
@@ -752,19 +772,8 @@ impl<T> FilterIter<T> {
         val r: Option<T> = Option::None
         r
     }
-
-    fn collect(self: Self) -> Vec<T> {
-        val out: Vec<T> = Vec::new()
-        var it = self
-        loop {
-            match it.next() {
-                Option::Some(v) => { out.push(v) }
-                Option::None => { break }
-            }
-        }
-        out
-    }
 }
+
 
 impl<T> VecIter<T> {
     fn filter(&self, pred: fn (T) -> bool) -> FilterIter<T> {
@@ -783,7 +792,7 @@ struct EnumerateIter<T> {
     index: u64,
 }
 
-impl<T> EnumerateIter<T> {
+impl<T> Iterator<(u64, T)> for EnumerateIter<T> {
     # Yield `(index, element)` pairs, starting at 0.
     unsafe fn next(&mut self) -> Option<(u64, T)> {
         match self.source.next() {
@@ -796,6 +805,7 @@ impl<T> EnumerateIter<T> {
         }
     }
 }
+
 
 impl<T> VecIter<T> {
     fn enumerate(&self) -> EnumerateIter<T> {
@@ -817,7 +827,7 @@ struct ZipIter<A, B> {
     index: u64,
 }
 
-impl<A, B> ZipIter<A, B> {
+impl<A, B> Iterator<(A, B)> for ZipIter<A, B> {
     # Yield `(a, b)` pairs, stopping at the shorter of the two
     # sources. `elems` packs the two element strides into one field
     # (`a_elem << 32 | b_elem`) so the struct fits in the backend's
@@ -836,6 +846,7 @@ impl<A, B> ZipIter<A, B> {
         }
     }
 }
+
 
 impl<T> VecIter<T> {
     fn zip<U>(&self, other: VecIter<U>) -> ZipIter<T, U> {

@@ -167,7 +167,7 @@ impl<T> Deque<T> {
     }
 }
 
-impl<T> DequeIter<T> {
+impl<T> Iterator<T> for DequeIter<T> {
     unsafe fn next(&mut self) -> Option<T> {
         if self.index >= self.count {
             Option::None
@@ -181,3 +181,4 @@ impl<T> DequeIter<T> {
         }
     }
 }
+

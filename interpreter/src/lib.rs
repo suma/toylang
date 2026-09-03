@@ -566,6 +566,20 @@ fn check_typing_collecting(
         string_interner,
     );
 
+    // STDLIB-TRAIT-BASE B0: two impls of one method on one type. The
+    // registries replace on a matching key, so one body vanishes; the
+    // runtime registry builder noticed, but only once the program ran.
+    // Report it here, where it is a type error like any other.
+    if let Some(message) =
+        frontend::type_checker::find_duplicate_impl_method(&program.statement, string_interner)
+    {
+        errors.push(Diagnostic::from_type_check_error(
+            &frontend::type_checker::TypeCheckError::generic_error(&message),
+            diag_file,
+            Some(string_interner),
+        ));
+    }
+
     // The impl_blocks walk runs over all statements (user +
     // integrated module + prelude) so impl blocks from every source
     // contribute methods to `context.struct_methods`.

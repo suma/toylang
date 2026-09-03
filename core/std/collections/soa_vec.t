@@ -163,7 +163,7 @@ impl<T> SoaVec<T> {
     }
 }
 
-impl<T> SoaVecIter<T> {
+impl<T> Iterator<T> for SoaVecIter<T> {
     unsafe fn next(&mut self) -> Option<T> {
         if self.index >= self.len {
             Option::None
@@ -175,3 +175,4 @@ impl<T> SoaVecIter<T> {
         }
     }
 }
+

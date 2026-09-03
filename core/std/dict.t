@@ -358,7 +358,7 @@ impl<K: Hash, V> Dict<K, V> {
     }
 }
 
-impl<K, V> DictIter<K, V> {
+impl<K, V> Iterator<(K, V)> for DictIter<K, V> {
     # Advance by one entry. Returns `None` once `index` has walked
     # past `count`. Keys and values are read as copies out of the
     # buffers — like `Dict::get`, compound entries alias the stored
@@ -377,6 +377,7 @@ impl<K, V> DictIter<K, V> {
         }
     }
 }
+
 
 # Iterator adapters (STDLIB-ITER-ADAPT): `map` / `filter` /
 # `enumerate` on a `DictIter<K, V>`. Same design as the `VecIter`
@@ -401,7 +402,7 @@ struct DictMapIter<K, V, U> {
     f: fn (K, V) -> U,
 }
 
-impl<K, V, U> DictMapIter<K, V, U> {
+impl<K, V, U> Iterator<U> for DictMapIter<K, V, U> {
     # Apply `f` to each `(key, value)` pair on the way out. `f` takes
     # the key and value as separate scalar args: an AOT closure cannot
     # receive a tuple parameter, so the adapter destructures the pair
@@ -421,6 +422,7 @@ impl<K, V, U> DictMapIter<K, V, U> {
         }
     }
 }
+
 
 impl<K, V> DictIter<K, V> {
     fn map<U>(&self, f: fn (K, V) -> U) -> DictMapIter<K, V, U> {
@@ -442,7 +444,7 @@ struct DictFilterIter<K, V> {
     pred: fn (K, V) -> bool,
 }
 
-impl<K, V> DictFilterIter<K, V> {
+impl<K, V> Iterator<(K, V)> for DictFilterIter<K, V> {
     # Yield only the pairs for which `pred` returns true.
     unsafe fn next(&mut self) -> Option<(K, V)> {
         loop {
@@ -465,6 +467,7 @@ impl<K, V> DictFilterIter<K, V> {
         r
     }
 }
+
 
 impl<K, V> DictIter<K, V> {
     fn filter(&self, pred: fn (K, V) -> bool) -> DictFilterIter<K, V> {

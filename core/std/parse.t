@@ -67,10 +67,13 @@ fn digits_to_u64(b: String, start: u64, end: u64) -> Result<u64, ParseError> {
     var i: u64 = start
     while i < end {
         val c: u8 = b.get(i)
-        if c < '0' || c > '9' {
-            return Result::Err(ParseError::Invalid)
+        # STDLIB-TEXT §6: the comparison chain this used to spell by
+        # hand now has a name, and one place to be right.
+        val d: Option<u32> = c.digit_value(10u32)
+        val digit: u64 = match d {
+            Option::Some(v) => v as u64,
+            Option::None => { return Result::Err(ParseError::Invalid) }
         }
-        val digit: u64 = (c - '0') as u64
         val scaled = acc.checked_mul(10u64)
         match scaled {
             Option::Some(v) => { acc = v }
@@ -154,7 +157,7 @@ fn all_digits(b: String, start: u64, end: u64) -> bool {
     var i: u64 = start
     while i < end {
         val c: u8 = b.get(i)
-        if c < '0' || c > '9' {
+        if c.is_ascii_digit() == false {
             return false
         }
         i = i + 1u64
@@ -180,7 +183,7 @@ fn is_decimal(b: String, n: u64) -> bool {
     var int_end: u64 = i
     while int_end < n {
         val c: u8 = b.get(int_end)
-        if c < '0' || c > '9' {
+        if c.is_ascii_digit() == false {
             break
         }
         int_end = int_end + 1u64
@@ -193,7 +196,7 @@ fn is_decimal(b: String, n: u64) -> bool {
         var frac_end: u64 = cursor
         while frac_end < n {
             val c: u8 = b.get(frac_end)
-            if c < '0' || c > '9' {
+            if c.is_ascii_digit() == false {
                 break
             }
             frac_end = frac_end + 1u64

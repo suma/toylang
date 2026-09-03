@@ -1518,3 +1518,219 @@ fn comparing_strs_with_an_operator_names_the_call_that_works() {
         "the diagnostic does not point at the call that works:\n{joined}"
     );
 }
+
+// STDLIB-TEXT T3: ASCII classification on `u8` and `u32`.
+//
+// Both widths, because `String::get` hands back a `u8` while
+// `push_char` takes a `u32` — one impl would make every call spell a
+// cast that carries no information. Everything outside ASCII answers
+// false and converts to itself, which is what the names promise.
+
+#[test]
+fn ascii_classification_answers_for_both_widths() {
+    let src = r#"
+        fn main() -> u64 {
+            val b: u8 = '7'
+            val c: u32 = 'Q'
+            println(b.is_ascii_digit())
+            println(b.is_ascii_alpha())
+            println(b.is_ascii_alnum())
+            println(c.is_ascii_alpha())
+            println(c.is_ascii_upper())
+            println(c.to_ascii_lower())
+            println(b.to_ascii_upper())
+            val sp: u8 = ' '
+            println(sp.is_ascii_space())
+            # Past ASCII: false, and unchanged by the conversions.
+            val hi: u8 = 200u8
+            println(hi.is_ascii())
+            println(hi.is_ascii_alpha())
+            println(hi.to_ascii_upper())
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "ascii_class");
+}
+
+#[test]
+fn digit_value_reads_a_character_in_any_radix() {
+    let src = r#"
+        fn show(d: Option<u32>) -> u64 {
+            match d {
+                Option::Some(v) => v as u64,
+                Option::None => 99u64,
+            }
+        }
+
+        fn main() -> u64 {
+            val f: u8 = 'f'
+            val nine: u8 = '9'
+            val z: u8 = 'Z'
+            # Bound first: the compiled lanes refuse a compound return
+            # in expression position.
+            val hex = f.digit_value(16u32)
+            val dec = f.digit_value(10u32)      # not a decimal digit
+            val d9 = nine.digit_value(10u32)
+            val b36 = z.digit_value(36u32)
+            val bin = nine.digit_value(2u32)    # out of range for binary
+            println(show(hex))
+            println(show(dec))
+            println(show(d9))
+            println(show(b36))
+            println(show(bin))
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "digit_value");
+}
+
+// STDLIB-TEXT T4: bytes -> codepoints.
+
+#[test]
+fn chars_walks_codepoints_not_bytes() {
+    let src = r#"
+        fn main() -> u64 {
+            val s = String::from_str("aé漢🌏")
+            var n: u64 = 0u64
+            for c in s.chars() {
+                println(c)
+                n = n + 1u64
+            }
+            println(n)
+            println(s.len())
+            0u64
+        }
+    "#;
+    // Four characters, ten bytes: the two numbers differing is the
+    // whole point of having both iterators.
+    assert_stdout_consistent(src, "chars_iter");
+}
+
+#[test]
+fn a_broken_sequence_yields_one_replacement_character_and_keeps_going() {
+    // `None` already means "the end", so a decode failure cannot be
+    // reported there without making every loop unable to tell a bad
+    // byte from a finished string. U+FFFD and one byte forward is the
+    // `from_utf8_lossy` convention, and it terminates.
+    let src = r#"
+        fn main() -> u64 {
+            var bad = String::new()
+            bad.push(97u8)
+            bad.push(255u8)     # not a lead byte
+            bad.push(226u8)     # a 3-byte lead with nothing after it
+            bad.push(98u8)
+            for c in bad.chars() { println(c) }
+            println(bad.is_utf8())
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "chars_lossy");
+}
+
+// STDLIB-TEXT T5: the rest of the `String` surface.
+
+#[test]
+fn string_searches_and_builds() {
+    let src = r#"
+        fn at(o: Option<u64>) -> u64 {
+            match o {
+                Option::Some(i) => i,
+                Option::None => 99u64,
+            }
+        }
+
+        fn main() -> u64 {
+            val s = String::from_str("one two  three")
+            val two = String::from_str("two")
+            val o = String::from_str("o")
+            val one = String::from_str("one")
+            val three = String::from_str("three")
+            val dash = String::from_str("-")
+            val f1 = s.find(two)
+            val f2 = s.rfind(o)
+            val f3 = s.find_from(o, 7u64)
+            println(at(f1))
+            println(at(f2))
+            println(at(f3))
+            println(s.starts_with(one))
+            println(s.ends_with(three))
+            println(s.eq_str("one two  three"))
+            println(s.eq_str("nope"))
+            val rep = s.replace(two, dash)
+            println(rep)
+            val bar = dash.repeat(4u64)
+            println(bar)
+            val ws = s.split_whitespace()
+            println(ws.size())
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "string_search_build");
+}
+
+#[test]
+fn lines_drops_the_carriage_return_and_the_trailing_newline() {
+    // A CRLF file has to read the same as an LF one, and a trailing
+    // newline must not invent a final empty line — every
+    // line-oriented tool agrees on both.
+    let src = r#"
+        fn main() -> u64 {
+            val text = String::from_str("a\r\nb\nc\n")
+            val ls = text.lines()
+            println(ls.size())
+            var i: u64 = 0u64
+            while i < ls.size() {
+                val line = ls.get(i)
+                println(line)
+                i = i + 1u64
+            }
+            val no_trailing = String::from_str("x\ny")
+            val l2 = no_trailing.lines()
+            println(l2.size())
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "string_lines");
+}
+
+#[test]
+fn join_is_the_inverse_of_split() {
+    // On `String` rather than `Vec`, because a container generic over
+    // anything should not grow a method that exists for one element
+    // type.
+    let src = r#"
+        fn main() -> u64 {
+            val s = String::from_str("a,b,c")
+            val comma = String::from_str(",")
+            val parts = s.split(comma)
+            val back = String::join(parts, comma)
+            println(back)
+            println(back.eq_str("a,b,c"))
+            val dash = String::from_str(" - ")
+            val spaced = String::join(parts, dash)
+            println(spaced)
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "string_join");
+}
+
+#[test]
+fn push_str_takes_the_literal_everyone_writes_first() {
+    // `s.push_str("literal")` used to type-check and then die at run
+    // time with `Cannot access field on non-struct object:
+    // ConstString`, because the name meant "append a String". The
+    // names now say which type they take.
+    let src = r#"
+        fn main() -> u64 {
+            var s = String::new()
+            s.push_str("hello")
+            s.push_str(", ")
+            val w = String::from_str("world")
+            s.push_string(w)
+            println(s)
+            s.len()
+        }
+    "#;
+    assert_consistent(src, "push_str_literal");
+}

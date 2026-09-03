@@ -4912,9 +4912,44 @@ Method dispatch:
     says so: a Unicode fold needs tens of kilobytes of tables and,
     for `ß` -> `SS` or Turkish `i`, a locale.
   - `impl Ord for String` — `.lt(other)`, byte order.
-  - `.is_utf8()` — whether these bytes are text, and so whether
-    `to_str()` will accept them. Ask before crossing rather than
-    handling a `Result` on every string.
+- Searching and building, on `impl String`:
+  `.find(needle)` / `.find_from(needle, start)` / `.rfind(needle)` /
+  `.starts_with(p)` / `.ends_with(s)` — byte offsets, `Option<u64>`
+  where an offset is the answer; `.eq_str("literal")` compares
+  against a borrowed `str` without allocating one to hold it;
+  `.replace(pattern, replacement)` / `.repeat(n)` / `.lines()` /
+  `.split_whitespace()` build new buffers;
+  `String::join(parts, sep)` is `split`'s inverse (an associated
+  function on `String` rather than a method on `Vec`, since a
+  container generic over anything should not grow a method that
+  exists for one element type).
+- `.push_str("literal")` appends a `str`; `.push_string(other)`
+  appends a `String`. The names say which type they take.
+- `.is_utf8()` — whether these bytes are text, and so whether
+  `to_str()` will accept them. Ask before crossing rather than
+  handling a `Result` on every string.
+- `.iter()` yields `u8`, one per byte; `.chars()` yields `char`, one
+  per codepoint. On bytes that are not UTF-8, `chars()` answers
+  U+FFFD and advances one byte — `None` already means "the end", so
+  a decode failure cannot be reported there.
+
+### ASCII classification
+
+`core/std/char.t` declares `AsciiClass`, implemented for **both `u8`
+and `u32`**: `String::get` hands back a byte and `push_char` takes a
+codepoint, and one impl would make every call spell a cast that
+carries no information.
+
+```rust
+val b: u8 = s.get(0u64)
+b.is_ascii_digit()      # also: _alpha / _alnum / _space / _upper / _lower
+b.to_ascii_upper()      # and to_ascii_lower
+b.digit_value(16u32)    # Option<u32> — 'f' is 15; 'f' in radix 10 is None
+```
+
+Everything outside ASCII answers `false`, and the conversions return
+the value unchanged. That is the whole of the language's case
+handling — see [Text](#text-str-string-char-and-u8) for why.
   - `impl Concat<String> for String` /
     `impl Contains<String> for String` /
     `impl Split<String, Vec<String>> for String` — `.concat(t)`,

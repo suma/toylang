@@ -211,9 +211,23 @@ impl String {
         }
     }
 
+    # Append the bytes of a `str` -- a literal, or any borrowed
+    # string.
+    #
+    #     s.push_str("hello")
+    #
+    # This name used to mean "append a `String`", which meant
+    # `s.push_str("literal")` -- the thing everyone writes first --
+    # type-checked and then died at run time with `Cannot access
+    # field on non-struct object: ConstString`. The names now say
+    # which type they take (STDLIB-TEXT §8).
+    unsafe fn push_str(&mut self, other: str) {
+        self.extend_bytes(other.as_ptr(), other.len())
+    }
+
     # Append the bytes of another String. Auto-borrow at the call
-    # site lets `s.push_str(t)` work with `t: String`.
-    fn push_str(&mut self, other: &String) {
+    # site lets `s.push_string(t)` work with `t: String`.
+    fn push_string(&mut self, other: &String) {
         self.extend_bytes(other.data, other.len)
     }
 
@@ -659,6 +673,352 @@ impl StringIter {
             val b: u8 = __builtin_ptr_read(self.data, i)
             Option::Some(b)
         }
+    }
+}
+
+# ---------------------------------------------------------------------
+# Searching and building (STDLIB-TEXT §8).
+#
+# The `str` side of these lives in `core/std/str.t` and answers about
+# bytes it borrows. These are the versions for a buffer you own, plus
+# the ones that can only exist here because their answer is a new
+# buffer.
+
+impl String {
+    # Byte offset of the first occurrence of `needle` at or after
+    # `start`, or `None`. An empty needle is found at `start`.
+    # (`from` would read better and is a keyword — it is how an
+    # `extern fn` names its library.)
+    #
+    # Offsets are bytes, like every other index into a string. UTF-8
+    # is self-synchronising, so a match can only begin at a character
+    # boundary and a returned offset is always one.
+    unsafe fn find_from(&self, needle: &String, start: u64) -> Option<u64> {
+        val n: u64 = self.len
+        val m: u64 = needle.len
+        if start > n { return Option::None }
+        if m == 0u64 { return Option::Some(start) }
+        if m > n - start { return Option::None }
+        var i: u64 = start
+        while i + m <= n {
+            var matched: bool = true
+            var j: u64 = 0u64
+            while j < m {
+                val a: u8 = __builtin_ptr_read(self.data, i + j)
+                val b: u8 = __builtin_ptr_read(needle.data, j)
+                if a != b {
+                    matched = false
+                    break
+                }
+                j = j + 1u64
+            }
+            if matched { return Option::Some(i) }
+            i = i + 1u64
+        }
+        Option::None
+    }
+
+    unsafe fn find(&self, needle: &String) -> Option<u64> {
+        self.find_from(needle, 0u64)
+    }
+
+    # Byte offset of the **last** occurrence, or `None`. An empty
+    # needle is found at `size()`, mirroring `find`'s answer of 0.
+    unsafe fn rfind(&self, needle: &String) -> Option<u64> {
+        val n: u64 = self.len
+        val m: u64 = needle.len
+        if m == 0u64 { return Option::Some(n) }
+        if m > n { return Option::None }
+        var i: u64 = n - m + 1u64
+        while i > 0u64 {
+            val at: u64 = i - 1u64
+            var matched: bool = true
+            var j: u64 = 0u64
+            while j < m {
+                val a: u8 = __builtin_ptr_read(self.data, at + j)
+                val b: u8 = __builtin_ptr_read(needle.data, j)
+                if a != b {
+                    matched = false
+                    break
+                }
+                j = j + 1u64
+            }
+            if matched { return Option::Some(at) }
+            i = i - 1u64
+        }
+        Option::None
+    }
+
+    unsafe fn starts_with(&self, prefix: &String) -> bool {
+        val m: u64 = prefix.len
+        if m > self.len { return false }
+        var j: u64 = 0u64
+        while j < m {
+            val a: u8 = __builtin_ptr_read(self.data, j)
+            val b: u8 = __builtin_ptr_read(prefix.data, j)
+            if a != b { return false }
+            j = j + 1u64
+        }
+        true
+    }
+
+    unsafe fn ends_with(&self, suffix: &String) -> bool {
+        val m: u64 = suffix.len
+        val n: u64 = self.len
+        if m > n { return false }
+        val at: u64 = n - m
+        var j: u64 = 0u64
+        while j < m {
+            val a: u8 = __builtin_ptr_read(self.data, at + j)
+            val b: u8 = __builtin_ptr_read(suffix.data, j)
+            if a != b { return false }
+            j = j + 1u64
+        }
+        true
+    }
+
+    # Compare against a borrowed `str` without allocating a `String`
+    # to hold it. `s == t` needs two `String`s; this is the version
+    # for the far more common `s == "literal"`.
+    unsafe fn eq_str(&self, other: str) -> bool {
+        val n: u64 = other.len()
+        if n != self.len { return false }
+        val p: ptr = other.as_ptr()
+        var i: u64 = 0u64
+        while i < n {
+            val a: u8 = __builtin_ptr_read(self.data, i)
+            val b: u8 = __builtin_ptr_read(p, i)
+            if a != b { return false }
+            i = i + 1u64
+        }
+        true
+    }
+
+    # A new String with every occurrence of `pattern` replaced by
+    # `replacement`. Non-overlapping, left to right. An empty
+    # `pattern` panics: there is no useful reading of "replace nothing
+    # everywhere".
+    #
+    # (`from` and `to` would read better and are both keywords -- one
+    # names an `extern fn`'s library, the other is the range form of a
+    # `for` loop.)
+    unsafe fn replace(&self, pattern: &String, replacement: &String) -> String {
+        assert(pattern.len > 0u64, "String::replace: the pattern must not be empty")
+        var out: String = String::new()
+        var i: u64 = 0u64
+        val n: u64 = self.len
+        val m: u64 = pattern.len
+        while i < n {
+            var matched: bool = false
+            if i + m <= n {
+                matched = true
+                var j: u64 = 0u64
+                while j < m {
+                    val a: u8 = __builtin_ptr_read(self.data, i + j)
+                    val b: u8 = __builtin_ptr_read(pattern.data, j)
+                    if a != b {
+                        matched = false
+                        break
+                    }
+                    j = j + 1u64
+                }
+            }
+            if matched {
+                out.push_string(replacement)
+                i = i + m
+            } else {
+                val c: u8 = __builtin_ptr_read(self.data, i)
+                out.push(c)
+                i = i + 1u64
+            }
+        }
+        out
+    }
+
+    # `self` repeated `n` times. `n == 0` is the empty string.
+    unsafe fn repeat(&self, n: u64) -> String {
+        var out: String = String::new()
+        var k: u64 = 0u64
+        while k < n {
+            out.push_string(self)
+            k = k + 1u64
+        }
+        out
+    }
+
+    # Split on `\n`, dropping a single trailing `\r` from each line
+    # so a CRLF file reads the same as an LF one. A trailing newline
+    # does **not** produce a final empty line -- the convention every
+    # line-oriented tool uses.
+    unsafe fn lines(&self) -> Vec<String> {
+        var out: Vec<String> = Vec::new()
+        val n: u64 = self.len
+        var start: u64 = 0u64
+        var i: u64 = 0u64
+        while i < n {
+            val c: u8 = __builtin_ptr_read(self.data, i)
+            if c == '\n' {
+                var end: u64 = i
+                if end > start {
+                    val prev: u8 = __builtin_ptr_read(self.data, end - 1u64)
+                    if prev == '\r' { end = end - 1u64 }
+                }
+                val line: String = self.substring(start, end)
+                out.push(line)
+                start = i + 1u64
+            }
+            i = i + 1u64
+        }
+        if start < n {
+            val tail: String = self.substring(start, n)
+            out.push(tail)
+        }
+        out
+    }
+
+    # Split on runs of ASCII whitespace, dropping empty parts. Unlike
+    # `split(sep)` this treats a run as one separator, which is what
+    # makes it useful for reading columns out of a line.
+    unsafe fn split_whitespace(&self) -> Vec<String> {
+        var out: Vec<String> = Vec::new()
+        val n: u64 = self.len
+        var i: u64 = 0u64
+        while i < n {
+            val c: u8 = __builtin_ptr_read(self.data, i)
+            if c.is_ascii_space() {
+                i = i + 1u64
+                continue
+            }
+            val start: u64 = i
+            while i < n {
+                # A fresh binding rather than reassigning one from the
+                # outer loop: the annotation on a `ptr_read` is the
+                # only thing that says what shape came back, and an
+                # assignment has nowhere to put one.
+                val b: u8 = __builtin_ptr_read(self.data, i)
+                if b.is_ascii_space() { break }
+                i = i + 1u64
+            }
+            val part: String = self.substring(start, i)
+            out.push(part)
+        }
+        out
+    }
+}
+
+impl String {
+    # `parts` joined with `sep` between them, in order. The inverse of
+    # `split`, and the reason it is an associated function on `String`
+    # rather than a method on `Vec`: `Vec<T>` is generic over anything,
+    # and a container should not grow a method that only exists for
+    # one element type.
+    unsafe fn join(parts: &Vec<String>, sep: &String) -> String {
+        var out: String = String::new()
+        var i: u64 = 0u64
+        val n: u64 = parts.size()
+        while i < n {
+            if i > 0u64 { out.push_string(sep) }
+            val part: String = parts.get(i)
+            out.push_string(part)
+            i = i + 1u64
+        }
+        out
+    }
+}
+
+# ---------------------------------------------------------------------
+# Codepoints (STDLIB-TEXT §7).
+#
+# The decoding half. Encoding (`push_char`) has been here since there
+# was a `push_char`, because writing a string is what needed it first;
+# reading one back a character at a time had no API at all.
+#
+# Same three fields as `StringIter`, so it costs nothing extra against
+# the return-register budget. The difference is the step: one to four
+# bytes, decided by the lead byte.
+struct CharsIter {
+    data: ptr,
+    len: u64,
+    index: u64,
+}
+
+impl String {
+    # Borrow the string into an iterator over Unicode scalar values.
+    # `iter()` is the byte-at-a-time view; this is the character one.
+    #
+    #     for c in s.chars() { ... }        # c: char (u32)
+    #
+    # `&self` keeps the caller's binding alive; the iterator shares
+    # the buffer and is invalidated by a `push` that reallocates.
+    fn chars(&self) -> CharsIter {
+        CharsIter { data: self.data, len: self.len, index: 0u64 }
+    }
+}
+
+impl CharsIter {
+    # Advance by one codepoint.
+    #
+    # A `String` holds arbitrary bytes, so this can meet a sequence
+    # that is not UTF-8. It answers **U+FFFD and advances one byte**,
+    # the `from_utf8_lossy` convention -- `None` already means "the
+    # end", so a failure cannot be reported there without making every
+    # loop unable to tell a broken byte from a finished string. A
+    # caller that needs to know asks `is_utf8()` first, the same
+    # discipline `to_str` uses.
+    #
+    # On a `str`, whose bytes are valid UTF-8 by construction, U+FFFD
+    # can only come back if it was actually written.
+    unsafe fn next(&mut self) -> Option<char> {
+        if self.index >= self.len {
+            return Option::None
+        }
+        val b: u8 = __builtin_ptr_read(self.data, self.index)
+        if b < 128u8 {
+            self.index = self.index + 1u64
+            return Option::Some(b as u32)
+        }
+        var need: u64 = 0u64
+        var lo: u32 = 0u32
+        var cp: u32 = 0u32
+        if b >= 194u8 && b <= 223u8 {
+            need = 1u64
+            cp = (b as u32) - 192u32
+            lo = 128u32
+        } elif b >= 224u8 && b <= 239u8 {
+            need = 2u64
+            cp = (b as u32) - 224u32
+            lo = 2048u32
+        } elif b >= 240u8 && b <= 244u8 {
+            need = 3u64
+            cp = (b as u32) - 240u32
+            lo = 65536u32
+        } else {
+            self.index = self.index + 1u64
+            return Option::Some(65533u32)
+        }
+        if self.index + need >= self.len + 1u64 {
+            self.index = self.index + 1u64
+            return Option::Some(65533u32)
+        }
+        var k: u64 = 1u64
+        while k <= need {
+            val c: u8 = __builtin_ptr_read(self.data, self.index + k)
+            if c < 128u8 || c > 191u8 {
+                self.index = self.index + 1u64
+                return Option::Some(65533u32)
+            }
+            cp = cp * 64u32 + ((c as u32) - 128u32)
+            k = k + 1u64
+        }
+        # Over-long forms and surrogates are not scalar values, so they
+        # are as invalid as a stray byte -- and rejecting them is what
+        # keeps this in step with `is_utf8`.
+        if cp < lo || (cp >= 55296u32 && cp <= 57343u32) || cp > 1114111u32 {
+            self.index = self.index + 1u64
+            return Option::Some(65533u32)
+        }
+        self.index = self.index + need + 1u64
+        Option::Some(cp)
     }
 }
 

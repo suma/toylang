@@ -269,12 +269,17 @@ fn string_from_str_round_trip() {
 
 #[test]
 fn string_push_str_round_trip() {
-    // REF-Stage-2 minimum subset: `String::push_str(&mut self,
+    // REF-Stage-2 minimum subset: `String::push_string(&mut self,
     // other: &String)` lets a caller append one heap-managed
     // string onto another. The `&String` parameter type is parsed
     // as `TypeDecl::Ref(...)`, distinct from `String` in the type
     // system, but the call site can pass a bare `String` value
-    // via auto-borrow (`s.push_str(b)` where `b: String`).
+    // via auto-borrow (`s.push_string(b)` where `b: String`).
+    //
+    // The name was `push_str` until STDLIB-TEXT §8; that one now
+    // takes a `str`, which is what `s.push_str("literal")` -- the
+    // thing everyone writes first -- had been type-checking as and
+    // then dying on at run time.
     //
     // Internally `push_str` delegates to
     // `Vec<u8>::extend_bytes(&mut self, src: ptr, count: u64)` —
@@ -292,8 +297,8 @@ fn string_push_str_round_trip() {
             var s: String = String::from_str("hello")
             val sp: String = String::from_str(" ")
             val w: String = String::from_str("world")
-            s.push_str(sp)
-            s.push_str(w)
+            s.push_string(sp)
+            s.push_string(w)
             val n: u64 = s.size()
             if n != 11u64 {
                 return 1u64

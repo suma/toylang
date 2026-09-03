@@ -1426,6 +1426,19 @@
   どちらも「実プログラムで書いていて guard がホットパスにある」を
   確認してから。
 
+- **CHAR-LITERAL-RETURN / -SIBLING: 戻り位置と `if` の兄弟 arm** ★ —
+  `fn f() -> u8 { '+' }` は `expected u8, but got u32` になる。
+  CHAR-LITERAL-NUM が型を取る位置は注釈 / 引数 / 比較 / 演算相手までで、
+  **宣言戻り型と `if` の兄弟 arm は入っていない** (サフィックス無し数値
+  リテラルは両方から取れる — 戻り位置は `visitor.rs` の
+  `last == TypeDecl::Number` gate、arm は `propagate_number_subtree`)。
+  直すなら (a) その gate を char リテラルにも広げる、
+  (b) `propagate_number_subtree` に `Expr::CharLiteral` の leaf を足す
+  (if / match の arm を降りる再帰は既にある) の 2 箇所。
+  2026-09-03 に `core/std/base64.t` の `symbol()` で踏んで、
+  `'+' as u8` / `'/' as u8` で回避した (隣の 3 arm が元から `as u8`
+  なので実害は小さい)。
+
 - **CHAR-LITERAL-MATCH: narrow int の match scrutinee** ★ —
   `match byte { 'h' => ... }` は書けない (`match scrutinee must be an
   enum, struct, primitive (bool / i64 / u64 / str), or tuple, got

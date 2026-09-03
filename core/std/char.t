@@ -74,7 +74,7 @@ impl AsciiClass for u8 {
 
     fn is_ascii_space(self: Self) -> bool {
         self == ' ' || self == '\t' || self == '\n' || self == '\r'
-            || self == 11u8 || self == 12u8
+            || self == '\x0b' || self == '\x0c'
     }
 
     fn is_ascii_upper(self: Self) -> bool { self >= 'A' && self <= 'Z' }
@@ -82,11 +82,11 @@ impl AsciiClass for u8 {
     fn is_ascii_lower(self: Self) -> bool { self >= 'a' && self <= 'z' }
 
     fn to_ascii_upper(self: Self) -> Self {
-        if self.is_ascii_lower() { self - 32u8 } else { self }
+        if self.is_ascii_lower() { self - 0x20u8 } else { self }
     }
 
     fn to_ascii_lower(self: Self) -> Self {
-        if self.is_ascii_upper() { self + 32u8 } else { self }
+        if self.is_ascii_upper() { self + 0x20u8 } else { self }
     }
 
     fn digit_value(self: Self, radix: u32) -> Option<u32> {
@@ -110,7 +110,7 @@ impl AsciiClass for u32 {
 
     fn is_ascii_space(self: Self) -> bool {
         self == ' ' || self == '\t' || self == '\n' || self == '\r'
-            || self == 11u32 || self == 12u32
+            || self == '\x0b' || self == '\x0c'
     }
 
     fn is_ascii_upper(self: Self) -> bool { self >= 'A' && self <= 'Z' }
@@ -118,11 +118,11 @@ impl AsciiClass for u32 {
     fn is_ascii_lower(self: Self) -> bool { self >= 'a' && self <= 'z' }
 
     fn to_ascii_upper(self: Self) -> Self {
-        if self.is_ascii_lower() { self - 32u32 } else { self }
+        if self.is_ascii_lower() { self - 0x20u32 } else { self }
     }
 
     fn to_ascii_lower(self: Self) -> Self {
-        if self.is_ascii_upper() { self + 32u32 } else { self }
+        if self.is_ascii_upper() { self + 0x20u32 } else { self }
     }
 
     fn digit_value(self: Self, radix: u32) -> Option<u32> {

@@ -101,7 +101,7 @@ impl JsonWriter {
     fn write_escaped(&mut self, s: str) {
     val text: String = String::from_str(s)
     val n: u64 = text.size()
-    self.out.push(34u8)
+    self.out.push('"')
     var i: u64 = 0u64
     while i < n {
         val b: u8 = text.get(i)
@@ -110,32 +110,38 @@ impl JsonWriter {
         # literal in this language cannot yet contain an escaped
         # backslash or quote, which is exactly what this function
         # emits.
-        if c == 34u64 {
-            self.out.push(92u8)
-            self.out.push(34u8)
-        } elif c == 92u64 {
-            self.out.push(92u8)
-            self.out.push(92u8)
-        } elif c == 10u64 {
-            self.out.push(92u8)
-            self.out.push(110u8)
-        } elif c == 13u64 {
-            self.out.push(92u8)
-            self.out.push(114u8)
-        } elif c == 9u64 {
-            self.out.push(92u8)
-            self.out.push(116u8)
-        } elif c == 8u64 {
-            self.out.push(92u8)
-            self.out.push(98u8)
-        } elif c == 12u64 {
-            self.out.push(92u8)
-            self.out.push(102u8)
+        #
+        # `'\x08'` / `'\x0c'` are backspace and form feed, which JSON
+        # spells `\b` and `\f`. The language's char escapes are
+        # `\n \t \r \0 \\ \' \"`, so those two arrive by code point --
+        # the letter pushed next to each says which is which.
+        if c == '"' {
+            self.out.push('\\')
+            self.out.push('"')
+        } elif c == '\\' {
+            self.out.push('\\')
+            self.out.push('\\')
+        } elif c == '\n' {
+            self.out.push('\\')
+            self.out.push('n')
+        } elif c == '\r' {
+            self.out.push('\\')
+            self.out.push('r')
+        } elif c == '\t' {
+            self.out.push('\\')
+            self.out.push('t')
+        } elif c == '\x08' {
+            self.out.push('\\')
+            self.out.push('b')
+        } elif c == '\x0c' {
+            self.out.push('\\')
+            self.out.push('f')
         } elif c < 32u64 {
-            self.out.push(92u8)
-            self.out.push(117u8)
-            self.out.push(48u8)
-            self.out.push(48u8)
+            # Every other control character as `\u00XX`.
+            self.out.push('\\')
+            self.out.push('u')
+            self.out.push('0')
+            self.out.push('0')
             self.out.push(json::hex_digit(c / 16u64))
             self.out.push(json::hex_digit(c % 16u64))
         } else {
@@ -143,32 +149,32 @@ impl JsonWriter {
         }
         i = i + 1u64
     }
-    self.out.push(34u8)
+    self.out.push('"')
 }
 
     fn separate(&mut self) {
-        if self.need_comma { self.out.push(44u8) }
+        if self.need_comma { self.out.push(',') }
     }
 
     fn begin_object(&mut self) {
         self.separate()
-        self.out.push(123u8)
+        self.out.push('{')
         self.need_comma = false
     }
 
     fn end_object(&mut self) {
-        self.out.push(125u8)
+        self.out.push('}')
         self.need_comma = true
     }
 
     fn begin_array(&mut self) {
         self.separate()
-        self.out.push(91u8)
+        self.out.push('[')
         self.need_comma = false
     }
 
     fn end_array(&mut self) {
-        self.out.push(93u8)
+        self.out.push(']')
         self.need_comma = true
     }
 
@@ -177,7 +183,7 @@ impl JsonWriter {
     fn key(&mut self, k: str) {
         self.separate()
         self.write_escaped(k)
-        self.out.push(58u8)
+        self.out.push(':')
         self.need_comma = false
     }
 
@@ -229,7 +235,7 @@ impl JsonWriter {
 }
 
 fn hex_digit(v: u64) -> u8 {
-    if v < 10u64 { (48u64 + v) as u8 } else { (97u64 + v - 10u64) as u8 }
+    if v < 10u64 { ('0' + v) as u8 } else { ('a' + (v - 10u64)) as u8 }
 }
 
 # ---------------------------------------------------------------------
@@ -434,9 +440,9 @@ impl Json {
             out.push_string(&part)
         } else {
             val is_object: bool = n.kind == 6u64
-            # Byte pushes: `"{"` alone is the start of an
-            # interpolation, not a brace.
-            if is_object { out.push(123u8) } else { out.push(91u8) }
+            # Char literals, not string literals: `"{"` alone
+            # would start an interpolation rather than name a brace.
+            if is_object { out.push('{') } else { out.push('[') }
             var child: u64 = id + 1u64
             var index: u64 = 0u64
             while child < n.next {
@@ -455,7 +461,7 @@ impl Json {
                 child = c.next
                 index = index + 1u64
             }
-            if is_object { out.push(125u8) } else { out.push(93u8) }
+            if is_object { out.push('}') } else { out.push(']') }
         }
         out
     }
@@ -475,7 +481,7 @@ impl Json {
 # the document. See the note on `Json::err_kind` for why the failure
 # is not simply returned.
 
-fn is_digit(b: u64) -> bool { b >= 48u64 && b <= 57u64 }
+fn is_digit(b: u64) -> bool { b >= '0' && b <= '9' }
 
 fn err_empty() -> u64 { 1u64 }
 fn err_invalid() -> u64 { 2u64 }
@@ -550,7 +556,7 @@ impl Json {
         var scanning: bool = true
         while scanning && p < n {
             val b: u64 = text.get(p) as u64
-            if b == 32u64 || b == 9u64 || b == 10u64 || b == 13u64 {
+            if b == ' ' || b == '\t' || b == '\n' || b == '\r' {
                 p = p + 1u64
             } else {
                 scanning = false
@@ -574,12 +580,12 @@ impl Json {
         while i < 4u64 {
             val b: u64 = text.get(pos + i) as u64
             var d: i64 = -1i64
-            if b >= 48u64 && b <= 57u64 {
-                d = (b - 48u64) as i64
-            } elif b >= 97u64 && b <= 102u64 {
-                d = (b - 87u64) as i64
-            } elif b >= 65u64 && b <= 70u64 {
-                d = (b - 55u64) as i64
+            if b >= '0' && b <= '9' {
+                d = (b - '0') as i64
+            } elif b >= 'a' && b <= 'f' {
+                d = (b - 'a' + 10u64) as i64
+            } elif b >= 'A' && b <= 'F' {
+                d = (b - 'A' + 10u64) as i64
             }
             if d < 0i64 { return -1i64 }
             v = v * 16i64 + d
@@ -611,16 +617,16 @@ impl Json {
         }
         val p: u64 = self.skip_ws(text, pos)
         val b: u64 = self.byte_at(text, p)
-        if b == 123u64 {
+        if b == '{' {
             val r = self.read_object(text, p, depth)
             r
-        } elif b == 91u64 {
+        } elif b == '[' {
             val r = self.read_array(text, p, depth)
             r
-        } elif b == 34u64 {
+        } elif b == '"' {
             val r = self.read_text(text, p)
             r
-        } elif b == 116u64 {
+        } elif b == 't' {
             if self.word_at(text, p, "true") {
                 val id: u64 = self.push_node(json::kind_bool(), 1i64, 0f64)
                 self.close_leaf(id)
@@ -629,7 +635,7 @@ impl Json {
                 val f = self.fail(json::err_invalid(), p)
                 f
             }
-        } elif b == 102u64 {
+        } elif b == 'f' {
             if self.word_at(text, p, "false") {
                 val id: u64 = self.push_node(json::kind_bool(), 0i64, 0f64)
                 self.close_leaf(id)
@@ -638,7 +644,7 @@ impl Json {
                 val f = self.fail(json::err_invalid(), p)
                 f
             }
-        } elif b == 110u64 {
+        } elif b == 'n' {
             if self.word_at(text, p, "null") {
                 val id: u64 = self.push_node(json::kind_null(), 0i64, 0f64)
                 self.close_leaf(id)
@@ -647,7 +653,7 @@ impl Json {
                 val f = self.fail(json::err_invalid(), p)
                 f
             }
-        } elif b == 45u64 || json::is_digit(b) {
+        } elif b == '-' || json::is_digit(b) {
             val r = self.read_number(text, p)
             r
         } else {
@@ -659,7 +665,7 @@ impl Json {
     fn read_array(&mut self, text: &String, pos: u64, depth: u64) -> Option<u64> {
         val id: u64 = self.push_node(json::kind_array(), 0i64, 0f64)
         var p: u64 = self.skip_ws(text, pos + 1u64)
-        if self.byte_at(text, p) == 93u64 {
+        if self.byte_at(text, p) == ']' {
             self.close_node(id)
             return Option::Some(p + 1u64)
         }
@@ -676,9 +682,9 @@ impl Json {
             }
             if !failed {
                 val b: u64 = self.byte_at(text, p)
-                if b == 44u64 {
+                if b == ',' {
                     p = p + 1u64
-                } elif b == 93u64 {
+                } elif b == ']' {
                     p = p + 1u64
                     done = true
                 } else {
@@ -696,7 +702,7 @@ impl Json {
     fn read_object(&mut self, text: &String, pos: u64, depth: u64) -> Option<u64> {
         val id: u64 = self.push_node(json::kind_object(), 0i64, 0f64)
         var p: u64 = self.skip_ws(text, pos + 1u64)
-        if self.byte_at(text, p) == 125u64 {
+        if self.byte_at(text, p) == '}' {
             self.close_node(id)
             return Option::Some(p + 1u64)
         }
@@ -705,7 +711,7 @@ impl Json {
         while !done {
             # The key is a text node like any other: an object's
             # children alternate key, value, key, value.
-            if self.byte_at(text, p) != 34u64 {
+            if self.byte_at(text, p) != '"' {
                 val f = self.fail(json::err_invalid(), p)
                 failed = true
                 done = true
@@ -721,7 +727,7 @@ impl Json {
                 }
             }
             if !failed {
-                if self.byte_at(text, p) != 58u64 {
+                if self.byte_at(text, p) != ':' {
                     val f = self.fail(json::err_invalid(), p)
                     failed = true
                     done = true
@@ -741,9 +747,9 @@ impl Json {
             }
             if !failed {
                 val b: u64 = self.byte_at(text, p)
-                if b == 44u64 {
+                if b == ',' {
                     p = self.skip_ws(text, p + 1u64)
-                } elif b == 125u64 {
+                } elif b == '}' {
                     p = p + 1u64
                     done = true
                 } else {
@@ -774,7 +780,7 @@ impl Json {
                 val f = self.fail(json::err_invalid(), p)
                 failed = true
                 done = true
-            } elif b == 34u64 {
+            } elif b == '"' {
                 p = p + 1u64
                 done = true
             } elif b < 32u64 {
@@ -783,33 +789,33 @@ impl Json {
                 val f = self.fail(json::err_invalid(), p)
                 failed = true
                 done = true
-            } elif b == 92u64 {
+            } elif b == '\\' {
                 val e: u64 = self.byte_at(text, p + 1u64)
-                if e == 34u64 {
-                    out.push(34u8)
+                if e == '"' {
+                    out.push('"')
                     p = p + 2u64
-                } elif e == 92u64 {
-                    out.push(92u8)
+                } elif e == '\\' {
+                    out.push('\\')
                     p = p + 2u64
-                } elif e == 47u64 {
-                    out.push(47u8)
+                } elif e == '/' {
+                    out.push('/')
                     p = p + 2u64
-                } elif e == 98u64 {
-                    out.push(8u8)
+                } elif e == 'b' {
+                    out.push('\x08')
                     p = p + 2u64
-                } elif e == 102u64 {
-                    out.push(12u8)
+                } elif e == 'f' {
+                    out.push('\x0c')
                     p = p + 2u64
-                } elif e == 110u64 {
-                    out.push(10u8)
+                } elif e == 'n' {
+                    out.push('\n')
                     p = p + 2u64
-                } elif e == 114u64 {
-                    out.push(13u8)
+                } elif e == 'r' {
+                    out.push('\r')
                     p = p + 2u64
-                } elif e == 116u64 {
-                    out.push(9u8)
+                } elif e == 't' {
+                    out.push('\t')
                     p = p + 2u64
-                } elif e == 117u64 {
+                } elif e == 'u' {
                     val hi: i64 = self.hex4(text, p + 2u64)
                     if hi < 0i64 {
                         val f = self.fail(json::err_invalid(), p)
@@ -821,7 +827,7 @@ impl Json {
                         val lo: i64 = self.hex4(text, p + 8u64)
                         val slash: u64 = self.byte_at(text, p + 6u64)
                         val u: u64 = self.byte_at(text, p + 7u64)
-                        if slash != 92u64 || u != 117u64 || lo < 56320i64 || lo > 57343i64 {
+                        if slash != '\\' || u != 'u' || lo < 56320i64 || lo > 57343i64 {
                             val f = self.fail(json::err_invalid(), p)
                             failed = true
                             done = true
@@ -859,9 +865,9 @@ impl Json {
     # leading zero, no bare `.5`, no hex.
     fn read_number(&mut self, text: &String, pos: u64) -> Option<u64> {
         var p: u64 = pos
-        if self.byte_at(text, p) == 45u64 { p = p + 1u64 }
+        if self.byte_at(text, p) == '-' { p = p + 1u64 }
         val first: u64 = self.byte_at(text, p)
-        if first == 48u64 {
+        if first == '0' {
             p = p + 1u64
             # `01` is two tokens to a lenient reader and one mistake
             # to everyone else. Rejected here rather than left to the
@@ -878,7 +884,7 @@ impl Json {
             return f
         }
         var floating: bool = false
-        if self.byte_at(text, p) == 46u64 {
+        if self.byte_at(text, p) == '.' {
             floating = true
             p = p + 1u64
             if !json::is_digit(self.byte_at(text, p)) {
@@ -888,11 +894,11 @@ impl Json {
             while json::is_digit(self.byte_at(text, p)) { p = p + 1u64 }
         }
         val e: u64 = self.byte_at(text, p)
-        if e == 101u64 || e == 69u64 {
+        if e == 'e' || e == 'E' {
             floating = true
             p = p + 1u64
             val sign: u64 = self.byte_at(text, p)
-            if sign == 43u64 || sign == 45u64 { p = p + 1u64 }
+            if sign == '+' || sign == '-' { p = p + 1u64 }
             if !json::is_digit(self.byte_at(text, p)) {
                 val f = self.fail(json::err_invalid(), p)
                 return f

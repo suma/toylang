@@ -24,15 +24,20 @@
 # The character for a 6-bit group.
 fn symbol(v: u64) -> u8 {
     if v < 26u64 {
-        (65u64 + v) as u8
+        ('A' + v) as u8
     } elif v < 52u64 {
-        (71u64 + v) as u8
+        ('a' + (v - 26u64)) as u8
     } elif v < 62u64 {
-        (v - 4u64) as u8
+        ('0' + (v - 52u64)) as u8
     } elif v == 62u64 {
-        43u8
+        # `as u8` on these two only because a char literal does not
+        # take its type from a return position or from a sibling `if`
+        # arm (CHAR-LITERAL-NUM covers annotations, arguments,
+        # comparisons and arithmetic). The three arms above need the
+        # cast anyway.
+        '+' as u8
     } else {
-        47u8
+        '/' as u8
     }
 }
 
@@ -40,15 +45,15 @@ fn symbol(v: u64) -> u8 {
 # alphabet (including `=`, which the caller handles by position).
 fn value(b: u8) -> u64 {
     val c: u64 = b as u64
-    if c >= 65u64 && c <= 90u64 {
-        c - 65u64
-    } elif c >= 97u64 && c <= 122u64 {
-        c - 71u64
-    } elif c >= 48u64 && c <= 57u64 {
-        c + 4u64
-    } elif c == 43u64 {
+    if c >= 'A' && c <= 'Z' {
+        c - 'A'
+    } elif c >= 'a' && c <= 'z' {
+        c - 'a' + 26u64
+    } elif c >= '0' && c <= '9' {
+        c - '0' + 52u64
+    } elif c == '+' {
         62u64
-    } elif c == 47u64 {
+    } elif c == '/' {
         63u64
     } else {
         64u64
@@ -77,15 +82,15 @@ pub fn encode(bytes: &Vec<u8>) -> String {
         val a: u64 = bytes.get(i) as u64
         out.push(base64::symbol(a / 4u64))
         out.push(base64::symbol((a % 4u64) * 16u64))
-        out.push(61u8)
-        out.push(61u8)
+        out.push('=')
+        out.push('=')
     } elif rest == 2u64 {
         val a: u64 = bytes.get(i) as u64
         val b: u64 = bytes.get(i + 1u64) as u64
         out.push(base64::symbol(a / 4u64))
         out.push(base64::symbol((a % 4u64) * 16u64 + b / 16u64))
         out.push(base64::symbol((b % 16u64) * 4u64))
-        out.push(61u8)
+        out.push('=')
     }
     out
 }
@@ -119,8 +124,8 @@ pub fn decode(s: str) -> Result<Vec<u8>, CodecError> {
         # Padding is only ever in the final group, and only in the
         # last two positions.
         val last: bool = i + 4u64 == n
-        if c2 == 61u8 {
-            if !last || c3 != 61u8 {
+        if c2 == '=' {
+            if !last || c3 != '=' {
                 return Result::Err(CodecError::Invalid(i + 2u64))
             }
             if v1 % 16u64 != 0u64 {
@@ -133,7 +138,7 @@ pub fn decode(s: str) -> Result<Vec<u8>, CodecError> {
                 return Result::Err(CodecError::Invalid(i + 2u64))
             }
             out.push((v0 * 4u64 + v1 / 16u64) as u8)
-            if c3 == 61u8 {
+            if c3 == '=' {
                 if !last {
                     return Result::Err(CodecError::Invalid(i + 3u64))
                 }

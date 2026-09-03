@@ -20,9 +20,9 @@
 # The digit for a nibble, lower case.
 fn nibble(v: u64) -> u8 {
     if v < 10u64 {
-        (48u64 + v) as u8
+        ('0' + v) as u8
     } else {
-        (87u64 + v) as u8
+        ('a' + (v - 10u64)) as u8
     }
 }
 
@@ -31,12 +31,12 @@ fn nibble(v: u64) -> u8 {
 # the caller checks it immediately.
 fn digit(b: u8) -> u64 {
     val c: u64 = b as u64
-    if c >= 48u64 && c <= 57u64 {
-        c - 48u64
-    } elif c >= 97u64 && c <= 102u64 {
-        c - 87u64
-    } elif c >= 65u64 && c <= 70u64 {
-        c - 55u64
+    if c >= '0' && c <= '9' {
+        c - '0'
+    } elif c >= 'a' && c <= 'f' {
+        c - 'a' + 10u64
+    } elif c >= 'A' && c <= 'F' {
+        c - 'A' + 10u64
     } else {
         16u64
     }

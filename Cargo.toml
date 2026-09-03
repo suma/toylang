@@ -51,6 +51,7 @@ debug = false
 
 [profile.test.package."*"]
 opt-level = 0
+debug = false
 
 [profile.dev.package.cranelift]
 opt-level = 2

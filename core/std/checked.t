@@ -64,7 +64,7 @@ trait Checked {
 impl Checked for u8 {
     fn checked_add(self: Self, other: Self) -> Option<Self> {
         # `MAX - other` cannot underflow: `other` is itself a u8.
-        if self > 255u8 - other {
+        if self > limits::u8_max() - other {
             Option::None
         } else {
             Option::Some(self + other)
@@ -82,7 +82,7 @@ impl Checked for u8 {
     fn checked_mul(self: Self, other: Self) -> Option<Self> {
         if other == 0u8 {
             Option::Some(0u8)
-        } elif self > 255u8 / other {
+        } elif self > limits::u8_max() / other {
             Option::None
         } else {
             Option::Some(self * other)
@@ -98,8 +98,8 @@ impl Checked for u8 {
     }
 
     fn saturating_add(self: Self, other: Self) -> Self {
-        if self > 255u8 - other {
-            255u8
+        if self > limits::u8_max() - other {
+            limits::u8_max()
         } else {
             self + other
         }
@@ -116,8 +116,8 @@ impl Checked for u8 {
     fn saturating_mul(self: Self, other: Self) -> Self {
         if other == 0u8 {
             0u8
-        } elif self > 255u8 / other {
-            255u8
+        } elif self > limits::u8_max() / other {
+            limits::u8_max()
         } else {
             self * other
         }
@@ -127,7 +127,7 @@ impl Checked for u8 {
 impl Checked for u16 {
     fn checked_add(self: Self, other: Self) -> Option<Self> {
         # `MAX - other` cannot underflow: `other` is itself a u16.
-        if self > 65535u16 - other {
+        if self > limits::u16_max() - other {
             Option::None
         } else {
             Option::Some(self + other)
@@ -145,7 +145,7 @@ impl Checked for u16 {
     fn checked_mul(self: Self, other: Self) -> Option<Self> {
         if other == 0u16 {
             Option::Some(0u16)
-        } elif self > 65535u16 / other {
+        } elif self > limits::u16_max() / other {
             Option::None
         } else {
             Option::Some(self * other)
@@ -161,8 +161,8 @@ impl Checked for u16 {
     }
 
     fn saturating_add(self: Self, other: Self) -> Self {
-        if self > 65535u16 - other {
-            65535u16
+        if self > limits::u16_max() - other {
+            limits::u16_max()
         } else {
             self + other
         }
@@ -179,8 +179,8 @@ impl Checked for u16 {
     fn saturating_mul(self: Self, other: Self) -> Self {
         if other == 0u16 {
             0u16
-        } elif self > 65535u16 / other {
-            65535u16
+        } elif self > limits::u16_max() / other {
+            limits::u16_max()
         } else {
             self * other
         }
@@ -190,7 +190,7 @@ impl Checked for u16 {
 impl Checked for u32 {
     fn checked_add(self: Self, other: Self) -> Option<Self> {
         # `MAX - other` cannot underflow: `other` is itself a u32.
-        if self > 4294967295u32 - other {
+        if self > limits::u32_max() - other {
             Option::None
         } else {
             Option::Some(self + other)
@@ -208,7 +208,7 @@ impl Checked for u32 {
     fn checked_mul(self: Self, other: Self) -> Option<Self> {
         if other == 0u32 {
             Option::Some(0u32)
-        } elif self > 4294967295u32 / other {
+        } elif self > limits::u32_max() / other {
             Option::None
         } else {
             Option::Some(self * other)
@@ -224,8 +224,8 @@ impl Checked for u32 {
     }
 
     fn saturating_add(self: Self, other: Self) -> Self {
-        if self > 4294967295u32 - other {
-            4294967295u32
+        if self > limits::u32_max() - other {
+            limits::u32_max()
         } else {
             self + other
         }
@@ -242,8 +242,8 @@ impl Checked for u32 {
     fn saturating_mul(self: Self, other: Self) -> Self {
         if other == 0u32 {
             0u32
-        } elif self > 4294967295u32 / other {
-            4294967295u32
+        } elif self > limits::u32_max() / other {
+            limits::u32_max()
         } else {
             self * other
         }
@@ -253,7 +253,7 @@ impl Checked for u32 {
 impl Checked for u64 {
     fn checked_add(self: Self, other: Self) -> Option<Self> {
         # `MAX - other` cannot underflow: `other` is itself a u64.
-        if self > 18446744073709551615u64 - other {
+        if self > limits::u64_max() - other {
             Option::None
         } else {
             Option::Some(self + other)
@@ -271,7 +271,7 @@ impl Checked for u64 {
     fn checked_mul(self: Self, other: Self) -> Option<Self> {
         if other == 0u64 {
             Option::Some(0u64)
-        } elif self > 18446744073709551615u64 / other {
+        } elif self > limits::u64_max() / other {
             Option::None
         } else {
             Option::Some(self * other)
@@ -287,8 +287,8 @@ impl Checked for u64 {
     }
 
     fn saturating_add(self: Self, other: Self) -> Self {
-        if self > 18446744073709551615u64 - other {
-            18446744073709551615u64
+        if self > limits::u64_max() - other {
+            limits::u64_max()
         } else {
             self + other
         }
@@ -305,8 +305,8 @@ impl Checked for u64 {
     fn saturating_mul(self: Self, other: Self) -> Self {
         if other == 0u64 {
             0u64
-        } elif self > 18446744073709551615u64 / other {
-            18446744073709551615u64
+        } elif self > limits::u64_max() / other {
+            limits::u64_max()
         } else {
             self * other
         }
@@ -318,9 +318,9 @@ impl Checked for i8 {
         # Each bound is computed on the side that cannot overflow:
         # `MAX - other` only when `other` is positive, `MIN - other`
         # only when it is negative.
-        if other > 0i8 && self > 127i8 - other {
+        if other > 0i8 && self > limits::i8_max() - other {
             Option::None
-        } elif other < 0i8 && self < -128i8 - other {
+        } elif other < 0i8 && self < limits::i8_min() - other {
             Option::None
         } else {
             Option::Some(self + other)
@@ -328,9 +328,9 @@ impl Checked for i8 {
     }
 
     fn checked_sub(self: Self, other: Self) -> Option<Self> {
-        if other < 0i8 && self > 127i8 + other {
+        if other < 0i8 && self > limits::i8_max() + other {
             Option::None
-        } elif other > 0i8 && self < -128i8 + other {
+        } elif other > 0i8 && self < limits::i8_min() + other {
             Option::None
         } else {
             Option::Some(self - other)
@@ -343,7 +343,7 @@ impl Checked for i8 {
         # by `-1` and trap.
         if other == 0i8 {
             Option::Some(0i8)
-        } elif self == -128i8 && other == -1i8 {
+        } elif self == limits::i8_min() && other == -1i8 {
             Option::None
         } else {
             val product = self * other
@@ -358,7 +358,7 @@ impl Checked for i8 {
     fn checked_div(self: Self, other: Self) -> Option<Self> {
         if other == 0i8 {
             Option::None
-        } elif self == -128i8 && other == -1i8 {
+        } elif self == limits::i8_min() && other == -1i8 {
             Option::None
         } else {
             Option::Some(self / other)
@@ -366,20 +366,20 @@ impl Checked for i8 {
     }
 
     fn saturating_add(self: Self, other: Self) -> Self {
-        if other > 0i8 && self > 127i8 - other {
-            127i8
-        } elif other < 0i8 && self < -128i8 - other {
-            -128i8
+        if other > 0i8 && self > limits::i8_max() - other {
+            limits::i8_max()
+        } elif other < 0i8 && self < limits::i8_min() - other {
+            limits::i8_min()
         } else {
             self + other
         }
     }
 
     fn saturating_sub(self: Self, other: Self) -> Self {
-        if other < 0i8 && self > 127i8 + other {
-            127i8
-        } elif other > 0i8 && self < -128i8 + other {
-            -128i8
+        if other < 0i8 && self > limits::i8_max() + other {
+            limits::i8_max()
+        } elif other > 0i8 && self < limits::i8_min() + other {
+            limits::i8_min()
         } else {
             self - other
         }
@@ -390,16 +390,16 @@ impl Checked for i8 {
         # the true product decides which bound an overflow clamps to.
         if other == 0i8 {
             0i8
-        } elif self == -128i8 && other == -1i8 {
-            127i8
+        } elif self == limits::i8_min() && other == -1i8 {
+            limits::i8_max()
         } else {
             val product = self * other
             if product / other == self {
                 product
             } elif (self < 0i8 && other < 0i8) || (self > 0i8 && other > 0i8) {
-                127i8
+                limits::i8_max()
             } else {
-                -128i8
+                limits::i8_min()
             }
         }
     }
@@ -410,9 +410,9 @@ impl Checked for i16 {
         # Each bound is computed on the side that cannot overflow:
         # `MAX - other` only when `other` is positive, `MIN - other`
         # only when it is negative.
-        if other > 0i16 && self > 32767i16 - other {
+        if other > 0i16 && self > limits::i16_max() - other {
             Option::None
-        } elif other < 0i16 && self < -32768i16 - other {
+        } elif other < 0i16 && self < limits::i16_min() - other {
             Option::None
         } else {
             Option::Some(self + other)
@@ -420,9 +420,9 @@ impl Checked for i16 {
     }
 
     fn checked_sub(self: Self, other: Self) -> Option<Self> {
-        if other < 0i16 && self > 32767i16 + other {
+        if other < 0i16 && self > limits::i16_max() + other {
             Option::None
-        } elif other > 0i16 && self < -32768i16 + other {
+        } elif other > 0i16 && self < limits::i16_min() + other {
             Option::None
         } else {
             Option::Some(self - other)
@@ -435,7 +435,7 @@ impl Checked for i16 {
         # by `-1` and trap.
         if other == 0i16 {
             Option::Some(0i16)
-        } elif self == -32768i16 && other == -1i16 {
+        } elif self == limits::i16_min() && other == -1i16 {
             Option::None
         } else {
             val product = self * other
@@ -450,7 +450,7 @@ impl Checked for i16 {
     fn checked_div(self: Self, other: Self) -> Option<Self> {
         if other == 0i16 {
             Option::None
-        } elif self == -32768i16 && other == -1i16 {
+        } elif self == limits::i16_min() && other == -1i16 {
             Option::None
         } else {
             Option::Some(self / other)
@@ -458,20 +458,20 @@ impl Checked for i16 {
     }
 
     fn saturating_add(self: Self, other: Self) -> Self {
-        if other > 0i16 && self > 32767i16 - other {
-            32767i16
-        } elif other < 0i16 && self < -32768i16 - other {
-            -32768i16
+        if other > 0i16 && self > limits::i16_max() - other {
+            limits::i16_max()
+        } elif other < 0i16 && self < limits::i16_min() - other {
+            limits::i16_min()
         } else {
             self + other
         }
     }
 
     fn saturating_sub(self: Self, other: Self) -> Self {
-        if other < 0i16 && self > 32767i16 + other {
-            32767i16
-        } elif other > 0i16 && self < -32768i16 + other {
-            -32768i16
+        if other < 0i16 && self > limits::i16_max() + other {
+            limits::i16_max()
+        } elif other > 0i16 && self < limits::i16_min() + other {
+            limits::i16_min()
         } else {
             self - other
         }
@@ -482,16 +482,16 @@ impl Checked for i16 {
         # the true product decides which bound an overflow clamps to.
         if other == 0i16 {
             0i16
-        } elif self == -32768i16 && other == -1i16 {
-            32767i16
+        } elif self == limits::i16_min() && other == -1i16 {
+            limits::i16_max()
         } else {
             val product = self * other
             if product / other == self {
                 product
             } elif (self < 0i16 && other < 0i16) || (self > 0i16 && other > 0i16) {
-                32767i16
+                limits::i16_max()
             } else {
-                -32768i16
+                limits::i16_min()
             }
         }
     }
@@ -502,9 +502,9 @@ impl Checked for i32 {
         # Each bound is computed on the side that cannot overflow:
         # `MAX - other` only when `other` is positive, `MIN - other`
         # only when it is negative.
-        if other > 0i32 && self > 2147483647i32 - other {
+        if other > 0i32 && self > limits::i32_max() - other {
             Option::None
-        } elif other < 0i32 && self < -2147483648i32 - other {
+        } elif other < 0i32 && self < limits::i32_min() - other {
             Option::None
         } else {
             Option::Some(self + other)
@@ -512,9 +512,9 @@ impl Checked for i32 {
     }
 
     fn checked_sub(self: Self, other: Self) -> Option<Self> {
-        if other < 0i32 && self > 2147483647i32 + other {
+        if other < 0i32 && self > limits::i32_max() + other {
             Option::None
-        } elif other > 0i32 && self < -2147483648i32 + other {
+        } elif other > 0i32 && self < limits::i32_min() + other {
             Option::None
         } else {
             Option::Some(self - other)
@@ -527,7 +527,7 @@ impl Checked for i32 {
         # by `-1` and trap.
         if other == 0i32 {
             Option::Some(0i32)
-        } elif self == -2147483648i32 && other == -1i32 {
+        } elif self == limits::i32_min() && other == -1i32 {
             Option::None
         } else {
             val product = self * other
@@ -542,7 +542,7 @@ impl Checked for i32 {
     fn checked_div(self: Self, other: Self) -> Option<Self> {
         if other == 0i32 {
             Option::None
-        } elif self == -2147483648i32 && other == -1i32 {
+        } elif self == limits::i32_min() && other == -1i32 {
             Option::None
         } else {
             Option::Some(self / other)
@@ -550,20 +550,20 @@ impl Checked for i32 {
     }
 
     fn saturating_add(self: Self, other: Self) -> Self {
-        if other > 0i32 && self > 2147483647i32 - other {
-            2147483647i32
-        } elif other < 0i32 && self < -2147483648i32 - other {
-            -2147483648i32
+        if other > 0i32 && self > limits::i32_max() - other {
+            limits::i32_max()
+        } elif other < 0i32 && self < limits::i32_min() - other {
+            limits::i32_min()
         } else {
             self + other
         }
     }
 
     fn saturating_sub(self: Self, other: Self) -> Self {
-        if other < 0i32 && self > 2147483647i32 + other {
-            2147483647i32
-        } elif other > 0i32 && self < -2147483648i32 + other {
-            -2147483648i32
+        if other < 0i32 && self > limits::i32_max() + other {
+            limits::i32_max()
+        } elif other > 0i32 && self < limits::i32_min() + other {
+            limits::i32_min()
         } else {
             self - other
         }
@@ -574,16 +574,16 @@ impl Checked for i32 {
         # the true product decides which bound an overflow clamps to.
         if other == 0i32 {
             0i32
-        } elif self == -2147483648i32 && other == -1i32 {
-            2147483647i32
+        } elif self == limits::i32_min() && other == -1i32 {
+            limits::i32_max()
         } else {
             val product = self * other
             if product / other == self {
                 product
             } elif (self < 0i32 && other < 0i32) || (self > 0i32 && other > 0i32) {
-                2147483647i32
+                limits::i32_max()
             } else {
-                -2147483648i32
+                limits::i32_min()
             }
         }
     }
@@ -594,9 +594,9 @@ impl Checked for i64 {
         # Each bound is computed on the side that cannot overflow:
         # `MAX - other` only when `other` is positive, `MIN - other`
         # only when it is negative.
-        if other > 0i64 && self > 9223372036854775807i64 - other {
+        if other > 0i64 && self > limits::i64_max() - other {
             Option::None
-        } elif other < 0i64 && self < -9223372036854775808i64 - other {
+        } elif other < 0i64 && self < limits::i64_min() - other {
             Option::None
         } else {
             Option::Some(self + other)
@@ -604,9 +604,9 @@ impl Checked for i64 {
     }
 
     fn checked_sub(self: Self, other: Self) -> Option<Self> {
-        if other < 0i64 && self > 9223372036854775807i64 + other {
+        if other < 0i64 && self > limits::i64_max() + other {
             Option::None
-        } elif other > 0i64 && self < -9223372036854775808i64 + other {
+        } elif other > 0i64 && self < limits::i64_min() + other {
             Option::None
         } else {
             Option::Some(self - other)
@@ -619,7 +619,7 @@ impl Checked for i64 {
         # by `-1` and trap.
         if other == 0i64 {
             Option::Some(0i64)
-        } elif self == -9223372036854775808i64 && other == -1i64 {
+        } elif self == limits::i64_min() && other == -1i64 {
             Option::None
         } else {
             val product = self * other
@@ -634,7 +634,7 @@ impl Checked for i64 {
     fn checked_div(self: Self, other: Self) -> Option<Self> {
         if other == 0i64 {
             Option::None
-        } elif self == -9223372036854775808i64 && other == -1i64 {
+        } elif self == limits::i64_min() && other == -1i64 {
             Option::None
         } else {
             Option::Some(self / other)
@@ -642,20 +642,20 @@ impl Checked for i64 {
     }
 
     fn saturating_add(self: Self, other: Self) -> Self {
-        if other > 0i64 && self > 9223372036854775807i64 - other {
-            9223372036854775807i64
-        } elif other < 0i64 && self < -9223372036854775808i64 - other {
-            -9223372036854775808i64
+        if other > 0i64 && self > limits::i64_max() - other {
+            limits::i64_max()
+        } elif other < 0i64 && self < limits::i64_min() - other {
+            limits::i64_min()
         } else {
             self + other
         }
     }
 
     fn saturating_sub(self: Self, other: Self) -> Self {
-        if other < 0i64 && self > 9223372036854775807i64 + other {
-            9223372036854775807i64
-        } elif other > 0i64 && self < -9223372036854775808i64 + other {
-            -9223372036854775808i64
+        if other < 0i64 && self > limits::i64_max() + other {
+            limits::i64_max()
+        } elif other > 0i64 && self < limits::i64_min() + other {
+            limits::i64_min()
         } else {
             self - other
         }
@@ -666,16 +666,16 @@ impl Checked for i64 {
         # the true product decides which bound an overflow clamps to.
         if other == 0i64 {
             0i64
-        } elif self == -9223372036854775808i64 && other == -1i64 {
-            9223372036854775807i64
+        } elif self == limits::i64_min() && other == -1i64 {
+            limits::i64_max()
         } else {
             val product = self * other
             if product / other == self {
                 product
             } elif (self < 0i64 && other < 0i64) || (self > 0i64 && other > 0i64) {
-                9223372036854775807i64
+                limits::i64_max()
             } else {
-                -9223372036854775808i64
+                limits::i64_min()
             }
         }
     }

@@ -50,6 +50,7 @@ mod soa;
 mod diagnostics;
 mod runtime_io;
 mod parse_numbers;
+mod numeric;
 mod generic_enum_payload;
 mod primitive_receivers;
 mod conv_span;

@@ -1152,11 +1152,28 @@ impl<'a> TypeCheckerVisitor<'a> {
             lhs_obj.clone().accept_expr(self)?
         };
         
+        // PTR-READ-ASSIGN: the target's type is what the right-hand
+        // side is being asked for, so it is offered as the hint --
+        // exactly as a `val`'s annotation is.
+        //
+        // `__builtin_ptr_read` takes its *shape* from that hint and
+        // has no other source for it, so without this
+        // `b = __builtin_ptr_read(p, i)` silently read a `u64` into a
+        // `u8` binding and reported the mismatch against whichever
+        // statement the recovery anchored on. Writing the same read as
+        // a fresh `val b: u8 = ...` worked, which made the difference
+        // look arbitrary.
+        //
+        // Restored before the compatibility check so nothing below
+        // sees a hint from this statement.
+        let saved_hint = self.type_inference.type_hint.replace(lhs_ty.clone());
         // Located: an error raised inside the right-hand side (an
         // unrunnable literal, a bad call) otherwise reached the
         // statement-level recovery with no location of its own, and
         // was then anchored on whatever statement came next.
-        let rhs_ty = self.check_expr_located(&rhs)?;
+        let rhs_ty = self.check_expr_located(&rhs);
+        self.type_inference.type_hint = saved_hint;
+        let rhs_ty = rhs_ty?;
         // NUMBER-HINT: the assignment target's type names what an
         // unsuffixed literal on the right should become, so `x = 5`
         // works for an `i64` binding without a suffix.

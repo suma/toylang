@@ -904,10 +904,6 @@ impl String {
             }
             val start: u64 = i
             while i < n {
-                # A fresh binding rather than reassigning one from the
-                # outer loop: the annotation on a `ptr_read` is the
-                # only thing that says what shape came back, and an
-                # assignment has nowhere to put one.
                 val b: u8 = __builtin_ptr_read(self.data, i)
                 if b.is_ascii_space() { break }
                 i = i + 1u64

@@ -181,3 +181,50 @@ fn a_string_lends_its_bytes_as_a_span() {
     assert_consistent(src, "string_as_span");
 }
 
+
+// PTR-READ-ASSIGN: `b = __builtin_ptr_read(p, i)`.
+//
+// The read's width comes from the annotation on a `val`, and an
+// assignment has nowhere to put one -- so the same read had to be
+// spelled as a fresh binding inside the loop. Worse, the type checker
+// did not say so: it fell back to `u64`, and the mismatch was
+// reported against whichever statement the recovery anchored on,
+// naming a type from somewhere else entirely.
+//
+// The binding being written to already has a width, which is the same
+// answer the annotation would have given.
+
+#[test]
+fn a_pointer_read_can_be_assigned_to_an_existing_binding() {
+    let src = r#"
+        unsafe fn sum(p: ptr, n: u64) -> u64 {
+            var total: u64 = 0u64
+            var b: u8 = 0u8
+            var i: u64 = 0u64
+            while i < n {
+                b = __builtin_ptr_read(p, i)
+                total = total + (b as u64)
+                i = i + 1u64
+            }
+            total
+        }
+
+        unsafe fn wide(p: ptr) -> u64 {
+            var w: u64 = 0u64
+            w = __builtin_ptr_read(p, 0u64)
+            w
+        }
+
+        unsafe fn main() -> u64 {
+            val s = String::from_str("abc")
+            val bytes = sum(s.as_ptr(), s.len())
+            val q: ptr = __builtin_heap_alloc(8u64)
+            __builtin_ptr_write(q, 0u64, 41u64)
+            bytes + wide(q)
+        }
+    "#;
+    // 97 + 98 + 99 + 41. Both widths, so a narrow read that silently
+    // became a `u64` would show up as the wrong sum rather than as an
+    // error.
+    assert_consistent(src, "ptr_read_assign");
+}

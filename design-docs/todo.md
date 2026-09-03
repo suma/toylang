@@ -10,6 +10,21 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-03
+- **PTR-READ-ASSIGN 解消 + `str` の比較演算子 (STDLIB-ORD)** —
+  (1) `b = __builtin_ptr_read(p, i)` が書けるようになった。読み出し幅は
+  `val` の注釈から取るので**代入には置き場所が無かった**が、書き込み先の
+  束縛が既に幅を持っている。型検査器は黙って `u64` に倒しており、
+  不一致は recovery が当てた別の文に、別の型を名指しして報告されていた
+  (frontend は代入先の型をヒントとして渡し、lowering は束縛の IR 型で
+  `PtrRead` を出す)。
+  (2) `a < b` / `<=` / `>` / `>=` が `str` で動く。`impl Ord for str` は
+  T0 で入っていたが、演算子オーバーロードは**struct レシーバ**にしか
+  効かないので `a.lt(b)` と書くしかなかった。比較を `Ord` の呼び出しに
+  書き換える (`Ord` は `lt` しか宣言しないので `a > b` は `b.lt(a)`、
+  等号込みはその否定)。**post-pass** — 被演算子・条件・末尾式は検査器への
+  到達経路が別々で、ノード自身の `ExprRef` を持つ経路と持たない経路が
+  あるため。そのために `visit_binary` で両辺 `str` のときだけ型を記録する
+  (被演算子は `accept_expr` 経由で型を記録しない)
 - **STDLIB-TRAIT-BASE B5 — 戻り位置からの型引数推論と `Default`。
   これで B0〜B5 すべて landing** — `fn make<T: Default>() -> T {
   T::default() }` は 3 箇所で別々に落ちていたが、原因は 1 つ:
@@ -1286,15 +1301,6 @@
   動く。原因未特定のため 2026-09-03 の B3 では**コンテナの `Clone` impl を
   入れていない** (primitive 全幅 / `str` / `String` のみ)。`Vec` /
   `Box` の `Clone` はここが解けてから
-- **PTR-READ-ASSIGN: 注釈の無い `__builtin_ptr_read` を代入すると診断が
-  嘘をつく** ★ — `var c: u8 = ...` の後に `c = __builtin_ptr_read(p, i)`
-  と**代入**すると (`val` の再宣言ではなく)、読み出しの shape を決める
-  注釈がどこにも無いため、`[E0001] Type mismatch: expected u8, but got
-  Vec<String> (in assignment)` のように**無関係な型を名指しし、位置は
-  ユーザファイルの末尾を指す** (stdlib の body で起きるので全プログラムに
-  波及する)。2026-09-03 に `String::split_whitespace` を書いていて踏んだ。
-  正しくは「代入位置の `ptr_read` は shape を決められない」と言うべき。
-  回避は内側で `val` を新しく束縛すること
 - **STDLIB-NUMERIC: 整数側の math が無い** ★ — 設計は
   [`STDLIB_NUMERIC.md`](STDLIB_NUMERIC.md) (2026-09-03)。`math.t` は
   f64 の libm ラッパ 11 本 + `abs(i64)` + `min`/`max` (**i64 と u64

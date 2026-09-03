@@ -522,6 +522,11 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_str_hash", toylang_rt::toy_str_hash as *const u8);
     jit_builder.symbol("toy_str_cmp", toylang_rt::toy_str_cmp as *const u8);
     jit_builder.symbol("toy_str_find", toylang_rt::toy_str_find as *const u8);
+    jit_builder.symbol("toy_bits_popcount", toylang_rt::toy_bits_popcount as *const u8);
+    jit_builder.symbol("toy_bits_clz", toylang_rt::toy_bits_clz as *const u8);
+    jit_builder.symbol("toy_bits_ctz", toylang_rt::toy_bits_ctz as *const u8);
+    jit_builder.symbol("toy_bits_reverse", toylang_rt::toy_bits_reverse as *const u8);
+    jit_builder.symbol("toy_bits_swap_bytes", toylang_rt::toy_bits_swap_bytes as *const u8);
     jit_builder.symbol("toy_io_random", toylang_rt::toy_io_random as *const u8);
     jit_builder.symbol("toy_io_random_seed", toylang_rt::toy_io_random_seed as *const u8);
     jit_builder.symbol("toy_io_strftime", toylang_rt::toy_io_strftime as *const u8);

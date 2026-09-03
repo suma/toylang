@@ -200,6 +200,15 @@ pub fn build_io_registry() -> HashMap<&'static str, ExternFn> {
     m.insert("__extern_str_cmp", str_cmp);
     // STDLIB-TEXT §3: `str`'s search primitive.
     m.insert("__extern_str_find", str_find);
+    // STDLIB-NUMERIC N1: the five bit primitives. Forwarded to
+    // `toylang_rt` so the answer for an input of 0 -- the one case
+    // the hardware instruction leaves undefined -- cannot differ
+    // between lanes.
+    m.insert("__extern_bits_popcount", bits_popcount);
+    m.insert("__extern_bits_clz", bits_clz);
+    m.insert("__extern_bits_ctz", bits_ctz);
+    m.insert("__extern_bits_reverse", bits_reverse);
+    m.insert("__extern_bits_swap_bytes", bits_swap_bytes);
     m.insert("__extern_io_random_u64", io_random);
     m.insert("__extern_io_random_seed", io_random_seed);
     m.insert("__extern_io_strftime_str", io_strftime);
@@ -655,6 +664,50 @@ fn io_write_file_status(_args: &[Value]) -> Result<Value, InterpreterError> {
 /// `core/std/hash.t`. Mirrors `toylang_rt::toy_str_hash` step for
 /// step (and `impl Hash for String` in `core/std/string.t`), so a key
 /// hashes to the same u64 on every backend.
+/// STDLIB-NUMERIC N1: one `u64` argument, one `u32` answer.
+fn bits_u32_of(args: &[Value], who: &'static str, f: extern "C" fn(u64) -> u32) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: format!("extern fn `{who}` takes 1 argument"),
+            expected: 1,
+            found: args.len(),
+        });
+    }
+    Ok(Value::UInt32(f(u64_arg(&args[0], who)?)))
+}
+
+/// As above, answering with a `u64`.
+fn bits_u64_of(args: &[Value], who: &'static str, f: extern "C" fn(u64) -> u64) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: format!("extern fn `{who}` takes 1 argument"),
+            expected: 1,
+            found: args.len(),
+        });
+    }
+    Ok(u64_result(f(u64_arg(&args[0], who)?)))
+}
+
+fn bits_popcount(args: &[Value]) -> Result<Value, InterpreterError> {
+    bits_u32_of(args, "__extern_bits_popcount", toylang_rt::toy_bits_popcount)
+}
+
+fn bits_clz(args: &[Value]) -> Result<Value, InterpreterError> {
+    bits_u32_of(args, "__extern_bits_clz", toylang_rt::toy_bits_clz)
+}
+
+fn bits_ctz(args: &[Value]) -> Result<Value, InterpreterError> {
+    bits_u32_of(args, "__extern_bits_ctz", toylang_rt::toy_bits_ctz)
+}
+
+fn bits_reverse(args: &[Value]) -> Result<Value, InterpreterError> {
+    bits_u64_of(args, "__extern_bits_reverse", toylang_rt::toy_bits_reverse)
+}
+
+fn bits_swap_bytes(args: &[Value]) -> Result<Value, InterpreterError> {
+    bits_u64_of(args, "__extern_bits_swap_bytes", toylang_rt::toy_bits_swap_bytes)
+}
+
 /// STDLIB-TEXT §3: byte offset of `needle` in `haystack` at or after
 /// `from`, or -1. Same rule as `toylang_rt::toy_str_find`: an empty
 /// needle matches at `from`, and the offset is in bytes.

@@ -100,3 +100,88 @@ fn the_checked_arithmetic_still_finds_the_same_edges() {
     "#;
     assert_stdout_consistent(src, "checked_uses_limits");
 }
+
+// N1: bit operations. Five externs over `u64` with the per-width
+// correction in toylang -- nine operations across eight widths would
+// otherwise be 72 boundary crossings.
+
+#[test]
+fn bit_operations_answer_per_width() {
+    let src = r#"
+        fn main() -> u64 {
+            val a: u8 = 0xB0u8
+            println(a.popcount())
+            println(a.leading_zeros())
+            println(a.trailing_zeros())
+            println(a.reverse_bits())
+            val w: u32 = 0x12345678u32
+            println(w.swap_bytes())
+            println(w.rotate_left(8u32))
+            println(w.rotate_right(8u32))
+            # A rotation by the width is the identity, and by more
+            # than the width wraps round.
+            println(w.rotate_left(32u32) == w)
+            println(w.rotate_left(40u32) == w.rotate_left(8u32))
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "bits_per_width");
+}
+
+#[test]
+fn zero_is_defined_and_the_edges_hold() {
+    // The hardware instruction leaves an input of 0 undefined; this
+    // answers the width, as Rust does. The extremes are the other
+    // place a width correction goes wrong.
+    let src = r#"
+        fn main() -> u64 {
+            val z8: u8 = 0u8
+            val z64: u64 = 0u64
+            println(z8.leading_zeros())
+            println(z8.trailing_zeros())
+            println(z64.leading_zeros())
+            println(z64.trailing_zeros())
+            println(z8.popcount())
+            val m8: u8 = limits::u8_max()
+            val m64: u64 = limits::u64_max()
+            println(m8.popcount())
+            println(m8.leading_zeros())
+            println(m8.trailing_zeros())
+            println(m64.popcount())
+            println(m64.leading_zeros())
+            println(m64.trailing_zeros())
+            # A signed width answers about the bit pattern, not the
+            # value.
+            val neg: i8 = -1i8
+            println(neg.popcount())
+            val lo: i64 = limits::i64_min()
+            println(lo.popcount())
+            println(lo.leading_zeros())
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "bits_zero_and_edges");
+}
+
+#[test]
+fn powers_of_two_round_up_and_zero_is_not_one() {
+    let src = r#"
+        fn main() -> u64 {
+            val z: u64 = 0u64
+            println(z.is_power_of_two())
+            println(z.next_power_of_two())
+            val one: u64 = 1u64
+            println(one.is_power_of_two())
+            println(one.next_power_of_two())
+            val n: u64 = 100u64
+            println(n.next_power_of_two())
+            val exact: u64 = 128u64
+            println(exact.is_power_of_two())
+            println(exact.next_power_of_two())
+            val small: u8 = 100u8
+            println(small.next_power_of_two())
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "bits_power_of_two");
+}

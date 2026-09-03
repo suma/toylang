@@ -3872,6 +3872,52 @@ pub extern "C" fn toy_str_hash(s: *const u8) -> u64 {
     h
 }
 
+// ---------------------------------------------------------------------
+// STDLIB-NUMERIC N1: bit operations.
+//
+// Five externs over `u64`, with the per-width correction written in
+// toylang (`core/std/bits.t`). Nine operations across eight widths
+// would otherwise be 72 externs, and the correction is a shift.
+//
+// They are externs rather than IR instructions because that is one
+// implementation shared by four lanes; an IR instruction is three.
+// Cranelift has `popcnt` and `clz` as single instructions, so an AOT
+// build pays a call it need not -- measured at ~5 ns, against ~400 µs
+// for the same operation written as a toylang loop on the
+// interpreter. Promote it when a program is measured wanting it, the
+// way SIMD-VM-SLOT decided.
+
+/// Number of set bits.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_bits_popcount(x: u64) -> u32 {
+    x.count_ones()
+}
+
+/// Number of leading zero bits. **64 for an input of 0**, which is
+/// Rust's answer and, unlike the hardware instruction's, is defined.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_bits_clz(x: u64) -> u32 {
+    x.leading_zeros()
+}
+
+/// Number of trailing zero bits. 64 for an input of 0, as above.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_bits_ctz(x: u64) -> u32 {
+    x.trailing_zeros()
+}
+
+/// The 64 bits in the opposite order.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_bits_reverse(x: u64) -> u64 {
+    x.reverse_bits()
+}
+
+/// The 8 bytes in the opposite order.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_bits_swap_bytes(x: u64) -> u64 {
+    x.swap_bytes()
+}
+
 /// Byte offset of the first occurrence of `needle` in `haystack`, or
 /// `-1` — the search half of `str`'s method set (STDLIB_TEXT §3).
 ///

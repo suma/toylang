@@ -543,6 +543,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         if actual == *expected || actual == TypeDecl::Number {
             return Ok(());
         }
+        // CHAR-LITERAL-NUM: a lane value written as a character
+        // claims the lane type when its code point fits, exactly as
+        // an ordinary argument position does — `__simd_splat('0')`
+        // against a `u8x16` is the same request as `take_u8('0')`.
+        if self.coerce_char_literal(arg, expected)?.is_some() {
+            return Ok(());
+        }
         Err(self.error_with_location(
             TypeCheckError::generic_error(&format!(
                 "{name} expects `{}` for {role}, got `{}`",

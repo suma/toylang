@@ -193,6 +193,14 @@ impl<'a> AstIntegrationContext<'a> {
                 self.map_expr(args, "Call args")?,
             )),
             Expr::ExprList(exprs) => Ok(Expr::ExprList(self.map_exprs(exprs, "ExprList")?)),
+            // `[a, b, c]`. Reached from `core/std/hex.t`'s
+            // `__simd_shuffle` masks, which the parser folds into two
+            // `u64` words — but the array node it folded *away* stays
+            // in the module's pool, and this remapper copies every
+            // node rather than only the reachable ones.
+            Expr::ArrayLiteral(exprs) => {
+                Ok(Expr::ArrayLiteral(self.map_exprs(exprs, "ArrayLiteral")?))
+            }
             Expr::Block(stmts) => {
                 let mut new_stmts = Vec::with_capacity(stmts.len());
                 for stmt_ref in stmts {

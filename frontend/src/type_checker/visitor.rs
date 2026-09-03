@@ -769,8 +769,11 @@ impl<'a> TypeCheckerVisitor<'a> {
         let mut last = TypeDecl::Unit;
         let s = func.code;
 
-        // Is already checked
-        match self.function_checking.is_checked_fn.get(&func.name) {
+        // Is already checked. Keyed by the *body*, not the name:
+        // two modules can each define a free `encode`, and a
+        // name-keyed guard silently skipped the second one's body
+        // (see `FunctionCheckingState::checked_bodies`).
+        match self.function_checking.checked_bodies.get(&s) {
             Some(Some(result_ty)) => return Ok(result_ty.clone()),  // already checked
             Some(None) => return Ok(TypeDecl::Unknown), // now checking
             None => (),
@@ -852,11 +855,15 @@ impl<'a> TypeCheckerVisitor<'a> {
             self.function_checking
                 .is_checked_fn
                 .insert(func.name, Some(declared.clone()));
+            self.function_checking
+                .checked_bodies
+                .insert(s, Some(declared.clone()));
             return Ok(declared);
         }
 
         // Now checking...
         self.function_checking.is_checked_fn.insert(func.name, None);
+        self.function_checking.checked_bodies.insert(s, None);
 
         // Clear type cache at the start of each function to limit cache scope
         self.optimization.type_cache.clear();
@@ -1213,6 +1220,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
 
         self.function_checking.is_checked_fn.insert(func.name, Some(last.clone()));
+        self.function_checking.checked_bodies.insert(s, Some(last.clone()));
         Ok(last)
     }
 

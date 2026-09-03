@@ -205,7 +205,14 @@ impl EvaluationContext<'_> {
         let result = self.evaluate_block_body(statements);
         match result {
             Ok(v) => {
-                self.run_and_pop_drop_scope()?;
+                // DROP-GLUE: the block's own value escapes, so it is
+                // not this scope's to free.
+                let escaping = match &v {
+                    EvaluationResult::Value(value) => Some(value.clone()),
+                    EvaluationResult::Return(Some(value)) => Some(value.clone()),
+                    _ => None,
+                };
+                self.run_and_pop_drop_scope_except(escaping.as_ref())?;
                 Ok(v)
             }
             Err(e) => {

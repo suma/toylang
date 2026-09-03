@@ -435,6 +435,20 @@ impl<T> Vec<T> {
 # none to give -- only the type does (STDLIB-TRAIT-BASE §7). Its own
 # block so `Vec<T>` does not require `T: Default` everywhere, the same
 # shape `sort` uses for `Ord`.
+impl<T: Clone> Clone for Vec<T> {
+    unsafe fn clone(&self) -> Self {
+        var out: Vec<T> = Vec::new()
+        var i: u64 = 0u64
+        while i < self.len {
+            val v: T = self.get(i)
+            val c: T = v.clone()
+            out.push(c)
+            i = i + 1u64
+        }
+        out
+    }
+}
+
 impl<T: Default> Vec<T> {
     # Make `size()` exactly `n`: drop the tail, or fill with `T`'s
     # default. Shrinking keeps the capacity, like `clear`.

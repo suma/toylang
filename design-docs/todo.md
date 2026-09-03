@@ -10,6 +10,19 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-03
+- **RETURN-LOCAL-DROP (tree-walker) 解消 + `Vec` / `Box` の `Clone`** —
+  `fn build() -> Vec<u64> { var out = Vec::new(); out.push(1u64); out }`
+  が、**tree-walker では解放済みのバッファを返していた**。ブロック終端の
+  drop glue が、そのブロック自身が渡す値まで解放していたため。次の
+  `push` が `Invalid memory access in ptr_write` になり、原因の return を
+  指すものは何も出なかった。所有型の `Clone` impl はすべてこの形なので、
+  そこで露見した。**`--all-backends` の interpreter レーンは IR VM なので
+  見えない** — tree-walker をオラクルにするのは consistency harness だけ
+  (CLAUDE.md の取り違え注意そのもの)。
+  これで `impl<T: Clone> Clone for Vec<T>` / `Box<T>` が入った。
+  **VEC-CLONE-WITH-STRING-CLONE は誤診だった**: 実体は `String::clone` が
+  `to_string()` を末尾位置で返していたことで、別のエラーを追う過程で
+  既に直っており、コンテナの impl を再テストせずに落としていた。
 - **PTR-READ-ASSIGN 解消 + `str` の比較演算子 (STDLIB-ORD)** —
   (1) `b = __builtin_ptr_read(p, i)` が書けるようになった。読み出し幅は
   `val` の注釈から取るので**代入には置き場所が無かった**が、書き込み先の
@@ -1287,6 +1300,13 @@
   bound は要らない / `K: Hash` bound は動くが breaking change /
   `Set` は `Dict<T, ()>` では書けない / `remove` の swap-remove で
   反復順は既に挿入順ではない)
+- **STRING-NO-DROP: `String` に `impl Drop` が無い** ★ — `Vec<T>` は
+  持っているのに `String` は持たないので、**すべての `String` が
+  バッファを漏らす** (`--profile=mem` の `leaks` に `string.t` の
+  `from_str` / `push` が並ぶ)。2026-09-03 に `Clone` の leak 検査で
+  気づいた。足すのは 4 行だが、`Drop` を持つ型は container に入れると
+  **move する** (`[E0014]`) ので、既存の `String` を受け渡すコードが
+  move 検査に引っかかりうる。影響範囲を測ってから
 - **GENERIC-SCALAR-REF: `&T` が primitive に解決される generic 関数** ★ —
   `fn get<T: Id>(v: &T)` を `get(&5u64)` 相当で呼ぶと、compiled lane は
   **拒否する** (2026-09-03 に明示的なエラーを入れた)。スカラーへの参照は
@@ -1294,13 +1314,6 @@
   引数スロットの型・`param_ref_pointee`・body 側の見方が揃わず、
   3 レーンが 3 通りの誤答を返していた。compound の `&T` は erase される
   ので影響なし。回避は `T` を値で取ること
-- **VEC-CLONE-WITH-STRING-CLONE: `Vec<T>` と `String` の `Clone` を同じ
-  プログラムで使うと壊れる** ★ — `impl<T: Clone> Clone for Vec<T>` を
-  置いた状態で `v.clone()` と `s.clone()` (String) を両方書くと
-  `Internal error: Invalid memory access in ptr_write`。個別にはどちらも
-  動く。原因未特定のため 2026-09-03 の B3 では**コンテナの `Clone` impl を
-  入れていない** (primitive 全幅 / `str` / `String` のみ)。`Vec` /
-  `Box` の `Clone` はここが解けてから
 - **STDLIB-NUMERIC: 整数側の math が無い** ★ — 設計は
   [`STDLIB_NUMERIC.md`](STDLIB_NUMERIC.md) (2026-09-03)。`math.t` は
   f64 の libm ラッパ 11 本 + `abs(i64)` + `min`/`max` (**i64 と u64

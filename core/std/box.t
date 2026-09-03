@@ -49,6 +49,17 @@ struct Box<T> {
     data: ptr,
 }
 
+# `Clone` for a Box: a second heap cell holding a clone of the value,
+# freed independently of the first.
+impl<T: Clone> Clone for Box<T> {
+    unsafe fn clone(&self) -> Self {
+        val v: T = self.get()
+        val c: T = v.clone()
+        val b: Box<T> = Box::new(c)
+        b
+    }
+}
+
 impl<T> Box<T> {
     unsafe fn new(value: T) -> Self {
         val bytes: u64 = __builtin_sizeof(value)

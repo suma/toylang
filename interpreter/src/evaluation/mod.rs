@@ -900,15 +900,38 @@ impl<'a> EvaluationContext<'a> {
 
     /// Pop the current auto-drop scope and run each binding's drop
     /// glue in reverse declaration order (LIFO — last-bound drops
-    /// first). Errors from any drop call abort the unwind and
-    /// surface to the caller. Called on every successful exit
-    /// path of a block (linear / `Return` / `Break` / `Continue`);
-    /// errors from the body itself skip the drop calls (the
-    /// process is going to die anyway, similar to a panic in
-    /// Rust where unwind = no second pass on `Drop`).
-    pub(super) fn run_and_pop_drop_scope(&mut self) -> Result<(), InterpreterError> {
+    /// first), keeping alive the one value the block is handing out.
+    ///
+    /// Errors from any drop call abort the unwind and surface to the
+    /// caller. Called on every successful exit path of a block
+    /// (linear / `Return` / `Break` / `Continue`); errors from the
+    /// body itself skip the drop calls (the process is going to die
+    /// anyway, similar to a panic in Rust where unwind = no second
+    /// pass on `Drop`).
+    ///
+    /// A block that ends in one of its own bindings -- `fn build() ->
+    /// Vec<u64> { var out = Vec::new(); out.push(1u64); out }`, and
+    /// every `Clone` impl -- gives that value to its caller. Dropping
+    /// it on the way out freed a buffer the caller then wrote to:
+    /// "Invalid memory access in ptr_write", on the *next* push, with
+    /// nothing pointing at the return that caused it.
+    ///
+    /// Identity, not containment: a binding moved *into* the returned
+    /// value is already handled, by the move check marking it
+    /// transferred so no drop is registered for it at all (BOX-T).
+    pub(super) fn run_and_pop_drop_scope_except(
+        &mut self,
+        escaping: Option<&Value>,
+    ) -> Result<(), InterpreterError> {
+        let escaping = match escaping {
+            Some(Value::Heap(rc)) => Some(rc.clone()),
+            _ => None,
+        };
         let scope = self.drop_scopes.pop().unwrap_or_default();
         for entry in scope.into_iter().rev() {
+            if escaping.as_ref().is_some_and(|kept| Rc::ptr_eq(kept, &entry.value)) {
+                continue;
+            }
             self.glue_drop(&entry)?;
         }
         Ok(())

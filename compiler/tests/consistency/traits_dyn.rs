@@ -1187,3 +1187,100 @@ fn get_or_default_answers_for_a_key_that_is_not_there() {
     "#;
     assert_stdout_consistent(src, "dict_get_or_default");
 }
+
+#[test]
+fn cloning_a_container_gives_it_its_own_allocation() {
+    // The point of `Clone` on an owning type: the copy is freed on its
+    // own, which is the whole difference from `val b = a` -- that is
+    // an alias, and putting `a` into a container moves it.
+    let src = r#"
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            v.push(1u64)
+            v.push(2u64)
+            var w: Vec<u64> = v.clone()
+            # Growing the copy must not disturb the original.
+            w.push(3u64)
+            println(v.size())
+            println(w.size())
+            println(w.get(0u64))
+            val b: Box<u64> = Box::new(9u64)
+            val c: Box<u64> = b.clone()
+            val n: u64 = c.get()
+            println(n)
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "container_clone");
+}
+
+#[test]
+fn a_cloned_vector_of_strings_copies_each_element() {
+    // `impl<T: Clone> Clone for Vec<T>` clones element by element, so
+    // a `Vec<String>` copy owns its own buffers rather than aliasing
+    // the original's.
+    let src = r#"
+        fn main() -> u64 {
+            var v: Vec<String> = Vec::new()
+            val a = String::from_str("one")
+            val b = String::from_str("two")
+            v.push(a)
+            v.push(b)
+            val w: Vec<String> = v.clone()
+            var total: u64 = 0u64
+            var i: u64 = 0u64
+            while i < w.size() {
+                val s: String = w.get(i)
+                total = total + s.len()
+                i = i + 1u64
+            }
+            total
+        }
+    "#;
+    assert_consistent(src, "vec_of_string_clone");
+}
+
+// DROP-GLUE: a block's own value is not that block's to free.
+//
+// `fn build() -> Vec<u64> { var out = Vec::new(); out.push(1u64); out }`
+// handed the caller a buffer the tree-walker had already dropped on
+// the way out, so the next `push` wrote through it -- reported as
+// "Invalid memory access in ptr_write" at the push, with nothing
+// pointing at the return that caused it. The compiled lanes were
+// unaffected, which is why it survived: `--all-backends` runs the IR
+// VM, and only this harness uses the tree-walker as the oracle.
+//
+// Every `Clone` impl on an owning type has exactly this shape, which
+// is how it was found.
+
+#[test]
+fn a_function_can_return_a_container_it_built() {
+    let src = r#"
+        fn build() -> Vec<u64> {
+            var out: Vec<u64> = Vec::new()
+            out.push(1u64)
+            out
+        }
+
+        struct Maker { n: u64 }
+        impl Maker {
+            fn build(&self) -> Vec<u64> {
+                var out: Vec<u64> = Vec::new()
+                out.push(self.n)
+                out
+            }
+        }
+
+        fn main() -> u64 {
+            var a: Vec<u64> = build()
+            a.push(3u64)
+            val m = Maker { n: 7u64 }
+            var b: Vec<u64> = m.build()
+            b.push(8u64)
+            a.size() + b.size() + b.get(0u64)
+        }
+    "#;
+    // 2 + 2 + 7. The pushes are the point: they write to the buffer
+    // the callee returned.
+    assert_consistent(src, "return_locally_built_container");
+}

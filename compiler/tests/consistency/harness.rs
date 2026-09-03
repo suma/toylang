@@ -912,6 +912,21 @@ pub(super) fn interpreter_streams(source: &str) -> (String, String) {
 /// stdout or stderr. Two engines that print the same words on
 /// different descriptors have not agreed.
 pub(super) fn compiled_run_streams(source: &str, stem: &str) -> Option<(i32, String, String)> {
+    compiled_run_streams_env(source, stem, &[])
+}
+
+/// [`compiled_run_streams`], with `env` set on the spawned binary.
+///
+/// A test that wants to pin how a variable is read cannot set it in
+/// this process: the runtime resolves such a variable once per
+/// thread and caches it, and nextest runs these tests in parallel in
+/// one process, so the first test to touch it would decide the
+/// answer for the rest. A subprocess has its own copy.
+pub(super) fn compiled_run_streams_env(
+    source: &str,
+    stem: &str,
+    env: &[(&str, &str)],
+) -> Option<(i32, String, String)> {
     let src_path = unique_path(&format!("{stem}.t"));
     std::fs::write(&src_path, source).expect("write source");
     let exe_path = unique_path(stem);
@@ -920,7 +935,11 @@ pub(super) fn compiled_run_streams(source: &str, stem: &str) -> Option<(i32, Str
     options.core_modules_dir = Some(core_modules_dir());
     options.link_cache_dir = Some(link_cache_dir_for_tests());
     let result = if compile_file(&options).is_ok() {
-        let out = Command::new(&exe_path).output().expect("spawn binary");
+        let mut cmd = Command::new(&exe_path);
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
+        let out = cmd.output().expect("spawn binary");
         Some((
             out.status.code().expect("exit code"),
             String::from_utf8_lossy(&out.stdout).into_owned(),

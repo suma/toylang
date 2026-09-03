@@ -527,6 +527,9 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_bits_ctz", toylang_rt::toy_bits_ctz as *const u8);
     jit_builder.symbol("toy_bits_reverse", toylang_rt::toy_bits_reverse as *const u8);
     jit_builder.symbol("toy_bits_swap_bytes", toylang_rt::toy_bits_swap_bytes as *const u8);
+    jit_builder.symbol("toy_log_level", toylang_rt::toy_log_level as *const u8);
+    jit_builder.symbol("toy_log_set_level", toylang_rt::toy_log_set_level as *const u8);
+    jit_builder.symbol("toy_log_timestamps", toylang_rt::toy_log_timestamps as *const u8);
     jit_builder.symbol("toy_fs_dir_open", toylang_rt::toy_fs_dir_open as *const u8);
     jit_builder.symbol("toy_fs_dir_name", toylang_rt::toy_fs_dir_name as *const u8);
     jit_builder.symbol("toy_fs_status", toylang_rt::toy_fs_status as *const u8);

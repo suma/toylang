@@ -215,6 +215,13 @@ pub fn build_io_registry() -> HashMap<&'static str, ExternFn> {
     // STDLIB-TIME TM0/TM1/TM3. Forwarded to `toylang_rt` -- the
     // calendar especially, which `strftime` already uses: a second
     // implementation of it is the thing §4 exists to prevent.
+    // STDLIB-LOG: the level is one value in the runtime, so it has to
+    // be read across the boundary rather than held here -- a second
+    // copy in the interpreter would answer differently from the same
+    // program built AOT.
+    m.insert("__extern_log_level", log_level);
+    m.insert("__extern_log_set_level", log_set_level);
+    m.insert("__extern_log_timestamps", log_timestamps);
     // STDLIB-FS-PATH: forwarded to `toylang_rt`, the shape
     // `extern_net` uses -- a second implementation of the errno
     // table is what ERROR_MODEL's E0 had to undo.
@@ -398,6 +405,26 @@ fn u64_arg(value: &Value, name: &str) -> Result<u64, InterpreterError> {
         },
         other => Err(InterpreterError::InternalError(format!(
             "extern fn `{name}`: expected a u64 argument, got {other:?}"
+        ))),
+    }
+}
+
+/// Extract a `u32` argument. A narrow width crosses the boundary as
+/// its own `Value` variant rather than widening, so `u64_arg` does
+/// not cover it.
+fn u32_arg(value: &Value, name: &str) -> Result<u32, InterpreterError> {
+    match value {
+        Value::UInt32(v) => Ok(*v),
+        Value::UInt64(v) => Ok(*v as u32),
+        Value::Heap(rc) => match &*rc.borrow() {
+            Object::UInt32(v) => Ok(*v),
+            Object::UInt64(v) => Ok(*v as u32),
+            other => Err(InterpreterError::InternalError(format!(
+                "extern fn `{name}`: expected a u32 argument, got {other:?}"
+            ))),
+        },
+        other => Err(InterpreterError::InternalError(format!(
+            "extern fn `{name}`: expected a u32 argument, got {other:?}"
         ))),
     }
 }
@@ -1200,4 +1227,41 @@ fn io_env_value(args: &[Value]) -> Result<Value, InterpreterError> {
     };
     let value = std::env::vars().nth(i).map(|(_, v)| v).unwrap_or_default();
     Ok(str_result(value))
+}
+
+/// STDLIB-LOG: the active level, resolved from `TOY_LOG` by the
+/// runtime on its first read.
+fn log_level(args: &[Value]) -> Result<Value, InterpreterError> {
+    if !args.is_empty() {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_log_level` takes no arguments".to_string(),
+            expected: 0,
+            found: args.len(),
+        });
+    }
+    Ok(Value::UInt32(toylang_rt::toy_log_level()))
+}
+
+fn log_set_level(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_log_set_level` takes 1 argument".to_string(),
+            expected: 1,
+            found: args.len(),
+        });
+    }
+    let level = u32_arg(&args[0], "__extern_log_set_level")?;
+    toylang_rt::toy_log_set_level(level);
+    Ok(Value::Unit)
+}
+
+fn log_timestamps(args: &[Value]) -> Result<Value, InterpreterError> {
+    if !args.is_empty() {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_log_timestamps` takes no arguments".to_string(),
+            expected: 0,
+            found: args.len(),
+        });
+    }
+    Ok(Value::Bool(toylang_rt::toy_log_timestamps()))
 }

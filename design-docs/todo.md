@@ -10,6 +10,23 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-03
+- **STDLIB-LOG — レベル付きログ (`core/std/log.t`)** — 設計は
+  [`STDLIB_LOG.md`](STDLIB_LOG.md)。stderr 固定・純 toylang。レベルは
+  runtime に 1 つ (初期値 `TOY_LOG`、不正値は警告して `info`)、
+  熱いループ用に `enabled(level)`、`TOY_LOG_TIME=1` で
+  `DateTime::to_str` の ISO 8601 を前置。`log(level, msg)` は
+  `log::log` が読みにくいので `at` にした (衝突ではない)。
+- **STDLIB-FS-PATH — path 操作とファイルシステム (`core/std/path.t` /
+  `fs.t`)** — 設計は [`STDLIB_FS_PATH.md`](STDLIB_FS_PATH.md)。
+  `path.t` は syscall を呼ばない。`mtime` / `mode` は `struct stat` の
+  layout がプラットフォームで違うので置かない (誤った offset は
+  黙って別の数を返す)。`remove_dir_all` も置かない。`IoError` に
+  3 variant 追加 (破壊的)。FREE-FN-VS-ASSOC-COLLISION もここで解消。
+- **STDLIB-TIME — 単調時計・sleep・CPU 時間・日付 (`core/std/time.t`)** —
+  設計は [`STDLIB_TIME.md`](STDLIB_TIME.md)。`Stopwatch` /
+  `DateTime` (`{ secs, nanos }` の 2 field — 7 field はレジスタ上限を
+  超えた) / ISO 8601 の往復。`bench` は「関数を値として渡せない」ため
+  落とし、HOF-RETURN-UNKNOWN として記録。
 - **GENERIC-SCALAR-REF 解消 — `&T` が primitive でも通る** —
   パラメータの束縛が**置換前の** `&T` を見ていて
   `lower_scalar(Generic(T))` が None になり、compound 経路に落ちていた。
@@ -1180,6 +1197,21 @@
   `docs/language.md` 新設**。
 ## 未実装 📋
 
+- **STDLIB-FN-SHADOWED-BY-USER-FN: user の自由関数が stdlib module の
+  同名関数を内側から置き換える** — `fn pad2_field(n: u64) -> u64` を
+  書いたプログラムが `println(dt)` で落ちる
+  (`[E0001] expected u64, but got u32 ... 'pad2_field'`、**行は
+  `core/std/time.t` の中**を指す)。stdlib の body の裸の呼び出しが
+  user の関数に解決されるため。**黙って壊れる形もある**: `fn at(...)`
+  を書くと `log::at` の body が誤った引数型で検査され、
+  `Display for Level` の書き換えが起きず `INFO` の代わりに
+  `Level::Info` が出た (診断は出ない)。回避は module 側が自分の名前を
+  `log::` で修飾すること (それでも body の検査は直らないので、
+  `log.t` は Display 依存も外した)。直す場所は名前解決 —
+  module の body から見える自由関数は、その module のものを先に
+  探すべき。FREE-FN-VS-ASSOC-COLLISION (型の method vs 自由関数、
+  解決済み) と同じ族の残り。
+
 > 完了した項目はここに残さない (完了済み節と二重になる)。優先度は
 > ★ = あると良い / ★★ = 効果が見えている / ★★★ = ロードマップ級。
 
@@ -1350,72 +1382,6 @@
   → N3 (`min`/`max`/`clamp` 全幅) → N4 (f64 の 7 本 + 分類) →
   N5 (**f32 の libm が 1 本も無い** + format spec の f32 未対応) →
   N6 (`random.t` — 範囲は棄却法、分布は純 toylang で列を共有)
-- **STDLIB-TIME: 単調時計・sleep・性能カウンタ・日付** ★ — 設計は
-  [`STDLIB_TIME.md`](STDLIB_TIME.md) (2026-09-03)。`now()` は libc `time`
-  の wall 秒のみなので、ベンチも指数バックオフの再試行も書けない。
-  日付は**出力 (`strftime`) だけあって入力が無い**。測ったこと:
-  (1) `CLOCK_MONOTONIC` / `CLOCK_PROCESS_CPUTIME_ID` / `nanosleep` /
-  `clock_getres` は C の probe でこのホストで全部動く (Linux も同じ 4 本
-  なので NET のような OS 分岐は要らない)、(2) **extern 1 回は
-  interpreter で +6.7 µs / AOT で +5 ns** (1e6 ループの差分。同ループの
-  1 反復が interpreter で約 6 µs なので extern 1 回 ≒ 演算 3 個)、
-  (3) 暦 (`civil_from_days`) は既に Rust 側にあり、**interpreter の
-  extern registry が同じ関数に委譲している**ので extern は 4 レーンで
-  実装 1 つ。決定: **時計は測る区間の外でしか読まない** (`bench` は
-  最小値を取らない — 反復ごとの読みが測る対象より大きい) / **暦は
-  extern 2 本に寄せ、文法 (ISO 8601 のパース) は toylang 側**
-  (`to_f64` と同じ切り分け、`strptime` は入れない) / **PMU
-  ハードウェアカウンタは非目標** (Linux `perf_event_open` と macOS
-  kperf に共通の口が無く、権限も要る) / **`Duration` 型は作らず
-  関数名に単位を入れる** (`sleep_ms` / `elapsed_ns`)。着手順は
-  TM0 (単調時計 + sleep) → TM1 (CPU 時間 + `now_unix_ns`) →
-  TM2 (`Stopwatch` / `bench`) → TM3 (暦 + `DateTime`) →
-  TM4 (`parse_iso8601` + `TimeError`) → TM5 (整形)。テストは
-  **暦とパースは 4 レーンで値ごと pin、時計は単調性と sleep 下限だけ**
-- **STDLIB-FS-PATH: path 操作とディレクトリ列挙** ★ — 設計は
-  [`STDLIB_FS_PATH.md`](STDLIB_FS_PATH.md) (2026-09-03)。path の結合・
-  分解も `ls` 相当も metadata も無く、ファイルを 1 つ名指しで読み書き
-  することしかできない。測ったこと: (1) **`file_exists` は「ファイルが
-  ある」ではない** — 実体は `access(F_OK)` なのでディレクトリでも true
-  (名前が実装より狭い)、(2) extern の実装を 2 つ持つと割れることを
-  この repo は既にやっている — `extern_net.rs` は「errno → enum の
-  対応表が 2 つになる」から `toylang_rt` へ転送すると書いており、
-  2 実装を持つ io 側が実際に割れている (ERROR_MODEL の E0)、
-  (3) 配列を返せない extern の先例が `Poller` にある (個数を返して
-  `event(i)` で読み戻す)。決定: **`path.t` は syscall を 1 つも呼ばない**
-  (純 toylang、ホスト非依存なのでテストの大半がここに乗る) /
-  **`fs.t` の extern は `toylang_rt` へ転送** (net の流儀) /
-  **`Path` 型は作らない** (`Duration` を作らないのと同じ判断) /
-  **列挙は「全部コピー」を正面に** (poller の index 読みは木を歩く
-  用途と衝突する) / **列挙順は未規定と書く** (決められないので
-  決められないと書き、テストは sort してから比較) /
-  **`remove_dir_all` は置かない**。着手順は F0 (`path.t`) →
-  F1 (`list_dir`) → F2 (`metadata`) → F3 (変更系 + `IoError` に
-  `AlreadyExists` / `NotADirectory` / `NotEmpty` を追加。**破壊的**
-  なので ERROR_MODEL の E0 が直った後) → F4 (`realpath` /
-  `current_dir` / `temp_dir`) → F5 (`mkdir_all` / `copy_file`)
-- **STDLIB-LOG: レベル付きログ** ★ — 設計は
-  [`STDLIB_LOG.md`](STDLIB_LOG.md) (2026-09-03)。`eprint` / `eprintln` が
-  入った (P0-A) ので純 toylang で書ける。**論点 2 つの答え**: 出力先は
-  **stderr 固定** (stdout はプログラムの出力、差し替えは runtime の
-  `set_err_sink` が既に持っている)。**レベルのコンパイル時除去は
-  できない** — 理由が 3 つ積み重なっている: (1) module の `const` は
-  届かないので stdlib のログ関数から user の `const LOG_LEVEL` が
-  見えない (MODULE-CONST)、(2) **引数はレベル判定より先に評価される**
-  ので、消せるのは書き込みだけで補間の費用は残る (遅延評価は `??` の
-  右辺のように言語が知っている位置にしか作れない)、(3) `const fn` は
-  `print` / `println` を禁じているのでログ関数は定義上 `const fn` に
-  なれない。**代わりに `enabled(level)` を置き、熱いループでは
-  ループの外で 1 回読んで `bool` を持つ形を doc の先頭に書く**
-  (extern の読み・補間・書き込みの 3 つとも消える)。本題は
-  「レベルという可変な値の置き場所」で、**言語に可変なグローバルが
-  無い**ので runtime に 1 つ持ち extern で読み書きする
-  (`TOY_PROFILE_MEM` と同じ流儀、初期値は環境変数 `TOY_LOG`)。
-  **既定でタイムスタンプを付けない** (付けると 4 レーンの出力比較が
-  できなくなる。`TOY_LOG_TIME=1` で ISO 8601)。着手順は L0 (レベルと
-  5 関数。シンクを差し替えて出力を突き合わせるテスト) → L1 (不正値の
-  警告など) → L2 (タイムスタンプ。**分野をまたぐ依存はこれだけ** —
-  STDLIB_TIME の TM3 の後) → L3 (任意: `log::json`)
 - **STDLIB-SERIALIZE: JSON / hex / base64** ★ — 設計は
   [`STDLIB_SERIALIZE.md`](STDLIB_SERIALIZE.md) (2026-09-03)。構造を持った
   データを保存して読み戻す方法が 1 つも無い。測ったこと: (1) **JSON の

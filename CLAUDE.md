@@ -25,14 +25,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | RUNTIME-TRAP guard をどう消しているか | [`design-docs/GUARD_ELISION.md`](design-docs/GUARD_ELISION.md) |
 | 配列 / Vec の layout (AoS / SoA) の設計 (Phase 0・2 landing 済み) | [`design-docs/DATA_ORIENTED.md`](design-docs/DATA_ORIENTED.md) |
 | Dict の hash 化 / `Set` / Deque / PQ / `Vec` 拡張の設計 (未実装) | [`design-docs/COLLECTIONS.md`](design-docs/COLLECTIONS.md) |
-| 失敗の運び方 (panic / `Result` / 確保失敗) とエラー型の規約 (未実装) | [`design-docs/ERROR_MODEL.md`](design-docs/ERROR_MODEL.md) |
-| `str` / `String` / `char` の境界と Unicode の線引き (未実装) | [`design-docs/STDLIB_TEXT.md`](design-docs/STDLIB_TEXT.md) |
-| `Iterator` / `Clone` / `Default` と bound の穴 (未実装) | [`design-docs/STDLIB_TRAIT_BASE.md`](design-docs/STDLIB_TRAIT_BASE.md) |
-| 単調時計 / sleep / 性能カウンタ / 日付 (未実装) | [`design-docs/STDLIB_TIME.md`](design-docs/STDLIB_TIME.md) |
-| path の文法とディレクトリ列挙 (未実装) | [`design-docs/STDLIB_FS_PATH.md`](design-docs/STDLIB_FS_PATH.md) |
-| 整数 math / ビット演算 / 限界値 / 乱数 (未実装) | [`design-docs/STDLIB_NUMERIC.md`](design-docs/STDLIB_NUMERIC.md) |
+| 失敗の運び方 (panic / `Result` / 確保失敗) とエラー型の規約 (landing 済み) | [`design-docs/ERROR_MODEL.md`](design-docs/ERROR_MODEL.md) |
+| `str` / `String` / `char` の境界と Unicode の線引き (landing 済み) | [`design-docs/STDLIB_TEXT.md`](design-docs/STDLIB_TEXT.md) |
+| `Iterator` / `Clone` / `Default` と bound の穴 (landing 済み) | [`design-docs/STDLIB_TRAIT_BASE.md`](design-docs/STDLIB_TRAIT_BASE.md) |
+| 単調時計 / sleep / 性能カウンタ / 日付 (landing 済み) | [`design-docs/STDLIB_TIME.md`](design-docs/STDLIB_TIME.md) |
+| path の文法とディレクトリ列挙 (landing 済み) | [`design-docs/STDLIB_FS_PATH.md`](design-docs/STDLIB_FS_PATH.md) |
+| 整数 math / ビット演算 / 限界値 / 乱数 (landing 済み) | [`design-docs/STDLIB_NUMERIC.md`](design-docs/STDLIB_NUMERIC.md) |
 | JSON / hex / base64 (未実装) | [`design-docs/STDLIB_SERIALIZE.md`](design-docs/STDLIB_SERIALIZE.md) |
-| レベル付きログ (未実装) | [`design-docs/STDLIB_LOG.md`](design-docs/STDLIB_LOG.md) |
+| レベル付きログ (landing 済み) | [`design-docs/STDLIB_LOG.md`](design-docs/STDLIB_LOG.md) |
 | `ptr` を型付きにする設計 (未実装) | [`design-docs/POINTER.md`](design-docs/POINTER.md) |
 | SIMD の設計と残りのフェーズ | [`design-docs/SIMD.md`](design-docs/SIMD.md) |
 | socket ラッパーと OS のコンパイル時切り替え (N0〜N5 landing 済み) | [`design-docs/NETWORK_IO.md`](design-docs/NETWORK_IO.md) |

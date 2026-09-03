@@ -574,6 +574,12 @@ struct ThreadState {
     // entries back one at a time after one crossing read them all.
     fs_status: u64,
     fs_entries: alloc::vec::Vec<alloc::vec::Vec<u8>>,
+    // STDLIB-LOG: the level, and whether timestamps are on. Both
+    // resolved from the environment on first read.
+    log_level: u32,
+    log_level_resolved: bool,
+    log_time: bool,
+    log_time_resolved: bool,
     /// RUNTIME-LIB P0-A: where program output goes, and the sink it
     /// goes through when `print_stderr` is set. The compiled backends
     /// flip the flag around a print instruction marked `stderr`
@@ -639,6 +645,10 @@ impl Default for ThreadState {
             env_status: IO_OK,
             fs_status: IO_OK,
             fs_entries: alloc::vec::Vec::new(),
+            log_level: LOG_INFO,
+            log_level_resolved: false,
+            log_time: false,
+            log_time_resolved: false,
             write_file_status: IO_OK,
             err_sink: default_err_sink,
             print_stderr: false,
@@ -4192,6 +4202,82 @@ pub fn strftime_utc(fmt: &str, secs: i64) -> String {
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------
+// STDLIB-LOG: the one mutable level.
+//
+// The language has no mutable global, so the level lives here and is
+// read and written across the boundary -- the shape `TOY_PROFILE_MEM`
+// already uses. The alternatives were a `Logger` value threaded
+// through every function that might log, or a user `const` the
+// stdlib cannot see.
+// ---------------------------------------------------------------------
+
+const LOG_ERROR: u32 = 0;
+const LOG_WARN: u32 = 1;
+const LOG_INFO: u32 = 2;
+const LOG_DEBUG: u32 = 3;
+const LOG_TRACE: u32 = 4;
+
+/// The active level, resolved from `TOY_LOG` on the first read.
+///
+/// An unrecognised value warns once on stderr rather than being
+/// ignored: someone who misspells `debug` otherwise sees only that
+/// their logging does not appear.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_log_level() -> u32 {
+    let st = thread_state();
+    if st.log_level_resolved {
+        return st.log_level;
+    }
+    st.log_level_resolved = true;
+    st.log_level = LOG_INFO;
+    let raw = unsafe { getenv(c"TOY_LOG".as_ptr().cast()) };
+    if raw.is_null() {
+        return st.log_level;
+    }
+    let mut len = 0usize;
+    while len < 64 && unsafe { *raw.add(len) } != 0 {
+        len += 1;
+    }
+    let text = unsafe { core::slice::from_raw_parts(raw as *const u8, len) };
+    st.log_level = match text {
+        b"error" => LOG_ERROR,
+        b"warn" => LOG_WARN,
+        b"info" => LOG_INFO,
+        b"debug" => LOG_DEBUG,
+        b"trace" => LOG_TRACE,
+        _ => {
+            err_write("toylang: TOY_LOG must be one of error/warn/info/debug/trace; using info\n");
+            LOG_INFO
+        }
+    };
+    st.log_level
+}
+
+/// Override the level from the program, for a `--test` block or a
+/// `-v` flag.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_log_set_level(level: u32) {
+    let st = thread_state();
+    st.log_level_resolved = true;
+    st.log_level = if level > LOG_TRACE { LOG_TRACE } else { level };
+}
+
+/// Whether a timestamp is prefixed, from `TOY_LOG_TIME`.
+///
+/// Off by default so the four lanes' output can be compared at all --
+/// a clock reading differs every run.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_log_timestamps() -> bool {
+    let st = thread_state();
+    if !st.log_time_resolved {
+        st.log_time_resolved = true;
+        let raw = unsafe { getenv(c"TOY_LOG_TIME".as_ptr().cast()) };
+        st.log_time = !raw.is_null() && unsafe { *raw } == b'1';
+    }
+    st.log_time
 }
 
 // ---------------------------------------------------------------------

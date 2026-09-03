@@ -1,10 +1,10 @@
 # STDLIB TRAIT BASE — `Iterator` / `Clone` / `Default` と、bound が書けない 2 つの穴
 
-> **状態: B0〜B4 landing 済み (2026-09-03)。残りは B5** (`T::assoc()` +
-> `Default`)。B3 の `Clone` は primitive 全幅 + `str` + `String` のみで、
-> コンテナ (`Vec` / `Box`) は todo.md の VEC-CLONE-WITH-STRING-CLONE 待ち。
-> `&T` が primitive に解決される generic 関数は compiled lane が拒否する
-> (GENERIC-SCALAR-REF)。
+> **状態: B0〜B5 すべて landing 済み (2026-09-03)。** 以下は決定の記録と
+> して残す。積み残しは 2 つだけ: B3 の `Clone` は primitive 全幅 +
+> `str` + `String` のみで、コンテナ (`Vec` / `Box`) は todo.md の
+> VEC-CLONE-WITH-STRING-CLONE 待ち。`&T` が primitive に解決される
+> generic 関数は compiled lane が拒否する (GENERIC-SCALAR-REF)。
 
 > 対象: `core/std/iter.t` / `core/std/ord.t` / `core/std/hash.t` と、
 > stdlib の 15 個の反復子 (`vec.t` / `dict.t` / `string.t` / `set.t` /

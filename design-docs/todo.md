@@ -10,6 +10,22 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-03
+- **STDLIB-TRAIT-BASE B5 — 戻り位置からの型引数推論と `Default`。
+  これで B0〜B5 すべて landing** — `fn make<T: Default>() -> T {
+  T::default() }` は 3 箇所で別々に落ちていたが、原因は 1 つ:
+  **どの層も型引数を「引数」からしか読まない**ので、戻り型にしか現れない
+  パラメータには材料が無かった。型検査器 (`T::assoc()` の解決 tier を
+  method 側から写す) / 単相化 (束縛の注釈を hint として下ろす) /
+  tree-walker (per-call generic scope の 3 番目の情報源に注釈を足す) の
+  3 箇所に入れた。**注釈は最後の手段** — hint があれば常に戻り型と
+  単一化する形にしたら既存テストが 15 本落ちた (call site の type hint は
+  期待戻り型とは限らず、数値リテラルの文脈を引数へ運ぶ役目も持つ)。
+  引数から解いて、それでも未束縛のときだけ注釈を見る。
+  `core/std/default.t` に `Default` (primitive 全幅。`str` は
+  **予約語で `str::default()` と綴れない**ので入れない — tree-walker
+  だけが到達できる impl は無いより悪い)、利用者は `Vec::resize` と
+  `Dict::get_or_default` (どちらも bound は**専用の impl block**に置く
+  ので `Vec<T>` / `Dict<K, V>` は影響を受けない)
 - **STDLIB-TRAIT-BASE B0 / B2 — stdlib の反復子が trait を名乗るように
   なった** — 16 個の `next` を inherent から `impl Iterator<Item> for X`
   へ**移した** (両方に書くと片方が黙って消えるため「足す」ではない)。
@@ -1279,15 +1295,6 @@
   波及する)。2026-09-03 に `String::split_whitespace` を書いていて踏んだ。
   正しくは「代入位置の `ptr_read` は shape を決められない」と言うべき。
   回避は内側で `val` を新しく束縛すること
-- **STDLIB-TRAIT-BASE B5: `T::assoc()` と `Default`** ★ — 設計は
-  [`STDLIB_TRAIT_BASE.md`](STDLIB_TRAIT_BASE.md)。B0〜B4 は 2026-09-03 に
-  landing (完了済み節)。残りは型パラメータ経由の associated function
-  (`fn make<T: Default>() -> T { T::default() }` は今
-  `[E0003] Struct 'T' not found`) と、その上に載る `Default`。
-  method 呼び出し (B1) と違いレシーバの値が無いので、**型引数の推論元が
-  戻り位置しかない** — 単相化は今のところ引数からしか型を取れないので、
-  そこに新しい能力が要る。`Default` は利用者 (`Vec::resize` /
-  `Dict::get_or_default`) と同じ Phase で入れる
 - **STDLIB-NUMERIC: 整数側の math が無い** ★ — 設計は
   [`STDLIB_NUMERIC.md`](STDLIB_NUMERIC.md) (2026-09-03)。`math.t` は
   f64 の libm ラッパ 11 本 + `abs(i64)` + `min`/`max` (**i64 と u64

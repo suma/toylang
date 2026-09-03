@@ -10,6 +10,20 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-03
+- **STDLIB-SERIALIZE S1/S3/S4/S5 — JSON (`core/std/json.t`)** —
+  設計は [`STDLIB_SERIALIZE.md`](STDLIB_SERIALIZE.md)。`JsonWriter`
+  (木を作らない writer) / 平坦な `Json` の木 / RFC 8259 の部分集合の
+  reader。**設計から 3 点ずらした**: (1) 木は `enum Json` ではなく
+  `Vec<JsonNode>` の pre-order 平坦表現 — enum 版は tree-walker では
+  動くが compiled lane では関数に渡せない (`cannot lower parameter`)、
+  (2) `parse(s) -> Result<Json, JsonError>` ではなく
+  `doc.read(s) -> Option<u64>` + `doc.error()` — レジスタ予算
+  (RESULT-COMPOUND-WRITEBACK)、(3) 深さ上限は 128 ではなく 32 —
+  ホストの stack が 40〜60 で尽きるので、それ以上は発火しない上限。
+- **STDLIB-SERIALIZE S0/S2 — hex / base64 (`core/std/hex.t` /
+  `base64.t` / `codec.t`)** — RFC 4648 の test vector で pin。hex は
+  出力小文字・入力両対応、base64 は標準アルファベット + padding 必須
+  + 末尾の未使用ビットが 0 であること。失敗は `CodecError` 1 つ。
 - **STDLIB-LOG — レベル付きログ (`core/std/log.t`)** — 設計は
   [`STDLIB_LOG.md`](STDLIB_LOG.md)。stderr 固定・純 toylang。レベルは
   runtime に 1 つ (初期値 `TOY_LOG`、不正値は警告して `info`)、
@@ -1197,6 +1211,22 @@
   `docs/language.md` 新設**。
 ## 未実装 📋
 
+- **MODULE-FN-REF-ARG: module の自由関数が `&compound` を取り scalar を
+  返すと lowering が落ちる** — `hex::probe(v: &Vec<u8>) -> u64` を
+  `hex::probe(&v)` で呼ぶと `call argument produced no value`
+  (JIT / AOT)。**同じシグネチャでも戻りが compound なら通る**
+  (`hex::encode(&Vec<u8>) -> String` は動く) し、**同一ファイルの
+  自由関数**や **method** なら scalar 戻りでも通る。拒否なので誤答は
+  出ない。`core/std/json.t` の `skip_ws` / `byte_at` / `hex4` /
+  `word_at` はこれを避けて method にしてある。
+- **RESULT-COMPOUND-WRITEBACK: `&mut self` の method が
+  `Result<u64, E>` を返せない** — `Vec` を 1 つ持つ struct (4 leaf) の
+  `&mut self` method が `Result<u64, JsonError>` を返すと
+  `Too many return values to fit in registers`。writeback の leaf と
+  戻りの leaf が同じ予算を食う。**`Option<u64>` なら通る** (6 leaf 側の
+  struct でも通った)。`Result<Struct, E>` を返す自由関数も同じ壁
+  (`json::parse(s) -> Result<Json, JsonError>` が書けない理由)。
+  cranelift の `StructReturn` を使えば外せるはずの制限。
 - **AOT-MATCH-STR-ARM-BLOCK: `str` を返す match の arm がブロックだと
   AOT が拒否する** — 最小再現:
   ```

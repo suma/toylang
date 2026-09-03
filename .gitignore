@@ -20,3 +20,8 @@ interpreter/proptest-regressions
 # read AGENTS.md, Claude Code reads CLAUDE.md). Convention is per-user
 # preference — leave the symlink optional rather than tracking it.
 AGENTS.md
+
+# Proof-of-concept programs written *in* toylang (design notes and
+# sources). They exercise the language rather than implement it, and
+# they move faster than the compiler's history should have to record.
+/poc/

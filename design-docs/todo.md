@@ -1311,6 +1311,22 @@
   bound は要らない / `K: Hash` bound は動くが breaking change /
   `Set` は `Dict<T, ()>` では書けない / `remove` の swap-remove で
   反復順は既に挿入順ではない)
+- **HOF-RETURN-UNKNOWN: 関数を値として渡す形が使えない** ★ —
+  (a) **名前つき関数を値として渡せない** — `fn run(f: fn () -> ())` に
+  `run(work)` と書くと `[E0001] expected fn () -> (), but got ()`
+  (名前が関数の**戻り型**に解決される)。(b) closure リテラルを渡すと
+  通るが、**その呼び出しの戻り型が `Unknown` になる**ので
+  `val b: Bench = bench(3u64, fn() -> () { })` の `b.iters` が
+  `field access for type Unknown`。2026-09-03 の STDLIB-TIME で
+  `bench(iters, f)` を書こうとして踏み、**`bench` を入れずに
+  `Stopwatch` だけにした**
+- **FREE-FN-VS-ASSOC-COLLISION: 自由関数が associated function の
+  dispatch を奪う** ★★ — stdlib に `pub fn from_parts(...)` を足したら、
+  **無関係なプログラムの `Span::from_parts(p, 4u64)` がそちらに飛んだ**
+  (tree-walker のみ。`Type error: expected UInt64, found UInt32` が
+  span のコードで出る)。名前を変えて回避したが、**型検査は通り
+  tree-walker だけが誤答する**形なので、衝突は拒否するか
+  associated function を優先すべき。2026-09-03 の STDLIB-TIME で発見
 - **STRING-NO-DROP: `String` に `impl Drop` が無い** ★ — `Vec<T>` は
   持っているのに `String` は持たないので、**すべての `String` が
   バッファを漏らす** (`--profile=mem` の `leaks` に `string.t` の

@@ -209,6 +209,16 @@ pub fn build_io_registry() -> HashMap<&'static str, ExternFn> {
     m.insert("__extern_bits_ctz", bits_ctz);
     m.insert("__extern_bits_reverse", bits_reverse);
     m.insert("__extern_bits_swap_bytes", bits_swap_bytes);
+    // STDLIB-TIME TM0/TM1/TM3. Forwarded to `toylang_rt` -- the
+    // calendar especially, which `strftime` already uses: a second
+    // implementation of it is the thing §4 exists to prevent.
+    m.insert("__extern_time_now_mono_ns", time_now_mono_ns);
+    m.insert("__extern_time_mono_res_ns", time_mono_res_ns);
+    m.insert("__extern_time_cpu_ns", time_cpu_ns);
+    m.insert("__extern_time_now_unix_ns", time_now_unix_ns);
+    m.insert("__extern_time_sleep_ns", time_sleep_ns);
+    m.insert("__extern_time_civil_from_days", time_civil_from_days);
+    m.insert("__extern_time_days_from_civil", time_days_from_civil);
     m.insert("__extern_io_random_u64", io_random);
     m.insert("__extern_io_random_seed", io_random_seed);
     m.insert("__extern_io_strftime_str", io_strftime);
@@ -664,6 +674,90 @@ fn io_write_file_status(_args: &[Value]) -> Result<Value, InterpreterError> {
 /// `core/std/hash.t`. Mirrors `toylang_rt::toy_str_hash` step for
 /// step (and `impl Hash for String` in `core/std/string.t`), so a key
 /// hashes to the same u64 on every backend.
+/// STDLIB-TIME: the no-argument clocks.
+fn time_no_args_u64(
+    args: &[Value],
+    who: &'static str,
+    f: extern "C" fn() -> u64,
+) -> Result<Value, InterpreterError> {
+    if !args.is_empty() {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: format!("extern fn `{who}` takes no arguments"),
+            expected: 0,
+            found: args.len(),
+        });
+    }
+    Ok(u64_result(f()))
+}
+
+fn time_now_mono_ns(args: &[Value]) -> Result<Value, InterpreterError> {
+    time_no_args_u64(args, "__extern_time_now_mono_ns", toylang_rt::toy_time_now_mono_ns)
+}
+
+fn time_mono_res_ns(args: &[Value]) -> Result<Value, InterpreterError> {
+    time_no_args_u64(args, "__extern_time_mono_res_ns", toylang_rt::toy_time_mono_res_ns)
+}
+
+fn time_cpu_ns(args: &[Value]) -> Result<Value, InterpreterError> {
+    time_no_args_u64(args, "__extern_time_cpu_ns", toylang_rt::toy_time_cpu_ns)
+}
+
+fn time_now_unix_ns(args: &[Value]) -> Result<Value, InterpreterError> {
+    if !args.is_empty() {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_time_now_unix_ns` takes no arguments".to_string(),
+            expected: 0,
+            found: args.len(),
+        });
+    }
+    Ok(Value::Int64(toylang_rt::toy_time_now_unix_ns()))
+}
+
+fn time_sleep_ns(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_time_sleep_ns` takes 1 argument".to_string(),
+            expected: 1,
+            found: args.len(),
+        });
+    }
+    toylang_rt::toy_time_sleep_ns(u64_arg(&args[0], "__extern_time_sleep_ns")?);
+    Ok(Value::Unit)
+}
+
+/// STDLIB-TIME TM3: the calendar, forwarded so there is one of it.
+fn time_i64_of(
+    args: &[Value],
+    who: &'static str,
+    f: extern "C" fn(i64) -> i64,
+) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: format!("extern fn `{who}` takes 1 argument"),
+            expected: 1,
+            found: args.len(),
+        });
+    }
+    let v = match &args[0] {
+        Value::Int64(v) => *v,
+        Value::UInt64(v) => *v as i64,
+        other => {
+            return Err(InterpreterError::InternalError(format!(
+                "extern fn `{who}` expects an i64 argument, got {other:?}"
+            )))
+        }
+    };
+    Ok(Value::Int64(f(v)))
+}
+
+fn time_civil_from_days(args: &[Value]) -> Result<Value, InterpreterError> {
+    time_i64_of(args, "__extern_time_civil_from_days", toylang_rt::toy_time_civil_from_days)
+}
+
+fn time_days_from_civil(args: &[Value]) -> Result<Value, InterpreterError> {
+    time_i64_of(args, "__extern_time_days_from_civil", toylang_rt::toy_time_days_from_civil)
+}
+
 /// STDLIB-NUMERIC N1: one `u64` argument, one `u32` answer.
 fn bits_u32_of(args: &[Value], who: &'static str, f: extern "C" fn(u64) -> u32) -> Result<Value, InterpreterError> {
     if args.len() != 1 {

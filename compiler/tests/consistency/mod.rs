@@ -51,6 +51,7 @@ mod diagnostics;
 mod runtime_io;
 mod parse_numbers;
 mod numeric;
+mod time;
 mod generic_enum_payload;
 mod primitive_receivers;
 mod conv_span;

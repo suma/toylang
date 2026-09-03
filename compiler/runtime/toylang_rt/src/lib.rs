@@ -108,6 +108,13 @@ unsafe extern "C" {
     fn atexit(f: extern "C" fn()) -> i32;
     fn time(t: *mut i64) -> i64;
     fn getpid() -> i32;
+    // STDLIB-TIME TM0/TM1. `clock_gettime` / `clock_getres` /
+    // `nanosleep` are POSIX and present on both supported hosts with
+    // the same signatures, so there is no `sys` split here -- unlike
+    // the socket layer, whose constants differ per platform.
+    fn clock_gettime(clock_id: i32, tp: *mut Timespec) -> i32;
+    fn clock_getres(clock_id: i32, res: *mut Timespec) -> i32;
+    fn nanosleep(req: *const Timespec, rem: *mut Timespec) -> i32;
     fn access(path: *const u8, mode: i32) -> i32;
     // The process environment, an array of `name=value` C strings
     // terminated by a null pointer. Iterated by `toy_io_env_*`.
@@ -4165,6 +4172,130 @@ pub fn strftime_utc(fmt: &str, secs: i64) -> String {
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------
+// STDLIB-TIME TM0/TM1: clocks and sleeping.
+// ---------------------------------------------------------------------
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Timespec {
+    tv_sec: i64,
+    tv_nsec: i64,
+}
+
+// The clock ids agree on macOS and Linux for the three used here.
+const CLOCK_REALTIME: i32 = 0;
+#[cfg(target_os = "macos")]
+const CLOCK_MONOTONIC: i32 = 6;
+#[cfg(not(target_os = "macos"))]
+const CLOCK_MONOTONIC: i32 = 1;
+#[cfg(target_os = "macos")]
+const CLOCK_PROCESS_CPUTIME_ID: i32 = 12;
+#[cfg(not(target_os = "macos"))]
+const CLOCK_PROCESS_CPUTIME_ID: i32 = 2;
+
+fn read_clock_ns(clock_id: i32) -> u64 {
+    let mut ts = Timespec::default();
+    if unsafe { clock_gettime(clock_id, &mut ts) } != 0 {
+        return 0;
+    }
+    (ts.tv_sec as u64)
+        .wrapping_mul(1_000_000_000)
+        .wrapping_add(ts.tv_nsec as u64)
+}
+
+/// A monotonically non-decreasing count of nanoseconds.
+///
+/// **The origin is unspecified** -- on both hosts it is near boot,
+/// but only *differences* mean anything. Do not store one or
+/// compare it across processes.
+///
+/// Non-decreasing, not strictly increasing: two reads closer together
+/// than the clock's resolution give the same answer.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_time_now_mono_ns() -> u64 {
+    read_clock_ns(CLOCK_MONOTONIC)
+}
+
+/// The monotonic clock's granularity in nanoseconds, as the OS
+/// reports it.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_time_mono_res_ns() -> u64 {
+    let mut ts = Timespec::default();
+    if unsafe { clock_getres(CLOCK_MONOTONIC, &mut ts) } != 0 {
+        return 0;
+    }
+    (ts.tv_sec as u64)
+        .wrapping_mul(1_000_000_000)
+        .wrapping_add(ts.tv_nsec as u64)
+}
+
+/// CPU time this process has used, user plus system.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_time_cpu_ns() -> u64 {
+    read_clock_ns(CLOCK_PROCESS_CPUTIME_ID)
+}
+
+/// Nanoseconds since the Unix epoch, UTC, no leap seconds.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_time_now_unix_ns() -> i64 {
+    let mut ts = Timespec::default();
+    if unsafe { clock_gettime(CLOCK_REALTIME, &mut ts) } != 0 {
+        return 0;
+    }
+    ts.tv_sec
+        .wrapping_mul(1_000_000_000)
+        .wrapping_add(ts.tv_nsec)
+}
+
+/// Sleep for at least `ns`.
+///
+/// A signal cuts `nanosleep` short and hands back what is left, so
+/// the retry happens here rather than in every caller. There is
+/// deliberately no return value: reporting how long it actually slept
+/// invites callers to use it as a clock.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_time_sleep_ns(ns: u64) {
+    let mut req = Timespec {
+        tv_sec: (ns / 1_000_000_000) as i64,
+        tv_nsec: (ns % 1_000_000_000) as i64,
+    };
+    let mut rem = Timespec::default();
+    // Bounded so a clock that never advances cannot hang the process.
+    let mut guard = 0;
+    while unsafe { nanosleep(&req, &mut rem) } != 0 && guard < 1024 {
+        if current_errno() != 4 {
+            // Not EINTR: the request was malformed, and retrying it
+            // would spin.
+            return;
+        }
+        req = rem;
+        guard += 1;
+    }
+}
+
+/// STDLIB-TIME TM3: the civil date `days` days after 1970-01-01,
+/// packed as `y * 65536 + m * 256 + d`.
+///
+/// Packed rather than three externs because the toylang side unpacks
+/// with two shifts and a mask, and the alternative is three boundary
+/// crossings for one question. The year survives an arithmetic shift
+/// even when negative, because the low 16 bits are non-negative.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_time_civil_from_days(days: i64) -> i64 {
+    let (y, m, d) = civil_from_days(days);
+    y.wrapping_mul(65536) + (m as i64) * 256 + (d as i64)
+}
+
+/// The inverse: days since 1970-01-01 for a packed civil date.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_time_days_from_civil(packed: i64) -> i64 {
+    let y = packed >> 16;
+    let m = ((packed >> 8) & 0xFF) as u32;
+    let d = (packed & 0xFF) as u32;
+    days_from_civil(y, m, d)
 }
 
 /// Days since 1970-01-01 of the given proleptic Gregorian date.

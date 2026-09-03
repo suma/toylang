@@ -527,6 +527,19 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_bits_ctz", toylang_rt::toy_bits_ctz as *const u8);
     jit_builder.symbol("toy_bits_reverse", toylang_rt::toy_bits_reverse as *const u8);
     jit_builder.symbol("toy_bits_swap_bytes", toylang_rt::toy_bits_swap_bytes as *const u8);
+    jit_builder.symbol("toy_time_now_mono_ns", toylang_rt::toy_time_now_mono_ns as *const u8);
+    jit_builder.symbol("toy_time_mono_res_ns", toylang_rt::toy_time_mono_res_ns as *const u8);
+    jit_builder.symbol("toy_time_cpu_ns", toylang_rt::toy_time_cpu_ns as *const u8);
+    jit_builder.symbol("toy_time_now_unix_ns", toylang_rt::toy_time_now_unix_ns as *const u8);
+    jit_builder.symbol("toy_time_sleep_ns", toylang_rt::toy_time_sleep_ns as *const u8);
+    jit_builder.symbol(
+        "toy_time_civil_from_days",
+        toylang_rt::toy_time_civil_from_days as *const u8,
+    );
+    jit_builder.symbol(
+        "toy_time_days_from_civil",
+        toylang_rt::toy_time_days_from_civil as *const u8,
+    );
     jit_builder.symbol("toy_io_random", toylang_rt::toy_io_random as *const u8);
     jit_builder.symbol("toy_io_random_seed", toylang_rt::toy_io_random_seed as *const u8);
     jit_builder.symbol("toy_io_strftime", toylang_rt::toy_io_strftime as *const u8);

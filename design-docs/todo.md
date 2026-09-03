@@ -10,6 +10,17 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-03
+- **STDLIB-TEXT T3〜T5 — テキストの分野が完了** — `AsciiClass`
+  (`core/std/char.t`、`u8` と `u32` の両方に impl。`digit_value(radix)` 込み。
+  `parse.t` が手書きしていた `c < '0' || c > '9'` 4 箇所を置換) /
+  `String::chars()` (`CharsIter`、不正バイトは U+FFFD で 1 バイト前進 —
+  `None` は終端の意味なので失敗を乗せられない) / `find` / `find_from` /
+  `rfind` / `starts_with` / `ends_with` / `eq_str` / `replace` / `repeat` /
+  `lines` / `split_whitespace` / `String::join`。**`push_str` は `str` を、
+  `push_string` は `String` を取る**ように分割し、ERROR_MODEL の F10
+  (`s.push_str("literal")` が型検査を通って実行時に壊れる) が閉じた。
+  **`from` と `to` は予約語**なので引数名に使えない (extern の library 名と
+  `for ... to ...`)。
 - **STDLIB-TEXT T0〜T2 + STDLIB-ORD (`str`) — `str` / `String` の境界が
   決着** — 設計は [`STDLIB_TEXT.md`](STDLIB_TEXT.md)。**`str` は所有しないので
   新しい文字列を作る API を持たない**: `substring` / `trim` / `to_upper` /
@@ -1211,28 +1222,15 @@
   bound は要らない / `K: Hash` bound は動くが breaking change /
   `Set` は `Dict<T, ()>` では書けない / `remove` の swap-remove で
   反復順は既に挿入順ではない)
-- **STDLIB-TEXT: 文字列・テキストの正本が無い** ★★ — 設計は
-  [`STDLIB_TEXT.md`](STDLIB_TEXT.md) (2026-09-03)。規約の不足だと
-  思っていたが、**測ったら 4 件は今日壊れている**ので ★★ に上げた:
-  (1) `str` の変換系 6 method (`substring` / `trim` / `to_upper` /
-  `to_lower` / `contains` / `split`) は**型検査を通り interpreter で
-  動くが compiled lane に存在しない** (IR には `StrLen` と `StrConcat`
-  しか無い) — TYPECHECK-LIES、(2) 非 UTF-8 バイト列の `to_str()` が
-  **tree-walker 6 / compiled 2** と長さから割れる (tree-walker だけ
-  `from_utf8_lossy`)、(3) `str.substring` の非 char 境界 index が
-  **Rust の生 panic** (位置も backtrace も出ない)、(4) `str < str` の
-  診断が「同じ型を不一致と言う」(`incompatible types str and str`)。
-  決定: **`str` は所有しないので新しい文字列を作る API を持たない**
-  (確保する 5 つは `String` へ、読むだけの述語は `str` に extern で)
-  / **`str` は妥当な UTF-8 を不変とする** (`str_from_bytes` が検証、
-  非 UTF-8 は `Vec<u8>` / `Span<u8>` で運ぶ) / **Unicode は codepoint
-  止まり** (grapheme / 正規化 / 照合順序は非目標、`to_upper` は
-  `to_ascii_upper` に改名)。着手順は T0 (壊れている 4 件) → T1 (役割表を
-  `docs/language.md` へ) → T2 (method 集合を絞る + `Ord for str`) →
-  T3 (`AsciiClass`) → T4 (`chars()`) → T5 (足りない API)。
-  **STDLIB-ORD は解消できる** — 「generic context で AOT が表現できない」
-  はもう成り立たず、`impl Ord for str` は 3 レーンで動くことを確認した
-  (残る論点は `as_ptr` の確保だけなので extern `toy_str_cmp` に載せる)
+- **PTR-READ-ASSIGN: 注釈の無い `__builtin_ptr_read` を代入すると診断が
+  嘘をつく** ★ — `var c: u8 = ...` の後に `c = __builtin_ptr_read(p, i)`
+  と**代入**すると (`val` の再宣言ではなく)、読み出しの shape を決める
+  注釈がどこにも無いため、`[E0001] Type mismatch: expected u8, but got
+  Vec<String> (in assignment)` のように**無関係な型を名指しし、位置は
+  ユーザファイルの末尾を指す** (stdlib の body で起きるので全プログラムに
+  波及する)。2026-09-03 に `String::split_whitespace` を書いていて踏んだ。
+  正しくは「代入位置の `ptr_read` は shape を決められない」と言うべき。
+  回避は内側で `val` を新しく束縛すること
 - **STDLIB-TRAIT-BASE: trait 基盤の穴** ★ — 設計は
   [`STDLIB_TRAIT_BASE.md`](STDLIB_TRAIT_BASE.md) (2026-09-03)。
   **この項目の把握自体が古かった**: `trait Iterator<T>` は

@@ -1,8 +1,8 @@
 # STDLIB TEXT — `str` / `String` / `char` / `u8` の境界と Unicode の線引き
 
-> **状態: T0〜T2 landing 済み (2026-09-03)。** 残りは T3 (`AsciiClass`) /
-> T4 (`chars()` / `is_utf8` の残) / T5 (足りない API)。`is_utf8` は T0 で
-> 先に入れた (§2 の検証と対で要るため)。
+> **状態: T0〜T5 すべて landing 済み (2026-09-03)。** 以下は決定の記録と
+> して残す。非目標 (grapheme / 正規化 / Unicode 大小変換 / 照合順序 /
+> 正規表現 / SSO / interning) は末尾の節のとおり据え置き。
 
 > 対象: `core/std/str.t` / `core/std/string.t` / `core/std/str_ops.t` /
 > `core/std/char.t` (と `frontend` の `BuiltinMethod::Str*`)

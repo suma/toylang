@@ -1,6 +1,10 @@
 # SIMD — vector を型にし、intrinsic を最小限にする
 
-> **状態: Phase 2 landing 済み (2026-08-30)**。仕様の正本は
+> **状態: Phase 2 / Phase 3 landing 済み** (型と intrinsic が
+> 2026-08-30、stdlib kernel の置換が同日、intrinsic 4 個の追補が
+> 2026-09-03)。**intrinsic の穴は無くなった** — 設計時に挙げたものは
+> 全部入っている (17 個)。残るのは Phase 4 (自動ベクトル化 / 256bit) と
+> `--simd-report`。仕様の正本は
 > [`docs/language.md`](../docs/language.md) の「SIMD vectors」節。
 > **Phase 0 (`soa` 配列) / Phase 1 (slice `&[T]`) は前提から外した** —
 > `__simd_load` / `__simd_store` を `ptr` + 要素 index にしたので、
@@ -57,6 +61,15 @@ val s: f64 = __simd_reduce_add(c)
 | `__simd_any(mask)` / `__simd_all(mask)` | 比較結果の縮約 |
 
 `BuiltinFunction` に足す variant はこれだけで、cache schema の bump は 1 回で済む。
+
+> **結果: この見積もりはおおむね当たった。** 実際に入ったのは
+> **17 個**で、上の表の全項目 + 表に無かった 3 個
+> (`__simd_bitmask` / `__simd_swizzle` / `__simd_bitcast`、下の
+> 「Phase 3 の追補」)。cache schema の bump は 3 回 — Phase 2 で 1 回、
+> 追補で 2 回 (bitmask の 3 つで 1 回、`__simd_shuffle` で 1 回)。
+> **追補を 1 コミットにまとめていれば 2 回で済んだ**ので、「まとめて
+> 入れれば bump は 1 回」という制約 1 の読みは正しく、それを守り
+> きれなかっただけ。
 
 ## 型
 
@@ -288,7 +301,7 @@ gcc の `-fopt-info-vec-missed` に相当するが、**言語側の直し方 (`s
 | **0** | `soa [T; N]` | 未着手 (DATA_ORIENTED.md)。SIMD の前提ではなくなった |
 | **1** | slice `&[T]` | 未着手。`ptr` で代替したので前提ではない |
 | **2** | vector 型 + lane-wise 演算子 + intrinsic | **landing 済み** (下記) |
-| **3** | stdlib kernel の置換 (戦略 B) | **landing 済み** (下記)。`--simd-report` (戦略 D) は未着手 |
+| **3** | stdlib kernel の置換 (戦略 B) | **landing 済み** (下記)。追補で intrinsic 4 個 (2026-09-03)。`--simd-report` (戦略 D) は未着手 |
 | **4** | 限定自動ベクトル化 (戦略 C) / 256bit + feature detection | 未着手 |
 
 ## Phase 2 で実際に入ったもの (2026-08-30)
@@ -327,7 +340,12 @@ offset が**バイト**なのとは違うので、`docs/language.md` に明記�
 演算子の相手でもよい (`v & __simd_splat(15u8)` が通る)。
 
 intrinsic は 13 個 (`__simd_shuffle` は定数マスク配列が要るので見送り)。
-**2026-09-03 に 3 個足して 16 個** (下の「Phase 3 の追補」)。
+**2026-09-03 に 4 個足して 17 個**、`__simd_shuffle` もこのとき入った
+(下の「Phase 3 の追補」)。
+
+この stamp は**型検査器**の仕事だが、`__simd_shuffle` のマスクだけは
+**パーサ**で畳んでいる。型検査器の rewrite 前置きが届かない式の位置が
+あるためで、経緯は追補の該当節にある。
 
 ### 4. `<<` / `>>` の右辺はスカラー
 
@@ -365,6 +383,7 @@ lane 型が増えて 16 バイトを超える幅 (256bit) を入れるとき。
 | 型・lane 表 | `frontend/src/type_decl.rs::VectorType` |
 | intrinsic 定義 | `frontend/src/ast/expr.rs::SimdOp` |
 | 型検査 + 型の焼き込み | `frontend/src/type_checker/simd.rs` |
+| `__simd_shuffle` の定数マスクの畳み込み | `frontend/src/parser/expr/primary.rs::fold_simd_shuffle_mask` (エンコードは `ast/expr.rs::SimdOp::pack_shuffle_mask`) |
 | tree-walker (オラクル) | `interpreter/src/evaluation/simd.rs`、値は `object.rs::SimdValue` |
 | lowering (IR VM / AOT / compiler JIT) | `compiler_lower/src/simd.rs`、IR は `compiler_ir::VecTy` + `InstKind::Simd*` |
 | IR VM 実行 | `compiler_vm/src/simd.rs` (slot は 8 → 16 バイトに拡げた) |
@@ -372,21 +391,33 @@ lane 型が増えて 16 バイトを超える幅 (256bit) を入れるとき。
 | 表示 | `compiler/runtime/toylang_rt` の `toy_print_vec` / `toy_to_string_vec` |
 | 一致テスト | `compiler/tests/consistency/simd.rs`、tree-walker 単体は `interpreter/tests/simd_tests.rs` |
 
-## Phase 3 の追補 (2026-09-03): `bitmask` / `swizzle` / `bitcast`
+## Phase 3 の追補 (2026-09-03): `bitmask` / `swizzle` / `bitcast` / `shuffle`
 
-Phase 2 で「型と演算子で表せないもの」を数えたとき、**「どの lane か」を
-聞く手段が抜けていた**。`__simd_any` は「窓のどこかに在る」までしか答え
-ないので、`String::contains` / `Split` の memchr は当たった瞬間に
-**16 バイトを 1 バイトずつ舐め直す**形になっていた — 戦略 B の実測表で
-「先頭バイトが稀なら 16x、密なら 1.5x」と 10 倍開いていた原因がこれ。
+**intrinsic 13 → 17。これで設計時に挙げたものは全部入った。**
+足した理由は 2 つある。
+
+**(1) 「どの lane か」を聞く手段が無かった。** Phase 2 で「型と演算子で
+表せないもの」を数えたとき、この穴を見落としていた。`__simd_any` は
+「窓のどこかに在る」までしか答えないので、`String::contains` / `Split` の
+memchr は当たった瞬間に**16 バイトを 1 バイトずつ舐め直す**形になっていた —
+戦略 B の実測表で「先頭バイトが稀なら 16x、密なら 1.5x」と 10 倍開いていた
+原因がこれ。`__simd_bitmask` がこれを埋める。
+
+**(2) `__simd_shuffle` は Phase 2 が唯一見送った intrinsic だった。**
+定数マスク配列をどう受けるかが未決だったため。同時に `__simd_swizzle`
+(実行時 index の表引き) も足したのは、**hex / base64 の SIMD 化には
+両方が対で要る**から — アルファベットの表引きが `swizzle`、
+3→4 バイトの並べ替えが `shuffle`。`__simd_bitcast` は byte lane 専用の
+`swizzle` に他の lane 型から入るための受け口。
 
 | intrinsic | 形 | cranelift |
 |---|---|---|
 | `__simd_bitmask(v) -> u64` | bit `k` = lane `k` の**最上位ビット** | `vhigh_bits` |
 | `__simd_swizzle(a: u8x16, idx: u8x16) -> u8x16` | 実行時 index の表引き、範囲外は 0 | `swizzle` |
 | `__simd_bitcast(v) -> W` | 同じ 16 バイトを別 lane 型で読む | `bitcast` |
+| `__simd_shuffle(a, b, [k...]) -> V` | 定数マスクの置換 (`a` の次が `b`) | `shuffle` |
 
-意味論で固定したのは 3 点:
+意味論で固定したのは 4 点:
 
 1. **`bitmask` は「非ゼロ」ではなく MSB。** 単一命令で実装できる定義は
    これだけ (`pmovmskb` / NEON の shift+and+addv)。比較が返す全 1 / 全 0
@@ -399,6 +430,12 @@ Phase 2 で「型と演算子で表せないもの」を数えたとき、**「�
 3. **`bitcast` は little-endian。** 「`__simd_store` して別の型で
    `__simd_load` する」と定義した。ホストの性質ではなく言語の定義
    (`SimdValue::to_bytes` が既に LE)。
+4. **`shuffle` の範囲外はコンパイルエラー** (`swizzle` の 0 埋めとは
+   逆)。マスクが定数である以上、処理系が言えることを実行時の値に
+   化けさせる理由が無い。index は `a` の次に `b` を並べたものを指す
+   (lane 数以上なら `b[k - lanes]`)。**この非対称は意図的**で、
+   2 つの intrinsic の役割の違い (定数の置換 / 実行時の表引き) が
+   そのまま出ている。
 
 ### 実測: memchr の密ケースが 2.0x (2026-09-03)
 
@@ -417,17 +454,50 @@ skip 判定を書いたが、それだと**疎なケースが 0.10s → 0.13s �
 **安い質問を先にして、当たったときだけ精密な質問をする**のが両方で勝つ
 形になる。この順序は `core/std/string.t` のコメントにも書いた。
 
+### `__simd_shuffle` の定数マスクをどこで畳むか — 型検査器では届かなかった
+
+Phase 2 が見送った唯一の intrinsic。マスクは**値ではなく命令の一部**なので、
+ソースの配列リテラル `[0u64, 4u64, 1u64, 5u64]` を**バイト 8bit × 16 の
+`u64` 2 語**に畳んで、バックエンドには配列を見せない形にした。
+`__simd_splat` の型コード stamp と同じ手口 (合成の `u64` 引数)。
+
+**エンコードは +1 バイアス**。`0` を「書かれていない」の意味に使うことで、
+語からマスクの**長さが復元できる** (バイアスなしだと末尾の `0u64` が
+padding と区別できず、2 lane のマスクと「末尾が 0 の 4 lane マスク」を
+型検査器が見分けられない)。
+
+**最初は型検査器の rewrite 前置き (`stamp_simd_call`) に置いたが、これは
+誤りだった。** `val` 右辺と引数位置では動くが、
+
+- 裸の式文 `__simd_shuffle(a, b, [...])`
+- binary operand `__simd_shuffle(...) + a`
+- `if` の条件
+
+の 3 つは `visit_expr` の前置きを通らないので、**マスクが畳まれないまま
+「マスクが読めない」と報告される**。`a ?? b` が持つ盲点と同じ集合で
+(CLAUDE.md の NULL-COALESCE 節)、あちらは post-pass で回収しているが、
+shuffle は**検査より前**に畳めていないと診断が出せないので同じ手は使えない。
+プール全体を舐める pre-pass も試したが、**型検査のドライバが 3 つある**
+(`visit_program` / `check_program_multiple_errors` / interpreter 独自の
+`check_typing_diagnostics`) ため、置き場所が増えるだけだった。
+
+**結論: パーサで畳む** (`parser/expr/primary.rs::fold_simd_shuffle_mask`)。
+畳み込みは純粋に構文的なので型を要らず、`BuiltinCall` を作る唯一の場所に
+置けば経路の数に依らない。**lane 数との突き合わせ (個数・範囲) だけは
+型検査器** (`check_simd_shuffle`) — そこが lane 型を名指しできる唯一の場所。
+
+cranelift の `shuffle` は `I8X16` の**バイト**index なので、lane 幅 w の
+型では 1 lane が連続 w バイトに展開される。前後の `bitcast` は
+レジスタ上の読み替えで実行時コストは無い。
+
 ### 残っている穴
 
-- **`__simd_shuffle`** — 定数マスク配列の受け取りが要る。設計は
-  「配列リテラル `[0u64, 4u64, ...]` を**型検査器が畳んで** synthetic な
-  `u64` 2 語 (lane 8bit × 16) にし、バックエンドには配列を見せない」形が
-  既存の stamp 機構 (`stamp_simd_call`) にそのまま乗る。hex / base64 の
-  SIMD 化は `swizzle` (表引き) と `shuffle` (interleave) が**対**で
-  要るので、着手するならこの 2 つはセット
 - **入れ子呼び出しに型が届かない** — `__simd_insert(__simd_splat(2u8), ...)`
   は `[E0010]` になる。vector を取る引数位置が hint を降ろしていないため
   で、`__simd_swizzle` の第 2 引数でも踏む。回避は `val` に束縛すること
+- **hex / base64 の SIMD 化** — `swizzle` (アルファベットの表引き) と
+  `shuffle` (3→4 バイトの並べ替え) が揃ったので、材料は全部ある。
+  `core/std/hex.t` / `base64.t` はまだ byte ループ
 - **lane 型 5 種の追加** — 表を埋めるだけ
 - **`[f64x2; N]`** — vector を配列要素にする経路は未整備
   (`array_layout.rs` の 8 バイト leaf slot に収まらない)

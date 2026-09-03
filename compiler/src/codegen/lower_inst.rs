@@ -136,7 +136,8 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             | InstKind::SimdTest { .. }
             | InstKind::SimdBitmask { .. }
             | InstKind::SimdSwizzle { .. }
-            | InstKind::SimdBitcast { .. } => self.lower_simd(inst),
+            | InstKind::SimdBitcast { .. }
+            | InstKind::SimdShuffle { .. } => self.lower_simd(inst),
         }
     }
 

@@ -298,11 +298,11 @@ fn main() -> u64 {
 - **`soa [T; N]` (DOD Phase 0)**: 配列型の前置修飾子で **SoA (列ごと配置) を選ぶ**。**same-type** — `soa [P; N]` と `[P; N]` は同じ型 (付け外して計測できる)。`ps[i].f` 読み書き・`val p = ps[i]`・range slice は AoS と同書式 (`ps[i] = p` の compound 一括書き込みは不可)。`soa` は contextual keyword (`val soa = 5u64` は従来どおり)。**`ps[i].f` は compiled lane では SoA 以前に未対応だった** ので、AoS 配列でも `arr[i].field` が新規に動く。実装は列方式 (leaf ごとに slot) で IR / codegen / IR VM 無変更。例: `interpreter/example/soa.t`。**enum 要素も可** (tag が独立した列になる。enum 要素だけは `ss[i] = Shape::Point` と丸ごと書ける — variant には leaf の名前が無いため)。列は leaf の実幅で pack される。1 列を関数に渡すのは `ps.mass` → `Column<T>` (下)。heap 版は `soa Vec<T>` (下の `SoaVec<T>`)
 - **SIMD vector (SIMD)**: 128bit の vector 型 5 種 (`f64x2` / `f32x4` /
   `i32x4` / `i64x2` / `u8x16`)。**通常の演算子が lane-wise に効く**ので
-  intrinsic は型と演算子で表せない 16 個だけ (`__simd_splat` /
+  intrinsic は型と演算子で表せない 17 個だけ (`__simd_splat` /
   `__simd_load` / `__simd_store` / `__simd_extract` / `__simd_insert` /
   `__simd_select` / `__simd_reduce_add|min|max|and|or` / `__simd_any` /
   `__simd_all` / `__simd_bitmask` / `__simd_swizzle` /
-  `__simd_bitcast`)。128bit に限るのは SSE2 (x86-64) と NEON (aarch64) が
+  `__simd_bitcast` / `__simd_shuffle`)。128bit に限るのは SSE2 (x86-64) と NEON (aarch64) が
   無条件に持つから (ホスト依存ゼロ)。要点:
   - **整数 lane は wrap し trap しない** — scalar の `u64 -` / `/` は
     panic するが (RUNTIME-TRAP)、lane ごとの guard はベクトル化の意味を
@@ -326,7 +326,10 @@ fn main() -> u64 {
     memchr が候補位置へ直接飛べる。**安い `__simd_any` を先に置く**
     こと (NEON では bitmask が数命令、any は 1 命令)
   - **`__simd_swizzle(a: u8x16, idx: u8x16)`** は**実行時 index** の
-    byte 表引き (範囲外は 0)。定数マスクの `__simd_shuffle` は未実装
+    byte 表引き (範囲外は 0)。**`__simd_shuffle(a, b, [k...])`** は
+    **定数マスク**の置換で、index は `a` の次に `b` を並べたものを指す
+    (lane 数以上なら `b[k - lanes]`)。範囲外はコンパイルエラー。
+    マスクは**パーサで畳まれる**ので値ではない (実行時に計算できない)
   - **`__simd_bitcast`** は同じ 16 バイトを別 lane 型で読む
     (`__simd_store` して別型で `__simd_load` と同義、little-endian)
   - 3 backend 対応 (interpreter JIT は silent fallback)。例:

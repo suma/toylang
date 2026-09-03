@@ -53,10 +53,20 @@ impl<'a> EvaluationContext<'a> {
         } else {
             None
         };
-        if values.len() != op.arity() {
+        // `__simd_shuffle` is the one intrinsic whose stamp replaces
+        // an argument rather than following one: the array literal
+        // the user wrote is two packed `u64` words by the time any
+        // engine sees the call.
+        let shuffle_mask = if matches!(op, SimdOp::Shuffle) && values.len() == op.consumed_args() {
+            let word = |i: usize| values[i].borrow().try_unwrap_uint64().unwrap_or(0);
+            Some(SimdOp::unpack_shuffle_mask(word(2), word(3)))
+        } else {
+            None
+        };
+        if values.len() != op.consumed_args() {
             return Err(InterpreterError::InternalError(format!(
                 "{name} expects {} argument(s), got {}",
-                op.arity(),
+                op.consumed_args(),
                 values.len()
             )));
         }
@@ -149,6 +159,34 @@ impl<'a> EvaluationContext<'a> {
                 let ty = Self::simd_annotation(name, result_ty)?;
                 let vector = Self::simd_operand(name, &scalar(0))?;
                 Object::Simd(SimdValue::from_bytes(ty, &vector.to_bytes()))
+            }
+            SimdOp::Shuffle => {
+                let a = Self::simd_operand(name, &scalar(0))?;
+                let b = Self::simd_operand(name, &scalar(1))?;
+                let mask = shuffle_mask.ok_or_else(|| {
+                    InterpreterError::InternalError(format!(
+                        "{name}: no lane mask stamped on the call"
+                    ))
+                })?;
+                let ty = a.vector_type();
+                let lanes = ty.lanes();
+                let width = ty.lane_bytes();
+                let (a, b) = (a.to_bytes(), b.to_bytes());
+                let mut out = [0u8; 16];
+                for (j, index) in mask.iter().enumerate().take(lanes) {
+                    // Below the lane count reads `a`, at or above it
+                    // reads `b` — the type checker has already
+                    // rejected anything past the pair.
+                    let index = *index as usize;
+                    let (source, lane) = if index < lanes {
+                        (&a, index)
+                    } else {
+                        (&b, index - lanes)
+                    };
+                    out[j * width..(j + 1) * width]
+                        .copy_from_slice(&source[lane * width..(lane + 1) * width]);
+                }
+                Object::Simd(SimdValue::from_bytes(ty, &out))
             }
         };
         Ok(EvaluationResult::Value(value.into()))

@@ -1569,6 +1569,14 @@ pub enum InstKind {
     /// codegen needs the source type to name the cranelift value it
     /// is reinterpreting.
     SimdBitcast { value: ValueId, from: VecTy, to: VecTy },
+    /// SIMD `__simd_shuffle(a, b, [k...]) -> V` — a compile-time
+    /// permutation. `mask[j]` is the source *lane* for result lane
+    /// `j`, indexing `a` followed by `b`, and only the first
+    /// `ty.lanes()` entries mean anything. Lane indices rather than
+    /// the byte indices cranelift's `shuffle` immediate wants, so
+    /// the IR reads the way the source does and each backend widens
+    /// them itself.
+    SimdShuffle { a: ValueId, b: ValueId, mask: [u8; 16], ty: VecTy },
     /// `print("literal")` / `println("literal")`. The string is laid
     /// out in `.rodata` by codegen and the helper is `toy_print_str` /
     /// `toy_println_str`.
@@ -2155,6 +2163,10 @@ impl InstKind {
                 one(table);
                 one(indices);
             }
+            InstKind::SimdShuffle { a, b, .. } => {
+                one(a);
+                one(b);
+            }
             InstKind::SimdLoad { ptr, offset, .. } => {
                 one(ptr);
                 one(offset);
@@ -2635,6 +2647,18 @@ impl fmt::Display for DisplayInst<'_> {
             }
             InstKind::SimdSwizzle { table, indices } => {
                 write!(f, "{prefix}simd.swizzle.u8x16 {table}, {indices}")
+            }
+            InstKind::SimdShuffle { a, b, mask, ty } => {
+                let lanes = mask[..ty.lanes()]
+                    .iter()
+                    .map(|k| k.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(
+                    f,
+                    "{prefix}simd.shuffle.{} {a}, {b}, [{lanes}]",
+                    ty.source_name()
+                )
             }
             InstKind::SimdBitcast { value, from, to } => {
                 write!(

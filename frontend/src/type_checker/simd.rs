@@ -61,6 +61,80 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
 
+    /// `__simd_shuffle(a, b, [k...])`: two vectors of one type and a
+    /// constant mask with one index per lane, each selecting a lane
+    /// of `a` followed by `b`.
+    ///
+    /// Everything about the mask is decided here, because this is
+    /// the first point where both the mask and the lane count are
+    /// known. An out-of-range index is an error rather than a zero
+    /// lane: the mask is a constant, so the compiler can say so, and
+    /// `__simd_swizzle` is the intrinsic for indices that are not.
+    fn check_simd_shuffle(&mut self, args: &[ExprRef]) -> Result<TypeDecl, TypeCheckError> {
+        let name = SimdOp::Shuffle.builtin_name();
+        // Four arguments means `stamp_simd_shuffle_mask` accepted the
+        // mask; three means it could not read it, and the operands
+        // are still worth checking so the report names the lane count.
+        let mask = if args.len() == SimdOp::Shuffle.consumed_args() {
+            let lo = self.const_lane_index(&args[2]);
+            let hi = self.const_lane_index(&args[3]);
+            match (lo, hi) {
+                (Some(lo), Some(hi)) => Some(SimdOp::unpack_shuffle_mask(lo, hi)),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let a_ty = self.simd_vector_arg(&args[0], name, "the `a` vector")?;
+        let b_ty = self.simd_vector_arg(&args[1], name, "the `b` vector")?;
+        if a_ty != b_ty {
+            return Err(self.error_with_location(
+                TypeCheckError::generic_error(&format!(
+                    "{name} permutes two vectors of the same type, but got `{}` and `{}`",
+                    a_ty.source_name(),
+                    b_ty.source_name()
+                )),
+                &args[1],
+            ));
+        }
+
+        let lanes = a_ty.lanes();
+        let Some(mask) = mask else {
+            return Err(self.error_with_location(
+                TypeCheckError::generic_error(&format!(
+                    "{name} takes its mask as an array literal of integer literals —                      the permutation is part of the instruction, not a value it reads.                      `{}` has {lanes} lanes, so write {lanes} indices in `0..{}`, where                      an index below {lanes} selects that lane of `a` and one at or above                      it selects lane `k - {lanes}` of `b`; for indices computed at run                      time use `__simd_swizzle`",
+                    a_ty.source_name(),
+                    lanes * 2
+                )),
+                &args[2],
+            ));
+        };
+        if mask.len() != lanes {
+            return Err(self.error_with_location(
+                TypeCheckError::generic_error(&format!(
+                    "{name} needs one index per lane: `{}` has {lanes}, but the mask                      has {}",
+                    a_ty.source_name(),
+                    mask.len()
+                )),
+                &args[2],
+            ));
+        }
+        for index in &mask {
+            if (*index as usize) >= lanes * 2 {
+                return Err(self.error_with_location(
+                    TypeCheckError::generic_error(&format!(
+                        "index {index} is out of range for {name} on `{}`: the mask                          selects from `a` then `b`, so an index has to be in `0..{}`",
+                        a_ty.source_name(),
+                        lanes * 2
+                    )),
+                    &args[2],
+                ));
+            }
+        }
+        Ok(TypeDecl::Vector(a_ty))
+    }
+
     /// Type-check one `__simd_*` call and report its result type.
     pub(crate) fn check_simd_call(
         &mut self,
@@ -68,6 +142,11 @@ impl<'a> TypeCheckerVisitor<'a> {
         args: &[ExprRef],
     ) -> Result<TypeDecl, TypeCheckError> {
         let name = op.builtin_name();
+        // `__simd_shuffle`'s stamp *replaces* an argument instead of
+        // following one, so it does not fit the prologue below.
+        if matches!(op, SimdOp::Shuffle) {
+            return self.check_simd_shuffle(args);
+        }
         // `stamp_simd_result_types` appends the result type to
         // `__simd_splat` / `__simd_load` when the call site annotated
         // it, so those two carry one more argument than the user
@@ -207,6 +286,9 @@ impl<'a> TypeCheckerVisitor<'a> {
                 self.simd_vector_arg(&args[0], name, "the vector")?;
                 Ok(TypeDecl::Vector(vec_ty))
             }
+            // Handled before the prologue above: its stamp replaces
+            // an argument rather than following one.
+            SimdOp::Shuffle => self.check_simd_shuffle(args),
         }
     }
 

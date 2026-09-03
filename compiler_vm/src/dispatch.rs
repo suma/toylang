@@ -186,6 +186,14 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
         // The slot already holds the 16-byte image, and a bitcast
         // changes only how the *next* instruction decodes it — so
         // there are no bytes to move.
+        InstKind::SimdShuffle { a, b, mask, ty } => {
+            let av = vm.read_value(*a).read_v128();
+            let bv = vm.read_value(*b).read_v128();
+            let out = crate::simd::shuffle(av, bv, mask, *ty);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_v128(out));
+            }
+        }
         InstKind::SimdBitcast { value, .. } => {
             let bytes = vm.read_value(*value).read_v128();
             if let Some((vid, _)) = inst.result {

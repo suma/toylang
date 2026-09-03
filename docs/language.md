@@ -1962,6 +1962,7 @@ for false.
 | `__simd_bitmask(v)` | `V -> u64` — bit `k` is lane `k`'s high bit |
 | `__simd_swizzle(a, idx)` | `(u8x16, u8x16) -> u8x16` — byte table lookup |
 | `__simd_bitcast(v)` | `V -> W` — the same 16 bytes, another lane type |
+| `__simd_shuffle(a, b, [k...])` | `(V, V, const) -> V` — constant permutation |
 
 Every `__simd_*` intrinsic is pure except `__simd_load` / `__simd_store`,
 which carry the same effects `__builtin_ptr_read` / `__builtin_ptr_write`
@@ -2016,6 +2017,22 @@ lane `i` is `a[idx[i]]`, and an index of 16 or more selects zero. Byte
 lanes on both sides, because that is the shape `pshufb` and `tbl`
 have; reach it from another lane type with `__simd_bitcast`. This is
 the 16-entry lookup table a hex or base64 encoder is built from.
+
+**`__simd_shuffle(a, b, [k...])` permutes at compile time.** Result
+lane `j` is lane `k[j]` of `a` followed by `b`: an index below the
+lane count selects that lane of `a`, one at or above it selects lane
+`k - lanes` of `b`. The mask is an array literal of integer literals
+with exactly one index per lane, and an out-of-range index is a
+compile error — the mask is a constant, so the compiler can say so.
+
+```rust
+val zip = __simd_shuffle(a, b, [0u64, 4u64, 1u64, 5u64])  # i32x4: a0 b0 a1 b1
+val rev = __simd_shuffle(a, a, [3u64, 2u64, 1u64, 0u64])
+```
+
+The mask is not a value: it is folded out of the tree while parsing,
+so it costs no allocation and cannot be computed at run time. Use
+`__simd_swizzle` when the indices are values.
 
 **`__simd_bitcast` moves no bits.** It is defined as `__simd_store`
 followed by `__simd_load` at the new type: the 16 bytes are unchanged

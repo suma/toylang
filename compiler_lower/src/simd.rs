@@ -30,6 +30,7 @@ impl<'a> FunctionLower<'a> {
             SimdOp::Store => Some(Type::Unit),
             SimdOp::Any | SimdOp::All => Some(Type::Bool),
             SimdOp::Bitmask => Some(Type::U64),
+            SimdOp::Shuffle => self.simd_operand_type(args, 0).map(Type::Vector),
             SimdOp::Swizzle => Some(Type::Vector(VecTy::U8x16)),
             SimdOp::Insert => self.simd_operand_type(args, 0).map(Type::Vector),
             // `select`'s first argument is the *mask*, whose lane
@@ -60,10 +61,10 @@ impl<'a> FunctionLower<'a> {
         } else {
             args
         };
-        if user_args.len() != op.arity() {
+        if user_args.len() != op.consumed_args() {
             return Err(format!(
                 "{name} expects {} argument(s), got {}",
-                op.arity(),
+                op.consumed_args(),
                 user_args.len()
             ));
         }
@@ -147,6 +148,16 @@ impl<'a> FunctionLower<'a> {
                 Ok(self.emit(
                     InstKind::SimdSwizzle { table, indices },
                     Some(Type::Vector(VecTy::U8x16)),
+                ))
+            }
+            SimdOp::Shuffle => {
+                let a = self.simd_operand_value(name, &user_args[0])?;
+                let b = self.simd_operand_value(name, &user_args[1])?;
+                let ty = self.simd_value_vector_type(name, a)?;
+                let mask = self.simd_shuffle_mask(name, user_args, ty)?;
+                Ok(self.emit(
+                    InstKind::SimdShuffle { a, b, mask, ty },
+                    Some(Type::Vector(ty)),
                 ))
             }
             SimdOp::Bitcast => {
@@ -244,6 +255,38 @@ impl<'a> FunctionLower<'a> {
             Some(Type::U64),
         )
         .ok_or_else(|| format!("{name}: could not compute the byte offset"))
+    }
+
+    /// The permutation the type checker packed into the call's last
+    /// two arguments, widened back to one source lane per result
+    /// lane.
+    fn simd_shuffle_mask(
+        &self,
+        name: &str,
+        args: &[ExprRef],
+        ty: VecTy,
+    ) -> Result<[u8; 16], String> {
+        let word = |i: usize| match self.program.expression.get(&args[i]) {
+            Some(frontend::ast::Expr::UInt64(v)) => Some(v),
+            _ => None,
+        };
+        let (Some(lo), Some(hi)) = (word(2), word(3)) else {
+            return Err(format!(
+                "{name}: the lane mask did not survive type checking as two literals"
+            ));
+        };
+        let lanes = SimdOp::unpack_shuffle_mask(lo, hi);
+        if lanes.len() != ty.lanes() {
+            return Err(format!(
+                "{name}: the mask has {} indices but {} has {} lanes",
+                lanes.len(),
+                ty.source_name(),
+                ty.lanes()
+            ));
+        }
+        let mut mask = [0u8; 16];
+        mask[..lanes.len()].copy_from_slice(&lanes);
+        Ok(mask)
     }
 
     /// A lane index, which has to be a literal the compiler can read.

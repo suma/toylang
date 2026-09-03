@@ -163,6 +163,23 @@ pub fn swizzle(table: [u8; 16], indices: [u8; 16]) -> [u8; 16] {
     out
 }
 
+/// `__simd_shuffle`: a compile-time permutation of `a` followed by
+/// `b`. `mask[j]` is the source lane for result lane `j`; the type
+/// checker has already rejected an index past the pair, so nothing
+/// here has to decide what an out-of-range one would mean.
+pub fn shuffle(a: [u8; 16], b: [u8; 16], mask: &[u8; 16], ty: VecTy) -> [u8; 16] {
+    let lanes = ty.lanes();
+    let width = ty.lane_bytes();
+    let mut out = [0u8; 16];
+    for (j, index) in mask.iter().enumerate().take(lanes) {
+        let index = *index as usize;
+        let (source, lane) = if index < lanes { (&a, index) } else { (&b, index - lanes) };
+        out[j * width..(j + 1) * width]
+            .copy_from_slice(&source[lane * width..(lane + 1) * width]);
+    }
+    out
+}
+
 /// A horizontal fold, lane 0 through n in order.
 pub fn reduce(bytes: [u8; 16], op: SimdReduceOp, ty: VecTy) -> RawSlot {
     macro_rules! fold {

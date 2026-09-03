@@ -462,9 +462,9 @@ impl MemStat {
 /// operators are *not* here: they go through the regular binary /
 /// unary operator paths, which is the whole point of making vectors a
 /// type. What is left is construction, memory traffic, lane
-/// addressing, horizontal reduction, and lane permutation — sixteen
-/// names, so the AST cache schema is bumped once rather than once
-/// per lane type.
+/// addressing, horizontal reduction, and lane permutation —
+/// seventeen names, so the AST cache schema is bumped once rather
+/// than once per lane type.
 ///
 /// Spelling: no lane-type suffix. `__simd_splat` / `__simd_load`
 /// take their result type from the annotation at the call site, the
@@ -539,10 +539,26 @@ pub enum SimdOp {
     /// `__simd_load` at the new type. Like `__simd_splat`, the
     /// result type comes from the call site's annotation.
     Bitcast,
+    /// `__simd_shuffle(a: V, b: V, [k...]) -> V` — result lane `j`
+    /// is lane `k[j]` of `a` followed by `b`: an index below the
+    /// lane count selects from `a`, one at or above it selects
+    /// `b[k - lanes]`. The mask is a **compile-time constant** with
+    /// exactly one index per lane, and an out-of-range index is a
+    /// compile error rather than a zero lane — the whole point of a
+    /// constant mask is that the compiler can check it.
+    ///
+    /// The user writes the mask as an array literal; the type
+    /// checker validates it and **replaces it with two packed `u64`
+    /// words** ([`SimdOp::pack_shuffle_mask`]), so no backend ever
+    /// sees an array. That keeps the mask out of the value graph,
+    /// where it would otherwise look like an allocation.
+    ///
+    /// The runtime-indexed cousin is [`SimdOp::Swizzle`].
+    Shuffle,
 }
 
 impl SimdOp {
-    pub const ALL: [SimdOp; 16] = [
+    pub const ALL: [SimdOp; 17] = [
         SimdOp::Splat,
         SimdOp::Load,
         SimdOp::Store,
@@ -559,6 +575,7 @@ impl SimdOp {
         SimdOp::Bitmask,
         SimdOp::Swizzle,
         SimdOp::Bitcast,
+        SimdOp::Shuffle,
     ];
 
     /// The source spelling.
@@ -580,6 +597,7 @@ impl SimdOp {
             SimdOp::Bitmask => "__simd_bitmask",
             SimdOp::Swizzle => "__simd_swizzle",
             SimdOp::Bitcast => "__simd_bitcast",
+            SimdOp::Shuffle => "__simd_shuffle",
         }
     }
 
@@ -597,7 +615,7 @@ impl SimdOp {
             | SimdOp::Bitmask
             | SimdOp::Bitcast => 1,
             SimdOp::Load | SimdOp::Extract | SimdOp::Swizzle => 2,
-            SimdOp::Store | SimdOp::Insert | SimdOp::Select => 3,
+            SimdOp::Store | SimdOp::Insert | SimdOp::Select | SimdOp::Shuffle => 3,
         }
     }
 
@@ -605,6 +623,64 @@ impl SimdOp {
     /// rather than from an argument.
     pub fn needs_result_annotation(self) -> bool {
         matches!(self, SimdOp::Splat | SimdOp::Load | SimdOp::Bitcast)
+    }
+
+    /// How many arguments the node holds once the type checker has
+    /// stamped in what the call site could not spell. It is
+    /// [`SimdOp::arity`] for every intrinsic but `__simd_shuffle`,
+    /// whose one array-literal mask becomes two packed `u64` words.
+    /// (The suffix-less three grow too, but their prologue reads the
+    /// stamp off and drops it before this is consulted.)
+    pub fn consumed_args(self) -> usize {
+        match self {
+            SimdOp::Shuffle => self.arity() + 1,
+            _ => self.arity(),
+        }
+    }
+
+    /// Pack a `__simd_shuffle` mask into the two `u64` words the
+    /// stamped call carries.
+    ///
+    /// Each index is stored **biased by one** in its own byte, low
+    /// word first, so an unwritten byte reads back as zero and the
+    /// *length* of the mask survives the round trip. Without the
+    /// bias a trailing `0u64` index would be indistinguishable from
+    /// padding, and the type checker could not tell a two-lane mask
+    /// from a four-lane one whose last two indices are zero.
+    ///
+    /// `None` when the mask cannot be represented at all (empty,
+    /// longer than sixteen, or an index too large for a biased
+    /// byte); the caller reports that against the vector's actual
+    /// lane count, which it knows and this does not.
+    pub fn pack_shuffle_mask(indices: &[u64]) -> Option<(u64, u64)> {
+        if indices.is_empty() || indices.len() > 16 {
+            return None;
+        }
+        let mut bytes = [0u8; 16];
+        for (slot, index) in bytes.iter_mut().zip(indices) {
+            *slot = u8::try_from(index.checked_add(1)?).ok()?;
+        }
+        let word = |half: &[u8]| {
+            half.iter()
+                .enumerate()
+                .fold(0u64, |acc, (i, b)| acc | (*b as u64) << (8 * i))
+        };
+        Some((word(&bytes[..8]), word(&bytes[8..])))
+    }
+
+    /// The inverse of [`SimdOp::pack_shuffle_mask`]: the indices back
+    /// in order, stopping at the first unwritten byte.
+    pub fn unpack_shuffle_mask(lo: u64, hi: u64) -> Vec<u8> {
+        let mut out = Vec::with_capacity(16);
+        for j in 0..16 {
+            let word = if j < 8 { lo } else { hi };
+            let byte = (word >> (8 * (j % 8))) as u8;
+            if byte == 0 {
+                break;
+            }
+            out.push(byte - 1);
+        }
+        out
     }
 
     /// Whether the intrinsic only makes sense on integer lanes.

@@ -11,6 +11,67 @@ use super::{
     parse_postfix, try_intercept_parser_macro,
 };
 
+/// `__simd_shuffle(a, b, [k...])` — replace the mask array literal
+/// with the two packed `u64` words every later pass reads
+/// ([`SimdOp::pack_shuffle_mask`]).
+///
+/// In the parser because the fold is purely syntactic and because
+/// *every* consumer has to see the folded form. Doing it during type
+/// checking would not: three drivers run the checker with their own
+/// statement loops, and several expression positions — a bare
+/// expression statement, a binary operand, an `if` condition — never
+/// reach the prologue in `visit_expr` where the other SIMD rewrites
+/// live. The mask is also not a value: leaving the array in the tree
+/// would make the tree-walker allocate one per call, since it
+/// evaluates every argument of an intrinsic.
+///
+/// Only the *encoding* is decided here. Whether the mask has one
+/// index per lane and whether each index is in range needs the
+/// vector type, so it is checked in
+/// `type_checker::simd::check_simd_shuffle` — a mask this cannot
+/// read is left alone for that routine to report against the lane
+/// count it can name.
+fn fold_simd_shuffle_mask(parser: &mut Parser, args: &[ExprRef]) -> Option<Vec<ExprRef>> {
+    if args.len() != SimdOp::Shuffle.arity() {
+        return None;
+    }
+    let Some(Expr::ArrayLiteral(elements)) =
+        parser.ast_builder.get_expr_pool().get(&args[2])
+    else {
+        return None;
+    };
+    let mut indices = Vec::with_capacity(elements.len());
+    for element in &elements {
+        indices.push(shuffle_mask_index(parser, element)?);
+    }
+    let (lo, hi) = SimdOp::pack_shuffle_mask(&indices)?;
+    Some(vec![
+        args[0],
+        args[1],
+        parser.ast_builder.add_expr(Expr::UInt64(lo)),
+        parser.ast_builder.add_expr(Expr::UInt64(hi)),
+    ])
+}
+
+/// One mask entry, which has to be a non-negative integer literal.
+/// A suffix-less literal is still `Expr::Number` at this point, so
+/// both spellings (`0` and `0u64`) are read.
+fn shuffle_mask_index(parser: &Parser, element: &ExprRef) -> Option<u64> {
+    match parser.ast_builder.get_expr_pool().get(element)? {
+        Expr::UInt64(v) => Some(v),
+        Expr::Int64(v) if v >= 0 => Some(v as u64),
+        Expr::UInt32(v) => Some(v as u64),
+        Expr::UInt16(v) => Some(v as u64),
+        Expr::UInt8(v) => Some(v as u64),
+        Expr::Int32(v) if v >= 0 => Some(v as u64),
+        Expr::Number(sym) => parser
+            .string_interner
+            .resolve(sym)
+            .and_then(|s| s.parse::<u64>().ok()),
+        _ => None,
+    }
+}
+
 /// Parse bracket access syntax: [index], [start..end], [..end], [start..], [..]
 pub(super) fn parse_bracket_access(parser: &mut Parser, object_expr: ExprRef, location: crate::type_checker::SourceLocation) -> ParserResult<ExprRef> {
     if parser.peek() == Some(&Kind::DotDot) {
@@ -486,6 +547,15 @@ fn parse_primary_after_identifier(
             let args = parse_expr_list(parser, vec![])?;
             parser.expect_err(&Kind::ParenClose)?;
             if let Some(builtin_func) = parser.builtin_symbols.symbol_to_builtin(name) {
+                // SIMD: `__simd_shuffle`'s mask is a constant, not a
+                // value. Fold it here so nothing downstream sees the
+                // array literal.
+                let args = match builtin_func {
+                    BuiltinFunction::Simd(SimdOp::Shuffle) => {
+                        fold_simd_shuffle_mask(parser, &args).unwrap_or(args)
+                    }
+                    _ => args,
+                };
                 Ok(parser.ast_builder.builtin_call_expr(builtin_func, args, Some(location)))
             } else {
                 Ok(parser.ast_builder.call_expr(name, args, Some(location)))

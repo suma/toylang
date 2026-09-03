@@ -82,6 +82,7 @@ fn inst_supported(kind: &InstKind) -> bool {
         | InstKind::SimdBitmask { .. }
         | InstKind::SimdSwizzle { .. }
         | InstKind::SimdBitcast { .. }
+        | InstKind::SimdShuffle { .. }
         | InstKind::PrintRaw { .. }
         | InstKind::HeapAlloc { .. }
         | InstKind::HeapRealloc { .. }

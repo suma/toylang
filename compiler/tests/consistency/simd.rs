@@ -517,3 +517,105 @@ fn simd_bitcast_keeps_the_bytes_in_little_endian_order() {
         57u64,
     );
 }
+
+#[test]
+fn simd_shuffle_permutes_two_vectors() {
+    // The mask indexes `a` followed by `b`, so an index at or above
+    // the lane count reaches into the second vector. Interleaving
+    // the low halves is the case a codec needs and the one that
+    // catches a backend that treats the mask as two separate
+    // selections.
+    let src = r#"
+        fn main() -> u64 {
+            val a0: i32x4 = __simd_splat(10i32)
+            val a = __simd_insert(
+                __simd_insert(__simd_insert(a0, 1u64, 11i32), 2u64, 12i32),
+                3u64, 13i32)
+            val b0: i32x4 = __simd_splat(20i32)
+            val b = __simd_insert(
+                __simd_insert(__simd_insert(b0, 1u64, 21i32), 2u64, 22i32),
+                3u64, 23i32)
+
+            val zip = __simd_shuffle(a, b, [0u64, 4u64, 1u64, 5u64])
+            val l0: i32 = __simd_extract(zip, 0u64)
+            val l1: i32 = __simd_extract(zip, 1u64)
+            val l3: i32 = __simd_extract(zip, 3u64)
+
+            val rev = __simd_shuffle(a, a, [3u64, 2u64, 1u64, 0u64])
+            val r0: i32 = __simd_extract(rev, 0u64)
+            val r3: i32 = __simd_extract(rev, 3u64)
+
+            if l0 == 10i32 && l1 == 20i32 && l3 == 21i32
+                && r0 == 13i32 && r3 == 10i32
+            {
+                61u64
+            } else {
+                0u64
+            }
+        }
+    "#;
+    assert_simd(src, "simd_shuffle_permutes_two_vectors", 61u64);
+}
+
+#[test]
+fn simd_shuffle_works_on_every_lane_width() {
+    // Cranelift's `shuffle` is an `I8X16` instruction taking *byte*
+    // indices, so every lane wider than a byte becomes a run of
+    // consecutive bytes. Get that widening wrong and an `f64x2` swap
+    // still "works" on the tree-walker while the compiled lanes
+    // return halves of two different lanes -- which is why both ends
+    // of the width range are here.
+    let src = r#"
+        fn main() -> u64 {
+            val f0: f64x2 = __simd_splat(1.5f64)
+            val f = __simd_insert(f0, 1u64, 2.5f64)
+            val g: f64x2 = __simd_splat(9.5f64)
+            val swapped = __simd_shuffle(f, g, [3u64, 0u64])
+            val s0: f64 = __simd_extract(swapped, 0u64)
+            val s1: f64 = __simd_extract(swapped, 1u64)
+
+            val u0: u8x16 = __simd_splat(7u8)
+            val u = __simd_insert(u0, 5u64, 99u8)
+            val z: u8x16 = __simd_splat(0u8)
+            val picked = __simd_shuffle(u, z, [
+                5u64, 5u64, 16u64, 5u64, 5u64, 5u64, 5u64, 5u64,
+                5u64, 5u64, 5u64, 5u64, 5u64, 5u64, 5u64, 5u64])
+            val p0: u8 = __simd_extract(picked, 0u64)
+            val p2: u8 = __simd_extract(picked, 2u64)
+
+            if s0 == 9.5f64 && s1 == 1.5f64 && p0 == 99u8 && p2 == 0u8 {
+                63u64
+            } else {
+                0u64
+            }
+        }
+    "#;
+    assert_simd(src, "simd_shuffle_works_on_every_lane_width", 63u64);
+}
+
+#[test]
+fn simd_shuffle_mask_is_folded_in_every_position() {
+    // The mask is folded in the *parser*, not in the type checker's
+    // rewrite prologue, because a bare expression statement, a binary
+    // operand and an `if` condition never reach that prologue. Each
+    // of those positions appears here: before the fold moved, three
+    // of them were rejected as "no mask" while the same call in an
+    // argument position compiled.
+    let src = r#"
+        fn main() -> u64 {
+            val a0: i32x4 = __simd_splat(1i32)
+            val a = __simd_insert(a0, 1u64, 4i32)
+            __simd_shuffle(a, a, [1u64, 0u64, 1u64, 0u64])
+            val sum = __simd_shuffle(a, a, [1u64, 1u64, 1u64, 1u64]) + a
+            val total: i32 = __simd_reduce_add(sum)
+            if __simd_all(__simd_shuffle(a, a, [0u64, 1u64, 2u64, 3u64]) == a)
+                && total == 23i32
+            {
+                65u64
+            } else {
+                0u64
+            }
+        }
+    "#;
+    assert_simd(src, "simd_shuffle_mask_is_folded_in_every_position", 65u64);
+}

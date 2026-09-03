@@ -164,6 +164,55 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let out = self.builder.ins().swizzle(t, i);
                 self.record_result(inst, out);
             }
+            InstKind::SimdShuffle { a, b, mask, ty } => {
+                // Cranelift's `shuffle` is defined on `I8X16` and
+                // takes *byte* indices over the 32 bytes of the two
+                // operands, so a wider lane becomes a run of
+                // `lane_bytes` consecutive byte indices. The two
+                // reinterpretations around it are register-level and
+                // cost nothing at run time.
+                let lanes = ty.lanes();
+                let width = ty.lane_bytes();
+                let mut bytes = [0u8; 16];
+                for (j, index) in mask.iter().enumerate().take(lanes) {
+                    let index = *index as usize;
+                    let base = if index < lanes {
+                        index * width
+                    } else {
+                        16 + (index - lanes) * width
+                    };
+                    for t in 0..width {
+                        bytes[j * width + t] = (base + t) as u8;
+                    }
+                }
+                let av = self.value(*a);
+                let bv = self.value(*b);
+                let (av, bv) = if matches!(ty, VecTy::U8x16) {
+                    (av, bv)
+                } else {
+                    let flags = cranelift_codegen::ir::MemFlags::new()
+                        .with_endianness(cranelift_codegen::ir::Endianness::Little);
+                    (
+                        self.builder.ins().bitcast(types::I8X16, flags, av),
+                        self.builder.ins().bitcast(types::I8X16, flags, bv),
+                    )
+                };
+                let imm = self
+                    .builder
+                    .func
+                    .dfg
+                    .immediates
+                    .push(cranelift_codegen::ir::ConstantData::from(&bytes[..]));
+                let out = self.builder.ins().shuffle(av, bv, imm);
+                let out = if matches!(ty, VecTy::U8x16) {
+                    out
+                } else {
+                    let flags = cranelift_codegen::ir::MemFlags::new()
+                        .with_endianness(cranelift_codegen::ir::Endianness::Little);
+                    self.builder.ins().bitcast(vec_to_cranelift_ty(*ty), flags, out)
+                };
+                self.record_result(inst, out);
+            }
             InstKind::SimdBitcast { value, to, .. } => {
                 let v = self.value(*value);
                 let want = vec_to_cranelift_ty(*to);

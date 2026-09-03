@@ -105,5 +105,19 @@ unsafe fn main() -> u64 {
     val one: f64x2 = __simd_splat(1f64)
     val bits: i64x2 = __simd_bitcast(one)
     println(__simd_extract(bits, 0u64))
+
+    # --- a permutation fixed at compile time -------------------------
+    # `__simd_shuffle`'s mask is an array literal of constants, one
+    # index per lane, selecting from `a` followed by `b`: an index
+    # below the lane count reads `a`, one at or above it reads
+    # `b[k - lanes]`. Being constant is what makes it a permutation
+    # the compiler can check -- an out-of-range index is an error
+    # here, where `__simd_swizzle` (runtime indices) would give zero.
+    val lo0: i32x4 = __simd_splat(10i32)
+    val lo = __simd_insert(__simd_insert(__simd_insert(lo0, 1u64, 11i32), 2u64, 12i32), 3u64, 13i32)
+    val hi0: i32x4 = __simd_splat(20i32)
+    val hi = __simd_insert(__simd_insert(__simd_insert(hi0, 1u64, 21i32), 2u64, 22i32), 3u64, 23i32)
+    println(__simd_shuffle(lo, hi, [0u64, 4u64, 1u64, 5u64]))
+    println(__simd_shuffle(lo, lo, [3u64, 2u64, 1u64, 0u64]))
     0u64
 }

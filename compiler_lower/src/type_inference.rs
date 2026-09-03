@@ -452,7 +452,15 @@ impl<'a> FunctionLower<'a> {
                                 .collect();
                         let ret = template.return_type.as_ref()?;
                         match ret {
-                            TypeDecl::Generic(g) => subst.get(g).copied(),
+                            // A return type written `T` reaches here as
+                            // `Generic` or as `Identifier`, depending on
+                            // whether the checker resolved it -- both
+                            // name the same parameter.
+                            TypeDecl::Generic(g) | TypeDecl::Identifier(g)
+                                if subst.contains_key(g) =>
+                            {
+                                subst.get(g).copied()
+                            }
                             other => lower_scalar(other),
                         }
                     })

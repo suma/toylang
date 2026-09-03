@@ -10,6 +10,17 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-03
+- **GENERIC-SCALAR-REF 解消 — `&T` が primitive でも通る** —
+  パラメータの束縛が**置換前の** `&T` を見ていて
+  `lower_scalar(Generic(T))` が None になり、compound 経路に落ちていた。
+  一方でシグネチャと `param_ref_pointee` は既に「ポインタ」で合意して
+  いたので、呼び出し側が番地を置いた所を callee が値として読み、
+  3 レーンが 3 通りの誤答を返していた (2026-09-03 にいったん明示的な拒否に
+  していたもの)。`lower_scalar_with_subst` にするだけ。
+  併せて `val` の注釈から取る幅も**アクティブな置換込み**で lower する
+  ようにした (body 内の `val c: T = ...` は空の置換では解決できない)。
+  これで `interpreter/example/jit_panic_expr.t` が AOT 非対応リストから
+  外れた。
 - **RETURN-LOCAL-DROP (tree-walker) 解消 + `Vec` / `Box` の `Clone`** —
   `fn build() -> Vec<u64> { var out = Vec::new(); out.push(1u64); out }`
   が、**tree-walker では解放済みのバッファを返していた**。ブロック終端の
@@ -1307,13 +1318,6 @@
   気づいた。足すのは 4 行だが、`Drop` を持つ型は container に入れると
   **move する** (`[E0014]`) ので、既存の `String` を受け渡すコードが
   move 検査に引っかかりうる。影響範囲を測ってから
-- **GENERIC-SCALAR-REF: `&T` が primitive に解決される generic 関数** ★ —
-  `fn get<T: Id>(v: &T)` を `get(&5u64)` 相当で呼ぶと、compiled lane は
-  **拒否する** (2026-09-03 に明示的なエラーを入れた)。スカラーへの参照は
-  番地で渡して読み戻す形なのに、pointee が置換時にしか決まらないと
-  引数スロットの型・`param_ref_pointee`・body 側の見方が揃わず、
-  3 レーンが 3 通りの誤答を返していた。compound の `&T` は erase される
-  ので影響なし。回避は `T` を値で取ること
 - **STDLIB-NUMERIC: 整数側の math が無い** ★ — 設計は
   [`STDLIB_NUMERIC.md`](STDLIB_NUMERIC.md) (2026-09-03)。`math.t` は
   f64 の libm ラッパ 11 本 + `abs(i64)` + `min`/`max` (**i64 と u64

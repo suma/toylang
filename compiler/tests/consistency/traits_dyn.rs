@@ -1284,3 +1284,45 @@ fn a_function_can_return_a_container_it_built() {
     // the callee returned.
     assert_consistent(src, "return_locally_built_container");
 }
+
+// GENERIC-SCALAR-REF: `&T` where `T` turns out to be a primitive.
+//
+// A scalar reference is passed as an address and read back through
+// it, and the pieces that decide that read the *declared* type -- in
+// a monomorphised body that is `&T`, which is not a scalar until the
+// substitution says so. The signature and the call site agreed it was
+// a pointer while the body bound it as a value, so the three lanes
+// returned three different wrong numbers; it was refused outright
+// rather than shipped that way.
+
+#[test]
+fn a_generic_function_can_borrow_a_primitive() {
+    let src = r#"
+        struct P { v: i64 }
+        impl Clone for P { fn clone(&self) -> Self { P { v: self.v } } }
+
+        fn dup<T: Clone>(v: &T) -> T {
+            val c: T = v.clone()
+            c
+        }
+
+        fn main() -> u64 {
+            # Every shape a `&T` can resolve to: the widths differ, so
+            # a reference read at the wrong one shows up as a wrong
+            # answer rather than as an error.
+            val a: u64 = 7u64
+            val b: u64 = dup(&a)
+            val f: f64 = 1.5f64
+            val g: f64 = dup(&f)
+            val s: bool = true
+            val t: bool = dup(&s)
+            val p = P { v: 5i64 }
+            val q: P = dup(&p)
+            val n: i64 = q.v
+            println(g)
+            println(t)
+            b + (n as u64)
+        }
+    "#;
+    assert_stdout_consistent(src, "generic_borrow_primitive");
+}

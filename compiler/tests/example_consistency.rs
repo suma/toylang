@@ -83,7 +83,6 @@ const AOT_UNSUPPORTED: &[&str] = &[
     "float64.t",
     "jit_heap.t",
     "jit_nested_tuple_fallback.t",
-    "jit_panic_expr.t",
     // Same reasons as `contracts.t`: `requires` / `ensures`, plus
     // `assert_eq`, which lowers to a panic whose message is built at
     // runtime rather than being a literal.

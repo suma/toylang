@@ -1854,8 +1854,18 @@ impl<'a> FunctionLower<'a> {
                 );
                 continue;
             }
+            // GENERIC-SCALAR-REF: `lower_scalar_with_subst`, not
+            // `lower_scalar` -- in a monomorphised body the pointee is
+            // written `T` and only the substitution says what it is.
+            // Asking the declared type directly answered "not a
+            // scalar", so a `&T` that turned out to be one fell
+            // through to the compound path while the signature and
+            // `param_ref_pointee` had already agreed it was a pointer.
+            // The callee then read a value where the caller had put an
+            // address, and the three lanes returned three different
+            // wrong numbers.
             if let frontend::type_decl::TypeDecl::Ref { is_mut, inner } = decl_ty
-                && let Some(pointee_ty) = super::types::lower_scalar(inner)
+                && let Some(pointee_ty) = self.lower_scalar_with_subst(inner)
                     && matches!(
                         pointee_ty,
                         Type::I64 | Type::U64 | Type::F64 | Type::Bool

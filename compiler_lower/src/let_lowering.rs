@@ -564,10 +564,10 @@ impl<'a> FunctionLower<'a> {
         // STDLIB-TRAIT-BASE B5: the annotation names the type argument
         // when nothing else can (`val a: u64 = make()`). The compound
         // paths above set the same hint; this is the scalar half.
-        let hint = annotation.and_then(|a| {
-            let subst = std::collections::HashMap::new();
-            self.lower_type_with_subst(a, &subst)
-        });
+        // Through the *active* substitution: inside a monomorphised
+        // body an annotation can name a type parameter (`val c: T =
+        // ...`), and an empty map cannot lower that.
+        let hint = annotation.and_then(|a| self.lower_type_with_active_subst(a));
         // The hint stays set across `value_scalar` too: it asks the
         // same question a second time to size the binding, and would
         // otherwise fail after the instance had already been created.
@@ -579,7 +579,12 @@ impl<'a> FunctionLower<'a> {
             .and_then(|_| self.value_scalar(rhs_ref));
         self.pending_return_hint = saved;
         let v = lowered?.ok_or_else(|| "val/var rhs produced no value".to_string())?;
+        // The annotation is the binding's declared type, so it is a
+        // better answer than a failure when the rhs cannot say what it
+        // produced -- a generic call whose type argument only the
+        // annotation names, for instance.
         let scalar = scalar
+            .or(hint)
             .ok_or_else(|| "could not infer scalar type for val/var rhs".to_string())?;
         let local = self.module.function_mut(self.func_id).add_local(scalar);
         self.bindings
@@ -824,6 +829,18 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
+
+    /// STDLIB-TRAIT-BASE B5: lower an annotation with the body's own
+    /// monomorphisation applied, so `val c: T = ...` inside a generic
+    /// body resolves to whatever `T` is here.
+    fn lower_type_with_active_subst(&mut self, ty: &TypeDecl) -> Option<Type> {
+        if let Some(t) = self.lower_scalar_with_subst(ty) {
+            return Some(t);
+        }
+        let subst: std::collections::HashMap<DefaultSymbol, Type> = self.active_subst.clone();
+        self.lower_type_with_subst(ty, &subst)
+    }
+
     /// Tuple- or enum-returning call RHS helper. Allocates the
     /// matching binding shape and emits a `CallTuple` /
     /// `CallEnum` so codegen can route multi-return slots
@@ -873,10 +890,10 @@ impl<'a> FunctionLower<'a> {
         // the arguments cannot (`val p: P = make()`). Handed down as a
         // hint rather than a parameter because every intermediate call
         // in the resolution chain would otherwise have to carry it.
-        let hint = annotation.and_then(|a| {
-            let subst = std::collections::HashMap::new();
-            self.lower_type_with_subst(a, &subst)
-        });
+        // Through the *active* substitution: inside a monomorphised
+        // body an annotation can name a type parameter (`val c: T =
+        // ...`), and an empty map cannot lower that.
+        let hint = annotation.and_then(|a| self.lower_type_with_active_subst(a));
         let saved = std::mem::replace(&mut self.pending_return_hint, hint);
         let resolved = self.resolve_call_target(fn_name, args_ref).ok();
         self.pending_return_hint = saved;

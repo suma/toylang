@@ -22,13 +22,10 @@ pub trait Clone {
     fn clone(&self) -> Self
 }
 
-# Note on writing a generic function over `Clone`: take `T` **by
-# value**, not `&T`. A `&T` that resolves to a primitive cannot be
-# passed by the compiled lanes yet (todo.md GENERIC-SCALAR-REF), and
-# by value costs nothing for the types where it matters -- a compound
-# argument is passed as its leaves either way.
-#
-#     fn dup<T: Clone>(v: T) -> T { v.clone() }
+#     fn dup<T: Clone>(v: &T) -> T {
+#         val c: T = v.clone()
+#         c
+#     }
 
 # Primitives: the value is the copy. Impl'd for every width, the way
 # `Hash` and `Ord` are, so a `<T: Clone>` bound accepts them.

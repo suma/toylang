@@ -296,35 +296,6 @@ impl<'a> FunctionLower<'a> {
             .copied()
             .zip(type_args.iter().copied())
             .collect();
-        // STDLIB-TRAIT-BASE B1: `&T` where `T` turns out to be a
-        // scalar is refused rather than lowered.
-        //
-        // A scalar reference is passed as an address and read back
-        // through it, and the pieces that decide that (the parameter
-        // slot type, `param_ref_pointee`, and the body's own view of
-        // the binding) do not yet agree once the pointee only becomes
-        // scalar at substitution time -- the three lanes returned
-        // three different wrong numbers. Compound `T` is unaffected,
-        // because a compound reference is erased to the pointee.
-        //
-        // Refusing keeps this where it was before the inference was
-        // added: a compile error, not a wrong answer. Recorded as
-        // GENERIC-SCALAR-REF in design-docs/todo.md.
-        for (pname, ptype) in &template.parameter {
-            if let TypeDecl::Ref { inner, .. } = ptype
-                && let TypeDecl::Generic(g) | TypeDecl::Identifier(g) = inner.as_ref()
-                && let Some(actual) = subst.get(g)
-                && crate::templates::is_scalar_pointee(*actual)
-            {
-                return Err(format!(
-                    "generic function `{}`: parameter `{}: {}` resolves to a reference to a scalar, which this compiler cannot pass yet; take `{}` by value",
-                    self.interner.resolve(template_name).unwrap_or("?"),
-                    self.interner.resolve(*pname).unwrap_or("?"),
-                    crate::spelling::spell_type_decl(self.interner, ptype),
-                    self.interner.resolve(*g).unwrap_or("T"),
-                ));
-            }
-        }
         // Lower the param / return signatures with the active subst.
         let mut params: Vec<Type> = Vec::with_capacity(template.parameter.len());
         for (pname, ptype) in &template.parameter {

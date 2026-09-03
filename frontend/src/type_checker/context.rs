@@ -110,6 +110,12 @@ pub struct TypeCheckContext {
     // Bounds for the generic parameters of the function currently being
     // type-checked (e.g. `<A: Allocator>`). Cleared between functions.
     pub current_fn_generic_bounds: HashMap<DefaultSymbol, TypeDecl>,
+    /// Every generic parameter the current function declares, bound or
+    /// not. `current_fn_generic_bounds` only holds the ones that carry
+    /// a bound, so an unconstrained `fn shuffle<T>(v: &mut Vec<T>)` is
+    /// absent from it -- and a `T` returned by a method call inside
+    /// such a body would look like a parameter nobody declared.
+    pub current_fn_generic_params: Vec<DefaultSymbol>,
     /// COLLECTIONS C0(a): which generic body is being checked, so that
     /// a `==` between two values of a type parameter can be recorded
     /// against it. `None` outside a function or method body.
@@ -226,6 +232,7 @@ impl TypeCheckContext {
             current_impl_target: None,
             current_impl_generic_params: None,
             current_fn_generic_bounds: HashMap::new(),
+            current_fn_generic_params: Vec::new(),
             current_eq_owner: None,
             eq_required_params: HashMap::new(),
             eq_instantiations: Vec::new(),

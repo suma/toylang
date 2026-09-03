@@ -2136,9 +2136,21 @@ impl<'a> FunctionLower<'a> {
         // (None entry) but flattened the function into the
         // table by name.
         let target_opt = if !is_struct {
-            self.module
-                .lookup_function(Some(struct_name), fn_name)
-                .or_else(|| self.module.lookup_function(None, fn_name))
+            // A generic module function (`random::shuffle(&mut v)`) is
+            // not in the function index under its bare name at all --
+            // each instantiation is minted on demand from the
+            // template, which is what `resolve_call_target` does for
+            // the unqualified spelling. Without this the lookups below
+            // find nothing and the call is rejected as unsupported,
+            // so the same function worked written one way and not the
+            // other.
+            if self.generic_funcs.contains_key(&fn_name) {
+                Some(self.resolve_call_target_from_args(fn_name, &args)?)
+            } else {
+                self.module
+                    .lookup_function(Some(struct_name), fn_name)
+                    .or_else(|| self.module.lookup_function(None, fn_name))
+            }
         } else {
             None
         };
@@ -2170,23 +2182,59 @@ impl<'a> FunctionLower<'a> {
                     self.interner.resolve(fn_name).unwrap_or("?"),
                 ));
             }
-            // Flatten compound arguments into their leaf values, the
-            // way every other call site does. Lowering each argument
-            // as a single expression instead meant a module function
-            // could not take a struct at all (`io::read_file_into(p,
-            // span)` reported "module function arg produced no
-            // value", naming neither the argument nor the shape),
-            // while the identical call to a top-level function
-            // worked.
-            let mut arg_values: Vec<ValueId> = Vec::with_capacity(args.len());
-            for a in &args {
-                arg_values.extend(self.lower_arg_values(a)?);
-            }
+            // Lower the arguments through the same per-item path a
+            // bare call uses, with the callee known. Flattening
+            // compound arguments into leaves is only part of what it
+            // does -- it also hands a `&T` parameter an address
+            // rather than a value, which is what a `&mut Vec<T>`
+            // parameter needs (`random::shuffle(&mut v)` reported
+            // "call argument produced no value" without it).
+            let arg_values = self.lower_call_arg_items(&args, Some(target))?;
             let result_ty = if ret_ty.produces_value() {
                 Some(ret_ty)
             } else {
                 None
             };
+            // REF-Stage-2 (ii): a callee that mutates a compound
+            // through `&mut` returns the changed leaves, and the
+            // caller's locals only see them if the call is emitted
+            // with the writeback destinations attached.
+            let writeback_dests =
+                if !self.module.function(target).self_writeback_types.is_empty() {
+                    self.collect_compound_writeback_dests_slice(&args)?
+                } else {
+                    Vec::new()
+                };
+            if !writeback_dests.is_empty() {
+                let expected = self.module.function(target).self_writeback_types.len();
+                if writeback_dests.len() != expected {
+                    return Err(format!(
+                        "internal error: call to `{}::{}` has {} writeback dests but callee declared {} writeback returns",
+                        self.interner.resolve(struct_name).unwrap_or("?"),
+                        self.interner.resolve(fn_name).unwrap_or("?"),
+                        writeback_dests.len(),
+                        expected,
+                    ));
+                }
+                let ret_dest = result_ty
+                    .map(|ty| self.module.function_mut(self.func_id).add_local(ty));
+                self.emit(
+                    InstKind::CallWithSelfWriteback {
+                        target,
+                        args: arg_values,
+                        ret_dest,
+                        ret_ty: result_ty,
+                        self_dests: writeback_dests,
+                    },
+                    None,
+                );
+                return match (ret_dest, result_ty) {
+                    (Some(local), Some(ty)) => {
+                        Ok(self.emit(InstKind::LoadLocal(local), Some(ty)))
+                    }
+                    _ => Ok(None),
+                };
+            }
             return Ok(self.emit(
                 InstKind::Call { target, args: arg_values },
                 result_ty,

@@ -211,7 +211,12 @@ impl<'a> TypeCheckerVisitor<'a> {
                 .as_ref()
                 .map(|p| p.contains(sym))
                 .unwrap_or(false);
-            let in_fn_scope = self.context.current_fn_generic_bounds.contains_key(sym);
+            // Bounds alone are not the scope: `fn shuffle<T>(v: &mut
+            // Vec<T>)` declares `T` and constrains it with nothing, so
+            // it never reaches the bounds map. Both lists have to be
+            // consulted or an unbounded parameter reads as undeclared.
+            let in_fn_scope = self.context.current_fn_generic_bounds.contains_key(sym)
+                || self.context.current_fn_generic_params.contains(sym);
             if !in_impl_scope && !in_fn_scope {
                 let sym_str = self.resolve_symbol_name(*sym);
                 return Err(TypeCheckError::generic_error(&format!(
@@ -884,6 +889,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                 .core
                 .expr_pool
                 .add(Expr::ExprList(args.clone()));
+            // `visit_generic_call` pops a scope on every exit -- the
+            // bare-call path in `expression.rs` pushes one before
+            // dispatching, and this path has to as well. Without it the
+            // pop takes the *caller's* scope, so `random::shuffle(&mut
+            // v)` left every later mention of `v` reading as
+            // `[E0003] Identifier 'v' not found`.
+            self.push_context();
             return self.visit_generic_call(function_name, &args_ref, &fun);
         }
         let params: Vec<_> = fun

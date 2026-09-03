@@ -414,3 +414,127 @@ fn the_random_shapes_stay_inside_their_ranges() {
     // Zero violations across a thousand draws.
     assert_consistent(src, "random_ranges");
 }
+
+#[test]
+fn a_shuffle_is_a_permutation_and_the_same_one_everywhere() {
+    let src = r#"
+        fn main() -> u64 {
+            io::random_seed(0x99u64)
+            var v: Vec<u64> = Vec::new()
+            var i: u64 = 0u64
+            while i < 12u64 {
+                v.push(i)
+                i = i + 1u64
+            }
+            random::shuffle(&mut v)
+            # The order is the interesting part -- it has to be the
+            # same on every backend, since one seed feeds one PRNG.
+            var k: u64 = 0u64
+            while k < v.size() {
+                print(v.get(k))
+                print(" ")
+                k = k + 1u64
+            }
+            println("")
+            # ... and it has to still be the same twelve values. A
+            # swap that dropped one would keep the length.
+            var seen: u64 = 0u64
+            var j: u64 = 0u64
+            while j < v.size() {
+                seen = seen | (1u64 << v.get(j))
+                j = j + 1u64
+            }
+            println(seen)
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "random_shuffle");
+}
+
+#[test]
+fn shuffling_the_short_cases_does_not_trap() {
+    // Zero and one element: `n - 1` would underflow, and `u64`
+    // subtraction traps rather than wrapping.
+    let src = r#"
+        fn main() -> u64 {
+            io::random_seed(1u64)
+            var empty: Vec<u64> = Vec::new()
+            random::shuffle(&mut empty)
+            var one: Vec<u64> = Vec::new()
+            one.push(42u64)
+            random::shuffle(&mut one)
+            empty.size() + one.get(0u64)
+        }
+    "#;
+    assert_consistent(src, "random_shuffle_short");
+}
+
+// N2 (the rest): `checked_pow`, the one `Checked` member whose
+// exponent is not another `Self`.
+
+#[test]
+fn checked_pow_reports_the_width_it_leaves() {
+    let src = r#"
+        fn show8(r: Option<u8>) -> u64 {
+            match r {
+                Option::Some(v) => { println(v) }
+                Option::None => { println("none") }
+            }
+            0u64
+        }
+
+        fn show_i64(r: Option<i64>) -> u64 {
+            match r {
+                Option::Some(v) => { println(v) }
+                Option::None => { println("none") }
+            }
+            0u64
+        }
+
+        fn main() -> u64 {
+            # The receiver is a name, the shape the compiled backends
+            # want (`docs/language.md` -> "Overflow-aware arithmetic").
+            val three: u8 = 3u8
+            val a: Option<u8> = three.checked_pow(5u32)
+            show8(a)
+            val b: Option<u8> = three.checked_pow(6u32)
+            show8(b)
+            # Anything to the zeroth is one, including zero.
+            val zero: u8 = 0u8
+            val c: Option<u8> = zero.checked_pow(0u32)
+            show8(c)
+            val neg: i64 = -3i64
+            val d: Option<i64> = neg.checked_pow(3u32)
+            show_i64(d)
+            val two: i64 = 2i64
+            val e: Option<i64> = two.checked_pow(62u32)
+            show_i64(e)
+            val f: Option<i64> = two.checked_pow(63u32)
+            show_i64(f)
+            # A huge exponent on a base that cannot overflow: the
+            # square-and-multiply loop runs 32 times, not four
+            # billion.
+            val one: i64 = 1i64
+            val g: Option<i64> = one.checked_pow(4000000000u32)
+            show_i64(g)
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "checked_pow");
+}
+
+#[test]
+fn clamp_f32_holds_the_bounds() {
+    let src = r#"
+        fn main() -> u64 {
+            println(math::clamp_f32(5.5f32, 0f32, 2f32))
+            println(math::clamp_f32(-1f32, 0f32, 2f32))
+            println(math::clamp_f32(1.5f32, 0f32, 2f32))
+            # NaN is not outside the range -- it is not comparable to
+            # it, so both tests fail and the value comes back out.
+            println(math::is_nan_f32(math::clamp_f32(limits::f32_nan(), 0f32, 2f32)))
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "clamp_f32");
+}

@@ -49,6 +49,22 @@ impl<'a> FunctionLower<'a> {
         fn_name: DefaultSymbol,
         args_ref: &ExprRef,
     ) -> Result<FuncId, String> {
+        let arg_exprs: Vec<ExprRef> = match self.program.expression.get(args_ref) {
+            Some(Expr::ExprList(items)) => items,
+            _ => return Err("call arguments must be an ExprList".to_string()),
+        };
+        self.resolve_call_target_from_args(fn_name, &arg_exprs)
+    }
+
+    /// The same resolution starting from the argument expressions
+    /// themselves. A module-qualified call holds a `Vec<ExprRef>` and
+    /// no `ExprList` node to point at, and it needs generic templates
+    /// instantiated exactly the way a bare call does.
+    pub(super) fn resolve_call_target_from_args(
+        &mut self,
+        fn_name: DefaultSymbol,
+        arg_exprs: &[ExprRef],
+    ) -> Result<FuncId, String> {
         // Closures Phase 5a: `lift_closure_binding` registers
         // `name -> FuncId` when it sees a `val name = fn(...)`
         // literal, so a subsequent `name(args)` lands here as a
@@ -80,18 +96,6 @@ impl<'a> FunctionLower<'a> {
             // "take the IR Type of the matching arg"; concrete slots
             // are skipped (the type-checker has already verified
             // they line up).
-            let arg_exprs: Vec<ExprRef> = match self
-                .program
-                .expression
-                .get(args_ref)
-            {
-                Some(Expr::ExprList(items)) => items,
-                _ => {
-                    return Err(
-                        "call arguments must be an ExprList".to_string(),
-                    );
-                }
-            };
             if template.parameter.len() != arg_exprs.len() {
                 return Err(format!(
                     "generic function `{}` expects {} argument(s), got {}",

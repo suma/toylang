@@ -508,7 +508,8 @@ fn main() -> u64 {
     `compiler/tests/consistency/` が pin）。一方 `+` / `*` / 符号付き `-` の
     overflow は **wrap**（ビルドプロファイルに依らず 1 つの意味論）。逃げ道は
     `core/std/checked.t` の `trait Checked` — `checked_add|sub|mul|div` →
-    `Option<Self>` / `saturating_add|sub|mul` → `Self` を**全 8 幅**
+    `Option<Self>` / `checked_pow(exp: u32)` → `Option<Self>` /
+    `saturating_add|sub|mul` → `Self` を**全 8 幅**
     (`u8`〜`u64` / `i8`〜`i64`) に impl (レシーバは名前束縛、enum 結果は
     `val` 束縛してから `match`、または `??` で畳む)。
     **narrow unsigned の `-` はアンダーフローで trap せず wrap する**

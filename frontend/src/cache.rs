@@ -32,7 +32,7 @@ use crate::ast::module_interface::ModuleInterface;
 ///
 /// Mismatched versions are treated as a cache miss by
 /// [`load_full_module`].
-pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 39;
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 40;
 // v2: `File` gained `id` (JIT cache key) and `tests` (LLM-LOOP P4).
 // v3: `BuiltinFunctionSymbols` interns the MEMORY_PROFILING M4 counter
 // names, shifting every later symbol id.
@@ -102,6 +102,11 @@ pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 39;
 // for every module interned after it, whose unchanged entries would
 // otherwise be read back against the old intern order (the same
 // reason convert.t bumped v9 and parse.t v33).
+// v40: STDLIB-NUMERIC N2/N3/N6 — `checked.t` gains `checked_pow`,
+// `math.t` gains `clamp_f32` and `random.t` gains `shuffle`. New names
+// in an auto-loaded module shift every symbol interned after it, so
+// the modules that did *not* change would be read back against the
+// old intern order (v37's reasoning, one file later).
 
 /// Bincode options for the AST cache.
 ///

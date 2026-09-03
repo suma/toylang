@@ -1,5 +1,9 @@
 # STDLIB NUMERIC — 整数の math・ビット演算・限界値・乱数
 
+> **状態: N0〜N6 すべて landing 済み (2026-09-03)。** 以下は決定の記録
+> として残す。非目標 (bignum / 有理数・decimal / 複素数・行列 / 統計 /
+> CSPRNG) は末尾の節のとおり据え置き。
+
 > 対象: `core/std/math.t` / `core/std/i64.t` / `core/std/f64.t` /
 > `core/std/checked.t` と、新設する `core/std/bits.t` /
 > `core/std/random.t`
@@ -230,11 +234,27 @@ pub fn shuffle<T>(v: &mut Vec<T>)                # Fisher-Yates
 - **すべて `random_u64()` の上の純 toylang** (制約 5)。同じ seed から
   同じ列が出ることを 3 レーンで pin する。`random_normal` を extern に
   すると libm の実装差で値が割れる。
-- **`shuffle` は `&mut Vec<T>` を取る。** TRAIT_BASE の実測 3
-  (`&mut T` が単一化できない) に**当たるかどうかは着手時に測る** —
-  外側が具体型 (`Vec<T>`) なので通る見込みだが、通らなければ
-  `impl<T> Vec<T> { fn shuffle(&mut self) }` に置き換える (その場合
-  `vec.t` が `random` に依存するので、依存の向きを先に決める)。
+- **`shuffle` は `&mut Vec<T>` を取る。** 測った結果、TRAIT_BASE の
+  実測 3 には当たらなかった (外側が具体型 `Vec<T>` なので `&mut T` の
+  単一化を要求しない)。`impl<T> Vec<T>` の置き換えは不要で、`vec.t` は
+  `random` を知らないままになった。
+  ただし**別の 3 つ**に当たり、そのすべてが「**bound の無い `<T>`**」
+  と「**module 修飾した呼び出し**」の組でしか露出しない:
+  (1) 型検査器が「宣言された型パラメータ」を **bound を持つものだけ**で
+  判定していた (`current_fn_generic_bounds` は bound の無い `T` を
+  持たない) ため、body 中の `v.get(i)` が返す `T` が「誰も宣言していない
+  名前」に見えていた。
+  (2) `dispatch_module_function_call_with_qualifier` が
+  `visit_generic_call` の**押していないスコープを pop していた** —
+  `visit_generic_call` は全出口で 1 つ pop する契約で、bare 呼び出し側
+  (`expression.rs`) は push していた。結果 `random::shuffle(&mut v)` の
+  **次の行から `v` が消え**、`[E0003] Identifier 'v' not found` になる。
+  (3) lowering が module 修飾の callee を関数索引から**名前で**引いて
+  いた。generic テンプレートはそこに居ない (呼び出しごとに実体化する)
+  ので、同じ関数が bare では通り修飾では
+  「compiler MVP cannot lower the call」になっていた。併せて修飾呼び出しの
+  引数を `lower_call_arg_items` に通し (`&T` にアドレスを渡す経路)、
+  `&mut` の writeback も配線した。
 - **暗号用途に使えないと書く。** `random()` は再現可能な PRNG で、
   seed は時刻と pid。CSPRNG は非目標。
 

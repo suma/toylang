@@ -33,15 +33,21 @@ package std.checked
 # the widths below are a stdlib edit with no compiler work behind
 # them (RUNTIME-TRAP-NARROW).
 #
-# The bodies are mechanical per width — the same seven bodies with
+# The bodies are mechanical per width — the same eight bodies with
 # the width's own `MAX` / `MIN` literals substituted — so read one
-# unsigned impl and one signed impl and the rest follow. Two of them
+# unsigned impl and one signed impl and the rest follow. Three of them
 # are worth knowing:
 #
 #   - unsigned `checked_mul` divides `MAX` by `other` rather than
 #     multiplying, so the test itself cannot overflow;
 #   - signed `checked_mul` multiplies and divides back, with
-#     `MIN * -1` taken out first because that division would trap.
+#     `MIN * -1` taken out first because that division would trap;
+#   - `checked_pow` squares and multiplies rather than looping `exp`
+#     times, so it is bounded by the 32 bits of the exponent instead
+#     of by its value: `1u64.checked_pow(4000000000u32)` answers at
+#     once where the repeated-multiplication spelling would not.
+#     Every product goes through `checked_mul`, which is what makes
+#     the overflow report exact rather than an estimate.
 #
 # Narrow widths differ from `u64` in one place worth naming: `a - b`
 # below zero **wraps** on `u8` / `u16` / `u32` where the same
@@ -55,6 +61,7 @@ trait Checked {
     fn checked_sub(self: Self, other: Self) -> Option<Self>
     fn checked_mul(self: Self, other: Self) -> Option<Self>
     fn checked_div(self: Self, other: Self) -> Option<Self>
+    fn checked_pow(self: Self, exp: u32) -> Option<Self>
     fn saturating_add(self: Self, other: Self) -> Self
     fn saturating_sub(self: Self, other: Self) -> Self
     fn saturating_mul(self: Self, other: Self) -> Self
@@ -122,6 +129,30 @@ impl Checked for u8 {
             self * other
         }
     }
+
+    fn checked_pow(self: Self, exp: u32) -> Option<Self> {
+        var result: u8 = 1u8
+        var b: u8 = self
+        var e: u64 = exp as u64
+        while e > 0u64 {
+            if (e & 1u64) == 1u64 {
+                val step: Option<u8> = result.checked_mul(b)
+                match step {
+                    Option::Some(v) => { result = v }
+                    Option::None => { return Option::None }
+                }
+            }
+            e = e >> 1u64
+            if e > 0u64 {
+                val sq: Option<u8> = b.checked_mul(b)
+                match sq {
+                    Option::Some(v) => { b = v }
+                    Option::None => { return Option::None }
+                }
+            }
+        }
+        Option::Some(result)
+    }
 }
 
 impl Checked for u16 {
@@ -184,6 +215,30 @@ impl Checked for u16 {
         } else {
             self * other
         }
+    }
+
+    fn checked_pow(self: Self, exp: u32) -> Option<Self> {
+        var result: u16 = 1u16
+        var b: u16 = self
+        var e: u64 = exp as u64
+        while e > 0u64 {
+            if (e & 1u64) == 1u64 {
+                val step: Option<u16> = result.checked_mul(b)
+                match step {
+                    Option::Some(v) => { result = v }
+                    Option::None => { return Option::None }
+                }
+            }
+            e = e >> 1u64
+            if e > 0u64 {
+                val sq: Option<u16> = b.checked_mul(b)
+                match sq {
+                    Option::Some(v) => { b = v }
+                    Option::None => { return Option::None }
+                }
+            }
+        }
+        Option::Some(result)
     }
 }
 
@@ -248,6 +303,30 @@ impl Checked for u32 {
             self * other
         }
     }
+
+    fn checked_pow(self: Self, exp: u32) -> Option<Self> {
+        var result: u32 = 1u32
+        var b: u32 = self
+        var e: u64 = exp as u64
+        while e > 0u64 {
+            if (e & 1u64) == 1u64 {
+                val step: Option<u32> = result.checked_mul(b)
+                match step {
+                    Option::Some(v) => { result = v }
+                    Option::None => { return Option::None }
+                }
+            }
+            e = e >> 1u64
+            if e > 0u64 {
+                val sq: Option<u32> = b.checked_mul(b)
+                match sq {
+                    Option::Some(v) => { b = v }
+                    Option::None => { return Option::None }
+                }
+            }
+        }
+        Option::Some(result)
+    }
 }
 
 impl Checked for u64 {
@@ -310,6 +389,30 @@ impl Checked for u64 {
         } else {
             self * other
         }
+    }
+
+    fn checked_pow(self: Self, exp: u32) -> Option<Self> {
+        var result: u64 = 1u64
+        var b: u64 = self
+        var e: u64 = exp as u64
+        while e > 0u64 {
+            if (e & 1u64) == 1u64 {
+                val step: Option<u64> = result.checked_mul(b)
+                match step {
+                    Option::Some(v) => { result = v }
+                    Option::None => { return Option::None }
+                }
+            }
+            e = e >> 1u64
+            if e > 0u64 {
+                val sq: Option<u64> = b.checked_mul(b)
+                match sq {
+                    Option::Some(v) => { b = v }
+                    Option::None => { return Option::None }
+                }
+            }
+        }
+        Option::Some(result)
     }
 }
 
@@ -403,6 +506,30 @@ impl Checked for i8 {
             }
         }
     }
+
+    fn checked_pow(self: Self, exp: u32) -> Option<Self> {
+        var result: i8 = 1i8
+        var b: i8 = self
+        var e: u64 = exp as u64
+        while e > 0u64 {
+            if (e & 1u64) == 1u64 {
+                val step: Option<i8> = result.checked_mul(b)
+                match step {
+                    Option::Some(v) => { result = v }
+                    Option::None => { return Option::None }
+                }
+            }
+            e = e >> 1u64
+            if e > 0u64 {
+                val sq: Option<i8> = b.checked_mul(b)
+                match sq {
+                    Option::Some(v) => { b = v }
+                    Option::None => { return Option::None }
+                }
+            }
+        }
+        Option::Some(result)
+    }
 }
 
 impl Checked for i16 {
@@ -494,6 +621,30 @@ impl Checked for i16 {
                 limits::i16_min()
             }
         }
+    }
+
+    fn checked_pow(self: Self, exp: u32) -> Option<Self> {
+        var result: i16 = 1i16
+        var b: i16 = self
+        var e: u64 = exp as u64
+        while e > 0u64 {
+            if (e & 1u64) == 1u64 {
+                val step: Option<i16> = result.checked_mul(b)
+                match step {
+                    Option::Some(v) => { result = v }
+                    Option::None => { return Option::None }
+                }
+            }
+            e = e >> 1u64
+            if e > 0u64 {
+                val sq: Option<i16> = b.checked_mul(b)
+                match sq {
+                    Option::Some(v) => { b = v }
+                    Option::None => { return Option::None }
+                }
+            }
+        }
+        Option::Some(result)
     }
 }
 
@@ -587,6 +738,30 @@ impl Checked for i32 {
             }
         }
     }
+
+    fn checked_pow(self: Self, exp: u32) -> Option<Self> {
+        var result: i32 = 1i32
+        var b: i32 = self
+        var e: u64 = exp as u64
+        while e > 0u64 {
+            if (e & 1u64) == 1u64 {
+                val step: Option<i32> = result.checked_mul(b)
+                match step {
+                    Option::Some(v) => { result = v }
+                    Option::None => { return Option::None }
+                }
+            }
+            e = e >> 1u64
+            if e > 0u64 {
+                val sq: Option<i32> = b.checked_mul(b)
+                match sq {
+                    Option::Some(v) => { b = v }
+                    Option::None => { return Option::None }
+                }
+            }
+        }
+        Option::Some(result)
+    }
 }
 
 impl Checked for i64 {
@@ -678,6 +853,30 @@ impl Checked for i64 {
                 limits::i64_min()
             }
         }
+    }
+
+    fn checked_pow(self: Self, exp: u32) -> Option<Self> {
+        var result: i64 = 1i64
+        var b: i64 = self
+        var e: u64 = exp as u64
+        while e > 0u64 {
+            if (e & 1u64) == 1u64 {
+                val step: Option<i64> = result.checked_mul(b)
+                match step {
+                    Option::Some(v) => { result = v }
+                    Option::None => { return Option::None }
+                }
+            }
+            e = e >> 1u64
+            if e > 0u64 {
+                val sq: Option<i64> = b.checked_mul(b)
+                match sq {
+                    Option::Some(v) => { b = v }
+                    Option::None => { return Option::None }
+                }
+            }
+        }
+        Option::Some(result)
     }
 }
 

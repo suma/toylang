@@ -395,6 +395,15 @@ pub fn max_f32(a: f32, b: f32) -> f32 {
     if a > b { a } else { b }
 }
 
+# `clamp_f64`'s twin. The bounds are compared with `<` / `>` rather
+# than through `min_f32` / `max_f32`, so a NaN `x` stays NaN here
+# while `min_f32(NaN, b)` deliberately answers `b` -- clamping asks
+# "is this outside the range", and NaN is not.
+pub fn clamp_f32(x: f32, lo: f32, hi: f32) -> f32 {
+    assert(lo <= hi, "clamp_f32: the low bound is above the high one")
+    if x < lo { lo } elif x > hi { hi } else { x }
+}
+
 pub fn is_nan_f32(x: f32) -> bool { x != x }
 
 pub fn is_infinite_f32(x: f32) -> bool {

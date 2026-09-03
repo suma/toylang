@@ -921,6 +921,12 @@ impl<'a> TypeCheckerVisitor<'a> {
             &mut self.context.current_fn_generic_bounds,
             func.generic_bounds.clone(),
         );
+        // An unbounded `<T>` has no entry in the map above, so record
+        // the declared parameters by name as well (see the field's doc).
+        let prev_generic_params = std::mem::replace(
+            &mut self.context.current_fn_generic_params,
+            func.generic_params.clone(),
+        );
         // COLLECTIONS C0(a): the body's `==` between two values of a
         // type parameter belongs to this function, and is answered at
         // its call sites (`eq_requirement.rs`).
@@ -1001,6 +1007,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 Err(e) => {
                     // Restore bounds so a following type-check doesn't inherit them.
                     self.context.current_fn_generic_bounds = prev_bounds;
+                    self.context.current_fn_generic_params = prev_generic_params;
                     self.context.current_eq_owner = prev_eq_owner;
                     self.context.closure_by_ref_bodies = prev_by_ref;
                     if pushed_generic_scope {
@@ -1050,6 +1057,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         self.pop_context();
         self.context.current_fn_generic_bounds = prev_bounds;
+        self.context.current_fn_generic_params = prev_generic_params;
         self.context.current_eq_owner = prev_eq_owner;
         self.context.closure_by_ref_bodies = prev_by_ref;
         if pushed_generic_scope {

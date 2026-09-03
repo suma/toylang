@@ -77,3 +77,32 @@ pub fn random_normal() -> f64 {
     val theta: f64 = 6.283185307179586f64 * v
     r * math::cos(theta)
 }
+
+# Shuffle a vector in place, uniformly (Fisher-Yates).
+#
+# Every one of the `n!` orderings is equally likely, which the naive
+# "swap each element with a random position anywhere" loop is not --
+# that one produces `n^n` equally likely swap sequences over `n!`
+# orderings, and the two do not divide. Drawing from `[0, i]` and
+# walking down is what makes the counts match.
+#
+# The draw goes through `random_range`, so the rejection there keeps
+# the positions unbiased too; `random() % (i + 1)` would tilt every
+# shuffle toward the low indices.
+pub fn shuffle<T>(v: &mut Vec<T>) {
+    val n: u64 = v.size()
+    # `n - 1` would underflow on an empty vector, and `u64`
+    # subtraction traps rather than wrapping (RUNTIME-TRAP).
+    if n < 2u64 { return }
+    var i: u64 = n - 1u64
+    while i > 0u64 {
+        val j: u64 = random_range(0u64, i + 1u64)
+        if j != i {
+            val a: T = v.get(i)
+            val b: T = v.get(j)
+            v.set(i, b)
+            v.set(j, a)
+        }
+        i = i - 1u64
+    }
+}

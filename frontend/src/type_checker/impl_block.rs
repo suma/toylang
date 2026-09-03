@@ -129,6 +129,12 @@ impl<'a> TypeCheckerVisitor<'a> {
                 &mut self.context.current_fn_generic_bounds,
                 merged_bounds,
             );
+            // A method's own unbounded parameters are not in the map
+            // above; record them by name as well (see the field's doc).
+            let prev_generic_params = std::mem::replace(
+                &mut self.context.current_fn_generic_params,
+                method.generic_params.clone(),
+            );
             // COLLECTIONS C0(a): as in the free-function path, a `==`
             // between two type-parameter values is recorded against
             // this method and answered at its call sites.
@@ -151,6 +157,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             for cond in &method.requires {
                 if let Err(e) = self.check_method_contract_clause(cond, "requires") {
                     self.context.current_fn_generic_bounds = prev_bounds;
+                    self.context.current_fn_generic_params = prev_generic_params;
                     self.context.current_eq_owner = prev_eq_owner;
                     self.restore_method_parameter_context();
                     if has_generics {
@@ -187,6 +194,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 // under the `__old_N` the clause refers to.
                 if let Err(e) = self.check_old_snapshots(&method.old_exprs) {
                     self.context.current_fn_generic_bounds = prev_bounds;
+                    self.context.current_fn_generic_params = prev_generic_params;
                     self.context.current_eq_owner = prev_eq_owner;
                     self.restore_method_parameter_context();
                     if has_generics {
@@ -197,6 +205,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 for cond in &method.ensures {
                     if let Err(e) = self.check_method_contract_clause(cond, "ensures") {
                         self.context.current_fn_generic_bounds = prev_bounds;
+                        self.context.current_fn_generic_params = prev_generic_params;
                         self.context.current_eq_owner = prev_eq_owner;
                         self.restore_method_parameter_context();
                         if has_generics {
@@ -212,6 +221,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
             // Restore generic bounds and parameter context
             self.context.current_fn_generic_bounds = prev_bounds;
+            self.context.current_fn_generic_params = prev_generic_params;
             self.context.current_eq_owner = prev_eq_owner;
             self.restore_method_parameter_context();
 

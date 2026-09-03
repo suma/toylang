@@ -4593,6 +4593,7 @@ One trait, `Checked`, with an impl for **every integer width** —
 | | signature |
 |---|---|
 | `checked_add` / `checked_sub` / `checked_mul` / `checked_div` | `(self: Self, other: Self) -> Option<Self>` |
+| `checked_pow` | `(self: Self, exp: u32) -> Option<Self>` |
 | `saturating_add` / `saturating_sub` / `saturating_mul` | `(self: Self, other: Self) -> Self` |
 
 Each impl clamps to its own type's bounds, so the same call reads the
@@ -4602,6 +4603,14 @@ where the `u64` impl gives `u64::MAX`.
 `checked_div` answers `Option::None` for both traps the `/` operator
 raises — a zero divisor and `MIN / -1` — so it is the way to divide by
 a value that might be either.
+
+`checked_pow` is the odd one out: its second argument is an exponent
+(`u32`), not another `Self`. It squares and multiplies, so the work is
+bounded by the exponent's 32 bits rather than by its value, and every
+product goes through `checked_mul` — `2i64.checked_pow(63u32)` is
+`Option::None`, `2i64.checked_pow(62u32)` is the exact power. There is
+no `saturating_pow`: what to clamp a signed overflow to depends on the
+sign of the base, and picking one silently is worse than an `Option`.
 
 Narrow widths differ from `u64` in one way worth knowing: `a - b`
 below zero **wraps** on `u8` / `u16` / `u32`, where the same

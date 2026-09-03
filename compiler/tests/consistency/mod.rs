@@ -70,3 +70,4 @@ mod narrow_for_range;
 mod enum_assoc_fn_producer;
 mod return_type_instantiates;
 mod op_overload_positions;
+mod unbounded_generic_param;

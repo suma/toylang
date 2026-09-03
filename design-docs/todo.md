@@ -10,6 +10,37 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-03
+- **STDLIB-NUMERIC 完了 (N0〜N6) — 残っていた `shuffle` / `checked_pow` /
+  `clamp_f32`** — 設計は [`STDLIB_NUMERIC.md`](STDLIB_NUMERIC.md)。
+  N0〜N5 と N6 の大半は先に landing していたが、宣言だけあって書かれて
+  いなかった 3 つを入れた。`random::shuffle<T>(&mut Vec<T>)` は
+  **stdlib で最初の generic 自由関数**で、そのせいで「bound の無い
+  `<T>`」と「module 修飾の呼び出し」の組でしか出ない穴を 3 層ぶん
+  掘り出した (下記 3 項)。`checked_pow` は `Checked` の 8 幅すべてに
+  square-and-multiply で足した — 指数の**値**ではなく 32 bit で
+  上限が決まるので `1i64.checked_pow(4000000000u32)` が即答する。
+  `saturating_pow` は置かない (符号付きの飽和先が基数の符号で変わる)。
+- **UNBOUNDED-GENERIC-PARAM — bound の無い `<T>` が「宣言されていない」
+  扱いだった** — 型検査器は「この関数が宣言した型パラメータ」を
+  `current_fn_generic_bounds` (bound を持つものだけの map) で判定して
+  いたので、`fn shuffle<T>(v: &mut Vec<T>)` の body 中の `v.get(i)` が
+  返す `T` が `[E0010] ... which is not bound here` になっていた。
+  `current_fn_generic_params` を context に足して両方を見る。
+- **QUALIFIED-GENERIC-CALL-SCOPE — module 修飾の generic 呼び出しが
+  呼び出し側の束縛を消していた** — `visit_generic_call` は全出口で
+  スコープを 1 つ pop する契約で、bare 呼び出し側は push していたが
+  `dispatch_module_function_call_with_qualifier` は push していなかった。
+  `random::shuffle(&mut v)` の**次の行から `v` が消え**、
+  `[E0003] Identifier 'v' not found` になる。呼び出しは正しいので
+  診断は現場を指さない。
+- **QUALIFIED-GENERIC-CALL-LOWER — 同じ呼び出しが lowering でも
+  落ちていた** — module 修飾の callee を関数索引から**名前で**引いて
+  いたが、generic テンプレートはそこに居ない (呼び出しごとに実体化)。
+  `resolve_call_target` を引数スライス版に分けて修飾側からも通し、
+  併せて引数を `lower_call_arg_items` (= `&T` にアドレスを渡す経路) に
+  乗せ、`&mut` compound の writeback も配線した。これ以前は module の
+  関数に `&mut` の struct を渡すと `call argument produced no value` で
+  落ちていた。
 - **TYPECHECK-BODY-KEY — 同名の module 関数の body が丸ごと未検査だった**
   — `type_check_body` の「検査済み」メモが**関数名だけをキー**にしていた
   ため、`base64::encode` を検査したあと `hex::encode` は body を walk

@@ -1377,22 +1377,6 @@
 > 分野ごとの空白で、`RUNTIME_LIBRARY.md` の P1〜P4 に対応する
 > (下の 2 件も分野で言えば TEXT と IO に属する)。
 
-- **STDLIB-COLLECTIONS: Dict の hash 化 / `Set<T>` / Deque / PriorityQueue /
-  Vec 拡張** ★★ — RUNTIME_LIBRARY の P1 が丸ごと未着手。`dict.t` の
-  insert/get は今も線形探索 (`dict.t:56`)。論点は 3 つ: (a) `hash.t` の
-  mixer 更新 (当人が「将来は Wyhash / FxHash 相当が要る」と明記。trait
-  署名は安定契約なので実装差し替えで済む)、(b) tombstone と成長閾値、
-  (c) **`DictIter` の反復順** — 現状は挿入順 (並列配列の並び) で、open
-  addressing にすると物理順が変わる。挿入順を維持する (index 配列を
-  重ねる) か「未規定」に引き下げるかを `docs/language.md` で**先に**
-  決める。`contains` / `index_of` / `remove` は `T` に `==` を要求する
-  bound が今の trait 機構で書けるかが着手時の実測事項
-  (→ STDLIB-TRAIT-BASE)。Dict と `Set` は表実装を共有するので、個別に
-  着手すると設計が割れる — 設計は [`COLLECTIONS.md`](COLLECTIONS.md)
-  (2026-09-02。上記の論点は実測で決着済み: generic な `==` に `Eq`
-  bound は要らない / `K: Hash` bound は動くが breaking change /
-  `Set` は `Dict<T, ()>` では書けない / `remove` の swap-remove で
-  反復順は既に挿入順ではない)
 - **HOF-RETURN-UNKNOWN: 関数を値として渡す形が使えない** ★ —
   (a) **名前つき関数を値として渡せない** — `fn run(f: fn () -> ())` に
   `run(work)` と書くと `[E0001] expected fn () -> (), but got ()`
@@ -1409,52 +1393,6 @@
   気づいた。足すのは 4 行だが、`Drop` を持つ型は container に入れると
   **move する** (`[E0014]`) ので、既存の `String` を受け渡すコードが
   move 検査に引っかかりうる。影響範囲を測ってから
-- **STDLIB-NUMERIC: 整数側の math が無い** ★ — 設計は
-  [`STDLIB_NUMERIC.md`](STDLIB_NUMERIC.md) (2026-09-03)。`math.t` は
-  f64 の libm ラッパ 11 本 + `abs(i64)` + `min`/`max` (**i64 と u64
-  だけ**) で、整数側は実質空。測ったこと: (1) **`u64::MAX` を書く手段が
-  無い** — `checked.t` は 8 幅ぶんの限界値を `255u8` のように直書き
-  している (associated const も module const も無いため)、(2) IEEE の端は
-  正しい (`0.0/0.0` は `NaN`、`nan == nan` は false、`-7 % 3 == -1`)
-  が `is_nan` が無く、**`NaN` / `inf` という綴りは JSON に無い**
-  (SERIALIZE へ)、(3) extern 1 回は interpreter で +6.7 µs なのに対し
-  **ビット演算を toylang のループで書くと 64 反復で約 400 µs** —
-  60 倍遅いので extern。決定: **ビット演算は u64 の extern 5 本を土台に
-  幅の補正を toylang で** (9 種 × 8 幅 = 72 本の extern を作らない) /
-  **IR 命令にはしない** (cranelift の `popcnt` は 1 命令だが、extern なら
-  実装 1 つ・IR 命令なら 3 つ。SIMD-VM-SLOT と同じ「測って払う」) /
-  **`min`/`max` は `Ord` の default body に置かない** (`Self` 戻りが
-  bound 越しに呼べない穴に当たる。TRAIT_BASE B1 の後に移す) /
-  **溢れは wrap、checked は `Checked` に足す** (3 つ目の規約を作らない)。
-  着手順は N0 (`limits.t`。**他の全部が限界値を使う**) → N1 (`bits.t`。
-  `Dict` の手書き `next_power_of_two` が利用者) → N2 (整数 math。
-  `isqrt` / `gcd` は `ensures` を書けるので `--check` のオラクルが効く)
-  → N3 (`min`/`max`/`clamp` 全幅) → N4 (f64 の 7 本 + 分類) →
-  N5 (**f32 の libm が 1 本も無い** + format spec の f32 未対応) →
-  N6 (`random.t` — 範囲は棄却法、分布は純 toylang で列を共有)
-- **STDLIB-SERIALIZE: JSON / hex / base64** ★ — 設計は
-  [`STDLIB_SERIALIZE.md`](STDLIB_SERIALIZE.md) (2026-09-03)。構造を持った
-  データを保存して読み戻す方法が 1 つも無い。測ったこと: (1) **JSON の
-  値の木は今日書ける** — `enum Json { .. Array(Vec<Json>),
-  Object(Dict<String, Json>) }` が 3 レーン一致 (E0013 に当たらないのは
-  `Vec` / `Dict` がヒープの向こう側だから。`Box` を挟まなくてよい)、
-  (2) f64 の綴りは往復するが**指数形が無い** (`1e30` 相当が 31 桁)、
-  (3) **ソースに指数リテラルが書けない** (`1e300f64` は `[E0012]`。
-  一方 `parse::to_f64("1e10")` は受理する — 入力にあるのに文法に無い)、
-  (4) **module 修飾の型名が generic 型引数に書けない**
-  (`Result<f64, parse::ParseError>` が parse error。裸の `ParseError`
-  なら通る) — JSON の API はこの形を user のコードに毎回出す、
-  (5) IR VM のループは 1 反復 ≒ 6 µs なので**1 MB の base64 が
-  interpreter で約 6 秒**。決定: **`Int(i64)` と `Num(f64)` を分ける**
-  (`u64` の id を f64 に通すと 2^53 で壊れる) / **指数形は出さない**
-  (往復する唯一の綴りに寄せる) / **`NaN` / `inf` は writer が panic**
-  (書けない値を黙って `null` にしない) / **深さ上限 128 で `TooDeep`**
-  (user の入力が `recursion limit exceeded` の panic になってはいけない)
-  / **エラーは失敗位置をバイト offset で持つ** / **derive 相当は非目標**
-  (型情報が実行時に無い)。着手順は S0 (hex。いちばん小さくて分野の型を
-  確定させる) → S1 (`JsonWriter`。木を作らない) → S2 (base64) →
-  S3 (`Json` の木。出力は S1 で書くので綴りの実装が 2 つにならない) →
-  S4 (reader) → S5 (深さ / 位置つき診断)
 - **並行性 (CONCURRENCY)** は分野としては stdlib だが、本体が move /
   Drop モデルとの接合なので「検討中の機能」節に置いてある (★★★)。
   RUNTIME_LIBRARY P3 も「設計文書を別に取ってから着手」と同じ判断

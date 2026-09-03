@@ -80,16 +80,16 @@ read_file / strftime) / panic・backtrace (shadow stack) / 出力シンク
 |---|---|---|---|---|
 | **P0** | io 書き込み系 | `write_file` / `append_file` / `eprint` / `io::exit(code)` | extern | ✅ 2026-08-30 (P0-A) |
 | **P0** | str パース | `parse::to_i64/to_u64/to_f64/to_bool(str) -> Result<_, ParseError>` | 純 toylang + extern 1 本 | ✅ 2026-08-30 (P0-B) |
-| **P0** | 衛生項目 | ~~narrow int の `checked_*` (RUNTIME-TRAP-NARROW)~~ ✅ 2026-08-31 / `str` の `Ord` (STDLIB-ORD) / `arg(i)` 等の範囲外 `Result` 化 | 混在 | 残りは todo 既載 |
-| **P1** | Dict hash 化 | 線形探索 → open addressing。`hash.t` の mixer 更新を含む | 純 toylang | 未着手 ([COLLECTIONS](COLLECTIONS.md)) |
-| **P1** | `Set<T>` | hash 化した表を共有 | 純 toylang | 未着手 ([COLLECTIONS](COLLECTIONS.md)) |
-| **P1** | Vec 拡張 | `insert`/`remove`/`contains`/`index_of`/`reverse`/`sort_by` | 純 toylang | 未着手 ([COLLECTIONS](COLLECTIONS.md)) |
-| **P2** | 時間 | `now_mono()` / `sleep(ms)` | extern | 未着手 |
-| **P2** | PriorityQueue / Deque | `Vec<T>` + `Ord` の binary heap / ring buffer | 純 toylang | 未着手 |
-| **P2** | ロギング | レベル付き `log(level, msg)` → stderr | 純 toylang | P0 の `eprint` 依存 |
+| **P0** | 衛生項目 | ~~narrow int の `checked_*` (RUNTIME-TRAP-NARROW)~~ ✅ 2026-08-31 / ~~`str` の `Ord` (STDLIB-ORD)~~ ✅ 2026-09-03 / `arg(i)` 等の範囲外 `Result` 化 | 混在 | 残りは todo 既載 |
+| **P1** | Dict hash 化 | 線形探索 → open addressing。`hash.t` の mixer 更新を含む | 純 toylang | ✅ 2026-09-02 (C1) |
+| **P1** | `Set<T>` | hash 化した表を共有 | 純 toylang | ✅ 2026-09-02 (C2) |
+| **P1** | Vec 拡張 | `insert`/`remove`/`contains`/`index_of`/`reverse`/`sort_by` | 純 toylang | ✅ 2026-09-03 (C3) |
+| **P2** | 時間 | `now_mono()` / `sleep(ms)` / `DateTime` | extern | ✅ 2026-09-03 ([STDLIB_TIME](STDLIB_TIME.md)) |
+| **P2** | PriorityQueue / Deque | `Vec<T>` + `Ord` の binary heap / ring buffer | 純 toylang | ✅ 2026-09-03 (C4 / C5) |
+| **P2** | ロギング | レベル付き `log::at(level, msg)` → stderr | 純 toylang | ✅ 2026-09-03 ([STDLIB_LOG](STDLIB_LOG.md)) |
 | **P3** | 並行性 | `spawn` + join ハンドル + channel | extern + コンパイラ | 設計文書から (todo CONCURRENCY) |
 | **P4** | FFI P2 | dlopen / `NativeLibrary` | extern | FFI_PLAN Phase 2 設計済み |
-| **P4** | JSON | writer 先行、reader は後 | 純 toylang | 未着手 |
+| **P4** | JSON / hex / base64 | writer 先行、reader は後 | 純 toylang | ✅ 2026-09-03 ([STDLIB_SERIALIZE](STDLIB_SERIALIZE.md)) |
 | 保留 | プロセス spawn / ネットワーク / regex / 多倍長 | 需要未確認 | — | 下記「非目標」 |
 
 ### 各項目の論点

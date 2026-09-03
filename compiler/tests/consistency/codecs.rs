@@ -240,3 +240,125 @@ fn every_byte_survives_both_codecs() {
     );
     assert_renders(&src, "codec_all_bytes", "512\n344\ntrue\ntrue\n");
 }
+
+/// The vector paths (SIMD.md strategy B) start at 32 bytes of hex
+/// text and 32 characters of base64, and each leaves a tail to the
+/// scalar loop. Lengths on both sides of every boundary, so a chunk
+/// that is one element short — or a tail that starts one element
+/// early — shows up here rather than as a wrong byte in the middle
+/// of somebody's file.
+#[test]
+fn codec_round_trips_across_the_vector_boundaries() {
+    let src = format!(
+        r#"
+        {HELPERS}
+        fn round(n: u64) -> bool {{
+            var v: Vec<u8> = Vec::new()
+            var k: u64 = 0u64
+            while k < n {{
+                v.push(((k * 37u64 + 5u64) % 256u64) as u8)
+                k = k + 1u64
+            }}
+            val h: String = hex::encode(v)
+            val b: String = base64::encode(v)
+            if h.len() != n * 2u64 {{ return false }}
+            if b.len() != ((n + 2u64) / 3u64) * 4u64 {{ return false }}
+            var ok: bool = true
+            val dh = hex::decode(h.to_str())
+            match dh {{
+                Result::Ok(d) => {{
+                    if d.size() != n {{ ok = false }}
+                    var j: u64 = 0u64
+                    while j < n {{
+                        if d.get(j) != v.get(j) {{ ok = false }}
+                        j = j + 1u64
+                    }}
+                }}
+                Result::Err(_) => {{ ok = false }}
+            }}
+            val db = base64::decode(b.to_str())
+            match db {{
+                Result::Ok(d) => {{
+                    if d.size() != n {{ ok = false }}
+                    var j: u64 = 0u64
+                    while j < n {{
+                        if d.get(j) != v.get(j) {{ ok = false }}
+                        j = j + 1u64
+                    }}
+                }}
+                Result::Err(_) => {{ ok = false }}
+            }}
+            ok
+        }}
+        fn main() -> u64 {{
+            var bad: u64 = 0u64
+            var n: u64 = 0u64
+            while n < 70u64 {{
+                if !round(n) {{ bad = bad + 1u64 }}
+                n = n + 1u64
+            }}
+            println(bad)
+            0u64
+        }}
+    "#
+    );
+    assert_renders(&src, "codec_vector_boundaries", "0\n");
+}
+
+/// A bad character *after* a whole vector chunk still reports its own
+/// index.
+///
+/// This is the part of the vector path that could quietly regress
+/// into a worse diagnostic: the chunk loop cannot say which lane was
+/// wrong, so it stops and hands the position back to the scalar loop.
+/// Get that handoff wrong and the error still says `Invalid`, just
+/// about the wrong byte — which no round-trip test would catch.
+#[test]
+fn codec_reports_the_bad_character_after_a_full_chunk() {
+    let src = format!(
+        r#"
+        {HELPERS}
+        fn hex_bad(s: str) -> u64 {{
+            val d = hex::decode(s)
+            match d {{
+                Result::Ok(_) => 9999u64
+                Result::Err(e) => {{
+                    match e {{
+                        CodecError::Invalid(k) => k
+                        CodecError::BadLength => 8888u64
+                    }}
+                }}
+            }}
+        }}
+        fn b64_bad(s: str) -> u64 {{
+            val d = base64::decode(s)
+            match d {{
+                Result::Ok(_) => 9999u64
+                Result::Err(e) => {{
+                    match e {{
+                        CodecError::Invalid(k) => k
+                        CodecError::BadLength => 8888u64
+                    }}
+                }}
+            }}
+        }}
+        fn main() -> u64 {{
+            # 32 good hex digits (one whole chunk), then a bad one.
+            println(hex_bad("00112233445566778899aabbccddeeffZ0"))
+            # A bad digit inside the first chunk.
+            println(hex_bad("0011223344556677889_aabbccddeeff"))
+            # 36 good base64 characters (two chunks' worth of the
+            # bound), then a bad one.
+            println(b64_bad("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA!AAA"))
+            # A bad character inside the first chunk.
+            println(b64_bad("AAAAAAAA!AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"))
+            0u64
+        }}
+    "#
+    );
+    assert_renders(
+        &src,
+        "codec_bad_character_after_chunk",
+        "32\n19\n36\n8\n",
+    );
+}

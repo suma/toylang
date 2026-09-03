@@ -62,6 +62,46 @@ impl String {
         }
     }
 
+    # Empty, with room for `n` bytes already taken.
+    #
+    # The counterpart of `Vec::with_capacity`, and for the same
+    # reason: a caller that knows the final size should pay for one
+    # allocation rather than let `push` grow the buffer under it.
+    # `size()` is still 0 — the bytes are room, not content. Code
+    # that fills the buffer through `as_ptr()` says how much it wrote
+    # with `set_size`.
+    #
+    # `heap_alloc(0)` answers null by contract (`core/std/ptr.t`), so
+    # only a non-zero request can have failed; reading every null as
+    # failure would make `String::with_capacity(0)` an out-of-memory
+    # panic.
+    fn with_capacity(n: u64) -> Self {
+        val data: ptr = __builtin_heap_alloc(n)
+        if n > 0u64 && __builtin_ptr_is_null(data) {
+            panic("String::with_capacity: allocation failed ({n} bytes)")
+        }
+        String {
+            data: data,
+            len: 0u64,
+            cap: n,
+            elem_size: 1u64,
+        }
+    }
+
+    # Say that `n` bytes of the buffer are live, after writing them
+    # through `as_ptr()` rather than with `push`. Without this the
+    # bytes are there and `size()` still answers 0.
+    #
+    # Panics past the capacity. Bytes between the old and the new
+    # size are whatever the memory already held, so this is only
+    # sound once they have actually been written — the checker cannot
+    # see that, and it is not an `unsafe fn` either, for the same
+    # reason `Vec::set_size` is not: it touches no pointee itself.
+    fn set_size(&mut self, n: u64) {
+        if n > self.cap { panic("String::set_size beyond capacity") }
+        self.len = n
+    }
+
     # Bulk-copy a `str`'s UTF-8 bytes onto a fresh String. The
     # trailing NUL terminator is intentionally NOT copied
     # (`size()` matches `s.len()` exactly).

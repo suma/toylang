@@ -211,6 +211,9 @@ JIT (`jit.rs`) は `cranelift_native` のまま — 生成コードがそのマ�
 | `CaseConvert` (`to_upper` / `to_lower`) | `string.t::fold_ascii_case` | ASCII 大小変換は完全に lane-wise |
 | `Contains` / `Split` | `string.t` | needle / sep の先頭バイトを 16 バイトずつ走査 (memchr) |
 
+**2026-09-03 に codec を追加**: `hex::encode` / `decode` /
+`base64::encode` / `decode`。実測は下の「codec の SIMD 化」節。
+
 **実測** (AOT、4096 バイトの文字列、aarch64、中央値):
 
 | kernel | scalar | SIMD | |
@@ -238,6 +241,50 @@ scalar 1.38s → **一括確保 + `mem_copy` に変えて 0.71s** (1.9x) →
 テスト中の文字列はほぼ 16 バイト未満で、ベクタ経路に入らない。
 長い入力の pin は `compiler/tests/consistency/simd.rs` の
 「Stdlib kernels」節にある (chunk 境界と tail の両方を踏む)。
+
+### codec の SIMD 化 (2026-09-03)
+
+`__simd_swizzle` / `__simd_shuffle` / `__simd_bitcast` が入って初めて
+書けるようになった 4 つ。**確保を 1 回にして書き抜ける**のが半分、
+lane 演算がもう半分。
+
+| kernel | 1 パス | 使う道具 |
+|---|---|---|
+| `hex::encode` | 16 バイト → 32 文字 | `swizzle` = 16 エントリの数字表引き、`shuffle` = hi/lo の交互配置 |
+| `hex::decode` | 32 文字 → 16 バイト | `c \| 0x20` で大小を畳んで 1 組の比較、`shuffle` で偶奇を分けて `(hi << 4) \| lo` |
+| `base64::encode` | 12 バイト → 16 文字 | `shuffle` で 3 バイト組を 32bit lane へ、`bitcast` して 6bit 場を取り出し、`shuffle` 2 回で織り直す |
+| `base64::decode` | 16 文字 → 12 バイト | 逆順。位置ごとに 1 ベクタへ `shuffle` してから 3 バイトに詰める |
+
+出力バッファは `String::with_capacity` + `set_size` で 1 回だけ確保する
+(この 2 つは codec のために足した。`Vec` に元からあったものの String 版で、
+`as_ptr()` へ書き込んでから長さを申告する形)。
+
+**実測** (AOT、aarch64、`TOYLANG_CRANELIFT_OPT_LEVEL=speed`、**100 MiB**、
+3 回の最小値。バッファ生成の 0.01s は差し引いてある。encode は 10ms の
+計測分解能に近いので 1000 MiB で測って 1/10 した):
+
+| kernel | scalar | SIMD | |
+|---|---|---|---|
+| `hex::encode` | 0.78s | 0.024s | **33x** |
+| `base64::encode` | 0.59s | 0.033s | **18x** |
+| `hex::decode` | 1.18s | 0.32s | **3.7x** |
+| `base64::decode` | 1.00s | 0.33s | **3.0x** |
+
+**decode が encode ほど伸びないのは確保が残るから。** encode は出力長が
+入力長から決まるので 1 回の確保で書き抜けるが、decode は呼び出しごとに
+`Vec` を確保して返す (32 回の測定で 32 回の確保と解放)。走査そのものは
+encode と同じ桁で速くなっている。
+
+**OS の `base64` との比較** (同じ 100 MiB、macOS/aarch64。`base64` 側は
+read + write を含み、`cat` の下限は 0.01s):
+
+| | `/usr/bin/base64` | toylang | |
+|---|---|---|---|
+| encode | 0.06s | **0.033s** | 1.5x |
+| decode (133 MiB → 100 MiB) | 0.96s | **0.33s** | 2.8x |
+
+出力は `/usr/bin/base64` (base64) と `xxd -p` (hex) に**バイト一致**を
+確認済み。
 
 **まだ手を付けていない候補**:
 
@@ -495,9 +542,6 @@ cranelift の `shuffle` は `I8X16` の**バイト**index なので、lane 幅 w
 - **入れ子呼び出しに型が届かない** — `__simd_insert(__simd_splat(2u8), ...)`
   は `[E0010]` になる。vector を取る引数位置が hint を降ろしていないため
   で、`__simd_swizzle` の第 2 引数でも踏む。回避は `val` に束縛すること
-- **hex / base64 の SIMD 化** — `swizzle` (アルファベットの表引き) と
-  `shuffle` (3→4 バイトの並べ替え) が揃ったので、材料は全部ある。
-  `core/std/hex.t` / `base64.t` はまだ byte ループ
 - **lane 型 5 種の追加** — 表を埋めるだけ
 - **`[f64x2; N]`** — vector を配列要素にする経路は未整備
   (`array_layout.rs` の 8 バイト leaf slot に収まらない)

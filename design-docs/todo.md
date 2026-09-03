@@ -10,6 +10,22 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-03
+- **TYPECHECK-BODY-KEY — 同名の module 関数の body が丸ごと未検査だった**
+  — `type_check_body` の「検査済み」メモが**関数名だけをキー**にしていた
+  ため、`base64::encode` を検査したあと `hex::encode` は body を walk
+  せずに返っていた。型検査器は body を**書き換える** (`?` の desugar /
+  `Display` の `to_str` / CHAR-LITERAL-NUM の narrowing / SIMD の型
+  焼き込み) ので、2 つ目の関数ではそれが全部黙って効かず、生の AST が
+  バックエンドに流れていた。body の `StmtRef` をキーにする
+  (`FunctionCheckingState::checked_bodies`)。2026-08-30 に free function
+  を検査対象に入れた修正の**取りこぼし**で、症状は
+  `hex::encode` の `__simd_load` が「型が焼き込まれていない」で落ちること。
+- **CODEC-SIMD — hex / base64 の 4 カーネルを SIMD 化** — encode は
+  **33x / 18x**、decode は **3.7x / 3.0x** (100 MiB、AOT)。
+  `/usr/bin/base64` 比で encode 1.5x / decode 2.8x 速く、出力は
+  `base64` / `xxd -p` とバイト一致。出力バッファ用に
+  **`String::with_capacity` / `set_size`** を追加 (`Vec` の同名 API の
+  String 版)。設計と実測は [`SIMD.md`](SIMD.md) の「codec の SIMD 化」。
 - **SIMD-INTRINSIC-4 — `__simd_bitmask` / `__simd_swizzle` /
   `__simd_bitcast` / `__simd_shuffle` (intrinsic 13 → 17、**未実装の
   intrinsic は無くなった**)** — 「どの lane か」を聞く手段が
@@ -1712,10 +1728,8 @@
 * SIMD Phase 3 の残 / Phase 4 ★★ — Phase 2 (型 + 演算子 + intrinsic) と
   戦略 B の主要 kernel は landing 済み。`__simd_bitmask` /
   `__simd_swizzle` / `__simd_bitcast` / `__simd_shuffle` も入った
-  (2026-09-03、**intrinsic の穴は無し**)。残りは (a1) **hex / base64 の
-  SIMD 化** — `swizzle` (表引き) と `shuffle` (並べ替え) が揃ったので
-  材料は全部あるが、`core/std/hex.t` / `base64.t` はまだ byte ループ、
-  (a) **stdlib の残り kernel**
+  (2026-09-03、**intrinsic の穴は無し**)。hex / base64 の 4 カーネルも
+  SIMD 化済み。残りは (a) **stdlib の残り kernel**
   — `Vec` の `sum` / `min` / `max` (**API 自体が無い**ので追加から)、
   `Vec<T>::sort` の小配列部分、
   (b) `--simd-report` (「なぜベクトル化されなかったか」を聞ける CLI)、

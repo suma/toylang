@@ -1197,6 +1197,26 @@
   `docs/language.md` 新設**。
 ## 未実装 📋
 
+- **AOT-MATCH-STR-ARM-BLOCK: `str` を返す match の arm がブロックだと
+  AOT が拒否する** — 最小再現:
+  ```
+  fn pick(o: Option<u64>) -> str {
+      match o {
+          Option::Some(v) => { val a: String = String::from_str("one")
+                               val s: str = a.to_str()
+                               s }
+          Option::None => { val b: String = String::from_str("none")
+                            val t: str = b.to_str()
+                            t }
+      }
+  }
+  ```
+  → `function falls through without producing a value of the declared
+  return type`。**片方の arm がリテラル (`"err"`) なら通る**ので、
+  両 arm が実行時に組み立てた `str` を返す形が落ちる。
+  **拒否であって誤答ではない** (コンパイル時に止まる)。回避は
+  arm で `println` する / `String` を返して呼び出し側で `to_str`。
+  `core/std/hex.t` / `base64.t` のテストはこの形を避けている。
 - **STDLIB-FN-SHADOWED-BY-USER-FN: user の自由関数が stdlib module の
   同名関数を内側から置き換える** — `fn pad2_field(n: u64) -> u64` を
   書いたプログラムが `println(dt)` で落ちる

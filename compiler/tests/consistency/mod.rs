@@ -54,6 +54,7 @@ mod numeric;
 mod time;
 mod fs_path;
 mod log;
+mod codecs;
 mod generic_enum_payload;
 mod primitive_receivers;
 mod conv_span;

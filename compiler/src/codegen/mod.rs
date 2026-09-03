@@ -350,6 +350,8 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_format_i64: cranelift_module::FuncId,
     rt_format_u64: cranelift_module::FuncId,
     rt_format_f64: cranelift_module::FuncId,
+    /// STDLIB-NUMERIC N5.
+    rt_format_f32: cranelift_module::FuncId,
     rt_format_bool: cranelift_module::FuncId,
     rt_format_str: cranelift_module::FuncId,
     /// `panic`-message symbol → data id of `.rodata` blob holding
@@ -928,6 +930,14 @@ impl<M: Module> CodegenSession<M> {
         format_f64_sig.params.push(AbiParam::new(types::I64));
         format_f64_sig.returns.push(AbiParam::new(types::I64));
         let rt_format_f64 = declare_helper(&mut module, "toy_format_f64", &format_f64_sig)?;
+        // STDLIB-NUMERIC N5: the f32 twin. Single precision all the
+        // way through -- promoting to f64 first prints a different
+        // number.
+        let mut format_f32_sig = Signature::new(call_conv);
+        format_f32_sig.params.push(AbiParam::new(types::F32));
+        format_f32_sig.params.push(AbiParam::new(types::I64));
+        format_f32_sig.returns.push(AbiParam::new(types::I64));
+        let rt_format_f32 = declare_helper(&mut module, "toy_format_f32", &format_f32_sig)?;
 
         let mut format_bool_sig = Signature::new(call_conv);
         format_bool_sig.params.push(AbiParam::new(types::I8).uext());
@@ -1017,6 +1027,7 @@ impl<M: Module> CodegenSession<M> {
             rt_format_i64,
             rt_format_u64,
             rt_format_f64,
+            rt_format_f32,
             rt_format_bool,
             rt_format_str,
             panic_strings: HashMap::new(),
@@ -1976,6 +1987,7 @@ struct RuntimeRefs {
     format_i64: cranelift_codegen::ir::FuncRef,
     format_u64: cranelift_codegen::ir::FuncRef,
     format_f64: cranelift_codegen::ir::FuncRef,
+    format_f32: cranelift_codegen::ir::FuncRef,
     format_bool: cranelift_codegen::ir::FuncRef,
     format_str: cranelift_codegen::ir::FuncRef,
 }

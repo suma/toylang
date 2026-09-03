@@ -315,3 +315,102 @@ fn the_rest_of_f64() {
     "#;
     assert_stdout_consistent(src, "f64_rest");
 }
+
+// N5: `f32` had a type, literals and operators, and not one libm
+// function -- nor a format spec.
+
+#[test]
+fn f32_has_the_single_precision_family() {
+    let src = r#"
+        fn main() -> u64 {
+            val two: f32 = 2f32
+            println(math::sqrt_f32(two))
+            println(math::floor_f32(2.7f32))
+            println(math::ceil_f32(2.1f32))
+            println(math::round_f32(2.5f32))
+            println(math::fabs_f32(-3f32))
+            val n = limits::f32_nan()
+            println(math::min_f32(n, 1f32))
+            println(math::is_nan_f32(n))
+            println(math::is_infinite_f32(limits::f32_inf()))
+            println(math::is_finite_f32(limits::f32_inf()))
+            println(math::is_finite_f32(1f32))
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "f32_family");
+}
+
+#[test]
+fn a_format_spec_applies_to_f32_too() {
+    // At single precision, not promoted: `0.1f32` renders as `0.1`
+    // here and as `0.10000000149011612` through f64.
+    let src = r#"
+        fn main() -> u64 {
+            val x: f32 = 3.14159f32
+            println("{x:.2}")
+            println("{x:.4}")
+            val y: f32 = 1f32
+            println("{y}")
+            val z: f32 = 0.1f32
+            println("{z}")
+            val w: f32 = 2.5f32
+            println("{w:<10}|")
+            println("{w:>10}|")
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "f32_format_spec");
+}
+
+// N6: random numbers, all of them on one extern so the same seed
+// gives the same sequence everywhere.
+
+#[test]
+fn a_seeded_sequence_is_the_same_on_every_backend() {
+    let src = r#"
+        fn main() -> u64 {
+            io::random_seed(0x99u64)
+            var i: u64 = 0u64
+            while i < 8u64 {
+                println(random::random_range(10u64, 20u64))
+                i = i + 1u64
+            }
+            println(random::random_bool())
+            println(random::random_i64_range(-5i64, 5i64))
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "random_seeded");
+}
+
+#[test]
+fn the_random_shapes_stay_inside_their_ranges() {
+    // The values themselves are the previous test's business; this is
+    // about the invariants, which hold for any seed.
+    let src = r#"
+        fn main() -> u64 {
+            io::random_seed(7u64)
+            var bad: u64 = 0u64
+            var i: u64 = 0u64
+            while i < 200u64 {
+                # A power-of-two span takes the mask path, anything
+                # else the rejection path -- both are exercised.
+                val a = random::random_range(0u64, 16u64)
+                if a >= 16u64 { bad = bad + 1u64 }
+                val b = random::random_range(3u64, 10u64)
+                if b < 3u64 || b >= 10u64 { bad = bad + 1u64 }
+                val c = random::random_i64_range(-4i64, 4i64)
+                if c < -4i64 || c >= 4i64 { bad = bad + 1u64 }
+                val f = random::random_f64()
+                if f < 0f64 || f >= 1f64 { bad = bad + 1u64 }
+                val n = random::random_normal()
+                if math::is_finite(n) == false { bad = bad + 1u64 }
+                i = i + 1u64
+            }
+            bad
+        }
+    "#;
+    // Zero violations across a thousand draws.
+    assert_consistent(src, "random_ranges");
+}

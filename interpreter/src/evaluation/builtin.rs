@@ -1480,6 +1480,8 @@ fn format_object(
         Object::UInt16(v) => spec.render_uint(*v as u64, false, 16),
         Object::UInt8(v) => spec.render_uint(*v as u64, false, 8),
         Object::Float64(v) => spec.render_f64(*v),
+        // STDLIB-NUMERIC N5.
+        Object::Float32(v) => spec.render_f32(*v),
         Object::Bool(v) => spec.render_text(if *v { "true" } else { "false" }),
         Object::String(s) => spec.render_text(s),
         Object::ConstString(sym) => {

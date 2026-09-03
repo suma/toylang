@@ -1443,18 +1443,10 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                         (self.runtime.format_u64, vec![widened, spec_v, bits_v])
                     }
                     IrType::F64 => (self.runtime.format_f64, vec![v, spec_v]),
-                    // SIMD-F32: a format spec on `f32` is rejected by the
-                    // type checker (same formattable set as before f32
-                    // existed), so reaching here is a lowering bug — the
-                    // promoted-through-f64 rendering would not be
-                    // byte-identical to Rust's f32 formatting.
-                    IrType::F32 => {
-                        return Err(
-                            "internal error: __builtin_format of f32 reached codegen \
-                             (the type checker rejects format specs on f32)"
-                                .to_string(),
-                        );
-                    }
+                    // STDLIB-NUMERIC N5: its own helper, not a promotion
+                    // through f64 -- `0.1f32` prints `0.1` at single
+                    // precision and `0.10000000149011612` promoted.
+                    IrType::F32 => (self.runtime.format_f32, vec![v, spec_v]),
                     IrType::Bool => (self.runtime.format_bool, vec![v, spec_v]),
                     IrType::Str => (self.runtime.format_str, vec![v, spec_v]),
                     IrType::Unit | IrType::Struct(_) | IrType::Tuple(_) | IrType::Enum(_)

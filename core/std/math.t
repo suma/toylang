@@ -46,6 +46,14 @@ extern fn __extern_acos_f64(x: f64) -> f64
 extern fn __extern_log10_f64(x: f64) -> f64
 extern fn __extern_atan2_f64(y: f64, x: f64) -> f64
 extern fn __extern_hypot_f64(x: f64, y: f64) -> f64
+# STDLIB-NUMERIC N5: the single-precision family.
+extern fn __extern_sqrt_f32(x: f32) -> f32
+extern fn __extern_abs_f32(x: f32) -> f32
+extern fn __extern_floor_f32(x: f32) -> f32
+extern fn __extern_ceil_f32(x: f32) -> f32
+extern fn __extern_round_f32(x: f32) -> f32
+extern fn __extern_sin_f32(x: f32) -> f32
+extern fn __extern_cos_f32(x: f32) -> f32
 
 pub fn abs(x: i64) -> i64 {
     # Forwards to the runtime `wrapping_abs` helper so `i64::MIN.abs()`
@@ -354,4 +362,45 @@ pub fn is_infinite(x: f64) -> bool {
 
 pub fn is_finite(x: f64) -> bool {
     if is_nan(x) { false } else { is_infinite(x) == false }
+}
+
+# ---------------------------------------------------------------------
+# f32 (STDLIB-NUMERIC N5).
+#
+# SIMD-F32 gave `f32` a type, literals and operators and stopped
+# there: not one libm function reached it.
+#
+# **Computed at single precision, not promoted.** `sqrtf(x)` and
+# `sqrt(x as f64) as f32` can differ in the last bit, and a scalar
+# answer that disagrees with what `f32x4` produces is exactly the
+# trap that shape exists to avoid.
+
+pub fn sqrt_f32(x: f32) -> f32 { __extern_sqrt_f32(x) }
+pub fn fabs_f32(x: f32) -> f32 { __extern_abs_f32(x) }
+pub fn floor_f32(x: f32) -> f32 { __extern_floor_f32(x) }
+pub fn ceil_f32(x: f32) -> f32 { __extern_ceil_f32(x) }
+pub fn round_f32(x: f32) -> f32 { __extern_round_f32(x) }
+pub fn sin_f32(x: f32) -> f32 { __extern_sin_f32(x) }
+pub fn cos_f32(x: f32) -> f32 { __extern_cos_f32(x) }
+
+pub fn min_f32(a: f32, b: f32) -> f32 {
+    if a != a { return b }
+    if b != b { return a }
+    if a < b { a } else { b }
+}
+
+pub fn max_f32(a: f32, b: f32) -> f32 {
+    if a != a { return b }
+    if b != b { return a }
+    if a > b { a } else { b }
+}
+
+pub fn is_nan_f32(x: f32) -> bool { x != x }
+
+pub fn is_infinite_f32(x: f32) -> bool {
+    x == limits::f32_inf() || x == limits::f32_neg_inf()
+}
+
+pub fn is_finite_f32(x: f32) -> bool {
+    if is_nan_f32(x) { false } else { is_infinite_f32(x) == false }
 }

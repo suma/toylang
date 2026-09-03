@@ -51,6 +51,18 @@ pub fn build_default_registry() -> HashMap<&'static str, ExternFn> {
     m.insert("__extern_log10_f64", extern_log10_f64);
     m.insert("__extern_atan2_f64", extern_atan2_f64);
     m.insert("__extern_hypot_f64", extern_hypot_f64);
+    // STDLIB-NUMERIC N5: `f32` had type and operators but not one
+    // libm function. Computed at single precision rather than
+    // promoted -- `sqrtf(x)` and `sqrt(x as f64) as f32` can differ
+    // in the last bit, and a scalar answer that disagrees with the
+    // `f32x4` one is the thing to avoid.
+    m.insert("__extern_sqrt_f32", extern_sqrt_f32);
+    m.insert("__extern_abs_f32", extern_abs_f32);
+    m.insert("__extern_floor_f32", extern_floor_f32);
+    m.insert("__extern_ceil_f32", extern_ceil_f32);
+    m.insert("__extern_round_f32", extern_round_f32);
+    m.insert("__extern_sin_f32", extern_sin_f32);
+    m.insert("__extern_cos_f32", extern_cos_f32);
     // i64 wrapping_abs — used by the prelude's `impl Abs for i64`.
     // `i64::MIN` stays at `i64::MIN` (matches the legacy
     // `BuiltinMethod::I64Abs` semantics that the prelude replaces).
@@ -136,6 +148,34 @@ fn extern_trunc_f64(args: &[Value]) -> Result<Value, InterpreterError> { unary_f
 fn extern_asin_f64(args: &[Value]) -> Result<Value, InterpreterError> { unary_f64("asin", args, f64::asin) }
 fn extern_acos_f64(args: &[Value]) -> Result<Value, InterpreterError> { unary_f64("acos", args, f64::acos) }
 fn extern_log10_f64(args: &[Value]) -> Result<Value, InterpreterError> { unary_f64("log10", args, f64::log10) }
+
+/// STDLIB-NUMERIC N5: the one-argument `f32` shape.
+fn unary_f32(name: &str, args: &[Value], op: fn(f32) -> f32) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: format!("extern fn `{name}` takes 1 argument"),
+            expected: 1,
+            found: args.len(),
+        });
+    }
+    let x = match &args[0] {
+        Value::Float32(v) => *v,
+        other => {
+            return Err(InterpreterError::InternalError(format!(
+                "extern fn `{name}` expects an f32 argument, got {other:?}"
+            )))
+        }
+    };
+    Ok(Value::Float32(op(x)))
+}
+
+fn extern_sqrt_f32(args: &[Value]) -> Result<Value, InterpreterError> { unary_f32("sqrtf", args, f32::sqrt) }
+fn extern_abs_f32(args: &[Value]) -> Result<Value, InterpreterError> { unary_f32("fabsf", args, f32::abs) }
+fn extern_floor_f32(args: &[Value]) -> Result<Value, InterpreterError> { unary_f32("floorf", args, f32::floor) }
+fn extern_ceil_f32(args: &[Value]) -> Result<Value, InterpreterError> { unary_f32("ceilf", args, f32::ceil) }
+fn extern_round_f32(args: &[Value]) -> Result<Value, InterpreterError> { unary_f32("roundf", args, f32::round) }
+fn extern_sin_f32(args: &[Value]) -> Result<Value, InterpreterError> { unary_f32("sinf", args, f32::sin) }
+fn extern_cos_f32(args: &[Value]) -> Result<Value, InterpreterError> { unary_f32("cosf", args, f32::cos) }
 
 /// The two-argument shape, for `atan2` and `hypot`.
 fn binary_f64(

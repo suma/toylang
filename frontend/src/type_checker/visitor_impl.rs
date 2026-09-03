@@ -544,14 +544,19 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
                     | TypeDecl::Int8 | TypeDecl::UInt8
                     | TypeDecl::Int16 | TypeDecl::UInt16
                     | TypeDecl::Int32 | TypeDecl::UInt32
-                    | TypeDecl::Float64 | TypeDecl::Bool | TypeDecl::String
+                    | TypeDecl::Float64
+                    // STDLIB-NUMERIC N5: f32 was left out when it was
+                    // added, so `{x:.2}` worked for every numeric type
+                    // but one.
+                    | TypeDecl::Float32
+                    | TypeDecl::Bool | TypeDecl::String
                     | TypeDecl::Number
             );
             if !formattable {
                 let shown = self.named_type_for_error(&value_ty);
                 let err = TypeCheckError::generic_error(&format!(
                     "a format spec applies to primitives only \
-                     (integers, `f64`, `bool`, `str`), but this value is `{shown}`; \
+                     (integers, `f64`, `f32`, `bool`, `str`), but this value is `{shown}`; \
                      write `{{value}}` without a spec, or give the type a \
                      `to_str` method and format that"
                 ));

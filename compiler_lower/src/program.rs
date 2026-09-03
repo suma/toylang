@@ -95,6 +95,16 @@ fn libm_import_name_for(name: &str) -> Option<&'static str> {
         "__extern_log10_f64" => "log10",
         "__extern_atan2_f64" => "atan2",
         "__extern_hypot_f64" => "hypot",
+        // STDLIB-NUMERIC N5: the `f` suffix is libm's single-precision
+        // family. Not `sqrt` on a promoted value -- the last bit can
+        // differ, and the scalar answer has to agree with `f32x4`.
+        "__extern_sqrt_f32" => "sqrtf",
+        "__extern_abs_f32" => "fabsf",
+        "__extern_floor_f32" => "floorf",
+        "__extern_ceil_f32" => "ceilf",
+        "__extern_round_f32" => "roundf",
+        "__extern_sin_f32" => "sinf",
+        "__extern_cos_f32" => "cosf",
         // `__extern_abs_i64` — wrapping_abs for i64. libc has
         // `int abs(int)` and `long labs(long)`; we use `labs` and
         // assume `long` is 64-bit on the supported targets (LP64

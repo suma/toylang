@@ -213,6 +213,12 @@ pub trait VmHost {
             Type::U16 => spec.render_uint(unsafe { slot.u64 as u16 } as u64, false, 16),
             Type::U8 => spec.render_uint(unsafe { slot.u64 as u8 } as u64, false, 8),
             Type::F64 => spec.render_f64(unsafe { slot.f64 }),
+            // STDLIB-NUMERIC N5: at single precision, not promoted --
+            // `0.1f32` is `0.1` here and `0.10000000149011612` if it
+            // goes through f64 first. Without this arm an `f32` fell
+            // into the compound catch-all below and printed its bit
+            // pattern.
+            Type::F32 => spec.render_f32(slot.read_f32()),
             Type::Bool => spec.render_text(if unsafe { slot.bool } { "true" } else { "false" }),
             Type::Str => spec.render_text(&self.read_str(unsafe { slot.u64 })),
             // The type checker only lets primitives carry a spec, so

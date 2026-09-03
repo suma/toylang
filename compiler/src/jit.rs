@@ -554,6 +554,7 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_format_i64", toylang_rt::toy_format_i64 as *const u8);
     jit_builder.symbol("toy_format_u64", toylang_rt::toy_format_u64 as *const u8);
     jit_builder.symbol("toy_format_f64", toylang_rt::toy_format_f64 as *const u8);
+    jit_builder.symbol("toy_format_f32", toylang_rt::toy_format_f32 as *const u8);
     jit_builder.symbol("toy_format_bool", toylang_rt::toy_format_bool as *const u8);
     jit_builder.symbol("toy_format_str", toylang_rt::toy_format_str as *const u8);
 }

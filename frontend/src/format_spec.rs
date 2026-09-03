@@ -285,6 +285,25 @@ impl FormatSpec {
     /// Render a float. The default (no precision) keeps the
     /// interpreter's display convention — an integral value shows one
     /// decimal place — so `"{x}"` and `"{x:>8}"` agree on the digits.
+    /// STDLIB-NUMERIC N5: `render_f64`'s twin, at single precision.
+    ///
+    /// **Not `render_f64(v as f64)`.** Promoting first prints the f64
+    /// nearest the f32, which is a different and longer number:
+    /// `0.1f32` is `0.1` here and `0.10000000149011612` promoted.
+    pub fn render_f32(&self, v: f32) -> String {
+        let body = match self.precision {
+            Some(p) => format!("{v:.*}", p as usize),
+            None => {
+                if v.is_finite() && v % 1.0 == 0.0 {
+                    format!("{v:.1}")
+                } else {
+                    format!("{v}")
+                }
+            }
+        };
+        self.pad(&body, true)
+    }
+
     pub fn render_f64(&self, v: f64) -> String {
         let body = match self.precision {
             Some(p) => format!("{v:.*}", p as usize),

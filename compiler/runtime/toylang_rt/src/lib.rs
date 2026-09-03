@@ -2448,6 +2448,28 @@ impl Spec {
         self.pad(&body, true)
     }
 
+    /// STDLIB-NUMERIC N5: the same shape as `render_f64`, spelled at
+    /// single precision.
+    ///
+    /// **Not `render_f64(v as f64)`.** Promoting first prints the f64
+    /// nearest the f32, which is a longer and different number:
+    /// `0.1f32` is `0.1` here and `0.10000000149011612` promoted. The
+    /// integral-value rule (`1f32` prints `1.0`) is the same one
+    /// `docs/language.md` fixes for f64.
+    fn render_f32(&self, v: f32) -> String {
+        let body = match self.precision {
+            Some(p) => format!("{v:.*}", p),
+            None => {
+                if v.is_finite() && v % 1.0 == 0.0 {
+                    format!("{v:.1}")
+                } else {
+                    format!("{v}")
+                }
+            }
+        };
+        self.pad(&body, true)
+    }
+
     fn render_f64(&self, v: f64) -> String {
         let body = match self.precision {
             Some(p) => format!("{v:.*}", p),
@@ -2484,6 +2506,12 @@ pub extern "C" fn toy_format_u64(v: u64, spec: u64, bits: u64) -> *const u8 {
 pub extern "C" fn toy_format_f64(v: f64, spec: u64) -> *const u8 {
     let spec = Spec::unpack(spec);
     toy_str_alloc(spec.render_f64(v).as_bytes())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_format_f32(v: f32, spec: u64) -> *const u8 {
+    let spec = Spec::unpack(spec);
+    toy_str_alloc(spec.render_f32(v).as_bytes())
 }
 
 #[unsafe(no_mangle)]

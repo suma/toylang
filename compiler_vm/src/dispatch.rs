@@ -168,6 +168,30 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
                 vm.write_value(vid, RawSlot::from_bool(out));
             }
         }
+        InstKind::SimdBitmask { value, ty } => {
+            let bytes = vm.read_value(*value).read_v128();
+            let out = crate::simd::bitmask(bytes, *ty);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(out));
+            }
+        }
+        InstKind::SimdSwizzle { table, indices } => {
+            let t = vm.read_value(*table).read_v128();
+            let i = vm.read_value(*indices).read_v128();
+            let out = crate::simd::swizzle(t, i);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_v128(out));
+            }
+        }
+        // The slot already holds the 16-byte image, and a bitcast
+        // changes only how the *next* instruction decodes it — so
+        // there are no bytes to move.
+        InstKind::SimdBitcast { value, .. } => {
+            let bytes = vm.read_value(*value).read_v128();
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_v128(bytes));
+            }
+        }
         InstKind::LoadLocal(local) => {
             let slot = vm.read_local(*local);
             if let Some((vid, _)) = inst.result {

@@ -10,6 +10,12 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-03
+- **SIMD-INTRINSIC-3 — `__simd_bitmask` / `__simd_swizzle` /
+  `__simd_bitcast` (intrinsic 13 → 16)** — 「どの lane か」を聞く手段が
+  抜けていたので `__simd_any` で当たった後は 1 バイトずつ舐め直していた。
+  `String::contains` / `Split` を bitmask 版に置換して**密ケース 2.0x**
+  (1.26s → 0.62s)、疎ケースは変化なし。設計と実測は [`SIMD.md`](SIMD.md)
+  の「Phase 3 の追補」。
 - **STDLIB-SERIALIZE S1/S3/S4/S5 — JSON (`core/std/json.t`)** —
   設計は [`STDLIB_SERIALIZE.md`](STDLIB_SERIALIZE.md)。`JsonWriter`
   (木を作らない writer) / 平坦な `Json` の木 / RFC 8259 の部分集合の
@@ -1688,7 +1694,13 @@
   警告を出すかは未決で、`--simd-report` と同じ「聞けば答える」tooling 側に
   置くのが妥当 (DATA_ORIENTED.md の論点 1)
 * SIMD Phase 3 の残 / Phase 4 ★★ — Phase 2 (型 + 演算子 + intrinsic) と
-  戦略 B の主要 kernel は landing 済み。残りは (a) **stdlib の残り kernel**
+  戦略 B の主要 kernel は landing 済み。`__simd_bitmask` /
+  `__simd_swizzle` / `__simd_bitcast` も入った (2026-09-03)。残りは
+  (a0) **`__simd_shuffle`** — 唯一の未実装 intrinsic。定数マスクを
+  「配列リテラルを型検査器が畳んで synthetic な `u64` 2 語にする」形で
+  受ける設計まで書いてある。hex / base64 の SIMD 化は `swizzle` と
+  `shuffle` が**対**で要るので、着手するならセット、
+  (a) **stdlib の残り kernel**
   — `Vec` の `sum` / `min` / `max` (**API 自体が無い**ので追加から)、
   `Vec<T>::sort` の小配列部分、
   (b) `--simd-report` (「なぜベクトル化されなかったか」を聞ける CLI)、

@@ -70,7 +70,7 @@ fn inst_supported(kind: &InstKind) -> bool {
         | InstKind::Cast { .. }
         | InstKind::Print { .. }
         | InstKind::PrintStr { .. }
-        // SIMD: all thirteen intrinsics run in the VM.
+        // SIMD: every intrinsic runs in the VM.
         | InstKind::SimdSplat { .. }
         | InstKind::SimdLoad { .. }
         | InstKind::SimdStore { .. }
@@ -79,6 +79,9 @@ fn inst_supported(kind: &InstKind) -> bool {
         | InstKind::SimdSelect { .. }
         | InstKind::SimdReduce { .. }
         | InstKind::SimdTest { .. }
+        | InstKind::SimdBitmask { .. }
+        | InstKind::SimdSwizzle { .. }
+        | InstKind::SimdBitcast { .. }
         | InstKind::PrintRaw { .. }
         | InstKind::HeapAlloc { .. }
         | InstKind::HeapRealloc { .. }

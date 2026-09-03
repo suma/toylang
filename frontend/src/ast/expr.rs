@@ -462,8 +462,9 @@ impl MemStat {
 /// operators are *not* here: they go through the regular binary /
 /// unary operator paths, which is the whole point of making vectors a
 /// type. What is left is construction, memory traffic, lane
-/// addressing, and horizontal reduction — thirteen names, so the AST
-/// cache schema is bumped once rather than once per lane type.
+/// addressing, horizontal reduction, and lane permutation — sixteen
+/// names, so the AST cache schema is bumped once rather than once
+/// per lane type.
 ///
 /// Spelling: no lane-type suffix. `__simd_splat` / `__simd_load`
 /// take their result type from the annotation at the call site, the
@@ -510,10 +511,38 @@ pub enum SimdOp {
     Any,
     /// `__simd_all(mask: M) -> bool` — every lane non-zero.
     All,
+    /// `__simd_bitmask(v: V) -> u64` — bit `k` is the **most
+    /// significant bit** of lane `k`; the bits above the lane count
+    /// are zero. `__simd_any` answers *whether* a lane matched;
+    /// this answers *which*, so a byte search can jump straight to
+    /// the hit with `trailing_zeros` instead of re-scanning the
+    /// chunk one lane at a time.
+    ///
+    /// The MSB rather than "non-zero" because that is the one
+    /// definition every ISA implements in a single instruction
+    /// (`pmovmskb` / the NEON shift-and-add sequence). On the
+    /// all-ones / all-zeros masks a comparison produces — the only
+    /// input this is meant for — the two definitions agree.
+    Bitmask,
+    /// `__simd_swizzle(a: u8x16, idx: u8x16) -> u8x16` — a runtime
+    /// table lookup: result lane `i` is `a[idx[i]]`, or zero when
+    /// `idx[i] >= 16`. The indices are *values*, not literals, which
+    /// is what separates this from a shuffle and what makes a
+    /// 16-entry lookup table (hex digits, the base64 alphabet)
+    /// vectorisable.
+    ///
+    /// Byte lanes only, because that is the shape of `pshufb` and
+    /// `tbl`. Wider lanes go through `__simd_bitcast`.
+    Swizzle,
+    /// `__simd_bitcast(v: V) -> W` — the same 16 bytes read as
+    /// another vector type, equivalent to `__simd_store` followed by
+    /// `__simd_load` at the new type. Like `__simd_splat`, the
+    /// result type comes from the call site's annotation.
+    Bitcast,
 }
 
 impl SimdOp {
-    pub const ALL: [SimdOp; 13] = [
+    pub const ALL: [SimdOp; 16] = [
         SimdOp::Splat,
         SimdOp::Load,
         SimdOp::Store,
@@ -527,6 +556,9 @@ impl SimdOp {
         SimdOp::ReduceOr,
         SimdOp::Any,
         SimdOp::All,
+        SimdOp::Bitmask,
+        SimdOp::Swizzle,
+        SimdOp::Bitcast,
     ];
 
     /// The source spelling.
@@ -545,6 +577,9 @@ impl SimdOp {
             SimdOp::ReduceOr => "__simd_reduce_or",
             SimdOp::Any => "__simd_any",
             SimdOp::All => "__simd_all",
+            SimdOp::Bitmask => "__simd_bitmask",
+            SimdOp::Swizzle => "__simd_swizzle",
+            SimdOp::Bitcast => "__simd_bitcast",
         }
     }
 
@@ -558,8 +593,10 @@ impl SimdOp {
             | SimdOp::ReduceAnd
             | SimdOp::ReduceOr
             | SimdOp::Any
-            | SimdOp::All => 1,
-            SimdOp::Load | SimdOp::Extract => 2,
+            | SimdOp::All
+            | SimdOp::Bitmask
+            | SimdOp::Bitcast => 1,
+            SimdOp::Load | SimdOp::Extract | SimdOp::Swizzle => 2,
             SimdOp::Store | SimdOp::Insert | SimdOp::Select => 3,
         }
     }
@@ -567,7 +604,7 @@ impl SimdOp {
     /// Whether the result type comes from the call site's annotation
     /// rather than from an argument.
     pub fn needs_result_annotation(self) -> bool {
-        matches!(self, SimdOp::Splat | SimdOp::Load)
+        matches!(self, SimdOp::Splat | SimdOp::Load | SimdOp::Bitcast)
     }
 
     /// Whether the intrinsic only makes sense on integer lanes.

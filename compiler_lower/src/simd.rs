@@ -24,9 +24,13 @@ impl<'a> FunctionLower<'a> {
     /// anything. Mirrors the type checker's rules.
     pub(super) fn simd_result_type(&self, op: &SimdOp, args: &[ExprRef]) -> Option<Type> {
         match op {
-            SimdOp::Splat | SimdOp::Load => self.simd_stamped_type(*op, args).map(Type::Vector),
+            SimdOp::Splat | SimdOp::Load | SimdOp::Bitcast => {
+                self.simd_stamped_type(*op, args).map(Type::Vector)
+            }
             SimdOp::Store => Some(Type::Unit),
             SimdOp::Any | SimdOp::All => Some(Type::Bool),
+            SimdOp::Bitmask => Some(Type::U64),
+            SimdOp::Swizzle => Some(Type::Vector(VecTy::U8x16)),
             SimdOp::Insert => self.simd_operand_type(args, 0).map(Type::Vector),
             // `select`'s first argument is the *mask*, whose lane
             // type can differ from the value's (`f64x2`'s mask is
@@ -131,6 +135,34 @@ impl<'a> FunctionLower<'a> {
                 let ty = self.simd_value_vector_type(name, value)?;
                 let all = matches!(op, SimdOp::All);
                 Ok(self.emit(InstKind::SimdTest { value, all, ty }, Some(Type::Bool)))
+            }
+            SimdOp::Bitmask => {
+                let value = self.simd_operand_value(name, &user_args[0])?;
+                let ty = self.simd_value_vector_type(name, value)?;
+                Ok(self.emit(InstKind::SimdBitmask { value, ty }, Some(Type::U64)))
+            }
+            SimdOp::Swizzle => {
+                let table = self.simd_operand_value(name, &user_args[0])?;
+                let indices = self.simd_operand_value(name, &user_args[1])?;
+                Ok(self.emit(
+                    InstKind::SimdSwizzle { table, indices },
+                    Some(Type::Vector(VecTy::U8x16)),
+                ))
+            }
+            SimdOp::Bitcast => {
+                let to = self.simd_require_stamp(*op, stamped)?;
+                let value = self.simd_operand_value(name, &user_args[0])?;
+                let from = self.simd_value_vector_type(name, value)?;
+                // A same-type bitcast is the identity, and emitting
+                // one would make codegen ask cranelift to reinterpret
+                // a value as itself.
+                if from == to {
+                    return Ok(Some(value));
+                }
+                Ok(self.emit(
+                    InstKind::SimdBitcast { value, from, to },
+                    Some(Type::Vector(to)),
+                ))
             }
         }
     }

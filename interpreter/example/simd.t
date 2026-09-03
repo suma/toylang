@@ -72,5 +72,38 @@ unsafe fn main() -> u64 {
     val lane: f64 = __simd_extract(v, 1u64)
     println(lane)
     println("as text: {v}")
+
+    # --- which lane, not whether ------------------------------------
+    # `__simd_any` says a byte is somewhere in the window;
+    # `__simd_bitmask` says where. Bit k is lane k's *most
+    # significant* bit, so on the all-ones / all-zeros mask a
+    # comparison produces it reads as one bit per matching lane, and
+    # `trailing_zeros` turns it into an index. This is what lets the
+    # stdlib's `contains` jump to the candidate instead of re-walking
+    # the chunk one byte at a time.
+    val text: u8x16 = __simd_splat(97u8)
+    val marked = __simd_insert(__simd_insert(text, 5u64, 122u8), 11u64, 122u8)
+    val hits: u64 = __simd_bitmask(marked == __simd_splat(122u8))
+    println(hits)
+    println(hits.trailing_zeros())
+
+    # --- byte table lookup -------------------------------------------
+    # `__simd_swizzle` indexes with *values*, not literals: the 16
+    # bytes of `table` are a lookup table and `idx` picks from it.
+    # An index of 16 or more selects zero.
+    val zeros: u8x16 = __simd_splat(0u8)
+    val table = __simd_insert(__simd_insert(zeros, 1u64, 65u8), 2u64, 66u8)
+    val all_two: u8x16 = __simd_splat(2u8)
+    val idx = __simd_insert(all_two, 0u64, 1u8)
+    println(__simd_swizzle(table, idx))
+
+    # --- the same bytes, another lane type ---------------------------
+    # `__simd_bitcast` moves no bits; it is `__simd_store` followed by
+    # `__simd_load` at the new type. Here it exposes the IEEE 754 bit
+    # pattern of 1.0, and it is also how a wider vector reaches the
+    # byte-lane `__simd_swizzle`.
+    val one: f64x2 = __simd_splat(1f64)
+    val bits: i64x2 = __simd_bitcast(one)
+    println(__simd_extract(bits, 0u64))
     0u64
 }

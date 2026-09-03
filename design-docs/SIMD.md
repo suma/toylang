@@ -327,6 +327,7 @@ offset が**バイト**なのとは違うので、`docs/language.md` に明記�
 演算子の相手でもよい (`v & __simd_splat(15u8)` が通る)。
 
 intrinsic は 13 個 (`__simd_shuffle` は定数マスク配列が要るので見送り)。
+**2026-09-03 に 3 個足して 16 個** (下の「Phase 3 の追補」)。
 
 ### 4. `<<` / `>>` の右辺はスカラー
 
@@ -371,9 +372,62 @@ lane 型が増えて 16 バイトを超える幅 (256bit) を入れるとき。
 | 表示 | `compiler/runtime/toylang_rt` の `toy_print_vec` / `toy_to_string_vec` |
 | 一致テスト | `compiler/tests/consistency/simd.rs`、tree-walker 単体は `interpreter/tests/simd_tests.rs` |
 
+## Phase 3 の追補 (2026-09-03): `bitmask` / `swizzle` / `bitcast`
+
+Phase 2 で「型と演算子で表せないもの」を数えたとき、**「どの lane か」を
+聞く手段が抜けていた**。`__simd_any` は「窓のどこかに在る」までしか答え
+ないので、`String::contains` / `Split` の memchr は当たった瞬間に
+**16 バイトを 1 バイトずつ舐め直す**形になっていた — 戦略 B の実測表で
+「先頭バイトが稀なら 16x、密なら 1.5x」と 10 倍開いていた原因がこれ。
+
+| intrinsic | 形 | cranelift |
+|---|---|---|
+| `__simd_bitmask(v) -> u64` | bit `k` = lane `k` の**最上位ビット** | `vhigh_bits` |
+| `__simd_swizzle(a: u8x16, idx: u8x16) -> u8x16` | 実行時 index の表引き、範囲外は 0 | `swizzle` |
+| `__simd_bitcast(v) -> W` | 同じ 16 バイトを別 lane 型で読む | `bitcast` |
+
+意味論で固定したのは 3 点:
+
+1. **`bitmask` は「非ゼロ」ではなく MSB。** 単一命令で実装できる定義は
+   これだけ (`pmovmskb` / NEON の shift+and+addv)。比較が返す全 1 / 全 0
+   のマスク上では両者一致するので、実用上の差は無い。lane 数に依らず
+   `u64` を返すので `Bits::trailing_zeros` にそのまま渡せる。
+   float lane の MSB は符号ビット。
+2. **`swizzle` は byte lane のみ、範囲外は 0。** `pshufb` と `tbl` の形。
+   modulo 16 に丸める実装も「それらしい」ので consistency test で
+   固定した。
+3. **`bitcast` は little-endian。** 「`__simd_store` して別の型で
+   `__simd_load` する」と定義した。ホストの性質ではなく言語の定義
+   (`SimdValue::to_bytes` が既に LE)。
+
+### 実測: memchr の密ケースが 2.0x (2026-09-03)
+
+4096 バイト、needle の先頭バイトが 26 バイト周期で現れて一度も一致しない
+入力 (SIMD.md の戦略 B が 1.5x と測ったのと同じ形)。AOT、aarch64、
+`TOYLANG_CRANELIFT_OPT_LEVEL=speed`、中央値:
+
+| 入力 | bitmask 前 | bitmask 後 | |
+|---|---|---|---|
+| 先頭バイトが密 (26 バイト周期) | 1.26s | 0.62s | **2.0x** |
+| 先頭バイトが不在 | 0.10s | 0.10s | 変化なし |
+
+**`__simd_any` の gate は残すこと。** 最初は `bitmask == 0` だけで
+skip 判定を書いたが、それだと**疎なケースが 0.10s → 0.13s に悪化した**
+(30%)。`vany_true` は 1 命令、`vhigh_bits` は NEON では数命令の列なので、
+**安い質問を先にして、当たったときだけ精密な質問をする**のが両方で勝つ
+形になる。この順序は `core/std/string.t` のコメントにも書いた。
+
 ### 残っている穴
 
-- **`__simd_shuffle`** — 定数マスク配列の受け取りが要る
+- **`__simd_shuffle`** — 定数マスク配列の受け取りが要る。設計は
+  「配列リテラル `[0u64, 4u64, ...]` を**型検査器が畳んで** synthetic な
+  `u64` 2 語 (lane 8bit × 16) にし、バックエンドには配列を見せない」形が
+  既存の stamp 機構 (`stamp_simd_call`) にそのまま乗る。hex / base64 の
+  SIMD 化は `swizzle` (表引き) と `shuffle` (interleave) が**対**で
+  要るので、着手するならこの 2 つはセット
+- **入れ子呼び出しに型が届かない** — `__simd_insert(__simd_splat(2u8), ...)`
+  は `[E0010]` になる。vector を取る引数位置が hint を降ろしていないため
+  で、`__simd_swizzle` の第 2 引数でも踏む。回避は `val` に束縛すること
 - **lane 型 5 種の追加** — 表を埋めるだけ
 - **`[f64x2; N]`** — vector を配列要素にする経路は未整備
   (`array_layout.rs` の 8 バイト leaf slot に収まらない)

@@ -1556,6 +1556,19 @@ pub enum InstKind {
     SimdReduce { value: ValueId, op: SimdReduceOp, ty: VecTy },
     /// SIMD `__simd_any(m)` / `__simd_all(m) -> bool`.
     SimdTest { value: ValueId, all: bool, ty: VecTy },
+    /// SIMD `__simd_bitmask(v) -> u64` — bit `k` is lane `k`'s most
+    /// significant bit. Always `u64`, whatever the lane count, so
+    /// the result feeds `trailing_zeros` without a per-type cast.
+    SimdBitmask { value: ValueId, ty: VecTy },
+    /// SIMD `__simd_swizzle(a, idx) -> u8x16` — byte-wise table
+    /// lookup with **runtime** indices; out of range gives zero.
+    /// Byte lanes on both sides, so no `VecTy` field is needed.
+    SimdSwizzle { table: ValueId, indices: ValueId },
+    /// SIMD `__simd_bitcast(v) -> W` — the same 16 bytes read as
+    /// another vector type. `from` is kept alongside `to` because
+    /// codegen needs the source type to name the cranelift value it
+    /// is reinterpreting.
+    SimdBitcast { value: ValueId, from: VecTy, to: VecTy },
     /// `print("literal")` / `println("literal")`. The string is laid
     /// out in `.rodata` by codegen and the helper is `toy_print_str` /
     /// `toy_println_str`.
@@ -2135,7 +2148,13 @@ impl InstKind {
             | InstKind::SimdSplat { value, .. }
             | InstKind::SimdExtract { value, .. }
             | InstKind::SimdReduce { value, .. }
-            | InstKind::SimdTest { value, .. } => one(value),
+            | InstKind::SimdTest { value, .. }
+            | InstKind::SimdBitmask { value, .. }
+            | InstKind::SimdBitcast { value, .. } => one(value),
+            InstKind::SimdSwizzle { table, indices } => {
+                one(table);
+                one(indices);
+            }
             InstKind::SimdLoad { ptr, offset, .. } => {
                 one(ptr);
                 one(offset);
@@ -2610,6 +2629,20 @@ impl fmt::Display for DisplayInst<'_> {
             InstKind::SimdTest { value, all, ty } => {
                 let which = if *all { "all" } else { "any" };
                 write!(f, "{prefix}simd.{which}.{} {value}", ty.source_name())
+            }
+            InstKind::SimdBitmask { value, ty } => {
+                write!(f, "{prefix}simd.bitmask.{} {value}", ty.source_name())
+            }
+            InstKind::SimdSwizzle { table, indices } => {
+                write!(f, "{prefix}simd.swizzle.u8x16 {table}, {indices}")
+            }
+            InstKind::SimdBitcast { value, from, to } => {
+                write!(
+                    f,
+                    "{prefix}simd.bitcast.{}.{} {value}",
+                    from.source_name(),
+                    to.source_name()
+                )
             }
             InstKind::BinOp { op, lhs, rhs } => write!(f, "{prefix}{op} {lhs}, {rhs}"),
             InstKind::UnaryOp { op, operand } => write!(f, "{prefix}{op} {operand}"),

@@ -49,7 +49,7 @@ pub(super) fn vec_type_code(v: VecTy) -> i64 {
 }
 
 impl<'a, 'b> LowerCtx<'a, 'b> {
-    /// The eight `__simd_*` instructions.
+    /// The `__simd_*` instructions, one arm each.
     pub(super) fn lower_simd(&mut self, inst: &crate::ir::Instruction) -> Result<(), String> {
         match &inst.kind {
             InstKind::SimdSplat { value, ty } => {
@@ -133,6 +133,49 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 // says this instruction produces `Bool`, which is also
                 // an I8, so the value passes through unchanged.
                 self.record_result(inst, raw);
+            }
+            InstKind::SimdBitmask { value, ty } => {
+                // `vhigh_bits` only lowers for *integer* vectors on
+                // aarch64 (x86 accepts a float vector because
+                // `movmskps` does), so route a float vector through
+                // its own mask type first — a register-level
+                // reinterpretation with no run-time cost.
+                let v = self.value(*value);
+                let v = if ty.is_float() {
+                    let want = vec_to_cranelift_ty(ty.mask());
+                    self.builder.ins().bitcast(
+                        want,
+                        cranelift_codegen::ir::MemFlags::new(),
+                        v,
+                    )
+                } else {
+                    v
+                };
+                // At most 16 bits come back, so an `I32` result is
+                // wide enough for every lane count; the IR says the
+                // instruction produces `u64`, hence the extension.
+                let bits = self.builder.ins().vhigh_bits(types::I32, v);
+                let out = self.builder.ins().uextend(types::I64, bits);
+                self.record_result(inst, out);
+            }
+            InstKind::SimdSwizzle { table, indices } => {
+                let t = self.value(*table);
+                let i = self.value(*indices);
+                let out = self.builder.ins().swizzle(t, i);
+                self.record_result(inst, out);
+            }
+            InstKind::SimdBitcast { value, to, .. } => {
+                let v = self.value(*value);
+                let want = vec_to_cranelift_ty(*to);
+                // Cranelift insists on an explicit byte order when
+                // the lane count changes, and little-endian is the
+                // language's definition of a vector's memory image
+                // (`__simd_store` writes it, `SimdValue::to_bytes`
+                // mirrors it) — not a property of the host.
+                let flags = cranelift_codegen::ir::MemFlags::new()
+                    .with_endianness(cranelift_codegen::ir::Endianness::Little);
+                let out = self.builder.ins().bitcast(want, flags, v);
+                self.record_result(inst, out);
             }
             _ => unreachable!("lower_simd was handed an instruction it does not own"),
         }

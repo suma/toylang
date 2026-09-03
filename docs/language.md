@@ -1959,6 +1959,9 @@ for false.
 | `__simd_reduce_min(v)` / `__simd_reduce_max(v)` | `V -> E` |
 | `__simd_reduce_and(v)` / `__simd_reduce_or(v)` | `V -> E`, integer lanes only |
 | `__simd_any(mask)` / `__simd_all(mask)` | `M -> bool` |
+| `__simd_bitmask(v)` | `V -> u64` — bit `k` is lane `k`'s high bit |
+| `__simd_swizzle(a, idx)` | `(u8x16, u8x16) -> u8x16` — byte table lookup |
+| `__simd_bitcast(v)` | `V -> W` — the same 16 bytes, another lane type |
 
 Every `__simd_*` intrinsic is pure except `__simd_load` / `__simd_store`,
 which carry the same effects `__builtin_ptr_read` / `__builtin_ptr_write`
@@ -1982,10 +1985,47 @@ range. The lane is part of the instruction, not a value it reads; to
 select a lane computed at run time, store the vector and read the
 element back.
 
+**`__simd_bitmask` gathers the *most significant* bit of each lane,**
+not "is the lane non-zero". Bit `k` of the result is lane `k`'s high
+bit and bits at or above the lane count are zero, so the answer is a
+`u64` whatever the vector was. On the all-ones / all-zeros mask a
+comparison produces — the input this exists for — the two readings
+agree; on a vector of ones they do not, and the high bit is the one
+every ISA gathers in a single instruction. A float lane's high bit is
+its sign bit.
+
+Where `__simd_any` says *whether* a lane matched, this says *which*:
+
+```rust
+val eq = chunk == needle_v
+if !__simd_any(eq) {
+    i = i + 16u64            # no candidate in this window
+} else {
+    i = i + (__simd_bitmask(eq).trailing_zeros() as u64)
+}
+```
+
+Keep the `__simd_any` gate. It is one instruction on both ISAs, while
+the bitmask is a several-instruction sequence on NEON — asking the
+cheap question first and the precise one only on a hit is what makes
+the pattern faster than the naive scan in *both* the sparse and the
+dense case.
+
+**`__simd_swizzle(a, idx)` indexes with values, not literals.** Result
+lane `i` is `a[idx[i]]`, and an index of 16 or more selects zero. Byte
+lanes on both sides, because that is the shape `pshufb` and `tbl`
+have; reach it from another lane type with `__simd_bitcast`. This is
+the 16-entry lookup table a hex or base64 encoder is built from.
+
+**`__simd_bitcast` moves no bits.** It is defined as `__simd_store`
+followed by `__simd_load` at the new type: the 16 bytes are unchanged
+and only their division into lanes differs. Like `__simd_splat`, it
+takes its result type from the call site's annotation.
+
 ### Where the vector type comes from
 
-`__simd_splat` and `__simd_load` have no lane-type suffix, so the call
-alone does not say what it produces. The type is taken from context —
+`__simd_splat`, `__simd_load` and `__simd_bitcast` have no lane-type
+suffix, so the call alone does not say what it produces. The type is taken from context —
 an annotation, or the vector on the other side of an operator:
 
 ```rust

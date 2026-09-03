@@ -1,5 +1,5 @@
 // SIMD (SIMD.md Phase 2): the 128-bit vector types, lane-wise
-// operators, and the thirteen `__simd_*` intrinsics across all three
+// operators, and the `__simd_*` intrinsics across all three
 // backends.
 //
 // The semantics SIMD.md fixes are what these tests exist to pin, and
@@ -404,4 +404,116 @@ fn stdlib_split_skips_whole_chunks() {
         }
     "#;
     assert_simd(src, "stdlib_split_skips_whole_chunks", 97u64);
+}
+
+// ---------------------------------------------------------------
+// `__simd_bitmask` / `__simd_swizzle` / `__simd_bitcast`
+// ---------------------------------------------------------------
+
+#[test]
+fn simd_bitmask_says_which_lanes_matched() {
+    // The point of the intrinsic: `__simd_any` says *whether* a byte
+    // is in the chunk, `__simd_bitmask` plus `trailing_zeros` says
+    // *where* -- which is what turns the stdlib's memchr from a
+    // per-byte rescan into a jump.
+    let src = r#"
+        fn main() -> u64 {
+            val a: u8x16 = __simd_splat(1u8)
+            val b = __simd_insert(__simd_insert(a, 3u64, 9u8), 7u64, 9u8)
+            val hits = __simd_bitmask(b == __simd_splat(9u8))
+            val first = hits.trailing_zeros()
+            if hits == 136u64 && first == 3u32 { 51u64 } else { 0u64 }
+        }
+    "#;
+    assert_simd(src, "simd_bitmask_says_which_lanes_matched", 51u64);
+}
+
+#[test]
+fn simd_bitmask_reads_the_high_bit_not_non_zero() {
+    // `__simd_any` asks whether a lane is non-zero; `__simd_bitmask`
+    // gathers the lane's **most significant** bit. Lanes of `1` make
+    // the two answers differ, and every backend has to pick the same
+    // one -- the machine instructions gather the MSB, so that is the
+    // definition. A float lane's MSB is its sign bit.
+    let src = r#"
+        fn main() -> u64 {
+            val ones: i32x4 = __simd_splat(1i32)
+            val neg: i32x4 = __simd_splat(0i32 - 1i32)
+            val f: f64x2 = __simd_splat(0f64 - 1.5f64)
+            if __simd_bitmask(ones) == 0u64
+                && __simd_any(ones)
+                && __simd_bitmask(neg) == 15u64
+                && __simd_bitmask(f) == 3u64
+            {
+                53u64
+            } else {
+                0u64
+            }
+        }
+    "#;
+    assert_simd(src, "simd_bitmask_reads_the_high_bit_not_non_zero", 53u64);
+}
+
+#[test]
+fn simd_swizzle_looks_up_a_byte_table() {
+    // Runtime indices, unlike the constant lane of `__simd_extract`:
+    // this is the 16-entry lookup a hex or base64 encoder needs. An
+    // index of 16 or more selects zero, which is the rule both
+    // `pshufb` (as cranelift normalises it) and NEON's `tbl` follow --
+    // pin it, because a backend that wrapped modulo 16 instead would
+    // still look plausible.
+    let src = r#"
+        fn main() -> u64 {
+            val base: u8x16 = __simd_splat(0u8)
+            val t = __simd_insert(
+                __simd_insert(__simd_insert(base, 0u64, 10u8), 1u64, 20u8),
+                2u64, 30u8)
+            val ib: u8x16 = __simd_splat(2u8)
+            val idx = __simd_insert(__simd_insert(ib, 0u64, 1u8), 15u64, 99u8)
+            val out = __simd_swizzle(t, idx)
+            val l0: u8 = __simd_extract(out, 0u64)
+            val l1: u8 = __simd_extract(out, 1u64)
+            val l15: u8 = __simd_extract(out, 15u64)
+            if l0 == 20u8 && l1 == 30u8 && l15 == 0u8 { 55u64 } else { 0u64 }
+        }
+    "#;
+    assert_simd(src, "simd_swizzle_looks_up_a_byte_table", 55u64);
+}
+
+#[test]
+fn simd_bitcast_keeps_the_bytes_in_little_endian_order() {
+    // A bitcast moves no bits: it is `__simd_store` followed by
+    // `__simd_load` at the other type. The lane *order* is the part
+    // that could differ between engines, so the test reads a value
+    // back whose bytes are all distinct positions.
+    let src = r#"
+        fn main() -> u64 {
+            val a: u8x16 = __simd_splat(1u8)
+            val b = __simd_insert(a, 3u64, 9u8)
+            val w: i32x4 = __simd_bitcast(b)
+            val lane0: i32 = __simd_extract(w, 0u64)
+            val back: u8x16 = __simd_bitcast(w)
+            val byte3: u8 = __simd_extract(back, 3u64)
+            val byte0: u8 = __simd_extract(back, 0u64)
+
+            val f: f64x2 = __simd_splat(1.0f64)
+            val bits: i64x2 = __simd_bitcast(f)
+            val exponent: i64 = __simd_extract(bits, 0u64)
+
+            if lane0 == 151060737i32
+                && byte3 == 9u8
+                && byte0 == 1u8
+                && exponent == 4607182418800017408i64
+            {
+                57u64
+            } else {
+                0u64
+            }
+        }
+    "#;
+    assert_simd(
+        src,
+        "simd_bitcast_keeps_the_bytes_in_little_endian_order",
+        57u64,
+    );
 }

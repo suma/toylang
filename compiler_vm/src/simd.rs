@@ -138,6 +138,31 @@ pub fn test(mask: [u8; 16], all: bool, ty: VecTy) -> bool {
     if all { lanes.all(|x| x) } else { lanes.any(|x| x) }
 }
 
+/// `__simd_bitmask`: bit `k` is lane `k`'s most significant bit,
+/// which is the last byte of the lane in the little-endian image.
+pub fn bitmask(bytes: [u8; 16], ty: VecTy) -> u64 {
+    let width = ty.lane_bytes();
+    let mut bits = 0u64;
+    for k in 0..ty.lanes() {
+        if bytes[(k + 1) * width - 1] & 0x80 != 0 {
+            bits |= 1u64 << k;
+        }
+    }
+    bits
+}
+
+/// `__simd_swizzle`: byte-wise table lookup. An index outside
+/// `0..16` selects zero — the rule both `pshufb` (after cranelift
+/// normalises it) and NEON's `tbl` follow.
+pub fn swizzle(table: [u8; 16], indices: [u8; 16]) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    for (k, slot) in out.iter_mut().enumerate() {
+        let i = indices[k] as usize;
+        *slot = if i < 16 { table[i] } else { 0 };
+    }
+    out
+}
+
 /// A horizontal fold, lane 0 through n in order.
 pub fn reduce(bytes: [u8; 16], op: SimdReduceOp, ty: VecTy) -> RawSlot {
     macro_rules! fold {

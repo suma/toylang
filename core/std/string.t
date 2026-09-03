@@ -575,9 +575,25 @@ impl Contains<String> for String {
             # would read past the allocation.
             if i + 16u64 <= n {
                 val chunk: u8x16 = __simd_load(self.data, i)
-                if !__simd_any(chunk == first_v) {
+                val eq: u8x16 = chunk == first_v
+                if !__simd_any(eq) {
                     i = i + 16u64
                     continue
+                }
+                # A hit somewhere in the window is not enough: ask
+                # *which* byte it was and jump there. Without this the
+                # loop falls back to advancing one byte at a time as
+                # soon as the first byte appears anywhere, which is
+                # why the dense case used to run at scalar speed.
+                #
+                # `__simd_any` still gates it: on the common
+                # (no-match) window it is one instruction, while
+                # `__simd_bitmask` is a several-instruction gather on
+                # NEON. Ask the cheap question first, the precise one
+                # only when the answer is yes.
+                i = i + (__simd_bitmask(eq).trailing_zeros() as u64)
+                if i + m > n {
+                    break
                 }
             }
             var matched: bool = true
@@ -601,8 +617,8 @@ impl Contains<String> for String {
 }
 
 # `split(sep)` — O(n * m) worst case, with the scan for a candidate
-# separator done 16 bytes at a time (the same memchr trick
-# `contains` uses). Empty `sep` panics. Each part is a fresh `String` allocated through the
+# separator done 16 bytes at a time and `__simd_bitmask` naming the
+# byte that matched (the same memchr trick `contains` uses). Empty `sep` panics. Each part is a fresh `String` allocated through the
 # active allocator; the outer `Vec<String>` holds them in
 # encounter order (including a trailing empty slice if the input
 # ends with `sep`, matching Rust's `str::split` shape).
@@ -624,9 +640,19 @@ impl Split<String, Vec<String>> for String {
             # skipping does not disturb the part boundaries.
             if i + 16u64 <= n {
                 val chunk: u8x16 = __simd_load(self.data, i)
-                if !__simd_any(chunk == first_v) {
+                val eq: u8x16 = chunk == first_v
+                if !__simd_any(eq) {
                     i = i + 16u64
                     continue
+                }
+                # Jump to the byte that matched rather than to the
+                # window that contains it. `start` still only moves on
+                # a full match, so the part boundaries are untouched.
+                # The cheap `__simd_any` gates the more expensive
+                # `__simd_bitmask`, as in `contains`.
+                i = i + (__simd_bitmask(eq).trailing_zeros() as u64)
+                if i + m > n {
+                    break
                 }
             }
             var matched: bool = true

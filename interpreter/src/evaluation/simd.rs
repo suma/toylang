@@ -122,6 +122,34 @@ impl<'a> EvaluationContext<'a> {
                 let mask = Self::simd_operand(name, &scalar(0))?;
                 Object::Bool((0..mask.lanes()).all(|k| mask.lane_is_set(k)))
             }
+            SimdOp::Bitmask => {
+                let mask = Self::simd_operand(name, &scalar(0))?;
+                let mut bits = 0u64;
+                for k in 0..mask.lanes() {
+                    if mask.lane_high_bit(k) {
+                        bits |= 1u64 << k;
+                    }
+                }
+                Object::UInt64(bits)
+            }
+            SimdOp::Swizzle => {
+                let table = Self::simd_operand(name, &scalar(0))?.to_bytes();
+                let indices = Self::simd_operand(name, &scalar(1))?.to_bytes();
+                let mut out = [0u8; 16];
+                for (k, slot) in out.iter_mut().enumerate() {
+                    // Out of range selects zero, which is what both
+                    // `pshufb` (after cranelift's normalisation) and
+                    // NEON's `tbl` do.
+                    let i = indices[k] as usize;
+                    *slot = if i < 16 { table[i] } else { 0 };
+                }
+                Object::Simd(SimdValue::U8x16(out))
+            }
+            SimdOp::Bitcast => {
+                let ty = Self::simd_annotation(name, result_ty)?;
+                let vector = Self::simd_operand(name, &scalar(0))?;
+                Object::Simd(SimdValue::from_bytes(ty, &vector.to_bytes()))
+            }
         };
         Ok(EvaluationResult::Value(value.into()))
     }

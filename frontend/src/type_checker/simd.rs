@@ -2,7 +2,7 @@
 //!
 //! Lane-wise arithmetic and comparison are *not* here — they are
 //! ordinary binary operators over `TypeDecl::Vector`, checked in
-//! `expression.rs`. This module covers the thirteen `__simd_*`
+//! `expression.rs`. This module covers the sixteen `__simd_*`
 //! intrinsics: the operations a type and an operator cannot express.
 //!
 //! Two rules shape the signatures:
@@ -168,6 +168,44 @@ impl<'a> TypeCheckerVisitor<'a> {
             SimdOp::Any | SimdOp::All => {
                 self.simd_vector_arg(&args[0], name, "the mask")?;
                 Ok(TypeDecl::Bool)
+            }
+            // `u64` regardless of lane count, so a caller can hand
+            // the result to `Bits::trailing_zeros` without knowing
+            // which vector produced it. Bits at or above the lane
+            // count are always zero.
+            SimdOp::Bitmask => {
+                self.simd_vector_arg(&args[0], name, "the mask")?;
+                Ok(TypeDecl::UInt64)
+            }
+            // Byte lanes on both sides: `pshufb` and `tbl` index
+            // bytes, and a wider-lane swizzle would have to be
+            // synthesised differently on each ISA. `__simd_bitcast`
+            // is the way in from another lane type.
+            SimdOp::Swizzle => {
+                let a_ty = self.simd_vector_arg(&args[0], name, "the table")?;
+                let idx_ty = self.simd_vector_arg(&args[1], name, "the indices")?;
+                for (ty, arg, role) in
+                    [(a_ty, &args[0], "the table"), (idx_ty, &args[1], "the indices")]
+                {
+                    if ty != VectorType::U8x16 {
+                        return Err(self.error_with_location(
+                            TypeCheckError::generic_error(&format!(
+                                "{name} indexes bytes, so {role} has to be `u8x16`,                                  got `{}`; reinterpret it with `__simd_bitcast` first",
+                                ty.source_name()
+                            )),
+                            arg,
+                        ));
+                    }
+                }
+                Ok(TypeDecl::Vector(VectorType::U8x16))
+            }
+            // Every vector is 128 bits wide, so any pair of vector
+            // types is a legal reinterpretation and there is nothing
+            // to check beyond "the argument is a vector".
+            SimdOp::Bitcast => {
+                let vec_ty = Self::simd_result_annotation(op, result_ty)?;
+                self.simd_vector_arg(&args[0], name, "the vector")?;
+                Ok(TypeDecl::Vector(vec_ty))
             }
         }
     }

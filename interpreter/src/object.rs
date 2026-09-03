@@ -109,6 +109,19 @@ impl SimdValue {
         }
     }
 
+    /// Whether lane `k`'s **most significant bit** is set —
+    /// `__simd_bitmask`'s per-lane question, which is deliberately
+    /// not [`SimdValue::lane_is_set`]'s "non-zero": the MSB is what
+    /// the machine instructions gather, and the two agree on the
+    /// all-ones / all-zeros masks a comparison produces.
+    ///
+    /// Read off the byte image rather than per lane type, so a
+    /// float's sign bit needs no special case.
+    pub fn lane_high_bit(&self, k: usize) -> bool {
+        let width = self.vector_type().lane_bytes();
+        self.to_bytes()[(k + 1) * width - 1] & 0x80 != 0
+    }
+
     /// The 16 bytes of the vector in little-endian lane order — the
     /// memory image `__simd_store` writes and `__simd_load` reads.
     pub fn to_bytes(&self) -> [u8; 16] {

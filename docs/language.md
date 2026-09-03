@@ -4858,7 +4858,7 @@ produces a new string, because a `str` has no buffer to write into:
 | `str.contains(needle: str)` | `-> bool` | |
 | `str.starts_with(prefix: str)` | `-> bool` | |
 | `str.ends_with(suffix: str)` | `-> bool` | |
-| `str.lt(other: str)` | `-> bool` | `impl Ord for str`; byte order |
+| `str.lt(other: str)` | `-> bool` | `impl Ord for str`; what `a < b` becomes |
 | `str.as_ptr()` | `-> ptr` | the UTF-8 bytes, NUL-terminated |
 | `str.hash()` | `-> u64` | FNV-1a |
 
@@ -4873,9 +4873,10 @@ so and names the owned spelling:
         produces an owned String
 ```
 
-`<` is likewise not an operator on `str` — operator overloading is a
-struct feature — but the ordering exists: use `a.lt(b)`, which is
-the order `Vec<str>::sort()` uses.
+`<` / `<=` / `>` / `>=` compare two `str`s in byte order — the same
+order `Vec<str>::sort()` uses. Operator overloading dispatches on a
+struct receiver, so the comparison is rewritten into the `Ord` call
+that implements it; `a.lt(b)` is the same thing written out.
 
 ### `String` (heap byte buffer)
 

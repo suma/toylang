@@ -1500,23 +1500,67 @@ fn strs_sort_by_bytes_which_is_codepoint_order() {
 }
 
 #[test]
-fn comparing_strs_with_an_operator_names_the_call_that_works() {
-    // `str` has an ordering but `<` is not an operator on it, and
-    // "incompatible types str and str" reads like a compiler bug.
-    let errs = type_check_errors(
-        r#"
+fn strs_compare_with_the_operators() {
+    // `impl Ord for str` gave `str` an ordering that only `a.lt(b)`
+    // could reach, because operator overloading dispatches on a struct
+    // receiver. The comparison is rewritten into that call instead, so
+    // the four operators work and mean what `Vec<str>::sort()` means.
+    //
+    // `Ord` declares only `lt`, so the other three are spelled with
+    // it. Equal operands are the case that catches a wrong spelling:
+    // every one of the four has a different answer there.
+    let src = r#"
         fn main() -> u64 {
             val a: str = "abc"
             val b: str = "abd"
-            if a < b { 1u64 } else { 0u64 }
+            val c: str = "abc"
+            println(a < b)
+            println(b < a)
+            println(a < c)
+            println(a <= c)
+            println(a >= c)
+            println(a > c)
+            println(b > a)
+            println(a >= b)
+            # A prefix sorts before what extends it, and bytes put
+            # uppercase first -- the same order `sort` uses.
+            val p: str = "ab"
+            val u: str = "Abc"
+            println(p < a)
+            println(u < a)
+            0u64
         }
-        "#,
-    );
-    let joined = errs.join("\n");
-    assert!(
-        joined.contains("a.lt(b)") && !joined.contains("incompatible types str and str"),
-        "the diagnostic does not point at the call that works:\n{joined}"
-    );
+    "#;
+    assert_stdout_consistent(src, "str_compare_operators");
+}
+
+#[test]
+fn str_comparisons_work_wherever_they_are_written() {
+    // The rewrite is a post-pass over the pool rather than an
+    // interception, because an operand of another operator, a
+    // condition and a tail expression each reach the checker by a
+    // different route and only some carry the node's own reference.
+    let src = r#"
+        fn take(b: bool) -> u64 { if b { 1u64 } else { 0u64 } }
+        fn cmp(a: str, b: str) -> bool { a < b }
+
+        fn main() -> u64 {
+            val a: str = "abc"
+            val b: str = "abd"
+            var n: u64 = 0u64
+            n = n + take(a < b)              # argument
+            var i: u64 = 0u64
+            while a < b && i < 1u64 { i = i + 1u64 }   # condition, and an operand of `&&`
+            n = n + i
+            if cmp(a, b) { n = n + 1u64 }    # a function's tail
+            val negated: bool = !(a < b)     # operand of a unary
+            if negated { n = n + 10u64 }
+            val r = a < b                    # a plain binding
+            val m = match r { true => 1u64, false => 0u64 }
+            n + m
+        }
+    "#;
+    assert_consistent(src, "str_compare_positions");
 }
 
 // STDLIB-TEXT T3: ASCII classification on `u8` and `u32`.

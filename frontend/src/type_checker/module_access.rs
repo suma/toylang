@@ -59,6 +59,9 @@ impl<'a> TypeCheckerVisitor<'a> {
         // through direct `accept_expr` dispatch (and were typed but not
         // rewritten) with their lazy `val` + `match` blocks.
         self.apply_null_coalesce_rewrites();
+        // STDLIB-ORD: `a < b` on two `str`s becomes the `Ord` call that
+        // implements it, now that every operand type is recorded.
+        self.apply_str_ordering_rewrites();
 
         // COLLECTIONS C0(a): every body and every call site has been
         // seen, so the recorded `==`-on-a-type-parameter requirements

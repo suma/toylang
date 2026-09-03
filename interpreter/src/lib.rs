@@ -691,6 +691,9 @@ fn check_typing_collecting(
     // with their lazy `val` + `match` blocks. Same placement rationale
     // as the tuple-struct rewrites above.
     tc.apply_null_coalesce_rewrites();
+    // STDLIB-ORD: `a < b` on two `str`s becomes the `Ord` call that
+    // implements it, now that every operand type is recorded.
+    tc.apply_str_ordering_rewrites();
     // COLLECTIONS C0(a): with every body and every call site checked,
     // join the `==`-on-a-type-parameter requirements against the types
     // each call instantiated them with.

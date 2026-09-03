@@ -389,6 +389,17 @@ impl<'a> TypeCheckerVisitor<'a> {
             ty
         };
 
+        // STDLIB-ORD: record the operand types when both are `str`, so
+        // `apply_str_ordering_rewrites` can find the comparisons it
+        // has to turn into `Ord` calls. Operands reach the checker
+        // through `accept_expr`, which does not record a type, and the
+        // post-pass has nothing else to go on -- without this the
+        // comparison arrives at the backends as a raw `<` between two
+        // strings, which none of them can do.
+        if matches!(lhs_ty, TypeDecl::String) && matches!(rhs_ty, TypeDecl::String) {
+            self.type_inference.set_expr_type(lhs, TypeDecl::String);
+            self.type_inference.set_expr_type(rhs, TypeDecl::String);
+        }
 
         // `Unknown` is the checker's poison type: it marks an operand
         // whose real type could not be determined, either because it
@@ -690,25 +701,19 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
 
-        // TYPECHECK-LIES: `str` has an ordering (`impl Ord for str`,
-        // which is what `Vec<str>::sort()` uses), but `<` is not an
-        // operator on it -- overloading is a struct feature. Saying
-        // "incompatible types str and str" for that reads like a
-        // compiler bug, so name the call that does work.
-        if let Some(method_name) = Self::struct_cmp_method_name(op)
+        // STDLIB-ORD: two `str`s have an ordering (`impl Ord for
+        // str`), so the comparison is a `bool`. The call that
+        // implements it is put in by `apply_str_ordering_rewrites`,
+        // which runs once every body is checked -- this route knows
+        // the operand types but not always the node's own `ExprRef`,
+        // and the rewrite needs the node.
+        //
+        if Self::struct_cmp_method_name(op).is_some()
+            && !matches!(op, Operator::EQ | Operator::NE)
             && matches!(l, TypeDecl::String)
             && matches!(r, TypeDecl::String)
         {
-            let symbol = Self::comparison_operator_symbol(op);
-            return Err(self.error_with_location(
-                TypeCheckError::unsupported_operation(
-                    &format!(
-                        "`{symbol}` on `str` (compare with `a.{method_name}(b)`, the byte order `Vec<str>::sort()` uses)"
-                    ),
-                    l.clone(),
-                ),
-                lhs,
-            ));
+            return Ok(TypeDecl::Bool);
         }
 
         // TYPECHECK-LIES: when both sides are the same user type,
@@ -2279,6 +2284,66 @@ impl<'a> TypeCheckerVisitor<'a> {
             if let Some(replacement) = replacement {
                 self.core.expr_pool.update(&expr_ref, replacement);
             }
+        }
+    }
+
+    /// STDLIB-ORD: rewrite every `a < b` between two `str`s into the
+    /// `Ord` call that implements it.
+    ///
+    /// Operator overloading dispatches on a *struct* receiver, so the
+    /// ordering `impl Ord for str` provides was reachable only by
+    /// spelling `a.lt(b)` by hand. One rewrite here, and three
+    /// backends that see nothing new -- the same shape as the
+    /// `Display` insertion and the `?` desugar.
+    ///
+    /// A **post-pass**, for the reason `??` needs one: an operand of
+    /// another operator, a condition and a tail expression each reach
+    /// the checker by a different route, and only some of them carry
+    /// the node's own `ExprRef`. Reading the operand types back from
+    /// what the check recorded works for all of them at once.
+    ///
+    /// `Ord` declares only `lt`, so the other three are spelled with
+    /// it: `a > b` is `b.lt(a)`, and the inclusive pair are those
+    /// negated. Bytes are totally ordered, so the negation is exact.
+    pub fn apply_str_ordering_rewrites(&mut self) {
+        let Some(lt) = self.core.string_interner.get("lt") else {
+            // No `Ord` in scope — a program checked without the
+            // stdlib. The comparison keeps its usual diagnostic.
+            return;
+        };
+        for index in 0..self.core.expr_pool.len() {
+            let expr_ref = ExprRef(index as u32);
+            let Some(Expr::Binary(op, lhs, rhs)) = self.core.expr_pool.get(&expr_ref) else {
+                continue;
+            };
+            let negate = match op {
+                Operator::LT | Operator::GT => false,
+                Operator::LE | Operator::GE => true,
+                _ => continue,
+            };
+            // `a > b` and `a <= b` ask `lt` the other way round.
+            let swap = matches!(op, Operator::GT | Operator::LE);
+            let both_str = matches!(
+                self.type_inference.expr_types.get(&lhs),
+                Some(TypeDecl::String)
+            ) && matches!(
+                self.type_inference.expr_types.get(&rhs),
+                Some(TypeDecl::String)
+            );
+            if !both_str {
+                continue;
+            }
+            let (receiver, argument) = if swap { (rhs, lhs) } else { (lhs, rhs) };
+            let call = self
+                .core
+                .expr_pool
+                .add(Expr::MethodCall(receiver, lt, vec![argument]));
+            let body = if negate {
+                Expr::Unary(UnaryOp::LogicalNot, call)
+            } else {
+                Expr::MethodCall(receiver, lt, vec![argument])
+            };
+            self.core.expr_pool.update(&expr_ref, body);
         }
     }
 

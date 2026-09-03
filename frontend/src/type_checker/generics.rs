@@ -86,6 +86,44 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
             );
         }
         
+        // STDLIB-TRAIT-BASE B5: where the call's value lands is
+        // evidence too -- but **only** for a parameter the arguments
+        // could not name.
+        //
+        // Constraints came from arguments alone, so a function whose
+        // type parameter appears only in its return type
+        // (`fn make<T: Default>() -> T`) had nothing to infer from and
+        // was rejected as "cannot infer T", with the answer written
+        // down one token away in `val p: P = make()`.
+        //
+        // Adding the constraint unconditionally is wrong: the type
+        // hint at a call site is not always the expected return type
+        // (it also carries numeric-literal context down into the
+        // arguments), so unifying against it broke inference that had
+        // been working. Solve first, and only reach for the hint when
+        // something is genuinely missing.
+        let solved = self.type_inference.solve_constraints(self.core.string_interner);
+        let needs_return_evidence = match &solved {
+            Ok(solution) => fun
+                .generic_params
+                .iter()
+                .any(|p| !solution.contains_key(p)),
+            Err(_) => false,
+        };
+        if needs_return_evidence
+            && let (Some(ret_ty), Some(hint)) = (
+                fun.return_type.as_ref(),
+                self.type_inference.type_hint.clone(),
+            )
+            && !matches!(hint, TypeDecl::Unknown | TypeDecl::Number)
+        {
+            self.type_inference.add_constraint(
+                ret_ty.clone(),
+                hint,
+                crate::type_checker::inference::ConstraintContext::Generic,
+            );
+        }
+
         // Solve constraints to get type substitutions
         let substitutions = match self.type_inference.solve_constraints(self.core.string_interner) {
             Ok(solution) => solution,

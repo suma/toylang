@@ -610,6 +610,18 @@ impl<'a> EvaluationContext<'a> {
         merged
     }
 
+    /// STDLIB-TRAIT-BASE B5: the symbol a resolved type is registered
+    /// under, for looking a method up. `None` for a type with no name
+    /// of its own.
+    pub(super) fn type_decl_target_symbol(&self, ty: &TypeDecl) -> Option<DefaultSymbol> {
+        match ty {
+            TypeDecl::Struct(sym, _) | TypeDecl::Enum(sym, _) | TypeDecl::Identifier(sym) => {
+                Some(*sym)
+            }
+            _ => None,
+        }
+    }
+
     /// The generic-parameter scope a *receiver* determines: the
     /// declaring struct / enum's `generic_params` zipped with the
     /// runtime `type_args` the value carries. A `Ptr<u64>` receiver
@@ -745,6 +757,31 @@ impl<'a> EvaluationContext<'a> {
     /// Parameters the caller also cannot name stay unbound; reading
     /// `sizeof::<T>()` with one of those is a runtime error, not a
     /// silent guess.
+    /// STDLIB-TRAIT-BASE B5: bind whatever generic parameters the
+    /// *declared return type* names, by matching it against the type
+    /// the caller is binding the result to.
+    ///
+    /// A parameter that appears only in the return position
+    /// (`fn make<T: Default>() -> T`) is invisible to the argument
+    /// walk, so without this there is nothing to bind it to and
+    /// `T::default()` inside the body has no idea which impl it
+    /// means. The compiled lanes read the same annotation for the
+    /// same reason.
+    pub(super) fn fill_scope_from_annotation(
+        &mut self,
+        scope: &mut HashMap<DefaultSymbol, TypeDecl>,
+        generic_params: &[DefaultSymbol],
+        return_type: Option<&TypeDecl>,
+    ) {
+        if generic_params.iter().all(|p| scope.contains_key(p)) {
+            return;
+        }
+        let (Some(declared), Some(actual)) = (return_type, self.pending_annotation.clone()) else {
+            return;
+        };
+        bind_generics_from_type(declared, &actual, generic_params, scope);
+    }
+
     pub(super) fn fill_scope_from_caller(
         &mut self,
         scope: &mut HashMap<DefaultSymbol, TypeDecl>,
@@ -1258,5 +1295,39 @@ pub fn convert_object(e: &Expr) -> Result<Object, InterpreterError> {
         _ => Err(InterpreterError::InternalError(format!(
             "Expression type not handled in convert_object: {e:?}"
         ))),
+    }
+}
+
+/// Match a declared type against a concrete one, binding any of
+/// `params` it names. Structural and conservative: only the shapes
+/// that can carry a parameter are walked, and an existing binding is
+/// never overwritten (STDLIB-TRAIT-BASE B5).
+fn bind_generics_from_type(
+    declared: &TypeDecl,
+    actual: &TypeDecl,
+    params: &[DefaultSymbol],
+    out: &mut HashMap<DefaultSymbol, TypeDecl>,
+) {
+    match declared {
+        TypeDecl::Generic(p) | TypeDecl::Identifier(p) if params.contains(p) => {
+            out.entry(*p).or_insert_with(|| actual.clone());
+        }
+        TypeDecl::Struct(_, decl_args) | TypeDecl::Enum(_, decl_args) => {
+            let actual_args = match actual {
+                TypeDecl::Struct(_, a) | TypeDecl::Enum(_, a) => a,
+                _ => return,
+            };
+            for (d, a) in decl_args.iter().zip(actual_args.iter()) {
+                bind_generics_from_type(d, a, params, out);
+            }
+        }
+        TypeDecl::Ref { inner, .. } => {
+            let actual_inner = match actual {
+                TypeDecl::Ref { inner: a, .. } => a.as_ref(),
+                other => other,
+            };
+            bind_generics_from_type(inner, actual_inner, params, out);
+        }
+        _ => {}
     }
 }

@@ -2127,6 +2127,14 @@ impl EvaluationContext<'_> {
             for (param, ty) in args_generic_scope(&function.parameter, &rc_args) {
                 generic_scope.entry(param).or_insert(ty);
             }
+            // STDLIB-TRAIT-BASE B5: then the binding's annotation, for
+            // a parameter that appears only in the return type.
+            let declared_return = function.return_type.clone();
+            self.fill_scope_from_annotation(
+                &mut generic_scope,
+                &function.generic_params,
+                declared_return.as_ref(),
+            );
             self.fill_scope_from_caller(&mut generic_scope, &function.generic_params);
         }
         self.push_generic_type_scope(generic_scope);
@@ -2283,6 +2291,24 @@ impl EvaluationContext<'_> {
         // yet — that's a Phase 2b refinement.
         if let Some(method) = self.get_method(struct_name, function_name, &[]) {
             return self.call_associated_method(method, args.to_vec(), Some(struct_name), call_site);
+        }
+
+        // STDLIB-TRAIT-BASE B5: `T::assoc()` inside a generic body.
+        // `T` is not a declared type, it is a name the active call's
+        // generic scope binds to one -- the same scope
+        // `__builtin_sizeof::<T>()` reads. The compiled lanes reach
+        // the same answer by substituting the qualifier before
+        // lowering.
+        if let Some(concrete) = self
+            .merged_generic_scope()
+            .get(&struct_name)
+            .and_then(|ty| self.type_decl_target_symbol(ty))
+            .filter(|c| *c != struct_name)
+        {
+            if let Some(method) = self.get_method(concrete, function_name, &[]) {
+                return self
+                    .call_associated_method(method, args.to_vec(), Some(concrete), call_site);
+            }
         }
 
         Err(InterpreterError::FunctionNotFound(

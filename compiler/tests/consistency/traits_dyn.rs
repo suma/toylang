@@ -1056,3 +1056,61 @@ fn writing_one_method_twice_is_refused_before_it_runs() {
         "a doubly-written method should be refused at check time:\n{joined}"
     );
 }
+
+// STDLIB-TRAIT-BASE B5 (mechanism): a type argument that only the
+// return position can name.
+//
+// Every layer read type arguments from the *arguments*, which leaves
+// nothing to read when a parameter appears solely in the return type.
+// `T::default()` was `[E0003] Struct 'T' not found` in the checker,
+// `cannot infer type arguments` in the monomorphiser, and
+// `Associated function 'default' not found for struct 'T'` in the
+// tree-walker -- three reports of one missing source of evidence.
+
+#[test]
+fn a_type_parameter_can_be_named_by_the_binding_alone() {
+    let src = r#"
+        trait Spawn { fn spawn() -> Self }
+
+        struct P { v: i64 }
+        struct Q { v: i64 }
+
+        impl Spawn for P { fn spawn() -> Self { P { v: 3i64 } } }
+        impl Spawn for Q { fn spawn() -> Self { Q { v: 40i64 } } }
+
+        fn make<T: Spawn>() -> T {
+            val c: T = T::spawn()
+            c
+        }
+
+        fn main() -> u64 {
+            # Nothing in the call says which `T`; the annotation does,
+            # and each instantiation has to reach its own impl.
+            val p: P = make()
+            val q: Q = make()
+            val a: i64 = p.v
+            val b: i64 = q.v
+            (a + b) as u64
+        }
+    "#;
+    assert_consistent(src, "type_arg_from_binding");
+}
+
+#[test]
+fn an_argument_still_wins_over_the_binding() {
+    // The annotation is evidence of last resort: reaching for it
+    // whenever a hint exists broke inference that was already working,
+    // because a call site's type hint is not always the expected
+    // return type -- it also carries numeric-literal context into the
+    // arguments.
+    let src = r#"
+        fn first<T>(a: T, b: T) -> T { a }
+
+        fn main() -> u64 {
+            val x: u64 = first(7u64, 9u64)
+            val y: i64 = first(1i64, 2i64)
+            x + (y as u64)
+        }
+    "#;
+    assert_consistent(src, "argument_beats_binding");
+}

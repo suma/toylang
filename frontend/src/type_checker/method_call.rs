@@ -915,8 +915,103 @@ impl<'a> TypeCheckerVisitor<'a> {
         Ok(return_ty)
     }
 
+    /// STDLIB-TRAIT-BASE B5: resolve `T::assoc(args)` against the
+    /// trait `T` is bound to, or `None` when `struct_name` is not a
+    /// type parameter in scope (which is every ordinary
+    /// `Type::assoc()` call).
+    fn resolve_type_param_associated_call(
+        &mut self,
+        struct_name: DefaultSymbol,
+        function_name: DefaultSymbol,
+        args: &[ExprRef],
+    ) -> Result<Option<TypeDecl>, TypeCheckError> {
+        let Some(bound) = self.context.current_fn_generic_bounds.get(&struct_name).cloned() else {
+            return Ok(None);
+        };
+        let trait_bounds: Vec<(DefaultSymbol, Vec<TypeDecl>)> = match bound {
+            TypeDecl::Identifier(t) => vec![(t, Vec::new())],
+            TypeDecl::Struct(t, a) | TypeDecl::Enum(t, a) => vec![(t, a)],
+            TypeDecl::TraitIntersection(ts) => ts.into_iter().map(|t| (t, Vec::new())).collect(),
+            _ => return Ok(None),
+        };
+        for (trait_sym, trait_args) in &trait_bounds {
+            let Some(sig) = self.context.get_trait_method(*trait_sym, function_name).cloned() else {
+                continue;
+            };
+            // Substitute the trait's own generic params with the
+            // bound's arguments, exactly as the method path does.
+            let trait_generic_params = self
+                .context
+                .trait_generic_params
+                .get(trait_sym)
+                .cloned()
+                .unwrap_or_default();
+            let mut subst: HashMap<DefaultSymbol, TypeDecl> = HashMap::new();
+            for (p, a) in trait_generic_params.iter().zip(trait_args.iter()) {
+                subst.insert(*p, a.clone());
+            }
+            // Check the arguments against the trait's declaration.
+            // `self` is skipped: an associated call names no receiver.
+            let params: Vec<TypeDecl> = sig
+                .parameter
+                .iter()
+                .skip(usize::from(sig.has_self_param))
+                .map(|(_, ty)| ty.substitute_generics(&subst))
+                .collect();
+            if args.len() != params.len() {
+                return Err(TypeCheckError::generic_error(&format!(
+                    "`{}::{}` expects {} argument(s), found {}",
+                    self.resolve_symbol_name(struct_name),
+                    self.resolve_symbol_name(function_name),
+                    params.len(),
+                    args.len(),
+                )));
+            }
+            for (arg, expected) in args.iter().zip(params.iter()) {
+                let actual = self.visit_expr(arg)?;
+                let expected_here = match expected {
+                    TypeDecl::Self_ => TypeDecl::Generic(struct_name),
+                    other => other.clone(),
+                };
+                if !self.is_arg_compatible_dyn_aware(&actual, &expected_here)
+                    && !matches!(actual, TypeDecl::Unknown)
+                {
+                    return Err(TypeCheckError::type_mismatch(expected_here, actual).with_context(
+                        &format!(
+                            "argument of `{}::{}`",
+                            self.resolve_symbol_name(struct_name),
+                            self.resolve_symbol_name(function_name),
+                        ),
+                    ));
+                }
+            }
+            let ret = sig
+                .return_type
+                .clone()
+                .unwrap_or(TypeDecl::Unit)
+                .substitute_generics(&subst);
+            return Ok(Some(match ret {
+                TypeDecl::Self_ => TypeDecl::Generic(struct_name),
+                other => other,
+            }));
+        }
+        Ok(None)
+    }
+
     pub fn visit_associated_function_call_impl(&mut self, struct_name: DefaultSymbol, function_name: DefaultSymbol, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         // Handle Container::function_name(args) type calls for any associated function
+
+        // STDLIB-TRAIT-BASE B5: `T::assoc(...)` where `T` is a bounded
+        // type parameter rather than a named type. The method-call
+        // path has had this tier since B1; without the same one here,
+        // `fn make<T: Default>() -> T { T::default() }` was reported
+        // as `[E0003] Struct 'T' not found` -- and `T` really is not a
+        // struct. What it is, is a name the enclosing signature bound
+        // to a trait, and with no receiver to read a type off, that
+        // trait is the only source of the signature.
+        if let Some(ty) = self.resolve_type_param_associated_call(struct_name, function_name, args)? {
+            return Ok(ty);
+        }
 
         // Enum tuple-variant construction: `Enum::Variant(args)` syntactically
         // matches `Struct::assoc(args)`. Intercept when the left side is a

@@ -446,6 +446,16 @@ struct FunctionLower<'a> {
     /// Set via `set_active_subst` from the program-level driver
     /// when a `PendingMethodInstance` body is dequeued.
     active_subst: HashMap<DefaultSymbol, Type>,
+    /// STDLIB-TRAIT-BASE B5: the type the value of the call being
+    /// resolved is about to be bound to.
+    ///
+    /// A generic function's type arguments are read from its
+    /// arguments, which leaves nothing to read when a parameter
+    /// appears only in the return type (`fn make<T: Default>() -> T`).
+    /// The binding's annotation is the evidence, and it lives a layer
+    /// above the resolution, so it is handed down here rather than
+    /// through every call in the chain.
+    pending_return_hint: Option<Type>,
     /// Stage 1 of `&` references: when lowering a `&mut self`
     /// method body, holds the receiver's leaf scalar `(LocalId,
     /// Type)` list (in declaration order). Every `Return`

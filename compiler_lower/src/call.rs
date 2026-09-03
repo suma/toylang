@@ -110,6 +110,22 @@ impl<'a> FunctionLower<'a> {
                     &mut inferred,
                 );
             }
+            // STDLIB-TRAIT-BASE B5: a parameter the arguments could
+            // not name may still be named by where the result goes.
+            if let Some(hint) = self.pending_return_hint
+                && let Some(ret) = template.return_type.as_ref()
+                && template
+                    .generic_params
+                    .iter()
+                    .any(|p| !inferred.contains_key(p))
+            {
+                self.bind_method_only_param(
+                    ret,
+                    hint,
+                    &template.generic_params,
+                    &mut inferred,
+                );
+            }
             let type_args: Option<Vec<Type>> = template
                 .generic_params
                 .iter()

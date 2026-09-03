@@ -60,6 +60,12 @@ impl<'a> FunctionLower<'a> {
             .expression
             .get(rhs_ref)
             .ok_or_else(|| "let rhs missing".to_string())?;
+        // STDLIB-TRAIT-BASE B5: inside a monomorphised body, `T::assoc()`
+        // names a type parameter where every path below expects a
+        // declared type. Substituting the qualifier here — on the local
+        // copy, never in the pool, which is shared by every instance of
+        // the template — lets all of them work unchanged.
+        let rhs = self.substitute_assoc_qualifier(rhs);
         // Closures Phase 5a: `val name = fn(params) -> R { body }`
         // lifts to a synthesized top-level function. The closure
         // literal isn't materialised as a runtime value (Phase 5a
@@ -360,7 +366,7 @@ impl<'a> FunctionLower<'a> {
         // also handled here without special-casing destructuring.
         if let Expr::Call(fn_name, args_ref) = rhs.clone()
             && let Some(result) =
-                self.lower_let_call_tuple_or_enum(name, fn_name, &args_ref)?
+                self.lower_let_call_tuple_or_enum(name, annotation, fn_name, &args_ref)?
             {
                 return Ok(result);
             }
@@ -369,7 +375,7 @@ impl<'a> FunctionLower<'a> {
         // the multi-return values into the per-field locals.
         if let Expr::Call(fn_name, args_ref) = rhs
             && let Some(result) =
-                self.lower_let_call_struct(name, fn_name, &args_ref)?
+                self.lower_let_call_struct(name, annotation, fn_name, &args_ref)?
             {
                 return Ok(result);
             }
@@ -770,6 +776,33 @@ impl<'a> FunctionLower<'a> {
         Ok(None)
     }
 
+    /// STDLIB-TRAIT-BASE B5: rewrite `T::assoc(args)` to
+    /// `Concrete::assoc(args)` using the active monomorphisation.
+    ///
+    /// Returns the expression unchanged for everything else, which is
+    /// every associated call outside a generic body.
+    pub(super) fn substitute_assoc_qualifier(&self, expr: Expr) -> Expr {
+        let Expr::AssociatedFunctionCall(qualifier, fn_name, args) = expr else {
+            return expr;
+        };
+        match self.concrete_type_param_name(qualifier) {
+            Some(concrete) => Expr::AssociatedFunctionCall(concrete, fn_name, args),
+            None => Expr::AssociatedFunctionCall(qualifier, fn_name, args),
+        }
+    }
+
+    /// The declared type a type parameter stands for in the body being
+    /// lowered, as the symbol the struct / enum registries are keyed
+    /// on. `None` when the symbol is not a type parameter, or stands
+    /// for something with no name of its own (a scalar).
+    pub(super) fn concrete_type_param_name(&self, sym: DefaultSymbol) -> Option<DefaultSymbol> {
+        match self.active_subst.get(&sym).copied()? {
+            Type::Struct(id) => Some(self.module.struct_def(id).base_name),
+            Type::Enum(id) => Some(self.module.enum_def(id).base_name),
+            _ => None,
+        }
+    }
+
     /// Tuple- or enum-returning call RHS helper. Allocates the
     /// matching binding shape and emits a `CallTuple` /
     /// `CallEnum` so codegen can route multi-return slots
@@ -779,10 +812,13 @@ impl<'a> FunctionLower<'a> {
     fn lower_let_call_tuple_or_enum(
         &mut self,
         name: DefaultSymbol,
+        annotation: Option<&TypeDecl>,
         fn_name: DefaultSymbol,
         args_ref: &ExprRef,
     ) -> Result<Option<Option<ValueId>>, String> {
-        if let Some(target_id) = self.lookup_or_instantiate_call_target(fn_name, args_ref) {
+        if let Some(target_id) =
+            self.lookup_or_instantiate_call_target(fn_name, annotation, args_ref)
+        {
             let items: Vec<ExprRef> = self.call_arg_items(args_ref)?;
             return self.lower_let_call_compound_target(name, target_id, &items);
         }
@@ -803,6 +839,7 @@ impl<'a> FunctionLower<'a> {
     fn lookup_or_instantiate_call_target(
         &mut self,
         fn_name: DefaultSymbol,
+        annotation: Option<&TypeDecl>,
         args_ref: &ExprRef,
     ) -> Option<crate::ir::FuncId> {
         if let Some(id) = self.module.lookup_function(None, fn_name) {
@@ -811,7 +848,18 @@ impl<'a> FunctionLower<'a> {
         if !self.generic_funcs.contains_key(&fn_name) {
             return None;
         }
-        self.resolve_call_target(fn_name, args_ref).ok()
+        // STDLIB-TRAIT-BASE B5: the annotation is what names `T` when
+        // the arguments cannot (`val p: P = make()`). Handed down as a
+        // hint rather than a parameter because every intermediate call
+        // in the resolution chain would otherwise have to carry it.
+        let hint = annotation.and_then(|a| {
+            let subst = std::collections::HashMap::new();
+            self.lower_type_with_subst(a, &subst)
+        });
+        let saved = std::mem::replace(&mut self.pending_return_hint, hint);
+        let resolved = self.resolve_call_target(fn_name, args_ref).ok();
+        self.pending_return_hint = saved;
+        resolved
     }
 
     /// Shared tail of the compound-returning call intercepts (bare
@@ -936,10 +984,13 @@ impl<'a> FunctionLower<'a> {
     fn lower_let_call_struct(
         &mut self,
         name: DefaultSymbol,
+        annotation: Option<&TypeDecl>,
         fn_name: DefaultSymbol,
         args_ref: &ExprRef,
     ) -> Result<Option<Option<ValueId>>, String> {
-        if let Some(target_id) = self.lookup_or_instantiate_call_target(fn_name, args_ref) {
+        if let Some(target_id) =
+            self.lookup_or_instantiate_call_target(fn_name, annotation, args_ref)
+        {
             let items: Vec<ExprRef> = self.call_arg_items(args_ref)?;
             return self.lower_let_call_compound_target(name, target_id, &items);
         }

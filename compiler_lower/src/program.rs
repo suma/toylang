@@ -1641,6 +1641,7 @@ impl<'a> FunctionLower<'a> {
             method_instances,
             pending_method_work,
             active_subst: HashMap::new(),
+            pending_return_hint: None,
             self_writeback_locals: None,
             pending_self_writeback_param: None,
             closure_bindings: HashMap::new(),

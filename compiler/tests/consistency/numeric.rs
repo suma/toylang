@@ -185,3 +185,133 @@ fn powers_of_two_round_up_and_zero_is_not_one() {
     "#;
     assert_stdout_consistent(src, "bits_power_of_two");
 }
+
+// N2: integer math. Overflow wraps, like `+` and `*` -- `Checked` is
+// where a caller goes to be told about it.
+
+#[test]
+fn integer_math_answers_the_arithmetic_the_operators_do_not() {
+    let src = r#"
+        fn main() -> u64 {
+            println(math::pow_u64(3u64, 5u32))
+            println(math::pow_u64(7u64, 0u32))
+            println(math::pow_i64(-2i64, 3u32))
+            println(math::gcd_u64(48u64, 18u64))
+            println(math::gcd_u64(0u64, 0u64))
+            println(math::gcd_u64(9u64, 0u64))
+            println(math::lcm_u64(4u64, 6u64))
+            println(math::lcm_u64(0u64, 5u64))
+            println(math::sign_i64(-5i64))
+            println(math::sign_i64(0i64))
+            # The average of the two largest values, which `(a+b)/2`
+            # cannot compute.
+            println(math::midpoint_u64(limits::u64_max(), limits::u64_max()))
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "integer_math");
+}
+
+#[test]
+fn floor_division_is_named_apart_from_the_operators() {
+    // `/` and `%` truncate toward zero, so `-7 / 3` is -2. Indexing a
+    // ring buffer wants the other convention; the operators are not
+    // changing, so the names are how the two are told apart.
+    let src = r#"
+        fn main() -> u64 {
+            println(-7i64 / 3i64)
+            println(math::div_floor_i64(-7i64, 3i64))
+            println(-7i64 % 3i64)
+            println(math::mod_floor_i64(-7i64, 3i64))
+            # Positive operands agree with the operators.
+            println(math::div_floor_i64(7i64, 3i64))
+            println(math::mod_floor_i64(7i64, 3i64))
+            # The remainder always takes the divisor's sign.
+            println(math::mod_floor_i64(7i64, -3i64))
+            println(math::mod_floor_i64(-6i64, 3i64))
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "floor_division");
+}
+
+#[test]
+fn integer_square_root_is_exact_where_floats_are_not() {
+    // `sqrt(x as f64) as u64` is off by one above 2^53, where an f64
+    // can no longer hold every integer. The postcondition is what
+    // `--check` uses as an oracle -- and what found the overflow in
+    // the first draft, where the initial guess of `x` itself made
+    // `r + x / r` wrap for `u64::MAX` and the next step divide by 0.
+    let src = r#"
+        fn main() -> u64 {
+            println(math::isqrt_u64(0u64))
+            println(math::isqrt_u64(1u64))
+            println(math::isqrt_u64(2u64))
+            println(math::isqrt_u64(15u64))
+            println(math::isqrt_u64(16u64))
+            println(math::isqrt_u64(1000000000000u64))
+            # Past 2^53, where the float route goes wrong.
+            println(math::isqrt_u64(9007199254740993u64))
+            println(math::isqrt_u64(limits::u64_max()))
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "isqrt");
+}
+
+// N3 / N4.
+
+#[test]
+fn min_max_and_clamp_span_the_widths_and_put_nan_last() {
+    let src = r#"
+        fn main() -> u64 {
+            println(math::min_u8(3u8, 9u8))
+            println(math::max_u8(3u8, 9u8))
+            println(math::clamp_i32(50i32, 0i32, 10i32))
+            println(math::clamp_i32(-50i32, 0i32, 10i32))
+            println(math::clamp_i32(5i32, 0i32, 10i32))
+            println(math::min_i16(limits::i16_min(), 0i16))
+            println(math::max_u64(limits::u64_max(), 0u64))
+            # IEEE 754's `minNum`: a NaN loses to a number, either way
+            # round. Written out because `<` alone propagates it.
+            val n = limits::f64_nan()
+            println(math::min_f64(n, 1f64))
+            println(math::min_f64(1f64, n))
+            println(math::max_f64(n, 1f64))
+            println(math::min_f64(2f64, 1f64))
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "min_max_clamp");
+}
+
+#[test]
+fn the_rest_of_f64() {
+    let src = r#"
+        fn main() -> u64 {
+            # Halves round away from zero, not to even.
+            println(math::round(2.5f64))
+            println(math::round(-2.5f64))
+            println(math::round(2.4f64))
+            println(math::trunc(-2.7f64))
+            println(math::log10(1000f64))
+            println(math::hypot(3f64, 4f64))
+            println(math::atan2(0f64, 1f64))
+            println(math::asin(0f64))
+            println(math::acos(1f64))
+            # Classification: a NaN is the only value unequal to
+            # itself, which is both the definition and the test.
+            val n = limits::f64_nan()
+            val i = limits::f64_inf()
+            println(math::is_nan(n))
+            println(math::is_nan(1f64))
+            println(math::is_infinite(i))
+            println(math::is_infinite(n))
+            println(math::is_finite(1f64))
+            println(math::is_finite(i))
+            println(math::is_finite(n))
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "f64_rest");
+}

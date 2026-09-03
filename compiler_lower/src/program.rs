@@ -87,6 +87,14 @@ fn libm_import_name_for(name: &str) -> Option<&'static str> {
         "__extern_floor_f64" => "floor",
         "__extern_ceil_f64" => "ceil",
         "__extern_abs_f64" => "fabs",
+        // STDLIB-NUMERIC N4.
+        "__extern_round_f64" => "round",
+        "__extern_trunc_f64" => "trunc",
+        "__extern_asin_f64" => "asin",
+        "__extern_acos_f64" => "acos",
+        "__extern_log10_f64" => "log10",
+        "__extern_atan2_f64" => "atan2",
+        "__extern_hypot_f64" => "hypot",
         // `__extern_abs_i64` — wrapping_abs for i64. libc has
         // `int abs(int)` and `long labs(long)`; we use `labs` and
         // assume `long` is 64-bit on the supported targets (LP64

@@ -40,6 +40,17 @@ pub fn build_default_registry() -> HashMap<&'static str, ExternFn> {
     m.insert("__extern_sqrt_f64", extern_sqrt_f64);
     m.insert("__extern_abs_f64", extern_abs_f64);
     m.insert("__extern_pow_f64", extern_pow_f64);
+    // STDLIB-NUMERIC N4: the seven libm functions `math.t` was
+    // missing. `round` is libm's, which rounds halves away from zero;
+    // there is deliberately no banker's-rounding twin, because two of
+    // them means a caller cannot tell which they got.
+    m.insert("__extern_round_f64", extern_round_f64);
+    m.insert("__extern_trunc_f64", extern_trunc_f64);
+    m.insert("__extern_asin_f64", extern_asin_f64);
+    m.insert("__extern_acos_f64", extern_acos_f64);
+    m.insert("__extern_log10_f64", extern_log10_f64);
+    m.insert("__extern_atan2_f64", extern_atan2_f64);
+    m.insert("__extern_hypot_f64", extern_hypot_f64);
     // i64 wrapping_abs — used by the prelude's `impl Abs for i64`.
     // `i64::MIN` stays at `i64::MIN` (matches the legacy
     // `BuiltinMethod::I64Abs` semantics that the prelude replaces).
@@ -118,6 +129,47 @@ fn extern_abs_i64(args: &[Value]) -> Result<Value, InterpreterError> {
             "extern fn `__extern_abs_i64` expects an i64 argument, got {other:?}"
         ))),
     }
+}
+
+fn extern_round_f64(args: &[Value]) -> Result<Value, InterpreterError> { unary_f64("round", args, f64::round) }
+fn extern_trunc_f64(args: &[Value]) -> Result<Value, InterpreterError> { unary_f64("trunc", args, f64::trunc) }
+fn extern_asin_f64(args: &[Value]) -> Result<Value, InterpreterError> { unary_f64("asin", args, f64::asin) }
+fn extern_acos_f64(args: &[Value]) -> Result<Value, InterpreterError> { unary_f64("acos", args, f64::acos) }
+fn extern_log10_f64(args: &[Value]) -> Result<Value, InterpreterError> { unary_f64("log10", args, f64::log10) }
+
+/// The two-argument shape, for `atan2` and `hypot`.
+fn binary_f64(
+    name: &str,
+    args: &[Value],
+    op: fn(f64, f64) -> f64,
+) -> Result<Value, InterpreterError> {
+    if args.len() != 2 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: format!("extern fn `{name}` takes 2 arguments"),
+            expected: 2,
+            found: args.len(),
+        });
+    }
+    let mut vals = [0f64; 2];
+    for (slot, arg) in vals.iter_mut().zip(args.iter()) {
+        *slot = match arg {
+            Value::Float64(v) => *v,
+            other => {
+                return Err(InterpreterError::InternalError(format!(
+                    "extern fn `{name}` expects f64 arguments, got {other:?}"
+                )))
+            }
+        };
+    }
+    Ok(Value::Float64(op(vals[0], vals[1])))
+}
+
+fn extern_atan2_f64(args: &[Value]) -> Result<Value, InterpreterError> {
+    binary_f64("atan2", args, f64::atan2)
+}
+
+fn extern_hypot_f64(args: &[Value]) -> Result<Value, InterpreterError> {
+    binary_f64("hypot", args, f64::hypot)
 }
 
 fn extern_pow_f64(args: &[Value]) -> Result<Value, InterpreterError> {

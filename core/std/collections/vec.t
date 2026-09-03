@@ -431,6 +431,25 @@ impl<T> Vec<T> {
 # element type resolves to the `lt` the `Ord` impl provides, so
 # `Vec<u64>` / `Vec<i64>` / `Vec<f64>` / `Vec<bool>` and any
 # `impl Ord` struct (including `String`, byte-wise) sort.
+# `resize` needs a value for the slots it adds, and the caller has
+# none to give -- only the type does (STDLIB-TRAIT-BASE §7). Its own
+# block so `Vec<T>` does not require `T: Default` everywhere, the same
+# shape `sort` uses for `Ord`.
+impl<T: Default> Vec<T> {
+    # Make `size()` exactly `n`: drop the tail, or fill with `T`'s
+    # default. Shrinking keeps the capacity, like `clear`.
+    unsafe fn resize(&mut self, n: u64) {
+        if n <= self.len {
+            self.len = n
+            return
+        }
+        val fill: T = T::default()
+        while self.len < n {
+            self.push(fill)
+        }
+    }
+}
+
 impl<T: Ord> Vec<T> {
     # Sort in place, ascending. Stable: equal elements keep their
     # relative order. Elements are read as copies out of the buffer

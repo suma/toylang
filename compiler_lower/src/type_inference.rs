@@ -417,6 +417,27 @@ impl<'a> FunctionLower<'a> {
                                 &mut inferred,
                             );
                         }
+                        // STDLIB-TRAIT-BASE B5: the same last-resort
+                        // evidence `resolve_call_target` uses. Without
+                        // it the arm below cannot answer for a
+                        // parameter that appears only in the return
+                        // type, and the binding is reported as
+                        // "could not infer scalar type" after the
+                        // instance has already been created.
+                        if let Some(hint) = self.pending_return_hint
+                            && let Some(ret) = template.return_type.as_ref()
+                            && template
+                                .generic_params
+                                .iter()
+                                .any(|p| !inferred.contains_key(p))
+                        {
+                            self.bind_method_only_param(
+                                ret,
+                                hint,
+                                &template.generic_params,
+                                &mut inferred,
+                            );
+                        }
                         let type_args: Option<Vec<Type>> = template
                             .generic_params
                             .iter()
@@ -443,9 +464,27 @@ impl<'a> FunctionLower<'a> {
                 // the bare lookup. Real associated method calls
                 // aren't supported in expression position so the
                 // None return at the bottom is the correct fallback.
+                //
+                // STDLIB-TRAIT-BASE B5: the qualifier is substituted
+                // first, and the method registry consulted last, for
+                // the same reason `lower_expr_associated_call` does
+                // both -- `T::default()` in a monomorphised body names
+                // a type parameter, and for a primitive `T` the impl
+                // lives under the canonical name symbol.
+                let struct_name = self
+                    .concrete_type_param_name(struct_name)
+                    .unwrap_or(struct_name);
                 self.module
                     .lookup_function(Some(struct_name), fn_name)
                     .or_else(|| self.module.lookup_function(None, fn_name))
+                    .or_else(|| {
+                        crate::method_registry::lookup_method_func(
+                            self.method_func_ids,
+                            struct_name,
+                            fn_name,
+                            &[],
+                        )
+                    })
                     .map(|id| self.module.function(id).return_type)
             }
             Expr::BuiltinCall(func, args) => match func {

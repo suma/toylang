@@ -4933,6 +4933,46 @@ Method dispatch:
   U+FFFD and advances one byte — `None` already means "the end", so
   a decode failure cannot be reported there.
 
+### Stdlib traits
+
+`core/std/` declares the small set of traits a bound is worth taking:
+
+| Trait | File | Method | Used by |
+|---|---|---|---|
+| `Ord` | `ord.t` | `lt(self, other) -> bool` | `Vec::sort` |
+| `Hash` | `hash.t` | `hash(self) -> u64` | `Dict`, `Set` |
+| `Clone` | `clone.t` | `clone(&self) -> Self` | anything that must keep a value it also gives away |
+| `Default` | `default.t` | `default() -> Self` | `Vec::resize`, `Dict::get_or_default` |
+| `Iterator<T>` | `iter.t` | `next(&mut self) -> Option<T>` | every stdlib iterator; `for` loops |
+
+`Clone` is part of the ownership model, not a convenience: `val b = a`
+on a compound is an *alias*, and putting `a` into a container moves it
+(`[E0014]`), after which the name cannot be read. `a.clone()` is the
+way to keep both. There is no `Copy` — whether a type moves is already
+decided by whether it has a `Drop`.
+
+`Default` exists so a type can answer **without a value in hand**:
+`Vec::resize` fills slots before any element exists, and
+`Dict::get_or_default` answers for a key that is absent.
+
+```rust
+fn make<T: Default>() -> T {
+    val c: T = T::default()
+    c
+}
+
+val a: u64 = make()        # the annotation is what names `T`
+```
+
+Both take their extra bound on **their own impl block**
+(`impl<T: Default> Vec<T>`), so an ordinary `Vec<T>` is unaffected.
+
+There is no `Eq`: a generic `==` already works without a bound and
+dispatches to the type's own `eq`, so declaring one would add no check
+— only a new way to fail by forgetting to write an impl. `Display` is
+likewise dispatched by having a `to_str` method rather than by naming
+a trait.
+
 ### ASCII classification
 
 `core/std/char.t` declares `AsciiClass`, implemented for **both `u8`

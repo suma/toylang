@@ -2115,6 +2115,16 @@ impl<'a> FunctionLower<'a> {
         fn_name: DefaultSymbol,
         args: Vec<ExprRef>,
     ) -> Result<Option<ValueId>, String> {
+        // STDLIB-TRAIT-BASE B5: `T::assoc()` inside a monomorphised
+        // body names a type parameter, and every lookup below expects
+        // a declared type -- or, for a primitive, the canonical name
+        // its impls register under. Substituting the qualifier here
+        // covers the expression position; `lower_let` does the same
+        // for its own early-return intercepts, which read the node
+        // before this is reached.
+        let struct_name = self
+            .concrete_type_param_name(struct_name)
+            .unwrap_or(struct_name);
         let is_struct = self.struct_defs.contains_key(&struct_name)
             || self.enum_defs.contains_key(&struct_name);
         // Qualified call (`math::add(args)`): try
@@ -2132,6 +2142,25 @@ impl<'a> FunctionLower<'a> {
         } else {
             None
         };
+        // STDLIB-TRAIT-BASE B5: an associated function on a
+        // *primitive* (`u64::default()`, reached from `T::default()`
+        // in a monomorphised body). `impl Default for u64` registers
+        // under the canonical name symbol, exactly as `impl Ord for
+        // u64` does -- the method registry already holds it, and only
+        // the lookup was missing, because a primitive is neither a
+        // struct nor a module.
+        //
+        // Note this name cannot be *written*: every primitive's name
+        // is a reserved keyword, so `u64::default()` is a parse error.
+        // It exists only as the substituted form of `T::default()`.
+        let target_opt = target_opt.or_else(|| {
+            crate::method_registry::lookup_method_func(
+                self.method_func_ids,
+                struct_name,
+                fn_name,
+                &[],
+            )
+        });
         if let Some(target) = target_opt {
             let ret_ty = self.module.function(target).return_type;
             if matches!(ret_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {

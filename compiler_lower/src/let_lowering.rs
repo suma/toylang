@@ -483,7 +483,7 @@ impl<'a> FunctionLower<'a> {
             return Ok(result);
         }
         // Scalar fallback (existing behaviour).
-        self.lower_let_scalar_fallback(name, rhs_ref)
+        self.lower_let_scalar_fallback(name, annotation, rhs_ref)
     }
 
     /// Bind a name to a struct- / tuple-typed field, tuple element,
@@ -558,13 +558,28 @@ impl<'a> FunctionLower<'a> {
     fn lower_let_scalar_fallback(
         &mut self,
         name: DefaultSymbol,
+        annotation: Option<&TypeDecl>,
         rhs_ref: &ExprRef,
     ) -> Result<Option<ValueId>, String> {
-        let v = self
-            .lower_expr(rhs_ref)?
-            .ok_or_else(|| "val/var rhs produced no value".to_string())?;
-        let scalar = self
-            .value_scalar(rhs_ref)
+        // STDLIB-TRAIT-BASE B5: the annotation names the type argument
+        // when nothing else can (`val a: u64 = make()`). The compound
+        // paths above set the same hint; this is the scalar half.
+        let hint = annotation.and_then(|a| {
+            let subst = std::collections::HashMap::new();
+            self.lower_type_with_subst(a, &subst)
+        });
+        // The hint stays set across `value_scalar` too: it asks the
+        // same question a second time to size the binding, and would
+        // otherwise fail after the instance had already been created.
+        let saved = std::mem::replace(&mut self.pending_return_hint, hint);
+        let lowered = self.lower_expr(rhs_ref);
+        let scalar = lowered
+            .as_ref()
+            .ok()
+            .and_then(|_| self.value_scalar(rhs_ref));
+        self.pending_return_hint = saved;
+        let v = lowered?.ok_or_else(|| "val/var rhs produced no value".to_string())?;
+        let scalar = scalar
             .ok_or_else(|| "could not infer scalar type for val/var rhs".to_string())?;
         let local = self.module.function_mut(self.func_id).add_local(scalar);
         self.bindings
@@ -799,7 +814,13 @@ impl<'a> FunctionLower<'a> {
         match self.active_subst.get(&sym).copied()? {
             Type::Struct(id) => Some(self.module.struct_def(id).base_name),
             Type::Enum(id) => Some(self.module.enum_def(id).base_name),
-            _ => None,
+            // A primitive names its impls under its canonical
+            // spelling, read from NUM-W-ENUMERATION's single list
+            // (`impl Default for u64` registers under `"u64"`).
+            scalar => TypeDecl::PRIMITIVE_IMPL_TARGETS
+                .iter()
+                .find(|(decl, _)| crate::types::lower_scalar(decl) == Some(scalar))
+                .and_then(|(_, name)| self.interner.get(name)),
         }
     }
 

@@ -342,6 +342,24 @@ struct DictIter<K, V> {
     index: u64,
 }
 
+# The extra bound lives on its own block so `Dict<K, V>` does not
+# require `V: Default` everywhere -- the same shape `impl<T: Ord>
+# Vec<T>` uses for `sort`.
+impl<K: Hash, V: Default> Dict<K, V> {
+    # Look up `key`, answering with `V`'s default on a miss.
+    #
+    # `get_or` needs a value the caller already has; this one needs
+    # only the *type* to have an answer, which is what `Default` is
+    # for (STDLIB-TRAIT-BASE §7). Counting occurrences is the shape:
+    #
+    #     val n = counts.get_or_default(word)
+    #     counts.insert(word, n + 1u64)
+    unsafe fn get_or_default(self: Self, key: K) -> V {
+        val zero: V = V::default()
+        self.get_or(key, zero)
+    }
+}
+
 impl<K: Hash, V> Dict<K, V> {
     # Borrow the dict into an iterator. `&self` keeps the caller's
     # binding alive; the returned iterator shares the key / value

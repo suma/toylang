@@ -618,7 +618,14 @@ impl<'a> EvaluationContext<'a> {
             TypeDecl::Struct(sym, _) | TypeDecl::Enum(sym, _) | TypeDecl::Identifier(sym) => {
                 Some(*sym)
             }
-            _ => None,
+            // A primitive names its impls under its canonical spelling
+            // (`impl Default for u64` registers under `"u64"`), read
+            // from NUM-W-ENUMERATION's single list rather than a table
+            // repeated here.
+            other => TypeDecl::PRIMITIVE_IMPL_TARGETS
+                .iter()
+                .find(|(t, _)| t == other)
+                .and_then(|(_, name)| self.string_interner.get(name)),
         }
     }
 

@@ -1114,3 +1114,76 @@ fn an_argument_still_wins_over_the_binding() {
     "#;
     assert_consistent(src, "argument_beats_binding");
 }
+
+// STDLIB-TRAIT-BASE B5: `Default` and the two methods that needed it.
+
+#[test]
+fn default_answers_for_a_type_with_no_value_in_hand() {
+    let src = r#"
+        struct P { v: i64 }
+        impl Default for P { fn default() -> Self { P { v: 9i64 } } }
+
+        fn make<T: Default>() -> T {
+            val c: T = T::default()
+            c
+        }
+
+        fn main() -> u64 {
+            # Primitives reach the stdlib impls, the struct its own,
+            # and nothing in either call says which.
+            val a: u64 = make()
+            val b: i64 = make()
+            val f: bool = make()
+            val p: P = make()
+            println(a)
+            println(b)
+            println(f)
+            val n: i64 = p.v
+            println(n)
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "default_trait");
+}
+
+#[test]
+fn resize_fills_with_the_element_types_default() {
+    // `resize` has to produce values for slots no element exists in
+    // yet, so the type is the only thing that can answer. Its bound
+    // lives on its own impl block, so an ordinary `Vec<T>` is
+    // unaffected.
+    let src = r#"
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            v.push(7u64)
+            v.resize(4u64)
+            println(v.size())
+            println(v.get(0u64))
+            println(v.get(3u64))
+            # Shrinking drops the tail and keeps the capacity.
+            v.resize(1u64)
+            println(v.size())
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "vec_resize_default");
+}
+
+#[test]
+fn get_or_default_answers_for_a_key_that_is_not_there() {
+    // The counting shape: no value to hand `get_or`, only a type.
+    let src = r#"
+        fn main() -> u64 {
+            var counts: Dict<str, u64> = Dict::new()
+            val first = counts.get_or_default("apple")
+            println(first)
+            counts.insert("apple", first + 1u64)
+            val second = counts.get_or_default("apple")
+            println(second)
+            val missing = counts.get_or_default("pear")
+            println(missing)
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "dict_get_or_default");
+}

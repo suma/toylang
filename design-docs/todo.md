@@ -10,6 +10,22 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-03
+- **STDLIB-TRAIT-BASE B0 / B2 — stdlib の反復子が trait を名乗るように
+  なった** — 16 個の `next` を inherent から `impl Iterator<Item> for X`
+  へ**移した** (両方に書くと片方が黙って消えるため「足す」ではない)。
+  これで `fn total<I: Iterator<u64>>(it: I)` が書ける — 以前は
+  `Vec<u64>` は取れても `v.iter().filter(...)` の結果を受ける先が
+  無かった。**呼び出し側は反復子を束縛してから渡す** (単相化は束縛から
+  型引数を取る)。診断 3 件も B0 で修正: `trait B: A` が `BraceOpen`
+  としか言わなかった件、trait 中の `type Item` が**次の行**を指して
+  `BraceClose` と言った件、同じ method を inherent と trait impl の
+  両方に書くと**実行時**に落ちた件 (型検査に移した — `impl Iterator<T>`
+  を既存の `next` 持ちに足すと必ず踏む形なので)。
+  `Iterator<T>` は associated type に移さない (16 impl と全利用箇所を
+  書き換えて得るのは `<I: Iterator>` と書けることだけ、かつ明示の型引数は
+  1 つの struct が複数名乗る余地を残す)。
+  **残るのは B5** (`T::assoc()` + `Default`) — レシーバの値が無いので
+  型引数の推論元が戻り位置しかなく、単相化に新しい能力が要る
 - **STDLIB-TRAIT-BASE B1 / B3 / B4 — bound を書いた先で何かできるように
   なった** — 設計は [`STDLIB_TRAIT_BASE.md`](STDLIB_TRAIT_BASE.md)。
   `Ord` だけが bound 越しに使えていたのは偶然 (`lt` が `bool` を返し
@@ -1263,30 +1279,15 @@
   波及する)。2026-09-03 に `String::split_whitespace` を書いていて踏んだ。
   正しくは「代入位置の `ptr_read` は shape を決められない」と言うべき。
   回避は内側で `val` を新しく束縛すること
-- **STDLIB-TRAIT-BASE: trait 基盤の穴** ★ — 設計は
-  [`STDLIB_TRAIT_BASE.md`](STDLIB_TRAIT_BASE.md) (2026-09-03)。
-  **この項目の把握自体が古かった**: `trait Iterator<T>` は
-  documentation-only ではなく、`fn f<I: Iterator<i64>>(it: I)` も
-  generic 関数の中の `for x in it` も 3 レーンで動く (ITER-PROTOCOL-TRAIT
-  が制限を外した後の状態)。本当の穴は 2 つで、どちらも bound を書いた
-  **先**にある: (1) **`Self` を返す trait method は bound 越しに呼べない**
-  (`fn dup<T: Clone>(v: &T) -> T { v.clone() }` が
-  `[E0010] DEBUG: Method 'clone' returned unresolved Generic('T')` —
-  診断に `DEBUG:` が入ったまま。直接呼び `p.clone()` は 3 レーンで動く)、
-  (2) **`&mut T` は呼び出し側で推論できない**
-  (`Cannot unify &mut T with &mut P`。`&T` は通る)。この 2 つのせいで
-  `Clone` / `Default` / 算術 trait が generic 文脈で書けず、`Ord` だけが
-  例外的に使えているのは `lt` が `bool` を返し `&mut` を取らないから。
-  加えて **stdlib の反復子 15 個が 1 つも `impl Iterator<T>` を
-  名乗っていない** (for ループが structural なので今まで困らなかった)
-  ので、反復子を取る関数が user 空間で書けない。決定: **`Eq` は
-  置かない** (C0(a) の性質で検査は 1 つも増えない) / **`Iterator<T>` の
-  形は A4 associated types を待たずに確定させる** (移す費用は 15 impl、
-  得るのは型引数を省ける事だけ)。着手順は B0 (記述の是正 + 診断 3 件。
-  trait 継承 / associated type の parse error が生のトークン名
-  `BraceOpen` しか言わない件を含む) → B1 (`Self` 戻りの置換) →
-  B2 (15 個に `impl Iterator<T>`) → B3 (`Clone`) → B4 (`&mut T`) →
-  B5 (`T::assoc()` + `Default`)
+- **STDLIB-TRAIT-BASE B5: `T::assoc()` と `Default`** ★ — 設計は
+  [`STDLIB_TRAIT_BASE.md`](STDLIB_TRAIT_BASE.md)。B0〜B4 は 2026-09-03 に
+  landing (完了済み節)。残りは型パラメータ経由の associated function
+  (`fn make<T: Default>() -> T { T::default() }` は今
+  `[E0003] Struct 'T' not found`) と、その上に載る `Default`。
+  method 呼び出し (B1) と違いレシーバの値が無いので、**型引数の推論元が
+  戻り位置しかない** — 単相化は今のところ引数からしか型を取れないので、
+  そこに新しい能力が要る。`Default` は利用者 (`Vec::resize` /
+  `Dict::get_or_default`) と同じ Phase で入れる
 - **STDLIB-NUMERIC: 整数側の math が無い** ★ — 設計は
   [`STDLIB_NUMERIC.md`](STDLIB_NUMERIC.md) (2026-09-03)。`math.t` は
   f64 の libm ラッパ 11 本 + `abs(i64)` + `min`/`max` (**i64 と u64

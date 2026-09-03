@@ -527,6 +527,17 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_bits_ctz", toylang_rt::toy_bits_ctz as *const u8);
     jit_builder.symbol("toy_bits_reverse", toylang_rt::toy_bits_reverse as *const u8);
     jit_builder.symbol("toy_bits_swap_bytes", toylang_rt::toy_bits_swap_bytes as *const u8);
+    jit_builder.symbol("toy_fs_dir_open", toylang_rt::toy_fs_dir_open as *const u8);
+    jit_builder.symbol("toy_fs_dir_name", toylang_rt::toy_fs_dir_name as *const u8);
+    jit_builder.symbol("toy_fs_status", toylang_rt::toy_fs_status as *const u8);
+    jit_builder.symbol("toy_fs_is_dir", toylang_rt::toy_fs_is_dir as *const u8);
+    jit_builder.symbol("toy_fs_file_size", toylang_rt::toy_fs_file_size as *const u8);
+    jit_builder.symbol("toy_fs_mkdir", toylang_rt::toy_fs_mkdir as *const u8);
+    jit_builder.symbol("toy_fs_remove_file", toylang_rt::toy_fs_remove_file as *const u8);
+    jit_builder.symbol("toy_fs_remove_dir", toylang_rt::toy_fs_remove_dir as *const u8);
+    jit_builder.symbol("toy_fs_rename", toylang_rt::toy_fs_rename as *const u8);
+    jit_builder.symbol("toy_fs_realpath", toylang_rt::toy_fs_realpath as *const u8);
+    jit_builder.symbol("toy_fs_current_dir", toylang_rt::toy_fs_current_dir as *const u8);
     jit_builder.symbol("toy_time_now_mono_ns", toylang_rt::toy_time_now_mono_ns as *const u8);
     jit_builder.symbol("toy_time_mono_res_ns", toylang_rt::toy_time_mono_res_ns as *const u8);
     jit_builder.symbol("toy_time_cpu_ns", toylang_rt::toy_time_cpu_ns as *const u8);

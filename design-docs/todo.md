@@ -1320,13 +1320,6 @@
   `field access for type Unknown`。2026-09-03 の STDLIB-TIME で
   `bench(iters, f)` を書こうとして踏み、**`bench` を入れずに
   `Stopwatch` だけにした**
-- **FREE-FN-VS-ASSOC-COLLISION: 自由関数が associated function の
-  dispatch を奪う** ★★ — stdlib に `pub fn from_parts(...)` を足したら、
-  **無関係なプログラムの `Span::from_parts(p, 4u64)` がそちらに飛んだ**
-  (tree-walker のみ。`Type error: expected UInt64, found UInt32` が
-  span のコードで出る)。名前を変えて回避したが、**型検査は通り
-  tree-walker だけが誤答する**形なので、衝突は拒否するか
-  associated function を優先すべき。2026-09-03 の STDLIB-TIME で発見
 - **STRING-NO-DROP: `String` に `impl Drop` が無い** ★ — `Vec<T>` は
   持っているのに `String` は持たないので、**すべての `String` が
   バッファを漏らす** (`--profile=mem` の `leaks` に `string.t` の

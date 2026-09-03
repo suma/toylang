@@ -56,6 +56,9 @@ thread_local! {
     static READ_FILE_STATUS: Cell<u64> = const { Cell::new(0) };
     static ENV_STATUS: Cell<u64> = const { Cell::new(0) };
     static WRITE_FILE_STATUS: Cell<u64> = const { Cell::new(0) };
+    // STDLIB-FS-PATH: the same pairing, plus the last listing.
+    static FS_STATUS: Cell<u64> = const { Cell::new(0) };
+    static FS_ENTRIES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 // ERROR_MODEL D3 / E0: the failure vocabulary is defined once, in
@@ -212,6 +215,20 @@ pub fn build_io_registry() -> HashMap<&'static str, ExternFn> {
     // STDLIB-TIME TM0/TM1/TM3. Forwarded to `toylang_rt` -- the
     // calendar especially, which `strftime` already uses: a second
     // implementation of it is the thing §4 exists to prevent.
+    // STDLIB-FS-PATH: forwarded to `toylang_rt`, the shape
+    // `extern_net` uses -- a second implementation of the errno
+    // table is what ERROR_MODEL's E0 had to undo.
+    m.insert("__extern_fs_dir_open", fs_dir_open);
+    m.insert("__extern_fs_dir_name", fs_dir_name);
+    m.insert("__extern_fs_status", fs_status);
+    m.insert("__extern_fs_is_dir", fs_is_dir);
+    m.insert("__extern_fs_file_size", fs_file_size);
+    m.insert("__extern_fs_mkdir", fs_mkdir);
+    m.insert("__extern_fs_remove_file", fs_remove_file);
+    m.insert("__extern_fs_remove_dir", fs_remove_dir);
+    m.insert("__extern_fs_rename", fs_rename);
+    m.insert("__extern_fs_realpath", fs_realpath);
+    m.insert("__extern_fs_current_dir", fs_current_dir);
     m.insert("__extern_time_now_mono_ns", time_now_mono_ns);
     m.insert("__extern_time_mono_res_ns", time_mono_res_ns);
     m.insert("__extern_time_cpu_ns", time_cpu_ns);
@@ -674,6 +691,175 @@ fn io_write_file_status(_args: &[Value]) -> Result<Value, InterpreterError> {
 /// `core/std/hash.t`. Mirrors `toylang_rt::toy_str_hash` step for
 /// step (and `impl Hash for String` in `core/std/string.t`), so a key
 /// hashes to the same u64 on every backend.
+fn fs_dir_open(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_fs_dir_open` takes 1 argument".to_string(),
+            expected: 1,
+            found: args.len(),
+        });
+    }
+    let path = str_arg(&args[0], "__extern_fs_dir_open")?;
+    let mut names: Vec<String> = Vec::new();
+    let status = match std::fs::read_dir(&path) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                // `.` and `..` never appear in `read_dir`; the
+                // runtime's `readdir` loop drops them so the two
+                // agree.
+                names.push(entry.file_name().to_string_lossy().into_owned());
+            }
+            IO_OK
+        }
+        Err(e) => status_from_io_error(&e, IO_READ_ERROR),
+    };
+    FS_ENTRIES.with(|s| *s.borrow_mut() = names.clone());
+    FS_STATUS.with(|s| s.set(status));
+    Ok(u64_result(names.len() as u64))
+}
+
+fn fs_dir_name(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_fs_dir_name` takes 1 argument".to_string(),
+            expected: 1,
+            found: args.len(),
+        });
+    }
+    let i = u64_arg(&args[0], "__extern_fs_dir_name")? as usize;
+    let name = FS_ENTRIES.with(|s| s.borrow().get(i).cloned().unwrap_or_default());
+    Ok(str_result(name))
+}
+
+fn fs_status(_args: &[Value]) -> Result<Value, InterpreterError> {
+    Ok(u64_result(FS_STATUS.with(|s| s.get())))
+}
+
+fn fs_is_dir(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_fs_is_dir` takes 1 argument".to_string(),
+            expected: 1,
+            found: args.len(),
+        });
+    }
+    let path = str_arg(&args[0], "__extern_fs_is_dir")?;
+    Ok(Value::Bool(std::path::Path::new(&path).is_dir()))
+}
+
+fn fs_file_size(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_fs_file_size` takes 1 argument".to_string(),
+            expected: 1,
+            found: args.len(),
+        });
+    }
+    let path = str_arg(&args[0], "__extern_fs_file_size")?;
+    match std::fs::metadata(&path) {
+        Ok(m) => {
+            FS_STATUS.with(|s| s.set(IO_OK));
+            Ok(u64_result(m.len()))
+        }
+        Err(e) => {
+            FS_STATUS.with(|s| s.set(fs_status_from_io_error(&e)));
+            Ok(u64_result(0))
+        }
+    }
+}
+
+/// The io vocabulary plus the three a file system needs, matching
+/// `toylang_rt::fs_status_from_errno` value for value.
+fn fs_status_from_io_error(e: &std::io::Error) -> u64 {
+    match e.raw_os_error() {
+        Some(17) => toylang_rt::FS_ALREADY_EXISTS,
+        Some(20) => toylang_rt::FS_NOT_A_DIRECTORY,
+        Some(66) | Some(39) => toylang_rt::FS_NOT_EMPTY,
+        _ => status_from_io_error(e, IO_READ_ERROR),
+    }
+}
+
+fn fs_one_path(
+    args: &[Value],
+    who: &'static str,
+    f: fn(&str) -> std::io::Result<()>,
+) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: format!("extern fn `{who}` takes 1 argument"),
+            expected: 1,
+            found: args.len(),
+        });
+    }
+    let path = str_arg(&args[0], who)?;
+    Ok(u64_result(match f(&path) {
+        Ok(()) => IO_OK,
+        Err(e) => fs_status_from_io_error(&e),
+    }))
+}
+
+fn fs_mkdir(args: &[Value]) -> Result<Value, InterpreterError> {
+    fs_one_path(args, "__extern_fs_mkdir", |p| std::fs::create_dir(p))
+}
+
+fn fs_remove_file(args: &[Value]) -> Result<Value, InterpreterError> {
+    fs_one_path(args, "__extern_fs_remove_file", |p| std::fs::remove_file(p))
+}
+
+fn fs_remove_dir(args: &[Value]) -> Result<Value, InterpreterError> {
+    fs_one_path(args, "__extern_fs_remove_dir", |p| std::fs::remove_dir(p))
+}
+
+fn fs_rename(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 2 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_fs_rename` takes 2 arguments".to_string(),
+            expected: 2,
+            found: args.len(),
+        });
+    }
+    let from = str_arg(&args[0], "__extern_fs_rename")?;
+    let to = str_arg(&args[1], "__extern_fs_rename")?;
+    Ok(u64_result(match std::fs::rename(&from, &to) {
+        Ok(()) => IO_OK,
+        Err(e) => fs_status_from_io_error(&e),
+    }))
+}
+
+fn fs_realpath(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_fs_realpath` takes 1 argument".to_string(),
+            expected: 1,
+            found: args.len(),
+        });
+    }
+    let path = str_arg(&args[0], "__extern_fs_realpath")?;
+    match std::fs::canonicalize(&path) {
+        Ok(p) => {
+            FS_STATUS.with(|s| s.set(IO_OK));
+            Ok(str_result(p.to_string_lossy().into_owned()))
+        }
+        Err(e) => {
+            FS_STATUS.with(|s| s.set(fs_status_from_io_error(&e)));
+            Ok(str_result(String::new()))
+        }
+    }
+}
+
+fn fs_current_dir(_args: &[Value]) -> Result<Value, InterpreterError> {
+    match std::env::current_dir() {
+        Ok(p) => {
+            FS_STATUS.with(|s| s.set(IO_OK));
+            Ok(str_result(p.to_string_lossy().into_owned()))
+        }
+        Err(e) => {
+            FS_STATUS.with(|s| s.set(fs_status_from_io_error(&e)));
+            Ok(str_result(String::new()))
+        }
+    }
+}
+
 /// STDLIB-TIME: the no-argument clocks.
 fn time_no_args_u64(
     args: &[Value],

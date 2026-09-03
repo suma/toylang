@@ -2267,10 +2267,33 @@ impl EvaluationContext<'_> {
         // even when a user `fn add(Point, Point)` exists. Falls
         // back to the bare-name lookup, then to the legacy flat
         // map for back-compat.
-        let resolved = self
-            .lookup_function_qualified(Some(struct_name), function_name)
-            .or_else(|| self.lookup_function_qualified(None, function_name))
-            .or_else(|| self.function.get(&function_name).cloned());
+        //
+        // FREE-FN-VS-ASSOC-COLLISION: the bare-name fallbacks below
+        // must not run before the *type's own* method when the
+        // qualifier names a declared type. They did, so a stdlib
+        // module gaining a `pub fn join` silently redirected
+        // `String::join(parts, sep)` to it -- type-checked, wrong at
+        // run time, and only on this engine. A module-qualified
+        // lookup (`math::add`) is still tried first: that names a
+        // module, not a type.
+        let names_a_type = self.struct_definitions.contains_key(&struct_name)
+            || self.enum_definitions.contains_key(&struct_name);
+        let resolved = if names_a_type {
+            let own = self.get_method(struct_name, function_name, &[]);
+            if let Some(method) = own {
+                return self.call_associated_method(
+                    method,
+                    args.to_vec(),
+                    Some(struct_name),
+                    call_site,
+                );
+            }
+            self.lookup_function_qualified(Some(struct_name), function_name)
+        } else {
+            self.lookup_function_qualified(Some(struct_name), function_name)
+                .or_else(|| self.lookup_function_qualified(None, function_name))
+                .or_else(|| self.function.get(&function_name).cloned())
+        };
         if let Some(func) = resolved {
             // This is a regular function, call it directly without self.
             // Bridge `RcObject` args to `Value` at the boundary.

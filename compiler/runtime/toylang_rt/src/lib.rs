@@ -113,6 +113,19 @@ unsafe extern "C" {
     // the same signatures, so there is no `sys` split here -- unlike
     // the socket layer, whose constants differ per platform.
     fn clock_gettime(clock_id: i32, tp: *mut Timespec) -> i32;
+    // STDLIB-FS-PATH. `opendir` / `readdir` / `closedir` and the
+    // mutating calls are POSIX; `struct dirent`'s layout is not
+    // portable, so the name is read through `readdir` and copied
+    // rather than the struct being mapped.
+    fn opendir(path: *const u8) -> *mut u8;
+    fn closedir(d: *mut u8) -> i32;
+    fn readdir(d: *mut u8) -> *mut u8;
+    fn mkdir(path: *const u8, mode: u32) -> i32;
+    fn rmdir(path: *const u8) -> i32;
+    fn unlink(path: *const u8) -> i32;
+    fn rename(from: *const u8, to: *const u8) -> i32;
+    fn realpath(path: *const u8, resolved: *mut u8) -> *mut u8;
+    fn getcwd(buf: *mut u8, size: usize) -> *mut u8;
     fn clock_getres(clock_id: i32, res: *mut Timespec) -> i32;
     fn nanosleep(req: *const Timespec, rem: *mut Timespec) -> i32;
     fn access(path: *const u8, mode: i32) -> i32;
@@ -556,6 +569,11 @@ struct ThreadState {
     read_file_status: u64,
     env_status: u64,
     write_file_status: u64,
+    // STDLIB-FS-PATH: the same pairing for the file-system calls,
+    // plus the last directory listing so `dir_name(i)` can hand the
+    // entries back one at a time after one crossing read them all.
+    fs_status: u64,
+    fs_entries: alloc::vec::Vec<alloc::vec::Vec<u8>>,
     /// RUNTIME-LIB P0-A: where program output goes, and the sink it
     /// goes through when `print_stderr` is set. The compiled backends
     /// flip the flag around a print instruction marked `stderr`
@@ -619,6 +637,8 @@ impl Default for ThreadState {
             random_seeded: false,
             read_file_status: IO_OK,
             env_status: IO_OK,
+            fs_status: IO_OK,
+            fs_entries: alloc::vec::Vec::new(),
             write_file_status: IO_OK,
             err_sink: default_err_sink,
             print_stderr: false,
@@ -4173,6 +4193,279 @@ pub fn strftime_utc(fmt: &str, secs: i64) -> String {
     }
     out
 }
+
+// ---------------------------------------------------------------------
+// STDLIB-FS-PATH: the file system calls behind `core/std/fs.t`.
+//
+// **No `struct stat`, and `struct dirent` only for its name.** Both
+// layouts differ between macOS and Linux, and a mis-transcribed
+// offset compiles cleanly and returns a wrong answer -- the failure
+// NETWORK_IO's per-platform `sys` module and its header cross-check
+// exist to prevent. Rather than take that on for metadata, the size
+// comes from `fseek`/`ftell` and the kind from whether `opendir`
+// succeeds. That is why `fs.t` reports size and kind but not `mtime`
+// or `mode`.
+//
+// A directory listing does need the name out of `dirent`, so the
+// offset is transcribed -- but it is the *only* one, and the unit
+// test below reads a directory this crate creates and checks the
+// names come back, which fails loudly if the offset is wrong.
+// ---------------------------------------------------------------------
+
+/// Offset of `d_name` within `struct dirent`.
+///
+/// macOS: `d_ino` (8) + `d_seekoff` (8) + `d_reclen` (2) +
+/// `d_namlen` (2) + `d_type` (1) = 21.
+#[cfg(target_os = "macos")]
+const DIRENT_NAME_OFFSET: usize = 21;
+
+/// Linux: `d_ino` (8) + `d_off` (8) + `d_reclen` (2) + `d_type` (1)
+/// = 19.
+#[cfg(not(target_os = "macos"))]
+const DIRENT_NAME_OFFSET: usize = 19;
+
+/// One directory's entries, read in full by `toy_fs_dir_open` and
+/// handed back one at a time.
+///
+/// Copied rather than streamed because walking a tree -- open a
+/// directory, recurse into each entry -- is the common shape, and a
+/// streaming reader's buffer would be overwritten by the recursive
+/// open.
+///
+/// `.` and `..` are dropped here. Returning them makes every
+/// tree-walking program an infinite loop on its first try.
+fn dir_entries(path: *const u8) -> Option<alloc::vec::Vec<alloc::vec::Vec<u8>>> {
+    let d = unsafe { opendir(path) };
+    if d.is_null() {
+        return None;
+    }
+    let mut out = alloc::vec::Vec::new();
+    loop {
+        // `readdir` reports both "end of directory" and "error" with
+        // NULL; the distinction needs errno cleared first, and a
+        // partial listing is not worth the extra failure mode.
+        let e = unsafe { readdir(d) };
+        if e.is_null() {
+            break;
+        }
+        let name_ptr = unsafe { e.add(DIRENT_NAME_OFFSET) };
+        let mut len = 0usize;
+        while len < 1024 && unsafe { *name_ptr.add(len) } != 0 {
+            len += 1;
+        }
+        let name = unsafe { core::slice::from_raw_parts(name_ptr, len) };
+        if name == b"." || name == b".." {
+            continue;
+        }
+        out.push(name.to_vec());
+    }
+    unsafe { closedir(d) };
+    Some(out)
+}
+
+/// Read `path`'s entries into thread state and answer how many there
+/// are. The failure status goes to `toy_io_read_file_status`'s
+/// neighbour, `toy_fs_status`.
+///
+/// # Safety
+/// `path` must be a valid toylang str handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_fs_dir_open(path: *const u8) -> u64 {
+    let st = thread_state();
+    let p = str_to_cstring(path);
+    match dir_entries(p.as_ptr()) {
+        Some(entries) => {
+            let n = entries.len() as u64;
+            st.fs_entries = entries;
+            st.fs_status = io_status::OK;
+            n
+        }
+        None => {
+            st.fs_entries = alloc::vec::Vec::new();
+            st.fs_status = io_status::from_errno(current_errno());
+            0
+        }
+    }
+}
+
+/// The `i`th name from the last `toy_fs_dir_open`.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_fs_dir_name(i: u64) -> *const u8 {
+    let st = thread_state();
+    match st.fs_entries.get(i as usize) {
+        Some(name) => toy_str_alloc(name),
+        None => toy_str_alloc(&[]),
+    }
+}
+
+/// The status of the last `fs` call in this thread.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_fs_status() -> u64 {
+    thread_state().fs_status
+}
+
+/// Whether `path` names a directory -- decided by whether it can be
+/// opened as one, which needs no struct layout.
+///
+/// # Safety
+///
+/// `path` must be a valid toylang str handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_fs_is_dir(path: *const u8) -> u8 {
+    let p = str_to_cstring(path);
+    let d = unsafe { opendir(p.as_ptr()) };
+    if d.is_null() {
+        return 0;
+    }
+    unsafe { closedir(d) };
+    1
+}
+
+/// The size of the file at `path` in bytes, with the status recorded
+/// alongside. Measured by seeking to the end, so no `struct stat`.
+///
+/// # Safety
+///
+/// `path` must be a valid toylang str handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_fs_file_size(path: *const u8) -> u64 {
+    let st = thread_state();
+    let p = str_to_cstring(path);
+    let f = unsafe { fopen(p.as_ptr(), c"rb".as_ptr().cast()) };
+    if f.is_null() {
+        st.fs_status = io_status::from_errno(current_errno());
+        return 0;
+    }
+    unsafe { fseek(f, 0, 2) };
+    let n = unsafe { ftell(f) };
+    unsafe { fclose(f) };
+    if n < 0 {
+        st.fs_status = io_status::READ_ERROR;
+        return 0;
+    }
+    st.fs_status = io_status::OK;
+    n as u64
+}
+
+/// The four mutating calls. Each answers with the status vocabulary
+/// rather than errno, so the enum in `fs.t` cannot drift from it.
+///
+/// # Safety
+///
+/// `path` must be a valid toylang str handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_fs_mkdir(path: *const u8) -> u64 {
+    let p = str_to_cstring(path);
+    // 0o777 -- the process umask narrows it, as for `mkdir(1)`.
+    if unsafe { mkdir(p.as_ptr(), 0o777) } == 0 {
+        io_status::OK
+    } else {
+        fs_status_from_errno(current_errno())
+    }
+}
+
+///
+/// # Safety
+///
+/// `path` must be a valid toylang str handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_fs_remove_file(path: *const u8) -> u64 {
+    let p = str_to_cstring(path);
+    if unsafe { unlink(p.as_ptr()) } == 0 {
+        io_status::OK
+    } else {
+        fs_status_from_errno(current_errno())
+    }
+}
+
+///
+/// # Safety
+///
+/// `path` must be a valid toylang str handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_fs_remove_dir(path: *const u8) -> u64 {
+    let p = str_to_cstring(path);
+    if unsafe { rmdir(p.as_ptr()) } == 0 {
+        io_status::OK
+    } else {
+        fs_status_from_errno(current_errno())
+    }
+}
+
+///
+/// # Safety
+///
+/// Both arguments must be valid toylang str handles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_fs_rename(from: *const u8, to: *const u8) -> u64 {
+    let f = str_to_cstring(from);
+    let t = str_to_cstring(to);
+    if unsafe { rename(f.as_ptr(), t.as_ptr()) } == 0 {
+        io_status::OK
+    } else {
+        fs_status_from_errno(current_errno())
+    }
+}
+
+/// The absolute, symlink-resolved form of `path`. Empty on failure,
+/// with the reason in `toy_fs_status`.
+///
+/// # Safety
+///
+/// `path` must be a valid toylang str handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_fs_realpath(path: *const u8) -> *const u8 {
+    let st = thread_state();
+    let p = str_to_cstring(path);
+    let mut buf = [0u8; 4096];
+    let r = unsafe { realpath(p.as_ptr(), buf.as_mut_ptr()) };
+    if r.is_null() {
+        st.fs_status = fs_status_from_errno(current_errno());
+        return toy_str_alloc(&[]);
+    }
+    st.fs_status = io_status::OK;
+    let mut len = 0usize;
+    while len < buf.len() && buf[len] != 0 {
+        len += 1;
+    }
+    toy_str_alloc(&buf[..len])
+}
+
+/// The process's working directory.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_fs_current_dir() -> *const u8 {
+    let st = thread_state();
+    let mut buf = [0u8; 4096];
+    let r = unsafe { getcwd(buf.as_mut_ptr(), buf.len()) };
+    if r.is_null() {
+        st.fs_status = fs_status_from_errno(current_errno());
+        return toy_str_alloc(&[]);
+    }
+    st.fs_status = io_status::OK;
+    let mut len = 0usize;
+    while len < buf.len() && buf[len] != 0 {
+        len += 1;
+    }
+    toy_str_alloc(&buf[..len])
+}
+
+/// STDLIB-FS-PATH §8: the io vocabulary plus the three a file system
+/// needs. Defined here beside `io_status` so the enum in `fs.t` has
+/// one table to decode, not two.
+fn fs_status_from_errno(err: i32) -> u64 {
+    match err {
+        17 => FS_ALREADY_EXISTS,  // EEXIST
+        20 => FS_NOT_A_DIRECTORY, // ENOTDIR
+        // ENOTEMPTY is 66 on macOS and 39 on Linux -- the one place
+        // in this table the platforms disagree.
+        66 | 39 => FS_NOT_EMPTY,
+        other => io_status::from_errno(other),
+    }
+}
+
+pub const FS_ALREADY_EXISTS: u64 = 7;
+pub const FS_NOT_A_DIRECTORY: u64 = 8;
+pub const FS_NOT_EMPTY: u64 = 9;
 
 // ---------------------------------------------------------------------
 // STDLIB-TIME TM0/TM1: clocks and sleeping.

@@ -68,6 +68,12 @@ pub enum IoError {
     WriteError,        # a write failed with no errno behind it
     EndOfInput,        # `read_line`: EOF before any byte was read
     Unknown,           # the OS reported an errno the runtime cannot name
+    # STDLIB-FS-PATH §8: the three a file system adds. Adding
+    # variants is a breaking change for an exhaustive `match`, which
+    # is the price of the enum being exhaustive in the first place.
+    AlreadyExists,     # the path is already taken (EEXIST)
+    NotADirectory,     # a component of the path is not a directory
+    NotEmpty,          # `remove_dir` on a directory with entries
 }
 
 impl Display for IoError {
@@ -80,6 +86,9 @@ impl Display for IoError {
             IoError::WriteError => "write error",
             IoError::EndOfInput => "end of input",
             IoError::Unknown => "unknown error",
+            IoError::AlreadyExists => "already exists",
+            IoError::NotADirectory => "not a directory",
+            IoError::NotEmpty => "directory not empty",
         }
     }
 }

@@ -10,6 +10,24 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-03
+- **STDLIB-TRAIT-BASE B1 / B3 / B4 — bound を書いた先で何かできるように
+  なった** — 設計は [`STDLIB_TRAIT_BASE.md`](STDLIB_TRAIT_BASE.md)。
+  `Ord` だけが bound 越しに使えていたのは偶然 (`lt` が `bool` を返し
+  `&mut` を取らないため) で、穴は 2 つとも別の層にあった:
+  (B1) `Self` 戻りの解決は正しく動いていて、その後の**ガードが関数の型
+  パラメータを見ていなかった** (impl のものしか見ない) ため弾かれていた。
+  診断の `DEBUG:` も消した。合わせて `val c: T = ...` の
+  `Identifier(T)` と戻り型の `Generic(T)` を「同じ型を不一致と言う」形も
+  修正。(B4) `unify_types` に**参照の行が無かった** — `&mut T` は
+  `Cannot unify` で落ち、`&T` は静かに `Unknown` を返していた。
+  さらに lowering 側も `&T` の型引数推論・置換後の lower・
+  `param_ref_pointee` の置換後計算・`&mut T` の writeback 配線が
+  すべて欠けていた (最後の 1 つは tree-walker だけが変異を報告し
+  compiled lane が黙って捨てる誤答だった)。
+  (B3) `core/std/clone.t` に `trait Clone`。primitive 全幅 + `str` +
+  `String`。**コンテナの impl は入れていない** (→ VEC-CLONE-WITH-STRING-CLONE)。
+  `Clone` は所有モデルの一部 — `val b = a` は alias で、container に
+  入れると move する。
 - **STDLIB-TEXT T3〜T5 — テキストの分野が完了** — `AsciiClass`
   (`core/std/char.t`、`u8` と `u32` の両方に impl。`digit_value(radix)` 込み。
   `parse.t` が手書きしていた `c < '0' || c > '9'` 4 箇所を置換) /
@@ -1222,6 +1240,20 @@
   bound は要らない / `K: Hash` bound は動くが breaking change /
   `Set` は `Dict<T, ()>` では書けない / `remove` の swap-remove で
   反復順は既に挿入順ではない)
+- **GENERIC-SCALAR-REF: `&T` が primitive に解決される generic 関数** ★ —
+  `fn get<T: Id>(v: &T)` を `get(&5u64)` 相当で呼ぶと、compiled lane は
+  **拒否する** (2026-09-03 に明示的なエラーを入れた)。スカラーへの参照は
+  番地で渡して読み戻す形なのに、pointee が置換時にしか決まらないと
+  引数スロットの型・`param_ref_pointee`・body 側の見方が揃わず、
+  3 レーンが 3 通りの誤答を返していた。compound の `&T` は erase される
+  ので影響なし。回避は `T` を値で取ること
+- **VEC-CLONE-WITH-STRING-CLONE: `Vec<T>` と `String` の `Clone` を同じ
+  プログラムで使うと壊れる** ★ — `impl<T: Clone> Clone for Vec<T>` を
+  置いた状態で `v.clone()` と `s.clone()` (String) を両方書くと
+  `Internal error: Invalid memory access in ptr_write`。個別にはどちらも
+  動く。原因未特定のため 2026-09-03 の B3 では**コンテナの `Clone` impl を
+  入れていない** (primitive 全幅 / `str` / `String` のみ)。`Vec` /
+  `Box` の `Clone` はここが解けてから
 - **PTR-READ-ASSIGN: 注釈の無い `__builtin_ptr_read` を代入すると診断が
   嘘をつく** ★ — `var c: u8 = ...` の後に `c = __builtin_ptr_read(p, i)`
   と**代入**すると (`val` の再宣言ではなく)、読み出しの shape を決める

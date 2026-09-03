@@ -431,6 +431,18 @@ impl String {
 #
 # `__builtin_str_from_bytes` copies, so the result does not alias the
 # buffer and is unaffected by a later `push`.
+# `Clone` for a String: `to_string` already builds an independent
+# buffer, so this is that under the name a `<T: Clone>` bound asks
+# for.
+impl Clone for String {
+    unsafe fn clone(&self) -> Self {
+        # Bound rather than returned directly: the compiled lanes
+        # refuse a compound-returning method in expression position.
+        val copy: String = self.to_string()
+        copy
+    }
+}
+
 impl Display for String {
     unsafe fn to_str(&self) -> str {
         __builtin_str_from_bytes(self.data, self.len)

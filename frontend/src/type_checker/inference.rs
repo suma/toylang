@@ -474,6 +474,41 @@ impl TypeInferenceState {
                     },
                 ])
             }
+
+            // STDLIB-TRAIT-BASE B1/B4: a reference unifies through to
+            // what it points at, and only against a reference of the
+            // same mutability.
+            //
+            // The table had no row for this at all, so `fn f<T: Tr>(v:
+            // &T)` called with `&p` left `T` unbound: `&mut T` said
+            // `Cannot unify &mut T with &mut P` outright, and `&T`
+            // failed more quietly -- the call was accepted and the
+            // return type came back `Unknown`, which surfaced later as
+            // "field access on Unknown" somewhere else entirely. That
+            // is why `Clone` could not be written as
+            // `fn dup<T: Clone>(v: &T) -> T`, and why no generic
+            // function could take a `&mut` receiver.
+            //
+            // Mutability is part of the match rather than something to
+            // widen: a `&T` argument must not satisfy a `&mut T`
+            // parameter.
+            (
+                TypeDecl::Ref { is_mut: left_mut, inner: left_inner },
+                TypeDecl::Ref { is_mut: right_mut, inner: right_inner },
+            ) => {
+                if left_mut != right_mut {
+                    return Err(format!(
+                        "Cannot unify `{}` with `{}`: one is a mutable borrow and the other is not",
+                        left.spell_with(Some(interner)),
+                        right.spell_with(Some(interner)),
+                    ));
+                }
+                Ok(vec![TypeConstraint {
+                    left: (**left_inner).clone(),
+                    right: (**right_inner).clone(),
+                    context: ConstraintContext::Generic,
+                }])
+            }
             
             // Struct type unification
             (TypeDecl::Struct(left_name, left_params), TypeDecl::Struct(right_name, right_params)) => {

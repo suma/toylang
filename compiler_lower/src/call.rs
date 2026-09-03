@@ -28,7 +28,7 @@
 
 use std::collections::HashMap;
 
-use frontend::ast::{Expr, ExprRef};
+use frontend::ast::{Expr, ExprRef, UnaryOp};
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 
@@ -208,6 +208,25 @@ impl<'a> FunctionLower<'a> {
                     _ => {}
                 }
             }
+            // STDLIB-TRAIT-BASE B1/B4: a `&T` / `&mut T` parameter says
+            // as much about `T` as a by-value one does. Borrows are
+            // erased before this backend sees anything, so both sides
+            // are peeled -- the declared type of its reference, and
+            // the argument of its `&` -- and the same walk runs on
+            // what is underneath.
+            //
+            // Without this, `fn dup<T: Clone>(v: &T) -> T` and every
+            // function taking `&mut T` type-checked and then failed to
+            // monomorphise, which is most of the reason a bound could
+            // be written but not used.
+            TypeDecl::Ref { inner, .. } => {
+                let arg = match self.program.expression.get(arg) {
+                    Some(Expr::Unary(UnaryOp::Borrow, e))
+                    | Some(Expr::Unary(UnaryOp::BorrowMut, e)) => e,
+                    _ => *arg,
+                };
+                self.infer_generic_args_from_param(inner, &arg, generic_params, inferred);
+            }
             TypeDecl::Tuple(elems) => {
                 if let Some(Type::Tuple(id)) = self.value_scalar(arg) {
                     let def = &self.module.tuple_defs[id.0 as usize];
@@ -261,6 +280,35 @@ impl<'a> FunctionLower<'a> {
             .copied()
             .zip(type_args.iter().copied())
             .collect();
+        // STDLIB-TRAIT-BASE B1: `&T` where `T` turns out to be a
+        // scalar is refused rather than lowered.
+        //
+        // A scalar reference is passed as an address and read back
+        // through it, and the pieces that decide that (the parameter
+        // slot type, `param_ref_pointee`, and the body's own view of
+        // the binding) do not yet agree once the pointee only becomes
+        // scalar at substitution time -- the three lanes returned
+        // three different wrong numbers. Compound `T` is unaffected,
+        // because a compound reference is erased to the pointee.
+        //
+        // Refusing keeps this where it was before the inference was
+        // added: a compile error, not a wrong answer. Recorded as
+        // GENERIC-SCALAR-REF in design-docs/todo.md.
+        for (pname, ptype) in &template.parameter {
+            if let TypeDecl::Ref { inner, .. } = ptype
+                && let TypeDecl::Generic(g) | TypeDecl::Identifier(g) = inner.as_ref()
+                && let Some(actual) = subst.get(g)
+                && crate::templates::is_scalar_pointee(*actual)
+            {
+                return Err(format!(
+                    "generic function `{}`: parameter `{}: {}` resolves to a reference to a scalar, which this compiler cannot pass yet; take `{}` by value",
+                    self.interner.resolve(template_name).unwrap_or("?"),
+                    self.interner.resolve(*pname).unwrap_or("?"),
+                    crate::spelling::spell_type_decl(self.interner, ptype),
+                    self.interner.resolve(*g).unwrap_or("T"),
+                ));
+            }
+        }
         // Lower the param / return signatures with the active subst.
         let mut params: Vec<Type> = Vec::with_capacity(template.parameter.len());
         for (pname, ptype) in &template.parameter {
@@ -310,12 +358,64 @@ impl<'a> FunctionLower<'a> {
             .declare_function_anon(export_name, Linkage::Local, params, ret);
         // REF-Stage-2 (iv): record `&T` / `&mut T` parameters so call
         // sites hand them an address rather than a value.
+        //
+        // **After substitution.** Asking the template directly says
+        // "not a scalar reference" for every `&T`, because `T` is not
+        // a scalar until it is one -- so a `dup(&a)` with `a: u64`
+        // passed a value while the body read through an address, and
+        // the three lanes returned three different pieces of garbage.
+        // Compound `T` was unaffected, which is why it only showed up
+        // once `&T` could be inferred at all (STDLIB-TRAIT-BASE B1).
         let param_ref_pointee: Vec<Option<crate::ir::Type>> = template
             .parameter
             .iter()
-            .map(|(_, t)| crate::templates::param_ref_pointee_ty(t))
+            .map(|(_, t)| match t {
+                TypeDecl::Ref { inner, .. } => match inner.as_ref() {
+                    TypeDecl::Generic(g) | TypeDecl::Identifier(g) => subst
+                        .get(g)
+                        .copied()
+                        .filter(|ty| crate::templates::is_scalar_pointee(*ty)),
+                    _ => crate::templates::param_ref_pointee_ty(t),
+                },
+                _ => crate::templates::param_ref_pointee_ty(t),
+            })
             .collect();
         self.module.function_mut(func_id).param_ref_pointee = param_ref_pointee;
+        // REF-Stage-2: a `&mut T` parameter that resolves to a
+        // compound returns its leaves alongside the declared result,
+        // and the caller writes them back into its own binding. The
+        // instantiation path never wired this, so a generic function
+        // taking `&mut T` compiled to one that mutated a copy: the
+        // tree-walker reported the mutation and the compiled lanes
+        // silently did not (STDLIB-TRAIT-BASE B4).
+        //
+        // A `&mut` to a *scalar* is excluded here for the same reason
+        // the non-generic path excludes it -- it travels as an address
+        // -- and a generic parameter that resolves to one is refused
+        // above.
+        {
+            let mut writeback_types: Vec<crate::ir::Type> = Vec::new();
+            for (pi, (_, decl_ty)) in template.parameter.iter().enumerate() {
+                if !matches!(decl_ty, TypeDecl::Ref { is_mut: true, .. }) {
+                    continue;
+                }
+                if pi >= self.module.function(func_id).params.len() {
+                    continue;
+                }
+                let param_ty = self.module.function(func_id).params[pi];
+                if crate::templates::is_scalar_pointee(param_ty) {
+                    continue;
+                }
+                compiler_ir::layout::flatten_compound_leaf_types(
+                    self.module,
+                    param_ty,
+                    &mut writeback_types,
+                );
+            }
+            if !writeback_types.is_empty() {
+                self.module.function_mut(func_id).self_writeback_types = writeback_types;
+            }
+        }
         self.generic_instances
             .insert((template_name, type_args), func_id);
         // TEST-PERF: this body-bearing instance is now queued; the
@@ -371,6 +471,27 @@ impl<'a> FunctionLower<'a> {
                 self_type
             }
             TypeDecl::Generic(g) => subst.get(g).copied(),
+            // STDLIB-TRAIT-BASE B1/B4: a substituted `&T`. The arm was
+            // missing, so the instantiation was refused with "cannot
+            // lower parameter `v: &T` after substitution" -- after the
+            // inference had already worked out what `T` was.
+            //
+            // The answer has to match what `lower_param_or_return_type`
+            // gives a written-out `&u64`: a reference to a **scalar**
+            // is one pointer-sized slot, not the pointee's own type.
+            // Returning the pointee made the callee read a value where
+            // the caller had put an address, which the three lanes
+            // reported as three different wrong numbers. A reference
+            // to a compound is still erased to the pointee, which is
+            // what that path does too.
+            TypeDecl::Ref { inner, .. } => {
+                let lowered = self.lower_type_with_subst_self(inner, subst, self_type)?;
+                if crate::templates::is_scalar_pointee(lowered) {
+                    Some(Type::U64)
+                } else {
+                    Some(lowered)
+                }
+            }
             TypeDecl::Identifier(name) => {
                 if let Some(ty) = subst.get(name).copied() {
                     return Some(ty);

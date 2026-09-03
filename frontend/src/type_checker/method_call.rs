@@ -189,24 +189,34 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Check other type methods
         let result = self.visit_method_call_on_type(&resolved_obj_type, method, args, &arg_types);
         
-        // Debug: If result is Generic, show what happened
+        // A `Generic(P)` result is only a bug when `P` is not a type
+        // parameter that is actually in scope.
+        //
+        // Two scopes count. A method inside a generic impl returns an
+        // impl-level param (`self.f(v)` on `MapIter<T, U>` returns
+        // `U` while `next`'s body is checked against the template) --
+        // and so does a **generic free function**: `fn dup<T: Clone>(v:
+        // &T) -> T { v.clone() }` resolves `Self` to `T`, which is
+        // exactly right and was being rejected because only the impl
+        // scope was consulted (STDLIB-TRAIT-BASE B1).
+        //
+        // That single omission is why `Clone`, `Default` and every
+        // arithmetic trait were unwritable in a generic context, and
+        // why `Ord` was the one that worked: `lt` returns `bool`, so
+        // it never produced a `Generic` to reject.
         if let Ok(TypeDecl::Generic(sym)) = &result {
-            // A method inside a generic impl legitimately returns an
-            // impl-level generic param (`self.f(v)` on `MapIter<T, U>`
-            // returns `U` while `next`'s body is type-checked against
-            // the template). Only a Generic outside that scope is a
-            // genuine unresolved-param bug worth reporting.
             let in_impl_scope = self
                 .context
                 .current_impl_generic_params
                 .as_ref()
                 .map(|p| p.contains(sym))
                 .unwrap_or(false);
-            if !in_impl_scope {
+            let in_fn_scope = self.context.current_fn_generic_bounds.contains_key(sym);
+            if !in_impl_scope && !in_fn_scope {
                 let sym_str = self.resolve_symbol_name(*sym);
                 return Err(TypeCheckError::generic_error(&format!(
-                    "DEBUG: Method '{}' returned unresolved Generic('{}') for object type {}",
-                    method_name, sym_str, self.type_name_for_error(&resolved_obj_type)
+                    "method '{}' on `{}` returns the type parameter `{}`, which is not                      bound here — name it in the enclosing function's or impl's parameter list",
+                    method_name, self.type_name_for_error(&resolved_obj_type), sym_str
                 )));
             }
         }

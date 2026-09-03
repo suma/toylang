@@ -854,3 +854,107 @@ fn from_is_selected_by_the_argument_type() {
     assert_consistent(src, "from_selected_by_argument");
 }
 
+
+// STDLIB-TRAIT-BASE B1 / B3 / B4: what a bound is for.
+//
+// `Ord` was the one trait usable through a bound, and the reason was
+// accidental: `lt` returns `bool` and takes no `&mut`, so it dodged
+// both holes. A trait method returning `Self` could not be called
+// through a type parameter at all, and a `&mut T` parameter could not
+// be inferred at the call site — which is every trait anyone would
+// want to write next.
+
+#[test]
+fn a_trait_method_returning_self_is_callable_through_a_bound() {
+    let src = r#"
+        struct P { v: i64 }
+        impl Clone for P {
+            fn clone(&self) -> Self { P { v: self.v } }
+        }
+
+        fn dup<T: Clone>(v: T) -> T {
+            val c: T = v.clone()
+            c
+        }
+
+        fn main() -> u64 {
+            val a: u64 = 7u64
+            val b: u64 = dup(a)
+            val p = P { v: 5i64 }
+            val q: P = dup(p)
+            val n: i64 = q.v
+            b + (n as u64)
+        }
+    "#;
+    // 7 + 5. The primitive goes through `impl Clone for u64`, the
+    // struct through the user's own impl, and both reach the same
+    // generic body.
+    assert_consistent(src, "clone_through_bound");
+}
+
+#[test]
+fn a_generic_function_can_take_a_mutable_borrow() {
+    // `Cannot unify &mut T with &mut P`: the unifier had no row for a
+    // reference at all. `&T` failed more quietly — the call was
+    // accepted and the return type came back `Unknown`, surfacing
+    // later as an error somewhere else entirely.
+    let src = r#"
+        struct P { n: u64 }
+        trait Bump { fn bump(&mut self) }
+        impl Bump for P {
+            fn bump(&mut self) { self.n = self.n + 1u64 }
+        }
+
+        fn go<T: Bump>(v: &mut T) { v.bump() }
+
+        fn main() -> u64 {
+            var p = P { n: 5u64 }
+            go(&mut p)
+            go(&mut p)
+            p.n
+        }
+    "#;
+    assert_consistent(src, "generic_mut_borrow");
+}
+
+#[test]
+fn a_generic_function_can_take_a_shared_borrow_of_a_compound() {
+    let src = r#"
+        struct P { v: i64 }
+        impl Clone for P {
+            fn clone(&self) -> Self { P { v: self.v } }
+        }
+
+        fn dup<T: Clone>(v: &T) -> T {
+            val c: T = v.clone()
+            c
+        }
+
+        fn main() -> u64 {
+            val p = P { v: 5i64 }
+            val q: P = dup(&p)
+            val n: i64 = q.v
+            n as u64
+        }
+    "#;
+    assert_consistent(src, "generic_shared_borrow");
+}
+
+#[test]
+fn cloning_a_string_gives_an_independent_buffer() {
+    // The point of `Clone` in this language: `val b = a` on a compound
+    // is an alias, and putting `a` in a container moves it. A clone is
+    // the other thing you can hand over — with its own allocation,
+    // freed on its own.
+    let src = r#"
+        fn main() -> u64 {
+            var s = String::from_str("hi")
+            val t: String = s.clone()
+            s.push_str("!")
+            println(s)
+            println(t)
+            s.len() + t.len()
+        }
+    "#;
+    assert_stdout_consistent(src, "string_clone_independent");
+}

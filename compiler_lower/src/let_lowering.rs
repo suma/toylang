@@ -782,11 +782,36 @@ impl<'a> FunctionLower<'a> {
         fn_name: DefaultSymbol,
         args_ref: &ExprRef,
     ) -> Result<Option<Option<ValueId>>, String> {
-        if let Some(target_id) = self.module.lookup_function(None, fn_name) {
+        if let Some(target_id) = self.lookup_or_instantiate_call_target(fn_name, args_ref) {
             let items: Vec<ExprRef> = self.call_arg_items(args_ref)?;
             return self.lower_let_call_compound_target(name, target_id, &items);
         }
         Ok(None)
+    }
+
+    /// The callee a `val x = f(...)` names, including a **generic
+    /// template** that has not been instantiated yet.
+    ///
+    /// The compound-return intercepts looked the name up with
+    /// `module.lookup_function`, which only knows names that already
+    /// exist -- and a generic function exists only per instantiation.
+    /// So `val q: P = dup(&p)` on `fn dup<T: Clone>(v: &T) -> T` fell
+    /// past every compound path to the plain expression one, which
+    /// refuses a struct-returning call and told the user to bind it
+    /// with `val` -- which is what they had written
+    /// (STDLIB-TRAIT-BASE B1).
+    fn lookup_or_instantiate_call_target(
+        &mut self,
+        fn_name: DefaultSymbol,
+        args_ref: &ExprRef,
+    ) -> Option<crate::ir::FuncId> {
+        if let Some(id) = self.module.lookup_function(None, fn_name) {
+            return Some(id);
+        }
+        if !self.generic_funcs.contains_key(&fn_name) {
+            return None;
+        }
+        self.resolve_call_target(fn_name, args_ref).ok()
     }
 
     /// Shared tail of the compound-returning call intercepts (bare
@@ -914,7 +939,7 @@ impl<'a> FunctionLower<'a> {
         fn_name: DefaultSymbol,
         args_ref: &ExprRef,
     ) -> Result<Option<Option<ValueId>>, String> {
-        if let Some(target_id) = self.module.lookup_function(None, fn_name) {
+        if let Some(target_id) = self.lookup_or_instantiate_call_target(fn_name, args_ref) {
             let items: Vec<ExprRef> = self.call_arg_items(args_ref)?;
             return self.lower_let_call_compound_target(name, target_id, &items);
         }

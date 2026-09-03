@@ -882,13 +882,20 @@ pub(super) fn param_ref_pointee_ty(ty: &TypeDecl) -> Option<Type> {
         return None;
     };
     let scalar = lower_scalar(inner)?;
+    is_scalar_pointee(scalar).then_some(scalar)
+}
+
+/// Whether a reference to this IR type is passed as an address. The
+/// generic-instantiation path asks this about an *already substituted*
+/// type argument, where there is no `TypeDecl` left to hand
+/// [`param_ref_pointee_ty`].
+pub(super) fn is_scalar_pointee(scalar: Type) -> bool {
     matches!(
         scalar,
         Type::I64 | Type::U64 | Type::F64 | Type::Bool
             | Type::I8 | Type::U8 | Type::I16 | Type::U16
             | Type::I32 | Type::U32
     )
-    .then_some(scalar)
 }
 
 /// Replace every `Self` inside `ty` with the impl target's type.

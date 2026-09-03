@@ -1092,6 +1092,26 @@ impl<'a> TypeCheckerVisitor<'a> {
                             // produces no value.
                             (TypeDecl::Unit, TypeDecl::Tuple(t))
                             | (TypeDecl::Tuple(t), TypeDecl::Unit) => t.is_empty(),
+                            // STDLIB-TRAIT-BASE B1: a type parameter is
+                            // spelled `Generic(T)` where the checker
+                            // resolved it and `Identifier(T)` where the
+                            // parser wrote it (`val c: T = ...`), and
+                            // both reach here. Reporting "expected T,
+                            // but got T" for that reads like a compiler
+                            // bug, and it is what stopped a generic
+                            // function from returning a value it had
+                            // bound to a `T`-annotated local.
+                            //
+                            // The check is against the function's own
+                            // parameter list rather than the bounds in
+                            // scope: this runs *after* the generic
+                            // scope is popped, and inside one function
+                            // a symbol names one parameter anyway.
+                            (TypeDecl::Generic(a), TypeDecl::Generic(b))
+                            | (TypeDecl::Generic(a), TypeDecl::Identifier(b))
+                            | (TypeDecl::Identifier(b), TypeDecl::Generic(a)) => {
+                                a == b && func.generic_params.contains(a)
+                            }
                             (TypeDecl::Struct(a, params_a), TypeDecl::Identifier(b))
                             | (TypeDecl::Identifier(b), TypeDecl::Struct(a, params_a)) => {
                                 a == b && params_a.is_empty()

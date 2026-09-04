@@ -350,6 +350,19 @@ TREE-WALKER-GENERIC-SCOPE / ZIP-ITER-GENERIC-SCOPE。
 interpreter JIT は 3 つとも silent fallback (`toylang_rt` を link して
 いないため)。
 
+**実測 (2026-09-05、debug build の interpreter、200 KB の buffer に
+対する 1 回の部分文字列探索。needle は一致しないので走査は全長)**:
+
+| 形 | 時間 |
+|---|---|
+| 手書きの二重ループ (M3 以前の `find_from` と同じ形) | **~4.5 s** |
+| `__builtin_mem_find_seq` 1 呼び出し | **~5 ms** |
+
+**~900 倍。** 「3 桁縮まらないなら設計が間違っている」と書いた基準は
+満たしている。compiled レーンでは元から load 命令に落ちていたので
+差は小さいが、`--check` / `--test` / example がすべてこの遅い
+レーンで走ることを思い出すこと。
+
 **踏んだ制約 (M3 の産物ではない)**: compiled レーンは
 **method 呼び出しの compound 引数を `match` の scrutinee 位置で
 lowering できない** (`hay.find_seq(n)` を直接 match に置くと

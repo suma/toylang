@@ -1925,6 +1925,90 @@ changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 
   CHAR-LITERAL-GENERIC-ARG がレシーバの型引数で置換してから hint に使っている。
   2026-09-03 に `logsearch/` の設計 (ログ検索サービスのモデルケース) で発見。
 
+  **2026-09-04 追記 — この穴は `&mut` を黙って値渡しに変える。**
+  引数の型が見られないので、`&mut T` を要求する method に `&mut T` の
+  パラメータをそのまま渡すと、値渡し (コピー) として通ってしまう。
+  compound のコピーは writeback を持たないので、**callee の書き込みは
+  どこにも残らない**。最小再現 (interpreter / AOT とも `2` ではなく
+  `1` を出す):
+
+  ```rust
+  struct Sink { v: Vec<u8> }
+  impl Sink {
+      fn add(&mut self, b: u8) { self.v.push(b) }
+      fn len(&self) -> u64 { self.v.size() }
+  }
+  struct Helper { n: u64 }
+  impl Helper {
+      fn fill(&self, out: &mut Sink) { out.add(65u8) }
+  }
+  fn outer(out: &mut Sink) {
+      out.add(66u8)          # 直接の書き込みは効く
+      val h = Helper { n: 0u64 }
+      h.fill(out)            # method 経由の書き込みは消える
+  }
+  fn main() -> u64 {
+      var b = Sink { v: Vec::new() }
+      outer(&mut b)
+      println(b.len())       # 2 が正しい。両レーンとも 1
+      0u64
+  }
+  ```
+
+  **自由関数なら同じ形が型検査で止まる** (`[E0001] expected &mut Sink,
+  but got Sink` — REF-REBORROW)。つまり method 側だけが、コンパイル時に
+  捕まるはずの間違いを**実行時の静かなデータ喪失**に変えている。
+  `poc/logsearch` のアーカイブ書き出しがこれを踏み、フレームのヘッダと
+  長さは正しいのに**中身だけが空**のファイルを書いた (CRC 検証が
+  無ければ「成功」と報告していた)。回避策はローカルの `var` に組んでから
+  写すことで、コピーが 1 回増える。
+
+- **COMPOUND-FIELD-ARG: compound な *フィールド* を引数に渡せない** ★★ —
+  束縛・リテラル・呼び出し結果は通る (COMPOUND-ARG-CALL、2026-09-02) が、
+  フィールドパスだけが残っている。
+
+  ```rust
+  struct Holder { buf: Vec<u8> }
+  fn count(b: &Vec<u8>) -> u64 { b.size() }
+  impl Holder {
+      fn via_field(&self) -> u64 { count(self.buf) }   # compile error
+  }
+  ```
+
+  AOT が `call argument produced no value` (method 呼び出しなら
+  `method argument produced no value`) で拒否する。**診断が規則を
+  名指ししていない** ので、原因に辿り着くのに二分探索が要る。
+  回避策は窓を渡すこと (`self.buf.as_span()` を `val` に束縛して
+  `Span<u8>` で渡す) で、`poc/logsearch` の行分割はこの形にしてある。
+
+- **BARE-NAME-COLLISION: auto-load される全モジュールが bare 名の
+  1 つの名前空間を共有する** ★★ — `poc/logsearch` に
+  `fn is_digit(b: u8) -> bool` (**`pub` でない**) を書いたら
+  `[E0010] ambiguous module path \`is_digit\`: it matches
+  logsearch::record::is_digit and std::json::is_digit` で落ちた。
+  `max_depth` も `std::json::max_depth` と衝突した。診断は明快で
+  「ファイル名を変えろ」と言うが、**stdlib が 1 つ関数を増やすたびに、
+  ユーザのプライベート関数が壊れうる**ということでもある。
+  private を名前空間から外すか、衝突時に呼び出し側の module を
+  優先するかは設計判断が要る。
+
+- **ENTRY-IN-MODULE-ROOT: プログラム本体をモジュール根に置くと
+  自分の `const` を失う** ★ — エントリはコンパイラに「プログラム」として
+  渡すので、同じファイルがモジュール根の下にもあると auto-load で
+  **もう一度取り込まれ**、その複製は自分の top-level `const` を持たない
+  まま型検査される (`[E0003] Identifier 'BUF_BYTES' not found`、
+  `= note: this comes from module ...`)。エントリを根の外に置けば済むが、
+  **診断からその結論に辿り着けない**。二重取り込みを検出して黙って
+  無視するか、はっきり拒否するかのどちらかが要る。
+
+- **ENUM-CALL-VALUE-COUNT (internal error)** ★ —
+  `internal error: enum call returned 19 value(s), expected 15`。
+  自由関数が `&mut` の compound を 2 つと `&` を 1 つ取り `u64` を返す形で
+  出た (`poc/logsearch` のアーカイブ書き出し)。**最小再現は取れていない** —
+  7 フィールド struct を `Result` で返す形は通る。`&mut` を 1 つに
+  減らしたら消えたので、writeback の leaf 数の数え方が疑わしい。
+  internal error なのでユーザ側に直し方の手掛かりが無い。
+
 ### パーサーの既知制限事項
 - bare `self` 非対応 — `self: Self` / `&self` / `&mut self` のいずれかを書く。
 - `else if` 非対応 — `elif` を使う。

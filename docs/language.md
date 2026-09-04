@@ -214,9 +214,16 @@ Explicit borrow expressions (`UnaryOp::Borrow` / `UnaryOp::BorrowMut`):
   - The operand must be a bare identifier (no `&mut s.field`,
     `&mut arr[i]`, etc.; field-level borrow is intentionally out of
     scope).
-  - The named binding must be `var`-declared. Borrowing a `val` (or
-    a top-level `const`) mutably is rejected with a precise diagnostic
+  - The named binding must be `var`-declared, or be a `&mut T`
+    parameter (or a `&mut self` receiver) of the enclosing function or
+    method — those are already mutable through their reference, so
+    forwarding one on (`inner(&mut out)`, `bump(&mut self.count)`) is
+    a re-borrow rather than a new one. Borrowing a `val` (or a
+    top-level `const`) mutably is rejected with a precise diagnostic
     naming the binding.
+  - The receiver itself is never an assignment target: `self = <value>`
+    is rejected whatever the receiver kind (write to its fields
+    instead).
 - Binary `&` (bitwise AND) remains unambiguous since it is reached only
   after a primary; prefix `&` lives at the start of an expression.
 
@@ -1253,7 +1260,7 @@ Listed lowest precedence first:
 | Unary `-` | Negation (`i64`, `f64` only) |
 | Unary `!` | Logical not (`bool`) |
 | Unary `~` | Bitwise not (`u64`, `i64`) |
-| Unary `&` / `&mut` | Borrow expression — produces `&T` / `&mut T`. `&mut` requires the operand to be a bare `var`-declared identifier; see [Reference types](#reference-types) |
+| Unary `&` / `&mut` | Borrow expression — produces `&T` / `&mut T`. `&mut` requires the operand to be a `var`-declared binding, a `&mut T` parameter, or a `&mut self` receiver; see [Reference types](#reference-types) |
 | `as` | Type cast (any numeric primitive ↔ any other: i64 ↔ u64, i64/u64 ↔ f64/f32, f64 ↔ f32) |
 | Postfix `?` | Early-return on `Result::Err` / `Option::None`; see [`?` operator](#-operator-early-return) |
 | `.field` `.0` `.method(...)` | Field / tuple-index / method access |

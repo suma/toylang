@@ -10,6 +10,20 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **METHOD-MUT-PARAM-REBORROW — method が自分の `&mut` パラメータを
+  再借用できるようになった** — `setup_method_parameter_context` が
+  全パラメータを `set_var` で登録していたので、method の body の
+  `&mut out` だけが `cannot borrow \`out\` as mutable: binding is not
+  declared \`var\`` で蹴られていた (自由関数側の `visitor.rs` には
+  `&mut T` の分岐がある)。bare 渡しは METHOD-ARG-UNCHECKED で
+  黙って値渡しになるため、**`&mut` パラメータを method から転送する
+  綴りが 1 つも無い**状態だった (`poc/logsearch` が踏んだ
+  「書き込みが消える」の片割れ)。`&mut self` レシーバも同じ理由で
+  可変にしたので `bump(&mut self.count)` が書ける (compound
+  フィールドの借用は COMPOUND-FIELD-ARG のまま AOT が拒否する —
+  自由関数からの `&mut w.s` と同じ)。receiver そのものへの代入
+  (`self = ...`) は、これまで同じ不変性が兼ねていた拒否を専用の
+  規則に移した (以前は tree-walker の実行時エラーに落ちていた)。
 - **MEMORY-ACCESS M3 — `Span<T>` の範囲演算** — `__builtin_mem_eq` /
   `mem_find` / `mem_find_seq` (実装は `toylang_rt` 1 か所、libc では
   ない) と、それを包む `copy_from` / `move_from` / `bytes_eq` /
@@ -2119,8 +2133,16 @@ changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 
   捕まるはずの間違いを**実行時の静かなデータ喪失**に変えている。
   `poc/logsearch` のアーカイブ書き出しがこれを踏み、フレームのヘッダと
   長さは正しいのに**中身だけが空**のファイルを書いた (CRC 検証が
-  無ければ「成功」と報告していた)。回避策はローカルの `var` に組んでから
-  写すことで、コピーが 1 回増える。
+  無ければ「成功」と報告していた)。
+
+  **2026-09-05 追記 — 回避策は増えた (穴自体は残っている)。**
+  METHOD-MUT-PARAM-REBORROW が landing したので、method の中でも
+  `h.fill(&mut out)` と**明示的に再借用すれば正しく書き戻る**。
+  それまでは method 内の `&mut out` が型検査で蹴られていたため、
+  `&mut` パラメータを method から転送する綴りが 1 つも無く、
+  ローカルの `var` に組んでから写す (コピーが 1 回増える) しか
+  なかった。bare の `h.fill(out)` が黙って通って書き込みを捨てる
+  のは本項の未修正部分。
 
 - **COMPOUND-FIELD-ARG: compound な *フィールド* を引数に渡せない** ★★ —
   束縛・リテラル・呼び出し結果は通る (COMPOUND-ARG-CALL、2026-09-02) が、

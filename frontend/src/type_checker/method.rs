@@ -288,12 +288,31 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
             // for the same reason `instantiate_generic_method_with_self_type`
             // uses it for the synthetic `Self` subst entry.
             if let Some(self_sym) = self.core.string_interner.get("self") {
-                self.context.set_var(self_sym, self_type);
+                // A `&mut self` receiver is mutable through its
+                // reference for the same reason a `&mut T` parameter
+                // is (below), so `&mut self.field` is a re-borrow.
+                if method.self_is_mut {
+                    self.context.set_mutable_var(self_sym, self_type);
+                } else {
+                    self.context.set_var(self_sym, self_type);
+                }
             }
         }
+        // REF-Stage-2: a `&mut T` parameter is mutable through the
+        // reference, so it has to be registered the way the free
+        // function path registers it (`visitor.rs`). Without this a
+        // method body cannot re-borrow its own out-parameter
+        // (`inner(&mut out)` reported "binding is not declared
+        // `var`"), which left no spelling that forwards a `&mut`
+        // parameter from inside a method. Plain value params and
+        // `&T` params stay immutable.
         for (param_name, param_type) in &method.parameter {
             let resolved_param_type = self.resolve_self_type(param_type);
-            self.context.set_var(*param_name, resolved_param_type);
+            if matches!(resolved_param_type, TypeDecl::Ref { is_mut: true, .. }) {
+                self.context.set_mutable_var(*param_name, resolved_param_type);
+            } else {
+                self.context.set_var(*param_name, resolved_param_type);
+            }
         }
     }
 

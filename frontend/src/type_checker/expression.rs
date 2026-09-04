@@ -1141,6 +1141,19 @@ impl<'a> TypeCheckerVisitor<'a> {
                     &lhs,
                 ));
             }
+            // The receiver itself is never assignable, whatever its
+            // form. `&mut self` is a mutable binding (so that
+            // `&mut self.field` is a re-borrow, as in a `&mut T`
+            // parameter), which would otherwise let the rule below
+            // wave `self = <value>` through to a runtime error.
+            if self.resolve_symbol_name(name) == "self" {
+                return Err(self.error_with_location(
+                    TypeCheckError::generic_error(
+                        "cannot assign to `self`: the receiver is not a reassignable binding (write to its fields instead)",
+                    ),
+                    &lhs,
+                ));
+            }
             if self.context.is_var_mutable(name) == Some(false) {
                 let name_str = self.resolve_symbol_name(name);
                 return Err(TypeCheckError::generic_error(&format!(

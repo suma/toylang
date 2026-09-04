@@ -392,6 +392,64 @@ fn main() -> str {
             other => panic!("Expected String or ConstString but got {:?}", other),
         }
     }
+
+    #[test]
+    fn test_mut_self_is_a_mutable_binding_but_not_assignable() {
+        // METHOD-MUT-PARAM-REBORROW: `&mut self` is a mutable binding,
+        // so `&mut self.field` inside the method is a re-borrow rather
+        // than a mutable borrow of an immutable name. Before this the
+        // receiver (and every `&mut T` method parameter) was bound
+        // immutably, which left no way to forward a mutable borrow out
+        // of a method body.
+        let borrow = r#"
+fn bump(n: &mut u64) {
+    n = n + 1u64
+}
+
+struct Counter {
+    value: u64
+}
+
+impl Counter {
+    fn go(&mut self) -> u64 {
+        bump(&mut self.value)
+        self.value
+    }
+}
+
+fn main() -> u64 {
+    var c = Counter { value: 41u64 }
+    c.go()
+}
+"#;
+        crate::common::assert_program_result_u64(borrow, 42);
+
+        // Assigning to the receiver itself stays an error. It used to
+        // be caught by the same immutability that blocked the
+        // re-borrow above, so it now carries a rule of its own.
+        let assign = r#"
+struct Counter {
+    value: u64
+}
+
+impl Counter {
+    fn reset(&mut self) {
+        self = Counter { value: 0u64 }
+    }
+}
+
+fn main() -> u64 {
+    var c = Counter { value: 41u64 }
+    c.reset()
+    c.value
+}
+"#;
+        let err = test_program(assign).expect_err("assigning to `self` must be rejected");
+        assert!(
+            err.contains("cannot assign to `self`"),
+            "unexpected diagnostic: {err}"
+        );
+    }
 }
 
 // =============================================================================

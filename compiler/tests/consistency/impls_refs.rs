@@ -413,6 +413,60 @@ fn ref_stage2_scalar_mut_ref_propagates_mutation_round_trip() {
 }
 
 #[test]
+fn method_reborrows_its_own_mut_parameter_round_trip() {
+    // A method could not re-borrow its own `&mut T` parameter:
+    // `setup_method_parameter_context` bound every parameter with
+    // `set_var`, so `&mut out` inside a method body was rejected as
+    // "cannot borrow `out` as mutable: binding is not declared
+    // `var`" while the identical free function body was accepted
+    // (`visitor.rs` has the `&mut` branch). Since passing `out`
+    // bare to a *method* is not type-checked at all
+    // (METHOD-ARG-UNCHECKED) and silently copies the compound,
+    // that left no spelling that forwards a `&mut` parameter out
+    // of a method: the callee's writes were dropped.
+    //
+    // Pins the forwarding shapes — to a free function, to a method
+    // whose receiver is a field of `self`, and a borrow of `self`'s
+    // own field — and that the writes are visible to the *caller*
+    // afterwards.
+    //
+    // Returns 3 (one byte written directly, two through the
+    // forwarded borrows).
+    let src = r#"
+        struct Sink { v: Vec<u8> }
+        impl Sink {
+            fn add(&mut self, b: u8) { self.v.push(b) }
+            fn len(&self) -> u64 { self.v.size() }
+        }
+        struct Inner { n: u64 }
+        impl Inner {
+            fn emit(&mut self, out: &mut Sink) { out.add(67u8) }
+        }
+        fn emit_free(out: &mut Sink) { out.add(65u8) }
+        fn bump(n: &mut u64) { n = n + 1u64 }
+        struct Writer { inner: Inner, count: u64 }
+        impl Writer {
+            fn write(&mut self, out: &mut Sink) -> u64 {
+                out.add(66u8)
+                emit_free(&mut out)
+                self.inner.emit(&mut out)
+                bump(&mut self.count)
+                out.len()
+            }
+        }
+        fn main() -> u64 {
+            var s = Sink { v: Vec::new() }
+            var w = Writer { inner: Inner { n: 0u64 }, count: 0u64 }
+            val n = w.write(&mut s)
+            if n != 3u64 { return 1u64 }
+            if w.count != 1u64 { return 2u64 }
+            s.len()
+        }
+    "#;
+    assert_consistent(src, "method_reborrows_its_own_mut_parameter_round_trip");
+}
+
+#[test]
 fn ref_stage2_field_mut_borrow_propagates_round_trip() {
     // REF-Stage-2 (iii): field-level mutable borrow.
     // `&mut p.x` resolves to the leaf scalar local of `Point.x`

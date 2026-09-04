@@ -981,7 +981,7 @@
   `impl<T: Ord> Vec<T>` の method は receiver の型引数が bound を満たさないと
   `[E0010] Method 'sort' generic parameter 'T' bound violation`。
 - **STDLIB-ORD: `Ord` trait + `Vec::sort` (3 バックエンド)** —
-  `core/std/ord.t` に `trait Ord { fn lt(self: Self, other: Self) -> bool }`、
+  `core/std/cmp.t` に `trait Ord { fn lt(self: Self, other: Self) -> bool }`、
   `core/std/collections/vec.t` に `impl<T: Ord> Vec<T>::sort()` (安定
   insertion sort)、`core/std/string.t` に `impl Ord for String` (byte-wise)。
 - **RUNTIME-IO 拡張: 乱数シード / 時刻フォーマット / 環境変数一覧 (3
@@ -1078,7 +1078,7 @@
 - **`str == str` を内容比較に統一** — interpreter (tree-walker)
   だけが内容比較で、他 4 実装は runtime handle の整数比較だった
   (**型は通るが答えが違う** divergence)。
-- **`Display` trait — 型が自分の見せ方を決める** — `core/std/display.t`。
+- **`Display` trait — 型が自分の見せ方を決める** — `core/std/fmt.t`。
 - **str リテラルの数え差 (interpreter だけ +1 確保) を解消** — IR VM が str
   リテラルを counter-free に実体化 (コンパイル系の `.rodata` と同じ扱い)。
 - **Drop 内で `&mut self` フィールドを free すると use-after-free
@@ -1265,7 +1265,32 @@
   JIT、ネスト分解、match arm guard。
 - **#184 Trait + impl** / **#170 top-level const** / **#169
   `docs/language.md` 新設**。
+- **MODULE-SYSTEM P1 — stdlib の配置と名前** — `ord.t` → `cmp.t` /
+  `display.t` → `fmt.t` / `str_ops.t` を `str.t` に統合 /
+  `i64.t` + `f64.t` → `num.t`。設計は
+  [`MODULE_SYSTEM.md`](MODULE_SYSTEM.md)。
 ## 未実装 📋
+
+- **MODULE-SYSTEM P2: qualifier がリーフ名 1 個なので、同名ファイルが
+  2 つあると panic する** ★★★ — `<core>/a/dup.t` と `<core>/b/dup.t` が
+  同じ関数名を輸出すると型検査を素通りして `compiler_ir/src/lib.rs:447`
+  で `function_index collision`。stdlib のファイル名を全ツリーで一意に
+  保つことで回避しているだけなので、ディレクトリを掘るたびに近づく。
+  直し方は関数表のキー (型検査 `context.functions` / IR
+  `function_index` / ランタイム `function_qualified`) をフルパスに
+  変え、呼び出し側は suffix 一致で解決して曖昧なら型エラーにする。
+  設計は [`MODULE_SYSTEM.md`](MODULE_SYSTEM.md) D4 / P2。
+
+- **MODULE-SYSTEM P3: 多セグメントの `::` パスが検査されない / `mod.t` /
+  `import as`** ★★ — 3 つとも同じ「モジュールパスが 1 シンボルに
+  潰れている」ことの現れ。(1) パーサが `a::b::c(...)` の中間を捨てるので
+  `std::math::abs` も `zzz::math::abs` も通る。(2) auto-load の walker が
+  `mod.t` を `mod` という名前のファイルとして扱うので
+  `<core>/foo/mod.t` は `foo::` ではなく `mod::` で呼ぶことになり、
+  `import` 側の解決 (`candidate_module_paths`) と食い違う。(3)
+  `import a.b as h` の alias を `visit_import` が捨てるので `h::` は
+  `Struct 'h' not found`。設計は
+  [`MODULE_SYSTEM.md`](MODULE_SYSTEM.md) P3。
 
 - **MODULE-FN-REF-ARG: module の自由関数が `&compound` を取り scalar を
   返すと lowering が落ちる** — `hex::probe(v: &Vec<u8>) -> u64` を
@@ -1864,6 +1889,6 @@ changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 
 - 関数のネスト定義 (`fn` の中の `fn`) は不可 — closure (`fn(x: T) -> R { ... }`) を使う。
 - デフォルト引数 / 名前付き引数は不可 (`f(a: u64, b: u64 = 1u64)` / `f(a: 1u64)`)。導入予定も無い。
 - `extern fn` の generic params は parser では受理されるが、JIT / AOT が per-instance シンボル名を持たないため interpreter でのみ動く (`#195b`)。
-- `package` 宣言 / `import` path のセグメントに primitive type キーワード (`i64` / `f64` / ...) は使えない (`core/std/i64.t` が `package` 宣言を省いているのはこのため)。
+- `package` 宣言 / `import` path のセグメントに primitive type キーワード (`i64` / `f64` / ...) は使えない (`core/std/str.t` が `package` 宣言を省いているのはこのため)。
 - 関数名に primitive type キーワードは使えない (`fn f64(...)` は `expected function name`)。
 - 3-part qualified call (`std::math::abs(x)`) は parser が **last 名だけを採る**。名前が一意なら結果的に解決するが、意図した経路ではない (`#185残`)。

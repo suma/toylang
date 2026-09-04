@@ -4029,7 +4029,7 @@ pub extern "C" fn toy_str_find(haystack: *const u8, needle: *const u8, from: u64
 }
 
 /// Three-way byte comparison of two str handles — the `Ord for str`
-/// impl in `core/std/ord.t`. Negative / zero / positive, `memcmp`
+/// impl in `core/std/cmp.t`. Negative / zero / positive, `memcmp`
 /// order with the shorter string first on a common prefix.
 ///
 /// Byte order over UTF-8 *is* codepoint order, so this is also

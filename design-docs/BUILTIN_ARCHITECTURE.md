@@ -204,10 +204,10 @@ integrate される (詳細は [`docs/language.md` → Modules → Core modules
 | `allocator.t` | `pub trait Alloc` + wrapper struct (`Global` / `Arena` / `FixedBuffer`)、各 `impl Drop` |
 | `drop.t` | `pub trait Drop { fn drop(&mut self) }` |
 | `math.t` | `math::abs` / `sqrt` / `min_*` / `max_*` / `pow` / `sin` / `cos` / `tan` / `log` / `log2` / `exp` / `floor` / `ceil` (libm 経由は `extern fn __extern_*_f64`) |
-| `i64.t` / `f64.t` | extension trait (`Abs` / `Sqrt` 等) と `impl Abs for i64` のような primitive impl |
+| `num.t` | extension trait (`Abs` / `Sqrt`) と `impl Abs for i64` のような primitive impl |
 | `char.t` | `type char = u32` alias |
 | `string.t` | `pub struct String` + inherent methods (`new` / `from_str` / `push` / `pop` / `len` / `as_ptr` / `eq` / `to_string` 等) |
-| `str_ops.t` | extension trait `Substring` / `Trim` / `CaseConvert` / `Concat<T>` / `Contains<T>` / `Split<T, U>` |
+| `str.t` | `str` の extension trait (`AsPtr` / `Length` / `StrSearch`) と、`String` 側が impl する `Substring` / `Trim` / `CaseConvert` / `Concat<T>` / `Contains<T>` / `Split<T, U>` の宣言 |
 | `option.t` / `result.t` | generic enum + method (`is_some` / `unwrap_or` / `expect` 等) |
 | `collections/vec.t` | generic `Vec<T>` |
 | `dict.t` / `hash.t` | dict 型 + Hash trait (extension trait over primitives) |
@@ -298,8 +298,8 @@ compiler/src/
 runtime/toylang_rt.c                     AOT runtime helper (C)
 
 core/std/                                stdlib (auto-load)
-  allocator.t  drop.t  math.t  string.t  str_ops.t  option.t  result.t
-  i64.t  f64.t  char.t  hash.t  dict.t  collections/vec.t
+  allocator.t  drop.t  math.t  string.t  str.t  option.t  result.t
+  num.t  char.t  hash.t  dict.t  collections/vec.t
 ```
 
 ## 設計原則

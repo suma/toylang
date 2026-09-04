@@ -49,8 +49,8 @@ fn core_modules_dir() -> PathBuf {
 /// Compile `source` to a unique executable path, run it, and return
 /// the exit code (or panic on link / spawn failure). Auto-loads
 /// `<repo>/core/` so value-method tests using `i64.abs()` /
-/// `f64.sqrt()` (provided by `core/std/i64.t` and
-/// `core/std/f64.t`) work without per-test wiring.
+/// `f64.sqrt()` (provided by `core/std/num.t`) work without
+/// per-test wiring.
 ///
 /// Lite-path optimisation: try first WITHOUT core auto-load (most
 /// e2e tests are pure user code). When `compile_file` fails on the

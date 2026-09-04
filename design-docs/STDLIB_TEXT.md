@@ -4,8 +4,7 @@
 > して残す。非目標 (grapheme / 正規化 / Unicode 大小変換 / 照合順序 /
 > 正規表現 / SSO / interning) は末尾の節のとおり据え置き。
 
-> 対象: `core/std/str.t` / `core/std/string.t` / `core/std/str_ops.t` /
-> `core/std/char.t` (と `frontend` の `BuiltinMethod::Str*`)
+> 対象: `core/std/str.t` / `core/std/string.t` / `core/std/char.t` (と `frontend` の `BuiltinMethod::Str*`)
 > 状態の正本: [`todo.md`](todo.md) の **STDLIB-TEXT**
 > 俯瞰と優先順位: [`RUNTIME_LIBRARY.md`](RUNTIME_LIBRARY.md)
 > 実測: 2026-09-03 (この文書の数値と診断文はすべてこの日に取った)

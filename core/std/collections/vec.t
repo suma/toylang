@@ -425,7 +425,7 @@ impl<T> Vec<T> {
 }
 
 # STDLIB-ORD: stable insertion sort over the `Ord` trait
-# (`core/std/ord.t`). O(n^2) worst case — fine for the sizes toy
+# (`core/std/cmp.t`). O(n^2) worst case — fine for the sizes toy
 # programs sort, and much simpler than a generic partition (which
 # would need swap-by-value and a 3-way comparison). The `<` on the
 # element type resolves to the `lt` the `Ord` impl provides, so

@@ -53,8 +53,7 @@ surfaces become available. The bundled stdlib lives under
 | File | Provides |
 |---|---|
 | `math.t` | `extern fn __extern_*_f64` declarations + `pub fn sin` / `cos` / `tan` / `log` / `log2` / `exp` / `floor` / `ceil` / `sqrt` / `abs` / `fabs` / `pow` / `min_*` / `max_*` |
-| `i64.t` | `trait Abs { fn abs(self) -> Self }` + `impl Abs for i64` |
-| `f64.t` | `impl Abs for f64`, `trait Sqrt` + `impl Sqrt for f64` |
+| `num.t` | `trait Abs` + `impl Abs for i64` / `for f64`, `trait Sqrt` + `impl Sqrt for f64` |
 | `option.t` | `enum Option<T> { None, Some(T) }` + `impl<T> Option<T>` (`is_some` / `is_none` / `unwrap_or` / `expect`) |
 | `result.t` | `enum Result<T, E> { Ok(T), Err(E) }` + `impl<T, E> Result<T, E>` (`is_ok` / `is_err` / `unwrap_or` / `expect`) |
 

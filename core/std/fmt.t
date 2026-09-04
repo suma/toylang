@@ -1,6 +1,11 @@
 # `Display` — how a value renders as text.
 #
-# Auto-loaded from `<core>/std/display.t -> ["std", "display"]`.
+# Auto-loaded from `<core>/std/fmt.t -> ["std", "fmt"]`.
+#
+# Named `fmt` rather than `display` because a trait module is named
+# for the concept, not for the trait — see
+# `design-docs/MODULE_SYSTEM.md` D2. Rust spells the same module
+# `std::fmt`, C++ `<format>`.
 #
 # A type that implements this controls what `print` / `println` write
 # and what string interpolation splices in:

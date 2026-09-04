@@ -1,5 +1,5 @@
 # NOTE: no `package` line. Following the same pattern as
-# `core/std/i64.t` / `core/std/f64.t`, this file's package path
+# `core/std/str.t`, this file's package path
 # would be `std.hash`, but we leave the declaration off so the
 # auto-load integration derives the path from the file system
 # (`core/std/hash.t -> ["std", "hash"]`).

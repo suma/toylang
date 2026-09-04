@@ -336,7 +336,7 @@ Stdlib types:
   `pop` / `get` / `set` / `size` / `len` / `as_ptr` / `capacity` /
   `is_empty` / `clear` / `extend_bytes` / `push_str` / `push_char`
   / `eq` / `to_string`. Extension trait impls (in
-  `core/std/str_ops.t`): `Substring` / `Trim` / `CaseConvert` /
+  `core/std/str.t`): `Substring` / `Trim` / `CaseConvert` /
   `Concat<String>` / `Contains<String>` / `Split<String,
   Vec<String>>` — `.substring(s, e)` / `.trim()` /
   `.to_ascii_upper()` / `.to_ascii_lower()` / `.concat(other)` /
@@ -1522,7 +1522,7 @@ struct itself could — a field root (`(a + b).x`), an argument
 
 ### `Ord` and `Vec::sort` (STDLIB-ORD)
 
-`core/std/ord.t` declares `trait Ord { fn lt(self: Self, other: Self) -> bool }`
+`core/std/cmp.t` declares `trait Ord { fn lt(self: Self, other: Self) -> bool }`
 with impls for every primitive width, `f64`, `bool`, and `String`
 (byte-wise, in `core/std/string.t`). The method is named `lt` — the
 same name the `<` operator overload dispatches to — so a type that
@@ -3225,7 +3225,7 @@ Backend support:
 - **AOT compiler** declares each impl method as
   `toy_<TypeName>__<method>` and emits regular cranelift calls.
 
-The numeric stdlib (`core/std/i64.t`, `core/std/f64.t`) uses
+The numeric stdlib (`core/std/num.t`) uses
 exactly this machinery — `n.abs()` / `r.sqrt()` are not
 language-built-ins, they're `impl Abs for i64` / `impl Sqrt for f64`
 loaded from the core directory.
@@ -3736,7 +3736,7 @@ A caller's own bounded parameter satisfies the same bound, as
 `relay` shows — the bound chain is transparent, so a bounded generic
 can hand its value to another function with the same requirement.
 Primitives satisfy a bound through an extension impl
-(`impl Ord for u64` in `core/std/ord.t` makes `<T: Ord>` accept
+(`impl Ord for u64` in `core/std/cmp.t` makes `<T: Ord>` accept
 `u64`).
 
 The check covers methods as well as free functions: a method from an
@@ -3765,10 +3765,10 @@ The `package` declaration is optional and, when present, must be the
 first non-comment line. Path components are dot-separated identifiers.
 
 > **Note**: package segments must be `Identifier` tokens; reserved
-> keywords (`i64`, `f64`, etc.) are rejected by the parser. Files
-> living under `core/std/i64.t` / `core/std/f64.t` therefore omit
-> the `package` line — the auto-load path derives the module path
-> from the file system instead.
+> keywords (`i64`, `f64`, `str`, etc.) are rejected by the parser.
+> Files such as `core/std/str.t` therefore omit the `package` line —
+> the auto-load path derives the module path from the file system
+> instead. Every other core module omits it too, for consistency.
 
 ### Core modules (auto-load)
 
@@ -3793,13 +3793,22 @@ Module paths come from the file system layout under the core dir:
 | Path                       | Module path        | Alias    |
 |----------------------------|--------------------|----------|
 | `<core>/foo.t`             | `["foo"]`          | `foo`    |
-| `<core>/foo/foo.t`         | `["foo"]`          | `foo`    |
-| `<core>/foo/mod.t`         | `["foo"]`          | `foo`    |
+| `<core>/foo/foo.t`         | `["foo", "foo"]`   | `foo`    |
+| `<core>/foo/mod.t`         | `["foo", "mod"]`   | `mod`    |
 | `<core>/std/math.t`        | `["std", "math"]`  | `math`   |
-| `<core>/std/i64.t`         | `["std", "i64"]`   | `i64`    |
+| `<core>/std/collections/vec.t` | `["std", "collections", "vec"]` | `vec` |
 
-The alias is always the last path segment, so `math::sin(x)` resolves
-through `core/std/math.t` even though the on-disk path is nested.
+Every segment comes from a directory or file name, and **the alias is
+always the last one** — so `math::sin(x)` resolves through
+`core/std/math.t` even though the on-disk path is nested, and the
+leading `std` is not part of any name a program writes.
+
+> **`mod.t` is not an entry point on the auto-load path.** It is
+> treated as a file named `mod`, so `<core>/foo/mod.t` answers to
+> `mod::`, not `foo::`. Only `import` resolution (below) knows the
+> `mod.t` / `<name>/<name>.t` conventions. Unifying the two is
+> `design-docs/MODULE_SYSTEM.md` P3; until then, name a directory
+> module's entry point after something other than `mod`.
 
 Auto-loaded modules opt out of bare-call enforcement, so user code
 can shadow auto-loaded names with same-name local definitions
@@ -3818,12 +3827,25 @@ compiler also mangles each integrated function's exported symbol to
 `toy_<qualifier>__<name>` so distinct cranelift entries are emitted
 for cross-module same-name functions.
 
+> **The qualifier is one symbol, not the path.** Two modules whose
+> *file names* match (`<core>/a/dup.t` and `<core>/b/dup.t`) share the
+> qualifier `dup`, and if they also export the same function name the
+> IR builder aborts with `function_index collision`. Core module file
+> names are therefore kept unique across the whole tree. Keying the
+> table by the full path is `design-docs/MODULE_SYSTEM.md` P2.
+
 ### Import (explicit, optional)
 
 ```rust
 import my.helpers           # bare import
-import my.helpers as h      # aliased import
+import my.helpers as h      # aliased import (parsed, NOT yet honoured)
 ```
+
+> **`as <alias>` is accepted by the parser and then dropped.** The
+> module is registered under its last path segment either way, so
+> `h::add(...)` reports `Struct 'h' not found` while
+> `helpers::add(...)` works. Tracked as `design-docs/MODULE_SYSTEM.md`
+> P3.
 
 Most user programs don't need `import` at all — the core directory
 covers the stdlib. Use `import` for non-core modules or for paths
@@ -3844,10 +3866,17 @@ program that already had `math::sin(x)` working causes no error.
 
 ```rust
 math::sin(x)
-h::add(1u64, 2u64)              # via alias
+helpers::add(1u64, 2u64)
 ```
 
 `::` is the scope-resolution operator; `.` is field/method access only.
+
+> **A qualifier longer than one segment is not checked.** The parser
+> keeps only the last segment of `a::b::c(...)`, so
+> `std::math::sin(x)` resolves to whatever `sin` a single module
+> exports — and `anything::math::sin(x)` resolves to the same thing.
+> Write the one-segment form (`math::sin(x)`). Path-aware resolution
+> is `design-docs/MODULE_SYSTEM.md` P2 / P3.
 
 ---
 
@@ -4531,7 +4560,7 @@ r.sqrt()   # -> f64  (IEEE 754; NaN for negative inputs)
 
 These are **regular extension-trait methods**, not hardcoded
 builtins. The trait declarations and impl blocks live in
-`core/std/i64.t` and `core/std/f64.t`:
+`core/std/num.t`:
 
 ```rust
 trait Abs { fn abs(self: Self) -> Self }
@@ -4820,7 +4849,7 @@ positions where an enum-returning call needs no binding.
 
 ### `Display`
 
-`core/std/display.t`:
+`core/std/fmt.t`:
 
 ```rust
 pub trait Display {
@@ -4973,7 +5002,7 @@ Method dispatch:
   `extend_bytes`, `push_str`, `push_char`, `eq`, `to_string`.
 - Extension trait impls (in `core/std/string.t`):
   - `impl Substring for String` / `impl Trim for String` /
-    `impl CaseConvert for String` (from `core/std/str_ops.t`) —
+    `impl CaseConvert for String` (from `core/std/str.t`) —
     `.substring(s, e)`, `.trim()`, `.to_ascii_upper()`,
     `.to_ascii_lower()`. The case fold is ASCII-only and the name
     says so: a Unicode fold needs tens of kilobytes of tables and,
@@ -5006,7 +5035,7 @@ Method dispatch:
 
 | Trait | File | Method | Used by |
 |---|---|---|---|
-| `Ord` | `ord.t` | `lt(self, other) -> bool` | `Vec::sort` |
+| `Ord` | `cmp.t` | `lt(self, other) -> bool` | `Vec::sort` |
 | `Hash` | `hash.t` | `hash(self) -> u64` | `Dict`, `Set` |
 | `Clone` | `clone.t` | `clone(&self) -> Self` | anything that must keep a value it also gives away |
 | `Default` | `default.t` | `default() -> Self` | `Vec::resize`, `Dict::get_or_default` |

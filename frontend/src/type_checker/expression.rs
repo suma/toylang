@@ -3250,7 +3250,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         vec![conv_stmt, err_stmt, return_stmt]
     }
 
-    /// `Display` dispatch (`core/std/display.t`).
+    /// `Display` dispatch (`core/std/fmt.t`).
     ///
     /// Rewrites the argument of the three builtins that turn a value
     /// into text, when that value's type knows how to render itself:

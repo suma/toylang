@@ -587,7 +587,7 @@ fn an_abandoned_execution_attempt_is_not_counted_against_the_next_one() {
     );
 }
 
-// --- `Display` (core/std/display.t) ---------------------------------
+// --- `Display` (core/std/fmt.t) ---------------------------------
 //
 // A type with a `to_str(&self) -> str` method controls what `print` /
 // `println` write and what string interpolation splices in. The type

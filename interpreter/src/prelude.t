@@ -6,7 +6,7 @@
 # Currently empty. The numeric extension traits (`Abs` / `Sqrt`
 # for `i64` / `f64`) used to live here as a transitional bridge
 # during Step E of the extension-trait migration; they now live
-# in `core/std/i64.t` and `core/std/f64.t` and reach user
+# in `core/std/num.t` and reach user
 # programs through the auto-load path. Programs that opt out of
 # auto-load (`TOYLANG_CORE_MODULES=` or
 # `--core-modules ""` for tests/CI) lose access to those methods —

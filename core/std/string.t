@@ -32,7 +32,7 @@
 # `to_ascii_upper` / `to_ascii_lower` / `concat` / `contains` / `to_string`)
 # as inherent methods so the call shape matches `str`'s built-in
 # methods exactly. The trait declarations in
-# `core/std/str_ops.t` (`Substring` / `Trim` / `CaseConvert` /
+# `core/std/str.t` (`Substring` / `Trim` / `CaseConvert` /
 # `Concat` / `Contains`) `impl` against `String` here too — they
 # fit the per-receiver `Self`-returning shape cleanly.
 # `ToString` is intentionally inherent-only on each type

@@ -63,7 +63,7 @@ pub struct TypeCheckerVisitor<'a> {
     pub builtin_methods: HashMap<(TypeDecl, String), BuiltinMethod>,
     // Builtin function signatures table
     pub builtin_function_signatures: Vec<BuiltinFunctionSignature>,
-    /// Types that render themselves (`Display`, `core/std/display.t`),
+    /// Types that render themselves (`Display`, `core/std/fmt.t`),
     /// built once from the statement pool on first use.
     ///
     /// Deliberately *not* read out of `context.struct_methods`: an impl

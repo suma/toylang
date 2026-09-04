@@ -276,7 +276,7 @@ fn format(&self, fmt: str) -> String                    # strftime に委譲
   `bench` / `DateTime` / パース / 整形。
 - **`io.t` (現状維持)**: `now()` / `strftime()` は動くまま。doc comment で
   `time::` へ誘導する。**移さない** — `io::now` を使っている example と
-  テストを壊す価値が無く、`f64.t` が `math::fabs` を呼んでいるように
+  テストを壊す価値が無く、`num.t` が `math::fabs` を呼んでいるように
   **stdlib の module 間呼び出しは動く**ので、必要なら薄い転送で済む。
 
 ## 8. 非決定をどうテストするか

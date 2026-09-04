@@ -6,7 +6,7 @@
 > VEC-CLONE-WITH-STRING-CLONE 待ち。`&T` が primitive に解決される
 > generic 関数は compiled lane が拒否する (GENERIC-SCALAR-REF)。
 
-> 対象: `core/std/iter.t` / `core/std/ord.t` / `core/std/hash.t` と、
+> 対象: `core/std/iter.t` / `core/std/cmp.t` / `core/std/hash.t` と、
 > stdlib の 15 個の反復子 (`vec.t` / `dict.t` / `string.t` / `set.t` /
 > `deque.t` / `soa_vec.t`)
 > 状態の正本: [`todo.md`](todo.md) の **STDLIB-TRAIT-BASE**
@@ -218,7 +218,7 @@ pub trait Clone {
 }
 ```
 
-`core/std/clone.t` に置く (`ord.t` / `hash.t` と同じ 1 trait 1 ファイル)。
+`core/std/clone.t` に置く (`cmp.t` / `hash.t` と同じ 1 trait 1 ファイル)。
 
 - **深いコピー**。`Drop` を持つ型 (`Vec` / `String` / `Box` / `Dict` /
   `Set` / `Deque`) は**新しい確保**を持ち、元とは独立に free される。

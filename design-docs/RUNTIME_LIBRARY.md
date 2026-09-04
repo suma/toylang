@@ -28,7 +28,7 @@ stdlib は機能別に必要に応じて landing してきた (Vec → String �
 | `math.t` | f64 libm intrinsics + min/max/abs | extern 形の模範実装 |
 | `checked.t` | `trait Checked` の `checked_*` / `saturating_*` | **全 8 幅** (`u8`〜`u64` / `i8`〜`i64`、2026-08-31) |
 | `hash.t` | `trait Hash { fn hash() -> u64 }` | primitive のみ、identity/parity の簡易実装。open addressing 用 mixer は将来と明記済み |
-| `ord.t` / `str_ops.t` / `display.t` / `option.t` / `result.t` / `convert.t` / `drop.t` / `iter.t` | 契約と拡張 trait | `convert.t` は `From`/`Into` のみ、**パース関数は存在しない** |
+| `cmp.t` / `str.t` / `fmt.t` / `option.t` / `result.t` / `convert.t` / `drop.t` / `iter.t` | 契約と拡張 trait | `convert.t` は `From`/`Into` のみ、**パース関数は存在しない** |
 
 ### `toylang_rt` (Rust の層)
 

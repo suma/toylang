@@ -1,8 +1,13 @@
 # Stdlib `Ord` trait (STDLIB-ORD): a total-order comparison contract
 # for `Vec::sort` and any other generic sorting / ordering code.
 #
-# Auto-loaded from `<core>/std/ord.t -> ["std", "ord"]`. No `package`
+# Auto-loaded from `<core>/std/cmp.t -> ["std", "cmp"]`. No `package`
 # line — same pattern as `core/std/hash.t`.
+#
+# Named `cmp` rather than `ord` because a trait module is named for
+# the concept, not for the trait (`clone` / `default` / `convert` /
+# `hash` / `iter` already are) — see `design-docs/MODULE_SYSTEM.md`
+# D2. Rust spells the same module `std::cmp`, C++ `<compare>`.
 #
 # Design notes:
 #

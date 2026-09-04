@@ -1,5 +1,5 @@
-# NOTE: no `package` line — same reason as `core/std/i64.t` /
-# `core/std/f64.t` / `core/std/hash.t`. Auto-load derives the
+# NOTE: no `package` line — same reason as `core/std/str.t` /
+# `core/std/hash.t`. Auto-load derives the
 # module path from the file system (`core/std/dict.t -> ["std",
 # "dict"]`).
 #

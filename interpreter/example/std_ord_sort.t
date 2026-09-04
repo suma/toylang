@@ -1,4 +1,4 @@
-# STDLIB-ORD: the `Ord` trait (`core/std/ord.t`) and `Vec<T>::sort()`
+# STDLIB-ORD: the `Ord` trait (`core/std/cmp.t`) and `Vec<T>::sort()`
 # (`core/std/collections/vec.t`).
 #
 # `sort` is a stable in-place insertion sort over the bound

@@ -4,7 +4,7 @@
 > として残す。非目標 (bignum / 有理数・decimal / 複素数・行列 / 統計 /
 > CSPRNG) は末尾の節のとおり据え置き。
 
-> 対象: `core/std/math.t` / `core/std/i64.t` / `core/std/f64.t` /
+> 対象: `core/std/math.t` / `core/std/num.t` (旧 `i64.t` / `f64.t`) /
 > `core/std/checked.t` と、新設する `core/std/bits.t` /
 > `core/std/random.t`
 > 状態の正本: [`todo.md`](todo.md) の **STDLIB-NUMERIC**

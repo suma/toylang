@@ -1,4 +1,4 @@
-// STDLIB-ORD: the `Ord` trait (`core/std/ord.t`) and `Vec<T>::sort`
+// STDLIB-ORD: the `Ord` trait (`core/std/cmp.t`) and `Vec<T>::sort`
 // (`core/std/collections/vec.t`). Interpreter-side behaviour tests;
 // the 3-backend agreement is pinned in
 // `compiler/tests/consistency.rs` (`vec_sort_is_consistent_across_backends`).

@@ -37,6 +37,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | SIMD の設計と残りのフェーズ | [`design-docs/SIMD.md`](design-docs/SIMD.md) |
 | socket ラッパーと OS のコンパイル時切り替え (N0〜N5 landing 済み) | [`design-docs/NETWORK_IO.md`](design-docs/NETWORK_IO.md) |
 | epoll / kqueue の統一形 (landing 済み) | [`design-docs/EVENT_POLLING.md`](design-docs/EVENT_POLLING.md) |
+| stdlib のディレクトリ配置と `module::` の解決規則 | [`design-docs/MODULE_SYSTEM.md`](design-docs/MODULE_SYSTEM.md) |
 | example のビルド・実行方法 | [`interpreter/example/HOW_TO.md`](interpreter/example/HOW_TO.md) |
 | このリポジトリで LLM が作業する際の指針 | [`design-docs/COMPILER_DEV_LOOP.md`](design-docs/COMPILER_DEV_LOOP.md) |
 
@@ -351,12 +352,12 @@ fn main() -> u64 {
     (`coerce_char_literal`) で、**stdlib の body も検査対象**なので
     `core/std/parse.t` の `c < '0' || c > '9'` のような書き方が
     stdlib 内でも効く
-  - `String` (`core/std/string.t`) — heap-managed byte buffer の **nominal struct** (`type` alias ではなく独立 struct、`Vec<u8>` と同 memory layout だが nominal identity は別)。inherent method (`new` / `from_str(s)` / `push` / `pop` / `get` / `set` / `size` / `len` / `as_ptr` / `capacity` / `is_empty` / `clear` / `extend_bytes` / `push_str` / `push_char` / `eq` / `to_string`) + 拡張 trait impl (`Substring` / `Trim` / `CaseConvert` / `Concat<String>` / `Contains<String>` / `Split<String, Vec<String>>` from `core/std/str_ops.t`) で `s.len()` / `s.substring(...)` / `s.trim()` / `s.concat(other)` / `s.split(sep)` 等が `str` と同じ call shape で動く (3 backend)。
+  - `String` (`core/std/string.t`) — heap-managed byte buffer の **nominal struct** (`type` alias ではなく独立 struct、`Vec<u8>` と同 memory layout だが nominal identity は別)。inherent method (`new` / `from_str(s)` / `push` / `pop` / `get` / `set` / `size` / `len` / `as_ptr` / `capacity` / `is_empty` / `clear` / `extend_bytes` / `push_str` / `push_char` / `eq` / `to_string`) + 拡張 trait impl (`Substring` / `Trim` / `CaseConvert` / `Concat<String>` / `Contains<String>` / `Split<String, Vec<String>>` from `core/std/str.t`) で `s.len()` / `s.substring(...)` / `s.trim()` / `s.concat(other)` / `s.split(sep)` 等が `str` と同じ call shape で動く (3 backend)。
   - **`SoaVec<T>` (`core/std/collections/soa_vec.t`, DOD Phase 2)** — `Vec<T>` と同じ call surface (`push` / `pop` / `get` / `set` / `size` / `capacity` / `is_empty` / `clear` / `iter`) で、**1 確保を leaf ごとの列に区切る**動的配列。`soa Vec<T>` と書くと parser が `SoaVec<T>` に書き換える (砂糖は checker より前で消える)。stack の `soa [T; N]` と違い **`Vec<T>` とは別型** (heap は layout が観測可能なので付け外しは注釈 + コンストラクタの 2 箇所)。番地は `__builtin_soa_read` / `__builtin_soa_write` が `prefix_j * cap + i * stride_j` で作り、既存の `PtrRead` / `PtrWrite` に展開されるので IR / codegen / IR VM は SoA を知らない。確保総量は `Vec` と一致 (列 stride = leaf 実幅)、drop glue は列を歩く。例: `interpreter/example/soa_vec.t`
   - **`Column<T>` (`core/std/column.t`, DOD Phase 1)** — **配列の 1 列への窓**。`ps.mass` (配列 / `soa Vec<T>` の field access) がコンパイラ側で `Column<T>` を作る (addr + len + stride)。`get` / `set` / `len` / `is_empty` のみで、**`as_raw` / `stride` は無い** (列は compiled lane では番地だが tree-walker では番地を持たないため、番地を出す API はレーンで答えが割れる)。**stride を持つので AoS 配列でも通る** — `soa` を付け外しても関数シグネチャが変わらない。view なので `set` は元の配列に通り、escape は未検査。compiled lane は `val ms = ps.mass` に束縛してから渡す。例: `interpreter/example/soa_column.t`
   - `Ptr<T>` (`core/std/ptr.t`, POINTER P3+P5) — **型付きポインタ窓**。`T` は field に現れず `addr: ptr` の背後にだけ居るので backend 特殊扱いゼロ (`Box<T>` と同じ手口)。`alloc(count)` (stride は `__builtin_sizeof::<T>()`、**0 要素でも 1 バイト確保して非 null を保証**) / `get` / `set` / `p[i]` / `p[i] = v` (`__getitem__` / `__setitem__`) / `offset(count)` / `as_raw()`。**window であって owner ではない** — free は呼び出し側 (`__builtin_heap_free(p.as_raw())`)、index は unchecked。**non-null 不変** (P5) — 不在は `Option<Ptr<T>>` で表す (`has_next: bool` 方式が消える、16 バイト・niche 最適化は不可)。不変は構成による規約で compiler 強制は無し (field visibility は未強制)
   - `Span<T>` (`core/std/span.t`, POINTER P4) — **境界検査つきの窓**。`Ptr<T>` + 長さのペアで、todo の slice 型 `&[T]` をライブラリ側で回収する形。`from_parts(p, len)` / `get` / `set` / `s[i]` / `s[i] = v` (範囲外は panic、文言は `Vec` と同規約) / `len` / `is_empty` / `as_ptr` / `as_raw` (`__simd_load` の受け口)。**view であって owner ではない**。**escape は未検査** (POINTER.md の既定、選択肢 1) — 参照Rule は `&T` のみなので、`Span` は指す先より長生きできる
-  - `Vec<T>` (`core/std/collections/vec.t`) — generic dynamic array。`T` が compound (struct/tuple) も AOT 対応 (`__builtin_ptr_read/write` を per-leaf 展開、`AOT-COMPOUND-PTR-RW`)。**`v.sort()` (STDLIB-ORD)** — `impl<T: Ord> Vec<T>` の安定 in-place insertion sort。`Ord` trait (`core/std/ord.t`) は `fn lt(self: Self, other: Self) -> bool` だけで、primitive 全幅 / `f64` / `bool` / `String` (byte-wise) に impl。method 名が `<` 演算子オーバーロードの `lt` と同じなので `impl Ord` は `<` も自動で得る (3 backend)。`T` が Ord でない `sort()` は **call site で型エラー** (`[E0010] ... bound violation`) — impl block の generic bound は free function と同じく呼び出し側で強制される。
+  - `Vec<T>` (`core/std/collections/vec.t`) — generic dynamic array。`T` が compound (struct/tuple) も AOT 対応 (`__builtin_ptr_read/write` を per-leaf 展開、`AOT-COMPOUND-PTR-RW`)。**`v.sort()` (STDLIB-ORD)** — `impl<T: Ord> Vec<T>` の安定 in-place insertion sort。`Ord` trait (`core/std/cmp.t`) は `fn lt(self: Self, other: Self) -> bool` だけで、primitive 全幅 / `f64` / `bool` / `String` (byte-wise) に impl。method 名が `<` 演算子オーバーロードの `lt` と同じなので `impl Ord` は `<` も自動で得る (3 backend)。`T` が Ord でない `sort()` は **call site で型エラー** (`[E0010] ... bound violation`) — impl block の generic bound は free function と同じく呼び出し側で強制される。
 - **`unsafe fn` (POINTER P6)**: **生メモリを読み書きする body は宣言が要る**
   (`[E0024]`)。対象は「指す先」に触る builtin — `__builtin_ptr_read` /
   `__builtin_ptr_write` / `mem_copy` / `mem_move` / `mem_set` /
@@ -701,7 +702,7 @@ fn main() -> u64 {
 - 任意の型を受け取り、`Object::to_display_string` で整形。文字列は引用符なし、構造体 / dict はフィールド名順にソートして決定的な出力
 - ユーザ向けの日常的な I/O なので、`heap_alloc` 等の低レベル builtin と違って `__builtin_` prefix は付けない
 - **`Display`**: `fn to_str(&self) -> str` を持つ型は `print` / `println` /
-  文字列補間 `"{v}"` の出方を自分で決める (`core/std/display.t`)。
+  文字列補間 `"{v}"` の出方を自分で決める (`core/std/fmt.t`)。
   型検査器が `println(v)` → `println(v.to_str())` に書き換えるので
   **バックエンドは通常の method 呼び出ししか見ない**。ディスパッチは
   method の有無で決まる (`==` → `eq` と同じ流儀) ので inherent method でも動く。

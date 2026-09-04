@@ -32,7 +32,7 @@ use crate::ast::module_interface::ModuleInterface;
 ///
 /// Mismatched versions are treated as a cache miss by
 /// [`load_full_module`].
-pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 40;
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 41;
 // v2: `File` gained `id` (JIT cache key) and `tests` (LLM-LOOP P4).
 // v3: `BuiltinFunctionSymbols` interns the MEMORY_PROFILING M4 counter
 // names, shifting every later symbol id.
@@ -107,6 +107,13 @@ pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 40;
 // in an auto-loaded module shift every symbol interned after it, so
 // the modules that did *not* change would be read back against the
 // old intern order (v37's reasoning, one file later).
+// v41: MODULE-SYSTEM P1 — the stdlib renames `ord.t` -> `cmp.t`,
+// `display.t` -> `fmt.t`, folds `str_ops.t` into `str.t` and
+// `i64.t` + `f64.t` into `num.t`. Integration order is the
+// path-sorted module list, so renaming files reorders it and every
+// unchanged module would be read back against the old intern order
+// (the same reason convert.t bumped v9). See
+// `design-docs/MODULE_SYSTEM.md`.
 
 /// Bincode options for the AST cache.
 ///

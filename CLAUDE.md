@@ -14,6 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | **「name resolution はどこか」** — 関心事 → 実装サイト | [`design-docs/CODE_MAP.md`](design-docs/CODE_MAP.md) |
 | 構文・型・セマンティクスの**正本** | [`docs/language.md`](docs/language.md) |
 | `requires` / `ensures` の**書き方・検証・落とし穴** | [`docs/design_by_contract.md`](docs/design_by_contract.md) |
+| `Vec<T>` に契約を入れる案 (選択待ち) | [`design-docs/VEC_CONTRACTS.md`](design-docs/VEC_CONTRACTS.md) |
 | いつ何が landing したか / 未実装項目 | [`design-docs/todo.md`](design-docs/todo.md) |
 | 機能ごとの実装詳細・フェーズ履歴 | [`design-docs/FEATURE_NOTES.md`](design-docs/FEATURE_NOTES.md) |
 | LLM 向けの診断・テスト機能の設計 | [`design-docs/LLM_FEEDBACK_LOOP.md`](design-docs/LLM_FEEDBACK_LOOP.md) |

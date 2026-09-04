@@ -1276,6 +1276,28 @@
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
 
+- **NEVER-ALLOCATES-METHOD-STACK: method に `never_allocates` と `unsafe`
+  を重ねられない** — `parse_method_modifiers` (`frontend/src/parser/stmt.rs`)
+  が両方の修飾子に「次が `fn`」を要求するので、impl 内の
+  `never_allocates unsafe fn` / `unsafe never_allocates fn` が parse
+  エラー。自由関数側 (`program_parser.rs`) は「次がもう 1 つの修飾子」も
+  通す。CLAUDE.md の「順不同」に実装が追いついていない。`Vec` の読み取り系
+  (ほぼ全部 `unsafe fn`) に `never_allocates` を付けられない原因
+  ([`VEC_CONTRACTS.md`](VEC_CONTRACTS.md) §5-1、2026-09-04)。
+
+- **DBC-RESULT-FIELD: compound を返す関数の `ensures result.field` が
+  compiled lane で落ちる** — `fn f(n: u64) -> Self ensures result.cap == n`
+  は interpreter で通り、AOT / JIT は `field access on a non-struct value`。
+  構築子 (`Vec::with_capacity` 等) に事後条件を書けない
+  ([`VEC_CONTRACTS.md`](VEC_CONTRACTS.md) §5-2、2026-09-04)。
+
+- **DBC-CHECK-SKIP-REPORT: `--check` が `ptr` レシーバの method を黙って
+  飛ばす** — design_by_contract.md には明記があるが、`Vec` のように契約が
+  増えるほど「検査されたつもり」が危険。最低限 `SKIPPED` 行を出す。
+  本命は構築子 (`new()` + ランダムな `push` 列) 経由でレシーバを生成すること
+  で、collection に `--check` を効かせる唯一の道
+  ([`VEC_CONTRACTS.md`](VEC_CONTRACTS.md) §5-3)。
+
 - **MODULE-SYSTEM P3: 多セグメントの `::` パスが検査されない / `mod.t` /
   `import as`** ★★★ — 3 つとも同じ「モジュールパスが構文で 1 シンボルに
   潰れている」ことの現れ。**P2 で表と解決規則は既にパスを理解している**
@@ -1735,6 +1757,12 @@
 
 ## 検討中の機能
 
+* `Vec<T>` への Design by Contract 適用 (VEC-CONTRACTS) — **案の段階、
+  範囲は未選択** (2026-09-04、[`VEC_CONTRACTS.md`](VEC_CONTRACTS.md))。
+  候補は A (境界の `requires`、panic 併記を推奨) / B (長さ・容量の
+  `ensures` + `old`、本命) / C (`never_allocates` と allocation 契約) /
+  D (擬似 invariant) / E (`is_sorted` helper)。要素値の契約は generic `T`
+  に `eq` を要求するので不採用。コストは AOT で 0.8ns/呼び出し。
 * FFI — P1 (静的 FFI、`from`/`as`) 完了 (2026-08-16、[`FFI_PLAN.md`](FFI_PLAN.md))。
   P2 (動的ロード / dlopen builtin) は未着手
 * AOT ランタイムの Rust 化 — R0+R1 完了、R2 (extern 一般化 = FFI_PLAN P1)

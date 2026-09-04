@@ -330,6 +330,10 @@ pub fn builtin_effect(func: BuiltinFunction) -> (EffectSet, &'static str) {
         HeapFree => (EffectSet::of(&[Effect::Free]), "__builtin_heap_free"),
 
         PtrRead => (EffectSet::of(&[Effect::RawRead]), "__builtin_ptr_read"),
+        // MEMORY-ACCESS M1: same dereference, same effect -- naming the
+        // type changes where the width comes from, not what the call
+        // touches. `unsafe fn` follows from this mask (POINTER P6).
+        PtrReadTyped(_) => (EffectSet::of(&[Effect::RawRead]), "__builtin_ptr_read"),
         // The address-arithmetic / comparison builtins are pure: they
         // never touch memory *contents*, only the addresses as values
         // (Rust's `as_ptr` / `offset_from` are safe the same way —

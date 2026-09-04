@@ -78,16 +78,29 @@ impl VmHost for InterpreterHost {
 
     fn ptr_read(&self, addr: u64, offset: u64, ty: Type) -> Option<RawSlot> {
         with_heap(|h| {
-            if let Some(rc) = h.typed_read(addr as usize, offset as usize) {
-                let obj = rc.borrow();
-                return Some(object_to_slot(&obj, ty));
-            }
-            // Fallback: read the scalar's bytes directly from the buffer.
+            // MEMORY-ACCESS M1: the bytes come first for a scalar
+            // read. The instruction names the width it wants
+            // (`elem_ty`) and `ptr_write` stamps every scalar into the
+            // byte buffer at its own width, so the bytes can always
+            // answer -- while the typed-slot map answers with whatever
+            // *type* was last written at that exact `(addr, offset)`.
+            // Reading a `u64` over four `u8` writes got this lane the
+            // first byte where the AOT and JIT lanes read the whole
+            // word, which is a disagreement on the same IR: the VM
+            // and the compiled backends share `compiler_lower`.
+            //
+            // The slot map stays the answer for everything with no
+            // byte width -- `String`, structs handed over whole,
+            // allocator handles.
             let width = scalar_byte_width(ty);
             if width > 0 {
                 if let Some(raw) = h.read_scalar_bytes(addr as usize, offset as usize, width) {
                     return Some(byte_value_to_slot(raw, ty));
                 }
+            }
+            if let Some(rc) = h.typed_read(addr as usize, offset as usize) {
+                let obj = rc.borrow();
+                return Some(object_to_slot(&obj, ty));
             }
             None
         })

@@ -1657,6 +1657,28 @@ impl<'a, 'b> State<'a, 'b> {
                         };
                         Ok(Some(self.call_helper(kind, &[p, off])?))
                     }
+                    // MEMORY-ACCESS M1: same helpers, but the type
+                    // comes from the call rather than the hint map.
+                    // Eligibility already narrowed `T` to the four
+                    // this JIT can read.
+                    BuiltinFunction::PtrReadTyped(ref ty) => {
+                        let expected = ScalarTy::from_type_decl(ty)
+                            .ok_or_else(|| "ptr_read::<T> element type unsupported".to_string())?;
+                        let p = self
+                            .gen_expr(&args[0])?
+                            .ok_or_else(|| "ptr_read ptr".to_string())?;
+                        let off = self
+                            .gen_expr(&args[1])?
+                            .ok_or_else(|| "ptr_read offset".to_string())?;
+                        let kind = match expected {
+                            ScalarTy::I64 => HelperKind::PtrReadI64,
+                            ScalarTy::U64 => HelperKind::PtrReadU64,
+                            ScalarTy::Bool => HelperKind::PtrReadBool,
+                            ScalarTy::Ptr => HelperKind::PtrReadPtr,
+                            _ => return Err("ptr_read::<T> element type unsupported".into()),
+                        };
+                        Ok(Some(self.call_helper(kind, &[p, off])?))
+                    }
                     BuiltinFunction::PtrWrite => {
                         let val_ty = self.expr_type(&args[2])?;
                         let p = self

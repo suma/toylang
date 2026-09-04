@@ -73,3 +73,4 @@ mod op_overload_positions;
 mod unbounded_generic_param;
 mod crypto;
 mod bulk_memory;
+mod typed_ptr_read;

@@ -2532,6 +2532,7 @@ impl<'a> FunctionLower<'a> {
             | BuiltinFunction::HeapFree
             | BuiltinFunction::HeapRealloc
             | BuiltinFunction::PtrRead
+            | BuiltinFunction::PtrReadTyped(_)
             | BuiltinFunction::PtrWrite
             | BuiltinFunction::PtrOffset
             | BuiltinFunction::SoaRead
@@ -2629,6 +2630,39 @@ impl<'a> FunctionLower<'a> {
                      uses are not supported in AOT yet)"
                         .to_string(),
                 )
+            }
+            BuiltinFunction::PtrReadTyped(ty) => {
+                // MEMORY-ACCESS M1: `__builtin_ptr_read::<T>(p, off)`.
+                // The width is the written type, so unlike the arm
+                // above this is an ordinary expression -- it needs no
+                // annotation and no binding around it.
+                //
+                // A compound `T` still needs the destination binding
+                // its leaves are stored into, so it is handled in
+                // `let_lowering.rs` and only the scalar case reaches
+                // here; a compound read in expression position gets
+                // the same "bind it first" answer other compound
+                // expressions get in the compiled lanes.
+                expect_args(args, 2, "__builtin_ptr_read::<T> takes 2 args (pointer, offset)")?;
+                let elem_ty = self
+                    .lower_scalar_with_subst(ty)
+                    .or_else(|| self.lower_type_arg(ty))
+                    .ok_or_else(|| {
+                        "__builtin_ptr_read::<T>: unknown element type".to_string()
+                    })?;
+                if matches!(elem_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
+                    return Err(
+                        "__builtin_ptr_read::<T> with a struct / tuple / enum `T` must be                          bound by a `val` (the read expands into one load per leaf)"
+                            .to_string(),
+                    );
+                }
+                let ptr = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "ptr_read base produced no value".to_string())?;
+                let offset = self
+                    .lower_expr(&args[1])?
+                    .ok_or_else(|| "ptr_read offset produced no value".to_string())?;
+                Ok(self.emit(InstKind::PtrRead { ptr, offset, elem_ty }, Some(elem_ty)))
             }
             BuiltinFunction::PtrWrite => {
                 // `__builtin_ptr_write(ptr, offset, value)` — the

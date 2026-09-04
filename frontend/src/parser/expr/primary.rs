@@ -478,26 +478,41 @@ fn parse_primary_after_identifier(
         // backend resolves that through its active substitution, the
         // same way a named type argument resolves through the
         // struct / enum tables.
-        if parser.peek_n(1) == Some(&Kind::LT)
-            && matches!(
-                parser.builtin_symbols.symbol_to_builtin(name),
-                Some(BuiltinFunction::SizeOf)
-            )
-        {
+        // MEMORY-ACCESS M1: `__builtin_ptr_read::<T>(p, off)` joins
+        // `sizeof` in taking a type argument, so the two share the
+        // `::<T>` parse and differ only in what follows it.
+        let typed_builtin = if parser.peek_n(1) == Some(&Kind::LT) {
+            match parser.builtin_symbols.symbol_to_builtin(name) {
+                Some(BuiltinFunction::SizeOf) => Some(false),
+                Some(BuiltinFunction::PtrRead) => Some(true),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some(takes_args) = typed_builtin {
             parser.next(); // consume `::`
             parser.next(); // consume `<`
             let empty_generic_context = std::collections::HashSet::new();
             let ty = parser.parse_type_declaration_with_generic_context(&empty_generic_context)?;
             parser.expect_err(&Kind::GT)?;
             parser.expect_err(&Kind::ParenOpen)?;
-            parser.expect_err(&Kind::ParenClose)?;
+            let args = if takes_args {
+                let args = parse_expr_list(parser, vec![])?;
+                parser.expect_err(&Kind::ParenClose)?;
+                args
+            } else {
+                parser.expect_err(&Kind::ParenClose)?;
+                vec![]
+            };
             // Span the whole `__builtin_sizeof::<T>()`, not just the name.
             let location = parser.span_to_cursor(name_location);
-            return Ok(parser.ast_builder.builtin_call_expr(
-                BuiltinFunction::SizeOfType(ty),
-                vec![],
-                Some(location),
-            ));
+            let func = if takes_args {
+                BuiltinFunction::PtrReadTyped(ty)
+            } else {
+                BuiltinFunction::SizeOfType(ty)
+            };
+            return Ok(parser.ast_builder.builtin_call_expr(func, args, Some(location)));
         }
         let mut qualified_path = vec![name];
         while parser.peek() == Some(&Kind::DoubleColon) {

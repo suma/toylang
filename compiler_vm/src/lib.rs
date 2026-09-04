@@ -565,6 +565,7 @@ impl<'a> Vm<'a> {
             let size = (slot_info.length as u64) * (slot_info.elem_stride_bytes as u64);
             let base = self.host.alloc_at(size, 0);
             frame.array_bases.push(base);
+            frame.array_strides.push(slot_info.elem_stride_bytes as u64);
         }
         // Back each address-taken local with a heap cell so `AddressOf`
         // yields a stable pointer and `&mut T` mutations propagate.

@@ -263,6 +263,12 @@ impl<'a> AstIntegrationContext<'a> {
                     frontend::ast::BuiltinFunction::SizeOfType(ty) => {
                         frontend::ast::BuiltinFunction::SizeOfType(self.remap_type_decl(ty)?)
                     }
+                    // MEMORY-ACCESS M1: `__builtin_ptr_read::<T>` carries
+                    // a written type for the same reason and needs the
+                    // same remap.
+                    frontend::ast::BuiltinFunction::PtrReadTyped(ty) => {
+                        frontend::ast::BuiltinFunction::PtrReadTyped(self.remap_type_decl(ty)?)
+                    }
                     other => other.clone(),
                 };
                 Ok(Expr::BuiltinCall(

@@ -684,6 +684,14 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
             return self.check_simd_call(*op, args);
         }
 
+        // MEMORY-ACCESS M1: `__builtin_ptr_read::<T>(p, off)` carries
+        // its own width, so it answers here rather than reaching for
+        // the surrounding annotation the way `PtrRead` does below.
+        if let BuiltinFunction::PtrReadTyped(ty) = func {
+            let ty = ty.clone();
+            return self.check_ptr_read_typed(&ty, args);
+        }
+
         // MEMORY-ACCESS M0: the bulk-memory builtins check their own
         // arguments (the flat table below never visits them).
         if matches!(

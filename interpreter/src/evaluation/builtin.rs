@@ -465,17 +465,33 @@ impl EvaluationContext<'_> {
     /// `None` when the annotation is missing or is not a fixed-width
     /// scalar, so the caller keeps its existing behaviour.
     fn read_annotated_scalar_bytes(&self, addr: usize, offset: usize) -> Option<crate::object::Object> {
-        use crate::object::Object;
         let annotation = self.pending_annotation.clone()?;
-        // Inside a generic body the annotation is the parameter
-        // (`val v: T = ...` in `Vec::get`), so resolve it the way
-        // `__builtin_sizeof::<T>()` does.
-        let resolved = match &annotation {
+        self.read_scalar_bytes_as(addr, offset, &annotation)
+    }
+
+    /// The same read against a type named outright — the shape
+    /// `__builtin_ptr_read::<T>(p, off)` asks for (MEMORY-ACCESS M1).
+    ///
+    /// `None` when `ty` is not a fixed-width scalar, so a caller that
+    /// reads a struct / `String` / enum keeps going to the typed-slot
+    /// map where those live.
+    fn read_scalar_bytes_as(
+        &self,
+        addr: usize,
+        offset: usize,
+        ty: &TypeDecl,
+    ) -> Option<crate::object::Object> {
+        use crate::object::Object;
+        // Inside a generic body the type is the parameter (`val v: T
+        // = ...` in `Vec::get`, or `__builtin_ptr_read::<T>` in the
+        // same place), so resolve it the way `__builtin_sizeof::<T>()`
+        // does.
+        let resolved = match ty {
             TypeDecl::Generic(g) | TypeDecl::Identifier(g) => self
                 .merged_generic_scope()
                 .get(g)
                 .cloned()
-                .unwrap_or(annotation.clone()),
+                .unwrap_or_else(|| ty.clone()),
             other => other.clone(),
         };
         let (width, build): (usize, fn(u64) -> Object) = match resolved {
@@ -488,6 +504,13 @@ impl EvaluationContext<'_> {
             TypeDecl::Int32 => (4, |v| Object::Int32(v as i32)),
             TypeDecl::Int64 => (8, |v| Object::Int64(v as i64)),
             TypeDecl::UInt64 => (8, Object::UInt64),
+            // Floats are mirrored into the byte buffer by
+            // `scalar_bits` like every other scalar; leaving them out
+            // here meant a float with no typed slot fell through to
+            // the 8-byte integer read and came back as a `u64` of its
+            // bit pattern.
+            TypeDecl::Float64 => (8, |v| Object::Float64(f64::from_bits(v))),
+            TypeDecl::Float32 => (4, |v| Object::Float32(f32::from_bits(v as u32))),
             _ => return None,
         };
         let raw = self
@@ -547,6 +570,7 @@ impl EvaluationContext<'_> {
             | BuiltinFunction::HeapFree
             | BuiltinFunction::HeapRealloc
             | BuiltinFunction::PtrRead
+            | BuiltinFunction::PtrReadTyped(_)
             | BuiltinFunction::PtrWrite
             | BuiltinFunction::PtrOffset
             | BuiltinFunction::SoaRead
@@ -717,6 +741,44 @@ impl EvaluationContext<'_> {
                 Some(value) => Ok(EvaluationResult::Value((Object::UInt64(value)).into())),
                 None => Err(InterpreterError::InternalError("Invalid memory access in ptr_read".to_string())),
             }
+        }
+
+        // MEMORY-ACCESS M1: `__builtin_ptr_read::<T>(p, off)`. The
+        // width is the written type, so unlike `PtrRead` above this
+        // needs no `pending_annotation` and reads the same in any
+        // expression position.
+        //
+        // The order of the two sources is also the other way round.
+        // `PtrRead` consults the typed-slot map first, which makes
+        // the read answer with whatever *type* was last written
+        // there; asking for a `u64` over bytes written as `u8` got
+        // this engine 65 where the AOT lane read 0x4241. When the
+        // type is named, the bytes are the answer -- every scalar
+        // write is mirrored into the byte buffer -- and the slot map
+        // is the fallback for the values that live only there
+        // (struct / enum / `String` / `Allocator`).
+        BuiltinFunction::PtrReadTyped(ty) => {
+            Self::expect_args("ptr_read", args, 2)?;
+
+            let ptr_result = self.evaluate(&args[0])?;
+            let ptr_obj = try_value!(Ok(ptr_result));
+            let addr = ptr_obj.borrow().try_unwrap_pointer()
+                .map_err(|_| InterpreterError::InternalError("ptr_read expects pointer as first argument".to_string()))?;
+
+            let offset_result = self.evaluate(&args[1])?;
+            let offset_obj = try_value!(Ok(offset_result));
+            let offset = offset_obj.borrow().try_unwrap_uint64()
+                .map_err(|_| InterpreterError::InternalError("ptr_read expects u64 offset as second argument".to_string()))?;
+
+            if let Some(value) = self.read_scalar_bytes_as(addr, offset as usize, ty) {
+                return Ok(EvaluationResult::Value(value.into()));
+            }
+            if let Some(value) = self.heap_manager.borrow().typed_read(addr, offset as usize) {
+                return Ok(EvaluationResult::Value(value.into()));
+            }
+            Err(InterpreterError::InternalError(
+                "Invalid memory access in ptr_read".to_string(),
+            ))
         }
 
         BuiltinFunction::PtrWrite => {

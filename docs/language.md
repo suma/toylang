@@ -4037,7 +4037,8 @@ These always go through the active allocator:
 | `__builtin_heap_alloc(size: u64)` | `-> ptr` |
 | `__builtin_heap_free(p: ptr)` | `-> ()` |
 | `__builtin_heap_realloc(p: ptr, new_size: u64)` | `-> ptr` |
-| `__builtin_ptr_read(p: ptr, offset: u64)` | `-> T` (return type from context) |
+| `__builtin_ptr_read::<T>(p: ptr, offset: u64)` | `-> T` (the written type) |
+| `__builtin_ptr_read(p: ptr, offset: u64)` | `-> T` (return type from context; legacy) |
 | `__builtin_ptr_write(p: ptr, offset: u64, v: T)` | `-> ()` |
 | `__builtin_ptr_is_null(p: ptr)` | `-> bool` |
 | `__builtin_mem_copy(src: ptr, dst: ptr, size: u64)` | `-> ()` |
@@ -4047,9 +4048,30 @@ These always go through the active allocator:
 | `__builtin_ptr_eq(a: ptr, b: ptr)` | `-> bool` (address equality) |
 | `__builtin_null_ptr()` | `-> ptr` (address 0; `__builtin_heap_alloc(0u64)` may return non-null, so use this when you need a portable null) |
 
-`__builtin_ptr_read` is type-polymorphic: it returns the type required
-by its surrounding context (the lhs annotation of `val v: T = ...`,
-typically). `__builtin_ptr_write` accepts any type.
+`__builtin_ptr_read` comes in two forms. **Write the type**:
+
+```rust
+val b: u8 = __builtin_ptr_read::<u8>(p, i)
+val n: u64 = (__builtin_ptr_read::<u8>(p, i) as u64) + 1u64   # any position
+```
+
+The width is then part of the call, so the read is an ordinary
+expression: it needs no annotation, it may appear anywhere a value may,
+and the type it reads cannot disagree with the type it is used as. A
+generic parameter is a legal type argument (`__builtin_ptr_read::<T>`),
+resolved through the same substitution `__builtin_sizeof::<T>()` uses.
+
+The older form takes the type from its surrounding context — the
+annotation of the `val v: T = ...` it is bound by — and is kept for
+the code that already uses it. It is a statement rather than an
+expression: the compiled backends accept it only as the right-hand side
+of an annotated binding, and with no annotation in reach the backends
+do not agree on what it reads. Prefer the written type.
+
+Neither form checks that the bytes were *written* as `T`; a read is a
+reinterpretation of the range, which is why both are `unsafe`.
+
+`__builtin_ptr_write` accepts any type.
 
 The `mem_*` family moves a whole range at once. `mem_copy` requires the
 ranges not to overlap; `mem_move` allows it. A `size` of zero is a

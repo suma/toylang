@@ -32,7 +32,7 @@ use crate::ast::module_interface::ModuleInterface;
 ///
 /// Mismatched versions are treated as a cache miss by
 /// [`load_full_module`].
-pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 41;
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 42;
 // v2: `File` gained `id` (JIT cache key) and `tests` (LLM-LOOP P4).
 // v3: `BuiltinFunctionSymbols` interns the MEMORY_PROFILING M4 counter
 // names, shifting every later symbol id.
@@ -114,6 +114,10 @@ pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 41;
 // unchanged module would be read back against the old intern order
 // (the same reason convert.t bumped v9). See
 // `design-docs/MODULE_SYSTEM.md`.
+// v42: MEMORY-ACCESS M1 — `BuiltinFunction::PtrReadTyped(TypeDecl)`,
+// the `__builtin_ptr_read::<T>(p, off)` form. A new variant in the
+// middle of the enum changes its serde shape, so a v41 entry would
+// deserialize into the wrong variant order (v28's reasoning).
 
 /// Bincode options for the AST cache.
 ///

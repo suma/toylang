@@ -277,8 +277,8 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
         InstKind::ArrayLoad { slot, index, elem_ty } => {
             let idx = vm.read_value(*index);
             let base = vm.current_frame().array_bases[slot.0 as usize];
-            let stride = scalar_size_bytes(*elem_ty);
-            let addr = base + unsafe { idx.u64 } * stride as u64;
+            let stride = vm.current_frame().array_strides[slot.0 as usize];
+            let addr = base + unsafe { idx.u64 } * stride;
             if let Some((vid, _)) = inst.result {
                 let result = host.ptr_read(addr, 0, *elem_ty);
                 if let Some(slot_val) = result {
@@ -290,8 +290,8 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
             let idx = vm.read_value(*index);
             let val = vm.read_value(*value);
             let base = vm.current_frame().array_bases[slot.0 as usize];
-            let stride = scalar_size_bytes(*elem_ty);
-            let addr = base + unsafe { idx.u64 } * stride as u64;
+            let stride = vm.current_frame().array_strides[slot.0 as usize];
+            let addr = base + unsafe { idx.u64 } * stride;
             host.ptr_write(addr, 0, val, *elem_ty);
         }
         InstKind::HeapAlloc { size, site, .. } => {
@@ -504,11 +504,11 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
             let v = vm.read_value(*value);
             host.ptr_write(p, 0, v, *ty);
         }
-        InstKind::ArrayElemAddr { slot, index, elem_ty } => {
+        InstKind::ArrayElemAddr { slot, index, elem_ty: _ } => {
             let idx = vm.read_value(*index);
             let base = vm.current_frame().array_bases[slot.0 as usize];
-            let stride = scalar_size_bytes(*elem_ty);
-            let addr = base + unsafe { idx.u64 } * stride as u64;
+            let stride = vm.current_frame().array_strides[slot.0 as usize];
+            let addr = base + unsafe { idx.u64 } * stride;
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }
@@ -874,22 +874,5 @@ fn format_scalar(host: &dyn VmHost, slot: RawSlot, ty: Type) -> String {
         Type::Str => host.read_str(unsafe { slot.u64 }),
         Type::Vector(v) => crate::simd::format(slot.read_v128(), v),
         _ => format!("{:?}", unsafe { slot.u64 }),
-    }
-}
-
-/// Byte size for scalar types. Compound types return 8 (pointer-sized)
-/// because the IR VM stores them as opaque handles in RawSlot.
-fn scalar_size_bytes(ty: Type) -> u32 {
-    match ty {
-        Type::I8 | Type::U8 => 1,
-        Type::I16 | Type::U16 => 2,
-        Type::I32 | Type::U32 => 4,
-        // SIMD-F32: native single-precision width.
-        Type::F32 => 4,
-        Type::I64 | Type::U64 | Type::F64 | Type::Bool | Type::Str => 8,
-        // SIMD: 128 bits, whatever the lane type.
-        Type::Vector(_) => 16,
-        Type::Unit => 0,
-        _ => 8, // Struct / Tuple / Enum stored as pointer-sized handles
     }
 }

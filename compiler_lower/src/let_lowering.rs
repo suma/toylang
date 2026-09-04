@@ -416,6 +416,19 @@ impl<'a> FunctionLower<'a> {
                 {
                     return Ok(result);
                 }
+        // MEMORY-ACCESS M1: the same read with the width written at
+        // the call. The type argument replaces the annotation as the
+        // element type -- including for a compound `T`, which is why
+        // it routes here rather than through `lower_builtin_call`
+        // (the per-leaf expansion needs the destination binding).
+        if let Expr::BuiltinCall(frontend::ast::BuiltinFunction::PtrReadTyped(ty), args) =
+            rhs.clone()
+            && args.len() == 2
+                && let Some(result) =
+                    self.lower_let_builtin_ptr_read(name, Some(&ty), &args, false)?
+                {
+                    return Ok(result);
+                }
         // DATA-ORIENTED Phase 1: `val ms = ps.mass` — the column
         // window. A field name on an *array* is every element's copy
         // of that field, handed back as a `Column<T>`

@@ -33,6 +33,13 @@ pub struct CallFrame {
     pub return_dests: Vec<LocalId>,
     /// Per-array-slot base addresses (heap-allocated). Indexed by `ArraySlotId.0`.
     pub array_bases: Vec<u64>,
+    /// Per-array-slot element stride, from the slot the lowering
+    /// sized. Indexing used to re-derive this from the element type
+    /// and got `bool` wrong (8 bytes against a slot packed at 1), so
+    /// a `soa [T; N]`'s bool column wrote over its neighbour's bytes
+    /// -- invisible while reads came from the typed-slot map, and a
+    /// wrong answer once they came from the bytes (MEMORY-ACCESS M1).
+    pub array_strides: Vec<u64>,
     /// Lazily materialised `&dyn Trait` coercion buffers, keyed by
     /// `Function::dyn_coerce_slots` index. Mirrors the AOT `StackSlot`
     /// reuse so repeated `DynCoerceSlotAddr` for the same slot returns a
@@ -64,6 +71,7 @@ impl CallFrame {
             return_dest: None,
             return_dests: Vec::new(),
             array_bases: Vec::new(),
+            array_strides: Vec::new(),
             dyn_coerce_addrs: HashMap::new(),
             addr_cells: HashMap::new(),
             values: HashMap::new(),

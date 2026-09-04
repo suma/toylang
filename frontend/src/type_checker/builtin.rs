@@ -99,6 +99,39 @@ impl<'a> TypeCheckerVisitor<'a> {
         Ok(TypeDecl::Unit)
     }
 
+    /// MEMORY-ACCESS M1: `__builtin_ptr_read::<T>(p, offset) -> T`.
+    ///
+    /// The width is the written type, so this call answers on its own
+    /// -- no annotation, no `type_hint`, no position requirement. The
+    /// context-typed `__builtin_ptr_read(p, offset)` still exists and
+    /// still takes its type from the surrounding binding; it is the
+    /// legacy form (see design-docs/MEMORY_ACCESS.md M1/M2).
+    pub fn check_ptr_read_typed(
+        &mut self,
+        ty: &TypeDecl,
+        args: &Vec<ExprRef>,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        self.validate_type_argument(ty, "__builtin_ptr_read")?;
+        if args.len() != 2 {
+            return Err(TypeCheckError::generic_error(&format!(
+                "__builtin_ptr_read::<T> takes 2 arguments (pointer, byte offset), got {}",
+                args.len()
+            )));
+        }
+        self.expect_builtin_arg(&args[0], &TypeDecl::Ptr, "__builtin_ptr_read", "pointer")?;
+        self.expect_builtin_arg(
+            &args[1],
+            &TypeDecl::UInt64,
+            "__builtin_ptr_read",
+            "byte offset",
+        )?;
+        // The written type verbatim: a generic parameter stays
+        // `Identifier(T)` / `Generic(T)` for the backend's
+        // substitution to resolve, exactly as the annotation form's
+        // hint did.
+        Ok(ty.clone())
+    }
+
     /// One argument against one expected type, letting a suffix-less
     /// numeric literal take the expected type the way every other
     /// argument position does.

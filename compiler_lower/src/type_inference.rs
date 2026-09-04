@@ -521,6 +521,15 @@ impl<'a> FunctionLower<'a> {
                 // POINTER P1: the type-argument form answers the same
                 // question, also as u64.
                 frontend::ast::BuiltinFunction::SizeOfType(_) => Some(Type::U64),
+                // MEMORY-ACCESS M1: the read's type is written at the
+                // call, so this is the one pointer builtin whose
+                // result type needs no surrounding annotation.
+                // A compound `T` is not a scalar and answers `None`
+                // here; that read goes through the per-leaf path in
+                // `let_lowering.rs` and never asks this.
+                frontend::ast::BuiltinFunction::PtrReadTyped(ty) => {
+                    self.lower_scalar_with_subst(&ty)
+                }
                 // #121 Phase B-min: allocator handles are u64
                 // sentinel values.
                 frontend::ast::BuiltinFunction::DefaultAllocator

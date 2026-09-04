@@ -3363,12 +3363,13 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// for; the result size itself is computed at evaluation /
     /// lowering time, not here.
     pub(super) fn check_sizeof_type_arg(&mut self, ty: &TypeDecl) -> Result<TypeDecl, TypeCheckError> {
-        self.validate_sizeof_type(ty)?;
+        self.validate_type_argument(ty, "__builtin_sizeof")?;
         Ok(TypeDecl::UInt64)
     }
 
-    /// One type in a `__builtin_sizeof::<...>` argument, recursively
-    /// for the compound shapes.
+    /// One type in a `::<...>` argument of a builtin that takes one
+    /// (`__builtin_sizeof`, `__builtin_ptr_read`), recursively for the
+    /// compound shapes. `builtin` names the caller in the diagnostics.
     ///
     /// A generic parameter arrives as `TypeDecl::Identifier(T)` (the
     /// turbofish type is parsed without generic context) or as
@@ -3377,7 +3378,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// in the checker's generic scope or the enclosing impl's
     /// parameter list. A bare name that is not a parameter must
     /// declare a struct or an enum.
-    fn validate_sizeof_type(&self, ty: &TypeDecl) -> Result<(), TypeCheckError> {
+    pub(super) fn validate_type_argument(&self, ty: &TypeDecl, builtin: &str) -> Result<(), TypeCheckError> {
         match ty {
             // Fixed-width scalars and the pointer-width opaque handles.
             TypeDecl::Bool
@@ -3412,7 +3413,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     .unwrap_or("?")
                     .to_string();
                 Err(TypeCheckError::generic_error(&format!(
-                    "unknown type `{shown}` in `__builtin_sizeof::<{shown}>` — the type \
+                    "unknown type `{shown}` in `{builtin}::<{shown}>` — the type \
                      argument must be a declared type or a generic parameter in scope"
                 )))
             }
@@ -3427,33 +3428,33 @@ impl<'a> TypeCheckerVisitor<'a> {
                         .unwrap_or("?")
                         .to_string();
                     return Err(TypeCheckError::generic_error(&format!(
-                        "unknown type `{shown}` in `__builtin_sizeof` — the type \
+                        "unknown type `{shown}` in `{builtin}` — the type \
                          argument must be a declared type or a generic parameter in scope"
                     )));
                 }
                 for a in args {
-                    self.validate_sizeof_type(a)?;
+                    self.validate_type_argument(a, builtin)?;
                 }
                 Ok(())
             }
             TypeDecl::Tuple(elems) => {
                 for e in elems {
-                    self.validate_sizeof_type(e)?;
+                    self.validate_type_argument(e, builtin)?;
                 }
                 Ok(())
             }
-            TypeDecl::Ref { inner, .. } => self.validate_sizeof_type(inner),
+            TypeDecl::Ref { inner, .. } => self.validate_type_argument(inner, builtin),
             // Widths no backend answers for: the value form cannot ask
             // a runtime `str` its byte size either, and a size that
             // exists only on some backends is not a size.
             TypeDecl::Array(..) | TypeDecl::Dict(..) | TypeDecl::Range(_)
             | TypeDecl::Function(..) | TypeDecl::Dyn(_) | TypeDecl::Self_
             | TypeDecl::TraitIntersection(_)
-            | TypeDecl::Hole | TypeDecl::Unknown => Err(TypeCheckError::generic_error(
-                "`__builtin_sizeof::<T>` supports primitives, `ptr`, vectors, tuples and \
+            | TypeDecl::Hole | TypeDecl::Unknown => Err(TypeCheckError::generic_error(&format!(
+                "`{builtin}::<T>` supports primitives, `ptr`, vectors, tuples and \
                  declared struct / enum types — arrays, dicts, function and trait-object \
                  types have no size to report",
-            )),
+            ))),
         }
     }
 

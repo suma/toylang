@@ -699,6 +699,24 @@ pub enum BuiltinFunction {
 
     // Pointer operations
     PtrRead,      // __builtin_ptr_read(pointer: ptr, offset: u64) -> u64
+    // MEMORY-ACCESS M1: the type-argument form,
+    // `__builtin_ptr_read::<T>(p, offset) -> T`.
+    //
+    // `PtrRead` above takes the read's width from the *surrounding
+    // context* -- the annotation of the `val v: T = ...` it must be
+    // bound by. That makes the read a statement rather than an
+    // expression, forces a side channel through every lane
+    // (`pending_annotation` in the tree-walker, `ptr_read_hints` in
+    // the interpreter JIT, a syntactic special case in
+    // `let_lowering.rs`), and leaves the lanes free to disagree when
+    // no annotation is in reach. Naming the type at the call settles
+    // all three: the width is in the operation, where the IR has
+    // always carried it (`InstKind::PtrRead { elem_ty }`).
+    //
+    // A generic parameter arrives as `TypeDecl::Identifier(T)` and
+    // resolves through the backend's active substitution, exactly as
+    // for `SizeOfType`. See design-docs/MEMORY_ACCESS.md.
+    PtrReadTyped(TypeDecl),
     PtrWrite,     // __builtin_ptr_write(pointer: ptr, offset: u64, value: u64) -> unit
     PtrIsNull,    // __builtin_ptr_is_null(pointer: ptr) -> bool
     PtrEq,        // __builtin_ptr_eq(a: ptr, b: ptr) -> bool

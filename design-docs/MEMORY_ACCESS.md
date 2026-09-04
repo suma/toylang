@@ -1,6 +1,6 @@
 # MEMORY-ACCESS — 1 バイトずつではなく「範囲」を primitive にする
 
-> **状態: 提案 (2026-09-04)。M0 landing 済み (2026-09-05)、M1 以降は未実装。**
+> **状態: 提案 (2026-09-04)。M0 / M1 landing 済み (2026-09-05)、M2 以降は未実装。**
 > 前提は [`POINTER.md`](POINTER.md) (L0〜L4 の層と `Ptr<T>` / `Span<T>`)、
 > builtin の一覧は [`../docs/language.md`](../docs/language.md) の
 > 「Pointer / memory builtins」、効果は [`EFFECT_SYSTEM.md`](EFFECT_SYSTEM.md)。
@@ -239,7 +239,7 @@ method は `unsafe` が外れる (156 → 20 前後の見込み)。
 | # | やること | 規模 | 効果 |
 |---|---|---|---|
 | M0 | `mem_move` / `mem_set` を compiled レーンで lowering、`mem_set` の署名を doc に合わせる (実測 4) ✅ (2026-09-05) | 小 | 4 レーン一致。以降の土台 |
-| M1 | `__builtin_ptr_read::<T>(p, off)` (A) と旧形の deprecation | 中 | 実測 1・2 の解消。側路 3 種の削除 |
+| M1 | `__builtin_ptr_read::<T>(p, off)` (A) と旧形の deprecation ✅ (2026-09-05、deprecation は文書のみ) | 中 | 実測 1・2 の解消。側路 3 種の削除は M2 |
 | M2 | stdlib 213 箇所を `::<T>` 形へ機械移行 + `Vec::elem_size` 撤去 | 中 (stdlib) | 単位と幅が層で固定される |
 | M3 | `Span<T>` の範囲演算 (C の表) を `copy_from` / `fill` / `eq` / `find` / `find_seq` から | 中 | 実測 3・5 の解消。string.t の 5 重複が 1 に |
 | M4 | `chunks::<N>()` と `read_uNN_le/be` | 中 | hex / base64 / sha256 の手書き SIMD と桁合わせが runtime に移る |
@@ -263,6 +263,34 @@ AOT codegen (libc `memmove` / `memset`) / IR VM host に配線した。
   「compiler MVP cannot lower builtin yet」ではなく**コンパイルエラー**になる
 - `interpreter/example/jit_heap.t` が `AOT_UNSUPPORTED` から外れた
   (`example_consistency.rs` の両方向検査が要求してきた)
+
+**M1 (2026-09-05)。** `BuiltinFunction::PtrReadTyped(TypeDecl)` を足した。
+turbofish の parse は `__builtin_sizeof::<T>()` と同じ場所を共有し
+(違いは引数を取るかだけ)、型検査は `validate_type_argument` を
+sizeof と共用、lowering は **IR が既に持っていた `elem_ty` を注釈ではなく
+呼び出しから埋める**だけ。compound `T` は `let_lowering.rs` の per-leaf 展開
+に載せた (書かれた型が注釈の代わりになる)。cache schema は v42。
+
+**旧形は残した** (deprecation は `docs/language.md` の記述のみ)。
+警告を出すと stdlib の 213 箇所が毎回鳴るので、警告は M2 (移行) と同時。
+したがって側路 (`pending_annotation` / `ptr_read_hints` /
+`let_lowering` の構文特例) の**削除も M2**。
+
+移行の途中で 2 つ直した:
+
+- **IR VM の `ptr_read` は scalar なら typed-slot map より byte を先に読む**
+  ようにした。同じ IR を走らせる AOT / JIT と答えが割れていた
+  (実測 1 の 65 対 16961) のは、slot map が「その番地に最後に書かれた**型**」
+  を返すため。scalar の write は必ず byte にも刻まれているので、byte が
+  答えられる。slot map は byte 幅を持たないもの (`String` / struct /
+  allocator handle) の受け口として残る
+- **IR VM の配列アドレス計算が stride を型から引き直していた**
+  (`scalar_size_bytes`)。この表だけ `bool` を 8 バイトとしており、
+  lowering が 1 バイトで確保した列に 8 バイト間隔で書いていた —
+  `soa [Mixed; 3]` の bool 列が隣の f32 列を踏んで 1.5 が 0.5 になる。
+  typed-slot map が (addr, offset) 完全一致で引くので**値としては見えて
+  いなかった**バグで、byte を読むようにした瞬間に出た。frame が確保時の
+  stride を持つようにして表は削除 (重複した知識をなくす)
 
 ## 検証
 

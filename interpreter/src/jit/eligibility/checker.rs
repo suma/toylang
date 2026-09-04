@@ -2333,7 +2333,8 @@ impl<'a> Checker<'a> {
                         Some(ScalarTy::Unit)
                     }
                     BuiltinFunction::MemSet => {
-                        if !self.check_builtin_args(&[ScalarTy::Ptr, ScalarTy::U64, ScalarTy::U64], &args) {
+                        // MEMORY-ACCESS M0: the fill value is a `u8`.
+                        if !self.check_builtin_args(&[ScalarTy::Ptr, ScalarTy::U8, ScalarTy::U64], &args) {
                             return None;
                         }
                         Some(ScalarTy::Unit)
@@ -2351,6 +2352,30 @@ impl<'a> Checker<'a> {
                             self.reject(|| {
                                 "ptr_read used outside a typed val/var/assign — JIT \
                                  needs the result type to be statically known"
+                                    .to_string()
+                            });
+                        }
+                        resolved
+                    }
+                    // MEMORY-ACCESS M1: the width is written at the
+                    // call, so there is no hint to look up and no
+                    // position requirement. Only the four types this
+                    // JIT has read helpers for are supported; anything
+                    // else declines and the tree-walker answers.
+                    BuiltinFunction::PtrReadTyped(ref ty) => {
+                        if !self.check_builtin_args(&[ScalarTy::Ptr, ScalarTy::U64], &args) {
+                            return None;
+                        }
+                        let resolved = ScalarTy::from_type_decl(ty).filter(|t| {
+                            matches!(
+                                t,
+                                ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Bool | ScalarTy::Ptr
+                            )
+                        });
+                        if resolved.is_none() {
+                            self.reject(|| {
+                                "__builtin_ptr_read::<T> supports i64 / u64 / bool / ptr \
+                                 in the interpreter JIT"
                                     .to_string()
                             });
                         }

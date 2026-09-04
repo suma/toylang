@@ -10,15 +10,26 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **METHOD-ARG-UNCHECKED — method 呼び出しの引数を型検査するようにした**
+  — 個数も型も見ていなかったので、`w.two(1u64)` (2 引数の宣言) や
+  `h.fill(out)` (`&mut Sink` を要求する位置に値) が通り、tree-walker は
+  値を出し、compiled レーンは cranelift の verifier が SSA 値の名前で
+  落ちていた。とくに `&mut` は**黙って値渡し (コピー) に化ける**ので、
+  callee の書き込みがどこにも残らない (`poc/logsearch` が壊れた
+  アーカイブを「成功」と報告した原因)。自由関数と同じ
+  `[E0001] ... (in argument N of method 'f')` を出す。宣言が読める
+  場合だけ検査する — レシーバが struct / enum で、その引数位置の
+  宣言型が型パラメータを含まないとき (generic の束縛は後段の仕事)。
+  associated function (`P::make(...)`) は元から検査されていた。
 - **METHOD-MUT-PARAM-REBORROW — method が自分の `&mut` パラメータを
   再借用できるようになった** — `setup_method_parameter_context` が
   全パラメータを `set_var` で登録していたので、method の body の
   `&mut out` だけが `cannot borrow \`out\` as mutable: binding is not
   declared \`var\`` で蹴られていた (自由関数側の `visitor.rs` には
   `&mut T` の分岐がある)。bare 渡しは METHOD-ARG-UNCHECKED で
-  黙って値渡しになるため、**`&mut` パラメータを method から転送する
-  綴りが 1 つも無い**状態だった (`poc/logsearch` が踏んだ
-  「書き込みが消える」の片割れ)。`&mut self` レシーバも同じ理由で
+  黙って値渡しになっていたため (同日 METHOD-ARG-UNCHECKED で解消)、
+  **`&mut` パラメータを method から転送する綴りが 1 つも無い**状態
+  だった (`poc/logsearch` が踏んだ「書き込みが消える」の片割れ)。`&mut self` レシーバも同じ理由で
   可変にしたので `bump(&mut self.count)` が書ける (compound
   フィールドの借用は COMPOUND-FIELD-ARG のまま AOT が拒否する —
   自由関数からの `&mut w.s` と同じ)。receiver そのものへの代入
@@ -2071,78 +2082,6 @@ changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 
 経緯は git log と完了済み節にある。`__getitem__` の 2 件
 (`&self` 受理 / generic 戻り型置換) も 2026-08-30 に解消
 (POINTER P2、完了済み節)。
-
-- **METHOD-ARG-UNCHECKED: method 呼び出しの引数が型検査されない** ★★★ —
-  自由関数は正しく落ちる (`fn take(s: &String)` に `take("ab")` で
-  `[E0001] Type mismatch: expected &String, but got str`) のに、
-  **method は型も個数も検査していない**。2026-09-03 実測、いずれも
-  interpreter が値を出して完走する:
-
-  | 書いたもの | 宣言 | 出た値 |
-  |---|---|---|
-  | `w.take_u64(true)` | `fn take_u64(&self, n: u64)` | `1` |
-  | `w.take_str(42u64)` | `fn take_str(&self, s: str)` | `0` |
-  | `w.eat(7u64)` | `fn eat(&mut self, other: &W)` | `7` (body の `other.n` が通る) |
-  | `w.two(1u64)` | `fn two(&self, a: u64, b: u64)` | `1` (引数不足が通る) |
-
-  stdlib でも同じで、**`s.push_str("ab")` が通る** (`push_str` は
-  `&String` を取るので `String::from_str("ab")` が正しい)。結果は
-  レーンで割れる: interpreter は**黙って何もしない** (`len()` は 0 のまま)、
-  AOT は cranelift の verifier がクラッシュする
-  (`mismatched argument count ...: got 5, expected 8` /
-  `arg 1 (v14) has type i8, expected i64`)。`Vec<u8>::push_str` も同型。
-  **String に文字列を足すという最初に書く形が黙って壊れ**、compiled
-  レーンの診断は internal error の文言なので原因に辿り着けない。
-  直し方は自由関数側の検査 (`[E0001]` を出している経路) を method 呼び出しにも
-  通すこと。材料は揃っている — `declared_method_param_types` は既にあり、
-  CHAR-LITERAL-GENERIC-ARG がレシーバの型引数で置換してから hint に使っている。
-  2026-09-03 に `logsearch/` の設計 (ログ検索サービスのモデルケース) で発見。
-
-  **2026-09-04 追記 — この穴は `&mut` を黙って値渡しに変える。**
-  引数の型が見られないので、`&mut T` を要求する method に `&mut T` の
-  パラメータをそのまま渡すと、値渡し (コピー) として通ってしまう。
-  compound のコピーは writeback を持たないので、**callee の書き込みは
-  どこにも残らない**。最小再現 (interpreter / AOT とも `2` ではなく
-  `1` を出す):
-
-  ```rust
-  struct Sink { v: Vec<u8> }
-  impl Sink {
-      fn add(&mut self, b: u8) { self.v.push(b) }
-      fn len(&self) -> u64 { self.v.size() }
-  }
-  struct Helper { n: u64 }
-  impl Helper {
-      fn fill(&self, out: &mut Sink) { out.add(65u8) }
-  }
-  fn outer(out: &mut Sink) {
-      out.add(66u8)          # 直接の書き込みは効く
-      val h = Helper { n: 0u64 }
-      h.fill(out)            # method 経由の書き込みは消える
-  }
-  fn main() -> u64 {
-      var b = Sink { v: Vec::new() }
-      outer(&mut b)
-      println(b.len())       # 2 が正しい。両レーンとも 1
-      0u64
-  }
-  ```
-
-  **自由関数なら同じ形が型検査で止まる** (`[E0001] expected &mut Sink,
-  but got Sink` — REF-REBORROW)。つまり method 側だけが、コンパイル時に
-  捕まるはずの間違いを**実行時の静かなデータ喪失**に変えている。
-  `poc/logsearch` のアーカイブ書き出しがこれを踏み、フレームのヘッダと
-  長さは正しいのに**中身だけが空**のファイルを書いた (CRC 検証が
-  無ければ「成功」と報告していた)。
-
-  **2026-09-05 追記 — 回避策は増えた (穴自体は残っている)。**
-  METHOD-MUT-PARAM-REBORROW が landing したので、method の中でも
-  `h.fill(&mut out)` と**明示的に再借用すれば正しく書き戻る**。
-  それまでは method 内の `&mut out` が型検査で蹴られていたため、
-  `&mut` パラメータを method から転送する綴りが 1 つも無く、
-  ローカルの `var` に組んでから写す (コピーが 1 回増える) しか
-  なかった。bare の `h.fill(out)` が黙って通って書き込みを捨てる
-  のは本項の未修正部分。
 
 - **COMPOUND-FIELD-ARG: compound な *フィールド* を引数に渡せない** ★★ —
   束縛・リテラル・呼び出し結果は通る (COMPOUND-ARG-CALL、2026-09-02) が、

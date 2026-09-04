@@ -142,6 +142,86 @@ mod argument_checking {
     }
 
     #[test]
+    fn test_method_argument_count_is_checked() {
+        // METHOD-ARG-UNCHECKED: a method call's argument list went
+        // unchecked — neither count nor types — while the same
+        // mistake in a free function was a type error. Missing
+        // arguments reached the tree-walker (which produced a value
+        // from whatever was in the slot) and the compiled lanes
+        // (where cranelift's verifier crashed).
+        let source = r#"
+            struct Foo { x: u64 }
+            impl Foo {
+                fn two(&self, a: u64, b: u64) -> u64 { a + b }
+            }
+            fn main() -> u64 {
+                val f = Foo { x: 1u64 }
+                f.two(1u64)
+            }
+        "#;
+        let err = parse_and_check(source).expect_err("missing argument must be rejected");
+        assert!(
+            format!("{:?}", err).contains("argument count mismatch"),
+            "unexpected diagnostic: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_method_argument_type_is_checked() {
+        let source = r#"
+            struct Foo { x: u64 }
+            impl Foo {
+                fn take(&self, n: u64) -> u64 { n }
+            }
+            fn main() -> u64 {
+                val f = Foo { x: 1u64 }
+                f.take(true)
+            }
+        "#;
+        let err = parse_and_check(source).expect_err("wrong argument type must be rejected");
+        let text = format!("{:?}", err);
+        assert!(
+            text.contains("expected u64") && text.contains("bool"),
+            "unexpected diagnostic: {text}"
+        );
+    }
+
+    #[test]
+    fn test_method_mut_ref_parameter_rejects_a_bare_value() {
+        // The costly case: without the argument check, a `&mut T`
+        // parameter handed a bare value passed as a copy, so the
+        // callee's writes went nowhere and the program ran to
+        // completion with the wrong answer. A free function rejected
+        // the same call, so the fix is to say the same thing here.
+        let source = r#"
+            struct Sink { n: u64 }
+            impl Sink {
+                fn add(&mut self, d: u64) { self.n = self.n + d }
+            }
+            struct Helper { k: u64 }
+            impl Helper {
+                fn fill(&self, out: &mut Sink) { out.add(1u64) }
+            }
+            fn outer(out: &mut Sink) {
+                val h = Helper { k: 0u64 }
+                h.fill(out)
+            }
+            fn main() -> u64 {
+                var s = Sink { n: 0u64 }
+                outer(&mut s)
+                s.n
+            }
+        "#;
+        let err = parse_and_check(source).expect_err("a bare value for `&mut` must be rejected");
+        assert!(
+            format!("{:?}", err).contains("&mut Sink"),
+            "unexpected diagnostic: {:?}",
+            err
+        );
+    }
+
+    #[test]
     fn test_method_with_two_args() {
         let source = r#"
             struct Foo {

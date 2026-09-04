@@ -186,6 +186,16 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Note: Current struct definition does not include methods
         // Method support will be added in a future refactoring
         
+        // METHOD-ARG-UNCHECKED: a method's argument list is checked
+        // the way a free function's is. Until this ran, neither the
+        // count nor the types were looked at, so `w.two(1u64)` (two
+        // declared parameters) and `s.push_str("ab")` (a `&String`
+        // parameter handed a `str`) were accepted — the tree-walker
+        // then produced a value, and the compiled lanes crashed
+        // cranelift's verifier with an argument-count or -type
+        // message naming SSA values.
+        self.check_method_call_arguments(&resolved_obj_type, method, args, &arg_types)?;
+
         // Check other type methods
         let result = self.visit_method_call_on_type(&resolved_obj_type, method, args, &arg_types);
         
@@ -287,6 +297,133 @@ impl<'a> TypeCheckerVisitor<'a> {
         true
     }
 
+    /// How many entries of `method_func.parameter` the receiver
+    /// occupies. `&self` / `&mut self` are not in the list at all
+    /// (the parser records them as `has_self_param`); the by-value
+    /// `self: Self` form is, as parameter 0.
+    fn method_receiver_slots(&self, method_func: &MethodFunction) -> usize {
+        if method_func.has_self_param {
+            return 0;
+        }
+        match method_func.parameter.first() {
+            Some((name, _)) if self.resolve_symbol_name(*name) == "self" => 1,
+            _ => 0,
+        }
+    }
+
+    /// Can this declared parameter type be compared against an actual
+    /// argument type here?
+    ///
+    /// A parameter that still mentions a type parameter names nothing
+    /// concrete at this point — binding it is the job of the
+    /// substitution collection in `visit_method_call_on_type`, which
+    /// runs after this check. `Self` is the same story on the trait
+    /// side. Such positions are left unchecked rather than guessed at.
+    fn param_type_is_checkable(&self, ty: &TypeDecl) -> bool {
+        if ty.contains_generic() {
+            return false;
+        }
+        match ty {
+            TypeDecl::Self_ => false,
+            // A bare name that is not a registered struct / enum is a
+            // type parameter spelled without `Generic` (the parser
+            // cannot tell the two apart).
+            TypeDecl::Identifier(name) => {
+                self.context.struct_definitions.contains_key(name)
+                    || self.context.enum_definitions.contains_key(name)
+            }
+            TypeDecl::Ref { inner, .. } => self.param_type_is_checkable(inner),
+            TypeDecl::Array(elems, _, _) | TypeDecl::Tuple(elems) => {
+                elems.iter().all(|t| self.param_type_is_checkable(t))
+            }
+            TypeDecl::Dict(k, v) => {
+                self.param_type_is_checkable(k) && self.param_type_is_checkable(v)
+            }
+            TypeDecl::Struct(_, args) | TypeDecl::Enum(_, args) => {
+                args.iter().all(|t| self.param_type_is_checkable(t))
+            }
+            TypeDecl::Range(t) => self.param_type_is_checkable(t),
+            TypeDecl::Function(params, ret) => {
+                params.iter().all(|t| self.param_type_is_checkable(t))
+                    && self.param_type_is_checkable(ret)
+            }
+            _ => true,
+        }
+    }
+
+    /// METHOD-ARG-UNCHECKED: check a method call's argument count and
+    /// argument types against the declaration, the way
+    /// `check_call_args_against_params` does for a free function.
+    ///
+    /// Only applies where the declaration can be found and read: a
+    /// struct / enum receiver whose method table has the method, and
+    /// per argument, a parameter type that mentions no type parameter
+    /// (see `param_type_is_checkable`). Builtin methods never reach
+    /// here — they return earlier, from their own dispatch.
+    fn check_method_call_arguments(
+        &mut self,
+        obj_type: &TypeDecl,
+        method: &DefaultSymbol,
+        args: &[ExprRef],
+        arg_types: &[TypeDecl],
+    ) -> Result<(), TypeCheckError> {
+        let (name, type_args) = match obj_type {
+            TypeDecl::Struct(name, args) | TypeDecl::Enum(name, args) => (*name, args.clone()),
+            _ => return Ok(()),
+        };
+        let Some(method_func) = self
+            .context
+            .get_struct_method(name, *method, &type_args)
+            .or_else(|| self.context.get_struct_method(name, *method, &[]))
+            .cloned()
+        else {
+            return Ok(());
+        };
+        let expected_count = method_func.parameter.len() - self.method_receiver_slots(&method_func);
+        if args.len() != expected_count {
+            let method_str = self.resolve_symbol_name(*method);
+            let err = TypeCheckError::generic_error(&format!(
+                "method '{}' on `{}` argument count mismatch: expected {}, found {}",
+                method_str,
+                self.type_name_for_error(obj_type),
+                expected_count,
+                args.len()
+            ));
+            return Err(match args.first() {
+                Some(arg) => self.error_with_location(err, arg),
+                None => err,
+            });
+        }
+
+        let Some(declared) = self.declared_method_param_types(obj_type, method, args.len()) else {
+            return Ok(());
+        };
+        for (arg_index, ((arg, arg_ty), expected)) in
+            args.iter().zip(arg_types.iter()).zip(declared.iter()).enumerate()
+        {
+            let Some(expected) = expected else { continue };
+            if !self.param_type_is_checkable(expected) {
+                continue;
+            }
+            if *arg_ty == TypeDecl::Unknown {
+                continue;
+            }
+            if self.is_arg_compatible_dyn_aware(arg_ty, expected) {
+                continue;
+            }
+            let method_str = self.resolve_symbol_name(*method);
+            let err = TypeCheckError::type_mismatch(expected.clone(), arg_ty.clone())
+                .with_context(&format!(
+                    "argument {} of method '{}'",
+                    arg_index + 1,
+                    method_str
+                ));
+            let err = self.error_with_location(err, arg);
+            return Err(self.suggest_numeric_cast(err, arg, arg_ty, expected));
+        }
+        Ok(())
+    }
+
     /// Helper method to handle method calls on a specific type
     /// The declared parameter types of `obj_type::method`, aligned to
     /// the *call's* argument list.
@@ -343,7 +480,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
         // A by-value `self: Self` receiver occupies parameter slot 0;
         // `&self` / `&mut self` receivers are kept out of the list.
-        let offset = if method_func.parameter.len() > arg_count { 1 } else { 0 };
+        let offset = self.method_receiver_slots(method_func);
         Some(
             (0..arg_count)
                 .map(|i| {

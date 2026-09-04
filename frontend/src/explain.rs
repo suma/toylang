@@ -97,8 +97,12 @@ would fix it: the value itself is wrong.
 
 An argument that does not match its parameter reports the same code,
 with the offending argument named in the context: `(in argument 2 of
-function 'f')`. There *is* no implicit conversion at a call site, so
-that form always needs an explicit `as`.
+function 'f')`, or `(in argument 1 of method 'fill')` for a method
+call. There *is* no implicit conversion at a call site, so that form
+always needs an explicit `as`. A `&mut T` parameter is the one case
+where no cast is the answer: pass the borrow the parameter asks for
+(`h.fill(&mut out)`), since a bare value would be copied and the
+callee's writes lost.
 
 Two shapes that reach this code without looking numeric:
 

@@ -5767,8 +5767,16 @@ the standard library and from the engine rather than from an operator:
 
 | Situation | Message |
 |---|---|
-| `v.get(i)` / `v.set(i, x)` / `s.get(i)` past the end, `v.pop()` on an empty `Vec` | `Vec::get index out of bounds`, … |
+| `v.get(i)` / `v.set(i, x)` / `s.get(i)` past the end, `v.pop()` on an empty `Vec` | `` `requires` clause #1 of function `get` … (with index = 5) ``, … |
 | More nested calls than the engine's stack allows | `recursion limit exceeded (N frames deep)` |
+
+The first row is a contract, not a hand-written check: `Vec` states the
+positions a caller may name as `requires` clauses, so the failure
+reports the index that broke the bound. Those clauses are compiled out
+of a `--release` build, where the same reads instead reach the `panic`
+each body keeps behind the clause (`Vec::get index out of bounds`) —
+the guard on a built-in `arr[i]` never goes away, and a `Vec` should
+not be the one indexed read that does.
 
 The recursion ceiling is a property of the engine, not of the language:
 the tree-walker spends a host stack frame per toylang call and stops at

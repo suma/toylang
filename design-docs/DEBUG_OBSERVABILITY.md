@@ -695,6 +695,15 @@ interpreter JIT だけは呼び出しごと (巻き上げるプロローグが�
 書くので追加のチェックは掛からない。`Dict::get` は元から
 `Option<V>` を返すので対象外。
 
+**2026-09-04 (VEC-CONTRACTS) で「契約が先、panic は網」になった。**
+`Vec` の 7 本 (`get` / `set` / `pop` / `insert` / `remove` /
+`swap_remove` / `set_size`) は同じ条件を `requires` にも書いた。
+checked ビルドではそちらが先に発火するので、文言は固定文字列ではなく
+**破った値**を出す (`(with index = 5)`)。`panic` は消していない — 契約は
+`--release` で落ちるので、消すと `Vec` だけが release で unchecked な
+indexed read になり、組み込み配列が release でも guard を残す設計
+([`GUARD_ELISION.md`](GUARD_ELISION.md)) と食い違う。
+
 ---
 
 ## 値を持つ文言 ✅ (2026-08-27)

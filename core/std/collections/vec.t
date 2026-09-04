@@ -16,13 +16,22 @@
 # API:
 #   - `Vec::new() -> Self`
 #   - `v.push(value)` (`&mut self`) — append, geometric grow
-#   - `v.pop() -> T` (`&mut self`) — remove last (panics when empty)
-#   - `v.get(i) -> T` — random read (bounds-checked; panics)
-#   - `v.set(i, value)` (`&mut self`) — random write (bounds
-#     check)
+#   - `v.pop() -> T` (`&mut self`) — remove last
+#   - `v.get(i) -> T` — random read
+#   - `v.set(i, value)` (`&mut self`) — random write
 #   - `v.size() -> u64` — current element count
 #   - `v.capacity() -> u64` — allocated slots
 #   - `v.is_empty() -> bool`
+#
+# The positions a caller may name are stated as `requires` clauses
+# rather than left to a comment: `--api core/std/collections/vec.t`
+# prints them, and a violation reports the offending value
+# (`with index = 5`) instead of a fixed string. The `panic` inside
+# each body is kept on purpose and is *not* dead code — contracts are
+# compiled out by `--release`, and a `Vec` whose bounds stop being
+# checked there would be the one indexed read in the language that
+# goes unguarded in a release build (a built-in `arr[i]` keeps its
+# guard, GUARD_ELISION.md). Contract first, panic as the net.
 #
 # Method `size` is named for symmetry with `core/std/dict.t::size`
 # rather than Rust's `len` to dodge any potential clash with the
@@ -154,7 +163,9 @@ impl<T> Vec<T> {
     # could not grow is still intact and still owns its bytes; writing
     # the null in first would lose the old pointer -- a leak, and every
     # later element written to address 0.
-    unsafe fn grow_to(&mut self, new_cap: u64) {
+    unsafe fn grow_to(&mut self, new_cap: u64)
+        requires new_cap >= self.len
+    {
         val room: Option<u64> = new_cap.checked_mul(self.elem_size)
         val bytes: u64 = match room {
             Option::Some(b) => b,
@@ -175,13 +186,15 @@ impl<T> Vec<T> {
     # without going through `push`. Without this the bytes are there
     # and `size()` still says 0.
     #
-    # Panics past the capacity. Elements between the old and new
+    # Capacity is the bound. Elements between the old and new
     # size are whatever the memory already held, so this is only
     # sound after they have actually been written — the checker
     # cannot see that, and (P6's rule being about pointee-touching
     # builtins, which this calls none of) it is not an `unsafe fn`
     # either.
-    fn set_size(&mut self, n: u64) {
+    fn set_size(&mut self, n: u64)
+        requires n <= self.cap
+    {
         if n > self.cap { panic("Vec::set_size beyond capacity") }
         self.len = n
     }
@@ -234,32 +247,38 @@ impl<T> Vec<T> {
         self.len = self.len + 1u64
     }
 
-    # Remove and return the last element. Panics on an empty Vec
-    # (DEBUG-OBS D6) — it used to read whatever sat at offset 0 and
-    # underflow `self.len` to `u64::MAX`, which turned one mistake
-    # into a Vec that reports 18 quintillion elements.
-    unsafe fn pop(&mut self) -> T {
+    # Remove and return the last element. An empty vec has no last
+    # element to name (DEBUG-OBS D6) — this used to read whatever sat
+    # at offset 0 and underflow `self.len` to `u64::MAX`, which turned
+    # one mistake into a Vec that reports 18 quintillion elements.
+    unsafe fn pop(&mut self) -> T
+        requires self.len > 0u64
+    {
         if self.len == 0u64 { panic("Vec::pop on an empty Vec") }
         self.len = self.len - 1u64
         val v: T = __builtin_ptr_read(self.data, self.len * self.elem_size)
         v
     }
 
-    # Random-access read, bounds-checked (DEBUG-OBS D6).
+    # Random-access read (DEBUG-OBS D6).
     #
     # A built-in array traps on an out-of-range index (RUNTIME-TRAP);
     # this used to be the one indexed read that did not, and reading
     # past the end reached the host — `value not defined` from inside
     # the IR VM, with no toylang position or backtrace left.
-    unsafe fn get(&self, index: u64) -> T {
+    unsafe fn get(&self, index: u64) -> T
+        requires index < self.len
+    {
         if index >= self.len { panic("Vec::get index out of bounds") }
         val v: T = __builtin_ptr_read(self.data, index * self.elem_size)
         v
     }
 
-    # Random-access write, bounds-checked. `push` writes through the
-    # raw pointer, so appending is not affected by this.
-    unsafe fn set(&mut self, index: u64, value: T) {
+    # Random-access write. `push` writes through the raw pointer, so
+    # appending is not affected by the bound stated here.
+    unsafe fn set(&mut self, index: u64, value: T)
+        requires index < self.len
+    {
         if index >= self.len { panic("Vec::set index out of bounds") }
         __builtin_ptr_write(self.data, index * self.elem_size, value)
     }
@@ -304,8 +323,10 @@ impl<T> Vec<T> {
 
     # Insert `value` at `index`, shifting everything from there up one
     # place. `index == size()` appends, which makes `insert` total over
-    # the positions a caller can name; past that it panics, like `get`.
-    unsafe fn insert(&mut self, index: u64, value: T) {
+    # the positions a caller can name — hence `<=` where `get` has `<`.
+    unsafe fn insert(&mut self, index: u64, value: T)
+        requires index <= self.len
+    {
         if index > self.len { panic("Vec::insert index out of bounds") }
         if self.elem_size == 0u64 {
             self.elem_size = __builtin_sizeof(value)
@@ -327,7 +348,9 @@ impl<T> Vec<T> {
 
     # Remove the element at `index` and return it, shifting the rest
     # down. Order-preserving and O(n); `swap_remove` is the O(1) one.
-    unsafe fn remove(&mut self, index: u64) -> T {
+    unsafe fn remove(&mut self, index: u64) -> T
+        requires index < self.len
+    {
         if index >= self.len { panic("Vec::remove index out of bounds") }
         val out: T = __builtin_ptr_read(self.data, index * self.elem_size)
         var i: u64 = index
@@ -344,7 +367,9 @@ impl<T> Vec<T> {
     # element into the hole. O(1), and it reorders — the name says so,
     # which `Dict::remove` used not to (it swapped silently and broke
     # iteration order).
-    unsafe fn swap_remove(&mut self, index: u64) -> T {
+    unsafe fn swap_remove(&mut self, index: u64) -> T
+        requires index < self.len
+    {
         if index >= self.len { panic("Vec::swap_remove index out of bounds") }
         val out: T = __builtin_ptr_read(self.data, index * self.elem_size)
         val last: T = __builtin_ptr_read(self.data, (self.len - 1u64) * self.elem_size)
@@ -629,19 +654,22 @@ impl Vec<u8> {
     #   < 0x110000 -> 4 bytes: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
     #
     # Surrogate codepoints (U+D800..U+DFFF) and codepoints
-    # >= U+110000 are not valid Unicode scalars and panic. Lexer
-    # already rejects them in `'\u{...}'` literals via
-    # `char::from_u32`; the runtime check guards values built from
-    # arithmetic.
+    # >= U+110000 are not valid Unicode scalars, and the signature
+    # says so. Lexer already rejects them in `'\u{...}'` literals via
+    # `char::from_u32`; the contract guards values built from
+    # arithmetic. Unlike the indexed methods this one carries no
+    # matching `panic` — a violation writes malformed UTF-8, which is
+    # a wrong answer and not a memory error, so there is nothing for a
+    # `--release` build to be protected from.
     #
     # Implementation notes: shifts intentionally use `u64` operands —
     # the type checker forces shift right-hand sides to `u64`
     # (`frontend/src/type_checker/utility.rs:128`), so we widen the
     # codepoint once and narrow each output byte with `as u8`.
-    fn push_char(&mut self, c: char) {
-        assert(c < 0x110000u32, "push_char: codepoint out of range")
-        assert(!(c >= 0xD800u32 && c <= 0xDFFFu32),
-               "push_char: surrogate codepoint not allowed")
+    fn push_char(&mut self, c: char)
+        requires c < 0x110000u32
+        requires !(c >= 0xD800u32 && c <= 0xDFFFu32)
+    {
         val cp: u64 = c as u64
         if cp < 0x80u64 {
             self.push(cp as u8)

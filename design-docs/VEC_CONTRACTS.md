@@ -1,6 +1,8 @@
 # VEC CONTRACTS — `Vec<T>` に Design by Contract を適用する案
 
-> **状態: 案 (2026-09-04)。適用する範囲を選ぶ段階で、コードは未変更。**
+> **状態: 一部 landing (2026-09-04)。`requires` の 3 行 (§4 の #1 / #2 /
+> #3) を `core/std/collections/vec.t` に入れた。`ensures` 系 (#4〜#7) と
+> `never_allocates` 系 (#8〜#11) は未着手。**
 > 以下の A〜F が候補の分類、§4 の表が選択シート。選んだ行だけを
 > `core/std/collections/vec.t` に入れる。
 
@@ -216,22 +218,39 @@ D は B と重なる (`push` の `ensures self.cap >= self.len` は不変条件 
 
 | # | 分類 | 内容 | 推奨 | 選択 |
 |---|---|---|---|---|
-| 1 | A2 | 境界の `requires` を panic に**併記** (`get` / `set` / `pop` / `insert` / `remove` / `swap_remove` / `set_size`) | ◎ | |
-| 2 | A1 | `push_char` の `assert` 2 本を `requires` に置換 | ○ | |
-| 3 | A | `grow_to` に `requires new_cap >= self.len` (文書目的) | △ | |
-| 4 | B | 長さ / 容量の `ensures` — `push` / `pop` / `insert` / `remove` / `swap_remove` / `clear` / `set_size` / `resize` / `reverse` / `sort` / `sort_by` | ◎ | |
-| 5 | B | `impl Vec<u8>` の `ensures` — `extend_bytes` / `push_str` / `push_char` | ◎ | |
-| 6 | B | `try_reserve` の `ensures result.is_err() \|\| self.cap >= self.len + n` | ○ | |
-| 7 | B | `VecIter::next` の `ensures self.index <= self.len` | △ | |
-| 8 | C | `never_allocates` を unsafe でない読み取り系 7 本に (`size` / `capacity` / `is_empty` / `as_ptr` / `clear` / `set_size` / `iter`) | ◎ | |
-| 9 | C | `push` / `insert` に「realloc 高々 1 回」の生の `ensures` | ○ | |
-| 10 | C | `with_capacity` / `from_str` に `ensures allocations(1u64)` | ○ | |
-| 11 | C | `get` / `set` / `pop` / ... の `ensures allocations(0u64)` (§5-1 が直るまでの代用) | △ (直ったら 8 に統合) | |
-| 12 | E | `is_sorted` を足し `sort` に `ensures self.is_sorted()` (`E0018` 警告つき) | △ | |
-| 13 | D2 | `well_formed()` 方式の擬似 invariant | × (B で足りる) | |
+| 1 | A2 | 境界の `requires` を panic に**併記** (`get` / `set` / `pop` / `insert` / `remove` / `swap_remove` / `set_size`) | ◎ | **✅ 2026-09-04** |
+| 2 | A1 | `push_char` の `assert` 2 本を `requires` に置換 | ○ | **✅ 2026-09-04** |
+| 3 | A | `grow_to` に `requires new_cap >= self.len` (文書目的) | △ | **✅ 2026-09-04** |
+| 4 | B | 長さ / 容量の `ensures` — `push` / `pop` / `insert` / `remove` / `swap_remove` / `clear` / `set_size` / `resize` / `reverse` / `sort` / `sort_by` | ◎ | 未 |
+| 5 | B | `impl Vec<u8>` の `ensures` — `extend_bytes` / `push_str` / `push_char` | ◎ | 未 |
+| 6 | B | `try_reserve` の `ensures result.is_err() \|\| self.cap >= self.len + n` | ○ | 未 |
+| 7 | B | `VecIter::next` の `ensures self.index <= self.len` | △ | 未 |
+| 8 | C | `never_allocates` を unsafe でない読み取り系 7 本に (`size` / `capacity` / `is_empty` / `as_ptr` / `clear` / `set_size` / `iter`) | ◎ | 未 |
+| 9 | C | `push` / `insert` に「realloc 高々 1 回」の生の `ensures` | ○ | 未 |
+| 10 | C | `with_capacity` / `from_str` に `ensures allocations(1u64)` | ○ | 未 |
+| 11 | C | `get` / `set` / `pop` / ... の `ensures allocations(0u64)` (§5-1 が直るまでの代用) | △ (直ったら 8 に統合) | 未 |
+| 12 | E | `is_sorted` を足し `sort` に `ensures self.is_sorted()` (`E0018` 警告つき) | △ | 未 |
+| 13 | D2 | `well_formed()` 方式の擬似 invariant | × (B で足りる) | × |
 
 「◎ だけ」で選ぶと、`vec.t` の変更は契約行 **約 35 行** と panic 文の
 テスト更新 2 箇所 (§6)、コードの本体は 1 行も動かない。
+
+### 4-1. #1〜#3 を入れた結果 (2026-09-04)
+
+- 契約行は **11 本** (`requires` 9 本 + `push_char` の 2 本)。`assert` 2 本が
+  消え、body のロジックは 1 行も動いていない
+- `--api core/std/collections/vec.t` に 9 method の節が出る
+- 違反の文言は 3 レーン一致で
+  `` `requires` clause #1 of function `get` ... (with index = 5) ``。
+  `--release` と `INTERPRETER_CONTRACTS=off` では従来どおり
+  `panic: Vec::get index out of bounds` (A2 の狙いどおり)
+- コスト: `Vec` 以外に何もしない AOT ループ (`with_capacity` +
+  `push` × 1000 + `get` × 1000 を 20 万回 = 4 億呼び出し) で
+  **0.74s (checked) vs 0.65s (`--release`)**。1 呼び出し **~0.22ns**、
+  比 1.14x で §6 の閾値 (2 倍) の内側
+- `--check` の対象数は変わらない (1 件) — §5-3 のとおり `ptr` レシーバの
+  method は黙って飛ばされるので、入れた 9 本はどれも掃かれていない。
+  検証はテストスイート (2827 件) と `example_consistency` が担っている
 
 ## 5. 調査で見つかった言語側の穴
 

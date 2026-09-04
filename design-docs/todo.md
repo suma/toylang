@@ -9,6 +9,18 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-09-04
+- **VEC-CONTRACTS #1〜#3 — `Vec<T>` の境界を `requires` にした** — 設計と
+  選択シートは [`VEC_CONTRACTS.md`](VEC_CONTRACTS.md)。`get` / `set` /
+  `pop` / `insert` / `remove` / `swap_remove` / `set_size` / `grow_to` に
+  `requires` を足し、`push_char` の `assert` 2 本を `requires` に置換
+  (契約 11 行、body のロジックは無変更)。**panic は残す (A2)** — 契約は
+  `--release` で消えるので、消すと `Vec` だけが release で unchecked な
+  indexed read になる。checked ビルドでは契約が先に発火して**破った値**を
+  出す (`(with index = 5)`)。コストは 4 億呼び出しで 0.74s vs 0.65s
+  (~0.22ns/呼び出し、1.14x)。`ensures` 系 (#4〜#7) と `never_allocates`
+  系 (#8〜#11) は未着手。
+
 ### 2026-09-03
 - **STDLIB-NUMERIC 完了 (N0〜N6) — 残っていた `shuffle` / `checked_pow` /
   `clamp_f32`** — 設計は [`STDLIB_NUMERIC.md`](STDLIB_NUMERIC.md)。
@@ -1757,12 +1769,13 @@
 
 ## 検討中の機能
 
-* `Vec<T>` への Design by Contract 適用 (VEC-CONTRACTS) — **案の段階、
-  範囲は未選択** (2026-09-04、[`VEC_CONTRACTS.md`](VEC_CONTRACTS.md))。
-  候補は A (境界の `requires`、panic 併記を推奨) / B (長さ・容量の
-  `ensures` + `old`、本命) / C (`never_allocates` と allocation 契約) /
-  D (擬似 invariant) / E (`is_sorted` helper)。要素値の契約は generic `T`
-  に `eq` を要求するので不採用。コストは AOT で 0.8ns/呼び出し。
+* `Vec<T>` への Design by Contract 適用 (VEC-CONTRACTS) の**残り** —
+  `requires` の 3 行 (§4 の #1〜#3) は 2026-09-04 に landing 済み
+  ([`VEC_CONTRACTS.md`](VEC_CONTRACTS.md))。未着手は B (長さ・容量の
+  `ensures` + `old`、本命、#4〜#7) / C (`never_allocates` と allocation
+  契約、#8〜#11 — #8 は §5-1 の parser の穴に塞がれている) /
+  E (`is_sorted` helper、#12)。D (擬似 invariant) は B に吸収されるので
+  不採用、要素値の契約は generic `T` に `eq` を要求するので不採用。
 * FFI — P1 (静的 FFI、`from`/`as`) 完了 (2026-08-16、[`FFI_PLAN.md`](FFI_PLAN.md))。
   P2 (動的ロード / dlopen builtin) は未着手
 * AOT ランタイムの Rust 化 — R0+R1 完了、R2 (extern 一般化 = FFI_PLAN P1)

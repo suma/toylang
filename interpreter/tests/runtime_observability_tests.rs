@@ -422,7 +422,14 @@ fn a_vec_read_past_the_end_is_a_toylang_failure() {
             0u64
         }",
     );
-    assert!(diags.contains("Vec::get index out of bounds"), "{diags}");
+    // VEC-CONTRACTS: the `requires` clause fires before the `panic`
+    // the body still keeps for `--release`, so the message now names
+    // the clause *and* the index that broke it.
+    assert!(
+        diags.contains("`requires` clause #1 of function `get`"),
+        "{diags}"
+    );
+    assert!(diags.contains("(with index = 5)"), "{diags}");
     assert!(diags.contains("core/std/collections/vec.t:"), "{diags}");
     assert!(diags.contains("Vec::get (called at line 4)"), "{diags}");
 }
@@ -436,7 +443,11 @@ fn popping_an_empty_vec_says_what_happened() {
             0u64
         }",
     );
-    assert!(diags.contains("Vec::pop on an empty Vec"), "{diags}");
+    assert!(
+        diags.contains("`requires` clause #1 of function `pop`"),
+        "{diags}"
+    );
+    assert!(diags.contains("core/std/collections/vec.t:"), "{diags}");
 }
 
 #[test]

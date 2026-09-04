@@ -508,6 +508,21 @@ pub(crate) fn make_object_module() -> Result<ObjectModule, String> {
     flag_builder
         .set("is_pic", "true")
         .map_err(|e| format!("flag set: {e}"))?;
+    // A compound return is flattened into one cranelift return slot
+    // per leaf, and once those outrun the target's return registers
+    // (8 on aarch64, fewer on x86-64) cranelift rejects the signature
+    // with "Too many return values to fit in registers". This flag
+    // makes it spill the excess through a return-area pointer it
+    // introduces itself, on both the caller and the callee side, so
+    // no lowering site has to know a wide struct is being returned.
+    //
+    // The layout cranelift picks for that buffer is its own, not the
+    // platform's — which is fine here because both ends of every such
+    // call are emitted by this compiler. Nothing wide crosses into
+    // `toylang_rt`: every runtime helper returns a single scalar.
+    flag_builder
+        .set("enable_multi_ret_implicit_sret", "true")
+        .map_err(|e| format!("flag set: {e}"))?;
     let isa = isa_builder
         .finish(settings::Flags::new(flag_builder))
         .map_err(|e| format!("ISA finish: {e}"))?;

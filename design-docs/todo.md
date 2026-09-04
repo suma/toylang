@@ -10,6 +10,19 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-04
+- **WIDE-RETURN — 戻り値の leaf が返却レジスタを超える compound を
+  compiled lane が返せるようになった** — struct / tuple / enum の戻りは
+  leaf ごとに 1 つの cranelift 戻りスロットへ展開されるので、返却
+  レジスタ (aarch64 で 8、x86-64 はさらに少ない) を超えると cranelift が
+  `Too many return values to fit in registers` で署名ごと拒否していた。
+  3 つの cranelift 設定に `enable_multi_ret_implicit_sret` を足し、
+  溢れた分を cranelift 自身が導入する return-area ポインタ経由で渡す
+  ようにした (lowering 側は無変更 — 呼び出し形ごとの sret 実装が要らない)。
+  AOT / compiler JIT / interpreter JIT の 3 つに効く。これで
+  **RESULT-COMPOUND-WRITEBACK も解けた** — `&mut self` の method が
+  `Result<u64, E>` を返せる (writeback の leaf と戻りの leaf が同じ予算を
+  食っていた) し、`Result<Struct, E>` を返す自由関数も書ける
+  (`json::parse(s) -> Result<Json, JsonError>` を阻んでいた壁)。
 - **VEC-CONTRACTS #1〜#3 — `Vec<T>` の境界を `requires` にした** — 設計と
   選択シートは [`VEC_CONTRACTS.md`](VEC_CONTRACTS.md)。`get` / `set` /
   `pop` / `insert` / `remove` / `swap_remove` / `set_size` / `grow_to` に
@@ -1331,14 +1344,6 @@
   自由関数**や **method** なら scalar 戻りでも通る。拒否なので誤答は
   出ない。`core/std/json.t` の `skip_ws` / `byte_at` / `hex4` /
   `word_at` はこれを避けて method にしてある。
-- **RESULT-COMPOUND-WRITEBACK: `&mut self` の method が
-  `Result<u64, E>` を返せない** — `Vec` を 1 つ持つ struct (4 leaf) の
-  `&mut self` method が `Result<u64, JsonError>` を返すと
-  `Too many return values to fit in registers`。writeback の leaf と
-  戻りの leaf が同じ予算を食う。**`Option<u64>` なら通る** (6 leaf 側の
-  struct でも通った)。`Result<Struct, E>` を返す自由関数も同じ壁
-  (`json::parse(s) -> Result<Json, JsonError>` が書けない理由)。
-  cranelift の `StructReturn` を使えば外せるはずの制限。
 - **AOT-MATCH-STR-ARM-BLOCK: `str` を返す match の arm がブロックだと
   AOT が拒否する** — 最小再現:
   ```

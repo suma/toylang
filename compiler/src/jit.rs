@@ -227,9 +227,19 @@ fn compile_program_to_jit(
     // JITBuilder owns it directly and we don't need PIC since the
     // code lives in JIT-allocated memory the runtime addresses
     // absolutely.
-    let mut jit_builder =
-        JITBuilder::with_flags(&[("opt_level", crate::codegen::cranelift_opt_level())], cranelift_module::default_libcall_names())
-            .map_err(|e| format!("JITBuilder: {e}"))?;
+    //
+    // `enable_multi_ret_implicit_sret` keeps wide compound returns
+    // working here for the same reason as in `make_object_module`:
+    // past the target's return registers cranelift needs a return-area
+    // pointer, and this lets it introduce one on both sides itself.
+    let mut jit_builder = JITBuilder::with_flags(
+        &[
+            ("opt_level", crate::codegen::cranelift_opt_level()),
+            ("enable_multi_ret_implicit_sret", "true"),
+        ],
+        cranelift_module::default_libcall_names(),
+    )
+    .map_err(|e| format!("JITBuilder: {e}"))?;
     register_runtime_symbols(&mut jit_builder);
     // FFI_PLAN P1-MVP-C: `extern fn ... from "lib"` symbols are
     // resolved through a lookup closure that dlopens the declared

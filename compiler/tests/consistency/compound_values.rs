@@ -1553,3 +1553,178 @@ fn both_arms_of_a_match_may_produce_the_same_struct() {
     assert_eq!(interpreter_value(src) & 0xff, 107);
     assert_consistent(src, "compound_both_arms");
 }
+
+/// A compound return is flattened into one cranelift return slot per
+/// leaf, and past the target's return registers cranelift refused the
+/// signature outright ("Too many return values to fit in registers"),
+/// so a struct this wide could not be returned at all on either
+/// compiled lane. Ten leaves clears the widest limit among the
+/// supported targets (8, on aarch64).
+#[test]
+fn a_struct_wider_than_the_return_registers_comes_back_whole() {
+    let src = r#"
+        struct Wide {
+            a: u64, b: u64, c: u64, d: u64, e: u64,
+            f: u64, g: u64, h: u64, i: u64, j: u64,
+        }
+
+        fn make(n: u64) -> Wide {
+            Wide {
+                a: n, b: 2u64, c: 3u64, d: 4u64, e: 5u64,
+                f: 6u64, g: 7u64, h: 8u64, i: 9u64, j: 10u64,
+            }
+        }
+
+        fn main() -> u64 {
+            val w = make(1u64)
+            # Every leaf, so a return area that only carried the first
+            # few would show up as a wrong sum rather than a crash.
+            w.a + w.b + w.c + w.d + w.e + w.f + w.g + w.h + w.i + w.j
+        }
+    "#;
+    assert_eq!(interpreter_value(src) & 0xff, 55);
+    assert_consistent(src, "wide_struct_return");
+}
+
+/// The leaf count is what matters, not the field count: nesting is
+/// what produces a wide leaf list out of few fields. The leaves are
+/// mixed types on purpose — integer and float leaves draw on separate
+/// return registers, so it is the nine integer ones that overflow
+/// here while the three floats still fit.
+#[test]
+fn a_wide_return_may_nest_and_mix_leaf_types() {
+    let src = r#"
+        struct Inner { p: u64, q: i64, r: f64 }
+        struct Wide {
+            a: u64, b: i64, c: f64, d: bool,
+            e: Inner, f: Inner,
+            g: u64, h: u64,
+        }
+
+        fn make(n: u64) -> Wide {
+            Wide {
+                a: n, b: 2i64, c: 3.5f64, d: true,
+                e: Inner { p: 10u64, q: -1i64, r: 0.5f64 },
+                f: Inner { p: 20u64, q: -2i64, r: 1.5f64 },
+                g: 99u64, h: 100u64,
+            }
+        }
+
+        fn main() -> u64 {
+            val w = make(1u64)
+            var acc = w.a + w.e.p + w.f.p + w.g + w.h
+            if w.d { acc = acc + 1u64 }
+            acc = acc + (w.c + w.e.r + w.f.r) as u64
+            acc + (w.b - w.e.q - w.f.q) as u64
+        }
+    "#;
+    // 1 + 10 + 20 + 99 + 100 = 230, +1 for `d`, +5 for 3.5+0.5+1.5,
+    // +5 for 2-(-1)-(-2).
+    assert_eq!(interpreter_value(src) & 0xff, 241);
+    assert_consistent(src, "wide_nested_return");
+}
+
+/// Tuples and enum payloads reach codegen as the same flattened leaf
+/// list a struct does, and each has its own call lowering
+/// (`CallTuple` / `CallEnum`), so each needs its own witness that the
+/// return area carries the whole value.
+#[test]
+fn wide_tuple_and_enum_returns_survive_the_return_area() {
+    let src = r#"
+        enum Big {
+            Many(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64),
+            Nil,
+        }
+
+        fn tup(n: u64) -> (u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) {
+            (n, 1u64, 2u64, 3u64, 4u64, 5u64, 6u64, 7u64, 8u64, 9u64)
+        }
+
+        fn en(n: u64) -> Big {
+            if n > 0u64 {
+                Big::Many(n, 1u64, 2u64, 3u64, 4u64, 5u64, 6u64, 7u64, 8u64, 9u64)
+            } else {
+                Big::Nil
+            }
+        }
+
+        fn main() -> u64 {
+            val t = tup(10u64)
+            val s = t.0 + t.1 + t.2 + t.3 + t.4 + t.5 + t.6 + t.7 + t.8 + t.9
+            val e = en(1u64)
+            val p = match e {
+                Big::Many(a, b, c, d, f, g, h, i, j, k) => {
+                    a + b + c + d + f + g + h + i + j + k
+                }
+                Big::Nil => 0u64,
+            }
+            s + p
+        }
+    "#;
+    // 10 + 45 from the tuple, 1 + 45 from the payload.
+    assert_eq!(interpreter_value(src) & 0xff, 101);
+    assert_consistent(src, "wide_tuple_enum_return");
+}
+
+/// The two call shapes that append their own return slots: a `&mut
+/// self` method hands back the mutated receiver's leaves alongside
+/// the value, and a `dyn` call goes through a vtable rather than a
+/// direct symbol. Both push the slot count further past the registers.
+#[test]
+fn wide_returns_work_through_writeback_and_dyn_dispatch() {
+    let src = r#"
+        struct Wide {
+            a: u64, b: u64, c: u64, d: u64, e: u64,
+            f: u64, g: u64, h: u64, i: u64, j: u64,
+        }
+
+        fn sum(w: Wide) -> u64 {
+            w.a + w.b + w.c + w.d + w.e + w.f + w.g + w.h + w.i + w.j
+        }
+
+        struct Counter { n: u64 }
+
+        impl Counter {
+            fn bump(&mut self) -> Wide {
+                self.n = self.n + 1u64
+                Wide {
+                    a: self.n, b: 2u64, c: 3u64, d: 4u64, e: 5u64,
+                    f: 6u64, g: 7u64, h: 8u64, i: 9u64, j: 10u64,
+                }
+            }
+        }
+
+        trait Maker {
+            fn build(self: Self) -> Wide
+        }
+
+        struct M { k: u64 }
+
+        impl Maker for M {
+            fn build(self: Self) -> Wide {
+                Wide {
+                    a: self.k, b: 2u64, c: 3u64, d: 4u64, e: 5u64,
+                    f: 6u64, g: 7u64, h: 8u64, i: 9u64, j: 10u64,
+                }
+            }
+        }
+
+        fn via_dyn(m: &dyn Maker) -> u64 {
+            val w = m.build()
+            sum(w)
+        }
+
+        fn main() -> u64 {
+            var c = Counter { n: 0u64 }
+            val w1 = c.bump()
+            val w2 = c.bump()
+            val m = M { k: 3u64 }
+            # 55 + 56 witnesses the writeback: the second call has to
+            # see the increment the first one made.
+            sum(w1) + sum(w2) + via_dyn(&m) + c.n
+        }
+    "#;
+    // 55 + 56 + 57 + 2 = 170.
+    assert_eq!(interpreter_value(src) & 0xff, 170);
+    assert_consistent(src, "wide_return_writeback_dyn");
+}

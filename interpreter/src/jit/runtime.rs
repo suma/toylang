@@ -988,6 +988,16 @@ fn build_cache_entry(
     flag_builder
         .set("is_pic", "false")
         .map_err(|e| format!("flag: {e}"))?;
+    // A struct return expands into one cranelift return slot per
+    // field, and past the target's return registers cranelift refuses
+    // the signature outright ("Too many return values to fit in
+    // registers"). That error aborts the whole cache entry, so one
+    // wide struct used to cost the program every JITted function.
+    // This flag lets cranelift spill the excess through a hidden
+    // return-area pointer it introduces on both sides of the call.
+    flag_builder
+        .set("enable_multi_ret_implicit_sret", "true")
+        .map_err(|e| format!("flag: {e}"))?;
     let isa_builder = cranelift_native::builder().map_err(|e| format!("isa builder: {e}"))?;
     let isa = isa_builder
         .finish(settings::Flags::new(flag_builder))

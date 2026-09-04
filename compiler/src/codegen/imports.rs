@@ -313,6 +313,8 @@ impl<M: Module> CodegenSession<M> {
             realloc: self.declare_func_in_func_readonly(self.libc_realloc, func),
             free: self.declare_func_in_func_readonly(self.libc_free, func),
             memcpy: self.declare_func_in_func_readonly(self.libc_memcpy, func),
+            memmove: self.declare_func_in_func_readonly(self.libc_memmove, func),
+            memset: self.declare_func_in_func_readonly(self.libc_memset, func),
             print_i64: self.declare_func_in_func_readonly(self.rt_print_i64, func),
             println_i64: self.declare_func_in_func_readonly(self.rt_println_i64, func),
             print_u64: self.declare_func_in_func_readonly(self.rt_print_u64, func),

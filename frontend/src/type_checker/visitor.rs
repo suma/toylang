@@ -377,7 +377,11 @@ impl<'a> TypeCheckerVisitor<'a> {
             BuiltinFunctionSignature {
                 func: BuiltinFunction::MemSet,
                 arg_count: 3,
-                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64, TypeDecl::UInt64],
+                // MEMORY-ACCESS M0: the fill value is one byte, as
+                // `docs/language.md` and the AST comment always said.
+                // It used to be `u64` here and each lane truncated it
+                // its own way.
+                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt8, TypeDecl::UInt64],
                 return_type: TypeDecl::Unit,
             },
             // Allocator handle builtins. The Allocator value itself is opaque at the

@@ -128,7 +128,11 @@ fn inst_supported(kind: &InstKind) -> bool {
         // Phase 3e: `str` now uses the AOT raw-byte layout
         // (`[bytes][NUL][u64 len]`), so byte-level string construction
         // via `MemCopy` round-trips correctly.
-        | InstKind::MemCopy { .. } => true,
+        | InstKind::MemCopy { .. }
+        // MEMORY-ACCESS M0: `mem_move` / `mem_set` reach the same
+        // heap through the host, so they run here too.
+        | InstKind::MemMove { .. }
+        | InstKind::MemSet { .. } => true,
     }
 }
 

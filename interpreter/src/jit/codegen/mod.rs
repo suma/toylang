@@ -1696,6 +1696,17 @@ impl<'a, 'b> State<'a, 'b> {
                         let c = self
                             .gen_expr(&args[2])?
                             .ok_or_else(|| "mem_* arg2".to_string())?;
+                        // MEMORY-ACCESS M0: `mem_set`'s fill value is a
+                        // `u8`, so it arrives as a cranelift I8 while
+                        // the helper takes I64. Zero-extend it (a byte
+                        // fill is unsigned: 0xFFu8 fills 0xFF).
+                        let b = if matches!(func, BuiltinFunction::MemSet)
+                            && self.builder.func.dfg.value_type(b) != types::I64
+                        {
+                            self.builder.ins().uextend(types::I64, b)
+                        } else {
+                            b
+                        };
                         self.call_helper(kind, &[a, b, c])?;
                         Ok(None)
                     }

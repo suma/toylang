@@ -166,7 +166,7 @@ fn test_val_heap_mem_set_operations() {
     let source = r#"
         unsafe fn main() -> u64 {
             val heap_ptr = __builtin_heap_alloc(16u64)
-            val fill_byte = 170u64  # 170 = 0xAA in binary: 10101010
+            val fill_byte = 170u8  # 170 = 0xAA in binary: 10101010
 
             # Fill first 8 bytes with pattern
             __builtin_mem_set(heap_ptr, fill_byte, 8u64)

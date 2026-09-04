@@ -116,6 +116,8 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             | InstKind::Backtrace
             | InstKind::Format { .. } => self.lower_strings(inst),
             InstKind::MemCopy { .. }
+            | InstKind::MemMove { .. }
+            | InstKind::MemSet { .. }
             | InstKind::AllocPush { .. }
             | InstKind::AllocPop
             | InstKind::AllocCurrent
@@ -1492,6 +1494,35 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 self.builder
                     .ins()
                     .call(self.runtime.memcpy, &[dest_v, src_v, size_v]);
+            }
+            InstKind::MemMove { src, dest, size } => {
+                // Same (src, dest, size) -> (dest, src, n) swap as
+                // MemCopy; libc memmove tolerates overlap.
+                let src_v = self.value(*src);
+                let dest_v = self.value(*dest);
+                let size_v = self.value(*size);
+                self.builder
+                    .ins()
+                    .call(self.runtime.memmove, &[dest_v, src_v, size_v]);
+            }
+            InstKind::MemSet { dest, byte, size } => {
+                // libc memset takes the fill value as an `int`, so the
+                // toylang `u8` is zero-extended (never sign-extended:
+                // 0xFFu8 fills with 0xFF, not with 0xFFFFFFFF).
+                let dest_v = self.value(*dest);
+                let byte_v = self.value(*byte);
+                let size_v = self.value(*size);
+                let byte_ty = self.builder.func.dfg.value_type(byte_v);
+                let byte_i32 = if byte_ty == types::I32 {
+                    byte_v
+                } else if byte_ty.bits() < 32 {
+                    self.builder.ins().uextend(types::I32, byte_v)
+                } else {
+                    self.builder.ins().ireduce(types::I32, byte_v)
+                };
+                self.builder
+                    .ins()
+                    .call(self.runtime.memset, &[dest_v, byte_i32, size_v]);
             }
             // #121 Phase B-min: active-allocator stack ops.
             // `AllocPush(handle)` and `AllocPop` emit a libc call

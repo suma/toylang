@@ -81,7 +81,8 @@ const AOT_UNSUPPORTED: &[&str] = &[
     "contracts.t",
     "extern_generic_identity.t",
     "float64.t",
-    "jit_heap.t",
+    // (`jit_heap.t` left in MEMORY-ACCESS M0: `__builtin_mem_set`
+    // was the last builtin in it the AOT lane could not lower.)
     "jit_nested_tuple_fallback.t",
     // Same reasons as `contracts.t`: `requires` / `ensures`, plus
     // `assert_eq`, which lowers to a panic whose message is built at

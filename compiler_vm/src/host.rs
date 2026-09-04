@@ -106,6 +106,13 @@ pub trait VmHost {
     /// `memcpy(src, dest, size)` over the heap's raw byte buffer.
     fn mem_copy(&self, src: u64, dest: u64, size: u64);
 
+    /// `memmove(src, dest, size)` — as `mem_copy`, but the ranges may
+    /// overlap (MEMORY-ACCESS M0).
+    fn mem_move(&self, src: u64, dest: u64, size: u64);
+
+    /// `memset(dest, byte, size)` — fill a range with one byte.
+    fn mem_set(&self, dest: u64, byte: u8, size: u64);
+
     /// One byte of the heap, typed slots consulted first (a byte
     /// written through a wider type truncates, matching a byte
     /// buffer).

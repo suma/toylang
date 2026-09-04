@@ -870,6 +870,8 @@ impl Object {
         (unwrap_bool,    try_unwrap_bool,    Object::Bool,        bool,          TypeDecl::Bool,    "bool"),
         (unwrap_int64,   try_unwrap_int64,   Object::Int64,       i64,           TypeDecl::Int64,   "int64"),
         (unwrap_uint64,  try_unwrap_uint64,  Object::UInt64,      u64,           TypeDecl::UInt64,  "uint64"),
+        // MEMORY-ACCESS M0: `__builtin_mem_set`'s fill value is a byte.
+        (unwrap_uint8,   try_unwrap_uint8,   Object::UInt8,       u8,            TypeDecl::UInt8,   "uint8"),
         (unwrap_float64, try_unwrap_float64, Object::Float64,     f64,           TypeDecl::Float64, "float64"),
         (unwrap_float32, try_unwrap_float32, Object::Float32,     f32,           TypeDecl::Float32, "float32"),
         (unwrap_pointer, try_unwrap_pointer, Object::Pointer,     usize,         TypeDecl::Ptr,     "pointer"),

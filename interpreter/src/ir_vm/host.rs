@@ -161,6 +161,14 @@ impl VmHost for InterpreterHost {
         let _ = with_heap(|h| h.copy_memory(src as usize, dest as usize, size as usize));
     }
 
+    fn mem_move(&self, src: u64, dest: u64, size: u64) {
+        let _ = with_heap(|h| h.move_memory(src as usize, dest as usize, size as usize));
+    }
+
+    fn mem_set(&self, dest: u64, byte: u8, size: u64) {
+        let _ = with_heap(|h| h.set_memory(dest as usize, byte, size as usize));
+    }
+
     fn read_byte_at(&self, addr: u64, offset: u64) -> u8 {
         with_heap(|h| h.read_byte_at(addr as usize, offset as usize)).unwrap_or(0)
     }

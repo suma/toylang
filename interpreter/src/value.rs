@@ -232,6 +232,18 @@ impl Value {
         }
     }
 
+    /// MEMORY-ACCESS M0: `__builtin_mem_set`'s fill value. A byte is
+    /// a `u8` here, not a truncated `u64`.
+    pub fn try_unwrap_uint8(&self) -> Result<u8, ObjectError> {
+        match self {
+            Value::UInt8(v) => Ok(*v),
+            _ => Err(ObjectError::TypeMismatch {
+                expected: TypeDecl::UInt8,
+                found: self.get_type(),
+            }),
+        }
+    }
+
     pub fn try_unwrap_float64(&self) -> Result<f64, ObjectError> {
         match self {
             Value::Float64(v) => Ok(*v),

@@ -4051,6 +4051,14 @@ These always go through the active allocator:
 by its surrounding context (the lhs annotation of `val v: T = ...`,
 typically). `__builtin_ptr_write` accepts any type.
 
+The `mem_*` family moves a whole range at once. `mem_copy` requires the
+ranges not to overlap; `mem_move` allows it. A `size` of zero is a
+no-op rather than a fault, as it is for the libc functions they name.
+`mem_set`'s fill value is one byte, and it takes its type from the
+argument position like any other argument, so `__builtin_mem_set(p, 0,
+n)` and `__builtin_mem_set(p, '0', n)` both write the byte they read
+as.
+
 The builtins that dereference (`ptr_read` / `ptr_write` / the `mem_*`
 family) may only appear in a body declared
 [`unsafe fn`](#unsafe-fn--raw-memory-access); the address-arithmetic

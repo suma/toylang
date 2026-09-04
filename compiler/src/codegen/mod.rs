@@ -241,6 +241,11 @@ pub(crate) struct CodegenSession<M: Module> {
     libc_realloc: cranelift_module::FuncId,
     libc_free: cranelift_module::FuncId,
     libc_memcpy: cranelift_module::FuncId,
+    /// libc `memmove` / `memset` — `__builtin_mem_move` and
+    /// `__builtin_mem_set` (MEMORY-ACCESS M0). Until then both
+    /// builtins existed only in the tree-walker.
+    libc_memmove: cranelift_module::FuncId,
+    libc_memset: cranelift_module::FuncId,
     /// libm `double pow(double, double)` — used by `BinOp::Pow`.
     libm_pow: cranelift_module::FuncId,
     /// libm transcendentals — `double sin(double)` etc. Used by the
@@ -596,6 +601,24 @@ impl<M: Module> CodegenSession<M> {
         let libc_memcpy = module
             .declare_function("memcpy", CLinkage::Import, &memcpy_sig)
             .map_err(|e| format!("declare memcpy: {e}"))?;
+
+        // libc `memmove(void *dest, const void *src, size_t n)` has
+        // memcpy's signature exactly, so it reuses the same one.
+        let libc_memmove = module
+            .declare_function("memmove", CLinkage::Import, &memcpy_sig)
+            .map_err(|e| format!("declare memmove: {e}"))?;
+
+        // libc `memset(void *dest, int c, size_t n) -> void *`. The
+        // fill value is a `u8` in toylang; codegen zero-extends it to
+        // the `int` libc wants.
+        let mut memset_sig = Signature::new(call_conv);
+        memset_sig.params.push(AbiParam::new(types::I64)); // dest
+        memset_sig.params.push(AbiParam::new(types::I32)); // c
+        memset_sig.params.push(AbiParam::new(types::I64)); // n
+        memset_sig.returns.push(AbiParam::new(types::I64)); // returns dest, ignored
+        let libc_memset = module
+            .declare_function("memset", CLinkage::Import, &memset_sig)
+            .map_err(|e| format!("declare memset: {e}"))?;
 
         // (`libc_strlen` was used by an earlier draft of
         // `__builtin_str_len`; the str runtime value now points at
@@ -975,6 +998,8 @@ impl<M: Module> CodegenSession<M> {
             libc_realloc,
             libc_free,
             libc_memcpy,
+            libc_memmove,
+            libc_memset,
             libm_pow,
             libm_sin,
             libm_cos,
@@ -1931,6 +1956,8 @@ struct RuntimeRefs {
     realloc: cranelift_codegen::ir::FuncRef,
     free: cranelift_codegen::ir::FuncRef,
     memcpy: cranelift_codegen::ir::FuncRef,
+    memmove: cranelift_codegen::ir::FuncRef,
+    memset: cranelift_codegen::ir::FuncRef,
     print_i64: cranelift_codegen::ir::FuncRef,
     println_i64: cranelift_codegen::ir::FuncRef,
     print_u64: cranelift_codegen::ir::FuncRef,

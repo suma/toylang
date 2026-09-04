@@ -1751,6 +1751,13 @@ pub enum InstKind {
     /// the toylang argument order is (src, dest, size); codegen
     /// swaps to libc's `(dest, src, n)` at the call site.
     MemCopy { src: ValueId, dest: ValueId, size: ValueId },
+    /// `__builtin_mem_move(src, dest, size)` — libc memmove. Same
+    /// argument order (and the same swap at the call site) as
+    /// `MemCopy`; the difference is that the ranges may overlap.
+    MemMove { src: ValueId, dest: ValueId, size: ValueId },
+    /// `__builtin_mem_set(dest, byte, size)` — libc memset. `byte` is
+    /// a `u8` value; codegen widens it to the `int` libc expects.
+    MemSet { dest: ValueId, byte: ValueId, size: ValueId },
     /// Stage 1 of `&` references: call to a `&mut self` method.
     /// The cranelift call returns
     /// `(user_return_leaves..., self_writeback_leaves...)`; codegen
@@ -2247,9 +2254,14 @@ impl InstKind {
                 one(ptr);
                 one(len);
             }
-            InstKind::MemCopy { src, dest, size } => {
+            InstKind::MemCopy { src, dest, size } | InstKind::MemMove { src, dest, size } => {
                 one(src);
                 one(dest);
+                one(size);
+            }
+            InstKind::MemSet { dest, byte, size } => {
+                one(dest);
+                one(byte);
                 one(size);
             }
             InstKind::RecordAllocatorLayout { name, managed, live, free_blocks, largest } => {
@@ -2797,6 +2809,12 @@ impl fmt::Display for DisplayInst<'_> {
             }
             InstKind::MemCopy { src, dest, size } => {
                 write!(f, "mem_copy {src} -> {dest}, {size}")
+            }
+            InstKind::MemMove { src, dest, size } => {
+                write!(f, "mem_move {src} -> {dest}, {size}")
+            }
+            InstKind::MemSet { dest, byte, size } => {
+                write!(f, "mem_set {dest}, {byte}, {size}")
             }
             InstKind::CallWithSelfWriteback { target, args, ret_dest, self_dests, .. } => {
                 let arg_str = args.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ");

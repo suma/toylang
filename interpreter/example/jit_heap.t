@@ -12,7 +12,7 @@
 unsafe fn main() -> u64 {
     val p: ptr = __builtin_heap_alloc(64u64)
     val p_ok: bool = !__builtin_ptr_is_null(p)
-    __builtin_mem_set(p, 0u64, 64u64)
+    __builtin_mem_set(p, 0u8, 64u64)
 
     val q: ptr = __builtin_heap_realloc(p, 128u64)
     val q_ok: bool = !__builtin_ptr_is_null(q)

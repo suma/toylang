@@ -36,6 +36,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 暗号ハッシュ (SHA-256 / SHA-224 landing 済み) | [`design-docs/STDLIB_CRYPTO.md`](design-docs/STDLIB_CRYPTO.md) |
 | レベル付きログ (landing 済み) | [`design-docs/STDLIB_LOG.md`](design-docs/STDLIB_LOG.md) |
 | `ptr` を型付きにする設計 (未実装) | [`design-docs/POINTER.md`](design-docs/POINTER.md) |
+| メモリアクセスを「範囲」単位にする設計 (提案) | [`design-docs/MEMORY_ACCESS.md`](design-docs/MEMORY_ACCESS.md) |
 | SIMD の設計と残りのフェーズ | [`design-docs/SIMD.md`](design-docs/SIMD.md) |
 | socket ラッパーと OS のコンパイル時切り替え (N0〜N5 landing 済み) | [`design-docs/NETWORK_IO.md`](design-docs/NETWORK_IO.md) |
 | epoll / kqueue の統一形 (landing 済み) | [`design-docs/EVENT_POLLING.md`](design-docs/EVENT_POLLING.md) |

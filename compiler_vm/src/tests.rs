@@ -173,6 +173,21 @@ impl VmHost for TestHost {
         }
     }
 
+    fn mem_move(&self, src: u64, dest: u64, size: u64) {
+        // The copy above already goes through a temporary, so it is
+        // overlap-safe; move shares it.
+        self.mem_copy(src, dest, size);
+    }
+
+    fn mem_set(&self, dest: u64, byte: u8, size: u64) {
+        let mut h = self.heap.borrow_mut();
+        let d = dest as usize;
+        let n = size as usize;
+        if d + n <= h.len() {
+            h[d..d + n].fill(byte);
+        }
+    }
+
     fn read_byte_at(&self, addr: u64, offset: u64) -> u8 {
         if let Some((slot, _)) = self.typed.borrow().get(&(addr as usize, offset as usize)) {
             return unsafe { slot.u64 } as u8;

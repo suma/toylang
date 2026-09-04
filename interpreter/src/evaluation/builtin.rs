@@ -1146,15 +1146,18 @@ impl EvaluationContext<'_> {
 
             let value_result = self.evaluate(&args[1])?;
             let value_obj = try_value!(Ok(value_result));
-            let value = value_obj.borrow().try_unwrap_uint64()
-                .map_err(|_| InterpreterError::InternalError("mem_set expects u64 value as second argument".to_string()))?;
+            // MEMORY-ACCESS M0: the fill value is a `u8` (the type
+            // checker enforces it), so read it as one instead of
+            // truncating a u64 here.
+            let value = value_obj.borrow().try_unwrap_uint8()
+                .map_err(|_| InterpreterError::InternalError("mem_set expects u8 value as second argument".to_string()))?;
 
             let size_result = self.evaluate(&args[2])?;
             let size_obj = try_value!(Ok(size_result));
             let size = size_obj.borrow().try_unwrap_uint64()
                 .map_err(|_| InterpreterError::InternalError("mem_set expects u64 size as third argument".to_string()))?;
 
-            if self.heap_manager.borrow_mut().set_memory(addr, value as u8, size as usize) {
+            if self.heap_manager.borrow_mut().set_memory(addr, value, size as usize) {
                 Ok(EvaluationResult::Value((Object::Unit).into()))
             } else {
                 Err(InterpreterError::InternalError("Invalid memory access in mem_set".to_string()))

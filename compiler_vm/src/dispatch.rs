@@ -397,6 +397,22 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
             let n = unsafe { vm.read_value(*size).u64 };
             host.mem_copy(s, d, n);
         }
+        InstKind::MemMove { src, dest, size } => {
+            // MEMORY-ACCESS M0: memcpy's overlap-tolerant sibling,
+            // same toylang argument order.
+            let s = unsafe { vm.read_value(*src).u64 };
+            let d = unsafe { vm.read_value(*dest).u64 };
+            let n = unsafe { vm.read_value(*size).u64 };
+            host.mem_move(s, d, n);
+        }
+        InstKind::MemSet { dest, byte, size } => {
+            // The fill value is a `u8`; the slot carries it in the
+            // low byte.
+            let d = unsafe { vm.read_value(*dest).u64 };
+            let b = unsafe { vm.read_value(*byte).u64 } as u8;
+            let n = unsafe { vm.read_value(*size).u64 };
+            host.mem_set(d, b, n);
+        }
         InstKind::CallWithSelfWriteback { target, args, ret_dest, self_dests, .. } => {
             // Phase 3c: `&mut self` call. The callee returns
             // `[ret_leaf?, self_writeback_leaves...]`; route every

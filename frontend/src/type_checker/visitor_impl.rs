@@ -684,6 +684,15 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
             return self.check_simd_call(*op, args);
         }
 
+        // MEMORY-ACCESS M0: the bulk-memory builtins check their own
+        // arguments (the flat table below never visits them).
+        if matches!(
+            func,
+            BuiltinFunction::MemCopy | BuiltinFunction::MemMove | BuiltinFunction::MemSet
+        ) {
+            return self.check_memory_builtin_args(func, args);
+        }
+
         // POINTER P1: `__builtin_sizeof::<T>()`. The written type is
         // the whole call, so it is validated here rather than through
         // the flat signature table (whose lookup compares the payload

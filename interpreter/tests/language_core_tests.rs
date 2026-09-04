@@ -1583,7 +1583,7 @@ mod heap_operations {
                 val heap_ptr = __builtin_heap_alloc(16u64)
 
                 # Set memory to a specific value
-                val fill_value = 255u64
+                val fill_value = 255u8
                 __builtin_mem_set(heap_ptr, fill_value, 8u64)
 
                 # Read back as u64 (should be all 0xFF bytes)

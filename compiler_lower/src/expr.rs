@@ -2545,6 +2545,8 @@ impl<'a> FunctionLower<'a> {
             BuiltinFunction::MemStat(_)
             | BuiltinFunction::RecordAllocatorLayout
             | BuiltinFunction::MemCopy
+            | BuiltinFunction::MemMove
+            | BuiltinFunction::MemSet
             | BuiltinFunction::CurrentAllocator
             | BuiltinFunction::DefaultAllocator => self.lower_builtin_allocator_and_memory(func, args),
             BuiltinFunction::SizeOf
@@ -2561,11 +2563,11 @@ impl<'a> FunctionLower<'a> {
             BuiltinFunction::Abs
             | BuiltinFunction::Min | BuiltinFunction::Max => self.lower_builtin_numeric(func, args),
             BuiltinFunction::Simd(op) => self.lower_builtin_simd(op, args),
-            // DIAG-DEBUG-FMT-OK: `BuiltinFunction`'s Debug spelling
-            // is the builtin's own name.
-            other => Err(format!(
-                "compiler MVP cannot lower builtin yet: {other:?}"
-            )),
+            // No catch-all: `MemMove` / `MemSet` were the last two
+            // builtins without a lowering (MEMORY-ACCESS M0), so the
+            // match is exhaustive and a new `BuiltinFunction` now
+            // fails to compile here instead of failing at run time
+            // with "compiler MVP cannot lower builtin yet".
         }
     }
 
@@ -2962,6 +2964,32 @@ impl<'a> FunctionLower<'a> {
                 let size = self.lower_expr(&args[2])?
                     .ok_or_else(|| "mem_copy size produced no value".to_string())?;
                 Ok(self.emit(InstKind::MemCopy { src, dest, size }, None))
+            }
+            BuiltinFunction::MemMove => {
+                // `__builtin_mem_move(src: ptr, dest: ptr, size: u64)`
+                // — memcpy's overlap-tolerant sibling. Same argument
+                // order, same swap in codegen.
+                expect_args(args, 3, "__builtin_mem_move takes 3 args (src, dest, size)")?;
+                let src = self.lower_expr(&args[0])?
+                    .ok_or_else(|| "mem_move src produced no value".to_string())?;
+                let dest = self.lower_expr(&args[1])?
+                    .ok_or_else(|| "mem_move dest produced no value".to_string())?;
+                let size = self.lower_expr(&args[2])?
+                    .ok_or_else(|| "mem_move size produced no value".to_string())?;
+                Ok(self.emit(InstKind::MemMove { src, dest, size }, None))
+            }
+            BuiltinFunction::MemSet => {
+                // `__builtin_mem_set(dest: ptr, byte: u8, size: u64)`
+                // — libc memset. The byte reaches codegen as a `u8`
+                // value and is widened there to libc's `int`.
+                expect_args(args, 3, "__builtin_mem_set takes 3 args (dest, byte, size)")?;
+                let dest = self.lower_expr(&args[0])?
+                    .ok_or_else(|| "mem_set dest produced no value".to_string())?;
+                let byte = self.lower_expr(&args[1])?
+                    .ok_or_else(|| "mem_set byte produced no value".to_string())?;
+                let size = self.lower_expr(&args[2])?
+                    .ok_or_else(|| "mem_set size produced no value".to_string())?;
+                Ok(self.emit(InstKind::MemSet { dest, byte, size }, None))
             }
             BuiltinFunction::CurrentAllocator => {
                 // #121 Phase B-min: read the top of the runtime

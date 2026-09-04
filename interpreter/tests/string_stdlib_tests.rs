@@ -188,9 +188,9 @@ fn string_as_ptr_round_trip() {
         unsafe fn main() -> u64 {
             val s: String = String::from_str("ABC")
             val p: ptr = s.as_ptr()
-            val b0: u8 = __builtin_ptr_read(p, 0u64)
-            val b1: u8 = __builtin_ptr_read(p, 1u64)
-            val b2: u8 = __builtin_ptr_read(p, 2u64)
+            val b0: u8 = __builtin_ptr_read::<u8>(p, 0u64)
+            val b1: u8 = __builtin_ptr_read::<u8>(p, 1u64)
+            val b2: u8 = __builtin_ptr_read::<u8>(p, 2u64)
             assert(b0 == 0x41u8, "byte 0")
             assert(b1 == 0x42u8, "byte 1")
             assert(b2 == 0x43u8, "byte 2")

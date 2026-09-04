@@ -68,12 +68,12 @@ impl<T: Hash> Set<T> {
         val mask: u64 = scap - 1u64
         var j: u64 = hash_mix(value.hash()) & mask
         loop {
-            val s: u32 = __builtin_ptr_read(self.slots, j * 4u64)
+            val s: u32 = __builtin_ptr_read::<u32>(self.slots, j * 4u64)
             if s == dict_slot_empty() {
                 break
             }
             val idx: u64 = s as u64
-            val existing: T = __builtin_ptr_read(self.elems, idx * es)
+            val existing: T = __builtin_ptr_read::<T>(self.elems, idx * es)
             if existing == value {
                 return false
             }
@@ -106,10 +106,10 @@ impl<T: Hash> Set<T> {
             val nmask: u64 = ncap - 1u64
             var i: u64 = 0u64
             while i < self.count {
-                val e2: T = __builtin_ptr_read(self.elems, i * es)
+                val e2: T = __builtin_ptr_read::<T>(self.elems, i * es)
                 var p: u64 = hash_mix(e2.hash()) & nmask
                 loop {
-                    val s2: u32 = __builtin_ptr_read(self.slots, p * 4u64)
+                    val s2: u32 = __builtin_ptr_read::<u32>(self.slots, p * 4u64)
                     if s2 == dict_slot_empty() {
                         break
                     }
@@ -132,12 +132,12 @@ impl<T: Hash> Set<T> {
         val mask: u64 = scap - 1u64
         var j: u64 = hash_mix(value.hash()) & mask
         loop {
-            val s: u32 = __builtin_ptr_read(self.slots, j * 4u64)
+            val s: u32 = __builtin_ptr_read::<u32>(self.slots, j * 4u64)
             if s == dict_slot_empty() {
                 break
             }
             val idx: u64 = s as u64
-            val existing: T = __builtin_ptr_read(self.elems, idx * es)
+            val existing: T = __builtin_ptr_read::<T>(self.elems, idx * es)
             if existing == value {
                 return true
             }
@@ -161,12 +161,12 @@ impl<T: Hash> Set<T> {
         var j: u64 = hash_mix(value.hash()) & mask
         var found: u64 = self.count
         loop {
-            val s: u32 = __builtin_ptr_read(self.slots, j * 4u64)
+            val s: u32 = __builtin_ptr_read::<u32>(self.slots, j * 4u64)
             if s == dict_slot_empty() {
                 break
             }
             val idx: u64 = s as u64
-            val existing: T = __builtin_ptr_read(self.elems, idx * es)
+            val existing: T = __builtin_ptr_read::<T>(self.elems, idx * es)
             if existing == value {
                 found = idx
                 break
@@ -179,7 +179,7 @@ impl<T: Hash> Set<T> {
 
         var i: u64 = found
         while i + 1u64 < self.count {
-            val nv: T = __builtin_ptr_read(self.elems, (i + 1u64) * es)
+            val nv: T = __builtin_ptr_read::<T>(self.elems, (i + 1u64) * es)
             __builtin_ptr_write(self.elems, i * es, nv)
             i = i + 1u64
         }
@@ -192,10 +192,10 @@ impl<T: Hash> Set<T> {
         }
         var e: u64 = 0u64
         while e < self.count {
-            val e2: T = __builtin_ptr_read(self.elems, e * es)
+            val e2: T = __builtin_ptr_read::<T>(self.elems, e * es)
             var p: u64 = hash_mix(e2.hash()) & mask
             loop {
-                val s2: u32 = __builtin_ptr_read(self.slots, p * 4u64)
+                val s2: u32 = __builtin_ptr_read::<u32>(self.slots, p * 4u64)
                 if s2 == dict_slot_empty() {
                     break
                 }
@@ -259,7 +259,7 @@ impl<T> Iterator<T> for SetIter<T> {
         } else {
             val i = self.index
             self.index = self.index + 1u64
-            val v: T = __builtin_ptr_read(self.elems, i * self.elem_size)
+            val v: T = __builtin_ptr_read::<T>(self.elems, i * self.elem_size)
             Option::Some(v)
         }
     }

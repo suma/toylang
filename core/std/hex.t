@@ -95,7 +95,7 @@ pub unsafe fn encode(bytes: &Vec<u8>) -> String {
     while i < n {
         # The annotation on the read is the only thing that says how
         # wide the value is, so it cannot be folded into the cast.
-        val byte: u8 = __builtin_ptr_read(src, i)
+        val byte: u8 = __builtin_ptr_read::<u8>(src, i)
         val b: u64 = byte as u64
         __builtin_ptr_write(dst, i * 2u64, hex::nibble(b / 16u64))
         __builtin_ptr_write(dst, i * 2u64 + 1u64, hex::nibble(b % 16u64))

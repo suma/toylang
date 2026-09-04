@@ -73,11 +73,11 @@ impl<T> Ptr<T> {
         Ptr { addr: p }
     }
 
-    # Element read. The annotation is the read's shape; the stride is
-    # the type's, so the two can no longer disagree the way
-    # `val v: f64 = __builtin_ptr_read(vec.data, i * 8u64)` could.
+    # Element read. `T` is the read's shape and the stride's, so the
+    # two can no longer disagree the way a hand-written
+    # `__builtin_ptr_read::<f64>(vec.data, i * 8u64)` could.
     unsafe fn get(&self, i: u64) -> T {
-        val v: T = __builtin_ptr_read(self.addr, i * __builtin_sizeof::<T>())
+        val v: T = __builtin_ptr_read::<T>(self.addr, i * __builtin_sizeof::<T>())
         v
     }
 
@@ -124,7 +124,7 @@ impl<T> Ptr<T> {
     # Bracket sugar. `p[i]` and `p.set` are the same operations; the
     # compiled lanes lower the bracket forms to these calls (P2).
     unsafe fn __getitem__(&self, i: u64) -> T {
-        val v: T = __builtin_ptr_read(self.addr, i * __builtin_sizeof::<T>())
+        val v: T = __builtin_ptr_read::<T>(self.addr, i * __builtin_sizeof::<T>())
         v
     }
 

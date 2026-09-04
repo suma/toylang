@@ -769,7 +769,7 @@ pub(super) fn memory_profile_report(source: &str, stem: &str) -> String {
 pub(super) const JSON_PROFILE_PROGRAM: &str = "unsafe fn keep() -> u64 {\n\
     \x20   val p: ptr = __builtin_heap_alloc(32u64)\n\
     \x20   __builtin_ptr_write(p, 0u64, 7u64)\n\
-    \x20   val v: u64 = __builtin_ptr_read(p, 0u64)\n\
+    \x20   val v: u64 = __builtin_ptr_read::<u64>(p, 0u64)\n\
     \x20   v\n\
     }\n\
     \n\

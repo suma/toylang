@@ -49,7 +49,7 @@ impl<T> Column<T> {
     # like `Vec::get` / `Span::get` rather than reading past the end.
     unsafe fn get(&self, index: u64) -> T {
         if index >= self.len { panic("Column::get index out of bounds") }
-        val v: T = __builtin_ptr_read(self.addr, index * self.stride)
+        val v: T = __builtin_ptr_read::<T>(self.addr, index * self.stride)
         v
     }
 

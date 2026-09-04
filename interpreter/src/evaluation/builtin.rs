@@ -935,12 +935,15 @@ impl EvaluationContext<'_> {
         BuiltinFunction::StrToPtr => {
             // `__builtin_str_to_ptr(s: str) -> ptr` — interpreter
             // semantic: allocate a heap buffer of (len + 1) bytes
-            // via the active allocator, write each UTF-8 byte into
-            // the typed_slots map as `Object::U8(byte)` so a
-            // subsequent `__builtin_ptr_read(p, i)` with a
-            // `val: u8 = ...` annotation returns the byte at
-            // offset i. Index `len` holds the NUL terminator (so
+            // via the active allocator and write each UTF-8 byte
+            // into it. Index `len` holds the NUL terminator (so
             // C-style cstrings work too).
+            //
+            // The bytes go into *both* the raw buffer and the
+            // typed-slot map (MEMORY-ACCESS M2). Slots alone were
+            // enough while every read consulted them first; a read
+            // that names its width reads the bytes, and found a
+            // zeroed buffer where the string was.
             Self::expect_args("str_to_ptr", args, 1)?;
             let s_result = self.evaluate(&args[0])?;
             let s_obj = try_value!(Ok(s_result));
@@ -971,6 +974,7 @@ impl EvaluationContext<'_> {
                 let mut hm = self.heap_manager.borrow_mut();
                 for (i, b) in bytes.iter().enumerate() {
                     hm.typed_write(addr, i, std::rc::Rc::new(std::cell::RefCell::new(Object::UInt8(*b))));
+                    hm.write_scalar_bytes(addr, i, 1, *b as u64);
                 }
                 // NUL terminator at offset == bytes.len().
                 hm.typed_write(
@@ -978,6 +982,7 @@ impl EvaluationContext<'_> {
                     bytes.len(),
                     std::rc::Rc::new(std::cell::RefCell::new(Object::UInt8(0))),
                 );
+                hm.write_scalar_bytes(addr, bytes.len(), 1, 0);
             }
             Ok(EvaluationResult::Value((Object::Pointer(addr)).into()))
         }

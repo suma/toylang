@@ -39,6 +39,14 @@ impl List {
         self.len
     }
 
+    # Still the legacy context-typed read (MEMORY-ACCESS M2 migrated
+    # the rest of the tree). Writing `__builtin_ptr_read::<u64>(...)`
+    # here makes this function lowerable, which sends the whole
+    # program down the IR VM lane -- and straight into an unrelated
+    # pre-existing defect there: a by-value `self: Self` method that
+    # reallocates and writes back crashes the VM with "value not
+    # defined" (todo IRVM-SELF-WRITEBACK-REALLOC). The bare form keeps
+    # the program on the tree-walker until that is fixed.
     unsafe fn get(self: Self, index: u64) -> u64 {
         __builtin_ptr_read(self.data, index * 8u64)
     }

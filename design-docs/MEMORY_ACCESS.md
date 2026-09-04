@@ -1,6 +1,6 @@
 # MEMORY-ACCESS — 1 バイトずつではなく「範囲」を primitive にする
 
-> **状態: 提案 (2026-09-04)。M0 / M1 landing 済み (2026-09-05)、M2 以降は未実装。**
+> **状態: 提案 (2026-09-04)。M0 / M1 / M2 landing 済み (2026-09-05)、M3 以降は未実装。**
 > 前提は [`POINTER.md`](POINTER.md) (L0〜L4 の層と `Ptr<T>` / `Span<T>`)、
 > builtin の一覧は [`../docs/language.md`](../docs/language.md) の
 > 「Pointer / memory builtins」、効果は [`EFFECT_SYSTEM.md`](EFFECT_SYSTEM.md)。
@@ -240,7 +240,7 @@ method は `unsafe` が外れる (156 → 20 前後の見込み)。
 |---|---|---|---|
 | M0 | `mem_move` / `mem_set` を compiled レーンで lowering、`mem_set` の署名を doc に合わせる (実測 4) ✅ (2026-09-05) | 小 | 4 レーン一致。以降の土台 |
 | M1 | `__builtin_ptr_read::<T>(p, off)` (A) と旧形の deprecation ✅ (2026-09-05、deprecation は文書のみ) | 中 | 実測 1・2 の解消。側路 3 種の削除は M2 |
-| M2 | stdlib 213 箇所を `::<T>` 形へ機械移行 + `Vec::elem_size` 撤去 | 中 (stdlib) | 単位と幅が層で固定される |
+| M2 | stdlib 213 箇所を `::<T>` 形へ機械移行 ✅ (2026-09-05) + `Vec::elem_size` 撤去 ❌ (下記) | 中 (stdlib) | 単位と幅が層で固定される |
 | M3 | `Span<T>` の範囲演算 (C の表) を `copy_from` / `fill` / `eq` / `find` / `find_seq` から | 中 | 実測 3・5 の解消。string.t の 5 重複が 1 に |
 | M4 | `chunks::<N>()` と `read_uNN_le/be` | 中 | hex / base64 / sha256 の手書き SIMD と桁合わせが runtime に移る |
 | M5 | `Vec` / `String` / `Dict` / `Box` の `data: ptr` → `Ptr<T>` / `Span<T>`、`unsafe fn` の縮小 (D) | 中 (stdlib) | `unsafe` が 20 本の印に戻る |
@@ -291,6 +291,39 @@ sizeof と共用、lowering は **IR が既に持っていた `elem_ty` を注�
   typed-slot map が (addr, offset) 完全一致で引くので**値としては見えて
   いなかった**バグで、byte を読むようにした瞬間に出た。frame が確保時の
   stride を持つようにして表は削除 (重複した知識をなくす)
+
+**M2 (2026-09-05)。** `core/**.t` の読み出し **130 箇所すべて**が
+`__builtin_ptr_read::<T>(...)` になった (旧形は core に 0 箇所)。
+example / poc と、他機能のテストに紛れていた 79 箇所も移行した。
+旧形専用のテスト (`memory_tests` / `region_tests` /
+`conv_span` の PTR-READ-ASSIGN) は**残してある** — 旧形は削除して
+いないので、その振る舞いを押さえるのはこれらだけになった。
+
+**`Vec::elem_size` は撤去できなかった。** POINTER P1 が「副産物として
+畳める」と書いていたのは compiled レーンの話で、**tree-walker は
+`__builtin_sizeof::<T>()` の `T` を解決できない場面がある**。実際に
+踏んだのは `MapIter<T, U>::collect` の `val out: Vec<U> = Vec::new()`
+→ `out.push(v)` で、`out` の値が持つ型引数が `Identifier(U)` のまま
+(呼び出し元の scope に `U` が無い) なので `Vec::push` の中で
+`sizeof::<T>()` が「unbound generic parameter」で落ちる。`elem_size`
+が最初の push で**値**から stride を学ぶ形になっていたのは、これを
+避けるためだった。`VecIter` の `elem_size` と `ZipIter` の `elems`
+パックも同じ理由で残る (`zip<U>` の `U` は method-level の型引数で、
+turbofish の scope にも tree-walker の subst にも見えない)。
+撤去は tree-walker の generic scope を直してから — todo の
+TREE-WALKER-GENERIC-SCOPE / ZIP-ITER-GENERIC-SCOPE。
+
+移行で 2 つ出た:
+
+- `interpreter/example/allocator_bounded.t` が **AOT で通るように
+  なった** (tail 位置の bare read に注釈が無く lowering できなかった
+  だけだった)。`AOT_UNSUPPORTED` から外れた
+- `interpreter/example/allocator_list.t` **だけは旧形のまま残した**。
+  `get` を移行すると lowering が通ってしまい、プログラム全体が IR VM
+  レーンに乗って**無関係な既存バグ**を踏む (by-value `self: Self` の
+  method が realloc して writeback すると VM が "value not defined"
+  で落ちる。旧形でも再現する = M2 の産物ではない)。
+  todo の IRVM-SELF-WRITEBACK-REALLOC
 
 ## 検証
 

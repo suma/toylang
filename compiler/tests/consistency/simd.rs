@@ -170,8 +170,8 @@ fn simd_load_and_store_address_by_element() {
             val v: f64x2 = __simd_load(p, 0u64)
             val doubled = v + v
             __simd_store(p, 2u64, doubled)
-            val back: f64 = __builtin_ptr_read(p, 16u64)
-            val back2: f64 = __builtin_ptr_read(p, 24u64)
+            val back: f64 = __builtin_ptr_read::<f64>(p, 16u64)
+            val back2: f64 = __builtin_ptr_read::<f64>(p, 24u64)
             __builtin_heap_free(p)
             if back == 3.0f64 && back2 == 5.0f64 { 61u64 } else { 0u64 }
         }

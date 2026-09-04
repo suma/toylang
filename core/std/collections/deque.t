@@ -57,7 +57,7 @@ impl<T> Deque<T> {
             val wrapped: u64 = self.head + self.len - oldcap
             var i: u64 = 0u64
             while i < wrapped {
-                val v: T = __builtin_ptr_read(self.data, i * self.elem_size)
+                val v: T = __builtin_ptr_read::<T>(self.data, i * self.elem_size)
                 __builtin_ptr_write(self.data, (oldcap + i) * self.elem_size, v)
                 i = i + 1u64
             }
@@ -85,7 +85,7 @@ impl<T> Deque<T> {
     # slot and underflowing `len`.
     unsafe fn pop_front(&mut self) -> T {
         if self.len == 0u64 { panic("Deque::pop_front on an empty Deque") }
-        val v: T = __builtin_ptr_read(self.data, self.head * self.elem_size)
+        val v: T = __builtin_ptr_read::<T>(self.data, self.head * self.elem_size)
         self.head = (self.head + 1u64) % self.cap
         self.len = self.len - 1u64
         v
@@ -94,7 +94,7 @@ impl<T> Deque<T> {
     unsafe fn pop_back(&mut self) -> T {
         if self.len == 0u64 { panic("Deque::pop_back on an empty Deque") }
         val slot: u64 = (self.head + self.len - 1u64) % self.cap
-        val v: T = __builtin_ptr_read(self.data, slot * self.elem_size)
+        val v: T = __builtin_ptr_read::<T>(self.data, slot * self.elem_size)
         self.len = self.len - 1u64
         v
     }
@@ -103,7 +103,7 @@ impl<T> Deque<T> {
     unsafe fn get(&self, index: u64) -> T {
         if index >= self.len { panic("Deque::get index out of bounds") }
         val slot: u64 = (self.head + index) % self.cap
-        val v: T = __builtin_ptr_read(self.data, slot * self.elem_size)
+        val v: T = __builtin_ptr_read::<T>(self.data, slot * self.elem_size)
         v
     }
 
@@ -176,7 +176,7 @@ impl<T> Iterator<T> for DequeIter<T> {
             val cap: u64 = self.head_cap & 0xFFFFFFFFu64
             val slot: u64 = (head + self.index) % cap
             self.index = self.index + 1u64
-            val v: T = __builtin_ptr_read(self.data, slot * self.elem_size)
+            val v: T = __builtin_ptr_read::<T>(self.data, slot * self.elem_size)
             Option::Some(v)
         }
     }

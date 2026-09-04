@@ -180,7 +180,7 @@ impl Arena {
     unsafe fn reset(&mut self) {
         var i = 0u64
         while i < self.count {
-            val a: ptr = __builtin_ptr_read(self.addrs, i * 8u64)
+            val a: ptr = __builtin_ptr_read::<ptr>(self.addrs, i * 8u64)
             with allocator = __builtin_default_allocator() {
                 __builtin_heap_free(a)
             }
@@ -208,7 +208,7 @@ impl Arena {
     unsafe fn _find(&self, p: ptr) -> u64 {
         var i = 0u64
         while i < self.count {
-            val a: ptr = __builtin_ptr_read(self.addrs, i * 8u64)
+            val a: ptr = __builtin_ptr_read::<ptr>(self.addrs, i * 8u64)
             if __builtin_ptr_eq(a, p) {
                 return i
             }
@@ -285,7 +285,7 @@ impl Alloc for Arena {
             return __builtin_null_ptr()
         }
         if idx < self.count {
-            val old: u64 = __builtin_ptr_read(self.sizes, idx * 8u64)
+            val old: u64 = __builtin_ptr_read::<u64>(self.sizes, idx * 8u64)
             self.bytes_used = self.bytes_used - old + new_size
             __builtin_ptr_write(self.addrs, idx * 8u64, q)
             __builtin_ptr_write(self.sizes, idx * 8u64, new_size)
@@ -342,7 +342,7 @@ impl FixedBuffer {
     unsafe fn reset(&mut self) {
         var i = 0u64
         while i < self.count {
-            val a: ptr = __builtin_ptr_read(self.addrs, i * 8u64)
+            val a: ptr = __builtin_ptr_read::<ptr>(self.addrs, i * 8u64)
             with allocator = __builtin_default_allocator() {
                 __builtin_heap_free(a)
             }
@@ -366,7 +366,7 @@ impl FixedBuffer {
     unsafe fn _find(&self, p: ptr) -> u64 {
         var i = 0u64
         while i < self.count {
-            val a: ptr = __builtin_ptr_read(self.addrs, i * 8u64)
+            val a: ptr = __builtin_ptr_read::<ptr>(self.addrs, i * 8u64)
             if __builtin_ptr_eq(a, p) {
                 return i
             }
@@ -380,8 +380,8 @@ impl FixedBuffer {
     unsafe fn _swap_remove(&mut self, idx: u64) {
         val last = self.count - 1u64
         if idx != last {
-            val last_addr: ptr = __builtin_ptr_read(self.addrs, last * 8u64)
-            val last_size: u64 = __builtin_ptr_read(self.sizes, last * 8u64)
+            val last_addr: ptr = __builtin_ptr_read::<ptr>(self.addrs, last * 8u64)
+            val last_size: u64 = __builtin_ptr_read::<u64>(self.sizes, last * 8u64)
             __builtin_ptr_write(self.addrs, idx * 8u64, last_addr)
             __builtin_ptr_write(self.sizes, idx * 8u64, last_size)
         }
@@ -431,7 +431,7 @@ impl Alloc for FixedBuffer {
     unsafe fn free(&mut self, p: ptr) {
         val idx = self._find(p)
         if idx < self.count {
-            val sz: u64 = __builtin_ptr_read(self.sizes, idx * 8u64)
+            val sz: u64 = __builtin_ptr_read::<u64>(self.sizes, idx * 8u64)
             with allocator = self._h {
                 __builtin_heap_free(p)
             }
@@ -446,12 +446,12 @@ impl Alloc for FixedBuffer {
             return __builtin_null_ptr()
         }
         val idx = self._find(p)
-        # AOT MVP requires `val NAME: TYPE = __builtin_ptr_read(...)` to
-        # be a top-level let-binding, not nested inside `if`. Read the
-        # current size up front (when known) into a separate `var`.
+        # A compound read still has to be a top-level let-binding in
+        # the AOT lane, not nested inside `if`. Read the current size
+        # up front (when known) into a separate `var`.
         var old: u64 = 0u64
         if idx < self.count {
-            val sz: u64 = __builtin_ptr_read(self.sizes, idx * 8u64)
+            val sz: u64 = __builtin_ptr_read::<u64>(self.sizes, idx * 8u64)
             old = sz
         }
         val projected = self.used_bytes - old + new_size
@@ -552,7 +552,7 @@ impl SlotRegion {
         var i: u64 = at
         var ok: bool = true
         while i < at + n {
-            val u: u64 = __builtin_ptr_read(self.used, i * 8u64)
+            val u: u64 = __builtin_ptr_read::<u64>(self.used, i * 8u64)
             if u != 0u64 { ok = false }
             i = i + 1u64
         }
@@ -588,7 +588,7 @@ impl Alloc for SlotRegion {
         # Annotated binding: the AOT lowering takes the read width from
         # the annotation, so a bare expression-position read is not
         # supported there.
-        val slot_ptr: ptr = __builtin_ptr_read(self.ptrs, at * 8u64)
+        val slot_ptr: ptr = __builtin_ptr_read::<ptr>(self.ptrs, at * 8u64)
         slot_ptr
     }
 
@@ -597,7 +597,7 @@ impl Alloc for SlotRegion {
         var i: u64 = 0u64
         var at: u64 = self.slot_count
         while i < self.slot_count {
-            val q: ptr = __builtin_ptr_read(self.ptrs, i * 8u64)
+            val q: ptr = __builtin_ptr_read::<ptr>(self.ptrs, i * 8u64)
             if __builtin_ptr_eq(q, p) {
                 at = i
                 i = self.slot_count
@@ -606,7 +606,7 @@ impl Alloc for SlotRegion {
             }
         }
         if at >= self.slot_count { return }
-        val n: u64 = __builtin_ptr_read(self.used, at * 8u64)
+        val n: u64 = __builtin_ptr_read::<u64>(self.used, at * 8u64)
         if n == 0u64 { return }
         var k: u64 = at
         while k < at + n {
@@ -636,7 +636,7 @@ impl Alloc for SlotRegion {
         var run: u64 = 0u64
         var i: u64 = 0u64
         while i < self.slot_count {
-            val u: u64 = __builtin_ptr_read(self.used, i * 8u64)
+            val u: u64 = __builtin_ptr_read::<u64>(self.used, i * 8u64)
             if u == 0u64 {
                 run = run + 1u64
                 if run == 1u64 { blocks = blocks + 1u64 }
@@ -671,7 +671,7 @@ impl Drop for SlotRegion {
         __builtin_record_allocator_layout("SlotRegion", l.managed(), l.live(), l.blocks(), l.largest())
         var i: u64 = 0u64
         while i < self.slot_count {
-            val p: ptr = __builtin_ptr_read(self.ptrs, i * 8u64)
+            val p: ptr = __builtin_ptr_read::<ptr>(self.ptrs, i * 8u64)
             with allocator = __builtin_default_allocator() {
                 __builtin_heap_free(p)
             }

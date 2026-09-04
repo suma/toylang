@@ -78,7 +78,7 @@ impl<T> Box<T> {
     # A copy of the boxed value. The annotation is what gives the read
     # its shape, so it cannot be dropped.
     unsafe fn get(&self) -> T {
-        val v: T = __builtin_ptr_read(self.data, 0u64)
+        val v: T = __builtin_ptr_read::<T>(self.data, 0u64)
         v
     }
 

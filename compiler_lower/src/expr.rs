@@ -2616,18 +2616,17 @@ impl<'a> FunctionLower<'a> {
                 ))
             }
             BuiltinFunction::PtrRead => {
-                // `__builtin_ptr_read(ptr, offset)` — return type comes
-                // from the surrounding `val`/`var` annotation. The
-                // generic version (no annotation) is rejected here so
-                // the user gets a clear error pointing at the missing
-                // type hint. The let-binding lowering path
-                // (`let_lowering.rs::lower_let`) handles
-                // `val x: T = __builtin_ptr_read(...)` directly and
-                // never reaches this arm.
+                // The legacy context-typed form: the return type comes
+                // from the surrounding `val` / `var` annotation, so it
+                // can only appear as that binding's rhs -- which
+                // `let_lowering.rs::lower_let` intercepts before this
+                // arm. Reaching here means there was no annotation to
+                // read a width from (MEMORY-ACCESS M1/M2).
                 Err(
-                    "compiler MVP requires `val NAME: TYPE = __builtin_ptr_read(...)` \
-                     (the read width is taken from the annotation; bare expression-position \
-                     uses are not supported in AOT yet)"
+                    "`__builtin_ptr_read(p, off)` takes its width from the annotation of the \
+                     `val NAME: TYPE = ...` it is bound by, so it cannot be used here; write \
+                     `__builtin_ptr_read::<TYPE>(p, off)`, which carries its own width and \
+                     works in any position"
                         .to_string(),
                 )
             }

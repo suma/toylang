@@ -14,10 +14,10 @@ unsafe fn main() -> u64 {
     val q: ptr = __builtin_heap_alloc(8u64)
     __builtin_ptr_write(p, 24u64, q)
 
-    val read_i: i64 = __builtin_ptr_read(p, 0u64)
-    val read_u: u64 = __builtin_ptr_read(p, 8u64)
-    val read_b: bool = __builtin_ptr_read(p, 16u64)
-    val read_p: ptr = __builtin_ptr_read(p, 24u64)
+    val read_i: i64 = __builtin_ptr_read::<i64>(p, 0u64)
+    val read_u: u64 = __builtin_ptr_read::<u64>(p, 8u64)
+    val read_b: bool = __builtin_ptr_read::<bool>(p, 16u64)
+    val read_p: ptr = __builtin_ptr_read::<ptr>(p, 24u64)
 
     val flag: u64 = if read_b { 1u64 } else { 0u64 }
     val ptr_check: u64 = if !__builtin_ptr_is_null(read_p) { 99u64 } else { 0u64 }

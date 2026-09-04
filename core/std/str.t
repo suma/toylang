@@ -18,9 +18,8 @@
 #     so `s.as_ptr()` returns the same address.
 #   - Interpreter: heap-allocates `len + 1` bytes via the active
 #     allocator and writes each byte as a typed-slot u8 entry, so
-#     `__builtin_ptr_read(p, i)` with a `val: u8 = ...` annotation
-#     returns the byte at offset i. The NUL terminator lives at
-#     index `len`.
+#     `__builtin_ptr_read::<u8>(p, i)` returns the byte at offset i.
+#     The NUL terminator lives at index `len`.
 #
 # Use case: low-level FFI / interop where the caller needs to walk
 # the bytes of a string with `__builtin_ptr_read` (and `mem_copy`

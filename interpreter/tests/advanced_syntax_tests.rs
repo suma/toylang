@@ -553,7 +553,7 @@ fn test_drop_trait_auto_called_at_scope_exit() {
 struct Marker { id: u64, log: ptr }
 impl Drop for Marker {
     unsafe fn drop(&mut self) {
-        val cur: u64 = __builtin_ptr_read(self.log, 0u64)
+        val cur: u64 = __builtin_ptr_read::<u64>(self.log, 0u64)
         __builtin_ptr_write(self.log, 0u64, cur * 10u64 + self.id)
     }
 }
@@ -565,7 +565,7 @@ unsafe fn main() -> u64 {
     val log: ptr = __builtin_heap_alloc(8u64)
     __builtin_ptr_write(log, 0u64, 0u64)
     run(log)
-    val recorded: u64 = __builtin_ptr_read(log, 0u64)
+    val recorded: u64 = __builtin_ptr_read::<u64>(log, 0u64)
     recorded
 }
     "#;
@@ -583,7 +583,7 @@ fn test_drop_trait_fires_on_early_return() {
 struct Marker { id: u64, log: ptr }
 impl Drop for Marker {
     unsafe fn drop(&mut self) {
-        val cur: u64 = __builtin_ptr_read(self.log, 0u64)
+        val cur: u64 = __builtin_ptr_read::<u64>(self.log, 0u64)
         __builtin_ptr_write(self.log, 0u64, cur * 10u64 + self.id)
     }
 }
@@ -596,7 +596,7 @@ unsafe fn main() -> u64 {
     val log: ptr = __builtin_heap_alloc(8u64)
     __builtin_ptr_write(log, 0u64, 0u64)
     val r: u64 = run(log)
-    val recorded: u64 = __builtin_ptr_read(log, 0u64)
+    val recorded: u64 = __builtin_ptr_read::<u64>(log, 0u64)
     if r != 7u64 { return 1u64 }
     recorded
 }

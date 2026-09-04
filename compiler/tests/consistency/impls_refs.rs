@@ -250,11 +250,11 @@ fn string_from_str_round_trip() {
             val s: String = String::from_str("hello")
             val n: u64 = s.size()
             val p: ptr = s.as_ptr()
-            val a: u8 = __builtin_ptr_read(p, 0u64)
-            val b: u8 = __builtin_ptr_read(p, 1u64)
-            val c: u8 = __builtin_ptr_read(p, 2u64)
-            val d: u8 = __builtin_ptr_read(p, 3u64)
-            val e: u8 = __builtin_ptr_read(p, 4u64)
+            val a: u8 = __builtin_ptr_read::<u8>(p, 0u64)
+            val b: u8 = __builtin_ptr_read::<u8>(p, 1u64)
+            val c: u8 = __builtin_ptr_read::<u8>(p, 2u64)
+            val d: u8 = __builtin_ptr_read::<u8>(p, 3u64)
+            val e: u8 = __builtin_ptr_read::<u8>(p, 4u64)
             if n != 5u64 { 1u64 }
             elif a != 104u8 { 2u64 }
             elif b != 101u8 { 3u64 }
@@ -304,9 +304,9 @@ fn string_push_str_round_trip() {
                 return 1u64
             }
             val p: ptr = s.as_ptr()
-            val first: u8 = __builtin_ptr_read(p, 0u64)
-            val mid: u8 = __builtin_ptr_read(p, 5u64)
-            val last: u8 = __builtin_ptr_read(p, 10u64)
+            val first: u8 = __builtin_ptr_read::<u8>(p, 0u64)
+            val mid: u8 = __builtin_ptr_read::<u8>(p, 5u64)
+            val last: u8 = __builtin_ptr_read::<u8>(p, 10u64)
             if first != 104u8 {
                 return 2u64
             }
@@ -351,12 +351,12 @@ fn ref_stage2_explicit_borrow_and_mut_ref_round_trip() {
         }
 
         unsafe fn first_byte(s: &String) -> u8 {
-            val b: u8 = __builtin_ptr_read(s.as_ptr(), 0u64)
+            val b: u8 = __builtin_ptr_read::<u8>(s.as_ptr(), 0u64)
             b
         }
 
         unsafe fn first_byte_mut(s: &mut String) -> u8 {
-            val b: u8 = __builtin_ptr_read(s.as_ptr(), 0u64)
+            val b: u8 = __builtin_ptr_read::<u8>(s.as_ptr(), 0u64)
             b
         }
 
@@ -986,7 +986,7 @@ fn getitem_setitem_magic_methods_3_backend() {
 
         impl Bytes {
             unsafe fn __getitem__(&self, i: u64) -> u64 {
-                val v: u64 = __builtin_ptr_read(self.data, i)
+                val v: u64 = __builtin_ptr_read::<u64>(self.data, i)
                 v
             }
             unsafe fn __setitem__(&mut self, i: u64, value: u64) {

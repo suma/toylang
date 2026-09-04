@@ -179,7 +179,7 @@ fn generic_raii_drop_lifo_round_trip() {
         struct Marker { id: u64, log: ptr }
         impl Drop for Marker {
             unsafe fn drop(&mut self) {
-                val cur: u64 = __builtin_ptr_read(self.log, 0u64)
+                val cur: u64 = __builtin_ptr_read::<u64>(self.log, 0u64)
                 __builtin_ptr_write(self.log, 0u64, cur * 10u64 + self.id)
             }
         }
@@ -191,7 +191,7 @@ fn generic_raii_drop_lifo_round_trip() {
             val log: ptr = __builtin_heap_alloc(8u64)
             __builtin_ptr_write(log, 0u64, 0u64)
             run(log)
-            val recorded: u64 = __builtin_ptr_read(log, 0u64)
+            val recorded: u64 = __builtin_ptr_read::<u64>(log, 0u64)
             recorded
         }
     "#;
@@ -212,7 +212,7 @@ fn generic_raii_drop_on_early_return_round_trip() {
         struct Marker { id: u64, log: ptr }
         impl Drop for Marker {
             unsafe fn drop(&mut self) {
-                val cur: u64 = __builtin_ptr_read(self.log, 0u64)
+                val cur: u64 = __builtin_ptr_read::<u64>(self.log, 0u64)
                 __builtin_ptr_write(self.log, 0u64, cur * 10u64 + self.id)
             }
         }
@@ -225,7 +225,7 @@ fn generic_raii_drop_on_early_return_round_trip() {
             val log: ptr = __builtin_heap_alloc(8u64)
             __builtin_ptr_write(log, 0u64, 0u64)
             val r: u64 = run(log)
-            val recorded: u64 = __builtin_ptr_read(log, 0u64)
+            val recorded: u64 = __builtin_ptr_read::<u64>(log, 0u64)
             if r != 7u64 { return 1u64 }
             recorded
         }

@@ -173,7 +173,7 @@ impl String {
     unsafe fn pop(&mut self) -> u8 {
         if self.len == 0u64 { panic("String::pop on an empty String") }
         self.len = self.len - 1u64
-        val b: u8 = __builtin_ptr_read(self.data, self.len)
+        val b: u8 = __builtin_ptr_read::<u8>(self.data, self.len)
         b
     }
 
@@ -181,7 +181,7 @@ impl String {
     # used to reach the host rather than fail as a toylang program.
     unsafe fn get(&self, i: u64) -> u8 {
         if i >= self.len { panic("String::get index out of bounds") }
-        val b: u8 = __builtin_ptr_read(self.data, i)
+        val b: u8 = __builtin_ptr_read::<u8>(self.data, i)
         b
     }
 
@@ -245,7 +245,7 @@ impl String {
     unsafe fn extend_bytes(&mut self, src: ptr, count: u64) {
         var i: u64 = 0u64
         while i < count {
-            val b: u8 = __builtin_ptr_read(src, i)
+            val b: u8 = __builtin_ptr_read::<u8>(src, i)
             self.push(b)
             i = i + 1u64
         }
@@ -322,8 +322,8 @@ impl String {
             i = i + 16u64
         }
         while i < n {
-            val a: u8 = __builtin_ptr_read(self.data, i)
-            val b: u8 = __builtin_ptr_read(other.data, i)
+            val a: u8 = __builtin_ptr_read::<u8>(self.data, i)
+            val b: u8 = __builtin_ptr_read::<u8>(other.data, i)
             if a != b {
                 return false
             }
@@ -368,7 +368,7 @@ impl String {
             i = i + 16u64
         }
         while i < n {
-            val b: u8 = __builtin_ptr_read(data, i)
+            val b: u8 = __builtin_ptr_read::<u8>(data, i)
             if b >= lo && b <= hi {
                 if up {
                     __builtin_ptr_write(data, i, b - 0x20u8)
@@ -408,7 +408,7 @@ impl String {
     unsafe fn is_utf8(&self) -> bool {
         var i: u64 = 0u64
         while i < self.len {
-            val b: u8 = __builtin_ptr_read(self.data, i)
+            val b: u8 = __builtin_ptr_read::<u8>(self.data, i)
             var need: u64 = 0u64
             var lo: u32 = 0u32
             var hi: u32 = 0u32
@@ -439,7 +439,7 @@ impl String {
             if i + need >= self.len + 1u64 { return false }
             var k: u64 = 1u64
             while k <= need {
-                val c: u8 = __builtin_ptr_read(self.data, i + k)
+                val c: u8 = __builtin_ptr_read::<u8>(self.data, i + k)
                 if c < 128u8 || c > 191u8 { return false }
                 cp = cp * 64u32 + ((c as u32) - 128u32)
                 k = k + 1u64
@@ -456,7 +456,7 @@ impl String {
         var result: String = String::new()
         var i: u64 = 0u64
         while i < self.len {
-            val b: u8 = __builtin_ptr_read(self.data, i)
+            val b: u8 = __builtin_ptr_read::<u8>(self.data, i)
             result.push(b)
             i = i + 1u64
         }
@@ -499,7 +499,7 @@ impl Substring for String {
         var result: String = String::new()
         var i: u64 = start
         while i < end {
-            val b: u8 = __builtin_ptr_read(self.data, i)
+            val b: u8 = __builtin_ptr_read::<u8>(self.data, i)
             result.push(b)
             i = i + 1u64
         }
@@ -518,7 +518,7 @@ impl Trim for String {
         val n: u64 = self.len
         var start: u64 = 0u64
         while start < n {
-            val b: u8 = __builtin_ptr_read(self.data, start)
+            val b: u8 = __builtin_ptr_read::<u8>(self.data, start)
             if b == 0x20u8 || b == 0x09u8 || b == 0x0Au8 || b == 0x0Du8 {
                 start = start + 1u64
             } else {
@@ -527,7 +527,7 @@ impl Trim for String {
         }
         var end: u64 = n
         while end > start {
-            val b: u8 = __builtin_ptr_read(self.data, end - 1u64)
+            val b: u8 = __builtin_ptr_read::<u8>(self.data, end - 1u64)
             if b == 0x20u8 || b == 0x09u8 || b == 0x0Au8 || b == 0x0Du8 {
                 end = end - 1u64
             } else {
@@ -574,13 +574,13 @@ impl Concat<String> for String {
         var result: String = String::new()
         var i: u64 = 0u64
         while i < self.len {
-            val a: u8 = __builtin_ptr_read(self.data, i)
+            val a: u8 = __builtin_ptr_read::<u8>(self.data, i)
             result.push(a)
             i = i + 1u64
         }
         var j: u64 = 0u64
         while j < other.len {
-            val b: u8 = __builtin_ptr_read(other.data, j)
+            val b: u8 = __builtin_ptr_read::<u8>(other.data, j)
             result.push(b)
             j = j + 1u64
         }
@@ -606,7 +606,7 @@ impl Contains<String> for String {
         if m > n {
             return false
         }
-        val first: u8 = __builtin_ptr_read(needle.data, 0u64)
+        val first: u8 = __builtin_ptr_read::<u8>(needle.data, 0u64)
         val first_v: u8x16 = __simd_splat(first)
         var i: u64 = 0u64
         while i + m <= n {
@@ -639,8 +639,8 @@ impl Contains<String> for String {
             var matched: bool = true
             var j: u64 = 0u64
             while j < m {
-                val a: u8 = __builtin_ptr_read(self.data, i + j)
-                val b: u8 = __builtin_ptr_read(needle.data, j)
+                val a: u8 = __builtin_ptr_read::<u8>(self.data, i + j)
+                val b: u8 = __builtin_ptr_read::<u8>(needle.data, j)
                 if a != b {
                     matched = false
                     break
@@ -668,7 +668,7 @@ impl Split<String, Vec<String>> for String {
         var result: Vec<String> = Vec::new()
         val n: u64 = self.len
         val m: u64 = sep.len
-        val first: u8 = __builtin_ptr_read(sep.data, 0u64)
+        val first: u8 = __builtin_ptr_read::<u8>(sep.data, 0u64)
         val first_v: u8x16 = __simd_splat(first)
         var start: u64 = 0u64
         var i: u64 = 0u64
@@ -698,8 +698,8 @@ impl Split<String, Vec<String>> for String {
             var matched: bool = true
             var j: u64 = 0u64
             while j < m {
-                val a: u8 = __builtin_ptr_read(self.data, i + j)
-                val b: u8 = __builtin_ptr_read(sep.data, j)
+                val a: u8 = __builtin_ptr_read::<u8>(self.data, i + j)
+                val b: u8 = __builtin_ptr_read::<u8>(sep.data, j)
                 if a != b {
                     matched = false
                     break
@@ -748,7 +748,7 @@ impl Iterator<u8> for StringIter {
         } else {
             val i = self.index
             self.index = self.index + 1u64
-            val b: u8 = __builtin_ptr_read(self.data, i)
+            val b: u8 = __builtin_ptr_read::<u8>(self.data, i)
             Option::Some(b)
         }
     }
@@ -783,8 +783,8 @@ impl String {
             var matched: bool = true
             var j: u64 = 0u64
             while j < m {
-                val a: u8 = __builtin_ptr_read(self.data, i + j)
-                val b: u8 = __builtin_ptr_read(needle.data, j)
+                val a: u8 = __builtin_ptr_read::<u8>(self.data, i + j)
+                val b: u8 = __builtin_ptr_read::<u8>(needle.data, j)
                 if a != b {
                     matched = false
                     break
@@ -814,8 +814,8 @@ impl String {
             var matched: bool = true
             var j: u64 = 0u64
             while j < m {
-                val a: u8 = __builtin_ptr_read(self.data, at + j)
-                val b: u8 = __builtin_ptr_read(needle.data, j)
+                val a: u8 = __builtin_ptr_read::<u8>(self.data, at + j)
+                val b: u8 = __builtin_ptr_read::<u8>(needle.data, j)
                 if a != b {
                     matched = false
                     break
@@ -833,8 +833,8 @@ impl String {
         if m > self.len { return false }
         var j: u64 = 0u64
         while j < m {
-            val a: u8 = __builtin_ptr_read(self.data, j)
-            val b: u8 = __builtin_ptr_read(prefix.data, j)
+            val a: u8 = __builtin_ptr_read::<u8>(self.data, j)
+            val b: u8 = __builtin_ptr_read::<u8>(prefix.data, j)
             if a != b { return false }
             j = j + 1u64
         }
@@ -848,8 +848,8 @@ impl String {
         val at: u64 = n - m
         var j: u64 = 0u64
         while j < m {
-            val a: u8 = __builtin_ptr_read(self.data, at + j)
-            val b: u8 = __builtin_ptr_read(suffix.data, j)
+            val a: u8 = __builtin_ptr_read::<u8>(self.data, at + j)
+            val b: u8 = __builtin_ptr_read::<u8>(suffix.data, j)
             if a != b { return false }
             j = j + 1u64
         }
@@ -865,8 +865,8 @@ impl String {
         val p: ptr = other.as_ptr()
         var i: u64 = 0u64
         while i < n {
-            val a: u8 = __builtin_ptr_read(self.data, i)
-            val b: u8 = __builtin_ptr_read(p, i)
+            val a: u8 = __builtin_ptr_read::<u8>(self.data, i)
+            val b: u8 = __builtin_ptr_read::<u8>(p, i)
             if a != b { return false }
             i = i + 1u64
         }
@@ -893,8 +893,8 @@ impl String {
                 matched = true
                 var j: u64 = 0u64
                 while j < m {
-                    val a: u8 = __builtin_ptr_read(self.data, i + j)
-                    val b: u8 = __builtin_ptr_read(pattern.data, j)
+                    val a: u8 = __builtin_ptr_read::<u8>(self.data, i + j)
+                    val b: u8 = __builtin_ptr_read::<u8>(pattern.data, j)
                     if a != b {
                         matched = false
                         break
@@ -906,7 +906,7 @@ impl String {
                 out.push_string(replacement)
                 i = i + m
             } else {
-                val c: u8 = __builtin_ptr_read(self.data, i)
+                val c: u8 = __builtin_ptr_read::<u8>(self.data, i)
                 out.push(c)
                 i = i + 1u64
             }
@@ -935,11 +935,11 @@ impl String {
         var start: u64 = 0u64
         var i: u64 = 0u64
         while i < n {
-            val c: u8 = __builtin_ptr_read(self.data, i)
+            val c: u8 = __builtin_ptr_read::<u8>(self.data, i)
             if c == '\n' {
                 var end: u64 = i
                 if end > start {
-                    val prev: u8 = __builtin_ptr_read(self.data, end - 1u64)
+                    val prev: u8 = __builtin_ptr_read::<u8>(self.data, end - 1u64)
                     if prev == '\r' { end = end - 1u64 }
                 }
                 val line: String = self.substring(start, end)
@@ -963,14 +963,14 @@ impl String {
         val n: u64 = self.len
         var i: u64 = 0u64
         while i < n {
-            val c: u8 = __builtin_ptr_read(self.data, i)
+            val c: u8 = __builtin_ptr_read::<u8>(self.data, i)
             if c.is_ascii_space() {
                 i = i + 1u64
                 continue
             }
             val start: u64 = i
             while i < n {
-                val b: u8 = __builtin_ptr_read(self.data, i)
+                val b: u8 = __builtin_ptr_read::<u8>(self.data, i)
                 if b.is_ascii_space() { break }
                 i = i + 1u64
             }
@@ -1047,7 +1047,7 @@ impl Iterator<char> for CharsIter {
         if self.index >= self.len {
             return Option::None
         }
-        val b: u8 = __builtin_ptr_read(self.data, self.index)
+        val b: u8 = __builtin_ptr_read::<u8>(self.data, self.index)
         if b < 128u8 {
             self.index = self.index + 1u64
             return Option::Some(b as u32)
@@ -1077,7 +1077,7 @@ impl Iterator<char> for CharsIter {
         }
         var k: u64 = 1u64
         while k <= need {
-            val c: u8 = __builtin_ptr_read(self.data, self.index + k)
+            val c: u8 = __builtin_ptr_read::<u8>(self.data, self.index + k)
             if c < 128u8 || c > 191u8 {
                 self.index = self.index + 1u64
                 return Option::Some(65533u32)

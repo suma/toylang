@@ -181,7 +181,7 @@ fn a_method_body_dispatches_the_same_as_a_function_body() {
 
 #[test]
 fn ptr_read_into_a_named_struct_round_trips() {
-    // RECURSIVE-TYPES follow-up: `val n: Node = __builtin_ptr_read(...)`.
+    // RECURSIVE-TYPES follow-up: `val n: Node = __builtin_ptr_read::<Node>(...)`.
     //
     // The compound read path existed but only recognised an annotation
     // it could reach through `lower_scalar` or the active
@@ -209,7 +209,7 @@ fn ptr_read_into_a_named_struct_round_trips() {
 
         unsafe fn sum(n: Node) -> i64 {
             if n.has_next {
-                val rest: Node = __builtin_ptr_read(n.next, 0u64)
+                val rest: Node = __builtin_ptr_read::<Node>(n.next, 0u64)
                 n.v + sum(rest)
             } else {
                 n.v
@@ -285,7 +285,7 @@ fn an_enum_through_a_ptr_round_trips() {
         unsafe fn sum(l: List) -> i64 {
             match l {
                 List::Cons(v, p) => {
-                    val rest: List = __builtin_ptr_read(p, 0u64)
+                    val rest: List = __builtin_ptr_read::<List>(p, 0u64)
                     v + sum(rest)
                 }
                 List::Nil => 0i64,
@@ -389,7 +389,7 @@ fn a_transferred_value_is_not_freed_by_the_binding_that_built_it() {
                 Cell { p: p }
             }
             unsafe fn get(&self) -> T {
-                val v: T = __builtin_ptr_read(self.p, 0u64)
+                val v: T = __builtin_ptr_read::<T>(self.p, 0u64)
                 v
             }
         }

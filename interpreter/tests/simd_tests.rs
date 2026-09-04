@@ -125,8 +125,8 @@ fn store_round_trips_through_ptr_read() {
             val p = __builtin_heap_alloc(64u64)
             val v: f64x2 = __simd_splat(2.5f64)
             __simd_store(p, 1u64, v)
-            val a: f64 = __builtin_ptr_read(p, 8u64)
-            val b: f64 = __builtin_ptr_read(p, 16u64)
+            val a: f64 = __builtin_ptr_read::<f64>(p, 8u64)
+            val b: f64 = __builtin_ptr_read::<f64>(p, 16u64)
             __builtin_heap_free(p)
             if a == 2.5f64 && b == 2.5f64 { 15u64 } else { 0u64 }
         }

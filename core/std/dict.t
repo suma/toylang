@@ -110,12 +110,12 @@ impl<K: Hash, V> Dict<K, V> {
         val mask: u64 = scap - 1u64
         var j: u64 = hash_mix(key.hash()) & mask
         loop {
-            val s: u32 = __builtin_ptr_read(self.slots, j * 4u64)
+            val s: u32 = __builtin_ptr_read::<u32>(self.slots, j * 4u64)
             if s == dict_slot_empty() {
                 break
             }
             val idx: u64 = s as u64
-            val existing: K = __builtin_ptr_read(self.keys, idx * ks)
+            val existing: K = __builtin_ptr_read::<K>(self.keys, idx * ks)
             if existing == key {
                 __builtin_ptr_write(self.vals, idx * vs, value)
                 return
@@ -152,10 +152,10 @@ impl<K: Hash, V> Dict<K, V> {
             val nmask: u64 = ncap - 1u64
             var i: u64 = 0u64
             while i < self.count {
-                val k2: K = __builtin_ptr_read(self.keys, i * ks)
+                val k2: K = __builtin_ptr_read::<K>(self.keys, i * ks)
                 var p: u64 = hash_mix(k2.hash()) & nmask
                 loop {
-                    val s2: u32 = __builtin_ptr_read(self.slots, p * 4u64)
+                    val s2: u32 = __builtin_ptr_read::<u32>(self.slots, p * 4u64)
                     if s2 == dict_slot_empty() {
                         break
                     }
@@ -180,14 +180,14 @@ impl<K: Hash, V> Dict<K, V> {
         val mask: u64 = scap - 1u64
         var j: u64 = hash_mix(key.hash()) & mask
         loop {
-            val s: u32 = __builtin_ptr_read(self.slots, j * 4u64)
+            val s: u32 = __builtin_ptr_read::<u32>(self.slots, j * 4u64)
             if s == dict_slot_empty() {
                 break
             }
             val idx: u64 = s as u64
-            val existing: K = __builtin_ptr_read(self.keys, idx * ks)
+            val existing: K = __builtin_ptr_read::<K>(self.keys, idx * ks)
             if existing == key {
-                val v: V = __builtin_ptr_read(self.vals, idx * vs)
+                val v: V = __builtin_ptr_read::<V>(self.vals, idx * vs)
                 return v
             }
             j = (j + 1u64) & mask
@@ -207,14 +207,14 @@ impl<K: Hash, V> Dict<K, V> {
         val mask: u64 = scap - 1u64
         var j: u64 = hash_mix(key.hash()) & mask
         loop {
-            val s: u32 = __builtin_ptr_read(self.slots, j * 4u64)
+            val s: u32 = __builtin_ptr_read::<u32>(self.slots, j * 4u64)
             if s == dict_slot_empty() {
                 break
             }
             val idx: u64 = s as u64
-            val existing: K = __builtin_ptr_read(self.keys, idx * ks)
+            val existing: K = __builtin_ptr_read::<K>(self.keys, idx * ks)
             if existing == key {
-                val v: V = __builtin_ptr_read(self.vals, idx * vs)
+                val v: V = __builtin_ptr_read::<V>(self.vals, idx * vs)
                 return Option::Some(v)
             }
             j = (j + 1u64) & mask
@@ -231,12 +231,12 @@ impl<K: Hash, V> Dict<K, V> {
         val mask: u64 = scap - 1u64
         var j: u64 = hash_mix(key.hash()) & mask
         loop {
-            val s: u32 = __builtin_ptr_read(self.slots, j * 4u64)
+            val s: u32 = __builtin_ptr_read::<u32>(self.slots, j * 4u64)
             if s == dict_slot_empty() {
                 break
             }
             val idx: u64 = s as u64
-            val existing: K = __builtin_ptr_read(self.keys, idx * ks)
+            val existing: K = __builtin_ptr_read::<K>(self.keys, idx * ks)
             if existing == key {
                 return true
             }
@@ -267,12 +267,12 @@ impl<K: Hash, V> Dict<K, V> {
         var j: u64 = hash_mix(key.hash()) & mask
         var found: u64 = self.count
         loop {
-            val s: u32 = __builtin_ptr_read(self.slots, j * 4u64)
+            val s: u32 = __builtin_ptr_read::<u32>(self.slots, j * 4u64)
             if s == dict_slot_empty() {
                 break
             }
             val idx: u64 = s as u64
-            val existing: K = __builtin_ptr_read(self.keys, idx * ks)
+            val existing: K = __builtin_ptr_read::<K>(self.keys, idx * ks)
             if existing == key {
                 found = idx
                 break
@@ -285,8 +285,8 @@ impl<K: Hash, V> Dict<K, V> {
 
         var i: u64 = found
         while i + 1u64 < self.count {
-            val nk: K = __builtin_ptr_read(self.keys, (i + 1u64) * ks)
-            val nv: V = __builtin_ptr_read(self.vals, (i + 1u64) * vs)
+            val nk: K = __builtin_ptr_read::<K>(self.keys, (i + 1u64) * ks)
+            val nv: V = __builtin_ptr_read::<V>(self.vals, (i + 1u64) * vs)
             __builtin_ptr_write(self.keys, i * ks, nk)
             __builtin_ptr_write(self.vals, i * vs, nv)
             i = i + 1u64
@@ -300,10 +300,10 @@ impl<K: Hash, V> Dict<K, V> {
         }
         var e: u64 = 0u64
         while e < self.count {
-            val k2: K = __builtin_ptr_read(self.keys, e * ks)
+            val k2: K = __builtin_ptr_read::<K>(self.keys, e * ks)
             var p: u64 = hash_mix(k2.hash()) & mask
             loop {
-                val s2: u32 = __builtin_ptr_read(self.slots, p * 4u64)
+                val s2: u32 = __builtin_ptr_read::<u32>(self.slots, p * 4u64)
                 if s2 == dict_slot_empty() {
                     break
                 }
@@ -389,8 +389,8 @@ impl<K, V> Iterator<(K, V)> for DictIter<K, V> {
             self.index = self.index + 1u64
             val ks: u64 = self.sizes >> 32u64
             val vs: u64 = self.sizes & 0xFFFFFFFFu64
-            val k: K = __builtin_ptr_read(self.keys, i * ks)
-            val v: V = __builtin_ptr_read(self.vals, i * vs)
+            val k: K = __builtin_ptr_read::<K>(self.keys, i * ks)
+            val v: V = __builtin_ptr_read::<V>(self.vals, i * vs)
             Option::Some((k, v))
         }
     }
@@ -433,8 +433,8 @@ impl<K, V, U> Iterator<U> for DictMapIter<K, V, U> {
         } else {
             val ks: u64 = self.sizes >> 32u64
             val vs: u64 = self.sizes & 0xFFFFFFFFu64
-            val k: K = __builtin_ptr_read(self.keys, index * ks)
-            val v: V = __builtin_ptr_read(self.vals, index * vs)
+            val k: K = __builtin_ptr_read::<K>(self.keys, index * ks)
+            val v: V = __builtin_ptr_read::<V>(self.vals, index * vs)
             self.count_index = (count << 32u64) | (index + 1u64)
             Option::Some(self.f(k, v))
         }
@@ -473,8 +473,8 @@ impl<K, V> Iterator<(K, V)> for DictFilterIter<K, V> {
             }
             val ks: u64 = self.sizes >> 32u64
             val vs: u64 = self.sizes & 0xFFFFFFFFu64
-            val k: K = __builtin_ptr_read(self.keys, index * ks)
-            val v: V = __builtin_ptr_read(self.vals, index * vs)
+            val k: K = __builtin_ptr_read::<K>(self.keys, index * ks)
+            val v: V = __builtin_ptr_read::<V>(self.vals, index * vs)
             self.count_index = (count << 32u64) | (index + 1u64)
             if self.pred(k, v) {
                 val r: Option<(K, V)> = Option::Some((k, v))

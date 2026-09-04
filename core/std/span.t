@@ -101,7 +101,7 @@ impl<T> Span<T> {
     # backend (the `Vec::get` convention).
     unsafe fn get(&self, i: u64) -> T {
         if i >= self.count { panic("Span::get index out of bounds") }
-        val v: T = __builtin_ptr_read(self.data.addr, i * __builtin_sizeof::<T>())
+        val v: T = __builtin_ptr_read::<T>(self.data.addr, i * __builtin_sizeof::<T>())
         v
     }
 
@@ -136,7 +136,7 @@ impl<T> Span<T> {
     # indexing syntax.
     unsafe fn __getitem__(&self, i: u64) -> T {
         if i >= self.count { panic("Span::get index out of bounds") }
-        val v: T = __builtin_ptr_read(self.data.addr, i * __builtin_sizeof::<T>())
+        val v: T = __builtin_ptr_read::<T>(self.data.addr, i * __builtin_sizeof::<T>())
         v
     }
 

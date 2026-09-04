@@ -27,8 +27,8 @@ fn aot_heap_alloc_round_trip() {
             val p: ptr = __builtin_heap_alloc(16u64)
             __builtin_ptr_write(p, 0u64, 17u64)
             __builtin_ptr_write(p, 8u64, 25u64)
-            val a: u64 = __builtin_ptr_read(p, 0u64)
-            val b: u64 = __builtin_ptr_read(p, 8u64)
+            val a: u64 = __builtin_ptr_read::<u64>(p, 0u64)
+            val b: u64 = __builtin_ptr_read::<u64>(p, 8u64)
             __builtin_heap_free(p)
             a + b
         }
@@ -80,7 +80,7 @@ fn aot_mut_self_propagates_field_mutation() {
 #[test]
 fn aot_dict_contains_key_empty_uses_per_monomorph_subst() {
     // DICT-AOT-NEW Phase C: per-monomorph generic subst lets a
-    // method body's `val existing: K = __builtin_ptr_read(...)`
+    // method body's `val existing: K = __builtin_ptr_read::<K>(...)`
     // resolve K to the concrete type for the active instance
     // (`Type::I64` for `Dict<i64, u64>::contains_key`). Combined
     // with the new `__builtin_sizeof(generic_param)` AOT lower,
@@ -154,9 +154,9 @@ fn aot_heap_realloc_grows_buffer() {
             p = __builtin_heap_realloc(p, 24u64)
             __builtin_ptr_write(p, 8u64, 200u64)
             __builtin_ptr_write(p, 16u64, 300u64)
-            val a: u64 = __builtin_ptr_read(p, 0u64)
-            val b: u64 = __builtin_ptr_read(p, 8u64)
-            val c: u64 = __builtin_ptr_read(p, 16u64)
+            val a: u64 = __builtin_ptr_read::<u64>(p, 0u64)
+            val b: u64 = __builtin_ptr_read::<u64>(p, 8u64)
+            val c: u64 = __builtin_ptr_read::<u64>(p, 16u64)
             __builtin_heap_free(p)
             a + b + c
         }

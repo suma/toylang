@@ -1715,7 +1715,7 @@ mod heap_operations {
                 }
 
                 unsafe fn get(self: Self, index: u64) -> i64 {
-                    val v: i64 = __builtin_ptr_read(self.data, index * 8u64)
+                    val v: i64 = __builtin_ptr_read::<i64>(self.data, index * 8u64)
                     v
                 }
             }
@@ -1766,7 +1766,7 @@ mod heap_operations {
                 }
 
                 unsafe fn get(self: Self, index: u64) -> bool {
-                    val v: bool = __builtin_ptr_read(self.data, index)
+                    val v: bool = __builtin_ptr_read::<bool>(self.data, index)
                     v
                 }
             }
@@ -2000,7 +2000,7 @@ mod heap_operations {
                 }
 
                 unsafe fn get(&self, i: u64) -> T {
-                    val v: T = __builtin_ptr_read(self.data, i * __builtin_sizeof::<T>())
+                    val v: T = __builtin_ptr_read::<T>(self.data, i * __builtin_sizeof::<T>())
                     v
                 }
             }

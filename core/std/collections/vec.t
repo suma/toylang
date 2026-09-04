@@ -39,7 +39,7 @@
 # resolve `v.len(...)`.
 #
 # Per-monomorph generic substitution (DICT-AOT-NEW Phase C) makes
-# `__builtin_sizeof(value)` and `val: T = __builtin_ptr_read(...)`
+# `__builtin_sizeof(value)` and `__builtin_ptr_read::<T>(...)`
 # work for arbitrary T at AOT. `&mut self` Stage 1 propagates
 # `self.cap = ...` / `self.data = ...` / `self.len = ...`
 # mutations back to the caller's binding via the Self-out-parameter
@@ -256,7 +256,7 @@ impl<T> Vec<T> {
     {
         if self.len == 0u64 { panic("Vec::pop on an empty Vec") }
         self.len = self.len - 1u64
-        val v: T = __builtin_ptr_read(self.data, self.len * self.elem_size)
+        val v: T = __builtin_ptr_read::<T>(self.data, self.len * self.elem_size)
         v
     }
 
@@ -270,7 +270,7 @@ impl<T> Vec<T> {
         requires index < self.len
     {
         if index >= self.len { panic("Vec::get index out of bounds") }
-        val v: T = __builtin_ptr_read(self.data, index * self.elem_size)
+        val v: T = __builtin_ptr_read::<T>(self.data, index * self.elem_size)
         v
     }
 
@@ -338,7 +338,7 @@ impl<T> Vec<T> {
         }
         var i: u64 = self.len
         while i > index {
-            val prev: T = __builtin_ptr_read(self.data, (i - 1u64) * self.elem_size)
+            val prev: T = __builtin_ptr_read::<T>(self.data, (i - 1u64) * self.elem_size)
             __builtin_ptr_write(self.data, i * self.elem_size, prev)
             i = i - 1u64
         }
@@ -352,10 +352,10 @@ impl<T> Vec<T> {
         requires index < self.len
     {
         if index >= self.len { panic("Vec::remove index out of bounds") }
-        val out: T = __builtin_ptr_read(self.data, index * self.elem_size)
+        val out: T = __builtin_ptr_read::<T>(self.data, index * self.elem_size)
         var i: u64 = index
         while i + 1u64 < self.len {
-            val next: T = __builtin_ptr_read(self.data, (i + 1u64) * self.elem_size)
+            val next: T = __builtin_ptr_read::<T>(self.data, (i + 1u64) * self.elem_size)
             __builtin_ptr_write(self.data, i * self.elem_size, next)
             i = i + 1u64
         }
@@ -371,8 +371,8 @@ impl<T> Vec<T> {
         requires index < self.len
     {
         if index >= self.len { panic("Vec::swap_remove index out of bounds") }
-        val out: T = __builtin_ptr_read(self.data, index * self.elem_size)
-        val last: T = __builtin_ptr_read(self.data, (self.len - 1u64) * self.elem_size)
+        val out: T = __builtin_ptr_read::<T>(self.data, index * self.elem_size)
+        val last: T = __builtin_ptr_read::<T>(self.data, (self.len - 1u64) * self.elem_size)
         __builtin_ptr_write(self.data, index * self.elem_size, last)
         self.len = self.len - 1u64
         out
@@ -382,7 +382,7 @@ impl<T> Vec<T> {
     unsafe fn contains(&self, value: T) -> bool {
         var i: u64 = 0u64
         while i < self.len {
-            val e: T = __builtin_ptr_read(self.data, i * self.elem_size)
+            val e: T = __builtin_ptr_read::<T>(self.data, i * self.elem_size)
             if e == value {
                 return true
             }
@@ -395,7 +395,7 @@ impl<T> Vec<T> {
     unsafe fn index_of(&self, value: T) -> Option<u64> {
         var i: u64 = 0u64
         while i < self.len {
-            val e: T = __builtin_ptr_read(self.data, i * self.elem_size)
+            val e: T = __builtin_ptr_read::<T>(self.data, i * self.elem_size)
             if e == value {
                 return Option::Some(i)
             }
@@ -412,8 +412,8 @@ impl<T> Vec<T> {
         var i: u64 = 0u64
         var j: u64 = self.len - 1u64
         while i < j {
-            val a: T = __builtin_ptr_read(self.data, i * self.elem_size)
-            val b: T = __builtin_ptr_read(self.data, j * self.elem_size)
+            val a: T = __builtin_ptr_read::<T>(self.data, i * self.elem_size)
+            val b: T = __builtin_ptr_read::<T>(self.data, j * self.elem_size)
             __builtin_ptr_write(self.data, i * self.elem_size, b)
             __builtin_ptr_write(self.data, j * self.elem_size, a)
             i = i + 1u64
@@ -570,7 +570,7 @@ impl<T> Iterator<T> for VecIter<T> {
         } else {
             val i = self.index
             self.index = self.index + 1u64
-            val e: T = __builtin_ptr_read(self.data, i * self.elem_size)
+            val e: T = __builtin_ptr_read::<T>(self.data, i * self.elem_size)
             Option::Some(e)
         }
     }
@@ -578,7 +578,7 @@ impl<T> Iterator<T> for VecIter<T> {
 
 
 # Concrete-args impl: byte-vector helpers live here because the
-# inner `__builtin_ptr_read(...)` produces `u8` and `push(value)`
+# inner `__builtin_ptr_read::<u8>(...)` produces `u8` and `push(value)`
 # needs the receiver `Vec<T>`'s `T` to be `u8` for the push to
 # type-check. CONCRETE-IMPL Phase 2 lets this `impl Vec<u8>` and
 # the generic `impl<T> Vec<T>` above coexist in the registry.
@@ -630,7 +630,7 @@ impl Vec<u8> {
     unsafe fn extend_bytes(&mut self, src: ptr, count: u64) {
         var i: u64 = 0u64
         while i < count {
-            val b: u8 = __builtin_ptr_read(src, i)
+            val b: u8 = __builtin_ptr_read::<u8>(src, i)
             self.push(b)
             i = i + 1u64
         }
@@ -715,8 +715,8 @@ impl Vec<u8> {
             i = i + 16u64
         }
         while i < n {
-            val a: u8 = __builtin_ptr_read(pa, i)
-            val b: u8 = __builtin_ptr_read(pb, i)
+            val a: u8 = __builtin_ptr_read::<u8>(pa, i)
+            val b: u8 = __builtin_ptr_read::<u8>(pb, i)
             if a != b {
                 return false
             }
@@ -900,8 +900,8 @@ impl<A, B> Iterator<(A, B)> for ZipIter<A, B> {
         } else {
             val a_elem = self.elems >> 32u64
             val b_elem = self.elems & 0xFFFFFFFFu64
-            val ai: A = __builtin_ptr_read(self.a_data, self.index * a_elem)
-            val bi: B = __builtin_ptr_read(self.b_data, self.index * b_elem)
+            val ai: A = __builtin_ptr_read::<A>(self.a_data, self.index * a_elem)
+            val bi: B = __builtin_ptr_read::<B>(self.b_data, self.index * b_elem)
             self.index = self.index + 1u64
             Option::Some((ai, bi))
         }

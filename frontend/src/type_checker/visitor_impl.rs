@@ -567,7 +567,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
 
         // `ptr_read` originally always returned u64, but generic `List<T>`
         // code stores non-u64 values. When the caller supplies a primitive
-        // type hint (e.g. `val v: i64 = __builtin_ptr_read(p, off)` or a
+        // type hint (e.g. `val v: i64 = __builtin_ptr_read::<i64>(p, off)` or a
         // method with a `T` return type being visited under its hint),
         // surface the hint as the result so nested expressions pick up
         // the right element type. Fall back to u64 for backward compat.
@@ -593,7 +593,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
                     // from an enum, and nothing resolves the annotation
                     // before this point. Without this arm the hint was
                     // dropped and the read came back `u64`, so
-                    // `val n: Node = __builtin_ptr_read(p, off)` failed
+                    // `val n: Node = __builtin_ptr_read::<Node>(p, off)` failed
                     // with a type mismatch: the raw-`ptr` indirection
                     // that E0013 points recursive types at could be
                     // written but not read back (RECURSIVE-TYPES).

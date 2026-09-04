@@ -224,7 +224,7 @@ pub(super) type MethodInstances =
 /// `FuncId`, the `(target, method)` pair to look up the template,
 /// and the per-monomorph type substitution so val/var annotations
 /// inside the body that name a generic param (e.g.
-/// `val existing: K = __builtin_ptr_read(...)` in
+/// `val existing: K = __builtin_ptr_read::<K>(...)` in
 /// `core/std/dict.t::insert`) resolve to the concrete type for
 /// this instance. Without the substitution, the lowering layer
 /// would treat `K` as a fresh symbol with no scalar mapping and

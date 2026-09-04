@@ -44,7 +44,7 @@ unsafe fn scratch(n: u64) -> u64
 {
     val p: ptr = __builtin_heap_alloc(128u64)
     __builtin_ptr_write(p, 0u64, n)
-    val v: u64 = __builtin_ptr_read(p, 0u64)
+    val v: u64 = __builtin_ptr_read::<u64>(p, 0u64)
     __builtin_heap_free(p)
     v
 }

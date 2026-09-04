@@ -30,7 +30,7 @@ impl<T> Cell<T> {
         Cell { p: p }
     }
     unsafe fn get(&self) -> T {
-        val v: T = __builtin_ptr_read(self.p, 0u64)
+        val v: T = __builtin_ptr_read::<T>(self.p, 0u64)
         v
     }
 }

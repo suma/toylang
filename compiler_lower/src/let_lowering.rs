@@ -397,10 +397,10 @@ impl<'a> FunctionLower<'a> {
                 return Ok(result);
             }
         // #121 Phase A: `val name: T = __builtin_ptr_read(p, off)` —
-        // the read width is taken from the annotation. Without this
-        // intercept, lower_builtin_call's PtrRead arm rejects the
-        // call with a clear error pointing at the missing type
-        // hint, but a let-binding always supplies one.
+        // the legacy form, whose width comes from the annotation.
+        // Without this intercept, lower_builtin_call's PtrRead arm
+        // rejects the call with an error pointing at the typed form,
+        // but a let-binding always supplies an annotation.
         //
         // AOT-COMPOUND-PTR-RW: when the annotation is a compound
         // (struct / tuple) the call expands into one `PtrRead` per
@@ -606,9 +606,11 @@ impl<'a> FunctionLower<'a> {
         Ok(None)
     }
 
-    /// `__builtin_ptr_read` RHS helper
-    /// (`val name: T = __builtin_ptr_read(p, off)`). Reads the
-    /// width from the annotation. For a compound `T` (struct /
+    /// `__builtin_ptr_read` RHS helper. Serves both forms: the
+    /// legacy `val name: T = __builtin_ptr_read(p, off)`, whose width
+    /// is the annotation's, and `__builtin_ptr_read::<T>(p, off)`,
+    /// which passes its written type in as `annotation`.
+    /// For a compound `T` (struct /
     /// tuple) the call expands into one `PtrRead` per leaf
     /// scalar at `off + leaf_off`, mirroring the per-leaf write
     /// loop in `expr.rs::PtrWrite`. Scalar callers continue
@@ -635,7 +637,7 @@ impl<'a> FunctionLower<'a> {
         // the subst, an annotation that names a generic
         // param (e.g. `K` in
         // `core/std/dict.t::insert`'s
-        // `val existing: K = __builtin_ptr_read(...)`)
+        // `val existing: K = __builtin_ptr_read::<K>(...)`)
         // wouldn't be reachable through `lower_scalar`,
         // which only knows the leaf-primitive `TypeDecl`s.
         let elem_ty = annotation.and_then(|a| self.lower_scalar_with_subst(a));

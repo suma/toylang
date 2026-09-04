@@ -32,7 +32,7 @@ fn mem_set_fills_and_mem_move_overlaps() {
             var acc: u64 = 0u64
             var i: u64 = 0u64
             while i < 9u64 {
-                val b: u8 = __builtin_ptr_read(p, i)
+                val b: u8 = __builtin_ptr_read::<u8>(p, i)
                 acc = acc + (b as u64)
                 i = i + 1u64
             }
@@ -56,8 +56,8 @@ fn the_fill_byte_takes_the_argument_position_s_type() {
             val p: ptr = __builtin_heap_alloc(8u64)
             __builtin_mem_set(p, 0, 4u64)
             __builtin_mem_set(__builtin_ptr_offset(p, 4u64), '0', 4u64)
-            val zero: u8 = __builtin_ptr_read(p, 0u64)
-            val digit: u8 = __builtin_ptr_read(p, 4u64)
+            val zero: u8 = __builtin_ptr_read::<u8>(p, 0u64)
+            val digit: u8 = __builtin_ptr_read::<u8>(p, 4u64)
             __builtin_heap_free(p)
             (zero as u64) + (digit as u64)
         }
@@ -77,7 +77,7 @@ fn a_zero_length_range_is_a_no_op() {
             __builtin_mem_set(p, 0x00u8, 0u64)
             __builtin_mem_move(p, __builtin_ptr_offset(p, 1u64), 0u64)
             __builtin_mem_copy(p, __builtin_ptr_offset(p, 1u64), 0u64)
-            val untouched: u8 = __builtin_ptr_read(p, 0u64)
+            val untouched: u8 = __builtin_ptr_read::<u8>(p, 0u64)
             __builtin_heap_free(p)
             untouched as u64
         }

@@ -10,7 +10,7 @@ unsafe fn main() -> u64 {
     val total: u64 = with allocator = arena {
         val p: ptr = __builtin_heap_alloc(8u64)
         __builtin_ptr_write(p, 0u64, 12345u64)
-        val x: u64 = __builtin_ptr_read(p, 0u64)
+        val x: u64 = __builtin_ptr_read::<u64>(p, 0u64)
         x
     }
     total

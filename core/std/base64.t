@@ -148,9 +148,9 @@ pub unsafe fn encode(bytes: &Vec<u8>) -> String {
         j = j + 16u64
     }
     while i + 3u64 <= n {
-        val b0: u8 = __builtin_ptr_read(src, i)
-        val b1: u8 = __builtin_ptr_read(src, i + 1u64)
-        val b2: u8 = __builtin_ptr_read(src, i + 2u64)
+        val b0: u8 = __builtin_ptr_read::<u8>(src, i)
+        val b1: u8 = __builtin_ptr_read::<u8>(src, i + 1u64)
+        val b2: u8 = __builtin_ptr_read::<u8>(src, i + 2u64)
         val group: u64 = (b0 as u64) * 65536u64 + (b1 as u64) * 256u64 + (b2 as u64)
         __builtin_ptr_write(dst, j, base64::symbol(group / 262144u64))
         __builtin_ptr_write(dst, j + 1u64, base64::symbol((group / 4096u64) % 64u64))
@@ -165,15 +165,15 @@ pub unsafe fn encode(bytes: &Vec<u8>) -> String {
     # `u32` there — four bytes where one belongs.
     val pad: u8 = '='
     if rest == 1u64 {
-        val b0: u8 = __builtin_ptr_read(src, i)
+        val b0: u8 = __builtin_ptr_read::<u8>(src, i)
         val a: u64 = b0 as u64
         __builtin_ptr_write(dst, j, base64::symbol(a / 4u64))
         __builtin_ptr_write(dst, j + 1u64, base64::symbol((a % 4u64) * 16u64))
         __builtin_ptr_write(dst, j + 2u64, pad)
         __builtin_ptr_write(dst, j + 3u64, pad)
     } elif rest == 2u64 {
-        val b0: u8 = __builtin_ptr_read(src, i)
-        val b1: u8 = __builtin_ptr_read(src, i + 1u64)
+        val b0: u8 = __builtin_ptr_read::<u8>(src, i)
+        val b1: u8 = __builtin_ptr_read::<u8>(src, i + 1u64)
         val a: u64 = b0 as u64
         val b: u64 = b1 as u64
         __builtin_ptr_write(dst, j, base64::symbol(a / 4u64))

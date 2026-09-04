@@ -436,7 +436,7 @@ builtins:
 
     val p: ptr = __builtin_heap_alloc(__builtin_sizeof(rest))
     __builtin_ptr_write(p, 0u64, rest)
-    val rest: Node = __builtin_ptr_read(n.next, 0u64)
+    val rest: Node = __builtin_ptr_read::<Node>(n.next, 0u64)
 
 The annotation on the read is what gives it a shape -- it names the
 type whose leaves come back out of the buffer, so it cannot be left
@@ -859,12 +859,12 @@ signature level — `--effects` answers the same question as
 `raw_read` / `raw_write`:
 
     fn get(&self, i: u64) -> T {          # E0024: __builtin_ptr_read ...
-        val v: T = __builtin_ptr_read(self.addr, i * 8u64)
+        val v: T = __builtin_ptr_read::<T>(self.addr, i * 8u64)
         v
     }
 
     unsafe fn get(&self, i: u64) -> T {   # fine
-        val v: T = __builtin_ptr_read(self.addr, i * 8u64)
+        val v: T = __builtin_ptr_read::<T>(self.addr, i * 8u64)
         v
     }
 

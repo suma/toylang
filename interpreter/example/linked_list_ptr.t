@@ -33,7 +33,7 @@ unsafe fn sum(n: Node) -> i64 {
     if n.has_next {
         # The annotation is what gives the read its shape: it names the
         # type whose leaves are pulled back out of the buffer.
-        val rest: Node = __builtin_ptr_read(n.next, 0u64)
+        val rest: Node = __builtin_ptr_read::<Node>(n.next, 0u64)
         n.v + sum(rest)
     } else {
         n.v

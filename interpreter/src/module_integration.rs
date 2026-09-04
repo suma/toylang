@@ -573,7 +573,7 @@ impl<'a> AstIntegrationContext<'a> {
                 // The annotation `T` in `val x: T = ...` carries
                 // a module-interner symbol when written inside a
                 // generic method body (e.g.
-                // `val existing: K = __builtin_ptr_read(...)` in
+                // `val existing: K = __builtin_ptr_read::<K>(...)` in
                 // `core/std/dict.t`'s `impl<K, V> Dict<K, V>`). Without
                 // routing through remap_type_decl, the type
                 // checker sees `Identifier(<module interner sym>)`

@@ -32,7 +32,7 @@ fn a_raw_read_without_the_declaration_is_refused() {
     let err = test_program(
         r#"
         fn load(p: ptr) -> u64 {
-            val v: u64 = __builtin_ptr_read(p, 0u64)
+            val v: u64 = __builtin_ptr_read::<u64>(p, 0u64)
             v
         }
 
@@ -51,7 +51,7 @@ fn the_declaration_makes_the_raw_access_legal() {
         unsafe fn roundtrip() -> u64 {
             val p: ptr = __builtin_heap_alloc(8u64)
             __builtin_ptr_write(p, 0u64, 42u64)
-            val v: u64 = __builtin_ptr_read(p, 0u64)
+            val v: u64 = __builtin_ptr_read::<u64>(p, 0u64)
             __builtin_heap_free(p)
             v
         }
@@ -71,7 +71,7 @@ fn calling_an_unsafe_fn_does_not_make_the_caller_unsafe() {
         unsafe fn poke(v: u64) -> u64 {
             val p: ptr = __builtin_heap_alloc(8u64)
             __builtin_ptr_write(p, 0u64, v)
-            val out: u64 = __builtin_ptr_read(p, 0u64)
+            val out: u64 = __builtin_ptr_read::<u64>(p, 0u64)
             __builtin_heap_free(p)
             out
         }
@@ -151,7 +151,7 @@ fn an_unsafe_method_is_accepted_and_its_caller_stays_safe() {
             }
 
             unsafe fn load(&self) -> u64 {
-                val v: u64 = __builtin_ptr_read(self.addr, 0u64)
+                val v: u64 = __builtin_ptr_read::<u64>(self.addr, 0u64)
                 v
             }
         }
@@ -210,7 +210,7 @@ fn a_trait_default_body_carries_its_own_declaration() {
         r#"
         trait Peek {
             unsafe fn first(&self) -> u64 {
-                val v: u64 = __builtin_ptr_read(self.addr, 0u64)
+                val v: u64 = __builtin_ptr_read::<u64>(self.addr, 0u64)
                 v
             }
         }
@@ -239,7 +239,7 @@ fn a_trait_default_body_without_the_declaration_is_refused() {
         r#"
         trait Peek {
             fn first(&self) -> u64 {
-                val v: u64 = __builtin_ptr_read(self.addr, 0u64)
+                val v: u64 = __builtin_ptr_read::<u64>(self.addr, 0u64)
                 v
             }
         }

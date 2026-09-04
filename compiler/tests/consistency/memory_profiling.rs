@@ -479,10 +479,10 @@ fn interior_pointers_read_and_write_independently() {
             val cell1: ptr = __builtin_ptr_offset(block, 32u64)
             __builtin_ptr_write(cell0, 0u64, 111u64)
             __builtin_ptr_write(cell1, 0u64, 222u64)
-            val a: u64 = __builtin_ptr_read(cell0, 0u64)
-            val b: u64 = __builtin_ptr_read(cell1, 0u64)
+            val a: u64 = __builtin_ptr_read::<u64>(cell0, 0u64)
+            val b: u64 = __builtin_ptr_read::<u64>(cell1, 0u64)
             # The interior pointer of cell1 aliases base + 32.
-            val c: u64 = __builtin_ptr_read(block, 32u64)
+            val c: u64 = __builtin_ptr_read::<u64>(block, 32u64)
             __builtin_heap_free(block)
             a + b + c
         }
@@ -501,7 +501,7 @@ fn interior_pointers_compose() {
             val half: ptr = __builtin_ptr_offset(block, 32u64)
             val quarter: ptr = __builtin_ptr_offset(half, 16u64)
             __builtin_ptr_write(quarter, 0u64, 99u64)
-            val v: u64 = __builtin_ptr_read(block, 48u64)
+            val v: u64 = __builtin_ptr_read::<u64>(block, 48u64)
             v
         }
     "#;

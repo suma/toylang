@@ -362,7 +362,7 @@ impl EvaluationContext<'_> {
         self.pending_annotation = prev_annotation;
         let value = try_value_v!(value);
         let value = apply_annotation_type_args(value, annotation);
-        // DROP-GLUE: `val v: T = __builtin_ptr_read(...)` copies the
+        // DROP-GLUE: `val v: T = __builtin_ptr_read::<T>(...)` copies the
         // slot's value out. The copy is an *alias* of the slot (the
         // slot's owner frees it when it dies), so the binding must not
         // register a drop — otherwise `Box::get()` on a `Box<Box<i64>>`

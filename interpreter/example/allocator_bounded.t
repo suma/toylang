@@ -22,7 +22,7 @@ unsafe fn store<A: Allocator>(x: u64, a: A) -> u64 {
     with allocator = a {
         val p = __builtin_heap_alloc(8u64)
         __builtin_ptr_write(p, 0u64, x)
-        __builtin_ptr_read(p, 0u64)
+        __builtin_ptr_read::<u64>(p, 0u64)
     }
 }
 

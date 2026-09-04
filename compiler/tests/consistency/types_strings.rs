@@ -485,7 +485,7 @@ fn string_as_ptr_via_trait_round_trip() {
         unsafe fn main() -> u64 {
             val s: String = String::from_str("Z")
             val p: ptr = s.as_ptr()
-            val b: u8 = __builtin_ptr_read(p, 0u64)
+            val b: u8 = __builtin_ptr_read::<u8>(p, 0u64)
             if b != 0x5Au8 { return 1u64 }
             42u64
         }
@@ -598,7 +598,7 @@ fn sizeof_type_arg_round_trip() {
                 Slice2 { data: p, len: len }
             }
             unsafe fn get(&self, i: u64) -> T {
-                val v: T = __builtin_ptr_read(self.data, i * __builtin_sizeof::<T>())
+                val v: T = __builtin_ptr_read::<T>(self.data, i * __builtin_sizeof::<T>())
                 v
             }
         }
@@ -1182,9 +1182,9 @@ fn str_as_ptr_extension_method_round_trip() {
         unsafe fn main() -> u64 {
             val s = "hi"
             val p: ptr = s.as_ptr()
-            val a: u8 = __builtin_ptr_read(p, 0u64)
-            val b: u8 = __builtin_ptr_read(p, 1u64)
-            val nul: u8 = __builtin_ptr_read(p, 2u64)
+            val a: u8 = __builtin_ptr_read::<u8>(p, 0u64)
+            val b: u8 = __builtin_ptr_read::<u8>(p, 1u64)
+            val nul: u8 = __builtin_ptr_read::<u8>(p, 2u64)
             if a == 104u8 {
                 if b == 105u8 {
                     if nul == 0u8 { 42u64 } else { 3u64 }
@@ -1217,9 +1217,9 @@ fn str_to_ptr_byte_walk_round_trip() {
         unsafe fn main() -> u64 {
             val s = "hi"
             val p: ptr = __builtin_str_to_ptr(s)
-            val a: u8 = __builtin_ptr_read(p, 0u64)
-            val b: u8 = __builtin_ptr_read(p, 1u64)
-            val nul: u8 = __builtin_ptr_read(p, 2u64)
+            val a: u8 = __builtin_ptr_read::<u8>(p, 0u64)
+            val b: u8 = __builtin_ptr_read::<u8>(p, 1u64)
+            val nul: u8 = __builtin_ptr_read::<u8>(p, 2u64)
             if a == 104u8 {
                 if b == 105u8 {
                     if nul == 0u8 { 42u64 } else { 3u64 }

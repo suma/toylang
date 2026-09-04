@@ -2129,6 +2129,18 @@ changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 
   減らしたら消えたので、writeback の leaf 数の数え方が疑わしい。
   internal error なのでユーザ側に直し方の手掛かりが無い。
 
+- **EFFECTS-CORE-MODULES: `--effects` が `--core-modules` を無視する** ★ —
+  `--core-modules <DIR> --effects prog.t` は指定を捨てて既定の探索に
+  倒れるので、ユーザのモジュールを持つプログラムは `[E0003] Struct
+  'logdir' not found` の山になる (`--effects` は型検査を通す
+  クエリなので、モジュールが無ければ何も答えられない)。原因は
+  `interpreter/src/main.rs` の `run_effects` が
+  `resolve_core_modules_dir(None)` を呼ぶこと — フラグは実行系の
+  引数と一緒に解析され、このクエリはその前に走る。回避策は
+  `TOYLANG_CORE_MODULES=<DIR>` (優先順位 2 の env var は効く)。
+  `--api` は parse だけなので影響しない。2026-09-05、
+  `poc/logsearch` を型検査しようとして踏んだ。
+
 ### パーサーの既知制限事項
 - **行末の識別子と、次の行頭の `(` が改行を跨いで呼び出しになる** —
   セミコロンが無いので、

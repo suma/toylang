@@ -10,6 +10,15 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **MEMORY-ACCESS M3 — `Span<T>` の範囲演算** — `__builtin_mem_eq` /
+  `mem_find` / `mem_find_seq` (実装は `toylang_rt` 1 か所、libc では
+  ない) と、それを包む `copy_from` / `move_from` / `bytes_eq` /
+  `find` / `find_seq` / `fill`。`String::eq` の「SIMD ループ + 端数
+  ループ」と `String::find_from` の二重ループが**それぞれ 1 呼び出し**
+  になった。
+- **MEMORY-ACCESS M2 — stdlib の読み出し 130 箇所を `::<T>` 形へ移行**
+  — `core/**.t` に旧形は 0 箇所。`Vec::elem_size` は撤去できず
+  (未実装節の TREE-WALKER-GENERIC-SCOPE)。
 - **MEMORY-ACCESS M0 — `mem_move` / `mem_set` が全バックエンドで動く
   ようになった** — compiled レーンに lowering が無く
   (`cannot lower builtin yet: MemMove`)、`mem_set` の fill value は
@@ -1364,6 +1373,60 @@
   `function_index collision` panic が、候補を名指しする型エラーに
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
+
+- **MEMORY-ACCESS M4: `chunks::<N>()` と `read_uNN_le/be`** —
+  設計は [`MEMORY_ACCESS.md`](MEMORY_ACCESS.md)。M3 で範囲を答える
+  primitive は入ったが、**ブロック単位の反復と幅つきスカラー読みは
+  まだ手書き**: `hex.t` / `base64.t` は「16 バイトずつ + 端数を
+  スカラーで」を自分で書いており (同じアルゴリズムの 2 実装)、
+  `base64` / `sha256` は `(b0 as u64) * 65536u64 + ...` で桁を
+  組み立てている。`for c in s.chunks::<16>()` が端数を持つ形にすれば
+  書き手は 1 回で済み、`s.read_u32_le(i)` は endianness を型の側に
+  置ける。
+
+- **MEMORY-ACCESS M5: `Vec` / `String` / `Dict` / `Box` の
+  `data: ptr` → `Ptr<T>` / `Span<T>`** — 設計は
+  [`MEMORY_ACCESS.md`](MEMORY_ACCESS.md)。生 builtin を直接叩く場所を
+  `ptr.t` / `span.t` / `allocator.t` と extern 境界に集約すると、
+  stdlib の `unsafe fn` が **156 本 → 20 本前後**になり、
+  `--effects` の `raw_read` / `raw_write` が「本当に見るべき関数」を
+  指すようになる。P6 の狙いはこれだったが、集約先が stdlib 全体に
+  なっている。M2 で `Vec::elem_size` が撤去できなかった理由
+  (下の TREE-WALKER-GENERIC-SCOPE) が前提条件。
+
+- **MEMORY-ACCESS: 旧形 `__builtin_ptr_read(p, off)` の削除** —
+  M2 で stdlib は全部 `::<T>` 形になったので、残る使用者は旧形を
+  pin しているテストだけ (`memory_tests` / `region_tests` /
+  `conv_span` の PTR-READ-ASSIGN)。落とせば `pending_annotation` の
+  ptr_read 経路・`ptr_read_hints` (19 箇所)・`let_lowering.rs` の
+  構文特例が消える。**先に警告を出す期間を置くかは要判断** (警告に
+  すると上記テストが毎回鳴る)。
+
+- **TREE-WALKER-GENERIC-SCOPE: 入れ子の generic で `T` が解決できない**
+  ★ — `MapIter<T, U>::collect` の `val out: Vec<U> = Vec::new()` が
+  持つ型引数は `Identifier(U)` のままで、続く `out.push(v)` の中の
+  `__builtin_sizeof::<T>()` が「unbound generic parameter」で落ちる。
+  呼び出し元の scope に `U` が無いため。`Vec` が `elem_size` フィールドを
+  持ち、**最初の push が値から stride を学ぶ**形になっているのはこれの
+  回避で、MEMORY-ACCESS M2 はこれが理由で field を撤去できなかった。
+  compiled レーンは monomorph subst があるので通る。
+
+- **ZIP-ITER-GENERIC-SCOPE: method-level の型引数が turbofish から
+  見えない** — `VecIter<T>::zip<U>(other: VecIter<U>)` の中で
+  `__builtin_sizeof::<U>()` が `[E0010] unknown type \`U\`` になる
+  (`check_sizeof_type_arg` は impl の generic params と型推論 scope しか
+  見ない)。`ZipIter` が 2 つの stride を `elems` に 32bit ずつパックして
+  持っているのはこれの回避。
+
+- **IRVM-SELF-WRITEBACK-REALLOC: by-value `self` + realloc で IR VM が
+  落ちる** ★ — `unsafe fn push(self: Self, ...)` が `self.data =
+  __builtin_heap_realloc(...)` と `self.len = ...` を書き戻す形で、
+  IR VM が `value not defined` で panic する
+  (`compiler_vm/src/lib.rs:480`)。旧形 / 新形どちらの ptr_read でも
+  再現するので MEMORY-ACCESS とは独立。`interpreter/example/allocator_list.t`
+  が旧形の read を残しているのはこれを避けるため (移行すると
+  lowering が通り、プログラムが IR VM レーンに乗ってしまう)。
+  最小再現は git log の MEMORY-ACCESS M2 コミット。
 
 - **TRAIT-CONTRACT-EXPRREF: body 無しの trait method に `requires` を
   書くと壊れる** ★★ — clause の ExprRef が inheritance の先で別の節点に

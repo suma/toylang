@@ -299,37 +299,22 @@ impl String {
 
     # Byte-wise equality. Two strings are equal iff they have the
     # same length and every byte matches. Length check first so
-    # different-sized strings short-circuit without walking the
+    # different-sized strings short-circuit without touching the
     # buffer. Operator overload (`==` / `!=`) routes here via the
-    # `eq` method dispatch (frontend's struct_eq_compatible
-    # check).
+    # `eq` method dispatch (frontend's struct_eq_compatible check).
+    #
+    # One range comparison (MEMORY-ACCESS M3). This used to be a
+    # hand-written `__simd_load` loop over 16-byte chunks plus a
+    # scalar tail -- two spellings of the same comparison, in the
+    # stdlib source, where every backend had to agree on both. The
+    # vectorised version still exists; it is inside the runtime's
+    # `toy_mem_eq` now, in one place, for every caller.
     unsafe fn eq(&self, other: &String) -> bool {
         val n: u64 = self.len
         if n != other.len {
             return false
         }
-        # SIMD: 16 bytes per comparison while a whole chunk fits.
-        # The bound is `i + 16 <= n`, never `i < n`, because a
-        # vector load reads all 16 bytes -- a chunk that straddles
-        # the end of the buffer would read past the allocation.
-        var i: u64 = 0u64
-        while i + 16u64 <= n {
-            val a: u8x16 = __simd_load(self.data, i)
-            val b: u8x16 = __simd_load(other.data, i)
-            if !__simd_all(a == b) {
-                return false
-            }
-            i = i + 16u64
-        }
-        while i < n {
-            val a: u8 = __builtin_ptr_read::<u8>(self.data, i)
-            val b: u8 = __builtin_ptr_read::<u8>(other.data, i)
-            if a != b {
-                return false
-            }
-            i = i + 1u64
-        }
-        true
+        __builtin_mem_eq(self.data, other.data, n)
     }
 
     # Shared body of `to_ascii_upper` / `to_ascii_lower` (CaseConvert). Copies
@@ -772,29 +757,24 @@ impl String {
     # Offsets are bytes, like every other index into a string. UTF-8
     # is self-synchronising, so a match can only begin at a character
     # boundary and a returned offset is always one.
+    #
+    # One range search (MEMORY-ACCESS M3). The nested loop this
+    # replaced -- walk `i`, compare `m` bytes, back up -- was written
+    # out five times across this file; `toy_mem_find_seq` is the one
+    # copy left, and it is the same one on every backend.
     unsafe fn find_from(&self, needle: &String, start: u64) -> Option<u64> {
         val n: u64 = self.len
         val m: u64 = needle.len
         if start > n { return Option::None }
         if m == 0u64 { return Option::Some(start) }
         if m > n - start { return Option::None }
-        var i: u64 = start
-        while i + m <= n {
-            var matched: bool = true
-            var j: u64 = 0u64
-            while j < m {
-                val a: u8 = __builtin_ptr_read::<u8>(self.data, i + j)
-                val b: u8 = __builtin_ptr_read::<u8>(needle.data, j)
-                if a != b {
-                    matched = false
-                    break
-                }
-                j = j + 1u64
-            }
-            if matched { return Option::Some(i) }
-            i = i + 1u64
+        val from: ptr = __builtin_ptr_offset(self.data, start)
+        val at: u64 = __builtin_mem_find_seq(from, n - start, needle.data, m)
+        if at >= n - start {
+            Option::None
+        } else {
+            Option::Some(start + at)
         }
-        Option::None
     }
 
     unsafe fn find(&self, needle: &String) -> Option<u64> {

@@ -358,6 +358,12 @@ pub fn builtin_effect(func: BuiltinFunction) -> (EffectSet, &'static str) {
         MemCopy => (EffectSet::of(&[Effect::RawWrite]), "__builtin_mem_copy"),
         MemMove => (EffectSet::of(&[Effect::RawWrite]), "__builtin_mem_move"),
         MemSet => (EffectSet::of(&[Effect::RawWrite]), "__builtin_mem_set"),
+        // MEMORY-ACCESS M3: these read a range and write nothing, so
+        // they carry `RawRead` -- enough to require `unsafe fn`, and
+        // honest about which half of memory they touch.
+        MemEq => (EffectSet::of(&[Effect::RawRead]), "__builtin_mem_eq"),
+        MemFind => (EffectSet::of(&[Effect::RawRead]), "__builtin_mem_find"),
+        MemFindSeq => (EffectSet::of(&[Effect::RawRead]), "__builtin_mem_find_seq"),
         // Registers a region's final layout with the profiler: a write
         // into runtime-owned state, and one that asks about the run.
         RecordAllocatorLayout => (

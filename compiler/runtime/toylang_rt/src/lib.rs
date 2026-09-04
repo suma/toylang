@@ -2166,6 +2166,87 @@ pub unsafe extern "C" fn toy_str_eq(a: *const u8, b: *const u8) -> i8 {
     (abytes == bbytes) as i8
 }
 
+// ---------------------------------------------------------------
+// MEMORY-ACCESS M3: range operations.
+//
+// One call per *range* instead of one per element. The stdlib's
+// `Span<T>` wraps these, so a comparison or a search is a single
+// runtime call on every backend rather than a hand-written byte loop
+// in toylang -- which is what left `core/std/string.t` with five
+// copies of the same substring scan. See design-docs/MEMORY_ACCESS.md.
+//
+// They live here rather than in libc (`memcmp` / `memchr` / `memmem`)
+// so all four lanes run the same definition: `memmem` in particular is
+// not portable, and a search that answers differently on one platform
+// is not a search.
+
+/// `__builtin_mem_eq(a, b, size) -> bool`. A zero-length range is
+/// equal to itself, as `memcmp(_, _, 0)` is.
+///
+/// # Safety
+/// Both pointers must be readable for `size` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_mem_eq(a: *const u8, b: *const u8, size: u64) -> i8 {
+    if size == 0 {
+        return 1;
+    }
+    let (x, y) = unsafe {
+        (
+            core::slice::from_raw_parts(a, size as usize),
+            core::slice::from_raw_parts(b, size as usize),
+        )
+    };
+    (x == y) as i8
+}
+
+/// `__builtin_mem_find(p, len, byte) -> u64` — the index of the first
+/// `byte`, or `len` when there is none. `len` rather than a sentinel
+/// like `u64::MAX` so the caller's bound check is the same comparison
+/// either way; `Span::find` turns it into an `Option<u64>`.
+///
+/// # Safety
+/// `p` must be readable for `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_mem_find(p: *const u8, len: u64, byte: u8) -> u64 {
+    if len == 0 {
+        return 0;
+    }
+    let hay = unsafe { core::slice::from_raw_parts(p, len as usize) };
+    match hay.iter().position(|&b| b == byte) {
+        Some(i) => i as u64,
+        None => len,
+    }
+}
+
+/// `__builtin_mem_find_seq(hay, hay_len, needle, needle_len) -> u64` —
+/// the index of the first occurrence of the needle, or `hay_len` when
+/// there is none. An empty needle is found at 0 (the convention every
+/// substring search follows); a needle longer than the haystack is not
+/// found.
+///
+/// # Safety
+/// Both pointers must be readable for their lengths.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_mem_find_seq(
+    hay: *const u8,
+    hay_len: u64,
+    needle: *const u8,
+    needle_len: u64,
+) -> u64 {
+    if needle_len == 0 {
+        return 0;
+    }
+    if needle_len > hay_len {
+        return hay_len;
+    }
+    let h = unsafe { core::slice::from_raw_parts(hay, hay_len as usize) };
+    let n = unsafe { core::slice::from_raw_parts(needle, needle_len as usize) };
+    match h.windows(n.len()).position(|w| w == n) {
+        Some(i) => i as u64,
+        None => hay_len,
+    }
+}
+
 /// `__builtin_str_from_bytes(p, len)` — exported wrapper over the
 /// allocator above so codegen can call it directly. Copies, so the
 /// resulting str is unaffected by later writes to the buffer.

@@ -48,8 +48,10 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
 
-    /// MEMORY-ACCESS M0: check the arguments of the bulk-memory
-    /// builtins (`mem_copy` / `mem_move` / `mem_set`).
+    /// MEMORY-ACCESS M0/M3: check the arguments of the memory
+    /// builtins -- the three that move a range (`mem_copy` /
+    /// `mem_move` / `mem_set`) and the three that answer about one
+    /// (`mem_eq` / `mem_find` / `mem_find_seq`).
     ///
     /// `visit_builtin_call` answers most builtins straight out of the
     /// signature table **without visiting the arguments**, so the
@@ -65,39 +67,62 @@ impl<'a> TypeCheckerVisitor<'a> {
         func: &BuiltinFunction,
         args: &Vec<ExprRef>,
     ) -> Result<TypeDecl, TypeCheckError> {
-        let (name, expected): (&str, [TypeDecl; 3]) = match func {
+        use TypeDecl::{Bool, Ptr, UInt64, UInt8, Unit};
+        // (name, [(expected type, what the argument is)], result type)
+        let (name, params, result): (&str, &[(TypeDecl, &str)], TypeDecl) = match func {
             BuiltinFunction::MemCopy => (
                 "__builtin_mem_copy",
-                [TypeDecl::Ptr, TypeDecl::Ptr, TypeDecl::UInt64],
+                &[(Ptr, "source"), (Ptr, "destination"), (UInt64, "size")],
+                Unit,
             ),
             BuiltinFunction::MemMove => (
                 "__builtin_mem_move",
-                [TypeDecl::Ptr, TypeDecl::Ptr, TypeDecl::UInt64],
+                &[(Ptr, "source"), (Ptr, "destination"), (UInt64, "size")],
+                Unit,
             ),
             BuiltinFunction::MemSet => (
                 "__builtin_mem_set",
-                [TypeDecl::Ptr, TypeDecl::UInt8, TypeDecl::UInt64],
+                &[(Ptr, "destination"), (UInt8, "fill byte"), (UInt64, "size")],
+                Unit,
+            ),
+            // MEMORY-ACCESS M3: the range questions.
+            BuiltinFunction::MemEq => (
+                "__builtin_mem_eq",
+                &[(Ptr, "left"), (Ptr, "right"), (UInt64, "size")],
+                Bool,
+            ),
+            BuiltinFunction::MemFind => (
+                "__builtin_mem_find",
+                &[(Ptr, "haystack"), (UInt64, "length"), (UInt8, "byte")],
+                UInt64,
+            ),
+            BuiltinFunction::MemFindSeq => (
+                "__builtin_mem_find_seq",
+                &[
+                    (Ptr, "haystack"),
+                    (UInt64, "haystack length"),
+                    (Ptr, "needle"),
+                    (UInt64, "needle length"),
+                ],
+                UInt64,
             ),
             _ => unreachable!("check_memory_builtin_args was handed another builtin"),
         };
-        let roles: [&str; 3] = match func {
-            BuiltinFunction::MemSet => ["destination", "fill byte", "size"],
-            _ => ["source", "destination", "size"],
-        };
-        if args.len() != 3 {
+        if args.len() != params.len() {
+            let roles: Vec<&str> = params.iter().map(|(_, role)| *role).collect();
             return Err(TypeCheckError::generic_error(&format!(
-                "{name} takes 3 arguments ({}, {}, {}), got {}",
-                roles[0],
-                roles[1],
-                roles[2],
+                "{name} takes {} arguments ({}), got {}",
+                params.len(),
+                roles.join(", "),
                 args.len()
             )));
         }
-        for ((arg, want), role) in args.iter().zip(expected.iter()).zip(roles.iter()) {
+        for (arg, (want, role)) in args.iter().zip(params.iter()) {
             self.expect_builtin_arg(arg, want, name, role)?;
         }
-        Ok(TypeDecl::Unit)
+        Ok(result)
     }
+
 
     /// MEMORY-ACCESS M1: `__builtin_ptr_read::<T>(p, offset) -> T`.
     ///

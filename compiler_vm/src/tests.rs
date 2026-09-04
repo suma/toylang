@@ -188,6 +188,46 @@ impl VmHost for TestHost {
         }
     }
 
+    fn mem_eq(&self, a: u64, b: u64, size: u64) -> bool {
+        let h = self.heap.borrow();
+        let (x, y, n) = (a as usize, b as usize, size as usize);
+        x + n <= h.len() && y + n <= h.len() && h[x..x + n] == h[y..y + n]
+    }
+
+    fn mem_find(&self, ptr: u64, len: u64, byte: u8) -> u64 {
+        let h = self.heap.borrow();
+        let (p, n) = (ptr as usize, len as usize);
+        if p + n > h.len() {
+            return len;
+        }
+        h[p..p + n].iter().position(|&b| b == byte).map(|i| i as u64).unwrap_or(len)
+    }
+
+    fn mem_find_seq(&self, hay: u64, hay_len: u64, needle: u64, needle_len: u64) -> u64 {
+        if needle_len == 0 {
+            return 0;
+        }
+        if needle_len > hay_len {
+            return hay_len;
+        }
+        let h = self.heap.borrow();
+        let (a, an, b, bn) = (
+            hay as usize,
+            hay_len as usize,
+            needle as usize,
+            needle_len as usize,
+        );
+        if a + an > h.len() || b + bn > h.len() {
+            return hay_len;
+        }
+        let n = h[b..b + bn].to_vec();
+        h[a..a + an]
+            .windows(bn)
+            .position(|w| w == n.as_slice())
+            .map(|i| i as u64)
+            .unwrap_or(hay_len)
+    }
+
     fn read_byte_at(&self, addr: u64, offset: u64) -> u8 {
         if let Some((slot, _)) = self.typed.borrow().get(&(addr as usize, offset as usize)) {
             return unsafe { slot.u64 } as u8;

@@ -573,6 +573,10 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     // STR-INTERP-AOT: str runtime helpers.
     jit_builder.symbol("toy_str_concat", toylang_rt::toy_str_concat as *const u8);
     jit_builder.symbol("toy_str_from_bytes", toylang_rt::toy_str_from_bytes as *const u8);
+    // MEMORY-ACCESS M3: the range questions.
+    jit_builder.symbol("toy_mem_eq", toylang_rt::toy_mem_eq as *const u8);
+    jit_builder.symbol("toy_mem_find", toylang_rt::toy_mem_find as *const u8);
+    jit_builder.symbol("toy_mem_find_seq", toylang_rt::toy_mem_find_seq as *const u8);
     jit_builder.symbol("toy_str_eq", toylang_rt::toy_str_eq as *const u8);
     jit_builder.symbol("toy_to_string_i64", toylang_rt::toy_to_string_i64 as *const u8);
     jit_builder.symbol("toy_to_string_u64", toylang_rt::toy_to_string_u64 as *const u8);

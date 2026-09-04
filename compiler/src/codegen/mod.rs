@@ -246,6 +246,12 @@ pub(crate) struct CodegenSession<M: Module> {
     /// builtins existed only in the tree-walker.
     libc_memmove: cranelift_module::FuncId,
     libc_memset: cranelift_module::FuncId,
+    /// MEMORY-ACCESS M3: the range questions, answered by
+    /// `toylang_rt` rather than libc so every lane runs one
+    /// definition.
+    rt_mem_eq: cranelift_module::FuncId,
+    rt_mem_find: cranelift_module::FuncId,
+    rt_mem_find_seq: cranelift_module::FuncId,
     /// libm `double pow(double, double)` — used by `BinOp::Pow`.
     libm_pow: cranelift_module::FuncId,
     /// libm transcendentals — `double sin(double)` etc. Used by the
@@ -619,6 +625,37 @@ impl<M: Module> CodegenSession<M> {
         let libc_memset = module
             .declare_function("memset", CLinkage::Import, &memset_sig)
             .map_err(|e| format!("declare memset: {e}"))?;
+
+        // MEMORY-ACCESS M3: the range questions live in `toylang_rt`,
+        // not libc -- `memmem` is not portable, and one definition per
+        // operation is what keeps the four lanes agreeing.
+        let mut mem_eq_sig = Signature::new(call_conv);
+        mem_eq_sig.params.push(AbiParam::new(types::I64)); // a
+        mem_eq_sig.params.push(AbiParam::new(types::I64)); // b
+        mem_eq_sig.params.push(AbiParam::new(types::I64)); // size
+        mem_eq_sig.returns.push(AbiParam::new(types::I8).uext());
+        let rt_mem_eq = module
+            .declare_function("toy_mem_eq", CLinkage::Import, &mem_eq_sig)
+            .map_err(|e| format!("declare toy_mem_eq: {e}"))?;
+
+        let mut mem_find_sig = Signature::new(call_conv);
+        mem_find_sig.params.push(AbiParam::new(types::I64)); // p
+        mem_find_sig.params.push(AbiParam::new(types::I64)); // len
+        mem_find_sig.params.push(AbiParam::new(types::I8).uext()); // byte
+        mem_find_sig.returns.push(AbiParam::new(types::I64));
+        let rt_mem_find = module
+            .declare_function("toy_mem_find", CLinkage::Import, &mem_find_sig)
+            .map_err(|e| format!("declare toy_mem_find: {e}"))?;
+
+        let mut mem_find_seq_sig = Signature::new(call_conv);
+        mem_find_seq_sig.params.push(AbiParam::new(types::I64)); // hay
+        mem_find_seq_sig.params.push(AbiParam::new(types::I64)); // hay_len
+        mem_find_seq_sig.params.push(AbiParam::new(types::I64)); // needle
+        mem_find_seq_sig.params.push(AbiParam::new(types::I64)); // needle_len
+        mem_find_seq_sig.returns.push(AbiParam::new(types::I64));
+        let rt_mem_find_seq = module
+            .declare_function("toy_mem_find_seq", CLinkage::Import, &mem_find_seq_sig)
+            .map_err(|e| format!("declare toy_mem_find_seq: {e}"))?;
 
         // (`libc_strlen` was used by an earlier draft of
         // `__builtin_str_len`; the str runtime value now points at
@@ -1000,6 +1037,9 @@ impl<M: Module> CodegenSession<M> {
             libc_memcpy,
             libc_memmove,
             libc_memset,
+            rt_mem_eq,
+            rt_mem_find,
+            rt_mem_find_seq,
             libm_pow,
             libm_sin,
             libm_cos,
@@ -1958,6 +1998,9 @@ struct RuntimeRefs {
     memcpy: cranelift_codegen::ir::FuncRef,
     memmove: cranelift_codegen::ir::FuncRef,
     memset: cranelift_codegen::ir::FuncRef,
+    mem_eq: cranelift_codegen::ir::FuncRef,
+    mem_find: cranelift_codegen::ir::FuncRef,
+    mem_find_seq: cranelift_codegen::ir::FuncRef,
     print_i64: cranelift_codegen::ir::FuncRef,
     println_i64: cranelift_codegen::ir::FuncRef,
     print_u64: cranelift_codegen::ir::FuncRef,

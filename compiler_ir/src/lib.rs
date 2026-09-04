@@ -1758,6 +1758,16 @@ pub enum InstKind {
     /// `__builtin_mem_set(dest, byte, size)` — libc memset. `byte` is
     /// a `u8` value; codegen widens it to the `int` libc expects.
     MemSet { dest: ValueId, byte: ValueId, size: ValueId },
+    /// MEMORY-ACCESS M3: the range *questions*. Each is one call into
+    /// `toylang_rt` (`toy_mem_eq` / `toy_mem_find` / `toy_mem_find_seq`)
+    /// rather than libc, so all four lanes run one definition --
+    /// `memmem` in particular is not portable, and a search that
+    /// answers differently per platform is not a search.
+    MemEq { a: ValueId, b: ValueId, size: ValueId },
+    /// Index of the first `byte`, or `len` when absent.
+    MemFind { ptr: ValueId, len: ValueId, byte: ValueId },
+    /// Index of the first occurrence of the needle, or `hay_len`.
+    MemFindSeq { hay: ValueId, hay_len: ValueId, needle: ValueId, needle_len: ValueId },
     /// Stage 1 of `&` references: call to a `&mut self` method.
     /// The cranelift call returns
     /// `(user_return_leaves..., self_writeback_leaves...)`; codegen
@@ -2263,6 +2273,22 @@ impl InstKind {
                 one(dest);
                 one(byte);
                 one(size);
+            }
+            InstKind::MemEq { a, b, size } => {
+                one(a);
+                one(b);
+                one(size);
+            }
+            InstKind::MemFind { ptr, len, byte } => {
+                one(ptr);
+                one(len);
+                one(byte);
+            }
+            InstKind::MemFindSeq { hay, hay_len, needle, needle_len } => {
+                one(hay);
+                one(hay_len);
+                one(needle);
+                one(needle_len);
             }
             InstKind::RecordAllocatorLayout { name, managed, live, free_blocks, largest } => {
                 one(name);
@@ -2815,6 +2841,15 @@ impl fmt::Display for DisplayInst<'_> {
             }
             InstKind::MemSet { dest, byte, size } => {
                 write!(f, "mem_set {dest}, {byte}, {size}")
+            }
+            InstKind::MemEq { a, b, size } => {
+                write!(f, "mem_eq {a}, {b}, {size}")
+            }
+            InstKind::MemFind { ptr, len, byte } => {
+                write!(f, "mem_find {ptr}, {len}, {byte}")
+            }
+            InstKind::MemFindSeq { hay, hay_len, needle, needle_len } => {
+                write!(f, "mem_find_seq {hay}, {hay_len}, {needle}, {needle_len}")
             }
             InstKind::CallWithSelfWriteback { target, args, ret_dest, self_dests, .. } => {
                 let arg_str = args.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ");

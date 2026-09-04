@@ -405,6 +405,34 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
             let n = unsafe { vm.read_value(*size).u64 };
             host.mem_move(s, d, n);
         }
+        InstKind::MemEq { a, b, size } => {
+            let av = unsafe { vm.read_value(*a).u64 };
+            let bv = unsafe { vm.read_value(*b).u64 };
+            let n = unsafe { vm.read_value(*size).u64 };
+            let eq = host.mem_eq(av, bv, n);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_bool(eq));
+            }
+        }
+        InstKind::MemFind { ptr, len, byte } => {
+            let p = unsafe { vm.read_value(*ptr).u64 };
+            let n = unsafe { vm.read_value(*len).u64 };
+            let b = unsafe { vm.read_value(*byte).u64 } as u8;
+            let at = host.mem_find(p, n, b);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(at));
+            }
+        }
+        InstKind::MemFindSeq { hay, hay_len, needle, needle_len } => {
+            let h = unsafe { vm.read_value(*hay).u64 };
+            let hn = unsafe { vm.read_value(*hay_len).u64 };
+            let n = unsafe { vm.read_value(*needle).u64 };
+            let nn = unsafe { vm.read_value(*needle_len).u64 };
+            let at = host.mem_find_seq(h, hn, n, nn);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(at));
+            }
+        }
         InstKind::MemSet { dest, byte, size } => {
             // The fill value is a `u8`; the slot carries it in the
             // low byte.

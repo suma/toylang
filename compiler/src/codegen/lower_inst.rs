@@ -118,6 +118,9 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             InstKind::MemCopy { .. }
             | InstKind::MemMove { .. }
             | InstKind::MemSet { .. }
+            | InstKind::MemEq { .. }
+            | InstKind::MemFind { .. }
+            | InstKind::MemFindSeq { .. }
             | InstKind::AllocPush { .. }
             | InstKind::AllocPop
             | InstKind::AllocCurrent
@@ -1523,6 +1526,48 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 self.builder
                     .ins()
                     .call(self.runtime.memset, &[dest_v, byte_i32, size_v]);
+            }
+            InstKind::MemEq { a, b, size } => {
+                let a_v = self.value(*a);
+                let b_v = self.value(*b);
+                let size_v = self.value(*size);
+                let call = self.builder.ins().call(self.runtime.mem_eq, &[a_v, b_v, size_v]);
+                let result = self.builder.inst_results(call)[0];
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, result);
+                }
+            }
+            InstKind::MemFind { ptr, len, byte } => {
+                let p = self.value(*ptr);
+                let n = self.value(*len);
+                let b = self.value(*byte);
+                // The helper takes the byte at its own width; the
+                // value arrives as an I8 already.
+                let b_ty = self.builder.func.dfg.value_type(b);
+                let b8 = if b_ty == types::I8 {
+                    b
+                } else {
+                    self.builder.ins().ireduce(types::I8, b)
+                };
+                let call = self.builder.ins().call(self.runtime.mem_find, &[p, n, b8]);
+                let result = self.builder.inst_results(call)[0];
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, result);
+                }
+            }
+            InstKind::MemFindSeq { hay, hay_len, needle, needle_len } => {
+                let h = self.value(*hay);
+                let hn = self.value(*hay_len);
+                let n = self.value(*needle);
+                let nn = self.value(*needle_len);
+                let call = self
+                    .builder
+                    .ins()
+                    .call(self.runtime.mem_find_seq, &[h, hn, n, nn]);
+                let result = self.builder.inst_results(call)[0];
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, result);
+                }
             }
             // #121 Phase B-min: active-allocator stack ops.
             // `AllocPush(handle)` and `AllocPop` emit a libc call

@@ -132,7 +132,12 @@ fn inst_supported(kind: &InstKind) -> bool {
         // MEMORY-ACCESS M0: `mem_move` / `mem_set` reach the same
         // heap through the host, so they run here too.
         | InstKind::MemMove { .. }
-        | InstKind::MemSet { .. } => true,
+        | InstKind::MemSet { .. }
+        // MEMORY-ACCESS M3: the range questions go through the host
+        // like the moves do.
+        | InstKind::MemEq { .. }
+        | InstKind::MemFind { .. }
+        | InstKind::MemFindSeq { .. } => true,
     }
 }
 

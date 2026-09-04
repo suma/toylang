@@ -1661,6 +1661,14 @@ impl<'a, 'b> State<'a, 'b> {
                     // comes from the call rather than the hint map.
                     // Eligibility already narrowed `T` to the four
                     // this JIT can read.
+                    // Rejected by eligibility; unreachable here.
+                    BuiltinFunction::MemEq
+                    | BuiltinFunction::MemFind
+                    | BuiltinFunction::MemFindSeq => Err(
+                        "the mem_eq / mem_find / mem_find_seq builtins are not supported in \
+                         the interpreter JIT"
+                            .to_string(),
+                    ),
                     BuiltinFunction::PtrReadTyped(ref ty) => {
                         let expected = ScalarTy::from_type_decl(ty)
                             .ok_or_else(|| "ptr_read::<T> element type unsupported".to_string())?;

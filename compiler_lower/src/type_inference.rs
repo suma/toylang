@@ -535,6 +535,10 @@ impl<'a> FunctionLower<'a> {
                 frontend::ast::BuiltinFunction::DefaultAllocator
                 | frontend::ast::BuiltinFunction::CurrentAllocator => Some(Type::U64),
                 frontend::ast::BuiltinFunction::PtrIsNull => Some(Type::Bool),
+                // MEMORY-ACCESS M3: the range questions.
+                frontend::ast::BuiltinFunction::MemEq => Some(Type::Bool),
+                frontend::ast::BuiltinFunction::MemFind
+                | frontend::ast::BuiltinFunction::MemFindSeq => Some(Type::U64),
                 frontend::ast::BuiltinFunction::PtrEq => Some(Type::Bool),
                 frontend::ast::BuiltinFunction::NullPtr => Some(Type::U64),
                 // `__builtin_ptr_offset(base, offset) -> ptr` is a

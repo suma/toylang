@@ -2548,6 +2548,9 @@ impl<'a> FunctionLower<'a> {
             | BuiltinFunction::MemCopy
             | BuiltinFunction::MemMove
             | BuiltinFunction::MemSet
+            | BuiltinFunction::MemEq
+            | BuiltinFunction::MemFind
+            | BuiltinFunction::MemFindSeq
             | BuiltinFunction::CurrentAllocator
             | BuiltinFunction::DefaultAllocator => self.lower_builtin_allocator_and_memory(func, args),
             BuiltinFunction::SizeOf
@@ -3023,6 +3026,48 @@ impl<'a> FunctionLower<'a> {
                 let size = self.lower_expr(&args[2])?
                     .ok_or_else(|| "mem_set size produced no value".to_string())?;
                 Ok(self.emit(InstKind::MemSet { dest, byte, size }, None))
+            }
+            BuiltinFunction::MemEq => {
+                // MEMORY-ACCESS M3: `__builtin_mem_eq(a, b, size) -> bool`.
+                expect_args(args, 3, "__builtin_mem_eq takes 3 args (a, b, size)")?;
+                let a = self.lower_expr(&args[0])?
+                    .ok_or_else(|| "mem_eq a produced no value".to_string())?;
+                let b = self.lower_expr(&args[1])?
+                    .ok_or_else(|| "mem_eq b produced no value".to_string())?;
+                let size = self.lower_expr(&args[2])?
+                    .ok_or_else(|| "mem_eq size produced no value".to_string())?;
+                Ok(self.emit(InstKind::MemEq { a, b, size }, Some(Type::Bool)))
+            }
+            BuiltinFunction::MemFind => {
+                // `__builtin_mem_find(p, len, byte) -> u64`.
+                expect_args(args, 3, "__builtin_mem_find takes 3 args (p, len, byte)")?;
+                let ptr = self.lower_expr(&args[0])?
+                    .ok_or_else(|| "mem_find pointer produced no value".to_string())?;
+                let len = self.lower_expr(&args[1])?
+                    .ok_or_else(|| "mem_find length produced no value".to_string())?;
+                let byte = self.lower_expr(&args[2])?
+                    .ok_or_else(|| "mem_find byte produced no value".to_string())?;
+                Ok(self.emit(InstKind::MemFind { ptr, len, byte }, Some(Type::U64)))
+            }
+            BuiltinFunction::MemFindSeq => {
+                // `__builtin_mem_find_seq(hay, hay_len, needle, needle_len) -> u64`.
+                expect_args(
+                    args,
+                    4,
+                    "__builtin_mem_find_seq takes 4 args (hay, hay_len, needle, needle_len)",
+                )?;
+                let hay = self.lower_expr(&args[0])?
+                    .ok_or_else(|| "mem_find_seq haystack produced no value".to_string())?;
+                let hay_len = self.lower_expr(&args[1])?
+                    .ok_or_else(|| "mem_find_seq haystack length produced no value".to_string())?;
+                let needle = self.lower_expr(&args[2])?
+                    .ok_or_else(|| "mem_find_seq needle produced no value".to_string())?;
+                let needle_len = self.lower_expr(&args[3])?
+                    .ok_or_else(|| "mem_find_seq needle length produced no value".to_string())?;
+                Ok(self.emit(
+                    InstKind::MemFindSeq { hay, hay_len, needle, needle_len },
+                    Some(Type::U64),
+                ))
             }
             BuiltinFunction::CurrentAllocator => {
                 // #121 Phase B-min: read the top of the runtime

@@ -4044,6 +4044,9 @@ These always go through the active allocator:
 | `__builtin_mem_copy(src: ptr, dst: ptr, size: u64)` | `-> ()` |
 | `__builtin_mem_move(src: ptr, dst: ptr, size: u64)` | `-> ()` |
 | `__builtin_mem_set(p: ptr, byte: u8, size: u64)` | `-> ()` |
+| `__builtin_mem_eq(a: ptr, b: ptr, size: u64)` | `-> bool` |
+| `__builtin_mem_find(p: ptr, len: u64, byte: u8)` | `-> u64` (index, or `len` when absent) |
+| `__builtin_mem_find_seq(hay: ptr, hay_len: u64, needle: ptr, needle_len: u64)` | `-> u64` (index, or `hay_len` when absent) |
 | `__builtin_ptr_offset(p: ptr, bytes: u64)` | `-> ptr` (address arithmetic; no allocation) |
 | `__builtin_ptr_eq(a: ptr, b: ptr)` | `-> bool` (address equality) |
 | `__builtin_null_ptr()` | `-> ptr` (address 0; `__builtin_heap_alloc(0u64)` may return non-null, so use this when you need a portable null) |
@@ -4073,13 +4076,27 @@ reinterpretation of the range, which is why both are `unsafe`.
 
 `__builtin_ptr_write` accepts any type.
 
-The `mem_*` family moves a whole range at once. `mem_copy` requires the
-ranges not to overlap; `mem_move` allows it. A `size` of zero is a
-no-op rather than a fault, as it is for the libc functions they name.
-`mem_set`'s fill value is one byte, and it takes its type from the
-argument position like any other argument, so `__builtin_mem_set(p, 0,
-n)` and `__builtin_mem_set(p, '0', n)` both write the byte they read
-as.
+The `mem_*` family works on a whole range at once — one call per
+range, not per element.
+
+Three of them move bytes. `mem_copy` requires the ranges not to
+overlap; `mem_move` allows it. A `size` of zero is a no-op rather than
+a fault, as it is for the libc functions they name. `mem_set`'s fill
+value is one byte, and it takes its type from the argument position
+like any other argument, so `__builtin_mem_set(p, 0, n)` and
+`__builtin_mem_set(p, '0', n)` both write the byte they read as.
+
+Three answer about a range. `mem_eq` compares one; `mem_find` looks
+for a byte and `mem_find_seq` for a sequence of them. **A search that
+finds nothing answers with the length it searched**, not with a
+sentinel, so the caller's bound check is the same comparison either
+way; `Span<u8>`'s `find` / `find_seq` turn that into an `Option<u64>`.
+An empty needle is found at 0, and a needle longer than the haystack
+is not found. These three are defined in the toylang runtime rather
+than delegated to libc, so every backend runs one definition of each.
+
+Prefer the `Span<T>` methods below to the raw builtins: they carry the
+length, so the range they hand down is the one that was allocated.
 
 The builtins that dereference (`ptr_read` / `ptr_write` / the `mem_*`
 family) may only appear in a body declared
@@ -4168,6 +4185,34 @@ shares its pass; `--explain E0026` has the reasoning.
 
 Two hazards stay uncovered: a window captured by a closure, and one
 held across a `push` that reallocates. Neither is lifetime-shaped.
+
+**Range operations.** A span also answers about, and writes, its whole
+range at once — one call rather than a loop:
+
+```rust
+dst.copy_from(src)     # the ranges must not overlap (memcpy)
+dst.move_from(src)     # they may (memmove)
+a.bytes_eq(b)          # same length and same bytes
+```
+
+Both copies require the lengths to match; a copy that quietly did the
+shorter of the two would hide the mistake in the half it skipped.
+`bytes_eq` compares *bytes*, which is what a window over raw memory
+can answer: for `f64` elements that is not IEEE equality, and for a
+`T` holding pointers it says nothing about what they point at.
+
+A `Span<u8>` additionally searches and fills:
+
+```rust
+val at: Option<u64> = hay.find(0x2Cu8)      # first byte
+val at: Option<u64> = hay.find_seq(needle)  # first occurrence
+buf.fill(0u8)
+```
+
+`find_seq` finds an empty needle at 0 and never finds one longer than
+the window. These are the operations `String::eq` and
+`String::find_from` are built on, so a search is one runtime call on
+every backend instead of a byte loop written out per caller.
 
 Converting to and from `str`:
 

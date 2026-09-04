@@ -796,6 +796,20 @@ pub enum BuiltinFunction {
     MemMove,      // __builtin_mem_move(src: ptr, dest: ptr, size: u64) -> unit
     MemSet,       // __builtin_mem_set(pointer: ptr, value: u8, size: u64) -> unit
 
+    // MEMORY-ACCESS M3: range operations that *answer* about a range
+    // rather than moving one. Each is a single call per range on
+    // every backend (`toylang_rt`'s `toy_mem_*`), which is what the
+    // stdlib's `Span<T>` wrappers exist to hand out -- the hand-written
+    // byte loops they replace had the same scan spelled five times in
+    // `core/std/string.t` alone.
+    MemEq,        // __builtin_mem_eq(a: ptr, b: ptr, size: u64) -> bool
+    // The index of the first `byte`, or `len` when absent. A length
+    // rather than a sentinel, so the caller's bound check is the same
+    // comparison either way.
+    MemFind,      // __builtin_mem_find(p: ptr, len: u64, byte: u8) -> u64
+    // The index of the first occurrence of the needle, or `hay_len`.
+    MemFindSeq,   // __builtin_mem_find_seq(hay: ptr, hay_len: u64, needle: ptr, needle_len: u64) -> u64
+
     // Allocator context
     CurrentAllocator,      // __builtin_current_allocator() -> Allocator on top of stack (default handle when unset)
     DefaultAllocator,      // __builtin_default_allocator() -> Allocator referring to the global/default allocator
@@ -940,6 +954,9 @@ pub struct BuiltinFunctionSymbols {
     pub mem_copy: DefaultSymbol,
     pub mem_move: DefaultSymbol,
     pub mem_set: DefaultSymbol,
+    pub mem_eq: DefaultSymbol,
+    pub mem_find: DefaultSymbol,
+    pub mem_find_seq: DefaultSymbol,
 
     // Allocator context
     pub current_allocator: DefaultSymbol,
@@ -1033,6 +1050,9 @@ impl BuiltinFunctionSymbols {
             mem_copy: interner.get_or_intern("__builtin_mem_copy"),
             mem_move: interner.get_or_intern("__builtin_mem_move"),
             mem_set: interner.get_or_intern("__builtin_mem_set"),
+            mem_eq: interner.get_or_intern("__builtin_mem_eq"),
+            mem_find: interner.get_or_intern("__builtin_mem_find"),
+            mem_find_seq: interner.get_or_intern("__builtin_mem_find_seq"),
             current_allocator: interner.get_or_intern("__builtin_current_allocator"),
             default_allocator: interner.get_or_intern("__builtin_default_allocator"),
             mem_stats: MemStat::ALL
@@ -1095,6 +1115,9 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.mem_copy { Some(BuiltinFunction::MemCopy) }
         else if symbol == self.mem_move { Some(BuiltinFunction::MemMove) }
         else if symbol == self.mem_set { Some(BuiltinFunction::MemSet) }
+        else if symbol == self.mem_eq { Some(BuiltinFunction::MemEq) }
+        else if symbol == self.mem_find { Some(BuiltinFunction::MemFind) }
+        else if symbol == self.mem_find_seq { Some(BuiltinFunction::MemFindSeq) }
         else if symbol == self.current_allocator { Some(BuiltinFunction::CurrentAllocator) }
         else if symbol == self.default_allocator { Some(BuiltinFunction::DefaultAllocator) }
         else if symbol == self.print { Some(BuiltinFunction::Print) }

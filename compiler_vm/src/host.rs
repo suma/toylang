@@ -113,6 +113,18 @@ pub trait VmHost {
     /// `memset(dest, byte, size)` — fill a range with one byte.
     fn mem_set(&self, dest: u64, byte: u8, size: u64);
 
+    // MEMORY-ACCESS M3: the range questions. One host call per range,
+    // matching `toylang_rt`'s `toy_mem_*` definitions byte for byte.
+
+    /// Whether two ranges hold the same bytes.
+    fn mem_eq(&self, a: u64, b: u64, size: u64) -> bool;
+
+    /// Index of the first `byte` in the range, or `len` when absent.
+    fn mem_find(&self, ptr: u64, len: u64, byte: u8) -> u64;
+
+    /// Index of the first occurrence of the needle, or `hay_len`.
+    fn mem_find_seq(&self, hay: u64, hay_len: u64, needle: u64, needle_len: u64) -> u64;
+
     /// One byte of the heap, typed slots consulted first (a byte
     /// written through a wider type truncates, matching a byte
     /// buffer).

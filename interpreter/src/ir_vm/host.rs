@@ -182,6 +182,58 @@ impl VmHost for InterpreterHost {
         let _ = with_heap(|h| h.set_memory(dest as usize, byte, size as usize));
     }
 
+    fn mem_eq(&self, a: u64, b: u64, size: u64) -> bool {
+        if size == 0 {
+            return true;
+        }
+        with_heap(|h| {
+            let (x, y) = (
+                h.read_bytes_raw(a as usize, size as usize),
+                h.read_bytes_raw(b as usize, size as usize),
+            );
+            match (x, y) {
+                (Some(x), Some(y)) => x == y,
+                _ => false,
+            }
+        })
+        .unwrap_or(false)
+    }
+
+    fn mem_find(&self, ptr: u64, len: u64, byte: u8) -> u64 {
+        if len == 0 {
+            return 0;
+        }
+        with_heap(|h| match h.read_bytes_raw(ptr as usize, len as usize) {
+            Some(hay) => hay.iter().position(|&b| b == byte).map(|i| i as u64).unwrap_or(len),
+            None => len,
+        })
+        .unwrap_or(len)
+    }
+
+    fn mem_find_seq(&self, hay: u64, hay_len: u64, needle: u64, needle_len: u64) -> u64 {
+        if needle_len == 0 {
+            return 0;
+        }
+        if needle_len > hay_len {
+            return hay_len;
+        }
+        with_heap(|h| {
+            let (a, b) = (
+                h.read_bytes_raw(hay as usize, hay_len as usize),
+                h.read_bytes_raw(needle as usize, needle_len as usize),
+            );
+            match (a, b) {
+                (Some(a), Some(b)) => a
+                    .windows(b.len())
+                    .position(|w| w == b.as_slice())
+                    .map(|i| i as u64)
+                    .unwrap_or(hay_len),
+                _ => hay_len,
+            }
+        })
+        .unwrap_or(hay_len)
+    }
+
     fn read_byte_at(&self, addr: u64, offset: u64) -> u8 {
         with_heap(|h| h.read_byte_at(addr as usize, offset as usize)).unwrap_or(0)
     }

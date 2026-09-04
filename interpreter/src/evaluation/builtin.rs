@@ -520,6 +520,49 @@ impl EvaluationContext<'_> {
         Some(build(raw))
     }
 
+    /// One argument of a memory builtin, evaluated and unwrapped.
+    ///
+    /// The `mem_*` builtins take only scalars, so a control-flow
+    /// result (`break` / `return` inside an argument) has nowhere
+    /// sensible to go and is reported rather than silently dropped --
+    /// the older arms wrote this out per argument with `try_value!`.
+    fn eval_scalar_arg(
+        &mut self,
+        arg: &ExprRef,
+        who: &str,
+    ) -> Result<crate::object::RcObject, InterpreterError> {
+        match self.evaluate(arg)? {
+            EvaluationResult::Value(v) => Ok(v.into_rc()),
+            _ => Err(InterpreterError::InternalError(format!(
+                "{who}: argument did not produce a value"
+            ))),
+        }
+    }
+
+    fn eval_pointer_arg(&mut self, arg: &ExprRef, who: &str) -> Result<usize, InterpreterError> {
+        let obj = self.eval_scalar_arg(arg, who)?;
+        let addr = obj.borrow().try_unwrap_pointer().map_err(|_| {
+            InterpreterError::InternalError(format!("{who} expects a pointer argument"))
+        })?;
+        Ok(addr)
+    }
+
+    fn eval_u64_arg(&mut self, arg: &ExprRef, who: &str) -> Result<u64, InterpreterError> {
+        let obj = self.eval_scalar_arg(arg, who)?;
+        let v = obj.borrow().try_unwrap_uint64().map_err(|_| {
+            InterpreterError::InternalError(format!("{who} expects a u64 argument"))
+        })?;
+        Ok(v)
+    }
+
+    fn eval_u8_arg(&mut self, arg: &ExprRef, who: &str) -> Result<u8, InterpreterError> {
+        let obj = self.eval_scalar_arg(arg, who)?;
+        let v = obj.borrow().try_unwrap_uint8().map_err(|_| {
+            InterpreterError::InternalError(format!("{who} expects a u8 argument"))
+        })?;
+        Ok(v)
+    }
+
     fn expect_args(name: &str, args: &[ExprRef], n: usize) -> Result<(), InterpreterError> {
         if args.len() == n {
             return Ok(());
@@ -586,6 +629,9 @@ impl EvaluationContext<'_> {
             | BuiltinFunction::MemCopy
             | BuiltinFunction::MemMove
             | BuiltinFunction::MemSet
+            | BuiltinFunction::MemEq
+            | BuiltinFunction::MemFind
+            | BuiltinFunction::MemFindSeq
             | BuiltinFunction::CurrentAllocator
             | BuiltinFunction::DefaultAllocator => self.builtin_allocator_and_memory(func, args),
             BuiltinFunction::SizeOf
@@ -1229,6 +1275,68 @@ impl EvaluationContext<'_> {
             } else {
                 Err(InterpreterError::InternalError("Invalid memory access in mem_set".to_string()))
             }
+        }
+
+        // MEMORY-ACCESS M3: the range questions. Same definitions as
+        // `toylang_rt`'s `toy_mem_*` -- one call per range, and one
+        // answer for every lane.
+        BuiltinFunction::MemEq => {
+            Self::expect_args("mem_eq", args, 3)?;
+            let a = self.eval_pointer_arg(&args[0], "mem_eq")?;
+            let b = self.eval_pointer_arg(&args[1], "mem_eq")?;
+            let size = self.eval_u64_arg(&args[2], "mem_eq")? as usize;
+            if size == 0 {
+                return Ok(EvaluationResult::Value((Object::Bool(true)).into()));
+            }
+            let hm = self.heap_manager.borrow();
+            let eq = match (hm.read_bytes_raw(a, size), hm.read_bytes_raw(b, size)) {
+                (Some(x), Some(y)) => x == y,
+                _ => false,
+            };
+            Ok(EvaluationResult::Value((Object::Bool(eq)).into()))
+        }
+
+        BuiltinFunction::MemFind => {
+            Self::expect_args("mem_find", args, 3)?;
+            let p = self.eval_pointer_arg(&args[0], "mem_find")?;
+            let len = self.eval_u64_arg(&args[1], "mem_find")?;
+            let byte = self.eval_u8_arg(&args[2], "mem_find")?;
+            if len == 0 {
+                return Ok(EvaluationResult::Value((Object::UInt64(0)).into()));
+            }
+            let hm = self.heap_manager.borrow();
+            let at = match hm.read_bytes_raw(p, len as usize) {
+                Some(hay) => hay.iter().position(|&b| b == byte).map(|i| i as u64).unwrap_or(len),
+                None => len,
+            };
+            Ok(EvaluationResult::Value((Object::UInt64(at)).into()))
+        }
+
+        BuiltinFunction::MemFindSeq => {
+            Self::expect_args("mem_find_seq", args, 4)?;
+            let hay = self.eval_pointer_arg(&args[0], "mem_find_seq")?;
+            let hay_len = self.eval_u64_arg(&args[1], "mem_find_seq")?;
+            let needle = self.eval_pointer_arg(&args[2], "mem_find_seq")?;
+            let needle_len = self.eval_u64_arg(&args[3], "mem_find_seq")?;
+            if needle_len == 0 {
+                return Ok(EvaluationResult::Value((Object::UInt64(0)).into()));
+            }
+            if needle_len > hay_len {
+                return Ok(EvaluationResult::Value((Object::UInt64(hay_len)).into()));
+            }
+            let hm = self.heap_manager.borrow();
+            let at = match (
+                hm.read_bytes_raw(hay, hay_len as usize),
+                hm.read_bytes_raw(needle, needle_len as usize),
+            ) {
+                (Some(h), Some(n)) => h
+                    .windows(n.len())
+                    .position(|w| w == n.as_slice())
+                    .map(|i| i as u64)
+                    .unwrap_or(hay_len),
+                _ => hay_len,
+            };
+            Ok(EvaluationResult::Value((Object::UInt64(at)).into()))
         }
 
         BuiltinFunction::CurrentAllocator => {

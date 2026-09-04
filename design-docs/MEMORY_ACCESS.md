@@ -1,6 +1,6 @@
 # MEMORY-ACCESS — 1 バイトずつではなく「範囲」を primitive にする
 
-> **状態: 提案 (2026-09-04)。M0 / M1 / M2 landing 済み (2026-09-05)、M3 以降は未実装。**
+> **状態: 提案 (2026-09-04)。M0〜M3 landing 済み (2026-09-05)、M4 / M5 は未実装。**
 > 前提は [`POINTER.md`](POINTER.md) (L0〜L4 の層と `Ptr<T>` / `Span<T>`)、
 > builtin の一覧は [`../docs/language.md`](../docs/language.md) の
 > 「Pointer / memory builtins」、効果は [`EFFECT_SYSTEM.md`](EFFECT_SYSTEM.md)。
@@ -241,7 +241,7 @@ method は `unsafe` が外れる (156 → 20 前後の見込み)。
 | M0 | `mem_move` / `mem_set` を compiled レーンで lowering、`mem_set` の署名を doc に合わせる (実測 4) ✅ (2026-09-05) | 小 | 4 レーン一致。以降の土台 |
 | M1 | `__builtin_ptr_read::<T>(p, off)` (A) と旧形の deprecation ✅ (2026-09-05、deprecation は文書のみ) | 中 | 実測 1・2 の解消。側路 3 種の削除は M2 |
 | M2 | stdlib 213 箇所を `::<T>` 形へ機械移行 ✅ (2026-09-05) + `Vec::elem_size` 撤去 ❌ (下記) | 中 (stdlib) | 単位と幅が層で固定される |
-| M3 | `Span<T>` の範囲演算 (C の表) を `copy_from` / `fill` / `eq` / `find` / `find_seq` から | 中 | 実測 3・5 の解消。string.t の 5 重複が 1 に |
+| M3 | `Span<T>` の範囲演算 (C の表) を `copy_from` / `fill` / `eq` / `find` / `find_seq` から ✅ (2026-09-05) | 中 | 実測 3・5 の解消。string.t の 5 重複が 1 に |
 | M4 | `chunks::<N>()` と `read_uNN_le/be` | 中 | hex / base64 / sha256 の手書き SIMD と桁合わせが runtime に移る |
 | M5 | `Vec` / `String` / `Dict` / `Box` の `data: ptr` → `Ptr<T>` / `Span<T>`、`unsafe fn` の縮小 (D) | 中 (stdlib) | `unsafe` が 20 本の印に戻る |
 
@@ -324,6 +324,37 @@ TREE-WALKER-GENERIC-SCOPE / ZIP-ITER-GENERIC-SCOPE。
   method が realloc して writeback すると VM が "value not defined"
   で落ちる。旧形でも再現する = M2 の産物ではない)。
   todo の IRVM-SELF-WRITEBACK-REALLOC
+
+**M3 (2026-09-05)。** 範囲について**答える** builtin を 3 つ足した:
+`__builtin_mem_eq` / `__builtin_mem_find` / `__builtin_mem_find_seq`。
+実装は **libc ではなく `toylang_rt`** の `toy_mem_*` 1 か所
+(`memmem` は移植性が無く、プラットフォームごとに答えが変わる検索は
+検索ではない)。探索が見つからなかったときは**探した長さ**を返す
+(sentinel ではない) ので、呼び出し側の境界検査が同じ比較で済む。
+
+`core/std/span.t` がこれを包む: 汎用 `impl<T> Span<T>` に
+`copy_from` (非重複) / `move_from` (重複可) / `bytes_eq`、
+`impl Span<u8>` に `find` / `find_seq` / `fill`。長さ不一致は panic
+(`bytes_eq` は false)。
+
+**書き換えた呼び出し側 2 つが M3 の主張の証拠**:
+
+- `String::eq` — `__simd_load` の 16 バイトループ + スカラーの端数
+  ループ (**同じ比較の 2 実装**) が `__builtin_mem_eq` 1 行になった。
+  ベクトル化は消えていない — runtime の中に 1 つある
+- `String::find_from` — 二重ループの部分文字列探索が
+  `__builtin_mem_find_seq` 1 呼び出しに。`find` / `rfind` /
+  `contains` / `replace` はこれを通るので、残る手書きの走査は
+  `split` / `split_whitespace` 側だけになった
+
+interpreter JIT は 3 つとも silent fallback (`toylang_rt` を link して
+いないため)。
+
+**踏んだ制約 (M3 の産物ではない)**: compiled レーンは
+**method 呼び出しの compound 引数を `match` の scrutinee 位置で
+lowering できない** (`hay.find_seq(n)` を直接 match に置くと
+「method argument produced no value」)。`val` に束縛してから match
+すれば通る — CLAUDE.md が `?` について書いている制約と同じもの。
 
 ## 検証
 

@@ -132,6 +132,52 @@ impl<T> Span<T> {
         self.data.addr
     }
 
+    # Copy `src` over this window, one range operation (MEMORY-ACCESS
+    # M3). The lengths must match: a copy that silently did the
+    # shorter of the two would hide the mistake in whichever half was
+    # not copied.
+    #
+    # **The ranges must not overlap** -- this is `memcpy`. Use
+    # `move_from` for a window that slides over itself.
+    unsafe fn copy_from(&self, src: Span<T>) {
+        if src.count != self.count { panic("Span::copy_from length mismatch") }
+        __builtin_mem_copy(
+            src.data.addr,
+            self.data.addr,
+            self.count * __builtin_sizeof::<T>(),
+        )
+    }
+
+    # As `copy_from`, but the two windows may overlap -- this is
+    # `memmove`. Sliding a window over itself (an insert or a remove
+    # inside one buffer) is the case that needs it.
+    unsafe fn move_from(&self, src: Span<T>) {
+        if src.count != self.count { panic("Span::move_from length mismatch") }
+        __builtin_mem_move(
+            src.data.addr,
+            self.data.addr,
+            self.count * __builtin_sizeof::<T>(),
+        )
+    }
+
+    # Whether two windows hold the same bytes. One range comparison
+    # rather than a loop, so this is the shape `String::eq` and
+    # `starts_with` are built on.
+    #
+    # It compares the *bytes*, which is what a window over raw memory
+    # can answer: for `f64` elements that is not IEEE equality (NaN
+    # equals itself here, -0.0 does not equal 0.0), and for a `T` with
+    # a `Drop` impl it says nothing about the values behind any
+    # pointers. Byte windows are what it is for.
+    unsafe fn bytes_eq(&self, other: Span<T>) -> bool {
+        if self.count != other.count { return false }
+        __builtin_mem_eq(
+            self.data.addr,
+            other.data.addr,
+            self.count * __builtin_sizeof::<T>(),
+        )
+    }
+
     # Bracket sugar — the same bounds-checked operations under
     # indexing syntax.
     unsafe fn __getitem__(&self, i: u64) -> T {
@@ -143,5 +189,43 @@ impl<T> Span<T> {
     unsafe fn __setitem__(&self, i: u64, value: T) {
         if i >= self.count { panic("Span::set index out of bounds") }
         __builtin_ptr_write(self.data.addr, i * __builtin_sizeof::<T>(), value)
+    }
+}
+
+# Byte windows answer two more questions, because a byte is the unit
+# the search primitives work in (MEMORY-ACCESS M3). Both are one call
+# per range: `core/std/string.t` used to spell the second one out as a
+# hand-written scan in five separate methods.
+impl Span<u8> {
+    # The index of the first `value`, or `None`.
+    unsafe fn find(&self, value: u8) -> Option<u64> {
+        val at: u64 = __builtin_mem_find(self.data.addr, self.count, value)
+        if at >= self.count {
+            Option::None
+        } else {
+            Option::Some(at)
+        }
+    }
+
+    # The index where `needle` first occurs, or `None`. An empty
+    # needle is found at 0, the convention every substring search
+    # follows; a needle longer than the window is not found.
+    unsafe fn find_seq(&self, needle: Span<u8>) -> Option<u64> {
+        val at: u64 = __builtin_mem_find_seq(
+            self.data.addr,
+            self.count,
+            needle.data.addr,
+            needle.count,
+        )
+        if at >= self.count && needle.count > 0u64 {
+            Option::None
+        } else {
+            Option::Some(at)
+        }
+    }
+
+    # Write `value` into every byte of the window.
+    unsafe fn fill(&self, value: u8) {
+        __builtin_mem_set(self.data.addr, value, self.count)
     }
 }

@@ -2362,6 +2362,20 @@ impl<'a> Checker<'a> {
                     // position requirement. Only the four types this
                     // JIT has read helpers for are supported; anything
                     // else declines and the tree-walker answers.
+                    // MEMORY-ACCESS M3: the range questions call into
+                    // `toylang_rt`, which this JIT does not link.
+                    // Declining sends the program to the tree-walker,
+                    // like the rest of this JIT's gaps.
+                    BuiltinFunction::MemEq
+                    | BuiltinFunction::MemFind
+                    | BuiltinFunction::MemFindSeq => {
+                        self.reject(|| {
+                            "the mem_eq / mem_find / mem_find_seq builtins are not supported \
+                             in the interpreter JIT"
+                                .to_string()
+                        });
+                        None
+                    }
                     BuiltinFunction::PtrReadTyped(ref ty) => {
                         if !self.check_builtin_args(&[ScalarTy::Ptr, ScalarTy::U64], &args) {
                             return None;

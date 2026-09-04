@@ -2288,9 +2288,9 @@ impl EvaluationContext<'_> {
                     call_site,
                 );
             }
-            self.lookup_function_qualified(Some(struct_name), function_name)
+            self.lookup_function_qualified(Some(&[struct_name]), function_name)
         } else {
-            self.lookup_function_qualified(Some(struct_name), function_name)
+            self.lookup_function_qualified(Some(&[struct_name]), function_name)
                 .or_else(|| self.lookup_function_qualified(None, function_name))
                 .or_else(|| self.function.get(&function_name).cloned())
         };

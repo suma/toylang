@@ -27,6 +27,32 @@ pub struct EqInstantiation {
     pub location: Option<crate::type_checker::error::SourceLocation>,
 }
 
+/// One integrated module's free function, with the module's full
+/// dotted path (MODULE-SYSTEM P2).
+#[derive(Debug, Clone)]
+pub struct ModuleFunction {
+    pub path: Rc<[DefaultSymbol]>,
+    pub func: Rc<Function>,
+}
+
+/// Outcome of a function-table lookup. `Ambiguous` carries the
+/// competing module paths so the caller can name them instead of
+/// reporting "not found" for something that exists twice.
+#[derive(Debug)]
+pub enum FnLookup {
+    Found(Rc<Function>),
+    Missing,
+    Ambiguous(Vec<Rc<[DefaultSymbol]>>),
+}
+
+/// Does `path` end with `suffix`? This is the whole of the
+/// qualifier-resolution rule: a call site names as many trailing
+/// segments of a module path as it likes (`math::abs` /
+/// `std::math::abs`), and one segment is the common case.
+pub fn path_ends_with(path: &[DefaultSymbol], suffix: &[DefaultSymbol]) -> bool {
+    suffix.len() <= path.len() && path[path.len() - suffix.len()..] == *suffix
+}
+
 #[derive(Debug)]
 pub struct VarState {
     pub ty: TypeDecl,
@@ -90,16 +116,23 @@ pub fn is_wildcard_spec(target_type_args: &[TypeDecl]) -> bool {
 #[derive(Debug)]
 pub struct TypeCheckContext {
     pub vars: Vec<HashMap<DefaultSymbol, VarState>>,
-    /// `(module_qualifier, fn_name) -> Function`. The qualifier is the
-    /// **last segment** of the originating module's dotted path
-    /// (`Some("math")` for `core/std/math.t`) or `None` for
-    /// user-authored top-level functions. Mirrors the IR-level
-    /// `function_index` keying introduced by todo #193 so two modules
-    /// each defining `pub fn foo` no longer last-wins at type-check
-    /// time. Bare-name lookups try `(None, name)` first and then fall
-    /// back to a unique `(Some(_), name)`; qualified
-    /// `module::func(args)` calls go straight at `(Some(m), name)`.
-    pub functions: HashMap<(Option<DefaultSymbol>, DefaultSymbol), Rc<Function>>,
+    /// User-authored top-level functions, keyed by name. Functions
+    /// that came in through module integration live in
+    /// `module_functions` instead, so a user `fn encode` and a
+    /// stdlib `pub fn encode` never contend for one slot.
+    pub functions: HashMap<DefaultSymbol, Rc<Function>>,
+    /// Integrated modules' functions: name -> every candidate, each
+    /// tagged with its module's **full** dotted path
+    /// (`["std", "math"]` for `core/std/math.t`).
+    ///
+    /// A qualifier written at a call site is matched against the
+    /// *tail* of that path (MODULE-SYSTEM P2), so `math::abs` and
+    /// `std::math::abs` name the same function, and two modules whose
+    /// last segment collides are reported as ambiguous rather than
+    /// silently overwriting each other — which is what the old
+    /// `(Option<last_segment>, name)` key did, all the way down to a
+    /// `function_index collision` panic in the IR builder.
+    pub module_functions: HashMap<DefaultSymbol, Vec<ModuleFunction>>,
     pub struct_definitions: HashMap<DefaultSymbol, StructDefinition>,
     pub struct_methods: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Vec<MethodSpec>>>,
     pub struct_generic_params: HashMap<DefaultSymbol, Vec<DefaultSymbol>>, // Store generic parameters for structs
@@ -224,6 +257,7 @@ impl TypeCheckContext {
         Self {
             vars: vec![HashMap::with_capacity(16)],
             functions: HashMap::with_capacity(32),
+            module_functions: HashMap::with_capacity(256),
             struct_definitions: HashMap::with_capacity(16),
             struct_methods: HashMap::with_capacity(16),
             struct_generic_params: HashMap::with_capacity(16),
@@ -314,39 +348,50 @@ impl TypeCheckContext {
         None
     }
 
-    /// Backwards-compatible: registers under `(None, name)` (the
-    /// user-authored slot). Use `set_fn_with_module` for integrated
-    /// `pub fn`s that came in through module integration.
+    /// Registers a user-authored top-level function.
     pub fn set_fn(&mut self, name: DefaultSymbol, f: Rc<Function>) {
-        self.functions.insert((None, name), f);
+        self.functions.insert(name, f);
     }
 
-    /// Module-aware registration. `qualifier` is `Some(last_segment)`
-    /// for an integrated module's `pub fn`, `None` for user-authored
-    /// top-level functions.
+    /// Module-aware registration. `module_path` is the originating
+    /// module's full dotted path (`["std", "math"]`), or `None` for
+    /// user-authored top-level functions.
+    ///
+    /// Re-registering the same path + name replaces the entry rather
+    /// than adding a second candidate: integration can run twice for
+    /// one module (auto-load plus an explicit `import`), and a
+    /// duplicate candidate would read as ambiguity.
     pub fn set_fn_with_module(
         &mut self,
-        qualifier: Option<DefaultSymbol>,
+        module_path: Option<&[DefaultSymbol]>,
         name: DefaultSymbol,
         f: Rc<Function>,
     ) {
-        self.functions.insert((qualifier, name), f);
+        let Some(path) = module_path else {
+            self.set_fn(name, f);
+            return;
+        };
+        let candidates = self.module_functions.entry(name).or_default();
+        if let Some(existing) = candidates.iter_mut().find(|c| *c.path == *path) {
+            existing.func = f;
+            return;
+        }
+        candidates.push(ModuleFunction { path: path.into(), func: f });
     }
 
-    /// Module qualifier this exact `Function` was registered under, or
-    /// `None` when it is user-authored (registered in the `(None, name)`
-    /// slot).
+    /// Module path this exact `Function` was registered under, or
+    /// `None` when it is user-authored.
     ///
     /// LLM-LOOP P2: identity, not name, decides — a user function and an
     /// imported one can share a name, and confusing the two is how a
-    /// diagnostic ends up blaming the wrong file. Only the slots for
-    /// this function's own name are examined, so the scan is over at
-    /// most a handful of entries.
-    pub fn module_qualifier_of(&self, f: &Rc<Function>) -> Option<DefaultSymbol> {
-        self.functions
+    /// diagnostic ends up blaming the wrong file. Only the candidates
+    /// for this function's own name are examined.
+    pub fn module_path_of(&self, f: &Rc<Function>) -> Option<Rc<[DefaultSymbol]>> {
+        self.module_functions
+            .get(&f.name)?
             .iter()
-            .find(|((_, name), candidate)| *name == f.name && Rc::ptr_eq(candidate, f))
-            .and_then(|((qualifier, _), _)| *qualifier)
+            .find(|c| Rc::ptr_eq(&c.func, f))
+            .map(|c| Rc::clone(&c.path))
     }
 
     pub fn get_var(&self, name: DefaultSymbol) -> Option<TypeDecl> {
@@ -359,47 +404,68 @@ impl TypeCheckContext {
         None
     }
 
-    /// Backwards-compatible: bare-name lookup. Tries the user-authored
-    /// `(None, name)` slot first, then falls back to a unique
-    /// `(Some(_), name)` integrated-module entry. Returns None on
-    /// either miss or ambiguity (multiple modules export the same
-    /// bare name) — call `lookup_fn` directly for the explicit
-    /// qualifier-aware form.
+    /// Bare-name lookup: the user-authored slot first, then the
+    /// unique module candidate. `None` on a miss *or* on ambiguity —
+    /// use `lookup_fn_detailed` when the caller wants to tell those
+    /// apart in a diagnostic.
     pub fn get_fn(&self, name: DefaultSymbol) -> Option<Rc<Function>> {
         self.lookup_fn(None, name)
     }
 
-    /// Module-aware lookup. With `qualifier == Some(m)` looks up
-    /// `(Some(m), name)` directly (no fallback). With
-    /// `qualifier == None` tries `(None, name)` then falls back to the
-    /// unique `(Some(_), name)` entry across modules; ambiguous bare
-    /// resolution returns None so the caller can surface a clear
-    /// error.
+    /// Module-aware lookup.
+    ///
+    /// - `qualifier == None` — the user-authored function wins; with
+    ///   none, the module candidates must be unique.
+    /// - `qualifier == Some(segments)` — every module candidate whose
+    ///   path *ends with* `segments` is considered, and it must be
+    ///   unique. No fallback to the user-authored slot: the call named
+    ///   a module.
     pub fn lookup_fn(
         &self,
-        qualifier: Option<DefaultSymbol>,
+        qualifier: Option<&[DefaultSymbol]>,
         name: DefaultSymbol,
     ) -> Option<Rc<Function>> {
-        if let Some(q) = qualifier {
-            return self.functions.get(&(Some(q), name)).cloned();
+        match self.lookup_fn_detailed(qualifier, name) {
+            FnLookup::Found(f) => Some(f),
+            _ => None,
         }
-        if let Some(f) = self.functions.get(&(None, name)).cloned() {
-            return Some(f);
+    }
+
+    /// `lookup_fn` that reports *why* it failed. Ambiguity carries the
+    /// competing module paths so the diagnostic can name them.
+    pub fn lookup_fn_detailed(
+        &self,
+        qualifier: Option<&[DefaultSymbol]>,
+        name: DefaultSymbol,
+    ) -> FnLookup {
+        if qualifier.is_none()
+            && let Some(f) = self.functions.get(&name)
+        {
+            return FnLookup::Found(Rc::clone(f));
         }
-        // Bare-name fallback: look for a unique entry across modules.
-        // Returns Some only when exactly one (Some(_), name) exists,
-        // else None so the caller can surface "ambiguous" as a clean
-        // error rather than silently picking one.
-        let candidates: Vec<_> = self
-            .functions
-            .iter()
-            .filter(|((_, n), _)| *n == name)
-            .collect();
-        if candidates.len() == 1 {
-            Some(candidates[0].1.clone())
-        } else {
-            None
+        let Some(candidates) = self.module_functions.get(&name) else {
+            return FnLookup::Missing;
+        };
+        let mut hits = candidates.iter().filter(|c| match qualifier {
+            Some(segments) => path_ends_with(&c.path, segments),
+            None => true,
+        });
+        let Some(first) = hits.next() else {
+            return FnLookup::Missing;
+        };
+        if hits.next().is_none() {
+            return FnLookup::Found(Rc::clone(&first.func));
         }
+        FnLookup::Ambiguous(
+            candidates
+                .iter()
+                .filter(|c| match qualifier {
+                    Some(segments) => path_ends_with(&c.path, segments),
+                    None => true,
+                })
+                .map(|c| Rc::clone(&c.path))
+                .collect(),
+        )
     }
 
     pub fn update_var_type(&mut self, name: DefaultSymbol, new_ty: TypeDecl) -> bool {

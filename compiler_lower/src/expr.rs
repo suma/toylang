@@ -2148,7 +2148,7 @@ impl<'a> FunctionLower<'a> {
                 Some(self.resolve_call_target_from_args(fn_name, &args)?)
             } else {
                 self.module
-                    .lookup_function(Some(struct_name), fn_name)
+                    .lookup_function(Some(&[struct_name]), fn_name)
                     .or_else(|| self.module.lookup_function(None, fn_name))
             }
         } else {

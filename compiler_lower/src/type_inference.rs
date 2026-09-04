@@ -483,7 +483,7 @@ impl<'a> FunctionLower<'a> {
                     .concrete_type_param_name(struct_name)
                     .unwrap_or(struct_name);
                 self.module
-                    .lookup_function(Some(struct_name), fn_name)
+                    .lookup_function(Some(&[struct_name]), fn_name)
                     .or_else(|| self.module.lookup_function(None, fn_name))
                     .or_else(|| {
                         crate::method_registry::lookup_method_func(

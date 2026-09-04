@@ -390,7 +390,7 @@ impl<'a> FunctionLower<'a> {
         if let Expr::AssociatedFunctionCall(qualifier, fn_name, ref args_vec) = rhs.clone()
             && !self.struct_defs.contains_key(&qualifier)
             && !self.enum_defs.contains_key(&qualifier)
-            && let Some(target_id) = self.module.lookup_function(Some(qualifier), fn_name)
+            && let Some(target_id) = self.module.lookup_function(Some(&[qualifier]), fn_name)
             && let Some(result) =
                 self.lower_let_call_compound_target(name, target_id, args_vec)?
             {

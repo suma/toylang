@@ -181,16 +181,16 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
 
         // Register all functions from the program into the type
-        // checker context. Pass the matching module qualifier (last
-        // segment of the originating dotted path) so two same-named
-        // `pub fn`s coming from different modules end up under
-        // distinct keys (#193b).
+        // checker context. Pass the originating module's full dotted
+        // path so two same-named `pub fn`s coming from different
+        // modules stay distinct candidates (#193b) and a qualifier
+        // written at a call site can match any tail of it
+        // (MODULE-SYSTEM P2).
         for (idx, func) in functions.iter().enumerate() {
-            let qualifier = function_module_paths
+            let module_path = function_module_paths
                 .get(idx)
-                .and_then(|opt| opt.as_ref())
-                .and_then(|path| path.last().copied());
-            visitor.add_function_with_module(qualifier, func.clone());
+                .and_then(|opt| opt.as_deref());
+            visitor.add_function_with_module(module_path, func.clone());
         }
 
         // Register every struct and enum the program declares, before
@@ -747,10 +747,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         if result.is_ok() && self.errors.len() == errors_before {
             return result;
         }
-        let Some(qualifier) = self.context.module_qualifier_of(&func) else {
+        let Some(path) = self.context.module_path_of(&func) else {
             return result;
         };
-        let module = self.resolve_symbol_name(qualifier);
+        let module = self.resolve_module_path(&path);
 
         for error in &mut self.errors[errors_before..] {
             if error.origin_module.is_none() {

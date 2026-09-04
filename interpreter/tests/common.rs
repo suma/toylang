@@ -42,7 +42,9 @@ pub fn test_program_no_core(source_code: &str) -> Result<Rc<RefCell<Object>>, St
     test_program_with_core(source_code, None)
 }
 
-fn test_program_with_core(
+/// Run `source_code` against an arbitrary core-modules directory.
+/// `None` opts out of auto-load entirely.
+pub fn test_program_with_core(
     source_code: &str,
     core: Option<std::path::PathBuf>,
 ) -> Result<Rc<RefCell<Object>>, String> {

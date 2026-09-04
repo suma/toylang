@@ -1,4 +1,6 @@
-use crate::common::{test_program, test_program_no_core, test_program_with_core_modules};
+use crate::common::{
+    test_program, test_program_no_core, test_program_with_core, test_program_with_core_modules,
+};
 
 // ============================================================================
 // Module system tests
@@ -282,4 +284,98 @@ fn test_logical_operations() {
         assert!(res.is_ok(), "Failed for {} {} {}", a, op, b);
         assert_eq!(res.unwrap().borrow().unwrap_bool(), expected);
     }
+}
+
+// ============================================================================
+// MODULE-SYSTEM P2: the qualifier is the module's full path, matched by
+// suffix.
+//
+// Before P2 the qualifier was the leaf file name alone, so two modules
+// in different directories with the same file name shared one table
+// slot: the type checker resolved to whichever was registered last and
+// the IR builder aborted with `function_index collision`. These tests
+// build a throwaway core tree to pin the three outcomes.
+// ============================================================================
+
+/// Write a core-modules tree: `(relative path, source)` pairs under a
+/// fresh temp dir. Returned dir must outlive the run.
+fn core_tree(files: &[(&str, &str)]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for (rel, src) in files {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        std::fs::write(&path, src).expect("write module");
+    }
+    dir
+}
+
+#[test]
+fn module_qualifier_matches_the_tail_of_the_path() {
+    // `core/std/a/dup.t` is reachable as `dup::f()` — one segment of a
+    // three-segment path (`std.a.dup`).
+    let core = core_tree(&[("std/a/dup.t", "pub fn f() -> u64 { 7u64 }\n")]);
+    let result = test_program_with_core(
+        "fn main() -> u64 { dup::f() }",
+        Some(core.path().to_path_buf()),
+    );
+    assert!(result.is_ok(), "dup::f() should resolve: {:?}", result.err());
+    assert_eq!(result.unwrap().borrow().unwrap_uint64(), 7);
+}
+
+#[test]
+fn same_leaf_name_different_functions_both_resolve() {
+    let core = core_tree(&[
+        ("std/a/dup.t", "pub fn f() -> u64 { 1u64 }\n"),
+        ("std/b/dup.t", "pub fn g() -> u64 { 2u64 }\n"),
+    ]);
+    let result = test_program_with_core(
+        "fn main() -> u64 { dup::f() + dup::g() }",
+        Some(core.path().to_path_buf()),
+    );
+    assert!(result.is_ok(), "both should resolve: {:?}", result.err());
+    assert_eq!(result.unwrap().borrow().unwrap_uint64(), 3);
+}
+
+#[test]
+fn same_leaf_name_same_function_is_ambiguous_not_a_panic() {
+    // This is the case that used to reach `function_index collision`
+    // in the IR builder. Both competing paths must be named: the
+    // reader cannot fix what the diagnostic will not identify.
+    let core = core_tree(&[
+        ("std/a/dup.t", "pub fn f() -> u64 { 1u64 }\n"),
+        ("std/b/dup.t", "pub fn f() -> u64 { 2u64 }\n"),
+    ]);
+    let err = test_program_with_core(
+        "fn main() -> u64 { dup::f() }",
+        Some(core.path().to_path_buf()),
+    )
+    .expect_err("colliding module file names should be reported");
+    assert!(err.contains("ambiguous module path"), "{err}");
+    assert!(err.contains("std::a::dup::f"), "{err}");
+    assert!(err.contains("std::b::dup::f"), "{err}");
+}
+
+#[test]
+fn bare_call_reports_ambiguity_rather_than_not_found() {
+    let core = core_tree(&[
+        ("std/a/dup.t", "pub fn f() -> u64 { 1u64 }\n"),
+        ("std/b/dup.t", "pub fn f() -> u64 { 2u64 }\n"),
+    ]);
+    let err = test_program_with_core(
+        "fn main() -> u64 { f() }",
+        Some(core.path().to_path_buf()),
+    )
+    .expect_err("an ambiguous bare call should be reported");
+    assert!(err.contains("ambiguous module path"), "{err}");
+}
+
+#[test]
+fn user_function_still_wins_over_a_module_one() {
+    let core = core_tree(&[("std/a/dup.t", "pub fn f() -> u64 { 1u64 }\n")]);
+    let result = test_program_with_core(
+        "fn f() -> u64 { 9u64 }\nfn main() -> u64 { f() }",
+        Some(core.path().to_path_buf()),
+    );
+    assert!(result.is_ok(), "{:?}", result.err());
+    assert_eq!(result.unwrap().borrow().unwrap_uint64(), 9);
 }

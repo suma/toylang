@@ -1518,6 +1518,14 @@ impl<'a> TypeCheckerVisitor<'a> {
             && let TypeDecl::Function(param_tys, ret_ty) = callee_ty {
                 return self.visit_indirect_call(fn_name, args_ref, &param_tys, &ret_ty);
             }
+        // MODULE-SYSTEM P2: a bare name that several modules export is
+        // not missing, it is ambiguous, and saying "not found" sends the
+        // reader looking for something that is right there twice.
+        if let crate::type_checker::context::FnLookup::Ambiguous(paths) =
+            self.context.lookup_fn_detailed(None, fn_name)
+        {
+            return Err(self.ambiguous_module_function_error(None, fn_name, &paths));
+        }
         let fn_name_str = self.resolve_symbol_name(fn_name);
         // ALLOC-CONTRACT: `old(...)` is a contextual form the parser
         // only recognises inside an `ensures` clause, so writing it
@@ -1550,7 +1558,8 @@ impl<'a> TypeCheckerVisitor<'a> {
             .context
             .functions
             .keys()
-            .filter_map(|(_, sym)| self.core.string_interner.resolve(*sym))
+            .chain(self.context.module_functions.keys())
+            .filter_map(|sym| self.core.string_interner.resolve(*sym))
             .collect();
         let Some(best) = crate::diagnostic::closest_candidate(name, candidates) else {
             return error;

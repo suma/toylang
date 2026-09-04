@@ -26,12 +26,13 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
     /// Register an imported / module-qualified function.
+    /// `module_path` is the originating module's full dotted path.
     pub fn add_function_with_module(
         &mut self,
-        qualifier: Option<DefaultSymbol>,
+        module_path: Option<&[DefaultSymbol]>,
         f: Rc<Function>,
     ) {
-        self.context.set_fn_with_module(qualifier, f.name, f.clone());
+        self.context.set_fn_with_module(module_path, f.name, f.clone());
     }
 
     /// Return a clone of the expression → type map built by

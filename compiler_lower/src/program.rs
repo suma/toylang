@@ -322,16 +322,16 @@ fn declare_plain_functions(
     // resolve to a `FuncId` during the body lowering pass. Generic
     // functions go into the templates table instead.
     for (idx, func) in program.function.iter().enumerate() {
-        // Module qualifier (last segment of the originating module's
-        // dotted path) — `None` for user-authored top-level functions,
-        // `Some("math")` for `core/std/math.t` etc. This becomes the
-        // first half of the IR's `function_index` key so two modules
-        // each defining `pub fn foo` no longer overwrite each other.
-        let module_qualifier = program
+        // The originating module's full dotted path — `None` for
+        // user-authored top-level functions, `["std", "math"]` for
+        // `core/std/math.t`. The IR keeps it so two modules each
+        // defining `pub fn foo` stay distinct entries and a call
+        // site's qualifier can match any tail of it
+        // (MODULE-SYSTEM P2).
+        let module_path: Option<&[DefaultSymbol]> = program
             .function_module_paths
             .get(idx)
-            .and_then(|opt| opt.as_ref())
-            .and_then(|path| path.last().copied());
+            .and_then(|opt| opt.as_deref());
         if !func.generic_params.is_empty() {
             generic_funcs.insert(func.name, Rc::clone(func));
             continue;
@@ -401,7 +401,7 @@ fn declare_plain_functions(
             };
             module.declare_function_with_module(
                 func.name,
-                module_qualifier,
+                module_path,
                 import_name,
                 Linkage::Import,
                 params,
@@ -440,27 +440,34 @@ fn declare_plain_functions(
         // program entry point. Every other function is mangled to avoid
         // colliding with libc symbols when the resulting object is linked.
         // Functions that came in through module integration also get
-        // their module qualifier mangled in (#193 / #193b) so two
-        // modules each defining `pub fn add` end up with distinct
-        // cranelift symbols (`toy_add` for the user version,
-        // `toy_math__add` for the stdlib version) — without this, the
-        // module's `declare_function` would error on a duplicate
-        // signature even though the IR `function_index` keys them
-        // apart.
+        // their module path mangled in (#193 / #193b) so two modules
+        // each defining `pub fn add` end up with distinct cranelift
+        // symbols (`toy_add` for the user version, `toy_std_math__add`
+        // for the stdlib version) — without this, the module's
+        // `declare_function` would error on a duplicate signature even
+        // though the IR keys them apart. The **whole** path goes in,
+        // not just its last segment: two same-named files in different
+        // directories would otherwise mangle to one symbol
+        // (MODULE-SYSTEM P2).
         let (export_name, linkage) = if raw_name == "main" {
             (raw_name.to_string(), Linkage::Export)
         } else {
-            let mangled = match module_qualifier
-                .and_then(|q| interner.resolve(q))
-            {
-                Some(qual) => format!("toy_{}__{}", qual, raw_name),
+            let mangled = match module_path {
+                Some(path) => {
+                    let joined = path
+                        .iter()
+                        .filter_map(|seg| interner.resolve(*seg))
+                        .collect::<Vec<_>>()
+                        .join("_");
+                    format!("toy_{}__{}", joined, raw_name)
+                }
                 None => format!("toy_{}", raw_name),
             };
             (mangled, Linkage::Local)
         };
         let func_id = module.declare_function_with_module(
             func.name,
-            module_qualifier,
+            module_path,
             export_name,
             linkage,
             params,

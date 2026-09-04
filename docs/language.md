@@ -3816,23 +3816,32 @@ can shadow auto-loaded names with same-name local definitions
 exists). The qualified form keeps working through the synthetic
 `ImportDecl` the auto-load path inserts.
 
-The function table is keyed by `(module_qualifier, name)` end-to-end
-(IR `function_index`, type-checker `context.functions`, interpreter
-runtime `function_qualified` map), so two modules that each export
-`pub fn foo` no longer collide. Bare `foo(...)` first looks up
-`(None, "foo")` (the user-authored slot); if missed, it falls back
-to the unique `(Some(_), "foo")` entry across modules. Qualified
-`bar::foo(...)` looks up `(Some("bar"), "foo")` directly. The
-compiler also mangles each integrated function's exported symbol to
-`toy_<qualifier>__<name>` so distinct cranelift entries are emitted
-for cross-module same-name functions.
+The function table records each function's **full** module path
+end-to-end (IR `function_index`, type-checker
+`context.module_functions`, interpreter runtime `function_qualified`
+map), so two modules that each export `pub fn foo` never collide.
 
-> **The qualifier is one symbol, not the path.** Two modules whose
-> *file names* match (`<core>/a/dup.t` and `<core>/b/dup.t`) share the
-> qualifier `dup`, and if they also export the same function name the
-> IR builder aborts with `function_index collision`. Core module file
-> names are therefore kept unique across the whole tree. Keying the
-> table by the full path is `design-docs/MODULE_SYSTEM.md` P2.
+A qualifier written at a call site is matched against the **tail** of
+that path, so one segment is enough while the whole path stays legal:
+
+| Call | Resolves to |
+|---|---|
+| `foo(...)` | the user-authored `foo`; failing that, the one module that exports `foo` |
+| `math::abs(x)` | any module whose path ends in `math` — exactly one must |
+
+Two modules whose file names match (`<core>/a/dup.t` and
+`<core>/b/dup.t`) stay distinct entries; `dup::f()` is reported as
+**ambiguous**, naming both paths, when they both export `f`. (Before,
+the qualifier was the last segment alone: the two shared one slot and
+the IR builder aborted with `function_index collision`.) A bare call
+that several modules answer is reported the same way rather than as
+"not found".
+
+The compiler mangles each integrated function's exported symbol to
+`toy_<path joined by underscores>__<name>` (`toy_std_math__abs`),
+so distinct cranelift entries are emitted for cross-module same-name
+functions — the whole path, again, so two same-named files in
+different directories do not mangle to one symbol.
 
 ### Import (explicit, optional)
 
@@ -3871,12 +3880,12 @@ helpers::add(1u64, 2u64)
 
 `::` is the scope-resolution operator; `.` is field/method access only.
 
-> **A qualifier longer than one segment is not checked.** The parser
-> keeps only the last segment of `a::b::c(...)`, so
-> `std::math::sin(x)` resolves to whatever `sin` a single module
-> exports — and `anything::math::sin(x)` resolves to the same thing.
-> Write the one-segment form (`math::sin(x)`). Path-aware resolution
-> is `design-docs/MODULE_SYSTEM.md` P2 / P3.
+> **A qualifier longer than one segment does not reach the resolver
+> yet.** The table understands full paths, but the parser still keeps
+> only the last segment of `a::b::c(...)` — so `std::math::sin(x)`
+> resolves as if written `sin(x)`, and `anything::math::sin(x)` does
+> the same. Write the one-segment form (`math::sin(x)`) until
+> `design-docs/MODULE_SYSTEM.md` P3 lands.
 
 ---
 

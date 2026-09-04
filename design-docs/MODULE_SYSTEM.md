@@ -1,13 +1,15 @@
 # MODULE SYSTEM — stdlib のディレクトリと名前空間
 
-> **状態: P1 着手 (2026-09-04)。P2 / P3 は未着手。**
+> **状態: P1 / P2 landing 済み (2026-09-04)。P3 は未着手。**
 > 対象: `core/std/**.t` の配置と、`module::name(...)` の解決規則。
 > 実装サイト: [`interpreter/src/module_integration.rs`](../interpreter/src/module_integration.rs)
 > (発見・統合)、[`frontend/src/module_resolver.rs`](../frontend/src/module_resolver.rs)
 > (`import` の探索)、[`frontend/src/type_checker/module_access.rs`](../frontend/src/type_checker/module_access.rs)
 > (alias 登録)、[`frontend/src/parser/expr/primary.rs`](../frontend/src/parser/expr/primary.rs)
 > (`::` パスの構文)、[`frontend/src/type_checker/context.rs`](../frontend/src/type_checker/context.rs)
-> (`(qualifier, name)` の関数表)。
+> (関数表と `path_ends_with`)、[`compiler_ir/src/lib.rs`](../compiler_ir/src/lib.rs)
+> (`function_index`)、[`interpreter/src/evaluation/mod.rs`](../interpreter/src/evaluation/mod.rs)
+> (`function_qualified`)。
 > 仕様の正本: [`../docs/language.md`](../docs/language.md) の「Modules」。
 > 状態の正本: [`todo.md`](todo.md)。
 > 実測: 2026-09-04
@@ -39,8 +41,11 @@
 2. **統合**: 全モジュールが**無条件に auto-load** され、AST がメインの
    pool に deep-copy される。`import` は stdlib に対しては no-op。
 3. **alias**: `register_import` が**最後のセグメントだけ**を alias に
-   する (`["std","io"] -> io`)。型検査器の関数表のキーは
-   `(Option<DefaultSymbol>, name)` で、qualifier はこの 1 シンボル。
+   する (`["std","io"] -> io`) — 「この識別子はモジュールか」の判定に
+   使う。関数の解決自体は P2 以降フルパスで、呼び出し側の qualifier を
+   末尾一致で突き合わせる。**P2 以前は関数表のキーが
+   `(Option<DefaultSymbol>, name)` で、qualifier はリーフ 1 シンボル
+   だった** — 以下の「実測したズレ」はその時点の記録。
 4. **型はモジュールに属さない。** `Vec` / `String` / `Option` は常に
    グローバルで、ユーザ定義と衝突したら stdlib 側が `__std_<name>` に
    退避する (`shadowed_stdlib_types`)。
@@ -49,8 +54,8 @@
 
 | # | 書いた形 | 実際 |
 |---|---|---|
-| 1 | `std::math::abs(-3i64)` | **通るが検査されていない。** パーサが 3 セグメント以上を「最後だけ」に潰し (`primary.rs` の qualified-path 分岐)、bare `abs` の一意フォールバックで当たっている。`zzz::math::abs` でも通る |
-| 2 | 同じリーフ名 + 同じ関数名の 2 モジュール | **panic。** `std/a/dup.t` と `std/b/dup.t` が両方 `pub fn f` を持つと型検査を素通りし、`compiler_ir/src/lib.rs:447` で `function_index collision for symbol=... qualifier=...` |
+| 1 | `std::math::abs(-3i64)` | **通るが検査されていない。** パーサが 3 セグメント以上を「最後だけ」に潰し (`primary.rs` の qualified-path 分岐)、bare `abs` の一意フォールバックで当たっている。`zzz::math::abs` でも通る (**P3 で解消予定**) |
+| 2 | 同じリーフ名 + 同じ関数名の 2 モジュール | **panic。** `std/a/dup.t` と `std/b/dup.t` が両方 `pub fn f` を持つと型検査を素通りし、`compiler_ir/src/lib.rs:447` で `function_index collision for symbol=... qualifier=...` (**P2 で解消済み** — 候補パスを名指しする型エラーになった) |
 | 3 | `<core>/foo/mod.t` の `foo::f()` | **`[E0003] Struct 'foo' not found`。** auto-load の walker は `mod` をリーフ名として扱うので alias は `mod`。`import` 側の `candidate_module_paths` だけが `mod.t` を知っていて、2 経路が食い違っている (`docs/language.md` の表は `["foo"]` と書いていて誤り) |
 | 4 | `import my.helpers as h` の `h::add(...)` | **`[E0003] Struct 'h' not found`。** パーサは `as` を受理するが `visit_import` が alias を捨てている。ドキュメントには載っている |
 
@@ -207,12 +212,30 @@ core/std/
 - `str_ops` / `ord` / `display` / `i64` / `f64` を qualifier として
   呼んでいるコードは無い (これらのファイルに自由関数が無いため)
 
-### P2 — qualifier をパスにする (D4)
+### P2 — qualifier をパスにする (D4、landing 済み)
 
-- 関数表のキー (型検査 `context.functions`、IR `function_index`、
-  ランタイム `function_qualified`) を `Vec<DefaultSymbol>` に
-- suffix 一致解決 + 曖昧なら型エラー。**現状 #2 の panic が消える**
-- AOT のシンボルマングル (`toy_<qualifier>__<name>`) をパス全体に
+3 つの表がどれも「名前 → 候補の並び。各候補はモジュールのフルパスを
+持つ」形になった。呼び出し側の qualifier はそのパスの**末尾**と
+突き合わせる (`path_ends_with`、型検査と IR で同じ規則を共有)。
+
+| 変更 | |
+|---|---|
+| 型検査 | `context.functions` (ユーザ定義、名前キー) と `context.module_functions` (`name -> Vec<ModuleFunction>`) に分割。`lookup_fn_detailed` が `Found` / `Missing` / `Ambiguous(候補パス)` を返す |
+| IR | `function_index: HashMap<DefaultSymbol, Vec<FunctionEntry>>`。**panic は同一モジュールの重複宣言だけ**に狭まった |
+| ランタイム | `function_qualified` が同形 (`QualifiedFunction`) |
+| マングル | `toy_<path を `_` で連結>__<name>` (`toy_std_math__abs`)。リーフだけだと別ディレクトリの同名ファイルが 1 シンボルに潰れる |
+
+診断は候補を名指しする (`ambiguous module path 'dup::f': it matches
+std::a::dup::f and std::b::dup::f`)。**bare 呼び出しも同じ**で、
+以前の「Function 'f' not found」(2 つ在るのに) をやめた。
+
+**回避策の案内は P3 待ちであることを明示している** — 追加の
+セグメントを書いて選ぶのは P3 が入ってからなので、今の文言は
+「ファイル名を変えろ」を先に言う。
+
+テスト: `interpreter/tests/module_property_tests.rs` の 5 本
+(一時 core ツリーを組んで、tail 一致 / 別関数なら両方解決 / 同名なら
+曖昧 / bare も曖昧 / ユーザ定義が勝つ)。
 
 ### P3 — 構文と `import` の穴埋め
 

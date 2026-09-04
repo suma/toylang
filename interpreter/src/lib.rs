@@ -38,7 +38,7 @@ use frontend::type_decl::TypeDecl;
 use frontend::visitor::DeclVisitor;
 use string_interner::{DefaultSymbol, DefaultStringInterner};
 use crate::object::RcObject;
-use crate::evaluation::EvaluationContext;
+use crate::evaluation::{EvaluationContext, QualifiedFunction};
 use crate::error::InterpreterError;
 use crate::error_formatter::ErrorFormatter;
 use crate::module_integration::load_and_integrate_module;
@@ -76,30 +76,31 @@ fn setup_type_checker<'a>(program: &'a mut File, string_interner: &'a mut Defaul
     }
 
     // Register all defined functions before creating the type checker.
-    // Pair each function with its module qualifier (last segment of
-    // the originating dotted path; `None` for user-authored) so the
-    // type-checker registers them under module-aware keys (#193b).
-    let functions_to_register: Vec<(Option<DefaultSymbol>, std::rc::Rc<frontend::ast::Function>)> =
-        program
-            .function
-            .iter()
-            .enumerate()
-            .map(|(i, f)| {
-                let qualifier = program
-                    .function_module_paths
-                    .get(i)
-                    .and_then(|opt| opt.as_ref())
-                    .and_then(|path| path.last().copied());
-                (qualifier, f.clone())
-            })
-            .collect();
+    // Pair each function with its originating module's full dotted
+    // path (`None` for user-authored) so the type-checker can match a
+    // call site's qualifier against any tail of it (MODULE-SYSTEM P2).
+    let functions_to_register: Vec<(
+        Option<Vec<DefaultSymbol>>,
+        std::rc::Rc<frontend::ast::Function>,
+    )> = program
+        .function
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let module_path = program
+                .function_module_paths
+                .get(i)
+                .and_then(|opt| opt.clone());
+            (module_path, f.clone())
+        })
+        .collect();
 
     // Now create the type checker
     let mut tc = TypeCheckerVisitor::with_program(program, string_interner);
 
     // Register all defined functions (module-qualified)
-    for (qualifier, f) in &functions_to_register {
-        tc.add_function_with_module(*qualifier, f.clone());
+    for (module_path, f) in &functions_to_register {
+        tc.add_function_with_module(module_path.as_deref(), f.clone());
     }
     
     // Register struct definitions with their symbols
@@ -946,8 +947,7 @@ fn build_function_map(program: &File, _string_interner: &DefaultStringInterner) 
 pub struct SharedRunData<'a> {
     pub(crate) program: &'a File,
     pub(crate) func_map: Rc<HashMap<DefaultSymbol, Rc<Function>>>,
-    pub(crate) func_qualified:
-        Rc<HashMap<(Option<DefaultSymbol>, DefaultSymbol), Rc<Function>>>,
+    pub(crate) func_qualified: Rc<HashMap<DefaultSymbol, Vec<QualifiedFunction>>>,
     pub(crate) method_registry:
         Rc<HashMap<DefaultSymbol, HashMap<DefaultSymbol, Vec<crate::evaluation::MethodSpec>>>>,
     pub(crate) drop_trait_structs: Rc<HashSet<DefaultSymbol>>,
@@ -1056,24 +1056,27 @@ impl<'a> SharedRunData<'a> {
     }
 }
 
-/// Module-aware mirror of `build_function_map`. Each function is
-/// keyed by `(module_qualifier, fn_name)` where the qualifier is the
-/// last segment of `program.function_module_paths[i]` (`None` for
-/// user-authored). Lets the runtime resolve a bare `Expr::Call("add",
-/// ...)` to the user version while routing
+/// Module-aware mirror of `build_function_map`: `fn_name -> every
+/// function of that name`, each tagged with the full dotted path of
+/// the module it came from (`program.function_module_paths[i]`,
+/// `None` for user-authored). Lets the runtime resolve a bare
+/// `Expr::Call("add", ...)` to the user version while routing
 /// `Expr::AssociatedFunctionCall("math", "add", ...)` to the stdlib
-/// version (#193b).
+/// version (#193b), matching the qualifier against the tail of the
+/// path (MODULE-SYSTEM P2).
 fn build_function_qualified_map(
     program: &File,
-) -> HashMap<(Option<DefaultSymbol>, DefaultSymbol), Rc<Function>> {
-    let mut map = HashMap::new();
+) -> HashMap<DefaultSymbol, Vec<QualifiedFunction>> {
+    let mut map: HashMap<DefaultSymbol, Vec<QualifiedFunction>> = HashMap::new();
     for (i, f) in program.function.iter().enumerate() {
-        let qualifier = program
+        let module_path = program
             .function_module_paths
             .get(i)
-            .and_then(|opt| opt.as_ref())
-            .and_then(|path| path.last().copied());
-        map.insert((qualifier, f.name), f.clone());
+            .and_then(|opt| opt.clone());
+        map.entry(f.name).or_default().push(QualifiedFunction {
+            module_path,
+            func: f.clone(),
+        });
     }
     map
 }

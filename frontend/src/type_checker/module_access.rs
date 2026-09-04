@@ -166,6 +166,44 @@ impl<'a> TypeCheckerVisitor<'a> {
             !name.chars().next().unwrap_or('0').is_uppercase()
     }
 
+    /// A module path as a program would write it (`std::math`).
+    pub(super) fn resolve_module_path(&self, module_path: &[DefaultSymbol]) -> String {
+        self.resolve_module_path_names(module_path).join("::")
+    }
+
+    /// MODULE-SYSTEM P2: the qualifier matched more than one module.
+    /// Naming the competing paths is the whole point — the reader's
+    /// fix is to write enough leading segments to tell them apart.
+    pub(super) fn ambiguous_module_function_error(
+        &self,
+        qualifier: Option<&[DefaultSymbol]>,
+        function_name: DefaultSymbol,
+        candidates: &[std::rc::Rc<[DefaultSymbol]>],
+    ) -> TypeCheckError {
+        let name = self.resolve_symbol_name(function_name);
+        let written = match qualifier {
+            Some(segments) => format!("{}::{}", self.resolve_module_path(segments), name),
+            None => name.clone(),
+        };
+        let mut paths: Vec<String> = candidates
+            .iter()
+            .map(|p| format!("{}::{}", self.resolve_module_path(p), name))
+            .collect();
+        paths.sort();
+        // Naming enough leading segments is what will disambiguate
+        // this once the parser keeps them (MODULE-SYSTEM P3); today it
+        // drops everything but the last, so the fix available *now* is
+        // to give the two modules different file names.
+        TypeCheckError::generic_error(&format!(
+            "ambiguous module path `{}`: it matches {}. Two modules \
+             cannot share a file name — rename one of them (writing more \
+             leading segments will be the other way out once multi-segment \
+             paths are checked)",
+            written,
+            paths.join(" and ")
+        ))
+    }
+
     /// Helper to convert module path symbols to readable names
     fn resolve_module_path_names(&self, module_path: &[DefaultSymbol]) -> Vec<String> {
         module_path.iter()

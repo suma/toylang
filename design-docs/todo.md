@@ -1269,22 +1269,19 @@
   `display.t` → `fmt.t` / `str_ops.t` を `str.t` に統合 /
   `i64.t` + `f64.t` → `num.t`。設計は
   [`MODULE_SYSTEM.md`](MODULE_SYSTEM.md)。
+- **MODULE-SYSTEM P2 — qualifier がモジュールのフルパスになった** —
+  3 つの関数表 (型検査 / IR / ランタイム) が候補ごとにパスを持ち、
+  呼び出し側の qualifier は末尾一致で解決する。同名ファイル 2 つの
+  `function_index collision` panic が、候補を名指しする型エラーに
+  なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
 
-- **MODULE-SYSTEM P2: qualifier がリーフ名 1 個なので、同名ファイルが
-  2 つあると panic する** ★★★ — `<core>/a/dup.t` と `<core>/b/dup.t` が
-  同じ関数名を輸出すると型検査を素通りして `compiler_ir/src/lib.rs:447`
-  で `function_index collision`。stdlib のファイル名を全ツリーで一意に
-  保つことで回避しているだけなので、ディレクトリを掘るたびに近づく。
-  直し方は関数表のキー (型検査 `context.functions` / IR
-  `function_index` / ランタイム `function_qualified`) をフルパスに
-  変え、呼び出し側は suffix 一致で解決して曖昧なら型エラーにする。
-  設計は [`MODULE_SYSTEM.md`](MODULE_SYSTEM.md) D4 / P2。
-
 - **MODULE-SYSTEM P3: 多セグメントの `::` パスが検査されない / `mod.t` /
-  `import as`** ★★ — 3 つとも同じ「モジュールパスが 1 シンボルに
-  潰れている」ことの現れ。(1) パーサが `a::b::c(...)` の中間を捨てるので
-  `std::math::abs` も `zzz::math::abs` も通る。(2) auto-load の walker が
+  `import as`** ★★★ — 3 つとも同じ「モジュールパスが構文で 1 シンボルに
+  潰れている」ことの現れ。**P2 で表と解決規則は既にパスを理解している**
+  ので、残っているのは構文側。(1) パーサが `a::b::c(...)` の中間を
+  捨てるので `std::math::abs` も `zzz::math::abs` も通る。**P2 の曖昧
+  エラーが案内する「セグメントを増やして選ぶ」がまだ書けないのはこれ**。(2) auto-load の walker が
   `mod.t` を `mod` という名前のファイルとして扱うので
   `<core>/foo/mod.t` は `foo::` ではなく `mod::` で呼ぶことになり、
   `import` 側の解決 (`candidate_module_paths`) と食い違う。(3)

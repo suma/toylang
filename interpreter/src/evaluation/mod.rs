@@ -135,6 +135,14 @@ pub enum EvaluationResult {
     Continue(Option<DefaultSymbol>),
 }
 
+/// One entry in the runtime's module-aware function table: a
+/// function plus the module it came from (`None` = user-authored).
+#[derive(Debug, Clone)]
+pub struct QualifiedFunction {
+    pub(crate) module_path: Option<Vec<DefaultSymbol>>,
+    pub(crate) func: Rc<Function>,
+}
+
 pub struct EvaluationContext<'a> {
     pub(super) stmt_pool: &'a StmtPool,
     pub(super) expr_pool: &'a ExprPool,
@@ -143,20 +151,21 @@ pub struct EvaluationContext<'a> {
     /// program-derived map across many fresh evaluation contexts; the
     /// tree-walker only reads it while running.
     pub(crate) function: Rc<HashMap<DefaultSymbol, Rc<Function>>>,
-    /// Module-aware mirror of `function` keyed by
-    /// `(module_qualifier, fn_name)`. The qualifier is the **last
-    /// segment** of the originating module's dotted path
-    /// (`Some("math")` for `core/std/math.t`) or `None` for
-    /// user-authored top-level functions. Mirrors the IR-level
-    /// `function_index` keying introduced for #193 and the
-    /// type-checker `context.functions` keying for #193b. Bare
-    /// `Expr::Call("add", ...)` resolves via
+    /// Module-aware mirror of `function`: `fn_name -> every function
+    /// of that name`, each tagged with the full dotted path of the
+    /// module it came from (`["std", "math"]` for `core/std/math.t`)
+    /// or `None` for user-authored top-level functions. Mirrors the
+    /// IR's `function_index` and the type checker's
+    /// `context.module_functions`.
+    ///
+    /// Bare `Expr::Call("add", ...)` resolves via
     /// `lookup_function_qualified(None, "add")`; qualified
-    /// `Expr::AssociatedFunctionCall("math", "add", ...)` resolves
-    /// via `lookup_function_qualified(Some("math"), "add")`. The
-    /// flat `function` map above is kept for backwards-compatibility
-    /// at sites that don't yet thread the qualifier.
-    pub(crate) function_qualified: Rc<HashMap<(Option<DefaultSymbol>, DefaultSymbol), Rc<Function>>>,
+    /// `Expr::AssociatedFunctionCall("math", "add", ...)` via
+    /// `lookup_function_qualified(Some(&["math"]), "add")`, which
+    /// matches the **tail** of each path (MODULE-SYSTEM P2). The flat
+    /// `function` map above is kept for backwards-compatibility at
+    /// sites that don't yet thread the qualifier.
+    pub(crate) function_qualified: Rc<HashMap<DefaultSymbol, Vec<QualifiedFunction>>>,
     pub environment: Environment,
     /// `Rc` for the same reason as `function` (shared across trials).
     pub(crate) method_registry: Rc<HashMap<DefaultSymbol, HashMap<DefaultSymbol, Vec<MethodSpec>>>>, // struct_name -> method_name -> [specs by target_type_args]
@@ -388,7 +397,7 @@ impl<'a> EvaluationContext<'a> {
         expr_pool: &'a ExprPool,
         string_interner: &'a mut DefaultStringInterner,
         function: HashMap<DefaultSymbol, Rc<Function>>,
-        function_qualified: HashMap<(Option<DefaultSymbol>, DefaultSymbol), Rc<Function>>,
+        function_qualified: HashMap<DefaultSymbol, Vec<QualifiedFunction>>,
     ) -> Self {
         let heap_manager = Rc::new(RefCell::new(HeapManager::new()));
         let global_allocator: Rc<dyn Allocator> = Rc::new(GlobalAllocator::new(heap_manager.clone()));
@@ -512,37 +521,36 @@ impl<'a> EvaluationContext<'a> {
     /// Module-aware function resolver. Mirrors the type-checker's
     /// `TypeCheckContext::lookup_fn`:
     /// - `Some(qualifier)` looks up `(Some(q), name)` directly.
-    /// - `None` (bare call) prefers `(None, name)`, then falls back to
-    ///   the unique `(Some(_), name)` entry; ambiguous bare calls
+    /// - `None` (bare call) prefers the user-authored entry, then
+    ///   falls back to the unique module entry; ambiguous bare calls
     ///   return `None` so the caller can surface a clean error.
+    /// - `Some(segments)` keeps every entry whose module path ends
+    ///   with `segments`, and it must be unique.
     ///
     /// Returns `None` if `function_qualified` is empty (legacy
     /// constructor path) — in that case callers fall back to the
     /// flat `function` map.
     pub(super) fn lookup_function_qualified(
         &self,
-        qualifier: Option<DefaultSymbol>,
+        qualifier: Option<&[DefaultSymbol]>,
         name: DefaultSymbol,
     ) -> Option<Rc<Function>> {
-        if self.function_qualified.is_empty() {
-            return None;
+        let entries = self.function_qualified.get(&name)?;
+        if qualifier.is_none() {
+            if let Some(entry) = entries.iter().find(|e| e.module_path.is_none()) {
+                return Some(Rc::clone(&entry.func));
+            }
         }
-        if let Some(q) = qualifier {
-            return self.function_qualified.get(&(Some(q), name)).cloned();
+        let mut hits = entries.iter().filter(|e| match (qualifier, &e.module_path) {
+            (None, _) => true,
+            (Some(segments), Some(path)) => frontend::type_checker::path_ends_with(path, segments),
+            (Some(_), None) => false,
+        });
+        let first = hits.next()?;
+        if hits.next().is_some() {
+            return None; // ambiguous
         }
-        if let Some(f) = self.function_qualified.get(&(None, name)).cloned() {
-            return Some(f);
-        }
-        let candidates: Vec<_> = self
-            .function_qualified
-            .iter()
-            .filter(|((_, n), _)| *n == name)
-            .collect();
-        if candidates.len() == 1 {
-            Some(candidates[0].1.clone())
-        } else {
-            None
-        }
+        Some(Rc::clone(&first.func))
     }
 
     /// Override the contract mode after construction. Tests use this to

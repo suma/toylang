@@ -51,21 +51,36 @@ use string_interner::{DefaultSymbol, Symbol};
 
 pub mod layout;
 
+/// One entry in [`Module::function_index`]: a function, plus the
+/// module it came from (`None` = user-authored).
+#[derive(Debug, Clone)]
+pub struct FunctionEntry {
+    pub module_path: Option<Vec<DefaultSymbol>>,
+    pub id: FuncId,
+}
+
+/// Does `path` end with `suffix`? The qualifier-resolution rule
+/// (MODULE-SYSTEM P2); mirrors the type checker's own
+/// `path_ends_with` so both agree on which call resolves where.
+pub fn path_ends_with(path: &[DefaultSymbol], suffix: &[DefaultSymbol]) -> bool {
+    suffix.len() <= path.len() && path[path.len() - suffix.len()..] == *suffix
+}
+
 /// Top-level container. One IR module corresponds to one toylang program.
 #[derive(Debug, Default)]
 pub struct Module {
     pub functions: Vec<Function>,
-    /// `(module_qualifier, name) -> index into functions`. The
-    /// qualifier is the **last segment** of the originating module's
-    /// dotted path (`"math"` for `core/std/math.t`) or `None` for
-    /// user-authored top-level functions. Auto-loaded modules push
-    /// `Some(last_seg)` so two modules each defining `pub fn foo` do
-    /// not silently overwrite each other (todo #193). Bare-name
-    /// resolution at call sites tries the `None` key first and then
-    /// falls back to the unique `Some(_)` entry, while qualified
-    /// `Expr::AssociatedFunctionCall(mod, fn)` calls go straight at
-    /// `(Some(mod), fn)`.
-    pub function_index: HashMap<(Option<DefaultSymbol>, DefaultSymbol), FuncId>,
+    /// `fn_name -> every function of that name`, each tagged with the
+    /// full dotted path of the module it came from (`["std", "math"]`
+    /// for `core/std/math.t`) or `None` for user-authored top-level
+    /// functions.
+    ///
+    /// A qualifier written at a call site matches the **tail** of that
+    /// path (MODULE-SYSTEM P2), so `math::abs(x)` finds `std.math.abs`
+    /// and two modules whose last segment collides stay distinct
+    /// entries. Before P2 the key was `(Option<last_segment>, name)`,
+    /// and that collision aborted the build here.
+    pub function_index: HashMap<DefaultSymbol, Vec<FunctionEntry>>,
     /// `extern fn ... from "lib"` link requests (FFI_PLAN P1), deduped
     /// and in declaration order. The AOT driver passes each as `-l<lib>`;
     /// the JIT dlopens them for symbol lookup. `"toylang_rt"` is the
@@ -406,14 +421,13 @@ impl Module {
         self.declare_function_with_module(symbol, None, export_name, linkage, params, return_type)
     }
 
-    /// `declare_function` form that takes an explicit module qualifier
-    /// (`Some(last_seg)` for an integrated module's `pub fn`,
-    /// `None` for user-authored top-level functions). Used by the
-    /// lowering pass once the originating module is known.
+    /// `declare_function` form that takes the originating module's
+    /// full dotted path (`None` for user-authored top-level
+    /// functions). Used by the lowering pass once the module is known.
     pub fn declare_function_with_module(
         &mut self,
         symbol: DefaultSymbol,
-        module_qualifier: Option<DefaultSymbol>,
+        module_path: Option<&[DefaultSymbol]>,
         export_name: String,
         linkage: Linkage,
         params: Vec<Type>,
@@ -438,17 +452,25 @@ impl Module {
             blocks: Vec::new(),
             entry: BlockId(0),
         });
-        let key = (module_qualifier, symbol);
-        if let Some(prev) = self.function_index.insert(key, id) {
-            // Existing entry was overwritten — prior declare with the
-            // same `(qualifier, name)` is not expected because the
-            // lowering pre-pass dedups generics into a separate map.
-            // Surface this as a panic so future regressions are loud.
+        let entries = self.function_index.entry(symbol).or_default();
+        if let Some(prev) = entries
+            .iter()
+            .find(|e| e.module_path.as_deref() == module_path)
+        {
+            // The same function declared twice from the same module is
+            // not expected — the lowering pre-pass dedups generics into
+            // a separate map — so keep it loud. Two *different* modules
+            // exporting the same name is no longer a collision: they
+            // are distinct entries, told apart by their paths.
             panic!(
-                "function_index collision for symbol={:?} qualifier={:?} (previous FuncId={:?})",
-                symbol, module_qualifier, prev
+                "function_index collision for symbol={:?} module_path={:?} (previous FuncId={:?})",
+                symbol, module_path, prev.id
             );
         }
+        entries.push(FunctionEntry {
+            module_path: module_path.map(|p| p.to_vec()),
+            id,
+        });
         id
     }
 
@@ -493,41 +515,42 @@ impl Module {
         &self.functions[id.0 as usize]
     }
 
-    /// Resolve a call-target `FuncId` by name, with the module-qualified
-    /// fallback semantics described on `function_index`:
+    /// Resolve a call-target `FuncId` by name.
     ///
-    /// - **Bare call (`qualifier == None`)**: try the user-authored
-    ///   `(None, name)` slot first. If that misses, scan for any
-    ///   `(Some(_), name)` entry. Returns `Some(_)` only if exactly
-    ///   one such qualified entry exists; ambiguous bare calls
-    ///   produce `None` so the caller can surface a clear error.
-    /// - **Qualified call (`qualifier == Some(m)`)**: look up
-    ///   `(Some(m), name)` directly. No fallback to `(None, name)`
-    ///   because the user explicitly named the module.
+    /// - **Bare call (`qualifier == None`)**: the user-authored entry
+    ///   wins; with none, the module entries must be unique. An
+    ///   ambiguous bare call yields `None` so the caller can surface a
+    ///   clear error.
+    /// - **Qualified call (`qualifier == Some(segments)`)**: every
+    ///   entry whose module path *ends with* `segments` is considered,
+    ///   and it must be unique — `math::abs` and `std::math::abs` both
+    ///   name `std.math.abs`. No fallback to the user-authored entry:
+    ///   the call named a module.
     ///
-    /// `None` overall means "not found" — the caller is responsible
-    /// for distinguishing missing vs ambiguous in its diagnostic if
-    /// it cares.
+    /// `None` overall means "not found or ambiguous" — the type
+    /// checker has already reported the difference by the time
+    /// lowering runs.
     pub fn lookup_function(
         &self,
-        qualifier: Option<DefaultSymbol>,
+        qualifier: Option<&[DefaultSymbol]>,
         name: DefaultSymbol,
     ) -> Option<FuncId> {
-        if let Some(q) = qualifier {
-            return self.function_index.get(&(Some(q), name)).copied();
+        let entries = self.function_index.get(&name)?;
+        if qualifier.is_none()
+            && let Some(entry) = entries.iter().find(|e| e.module_path.is_none())
+        {
+            return Some(entry.id);
         }
-        if let Some(id) = self.function_index.get(&(None, name)).copied() {
-            return Some(id);
-        }
-        let mut hits = self
-            .function_index
-            .iter()
-            .filter(|((_, n), _)| *n == name);
-        let first = hits.next().map(|(_, id)| *id);
+        let mut hits = entries.iter().filter(|e| match (qualifier, &e.module_path) {
+            (None, _) => true,
+            (Some(segments), Some(path)) => path_ends_with(path, segments),
+            (Some(_), None) => false,
+        });
+        let first = hits.next()?;
         if hits.next().is_some() {
             return None; // ambiguous
         }
-        first
+        Some(first.id)
     }
 
     /// Returns true when at least one entry exists for `name`,
@@ -535,9 +558,7 @@ impl Module {
     /// want a quick "is there any function by this name" probe
     /// before computing args.
     pub fn has_function(&self, name: DefaultSymbol) -> bool {
-        self.function_index
-            .keys()
-            .any(|(_, n)| *n == name)
+        self.function_index.contains_key(&name)
     }
 
     pub fn function_mut(&mut self, id: FuncId) -> &mut Function {

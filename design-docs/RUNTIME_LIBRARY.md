@@ -90,6 +90,7 @@ read_file / strftime) / panic・backtrace (shadow stack) / 出力シンク
 | **P3** | 並行性 | `spawn` + join ハンドル + channel | extern + コンパイラ | 設計文書から (todo CONCURRENCY) |
 | **P4** | FFI P2 | dlopen / `NativeLibrary` | extern | FFI_PLAN Phase 2 設計済み |
 | **P4** | JSON / hex / base64 | writer 先行、reader は後 | 純 toylang | ✅ 2026-09-03 ([STDLIB_SERIALIZE](STDLIB_SERIALIZE.md)) |
+| **P4** | 暗号ハッシュ | SHA-256 → SHA-512 → HMAC。SHA-3 / BLAKE3 / パスワード KDF は非目標 | 純 toylang | C0/C1 ✅ 2026-09-04 ([STDLIB_CRYPTO](STDLIB_CRYPTO.md)) |
 | 保留 | プロセス spawn / ネットワーク / regex / 多倍長 | 需要未確認 | — | 下記「非目標」 |
 
 ### 各項目の論点
@@ -223,6 +224,9 @@ landing するのが効率的。**P1-A の反復順の論点だけは P0 と並�
   Layer 1 (Rust) に置くのが確定。
 - **regex / 多倍長 / 直列化フレームワーク** — toy 言語の用途に対して
   過剰。JSON writer の需要を見てから次を考える。
+- **共通鍵暗号 / パスワード KDF / SHA-3 / BLAKE3** — ハッシュの範囲は
+  [`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md) の §5 で線を引いた。定数時間を
+  保証する手段がこの処理系に無いので、それを前提にする分野は開けない。
 - **ゼロコスト抽象化の追求** — stdlib は読みやすさと 3 バックエンド互換を
   優先する (iterator アダプタが「普通の struct + next」で書かれているのと
   同じ判断)。

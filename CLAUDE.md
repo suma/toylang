@@ -33,6 +33,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | path の文法とディレクトリ列挙 (landing 済み) | [`design-docs/STDLIB_FS_PATH.md`](design-docs/STDLIB_FS_PATH.md) |
 | 整数 math / ビット演算 / 限界値 / 乱数 (landing 済み) | [`design-docs/STDLIB_NUMERIC.md`](design-docs/STDLIB_NUMERIC.md) |
 | JSON / hex / base64 (landing 済み) | [`design-docs/STDLIB_SERIALIZE.md`](design-docs/STDLIB_SERIALIZE.md) |
+| 暗号ハッシュ (SHA-256 / SHA-224 landing 済み) | [`design-docs/STDLIB_CRYPTO.md`](design-docs/STDLIB_CRYPTO.md) |
 | レベル付きログ (landing 済み) | [`design-docs/STDLIB_LOG.md`](design-docs/STDLIB_LOG.md) |
 | `ptr` を型付きにする設計 (未実装) | [`design-docs/POINTER.md`](design-docs/POINTER.md) |
 | SIMD の設計と残りのフェーズ | [`design-docs/SIMD.md`](design-docs/SIMD.md) |

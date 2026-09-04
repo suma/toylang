@@ -10,6 +10,18 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-04
+- **STDLIB-CRYPTO C0/C1 — SHA-256 / SHA-224 (`core/std/crypto/`)** —
+  設計は [`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md)。`digest.t` が
+  `trait Digest` (streaming) + `struct Sum` (出力値) + `ct_eq`
+  (定数時間**を意図した**比較。バリアが無いので保証はしないと明記)、
+  `sha256.t` が FIPS 180-4 の SHA-256 / SHA-224。純 toylang
+  (経路の判断は §4、**64 KB で interpreter 6.2s / AOT 7ms**)。
+  出力は裸の `Vec<u8>` ではなく `Sum` — 入力も出力もバイト列なので、
+  型が無いと二重ハッシュを検査器が見逃す。`to_hex` は `hex::encode`
+  に委譲 (16 進の綴りを 2 つ持たない)。契約は shift 量 / 出力長 /
+  ブロック長 / 添字に置いた (trait 側に置けない理由は上の
+  TRAIT-CONTRACT-EXPRREF)。3 レーン一致 + 公開ベクタで pin。
+  例: `interpreter/example/crypto_sha256.t`。C2〜C4 は未着手。
 - **WIDE-RETURN — 戻り値の leaf が返却レジスタを超える compound を
   compiled lane が返せるようになった** — struct / tuple / enum の戻りは
   leaf ごとに 1 つの cranelift 戻りスロットへ展開されるので、返却
@@ -559,10 +571,19 @@
   `poll.t` は `pub fn interest_read() -> u32 { 1u32 }` の形で回避した。
   stdlib に定数を置く自然な方法が無いので、次に定数が要る機能でまた踏む。
 
-- **NUM-W-SHIFT: narrow int の `<<` / `>>` が型検査で拒否される** ★ —
+- **NUM-W-SHIFT: narrow int の `<<` / `>>` が型検査で拒否される** ★★ —
   `u8 << u8` も `u8 << u64` も「incompatible types u8 and u64」。
   `&` / `|` / `^` は全幅で動く (2026-09-01 に tree-walker 側を修正) ので
   shift だけが取り残されている。2026-09-01 に NET N3 のテストで踏んだ。
+  **拒んでいるのは lhs の幅**で、`u32` でも同じ (`x >> 3u32` は
+  「u64 and u32」、`x >> 3u64` は「u32 and u64」)。`docs/language.md:1249`
+  の「rhs must be `u64`」は片方しか書いていない。`Bits` が
+  `rotate_left` / `rotate_right` を全 8 幅に提供しているのと非対称。
+  2026-09-04 に STDLIB-CRYPTO で再度踏んで ★ を上げた: 回避の
+  `((x as u64) >> n) as u32` は**32 以上の shift が trap せず 0 になる**
+  という別の意味論を持ち込むので、`core/std/crypto/sha256.t` の
+  `shr32` / `shl32` は `requires n < 32u64` でそこを埋めている
+  ([`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md) 実測 1)。
 
 - **UNIT-TYPE-ARG — `Result<(), E>` / `Option<()>` が 4 レーンで動く** —
   「成否だけを返す」API の自然な形が compiled レーンで書けなかった。
@@ -1301,6 +1322,34 @@
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
 
+- **TRAIT-CONTRACT-EXPRREF: body 無しの trait method に `requires` を
+  書くと壊れる** ★★ — clause の ExprRef が inheritance の先で別の節点に
+  結び付き、`[E0010] requires clause must be of type bool, got Unknown`
+  が**impl 側の無関係な method を指して**出る (`requires true` でも同じ)。
+  2 つの記述と食い違う: CLAUDE.md の「trait 本体には ... `requires` /
+  `ensures` 節も書ける」と、DBC-LISKOV の `[E0023]` が出す
+  **「move the clause to `trait Foo`」という指示** — 従えない指示に
+  なっている。default body 付きの trait method は未確認。
+  `trait Digest` が契約を持てない理由
+  ([`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md) 実測 2、2026-09-04)。
+
+- **ARRAY-REPEAT-LITERAL: `[value; N]` が書けない** — `[0u8; 64]` は
+  parse エラー (`unexpected token in array elements: Some(Semicolon)`)
+  なので、固定長の作業領域は要素を全部並べるしかない。加えて
+  `const K: [u32; 64] = [...]` は compiled lane が拒否
+  (`only literal values and references to earlier consts`)、stdlib
+  モジュール内の const 配列添字は integration が拒否
+  (`Unsupported expression type for remapping: SliceAccess`)。
+  この 3 つで **`Sha256` のブロックバッファ・message schedule・K 表が
+  全部ヒープの `Vec`** になり、`never_allocates` を名乗れない
+  ([`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md) 実測 4、2026-09-04)。
+
+- **STDLIB-CRYPTO C2〜C4: SHA-512 族 / HMAC / SHA-1・MD5** —
+  設計と優先順位は [`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md)。C2 (SHA-512 /
+  384 / 512-256) は C1 と同型で lane が u64 になるだけ、C3 (HMAC) は
+  `trait Digest` が元を取る場所、C4 (SHA-1 / MD5) は相互運用専用で
+  壊れていることを明示する。
+
 - **NEVER-ALLOCATES-METHOD-STACK: method に `never_allocates` と `unsafe`
   を重ねられない** — `parse_method_modifiers` (`frontend/src/parser/stmt.rs`)
   が両方の修飾子に「次が `fn`」を要求するので、impl 内の
@@ -1315,6 +1364,10 @@
   は interpreter で通り、AOT / JIT は `field access on a non-struct value`。
   構築子 (`Vec::with_capacity` 等) に事後条件を書けない
   ([`VEC_CONTRACTS.md`](VEC_CONTRACTS.md) §5-2、2026-09-04)。
+  **method 呼び出しの形も同じ** — `ensures result.size() == 32u64` は
+  `compiler MVP requires the method receiver to be a struct or enum
+  binding`。`sha256::sum` が出力長を契約で言えない理由
+  ([`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md) 実測 5、2026-09-04)。
 
 - **DBC-CHECK-SKIP-REPORT: `--check` が `ptr` レシーバの method を黙って
   飛ばす** — design_by_contract.md には明記があるが、`Vec` のように契約が

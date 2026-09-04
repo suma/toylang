@@ -551,6 +551,18 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_fs_rename", toylang_rt::toy_fs_rename as *const u8);
     jit_builder.symbol("toy_fs_realpath", toylang_rt::toy_fs_realpath as *const u8);
     jit_builder.symbol("toy_fs_current_dir", toylang_rt::toy_fs_current_dir as *const u8);
+    // STDLIB-FS-HANDLE: the open-file calls.
+    jit_builder.symbol("toy_file_open", toylang_rt::toy_file_open as *const u8);
+    jit_builder.symbol("toy_file_close", toylang_rt::toy_file_close as *const u8);
+    jit_builder.symbol("toy_file_read", toylang_rt::toy_file_read as *const u8);
+    jit_builder.symbol("toy_file_write", toylang_rt::toy_file_write as *const u8);
+    jit_builder.symbol("toy_file_read_at", toylang_rt::toy_file_read_at as *const u8);
+    jit_builder.symbol("toy_file_write_at", toylang_rt::toy_file_write_at as *const u8);
+    jit_builder.symbol("toy_file_seek", toylang_rt::toy_file_seek as *const u8);
+    jit_builder.symbol("toy_file_size", toylang_rt::toy_file_size as *const u8);
+    jit_builder.symbol("toy_file_sync", toylang_rt::toy_file_sync as *const u8);
+    jit_builder.symbol("toy_file_truncate", toylang_rt::toy_file_truncate as *const u8);
+    jit_builder.symbol("toy_file_status", toylang_rt::toy_file_status as *const u8);
     jit_builder.symbol("toy_time_now_mono_ns", toylang_rt::toy_time_now_mono_ns as *const u8);
     jit_builder.symbol("toy_time_mono_res_ns", toylang_rt::toy_time_mono_res_ns as *const u8);
     jit_builder.symbol("toy_time_cpu_ns", toylang_rt::toy_time_cpu_ns as *const u8);

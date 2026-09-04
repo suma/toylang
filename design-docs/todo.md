@@ -10,6 +10,21 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **STDLIB-FS-HANDLE — `fs::File` (開いたファイル) を入れた** —
+  `fs.t` は全部パス指定の全体操作で、ハンドルを持つ型が 1 つも
+  無かった。`poc/logsearch` が「残る前提のうち最大 (R2)」と書いた項目。
+  `File::open` / `create` / `append` / `open_rw` / `read` / `write` /
+  `read_at` / `write_at` / `seek_to` / `seek_by` / `seek_end` / `tell` /
+  `size` / `sync` / `truncate` / `close` / `as_fd` / `is_open`。
+  buffer は `Span<u8>` (EXTERN-BUF、確保もコピーも無し)、失敗は既存の
+  `IoError`、`Drop` が fd を閉じる。設計は
+  [`STDLIB_FS_PATH.md`](STDLIB_FS_PATH.md) §10、例は
+  `interpreter/example/fs_file.t`。R5 (`fsync`) も同じハンドルで解消。
+- **`Result<(), E>` を `val` に束縛すると lowering が panic した** —
+  `val r: Result<(), IoError> = f()` が
+  `compound_storage.rs` の `payload slot shape mismatch` で落ちていた。
+  `()` payload の `(Unit, Unit)` に copy の arm が無かっただけで、
+  `()` は写す leaf を持たないので空実装。上の `File` を書いていて踏んだ。
 - **METHOD-ARG-UNCHECKED — method 呼び出しの引数を型検査するようにした**
   — 個数も型も見ていなかったので、`w.two(1u64)` (2 引数の宣言) や
   `h.fill(out)` (`&mut Sink` を要求する位置に値) が通り、tree-walker は

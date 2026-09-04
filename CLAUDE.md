@@ -30,7 +30,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `str` / `String` / `char` の境界と Unicode の線引き (landing 済み) | [`design-docs/STDLIB_TEXT.md`](design-docs/STDLIB_TEXT.md) |
 | `Iterator` / `Clone` / `Default` と bound の穴 (landing 済み) | [`design-docs/STDLIB_TRAIT_BASE.md`](design-docs/STDLIB_TRAIT_BASE.md) |
 | 単調時計 / sleep / 性能カウンタ / 日付 (landing 済み) | [`design-docs/STDLIB_TIME.md`](design-docs/STDLIB_TIME.md) |
-| path の文法とディレクトリ列挙 (landing 済み) | [`design-docs/STDLIB_FS_PATH.md`](design-docs/STDLIB_FS_PATH.md) |
+| path の文法・ディレクトリ列挙・`File` ハンドル (landing 済み) | [`design-docs/STDLIB_FS_PATH.md`](design-docs/STDLIB_FS_PATH.md) |
 | 整数 math / ビット演算 / 限界値 / 乱数 (landing 済み) | [`design-docs/STDLIB_NUMERIC.md`](design-docs/STDLIB_NUMERIC.md) |
 | JSON / hex / base64 (landing 済み) | [`design-docs/STDLIB_SERIALIZE.md`](design-docs/STDLIB_SERIALIZE.md) |
 | 暗号ハッシュ (SHA-256 / SHA-224 landing 済み) | [`design-docs/STDLIB_CRYPTO.md`](design-docs/STDLIB_CRYPTO.md) |
@@ -642,6 +642,20 @@ fn main() -> u64 {
   `to_f64` だけ extern (10 進 → 2 進変換) だが**文法判定は toylang 側**
   (でないと Rust `str::parse` と libc `strtod` で受理集合が食い違う)。
   詳細は `docs/language.md` の「Parsing numbers」
+- **`fs::File` モジュール** (`core/std/fs.t`、STDLIB-FS-HANDLE、3 レーン対応) —
+  **開いたファイル**。`fs::` の他の関数がパス指定の全体操作なのに対し、
+  こちらは 1 回開いて**範囲**を読み書きする。`File::open` (読み、
+  作らない) / `create` (書き、消す) / `append` (末尾) / `open_rw`
+  (読み書き、残す)、`read` / `write` (cursor が進む)、
+  **`read_at(offset, buf)` / `write_at(offset, buf)` (cursor を
+  動かさない)**、`seek_to` / `seek_by` / `seek_end` / `tell` /
+  `size` / `sync` (fsync) / `truncate` / `close` / `as_fd` /
+  `is_open`。buffer は `Span<u8>` (確保もコピーも無し、`net` の
+  read/write と同じ受け口)。**`Ok(0)` は EOF、短い read/write は
+  `Ok(n)` であって `Err` ではない**。`Drop` が fd を閉じ、`close()`
+  は冪等。失敗は `IoError`。`import` は不要だが `File::` は
+  **修飾せずに書く** (`fs::File::open` は `[E0003]`)。
+  例: `interpreter/example/fs_file.t`
 - **`io::` モジュール** (`core/std/io.t`) — `read_line()` / `argc()` /
   `arg(i)` / `env_var(name)` / `read_file(path)` /
   **`write_file(path, contents)`** / **`append_file(path, contents)`** /

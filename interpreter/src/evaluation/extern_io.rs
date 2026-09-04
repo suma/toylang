@@ -236,6 +236,15 @@ pub fn build_io_registry() -> HashMap<&'static str, ExternFn> {
     m.insert("__extern_fs_rename", fs_rename);
     m.insert("__extern_fs_realpath", fs_realpath);
     m.insert("__extern_fs_current_dir", fs_current_dir);
+    // STDLIB-FS-HANDLE: the open-file calls, forwarded to the runtime
+    // (see the block at the end of this file).
+    m.insert("__extern_file_open", file_open);
+    m.insert("__extern_file_close", file_close);
+    m.insert("__extern_file_seek", file_seek);
+    m.insert("__extern_file_size", file_size_fd);
+    m.insert("__extern_file_sync", file_sync);
+    m.insert("__extern_file_truncate", file_truncate);
+    m.insert("__extern_file_status", file_status);
     m.insert("__extern_time_now_mono_ns", time_now_mono_ns);
     m.insert("__extern_time_mono_res_ns", time_mono_res_ns);
     m.insert("__extern_time_cpu_ns", time_cpu_ns);
@@ -290,6 +299,12 @@ pub fn build_io_buf_registry() -> HashMap<&'static str, ExternBufFn> {
     let mut m: HashMap<&'static str, ExternBufFn> = HashMap::new();
     m.insert("__extern_io_read_file_into", io_read_file_into);
     m.insert("__extern_io_write_file_bytes", io_write_file_bytes);
+    // STDLIB-FS-HANDLE: the same four directions through a
+    // descriptor rather than a path.
+    m.insert("__extern_file_read", file_read);
+    m.insert("__extern_file_write", file_write);
+    m.insert("__extern_file_read_at", file_read_at);
+    m.insert("__extern_file_write_at", file_write_at);
     m
 }
 
@@ -1264,4 +1279,170 @@ fn log_timestamps(args: &[Value]) -> Result<Value, InterpreterError> {
         });
     }
     Ok(Value::Bool(toylang_rt::toy_log_timestamps()))
+}
+
+// ---------------------------------------------------------------------
+// STDLIB-FS-HANDLE: the open-file externs (`core/std/fs.t`).
+//
+// Forwarded to `toylang_rt` rather than reimplemented on `std::fs`,
+// the shape `extern_net` uses and for the same reason: a second
+// mapping from errno to `IoError` is a second thing that can drift,
+// and ERROR_MODEL E0 is the record of it drifting. Forwarding also
+// makes the descriptor a real one, so a `File` opened here can be
+// handed to `Poller::register` exactly as in the compiled lanes.
+
+fn file_open(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_io_args("__extern_file_open", args, 2)?;
+    let path = str_arg(&args[0], "__extern_file_open")?;
+    let mode = u64_arg(&args[1], "__extern_file_open")?;
+    Ok(Value::Int32(toylang_rt::file_open(path.as_bytes(), mode)))
+}
+
+fn file_close(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_io_args("__extern_file_close", args, 1)?;
+    let fd = fd_arg(&args[0], "__extern_file_close")?;
+    Ok(u64_result(toylang_rt::file_close(fd)))
+}
+
+fn file_seek(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_io_args("__extern_file_seek", args, 3)?;
+    let fd = fd_arg(&args[0], "__extern_file_seek")?;
+    let offset = i64_arg(&args[1], "__extern_file_seek")?;
+    let whence = u64_arg(&args[2], "__extern_file_seek")?;
+    Ok(u64_result(toylang_rt::file_seek(fd, offset, whence)))
+}
+
+fn file_size_fd(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_io_args("__extern_file_size", args, 1)?;
+    let fd = fd_arg(&args[0], "__extern_file_size")?;
+    Ok(u64_result(toylang_rt::file_size(fd)))
+}
+
+fn file_sync(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_io_args("__extern_file_sync", args, 1)?;
+    let fd = fd_arg(&args[0], "__extern_file_sync")?;
+    Ok(u64_result(toylang_rt::file_sync(fd)))
+}
+
+fn file_truncate(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_io_args("__extern_file_truncate", args, 2)?;
+    let fd = fd_arg(&args[0], "__extern_file_truncate")?;
+    let len = u64_arg(&args[1], "__extern_file_truncate")?;
+    Ok(u64_result(toylang_rt::file_truncate(fd, len)))
+}
+
+fn file_status(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_io_args("__extern_file_status", args, 0)?;
+    Ok(u64_result(toylang_rt::file_status()))
+}
+
+/// The four that carry a buffer. `with_bytes` / `with_bytes_mut` lend
+/// the real bytes for the duration of the call, so the syscall reads
+/// and writes **toylang memory directly** (EXTERN-BUF) -- the same
+/// zero-copy shape the compiled lanes get.
+fn file_read(ctx: &mut EvaluationContext<'_>, args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_io_args("__extern_file_read", args, 3)?;
+    let fd = fd_arg(&args[0], "__extern_file_read")?;
+    let len = u64_arg(&args[2], "__extern_file_read")?;
+    if len == 0 {
+        return Ok(u64_result(toylang_rt::file_read(fd, &mut [])));
+    }
+    let n = with_bytes_mut(ctx, &args[1], len, "__extern_file_read", |buf| {
+        toylang_rt::file_read(fd, buf)
+    })?;
+    Ok(u64_result(n))
+}
+
+fn file_write(ctx: &mut EvaluationContext<'_>, args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_io_args("__extern_file_write", args, 3)?;
+    let fd = fd_arg(&args[0], "__extern_file_write")?;
+    let len = u64_arg(&args[2], "__extern_file_write")?;
+    if len == 0 {
+        return Ok(u64_result(toylang_rt::file_write(fd, &[])));
+    }
+    let n = with_bytes(ctx, &args[1], len, "__extern_file_write", |buf| {
+        toylang_rt::file_write(fd, buf)
+    })?;
+    Ok(u64_result(n))
+}
+
+fn file_read_at(ctx: &mut EvaluationContext<'_>, args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_io_args("__extern_file_read_at", args, 4)?;
+    let fd = fd_arg(&args[0], "__extern_file_read_at")?;
+    let len = u64_arg(&args[2], "__extern_file_read_at")?;
+    let offset = u64_arg(&args[3], "__extern_file_read_at")?;
+    if len == 0 {
+        return Ok(u64_result(toylang_rt::file_read_at(fd, &mut [], offset)));
+    }
+    let n = with_bytes_mut(ctx, &args[1], len, "__extern_file_read_at", |buf| {
+        toylang_rt::file_read_at(fd, buf, offset)
+    })?;
+    Ok(u64_result(n))
+}
+
+fn file_write_at(
+    ctx: &mut EvaluationContext<'_>,
+    args: &[Value],
+) -> Result<Value, InterpreterError> {
+    expect_io_args("__extern_file_write_at", args, 4)?;
+    let fd = fd_arg(&args[0], "__extern_file_write_at")?;
+    let len = u64_arg(&args[2], "__extern_file_write_at")?;
+    let offset = u64_arg(&args[3], "__extern_file_write_at")?;
+    if len == 0 {
+        return Ok(u64_result(toylang_rt::file_write_at(fd, &[], offset)));
+    }
+    let n = with_bytes(ctx, &args[1], len, "__extern_file_write_at", |buf| {
+        toylang_rt::file_write_at(fd, buf, offset)
+    })?;
+    Ok(u64_result(n))
+}
+
+/// The descriptor argument. A toylang `i32` crosses as its own
+/// `Value` variant; the wider ones are accepted so a literal does not
+/// have to be spelled `-1i32` at every call site.
+fn fd_arg(value: &Value, name: &str) -> Result<i32, InterpreterError> {
+    match value {
+        Value::Int32(v) => Ok(*v),
+        Value::Int64(v) => Ok(*v as i32),
+        Value::UInt64(v) => Ok(*v as i32),
+        Value::Heap(rc) => match &*rc.borrow() {
+            Object::Int32(v) => Ok(*v),
+            Object::Int64(v) => Ok(*v as i32),
+            other => Err(InterpreterError::InternalError(format!(
+                "extern fn `{name}`: expected a file descriptor, got {other:?}"
+            ))),
+        },
+        other => Err(InterpreterError::InternalError(format!(
+            "extern fn `{name}`: expected a file descriptor, got {other:?}"
+        ))),
+    }
+}
+
+fn i64_arg(value: &Value, name: &str) -> Result<i64, InterpreterError> {
+    match value {
+        Value::Int64(v) => Ok(*v),
+        Value::UInt64(v) => Ok(*v as i64),
+        Value::Int32(v) => Ok(*v as i64),
+        Value::Heap(rc) => match &*rc.borrow() {
+            Object::Int64(v) => Ok(*v),
+            Object::UInt64(v) => Ok(*v as i64),
+            other => Err(InterpreterError::InternalError(format!(
+                "extern fn `{name}`: expected an i64 argument, got {other:?}"
+            ))),
+        },
+        other => Err(InterpreterError::InternalError(format!(
+            "extern fn `{name}`: expected an i64 argument, got {other:?}"
+        ))),
+    }
+}
+
+fn expect_io_args(name: &str, args: &[Value], want: usize) -> Result<(), InterpreterError> {
+    if args.len() != want {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: format!("extern fn `{name}` takes {want} argument(s)"),
+            expected: want,
+            found: args.len(),
+        });
+    }
+    Ok(())
 }

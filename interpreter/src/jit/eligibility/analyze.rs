@@ -113,7 +113,23 @@ pub fn analyze(
     // every program to the tree-walker.
     if let Some(drop_sym) = interner.get("Drop") {
         let stdlib_owning: Vec<DefaultSymbol> =
-            ["Arena", "FixedBuffer", "SlotRegion", "Box", "Vec", "SoaVec", "Deque", "TcpStream", "TcpListener", "Poller", "UdpSocket"]
+            // STDLIB-FS-HANDLE: `File` for the same reason as the
+            // sockets — its `impl Drop` closes a descriptor the
+            // interpreter's scope-exit path already handles.
+            [
+                "Arena",
+                "FixedBuffer",
+                "SlotRegion",
+                "Box",
+                "Vec",
+                "SoaVec",
+                "Deque",
+                "TcpStream",
+                "TcpListener",
+                "Poller",
+                "UdpSocket",
+                "File",
+            ]
                 .iter()
                 .filter_map(|name| interner.get(name))
                 .collect();

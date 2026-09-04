@@ -309,8 +309,8 @@ RUNTIME_GAPS の R2 / R3 / R5 と G4。**関数ではなく型・処理系機能
 
 | 項目 | 何が要るか |
 |---|---|
-| **ファイルの部分入出力** (R2 ★★★) | `File` ハンドル型 + `open`/`close`/`seek`/`pread`/`pwrite`。`io.t` は全部パス指定の全体操作で、ハンドルを持つ型が 1 つも無い。**RUNTIME_GAPS が「最も効果が大きい 1 項目」と書いている** |
-| **`fsync` / `truncate`** (R5) | 上のハンドルに乗る |
+| ~~**ファイルの部分入出力** (R2)~~ | ✅ 2026-09-05: `fs::File` (`open`/`create`/`append`/`open_rw`/`read`/`write`/`read_at`/`write_at`/`seek_*`/`tell`/`size`/`close`)。設計は [`STDLIB_FS_PATH.md`](STDLIB_FS_PATH.md) §10 |
+| ~~**`fsync` / `truncate`** (R5)~~ | ✅ 2026-09-05: 同じハンドルの `sync()` / `truncate(len)` |
 | **`SIGTERM` の捕捉** (R3 ★★) | シグナルハンドラは処理系側 (常駐サービスを書くのに要る) |
 | **システム情報** (G4 ★) | hostname / pid / CPU 数 / RSS / `statfs`。extern を並べるだけだが、`io.t` に置くか `sys.t` を切るかを決める |
 | ファイルのメタデータ | mtime / permissions / `walk_dir` / symlink。`fs.t` の自然な続き |
@@ -324,7 +324,9 @@ RUNTIME_GAPS の R2 / R3 / R5 と G4。**関数ではなく型・処理系機能
   ので先に置く (B が入ると `math.t` が 30 本縮む)。
 - **H は別枠**。R2 (ファイルハンドル) は他のどれより効果が大きいが、
   型を 1 つ導入する仕事なので、この節の「関数を足す」作業とは
-  別に計画する。
+  別に計画する。**2026-09-05 に R2 / R5 は landing した** (`fs::File`)
+  ので、H に残るのは **R3 シグナル捕捉**と **G4 システム情報**、
+  それに `fs.t` の metadata (`mtime` / `mode`)。
 
 ## Phase 分割
 

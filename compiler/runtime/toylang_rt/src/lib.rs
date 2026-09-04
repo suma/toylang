@@ -129,6 +129,19 @@ unsafe extern "C" {
     fn clock_getres(clock_id: i32, res: *mut Timespec) -> i32;
     fn nanosleep(req: *const Timespec, rem: *mut Timespec) -> i32;
     fn access(path: *const u8, mode: i32) -> i32;
+    // STDLIB-FS-HANDLE: the open-file calls. Raw descriptors rather
+    // than `FILE*`: `pread` / `fsync` / `ftruncate` are fd operations,
+    // and mixing them with a buffered stream means flushing by hand
+    // before every one of them. `open` is variadic in libc (the mode
+    // argument is read only when O_CREAT is set), declared here the
+    // way `fcntl` above already is.
+    fn open(path: *const u8, flags: i32, ...) -> i32;
+    fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
+    fn lseek(fd: i32, offset: i64, whence: i32) -> i64;
+    fn pread(fd: i32, buf: *mut u8, count: usize, offset: i64) -> isize;
+    fn pwrite(fd: i32, buf: *const u8, count: usize, offset: i64) -> isize;
+    fn fsync(fd: i32) -> i32;
+    fn ftruncate(fd: i32, len: i64) -> i32;
     // The process environment, an array of `name=value` C strings
     // terminated by a null pointer. Iterated by `toy_io_env_*`.
     static environ: *mut *mut u8;
@@ -574,6 +587,12 @@ struct ThreadState {
     // entries back one at a time after one crossing read them all.
     fs_status: u64,
     fs_entries: alloc::vec::Vec<alloc::vec::Vec<u8>>,
+    // STDLIB-FS-HANDLE: the same pairing for the open-file calls. A
+    // slot of its own rather than sharing `fs_status`: a `read` on a
+    // handle and a directory listing are independent operations, and
+    // one clobbering the other's status is the bug the per-operation
+    // slots above exist to prevent.
+    file_status: u64,
     // STDLIB-LOG: the level, and whether timestamps are on. Both
     // resolved from the environment on first read.
     log_level: u32,
@@ -644,6 +663,7 @@ impl Default for ThreadState {
             read_file_status: IO_OK,
             env_status: IO_OK,
             fs_status: IO_OK,
+            file_status: IO_OK,
             fs_entries: alloc::vec::Vec::new(),
             log_level: LOG_INFO,
             log_level_resolved: false,
@@ -4633,6 +4653,304 @@ fn fs_status_from_errno(err: i32) -> u64 {
 pub const FS_ALREADY_EXISTS: u64 = 7;
 pub const FS_NOT_A_DIRECTORY: u64 = 8;
 pub const FS_NOT_EMPTY: u64 = 9;
+
+// ---------------------------------------------------------------------
+// STDLIB-FS-HANDLE: open files (RUNTIME_LIBRARY「関数粒度の空白」H).
+//
+// Everything above this line addresses a file **by path** and touches
+// the whole of it. That is what forced `poc/logsearch` to split its
+// index into a second file and to cap a segment at 8 MiB: reading a
+// footer meant reading the file. A descriptor plus `pread` is the
+// missing half, and `fsync` / `ftruncate` are the two the durability
+// story needed.
+//
+// Descriptors rather than `FILE*`: `pread` / `fsync` / `ftruncate` are
+// fd operations, and layering them over a buffered stream means
+// flushing by hand before each one -- a rule to remember, which is the
+// kind of thing this runtime tries not to hand upward. The cost is the
+// three `open` flags whose values differ per platform, below.
+//
+// Failures follow RUNTIME-IO: the payload-carrying call records a
+// status in the thread state and the paired `toy_file_status` hands it
+// back, so the boundary itself still carries only scalars. The
+// vocabulary is `io_status`, decoded by `fs_error_from_status` in
+// `fs.t` -- no third table.
+
+/// The `open(2)` flags that differ between the two supported hosts.
+///
+/// `O_RDONLY` / `O_WRONLY` / `O_RDWR` are 0 / 1 / 2 everywhere and are
+/// written inline. These three are not, and a wrong value here opens
+/// the file successfully with the wrong behaviour -- the silent kind
+/// of failure that `sys_epoll` / `sys_kqueue` are split for.
+#[cfg(target_os = "macos")]
+mod open_flags {
+    pub const CREAT: i32 = 0x0200;
+    pub const TRUNC: i32 = 0x0400;
+    pub const APPEND: i32 = 0x0008;
+}
+
+#[cfg(not(target_os = "macos"))]
+mod open_flags {
+    pub const CREAT: i32 = 0o100;
+    pub const TRUNC: i32 = 0o1000;
+    pub const APPEND: i32 = 0o2000;
+}
+
+const SEEK_SET: i32 = 0;
+const SEEK_CUR: i32 = 1;
+
+/// How `file_open` was asked to open the file. The numbers are the
+/// wire format between `fs.t`'s four constructors and this function;
+/// they are not the platform's flags.
+pub const FILE_MODE_READ: u64 = 0;
+pub const FILE_MODE_CREATE: u64 = 1;
+pub const FILE_MODE_APPEND: u64 = 2;
+pub const FILE_MODE_READ_WRITE: u64 = 3;
+
+/// Record the outcome of a file-handle call and answer whether it
+/// succeeded, the shape `net_record` uses.
+fn file_record(ok: bool) -> bool {
+    let st = thread_state();
+    st.file_status = if ok {
+        io_status::OK
+    } else {
+        io_status::from_errno(current_errno())
+    };
+    ok
+}
+
+/// Open `path` in one of the four modes, answering the descriptor or
+/// `-1` with the reason in [`file_status`].
+///
+/// The created file is `0o666` before the umask, as `creat(1)` and
+/// every shell redirection are.
+pub fn file_open(path: &[u8], mode: u64) -> i32 {
+    let flags = match mode {
+        FILE_MODE_CREATE => 1 | open_flags::CREAT | open_flags::TRUNC,
+        FILE_MODE_APPEND => 1 | open_flags::CREAT | open_flags::APPEND,
+        // Read-write **without** truncating: the mode that lets a
+        // program update a record in place, which is the whole point
+        // of having `pwrite`.
+        FILE_MODE_READ_WRITE => 2 | open_flags::CREAT,
+        // Anything else is read-only. `FILE_MODE_READ` is 0 and so is
+        // `O_RDONLY`; a mode this build does not know still opens
+        // something safe rather than creating a file.
+        _ => 0,
+    };
+    let mut p: Vec<u8> = Vec::with_capacity(path.len() + 1);
+    p.extend_from_slice(path);
+    p.push(0);
+    let fd = unsafe { open(p.as_ptr(), flags, 0o666u32) };
+    file_record(fd >= 0);
+    fd
+}
+
+/// Close `fd`, answering the status. A negative fd does nothing and
+/// succeeds: `fs.t` parks the field at `-1` after closing, so a second
+/// `close()` cannot shut down whatever unrelated file has since been
+/// handed that number (the rule `net_close` follows).
+pub fn file_close(fd: i32) -> u64 {
+    if fd < 0 {
+        thread_state().file_status = io_status::OK;
+        return io_status::OK;
+    }
+    file_record(unsafe { close(fd) } == 0);
+    thread_state().file_status
+}
+
+/// Read into `buf` at the cursor, answering how many bytes landed.
+///
+/// **`0` with an OK status is end of file**, not a failure -- the
+/// count and the status have to be read together, as for `net_recv`.
+/// A short read is ordinary too: the count is what arrived.
+pub fn file_read(fd: i32, buf: &mut [u8]) -> u64 {
+    let n = unsafe { read(fd, buf.as_mut_ptr(), buf.len()) };
+    if file_record(n >= 0) { n as u64 } else { 0 }
+}
+
+/// Write `buf` at the cursor, answering how many bytes went out.
+///
+/// A short write is reported as the count, not as a failure; the
+/// caller compares it with `buf.len()`. That is `write(2)`, and
+/// pretending otherwise would hide a full disk behind an `Ok`.
+pub fn file_write(fd: i32, buf: &[u8]) -> u64 {
+    let n = unsafe { write(fd, buf.as_ptr(), buf.len()) };
+    if file_record(n >= 0) { n as u64 } else { 0 }
+}
+
+/// `file_read` from an absolute offset, leaving the cursor alone.
+///
+/// This is the call the whole section exists for: reading a footer or
+/// one frame out of a large file without reading what precedes it.
+pub fn file_read_at(fd: i32, buf: &mut [u8], offset: u64) -> u64 {
+    let n = unsafe { pread(fd, buf.as_mut_ptr(), buf.len(), offset as i64) };
+    if file_record(n >= 0) { n as u64 } else { 0 }
+}
+
+/// `file_write` at an absolute offset, leaving the cursor alone.
+///
+/// On a descriptor opened in append mode Linux ignores the offset and
+/// appends anyway (POSIX says `pwrite` on `O_APPEND` is unspecified),
+/// so `fs.t` documents this as belonging with `open_rw`.
+pub fn file_write_at(fd: i32, buf: &[u8], offset: u64) -> u64 {
+    let n = unsafe { pwrite(fd, buf.as_ptr(), buf.len(), offset as i64) };
+    if file_record(n >= 0) { n as u64 } else { 0 }
+}
+
+/// Move the cursor, answering its new absolute position. `whence` is
+/// 0 from the start, 1 from the cursor, 2 from the end -- the
+/// `lseek(2)` numbers, which `fs.t` hides behind three named methods.
+pub fn file_seek(fd: i32, offset: i64, whence: u64) -> u64 {
+    let w = match whence {
+        1 => SEEK_CUR,
+        2 => SEEK_END,
+        _ => SEEK_SET,
+    };
+    let n = unsafe { lseek(fd, offset, w) };
+    if file_record(n >= 0) { n as u64 } else { 0 }
+}
+
+/// The size of the open file, **without moving the cursor**: the
+/// position is saved, the end is sought, and the position is put
+/// back. `toy_fs_file_size` answers the same question for a path.
+pub fn file_size(fd: i32) -> u64 {
+    let here = unsafe { lseek(fd, 0, SEEK_CUR) };
+    if !file_record(here >= 0) {
+        return 0;
+    }
+    let end = unsafe { lseek(fd, 0, SEEK_END) };
+    if !file_record(end >= 0) {
+        return 0;
+    }
+    let back = unsafe { lseek(fd, here, SEEK_SET) };
+    if !file_record(back >= 0) {
+        return 0;
+    }
+    end as u64
+}
+
+/// Flush this file's writes to the storage device.
+///
+/// The one call that makes a write survive losing power rather than
+/// merely losing the process -- `STORAGE_FORMAT.md` §9's "strong
+/// against a process death, weak against a power cut" was written
+/// because this was missing.
+pub fn file_sync(fd: i32) -> u64 {
+    file_record(unsafe { fsync(fd) } == 0);
+    thread_state().file_status
+}
+
+/// Cut the file to `len` bytes, or extend it with zeros. The cursor
+/// does not move, so a truncate can leave it past the end.
+pub fn file_truncate(fd: i32, len: u64) -> u64 {
+    file_record(unsafe { ftruncate(fd, len as i64) } == 0);
+    thread_state().file_status
+}
+
+/// The status of the most recent file-handle call.
+pub fn file_status() -> u64 {
+    thread_state().file_status
+}
+
+/// # Safety
+///
+/// `path` must be a valid toylang str handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_file_open(path: *const u8, mode: u64) -> i32 {
+    if path.is_null() {
+        thread_state().file_status = io_status::NOT_FOUND;
+        return -1;
+    }
+    file_open(str_bytes(path), mode)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_file_close(fd: i32) -> u64 {
+    file_close(fd)
+}
+
+/// # Safety
+///
+/// `buf` must point at at least `len` writable bytes. The stdlib
+/// wrapper takes a `Span<u8>` and passes its address and length
+/// together, which is what guarantees it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_file_read(fd: i32, buf: *mut u8, len: u64) -> u64 {
+    if buf.is_null() || len == 0 {
+        thread_state().file_status = io_status::OK;
+        return 0;
+    }
+    file_read(fd, unsafe { core::slice::from_raw_parts_mut(buf, len as usize) })
+}
+
+/// # Safety
+///
+/// `buf` must point at at least `len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_file_write(fd: i32, buf: *const u8, len: u64) -> u64 {
+    if buf.is_null() || len == 0 {
+        thread_state().file_status = io_status::OK;
+        return 0;
+    }
+    file_write(fd, unsafe { core::slice::from_raw_parts(buf, len as usize) })
+}
+
+/// # Safety
+///
+/// As [`toy_file_read`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_file_read_at(fd: i32, buf: *mut u8, len: u64, offset: u64) -> u64 {
+    if buf.is_null() || len == 0 {
+        thread_state().file_status = io_status::OK;
+        return 0;
+    }
+    file_read_at(
+        fd,
+        unsafe { core::slice::from_raw_parts_mut(buf, len as usize) },
+        offset,
+    )
+}
+
+/// # Safety
+///
+/// As [`toy_file_write`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_file_write_at(fd: i32, buf: *const u8, len: u64, offset: u64) -> u64 {
+    if buf.is_null() || len == 0 {
+        thread_state().file_status = io_status::OK;
+        return 0;
+    }
+    file_write_at(
+        fd,
+        unsafe { core::slice::from_raw_parts(buf, len as usize) },
+        offset,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_file_seek(fd: i32, offset: i64, whence: u64) -> u64 {
+    file_seek(fd, offset, whence)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_file_size(fd: i32) -> u64 {
+    file_size(fd)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_file_sync(fd: i32) -> u64 {
+    file_sync(fd)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_file_truncate(fd: i32, len: u64) -> u64 {
+    file_truncate(fd, len)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_file_status() -> u64 {
+    file_status()
+}
 
 // ---------------------------------------------------------------------
 // STDLIB-TIME TM0/TM1: clocks and sleeping.

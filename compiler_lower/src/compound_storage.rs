@@ -1097,6 +1097,11 @@ impl<'a> FunctionLower<'a> {
                         let de = de.clone();
                         self.copy_tuple_elements(&se, &de);
                     }
+                    // A `()` payload (`Result<(), E>`'s `Ok`) has no leaf to
+                    // move, so copying it is doing nothing -- but the arm
+                    // has to exist: without it, binding such a value to a
+                    // `val` reached the `unreachable!` below.
+                    (PayloadSlot::Unit, PayloadSlot::Unit) => {}
                     _ => unreachable!("payload slot shape mismatch"),
                 }
             }

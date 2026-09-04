@@ -17,6 +17,7 @@
 | metadata | **無い** (サイズも更新時刻も種別も読めない) |
 | 作成・削除・改名 | **無い** (`mkdir` / `remove` / `rename`) |
 | カレントディレクトリ | **無い** |
+| 開いたファイル (handle) | **無い** (`open` / `seek` / `pread` / `fsync` / `truncate`) — §10 で入った |
 
 ## なぜ今これを設計するか
 
@@ -282,11 +283,72 @@ NotEmpty           # ENOTEMPTY (remove_dir)
 | **F3** | 変更系 (§7) + `IoError` の 3 variant (§8) | 失敗の文言が 4 レーン一致 (E0 の再発防止) |
 | **F4** | `realpath` / `current_dir` / `temp_dir` | `temp_dir` は `TMPDIR` から純 toylang |
 | **F5** | `mkdir_all` / `copy_file` (純 toylang) | binary safe を非 UTF-8 ファイルで pin |
+| **F6** | `File` (§10) | `read_at` が cursor を動かさないこと・append・idempotent な `close` を 3 レーンで pin |
 
 **F0 が先頭**なのは、syscall を 1 つも呼ばずに分野の半分が landing
 できるから。F3 の `IoError` 拡張は ERROR_MODEL の E0 (語彙が 4 経路に
 別々に書かれている) が直った**後**にやる — 先にやると割れた語彙を
 3 つ増やすことになる。
+
+## 10. 開いたファイル (F6)
+
+§1〜§9 はすべて**パスを指定した全体操作**で、これは意図的な線引き
+だった (「ハンドルは需要が出てから」)。需要は
+[`poc/logsearch`](../poc/logsearch/design-docs/RUNTIME_GAPS.md) が出した
+— 索引を別ファイルに割ったのも、セグメントを 8 MiB で止めたのも、
+**footer を読むにはファイルを読むしかなかった**ためで、あの文書は
+これを「残る前提のうち最大 (R2)」と書いている。
+
+### 形
+
+`net.t` の `TcpStream` と同じ: `struct File { fd: i32 }`、`Drop` が
+閉じ、`close()` は早く閉じて field を `-1` に置く (二度目の close が
+無関係なファイルを閉じないため)。
+
+| 種類 | API |
+|---|---|
+| 開く | `File::open` (読み、作らない) / `create` (書き、消す) / `append` (末尾に書く) / `open_rw` (読み書き、**残す**) |
+| 逐次 | `read(buf)` / `write(buf)` — cursor が進む |
+| 範囲 | `read_at(offset, buf)` / `write_at(offset, buf)` — **cursor を動かさない** |
+| cursor | `seek_to(u64)` / `seek_by(i64)` / `seek_end(i64)` / `tell()` |
+| その他 | `size()` (cursor を動かさない) / `sync()` / `truncate(len)` / `close()` / `as_fd()` / `is_open()` |
+
+`buf` は `Span<u8>`。確保もコピーもせず、EXTERN-BUF の経路で
+**toylang のメモリに直接**読み書きする (`net::TcpStream` の read/write と
+同じ受け口なので、`Vec::with_capacity` + `capacity_span` + `set_size`
+という規約も同じ)。
+
+### 決めたこと
+
+1. **`whence` を露出しない。** `lseek(2)` の 0/1/2 は `seek_to` /
+   `seek_by` / `seek_end` の 3 メソッドに分けた。module top-level の
+   `const` が他モジュールから見えない (todo MODULE-CONST) ので、
+   `Poller` の `interest_read()` 方式を採るしかないが、この 3 つは
+   名前にした方が短い。
+2. **開き方は 4 つの named constructor。** `open(2)` の
+   `O_CREAT` / `O_TRUNC` / `O_APPEND` は**値がホストで違う**ので、
+   flag を toylang 側に出すと `sys_epoll` / `sys_kqueue` を分けた
+   のと同じ事故 (値を写し間違えても開けてしまう) を招く。runtime が
+   4 つの番号を platform の flag に写す。
+3. **短い read / write は `Ok(n)` であって `Err` ではない。**
+   `Ok(0)` は EOF。これは `net::TcpStream` の規約と同じで、
+   count と status を**必ず一緒に読む** (RUNTIME-IO のペア方式)。
+   ディスクが一杯なのを `Ok` の小さい数で報せるのは `write(2)` の形。
+4. **`FILE*` ではなく生の fd。** `pread` / `fsync` / `ftruncate` は
+   fd の操作で、buffered stream に載せると「毎回手で flush する」
+   規律が要る。`as_fd()` があるので `Poller::register` にも渡せる。
+5. **`write_at` は `append` と組み合わせない。** POSIX は
+   `O_APPEND` の fd への `pwrite` を未規定とし、Linux は offset を
+   無視して末尾に足す。`open_rw` と使う。
+
+失敗は §8 の `IoError` をそのまま使う (status の表は `io_status` 1 つ、
+`fs_error_from_status` が decode する — 3 つ目の表は作らない)。
+
+### 残した穴
+
+`openat` / `dup` / `flock` / `mmap` / 非同期 I/O は入れていない。
+`mtime` が無いのは §6 のまま (`struct stat` の layout 問題は handle が
+入っても変わらない — `fstat` でも同じ layout を読む)。
 
 ## 非目標
 
@@ -298,8 +360,12 @@ NotEmpty           # ENOTEMPTY (remove_dir)
 - **symlink の作成 (`symlink` / `link`)** — 読む側 (`kind` /
   `symlink_metadata` / `realpath`) だけ置く。作る需要が出てから。
 - **`remove_dir_all`** — §7。
-- **ファイルロック / mmap / `fsync`** — どれも「いつ書かれたか」の
-  規約を持ち込むので、必要になった時点で別に設計する。
+- **ファイルロック / mmap** — どちらも「いつ書かれたか」の規約を
+  持ち込むので、必要になった時点で別に設計する。
+  **`fsync` はここから外した (F6)** — handle が入ると `fsync` は
+  「その fd の書き込みを落とす」以上の意味を持たず、規約は
+  「呼んだら落ちる」の 1 行で足りる。持ち込むと思っていた複雑さは
+  path 指定の全体操作しか無かった頃の見立てだった。
 - **ディレクトリ監視 (inotify / kqueue の vnode)** — EVENT_POLLING の
   統一形に vnode を足す話で、この分野ではない。
 - **glob / パターンマッチ** — `list_dir` と STDLIB_TEXT の

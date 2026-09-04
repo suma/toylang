@@ -9,6 +9,27 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-09-05
+- **MEMORY-ACCESS M0 — `mem_move` / `mem_set` が全バックエンドで動く
+  ようになった** — compiled レーンに lowering が無く
+  (`cannot lower builtin yet: MemMove`)、`mem_set` の fill value は
+  doc が `u8`・型検査表が `u64`・tree-walker が `u64` で三者バラバラ
+  だった。`u8` に統一し、**3 つの `mem_*` は引数を型検査するように
+  した** (`visit_builtin_call` は署名表から戻り型を返すだけで引数を
+  訪問しておらず、`arg_types` は飾りだった)。診断は
+  [`MEMORY_ACCESS.md`](MEMORY_ACCESS.md)。
+- **MEMORY-ACCESS M1 — `__builtin_ptr_read::<T>(p, off)`** — 読み出し
+  幅を呼び出しに書けるようにした。旧形 (注釈から取る形) は残す
+  (stdlib の 213 箇所を移行する M2 まで警告は出さない)。これに伴い
+  IR VM の scalar 読みが typed-slot map より byte を優先するようになり、
+  同じ IR を走らせる AOT / JIT との不一致が消えた。
+- **IRVM-BOOL-STRIDE — IR VM が bool 配列を 8 バイト間隔で書いていた**
+  — 配列アドレス計算が stride を型から引き直す表を持っており、その表
+  だけ `bool` を 8 バイトとしていた (lowering は 1 バイトで確保)。
+  `soa [T; N]` の bool 列が隣の列を踏む。typed-slot map が値を返して
+  いたので見えていなかった。frame が確保時の stride を持つようにして
+  表を削除。
+
 ### 2026-09-04
 - **JSON-RESULT-READER — json の reader が `Result` を返すようになった
   (`json::parse` が設計どおりの入口になった)** — WIDE-RETURN が

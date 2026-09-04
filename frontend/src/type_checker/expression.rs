@@ -7,6 +7,22 @@ use crate::type_checker::{
 };
 use crate::type_checker::generics::GenericTypeChecking;
 
+/// The name `?` and `??` should classify an enum by.
+///
+/// A stdlib body that names `Result` / `Option` is integrated under
+/// the alias `__std_Result` / `__std_Option` when the user program
+/// shadows those names (DICT-CROSS-MODULE-OPTION), so the interned
+/// spelling reaching the type checker is not always the written one.
+/// Matching the raw spelling made `?` in `core/std/json.t` fail with
+/// "`?` requires Result or Option, got enum `__std_Result`" -- but
+/// only in the programs that shadow, so the whole stdlib could not
+/// rely on `?` at all. Only the classification strips the prefix; the
+/// patterns the desugar builds keep the aliased symbol, which is the
+/// one the enum is actually registered under.
+fn stdlib_enum_name(name: &str) -> &str {
+    name.strip_prefix("__std_").unwrap_or(name)
+}
+
 /// Expression type checking implementation
 impl<'a> TypeCheckerVisitor<'a> {
     /// REF-Stage-2 (iii): walk a `&mut <expr>` operand down through
@@ -2445,12 +2461,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                 )));
             }
         };
-        let enum_name_str = self
-            .core
-            .string_interner
-            .resolve(enum_name)
-            .unwrap_or("?")
-            .to_string();
+        let enum_name_str = stdlib_enum_name(
+            self.core
+                .string_interner
+                .resolve(enum_name)
+                .unwrap_or("?"),
+        )
+        .to_string();
         let (success_variant, error_variant, error_is_unit) = match enum_name_str.as_str() {
             "Result" => ("Ok", "Err", false),
             "Option" => ("Some", "None", true),
@@ -2791,12 +2808,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                 )));
             }
         };
-        let enum_name_str = self
-            .core
-            .string_interner
-            .resolve(enum_name)
-            .unwrap_or("?")
-            .to_string();
+        let enum_name_str = stdlib_enum_name(
+            self.core
+                .string_interner
+                .resolve(enum_name)
+                .unwrap_or("?"),
+        )
+        .to_string();
         let (success_variant, failure_variant, failure_is_unit) = match enum_name_str.as_str() {
             "Option" => ("Some", "None", true),
             "Result" => ("Ok", "Err", false),
@@ -2979,12 +2997,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                 )));
             }
         };
-        let enum_name_str = self
-            .core
-            .string_interner
-            .resolve(enum_name)
-            .unwrap_or("?")
-            .to_string();
+        let enum_name_str = stdlib_enum_name(
+            self.core
+                .string_interner
+                .resolve(enum_name)
+                .unwrap_or("?"),
+        )
+        .to_string();
         match enum_name_str.as_str() {
             "Option" | "Result" => {}
             _ => {

@@ -10,6 +10,29 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-04
+- **JSON-RESULT-READER — json の reader が `Result` を返すようになった
+  (`json::parse` が設計どおりの入口になった)** — WIDE-RETURN が
+  landing したので、`doc.read(s) -> Option<u64>` + `doc.error()` と
+  いう迂回 (`Json` が失敗をフィールドに溜める形) をやめ、reader の
+  全段を `Result<u64, JsonError>` にして `?` で伝播させた。設計の
+  `pub fn parse(s: str) -> Result<Json, JsonError>` も入った
+  (`Ok` は `Vec` を積んだ木、`Err` は payload つき variant —
+  両方 wide なので以前は署名ごと拒否されていた)。副産物として
+  `Json` から 2 フィールド、`fail` / `error()` / 4 つの err コードが
+  消え、`read_array` / `read_object` / `read_text` の `failed` フラグ
+  も消えた。これを書く途中で下の 2 つが出た。
+- **MODULE-TRY-REMAP — stdlib の body に `?` を書くと integration が
+  落ちていた** — `module_integration.rs` の remap に `Expr::Try` の
+  腕が無く、`Unsupported expression type for remapping: Try { ... }`。
+  `NullCoalesce` (`??`) の腕はあったので `?` だけが穴で、**stdlib は
+  今まで `?` を 1 つも使っていなかった**ため誰も踏んでいなかった。
+- **TRY-STDLIB-ALIAS — user が `Result` / `Option` を影にすると
+  stdlib の `?` / `??` が壊れる** — 影があると stdlib 側の enum は
+  `__std_Result` に再 intern される (DICT-CROSS-MODULE-OPTION) のに、
+  `?` / `??` の desugar は**書かれた綴りで分類**していたので
+  ``[E0010] `?` requires Result or Option, got enum `__std_Result` ``。
+  影のあるプログラムでだけ落ちるので、stdlib 全体が `?` に依存できな
+  かった。分類だけ prefix を剥がす (patterns は別名のままで正しい)。
 - **STDLIB-CRYPTO C0/C1 — SHA-256 / SHA-224 (`core/std/crypto/`)** —
   設計は [`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md)。`digest.t` が
   `trait Digest` (streaming) + `struct Sum` (出力値) + `ct_eq`
@@ -106,13 +129,12 @@
 - **STDLIB-SERIALIZE S1/S3/S4/S5 — JSON (`core/std/json.t`)** —
   設計は [`STDLIB_SERIALIZE.md`](STDLIB_SERIALIZE.md)。`JsonWriter`
   (木を作らない writer) / 平坦な `Json` の木 / RFC 8259 の部分集合の
-  reader。**設計から 3 点ずらした**: (1) 木は `enum Json` ではなく
+  reader。**設計から 2 点ずらした**: (1) 木は `enum Json` ではなく
   `Vec<JsonNode>` の pre-order 平坦表現 — enum 版は tree-walker では
   動くが compiled lane では関数に渡せない (`cannot lower parameter`)、
-  (2) `parse(s) -> Result<Json, JsonError>` ではなく
-  `doc.read(s) -> Option<u64>` + `doc.error()` — レジスタ予算
-  (RESULT-COMPOUND-WRITEBACK)、(3) 深さ上限は 128 ではなく 32 —
+  (2) 深さ上限は 128 ではなく 32 —
   ホストの stack が 40〜60 で尽きるので、それ以上は発火しない上限。
+  (もう 1 点あった error channel のずれは JSON-RESULT-READER で解消。)
 - **STDLIB-SERIALIZE S0/S2 — hex / base64 (`core/std/hex.t` /
   `base64.t` / `codec.t`)** — RFC 4648 の test vector で pin。hex は
   出力小文字・入力両対応、base64 は標準アルファベット + padding 必須

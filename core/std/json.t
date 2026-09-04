@@ -7,6 +7,11 @@
 # `Json::to_string` writes through the same writer so there is one
 # implementation of the spelling.
 #
+# Reading is `json::parse(s) -> Result<Json, JsonError>`, or
+# `Json::read` when the document to read into is one you already
+# hold. Every step of the reader answers a `Result`, so a failure
+# says where it stopped without a second call to ask.
+#
 # **Numbers are `Int(i64)` or `Num(f64)`, never both.** JSON has one
 # number type, but a `u64` identifier put through an `f64` stops
 # being itself above 2^53 -- `1234567890123456789` reads back as
@@ -277,18 +282,6 @@ struct JsonNode {
 
 pub struct Json {
     nodes: Vec<JsonNode>,
-    # Why the last `read` failed: 0 for "it did not", otherwise the
-    # `JsonError` variant, with `err_at` its byte offset.
-    #
-    # The failure is kept here rather than returned because a
-    # `Result<u64, JsonError>` from a `&mut self` method does not fit
-    # in the return registers once the writeback of `self` is counted
-    # (`Too many return values to fit in registers`) -- measured, at
-    # every shape this reader tried. `Option<u64>` does fit, and
-    # `error()` reads back the detail through `&self`, which has no
-    # writeback at all.
-    err_kind: u64,
-    err_at: u64,
 }
 
 fn kind_null() -> u64 { 0u64 }
@@ -300,7 +293,7 @@ fn kind_array() -> u64 { 5u64 }
 fn kind_object() -> u64 { 6u64 }
 
 impl Json {
-    fn new() -> Self { Json { nodes: Vec::new(), err_kind: 0u64, err_at: 0u64 } }
+    fn new() -> Self { Json { nodes: Vec::new() } }
 
     # The index of the whole document's value. Always 0 for a
     # document that parsed.
@@ -476,35 +469,14 @@ impl Json {
 # to another, and this one is on the strict side by design -- the
 # same choice `parse::to_u64` makes.
 #
-# **Every step answers `Option<u64>`** -- the position just past what
-# it read, or nothing -- and a failure records its kind and offset in
-# the document. See the note on `Json::err_kind` for why the failure
-# is not simply returned.
+# **Every step answers `Result<u64, JsonError>`** -- the position
+# just past what it read, or why it stopped -- so a failure travels
+# out on the return, and `?` carries a nested one up without the
+# caller restating it.
 
 fn is_digit(b: u64) -> bool { b >= '0' && b <= '9' }
 
-fn err_empty() -> u64 { 1u64 }
-fn err_invalid() -> u64 { 2u64 }
-fn err_trailing() -> u64 { 3u64 }
-fn err_too_deep() -> u64 { 4u64 }
-
 impl Json {
-    # Why the last `read` failed.
-    #
-    # Only meaningful when `read` answered `Option::None`; on a
-    # document that parsed it reads `Empty`.
-    fn error(&self) -> JsonError {
-        if self.err_kind == 2u64 {
-            JsonError::Invalid(self.err_at)
-        } elif self.err_kind == 3u64 {
-            JsonError::Trailing(self.err_at)
-        } elif self.err_kind == 4u64 {
-            JsonError::TooDeep(self.err_at)
-        } else {
-            JsonError::Empty
-        }
-    }
-
     # Two constructors rather than one, because a compound-returning
     # call cannot sit in an argument in the compiled lanes: the empty
     # `String` a non-text node carries has to be bound first, and
@@ -534,12 +506,6 @@ impl Json {
         var n: JsonNode = self.nodes.get(id)
         n.next = self.nodes.size()
         self.nodes.set(id, n)
-    }
-
-    fn fail(&mut self, kind: u64, at: u64) -> Option<u64> {
-        self.err_kind = kind
-        self.err_at = at
-        Option::None
     }
 
     # These take the input by reference and answer with a scalar, and
@@ -610,10 +576,9 @@ impl Json {
 
     # Read one value at `pos`, appending its nodes, and answer with
     # the position just after it.
-    fn read_value(&mut self, text: &String, pos: u64, depth: u64) -> Option<u64> {
+    fn read_value(&mut self, text: &String, pos: u64, depth: u64) -> Result<u64, JsonError> {
         if depth > json::max_depth() {
-            val f = self.fail(json::err_too_deep(), pos)
-            return f
+            return Result::Err(JsonError::TooDeep(pos))
         }
         val p: u64 = self.skip_ws(text, pos)
         val b: u64 = self.byte_at(text, p)
@@ -630,138 +595,93 @@ impl Json {
             if self.word_at(text, p, "true") {
                 val id: u64 = self.push_node(json::kind_bool(), 1i64, 0f64)
                 self.close_leaf(id)
-                Option::Some(p + 4u64)
+                Result::Ok(p + 4u64)
             } else {
-                val f = self.fail(json::err_invalid(), p)
-                f
+                Result::Err(JsonError::Invalid(p))
             }
         } elif b == 'f' {
             if self.word_at(text, p, "false") {
                 val id: u64 = self.push_node(json::kind_bool(), 0i64, 0f64)
                 self.close_leaf(id)
-                Option::Some(p + 5u64)
+                Result::Ok(p + 5u64)
             } else {
-                val f = self.fail(json::err_invalid(), p)
-                f
+                Result::Err(JsonError::Invalid(p))
             }
         } elif b == 'n' {
             if self.word_at(text, p, "null") {
                 val id: u64 = self.push_node(json::kind_null(), 0i64, 0f64)
                 self.close_leaf(id)
-                Option::Some(p + 4u64)
+                Result::Ok(p + 4u64)
             } else {
-                val f = self.fail(json::err_invalid(), p)
-                f
+                Result::Err(JsonError::Invalid(p))
             }
         } elif b == '-' || json::is_digit(b) {
             val r = self.read_number(text, p)
             r
         } else {
-            val f = self.fail(json::err_invalid(), p)
-            f
+            Result::Err(JsonError::Invalid(p))
         }
     }
 
-    fn read_array(&mut self, text: &String, pos: u64, depth: u64) -> Option<u64> {
+    fn read_array(&mut self, text: &String, pos: u64, depth: u64) -> Result<u64, JsonError> {
         val id: u64 = self.push_node(json::kind_array(), 0i64, 0f64)
         var p: u64 = self.skip_ws(text, pos + 1u64)
         if self.byte_at(text, p) == ']' {
             self.close_node(id)
-            return Option::Some(p + 1u64)
+            return Result::Ok(p + 1u64)
         }
         var done: bool = false
-        var failed: bool = false
         while !done {
-            val r = self.read_value(text, p, depth + 1u64)
-            match r {
-                Option::Some(after) => { p = self.skip_ws(text, after) }
-                Option::None => {
-                    failed = true
-                    done = true
-                }
-            }
-            if !failed {
-                val b: u64 = self.byte_at(text, p)
-                if b == ',' {
-                    p = p + 1u64
-                } elif b == ']' {
-                    p = p + 1u64
-                    done = true
-                } else {
-                    val f = self.fail(json::err_invalid(), p)
-                    failed = true
-                    done = true
-                }
+            val after: u64 = self.read_value(text, p, depth + 1u64)?
+            p = self.skip_ws(text, after)
+            val b: u64 = self.byte_at(text, p)
+            if b == ',' {
+                p = p + 1u64
+            } elif b == ']' {
+                p = p + 1u64
+                done = true
+            } else {
+                return Result::Err(JsonError::Invalid(p))
             }
         }
-        if failed { return Option::None }
         self.close_node(id)
-        Option::Some(p)
+        Result::Ok(p)
     }
 
-    fn read_object(&mut self, text: &String, pos: u64, depth: u64) -> Option<u64> {
+    fn read_object(&mut self, text: &String, pos: u64, depth: u64) -> Result<u64, JsonError> {
         val id: u64 = self.push_node(json::kind_object(), 0i64, 0f64)
         var p: u64 = self.skip_ws(text, pos + 1u64)
         if self.byte_at(text, p) == '}' {
             self.close_node(id)
-            return Option::Some(p + 1u64)
+            return Result::Ok(p + 1u64)
         }
         var done: bool = false
-        var failed: bool = false
         while !done {
             # The key is a text node like any other: an object's
             # children alternate key, value, key, value.
             if self.byte_at(text, p) != '"' {
-                val f = self.fail(json::err_invalid(), p)
-                failed = true
+                return Result::Err(JsonError::Invalid(p))
+            }
+            val after_key: u64 = self.read_text(text, p)?
+            p = self.skip_ws(text, after_key)
+            if self.byte_at(text, p) != ':' {
+                return Result::Err(JsonError::Invalid(p))
+            }
+            p = p + 1u64
+            val after_value: u64 = self.read_value(text, p, depth + 1u64)?
+            p = self.skip_ws(text, after_value)
+            val b: u64 = self.byte_at(text, p)
+            if b == ',' {
+                p = self.skip_ws(text, p + 1u64)
+            } elif b == '}' {
+                p = p + 1u64
                 done = true
-            }
-            if !failed {
-                val k = self.read_text(text, p)
-                match k {
-                    Option::Some(after) => { p = self.skip_ws(text, after) }
-                    Option::None => {
-                        failed = true
-                        done = true
-                    }
-                }
-            }
-            if !failed {
-                if self.byte_at(text, p) != ':' {
-                    val f = self.fail(json::err_invalid(), p)
-                    failed = true
-                    done = true
-                } else {
-                    p = p + 1u64
-                }
-            }
-            if !failed {
-                val v = self.read_value(text, p, depth + 1u64)
-                match v {
-                    Option::Some(after) => { p = self.skip_ws(text, after) }
-                    Option::None => {
-                        failed = true
-                        done = true
-                    }
-                }
-            }
-            if !failed {
-                val b: u64 = self.byte_at(text, p)
-                if b == ',' {
-                    p = self.skip_ws(text, p + 1u64)
-                } elif b == '}' {
-                    p = p + 1u64
-                    done = true
-                } else {
-                    val f = self.fail(json::err_invalid(), p)
-                    failed = true
-                    done = true
-                }
+            } else {
+                return Result::Err(JsonError::Invalid(p))
             }
         }
-        if failed { return Option::None }
         self.close_node(id)
-        Option::Some(p)
+        Result::Ok(p)
     }
 
     # A quoted string, escapes decoded.
@@ -769,26 +689,21 @@ impl Json {
     # `\uXXXX` is accepted, and a surrogate pair is put back together
     # into one codepoint before it is encoded -- so an emoji written
     # as two escapes is one character, and a lone half is `Invalid`.
-    fn read_text(&mut self, text: &String, pos: u64) -> Option<u64> {
+    fn read_text(&mut self, text: &String, pos: u64) -> Result<u64, JsonError> {
         var out: String = String::new()
         var p: u64 = pos + 1u64
         var done: bool = false
-        var failed: bool = false
         while !done {
             val b: u64 = self.byte_at(text, p)
             if b == 256u64 {
-                val f = self.fail(json::err_invalid(), p)
-                failed = true
-                done = true
+                return Result::Err(JsonError::Invalid(p))
             } elif b == '"' {
                 p = p + 1u64
                 done = true
             } elif b < 32u64 {
                 # A raw control character has to be escaped; only its
                 # escape is legal here.
-                val f = self.fail(json::err_invalid(), p)
-                failed = true
-                done = true
+                return Result::Err(JsonError::Invalid(p))
             } elif b == '\\' {
                 val e: u64 = self.byte_at(text, p + 1u64)
                 if e == '"' {
@@ -818,9 +733,7 @@ impl Json {
                 } elif e == 'u' {
                     val hi: i64 = self.hex4(text, p + 2u64)
                     if hi < 0i64 {
-                        val f = self.fail(json::err_invalid(), p)
-                        failed = true
-                        done = true
+                        return Result::Err(JsonError::Invalid(p))
                     } elif hi >= 55296i64 && hi <= 56319i64 {
                         # A high surrogate is half of a codepoint; the
                         # other half has to follow it.
@@ -828,9 +741,7 @@ impl Json {
                         val slash: u64 = self.byte_at(text, p + 6u64)
                         val u: u64 = self.byte_at(text, p + 7u64)
                         if slash != '\\' || u != 'u' || lo < 56320i64 || lo > 57343i64 {
-                            val f = self.fail(json::err_invalid(), p)
-                            failed = true
-                            done = true
+                            return Result::Err(JsonError::Invalid(p))
                         } else {
                             val c: i64 = 65536i64 + (hi - 55296i64) * 1024i64 + (lo - 56320i64)
                             out.push_char(c as u32)
@@ -838,32 +749,27 @@ impl Json {
                         }
                     } elif hi >= 56320i64 && hi <= 57343i64 {
                         # A low surrogate with nothing before it.
-                        val f = self.fail(json::err_invalid(), p)
-                        failed = true
-                        done = true
+                        return Result::Err(JsonError::Invalid(p))
                     } else {
                         out.push_char(hi as u32)
                         p = p + 6u64
                     }
                 } else {
-                    val f = self.fail(json::err_invalid(), p)
-                    failed = true
-                    done = true
+                    return Result::Err(JsonError::Invalid(p))
                 }
             } else {
                 out.push(b as u8)
                 p = p + 1u64
             }
         }
-        if failed { return Option::None }
         val id: u64 = self.push_text_node(out)
         self.close_leaf(id)
-        Option::Some(p)
+        Result::Ok(p)
     }
 
     # A number, in JSON's grammar and no wider: no leading `+`, no
     # leading zero, no bare `.5`, no hex.
-    fn read_number(&mut self, text: &String, pos: u64) -> Option<u64> {
+    fn read_number(&mut self, text: &String, pos: u64) -> Result<u64, JsonError> {
         var p: u64 = pos
         if self.byte_at(text, p) == '-' { p = p + 1u64 }
         val first: u64 = self.byte_at(text, p)
@@ -874,22 +780,19 @@ impl Json {
             # caller as trailing content, so it reads the same at the
             # top level as it does inside an array.
             if json::is_digit(self.byte_at(text, p)) {
-                val f = self.fail(json::err_invalid(), p)
-                return f
+                return Result::Err(JsonError::Invalid(p))
             }
         } elif json::is_digit(first) {
             while json::is_digit(self.byte_at(text, p)) { p = p + 1u64 }
         } else {
-            val f = self.fail(json::err_invalid(), p)
-            return f
+            return Result::Err(JsonError::Invalid(p))
         }
         var floating: bool = false
         if self.byte_at(text, p) == '.' {
             floating = true
             p = p + 1u64
             if !json::is_digit(self.byte_at(text, p)) {
-                val f = self.fail(json::err_invalid(), p)
-                return f
+                return Result::Err(JsonError::Invalid(p))
             }
             while json::is_digit(self.byte_at(text, p)) { p = p + 1u64 }
         }
@@ -900,8 +803,7 @@ impl Json {
             val sign: u64 = self.byte_at(text, p)
             if sign == '+' || sign == '-' { p = p + 1u64 }
             if !json::is_digit(self.byte_at(text, p)) {
-                val f = self.fail(json::err_invalid(), p)
-                return f
+                return Result::Err(JsonError::Invalid(p))
             }
             while json::is_digit(self.byte_at(text, p)) { p = p + 1u64 }
         }
@@ -922,7 +824,7 @@ impl Json {
                 }
             }
         }
-        if placed { return Option::Some(p) }
+        if placed { return Result::Ok(p) }
         val as_num = parse::to_f64(spelling)
         var ok: bool = false
         match as_num {
@@ -934,49 +836,58 @@ impl Json {
             Result::Err(_) => {}
         }
         if !ok {
-            val f = self.fail(json::err_invalid(), pos)
-            return f
+            return Result::Err(JsonError::Invalid(pos))
         }
-        Option::Some(p)
+        Result::Ok(p)
     }
 
     # Read a document into `self`, answering with the root index
-    # (always 0) or nothing. On nothing, `error()` says what happened.
+    # (always 0) or why it stopped.
     #
     #     var doc: Json = Json::new()
     #     val r = doc.read(text)
     #     match r {
-    #         Option::Some(root) => { ... }
-    #         Option::None => { println(doc.error()) }
+    #         Result::Ok(root) => { ... }
+    #         Result::Err(e) => { println(e) }
     #     }
+    #
+    # `json::parse` is the same thing without the two lines; reach for
+    # this one when you want to read into a document you already hold.
     #
     # The whole input has to be one value: anything after it is
     # `Trailing`, and whitespace alone is `Empty`. A failed read
     # leaves whatever was read before the failure in the document, so
     # read into a fresh `Json` rather than reusing one.
-    fn read(&mut self, s: str) -> Option<u64> {
+    fn read(&mut self, s: str) -> Result<u64, JsonError> {
         val text: String = String::from_str(s)
         val start: u64 = self.skip_ws(&text, 0u64)
         if start >= text.size() {
-            val f = self.fail(json::err_empty(), 0u64)
-            return f
+            return Result::Err(JsonError::Empty)
         }
-        val r = self.read_value(&text, start, 0u64)
-        var after: u64 = 0u64
-        var ok: bool = false
-        match r {
-            Option::Some(end) => {
-                after = end
-                ok = true
-            }
-            Option::None => {}
-        }
-        if !ok { return Option::None }
+        val after: u64 = self.read_value(&text, start, 0u64)?
         val end: u64 = self.skip_ws(&text, after)
         if end < text.size() {
-            val f = self.fail(json::err_trailing(), end)
-            return f
+            return Result::Err(JsonError::Trailing(end))
         }
-        Option::Some(0u64)
+        Result::Ok(0u64)
     }
+}
+
+# Read a whole document, the way §2 of the design asked for it.
+#
+#     val r = json::parse(text)
+#     match r {
+#         Result::Ok(doc) => { ... }
+#         Result::Err(e) => { println(e) }
+#     }
+#
+# A free function rather than an associated one so the call reads as
+# the entrance it is; `Json::read` is the same reader with the
+# document supplied by the caller.
+pub fn parse(s: str) -> Result<Json, JsonError> {
+    var doc: Json = Json::new()
+    # `?` rather than a `match`: handing the document back from an
+    # arm would be a move inside a branch, which is `[E0014]`.
+    val root: u64 = doc.read(s)?
+    Result::Ok(doc)
 }

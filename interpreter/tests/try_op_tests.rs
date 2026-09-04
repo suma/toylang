@@ -457,3 +457,35 @@ fn try_in_unit_function_is_a_type_error() {
     "#;
     assert!(test_program(src).is_err(), "`?` inside a Unit fn must fail type checking");
 }
+
+// ---------------------------------------------------------------------
+// `?` inside a stdlib body.
+// ---------------------------------------------------------------------
+
+#[test]
+fn try_in_a_stdlib_body_survives_a_user_shadow_of_result() {
+    // A stdlib module that uses `?` is integrated into the user's
+    // program, and when the user has a `Result` of their own the
+    // stdlib's is re-interned as `__std_Result`
+    // (DICT-CROSS-MODULE-OPTION). The desugar classified the enum by
+    // its interned spelling, so `json::parse` -- which propagates with
+    // `?` -- failed with "`?` requires Result or Option, got enum
+    // `__std_Result`", but only in programs that shadow. The shadow is
+    // a struct here, so nothing about the user's type could stand in
+    // for the stdlib enum.
+    let src = r#"
+        struct Result<T, E> { ok: bool, value: T, error: E }
+
+        fn main() -> u64 {
+            val mine: Result<u64, u64> = Result { ok: true, value: 7u64, error: 0u64 }
+            val doc = json::parse("[1, 2, 3]")
+            var n: u64 = 0u64
+            match doc {
+                __std_Result::Ok(d) => { n = d.size() }
+                __std_Result::Err(e) => { n = 0u64 }
+            }
+            n + mine.value
+        }
+    "#;
+    assert_program_result_u64(src, 11);
+}

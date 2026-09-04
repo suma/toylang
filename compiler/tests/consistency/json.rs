@@ -10,14 +10,11 @@ const SHOW: &str = r#"
         var d: Json = Json::new()
         val r = d.read(s)
         match r {
-            Option::Some(root) => {
+            Result::Ok(root) => {
                 val out: String = d.to_string()
                 println(out)
             }
-            Option::None => {
-                val e: JsonError = d.error()
-                println(e)
-            }
+            Result::Err(e) => { println(e) }
         }
     }
 "#;
@@ -231,11 +228,8 @@ fn a_document_too_deep_is_reported_rather_than_fatal() {
             var d: Json = Json::new()
             val r = d.read(text)
             match r {
-                Option::Some(root) => { println(d.size()) }
-                Option::None => {
-                    val e: JsonError = d.error()
-                    println(e)
-                }
+                Result::Ok(root) => { println(d.size()) }
+                Result::Err(e) => { println(e) }
             }
         }
 
@@ -275,7 +269,7 @@ fn a_read_document_can_be_walked_by_name() {
             var d: Json = Json::new()
             val r = d.read("{{\u{22}name\u{22}: \u{22}toy\u{22}, \u{22}n\u{22}: 42, \u{22}xs\u{22}: [1, 2, 3]}}")
             match r {
-                Option::Some(root) => {
+                Result::Ok(root) => {
                     println(d.len(root))
                     var i: u64 = 0u64
                     while i < d.len(root) {
@@ -309,10 +303,7 @@ fn a_read_document_can_be_walked_by_name() {
                         Option::None => { println(0u64) }
                     }
                 }
-                Option::None => {
-                    val e: JsonError = d.error()
-                    println(e)
-                }
+                Result::Err(e) => { println(e) }
             }
             0u64
         }
@@ -336,18 +327,65 @@ fn a_repeated_name_keeps_the_last_one() {
             var d: Json = Json::new()
             val r = d.read("{{{{\u{{22}}a\u{{22}}: 1, \u{{22}}a\u{{22}}: 2}}}}")
             match r {{
-                Option::Some(root) => {{
+                Result::Ok(root) => {{
                     val a = d.get(root, "a")
                     match a {{
                         Option::Some(v) => {{ println(d.as_int(v)) }}
                         Option::None => {{ println(-1i64) }}
                     }}
                 }}
-                Option::None => {{ println(-2i64) }}
+                Result::Err(e) => {{ println(-2i64) }}
             }}
             0u64
         }}
     "#
     );
     assert_renders(&src, "json_dup_key", "{\"a\":1,\"a\":2}\n2\n");
+}
+
+#[test]
+fn parse_hands_back_the_document_or_the_reason() {
+    // `json::parse` is the entrance §2 of the design asked for: a
+    // `Result<Json, JsonError>`. Both halves are wide -- the `Ok`
+    // carries a `Vec` of nodes, the `Err` a variant with a payload --
+    // so until WIDE-RETURN this signature was rejected outright by
+    // cranelift ("Too many return values to fit in registers") and the
+    // reader had to keep its failure in a field instead.
+    let src = r#"
+        fn main() -> u64 {
+            val good = json::parse("{{\u{22}n\u{22}: 42, \u{22}xs\u{22}: [1, 2]}}")
+            match good {
+                Result::Ok(doc) => {
+                    val root: u64 = doc.root()
+                    println(doc.len(root))
+                    val n = doc.get(root, "n")
+                    match n {
+                        Option::Some(v) => { println(doc.as_int(v)) }
+                        Option::None => { println(-1i64) }
+                    }
+                    val back: String = doc.to_string()
+                    println(back)
+                }
+                Result::Err(e) => { println(e) }
+            }
+
+            val empty = json::parse("   ")
+            match empty {
+                Result::Ok(doc) => { println("read") }
+                Result::Err(e) => { println(e) }
+            }
+
+            val trailing = json::parse("1 2")
+            match trailing {
+                Result::Ok(doc) => { println("read") }
+                Result::Err(e) => { println(e) }
+            }
+            0u64
+        }
+    "#;
+    assert_renders(
+        src,
+        "json_parse",
+        "2\n42\n{\"n\":42,\"xs\":[1,2]}\nempty input\ntrailing content at byte 2\n",
+    );
 }

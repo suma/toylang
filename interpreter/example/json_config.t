@@ -41,13 +41,13 @@ fn main() -> u64 {
     val config: String = render(8080u64, "localhost", false)
     println(config)
 
-    # Reading. `read` answers with the root index or with nothing,
-    # and the failure is read back with `error()`.
+    # Reading. `read` answers with the root index, or with why it
+    # stopped.
     var d: Json = Json::new()
     val text: str = config.to_str()
     val r = d.read(text)
     match r {
-        Option::Some(root) => {
+        Result::Ok(root) => {
             var i: u64 = 0u64
             while i < d.len(root) {
                 val key: str = d.key_at(root, i)
@@ -66,21 +66,15 @@ fn main() -> u64 {
             val again: String = d.to_string()
             println(again.eq_str(text))
         }
-        Option::None => {
-            val e: JsonError = d.error()
-            println(e)
-        }
+        Result::Err(e) => { println(e) }
     }
 
     # A reader that takes no extensions says where it stopped.
-    var bad: Json = Json::new()
-    val r2 = bad.read("{{\u{22}a\u{22}: 1,}}")
+    # `json::parse` is the same reader with the document made for you.
+    val r2 = json::parse("{{\u{22}a\u{22}: 1,}}")
     match r2 {
-        Option::Some(root) => { println("accepted") }
-        Option::None => {
-            val e: JsonError = bad.error()
-            println(e)
-        }
+        Result::Ok(doc) => { println("accepted") }
+        Result::Err(e) => { println(e) }
     }
     0u64
 }

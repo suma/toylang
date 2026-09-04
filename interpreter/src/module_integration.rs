@@ -373,6 +373,31 @@ impl<'a> AstIntegrationContext<'a> {
                     self.map_exprs(args, "MethodCall argument")?,
                 ))
             }
+            Expr::Try {
+                inner,
+                scrutinee_binding,
+                success_binding,
+                error_binding,
+                panic_msg,
+                converted_binding,
+                result_binding,
+            } => {
+                // `expr?` — the inner ExprRef plus the six synthetic
+                // binding symbols the parser pre-interned in the
+                // *module's* interner. Without this arm a stdlib body
+                // cannot use `?` at all: integration stops with
+                // "Unsupported expression type for remapping"
+                // (`core/std/json.t`'s reader, 2026-09-04).
+                Ok(Expr::Try {
+                    inner: self.map_expr(inner, "Try inner")?,
+                    scrutinee_binding: self.remap_symbol(*scrutinee_binding)?,
+                    success_binding: self.remap_symbol(*success_binding)?,
+                    error_binding: self.remap_symbol(*error_binding)?,
+                    panic_msg: self.remap_symbol(*panic_msg)?,
+                    converted_binding: self.remap_symbol(*converted_binding)?,
+                    result_binding: self.remap_symbol(*result_binding)?,
+                })
+            }
             Expr::NullCoalesce { lhs, rhs, scrutinee_binding, success_binding, error_binding } => {
                 // `a ?? b` — both operands and the three synthetic
                 // binding symbols carry module-local interned ids.

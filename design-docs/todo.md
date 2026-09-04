@@ -1678,6 +1678,17 @@
 > 分野ごとの空白で、`RUNTIME_LIBRARY.md` の P1〜P4 に対応する
 > (下の 2 件も分野で言えば TEXT と IO に属する)。
 
+> 2026-09-05 に **関数の粒度**でもう一度棚卸しした
+> (`poc/logsearch` の `RUNTIME_GAPS.md` を突き合わせ相手にした)。
+> 「モジュールは在るが標準的な関数が 1 本足りない」形の空白 8 分野を
+> [`RUNTIME_LIBRARY.md`](RUNTIME_LIBRARY.md) の「関数粒度の空白」節に
+> 置いた (**ここに表を再掲しない**)。効きの大きい順に
+> **A 反復子の終端操作 (`fold`/`any`/`all`/`count`/`sum`) →
+> B `Ordering` と汎用 `min`/`max`/`clamp` → F CRC-32**。
+> どれも純 toylang か extern 1 行で書ける。処理系側が要るのは
+> **ファイルハンドル (`open`/`seek`/`pread`/`fsync`)** と
+> **シグナル捕捉**の 2 つで、これは同節の H に分けてある。
+
 - **HOF-RETURN-UNKNOWN: 関数を値として渡す形が使えない** ★ —
   (a) **名前つき関数を値として渡せない** — `fn run(f: fn () -> ())` に
   `run(work)` と書くと `[E0001] expected fn () -> (), but got ()`

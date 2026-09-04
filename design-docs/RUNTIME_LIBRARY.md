@@ -191,6 +191,141 @@ EFFECT_SYSTEM.md「この先」に **「region を跨がない値 = 送れる値
 reader は文字列走査のパーサで、`String` / `StringIter` の上に純 toylang で
 書けるが工数は writer の数倍。実需要が出てから reader を切る。
 
+## 関数粒度の空白 (2026-09-05 棚卸し)
+
+上の P0〜P4 は**ライブラリ (分野) 単位**の台帳で、ほぼ landing した。
+一方 `poc/logsearch` を書いて出てきた
+[`RUNTIME_GAPS.md`](../poc/logsearch/design-docs/RUNTIME_GAPS.md) は
+**機能単位**で、その多くが「モジュールは在るが、そのモジュールに
+標準的な関数が 1 本足りない」形をしている。ここはその粒度で並べる。
+
+**棚卸しの方法**: `--api core/std/*.t` の全出力に対して、他言語の標準
+ライブラリで当然ある名前を突き合わせた (無いことは `grep -rn "fn <name>"
+core/` で確認)。
+
+> **RUNTIME_GAPS の G8 (文字列走査) はほぼ解消している。** あの文書が
+> 「無い」と書く `find` / `starts_with` / `ends_with` / `str` の `Ord` は
+> `str.t` の `StrSearch` と `string.t` の `impl String` に入っており、
+> `rfind` / `replace` / `repeat` / `lines` / `split_whitespace` /
+> `join` / `chars` もある。残っているのは下表 D の 5 本だけ。
+> POC 側の文書は実装前の実測なので、参照するときは日付に注意する。
+
+### A. 反復子の終端操作 ★★ (純 toylang)
+
+**`VecIter` / `DictIter` / `StringIter` に終端操作が 1 つも無い**
+(`collect` を除く)。`map` / `filter` / `enumerate` / `zip` という
+中間アダプタだけが在るので、**チェーンの最後で必ず `for` と `var` に
+落ちる**。これが今いちばん広く効いている空白。
+
+| 無いもの | 備考 |
+|---|---|
+| `fold(init, f)` / `count()` / `any(p)` / `all(p)` | `count` 以外は HOF。`sort_by` が `fn (T, T) -> bool` を取れているので経路は通っている |
+| `sum()` / `min()` / `max()` | `sum` は数値 bound、`min`/`max` は `T: Ord` が要る (下の B) |
+| `position(p)` / `find(p)` | `Vec::index_of` は値の等値のみ (述語版が無い) |
+| `take(n)` / `skip(n)` / `rev()` / `chain(other)` / `filter_map(f)` | 中間アダプタ側の残り |
+
+**着手前の制約 2 つ**: (1) todo の **HOF-RETURN-UNKNOWN** —
+名前つき関数を値として渡せないので、述語は closure リテラルで書く形に
+なる。(2) AOT の closure は**スカラーしか捕捉できない**ので、
+バッファを捕捉する述語はインタプリタでしか動かない。どちらも
+アダプタの追加を止めはしないが、テストは closure リテラル形で書く。
+
+### B. 比較と順序 ★★ (純 toylang + 設計判断)
+
+| 無いもの | 何が困るか |
+|---|---|
+| **`Ordering` enum (`Less`/`Equal`/`Greater`)** | 3 値比較が書けない。`Ord` は `lt` 1 本なので、安定ソートも二分探索も `lt` を 2 回呼んで等値を導く。`RUNTIME_GAPS` G8 の「カタログのソート」がここ |
+| **汎用 `max` / `min` / `clamp` (`T: Ord`)** | 無いので `math.t` が**幅ごとに 30 本**並べている (`min_u8` … `clamp_i64`、`pub fn` 71 本中 30 本がこれ)。`Ord` が in-scope の今なら 3 本で置き換えられる |
+| `binary_search` (`Vec<T: Ord>`) | ソート済み列の検索が線形のまま |
+| `Eq` trait | 現状は「`eq` method の有無で dispatch」という規約 (`==` overload) なので trait は**要らない**という判断。ただし `Vec::contains` / `index_of` が `T` の等値をどう取っているかは bound で表現できていない |
+
+**`Ordering` を入れるかは設計判断**。入れると `Ord` の必須 method が
+`cmp` になり、`lt` は default body になる (既存 impl は全部そのまま動く)。
+入れないなら `le` を足して 2 本で等値を導く形に留める。**先に決める**。
+
+### C. `Option` / `Result` の合成 ★ (純 toylang)
+
+`Option` は 7 本、`Result` は 7 本しかない。`?` と `??` が言語側に
+在るぶん優先度は下がるが、**`Option` を返す stdlib API が増えた**
+(`String::find` / `Span::find` / `Vec::index_of` / `Dict::get`) ので、
+受けた側で繋げられないのが効き始めている。
+
+| 型 | 無いもの |
+|---|---|
+| `Option<T>` | `and_then` / `or_else` / `filter` / `flatten` / `ok_or` / `unwrap_or_default` |
+| `Result<T, E>` | `and_then` / `or_else` / `ok` / `err` / `unwrap_or_else` / `unwrap_or_default` |
+
+### D. 文字列とバイト列 ★ (純 toylang)
+
+G8 の残り。**確保する API はここまで**という線は引けているので、
+残りは「確保しない側」に寄せる。
+
+| 無いもの | 置き場所 |
+|---|---|
+| `split_once(sep)` / `strip_prefix` / `strip_suffix` | `String` (どれも確保を 1 回に抑えられる) |
+| `trim_start` / `trim_end` | `Trim` trait の拡張 |
+| `eq_ignore_ascii_case` | `String` / `str` |
+| **`Span<u8>` の `rfind` / `starts_with` / `ends_with`** | `find` / `find_seq` と同じく `toylang_rt` の 1 呼び出しで済む。**hot path はこちらを使う** |
+| `Span<T>` の `split_at` / `reverse` / `iter` | 窓を分ける操作が無いので、オフセット計算を呼び出し側が持っている |
+
+### E. コレクションの穴 ★ (純 toylang)
+
+| 型 | 無いもの |
+|---|---|
+| `Vec<T>` | `truncate` / `retain` / `dedup` / `swap` / `first` / `last` / `fill` / `extend(&Vec<T>)` (`swap_remove` は在る) |
+| `Dict<K, V>` | `keys()` / `values()` / `clear()` / `is_empty()` / `get_or_insert` |
+| `Set<T>` | `union` / `intersection` / `difference` / `is_subset` / `extend` (**集合演算が 1 つも無い**) |
+| `Deque<T>` | `front()` / `back()` (覗き見。`PriorityQueue::peek` に相当するものが無い) |
+
+**`never_allocates` との相性** (G11) はここに掛かる: 容量が足りていても
+`push` は到達可能性で拒否されるので、hot path 向けには
+`push_within_capacity(v) -> bool` のような**伸びないことが分かる 1 本**が
+別に要る。todo に対応項目は無い (NEVER-ALLOCATES × STDLIB-COLLECTIONS)。
+
+### F. チェックサム ★★ (純 toylang)
+
+G7。**`hash.t` はハッシュ表用の mixer であってチェックサムではない**
+(衝突耐性も値の安定性も別物) — この指摘は正しく、代わりが無い。
+
+| 無いもの | 備考 |
+|---|---|
+| **CRC-32 / Adler-32** | 純 toylang で書ける。表は `const fn` がスカラーしか畳めないので起動時に `Vec<u32>` を組む形になる (POC が実際にそうした) |
+| SHA-512 / HMAC | [`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md) に道筋あり。SHA-256 の次 |
+
+圧縮 (gzip / zlib / zstd) は「非目標」節の範囲に留める。**CRC-32 は
+圧縮と独立に価値がある** (保存形式の完全性検査) ので切り離してよい。
+
+### G. 数学の残り ★ (extern 1 行ずつ)
+
+`atan` / `sinh` / `cosh` / `tanh` / `cbrt` / `exp2` / `log1p` /
+`copysign` / `fma`。加えて **f32 の `pub fn` ラッパが無い**
+(`__extern_*_f32` は 6 本在るのに公開関数が無い)。どれも
+`math.t` の既存の形をなぞるだけなので単価が最も安い。
+
+### H. stdlib だけでは閉じないもの
+
+RUNTIME_GAPS の R2 / R3 / R5 と G4。**関数ではなく型・処理系機能が
+先に要る**ので、この節の他項目とは性質が違う。
+
+| 項目 | 何が要るか |
+|---|---|
+| **ファイルの部分入出力** (R2 ★★★) | `File` ハンドル型 + `open`/`close`/`seek`/`pread`/`pwrite`。`io.t` は全部パス指定の全体操作で、ハンドルを持つ型が 1 つも無い。**RUNTIME_GAPS が「最も効果が大きい 1 項目」と書いている** |
+| **`fsync` / `truncate`** (R5) | 上のハンドルに乗る |
+| **`SIGTERM` の捕捉** (R3 ★★) | シグナルハンドラは処理系側 (常駐サービスを書くのに要る) |
+| **システム情報** (G4 ★) | hostname / pid / CPU 数 / RSS / `statfs`。extern を並べるだけだが、`io.t` に置くか `sys.t` を切るかを決める |
+| ファイルのメタデータ | mtime / permissions / `walk_dir` / symlink。`fs.t` の自然な続き |
+
+### まとめ — どこから取るか
+
+- **A〜G はすべて純 toylang か extern 1 行で、今日書ける**。処理系の
+  変更を待つものは 1 つも無い (B の `Ordering` だけが設計判断)。
+- 単価あたりの効きは **A (終端操作) > B (`Ordering` と汎用 min/max) >
+  F (CRC-32) > E > C > D > G**。A と B は**他の項目の書き方を変える**
+  ので先に置く (B が入ると `math.t` が 30 本縮む)。
+- **H は別枠**。R2 (ファイルハンドル) は他のどれより効果が大きいが、
+  型を 1 つ導入する仕事なので、この節の「関数を足す」作業とは
+  別に計画する。
+
 ## Phase 分割
 
 | Phase | 内容 | 受け入れ基準 |

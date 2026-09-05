@@ -10,6 +10,19 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **MODULE-IMPORTS D1 — `import a.b as h` が効くようになった**
+  ([`MODULE_IMPORTS.md`](MODULE_IMPORTS.md))。alias はパーサが受理して
+  `visit_import` が捨てていたので `h::f()` は `Struct 'h' not found`
+  だった。**パーサが alias を末尾セグメントに置換する**ので、qualifier を
+  末尾一致で解決する既存経路 (MODULE-SYSTEM P2) がそのまま効き、
+  型検査器 / tree-walker / IR lowerer は alias を知らない —
+  **同じ解決規則を 4 か所目に増やさない**のが要点 (rank を 1 か所落として
+  型検査と実行が食い違った件の再発防止)。alias はファイル局所なので、
+  1 ファイルしか見ないパーサが唯一完全に解決できる場所でもある。
+  併せて `X::f(...)` の未解決 qualifier を
+  `Type or module 'X' not found` に (以前は `Struct 'X' not found` で、
+  module の綴り間違いを struct 探しに送っていた)。
+  `FULL_AST_CACHE_SCHEMA_VERSION` 45
 - **`toy version`** — toy / compiler / interpreter / stdlib の
   version + git revision + **パス**を 1 行ずつ。**パスが無い行は
   同じ行に色つきで警告**する (`NO_COLOR` / `TOY_COLOR` 対応、
@@ -1777,18 +1790,17 @@
   で、collection に `--check` を効かせる唯一の道
   ([`VEC_CONTRACTS.md`](VEC_CONTRACTS.md) §5-3)。
 
-- **MODULE-SYSTEM P3: 多セグメントの `::` パスが検査されない / `mod.t` /
-  `import as`** ★★★ — 3 つとも同じ「モジュールパスが構文で 1 シンボルに
+- **MODULE-SYSTEM P3: 多セグメントの `::` パスが検査されない / `mod.t`** ★★★
+  — 2 つとも同じ「モジュールパスが構文で 1 シンボルに
   潰れている」ことの現れ。**P2 で表と解決規則は既にパスを理解している**
   ので、残っているのは構文側。(1) パーサが `a::b::c(...)` の中間を
   捨てるので `std::math::abs` も `zzz::math::abs` も通る。**P2 の曖昧
   エラーが案内する「セグメントを増やして選ぶ」がまだ書けないのはこれ**。(2) auto-load の walker が
   `mod.t` を `mod` という名前のファイルとして扱うので
   `<core>/foo/mod.t` は `foo::` ではなく `mod::` で呼ぶことになり、
-  `import` 側の解決 (`candidate_module_paths`) と食い違う。(3)
-  `import a.b as h` の alias を `visit_import` が捨てるので `h::` は
-  `Struct 'h' not found`。設計は
-  [`MODULE_SYSTEM.md`](MODULE_SYSTEM.md) P3。
+  `import` 側の解決 (`candidate_module_paths`) と食い違う。設計は
+  [`MODULE_SYSTEM.md`](MODULE_SYSTEM.md) P3。**3 つ目だった
+  `import a.b as h` は 2026-09-05 に解消** (MODULE-IMPORTS D1)。
 
 - **MODULE-FN-REF-ARG: module の自由関数が `&compound` を取り scalar を
   返すと lowering が落ちる** — `hex::probe(v: &Vec<u8>) -> u64` を
@@ -2234,7 +2246,9 @@
 
 * **明示 import (MODULE-IMPORTS)** — stdlib も
   `import std.hex` を書かないと使えない形にする提案。
-  [`MODULE_IMPORTS.md`](MODULE_IMPORTS.md)。BARE-NAME-COLLISION /
+  [`MODULE_IMPORTS.md`](MODULE_IMPORTS.md)。**D1 の alias 束縛だけ
+  2026-09-05 に landing** (`import a.b as h`)。残り (可視性の規則 P1 /
+  遅延読み込み P2 / 型の名前空間化 P3) は未着手。BARE-NAME-COLLISION /
   TYPE-NAME-COLLISION を「規則」で消し (今の rank は同 root の衝突を
   消せない)、`pub` を実効化し、hello world の **145ms → 5.7ms**
   (auto-load が 46 モジュール全部を読んでいる分) を取り戻す。
@@ -2444,6 +2458,18 @@ changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 
   `type_check(func)`、lowering は関数ごとのループで既に持っているが、
   **tree-walker は実行中の関数の module を持っていない**
   (`CallFrame` に足すか、型検査時に解決結果を AST に焼く)。
+
+- **QUALIFIER-BARE-FALLBACK: 修飾付き呼び出しが別モジュールの関数に
+  落ちる** ★★ — `hex::abs(-3i64)` が `std::math::abs` を呼んで `3` を
+  返す。`m::f(...)` の `m` が既知のモジュールで `f` を輸出していないとき、
+  `method_call.rs` の module 呼び出し経路が**bare 名で引き直す**
+  (「module integration が修飾なしで入れていた頃の流れ」のための
+  フォールバック)。**誤答であって拒否ではない** — 修飾は「このモジュールの」
+  と言っているのに別のモジュールのものが返る。MODULE-IMPORTS D1 の
+  alias (`import std.hex as math` → `math::abs` が `std.math::abs` に
+  当たる) で表面化したが、alias 以前からある。消すと、修飾付きで書いて
+  bare に救われていた既存コードが落ちうるので、影響範囲を測ってから。
+  2026-09-05。
 
 - **TYPE-NAME-COLLISION: struct / enum 名には曖昧性検査すら無い** ★★ —
   関数には (module path, rank) の候補集合があるが、型は

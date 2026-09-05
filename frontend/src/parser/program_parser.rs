@@ -94,9 +94,17 @@ impl<'a> Parser<'a> {
         };
 
         // Parse import declarations (multiple allowed)
+        //
+        // MODULE-IMPORTS D1: an `as` alias is recorded before any body
+        // is parsed, so `h::f(...)` in a function below can be spelled
+        // back to the module it names. See `Parser::import_aliases`.
         let mut imports = Vec::new();
         while matches!(self.peek(), Some(Kind::Import)) {
-            imports.push(self.parse_import_decl()?);
+            let import = self.parse_import_decl()?;
+            if let (Some(alias), Some(&last)) = (import.alias, import.module_path.last()) {
+                self.import_aliases.insert(alias, last);
+            }
+            imports.push(import);
         }
 
         loop {

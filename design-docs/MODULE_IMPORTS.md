@@ -1,6 +1,7 @@
 # MODULE IMPORTS — stdlib も `import std.hex` を要求する
 
-> **状態: 提案 (未着手)。**
+> **状態: 提案。D1 の alias 束縛のみ landing 済み (2026-09-05)、
+> 残りは未着手。**
 > 対象: 「auto-load が全モジュールを 1 つの名前空間に流し込む」現状を、
 > **ファイル単位の明示 import** に置き換える。
 > 前段: [`todo.md`](todo.md) の BARE-NAME-COLLISION / TYPE-NAME-COLLISION
@@ -110,6 +111,29 @@ import std.hex as codec    # codec:: にする
 
 呼び出しは今と同じ `hex::encode(bytes)`。**書き方は変わらず、書ける条件が
 変わる。**
+
+> **landing 済み (2026-09-05)**: `as` の alias が効くようになった。
+> 実装は**パーサでの置換** — `import a.b as h` を読んだ時点で
+> `h -> b` を記録し、`h::f(...)` を組み立てる際に先頭セグメントを
+> 差し替える (`frontend/src/parser/expr/primary.rs`)。qualifier は
+> 元から末尾一致で解決される (MODULE-SYSTEM P2) ので、**型検査器 /
+> tree-walker / IR lowerer は alias を知らないまま動く** — D9 が言う
+> 「解決規則を増やさない」を、この小さな一歩でも守る形。alias は
+> ファイル局所なので、1 ファイルしか見ないパーサが唯一「完全に」
+> 解決できる場所でもある (`alias_resolution.rs` が型 alias で
+> 逆に苦労しているのは、あちらがファイルを跨ぐため)。
+>
+> **まだ効いていないのは (c) の「bare 名を持ち込まない」**。これは
+> 可視性の規則そのもの (D3 / D4) なので P1 に属する。今の段階では
+> `import` は**足すと使えるものが増えるだけ**で、何も禁じない。
+>
+> 副産物として `X::f(...)` の未解決 qualifier の診断を
+> `Struct 'X' not found` → `Type or module 'X' not found` にした。
+> 逆に、**修飾したのに bare で引き直す**フォールバックが在ることも
+> 判明した (`hex::abs(...)` が `std::math::abs` を返す) —
+> alias 以前からある誤答で、[`todo.md`](todo.md) の
+> QUALIFIER-BARE-FALLBACK に分けた。**D3 を入れるときに一緒に消える**
+> はずのもの (呼び出し元の import 集合の外は候補にならないため)。
 
 ### D2. prelude を宣言する
 
@@ -235,7 +259,8 @@ bare 名しか持たないため、`File` に側テーブル (`ExprRef` → 解�
 
 | | 内容 | 解消するもの |
 |---|---|---|
-| **P1** | D3 / D4 / D6 の重複エラー / D9 の焼き込み / D10 の警告。**読み込みは今のまま全部** | BARE-NAME-COLLISION、TYPE-NAME-COLLISION、`pub` の無効化 |
+| **P0** | D1 の alias 束縛 (**2026-09-05 landing**) | `import ... as` が捨てられていた件 |
+| **P1** | D3 / D4 / D6 の重複エラー / D9 の焼き込み / D10 の警告。**読み込みは今のまま全部** | BARE-NAME-COLLISION、TYPE-NAME-COLLISION、`pub` の無効化、QUALIFIER-BARE-FALLBACK |
 | **P2** | D5 の遅延読み込み + 「import を足せ」診断。D10 を error に倒す | 145 ms |
 | **P3** | 型の名前空間化。`shadowed_stdlib_types` (`__std_<name>` 退避) の撤去 | 型の衝突を規則で消す |
 | **P4** | 後片付け: D8 (bare 名の rank 規則を削除)、`import ... as` を honour ([`MODULE_SYSTEM.md`](MODULE_SYSTEM.md) P3 #4)、多セグメント qualifier (#1)、`mod.t` の 2 経路統一 (#3) | MODULE_SYSTEM P3 |

@@ -228,6 +228,26 @@ pub struct Parser<'a> {
     /// target keeps `Generic(T)` placeholders that get substituted at
     /// the use site via `substitute_generics`.
     pub type_aliases: HashMap<DefaultSymbol, (Vec<DefaultSymbol>, TypeDecl)>,
+    /// MODULE-IMPORTS D1: `import a.b as h` binds `h` to the module
+    /// `a.b`, so `h::f(...)` means `b::f(...)`. Maps the alias to the
+    /// module path's **last** segment, which is what a qualifier is
+    /// matched against (MODULE-SYSTEM P2 resolves a qualifier against
+    /// the tail of each module path).
+    ///
+    /// Substituting here rather than downstream is what keeps the
+    /// alias from becoming a fourth name-resolution rule: the same
+    /// question is already answered independently by the type
+    /// checker, the tree-walker and the IR lowerer, and a rule that
+    /// lives in three places drifts (`File::function_module_ranks`
+    /// was dropped in one of them and a program type-checked against
+    /// one function while running another). An import alias is
+    /// file-local by definition, so the parser -- which sees exactly
+    /// one file -- is the one place that can resolve it completely.
+    ///
+    /// Imports are parsed before any declaration, so every body in
+    /// the file sees a complete map. Same shape and same
+    /// no-forward-reference rule as `type_aliases` above.
+    pub import_aliases: HashMap<DefaultSymbol, DefaultSymbol>,
     /// COMPILE-TIME-EVAL C5: the value of each top-level `const` whose
     /// initialiser is an integer literal, so an array length can name
     /// it: `const N: u64 = 3u64` then `val a: [i64; N]`.
@@ -322,6 +342,7 @@ impl<'a> Parser<'a> {
             old_exprs: Vec::new(),
             last_alloc_budget: None,
             type_aliases: HashMap::new(),
+            import_aliases: HashMap::new(),
             const_lengths: HashMap::new(),
             declared_type_generics: HashMap::new(),
             source_file: None,

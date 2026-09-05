@@ -3860,14 +3860,34 @@ different directories do not mangle to one symbol.
 
 ```rust
 import my.helpers           # bare import
-import my.helpers as h      # aliased import (parsed, NOT yet honoured)
+import my.helpers as h      # aliased import
 ```
 
-> **`as <alias>` is accepted by the parser and then dropped.** The
-> module is registered under its last path segment either way, so
-> `h::add(...)` reports `Struct 'h' not found` while
-> `helpers::add(...)` works. Tracked as `design-docs/MODULE_SYSTEM.md`
-> P3.
+An `as <alias>` clause binds the module to `alias` **in the importing
+file only**, so `h::add(...)` calls `my.helpers::add`. The alias is a
+second spelling of the qualifier, not a restriction: the module's own
+last segment (`helpers::add(...)`) keeps working alongside it, and a
+module reached by auto-load needs no `import` line at all.
+
+The substitution happens while parsing the file that wrote the
+`import`, so an alias never reaches the function table — `h::add(...)`
+is indistinguishable from `helpers::add(...)` by the time anything
+resolves it. Two consequences follow. An alias is invisible to other
+files (each file names a module however it likes), and an alias
+cannot disambiguate two modules whose paths end in the same segment:
+`import a.dup as x` still leaves `x::f()` ambiguous against
+`b.dup::f`, because both resolve through the tail `dup`. Rename one of
+the files, as the diagnostic says.
+
+An alias replaces the qualifier it renames: after
+`import std.hex as math`, `math::` names `std.hex`. Be aware that a
+qualified call naming a module that does not export the function
+currently **falls back to the bare name** rather than failing — so
+`math::abs(...)` under that import still finds the auto-loaded
+`std.math::abs`. That fallback predates aliases and applies to every
+qualified call (`hex::abs(...)` resolves the same way with no import
+at all); it is tracked as QUALIFIER-BARE-FALLBACK in
+`design-docs/todo.md`.
 
 Most user programs don't need `import` at all — the core directory
 covers the stdlib. Use `import` for non-core modules or for paths

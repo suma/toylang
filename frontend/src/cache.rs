@@ -32,7 +32,7 @@ use crate::ast::module_interface::ModuleInterface;
 ///
 /// Mismatched versions are treated as a cache miss by
 /// [`load_full_module`].
-pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 44;
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 45;
 // v2: `File` gained `id` (JIT cache key) and `tests` (LLM-LOOP P4).
 // v3: `BuiltinFunctionSymbols` interns the MEMORY_PROFILING M4 counter
 // names, shifting every later symbol id.
@@ -122,6 +122,11 @@ pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 44;
 // MemFindSeq}`. `BuiltinFunctionSymbols::new` interns three more
 // names, which shifts every symbol interned after them (v3's
 // reasoning), and the enum gains three variants (v42's).
+// v44: BUILD-TOOL B0 — `File::function_module_ranks`.
+// v45: MODULE-IMPORTS D1 — the parser substitutes `import a.b as h`
+// aliases into qualified paths, so a module cached before this change
+// stores `h::f(...)` with `h` unresolved. Nothing in the layout moved;
+// what changed is what a given source text parses *to*.
 
 /// Bincode options for the AST cache.
 ///

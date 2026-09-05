@@ -527,6 +527,17 @@ fn parse_primary_after_identifier(
                 break;
             }
         }
+        // MODULE-IMPORTS D1: `import a.b as h` makes `h::f(...)` mean
+        // `b::f(...)`. Only the leading segment is a module
+        // qualifier, and the substitution happens here so that
+        // nothing downstream -- type checker, tree-walker, IR
+        // lowerer -- has to learn about aliases at all
+        // (`Parser::import_aliases` says why that matters).
+        if qualified_path.len() > 1
+            && let Some(target) = parser.import_aliases.get(&qualified_path[0]).copied()
+        {
+            qualified_path[0] = target;
+        }
         return match parser.peek() {
             Some(Kind::ParenOpen) => {
                 let location = name_location;

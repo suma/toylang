@@ -1299,7 +1299,17 @@ impl<'a> TypeCheckerVisitor<'a> {
         if !self.context.struct_definitions.contains_key(&struct_name)
             && !self.context.enum_definitions.contains_key(&struct_name)
         {
-            return Err(TypeCheckError::not_found("Struct", &self.resolve_symbol_name(struct_name)));
+            // MODULE-IMPORTS D1: everything that reaches here was
+            // written `X::f(...)`, and by now `X` has been ruled out
+            // as a type parameter, an enum, a struct and an imported
+            // module -- so naming only one of those sends the reader
+            // looking in the wrong place. A mistyped module qualifier
+            // (or an `import ... as` alias that was never written)
+            // lands here just as often as a missing struct.
+            return Err(TypeCheckError::not_found(
+                "Type or module",
+                &self.resolve_symbol_name(struct_name),
+            ));
         }
 
         let function_name_str = self.resolve_symbol_name(function_name);

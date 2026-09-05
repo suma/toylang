@@ -57,7 +57,7 @@
 | 1 | `std::math::abs(-3i64)` | **通るが検査されていない。** パーサが 3 セグメント以上を「最後だけ」に潰し (`primary.rs` の qualified-path 分岐)、bare `abs` の一意フォールバックで当たっている。`zzz::math::abs` でも通る (**P3 で解消予定**) |
 | 2 | 同じリーフ名 + 同じ関数名の 2 モジュール | **panic。** `std/a/dup.t` と `std/b/dup.t` が両方 `pub fn f` を持つと型検査を素通りし、`compiler_ir/src/lib.rs:447` で `function_index collision for symbol=... qualifier=...` (**P2 で解消済み** — 候補パスを名指しする型エラーになった) |
 | 3 | `<core>/foo/mod.t` の `foo::f()` | **`[E0003] Struct 'foo' not found`。** auto-load の walker は `mod` をリーフ名として扱うので alias は `mod`。`import` 側の `candidate_module_paths` だけが `mod.t` を知っていて、2 経路が食い違っている (`docs/language.md` の表は `["foo"]` と書いていて誤り) |
-| 4 | `import my.helpers as h` の `h::add(...)` | **`[E0003] Struct 'h' not found`。** パーサは `as` を受理するが `visit_import` が alias を捨てている。ドキュメントには載っている |
+| 4 | `import my.helpers as h` の `h::add(...)` | **`[E0003] Struct 'h' not found`。** パーサは `as` を受理するが `visit_import` が alias を捨てていた (**2026-09-05 に解消** — パーサが alias をモジュールパスの末尾セグメントに置換する。[`MODULE_IMPORTS.md`](MODULE_IMPORTS.md) D1) |
 
 2 は「今フラットだからリーフ名が一意で踏んでいない」だけで、
 **ディレクトリを掘る変更はこの地雷原に入ることを意味する**。
@@ -252,7 +252,12 @@ std::a::dup::f and std::b::dup::f`)。**bare 呼び出しも同じ**で、
   「先頭がモジュールパス / 末尾が型・関数」に振り分ける (現状 #1)
 - auto-load の walker に `mod.t` / `<name>/<name>.t` を入れて
   `import` 側の `candidate_module_paths` と揃える (現状 #3)
-- `import a.b as h` の alias を `register_import` に通す (現状 #4)
+- ~~`import a.b as h` の alias を `register_import` に通す (現状 #4)~~ —
+  2026-09-05 に解消。ただし `register_import` ではなく**パーサでの置換**で
+  ([`MODULE_IMPORTS.md`](MODULE_IMPORTS.md) D1)。alias はファイル局所
+  なので、統合後の 1 つの `File` を見る型検査器には「どのファイルが
+  どう呼んだか」がもう無い — 置換を parse 時にやれば、解決規則を
+  持つ 3 か所 (型検査器 / tree-walker / IR) はどれも alias を知らずに済む
 
 ## 非目標
 
@@ -260,5 +265,6 @@ std::a::dup::f and std::b::dup::f`)。**bare 呼び出しも同じ**で、
 - **prelude を絞る** (D5) — auto-load-everything を維持
 - **可視性の強化** — `pub` は現状ほぼ素通り (`check_function_access` は
   同一モジュール判定を持たない)。名前空間の話とは独立なので別項目
+  ([`MODULE_IMPORTS.md`](MODULE_IMPORTS.md) D4 が拾っている)
 - **循環 import の実運用** — `ModuleResolver` に検出はあるが stdlib は
   全部 auto-load なので出番が無い

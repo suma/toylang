@@ -388,3 +388,72 @@ fn user_function_still_wins_over_a_module_one() {
     assert!(result.is_ok(), "{:?}", result.err());
     assert_eq!(result.unwrap().borrow().unwrap_uint64(), 9);
 }
+
+// ============================================================================
+// MODULE-IMPORTS D1: `import a.b as h` binds the module to `h`.
+//
+// The alias used to be parsed and then dropped, so `h::f()` reported
+// `Struct 'h' not found` while the un-aliased name kept working
+// (MODULE_SYSTEM.md's measured gap #4). The parser now substitutes the
+// alias for the module path's last segment, which is what a qualifier
+// resolves against -- so nothing downstream learns about aliases.
+// ============================================================================
+
+#[test]
+fn import_alias_binds_the_module() {
+    let core = core_tree(&[("std/a/helpers.t", "pub fn f() -> u64 { 7u64 }\n")]);
+    let result = test_program_with_core(
+        "import std.a.helpers as h\nfn main() -> u64 { h::f() }",
+        Some(core.path().to_path_buf()),
+    );
+    assert!(result.is_ok(), "h::f() should resolve: {:?}", result.err());
+    assert_eq!(result.unwrap().borrow().unwrap_uint64(), 7);
+}
+
+#[test]
+fn import_alias_does_not_leak_into_other_names() {
+    // The substitution is keyed on the alias symbol, so a same-named
+    // local binding or a call to a function called `h` is untouched.
+    let core = core_tree(&[("std/a/helpers.t", "pub fn f() -> u64 { 7u64 }\n")]);
+    let result = test_program_with_core(
+        "import std.a.helpers as h\n\
+         fn h() -> u64 { 30u64 }\n\
+         fn main() -> u64 { val h = 5u64\n h + helpers::f() + h() }",
+        Some(core.path().to_path_buf()),
+    );
+    assert!(result.is_ok(), "{:?}", result.err());
+    assert_eq!(result.unwrap().borrow().unwrap_uint64(), 42);
+}
+
+#[test]
+fn import_alias_works_inside_a_module() {
+    // A module's own `import ... as` is file-local: `util` aliases
+    // `helpers`, and the entry program neither sees nor needs it.
+    let core = core_tree(&[
+        ("std/a/helpers.t", "pub fn f() -> u64 { 7u64 }\n"),
+        (
+            "std/util.t",
+            "import std.a.helpers as h\npub fn g() -> u64 { h::f() + 1u64 }\n",
+        ),
+    ]);
+    let result = test_program_with_core(
+        "fn main() -> u64 { util::g() }",
+        Some(core.path().to_path_buf()),
+    );
+    assert!(result.is_ok(), "{:?}", result.err());
+    assert_eq!(result.unwrap().borrow().unwrap_uint64(), 8);
+}
+
+#[test]
+fn unknown_qualifier_names_both_possibilities() {
+    // `X::f(...)` that resolves to neither a type nor a module used to
+    // report `Struct 'X' not found`, which sends a reader with a
+    // mistyped module alias looking for a struct.
+    let core = core_tree(&[("std/a/helpers.t", "pub fn f() -> u64 { 7u64 }\n")]);
+    let err = test_program_with_core(
+        "import std.a.helpers as h\nfn main() -> u64 { hh::f() }",
+        Some(core.path().to_path_buf()),
+    )
+    .expect_err("a mistyped qualifier should be reported");
+    assert!(err.contains("Type or module 'hh' not found"), "{err}");
+}

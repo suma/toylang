@@ -1246,6 +1246,50 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
     /// Type check identifiers
+/// REF-REBORROW: accept a `&mut T` binding handed straight to a
+    /// `&mut T` parameter, and rewrite it to the explicit borrow.
+    ///
+    /// `fn insert(arena: &mut Vec<Node>, ..)` calling `insert(arena, ..)`
+    /// used to be `expected &mut Vec<Node>, but got Vec<Node>`, because
+    /// reading a reference binding auto-dereferences it
+    /// (`visit_identifier`). Every function that rewrites a tree or a
+    /// graph has this shape, so it was hit constantly, and the only way
+    /// out was to write `&mut arena` -- re-borrowing something already
+    /// borrowed.
+    ///
+    /// Only **forwarding** is made implicit. Taking a `&mut` of an owned
+    /// value still has to be written (`f(&mut local)`), because that is
+    /// a decision about the local: it is the difference between the
+    /// callee seeing your value and the callee changing it. Forwarding
+    /// decides nothing -- the caller already granted mutable access,
+    /// and passing it on cannot grant more.
+    ///
+    /// The argument node is rewritten to `&mut <ident>` rather than
+    /// taught to lowering, so every backend sees the spelling that
+    /// already worked -- including the writeback bookkeeping, which
+    /// keys off exactly that shape.
+    pub(super) fn try_reborrow_mut_arg(&mut self, arg: &ExprRef, expected: &TypeDecl) -> bool {
+        let TypeDecl::Ref { is_mut: true, inner: expected_inner } = expected else {
+            return false;
+        };
+        let Some(Expr::Identifier(sym)) = self.core.expr_pool.get(arg) else {
+            return false;
+        };
+        let Some(TypeDecl::Ref { is_mut: true, inner: actual_inner }) =
+            self.context.get_var(sym)
+        else {
+            return false;
+        };
+        if !actual_inner.is_equivalent(expected_inner) {
+            return false;
+        }
+        let ident = self.core.expr_pool.add(Expr::Identifier(sym));
+        self.core
+            .expr_pool
+            .update(arg, Expr::Unary(UnaryOp::BorrowMut, ident));
+        true
+    }
+
     pub fn visit_identifier(&mut self, name: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
         if let Some(val_type) = self.context.get_var(name) {
             // Return the stored type, which may be Number for type inference.
@@ -1670,6 +1714,11 @@ impl<'a> TypeCheckerVisitor<'a> {
             // must implement the trait); the underlying helper
             // covers Identifier↔Struct / Identifier↔Enum plus the
             // REF-Stage-2 auto-borrow (`T` → `&T`).
+            // REF-REBORROW: forwarding an existing `&mut` is not a new
+            // borrow decision, so it does not need to be written out.
+            if self.try_reborrow_mut_arg(arg, expected_type) {
+                continue;
+            }
             if !self.is_arg_compatible_dyn_aware(&arg_type, expected_type) && arg_type != TypeDecl::Unknown {
                 self.type_inference.type_hint = original_hint;
                 let fn_name_str = self.resolve_symbol_name(fn_name);

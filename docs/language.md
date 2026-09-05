@@ -200,6 +200,20 @@ Type system:
   - `T` → `&mut T` is **not** auto-borrowed; the caller must write
     `&mut <var>` so the mutability is visible at the call site
     (Rust-style discipline).
+  - **`&mut T` → `&mut T` is forwarded implicitly** (a *reborrow*):
+    a name already bound as `&mut T` — a parameter or a `&mut self`
+    receiver — may be handed to a `&mut T` parameter without writing
+    the borrow again (`insert(arena, ..)` inside
+    `fn insert(arena: &mut Vec<Node>, ..)`). Writing `&mut arena`
+    there means the same thing and is still accepted.
+
+    The distinction is what the call site is deciding. Taking `&mut`
+    of an owned value decides something about that value — whether the
+    callee may change it — so it is written. Forwarding decides
+    nothing: the caller was already granted mutable access, and
+    passing it on cannot grant more. The type checker rewrites the
+    argument to the explicit form, so nothing downstream sees the
+    shorthand.
   - `&mut T` → `&T` is allowed (a mutable reference satisfies an
     immutable expectation).
   - The reverse direction (`&T` / `&mut T` flowing into `T`) is
@@ -484,7 +498,9 @@ Two distinct relations live on `TypeDecl`:
     immutable expectation).
   Importantly, `T` → `&mut T` auto-borrow is **rejected** — the caller
   must write `&mut <name>` explicitly so the mutability is visible
-  at the call site.
+  at the call site. A `&mut T` binding handed to a `&mut T` parameter
+  is a **reborrow**, not an auto-borrow, and is accepted as written
+  (see [Reference types](#reference-types)).
 
 Assignment is also rejected for any reference type: `val r: &T = ...`
 is a [REF-Stage-2 (e)](#reference-types) escape error — references

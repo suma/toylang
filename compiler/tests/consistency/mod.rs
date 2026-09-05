@@ -80,3 +80,4 @@ mod range_ops;
 mod writeback_prune;
 mod ptr_self;
 mod by_value_params;
+mod ref_reborrow;

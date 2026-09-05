@@ -411,6 +411,11 @@ impl<'a> TypeCheckerVisitor<'a> {
             if self.is_arg_compatible_dyn_aware(arg_ty, expected) {
                 continue;
             }
+            // REF-REBORROW: same rule as a free call -- forwarding an
+            // existing `&mut` needs no borrow written.
+            if self.try_reborrow_mut_arg(arg, expected) {
+                continue;
+            }
             let method_str = self.resolve_symbol_name(*method);
             let err = TypeCheckError::type_mismatch(expected.clone(), arg_ty.clone())
                 .with_context(&format!(

@@ -10,6 +10,7 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **REF-REBORROW — `&mut` 引数の転送に借用を書かなくてよくなった** — `fn insert(arena: &mut Vec<Node>, ..)` の中の `insert(arena, ..)` が通る。**再借用だけ**を暗黙にした — 所有値から `&mut` を取るのは今も明示が要る (呼び先が値を変えてよいかの決定だから)。転送は何も決めない (呼び出し側は既に可変アクセスを与えられており、渡しても増えない)。型検査器が明示形に書き換えるので**下流は略記を見ない** — writeback の帳簿もその形を見ている。
 - **BY-VALUE-SELF-ALIAS — 値渡しの引数は callee 自身のコピーになった** — tree-walker が `Rc` を共有していたので、`self: Self` / 値渡しの compound 引数への書き込みが呼び出し側に漏れていた (compiled レーンは leaf をコピーするので漏れない)。`BACKEND.md` の規定どおり tree-walker を直した。コピーは**構造的で深くない** — compound の背骨を作り直し scalar で止まるので、`Vec` の heap buffer は共有のまま。この挙動に依存していた 2 か所 (`interpreter/example/allocator_list.t` と struct の `__setitem__` テスト) は、どちらも `&mut self` のつもりで書かれていたので直した。
 - **CODE-SIZE-SELF-ABI — 演算子オーバーロードと method の参照引数も番地で渡す** — 被演算子を作る前に呼び先は解決済みなので、埋める引数枠を渡すだけで除外リストが消えた。`fn add(&self, o: &Self)` は 13 → 2 引数。ついでに「ポインタ引数は writeback slot を持たない」を呼び出し側の数え方と body 側の導出にも通した (前者は数が合わず黙って素の `Call` に落ちていた)。`poc/logsearch` の `__text` は 191,080 → 153,056 B (一連の作業で −19.9%)。[`CODE_SIZE.md`](CODE_SIZE.md)。
 - **CODE-SIZE-SELF-ABI S3b — 幅の広いローカル束縛を stack slot に常駐** — 鎖の根が呼び出しごとに slot を作り直すのをやめ、生涯 slot に住まわせる。`AddressOf` も囲っている記憶域を返すようにして「leaf の家は 1 つ」を守った (`&mut wide.field` がここで壊れていた)。`cmd_archive` 2,706 → 1,211 命令、`poc/logsearch` の `__text` は 191,080 → 156,252 B (一連の作業で −18.2%)。[`CODE_SIZE.md`](CODE_SIZE.md)。
@@ -1908,17 +1909,6 @@
   スキャナの対象に入れると偽陽性だらけになる。入れるなら
   「ユーザに見える refusal」と「internal error」を先に分ける必要がある
 
-- **REF-REBORROW: `&mut` 引数を再帰呼び出しにそのまま渡せない** ★ —
-  `fn insert(arena: &mut Vec<Node>, ..)` の中で `insert(arena, ..)` は
-  `expected &mut Vec<Node>, but got Vec<Node>`。`insert(&mut arena, ..)`
-  と書き直せば 3 レーンで通る。木やグラフを書き換える関数は必ずこの形に
-  なるので毎回踏む。値渡しに逃げると今度は `[E0014] 分岐の中では move
-  できない` (MOVE-CONDITIONAL) に当たるので、回避は再借用一択。
-  **規則自体は一貫している** — `&mut T` は呼び出し側で明示の借用を要求する
-  (`type_decl.rs::is_arg_compatible`)、パラメータでもローカルでも同じ。
-  不便なのは `&T` の自動借用があるのに `&mut` には無い非対称。
-  **再借用は幅の広い (ポインタ渡しの) 引数でも 2 段重ねて正しく動く** —
-  2026-09-05 に 3 レーンで確認、`compiler/tests/consistency/ptr_self.rs` に固定
 - **UNIT-STRUCT-FIELD: struct のフィールドに `()` を書けない** ★ —
   `struct S { u: () }` が `[E0004] Unsupported operation 'field type in
   struct 'S'' for type ()`。`()` は戻り型 / `val` 注釈 / 引数 / 型引数

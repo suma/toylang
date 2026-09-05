@@ -188,12 +188,47 @@ mod argument_checking {
     }
 
     #[test]
-    fn test_method_mut_ref_parameter_rejects_a_bare_value() {
+    fn test_method_mut_ref_parameter_rejects_an_owned_value() {
         // The costly case: without the argument check, a `&mut T`
-        // parameter handed a bare value passed as a copy, so the
-        // callee's writes went nowhere and the program ran to
+        // parameter handed a bare *owned* value passed as a copy, so
+        // the callee's writes went nowhere and the program ran to
         // completion with the wrong answer. A free function rejected
-        // the same call, so the fix is to say the same thing here.
+        // the same call, so this says the same thing here.
+        //
+        // Forwarding an existing `&mut` is a different question and is
+        // accepted (REF-REBORROW) -- `s` below is a `var`, not a
+        // reference, so taking a mutable borrow of it is a decision
+        // the call site still has to write.
+        let source = r#"
+            struct Sink { n: u64 }
+            impl Sink {
+                fn add(&mut self, d: u64) { self.n = self.n + d }
+            }
+            struct Helper { k: u64 }
+            impl Helper {
+                fn fill(&self, out: &mut Sink) { out.add(1u64) }
+            }
+            fn main() -> u64 {
+                var s = Sink { n: 0u64 }
+                val h = Helper { k: 0u64 }
+                h.fill(s)
+                s.n
+            }
+        "#;
+        let err = parse_and_check(source).expect_err("an owned value for `&mut` must be rejected");
+        assert!(
+            format!("{:?}", err).contains("&mut Sink"),
+            "unexpected diagnostic: {:?}",
+            err
+        );
+    }
+
+    /// REF-REBORROW: the same call is fine when the argument is
+    /// already a `&mut` binding -- forwarding grants no access the
+    /// caller had not granted. That it also *propagates* is pinned by
+    /// `consistency::ref_reborrow`, which can run the program.
+    #[test]
+    fn test_method_mut_ref_parameter_accepts_a_forwarded_reference() {
         let source = r#"
             struct Sink { n: u64 }
             impl Sink {
@@ -213,12 +248,7 @@ mod argument_checking {
                 s.n
             }
         "#;
-        let err = parse_and_check(source).expect_err("a bare value for `&mut` must be rejected");
-        assert!(
-            format!("{:?}", err).contains("&mut Sink"),
-            "unexpected diagnostic: {:?}",
-            err
-        );
+        parse_and_check(source).expect("forwarding a `&mut` binding is a reborrow");
     }
 
     #[test]

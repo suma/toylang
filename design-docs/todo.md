@@ -1662,14 +1662,6 @@
   昔のコストで渡る。外れた経路は `ptr_self_verify` がビルドを止めるので
   沈黙はしない。[`CODE_SIZE.md`](CODE_SIZE.md)。
 
-- **PTR-PARAM-NO-REBORROW: `&mut T` 引数を別の `&mut T` 引数に渡せない** ★ —
-  `fn outer(w: &mut Wide) { leaf(w, n) }` は
-  `[E0001] expected &mut Wide, but got Wide` で落ちる (`&mut w` と
-  書いても同じ)。型検査に reborrow が無い。method 呼び出し
-  (`w.bump()`) は通るので実害は限定的だが、自由関数どうしで
-  `&mut` を引き回す形が書けない。CODE-SIZE-SELF-ABI の作業中に
-  テストを書こうとして踏んだ (2026-09-05)。**ABI 側の問題ではない**。
-
 - **BY-VALUE-SELF-ALIAS: by-value receiver の `var s = self` が tree-walker
   だけ呼び出し側に漏れる** ★★ — `fn consumed(self: Self)` の中で
   `var s = self` して `s.a = ...` と書くと、**tree-walker では
@@ -1936,7 +1928,12 @@
   `expected &mut Vec<Node>, but got Vec<Node>`。`insert(&mut arena, ..)`
   と書き直せば 3 レーンで通る。木やグラフを書き換える関数は必ずこの形に
   なるので毎回踏む。値渡しに逃げると今度は `[E0014] 分岐の中では move
-  できない` (MOVE-CONDITIONAL) に当たるので、回避は再借用一択
+  できない` (MOVE-CONDITIONAL) に当たるので、回避は再借用一択。
+  **規則自体は一貫している** — `&mut T` は呼び出し側で明示の借用を要求する
+  (`type_decl.rs::is_arg_compatible`)、パラメータでもローカルでも同じ。
+  不便なのは `&T` の自動借用があるのに `&mut` には無い非対称。
+  **再借用は幅の広い (ポインタ渡しの) 引数でも 2 段重ねて正しく動く** —
+  2026-09-05 に 3 レーンで確認、`compiler/tests/consistency/ptr_self.rs` に固定
 - **UNIT-STRUCT-FIELD: struct のフィールドに `()` を書けない** ★ —
   `struct S { u: () }` が `[E0004] Unsupported operation 'field type in
   struct 'S'' for type ()`。`()` は戻り型 / `val` 注釈 / 引数 / 型引数

@@ -311,10 +311,11 @@ fn the_threshold_does_not_change_the_answer() {
 /// This is the shape `flush_segment(w: &mut ArchiveWriter, ...)` has
 /// in `poc/logsearch`, and it was the largest remaining cost there.
 ///
-/// (Handing the parameter on to another `&mut T` *function* is not
-/// spelled here: the type checker has no reborrow, so `leaf(w, n)`
-/// inside `fn outer(w: &mut Wide)` is rejected as `Wide` vs
-/// `&mut Wide` -- a language gap, not an ABI one.)
+/// Handing the parameter on to another `&mut T` function needs the
+/// borrow spelled -- `leaf(&mut w, n)`, not `leaf(w, n)` -- which is
+/// the same rule a local obeys (`is_arg_compatible`: `T` auto-borrows
+/// to `&T`, never to `&mut T`). `a_mut_parameter_reborrows_down_a_chain`
+/// below covers that form.
 #[test]
 fn a_wide_mut_reference_parameter_is_passed_by_address() {
     let src = r#"
@@ -585,4 +586,44 @@ fn a_field_of_a_resident_binding_can_be_borrowed() {
         }
     "#;
     assert_consistent(src, "ptr_self_resident_field_borrow");
+}
+
+/// Reborrowing a wide `&mut T` parameter into another one, twice over.
+/// Both levels are pointer-passed, so what is checked is that the
+/// address really is handed along rather than a copy taken -- if it
+/// were copied, the innermost writes would not reach `main`'s binding.
+///
+/// The borrow has to be written (`leaf(&mut w, n)`); the bare form is
+/// rejected for a parameter exactly as it is for a local. See
+/// REF-REBORROW in `todo.md` -- a language asymmetry, not an ABI one.
+#[test]
+fn a_mut_parameter_reborrows_down_a_chain() {
+    let src = r#"
+        struct Wide {
+            a: u64, b: u64, c: u64, d: u64, e: u64, f: u64,
+            g: u64, h: u64, i: u64, j: u64, k: u64, l: u64,
+        }
+
+        fn leaf(w: &mut Wide, n: u64) -> u64 {
+            w.a = w.a + n
+            w.a
+        }
+        fn mid(w: &mut Wide, n: u64) -> u64 {
+            leaf(&mut w, n) + leaf(&mut w, n)
+        }
+        fn outer(w: &mut Wide, n: u64) -> u64 {
+            mid(&mut w, n) + mid(&mut w, n)
+        }
+
+        fn main() -> u64 {
+            var q = Wide {
+                a: 0u64, b: 0u64, c: 0u64, d: 0u64, e: 0u64, f: 0u64,
+                g: 0u64, h: 0u64, i: 0u64, j: 0u64, k: 0u64, l: 9u64,
+            }
+            # `a` runs 1,2,3,4 -> the running sums add to 10.
+            val s = outer(&mut q, 1u64)
+            s * 100u64 + q.a * 10u64 + q.l
+        }
+    "#;
+    assert_consistent(src, "ptr_self_reborrow_chain");
 }

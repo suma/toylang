@@ -24,6 +24,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | エフェクト格子と 3 検査の関係 | [`design-docs/EFFECT_SYSTEM.md`](design-docs/EFFECT_SYSTEM.md) |
 | allocator のリージョン脱出検査 | [`design-docs/REGIONS.md`](design-docs/REGIONS.md) |
 | RUNTIME-TRAP guard をどう消しているか | [`design-docs/GUARD_ELISION.md`](design-docs/GUARD_ELISION.md) |
+| 生成バイナリが太る理由 (`&mut self` の ABI) | [`design-docs/CODE_SIZE.md`](design-docs/CODE_SIZE.md) |
 | 配列 / Vec の layout (AoS / SoA) の設計 (Phase 0・2 landing 済み) | [`design-docs/DATA_ORIENTED.md`](design-docs/DATA_ORIENTED.md) |
 | Dict の hash 化 / `Set` / Deque / PQ / `Vec` 拡張の設計 (未実装) | [`design-docs/COLLECTIONS.md`](design-docs/COLLECTIONS.md) |
 | 失敗の運び方 (panic / `Result` / 確保失敗) とエラー型の規約 (landing 済み) | [`design-docs/ERROR_MODEL.md`](design-docs/ERROR_MODEL.md) |

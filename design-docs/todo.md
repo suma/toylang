@@ -10,6 +10,21 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **リファクタリング (frontend / compiler / interpreter)** — 重複と
+  手書きの冗長データを 7 か所落として **-516 行**。compiler:
+  `CodegenSession::new` の 577 行の signature 組み立てを
+  `SymbolImporter` + `abi` / `sext` / `uext` で 1 宣言 1 行に
+  (declare 順は 81 個とも不変)、`define_function` /
+  `lower_function` を `prepare_function_context` に寄せて 130 行の
+  三重複製を削除、`CallIndirectFn{Struct,Tuple,Enum}` の同一 3 arm を
+  1 メソッドに、JIT の 159 シンボル登録を
+  `stringify!` マクロに (名前とポインタの取り違えが書けなくなる)。
+  frontend: `BuiltinFunctionSignature::arg_count` は**どこからも
+  読まれず** 36 行で手書き保守されていたので削除、表は `sig(...)` 1 行に。
+  interpreter: property trial の const 初期化 45 行の重複と、
+  `*_from_source` 4 本の parse / 型エラー報告の前置きを共通化。
+  併せて `gen_block` の doc コメントが toylang を Rust doctest として
+  コンパイルしていた既存の失敗を修正 (`cargo test --doc --workspace`)。
 - **MODULE-IMPORTS D1 — `import a.b as h` が効くようになった**
   ([`MODULE_IMPORTS.md`](MODULE_IMPORTS.md))。alias はパーサが受理して
   `visit_import` が捨てていたので `h::f()` は `Struct 'h' not found`

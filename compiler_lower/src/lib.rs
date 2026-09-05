@@ -485,6 +485,14 @@ struct FunctionLower<'a> {
     /// for the by-reference form, since a by-value receiver cannot
     /// share the caller's storage.
     pending_ptr_self_param: Option<DefaultSymbol>,
+    /// CODE-SIZE-SELF-ABI S3b: recursion depth inside
+    /// `allocate_struct_fields`, so only the outermost struct becomes a
+    /// resident binding and its nested fields stay part of it.
+    struct_alloc_depth: u32,
+    /// True while the function's parameters are being bound. A
+    /// parameter's storage belongs to the caller, so it never becomes
+    /// resident.
+    binding_params: bool,
     /// Closures Phase 5a (AOT): mapping from a closure-binding
     /// symbol (the `name` in `val name = fn(...)`) to the
     /// synthesized top-level `FuncId` we lifted the closure into,

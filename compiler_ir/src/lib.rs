@@ -218,6 +218,14 @@ impl Function {
         self.ptr_params.iter().find(|p| p.param_index == i)
     }
 
+    /// The resident group whose leaves are exactly `leaves`, if any.
+    pub fn resident_for(&self, leaves: &[LocalId]) -> Option<&ResidentCompound> {
+        self.resident_compounds.iter().find(|r| {
+            r.leaves.len() == leaves.len()
+                && r.leaves.iter().zip(leaves.iter()).all(|((a, _, _), b)| a == b)
+        })
+    }
+
     /// Whether parameter 0 -- a method receiver -- travels as an
     /// address. Named for the common question; `ptr_param(0)` under
     /// the hood.
@@ -470,6 +478,7 @@ impl Module {
             self_writeback_types: Vec::new(),
             self_writeback_locals: Vec::new(),
             ptr_params: Vec::new(),
+            resident_compounds: Vec::new(),
             locals: Vec::new(),
             array_slots: Vec::new(),
             address_taken_locals: std::collections::HashSet::new(),
@@ -529,6 +538,7 @@ impl Module {
             self_writeback_types: Vec::new(),
             self_writeback_locals: Vec::new(),
             ptr_params: Vec::new(),
+            resident_compounds: Vec::new(),
             locals: Vec::new(),
             array_slots: Vec::new(),
             address_taken_locals: std::collections::HashSet::new(),
@@ -895,6 +905,21 @@ pub struct Function {
     /// such a receiver needs no writeback returns -- the mutation has
     /// already landed where the caller can see it.
     pub ptr_params: Vec<PtrSelf>,
+    /// CODE-SIZE-SELF-ABI S3b: local compound bindings that live in a
+    /// stack slot instead of in one SSA variable per leaf.
+    ///
+    /// A binding wide enough to be handed to a pointer-taking callee
+    /// would otherwise be copied into a scratch slot before every such
+    /// call and read back afterwards. Keeping it in a slot for its
+    /// whole life makes that copy disappear: passing it is the slot's
+    /// address, and the callee's writes are already where the binding
+    /// can see them.
+    ///
+    /// The body is unchanged -- it still names leaf locals -- and
+    /// codegen turns their `LoadLocal` / `StoreLocal` into loads and
+    /// stores against the slot, the same way it does for a
+    /// pointer-passed parameter.
+    pub resident_compounds: Vec<ResidentCompound>,
     /// CODE-SIZE-WB-PRUNE: the leaf locals whose values fill the
     /// writeback return slots, in the same order as
     /// `self_writeback_types`. Recorded at lowering time so a
@@ -1638,6 +1663,19 @@ impl InstKind {
             | InstKind::DynCoerceSlotAddr { .. } => {}
         }
     }
+}
+
+/// CODE-SIZE-SELF-ABI S3b: one compound binding held in a stack slot.
+///
+/// `slot_idx` indexes `Function::dyn_coerce_slots`, which is where
+/// byte-sized scratch slots already live; `DynCoerceSlotAddr` is how
+/// its address is taken.
+#[derive(Debug, Clone)]
+pub struct ResidentCompound {
+    pub slot_idx: u32,
+    /// `(leaf local, byte offset, type)`, in `flatten_struct_locals`
+    /// order.
+    pub leaves: Vec<(LocalId, u64, Type)>,
 }
 
 /// CODE-SIZE-SELF-ABI: how a pointer-passed parameter is laid out.

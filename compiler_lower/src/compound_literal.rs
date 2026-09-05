@@ -609,6 +609,71 @@ impl<'a> FunctionLower<'a> {
     /// pending-struct-value channel for tail-position struct
     /// literals).
     pub(super) fn allocate_struct_fields(&mut self, struct_id: StructId) -> Vec<FieldBinding> {
+        let out = self.allocate_struct_fields_inner(struct_id);
+        // CODE-SIZE-SELF-ABI S3b: only the outermost allocation is a
+        // binding of its own -- the recursive ones are its fields, and
+        // they live inside the same slot.
+        if self.struct_alloc_depth == 0 {
+            self.make_resident_if_wide(struct_id, &out);
+        }
+        out
+    }
+
+    /// CODE-SIZE-SELF-ABI S3b: give a wide local compound its own stack
+    /// slot, so it is passed by address rather than copied.
+    ///
+    /// Declines for anything that would be wrong or pointless:
+    ///
+    /// * **parameters**, which either arrive as leaves the entry block
+    ///   defines or already come in as an address -- either way the
+    ///   caller owns the storage;
+    /// * narrow structs, whose leaves ride in registers, where a slot
+    ///   would turn free reads into loads;
+    /// * a struct with no byte layout to describe.
+    fn make_resident_if_wide(&mut self, struct_id: StructId, fields: &[FieldBinding]) {
+        if self.binding_params {
+            return;
+        }
+        let leaf_locals = super::bindings::flatten_struct_locals(fields);
+        if leaf_locals.len() <= crate::program::PTR_SELF_LEAF_THRESHOLD {
+            return;
+        }
+        let Some(layout) = crate::program::struct_leaf_layout(self.module, Type::Struct(struct_id))
+        else {
+            return;
+        };
+        if layout.len() != leaf_locals.len() {
+            return;
+        }
+        let bytes: u64 = layout
+            .last()
+            .map(|(off, ty)| off + crate::program::scalar_byte_size(*ty).unwrap_or(8))
+            .unwrap_or(0);
+        let slot_idx = {
+            let func = self.module.function_mut(self.func_id);
+            let idx = func.dyn_coerce_slots.len() as u32;
+            func.dyn_coerce_slots.push(bytes.max(1) as u32);
+            idx
+        };
+        let leaves: Vec<(crate::ir::LocalId, u64, Type)> = leaf_locals
+            .iter()
+            .zip(layout.iter())
+            .map(|((local, ty), (offset, _))| (*local, *offset, *ty))
+            .collect();
+        self.module
+            .function_mut(self.func_id)
+            .resident_compounds
+            .push(crate::ir::ResidentCompound { slot_idx, leaves });
+    }
+
+    fn allocate_struct_fields_inner(&mut self, struct_id: StructId) -> Vec<FieldBinding> {
+        self.struct_alloc_depth += 1;
+        let out = self.allocate_struct_fields_body(struct_id);
+        self.struct_alloc_depth -= 1;
+        out
+    }
+
+    fn allocate_struct_fields_body(&mut self, struct_id: StructId) -> Vec<FieldBinding> {
         let def = self.module.struct_def(struct_id).clone();
         let mut out: Vec<FieldBinding> = Vec::with_capacity(def.fields.len());
         for (field_name, field_ty) in &def.fields {

@@ -23,8 +23,8 @@
 **進捗** (すべて 2026-09-05): 戻り側は CODE-SIZE-WB-PRUNE、引数側は
 S1+S2 (幅の広い by-reference **receiver**) と S3a (`&T` / `&mut T` の
 **compound 引数**)。`__text` は合わせて **191,080 → 162,912 B (−14.7%)**。
-**残りは S3b** — ローカル束縛 (`var w = ArchiveWriter::new()`) が
-まだ leaf local なので、根は呼び出しごとに slot を作り直す。
+S3b (幅の広い**ローカル束縛**を stack slot に常駐) まで入り、
+`__text` は **191,080 → 156,252 B (−18.2%)**。
 
 ## 計測 — 331,832 B の内訳
 
@@ -193,7 +193,7 @@ DEBUG-OBS D3 は panic サイトごとに文面を `.rodata` に置く
 クラッシュではなく古い値として出る。pass をわざと壊す (全 slot を落とす)
 と 6 本中 5 本が落ち、`dyn` の 1 本だけは veto が効いて通る。
 
-### 済: compound を参照で渡すときはポインタ 1 本 (S1+S2+S3a, 2026-09-05)
+### 済: compound は番地 1 本で渡し、幅の広いローカルは常駐させる (S1〜S3b, 2026-09-05)
 
 **leaf 数が閾値を超える compound `self` はポインタで渡す。**
 展開はレジスタに乗る間だけの最適化で、既定にすべきものではない
@@ -310,18 +310,45 @@ fn flush_segment(w: &mut ArchiveWriter, out: str, segid: u64, crc: &Crc32) -> u6
 **by-value の compound 引数は対象外**。値渡しは自分のコピーを持つ
 規約なので、記憶域を共有すると callee の書き込みが外に漏れる。
 
+#### S3b — 幅の広いローカル束縛を stack slot に常駐させる
+
+鎖の**根**が最後まで残っていた。`var w = ArchiveWriter::new()` を持つ
+関数は受け側が leaf local なので、番地を要求する callee を呼ぶたびに
+slot へ 52 個書き出して読み戻していた。
+
+leaf 8 個を超える**ローカルの compound 束縛**は、生涯を通じて
+stack slot に住む。実装は S1 と同じ仕掛けの使い回しで、codegen が
+その leaf の `LoadLocal` / `StoreLocal` を slot への load/store に
+読み替えるだけ — **lowering は何も変わらない** (`Binding::Struct` の
+74 か所は leaf local を扱い続ける)。番地が要るときは
+`DynCoerceSlotAddr` を出すので、materialise も読み戻しも消える。
+
+**パラメータは対象外**。記憶域は呼び出し側のもので、entry block が
+leaf を定義するか、そもそも番地で来ている。
+
+**1 つの leaf に家は 1 つ** — これが唯一の落とし穴だった。
+`&mut wide.field` は `AddressOf` を出し、それが専用 slot を指す一方で
+読み書きは常駐 slot に行っていた。`AddressOf` が**囲っている記憶域**
+(常駐 slot + offset、あるいはポインタ + offset) を返すよう直して
+1 つに揃えた。閾値 0 のストレスで出ていた 3 件
+(`method_reborrows_its_own_mut_parameter` /
+`ref_stage2_field_mut_borrow` / `ref_stage2_nested_chain_mut_borrow`)
+はすべてこれが原因だった。
+
 #### 効果 (`poc/logsearch`)
 
-| | 変更前 | WB-PRUNE 後 | S1+S2 後 | **S3a 後** |
-|---|---:|---:|---:|---:|
-| `__text` | 191,080 | 171,424 | 167,736 | **162,912** (−14.7%) |
-| ファイル | 331,832 | 315,336 | 298,824 | **298,824** (−9.9%) |
+| | 変更前 | WB-PRUNE | S1+S2 | S3a | **S3b** |
+|---|---:|---:|---:|---:|---:|
+| `__text` | 191,080 | 171,424 | 167,736 | 162,912 | **156,252** (−18.2%) |
+| ファイル | 331,832 | 315,336 | 298,824 | 298,824 | **298,824** (−9.9%) |
+| archive | 1,687〜1,698 ms | — | — | — | **1,609〜1,632 ms** |
 
 関数単位:
 
 | | 変更前 | 現在 |
 |---|---:|---:|
 | `ArchiveWriter::emit_terms` | 3,092 命令 | **263** |
+| `cmd_archive` | 2,706 | **1,211** |
 | `flush_segment` | 1,384 | **455** |
 | `ArchiveWriter::link` | 779 | 188 |
 | `ArchiveWriter::write_seg` | 3,453 | 2,152 |
@@ -329,6 +356,19 @@ fn flush_segment(w: &mut ArchiveWriter, out: str, segid: u64, crc: &Crc32) -> u6
 
 archive の出力セグメントは**変更前のコンパイラと byte 単位で一致**
 (444,549 records / 12 segments ok)。
+
+#### 閾値 0 のストレスに残るもの
+
+全 struct をポインタ経路に通すと 66 件落ちるが、**43 件は上の 2 重の網**
+(verifier / reload guard)。値が食い違うのは 4 件だけで:
+
+- `a_return_type_instantiates_a_constructor` — 1 field の generic
+  struct。**幅の広い generic struct**で閾値 8 の下で再現を試み、
+  3 バックエンド一致を確認済み (テストに固定)
+- `soa` の 3 件 — **AOT の stack frame の形**を検査するテスト。
+  常駐させれば frame は変わるので、閾値 0 でだけ落ちるのは筋が通る
+
+閾値 8 では全 2,930 テストが通る。
 
 #### 残っている費用の見積もり
 

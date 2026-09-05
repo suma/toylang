@@ -1904,6 +1904,10 @@ struct LowerCtx<'a, 'b> {
     /// and `StoreLocal` on these go through the pointer, which is what
     /// keeps the caller's copy the only copy.
     ptr_self_leaves: HashMap<u32, (compiler_ir::LocalId, u64, IrType)>,
+    /// CODE-SIZE-SELF-ABI S3b: leaf local -> `(dyn_coerce slot index,
+    /// byte offset, type)` for a local compound that lives in a stack
+    /// slot rather than in one variable per leaf.
+    resident_leaves: HashMap<u32, (u32, u64, IrType)>,
     /// A5-P2-MVP-B: per-`Function::dyn_coerce_slots` entry cranelift
     /// `StackSlot`. Materialised lazily on the first
     /// `InstKind::DynCoerceSlotAddr { slot_idx }` reference so that
@@ -1988,6 +1992,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             array_slots: HashMap::new(),
             addr_taken_slots: HashMap::new(),
             ptr_self_leaves: HashMap::new(),
+            resident_leaves: HashMap::new(),
             dyn_coerce_stack_slots: HashMap::new(),
         }
     }
@@ -2022,6 +2027,17 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
         //         LoadLocal / StoreLocal will route through this slot
         //         for address-taken locals so the canonical storage
         //         is the one AddressOf yields a `stack_addr` for.
+        // 2a-ter. CODE-SIZE-SELF-ABI S3b: leaves of a resident local
+        //         compound read and write against its slot. Registered
+        //         in the same map the pointer-passed parameters use;
+        //         the base is a slot address rather than an incoming
+        //         pointer, and `DynCoerceSlotAddr` is how the lowering
+        //         hands that address to a callee.
+        for r in &func.resident_compounds {
+            for (leaf, offset, ty) in &r.leaves {
+                self.resident_leaves.insert(leaf.0, (r.slot_idx, *offset, *ty));
+            }
+        }
         for &local in &func.address_taken_locals {
             let ir_ty = func.locals[local.0 as usize];
             let bytes = ir_type_byte_size(ir_ty);

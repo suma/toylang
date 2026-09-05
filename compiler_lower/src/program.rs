@@ -435,6 +435,10 @@ pub(super) fn scalar_byte_size(ty: Type) -> Option<u64> {
 /// `self` methods.
 pub(super) const PTR_SELF_LEAF_THRESHOLD: usize = 8;
 
+pub(super) fn struct_leaf_layout(module: &Module, ty: Type) -> Option<Vec<(u64, Type)>> {
+    dyn_struct_leaf_layout(module, ty)
+}
+
 fn dyn_struct_leaf_layout(module: &Module, ty: Type) -> Option<Vec<(u64, Type)>> {
     let mut leaves: Vec<Type> = Vec::new();
     flatten_compound_leaf_types(module, ty, &mut leaves);
@@ -1866,6 +1870,8 @@ impl<'a> FunctionLower<'a> {
             self_writeback_locals: None,
             pending_self_writeback_param: None,
             pending_ptr_self_param: None,
+            struct_alloc_depth: 0,
+            binding_params: false,
             closure_bindings: HashMap::new(),
             pending_closure_work,
             pending_glue_work,
@@ -2136,6 +2142,10 @@ impl<'a> FunctionLower<'a> {
         // must agree with this expansion; codegen mirrors the same
         // walk to assign block params to locals.
         let param_types: Vec<Type> = self.module.function(self.func_id).params.clone();
+        // CODE-SIZE-SELF-ABI S3b: a parameter's storage belongs to the
+        // caller, so its leaves must not be redirected into a slot of
+        // our own while they are being bound.
+        self.binding_params = true;
         for (i, (name, decl_ty)) in func.parameter.iter().enumerate() {
             // REF-Stage-2 (b)+(c)+(g): `&T` / `&mut T` scalar parameter
             // binds as `Binding::RefScalar` so reads / assignments
@@ -2314,6 +2324,8 @@ impl<'a> FunctionLower<'a> {
         // values to the user-visible return slot list, and the
         // codegen layer extends the cranelift signature's return
         // shape from `self_writeback_types`.
+        self.binding_params = false;
+
         // CODE-SIZE-SELF-ABI: decide whether the receiver travels as a
         // pointer before the writeback shape is built, because a
         // pointer-passed receiver needs no writeback at all -- its

@@ -375,7 +375,16 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 // Read them via `stack_load` so the canonical storage
                 // (the one `AddressOf` returns a `stack_addr` for) is
                 // the source of truth.
-                if let Some((base, offset, ty)) = self.ptr_self_leaves.get(&local.0).copied() {
+                if let Some((slot_idx, offset, ty)) = self.resident_leaves.get(&local.0).copied() {
+                    // CODE-SIZE-SELF-ABI S3b: the binding lives in a
+                    // slot, so a leaf read is a load from it.
+                    let cl_ty = ir_to_cranelift_ty(ty).ok_or_else(|| {
+                        format!("LoadLocal: resident leaf {local:?} has unsupported type {ty:?}")
+                    })?;
+                    let slot = self.dyn_coerce_slot(slot_idx)?;
+                    let v = self.builder.ins().stack_load(cl_ty, slot, offset as i32);
+                    self.record_result(inst, v);
+                } else if let Some((base, offset, ty)) = self.ptr_self_leaves.get(&local.0).copied() {
                     // CODE-SIZE-SELF-ABI: the receiver lives in the
                     // caller's memory, so a leaf read is a load.
                     let cl_ty = ir_to_cranelift_ty(ty).ok_or_else(|| {
@@ -407,6 +416,25 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 self.store_local(*dst, v);
             }
             InstKind::AddressOf { local } => {
+                // CODE-SIZE-SELF-ABI: a leaf that lives inside a bigger
+                // storage has its address there, not in a private slot
+                // of its own. Getting this wrong gives the local two
+                // homes -- reads and writes going to one, the borrow
+                // pointing at the other -- so it is checked before the
+                // ordinary address-taken slot.
+                if let Some((slot_idx, offset, _)) = self.resident_leaves.get(&local.0).copied() {
+                    let slot = self.dyn_coerce_slot(slot_idx)?;
+                    let v = self.builder.ins().stack_addr(types::I64, slot, offset as i32);
+                    self.record_result(inst, v);
+                    return Ok(());
+                }
+                if let Some((base, offset, _)) = self.ptr_self_leaves.get(&local.0).copied() {
+                    let base_var = self.local(base);
+                    let addr = self.builder.use_var(base_var);
+                    let v = self.builder.ins().iadd_imm(addr, offset as i64);
+                    self.record_result(inst, v);
+                    return Ok(());
+                }
                 let slot = *self.addr_taken_slots.get(&local.0).ok_or_else(|| {
                     format!(
                         "AddressOf {local:?}: local was not registered in `address_taken_locals`",
@@ -1613,7 +1641,39 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
     /// destinations included, which is what this was written for --
     /// has to go through here, or the write lands in a variable
     /// nobody reads and the mutation is silently lost.
+/// CODE-SIZE-SELF-ABI S3b: the cranelift `StackSlot` behind a
+    /// `Function::dyn_coerce_slots` entry, created on first use.
+    fn dyn_coerce_slot(
+        &mut self,
+        slot_idx: u32,
+    ) -> Result<cranelift_codegen::ir::StackSlot, String> {
+        use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
+        if let Some(s) = self.dyn_coerce_stack_slots.get(&slot_idx).copied() {
+            return Ok(s);
+        }
+        let size = *self
+            .ir_module
+            .function(self.func_id)
+            .dyn_coerce_slots
+            .get(slot_idx as usize)
+            .ok_or_else(|| format!("dyn_coerce slot {slot_idx} out of range"))?;
+        let slot = self.builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            size,
+            0,
+        ));
+        self.dyn_coerce_stack_slots.insert(slot_idx, slot);
+        Ok(slot)
+    }
+
     fn store_local(&mut self, local: compiler_ir::LocalId, v: Value) {
+        if let Some((slot_idx, offset, _)) = self.resident_leaves.get(&local.0).copied() {
+            let slot = self
+                .dyn_coerce_slot(slot_idx)
+                .expect("resident compound slot");
+            self.builder.ins().stack_store(v, slot, offset as i32);
+            return;
+        }
         if let Some((base, offset, _)) = self.ptr_self_leaves.get(&local.0).copied() {
             let base_var = self.local(base);
             let addr = self.builder.use_var(base_var);

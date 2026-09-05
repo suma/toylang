@@ -514,3 +514,75 @@ fn a_reborrowed_mut_parameter_reaches_the_same_storage() {
     "#;
     assert_consistent(src, "ptr_self_reborrowed_param");
 }
+
+/// S3b: a wide **local binding** lives in a stack slot for its whole
+/// life, so handing it to a pointer-taking callee is that slot's
+/// address rather than a copy-out and read-back.
+///
+/// What this pins is that the slot really is the one storage: the
+/// binding is written directly, written through a method, and read
+/// back, all in one program.
+#[test]
+fn a_wide_local_binding_is_one_storage() {
+    let src = r#"
+        struct Wide {
+            a: u64, b: u64, c: u64, d: u64,
+            e: u64, f: u64, g: u64, h: u64,
+            i: u64, j: u64, k: u64, l: u64,
+        }
+
+        impl Wide {
+            fn bump(&mut self, n: u64) { self.a = self.a + n }
+            fn total(&self) -> u64 { self.a + self.b + self.l }
+        }
+
+        fn main() -> u64 {
+            var w = Wide {
+                a: 0u64, b: 0u64, c: 3u64, d: 4u64,
+                e: 5u64, f: 6u64, g: 7u64, h: 8u64,
+                i: 9u64, j: 10u64, k: 11u64, l: 12u64,
+            }
+            w.a = 1u64          # written directly
+            w.bump(2u64)        # written through the pointer
+            w.b = w.a + 10u64   # read back, then written directly
+            w.total() + w.a
+        }
+    "#;
+    assert_consistent(src, "ptr_self_resident_local");
+}
+
+/// A `&mut` borrow of one **field** of a resident binding. The leaf
+/// has to keep a single home: if the borrow points at a private slot
+/// while reads and writes go to the resident one, the update is lost.
+/// Both spellings are here -- borrowing from outside the struct, and
+/// from inside a method whose receiver is itself a pointer.
+#[test]
+fn a_field_of_a_resident_binding_can_be_borrowed() {
+    let src = r#"
+        struct Wide {
+            x: u64, y: u64, c: u64, d: u64, e: u64,
+            f: u64, g: u64, h: u64, i: u64, j: u64, k: u64,
+        }
+
+        fn add_in_place(target: &mut u64, delta: u64) {
+            target = target + delta
+        }
+
+        impl Wide {
+            fn bump(&mut self) { add_in_place(&mut self.x, 5u64) }
+        }
+
+        fn main() -> u64 {
+            var p = Wide {
+                x: 10u64, y: 20u64, c: 0u64, d: 0u64, e: 0u64,
+                f: 0u64, g: 0u64, h: 0u64, i: 0u64, j: 0u64, k: 0u64,
+            }
+            add_in_place(&mut p.x, 30u64)
+            add_in_place(&mut p.x, 2u64)
+            p.bump()
+            # x = 10 + 30 + 2 + 5 = 47, y untouched.
+            p.x + p.y
+        }
+    "#;
+    assert_consistent(src, "ptr_self_resident_field_borrow");
+}

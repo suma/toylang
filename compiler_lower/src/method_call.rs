@@ -1216,6 +1216,25 @@ impl<'a> FunctionLower<'a> {
                         .all(|((a, _, _), (b, _))| a == b)
             })
             .cloned();
+        // CODE-SIZE-SELF-ABI S3b: a binding that already lives in a
+        // slot hands over that slot's address. This is the root of the
+        // chain -- without it every call from the function that *owns*
+        // the struct copies it out and reads it back.
+        let leaf_ids: Vec<LocalId> = leaves.iter().map(|(l, _)| *l).collect();
+        if let Some(r) = self
+            .module
+            .function(self.func_id)
+            .resident_for(&leaf_ids)
+            .cloned()
+        {
+            let addr = self
+                .emit(
+                    InstKind::DynCoerceSlotAddr { slot_idx: r.slot_idx },
+                    Some(Type::U64),
+                )
+                .expect("DynCoerceSlotAddr returns a value");
+            return Ok((addr, ReceiverReload::none()));
+        }
         if let Some(ps) = forwarded
             && let Some(ptr_local) = ps.ptr_local
         {

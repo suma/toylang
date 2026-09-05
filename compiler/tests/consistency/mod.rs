@@ -54,6 +54,7 @@ mod numeric;
 mod time;
 mod fs_path;
 mod fs_handle;
+mod testing_lib;
 mod log;
 mod codecs;
 mod json;

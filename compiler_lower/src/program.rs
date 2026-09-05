@@ -2608,6 +2608,7 @@ pub fn install_test_driver(
     module: &mut Module,
     program: &File,
     interner: &DefaultStringInterner,
+    only: Option<&[String]>,
 ) -> Result<Vec<String>, String> {
     /// What a marker line starts with. The runner matches on it, so
     /// it is spelled once, here.
@@ -2615,6 +2616,11 @@ pub fn install_test_driver(
 
     let mut targets: Vec<(FuncId, String)> = Vec::with_capacity(program.tests.len());
     for test in &program.tests {
+        if let Some(only) = only
+            && !only.contains(&test.name)
+        {
+            continue;
+        }
         let Some(id) = module.lookup_function(None, test.function) else {
             // A test whose generated function did not survive lowering
             // is a bug in this pass's assumptions, not something to

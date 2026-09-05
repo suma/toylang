@@ -690,6 +690,21 @@ pub(super) fn assert_stdout_consistent(source: &str, stem: &str) {
     );
 }
 
+/// Run `source` and return the runtime failure it produced.
+///
+/// For assertions whose whole point is the *message*: a test that
+/// only checked the program stopped would pass against a diagnostic
+/// that says nothing.
+pub(super) fn interpreter_error(source: &str) -> String {
+    let core = core_modules_dir();
+    let mut options = interpreter::RunOptions::default();
+    options.core_modules_dirs = std::slice::from_ref(&core);
+    match interpreter::run_source(source, "test.t", &options) {
+        Ok(outcome) => panic!("expected a runtime failure, got {outcome:?}"),
+        Err(e) => e,
+    }
+}
+
 /// Parse + type-check `source` with the core modules, returning the
 /// rendered diagnostics on failure.
 pub(super) fn type_check_errors(source: &str) -> Vec<String> {

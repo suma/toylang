@@ -439,6 +439,7 @@ fn lower_for_fold(
             function: sym,
             line: 0,
             file: None,
+            expect_panic: None,
         });
     }
     for (i, sym) in const_fn_entries.iter().enumerate() {
@@ -447,6 +448,7 @@ fn lower_for_fold(
             function: *sym,
             line: 0,
             file: None,
+            expect_panic: None,
         });
     }
     // 3. Lower.

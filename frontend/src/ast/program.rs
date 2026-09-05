@@ -103,6 +103,18 @@ pub struct TestCase {
     pub function: DefaultSymbol,
     /// Where the `test` keyword is, so a failure can cite the block.
     pub line: u32,
+    /// TEST-TOOL T4: the block is expected to **panic**.
+    ///
+    /// `test "..." panics { }` inverts the outcome — the block passes
+    /// by stopping the program. Written because there was no way at
+    /// all to check that a contract holds: VEC-CONTRACTS turned
+    /// `Vec`'s bounds into `requires` clauses and nothing could
+    /// confirm one ever fires.
+    ///
+    /// `Some(None)` accepts any panic; `Some(Some(text))` requires the
+    /// message to contain `text`, because "something died" is not a
+    /// test of *which* contract was broken.
+    pub expect_panic: Option<Option<String>>,
     /// Which file the block is in, when it is not the entry.
     ///
     /// TEST-TOOL T0: a module's tests are carried into the program

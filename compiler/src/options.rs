@@ -72,6 +72,15 @@ pub struct CompilerOptions {
     /// assertion is a panic and a panic on a compiled lane ends the
     /// process.
     pub test_mode: bool,
+    /// With `test_mode`, the exact names to include. `None` runs
+    /// every `test` block in the program.
+    ///
+    /// TEST-TOOL T4: a `panics` test ends the process, so it cannot
+    /// share a driver with anything that has to run after it. The
+    /// runner puts each in a binary of its own and gives the rest a
+    /// driver that leaves them out — which is a *set*, not a single
+    /// name: excluding one test is naming all the others.
+    pub test_only: Option<Vec<String>>,
 }
 
 impl CompilerOptions {
@@ -88,6 +97,7 @@ impl CompilerOptions {
             diagnostics_json: false,
             link_cache_dir: None,
             test_mode: false,
+            test_only: None,
         }
     }
 }

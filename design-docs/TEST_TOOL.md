@@ -1,7 +1,7 @@
 # TEST TOOL — toylang のテストを書く道具
 
-> **状態: T0〜T2 landing 済み (2026-09-05)。** T3 (`core/std/testing.t`) /
-> T4 (`panics` と `--backend all`) / T5 (ゴールデン) は未着手。
+> **状態: T0〜T5 landing 済み (2026-09-05)。** 残るのは
+> T4 の後半 (`--backend all` = レーン間の食い違い報告) だけ。
 > 実装: `interpreter/src/module_integration.rs` (T0)、
 > `compiler_lower::install_test_driver` + `compiler --test` (T1)、
 > [`toy/src/test_runner.rs`](../toy/src/test_runner.rs) (T2)。
@@ -237,9 +237,29 @@ T0 が最優先。**残り 3 つは T0 の後でないと価値が出ない** �
   ineligible になり tree-walker に落ちていたので露見していなかった。
   T1 で lower できるようにした瞬間に**全テストが黙って緑になる**。
   fast path を「entry が本当に `main` のときだけ」に絞った
-| **T3** | `core/std/testing.t` | 上の表の 5 つが 1 行で書ける | 未着手 |
-| **T4** | `panics` テストと `--backend all` | 契約違反が検査でき、レーンの食い違いが出る | 未着手 |
-| **T5** | ゴールデンと `--bless` | `.seg` の形式が固定される | 未着手 |
+| **T3** | `core/std/testing.t` | 上の表の 5 つが 1 行で書ける | ✅ 2026-09-05 |
+| **T4** | `panics` テストと `--backend all` | 契約違反が検査でき、レーンの食い違いが出る | `panics` ✅ / `--backend all` 未 |
+| **T5** | ゴールデンと `--bless` | `.seg` の形式が固定される | ✅ 2026-09-05 |
+
+### T3〜T5 で決めたこと
+
+- **`assert_bytes_eq` の走査は失敗時にしか走らない** — `Span::bytes_eq`
+  が yes/no を 1 呼び出しで答える (MEMORY-ACCESS M3) ので、
+  通ったアサーションの費用は `bytes_eq` そのもの。オフセットを探す
+  ループはその後
+- **確保の検査は `live_bytes`** — cumulative ではない。
+  バッファを確保して解放したヘルパは heap を「増やして」いないので、
+  確保そのものを禁じると実装を検査することになる
+- **`panics` テストは AOT ではテスト 1 本 = バイナリ 1 本** —
+  panic がプロセスを終わらせるので、後に走るものと driver を共有できない。
+  そのため driver の filter は**名前の集合**である (1 本を除くとは
+  他の全部を名指すこと)
+- **golden が無いときは失敗**で、初回に黙って記録はしない。
+  一度も見られていないテストが緑になるのを避ける。
+  `--bless` は `TOY_BLESS` で伝える (AOT は子プロセスの環境、
+  VM は `toy` 自身の環境)
+- **テストはパッケージ根から走る** — テストに書く golden のパスが
+  書いたとおりの意味になるように
 
 ### T0 で分かったこと
 

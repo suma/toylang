@@ -35,7 +35,7 @@ usage:
   toy run   [PATH] [--release] [--backend aot|jit|vm|tree] [-v] [-- ARGS...]
   toy check [PATH] [-v]
   toy clean [PATH] [--all] [-v]
-  toy test  [FILTER] [PATH] [--list] [--format=json] [-v]
+  toy test  [FILTER] [PATH] [--list] [--bless] [--format=json] [-v]
   toy api <MODULE.t> [PATH]
   toy effects [PATH] [-v]
   toy explain <CODE>
@@ -52,6 +52,7 @@ options:
   --core-modules DIR   add a module root; repeatable, later wins
   -v, --verbose        print the equivalent compiler/interpreter call
   --list               list the tests instead of running them
+  --bless              test: record the golden files instead of checking
   --format=json        machine-readable results (test only)
   --all                clean: remove the link cache and build/ too
   --no-warn-collisions skip the duplicate-name pre-check
@@ -96,6 +97,7 @@ struct Args {
     /// `toy test <filter>`).
     subject: Option<String>,
     list_only: bool,
+    bless: bool,
     json: bool,
     warn_collisions: bool,
     all: bool,
@@ -148,6 +150,7 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
         program_args: Vec::new(),
         subject: None,
         list_only: false,
+        bless: false,
         json: false,
         warn_collisions: true,
         all: false,
@@ -165,6 +168,7 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
         match arg.as_str() {
             "--release" => a.release = true,
             "--list" => a.list_only = true,
+            "--bless" => a.bless = true,
             "--format=json" => a.json = true,
             "--no-warn-collisions" => a.warn_collisions = false,
             "--all" => a.all = true,
@@ -442,6 +446,7 @@ fn cmd_test(args: &Args) -> Result<(), String> {
         // one pass rather than stopping at the first.
         aot: !matches!(args.backend, Some(Backend::Vm) | Some(Backend::Tree)),
         release: args.release,
+        bless: args.bless,
     };
     test_runner::run(&pkg, &opts)
 }

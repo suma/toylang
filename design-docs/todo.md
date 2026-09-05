@@ -10,6 +10,27 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **TEST-TOOL T3 — `core/std/testing.t`** — `assert_close` /
+  `assert_str_eq` / `assert_bytes_eq` / `assert_some` / `assert_ok` /
+  `assert_err` / `assert_in_range(_u64)` と、確保の区間検査
+  (`heap_mark` / `assert_no_growth` / `assert_growth_at_most`)。
+  **失敗が位置と両辺を言う**のが要点で、`assert_bytes_eq` は
+  最初に違うオフセットを出す (4 MiB が 1 バイト違うときに
+  「違います」だけでは使えない)。走査は失敗時にしか走らない
+  (`Span::bytes_eq` が先に yes/no を答えるので、通った側の費用は
+  そのまま)
+- **TEST-TOOL T4 — `test "..." panics { }`** (`panics "text"` で
+  メッセージも照合)。VEC-CONTRACTS が `Vec` の境界を `requires` に
+  したのに、**その契約が破れることを確かめる術が無かった**。
+  AOT は panic がプロセスを終わらせるので**テスト 1 本 = バイナリ 1 本**
+  (driver の filter を名前の集合にした — 1 本を除くとは他の全部を
+  名指すこと)。`--backend all` (レーン間の食い違い報告) は未着手
+- **TEST-TOOL T5 — golden ファイルと `toy test --bless`** —
+  `testing::assert_golden(path, bytes)`。**無いときは失敗**で初回の
+  自動記録はしない (一度も見られていないテストが緑になるため)。
+  差分は T3 の関数が出すので「何バイト目から違う」が出る。
+  テストは**パッケージ根から走る**ので、テストに書いた golden の
+  パスが書いたとおりの意味になる
 - **TEST-TOOL T1 — compiled レーンで `test` が走るようになった** —
   `assert` が literal メッセージしか受けなかったので、
   2 値からメッセージを組む `assert_eq` を含む `test` は

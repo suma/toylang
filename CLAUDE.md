@@ -130,7 +130,7 @@ cargo run -q -p toy -- build mypkg [--release] [-o PATH]
 cargo run -q -p toy -- run   mypkg [--backend aot|jit|vm] [-- ARGS...]
 cargo run -q -p toy -- check mypkg
 cargo run -q -p toy -- clean mypkg [--all]   # 出力を消す (--all は build/ ごと)
-cargo run -q -p toy -- test  mypkg [FILTER] [--list] [--format=json]
+cargo run -q -p toy -- test  mypkg [FILTER] [--list] [--bless] [--format=json]
 # `test` は tests/*.t と entry を走らせ、**モジュール内の `test` も拾う**
 # (TEST-TOOL T0)。**既定は AOT** で、出荷するレーンが検査対象になる
 # (T1)。`--backend vm` は IR VM で走らせ、**全部の失敗を 1 回で報告する**
@@ -458,6 +458,21 @@ fn main() -> u64 {
 - **`panic("msg")` ビルトイン**: 実行を中断するメッセージ付き panic。型検査では「Unknown」を返す扱いで、`if cond { panic("...") } else { value }` のような式位置でも使える。関数全体が panic で発散する場合も戻り型と関係なく型検査が通る
 - **`test "name" { ... }` ブロック**: トップレベルに書けるテスト。`test` は contextual keyword なので `fn test(...)` や `val test = ...` は従来どおり使える。各ブロックは内部でゼロ引数関数に lower されるため型検査・バックエンドは特別扱い不要。通常実行では呼ばれず、`--test` で実行する。テストごとに独立した評価コンテキストを持つ
 - **`assert_eq(a, b)` / `assert_ne(a, b)` ビルトイン**: 失敗時に **left / right の実値**と行番号を出す。パーサマクロで一時束縛 + 比較 + メッセージ組み立てに desugar される
+- **`test "name" panics { ... }` / `panics "text"` (TEST-TOOL T4)**:
+  ブロックが **panic することを期待**するテスト。`panics "text"` は
+  panic メッセージが `text` を含むことまで確かめる (「何かが落ちた」では
+  どの契約が破れたか言えないため)。契約違反 (`requires`) の検査が
+  これで書ける。AOT では panic がプロセスを終わらせるので
+  **テスト 1 本ごとに 1 バイナリ**を作って走らせる
+- **`core/std/testing.t` (TEST-TOOL T3)**: 失敗が**位置と両辺**を言う
+  アサーション群 — `assert_close(a, b, eps)` / `assert_str_eq` /
+  `assert_bytes_eq` (最初に違うオフセットを出す) / `assert_some` /
+  `assert_ok` / `assert_err` / `assert_in_range(_u64)` /
+  `assert_golden(path, bytes)` (T5、`toy test --bless` で記録) と、
+  確保の区間検査 `heap_mark()` / `assert_no_growth(mark)` /
+  `assert_growth_at_most(mark, budget)`
+  (`ensures allocates(N)` が**関数**の契約なのに対し、こちらは
+  **テストの中の区間**に効く)
 - **`assert(cond, "msg")` ビルトイン**: `cond` が false のときだけ `panic(msg)` する糖衣。`(bool, str) -> ()`。message は false 時にのみ評価される。JIT は `brif cond, cont, fail; fail: call jit_panic; trap` で lower（success path はオーバヘッド最小、failure path は panic と同じ helper）
 - **`?` (Try) 演算子**: postfix early-return。`expr?` は inner の型に応じて `Result<T, E>` か `Option<T>` の match に desugar し、success arm では unwrap 値を返し、error arm では enclosing 関数から `return` で伝播する。Parser が `Expr::Try { inner, .. }` を emit、type checker が in-place で `Block { val __try_t = inner; match __try_t { Ok(__try_v) => __try_v as T, Err(__try_e) => { return __try_t; panic("?-unreachable") } } }` に rewrite。backend (interpreter / AOT / JIT) は rewritten Match のみを観測。**success 型の変更を跨ぐ伝播** (`read_file(p)?` を `-> Result<u64, str>` で受ける) は error arm が宣言戻り型に対して `Result::Err(__try_e)` を再構築する (TRY-ERR-RETYPE、`return` の enum 構築は lowering 対応済み)。error 型の変更は `E2: From<E1>` で変換 (無ければ型エラー)。**`return` 式は宣言戻り型と突き合わせて検査される** (closure body は除外 — 合成関数として別戻り型を持つ)。Unit 関数内の `?` は型エラー。**制約**: inner は `Result` か `Option` 以外不可、AOT は `match` scrutinee 等の MVP 制約を継承 (function-call enum scrutinee は val-bind 経由)
 - **`??` (null-coalesce) 演算子** (NULL-COALESCE): `a ?? b` は `a` が `Option::Some` / `Result::Ok` なら中身を、`None` / `Err` なら `b` を評価して返す。**右結合** (`a ?? b ?? c` = `a ?? (b ?? c)`)、比較演算子より密で shift 未満 (`a ?? b == c` = `(a ?? b) == c`)。**default は遅延評価** — type checker が `Block { val t = a; match t { Some(v) => v as T, None => b } }` に書き換えるので、`b` は None / Err パスでのみ走る (`unwrap_or` の結果、`unwrap_or_else` の評価規律)。lhs は `Option<T>` / `Result<T, E>` のみ、両 arm は同型 (bare `Option::None` の未解決 success 型は default 側が決める)。binary operand / 条件 / tail など `visit_expr` を通らない位置は checker が型だけ付けて、pool 書き換えは `apply_null_coalesce_rewrites` の post-pass で行う (バックエンドはいずれの経路でも desugar 後の Block のみを見る)。例: `interpreter/example/null_coalesce.t`

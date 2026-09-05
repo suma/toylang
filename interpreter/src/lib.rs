@@ -1816,6 +1816,9 @@ pub struct TestOutcome {
     /// The file the block is in, when it is not the entry (a module's
     /// test carried in by integration). `None` means the entry.
     pub file: Option<String>,
+    /// TEST-TOOL T4: the block is expected to panic, optionally with
+    /// a message containing this text. Mirrors `TestCase`.
+    pub expect_panic: Option<Option<String>>,
     /// `None` when the test passed; the diagnostic when it did not.
     pub failure: Option<String>,
 }
@@ -1841,19 +1844,46 @@ pub fn run_tests(
                 .iter()
                 .find(|f| f.name == test.function)
                 .cloned();
-            let failure = match entry {
+            let outcome = match entry {
                 Some(entry) => {
-                    execute_entry(program, string_interner, source_code, filename, entry).err()
+                    execute_entry(program, string_interner, source_code, filename, entry)
                 }
-                None => Some(format!(
+                None => Err(format!(
                     "internal error: test `{}` has no generated function",
                     test.name
                 )),
+            };
+            // TEST-TOOL T4: `test "..." panics { }` inverts the
+            // outcome. A block that stops the program is the only way
+            // to check that a contract fires — VEC-CONTRACTS turned
+            // `Vec`'s bounds into `requires` clauses and nothing could
+            // confirm one ever held.
+            let failure = match (&test.expect_panic, outcome) {
+                (None, result) => result.err(),
+                (Some(_), Ok(_)) => Some(format!(
+                    "expected `{}` to panic, but it returned",
+                    test.name
+                )),
+                (Some(None), Err(_)) => None,
+                (Some(Some(wanted)), Err(text)) => {
+                    if text.contains(wanted.as_str()) {
+                        None
+                    } else {
+                        // Naming the message that did arrive is the
+                        // point: "something died" does not say which
+                        // contract broke, which is the whole reason
+                        // the expected text can be written down.
+                        Some(format!(
+                            "expected a panic containing `{wanted}`, but it said:\n{text}"
+                        ))
+                    }
+                }
             };
             TestOutcome {
                 name: test.name.clone(),
                 line: test.line,
                 file: test.file.clone(),
+                expect_panic: test.expect_panic.clone(),
                 failure,
             }
         })
@@ -1902,6 +1932,7 @@ pub fn list_tests_from_source(
             name: t.name.clone(),
             line: t.line,
             file: t.file.clone(),
+            expect_panic: t.expect_panic.clone(),
             failure: None,
         })
         .collect())

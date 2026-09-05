@@ -740,3 +740,156 @@ fn clean_leaves_the_sources_alone() {
     assert!(pkg.0.join("src/mine.t").is_file());
     assert!(pkg.0.join("tests/a.t").is_file());
 }
+
+// --- T4 / T5 ----------------------------------------------------------
+
+#[test]
+fn a_panics_test_passes_by_stopping() {
+    // TEST-TOOL T4. VEC-CONTRACTS turned `Vec`'s bounds into
+    // `requires` clauses and nothing could confirm one ever fired: a
+    // panic ends the program, so there was no way to write the test.
+    //
+    // Both lanes, because the compiled one needs a binary per such
+    // test (a panic ends the process, so it cannot share a driver).
+    let pkg = scratch("panics");
+    write(
+        &pkg,
+        "main.t",
+        r#"
+test "index past the end panics" panics {
+    val v: Vec<u64> = Vec::new()
+    val x: u64 = v.get(0u64)
+}
+test "and the message names the contract" panics "Contract violation" {
+    val v: Vec<u64> = Vec::new()
+    val x: u64 = v.get(0u64)
+}
+test "an ordinary test still runs beside them" {
+    assert_eq(1u64, 1u64)
+}
+fn main() -> u64 { 0u64 }
+"#,
+    );
+    for backend in ["aot", "vm"] {
+        let out = run(
+            &pkg,
+            &["test", pkg.0.to_str().unwrap(), "--backend", backend],
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.contains("3 passed, 0 failed"),
+            "{backend}: stdout: {stdout}\nstderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn a_panics_test_that_returns_is_a_failure() {
+    let pkg = scratch("panics_but_returns");
+    write(
+        &pkg,
+        "main.t",
+        "test \"never panics\" panics { assert_eq(1u64, 1u64) }\nfn main() -> u64 { 0u64 }\n",
+    );
+    for backend in ["aot", "vm"] {
+        let out = run(
+            &pkg,
+            &["test", pkg.0.to_str().unwrap(), "--backend", backend],
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success() && stderr.contains("to panic, but it returned"),
+            "{backend}: stderr: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn the_expected_message_has_to_match() {
+    // "Something died" does not say which contract broke, which is
+    // the whole reason the text can be written down.
+    let pkg = scratch("panics_message");
+    write(
+        &pkg,
+        "main.t",
+        r#"
+test "wrong text" panics "no such text" {
+    val v: Vec<u64> = Vec::new()
+    val x: u64 = v.get(0u64)
+}
+fn main() -> u64 { 0u64 }
+"#,
+    );
+    let out = run(&pkg, &["test", pkg.0.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && stderr.contains("expected a panic containing `no such text`"),
+        "stderr: {stderr}"
+    );
+    // And it prints what did arrive, so the fix is visible. Here
+    // that is the `requires` clause — which is the case T4 exists
+    // for: VEC-CONTRACTS made `Vec`'s bounds a contract and nothing
+    // could confirm one fires.
+    assert!(
+        stderr.contains("Contract violation") && stderr.contains("`get`"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn a_golden_file_is_recorded_by_bless_and_checked_after() {
+    // TEST-TOOL T5. A format's promise — "no change makes existing
+    // data unreadable" — is not a check until the bytes are written
+    // down.
+    let pkg = scratch("golden");
+    write(
+        &pkg,
+        "main.t",
+        r#"
+test "the format did not change" {
+    var v: Vec<u8> = Vec::with_capacity(4u64)
+    v.push(1u8)
+    v.push(2u8)
+    v.push(3u8)
+    v.push(4u8)
+    val s = v.as_span()
+    match s {
+        Option::Some(bytes) => { testing::assert_golden("tests/golden/one.bin", bytes) }
+        Option::None => { panic("no span") }
+    }
+}
+fn main() -> u64 { 0u64 }
+"#,
+    );
+    std::fs::create_dir_all(pkg.0.join("tests/golden")).unwrap();
+
+    // Missing: a failure that names the remedy. Recording on first
+    // sight would mean a test nobody has looked at goes green.
+    let first = run(&pkg, &["test", pkg.0.to_str().unwrap()]);
+    assert!(!first.status.success());
+    assert!(
+        String::from_utf8_lossy(&first.stderr).contains("run `toy test --bless`"),
+        "stderr: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    let blessed = run(&pkg, &["test", pkg.0.to_str().unwrap(), "--bless"]);
+    assert!(
+        blessed.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&blessed.stderr)
+    );
+    let recorded = pkg.0.join("tests/golden/one.bin");
+    assert_eq!(std::fs::read(&recorded).unwrap(), vec![1u8, 2, 3, 4]);
+
+    // Recorded, so it passes; changed, so it fails by offset.
+    assert!(run(&pkg, &["test", pkg.0.to_str().unwrap()]).status.success());
+    std::fs::write(&recorded, [1u8, 2, 99, 4]).unwrap();
+    let changed = run(&pkg, &["test", pkg.0.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&changed.stderr);
+    assert!(
+        !changed.status.success() && stderr.contains("byte 2 differs"),
+        "a golden mismatch must name the offset: {stderr}"
+    );
+}

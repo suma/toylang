@@ -176,9 +176,13 @@ impl<'a> Parser<'a> {
             // everywhere else, so existing code with a `fn test(..)` or
             // a variable named `test` keeps working. Only the exact
             // shape `test <string> {` at top level is a test block.
+            // TEST-TOOL T4: `panics` may sit between the name and the
+            // block, optionally with the message the panic must
+            // contain. Contextual like `test` itself.
             if matches!(self.peek(), Some(Kind::Identifier(s)) if s == "test")
                 && matches!(self.peek_n(1), Some(Kind::String(_)))
-                && matches!(self.peek_n(2), Some(Kind::BraceOpen))
+                && (matches!(self.peek_n(2), Some(Kind::BraceOpen))
+                    || matches!(self.peek_n(2), Some(Kind::Identifier(s)) if s == "panics"))
             {
                 let test_start_pos = self.peek_position_n(0).unwrap().start;
                 let location = self.current_source_location();
@@ -189,6 +193,22 @@ impl<'a> Parser<'a> {
                     _ => unreachable!("peeked above"),
                 };
                 self.next(); // consume the name
+                let expect_panic = if matches!(
+                    self.peek(),
+                    Some(Kind::Identifier(s)) if s == "panics"
+                ) {
+                    self.next(); // consume `panics`
+                    match self.peek() {
+                        Some(Kind::String(msg)) => {
+                            let msg = msg.clone();
+                            self.next();
+                            Some(Some(msg))
+                        }
+                        _ => Some(None),
+                    }
+                } else {
+                    None
+                };
                 let outer_function = self
                     .current_function
                     .replace(format!("test \"{display_name}\""));
@@ -229,6 +249,7 @@ impl<'a> Parser<'a> {
                     function: fn_name,
                     line: location.line,
                     file: None,
+                    expect_panic,
                 });
                 continue;
             }

@@ -59,7 +59,7 @@ impl Display for ParseError {
 # Digits `[start, end)` of `b` as a `u64`, rejecting a non-digit byte
 # and a value that does not fit. The caller has already dealt with any
 # sign, so an empty range here means the input was a bare sign.
-fn digits_to_u64(b: String, start: u64, end: u64) -> Result<u64, ParseError> {
+fn digits_to_u64(b: &String, start: u64, end: u64) -> Result<u64, ParseError> {
     if start >= end {
         return Result::Err(ParseError::Invalid)
     }
@@ -102,7 +102,7 @@ pub fn to_u64(s: str) -> Result<u64, ParseError> {
     if b.get(0u64) == '+' {
         start = 1u64
     }
-    val r: Result<u64, ParseError> = digits_to_u64(b, start, n)
+    val r: Result<u64, ParseError> = digits_to_u64(&b, start, n)
     r
 }
 
@@ -125,7 +125,7 @@ pub fn to_i64(s: str) -> Result<i64, ParseError> {
     } elif first == '+' {
         start = 1u64
     }
-    val magnitude: Result<u64, ParseError> = digits_to_u64(b, start, n)
+    val magnitude: Result<u64, ParseError> = digits_to_u64(&b, start, n)
     match magnitude {
         Result::Ok(m) => {
             if negative {
@@ -150,7 +150,7 @@ pub fn to_i64(s: str) -> Result<i64, ParseError> {
 }
 
 # Whether `s[start..end]` is one or more digits.
-fn all_digits(b: String, start: u64, end: u64) -> bool {
+fn all_digits(b: &String, start: u64, end: u64) -> bool {
     if start >= end {
         return false
     }
@@ -170,7 +170,7 @@ fn all_digits(b: String, start: u64, end: u64) -> bool {
 # so that every backend accepts the same set of strings — a C
 # `strtod` would also take `inf`, `nan`, hex floats and leading
 # whitespace, none of which this language's grammar has.
-fn is_decimal(b: String, n: u64) -> bool {
+fn is_decimal(b: &String, n: u64) -> bool {
     var i: u64 = 0u64
     if n == 0u64 {
         return false
@@ -220,7 +220,7 @@ fn is_decimal(b: String, n: u64) -> bool {
                 cursor = cursor + 1u64
             }
         }
-        if !all_digits(b, cursor, n) {
+        if !all_digits(&b, cursor, n) {
             return false
         }
         cursor = n
@@ -238,7 +238,7 @@ pub fn to_f64(s: str) -> Result<f64, ParseError> {
     if n == 0u64 {
         return Result::Err(ParseError::Empty)
     }
-    if !is_decimal(b, n) {
+    if !is_decimal(&b, n) {
         return Result::Err(ParseError::Invalid)
     }
     val v: f64 = __extern_parse_f64(s)

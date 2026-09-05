@@ -459,6 +459,26 @@ impl String {
 # `Clone` for a String: `to_string` already builds an independent
 # buffer, so this is that under the name a `<T: Clone>` bound asks
 # for.
+# DROP-GLUE: the buffer dies with the binding, exactly as
+# `impl Drop for Vec<T>` does -- a `String` is the same three fields
+# over the same allocation, and it went without this until 2026-09-05,
+# so every `String` a program built leaked its bytes.
+#
+# There is no element glue to run first: the contents are `u8`, which
+# own nothing. `data` is null for a `String::new()` that never grew,
+# and freeing null is a no-op.
+#
+# The cost of owning the buffer is that a `String` now **moves**
+# (`[E0014]`) when it is put somewhere that outlives the scope -- into
+# a container, a struct field, or a by-value argument. That is the same
+# bargain `Vec<T>` makes, and it is what makes the free correct rather
+# than a double free.
+impl Drop for String {
+    fn drop(&mut self) {
+        __builtin_heap_free(self.data)
+    }
+}
+
 impl Clone for String {
     unsafe fn clone(&self) -> Self {
         # Bound rather than returned directly: the compiled lanes

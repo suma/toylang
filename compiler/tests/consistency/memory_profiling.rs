@@ -104,6 +104,65 @@ fn string_literals_no_longer_allocate_differently_across_backends() {
     );
 }
 
+/// STRING-NO-DROP: a `String` frees its buffer when it dies.
+///
+/// `Vec<T>` owned its allocation from the start; `String` -- the same
+/// three fields over the same buffer -- did not, so every string a
+/// program built leaked. The number this pins is `live_bytes 0`: the
+/// program allocates (`from_str`, then a `to_ascii_upper` that builds
+/// a second buffer) and ends owing nothing.
+#[test]
+fn a_string_frees_its_buffer_when_it_dies() {
+    let report = memory_profile_report(
+        r#"
+        fn main() -> u64 {
+            var s: String = String::from_str("hello")
+            s.push_str(" world")
+            val t: String = s.to_ascii_upper()
+            t.len()
+        }
+        "#,
+        "prof_string_drop",
+    );
+    if report.is_empty() {
+        return; // e2e skipped
+    }
+    assert!(
+        report.contains("live_bytes        0"),
+        "a String should free its buffer; report was:\n{report}"
+    );
+}
+
+/// The same for the element type of a container.
+///
+/// `Vec::sort` used to bind each element to a local through `get`,
+/// which carries drop glue -- so sorting a `Vec<String>` freed the
+/// buffers the vector still held, and the next read of one hit a dead
+/// allocation. It addresses the buffer directly now, the way
+/// `contains` / `index_of` always did. This pins that a sorted vector
+/// of strings still reads back, on every lane.
+#[test]
+fn sorting_a_vec_of_strings_does_not_free_what_it_sorts() {
+    memory_profiles_agree(
+        r#"
+        fn main() -> u64 {
+            var v: Vec<String> = Vec::new()
+            val a: String = String::from_str("pear")
+            v.push(a)
+            val b: String = String::from_str("apple")
+            v.push(b)
+            val c: String = String::from_str("fig")
+            v.push(c)
+            v.sort()
+            val first: String = v.get(0u64)
+            val want: String = String::from_str("apple")
+            if first == want { 0u64 } else { 1u64 }
+        }
+        "#,
+        "prof_string_vec_sort",
+    );
+}
+
 // --- MEMORY_PROFILING M2: attribution -------------------------------
 //
 // The site identifier *is* the allocation's source position, packed as

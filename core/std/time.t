@@ -281,17 +281,17 @@ pub unsafe fn parse_iso8601(s: str) -> Result<DateTime, TimeError> {
     if n < 10u64 { return Result::Err(TimeError::Invalid) }
     val b: String = String::from_str(s)
 
-    val year: i64 = match iso_digits(b, 0u64, 4u64) {
+    val year: i64 = match iso_digits(&b, 0u64, 4u64) {
         Option::Some(v) => v as i64,
         Option::None => { return Result::Err(TimeError::Invalid) }
     }
     if b.get(4u64) != '-' { return Result::Err(TimeError::Invalid) }
-    val month: u32 = match iso_digits(b, 5u64, 2u64) {
+    val month: u32 = match iso_digits(&b, 5u64, 2u64) {
         Option::Some(v) => v as u32,
         Option::None => { return Result::Err(TimeError::Invalid) }
     }
     if b.get(7u64) != '-' { return Result::Err(TimeError::Invalid) }
-    val day: u32 = match iso_digits(b, 8u64, 2u64) {
+    val day: u32 = match iso_digits(&b, 8u64, 2u64) {
         Option::Some(v) => v as u32,
         Option::None => { return Result::Err(TimeError::Invalid) }
     }
@@ -306,17 +306,17 @@ pub unsafe fn parse_iso8601(s: str) -> Result<DateTime, TimeError> {
     if i < n {
         if b.get(i) != 'T' { return Result::Err(TimeError::Invalid) }
         if i + 9u64 > n { return Result::Err(TimeError::Invalid) }
-        hour = match iso_digits(b, i + 1u64, 2u64) {
+        hour = match iso_digits(&b, i + 1u64, 2u64) {
             Option::Some(v) => v as u32,
             Option::None => { return Result::Err(TimeError::Invalid) }
         }
         if b.get(i + 3u64) != ':' { return Result::Err(TimeError::Invalid) }
-        minute = match iso_digits(b, i + 4u64, 2u64) {
+        minute = match iso_digits(&b, i + 4u64, 2u64) {
             Option::Some(v) => v as u32,
             Option::None => { return Result::Err(TimeError::Invalid) }
         }
         if b.get(i + 6u64) != ':' { return Result::Err(TimeError::Invalid) }
-        second = match iso_digits(b, i + 7u64, 2u64) {
+        second = match iso_digits(&b, i + 7u64, 2u64) {
             Option::Some(v) => v as u32,
             Option::None => { return Result::Err(TimeError::Invalid) }
         }
@@ -350,12 +350,12 @@ pub unsafe fn parse_iso8601(s: str) -> Result<DateTime, TimeError> {
                 i = i + 1u64
             } elif z == '+' || z == '-' {
                 if i + 6u64 > n { return Result::Err(TimeError::Invalid) }
-                val oh: u64 = match iso_digits(b, i + 1u64, 2u64) {
+                val oh: u64 = match iso_digits(&b, i + 1u64, 2u64) {
                     Option::Some(v) => v,
                     Option::None => { return Result::Err(TimeError::Invalid) }
                 }
                 if b.get(i + 3u64) != ':' { return Result::Err(TimeError::Invalid) }
-                val om: u64 = match iso_digits(b, i + 4u64, 2u64) {
+                val om: u64 = match iso_digits(&b, i + 4u64, 2u64) {
                     Option::Some(v) => v,
                     Option::None => { return Result::Err(TimeError::Invalid) }
                 }
@@ -385,7 +385,7 @@ pub unsafe fn parse_iso8601(s: str) -> Result<DateTime, TimeError> {
 # `count` decimal digits starting at `at`, or `None` if any of them is
 # not a digit. Fixed-width on purpose: the grammar has no variable
 # fields.
-unsafe fn iso_digits(b: String, at: u64, count: u64) -> Option<u64> {
+unsafe fn iso_digits(b: &String, at: u64, count: u64) -> Option<u64> {
     if at + count > b.size() { return Option::None }
     var acc: u64 = 0u64
     var i: u64 = 0u64

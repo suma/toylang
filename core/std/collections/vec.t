@@ -433,17 +433,21 @@ impl<T> Vec<T> {
     unsafe fn sort_by(&mut self, less: fn (T, T) -> bool) {
         var i: u64 = 1u64
         while i < self.len {
-            val key: T = self.get(i)
+            # Raw reads and writes rather than `get` / `set`, for the
+            # reason spelled out on `sort` below: a local bound from a
+            # compound-returning method call carries drop glue, and an
+            # element copy is an alias rather than an owned value.
+            val key: T = __builtin_ptr_read::<T>(self.data, i * self.elem_size)
             var j: u64 = i
             while j > 0u64 {
-                val prev: T = self.get(j - 1u64)
+                val prev: T = __builtin_ptr_read::<T>(self.data, (j - 1u64) * self.elem_size)
                 if !less(key, prev) {
                     break
                 }
-                self.set(j, prev)
+                __builtin_ptr_write(self.data, j * self.elem_size, prev)
                 j = j - 1u64
             }
-            self.set(j, key)
+            __builtin_ptr_write(self.data, j * self.elem_size, key)
             i = i + 1u64
         }
     }
@@ -491,28 +495,38 @@ impl<T: Default> Vec<T> {
 
 impl<T: Ord> Vec<T> {
     # Sort in place, ascending. Stable: equal elements keep their
-    # relative order. Elements are read as copies out of the buffer
-    # (like `get`), and `lt` takes `self: Self` which aliases rather
-    # than moves, so `key` stays usable across the inner loop.
+    # relative order. Elements are read as copies out of the buffer,
+    # and `lt` takes `self: Self` which aliases rather than moves, so
+    # `key` stays usable across the inner loop.
     #
-    # Each `self.get(...)` is bound to a local before use — a
+    # **The buffer is addressed directly rather than through `get` /
+    # `set`, and that is load-bearing for an element type that owns
+    # something** (STRING-NO-DROP). A local bound from a
+    # compound-returning *method call* carries drop glue, so
+    # `val key: T = self.get(i)` on a `Vec<String>` frees the very
+    # buffer the element still holds -- the copy aliases it, and the
+    # glue cannot tell an alias from an owned value. A local bound
+    # from `__builtin_ptr_read` does not, which is why `contains` /
+    # `index_of` were already written this way.
+    #
+    # The value cannot go straight into the argument either: a
     # compound-returning method call directly in an expression
-    # position (a `set` argument, a `lt` argument) cannot be
-    # AOT-lowered for compound `T` (e.g. `Vec<String>`).
-    fn sort(&mut self) {
+    # position (a `set` argument, a `lt` argument) does not AOT-lower
+    # for compound `T`. Hence a `val` and a raw write.
+    unsafe fn sort(&mut self) {
         var i: u64 = 1u64
         while i < self.len {
-            val key: T = self.get(i)
+            val key: T = __builtin_ptr_read::<T>(self.data, i * self.elem_size)
             var j: u64 = i
             while j > 0u64 {
-                val prev: T = self.get(j - 1u64)
+                val prev: T = __builtin_ptr_read::<T>(self.data, (j - 1u64) * self.elem_size)
                 if !key.lt(prev) {
                     break
                 }
-                self.set(j, prev)
+                __builtin_ptr_write(self.data, j * self.elem_size, prev)
                 j = j - 1u64
             }
-            self.set(j, key)
+            __builtin_ptr_write(self.data, j * self.elem_size, key)
             i = i + 1u64
         }
     }

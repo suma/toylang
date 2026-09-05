@@ -475,9 +475,29 @@ impl<'a> Vm<'a> {
         }
     }
 
+    /// An SSA value this frame defined.
+    ///
+    /// The panic names *where*, which is the whole of its value: this
+    /// fires when lowering emitted a use with no reaching definition,
+    /// or when an instruction that should have produced a value did
+    /// not (a `PtrRead` of a freed allocation is the case that
+    /// happens in practice). "value not defined" on its own sends the
+    /// reader to bisect the program; with the function and the
+    /// instruction it is one look at `--emit ir`.
     fn read_value(&self, id: ValueId) -> RawSlot {
         let frame = self.frames.last().expect("no active frame");
-        *frame.values.get(&id).expect("value not defined")
+        *frame.values.get(&id).unwrap_or_else(|| {
+            let func = self
+                .module
+                .functions
+                .get(frame.func_id.0 as usize)
+                .map(|f| f.export_name.as_str())
+                .unwrap_or("<unknown>");
+            panic!(
+                "value not defined: {id:?} in {func} at {:?} instruction {}",
+                frame.block, frame.pc
+            )
+        })
     }
 
     /// Static type of a defined SSA value, if recorded.

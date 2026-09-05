@@ -129,6 +129,11 @@ pub fn analyze(
                 "Poller",
                 "UdpSocket",
                 "File",
+                // STRING-NO-DROP: `String` owns its buffer as of
+                // 2026-09-05. It is the most widely used type in the
+                // list -- without it here, every program that touches
+                // a string drops to the tree-walker.
+                "String",
             ]
                 .iter()
                 .filter_map(|name| interner.get(name))

@@ -10,6 +10,35 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **STRING-NO-DROP — `String` が自分のバッファを解放するようにした** —
+  `Vec<T>` は最初から持っていた `impl Drop` を `String` は持たず、
+  **プログラムが作った `String` は 1 つ残らず漏れていた**
+  (`--profile=mem` の `leaks` に `from_str` / `push` が並ぶ)。
+  本体は 4 行。影響範囲を測れという注記どおり測った結果:
+  - **`Vec::sort` / `sort_by` が use-after-free になった**。
+    `val key: T = self.get(i)` のように **compound を返す method 呼び出し**
+    から束縛したローカルには drop glue が付くが、その値は要素の
+    **別名**であって所有ではない。ソートが自分の要素を解放し、次の読みが
+    死んだ確保に当たって IR VM が `value not defined` で落ちる。
+    `contains` / `index_of` が元からそうしていたように
+    `__builtin_ptr_read::<T>` で直接読む形に直した (これには glue が
+    付かない)。**`Vec<T>` の他の method は元から安全**
+    (`contains` / `index_of` / `clone` / iterator は temporary か
+    ptr_read 経由)
+  - JIT の `impl Drop` allowlist に `String` を足す必要があった。
+    `File` と同じ穴で、忘れると**文字列に触る全プログラムが
+    tree-walker に落ちる**
+  - `parse.t` / `time.t` のヘルパが `String` を値で取っていたのを
+    `&String` に変えた (値渡しは move になるので、同じ束縛を 2 回
+    渡せなくなる)
+  - **残る `Ord::lt` の形**: `fn lt(self: Self, other: Self)` は
+    値渡しだが alias なので move にならない。`&self` にすべきかは
+    RUNTIME_LIBRARY「関数粒度の空白」B の `Ordering` 論点と一緒に決める
+- **IR VM の `value not defined` が場所を言うようになった** —
+  関数名・ブロック・命令位置を出す。上の use-after-free を切り分けるのに
+  丸ごと 1 往復かかったので。`PtrRead` が死んだ確保に当たると
+  値を作らないため、この panic は**実際には解放済みメモリの読み**を
+  意味することが多い
 - **STDLIB-FS-HANDLE — `fs::File` (開いたファイル) を入れた** —
   `fs.t` は全部パス指定の全体操作で、ハンドルを持つ型が 1 つも
   無かった。`poc/logsearch` が「残る前提のうち最大 (R2)」と書いた項目。
@@ -1713,13 +1742,6 @@
   `field access for type Unknown`。2026-09-03 の STDLIB-TIME で
   `bench(iters, f)` を書こうとして踏み、**`bench` を入れずに
   `Stopwatch` だけにした**
-- **STRING-NO-DROP: `String` に `impl Drop` が無い** ★ — `Vec<T>` は
-  持っているのに `String` は持たないので、**すべての `String` が
-  バッファを漏らす** (`--profile=mem` の `leaks` に `string.t` の
-  `from_str` / `push` が並ぶ)。2026-09-03 に `Clone` の leak 検査で
-  気づいた。足すのは 4 行だが、`Drop` を持つ型は container に入れると
-  **move する** (`[E0014]`) ので、既存の `String` を受け渡すコードが
-  move 検査に引っかかりうる。影響範囲を測ってから
 - **並行性 (CONCURRENCY)** は分野としては stdlib だが、本体が move /
   Drop モデルとの接合なので「検討中の機能」節に置いてある (★★★)。
   RUNTIME_LIBRARY P3 も「設計文書を別に取ってから着手」と同じ判断
@@ -2101,6 +2123,17 @@
   決定的である必要がある — `compiler/tests/reproducible_build.rs` が pin)。
 
 ### 既知の不具合
+
+- **compound を返す method 呼び出しから束縛したローカルに drop glue が付く**
+  ★★ — `val e: T = v.get(i)` の `e` は要素の**別名**なのに所有として
+  扱われ、スコープを抜けるときにコンテナの持つバッファを解放する。
+  `__builtin_ptr_read::<T>` から束縛すれば付かないので、stdlib の
+  generic なコンテナ実装はそちらで書いている (`Vec::contains` /
+  `sort` / `sort_by`)。**回避策は分かっているが、規律であって検査では
+  ない** — ユーザが `Vec<String>` に対して同じ形を書けば同じことが
+  起きる。根本は「別名を返す API と所有を返す API を型で区別できない」
+  ことなので、`Vec::get` が `&T` を返せるようになる (借用の一般化) か、
+  drop flag が入るまで残る。2026-09-05 の STRING-NO-DROP で踏んだ。
 
 **直った項目をこの節に段落で残さないこと** — 常時読まれるファイルが
 changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 バックエンドで

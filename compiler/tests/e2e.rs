@@ -76,7 +76,7 @@ fn try_compile_and_run(
     let exe_path = unique_path(stem);
     let mut options = CompilerOptions::new(src_path.clone());
     options.output = Some(exe_path.clone());
-    options.core_modules_dir = core_dir;
+    options.core_modules_dirs = core_dir.into_iter().collect();
     options.link_cache_dir = Some(link_cache_dir_for_tests());
     let result = if compile_file(&options).is_ok() {
         let status = Command::new(&exe_path)

@@ -71,7 +71,7 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, bool, ProfileMode), S
     let mut emit = EmitKind::Executable;
     let mut verbose = false;
     let mut release = false;
-    let mut core_modules_dir: Option<PathBuf> = None;
+    let mut core_modules_dirs: Vec<PathBuf> = Vec::new();
     let mut diagnostics_json = false;
     let mut i = 0;
     while i < args.len() {
@@ -117,7 +117,7 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, bool, ProfileMode), S
                 let v = args
                     .get(i)
                     .ok_or_else(|| "--core-modules needs a path argument".to_string())?;
-                core_modules_dir = Some(PathBuf::from(v));
+                core_modules_dirs.push(PathBuf::from(v));
             }
             s if s.starts_with("--diagnostics=") => {
                 match &s["--diagnostics=".len()..] {
@@ -127,7 +127,7 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, bool, ProfileMode), S
                 }
             }
             s if s.starts_with("--core-modules=") => {
-                core_modules_dir = Some(PathBuf::from(&s["--core-modules=".len()..]));
+                core_modules_dirs.push(PathBuf::from(&s["--core-modules=".len()..]));
             }
             // A bare `-` is the input, not a flag (D6: read stdin).
             s if s.starts_with('-') && s != "-" => {
@@ -148,7 +148,7 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, bool, ProfileMode), S
     options.emit = emit;
     options.verbose = verbose;
     options.release = release;
-    options.core_modules_dir = core_modules_dir;
+    options.core_modules_dirs = core_modules_dirs;
     options.diagnostics_json = diagnostics_json;
     // Asking for a shape without asking for the report is a typo; a
     // silently-ignored flag would leave the user waiting for JSON.

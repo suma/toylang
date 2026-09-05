@@ -99,14 +99,21 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
     // bounds, and contract validation all run before codegen sees the AST.
     // Forwards the optional core-modules directory so the AOT build path
     // sees the same auto-loaded modules the interpreter does (resolution
-    // priority: `options.core_modules_dir` > `TOYLANG_CORE_MODULES` env
-    // var > exe-relative search; see `resolve_core_modules_dir`).
-    let core_modules_dir = resolve_core_modules_dir(options.core_modules_dir.clone());
+    // priority: `options.core_modules_dirs` > `TOYLANG_CORE_MODULES`
+    // env var > exe-relative search; see `resolve_core_modules_dirs`).
+    let core_modules_dirs = resolve_core_modules_dirs(options.core_modules_dirs.clone());
     if options.verbose {
-        if let Some(d) = &core_modules_dir {
-            eprintln!("core modules: {}", d.display());
+        if core_modules_dirs.is_empty() {
+            eprintln!("module roots: <none> (auto-load disabled)");
         } else {
-            eprintln!("core modules: <none> (auto-load disabled)");
+            eprintln!(
+                "module roots: {}",
+                core_modules_dirs
+                    .iter()
+                    .map(|d| d.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
         }
     }
     let diagnostics_json = options.diagnostics_json;
@@ -115,7 +122,7 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
         session.string_interner_mut(),
         Some(&source),
         Some(options.input.to_string_lossy().as_ref()),
-        core_modules_dir.as_deref(),
+        &core_modules_dirs,
     )
     .map_err(|diagnostics| {
         if diagnostics_json {
@@ -244,7 +251,9 @@ pub fn compile_checked_program(
 /// the source repo behaves identically across the AOT compiler and
 /// the interpreter:
 ///
-/// 1. CLI / API caller override (`options.core_modules_dir`).
+/// 1. CLI / API caller override (`options.core_modules_dirs`), in the
+///    order given. BUILD-TOOL B0: a later root wins a module path an
+///    earlier one also defines.
 /// 2. `TOYLANG_CORE_MODULES` env var. Empty value opts out.
 /// 3. Executable-relative probe — `<exe>/modules/`,
 ///    `<exe>/../share/toylang/modules/`, `<exe>/../../interpreter/modules/`
@@ -253,20 +262,24 @@ pub fn compile_checked_program(
 ///
 /// Returns `None` when nothing resolves; auto-loading then becomes a
 /// no-op.
-pub fn resolve_core_modules_dir(
-    cli_override: Option<std::path::PathBuf>,
-) -> Option<std::path::PathBuf> {
-    if let Some(p) = cli_override {
-        return Some(p);
+pub fn resolve_core_modules_dirs(
+    cli_roots: Vec<std::path::PathBuf>,
+) -> Vec<std::path::PathBuf> {
+    if !cli_roots.is_empty() {
+        return cli_roots;
     }
     if let Some(env_val) = std::env::var_os("TOYLANG_CORE_MODULES") {
         if env_val.is_empty() {
-            return None;
+            return Vec::new();
         }
-        return Some(std::path::PathBuf::from(env_val));
+        return vec![std::path::PathBuf::from(env_val)];
     }
-    let exe = std::env::current_exe().ok()?;
-    let exe_dir = exe.parent()?;
+    let Ok(exe) = std::env::current_exe() else {
+        return Vec::new();
+    };
+    let Some(exe_dir) = exe.parent() else {
+        return Vec::new();
+    };
     // Default search candidates. The third entry is the dev-tree
     // fallback: when the binary is `target/debug/compiler`,
     // `exe_dir/../../core` resolves to `<repo>/core/`. The first two
@@ -278,10 +291,10 @@ pub fn resolve_core_modules_dir(
     ];
     for cand in candidates {
         if cand.is_dir() {
-            return Some(cand);
+            return vec![cand];
         }
     }
-    None
+    Vec::new()
 }
 
 fn default_object_path(input: &Path) -> std::path::PathBuf {

@@ -39,12 +39,17 @@ pub struct CompilerOptions {
     /// when the contract overhead matters and the predicates have been
     /// validated in a checked build.
     pub release: bool,
-    /// Override for the core-modules directory. When `None`, the
-    /// driver consults `TOYLANG_CORE_MODULES` and then falls back to
-    /// an executable-relative search (see
-    /// `compiler::resolve_core_modules_dir`). Set explicitly via the
-    /// `--core-modules <DIR>` CLI flag or by direct API consumers.
-    pub core_modules_dir: Option<PathBuf>,
+    /// Override for the module roots. When empty, the driver consults
+    /// `TOYLANG_CORE_MODULES` and then falls back to an
+    /// executable-relative search (see
+    /// `compiler::resolve_core_modules_dirs`). Set explicitly by
+    /// repeating the `--core-modules <DIR>` CLI flag, or by direct API
+    /// consumers.
+    ///
+    /// BUILD-TOOL B0: roots are searched in order and **a later one
+    /// wins** a module path an earlier one also defines, so a
+    /// package's own `src/` can follow the stdlib.
+    pub core_modules_dirs: Vec<PathBuf>,
     /// LLM-LOOP P3: emit type-check diagnostics as JSON on stderr
     /// instead of the rendered text form.
     pub diagnostics_json: bool,
@@ -69,7 +74,7 @@ impl CompilerOptions {
             emit: EmitKind::Executable,
             verbose: false,
             release: false,
-            core_modules_dir: None,
+            core_modules_dirs: Vec::new(),
             diagnostics_json: false,
             link_cache_dir: None,
         }

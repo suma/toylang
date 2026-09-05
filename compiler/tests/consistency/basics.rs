@@ -331,7 +331,7 @@ fn u64_underflow_traps_on_every_backend() {
     let core = core_modules_dir();
 
     let mut interp_opts = RunOptions::default();
-    interp_opts.core_modules_dir = Some(core.as_path());
+    interp_opts.core_modules_dirs = std::slice::from_ref(&core);
     assert!(
         interpreter::run_source(src, "underflow.t", &interp_opts).is_err(),
         "interpreter should refuse the subtraction"
@@ -369,7 +369,7 @@ fn integer_division_by_zero_traps_on_every_backend() {
         );
         let core = core_modules_dir();
         let mut interp_opts = RunOptions::default();
-        interp_opts.core_modules_dir = Some(core.as_path());
+        interp_opts.core_modules_dirs = std::slice::from_ref(&core);
         assert!(
             interpreter::run_source(&src, "div_by_zero.t", &interp_opts).is_err(),
             "the interpreter should refuse `{op}` by zero"
@@ -427,7 +427,7 @@ fn signed_division_overflow_traps_on_every_backend() {
         );
         let core = core_modules_dir();
         let mut interp_opts = RunOptions::default();
-        interp_opts.core_modules_dir = Some(core.as_path());
+        interp_opts.core_modules_dirs = std::slice::from_ref(&core);
         assert!(
             interpreter::run_source(&src, "div_overflow.t", &interp_opts).is_err(),
             "the interpreter should refuse `MIN {op} -1`"
@@ -459,7 +459,7 @@ fn runtime_index_out_of_bounds_traps_on_every_backend() {
     "#;
     let core = core_modules_dir();
     let mut interp_opts = RunOptions::default();
-    interp_opts.core_modules_dir = Some(core.as_path());
+    interp_opts.core_modules_dirs = std::slice::from_ref(&core);
     assert!(
         interpreter::run_source(src, "index_oob.t", &interp_opts).is_err(),
         "the interpreter should refuse the out-of-bounds read"

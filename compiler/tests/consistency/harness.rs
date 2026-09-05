@@ -52,7 +52,7 @@ pub(super) fn needs_core(source: &str) -> bool {
                 interner,
                 Some(source),
                 Some("test.t"),
-                None,
+                &[],
             )
             .is_err()
         }
@@ -118,14 +118,14 @@ pub(super) fn interpreter_value(source: &str) -> u64 {
     // references), and skipping the type-check pass over `core/std/*.t`
     // shaves a measurable amount off every such test. Both outcomes of
     // the lite attempt are memoized, so the fallback never re-runs it.
-    if let Some(v) = interpreter_value_with_core(source, None) {
+    if let Some(v) = interpreter_value_with_core(source, Vec::new()) {
         return v;
     }
-    interpreter_value_with_core(source, Some(core_modules_dir()))
+    interpreter_value_with_core(source, vec![core_modules_dir()])
         .expect("interpreter type-check / execute (with core)")
 }
 
-pub(super) fn interpreter_value_with_core(source: &str, core_dir: Option<PathBuf>) -> Option<u64> {
+pub(super) fn interpreter_value_with_core(source: &str, core_dir: Vec<PathBuf>) -> Option<u64> {
     ast_lanes(source, core_dir).map(|(value, _ir_vm)| value)
 }
 
@@ -148,8 +148,8 @@ pub(super) fn interpreter_value_with_core(source: &str, core_dir: Option<PathBuf
 /// Both outcomes are memoized. Failures used to return early without
 /// recording anything, so a source that cannot run in this
 /// configuration was re-parsed and re-type-checked on every ask.
-pub(super) fn ast_lanes(source: &str, core_dir: Option<PathBuf>) -> Option<(u64, Option<i64>)> {
-    let key = (source.to_string(), core_dir.is_some());
+pub(super) fn ast_lanes(source: &str, core_dir: Vec<PathBuf>) -> Option<(u64, Option<i64>)> {
+    let key = (source.to_string(), !core_dir.is_empty());
     {
         let cache = AST_LANES_CACHE.lock().unwrap();
         if let Some(cached) = cache.get(&key) {
@@ -165,7 +165,7 @@ pub(super) fn ast_lanes(source: &str, core_dir: Option<PathBuf>) -> Option<(u64,
             interner,
             Some(source),
             Some("test.t"),
-            core_dir.as_deref(),
+            &core_dir,
         )
         .ok()?;
 
@@ -242,7 +242,7 @@ pub(super) struct CheckedProgram<'a> {
 pub(super) fn checked_program<'a>(
     source: &str,
     parser: &'a mut frontend::ParserWithInterner,
-    core_dir: Option<&std::path::Path>,
+    core_dir: &[PathBuf],
 ) -> Option<CheckedProgram<'a>> {
     checked_program_named(source, parser, core_dir, "test.t")
 }
@@ -256,7 +256,7 @@ pub(super) fn checked_program<'a>(
 pub(super) fn checked_program_named<'a>(
     source: &str,
     parser: &'a mut frontend::ParserWithInterner,
-    core_dir: Option<&std::path::Path>,
+    core_dir: &[PathBuf],
     file_name: &str,
 ) -> Option<CheckedProgram<'a>> {
     let mut program = parser.parse_program().ok()?;
@@ -349,7 +349,7 @@ pub(super) fn checked_compiler_run(checked: &CheckedProgram, stem: &str) -> (i32
     let exe_path = unique_path(stem);
     let mut options = CompilerOptions::new(PathBuf::from("<checked>"));
     options.output = Some(exe_path.clone());
-    options.core_modules_dir = Some(core_modules_dir());
+    options.core_modules_dirs = vec![core_modules_dir()];
     options.link_cache_dir = Some(link_cache_dir_for_tests());
     compiler::compile_checked_program(
         &checked.program,
@@ -429,10 +429,10 @@ pub(super) fn jit_exit_code(source: &str, _stem: &str, with_core: bool) -> i32 {
             return *cached;
         }
     }
-    let core_dir = if with_core { Some(core_modules_dir()) } else { None };
+    let core_dir: Vec<PathBuf> = if with_core { vec![core_modules_dir()] } else { Vec::new() };
     let mut options = RunOptions::default();
     options.jit = true;
-    options.core_modules_dir = core_dir.as_deref();
+    options.core_modules_dirs = &core_dir;
     let result = match interpreter::run_source(source, "test.t", &options) {
         Ok(RunOutcome { exit_code: Some(code) }) => code & 0xff,
         Ok(RunOutcome { exit_code: None }) => 0,
@@ -461,7 +461,7 @@ pub(super) fn try_compiler_exit_code(source: &str, stem: &str, with_core: bool) 
     let exe_path = unique_path(stem);
     let mut options = CompilerOptions::new(src_path.clone());
     options.output = Some(exe_path.clone());
-    options.core_modules_dir = if with_core { Some(core_modules_dir()) } else { None };
+    options.core_modules_dirs = if with_core { vec![core_modules_dir()] } else { Vec::new() };
     options.link_cache_dir = Some(link_cache_dir_for_tests());
     let compile_ok = compile_file(&options).is_ok();
     let result = if compile_ok {
@@ -479,7 +479,7 @@ pub(super) fn try_compiler_exit_code(source: &str, stem: &str, with_core: bool) 
 /// program does not type-check, when lowering fails, or when the
 /// lowered IR leaves the Phase 1 scalar subset.
 pub(super) fn ir_vm_exit_code(source: &str, with_core: bool) -> Option<i64> {
-    let core_dir = with_core.then(core_modules_dir);
+    let core_dir: Vec<PathBuf> = if with_core { vec![core_modules_dir()] } else { Vec::new() };
     ast_lanes(source, core_dir).and_then(|(_value, ir_vm)| ir_vm)
 }
 
@@ -510,7 +510,7 @@ pub(super) fn assert_consistent(source: &str, stem: &str) {
     // reaches the lanes that would only throw their work away. Its
     // result — success and failure alike — is memoized, so the
     // canonical path below re-asks for free.
-    if let Some(interp) = interpreter_value_with_core(source, None)
+    if let Some(interp) = interpreter_value_with_core(source, Vec::new())
         && let Some(compiled) = try_compiler_exit_code(source, stem, false)
         && let Ok(jit_prog) = compile_jit_lite(source)
     {
@@ -526,7 +526,7 @@ pub(super) fn assert_consistent(source: &str, stem: &str) {
     }
     let core = core_modules_dir();
     let mut parser = frontend::ParserWithInterner::new(source);
-    let checked = checked_program(source, &mut parser, Some(core.as_path()))
+    let checked = checked_program(source, &mut parser, std::slice::from_ref(&core))
         .expect("interpreter type-check / execute (with core)");
     let interp = checked_interpreter_value(&checked, source);
     let (compiled, _) = checked_compiler_run(&checked, stem);
@@ -566,7 +566,7 @@ pub(super) fn assert_consistent_without_tree_walker(source: &str, stem: &str, wh
     }
     let core = core_modules_dir();
     let mut parser = frontend::ParserWithInterner::new(source);
-    let checked = checked_program(source, &mut parser, Some(core.as_path()))
+    let checked = checked_program(source, &mut parser, std::slice::from_ref(&core))
         .expect("interpreter type-check (with core)");
     let tree_walker = interpreter::execute_program_tree_walking(
         &checked.program,
@@ -603,9 +603,9 @@ pub(super) fn assert_consistent_without_tree_walker(source: &str, stem: &str, wh
 ///
 /// `with_core` — same convention as `jit_exit_code`.
 pub(super) fn interpreter_stdout(source: &str, _stem: &str, with_core: bool) -> String {
-    let core_dir = if with_core { Some(core_modules_dir()) } else { None };
+    let core_dir: Vec<PathBuf> = if with_core { vec![core_modules_dir()] } else { Vec::new() };
     let mut options = RunOptions::default();
-    options.core_modules_dir = core_dir.as_deref();
+    options.core_modules_dirs = &core_dir;
     let (result, captured) = interpreter::output::with_capture(|| {
         interpreter::run_source(source, "test.t", &options)
     });
@@ -625,7 +625,7 @@ pub(super) fn try_compiler_stdout(source: &str, stem: &str, with_core: bool) -> 
     let exe_path = unique_path(stem);
     let mut options = CompilerOptions::new(src_path.clone());
     options.output = Some(exe_path.clone());
-    options.core_modules_dir = if with_core { Some(core_modules_dir()) } else { None };
+    options.core_modules_dirs = if with_core { vec![core_modules_dir()] } else { Vec::new() };
     options.link_cache_dir = Some(link_cache_dir_for_tests());
     let result = if compile_file(&options).is_ok() {
         let out = Command::new(&exe_path).output().expect("spawn binary");
@@ -675,7 +675,7 @@ pub(super) fn assert_stdout_consistent(source: &str, stem: &str) {
         }
     let core = core_modules_dir();
     let mut parser = frontend::ParserWithInterner::new(source);
-    let checked = checked_program(source, &mut parser, Some(core.as_path()))
+    let checked = checked_program(source, &mut parser, std::slice::from_ref(&core))
         .expect("interpreter type-check / execute (with core)");
     let interp = checked_interpreter_stdout(&checked, source);
     let (_, compiled) = checked_compiler_run(&checked, &format!("{stem}_aot"));
@@ -702,7 +702,7 @@ pub(super) fn type_check_errors(source: &str) -> Vec<String> {
         session.string_interner_mut(),
         Some(source),
         Some("test.t"),
-        Some(core_modules_dir().as_path()),
+        std::slice::from_ref(&core_modules_dir()),
     )
     .expect_err("expected a type-check error")
 }
@@ -846,7 +846,7 @@ pub(super) fn interpreter_layout_report(source: &str) -> String {
     interpreter::heap::reset_profile();
     let core = core_modules_dir();
     let mut options = RunOptions::default();
-    options.core_modules_dir = Some(core.as_path());
+    options.core_modules_dirs = std::slice::from_ref(&core);
     interpreter::run_source(source, "test.t", &options).expect("interpreter run");
     interpreter::heap::allocator_layout_report_text(&interpreter::heap::allocator_layouts())
 }
@@ -864,7 +864,7 @@ pub(super) fn compiled_run_output(source: &str, stem: &str) -> Option<(i32, Stri
     let exe_path = unique_path(stem);
     let mut options = CompilerOptions::new(src_path.clone());
     options.output = Some(exe_path.clone());
-    options.core_modules_dir = Some(core_modules_dir());
+    options.core_modules_dirs = vec![core_modules_dir()];
     options.link_cache_dir = Some(link_cache_dir_for_tests());
     let result = if compile_file(&options).is_ok() {
         let out = Command::new(&exe_path).output().expect("spawn binary");
@@ -890,7 +890,7 @@ pub(super) fn compiled_run_output(source: &str, stem: &str) -> Option<(i32, Stri
 pub(super) fn interpreter_streams(source: &str) -> (String, String) {
     let core = core_modules_dir();
     let mut parser = frontend::ParserWithInterner::new(source);
-    let checked = checked_program(source, &mut parser, Some(core.as_path()))
+    let checked = checked_program(source, &mut parser, std::slice::from_ref(&core))
         .expect("interpreter type-check (with core)");
     let (result, out, err) = interpreter::output::with_stdout_stderr_capture(|| {
         interpreter::execute_program_tree_walking(
@@ -932,7 +932,7 @@ pub(super) fn compiled_run_streams_env(
     let exe_path = unique_path(stem);
     let mut options = CompilerOptions::new(src_path.clone());
     options.output = Some(exe_path.clone());
-    options.core_modules_dir = Some(core_modules_dir());
+    options.core_modules_dirs = vec![core_modules_dir()];
     options.link_cache_dir = Some(link_cache_dir_for_tests());
     let result = if compile_file(&options).is_ok() {
         let mut cmd = Command::new(&exe_path);
@@ -975,7 +975,7 @@ pub(super) fn lowered_ir_with(source: &str, release: bool) -> String {
         interner,
         Some(source),
         Some("test.t"),
-        needs_core(source).then_some(core.as_path()),
+        if needs_core(source) { std::slice::from_ref(&core) } else { &[] },
     )
     .expect("type check");
     let contract_msgs = compiler_lower::ContractMessages::intern(interner);
@@ -1049,7 +1049,7 @@ pub(super) fn assert_jit_compiled_and_matches(source: &str, stem: &str) {
     let core = core_modules_dir();
     let mut options = RunOptions::default();
     options.jit = true;
-    options.core_modules_dir = Some(core.as_path());
+    options.core_modules_dirs = std::slice::from_ref(&core);
 
     let (result, jit_stdout, stderr) =
         interpreter::output::with_stdout_stderr_capture(|| {
@@ -1171,7 +1171,7 @@ pub(super) fn diagnostic_lanes(source: &str, stem: &str) -> Vec<DiagnosticLane> 
 
     let core = core_modules_dir();
     let mut parser = frontend::ParserWithInterner::new(source);
-    let checked = checked_program_named(source, &mut parser, Some(core.as_path()), &file_name)
+    let checked = checked_program_named(source, &mut parser, std::slice::from_ref(&core), &file_name)
         .unwrap_or_else(|| panic!("type-check failed for the diagnostic lane program `{stem}`"));
 
     let tree_walker = match interpreter::execute_program_tree_walking(
@@ -1284,7 +1284,7 @@ fn aot_diagnostic(checked: &CheckedProgram, stem: &str) -> (&'static str, String
     let exe_path = unique_path(stem);
     let mut options = CompilerOptions::new(PathBuf::from("<checked>"));
     options.output = Some(exe_path.clone());
-    options.core_modules_dir = Some(core_modules_dir());
+    options.core_modules_dirs = vec![core_modules_dir()];
     options.link_cache_dir = Some(link_cache_dir_for_tests());
     if let Err(e) = compiler::compile_checked_program(
         &checked.program,
@@ -1341,7 +1341,7 @@ pub(super) fn run_diagnostic_lane_child() -> bool {
         "interpreter-jit" => {
             let mut options = RunOptions::default();
             options.jit = true;
-            options.core_modules_dir = Some(core.as_path());
+            options.core_modules_dirs = std::slice::from_ref(&core);
             // `run_source` writes the diagnostic to stderr itself, the
             // way the `interpreter` binary does; a JIT-compiled panic
             // never gets that far and exits from `jit_panic` instead.
@@ -1349,7 +1349,7 @@ pub(super) fn run_diagnostic_lane_child() -> bool {
         }
         "compiler-jit" => {
             let mut options = CompilerOptions::new(path);
-            options.core_modules_dir = Some(core);
+            options.core_modules_dirs = vec![core];
             match compiler::compile_to_jit_main_with_options(&source, &options) {
                 Ok(program) => {
                     program.run();
@@ -1456,7 +1456,7 @@ pub(super) fn aot_clif(source: &str) -> String {
         interner,
         Some(source),
         Some("test.t"),
-        needs_core(source).then_some(core.as_path()),
+        if needs_core(source) { std::slice::from_ref(&core) } else { &[] },
     )
     .expect("type check");
     let contract_msgs = compiler_lower::ContractMessages::intern(interner);

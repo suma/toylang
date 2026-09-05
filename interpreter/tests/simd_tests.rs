@@ -23,7 +23,7 @@ fn assert_type_error_message(src: &str, expected_hint: &str) {
         interner,
         Some(src),
         Some("simd.t"),
-        Some(core.as_path()),
+        std::slice::from_ref(&core),
     )
     .expect_err("expected a type error");
     let rendered = format!("{err:?}");

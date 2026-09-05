@@ -74,7 +74,7 @@ fn the_writer_refuses_a_number_json_cannot_spell() {
     "#;
     let mut opts = RunOptions::default();
     let core = core_modules_dir();
-    opts.core_modules_dir = Some(core.as_path());
+    opts.core_modules_dirs = std::slice::from_ref(&core);
     let err = interpreter::run_source(src, "json_nan.t", &opts)
         .expect_err("NaN must not be written");
     assert!(

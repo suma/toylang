@@ -28,7 +28,7 @@ fn diagnose(source: &str) -> Vec<Diagnostic> {
         string_interner,
         Some(source),
         Some("test.t"),
-        Some(core.as_path()),
+        std::slice::from_ref(&core),
     ) {
         Ok(_) => panic!("expected the program to fail type checking:\n{source}"),
         Err(diagnostics) => diagnostics,
@@ -210,7 +210,7 @@ fn diagnose_ok(source: &str) -> bool {
         string_interner,
         Some(source),
         Some("test.t"),
-        Some(core.as_path()),
+        std::slice::from_ref(&core),
     )
     .is_ok()
 }
@@ -347,7 +347,7 @@ fn runtime_json(source: &str) -> serde_json::Value {
     let core = crate::common::core_modules_dir();
     let mut options = interpreter::RunOptions::default();
     options.diagnostics_json = true;
-    options.core_modules_dir = Some(core.as_path());
+    options.core_modules_dirs = std::slice::from_ref(&core);
     let (result, stderr) = interpreter::output::with_stderr_capture(|| {
         interpreter::run_source(source, "test.t", &options)
     });

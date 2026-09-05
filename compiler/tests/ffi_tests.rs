@@ -69,7 +69,7 @@ fn unique_path(stem: &str) -> PathBuf {
 fn interpreter_stdout(source: &str) -> String {
     let core = core_modules_dir();
     let mut options = interpreter::RunOptions::default();
-    options.core_modules_dir = Some(core.as_path());
+    options.core_modules_dirs = std::slice::from_ref(&core);
     let (result, captured) = interpreter::output::with_capture(|| {
         interpreter::run_source(source, "ffi_test.t", &options)
     });
@@ -94,7 +94,7 @@ fn aot_stdout(source: &str, stem: &str) -> String {
     let exe_path = unique_path(stem);
     let mut options = CompilerOptions::new(src_path.clone());
     options.output = Some(exe_path.clone());
-    options.core_modules_dir = Some(core_modules_dir());
+    options.core_modules_dirs = vec![core_modules_dir()];
     compile_file(&options).expect("compile_file");
     let out = Command::new(&exe_path).output().expect("spawn binary");
     let _ = std::fs::remove_file(&src_path);
@@ -245,7 +245,7 @@ fn run_type_check(source: &str) -> Result<(), String> {
         session.string_interner_mut(),
         Some(source),
         None,
-        None,
+        &[],
     )
     .map_err(|errors| errors.join("\n"))?;
     Ok(())

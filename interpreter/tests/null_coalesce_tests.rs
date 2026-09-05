@@ -25,7 +25,7 @@ fn assert_output(src: &str, expected: &str) {
         interner,
         Some(src),
         Some("null_coalesce.t"),
-        Some(core.as_path()),
+        std::slice::from_ref(&core),
     )
     .map_err(|errors| format!("Type check errors: {errors:?}"))
     .expect("type check failed");
@@ -49,7 +49,7 @@ fn assert_type_error(src: &str, expected_hint: &str) {
         interner,
         Some(src),
         Some("null_coalesce.t"),
-        Some(core.as_path()),
+        std::slice::from_ref(&core),
     )
     .expect_err("expected a type error");
     let rendered = format!("{err:?}");

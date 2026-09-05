@@ -58,7 +58,7 @@ fn main() {
             let mut obj_opts = CompilerOptions::new(src_path.clone());
             obj_opts.output = Some(obj_path.clone());
             obj_opts.emit = EmitKind::Object;
-            obj_opts.core_modules_dir = Some(core.clone());
+            obj_opts.core_modules_dirs = vec![core.clone()];
             let t_obj0 = Instant::now();
             compile_file(&obj_opts).expect("compile object");
             let obj_dur = t_obj0.elapsed();
@@ -69,7 +69,7 @@ fn main() {
             // is the link cost (cc invocation, code-signing, etc.).
             let mut exe_opts = CompilerOptions::new(src_path.clone());
             exe_opts.output = Some(exe_path.clone());
-            exe_opts.core_modules_dir = Some(core.clone());
+            exe_opts.core_modules_dirs = vec![core.clone()];
             let t_exe0 = Instant::now();
             compile_file(&exe_opts).expect("compile exec");
             let exe_dur = t_exe0.elapsed();

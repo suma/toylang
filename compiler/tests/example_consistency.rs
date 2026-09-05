@@ -220,7 +220,7 @@ fn check_checked<'a>(
         parser.get_string_interner(),
         Some(source),
         Some(name),
-        Some(core.as_path()),
+        std::slice::from_ref(&core),
     )
     .map_err(|errors| format!("Type check errors: {errors:?}"))?;
     let contract_msgs = compiler::ContractMessages::intern(parser.get_string_interner());
@@ -257,7 +257,7 @@ fn run_compiled(checked: &CheckedProgram, stem: &str) -> Option<Run> {
     let exe_path = unique_path(stem);
     let mut options = CompilerOptions::new(PathBuf::from("<checked>"));
     options.output = Some(exe_path.clone());
-    options.core_modules_dir = Some(core_modules_dir());
+    options.core_modules_dirs = vec![core_modules_dir()];
     options.link_cache_dir = Some(link_cache_dir_for_tests());
     if compiler::compile_checked_program(
         &checked.program,

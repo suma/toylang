@@ -21,7 +21,7 @@ use crate::common::core_modules_dir;
 fn run_with_args(source: &str, args: Vec<&str>) -> Result<i64, String> {
     let core = core_modules_dir();
     let mut options = interpreter::RunOptions::default();
-    options.core_modules_dir = Some(&core);
+    options.core_modules_dirs = std::slice::from_ref(&core);
     options.args = args.into_iter().map(String::from).collect();
     let outcome = interpreter::run_source(source, "io_test.t", &options)?;
     outcome.exit_code.map(|c| c as i64).ok_or_else(|| "no numeric exit code".to_string())

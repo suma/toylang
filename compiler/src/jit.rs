@@ -183,8 +183,8 @@ pub fn compile_to_jit_main_with_options(
         // location: SourceLocation { file: FileId(0), .. } }`).
         .map_err(|e| format!("parse error: {e}"))?;
 
-    let core_modules_dir =
-        crate::resolve_core_modules_dir(options.core_modules_dir.clone());
+    let core_modules_dirs =
+        crate::resolve_core_modules_dirs(options.core_modules_dirs.clone());
     // DEBUG-OBS D3: the input's name, not `None`. It is what every
     // panic site in the compiled code will print, and a JIT run that
     // says `<input>` while the AOT run of the same program names the
@@ -195,7 +195,7 @@ pub fn compile_to_jit_main_with_options(
         session.string_interner_mut(),
         Some(source),
         Some(&display_name),
-        core_modules_dir.as_deref(),
+        &core_modules_dirs,
     )
     .map_err(|errors| format!("type-check failed:\n  {}", errors.join("\n  ")))?;
 

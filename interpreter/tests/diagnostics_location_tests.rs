@@ -428,7 +428,7 @@ fn integrated_positions_name_a_file_the_map_can_resolve() {
         parser.get_string_interner(),
         Some(source),
         Some("test.t"),
-        Some(&crate::common::core_modules_dir()),
+        std::slice::from_ref(&crate::common::core_modules_dir()),
     )
     .expect("type check");
 

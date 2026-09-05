@@ -58,7 +58,7 @@ fn allocation_contract_violation_stops_on_every_backend() {
     let core = core_modules_dir();
 
     let mut interp_opts = RunOptions::default();
-    interp_opts.core_modules_dir = Some(core.as_path());
+    interp_opts.core_modules_dirs = std::slice::from_ref(&core);
     assert!(
         interpreter::run_source(src, "alloc_contract.t", &interp_opts).is_err(),
         "the interpreter should refuse the allocating body"
@@ -265,7 +265,7 @@ fn a_broken_precondition_still_stops_every_backend() {
     "#;
     let core = core_modules_dir();
     let mut interp_opts = RunOptions::default();
-    interp_opts.core_modules_dir = Some(core.as_path());
+    interp_opts.core_modules_dirs = std::slice::from_ref(&core);
     assert!(
         interpreter::run_source(src, "contract_elision_bad.t", &interp_opts).is_err(),
         "the precondition should refuse the call"
@@ -334,7 +334,7 @@ fn a_trait_contract_violation_stops_every_backend() {
     "#;
     let core = core_modules_dir();
     let mut interp_opts = RunOptions::default();
-    interp_opts.core_modules_dir = Some(core.as_path());
+    interp_opts.core_modules_dirs = std::slice::from_ref(&core);
     assert!(
         interpreter::run_source(src, "trait_contract.t", &interp_opts).is_err(),
         "the trait's precondition should refuse the call"
@@ -372,7 +372,7 @@ fn an_allocation_budget_reports_the_same_numbers_on_every_backend() {
 
         let mut interp_opts = RunOptions::default();
         let core = core_modules_dir();
-        interp_opts.core_modules_dir = Some(core.as_path());
+        interp_opts.core_modules_dirs = std::slice::from_ref(&core);
         let interpreted = interpreter::run_source(&src, "budget.t", &interp_opts)
             .expect_err("the budget must be enforced");
         assert!(
@@ -589,7 +589,7 @@ fn a_broken_index_precondition_still_stops_every_backend() {
     "#;
     let core = core_modules_dir();
     let mut interp_opts = RunOptions::default();
-    interp_opts.core_modules_dir = Some(core.as_path());
+    interp_opts.core_modules_dirs = std::slice::from_ref(&core);
     assert!(
         interpreter::run_source(src, "index_contract.t", &interp_opts).is_err(),
         "the precondition should refuse the call"
@@ -683,7 +683,7 @@ fn a_broken_signed_index_precondition_still_stops_every_backend() {
     "#;
     let core = core_modules_dir();
     let mut interp_opts = RunOptions::default();
-    interp_opts.core_modules_dir = Some(core.as_path());
+    interp_opts.core_modules_dirs = std::slice::from_ref(&core);
     assert!(
         interpreter::run_source(src, "signed_index_contract.t", &interp_opts).is_err(),
         "the precondition should refuse the call"
@@ -752,7 +752,7 @@ fn a_broken_minus_one_precondition_still_stops_every_backend() {
     "#;
     let core = core_modules_dir();
     let mut interp_opts = RunOptions::default();
-    interp_opts.core_modules_dir = Some(core.as_path());
+    interp_opts.core_modules_dirs = std::slice::from_ref(&core);
     assert!(
         interpreter::run_source(src, "overflow_contract.t", &interp_opts).is_err(),
         "the precondition should refuse the call"
@@ -900,7 +900,7 @@ fn a_broken_chain_precondition_still_stops_every_backend() {
     "#;
     let core = core_modules_dir();
     let mut interp_opts = RunOptions::default();
-    interp_opts.core_modules_dir = Some(core.as_path());
+    interp_opts.core_modules_dirs = std::slice::from_ref(&core);
     assert!(
         interpreter::run_source(src, "chain_contract.t", &interp_opts).is_err(),
         "the precondition should refuse the call"
@@ -1194,7 +1194,7 @@ fn an_overrunning_loop_still_stops_every_backend() {
     "#;
     let core = core_modules_dir();
     let mut interp_opts = RunOptions::default();
-    interp_opts.core_modules_dir = Some(core.as_path());
+    interp_opts.core_modules_dirs = std::slice::from_ref(&core);
     assert!(
         interpreter::run_source(src, "loop_overrun.t", &interp_opts).is_err(),
         "the index guard should still fire"

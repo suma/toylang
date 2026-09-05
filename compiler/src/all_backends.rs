@@ -221,9 +221,9 @@ fn run_interpreter(
     display_name: &str,
     profile: ProfileMode,
 ) -> Result<Outcome, String> {
-    let core = crate::resolve_core_modules_dir(options.core_modules_dir.clone());
+    let core = crate::resolve_core_modules_dirs(options.core_modules_dirs.clone());
     let mut run_options = interpreter::RunOptions::default();
-    run_options.core_modules_dir = core.as_deref();
+    run_options.core_modules_dirs = &core;
     if profile.enabled() {
         interpreter::heap::reset_profile();
     }

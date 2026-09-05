@@ -751,7 +751,7 @@ fn f64_interpolation_agrees_with_the_interpreter_jit() {
     "#;
     let core = core_modules_dir();
     let mut parser = frontend::ParserWithInterner::new(src);
-    let checked = checked_program(src, &mut parser, Some(core.as_path()))
+    let checked = checked_program(src, &mut parser, std::slice::from_ref(&core))
         .expect("interpreter type-check (with core)");
     let interp = checked_interpreter_stdout(&checked, src);
     let jit = checked_jit_stdout(&checked, src);

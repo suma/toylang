@@ -23,7 +23,7 @@ fn streams_of(source: &str) -> (String, String) {
 fn streams_of_ir_vm(source: &str) -> (String, String) {
     let core = core_modules_dir();
     let mut options = interpreter::RunOptions::default();
-    options.core_modules_dir = Some(&core);
+    options.core_modules_dirs = std::slice::from_ref(&core);
     let (result, out, err) = interpreter::output::with_stdout_stderr_capture(|| {
         interpreter::run_source(source, "streams_test.t", &options)
     });

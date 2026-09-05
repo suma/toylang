@@ -233,7 +233,7 @@ fn a_folded_expression_still_traps_where_the_language_traps() {
         let src = format!("fn main() -> u64 {{ {expr} }}\n");
         let core = core_modules_dir();
         let mut opts = interpreter::RunOptions::default();
-        opts.core_modules_dir = Some(core.as_path());
+        opts.core_modules_dirs = std::slice::from_ref(&core);
         assert!(
             interpreter::run_source(&src, "trap.t", &opts).is_err(),
             "the interpreter should refuse `{expr}`"

@@ -1156,7 +1156,7 @@ pub(crate) fn load_and_integrate_module(
     program: &mut File,
     import: &ImportDecl,
     string_interner: &mut DefaultStringInterner,
-    core_modules_dir: Option<&std::path::Path>,
+    core_modules_dirs: &[std::path::PathBuf],
     shadowed_stdlib_types: std::collections::HashSet<String>,
 ) -> Result<(), String> {
     if import.module_path.is_empty() {
@@ -1173,7 +1173,7 @@ pub(crate) fn load_and_integrate_module(
         })
         .collect::<Result<_, _>>()?;
 
-    let candidates = candidate_module_paths(&segments, core_modules_dir);
+    let candidates = candidate_module_paths(core_modules_dirs, &segments);
     let mut tried: Vec<String> = Vec::with_capacity(candidates.len());
     for path in &candidates {
         tried.push(path.clone());
@@ -1214,6 +1214,51 @@ pub struct DiscoveredCoreModule {
     /// flag), so an absolute path would make one machine's diagnostic
     /// text differ from another's for the same program.
     pub display_path: String,
+    /// Where the file actually is, canonicalised when possible.
+    ///
+    /// BUILD-TOOL B0: the auto-load walker has to recognise the file
+    /// being compiled when it lives inside a module root, or the
+    /// entry is integrated twice and the copy loses its own
+    /// top-level `const`s (`[E0003] Identifier 'X' not found`, the
+    /// ENTRY-IN-MODULE-ROOT hole). Comparing paths is the only way to
+    /// know: the same source arrives once as "the program" and once
+    /// as "a module".
+    pub path: std::path::PathBuf,
+}
+
+/// [`discover_core_modules`] over several roots (BUILD-TOOL B0).
+///
+/// Roots are searched in order and **a later root wins** a module
+/// path an earlier one also defines, so a package's own `src/` can
+/// sit after the stdlib and shadow a module of the same name. That
+/// order is what makes `--core-modules <stdlib> --core-modules
+/// <pkg>/src` mean "the stdlib, plus mine, mine wins" -- the whole
+/// point of the flag being repeatable.
+///
+/// `entry` is the file being compiled. A discovered module at the
+/// same path is dropped rather than integrated a second time.
+pub fn discover_core_modules_multi(
+    dirs: &[std::path::PathBuf],
+    entry: Option<&std::path::Path>,
+) -> Result<Vec<DiscoveredCoreModule>, String> {
+    let entry_key = entry.map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()));
+    // Keyed by module path so a later root replaces an earlier one
+    // rather than both being integrated (two definitions of the same
+    // name is not a shadow, it is a redeclaration).
+    let mut by_segments: std::collections::HashMap<Vec<String>, DiscoveredCoreModule> =
+        std::collections::HashMap::new();
+    for dir in dirs {
+        for m in discover_core_modules(dir)? {
+            if entry_key.as_ref().is_some_and(|e| &m.path == e) {
+                continue;
+            }
+            by_segments.insert(m.segments.clone(), m);
+        }
+    }
+    let mut out: Vec<DiscoveredCoreModule> = by_segments.into_values().collect();
+    // Deterministic order, as the single-root walk promises.
+    out.sort_by(|a, b| a.segments.cmp(&b.segments));
+    Ok(out)
 }
 
 /// Recursively walk a core-modules directory and collect every
@@ -1306,7 +1351,13 @@ fn walk_core_dir(
         }
         display.push('/');
         display.push_str(file_name);
-        out.push(DiscoveredCoreModule { segments, source, display_path: display });
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+        out.push(DiscoveredCoreModule {
+            segments,
+            source,
+            display_path: display,
+            path: canonical,
+        });
     }
     // Subdirectories recurse. Each subdir contributes its name to
     // the segment prefix for the next level. The legacy
@@ -1329,8 +1380,8 @@ fn walk_core_dir(
 /// legacy cwd-relative `modules/...` so existing call sites that
 /// pre-date the `core/` move keep working.
 fn candidate_module_paths(
+    core_modules_dirs: &[std::path::PathBuf],
     segments: &[String],
-    core_modules_dir: Option<&std::path::Path>,
 ) -> Vec<String> {
     let prefix_dirs = &segments[..segments.len() - 1];
     let last = segments.last().expect("non-empty segments");
@@ -1346,8 +1397,11 @@ fn candidate_module_paths(
         parts.join("/")
     };
 
-    let mut out: Vec<String> = Vec::with_capacity(6);
-    if let Some(dir) = core_modules_dir {
+    let mut out: Vec<String> = Vec::with_capacity(3 * core_modules_dirs.len() + 3);
+    // BUILD-TOOL B0: later roots win, so they are tried first here --
+    // `candidate_module_paths` is first-match-wins, which is the same
+    // rule read from the other end.
+    for dir in core_modules_dirs.iter().rev() {
         let root = dir.to_string_lossy().into_owned();
         out.push(format!("{}/{}.t", join_under(&root, &[]), last));
         out.push(format!("{}/{}/{}.t", join_under(&root, &[]), last, last));

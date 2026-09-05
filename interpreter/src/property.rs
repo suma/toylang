@@ -896,7 +896,7 @@ pub fn check_source(
         session.string_interner_mut(),
         Some(source),
         Some(filename),
-        options.core_modules_dir,
+        options.core_modules_dirs,
     ) {
         let rendered: Vec<String> = diagnostics
             .iter()

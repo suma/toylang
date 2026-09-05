@@ -60,7 +60,7 @@ pub fn test_program_with_core(
         string_interner,
         Some(source_code),
         Some("test.t"),
-        core.as_deref(),
+        core.as_slice(),
     )
     .map_err(|errors| format!("Type check errors: {errors:?}"))?;
 

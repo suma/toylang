@@ -31,7 +31,7 @@ fn diagnose(source: &str) -> Vec<Diagnostic> {
         string_interner,
         Some(source),
         Some("test.t"),
-        Some(core.as_path()),
+        std::slice::from_ref(&core),
     ) {
         Ok(_) => panic!("expected the program to fail type checking:\n{source}"),
         Err(diagnostics) => diagnostics,

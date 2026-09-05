@@ -1,9 +1,12 @@
 # BUILD TOOL — `toy` コマンド
 
-> **状態: 提案 (未実装)。** 2026-09-05。
+> **状態: B0〜B1 + B3 landing 済み (2026-09-05)。** B2 (`toy test`) /
+> B4 (衝突の事前検出) / B5 (マニフェスト) は未着手。
+> 実装: [`toy/`](../toy) (`toy/src/main.rs` がサブコマンド、
+> `toy/src/package.rs` が §D2 の規約探索)。
 > 対象: **自分のモジュールを持つプログラム**をビルド・実行する手順。
 > 前提の実装サイト: [`interpreter/src/main.rs`](../interpreter/src/main.rs)
-> (`resolve_core_modules_dir`、優先順位の連鎖)、
+> (`resolve_core_modules_dirs`、優先順位の連鎖)、
 > [`compiler/src/main.rs`](../compiler/src/main.rs) (`--core-modules` /
 > `--emit` / `-o`)、[`compiler/src/driver.rs`](../compiler/src/driver.rs)
 > (`TOY_LINK_CACHE_DIR`)、
@@ -32,8 +35,16 @@ ln -s "$here/src"  "$root/logsearch"  # 自分のモジュールも symlink で
     poc/logsearch/main.t --release -o /tmp/logread
 ```
 
-**symlink 農場を手で作っている。** これは怠慢ではなく、今日の CLI で
-自分のモジュールを持つ唯一の方法である。
+**symlink 農場を手で作っている。** これは怠慢ではなく、
+(B0 以前の) CLI で自分のモジュールを持つ唯一の方法だった。
+
+> **2026-09-05 以降はこう書ける** (B0 / B1):
+>
+> ```sh
+> toy build poc/logsearch --release          # 根は道具が組み立てる
+> compiler --core-modules core --core-modules poc/logsearch/src \
+>     poc/logsearch/main.t --release -o /tmp/logread   # 道具なしでも
+> ```
 
 ### 原因は 1 つ — `--core-modules` は「追加」ではなく「置き換え」
 
@@ -178,14 +189,30 @@ warning: `is_digit` is defined in both src/record.t and <stdlib>/std/json.t
 
 ## 4. フェーズ
 
-| | 内容 | 依存 |
-|---|---|---|
-| **B0** | `--core-modules` を複数指定可能に + エントリの二重取り込みを飛ばす | 処理系。これだけで `refresh.sh` が消える |
-| **B1** | `toy build` / `run` / `check` (規約の探索、根の組み立て、リンクキャッシュ既定) | B0 |
-| **B2** | `toy test` | [`TEST_TOOL.md`](TEST_TOOL.md) の T0〜T2 |
-| **B3** | クエリの通し (`api` / `effects` / `explain`) — 穴 3 の解消 | B1 |
-| **B4** | 衝突の事前検出 (D5) | B1 |
-| **B5** | マニフェストと依存 | **必要になってから** |
+| | 内容 | 依存 | 状態 |
+|---|---|---|---|
+| **B0** | `--core-modules` を複数指定可能に + エントリの二重取り込みを飛ばす | 処理系。これだけで `refresh.sh` が消える | ✅ 2026-09-05 |
+| **B1** | `toy build` / `run` / `check` (規約の探索、根の組み立て、リンクキャッシュ既定) | B0 | ✅ 2026-09-05 |
+| **B2** | `toy test` | [`TEST_TOOL.md`](TEST_TOOL.md) の T0〜T2 | 未着手 |
+| **B3** | クエリの通し (`api` / `effects` / `explain`) — 穴 3 の解消 | B1 | ✅ 2026-09-05 |
+| **B4** | 衝突の事前検出 (D5) | B1 | 未着手 |
+| **B5** | マニフェストと依存 | **必要になってから** | — |
+
+### landing 時に分かったこと
+
+- **穴 3 は道具の外でも直した。** `--effects` はクエリなので main の
+  引数解析より前に走り、`--core-modules` を見ていなかった。argv から
+  root を拾う 15 行で、`interpreter --effects` 単体でも自分のモジュールを
+  持つプログラムに使える
+- **`--backend tree` は受理するが今は `vm` と同じ経路に落ちる。**
+  tree-walker を名指しで選ぶ入口が library API に無い
+  (`execute_program` は適格性で選ぶ)。オラクルが要る場面のために
+  名前は先に取ってあるが、**別物として効いているわけではない**
+- **B0 の代償は 40 ファイル。** `RunOptions.core_modules_dir:
+  Option<&Path>` → `core_modules_dirs: &[PathBuf]` が
+  ワークスペース中のテストに波及した。機械的だが、
+  設計文書が「`Vec` の長さ 1 でそのまま動く」と書いていたのは
+  **意味論の話**であってソース互換の話ではなかった
 
 **B0 だけでも価値がある。** `poc/logsearch` の 5 手順が 3 手順になり、
 `refresh.sh` と `build/root/` が消える。B1 で 1 手順になる。

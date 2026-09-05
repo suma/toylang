@@ -10,6 +10,30 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **BUILD-TOOL B0 — `--core-modules` を繰り返し指定できるようにした** —
+  これまでは**置き換え**だったので、自分のモジュールを指した瞬間に
+  stdlib が消えた。root は指定順に探索し、**後の root が勝つ**ので
+  `--core-modules core --core-modules mypkg/src` が
+  「stdlib + 自分、自分が勝つ」になる。`poc/logsearch` の
+  `refresh.sh` (symlink 農場) を書く理由が消えた。
+  併せて **ENTRY-IN-MODULE-ROOT を解消** — auto-load の walker が
+  コンパイル対象と同じ正規化パスのファイルを飛ばすので、
+  `src/main.t` を普通に書ける (以前は二重取り込みで複製が自分の
+  `const` を失い `[E0003]` になった)。
+  代償は `RunOptions.core_modules_dir: Option<&Path>` →
+  `core_modules_dirs: &[PathBuf]` の波及で 40 ファイル。
+  **EFFECTS-CORE-MODULES も解消**: `--effects` はクエリなので main の
+  引数解析より前に走り root を落としていた。argv から拾うようにした
+- **BUILD-TOOL B1/B3 — `toy` コマンドを追加した** (`toy/`) —
+  `build` / `run` / `check` / `api` / `effects` / `explain`。
+  パッケージは「`main.t` か `src/` を持つ最寄りの祖先」で、
+  **マニフェストは無い** (宣言することがまだ無い)。root は
+  stdlib → `src/` → `--core-modules` の順に積む。リンクキャッシュは
+  `build/.link/` を既定にした (90ms → 30ms が既定になる)。
+  `-v` は等価な `compiler` / `interpreter` 呼び出しを 1 行で出す —
+  道具は引数を組み立てるだけで意味論を持たない、という非目標の担保。
+  **`--backend tree` は名前だけ取ってあり、今は `vm` と同じ経路**
+  (tree-walker を名指しする library API が無い)
 - **`Bits` / `Checked` も借用にした** — 受け手は `&self`、`Checked` の
   `other` は `&Self`。`Ord` / `Hash` で直した 4 つに加えて、
   **`&T` 引数を渡していない経路があと 2 つあった**:

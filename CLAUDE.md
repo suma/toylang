@@ -42,6 +42,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | epoll / kqueue の統一形 (landing 済み) | [`design-docs/EVENT_POLLING.md`](design-docs/EVENT_POLLING.md) |
 | stdlib のディレクトリ配置と `module::` の解決規則 | [`design-docs/MODULE_SYSTEM.md`](design-docs/MODULE_SYSTEM.md) |
 | example のビルド・実行方法 | [`interpreter/example/HOW_TO.md`](interpreter/example/HOW_TO.md) |
+| **自分のモジュールを持つプログラム**のビルド (`toy`) | [`design-docs/BUILD_TOOL.md`](design-docs/BUILD_TOOL.md) |
 | **自分のモジュールを持つプログラム**のビルド (`toy` コマンドの提案) | [`design-docs/BUILD_TOOL.md`](design-docs/BUILD_TOOL.md) |
 | **toylang で書いたプログラム**のテスト (提案。処理系自身のテストは別) | [`design-docs/TEST_TOOL.md`](design-docs/TEST_TOOL.md) |
 | このリポジトリで LLM が作業する際の指針 | [`design-docs/COMPILER_DEV_LOOP.md`](design-docs/COMPILER_DEV_LOOP.md) |
@@ -117,6 +118,20 @@ TOY_PROFILE_MEM=1 ./compiled_binary          # AOT バイナリ単体
 # 同じレポートを JSON で (M4)。`leaks` は空でも `[]` が出る
 cargo run -q -p interpreter -- --profile=mem --profile-format=json <source_file.t>
 TOY_PROFILE_MEM=json ./compiled_binary
+
+# 自分のモジュールを持つプログラム (BUILD-TOOL B0/B1)。
+# `--core-modules` は**繰り返せて、後の root が勝つ** — stdlib を
+# 消さずに自分の src/ を足せる (以前は置き換えだった)
+cargo run -q -p compiler -- --core-modules core --core-modules mypkg/src mypkg/main.t -o prog
+
+# 同じことを規約でやる `toy`。root は「main.t か src/ を持つ最寄りの祖先」
+# から組み立てる。マニフェストは無い
+cargo run -q -p toy -- build mypkg [--release] [-o PATH]
+cargo run -q -p toy -- run   mypkg [--backend aot|jit|vm] [-- ARGS...]
+cargo run -q -p toy -- check mypkg
+cargo run -q -p toy -- api src/foo.t mypkg   # api / effects / explain も根つき
+cargo run -q -p toy -- effects mypkg
+# `-v` は等価な compiler / interpreter 呼び出しを 1 行で出す (道具を捨てて戻れる)
 
 # 入力ファイル名 `-` で stdin から読む。スクラッチファイルを作らずに済む
 echo 'fn main() -> u64 { 0u64 }' | cargo run -q -p interpreter -- --check -

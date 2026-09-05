@@ -475,7 +475,7 @@ fn the_aot_layout_report_is_byte_identical_to_the_shared_one() {
     let exe_path = unique_path("prof_layout");
     let mut options = CompilerOptions::new(src_path.clone());
     options.output = Some(exe_path.clone());
-    options.core_modules_dir = Some(core_modules_dir());
+    options.core_modules_dirs = vec![core_modules_dir()];
     options.link_cache_dir = Some(link_cache_dir_for_tests());
     compile_file(&options).expect("compile");
 

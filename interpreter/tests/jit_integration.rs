@@ -58,7 +58,7 @@ fn run(source_path: &str, jit: bool, verbose: bool) -> Run {
     let core = core_modules_dir();
     let mut opts = interpreter::RunOptions::default();
     opts.jit = jit;
-    opts.core_modules_dir = Some(core.as_path());
+    opts.core_modules_dirs = std::slice::from_ref(&core);
     let (result, stdout, stderr) = interpreter::output::with_stdout_stderr_capture(|| {
         interpreter::jit::with_jit_verbose_override(verbose, || {
             interpreter::run_source(&source, source_path, &opts)

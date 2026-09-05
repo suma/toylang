@@ -21,7 +21,7 @@ use frontend::type_checker::{Effect, EffectSet};
 fn effects(source: &str) -> Vec<(String, EffectSet)> {
     let core = core_modules_dir();
     let mut options = interpreter::RunOptions::default();
-    options.core_modules_dir = Some(core.as_path());
+    options.core_modules_dirs = std::slice::from_ref(&core);
     interpreter::effects_from_source(source, "test.t", &options)
         .expect("type check")
         .into_iter()

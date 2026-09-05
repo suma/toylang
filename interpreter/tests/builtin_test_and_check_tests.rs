@@ -11,9 +11,9 @@ use crate::common::core_modules_dir;
 use interpreter::property::CheckOutcome;
 use interpreter::RunOptions;
 
-fn options(core: &std::path::Path) -> RunOptions<'_> {
+fn options(core: &[std::path::PathBuf]) -> RunOptions<'_> {
     let mut o = RunOptions::default();
-    o.core_modules_dir = Some(core);
+    o.core_modules_dirs = core;
     o
 }
 
@@ -21,7 +21,7 @@ fn options(core: &std::path::Path) -> RunOptions<'_> {
 
 fn run_tests(source: &str) -> Vec<interpreter::TestOutcome> {
     let core = core_modules_dir();
-    interpreter::run_tests_from_source(source, "test.t", &options(core.as_path()))
+    interpreter::run_tests_from_source(source, "test.t", &options(std::slice::from_ref(&core)))
         .expect("program should type check")
 }
 
@@ -124,7 +124,7 @@ fn check_with_cases(
     interpreter::property::check_source(
         source,
         "check.t",
-        &options(core.as_path()),
+        &options(std::slice::from_ref(&core)),
         seed,
         Some(cases),
     )

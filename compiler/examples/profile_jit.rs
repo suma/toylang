@@ -31,9 +31,9 @@ fn main() {
     let source = "fn main() -> u64 { 42u64 }";
 
     let mut opts_full = compiler::CompilerOptions::new(PathBuf::from("<jit>"));
-    opts_full.core_modules_dir = Some(core.clone());
+    opts_full.core_modules_dirs = vec![core.clone()];
     let mut opts_no_core = opts_full.clone();
-    opts_no_core.core_modules_dir = None;
+    opts_no_core.core_modules_dirs = Vec::new();
     opts_no_core.link_cache_dir = None;
 
     // Warm up file-system caches and lazy statics.
@@ -67,7 +67,7 @@ fn main() {
             session.string_interner_mut(),
             Some(source),
             None,
-            Some(&core),
+            std::slice::from_ref(&core),
         )
         .expect("type check");
         t_check += t.elapsed();

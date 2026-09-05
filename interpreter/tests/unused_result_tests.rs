@@ -21,7 +21,7 @@ fn warnings_for(source: &str) -> Vec<String> {
         session.string_interner_mut(),
         Some(source),
         Some("test.t"),
-        Some(core.as_path()),
+        std::slice::from_ref(&core),
     )
     .expect("the program type-checks; the findings are warnings")
     .iter()

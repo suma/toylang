@@ -4,22 +4,26 @@ use std::path::PathBuf;
 use std::process;
 use interpreter::{RunOptions, RunOutcome};
 
-/// Resolve the core-modules directory using a small priority chain:
+/// Resolve the module roots using a small priority chain:
 ///
-/// 1. `--core-modules <DIR>` CLI flag (caller passes `cli_override`).
-///    Highest priority — CI / tests / one-off debugging override.
-/// 2. `TOYLANG_CORE_MODULES` env var. Whatever string the user sets
-///    becomes the path verbatim; the empty string opts out entirely
-///    (no auto-loaded modules at all).
+/// 1. `--core-modules <DIR>` CLI flags, **in the order given**.
+///    BUILD-TOOL B0: the flag is repeatable and a later root wins a
+///    module path an earlier one also defines, so
+///    `--core-modules <stdlib> --core-modules <pkg>/src` means "the
+///    stdlib, plus mine, mine wins". Before this the flag *replaced*
+///    the stdlib, which is why a program with its own modules needed
+///    a directory of symlinks holding both.
+/// 2. `TOYLANG_CORE_MODULES` env var, consulted only when no flag was
+///    given. Whatever string the user sets becomes the path verbatim;
+///    the empty string opts out entirely (no auto-loaded modules).
 /// 3. Executable-relative search. Probes a small set of canonical
 ///    layouts so a binary launched from either a dev tree or a
 ///    standard install just works:
-///      - `<exe_dir>/modules/`            (co-located distribution)
-///      - `<exe_dir>/../share/toylang/modules/` (Unix install)
-///      - `<exe_dir>/../../interpreter/modules/` (dev tree —
-///        `target/debug/interpreter` -> `<repo>/interpreter/modules/`)
+///      - `<exe_dir>/core/`                   (co-located distribution)
+///      - `<exe_dir>/../share/toylang/core/`  (Unix install)
+///      - `<exe_dir>/../../core/`             (dev tree)
 ///
-/// Returns `None` when nothing resolves and the env var didn't
+/// Returns an empty list when nothing resolves and the env var didn't
 /// explicitly opt out — auto-loading then becomes a no-op.
 /// DBC-CHECK-CASES: report a pass as thin when the precondition
 /// discarded more than this many inputs per accepted one. A narrow
@@ -28,19 +32,23 @@ use interpreter::{RunOptions, RunOutcome};
 /// budget.
 const THIN_PASS_RATIO: usize = 10;
 
-fn resolve_core_modules_dir(cli_override: Option<PathBuf>) -> Option<PathBuf> {
-    if let Some(p) = cli_override {
-        return Some(p);
+fn resolve_core_modules_dirs(cli_roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    if !cli_roots.is_empty() {
+        return cli_roots;
     }
     if let Some(env_val) = env::var_os("TOYLANG_CORE_MODULES") {
         // Explicit empty value = opt out. Anything else is a path.
         if env_val.is_empty() {
-            return None;
+            return Vec::new();
         }
-        return Some(PathBuf::from(env_val));
+        return vec![PathBuf::from(env_val)];
     }
-    let exe = env::current_exe().ok()?;
-    let exe_dir = exe.parent()?;
+    let Ok(exe) = env::current_exe() else {
+        return Vec::new();
+    };
+    let Some(exe_dir) = exe.parent() else {
+        return Vec::new();
+    };
     // Default search candidates. The third entry is the dev-tree
     // fallback: when the binary is `target/debug/interpreter`,
     // `exe_dir/../../core` resolves to `<repo>/core/`. The first two
@@ -52,10 +60,10 @@ fn resolve_core_modules_dir(cli_override: Option<PathBuf>) -> Option<PathBuf> {
     ];
     for cand in candidates {
         if cand.is_dir() {
-            return Some(cand);
+            return vec![cand];
         }
     }
-    None
+    Vec::new()
 }
 
 /// Read a program from a path, or from stdin when the path is `-`
@@ -75,10 +83,10 @@ fn read_source(path: &str) -> std::io::Result<String> {
     fs::read_to_string(path)
 }
 
-/// Parsed command-line arguments. `core_modules_cli` is `Some` when
-/// the user passed `--core-modules <DIR>` (or `--core-modules=<DIR>`)
-/// — that overrides the env var fallback in
-/// `resolve_core_modules_dir`.
+/// Parsed command-line arguments. `core_modules_cli` holds every
+/// `--core-modules <DIR>` (or `--core-modules=<DIR>`) in the order
+/// given; a non-empty list overrides the env var fallback in
+/// `resolve_core_modules_dirs`.
 /// A query that answers from the compiler's own tables and exits,
 /// without running a program (LLM-LOOP P7). Kept separate from
 /// `CliArgs` because these modes take no input file — folding them in
@@ -99,7 +107,7 @@ struct CliArgs {
     /// file) surfaced to `argc()` / `arg(i)`.
     prog_args: Vec<String>,
     verbose: bool,
-    core_modules_cli: Option<PathBuf>,
+    core_modules_cli: Vec<PathBuf>,
     /// LLM-LOOP P3: emit diagnostics as JSON on stderr instead of the
     /// rendered text form, so a tool driving the compiler can read spans
     /// and applicable fixes without scraping formatted output.
@@ -114,6 +122,29 @@ struct CliArgs {
     profile_mem: bool,
     /// MEMORY_PROFILING M4: emit that report as JSON instead of text.
     profile_json: bool,
+}
+
+/// The `--core-modules` roots as written on the command line.
+///
+/// The query modes run *before* the main argument parse — they take
+/// no input file in the usual sense — which is why `--effects` used
+/// to drop the flag entirely and answer against the default root
+/// (BUILD_TOOL.md §1, hole 3). Reading them here costs one pass over
+/// argv and makes `--effects` usable on a program with modules of
+/// its own.
+fn scrape_core_modules(raw: &[String]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut iter = raw.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--core-modules" {
+            if let Some(v) = iter.next() {
+                out.push(PathBuf::from(v));
+            }
+        } else if let Some(v) = arg.strip_prefix("--core-modules=") {
+            out.push(PathBuf::from(v));
+        }
+    }
+    out
 }
 
 /// Pull a query mode out of the raw arguments, if one is present.
@@ -158,7 +189,7 @@ fn parse_query(raw: &[String]) -> Result<Option<Query>, String> {
 fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
     let mut filename: Option<String> = None;
     let mut verbose = false;
-    let mut core_modules_cli: Option<PathBuf> = None;
+    let mut core_modules_cli: Vec<PathBuf> = Vec::new();
     let mut diagnostics_json = false;
     let mut run_tests = false;
     let mut check_contracts = false;
@@ -199,10 +230,10 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
                 let v = iter
                     .next()
                     .ok_or_else(|| "--core-modules needs a path argument".to_string())?;
-                core_modules_cli = Some(PathBuf::from(v));
+                core_modules_cli.push(PathBuf::from(v));
             }
             s if s.starts_with("--core-modules=") => {
-                core_modules_cli = Some(PathBuf::from(&s["--core-modules=".len()..]));
+                core_modules_cli.push(PathBuf::from(&s["--core-modules=".len()..]));
             }
             s if s.starts_with("--diagnostics=") => {
                 match &s["--diagnostics=".len()..] {
@@ -240,7 +271,9 @@ fn main() {
     match parse_query(&raw) {
         Ok(Some(Query::Explain(code))) => process::exit(run_explain(code.as_deref())),
         Ok(Some(Query::Api(path))) => process::exit(run_api(&path)),
-        Ok(Some(Query::Effects(path))) => process::exit(run_effects(&path)),
+        Ok(Some(Query::Effects(path))) => {
+            process::exit(run_effects(&path, scrape_core_modules(&raw)))
+        }
         Ok(None) => {}
         Err(msg) => {
             eprintln!("{msg}");
@@ -265,12 +298,21 @@ fn main() {
         }
     };
     let CliArgs { filename, prog_args, verbose, core_modules_cli, diagnostics_json, run_tests, check_contracts, seed, profile_mem, profile_json } = cli;
-    let core_modules_dir = resolve_core_modules_dir(core_modules_cli);
+    let core_modules_dirs = resolve_core_modules_dirs(core_modules_cli);
     if verbose {
-        if let Some(dir) = &core_modules_dir {
-            println!("Core modules directory: {}", dir.display());
+        if core_modules_dirs.is_empty() {
+            println!("Module roots: <none> (auto-load disabled)");
         } else {
-            println!("Core modules directory: <none> (auto-load disabled)");
+            // Printed in search order; a later root wins a name an
+            // earlier one also defines.
+            println!(
+                "Module roots: {}",
+                core_modules_dirs
+                    .iter()
+                    .map(|d| d.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
         }
     }
 
@@ -288,7 +330,7 @@ fn main() {
     let jit = matches!(env::var("INTERPRETER_JIT").as_deref(), Ok("1"));
     let mut options = RunOptions::default();
     options.jit = jit;
-    options.core_modules_dir = core_modules_dir.as_deref();
+    options.core_modules_dirs = &core_modules_dirs;
     options.diagnostics_json = diagnostics_json;
     options.args = prog_args;
     if run_tests {
@@ -399,7 +441,7 @@ fn run_api(path: &str) -> i32 {
 /// `concat` on `str` (runtime-internal) from one on `String` (stdlib
 /// code that allocates) — so it takes a runnable program rather than
 /// any module.
-fn run_effects(path: &str) -> i32 {
+fn run_effects(path: &str, cli_roots: Vec<PathBuf>) -> i32 {
     let source = match read_source(path) {
         Ok(s) => s,
         Err(e) => {
@@ -408,11 +450,12 @@ fn run_effects(path: &str) -> i32 {
         }
     };
     let display_name = if path == "-" { "<stdin>" } else { path };
-    // `--core-modules` is parsed with the run flags, which this query
-    // runs before; the env var fallback still applies.
-    let core_modules_dir = resolve_core_modules_dir(None);
+    // The roots come from `--core-modules` on this very command line
+    // (scraped, because the main parse has not run), with the env var
+    // and exe-relative fallbacks behind them as usual.
+    let core_modules_dirs = resolve_core_modules_dirs(cli_roots);
     let mut options = interpreter::RunOptions::default();
-    options.core_modules_dir = core_modules_dir.as_deref();
+    options.core_modules_dirs = &core_modules_dirs;
     let listing = match interpreter::effects_from_source(&source, display_name, &options) {
         Ok(listing) => listing,
         Err(_) => return 1,

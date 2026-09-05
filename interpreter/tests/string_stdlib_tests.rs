@@ -774,7 +774,7 @@ fn str_plus_str_is_rejected_by_the_type_checker() {
         string_interner,
         Some(source),
         Some("test.t"),
-        Some(core.as_path()),
+        std::slice::from_ref(&core),
     ) {
         Ok(_) => panic!("`str + str` must be a type error (no backend implements it)"),
         Err(diagnostics) => {

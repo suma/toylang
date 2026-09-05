@@ -29,7 +29,7 @@ fn type_check_errors(source: &str, why: &str) -> Vec<Diagnostic> {
         string_interner,
         Some(source),
         Some("test.t"),
-        Some(core.as_path()),
+        std::slice::from_ref(&core),
     ) {
         Ok(_) => panic!("{why}"),
         Err(diagnostics) => diagnostics,

@@ -22,7 +22,7 @@ fn assert_engine_parity(src: &str) -> bool {
         interner,
         Some(src),
         Some("parity.t"),
-        None,
+        &[],
     )
     .expect("type-check");
 

@@ -132,7 +132,7 @@ const PRELUDE_SOURCE: &str = include_str!("prelude.t");
 /// visible to the type-checker registration pass and to the runtime
 /// `build_method_registry` walk.
 ///
-/// `core_modules_dir` (when supplied) is scanned for top-level
+/// `core_modules_dirs` (when supplied) is scanned for top-level
 /// modules that are auto-imported into the program — the user no
 /// longer needs an explicit `import math` line for files in that
 /// directory. Each subdirectory `<dir>/<name>/` (with an entry-point
@@ -143,7 +143,8 @@ const PRELUDE_SOURCE: &str = include_str!("prelude.t");
 fn integrate_modules(
     program: &mut File,
     string_interner: &mut DefaultStringInterner,
-    core_modules_dir: Option<&std::path::Path>,
+    core_modules_dirs: &[std::path::PathBuf],
+    entry: Option<&std::path::Path>,
 ) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = Vec::new();
 
@@ -194,20 +195,24 @@ fn integrate_modules(
     let mut shadowed_stdlib_types: std::collections::HashSet<String> =
         std::collections::HashSet::new();
 
-    let discovered_modules = if let Some(dir) = core_modules_dir {
-        match module_integration::discover_core_modules(dir) {
+    let discovered_modules = if core_modules_dirs.is_empty() {
+        None
+    } else {
+        match module_integration::discover_core_modules_multi(core_modules_dirs, entry) {
             Ok(modules) => Some(modules),
             Err(err) => {
                 errors.push(format!(
-                    "Failed to scan core modules directory `{}`: {}",
-                    dir.display(),
+                    "Failed to scan module roots [{}]: {}",
+                    core_modules_dirs
+                        .iter()
+                        .map(|d| d.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
                     err
                 ));
                 None
             }
         }
-    } else {
-        None
     };
 
     // Phase 1: parallel pre-parse (cache load or cold parse + type-name
@@ -304,7 +309,7 @@ fn integrate_modules(
             program,
             import,
             string_interner,
-            core_modules_dir,
+            core_modules_dirs,
             shadowed_stdlib_types.clone(),
         ) {
             errors.push(format!("Module integration error: {}", err));
@@ -373,7 +378,7 @@ pub fn check_typing(
     source_code: Option<&str>,
     filename: Option<&str>,
 ) -> Result<(), Vec<String>> {
-    check_typing_with_core_modules(program, string_interner, source_code, filename, None)
+    check_typing_with_core_modules(program, string_interner, source_code, filename, &[])
 }
 
 /// Same as `check_typing` but with an explicit core-modules directory.
@@ -388,9 +393,9 @@ pub fn check_typing_with_core_modules(
     string_interner: &mut DefaultStringInterner,
     source_code: Option<&str>,
     filename: Option<&str>,
-    core_modules_dir: Option<&std::path::Path>,
+    core_modules_dirs: &[std::path::PathBuf],
 ) -> Result<(), Vec<String>> {
-    check_typing_diagnostics(program, string_interner, source_code, filename, core_modules_dir)
+    check_typing_diagnostics(program, string_interner, source_code, filename, core_modules_dirs)
         .map(|_warnings| ())
         .map_err(|diagnostics| {
             let formatter = ErrorFormatter::with_source_map(
@@ -421,9 +426,9 @@ pub fn check_typing_diagnostics(
     string_interner: &mut DefaultStringInterner,
     source_code: Option<&str>,
     filename: Option<&str>,
-    core_modules_dir: Option<&std::path::Path>,
+    core_modules_dirs: &[std::path::PathBuf],
 ) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
-    check_typing_collecting(program, string_interner, source_code, filename, core_modules_dir, None)
+    check_typing_collecting(program, string_interner, source_code, filename, core_modules_dirs, None)
 }
 
 /// What one declaration in the entry file can do (EFFECTS, `--effects`).
@@ -445,7 +450,7 @@ pub fn check_typing_effects(
     string_interner: &mut DefaultStringInterner,
     source_code: Option<&str>,
     filename: Option<&str>,
-    core_modules_dir: Option<&std::path::Path>,
+    core_modules_dirs: &[std::path::PathBuf],
     effects: &mut Vec<FunctionEffects>,
 ) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
     check_typing_collecting(
@@ -453,7 +458,7 @@ pub fn check_typing_effects(
         string_interner,
         source_code,
         filename,
-        core_modules_dir,
+        core_modules_dirs,
         Some(effects),
     )
 }
@@ -463,7 +468,7 @@ fn check_typing_collecting(
     string_interner: &mut DefaultStringInterner,
     source_code: Option<&str>,
     filename: Option<&str>,
-    core_modules_dir: Option<&std::path::Path>,
+    core_modules_dirs: &[std::path::PathBuf],
     mut collect_effects: Option<&mut Vec<FunctionEffects>>,
 ) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
     let diag_file = filename.unwrap_or("<input>");
@@ -498,7 +503,16 @@ fn check_typing_collecting(
     // etc. must be visible to the type-checker registration pass and
     // to `build_method_registry` so `x.abs()` resolves through the
     // extension-trait machinery.
-    if let Err(module_errors) = integrate_modules(program, string_interner, core_modules_dir) {
+    // BUILD-TOOL B0: the file being compiled, so the auto-load walk
+    // can recognise it if it lives inside one of the roots. Without
+    // this an entry under `src/` is integrated twice and the copy
+    // loses its own top-level `const`s.
+    let entry_path = filename
+        .filter(|f| *f != "-" && !f.starts_with('<'))
+        .map(std::path::PathBuf::from);
+    if let Err(module_errors) =
+        integrate_modules(program, string_interner, core_modules_dirs, entry_path.as_deref())
+    {
         errors.extend(module_errors.into_iter().map(|m| Diagnostic::message_only(m, diag_file)));
         return Err(errors);
     }
@@ -1845,7 +1859,7 @@ pub fn run_tests_from_source(
         session.string_interner_mut(),
         Some(source),
         Some(filename),
-        options.core_modules_dir,
+        options.core_modules_dirs,
     ) {
         let rendered: Vec<String> = diagnostics
             .iter()
@@ -1888,7 +1902,7 @@ pub fn effects_from_source(
         session.string_interner_mut(),
         Some(source),
         Some(filename),
-        options.core_modules_dir,
+        options.core_modules_dirs,
         &mut effects,
     ) {
         let rendered: Vec<String> =
@@ -1904,7 +1918,7 @@ pub fn effects_from_source(
 ///
 /// `jit` mirrors the `INTERPRETER_JIT=1` env var but is per-call so
 /// in-process callers can drive the JIT and tree-walker paths in the
-/// same process without poisoning a sibling thread's run. `core_modules_dir`
+/// same process without poisoning a sibling thread's run. `core_modules_dirs`
 /// mirrors `--core-modules` / `TOYLANG_CORE_MODULES`.
 ///
 /// `#[non_exhaustive]` on purpose: adding a field here used to break
@@ -1915,7 +1929,7 @@ pub fn effects_from_source(
 #[non_exhaustive]
 pub struct RunOptions<'a> {
     pub jit: bool,
-    pub core_modules_dir: Option<&'a std::path::Path>,
+    pub core_modules_dirs: &'a [std::path::PathBuf],
     /// LLM-LOOP P3: emit type-check diagnostics as a JSON array on
     /// stderr instead of the rendered text form.
     pub diagnostics_json: bool,
@@ -1991,7 +2005,7 @@ pub fn run_source(
         session.string_interner_mut(),
         Some(source),
         Some(filename),
-        options.core_modules_dir,
+        options.core_modules_dirs,
     ) {
         Err(diagnostics) => {
             if options.diagnostics_json {

@@ -288,7 +288,7 @@ impl Lsz {
 # `raw_len` bytes. Answers false when the stream ran out early, which
 # is how a truncated or corrupt frame is caught before it becomes
 # wrong records.
-pub fn decode(src: Span<u8>, from: u64, clen: u64, raw_len: u64, out: &mut ByteWriter) -> bool
+pub fn decode_frame(src: Span<u8>, from: u64, clen: u64, raw_len: u64, out: &mut ByteWriter) -> bool
     requires from + clen <= src.len()
 {
     val base = out.len()

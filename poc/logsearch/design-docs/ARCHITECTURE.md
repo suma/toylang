@@ -217,9 +217,11 @@ cargo build --release -p toy                      # 処理系 (初回のみ)
 
 stdlib の根が `std::math` などの経路を、`src/` の根が `record::` などの
 別名を与える。auto-load は根の下の **`.t` を全部**読むので、`import` 行は
-1 つも要らない。**bare 名は全部で 1 つの名前空間**なので、`src/lsz.t` の
-`decode` と `std/hex.t` の `decode` は衝突する — 後の根が勝つ規則で
-自分の実装に解決されるが、`toy` はビルド前に警告を出す。
+1 つも要らない。**bare 名は全部で 1 つの名前空間**なので、`src/lsz.t` に
+`decode` を置くと `std/hex.t` の `decode` と衝突する — 後の根が勝つ規則で
+自分の実装に解決されるが、`toy` はビルド前に警告を出す。この POC は
+stdlib と被る bare 名を**使わない**ことで避けている
+(`lsz::decode_frame` / `record::parse_line`)。
 
 > **確認済み**: `--core-modules <root>` 下に置いたユーザモジュールの
 > `pub fn` が、インタプリタと AOT の両方から `util::double(21u64)` の形で

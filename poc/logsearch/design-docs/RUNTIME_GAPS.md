@@ -369,7 +369,7 @@ stdlib のバイト kernel も SIMD 化済み。使い方と実測は [`SIMD.md`
 
 | 踏んだもの | 内容 |
 |---|---|
-| **bare な関数名がモジュールを跨いで衝突する** ★★ | `fn is_digit` が `std::json::is_digit` と衝突して `[E0010] ambiguous module path`。**`pub` でない関数でも衝突する**ので、auto-load される全モジュールが 1 つの名前空間を共有していることになる。`max_depth` も同じ。**この POC の回避策は改名** (`is_digit` → `is_digit_byte`)。**2026-09-05 に半分だけ解消** — 後の module root が bare 名を勝つようになった (BUILD-TOOL B0) ので、**ユーザの `src/` は stdlib に勝つ**。残るのは同 root どうしで、`toy check` が今も 2 件警告する (`decode`: `lsz.t` と `std::base64` / `std::hex`、`parse`: `record.t` と `std::json`)。**class ごと消す設計**は本体側 [`MODULE_IMPORTS.md`](../../../design-docs/MODULE_IMPORTS.md) (明示 import。D3 が「bare 名は自分のファイル + prelude だけ」にする) |
+| **bare な関数名がモジュールを跨いで衝突する** ★★ | `fn is_digit` が `std::json::is_digit` と衝突して `[E0010] ambiguous module path`。**`pub` でない関数でも衝突する**ので、auto-load される全モジュールが 1 つの名前空間を共有していることになる。`max_depth` も同じ。**この POC の回避策は改名** (`is_digit` → `is_digit_byte`)。**2026-09-05 に半分だけ解消** — 後の module root が bare 名を勝つようになった (BUILD-TOOL B0) ので、**ユーザの `src/` は stdlib に勝つ**。残っていた 2 件 (`decode`: `lsz.t` と `std::base64` / `std::hex`、`parse`: `record.t` と `std::json`) も**同日に改名で潰した** (`decode_frame` / `parse_line`) ので `toy check` は無警告。ただし**回避しただけ**で、stdlib に名前が増えるたびに踏みうる。**class ごと消す設計**は本体側 [`MODULE_IMPORTS.md`](../../../design-docs/MODULE_IMPORTS.md) (明示 import。D3 が「bare 名は自分のファイル + prelude だけ」にする) |
 | **プログラム本体をモジュール根に置くと自分の `const` を失う** | `src/main.t` を根に入れると auto-load で二重取り込みになり、複製側が `Identifier 'BUF_BYTES' not found` で落ちる。エントリは根の外に置くのが正解 ([`ARCHITECTURE.md`](ARCHITECTURE.md) §4) |
 
 ## G17. 所有型を分岐の中で move できない ★

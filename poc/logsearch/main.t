@@ -154,7 +154,7 @@ fn cmd_scan(dir: str, limit: u64) -> u64 {
                 match nx {
                     Option::Some(l) => {
                         if l.len > 0u64 {
-                            record::parse(&reader, l, &mut rec)
+                            record::parse_line(&reader, l, &mut rec)
                             lines = lines + 1u64
                             if rec.has_ts {
                                 with_ts = with_ts + 1u64
@@ -247,7 +247,7 @@ fn cmd_archive(dir: str, out: str, limit: u64) -> u64 {
                 match nx {
                     Option::Some(l) => {
                         if l.len > 0u64 {
-                            record::parse(&reader, l, &mut rec)
+                            record::parse_line(&reader, l, &mut rec)
                             val win = reader.span()
                             match win {
                                 Option::Some(sp) => { w.add(sp, l, &rec) }

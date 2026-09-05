@@ -214,7 +214,7 @@ fn scan_labels(r: &LogReader, from: u64, end: u64) -> u64 {
 }
 
 # Fill `out` from the line `ln` of `r`.
-pub fn parse(r: &LogReader, ln: Line, out: &mut ParsedLine) {
+pub fn parse_line(r: &LogReader, ln: Line, out: &mut ParsedLine) {
     val start = ln.start
     val end = ln.start + ln.len
     out.kind = 0u32

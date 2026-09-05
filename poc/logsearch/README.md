@@ -59,7 +59,11 @@ toy clean poc/logsearch --all    # build/ とリンクキャッシュを消す
     poc/logsearch/main.t --release -o /tmp/logsearch
 ```
 
-### ビルド時に出る警告
+### bare 名の衝突を避ける命名
+
+bare な関数名は**全モジュールで 1 つの名前空間**を共有する。`toy` は
+根を組み立てる時点で重複を見つけて先に言う (処理系は呼び出しに到達して
+から `[E0010]` を出す):
 
 ```
 warning: `decode` is defined in core/std/base64.t and core/std/hex.t and
@@ -67,10 +71,11 @@ warning: `decode` is defined in core/std/base64.t and core/std/hex.t and
   a bare call takes the last one; qualify it to be explicit
 ```
 
-bare な関数名は**全モジュールで 1 つの名前空間**を共有する。`toy` は
-根を組み立てる時点で重複を見つけて先に言う (処理系は呼び出しに到達して
-から `[E0010]` を出す)。**後の根が勝つ**ので `lsz::decode` は自分の
-実装に解決されるが、曖昧なままにせず修飾するのが正しい。
+**後の根が勝つ**ので `lsz::decode` は自分の実装に解決されるが、
+呼び出し側が修飾していても警告は消えない (衝突は定義側にあるため)。
+この POC は**改名で回避する**方針を取っており、2026-09-05 に最後の
+2 件を潰した — `lsz::decode` → `lsz::decode_frame`、
+`record::parse` → `record::parse_line`。`toy check` は無警告。
 
 この警告が出る仕組みごと消す設計が
 [`MODULE_IMPORTS.md`](../../design-docs/MODULE_IMPORTS.md) (明示 import)

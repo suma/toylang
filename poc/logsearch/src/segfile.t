@@ -169,7 +169,7 @@ pub fn head_of(f: &File, scratch: &mut ByteWriter) -> SegHead {
 #
 # One frame is in memory at a time: the compressed bytes land in
 # `raw`, and the expansion is appended straight to `out`. Handing a
-# `&mut` on to `lsz::decode` is what v2 could not do -- the writes
+# `&mut` on to `lsz::decode_frame` is what v2 could not do -- the writes
 # were dropped silently (METHOD-ARG-UNCHECKED, fixed 2026-09-05), and
 # the copy through a scratch buffer that worked around it is gone.
 pub fn expand_all(f: &File, h: &SegHead, crc: &Crc32,
@@ -214,7 +214,7 @@ pub fn expand_all(f: &File, h: &SegHead, crc: &Crc32,
                                     out.reserve(clen)
                                     out.put_span_fast(body, 0u64, clen)
                                 } else {
-                                    if !lsz::decode(body, 0u64, clen, rawlen, &mut out) { ok = false }
+                                    if !lsz::decode_frame(body, 0u64, clen, rawlen, &mut out) { ok = false }
                                 }
                             }
                             Option::None => { ok = false }
@@ -285,7 +285,7 @@ pub fn decode_block(src: Span<u8>, len: u64, crc: &Crc32, out: &mut ByteWriter) 
         out.reserve(clen)
         out.put_span_fast(src, body, clen)
     } else {
-        if !lsz::decode(src, body, clen, raw_len, &mut out) { ok = false }
+        if !lsz::decode_frame(src, body, clen, raw_len, &mut out) { ok = false }
     }
     if ok {
         val ow = out.span()

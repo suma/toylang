@@ -453,6 +453,7 @@ impl Module {
             param_dyn_trait: Vec::new(),
             return_type,
             self_writeback_types: Vec::new(),
+            self_writeback_locals: Vec::new(),
             locals: Vec::new(),
             array_slots: Vec::new(),
             address_taken_locals: std::collections::HashSet::new(),
@@ -510,6 +511,7 @@ impl Module {
             param_dyn_trait: Vec::new(),
             return_type,
             self_writeback_types: Vec::new(),
+            self_writeback_locals: Vec::new(),
             locals: Vec::new(),
             array_slots: Vec::new(),
             address_taken_locals: std::collections::HashSet::new(),
@@ -862,6 +864,13 @@ pub struct Function {
     /// other function. The order matches `flatten_struct_locals`
     /// of the receiver's struct.
     pub self_writeback_types: Vec<Type>,
+    /// CODE-SIZE-WB-PRUNE: the leaf locals whose values fill the
+    /// writeback return slots, in the same order as
+    /// `self_writeback_types`. Recorded at lowering time so a
+    /// post-pass can ask "did the body ever write this leaf?"
+    /// without re-deriving the receiver's binding shape. Empty
+    /// whenever `self_writeback_types` is.
+    pub self_writeback_locals: Vec<LocalId>,
     /// Typed local slots. Indices `0..params.len()` are the parameters;
     /// later indices are the `val` / `var` bindings introduced by the
     /// function body. Locals are mutable cells in this IR; SSA construction
@@ -1500,6 +1509,104 @@ pub struct Instruction {
     /// eleven call variants: one field, one place to set it, and the
     /// IR's printed form is unchanged.
     pub frame: Option<FrameId>,
+}
+
+impl InstKind {
+    /// CODE-SIZE-WB-PRUNE: call `visit` once for every local this
+    /// instruction can change the value of.
+    ///
+    /// The match is **exhaustive on purpose**. A new `InstKind` that
+    /// writes a local has to be classified here or the build breaks;
+    /// a silent `_ => {}` would let it through and the pruning pass
+    /// would drop a writeback slot that is still live, turning a
+    /// mutation into a lost update.
+    ///
+    /// `AddressOf` counts as a write: once the address escapes, a
+    /// `StoreRef` or `PtrWrite` we cannot follow may land on it.
+    pub fn writes_locals(&self, mut visit: impl FnMut(LocalId)) {
+        match self {
+            InstKind::StoreLocal { dst, .. } => visit(*dst),
+            InstKind::AddressOf { local } => visit(*local),
+            InstKind::CallStruct { dests, .. }
+            | InstKind::CallTuple { dests, .. }
+            | InstKind::CallEnum { dests, .. }
+            | InstKind::CallIndirectFnStruct { dests, .. }
+            | InstKind::CallIndirectFnTuple { dests, .. }
+            | InstKind::CallIndirectFnEnum { dests, .. } => {
+                dests.iter().copied().for_each(visit)
+            }
+            InstKind::CallWithSelfWriteback { ret_dest, self_dests, .. } => {
+                if let Some(d) = ret_dest {
+                    visit(*d);
+                }
+                self_dests.iter().copied().for_each(visit)
+            }
+            InstKind::CallWithSelfWritebackCompound { ret_dests, self_dests, .. } => {
+                ret_dests.iter().copied().for_each(&mut visit);
+                self_dests.iter().copied().for_each(visit)
+            }
+            InstKind::Const { .. }
+            | InstKind::BinOp { .. }
+            | InstKind::UnaryOp { .. }
+            | InstKind::LoadLocal { .. }
+            | InstKind::Call { .. }
+            | InstKind::Backtrace
+            | InstKind::Cast { .. }
+            | InstKind::Print { .. }
+            | InstKind::SimdSplat { .. }
+            | InstKind::SimdLoad { .. }
+            | InstKind::SimdStore { .. }
+            | InstKind::SimdExtract { .. }
+            | InstKind::SimdInsert { .. }
+            | InstKind::SimdSelect { .. }
+            | InstKind::SimdReduce { .. }
+            | InstKind::SimdTest { .. }
+            | InstKind::SimdBitmask { .. }
+            | InstKind::SimdSwizzle { .. }
+            | InstKind::SimdBitcast { .. }
+            | InstKind::SimdShuffle { .. }
+            | InstKind::PrintStr { .. }
+            | InstKind::ConstStr { .. }
+            | InstKind::ConstStrBytes { .. }
+            | InstKind::ArrayLoad { .. }
+            | InstKind::ArrayStore { .. }
+            | InstKind::PrintRaw { .. }
+            | InstKind::HeapAlloc { .. }
+            | InstKind::HeapRealloc { .. }
+            | InstKind::HeapFree { .. }
+            | InstKind::PtrRead { .. }
+            | InstKind::PtrWrite { .. }
+            | InstKind::StrLen { .. }
+            | InstKind::StrConcat { .. }
+            | InstKind::StrEq { .. }
+            | InstKind::StrFromBytes { .. }
+            | InstKind::ToString { .. }
+            | InstKind::Format { .. }
+            | InstKind::MemCopy { .. }
+            | InstKind::MemMove { .. }
+            | InstKind::MemSet { .. }
+            | InstKind::MemEq { .. }
+            | InstKind::MemFind { .. }
+            | InstKind::MemFindSeq { .. }
+            | InstKind::AllocPush { .. }
+            | InstKind::AllocPop
+            | InstKind::AllocCurrent
+            | InstKind::PtrIsNull { .. }
+            | InstKind::PtrEq { .. }
+            | InstKind::MemStat { .. }
+            | InstKind::MemStatEnable
+            | InstKind::RecordAllocatorLayout { .. }
+            | InstKind::LoadRef { .. }
+            | InstKind::StoreRef { .. }
+            | InstKind::ArrayElemAddr { .. }
+            | InstKind::FuncAddr { .. }
+            | InstKind::CallIndirect { .. }
+            | InstKind::MakeClosure { .. }
+            | InstKind::VtableAddr { .. }
+            | InstKind::CallIndirectFn { .. }
+            | InstKind::DynCoerceSlotAddr { .. } => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

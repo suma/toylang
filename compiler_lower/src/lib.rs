@@ -107,6 +107,9 @@ use consts::ConstValues;
 
 /// COMPILE-TIME-EVAL C2: what a constant operation produces.
 mod fold;
+/// CODE-SIZE-WB-PRUNE: post-lowering removal of writeback return
+/// slots whose leaf the body never writes.
+mod writeback_prune;
 
 mod array_layout;
 

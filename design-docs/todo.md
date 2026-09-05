@@ -10,6 +10,7 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **CODE-SIZE-WB-PRUNE — `&mut self` が書かない leaf を返さなくした** — lowering 後に writeback slot を落とす pass。不動点まで回すので callee → caller と連鎖する (`write_seg` の戻り 53 → 1)。`poc/logsearch` で `__text` −10.3%。設計は [`CODE_SIZE.md`](CODE_SIZE.md)。
 - **リファクタリング (frontend / compiler / interpreter)** — 重複と
   手書きの冗長データを 7 か所落として **-516 行**。compiler:
   `CodegenSession::new` の 577 行の signature 組み立てを
@@ -1652,18 +1653,16 @@
 ## 未実装 📋
 
 - **CODE-SIZE-SELF-ABI: `&mut self` が struct 全体を呼出規約に展開する** ★★★ —
-  `&mut self` メソッドは self の**全 leaf スカラー**を引数で受け、全 leaf を
-  戻り値で返す。leaf 数が引数レジスタ本数 (aarch64 で 8) を超えると、
-  超えた分は呼び出しのたびにメモリを往復する。`poc/logsearch` の
-  `ArchiveWriter` は 19 フィールド → **52 leaf** で、`write_seg` の署名は
-  **58 params → 53 returns**。1 フィールド読むだけの `ts_min()` すら 52 引数取る。
-  結果、`write_seg` は 3,452 命令の **70% が load/store**、`add` は 90 個だけ。
-  **幅 > 16 の関数は全体の 10% しかないのにコードの 49% を占める**
-  (`ArchiveWriter` の 16 メソッドで 29%)。**codegen 自体は良い** — 8 leaf
-  以下なら同じメソッドが 3 命令に落ちる。直しは「leaf 数が閾値を超える
-  compound `self` はポインタで渡す」。`address_taken_locals` の
-  explicit stack slot 経路 (REF-Stage-2) が既にあるので、そこへ繋ぐ。
-  `&self` (writeback 無し) から分けて入れられる。3 バックエンドに跨るので
+  `&mut self` メソッドは self の**全 leaf スカラー**を引数で受ける。
+  leaf 数が引数レジスタ本数 (aarch64 で 8) を超えると、超えた分は
+  呼び出しのたびにメモリを往復する。`poc/logsearch` の
+  `ArchiveWriter` は 19 フィールド → **52 leaf** なので、1 フィールド
+  読むだけの `ts_min()` すら 52 引数取る。
+  **戻り側は CODE-SIZE-WB-PRUNE で片付いた**が、**引数側は手つかず**。
+  直しは「leaf 数が閾値を超える compound `self` はポインタで渡す」。
+  `address_taken_locals` の explicit stack slot 経路 (REF-Stage-2) が
+  既にあるので、そこへ繋ぐ。`&self` (writeback 無し) から分けて
+  入れられる。3 バックエンドに跨るので
   `compiler/tests/consistency/` にテストが要る。
   計測と再現手順は [`CODE_SIZE.md`](CODE_SIZE.md)。
 

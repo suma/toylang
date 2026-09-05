@@ -1509,6 +1509,11 @@ pub fn lower_program(
     for function in &mut module.functions {
         crate::fold::drop_dead_consts(function);
     }
+    // CODE-SIZE-WB-PRUNE: with every body (and every thunk) lowered,
+    // the writeback tails that carry no new information can go. Both
+    // ends move together, so this has to be after the last call site
+    // is emitted.
+    crate::writeback_prune::prune_unwritten_writeback(&mut module);
     Ok(module)
 }
 
@@ -2095,8 +2100,12 @@ impl<'a> FunctionLower<'a> {
             // pre-populate) also get the right shape.
             let writeback_types: Vec<Type> =
                 writeback_leaves.iter().map(|(_, t)| *t).collect();
-            self.module.function_mut(self.func_id).self_writeback_types =
-                writeback_types;
+            let f = self.module.function_mut(self.func_id);
+            f.self_writeback_types = writeback_types;
+            // CODE-SIZE-WB-PRUNE: keep the leaf locals alongside the
+            // types so the post-lowering pass can tell which of them
+            // the body ever writes.
+            f.self_writeback_locals = writeback_leaves.iter().map(|(l, _)| *l).collect();
             self.self_writeback_locals = Some(writeback_leaves);
         }
 

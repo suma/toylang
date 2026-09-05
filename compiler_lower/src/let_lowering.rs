@@ -947,7 +947,7 @@ impl<'a> FunctionLower<'a> {
                 name,
                 Binding::Tuple { elements: element_bindings },
             );
-            let arg_values = self.lower_call_arg_items(args_items, None)?;
+            let (arg_values, _no_reloads) = self.lower_call_arg_items(args_items, None)?;
             self.emit(
                 InstKind::CallTuple {
                     target: target_id,
@@ -973,7 +973,7 @@ impl<'a> FunctionLower<'a> {
             }
             self.bindings
                 .insert(name, Binding::Enum(storage));
-            let arg_values = self.lower_call_arg_items(args_items, None)?;
+            let (arg_values, _no_reloads) = self.lower_call_arg_items(args_items, None)?;
             self.emit(
                 InstKind::CallEnum {
                     target: target_id,
@@ -1017,7 +1017,7 @@ impl<'a> FunctionLower<'a> {
             // identifiers; cross-struct call args are handled by
             // the regular `lower_call` path below if they show up
             // in this position).
-            let arg_values = self.lower_call_arg_items(args_items, None)?;
+            let (arg_values, _no_reloads) = self.lower_call_arg_items(args_items, None)?;
             self.emit(
                 InstKind::CallStruct {
                     target: target_id,

@@ -1453,8 +1453,8 @@ impl<M: Module> CodegenSession<M> {
         let call_conv = self.module.target_config().default_call_conv;
         let mut s = Signature::new(call_conv);
         for (i, p) in func.params.iter().enumerate() {
-            if i == 0 && func.ptr_self.is_some() {
-                // The receiver arrives as one address.
+            if func.ptr_param(i).is_some() {
+                // This parameter arrives as one address.
                 s.params.push(AbiParam::new(cranelift_codegen::ir::types::I64));
                 continue;
             }
@@ -2053,28 +2053,45 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
         // locals[i]` mapping is correct, regardless of how many of the
         // params were structs.
         let block_params: Vec<Value> = self.builder.block_params(entry).to_vec();
-        // CODE-SIZE-SELF-ABI: a pointer-passed receiver collapses its
-        // leaves into block param 0. The leaf locals it displaced are
-        // never bound from block params -- codegen reads and writes
-        // them through the pointer instead -- so the remaining params
-        // resume at the first local after them.
-        let (block_params, local_shift) = if let Some(ps) = &func.ptr_self
-            && let Some(ptr_local) = ps.ptr_local
+        // CODE-SIZE-SELF-ABI: a pointer-passed parameter collapses its
+        // leaves into a single block param. Its leaf locals are never
+        // bound from block params -- codegen reads and writes them
+        // through the pointer instead -- so the two indices advance at
+        // different rates and have to be walked together rather than
+        // zipped.
+        //
+        // `bindings` are the (block param, local) pairs still to bind
+        // the ordinary way.
+        let mut bindings: Vec<(usize, Value)> = Vec::with_capacity(block_params.len());
         {
-            let var = *self
-                .locals
-                .get(&ptr_local.0)
-                .expect("ptr_self local not declared");
-            self.builder.def_var(var, block_params[0]);
-            for (leaf, offset, ty) in &ps.leaves {
-                self.ptr_self_leaves.insert(leaf.0, (ptr_local, *offset, *ty));
+            let mut bp = 0usize;
+            let mut local_idx = 0usize;
+            for (i, p) in func.params.iter().enumerate() {
+                let leaf_count = flatten_struct_to_cranelift_tys(self.ir_module, *p).len();
+                match func.ptr_param(i).and_then(|ps| ps.ptr_local.map(|l| (ps, l))) {
+                    Some((ps, ptr_local)) => {
+                        let var = *self
+                            .locals
+                            .get(&ptr_local.0)
+                            .expect("pointer-passed param local not declared");
+                        self.builder.def_var(var, block_params[bp]);
+                        for (leaf, offset, ty) in &ps.leaves {
+                            self.ptr_self_leaves.insert(leaf.0, (ptr_local, *offset, *ty));
+                        }
+                        bp += 1;
+                        local_idx += leaf_count;
+                    }
+                    None => {
+                        for _ in 0..leaf_count {
+                            bindings.push((local_idx, block_params[bp]));
+                            bp += 1;
+                            local_idx += 1;
+                        }
+                    }
+                }
             }
-            (block_params[1..].to_vec(), ps.leaves.len())
-        } else {
-            (block_params, 0)
-        };
-        for (i, val) in block_params.iter().enumerate() {
-            let i = i + local_shift;
+        }
+        for (i, val) in bindings.iter().map(|(i, v)| (*i, v)) {
             // REF-Stage-2 (c): if a parameter local is address-taken,
             // its incoming block-param value must be stored into the
             // explicit stack slot rather than def_var'd into a SSA
@@ -2091,6 +2108,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 .expect("param local not declared");
             self.builder.def_var(var, *val);
         }
+        let _ = &block_params;
 
         // 2c. DEBUG-OBS D4: the shadow-stack prologue.
         //

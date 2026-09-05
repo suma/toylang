@@ -1425,7 +1425,7 @@ impl<'a> FunctionLower<'a> {
         // hands it straight over: no leaves to read in, and no leaves
         // to write back afterwards, because the impl mutates the
         // caller's bytes in place.
-        let impl_takes_ptr_self = self.module.function(impl_func_id).ptr_self.is_some();
+        let impl_takes_ptr_self = self.module.function(impl_func_id).ptr_self().is_some();
         let mut leaf_values: Vec<ValueId> = Vec::with_capacity(struct_leaves.len());
         if impl_takes_ptr_self {
             leaf_values.push(data_ptr_v);

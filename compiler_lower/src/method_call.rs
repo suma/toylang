@@ -946,7 +946,7 @@ impl<'a> FunctionLower<'a> {
             // CODE-SIZE-SELF-ABI: a pointer-passed receiver contributes
             // no writeback slots -- the callee wrote through the
             // pointer -- so its leaves must not appear here either.
-            let recv_is_ptr = self.module.function(target).ptr_self.is_some();
+            let recv_is_ptr = self.module.function(target).ptr_self().is_some();
             if template_self_is_mut && !recv_is_ptr {
                 match &binding {
                     Binding::Struct { fields, .. } => {
@@ -1197,14 +1197,27 @@ impl<'a> FunctionLower<'a> {
         &mut self,
         leaves: &[(LocalId, Type)],
     ) -> Result<(ValueId, ReceiverReload), String> {
-        if let Some(ps) = self.module.function(self.func_id).ptr_self.clone()
+        // Any of this function's own pointer-passed parameters -- the
+        // receiver or a `&T` / `&mut T` -- is already an address into
+        // the caller's storage, so handing it on costs one load. This
+        // is what stops a chain of calls rebuilding the struct at
+        // every hop.
+        let forwarded = self
+            .module
+            .function(self.func_id)
+            .ptr_params
+            .iter()
+            .find(|ps| {
+                ps.leaves.len() == leaves.len()
+                    && ps
+                        .leaves
+                        .iter()
+                        .zip(leaves.iter())
+                        .all(|((a, _, _), (b, _))| a == b)
+            })
+            .cloned();
+        if let Some(ps) = forwarded
             && let Some(ptr_local) = ps.ptr_local
-            && ps.leaves.len() == leaves.len()
-            && ps
-                .leaves
-                .iter()
-                .zip(leaves.iter())
-                .all(|((a, _, _), (b, _))| a == b)
         {
             let v = self
                 .emit(InstKind::LoadLocal(ptr_local), Some(Type::U64))
@@ -1302,7 +1315,7 @@ impl<'a> FunctionLower<'a> {
         match binding {
             Binding::Struct { fields, .. } => {
                 let leaves = flatten_struct_locals(fields);
-                if self.module.function(target).ptr_self.is_some() {
+                if self.module.function(target).ptr_self().is_some() {
                     // CODE-SIZE-SELF-ABI: the callee wants one address.
                     let (addr, r) = self.receiver_address(&leaves)?;
                     reload = r;
@@ -1783,7 +1796,7 @@ impl<'a> FunctionLower<'a> {
         match &recv_binding {
             Binding::Struct { fields, .. } => {
                 let leaves = flatten_struct_locals(fields);
-                if self.module.function(target).ptr_self.is_some() {
+                if self.module.function(target).ptr_self().is_some() {
                     // CODE-SIZE-SELF-ABI: same as the scalar-returning
                     // sibling -- one address instead of every leaf.
                     let (addr, r) = self.receiver_address(&leaves)?;
@@ -1893,7 +1906,7 @@ impl<'a> FunctionLower<'a> {
         if !self.module.function(target).self_writeback_types.is_empty() {
             // CODE-SIZE-SELF-ABI: a pointer-passed receiver has no
             // writeback slots to fill.
-            let recv_is_ptr = self.module.function(target).ptr_self.is_some();
+            let recv_is_ptr = self.module.function(target).ptr_self().is_some();
             match &recv_binding {
                 Binding::Struct { fields, .. } if !recv_is_ptr => writeback_dests.extend(
                     flatten_struct_locals(fields).into_iter().map(|(l, _)| l),

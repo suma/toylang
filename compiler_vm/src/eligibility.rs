@@ -36,13 +36,13 @@ pub fn ir_vm_supported(module: &Module) -> bool {
     let reachable = module.reachable_from(main_id);
     for fid in &reachable {
         let func = &module.functions[fid.0 as usize];
-        // CODE-SIZE-SELF-ABI: a pointer-passed receiver reads its
+        // CODE-SIZE-SELF-ABI: a pointer-passed parameter reads its
         // fields out of the caller's memory, which is outside the
         // VM's scalar model. It cannot arise in a module the VM would
         // otherwise accept (that takes a wide struct receiver), but
         // saying so here keeps the two definitions of "scalar subset"
         // from drifting apart.
-        if func.ptr_self.is_some() {
+        if !func.ptr_params.is_empty() {
             return false;
         }
         if matches!(func.linkage, compiler_ir::Linkage::Import) || func.blocks.is_empty() {

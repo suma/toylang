@@ -650,7 +650,8 @@ impl<'a> FunctionLower<'a> {
         if !self.module.function(target_id).self_writeback_types.is_empty() {
             dests.extend(self.collect_compound_writeback_dests_slice(args_items)?);
         }
-        let arg_values = self.lower_call_arg_items(args_items, Some(target_id))?;
+        let (arg_values, ptr_arg_reloads) =
+            self.lower_call_arg_items(args_items, Some(target_id))?;
         self.emit(
             InstKind::CallEnum {
                 target: target_id,
@@ -659,6 +660,9 @@ impl<'a> FunctionLower<'a> {
             },
             None,
         );
+        for r in ptr_arg_reloads {
+            r.apply(self);
+        }
         Ok(())
     }
 

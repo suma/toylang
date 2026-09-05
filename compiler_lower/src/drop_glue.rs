@@ -569,7 +569,7 @@ impl<'a> FunctionLower<'a> {
         // -- and reads nothing back, since the value is being dropped.
         let mut args: Vec<ValueId> = Vec::with_capacity(locals.len());
         let mut self_dests: Vec<LocalId> = Vec::with_capacity(locals.len());
-        if self.module.function(func_id).ptr_self.is_some() {
+        if self.module.function(func_id).ptr_self().is_some() {
             let (addr, reload) = self.receiver_address(locals)?;
             args.push(addr);
             // The value is being destroyed; nothing reads it back.

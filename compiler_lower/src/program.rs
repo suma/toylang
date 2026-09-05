@@ -221,7 +221,43 @@ fn decide_ptr_self(
     if dyn_struct_leaf_layout(module, self_ty).is_none() {
         return false;
     }
-    module.function_mut(func_id).ptr_self = Some(crate::ir::PtrSelf {
+    module.function_mut(func_id).ptr_params.push(crate::ir::PtrSelf {
+        param_index: 0,
+        ptr_local: None,
+        leaves: Vec::new(),
+    });
+    true
+}
+
+/// CODE-SIZE-SELF-ABI S3: should parameter `pi` travel as an address?
+///
+/// Same rule as the receiver: a **struct** behind a reference, wider
+/// than the argument registers. Records the decision and answers
+/// whether it took, so the caller can leave the parameter out of the
+/// writeback shape.
+///
+/// Only references reach here. A by-value compound parameter must keep
+/// its own copy, and a scalar reference already travels as an address
+/// through `RefScalar`.
+fn decide_ptr_param(
+    module: &mut Module,
+    func_id: FuncId,
+    pi: usize,
+    param_ty: Type,
+) -> bool {
+    if !matches!(param_ty, Type::Struct(_)) {
+        return false;
+    }
+    let mut leaves = Vec::new();
+    flatten_compound_leaf_types(module, param_ty, &mut leaves);
+    if leaves.len() <= PTR_SELF_LEAF_THRESHOLD {
+        return false;
+    }
+    if dyn_struct_leaf_layout(module, param_ty).is_none() {
+        return false;
+    }
+    module.function_mut(func_id).ptr_params.push(crate::ir::PtrSelf {
+        param_index: pi,
         ptr_local: None,
         leaves: Vec::new(),
     });
@@ -672,7 +708,31 @@ fn declare_plain_functions(
                 continue;
             }
             let param_ty = module.function(func_id).params[pi];
+            // CODE-SIZE-SELF-ABI S3: a wide `&mut <struct>` parameter
+            // travels as an address, exactly as a wide receiver does.
+            // Then the callee writes through the pointer and there is
+            // nothing to send back, so it contributes no writeback
+            // types either.
+            if decide_ptr_param(module, func_id, pi, param_ty) {
+                continue;
+            }
             flatten_compound_leaf_types(module, param_ty, &mut writeback_types);
+        }
+        // A `&<struct>` parameter has no writeback to skip, but it is
+        // just as expensive to pass leaf by leaf, so it gets the same
+        // treatment.
+        for (pi, (_, decl_ty)) in func.parameter.iter().enumerate() {
+            if !matches!(decl_ty, TypeDecl::Ref { is_mut: false, .. }) {
+                continue;
+            }
+            if let TypeDecl::Ref { inner, .. } = decl_ty
+                && (super::types::lower_scalar(inner).is_some()
+                    || matches!(inner.as_ref(), TypeDecl::Dyn(_)))
+            {
+                continue;
+            }
+            let param_ty = module.function(func_id).params[pi];
+            decide_ptr_param(module, func_id, pi, param_ty);
         }
         if !writeback_types.is_empty() {
             module.function_mut(func_id).self_writeback_types = writeback_types;
@@ -1852,52 +1912,88 @@ impl<'a> FunctionLower<'a> {
     /// quietly for anything it cannot describe -- a non-struct
     /// receiver, an unknown byte layout -- so the by-value form stays
     /// the fallback rather than a failure.
-    fn setup_ptr_self(&mut self) -> Result<bool, String> {
-        let self_sym = self.pending_ptr_self_param.take();
-        if self.module.function(self.func_id).ptr_self.is_none() {
-            return Ok(false);
+    /// CODE-SIZE-SELF-ABI: fill in the leaf detail for every
+    /// parameter this function was declared to take as an address.
+    ///
+    /// The decision itself was made when the function was declared
+    /// (a call site can be lowered before the callee's body exists);
+    /// what is only knowable here is which locals the parameter's
+    /// leaves ended up in. Anything that stops us describing them is
+    /// an internal inconsistency rather than a case to fall back on --
+    /// callers have already been given the pointer signature.
+    ///
+    /// Returns whether **the receiver** took the pointer form, which
+    /// is what tells `lower_body` to leave it out of the writeback
+    /// shape.
+    fn setup_ptr_params(
+        &mut self,
+        parameter: &[(DefaultSymbol, TypeDecl)],
+    ) -> Result<bool, String> {
+        // A method's synthetic parameter list carries the receiver at
+        // index 0 under its own symbol, so every index is found the
+        // same way; the flag only says whether index 0 *is* a receiver.
+        let receiver_is_param0 = self.pending_ptr_self_param.take().is_some();
+        let indices: Vec<usize> = self
+            .module
+            .function(self.func_id)
+            .ptr_params
+            .iter()
+            .map(|p| p.param_index)
+            .collect();
+        let mut receiver_took = false;
+        for pi in indices {
+            let Some((name, _)) = parameter.get(pi) else {
+                return Err(format!(
+                    "internal error (CODE-SIZE-SELF-ABI): pointer-passed param {pi} has no declaration"
+                ));
+            };
+            let leaves = self.ptr_param_leaf_layout(*name, pi)?;
+            let ptr_local = self.module.function_mut(self.func_id).add_local(Type::U64);
+            let f = self.module.function_mut(self.func_id);
+            if let Some(ps) = f.ptr_params.iter_mut().find(|p| p.param_index == pi) {
+                ps.ptr_local = Some(ptr_local);
+                ps.leaves = leaves;
+            }
+            if pi == 0 && receiver_is_param0 {
+                receiver_took = true;
+            }
         }
-        // The decision was already made when the function was
-        // declared, so anything that stops us filling in the detail is
-        // an internal inconsistency, not a case to fall back on: the
-        // callers have been given the pointer signature already.
-        let self_sym = self_sym.ok_or_else(|| {
-            "internal error (CODE-SIZE-SELF-ABI): pointer receiver declared for a body with no receiver binding"
-                .to_string()
-        })?;
+        Ok(receiver_took)
+    }
+
+    /// The `(leaf local, byte offset, type)` list for the struct bound
+    /// to `name`, which is parameter `pi`.
+    fn ptr_param_leaf_layout(
+        &mut self,
+        name: DefaultSymbol,
+        pi: usize,
+    ) -> Result<Vec<(LocalId, u64, Type)>, String> {
         let Some(super::bindings::Binding::Struct { fields, .. }) =
-            self.bindings.get(&self_sym).cloned()
+            self.bindings.get(&name).cloned()
         else {
             return Err(
-                "internal error (CODE-SIZE-SELF-ABI): pointer receiver is not bound as a struct"
+                "internal error (CODE-SIZE-SELF-ABI): pointer-passed param is not bound as a struct"
                     .to_string(),
             );
         };
         let leaf_locals = super::bindings::flatten_struct_locals(&fields);
-        // The receiver is params[0]; its leaves are locals[0..n], which
-        // is the assumption codegen's block-param shift relies on.
-        let self_ty = self.module.function(self.func_id).params[0];
-        let layout = dyn_struct_leaf_layout(self.module, self_ty).ok_or_else(|| {
-            "internal error (CODE-SIZE-SELF-ABI): pointer receiver has no byte layout".to_string()
+        let param_ty = self.module.function(self.func_id).params[pi];
+        let layout = dyn_struct_leaf_layout(self.module, param_ty).ok_or_else(|| {
+            "internal error (CODE-SIZE-SELF-ABI): pointer-passed param has no byte layout"
+                .to_string()
         })?;
         if layout.len() != leaf_locals.len() {
             return Err(format!(
-                "internal error (CODE-SIZE-SELF-ABI): receiver has {} leaf locals but {} layout slots",
+                "internal error (CODE-SIZE-SELF-ABI): param {pi} has {} leaf locals but {} layout slots",
                 leaf_locals.len(),
                 layout.len(),
             ));
         }
-        let leaves: Vec<(LocalId, u64, Type)> = leaf_locals
+        Ok(leaf_locals
             .iter()
             .zip(layout.iter())
             .map(|((local, ty), (offset, _))| (*local, *offset, *ty))
-            .collect();
-        let ptr_local = self.module.function_mut(self.func_id).add_local(Type::U64);
-        self.module.function_mut(self.func_id).ptr_self = Some(crate::ir::PtrSelf {
-            ptr_local: Some(ptr_local),
-            leaves,
-        });
-        Ok(true)
+            .collect())
     }
 
     pub(super) fn terminate_return(&mut self, mut values: Vec<ValueId>) {
@@ -2222,7 +2318,7 @@ impl<'a> FunctionLower<'a> {
         // pointer before the writeback shape is built, because a
         // pointer-passed receiver needs no writeback at all -- its
         // mutations land in the caller's memory as they happen.
-        let ptr_self_taken = self.setup_ptr_self()?;
+        let ptr_self_taken = self.setup_ptr_params(&func.parameter)?;
 
         let mut writeback_leaves: Vec<(LocalId, Type)> = Vec::new();
         if let Some(self_sym) = self.pending_self_writeback_param.take()

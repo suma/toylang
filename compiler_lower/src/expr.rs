@@ -21,6 +21,7 @@
 use frontend::ast::{BuiltinFunction, Expr, ExprRef, StmtRef, UnaryOp};
 use string_interner::DefaultSymbol;
 
+use crate::method_call::ReceiverReload;
 use super::bindings::{
     flatten_struct_locals, flatten_tuple_element_locals, Binding, EnumStorage, PayloadSlot,
     TupleElementBinding,
@@ -1128,7 +1129,8 @@ impl<'a> FunctionLower<'a> {
                 let mut dests: Vec<crate::ir::LocalId> =
                     leaves.iter().map(|(l, _)| *l).collect();
                 dests.extend(writeback_dests);
-                let args = self.lower_call_arg_items(args_items, Some(target_id))?;
+                let (args, ptr_arg_reloads) =
+                    self.lower_call_arg_items(args_items, Some(target_id))?;
                 self.emit(
                     InstKind::CallStruct {
                         target: target_id,
@@ -1137,6 +1139,9 @@ impl<'a> FunctionLower<'a> {
                     },
                     None,
                 );
+                for r in ptr_arg_reloads {
+                    r.apply(self);
+                }
                 Ok(Some(self.load_leaves(leaves)))
             }
             Type::Tuple(tuple_id) => {
@@ -1145,7 +1150,8 @@ impl<'a> FunctionLower<'a> {
                 let mut dests: Vec<crate::ir::LocalId> =
                     leaves.iter().map(|(l, _)| *l).collect();
                 dests.extend(writeback_dests);
-                let args = self.lower_call_arg_items(args_items, Some(target_id))?;
+                let (args, ptr_arg_reloads) =
+                    self.lower_call_arg_items(args_items, Some(target_id))?;
                 self.emit(
                     InstKind::CallTuple {
                         target: target_id,
@@ -1154,6 +1160,9 @@ impl<'a> FunctionLower<'a> {
                     },
                     None,
                 );
+                for r in ptr_arg_reloads {
+                    r.apply(self);
+                }
                 Ok(Some(self.load_leaves(leaves)))
             }
             _ => Ok(None),
@@ -1318,7 +1327,11 @@ impl<'a> FunctionLower<'a> {
     }
 
     pub(super) fn lower_call_args(&mut self, args_ref: &ExprRef) -> Result<Vec<ValueId>, String> {
-        self.lower_call_args_with_target(args_ref, None)
+        // No target, so no parameter can be pointer-passed and no
+        // reload can arise.
+        let (values, reloads) = self.lower_call_args_with_target(args_ref, None)?;
+        debug_assert!(reloads.is_empty());
+        Ok(values)
     }
 
     /// Variant that knows the callee's `param_ref_pointee` types so
@@ -1332,7 +1345,7 @@ impl<'a> FunctionLower<'a> {
         &mut self,
         args_ref: &ExprRef,
         target: Option<crate::ir::FuncId>,
-    ) -> Result<Vec<ValueId>, String> {
+    ) -> Result<(Vec<ValueId>, Vec<ReceiverReload>), String> {
         let args_expr = self
             .program
             .expression
@@ -1353,7 +1366,7 @@ impl<'a> FunctionLower<'a> {
         &mut self,
         items: &[ExprRef],
         target: Option<crate::ir::FuncId>,
-    ) -> Result<Vec<ValueId>, String> {
+    ) -> Result<(Vec<ValueId>, Vec<ReceiverReload>), String> {
         // The callee's declared parameter types, when the target is
         // known. A compound literal argument follows them to pick the
         // right monomorphisation.
@@ -1370,6 +1383,10 @@ impl<'a> FunctionLower<'a> {
             .map(|t| self.module.function(t).param_dyn_trait.clone())
             .unwrap_or_default();
         let mut values: Vec<ValueId> = Vec::with_capacity(items.len());
+        // CODE-SIZE-SELF-ABI S3: one per pointer-passed argument that
+        // had to be copied into a slot; the caller reads them back
+        // after emitting the call.
+        let mut ptr_arg_reloads: Vec<ReceiverReload> = Vec::new();
         for (arg_idx, a) in items.iter().enumerate() {
             // A5-P2: dyn-trait coercion at the call site. When the
             // callee's param at this slot is `&dyn TraitName`, the
@@ -1680,6 +1697,18 @@ impl<'a> FunctionLower<'a> {
             if let Some(Expr::Identifier(sym)) = self.program.expression.get(&arg_expr_ref) {
                 if let Some(Binding::Struct { fields, .. }) = self.bindings.get(&sym).cloned() {
                     let leaves = flatten_struct_locals(&fields);
+                    // CODE-SIZE-SELF-ABI S3: a wide `&T` / `&mut T`
+                    // parameter takes one address, the same as a wide
+                    // receiver does.
+                    if target
+                        .map(|t| self.module.function(t).ptr_param(arg_idx).is_some())
+                        .unwrap_or(false)
+                    {
+                        let (addr, reload) = self.receiver_address(&leaves)?;
+                        values.push(addr);
+                        ptr_arg_reloads.push(reload);
+                        continue;
+                    }
                     for (local, ty) in &leaves {
                         let v = self
                             .emit(InstKind::LoadLocal(*local), Some(*ty))
@@ -1745,7 +1774,7 @@ impl<'a> FunctionLower<'a> {
                 .ok_or_else(|| "call argument produced no value".to_string())?;
             values.push(v);
         }
-        Ok(values)
+        Ok((values, ptr_arg_reloads))
     }
 
 
@@ -2216,7 +2245,8 @@ impl<'a> FunctionLower<'a> {
             // rather than a value, which is what a `&mut Vec<T>`
             // parameter needs (`random::shuffle(&mut v)` reported
             // "call argument produced no value" without it).
-            let arg_values = self.lower_call_arg_items(&args, Some(target))?;
+            let (arg_values, ptr_arg_reloads) =
+                self.lower_call_arg_items(&args, Some(target))?;
             let result_ty = if ret_ty.produces_value() {
                 Some(ret_ty)
             } else {
@@ -2255,6 +2285,9 @@ impl<'a> FunctionLower<'a> {
                     },
                     None,
                 );
+                for r in ptr_arg_reloads {
+                    r.apply(self);
+                }
                 return match (ret_dest, result_ty) {
                     (Some(local), Some(ty)) => {
                         Ok(self.emit(InstKind::LoadLocal(local), Some(ty)))
@@ -2262,10 +2295,14 @@ impl<'a> FunctionLower<'a> {
                     _ => Ok(None),
                 };
             }
-            return Ok(self.emit(
+            let out = self.emit(
                 InstKind::Call { target, args: arg_values },
                 result_ty,
-            ));
+            );
+            for r in ptr_arg_reloads {
+                r.apply(self);
+            }
+            return Ok(out);
         }
         Err(format!(
             "compiler MVP cannot lower {} yet",

@@ -10,6 +10,7 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **CODE-SIZE-SELF-ABI S3a — `&T` / `&mut T` の compound 引数もポインタで渡す** — receiver と同じ扱いを参照引数に広げ、受け取った pointer param はどれでも転送元になる。`flush_segment` 1,384 → 455 命令、`poc/logsearch` の `__text` は 191,080 → 162,912 B (一連の作業で −14.7%)。[`CODE_SIZE.md`](CODE_SIZE.md)。
 - **CODE-SIZE-SELF-ABI S1+S2 — 幅の広い by-reference receiver をポインタで渡す** — leaf 8 個超の `&self` / `&mut self` は 1 本の番地で渡り、codegen が leaf の `LoadLocal` / `StoreLocal` をポインタ経由の load/store に読み替える。鎖を下るときは番地をそのまま転送する。`poc/logsearch` で `__text` 191,080 → 167,736 B (WB-PRUNE と合わせて −12.2%)、実行も ~4% 速い。設計は [`CODE_SIZE.md`](CODE_SIZE.md)。
 - **CODE-SIZE-WB-PRUNE — `&mut self` が書かない leaf を返さなくした** — lowering 後に writeback slot を落とす pass。不動点まで回すので callee → caller と連鎖する (`write_seg` の戻り 53 → 1)。`poc/logsearch` で `__text` −10.3%。設計は [`CODE_SIZE.md`](CODE_SIZE.md)。
 - **リファクタリング (frontend / compiler / interpreter)** — 重複と
@@ -1653,19 +1654,28 @@
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
 
-- **CODE-SIZE-SELF-ABI-S3: 鎖の根がまだ呼び出しごとに slot を作り直す** ★★ —
-  S1+S2 (完了済み) で「幅の広い by-reference receiver をポインタで渡す」
-  が入り、鎖の中ほどは大きく縮んだ (`emit_terms` 3,092 → 263 命令)。
-  残るのは**根**: `var w = ArchiveWriter::new()` を持つ関数は
-  受け側が leaf local なので、method を呼ぶたびに slot へ書き出して
-  読み戻す (`cmd_archive` +3,604 命令、`flush_segment` +2,532)。
-  直しは (1) **幅の広い struct のローカル束縛を stack slot に常駐**
-  させる、(2) `&mut T` / `&T` を取る**自由関数**の compound param にも
-  同じポインタ形を広げる (`flush_segment(w: &mut ArchiveWriter, ...)`
-  が今それで太っている)。**演算子オーバーロード** (`add` / `eq` ...) も
-  対象外のままで、被演算子を潰す `lower_arg_values` が callee を
-  知らないのが理由。外れた経路は `ptr_self_verify` がビルドを止めるので
-  沈黙はしない。設計と計測は [`CODE_SIZE.md`](CODE_SIZE.md)。
+- **CODE-SIZE-SELF-ABI-S3b: ローカル束縛が leaf local のままで、根が
+  呼び出しごとに slot を作り直す** ★★ — S1+S2 (receiver) と S3a
+  (`&T` / `&mut T` の compound 引数) が入り、鎖の中ほどと転送層は
+  片付いた (`emit_terms` 3,092 → 263 命令、`flush_segment` 1,384 → 455)。
+  残るのは**根**: `var w = ArchiveWriter::new()` を持つ関数は受け側が
+  leaf local なので、幅の広い引数を渡すたびに slot へ書き出して
+  読み戻す (`cmd_archive` がその分だけ太い)。直しは**幅の広い struct の
+  ローカル束縛を stack slot に常駐**させること — `Binding::Struct` の
+  consumer 17 ファイル 74 か所に関わるので、S1〜S3a より深い。
+  **演算子オーバーロード** (`add` / `eq` ...) も対象外のままで、被演算子を
+  潰す `lower_arg_values` が callee を知らないのが理由。外れた経路は
+  `ptr_self_verify` がビルドを止め、読み戻し忘れは `ReceiverReload` の
+  `Drop` が panic するので、どちらも沈黙しない。
+  計測と段取りは [`CODE_SIZE.md`](CODE_SIZE.md)。
+
+- **PTR-PARAM-NO-REBORROW: `&mut T` 引数を別の `&mut T` 引数に渡せない** ★ —
+  `fn outer(w: &mut Wide) { leaf(w, n) }` は
+  `[E0001] expected &mut Wide, but got Wide` で落ちる (`&mut w` と
+  書いても同じ)。型検査に reborrow が無い。method 呼び出し
+  (`w.bump()`) は通るので実害は限定的だが、自由関数どうしで
+  `&mut` を引き回す形が書けない。CODE-SIZE-SELF-ABI の作業中に
+  テストを書こうとして踏んだ (2026-09-05)。**ABI 側の問題ではない**。
 
 - **BY-VALUE-SELF-ALIAS: by-value receiver の `var s = self` が tree-walker
   だけ呼び出し側に漏れる** ★★ — `fn consumed(self: Self)` の中で

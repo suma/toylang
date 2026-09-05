@@ -628,7 +628,8 @@ impl<'a> FunctionLower<'a> {
                 self.interner.resolve(fn_name).unwrap_or("?")
             ));
         }
-        let mut arg_values = self.lower_call_args_with_target(args_ref, Some(target))?;
+        let (mut arg_values, ptr_arg_reloads) =
+            self.lower_call_args_with_target(args_ref, Some(target))?;
         // Phase 6: capturing closure direct call — prepend the
         // env_ptr in front of the user-visible args so the
         // callee's signature `(env: U64, ...user_params)` is
@@ -682,6 +683,11 @@ impl<'a> FunctionLower<'a> {
             // (stack-slot read-back); both are independent and only
             // the dyn side uses the pending queue.
             self.drain_dyn_mut_writebacks()?;
+            // CODE-SIZE-SELF-ABI S3: read back any argument that was
+            // copied into a slot to be passed by address.
+            for r in ptr_arg_reloads {
+                r.apply(self);
+            }
             // Surface the user-return value (loaded from the
             // ret_dest local) so the caller's expression-position
             // consumer sees a normal ValueId.
@@ -707,6 +713,9 @@ impl<'a> FunctionLower<'a> {
         // `CallWithSelfWriteback` branch above for the parallel
         // path that drains in the same way.
         self.drain_dyn_mut_writebacks()?;
+        for r in ptr_arg_reloads {
+            r.apply(self);
+        }
         Ok(call_value)
     }
 

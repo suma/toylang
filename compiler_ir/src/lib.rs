@@ -211,6 +211,21 @@ pub struct EnumVariant {
     pub payload_types: Vec<Type>,
 }
 
+impl Function {
+    /// CODE-SIZE-SELF-ABI: the pointer description for parameter `i`,
+    /// if that parameter travels as an address.
+    pub fn ptr_param(&self, i: usize) -> Option<&PtrSelf> {
+        self.ptr_params.iter().find(|p| p.param_index == i)
+    }
+
+    /// Whether parameter 0 -- a method receiver -- travels as an
+    /// address. Named for the common question; `ptr_param(0)` under
+    /// the hood.
+    pub fn ptr_self(&self) -> Option<&PtrSelf> {
+        self.ptr_param(0)
+    }
+}
+
 impl Module {
     pub fn new() -> Self {
         Self::default()
@@ -454,7 +469,7 @@ impl Module {
             return_type,
             self_writeback_types: Vec::new(),
             self_writeback_locals: Vec::new(),
-            ptr_self: None,
+            ptr_params: Vec::new(),
             locals: Vec::new(),
             array_slots: Vec::new(),
             address_taken_locals: std::collections::HashSet::new(),
@@ -513,7 +528,7 @@ impl Module {
             return_type,
             self_writeback_types: Vec::new(),
             self_writeback_locals: Vec::new(),
-            ptr_self: None,
+            ptr_params: Vec::new(),
             locals: Vec::new(),
             array_slots: Vec::new(),
             address_taken_locals: std::collections::HashSet::new(),
@@ -879,7 +894,7 @@ pub struct Function {
     /// pointer along, instead of re-pushing every leaf, and it is why
     /// such a receiver needs no writeback returns -- the mutation has
     /// already landed where the caller can see it.
-    pub ptr_self: Option<PtrSelf>,
+    pub ptr_params: Vec<PtrSelf>,
     /// CODE-SIZE-WB-PRUNE: the leaf locals whose values fill the
     /// writeback return slots, in the same order as
     /// `self_writeback_types`. Recorded at lowering time so a
@@ -1625,7 +1640,7 @@ impl InstKind {
     }
 }
 
-/// CODE-SIZE-SELF-ABI: how a pointer-passed receiver is laid out.
+/// CODE-SIZE-SELF-ABI: how a pointer-passed parameter is laid out.
 ///
 /// `leaves` is in the same order `flatten_struct_locals` produces, so
 /// it lines up with the leaf list every other part of lowering uses;
@@ -1633,6 +1648,10 @@ impl InstKind {
 /// same layout a `dyn` thunk writes behind `data_ptr`.
 #[derive(Debug, Clone)]
 pub struct PtrSelf {
+    /// Which parameter this describes. 0 is the receiver of a
+    /// `&self` / `&mut self` method; later indices are `&T` / `&mut T`
+    /// compound parameters of any function.
+    pub param_index: usize,
     /// Local that receives the incoming pointer. `None` until the
     /// body is lowered: the *decision* is made when the function is
     /// declared, because a caller may be lowered before the callee's
@@ -1641,7 +1660,7 @@ pub struct PtrSelf {
     /// the program does not reach) keeps `None` and is never emitted.
     pub ptr_local: Option<LocalId>,
     /// `(leaf local, byte offset, type)` for every leaf of the
-    /// receiver. Empty until the body is lowered, for the same reason.
+    /// parameter. Empty until the body is lowered, for the same reason.
     pub leaves: Vec<(LocalId, u64, Type)>,
 }
 

@@ -24,7 +24,7 @@ fn expected_arity(module: &Module, target: FuncId) -> usize {
     let func = module.function(target);
     let mut n = 0usize;
     for (i, p) in func.params.iter().enumerate() {
-        if i == 0 && func.ptr_self.is_some() {
+        if func.ptr_param(i).is_some() {
             n += 1;
             continue;
         }
@@ -70,10 +70,10 @@ pub fn verify_call_arity(module: &Module) -> Result<(), String> {
                         callee.export_name,
                         args.len(),
                         want,
-                        if callee.ptr_self.is_some() {
-                            " (its receiver travels as a pointer)"
-                        } else {
+                        if callee.ptr_params.is_empty() {
                             ""
+                        } else {
+                            " (one or more of its parameters travel as a pointer)"
                         },
                     ));
                 }

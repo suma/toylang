@@ -149,6 +149,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // the registration loop below can index it without
         // re-borrowing `program`.
         let function_module_paths = program.function_module_paths.clone();
+        let function_module_ranks = program.function_module_ranks.clone();
 
         let mut visitor = Self {
             core: CoreReferences::from_program(program, string_interner),
@@ -190,7 +191,8 @@ impl<'a> TypeCheckerVisitor<'a> {
             let module_path = function_module_paths
                 .get(idx)
                 .and_then(|opt| opt.as_deref());
-            visitor.add_function_with_module(module_path, func.clone());
+            let rank = function_module_ranks.get(idx).copied().unwrap_or(0);
+            visitor.add_function_with_module_ranked(module_path, func.clone(), rank);
         }
 
         // Register every struct and enum the program declares, before

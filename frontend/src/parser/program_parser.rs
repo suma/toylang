@@ -287,6 +287,7 @@ impl<'a> Parser<'a> {
         std::mem::swap(&mut ast_builder, &mut self.ast_builder);
         let (expr, stmt, location_pool) = ast_builder.extract_pools();
         let function_module_paths = vec![None; out.functions.len()];
+        let function_module_ranks = vec![0u32; out.functions.len()];
         Ok(File {
             id: crate::ast::program::next_file_id(),
             node: Node::new(out.start_pos.unwrap_or(0usize), out.end_pos.unwrap_or(0usize)),
@@ -294,6 +295,7 @@ impl<'a> Parser<'a> {
             imports,
             function: out.functions,
             function_module_paths,
+            function_module_ranks,
             consts: out.consts,
             tests: out.tests,
             transferred_bindings: std::collections::HashSet::new(),

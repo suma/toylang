@@ -348,6 +348,7 @@ fn declare_plain_functions(
             .function_module_paths
             .get(idx)
             .and_then(|opt| opt.as_deref());
+        let module_rank = program.function_module_ranks.get(idx).copied().unwrap_or(0);
         if !func.generic_params.is_empty() {
             generic_funcs.insert(func.name, Rc::clone(func));
             continue;
@@ -422,6 +423,7 @@ fn declare_plain_functions(
                 Linkage::Import,
                 params,
                 ret,
+                module_rank,
             );
             continue;
         }
@@ -488,6 +490,7 @@ fn declare_plain_functions(
             linkage,
             params,
             ret,
+            module_rank,
         );
         // TEST-PERF: this is a body-bearing function (non-generic,
         // non-extern), so it can be scheduled for deferred lowering

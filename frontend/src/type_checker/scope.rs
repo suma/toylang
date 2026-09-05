@@ -35,6 +35,18 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.context.set_fn_with_module(module_path, f.name, f.clone());
     }
 
+    /// [`add_function_with_module`] carrying the root's rank, so a
+    /// later `--core-modules` root wins the bare name.
+    pub fn add_function_with_module_ranked(
+        &mut self,
+        module_path: Option<&[DefaultSymbol]>,
+        f: Rc<Function>,
+        rank: u32,
+    ) {
+        self.context
+            .set_fn_with_module_ranked(module_path, f.name, f.clone(), rank);
+    }
+
     /// Return a clone of the expression → type map built by
     /// inference.  Used by tests and by later compilation stages.
     pub fn get_expr_types(&self) -> HashMap<crate::ast::ExprRef, crate::type_decl::TypeDecl> {

@@ -57,6 +57,12 @@ pub mod layout;
 pub struct FunctionEntry {
     pub module_path: Option<Vec<DefaultSymbol>>,
     pub id: FuncId,
+    /// Which module root it came from; higher wins a bare name.
+    /// Mirrors `File::function_module_ranks` and the interpreter's
+    /// `QualifiedFunction::rank` -- all three resolve the same call
+    /// the same way, or a program type-checks against one function
+    /// and runs another.
+    pub rank: u32,
 }
 
 /// Does `path` end with `suffix`? The qualifier-resolution rule
@@ -418,7 +424,7 @@ impl Module {
         params: Vec<Type>,
         return_type: Type,
     ) -> FuncId {
-        self.declare_function_with_module(symbol, None, export_name, linkage, params, return_type)
+        self.declare_function_with_module(symbol, None, export_name, linkage, params, return_type, 0)
     }
 
     /// `declare_function` form that takes the originating module's
@@ -432,6 +438,7 @@ impl Module {
         linkage: Linkage,
         params: Vec<Type>,
         return_type: Type,
+        module_rank: u32,
     ) -> FuncId {
         let id = FuncId(self.functions.len() as u32);
         self.functions.push(Function {
@@ -470,6 +477,7 @@ impl Module {
         entries.push(FunctionEntry {
             module_path: module_path.map(|p| p.to_vec()),
             id,
+            rank: module_rank,
         });
         id
     }
@@ -541,16 +549,28 @@ impl Module {
         {
             return Some(entry.id);
         }
-        let mut hits = entries.iter().filter(|e| match (qualifier, &e.module_path) {
-            (None, _) => true,
-            (Some(segments), Some(path)) => path_ends_with(path, segments),
-            (Some(_), None) => false,
-        });
-        let first = hits.next()?;
-        if hits.next().is_some() {
-            return None; // ambiguous
+        let matching: Vec<&FunctionEntry> = entries
+            .iter()
+            .filter(|e| match (qualifier, &e.module_path) {
+                (None, _) => true,
+                (Some(segments), Some(path)) => path_ends_with(path, segments),
+                (Some(_), None) => false,
+            })
+            .collect();
+        let first = matching.first()?;
+        if matching.len() == 1 {
+            return Some(first.id);
         }
-        Some(first.id)
+        // BUILD-TOOL B0: a later module root wins the bare name.
+        if qualifier.is_none() {
+            let top = matching.iter().map(|e| e.rank).max().unwrap_or(0);
+            let mut winners = matching.iter().filter(|e| e.rank == top);
+            let only = winners.next()?;
+            if winners.next().is_none() {
+                return Some(only.id);
+            }
+        }
+        None // ambiguous
     }
 
     /// Returns true when at least one entry exists for `name`,

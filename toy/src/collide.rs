@@ -1,16 +1,16 @@
 //! B4: say which bare names two module roots both define, before the
 //! compiler has to (BUILD_TOOL.md D5).
 //!
-//! The underlying hole is BARE-NAME-COLLISION: every auto-loaded
-//! module shares one namespace for bare calls, so a private
-//! `fn is_digit` in a package collides with `std::json::is_digit` and
-//! the program stops with `[E0010] ambiguous module path`. Resolving
-//! that is a language decision and this tool does not make it.
+//! A bare call now resolves — the later root wins, so a package's own
+//! `fn parse` shadows `std::json::parse` rather than colliding with
+//! it. Shadowing is still worth saying out loud: it is usually
+//! deliberate, and when it is not, the symptom is a stdlib function
+//! quietly not being the one that ran.
 //!
-//! Detecting it is a different matter. The roots are known before
-//! anything is parsed, so the duplicate can be named at the point the
-//! roots are assembled — whereas the compiler only reaches it when a
-//! *call* is resolved, which may be in a branch nobody ran today.
+//! The roots are known before anything is parsed, so this can be said
+//! at the point they are assembled — whereas the compiler reaches the
+//! question only when a *call* is resolved, which may be in a branch
+//! nobody ran today.
 //!
 //! The scan is deliberately shallow: a top-level `fn` / `pub fn` name
 //! at the start of a line. It is a warning, so a false positive costs
@@ -29,12 +29,14 @@ pub struct Collision {
 /// that the package has a hand in**.
 ///
 /// A duplicate that lives entirely inside the first root — the stdlib
-/// — is filtered out. It is real (`encode` is in both `std::base64`
-/// and `std::hex`, so a bare `encode(...)` is already ambiguous), but
-/// it is not this package's to fix, and a warning that appears on
-/// every command and cannot be acted on is a warning people learn to
-/// scroll past. The stdlib's own duplicates belong in the language's
-/// ledger, not in each build.
+/// — is filtered out. It is real, and unlike a package's shadow it is
+/// **not** resolvable: `encode` is in both `std::base64` and
+/// `std::hex` at the same rank, so a bare `encode(...)` is ambiguous
+/// and the compiler says so at the call. It is not this package's to
+/// fix, and a warning that appears on every command and cannot be
+/// acted on is a warning people learn to scroll past. The stdlib's
+/// own duplicates belong in the language's ledger, not in each
+/// build.
 ///
 /// Names are reported once, with every file that declares them, in
 /// name order — a report that moves between runs is one nobody reads
@@ -78,7 +80,7 @@ pub fn render(collisions: &[Collision]) -> String {
     let mut out = String::new();
     for c in collisions {
         out.push_str(&format!(
-            "warning: `{}` is defined in {}\n  a bare call resolves to neither -- qualify it, or rename one\n",
+            "warning: `{}` is defined in {}\n  a bare call takes the last one; qualify it to be explicit\n",
             c.name,
             c.files.join(" and ")
         ));

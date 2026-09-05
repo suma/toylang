@@ -38,6 +38,20 @@ pub struct File {
     /// function — entries already in `function` at integration time get
     /// `None` retroactively if they don't already have an entry.
     pub function_module_paths: Vec<Option<Vec<DefaultSymbol>>>,
+    /// Which module root each function came from, parallel to
+    /// `function`. Higher wins.
+    ///
+    /// BUILD-TOOL B0 gave a later `--core-modules` root the win over
+    /// an earlier one for a module *path*; this is the same rule one
+    /// level down, for the bare name a call may use without a
+    /// qualifier. Without it a package's own `fn parse` is merely a
+    /// third candidate against `std::json::parse` and every bare call
+    /// becomes `[E0010] ambiguous module path` -- so a private helper
+    /// breaks the day the stdlib grows a function of the same name
+    /// (BUILD_TOOL.md §1, hole 2). `0` is the stdlib and user-authored
+    /// top-level functions do not appear here at all: they win
+    /// outright, as they always did.
+    pub function_module_ranks: Vec<u32>,
     /// Top-level `const NAME: Type = expr` declarations. Evaluated once
     /// at program startup and bound as immutable globals so any function
     /// body (including `main`) can reference them.

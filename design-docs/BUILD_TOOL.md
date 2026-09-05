@@ -202,15 +202,19 @@ warning: `is_digit` is defined in both src/record.t and <stdlib>/std/json.t
 ### B4 が最初に見つけたもの
 
 **stdlib 自身が衝突している。** `encode` / `decode` が
-`std::base64` と `std::hex` の両方にあり、bare な `encode(...)` は
-既に曖昧である。道具はこれを**報告しない** — パッケージの側に
-直せるものが無く、毎回出て手も打てない警告は読み飛ばしを
-教えるだけなので、**第 1 root (stdlib) の中だけで閉じた重複は
-落としている**。言語側の台帳 (todo の BARE-NAME-COLLISION) の話。
+`std::base64` と `std::hex` の両方にあり、**同じ rank なので
+bare な `encode(...)` は今も曖昧**である。道具はこれを報告しない —
+パッケージの側に直せるものが無く、毎回出て手も打てない警告は
+読み飛ばしを教えるだけなので、**第 1 root (stdlib) の中だけで
+閉じた重複は落としている**。言語側の台帳 (todo の
+BARE-NAME-COLLISION) の話。
 
-`poc/logsearch` に対しては 2 件出た — `decode` (`src/lsz.t` と
-上記 2 つ) と `parse` (`src/record.t` と `std::json`)。どちらも
-実在する衝突で、**呼び出しに到達するまでコンパイラは黙っている**。
+`poc/logsearch` に対しては 2 件出た — `decode` (`src/lsz.t`) と
+`parse` (`src/record.t` vs `std::json`)。**これは穴 2 を直す
+きっかけになった**: B0 が module パスに入れた「後の root が勝つ」を
+bare 名にも適用し、パッケージの定義が stdlib を shadow するように
+した (2026-09-05)。だから上の 2 件は**もう壊れない** — 警告は
+「意図した shadow か」を尋ねるものに変わった。
 
 ### landing 時に分かったこと
 

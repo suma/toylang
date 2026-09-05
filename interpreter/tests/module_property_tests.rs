@@ -350,7 +350,11 @@ fn same_leaf_name_same_function_is_ambiguous_not_a_panic() {
         Some(core.path().to_path_buf()),
     )
     .expect_err("colliding module file names should be reported");
-    assert!(err.contains("ambiguous module path"), "{err}");
+    // `dup::f()` names a module, and two modules end in `dup`, so
+    // the qualifier itself is what cannot be resolved -- a different
+    // problem from a bare call, with a different remedy (rename a
+    // file), and now a different message.
+    assert!(err.contains("ambiguous module path `dup::f`"), "{err}");
     assert!(err.contains("std::a::dup::f"), "{err}");
     assert!(err.contains("std::b::dup::f"), "{err}");
 }
@@ -366,7 +370,12 @@ fn bare_call_reports_ambiguity_rather_than_not_found() {
         Some(core.path().to_path_buf()),
     )
     .expect_err("an ambiguous bare call should be reported");
-    assert!(err.contains("ambiguous module path"), "{err}");
+    // Both roots are one root here, so the two candidates rank
+    // equally and there is nothing to prefer -- which is the case the
+    // bare-call message is for. (A candidate from a *later*
+    // `--core-modules` root wins outright; see
+    // `a_later_root_wins_a_bare_name`.)
+    assert!(err.contains("ambiguous call `f`"), "{err}");
 }
 
 #[test]

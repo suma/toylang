@@ -10,6 +10,24 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **BARE-NAME-COLLISION — 後の module root が bare 名を勝ち取るようにした** —
+  B0 は module **パス**の解決に「後の root が勝つ」を入れたが、
+  bare 名 (qualifier 無しの呼び出し) は素通しで、パッケージ自身の
+  `fn parse` が `std::json::parse` に対して**単なる 3 つ目の候補**
+  だった。つまり stdlib が同名の関数を生やした日にユーザの private
+  helper が壊れる (BUILD_TOOL §1 穴 2)。同じ規則を 1 段下に適用した。
+  **修飾付きの呼び出しは対象外** — `hex::encode` は module を名指して
+  いるので、後の root に在るからと別のものを返すのは誤答。
+  rank は `File::function_module_ranks` として 3 か所
+  (型検査器 / interpreter の `QualifiedFunction` / IR の
+  `FunctionEntry`) に届ける — **1 つでも落とすと型検査した関数と
+  実行される関数が食い違う** (実際 interpreter 側を落として踏んだ)。
+  4 レーン一致をテストで固定。`FULL_AST_CACHE_SCHEMA_VERSION` を 44 に
+- **`ambiguous` の診断が用途で分かれた** — bare 呼び出しに
+  「Two modules cannot share a file name — rename one of them」と
+  言っていたが、`std::base64` と `std::hex` はファイル名が違う。
+  修飾付き (`dup::f`) は従来の文言、bare は
+  「どちらの module か書くか、後に来る root に自分の定義を置け」に
 - **TEST-TOOL T0 — module の中に `test` ブロックを書けるようにした** —
   `assert_eq` はパーサが文字列連結に desugar するマクロで、統合の
   remapper に `Expr::BuiltinMethodCall` の腕が無かった。つまり

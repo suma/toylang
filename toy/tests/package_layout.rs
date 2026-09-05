@@ -429,11 +429,10 @@ fn main() -> u64 { 0u64 }
 
 #[test]
 fn a_bare_name_the_package_shares_with_the_stdlib_is_named_up_front() {
-    // BARE-NAME-COLLISION is a language decision this tool does not
-    // make. Detecting it is separate: the roots are known before
-    // anything is parsed, whereas the compiler reaches the clash only
-    // when a *call* is resolved — possibly down a branch this run
-    // never takes.
+    // Shadowing resolves now (the later root wins), but it is worth
+    // saying out loud: the roots are known before anything is parsed,
+    // whereas the compiler reaches the question only when a *call* is
+    // resolved — possibly down a branch this run never takes.
     let pkg = scratch("collide");
     write(&pkg, "src/mine.t", "pub fn encode(n: u64) -> u64 { n }\n");
     write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
@@ -449,10 +448,10 @@ fn a_bare_name_the_package_shares_with_the_stdlib_is_named_up_front() {
 
 #[test]
 fn a_duplicate_that_is_entirely_the_stdlibs_is_not_reported() {
-    // `encode` is in both `std::base64` and `std::hex`, so a bare
-    // `encode(...)` is already ambiguous — but that is not this
-    // package's to fix, and a warning on every command that cannot be
-    // acted on is one people learn to scroll past.
+    // `encode` is in both `std::base64` and `std::hex` at the same
+    // rank, so a bare `encode(...)` really is ambiguous — but that is
+    // not this package's to fix, and a warning on every command that
+    // cannot be acted on is one people learn to scroll past.
     let pkg = scratch("no_stdlib_noise");
     write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
     let out = run(&pkg, &["check", pkg.0.to_str().unwrap()]);
@@ -473,4 +472,81 @@ fn the_collision_check_can_be_turned_off() {
         &["check", pkg.0.to_str().unwrap(), "--no-warn-collisions"],
     );
     assert!(!String::from_utf8_lossy(&out.stderr).contains("warning: `encode`"));
+}
+
+#[test]
+fn a_later_root_wins_a_bare_name() {
+    // BUILD_TOOL.md §1 hole 2: a package's own `fn parse` used to be
+    // merely a third candidate against `std::json::parse`, so every
+    // bare call became `[E0010] ambiguous module path` — and a
+    // private helper broke the day the stdlib grew a function of the
+    // same name. B0 already gave a later root the win for a module
+    // *path*; a bare name is the same question with the qualifier
+    // left off.
+    //
+    // Every lane has to agree, or a program type-checks against one
+    // function and runs another.
+    let pkg = scratch("bare_name_rank");
+    write(&pkg, "src/mine.t", "pub fn encode(n: u64) -> u64 { n + 1u64 }\n");
+    write(
+        &pkg,
+        "main.t",
+        r#"
+fn main() -> u64 {
+    val n: u64 = encode(41u64)
+    println(n)
+    0u64
+}
+"#,
+    );
+    for backend in ["vm", "aot", "jit"] {
+        let out = run(
+            &pkg,
+            &[
+                "run",
+                pkg.0.to_str().unwrap(),
+                "--backend",
+                backend,
+                "--no-warn-collisions",
+            ],
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("42"),
+            "{backend}: the package's `encode` should win; stdout: {stdout}\nstderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn a_qualified_call_still_names_its_own_module() {
+    // The preference is for the *unqualified* form only. Writing
+    // `hex::encode` asks for a particular module, and handing back a
+    // different one because it sits in a later root would be a wrong
+    // answer rather than a preference.
+    let pkg = scratch("qualified_unaffected");
+    write(&pkg, "src/mine.t", "pub fn encode(n: u64) -> u64 { n + 1u64 }\n");
+    write(
+        &pkg,
+        "main.t",
+        r#"
+fn main() -> u64 {
+    var v: Vec<u8> = Vec::new()
+    v.push(65u8)
+    val s: String = hex::encode(&v)
+    println(s)
+    val n: u64 = mine::encode(41u64)
+    println(n)
+    0u64
+}
+"#,
+    );
+    let out = run(&pkg, &["run", pkg.0.to_str().unwrap(), "--no-warn-collisions"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("41") && stdout.contains("42"),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

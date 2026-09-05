@@ -1237,9 +1237,18 @@ pub(crate) fn load_and_integrate_module(
 
     let candidates = candidate_module_paths(core_modules_dirs, &segments);
     let mut tried: Vec<String> = Vec::with_capacity(candidates.len());
-    for path in &candidates {
+    for (idx, path) in candidates.iter().enumerate() {
         tried.push(path.clone());
         if let Ok(source) = std::fs::read_to_string(path) {
+            // Three candidate spellings per root, tried later-root
+            // first, so the root's rank reads back off the index. A
+            // candidate past the roots is the legacy cwd-relative
+            // `modules/...` form, which ranks with the stdlib.
+            let root_rank = if idx < core_modules_dirs.len() * 3 {
+                (core_modules_dirs.len() - 1 - idx / 3) as u32
+            } else {
+                0
+            };
             return integrate_module_into_program_with_options_full(
                 &source,
                 program,
@@ -1248,6 +1257,7 @@ pub(crate) fn load_and_integrate_module(
                 Some(import.module_path.clone()),
                 shadowed_stdlib_types.clone(),
                 path,
+                root_rank,
             );
         }
     }
@@ -1286,6 +1296,10 @@ pub struct DiscoveredCoreModule {
     /// know: the same source arrives once as "the program" and once
     /// as "a module".
     pub path: std::path::PathBuf,
+    /// Which module root this came from; higher wins a bare name.
+    /// See `File::function_module_ranks`. `discover_core_modules`
+    /// alone always answers 0 -- only the multi-root walk ranks.
+    pub root_rank: u32,
 }
 
 /// [`discover_core_modules`] over several roots (BUILD-TOOL B0).
@@ -1309,8 +1323,9 @@ pub fn discover_core_modules_multi(
     // name is not a shadow, it is a redeclaration).
     let mut by_segments: std::collections::HashMap<Vec<String>, DiscoveredCoreModule> =
         std::collections::HashMap::new();
-    for dir in dirs {
-        for m in discover_core_modules(dir)? {
+    for (rank, dir) in dirs.iter().enumerate() {
+        for mut m in discover_core_modules(dir)? {
+            m.root_rank = rank as u32;
             if entry_key.as_ref().is_some_and(|e| &m.path == e) {
                 continue;
             }
@@ -1419,6 +1434,7 @@ fn walk_core_dir(
             source,
             display_path: display,
             path: canonical,
+            root_rank: 0,
         });
     }
     // Subdirectories recurse. Each subdir contributes its name to
@@ -1564,6 +1580,9 @@ pub fn integrate_module_into_program_with_options(
         // Back-compat entry point: the caller kept no path, so the
         // module can only be named for what it is.
         "<module>",
+        // The prelude and direct-integration callers rank with the
+        // stdlib: they are the floor a user module wins against.
+        0,
     )
 }
 
@@ -1602,6 +1621,7 @@ pub fn integrate_module_into_program_with_options_full(
     module_path: Option<Vec<DefaultSymbol>>,
     shadowed_stdlib_types: std::collections::HashSet<String>,
     display_path: &str,
+    root_rank: u32,
 ) -> Result<(), String> {
     // === Phase 4 fast path: try the on-disk Full AST cache ===
     //
@@ -1623,6 +1643,7 @@ pub fn integrate_module_into_program_with_options_full(
                 &shadowed_stdlib_types,
                 display_path,
                 source,
+                root_rank,
             );
         }
     }
@@ -1668,6 +1689,7 @@ pub fn integrate_module_into_program_with_options_full(
         main_program
             .function_module_paths
             .push(module_path.clone());
+        main_program.function_module_ranks.push(root_rank);
     }
 
     if !is_cache_disabled() {
@@ -1695,6 +1717,7 @@ pub(crate) fn integrate_cached_module(
     shadowed_stdlib_types: &std::collections::HashSet<String>,
     display_path: &str,
     source: &str,
+    root_rank: u32,
 ) -> Result<(), String> {
     // DEBUG-OBS D2: `source` is the text the cache was keyed on, so a
     // warm start draws the same excerpt a cold one does — without it,
@@ -1716,6 +1739,7 @@ pub(crate) fn integrate_cached_module(
         main_program
             .function_module_paths
             .push(module_path.map(|p| p.to_vec()));
+        main_program.function_module_ranks.push(root_rank);
     }
     Ok(())
 }
@@ -1862,6 +1886,7 @@ pub(crate) fn integrate_preparsed_core_module(
     module_path: Option<&[DefaultSymbol]>,
     shadowed_stdlib_types: &std::collections::HashSet<String>,
     display_path: &str,
+    root_rank: u32,
 ) -> Result<(), String> {
     match preparsed.payload {
         PreparsedPayload::Cached(SendCachedModule(cached)) => integrate_cached_module(
@@ -1872,6 +1897,7 @@ pub(crate) fn integrate_preparsed_core_module(
             shadowed_stdlib_types,
             display_path,
             &preparsed.source,
+            root_rank,
         ),
         PreparsedPayload::Parsed {
             file: SendFile(file),
@@ -1894,6 +1920,7 @@ pub(crate) fn integrate_preparsed_core_module(
                 main_program
                     .function_module_paths
                     .push(module_path.map(|p| p.to_vec()));
+                main_program.function_module_ranks.push(root_rank);
             }
 
             // --- Save to cache ---

@@ -141,6 +141,11 @@ pub enum EvaluationResult {
 pub struct QualifiedFunction {
     pub(crate) module_path: Option<Vec<DefaultSymbol>>,
     pub(crate) func: Rc<Function>,
+    /// Which module root it came from; higher wins a bare name.
+    /// Mirrors the type checker's rule (`File::function_module_ranks`)
+    /// -- the two have to agree, or a call type-checks against one
+    /// function and runs another.
+    pub(crate) rank: u32,
 }
 
 pub struct EvaluationContext<'a> {
@@ -541,16 +546,32 @@ impl<'a> EvaluationContext<'a> {
                 return Some(Rc::clone(&entry.func));
             }
         }
-        let mut hits = entries.iter().filter(|e| match (qualifier, &e.module_path) {
-            (None, _) => true,
-            (Some(segments), Some(path)) => frontend::type_checker::path_ends_with(path, segments),
-            (Some(_), None) => false,
-        });
-        let first = hits.next()?;
-        if hits.next().is_some() {
-            return None; // ambiguous
+        let matching: Vec<&QualifiedFunction> = entries
+            .iter()
+            .filter(|e| match (qualifier, &e.module_path) {
+                (None, _) => true,
+                (Some(segments), Some(path)) => {
+                    frontend::type_checker::path_ends_with(path, segments)
+                }
+                (Some(_), None) => false,
+            })
+            .collect();
+        let first = matching.first()?;
+        if matching.len() == 1 {
+            return Some(Rc::clone(&first.func));
         }
-        Some(Rc::clone(&first.func))
+        // BUILD-TOOL B0: a later module root wins the bare name, the
+        // same rule the type checker applies. Only unqualified -- an
+        // explicit `std::json::parse` names a module and must get it.
+        if qualifier.is_none() {
+            let top = matching.iter().map(|e| e.rank).max().unwrap_or(0);
+            let mut winners = matching.iter().filter(|e| e.rank == top);
+            let only = winners.next()?;
+            if winners.next().is_none() {
+                return Some(Rc::clone(&only.func));
+            }
+        }
+        None // ambiguous
     }
 
     /// Override the contract mode after construction. Tests use this to

@@ -33,6 +33,9 @@ pub struct EqInstantiation {
 pub struct ModuleFunction {
     pub path: Rc<[DefaultSymbol]>,
     pub func: Rc<Function>,
+    /// Which module root this came from; higher wins a bare name.
+    /// See `File::function_module_ranks`.
+    pub rank: u32,
 }
 
 /// Outcome of a function-table lookup. `Ambiguous` carries the
@@ -367,6 +370,17 @@ impl TypeCheckContext {
         name: DefaultSymbol,
         f: Rc<Function>,
     ) {
+        self.set_fn_with_module_ranked(module_path, name, f, 0)
+    }
+
+    /// [`set_fn_with_module`] with the originating root's rank.
+    pub fn set_fn_with_module_ranked(
+        &mut self,
+        module_path: Option<&[DefaultSymbol]>,
+        name: DefaultSymbol,
+        f: Rc<Function>,
+        rank: u32,
+    ) {
         let Some(path) = module_path else {
             self.set_fn(name, f);
             return;
@@ -374,9 +388,10 @@ impl TypeCheckContext {
         let candidates = self.module_functions.entry(name).or_default();
         if let Some(existing) = candidates.iter_mut().find(|c| *c.path == *path) {
             existing.func = f;
+            existing.rank = rank;
             return;
         }
-        candidates.push(ModuleFunction { path: path.into(), func: f });
+        candidates.push(ModuleFunction { path: path.into(), func: f, rank });
     }
 
     /// Module path this exact `Function` was registered under, or
@@ -446,26 +461,46 @@ impl TypeCheckContext {
         let Some(candidates) = self.module_functions.get(&name) else {
             return FnLookup::Missing;
         };
-        let mut hits = candidates.iter().filter(|c| match qualifier {
-            Some(segments) => path_ends_with(&c.path, segments),
-            None => true,
-        });
-        let Some(first) = hits.next() else {
+        let matching: Vec<&ModuleFunction> = candidates
+            .iter()
+            .filter(|c| match qualifier {
+                Some(segments) => path_ends_with(&c.path, segments),
+                None => true,
+            })
+            .collect();
+        let Some(&first) = matching.first() else {
             return FnLookup::Missing;
         };
-        if hits.next().is_none() {
+        if matching.len() == 1 {
             return FnLookup::Found(Rc::clone(&first.func));
         }
-        FnLookup::Ambiguous(
-            candidates
-                .iter()
-                .filter(|c| match qualifier {
-                    Some(segments) => path_ends_with(&c.path, segments),
-                    None => true,
-                })
-                .map(|c| Rc::clone(&c.path))
-                .collect(),
-        )
+        // BUILD-TOOL B0: a later module root wins. The rule already
+        // decides which *module* a path resolves to; a bare name is
+        // the same question with the qualifier left off, and answering
+        // it differently is what made a package's own `fn parse` merely
+        // a third candidate against `std::json::parse`.
+        //
+        // Only for an unqualified call: an explicit `std::json::parse`
+        // is asking for a particular module, and silently handing back
+        // a different one because it sits in a later root would be a
+        // wrong answer rather than a preference.
+        if qualifier.is_none() {
+            let top = matching.iter().map(|c| c.rank).max().unwrap_or(0);
+            let mut winners = matching.iter().filter(|c| c.rank == top);
+            if let Some(&only) = winners.next()
+                && winners.next().is_none()
+            {
+                return FnLookup::Found(Rc::clone(&only.func));
+            }
+            return FnLookup::Ambiguous(
+                matching
+                    .iter()
+                    .filter(|c| c.rank == top)
+                    .map(|c| Rc::clone(&c.path))
+                    .collect(),
+            );
+        }
+        FnLookup::Ambiguous(matching.iter().map(|c| Rc::clone(&c.path)).collect())
     }
 
     pub fn update_var_type(&mut self, name: DefaultSymbol, new_ty: TypeDecl) -> bool {

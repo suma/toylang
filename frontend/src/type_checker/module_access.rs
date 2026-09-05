@@ -190,18 +190,32 @@ impl<'a> TypeCheckerVisitor<'a> {
             .map(|p| format!("{}::{}", self.resolve_module_path(p), name))
             .collect();
         paths.sort();
-        // Naming enough leading segments is what will disambiguate
-        // this once the parser keeps them (MODULE-SYSTEM P3); today it
-        // drops everything but the last, so the fix available *now* is
-        // to give the two modules different file names.
-        TypeCheckError::generic_error(&format!(
-            "ambiguous module path `{}`: it matches {}. Two modules \
-             cannot share a file name — rename one of them (writing more \
-             leading segments will be the other way out once multi-segment \
-             paths are checked)",
-            written,
-            paths.join(" and ")
-        ))
+        // The advice depends on *why* it is ambiguous, and the two
+        // reasons had one message between them. A bare call matching
+        // several modules is not a file-name clash -- `std::base64`
+        // and `std::hex` have different file names and both export
+        // `encode` -- so telling the reader to rename a file sends
+        // them somewhere there is nothing to fix.
+        match qualifier {
+            None => TypeCheckError::generic_error(&format!(
+                "ambiguous call `{written}`: {} both define it. \
+                 Qualify the call with the module you mean, or move \
+                 your own definition into a module root that comes \
+                 after them (a later `--core-modules` root wins)",
+                paths.join(" and ")
+            )),
+            // A qualifier that still matches several modules *is* the
+            // file-name clash: the parser keeps only the last segment
+            // today, so two modules whose paths end the same way are
+            // indistinguishable until MODULE-SYSTEM P3 keeps more.
+            Some(_) => TypeCheckError::generic_error(&format!(
+                "ambiguous module path `{written}`: it matches {}. Two modules \
+                 cannot share a file name — rename one of them (writing more \
+                 leading segments will be the other way out once multi-segment \
+                 paths are checked)",
+                paths.join(" and ")
+            )),
+        }
     }
 
     /// Helper to convert module path symbols to readable names

@@ -81,6 +81,7 @@ fn setup_type_checker<'a>(program: &'a mut File, string_interner: &'a mut Defaul
     // call site's qualifier against any tail of it (MODULE-SYSTEM P2).
     let functions_to_register: Vec<(
         Option<Vec<DefaultSymbol>>,
+        u32,
         std::rc::Rc<frontend::ast::Function>,
     )> = program
         .function
@@ -91,7 +92,12 @@ fn setup_type_checker<'a>(program: &'a mut File, string_interner: &'a mut Defaul
                 .function_module_paths
                 .get(i)
                 .and_then(|opt| opt.clone());
-            (module_path, f.clone())
+            // BUILD-TOOL B0: the root's rank travels with the path.
+            // This loop re-registers everything the visitor already
+            // registered, so dropping the rank here silently reset it
+            // to 0 and a package module stopped outranking the stdlib.
+            let rank = program.function_module_ranks.get(i).copied().unwrap_or(0);
+            (module_path, rank, f.clone())
         })
         .collect();
 
@@ -99,8 +105,8 @@ fn setup_type_checker<'a>(program: &'a mut File, string_interner: &'a mut Defaul
     let mut tc = TypeCheckerVisitor::with_program(program, string_interner);
 
     // Register all defined functions (module-qualified)
-    for (module_path, f) in &functions_to_register {
-        tc.add_function_with_module(module_path.as_deref(), f.clone());
+    for (module_path, rank, f) in &functions_to_register {
+        tc.add_function_with_module_ranked(module_path.as_deref(), f.clone(), *rank);
     }
     
     // Register struct definitions with their symbols
@@ -166,6 +172,9 @@ fn integrate_modules(
         // this names the source file it was built from rather than a
         // path that exists at run time.
         "<prelude>",
+        // The prelude is the floor: anything a user module defines
+        // outranks it, as it does the stdlib.
+        0,
     ) {
         errors.push(format!("Prelude integration error: {}", err));
     }
@@ -277,6 +286,7 @@ fn integrate_modules(
                 Some(&path_syms),
                 &shadowed_stdlib_types,
                 &module.display_path,
+                module.root_rank,
             ) {
                 errors.push(format!(
                     "Core module `{}` integration error: {}",
@@ -1087,9 +1097,11 @@ fn build_function_qualified_map(
             .function_module_paths
             .get(i)
             .and_then(|opt| opt.clone());
+        let rank = program.function_module_ranks.get(i).copied().unwrap_or(0);
         map.entry(f.name).or_default().push(QualifiedFunction {
             module_path,
             func: f.clone(),
+            rank,
         });
     }
     map

@@ -176,7 +176,7 @@ fn flush_segment(seg: &mut ActiveSegment, m: &mut Mount) -> bool
 
 ```bash
 # 1 リクエストあたりの確保をゼロにできたかを見る
-./target/release/compiler --core-modules poc/logsearch/build/root \
+./target/release/compiler --core-modules core --core-modules poc/logsearch/src \
     poc/logsearch/main.t --profile=mem --profile-format=json -o /tmp/logsearchd
 TOY_PROFILE_MEM=json /tmp/logsearchd --config bench.conf
 ```

@@ -91,7 +91,7 @@ Python のオラクルとの突き合わせで見つけており、**同じ確�
 (壊れると過去のログが読めなくなる、この設計で唯一取り返しのつかない箇所)。
 
 ```bash
-./target/release/interpreter --core-modules poc/logsearch/build/root \
+./target/release/interpreter --core-modules core --core-modules poc/logsearch/src \
     --check poc/logsearch/tests/lsz_props.t
 ```
 

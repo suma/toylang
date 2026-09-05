@@ -139,39 +139,35 @@ store → catalog, mount
 
 ## 4. ビルド
 
-toylang の import は **core modules ディレクトリ**か、cwd 相対の
-`modules/` 以下しか探さない。アプリを複数ファイルに割るには、
-**std とアプリの両方を含む 1 つのルート**を作って `--core-modules` で指す
-のが最も素直で、これは実際に両レーンで通ることを確認してある。
-
-```
-poc/poc/logsearch/build/root/
-  std       -> <repo>/core/std       # symlink
-  logsearch -> ../../src             # symlink
-```
-
-symlink 2 本だけなので、モジュールを足しても root は触らなくてよい
-(生成は `poc/logsearch/refresh.sh`。出力の `build/` は git に入らない)。
-
-**エントリ `main.t` が `src/` の外にあるのは、この構成の要件である。**
-エントリはコンパイラに「プログラム」として渡すので、同じファイルが
-モジュール根の下にもあると**もう一度 auto-load され**、その複製は
-自分の top-level `const` を持たないまま型検査される
-(`Identifier 'BUF_BYTES' not found`)。1 ファイルに 1 つの役割を持たせる。
+`toy` が組む ([`../../../design-docs/BUILD_TOOL.md`](../../../design-docs/BUILD_TOOL.md))。
+パッケージは `main.t` か `src/` を持つディレクトリで、モジュール根は
+**stdlib → このパッケージの `src/`** の順に並ぶ (後の根が勝つ)。
 
 ```bash
-# 反復が多いので、処理系は --release で組んでおく (デバッグ版の ~10 倍速い)
-cargo build --release -p compiler -p interpreter
+cargo build --release -p toy                      # 処理系 (初回のみ)
+./target/release/toy build poc/logsearch --release
+./poc/logsearch/build/release/logsearch poc/logsearch/log   # 第 2 引数でファイル数を絞れる
+```
 
-# AOT (実用)
-./target/release/compiler --core-modules poc/logsearch/build/root \
+**以前はここに symlink 2 本のモジュール根を作る `refresh.sh` があった。**
+`--core-modules` が「追加」ではなく「置き換え」で、自分のモジュールを
+指すと stdlib が消えたためで、2026-09-05 に**繰り返し指定可能**になって
+理由ごと消えた。道具を使わない形も等価に動く:
+
+```bash
+./target/release/compiler --core-modules core --core-modules poc/logsearch/src \
     poc/logsearch/main.t --release -o /tmp/logread
-/tmp/logread poc/logsearch/log          # 第 2 引数でファイル数を絞れる
 
 # インタプリタ (オラクル。同じ答えを返すが桁で遅い)
-./target/release/interpreter --core-modules poc/logsearch/build/root \
+./target/release/interpreter --core-modules core --core-modules poc/logsearch/src \
     poc/logsearch/main.t poc/logsearch/log 5
 ```
+
+**エントリ `main.t` が `src/` の外にあるのは、もう要件ではない。**
+以前は二重取り込みで複製が top-level `const` を失っていたが
+(`Identifier 'BUF_BYTES' not found`)、auto-load が**コンパイル対象と
+同じファイルを飛ばす**ようになって解消した。ここで外に置いたままなのは
+1 ファイル 1 役割が読みやすいからで、構成上の制約ではない。
 
 **実測**: `poc/logsearch/log` の 30 ファイル・17 MB・
 68,557 行を **AOT で 59 ms**。同じ入力の 5 ファイル分で
@@ -179,9 +175,11 @@ cargo build --release -p compiler -p interpreter
 メソッドを呼ぶ形は IR VM では通らない、という目安になる。
 両レーンの集計値は完全に一致する。
 
-ルート直下の `std/` が `std::math` などの経路を、`logsearch/` が
-`segment::` などの別名を与える。auto-load はルート以下の **`.t` を全部**
-読むので、`import` 行は 1 つも要らない。
+stdlib の根が `std::math` などの経路を、`src/` の根が `record::` などの
+別名を与える。auto-load は根の下の **`.t` を全部**読むので、`import` 行は
+1 つも要らない。**bare 名は全部で 1 つの名前空間**なので、`src/lsz.t` の
+`decode` と `std/hex.t` の `decode` は衝突する — 後の根が勝つ規則で
+自分の実装に解決されるが、`toy` はビルド前に警告を出す。
 
 > **確認済み**: `--core-modules <root>` 下に置いたユーザモジュールの
 > `pub fn` が、インタプリタと AOT の両方から `util::double(21u64)` の形で

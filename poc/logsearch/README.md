@@ -12,26 +12,65 @@
 
 ```bash
 # 1. 処理系 (初回のみ / HEAD が進んだら再実行)
-cargo build --release -p compiler -p interpreter
+cargo build --release -p toy
 
-# 2. モジュール根 — std とこのプログラムの src を並べた symlink 2 本
-#    (初回のみ。src に .t を足しても再実行は要らない)
-./poc/logsearch/refresh.sh
+# 2. ビルド -> poc/logsearch/build/release/logsearch
+./target/release/toy build poc/logsearch --release
 
-# 3. AOT でビルド
-./target/release/compiler --core-modules poc/logsearch/build/root \
-    poc/logsearch/main.t --release -o /tmp/logread
+# 3. 取り込み + 圧縮
+./poc/logsearch/build/release/logsearch archive poc/logsearch/log/apache2 /tmp/arc
 
-# 4. 取り込み + 圧縮
-/tmp/logread archive poc/logsearch/log/apache2 /tmp/arc
-
-# 5. 検索
-/tmp/logread query /tmp/arc "status=404 path=/wp-login.php limit=5"
+# 4. 検索
+./poc/logsearch/build/release/logsearch query /tmp/arc "status=404 path=/wp-login.php limit=5"
 ```
 
-**手順 3 の `--release` を外すと `requires` 契約が検査される。**
-`lsz` / `crc` / `bytes` の境界条件がその場で捕まるので、開発中はこちら。
-配布時は付ける (契約が消え、境界検査も落ちる)。
+`toy` はパッケージを**引数のパスから上に歩いて**見つけ (`main.t` か
+`src/` を持つ最初のディレクトリ)、モジュール根を stdlib →
+`poc/logsearch/src` の順に並べる。**以前ここにあった `refresh.sh` は
+消えた** — symlink でモジュール根を手作りしていたのは
+`--core-modules` が「置き換え」だったからで、繰り返し指定できるように
+なって理由ごと無くなった ([`../../design-docs/BUILD_TOOL.md`](../../design-docs/BUILD_TOOL.md) B0)。
+
+**`--release` を外すと `requires` 契約が検査される。**
+`lsz` / `crc` / `bytes` の境界条件がその場で捕まるので、開発中はこちら
+(出力は `build/debug/logsearch`)。配布時は付ける (契約が消え、境界検査も落ちる)。
+
+ビルドは **0.22 秒** (5,067 行 + stdlib、warm)。`toy` はリンクキャッシュを
+`build/.link/` に置くので、2 回目以降は `cc` の呼び出しも消える。
+
+### そのほかの `toy`
+
+```bash
+toy check poc/logsearch          # 型検査だけ (コード生成をしない)
+toy test  poc/logsearch          # test ブロックを走らせる (まだ 0 件)
+toy clean poc/logsearch --all    # build/ とリンクキャッシュを消す
+```
+
+`toy run` もあるが、このプログラムは**ビルドして出来たものをパス指定で
+呼ぶ**方が扱いやすい (実行のたびにビルド判定を挟まない、引数が
+`--` の後ろに埋もれない)。以下の例は
+`poc/logsearch/build/release/logsearch` を `logsearch` と略記する。
+
+**道具を使わない経路も等価に動く。** `toy build -v` が実際の呼び出しを
+出すので、そのままコピーすれば `compiler` を直接叩ける:
+
+```bash
+./target/release/compiler --core-modules core --core-modules poc/logsearch/src \
+    poc/logsearch/main.t --release -o /tmp/logread
+```
+
+### ビルド時に出る警告
+
+```
+warning: `decode` is defined in core/std/base64.t and core/std/hex.t and
+         poc/logsearch/src/lsz.t
+  a bare call takes the last one; qualify it to be explicit
+```
+
+bare な関数名は**全モジュールで 1 つの名前空間**を共有する。`toy` は
+根を組み立てる時点で重複を見つけて先に言う (処理系は呼び出しに到達して
+から `[E0010]` を出す)。**後の根が勝つ**ので `lsz::decode` は自分の
+実装に解決されるが、曖昧なままにせず修飾するのが正しい。
 
 ## サブコマンド
 
@@ -48,10 +87,10 @@ cargo build --release -p compiler -p interpreter
 空白区切り。**索引が知っているキーはフィルタ、それ以外は本文の部分一致**。
 
 ```bash
-/tmp/logread query /tmp/arc "status=404 limit=10"          # フィールド指定
-/tmp/logread query /tmp/arc "timeout from=-6h"             # 部分一致 + 時刻
-/tmp/logread query /tmp/arc "top=status"                   # 値の分布
-/tmp/logread query /tmp/arc "ip=127.0.0.1 top=path"        # traversal
+logsearch query /tmp/arc "status=404 limit=10"          # フィールド指定
+logsearch query /tmp/arc "timeout from=-6h"             # 部分一致 + 時刻
+logsearch query /tmp/arc "top=status"                   # 値の分布
+logsearch query /tmp/arc "ip=127.0.0.1 top=path"        # traversal
 ```
 
 キーは `status` / `method` / `path` / `ip` / `vhost` / `ua` / `host` / `tag`、
@@ -78,15 +117,16 @@ poc/logsearch/
     search.t          部分一致検索 (SIMD、スカラー参照つき)
     query.t           クエリのパースと実行
   design-docs/        設計文書 11 本
-  refresh.sh          モジュール根を作る (出力は build/、git 管理外)
+  build/              toy の出力 (実行ファイル / リンクキャッシュ、git 管理外)
   log/                読ませる実ログ (git 管理外)
 ```
 
-**`main.t` が `src/` の外にあるのは構成上の要件である。** エントリは
-コンパイラに「プログラム」として渡すので、同じファイルがモジュール根の下にも
-あると **auto-load でもう一度取り込まれ**、その複製は自分の top-level `const` を
-持たないまま型検査される (`Identifier 'BUF_BYTES' not found`)。1 ファイルに
-1 つの役割を持たせる。
+**`main.t` が `src/` の外にあるのは、もう要件ではない。** 以前は
+エントリが根の下にもあると auto-load で二重に取り込まれ、複製が自分の
+top-level `const` を失って `Identifier 'BUF_BYTES' not found` で落ちた。
+2026-09-05 に auto-load が**コンパイル対象と同じファイルを飛ばす**ように
+なって解消している (`src/main.t` を置いた最小パッケージで確認済み)。
+ここで外に置いたままなのは好みの問題 — 1 ファイル 1 役割が読みやすい。
 
 ## 今どこまで動くか
 

@@ -1655,16 +1655,20 @@
 - **CODE-SIZE-SELF-ABI: `&mut self` が struct 全体を呼出規約に展開する** ★★★ —
   `&mut self` メソッドは self の**全 leaf スカラー**を引数で受ける。
   leaf 数が引数レジスタ本数 (aarch64 で 8) を超えると、超えた分は
-  呼び出しのたびにメモリを往復する。`poc/logsearch` の
+  呼び出しのたびにメモリを往復する (`poc/logsearch` で **11.5%** の命令)。
   `ArchiveWriter` は 19 フィールド → **52 leaf** なので、1 フィールド
   読むだけの `ts_min()` すら 52 引数取る。
-  **戻り側は CODE-SIZE-WB-PRUNE で片付いた**が、**引数側は手つかず**。
-  直しは「leaf 数が閾値を超える compound `self` はポインタで渡す」。
-  `address_taken_locals` の explicit stack slot 経路 (REF-Stage-2) が
-  既にあるので、そこへ繋ぐ。`&self` (writeback 無し) から分けて
-  入れられる。3 バックエンドに跨るので
-  `compiler/tests/consistency/` にテストが要る。
-  計測と再現手順は [`CODE_SIZE.md`](CODE_SIZE.md)。
+  **戻り側は CODE-SIZE-WB-PRUNE で済んだ**が、引数側は未着手。
+  **「読まない param を落とす」対称案は測って捨てた** — 効くのは
+  accessor だけ (`write_seg` / `emit_terms` は `self` を下へ渡し続けるので
+  全 param を読む) で、呼び出し回数の重みつきで **3.5%** にしかならず、
+  IR の leaf マスク + codegen + IR VM の代償に見合わない。
+  効くのは**鎖を通してポインタを 1 本流す**形で、`Ptr<S>` で手書きした
+  下限計測でも転送層が **−58%**。段取りは S1 転送形式 / S2 転送 /
+  S3 根の常駐化で、**S1 単独では退化するので S1+S2 が最小の出荷単位**。
+  S2 の「leaf local とメモリの同期」不変が `Binding::Struct` の
+  **17 ファイル 74 か所**に関わるため、1 セッションで安全に入る規模ではない。
+  設計・計測・段取りは [`CODE_SIZE.md`](CODE_SIZE.md)。
 
 - **CODE-SIZE-DIAG-STRINGS: panic サイトごとに文面を丸ごと持つ** ★ —
   DEBUG-OBS D3 の `declare_frame_strings` が panic サイトごとに

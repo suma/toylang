@@ -1651,6 +1651,31 @@
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
 
+- **CODE-SIZE-SELF-ABI: `&mut self` が struct 全体を呼出規約に展開する** ★★★ —
+  `&mut self` メソッドは self の**全 leaf スカラー**を引数で受け、全 leaf を
+  戻り値で返す。leaf 数が引数レジスタ本数 (aarch64 で 8) を超えると、
+  超えた分は呼び出しのたびにメモリを往復する。`poc/logsearch` の
+  `ArchiveWriter` は 19 フィールド → **52 leaf** で、`write_seg` の署名は
+  **58 params → 53 returns**。1 フィールド読むだけの `ts_min()` すら 52 引数取る。
+  結果、`write_seg` は 3,452 命令の **70% が load/store**、`add` は 90 個だけ。
+  **幅 > 16 の関数は全体の 10% しかないのにコードの 49% を占める**
+  (`ArchiveWriter` の 16 メソッドで 29%)。**codegen 自体は良い** — 8 leaf
+  以下なら同じメソッドが 3 命令に落ちる。直しは「leaf 数が閾値を超える
+  compound `self` はポインタで渡す」。`address_taken_locals` の
+  explicit stack slot 経路 (REF-Stage-2) が既にあるので、そこへ繋ぐ。
+  `&self` (writeback 無し) から分けて入れられる。3 バックエンドに跨るので
+  `compiler/tests/consistency/` にテストが要る。
+  計測と再現手順は [`CODE_SIZE.md`](CODE_SIZE.md)。
+
+- **CODE-SIZE-DIAG-STRINGS: panic サイトごとに文面を丸ごと持つ** ★ —
+  DEBUG-OBS D3 の `declare_frame_strings` が panic サイトごとに
+  レンダリング済みの文字列を `.rodata` に置く。`poc/logsearch` で
+  `toy_panic_msg_*` 102 個 (17 KB) + `toy_frame_pre_*` 89 個 (15 KB)
+  = **バイナリの 12%**。1 個あたり 166 バイトで、行番号とソース断片が
+  そのまま入っている。詰めるなら共通接頭辞の共有か、サイトを ID にして
+  表を 1 つにする。CODE-SIZE-SELF-ABI を直すまでは優先度が低い。
+  [`CODE_SIZE.md`](CODE_SIZE.md)。
+
 - **TEST-IN-MODULE: `test` ブロックをモジュールに置けない** ★★★ —
   auto-load されるモジュールに `test "..." { assert_eq(...) }` を書くと
   統合で落ちる:

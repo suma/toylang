@@ -1484,6 +1484,52 @@
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
 
+- **TEST-IN-MODULE: `test` ブロックをモジュールに置けない** ★★★ —
+  auto-load されるモジュールに `test "..." { assert_eq(...) }` を書くと
+  統合で落ちる:
+
+  ```
+  [E0010] Core module `mylib.mathx` integration error: Unsupported
+          expression type for remapping: BuiltinMethodCall(ExprRef(10),
+          StrConcat, [ExprRef(12)])
+  ```
+
+  `assert_eq` はパーサが文字列連結に desugar するマクロで、
+  `module_integration` の remapper が `BuiltinMethodCall` を知らない。
+  **テストがエントリファイルにしか書けない**ということで、
+  エントリはこの言語で唯一モジュールでないファイルなので、
+  12 モジュールのプログラムのテストが 1 ファイルに集まる
+  (`poc/logsearch` が 5,000 行でテスト 0 件だった理由)。
+  設計は [`TEST_TOOL.md`](TEST_TOOL.md) の T0。
+
+- **TEST-BLOCK-AOT: compiled レーンで `test` ブロックが通らない** ★★ —
+  `test` の中の `assert_eq` を AOT に渡すと
+  `compile error: assert requires a string literal message in this
+  compiler MVP`。**`--test` はインタプリタ専用**なので、出荷する
+  レーンは組み込みテストで検査できない。`poc/logsearch` が踏んだ
+  不具合はどれもバックエンド固有だった。[`TEST_TOOL.md`](TEST_TOOL.md) の T1。
+
+- **AOT-NO-MAIN-DIAG: `main` の無いファイルの AOT が無関係な
+  エラーを出す** ★ — `fn helper() -> u64 { 1u64 }` だけのファイルを
+  compiler に渡すと
+  `` compile error: `log::level_from_rank` is neither a variant of
+  `Level` nor an associated function returning it ``。インタプリタは
+  `main function symbol not found` と正しく言う。テストファイルは
+  `main` を持たないので、テストランナーを作ると必ず踏む。
+  [`TEST_TOOL.md`](TEST_TOOL.md) の T2。
+
+- **CORE-MODULES-SINGLE: `--core-modules` が「追加」ではなく
+  「置き換え」** ★★ — 根は 1 つしか取れず
+  (`resolve_core_modules_dir` の優先順位は CLI → env → exe 相対)、
+  自分のモジュールを指した瞬間に stdlib が消える。そのため
+  「stdlib と自分のモジュールを両方含む 1 ディレクトリ」を利用者が
+  自分で作ることになり、`poc/logsearch` は symlink を張る 25 行の
+  シェルスクリプト (`refresh.sh`) を持っている。**繰り返し指定可能に
+  すればスクリプトごと消える**。同時にエントリの二重取り込み
+  (ENTRY-IN-MODULE-ROOT) も、コンパイル対象と同じ正規化パスを
+  auto-load が飛ばせば消える。設計は
+  [`BUILD_TOOL.md`](BUILD_TOOL.md) の B0。
+
 - **MEMORY-ACCESS M4: `chunks::<N>()` と `read_uNN_le/be`** —
   設計は [`MEMORY_ACCESS.md`](MEMORY_ACCESS.md)。M3 で範囲を答える
   primitive は入ったが、**ブロック単位の反復と幅つきスカラー読みは
@@ -2137,6 +2183,22 @@
     `toylang_rt` をモジュール分割すると AOT の staticlib だけ古いまま
     残る。分割と同じコミットでディレクトリ監視に変える
 
+* **ビルドコマンド `toy`** — [`BUILD_TOOL.md`](BUILD_TOOL.md)。
+  自分のモジュールを持つプログラムを 1 コマンドでビルド・実行・
+  テストする薄い層。**速さの問題ではない** (空プログラム 90 ms、
+  リンクキャッシュが効けば 30 ms、`poc/logsearch` 5,067 行で 170 ms) —
+  モジュールの根を人間に組み立てさせないこと、同じ根をビルドと
+  クエリの両方に配ること、既にある速い経路を既定にすることが仕事。
+  **B0 (上の CORE-MODULES-SINGLE) だけは処理系側**で、そこだけで
+  `refresh.sh` が消える。マニフェストは依存が来るまで作らない。
+* **テストの道具とライブラリ** — [`TEST_TOOL.md`](TEST_TOOL.md)。
+  `test` ブロックと `--check` は landing 済み (LLM-LOOP P4/P5) だが、
+  **モジュールに置けず (TEST-IN-MODULE)、compiled レーンで走らない
+  (TEST-BLOCK-AOT)**。加えて語彙が `assert` / `assert_eq` /
+  `assert_ne` の 3 つしかなく、`panic` を期待するテスト・許容誤差
+  比較・バイト列の差分位置・確保量の検査・ゴールデンが書けない。
+  最初の受け入れ先は `poc/logsearch` (5,000 行・12 モジュール・
+  4 レーン・バイト形式)。
 * モジュール拡張 — バージョニング、リモートパッケージ
 * 言語内からの AST 取得・操作
 * LSP 対応 — 補完 / go-to-definition / hover / 診断 / フォーマット。frontend の AST・型チェッカ・`SourceLocation` を再利用できる。ただし**エージェントは LSP より CLI クエリを使いやすい**ので、LLM ループの観点では `--api` / 型ホール (P7 で landing 済み) の方が先だった

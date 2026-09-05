@@ -644,7 +644,7 @@ impl<'a> FunctionLower<'a> {
         // and emit `CallWithSelfWriteback` so the call's trailing
         // returns flow back into the caller's bindings.
         let writeback_dests = if !self.module.function(target).self_writeback_types.is_empty() {
-            self.collect_compound_writeback_dests(args_ref)?
+            self.collect_compound_writeback_dests(args_ref, Some(target))?
         } else {
             Vec::new()
         };
@@ -728,12 +728,13 @@ impl<'a> FunctionLower<'a> {
     pub(super) fn collect_compound_writeback_dests(
         &self,
         args_ref: &ExprRef,
+        target: Option<crate::ir::FuncId>,
     ) -> Result<Vec<LocalId>, String> {
         let items = match self.program.expression.get(args_ref) {
             Some(frontend::ast::Expr::ExprList(items)) => items,
             _ => return Ok(Vec::new()),
         };
-        self.collect_compound_writeback_dests_slice(&items)
+        self.collect_compound_writeback_dests_for(&items, target, 0)
     }
 
     /// Slice-based variant for `MethodCall` (which carries args as
@@ -742,8 +743,33 @@ impl<'a> FunctionLower<'a> {
         &self,
         items: &[ExprRef],
     ) -> Result<Vec<LocalId>, String> {
+        self.collect_compound_writeback_dests_for(items, None, 0)
+    }
+
+    /// CODE-SIZE-SELF-ABI: the variant that knows the callee, so a
+    /// `&mut` argument travelling as an address can be skipped -- it
+    /// writes through the pointer and declares no writeback slots, so
+    /// counting it here would make the caller's dest list disagree
+    /// with the callee's shape. That disagreement is not loud: the
+    /// call site quietly falls back to a plain `Call` and the
+    /// *receiver's* writeback is dropped with it.
+    ///
+    /// `base` is the parameter index the first item fills: 1 for a
+    /// method (the receiver is param 0), 0 for a free function.
+    pub(super) fn collect_compound_writeback_dests_for(
+        &self,
+        items: &[ExprRef],
+        target: Option<crate::ir::FuncId>,
+        base: usize,
+    ) -> Result<Vec<LocalId>, String> {
         let mut dests: Vec<LocalId> = Vec::new();
-        for a in items {
+        for (arg_idx, a) in items.iter().enumerate() {
+            if target
+                .map(|t| self.module.function(t).ptr_param(base + arg_idx).is_some())
+                .unwrap_or(false)
+            {
+                continue;
+            }
             let inner = match self.program.expression.get(a) {
                 Some(frontend::ast::Expr::Unary(frontend::ast::UnaryOp::BorrowMut, inner)) => {
                     inner

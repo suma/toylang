@@ -275,7 +275,7 @@ impl<'a> FunctionLower<'a> {
                         )
                     })?;
                 let arg_values = self.lower_call_args(&args_ref)?;
-                let extra = self.collect_compound_writeback_dests(&args_ref)?;
+                let extra = self.collect_compound_writeback_dests(&args_ref, None)?;
                 self.emit_struct_call_into_fields(
                     func_id,
                     arg_values,
@@ -422,7 +422,7 @@ impl<'a> FunctionLower<'a> {
                         )
                     })?;
                 let arg_values = self.lower_call_args(&args_ref)?;
-                let extra = self.collect_compound_writeback_dests(&args_ref)?;
+                let extra = self.collect_compound_writeback_dests(&args_ref, None)?;
                 self.emit_tuple_call_into_elements(
                     func_id,
                     arg_values,

@@ -648,7 +648,7 @@ impl<'a> FunctionLower<'a> {
     ) -> Result<(), String> {
         let mut dests = Self::flatten_enum_dests(storage);
         if !self.module.function(target_id).self_writeback_types.is_empty() {
-            dests.extend(self.collect_compound_writeback_dests_slice(args_items)?);
+            dests.extend(self.collect_compound_writeback_dests_for(args_items, Some(target_id), 0)?);
         }
         let (arg_values, ptr_arg_reloads) =
             self.lower_call_arg_items(args_items, Some(target_id))?;

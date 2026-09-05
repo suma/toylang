@@ -917,7 +917,7 @@ impl<'a> FunctionLower<'a> {
                 self.interner.resolve(method).unwrap_or("?"),
             ));
         }
-        let (values, recv_reload) = self.build_method_call_values(&binding, args, target)?;
+        let (values, recv_reloads) = self.build_method_call_values(&binding, args, target)?;
         // Stage 1 of `&` references: if the method is `&mut self`,
         // emit `CallWithSelfWriteback` so the cranelift call's
         // trailing self-leaf return values are stored back into
@@ -960,7 +960,7 @@ impl<'a> FunctionLower<'a> {
                     _ => {}
                 }
             }
-            self_dests.extend(self.collect_compound_writeback_dests_slice(args)?);
+            self_dests.extend(self.collect_compound_writeback_dests_for(args, Some(target), 1)?);
             // Sanity: caller dest count must match callee writeback type count.
             let expected = self.module.function(target).self_writeback_types.len();
             if self_dests.len() == expected {
@@ -982,7 +982,9 @@ impl<'a> FunctionLower<'a> {
                     },
                     None,
                 );
-                recv_reload.apply(self);
+                for r in recv_reloads {
+                    r.apply(self);
+                }
                 let result = match (ret_dest, ret_ty_opt) {
                     (Some(local), Some(ty)) => Some(
                         self.emit(InstKind::LoadLocal(local), Some(ty))
@@ -1003,7 +1005,9 @@ impl<'a> FunctionLower<'a> {
             None
         };
         let result = self.emit(inst, result_ty);
-        recv_reload.apply(self);
+        for r in recv_reloads {
+            r.apply(self);
+        }
         Ok(result)
     }
 
@@ -1322,9 +1326,10 @@ impl<'a> FunctionLower<'a> {
         binding: &Binding,
         args: &Vec<ExprRef>,
         target: crate::ir::FuncId,
-    ) -> Result<(Vec<ValueId>, ReceiverReload), String> {
+    ) -> Result<(Vec<ValueId>, Vec<ReceiverReload>), String> {
         let mut values: Vec<ValueId> = Vec::new();
         let mut reload = ReceiverReload::none();
+        let mut arg_reloads: Vec<ReceiverReload> = Vec::new();
         // The callee's declared parameter types, receiver leaves
         // included — a compound literal argument follows the one at
         // its own slot to pick the right monomorphisation. The
@@ -1465,7 +1470,21 @@ impl<'a> FunctionLower<'a> {
             };
             if let Some(Expr::Identifier(sym)) = self.program.expression.get(&arg_expr_ref) {
                 if let Some(Binding::Struct { fields, .. }) = self.bindings.get(&sym).cloned() {
-                    for (local, ty) in flatten_struct_locals(&fields) {
+                    let leaves = flatten_struct_locals(&fields);
+                    // CODE-SIZE-SELF-ABI: the receiver sits at param 0,
+                    // so this argument fills slot `1 + arg_idx`.
+                    if self
+                        .module
+                        .function(target)
+                        .ptr_param(1 + arg_idx)
+                        .is_some()
+                    {
+                        let (addr, r) = self.receiver_address(&leaves)?;
+                        arg_reloads.push(r);
+                        values.push(addr);
+                        continue;
+                    }
+                    for (local, ty) in leaves {
                         let v = self
                             .emit(InstKind::LoadLocal(local), Some(ty))
                             .expect("LoadLocal returns a value");
@@ -1526,7 +1545,8 @@ impl<'a> FunctionLower<'a> {
                 .ok_or_else(|| "method argument produced no value".to_string())?;
             values.push(v);
         }
-        Ok((values, reload))
+        arg_reloads.insert(0, reload);
+        Ok((values, arg_reloads))
     }
 
     /// A5-P2-MVP-A: vtable-dispatched method call on a `&dyn Trait`
@@ -1936,7 +1956,8 @@ impl<'a> FunctionLower<'a> {
                 }
                 _ => {}
             }
-            writeback_dests.extend(self.collect_compound_writeback_dests_slice(method_args)?);
+            writeback_dests
+                .extend(self.collect_compound_writeback_dests_for(method_args, Some(target), 1)?);
         }
         Ok(Some(CompoundMethodCall {
             target,

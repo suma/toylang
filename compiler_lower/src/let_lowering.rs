@@ -1577,8 +1577,12 @@ impl<'a> FunctionLower<'a> {
         // Before this it required a bare identifier on each side, so a
         // chain and a literal operand were both
         // `must be a bare identifier (MVP)`.
-        let mut all_args = self.lower_arg_values(&lhs_ref)?;
-        all_args.extend(self.lower_arg_values(&rhs_ref)?);
+        // CODE-SIZE-SELF-ABI: `a + b` is `add(&a, &b)` -- both slots
+        // can be pointer-passed, so each operand is lowered against
+        // the one it fills.
+        let (mut all_args, lhs_reload) = self.lower_arg_values_for(&lhs_ref, Some(func_id), 0)?;
+        let (rhs_args, rhs_reload) = self.lower_arg_values_for(&rhs_ref, Some(func_id), 1)?;
+        all_args.extend(rhs_args);
         let target_ret = self.module.function(func_id).return_type;
         let Type::Struct(dest_struct_id) = target_ret else {
             return Err(format!(
@@ -1600,6 +1604,8 @@ impl<'a> FunctionLower<'a> {
             },
             None,
         );
+        lhs_reload.apply(self);
+        rhs_reload.apply(self);
         Ok(Some((dest_struct_id, fields)))
     }
 
@@ -1653,7 +1659,8 @@ impl<'a> FunctionLower<'a> {
         // OP-OVERLOAD-CHAIN: see `emit_binary_overload` — the operand
         // takes the ordinary compound-argument path, so `-(a + b)` and
         // `-V { .. }` reach the same place a bare identifier did.
-        let all_args = self.lower_arg_values(&operand_ref)?;
+        let (all_args, operand_reload) =
+            self.lower_arg_values_for(&operand_ref, Some(func_id), 0)?;
         let target_ret = self.module.function(func_id).return_type;
         let Type::Struct(dest_struct_id) = target_ret else {
             return Err(format!(
@@ -1675,6 +1682,7 @@ impl<'a> FunctionLower<'a> {
             },
             None,
         );
+        operand_reload.apply(self);
         Ok(Some((dest_struct_id, fields)))
     }
 

@@ -627,3 +627,82 @@ fn a_mut_parameter_reborrows_down_a_chain() {
     "#;
     assert_consistent(src, "ptr_self_reborrow_chain");
 }
+
+/// Operator overloads on a wide struct. `a + b` becomes
+/// `add(&a, &b)`, but the operands are lowered one at a time, so this
+/// path had no callee to ask and used to spread both sides out leaf by
+/// leaf. Binary, comparison and unary forms are all here because they
+/// reach three different emit sites.
+#[test]
+fn operators_on_a_wide_struct_agree_across_backends() {
+    let src = r#"
+        struct V {
+            a: u64, b: u64, c: u64, d: u64, e: u64, f: u64,
+            g: u64, h: u64, i: u64, j: u64, k: u64, l: u64,
+        }
+
+        impl V {
+            fn add(&self, o: &V) -> V {
+                V { a: self.a + o.a, b: self.b + o.b,
+                    c: self.c, d: self.d, e: self.e, f: self.f,
+                    g: self.g, h: self.h, i: self.i, j: self.j,
+                    k: self.k, l: self.l }
+            }
+            fn eq(&self, o: &V) -> bool { self.a == o.a }
+            fn neg(&self) -> V {
+                V { a: self.a + 100u64, b: self.b,
+                    c: self.c, d: self.d, e: self.e, f: self.f,
+                    g: self.g, h: self.h, i: self.i, j: self.j,
+                    k: self.k, l: self.l }
+            }
+        }
+
+        fn main() -> u64 {
+            val p = V { a: 1u64, b: 2u64, c: 0u64, d: 0u64, e: 0u64, f: 0u64,
+                        g: 0u64, h: 0u64, i: 0u64, j: 0u64, k: 0u64, l: 0u64 }
+            val q = V { a: 10u64, b: 20u64, c: 0u64, d: 0u64, e: 0u64, f: 0u64,
+                        g: 0u64, h: 0u64, i: 0u64, j: 0u64, k: 0u64, l: 0u64 }
+            val r = p + q      # a = 11, b = 22
+            val n = -p         # a = 101
+            var acc: u64 = r.a + r.b + n.a
+            if p == q { acc = acc + 1000u64 }
+            if p == p { acc = acc + 1u64 }
+            # 11 + 22 + 101 + 1, and `p == q` must not fire.
+            acc
+        }
+    "#;
+    assert_consistent(src, "ptr_self_operator_overloads");
+}
+
+/// A wide `&T` argument to an ordinary method -- the same slot an
+/// operator overload's right-hand side fills, reached the plain way.
+/// The receiver and the argument are both pointers here, so it also
+/// pins that the two are not crossed.
+#[test]
+fn a_wide_reference_argument_to_a_method() {
+    let src = r#"
+        struct Wide {
+            a: u64, b: u64, c: u64, d: u64, e: u64, f: u64,
+            g: u64, h: u64, i: u64, j: u64, k: u64, l: u64,
+        }
+
+        impl Wide {
+            fn mix(&mut self, other: &Wide) -> u64 {
+                self.a = self.a + other.a
+                self.b = self.b + other.l
+                self.a * 100u64 + self.b
+            }
+        }
+
+        fn main() -> u64 {
+            var dst = Wide { a: 1u64, b: 1u64, c: 0u64, d: 0u64, e: 0u64, f: 0u64,
+                             g: 0u64, h: 0u64, i: 0u64, j: 0u64, k: 0u64, l: 0u64 }
+            val src2 = Wide { a: 5u64, b: 0u64, c: 0u64, d: 0u64, e: 0u64, f: 0u64,
+                              g: 0u64, h: 0u64, i: 0u64, j: 0u64, k: 0u64, l: 7u64 }
+            # dst.a = 6, dst.b = 8; src2 untouched.
+            val seen = dst.mix(&src2)
+            seen + dst.a + dst.b + src2.a + src2.l
+        }
+    "#;
+    assert_consistent(src, "ptr_self_wide_ref_arg_to_method");
+}

@@ -10,6 +10,7 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **CODE-SIZE-SELF-ABI — 演算子オーバーロードと method の参照引数も番地で渡す** — 被演算子を作る前に呼び先は解決済みなので、埋める引数枠を渡すだけで除外リストが消えた。`fn add(&self, o: &Self)` は 13 → 2 引数。ついでに「ポインタ引数は writeback slot を持たない」を呼び出し側の数え方と body 側の導出にも通した (前者は数が合わず黙って素の `Call` に落ちていた)。`poc/logsearch` の `__text` は 191,080 → 153,056 B (一連の作業で −19.9%)。[`CODE_SIZE.md`](CODE_SIZE.md)。
 - **CODE-SIZE-SELF-ABI S3b — 幅の広いローカル束縛を stack slot に常駐** — 鎖の根が呼び出しごとに slot を作り直すのをやめ、生涯 slot に住まわせる。`AddressOf` も囲っている記憶域を返すようにして「leaf の家は 1 つ」を守った (`&mut wide.field` がここで壊れていた)。`cmd_archive` 2,706 → 1,211 命令、`poc/logsearch` の `__text` は 191,080 → 156,252 B (一連の作業で −18.2%)。[`CODE_SIZE.md`](CODE_SIZE.md)。
 - **CODE-SIZE-SELF-ABI S3a — `&T` / `&mut T` の compound 引数もポインタで渡す** — receiver と同じ扱いを参照引数に広げ、受け取った pointer param はどれでも転送元になる。`flush_segment` 1,384 → 455 命令、`poc/logsearch` の `__text` は 191,080 → 162,912 B (一連の作業で −14.7%)。[`CODE_SIZE.md`](CODE_SIZE.md)。
 - **CODE-SIZE-SELF-ABI S1+S2 — 幅の広い by-reference receiver をポインタで渡す** — leaf 8 個超の `&self` / `&mut self` は 1 本の番地で渡り、codegen が leaf の `LoadLocal` / `StoreLocal` をポインタ経由の load/store に読み替える。鎖を下るときは番地をそのまま転送する。`poc/logsearch` で `__text` 191,080 → 167,736 B (WB-PRUNE と合わせて −12.2%)、実行も ~4% 速い。設計は [`CODE_SIZE.md`](CODE_SIZE.md)。
@@ -1654,13 +1655,6 @@
   `function_index collision` panic が、候補を名指しする型エラーに
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
-
-- **CODE-SIZE-SELF-ABI-OPOVERLOAD: 演算子オーバーロードの receiver は
-  今も leaf ごとに渡る** ★ — `add` / `eq` / `lt` などは被演算子を
-  `lower_arg_values` が 1 つずつ潰すので callee を知らず、ポインタ形の
-  対象外にしてある。幅の広い struct に演算子を実装すると、そこだけ
-  昔のコストで渡る。外れた経路は `ptr_self_verify` がビルドを止めるので
-  沈黙はしない。[`CODE_SIZE.md`](CODE_SIZE.md)。
 
 - **BY-VALUE-SELF-ALIAS: by-value receiver の `var s = self` が tree-walker
   だけ呼び出し側に漏れる** ★★ — `fn consumed(self: Self)` の中で

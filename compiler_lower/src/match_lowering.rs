@@ -1109,7 +1109,7 @@ impl<'a> FunctionLower<'a> {
                     .self_writeback_types
                     .is_empty()
                 {
-                    dests.extend(self.collect_compound_writeback_dests(&args_ref)?);
+                    dests.extend(self.collect_compound_writeback_dests(&args_ref, None)?);
                 }
                 let arg_values = self.lower_call_args(&args_ref)?;
                 self.emit(

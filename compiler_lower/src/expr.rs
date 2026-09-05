@@ -1115,7 +1115,7 @@ impl<'a> FunctionLower<'a> {
         {
             Vec::new()
         } else {
-            self.collect_compound_writeback_dests_slice(args_items)?
+            self.collect_compound_writeback_dests_for(args_items, Some(target_id), 0)?
         };
         match self.module.function(target_id).return_type {
             Type::Enum(enum_id) => {
@@ -1232,17 +1232,44 @@ impl<'a> FunctionLower<'a> {
     }
 
     pub(super) fn lower_arg_values(&mut self, a: &ExprRef) -> Result<Vec<ValueId>, String> {
+        let (values, reload) = self.lower_arg_values_for(a, None, 0)?;
+        reload.skip();
+        Ok(values)
+    }
+
+    /// CODE-SIZE-SELF-ABI: [`Self::lower_arg_values`] with the callee's
+    /// slot known, so a wide compound operand can be handed over as an
+    /// address instead of leaf by leaf.
+    ///
+    /// This is the shape operator overloads have -- `a + b` becomes
+    /// `add(&a, &b)`, but the operands are lowered one at a time and so
+    /// used to have no callee to ask. Passing it in is what lets an
+    /// overload on a wide struct cost the same as any other method.
+    pub(super) fn lower_arg_values_for(
+        &mut self,
+        a: &ExprRef,
+        target: Option<crate::ir::FuncId>,
+        param_index: usize,
+    ) -> Result<(Vec<ValueId>, ReceiverReload), String> {
         if let Some(Expr::Identifier(sym)) = self.program.expression.get(a) {
             match self.bindings.get(&sym).cloned() {
                 Some(Binding::Struct { fields, .. }) => {
+                    let leaves = flatten_struct_locals(&fields);
+                    if target
+                        .map(|t| self.module.function(t).ptr_param(param_index).is_some())
+                        .unwrap_or(false)
+                    {
+                        let (addr, reload) = self.receiver_address(&leaves)?;
+                        return Ok((vec![addr], reload));
+                    }
                     let mut out = Vec::new();
-                    for (local, ty) in flatten_struct_locals(&fields) {
+                    for (local, ty) in leaves {
                         let v = self
                             .emit(InstKind::LoadLocal(local), Some(ty))
                             .expect("LoadLocal returns a value");
                         out.push(v);
                     }
-                    return Ok(out);
+                    return Ok((out, ReceiverReload::none()));
                 }
                 Some(Binding::Tuple { elements }) => {
                     let mut out = Vec::new();
@@ -1252,21 +1279,21 @@ impl<'a> FunctionLower<'a> {
                             .expect("LoadLocal returns a value");
                         out.push(v);
                     }
-                    return Ok(out);
+                    return Ok((out, ReceiverReload::none()));
                 }
                 Some(Binding::Enum(storage)) => {
-                    return Ok(self.load_enum_locals(&storage));
+                    return Ok((self.load_enum_locals(&storage), ReceiverReload::none()));
                 }
                 _ => {}
             }
         }
         if let Some(values) = self.lower_compound_literal_arg(None, a)? {
-            return Ok(values);
+            return Ok((values, ReceiverReload::none()));
         }
         let v = self
             .lower_expr(a)?
             .ok_or_else(|| "call argument produced no value".to_string())?;
-        Ok(vec![v])
+        Ok((vec![v], ReceiverReload::none()))
     }
 
     /// REF-Stage-2 (iv): produce the pointer a scalar `&T` parameter

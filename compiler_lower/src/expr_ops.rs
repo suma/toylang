@@ -429,19 +429,30 @@ impl<'a> FunctionLower<'a> {
         // fall back to the regular BinOp path, as before — the type
         // checker rejects most such cases up front and the survivors
         // get the standard "Bad types" diagnostic.
-        let mut args: Vec<ValueId> = match self.lower_arg_values(lhs) {
+        // CODE-SIZE-SELF-ABI: each operand is lowered against the
+        // parameter slot it fills, so a wide one is handed over as an
+        // address.
+        let (mut args, lhs_reload) = match self.lower_arg_values_for(lhs, Some(func_id), 0) {
             Ok(v) => v,
             Err(_) => return Ok(None),
         };
-        match self.lower_arg_values(rhs) {
-            Ok(v) => args.extend(v),
-            Err(_) => return Ok(None),
-        }
+        let rhs_reload = match self.lower_arg_values_for(rhs, Some(func_id), 1) {
+            Ok((v, r)) => {
+                args.extend(v);
+                r
+            }
+            Err(_) => {
+                lhs_reload.skip();
+                return Ok(None);
+            }
+        };
         let bool_v = self
             .emit(InstKind::Call { target: func_id, args }, Some(Type::Bool))
             .ok_or_else(|| format!(
                 "operator overload: {} call produced no value", method_name
             ))?;
+        lhs_reload.apply(self);
+        rhs_reload.apply(self);
         // `!=` is the only operator that routes through `eq` and
         // negates. `<` / `<=` / `>` / `>=` use their own dedicated
         // methods (`lt` / `le` / `gt` / `ge`) and don't need

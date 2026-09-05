@@ -196,19 +196,7 @@ fn decide_ptr_self(
     if module.function(func_id).params.len() != method.parameter.len() + 1 {
         return false;
     }
-    // Methods reached by a *special* dispatch path build their
-    // argument list somewhere other than the method-call lowering --
-    // an operator overload flattens both operands through
-    // `lower_arg_values`, which has no callee to ask. Those keep the
-    // by-value form. `drop` is not on the list: the auto-drop glue
-    // does know its target and materialises a slot like any other
-    // caller.
-    let Some(interner) = interner else {
-        return false;
-    };
-    if is_specially_dispatched(method.name, interner) {
-        return false;
-    }
+    let _ = interner;
     let self_ty = module.function(func_id).params[0];
     if !matches!(self_ty, Type::Struct(_)) {
         return false;
@@ -264,30 +252,6 @@ fn decide_ptr_param(
     true
 }
 
-/// Method names the language dispatches through a path of its own
-/// rather than through ordinary method-call lowering.
-///
-/// These are the operator overloads (`a + b` becomes `add`, `a == b`
-/// becomes `eq`, and so on). Their operands are flattened by
-/// `lower_arg_values`, which sees one operand at a time and has no
-/// callee to ask about its receiver's transport, so a pointer-passed
-/// receiver would be handed its leaves instead of an address.
-///
-/// The list is deliberately by name: that is how the dispatch itself
-/// finds them (`docs/language.md`, "operator overload"). Anything
-/// missing from it is caught by `ptr_self_verify` as a build failure
-/// rather than a wrong answer.
-fn is_specially_dispatched(name: DefaultSymbol, interner: &DefaultStringInterner) -> bool {
-    matches!(
-        interner.resolve(name),
-        Some(
-            "add" | "sub" | "mul" | "div" | "rem"
-                | "eq" | "lt" | "le" | "gt" | "ge"
-                | "bitand" | "bitor" | "bitxor" | "shl" | "shr"
-                | "neg" | "bitnot" | "not"
-        )
-    )
-}
 
 pub(super) fn populate_method_writeback_types(
     module: &mut Module,
@@ -364,7 +328,39 @@ pub(super) fn populate_method_writeback_types(
         };
         if ir_param_idx < module.function(func_id).params.len() {
             let param_ty = module.function(func_id).params[ir_param_idx];
+            // CODE-SIZE-SELF-ABI: a wide `&mut <struct>` parameter of a
+            // *method* travels as an address, the same as one on a free
+            // function, and then carries no writeback.
+            if decide_ptr_param(module, func_id, ir_param_idx, param_ty) {
+                continue;
+            }
             flatten_compound_leaf_types(module, param_ty, &mut wb_types);
+        }
+    }
+    // Shared `&<struct>` parameters have no writeback to skip, but are
+    // just as expensive to spread out. `other: &Self` on an operator
+    // overload (`a + b` -> `add(&a, &b)`) is the common one.
+    for (param_pos, (_, decl_ty)) in method.parameter.iter().enumerate() {
+        if receiver_idx == 0 && param_pos == 0 {
+            continue;
+        }
+        if !matches!(decl_ty, TypeDecl::Ref { is_mut: false, .. }) {
+            continue;
+        }
+        if let TypeDecl::Ref { inner, .. } = decl_ty
+            && (super::types::lower_scalar(inner).is_some()
+                || matches!(inner.as_ref(), TypeDecl::Dyn(_)))
+        {
+            continue;
+        }
+        let ir_param_idx = if receiver_idx == 0 {
+            param_pos
+        } else {
+            receiver_idx + param_pos
+        };
+        if ir_param_idx < module.function(func_id).params.len() {
+            let param_ty = module.function(func_id).params[ir_param_idx];
+            decide_ptr_param(module, func_id, ir_param_idx, param_ty);
         }
     }
     if !wb_types.is_empty() {
@@ -2366,7 +2362,34 @@ impl<'a> FunctionLower<'a> {
             }
             match self.bindings.get(name).cloned() {
                 Some(super::bindings::Binding::Struct { fields, .. }) => {
-                    writeback_leaves.extend(super::bindings::flatten_struct_locals(&fields));
+                    // CODE-SIZE-SELF-ABI: a parameter that came in as
+                    // an address writes through it, so it declares no
+                    // writeback slots. The declaration-time shape
+                    // already left it out; this is the body-time half
+                    // of the same decision, and the two must agree or
+                    // the caller and callee disagree on the return
+                    // arity.
+                    let leaf_ids: Vec<LocalId> =
+                        super::bindings::flatten_struct_locals(&fields)
+                            .into_iter()
+                            .map(|(l, _)| l)
+                            .collect();
+                    let is_ptr = self
+                        .module
+                        .function(self.func_id)
+                        .ptr_params
+                        .iter()
+                        .any(|p| {
+                            p.leaves.len() == leaf_ids.len()
+                                && p.leaves
+                                    .iter()
+                                    .zip(leaf_ids.iter())
+                                    .all(|((a, _, _), b)| a == b)
+                        });
+                    if !is_ptr {
+                        writeback_leaves
+                            .extend(super::bindings::flatten_struct_locals(&fields));
+                    }
                 }
                 Some(super::bindings::Binding::Tuple { elements }) => {
                     writeback_leaves.extend(super::bindings::flatten_tuple_element_locals(&elements));

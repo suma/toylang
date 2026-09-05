@@ -13,5 +13,6 @@ path = "src/main.rs"
 [dependencies]
 compiler = { path = "../compiler" }
 compiler_core = { path = "../compiler_core" }
+compiler_lower = { path = "../compiler_lower" }
 frontend = { path = "../frontend" }
 interpreter = { path = "../interpreter" }

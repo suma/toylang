@@ -1847,8 +1847,8 @@ impl<'a> FunctionLower<'a> {
             Expr::Cast(inner, target_ty) => self.lower_cast(&inner, &target_ty),
             Expr::Match(scrutinee, arms) => self.lower_match(&scrutinee, &arms),
             Expr::MethodCall(obj, method, args) => self.lower_method_call(&obj, method, &args),
-            Expr::BuiltinMethodCall(_receiver, method, _args) => {
-                self.lower_expr_builtin_method_call(method)
+            Expr::BuiltinMethodCall(receiver, method, args) => {
+                self.lower_expr_builtin_method_call(&receiver, method, &args)
             }
             Expr::SliceAccess(obj, info) => self.lower_slice_access(&obj, &info),
             Expr::SliceAssign(obj, start, end, value) => {
@@ -2260,8 +2260,32 @@ impl<'a> FunctionLower<'a> {
     /// interpreter-only as before.
     fn lower_expr_builtin_method_call(
         &mut self,
+        receiver: &ExprRef,
         method: frontend::ast::BuiltinMethod,
+        args: &[ExprRef],
     ) -> Result<Option<ValueId>, String> {
+        // TEST-TOOL T1: `a.concat(b)` reaches the lowering as either
+        // `MethodCall` (what string interpolation builds, handled in
+        // `try_lower_str_concat_call`) or `BuiltinMethodCall` (what
+        // the type checker rewrites a `str` receiver's `concat` into,
+        // and what the `assert_eq` parser macro emits). Both are the
+        // same `toy_str_concat`; only the first was lowerable, so an
+        // `assert_eq` could not be compiled.
+        if matches!(method, frontend::ast::BuiltinMethod::StrConcat) {
+            if args.len() != 1 {
+                return Err(format!(
+                    "str.concat takes 1 argument, got {}",
+                    args.len()
+                ));
+            }
+            let a = self
+                .lower_expr(receiver)?
+                .ok_or_else(|| "str.concat receiver produced no value".to_string())?;
+            let b = self
+                .lower_expr(&args[0])?
+                .ok_or_else(|| "str.concat argument produced no value".to_string())?;
+            return Ok(self.emit(InstKind::StrConcat { a, b }, Some(Type::Str)));
+        }
         // DIAG-DEBUG-FMT-OK: `BuiltinMethod`'s Debug spelling is the
         // method's own name (`StrConcat`, `Substring`), which is what
         // names the gap here.
@@ -3306,7 +3330,17 @@ impl<'a> FunctionLower<'a> {
             }
             BuiltinFunction::Assert => {
                 expect_args(args, 2, "assert expects 2 arguments")?;
-                let msg_sym = self.expect_string_literal(&args[1], "assert")?;
+                // TEST-TOOL T1: the message need not be a literal.
+                // `assert_eq` desugars to an `assert` whose message is
+                // built from the two values, so requiring a literal
+                // here meant **no `test` block containing an
+                // `assert_eq` could be compiled at all** — the lanes
+                // that ship were the ones that could not be tested,
+                // and the bugs `poc/logsearch` actually hit were
+                // backend-specific. `panic` already took either form
+                // through `PanicStr` (ERROR_MODEL E3); this is the
+                // same fallback.
+                let literal = self.expect_string_literal(&args[1], "assert").ok();
                 let cond = self
                     .lower_expr(&args[0])?
                     .ok_or_else(|| "assert condition produced no value".to_string())?;
@@ -3318,9 +3352,27 @@ impl<'a> FunctionLower<'a> {
                     else_blk: fail,
                 });
                 // Failure block: panic with the assertion message.
+                //
+                // A computed message is lowered **here**, inside the
+                // block that only runs on failure. The language says
+                // the message is evaluated only when the condition is
+                // false (`docs/language.md`), and building it costs a
+                // string concatenation per assertion — hoisting it
+                // above the branch would make every passing assert pay
+                // for the report it does not print.
                 self.switch_to(fail);
                 let site = self.current_site();
-                self.terminate(Terminator::Panic { message: msg_sym, site });
+                match literal {
+                    Some(msg_sym) => {
+                        self.terminate(Terminator::Panic { message: msg_sym, site })
+                    }
+                    None => {
+                        let msg = self
+                            .lower_expr(&args[1])?
+                            .ok_or_else(|| "assert message produced no value".to_string())?;
+                        self.terminate(Terminator::PanicStr { message: msg, site });
+                    }
+                }
                 // Continue lowering after the assert in the success block.
                 self.switch_to(pass);
                 Ok(None)

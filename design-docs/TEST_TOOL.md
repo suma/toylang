@@ -1,10 +1,11 @@
 # TEST TOOL — toylang のテストを書く道具
 
-> **状態: T0 + T2 landing 済み (2026-09-05)。** T1 (compiled レーンでの
-> `test`) / T3 (`core/std/testing.t`) / T4 (`panics` と `--backend all`) /
-> T5 (ゴールデン) は未着手。
+> **状態: T0〜T2 landing 済み (2026-09-05)。** T3 (`core/std/testing.t`) /
+> T4 (`panics` と `--backend all`) / T5 (ゴールデン) は未着手。
 > 実装: `interpreter/src/module_integration.rs` (T0)、
+> `compiler_lower::install_test_driver` + `compiler --test` (T1)、
 > [`toy/src/test_runner.rs`](../toy/src/test_runner.rs) (T2)。
+> **`toy test` の既定は AOT** — 出荷するレーンが検査対象になる。
 > 対象: **toylang で書かれたプログラム**のテスト。処理系自身の Rust
 > テストは [`TEST_PLAN.md`](TEST_PLAN.md) が正本で、本文書は別の層。
 > 既にあるもの: `test "..." { }` + `--test` (LLM-LOOP P4)、
@@ -209,8 +210,33 @@ T0 が最優先。**残り 3 つは T0 の後でないと価値が出ない** �
 | | 内容 | 完了条件 | 状態 |
 |---|---|---|---|
 | **T0** | module 内の `test` ブロック | `src/lsz.t` に書いた `test` が `--test` で走る | ✅ 2026-09-05 |
-| **T1** | compiled レーンでの `test` | 同じテストが `--backend aot` で走る | 未着手 |
+| **T1** | compiled レーンでの `test` | 同じテストが `--backend aot` で走る | ✅ 2026-09-05 |
 | **T2** | `toy test` (探索・絞り込み・一覧・JSON) | `poc/logsearch` のテストが 1 コマンドで全部走る | ✅ 2026-09-05 |
+
+### T1 で分かったこと
+
+- **直したのは `assert` のメッセージ制限** — `panic` は既に非リテラルを
+  `PanicStr` で受けていた (ERROR_MODEL E3) のに `assert` は literal 縛りの
+  ままだった。`assert_eq` は 2 値からメッセージを組むので、
+  **`assert_eq` を含む `test` はそもそもコンパイルできなかった**。
+  メッセージは fail ブロックの中で lower する (false のときだけ評価する
+  規約を守るため、かつ通ったテストが報告の費用を払わないため)
+- **compiled レーンの entry を合成する** —
+  `compiler_lower::install_test_driver` が、各テストの前に stderr へ
+  マーカーを出して呼ぶだけの `main` を作る。ユーザの `main` は
+  `toy_program_main` に改名して残す (テストが呼びうる)。
+  **最初の失敗で止まる** — assertion 失敗は panic でプロセスが終わる。
+  全部報告するにはテストごとに 1 プロセスが要る (T4 の形)
+- **T2 (main の無いファイル) も一緒に消えた** — `test` ブロックを
+  entry として数えるようにしたので、`tests/*.t` が
+  「全部 lower する」フォールバックに落ちて無関係な stdlib の body で
+  死ぬことが無くなった
+- **`--test` が IR VM で全部 pass していた** (既存バグ) —
+  `execute_entry` は entry 関数を受け取るのに、IR VM の fast path は
+  **`main` を走らせていた**。`assert_eq` が lower できなかったおかげで
+  ineligible になり tree-walker に落ちていたので露見していなかった。
+  T1 で lower できるようにした瞬間に**全テストが黙って緑になる**。
+  fast path を「entry が本当に `main` のときだけ」に絞った
 | **T3** | `core/std/testing.t` | 上の表の 5 つが 1 行で書ける | 未着手 |
 | **T4** | `panics` テストと `--backend all` | 契約違反が検査でき、レーンの食い違いが出る | 未着手 |
 | **T5** | ゴールデンと `--bless` | `.seg` の形式が固定される | 未着手 |

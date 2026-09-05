@@ -52,7 +52,10 @@ pub fn emit_object(
     contract_msgs: &ContractMessages,
     options: &CompilerOptions,
 ) -> Result<(Vec<u8>, Vec<String>), String> {
-    let ir_module = lower::lower_program(program, interner, contract_msgs, options.release)?;
+    let mut ir_module = lower::lower_program(program, interner, contract_msgs, options.release)?;
+    if options.test_mode {
+        lower::install_test_driver(&mut ir_module, program, interner)?;
+    }
     let module = build_object_module(&ir_module, interner, options)?;
     let product = module.finish();
     let bytes = product

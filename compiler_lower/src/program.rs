@@ -1166,13 +1166,17 @@ pub fn lower_program(
         entry_syms.push(s);
     }
     entry_syms.extend(program.tests.iter().map(|t| t.function));
-    let mut main_seeded = false;
+    // TEST-TOOL T2: a *test* is an entry point too. Before this only
+    // `main` counted, so a `tests/*.t` file -- which has no `main` on
+    // purpose -- fell into the "lower everything" fallback below and
+    // died inside some unrelated stdlib body, reporting
+    // `log::level_from_rank is neither a variant of Level nor an
+    // associated function returning it` for a program whose actual
+    // problem was that nothing had been seeded.
+    let mut seeded_an_entry = false;
     for sym in entry_syms {
-        let is_main = interner.resolve(sym) == Some("main");
         if let Some(func_id) = module.lookup_function(None, sym) {
-            if is_main {
-                main_seeded = true;
-            }
+            seeded_an_entry = true;
             if scheduled.insert(func_id)
                 && let Some(src) = plain_sources.get(&func_id)
             {
@@ -1183,10 +1187,11 @@ pub fn lower_program(
             }
         }
     }
-    // Defensive: a file without `main` (partial / library source fed to
-    // `--emit=ir`) falls back to lowering every non-generic body, in
-    // declaration (FuncId) order for determinism.
-    if !main_seeded {
+    // Defensive: a file with neither `main` nor a `test` block
+    // (partial / library source fed to `--emit=ir`) falls back to
+    // lowering every non-generic body, in declaration (FuncId) order
+    // for determinism.
+    if !seeded_an_entry {
         let mut all: Vec<FuncId> = plain_sources.keys().copied().collect();
         all.sort_by_key(|f| f.0);
         for func_id in all {
@@ -2576,4 +2581,130 @@ impl<'a> FunctionLower<'a> {
         self.switch_to(pass);
         Ok(())
     }
+}
+
+/// TEST-TOOL T1: replace the program's entry with one that runs its
+/// `test` blocks.
+///
+/// A `test "..." { }` already lowers to a zero-argument function; what
+/// was missing is anything that calls them on a lane where there is no
+/// interpreter to walk `File::tests`. This builds that caller: for
+/// each test, a marker on **stderr** and then the call.
+///
+/// The marker is what makes a failure attributable. An assertion
+/// failure is a panic, and a panic on a compiled lane ends the
+/// process — so the run stops at the first failure and the last marker
+/// printed names the test that was running. Reporting every failure in
+/// one pass would need a process per test, which is the shape
+/// `TEST_TOOL.md` reserves for `panics` tests (T4); this is the cheap
+/// form, and the caller says plainly that the lane stops at the first
+/// failure.
+///
+/// The user's own `main` is kept — it may be called by a test — but it
+/// is no longer the entry, so it loses the `main` export name.
+///
+/// Returns the test names in the order the driver runs them.
+pub fn install_test_driver(
+    module: &mut Module,
+    program: &File,
+    interner: &DefaultStringInterner,
+) -> Result<Vec<String>, String> {
+    /// What a marker line starts with. The runner matches on it, so
+    /// it is spelled once, here.
+    const MARKER: &str = "__toy_test:";
+
+    let mut targets: Vec<(FuncId, String)> = Vec::with_capacity(program.tests.len());
+    for test in &program.tests {
+        let Some(id) = module.lookup_function(None, test.function) else {
+            // A test whose generated function did not survive lowering
+            // is a bug in this pass's assumptions, not something to
+            // paper over: the report would silently be short by one.
+            return Err(format!(
+                "test `{}` has no lowered function; cannot build the test entry",
+                test.name
+            ));
+        };
+        targets.push((id, test.name.clone()));
+    }
+
+    // The user's `main` stops being the entry. It stays lowered and
+    // callable — a test may call it — under a name that cannot
+    // collide with the one the system runtime looks for.
+    if let Some(user_main) = module
+        .functions
+        .iter_mut()
+        .find(|f| f.export_name == "main")
+    {
+        user_main.export_name = "toy_program_main".to_string();
+    }
+
+    // A `tests/*.t` file has no `main` and so may never have interned
+    // the word; the driver still needs *a* symbol for diagnostics.
+    // Any function's symbol would do, so reuse the first test's.
+    let entry_symbol = interner
+        .get("main")
+        .or_else(|| program.tests.first().map(|t| t.function))
+        .ok_or_else(|| "cannot name the synthesised test entry".to_string())?;
+    let driver = module.declare_function_anon(
+        "main".to_string(),
+        Linkage::Export,
+        Vec::new(),
+        Type::U64,
+    );
+
+    let mut instructions: Vec<crate::ir::Instruction> = Vec::new();
+    let mut next_value = 0u32;
+    let mut names: Vec<String> = Vec::with_capacity(targets.len());
+    for (id, name) in &targets {
+        // The marker rides stderr so it cannot be mistaken for the
+        // program's own output, which a test may well produce.
+        //
+        // `ConstStrBytes` rather than `ConstStr`: the marker text does
+        // not exist in the frontend interner and this pass runs after
+        // lowering, with only a `&` to it. The variant exists for
+        // exactly this (a `.rodata` slot for bytes the interner never
+        // saw), and the runtime ABI cannot tell the two apart.
+        let marker = format!("{MARKER}{name}");
+        let msg = crate::ir::ValueId(next_value);
+        next_value += 1;
+        instructions.push(crate::ir::Instruction {
+            result: Some((msg, Type::Str)),
+            kind: InstKind::ConstStrBytes { bytes: marker.into_bytes() },
+            frame: None,
+        });
+        instructions.push(crate::ir::Instruction {
+            result: None,
+            kind: InstKind::Print {
+                value: msg,
+                value_ty: Type::Str,
+                newline: true,
+                stderr: true,
+            },
+            frame: None,
+        });
+        instructions.push(crate::ir::Instruction {
+            result: None,
+            kind: InstKind::Call { target: *id, args: Vec::new() },
+            frame: None,
+        });
+        names.push(name.clone());
+    }
+    let zero = crate::ir::ValueId(next_value);
+    next_value += 1;
+    instructions.push(crate::ir::Instruction {
+        result: Some((zero, Type::U64)),
+        kind: InstKind::Const(crate::ir::Const::U64(0)),
+        frame: None,
+    });
+    let _ = next_value;
+
+    let f = module.function_mut(driver);
+    f.symbol = entry_symbol;
+    f.entry = crate::ir::BlockId(0);
+    f.blocks.push(crate::ir::Block {
+        id: crate::ir::BlockId(0),
+        instructions,
+        terminator: Some(crate::ir::Terminator::Return(vec![zero])),
+    });
+    Ok(names)
 }

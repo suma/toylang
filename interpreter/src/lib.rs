@@ -1437,10 +1437,27 @@ fn execute_entry_with_values(
     // part of every run whichever engine follows.
     let profile_before_attempt = crate::heap::snapshot_profile();
 
+    // Both fast paths below run the module's **`main`**, whatever
+    // function this call was handed. That is fine for a program run
+    // and wrong for anything else: `--test` calls `execute_entry` once
+    // per `test` block, and routing those through the VM ran `main`
+    // and reported the *test* as passing. It went unnoticed because a
+    // failing `assert_eq` could not be lowered, so every such program
+    // was ineligible and fell to the tree-walker — until the assert
+    // gap was closed (TEST-TOOL T1) and the tests started silently
+    // passing.
+    //
+    // Gate on the entry actually being `main`. Running a chosen
+    // function through the VM needs the VM to take an entry
+    // parameter, which is the honest fix and a larger one.
+    let entry_is_main = string_interner
+        .resolve(main_function.name)
+        .is_some_and(|n| n == "main");
+
     // The `main` fast paths only apply to the argument-less entry;
     // a property trial calls an arbitrary function with values.
     #[cfg(feature = "jit")]
-    if args.is_none() && fast_paths == FastPaths::Allow {
+    if entry_is_main && args.is_none() && fast_paths == FastPaths::Allow {
         if let Some(result) = jit::try_execute_main(program, string_interner) {
             return Ok(result);
         }
@@ -1465,7 +1482,7 @@ fn execute_entry_with_values(
     // `io::read_file` read the file a second time. The VM reports its
     // own failure now — position, backtrace and the values a predicate
     // saw — so there is nothing left to go back for.
-    if args.is_none() && fast_paths == FastPaths::Allow {
+    if entry_is_main && args.is_none() && fast_paths == FastPaths::Allow {
         let (outcome, captured) = crate::output::with_capture(|| {
             ir_vm::lift::run_main_via_ir_vm_outcome(program, string_interner)
         });
@@ -1841,6 +1858,53 @@ pub fn run_tests(
             }
         })
         .collect()
+}
+
+/// The `test` blocks in `source`, without running any of them.
+///
+/// Parses and type-checks exactly as a run would — a block that does
+/// not compile is not a test anyone can list — and then reports the
+/// names and positions. `toy test --list` and the compiled-lane runner
+/// both need to know what a file declares before deciding what to do
+/// with it.
+pub fn list_tests_from_source(
+    source: &str,
+    filename: &str,
+    options: &RunOptions<'_>,
+) -> Result<Vec<TestOutcome>, String> {
+    let formatter = ErrorFormatter::new(source, filename);
+    let mut session = compiler_core::CompilerSession::new();
+    let mut program = match session.parse_program_all_errors(source, filename) {
+        Ok(p) => p,
+        Err(errors) => {
+            formatter.display_parse_errors(&errors);
+            return Err(format!("{} parse error(s)", errors.len()));
+        }
+    };
+    if let Err(diagnostics) = check_typing_diagnostics(
+        &mut program,
+        session.string_interner_mut(),
+        Some(source),
+        Some(filename),
+        options.core_modules_dirs,
+    ) {
+        let rendered: Vec<String> = diagnostics
+            .iter()
+            .map(|d| formatter.format_diagnostic(d))
+            .collect();
+        formatter.display_type_check_errors(&rendered);
+        return Err(format!("{} type-check error(s)", diagnostics.len()));
+    }
+    Ok(program
+        .tests
+        .iter()
+        .map(|t| TestOutcome {
+            name: t.name.clone(),
+            line: t.line,
+            file: t.file.clone(),
+            failure: None,
+        })
+        .collect())
 }
 
 /// Parse, type check, and run the `test` blocks in `source`.

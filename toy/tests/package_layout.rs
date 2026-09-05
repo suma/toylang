@@ -228,7 +228,10 @@ fn main() -> u64 {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let exe = pkg.0.join("build").join(pkg.0.file_name().unwrap());
+    let exe = pkg
+        .0
+        .join("build/debug")
+        .join(pkg.0.file_name().unwrap());
     assert!(exe.is_file(), "expected an executable at {}", exe.display());
     let ran = Command::new(&exe).output().expect("run built binary");
     assert!(String::from_utf8_lossy(&ran.stdout).contains("hello, world"));
@@ -549,4 +552,108 @@ fn main() -> u64 {
         "stdout: {stdout}\nstderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+// --- output layout ----------------------------------------------------
+
+#[test]
+fn debug_and_release_do_not_share_a_path() {
+    // `--release` compiles the contracts out, so a release binary is a
+    // different program from a debug one. Sharing a path would mean
+    // the file on disk does not say which it is — and the answer would
+    // change under you between two builds.
+    let pkg = scratch("profiles");
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    assert!(run(&pkg, &["build", pkg.0.to_str().unwrap()]).status.success());
+    assert!(
+        run(&pkg, &["build", pkg.0.to_str().unwrap(), "--release"])
+            .status
+            .success()
+    );
+    let name = pkg.0.file_name().unwrap();
+    assert!(pkg.0.join("build/debug").join(name).is_file());
+    assert!(pkg.0.join("build/release").join(name).is_file());
+}
+
+#[test]
+fn run_does_not_overwrite_what_build_left_behind() {
+    // `build`'s output is a result — something to keep, copy or ship.
+    // `run`'s is scratch. A `toy run` after handing the binary to
+    // someone should not rewrite the file they were given.
+    let pkg = scratch("run_scratch");
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    assert!(run(&pkg, &["build", pkg.0.to_str().unwrap()]).status.success());
+    let built = pkg.0.join("build/debug").join(pkg.0.file_name().unwrap());
+    let stamp = std::fs::metadata(&built).unwrap().len();
+    // Make the product binary recognisable, then run and check it is
+    // still the file we put there.
+    std::fs::write(&built, b"not an executable any more").unwrap();
+    let _ = run(
+        &pkg,
+        &["run", pkg.0.to_str().unwrap(), "--backend", "aot"],
+    );
+    let after = std::fs::read(&built).unwrap();
+    assert_eq!(
+        after, b"not an executable any more",
+        "`toy run` must build somewhere else (was {stamp} bytes before)"
+    );
+}
+
+#[test]
+fn test_binaries_stay_out_of_the_product_directory() {
+    let pkg = scratch("test_dir");
+    write(
+        &pkg,
+        "main.t",
+        "test \"passes\" { assert_eq(1u64, 1u64) }\nfn main() -> u64 { 0u64 }\n",
+    );
+    let out = run(&pkg, &["test", pkg.0.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(pkg.0.join("build/debug/tests/main").is_file());
+    assert!(!pkg.0.join("build/debug/main").exists());
+}
+
+#[test]
+fn the_build_directory_ignores_itself() {
+    // Build output is not source, and every package would otherwise
+    // have to be told so by hand.
+    let pkg = scratch("gitignore");
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    assert!(run(&pkg, &["build", pkg.0.to_str().unwrap()]).status.success());
+    let marker = pkg.0.join("build/.gitignore");
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "*\n");
+}
+
+#[test]
+fn a_test_runs_on_the_compiled_lane_by_default() {
+    // TEST-TOOL T1: `assert_eq` inside a `test` block used to be
+    // unlowerable ("assert requires a string literal message in this
+    // compiler MVP"), so the lane that ships was the one that could
+    // not be tested — and the bugs a real program hits are
+    // backend-specific.
+    let pkg = scratch("aot_tests");
+    write(
+        &pkg,
+        "main.t",
+        r#"
+test "passes" { assert_eq(1u64 + 1u64, 2u64) }
+test "fails" { assert_eq(2u64, 3u64) }
+fn main() -> u64 { 0u64 }
+"#,
+    );
+    let out = run(&pkg, &["test", pkg.0.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!out.status.success(), "a failing test should exit non-zero");
+    // The failure is attributed to the block that was running, and the
+    // diagnostic carries both values.
+    assert!(
+        stderr.contains("FAILED  fails") && stderr.contains("left:  2"),
+        "stderr: {stderr}"
+    );
+    assert!(stdout.contains("1 passed, 1 failed"), "stdout: {stdout}");
 }

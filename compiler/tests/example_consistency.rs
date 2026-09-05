@@ -87,12 +87,6 @@ const AOT_UNSUPPORTED: &[&str] = &[
     // (`jit_heap.t` left in MEMORY-ACCESS M0: `__builtin_mem_set`
     // was the last builtin in it the AOT lane could not lower.)
     "jit_nested_tuple_fallback.t",
-    // Same reasons as `contracts.t`: `requires` / `ensures`, plus
-    // `assert_eq`, which lowers to a panic whose message is built at
-    // runtime rather than being a literal.
-    "memory_contract.t",
-    // Same again: the guide example carries `test` blocks.
-    "design_by_contract.t",
     "panic.t",
     "print_demo.t",
     "tuple_destructure_nested.t",

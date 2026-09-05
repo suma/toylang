@@ -71,6 +71,7 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, bool, ProfileMode), S
     let mut emit = EmitKind::Executable;
     let mut verbose = false;
     let mut release = false;
+    let mut test_mode = false;
     let mut core_modules_dirs: Vec<PathBuf> = Vec::new();
     let mut diagnostics_json = false;
     let mut i = 0;
@@ -83,6 +84,9 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, bool, ProfileMode), S
             }
             "-v" | "--verbose" => verbose = true,
             "--release" => release = true,
+            // TEST-TOOL T1: build an entry that runs the `test`
+            // blocks instead of `main`.
+            "--test" => test_mode = true,
             "--all-backends" => all_backends = true,
             s if s.starts_with("--profile=") => match &s["--profile=".len()..] {
                 "mem" => profile_mem = true,
@@ -149,6 +153,7 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, bool, ProfileMode), S
     options.verbose = verbose;
     options.release = release;
     options.core_modules_dirs = core_modules_dirs;
+    options.test_mode = test_mode;
     options.diagnostics_json = diagnostics_json;
     // Asking for a shape without asking for the report is a typo; a
     // silently-ignored flag would leave the user waiting for JSON.

@@ -126,6 +126,32 @@ mypkg/
   build/         出力。git に入れない
 ```
 
+**`build/` の中身** (2026-09-05 に決めた):
+
+```
+build/
+  .gitignore          "*" を初回に書く。出力はソースではない
+  .link/              リンクキャッシュ (profile 共通)
+  debug/
+    mypkg             toy build の成果物 — 残す・配る側
+    .run/mypkg        toy run --backend aot — 使い捨て
+    tests/main        toy test (テストファイルごとに 1 本)
+  release/
+    ...               同じ形
+```
+
+3 つとも理由がある:
+
+- **profile で分ける** — `--release` は契約を消すので debug と release は
+  **別のプログラム**である。同じパスに置くと、ディスク上のファイルが
+  どちらなのかを言わなくなり、しかも次のビルドで答えが変わる
+- **`run` と `build` を分ける** — `build` の出力は「残す結果」、
+  `run` の出力は使い捨て。ビルドしたバイナリを誰かに渡したあとで
+  `toy run` して、渡した物が書き換わるのは事故
+- **リンクキャッシュは profile 共通** — content-addressed
+  (オブジェクトのバイト列が鍵) なので、debug と release は
+  そもそも衝突しない
+
 `toy` は引数のパス (既定はカレント) から**上に歩いて** `main.t` か
 `src/` を持つディレクトリを探し、そこをパッケージ根とする。
 
@@ -154,7 +180,11 @@ toy explain <CODE>
 
 - **`toy run` の `--` 以降はプログラムの引数**。今は `RunOptions.args`
   への注入が CLI から見えにくく、`compiler` 側には無い
-- **`--backend` の既定は `aot`** (`toy run` だけ `vm`)。`vm` は
+- **`--backend` の既定は `aot`** (`toy run` だけ `vm`)。
+  `build` / `check` / `test` はどれも AOT を既定にする —
+  `check` は型検査に加えて **lowering まで** やるので、
+  型は通るが AOT が拒否する形 (式位置の compound 戻り method 等) を
+  ここで捕まえる。`--backend vm` でより安い問いに落とせる。`vm` は
   IR VM = 既定のインタプリタ、`tree` は tree-walker
   (**オラクルが要る場面はこれ**、CLAUDE.md の注意書きと同じ)
 - **`-v` は実際に走らせたコマンドを 1 行で出す。** 道具が処理系を
@@ -194,7 +224,7 @@ warning: `is_digit` is defined in both src/record.t and <stdlib>/std/json.t
 |---|---|---|---|
 | **B0** | `--core-modules` を複数指定可能に + エントリの二重取り込みを飛ばす | 処理系。これだけで `refresh.sh` が消える | ✅ 2026-09-05 |
 | **B1** | `toy build` / `run` / `check` (規約の探索、根の組み立て、リンクキャッシュ既定) | B0 | ✅ 2026-09-05 |
-| **B2** | `toy test` | [`TEST_TOOL.md`](TEST_TOOL.md) の T0〜T2 | ✅ 2026-09-05 (T0+T2。T1 は未) |
+| **B2** | `toy test` | [`TEST_TOOL.md`](TEST_TOOL.md) の T0〜T2 | ✅ 2026-09-05 (T0〜T2)。**既定は AOT** |
 | **B3** | クエリの通し (`api` / `effects` / `explain`) — 穴 3 の解消 | B1 | ✅ 2026-09-05 |
 | **B4** | 衝突の事前検出 (D5) | B1 | ✅ 2026-09-05 |
 | **B5** | マニフェストと依存 | **必要になってから** | — |

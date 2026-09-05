@@ -62,6 +62,16 @@ pub struct CompilerOptions {
     /// repeat runs of `cargo nextest` reuse linked binaries instead
     /// of re-invoking `cc` on every test.
     pub link_cache_dir: Option<PathBuf>,
+    /// TEST-TOOL T1: build an entry that runs the program's `test`
+    /// blocks instead of its `main`.
+    ///
+    /// The lanes that ship were the ones that could not be tested —
+    /// `--test` was interpreter-only, and the bugs a real program hits
+    /// are backend-specific. The driver prints a marker per test on
+    /// stderr and stops at the first failure, because a failed
+    /// assertion is a panic and a panic on a compiled lane ends the
+    /// process.
+    pub test_mode: bool,
 }
 
 impl CompilerOptions {
@@ -77,6 +87,7 @@ impl CompilerOptions {
             core_modules_dirs: Vec::new(),
             diagnostics_json: false,
             link_cache_dir: None,
+            test_mode: false,
         }
     }
 }

@@ -131,7 +131,12 @@ cargo run -q -p toy -- run   mypkg [--backend aot|jit|vm] [-- ARGS...]
 cargo run -q -p toy -- check mypkg
 cargo run -q -p toy -- test  mypkg [FILTER] [--list] [--format=json]
 # `test` は tests/*.t と entry を走らせ、**モジュール内の `test` も拾う**
-# (TEST-TOOL T0)。bare 名の衝突は実行前に警告する (--no-warn-collisions で無効)
+# (TEST-TOOL T0)。**既定は AOT** で、出荷するレーンが検査対象になる
+# (T1)。`--backend vm` は IR VM で走らせ、**全部の失敗を 1 回で報告する**
+# (AOT は panic がプロセスを終わらせるので最初の失敗で止まる)。
+# bare 名の衝突は実行前に警告する (--no-warn-collisions で無効)。
+# 出力は build/{debug,release}/ — build は成果物、run は .run/ に、
+# test は tests/ に出る。build/.gitignore は初回に自動生成
 cargo run -q -p toy -- api src/foo.t mypkg   # api / effects / explain も根つき
 cargo run -q -p toy -- effects mypkg
 # `-v` は等価な compiler / interpreter 呼び出しを 1 行で出す (道具を捨てて戻れる)

@@ -10,6 +10,40 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **TEST-TOOL T1 — compiled レーンで `test` が走るようになった** —
+  `assert` が literal メッセージしか受けなかったので、
+  2 値からメッセージを組む `assert_eq` を含む `test` は
+  **そもそもコンパイルできなかった**。`panic` は既に `PanicStr` で
+  非リテラルを受けていた (ERROR_MODEL E3) ので、同じ落とし方に揃えた。
+  メッセージは **fail ブロックの中で** lower する (false のときだけ
+  評価する規約 + 通ったテストに報告の費用を払わせない)。
+  entry は `compiler_lower::install_test_driver` が合成する —
+  各テストの前に stderr へマーカーを出して呼ぶ `main` で、
+  ユーザの `main` は `toy_program_main` に改名して残す。
+  **最初の失敗で止まる** (panic がプロセスを終わらせるため)。
+  `compiler --test` / `toy test` (既定 AOT) から使う
+- **TEST-TOOL T2 — `main` の無いファイルの AOT が無関係なエラーを出す件** —
+  `test` ブロックを entry として数えるようにした。以前は
+  `main` だけが entry で、無ければ「全部 lower する」フォールバックに
+  落ち、`log::level_from_rank is neither a variant ...` のような
+  無関係な stdlib の body で死んでいた
+- **`--test` が IR VM で全テストを黙って pass させていた** ★★★ —
+  `execute_entry` は entry 関数を受け取るのに、IR VM / JIT の fast path は
+  **`main` を走らせていた**。`assert_eq` が lower できなかったおかげで
+  そういうプログラムは ineligible になり tree-walker に落ちていたので
+  露見せず、T1 で lower できるようにした瞬間に**全テストが緑になった**。
+  fast path を「entry が本当に `main` のときだけ」に絞った。
+  literal `assert` を含む test は**以前から**黙って通っていた
+- **`toy` の出力レイアウトを決めた** — `build/{debug,release}/` で
+  profile を分ける (`--release` は契約を消すので**別のプログラム**であり、
+  同じパスだとディスク上のファイルがどちらか言わなくなる)。
+  `toy run` は `build/{profile}/.run/` に出す (build の成果物を
+  上書きしない)。テストは `build/{profile}/tests/`。
+  `build/.gitignore` を初回に自動生成。リンクキャッシュは
+  content-addressed なので profile 共通
+- **`toy build` / `check` / `test` の既定を AOT にした** —
+  `check` は型検査に加えて lowering まで走らせるので、
+  「型は通るが AOT が拒否する」形をここで捕まえる
 - **BARE-NAME-COLLISION — 後の module root が bare 名を勝ち取るようにした** —
   B0 は module **パス**の解決に「後の root が勝つ」を入れたが、
   bare 名 (qualifier 無しの呼び出し) は素通しで、パッケージ自身の

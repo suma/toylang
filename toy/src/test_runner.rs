@@ -32,6 +32,11 @@ pub struct Options {
     pub list_only: bool,
     pub format: Format,
     pub verbose: bool,
+    /// Run the blocks natively (TEST-TOOL T1) rather than on the IR
+    /// VM. The default, because the lane that ships is the one worth
+    /// testing — the bugs a real program hits are backend-specific.
+    pub aot: bool,
+    pub release: bool,
 }
 
 /// One `test` block's result, flattened for the report.
@@ -127,13 +132,131 @@ fn collect_t_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     Ok(())
 }
 
+/// Marker the compiled driver prints before each test, on stderr.
+/// Spelled in `compiler_lower::install_test_driver`; matched here.
+const MARKER: &str = "__toy_test:";
+
+/// Compile `file` with a test entry and run it.
+///
+/// **The lane stops at the first failure.** An assertion failure is a
+/// panic and a panic ends the process, so the marker stream tells us
+/// which test was running when it died and everything after it never
+/// ran. Reporting every failure in one pass needs a process per test
+/// (`TEST_TOOL.md` T4's shape); this is the cheap form, and the
+/// report says which tests did not get a turn.
+fn run_one_aot(pkg: &Package, file: &Path, opts: &Options) -> Result<Vec<Outcome>, String> {
+    let expected = run_one_vm_names(pkg, file, opts)?;
+    if expected.is_empty() {
+        return Ok(Vec::new());
+    }
+    let profile = crate::package::Profile::of(opts.release);
+    let exe = pkg.test_exe_path(
+        profile,
+        file.file_stem().and_then(|s| s.to_str()).unwrap_or("tests"),
+    );
+    if let Some(parent) = exe.parent() {
+        pkg.ensure_dir(parent)?;
+    }
+    let mut options = compiler::options::CompilerOptions::new(file.to_path_buf());
+    options.output = Some(exe.clone());
+    options.release = opts.release;
+    options.core_modules_dirs = pkg.module_roots.clone();
+    options.link_cache_dir = Some(pkg.link_cache_dir());
+    options.test_mode = true;
+    compiler::compile_file(&options)?;
+
+    let out = std::process::Command::new(&exe)
+        .output()
+        .map_err(|e| format!("cannot run `{}`: {e}", exe.display()))?;
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    // Every marker that was printed is a test that started. The last
+    // one is the one that was running when the process ended; it
+    // passed only if the process exited cleanly.
+    let started: Vec<String> = stderr
+        .lines()
+        .filter_map(|l| l.strip_prefix(MARKER))
+        .map(|s| s.to_string())
+        .collect();
+    let failure_text: String = stderr
+        .lines()
+        .filter(|l| !l.starts_with(MARKER))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let ok = out.status.success();
+
+    let mut result = Vec::with_capacity(expected.len());
+    for (name, file_of, line) in expected {
+        let position = started.iter().position(|s| *s == name);
+        let failure = match position {
+            // Never started: an earlier test ended the process.
+            None => Some("not run: an earlier test ended the process".to_string()),
+            // Started, and it is the last one, and we died: this is it.
+            Some(i) if !ok && i + 1 == started.len() => Some(failure_text.clone()),
+            Some(_) => None,
+        };
+        result.push(Outcome { name, file: file_of, line, failure });
+    }
+    Ok(result)
+}
+
+/// The test blocks `file` declares, without running them. Used by the
+/// AOT path to know what the driver *will* run, and by `--list`.
+fn run_one_vm_names(
+    pkg: &Package,
+    file: &Path,
+    opts: &Options,
+) -> Result<Vec<(String, String, u32)>, String> {
+    Ok(list_one(pkg, file, opts)?
+        .into_iter()
+        .map(|o| (o.name, o.file, o.line))
+        .collect())
+}
+
 fn run_one(pkg: &Package, file: &Path, opts: &Options) -> Result<Vec<Outcome>, String> {
+    // `--list` never needs to run anything, whichever lane is asked
+    // for, and the AOT path needs the listing anyway to know what the
+    // driver will run.
+    if opts.list_only {
+        return list_one(pkg, file, opts);
+    }
+    if opts.aot {
+        return run_one_aot(pkg, file, opts);
+    }
+    run_one_vm(pkg, file, opts)
+}
+
+/// The test blocks in `file`, discovered by type-checking it. Nothing
+/// is executed.
+fn list_one(pkg: &Package, file: &Path, opts: &Options) -> Result<Vec<Outcome>, String> {
+    let mut listed = run_one_vm(pkg, file, &Options { list_only: true, ..clone_opts(opts) })?;
+    for o in &mut listed {
+        o.failure = None;
+    }
+    Ok(listed)
+}
+
+fn clone_opts(opts: &Options) -> Options {
+    Options {
+        filter: opts.filter.clone(),
+        list_only: opts.list_only,
+        format: opts.format,
+        verbose: opts.verbose,
+        aot: opts.aot,
+        release: opts.release,
+    }
+}
+
+fn run_one_vm(pkg: &Package, file: &Path, opts: &Options) -> Result<Vec<Outcome>, String> {
     let source = std::fs::read_to_string(file)
         .map_err(|e| format!("cannot read `{}`: {e}", file.display()))?;
     let display = display_path(pkg, file);
     let mut options = RunOptions::default();
     options.core_modules_dirs = &pkg.module_roots;
-    let outcomes = interpreter::run_tests_from_source(&source, &display, &options)?;
+    let outcomes = if opts.list_only {
+        interpreter::list_tests_from_source(&source, &display, &options)?
+    } else {
+        interpreter::run_tests_from_source(&source, &display, &options)?
+    };
     Ok(outcomes
         .into_iter()
         .filter(|o| match &opts.filter {

@@ -253,13 +253,13 @@ fn cmd_build(args: &Args) -> Result<(), String> {
             "`toy build` produces an executable, so it needs the aot backend (got {backend:?})"
         ));
     }
+    let profile = package::Profile::of(args.release);
     let out = args
         .output
         .clone()
-        .unwrap_or_else(|| pkg.build_dir.join(pkg.name()));
+        .unwrap_or_else(|| pkg.exe_path(profile));
     if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("cannot create `{}`: {e}", parent.display()))?;
+        pkg.ensure_dir(parent)?;
     }
     let mut options = CompilerOptions::new(pkg.entry.clone());
     options.output = Some(out.clone());
@@ -294,9 +294,13 @@ fn cmd_run(args: &Args) -> Result<(), String> {
 }
 
 fn run_aot(args: &Args, pkg: &package::Package) -> Result<(), String> {
-    let out = pkg.build_dir.join(pkg.name());
-    std::fs::create_dir_all(&pkg.build_dir)
-        .map_err(|e| format!("cannot create `{}`: {e}", pkg.build_dir.display()))?;
+    // `run` builds into its own scratch path so it cannot replace the
+    // binary `build` left behind.
+    let profile = package::Profile::of(args.release);
+    let out = pkg.run_exe_path(profile);
+    if let Some(parent) = out.parent() {
+        pkg.ensure_dir(parent)?;
+    }
     let mut options = CompilerOptions::new(pkg.entry.clone());
     options.output = Some(out.clone());
     options.release = args.release;
@@ -358,26 +362,46 @@ fn run_in_process(
 fn cmd_check(args: &Args) -> Result<(), String> {
     let pkg = locate(args)?;
     let source = read_entry(&pkg)?;
+    let name = pkg.entry.to_string_lossy().into_owned();
+    // Default: check the way the AOT lane would, which means type
+    // checking *and* lowering. The compiler MVP refuses shapes the
+    // type checker accepts (a compound-returning method in expression
+    // position, a `match` scrutinee that is a call), and a `check`
+    // that misses them tells the user their program is fine right up
+    // until they build it. `--backend vm` asks the cheaper question.
+    let lower_too = !matches!(args.backend, Some(Backend::Vm) | Some(Backend::Tree));
     if args.verbose {
         eprintln!(
-            "toy: interpreter --check {} {}",
+            "toy: {} {} {}",
+            if lower_too { "compiler --emit ir" } else { "interpreter --check" },
             show_roots(&pkg),
             pkg.entry.display()
         );
     }
     let mut session = compiler_core::CompilerSession::new();
     let mut program = session
-        .parse_program_all_errors(&source, &pkg.entry.to_string_lossy())
+        .parse_program_all_errors(&source, &name)
         .map_err(|errors| format!("{} parse error(s)", errors.len()))?;
     interpreter::check_typing_with_core_modules(
         &mut program,
         session.string_interner_mut(),
         Some(&source),
-        Some(&pkg.entry.to_string_lossy()),
+        Some(&name),
         &pkg.module_roots,
     )
     .map_err(|errors| errors.join("\n"))?;
-    println!("ok: {}", pkg.entry.display());
+    if lower_too {
+        let mut options = compiler::options::CompilerOptions::new(pkg.entry.clone());
+        options.release = args.release;
+        options.core_modules_dirs = pkg.module_roots.clone();
+        let contract_msgs =
+            compiler_lower::ContractMessages::intern(session.string_interner_mut());
+        // The IR is discarded: the question is whether it can be
+        // built, not what it says. `--emit ir` is the same work with
+        // the answer kept.
+        compiler::codegen::emit_ir_text(&program, session.string_interner(), &contract_msgs, &options)?;
+    }
+    println!("ok: {name}");
     Ok(())
 }
 
@@ -392,6 +416,13 @@ fn cmd_test(args: &Args) -> Result<(), String> {
             test_runner::Format::Text
         },
         verbose: args.verbose,
+        // AOT is the default here for the reason TEST_TOOL gives: the
+        // lane that ships is the one worth testing, and the bugs a
+        // real program hits are backend-specific. `--backend vm` runs
+        // them on the IR VM instead, which reports *every* failure in
+        // one pass rather than stopping at the first.
+        aot: !matches!(args.backend, Some(Backend::Vm) | Some(Backend::Tree)),
+        release: args.release,
     };
     test_runner::run(&pkg, &opts)
 }

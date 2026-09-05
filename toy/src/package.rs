@@ -28,6 +28,27 @@ pub struct Package {
     pub build_dir: PathBuf,
 }
 
+/// Which build a path belongs to. `--release` compiles contracts out,
+/// so the two are different programs and must not share a name.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Profile {
+    Debug,
+    Release,
+}
+
+impl Profile {
+    pub fn of(release: bool) -> Self {
+        if release { Profile::Release } else { Profile::Debug }
+    }
+
+    fn dir_name(self) -> &'static str {
+        match self {
+            Profile::Debug => "debug",
+            Profile::Release => "release",
+        }
+    }
+}
+
 impl Package {
     /// The name used for the default output binary: the root
     /// directory's own name.
@@ -43,8 +64,57 @@ impl Package {
     /// makes it the default rather than an environment variable only
     /// the initiated set: it is the difference between a 90 ms and a
     /// 30 ms rebuild, and there is no reason for that to be opt-in.
+    ///
+    /// Shared across profiles on purpose: the cache is
+    /// content-addressed on the object bytes, so a debug and a release
+    /// build of the same program simply do not collide.
     pub fn link_cache_dir(&self) -> PathBuf {
         self.build_dir.join(".link")
+    }
+
+    /// Where a build of `profile` puts things. `--release` compiles
+    /// contracts out, so a release binary is a different program from
+    /// a debug one; sharing a path would mean the file on disk does
+    /// not say which it is, and the answer would change under you.
+    pub fn profile_dir(&self, profile: Profile) -> PathBuf {
+        self.build_dir.join(profile.dir_name())
+    }
+
+    /// The product binary: what `toy build` leaves behind for you to
+    /// keep, copy or ship.
+    pub fn exe_path(&self, profile: Profile) -> PathBuf {
+        self.profile_dir(profile).join(self.name())
+    }
+
+    /// Where `toy run` builds. Separate from [`exe_path`] so running
+    /// does not silently replace a binary you built and handed to
+    /// someone: `run`'s output is scratch, `build`'s is a result.
+    pub fn run_exe_path(&self, profile: Profile) -> PathBuf {
+        self.profile_dir(profile).join(".run").join(self.name())
+    }
+
+    /// Test binaries, one per test file, kept away from the product
+    /// binary so a directory listing of the build output is the thing
+    /// you meant to build.
+    pub fn test_exe_path(&self, profile: Profile, stem: &str) -> PathBuf {
+        self.profile_dir(profile).join("tests").join(stem)
+    }
+
+    /// Create `dir`, and on the first use of `build/` drop a
+    /// `.gitignore` in it.
+    ///
+    /// Build output is not source, and every package would otherwise
+    /// have to be told the same thing by hand. Written once and never
+    /// overwritten, so a package that wants to keep something under
+    /// `build/` can say so and be believed.
+    pub fn ensure_dir(&self, dir: &Path) -> Result<(), String> {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create `{}`: {e}", dir.display()))?;
+        let marker = self.build_dir.join(".gitignore");
+        if self.build_dir.is_dir() && !marker.exists() {
+            let _ = std::fs::write(&marker, "*\n");
+        }
+        Ok(())
     }
 }
 

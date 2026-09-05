@@ -42,6 +42,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | epoll / kqueue の統一形 (landing 済み) | [`design-docs/EVENT_POLLING.md`](design-docs/EVENT_POLLING.md) |
 | stdlib のディレクトリ配置と `module::` の解決規則 | [`design-docs/MODULE_SYSTEM.md`](design-docs/MODULE_SYSTEM.md) |
 | example のビルド・実行方法 | [`interpreter/example/HOW_TO.md`](interpreter/example/HOW_TO.md) |
+| **自分のモジュールを持つプログラム**のビルド (`toy` コマンドの提案) | [`design-docs/BUILD_TOOL.md`](design-docs/BUILD_TOOL.md) |
+| **toylang で書いたプログラム**のテスト (提案。処理系自身のテストは別) | [`design-docs/TEST_TOOL.md`](design-docs/TEST_TOOL.md) |
 | このリポジトリで LLM が作業する際の指針 | [`design-docs/COMPILER_DEV_LOOP.md`](design-docs/COMPILER_DEV_LOOP.md) |
 
 以下の「Language Syntax」節は**日常的に踏む要点の早見表**であって仕様書ではない。

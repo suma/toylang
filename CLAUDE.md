@@ -129,6 +129,7 @@ cargo run -q -p compiler -- --core-modules core --core-modules mypkg/src mypkg/m
 cargo run -q -p toy -- build mypkg [--release] [-o PATH]
 cargo run -q -p toy -- run   mypkg [--backend aot|jit|vm] [-- ARGS...]
 cargo run -q -p toy -- check mypkg
+cargo run -q -p toy -- clean mypkg [--all]   # 出力を消す (--all は build/ ごと)
 cargo run -q -p toy -- test  mypkg [FILTER] [--list] [--format=json]
 # `test` は tests/*.t と entry を走らせ、**モジュール内の `test` も拾う**
 # (TEST-TOOL T0)。**既定は AOT** で、出荷するレーンが検査対象になる

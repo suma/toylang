@@ -140,6 +140,11 @@ build/
     ...               同じ形
 ```
 
+`toy clean` はこの `debug/` と `release/` を消す。**リンクキャッシュは
+残す** — 捨てると次のビルドが 30ms から 90ms に戻るうえ、
+content-addressed なので古くなりようがない。`--all` は `build/` ごと
+消す (問いが「新しいビルド」ではなく「ディスク容量」のとき)。
+
 3 つとも理由がある:
 
 - **profile で分ける** — `--release` は契約を消すので debug と release は
@@ -170,6 +175,7 @@ build/
 
 ```
 toy build [--release] [--backend aot|jit|vm] [-o PATH]
+toy clean [--all]                 # 出力を消す。--all は build/ ごと
 toy run   [--release] [--backend ...] [-- ARGS...]
 toy check                         # 型検査だけ。コード生成をしない
 toy test  [FILTER] [--backend all] [--check] [--seed=N]

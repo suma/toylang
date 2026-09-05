@@ -34,6 +34,12 @@
   露見せず、T1 で lower できるようにした瞬間に**全テストが緑になった**。
   fast path を「entry が本当に `main` のときだけ」に絞った。
   literal `assert` を含む test は**以前から**黙って通っていた
+- **`toy clean`** — `build/{debug,release}/` を消す。
+  **リンクキャッシュは残す** (捨てると次のビルドが 30ms → 90ms に戻り、
+  content-addressed なので古くなりようがない)。`--all` は `build/` ごと。
+  削除する前に全パスを `Package::is_build_output` で照合する —
+  「出力を消す」と「パッケージを消す」の差はパス計算 1 つなので、
+  正しいはずのものを検査する
 - **`toy` の出力レイアウトを決めた** — `build/{debug,release}/` で
   profile を分ける (`--release` は契約を消すので**別のプログラム**であり、
   同じパスだとディスク上のファイルがどちらか言わなくなる)。

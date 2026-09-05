@@ -657,3 +657,86 @@ fn main() -> u64 { 0u64 }
     );
     assert!(stdout.contains("1 passed, 1 failed"), "stdout: {stdout}");
 }
+
+// --- clean ------------------------------------------------------------
+
+#[test]
+fn clean_removes_the_outputs_and_keeps_the_link_cache() {
+    // Throwing the cache away turns the next build from 30 ms back
+    // into 90 ms, and it cannot go stale — it is keyed on the bytes of
+    // the object it links. Cleaning is about the outputs.
+    let pkg = scratch("clean");
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    assert!(run(&pkg, &["build", pkg.0.to_str().unwrap()]).status.success());
+    assert!(
+        run(&pkg, &["build", pkg.0.to_str().unwrap(), "--release"])
+            .status
+            .success()
+    );
+    assert!(pkg.0.join("build/debug").is_dir());
+    assert!(pkg.0.join("build/release").is_dir());
+
+    let out = run(&pkg, &["clean", pkg.0.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!pkg.0.join("build/debug").exists());
+    assert!(!pkg.0.join("build/release").exists());
+    assert!(
+        pkg.0.join("build/.link").is_dir(),
+        "the link cache should survive a plain clean"
+    );
+}
+
+#[test]
+fn clean_all_takes_the_build_directory_with_it() {
+    let pkg = scratch("clean_all");
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    assert!(run(&pkg, &["build", pkg.0.to_str().unwrap()]).status.success());
+    assert!(
+        run(&pkg, &["clean", pkg.0.to_str().unwrap(), "--all"])
+            .status
+            .success()
+    );
+    assert!(!pkg.0.join("build").exists());
+    // And the package still builds: nothing outside `build/` was
+    // touched.
+    assert!(run(&pkg, &["build", pkg.0.to_str().unwrap()]).status.success());
+}
+
+#[test]
+fn cleaning_twice_is_not_an_error() {
+    let pkg = scratch("clean_twice");
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    for _ in 0..2 {
+        let out = run(&pkg, &["clean", pkg.0.to_str().unwrap()]);
+        assert!(
+            out.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn clean_leaves_the_sources_alone() {
+    // The one thing this command must never do. `is_build_output`
+    // checks every path against the package's `build/` before
+    // removing it, because the difference between "removes the build
+    // output" and "removes the package" is a path computation.
+    let pkg = scratch("clean_safety");
+    write(&pkg, "src/mine.t", "pub fn f() -> u64 { 1u64 }\n");
+    write(&pkg, "main.t", "fn main() -> u64 { mine::f() }\n");
+    write(&pkg, "tests/a.t", "test \"t\" { assert_eq(1u64, 1u64) }\n");
+    assert!(run(&pkg, &["build", pkg.0.to_str().unwrap()]).status.success());
+    assert!(
+        run(&pkg, &["clean", pkg.0.to_str().unwrap(), "--all"])
+            .status
+            .success()
+    );
+    assert!(pkg.0.join("main.t").is_file());
+    assert!(pkg.0.join("src/mine.t").is_file());
+    assert!(pkg.0.join("tests/a.t").is_file());
+}

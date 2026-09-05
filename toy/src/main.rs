@@ -16,6 +16,7 @@
 //! than spawning them — a process costs ~30 ms, which is most of what
 //! a small build costs at all.
 
+mod clean;
 mod collide;
 mod package;
 mod test_runner;
@@ -33,6 +34,7 @@ usage:
   toy build [PATH] [--release] [--backend aot|jit] [-o OUT] [-v]
   toy run   [PATH] [--release] [--backend aot|jit|vm|tree] [-v] [-- ARGS...]
   toy check [PATH] [-v]
+  toy clean [PATH] [--all] [-v]
   toy test  [FILTER] [PATH] [--list] [--format=json] [-v]
   toy api <MODULE.t> [PATH]
   toy effects [PATH] [-v]
@@ -51,6 +53,7 @@ options:
   -v, --verbose        print the equivalent compiler/interpreter call
   --list               list the tests instead of running them
   --format=json        machine-readable results (test only)
+  --all                clean: remove the link cache and build/ too
   --no-warn-collisions skip the duplicate-name pre-check
   -- ARGS...           arguments for the program (run only)
 ";
@@ -95,6 +98,7 @@ struct Args {
     list_only: bool,
     json: bool,
     warn_collisions: bool,
+    all: bool,
 }
 
 fn main() {
@@ -117,6 +121,7 @@ fn main() {
         "run" => cmd_run(&args),
         "check" => cmd_check(&args),
         "test" => cmd_test(&args),
+        "clean" => cmd_clean(&args),
         "api" => cmd_api(&args),
         "effects" => cmd_effects(&args),
         "explain" => cmd_explain(&args),
@@ -145,6 +150,7 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
         list_only: false,
         json: false,
         warn_collisions: true,
+        all: false,
     };
     let mut i = 0usize;
     while i < argv.len() {
@@ -161,6 +167,7 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
             "--list" => a.list_only = true,
             "--format=json" => a.json = true,
             "--no-warn-collisions" => a.warn_collisions = false,
+            "--all" => a.all = true,
             "--format" => {
                 i += 1;
                 let v = argv.get(i).ok_or("--format needs a value (text or json)")?;
@@ -403,6 +410,18 @@ fn cmd_check(args: &Args) -> Result<(), String> {
     }
     println!("ok: {name}");
     Ok(())
+}
+
+fn cmd_clean(args: &Args) -> Result<(), String> {
+    // No collision pre-check: removing output does not depend on what
+    // the program means, and a warning here would be noise on the one
+    // command that reads no source.
+    let stdlib = compiler::resolve_core_modules_dirs(Vec::new());
+    let pkg = package::find(&args.path, stdlib)?;
+    clean::run(
+        &pkg,
+        &clean::Options { all: args.all, verbose: args.verbose },
+    )
 }
 
 fn cmd_test(args: &Args) -> Result<(), String> {

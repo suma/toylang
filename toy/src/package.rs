@@ -100,6 +100,32 @@ impl Package {
         self.profile_dir(profile).join("tests").join(stem)
     }
 
+    /// The profile directories that exist, in a stable order.
+    pub fn existing_profile_dirs(&self) -> Vec<PathBuf> {
+        [Profile::Debug, Profile::Release]
+            .into_iter()
+            .map(|p| self.profile_dir(p))
+            .filter(|d| d.is_dir())
+            .collect()
+    }
+
+    /// Refuse to delete anything that is not build output.
+    ///
+    /// `toy clean` removes directories, and the only thing standing
+    /// between "removes the build output" and "removes the package" is
+    /// that the path was computed correctly. Check it rather than
+    /// trust it: the path must be inside this package's `build/`, or
+    /// be that directory itself.
+    pub fn is_build_output(&self, path: &Path) -> bool {
+        let Ok(build) = self.build_dir.canonicalize() else {
+            return false;
+        };
+        let Ok(target) = path.canonicalize() else {
+            return false;
+        };
+        target == build || target.starts_with(&build)
+    }
+
     /// Create `dir`, and on the first use of `build/` drop a
     /// `.gitignore` in it.
     ///

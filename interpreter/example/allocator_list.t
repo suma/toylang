@@ -26,7 +26,7 @@ impl List {
         List { data: __builtin_heap_alloc(0u64), len: 0u64, cap: 0u64 }
     }
 
-    unsafe fn push(self: Self, value: u64) -> u64 {
+    unsafe fn push(&mut self, value: u64) -> u64 {
         if self.cap == 0u64 {
             self.cap = 8u64
             self.data = __builtin_heap_realloc(self.data, self.cap * 8u64)
@@ -40,14 +40,17 @@ impl List {
     }
 
     # Still the legacy context-typed read (MEMORY-ACCESS M2 migrated
-    # the rest of the tree). Writing `__builtin_ptr_read::<u64>(...)`
-    # here makes this function lowerable, which sends the whole
-    # program down the IR VM lane -- and straight into an unrelated
-    # pre-existing defect there: a by-value `self: Self` method that
-    # reallocates and writes back crashes the VM with "value not
-    # defined" (todo IRVM-SELF-WRITEBACK-REALLOC). The bare form keeps
-    # the program on the tree-walker until that is fixed.
-    unsafe fn get(self: Self, index: u64) -> u64 {
+    # the rest of the tree); `__builtin_ptr_read::<u64>(...)` would do
+    # here too.
+    #
+    # `push` is `&mut self` and `get` is `&self`, which is what they
+    # mean. They were written `self: Self` -- by value -- and worked
+    # only because the tree-walker used to share the caller's object
+    # with a by-value receiver, so the reallocation reached the
+    # caller's `list` by accident. That is fixed
+    # (BY-VALUE-SELF-ALIAS), and this example is one of the two places
+    # that had been relying on it.
+    unsafe fn get(&self, index: u64) -> u64 {
         __builtin_ptr_read(self.data, index * 8u64)
     }
 }

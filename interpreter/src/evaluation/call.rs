@@ -466,8 +466,15 @@ impl EvaluationContext<'_> {
         // (when the source uses the `self: Self` form)
         for (param_symbol, _param_type) in &method.parameter {
             if param_index == 0 && first_param_is_self {
-                // First parameter is `self: Self` - bind the object
-                self.environment.set_val(*param_symbol, self_obj.clone().into());
+                // First parameter is `self: Self` -- **by value**, so
+                // the callee gets its own copy of the compound spine.
+                // Sharing the `Rc` here let a write inside the method
+                // reach the caller's binding, which no compiled lane
+                // does (BY-VALUE-SELF-ALIAS).
+                self.environment.set_val(
+                    *param_symbol,
+                    crate::object::copy_for_by_value_param(&self_obj).into(),
+                );
             } else {
                 // Subsequent parameters are regular args. With
                 // an implicit self receiver the first method.parameter
@@ -2109,7 +2116,22 @@ impl EvaluationContext<'_> {
                 self.environment.set_val_mutable(param.0, value.clone());
                 mut_ref_params.push(Some(param.0));
             } else {
-                self.environment.set_val(param.0, value.clone());
+                // BY-VALUE-SELF-ALIAS: a reference shares the caller's
+                // storage, which is the point of it. Everything else
+                // is by value, and the compiled lanes hand the callee
+                // a copy of the leaves -- so a write inside must not
+                // reach the caller's binding here either.
+                let is_ref = matches!(
+                    &param.1,
+                    frontend::type_decl::TypeDecl::Ref { .. }
+                );
+                let bound = match (is_ref, value) {
+                    (false, crate::value::Value::Heap(rc)) => crate::value::Value::Heap(
+                        crate::object::copy_for_by_value_param(rc),
+                    ),
+                    _ => value.clone(),
+                };
+                self.environment.set_val(param.0, bound);
                 mut_ref_params.push(None);
             }
         }

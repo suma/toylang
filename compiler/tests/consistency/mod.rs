@@ -79,3 +79,4 @@ mod typed_ptr_read;
 mod range_ops;
 mod writeback_prune;
 mod ptr_self;
+mod by_value_params;

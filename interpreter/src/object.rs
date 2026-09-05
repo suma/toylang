@@ -779,6 +779,59 @@ macro_rules! object_unwrap_methods {
     };
 }
 
+/// BY-VALUE-SELF-ALIAS: copy a value the way a **by-value parameter**
+/// crosses a call boundary.
+///
+/// Bindings in this evaluator share their `Rc`, which is what makes
+/// `val b = a` an alias for a compound -- deliberate, and the language
+/// says so. A parameter passed *by value* is the one place that is
+/// wrong: the compiled lanes hand the callee its own copy of the
+/// leaves, so a write inside the callee cannot reach the caller, and
+/// the tree-walker has to agree or it stops being a usable oracle.
+///
+/// The copy is structural, not deep: it rebuilds the compound spine
+/// (struct fields, array and tuple elements, enum payloads) and stops
+/// at scalars, which is exactly what copying the flattened leaves
+/// does. A `Vec<T>`'s pointer, length and capacity are scalars, so the
+/// heap buffer stays shared -- again matching the compiled lanes,
+/// where passing a `Vec` by value copies three words and not the
+/// elements.
+pub fn copy_for_by_value_param(value: &RcObject) -> RcObject {
+    let copied = match &*value.borrow() {
+        Object::Struct { type_name, fields, type_args } => Object::Struct {
+            type_name: *type_name,
+            fields: Box::new(
+                fields
+                    .iter()
+                    .map(|(k, v)| (*k, copy_for_by_value_param(v)))
+                    .collect(),
+            ),
+            type_args: type_args.clone(),
+        },
+        Object::Array(elems) => Object::Array(Box::new(
+            elems.iter().map(copy_for_by_value_param).collect(),
+        )),
+        Object::Tuple(elems) => Object::Tuple(Box::new(
+            elems.iter().map(copy_for_by_value_param).collect(),
+        )),
+        Object::EnumVariant { enum_name, variant_name, values, type_args } => {
+            Object::EnumVariant {
+                enum_name: *enum_name,
+                variant_name: *variant_name,
+                values: values.iter().map(copy_for_by_value_param).collect(),
+                type_args: type_args.clone(),
+            }
+        }
+        // Everything else keeps the sharing it has always had. A
+        // scalar is not written through its binding (parameters are
+        // immutable), and a handle whose identity is the point -- an
+        // allocator, a closure's captured environment -- must not be
+        // duplicated at all.
+        _ => return value.clone(),
+    };
+    Rc::new(RefCell::new(copied))
+}
+
 impl Object {
     // Helper to create a null object with specific type
     pub fn null_of_type(type_decl: TypeDecl) -> Object {

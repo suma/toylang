@@ -651,7 +651,7 @@ impl Counter {
         self.count
     }
 
-    fn __setitem__(self: Self, index: u64, value: u64) {
+    fn __setitem__(&mut self, index: u64, value: u64) {
         # In a mutable implementation, this would update the count
         # For now, just demonstrate the method call works
     }
@@ -856,7 +856,7 @@ impl MyList {
         self.data[idx]
     }
 
-    fn __setitem__(self: Self, index: i64, value: u64) {
+    fn __setitem__(&mut self, index: i64, value: u64) {
         val idx = if index < 0i64 {
             val len = self.data.len() as i64
             (len + index) as u64
@@ -992,7 +992,7 @@ impl MyList {
         self.data[(start as u64)..(end as u64)]
     }
 
-    fn __setslice__(self: Self, start: i64, end: i64, values: [u64]) {
+    fn __setslice__(&mut self, start: i64, end: i64, values: [u64]) {
         # Simple implementation: set values in a loop
         for i in 0u64 to values.len() {
             self.data[(start as u64) + i] = values[i]

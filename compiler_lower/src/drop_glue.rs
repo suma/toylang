@@ -562,14 +562,26 @@ impl<'a> FunctionLower<'a> {
                 ));
             }
         };
+        // CODE-SIZE-SELF-ABI: `drop` is a `&mut self` method like any
+        // other, so a wide struct's `drop` takes its receiver as a
+        // pointer. Glue runs over leaf locals it was handed, so it
+        // materialises a slot the same way an ordinary call site does
+        // -- and reads nothing back, since the value is being dropped.
         let mut args: Vec<ValueId> = Vec::with_capacity(locals.len());
         let mut self_dests: Vec<LocalId> = Vec::with_capacity(locals.len());
-        for (local, ty) in locals {
-            let v = self
-                .emit(InstKind::LoadLocal(*local), Some(*ty))
-                .ok_or_else(|| "auto-drop: LoadLocal returned no value".to_string())?;
-            args.push(v);
-            self_dests.push(*local);
+        if self.module.function(func_id).ptr_self.is_some() {
+            let (addr, reload) = self.receiver_address(locals)?;
+            args.push(addr);
+            // The value is being destroyed; nothing reads it back.
+            reload.skip();
+        } else {
+            for (local, ty) in locals {
+                let v = self
+                    .emit(InstKind::LoadLocal(*local), Some(*ty))
+                    .ok_or_else(|| "auto-drop: LoadLocal returned no value".to_string())?;
+                args.push(v);
+                self_dests.push(*local);
+            }
         }
         self.emit(
             InstKind::CallWithSelfWriteback {

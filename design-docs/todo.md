@@ -10,6 +10,7 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **CODE-SIZE-SELF-ABI S1+S2 — 幅の広い by-reference receiver をポインタで渡す** — leaf 8 個超の `&self` / `&mut self` は 1 本の番地で渡り、codegen が leaf の `LoadLocal` / `StoreLocal` をポインタ経由の load/store に読み替える。鎖を下るときは番地をそのまま転送する。`poc/logsearch` で `__text` 191,080 → 167,736 B (WB-PRUNE と合わせて −12.2%)、実行も ~4% 速い。設計は [`CODE_SIZE.md`](CODE_SIZE.md)。
 - **CODE-SIZE-WB-PRUNE — `&mut self` が書かない leaf を返さなくした** — lowering 後に writeback slot を落とす pass。不動点まで回すので callee → caller と連鎖する (`write_seg` の戻り 53 → 1)。`poc/logsearch` で `__text` −10.3%。設計は [`CODE_SIZE.md`](CODE_SIZE.md)。
 - **リファクタリング (frontend / compiler / interpreter)** — 重複と
   手書きの冗長データを 7 か所落として **-516 行**。compiler:
@@ -1652,23 +1653,29 @@
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
 
-- **CODE-SIZE-SELF-ABI: `&mut self` が struct 全体を呼出規約に展開する** ★★★ —
-  `&mut self` メソッドは self の**全 leaf スカラー**を引数で受ける。
-  leaf 数が引数レジスタ本数 (aarch64 で 8) を超えると、超えた分は
-  呼び出しのたびにメモリを往復する (`poc/logsearch` で **11.5%** の命令)。
-  `ArchiveWriter` は 19 フィールド → **52 leaf** なので、1 フィールド
-  読むだけの `ts_min()` すら 52 引数取る。
-  **戻り側は CODE-SIZE-WB-PRUNE で済んだ**が、引数側は未着手。
-  **「読まない param を落とす」対称案は測って捨てた** — 効くのは
-  accessor だけ (`write_seg` / `emit_terms` は `self` を下へ渡し続けるので
-  全 param を読む) で、呼び出し回数の重みつきで **3.5%** にしかならず、
-  IR の leaf マスク + codegen + IR VM の代償に見合わない。
-  効くのは**鎖を通してポインタを 1 本流す**形で、`Ptr<S>` で手書きした
-  下限計測でも転送層が **−58%**。段取りは S1 転送形式 / S2 転送 /
-  S3 根の常駐化で、**S1 単独では退化するので S1+S2 が最小の出荷単位**。
-  S2 の「leaf local とメモリの同期」不変が `Binding::Struct` の
-  **17 ファイル 74 か所**に関わるため、1 セッションで安全に入る規模ではない。
-  設計・計測・段取りは [`CODE_SIZE.md`](CODE_SIZE.md)。
+- **CODE-SIZE-SELF-ABI-S3: 鎖の根がまだ呼び出しごとに slot を作り直す** ★★ —
+  S1+S2 (完了済み) で「幅の広い by-reference receiver をポインタで渡す」
+  が入り、鎖の中ほどは大きく縮んだ (`emit_terms` 3,092 → 263 命令)。
+  残るのは**根**: `var w = ArchiveWriter::new()` を持つ関数は
+  受け側が leaf local なので、method を呼ぶたびに slot へ書き出して
+  読み戻す (`cmd_archive` +3,604 命令、`flush_segment` +2,532)。
+  直しは (1) **幅の広い struct のローカル束縛を stack slot に常駐**
+  させる、(2) `&mut T` / `&T` を取る**自由関数**の compound param にも
+  同じポインタ形を広げる (`flush_segment(w: &mut ArchiveWriter, ...)`
+  が今それで太っている)。**演算子オーバーロード** (`add` / `eq` ...) も
+  対象外のままで、被演算子を潰す `lower_arg_values` が callee を
+  知らないのが理由。外れた経路は `ptr_self_verify` がビルドを止めるので
+  沈黙はしない。設計と計測は [`CODE_SIZE.md`](CODE_SIZE.md)。
+
+- **BY-VALUE-SELF-ALIAS: by-value receiver の `var s = self` が tree-walker
+  だけ呼び出し側に漏れる** ★★ — `fn consumed(self: Self)` の中で
+  `var s = self` して `s.a = ...` と書くと、**tree-walker では
+  呼び出し側の値まで変わる**が compiled レーン (と IR VM) は変えない。
+  `val b = a` が compound では alias という規則
+  ([`docs/language.md`](../docs/language.md)) と、by-value receiver が
+  自分のコピーを持つという規則の交点。**CODE-SIZE-SELF-ABI とは無関係**
+  — その作業の前から同じ挙動であることを、変更を stash して確認済み
+  (2026-09-05)。どちらが正しいかを決めて 4 レーン揃える必要がある。
 
 - **CODE-SIZE-DIAG-STRINGS: panic サイトごとに文面を丸ごと持つ** ★ —
   DEBUG-OBS D3 の `declare_frame_strings` が panic サイトごとに

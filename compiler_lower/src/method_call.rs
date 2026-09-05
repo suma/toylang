@@ -86,6 +86,64 @@ pub(super) fn primitive_target_sym_for_ir_type(
     interner.get(decl.primitive_canonical_name()?)
 }
 
+/// CODE-SIZE-SELF-ABI: what a call site still owes its receiver after
+/// the call is emitted.
+///
+/// A materialised receiver was copied into a slot before the call; the
+/// callee wrote its mutations there, so the caller has to read them
+/// back into its leaf locals. Forgetting that is a lost update, and it
+/// is easy to forget because the reload happens *after* an emit that
+/// may be several functions away from where the address was made.
+///
+/// So it is a guard value rather than a field on the lowerer.
+/// `#[must_use]` catches ignoring it where it is produced; the `Drop`
+/// below catches the other half, where it rides inside a
+/// `CompoundMethodCall` that some call site drops without looking at
+/// the field. Both failures are loud, which is the point: the quiet
+/// version of this bug is a mutation that vanishes.
+#[must_use = "a materialised receiver must be read back (`apply`) or explicitly dropped (`skip`)"]
+pub(super) struct ReceiverReload {
+    /// `None` when the pointer was forwarded -- caller and callee are
+    /// looking at the same bytes, so there is nothing to read back.
+    slot: Option<(ValueId, Vec<(LocalId, u64, Type)>)>,
+}
+
+impl ReceiverReload {
+    /// The forwarded case: nothing owed.
+    pub(super) fn none() -> Self {
+        ReceiverReload { slot: None }
+    }
+
+    pub(super) fn slot(addr: ValueId, layout: Vec<(LocalId, u64, Type)>) -> Self {
+        ReceiverReload { slot: Some((addr, layout)) }
+    }
+
+    /// Read the receiver back. Call immediately after the call.
+    pub(super) fn apply(mut self, lower: &mut super::FunctionLower<'_>) {
+        if let Some((addr, layout)) = self.slot.take() {
+            lower.reload_receiver_slot(addr, &layout);
+        }
+    }
+
+    /// Deliberately not read back -- only correct when the receiver is
+    /// being destroyed, as in auto-drop glue.
+    pub(super) fn skip(mut self) {
+        self.slot = None;
+    }
+}
+
+impl Drop for ReceiverReload {
+    fn drop(&mut self) {
+        if self.slot.is_some() && !std::thread::panicking() {
+            panic!(
+                "internal error (CODE-SIZE-SELF-ABI): a materialised receiver was dropped \
+                 without being read back; whichever call site emits the call must call \
+                 `ReceiverReload::apply` (or `skip` when the value is being destroyed)"
+            );
+        }
+    }
+}
+
 impl<'a> FunctionLower<'a> {
     /// `&self` cousin of `lower_method_param_type` — used by
     /// `value_scalar`'s MethodCall arm so val/var annotation
@@ -859,7 +917,7 @@ impl<'a> FunctionLower<'a> {
                 self.interner.resolve(method).unwrap_or("?"),
             ));
         }
-        let values = self.build_method_call_values(&binding, args, target)?;
+        let (values, recv_reload) = self.build_method_call_values(&binding, args, target)?;
         // Stage 1 of `&` references: if the method is `&mut self`,
         // emit `CallWithSelfWriteback` so the cranelift call's
         // trailing self-leaf return values are stored back into
@@ -885,7 +943,11 @@ impl<'a> FunctionLower<'a> {
         let needs_writeback = !self.module.function(target).self_writeback_types.is_empty();
         if needs_writeback {
             let mut self_dests: Vec<crate::ir::LocalId> = Vec::new();
-            if template_self_is_mut {
+            // CODE-SIZE-SELF-ABI: a pointer-passed receiver contributes
+            // no writeback slots -- the callee wrote through the
+            // pointer -- so its leaves must not appear here either.
+            let recv_is_ptr = self.module.function(target).ptr_self.is_some();
+            if template_self_is_mut && !recv_is_ptr {
                 match &binding {
                     Binding::Struct { fields, .. } => {
                         for (l, _) in flatten_struct_locals(fields) {
@@ -920,6 +982,7 @@ impl<'a> FunctionLower<'a> {
                     },
                     None,
                 );
+                recv_reload.apply(self);
                 let result = match (ret_dest, ret_ty_opt) {
                     (Some(local), Some(ty)) => Some(
                         self.emit(InstKind::LoadLocal(local), Some(ty))
@@ -939,7 +1002,9 @@ impl<'a> FunctionLower<'a> {
         } else {
             None
         };
-        Ok(self.emit(inst, result_ty))
+        let result = self.emit(inst, result_ty);
+        recv_reload.apply(self);
+        Ok(result)
     }
 
     /// STR-INTERP-AOT: built-in str methods that don't have a
@@ -1112,13 +1177,122 @@ impl<'a> FunctionLower<'a> {
     /// Build the call args: receiver leaf scalars first, then method
     /// args (per-arg expansion for struct/tuple/enum identifier args
     /// mirrors `lower_call_args`).
+    /// CODE-SIZE-SELF-ABI: produce the address a pointer-passed
+    /// receiver is handed as.
+    ///
+    /// Two cases, and the difference between them is the whole point
+    /// of the change:
+    ///
+    /// * **Forwarding.** If these leaves *are* the current function's
+    ///   own pointer-passed receiver, they already live in the
+    ///   caller's memory; passing the pointer on costs one load. This
+    ///   is what makes a chain of `self` methods stop re-pushing the
+    ///   struct at every hop.
+    /// * **Materialising.** Otherwise the receiver lives in leaf
+    ///   locals and needs somewhere addressable: a per-call slot,
+    ///   written once before the call. `finish_receiver_slot` reads
+    ///   the leaves back afterwards, which is what replaces the
+    ///   writeback returns this receiver no longer has.
+    pub(super) fn receiver_address(
+        &mut self,
+        leaves: &[(LocalId, Type)],
+    ) -> Result<(ValueId, ReceiverReload), String> {
+        if let Some(ps) = self.module.function(self.func_id).ptr_self.clone()
+            && let Some(ptr_local) = ps.ptr_local
+            && ps.leaves.len() == leaves.len()
+            && ps
+                .leaves
+                .iter()
+                .zip(leaves.iter())
+                .all(|((a, _, _), (b, _))| a == b)
+        {
+            let v = self
+                .emit(InstKind::LoadLocal(ptr_local), Some(Type::U64))
+                .expect("LoadLocal returns a value");
+            // Forwarded: caller and callee share the bytes, so there
+            // is nothing to read back.
+            return Ok((v, ReceiverReload::none()));
+        }
+        let (addr, layout) = self.materialise_receiver_slot(leaves)?;
+        Ok((addr, ReceiverReload::slot(addr, layout)))
+    }
+
+    /// Write the receiver's leaves into a fresh per-call slot and
+    /// answer its address plus the layout needed to read them back.
+    fn materialise_receiver_slot(
+        &mut self,
+        leaves: &[(LocalId, Type)],
+    ) -> Result<(ValueId, Vec<(LocalId, u64, Type)>), String> {
+        let mut layout: Vec<(LocalId, u64, Type)> = Vec::with_capacity(leaves.len());
+        let mut offset: u64 = 0;
+        for (local, ty) in leaves {
+            let size = crate::program::scalar_byte_size(*ty).ok_or_else(|| {
+                format!(
+                    "CODE-SIZE-SELF-ABI: receiver leaf of type {} has no byte size",
+                    crate::spelling::spell_type(self.module, self.interner, *ty)
+                )
+            })?;
+            layout.push((*local, offset, *ty));
+            offset += size;
+        }
+        let slot_idx = {
+            let func = self.module.function_mut(self.func_id);
+            let idx = func.dyn_coerce_slots.len() as u32;
+            func.dyn_coerce_slots.push(offset.max(1) as u32);
+            idx
+        };
+        let addr = self
+            .emit(InstKind::DynCoerceSlotAddr { slot_idx }, Some(Type::U64))
+            .expect("DynCoerceSlotAddr returns a value");
+        for (local, off, ty) in &layout {
+            let val = self
+                .emit(InstKind::LoadLocal(*local), Some(*ty))
+                .expect("LoadLocal returns a value");
+            let off_v = self
+                .emit(InstKind::Const(Const::U64(*off)), Some(Type::U64))
+                .expect("Const returns a value");
+            self.emit(
+                InstKind::PtrWrite {
+                    ptr: addr,
+                    offset: off_v,
+                    value: val,
+                    value_ty: *ty,
+                },
+                None,
+            );
+        }
+        Ok((addr, layout))
+    }
+
+    /// Read a materialised receiver's leaves back out of its slot,
+    /// after the call that may have mutated them.
+    pub(super) fn reload_receiver_slot(
+        &mut self,
+        addr: ValueId,
+        layout: &[(LocalId, u64, Type)],
+    ) {
+        for (local, off, ty) in layout {
+            let off_v = self
+                .emit(InstKind::Const(Const::U64(*off)), Some(Type::U64))
+                .expect("Const returns a value");
+            let v = self
+                .emit(
+                    InstKind::PtrRead { ptr: addr, offset: off_v, elem_ty: *ty },
+                    Some(*ty),
+                )
+                .expect("PtrRead returns a value");
+            self.emit(InstKind::StoreLocal { dst: *local, src: v }, None);
+        }
+    }
+
     fn build_method_call_values(
         &mut self,
         binding: &Binding,
         args: &Vec<ExprRef>,
         target: crate::ir::FuncId,
-    ) -> Result<Vec<ValueId>, String> {
+    ) -> Result<(Vec<ValueId>, ReceiverReload), String> {
         let mut values: Vec<ValueId> = Vec::new();
+        let mut reload = ReceiverReload::none();
         // The callee's declared parameter types, receiver leaves
         // included — a compound literal argument follows the one at
         // its own slot to pick the right monomorphisation. The
@@ -1128,11 +1302,18 @@ impl<'a> FunctionLower<'a> {
         match binding {
             Binding::Struct { fields, .. } => {
                 let leaves = flatten_struct_locals(fields);
-                for (local, ty) in &leaves {
-                    let v = self
-                        .emit(InstKind::LoadLocal(*local), Some(*ty))
-                        .expect("LoadLocal returns a value");
-                    values.push(v);
+                if self.module.function(target).ptr_self.is_some() {
+                    // CODE-SIZE-SELF-ABI: the callee wants one address.
+                    let (addr, r) = self.receiver_address(&leaves)?;
+                    reload = r;
+                    values.push(addr);
+                } else {
+                    for (local, ty) in &leaves {
+                        let v = self
+                            .emit(InstKind::LoadLocal(*local), Some(*ty))
+                            .expect("LoadLocal returns a value");
+                        values.push(v);
+                    }
                 }
             }
             Binding::Enum(storage) => {
@@ -1313,7 +1494,7 @@ impl<'a> FunctionLower<'a> {
                 .ok_or_else(|| "method argument produced no value".to_string())?;
             values.push(v);
         }
-        Ok(values)
+        Ok((values, reload))
     }
 
     /// A5-P2-MVP-A: vtable-dispatched method call on a `&dyn Trait`
@@ -1598,13 +1779,23 @@ impl<'a> FunctionLower<'a> {
         // arguments (each lowered individually so identifier-arg
         // expansion for struct / tuple / enum stays intact).
         let mut args: Vec<ValueId> = Vec::new();
+        let mut reload = ReceiverReload::none();
         match &recv_binding {
             Binding::Struct { fields, .. } => {
-                for (local, ty) in flatten_struct_locals(fields) {
-                    let v = self
-                        .emit(InstKind::LoadLocal(local), Some(ty))
-                        .expect("LoadLocal returns");
-                    args.push(v);
+                let leaves = flatten_struct_locals(fields);
+                if self.module.function(target).ptr_self.is_some() {
+                    // CODE-SIZE-SELF-ABI: same as the scalar-returning
+                    // sibling -- one address instead of every leaf.
+                    let (addr, r) = self.receiver_address(&leaves)?;
+                    reload = r;
+                    args.push(addr);
+                } else {
+                    for (local, ty) in leaves {
+                        let v = self
+                            .emit(InstKind::LoadLocal(local), Some(ty))
+                            .expect("LoadLocal returns");
+                        args.push(v);
+                    }
                 }
             }
             Binding::Enum(storage) => {
@@ -1700,10 +1891,14 @@ impl<'a> FunctionLower<'a> {
         // receiver leaves first, then args in declaration order.
         let mut writeback_dests: Vec<LocalId> = Vec::new();
         if !self.module.function(target).self_writeback_types.is_empty() {
+            // CODE-SIZE-SELF-ABI: a pointer-passed receiver has no
+            // writeback slots to fill.
+            let recv_is_ptr = self.module.function(target).ptr_self.is_some();
             match &recv_binding {
-                Binding::Struct { fields, .. } => writeback_dests.extend(
+                Binding::Struct { fields, .. } if !recv_is_ptr => writeback_dests.extend(
                     flatten_struct_locals(fields).into_iter().map(|(l, _)| l),
                 ),
+                Binding::Struct { .. } => {}
                 Binding::Enum(storage) => {
                     Self::flatten_enum_dests_into(storage, &mut writeback_dests)
                 }
@@ -1716,6 +1911,7 @@ impl<'a> FunctionLower<'a> {
             ret,
             args,
             writeback_dests,
+            reload,
         }))
     }
 }
@@ -1733,6 +1929,9 @@ pub(super) struct CompoundMethodCall {
     /// Slots that receive `&mut` writeback, appended *after* the
     /// caller's own destination locals.
     pub writeback_dests: Vec<LocalId>,
+    /// CODE-SIZE-SELF-ABI: the caller emits the call, so the caller
+    /// owes the receiver its read-back.
+    pub reload: ReceiverReload,
 }
 
 #[cfg(test)]

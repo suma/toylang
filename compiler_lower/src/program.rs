@@ -165,6 +165,94 @@ pub(super) fn primitive_type_decl_for_target_sym(
 /// `Function::self_writeback_types`. Body-time lowering re-derives
 /// the same shape from the actual leaf locals; the two should
 /// always agree.
+/// CODE-SIZE-SELF-ABI: should this method's receiver travel as a
+/// pointer?
+///
+/// Yes when all of these hold:
+///
+/// * the receiver is **by reference**. The implicit form (`&self` /
+///   `&mut self`) is the by-reference one -- an explicit `(self: Self)`
+///   names itself in `method.parameter` and is by value, so it must
+///   keep its own copy or the callee's writes would escape.
+/// * it is a **struct**. Enum receivers carry a tag and per-variant
+///   payload slots whose layout this does not describe.
+/// * it flattens to **more leaves than there are argument registers**.
+///   At or below that the leaves ride in registers for free.
+fn decide_ptr_self(
+    module: &mut Module,
+    func_id: FuncId,
+    method: &frontend::ast::MethodFunction,
+    // `None` when the caller had no interner to hand (the generic
+    // instantiation path). Without one we cannot tell an operator
+    // overload from an ordinary method, so the receiver stays
+    // by-value -- the conservative direction.
+    interner: Option<&DefaultStringInterner>,
+) -> bool {
+    if !method.has_self_param {
+        return false;
+    }
+    // By-reference receivers are the ones lowering had to synthesise,
+    // which is exactly the case where IR params outnumber the AST's.
+    if module.function(func_id).params.len() != method.parameter.len() + 1 {
+        return false;
+    }
+    // Methods reached by a *special* dispatch path build their
+    // argument list somewhere other than the method-call lowering --
+    // an operator overload flattens both operands through
+    // `lower_arg_values`, which has no callee to ask. Those keep the
+    // by-value form. `drop` is not on the list: the auto-drop glue
+    // does know its target and materialises a slot like any other
+    // caller.
+    let Some(interner) = interner else {
+        return false;
+    };
+    if is_specially_dispatched(method.name, interner) {
+        return false;
+    }
+    let self_ty = module.function(func_id).params[0];
+    if !matches!(self_ty, Type::Struct(_)) {
+        return false;
+    }
+    let mut leaves = Vec::new();
+    flatten_compound_leaf_types(module, self_ty, &mut leaves);
+    if leaves.len() <= PTR_SELF_LEAF_THRESHOLD {
+        return false;
+    }
+    if dyn_struct_leaf_layout(module, self_ty).is_none() {
+        return false;
+    }
+    module.function_mut(func_id).ptr_self = Some(crate::ir::PtrSelf {
+        ptr_local: None,
+        leaves: Vec::new(),
+    });
+    true
+}
+
+/// Method names the language dispatches through a path of its own
+/// rather than through ordinary method-call lowering.
+///
+/// These are the operator overloads (`a + b` becomes `add`, `a == b`
+/// becomes `eq`, and so on). Their operands are flattened by
+/// `lower_arg_values`, which sees one operand at a time and has no
+/// callee to ask about its receiver's transport, so a pointer-passed
+/// receiver would be handed its leaves instead of an address.
+///
+/// The list is deliberately by name: that is how the dispatch itself
+/// finds them (`docs/language.md`, "operator overload"). Anything
+/// missing from it is caught by `ptr_self_verify` as a build failure
+/// rather than a wrong answer.
+fn is_specially_dispatched(name: DefaultSymbol, interner: &DefaultStringInterner) -> bool {
+    matches!(
+        interner.resolve(name),
+        Some(
+            "add" | "sub" | "mul" | "div" | "rem"
+                | "eq" | "lt" | "le" | "gt" | "ge"
+                | "bitand" | "bitor" | "bitxor" | "shl" | "shr"
+                | "neg" | "bitnot" | "not"
+        )
+    )
+}
+
 pub(super) fn populate_method_writeback_types(
     module: &mut Module,
     func_id: FuncId,
@@ -175,6 +263,11 @@ pub(super) fn populate_method_writeback_types(
     // goes through leaf erasure rather than an address.
     self_decl: Option<(&TypeDecl, &DefaultStringInterner)>,
 ) {
+    // CODE-SIZE-SELF-ABI: decide the receiver's transport here, at
+    // declaration time, because a call site may be lowered before the
+    // callee's body is. The leaf locals are filled in later, by
+    // `setup_ptr_self`, once the body allocates them.
+    let receiver_is_ptr = decide_ptr_self(module, func_id, method, self_decl.map(|(_, i)| i));
     let mut wb_types: Vec<Type> = Vec::new();
     let receiver_idx = if method.has_self_param
         && method.parameter.first().map(|(n, _)| {
@@ -199,7 +292,7 @@ pub(super) fn populate_method_writeback_types(
         // when the IR `params` is exactly one longer than
         // `method.parameter`, an implicit self was prepended.
         if module.function(func_id).params.len() == method.parameter.len() + 1 {
-            if method.self_is_mut {
+            if method.self_is_mut && !receiver_is_ptr {
                 let self_ty = module.function(func_id).params[0];
                 flatten_compound_leaf_types(module, self_ty, &mut wb_types);
             }
@@ -277,7 +370,7 @@ pub(super) fn populate_method_writeback_types(
 /// `__builtin_ptr_read/write` family use. Reject compound types
 /// (struct / tuple / enum) — the caller is expected to pre-flatten
 /// via `flatten_compound_leaf_types`.
-fn scalar_byte_size(ty: Type) -> Option<u64> {
+pub(super) fn scalar_byte_size(ty: Type) -> Option<u64> {
     match ty {
         Type::Bool | Type::I8 | Type::U8 => Some(1),
         Type::I16 | Type::U16 => Some(2),
@@ -295,6 +388,17 @@ fn scalar_byte_size(ty: Type) -> Option<u64> {
 /// the module-walking layer (no FunctionLower in scope yet during
 /// the method-decl loop). Returns `None` if any leaf is compound /
 /// enum / Unit — MVP-B only supports scalar fields.
+/// CODE-SIZE-SELF-ABI: the leaf count past which a by-reference
+/// receiver is handed over as a pointer instead of as its leaves.
+///
+/// Eight is the number of argument registers on both targets we build
+/// for (aarch64 and x86-64). At or below it the whole receiver rides
+/// in registers and spreading it out is free; above it every extra
+/// leaf is a store in the caller and a load in the callee, on every
+/// call, and the same leaves travel again on each hop down a chain of
+/// `self` methods.
+pub(super) const PTR_SELF_LEAF_THRESHOLD: usize = 8;
+
 fn dyn_struct_leaf_layout(module: &Module, ty: Type) -> Option<Vec<(u64, Type)>> {
     let mut leaves: Vec<Type> = Vec::new();
     flatten_compound_leaf_types(module, ty, &mut leaves);
@@ -1514,6 +1618,9 @@ pub fn lower_program(
     // ends move together, so this has to be after the last call site
     // is emitted.
     crate::writeback_prune::prune_unwritten_writeback(&mut module);
+    // CODE-SIZE-SELF-ABI: a call shape nobody taught about the pointer
+    // receiver must stop here, not reach codegen.
+    crate::ptr_self_verify::verify_call_arity(&module)?;
     Ok(module)
 }
 
@@ -1698,6 +1805,7 @@ impl<'a> FunctionLower<'a> {
             pending_return_hint: None,
             self_writeback_locals: None,
             pending_self_writeback_param: None,
+            pending_ptr_self_param: None,
             closure_bindings: HashMap::new(),
             pending_closure_work,
             pending_glue_work,
@@ -1736,6 +1844,62 @@ impl<'a> FunctionLower<'a> {
     /// after the user-visible return values. Use this in place of
     /// `self.terminate(Terminator::Return(...))` everywhere — the
     /// no-writeback case is a thin pass-through.
+    /// CODE-SIZE-SELF-ABI: hand the receiver over as a pointer when it
+    /// is wide enough to be worth it.
+    ///
+    /// Returns whether it took effect, which is what tells the caller
+    /// to leave the receiver out of the writeback shape. Declines
+    /// quietly for anything it cannot describe -- a non-struct
+    /// receiver, an unknown byte layout -- so the by-value form stays
+    /// the fallback rather than a failure.
+    fn setup_ptr_self(&mut self) -> Result<bool, String> {
+        let self_sym = self.pending_ptr_self_param.take();
+        if self.module.function(self.func_id).ptr_self.is_none() {
+            return Ok(false);
+        }
+        // The decision was already made when the function was
+        // declared, so anything that stops us filling in the detail is
+        // an internal inconsistency, not a case to fall back on: the
+        // callers have been given the pointer signature already.
+        let self_sym = self_sym.ok_or_else(|| {
+            "internal error (CODE-SIZE-SELF-ABI): pointer receiver declared for a body with no receiver binding"
+                .to_string()
+        })?;
+        let Some(super::bindings::Binding::Struct { fields, .. }) =
+            self.bindings.get(&self_sym).cloned()
+        else {
+            return Err(
+                "internal error (CODE-SIZE-SELF-ABI): pointer receiver is not bound as a struct"
+                    .to_string(),
+            );
+        };
+        let leaf_locals = super::bindings::flatten_struct_locals(&fields);
+        // The receiver is params[0]; its leaves are locals[0..n], which
+        // is the assumption codegen's block-param shift relies on.
+        let self_ty = self.module.function(self.func_id).params[0];
+        let layout = dyn_struct_leaf_layout(self.module, self_ty).ok_or_else(|| {
+            "internal error (CODE-SIZE-SELF-ABI): pointer receiver has no byte layout".to_string()
+        })?;
+        if layout.len() != leaf_locals.len() {
+            return Err(format!(
+                "internal error (CODE-SIZE-SELF-ABI): receiver has {} leaf locals but {} layout slots",
+                leaf_locals.len(),
+                layout.len(),
+            ));
+        }
+        let leaves: Vec<(LocalId, u64, Type)> = leaf_locals
+            .iter()
+            .zip(layout.iter())
+            .map(|((local, ty), (offset, _))| (*local, *offset, *ty))
+            .collect();
+        let ptr_local = self.module.function_mut(self.func_id).add_local(Type::U64);
+        self.module.function_mut(self.func_id).ptr_self = Some(crate::ir::PtrSelf {
+            ptr_local: Some(ptr_local),
+            leaves,
+        });
+        Ok(true)
+    }
+
     pub(super) fn terminate_return(&mut self, mut values: Vec<ValueId>) {
         // Phase 5 (汎用 RAII): emit `<binding>.drop()` for every
         // user-struct binding whose `impl Drop` is in scope at
@@ -1820,6 +1984,14 @@ impl<'a> FunctionLower<'a> {
             }).unwrap_or(true)
         {
             parameter.insert(0, (self.contract_msgs.self_ident, self_decl.clone()));
+            // CODE-SIZE-SELF-ABI: the implicit form is exactly the
+            // by-reference form (`&self` / `&mut self`) -- an explicit
+            // `(self: Self)` receiver is by value and already carries
+            // the name. Only a reference may travel as a pointer into
+            // the caller's storage; a by-value receiver has to keep
+            // its own copy, or the callee's writes would be visible
+            // to the caller.
+            self.pending_ptr_self_param = Some(self.contract_msgs.self_ident);
         }
         // Build a synthetic Function-shaped value and delegate. We
         // keep `name` / `generic_*` / `visibility` empty since
@@ -2046,8 +2218,15 @@ impl<'a> FunctionLower<'a> {
         // values to the user-visible return slot list, and the
         // codegen layer extends the cranelift signature's return
         // shape from `self_writeback_types`.
+        // CODE-SIZE-SELF-ABI: decide whether the receiver travels as a
+        // pointer before the writeback shape is built, because a
+        // pointer-passed receiver needs no writeback at all -- its
+        // mutations land in the caller's memory as they happen.
+        let ptr_self_taken = self.setup_ptr_self()?;
+
         let mut writeback_leaves: Vec<(LocalId, Type)> = Vec::new();
         if let Some(self_sym) = self.pending_self_writeback_param.take()
+            && !ptr_self_taken
             && let Some(super::bindings::Binding::Struct { fields, .. }) =
                 self.bindings.get(&self_sym).cloned()
             {

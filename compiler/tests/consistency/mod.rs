@@ -78,3 +78,4 @@ mod bulk_memory;
 mod typed_ptr_read;
 mod range_ops;
 mod writeback_prune;
+mod ptr_self;

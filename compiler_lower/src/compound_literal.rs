@@ -293,6 +293,7 @@ impl<'a> FunctionLower<'a> {
                         self.interner.resolve(method_sym).unwrap_or("?"),
                     ));
                 };
+                let reload = call.reload;
                 let Type::Struct(ret_struct_id) = call.ret else {
                     return Err(format!(
                         "method `{}` returns {}, but this slot holds a struct",
@@ -326,6 +327,7 @@ impl<'a> FunctionLower<'a> {
                     },
                     None,
                 );
+                reload.apply(self);
                 Ok(())
             }
             other => Err(format!(
@@ -437,6 +439,7 @@ impl<'a> FunctionLower<'a> {
                         self.interner.resolve(method_sym).unwrap_or("?"),
                     ));
                 };
+                let reload = call.reload;
                 if !matches!(call.ret, Type::Tuple(_)) {
                     return Err(format!(
                         "method `{}` returns {}, but this slot holds a tuple",
@@ -458,6 +461,7 @@ impl<'a> FunctionLower<'a> {
                     },
                     None,
                 );
+                reload.apply(self);
                 Ok(())
             }
             other => Err(format!(

@@ -110,6 +110,9 @@ mod fold;
 /// CODE-SIZE-WB-PRUNE: post-lowering removal of writeback return
 /// slots whose leaf the body never writes.
 mod writeback_prune;
+/// CODE-SIZE-SELF-ABI: post-lowering arity check for pointer-passed
+/// receivers.
+mod ptr_self_verify;
 
 mod array_layout;
 
@@ -477,6 +480,11 @@ struct FunctionLower<'a> {
     /// snapshot is taken so subsequent (non-method) bodies in
     /// the same `FunctionLower` reuse cycle aren't affected.
     pending_self_writeback_param: Option<DefaultSymbol>,
+    /// CODE-SIZE-SELF-ABI: the receiver symbol of a `&self` /
+    /// `&mut self` method whose body is about to be lowered. Set only
+    /// for the by-reference form, since a by-value receiver cannot
+    /// share the caller's storage.
+    pending_ptr_self_param: Option<DefaultSymbol>,
     /// Closures Phase 5a (AOT): mapping from a closure-binding
     /// symbol (the `name` in `val name = fn(...)`) to the
     /// synthesized top-level `FuncId` we lifted the closure into,
@@ -1410,8 +1418,22 @@ impl<'a> FunctionLower<'a> {
         let data_ptr_v = self
             .emit(InstKind::LoadLocal(data_ptr_local), Some(Type::U64))
             .ok_or_else(|| "dyn thunk: LoadLocal(data_ptr) returned no value".to_string())?;
+        // CODE-SIZE-SELF-ABI: when the impl method takes its receiver
+        // as a pointer, `data_ptr` already *is* that pointer -- the
+        // coercion site laid the struct out with the same
+        // `dyn_struct_leaf_layout` the pointer ABI uses. So the thunk
+        // hands it straight over: no leaves to read in, and no leaves
+        // to write back afterwards, because the impl mutates the
+        // caller's bytes in place.
+        let impl_takes_ptr_self = self.module.function(impl_func_id).ptr_self.is_some();
         let mut leaf_values: Vec<ValueId> = Vec::with_capacity(struct_leaves.len());
+        if impl_takes_ptr_self {
+            leaf_values.push(data_ptr_v);
+        }
         for (offset, leaf_ty) in struct_leaves {
+            if impl_takes_ptr_self {
+                break;
+            }
             let off_v = self
                 .emit(
                     InstKind::Const(crate::ir::Const::U64(*offset)),
@@ -1467,11 +1489,16 @@ impl<'a> FunctionLower<'a> {
             } else {
                 Some(self.module.function_mut(self.func_id).add_local(ret_ty))
             };
+            // CODE-SIZE-SELF-ABI: a pointer-passed receiver declares no
+            // writeback returns, so there is nothing to catch and
+            // nothing to store back.
             let mut self_dest_locals: Vec<crate::ir::LocalId> =
                 Vec::with_capacity(struct_leaves.len());
-            for (_off, leaf_ty) in struct_leaves {
-                let local = self.module.function_mut(self.func_id).add_local(*leaf_ty);
-                self_dest_locals.push(local);
+            if !impl_takes_ptr_self {
+                for (_off, leaf_ty) in struct_leaves {
+                    let local = self.module.function_mut(self.func_id).add_local(*leaf_ty);
+                    self_dest_locals.push(local);
+                }
             }
             self.emit(
                 InstKind::CallWithSelfWriteback {
@@ -1490,7 +1517,9 @@ impl<'a> FunctionLower<'a> {
             // Write each post-mutation leaf back to `data_ptr` at its
             // natural-sum offset so the caller's stack slot reflects
             // the change.
-            self.emit_writeback_ptrwrites(data_ptr_v, struct_leaves, &self_dest_locals)?;
+            if !impl_takes_ptr_self {
+                self.emit_writeback_ptrwrites(data_ptr_v, struct_leaves, &self_dest_locals)?;
+            }
             // Terminate.
             let fid = self.func_id;
             let return_vals: Vec<ValueId> = match ret_dest_local {
@@ -1525,11 +1554,16 @@ impl<'a> FunctionLower<'a> {
                 let local = self.module.function_mut(self.func_id).add_local(*leaf_ty);
                 ret_dest_locals.push(local);
             }
+            // CODE-SIZE-SELF-ABI: a pointer-passed receiver declares no
+            // writeback returns, so there is nothing to catch and
+            // nothing to store back.
             let mut self_dest_locals: Vec<crate::ir::LocalId> =
                 Vec::with_capacity(struct_leaves.len());
-            for (_off, leaf_ty) in struct_leaves {
-                let local = self.module.function_mut(self.func_id).add_local(*leaf_ty);
-                self_dest_locals.push(local);
+            if !impl_takes_ptr_self {
+                for (_off, leaf_ty) in struct_leaves {
+                    let local = self.module.function_mut(self.func_id).add_local(*leaf_ty);
+                    self_dest_locals.push(local);
+                }
             }
             self.emit(
                 InstKind::CallWithSelfWritebackCompound {
@@ -1540,7 +1574,9 @@ impl<'a> FunctionLower<'a> {
                 },
                 None,
             );
-            self.emit_writeback_ptrwrites(data_ptr_v, struct_leaves, &self_dest_locals)?;
+            if !impl_takes_ptr_self {
+                self.emit_writeback_ptrwrites(data_ptr_v, struct_leaves, &self_dest_locals)?;
+            }
             // Load each ret_dest leaf and pass through the multi-value
             // Return (matches the thunk's flat-leaf return signature).
             let mut return_vals: Vec<ValueId> = Vec::with_capacity(ret_dest_locals.len());

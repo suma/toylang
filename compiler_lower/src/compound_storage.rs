@@ -982,6 +982,7 @@ impl<'a> FunctionLower<'a> {
                         self.interner.resolve(method_sym).unwrap_or("?"),
                     ));
                 };
+                let reload = call.reload;
                 if call.ret != Type::Enum(target_enum_id) {
                     return Err(format!(
                         "method `{}` returns {}, but this slot holds `{}`",
@@ -1000,6 +1001,7 @@ impl<'a> FunctionLower<'a> {
                     },
                     None,
                 );
+                reload.apply(self);
                 Ok(())
             }
             other => Err(format!(

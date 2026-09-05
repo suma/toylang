@@ -375,7 +375,22 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 // Read them via `stack_load` so the canonical storage
                 // (the one `AddressOf` returns a `stack_addr` for) is
                 // the source of truth.
-                if let Some(slot) = self.addr_taken_slots.get(&local.0).copied() {
+                if let Some((base, offset, ty)) = self.ptr_self_leaves.get(&local.0).copied() {
+                    // CODE-SIZE-SELF-ABI: the receiver lives in the
+                    // caller's memory, so a leaf read is a load.
+                    let cl_ty = ir_to_cranelift_ty(ty).ok_or_else(|| {
+                        format!("LoadLocal: pointer-passed receiver leaf {local:?} has unsupported type {ty:?}")
+                    })?;
+                    let base_var = self.local(base);
+                    let addr = self.builder.use_var(base_var);
+                    let v = self.builder.ins().load(
+                        cl_ty,
+                        cranelift_codegen::ir::MemFlags::trusted(),
+                        addr,
+                        offset as i32,
+                    );
+                    self.record_result(inst, v);
+                } else if let Some(slot) = self.addr_taken_slots.get(&local.0).copied() {
                     let ir_ty = self.ir_module.function(self.func_id).locals[local.0 as usize];
                     let cl_ty = ir_to_cranelift_ty(ir_ty)
                         .ok_or_else(|| format!("LoadLocal: address-taken local {local:?} has unsupported type {ir_ty:?}"))?;
@@ -389,12 +404,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             }
             InstKind::StoreLocal { dst, src } => {
                 let v = self.value(*src);
-                if let Some(slot) = self.addr_taken_slots.get(&dst.0).copied() {
-                    self.builder.ins().stack_store(v, slot, 0);
-                } else {
-                    let var = self.local(*dst);
-                    self.builder.def_var(var, v);
-                }
+                self.store_local(*dst, v);
             }
             InstKind::AddressOf { local } => {
                 let slot = *self.addr_taken_slots.get(&local.0).ok_or_else(|| {
@@ -725,8 +735,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             ));
         }
         for (dest, val) in dests.iter().zip(results.iter()) {
-            let var = self.local(*dest);
-            self.builder.def_var(var, *val);
+            self.store_local(*dest, *val);
         }
         Ok(())
     }
@@ -815,8 +824,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     ));
                 }
                 for (dest, val) in dests.iter().zip(results.iter()) {
-                    let var = self.local(*dest);
-                    self.builder.def_var(var, *val);
+                    self.store_local(*dest, *val);
                 }
             }
             InstKind::CallTuple { target, args, dests } => {
@@ -839,8 +847,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     ));
                 }
                 for (dest, val) in dests.iter().zip(results.iter()) {
-                    let var = self.local(*dest);
-                    self.builder.def_var(var, *val);
+                    self.store_local(*dest, *val);
                 }
             }
             InstKind::CallEnum { target, args, dests } => {
@@ -863,8 +870,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     ));
                 }
                 for (dest, val) in dests.iter().zip(results.iter()) {
-                    let var = self.local(*dest);
-                    self.builder.def_var(var, *val);
+                    self.store_local(*dest, *val);
                 }
             }
             _ => unreachable!("lower_calls_through_values was handed an instruction it does not own"),
@@ -1597,6 +1603,36 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
         Ok(())
     }
 
+    /// CODE-SIZE-SELF-ABI / REF-Stage-2: write `v` into `local`,
+    /// honouring whatever storage that local actually has.
+    ///
+    /// Most locals are SSA variables, but two kinds are not: an
+    /// address-taken local lives in an explicit stack slot, and a leaf
+    /// of a pointer-passed receiver lives in the caller's memory.
+    /// Every place that produces a value *for a named local* -- call
+    /// destinations included, which is what this was written for --
+    /// has to go through here, or the write lands in a variable
+    /// nobody reads and the mutation is silently lost.
+    fn store_local(&mut self, local: compiler_ir::LocalId, v: Value) {
+        if let Some((base, offset, _)) = self.ptr_self_leaves.get(&local.0).copied() {
+            let base_var = self.local(base);
+            let addr = self.builder.use_var(base_var);
+            self.builder.ins().store(
+                cranelift_codegen::ir::MemFlags::trusted(),
+                v,
+                addr,
+                offset as i32,
+            );
+            return;
+        }
+        if let Some(slot) = self.addr_taken_slots.get(&local.0).copied() {
+            self.builder.ins().stack_store(v, slot, 0);
+            return;
+        }
+        let var = self.local(local);
+        self.builder.def_var(var, v);
+    }
+
     /// Calls that hand back mutated `self` leaves alongside their return
     /// value (the `&mut self` convention).
     fn lower_self_writeback(
@@ -1629,13 +1665,11 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 }
                 let mut idx = 0usize;
                 if let Some(local) = ret_dest {
-                    let var = self.local(*local);
-                    self.builder.def_var(var, results[idx]);
+                    self.store_local(*local, results[idx]);
                     idx += 1;
                 }
                 for local in self_dests {
-                    let var = self.local(*local);
-                    self.builder.def_var(var, results[idx]);
+                    self.store_local(*local, results[idx]);
                     idx += 1;
                 }
             }
@@ -1664,13 +1698,11 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     ));
                 }
                 for (i, local) in ret_dests.iter().enumerate() {
-                    let var = self.local(*local);
-                    self.builder.def_var(var, results[i]);
+                    self.store_local(*local, results[i]);
                 }
                 let offset = ret_dests.len();
                 for (i, local) in self_dests.iter().enumerate() {
-                    let var = self.local(*local);
-                    self.builder.def_var(var, results[offset + i]);
+                    self.store_local(*local, results[offset + i]);
                 }
             }
             _ => unreachable!("lower_self_writeback was handed an instruction it does not own"),

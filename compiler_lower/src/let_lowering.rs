@@ -1279,6 +1279,7 @@ impl<'a> FunctionLower<'a> {
         else {
             return Ok(None);
         };
+        let reload = call.reload;
         // Allocate the binding the result lands in, then emit the call
         // with its leaf locals as destinations (writeback slots last).
         match call.ret {
@@ -1334,6 +1335,10 @@ impl<'a> FunctionLower<'a> {
             }
             _ => unreachable!("prepare_compound_method_call guards the return shape"),
         }
+        // CODE-SIZE-SELF-ABI: the call is emitted here rather than in
+        // `prepare_compound_method_call`, so the receiver slot it
+        // materialised is read back here too.
+        reload.apply(self);
         Ok(Some(None))
     }
 

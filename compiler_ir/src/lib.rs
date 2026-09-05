@@ -454,6 +454,7 @@ impl Module {
             return_type,
             self_writeback_types: Vec::new(),
             self_writeback_locals: Vec::new(),
+            ptr_self: None,
             locals: Vec::new(),
             array_slots: Vec::new(),
             address_taken_locals: std::collections::HashSet::new(),
@@ -512,6 +513,7 @@ impl Module {
             return_type,
             self_writeback_types: Vec::new(),
             self_writeback_locals: Vec::new(),
+            ptr_self: None,
             locals: Vec::new(),
             array_slots: Vec::new(),
             address_taken_locals: std::collections::HashSet::new(),
@@ -864,6 +866,20 @@ pub struct Function {
     /// other function. The order matches `flatten_struct_locals`
     /// of the receiver's struct.
     pub self_writeback_types: Vec<Type>,
+    /// CODE-SIZE-SELF-ABI: when `Some`, parameter 0 -- the receiver of
+    /// a `&self` / `&mut self` method whose struct flattens to more
+    /// leaves than the ABI has argument registers -- travels as a
+    /// single pointer instead of as its leaves.
+    ///
+    /// The body is unchanged: it still reads and writes the same leaf
+    /// locals. Codegen rewrites those `LoadLocal` / `StoreLocal` into
+    /// loads and stores through the incoming pointer, which makes the
+    /// caller's memory the one copy of the receiver. That is what lets
+    /// a method forward `self` to another method by passing the
+    /// pointer along, instead of re-pushing every leaf, and it is why
+    /// such a receiver needs no writeback returns -- the mutation has
+    /// already landed where the caller can see it.
+    pub ptr_self: Option<PtrSelf>,
     /// CODE-SIZE-WB-PRUNE: the leaf locals whose values fill the
     /// writeback return slots, in the same order as
     /// `self_writeback_types`. Recorded at lowering time so a
@@ -1607,6 +1623,26 @@ impl InstKind {
             | InstKind::DynCoerceSlotAddr { .. } => {}
         }
     }
+}
+
+/// CODE-SIZE-SELF-ABI: how a pointer-passed receiver is laid out.
+///
+/// `leaves` is in the same order `flatten_struct_locals` produces, so
+/// it lines up with the leaf list every other part of lowering uses;
+/// the offsets are the natural running sum of the leaf widths, the
+/// same layout a `dyn` thunk writes behind `data_ptr`.
+#[derive(Debug, Clone)]
+pub struct PtrSelf {
+    /// Local that receives the incoming pointer. `None` until the
+    /// body is lowered: the *decision* is made when the function is
+    /// declared, because a caller may be lowered before the callee's
+    /// body exists, but the locals it names only come into being with
+    /// that body. A function that never gets a body (a declaration
+    /// the program does not reach) keeps `None` and is never emitted.
+    pub ptr_local: Option<LocalId>,
+    /// `(leaf local, byte offset, type)` for every leaf of the
+    /// receiver. Empty until the body is lowered, for the same reason.
+    pub leaves: Vec<(LocalId, u64, Type)>,
 }
 
 #[derive(Debug, Clone)]

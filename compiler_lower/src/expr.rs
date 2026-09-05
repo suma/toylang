@@ -976,6 +976,33 @@ impl<'a> FunctionLower<'a> {
         &mut self,
         call: crate::method_call::CompoundMethodCall,
     ) -> Result<Option<Vec<ValueId>>, String> {
+        // CODE-SIZE-SELF-ABI: this is where the call is emitted, so
+        // this is where a materialised receiver gets read back.
+        let reload = call.reload;
+        let out = self.lower_compound_method_arg_inner(
+            call.target,
+            call.ret,
+            call.args,
+            call.writeback_dests,
+        );
+        reload.apply(self);
+        out
+    }
+
+    fn lower_compound_method_arg_inner(
+        &mut self,
+        target: crate::ir::FuncId,
+        ret: Type,
+        args: Vec<ValueId>,
+        writeback_dests: Vec<crate::ir::LocalId>,
+    ) -> Result<Option<Vec<ValueId>>, String> {
+        let call = crate::method_call::CompoundMethodCall {
+            target,
+            ret,
+            args,
+            writeback_dests,
+            reload: crate::method_call::ReceiverReload::none(),
+        };
         match call.ret {
             Type::Enum(enum_id) => {
                 let storage = self.allocate_enum_storage(enum_id);

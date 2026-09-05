@@ -20,9 +20,10 @@
 コード品質そのものは良い — 8 leaf 以下なら 1 フィールドを +1 する
 メソッドは **3 命令**に落ちる。問題は codegen ではなく署名の形。
 
-**進捗**: 戻り側 (writeback) は 2026-09-05 に片付いた
-(CODE-SIZE-WB-PRUNE、`__text` −10.3%)。**引数側は手つかず** —
-`ts_min()` が 52 引数取るのは今も変わらない。
+**進捗** (どちらも 2026-09-05): 戻り側は CODE-SIZE-WB-PRUNE、
+引数側は S1+S2 (幅の広い by-reference receiver をポインタで渡す)。
+`__text` は合わせて **191,080 → 167,736 B (−12.2%)**。
+**残りは S3** — 鎖の根がまだ呼び出しごとに slot を作り直す。
 
 ## 計測 — 331,832 B の内訳
 
@@ -191,7 +192,7 @@ DEBUG-OBS D3 は panic サイトごとに文面を `.rodata` に置く
 クラッシュではなく古い値として出る。pass をわざと壊す (全 slot を落とす)
 と 6 本中 5 本が落ち、`dyn` の 1 本だけは veto が効いて通る。
 
-### 残り: compound self をポインタで渡す (本命、未着手)
+### 済: compound self をポインタで渡す (S1+S2, 2026-09-05)
 
 **leaf 数が閾値を超える compound `self` はポインタで渡す。**
 展開はレジスタに乗る間だけの最適化で、既定にすべきものではない
@@ -246,7 +247,69 @@ S2 には「leaf local とメモリが同期している」不変が要る (書�
 ポインタ側にも通っていること)。**S1 だけでは退化するので、
 S1+S2 を 1 つの変更として入れる。**
 
-#### 費用の見積もり
+#### 入った形
+
+**閾値は leaf 8 個** (aarch64 / x86-64 の引数レジスタ本数)。これを超える
+**by-reference の receiver** (`&self` / `&mut self`) が対象で、
+by-value (`self: Self`) は**対象外** — 呼び出し側の記憶域を共有すると
+callee の書き込みが外へ漏れるため。
+
+- **callee**: 署名は `params[0]` の leaf 群の代わりに 1 本のポインタ。
+  body は変えない — 同じ leaf local を読み書きし続け、**codegen が
+  その `LoadLocal` / `StoreLocal` をポインタ経由の load / store に
+  読み替える** (`ptr_self_leaves`)。呼び出し側の記憶域が唯一の実体に
+  なるので、**writeback の戻り値は要らない**
+- **caller**: receiver が**自分自身の pointer receiver** なら
+  ポインタをそのまま渡す (S2 の転送)。そうでなければ per-call slot に
+  leaf を書き出して番地を渡し、**呼び出し後に読み戻す** (S3 の根)
+- **`dyn` thunk**: `data_ptr` は既に同じ `dyn_struct_leaf_layout` で
+  並べてあるので**そのまま渡す** — leaf の読み出しも書き戻しも消える
+- **auto-drop glue**: `drop` も `&mut self` なので slot を作って渡す。
+  値は捨てられるので読み戻さない
+
+**決定は宣言時**に行う (呼び出し側が callee の body より先に lower
+されうるため)。leaf local は body を lower する時点で埋める。
+
+**適用しないもの**: 演算子オーバーロード (`add` / `eq` / `lt` ...)。
+被演算子は `lower_arg_values` が 1 つずつ潰すので callee を知らない。
+名前で除外し、外れたものは下の検査が**ビルドを止める**。
+
+#### 沈黙しないための 2 重の網
+
+この変更で失われうるのは「書いたはずの値」なので、取りこぼしは
+必ず音を立てるようにした:
+
+1. **`ptr_self_verify`** — lowering 後に全 call の引数個数を callee の
+   署名と突き合わせる。書き換え忘れた経路は
+   `internal error (CODE-SIZE-SELF-ABI): call from X to Y passes N
+   argument(s), but the callee's signature takes M` で**ビルドが止まる**
+2. **`ReceiverReload`** — slot を作った呼び出しは読み戻しの義務を負う。
+   `#[must_use]` が「作って捨てた」を捕まえ、`Drop` の panic が
+   「`CompoundMethodCall` の field ごと落とした」を捕まえる
+   (実際にこれで base64 と struct-literal の 2 経路の取りこぼしが出た)
+
+閾値を **0 にして全 receiver を通す**ストレス実行で経路を洗い出した。
+残る失敗は 2 件だがどちらも**上の網に掛かる**(ビルドエラーと
+診断テキストの不一致) — 沈黙する誤りは無い。
+
+#### 効果 (`poc/logsearch`)
+
+| | 変更前 | WB-PRUNE 後 | **S1+S2 後** |
+|---|---:|---:|---:|
+| `__text` | 191,080 | 171,424 | **167,736** (−12.2%) |
+| ファイル | 331,832 | 315,336 | **298,824** (−9.9%) |
+| archive 実行 | — | 1,687〜1,698 ms | **1,625〜1,673 ms** |
+
+関数単位では鎖の中ほどが大きく縮む
+(`emit_terms` 3,092 → 263 命令、`link` 779 → 188、`ts_min` 20 → 3)。
+**合計の伸びが小さいのは鎖の根が太るから** — `cmd_archive` +3,604、
+`flush_segment` +2,532。どちらも `ArchiveWriter` を leaf local で
+持っていて、呼び出しのたびに slot を作り直している。これが **S3**
+(根の常駐化) と、`&mut T` を取る**自由関数**への拡張で消える分。
+
+archive の出力セグメントは**変更前のコンパイラと byte 単位で一致**。
+
+#### 残っている費用の見積もり
 
 `Binding::Struct` の consumer は **17 ファイル 74 か所**。S2 の同期
 不変はそのすべてに関わるので、これは 1 セッションで安全に入る

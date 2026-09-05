@@ -902,12 +902,7 @@ impl<M: Module> CodegenSession<M> {
             if !matches!(func.linkage, Linkage::Import) && !reachable.contains(&id) {
                 continue;
             }
-            let sig = self.cranelift_signature_with_writeback(
-                ir_module,
-                &func.params,
-                func.return_type,
-                &func.self_writeback_types,
-            );
+            let sig = self.cranelift_signature_for(ir_module, func);
             let linkage = match func.linkage {
                 Linkage::Export => CLinkage::Export,
                 Linkage::Local => CLinkage::Local,
@@ -1446,6 +1441,32 @@ impl<M: Module> CodegenSession<M> {
     /// (compound writeback isn't supported in Phase 1) and lands as
     /// one cranelift return slot in the same order so caller-side
     /// `CallWithSelfWriteback` lowering can read them off.
+    /// CODE-SIZE-SELF-ABI: the signature a whole `Function` gets,
+    /// which is the writeback form above plus the receiver's pointer
+    /// form. One place, so the declaration pass and the body pass
+    /// cannot drift.
+    pub(crate) fn cranelift_signature_for(
+        &self,
+        ir_module: &IrModule,
+        func: &compiler_ir::Function,
+    ) -> Signature {
+        let call_conv = self.module.target_config().default_call_conv;
+        let mut s = Signature::new(call_conv);
+        for (i, p) in func.params.iter().enumerate() {
+            if i == 0 && func.ptr_self.is_some() {
+                // The receiver arrives as one address.
+                s.params.push(AbiParam::new(cranelift_codegen::ir::types::I64));
+                continue;
+            }
+            self.push_param(&mut s, ir_module, *p);
+        }
+        self.push_return(&mut s, ir_module, func.return_type);
+        for w in &func.self_writeback_types {
+            self.push_return(&mut s, ir_module, *w);
+        }
+        s
+    }
+
     fn cranelift_signature_with_writeback(
         &self,
         ir_module: &IrModule,
@@ -1550,12 +1571,7 @@ impl<M: Module> CodegenSession<M> {
     ) -> Result<Context, String> {
         let func = ir_module.function(func_id);
         let mut ctx = Context::new();
-        ctx.func.signature = self.cranelift_signature_with_writeback(
-            ir_module,
-            &func.params,
-            func.return_type,
-            &func.self_writeback_types,
-        );
+        ctx.func.signature = self.cranelift_signature_for(ir_module, func);
         let imports = self.declare_imports(&mut ctx.func);
         let panic_imports = self.declare_panic_imports(ir_module, func_id, &mut ctx.func);
         let frame_imports = self.declare_frame_imports(ir_module, func_id, &mut ctx.func);
@@ -1883,6 +1899,11 @@ struct LowerCtx<'a, 'b> {
     /// StoreLocal route through `stack_load` / `stack_store` for
     /// these so the storage AddressOf points at stays canonical.
     addr_taken_slots: HashMap<u32, cranelift_codegen::ir::StackSlot>,
+    /// CODE-SIZE-SELF-ABI: leaf local -> `(pointer local, byte offset,
+    /// type)` for the receiver of a pointer-passed method. `LoadLocal`
+    /// and `StoreLocal` on these go through the pointer, which is what
+    /// keeps the caller's copy the only copy.
+    ptr_self_leaves: HashMap<u32, (compiler_ir::LocalId, u64, IrType)>,
     /// A5-P2-MVP-B: per-`Function::dyn_coerce_slots` entry cranelift
     /// `StackSlot`. Materialised lazily on the first
     /// `InstKind::DynCoerceSlotAddr { slot_idx }` reference so that
@@ -1966,6 +1987,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             values: HashMap::new(),
             array_slots: HashMap::new(),
             addr_taken_slots: HashMap::new(),
+            ptr_self_leaves: HashMap::new(),
             dyn_coerce_stack_slots: HashMap::new(),
         }
     }
@@ -2031,7 +2053,28 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
         // locals[i]` mapping is correct, regardless of how many of the
         // params were structs.
         let block_params: Vec<Value> = self.builder.block_params(entry).to_vec();
+        // CODE-SIZE-SELF-ABI: a pointer-passed receiver collapses its
+        // leaves into block param 0. The leaf locals it displaced are
+        // never bound from block params -- codegen reads and writes
+        // them through the pointer instead -- so the remaining params
+        // resume at the first local after them.
+        let (block_params, local_shift) = if let Some(ps) = &func.ptr_self
+            && let Some(ptr_local) = ps.ptr_local
+        {
+            let var = *self
+                .locals
+                .get(&ptr_local.0)
+                .expect("ptr_self local not declared");
+            self.builder.def_var(var, block_params[0]);
+            for (leaf, offset, ty) in &ps.leaves {
+                self.ptr_self_leaves.insert(leaf.0, (ptr_local, *offset, *ty));
+            }
+            (block_params[1..].to_vec(), ps.leaves.len())
+        } else {
+            (block_params, 0)
+        };
         for (i, val) in block_params.iter().enumerate() {
+            let i = i + local_shift;
             // REF-Stage-2 (c): if a parameter local is address-taken,
             // its incoming block-param value must be stored into the
             // explicit stack slot rather than def_var'd into a SSA

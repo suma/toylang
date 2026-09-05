@@ -41,6 +41,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | socket ラッパーと OS のコンパイル時切り替え (N0〜N5 landing 済み) | [`design-docs/NETWORK_IO.md`](design-docs/NETWORK_IO.md) |
 | epoll / kqueue の統一形 (landing 済み) | [`design-docs/EVENT_POLLING.md`](design-docs/EVENT_POLLING.md) |
 | stdlib のディレクトリ配置と `module::` の解決規則 | [`design-docs/MODULE_SYSTEM.md`](design-docs/MODULE_SYSTEM.md) |
+| stdlib も `import std.hex` を要求する形にする提案 (未着手) | [`design-docs/MODULE_IMPORTS.md`](design-docs/MODULE_IMPORTS.md) |
 | example のビルド・実行方法 | [`interpreter/example/HOW_TO.md`](interpreter/example/HOW_TO.md) |
 | **自分のモジュールを持つプログラム**のビルド (`toy`) | [`design-docs/BUILD_TOOL.md`](design-docs/BUILD_TOOL.md) |
 | **自分のモジュールを持つプログラム**のビルド (`toy` コマンドの提案) | [`design-docs/BUILD_TOOL.md`](design-docs/BUILD_TOOL.md) |

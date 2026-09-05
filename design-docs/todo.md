@@ -2232,6 +2232,18 @@
 
 ## 検討中の機能
 
+* **明示 import (MODULE-IMPORTS)** — stdlib も
+  `import std.hex` を書かないと使えない形にする提案。
+  [`MODULE_IMPORTS.md`](MODULE_IMPORTS.md)。BARE-NAME-COLLISION /
+  TYPE-NAME-COLLISION を「規則」で消し (今の rank は同 root の衝突を
+  消せない)、`pub` を実効化し、hello world の **145ms → 5.7ms**
+  (auto-load が 46 モジュール全部を読んでいる分) を取り戻す。
+  計測: stdlib のモジュール間依存は 119 辺で**非循環**、prelude を引くと
+  足す import は **30 行 / 21 ファイル**、example + poc 200 ファイル側は
+  `mod::` を使う 21 ファイルだけ。構文は既に parse を通るので、変えるのは
+  意味論。**[`MODULE_SYSTEM.md`](MODULE_SYSTEM.md) の D5 (「暗黙に入る
+  集合は stdlib 全部」) を覆す**提案なので、採否は両方を読んで決める。
+
 * `Vec<T>` への Design by Contract 適用 (VEC-CONTRACTS) の**残り** —
   `requires` の 3 行 (§4 の #1〜#3) は 2026-09-04 に landing 済み
   ([`VEC_CONTRACTS.md`](VEC_CONTRACTS.md))。未着手は B (長さ・容量の

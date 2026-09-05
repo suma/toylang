@@ -172,6 +172,14 @@ Rust は `std::prelude` を明示して残りに `use` を要求する。C++20 �
 明記する。Rust 方式 (prelude を切って残りは `import` 必須) に寄せると
 既存の全ユーザコードが壊れるので採らない。
 
+> **2026-09-05: この判断を覆す提案がある** —
+> [`MODULE_IMPORTS.md`](MODULE_IMPORTS.md)。auto-load-everything は
+> (a) BARE-NAME-COLLISION / TYPE-NAME-COLLISION の**原因**であり、
+> (b) hello world に 145ms 払わせている、という 2 つの実測が後から出た。
+> 「既存コードが壊れる」の見積りも実測で覆っていて、prelude を引いた
+> 後に import を足すのは stdlib 30 行 / example + poc 21 ファイル。
+> 採否が決まるまで、本 D5 と同文書は**競合する提案として並存する**。
+
 ## フェーズ
 
 ### P1 — 配置と名前 (言語変更ゼロ)

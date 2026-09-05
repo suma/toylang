@@ -15,15 +15,36 @@
 #
 # Run it (from the repository root):
 #
-#   cargo build --release -p compiler -p interpreter
-#   ./target/release/compiler --core-modules poc/logsearch/build/root \
+#   cargo run -q -p toy -- run poc/logsearch --release -- \
+#       archive poc/logsearch/log /tmp/logarchive
+#
+# `toy` assembles the module roots itself (stdlib, then this
+# package's `src/`). The equivalent compiler call, if the tool is in
+# the way, is what `toy -v` prints:
+#
+#   ./target/release/compiler --core-modules core \
+#       --core-modules poc/logsearch/src \
 #       poc/logsearch/main.t --release -o /tmp/logread
-#   /tmp/logread archive poc/logsearch/log /tmp/logarchive
+#
+# `poc/logsearch/build/root` -- a symlink farm that used to stand in
+# for repeatable `--core-modules` -- is gone (BUILD-TOOL B0 made the
+# flag repeatable).
 #
 # `--release` turns the `requires` clauses off. Run without it while
 # developing: the contracts in `lsz` / `crc` / `bytes` are what catch
 # a bad offset at the call that made it, instead of three frames
 # later (design_by_contract.md).
+
+import std.fs
+import std.io
+import std.parse
+import std.time
+import archive
+import extract
+import logdir
+import query
+import record
+import segfile
 
 # The largest log file this reads whole, and so the largest one the
 # service can index. 16 MiB covers a rotated `kern.log`.

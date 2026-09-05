@@ -125,6 +125,43 @@ poc/logsearch/
 
 ### 依存の向き
 
+**各ファイルの先頭に `import` 行で宣言してある** (2026-09-05)。今の形:
+
+```
+main    → std.fs std.io std.parse std.time | archive extract logdir query record segfile
+archive → std.fs                           | extract record segfile
+query   → std.parse std.time               | archive logdir search segfile
+logdir  → std.fs std.path
+reader  → std.io
+extract →                                  | record
+segfile →                                  | lsz
+bytes crc line lsz record search →         (依存なし)
+```
+
+循環は無い。ただしそれは**設計上の選択**であって、処理系の制約では
+ない — 相互に `import` し合う 2 モジュールは普通に動く (2026-09-05 に
+確認。統合後は 1 つの `File` に畳まれるので初期化順という概念が無い)。
+以前ここには「toylang は循環を検出して落とす」と書いてあったが、
+それは `import` で個別に読み込む経路の話で、auto-load される
+このパッケージには掛かっていない。
+
+**`import` を書く基準は「`mod::` と修飾して呼ぶか」**である。toylang の
+`import` が今束縛するのは**モジュールの別名だけ**で、型は
+`Vec` / `String` / `Span` / `Dict` のようにグローバルに居る
+(本体側 [`MODULE_IMPORTS.md`](../../../design-docs/MODULE_IMPORTS.md) D1)。
+したがって `Dict` を使うだけのファイルに import 行は無い。
+**同 P2 (import の推移閉包だけを読み込む) が入ったら、型を使うだけの
+ファイルにも行が要る** — そのときこの POC が最初の移行対象になる。
+
+`import` は今のところ**何も禁じない** (書かなくても auto-load で
+呼べてしまう) ので、この宣言は**読む人と将来の検査のためのもの**である。
+別名 (`import a.b as h`) は使っていない — ファイル名がそのまま
+qualifier になる形が既に短い。
+
+**行き先の形**は下で、今あるファイルへの対応は
+`segbuild` / `segread` → `archive` + `segfile`、`index` → `archive`、
+`json` の読み手 → `core/std/json.t` である。
+
 ```
 main → config, server
 server → http, query, segbuild, catalog, stats
@@ -134,13 +171,6 @@ segread → lsz, crc, bytes
 catalog → bytes, crc, fs, path
 store → catalog, mount
 ```
-
-循環は無い。toylang のモジュール解決は循環を検出して落とす
-(`Circular dependency detected`) ので、これは守らないと動かない規約でもある。
-
-これは**行き先の形**で、今あるファイルへの対応は
-`segbuild` / `segread` → `archive` + `segfile`、`index` → `archive`、
-`json` の読み手 → `core/std/json.t` である。
 
 ## 4. ビルド
 

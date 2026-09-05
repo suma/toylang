@@ -25,6 +25,11 @@
 # today, and writing a unit the producer cannot fill would be a
 # fiction. The header carries a version so the change stays visible.
 
+import std.fs
+import extract
+import record
+import segfile
+
 pub fn frame_raw_bytes() -> u64 { 262144u64 }
 
 # How much raw log one segment holds before it is closed.

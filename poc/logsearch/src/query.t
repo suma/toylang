@@ -31,6 +31,13 @@
 # is expanded and scanned. The time range still prunes whole segments
 # from the header alone, which is what keeps a narrow query cheap.
 
+import std.parse
+import std.time
+import archive
+import logdir
+import search
+import segfile
+
 pub fn kind_any() -> u32 { 255u32 }
 pub fn default_limit() -> u64 { 20u64 }
 

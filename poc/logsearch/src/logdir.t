@@ -15,6 +15,9 @@
 # start-up side of the program and is never called per record
 # (MEMORY.md D4b).
 
+import std.fs
+import std.path
+
 # How deep to recurse. `/var/log` is two levels in practice
 # (`apache2/`, `nginx/`, ...); the bound keeps a symlink loop from
 # turning into an unbounded walk.

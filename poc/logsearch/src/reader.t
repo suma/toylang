@@ -25,6 +25,8 @@
 # and truncation are therefore *derived* rather than stored, and the
 # line cursor is a single `u64`.
 
+import std.io
+
 pub struct LogReader {
     buf: Vec<u8>,
     pos: u64,

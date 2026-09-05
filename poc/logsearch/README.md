@@ -72,6 +72,15 @@ bare な関数名は**全モジュールで 1 つの名前空間**を共有す�
 から `[E0010]` を出す)。**後の根が勝つ**ので `lsz::decode` は自分の
 実装に解決されるが、曖昧なままにせず修飾するのが正しい。
 
+この警告が出る仕組みごと消す設計が
+[`MODULE_IMPORTS.md`](../../design-docs/MODULE_IMPORTS.md) (明示 import)
+で、その先取りとして**各ファイルは自分が `mod::` で呼ぶモジュールを
+`import` 行で宣言してある** (2026-09-05)。今の `import` は
+**何も禁じない** — 書かなくても auto-load で呼べる — ので、これは
+依存を読めるようにするためのもの。宣言した依存は
+[`design-docs/ARCHITECTURE.md`](design-docs/ARCHITECTURE.md) §3 に
+一覧がある。
+
 ## サブコマンド
 
 | | |

@@ -25,6 +25,8 @@
 # **Unknown section kinds are skipped**, as in v2: adding a section
 # does not stop an older reader.
 
+import lsz
+
 pub fn head_bytes() -> u64 { 64u64 }
 pub fn dir_at() -> u64 { 64u64 }
 pub fn dir_slots() -> u64 { 8u64 }

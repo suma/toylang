@@ -6,9 +6,9 @@
 どちらもそれを渡すからで、`main.t` の `query` サブコマンドが受ける。
 
 ```
-logread query <archive> "status=404 path=/wp-login.php limit=5"
-logread query <archive> "tag=CRON session from=-6h order=asc"
-logread query <archive> "ip=127.0.0.1 top=path"
+logsearch query <archive> "status=404 path=/wp-login.php limit=5"
+logsearch query <archive> "tag=CRON session from=-6h order=asc"
+logsearch query <archive> "ip=127.0.0.1 top=path"
 ```
 
 トークンは 3 種類に分かれる。
@@ -100,7 +100,7 @@ bloom フィルタ、カーソルによるページング (§6 は設計のみ)�
 struct DescKey { ts: u64, seq: u64 }
 
 impl Ord for DescKey {
-    fn lt(self: Self, other: Self) -> bool {
+    fn lt(&self, other: &Self) -> bool {
         if self.ts != other.ts { return self.ts > other.ts }
         self.seq > other.seq
     }

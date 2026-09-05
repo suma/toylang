@@ -13,10 +13,11 @@
 | `Connection: keep-alive` (既定) / `close` | パイプライン (1 接続 1 要求ずつ処理) |
 | `?a=b&c=d` と `%XX` / `+` のデコード | multipart、cookie、認証、圧縮 (`Accept-Encoding` は無視) |
 
-**リクエストの JSON は読まない。** パーサが無い ([`RUNTIME_GAPS.md`](RUNTIME_GAPS.md)
-G6) のもあるが、それ以上に、この API に JSON が要る場面が無い —
-検索条件はクエリ文字列、取り込みは行の並びである。**応答は JSON を書く**
-(書き手は `Display` の上に素直に書ける)。
+**リクエストの JSON は読まない。** リーダは `core/std/json.t` に
+**ある** (2026-09-03、[`RUNTIME_GAPS.md`](RUNTIME_GAPS.md) §Z の G6) が、
+この API に JSON が要る場面が無い — 検索条件はクエリ文字列、取り込みは
+行の並びである。**応答は JSON を書く** (書き手は `Display` の上に
+素直に書ける)。
 
 要求全体の上限は **1 MiB**。超えたら `413` を返して接続を閉じる。
 これは礼儀ではなくメモリ規律で、接続バッファは起動時に確保した

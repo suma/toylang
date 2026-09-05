@@ -28,6 +28,6 @@ AGENTS.md
 #
 # Two directories under them are not: the log corpus a proof of
 # concept reads (real logs, ~137 MB, nothing to do with the compiler)
-# and the module root `poc/logsearch/refresh.sh` generates (symlinks).
+# and `toy build`'s output (the executable and its link cache).
 /poc/logsearch/log/
 /poc/logsearch/build/

@@ -204,7 +204,7 @@ test "steady state: 10k requests allocate nothing after warmup" {
 }
 ```
 
-**これが ROADMAP M2 の完了条件そのものである。** 落ちないことではなく、
+**これが定常性の完了条件そのものである** ([`ROADMAP.md`](ROADMAP.md) §4)。落ちないことではなく、
 増えないことを CI が見る。
 
 ## 6. この制約が消えたら

@@ -130,7 +130,7 @@ path → status  path → ip       vhost → path     host → tag
 問いたい形はその中の数本しかない。
 
 ```
-$ logread query <arc> "ip=127.0.0.1 top=path limit=5"
+$ logsearch query <arc> "ip=127.0.0.1 top=path limit=5"
 linked path for ip:127.0.0.1
   48  /
    8  /.env.production.local

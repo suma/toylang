@@ -56,7 +56,7 @@ toy clean poc/logsearch --all    # build/ とリンクキャッシュを消す
 
 ```bash
 ./target/release/compiler --core-modules core --core-modules poc/logsearch/src \
-    poc/logsearch/main.t --release -o /tmp/logread
+    poc/logsearch/main.t --release -o /tmp/logsearch
 ```
 
 ### ビルド時に出る警告
@@ -158,9 +158,18 @@ query "from=2030-01-01"        0 件    0 ms   (1,280 バイトしか読まな�
 
 答えは `grep` / `awk` / Python の厳密パーサと突き合わせて一致を確認している。
 
-## git には入らない
+## git に入るもの / 入らないもの
 
-`poc/` はルートの `.gitignore` に入れてある。処理系の履歴に、試作の設計文書と
-ソースを混ぜないため。**ここで見つけた言語側の不具合だけが
-`design-docs/todo.md` に上がる** — 実際に直った例もある
+**ソースと設計文書は追跡している。** この POC は、このリポジトリが持つ
+**唯一の「言語の利用者」**であり、何を回避しなければならなかったかが
+そのまま処理系の穴の一覧になるため。追跡しないのは 2 つだけで、
+ルートの `.gitignore` にそう書いてある:
+
+| | 理由 |
+|---|---|
+| `log/` | 読ませる実ログ (~137 MB)。処理系とは無関係 |
+| `build/` | `toy` の出力 (実行ファイル / リンクキャッシュ) |
+
+**言語側の不具合は `design-docs/todo.md` に上げる** (台帳を二重に持たない)。
+実際に直った例もある
 ([`design-docs/RUNTIME_GAPS.md`](design-docs/RUNTIME_GAPS.md) §Z)。

@@ -81,7 +81,8 @@ toylang のモジュールは**ファイル階層から経路が決まり、別�
 
 ```
 poc/logsearch/
-  main.t                  # **エントリ**。今は「読んで報告する」だけ
+  main.t                  # **エントリ**。5 つのサブコマンド
+                          #   (archive / query / fields / verify / scan)
   design-docs/            # この設計文書一式
   log/                    # 読ませる実ログ (git 管理外)
   src/
@@ -99,23 +100,23 @@ poc/logsearch/
     #   索引 (語彙・postings・リンク) は archive.t が持つ
     search.t              # **部分一致検索** (SIMD、スカラー参照つき)
     query.t               # **クエリのパースと実行**
+    # -- ここから下は設計のみ (まだファイルが無い) --
     config.t              # 設定ファイルの読み取りと検証
-    bytes.t               # ByteReader / ByteWriter (LE の詰め書き / 読み出し)
-    crc.t                 # CRC-32 (起動時に表を作る)
-    lsz.t                 # 圧縮コーデック LSZ1 (encode / decode)
-    record.t              # レコードの表現と行のパース
     labels.t              # ラベル辞書 (str → u32 code)
-    index.t               # 語彙索引の構築と参照
     catalog.t             # カタログのスナップショット / ジャーナル / --repair
     store.t               # マウント横断の目録。枝刈りと配置
     mount.t               # マウントの宣言・選択・容量計上
-    query.t               # クエリの表現・計画・実行状態機械
     http.t                # HTTP/1.1 の最小パーサとレスポンス組み立て
-    json.t                # JSON の**書き手**だけ (読み手は持たない)
+    json.t                # JSON の**書き手**だけ (読み手は `core/std/json.t`)
     ui.t                  # 検索 UI の HTML (const str)
     server.t              # poller、接続テーブル、ディスパッチ
     stats.t               # カウンタと /v1/stats
 ```
+
+> 以前ここには `bytes.t` / `crc.t` / `lsz.t` / `record.t` / `query.t` が
+> **実装済みの行と設計だけの行の両方に**並んでいた。書いた順に足して
+> 消し忘れたもので、実体は上の 1 つずつしかない。`index.t` も同じ理由で
+> 消した — 語彙・postings・リンクは `archive.t` が持っている。
 
 **分割の基準は「どのバッファを所有するか」**である。`segbuild` は書き込み
 バッファを、`server` は接続バッファを、`query` は結果バッファを持ち、
@@ -137,6 +138,10 @@ store → catalog, mount
 循環は無い。toylang のモジュール解決は循環を検出して落とす
 (`Circular dependency detected`) ので、これは守らないと動かない規約でもある。
 
+これは**行き先の形**で、今あるファイルへの対応は
+`segbuild` / `segread` → `archive` + `segfile`、`index` → `archive`、
+`json` の読み手 → `core/std/json.t` である。
+
 ## 4. ビルド
 
 `toy` が組む ([`../../../design-docs/BUILD_TOOL.md`](../../../design-docs/BUILD_TOOL.md))。
@@ -146,8 +151,13 @@ store → catalog, mount
 ```bash
 cargo build --release -p toy                      # 処理系 (初回のみ)
 ./target/release/toy build poc/logsearch --release
-./poc/logsearch/build/release/logsearch poc/logsearch/log   # 第 2 引数でファイル数を絞れる
+./poc/logsearch/build/release/logsearch archive poc/logsearch/log/apache2 /tmp/arc
+./poc/logsearch/build/release/logsearch query /tmp/arc "status=404 limit=5"
 ```
+
+サブコマンドを書かなければ第 1 引数がログディレクトリの `scan` になる
+(`logsearch poc/logsearch/log 5` は 5 ファイルだけ framing する)。
+一覧は [`../README.md`](../README.md)。
 
 **以前はここに symlink 2 本のモジュール根を作る `refresh.sh` があった。**
 `--core-modules` が「追加」ではなく「置き換え」で、自分のモジュールを
@@ -156,11 +166,11 @@ cargo build --release -p toy                      # 処理系 (初回のみ)
 
 ```bash
 ./target/release/compiler --core-modules core --core-modules poc/logsearch/src \
-    poc/logsearch/main.t --release -o /tmp/logread
+    poc/logsearch/main.t --release -o /tmp/logsearch
 
 # インタプリタ (オラクル。同じ答えを返すが桁で遅い)
 ./target/release/interpreter --core-modules core --core-modules poc/logsearch/src \
-    poc/logsearch/main.t poc/logsearch/log 5
+    poc/logsearch/main.t scan poc/logsearch/log 5
 ```
 
 **エントリ `main.t` が `src/` の外にあるのは、もう要件ではない。**

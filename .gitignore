@@ -21,7 +21,13 @@ interpreter/proptest-regressions
 # preference — leave the symlink optional rather than tracking it.
 AGENTS.md
 
-# Proof-of-concept programs written *in* toylang (design notes and
-# sources). They exercise the language rather than implement it, and
-# they move faster than the compiler's history should have to record.
-/poc/
+# Proof-of-concept programs written *in* toylang live under `poc/`.
+# Their sources and design notes are tracked -- they are the closest
+# thing this repository has to a user of the language, and what they
+# had to work around is how the gaps get found.
+#
+# Two directories under them are not: the log corpus a proof of
+# concept reads (real logs, ~137 MB, nothing to do with the compiler)
+# and the module root `poc/logsearch/refresh.sh` generates (symlinks).
+/poc/logsearch/log/
+/poc/logsearch/build/

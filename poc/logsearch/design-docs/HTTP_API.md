@@ -1,0 +1,198 @@
+# HTTP_API — サーバインターフェースと Web UI
+
+## 1. 何を話すか
+
+**HTTP/1.1 の部分集合**を話す。仕様の全部は要らないし、書けば書くほど
+壊れる面が増える。受け入れるのは次だけ:
+
+| 受け入れる | 受け入れない |
+|---|---|
+| `GET` / `POST` | それ以外は `405` |
+| ヘッダ行 (`Name: value`)、最大 32 本、各 1 KiB | 折り返し継続行 (obs-fold) |
+| `Content-Length` によるボディ | `Transfer-Encoding: chunked` は `411` |
+| `Connection: keep-alive` (既定) / `close` | パイプライン (1 接続 1 要求ずつ処理) |
+| `?a=b&c=d` と `%XX` / `+` のデコード | multipart、cookie、認証、圧縮 (`Accept-Encoding` は無視) |
+
+**リクエストの JSON は読まない。** パーサが無い ([`RUNTIME_GAPS.md`](RUNTIME_GAPS.md)
+G6) のもあるが、それ以上に、この API に JSON が要る場面が無い —
+検索条件はクエリ文字列、取り込みは行の並びである。**応答は JSON を書く**
+(書き手は `Display` の上に素直に書ける)。
+
+要求全体の上限は **1 MiB**。超えたら `413` を返して接続を閉じる。
+これは礼儀ではなくメモリ規律で、接続バッファは起動時に確保した
+固定サイズだからである ([`MEMORY.md`](MEMORY.md) §3)。
+
+## 2. エンドポイント
+
+### `GET /healthz`
+
+```
+200 OK
+text/plain
+
+ok
+```
+
+依存を一切見ない。プロセスが応答できることだけを表す。
+
+### `GET /v1/query`
+
+パラメータと意味は [`QUERY.md`](QUERY.md) §1。
+
+**`format=ndjson` (既定)** — 1 行 1 レコード。ストリーミングに向き、
+`limit` が大きくても応答バッファを段階的に流せる。
+
+```
+200 OK
+content-type: application/x-ndjson
+x-logsearch-next-cursor: 1756900000.4821
+
+{"ts":"2026-09-03T11:59:58Z","seq":4819,"labels":{"host":"web01","app":"api","level":"error"},"body":"request timed out after 30s"}
+{"ts":"2026-09-03T11:59:57Z","seq":4818,...}
+```
+
+**`format=json`** — 統計を含む 1 つのオブジェクト ([`QUERY.md`](QUERY.md) §7)。
+UI が使うのはこちら。
+
+**`format=text`** — 元の行に近い形。`grep` に食わせるための出力。
+
+エラー:
+
+| 状況 | コード | 本文 |
+|---|---|---|
+| パラメータが解釈できない | `400` | `{"error":"bad parameter","detail":"from: not a timestamp"}` |
+| `limit > 1000` | `400` | 上限を示す |
+| 予算で打ち切り | `200` | `stats.truncated = true` (エラーにはしない) |
+| マウントが全部読めない | `503` | `{"error":"no readable mount"}` |
+
+### `POST /v1/ingest`
+
+ボディは**改行区切りの行**。1 行 = 1 レコード。`Content-Type` は見ない。
+
+```
+POST /v1/ingest?host=web01&app=api
+content-length: 84
+
+2026-09-03T12:00:01Z level=error request timed out after 30s
+level=info served 200 in 4ms
+```
+
+- クエリ文字列で渡したラベルは**既定値**として全行に付く。行の中の
+  `key=value` が勝つ
+- 行頭が `YYYY-MM-DDTHH:MM:SSZ` か UNIX 秒なら `ts` として使い、
+  そうでなければ受信時刻
+- 応答は取り込んだ件数
+
+```
+200 OK
+{"accepted":2,"rejected":0,"seq_first":4821,"seq_last":4822}
+```
+
+**部分成功を返す。** 100 行のうち 3 行が壊れていても 97 行は取り込み、
+`rejected` で報告する。全体を失敗にすると、送り手は同じ 100 行を
+再送し続けることになる。
+
+### `GET /v1/streams`
+
+観測されているストリーム (ラベル集合) の一覧と件数。UI の補完に使う。
+
+```
+{"streams":[{"labels":{"host":"web01","app":"api","level":"error"},"records":11208,"ts_max":"..."}, ...]}
+```
+
+### `GET /v1/labels` / `GET /v1/labels?name=host`
+
+ラベルのキー一覧、あるいは指定キーの値一覧。カタログのラベル辞書から
+答えるので、セグメントは開かない。
+
+### `GET /v1/stats`
+
+```json
+{
+  "uptime_s": 86400,
+  "ingest": {"records": 4.31e8, "bytes": 8.6e10, "rejected": 12, "rate_1m": 4903},
+  "segments": {"live": 411, "pending_delete": 3, "active_records": 20144, "active_bytes": 4194304},
+  "mounts": [
+    {"path":"/var/log/logsearch/a","state":"active","quota":107374182400,"used":41231237120,"segments":121},
+    {"path":"/mnt/disk2/logsearch","state":"degraded","last_error":"permission denied","segments":0}
+  ],
+  "memory": {"live_bytes": 214958080, "cumulative_bytes": 981467136, "alloc_count": 41233},
+  "queries": {"running": 2, "completed": 91204, "truncated": 31, "p50_ms": 22, "p99_ms": 810},
+  "corrupt_frames": 0
+}
+```
+
+> `queries` のレイテンシは `time::now_mono_ns()` で測る (単調時計と
+> ナノ秒精度がある)。
+
+`memory` は**確保カウンタ** (`__builtin_live_bytes()` など) をそのまま出す。
+`live_bytes` が時間とともに増えていないことが、このサーバの健康の定義である
+([`MEMORY.md`](MEMORY.md) §5)。`cumulative_bytes` との差が開き続けるなら、
+どこかで「返らないメモリ」を使い続けている。
+
+### 管理系
+
+| エンドポイント | 意味 |
+|---|---|
+| `POST /v1/admin/flush` | アクティブセグメントを今すぐ書き出す |
+| `POST /v1/admin/compact` | 冷えたセグメントの併合を 1 本ぶん進める |
+| `POST /v1/admin/repair` | カタログを捨て、`seg/` を歩いて作り直す ([`STORAGE_FORMAT.md`](STORAGE_FORMAT.md) §7) |
+| `POST /v1/admin/gc` | 保持期限切れの削除を今すぐ 1 巡ぶん進める |
+| `POST /v1/admin/shutdown` | きれいに停止する ([`ARCHITECTURE.md`](ARCHITECTURE.md) §5) |
+
+**管理系は既定で `127.0.0.1` からの接続にしか答えない** (`peer_addr()` で
+判定)。認証機構が無いので、これが唯一の防御である。設定で
+`admin_from = any` にできるが、**その場合は前段に認証を置くこと**を
+設定ファイルのコメントに書く。
+
+## 3. Web UI
+
+`GET /` は**1 枚の HTML** を返す。外部 CSS も JS も画像も読まない
+(CDN に出ていく常駐サーバは、閉じたネットワークで動かないため)。
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ [from ▾] [to ▾]  [label host = web01 ×] [+]   [q: timeout ]🔍│
+├──────────────────────────────────────────────────────────────┤
+│ 12:00:01  web01 api  ERROR  request timed out after 30s      │
+│ 11:59:58  web02 api  WARN   retry 2/3 (upstream slow)        │
+│ …                                                             │
+│                                     [もっと読む]  412 件 / 180ms │
+└──────────────────────────────────────────────────────────────┘
+```
+
+- `fetch('/v1/query?...&format=json')` を叩いて描くだけ。状態は URL に持つので、
+  **検索結果はそのままリンクとして共有できる**
+- 「もっと読む」は `next_cursor` を足して再度叩く
+- ラベルの候補は `/v1/labels` から引く
+- `stats` を下部に出す ([`QUERY.md`](QUERY.md) §7)。**速い / 遅いの理由が
+  UI から見える**ことを設計目標にする
+
+HTML は `src/ui.t` の `const` 文字列として持つ。ファイルから読む案は、
+**インストール時にパスがずれると UI だけ 404 になる**ので採らない。
+埋め込みなら壊れようが無い。
+
+> **文字列補間との相性に注意**: HTML には `{` が大量に出るので、
+> toylang の補間 (`"{x}"`) が誤爆する。UI の文字列に補間は使わず、
+> `{{` / `}}` のエスケープが必要な箇所はコード側で連結する。
+
+## 4. 接続の扱い
+
+| 項目 | 値 | 理由 |
+|---|---|---|
+| 最大同時接続 | 128 | 接続テーブルを起動時に静的確保する |
+| 受信バッファ / 接続 | 64 KiB | 1 レコードの上限と同じ |
+| 送信バッファ / 接続 | 256 KiB | 部分書き込みを跨いで保持する |
+| アイドルタイムアウト | 60 秒 | `io::now()` の秒精度で足りる粒度 |
+| ヘッダ待ちタイムアウト | 10 秒 | slow-loris への最低限の応答 |
+| keep-alive | 有効 | 取り込みクライアントが繋ぎっぱなしにするため |
+
+接続テーブルが埋まったら**新規 accept をやめる** (登録解除ではなく、
+listener を poller から一時的に外す)。`accept` して即座に閉じるより、
+TCP のバックログに待たせる方が、送り手にとって扱いやすい。
+
+**書き込みは常に部分書き込みを想定する。** ソケットは非ブロッキングなので
+`write` は `Ok(n < len)` を普通に返す。`WouldBlock` を受けたら
+`interest_write()` を足して poller に戻り、書けるようになってから続きを送る。
+`net_echo_server.t` は小さな応答しか返さないのでこの経路を踏まないが、
+検索結果は数 MB になりうるので**ここは必ず踏む**。

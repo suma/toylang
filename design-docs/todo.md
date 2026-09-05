@@ -2241,6 +2241,30 @@ changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 
   `--api` は parse だけなので影響しない。2026-09-05、
   `poc/logsearch` を型検査しようとして踏んだ。
 
+- **E0014-WRONG-FILE: モジュールの中の `[E0014]` が入口ファイルを指す** ★★ —
+  所有権検査の診断だけがモジュール帰属を持っていない。**ファイル名は
+  入口のもの、行番号はモジュールのもの**という混ざり方をするので、
+  入口が短ければ `<line not available>`、長ければ**無関係な行**を
+  指すスニペットが出る。
+
+  ```rust
+  # probe.t (モジュール根の下)
+  pub fn collect_names(flag: bool) -> Vec<String> {
+      var out: Vec<String> = Vec::new()
+      val s = String::from_str("hello")
+      if flag { out.push(s) }        # ← ここが [E0014]
+      out
+  }
+  # entry.t (9 行)  ->  Error at entry.t:10:1 / `<line not available>`
+  ```
+
+  同じ状況で `[E0010]` は
+  `Error in imported module \`logsearch::query\` (line 680 of that
+  module)` と正しく出るので、**帰属を持つ診断と持たない診断がある**。
+  2026-09-05、`String` が所有型になった直後の `poc/logsearch` で
+  5 件同時に出て、全部が入口 `main.t` の無関係な行を指した
+  (実際の出所は `query.t` と `logdir.t`)。原因の特定が grep 頼みになる。
+
 ### パーサーの既知制限事項
 - **行末の識別子と、次の行頭の `(` が改行を跨いで呼び出しになる** —
   セミコロンが無いので、

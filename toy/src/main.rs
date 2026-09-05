@@ -16,9 +16,11 @@
 //! than spawning them — a process costs ~30 ms, which is most of what
 //! a small build costs at all.
 
+mod collide;
 mod package;
+mod test_runner;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use compiler::options::{CompilerOptions, EmitKind};
@@ -31,6 +33,7 @@ usage:
   toy build [PATH] [--release] [--backend aot|jit] [-o OUT] [-v]
   toy run   [PATH] [--release] [--backend aot|jit|vm|tree] [-v] [-- ARGS...]
   toy check [PATH] [-v]
+  toy test  [FILTER] [PATH] [--list] [--format=json] [-v]
   toy api <MODULE.t> [PATH]
   toy effects [PATH] [-v]
   toy explain <CODE>
@@ -46,6 +49,9 @@ options:
   -o, --output PATH    executable path (build only)
   --core-modules DIR   add a module root; repeatable, later wins
   -v, --verbose        print the equivalent compiler/interpreter call
+  --list               list the tests instead of running them
+  --format=json        machine-readable results (test only)
+  --no-warn-collisions skip the duplicate-name pre-check
   -- ARGS...           arguments for the program (run only)
 ";
 
@@ -83,8 +89,12 @@ struct Args {
     verbose: bool,
     program_args: Vec<String>,
     /// The one positional a subcommand may take beyond the path
-    /// (`toy api <module>` / `toy explain <code>`).
+    /// (`toy api <module>` / `toy explain <code>` /
+    /// `toy test <filter>`).
     subject: Option<String>,
+    list_only: bool,
+    json: bool,
+    warn_collisions: bool,
 }
 
 fn main() {
@@ -96,7 +106,7 @@ fn main() {
     let command = argv[0].clone();
     let rest = &argv[1..];
 
-    let takes_subject = matches!(command.as_str(), "api" | "explain");
+    let takes_subject = matches!(command.as_str(), "api" | "explain" | "test");
     let args = match parse_args(rest, takes_subject) {
         Ok(a) => a,
         Err(e) => fail(&e),
@@ -106,6 +116,7 @@ fn main() {
         "build" => cmd_build(&args),
         "run" => cmd_run(&args),
         "check" => cmd_check(&args),
+        "test" => cmd_test(&args),
         "api" => cmd_api(&args),
         "effects" => cmd_effects(&args),
         "explain" => cmd_explain(&args),
@@ -131,8 +142,10 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
         verbose: false,
         program_args: Vec::new(),
         subject: None,
+        list_only: false,
+        json: false,
+        warn_collisions: true,
     };
-    let mut positional_seen = 0usize;
     let mut i = 0usize;
     while i < argv.len() {
         let arg = &argv[i];
@@ -145,6 +158,18 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
         }
         match arg.as_str() {
             "--release" => a.release = true,
+            "--list" => a.list_only = true,
+            "--format=json" => a.json = true,
+            "--no-warn-collisions" => a.warn_collisions = false,
+            "--format" => {
+                i += 1;
+                let v = argv.get(i).ok_or("--format needs a value (text or json)")?;
+                match v.as_str() {
+                    "json" => a.json = true,
+                    "text" => a.json = false,
+                    other => return Err(format!("unknown format `{other}`")),
+                }
+            }
             "-v" | "--verbose" => a.verbose = true,
             "--backend" => {
                 i += 1;
@@ -172,14 +197,19 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
                 return Err(format!("unknown option `{other}`\n\n{USAGE}"));
             }
             other => {
-                // `api` and `explain` take their subject first, then an
-                // optional package path.
-                if takes_subject && positional_seen == 0 {
+                // `api` and `explain` take their subject first, then
+                // an optional package path. `toy test` takes both in
+                // either order, because "the filter" and "the
+                // package" are told apart by whether the argument
+                // names something on disk — asking a person to
+                // remember the order of two optional positionals is
+                // the kind of thing a tool should absorb.
+                let looks_like_a_path = Path::new(other).exists();
+                if takes_subject && a.subject.is_none() && !looks_like_a_path {
                     a.subject = Some(other.to_string());
                 } else {
                     a.path = PathBuf::from(other);
                 }
-                positional_seen += 1;
             }
         }
         i += 1;
@@ -195,6 +225,15 @@ fn locate(args: &Args) -> Result<package::Package, String> {
     // so they win — the same "later wins" rule the flag has when
     // passed to the compiler directly.
     pkg.module_roots.extend(args.extra_roots.iter().cloned());
+    // B4: name the duplicates before the compiler has to. It reaches
+    // them only when a *call* is resolved, which may be down a branch
+    // this run never takes.
+    if args.warn_collisions {
+        let collisions = collide::scan(&pkg.module_roots);
+        if !collisions.is_empty() {
+            eprint!("{}", collide::render(&collisions));
+        }
+    }
     Ok(pkg)
 }
 
@@ -340,6 +379,21 @@ fn cmd_check(args: &Args) -> Result<(), String> {
     .map_err(|errors| errors.join("\n"))?;
     println!("ok: {}", pkg.entry.display());
     Ok(())
+}
+
+fn cmd_test(args: &Args) -> Result<(), String> {
+    let pkg = locate(args)?;
+    let opts = test_runner::Options {
+        filter: args.subject.clone(),
+        list_only: args.list_only,
+        format: if args.json {
+            test_runner::Format::Json
+        } else {
+            test_runner::Format::Text
+        },
+        verbose: args.verbose,
+    };
+    test_runner::run(&pkg, &opts)
 }
 
 fn cmd_api(args: &Args) -> Result<(), String> {

@@ -129,6 +129,9 @@ cargo run -q -p compiler -- --core-modules core --core-modules mypkg/src mypkg/m
 cargo run -q -p toy -- build mypkg [--release] [-o PATH]
 cargo run -q -p toy -- run   mypkg [--backend aot|jit|vm] [-- ARGS...]
 cargo run -q -p toy -- check mypkg
+cargo run -q -p toy -- test  mypkg [FILTER] [--list] [--format=json]
+# `test` は tests/*.t と entry を走らせ、**モジュール内の `test` も拾う**
+# (TEST-TOOL T0)。bare 名の衝突は実行前に警告する (--no-warn-collisions で無効)
 cargo run -q -p toy -- api src/foo.t mypkg   # api / effects / explain も根つき
 cargo run -q -p toy -- effects mypkg
 # `-v` は等価な compiler / interpreter 呼び出しを 1 行で出す (道具を捨てて戻れる)

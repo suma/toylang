@@ -1,7 +1,8 @@
 # BUILD TOOL — `toy` コマンド
 
-> **状態: B0〜B1 + B3 landing 済み (2026-09-05)。** B2 (`toy test`) /
-> B4 (衝突の事前検出) / B5 (マニフェスト) は未着手。
+> **状態: B0〜B4 landing 済み (2026-09-05)。** B5 (マニフェスト) は
+> 「必要になってから」のまま。B2 は TEST_TOOL の T0/T2 まで
+> (T1 = compiled レーンでの `test` は未着手)。
 > 実装: [`toy/`](../toy) (`toy/src/main.rs` がサブコマンド、
 > `toy/src/package.rs` が §D2 の規約探索)。
 > 対象: **自分のモジュールを持つプログラム**をビルド・実行する手順。
@@ -193,10 +194,23 @@ warning: `is_digit` is defined in both src/record.t and <stdlib>/std/json.t
 |---|---|---|---|
 | **B0** | `--core-modules` を複数指定可能に + エントリの二重取り込みを飛ばす | 処理系。これだけで `refresh.sh` が消える | ✅ 2026-09-05 |
 | **B1** | `toy build` / `run` / `check` (規約の探索、根の組み立て、リンクキャッシュ既定) | B0 | ✅ 2026-09-05 |
-| **B2** | `toy test` | [`TEST_TOOL.md`](TEST_TOOL.md) の T0〜T2 | 未着手 |
+| **B2** | `toy test` | [`TEST_TOOL.md`](TEST_TOOL.md) の T0〜T2 | ✅ 2026-09-05 (T0+T2。T1 は未) |
 | **B3** | クエリの通し (`api` / `effects` / `explain`) — 穴 3 の解消 | B1 | ✅ 2026-09-05 |
-| **B4** | 衝突の事前検出 (D5) | B1 | 未着手 |
+| **B4** | 衝突の事前検出 (D5) | B1 | ✅ 2026-09-05 |
 | **B5** | マニフェストと依存 | **必要になってから** | — |
+
+### B4 が最初に見つけたもの
+
+**stdlib 自身が衝突している。** `encode` / `decode` が
+`std::base64` と `std::hex` の両方にあり、bare な `encode(...)` は
+既に曖昧である。道具はこれを**報告しない** — パッケージの側に
+直せるものが無く、毎回出て手も打てない警告は読み飛ばしを
+教えるだけなので、**第 1 root (stdlib) の中だけで閉じた重複は
+落としている**。言語側の台帳 (todo の BARE-NAME-COLLISION) の話。
+
+`poc/logsearch` に対しては 2 件出た — `decode` (`src/lsz.t` と
+上記 2 つ) と `parse` (`src/record.t` と `std::json`)。どちらも
+実在する衝突で、**呼び出しに到達するまでコンパイラは黙っている**。
 
 ### landing 時に分かったこと
 

@@ -228,6 +228,7 @@ impl<'a> Parser<'a> {
                     name: display_name,
                     function: fn_name,
                     line: location.line,
+                    file: None,
                 });
                 continue;
             }

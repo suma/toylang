@@ -1,6 +1,10 @@
 # TEST TOOL — toylang のテストを書く道具
 
-> **状態: 提案 (未実装)。** 2026-09-05。
+> **状態: T0 + T2 landing 済み (2026-09-05)。** T1 (compiled レーンでの
+> `test`) / T3 (`core/std/testing.t`) / T4 (`panics` と `--backend all`) /
+> T5 (ゴールデン) は未着手。
+> 実装: `interpreter/src/module_integration.rs` (T0)、
+> [`toy/src/test_runner.rs`](../toy/src/test_runner.rs) (T2)。
 > 対象: **toylang で書かれたプログラム**のテスト。処理系自身の Rust
 > テストは [`TEST_PLAN.md`](TEST_PLAN.md) が正本で、本文書は別の層。
 > 既にあるもの: `test "..." { }` + `--test` (LLM-LOOP P4)、
@@ -202,14 +206,35 @@ T0 が最優先。**残り 3 つは T0 の後でないと価値が出ない** �
 
 ## 4. フェーズ
 
-| | 内容 | 完了条件 |
-|---|---|---|
-| **T0** | module 内の `test` ブロック | `src/lsz.t` に書いた `test` が `--test` で走る |
-| **T1** | compiled レーンでの `test` | 同じテストが `--backend aot` で走る |
-| **T2** | `toy test` (探索・絞り込み・一覧・JSON) | `poc/logsearch` のテストが 1 コマンドで全部走る |
-| **T3** | `core/std/testing.t` | 上の表の 5 つが 1 行で書ける |
-| **T4** | `panics` テストと `--backend all` | 契約違反が検査でき、レーンの食い違いが出る |
-| **T5** | ゴールデンと `--bless` | `.seg` の形式が固定される |
+| | 内容 | 完了条件 | 状態 |
+|---|---|---|---|
+| **T0** | module 内の `test` ブロック | `src/lsz.t` に書いた `test` が `--test` で走る | ✅ 2026-09-05 |
+| **T1** | compiled レーンでの `test` | 同じテストが `--backend aot` で走る | 未着手 |
+| **T2** | `toy test` (探索・絞り込み・一覧・JSON) | `poc/logsearch` のテストが 1 コマンドで全部走る | ✅ 2026-09-05 |
+| **T3** | `core/std/testing.t` | 上の表の 5 つが 1 行で書ける | 未着手 |
+| **T4** | `panics` テストと `--backend all` | 契約違反が検査でき、レーンの食い違いが出る | 未着手 |
+| **T5** | ゴールデンと `--bless` | `.seg` の形式が固定される | 未着手 |
+
+### T0 で分かったこと
+
+- **直したのは 1 つの match arm。** 統合の remapper に
+  `Expr::BuiltinMethodCall` の腕が無かっただけで、`BuiltinMethod` は
+  symbol を持たない普通の enum なので受け手と引数を写すだけだった。
+  「5,000 行にテストが 0 件」の原因が 20 行の欠落だったことになる
+- **`test` ブロックは function とは別に運ばれる。** `test "..." { }` は
+  0 引数関数に lower され、その関数は元から統合で写っていた。
+  写っていなかったのは**それを名指す `TestCase`** の方で、
+  モジュールのテストは「死んだ関数」として存在し `--test` は
+  「`test` ブロックが無い」と答えていた
+- **名前とファイルを持たせた。** テスト名は `mathx::triple works` の
+  ように module で修飾する (2 つの module が同じ "roundtrip" を
+  持てるので)。`TestCase` に `file` を足して、失敗が**自分のファイル**を
+  引くようにした (足すまでは entry の名前 + module の行番号という
+  嘘の組み合わせを出していた)
+- **同じ module のテストは 1 回だけ報告する。** `tests/a.t` も `main.t` も
+  `src/` を取り込むので、素直に走らせると同じブロックが取り込んだ
+  プログラムの数だけ出る。ブロックを同定するのは書かれた場所なので、
+  `(file, line, name)` で畳む
 
 **最初の受け入れ先は `poc/logsearch`** である。5,000 行・12 モジュール・
 4 レーン・バイト列の形式を持つプログラムが既にあり、そこで書けない

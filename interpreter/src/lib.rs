@@ -1784,6 +1784,9 @@ pub fn execute_function_with_values(
 pub struct TestOutcome {
     pub name: String,
     pub line: u32,
+    /// The file the block is in, when it is not the entry (a module's
+    /// test carried in by integration). `None` means the entry.
+    pub file: Option<String>,
     /// `None` when the test passed; the diagnostic when it did not.
     pub failure: Option<String>,
 }
@@ -1821,6 +1824,7 @@ pub fn run_tests(
             TestOutcome {
                 name: test.name.clone(),
                 line: test.line,
+                file: test.file.clone(),
                 failure,
             }
         })

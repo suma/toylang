@@ -293,3 +293,184 @@ fn api_answers_for_a_module_relative_to_the_package() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+// --- B2 / T0: tests where the code is ---------------------------------
+
+#[test]
+fn a_test_block_inside_a_module_runs() {
+    // TEST-TOOL T0. `assert_eq` desugars to a string-concatenation
+    // chain that builds the failure message, and the module-integration
+    // remapper had no arm for it — so a module holding a `test` block
+    // could not be integrated at all, and the only file that could
+    // hold a test was the entry. That is why `poc/logsearch` has
+    // 5,000 lines and no tests.
+    let pkg = scratch("module_test");
+    write(
+        &pkg,
+        "src/mathx.t",
+        r#"
+pub fn triple(n: u64) -> u64 { n * 3u64 }
+
+test "triple works" {
+    assert_eq(mathx::triple(3u64), 9u64)
+}
+"#,
+    );
+    write(&pkg, "main.t", "fn main() -> u64 { mathx::triple(2u64) }\n");
+    let out = run(&pkg, &["test", pkg.0.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("1 passed, 0 failed"),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn a_failure_cites_the_module_it_was_written_in() {
+    // The block's line belongs to the module, not to the entry the
+    // runner happened to compile, and its name is qualified so two
+    // modules can both have a "roundtrip".
+    let pkg = scratch("module_test_fail");
+    write(
+        &pkg,
+        "src/mathx.t",
+        r#"
+pub fn triple(n: u64) -> u64 { n * 3u64 }
+
+test "is wrong on purpose" {
+    assert_eq(mathx::triple(2u64), 7u64)
+}
+"#,
+    );
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    let out = run(&pkg, &["test", pkg.0.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "a failing test should exit non-zero");
+    assert!(
+        stderr.contains("mathx::is wrong on purpose") && stderr.contains("src/mathx.t"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn a_module_test_is_reported_once_however_many_programs_pull_it_in() {
+    // `tests/a.t` and `main.t` both compile against `src/`, so the
+    // module's blocks arrive twice. They name one place, and that is
+    // what identifies them.
+    let pkg = scratch("dedup");
+    write(
+        &pkg,
+        "src/mathx.t",
+        r#"
+pub fn triple(n: u64) -> u64 { n * 3u64 }
+
+test "triple works" {
+    assert_eq(mathx::triple(3u64), 9u64)
+}
+"#,
+    );
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    write(
+        &pkg,
+        "tests/extra.t",
+        "test \"zero\" {\n    assert_eq(mathx::triple(0u64), 0u64)\n}\n",
+    );
+    let out = run(&pkg, &["test", pkg.0.to_str().unwrap(), "--list"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("2 test(s)"), "stdout: {stdout}");
+}
+
+#[test]
+fn a_filter_selects_by_name_and_a_path_still_reads_as_a_path() {
+    // `toy test <filter> <path>` in either order: the argument that
+    // names something on disk is the path.
+    let pkg = scratch("filter");
+    write(
+        &pkg,
+        "main.t",
+        r#"
+test "alpha runs" { assert_eq(1u64, 1u64) }
+test "beta runs" { assert_eq(2u64, 2u64) }
+fn main() -> u64 { 0u64 }
+"#,
+    );
+    let out = run(&pkg, &["test", "alpha", pkg.0.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("1 passed"), "stdout: {stdout}");
+
+    let both = run(&pkg, &["test", pkg.0.to_str().unwrap()]);
+    assert!(String::from_utf8_lossy(&both.stdout).contains("2 passed"));
+}
+
+#[test]
+fn the_json_form_carries_the_failure_text() {
+    let pkg = scratch("json");
+    write(
+        &pkg,
+        "main.t",
+        r#"
+test "wrong" { assert_eq(1u64, 2u64) }
+fn main() -> u64 { 0u64 }
+"#,
+    );
+    let out = run(&pkg, &["test", pkg.0.to_str().unwrap(), "--format=json"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"name\": \"wrong\"") && stdout.contains("\"failure\": \""),
+        "stdout: {stdout}"
+    );
+    // Newlines in the diagnostic must not break the line-per-record
+    // shape a reader depends on.
+    assert!(stdout.contains("\\n"), "the failure text should be escaped");
+}
+
+// --- B4: duplicate bare names -----------------------------------------
+
+#[test]
+fn a_bare_name_the_package_shares_with_the_stdlib_is_named_up_front() {
+    // BARE-NAME-COLLISION is a language decision this tool does not
+    // make. Detecting it is separate: the roots are known before
+    // anything is parsed, whereas the compiler reaches the clash only
+    // when a *call* is resolved — possibly down a branch this run
+    // never takes.
+    let pkg = scratch("collide");
+    write(&pkg, "src/mine.t", "pub fn encode(n: u64) -> u64 { n }\n");
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    let out = run(&pkg, &["check", pkg.0.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("warning: `encode` is defined in") && stderr.contains("src/mine.t"),
+        "stderr: {stderr}"
+    );
+    // The check itself still succeeds — it is a warning, not a bar.
+    assert!(out.status.success(), "stderr: {stderr}");
+}
+
+#[test]
+fn a_duplicate_that_is_entirely_the_stdlibs_is_not_reported() {
+    // `encode` is in both `std::base64` and `std::hex`, so a bare
+    // `encode(...)` is already ambiguous — but that is not this
+    // package's to fix, and a warning on every command that cannot be
+    // acted on is one people learn to scroll past.
+    let pkg = scratch("no_stdlib_noise");
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    let out = run(&pkg, &["check", pkg.0.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("warning: `encode`"),
+        "stdlib-only duplicates should stay quiet; stderr: {stderr}"
+    );
+}
+
+#[test]
+fn the_collision_check_can_be_turned_off() {
+    let pkg = scratch("no_warn");
+    write(&pkg, "src/mine.t", "pub fn encode(n: u64) -> u64 { n }\n");
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    let out = run(
+        &pkg,
+        &["check", pkg.0.to_str().unwrap(), "--no-warn-collisions"],
+    );
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("warning: `encode`"));
+}

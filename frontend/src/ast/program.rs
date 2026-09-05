@@ -89,6 +89,14 @@ pub struct TestCase {
     pub function: DefaultSymbol,
     /// Where the `test` keyword is, so a failure can cite the block.
     pub line: u32,
+    /// Which file the block is in, when it is not the entry.
+    ///
+    /// TEST-TOOL T0: a module's tests are carried into the program
+    /// being run, so `line` alone names a position in the wrong file
+    /// -- the report said `main.t:8` for a block in `src/mathx.t`.
+    /// `None` means the entry, which the runner already knows the
+    /// name of.
+    pub file: Option<String>,
 }
 
 /// Top-level `const NAME: Type = expression` declaration. The `value`

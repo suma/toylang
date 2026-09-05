@@ -438,6 +438,7 @@ fn lower_for_fold(
             name: format!("__ctfe_{idx}"),
             function: sym,
             line: 0,
+            file: None,
         });
     }
     for (i, sym) in const_fn_entries.iter().enumerate() {
@@ -445,6 +446,7 @@ fn lower_for_fold(
             name: format!("__ctfe_fn_{i}"),
             function: *sym,
             line: 0,
+            file: None,
         });
     }
     // 3. Lower.

@@ -10,6 +10,33 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **TEST-TOOL T0 — module の中に `test` ブロックを書けるようにした** —
+  `assert_eq` はパーサが文字列連結に desugar するマクロで、統合の
+  remapper に `Expr::BuiltinMethodCall` の腕が無かった。つまり
+  **`test` を持つモジュールは統合できず**、テストを書ける場所は
+  entry (この言語で唯一モジュールでないファイル) だけだった —
+  `poc/logsearch` が 5,000 行でテスト 0 件だった一番の理由。
+  併せて **`TestCase` がモジュールから運ばれるようにした** (0 引数
+  関数の方は元から写っていたが、それを名指すエントリが無かったので
+  「死んだ関数」になっていた)。名前は `mathx::triple works` のように
+  module 修飾し、`TestCase` に `file` を足して失敗が自分のファイルを
+  引くようにした
+- **BUILD-TOOL B2 — `toy test`** — `tests/*.t` と entry を走らせ、
+  module のテストは統合経由で拾う。名前の部分一致フィルタ /
+  `--list` / `--format=json`。同じ module のテストは
+  `(file, line, name)` で畳むので、取り込んだプログラムの数だけ
+  重複しない。1 プロセスで全部走る
+- **BUILD-TOOL B4 — bare 名の衝突を事前に報告する** — root の並びは
+  parse 前に分かるので、コンパイラが**呼び出しに到達したとき**に
+  出す `[E0010] ambiguous module path` より早く言える。
+  **stdlib 内だけで閉じた重複は報告しない** (パッケージ側に打つ手が
+  無く、毎回出る警告は読み飛ばしを教えるだけ)。`--no-warn-collisions` で切れる
+- **BARE-NAME-COLLISION の実例が 3 件見つかった** (上の B4 が最初に
+  出したもの): **stdlib 自身の `encode` / `decode` が
+  `std::base64` と `std::hex` に重複**していて、bare な
+  `encode(...)` は既に曖昧。`poc/logsearch` 側は `decode`
+  (`src/lsz.t`) と `parse` (`src/record.t` vs `std::json`)。
+  どれも呼び出しに到達するまでコンパイラは黙っている
 - **BUILD-TOOL B0 — `--core-modules` を繰り返し指定できるようにした** —
   これまでは**置き換え**だったので、自分のモジュールを指した瞬間に
   stdlib が消えた。root は指定順に探索し、**後の root が勝つ**ので

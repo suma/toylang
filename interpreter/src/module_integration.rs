@@ -64,6 +64,13 @@ pub(crate) struct AstIntegrationContext<'a> {
     /// every occurrence. Indexed by `DefaultSymbol::to_usize()`
     /// (module interner symbols are dense `0..len`); `None` = not yet
     /// translated.
+    /// What to call this module in a test report (`std::json`), when
+    /// the caller knows. `None` for the prelude and for direct
+    /// integration calls that pass no path.
+    module_label: Option<String>,
+    /// The module's path as a diagnostic names it, so a failing test
+    /// in it cites its own file rather than the entry's.
+    module_display_path: String,
     symbol_cache: Vec<Option<DefaultSymbol>>,
     /// Separate cache for `remap_type_symbol`: the stdlib-alias path
     /// (`__std_<name>`) produces a different main symbol than the
@@ -118,7 +125,16 @@ impl<'a> AstIntegrationContext<'a> {
             type_symbol_cache: vec![None; module_string_interner.len()],
             shadowed_stdlib_types,
             module_file,
+            module_label: None,
+            module_display_path: String::new(),
         }
+    }
+
+    /// Name this module for the test report (TEST-TOOL T0).
+    fn with_label(mut self, label: Option<String>, display_path: &str) -> Self {
+        self.module_label = label;
+        self.module_display_path = display_path.to_string();
+        self
     }
 
     /// Compute the alias name a stdlib type symbol should be remapped
@@ -414,6 +430,25 @@ impl<'a> AstIntegrationContext<'a> {
                     success_binding: self.remap_symbol(*success_binding)?,
                     error_binding: self.remap_symbol(*error_binding)?,
                 })
+            }
+            Expr::BuiltinMethodCall(receiver, method, args) => {
+                // `s.len()` / `a.concat(b)` and the rest of the
+                // compiler-known `str` methods. The `BuiltinMethod`
+                // itself is a plain enum carrying no symbols, so only
+                // the receiver and the arguments move.
+                //
+                // TEST-TOOL T0: `assert_eq` desugars to a `StrConcat`
+                // chain that builds the failure message, so **a module
+                // containing a `test` block could not be integrated at
+                // all** -- which is why `poc/logsearch` has 5,000
+                // lines and no tests: the only file that could hold
+                // one was the entry, the single file in the language
+                // that is not a module.
+                Ok(Expr::BuiltinMethodCall(
+                    self.map_expr(receiver, "BuiltinMethodCall receiver")?,
+                    method.clone(),
+                    self.map_exprs(args, "BuiltinMethodCall argument")?,
+                ))
             }
             // Add other expression types as needed
             _ => Err(format!("Unsupported expression type for remapping: {:?}", expr))
@@ -1128,8 +1163,35 @@ impl<'a> AstIntegrationContext<'a> {
         // the duplicate walk also confuses generic-method lookup
         // paths that key on the first declaration site.
         let integrated_functions = self.copy_functions()?;
+        self.copy_tests()?;
 
         Ok(integrated_functions)
+    }
+
+    /// TEST-TOOL T0: carry the module's `test` blocks over.
+    ///
+    /// A `test "..." { }` lowers to a zero-argument function, which
+    /// `copy_functions` already brings across; what was missing is the
+    /// `TestCase` entry that names it, so a module's tests existed as
+    /// dead functions and `--test` reported "no `test` blocks". The
+    /// name is prefixed with the module path, because a report listing
+    /// two tests called "roundtrip" from different modules cannot be
+    /// acted on.
+    fn copy_tests(&mut self) -> Result<(), String> {
+        for test in &self.module_program.tests {
+            let function = self.remap_symbol(test.function)?;
+            let name = match &self.module_label {
+                Some(label) => format!("{label}::{}", test.name),
+                None => test.name.clone(),
+            };
+            self.main_program.tests.push(frontend::ast::TestCase {
+                name,
+                function,
+                line: test.line,
+                file: Some(self.module_display_path.clone()),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -1510,6 +1572,28 @@ pub fn integrate_module_into_program_with_options(
 /// `program.function_module_paths`. Compiler IR uses the last
 /// segment to disambiguate same-named `pub fn`s coming from
 /// different modules (#193).
+/// The name a test report should use for a module (TEST-TOOL T0).
+///
+/// The module path when there is one (`std::json`), so two tests
+/// called "roundtrip" in different modules stay distinguishable.
+/// Falls back to the display path, which is what the prelude and
+/// direct integration calls have.
+fn module_label(
+    module_path: Option<&[DefaultSymbol]>,
+    interner: &DefaultStringInterner,
+    display_path: &str,
+) -> Option<String> {
+    match module_path {
+        Some(path) if !path.is_empty() => Some(
+            path.iter()
+                .filter_map(|sym| interner.resolve(*sym))
+                .collect::<Vec<_>>()
+                .join("::"),
+        ),
+        _ => Some(display_path.to_string()),
+    }
+}
+
 pub fn integrate_module_into_program_with_options_full(
     source: &str,
     main_program: &mut File,
@@ -1558,6 +1642,7 @@ pub fn integrate_module_into_program_with_options_full(
     // DEBUG-OBS D2: the module's text is registered before its
     // positions are copied, so they have somewhere to point.
     let module_file = main_program.source_map.add(display_path, source);
+    let label = module_label(module_path.as_deref(), main_string_interner, display_path);
     let mut integration_context = AstIntegrationContext::new(
         main_program,
         &module_program,
@@ -1565,7 +1650,8 @@ pub fn integrate_module_into_program_with_options_full(
         module_string_interner,
         shadowed_stdlib_types,
         module_file,
-    );
+    )
+    .with_label(label, display_path);
 
     let integrated_functions = integration_context.integrate()?;
     for function in integrated_functions {
@@ -1614,6 +1700,7 @@ pub(crate) fn integrate_cached_module(
     // warm start draws the same excerpt a cold one does — without it,
     // a cache hit would produce positions that resolve to nothing.
     let module_file = main_program.source_map.add(display_path, source);
+    let label = module_label(module_path, main_string_interner, display_path);
     let mut integration_context = AstIntegrationContext::new(
         main_program,
         &cached.file,
@@ -1621,7 +1708,8 @@ pub(crate) fn integrate_cached_module(
         &cached.interner,
         shadowed_stdlib_types.clone(),
         module_file,
-    );
+    )
+    .with_label(label, display_path);
     let integrated_functions = integration_context.integrate()?;
     for function in integrated_functions {
         main_program.function.push(function);
@@ -1790,6 +1878,7 @@ pub(crate) fn integrate_preparsed_core_module(
             interner,
         } => {
             let module_file = main_program.source_map.add(display_path, &preparsed.source);
+            let label = module_label(module_path, main_string_interner, display_path);
             let mut integration_context = AstIntegrationContext::new(
                 main_program,
                 &file,
@@ -1797,7 +1886,8 @@ pub(crate) fn integrate_preparsed_core_module(
                 &interner,
                 shadowed_stdlib_types.clone(),
                 module_file,
-            );
+            )
+            .with_label(label, display_path);
             let integrated_functions = integration_context.integrate()?;
             for function in integrated_functions {
                 main_program.function.push(function);

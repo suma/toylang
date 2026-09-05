@@ -487,7 +487,8 @@ fn report_tests(source: &str, filename: &str, options: &interpreter::RunOptions<
         outcomes.iter().filter(|o| o.failure.is_some()).collect();
     for outcome in &failed {
         let detail = outcome.failure.as_deref().unwrap_or("");
-        eprintln!("FAILED  {} ({filename}:{})", outcome.name, outcome.line);
+        let where_ = outcome.file.as_deref().unwrap_or(filename);
+        eprintln!("FAILED  {} ({where_}:{})", outcome.name, outcome.line);
         for line in detail.lines() {
             eprintln!("    {line}");
         }

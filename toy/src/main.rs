@@ -20,6 +20,7 @@ mod clean;
 mod collide;
 mod package;
 mod test_runner;
+mod version;
 
 use std::path::{Path, PathBuf};
 use std::process;
@@ -39,6 +40,7 @@ usage:
   toy api <MODULE.t> [PATH]
   toy effects [PATH] [-v]
   toy explain <CODE>
+  toy version [-v]
 
 PATH is a `.t` file or a directory; the package is the nearest
 ancestor holding `main.t` or `src/`. Module roots are the stdlib
@@ -127,6 +129,7 @@ fn main() {
         "api" => cmd_api(&args),
         "effects" => cmd_effects(&args),
         "explain" => cmd_explain(&args),
+        "version" | "--version" | "-V" => version::run(args.verbose),
         other => Err(format!("unknown command `{other}`\n\n{USAGE}")),
     };
     if let Err(e) = result {

@@ -893,3 +893,105 @@ fn main() -> u64 { 0u64 }
         "a golden mismatch must name the offset: {stderr}"
     );
 }
+
+// --- version ----------------------------------------------------------
+
+#[test]
+fn version_names_every_part_and_where_it_is() {
+    // The question during development is not "which release" — every
+    // build of this repo is 0.1.0 — but whether the thing running is
+    // the thing just built, and against which stdlib. Three parts can
+    // disagree, so each gets a row with a path.
+    let out = Command::new(toy_bin())
+        .arg("version")
+        .env("TOYLANG_CORE_MODULES", stdlib())
+        .output()
+        .expect("spawn toy");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    for part in ["toy", "compiler", "interpreter", "stdlib"] {
+        assert!(
+            stdout.lines().any(|l| l.starts_with(part)),
+            "no row for `{part}`: {stdout}"
+        );
+    }
+    // Each row carries the path it is talking about.
+    assert!(
+        stdout.lines().filter(|l| l.contains('/')).count() >= 4,
+        "every row should name a path: {stdout}"
+    );
+}
+
+#[test]
+fn a_missing_path_is_flagged_on_its_own_line() {
+    // A `compiler` that is not beside `toy` is not fatal — `toy` holds
+    // it as a crate — but `compiler ...` typed by hand will not work,
+    // and that is worth saying rather than leaving for the reader to
+    // notice in a path they were not reading.
+    let dir = scratch("version_missing");
+    let lone = dir.0.join("toy");
+    std::fs::copy(toy_bin(), &lone).expect("copy toy");
+    let out = Command::new(&lone)
+        .arg("version")
+        .env("TOYLANG_CORE_MODULES", dir.0.join("no-such-stdlib"))
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("spawn toy");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Same line as the path, so the two are read together.
+    for part in ["compiler", "interpreter", "stdlib"] {
+        let line = stdout
+            .lines()
+            .find(|l| l.starts_with(part))
+            .unwrap_or_else(|| panic!("no row for {part}: {stdout}"));
+        assert!(
+            line.contains("not found"),
+            "`{part}` is absent and should say so: {line}"
+        );
+    }
+    // `toy` itself is right there, so it is not flagged.
+    let toy_line = stdout.lines().find(|l| l.starts_with("toy")).unwrap();
+    assert!(!toy_line.contains("not found"), "{toy_line}");
+}
+
+#[test]
+fn colour_is_for_terminals_and_can_be_forced_or_suppressed() {
+    // Piped into a file or a grep the escapes are noise — and they
+    // would break the assertions above, which is the test.
+    let dir = scratch("version_colour");
+    let lone = dir.0.join("toy");
+    std::fs::copy(toy_bin(), &lone).expect("copy toy");
+    let missing = dir.0.join("no-such-stdlib");
+
+    let plain = Command::new(&lone)
+        .arg("version")
+        .env("TOYLANG_CORE_MODULES", &missing)
+        .output()
+        .expect("spawn toy");
+    assert!(
+        !String::from_utf8_lossy(&plain.stdout).contains('\x1b'),
+        "a pipe is not a terminal"
+    );
+
+    let forced = Command::new(&lone)
+        .arg("version")
+        .env("TOYLANG_CORE_MODULES", &missing)
+        .env("TOY_COLOR", "1")
+        .output()
+        .expect("spawn toy");
+    assert!(
+        String::from_utf8_lossy(&forced.stdout).contains("\x1b[33m"),
+        "TOY_COLOR should force it on"
+    );
+
+    let suppressed = Command::new(&lone)
+        .arg("version")
+        .env("TOYLANG_CORE_MODULES", &missing)
+        .env("TOY_COLOR", "1")
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("spawn toy");
+    // NO_COLOR is the convention, but an explicit request wins over
+    // an ambient one.
+    assert!(String::from_utf8_lossy(&suppressed.stdout).contains("\x1b[33m"));
+}

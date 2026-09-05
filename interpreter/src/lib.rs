@@ -2181,3 +2181,12 @@ pub fn run_source(
     };
     Ok(RunOutcome { exit_code })
 }
+/// This crate's version, for `toy version`.
+///
+/// `toy` links interpreter as a crate rather than spawning it, so the
+/// number it reports has to come from the crate itself — reading the
+/// standalone binary's would answer a different question (what is on
+/// disk, not what is running).
+pub fn version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}

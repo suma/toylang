@@ -10,6 +10,15 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **`toy version`** — toy / compiler / interpreter / stdlib の
+  version + git revision + **パス**を 1 行ずつ。**パスが無い行は
+  同じ行に色つきで警告**する (`NO_COLOR` / `TOY_COLOR` 対応、
+  端末でないときは自動で消える)。効く問いは「どのリリースか」ではなく
+  **「今動いているのは今ビルドした物か、どの stdlib に対してか」**。
+  revision はビルド時に build script が埋めるが、
+  **stdlib だけは実行時に `git -C <root>`** で引く — stdlib はデータで、
+  バイナリを作った checkout と別のところから来うるので、
+  その食い違いこそこのコマンドが可視化したいもの
 - **TEST-TOOL T3 — `core/std/testing.t`** — `assert_close` /
   `assert_str_eq` / `assert_bytes_eq` / `assert_some` / `assert_ok` /
   `assert_err` / `assert_in_range(_u64)` と、確保の区間検査

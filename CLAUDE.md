@@ -130,6 +130,9 @@ cargo run -q -p toy -- build mypkg [--release] [-o PATH]
 cargo run -q -p toy -- run   mypkg [--backend aot|jit|vm] [-- ARGS...]
 cargo run -q -p toy -- check mypkg
 cargo run -q -p toy -- clean mypkg [--all]   # 出力を消す (--all は build/ ごと)
+cargo run -q -p toy -- version [-v]         # 各部の version / git rev / パス
+# パスが無い行は同じ行に色つきで警告する。stdlib の revision は実行時に
+# `git -C <root>` で引く (stdlib はデータで、別 checkout から来うるため)
 cargo run -q -p toy -- test  mypkg [FILTER] [--list] [--bless] [--format=json]
 # `test` は tests/*.t と entry を走らせ、**モジュール内の `test` も拾う**
 # (TEST-TOOL T0)。**既定は AOT** で、出荷するレーンが検査対象になる

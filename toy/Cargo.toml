@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "The toylang build and run tool (BUILD_TOOL.md)."
+build = "build.rs"
 
 [[bin]]
 name = "toy"

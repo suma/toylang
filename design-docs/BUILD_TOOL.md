@@ -182,6 +182,7 @@ toy test  [FILTER] [--backend all] [--check] [--seed=N]
 toy api <module>                  # 既存の --api を根つきで
 toy effects [FILE]                # 既存の --effects を根つきで (穴 3 の解消)
 toy explain <CODE>
+toy version [-v]                  # 何のビルドが、どこに在るか
 ```
 
 - **`toy run` の `--` 以降はプログラムの引数**。今は `RunOptions.args`
@@ -193,6 +194,14 @@ toy explain <CODE>
   ここで捕まえる。`--backend vm` でより安い問いに落とせる。`vm` は
   IR VM = 既定のインタプリタ、`tree` は tree-walker
   (**オラクルが要る場面はこれ**、CLAUDE.md の注意書きと同じ)
+- **`toy version`** は toy / compiler / interpreter / stdlib の
+  version + git revision + **パス**を出し、パスが無い行は同じ行に
+  色つきで警告する。開発中に効く問いは「どのリリースか」ではなく
+  **「今動いているのは今ビルドした物か、どの stdlib に対してか」**で、
+  食い違いうる 3 者 (道具 / 隣の standalone バイナリ / stdlib
+  ディレクトリ) がそれぞれ別の答えを持ちうる。stdlib の revision だけは
+  **実行時に** `git -C <root>` で引く — stdlib はデータであって、
+  バイナリを作った checkout と別のところから来うるため
 - **`-v` は実際に走らせたコマンドを 1 行で出す。** 道具が処理系を
   隠さないための最低条件で、これがあれば「道具を捨てて手で叩く」に
   いつでも戻れる

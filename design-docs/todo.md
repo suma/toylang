@@ -10,6 +10,17 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **toylang 側のリファクタリング (stdlib / poc)** — 言語に入った機能で
+  手書きの定型を畳んで **-198 行**。`checked_pow` 8 本の
+  `match { Some(v) => .., None => return None }` を `?` に
+  (96 → 16 行)、`net` / `poll` の「status を `Result` に変える」
+  23 + 4 か所を `net_unit_result` / `net_u64_result` / `net_str_result`
+  に集約、iterator アダプタ 4 本の drain ループを `for v in it` に、
+  `Vec::with_capacity` / `grow_to` の容量オーバーフロー検査を `??` に。
+  `poc/logsearch` は `arg_u64` / `top=` / `parse_time` / `verify` /
+  `Reader::load` の 5 か所。**`net_result<T>` の 1 本で済ませられない**
+  のは、generic 関数が compiled レーンの enum を産む tail 位置に立てない
+  ため (`unknown function .. in enum-producing position`)。
 - **REF-REBORROW — `&mut` 引数の転送に借用を書かなくてよくなった** — `fn insert(arena: &mut Vec<Node>, ..)` の中の `insert(arena, ..)` が通る。**再借用だけ**を暗黙にした — 所有値から `&mut` を取るのは今も明示が要る (呼び先が値を変えてよいかの決定だから)。転送は何も決めない (呼び出し側は既に可変アクセスを与えられており、渡しても増えない)。型検査器が明示形に書き換えるので**下流は略記を見ない** — writeback の帳簿もその形を見ている。
 - **BY-VALUE-SELF-ALIAS — 値渡しの引数は callee 自身のコピーになった** — tree-walker が `Rc` を共有していたので、`self: Self` / 値渡しの compound 引数への書き込みが呼び出し側に漏れていた (compiled レーンは leaf をコピーするので漏れない)。`BACKEND.md` の規定どおり tree-walker を直した。コピーは**構造的で深くない** — compound の背骨を作り直し scalar で止まるので、`Vec` の heap buffer は共有のまま。この挙動に依存していた 2 か所 (`interpreter/example/allocator_list.t` と struct の `__setitem__` テスト) は、どちらも `&mut self` のつもりで書かれていたので直した。
 - **CODE-SIZE-SELF-ABI — 演算子オーバーロードと method の参照引数も番地で渡す** — 被演算子を作る前に呼び先は解決済みなので、埋める引数枠を渡すだけで除外リストが消えた。`fn add(&self, o: &Self)` は 13 → 2 引数。ついでに「ポインタ引数は writeback slot を持たない」を呼び出し側の数え方と body 側の導出にも通した (前者は数が合わず黙って素の `Call` に落ちていた)。`poc/logsearch` の `__text` は 191,080 → 153,056 B (一連の作業で −19.9%)。[`CODE_SIZE.md`](CODE_SIZE.md)。
@@ -1925,6 +1936,40 @@
   束縛せよ」というエラーになる。誘導が具体的なので実害は小さい。
   (2026-09-01 に **match の arm 束縛** と **`return` する arm** は解消。
   残っているのは method call の枝だけ。)
+
+- **COMPOUND-BLOCK-RHS の残: block の末尾が compound な `match`** ★ —
+  `val p: P = { val t = mk()  match t { .. => v, .. } }` が compiled
+  レーンで `val/var rhs produced no value`。**同じ `match` を直接
+  val-rhs に置けば通る**ので、抜けているのは「block を 1 枚挟んだとき」
+  だけ。tree-walker は通る。最小再現:
+
+  ```rust
+  struct P { x: i64 }
+  fn mk() -> Result<P, str> { Result::Ok(P { x: 3i64 }) }
+  fn main() -> u64 {
+      val p: P = {
+          val t = mk()
+          match t { Result::Ok(v) => v, Result::Err(_) => P { x: 0i64 } }
+      }
+      println(p.x)
+      0u64
+  }
+  ```
+
+- **TRY-COMPOUND: `?` の成功型が compound だと動かない** ★ —
+  `val f = File::open(path)?` / `Result<(i64, i64), E>` /
+  `Result<Option<T>, E>` のどれも通らない。`?` の desugar が成功 arm を
+  `__try_v as T` で型付けするため (AOT 推論のための措置)、
+  tree-walker は `Invalid cast from Struct { .. } to Identifier(..)` の
+  internal error、AOT は `compiler MVP only supports scalar as targets`
+  になる。**cast を scalar 型のときだけ吐く**ようにすると tree-walker /
+  IR VM は通るが、今度は上の COMPOUND-BLOCK-RHS を踏んで AOT が
+  `val/var rhs produced no value` で落ちる (desugar が作るのが
+  まさに「block の末尾が compound な `match`」だから)。**先に
+  COMPOUND-BLOCK-RHS を直すこと** — 順番を逆にするとレーンが割れる。
+  現状の回避は手書きの `match`。`poc/logsearch` が
+  `File::open` / `File::create` の周りでそう書いている
+  (2026-09-05 に stdlib / poc の `?` 化を進める過程で発見)
 
 - **COMPOUND-GENERIC-INSTANCE: `match` から generic struct を取り出すと
   注釈が要る** ★ — `val out: Span<u8> = match w { Option::Some(s) => s, .. }`。

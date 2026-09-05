@@ -66,15 +66,14 @@ fn arg_or(i: u64, fallback: str) -> str {
 }
 
 fn arg_u64(i: u64, fallback: u64) -> u64 {
-    var d = fallback
     if io::argc() > i {
-        val parsed = parse::to_u64(io::arg(i))
-        match parsed {
-            Result::Ok(n) => { d = n }
-            Result::Err(e) => { }
-        }
+        # `??` keeps the fallback for anything that is not a number:
+        # a missing argument and an unparsable one mean the same
+        # thing here, and the default is lazy so it costs nothing.
+        parse::to_u64(io::arg(i)) ?? fallback
+    } else {
+        fallback
     }
-    d
 }
 
 # `YYYY/MM/DD` for the segment's own day, so that retention can drop
@@ -576,11 +575,7 @@ fn cmd_query(dir: str, text: str) -> u64 {
                 val h2 = tok.substring(0u64, 6u64)
                 if h2.eq_str("limit=") {
                     val rest = tok.substring(6u64, tok.len())
-                    val n = parse::to_u64(rest.to_str())
-                    match n {
-                        Result::Ok(v) => { top_limit = v }
-                        Result::Err(e) => { }
-                    }
+                    top_limit = parse::to_u64(rest.to_str()) ?? top_limit
                 }
             }
         }

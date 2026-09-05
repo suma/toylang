@@ -140,19 +140,11 @@ impl Checked for u8 {
         var e: u64 = exp as u64
         while e > 0u64 {
             if (e & 1u64) == 1u64 {
-                val step: Option<u8> = result.checked_mul(b)
-                match step {
-                    Option::Some(v) => { result = v }
-                    Option::None => { return Option::None }
-                }
+                result = result.checked_mul(b)?
             }
             e = e >> 1u64
             if e > 0u64 {
-                val sq: Option<u8> = b.checked_mul(b)
-                match sq {
-                    Option::Some(v) => { b = v }
-                    Option::None => { return Option::None }
-                }
+                b = b.checked_mul(b)?
             }
         }
         Option::Some(result)
@@ -227,19 +219,11 @@ impl Checked for u16 {
         var e: u64 = exp as u64
         while e > 0u64 {
             if (e & 1u64) == 1u64 {
-                val step: Option<u16> = result.checked_mul(b)
-                match step {
-                    Option::Some(v) => { result = v }
-                    Option::None => { return Option::None }
-                }
+                result = result.checked_mul(b)?
             }
             e = e >> 1u64
             if e > 0u64 {
-                val sq: Option<u16> = b.checked_mul(b)
-                match sq {
-                    Option::Some(v) => { b = v }
-                    Option::None => { return Option::None }
-                }
+                b = b.checked_mul(b)?
             }
         }
         Option::Some(result)
@@ -314,19 +298,11 @@ impl Checked for u32 {
         var e: u64 = exp as u64
         while e > 0u64 {
             if (e & 1u64) == 1u64 {
-                val step: Option<u32> = result.checked_mul(b)
-                match step {
-                    Option::Some(v) => { result = v }
-                    Option::None => { return Option::None }
-                }
+                result = result.checked_mul(b)?
             }
             e = e >> 1u64
             if e > 0u64 {
-                val sq: Option<u32> = b.checked_mul(b)
-                match sq {
-                    Option::Some(v) => { b = v }
-                    Option::None => { return Option::None }
-                }
+                b = b.checked_mul(b)?
             }
         }
         Option::Some(result)
@@ -401,19 +377,11 @@ impl Checked for u64 {
         var e: u64 = exp as u64
         while e > 0u64 {
             if (e & 1u64) == 1u64 {
-                val step: Option<u64> = result.checked_mul(b)
-                match step {
-                    Option::Some(v) => { result = v }
-                    Option::None => { return Option::None }
-                }
+                result = result.checked_mul(b)?
             }
             e = e >> 1u64
             if e > 0u64 {
-                val sq: Option<u64> = b.checked_mul(b)
-                match sq {
-                    Option::Some(v) => { b = v }
-                    Option::None => { return Option::None }
-                }
+                b = b.checked_mul(b)?
             }
         }
         Option::Some(result)
@@ -517,19 +485,11 @@ impl Checked for i8 {
         var e: u64 = exp as u64
         while e > 0u64 {
             if (e & 1u64) == 1u64 {
-                val step: Option<i8> = result.checked_mul(b)
-                match step {
-                    Option::Some(v) => { result = v }
-                    Option::None => { return Option::None }
-                }
+                result = result.checked_mul(b)?
             }
             e = e >> 1u64
             if e > 0u64 {
-                val sq: Option<i8> = b.checked_mul(b)
-                match sq {
-                    Option::Some(v) => { b = v }
-                    Option::None => { return Option::None }
-                }
+                b = b.checked_mul(b)?
             }
         }
         Option::Some(result)
@@ -633,19 +593,11 @@ impl Checked for i16 {
         var e: u64 = exp as u64
         while e > 0u64 {
             if (e & 1u64) == 1u64 {
-                val step: Option<i16> = result.checked_mul(b)
-                match step {
-                    Option::Some(v) => { result = v }
-                    Option::None => { return Option::None }
-                }
+                result = result.checked_mul(b)?
             }
             e = e >> 1u64
             if e > 0u64 {
-                val sq: Option<i16> = b.checked_mul(b)
-                match sq {
-                    Option::Some(v) => { b = v }
-                    Option::None => { return Option::None }
-                }
+                b = b.checked_mul(b)?
             }
         }
         Option::Some(result)
@@ -749,19 +701,11 @@ impl Checked for i32 {
         var e: u64 = exp as u64
         while e > 0u64 {
             if (e & 1u64) == 1u64 {
-                val step: Option<i32> = result.checked_mul(b)
-                match step {
-                    Option::Some(v) => { result = v }
-                    Option::None => { return Option::None }
-                }
+                result = result.checked_mul(b)?
             }
             e = e >> 1u64
             if e > 0u64 {
-                val sq: Option<i32> = b.checked_mul(b)
-                match sq {
-                    Option::Some(v) => { b = v }
-                    Option::None => { return Option::None }
-                }
+                b = b.checked_mul(b)?
             }
         }
         Option::Some(result)
@@ -865,19 +809,11 @@ impl Checked for i64 {
         var e: u64 = exp as u64
         while e > 0u64 {
             if (e & 1u64) == 1u64 {
-                val step: Option<i64> = result.checked_mul(b)
-                match step {
-                    Option::Some(v) => { result = v }
-                    Option::None => { return Option::None }
-                }
+                result = result.checked_mul(b)?
             }
             e = e >> 1u64
             if e > 0u64 {
-                val sq: Option<i64> = b.checked_mul(b)
-                match sq {
-                    Option::Some(v) => { b = v }
-                    Option::None => { return Option::None }
-                }
+                b = b.checked_mul(b)?
             }
         }
         Option::Some(result)

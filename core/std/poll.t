@@ -168,12 +168,7 @@ impl Poller {
     # what `deregister` spells.
     pub fn register(&self, fd: i32, token: u64, interest: u32) -> Result<(), NetError> {
         val status: u64 = __extern_poll_ctl(self.fd, fd, token, interest)
-        if status == 0u64 {
-            Result::Ok(())
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_unit_result(status)
     }
 
     # Stop watching `fd`. Not an error if it was never watched — the
@@ -181,12 +176,7 @@ impl Poller {
     # satisfied either way.
     pub fn deregister(&self, fd: i32) -> Result<(), NetError> {
         val status: u64 = __extern_poll_ctl(self.fd, fd, 0u64, 0u32)
-        if status == 0u64 {
-            Result::Ok(())
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_unit_result(status)
     }
 
     # Wait until at least one descriptor is ready, `timeout_ms`
@@ -202,12 +192,7 @@ impl Poller {
     pub fn wait(&self, timeout_ms: i64) -> Result<u64, NetError> {
         val n: u64 = __extern_poll_wait(self.fd, timeout_ms)
         val status: u64 = __extern_net_status()
-        if status == 0u64 {
-            Result::Ok(n)
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_u64_result(n, status)
     }
 
     # The i-th event of the most recent `wait`. An index past the end
@@ -233,11 +218,6 @@ impl Poller {
         }
         val status: u64 = __extern_net_close(self.fd)
         self.fd = -1i32
-        if status == 0u64 {
-            Result::Ok(())
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_unit_result(status)
     }
 }

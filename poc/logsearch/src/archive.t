@@ -1175,11 +1175,7 @@ pub fn verify(base: str, crc: &Crc32) -> Result<VerifyReport, IoError> {
         ok: false, frames: 0u64, bad_frames: 0u64, records: 0u64,
         raw_bytes: 0u64, seg_bytes: 0u64, index_bytes: 0u64,
     }
-    val sized = fs::file_size(path.to_str())
-    match sized {
-        Result::Ok(n) => { report.seg_bytes = n }
-        Result::Err(e) => { return Result::Err(e) }
-    }
+    report.seg_bytes = fs::file_size(path.to_str())?
 
     val opened = File::open(path.to_str())
     match opened {

@@ -1117,11 +1117,8 @@ impl<U> StringMapIter<U> {
     fn collect(self: Self) -> Vec<U> {
         val out: Vec<U> = Vec::new()
         var it = self
-        loop {
-            match it.next() {
-                Option::Some(v) => { out.push(v) }
-                Option::None => { break }
-            }
+        for v in it {
+            out.push(v)
         }
         out
     }
@@ -1159,11 +1156,8 @@ impl StringFilterIter {
     fn collect(self: Self) -> Vec<u8> {
         val out: Vec<u8> = Vec::new()
         var it = self
-        loop {
-            match it.next() {
-                Option::Some(v) => { out.push(v) }
-                Option::None => { break }
-            }
+        for v in it {
+            out.push(v)
         }
         out
     }

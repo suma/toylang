@@ -249,7 +249,7 @@ bare 名しか持たないため、`File` に側テーブル (`ExprRef` → 解�
 | 対象 | 量 |
 |---|---|
 | stdlib に足す `import` 行 | **30 行 / 21 ファイル** (D2 の prelude を引いた後) |
-| stdlib の bare な他モジュール呼び出しの修飾 | **33 か所 / 5 ファイル** (`hash_mix` / `abs` / `sqrt` / `join` / `dict_slot_empty` / `net_error_from_status`) |
+| stdlib の bare な他モジュール呼び出しの修飾 | **33 か所 / 5 ファイル** (`hash_mix` / `abs` / `sqrt` / `join` / `dict_slot_empty` / `net_error_from_status` / `net_unit_result` / `net_u64_result`) |
 | `interpreter/example` + `poc` | `mod::` を使う 21 ファイルに 1〜4 行、prelude 外の型を使う 16 ファイルに 1 行、bare 呼び出し 3 か所 |
 
 依存グラフが非循環なので、import 行は**機械的に生成できる** (本文書の

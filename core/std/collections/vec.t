@@ -72,11 +72,7 @@ impl<T> Vec<T> {
     # does. `n == 0` allocates nothing, exactly like `new()`.
     fn with_capacity(n: u64) -> Self {
         val stride: u64 = __builtin_sizeof::<T>()
-        val room: Option<u64> = n.checked_mul(stride)
-        val bytes: u64 = match room {
-            Option::Some(b) => b,
-            Option::None => panic("Vec::with_capacity: capacity overflows u64"),
-        }
+        val bytes: u64 = n.checked_mul(stride) ?? panic("Vec::with_capacity: capacity overflows u64")
         val data: ptr = __builtin_heap_alloc(bytes)
         # `heap_alloc(0)` returns null *by contract* (`core/std/ptr.t`),
         # so only a non-zero request can have failed -- reading every
@@ -166,11 +162,7 @@ impl<T> Vec<T> {
     unsafe fn grow_to(&mut self, new_cap: u64)
         requires new_cap >= self.len
     {
-        val room: Option<u64> = new_cap.checked_mul(self.elem_size)
-        val bytes: u64 = match room {
-            Option::Some(b) => b,
-            Option::None => panic("Vec::grow: capacity overflows u64"),
-        }
+        val bytes: u64 = new_cap.checked_mul(self.elem_size) ?? panic("Vec::grow: capacity overflows u64")
         val grown: ptr = __builtin_heap_realloc(self.data, bytes)
         if bytes > 0u64 && __builtin_ptr_is_null(grown) {
             panic("Vec::grow: allocation failed ({bytes} bytes)")
@@ -773,11 +765,8 @@ impl<T, U> MapIter<T, U> {
     fn collect(self: Self) -> Vec<U> {
         val out: Vec<U> = Vec::new()
         var it = self
-        loop {
-            match it.next() {
-                Option::Some(v) => { out.push(v) }
-                Option::None => { break }
-            }
+        for v in it {
+            out.push(v)
         }
         out
     }
@@ -817,11 +806,8 @@ impl<T> FilterIter<T> {
     fn collect(self: Self) -> Vec<T> {
         val out: Vec<T> = Vec::new()
         var it = self
-        loop {
-            match it.next() {
-                Option::Some(v) => { out.push(v) }
-                Option::None => { break }
-            }
+        for v in it {
+            out.push(v)
         }
         out
     }

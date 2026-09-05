@@ -116,11 +116,7 @@ fn parse_time(text: str, now: i64) -> i64 {
         return now - (secs as i64)
     }
     if first >= '0' && first <= '9' && s.len() <= 11u64 {
-        val n = parse::to_u64(text)
-        match n {
-            Result::Ok(v) => { return v as i64 }
-            Result::Err(e) => { return 0i64 }
-        }
+        return (parse::to_u64(text) ?? 0u64) as i64
     }
     val dt = time::parse_iso8601(text)
     match dt {

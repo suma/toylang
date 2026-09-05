@@ -96,12 +96,7 @@ pub fn backend_name() -> str {
 pub fn resolve(host: str) -> Result<str, NetError> {
     val text: str = __extern_net_resolve(host)
     val status: u64 = __extern_net_status()
-    if status == 0u64 {
-        Result::Ok(text)
-    } else {
-        val err: NetError = net_error_from_status(status)
-        Result::Err(err)
-    }
+    net_str_result(text, status)
 }
 
 # What a socket call can answer with instead of a result.
@@ -218,6 +213,46 @@ pub fn net_error_from_status(status: u64) -> NetError {
     else { NetError::Unknown }
 }
 
+# The `Result` a call answers when its status is the whole verdict:
+# `Ok(())` on 0, the mapped `NetError` otherwise. Nearly every method
+# in `net` and `poll` ends this way, so the shape lives here once
+# instead of once per method.
+pub fn net_unit_result(status: u64) -> Result<(), NetError> {
+    if status == 0u64 {
+        Result::Ok(())
+    } else {
+        val err: NetError = net_error_from_status(status)
+        Result::Err(err)
+    }
+}
+
+# The same for a call that also produced a value. These externs write
+# the status as a side effect, so `value` is already in hand when the
+# status is read -- taking it by value costs nothing and keeps both
+# halves of the answer in one expression.
+#
+# One per payload type rather than one generic `net_result<T>`: a
+# generic function cannot yet stand in an enum-producing tail position
+# on the compiled lanes (`unknown function ... in enum-producing
+# position`), and these all sit in exactly that position.
+pub fn net_u64_result(value: u64, status: u64) -> Result<u64, NetError> {
+    if status == 0u64 {
+        Result::Ok(value)
+    } else {
+        val err: NetError = net_error_from_status(status)
+        Result::Err(err)
+    }
+}
+
+pub fn net_str_result(text: str, status: u64) -> Result<str, NetError> {
+    if status == 0u64 {
+        Result::Ok(text)
+    } else {
+        val err: NetError = net_error_from_status(status)
+        Result::Err(err)
+    }
+}
+
 # A listening TCP socket (N2).
 #
 # **Owns its fd**, the same way `TcpStream` does: `impl Drop` closes
@@ -267,12 +302,7 @@ impl TcpListener {
     pub fn local_port(&self) -> Result<u64, NetError> {
         val port: u64 = __extern_net_local_port(self.fd)
         val status: u64 = __extern_net_status()
-        if status == 0u64 {
-            Result::Ok(port)
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_u64_result(port, status)
     }
 
     # Take a pending connection.
@@ -296,24 +326,14 @@ impl TcpListener {
     # `WouldBlock`.
     pub fn set_blocking(&self, on: bool) -> Result<(), NetError> {
         val status: u64 = __extern_net_set_blocking(self.fd, on)
-        if status == 0u64 {
-            Result::Ok(())
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_unit_result(status)
     }
 
     # The address this listener bound to (N4).
     pub fn local_addr(&self) -> Result<str, NetError> {
         val text: str = __extern_net_local_addr(self.fd)
         val status: u64 = __extern_net_status()
-        if status == 0u64 {
-            Result::Ok(text)
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_str_result(text, status)
     }
 
     # The underlying descriptor, for registering with a poller (N3).
@@ -329,12 +349,7 @@ impl TcpListener {
         }
         val status: u64 = __extern_net_close(self.fd)
         self.fd = -1i32
-        if status == 0u64 {
-            Result::Ok(())
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_unit_result(status)
     }
 }
 
@@ -460,12 +475,7 @@ impl TcpStream {
     pub fn read(&self, buf: Span<u8>) -> Result<u64, NetError> {
         val n: u64 = __extern_net_recv(self.fd, buf.as_raw(), buf.len())
         val status: u64 = __extern_net_status()
-        if status == 0u64 {
-            Result::Ok(n)
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_u64_result(n, status)
     }
 
     # Send `buf`'s bytes, answering how many the kernel took.
@@ -476,12 +486,7 @@ impl TcpStream {
     pub fn write(&self, buf: Span<u8>) -> Result<u64, NetError> {
         val n: u64 = __extern_net_send(self.fd, buf.as_raw(), buf.len())
         val status: u64 = __extern_net_status()
-        if status == 0u64 {
-            Result::Ok(n)
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_u64_result(n, status)
     }
 
     # Read and clear the socket's pending error — how a non-blocking
@@ -489,12 +494,7 @@ impl TcpStream {
     # `Ok(())` means the connection is up.
     pub fn take_error(&self) -> Result<(), NetError> {
         val status: u64 = __extern_net_take_error(self.fd)
-        if status == 0u64 {
-            Result::Ok(())
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_unit_result(status)
     }
 
     # Half-close the write side. The peer's next read answers 0, which
@@ -502,12 +502,7 @@ impl TcpStream {
     # arrives on.
     pub fn shutdown_write(&self) -> Result<(), NetError> {
         val status: u64 = __extern_net_shutdown_write(self.fd)
-        if status == 0u64 {
-            Result::Ok(())
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_unit_result(status)
     }
 
     # Switch between blocking and non-blocking. New sockets are
@@ -515,12 +510,7 @@ impl TcpStream {
     # instead of answering `WouldBlock`.
     pub fn set_blocking(&self, on: bool) -> Result<(), NetError> {
         val status: u64 = __extern_net_set_blocking(self.fd, on)
-        if status == 0u64 {
-            Result::Ok(())
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_unit_result(status)
     }
 
     # This end's address and port (N4). Answers `("", 0)` with an
@@ -533,46 +523,26 @@ impl TcpStream {
     pub fn local_addr(&self) -> Result<str, NetError> {
         val text: str = __extern_net_local_addr(self.fd)
         val status: u64 = __extern_net_status()
-        if status == 0u64 {
-            Result::Ok(text)
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_str_result(text, status)
     }
 
     pub fn local_port(&self) -> Result<u64, NetError> {
         val port: u64 = __extern_net_local_port(self.fd)
         val status: u64 = __extern_net_status()
-        if status == 0u64 {
-            Result::Ok(port)
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_u64_result(port, status)
     }
 
     # The other end's address and port.
     pub fn peer_addr(&self) -> Result<str, NetError> {
         val text: str = __extern_net_peer_addr(self.fd)
         val status: u64 = __extern_net_status()
-        if status == 0u64 {
-            Result::Ok(text)
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_str_result(text, status)
     }
 
     pub fn peer_port(&self) -> Result<u64, NetError> {
         val port: u64 = __extern_net_peer_port(self.fd)
         val status: u64 = __extern_net_status()
-        if status == 0u64 {
-            Result::Ok(port)
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_u64_result(port, status)
     }
 
     # Turn Nagle's algorithm off, so a small write goes out at once
@@ -580,12 +550,7 @@ impl TcpStream {
     # wants; a bulk transfer is better off without it.
     pub fn set_nodelay(&self, on: bool) -> Result<(), NetError> {
         val status: u64 = __extern_net_set_nodelay(self.fd, on)
-        if status == 0u64 {
-            Result::Ok(())
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_unit_result(status)
     }
 
     # Bound how long a **blocking** read may wait; 0 removes the
@@ -594,22 +559,12 @@ impl TcpStream {
     # program, which is the one real risk of blocking mode here.
     pub fn set_read_timeout(&self, ms: u64) -> Result<(), NetError> {
         val status: u64 = __extern_net_set_timeout(self.fd, ms as i64, false)
-        if status == 0u64 {
-            Result::Ok(())
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_unit_result(status)
     }
 
     pub fn set_write_timeout(&self, ms: u64) -> Result<(), NetError> {
         val status: u64 = __extern_net_set_timeout(self.fd, ms as i64, true)
-        if status == 0u64 {
-            Result::Ok(())
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_unit_result(status)
     }
 
     # The underlying descriptor, for registering with a poller (N3).
@@ -625,12 +580,7 @@ impl TcpStream {
         }
         val status: u64 = __extern_net_close(self.fd)
         self.fd = -1i32
-        if status == 0u64 {
-            Result::Ok(())
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_unit_result(status)
     }
 }
 
@@ -678,12 +628,7 @@ impl UdpSocket {
     pub fn local_port(&self) -> Result<u64, NetError> {
         val port: u64 = __extern_net_local_port(self.fd)
         val status: u64 = __extern_net_status()
-        if status == 0u64 {
-            Result::Ok(port)
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_u64_result(port, status)
     }
 
     # Send one datagram to `addr:port`, answering how many bytes went.
@@ -701,12 +646,7 @@ impl UdpSocket {
         }
         val n: u64 = __extern_net_send_to(self.fd, buf.as_raw(), buf.len())
         val status: u64 = __extern_net_status()
-        if status == 0u64 {
-            Result::Ok(n)
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_u64_result(n, status)
     }
 
     # Receive one datagram into `buf`, answering how many bytes it
@@ -719,12 +659,7 @@ impl UdpSocket {
     pub fn recv_from(&self, buf: Span<u8>) -> Result<u64, NetError> {
         val n: u64 = __extern_net_recv_from(self.fd, buf.as_raw(), buf.len())
         val status: u64 = __extern_net_status()
-        if status == 0u64 {
-            Result::Ok(n)
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_u64_result(n, status)
     }
 
     # Who sent the most recent `recv_from`. Valid until the next one.
@@ -738,12 +673,7 @@ impl UdpSocket {
 
     pub fn set_blocking(&self, on: bool) -> Result<(), NetError> {
         val status: u64 = __extern_net_set_blocking(self.fd, on)
-        if status == 0u64 {
-            Result::Ok(())
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_unit_result(status)
     }
 
     pub fn as_fd(&self) -> i32 {
@@ -756,11 +686,6 @@ impl UdpSocket {
         }
         val status: u64 = __extern_net_close(self.fd)
         self.fd = -1i32
-        if status == 0u64 {
-            Result::Ok(())
-        } else {
-            val err: NetError = net_error_from_status(status)
-            Result::Err(err)
-        }
+        net_unit_result(status)
     }
 }

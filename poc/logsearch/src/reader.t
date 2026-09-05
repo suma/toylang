@@ -46,13 +46,7 @@ impl LogReader {
         val room = self.buf.capacity_span()
         var n: u64 = 0u64
         match room {
-            Option::Some(window) => {
-                val got = io::read_file_into(path, window)
-                match got {
-                    Result::Ok(k) => { n = k }
-                    Result::Err(e) => { return Result::Err(e) }
-                }
-            }
+            Option::Some(window) => { n = io::read_file_into(path, window)? }
             Option::None => { return Result::Err(IoError::ReadError) }
         }
         self.buf.set_size(n)

@@ -10,6 +10,21 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **`Bits` / `Checked` も借用にした** — 受け手は `&self`、`Checked` の
+  `other` は `&Self`。`Ord` / `Hash` で直した 4 つに加えて、
+  **`&T` 引数を渡していない経路があと 2 つあった**:
+  compound を返す method の引数ループ (struct/enum レシーバ) と、
+  primitive レシーバ + compound 戻りの経路 (`let_lowering`)。
+  `Checked` は `Option<Self>` を返すので後者に当たり、
+  `250u8.checked_add(10u8)` が `other` を 0 と読んで `Some(250)` を
+  返していた。auto-borrow を持つ経路が**全部で 4 つ**あることになる。
+  併せて **IR VM が address-taken local の裏当てセルを
+  確保カウンタに数えていた**のを uncounted にした
+  (`VmHost::alloc_internal`)。AOT / JIT は stack slot なので、
+  `f(&x)` にするだけで `alloc_count` がレーン間で食い違っていた
+  (`Vec::grow_to` の `checked_mul` で実際に踏んだ)。
+  ambient allocator ではなく global heap から取るので、
+  `with allocator = arena` の中で `&x` しても `arena.bytes_used()` は動かない
 - **`Ord` / `Hash` と container の読み取りメソッドを借用にした** —
   `trait Ord { fn lt(&self, other: &Self) }` / `trait Hash { fn hash(&self) }`、
   `Dict::get` / `get_or` / `get_or_default` / `contains_key` / `size` と

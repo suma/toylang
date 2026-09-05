@@ -1663,6 +1663,21 @@ impl<'a> FunctionLower<'a> {
             // here the literal reached `lower_expr` and produced no
             // value. The receiver occupies the first declared param,
             // so this argument's slot is `1 + arg_idx`.
+            // `T` -> `&T` auto-borrow, as on the scalar-returning
+            // sibling. Compound-returning methods reached this loop
+            // without it.
+            if let Some(ptr) = self.lower_scalar_ref_arg(
+                &arg_expr_ref,
+                self.module
+                    .function(target)
+                    .param_ref_pointee
+                    .get(1 + arg_idx)
+                    .copied()
+                    .flatten(),
+            )? {
+                args.push(ptr);
+                continue;
+            }
             let param_ty = self
                 .module
                 .function(target)

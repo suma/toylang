@@ -590,7 +590,7 @@ impl<'a> Vm<'a> {
         // Back each address-taken local with a heap cell so `AddressOf`
         // yields a stable pointer and `&mut T` mutations propagate.
         for local in &func.address_taken_locals {
-            let addr = self.host.alloc_at(8, 0);
+            let addr = self.host.alloc_internal(8);
             frame.addr_cells.insert(*local, addr);
         }
         self.frames.push(frame);
@@ -613,7 +613,7 @@ impl<'a> Vm<'a> {
         if let Some(&addr) = self.current_frame().addr_cells.get(&local) {
             return addr;
         }
-        let addr = self.host.alloc_at(8, 0);
+        let addr = self.host.alloc_internal(8);
         self.current_frame_mut().addr_cells.insert(local, addr);
         addr
     }

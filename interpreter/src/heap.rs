@@ -670,6 +670,17 @@ impl HeapManager {
         addr
     }
 
+    /// Storage the IR VM needs for its own bookkeeping (the backing
+    /// cell for an address-taken local), taken from the global heap
+    /// and **not counted**.
+    ///
+    /// Not the ambient allocator, either: a `with allocator = arena`
+    /// block would otherwise see `arena.bytes_used()` move because a
+    /// local inside it had its address taken.
+    pub fn alloc_internal(&mut self, size: usize) -> usize {
+        self.alloc_uncounted_at(size, 0)
+    }
+
     /// The allocation itself, without touching the counters.
     ///
     /// `realloc` services a move through this so one resize request

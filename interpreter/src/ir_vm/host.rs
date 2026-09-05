@@ -63,6 +63,10 @@ impl VmHost for InterpreterHost {
         with_active_allocator(|alloc| alloc.alloc_at(size as usize, site) as u64).unwrap_or(0)
     }
 
+    fn alloc_internal(&self, size: u64) -> u64 {
+        with_heap(|h| h.alloc_internal(size as usize) as u64).unwrap_or(0)
+    }
+
     fn note_alloc_site_file(&self, site: u64, file: &str) {
         crate::heap::note_site_file(site, file);
     }

@@ -26,51 +26,57 @@ extern fn __extern_bits_ctz(x: u64) -> u32 from "toylang_rt" as "toy_bits_ctz"
 extern fn __extern_bits_reverse(x: u64) -> u64 from "toylang_rt" as "toy_bits_reverse"
 extern fn __extern_bits_swap_bytes(x: u64) -> u64 from "toylang_rt" as "toy_bits_swap_bytes"
 
+# Every method borrows (`&self`). A reference to a primitive is erased
+# to the value at the boundary, so the bodies read as they did when
+# these took `self: Self`, and the signature stops implying that
+# asking a number for its popcount consumes it. The IR VM backs an
+# address-taken local with an *uncounted* cell, so a `&self` call
+# costs nothing the allocation counters can see.
 pub trait Bits {
-    fn popcount(self: Self) -> u32
+    fn popcount(&self) -> u32
     # The width when `self` is 0, not undefined.
-    fn leading_zeros(self: Self) -> u32
-    fn trailing_zeros(self: Self) -> u32
-    fn rotate_left(self: Self, n: u32) -> Self
-    fn rotate_right(self: Self, n: u32) -> Self
-    fn reverse_bits(self: Self) -> Self
+    fn leading_zeros(&self) -> u32
+    fn trailing_zeros(&self) -> u32
+    fn rotate_left(&self, n: u32) -> Self
+    fn rotate_right(&self, n: u32) -> Self
+    fn reverse_bits(&self) -> Self
     # A no-op at 8 bits; the identity is kept so generic code need not
     # special-case the width.
-    fn swap_bytes(self: Self) -> Self
+    fn swap_bytes(&self) -> Self
     # False for 0: zero is not a power of two.
-    fn is_power_of_two(self: Self) -> bool
+    fn is_power_of_two(&self) -> bool
     # 1 for an input of 0. Panics rather than wrapping when the answer
     # does not fit -- the same treatment an out-of-range index gets.
-    fn next_power_of_two(self: Self) -> Self
+    fn next_power_of_two(&self) -> Self
 }
 
 
 impl Bits for u8 {
-    fn popcount(self: Self) -> u32 { __extern_bits_popcount(self as u64) }
-    fn leading_zeros(self: Self) -> u32 { __extern_bits_clz(self as u64) - 56u32 }
-    fn trailing_zeros(self: Self) -> u32 {
+    fn popcount(&self) -> u32 { __extern_bits_popcount(self as u64) }
+    fn leading_zeros(&self) -> u32 { __extern_bits_clz(self as u64) - 56u32 }
+    fn trailing_zeros(&self) -> u32 {
         val z: u32 = __extern_bits_ctz(self as u64)
         if z > 8u32 { 8u32 } else { z }
     }
-    fn rotate_left(self: Self, n: u32) -> Self {
+    fn rotate_left(&self, n: u32) -> Self {
         val k: u64 = (n % 8u32) as u64
         if k == 0u64 { return self }
         val v: u64 = self as u64
         (((v << k) | (v >> (8u64 - k))) as u8) as u8
     }
-    fn rotate_right(self: Self, n: u32) -> Self {
+    fn rotate_right(&self, n: u32) -> Self {
         val k: u64 = (n % 8u32) as u64
         if k == 0u64 { return self }
         val v: u64 = self as u64
         (((v >> k) | (v << (8u64 - k))) as u8) as u8
     }
-    fn reverse_bits(self: Self) -> Self { ((__extern_bits_reverse(self as u64) >> 56u64) as u8) as u8 }
-    fn swap_bytes(self: Self) -> Self { ((__extern_bits_swap_bytes(self as u64) >> 56u64) as u8) as u8 }
-    fn is_power_of_two(self: Self) -> bool {
+    fn reverse_bits(&self) -> Self { ((__extern_bits_reverse(self as u64) >> 56u64) as u8) as u8 }
+    fn swap_bytes(&self) -> Self { ((__extern_bits_swap_bytes(self as u64) >> 56u64) as u8) as u8 }
+    fn is_power_of_two(&self) -> bool {
         val v: u64 = self as u64
         if v == 0u64 { false } else { __extern_bits_popcount(v) == 1u32 }
     }
-    fn next_power_of_two(self: Self) -> Self {
+    fn next_power_of_two(&self) -> Self {
         val v: u64 = self as u64
         if v <= 1u64 { return 1u8 }
         val bits: u32 = 64u32 - __extern_bits_clz(v - 1u64)
@@ -80,31 +86,31 @@ impl Bits for u8 {
 }
 
 impl Bits for u16 {
-    fn popcount(self: Self) -> u32 { __extern_bits_popcount(self as u64) }
-    fn leading_zeros(self: Self) -> u32 { __extern_bits_clz(self as u64) - 48u32 }
-    fn trailing_zeros(self: Self) -> u32 {
+    fn popcount(&self) -> u32 { __extern_bits_popcount(self as u64) }
+    fn leading_zeros(&self) -> u32 { __extern_bits_clz(self as u64) - 48u32 }
+    fn trailing_zeros(&self) -> u32 {
         val z: u32 = __extern_bits_ctz(self as u64)
         if z > 16u32 { 16u32 } else { z }
     }
-    fn rotate_left(self: Self, n: u32) -> Self {
+    fn rotate_left(&self, n: u32) -> Self {
         val k: u64 = (n % 16u32) as u64
         if k == 0u64 { return self }
         val v: u64 = self as u64
         (((v << k) | (v >> (16u64 - k))) as u16) as u16
     }
-    fn rotate_right(self: Self, n: u32) -> Self {
+    fn rotate_right(&self, n: u32) -> Self {
         val k: u64 = (n % 16u32) as u64
         if k == 0u64 { return self }
         val v: u64 = self as u64
         (((v >> k) | (v << (16u64 - k))) as u16) as u16
     }
-    fn reverse_bits(self: Self) -> Self { ((__extern_bits_reverse(self as u64) >> 48u64) as u16) as u16 }
-    fn swap_bytes(self: Self) -> Self { ((__extern_bits_swap_bytes(self as u64) >> 48u64) as u16) as u16 }
-    fn is_power_of_two(self: Self) -> bool {
+    fn reverse_bits(&self) -> Self { ((__extern_bits_reverse(self as u64) >> 48u64) as u16) as u16 }
+    fn swap_bytes(&self) -> Self { ((__extern_bits_swap_bytes(self as u64) >> 48u64) as u16) as u16 }
+    fn is_power_of_two(&self) -> bool {
         val v: u64 = self as u64
         if v == 0u64 { false } else { __extern_bits_popcount(v) == 1u32 }
     }
-    fn next_power_of_two(self: Self) -> Self {
+    fn next_power_of_two(&self) -> Self {
         val v: u64 = self as u64
         if v <= 1u64 { return 1u16 }
         val bits: u32 = 64u32 - __extern_bits_clz(v - 1u64)
@@ -114,31 +120,31 @@ impl Bits for u16 {
 }
 
 impl Bits for u32 {
-    fn popcount(self: Self) -> u32 { __extern_bits_popcount(self as u64) }
-    fn leading_zeros(self: Self) -> u32 { __extern_bits_clz(self as u64) - 32u32 }
-    fn trailing_zeros(self: Self) -> u32 {
+    fn popcount(&self) -> u32 { __extern_bits_popcount(self as u64) }
+    fn leading_zeros(&self) -> u32 { __extern_bits_clz(self as u64) - 32u32 }
+    fn trailing_zeros(&self) -> u32 {
         val z: u32 = __extern_bits_ctz(self as u64)
         if z > 32u32 { 32u32 } else { z }
     }
-    fn rotate_left(self: Self, n: u32) -> Self {
+    fn rotate_left(&self, n: u32) -> Self {
         val k: u64 = (n % 32u32) as u64
         if k == 0u64 { return self }
         val v: u64 = self as u64
         (((v << k) | (v >> (32u64 - k))) as u32) as u32
     }
-    fn rotate_right(self: Self, n: u32) -> Self {
+    fn rotate_right(&self, n: u32) -> Self {
         val k: u64 = (n % 32u32) as u64
         if k == 0u64 { return self }
         val v: u64 = self as u64
         (((v >> k) | (v << (32u64 - k))) as u32) as u32
     }
-    fn reverse_bits(self: Self) -> Self { ((__extern_bits_reverse(self as u64) >> 32u64) as u32) as u32 }
-    fn swap_bytes(self: Self) -> Self { ((__extern_bits_swap_bytes(self as u64) >> 32u64) as u32) as u32 }
-    fn is_power_of_two(self: Self) -> bool {
+    fn reverse_bits(&self) -> Self { ((__extern_bits_reverse(self as u64) >> 32u64) as u32) as u32 }
+    fn swap_bytes(&self) -> Self { ((__extern_bits_swap_bytes(self as u64) >> 32u64) as u32) as u32 }
+    fn is_power_of_two(&self) -> bool {
         val v: u64 = self as u64
         if v == 0u64 { false } else { __extern_bits_popcount(v) == 1u32 }
     }
-    fn next_power_of_two(self: Self) -> Self {
+    fn next_power_of_two(&self) -> Self {
         val v: u64 = self as u64
         if v <= 1u64 { return 1u32 }
         val bits: u32 = 64u32 - __extern_bits_clz(v - 1u64)
@@ -148,28 +154,28 @@ impl Bits for u32 {
 }
 
 impl Bits for u64 {
-    fn popcount(self: Self) -> u32 { __extern_bits_popcount(self as u64) }
-    fn leading_zeros(self: Self) -> u32 { __extern_bits_clz(self as u64) }
-    fn trailing_zeros(self: Self) -> u32 { __extern_bits_ctz(self as u64) }
-    fn rotate_left(self: Self, n: u32) -> Self {
+    fn popcount(&self) -> u32 { __extern_bits_popcount(self as u64) }
+    fn leading_zeros(&self) -> u32 { __extern_bits_clz(self as u64) }
+    fn trailing_zeros(&self) -> u32 { __extern_bits_ctz(self as u64) }
+    fn rotate_left(&self, n: u32) -> Self {
         val k: u64 = (n % 64u32) as u64
         if k == 0u64 { return self }
         val v: u64 = self as u64
         (((v << k) | (v >> (64u64 - k))) as u64) as u64
     }
-    fn rotate_right(self: Self, n: u32) -> Self {
+    fn rotate_right(&self, n: u32) -> Self {
         val k: u64 = (n % 64u32) as u64
         if k == 0u64 { return self }
         val v: u64 = self as u64
         (((v >> k) | (v << (64u64 - k))) as u64) as u64
     }
-    fn reverse_bits(self: Self) -> Self { (__extern_bits_reverse(self as u64) as u64) as u64 }
-    fn swap_bytes(self: Self) -> Self { (__extern_bits_swap_bytes(self as u64) as u64) as u64 }
-    fn is_power_of_two(self: Self) -> bool {
+    fn reverse_bits(&self) -> Self { (__extern_bits_reverse(self as u64) as u64) as u64 }
+    fn swap_bytes(&self) -> Self { (__extern_bits_swap_bytes(self as u64) as u64) as u64 }
+    fn is_power_of_two(&self) -> bool {
         val v: u64 = self as u64
         if v == 0u64 { false } else { __extern_bits_popcount(v) == 1u32 }
     }
-    fn next_power_of_two(self: Self) -> Self {
+    fn next_power_of_two(&self) -> Self {
         val v: u64 = self as u64
         if v <= 1u64 { return 1u64 }
         val bits: u32 = 64u32 - __extern_bits_clz(v - 1u64)
@@ -179,31 +185,31 @@ impl Bits for u64 {
 }
 
 impl Bits for i8 {
-    fn popcount(self: Self) -> u32 { __extern_bits_popcount((self as u8) as u64) }
-    fn leading_zeros(self: Self) -> u32 { __extern_bits_clz((self as u8) as u64) - 56u32 }
-    fn trailing_zeros(self: Self) -> u32 {
+    fn popcount(&self) -> u32 { __extern_bits_popcount((self as u8) as u64) }
+    fn leading_zeros(&self) -> u32 { __extern_bits_clz((self as u8) as u64) - 56u32 }
+    fn trailing_zeros(&self) -> u32 {
         val z: u32 = __extern_bits_ctz((self as u8) as u64)
         if z > 8u32 { 8u32 } else { z }
     }
-    fn rotate_left(self: Self, n: u32) -> Self {
+    fn rotate_left(&self, n: u32) -> Self {
         val k: u64 = (n % 8u32) as u64
         if k == 0u64 { return self }
         val v: u64 = (self as u8) as u64
         (((v << k) | (v >> (8u64 - k))) as u8) as i8
     }
-    fn rotate_right(self: Self, n: u32) -> Self {
+    fn rotate_right(&self, n: u32) -> Self {
         val k: u64 = (n % 8u32) as u64
         if k == 0u64 { return self }
         val v: u64 = (self as u8) as u64
         (((v >> k) | (v << (8u64 - k))) as u8) as i8
     }
-    fn reverse_bits(self: Self) -> Self { ((__extern_bits_reverse((self as u8) as u64) >> 56u64) as u8) as i8 }
-    fn swap_bytes(self: Self) -> Self { ((__extern_bits_swap_bytes((self as u8) as u64) >> 56u64) as u8) as i8 }
-    fn is_power_of_two(self: Self) -> bool {
+    fn reverse_bits(&self) -> Self { ((__extern_bits_reverse((self as u8) as u64) >> 56u64) as u8) as i8 }
+    fn swap_bytes(&self) -> Self { ((__extern_bits_swap_bytes((self as u8) as u64) >> 56u64) as u8) as i8 }
+    fn is_power_of_two(&self) -> bool {
         val v: u64 = (self as u8) as u64
         if v == 0u64 { false } else { __extern_bits_popcount(v) == 1u32 }
     }
-    fn next_power_of_two(self: Self) -> Self {
+    fn next_power_of_two(&self) -> Self {
         val v: u64 = (self as u8) as u64
         if v <= 1u64 { return 1i8 }
         val bits: u32 = 64u32 - __extern_bits_clz(v - 1u64)
@@ -213,31 +219,31 @@ impl Bits for i8 {
 }
 
 impl Bits for i16 {
-    fn popcount(self: Self) -> u32 { __extern_bits_popcount((self as u16) as u64) }
-    fn leading_zeros(self: Self) -> u32 { __extern_bits_clz((self as u16) as u64) - 48u32 }
-    fn trailing_zeros(self: Self) -> u32 {
+    fn popcount(&self) -> u32 { __extern_bits_popcount((self as u16) as u64) }
+    fn leading_zeros(&self) -> u32 { __extern_bits_clz((self as u16) as u64) - 48u32 }
+    fn trailing_zeros(&self) -> u32 {
         val z: u32 = __extern_bits_ctz((self as u16) as u64)
         if z > 16u32 { 16u32 } else { z }
     }
-    fn rotate_left(self: Self, n: u32) -> Self {
+    fn rotate_left(&self, n: u32) -> Self {
         val k: u64 = (n % 16u32) as u64
         if k == 0u64 { return self }
         val v: u64 = (self as u16) as u64
         (((v << k) | (v >> (16u64 - k))) as u16) as i16
     }
-    fn rotate_right(self: Self, n: u32) -> Self {
+    fn rotate_right(&self, n: u32) -> Self {
         val k: u64 = (n % 16u32) as u64
         if k == 0u64 { return self }
         val v: u64 = (self as u16) as u64
         (((v >> k) | (v << (16u64 - k))) as u16) as i16
     }
-    fn reverse_bits(self: Self) -> Self { ((__extern_bits_reverse((self as u16) as u64) >> 48u64) as u16) as i16 }
-    fn swap_bytes(self: Self) -> Self { ((__extern_bits_swap_bytes((self as u16) as u64) >> 48u64) as u16) as i16 }
-    fn is_power_of_two(self: Self) -> bool {
+    fn reverse_bits(&self) -> Self { ((__extern_bits_reverse((self as u16) as u64) >> 48u64) as u16) as i16 }
+    fn swap_bytes(&self) -> Self { ((__extern_bits_swap_bytes((self as u16) as u64) >> 48u64) as u16) as i16 }
+    fn is_power_of_two(&self) -> bool {
         val v: u64 = (self as u16) as u64
         if v == 0u64 { false } else { __extern_bits_popcount(v) == 1u32 }
     }
-    fn next_power_of_two(self: Self) -> Self {
+    fn next_power_of_two(&self) -> Self {
         val v: u64 = (self as u16) as u64
         if v <= 1u64 { return 1i16 }
         val bits: u32 = 64u32 - __extern_bits_clz(v - 1u64)
@@ -247,31 +253,31 @@ impl Bits for i16 {
 }
 
 impl Bits for i32 {
-    fn popcount(self: Self) -> u32 { __extern_bits_popcount((self as u32) as u64) }
-    fn leading_zeros(self: Self) -> u32 { __extern_bits_clz((self as u32) as u64) - 32u32 }
-    fn trailing_zeros(self: Self) -> u32 {
+    fn popcount(&self) -> u32 { __extern_bits_popcount((self as u32) as u64) }
+    fn leading_zeros(&self) -> u32 { __extern_bits_clz((self as u32) as u64) - 32u32 }
+    fn trailing_zeros(&self) -> u32 {
         val z: u32 = __extern_bits_ctz((self as u32) as u64)
         if z > 32u32 { 32u32 } else { z }
     }
-    fn rotate_left(self: Self, n: u32) -> Self {
+    fn rotate_left(&self, n: u32) -> Self {
         val k: u64 = (n % 32u32) as u64
         if k == 0u64 { return self }
         val v: u64 = (self as u32) as u64
         (((v << k) | (v >> (32u64 - k))) as u32) as i32
     }
-    fn rotate_right(self: Self, n: u32) -> Self {
+    fn rotate_right(&self, n: u32) -> Self {
         val k: u64 = (n % 32u32) as u64
         if k == 0u64 { return self }
         val v: u64 = (self as u32) as u64
         (((v >> k) | (v << (32u64 - k))) as u32) as i32
     }
-    fn reverse_bits(self: Self) -> Self { ((__extern_bits_reverse((self as u32) as u64) >> 32u64) as u32) as i32 }
-    fn swap_bytes(self: Self) -> Self { ((__extern_bits_swap_bytes((self as u32) as u64) >> 32u64) as u32) as i32 }
-    fn is_power_of_two(self: Self) -> bool {
+    fn reverse_bits(&self) -> Self { ((__extern_bits_reverse((self as u32) as u64) >> 32u64) as u32) as i32 }
+    fn swap_bytes(&self) -> Self { ((__extern_bits_swap_bytes((self as u32) as u64) >> 32u64) as u32) as i32 }
+    fn is_power_of_two(&self) -> bool {
         val v: u64 = (self as u32) as u64
         if v == 0u64 { false } else { __extern_bits_popcount(v) == 1u32 }
     }
-    fn next_power_of_two(self: Self) -> Self {
+    fn next_power_of_two(&self) -> Self {
         val v: u64 = (self as u32) as u64
         if v <= 1u64 { return 1i32 }
         val bits: u32 = 64u32 - __extern_bits_clz(v - 1u64)
@@ -281,28 +287,28 @@ impl Bits for i32 {
 }
 
 impl Bits for i64 {
-    fn popcount(self: Self) -> u32 { __extern_bits_popcount((self as u64) as u64) }
-    fn leading_zeros(self: Self) -> u32 { __extern_bits_clz((self as u64) as u64) }
-    fn trailing_zeros(self: Self) -> u32 { __extern_bits_ctz((self as u64) as u64) }
-    fn rotate_left(self: Self, n: u32) -> Self {
+    fn popcount(&self) -> u32 { __extern_bits_popcount((self as u64) as u64) }
+    fn leading_zeros(&self) -> u32 { __extern_bits_clz((self as u64) as u64) }
+    fn trailing_zeros(&self) -> u32 { __extern_bits_ctz((self as u64) as u64) }
+    fn rotate_left(&self, n: u32) -> Self {
         val k: u64 = (n % 64u32) as u64
         if k == 0u64 { return self }
         val v: u64 = (self as u64) as u64
         (((v << k) | (v >> (64u64 - k))) as u64) as i64
     }
-    fn rotate_right(self: Self, n: u32) -> Self {
+    fn rotate_right(&self, n: u32) -> Self {
         val k: u64 = (n % 64u32) as u64
         if k == 0u64 { return self }
         val v: u64 = (self as u64) as u64
         (((v >> k) | (v << (64u64 - k))) as u64) as i64
     }
-    fn reverse_bits(self: Self) -> Self { (__extern_bits_reverse((self as u64) as u64) as u64) as i64 }
-    fn swap_bytes(self: Self) -> Self { (__extern_bits_swap_bytes((self as u64) as u64) as u64) as i64 }
-    fn is_power_of_two(self: Self) -> bool {
+    fn reverse_bits(&self) -> Self { (__extern_bits_reverse((self as u64) as u64) as u64) as i64 }
+    fn swap_bytes(&self) -> Self { (__extern_bits_swap_bytes((self as u64) as u64) as u64) as i64 }
+    fn is_power_of_two(&self) -> bool {
         val v: u64 = (self as u64) as u64
         if v == 0u64 { false } else { __extern_bits_popcount(v) == 1u32 }
     }
-    fn next_power_of_two(self: Self) -> Self {
+    fn next_power_of_two(&self) -> Self {
         val v: u64 = (self as u64) as u64
         if v <= 1u64 { return 1i64 }
         val bits: u32 = 64u32 - __extern_bits_clz(v - 1u64)

@@ -61,6 +61,20 @@ pub trait VmHost {
 
     fn alloc_at(&self, size: u64, site: u64) -> u64;
 
+    /// Storage the **VM itself** needs, which the program did not ask
+    /// for: the backing cells for address-taken locals.
+    ///
+    /// It must not reach the allocation counters. The compiled lanes
+    /// put an address-taken local in a stack slot, so a program whose
+    /// only difference is `f(&x)` instead of `f(x)` would otherwise
+    /// report a different `alloc_count` on this engine than on the
+    /// others -- and `&self` on a primitive, which is what every
+    /// `Ord` / `Checked` call is, would make that difference constant.
+    /// The default counts, for hosts that keep no profile anyway.
+    fn alloc_internal(&self, size: u64) -> u64 {
+        self.alloc_at(size, 0)
+    }
+
     /// Remember which file an allocation site is in
     /// (MEMORY_PROFILING M2 + DEBUG-OBS D2).
     ///

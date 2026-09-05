@@ -1368,7 +1368,27 @@ impl<'a> FunctionLower<'a> {
                                 "primitive method receiver produced no value".to_string()
                             })?;
                         let mut all_args: Vec<ValueId> = vec![recv_value];
-                        for a in method_args {
+                        for (arg_idx, a) in method_args.iter().enumerate() {
+                            // `T` -> `&T` auto-borrow. The receiver
+                            // always occupies slot 0, so this
+                            // argument's entry is `1 + arg_idx`.
+                            // Without it `250u8.checked_add(x)` for
+                            // `fn checked_add(&self, other: &Self)`
+                            // passed the value where the callee reads
+                            // a pointer, and the addition silently
+                            // used 0.
+                            if let Some(ptr) = self.lower_scalar_ref_arg(
+                                a,
+                                self.module
+                                    .function(func_id)
+                                    .param_ref_pointee
+                                    .get(1 + arg_idx)
+                                    .copied()
+                                    .flatten(),
+                            )? {
+                                all_args.push(ptr);
+                                continue;
+                            }
                             let arg_expr_ref = match self.program.expression.get(a) {
                                 Some(Expr::Unary(frontend::ast::UnaryOp::Borrow | frontend::ast::UnaryOp::BorrowMut, inner)) => {
                                     inner

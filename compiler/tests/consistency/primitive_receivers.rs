@@ -182,3 +182,81 @@ fn dividing_the_narrow_minimum_by_minus_one_traps() {
         assert_diagnostic_consistent(&src, &format!("narrow_min_div_{width}"));
     }
 }
+
+/// A trait method that borrows its argument, called on a primitive.
+///
+/// `&Self` on a primitive receiver was wrong in three separate
+/// lowering paths at once, and wrong in the worst way: the call site
+/// passed the *value* where the callee read a pointer, so
+/// `3u64.lt(5u64)` dereferenced address 5, got 0, and answered
+/// `false`. Nothing crashed. The three paths are the scalar-returning
+/// primitive call, the compound-returning primitive call
+/// (`checked_add` answers `Option<Self>`), and the compound-returning
+/// struct call, so the program below goes through all of them.
+#[test]
+fn a_borrowed_argument_reaches_a_primitive_receiver() {
+    let src = r#"
+        trait Less {
+            fn less(&self, other: &Self) -> bool
+        }
+        impl Less for u64 {
+            fn less(&self, other: &Self) -> bool { self < other }
+        }
+        struct P { v: u64 }
+        impl Less for P {
+            fn less(&self, other: &Self) -> bool { self.v < other.v }
+        }
+        fn main() -> u64 {
+            var acc: u64 = 0u64
+            # Scalar-returning, primitive receiver.
+            val a: u64 = 3u64
+            val b: u64 = 5u64
+            if a.less(b) { acc = acc + 1u64 }
+            if b.less(a) { acc = acc + 100u64 }
+            # A literal receiver takes the same path.
+            if 3u64.less(5u64) { acc = acc + 2u64 }
+            # Compound-returning (`Option<Self>`), primitive receiver:
+            # `Checked` in the stdlib is the same shape.
+            val sum: Option<u64> = a.checked_add(b)
+            acc = acc + (sum ?? 900u64) * 10u64
+            val over: u64 = 18446744073709551615u64
+            val none: Option<u64> = over.checked_add(b)
+            acc = acc + (none ?? 7u64) * 1000u64
+            # Narrow widths reach the same impls.
+            val n: u8 = 250u8
+            val m: u8 = 10u8
+            val ns: Option<u8> = n.checked_add(m)
+            acc = acc + (ns ?? 3u8) as u64 * 100000u64
+            acc = acc + n.saturating_add(m) as u64 * 1000000u64
+            # Compound-returning, struct receiver.
+            val p: P = P { v: 1u64 }
+            val q: P = P { v: 2u64 }
+            if p.less(q) { acc = acc + 4u64 }
+            acc
+        }
+    "#;
+    assert_consistent(src, "primitive_borrowed_arg");
+}
+
+/// `Bits` after the same change: the receiver borrows and the answers
+/// do not move.
+#[test]
+fn the_bit_methods_answer_the_same_through_a_borrowed_receiver() {
+    let src = r#"
+        fn main() -> u64 {
+            val a: u64 = 11u64
+            var acc: u64 = 0u64
+            acc = acc + a.popcount() as u64
+            acc = acc + a.leading_zeros() as u64 * 10u64
+            acc = acc + a.trailing_zeros() as u64 * 100u64
+            acc = acc + a.rotate_left(2u32)
+            acc = acc + a.next_power_of_two()
+            if a.is_power_of_two() { acc = acc + 1000000u64 }
+            val b: u8 = 11u8
+            acc = acc + b.popcount() as u64 * 10000000u64
+            acc = acc + b.rotate_right(1u32) as u64
+            acc
+        }
+    "#;
+    assert_consistent(src, "bits_borrowed_receiver");
+}

@@ -865,7 +865,7 @@ fn vec_sort_is_consistent_across_backends() {
     let src = r#"
         struct Pt { x: i64, y: i64 }
         impl Ord for Pt {
-            fn lt(self: Self, other: Self) -> bool {
+            fn lt(&self, other: &Self) -> bool {
                 if self.x != other.x { self.x < other.x } else { self.y < other.y }
             }
         }

@@ -139,7 +139,7 @@ fn a_dict_key_without_eq_is_rejected() {
 struct P { x: i64 }
 
 impl Hash for P {
-    fn hash(self: Self) -> u64 { self.x as u64 }
+    fn hash(&self) -> u64 { self.x as u64 }
 }
 
 fn main() -> u64 {
@@ -704,7 +704,7 @@ fn a_reversed_ord_gives_a_max_heap() {
 struct Desc { v: u64 }
 
 impl Ord for Desc {
-    fn lt(self: Self, other: Self) -> bool { other.v < self.v }
+    fn lt(&self, other: &Self) -> bool { other.v < self.v }
 }
 
 fn main() -> u64 {

@@ -169,6 +169,11 @@ pub(super) fn populate_method_writeback_types(
     module: &mut Module,
     func_id: FuncId,
     method: &frontend::ast::MethodFunction,
+    // What `Self` names in this impl, when the caller knows it. Only
+    // the `&Self` auto-borrow below needs it; `None` is correct for
+    // an impl on a struct, where `&Self` is a compound reference and
+    // goes through leaf erasure rather than an address.
+    self_decl: Option<(&TypeDecl, &DefaultStringInterner)>,
 ) {
     let mut wb_types: Vec<Type> = Vec::new();
     let receiver_idx = if method.has_self_param
@@ -246,7 +251,18 @@ pub(super) fn populate_method_writeback_types(
         param_ref_pointee.push(None);
     }
     for (_, decl_ty) in method.parameter.iter() {
-        param_ref_pointee.push(param_ref_pointee_ty(decl_ty));
+        // `&Self` has to be substituted first. Without it
+        // `param_ref_pointee_ty` sees `Ref { inner: Self_ }`, cannot
+        // name a scalar pointee, and answers `None` — so the call
+        // site passed the *value* into a slot the callee then read
+        // with `LoadRef`. On `impl Ord for u64` that is a read of
+        // address 5, which answers 0 rather than crashing, so
+        // `3u64.lt(5u64)` quietly said false.
+        let resolved = match self_decl {
+            Some((decl, interner)) => super::templates::substitute_self(decl_ty, decl, interner),
+            None => decl_ty.clone(),
+        };
+        param_ref_pointee.push(param_ref_pointee_ty(&resolved));
     }
     module.function_mut(func_id).param_ref_pointee = param_ref_pointee;
 }
@@ -778,7 +794,7 @@ fn declare_methods(
         // writeback shape so callers compiled before the method's
         // body see the correct trailing-return layout. Same
         // helper used by generic-method instantiation.
-        populate_method_writeback_types(module, func_id, method);
+        populate_method_writeback_types(module, func_id, method, Some((&self_decl, interner)));
         method_func_ids
             .entry((*target_sym, *method_sym))
             .or_default()

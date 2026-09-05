@@ -148,7 +148,7 @@ fn vec_sort_orders_user_struct_with_impl_ord() {
         r#"
         struct Pt { x: i64, y: i64 }
         impl Ord for Pt {
-            fn lt(self: Self, other: Self) -> bool {
+            fn lt(&self, other: &Self) -> bool {
                 if self.x != other.x { self.x < other.x } else { self.y < other.y }
             }
         }
@@ -209,7 +209,7 @@ fn impl_ord_provides_the_lt_operator() {
         r#"
         struct N { v: i64 }
         impl Ord for N {
-            fn lt(self: Self, other: Self) -> bool {
+            fn lt(&self, other: &Self) -> bool {
                 self.v < other.v
             }
         }
@@ -352,7 +352,7 @@ fn user_struct_with_impl_ord_still_sorts() {
             key: u64
         }
         impl Ord for Item {
-            fn lt(self: Self, other: Self) -> bool {
+            fn lt(&self, other: &Self) -> bool {
                 self.key < other.key
             }
         }

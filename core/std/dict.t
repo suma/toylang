@@ -170,7 +170,7 @@ impl<K: Hash, V> Dict<K, V> {
 
     # Look up `key`; on hit return the stored value, on miss
     # return `default`.
-    unsafe fn get_or(self: Self, key: K, default: V) -> V {
+    unsafe fn get_or(&self, key: K, default: V) -> V {
         val scap: u64 = self.caps & 0xFFFFFFFFu64
         if scap == 0u64 {
             return default
@@ -197,7 +197,7 @@ impl<K: Hash, V> Dict<K, V> {
 
     # Option-returning lookup. Returns `Option::Some(v)` on hit,
     # `Option::None` on miss.
-    unsafe fn get(self: Self, key: K) -> Option<V> {
+    unsafe fn get(&self, key: K) -> Option<V> {
         val scap: u64 = self.caps & 0xFFFFFFFFu64
         if scap == 0u64 {
             return Option::None
@@ -222,7 +222,7 @@ impl<K: Hash, V> Dict<K, V> {
         Option::None
     }
 
-    unsafe fn contains_key(self: Self, key: K) -> bool {
+    unsafe fn contains_key(&self, key: K) -> bool {
         val scap: u64 = self.caps & 0xFFFFFFFFu64
         if scap == 0u64 {
             return false
@@ -245,7 +245,7 @@ impl<K: Hash, V> Dict<K, V> {
         false
     }
 
-    fn size(self: Self) -> u64 {
+    fn size(&self) -> u64 {
         self.count
     }
 
@@ -354,7 +354,7 @@ impl<K: Hash, V: Default> Dict<K, V> {
     #
     #     val n = counts.get_or_default(word)
     #     counts.insert(word, n + 1u64)
-    unsafe fn get_or_default(self: Self, key: K) -> V {
+    unsafe fn get_or_default(&self, key: K) -> V {
         val zero: V = V::default()
         self.get_or(key, zero)
     }

@@ -21,7 +21,7 @@
 # table's problem.
 
 trait Hash {
-    fn hash(self: Self) -> u64
+    fn hash(&self) -> u64
 }
 
 # The avalanching step an open-addressing table applies to whatever
@@ -54,14 +54,14 @@ pub fn hash_mix(h: u64) -> u64 {
 # based linear search; would be poor for power-of-two table
 # sizing without a mixer.
 impl Hash for i64 {
-    fn hash(self: Self) -> u64 {
+    fn hash(&self) -> u64 {
         self as u64
     }
 }
 
 # u64: identity. Same caveat about avalanching as i64::hash.
 impl Hash for u64 {
-    fn hash(self: Self) -> u64 {
+    fn hash(&self) -> u64 {
         self
     }
 }
@@ -69,7 +69,7 @@ impl Hash for u64 {
 # bool: just the discriminant. Two-bucket distribution is fine
 # for the linear-scan dict (we only need `eq` to break ties).
 impl Hash for bool {
-    fn hash(self: Self) -> u64 {
+    fn hash(&self) -> u64 {
         if self { 1u64 } else { 0u64 }
     }
 }
@@ -93,7 +93,7 @@ impl Hash for bool {
 extern fn __extern_str_hash(s: str) -> u64 from "toylang_rt" as "toy_str_hash"
 
 impl Hash for str {
-    fn hash(self: Self) -> u64 {
+    fn hash(&self) -> u64 {
         __extern_str_hash(self)
     }
 }
@@ -117,32 +117,32 @@ impl Hash for str {
 # Caveat: still not avalanching — a real open-addressing
 # table will want a Wyhash / FxHash mixer on top.
 impl Hash for u8 {
-    fn hash(self: Self) -> u64 {
+    fn hash(&self) -> u64 {
         self as u64
     }
 }
 impl Hash for u16 {
-    fn hash(self: Self) -> u64 {
+    fn hash(&self) -> u64 {
         self as u64
     }
 }
 impl Hash for u32 {
-    fn hash(self: Self) -> u64 {
+    fn hash(&self) -> u64 {
         self as u64
     }
 }
 impl Hash for i8 {
-    fn hash(self: Self) -> u64 {
+    fn hash(&self) -> u64 {
         (self as u8) as u64
     }
 }
 impl Hash for i16 {
-    fn hash(self: Self) -> u64 {
+    fn hash(&self) -> u64 {
         (self as u16) as u64
     }
 }
 impl Hash for i32 {
-    fn hash(self: Self) -> u64 {
+    fn hash(&self) -> u64 {
         (self as u32) as u64
     }
 }

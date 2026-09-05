@@ -17,12 +17,14 @@
 #   free (the operator table looks the method up by name, so the
 #   receiver style does not matter), and a type with a hand-written
 #   `lt` already satisfies the shape.
-# - The receiver is `self: Self` (by value) rather than `&self`
-#   because primitives cannot be dereferenced in this language — a
-#   `&u64` receiver has no way to reach the value it points at. The
-#   alias-based compound semantics mean a by-value receiver does not
-#   consume the caller's binding (`key.lt(other)` leaves `key`
-#   usable), so `Vec::sort` can call it repeatedly.
+# - The receiver and the argument are both borrowed (`&self`,
+#   `other: &Self`). They used to be by value, on the belief that a
+#   `&u64` receiver had no way to reach the value it points at; it
+#   does -- a reference to a primitive is erased to the value at the
+#   boundary, so `self < other` reads exactly as it did. Borrowing is
+#   what the `<` operator overload has always been documented to take
+#   (`docs/language.md`), and it says the true thing about the method:
+#   comparing does not consume either side.
 # - `f64` compares with the native `<`; NaN is not less than anything
 #   (including itself), so it stays put in a sort rather than
 #   ordering — same caveat as comparing floats with `<` directly.
@@ -34,49 +36,49 @@
 #   in a generic context.
 
 trait Ord {
-    fn lt(self: Self, other: Self) -> bool
+    fn lt(&self, other: &Self) -> bool
 }
 
 # Unsigned widths — native `<`.
 impl Ord for u64 {
-    fn lt(self: Self, other: Self) -> bool {
+    fn lt(&self, other: &Self) -> bool {
         self < other
     }
 }
 impl Ord for u32 {
-    fn lt(self: Self, other: Self) -> bool {
+    fn lt(&self, other: &Self) -> bool {
         self < other
     }
 }
 impl Ord for u16 {
-    fn lt(self: Self, other: Self) -> bool {
+    fn lt(&self, other: &Self) -> bool {
         self < other
     }
 }
 impl Ord for u8 {
-    fn lt(self: Self, other: Self) -> bool {
+    fn lt(&self, other: &Self) -> bool {
         self < other
     }
 }
 
 # Signed widths — native `<`.
 impl Ord for i64 {
-    fn lt(self: Self, other: Self) -> bool {
+    fn lt(&self, other: &Self) -> bool {
         self < other
     }
 }
 impl Ord for i32 {
-    fn lt(self: Self, other: Self) -> bool {
+    fn lt(&self, other: &Self) -> bool {
         self < other
     }
 }
 impl Ord for i16 {
-    fn lt(self: Self, other: Self) -> bool {
+    fn lt(&self, other: &Self) -> bool {
         self < other
     }
 }
 impl Ord for i8 {
-    fn lt(self: Self, other: Self) -> bool {
+    fn lt(&self, other: &Self) -> bool {
         self < other
     }
 }
@@ -84,14 +86,14 @@ impl Ord for i8 {
 # f64 — native `<`. NaN compares false in every direction, so it
 # never moves during a sort (see the file header).
 impl Ord for f64 {
-    fn lt(self: Self, other: Self) -> bool {
+    fn lt(&self, other: &Self) -> bool {
         self < other
     }
 }
 
 # bool — `false < true`, the canonical two-value total order.
 impl Ord for bool {
-    fn lt(self: Self, other: Self) -> bool {
+    fn lt(&self, other: &Self) -> bool {
         if self { false } else { other }
     }
 }
@@ -109,7 +111,7 @@ impl Ord for bool {
 extern fn __extern_str_cmp(a: str, b: str) -> i64 from "toylang_rt" as "toy_str_cmp"
 
 impl Ord for str {
-    fn lt(self: Self, other: Self) -> bool {
+    fn lt(&self, other: &Self) -> bool {
         __extern_str_cmp(self, other) < 0i64
     }
 }

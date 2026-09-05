@@ -341,6 +341,10 @@ impl<'a> FunctionLower<'a> {
             self.module,
             func_id,
             template,
+            // Generic instances target structs, where `&Self` is a
+            // compound reference: it erases to leaves rather than
+            // becoming an address, so there is nothing to resolve.
+            None,
         );
         self.method_instances
             .insert((target_sym, method_sym, inst_args), func_id);
@@ -1015,7 +1019,26 @@ impl<'a> FunctionLower<'a> {
             .lower_expr(obj)?
             .ok_or_else(|| "primitive method receiver produced no value".to_string())?;
         let mut values: Vec<ValueId> = vec![receiver_value];
-        for a in args {
+        for (arg_idx, a) in args.iter().enumerate() {
+            // `T` -> `&T` auto-borrow, as at every other call. This
+            // path did not have it, so `3u64.lt(5u64)` for
+            // `fn lt(&self, other: &Self)` handed the *value* 5 to a
+            // parameter the callee then read with `LoadRef` -- a read
+            // of address 5, which answers 0 rather than crashing, so
+            // the comparison quietly said false. The receiver always
+            // occupies slot 0, hence `1 + arg_idx`.
+            if let Some(ptr) = self.lower_scalar_ref_arg(
+                a,
+                self.module
+                    .function(func_id)
+                    .param_ref_pointee
+                    .get(1 + arg_idx)
+                    .copied()
+                    .flatten(),
+            )? {
+                values.push(ptr);
+                continue;
+            }
             let v = self
                 .lower_expr(a)?
                 .ok_or_else(|| {

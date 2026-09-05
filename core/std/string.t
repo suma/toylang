@@ -1257,7 +1257,7 @@ impl From<str> for String {
 # a copy of the bytes — the allocation the str impl exists to avoid.
 # `get` is a typed-slot read, so this walk allocates nothing.
 impl Hash for String {
-    fn hash(self: Self) -> u64 {
+    fn hash(&self) -> u64 {
         val n: u64 = self.size()
         var h: u64 = 14695981039346656037u64
         var i: u64 = 0u64
@@ -1271,7 +1271,7 @@ impl Hash for String {
 }
 
 impl Ord for String {
-    fn lt(self: Self, other: Self) -> bool {
+    fn lt(&self, other: &Self) -> bool {
         val n: u64 = self.size()
         val m: u64 = other.size()
         val k: u64 = if n < m { n } else { m }

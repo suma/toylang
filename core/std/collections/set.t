@@ -123,7 +123,7 @@ impl<T: Hash> Set<T> {
         true
     }
 
-    unsafe fn contains(self: Self, value: T) -> bool {
+    unsafe fn contains(&self, value: T) -> bool {
         val scap: u64 = self.caps & 0xFFFFFFFFu64
         if scap == 0u64 {
             return false
@@ -207,11 +207,11 @@ impl<T: Hash> Set<T> {
         true
     }
 
-    fn size(self: Self) -> u64 {
+    fn size(&self) -> u64 {
         self.count
     }
 
-    fn is_empty(self: Self) -> bool {
+    fn is_empty(&self) -> bool {
         self.count == 0u64
     }
 

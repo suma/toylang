@@ -14,7 +14,7 @@ struct Pt { x: i64, y: i64 }
 # Lexicographic order on (x, y); the `lt` method serves both `sort`
 # and the `<` operator.
 impl Ord for Pt {
-    fn lt(self: Self, other: Self) -> bool {
+    fn lt(&self, other: &Self) -> bool {
         if self.x != other.x {
             self.x < other.x
         } else {

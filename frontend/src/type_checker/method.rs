@@ -15,7 +15,7 @@ fn is_supported_impl_signature_shape(ty: &TypeDecl) -> bool {
         TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Float64 | TypeDecl::Float32 | TypeDecl::Bool |
         TypeDecl::String | TypeDecl::Ptr |
         // NUM-W: narrow ints valid as method param types so
-        // `impl Hash for u8 { fn hash(self: Self) -> u64 }`
+        // `impl Hash for u8 { fn hash(&self) -> u64 }`
         // (and any user-defined inherent impl on a narrow
         // primitive) survives validation.
         TypeDecl::Int8 | TypeDecl::Int16 | TypeDecl::Int32 |
@@ -110,6 +110,15 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                     .collect();
                 TypeDecl::Struct(*name, resolved_params)
             }
+            // `&Self` names the same type as `Self`, borrowed. Without
+            // this arm a method declared `fn lt(&self, other: &Self)`
+            // saw `other` as the literal `Self` inside its own body,
+            // so `self < other` on an `impl ... for u64` was reported
+            // as "expected u64, but got Self".
+            TypeDecl::Ref { is_mut, inner } => TypeDecl::Ref {
+                is_mut: *is_mut,
+                inner: Box::new(self.resolve_self_type(inner)),
+            },
             _ => type_decl.clone(),
         }
     }

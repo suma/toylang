@@ -496,8 +496,8 @@ impl<T: Default> Vec<T> {
 impl<T: Ord> Vec<T> {
     # Sort in place, ascending. Stable: equal elements keep their
     # relative order. Elements are read as copies out of the buffer,
-    # and `lt` takes `self: Self` which aliases rather than moves, so
-    # `key` stays usable across the inner loop.
+    # and `lt` borrows both sides, so `key` stays usable across the
+    # inner loop.
     #
     # **The buffer is addressed directly rather than through `get` /
     # `set`, and that is load-bearing for an element type that owns

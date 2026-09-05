@@ -1529,15 +1529,21 @@ struct itself could — a field root (`(a + b).x`), an argument
 
 ### `Ord` and `Vec::sort` (STDLIB-ORD)
 
-`core/std/cmp.t` declares `trait Ord { fn lt(self: Self, other: Self) -> bool }`
+`core/std/cmp.t` declares `trait Ord { fn lt(&self, other: &Self) -> bool }`
 with impls for every primitive width, `f64`, `bool`, and `String`
 (byte-wise, in `core/std/string.t`). The method is named `lt` — the
 same name the `<` operator overload dispatches to — so a type that
 implements `impl Ord` also gets the `<` operator for free, and a
-type with a hand-written `lt` already satisfies the shape. The
-receiver is `self: Self` (by value) because primitives cannot be
-dereferenced; the alias-based compound semantics keep the caller's
-binding usable, so sort can call `lt` repeatedly.
+type with a hand-written `lt` already satisfies the shape.
+
+Both sides are **borrowed**, which is also the shape this document
+gives for the `<` overload. A reference to a primitive is erased to
+the value at the boundary, so `self < other` inside an
+`impl Ord for u64` reads exactly as it would by value. (Before
+2026-09-05 the signature was `fn lt(self: Self, other: Self)`, on the
+belief that a `&u64` receiver could not reach what it points at. An
+impl written that way no longer conforms — the trait's receiver kind
+and parameter types are part of the contract.)
 
 `Vec<T>::sort()` (`core/std/collections/vec.t`) is a stable in-place
 insertion sort over the bound `impl<T: Ord> Vec<T>`:
@@ -1591,7 +1597,7 @@ struct key needs both written by hand — there is no derive:
 struct Point { x: i64, y: i64 }
 
 impl Hash for Point {
-    fn hash(self: Self) -> u64 { (self.x as u64) ^ ((self.y as u64) << 1u64) }
+    fn hash(&self) -> u64 { (self.x as u64) ^ ((self.y as u64) << 1u64) }
 }
 
 impl Point {
@@ -1683,7 +1689,7 @@ rather than reaching for a second queue type:
 struct Desc { v: u64 }
 
 impl Ord for Desc {
-    fn lt(self: Self, other: Self) -> bool { other.v < self.v }
+    fn lt(&self, other: &Self) -> bool { other.v < self.v }
 }
 # a PriorityQueue<Desc> now pops the largest `v` first
 ```
@@ -1766,7 +1772,7 @@ expected. `clear` empties the set but keeps its buffers.
 
 ### `Hash` and `hash_mix` (stdlib)
 
-`core/std/hash.t` declares `trait Hash { fn hash(self: Self) -> u64 }`
+`core/std/hash.t` declares `trait Hash { fn hash(&self) -> u64 }`
 with impls for every integer width, `bool`, `str`, and `String` (in
 `core/std/string.t`, the module that owns the type). `hash` promises
 one thing: equal values hash equally. It does *not* promise a spread —

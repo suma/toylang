@@ -328,6 +328,17 @@ impl TypeDecl {
             // Identifier and Struct with same symbol are equivalent (ignore type parameters for compatibility)
             (TypeDecl::Identifier(s1), TypeDecl::Struct(s2, _)) |
             (TypeDecl::Struct(s1, _), TypeDecl::Identifier(s2)) => s1 == s2,
+            // `&T` compares as `T` does, one level in. Derived
+            // equality is structural, so without this a `&String`
+            // whose inner is `Identifier` and one whose inner is
+            // `Struct` -- the same type, reached by two paths -- were
+            // reported as a mismatch against each other, which read
+            // as "expected &String, found &String". Mutability is
+            // part of the type: `&T` and `&mut T` are not equivalent.
+            (
+                TypeDecl::Ref { is_mut: m1, inner: i1 },
+                TypeDecl::Ref { is_mut: m2, inner: i2 },
+            ) => m1 == m2 && i1.is_equivalent(i2),
             // Identifier and Enum with same symbol are equivalent (the parser
             // emits `Identifier` for user-named types since it cannot tell
             // enums from structs until the type checker has seen all decls).

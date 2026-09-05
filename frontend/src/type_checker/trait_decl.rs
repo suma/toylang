@@ -598,6 +598,16 @@ fn resolve_self(t: &TypeDecl, struct_symbol: DefaultSymbol) -> TypeDecl {
     match t {
         TypeDecl::Self_ => TypeDecl::Struct(struct_symbol, vec![]),
         TypeDecl::Identifier(name) if *name == struct_symbol => TypeDecl::Struct(struct_symbol, vec![]),
+        // `&Self` is the borrowing form of the same obligation, so it
+        // has to resolve the same way. Without this arm a trait
+        // declaring `fn lt(&self, other: &Self)` could not be
+        // implemented at all: the impl spelling `&Self` compared
+        // unequal to itself once one side was resolved, and spelling
+        // the concrete type was reported as a mismatch too.
+        TypeDecl::Ref { is_mut, inner } => TypeDecl::Ref {
+            is_mut: *is_mut,
+            inner: Box::new(resolve_self(inner, struct_symbol)),
+        },
         other => other.clone(),
     }
 }

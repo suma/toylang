@@ -10,6 +10,32 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-05
+- **`Ord` / `Hash` と container の読み取りメソッドを借用にした** —
+  `trait Ord { fn lt(&self, other: &Self) }` / `trait Hash { fn hash(&self) }`、
+  `Dict::get` / `get_or` / `get_or_default` / `contains_key` / `size` と
+  `Set::contains` / `size` / `is_empty`。**破壊的変更** —
+  `impl Ord for T { fn lt(self: Self, other: Self) }` は
+  conformance を満たさなくなる (受け手の種類と引数型は trait の契約)。
+  `&self` は `<` 演算子オーバーロードが元から文書化していた形でもある。
+  **primitive だけを相手にする trait は `self: Self` のまま**
+  (`Bits` / `Checked` / `AsciiClass` / `Abs` / `Sqrt` / `str.t` の
+  `Length` / `AsPtr` / `StrSearch`)、`collect(self: Self)` /
+  `Into::into` / `JsonWriter::finish` も**意図的な by-value** なので不変。
+  これを通すのに処理系側で 4 つ直した:
+  - `resolve_self` が `&Self` の内側を解決していなかった (conformance が
+    `&Self` の impl を落としていた)
+  - `TypeDecl::is_equivalent` に `Ref` の腕が無く、導出 PartialEq に
+    落ちていたので `Identifier` と `Struct` で綴られた同じ型が
+    「expected &String, found &String」で不一致になっていた
+  - `resolve_self_type` が `&Self` を解決せず、body の中で `other` が
+    `Self` のままだった
+  - **`&Self` 引数が primitive レシーバで渡っていなかった** ★ —
+    `populate_method_writeback_types` が `Self` を置換せずに
+    `param_ref_pointee` を作るので `None` になり、かつ
+    `try_lower_primitive_method_call` に auto-borrow が無かった。
+    呼び出し側が**値**を渡し callee が `LoadRef` するので、
+    `3u64.lt(5u64)` が番地 5 を読んで**黙って false** を返していた
+    (crash しないのが最悪)
 - **STRING-NO-DROP — `String` が自分のバッファを解放するようにした** —
   `Vec<T>` は最初から持っていた `impl Drop` を `String` は持たず、
   **プログラムが作った `String` は 1 つ残らず漏れていた**

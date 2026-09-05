@@ -512,152 +512,59 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, v);
                 }
             }
+            // A5-P2-MVP-D/E: an indirect call whose return is a
+            // compound (struct / tuple / enum). The callee comes from
+            // a runtime ValueId (a vtable-loaded fn ptr) rather than a
+            // fixed FuncId, and the cranelift signature carries one
+            // return slot per flattened leaf, in the same canonical
+            // order `flatten_compound_leaf_types` gives the impl side.
+            // The three shapes differ only in which IR type names the
+            // return, so they share one lowering.
             InstKind::CallIndirectFnTuple {
                 callee,
                 args,
                 param_tys,
                 ret_tuple_id,
                 dests,
-            } => {
-                // A5-P2-MVP-E: indirect call returning a tuple. Same
-                // construction as CallIndirectFnStruct except the
-                // return shape comes from `Type::Tuple(_)`. The
-                // existing recursive flatten covers nested tuples too.
-                let fn_ptr = self.value(*callee);
-                let call_conv = self.builder.func.signature.call_conv;
-                let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
-                for pt in param_tys {
-                    let cl = ir_to_cranelift_ty(*pt).ok_or_else(|| {
-                        format!("CallIndirectFnTuple: cannot lower param type {pt:?}")
-                    })?;
-                    sig.params.push(cranelift_codegen::ir::AbiParam::new(cl));
-                }
-                let ret_cl_tys = flatten_struct_to_cranelift_tys(
-                    self.ir_module,
-                    IrType::Tuple(*ret_tuple_id),
-                );
-                for cl in &ret_cl_tys {
-                    sig.returns
-                        .push(cranelift_codegen::ir::AbiParam::new(*cl));
-                }
-                let sig_ref = self.builder.import_signature(sig);
-                let arg_values: Vec<Value> = args.iter().map(|a| self.value(*a)).collect();
-                let call_inst = self
-                    .builder
-                    .ins()
-                    .call_indirect(sig_ref, fn_ptr, &arg_values);
-                let results = self.builder.inst_results(call_inst).to_vec();
-                if results.len() != dests.len() {
-                    return Err(format!(
-                        "internal error: call_indirect_fn_tuple returned {} value(s), expected {}",
-                        results.len(),
-                        dests.len(),
-                    ));
-                }
-                for (dest, val) in dests.iter().zip(results.iter()) {
-                    let var = self.local(*dest);
-                    self.builder.def_var(var, *val);
-                }
-            }
+            } => self.lower_indirect_compound_call(
+                "CallIndirectFnTuple",
+                "call_indirect_fn_tuple",
+                *callee,
+                args,
+                param_tys,
+                IrType::Tuple(*ret_tuple_id),
+                dests,
+            )?,
             InstKind::CallIndirectFnEnum {
                 callee,
                 args,
                 param_tys,
                 ret_enum_id,
                 dests,
-            } => {
-                // A5-P2-MVP-E: indirect call returning an enum. The
-                // cranelift signature has one slot per enum-flatten
-                // leaf in canonical order (tag then variant payloads),
-                // matching `flatten_enum_dests` order on the caller
-                // side and `flatten_compound_leaf_types(Type::Enum)`
-                // on the impl side.
-                let fn_ptr = self.value(*callee);
-                let call_conv = self.builder.func.signature.call_conv;
-                let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
-                for pt in param_tys {
-                    let cl = ir_to_cranelift_ty(*pt).ok_or_else(|| {
-                        format!("CallIndirectFnEnum: cannot lower param type {pt:?}")
-                    })?;
-                    sig.params.push(cranelift_codegen::ir::AbiParam::new(cl));
-                }
-                let ret_cl_tys = flatten_struct_to_cranelift_tys(
-                    self.ir_module,
-                    IrType::Enum(*ret_enum_id),
-                );
-                for cl in &ret_cl_tys {
-                    sig.returns
-                        .push(cranelift_codegen::ir::AbiParam::new(*cl));
-                }
-                let sig_ref = self.builder.import_signature(sig);
-                let arg_values: Vec<Value> = args.iter().map(|a| self.value(*a)).collect();
-                let call_inst = self
-                    .builder
-                    .ins()
-                    .call_indirect(sig_ref, fn_ptr, &arg_values);
-                let results = self.builder.inst_results(call_inst).to_vec();
-                if results.len() != dests.len() {
-                    return Err(format!(
-                        "internal error: call_indirect_fn_enum returned {} value(s), expected {}",
-                        results.len(),
-                        dests.len(),
-                    ));
-                }
-                for (dest, val) in dests.iter().zip(results.iter()) {
-                    let var = self.local(*dest);
-                    self.builder.def_var(var, *val);
-                }
-            }
+            } => self.lower_indirect_compound_call(
+                "CallIndirectFnEnum",
+                "call_indirect_fn_enum",
+                *callee,
+                args,
+                param_tys,
+                IrType::Enum(*ret_enum_id),
+                dests,
+            )?,
             InstKind::CallIndirectFnStruct {
                 callee,
                 args,
                 param_tys,
                 ret_struct_id,
                 dests,
-            } => {
-                // A5-P2-MVP-D: indirect call returning a struct. Build
-                // the signature with all user params + flattened struct
-                // returns (one cranelift slot per scalar leaf), then
-                // fan the multi-result back into `dests[i]`. Mirrors
-                // the `CallStruct` direct-call lowering at line ~524
-                // but the callee comes from a runtime ValueId (a
-                // vtable-loaded fn ptr) instead of a fixed FuncId.
-                let fn_ptr = self.value(*callee);
-                let call_conv = self.builder.func.signature.call_conv;
-                let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
-                for pt in param_tys {
-                    let cl = ir_to_cranelift_ty(*pt).ok_or_else(|| {
-                        format!("CallIndirectFnStruct: cannot lower param type {pt:?}")
-                    })?;
-                    sig.params.push(cranelift_codegen::ir::AbiParam::new(cl));
-                }
-                let ret_cl_tys = flatten_struct_to_cranelift_tys(
-                    self.ir_module,
-                    IrType::Struct(*ret_struct_id),
-                );
-                for cl in &ret_cl_tys {
-                    sig.returns
-                        .push(cranelift_codegen::ir::AbiParam::new(*cl));
-                }
-                let sig_ref = self.builder.import_signature(sig);
-                let arg_values: Vec<Value> = args.iter().map(|a| self.value(*a)).collect();
-                let call_inst = self
-                    .builder
-                    .ins()
-                    .call_indirect(sig_ref, fn_ptr, &arg_values);
-                let results = self.builder.inst_results(call_inst).to_vec();
-                if results.len() != dests.len() {
-                    return Err(format!(
-                        "internal error: call_indirect_fn_struct returned {} value(s), expected {}",
-                        results.len(),
-                        dests.len(),
-                    ));
-                }
-                for (dest, val) in dests.iter().zip(results.iter()) {
-                    let var = self.local(*dest);
-                    self.builder.def_var(var, *val);
-                }
-            }
+            } => self.lower_indirect_compound_call(
+                "CallIndirectFnStruct",
+                "call_indirect_fn_struct",
+                *callee,
+                args,
+                param_tys,
+                IrType::Struct(*ret_struct_id),
+                dests,
+            )?,
             InstKind::DynCoerceSlotAddr { slot_idx } => {
                 // A5-P2-MVP-B: lazily materialise the cranelift
                 // `StackSlot` for this `Function::dyn_coerce_slots`
@@ -774,6 +681,56 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
         }
         Ok(())
     }
+
+    /// One lowering for `CallIndirectFn{Struct,Tuple,Enum}`.
+    ///
+    /// `what` names the instruction in a parameter-type failure,
+    /// `lowered` names it in the snake_case internal-error text the
+    /// three arms have always used; `ret` is the IR type whose leaves
+    /// become the cranelift return slots.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_indirect_compound_call(
+        &mut self,
+        what: &str,
+        lowered: &str,
+        callee: crate::ir::ValueId,
+        args: &[crate::ir::ValueId],
+        param_tys: &[IrType],
+        ret: IrType,
+        dests: &[crate::ir::LocalId],
+    ) -> Result<(), String> {
+        let fn_ptr = self.value(callee);
+        let call_conv = self.builder.func.signature.call_conv;
+        let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+        for pt in param_tys {
+            let cl = ir_to_cranelift_ty(*pt)
+                .ok_or_else(|| format!("{what}: cannot lower param type {pt:?}"))?;
+            sig.params.push(cranelift_codegen::ir::AbiParam::new(cl));
+        }
+        for cl in &flatten_struct_to_cranelift_tys(self.ir_module, ret) {
+            sig.returns.push(cranelift_codegen::ir::AbiParam::new(*cl));
+        }
+        let sig_ref = self.builder.import_signature(sig);
+        let arg_values: Vec<Value> = args.iter().map(|a| self.value(*a)).collect();
+        let call_inst = self
+            .builder
+            .ins()
+            .call_indirect(sig_ref, fn_ptr, &arg_values);
+        let results = self.builder.inst_results(call_inst).to_vec();
+        if results.len() != dests.len() {
+            return Err(format!(
+                "internal error: {lowered} returned {} value(s), expected {}",
+                results.len(),
+                dests.len(),
+            ));
+        }
+        for (dest, val) in dests.iter().zip(results.iter()) {
+            let var = self.local(*dest);
+            self.builder.def_var(var, *val);
+        }
+        Ok(())
+    }
+
 
     /// Calling through a value, and the calls whose result is compound
     /// (struct / tuple / enum) and so lands in several destinations.

@@ -31,6 +31,8 @@ use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
 use cranelift_module::{DataDescription, DataId, Linkage as CLinkage, Module, ModuleReloc};
 use cranelift_object::{ObjectBuilder, ObjectModule};
+
+use self::imports::{abi, sext, uext, SymbolImporter};
 use frontend::ast::File;
 use string_interner::{DefaultStringInterner, DefaultSymbol, Symbol};
 
@@ -551,114 +553,43 @@ pub(crate) fn make_object_module() -> Result<ObjectModule, String> {
 
 impl<M: Module> CodegenSession<M> {
     pub(crate) fn new(mut module: M) -> Result<Self, String> {
-        // Declare libc imports up front. `puts(const char*) -> int`
-        // is universally available on any platform whose system C
-        // compiler is also our linker driver, and gives us a one-call
-        // way to print the panic message + newline. `exit(int) -> !`
-        // terminates the process so the panic terminator cleanly maps
-        // onto a CFG exit. We use `i32` for the parameter / return so
-        // the ABI matches libc's prototype.
-        let call_conv = module.target_config().default_call_conv;
-        let mut puts_sig = Signature::new(call_conv);
-        puts_sig.params.push(AbiParam::new(types::I64));
-        puts_sig.returns.push(AbiParam::new(types::I32));
-        let libc_puts = module
-            .declare_function("puts", CLinkage::Import, &puts_sig)
-            .map_err(|e| format!("declare puts: {e}"))?;
+        use types::{F32, F64, I16, I32, I64, I8};
+        let mut imp = SymbolImporter::new(&mut module);
 
-        let mut exit_sig = Signature::new(call_conv);
-        exit_sig.params.push(AbiParam::new(types::I32));
-        let libc_exit = module
-            .declare_function("exit", CLinkage::Import, &exit_sig)
-            .map_err(|e| format!("declare exit: {e}"))?;
-
-        // #121 Phase A: libc malloc / realloc / free for the
-        // global-allocator path. `__builtin_heap_alloc(size)` →
-        // `malloc(size_t)`, `__builtin_heap_realloc(p, n)` →
-        // `realloc(p, size_t)`, `__builtin_heap_free(p)` →
-        // `free(p)`. size_t is i64-sized on every supported host.
-        let mut malloc_sig = Signature::new(call_conv);
-        malloc_sig.params.push(AbiParam::new(types::I64));
-        malloc_sig.returns.push(AbiParam::new(types::I64));
-        let libc_malloc = module
-            .declare_function("malloc", CLinkage::Import, &malloc_sig)
-            .map_err(|e| format!("declare malloc: {e}"))?;
-
-        let mut realloc_sig = Signature::new(call_conv);
-        realloc_sig.params.push(AbiParam::new(types::I64));
-        realloc_sig.params.push(AbiParam::new(types::I64));
-        realloc_sig.returns.push(AbiParam::new(types::I64));
-        let libc_realloc = module
-            .declare_function("realloc", CLinkage::Import, &realloc_sig)
-            .map_err(|e| format!("declare realloc: {e}"))?;
-
-        let mut free_sig = Signature::new(call_conv);
-        free_sig.params.push(AbiParam::new(types::I64));
-        let libc_free = module
-            .declare_function("free", CLinkage::Import, &free_sig)
-            .map_err(|e| format!("declare free: {e}"))?;
-
-        // libc `memcpy(void *dest, const void *src, size_t n) ->
-        // void *`. Used by `__builtin_mem_copy(src, dest, size)`
-        // — note the toylang arg order is (src, dest, size) so
-        // the codegen swaps them at the call site.
-        let mut memcpy_sig = Signature::new(call_conv);
-        memcpy_sig.params.push(AbiParam::new(types::I64)); // dest
-        memcpy_sig.params.push(AbiParam::new(types::I64)); // src
-        memcpy_sig.params.push(AbiParam::new(types::I64)); // n
-        memcpy_sig.returns.push(AbiParam::new(types::I64)); // returns dest, ignored
-        let libc_memcpy = module
-            .declare_function("memcpy", CLinkage::Import, &memcpy_sig)
-            .map_err(|e| format!("declare memcpy: {e}"))?;
-
-        // libc `memmove(void *dest, const void *src, size_t n)` has
-        // memcpy's signature exactly, so it reuses the same one.
-        let libc_memmove = module
-            .declare_function("memmove", CLinkage::Import, &memcpy_sig)
-            .map_err(|e| format!("declare memmove: {e}"))?;
-
-        // libc `memset(void *dest, int c, size_t n) -> void *`. The
-        // fill value is a `u8` in toylang; codegen zero-extends it to
-        // the `int` libc wants.
-        let mut memset_sig = Signature::new(call_conv);
-        memset_sig.params.push(AbiParam::new(types::I64)); // dest
-        memset_sig.params.push(AbiParam::new(types::I32)); // c
-        memset_sig.params.push(AbiParam::new(types::I64)); // n
-        memset_sig.returns.push(AbiParam::new(types::I64)); // returns dest, ignored
-        let libc_memset = module
-            .declare_function("memset", CLinkage::Import, &memset_sig)
-            .map_err(|e| format!("declare memset: {e}"))?;
+        // libc, declared up front. `puts` is universally available on
+        // any platform whose system C compiler is also our linker
+        // driver and gives us a one-call way to print the panic
+        // message + newline; `exit` terminates the process so the
+        // panic terminator cleanly maps onto a CFG exit. `size_t` is
+        // i64-sized on every supported host, so the heap trio takes
+        // I64 throughout (#121 Phase A: `__builtin_heap_alloc` →
+        // `malloc`, `_realloc` → `realloc`, `_free` → `free`).
+        let libc_puts = imp.declare("puts", &[abi(I64)], &[abi(I32)])?;
+        let libc_exit = imp.declare("exit", &[abi(I32)], &[])?;
+        let libc_malloc = imp.declare("malloc", &[abi(I64)], &[abi(I64)])?;
+        let libc_realloc = imp.declare("realloc", &[abi(I64), abi(I64)], &[abi(I64)])?;
+        let libc_free = imp.declare("free", &[abi(I64)], &[])?;
+        // `memcpy(dest, src, n) -> dest`. Note the toylang arg order
+        // is (src, dest, size), so codegen swaps them at the call
+        // site. `memmove` has the same prototype exactly; `memset`
+        // takes the fill value as an `int` and uses its low byte.
+        let mem3 = [abi(I64), abi(I64), abi(I64)];
+        let libc_memcpy = imp.declare("memcpy", &mem3, &[abi(I64)])?;
+        let libc_memmove = imp.declare("memmove", &mem3, &[abi(I64)])?;
+        let libc_memset =
+            imp.declare("memset", &[abi(I64), abi(I32), abi(I64)], &[abi(I64)])?;
 
         // MEMORY-ACCESS M3: the range questions live in `toylang_rt`,
         // not libc -- `memmem` is not portable, and one definition per
         // operation is what keeps the four lanes agreeing.
-        let mut mem_eq_sig = Signature::new(call_conv);
-        mem_eq_sig.params.push(AbiParam::new(types::I64)); // a
-        mem_eq_sig.params.push(AbiParam::new(types::I64)); // b
-        mem_eq_sig.params.push(AbiParam::new(types::I64)); // size
-        mem_eq_sig.returns.push(AbiParam::new(types::I8).uext());
-        let rt_mem_eq = module
-            .declare_function("toy_mem_eq", CLinkage::Import, &mem_eq_sig)
-            .map_err(|e| format!("declare toy_mem_eq: {e}"))?;
-
-        let mut mem_find_sig = Signature::new(call_conv);
-        mem_find_sig.params.push(AbiParam::new(types::I64)); // p
-        mem_find_sig.params.push(AbiParam::new(types::I64)); // len
-        mem_find_sig.params.push(AbiParam::new(types::I8).uext()); // byte
-        mem_find_sig.returns.push(AbiParam::new(types::I64));
-        let rt_mem_find = module
-            .declare_function("toy_mem_find", CLinkage::Import, &mem_find_sig)
-            .map_err(|e| format!("declare toy_mem_find: {e}"))?;
-
-        let mut mem_find_seq_sig = Signature::new(call_conv);
-        mem_find_seq_sig.params.push(AbiParam::new(types::I64)); // hay
-        mem_find_seq_sig.params.push(AbiParam::new(types::I64)); // hay_len
-        mem_find_seq_sig.params.push(AbiParam::new(types::I64)); // needle
-        mem_find_seq_sig.params.push(AbiParam::new(types::I64)); // needle_len
-        mem_find_seq_sig.returns.push(AbiParam::new(types::I64));
-        let rt_mem_find_seq = module
-            .declare_function("toy_mem_find_seq", CLinkage::Import, &mem_find_seq_sig)
-            .map_err(|e| format!("declare toy_mem_find_seq: {e}"))?;
+        let rt_mem_eq = imp.declare("toy_mem_eq", &mem3, &[uext(I8)])?;
+        let rt_mem_find =
+            imp.declare("toy_mem_find", &[abi(I64), abi(I64), uext(I8)], &[abi(I64)])?;
+        let rt_mem_find_seq = imp.declare(
+            "toy_mem_find_seq",
+            &[abi(I64), abi(I64), abi(I64), abi(I64)],
+            &[abi(I64)],
+        )?;
 
         // (`libc_strlen` was used by an earlier draft of
         // `__builtin_str_len`; the str runtime value now points at
@@ -666,368 +597,181 @@ impl<M: Module> CodegenSession<M> {
         // with a single `load.i64(s, 0)` and no libc helper is
         // needed.)
 
-        let mut pow_sig = Signature::new(call_conv);
-        pow_sig.params.push(AbiParam::new(types::F64));
-        pow_sig.params.push(AbiParam::new(types::F64));
-        pow_sig.returns.push(AbiParam::new(types::F64));
-        let libm_pow = module
-            .declare_function("pow", CLinkage::Import, &pow_sig)
-            .map_err(|e| format!("declare pow: {e}"))?;
+        // libm. `pow` backs `BinOp::Pow`; the rest are the
+        // `(double) -> double` family behind `UnaryOp::{Sin, Cos,
+        // Tan, Log, Log2, Exp}` (`floor` / `ceil` use cranelift's
+        // native instructions instead). Each call goes through
+        // cranelift's module-level FuncRef; the linker resolves them
+        // against libm.
+        let libm_pow = imp.declare("pow", &[abi(F64), abi(F64)], &[abi(F64)])?;
+        let f64_unary = ([abi(F64)], [abi(F64)]);
+        let libm_sin = imp.declare("sin", &f64_unary.0, &f64_unary.1)?;
+        let libm_cos = imp.declare("cos", &f64_unary.0, &f64_unary.1)?;
+        let libm_tan = imp.declare("tan", &f64_unary.0, &f64_unary.1)?;
+        let libm_log = imp.declare("log", &f64_unary.0, &f64_unary.1)?;
+        let libm_log2 = imp.declare("log2", &f64_unary.0, &f64_unary.1)?;
+        let libm_exp = imp.declare("exp", &f64_unary.0, &f64_unary.1)?;
 
-        // libm `(double) -> double` family. Same signature shape, so
-        // build it once and reuse. Each call goes through cranelift's
-        // module-level FuncRef; no special handling needed for the
-        // imports beyond the linker resolving them against libm at
-        // link time.
-        let mut f64_unary_sig = Signature::new(call_conv);
-        f64_unary_sig.params.push(AbiParam::new(types::F64));
-        f64_unary_sig.returns.push(AbiParam::new(types::F64));
-        let declare_libm = |module: &mut M, name: &str| -> Result<cranelift_module::FuncId, String> {
-            module
-                .declare_function(name, CLinkage::Import, &f64_unary_sig)
-                .map_err(|e| format!("declare {name}: {e}"))
-        };
-        let libm_sin = declare_libm(&mut module, "sin")?;
-        let libm_cos = declare_libm(&mut module, "cos")?;
-        let libm_tan = declare_libm(&mut module, "tan")?;
-        let libm_log = declare_libm(&mut module, "log")?;
-        let libm_log2 = declare_libm(&mut module, "log2")?;
-        let libm_exp = declare_libm(&mut module, "exp")?;
-
-        // Declare the `toy_*` runtime helpers up front. Each takes a
-        // single value matching its C prototype: i64/u64/bool/(char*).
-        // bool is `uint8_t` on the C side, mapped to cranelift `I8`.
-        let mut int_sig = Signature::new(call_conv);
-        int_sig.params.push(AbiParam::new(types::I64));
-        let mut bool_sig = Signature::new(call_conv);
-        bool_sig.params.push(AbiParam::new(types::I8));
-        let mut ptr_sig = Signature::new(call_conv);
-        ptr_sig.params.push(AbiParam::new(types::I64));
-
-        let declare_helper =
-            |module: &mut M, name: &str, sig: &Signature| -> Result<cranelift_module::FuncId, String> {
-                module
-                    .declare_function(name, CLinkage::Import, sig)
-                    .map_err(|e| format!("declare {name}: {e}"))
-            };
-
-        let rt_print_i64 = declare_helper(&mut module, "toy_print_i64", &int_sig)?;
-        let rt_println_i64 = declare_helper(&mut module, "toy_println_i64", &int_sig)?;
-        let rt_print_u64 = declare_helper(&mut module, "toy_print_u64", &int_sig)?;
-        let rt_println_u64 = declare_helper(&mut module, "toy_println_u64", &int_sig)?;
-        let rt_print_bool = declare_helper(&mut module, "toy_print_bool", &bool_sig)?;
-        let rt_println_bool = declare_helper(&mut module, "toy_println_bool", &bool_sig)?;
+        // The `toy_*` runtime helpers. Each print takes a single value
+        // matching its C prototype; bool is `uint8_t` on the C side,
+        // mapped to cranelift `I8`, and a str is a pointer (= I64).
+        let rt_print_i64 = imp.declare("toy_print_i64", &[abi(I64)], &[])?;
+        let rt_println_i64 = imp.declare("toy_println_i64", &[abi(I64)], &[])?;
+        let rt_print_u64 = imp.declare("toy_print_u64", &[abi(I64)], &[])?;
+        let rt_println_u64 = imp.declare("toy_println_u64", &[abi(I64)], &[])?;
+        let rt_print_bool = imp.declare("toy_print_bool", &[abi(I8)], &[])?;
+        let rt_println_bool = imp.declare("toy_println_bool", &[abi(I8)], &[])?;
         // RUNTIME-LIB P0-A: the stream selector. The print helpers
         // themselves are not duplicated for stderr — a print
         // instruction marked `stderr` is bracketed by two calls to
         // this, which flips the runtime's per-thread stream. That
         // keeps one helper per (type, newline) pair instead of two,
         // and costs the stdout path nothing.
-        let rt_print_stream = declare_helper(&mut module, "toy_print_stream", &bool_sig)?;
-        let rt_print_str = declare_helper(&mut module, "toy_print_str", &ptr_sig)?;
-        let rt_println_str = declare_helper(&mut module, "toy_println_str", &ptr_sig)?;
-
-        let mut f64_sig = Signature::new(call_conv);
-        f64_sig.params.push(AbiParam::new(types::F64));
-        let rt_print_f64 = declare_helper(&mut module, "toy_print_f64", &f64_sig)?;
-        let rt_println_f64 = declare_helper(&mut module, "toy_println_f64", &f64_sig)?;
+        let rt_print_stream = imp.declare("toy_print_stream", &[abi(I8)], &[])?;
+        let rt_print_str = imp.declare("toy_print_str", &[abi(I64)], &[])?;
+        let rt_println_str = imp.declare("toy_println_str", &[abi(I64)], &[])?;
+        let rt_print_f64 = imp.declare("toy_print_f64", &[abi(F64)], &[])?;
+        let rt_println_f64 = imp.declare("toy_println_f64", &[abi(F64)], &[])?;
         // SIMD-F32: single-precision print helpers take the f32 at its
         // native cranelift width (a promoted f64 argument would change
         // the rendered digits).
-        let mut f32_sig = Signature::new(call_conv);
-        f32_sig.params.push(AbiParam::new(types::F32));
-        let rt_print_f32 = declare_helper(&mut module, "toy_print_f32", &f32_sig)?;
+        let rt_print_f32 = imp.declare("toy_print_f32", &[abi(F32)], &[])?;
         // SIMD: the vector renderers take a pointer to the 16-byte
         // image plus a type code, so one helper covers every lane
         // type and no vector crosses the C ABI by value.
-        let mut print_vec_sig = Signature::new(call_conv);
-        print_vec_sig.params.push(AbiParam::new(types::I64));
-        print_vec_sig.params.push(AbiParam::new(types::I64));
-        print_vec_sig.params.push(AbiParam::new(types::I8));
-        let rt_print_vec = declare_helper(&mut module, "toy_print_vec", &print_vec_sig)?;
-        let rt_println_f32 = declare_helper(&mut module, "toy_println_f32", &f32_sig)?;
+        let rt_print_vec =
+            imp.declare("toy_print_vec", &[abi(I64), abi(I64), abi(I8)], &[])?;
+        let rt_println_f32 = imp.declare("toy_println_f32", &[abi(F32)], &[])?;
 
-        // NUM-W-AOT-pack Phase 2 narrow-int helper signatures.
-        // Each takes its native cranelift width (I8/I16/I32) so the
-        // codegen call site doesn't have to extend the value first
-        // — but the platform C ABI does still require the value to
-        // arrive in the arg register sign- or zero-extended to
-        // register width (otherwise the C compiler's promotion of
-        // `(int) v` reads garbage from the upper bits). Cranelift
-        // exposes that contract via `AbiParam::sext()` / `uext()`,
-        // which the backend then materialises as the appropriate
-        // platform extension on the caller side.
-        let mut i8s_sig = Signature::new(call_conv);
-        i8s_sig.params.push(AbiParam::new(types::I8).sext());
-        let mut i8u_sig = Signature::new(call_conv);
-        i8u_sig.params.push(AbiParam::new(types::I8).uext());
-        let mut i16s_sig = Signature::new(call_conv);
-        i16s_sig.params.push(AbiParam::new(types::I16).sext());
-        let mut i16u_sig = Signature::new(call_conv);
-        i16u_sig.params.push(AbiParam::new(types::I16).uext());
-        let mut i32s_sig = Signature::new(call_conv);
-        i32s_sig.params.push(AbiParam::new(types::I32).sext());
-        let mut i32u_sig = Signature::new(call_conv);
-        i32u_sig.params.push(AbiParam::new(types::I32).uext());
-        let rt_print_i8 = declare_helper(&mut module, "toy_print_i8", &i8s_sig)?;
-        let rt_println_i8 = declare_helper(&mut module, "toy_println_i8", &i8s_sig)?;
-        let rt_print_u8 = declare_helper(&mut module, "toy_print_u8", &i8u_sig)?;
-        let rt_println_u8 = declare_helper(&mut module, "toy_println_u8", &i8u_sig)?;
-        let rt_print_i16 = declare_helper(&mut module, "toy_print_i16", &i16s_sig)?;
-        let rt_println_i16 = declare_helper(&mut module, "toy_println_i16", &i16s_sig)?;
-        let rt_print_u16 = declare_helper(&mut module, "toy_print_u16", &i16u_sig)?;
-        let rt_println_u16 = declare_helper(&mut module, "toy_println_u16", &i16u_sig)?;
-        let rt_print_i32 = declare_helper(&mut module, "toy_print_i32", &i32s_sig)?;
-        let rt_println_i32 = declare_helper(&mut module, "toy_println_i32", &i32s_sig)?;
-        let rt_print_u32 = declare_helper(&mut module, "toy_print_u32", &i32u_sig)?;
-        let rt_println_u32 = declare_helper(&mut module, "toy_println_u32", &i32u_sig)?;
+        // NUM-W-AOT-pack Phase 2: narrow-int print helpers. Each takes
+        // its native cranelift width so the codegen call site doesn't
+        // extend the value first; the `sext` / `uext` markers are what
+        // satisfy the platform C ABI (see `imports::abi`).
+        let rt_print_i8 = imp.declare("toy_print_i8", &[sext(I8)], &[])?;
+        let rt_println_i8 = imp.declare("toy_println_i8", &[sext(I8)], &[])?;
+        let rt_print_u8 = imp.declare("toy_print_u8", &[uext(I8)], &[])?;
+        let rt_println_u8 = imp.declare("toy_println_u8", &[uext(I8)], &[])?;
+        let rt_print_i16 = imp.declare("toy_print_i16", &[sext(I16)], &[])?;
+        let rt_println_i16 = imp.declare("toy_println_i16", &[sext(I16)], &[])?;
+        let rt_print_u16 = imp.declare("toy_print_u16", &[uext(I16)], &[])?;
+        let rt_println_u16 = imp.declare("toy_println_u16", &[uext(I16)], &[])?;
+        let rt_print_i32 = imp.declare("toy_print_i32", &[sext(I32)], &[])?;
+        let rt_println_i32 = imp.declare("toy_println_i32", &[sext(I32)], &[])?;
+        let rt_print_u32 = imp.declare("toy_print_u32", &[uext(I32)], &[])?;
+        let rt_println_u32 = imp.declare("toy_println_u32", &[uext(I32)], &[])?;
 
         // #121 Phase B-min: active-allocator stack helpers. The stack
         // lives in the `toylang_rt` crate as a 64-deep fixed buffer
         // of u64 handles. Default allocator handle is the sentinel
         // 0 (which the heap path already routes to libc malloc).
-        let mut alloc_push_sig = Signature::new(call_conv);
-        alloc_push_sig.params.push(AbiParam::new(types::I64));
-        let rt_alloc_push = declare_helper(&mut module, "toy_alloc_push", &alloc_push_sig)?;
+        let rt_alloc_push = imp.declare("toy_alloc_push", &[abi(I64)], &[])?;
+        let rt_alloc_pop = imp.declare("toy_alloc_pop", &[], &[])?;
+        let rt_alloc_current = imp.declare("toy_alloc_current", &[], &[abi(I64)])?;
 
-        let alloc_pop_sig = Signature::new(call_conv);
-        let rt_alloc_pop = declare_helper(&mut module, "toy_alloc_pop", &alloc_pop_sig)?;
-
-        let mut alloc_current_sig = Signature::new(call_conv);
-        alloc_current_sig.returns.push(AbiParam::new(types::I64));
-        let rt_alloc_current = declare_helper(&mut module, "toy_alloc_current", &alloc_current_sig)?;
-
-        // Dispatched alloc / realloc / free.
-        // Signatures: (handle: u64, ...) -> ptr (or void for free).
-        // (handle, size, site, file) -> ptr. `site` is MEMORY_PROFILING
-        // M2's packed source position; `file` the `.rodata` name of the
-        // site's file (DEBUG-OBS D2), null when the site has none.
-        // Both ignored unless profiling is enabled.
-        let mut dispatched_alloc_sig = Signature::new(call_conv);
-        dispatched_alloc_sig.params.push(AbiParam::new(types::I64));
-        dispatched_alloc_sig.params.push(AbiParam::new(types::I64));
-        dispatched_alloc_sig.params.push(AbiParam::new(types::I64));
-        dispatched_alloc_sig.params.push(AbiParam::new(types::I64));
-        dispatched_alloc_sig.returns.push(AbiParam::new(types::I64));
-        let rt_dispatched_alloc = declare_helper(&mut module, "toy_dispatched_alloc", &dispatched_alloc_sig)?;
-
-        let mut dispatched_realloc_sig = Signature::new(call_conv);
-        dispatched_realloc_sig.params.push(AbiParam::new(types::I64));
-        dispatched_realloc_sig.params.push(AbiParam::new(types::I64));
-        dispatched_realloc_sig.params.push(AbiParam::new(types::I64));
-        // The site and its file, used only when `ptr` is null — a
-        // resize keeps the site its block already had, and the null
-        // form is an allocation (M2 + D2).
-        dispatched_realloc_sig.params.push(AbiParam::new(types::I64));
-        dispatched_realloc_sig.params.push(AbiParam::new(types::I64));
-        dispatched_realloc_sig.returns.push(AbiParam::new(types::I64));
-        let rt_dispatched_realloc = declare_helper(&mut module, "toy_dispatched_realloc", &dispatched_realloc_sig)?;
-
-        let mut dispatched_free_sig = Signature::new(call_conv);
-        dispatched_free_sig.params.push(AbiParam::new(types::I64));
-        dispatched_free_sig.params.push(AbiParam::new(types::I64));
-        let rt_dispatched_free = declare_helper(&mut module, "toy_dispatched_free", &dispatched_free_sig)?;
+        // Dispatched alloc / realloc / free, all `(handle: u64, ...)`.
+        // `site` is MEMORY_PROFILING M2's packed source position and
+        // `file` the `.rodata` name of the site's file (DEBUG-OBS D2),
+        // null when the site has none; both are ignored unless
+        // profiling is enabled. On realloc the pair is used only when
+        // `ptr` is null — a resize keeps the site its block already
+        // had, and the null form is an allocation.
+        let rt_dispatched_alloc = imp.declare(
+            "toy_dispatched_alloc",
+            &[abi(I64), abi(I64), abi(I64), abi(I64)],
+            &[abi(I64)],
+        )?;
+        let rt_dispatched_realloc = imp.declare(
+            "toy_dispatched_realloc",
+            &[abi(I64), abi(I64), abi(I64), abi(I64), abi(I64)],
+            &[abi(I64)],
+        )?;
+        let rt_dispatched_free =
+            imp.declare("toy_dispatched_free", &[abi(I64), abi(I64)], &[])?;
 
         // MEMORY_PROFILING M4. `toy_prof_stat(which) -> u64` reads one
         // counter, selected by `MemStat::code`; `toy_prof_force_counting()`
         // makes the runtime keep counting even when no report was asked
         // for, and is emitted at the top of `main` only when the program
         // reads a counter.
-        let mut prof_stat_sig = Signature::new(call_conv);
-        prof_stat_sig.params.push(AbiParam::new(types::I64));
-        prof_stat_sig.returns.push(AbiParam::new(types::I64));
-        let rt_prof_stat = declare_helper(&mut module, "toy_prof_stat", &prof_stat_sig)?;
-
-        let prof_force_sig = Signature::new(call_conv);
-        let rt_prof_force_counting =
-            declare_helper(&mut module, "toy_prof_force_counting", &prof_force_sig)?;
+        let rt_prof_stat = imp.declare("toy_prof_stat", &[abi(I64)], &[abi(I64)])?;
+        let rt_prof_force_counting = imp.declare("toy_prof_force_counting", &[], &[])?;
 
         // ALLOC-CONTRACT-SUGAR. `toy_panic_alloc_budget(stat, entry,
-        // current, limit)` prints the same sentence the interpreter
-        // prints for a violated allocation budget and exits. It takes
-        // the raw readings rather than a formatted string because
-        // `Terminator::Panic` can only carry a static one, which is
-        // the whole reason this path exists.
-        //
-        // DEBUG-OBS D3 added the two frame halves: the readings are
-        // formatted between a static prefix and suffix so the result
-        // sits inside the same `Error at file:line:col` frame every
-        // other diagnostic uses.
-        let mut alloc_budget_sig = Signature::new(call_conv);
-        for _ in 0..6 {
-            alloc_budget_sig.params.push(AbiParam::new(types::I64));
-        }
+        // current, limit, prefix, suffix)` prints the same sentence the
+        // interpreter prints for a violated allocation budget and exits.
+        // It takes the raw readings rather than a formatted string
+        // because `Terminator::Panic` can only carry a static one, which
+        // is the whole reason this path exists. DEBUG-OBS D3 added the
+        // two frame halves: the readings are formatted between a static
+        // prefix and suffix so the result sits inside the same
+        // `Error at file:line:col` frame every other diagnostic uses.
         let rt_panic_alloc_budget =
-            declare_helper(&mut module, "toy_panic_alloc_budget", &alloc_budget_sig)?;
-
+            imp.declare("toy_panic_alloc_budget", &[abi(I64); 6], &[])?;
         // DEBUG-OBS D3. `toy_panic_at(text)` writes an already-rendered
         // diagnostic to stderr and exits. The whole text is static, so
         // the helper takes one pointer and does no formatting.
-        let mut panic_at_sig = Signature::new(call_conv);
-        panic_at_sig.params.push(AbiParam::new(types::I64));
-        let rt_panic_at = declare_helper(&mut module, "toy_panic_at", &panic_at_sig)?;
-
+        let rt_panic_at = imp.declare("toy_panic_at", &[abi(I64)], &[])?;
         // DEBUG-OBS D5. `toy_backtrace_str()` returns a toylang `str`
-        // built from the shadow stack.
-        let mut backtrace_sig = Signature::new(call_conv);
-        backtrace_sig.returns.push(AbiParam::new(types::I64));
-        let rt_backtrace_str =
-            declare_helper(&mut module, "toy_backtrace_str", &backtrace_sig)?;
-
-        // DEBUG-OBS D6.
-        let recursion_sig = Signature::new(call_conv);
-        let rt_panic_recursion =
-            declare_helper(&mut module, "toy_panic_recursion", &recursion_sig)?;
-
+        // built from the shadow stack. D6 reports a runaway recursion.
+        let rt_backtrace_str = imp.declare("toy_backtrace_str", &[], &[abi(I64)])?;
+        let rt_panic_recursion = imp.declare("toy_panic_recursion", &[], &[])?;
         // A value-carrying trap: kind, the two operands, and the two
-        // static halves of the frame around the message.
-        let mut panic_values_sig = Signature::new(call_conv);
-        for _ in 0..5 {
-            panic_values_sig.params.push(AbiParam::new(types::I64));
-        }
-        let rt_panic_values =
-            declare_helper(&mut module, "toy_panic_values", &panic_values_sig)?;
-
-        let mut panic_dynamic_sig = Signature::new(call_conv);
-        for _ in 0..3 {
-            panic_dynamic_sig.params.push(AbiParam::new(types::I64));
-        }
-        let rt_panic_dynamic =
-            declare_helper(&mut module, "toy_panic_dynamic", &panic_dynamic_sig)?;
+        // static halves of the frame around the message. `panic_dynamic`
+        // is the same for a message the program built.
+        let rt_panic_values = imp.declare("toy_panic_values", &[abi(I64); 5], &[])?;
+        let rt_panic_dynamic = imp.declare("toy_panic_dynamic", &[abi(I64); 3], &[])?;
 
         // MEMORY_PROFILING M3 residual. `toy_record_allocator_layout`
         // takes the str name as an i64 pointer (the `[bytes][NUL][u64
         // len]` layout, NUL-terminated so C can read it as `const char*`)
         // plus the four layout numbers, and records nothing but the
         // report entry.
-        let mut record_allocator_layout_sig = Signature::new(call_conv);
-        record_allocator_layout_sig.params.push(AbiParam::new(types::I64));
-        record_allocator_layout_sig.params.push(AbiParam::new(types::I64));
-        record_allocator_layout_sig.params.push(AbiParam::new(types::I64));
-        record_allocator_layout_sig.params.push(AbiParam::new(types::I64));
-        record_allocator_layout_sig.params.push(AbiParam::new(types::I64));
         let rt_record_allocator_layout =
-            declare_helper(&mut module, "toy_record_allocator_layout", &record_allocator_layout_sig)?;
+            imp.declare("toy_record_allocator_layout", &[abi(I64); 5], &[])?;
 
-        // STR-INTERP-AOT: str runtime helpers. `concat` takes two
-        // str pointers (= u64 in cranelift IR) and returns one;
-        // each `to_string_*` takes its native scalar width and
-        // returns a str pointer. The narrow-int variants ride on
-        // the same sext / uext convention as the print helpers
-        // (the C ABI side reads register-extended bits).
-        // `a == b` on two str values: both handles in, bool out.
-        let mut str_eq_sig = Signature::new(call_conv);
-        str_eq_sig.params.push(AbiParam::new(types::I64));
-        str_eq_sig.params.push(AbiParam::new(types::I64));
-        str_eq_sig.returns.push(AbiParam::new(types::I8));
-        let rt_str_eq = declare_helper(&mut module, "toy_str_eq", &str_eq_sig)?;
-
-        // `__builtin_str_from_bytes(p, len) -> str`: byte pointer plus
-        // length in, str runtime value out.
-        let mut str_from_bytes_sig = Signature::new(call_conv);
-        str_from_bytes_sig.params.push(AbiParam::new(types::I64));
-        str_from_bytes_sig.params.push(AbiParam::new(types::I64));
-        str_from_bytes_sig.returns.push(AbiParam::new(types::I64));
+        // STR-INTERP-AOT: str runtime helpers. A str is one pointer, so
+        // `eq` takes two and answers a bool; `from_bytes(p, len)` and
+        // `concat` return one. Each `to_string_*` takes its native
+        // scalar width and returns a str pointer, the narrow variants
+        // riding the same sext / uext convention as the print helpers.
+        let rt_str_eq = imp.declare("toy_str_eq", &[abi(I64), abi(I64)], &[abi(I8)])?;
         let rt_str_from_bytes =
-            declare_helper(&mut module, "toy_str_from_bytes", &str_from_bytes_sig)?;
-
-        let mut str_concat_sig = Signature::new(call_conv);
-        str_concat_sig.params.push(AbiParam::new(types::I64));
-        str_concat_sig.params.push(AbiParam::new(types::I64));
-        str_concat_sig.returns.push(AbiParam::new(types::I64));
-        let rt_str_concat = declare_helper(&mut module, "toy_str_concat", &str_concat_sig)?;
-
-        let mut to_string_i64_sig = Signature::new(call_conv);
-        to_string_i64_sig.params.push(AbiParam::new(types::I64));
-        to_string_i64_sig.returns.push(AbiParam::new(types::I64));
-        let rt_to_string_i64 = declare_helper(&mut module, "toy_to_string_i64", &to_string_i64_sig)?;
-        let rt_to_string_u64 = declare_helper(&mut module, "toy_to_string_u64", &to_string_i64_sig)?;
-        let rt_to_string_str = declare_helper(&mut module, "toy_to_string_str", &to_string_i64_sig)?;
-
-        let mut to_string_f64_sig = Signature::new(call_conv);
-        to_string_f64_sig.params.push(AbiParam::new(types::F64));
-        to_string_f64_sig.returns.push(AbiParam::new(types::I64));
-        let rt_to_string_f64 = declare_helper(&mut module, "toy_to_string_f64", &to_string_f64_sig)?;
+            imp.declare("toy_str_from_bytes", &[abi(I64), abi(I64)], &[abi(I64)])?;
+        let rt_str_concat =
+            imp.declare("toy_str_concat", &[abi(I64), abi(I64)], &[abi(I64)])?;
+        let rt_to_string_i64 = imp.declare("toy_to_string_i64", &[abi(I64)], &[abi(I64)])?;
+        let rt_to_string_u64 = imp.declare("toy_to_string_u64", &[abi(I64)], &[abi(I64)])?;
+        let rt_to_string_str = imp.declare("toy_to_string_str", &[abi(I64)], &[abi(I64)])?;
+        let rt_to_string_f64 = imp.declare("toy_to_string_f64", &[abi(F64)], &[abi(I64)])?;
         // SIMD-F32: to_string takes the f32 at its native width.
-        let mut to_string_f32_sig = Signature::new(call_conv);
-        to_string_f32_sig.params.push(AbiParam::new(types::F32));
-        to_string_f32_sig.returns.push(AbiParam::new(types::I64));
-        let rt_to_string_f32 = declare_helper(&mut module, "toy_to_string_f32", &to_string_f32_sig)?;
-        let mut to_string_vec_sig = Signature::new(call_conv);
-        to_string_vec_sig.params.push(AbiParam::new(types::I64));
-        to_string_vec_sig.params.push(AbiParam::new(types::I64));
-        to_string_vec_sig.returns.push(AbiParam::new(types::I64));
+        let rt_to_string_f32 = imp.declare("toy_to_string_f32", &[abi(F32)], &[abi(I64)])?;
         let rt_to_string_vec =
-            declare_helper(&mut module, "toy_to_string_vec", &to_string_vec_sig)?;
+            imp.declare("toy_to_string_vec", &[abi(I64), abi(I64)], &[abi(I64)])?;
+        let rt_to_string_bool = imp.declare("toy_to_string_bool", &[uext(I8)], &[abi(I64)])?;
+        let rt_to_string_i8 = imp.declare("toy_to_string_i8", &[sext(I8)], &[abi(I64)])?;
+        let rt_to_string_u8 = imp.declare("toy_to_string_u8", &[uext(I8)], &[abi(I64)])?;
+        let rt_to_string_i16 = imp.declare("toy_to_string_i16", &[sext(I16)], &[abi(I64)])?;
+        let rt_to_string_u16 = imp.declare("toy_to_string_u16", &[uext(I16)], &[abi(I64)])?;
+        let rt_to_string_i32 = imp.declare("toy_to_string_i32", &[sext(I32)], &[abi(I64)])?;
+        let rt_to_string_u32 = imp.declare("toy_to_string_u32", &[uext(I32)], &[abi(I64)])?;
 
-        let mut to_string_bool_sig = Signature::new(call_conv);
-        to_string_bool_sig.params.push(AbiParam::new(types::I8).uext());
-        to_string_bool_sig.returns.push(AbiParam::new(types::I64));
-        let rt_to_string_bool = declare_helper(&mut module, "toy_to_string_bool", &to_string_bool_sig)?;
-
-        let mut to_string_i8_sig = Signature::new(call_conv);
-        to_string_i8_sig.params.push(AbiParam::new(types::I8).sext());
-        to_string_i8_sig.returns.push(AbiParam::new(types::I64));
-        let rt_to_string_i8 = declare_helper(&mut module, "toy_to_string_i8", &to_string_i8_sig)?;
-
-        let mut to_string_u8_sig = Signature::new(call_conv);
-        to_string_u8_sig.params.push(AbiParam::new(types::I8).uext());
-        to_string_u8_sig.returns.push(AbiParam::new(types::I64));
-        let rt_to_string_u8 = declare_helper(&mut module, "toy_to_string_u8", &to_string_u8_sig)?;
-
-        let mut to_string_i16_sig = Signature::new(call_conv);
-        to_string_i16_sig.params.push(AbiParam::new(types::I16).sext());
-        to_string_i16_sig.returns.push(AbiParam::new(types::I64));
-        let rt_to_string_i16 = declare_helper(&mut module, "toy_to_string_i16", &to_string_i16_sig)?;
-
-        let mut to_string_u16_sig = Signature::new(call_conv);
-        to_string_u16_sig.params.push(AbiParam::new(types::I16).uext());
-        to_string_u16_sig.returns.push(AbiParam::new(types::I64));
-        let rt_to_string_u16 = declare_helper(&mut module, "toy_to_string_u16", &to_string_u16_sig)?;
-
-        let mut to_string_i32_sig = Signature::new(call_conv);
-        to_string_i32_sig.params.push(AbiParam::new(types::I32).sext());
-        to_string_i32_sig.returns.push(AbiParam::new(types::I64));
-        let rt_to_string_i32 = declare_helper(&mut module, "toy_to_string_i32", &to_string_i32_sig)?;
-
-        let mut to_string_u32_sig = Signature::new(call_conv);
-        to_string_u32_sig.params.push(AbiParam::new(types::I32).uext());
-        to_string_u32_sig.returns.push(AbiParam::new(types::I64));
-        let rt_to_string_u32 = declare_helper(&mut module, "toy_to_string_u32", &to_string_u32_sig)?;
-
-        let mut format_int_sig = Signature::new(call_conv);
-        format_int_sig.params.push(AbiParam::new(types::I64));
-        format_int_sig.params.push(AbiParam::new(types::I64));
-        format_int_sig.params.push(AbiParam::new(types::I64));
-        format_int_sig.returns.push(AbiParam::new(types::I64));
-        let rt_format_i64 = declare_helper(&mut module, "toy_format_i64", &format_int_sig)?;
-        let rt_format_u64 = declare_helper(&mut module, "toy_format_u64", &format_int_sig)?;
-
-        let mut format_f64_sig = Signature::new(call_conv);
-        format_f64_sig.params.push(AbiParam::new(types::F64));
-        format_f64_sig.params.push(AbiParam::new(types::I64));
-        format_f64_sig.returns.push(AbiParam::new(types::I64));
-        let rt_format_f64 = declare_helper(&mut module, "toy_format_f64", &format_f64_sig)?;
+        // STR-INTERP-FMT: `__builtin_format`. The int form takes the
+        // value, its width in bits, and the packed spec; the others
+        // take the value and the spec.
+        let format_int = [abi(I64), abi(I64), abi(I64)];
+        let rt_format_i64 = imp.declare("toy_format_i64", &format_int, &[abi(I64)])?;
+        let rt_format_u64 = imp.declare("toy_format_u64", &format_int, &[abi(I64)])?;
+        let rt_format_f64 =
+            imp.declare("toy_format_f64", &[abi(F64), abi(I64)], &[abi(I64)])?;
         // STDLIB-NUMERIC N5: the f32 twin. Single precision all the
         // way through -- promoting to f64 first prints a different
         // number.
-        let mut format_f32_sig = Signature::new(call_conv);
-        format_f32_sig.params.push(AbiParam::new(types::F32));
-        format_f32_sig.params.push(AbiParam::new(types::I64));
-        format_f32_sig.returns.push(AbiParam::new(types::I64));
-        let rt_format_f32 = declare_helper(&mut module, "toy_format_f32", &format_f32_sig)?;
-
-        let mut format_bool_sig = Signature::new(call_conv);
-        format_bool_sig.params.push(AbiParam::new(types::I8).uext());
-        format_bool_sig.params.push(AbiParam::new(types::I64));
-        format_bool_sig.returns.push(AbiParam::new(types::I64));
-        let rt_format_bool = declare_helper(&mut module, "toy_format_bool", &format_bool_sig)?;
-
-        let mut format_str_sig = Signature::new(call_conv);
-        format_str_sig.params.push(AbiParam::new(types::I64));
-        format_str_sig.params.push(AbiParam::new(types::I64));
-        format_str_sig.returns.push(AbiParam::new(types::I64));
-        let rt_format_str = declare_helper(&mut module, "toy_format_str", &format_str_sig)?;
+        let rt_format_f32 =
+            imp.declare("toy_format_f32", &[abi(F32), abi(I64)], &[abi(I64)])?;
+        let rt_format_bool =
+            imp.declare("toy_format_bool", &[uext(I8), abi(I64)], &[abi(I64)])?;
+        let rt_format_str =
+            imp.declare("toy_format_str", &[abi(I64), abi(I64)], &[abi(I64)])?;
 
         Ok(Self {
             module,
@@ -1783,70 +1527,15 @@ impl<M: Module> CodegenSession<M> {
         ir_module: &IrModule,
         func_id: FuncId,
     ) -> Result<(), String> {
-        let func = ir_module.function(func_id);
+        let export_name = ir_module.function(func_id).export_name.clone();
         let cl_id = *self
             .fn_ids
             .get(&func_id)
-            .ok_or_else(|| format!("function {} not declared", func.export_name))?;
-        let mut ctx = Context::new();
-        ctx.func.signature = self.cranelift_signature_with_writeback(
-            ir_module,
-            &func.params,
-            func.return_type,
-            &func.self_writeback_types,
-        );
-        // Pre-declare every same-module function as an import on this
-        // function so `Call` lowering doesn't have to re-borrow the
-        // module mid-emission.
-        let imports = self.declare_imports(&mut ctx.func);
-        let panic_imports = self.declare_panic_imports(ir_module, func_id, &mut ctx.func);
-        let frame_imports = self.declare_frame_imports(ir_module, func_id, &mut ctx.func);
-        let shadow = self.declare_shadow_imports(ir_module, func_id, &mut ctx.func);
-        let alloc_file_imports = self.declare_alloc_file_imports(ir_module, func_id, &mut ctx.func);
-        let print_imports = self.declare_print_imports(ir_module, func_id, &mut ctx.func);
-        let raw_print_imports =
-            self.declare_raw_print_imports(ir_module, func_id, &mut ctx.func);
-        let const_str_bytes_imports =
-            self.declare_const_str_bytes_imports(ir_module, func_id, &mut ctx.func);
-        let vtable_imports =
-            self.declare_vtable_imports(ir_module, func_id, &mut ctx.func);
-        let runtime_refs = self.declare_runtime_refs(&mut ctx.func);
-        let mut builder_ctx = FunctionBuilderContext::new();
-        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
-        let result = {
-            let mut ctxt = LowerCtx::new(
-                &mut builder,
-                ir_module,
-                func_id,
-                &imports,
-                &panic_imports,
-                &frame_imports,
-                &shadow,
-                &alloc_file_imports,
-                &print_imports,
-                &raw_print_imports,
-                &const_str_bytes_imports,
-                &vtable_imports,
-                &runtime_refs,
-            );
-            ctxt.lower()
-        };
-        // Only finalize a function that was lowered completely.
-        // `finalize()` asserts every block is sealed and filled, and
-        // `lower()` returns early on an unsupported construct — leaving
-        // the current block without a terminator. Finalizing anyway
-        // replaced an intended, specific rejection ("compiler MVP does
-        // not support `%` on f64") with `FunctionBuilder finalized, but
-        // block block0 is not sealed`, an assertion from a dependency
-        // that says nothing about the program. On the error path the
-        // function is discarded, so there is nothing to finalize.
-        if result.is_ok() {
-            builder.finalize();
-        }
-        result?;
+            .ok_or_else(|| format!("function {export_name} not declared"))?;
+        let mut ctx = self.prepare_function_context(ir_module, func_id)?;
         self.module
             .define_function(cl_id, &mut ctx)
-            .map_err(|e| format!("define {}: {e}", func.export_name))?;
+            .map_err(|e| format!("define {export_name}: {e}"))?;
         Ok(())
     }
 
@@ -1924,60 +1613,7 @@ impl<M: Module> CodegenSession<M> {
         ir_module: &IrModule,
         func_id: FuncId,
     ) -> Result<String, String> {
-        let func = ir_module.function(func_id);
-        let mut ctx = Context::new();
-        ctx.func.signature = self.cranelift_signature_with_writeback(
-            ir_module,
-            &func.params,
-            func.return_type,
-            &func.self_writeback_types,
-        );
-        let imports = self.declare_imports(&mut ctx.func);
-        let panic_imports = self.declare_panic_imports(ir_module, func_id, &mut ctx.func);
-        let frame_imports = self.declare_frame_imports(ir_module, func_id, &mut ctx.func);
-        let shadow = self.declare_shadow_imports(ir_module, func_id, &mut ctx.func);
-        let alloc_file_imports = self.declare_alloc_file_imports(ir_module, func_id, &mut ctx.func);
-        let print_imports = self.declare_print_imports(ir_module, func_id, &mut ctx.func);
-        let raw_print_imports =
-            self.declare_raw_print_imports(ir_module, func_id, &mut ctx.func);
-        let const_str_bytes_imports =
-            self.declare_const_str_bytes_imports(ir_module, func_id, &mut ctx.func);
-        let vtable_imports =
-            self.declare_vtable_imports(ir_module, func_id, &mut ctx.func);
-        let runtime_refs = self.declare_runtime_refs(&mut ctx.func);
-        let mut builder_ctx = FunctionBuilderContext::new();
-        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
-        let result = {
-            let mut ctxt = LowerCtx::new(
-                &mut builder,
-                ir_module,
-                func_id,
-                &imports,
-                &panic_imports,
-                &frame_imports,
-                &shadow,
-                &alloc_file_imports,
-                &print_imports,
-                &raw_print_imports,
-                &const_str_bytes_imports,
-                &vtable_imports,
-                &runtime_refs,
-            );
-            ctxt.lower()
-        };
-        // Only finalize a function that was lowered completely.
-        // `finalize()` asserts every block is sealed and filled, and
-        // `lower()` returns early on an unsupported construct — leaving
-        // the current block without a terminator. Finalizing anyway
-        // replaced an intended, specific rejection ("compiler MVP does
-        // not support `%` on f64") with `FunctionBuilder finalized, but
-        // block block0 is not sealed`, an assertion from a dependency
-        // that says nothing about the program. On the error path the
-        // function is discarded, so there is nothing to finalize.
-        if result.is_ok() {
-            builder.finalize();
-        }
-        result?;
+        let ctx = self.prepare_function_context(ir_module, func_id)?;
         Ok(format!("{}", ctx.func.display()))
     }
 

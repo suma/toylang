@@ -1,11 +1,18 @@
 use crate::ast::*;
 use crate::type_decl::*;
 
-// Builtin function signature definition
+/// One builtin's declared shape.
+///
+/// Only `func` and `return_type` are consulted: the lookup in
+/// `visit_builtin_call_impl` finds the row by `func` and answers with
+/// `return_type` **without visiting the arguments**. `arg_types`
+/// therefore documents the intended prototype rather than enforcing
+/// it — the builtins whose arguments really are checked go through
+/// `check_memory_builtin_args`. There used to be an `arg_count`
+/// beside it, restated by hand in every row and read by nothing.
 #[derive(Debug, Clone)]
 pub struct BuiltinFunctionSignature {
     pub func: BuiltinFunction,
-    pub arg_count: usize,
     pub arg_types: Vec<TypeDecl>,
     pub return_type: TypeDecl,
 }

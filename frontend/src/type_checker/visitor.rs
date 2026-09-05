@@ -121,17 +121,24 @@ impl TupleStructRewrites {
     }
 }
 
+/// One row of the builtin catalogue, so a row reads as the prototype
+/// it stands for instead of four labelled fields.
+fn sig(
+    func: BuiltinFunction,
+    arg_types: Vec<TypeDecl>,
+    return_type: TypeDecl,
+) -> BuiltinFunctionSignature {
+    BuiltinFunctionSignature { func, arg_types, return_type }
+}
+
 /// `() -> u64` for every allocation counter (MEMORY_PROFILING M4).
 ///
 /// Derived from `MemStat::ALL` so adding a counter cannot leave the
 /// type checker behind.
 fn frontend_mem_stat_signatures() -> impl Iterator<Item = BuiltinFunctionSignature> {
-    MemStat::ALL.into_iter().map(|stat| BuiltinFunctionSignature {
-        func: BuiltinFunction::MemStat(stat),
-        arg_count: 0,
-        arg_types: vec![],
-        return_type: TypeDecl::UInt64,
-    })
+    MemStat::ALL
+        .into_iter()
+        .map(|stat| sig(BuiltinFunction::MemStat(stat), vec![], TypeDecl::UInt64))
 }
 
 impl<'a> TypeCheckerVisitor<'a> {
@@ -258,36 +265,15 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     pub(super) fn create_builtin_function_signatures() -> Vec<BuiltinFunctionSignature> {
         vec![
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::HeapAlloc,
-                arg_count: 1,
-                arg_types: vec![TypeDecl::UInt64],
-                return_type: TypeDecl::Ptr,
-            },
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::HeapFree,
-                arg_count: 1,
-                arg_types: vec![TypeDecl::Ptr],
-                return_type: TypeDecl::Unit,
-            },
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::HeapRealloc,
-                arg_count: 2,
-                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64],
-                return_type: TypeDecl::Ptr,
-            },
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::PtrRead,
-                arg_count: 2,
-                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64],
-                return_type: TypeDecl::UInt64,
-            },
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::PtrWrite,
-                arg_count: 3,
-                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64, TypeDecl::UInt64],
-                return_type: TypeDecl::Unit,
-            },
+            sig(BuiltinFunction::HeapAlloc, vec![TypeDecl::UInt64], TypeDecl::Ptr),
+            sig(BuiltinFunction::HeapFree, vec![TypeDecl::Ptr], TypeDecl::Unit),
+            sig(BuiltinFunction::HeapRealloc, vec![TypeDecl::Ptr, TypeDecl::UInt64], TypeDecl::Ptr),
+            sig(BuiltinFunction::PtrRead, vec![TypeDecl::Ptr, TypeDecl::UInt64], TypeDecl::UInt64),
+            sig(
+                BuiltinFunction::PtrWrite,
+                vec![TypeDecl::Ptr, TypeDecl::UInt64, TypeDecl::UInt64],
+                TypeDecl::Unit,
+            ),
             // DATA-ORIENTED Phase 2: the `SoaVec<T>` column
             // accessors. Like `__builtin_ptr_read`, the declared
             // return type is only the fallback — the annotation on
@@ -295,262 +281,154 @@ impl<'a> TypeCheckerVisitor<'a> {
             // `visit_builtin_call_impl`), and the value argument of
             // `soa_write` is any type at all, so its slot here is
             // nominal.
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::SoaRead,
-                arg_count: 3,
-                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64, TypeDecl::UInt64],
-                return_type: TypeDecl::UInt64,
-            },
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::SoaWrite,
-                arg_count: 4,
-                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64, TypeDecl::UInt64, TypeDecl::UInt64],
-                return_type: TypeDecl::Unit,
-            },
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::PtrIsNull,
-                arg_count: 1,
-                arg_types: vec![TypeDecl::Ptr],
-                return_type: TypeDecl::Bool,
-            },
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::PtrEq,
-                arg_count: 2,
-                arg_types: vec![TypeDecl::Ptr, TypeDecl::Ptr],
-                return_type: TypeDecl::Bool,
-            },
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::NullPtr,
-                arg_count: 0,
-                arg_types: vec![],
-                return_type: TypeDecl::Ptr,
-            },
+            sig(
+                BuiltinFunction::SoaRead,
+                vec![TypeDecl::Ptr, TypeDecl::UInt64, TypeDecl::UInt64],
+                TypeDecl::UInt64,
+            ),
+            sig(
+                BuiltinFunction::SoaWrite,
+                vec![TypeDecl::Ptr, TypeDecl::UInt64, TypeDecl::UInt64, TypeDecl::UInt64],
+                TypeDecl::Unit,
+            ),
+            sig(BuiltinFunction::PtrIsNull, vec![TypeDecl::Ptr], TypeDecl::Bool),
+            sig(BuiltinFunction::PtrEq, vec![TypeDecl::Ptr, TypeDecl::Ptr], TypeDecl::Bool),
+            sig(BuiltinFunction::NullPtr, vec![], TypeDecl::Ptr),
             // Pointer arithmetic (MEMORY_PROFILING M3 residual): make an
             // interior pointer that addresses `base + offset`, so an
             // offset-based region allocator can hand out sub-blocks of one
             // allocation. `ptr` is pointer-sized (u64) in every backend.
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::PtrOffset,
-                arg_count: 2,
-                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64],
-                return_type: TypeDecl::Ptr,
-            },
+            sig(BuiltinFunction::PtrOffset, vec![TypeDecl::Ptr, TypeDecl::UInt64], TypeDecl::Ptr),
             // String → pointer conversion. The pointer's lifetime is
             // tied to the input string; backends differ on the pointee
             // representation (raw NUL-terminated bytes for AOT/JIT,
             // typed-slot Object::U8 entries for the interpreter).
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::StrToPtr,
-                arg_count: 1,
-                arg_types: vec![TypeDecl::String],
-                return_type: TypeDecl::Ptr,
-            },
+            sig(BuiltinFunction::StrToPtr, vec![TypeDecl::String], TypeDecl::Ptr),
             // String → byte length. AOT loads the 8-byte length field
             // that lives at the str value's address (the .rodata
             // layout per literal is `[bytes][NUL][u64 len]`); the
             // str runtime value points at the len field). Interpreter
             // returns the underlying String's `.bytes().len()`.
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::StrLen,
-                arg_count: 1,
-                arg_types: vec![TypeDecl::String],
-                return_type: TypeDecl::UInt64,
-            },
+            sig(BuiltinFunction::StrLen, vec![TypeDecl::String], TypeDecl::UInt64),
             // Bytes -> str. The only way to build a `str` from data
             // computed at runtime; `String` needs it to render itself.
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::StrFromBytes,
-                arg_count: 2,
-                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64],
-                return_type: TypeDecl::String,
-            },
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::MemCopy,
-                arg_count: 3,
-                arg_types: vec![TypeDecl::Ptr, TypeDecl::Ptr, TypeDecl::UInt64],
-                return_type: TypeDecl::Unit,
-            },
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::MemMove,
-                arg_count: 3,
-                arg_types: vec![TypeDecl::Ptr, TypeDecl::Ptr, TypeDecl::UInt64],
-                return_type: TypeDecl::Unit,
-            },
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::MemSet,
-                arg_count: 3,
-                // MEMORY-ACCESS M0: the fill value is one byte, as
-                // `docs/language.md` and the AST comment always said.
-                // It used to be `u64` here and each lane truncated it
-                // its own way.
-                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt8, TypeDecl::UInt64],
-                return_type: TypeDecl::Unit,
-            },
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::MemEq,
-                arg_count: 3,
-                arg_types: vec![TypeDecl::Ptr, TypeDecl::Ptr, TypeDecl::UInt64],
-                return_type: TypeDecl::Bool,
-            },
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::MemFind,
-                arg_count: 3,
-                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64, TypeDecl::UInt8],
-                return_type: TypeDecl::UInt64,
-            },
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::MemFindSeq,
-                arg_count: 4,
-                arg_types: vec![
-                    TypeDecl::Ptr,
-                    TypeDecl::UInt64,
-                    TypeDecl::Ptr,
-                    TypeDecl::UInt64,
-                ],
-                return_type: TypeDecl::UInt64,
-            },
+            sig(
+                BuiltinFunction::StrFromBytes,
+                vec![TypeDecl::Ptr, TypeDecl::UInt64],
+                TypeDecl::String,
+            ),
+            sig(
+                BuiltinFunction::MemCopy,
+                vec![TypeDecl::Ptr, TypeDecl::Ptr, TypeDecl::UInt64],
+                TypeDecl::Unit,
+            ),
+            sig(
+                BuiltinFunction::MemMove,
+                vec![TypeDecl::Ptr, TypeDecl::Ptr, TypeDecl::UInt64],
+                TypeDecl::Unit,
+            ),
+            // MEMORY-ACCESS M0: the fill value is one byte, as
+            // `docs/language.md` and the AST comment always said.
+            // It used to be `u64` here and each lane truncated it
+            // its own way.
+            sig(
+                BuiltinFunction::MemSet,
+                vec![TypeDecl::Ptr, TypeDecl::UInt8, TypeDecl::UInt64],
+                TypeDecl::Unit,
+            ),
+            sig(
+                BuiltinFunction::MemEq,
+                vec![TypeDecl::Ptr, TypeDecl::Ptr, TypeDecl::UInt64],
+                TypeDecl::Bool,
+            ),
+            sig(
+                BuiltinFunction::MemFind,
+                vec![TypeDecl::Ptr, TypeDecl::UInt64, TypeDecl::UInt8],
+                TypeDecl::UInt64,
+            ),
+            sig(
+                BuiltinFunction::MemFindSeq,
+                vec![TypeDecl::Ptr, TypeDecl::UInt64, TypeDecl::Ptr, TypeDecl::UInt64],
+                TypeDecl::UInt64,
+            ),
             // Allocator handle builtins. The Allocator value itself is opaque at the
             // language level; `with allocator = expr { ... }` requires the RHS to be
             // of type Allocator and type checking enforces this.
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::CurrentAllocator,
-                arg_count: 0,
-                arg_types: vec![],
-                return_type: TypeDecl::Allocator,
-            },
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::DefaultAllocator,
-                arg_count: 0,
-                arg_types: vec![],
-                return_type: TypeDecl::Allocator,
-            },
+            sig(BuiltinFunction::CurrentAllocator, vec![], TypeDecl::Allocator),
+            sig(BuiltinFunction::DefaultAllocator, vec![], TypeDecl::Allocator),
             // `print` / `println` accept any value. arg_types is informational
             // only (visit_builtin_call does not enforce it), so `Unknown` is
             // used as a documentation placeholder.
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::Print,
-                arg_count: 1,
-                arg_types: vec![TypeDecl::Unknown],
-                return_type: TypeDecl::Unit,
-            },
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::Println,
-                arg_count: 1,
-                arg_types: vec![TypeDecl::Unknown],
-                return_type: TypeDecl::Unit,
-            },
+            sig(BuiltinFunction::Print, vec![TypeDecl::Unknown], TypeDecl::Unit),
+            sig(BuiltinFunction::Println, vec![TypeDecl::Unknown], TypeDecl::Unit),
             // RUNTIME-LIB P0-A: the stderr pair, same shape.
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::EPrint,
-                arg_count: 1,
-                arg_types: vec![TypeDecl::Unknown],
-                return_type: TypeDecl::Unit,
-            },
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::EPrintln,
-                arg_count: 1,
-                arg_types: vec![TypeDecl::Unknown],
-                return_type: TypeDecl::Unit,
-            },
+            sig(BuiltinFunction::EPrint, vec![TypeDecl::Unknown], TypeDecl::Unit),
+            sig(BuiltinFunction::EPrintln, vec![TypeDecl::Unknown], TypeDecl::Unit),
             // `panic(msg: str)` aborts the run. The "return type" is Unknown
             // so the call expression unifies with any surrounding context
             // (e.g. `if c { panic("...") } else { 5i64 }`); the value is
             // never produced because evaluation always errors.
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::Panic,
-                arg_count: 1,
-                arg_types: vec![TypeDecl::String],
-                return_type: TypeDecl::Unknown,
-            },
+            sig(BuiltinFunction::Panic, vec![TypeDecl::String], TypeDecl::Unknown),
             // `assert(cond: bool, msg: str)` is a no-op when `cond` is true
             // and panics with `msg` when it's false. The return is `Unit`
             // (it has a normal value path) — no Unknown trick is needed.
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::Assert,
-                arg_count: 2,
-                arg_types: vec![TypeDecl::Bool, TypeDecl::String],
-                return_type: TypeDecl::Unit,
-            },
+            sig(BuiltinFunction::Assert, vec![TypeDecl::Bool, TypeDecl::String], TypeDecl::Unit),
             // `__builtin_sizeof` takes a single probe value and returns the
             // byte size of its type as u64. The arg type is not constrained
             // at signature level — visit_builtin_call leaves type validation
             // to the evaluator for generic cases.
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::SizeOf,
-                arg_count: 1,
-                arg_types: vec![TypeDecl::Unknown],
-                return_type: TypeDecl::UInt64,
-            },
+            sig(BuiltinFunction::SizeOf, vec![TypeDecl::Unknown], TypeDecl::UInt64),
             // `__builtin_to_string` formats any value as the
             // `print` / `println` display string. Powers
             // string-interpolation desugaring; the arg type is
             // intentionally Unknown so all primitives and
             // structured values are accepted.
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::ToString,
-                arg_count: 1,
-                arg_types: vec![TypeDecl::Unknown],
-                return_type: TypeDecl::String,
-            },
+            sig(BuiltinFunction::ToString, vec![TypeDecl::Unknown], TypeDecl::String),
             // DEBUG-OBS D5: `__builtin_backtrace() -> str`.
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::Backtrace,
-                arg_count: 0,
-                arg_types: vec![],
-                return_type: TypeDecl::String,
-            },
+            sig(BuiltinFunction::Backtrace, vec![], TypeDecl::String),
             // STR-INTERP-FMT: `__builtin_format(value, spec)` renders
             // `value` under the packed spec in its second argument.
             // The value type stays Unknown at signature level like
             // `ToString`'s; `visit_builtin_call` narrows it to the
             // primitives a spec can act on.
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::Format,
-                arg_count: 2,
-                arg_types: vec![TypeDecl::Unknown, TypeDecl::UInt64],
-                return_type: TypeDecl::String,
-            },
+            sig(
+                BuiltinFunction::Format,
+                vec![TypeDecl::Unknown, TypeDecl::UInt64],
+                TypeDecl::String,
+            ),
             // Allocator layout registry (MEMORY_PROFILING M3 residual).
             // `__builtin_record_allocator_layout` — a region-owning
             // allocator pushes its final layout (as individual numeric
             // fields, since the builtin takes no structs) so the report
             // can print it. `name` is a str for human-readable labels;
             // the four u64s are exactly `AllocLayout`'s numbers.
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::RecordAllocatorLayout,
-                arg_count: 5,
-                arg_types: vec![
+            sig(
+                BuiltinFunction::RecordAllocatorLayout,
+                vec![
                     TypeDecl::String,
                     TypeDecl::UInt64,
                     TypeDecl::UInt64,
                     TypeDecl::UInt64,
                     TypeDecl::UInt64,
                 ],
-                return_type: TypeDecl::Unit,
-            },
+                TypeDecl::Unit,
+            ),
             // Integer math (user-facing). Signatures use Unknown
             // because the concrete shape is `i64 -> i64` *or*
             // `u64 -> u64` (resp. `(T, T) -> T`); visit_builtin_call
             // dispatches on the actual argument type and surfaces a
             // targeted diagnostic for incompatible types.
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::Abs,
-                arg_count: 1,
-                arg_types: vec![TypeDecl::Int64],
-                return_type: TypeDecl::Int64,
-            },
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::Min,
-                arg_count: 2,
-                arg_types: vec![TypeDecl::Unknown, TypeDecl::Unknown],
-                return_type: TypeDecl::Unknown,
-            },
-            BuiltinFunctionSignature {
-                func: BuiltinFunction::Max,
-                arg_count: 2,
-                arg_types: vec![TypeDecl::Unknown, TypeDecl::Unknown],
-                return_type: TypeDecl::Unknown,
-            },
+            sig(BuiltinFunction::Abs, vec![TypeDecl::Int64], TypeDecl::Int64),
+            sig(
+                BuiltinFunction::Min,
+                vec![TypeDecl::Unknown, TypeDecl::Unknown],
+                TypeDecl::Unknown,
+            ),
+            sig(
+                BuiltinFunction::Max,
+                vec![TypeDecl::Unknown, TypeDecl::Unknown],
+                TypeDecl::Unknown,
+            ),
             // NOTE: f64 math signatures (pow/sqrt/sin/cos/tan/log/log2
             // /exp/floor/ceil) lived here before Phase 4. The math
             // module now declares each as `extern fn __extern_*_f64`

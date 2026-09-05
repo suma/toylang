@@ -400,3 +400,57 @@ impl<M: Module> CodegenSession<M> {
         }
     }
 }
+
+/// One imported symbol's parameter or return slot.
+///
+/// `abi` is the plain form; `sext` / `uext` are the narrow forms. The
+/// platform C ABI requires a value narrower than a register to arrive
+/// already extended (otherwise the C side's promotion of `(int) v`
+/// reads whatever was in the upper bits), and cranelift materialises
+/// that extension on the caller side when the `AbiParam` says so.
+pub(super) fn abi(ty: cranelift_codegen::ir::Type) -> cranelift_codegen::ir::AbiParam {
+    cranelift_codegen::ir::AbiParam::new(ty)
+}
+
+pub(super) fn sext(ty: cranelift_codegen::ir::Type) -> cranelift_codegen::ir::AbiParam {
+    cranelift_codegen::ir::AbiParam::new(ty).sext()
+}
+
+pub(super) fn uext(ty: cranelift_codegen::ir::Type) -> cranelift_codegen::ir::AbiParam {
+    cranelift_codegen::ir::AbiParam::new(ty).uext()
+}
+
+/// Declares the libc / libm / `toylang_rt` symbols the generated code
+/// calls into.
+///
+/// Every declaration is the same three steps — build a `Signature` in
+/// the module's call convention, hand it to `declare_function` as an
+/// import, and name the symbol in the error. Spelling those out per
+/// symbol turned `CodegenSession::new` into several hundred lines in
+/// which a signature was hard to read off; here one line is one C
+/// prototype.
+pub(super) struct SymbolImporter<'m, M: Module> {
+    module: &'m mut M,
+    call_conv: cranelift_codegen::isa::CallConv,
+}
+
+impl<'m, M: Module> SymbolImporter<'m, M> {
+    pub(super) fn new(module: &'m mut M) -> Self {
+        let call_conv = module.target_config().default_call_conv;
+        Self { module, call_conv }
+    }
+
+    pub(super) fn declare(
+        &mut self,
+        name: &str,
+        params: &[cranelift_codegen::ir::AbiParam],
+        returns: &[cranelift_codegen::ir::AbiParam],
+    ) -> Result<cranelift_module::FuncId, String> {
+        let mut sig = cranelift_codegen::ir::Signature::new(self.call_conv);
+        sig.params.extend_from_slice(params);
+        sig.returns.extend_from_slice(returns);
+        self.module
+            .declare_function(name, cranelift_module::Linkage::Import, &sig)
+            .map_err(|e| format!("declare {name}: {e}"))
+    }
+}

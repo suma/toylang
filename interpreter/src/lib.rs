@@ -1662,6 +1662,44 @@ fn render_backtrace(frames: &[crate::error::CallFrame]) -> String {
 }
 
 
+/// Bring a freshly built trial context up to the state a run starts
+/// from: pools wired for diagnostics, module environment installed,
+/// and every top-level `const` evaluated into the environment.
+///
+/// Shared by the free-function and method trial entry points below.
+/// The `const` initializers are program setup — identical on every
+/// trial — so they run before the caller sets the step budget, and a
+/// failure here is an internal error rather than a counterexample.
+fn prepare_shared_trial<'a>(
+    eval: &mut EvaluationContext<'a>,
+    shared: &SharedRunData<'a>,
+    string_interner: &DefaultStringInterner,
+) -> Result<(), InterpreterError> {
+    eval.location_pool = Some(&shared.program.location_pool);
+    eval.source_map = Some(&shared.program.source_map);
+    initialize_module_environment(eval, shared.program);
+
+    for c in &shared.program.consts {
+        let value = match eval.evaluate(&c.value) {
+            Ok(crate::evaluation::EvaluationResult::Value(v)) => v.into_rc(),
+            Ok(_) => {
+                return Err(InterpreterError::InternalError(format!(
+                    "Const initializer for `{}` produced a non-value result",
+                    string_interner.resolve(c.name).unwrap_or("<unknown>")
+                )));
+            }
+            Err(e) => {
+                return Err(InterpreterError::InternalError(format!(
+                    "Const initializer for `{}` failed: {e}",
+                    string_interner.resolve(c.name).unwrap_or("<unknown>")
+                )));
+            }
+        };
+        eval.environment.set_val(c.name, (value).into());
+    }
+    Ok(())
+}
+
 /// Execute `function` with pre-evaluated arguments under a fresh
 /// evaluation context sharing program-derived data (TEST-PERF).
 ///
@@ -1692,29 +1730,7 @@ pub fn execute_function_with_values_shared(
         &mut string_interner_mut,
         shared,
     );
-    eval.location_pool = Some(&shared.program.location_pool);
-    eval.source_map = Some(&shared.program.source_map);
-    initialize_module_environment(&mut eval, shared.program);
-
-    for c in &shared.program.consts {
-        let value_result = eval.evaluate(&c.value);
-        let value = match value_result {
-            Ok(crate::evaluation::EvaluationResult::Value(v)) => v.into_rc(),
-            Ok(_) => {
-                return Err(InterpreterError::InternalError(format!(
-                    "Const initializer for `{}` produced a non-value result",
-                    string_interner.resolve(c.name).unwrap_or("<unknown>")
-                )));
-            }
-            Err(e) => {
-                return Err(InterpreterError::InternalError(format!(
-                    "Const initializer for `{}` failed: {e}",
-                    string_interner.resolve(c.name).unwrap_or("<unknown>")
-                )));
-            }
-        };
-        eval.environment.set_val(c.name, (value).into());
-    }
+    prepare_shared_trial(&mut eval, shared, string_interner)?;
 
     // Budget the trial body only: const initializers are program
     // setup, identical on every trial, and spending the allowance on
@@ -1750,29 +1766,7 @@ pub fn execute_method_with_values_shared(
         &mut string_interner_mut,
         shared,
     );
-    eval.location_pool = Some(&shared.program.location_pool);
-    eval.source_map = Some(&shared.program.source_map);
-    initialize_module_environment(&mut eval, shared.program);
-
-    for c in &shared.program.consts {
-        let value_result = eval.evaluate(&c.value);
-        let value = match value_result {
-            Ok(crate::evaluation::EvaluationResult::Value(v)) => v.into_rc(),
-            Ok(_) => {
-                return Err(InterpreterError::InternalError(format!(
-                    "Const initializer for `{}` produced a non-value result",
-                    string_interner.resolve(c.name).unwrap_or("<unknown>")
-                )));
-            }
-            Err(e) => {
-                return Err(InterpreterError::InternalError(format!(
-                    "Const initializer for `{}` failed: {e}",
-                    string_interner.resolve(c.name).unwrap_or("<unknown>")
-                )));
-            }
-        };
-        eval.environment.set_val(c.name, (value).into());
-    }
+    prepare_shared_trial(&mut eval, shared, string_interner)?;
 
     // Budget the trial body only; see the free-function counterpart.
     eval.set_step_budget(step_budget);
@@ -1890,6 +1884,57 @@ pub fn run_tests(
         .collect()
 }
 
+/// Parse `source`, reporting every syntax error the way a normal run
+/// does, and hand a short summary back so the caller can decide how to
+/// surface it (test assertions vs. process exit).
+///
+/// `json` picks LLM-LOOP P3's machine-readable form over the rendered
+/// snippets. Reporting here is the point: the formatted diagnostic used
+/// to be built and then dropped on the floor, so a parse error produced
+/// no output at all and the process just exited non-zero.
+fn parse_reporting(
+    session: &mut compiler_core::CompilerSession,
+    source: &str,
+    filename: &str,
+    formatter: &ErrorFormatter,
+    json: bool,
+) -> Result<File, String> {
+    match session.parse_program_all_errors(source, filename) {
+        Ok(program) => Ok(program),
+        Err(errors) => {
+            if json {
+                let diagnostics: Vec<Diagnostic> = errors
+                    .iter()
+                    .map(|e| Diagnostic::from_parser_error(e, filename))
+                    .collect();
+                emit_diagnostics_json(&diagnostics);
+            } else {
+                formatter.display_parse_errors(&errors);
+            }
+            Err(format!("{} parse error(s)", errors.len()))
+        }
+    }
+}
+
+/// Report type-check diagnostics and summarise them for the caller.
+/// The `json` split matches [`parse_reporting`]'s.
+fn report_type_errors(
+    formatter: &ErrorFormatter,
+    diagnostics: &[Diagnostic],
+    json: bool,
+) -> String {
+    if json {
+        emit_diagnostics_json(diagnostics);
+    } else {
+        let rendered: Vec<String> = diagnostics
+            .iter()
+            .map(|d| formatter.format_diagnostic(d))
+            .collect();
+        formatter.display_type_check_errors(&rendered);
+    }
+    format!("{} type-check error(s)", diagnostics.len())
+}
+
 /// The `test` blocks in `source`, without running any of them.
 ///
 /// Parses and type-checks exactly as a run would — a block that does
@@ -1904,13 +1949,7 @@ pub fn list_tests_from_source(
 ) -> Result<Vec<TestOutcome>, String> {
     let formatter = ErrorFormatter::new(source, filename);
     let mut session = compiler_core::CompilerSession::new();
-    let mut program = match session.parse_program_all_errors(source, filename) {
-        Ok(p) => p,
-        Err(errors) => {
-            formatter.display_parse_errors(&errors);
-            return Err(format!("{} parse error(s)", errors.len()));
-        }
-    };
+    let mut program = parse_reporting(&mut session, source, filename, &formatter, false)?;
     if let Err(diagnostics) = check_typing_diagnostics(
         &mut program,
         session.string_interner_mut(),
@@ -1918,12 +1957,7 @@ pub fn list_tests_from_source(
         Some(filename),
         options.core_modules_dirs,
     ) {
-        let rendered: Vec<String> = diagnostics
-            .iter()
-            .map(|d| formatter.format_diagnostic(d))
-            .collect();
-        formatter.display_type_check_errors(&rendered);
-        return Err(format!("{} type-check error(s)", diagnostics.len()));
+        return Err(report_type_errors(&formatter, &diagnostics, false));
     }
     Ok(program
         .tests
@@ -1950,21 +1984,13 @@ pub fn run_tests_from_source(
 ) -> Result<Vec<TestOutcome>, String> {
     let formatter = ErrorFormatter::new(source, filename);
     let mut session = compiler_core::CompilerSession::new();
-    let mut program = match session.parse_program_all_errors(source, filename) {
-        Ok(p) => p,
-        Err(errors) => {
-            if options.diagnostics_json {
-                let diagnostics: Vec<Diagnostic> = errors
-                    .iter()
-                    .map(|e| Diagnostic::from_parser_error(e, filename))
-                    .collect();
-                emit_diagnostics_json(&diagnostics);
-            } else {
-                formatter.display_parse_errors(&errors);
-            }
-            return Err(format!("{} parse error(s)", errors.len()));
-        }
-    };
+    let mut program = parse_reporting(
+        &mut session,
+        source,
+        filename,
+        &formatter,
+        options.diagnostics_json,
+    )?;
     if let Err(diagnostics) = check_typing_diagnostics(
         &mut program,
         session.string_interner_mut(),
@@ -1972,12 +1998,7 @@ pub fn run_tests_from_source(
         Some(filename),
         options.core_modules_dirs,
     ) {
-        let rendered: Vec<String> = diagnostics
-            .iter()
-            .map(|d| formatter.format_diagnostic(d))
-            .collect();
-        formatter.display_type_check_errors(&rendered);
-        return Err(format!("{} type-check error(s)", diagnostics.len()));
+        return Err(report_type_errors(&formatter, &diagnostics, false));
     }
     Ok(run_tests(
         &program,
@@ -2000,13 +2021,7 @@ pub fn effects_from_source(
 ) -> Result<Vec<FunctionEffects>, String> {
     let formatter = ErrorFormatter::new(source, filename);
     let mut session = compiler_core::CompilerSession::new();
-    let mut program = match session.parse_program_all_errors(source, filename) {
-        Ok(p) => p,
-        Err(errors) => {
-            formatter.display_parse_errors(&errors);
-            return Err(format!("{} parse error(s)", errors.len()));
-        }
-    };
+    let mut program = parse_reporting(&mut session, source, filename, &formatter, false)?;
     let mut effects = Vec::new();
     if let Err(diagnostics) = check_typing_effects(
         &mut program,
@@ -2016,10 +2031,7 @@ pub fn effects_from_source(
         options.core_modules_dirs,
         &mut effects,
     ) {
-        let rendered: Vec<String> =
-            diagnostics.iter().map(|d| formatter.format_diagnostic(d)).collect();
-        formatter.display_type_check_errors(&rendered);
-        return Err(format!("{} type-check error(s)", diagnostics.len()));
+        return Err(report_type_errors(&formatter, &diagnostics, false));
     }
     Ok(effects)
 }
@@ -2090,27 +2102,13 @@ pub fn run_source(
 ) -> Result<RunOutcome, String> {
     let formatter = ErrorFormatter::new(source, filename);
     let mut session = compiler_core::CompilerSession::new();
-    let mut program = match session.parse_program_all_errors(source, filename) {
-        Ok(p) => p,
-        Err(errors) => {
-            // Report every syntax error, then hand a short summary back
-            // to the caller so it can decide how to surface it (e.g.
-            // test assertions vs. process exit). The formatted
-            // diagnostic used to be built and then dropped on the floor,
-            // so a parse error produced no output at all — the process
-            // just exited non-zero.
-            if options.diagnostics_json {
-                let diagnostics: Vec<Diagnostic> = errors
-                    .iter()
-                    .map(|e| Diagnostic::from_parser_error(e, filename))
-                    .collect();
-                emit_diagnostics_json(&diagnostics);
-            } else {
-                formatter.display_parse_errors(&errors);
-            }
-            return Err(format!("{} parse error(s)", errors.len()));
-        }
-    };
+    let mut program = parse_reporting(
+        &mut session,
+        source,
+        filename,
+        &formatter,
+        options.diagnostics_json,
+    )?;
     match check_typing_diagnostics(
         &mut program,
         session.string_interner_mut(),
@@ -2119,16 +2117,11 @@ pub fn run_source(
         options.core_modules_dirs,
     ) {
         Err(diagnostics) => {
-            if options.diagnostics_json {
-                emit_diagnostics_json(&diagnostics);
-            } else {
-                let rendered: Vec<String> = diagnostics
-                    .iter()
-                    .map(|d| formatter.format_diagnostic(d))
-                    .collect();
-                formatter.display_type_check_errors(&rendered);
-            }
-            return Err(format!("{} type-check error(s)", diagnostics.len()));
+            return Err(report_type_errors(
+                &formatter,
+                &diagnostics,
+                options.diagnostics_json,
+            ));
         }
         // COMPILE-TIME-EVAL C4: warnings ride the same channel as
         // errors and are rendered the same way; only the outcome

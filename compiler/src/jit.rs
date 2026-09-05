@@ -362,61 +362,200 @@ fn find_main_id(ir_module: &crate::ir::Module) -> Option<FuncId> {
 // does (see RUNTIME_PORT.md R0/R1).
 // ---------------------------------------------------------------------------
 
+/// Bind every `toylang_rt` helper to the symbol name the codegen
+/// emits for it. The two are the same identifier by construction,
+/// so the list names it once: a mismatched pair used to be a
+/// silent unresolved symbol at `finalize_definitions` time.
+macro_rules! register_rt_fns {
+    ($builder:expr, $($name:ident),* $(,)?) => {
+        $( $builder.symbol(stringify!($name), toylang_rt::$name as *const u8); )*
+    };
+}
+
 fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
-    // print / println helpers, one per primitive width.
-    jit_builder.symbol("toy_print_i64", toylang_rt::toy_print_i64 as *const u8);
-    jit_builder.symbol("toy_println_i64", toylang_rt::toy_println_i64 as *const u8);
-    jit_builder.symbol("toy_print_u64", toylang_rt::toy_print_u64 as *const u8);
-    jit_builder.symbol("toy_println_u64", toylang_rt::toy_println_u64 as *const u8);
-    jit_builder.symbol("toy_print_bool", toylang_rt::toy_print_bool as *const u8);
-    jit_builder.symbol("toy_println_bool", toylang_rt::toy_println_bool as *const u8);
-    jit_builder.symbol("toy_print_str", toylang_rt::toy_print_str as *const u8);
-    jit_builder.symbol("toy_println_str", toylang_rt::toy_println_str as *const u8);
-    jit_builder.symbol("toy_print_f64", toylang_rt::toy_print_f64 as *const u8);
-    jit_builder.symbol("toy_println_f64", toylang_rt::toy_println_f64 as *const u8);
-    // SIMD-F32: single-precision print helpers.
-    jit_builder.symbol("toy_print_f32", toylang_rt::toy_print_f32 as *const u8);
-    // SIMD: the two vector renderers.
-    jit_builder.symbol("toy_print_vec", toylang_rt::toy_print_vec as *const u8);
-    jit_builder.symbol("toy_to_string_vec", toylang_rt::toy_to_string_vec as *const u8);
-    jit_builder.symbol("toy_println_f32", toylang_rt::toy_println_f32 as *const u8);
-    // NUM-W-AOT-pack Phase 2: dedicated narrow-int helpers so the
-    // JIT call site mirrors the AOT call site at the symbol level.
-    jit_builder.symbol("toy_print_i8", toylang_rt::toy_print_i8 as *const u8);
-    jit_builder.symbol("toy_println_i8", toylang_rt::toy_println_i8 as *const u8);
-    jit_builder.symbol("toy_print_u8", toylang_rt::toy_print_u8 as *const u8);
-    jit_builder.symbol("toy_println_u8", toylang_rt::toy_println_u8 as *const u8);
-    jit_builder.symbol("toy_print_i16", toylang_rt::toy_print_i16 as *const u8);
-    jit_builder.symbol("toy_println_i16", toylang_rt::toy_println_i16 as *const u8);
-    jit_builder.symbol("toy_print_u16", toylang_rt::toy_print_u16 as *const u8);
-    jit_builder.symbol("toy_println_u16", toylang_rt::toy_println_u16 as *const u8);
-    jit_builder.symbol("toy_print_i32", toylang_rt::toy_print_i32 as *const u8);
-    jit_builder.symbol("toy_println_i32", toylang_rt::toy_println_i32 as *const u8);
-    jit_builder.symbol("toy_print_u32", toylang_rt::toy_print_u32 as *const u8);
-    jit_builder.symbol("toy_println_u32", toylang_rt::toy_println_u32 as *const u8);
-    // #121 Phase B-min: active-allocator stack helpers.
-    jit_builder.symbol("toy_alloc_push", toylang_rt::toy_alloc_push as *const u8);
-    jit_builder.symbol("toy_alloc_pop", toylang_rt::toy_alloc_pop as *const u8);
-    jit_builder.symbol("toy_alloc_current", toylang_rt::toy_alloc_current as *const u8);
-    // Dispatched alloc / realloc / free (the bump region; the runtime
-    // arena/fixed_buffer infrastructure has been retired in favour of
-    // the toylang stdlib `Arena` / `FixedBuffer`).
-    jit_builder.symbol("toy_dispatched_alloc", toylang_rt::toy_dispatched_alloc as *const u8);
-    jit_builder.symbol("toy_dispatched_realloc", toylang_rt::toy_dispatched_realloc as *const u8);
-    jit_builder.symbol("toy_dispatched_free", toylang_rt::toy_dispatched_free as *const u8);
-    jit_builder.symbol("toy_prof_stat", toylang_rt::toy_prof_stat as *const u8);
-    jit_builder.symbol(
-        "toy_panic_alloc_budget",
-        toylang_rt::toy_panic_alloc_budget as *const u8,
+    register_rt_fns!(
+        jit_builder,
+        // print / println helpers, one per primitive width.
+        toy_print_i64,
+        toy_println_i64,
+        toy_print_u64,
+        toy_println_u64,
+        toy_print_bool,
+        toy_println_bool,
+        toy_print_str,
+        toy_println_str,
+        toy_print_f64,
+        toy_println_f64,
+        // SIMD-F32: single-precision print helpers.
+        toy_print_f32,
+        // SIMD: the two vector renderers.
+        toy_print_vec,
+        toy_to_string_vec,
+        toy_println_f32,
+        // NUM-W-AOT-pack Phase 2: dedicated narrow-int helpers so the
+        // JIT call site mirrors the AOT call site at the symbol level.
+        toy_print_i8,
+        toy_println_i8,
+        toy_print_u8,
+        toy_println_u8,
+        toy_print_i16,
+        toy_println_i16,
+        toy_print_u16,
+        toy_println_u16,
+        toy_print_i32,
+        toy_println_i32,
+        toy_print_u32,
+        toy_println_u32,
+        // #121 Phase B-min: active-allocator stack helpers.
+        toy_alloc_push,
+        toy_alloc_pop,
+        toy_alloc_current,
+        // Dispatched alloc / realloc / free (the bump region; the runtime
+        // arena/fixed_buffer infrastructure has been retired in favour of
+        // the toylang stdlib `Arena` / `FixedBuffer`).
+        toy_dispatched_alloc,
+        toy_dispatched_realloc,
+        toy_dispatched_free,
+        toy_prof_stat,
+        toy_panic_alloc_budget,
+        // DEBUG-OBS D3.
+        toy_panic_at,
+        // DEBUG-OBS D5.
+        toy_backtrace_str,
+        // DEBUG-OBS D6.
+        toy_panic_recursion,
+        toy_panic_values,
+        toy_panic_dynamic,
+        toy_prof_force_counting,
+        toy_record_allocator_layout,
+        // RUNTIME-IO: stdlib I/O externs (core/std/io.t).
+        toy_io_argc,
+        toy_io_arg,
+        toy_io_env,
+        toy_io_env_status,
+        toy_net_backend_name,
+        // NETWORK_IO N1. The AOT lane needs no equivalent — these live in
+        // the staticlib and the linker finds them.
+        toy_net_status,
+        toy_net_socket,
+        toy_net_connect,
+        toy_net_send,
+        toy_net_recv,
+        toy_net_close,
+        toy_net_set_blocking,
+        toy_net_take_error,
+        toy_net_shutdown_write,
+        toy_net_bind,
+        toy_net_local_port,
+        toy_net_accept,
+        // N4.
+        toy_net_local_addr,
+        toy_net_peer_addr,
+        toy_net_peer_port,
+        toy_net_set_nodelay,
+        toy_net_set_timeout,
+        toy_net_udp_bind,
+        toy_net_set_dest,
+        toy_net_send_to,
+        toy_net_recv_from,
+        toy_net_last_peer_addr,
+        toy_net_last_peer_port,
+        // N5.
+        toy_net_resolve,
+        // EVENT_POLLING N3.
+        toy_poll_create,
+        toy_poll_ctl,
+        toy_poll_wait,
+        toy_poll_event_token,
+        toy_poll_event_flags,
+        toy_poll_event_error,
+        toy_poll_error_status,
+        toy_io_read_file,
+        toy_io_read_file_into,
+        toy_io_write_file_bytes,
+        toy_io_read_file_status,
+        toy_print_stream,
+        toy_parse_f64,
+        toy_parse_f64_status,
+        toy_io_write_file,
+        toy_io_write_file_status,
+        toy_io_file_exists,
+        toy_str_hash,
+        toy_str_cmp,
+        toy_str_find,
+        toy_bits_popcount,
+        toy_bits_clz,
+        toy_bits_ctz,
+        toy_bits_reverse,
+        toy_bits_swap_bytes,
+        toy_log_level,
+        toy_log_set_level,
+        toy_log_timestamps,
+        toy_fs_dir_open,
+        toy_fs_dir_name,
+        toy_fs_status,
+        toy_fs_is_dir,
+        toy_fs_file_size,
+        toy_fs_mkdir,
+        toy_fs_remove_file,
+        toy_fs_remove_dir,
+        toy_fs_rename,
+        toy_fs_realpath,
+        toy_fs_current_dir,
+        // STDLIB-FS-HANDLE: the open-file calls.
+        toy_file_open,
+        toy_file_close,
+        toy_file_read,
+        toy_file_write,
+        toy_file_read_at,
+        toy_file_write_at,
+        toy_file_seek,
+        toy_file_size,
+        toy_file_sync,
+        toy_file_truncate,
+        toy_file_status,
+        toy_time_now_mono_ns,
+        toy_time_mono_res_ns,
+        toy_time_cpu_ns,
+        toy_time_now_unix_ns,
+        toy_time_sleep_ns,
+        toy_time_civil_from_days,
+        toy_time_days_from_civil,
+        toy_io_random,
+        toy_io_random_seed,
+        toy_io_strftime,
+        toy_io_env_count,
+        toy_io_env_name,
+        toy_io_env_value,
+        // STR-INTERP-AOT: str runtime helpers.
+        toy_str_concat,
+        toy_str_from_bytes,
+        // MEMORY-ACCESS M3: the range questions.
+        toy_mem_eq,
+        toy_mem_find,
+        toy_mem_find_seq,
+        toy_str_eq,
+        toy_to_string_i64,
+        toy_to_string_u64,
+        toy_to_string_f64,
+        // SIMD-F32: single-precision to_string helper.
+        toy_to_string_f32,
+        toy_to_string_bool,
+        toy_to_string_str,
+        toy_to_string_i8,
+        toy_to_string_u8,
+        toy_to_string_i16,
+        toy_to_string_u16,
+        toy_to_string_i32,
+        toy_to_string_u32,
+        // STR-INTERP-FMT: `__builtin_format` helpers.
+        toy_format_i64,
+        toy_format_u64,
+        toy_format_f64,
+        toy_format_f32,
+        toy_format_bool,
+        toy_format_str,
     );
-    // DEBUG-OBS D3.
-    jit_builder.symbol("toy_panic_at", toylang_rt::toy_panic_at as *const u8);
-    // DEBUG-OBS D5.
-    jit_builder.symbol("toy_backtrace_str", toylang_rt::toy_backtrace_str as *const u8);
-    // DEBUG-OBS D6.
-    jit_builder.symbol("toy_panic_recursion", toylang_rt::toy_panic_recursion as *const u8);
-    jit_builder.symbol("toy_panic_values", toylang_rt::toy_panic_values as *const u8);
-    jit_builder.symbol("toy_panic_dynamic", toylang_rt::toy_panic_dynamic as *const u8);
     // DEBUG-OBS D4: the shadow stack is *data*, not a function, and
     // the generated code writes to it directly rather than calling in.
     jit_builder.symbol(
@@ -427,190 +566,8 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
         "toy_shadow_depth",
         (&raw const toylang_rt::toy_shadow_depth) as *const u8,
     );
-    jit_builder.symbol("toy_prof_force_counting", toylang_rt::toy_prof_force_counting as *const u8);
-    jit_builder.symbol("toy_record_allocator_layout", toylang_rt::toy_record_allocator_layout as *const u8);
-    // RUNTIME-IO: stdlib I/O externs (core/std/io.t).
-    jit_builder.symbol("toy_io_argc", toylang_rt::toy_io_argc as *const u8);
-    jit_builder.symbol("toy_io_arg", toylang_rt::toy_io_arg as *const u8);
-    jit_builder.symbol("toy_io_env", toylang_rt::toy_io_env as *const u8);
-    jit_builder.symbol("toy_io_env_status", toylang_rt::toy_io_env_status as *const u8);
-    jit_builder.symbol(
-        "toy_net_backend_name",
-        toylang_rt::toy_net_backend_name as *const u8,
-    );
-    // NETWORK_IO N1. The AOT lane needs no equivalent — these live in
-    // the staticlib and the linker finds them.
-    jit_builder.symbol("toy_net_status", toylang_rt::toy_net_status as *const u8);
-    jit_builder.symbol("toy_net_socket", toylang_rt::toy_net_socket as *const u8);
-    jit_builder.symbol("toy_net_connect", toylang_rt::toy_net_connect as *const u8);
-    jit_builder.symbol("toy_net_send", toylang_rt::toy_net_send as *const u8);
-    jit_builder.symbol("toy_net_recv", toylang_rt::toy_net_recv as *const u8);
-    jit_builder.symbol("toy_net_close", toylang_rt::toy_net_close as *const u8);
-    jit_builder.symbol(
-        "toy_net_set_blocking",
-        toylang_rt::toy_net_set_blocking as *const u8,
-    );
-    jit_builder.symbol(
-        "toy_net_take_error",
-        toylang_rt::toy_net_take_error as *const u8,
-    );
-    jit_builder.symbol(
-        "toy_net_shutdown_write",
-        toylang_rt::toy_net_shutdown_write as *const u8,
-    );
-    jit_builder.symbol("toy_net_bind", toylang_rt::toy_net_bind as *const u8);
-    jit_builder.symbol(
-        "toy_net_local_port",
-        toylang_rt::toy_net_local_port as *const u8,
-    );
-    jit_builder.symbol("toy_net_accept", toylang_rt::toy_net_accept as *const u8);
-    // N4.
-    jit_builder.symbol(
-        "toy_net_local_addr",
-        toylang_rt::toy_net_local_addr as *const u8,
-    );
-    jit_builder.symbol("toy_net_peer_addr", toylang_rt::toy_net_peer_addr as *const u8);
-    jit_builder.symbol("toy_net_peer_port", toylang_rt::toy_net_peer_port as *const u8);
-    jit_builder.symbol(
-        "toy_net_set_nodelay",
-        toylang_rt::toy_net_set_nodelay as *const u8,
-    );
-    jit_builder.symbol(
-        "toy_net_set_timeout",
-        toylang_rt::toy_net_set_timeout as *const u8,
-    );
-    jit_builder.symbol("toy_net_udp_bind", toylang_rt::toy_net_udp_bind as *const u8);
-    jit_builder.symbol("toy_net_set_dest", toylang_rt::toy_net_set_dest as *const u8);
-    jit_builder.symbol("toy_net_send_to", toylang_rt::toy_net_send_to as *const u8);
-    jit_builder.symbol("toy_net_recv_from", toylang_rt::toy_net_recv_from as *const u8);
-    jit_builder.symbol(
-        "toy_net_last_peer_addr",
-        toylang_rt::toy_net_last_peer_addr as *const u8,
-    );
-    jit_builder.symbol(
-        "toy_net_last_peer_port",
-        toylang_rt::toy_net_last_peer_port as *const u8,
-    );
-    // N5.
-    jit_builder.symbol("toy_net_resolve", toylang_rt::toy_net_resolve as *const u8);
-    // EVENT_POLLING N3.
-    jit_builder.symbol("toy_poll_create", toylang_rt::toy_poll_create as *const u8);
-    jit_builder.symbol("toy_poll_ctl", toylang_rt::toy_poll_ctl as *const u8);
-    jit_builder.symbol("toy_poll_wait", toylang_rt::toy_poll_wait as *const u8);
-    jit_builder.symbol(
-        "toy_poll_event_token",
-        toylang_rt::toy_poll_event_token as *const u8,
-    );
-    jit_builder.symbol(
-        "toy_poll_event_flags",
-        toylang_rt::toy_poll_event_flags as *const u8,
-    );
-    jit_builder.symbol(
-        "toy_poll_event_error",
-        toylang_rt::toy_poll_event_error as *const u8,
-    );
-    jit_builder.symbol(
-        "toy_poll_error_status",
-        toylang_rt::toy_poll_error_status as *const u8,
-    );
-    jit_builder.symbol("toy_io_read_file", toylang_rt::toy_io_read_file as *const u8);
-    jit_builder.symbol(
-        "toy_io_read_file_into",
-        toylang_rt::toy_io_read_file_into as *const u8,
-    );
-    jit_builder.symbol(
-        "toy_io_write_file_bytes",
-        toylang_rt::toy_io_write_file_bytes as *const u8,
-    );
-    jit_builder.symbol("toy_io_read_file_status", toylang_rt::toy_io_read_file_status as *const u8);
-    jit_builder.symbol("toy_print_stream", toylang_rt::toy_print_stream as *const u8);
-    jit_builder.symbol("toy_parse_f64", toylang_rt::toy_parse_f64 as *const u8);
-    jit_builder.symbol("toy_parse_f64_status", toylang_rt::toy_parse_f64_status as *const u8);
-    jit_builder.symbol("toy_io_write_file", toylang_rt::toy_io_write_file as *const u8);
-    jit_builder.symbol("toy_io_write_file_status", toylang_rt::toy_io_write_file_status as *const u8);
-    jit_builder.symbol("toy_io_file_exists", toylang_rt::toy_io_file_exists as *const u8);
-    jit_builder.symbol("toy_str_hash", toylang_rt::toy_str_hash as *const u8);
-    jit_builder.symbol("toy_str_cmp", toylang_rt::toy_str_cmp as *const u8);
-    jit_builder.symbol("toy_str_find", toylang_rt::toy_str_find as *const u8);
-    jit_builder.symbol("toy_bits_popcount", toylang_rt::toy_bits_popcount as *const u8);
-    jit_builder.symbol("toy_bits_clz", toylang_rt::toy_bits_clz as *const u8);
-    jit_builder.symbol("toy_bits_ctz", toylang_rt::toy_bits_ctz as *const u8);
-    jit_builder.symbol("toy_bits_reverse", toylang_rt::toy_bits_reverse as *const u8);
-    jit_builder.symbol("toy_bits_swap_bytes", toylang_rt::toy_bits_swap_bytes as *const u8);
-    jit_builder.symbol("toy_log_level", toylang_rt::toy_log_level as *const u8);
-    jit_builder.symbol("toy_log_set_level", toylang_rt::toy_log_set_level as *const u8);
-    jit_builder.symbol("toy_log_timestamps", toylang_rt::toy_log_timestamps as *const u8);
-    jit_builder.symbol("toy_fs_dir_open", toylang_rt::toy_fs_dir_open as *const u8);
-    jit_builder.symbol("toy_fs_dir_name", toylang_rt::toy_fs_dir_name as *const u8);
-    jit_builder.symbol("toy_fs_status", toylang_rt::toy_fs_status as *const u8);
-    jit_builder.symbol("toy_fs_is_dir", toylang_rt::toy_fs_is_dir as *const u8);
-    jit_builder.symbol("toy_fs_file_size", toylang_rt::toy_fs_file_size as *const u8);
-    jit_builder.symbol("toy_fs_mkdir", toylang_rt::toy_fs_mkdir as *const u8);
-    jit_builder.symbol("toy_fs_remove_file", toylang_rt::toy_fs_remove_file as *const u8);
-    jit_builder.symbol("toy_fs_remove_dir", toylang_rt::toy_fs_remove_dir as *const u8);
-    jit_builder.symbol("toy_fs_rename", toylang_rt::toy_fs_rename as *const u8);
-    jit_builder.symbol("toy_fs_realpath", toylang_rt::toy_fs_realpath as *const u8);
-    jit_builder.symbol("toy_fs_current_dir", toylang_rt::toy_fs_current_dir as *const u8);
-    // STDLIB-FS-HANDLE: the open-file calls.
-    jit_builder.symbol("toy_file_open", toylang_rt::toy_file_open as *const u8);
-    jit_builder.symbol("toy_file_close", toylang_rt::toy_file_close as *const u8);
-    jit_builder.symbol("toy_file_read", toylang_rt::toy_file_read as *const u8);
-    jit_builder.symbol("toy_file_write", toylang_rt::toy_file_write as *const u8);
-    jit_builder.symbol("toy_file_read_at", toylang_rt::toy_file_read_at as *const u8);
-    jit_builder.symbol("toy_file_write_at", toylang_rt::toy_file_write_at as *const u8);
-    jit_builder.symbol("toy_file_seek", toylang_rt::toy_file_seek as *const u8);
-    jit_builder.symbol("toy_file_size", toylang_rt::toy_file_size as *const u8);
-    jit_builder.symbol("toy_file_sync", toylang_rt::toy_file_sync as *const u8);
-    jit_builder.symbol("toy_file_truncate", toylang_rt::toy_file_truncate as *const u8);
-    jit_builder.symbol("toy_file_status", toylang_rt::toy_file_status as *const u8);
-    jit_builder.symbol("toy_time_now_mono_ns", toylang_rt::toy_time_now_mono_ns as *const u8);
-    jit_builder.symbol("toy_time_mono_res_ns", toylang_rt::toy_time_mono_res_ns as *const u8);
-    jit_builder.symbol("toy_time_cpu_ns", toylang_rt::toy_time_cpu_ns as *const u8);
-    jit_builder.symbol("toy_time_now_unix_ns", toylang_rt::toy_time_now_unix_ns as *const u8);
-    jit_builder.symbol("toy_time_sleep_ns", toylang_rt::toy_time_sleep_ns as *const u8);
-    jit_builder.symbol(
-        "toy_time_civil_from_days",
-        toylang_rt::toy_time_civil_from_days as *const u8,
-    );
-    jit_builder.symbol(
-        "toy_time_days_from_civil",
-        toylang_rt::toy_time_days_from_civil as *const u8,
-    );
-    jit_builder.symbol("toy_io_random", toylang_rt::toy_io_random as *const u8);
-    jit_builder.symbol("toy_io_random_seed", toylang_rt::toy_io_random_seed as *const u8);
-    jit_builder.symbol("toy_io_strftime", toylang_rt::toy_io_strftime as *const u8);
-    jit_builder.symbol("toy_io_env_count", toylang_rt::toy_io_env_count as *const u8);
-    jit_builder.symbol("toy_io_env_name", toylang_rt::toy_io_env_name as *const u8);
-    jit_builder.symbol("toy_io_env_value", toylang_rt::toy_io_env_value as *const u8);
-    // STR-INTERP-AOT: str runtime helpers.
-    jit_builder.symbol("toy_str_concat", toylang_rt::toy_str_concat as *const u8);
-    jit_builder.symbol("toy_str_from_bytes", toylang_rt::toy_str_from_bytes as *const u8);
-    // MEMORY-ACCESS M3: the range questions.
-    jit_builder.symbol("toy_mem_eq", toylang_rt::toy_mem_eq as *const u8);
-    jit_builder.symbol("toy_mem_find", toylang_rt::toy_mem_find as *const u8);
-    jit_builder.symbol("toy_mem_find_seq", toylang_rt::toy_mem_find_seq as *const u8);
-    jit_builder.symbol("toy_str_eq", toylang_rt::toy_str_eq as *const u8);
-    jit_builder.symbol("toy_to_string_i64", toylang_rt::toy_to_string_i64 as *const u8);
-    jit_builder.symbol("toy_to_string_u64", toylang_rt::toy_to_string_u64 as *const u8);
-    jit_builder.symbol("toy_to_string_f64", toylang_rt::toy_to_string_f64 as *const u8);
-    // SIMD-F32: single-precision to_string helper.
-    jit_builder.symbol("toy_to_string_f32", toylang_rt::toy_to_string_f32 as *const u8);
-    jit_builder.symbol("toy_to_string_bool", toylang_rt::toy_to_string_bool as *const u8);
-    jit_builder.symbol("toy_to_string_str", toylang_rt::toy_to_string_str as *const u8);
-    jit_builder.symbol("toy_to_string_i8", toylang_rt::toy_to_string_i8 as *const u8);
-    jit_builder.symbol("toy_to_string_u8", toylang_rt::toy_to_string_u8 as *const u8);
-    jit_builder.symbol("toy_to_string_i16", toylang_rt::toy_to_string_i16 as *const u8);
-    jit_builder.symbol("toy_to_string_u16", toylang_rt::toy_to_string_u16 as *const u8);
-    jit_builder.symbol("toy_to_string_i32", toylang_rt::toy_to_string_i32 as *const u8);
-    jit_builder.symbol("toy_to_string_u32", toylang_rt::toy_to_string_u32 as *const u8);
-    // STR-INTERP-FMT: `__builtin_format` helpers.
-    jit_builder.symbol("toy_format_i64", toylang_rt::toy_format_i64 as *const u8);
-    jit_builder.symbol("toy_format_u64", toylang_rt::toy_format_u64 as *const u8);
-    jit_builder.symbol("toy_format_f64", toylang_rt::toy_format_f64 as *const u8);
-    jit_builder.symbol("toy_format_f32", toylang_rt::toy_format_f32 as *const u8);
-    jit_builder.symbol("toy_format_bool", toylang_rt::toy_format_bool as *const u8);
-    jit_builder.symbol("toy_format_str", toylang_rt::toy_format_str as *const u8);
 }
+
 
 // ---------------------------------------------------------------------------
 // Memory-profile accessors (MEMORY_PROFILING M1–M5).

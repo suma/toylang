@@ -2162,10 +2162,12 @@ impl<'a, 'b> State<'a, 'b> {
     /// binding of the same name: this engine answered 1011 where the
     /// other four answered 101 for
     ///
-    ///     var x = 100u64
-    ///     { var x = 10u64  x = x + 1000u64 }
-    ///     x = x + 1u64
-    ///     x
+    /// ```text
+    /// var x = 100u64
+    /// { var x = 10u64  x = x + 1000u64 }
+    /// x = x + 1u64
+    /// x
+    /// ```
     ///
     /// It stayed hidden because `interpreter/example/scope.t` — the
     /// example whose whole subject is this — ended on the assignment

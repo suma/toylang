@@ -2410,8 +2410,45 @@ changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 
   `max_depth` も `std::json::max_depth` と衝突した。診断は明快で
   「ファイル名を変えろ」と言うが、**stdlib が 1 つ関数を増やすたびに、
   ユーザのプライベート関数が壊れうる**ということでもある。
-  private を名前空間から外すか、衝突時に呼び出し側の module を
-  優先するかは設計判断が要る。
+
+  **rank (BUILD-TOOL B0) が消したのはこの形の半分だけ** — 別 root の
+  衝突は後の root が勝つが、**同じ root の 2 モジュール**は同 rank
+  なので今も落ちる (`src/a.t` と `src/b.t` がそれぞれ private な
+  `fn helper` を持ち、**各自が自分のを呼んでいる**だけで
+  `ambiguous call` になる)。stdlib 内の `encode` / `decode`
+  (base64 / hex、どちらも `pub`) も同じ形。
+
+  **シンボル名のマングリングは解決にならない** (2026-09-05 検討)。
+  定義側の一意化は既に済んでいて (`toy_std_math__add` /
+  `function_index` の (path, rank) エントリ)、残っているのは
+  **使用側の解決規則**だから。要るのは規則 2 つ:
+  (1) **`pub` を実効化する** — 非 `pub` の module 関数は自分の module
+  からの呼び出しにしか候補にならない (今は修飾付きでも呼べてしまう。
+  `check_function_access` の `is_same_module_access` が
+  `true` 固定)。stdlib の非 pub 40 本を他 module から呼んでいる箇所は
+  **0 件**なので、この変更単体では stdlib は壊れない。
+  (2) **呼び出し元 module を rank より先に優先する**。
+  難所は「呼び出し元 module」を 3 レーンに届けること — 型検査器は
+  `type_check(func)`、lowering は関数ごとのループで既に持っているが、
+  **tree-walker は実行中の関数の module を持っていない**
+  (`CallFrame` に足すか、型検査時に解決結果を AST に焼く)。
+
+- **TYPE-NAME-COLLISION: struct / enum 名には曖昧性検査すら無い** ★★ —
+  関数には (module path, rank) の候補集合があるが、型は
+  `register_struct` / `enum_definitions` が**名前だけのマップ**なので、
+  2 つの module が同じ `struct Item` を宣言すると**後勝ちで黙って
+  上書き**される。壊れるのは負けた側の module で、しかも診断は
+  そちらのフィールドを名指す:
+
+  ```
+  src/a.t: struct Item { v: u64 }        # 1 フィールド
+  src/b.t: struct Item { v: u64, w: u64 }
+  -> [E0010] Error in imported module `a`: Missing required field 'w'
+     in struct 'Item'
+  ```
+
+  BARE-NAME-COLLISION より重い (あちらは曖昧だと**言う**)。
+  2026-09-05、BARE-NAME-COLLISION の検討中に見つけた。
 
 - **ENTRY-IN-MODULE-ROOT: プログラム本体をモジュール根に置くと
   自分の `const` を失う** ★ — エントリはコンパイラに「プログラム」として

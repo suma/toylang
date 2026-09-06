@@ -958,12 +958,56 @@ impl<'a> EvaluationContext<'a> {
         };
         let scope = self.drop_scopes.pop().unwrap_or_default();
         for entry in scope.into_iter().rev() {
-            if escaping.as_ref().is_some_and(|kept| Rc::ptr_eq(kept, &entry.value)) {
+            if escaping
+                .as_ref()
+                .is_some_and(|kept| Self::value_holds(&entry.value, kept))
+            {
                 continue;
             }
             self.glue_drop(&entry)?;
         }
         Ok(())
+    }
+
+    /// Whether `kept` *is* `holder`, or sits inside it.
+    ///
+    /// Identity alone was the test, and identity alone misses the
+    /// shape `?` desugars to: `{ val t = mk()  match t { Ok(v) => v,
+    /// .. } }` hands out the *payload* of a binding the block made two
+    /// lines up, so what escapes is inside the entry rather than equal
+    /// to it. Dropping the entry then frees exactly what was handed
+    /// out — a closed descriptor, a freed buffer — with the caller
+    /// holding the alias. The compiled lanes copy leaves out of the
+    /// payload and never had the problem, so this is also what keeps
+    /// the four backends answering the same thing for `val f =
+    /// File::open(p)?`.
+    ///
+    /// Structural only: fields, payloads, elements. A value read out
+    /// of a container's *heap* slots (`v.get(i)`) is deliberately not
+    /// matched — the container still owns its buffer, and exempting it
+    /// on the strength of one element would leak the rest.
+    fn value_holds(holder: &RcObject, kept: &RcObject) -> bool {
+        let mut work: Vec<RcObject> = vec![holder.clone()];
+        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        while let Some(v) = work.pop() {
+            if Rc::ptr_eq(&v, kept) {
+                return true;
+            }
+            if !seen.insert(Rc::as_ptr(&v) as usize) {
+                continue;
+            }
+            let obj = v.borrow();
+            match &*obj {
+                Object::Struct { fields, .. } => work.extend(fields.values().cloned()),
+                Object::EnumVariant { values, .. } => work.extend(values.iter().cloned()),
+                Object::Tuple(elems) | Object::Array(elems) => {
+                    work.extend(elems.iter().cloned())
+                }
+                Object::Dict(entries) => work.extend(entries.values().cloned()),
+                _ => {}
+            }
+        }
+        false
     }
 
     /// Drop without running — used by error-path bailouts where

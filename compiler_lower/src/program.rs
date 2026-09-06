@@ -1841,6 +1841,7 @@ impl<'a> FunctionLower<'a> {
             print_stderr: false,
             current_expr: None,
             bindings: HashMap::new(),
+            pending_block_enums: HashMap::new(),
             loop_stack: Vec::new(),
             with_scope_depth: 0,
             with_scope_arena_drops: Vec::new(),

@@ -23,6 +23,33 @@ fn stdlib_enum_name(name: &str) -> &str {
     name.strip_prefix("__std_").unwrap_or(name)
 }
 
+/// Whether `as T` is a spelling the backends accept.
+///
+/// `as` is a scalar conversion everywhere: the tree-walker lifts its
+/// operand into a numeric form (plus a `str` -> `str` identity), and
+/// the compiled lanes refuse anything else outright ("compiler MVP
+/// only supports scalar `as` targets"). The `?` desugar is the only
+/// place that synthesises a same-type cast, and it asks here whether
+/// to spell one at all.
+fn is_scalar_cast_target(ty: &TypeDecl) -> bool {
+    matches!(
+        ty,
+        TypeDecl::Int64
+            | TypeDecl::UInt64
+            | TypeDecl::Int32
+            | TypeDecl::UInt32
+            | TypeDecl::Int16
+            | TypeDecl::UInt16
+            | TypeDecl::Int8
+            | TypeDecl::UInt8
+            | TypeDecl::Float64
+            | TypeDecl::Float32
+            | TypeDecl::Bool
+            | TypeDecl::String
+            | TypeDecl::Ptr
+    )
+}
+
 /// Expression type checking implementation
 impl<'a> TypeCheckerVisitor<'a> {
     /// REF-Stage-2 (iii): walk a `&mut <expr>` operand down through
@@ -2602,13 +2629,28 @@ impl<'a> TypeCheckerVisitor<'a> {
                 Pattern::Name(v_sym)
             }],
         );
+        //
+        // TRY-COMPOUND: the cast is only spelled when `T` is something
+        // `as` can name. A struct / tuple / enum success type leaves
+        // the arm body as the bare binding instead -- unlike the
+        // `Unit` case above there *is* a value bound, and an arm that
+        // binds a compound payload is what every backend already
+        // lowers for a hand-written `match`. Spelling `Point as Point`
+        // was not a no-op there but an outright refusal (`Invalid cast
+        // from Struct { .. }` in the tree-walker, `compiler MVP only
+        // supports scalar `as` targets` in the AOT), which is why `?`
+        // on a `Result<Point, E>` had no working spelling at all.
         let success_body = if unit_success {
             self.core.expr_pool.add(Expr::TupleLiteral(Vec::new()))
         } else {
             let v_ident = self.core.expr_pool.add(Expr::Identifier(v_sym));
-            self.core
-                .expr_pool
-                .add(Expr::Cast(v_ident, success_type.clone()))
+            if is_scalar_cast_target(&success_type) {
+                self.core
+                    .expr_pool
+                    .add(Expr::Cast(v_ident, success_type.clone()))
+            } else {
+                v_ident
+            }
         };
         let success_arm = MatchArm {
             pattern: success_pattern,
@@ -2741,11 +2783,17 @@ impl<'a> TypeCheckerVisitor<'a> {
         // (separate from the success-arm pattern's `v_sym`) makes
         // the error-arm's `return <t_sym>` self-contained without
         // relying on shadowing.
+        //
+        // The binding carries the inner type as its annotation, the
+        // way `??` already does: the AOT needs an explicit type to
+        // instantiate a generic enum, and it is also what lets the
+        // lowering read the success payload's shape out of a block's
+        // leading statement (COMPOUND-BLOCK-RHS).
         let scrutinee_ident = self.core.expr_pool.add(Expr::Identifier(t_sym));
         let bind_stmt = self
             .core
             .stmt_pool
-            .add(Stmt::Val(t_sym, None, inner));
+            .add(Stmt::Val(t_sym, Some(inner_ty.clone()), inner));
         let match_expr = self.core.expr_pool.add(Expr::Match(
             scrutinee_ident,
             vec![success_arm, error_arm],
@@ -2965,10 +3013,16 @@ impl<'a> TypeCheckerVisitor<'a> {
             vec![Pattern::Name(v_sym)],
         );
         let v_ident = self.core.expr_pool.add(Expr::Identifier(v_sym));
-        let success_body = self
-            .core
-            .expr_pool
-            .add(Expr::Cast(v_ident, success_type.clone()));
+        // TRY-COMPOUND: `as` is a scalar conversion in every backend,
+        // so a compound success type leaves the arm body as the bare
+        // binding — see the same call in `desugar_try_expr`.
+        let success_body = if is_scalar_cast_target(&success_type) {
+            self.core
+                .expr_pool
+                .add(Expr::Cast(v_ident, success_type.clone()))
+        } else {
+            v_ident
+        };
         let success_arm = MatchArm {
             pattern: success_pattern,
             guard: None,

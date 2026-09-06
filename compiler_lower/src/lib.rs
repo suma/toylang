@@ -39,7 +39,8 @@ use string_interner::{DefaultStringInterner, DefaultSymbol};
 pub use compiler_ir as ir;
 
 use crate::ir::{
-    Block, BlockId, FuncId, InstKind, Instruction, LocalId, Module, Terminator, Type, ValueId,
+    Block, BlockId, EnumId, FuncId, InstKind, Instruction, LocalId, Module, Terminator, Type,
+    ValueId,
 };
 use compiler_ir::layout::flatten_compound_leaf_types;
 
@@ -318,6 +319,18 @@ struct FunctionLower<'a> {
     result_sym: Option<DefaultSymbol>,
     /// Toylang binding name → storage shape.
     bindings: HashMap<DefaultSymbol, Binding>,
+    /// COMPOUND-BLOCK-RHS: the enums a block's own leading statements
+    /// bind, while detection is looking at that block's tail.
+    ///
+    /// `detect_*_result` is a peek that runs *before* anything is
+    /// lowered, so `val t = mk()` two lines above the tail is not in
+    /// `bindings` yet — and the arm-binding lookups need it, because
+    /// `match t { Ok(v) => v }` reads `v`'s shape out of `t`'s enum.
+    /// Only the enums whose identity is readable without inferring
+    /// anything land here (an explicit annotation, or a plain call's
+    /// declared return type); a miss just leaves detection answering
+    /// `None` the way it did before.
+    pending_block_enums: HashMap<DefaultSymbol, EnumId>,
     /// (continue, break, with_scope_depth_at_loop_entry) target blocks
     /// for `break` and `continue` inside the innermost loop. The third
     /// element is the `with_scope_depth` snapshot at loop entry —

@@ -9,6 +9,26 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-09-06
+- **TRY-COMPOUND / COMPOUND-BLOCK-RHS / COMPOUND-GENERIC-INSTANCE —
+  `?` が compound を運べるようになった** — `val f = File::open(p)?`
+  と、struct / tuple / enum / generic instance のどれでも通る。3 つの
+  修正が要った: (a) desugar の `__try_v as T` は **scalar のときだけ**
+  吐く (`as` は全レーンで scalar 変換なので `Point as Point` は
+  no-op ではなく拒否だった。`??` も同じ)、(b) `val x = { .. match .. }`
+  の**検出が block 自身の先頭束縛を見る**ようになった (検出は lowering
+  前の peek なので `val t = mk()` がまだ `bindings` に居らず、arm 束縛の
+  型を引けなかった。注釈か素の call の戻り型から引く)、(c) 検出が
+  base name だけでなく**具体の instance を運ぶ**ようになった
+  (`Result<Vec<u64>, E>` の payload は既に実体化済み。注釈の無い
+  generic を初めて解決できる — COMPOUND-GENERIC-INSTANCE がこれで消えた)。
+  加えて tree-walker の block 退出時の drop 免除を **identity から
+  包含関係に**広げた: compound は alias なので、block が渡した値が
+  block 内束縛の payload だと、その束縛の drop が渡した先を壊していた
+  (`File` は fd が閉じるので見える。`Vec` はバッファが読めてしまい隠れる)。
+  `poc/logsearch` の `File::create` / `File::open` の手書き `match` 2 か所を
+  `?` にして出力一致を確認。例: `interpreter/example/try_compound.t`。
+
 ### 2026-09-05
 - **toylang 側のリファクタリング (stdlib / poc)** — 言語に入った機能で
   手書きの定型を畳んで **-198 行**。`checked_pow` 8 本の
@@ -1934,50 +1954,14 @@
   `detect_struct_result` が method の戻り型を安く引けないので検出されず、
   従来どおり「compound-returning method を式の位置で使えない、`val` で
   束縛せよ」というエラーになる。誘導が具体的なので実害は小さい。
-  (2026-09-01 に **match の arm 束縛** と **`return` する arm** は解消。
-  残っているのは method call の枝だけ。)
+  (2026-09-01 に **match の arm 束縛** と **`return` する arm**、
+  2026-09-06 に **block を挟んだ形**は解消。残っているのは method call
+  の枝だけ。)
+  同じ理由で、block の先頭束縛から enum を引く `pending_enum_id` も
+  **注釈か素の call** しか読まない — `val t = Foo::open(p)` を注釈なしで
+  書いて `match t { .. }` を tail に置くと従来どおり検出されない。
+  `?` / `??` は自分で注釈を書くのでこの穴に落ちない。
 
-- **COMPOUND-BLOCK-RHS の残: block の末尾が compound な `match`** ★ —
-  `val p: P = { val t = mk()  match t { .. => v, .. } }` が compiled
-  レーンで `val/var rhs produced no value`。**同じ `match` を直接
-  val-rhs に置けば通る**ので、抜けているのは「block を 1 枚挟んだとき」
-  だけ。tree-walker は通る。最小再現:
-
-  ```rust
-  struct P { x: i64 }
-  fn mk() -> Result<P, str> { Result::Ok(P { x: 3i64 }) }
-  fn main() -> u64 {
-      val p: P = {
-          val t = mk()
-          match t { Result::Ok(v) => v, Result::Err(_) => P { x: 0i64 } }
-      }
-      println(p.x)
-      0u64
-  }
-  ```
-
-- **TRY-COMPOUND: `?` の成功型が compound だと動かない** ★ —
-  `val f = File::open(path)?` / `Result<(i64, i64), E>` /
-  `Result<Option<T>, E>` のどれも通らない。`?` の desugar が成功 arm を
-  `__try_v as T` で型付けするため (AOT 推論のための措置)、
-  tree-walker は `Invalid cast from Struct { .. } to Identifier(..)` の
-  internal error、AOT は `compiler MVP only supports scalar as targets`
-  になる。**cast を scalar 型のときだけ吐く**ようにすると tree-walker /
-  IR VM は通るが、今度は上の COMPOUND-BLOCK-RHS を踏んで AOT が
-  `val/var rhs produced no value` で落ちる (desugar が作るのが
-  まさに「block の末尾が compound な `match`」だから)。**先に
-  COMPOUND-BLOCK-RHS を直すこと** — 順番を逆にするとレーンが割れる。
-  現状の回避は手書きの `match`。`poc/logsearch` が
-  `File::open` / `File::create` の周りでそう書いている
-  (2026-09-05 に stdlib / poc の `?` 化を進める過程で発見)
-
-- **COMPOUND-GENERIC-INSTANCE: `match` から generic struct を取り出すと
-  注釈が要る** ★ — `val out: Span<u8> = match w { Option::Some(s) => s, .. }`。
-  `BranchShape::Produces` が base name (`Span`) しか運ばないので、
-  型引数は注釈から取るしかない。`struct_of_arm_binding` は payload の
-  **具体的な `StructId` を既に持っている**ので、`BranchShape` を
-  そこまで運べるようにすれば注釈は要らなくなる。既存の
-  `val v: Vec<u8> = Vec::new()` と同じ規則なので実害は小さい。
 - **TREE-WALKER-CONCRETE-IMPL** ★ — `impl C<u8>` と `impl C<i64>` の
   両方に同名の associated function があると tree-walker が spec を
   1 つしか持たず解決できない (`concrete_associated_hint` を

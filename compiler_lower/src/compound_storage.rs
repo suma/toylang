@@ -30,7 +30,10 @@
 //!   counterparts of the pre-allocated write path, also called
 //!   recursively from the enum payload code.
 
-use frontend::ast::{Expr, ExprRef, MatchArm, Stmt};
+use std::collections::HashMap;
+
+use frontend::ast::{Expr, ExprRef, MatchArm, Pattern, Stmt, StmtRef};
+use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 
 use super::bindings::{
@@ -75,6 +78,19 @@ pub(super) enum BranchShape<T> {
     Diverges,
 }
 
+/// Which instance a detected struct- or enum-producing branch names.
+///
+/// Detection usually learns only the template's name and leaves the
+/// instantiation to the `val`'s annotation, which is where it always
+/// came from. Reading the shape out of an enum payload is the
+/// exception: a `Result<Vec<u64>, E>` already carries the instantiated
+/// `Vec<u64>`, and an unannotated `val v = mk()?` has nowhere else to
+/// get it from.
+pub(super) enum ShapeSource<Id> {
+    Base(DefaultSymbol),
+    Instance(Id),
+}
+
 /// How a tuple-producing branch tells us its shape. Tuples have no
 /// name to look up — unlike a struct or an enum, the shape *is* the
 /// identity — so detection has to carry back enough to allocate from.
@@ -92,19 +108,24 @@ impl<'a> FunctionLower<'a> {
     /// struct, and which? Mirrors `detect_enum_result` — `lower_let`
     /// asks before deciding to pre-allocate a target, and a `None`
     /// leaves the existing paths to handle (or reject) the rhs.
+    ///
+    /// `&mut self` only because resolving a block's leading `val t:
+    /// Result<P, str> = ..` instantiates that generic enum; the answer
+    /// does not depend on when it happens, and instantiation is
+    /// idempotent.
     pub(super) fn detect_struct_result(
-        &self,
+        &mut self,
         expr_ref: &ExprRef,
-    ) -> Option<BranchShape<DefaultSymbol>> {
+    ) -> Option<BranchShape<ShapeSource<StructId>>> {
         let expr = self.program.expression.get(expr_ref)?;
         match expr {
             Expr::StructLiteral(name, _) if self.struct_defs.contains_key(&name) => {
-                Some(BranchShape::Produces(name))
+                Some(BranchShape::Produces(ShapeSource::Base(name)))
             }
             Expr::Identifier(sym) => match self.bindings.get(&sym) {
-                Some(Binding::Struct { struct_id, .. }) => Some(BranchShape::Produces(
-                    self.module.struct_def(*struct_id).base_name,
-                )),
+                Some(Binding::Struct { struct_id, .. }) => {
+                    Some(BranchShape::Produces(ShapeSource::Instance(*struct_id)))
+                }
                 _ => None,
             },
             // A call is worth recognising here even though the enum
@@ -113,9 +134,9 @@ impl<'a> FunctionLower<'a> {
             // declared return type says which struct it is.
             Expr::Call(fn_name, _) => match self.module.lookup_function(None, fn_name) {
                 Some(func_id) => match self.module.function(func_id).return_type {
-                    Type::Struct(struct_id) => Some(BranchShape::Produces(
-                        self.module.struct_def(struct_id).base_name,
-                    )),
+                    Type::Struct(struct_id) => {
+                        Some(BranchShape::Produces(ShapeSource::Instance(struct_id)))
+                    }
                     _ => None,
                 },
                 None => None,
@@ -128,7 +149,7 @@ impl<'a> FunctionLower<'a> {
             Expr::AssociatedFunctionCall(struct_name, _, _)
                 if self.struct_defs.contains_key(&struct_name) =>
             {
-                Some(BranchShape::Produces(struct_name))
+                Some(BranchShape::Produces(ShapeSource::Base(struct_name)))
             }
             Expr::BuiltinCall(frontend::ast::BuiltinFunction::Panic, _) => {
                 Some(BranchShape::Diverges)
@@ -139,28 +160,35 @@ impl<'a> FunctionLower<'a> {
                 self.agree_on_struct(&bodies)
             }
             Expr::Match(scrutinee, arms) => {
-                let mut found: Option<DefaultSymbol> = None;
+                let mut found: Option<ShapeSource<StructId>> = None;
                 for arm in &arms {
                     let shape = match self.detect_struct_result(&arm.body) {
                         Some(shape) => shape,
                         // Not a shape detection can see on its own —
                         // try the arm's own binding.
-                        None => self.struct_of_arm_binding(&scrutinee, &arm.pattern, &arm.body)?,
+                        None => {
+                            match self.arm_binding_payload_type(&scrutinee, &arm.pattern, &arm.body)?
+                            {
+                                Type::Struct(struct_id) => {
+                                    BranchShape::Produces(ShapeSource::Instance(struct_id))
+                                }
+                                _ => return None,
+                            }
+                        }
                     };
-                    match shape {
-                        BranchShape::Diverges => {}
-                        BranchShape::Produces(name) => match found {
-                            Some(seen) if seen != name => return None,
-                            _ => found = Some(name),
-                        },
-                    }
+                    found = self.merge_struct_shape(found, shape)?;
                 }
                 found.map(BranchShape::Produces)
             }
             Expr::Block(stmts) => {
-                let last = stmts.last()?;
-                match self.program.statement.get(last)? {
-                    Stmt::Expression(e) => self.detect_struct_result(&e),
+                let last = *stmts.last()?;
+                match self.program.statement.get(&last)? {
+                    Stmt::Expression(e) => {
+                        let saved = self.enter_block_pending(&stmts[..stmts.len() - 1]);
+                        let out = self.detect_struct_result(&e);
+                        self.pending_block_enums = saved;
+                        out
+                    }
                     // A block that leaves through `return` never
                     // reaches the merge, so it says nothing about which
                     // struct the others produce — exactly what
@@ -185,67 +213,148 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
-    /// The struct a `match` arm's pattern binds `name` to, when the
-    /// arm body is that bare name.
+    /// COMPOUND-BLOCK-RHS: record the enums this block's leading
+    /// statements bind, and hand back the map to restore afterwards.
+    ///
+    /// Detection runs before any of those statements is lowered, so
+    /// `bindings` cannot answer for them; without this, a tail like
+    /// `match t { Ok(v) => v, .. }` has no way to learn what `v` is
+    /// and the whole rhs falls through to "val/var rhs produced no
+    /// value". That is the shape `?` and `??` desugar to, so every
+    /// compound-carrying `expr?` depended on it.
+    fn enter_block_pending(&mut self, leading: &[StmtRef]) -> HashMap<DefaultSymbol, EnumId> {
+        let saved = self.pending_block_enums.clone();
+        for stmt_ref in leading {
+            let Some(stmt) = self.program.statement.get(stmt_ref) else {
+                continue;
+            };
+            let (name, annotation, rhs) = match stmt {
+                Stmt::Val(name, annotation, rhs) => (name, annotation, Some(rhs)),
+                Stmt::Var(name, annotation, rhs) => (name, annotation, rhs),
+                _ => continue,
+            };
+            if let Some(enum_id) = self.pending_enum_id(annotation.as_ref(), rhs.as_ref()) {
+                self.pending_block_enums.insert(name, enum_id);
+            }
+        }
+        saved
+    }
+
+    /// The enum instance a leading `val` / `var` binds, when it is
+    /// readable without inferring anything.
+    ///
+    /// Two sources, in order: the annotation — which `?` and `??`
+    /// always spell on the temp they bind — and, failing that, a plain
+    /// call's declared return type, which covers the hand-written
+    /// `val t = mk()` above a `match t { .. }`. A method or
+    /// associated-function rhs with no annotation is a deliberate
+    /// miss: resolving it means monomorphising, which is real work for
+    /// a question detection is allowed to decline.
+    fn pending_enum_id(
+        &mut self,
+        annotation: Option<&TypeDecl>,
+        rhs: Option<&ExprRef>,
+    ) -> Option<EnumId> {
+        if let Some(base) = self.annotation_enum_base(annotation)
+            && let Ok(enum_id) = self.resolve_enum_instance(base, annotation)
+        {
+            return Some(enum_id);
+        }
+        let Some(Expr::Call(fn_name, _)) = self.program.expression.get(rhs?) else {
+            return None;
+        };
+        let func_id = self.module.lookup_function(None, fn_name)?;
+        match self.module.function(func_id).return_type {
+            Type::Enum(enum_id) => Some(enum_id),
+            _ => None,
+        }
+    }
+
+    /// The payload type a `match` arm's pattern binds `name` to, when
+    /// the arm body is that bare name.
     ///
     /// `Result::Ok(s) => s` is how every `Result`-returning
     /// constructor is unwrapped, and `s` is not in `self.bindings` at
     /// detection time — arm bindings only exist once the arm is being
     /// lowered. The type is recoverable anyway: the scrutinee's enum
     /// says what that variant's payload at that position is.
-    fn struct_of_arm_binding(
+    fn arm_binding_payload_type(
         &self,
         scrutinee: &ExprRef,
-        pattern: &frontend::ast::Pattern,
+        pattern: &Pattern,
         body: &ExprRef,
-    ) -> Option<BranchShape<DefaultSymbol>> {
+    ) -> Option<Type> {
         let Expr::Identifier(want) = self.program.expression.get(body)? else {
             return None;
         };
-        let frontend::ast::Pattern::EnumVariant(_, variant_name, subs) = pattern else {
+        let Pattern::EnumVariant(_, variant_name, subs) = pattern else {
             return None;
         };
         let position = subs
             .iter()
-            .position(|p| matches!(p, frontend::ast::Pattern::Name(n) if *n == want))?;
+            .position(|p| matches!(p, Pattern::Name(n) if *n == want))?;
         // The scrutinee has to be a binding whose storage we already
-        // hold; that is the shape the compiled lanes accept anyway
-        // ("bind the call with `val` first").
+        // hold — or one this block is about to introduce, which is the
+        // same thing one lowering step later.
         let Expr::Identifier(scrutinee_name) = self.program.expression.get(scrutinee)? else {
             return None;
         };
-        let Some(Binding::Enum(storage)) = self.bindings.get(&scrutinee_name) else {
-            return None;
+        let enum_id = match self.bindings.get(&scrutinee_name) {
+            Some(Binding::Enum(storage)) => storage.enum_id,
+            _ => *self.pending_block_enums.get(&scrutinee_name)?,
         };
-        let def = self.module.enum_def(storage.enum_id);
+        let def = self.module.enum_def(enum_id);
         let variant_idx = def.variants.iter().position(|v| v.name == *variant_name)?;
-        match *def.variants[variant_idx].payload_types.get(position)? {
-            Type::Struct(struct_id) => Some(BranchShape::Produces(
-                self.module.struct_def(struct_id).base_name,
-            )),
-            _ => None,
-        }
+        def.variants[variant_idx].payload_types.get(position).copied()
     }
 
     /// Every branch must produce the same struct (or diverge), and at
     /// least one must produce.
-    fn agree_on_struct(&self, bodies: &[ExprRef]) -> Option<BranchShape<DefaultSymbol>> {
-        let mut found: Option<DefaultSymbol> = None;
+    fn agree_on_struct(&mut self, bodies: &[ExprRef]) -> Option<BranchShape<ShapeSource<StructId>>> {
+        let mut found: Option<ShapeSource<StructId>> = None;
         for body in bodies {
-            match self.detect_struct_result(body)? {
-                BranchShape::Diverges => {}
-                BranchShape::Produces(name) => match found {
-                    Some(seen) if seen != name => return None,
-                    _ => found = Some(name),
-                },
-            }
+            let shape = self.detect_struct_result(body)?;
+            found = self.merge_struct_shape(found, shape)?;
         }
         found.map(BranchShape::Produces)
     }
 
+    /// Fold one branch's shape into what the earlier branches said.
+    /// Branches must name the same struct; a resolved instance wins
+    /// over a bare template name, since it is the strictly more
+    /// informative answer and the two agree by construction.
+    fn merge_struct_shape(
+        &self,
+        found: Option<ShapeSource<StructId>>,
+        shape: BranchShape<ShapeSource<StructId>>,
+    ) -> Option<Option<ShapeSource<StructId>>> {
+        let produced = match shape {
+            BranchShape::Diverges => return Some(found),
+            BranchShape::Produces(source) => source,
+        };
+        let Some(seen) = found else {
+            return Some(Some(produced));
+        };
+        if self.struct_shape_base(&seen) != self.struct_shape_base(&produced) {
+            return None;
+        }
+        Some(Some(match (seen, produced) {
+            (ShapeSource::Base(_), other) => other,
+            (kept, _) => kept,
+        }))
+    }
+
+    /// The template name behind either spelling of a struct shape.
+    fn struct_shape_base(&self, source: &ShapeSource<StructId>) -> DefaultSymbol {
+        match source {
+            ShapeSource::Base(name) => *name,
+            ShapeSource::Instance(id) => self.module.struct_def(*id).base_name,
+        }
+    }
+
     /// Tuple counterpart of `detect_struct_result`.
     pub(super) fn detect_tuple_result(
-        &self,
+        &mut self,
         expr_ref: &ExprRef,
     ) -> Option<BranchShape<TupleShapeSource>> {
         let expr = self.program.expression.get(expr_ref)?;
@@ -276,14 +385,46 @@ impl<'a> FunctionLower<'a> {
                 bodies.extend(elif_pairs.iter().map(|(_, b)| *b));
                 self.agree_on_tuple(&bodies)
             }
-            Expr::Match(_, arms) => {
-                let bodies: Vec<ExprRef> = arms.iter().map(|a| a.body).collect();
-                self.agree_on_tuple(&bodies)
+            Expr::Match(scrutinee, arms) => {
+                let mut found: Option<TupleShapeSource> = None;
+                for arm in &arms {
+                    let shape = match self.detect_tuple_result(&arm.body) {
+                        Some(shape) => shape,
+                        // Same arm-binding fallback the struct side
+                        // has: `Result::Ok(t) => t` names a tuple
+                        // through the scrutinee's variant payload,
+                        // which is already interned.
+                        None => {
+                            match self.arm_binding_payload_type(&scrutinee, &arm.pattern, &arm.body)?
+                            {
+                                Type::Tuple(tuple_id) => {
+                                    BranchShape::Produces(TupleShapeSource::Interned(tuple_id))
+                                }
+                                _ => return None,
+                            }
+                        }
+                    };
+                    match shape {
+                        BranchShape::Diverges => {}
+                        BranchShape::Produces(source) => {
+                            if found.is_none() {
+                                found = Some(source);
+                            }
+                        }
+                    }
+                }
+                found.map(BranchShape::Produces)
             }
             Expr::Block(stmts) => {
-                let last = stmts.last()?;
-                match self.program.statement.get(last)? {
-                    Stmt::Expression(e) => self.detect_tuple_result(&e),
+                let last = *stmts.last()?;
+                match self.program.statement.get(&last)? {
+                    Stmt::Expression(e) => {
+                        let saved = self.enter_block_pending(&stmts[..stmts.len() - 1]);
+                        let out = self.detect_tuple_result(&e);
+                        self.pending_block_enums = saved;
+                        out
+                    }
+                    Stmt::Return(_) => Some(BranchShape::Diverges),
                     _ => None,
                 }
             }
@@ -295,7 +436,7 @@ impl<'a> FunctionLower<'a> {
     /// one that produces supplies the shape. Tuples are structural and
     /// the type checker has already agreed the branches share a type,
     /// so there is nothing further to compare.
-    fn agree_on_tuple(&self, bodies: &[ExprRef]) -> Option<BranchShape<TupleShapeSource>> {
+    fn agree_on_tuple(&mut self, bodies: &[ExprRef]) -> Option<BranchShape<TupleShapeSource>> {
         let mut found: Option<TupleShapeSource> = None;
         for body in bodies {
             match self.detect_tuple_result(body)? {
@@ -753,13 +894,16 @@ impl<'a> FunctionLower<'a> {
     /// path in `lower_let`; we only commit to the parallel
     /// `lower_into_enum_target` walk when we know all sub-trees end
     /// in enum producers.
-    pub(super) fn detect_enum_result(&self, expr_ref: &ExprRef) -> Option<DefaultSymbol> {
+    pub(super) fn detect_enum_result(
+        &mut self,
+        expr_ref: &ExprRef,
+    ) -> Option<BranchShape<ShapeSource<EnumId>>> {
         let expr = self.program.expression.get(expr_ref)?;
         match expr {
             Expr::QualifiedIdentifier(path)
                 if path.len() == 2 && self.enum_defs.contains_key(&path[0]) =>
             {
-                Some(path[0])
+                Some(BranchShape::Produces(ShapeSource::Base(path[0])))
             }
             Expr::AssociatedFunctionCall(en, name, _)
                 if self.enum_defs.contains_key(&en)
@@ -771,45 +915,107 @@ impl<'a> FunctionLower<'a> {
                     // enum-associated-call intercept.
                     && self.enum_variant_index(&en, &name).is_some() =>
             {
-                Some(en)
+                Some(BranchShape::Produces(ShapeSource::Base(en)))
             }
             Expr::Identifier(sym) => match self.bindings.get(&sym) {
                 Some(Binding::Enum(storage)) => {
-                    Some(self.module.enum_def(storage.enum_id).base_name)
+                    Some(BranchShape::Produces(ShapeSource::Instance(storage.enum_id)))
                 }
-                _ => None,
+                // A name this block binds a line or two above the tail
+                // (COMPOUND-BLOCK-RHS); it will be a real binding by
+                // the time the tail is lowered.
+                _ => self
+                    .pending_block_enums
+                    .get(&sym)
+                    .map(|id| BranchShape::Produces(ShapeSource::Instance(*id))),
             },
-            Expr::IfElifElse(_, then_body, elif_pairs, else_body) => {
-                let then_en = self.detect_enum_result(&then_body)?;
-                for (_, body) in &elif_pairs {
-                    if self.detect_enum_result(body)? != then_en {
-                        return None;
-                    }
-                }
-                if self.detect_enum_result(&else_body)? != then_en {
-                    return None;
-                }
-                Some(then_en)
+            // A branch that traps says nothing about which enum the
+            // others produce — the same meaning it has on the struct
+            // and tuple sides.
+            Expr::BuiltinCall(frontend::ast::BuiltinFunction::Panic, _) => {
+                Some(BranchShape::Diverges)
             }
-            Expr::Match(_, arms) => {
-                let first_en = arms.iter().find_map(|a| self.detect_enum_result(&a.body))?;
+            Expr::IfElifElse(_, then_body, elif_pairs, else_body) => {
+                let mut bodies = vec![then_body, else_body];
+                bodies.extend(elif_pairs.iter().map(|(_, b)| *b));
+                self.agree_on_enum(&bodies)
+            }
+            Expr::Match(scrutinee, arms) => {
+                let mut found: Option<ShapeSource<EnumId>> = None;
                 for arm in &arms {
-                    if self.detect_enum_result(&arm.body)? != first_en {
-                        return None;
-                    }
+                    let shape = match self.detect_enum_result(&arm.body) {
+                        Some(shape) => shape,
+                        // The arm's own binding, as on the struct and
+                        // tuple sides: `Result::Ok(o) => o` where the
+                        // payload is itself an enum (`Option<T>`).
+                        None => {
+                            match self.arm_binding_payload_type(&scrutinee, &arm.pattern, &arm.body)?
+                            {
+                                Type::Enum(enum_id) => {
+                                    BranchShape::Produces(ShapeSource::Instance(enum_id))
+                                }
+                                _ => return None,
+                            }
+                        }
+                    };
+                    found = self.merge_enum_shape(found, shape)?;
                 }
-                Some(first_en)
+                found.map(BranchShape::Produces)
             }
             Expr::Block(stmts) => {
-                let last = stmts.last()?;
-                let stmt = self.program.statement.get(last)?;
-                if let Stmt::Expression(e) = stmt {
-                    self.detect_enum_result(&e)
-                } else {
-                    None
+                let last = *stmts.last()?;
+                match self.program.statement.get(&last)? {
+                    Stmt::Expression(e) => {
+                        let saved = self.enter_block_pending(&stmts[..stmts.len() - 1]);
+                        let out = self.detect_enum_result(&e);
+                        self.pending_block_enums = saved;
+                        out
+                    }
+                    Stmt::Return(_) => Some(BranchShape::Diverges),
+                    _ => None,
                 }
             }
             _ => None,
+        }
+    }
+
+    /// Enum counterpart of `agree_on_struct`.
+    fn agree_on_enum(&mut self, bodies: &[ExprRef]) -> Option<BranchShape<ShapeSource<EnumId>>> {
+        let mut found: Option<ShapeSource<EnumId>> = None;
+        for body in bodies {
+            let shape = self.detect_enum_result(body)?;
+            found = self.merge_enum_shape(found, shape)?;
+        }
+        found.map(BranchShape::Produces)
+    }
+
+    /// Enum counterpart of `merge_struct_shape`.
+    fn merge_enum_shape(
+        &self,
+        found: Option<ShapeSource<EnumId>>,
+        shape: BranchShape<ShapeSource<EnumId>>,
+    ) -> Option<Option<ShapeSource<EnumId>>> {
+        let produced = match shape {
+            BranchShape::Diverges => return Some(found),
+            BranchShape::Produces(source) => source,
+        };
+        let Some(seen) = found else {
+            return Some(Some(produced));
+        };
+        if self.enum_shape_base(&seen) != self.enum_shape_base(&produced) {
+            return None;
+        }
+        Some(Some(match (seen, produced) {
+            (ShapeSource::Base(_), other) => other,
+            (kept, _) => kept,
+        }))
+    }
+
+    /// The template name behind either spelling of an enum shape.
+    fn enum_shape_base(&self, source: &ShapeSource<EnumId>) -> DefaultSymbol {
+        match source {
+            ShapeSource::Base(name) => *name,
+            ShapeSource::Instance(id) => self.module.enum_def(*id).base_name,
         }
     }
 

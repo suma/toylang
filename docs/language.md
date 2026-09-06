@@ -1324,9 +1324,9 @@ desugar at type-check time into:
 val x = compute()?
 # behaves like (when the enclosing fn returns Result<T, E>):
 val x = {
-    val __try_t = compute()
+    val __try_t: Result<T, E> = compute()
     match __try_t {
-        Result::Ok(__try_v) => __try_v as T,
+        Result::Ok(__try_v) => __try_v as T,   # `as T` only when T is a scalar
         Result::Err(__try_e) => {
             return __try_t
         },
@@ -1343,7 +1343,7 @@ val x = {
 val x = lookup()?
 # behaves like:
 val x = {
-    val __try_t = lookup()
+    val __try_t: Option<T> = lookup()
     match __try_t {
         Option::Some(__try_v) => __try_v as T,
         Option::None => {
@@ -1352,6 +1352,10 @@ val x = {
     }
 }
 ```
+
+The annotation on `__try_t` is what lets a generic enum
+(`Result<Vec<u64>, E>`) be instantiated; `??` spells one for the same
+reason.
 
 The desugar runs inside the type checker (not the parser) because
 the variant names (`Ok`/`Err` vs `Some`/`None`) depend on the
@@ -1414,8 +1418,20 @@ fn pipeline(a: i64, b: i64, c: i64) -> Result<i64, str> {
   }
   ```
 
+- **The success type may be a compound.** `val f = File::open(p)?`
+  binds a struct, and a tuple, an enum, or a generic instance
+  (`Result<Vec<u64>, E>`) works the same way. The `as T` in the
+  desugar above is spelled **only for a scalar `T`**: `as` is a scalar
+  conversion in every backend, so `Point as Point` was not a no-op but
+  a refusal, and a compound success arm therefore ends in the bare
+  binding. Ownership follows the hand-written `match` this replaces —
+  the value handed out is the payload, and the temporary is not
+  dropped out from under it.
 - **Out of scope** (initial implementation): user-defined `Try`
   trait.
+
+`interpreter/example/try_compound.t` runs all four compound shapes
+across the backends.
 
 Backends: all three (interpreter / cranelift JIT / AOT) execute
 the rewritten `match` directly.

@@ -34,7 +34,7 @@ use super::bindings::{
     Binding, FieldChainResult, TupleElementBinding,
 };
 use super::FunctionLower;
-use crate::ir::{Const, InstKind, LocalId, Type, ValueId};
+use crate::ir::{Const, EnumId, InstKind, LocalId, StructId, Type, ValueId};
 
 impl<'a> FunctionLower<'a> {
     /// Centralised val/var-with-rhs handling. Picks the binding shape
@@ -194,18 +194,22 @@ impl<'a> FunctionLower<'a> {
         // arm binding exists and the identifier arm becomes a plain
         // storage copy. Restricted to the composite shapes on purpose
         // — calls and literals have their own paths further down.
-        let enum_base = match self.detect_enum_result(rhs_ref) {
-            Some(base) => Some(base),
-            None => {
+        let enum_source = match self.detect_enum_result(rhs_ref) {
+            Some(crate::compound_storage::BranchShape::Produces(source)) => Some(source),
+            // Detection saw nothing, or saw only diverging branches
+            // (which bind nothing). Either way the annotation is the
+            // remaining source, as before.
+            _ => {
                 if matches!(rhs, Expr::Match(..) | Expr::IfElifElse(..) | Expr::Block(..)) {
                     self.annotation_enum_base(annotation)
+                        .map(crate::compound_storage::ShapeSource::Base)
                 } else {
                     None
                 }
             }
         };
-        if let Some(base_name) = enum_base {
-            return self.lower_let_enum_composite(name, annotation, rhs_ref, base_name);
+        if let Some(source) = enum_source {
+            return self.lower_let_enum_composite(name, annotation, rhs_ref, source);
         }
         // COMPOUND-BLOCK-RHS: the same for a struct- or tuple-producing
         // `if` chain, `match`, or block. Restricted to those three
@@ -218,10 +222,10 @@ impl<'a> FunctionLower<'a> {
             rhs,
             Expr::IfElifElse(..) | Expr::Match(..) | Expr::Block(..)
         ) {
-            if let Some(crate::compound_storage::BranchShape::Produces(base_name)) =
+            if let Some(crate::compound_storage::BranchShape::Produces(source)) =
                 self.detect_struct_result(rhs_ref)
             {
-                return self.lower_let_struct_composite(name, annotation, rhs_ref, base_name);
+                return self.lower_let_struct_composite(name, annotation, rhs_ref, source);
             }
             if let Some(crate::compound_storage::BranchShape::Produces(shape)) =
                 self.detect_tuple_result(rhs_ref)
@@ -1066,7 +1070,10 @@ impl<'a> FunctionLower<'a> {
     /// match ...`). The parser emits `Struct(Name<...>)` for any
     /// `Name<...>` spelling and `Identifier(Name)` for bare names, so
     /// all three spellings are checked against the enum table.
-    fn annotation_enum_base(&self, annotation: Option<&TypeDecl>) -> Option<DefaultSymbol> {
+    pub(super) fn annotation_enum_base(
+        &self,
+        annotation: Option<&TypeDecl>,
+    ) -> Option<DefaultSymbol> {
         let ty = annotation?;
         let sym = match ty {
             TypeDecl::Enum(sym, _) | TypeDecl::Struct(sym, _) | TypeDecl::Identifier(sym) => *sym,
@@ -1945,9 +1952,21 @@ impl<'a> FunctionLower<'a> {
         name: DefaultSymbol,
         annotation: Option<&TypeDecl>,
         rhs_ref: &ExprRef,
-        base_name: DefaultSymbol,
+        source: crate::compound_storage::ShapeSource<EnumId>,
     ) -> Result<Option<ValueId>, String> {
-        let enum_id = self.resolve_enum_instance(base_name, annotation)?;
+        use crate::compound_storage::ShapeSource;
+        // Annotation first, detected instance as the fallback — the
+        // same order `lower_let_struct_composite` uses, and for the
+        // same reason: an `Option<i64>` read out of an enum payload
+        // has no annotation to instantiate from.
+        let enum_id = match source {
+            ShapeSource::Base(base_name) => self.resolve_enum_instance(base_name, annotation)?,
+            ShapeSource::Instance(id) => {
+                let base_name = self.module.enum_def(id).base_name;
+                self.resolve_enum_instance(base_name, annotation)
+                    .unwrap_or(id)
+            }
+        };
         let storage = self.allocate_enum_storage(enum_id);
         self.bindings
             .insert(name, Binding::Enum(storage.clone()));
@@ -1965,9 +1984,22 @@ impl<'a> FunctionLower<'a> {
         name: DefaultSymbol,
         annotation: Option<&TypeDecl>,
         rhs_ref: &ExprRef,
-        base_name: DefaultSymbol,
+        source: crate::compound_storage::ShapeSource<StructId>,
     ) -> Result<Option<ValueId>, String> {
-        let struct_id = self.resolve_struct_instance(base_name, annotation)?;
+        use crate::compound_storage::ShapeSource;
+        // The annotation stays the first source: it is what the
+        // programmer wrote, and it is how every generic struct got
+        // instantiated here before. A detected instance is the answer
+        // for the case that used to have none — a `Vec<u64>` read out
+        // of an enum payload with no annotation to instantiate from.
+        let struct_id = match source {
+            ShapeSource::Base(base_name) => self.resolve_struct_instance(base_name, annotation)?,
+            ShapeSource::Instance(id) => {
+                let base_name = self.module.struct_def(id).base_name;
+                self.resolve_struct_instance(base_name, annotation)
+                    .unwrap_or(id)
+            }
+        };
         let fields = self.allocate_struct_fields(struct_id);
         // The binding owns the value whichever branch built it, so it
         // gets the same auto-drop registration a literal rhs would —

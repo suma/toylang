@@ -497,12 +497,8 @@ impl ArchiveWriter {
         val stem = String::from_str(base)
         val ext = String::from_str(".seg")
         var path = stem.concat(&ext)
-        val opened = File::create(path.to_str())
-        var total: u64 = 0u64
-        match opened {
-            Result::Ok(f) => { total = self.write_seg(&f, segid, crc) }
-            Result::Err(e) => { return Result::Err(e) }
-        }
+        val f = File::create(path.to_str())?
+        val total: u64 = self.write_seg(&f, segid, crc)
         # Zero is the failure: a segment always carries at least a
         # header, so the count can carry the verdict without a second
         # return value.
@@ -1177,69 +1173,64 @@ pub fn verify(base: str, crc: &Crc32) -> Result<VerifyReport, IoError> {
     }
     report.seg_bytes = fs::file_size(path.to_str())?
 
-    val opened = File::open(path.to_str())
-    match opened {
-        Result::Ok(f) => {
-            var head = ByteWriter::with_capacity(segfile::data_at() + 64u64)
-            var raw = ByteWriter::with_capacity(frame_raw_bytes() + 65536u64)
-            var arena = ByteWriter::with_capacity(segment_target_bytes() + 65536u64)
-            var sec = ByteWriter::with_capacity(1048576u64)
+    val f = File::open(path.to_str())?
+    var head = ByteWriter::with_capacity(segfile::data_at() + 64u64)
+    var raw = ByteWriter::with_capacity(frame_raw_bytes() + 65536u64)
+    var arena = ByteWriter::with_capacity(segment_target_bytes() + 65536u64)
+    var sec = ByteWriter::with_capacity(1048576u64)
 
-            val h = segfile::head_of(&f, &mut head)
-            if !h.ok {
-                report.ok = false
-            } else {
-                report.ok = true
-                report.records = h.records
-                report.frames = h.n_frames
-                report.index_bytes = h.recs_len + h.ftab_len + h.terms_len + h.links_len
+    val h = segfile::head_of(&f, &mut head)
+    if !h.ok {
+        report.ok = false
+    } else {
+        report.ok = true
+        report.records = h.records
+        report.frames = h.n_frames
+        report.index_bytes = h.recs_len + h.ftab_len + h.terms_len + h.links_len
 
-                if !segfile::expand_all(&f, &h, crc, &mut raw, &mut arena) {
-                    report.bad_frames = report.bad_frames + 1u64
-                    report.ok = false
-                }
-                report.raw_bytes = arena.len()
-                if arena.len() != h.arena_bytes { report.ok = false }
+        if !segfile::expand_all(&f, &h, crc, &mut raw, &mut arena) {
+            report.bad_frames = report.bad_frames + 1u64
+            report.ok = false
+        }
+        report.raw_bytes = arena.len()
+        if arena.len() != h.arena_bytes { report.ok = false }
 
-                # The record table is walked as well as read: a
-                # checksum says the bytes arrived, not that they
-                # decode into the number of records claimed.
-                if !segfile::read_range(&f, h.recs_off, h.recs_len, &mut sec) {
-                    report.ok = false
-                } else {
-                    val rw = sec.span()
-                    match rw {
-                        Option::Some(rb) => {
-                            if crc.of(rb, 0u64, h.recs_len) != h.recs_crc { report.ok = false }
-                            var walk = ByteReader::new(h.recs_len)
-                            var seen: u64 = 0u64
-                            while walk.remaining() > 0u64 {
-                                var k: u64 = 0u64
-                                while k < 11u64 {
-                                    val v = walk.take_varint(rb)
-                                    k = k + 1u64
-                                }
-                                seen = seen + 1u64
-                            }
-                            if seen != h.records { report.ok = false }
+        # The record table is walked as well as read: a
+        # checksum says the bytes arrived, not that they
+        # decode into the number of records claimed.
+        if !segfile::read_range(&f, h.recs_off, h.recs_len, &mut sec) {
+            report.ok = false
+        } else {
+            val rw = sec.span()
+            match rw {
+                Option::Some(rb) => {
+                    if crc.of(rb, 0u64, h.recs_len) != h.recs_crc { report.ok = false }
+                    var walk = ByteReader::new(h.recs_len)
+                    var seen: u64 = 0u64
+                    while walk.remaining() > 0u64 {
+                        var k: u64 = 0u64
+                        while k < 11u64 {
+                            val v = walk.take_varint(rb)
+                            k = k + 1u64
                         }
-                        Option::None => { report.ok = false }
+                        seen = seen + 1u64
                     }
+                    if seen != h.records { report.ok = false }
                 }
-
-                if h.has_terms() {
-                    if !segfile::load_block(&f, h.terms_off, h.terms_len, crc, &mut raw, &mut sec) {
-                        report.ok = false
-                    }
-                }
-                if h.has_links() {
-                    if !segfile::load_block(&f, h.links_off, h.links_len, crc, &mut raw, &mut sec) {
-                        report.ok = false
-                    }
-                }
+                Option::None => { report.ok = false }
             }
         }
-        Result::Err(e) => { return Result::Err(e) }
+
+        if h.has_terms() {
+            if !segfile::load_block(&f, h.terms_off, h.terms_len, crc, &mut raw, &mut sec) {
+                report.ok = false
+            }
+        }
+        if h.has_links() {
+            if !segfile::load_block(&f, h.links_off, h.links_len, crc, &mut raw, &mut sec) {
+                report.ok = false
+            }
+        }
     }
 
     Result::Ok(report)

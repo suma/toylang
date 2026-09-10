@@ -558,6 +558,78 @@ pub fn resolve_indexed(traw: Span<u8>, tlen: u64, q: &Query,
     empty
 }
 
+# Which frames hold the records the index left standing.
+#
+# The record table is a varint stream, so finding a record's place in
+# the arena means decoding every record before it -- cheap, and it is
+# the walk the body pass does anyway. What it buys is skipping the
+# LSZ decode of every frame no surviving record lives in, which on a
+# selective query is nearly all of them.
+#
+# A line can straddle a frame boundary (frames are cut at a fixed raw
+# size, not at line ends), so the whole extent is marked, not just the
+# offset it starts at.
+fn mark_frames(rb: Span<u8>, recs_len: u64, n_records: u64,
+               allowed: &Vec<u32>, starts: &Vec<u64>, lens: &Vec<u64>,
+               need: &mut Vec<u8>) {
+    need.clear()
+    var k: u64 = 0u64
+    while k < starts.size() {
+        need.push(0u8)
+        k = k + 1u64
+    }
+    var rd = ByteReader::new(recs_len)
+    var line_at: u64 = 0u64
+    var cursor: u64 = 0u64
+    # Frames are in arena order and so are the records, so this only
+    # moves forward.
+    var fc: u64 = 0u64
+    var r: u64 = 0u64
+    while r < n_records && rd.remaining() > 0u64 {
+        val flags = rd.take_varint(rb)
+        val line_len = rd.take_varint(rb)
+        val ts = rd.take_varint(rb)
+        val a1 = rd.take_varint(rb)
+        val a2 = rd.take_varint(rb)
+        val a3 = rd.take_varint(rb)
+        val a4 = rd.take_varint(rb)
+        val a5 = rd.take_varint(rb)
+        val a6 = rd.take_varint(rb)
+        val a7 = rd.take_varint(rb)
+        val a8 = rd.take_varint(rb)
+
+        var in_set = false
+        while cursor < allowed.size() {
+            val a: u32 = allowed.get(cursor)
+            if (a as u64) < r {
+                cursor = cursor + 1u64
+            } else {
+                if (a as u64) == r { in_set = true }
+                break
+            }
+        }
+        if in_set {
+            val last = line_at + line_len
+            # Walk forward to the first frame that can hold `line_at`,
+            # then mark every frame the line reaches into.
+            while fc < starts.size() {
+                val st: u64 = starts.get(fc)
+                val ln: u64 = lens.get(fc)
+                if st + ln <= line_at { fc = fc + 1u64 } else { break }
+            }
+            var g = fc
+            while g < starts.size() {
+                val st: u64 = starts.get(g)
+                if st >= last { break }
+                need.set(g, 1u8)
+                g = g + 1u64
+            }
+        }
+        line_at = line_at + line_len
+        r = r + 1u64
+    }
+}
+
 pub fn run(dir: str, q: &Query, crc: &Crc32) -> u64 {
     val segs = logdir::scan_suffix(dir, ".seg")
     val n_segs = segs.size()
@@ -581,6 +653,14 @@ pub fn run(dir: str, q: &Query, crc: &Crc32) -> u64 {
     var hits: Vec<Hit> = Vec::new()
     var texts: Vec<String> = Vec::new()
     var allowed: Vec<u32> = Vec::new()
+    # Frame selection: the table's extents, and one byte per frame.
+    var ftbuf = ByteWriter::with_capacity(4096u64)
+    var fstarts: Vec<u64> = Vec::new()
+    var flens: Vec<u64> = Vec::new()
+    var need: Vec<u8> = Vec::new()
+    var frames_read: u64 = 0u64
+    var frames_total: u64 = 0u64
+
     var considered: u64 = 0u64
     var opened: u64 = 0u64
     var pruned_time: u64 = 0u64
@@ -645,17 +725,57 @@ pub fn run(dir: str, q: &Query, crc: &Crc32) -> u64 {
                 # --- the bodies -------------------------------------
                 if wanted && !empty {
                     opened = opened + 1u64
-                    arena.clear()
-                    var good = segfile::expand_all(&f, &h, crc, &mut raw, &mut arena)
-                    if !good { println("  {seg_str}: frames unreadable") }
-                    if good {
-                        if !segfile::read_range(&f, h.recs_off, h.recs_len, &mut recs) {
-                            println("  {seg_str}: record table unreadable")
-                            good = false
+                    # The record table comes first now: it says where
+                    # each surviving record sits in the arena, which is
+                    # what decides the frames worth expanding.
+                    var good = true
+                    if !segfile::read_range(&f, h.recs_off, h.recs_len, &mut recs) {
+                        println("  {seg_str}: record table unreadable")
+                        good = false
+                    }
+                    need.clear()
+                    if good && use_terms {
+                        if segfile::frame_extents(&f, &h, &mut ftbuf, &mut fstarts, &mut flens) {
+                            val rw0 = recs.span()
+                            match rw0 {
+                                Option::Some(rb0) => {
+                                    mark_frames(rb0, recs.len(), h.records, &allowed,
+                                                &fstarts, &flens, &mut need)
+                                }
+                                Option::None => { }
+                            }
                         }
                     }
+                    # What was actually expanded, which is the point of
+                    # the selection: counting the arena's length would
+                    # count the frames that were skipped.
+                    var expanded_here = h.arena_bytes
+                    if need.size() > 0u64 {
+                        expanded_here = 0u64
+                        var fi2: u64 = 0u64
+                        while fi2 < need.size() {
+                            val fl: u8 = need.get(fi2)
+                            if fl != 0u8 {
+                                val fb: u64 = flens.get(fi2)
+                                expanded_here = expanded_here + fb
+                                frames_read = frames_read + 1u64
+                            }
+                            fi2 = fi2 + 1u64
+                        }
+                        frames_total = frames_total + need.size()
+                    } else {
+                        frames_read = frames_read + h.n_frames
+                        frames_total = frames_total + h.n_frames
+                    }
+                    arena.clear()
                     if good {
-                        scanned_bytes = scanned_bytes + arena.len()
+                        # An empty `need` expands everything, which is
+                        # what a query with no index filter wants.
+                        good = segfile::expand_selected(&f, &h, crc, &mut raw, &mut arena, &need)
+                        if !good { println("  {seg_str}: frames unreadable") }
+                    }
+                    if good {
+                        scanned_bytes = scanned_bytes + expanded_here
                         read_bytes = read_bytes + h.frames_len + h.recs_len
                         val aw = arena.span()
                         val rw = recs.span()
@@ -767,6 +887,7 @@ pub fn run(dir: str, q: &Query, crc: &Crc32) -> u64 {
     println("segments         {opened} opened of {considered} ({pruned_time} pruned by time, {pruned_terms} by the index)")
     println("records          {examined} examined, {matched} matched")
     println("bytes read       {read_bytes} off the disk, {scanned_bytes} expanded")
+    println("frames           {frames_read} expanded of {frames_total}")
     println("shown            {shown} (limit {q.limit})")
     if truncated { println("truncated        yes -- more than {max_hits()} matches were kept") }
     println("elapsed          {ms} ms")

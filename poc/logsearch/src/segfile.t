@@ -247,6 +247,133 @@ pub fn expand_all(f: &File, h: &SegHead, crc: &Crc32,
     ok
 }
 
+# Expand only the frames `need` marks, leaving the rest of `out` at
+# the right length but unwritten.
+#
+# A query that the index has already narrowed usually wants a handful
+# of lines out of a segment, and expanding the whole arena to reach
+# them is most of what such a query costs. Arena offsets have to stay
+# what the record table says, so a skipped frame still advances `out`
+# by its raw length -- the bytes there are whatever was in the buffer,
+# and are never read, because a record that would read them is a
+# record whose frame was needed.
+#
+# `need` is one byte per frame; anything non-zero expands. A `need`
+# shorter than the frame count expands the rest, so a caller that
+# cannot work out what it wants degrades to `expand_all`.
+pub fn expand_selected(f: &File, h: &SegHead, crc: &Crc32,
+                       raw: &mut ByteWriter, out: &mut ByteWriter,
+                       need: &Vec<u8>) -> bool {
+    var ok = true
+    var at = h.frames_off
+    val end = h.frames_off + h.frames_len
+    var i: u64 = 0u64
+    while i < h.n_frames && ok {
+        if at + 24u64 > end {
+            ok = false
+        } else {
+            if !read_range(f, at, 24u64, &mut raw) {
+                ok = false
+            } else {
+                var codec: u64 = 0u64
+                var rawlen: u64 = 0u64
+                var clen: u64 = 0u64
+                var want: u64 = 0u64
+                val hw = raw.span()
+                match hw {
+                    Option::Some(hb) => {
+                        var rd = ByteReader::new(24u64)
+                        if !rd.take_magic(hb, "LSF1") { ok = false }
+                        codec = rd.take_u32(hb)
+                        rawlen = rd.take_u32(hb)
+                        clen = rd.take_u32(hb)
+                        want = rd.take_u32(hb)
+                    }
+                    Option::None => { ok = false }
+                }
+                if ok && at + 24u64 + clen > end { ok = false }
+                var wanted = true
+                if i < need.size() {
+                    val flag: u8 = need.get(i)
+                    wanted = flag != 0u8
+                }
+                if ok && !wanted {
+                    # Skip the body entirely: no read, no decode, no
+                    # CRC. The arena keeps its shape.
+                    val n = out.len() + rawlen
+                    out.reserve(rawlen)
+                    out.set_len(n)
+                }
+                if ok && wanted {
+                    val before = out.len()
+                    if !read_range(f, at + 24u64, clen, &mut raw) {
+                        ok = false
+                    } else {
+                        val bw = raw.span()
+                        match bw {
+                            Option::Some(body) => {
+                                if codec == 0u64 {
+                                    out.reserve(clen)
+                                    out.put_span_fast(body, 0u64, clen)
+                                } else {
+                                    if !lsz::decode_frame(body, 0u64, clen, rawlen, &mut out) { ok = false }
+                                }
+                            }
+                            Option::None => { ok = false }
+                        }
+                    }
+                    if ok {
+                        val ow = out.span()
+                        match ow {
+                            Option::Some(got) => {
+                                if crc.of(got, before, rawlen) != want { ok = false }
+                            }
+                            Option::None => { ok = false }
+                        }
+                    }
+                }
+                at = at + 24u64 + clen
+            }
+        }
+        i = i + 1u64
+    }
+    if out.len() != h.arena_bytes { ok = false }
+    ok
+}
+
+# The frame each arena offset falls in, as `(arena_at, raw)` pairs read
+# from the frame table (kind 3). 20 bytes an entry, so this is a few
+# hundred bytes even for a full segment.
+pub fn frame_extents(f: &File, h: &SegHead, scratch: &mut ByteWriter,
+                     starts: &mut Vec<u64>, lens: &mut Vec<u64>) -> bool {
+    starts.clear()
+    lens.clear()
+    if h.ftab_len == 0u64 { return false }
+    if !read_range(f, h.ftab_off, h.ftab_len, &mut scratch) { return false }
+    var ok = true
+    val sw = scratch.span()
+    match sw {
+        Option::Some(sb) => {
+            var rd = ByteReader::new(h.ftab_len)
+            var i: u64 = 0u64
+            while i < h.n_frames && ok {
+                if rd.remaining() < 20u64 {
+                    ok = false
+                } else {
+                    val skip = rd.take_u64(sb)
+                    val arena_at = rd.take_u64(sb)
+                    val raw = rd.take_u32(sb)
+                    starts.push(arena_at)
+                    lens.push(raw)
+                }
+                i = i + 1u64
+            }
+        }
+        Option::None => { ok = false }
+    }
+    ok
+}
+
 # Write `len` bytes of `b` to the file at the cursor, retrying a short
 # write.
 #

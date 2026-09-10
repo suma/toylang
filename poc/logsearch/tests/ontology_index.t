@@ -534,3 +534,80 @@ test "the object table records when a value was seen" {
         Result::Err(e) => { panic("cannot open {seg}: {e}") }
     }
 }
+
+# ROADMAP 5 — フレーム単位の選択読み。飛ばしたフレームは**展開せず
+# 長さだけ進める**ので、アリーナのオフセットは表が言うとおりのまま
+# 残る。そこに古いバイトが居ても、読む記録が居ないから読まれない。
+test "a skipped frame keeps the arena's shape without expanding" {
+    val seg = build("build/ontology-fixture-frames")
+    val crc = Crc32::new()
+    val opened = File::open(seg.to_str())
+    match opened {
+        Result::Ok(f) => {
+            var scratch = ByteWriter::with_capacity(1024u64)
+            val h = segfile::head_of(&f, &mut scratch)
+            assert(h.ok, "segment header should read")
+
+            # フレーム表は書いてあったが、これまで誰も読んでいなかった。
+            var ftbuf = ByteWriter::with_capacity(1024u64)
+            var starts: Vec<u64> = Vec::new()
+            var lens: Vec<u64> = Vec::new()
+            assert(segfile::frame_extents(&f, &h, &mut ftbuf, &mut starts, &mut lens),
+                   "the frame table should read")
+            assert_eq(starts.size(), h.n_frames)
+            # 最初のフレームはアリーナの先頭から、全部で arena_bytes。
+            assert_eq(starts.get(0u64), 0u64)
+            var total: u64 = 0u64
+            var i: u64 = 0u64
+            while i < lens.size() {
+                val l: u64 = lens.get(i)
+                total = total + l
+                i = i + 1u64
+            }
+            assert_eq(total, h.arena_bytes)
+
+            var raw = ByteWriter::with_capacity(1048576u64)
+            var full = ByteWriter::with_capacity(1048576u64)
+            assert(segfile::expand_all(&f, &h, &crc, &mut raw, &mut full),
+                   "expand_all should succeed")
+
+            # 全部を要求したら expand_all と同じバイトになる。
+            var want_all: Vec<u8> = Vec::new()
+            var k: u64 = 0u64
+            while k < h.n_frames {
+                want_all.push(1u8)
+                k = k + 1u64
+            }
+            var sel = ByteWriter::with_capacity(1048576u64)
+            assert(segfile::expand_selected(&f, &h, &crc, &mut raw, &mut sel, &want_all),
+                   "expand_selected(all) should succeed")
+            assert_eq(sel.len(), full.len())
+            val fw = full.span()
+            val sw = sel.span()
+            match fw {
+                Option::Some(fb) => {
+                    match sw {
+                        Option::Some(sb) => {
+                            assert(fb.bytes_eq(sb), "expanding every frame must match expand_all")
+                        }
+                        Option::None => { panic("no selected bytes") }
+                    }
+                }
+                Option::None => { panic("no full bytes") }
+            }
+
+            # 何も要求しなければ、長さだけが正しく残る。
+            var want_none: Vec<u8> = Vec::new()
+            k = 0u64
+            while k < h.n_frames {
+                want_none.push(0u8)
+                k = k + 1u64
+            }
+            var skipped = ByteWriter::with_capacity(1048576u64)
+            assert(segfile::expand_selected(&f, &h, &crc, &mut raw, &mut skipped, &want_none),
+                   "expand_selected(none) should still succeed")
+            assert_eq(skipped.len(), h.arena_bytes)
+        }
+        Result::Err(e) => { panic("cannot open {seg}: {e}") }
+    }
+}

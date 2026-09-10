@@ -1130,6 +1130,114 @@ pub fn terms_with_prefix(idx: Span<u8>, sec_off: u64, sec_len: u64, prefix: str)
     out
 }
 
+# The terms whose name starts with `prefix` and whose *value* -- the
+# part after it -- contains `needle`, with where each one's postings
+# live.
+#
+# `terms_with_prefix` answers "how many of each value" and needs only
+# the names; this answers "which records" and needs the posting blob,
+# which sits after the header table. Otherwise the walk is the same:
+# names first, then headers in the same order.
+#
+# The scan is linear over the dictionary, which is what makes this
+# affordable without a sorted term list (ONTOLOGY.md §4 gave up
+# lexicographic order because sorting twenty thousand strings would go
+# through `Vec::sort`). A few tens of thousands of short names is cheap
+# next to expanding a segment, which is what a hit lets a query skip.
+pub struct TermMatches {
+    at: Vec<u64>,
+    len: Vec<u64>,
+    scanned: u64,
+    hits: u64,
+}
+
+# `needle_at` / `needle_len` name a slice of `needle_w` rather than a
+# span of its own, because an **empty** needle has no span: `ua~` means
+# "every user agent", and `String::as_span` answers `None` for the empty
+# string. Taking an offset lets the caller point into the query token it
+# already holds, which is never empty.
+pub fn terms_matching(idx: Span<u8>, sec_off: u64, sec_len: u64,
+                      prefix: str, needle_w: Span<u8>,
+                      needle_at: u64, needle_len: u64) -> TermMatches {
+    var ats: Vec<u64> = Vec::new()
+    var lens: Vec<u64> = Vec::new()
+    var out = TermMatches { at: ats, len: lens, scanned: 0u64, hits: 0u64 }
+    if sec_len > 0u64 {
+    var rd = ByteReader::new(sec_off + sec_len)
+    rd.seek(sec_off)
+    val n = rd.take_u32(idx)
+    out.scanned = n
+
+    # Pass one: where each name is.
+    var spans: Vec<u64> = Vec::with_capacity(n + 1u64)
+    var i: u64 = 0u64
+    while i < n {
+        val len = rd.take_varint(idx)
+        spans.push(record::pack_span(rd.position(), len))
+        rd.seek(rd.position() + len)
+        i = i + 1u64
+    }
+
+    # Pass two: the headers, in the same order. The offsets are
+    # relative to the blob, whose start is only known after the whole
+    # table, so they are kept and fixed up below.
+    var rel: Vec<u64> = Vec::new()
+    val plen = prefix.len()
+    i = 0u64
+    while i < n {
+        val doc_count = rd.take_varint(idx)
+        val post_off = rd.take_varint(idx)
+        val post_len = rd.take_varint(idx)
+        val sp: u64 = spans.get(i)
+        val at = record::span_start(sp)
+        val len = record::span_len(sp)
+        if len > plen {
+            if starts_with(idx, at, len, prefix) {
+                if contains_at(idx, at + plen, len - plen, needle_w, needle_at, needle_len) {
+                    rel.push(post_off)
+                    out.len.push(post_len)
+                }
+            }
+        }
+        i = i + 1u64
+    }
+    val blob_len = rd.take_varint(idx)
+    val blob_at = rd.position()
+    var k: u64 = 0u64
+    while k < rel.size() {
+        val off: u64 = rel.get(k)
+        out.at.push(blob_at + off)
+        k = k + 1u64
+    }
+    out.hits = out.at.size()
+    }
+    out
+}
+
+# Whether the `len` bytes at `at` contain `needle`. An empty needle
+# matches, which is what makes `ua~` mean "every user agent" rather
+# than nothing.
+fn contains_at(w: Span<u8>, at: u64, len: u64,
+               needle_w: Span<u8>, needle_at: u64, needle_len: u64) -> bool {
+    if needle_len == 0u64 { return true }
+    if needle_len > len { return false }
+    val last = len - needle_len
+    var i: u64 = 0u64
+    while i <= last {
+        var same = true
+        var k: u64 = 0u64
+        while k < needle_len && same {
+            val a: u8 = w.get(at + i + k)
+            val b: u8 = needle_w.get(needle_at + k)
+            if a != b { same = false }
+            k = k + 1u64
+        }
+        if same { return true }
+        i = i + 1u64
+    }
+    false
+}
+
 unsafe fn starts_with(w: Span<u8>, at: u64, len: u64, prefix: str) -> bool {
     val n = prefix.len()
     if n > len { return false }

@@ -589,8 +589,19 @@ fn cmd_query(dir: str, text: str) -> u64 {
         # is what the term index alone can answer (O0).
         val now2 = time::now_unix_secs()
         val q2 = query::parse_query(text, now2)
-        if q2.term_count() == 1u64 {
+        if q2.term_count() == 1u64 && q2.sub_count() == 0u64 && q2.needle_count() == 0u64 {
             return cmd_top_linked(dir, &q2, chosen.to_str(), top_limit)
+        }
+        # Anything else would be answered by dropping the filter, which
+        # is a different question than the one asked -- and it looks
+        # like an answer. Traversal starts from **one** value, because
+        # a link row names one `from`; a `~` matches several, and two
+        # `=` name two objects.
+        if q2.indexed_count() > 0u64 || q2.needle_count() > 0u64 {
+            println("`top=` traverses from exactly one `key=value`")
+            println("  got {q2.term_count()} exact, {q2.sub_count()} `~`, {q2.needle_count()} substring")
+            println("  drop the extra filters for the whole distribution, or name one value")
+            return 1u64
         }
         return cmd_fields_indexed(dir, chosen.to_str(), top_limit)
     }

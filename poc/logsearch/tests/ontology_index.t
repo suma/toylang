@@ -247,3 +247,56 @@ test "co-occurrence links are countable without expanding a frame" {
         Result::Err(e) => { panic("cannot open {seg}: {e}") }
     }
 }
+
+# §10 の「次の候補」— 語の部分一致。`ua=MJ12bot` が 0 件になるのは
+# フィールドが**値の全体**に一致するからで (§6)、`~` はその値の中を
+# 探す。走査は辞書 1 周で、postings にも arena にも触らない。
+test "a needle finds the values that contain it" {
+    val seg = build("build/ontology-fixture-sub")
+    val crc = Crc32::new()
+    val opened = File::open(seg.to_str())
+    match opened {
+        Result::Ok(f) => {
+            var scratch = ByteWriter::with_capacity(1024u64)
+            val h = segfile::head_of(&f, &mut scratch)
+            var raw = ByteWriter::with_capacity(4096u64)
+            var tsec = ByteWriter::with_capacity(4096u64)
+            assert(segfile::load_block(&f, h.terms_off, h.terms_len, &crc, &mut raw, &mut tsec),
+                   "the term section should decode")
+            val tw = tsec.span()
+            match tw {
+                Option::Some(traw) => {
+                    # `MJ12` は 1 つの user agent の中にある。完全一致の
+                    # `ua=MJ12bot` は 0 件で、これが §6 の言う差。
+                    val n1 = String::from_str("MJ12")
+                    val m1 = archive::terms_matching(traw, 0u64, tsec.len(), "ua:", span_of(&n1), 0u64, n1.len())
+                    assert_eq(m1.hits, 1u64)
+                    var o1: Vec<u32> = Vec::new()
+                    archive::decode_postings(traw, m1.at.get(0u64), m1.len.get(0u64), &mut o1)
+                    assert_eq(o1.size(), 1u64)
+                    assert_eq(o1.get(0u64), 3u32)
+
+                    # `a` は `/a` と `/ab` に当たる。`/404.html` には
+                    # 無いので、キーの中だけを見ていることも言える。
+                    val n2 = String::from_str("a")
+                    val m2 = archive::terms_matching(traw, 0u64, tsec.len(), "path:", span_of(&n2), 0u64, n2.len())
+                    assert_eq(m2.hits, 2u64)
+
+                    # 当たらない needle は 0 件。空の集合であって、
+                    # 「索引が知らないので本文を見る」ではない。
+                    val n3 = String::from_str("nowhere")
+                    val m3 = archive::terms_matching(traw, 0u64, tsec.len(), "path:", span_of(&n3), 0u64, n3.len())
+                    assert_eq(m3.hits, 0u64)
+
+                    # 空の needle はそのキーの値すべて。`ua~` が
+                    # 「user agent を持つ行すべて」になる。長さ 0 を
+                    # 渡すので、どの span を指しても読まれない。
+                    val m4 = archive::terms_matching(traw, 0u64, tsec.len(), "ua:", span_of(&n1), 0u64, 0u64)
+                    assert_eq(m4.hits, 2u64)
+                }
+                Option::None => { panic("empty term section") }
+            }
+        }
+        Result::Err(e) => { panic("cannot open {seg}: {e}") }
+    }
+}

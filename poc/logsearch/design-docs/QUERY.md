@@ -15,9 +15,9 @@ logsearch query <archive> "ip=127.0.0.1 top=path"
 
 | 種類 | 例 | 解決の仕方 |
 |---|---|---|
-| **索引の効くフィールド** | `status=404` `ip=1.2.3.4` `path=/x` `method=GET` `vhost=v` `ua=…` `host=h` `tag=CRON` | 語彙索引の postings。**語が無いセグメントは展開しない** ([`ONTOLOGY.md`](ONTOLOGY.md) §4) |
+| **索引の効くフィールド** | `status=404` `ip=10.0.0.1` `path=/x` `method=GET` `vhost=v` `ua=…` `host=h` `tag=CRON` | 語彙索引の postings。**語が無いセグメントは展開しない** ([`ONTOLOGY.md`](ONTOLOGY.md) §4) |
 | **クエリの制御** | `from=` `to=` `limit=` `order=` `kind=` `top=` | 下記 |
-| **それ以外すべて** | `timeout` `level=error` `SRC=1.2.3.4` | **本文の部分一致** (AND)。キーに見えても索引が知らなければ文字列として探す — 打った人の意図がそれだから |
+| **それ以外すべて** | `timeout` `level=error` `SRC=10.0.0.1` | **本文の部分一致** (AND)。キーに見えても索引が知らなければ文字列として探す — 打った人の意図がそれだから |
 
 | 制御 | 意味 |
 |---|---|

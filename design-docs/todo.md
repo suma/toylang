@@ -1692,6 +1692,37 @@
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
 
+- **TEST-PARALLEL: `toy test` を並列で走らせる** ★★ — 設計のみ
+  ([`TEST_PARALLEL.md`](TEST_PARALLEL.md)、2026-09-11)。TEST_TOOL の
+  非目標「並列実行」を取り下げた: 「スレッドが無い」は**言語**の話で
+  `toy` はホストの Rust、「順次で 0.4 秒」は AOT レーンの値で、同じ
+  `poc/logsearch` のスイートは `--backend vm` で **4.63 秒**かかる。
+  レーンでボトルネックが違う (AOT は compile + link で driver 1 本
+  warm ~29 ms / cold ~85 ms、VM は実行 4.5 s) が、どちらもジョブ間に
+  依存が無い。**並列にする前に直すものが 5 つ**あり、どれも逐次では
+  無害:
+  * **X0** `tests/a/x.t` と `tests/b/x.t` が**同じ** `build/*/tests/x`
+    を書く (実測)。`panics` は `sanitise(テスト名)` なので別ファイルの
+    同名テストも衝突する。中間 `.o` も出力名から作られるので一緒に踏む
+  * **X1** `.toycache` の書き込みが非アトミック (link cache は既に
+    tmp + rename なので、同じ手口を写すだけ)
+  * **X2** `--backend vm` の filter が**走らせてから捨てている** —
+    `toy test <名前> --backend vm` が全部走らせるのと同じ 4.71 秒
+  * **X3** debug ビルドは**オブジェクト破棄のたびにグローバル Mutex**
+    (`DESTRUCTION_LOG`)。並列にすると全ワーカーがそこに並ぶ
+  * **X4** `TOY_BLESS` を `set_var` で渡している (スレッドを立てる前に
+    1 回、が守れる位置へ)
+
+  設計の要点は 2 つ。(a) **AOT のジョブを compile から run へ移す** —
+  driver に走らせるテストを実行時に選ばせれば、`panics` テストが
+  コンパイルを増やさなくなり (プロセス起動は ~3 ms、compile は
+  29〜85 ms)、**AOT が全部の失敗を 1 回で報告できる**。(b) AST が
+  `Rc` で `!Send` なので、**1 ジョブの front-end と実行を同じスレッドで
+  完結させ、スレッド間は `Outcome` だけが渡る** (unsafe は出てこない)。
+  インタプリタの実行時状態は既に全部 thread_local。着手条件は
+  「1 パッケージの `toy test` が 2 秒を超えたら」で、VM レーンは既に
+  超えている。
+
 - **CODE-SIZE-DIAG-STRINGS: panic サイトごとに文面を丸ごと持つ** ★ —
   DEBUG-OBS D3 の `declare_frame_strings` が panic サイトごとに
   レンダリング済みの文字列を `.rodata` に置く。`poc/logsearch` で

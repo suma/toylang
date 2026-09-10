@@ -6,6 +6,7 @@
 #   archive <dir> <out> [limit]    parse it and compress it into segments
 #   query   <out> "<query>"        search the segments
 #   fields  <out> <field> [limit]   count the values of one field
+#   object  <out> "<key>=<value>"  one object: count, first / last seen
 #   verify  <out>                  read every segment back and check it
 #
 # The two that matter are `archive` and `query`: one turns a log
@@ -945,6 +946,121 @@ fn cmd_fields(dir: str, field: str, limit: u64) -> u64 {
     0u64
 }
 
+# ONTOLOGY O1 — one object, and when it was seen.
+#
+# The count comes from the dictionary and the ends from the object
+# table, so this reads two sections per segment and expands nothing.
+# Segments are folded: the count adds up, the ends take the outer
+# bounds of whichever segments hold the value.
+fn cmd_object(dir: str, spec: str) -> u64 {
+    val q = query::parse_query(spec, 0i64)
+    # One object means one value, and nothing else. Extra tokens would
+    # have to be dropped to answer at all, and a dropped filter looks
+    # like an answer -- `ua=Mozilla/5.0 (compatible; ...)` splits on
+    # its spaces, and the tail must not be silently discarded.
+    if q.term_count() != 1u64 || q.sub_count() > 0u64 || q.needle_count() > 0u64 {
+        println("object takes exactly one `key=value` and nothing else")
+        println("  got {q.term_count()} exact, {q.sub_count()} `~`, {q.needle_count()} substring")
+        println("  a value with spaces cannot be named here -- use `fields` or `query`")
+        return 1u64
+    }
+    val want: String = q.terms.get(0u64)
+    println("object {want}")
+
+    val segs = logdir::scan_suffix(dir, ".seg")
+    val crc = Crc32::new()
+    var head_buf = ByteWriter::with_capacity(segfile::data_at() + 64u64)
+    var raw = ByteWriter::with_capacity(1048576u64)
+    var tsec = ByteWriter::with_capacity(1048576u64)
+    var osec = ByteWriter::with_capacity(1048576u64)
+
+    var count: u64 = 0u64
+    var first: i64 = limits::i64_max()
+    var last: i64 = limits::i64_min()
+    var held: u64 = 0u64
+    var dated: u64 = 0u64
+    # Segments that carry an object table at all. An archive written
+    # before O1 has none, and that is a different thing from a value
+    # whose lines are undated -- saying the wrong one sends the reader
+    # looking at their data instead of at their archive.
+    var tabled: u64 = 0u64
+
+    var si: u64 = 0u64
+    while si < segs.size() {
+        val seg: String = segs.get(si)
+        si = si + 1u64
+        val opened = File::open(seg.to_str())
+        match opened {
+            Result::Ok(f) => {
+                val h = segfile::head_of(&f, &mut head_buf)
+                if h.ok && h.has_terms() {
+                    if segfile::load_block(&f, h.terms_off, h.terms_len, &crc, &mut raw, &mut tsec) {
+                        val tw = tsec.span()
+                        match tw {
+                            Option::Some(traw) => {
+                                val nw = want.as_span()
+                                match nw {
+                                    Option::Some(wsp) => {
+                                        val post = archive::term_postings(traw, tsec.len(), wsp, want.len())
+                                        if post.found {
+                                            held = held + 1u64
+                                            count = count + post.doc_count
+                                            val id = archive::term_id_of(traw, tsec.len(), wsp, want.len())
+                                            if h.has_objects() {
+                                                tabled = tabled + 1u64
+                                                if segfile::load_block(&f, h.objs_off, h.objs_len, &crc, &mut raw, &mut osec) {
+                                                    val ow = osec.span()
+                                                    match ow {
+                                                        Option::Some(oraw) => {
+                                                            val sp = archive::object_span(oraw, osec.len(), id)
+                                                            if sp.found {
+                                                                dated = dated + 1u64
+                                                                if sp.first < first { first = sp.first }
+                                                                if sp.last > last { last = sp.last }
+                                                            }
+                                                        }
+                                                        Option::None => { }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Option::None => { }
+                                }
+                            }
+                            Option::None => { }
+                        }
+                    }
+                }
+            }
+            Result::Err(e) => { println("  {seg}: {e}") }
+        }
+    }
+
+    if held == 0u64 {
+        println("  not in this archive")
+        return 1u64
+    }
+    println("  records        {count}")
+    println("  segments       {held}")
+    if tabled == 0u64 {
+        println("  first seen     -- (this archive has no object table)")
+        println("  last seen      -- (re-archive to record one)")
+    } elif dated == 0u64 {
+        # Real answer, not a missing one: the value is here, but every
+        # line carrying it was undated.
+        println("  first seen     -- (no dated line carries it)")
+        println("  last seen      --")
+    } else {
+        val fs = io::strftime("%Y-%m-%dT%H:%M:%SZ", first as u64)
+        val ls = io::strftime("%Y-%m-%dT%H:%M:%SZ", last as u64)
+        println("  first seen     {fs}")
+        println("  last seen      {ls}")
+        println("  span           {last - first} s")
+    }
+    0u64
+}
+
 fn main() -> u64 {
     val mode = arg_or(0u64, "scan")
     # Each branch names its bindings differently. Two sibling
@@ -974,6 +1090,11 @@ fn main() -> u64 {
             return cmd_fields(f_out, f_field, f_limit)
         }
         return cmd_fields_indexed(f_out, f_field, f_limit)
+    }
+    if mode == "object" {
+        val o_out = arg_or(1u64, "/tmp/logarchive")
+        val o_spec = arg_or(2u64, "")
+        return cmd_object(o_out, o_spec)
     }
     if mode == "verify" {
         val v_out = arg_or(1u64, "/tmp/logarchive")

@@ -179,6 +179,7 @@ JSON リーダが入った (`core/std/json.t`) ので、素性は人間が読め
 │ frame table        │  ← フレームの位置と担当範囲 (kind 3)
 │ term dictionary    │  ← 語彙索引 (kind 6、圧縮)
 │ link table         │  ← 共起リンク (kind 7、圧縮)
+│ object table       │  ← 語ごとの first/last (kind 8、圧縮)
 └────────────────────┘
 ```
 
@@ -250,9 +251,16 @@ kind 2  record table   レコードの列 (SoA varints、非圧縮)
 kind 3  frame table    フレームのオフセットと担当範囲 (20 バイト固定長)
 kind 6  term dictionary 語彙索引 (転置、LSZ1 圧縮)
 kind 7  link table     共起リンク (LSZ1 圧縮)
+kind 8  object table   語ごとの first_seen / last_seen (LSZ1 圧縮)
 ```
 
-圧縮したセクション (6 / 7) は自分のフレームヘッダを持つ:
+kind 8 は語の id 順に `has: varint` と、`has` なら `first: varint` +
+`last - first: varint` を並べる。件数は kind 6 が持っているので重複
+させない。**日付の無い行にしか現れなかった語は `has = 0`** —
+「不明」を番兵の時刻で表さないための 1 バイトである
+([`ONTOLOGY.md`](ONTOLOGY.md) §5-b)。
+
+圧縮したセクション (6 / 7 / 8) は自分のフレームヘッダを持つ:
 `"LST1"`, codec, 非圧縮長, 格納長, 非圧縮 CRC-32。読み手は
 `read_at` でその範囲だけ取り、展開して CRC を照合する。
 

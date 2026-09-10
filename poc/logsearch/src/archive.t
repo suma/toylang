@@ -92,6 +92,12 @@ pub struct ArchiveWriter {
     term_hash: Vec<u64>,      # the hash of each term, by id
     term_names: Vec<String>,
     term_counts: Vec<u64>,
+    # ONTOLOGY O1 の object 表: 語ごとに**日付を持つ**レコードの
+    # 時刻の下限と上限。日付の無い行は寄与しないので、一度も寄与が
+    # 無ければ `first > last` のまま残る — 空区間が「不明」を表すので、
+    # 3 本目の列 (寄与した件数) を持たずに済む。
+    term_first: Vec<i64>,
+    term_last: Vec<i64>,
     post_term: Vec<u32>,
     post_ord: Vec<u32>,
     # --- co-occurrence links (ONTOLOGY.md O1) ---
@@ -119,6 +125,8 @@ impl ArchiveWriter {
         val hashes: Vec<u64> = Vec::new()
         val names: Vec<String> = Vec::new()
         val tcounts: Vec<u64> = Vec::new()
+        val tfirst: Vec<i64> = Vec::new()
+        val tlast: Vec<i64> = Vec::new()
         val pterm: Vec<u32> = Vec::new()
         val pord: Vec<u32> = Vec::new()
         var lslots: Vec<u64> = Vec::with_capacity(term_slot_start())
@@ -134,6 +142,7 @@ impl ArchiveWriter {
             ts_min: 0i64, ts_max: 0i64, dated: 0u64,
             term_slots: slots, term_hash: hashes,
             term_names: names, term_counts: tcounts,
+            term_first: tfirst, term_last: tlast,
             post_term: pterm, post_ord: pord,
             link_slots: lslots, link_key: lkeys, link_count: lcounts,
         }
@@ -161,6 +170,8 @@ impl ArchiveWriter {
         self.term_hash.clear()
         self.term_names.clear()
         self.term_counts.clear()
+        self.term_first.clear()
+        self.term_last.clear()
         self.post_term.clear()
         self.post_ord.clear()
         var lj: u64 = 0u64
@@ -179,7 +190,8 @@ impl ArchiveWriter {
     # Record `key = <bytes>` for this record, and answer the term's
     # id so the caller can link it to the record's other fields.
     # `term_none()` means the field was absent.
-    fn emit(&mut self, w: Span<u8>, key: str, at: u64, len: u64) -> u64 {
+    fn emit(&mut self, w: Span<u8>, key: str, at: u64, len: u64,
+            has_ts: bool, ts: i64) -> u64 {
         if len == 0u64 { return term_none() }
         val h = extract::hash_term(key, w, at, len)
         val mask = self.term_slots.size() - 1u64
@@ -193,6 +205,14 @@ impl ArchiveWriter {
                 val name = extract::term_text(key, w, at, len)
                 self.term_names.push(name)
                 self.term_counts.push(1u64)
+                # Empty interval until a dated record says otherwise.
+                if has_ts {
+                    self.term_first.push(ts)
+                    self.term_last.push(ts)
+                } else {
+                    self.term_first.push(limits::i64_max())
+                    self.term_last.push(limits::i64_min())
+                }
                 self.term_hash.push(h)
                 self.term_slots.set(slot, id + 1u64)
                 placed = true
@@ -203,6 +223,12 @@ impl ArchiveWriter {
                     id = cand
                     val c: u64 = self.term_counts.get(cand)
                     self.term_counts.set(cand, c + 1u64)
+                    if has_ts {
+                        val f: i64 = self.term_first.get(cand)
+                        val l: i64 = self.term_last.get(cand)
+                        if ts < f { self.term_first.set(cand, ts) }
+                        if ts > l { self.term_last.set(cand, ts) }
+                    }
                     placed = true
                 } else {
                     slot = (slot + 1u64) & mask
@@ -327,22 +353,22 @@ impl ArchiveWriter {
         var host_id = term_none()
         var tag_id = term_none()
         if rec.has_host() {
-            host_id = self.emit(w, "host", rec.host_start(), rec.host_len())
+            host_id = self.emit(w, "host", rec.host_start(), rec.host_len(), rec.has_ts, rec.ts)
         }
         if rec.tag_len() > 0u64 {
-            tag_id = self.emit(w, "tag", rec.tag_start(), rec.tag_len())
+            tag_id = self.emit(w, "tag", rec.tag_start(), rec.tag_len(), rec.has_ts, rec.ts)
         }
         self.link(host_id, tag_id)
 
         if rec.kind == 3u32 {
             val f = extract::http(w, ln.start, ln.len)
             if f.ok {
-                val status_id = self.emit(w, "status", extract::field_start(f.status), extract::field_len(f.status))
-                val method_id = self.emit(w, "method", extract::field_start(f.method), extract::field_len(f.method))
-                val path_id = self.emit(w, "path", extract::field_start(f.path), extract::field_len(f.path))
-                val ip_id = self.emit(w, "ip", extract::field_start(f.client), extract::field_len(f.client))
-                val vhost_id = self.emit(w, "vhost", extract::field_start(f.vhost), extract::field_len(f.vhost))
-                val ua_id = self.emit(w, "ua", extract::field_start(f.ua), extract::field_len(f.ua))
+                val status_id = self.emit(w, "status", extract::field_start(f.status), extract::field_len(f.status), rec.has_ts, rec.ts)
+                val method_id = self.emit(w, "method", extract::field_start(f.method), extract::field_len(f.method), rec.has_ts, rec.ts)
+                val path_id = self.emit(w, "path", extract::field_start(f.path), extract::field_len(f.path), rec.has_ts, rec.ts)
+                val ip_id = self.emit(w, "ip", extract::field_start(f.client), extract::field_len(f.client), rec.has_ts, rec.ts)
+                val vhost_id = self.emit(w, "vhost", extract::field_start(f.vhost), extract::field_len(f.vhost), rec.has_ts, rec.ts)
+                val ua_id = self.emit(w, "ua", extract::field_start(f.ua), extract::field_len(f.ua), rec.has_ts, rec.ts)
                 # A fixed set of pairs, not every combination: six
                 # fields would make thirty ordered pairs per record,
                 # and the ones worth asking about are few.
@@ -827,6 +853,78 @@ impl ArchiveWriter {
         if !ok { return 0u64 }
         at_off = at_off + links_len
 
+        # ---- the object table (ONTOLOGY.md O1) -------------------
+        #
+        # Per term, the span of time it was seen over. The count is
+        # already in the dictionary (`doc_count`), so this adds only
+        # the two ends -- which is the whole of what O1 was missing.
+        #
+        # Terms are written in id order, so the table needs no names
+        # and a lookup is the same id the dictionary already answers.
+        # A term seen only on undated lines has no span; that is a
+        # leading 0 rather than a sentinel timestamp, so the format
+        # never has to name a value that means "not a value".
+        var osec = ByteWriter::with_capacity(262144u64)
+        val n_terms_o = self.term_names.size()
+        osec.put_u32(n_terms_o)
+        var oi: u64 = 0u64
+        while oi < n_terms_o {
+            val fi: i64 = self.term_first.get(oi)
+            val la: i64 = self.term_last.get(oi)
+            if fi <= la {
+                osec.put_varint(1u64)
+                osec.put_varint(fi as u64)
+                osec.put_varint((la - fi) as u64)
+            } else {
+                osec.put_varint(0u64)
+            }
+            oi = oi + 1u64
+        }
+
+        blk.clear()
+        val objs_off = at_off
+        val oraw_len = osec.len()
+        var oraw_crc: u64 = 0u64
+        val ow = osec.span()
+        match ow {
+            Option::Some(ob) => { oraw_crc = crc.of(ob, 0u64, oraw_len) }
+            Option::None => { }
+        }
+        blk.put_magic("LST1")
+        val ocodec_at = blk.len()
+        blk.put_u32(1u64)
+        blk.put_u32(oraw_len)
+        val oclen_at = blk.len()
+        blk.put_u32(0u64)
+        blk.put_u32(oraw_crc)
+        val obody_at = blk.len()
+        match ow {
+            Option::Some(ob) => {
+                val clen = self.z.encode(ob, 0u64, oraw_len, &mut blk)
+                if clen * 8u64 >= oraw_len * 7u64 {
+                    blk.truncate(obody_at)
+                    blk.put_span(ob, 0u64, oraw_len)
+                    blk.patch_u32(ocodec_at, 0u64)
+                    blk.patch_u32(oclen_at, oraw_len)
+                } else {
+                    blk.patch_u32(oclen_at, clen)
+                }
+            }
+            Option::None => { }
+        }
+        val objs_len = blk.len()
+        var objs_crc: u64 = 0u64
+        val bw4 = blk.span()
+        match bw4 {
+            Option::Some(bb) => {
+                objs_crc = crc.of(bb, 0u64, objs_len)
+                if !segfile::put_bytes(f, bb, objs_len) { ok = false }
+            }
+            Option::None => { ok = false }
+        }
+        if !ok { return 0u64 }
+        at_off = at_off + objs_len
+
         # ---- the header and the directory, written back ----------
         #
         # Everything above had to happen before these numbers
@@ -855,13 +953,14 @@ impl ArchiveWriter {
             Option::None => { }
         }
 
-        hdr.put_u32(5u64)                  # section count
+        hdr.put_u32(6u64)                  # section count
         hdr.put_u32(0u64)                  # reserved
         put_dir(&mut hdr, segfile::kind_frames(), frames_off, frames_len, 0u64)
         put_dir(&mut hdr, segfile::kind_records(), recs_off, recs_len, recs_crc)
         put_dir(&mut hdr, segfile::kind_ftable(), ftab_off, ftab_len, ftab_crc)
         put_dir(&mut hdr, segfile::kind_terms(), terms_off, terms_len, terms_crc)
         put_dir(&mut hdr, segfile::kind_links(), links_off, links_len, links_crc)
+        put_dir(&mut hdr, segfile::kind_objects(), objs_off, objs_len, objs_crc)
         while hdr.len() < segfile::data_at() { hdr.put_u8(0u8) }
 
         val hw2 = hdr.span()
@@ -1156,6 +1255,42 @@ pub struct TermMatches {
 # "every user agent", and `String::as_span` answers `None` for the empty
 # string. Taking an offset lets the caller point into the query token it
 # already holds, which is never empty.
+# ONTOLOGY O1: the span of time term `id` was seen over.
+#
+# `found` is false when the term was only ever on undated lines --
+# which is a real answer ("it is here, but nothing dates it"), not a
+# missing one, so it is distinguished from the term not existing.
+pub struct ObjectSpan {
+    found: bool,
+    first: i64,
+    last: i64,
+}
+
+pub fn object_span(oraw: Span<u8>, oraw_len: u64, id: u64) -> ObjectSpan {
+    var out = ObjectSpan { found: false, first: 0i64, last: 0i64 }
+    if oraw_len >= 4u64 {
+        var rd = ByteReader::new(oraw_len)
+        val n = rd.take_u32(oraw)
+        if id < n {
+            var i: u64 = 0u64
+            while i <= id {
+                val has = rd.take_varint(oraw)
+                if has == 1u64 {
+                    val f = rd.take_varint(oraw)
+                    val span = rd.take_varint(oraw)
+                    if i == id {
+                        out.found = true
+                        out.first = f as i64
+                        out.last = (f + span) as i64
+                    }
+                }
+                i = i + 1u64
+            }
+        }
+    }
+    out
+}
+
 pub fn terms_matching(idx: Span<u8>, sec_off: u64, sec_len: u64,
                       prefix: str, needle_w: Span<u8>,
                       needle_at: u64, needle_len: u64,

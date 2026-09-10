@@ -475,3 +475,62 @@ test "the parser sorts tokens into index terms and body needles" {
     assert_eq(f.indexed_count(), 3u64)
     assert_eq(f.needle_count(), 1u64)
 }
+
+# ONTOLOGY O1 の残り — object 表 (first_seen / last_seen)。
+# 件数は語彙索引の `doc_count` に既にあるので、新規はこの 2 つだけ。
+# 素材の 5 行は 12:00:01 から 12:00:05 まで 1 秒刻み。
+test "the object table records when a value was seen" {
+    val seg = build("build/ontology-fixture-object")
+    val crc = Crc32::new()
+    val opened = File::open(seg.to_str())
+    match opened {
+        Result::Ok(f) => {
+            var scratch = ByteWriter::with_capacity(1024u64)
+            val h = segfile::head_of(&f, &mut scratch)
+            assert(h.has_objects(), "the segment should carry an object table")
+
+            var raw = ByteWriter::with_capacity(4096u64)
+            var tsec = ByteWriter::with_capacity(4096u64)
+            assert(segfile::load_block(&f, h.terms_off, h.terms_len, &crc, &mut raw, &mut tsec),
+                   "the term section should decode")
+            var obuf = ByteWriter::with_capacity(4096u64)
+            var osec = ByteWriter::with_capacity(4096u64)
+            assert(segfile::load_block(&f, h.objs_off, h.objs_len, &crc, &mut obuf, &mut osec),
+                   "the object table should decode")
+            val tw = tsec.span()
+            match tw {
+                Option::Some(traw) => {
+                    val ow = osec.span()
+                    match ow {
+                        Option::Some(oraw) => {
+                            # `/a` は 1 行目 (12:00:01) と 4 行目 (12:00:04)。
+                            # 端は最小と最大であって、出現順ではない。
+                            val pa = String::from_str("path:/a")
+                            val ida = archive::term_id_of(traw, tsec.len(), span_of(&pa), pa.len())
+                            val sa = archive::object_span(oraw, osec.len(), ida)
+                            assert(sa.found, "path:/a should have a span")
+                            assert_eq(sa.last - sa.first, 3i64)
+
+                            # 1 行しか無い語は端が一致する。
+                            val pb = String::from_str("path:/b")
+                            val idb = archive::term_id_of(traw, tsec.len(), span_of(&pb), pb.len())
+                            val sb = archive::object_span(oraw, osec.len(), idb)
+                            assert(sb.found, "path:/b should have a span")
+                            assert_eq(sb.last - sb.first, 0i64)
+
+                            # /a のほうが早く始まる。
+                            assert(sa.first < sb.first, "/a is seen before /b")
+
+                            # 語彙索引の件数と食い違わないこと。
+                            val post = archive::term_postings(traw, tsec.len(), span_of(&pa), pa.len())
+                            assert_eq(post.doc_count, 2u64)
+                        }
+                        Option::None => { panic("empty object table") }
+                    }
+                }
+                Option::None => { panic("empty term section") }
+            }
+        }
+        Result::Err(e) => { panic("cannot open {seg}: {e}") }
+    }
+}

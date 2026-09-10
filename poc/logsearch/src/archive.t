@@ -1158,7 +1158,8 @@ pub struct TermMatches {
 # already holds, which is never empty.
 pub fn terms_matching(idx: Span<u8>, sec_off: u64, sec_len: u64,
                       prefix: str, needle_w: Span<u8>,
-                      needle_at: u64, needle_len: u64) -> TermMatches {
+                      needle_at: u64, needle_len: u64,
+                      anchored: bool) -> TermMatches {
     var ats: Vec<u64> = Vec::new()
     var lens: Vec<u64> = Vec::new()
     var out = TermMatches { at: ats, len: lens, scanned: 0u64, hits: 0u64 }
@@ -1193,7 +1194,7 @@ pub fn terms_matching(idx: Span<u8>, sec_off: u64, sec_len: u64,
         val len = record::span_len(sp)
         if len > plen {
             if starts_with(idx, at, len, prefix) {
-                if contains_at(idx, at + plen, len - plen, needle_w, needle_at, needle_len) {
+                if value_matches(idx, at + plen, len - plen, needle_w, needle_at, needle_len, anchored) {
                     rel.push(post_off)
                     out.len.push(post_len)
                 }
@@ -1214,14 +1215,22 @@ pub fn terms_matching(idx: Span<u8>, sec_off: u64, sec_len: u64,
     out
 }
 
-# Whether the `len` bytes at `at` contain `needle`. An empty needle
-# matches, which is what makes `ua~` mean "every user agent" rather
-# than nothing.
-fn contains_at(w: Span<u8>, at: u64, len: u64,
-               needle_w: Span<u8>, needle_at: u64, needle_len: u64) -> bool {
+# Whether the value -- the `len` bytes at `at` -- matches the needle.
+# `anchored` is the difference between `path^/wp-` and `path~/wp-`, and
+# on real traffic it is a large one: scanners nest these paths, so
+# `/wp-` appears 11,008 times in a path but starts only 9,251 of them,
+# and `/.env` starts 3,027 of the 7,860 it appears in. "The site's own
+# `.env`" and "somebody probing for one" are different questions.
+#
+# An empty needle matches either way, which is what makes `ua~` mean
+# "every user agent" rather than nothing.
+fn value_matches(w: Span<u8>, at: u64, len: u64,
+                 needle_w: Span<u8>, needle_at: u64, needle_len: u64,
+                 anchored: bool) -> bool {
     if needle_len == 0u64 { return true }
     if needle_len > len { return false }
-    val last = len - needle_len
+    var last = len - needle_len
+    if anchored { last = 0u64 }
     var i: u64 = 0u64
     while i <= last {
         var same = true

@@ -195,25 +195,52 @@ pub fn parse_query(text: str, now: i64) -> Query {
                 }
                 Option::None => { }
             }
-            # `key~needle`: a substring over the *values* the index
-            # already holds. Checked before the `=` fallthrough below
-            # because a token has one shape or the other, never both.
+            # `key~needle` / `key^needle`: a search over the *values*
+            # the index already holds -- anywhere, or at the start.
+            # Checked before the `=` fallthrough below because a token
+            # has one shape or the other, never both.
+            #
+            # The mode is stored as the spec's first byte rather than
+            # in a parallel array, so the resolver stays one loop. It
+            # cannot collide with a value: the marker sits in front of
+            # the *key*, and position 0 is never part of the needle.
             if !handled {
                 val tilde = String::from_str("~")
+                val caret = String::from_str("^")
                 val tat = tok.find(tilde)
+                val cat = tok.find(caret)
+                var mpos: u64 = 0u64
+                var found = false
+                var anchored = false
                 match tat {
-                    Option::Some(tpos) => {
-                        val tkey = tok.substring(0u64, tpos)
-                        if is_index_key(&tkey) {
-                            val needle = tok.substring(tpos + 1u64, tok.len())
-                            val colon = String::from_str(":")
-                            val head = tkey.concat(&colon)
-                            val norm = head.concat(&needle)
-                            q.subs.push(norm)
-                            handled = true
-                        }
-                    }
+                    Option::Some(tp) => { mpos = tp  found = true }
                     Option::None => { }
+                }
+                if !found {
+                    match cat {
+                        Option::Some(cpx) => { mpos = cpx  found = true  anchored = true }
+                        Option::None => { }
+                    }
+                }
+                if found {
+                    val tkey = tok.substring(0u64, mpos)
+                    if is_index_key(&tkey) {
+                        val needle = tok.substring(mpos + 1u64, tok.len())
+                        val colon = String::from_str(":")
+                        val keyed = tkey.concat(&colon)
+                        val body = keyed.concat(&needle)
+                        # The two spellings differ only in the marker,
+                        # so the push is written twice rather than
+                        # choosing a `String` in an expression.
+                        if anchored {
+                            val norm = caret.concat(&body)
+                            q.subs.push(norm)
+                        } else {
+                            val norm = tilde.concat(&body)
+                            q.subs.push(norm)
+                        }
+                        handled = true
+                    }
                 }
             }
             if !handled {
@@ -479,7 +506,10 @@ pub fn run(dir: str, q: &Query, crc: &Crc32) -> u64 {
                                         val cpos = spec.find(colon)
                                         match cpos {
                                             Option::Some(cp) => {
-                                                val pfx = spec.substring(0u64, cp + 1u64)
+                                                # spec is `<mark><key>:<needle>`.
+                                                val mark = spec.substring(0u64, 1u64)
+                                                val anchored = mark.eq_str("^")
+                                                val pfx = spec.substring(1u64, cp + 1u64)
                                                 # The needle is a slice of `spec`, not a
                                                 # string of its own: `ua~` has an empty
                                                 # needle and an empty `String` has no span,
@@ -490,7 +520,8 @@ pub fn run(dir: str, q: &Query, crc: &Crc32) -> u64 {
                                                         val hits = archive::terms_matching(
                                                             traw, 0u64, tsec.len(),
                                                             pfx.to_str(), nsp,
-                                                            cp + 1u64, spec.len() - (cp + 1u64))
+                                                            cp + 1u64, spec.len() - (cp + 1u64),
+                                                            anchored)
                                                         uni.clear()
                                                         var hi: u64 = 0u64
                                                         while hi < hits.at.size() {

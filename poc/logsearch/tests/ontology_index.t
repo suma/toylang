@@ -269,7 +269,7 @@ test "a needle finds the values that contain it" {
                     # `MJ12` は 1 つの user agent の中にある。完全一致の
                     # `ua=MJ12bot` は 0 件で、これが §6 の言う差。
                     val n1 = String::from_str("MJ12")
-                    val m1 = archive::terms_matching(traw, 0u64, tsec.len(), "ua:", span_of(&n1), 0u64, n1.len())
+                    val m1 = archive::terms_matching(traw, 0u64, tsec.len(), "ua:", span_of(&n1), 0u64, n1.len(), false)
                     assert_eq(m1.hits, 1u64)
                     var o1: Vec<u32> = Vec::new()
                     archive::decode_postings(traw, m1.at.get(0u64), m1.len.get(0u64), &mut o1)
@@ -279,20 +279,63 @@ test "a needle finds the values that contain it" {
                     # `a` は `/a` と `/ab` に当たる。`/404.html` には
                     # 無いので、キーの中だけを見ていることも言える。
                     val n2 = String::from_str("a")
-                    val m2 = archive::terms_matching(traw, 0u64, tsec.len(), "path:", span_of(&n2), 0u64, n2.len())
+                    val m2 = archive::terms_matching(traw, 0u64, tsec.len(), "path:", span_of(&n2), 0u64, n2.len(), false)
                     assert_eq(m2.hits, 2u64)
 
                     # 当たらない needle は 0 件。空の集合であって、
                     # 「索引が知らないので本文を見る」ではない。
                     val n3 = String::from_str("nowhere")
-                    val m3 = archive::terms_matching(traw, 0u64, tsec.len(), "path:", span_of(&n3), 0u64, n3.len())
+                    val m3 = archive::terms_matching(traw, 0u64, tsec.len(), "path:", span_of(&n3), 0u64, n3.len(), false)
                     assert_eq(m3.hits, 0u64)
 
                     # 空の needle はそのキーの値すべて。`ua~` が
                     # 「user agent を持つ行すべて」になる。長さ 0 を
                     # 渡すので、どの span を指しても読まれない。
-                    val m4 = archive::terms_matching(traw, 0u64, tsec.len(), "ua:", span_of(&n1), 0u64, 0u64)
+                    val m4 = archive::terms_matching(traw, 0u64, tsec.len(), "ua:", span_of(&n1), 0u64, 0u64, false)
                     assert_eq(m4.hits, 2u64)
+                }
+                Option::None => { panic("empty term section") }
+            }
+        }
+        Result::Err(e) => { panic("cannot open {seg}: {e}") }
+    }
+}
+
+# §4 が先送りしていた前方一致。線形走査なので辞書順は要らない —
+# 必要なのは「先頭でだけ比べる」ことだけ。実データでは差が大きく、
+# `/.env` は 7,860 のパスに現れるが始めるのは 3,027 だけである。
+test "an anchored needle only matches at the start of a value" {
+    val seg = build("build/ontology-fixture-anchor")
+    val crc = Crc32::new()
+    val opened = File::open(seg.to_str())
+    match opened {
+        Result::Ok(f) => {
+            var scratch = ByteWriter::with_capacity(1024u64)
+            val h = segfile::head_of(&f, &mut scratch)
+            var raw = ByteWriter::with_capacity(4096u64)
+            var tsec = ByteWriter::with_capacity(4096u64)
+            assert(segfile::load_block(&f, h.terms_off, h.terms_len, &crc, &mut raw, &mut tsec),
+                   "the term section should decode")
+            val tw = tsec.span()
+            match tw {
+                Option::Some(traw) => {
+                    # `html` は `/404.html` の**中**にある。含むなら 1 件、
+                    # 先頭でだけ見るなら 0 件。
+                    val n = String::from_str("html")
+                    val sub = archive::terms_matching(traw, 0u64, tsec.len(), "path:", span_of(&n), 0u64, n.len(), false)
+                    assert_eq(sub.hits, 1u64)
+                    val anc = archive::terms_matching(traw, 0u64, tsec.len(), "path:", span_of(&n), 0u64, n.len(), true)
+                    assert_eq(anc.hits, 0u64)
+
+                    # `/a` は `/a` と `/ab` の両方を**始める**ので、
+                    # 前方一致でも 2 件のまま。接頭辞は完全一致より広い。
+                    val p = String::from_str("/a")
+                    val ap = archive::terms_matching(traw, 0u64, tsec.len(), "path:", span_of(&p), 0u64, p.len(), true)
+                    assert_eq(ap.hits, 2u64)
+
+                    # 空の needle は錨があっても全件。
+                    val ae = archive::terms_matching(traw, 0u64, tsec.len(), "path:", span_of(&p), 0u64, 0u64, true)
+                    assert_eq(ae.hits, 4u64)
                 }
                 Option::None => { panic("empty term section") }
             }

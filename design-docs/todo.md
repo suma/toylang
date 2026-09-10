@@ -29,6 +29,9 @@
   `poc/logsearch` の `File::create` / `File::open` の手書き `match` 2 か所を
   `?` にして出力一致を確認。例: `interpreter/example/try_compound.t`。
 
+### 2026-09-10
+- **REF-REBORROW の残り 2 経路 — module 呼び出しと generic 推論** — 型検査の引数検査は 4 か所あり、最初の landing で自由関数と method の 2 つしか直していなかった。`query::resolve_indexed(traw, tlen, &q, out)` (非 generic module) と `random::shuffle(v)` (generic module) が今も借用を要求していた。後者は制約解決の**前**に書き換える必要がある — 内側の型は推論中なので、両辺が `&mut` であることだけを見る。
+
 ### 2026-09-05
 - **toylang 側のリファクタリング (stdlib / poc)** — 言語に入った機能で
   手書きの定型を畳んで **-198 行**。`checked_pow` 8 本の

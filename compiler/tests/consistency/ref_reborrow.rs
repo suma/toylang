@@ -150,3 +150,47 @@ fn a_forwarded_shared_reference_still_reads() {
     "#;
     assert_consistent(src, "reborrow_shared_reference");
 }
+
+/// Into a **module** function's `&mut` parameter. That is a third
+/// argument-checking site in the type checker, separate from free
+/// calls and method calls, and it was missed when the reborrow first
+/// landed -- `random::shuffle(v)` inside `fn go(v: &mut Vec<u64>)`
+/// still asked for the borrow to be written.
+///
+/// Shuffling is seeded so the answer is fixed; what is being checked
+/// is that the callee reached *this* vector, not that any particular
+/// permutation came out.
+#[test]
+fn a_forwarded_mut_parameter_reaches_a_module_function() {
+    let src = r#"
+        fn fill(v: &mut Vec<u64>) {
+            var i: u64 = 0u64
+            while i < 8u64 {
+                v.push(i)
+                i = i + 1u64
+            }
+        }
+
+        fn scramble(v: &mut Vec<u64>) {
+            random::shuffle(v)
+        }
+
+        fn main() -> u64 {
+            io::random_seed(12345u64)
+            var v: Vec<u64> = Vec::new()
+            fill(&mut v)
+            scramble(&mut v)
+            # The elements are still 0..7, whatever order they are in,
+            # so the sum pins that the callee worked on this vector
+            # rather than on a copy that went nowhere.
+            var t: u64 = 0u64
+            var i: u64 = 0u64
+            while i < v.size() {
+                t = t + v.get(i)
+                i = i + 1u64
+            }
+            t + v.size()
+        }
+    "#;
+    assert_consistent(src, "reborrow_into_module_function");
+}

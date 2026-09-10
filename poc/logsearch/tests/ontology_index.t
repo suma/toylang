@@ -343,3 +343,135 @@ test "an anchored needle only matches at the start of a value" {
         Result::Err(e) => { panic("cannot open {seg}: {e}") }
     }
 }
+
+# 索引側の解決そのもの — `=` の積、`~` の合併、両者の混在。
+# 素材の 5 行 (ordinal 0..4):
+#   0  ip 10.0.0.1  path /a         status 404  ua curl/8.0
+#   1  ip 10.0.0.1  path /b         status 200  ua curl/8.0
+#   2  ip 10.0.0.2  path /404.html  status 200  ua curl/8.0
+#   3  ip 10.0.0.2  path /a         status 404  ua MJ12bot/1.4
+#   4  ip 10.0.0.3  path /ab        status 200  ua curl/8.0
+fn allow(traw: Span<u8>, tlen: u64, text: str, out: &mut Vec<u32>) -> bool {
+    val q = query::parse_query(text, 0i64)
+    val empty = query::resolve_indexed(traw, tlen, &q, out)
+    empty
+}
+
+fn only(out: &Vec<u32>, a: u32) {
+    assert_eq(out.size(), 1u64)
+    assert_eq(out.get(0u64), a)
+}
+
+test "the index resolves unions and intersections together" {
+    val seg = build("build/ontology-fixture-resolve")
+    val crc = Crc32::new()
+    val opened = File::open(seg.to_str())
+    match opened {
+        Result::Ok(f) => {
+            var scratch = ByteWriter::with_capacity(1024u64)
+            val h = segfile::head_of(&f, &mut scratch)
+            var raw = ByteWriter::with_capacity(4096u64)
+            var tsec = ByteWriter::with_capacity(4096u64)
+            assert(segfile::load_block(&f, h.terms_off, h.terms_len, &crc, &mut raw, &mut tsec),
+                   "the term section should decode")
+            val tw = tsec.span()
+            match tw {
+                Option::Some(traw) => {
+                    val tlen = tsec.len()
+                    var got: Vec<u32> = Vec::new()
+
+                    # `=` ひとつ: 404 は 0 と 3。
+                    assert(!allow(traw, tlen, "status=404", &mut got), "404 is present")
+                    assert_eq(got.size(), 2u64)
+                    assert_eq(got.get(0u64), 0u32)
+                    assert_eq(got.get(1u64), 3u32)
+
+                    # `=` ふたつの積: 404 かつ ip 10.0.0.2 は 3 だけ。
+                    assert(!allow(traw, tlen, "status=404 ip=10.0.0.2", &mut got), "present")
+                    only(&got, 3u32)
+
+                    # 交わらない `=` の積は空 — セグメントごと飛ばせる。
+                    assert(allow(traw, tlen, "status=404 ip=10.0.0.3", &mut got), "no such record")
+
+                    # `~` の合併: path に `a` を含むのは /a (0,3) と /ab (4)。
+                    # 3 つの posting list が昇順のまま 1 本になる。
+                    assert(!allow(traw, tlen, "path~a", &mut got), "present")
+                    assert_eq(got.size(), 3u64)
+                    assert_eq(got.get(0u64), 0u32)
+                    assert_eq(got.get(1u64), 3u32)
+                    assert_eq(got.get(2u64), 4u32)
+
+                    # `^` は先頭でだけ: `html` は /404.html の中にあるが
+                    # 始めてはいないので空。`~` なら 2 が出る。
+                    assert(!allow(traw, tlen, "path~html", &mut got), "contains")
+                    only(&got, 2u32)
+                    assert(allow(traw, tlen, "path^html", &mut got), "does not start")
+
+                    # `~` と `=` の混在。合併してから積を取る。
+                    assert(!allow(traw, tlen, "path~a status=404", &mut got), "present")
+                    assert_eq(got.size(), 2u64)
+                    assert_eq(got.get(0u64), 0u32)
+                    assert_eq(got.get(1u64), 3u32)
+
+                    # 順序が効かないこと。同じ答えでなければ合併か積の
+                    # どちらかが順番に依存している。
+                    assert(!allow(traw, tlen, "status=404 path~a", &mut got), "present")
+                    assert_eq(got.size(), 2u64)
+                    assert_eq(got.get(0u64), 0u32)
+                    assert_eq(got.get(1u64), 3u32)
+
+                    # `~` ふたつの積: `a` を含み、かつ ua に `curl`。
+                    # /a(0,3) ∪ /ab(4) と curl(0,1,2,4) の積 = 0,4。
+                    assert(!allow(traw, tlen, "path~a ua~curl", &mut got), "present")
+                    assert_eq(got.size(), 2u64)
+                    assert_eq(got.get(0u64), 0u32)
+                    assert_eq(got.get(1u64), 4u32)
+
+                }
+                Option::None => { panic("empty term section") }
+            }
+        }
+        Result::Err(e) => { panic("cannot open {seg}: {e}") }
+    }
+}
+
+# トークンの振り分け。`resolve_indexed` は索引の項があるときにしか
+# 呼ばれないので、どれが索引の項になるかはここで決まる。
+test "the parser sorts tokens into index terms and body needles" {
+    # `=` は完全一致の項。
+    val a = query::parse_query("status=404", 0i64)
+    assert_eq(a.term_count(), 1u64)
+    assert_eq(a.sub_count(), 0u64)
+    assert_eq(a.needle_count(), 0u64)
+
+    # `~` と `^` は同じ枠 (`subs`) に入り、モードだけが違う。
+    val b = query::parse_query("ua~MJ12bot", 0i64)
+    assert_eq(b.term_count(), 0u64)
+    assert_eq(b.sub_count(), 1u64)
+    assert_eq(b.needle_count(), 0u64)
+
+    val c = query::parse_query("path^/wp-", 0i64)
+    assert_eq(c.sub_count(), 1u64)
+    assert_eq(c.needle_count(), 0u64)
+
+    # 索引が知らないキーは、`=` でも `~` でも本文の部分一致に落ちる。
+    # 打った人の意図がそれだから (QUERY.md)。
+    val d = query::parse_query("level=error level~err", 0i64)
+    assert_eq(d.indexed_count(), 0u64)
+    assert_eq(d.needle_count(), 2u64)
+
+    # 制御語は本文検索に落ちない。`top=path` を含む行を探すのは
+    # 誰の意図でもない。
+    val e = query::parse_query("top=path limit=5 order=asc", 0i64)
+    assert_eq(e.indexed_count(), 0u64)
+    assert_eq(e.needle_count(), 0u64)
+    assert_eq(e.limit, 5u64)
+    assert(!e.desc, "order=asc should clear desc")
+
+    # 混在。索引 3 つと本文 1 つ。
+    val f = query::parse_query("status=404 ua~bot path^/wp- timeout", 0i64)
+    assert_eq(f.term_count(), 1u64)
+    assert_eq(f.sub_count(), 2u64)
+    assert_eq(f.indexed_count(), 3u64)
+    assert_eq(f.needle_count(), 1u64)
+}

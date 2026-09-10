@@ -1065,6 +1065,12 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
         for (arg_expr, expected_ty) in args.iter().zip(params.iter()) {
             let actual_ty = self.visit_expr(arg_expr)?;
+            // REF-REBORROW: the third argument-checking site. Same rule
+            // as a free call and a method call -- forwarding an
+            // existing `&mut` needs no borrow written.
+            if self.try_reborrow_mut_arg(arg_expr, expected_ty) {
+                continue;
+            }
             if !self.is_arg_compatible_dyn_aware(&actual_ty, expected_ty) && !matches!(actual_ty, TypeDecl::Unknown) {
                 return Err(TypeCheckError::type_mismatch(
                     expected_ty.clone(),

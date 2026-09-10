@@ -72,6 +72,12 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         // Collect argument types and add constraints
         let mut arg_types = Vec::new();
         for (i, (arg_expr, (_, param_type))) in args.iter().zip(&fun.parameter).enumerate() {
+            // REF-REBORROW: rewrite before the argument is visited, so
+            // the constraint sees `&mut Vec<u64>` rather than the
+            // auto-dereferenced `Vec<u64>` -- otherwise solving hits
+            // "cannot unify `&mut Vec<T>` with `Vec<u64>`" and the
+            // borrow has to be written by hand after all.
+            self.try_reborrow_mut_arg_for_inference(arg_expr, param_type);
             let arg_type = self.visit_expr(arg_expr)?;
             arg_types.push(arg_type.clone());
             

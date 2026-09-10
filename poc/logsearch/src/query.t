@@ -358,6 +358,206 @@ pub fn max_hits() -> u64 { 20000u64 }
 # the term index prunes by field, and only a segment that survives
 # both is expanded. Decompressing 8 MiB to find nothing is the cost
 # this avoids.
+# The record ordinals this segment's **indexed** filters allow, or
+# "nothing survives" so the caller can skip the segment whole.
+#
+# Pulled out of `run` because it is the part that grew: `=` looks one
+# term up, `~` and `^` scan the dictionary and **union** every value
+# that matches, and each of those is then intersected with what came
+# before. Three merges over ascending lists, nested two deep, is not
+# something to leave inline in a function that also does file I/O and
+# printing -- and it is the only part a test can pin without a
+# directory on disk.
+#
+# `allowed` is cleared first and left holding the surviving ordinals,
+# ascending. The answer is `true` when the segment cannot match.
+pub fn resolve_indexed(traw: Span<u8>, tlen: u64, q: &Query,
+                       allowed: &mut Vec<u32>) -> bool {
+    var tmp: Vec<u32> = Vec::new()
+    var merged: Vec<u32> = Vec::new()
+    var uni: Vec<u32> = Vec::new()
+    var uni2: Vec<u32> = Vec::new()
+    var empty = false
+    allowed.clear()
+    var first = true
+    var t: u64 = 0u64
+    while t < q.terms.size() && !empty {
+        val name: String = q.terms.get(t)
+        val nw = name.as_span()
+        match nw {
+            Option::Some(want) => {
+                val post = archive::term_postings(traw, tlen, want, name.len())
+                if !post.found {
+                    empty = true
+                } else {
+                    tmp.clear()
+                    archive::decode_postings(traw, post.at, post.len, &mut tmp)
+                    if first {
+                        var c: u64 = 0u64
+                        while c < tmp.size() {
+                            val v: u32 = tmp.get(c)
+                            allowed.push(v)
+                            c = c + 1u64
+                        }
+                        first = false
+                    } else {
+                        # Both lists are ascending, so the
+                        # intersection is one merge pass.
+                        merged.clear()
+                        var a: u64 = 0u64
+                        var b: u64 = 0u64
+                        while a < allowed.size() && b < tmp.size() {
+                            val x: u32 = allowed.get(a)
+                            val y: u32 = tmp.get(b)
+                            if x == y {
+                                merged.push(x)
+                                a = a + 1u64
+                                b = b + 1u64
+                            } else {
+                                if x < y { a = a + 1u64 } else { b = b + 1u64 }
+                            }
+                        }
+                        allowed.clear()
+                        var m: u64 = 0u64
+                        while m < merged.size() {
+                            val v: u32 = merged.get(m)
+                            allowed.push(v)
+                            m = m + 1u64
+                        }
+                    }
+                    if allowed.size() == 0u64 { empty = true }
+                }
+            }
+            Option::None => { }
+        }
+        t = t + 1u64
+    }
+
+    # `key~needle`: every value of that
+    # key containing the needle, unioned,
+    # then intersected in like any other
+    # term. The dictionary is scanned
+    # once per needle.
+    var u: u64 = 0u64
+    while u < q.subs.size() && !empty {
+        val spec: String = q.subs.get(u)
+        val colon = String::from_str(":")
+        val cpos = spec.find(colon)
+        match cpos {
+            Option::Some(cp) => {
+                # spec is `<mark><key>:<needle>`.
+                val mark = spec.substring(0u64, 1u64)
+                val anchored = mark.eq_str("^")
+                val pfx = spec.substring(1u64, cp + 1u64)
+                # The needle is a slice of `spec`, not a
+                # string of its own: `ua~` has an empty
+                # needle and an empty `String` has no span,
+                # which would drop the filter silently.
+                val nw = spec.as_span()
+                match nw {
+                    Option::Some(nsp) => {
+                        val hits = archive::terms_matching(
+                            traw, 0u64, tlen,
+                            pfx.to_str(), nsp,
+                            cp + 1u64, spec.len() - (cp + 1u64),
+                            anchored)
+                        uni.clear()
+                        var hi: u64 = 0u64
+                        while hi < hits.at.size() {
+                            val pat: u64 = hits.at.get(hi)
+                            val plen: u64 = hits.len.get(hi)
+                            tmp.clear()
+                            archive::decode_postings(traw, pat, plen, &mut tmp)
+                            # Union: both sides ascending, so
+                            # one merge pass, dropping repeats.
+                            uni2.clear()
+                            var a: u64 = 0u64
+                            var b: u64 = 0u64
+                            while a < uni.size() || b < tmp.size() {
+                                if a >= uni.size() {
+                                    val y: u32 = tmp.get(b)
+                                    uni2.push(y)
+                                    b = b + 1u64
+                                } else {
+                                    if b >= tmp.size() {
+                                        val x: u32 = uni.get(a)
+                                        uni2.push(x)
+                                        a = a + 1u64
+                                    } else {
+                                        val x: u32 = uni.get(a)
+                                        val y: u32 = tmp.get(b)
+                                        if x == y {
+                                            uni2.push(x)
+                                            a = a + 1u64
+                                            b = b + 1u64
+                                        } else {
+                                            if x < y {
+                                                uni2.push(x)
+                                                a = a + 1u64
+                                            } else {
+                                                uni2.push(y)
+                                                b = b + 1u64
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            uni.clear()
+                            var c2: u64 = 0u64
+                            while c2 < uni2.size() {
+                                val v: u32 = uni2.get(c2)
+                                uni.push(v)
+                                c2 = c2 + 1u64
+                            }
+                            hi = hi + 1u64
+                        }
+                        if uni.size() == 0u64 {
+                            empty = true
+                        } else {
+                            if first {
+                                var c3: u64 = 0u64
+                                while c3 < uni.size() {
+                                    val v: u32 = uni.get(c3)
+                                    allowed.push(v)
+                                    c3 = c3 + 1u64
+                                }
+                                first = false
+                            } else {
+                                merged.clear()
+                                var a2: u64 = 0u64
+                                var b2: u64 = 0u64
+                                while a2 < allowed.size() && b2 < uni.size() {
+                                    val x: u32 = allowed.get(a2)
+                                    val y: u32 = uni.get(b2)
+                                    if x == y {
+                                        merged.push(x)
+                                        a2 = a2 + 1u64
+                                        b2 = b2 + 1u64
+                                    } else {
+                                        if x < y { a2 = a2 + 1u64 } else { b2 = b2 + 1u64 }
+                                    }
+                                }
+                                allowed.clear()
+                                var m2: u64 = 0u64
+                                while m2 < merged.size() {
+                                    val v: u32 = merged.get(m2)
+                                    allowed.push(v)
+                                    m2 = m2 + 1u64
+                                }
+                            }
+                            if allowed.size() == 0u64 { empty = true }
+                        }
+                    }
+                    Option::None => { }
+                }
+            }
+            Option::None => { }
+        }
+        u = u + 1u64
+    }
+    empty
+}
+
 pub fn run(dir: str, q: &Query, crc: &Crc32) -> u64 {
     val segs = logdir::scan_suffix(dir, ".seg")
     val n_segs = segs.size()
@@ -381,12 +581,6 @@ pub fn run(dir: str, q: &Query, crc: &Crc32) -> u64 {
     var hits: Vec<Hit> = Vec::new()
     var texts: Vec<String> = Vec::new()
     var allowed: Vec<u32> = Vec::new()
-    var tmp: Vec<u32> = Vec::new()
-    var merged: Vec<u32> = Vec::new()
-    # The union a `key~needle` builds before it is intersected in.
-    var uni: Vec<u32> = Vec::new()
-    var uni2: Vec<u32> = Vec::new()
-
     var considered: u64 = 0u64
     var opened: u64 = 0u64
     var pruned_time: u64 = 0u64
@@ -439,183 +633,7 @@ pub fn run(dir: str, q: &Query, crc: &Crc32) -> u64 {
                             match tw {
                                 Option::Some(traw) => {
                                     use_terms = true
-                                    allowed.clear()
-                                    var first = true
-                                    var t: u64 = 0u64
-                                    while t < q.terms.size() && !empty {
-                                        val name: String = q.terms.get(t)
-                                        val nw = name.as_span()
-                                        match nw {
-                                            Option::Some(want) => {
-                                                val post = archive::term_postings(traw, tsec.len(), want, name.len())
-                                                if !post.found {
-                                                    empty = true
-                                                } else {
-                                                    tmp.clear()
-                                                    archive::decode_postings(traw, post.at, post.len, &mut tmp)
-                                                    if first {
-                                                        var c: u64 = 0u64
-                                                        while c < tmp.size() {
-                                                            val v: u32 = tmp.get(c)
-                                                            allowed.push(v)
-                                                            c = c + 1u64
-                                                        }
-                                                        first = false
-                                                    } else {
-                                                        # Both lists are ascending, so the
-                                                        # intersection is one merge pass.
-                                                        merged.clear()
-                                                        var a: u64 = 0u64
-                                                        var b: u64 = 0u64
-                                                        while a < allowed.size() && b < tmp.size() {
-                                                            val x: u32 = allowed.get(a)
-                                                            val y: u32 = tmp.get(b)
-                                                            if x == y {
-                                                                merged.push(x)
-                                                                a = a + 1u64
-                                                                b = b + 1u64
-                                                            } else {
-                                                                if x < y { a = a + 1u64 } else { b = b + 1u64 }
-                                                            }
-                                                        }
-                                                        allowed.clear()
-                                                        var m: u64 = 0u64
-                                                        while m < merged.size() {
-                                                            val v: u32 = merged.get(m)
-                                                            allowed.push(v)
-                                                            m = m + 1u64
-                                                        }
-                                                    }
-                                                    if allowed.size() == 0u64 { empty = true }
-                                                }
-                                            }
-                                            Option::None => { }
-                                        }
-                                        t = t + 1u64
-                                    }
-
-                                    # `key~needle`: every value of that
-                                    # key containing the needle, unioned,
-                                    # then intersected in like any other
-                                    # term. The dictionary is scanned
-                                    # once per needle.
-                                    var u: u64 = 0u64
-                                    while u < q.subs.size() && !empty {
-                                        val spec: String = q.subs.get(u)
-                                        val colon = String::from_str(":")
-                                        val cpos = spec.find(colon)
-                                        match cpos {
-                                            Option::Some(cp) => {
-                                                # spec is `<mark><key>:<needle>`.
-                                                val mark = spec.substring(0u64, 1u64)
-                                                val anchored = mark.eq_str("^")
-                                                val pfx = spec.substring(1u64, cp + 1u64)
-                                                # The needle is a slice of `spec`, not a
-                                                # string of its own: `ua~` has an empty
-                                                # needle and an empty `String` has no span,
-                                                # which would drop the filter silently.
-                                                val nw = spec.as_span()
-                                                match nw {
-                                                    Option::Some(nsp) => {
-                                                        val hits = archive::terms_matching(
-                                                            traw, 0u64, tsec.len(),
-                                                            pfx.to_str(), nsp,
-                                                            cp + 1u64, spec.len() - (cp + 1u64),
-                                                            anchored)
-                                                        uni.clear()
-                                                        var hi: u64 = 0u64
-                                                        while hi < hits.at.size() {
-                                                            val pat: u64 = hits.at.get(hi)
-                                                            val plen: u64 = hits.len.get(hi)
-                                                            tmp.clear()
-                                                            archive::decode_postings(traw, pat, plen, &mut tmp)
-                                                            # Union: both sides ascending, so
-                                                            # one merge pass, dropping repeats.
-                                                            uni2.clear()
-                                                            var a: u64 = 0u64
-                                                            var b: u64 = 0u64
-                                                            while a < uni.size() || b < tmp.size() {
-                                                                if a >= uni.size() {
-                                                                    val y: u32 = tmp.get(b)
-                                                                    uni2.push(y)
-                                                                    b = b + 1u64
-                                                                } else {
-                                                                    if b >= tmp.size() {
-                                                                        val x: u32 = uni.get(a)
-                                                                        uni2.push(x)
-                                                                        a = a + 1u64
-                                                                    } else {
-                                                                        val x: u32 = uni.get(a)
-                                                                        val y: u32 = tmp.get(b)
-                                                                        if x == y {
-                                                                            uni2.push(x)
-                                                                            a = a + 1u64
-                                                                            b = b + 1u64
-                                                                        } else {
-                                                                            if x < y {
-                                                                                uni2.push(x)
-                                                                                a = a + 1u64
-                                                                            } else {
-                                                                                uni2.push(y)
-                                                                                b = b + 1u64
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                            uni.clear()
-                                                            var c2: u64 = 0u64
-                                                            while c2 < uni2.size() {
-                                                                val v: u32 = uni2.get(c2)
-                                                                uni.push(v)
-                                                                c2 = c2 + 1u64
-                                                            }
-                                                            hi = hi + 1u64
-                                                        }
-                                                        if uni.size() == 0u64 {
-                                                            empty = true
-                                                        } else {
-                                                            if first {
-                                                                var c3: u64 = 0u64
-                                                                while c3 < uni.size() {
-                                                                    val v: u32 = uni.get(c3)
-                                                                    allowed.push(v)
-                                                                    c3 = c3 + 1u64
-                                                                }
-                                                                first = false
-                                                            } else {
-                                                                merged.clear()
-                                                                var a2: u64 = 0u64
-                                                                var b2: u64 = 0u64
-                                                                while a2 < allowed.size() && b2 < uni.size() {
-                                                                    val x: u32 = allowed.get(a2)
-                                                                    val y: u32 = uni.get(b2)
-                                                                    if x == y {
-                                                                        merged.push(x)
-                                                                        a2 = a2 + 1u64
-                                                                        b2 = b2 + 1u64
-                                                                    } else {
-                                                                        if x < y { a2 = a2 + 1u64 } else { b2 = b2 + 1u64 }
-                                                                    }
-                                                                }
-                                                                allowed.clear()
-                                                                var m2: u64 = 0u64
-                                                                while m2 < merged.size() {
-                                                                    val v: u32 = merged.get(m2)
-                                                                    allowed.push(v)
-                                                                    m2 = m2 + 1u64
-                                                                }
-                                                            }
-                                                            if allowed.size() == 0u64 { empty = true }
-                                                        }
-                                                    }
-                                                    Option::None => { }
-                                                }
-                                            }
-                                            Option::None => { }
-                                        }
-                                        u = u + 1u64
-                                    }
+                                    empty = resolve_indexed(traw, tsec.len(), q, &mut allowed)
                                 }
                                 Option::None => { empty = true }
                             }

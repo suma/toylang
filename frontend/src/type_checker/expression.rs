@@ -1296,6 +1296,29 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// already worked -- including the writeback bookkeeping, which
     /// keys off exactly that shape.
     pub(super) fn try_reborrow_mut_arg(&mut self, arg: &ExprRef, expected: &TypeDecl) -> bool {
+        self.reborrow_mut_arg(arg, expected, true)
+    }
+
+    /// The same, for a **generic** parameter slot. The pointee types
+    /// are what inference is about to solve for (`&mut Vec<T>` against
+    /// `&mut Vec<u64>`), so requiring them to match already would
+    /// reject every useful case. Both sides being `&mut` is the whole
+    /// question here: the reborrow is valid, and unifying what is
+    /// behind it is inference's job.
+    pub(super) fn try_reborrow_mut_arg_for_inference(
+        &mut self,
+        arg: &ExprRef,
+        expected: &TypeDecl,
+    ) -> bool {
+        self.reborrow_mut_arg(arg, expected, false)
+    }
+
+    fn reborrow_mut_arg(
+        &mut self,
+        arg: &ExprRef,
+        expected: &TypeDecl,
+        check_pointee: bool,
+    ) -> bool {
         let TypeDecl::Ref { is_mut: true, inner: expected_inner } = expected else {
             return false;
         };
@@ -1307,7 +1330,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         else {
             return false;
         };
-        if !actual_inner.is_equivalent(expected_inner) {
+        if check_pointee && !actual_inner.is_equivalent(expected_inner) {
             return false;
         }
         let ident = self.core.expr_pool.add(Expr::Identifier(sym));

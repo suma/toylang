@@ -39,6 +39,7 @@ import std.time
 import catalog
 import http
 import mount
+import query
 
 # Tokens are names the poller stores and hands back without looking
 # inside. Functions rather than `const`, because a module's top-level
@@ -204,7 +205,7 @@ fn put_json_str(out: &mut ByteWriter, s: str) {
 fn stats_body(spec: str, st: &Stats, body: &mut ByteWriter) {
     val crc = Crc32::new()
     var ms = MountSet::new()
-    val have = open_mounts_for(spec, &mut ms)
+    val have = mount::open_spec(spec, &mut ms)
 
     val up = st.uptime_s()
     val reqs = st.requests
@@ -270,31 +271,11 @@ fn stats_body(spec: str, st: &Stats, body: &mut ByteWriter) {
     body.put_str("}}}}\n")
 }
 
-# `<spec>` is a mount configuration or a single directory. Duplicated
-# from `main.t` on purpose: the server has to answer without the CLI,
-# and threading a `&mut MountSet` through the router would put an
-# owning container in every response path.
-fn open_mounts_for(spec: str, ms: &mut MountSet) -> bool {
-    val s = String::from_str(spec)
-    val conf = String::from_str(".conf")
-    if s.ends_with(&conf) {
-        val got = mount::load_config(spec, ms)
-        match got {
-            Result::Ok(bad) => { }
-            Result::Err(e) => { return false }
-        }
-        return !ms.is_empty()
-    }
-    val one = String::from_str(spec)
-    ms.add(&one, 1099511627776u64, false)
-    true
-}
-
 # Rebuild every writable mount's catalog from `seg/`.
 fn admin_repair(spec: str, body: &mut ByteWriter) -> u64 {
     val crc = Crc32::new()
     var ms = MountSet::new()
-    if !open_mounts_for(spec, &mut ms) { return 503u64 }
+    if !mount::open_spec(spec, &mut ms) { return 503u64 }
     var rows: u64 = 0u64
     var mounts: u64 = 0u64
     var i: u64 = 0u64
@@ -322,7 +303,7 @@ fn admin_repair(spec: str, body: &mut ByteWriter) -> u64 {
 fn admin_gc(spec: str, days: u64, body: &mut ByteWriter) -> u64 {
     val crc = Crc32::new()
     var ms = MountSet::new()
-    if !open_mounts_for(spec, &mut ms) { return 503u64 }
+    if !mount::open_spec(spec, &mut ms) { return 503u64 }
     val now = time::now_unix_secs()
     val cutoff = now - ((days as i64) * 86400i64)
     var dropped: u64 = 0u64
@@ -422,6 +403,11 @@ pub fn route(spec: str, b: Span<u8>, r: &Request, local: bool,
         return
     }
 
+    if r.is_get() && path_is(b, r, "/v1/query") {
+        query_route(spec, b, r, alive, out)
+        return
+    }
+
     if r.is_post() {
         val admin = path_is(b, r, "/v1/admin/repair")
             || path_is(b, r, "/v1/admin/gc")
@@ -460,6 +446,108 @@ pub fn route(spec: str, b: Span<u8>, r: &Request, local: bool,
     }
 
     http::respond_error(out, 404u64, "no such endpoint", "", alive)
+}
+
+
+fn text_of_writer(w: &ByteWriter) -> String {
+    var t = String::new()
+    var i: u64 = 0u64
+    while i < w.len() {
+        t.push(w.byte_at(i))
+        i = i + 1u64
+    }
+    t
+}
+
+# `GET /v1/query` -- the same search the terminal runs, rendered for a
+# client instead of a person.
+#
+# The parameters are checked before a segment is opened. A `limit`
+# that is not a number is the client's mistake and costs nothing to
+# say so; finding out after a 300 ms walk would be the same answer,
+# later.
+fn query_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
+               out: &mut ByteWriter) {
+    var qbuf = ByteWriter::with_capacity(512u64)
+    if !http::query_param(b, r.query_at, r.query_len, "q", &mut qbuf) {
+        http::respond_error(out, 400u64, "bad parameter", "q: missing", alive)
+        return
+    }
+
+    var limit: u64 = 50u64
+    var lbuf = ByteWriter::with_capacity(32u64)
+    if http::query_param(b, r.query_at, r.query_len, "limit", &mut lbuf) {
+        val got = number_of(&lbuf)
+        var parsed: u64 = 0u64
+        match got {
+            Result::Ok(n) => { parsed = n }
+            Result::Err(e) => { parsed = 0u64 }
+        }
+        # The cap is the response budget, not a preference: the whole
+        # body is built in memory before any of it is written.
+        if parsed == 0u64 || parsed > 1000u64 {
+            http::respond_error(out, 400u64, "bad parameter",
+                                "limit: a number from 1 to 1000", alive)
+            return
+        }
+        limit = parsed
+    }
+
+    var fmt = query::format_ndjson()
+    var fbuf = ByteWriter::with_capacity(32u64)
+    if http::query_param(b, r.query_at, r.query_len, "format", &mut fbuf) {
+        val f = text_of_writer(&fbuf)
+        val as_json = String::from_str("json")
+        val as_text = String::from_str("text")
+        val as_nd = String::from_str("ndjson")
+        if f.eq(&as_json) {
+            fmt = query::format_json()
+        } elif f.eq(&as_text) {
+            fmt = query::format_text()
+        } elif f.eq(&as_nd) {
+            fmt = query::format_ndjson()
+        } else {
+            http::respond_error(out, 400u64, "bad parameter",
+                                "format: json, ndjson or text", alive)
+            return
+        }
+    }
+
+    var segs: Vec<String> = Vec::new()
+    mount::segments_of(spec, &mut segs)
+    if segs.size() == 0u64 {
+        http::respond_error(out, 503u64, "no readable mount", "", alive)
+        return
+    }
+
+    val text = text_of_writer(&qbuf)
+    val now = time::now_unix_secs()
+    var q = query::parse_query(text.to_str(), now)
+    q.limit = limit
+
+    val crc = Crc32::new()
+    var hits: Vec<Hit> = Vec::new()
+    var texts: Vec<String> = Vec::new()
+    var qst = SearchStats::new()
+    query::search(spec, &segs, &q, &crc, &mut hits, &mut texts, &mut qst)
+
+    var body = ByteWriter::with_capacity(65536u64)
+    var ctype = "application/x-ndjson"
+    if fmt == query::format_json() {
+        ctype = "application/json"
+        val n = query::render_json(&hits, &texts, &q, &qst, &mut body)
+    } elif fmt == query::format_text() {
+        ctype = "text/plain"
+        val n = query::render_text(&hits, &texts, &q, &mut body)
+    } else {
+        val n = query::render_ndjson(&hits, &texts, &q, &mut body)
+    }
+
+    # A search that ran out of budget is still an answer: the client
+    # is told in the statistics, not by an error code.
+    http::begin_response(out, 200u64, ctype, body.len(), alive)
+    http::end_headers(out)
+    out.put_all(&body)
 }
 
 fn number_of(w: &ByteWriter) -> Result<u64, ParseError> {

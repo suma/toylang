@@ -28,6 +28,7 @@ import std.json
 import std.parse
 import std.time
 import catalog
+import logdir
 
 pub fn state_active() -> u64 { 0u64 }
 pub fn state_full() -> u64 { 1u64 }
@@ -454,4 +455,84 @@ pub fn identity_matches(m: &MountMeta, remembered: &String) -> bool {
     if !m.ok { return false }
     if remembered.len() == 0u64 { return false }
     m.uuid.eq(remembered)
+}
+
+# ---------------------------------------------------------------------
+# What a `<spec>` on a command line or in a request means
+
+# Open the mounts a spec names: a configuration file (`*.conf`) or a
+# single directory used as one mount.
+#
+# The single-directory form is what every command took before mounts
+# existed, and it is still what the tests and the examples use. The
+# quota it gets is a placeholder rather than a policy -- naming a
+# directory says nothing about how much of the disk this service may
+# have, and a real limit is declared in a `.conf`.
+pub fn open_spec(spec: str, ms: &mut MountSet) -> bool {
+    val s = String::from_str(spec)
+    val conf = String::from_str(".conf")
+    if s.ends_with(&conf) {
+        val got = load_config(spec, ms)
+        match got {
+            Result::Ok(bad) => {
+                if bad > 0u64 {
+                    println("  {bad} line(s) of {spec} were not understood")
+                }
+            }
+            Result::Err(e) => {
+                println("cannot read {spec}: {e}")
+                return false
+            }
+        }
+        if ms.is_empty() {
+            println("{spec} declares no mounts")
+            return false
+        }
+        return true
+    }
+    val one = String::from_str(spec)
+    ms.add(&one, default_quota(), false)
+    true
+}
+
+# The placeholder a bare directory gets. 1 TiB, which is a number
+# chosen to stay out of the way rather than to mean anything.
+pub fn default_quota() -> u64 { 1099511627776u64 }
+
+# Every segment a spec covers, in a stable order.
+#
+# **The catalog answers, and the directory answers when the catalog
+# cannot.** Falling back rather than failing is what keeps the
+# catalog a cache: an archive written before catalogs existed still
+# reads, and so does one whose `meta/` was deleted.
+pub fn segments_of(spec: str, out: &mut Vec<String>) {
+    out.clear()
+    var ms = MountSet::new()
+    if !open_spec(spec, &mut ms) { return }
+    val crc = Crc32::new()
+    var i: u64 = 0u64
+    while i < ms.size() {
+        val p = ms.path_of(i)
+        val ps = p.to_str()
+        val c = catalog::load(ps, &crc)
+        if c.size() > 0u64 {
+            var k: u64 = 0u64
+            while k < c.size() {
+                val r = c.row(k)
+                val path = catalog::seg_path(ps, &r)
+                out.push(path.clone())
+                k = k + 1u64
+            }
+        } else {
+            val walked = logdir::scan_suffix(ps, ".seg")
+            var k2: u64 = 0u64
+            while k2 < walked.size() {
+                val w: String = walked.get(k2)
+                out.push(w.clone())
+                k2 = k2 + 1u64
+            }
+        }
+        i = i + 1u64
+    }
+    out.sort()
 }

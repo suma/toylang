@@ -34,6 +34,7 @@
 import std.parse
 import std.time
 import archive
+import http
 import logdir
 import search
 import segfile
@@ -630,19 +631,54 @@ fn mark_frames(rb: Span<u8>, recs_len: u64, n_records: u64,
     }
 }
 
-# Run a query over the segments the caller found.
-#
-# The list is handed in rather than walked here: which files exist is
-# a question about mounts and catalogs (`main.t::segments_of`), and a
-# query has no business knowing how that was answered. `dir` is kept
-# only so the empty case can name what was searched.
-pub fn run(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32) -> u64 {
-    val n_segs = segs.size()
-    if n_segs == 0u64 {
-        println("no segments under {dir}")
-        return 1u64
-    }
+# What the walk cost, so a caller can report it without having
+# watched. Scalars only: the search hands it back through a `&mut`,
+# and every field here is a number somebody asked for in QUERY.md
+# section 7 -- "why was that slow" is meant to be answerable from the
+# answer itself.
+pub struct SearchStats {
+    considered: u64,
+    opened: u64,
+    pruned_time: u64,
+    pruned_terms: u64,
+    examined: u64,
+    matched: u64,
+    read_bytes: u64,
+    scanned_bytes: u64,
+    frames_read: u64,
+    frames_total: u64,
+    truncated: bool,
+    ms: u64,
+}
 
+impl SearchStats {
+    pub fn new() -> Self {
+        val s = SearchStats {
+            considered: 0u64, opened: 0u64,
+            pruned_time: 0u64, pruned_terms: 0u64,
+            examined: 0u64, matched: 0u64,
+            read_bytes: 0u64, scanned_bytes: 0u64,
+            frames_read: 0u64, frames_total: 0u64,
+            truncated: false, ms: 0u64,
+        }
+        s
+    }
+}
+
+# Walk the segments the caller found and collect what matches.
+#
+# **Collecting and reporting are separate.** The walk fills `hits`,
+# `texts` and `st`; who renders them and where decides nothing here.
+# That split is what lets the same search answer a terminal and an
+# HTTP response without the engine knowing which.
+#
+# The segment list is handed in rather than walked: which files exist
+# is a question about mounts and catalogs (`main.t::segments_of`), and
+# a query has no business knowing how that was answered.
+pub fn search(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32,
+              hits: &mut Vec<Hit>, texts: &mut Vec<String>,
+              st: &mut SearchStats) {
+    val n_segs = segs.size()
     val watch = Stopwatch::start()
     # Five buffers for the whole run rather than one per segment.
     # v2 allocated a fresh arena inside `expand` for every segment it
@@ -655,8 +691,6 @@ pub fn run(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32) -> u64 {
     var recs = ByteWriter::with_capacity(4194304u64)
     var tsec = ByteWriter::with_capacity(4194304u64)
 
-    var hits: Vec<Hit> = Vec::new()
-    var texts: Vec<String> = Vec::new()
     var allowed: Vec<u32> = Vec::new()
     # Frame selection: the table's extents, and one byte per frame.
     var ftbuf = ByteWriter::with_capacity(4096u64)
@@ -856,6 +890,32 @@ pub fn run(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32) -> u64 {
     }
 
     hits.sort()
+    st.considered = considered
+    st.opened = opened
+    st.pruned_time = pruned_time
+    st.pruned_terms = pruned_terms
+    st.examined = examined
+    st.matched = matched
+    st.read_bytes = read_bytes
+    st.scanned_bytes = scanned_bytes
+    st.frames_read = frames_read
+    st.frames_total = frames_total
+    st.truncated = truncated
+    st.ms = watch.elapsed_ms()
+}
+
+# The terminal's rendering of a search: the matching lines, then why
+# it cost what it did.
+pub fn run(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32) -> u64 {
+    if segs.size() == 0u64 {
+        println("no segments under {dir}")
+        return 1u64
+    }
+    var hits: Vec<Hit> = Vec::new()
+    var texts: Vec<String> = Vec::new()
+    var st = SearchStats::new()
+    search(dir, segs, q, crc, &mut hits, &mut texts, &mut st)
+
     val total = hits.size()
     var shown: u64 = 0u64
     var i: u64 = 0u64
@@ -875,9 +935,8 @@ pub fn run(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32) -> u64 {
         i = i + 1u64
     }
 
-    val ms = watch.elapsed_ms()
     println("")
-    if matched == 0u64 && pruned_terms > 0u64 {
+    if st.matched == 0u64 && st.pruned_terms > 0u64 {
         # A field filter that matches nothing usually means the value
         # is not spelled the way the index spells it: `=` is **exact**,
         # so `ua=MJ12bot` finds nothing while the full user agent
@@ -889,14 +948,138 @@ pub fn run(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32) -> u64 {
             println("  (no segment holds a value matching every `~` needle)")
         }
     }
-    println("segments         {opened} opened of {considered} ({pruned_time} pruned by time, {pruned_terms} by the index)")
-    println("records          {examined} examined, {matched} matched")
-    println("bytes read       {read_bytes} off the disk, {scanned_bytes} expanded")
-    println("frames           {frames_read} expanded of {frames_total}")
+    println("segments         {st.opened} opened of {st.considered} ({st.pruned_time} pruned by time, {st.pruned_terms} by the index)")
+    println("records          {st.examined} examined, {st.matched} matched")
+    println("bytes read       {st.read_bytes} off the disk, {st.scanned_bytes} expanded")
+    println("frames           {st.frames_read} expanded of {st.frames_total}")
     println("shown            {shown} (limit {q.limit})")
-    if truncated { println("truncated        yes -- more than {max_hits()} matches were kept") }
-    println("elapsed          {ms} ms")
+    if st.truncated { println("truncated        yes -- more than {max_hits()} matches were kept") }
+    println("elapsed          {st.ms} ms")
     0u64
+}
+
+# ---------------------------------------------------------------------
+# Renderings
+#
+# Three shapes over the same result (HTTP_API.md section 2): lines for
+# a terminal or `grep`, one object per line for a stream, and one
+# object for a UI that wants the statistics with the records. None of
+# them re-reads a segment -- the walk already produced everything.
+
+pub fn format_text() -> u64 { 0u64 }
+pub fn format_ndjson() -> u64 { 1u64 }
+pub fn format_json() -> u64 { 2u64 }
+
+# Which record to show `i`-th, honouring `desc`.
+fn pick_at(hits: &Vec<Hit>, q: &Query, i: u64) -> u64 {
+    if q.desc { return hits.size() - 1u64 - i }
+    i
+}
+
+fn put_stamp(out: &mut ByteWriter, ts: i64) {
+    val dt = DateTime::from_unix(ts)
+    val stamp = time::format(dt, "%Y-%m-%dT%H:%M:%SZ")
+    out.put_str(stamp)
+}
+
+pub fn render_text(hits: &Vec<Hit>, texts: &Vec<String>, q: &Query,
+                   out: &mut ByteWriter) -> u64 {
+    val total = hits.size()
+    var shown: u64 = 0u64
+    var i: u64 = 0u64
+    while i < total && shown < q.limit {
+        val h: Hit = hits.get(pick_at(hits, q, i))
+        val line: String = texts.get(h.ord)
+        if h.ts == 0i64 {
+            out.put_str("-                     ")
+        } else {
+            put_stamp(out, h.ts)
+            out.put_str("  ")
+        }
+        out.put_str(line.to_str())
+        out.put_u8('\n')
+        shown = shown + 1u64
+        i = i + 1u64
+    }
+    shown
+}
+
+fn put_record(out: &mut ByteWriter, ts: i64, line: &String) {
+    out.put_str("{{\u{22}ts\u{22}:")
+    if ts == 0i64 {
+        out.put_str("null")
+    } else {
+        out.put_u8('\u{22}')
+        put_stamp(out, ts)
+        out.put_u8('\u{22}')
+    }
+    out.put_str(",\u{22}body\u{22}:")
+    http::put_json_string(out, line)
+    out.put_str("}}")
+}
+
+pub fn render_ndjson(hits: &Vec<Hit>, texts: &Vec<String>, q: &Query,
+                     out: &mut ByteWriter) -> u64 {
+    val total = hits.size()
+    var shown: u64 = 0u64
+    var i: u64 = 0u64
+    while i < total && shown < q.limit {
+        val h: Hit = hits.get(pick_at(hits, q, i))
+        val line: String = texts.get(h.ord)
+        put_record(out, h.ts, &line)
+        out.put_u8('\n')
+        shown = shown + 1u64
+        i = i + 1u64
+    }
+    shown
+}
+
+# One object, records and statistics together. **The statistics are
+# not decoration**: QUERY.md section 7 makes "why was that slow" part
+# of the answer, and a UI that cannot show the reason cannot tell a
+# selective query from an unselective one.
+pub fn render_json(hits: &Vec<Hit>, texts: &Vec<String>, q: &Query,
+                   st: &SearchStats, out: &mut ByteWriter) -> u64 {
+    out.put_str("{{\u{22}records\u{22}:[")
+    val total = hits.size()
+    var shown: u64 = 0u64
+    var i: u64 = 0u64
+    while i < total && shown < q.limit {
+        if shown > 0u64 { out.put_u8(',') }
+        val h: Hit = hits.get(pick_at(hits, q, i))
+        val line: String = texts.get(h.ord)
+        put_record(out, h.ts, &line)
+        shown = shown + 1u64
+        i = i + 1u64
+    }
+    out.put_str("],\u{22}stats\u{22}:{{\u{22}segments_opened\u{22}:")
+    out.put_str("{st.opened}")
+    out.put_str(",\u{22}segments_considered\u{22}:")
+    out.put_str("{st.considered}")
+    out.put_str(",\u{22}pruned_by_time\u{22}:")
+    out.put_str("{st.pruned_time}")
+    out.put_str(",\u{22}pruned_by_index\u{22}:")
+    out.put_str("{st.pruned_terms}")
+    out.put_str(",\u{22}records_examined\u{22}:")
+    out.put_str("{st.examined}")
+    out.put_str(",\u{22}records_matched\u{22}:")
+    out.put_str("{st.matched}")
+    out.put_str(",\u{22}bytes_read\u{22}:")
+    out.put_str("{st.read_bytes}")
+    out.put_str(",\u{22}bytes_expanded\u{22}:")
+    out.put_str("{st.scanned_bytes}")
+    out.put_str(",\u{22}frames_expanded\u{22}:")
+    out.put_str("{st.frames_read}")
+    out.put_str(",\u{22}frames_total\u{22}:")
+    out.put_str("{st.frames_total}")
+    out.put_str(",\u{22}shown\u{22}:")
+    out.put_str("{shown}")
+    out.put_str(",\u{22}truncated\u{22}:")
+    if st.truncated { out.put_str("true") } else { out.put_str("false") }
+    out.put_str(",\u{22}elapsed_ms\u{22}:")
+    out.put_str("{st.ms}")
+    out.put_str("}}}}\n")
+    shown
 }
 
 # --- field tallies (ONTOLOGY.md O0-a) --------------------------------

@@ -2,10 +2,17 @@
 
 > **実装状況 (2026-09-11)。** `src/http.t` (プロトコル) と
 > `src/server.t` (イベントループ) が入り、`logsearch serve <spec>
-> [port]` で上がる。動くのは `GET /healthz` / `GET /v1/stats` と
-> 管理系の `repair` / `gc` / `shutdown`。**`/v1/query` と `/v1/ingest`
-> と Web UI はまだ無い** — 検索はエンジンが stdout へ直接書く形なので、
-> 応答へ流すには出力先を引数にする作り替えが要る (次の 1 手)。
+> [port]` で上がる。動くのは `GET /healthz` / `GET /v1/query`
+> (`format=ndjson|json|text`) / `GET /v1/stats` と、管理系の
+> `repair` / `gc` / `shutdown`。**`/v1/ingest` と `/v1/streams` と
+> `/v1/labels` と Web UI はまだ無い** — 取り込みは書き込み経路が、
+> 残り 2 つはカタログのラベル辞書 (まだ無い) が要る。
+>
+> `/v1/query` の応答は**組み上げてから送る**。§2 が ndjson を
+> 「段階的に流せる」と書いているのに対し、こちらは本文全体を先に
+> 作って `content-length` を必ず書く形にした — keep-alive が
+> 長さの正しさに乗っているので、そこを崩さない方を取っている。
+> `limit` の上限 1000 はそのぶんの予算で、1000 件で約 280 KB。
 >
 > §4 の表のうち**同時接続だけが 128 ではなく 1** である。理由は設計
 > ではなく言語側の穴で、接続表は socket ハンドルの容器を要求するが

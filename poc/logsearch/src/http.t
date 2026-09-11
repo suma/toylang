@@ -475,6 +475,53 @@ pub fn query_param(b: Span<u8>, at: u64, len: u64, name: str,
 }
 
 # ---------------------------------------------------------------------
+# JSON strings
+
+# Append `s` as a quoted JSON string, escaped.
+#
+# **This one actually escapes**, unlike the small writers elsewhere
+# that only ever see a path or a hex digit: log lines carry quotes and
+# backslashes as a matter of course (every Apache request line has
+# two), and a response that hands them through unescaped is a
+# response no JSON parser will read.
+pub fn put_json_string(out: &mut ByteWriter, s: &String) {
+    out.put_u8('\u{22}')
+    var i: u64 = 0u64
+    val n = s.len()
+    while i < n {
+        val c: u8 = s.get(i)
+        if c == '\u{22}' {
+            out.put_u8('\\')
+            out.put_u8('\u{22}')
+        } elif c == '\\' {
+            out.put_u8('\\')
+            out.put_u8('\\')
+        } elif c == '\n' {
+            out.put_u8('\\')
+            out.put_u8('n')
+        } elif c == '\r' {
+            out.put_u8('\\')
+            out.put_u8('r')
+        } elif c == '\t' {
+            out.put_u8('\\')
+            out.put_u8('t')
+        } elif c < 32u8 {
+            # Anything else below a space has no short form. A log
+            # line really does contain these -- the TLS handshake
+            # bytes that arrive at a plaintext port are the example
+            # ONTOLOGY.md section 3 is built around.
+            val v = c as u64
+            val esc = "\\u{v:04x}"
+            out.put_str(esc)
+        } else {
+            out.put_u8(c)
+        }
+        i = i + 1u64
+    }
+    out.put_u8('\u{22}')
+}
+
+# ---------------------------------------------------------------------
 # Responses
 
 pub fn reason(status: u64) -> str {

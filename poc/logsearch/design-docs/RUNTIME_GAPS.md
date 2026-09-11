@@ -347,9 +347,10 @@ stdlib のバイト kernel も SIMD 化済み。使い方と実測は [`SIMD.md`
 | **`match` の arm から compound を代入できない** | `assignment rhs produced no value` | arm の中で使い切る (`Vec<String>` を外の `var` に代入せず、arm の内側でループを回す) |
 | **所有型を struct のフィールドへ代入できない** | `compiler MVP cannot assign whole struct to nested field \`name\` (assign individual leaf scalars instead)` | 値をフィールドに**後から入れず、構築時に渡す**。`mount.t` の `read_meta` は、識別子が分かった場所で `MountMeta { .. }` を組んで `return` する形になった。最小再現: `var h = Holder { name: n }` に対する `h.name = s` (`String` フィールド) |
 | **所有型を既存の束縛へ move できない** | `assignment rhs produced no value` | `var` に溜めずに `val` で受け切る。上の行と同じ理由で同じ回避になるので、**この 2 つは一緒に踏む**。最小再現: `var name = String::new()` に対する `name = s`。既出の「`match` の arm から compound を代入できない」と診断は同じだが、**arm でなくても起きる** (通常の呼び出し結果でも) |
+| **associated function に wide な `&mut` を渡せない** | `call argument produced no value` | 自由関数かモジュール関数にする。`fn f(w: &mut Wide, v: &mut Vec<u64>)` は通るが、同じものを `impl Ops { fn f(...) }` の associated function として書くと通らない — **呼び出し位置ごとに引数の lowering が呼び先を知っているかどうかが違う**のが原因で、同じ根から 3 件目 (2026-09-11、前の 2 件は本体側で直した)。最小再現: 12 leaf の struct への `&mut` を `Ops::touch(&mut w, &mut v)` に渡す |
 | **これらの診断に位置情報が無い** | `compile error: call argument produced no value` の 1 行だけ。ファイルも行番号も出ない | 二分探索するしかない。型検査の診断 (`[E0001]` など) はスニペット付きなので、**落ちる層で情報量が変わる** |
 
-**最初の 2 行と最後の行は 2026-09-05 に、間の 2 行は 2026-09-11 に再現を確認した。** 一方、以前ここにあった
+**最初の 2 行と最後の行は 2026-09-05 に、間の 3 行は 2026-09-11 に再現を確認した。** 一方、以前ここにあった
 「8 leaf を超える struct を返せない」「`&mut self` の書き戻しが同じ予算を
 食う」「str を返す関数の多重 `return`」の 3 行は WIDE-RETURN で消えた
 (12 フィールドの struct を返す関数と、5 leaf のレシーバが `Result` を

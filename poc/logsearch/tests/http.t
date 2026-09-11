@@ -289,3 +289,36 @@ test "an error response says what went wrong in the documented shape" {
     val want = String::from_str("HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 57\r\nconnection: close\r\n\r\n{{\u{22}error\u{22}:\u{22}bad parameter\u{22},\u{22}detail\u{22}:\u{22}limit: not a number\u{22}}}\n")
     assert(got.eq(&want), "the error response should be exactly this")
 }
+
+# ---------------------------------------------------------------------
+# JSON 文字列
+
+fn as_json(raw: str) -> String {
+    val s = String::from_str(raw)
+    var out = ByteWriter::with_capacity(128u64)
+    http::put_json_string(&mut out, &s)
+    val text = rendered(&out)
+    text
+}
+
+# ログ行は引用符とバックスラッシュを**普通に**含む (apache の
+# リクエスト行には必ず 2 つある)。素通しした応答は、どの JSON
+# パーサにも読めない。
+test "a log line survives being put in a JSON string" {
+    check("plain", &as_json("hello"), "\u{22}hello\u{22}")
+    check("quote", &as_json("say \u{22}hi\u{22}"), "\u{22}say \\\u{22}hi\\\u{22}\u{22}")
+    check("backslash", &as_json("a\\b"), "\u{22}a\\\\b\u{22}")
+    check("newline", &as_json("a\nb"), "\u{22}a\\nb\u{22}")
+    check("tab", &as_json("a\tb"), "\u{22}a\\tb\u{22}")
+}
+
+# §3 の TLS ハンドシェイク — 平文ポートに来た HTTPS のバイト列は
+# 0x16 0x03 0x01 で始まる。短い形の無い制御文字なので `\u00XX` に
+# 落ちなければならない。
+test "a control byte with no short form becomes an escape" {
+    val s = String::from_str("x\u{16}\u{03}y")
+    var out = ByteWriter::with_capacity(64u64)
+    http::put_json_string(&mut out, &s)
+    val got = rendered(&out)
+    check("control", &got, "\u{22}x\\u0016\\u0003y\u{22}")
+}

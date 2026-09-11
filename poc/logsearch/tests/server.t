@@ -203,3 +203,43 @@ test "the server answers over a real socket" {
     assert(contains(&text, "HTTP/1.1 200 OK"), "the socket carried the status line")
     assert(contains(&text, "\r\n\r\nok\n"), "and the body")
 }
+
+# ---------------------------------------------------------------------
+# `/v1/query`
+#
+# パラメータは**セグメントを 1 本も開く前に**検査する。300 ms 歩いた
+# あとで同じことを言っても答えは変わらないが、遅い。
+
+test "a query without a query string says which parameter is missing" {
+    val got = answer("GET /v1/query HTTP/1.1\r\n\r\n", true)
+    assert(contains(&got, "HTTP/1.1 400"), "a missing q is the client's mistake")
+    assert(contains(&got, "q: missing"), "and it is named")
+}
+
+# 上限は好みではなく**応答の予算**である。本文は 1 バイト書く前に
+# メモリ上で組み上がるので、上限の無い limit はサーバの寿命に効く。
+test "a limit outside the budget is refused before anything is read" {
+    val big = answer("GET /v1/query?q=a&limit=5000 HTTP/1.1\r\n\r\n", true)
+    assert(contains(&big, "HTTP/1.1 400"), "1000 is the cap")
+    assert(contains(&big, "1 to 1000"), "and the range is stated")
+
+    val zero = answer("GET /v1/query?q=a&limit=0 HTTP/1.1\r\n\r\n", true)
+    assert(contains(&zero, "HTTP/1.1 400"), "zero records is not a query")
+
+    val words = answer("GET /v1/query?q=a&limit=soon HTTP/1.1\r\n\r\n", true)
+    assert(contains(&words, "HTTP/1.1 400"), "a limit that is not a number is refused")
+}
+
+test "a format nobody renders is refused rather than guessed at" {
+    val got = answer("GET /v1/query?q=a&format=xml HTTP/1.1\r\n\r\n", true)
+    assert(contains(&got, "HTTP/1.1 400"), "xml is not one of the three")
+    assert(contains(&got, "json, ndjson or text"), "and the three are named")
+}
+
+# 読めるマウントが 1 つも無いのは 400 ではない。要求は正しく、
+# 答えられないのはこちらの側である。
+test "nothing readable is 503 and not a bad request" {
+    val got = answer("GET /v1/query?q=a HTTP/1.1\r\n\r\n", true)
+    assert(contains(&got, "HTTP/1.1 503"), "an empty spec cannot be served")
+    assert(contains(&got, "no readable mount"), "and says so")
+}

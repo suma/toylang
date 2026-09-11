@@ -68,12 +68,6 @@ import segfile
 # done (RUNTIME_GAPS.md).
 const BUF_BYTES: u64 = 16777216u64
 
-# The quota a bare directory gets when it is used as a mount. It is a
-# placeholder, not a policy: naming a directory on the command line
-# says nothing about how much of the disk this service may have. A
-# real limit is declared in a `.conf` (DATA_MODEL.md section 6).
-const SINGLE_MOUNT_QUOTA: u64 = 1099511627776u64
-
 fn arg_or(i: u64, fallback: str) -> str {
     var d = fallback
     if io::argc() > i {
@@ -109,80 +103,6 @@ fn day_dir(out: str, secs: i64) -> String {
     full
 }
 
-
-# Where the segments may go.
-#
-# `<spec>` is either a mount configuration (`*.conf`, DATA_MODEL.md
-# section 6) or a single directory, which is treated as one mount.
-# The single-directory form is what every command took before mounts
-# existed and is still the shape the tests and the examples use; the
-# quota it gets is a placeholder, because a directory named on the
-# command line is not declaring a limit.
-fn open_mounts(spec: str, ms: &mut MountSet) -> bool {
-    val s = String::from_str(spec)
-    val conf = String::from_str(".conf")
-    if s.ends_with(&conf) {
-        val got = mount::load_config(spec, ms)
-        match got {
-            Result::Ok(bad) => {
-                if bad > 0u64 {
-                    println("  {bad} line(s) of {spec} were not understood")
-                }
-            }
-            Result::Err(e) => {
-                println("cannot read {spec}: {e}")
-                return false
-            }
-        }
-        if ms.is_empty() {
-            println("{spec} declares no mounts")
-            return false
-        }
-        return true
-    }
-    val one = String::from_str(spec)
-    ms.add(&one, SINGLE_MOUNT_QUOTA, false)
-    true
-}
-
-# Every segment the spec covers, in a stable order.
-#
-# **The catalog answers, and the directory answers when the catalog
-# cannot** (DATA_MODEL.md section 6). Falling back rather than failing
-# is what makes the catalog a cache: an archive written before
-# catalogs existed still reads, and so does one whose `meta/` was
-# deleted.
-fn segments_of(spec: str, out: &mut Vec<String>) {
-    out.clear()
-    var ms = MountSet::new()
-    if !open_mounts(spec, &mut ms) { return }
-    val crc = Crc32::new()
-    var i: u64 = 0u64
-    while i < ms.size() {
-        val p = ms.path_of(i)
-        val ps = p.to_str()
-        val c = catalog::load(ps, &crc)
-        if c.size() > 0u64 {
-            var k: u64 = 0u64
-            while k < c.size() {
-                val r = c.row(k)
-                val path = catalog::seg_path(ps, &r)
-                out.push(path.clone())
-                k = k + 1u64
-            }
-        } else {
-            val walked = logdir::scan_suffix(ps, ".seg")
-            var k2: u64 = 0u64
-            while k2 < walked.size() {
-                val w: String = walked.get(k2)
-                out.push(w.clone())
-                k2 = k2 + 1u64
-            }
-        }
-        i = i + 1u64
-    }
-    out.sort()
-}
 
 # ---------------------------------------------------------------------
 
@@ -306,7 +226,7 @@ fn cmd_archive(dir: str, spec: str, limit: u64) -> u64 {
     }
 
     var ms = MountSet::new()
-    if !open_mounts(spec, &mut ms) { return 1u64 }
+    if !mount::open_spec(spec, &mut ms) { return 1u64 }
     val crc0 = Crc32::new()
     ms.refresh_used(&crc0)
 
@@ -545,7 +465,7 @@ fn place_segment(w: &mut ArchiveWriter, ms: &mut MountSet, gens: &Vec<u64>,
 fn cmd_verify(out: str) -> u64 {
     println("verifying {out}")
     var segs: Vec<String> = Vec::new()
-    segments_of(out, &mut segs)
+    mount::segments_of(out, &mut segs)
     val n = segs.size()
     if n == 0u64 {
         println("no segments found")
@@ -615,7 +535,7 @@ fn cmd_verify(out: str) -> u64 {
 # doubt rather than something to fear.
 fn cmd_catalog(spec: str, action: str) -> u64 {
     var ms = MountSet::new()
-    if !open_mounts(spec, &mut ms) { return 1u64 }
+    if !mount::open_spec(spec, &mut ms) { return 1u64 }
     val crc = Crc32::new()
     var rc: u64 = 0u64
     var i: u64 = 0u64
@@ -710,7 +630,7 @@ fn cmd_catalog(spec: str, action: str) -> u64 {
 # needs it; a one-shot command does not have anyone to wait for.
 fn cmd_retain(spec: str, days: u64) -> u64 {
     var ms = MountSet::new()
-    if !open_mounts(spec, &mut ms) { return 1u64 }
+    if !mount::open_spec(spec, &mut ms) { return 1u64 }
     val crc = Crc32::new()
     val now = time::now_unix_secs()
     val cutoff = now - ((days as i64) * 86400i64)
@@ -879,7 +799,7 @@ fn parent_of(path: &String) -> String {
 # expanded: the traversal is a walk of one group of link rows.
 fn cmd_top_linked(dir: str, q: &Query, field: str, limit: u64) -> u64 {
     var segs: Vec<String> = Vec::new()
-    segments_of(dir, &mut segs)
+    mount::segments_of(dir, &mut segs)
     if segs.size() == 0u64 {
         println("no segments under {dir}")
         return 1u64
@@ -1102,7 +1022,7 @@ fn cmd_query(dir: str, text: str) -> u64 {
     val q = query::parse_query(text, now)
     val crc = Crc32::new()
     var segs: Vec<String> = Vec::new()
-    segments_of(dir, &mut segs)
+    mount::segments_of(dir, &mut segs)
     val n = query::run(dir, &segs, &q, &crc)
     n
 }
@@ -1130,7 +1050,7 @@ fn cmd_fields_indexed(dir: str, field: str, limit: u64) -> u64 {
     println("field {field} (index)")
 
     var segs: Vec<String> = Vec::new()
-    segments_of(dir, &mut segs)
+    mount::segments_of(dir, &mut segs)
     val n_segs = segs.size()
     if n_segs == 0u64 {
         println("no segments under {dir}")
@@ -1282,7 +1202,7 @@ fn cmd_fields(dir: str, field: str, limit: u64) -> u64 {
     println("field {field}")
 
     var segs: Vec<String> = Vec::new()
-    segments_of(dir, &mut segs)
+    mount::segments_of(dir, &mut segs)
     val n_segs = segs.size()
     if n_segs == 0u64 {
         println("no segments under {dir}")
@@ -1462,7 +1382,7 @@ fn cmd_object(dir: str, spec: str) -> u64 {
     println("object {want}")
 
     var segs: Vec<String> = Vec::new()
-    segments_of(dir, &mut segs)
+    mount::segments_of(dir, &mut segs)
     val crc = Crc32::new()
     var head_buf = ByteWriter::with_capacity(segfile::data_at() + 64u64)
     var raw = ByteWriter::with_capacity(1048576u64)

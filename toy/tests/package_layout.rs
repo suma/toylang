@@ -613,7 +613,15 @@ fn test_binaries_stay_out_of_the_product_directory() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(pkg.0.join("build/debug/tests/main").is_file());
+    // The name carries a hash of the package-relative source path
+    // (TEST-PARALLEL X0), so look for the directory holding exactly
+    // one binary rather than for a fixed name.
+    let built: Vec<_> = std::fs::read_dir(pkg.0.join("build/debug/tests"))
+        .expect("tests dir")
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(built.len(), 1, "built: {built:?}");
+    assert!(built[0].starts_with("main_"), "built: {built:?}");
     assert!(!pkg.0.join("build/debug/main").exists());
 }
 
@@ -994,4 +1002,188 @@ fn colour_is_for_terminals_and_can_be_forced_or_suppressed() {
     // NO_COLOR is the convention, but an explicit request wins over
     // an ambient one.
     assert!(String::from_utf8_lossy(&suppressed.stdout).contains("\x1b[33m"));
+}
+
+// ---------------------------------------------------------------
+// TEST-PARALLEL: running the suite on more than one worker
+// ---------------------------------------------------------------
+
+/// A package with `count` test files, each holding two tests.
+fn multi_file_pkg(stem: &str, count: usize) -> Pkg {
+    let pkg = scratch(stem);
+    write(&pkg, "src/mathx.t", "pub fn triple(n: u64) -> u64 { n * 3u64 }\n");
+    write(&pkg, "main.t", "fn main() -> u64 { mathx::triple(1u64) }\n");
+    for i in 0..count {
+        write(
+            &pkg,
+            &format!("tests/t{i}.t"),
+            &format!(
+                "test \"file {i} case a\" {{ assert_eq(mathx::triple(3u64), 9u64) }}\n\
+                 test \"file {i} case b\" {{ assert_eq(mathx::triple(4u64), 12u64) }}\n"
+            ),
+        );
+    }
+    pkg
+}
+
+#[test]
+fn two_test_files_with_the_same_stem_get_their_own_binaries() {
+    // TEST-PARALLEL X0. `tests/a/x.t` and `tests/b/x.t` both compiled
+    // to `build/debug/tests/x`: harmless while one ran after the
+    // other, fatal once two workers do it at once — one of them
+    // executes a binary the other is still writing.
+    let pkg = scratch("same_stem");
+    write(&pkg, "src/mathx.t", "pub fn triple(n: u64) -> u64 { n * 3u64 }\n");
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    write(&pkg, "tests/a/x.t", "test \"from a\" { assert_eq(mathx::triple(1u64), 3u64) }\n");
+    write(&pkg, "tests/b/x.t", "test \"from b\" { assert_eq(mathx::triple(2u64), 6u64) }\n");
+
+    let out = run(&pkg, &["test", pkg.0.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let built: Vec<_> = std::fs::read_dir(pkg.0.join("build/debug/tests"))
+        .expect("tests dir")
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(built.len(), 2, "one binary per test file; got {built:?}");
+}
+
+#[test]
+fn one_worker_and_many_report_the_same_thing() {
+    // The whole safety net for a parallel runner (TEST_PARALLEL.md
+    // §7): the report is assembled in plan order rather than
+    // completion order, so the only way to notice a scheduling
+    // dependency is to compare the two.
+    let pkg = multi_file_pkg("jobs_agree", 4);
+    // One failure and one panicking test, so the comparison covers
+    // more than the happy path.
+    write(
+        &pkg,
+        "tests/z.t",
+        "test \"this one fails\" { assert_eq(2u64, 3u64) }\n\
+         test \"this one panics\" panics \"boom\" { panic(\"boom\") }\n",
+    );
+    let path = pkg.0.to_str().unwrap();
+    for lane in [vec!["test", path], vec!["test", path, "--backend", "vm"]] {
+        for format in [vec![], vec!["--format=json"]] {
+            let mut serial = lane.clone();
+            serial.extend(format.iter());
+            serial.push("-j1");
+            let mut parallel = lane.clone();
+            parallel.extend(format.iter());
+            parallel.push("-j8");
+
+            let one = run(&pkg, &serial);
+            let many = run(&pkg, &parallel);
+            assert_eq!(
+                without_elapsed(&one.stdout),
+                without_elapsed(&many.stdout),
+                "stdout differs for {serial:?}"
+            );
+            // stderr carries the failures; the timing line lives on
+            // stdout, so both streams are comparable byte for byte.
+            assert_eq!(
+                String::from_utf8_lossy(&one.stderr),
+                String::from_utf8_lossy(&many.stderr),
+                "stderr differs for {serial:?}"
+            );
+            assert_eq!(one.status.code(), many.status.code());
+        }
+    }
+}
+
+#[test]
+fn a_failing_test_shows_its_own_output_and_not_its_neighbours() {
+    // With workers running at once, letting output through as it
+    // happens interleaves it; the runner captures per test and prints
+    // only what a failure needs (TEST_PARALLEL.md D4).
+    let pkg = scratch("output_apart");
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    write(
+        &pkg,
+        "tests/a.t",
+        "test \"quiet neighbour\" { println(\"NEIGHBOUR_A\") }\n",
+    );
+    write(
+        &pkg,
+        "tests/b.t",
+        "test \"loud failure\" { println(\"MINE_B\") assert_eq(2u64, 3u64) }\n",
+    );
+    let out = run(&pkg, &["test", pkg.0.to_str().unwrap(), "--backend", "vm", "-j8"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(stderr.contains("MINE_B"), "the failure keeps its own output: {stderr}");
+    assert!(
+        !stderr.contains("NEIGHBOUR_A"),
+        "and not the other test's: {stderr}"
+    );
+}
+
+#[test]
+fn panicking_tests_still_pass_when_they_run_at_once() {
+    // TEST-TOOL T4 gives every `panics` test a binary of its own,
+    // which is the case where the collision in X0 bites hardest: the
+    // name came from the test, so two files could agree on it.
+    let pkg = scratch("panics_parallel");
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    for (i, file) in ["tests/one.t", "tests/two.t"].iter().enumerate() {
+        write(
+            &pkg,
+            file,
+            &format!(
+                "test \"same name\" panics \"boom {i}\" {{ panic(\"boom {i}\") }}\n\
+                 test \"also fine {i}\" {{ assert_eq(1u64, 1u64) }}\n"
+            ),
+        );
+    }
+    let out = run(&pkg, &["test", pkg.0.to_str().unwrap(), "-j8"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("4 passed, 0 failed"), "stdout: {stdout}");
+}
+
+#[test]
+fn a_name_filter_decides_what_runs_rather_than_what_is_printed() {
+    // TEST-PARALLEL X2: the IR VM lane used to run every block and
+    // then drop the ones whose names did not match, so asking for one
+    // test cost the whole suite. Observable without a clock: a test
+    // the filter excludes cannot fail the run.
+    let pkg = scratch("filter_runs");
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    write(
+        &pkg,
+        "tests/a.t",
+        "test \"keeper\" { assert_eq(1u64, 1u64) }\n\
+         test \"other block\" { panic(\"this block must never run\") }\n",
+    );
+    let out = run(&pkg, &["test", "keeper", pkg.0.to_str().unwrap(), "--backend", "vm"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("1 passed, 0 failed"), "stdout: {stdout}");
+}
+
+/// A run's summary line ends in how long it took, which is the one
+/// thing two runs of the same suite may legitimately disagree about.
+fn without_elapsed(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .map(|line| match line.find("   ") {
+            Some(cut) if line.ends_with(" s") && line.contains("passed,") => {
+                line[..cut].to_string()
+            }
+            _ => line.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }

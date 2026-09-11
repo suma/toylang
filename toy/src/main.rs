@@ -36,7 +36,7 @@ usage:
   toy run   [PATH] [--release] [--backend aot|jit|vm|tree] [-v] [-- ARGS...]
   toy check [PATH] [-v]
   toy clean [PATH] [--all] [-v]
-  toy test  [FILTER] [PATH] [--list] [--bless] [--format=json] [-v]
+  toy test  [FILTER] [PATH] [-j N] [--list] [--bless] [--format=json] [-v]
   toy api <MODULE.t> [PATH]
   toy effects [PATH] [-v]
   toy explain <CODE>
@@ -53,6 +53,7 @@ options:
   -o, --output PATH    executable path (build only)
   --core-modules DIR   add a module root; repeatable, later wins
   -v, --verbose        print the equivalent compiler/interpreter call
+  -j, --jobs N         test: run N jobs at once (default: cores; 1 = serial)
   --list               list the tests instead of running them
   --bless              test: record the golden files instead of checking
   --format=json        machine-readable results (test only)
@@ -103,6 +104,9 @@ struct Args {
     json: bool,
     warn_collisions: bool,
     all: bool,
+    /// `toy test -j N`. `None` means "as many as the machine has"
+    /// (TEST-PARALLEL D2).
+    jobs: Option<usize>,
 }
 
 fn main() {
@@ -157,6 +161,7 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
         json: false,
         warn_collisions: true,
         all: false,
+        jobs: None,
     };
     let mut i = 0usize;
     while i < argv.len() {
@@ -185,6 +190,21 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
                 }
             }
             "-v" | "--verbose" => a.verbose = true,
+            "-j" | "--jobs" => {
+                i += 1;
+                let v = argv.get(i).ok_or("-j needs a number")?;
+                a.jobs = Some(parse_jobs(v)?);
+            }
+            // `-j8` and `--jobs=8` as well as `-j 8`: every other tool
+            // that has this flag takes all three, and a runner people
+            // reach for to go faster should not stop to argue about
+            // the space.
+            _ if arg.starts_with("-j") && arg.len() > 2 => {
+                a.jobs = Some(parse_jobs(&arg[2..])?);
+            }
+            _ if arg.starts_with("--jobs=") => {
+                a.jobs = Some(parse_jobs(&arg["--jobs=".len()..])?);
+            }
             "--backend" => {
                 i += 1;
                 let v = argv.get(i).ok_or("--backend needs a value")?;
@@ -433,6 +453,14 @@ fn cmd_clean(args: &Args) -> Result<(), String> {
 
 fn cmd_test(args: &Args) -> Result<(), String> {
     let pkg = locate(args)?;
+    // TEST-PARALLEL X4: the IR VM lane runs inside this process, so
+    // `assert_golden` reads this variable from *here*. Rust makes
+    // `set_var` unsafe because it is unsound once a second thread
+    // exists, so it is set at the top of the command, before the
+    // runner has spawned anything.
+    if args.bless {
+        unsafe { std::env::set_var("TOY_BLESS", "1") };
+    }
     let opts = test_runner::Options {
         filter: args.subject.clone(),
         list_only: args.list_only,
@@ -450,8 +478,29 @@ fn cmd_test(args: &Args) -> Result<(), String> {
         aot: !matches!(args.backend, Some(Backend::Vm) | Some(Backend::Tree)),
         release: args.release,
         bless: args.bless,
+        // `--bless` records golden files, so two tests writing the
+        // same path at once would leave whichever won (D5). Recording
+        // is a rare, deliberate act; it does not need the parallelism.
+        jobs: if args.bless { 1 } else { args.jobs.unwrap_or_else(default_jobs) },
     };
     test_runner::run(&pkg, &opts)
+}
+
+fn parse_jobs(text: &str) -> Result<usize, String> {
+    let n: usize = text
+        .parse()
+        .map_err(|_| format!("-j needs a number, not `{text}`"))?;
+    if n == 0 {
+        return Err("-j needs at least 1 job".to_string());
+    }
+    Ok(n)
+}
+
+/// One worker per core unless told otherwise.
+fn default_jobs() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
 }
 
 fn cmd_api(args: &Args) -> Result<(), String> {

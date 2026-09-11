@@ -1,4 +1,5 @@
-//! `toy test` — running a package's `test` blocks (TEST_TOOL.md D3).
+//! `toy test` — running a package's `test` blocks (TEST_TOOL.md D3),
+//! in parallel (TEST_PARALLEL.md).
 //!
 //! The tests live wherever the code does. TEST-TOOL T0 made a module
 //! able to hold a `test` block at all — before it, integration failed
@@ -12,8 +13,33 @@
 //! form for anything reading the results rather than looking at them.
 //! One process, because `toy` holds the interpreter as a crate and a
 //! spawn is ~30 ms — fifty test files used to be fifty spawns.
+//!
+//! # Shape of a run
+//!
+//! **Plan, then run.** Every file is parsed and type-checked once up
+//! front to learn what it declares; the filter and the duplicate fold
+//! happen there, on names rather than on results. Then the planned
+//! tests are cut into jobs with no dependencies between them and
+//! handed to a pool of workers:
+//!
+//! | lane | job |
+//! |---|---|
+//! | AOT | one driver — compile a file's tests into a binary and run it |
+//! | AOT | one `panics` test — its own binary, since a panic ends the process |
+//! | IR VM | one test |
+//!
+//! Two rules keep this honest. **A job's front end and its execution
+//! stay on one thread**, because the AST owns `Rc<Function>` and cannot
+//! cross one; only an [`Outcome`] — strings and numbers — is handed
+//! back. And **the report is assembled in plan order, not completion
+//! order**, so `-j8` prints what `-j1` prints, byte for byte. That
+//! equality is pinned by a test, and it is the only thing standing
+//! between a parallel runner and a flaky one.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use interpreter::RunOptions;
 
@@ -41,6 +67,9 @@ pub struct Options {
     /// them. Reaches the program as `TOY_BLESS`, which
     /// `testing::assert_golden` reads.
     pub bless: bool,
+    /// How many jobs to run at once (TEST-PARALLEL D2). `1` is the
+    /// sequential runner: no threads are spawned at all.
+    pub jobs: usize,
 }
 
 /// One `test` block's result, flattened for the report.
@@ -49,14 +78,52 @@ struct Outcome {
     file: String,
     line: u32,
     failure: Option<String>,
+    /// What the test printed, kept so a failure can show it. Captured
+    /// rather than let through: with workers running at once, letting
+    /// twenty `println`s reach the terminal interleaves them into
+    /// something no one can read (TEST-PARALLEL D4).
+    output: String,
 }
 
-/// One test as the compiled lane needs to see it.
+/// One planned test: what the plan pass learned about a `test` block
+/// before anything ran.
 struct Planned {
     name: String,
     file: String,
     line: u32,
     expect_panic: Option<Option<String>>,
+    /// Position among the declaring file's blocks, which is how the
+    /// IR VM lane names the one to run.
+    index: usize,
+}
+
+/// One source file and the tests it contributes to this run.
+struct FilePlan {
+    path: PathBuf,
+    display: String,
+    tests: Vec<Planned>,
+}
+
+/// A unit of work with no dependency on any other.
+enum Job {
+    /// Compile one driver holding these tests and run it.
+    AotDriver { file: usize, tests: Vec<usize> },
+    /// One `panics` test in a binary of its own: a panic ends the
+    /// process, so it cannot share a driver with anything that has to
+    /// run after it (TEST-TOOL T4).
+    AotPanics { file: usize, test: usize },
+    /// One test on the IR VM.
+    Vm { file: usize, test: usize },
+}
+
+impl Job {
+    /// Which planned tests this job answers for, as `(file, test)`.
+    fn covers(&self) -> Vec<(usize, usize)> {
+        match self {
+            Job::AotDriver { file, tests } => tests.iter().map(|t| (*file, *t)).collect(),
+            Job::AotPanics { file, test } | Job::Vm { file, test } => vec![(*file, *test)],
+        }
+    }
 }
 
 pub fn run(pkg: &Package, opts: &Options) -> Result<(), String> {
@@ -64,6 +131,10 @@ pub fn run(pkg: &Package, opts: &Options) -> Result<(), String> {
     // relative to the package, so that is where tests run from — on
     // both lanes, since the in-process one inherits `toy`'s directory
     // and the compiled one is spawned.
+    //
+    // The directory is process-wide, which is also why a test cannot
+    // be given one of its own (TEST_PARALLEL.md §8): set once, before
+    // any worker exists, and never touched again.
     let restore = std::env::current_dir().ok();
     if std::env::set_current_dir(&pkg.root).is_err() {
         return Err(format!("cannot enter `{}`", pkg.root.display()));
@@ -76,12 +147,6 @@ pub fn run(pkg: &Package, opts: &Options) -> Result<(), String> {
 }
 
 fn run_in_package(pkg: &Package, opts: &Options) -> Result<(), String> {
-    // The IR VM lane runs inside this process, so the variable has to
-    // be here rather than on a child. Set once, before anything is
-    // run, in a tool that is single-threaded at this point.
-    if opts.bless {
-        unsafe { std::env::set_var("TOY_BLESS", "1") };
-    }
     let files = discover(pkg)?;
     if files.is_empty() {
         return Err(format!(
@@ -90,35 +155,23 @@ fn run_in_package(pkg: &Package, opts: &Options) -> Result<(), String> {
         ));
     }
 
-    let mut outcomes: Vec<Outcome> = Vec::new();
-    // A module's tests come along with whichever program integrates
-    // it, and `tests/a.t` and the entry both integrate `src/`. Without
-    // this the same block is run and reported once per program that
-    // pulled it in -- three tests became five. Keyed by where the
-    // block is written, which is the only thing that identifies it.
-    let mut seen: std::collections::HashSet<(String, u32, String)> =
-        std::collections::HashSet::new();
     let started = std::time::Instant::now();
-    for file in &files {
-        if opts.verbose {
-            eprintln!("toy: running tests in {}", file.display());
-        }
-        for outcome in run_one(pkg, file, opts)? {
-            let key = (outcome.file.clone(), outcome.line, outcome.name.clone());
-            if seen.insert(key) {
-                outcomes.push(outcome);
-            }
-        }
-    }
-    let elapsed = started.elapsed();
+    let plans = plan_all(pkg, &files, opts)?;
 
     if opts.list_only {
-        for o in &outcomes {
-            println!("{}  ({}:{})", o.name, o.file, o.line);
+        let mut count = 0usize;
+        for plan in &plans {
+            for test in &plan.tests {
+                println!("{}  ({}:{})", test.name, test.file, test.line);
+                count += 1;
+            }
         }
-        println!("{} test(s)", outcomes.len());
+        println!("{count} test(s)");
         return Ok(());
     }
+
+    let outcomes = execute(pkg, &plans, opts)?;
+    let elapsed = started.elapsed();
 
     match opts.format {
         Format::Json => report_json(&outcomes),
@@ -170,71 +223,393 @@ fn collect_t_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
 /// Spelled in `compiler_lower::install_test_driver`; matched here.
 const MARKER: &str = "__toy_test:";
 
-/// Compile `file` with a test entry and run it.
+// ---------------------------------------------------------------
+// Plan
+// ---------------------------------------------------------------
+
+/// The `test` blocks each file declares, in file order.
 ///
-/// **The lane stops at the first failure.** An assertion failure is a
-/// panic and a panic ends the process, so the marker stream tells us
-/// which test was running when it died and everything after it never
-/// ran. Reporting every failure in one pass needs a process per test
-/// (`TEST_TOOL.md` T4's shape); this is the cheap form, and the
-/// report says which tests did not get a turn.
-fn run_one_aot(pkg: &Package, file: &Path, opts: &Options) -> Result<Vec<Outcome>, String> {
-    let planned = plan(pkg, file, opts)?;
-    if planned.is_empty() {
-        return Ok(Vec::new());
+/// **Planning is a front end**: parse, type-check, read off the
+/// blocks. It is the same work a run needs, so on one worker the IR VM
+/// lane keeps what it checked (`prepared_for`) instead of paying for
+/// it twice. With workers, it cannot — a checked program holds `Rc` —
+/// so the listing is spread over them and each worker re-checks the
+/// file it later takes a test from. Doing this sequentially while the
+/// tests ran in parallel was worse than not parallelising at all: a
+/// nine-file suite spent 0.19 s here and 0.02 s running.
+fn list_all(
+    pkg: &Package,
+    files: &[PathBuf],
+    opts: &Options,
+) -> Result<Vec<Vec<interpreter::TestCaseInfo>>, String> {
+    let workers = opts.jobs.max(1).min(files.len());
+    if workers == 1 {
+        return files
+            .iter()
+            .map(|file| list_one(pkg, file, opts))
+            .collect();
     }
-    // TEST-TOOL T4: a `panics` test ends the process, so it cannot
-    // share a driver with tests that have to run after it. Each gets
-    // its own binary — the design's shape, on the premise that there
-    // are few of them.
-    let (panicking, plain): (Vec<&Planned>, Vec<&Planned>) =
-        planned.iter().partition(|p| p.expect_panic.is_some());
-    let mut out = Vec::with_capacity(planned.len());
-    for p in &panicking {
-        out.push(run_one_panics_aot(pkg, file, opts, p)?);
+    let slots: Vec<OnceLock<Result<Vec<interpreter::TestCaseInfo>, String>>> =
+        files.iter().map(|_| OnceLock::new()).collect();
+    let counter = AtomicUsize::new(0);
+    let cursor = &counter;
+    let slots_ref = &slots;
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(move || {
+                loop {
+                    let i = cursor.fetch_add(1, Ordering::Relaxed);
+                    if i >= files.len() {
+                        break;
+                    }
+                    let _ = slots_ref[i].set(list_one(pkg, &files[i], opts));
+                }
+            });
+        }
+    });
+    let mut out = Vec::with_capacity(files.len());
+    for slot in slots {
+        match slot.into_inner() {
+            Some(Ok(cases)) => out.push(cases),
+            Some(Err(e)) => return Err(e),
+            None => return Err("internal error: a file was never planned".to_string()),
+        }
     }
-    if plain.is_empty() {
-        return Ok(out);
-    }
-    out.extend(run_plain_aot(pkg, file, opts, &plain)?);
     Ok(out)
 }
 
-/// A single `panics` test, in a binary of its own.
-fn run_one_panics_aot(
+/// One file's `test` blocks.
+///
+/// On the IR VM lane with a single worker the checked program is kept
+/// (this thread is the one that will run the tests); otherwise it is
+/// read and dropped, because the thread that plans a file is not
+/// necessarily the thread that runs it and a checked program is the
+/// whole stdlib plus the package.
+fn list_one(
     pkg: &Package,
     file: &Path,
     opts: &Options,
-    test: &Planned,
-) -> Result<Outcome, String> {
-    let names = [test.name.clone()];
-    let exe = compile_driver(pkg, file, opts, Some(&names), &sanitise(&test.name))?;
-    let run = std::process::Command::new(&exe)
-        .envs(bless_env(opts))
-        .output()
-        .map_err(|e| format!("cannot run `{}`: {e}", exe.display()))?;
-    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
-    let text: String = stderr
-        .lines()
-        .filter(|l| !l.starts_with(MARKER))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let failure = if run.status.success() {
-        Some(format!("expected `{}` to panic, but it returned", test.name))
-    } else {
-        match &test.expect_panic {
-            Some(Some(wanted)) if !text.contains(wanted.as_str()) => Some(format!(
-                "expected a panic containing `{wanted}`, but it said:\n{text}"
-            )),
-            _ => None,
+) -> Result<Vec<interpreter::TestCaseInfo>, String> {
+    if opts.verbose {
+        eprintln!("toy: planning {}", file.display());
+    }
+    let display = display_path(pkg, file);
+    let keep = !opts.aot && !opts.list_only && opts.jobs.max(1) == 1;
+    if keep {
+        return Ok(prepared_for(pkg, file, &display)?.cases().to_vec());
+    }
+    let source = std::fs::read_to_string(file)
+        .map_err(|e| format!("cannot read `{}`: {e}", file.display()))?;
+    let mut options = RunOptions::default();
+    options.core_modules_dirs = &pkg.module_roots;
+    Ok(interpreter::list_tests_from_source(&source, &display, &options)?
+        .into_iter()
+        .map(|o| interpreter::TestCaseInfo {
+            name: o.name,
+            line: o.line,
+            file: o.file,
+            expect_panic: o.expect_panic,
+        })
+        .collect())
+}
+
+/// Learn what every file declares, apply the filter, and drop the
+/// duplicates — all before anything runs.
+///
+/// **The fold used to happen after the fact.** A module's tests come
+/// along with whichever program integrates it, and `tests/a.t` and the
+/// entry both integrate `src/`, so the same block was *run* once per
+/// program that pulled it in and then reported once. Identifying a
+/// block by where it is written (file, line, name) is the same rule as
+/// before; doing it here means the extra runs do not happen either.
+fn plan_all(pkg: &Package, files: &[PathBuf], opts: &Options) -> Result<Vec<FilePlan>, String> {
+    let listed = list_all(pkg, files, opts)?;
+    let mut seen: std::collections::HashSet<(String, u32, String)> =
+        std::collections::HashSet::new();
+    let mut plans = Vec::with_capacity(files.len());
+    for (file, cases) in files.iter().zip(listed) {
+        let display = display_path(pkg, file);
+        let mut tests = Vec::new();
+        for (index, case) in cases.into_iter().enumerate() {
+            if opts.filter.as_deref().is_some_and(|f| !case.name.contains(f)) {
+                continue;
+            }
+            // A test carried in from a module names its own file; one
+            // written in this file does not, and the file is this one.
+            let file_name = case.file.unwrap_or_else(|| display.clone());
+            let key = (file_name.clone(), case.line, case.name.clone());
+            if !seen.insert(key) {
+                continue;
+            }
+            tests.push(Planned {
+                name: case.name,
+                file: file_name,
+                line: case.line,
+                expect_panic: case.expect_panic,
+                index,
+            });
         }
+        plans.push(FilePlan {
+            path: file.clone(),
+            display,
+            tests,
+        });
+    }
+    Ok(plans)
+}
+
+// ---------------------------------------------------------------
+// Schedule
+// ---------------------------------------------------------------
+
+/// Cut the plan into jobs and run them, `opts.jobs` at a time.
+fn execute(pkg: &Package, plans: &[FilePlan], opts: &Options) -> Result<Vec<Outcome>, String> {
+    let jobs = build_jobs(plans, opts);
+    if jobs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // One slot per planned test, filled by whichever worker owns the
+    // job that covers it. `OnceLock` because a slot is written exactly
+    // once and read after every worker has finished.
+    let slots: Vec<Vec<OnceLock<Outcome>>> = plans
+        .iter()
+        .map(|p| p.tests.iter().map(|_| OnceLock::new()).collect())
+        .collect();
+    let errors: Vec<OnceLock<String>> = jobs.iter().map(|_| OnceLock::new()).collect();
+
+    let workers = opts.jobs.max(1).min(jobs.len());
+    if workers == 1 {
+        // No threads at all in the sequential case: it is the fallback
+        // for anything the parallel path would disturb (`--bless`), so
+        // it must not be the parallel path with one worker.
+        for (id, job) in jobs.iter().enumerate() {
+            run_job(pkg, plans, opts, job, id, &slots, &errors, 0);
+        }
+    } else {
+        let counter = AtomicUsize::new(0);
+        let cursor = &counter;
+        let jobs_ref = &jobs;
+        let slots_ref = &slots;
+        let errors_ref = &errors;
+        std::thread::scope(|scope| {
+            for worker in 0..workers {
+                scope.spawn(move || {
+                    // One cursor, many workers. Jobs are wildly uneven
+                    // — one test runs for seconds while its neighbours
+                    // take a millisecond — so a static split would
+                    // leave workers idle behind the long one.
+                    loop {
+                        let id = cursor.fetch_add(1, Ordering::Relaxed);
+                        if id >= jobs_ref.len() {
+                            break;
+                        }
+                        run_job(
+                            pkg,
+                            plans,
+                            opts,
+                            &jobs_ref[id],
+                            id,
+                            slots_ref,
+                            errors_ref,
+                            worker,
+                        );
+                    }
+                });
+            }
+        });
+    }
+
+    // A job that could not even be compiled is reported the way it was
+    // before there were jobs: as the run's error. The first one in job
+    // order, so the message does not depend on who lost the race.
+    if let Some(error) = errors.iter().find_map(|e| e.get()) {
+        return Err(error.clone());
+    }
+
+    let mut out = Vec::new();
+    for (file, plan) in plans.iter().enumerate() {
+        for (test, planned) in plan.tests.iter().enumerate() {
+            match slots[file][test].get() {
+                Some(outcome) => out.push(clone_outcome(outcome)),
+                // Not reachable: every planned test belongs to exactly
+                // one job. Reported rather than panicked on, because a
+                // silently missing test is the one failure mode a test
+                // runner must never have.
+                None => out.push(Outcome {
+                    name: planned.name.clone(),
+                    file: planned.file.clone(),
+                    line: planned.line,
+                    failure: Some("internal error: no job claimed this test".to_string()),
+                    output: String::new(),
+                }),
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// One job per driver on the compiled lane, one per test on the VM.
+fn build_jobs(plans: &[FilePlan], opts: &Options) -> Vec<Job> {
+    let mut jobs = Vec::new();
+    for (file, plan) in plans.iter().enumerate() {
+        if plan.tests.is_empty() {
+            continue;
+        }
+        if !opts.aot {
+            for test in 0..plan.tests.len() {
+                jobs.push(Job::Vm { file, test });
+            }
+            continue;
+        }
+        let mut plain = Vec::new();
+        for (test, planned) in plan.tests.iter().enumerate() {
+            if planned.expect_panic.is_some() {
+                jobs.push(Job::AotPanics { file, test });
+            } else {
+                plain.push(test);
+            }
+        }
+        if !plain.is_empty() {
+            jobs.push(Job::AotDriver { file, tests: plain });
+        }
+    }
+    jobs
+}
+
+/// Run one job and file its outcomes. Never returns a failure: a job
+/// that could not run records its error and leaves the slots it owns
+/// to the caller's reconciliation.
+#[allow(clippy::too_many_arguments)]
+fn run_job(
+    pkg: &Package,
+    plans: &[FilePlan],
+    opts: &Options,
+    job: &Job,
+    id: usize,
+    slots: &[Vec<OnceLock<Outcome>>],
+    errors: &[OnceLock<String>],
+    worker: usize,
+) {
+    if opts.verbose {
+        eprintln!("toy: [worker {worker}] job {id}: {}", describe(plans, job));
+    }
+    let produced = match job {
+        Job::AotDriver { file, tests } => run_aot_driver(pkg, &plans[*file], opts, tests),
+        Job::AotPanics { file, test } => {
+            run_aot_panics(pkg, &plans[*file], opts, *test).map(|o| vec![o])
+        }
+        Job::Vm { file, test } => run_vm_one(pkg, &plans[*file], opts, *test).map(|o| vec![o]),
     };
+    match produced {
+        Ok(outcomes) => {
+            for ((file, test), outcome) in job.covers().into_iter().zip(outcomes) {
+                let _ = slots[file][test].set(outcome);
+            }
+        }
+        Err(e) => {
+            let _ = errors[id].set(e);
+        }
+    }
+}
+
+fn describe(plans: &[FilePlan], job: &Job) -> String {
+    match job {
+        Job::AotDriver { file, tests } => {
+            format!("{} ({} test(s), aot)", plans[*file].display, tests.len())
+        }
+        Job::AotPanics { file, test } => {
+            format!("{} (aot, panics)", plans[*file].tests[*test].name)
+        }
+        Job::Vm { file, test } => format!("{} (vm)", plans[*file].tests[*test].name),
+    }
+}
+
+// ---------------------------------------------------------------
+// The IR VM lane
+// ---------------------------------------------------------------
+
+thread_local! {
+    /// Files this worker has already parsed and type-checked.
+    ///
+    /// A checked program holds `Rc`, so it cannot be shared between
+    /// workers; each one prepares a file the first time it takes a
+    /// test from it. With `T` workers and `F` files the front end runs
+    /// at most `T * F` times instead of `F` — ~40 ms a file for
+    /// `poc/logsearch`, against seconds of tests. That is the price of
+    /// an AST that is not `Send`, and it is worth paying to schedule
+    /// a test at a time.
+    static PREPARED: std::cell::RefCell<HashMap<PathBuf, std::rc::Rc<interpreter::PreparedTests>>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+fn prepared_for(
+    pkg: &Package,
+    path: &Path,
+    display: &str,
+) -> Result<std::rc::Rc<interpreter::PreparedTests>, String> {
+    if let Some(hit) = PREPARED.with(|c| c.borrow().get(path).cloned()) {
+        return Ok(hit);
+    }
+    let source = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read `{}`: {e}", path.display()))?;
+    let mut options = RunOptions::default();
+    options.core_modules_dirs = &pkg.module_roots;
+    let prepared =
+        std::rc::Rc::new(interpreter::prepare_tests(&source, display, &options)?);
+    PREPARED.with(|c| c.borrow_mut().insert(path.to_path_buf(), prepared.clone()));
+    Ok(prepared)
+}
+
+/// One test on the IR VM, in this process.
+fn run_vm_one(
+    pkg: &Package,
+    plan: &FilePlan,
+    _opts: &Options,
+    test: usize,
+) -> Result<Outcome, String> {
+    let planned = &plan.tests[test];
+    let prepared = prepared_for(pkg, &plan.path, &plan.display)?;
+    // The sink is thread-local, so two workers printing at once keep
+    // their output apart (`interpreter::output` was built that way
+    // precisely because an OS-level redirect would not).
+    let (outcome, printed) =
+        interpreter::output::with_capture(|| prepared.run_one(planned.index));
     Ok(Outcome {
-        name: test.name.clone(),
-        file: test.file.clone(),
-        line: test.line,
-        failure,
+        name: planned.name.clone(),
+        file: planned.file.clone(),
+        line: planned.line,
+        failure: outcome.failure,
+        output: printed,
     })
+}
+
+// ---------------------------------------------------------------
+// The compiled lane
+// ---------------------------------------------------------------
+
+/// Compile `file` with a test entry, optionally holding one test.
+fn compile_driver(
+    pkg: &Package,
+    plan: &FilePlan,
+    opts: &Options,
+    only: Option<&[String]>,
+    single: Option<&str>,
+) -> Result<PathBuf, String> {
+    let profile = crate::package::Profile::of(opts.release);
+    let exe = pkg.test_exe_path(profile, &plan.path, single);
+    if let Some(parent) = exe.parent() {
+        pkg.ensure_dir(parent)?;
+    }
+    let mut options = compiler::options::CompilerOptions::new(plan.path.clone());
+    options.output = Some(exe.clone());
+    options.release = opts.release;
+    options.core_modules_dirs = pkg.module_roots.clone();
+    options.link_cache_dir = Some(pkg.link_cache_dir());
+    options.test_mode = true;
+    options.test_only = only.map(|names| names.to_vec());
+    compiler::compile_file(&options)?;
+    Ok(exe)
 }
 
 /// `TOY_BLESS` for the compiled lane, which is a child process.
@@ -246,55 +621,64 @@ fn bless_env(opts: &Options) -> Vec<(String, String)> {
     }
 }
 
-/// Turn a test name into something that can be a file name.
-fn sanitise(name: &str) -> String {
-    name.chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '_' })
-        .collect()
-}
-
-/// Compile `file` with a test entry, optionally holding one test.
-fn compile_driver(
+/// A single `panics` test, in a binary of its own.
+fn run_aot_panics(
     pkg: &Package,
-    file: &Path,
+    plan: &FilePlan,
     opts: &Options,
-    only: Option<&[String]>,
-    stem: &str,
-) -> Result<PathBuf, String> {
-    let profile = crate::package::Profile::of(opts.release);
-    let exe = pkg.test_exe_path(profile, stem);
-    if let Some(parent) = exe.parent() {
-        pkg.ensure_dir(parent)?;
-    }
-    let mut options = compiler::options::CompilerOptions::new(file.to_path_buf());
-    options.output = Some(exe.clone());
-    options.release = opts.release;
-    options.core_modules_dirs = pkg.module_roots.clone();
-    options.link_cache_dir = Some(pkg.link_cache_dir());
-    options.test_mode = true;
-    options.test_only = only.map(|names| names.to_vec());
-    compiler::compile_file(&options)?;
-    Ok(exe)
+    test: usize,
+) -> Result<Outcome, String> {
+    let planned = &plan.tests[test];
+    let names = [planned.name.clone()];
+    let exe = compile_driver(pkg, plan, opts, Some(&names), Some(&planned.name))?;
+    let run = std::process::Command::new(&exe)
+        .envs(bless_env(opts))
+        .output()
+        .map_err(|e| format!("cannot run `{}`: {e}", exe.display()))?;
+    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+    let text: String = stderr
+        .lines()
+        .filter(|l| !l.starts_with(MARKER))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let failure = if run.status.success() {
+        Some(format!("expected `{}` to panic, but it returned", planned.name))
+    } else {
+        match &planned.expect_panic {
+            Some(Some(wanted)) if !text.contains(wanted.as_str()) => Some(format!(
+                "expected a panic containing `{wanted}`, but it said:\n{text}"
+            )),
+            _ => None,
+        }
+    };
+    Ok(Outcome {
+        name: planned.name.clone(),
+        file: planned.file.clone(),
+        line: planned.line,
+        failure,
+        output: String::from_utf8_lossy(&run.stdout).into_owned(),
+    })
 }
 
 /// The tests that do not expect a panic, in one driver.
-fn run_plain_aot(
+///
+/// **The lane stops at the first failure.** An assertion failure is a
+/// panic and a panic ends the process, so the marker stream tells us
+/// which test was running when it died and everything after it never
+/// ran. Reporting every failure in one pass needs a process per test
+/// (`TEST_PARALLEL.md` D1's shape); this is the cheap form, and the
+/// report says which tests did not get a turn.
+fn run_aot_driver(
     pkg: &Package,
-    file: &Path,
+    plan: &FilePlan,
     opts: &Options,
-    expected: &[&Planned],
+    tests: &[usize],
 ) -> Result<Vec<Outcome>, String> {
     // Name the ones to include rather than the ones to skip: the
     // driver runs a set, and "everything except the panicking tests"
     // is that set.
-    let names: Vec<String> = expected.iter().map(|p| p.name.clone()).collect();
-    let exe = compile_driver(
-        pkg,
-        file,
-        opts,
-        Some(&names),
-        file.file_stem().and_then(|s| s.to_str()).unwrap_or("tests"),
-    )?;
+    let names: Vec<String> = tests.iter().map(|t| plan.tests[*t].name.clone()).collect();
+    let exe = compile_driver(pkg, plan, opts, Some(&names), None)?;
     let out = std::process::Command::new(&exe)
         .envs(bless_env(opts))
         .output()
@@ -314,10 +698,12 @@ fn run_plain_aot(
         .collect::<Vec<_>>()
         .join("\n");
     let ok = out.status.success();
+    let printed = String::from_utf8_lossy(&out.stdout).into_owned();
 
-    let mut result = Vec::with_capacity(expected.len());
-    for p in expected {
-        let position = started.iter().position(|s| *s == p.name);
+    let mut result = Vec::with_capacity(tests.len());
+    for t in tests {
+        let planned = &plan.tests[*t];
+        let position = started.iter().position(|s| *s == planned.name);
         let failure = match position {
             // Never started: an earlier test ended the process.
             None => Some("not run: an earlier test ended the process".to_string()),
@@ -326,100 +712,17 @@ fn run_plain_aot(
             Some(_) => None,
         };
         result.push(Outcome {
-            name: p.name.clone(),
-            file: p.file.clone(),
-            line: p.line,
+            name: planned.name.clone(),
+            file: planned.file.clone(),
+            line: planned.line,
             failure,
+            // One driver's output belongs to all of its tests; there
+            // is no marker on stdout to cut it by. Shown only when
+            // something in it failed.
+            output: printed.clone(),
         });
     }
     Ok(result)
-}
-
-/// The test blocks `file` declares, without running them. The AOT
-/// path needs this to know what the driver will run and which of them
-/// expect a panic.
-fn plan(pkg: &Package, file: &Path, opts: &Options) -> Result<Vec<Planned>, String> {
-    let source = std::fs::read_to_string(file)
-        .map_err(|e| format!("cannot read `{}`: {e}", file.display()))?;
-    let display = display_path(pkg, file);
-    let mut options = RunOptions::default();
-    options.core_modules_dirs = &pkg.module_roots;
-    Ok(interpreter::list_tests_from_source(&source, &display, &options)?
-        .into_iter()
-        .filter(|o| match &opts.filter {
-            Some(f) => o.name.contains(f.as_str()),
-            None => true,
-        })
-        .map(|o| Planned {
-            name: o.name,
-            file: o.file.unwrap_or_else(|| display.clone()),
-            line: o.line,
-            expect_panic: o.expect_panic,
-        })
-        .collect())
-}
-
-fn run_one(pkg: &Package, file: &Path, opts: &Options) -> Result<Vec<Outcome>, String> {
-    // `--list` never needs to run anything, whichever lane is asked
-    // for, and the AOT path needs the listing anyway to know what the
-    // driver will run.
-    if opts.list_only {
-        return list_one(pkg, file, opts);
-    }
-    if opts.aot {
-        return run_one_aot(pkg, file, opts);
-    }
-    run_one_vm(pkg, file, opts)
-}
-
-/// The test blocks in `file`, discovered by type-checking it. Nothing
-/// is executed.
-fn list_one(pkg: &Package, file: &Path, opts: &Options) -> Result<Vec<Outcome>, String> {
-    let mut listed = run_one_vm(pkg, file, &Options { list_only: true, ..clone_opts(opts) })?;
-    for o in &mut listed {
-        o.failure = None;
-    }
-    Ok(listed)
-}
-
-fn clone_opts(opts: &Options) -> Options {
-    Options {
-        filter: opts.filter.clone(),
-        list_only: opts.list_only,
-        format: opts.format,
-        verbose: opts.verbose,
-        aot: opts.aot,
-        release: opts.release,
-        bless: opts.bless,
-    }
-}
-
-fn run_one_vm(pkg: &Package, file: &Path, opts: &Options) -> Result<Vec<Outcome>, String> {
-    let source = std::fs::read_to_string(file)
-        .map_err(|e| format!("cannot read `{}`: {e}", file.display()))?;
-    let display = display_path(pkg, file);
-    let mut options = RunOptions::default();
-    options.core_modules_dirs = &pkg.module_roots;
-    let outcomes = if opts.list_only {
-        interpreter::list_tests_from_source(&source, &display, &options)?
-    } else {
-        interpreter::run_tests_from_source(&source, &display, &options)?
-    };
-    Ok(outcomes
-        .into_iter()
-        .filter(|o| match &opts.filter {
-            Some(f) => o.name.contains(f.as_str()),
-            None => true,
-        })
-        .map(|o| Outcome {
-            name: o.name,
-            // A test carried in from a module names its own file; one
-            // written in this file does not, and the file is this one.
-            file: o.file.unwrap_or_else(|| display.clone()),
-            line: o.line,
-            failure: o.failure,
-        })
-        .collect())
 }
 
 /// Paths relative to the package root, so a report is the same
@@ -431,6 +734,16 @@ fn display_path(pkg: &Package, file: &Path) -> String {
         .into_owned()
 }
 
+fn clone_outcome(o: &Outcome) -> Outcome {
+    Outcome {
+        name: o.name.clone(),
+        file: o.file.clone(),
+        line: o.line,
+        failure: o.failure.clone(),
+        output: o.output.clone(),
+    }
+}
+
 /// Failure-first, the shape `--test` already had: a passing run is a
 /// single line, and a failure is the diagnostic in full.
 fn report_text(outcomes: &[Outcome], elapsed: std::time::Duration) {
@@ -439,6 +752,14 @@ fn report_text(outcomes: &[Outcome], elapsed: std::time::Duration) {
         eprintln!("FAILED  {} ({}:{})", o.name, o.file, o.line);
         for line in o.failure.as_deref().unwrap_or("").lines() {
             eprintln!("    {line}");
+        }
+        // What the test printed before it died, held back until now so
+        // that workers running at once cannot interleave their output.
+        if !o.output.trim().is_empty() {
+            eprintln!("    --- output ---");
+            for line in o.output.lines() {
+                eprintln!("    {line}");
+            }
         }
     }
     let passed = outcomes.len() - failed.len();

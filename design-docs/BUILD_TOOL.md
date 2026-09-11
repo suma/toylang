@@ -135,7 +135,9 @@ build/
   debug/
     mypkg             toy build の成果物 — 残す・配る側
     .run/mypkg        toy run --backend aot — 使い捨て
-    tests/main        toy test (テストファイルごとに 1 本)
+    tests/main_<hash>  toy test (テストファイルごとに 1 本。名前は
+                      パッケージ相対パスのハッシュつき — 別ディレクトリの
+                      同名ファイルが同じ binary を書いていた。TEST-PARALLEL X0)
   release/
     ...               同じ形
 ```
@@ -178,7 +180,8 @@ toy build [--release] [--backend aot|jit|vm] [-o PATH]
 toy clean [--all]                 # 出力を消す。--all は build/ ごと
 toy run   [--release] [--backend ...] [-- ARGS...]
 toy check                         # 型検査だけ。コード生成をしない
-toy test  [FILTER] [--backend all] [--check] [--seed=N]
+toy test  [FILTER] [-j N] [--backend all] [--check] [--seed=N]
+                                  # 既定でコア数ぶん並列 (TEST_PARALLEL.md)
 toy api <module>                  # 既存の --api を根つきで
 toy effects [FILE]                # 既存の --effects を根つきで (穴 3 の解消)
 toy explain <CODE>

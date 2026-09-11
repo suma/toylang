@@ -198,9 +198,7 @@ pub fn save_interface(
         .serialize(interface)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-    let mut file = std::fs::File::create(&path)?;
-    file.write_all(&bytes)?;
-    Ok(())
+    write_atomically(&dir, &path, &bytes)
 }
 
 // --- Full AST cache -----------------------------------------------
@@ -266,7 +264,42 @@ pub fn save_full_module(
         .serialize(cached)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-    let mut file = std::fs::File::create(&path)?;
-    file.write_all(&bytes)?;
-    Ok(())
+    write_atomically(&dir, &path, &bytes)
+}
+
+/// Stage to a temp file and `rename` into place.
+///
+/// Two compiles of the same module may run at once — `toy test`
+/// compiles a driver per test file in parallel, and so does any test
+/// suite that shells out — and they compute the same cache path from
+/// the same source hash. `File::create` + `write_all` lets a reader
+/// see a half-written entry; it degrades to a cache miss rather than a
+/// wrong answer, but a miss is exactly what the cache exists to avoid.
+/// `rename` is atomic on Unix and the racers write identical bytes, so
+/// whoever lands last is still correct.
+///
+/// The temp name carries the pid and a timestamp so two populators
+/// cannot collide on it — the same shape as the link cache's
+/// `populate_link_cache` in `compiler/src/driver.rs`.
+fn write_atomically(dir: &std::path::Path, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let stem = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "entry".to_string());
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = dir.join(format!(".{stem}.{}.{nanos}.tmp", std::process::id()));
+    {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+    }
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
 }

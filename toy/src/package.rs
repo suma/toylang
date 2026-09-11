@@ -93,11 +93,33 @@ impl Package {
         self.profile_dir(profile).join(".run").join(self.name())
     }
 
-    /// Test binaries, one per test file, kept away from the product
-    /// binary so a directory listing of the build output is the thing
-    /// you meant to build.
-    pub fn test_exe_path(&self, profile: Profile, stem: &str) -> PathBuf {
-        self.profile_dir(profile).join("tests").join(stem)
+    /// Test binaries, kept away from the product binary so a directory
+    /// listing of the build output is the thing you meant to build.
+    ///
+    /// **The name has to be unique per source file, not per file
+    /// stem.** `tests/a/x.t` and `tests/b/x.t` used to compile to the
+    /// same `build/<profile>/tests/x`: harmless while the runner was
+    /// sequential (each overwrote the other and ran in turn), fatal
+    /// once two workers do it at once — one of them executes a binary
+    /// the other is still writing. The intermediate object is named
+    /// after the output too (`driver.rs::sibling_temp_path` →
+    /// `.toy_compile_x.o`), so the collision is doubled.
+    ///
+    /// The stem stays readable and gains a hash of the package-relative
+    /// path; `test` names a single-test binary (TEST-TOOL T4's
+    /// `panics` shape), which two files may also spell the same way.
+    pub fn test_exe_path(&self, profile: Profile, file: &Path, test: Option<&str>) -> PathBuf {
+        let relative = file.strip_prefix(&self.root).unwrap_or(file);
+        let stem = file
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("tests");
+        let mut name = format!("{stem}_{:08x}", short_hash(&relative.to_string_lossy()));
+        if let Some(test) = test {
+            name.push_str("__");
+            name.push_str(&sanitise(test));
+        }
+        self.profile_dir(profile).join("tests").join(name)
     }
 
     /// The profile directories that exist, in a stable order.
@@ -219,4 +241,25 @@ pub fn find(start: &Path, stdlib: Vec<PathBuf>) -> Result<Package, String> {
 
     let build_dir = root.join("build");
     Ok(Package { root, entry, module_roots, build_dir })
+}
+
+/// A short, stable digest for a path or a test name.
+///
+/// `DefaultHasher` is SipHash13 with fixed keys, so the answer is the
+/// same in every process — a test binary keeps its name across runs,
+/// which is what makes the link cache and a debugger's breakpoints
+/// worth anything. (`compiler/src/driver.rs` relies on the same
+/// property for the link-cache key.)
+fn short_hash(text: &str) -> u32 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    (hasher.finish() >> 32) as u32
+}
+
+/// Turn a test name into something that can be a file name.
+fn sanitise(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect()
 }

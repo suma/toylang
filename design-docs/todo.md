@@ -1,6 +1,7 @@
 # TODO - Interpreter Improvements
 
 ## 完了済み ✅
+
 > **この節は 1 行サマリだけを持つ。** 実装の経緯・測定値・ファイルパス・
 > テスト数は git log のコミットメッセージにある。フェーズ設計は
 > [`LLM_FEEDBACK_LOOP.md`](LLM_FEEDBACK_LOOP.md) /
@@ -8,6 +9,16 @@
 > [`INCREMENTAL_COMPILATION.md`](INCREMENTAL_COMPILATION.md) /
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
+
+### 2026-09-11
+- **TEST-PARALLEL P0〜P3 — `toy test` が並列に走る** — `-j N` (既定は
+  コア数、`-j1` は従来の逐次経路、`--bless` は暗黙に `-j1`)。plan も
+  実行も同じカーソルで配る。VM レーンはテスト 1 本がジョブ、AOT は
+  driver 1 本がジョブ。`poc/logsearch` の VM が 4.83 → 0.80 s。
+  前提バグ 5 件 (テストバイナリ名の衝突 / `.toycache` の非アトミック
+  書き込み / VM の filter が走らせてから捨てていた / 破棄ごとの
+  グローバル Mutex / `TOY_BLESS` の `set_var` 位置) も同時に。
+  設計と測定は [`TEST_PARALLEL.md`](TEST_PARALLEL.md)。
 
 ### 2026-09-06
 - **TRY-COMPOUND / COMPOUND-BLOCK-RHS / COMPOUND-GENERIC-INSTANCE —
@@ -1692,36 +1703,21 @@
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
 
-- **TEST-PARALLEL: `toy test` を並列で走らせる** ★★ — 設計のみ
-  ([`TEST_PARALLEL.md`](TEST_PARALLEL.md)、2026-09-11)。TEST_TOOL の
-  非目標「並列実行」を取り下げた: 「スレッドが無い」は**言語**の話で
-  `toy` はホストの Rust、「順次で 0.4 秒」は AOT レーンの値で、同じ
-  `poc/logsearch` のスイートは `--backend vm` で **4.63 秒**かかる。
-  レーンでボトルネックが違う (AOT は compile + link で driver 1 本
-  warm ~29 ms / cold ~85 ms、VM は実行 4.5 s) が、どちらもジョブ間に
-  依存が無い。**並列にする前に直すものが 5 つ**あり、どれも逐次では
-  無害:
-  * **X0** `tests/a/x.t` と `tests/b/x.t` が**同じ** `build/*/tests/x`
-    を書く (実測)。`panics` は `sanitise(テスト名)` なので別ファイルの
-    同名テストも衝突する。中間 `.o` も出力名から作られるので一緒に踏む
-  * **X1** `.toycache` の書き込みが非アトミック (link cache は既に
-    tmp + rename なので、同じ手口を写すだけ)
-  * **X2** `--backend vm` の filter が**走らせてから捨てている** —
-    `toy test <名前> --backend vm` が全部走らせるのと同じ 4.71 秒
-  * **X3** debug ビルドは**オブジェクト破棄のたびにグローバル Mutex**
-    (`DESTRUCTION_LOG`)。並列にすると全ワーカーがそこに並ぶ
-  * **X4** `TOY_BLESS` を `set_var` で渡している (スレッドを立てる前に
-    1 回、が守れる位置へ)
+- **TEST-PARALLEL の残り (P4 / P5 / P6)** ★ — **P0〜P3 は 2026-09-11 に
+  landing** (完了済み節)。`toy test -j N` が既定でコア数、`-j1` が従来
+  どおり。残り 3 つ:
+  * **P4 所要時間の記録と longest-first** — 今はジョブを plan 順に配る
+    だけなので、長いテストを最後に引くと wall が伸びる。
+    `build/<profile>/.testtimes` に `(file, line, name)` → 実測を書いて
+    降順に並べる。**小さいスイートで並列度を落とす判断にも要る** —
+    合成 9 ファイルの `-j2` は front end を払い直すぶんだけ `-j1` より
+    遅い (0.22 → 0.32 s)
+  * **P5 `serial`** — `test "..." serial { }`。共有資源 (同じファイル /
+    固定ポート) を触るテストの逃げ道。今は `-j1` しかない
+  * **P6 `--backend all`** (TEST_TOOL T4 の残り) との合成 —
+    レーン × テストがジョブになる
 
-  設計の要点は 2 つ。(a) **AOT のジョブを compile から run へ移す** —
-  driver に走らせるテストを実行時に選ばせれば、`panics` テストが
-  コンパイルを増やさなくなり (プロセス起動は ~3 ms、compile は
-  29〜85 ms)、**AOT が全部の失敗を 1 回で報告できる**。(b) AST が
-  `Rc` で `!Send` なので、**1 ジョブの front-end と実行を同じスレッドで
-  完結させ、スレッド間は `Outcome` だけが渡る** (unsafe は出てこない)。
-  インタプリタの実行時状態は既に全部 thread_local。着手条件は
-  「1 パッケージの `toy test` が 2 秒を超えたら」で、VM レーンは既に
-  超えている。
+  設計と測定は [`TEST_PARALLEL.md`](TEST_PARALLEL.md)。
 
 - **CODE-SIZE-DIAG-STRINGS: panic サイトごとに文面を丸ごと持つ** ★ —
   DEBUG-OBS D3 の `declare_frame_strings` が panic サイトごとに

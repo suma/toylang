@@ -1829,59 +1829,72 @@ pub fn run_tests(
     source_code: Option<&str>,
     filename: Option<&str>,
 ) -> Vec<TestOutcome> {
-    program
-        .tests
-        .iter()
-        .map(|test| {
-            let entry = program
-                .function
-                .iter()
-                .find(|f| f.name == test.function)
-                .cloned();
-            let outcome = match entry {
-                Some(entry) => {
-                    execute_entry(program, string_interner, source_code, filename, entry)
-                }
-                None => Err(format!(
-                    "internal error: test `{}` has no generated function",
-                    test.name
-                )),
-            };
-            // TEST-TOOL T4: `test "..." panics { }` inverts the
-            // outcome. A block that stops the program is the only way
-            // to check that a contract fires — VEC-CONTRACTS turned
-            // `Vec`'s bounds into `requires` clauses and nothing could
-            // confirm one ever held.
-            let failure = match (&test.expect_panic, outcome) {
-                (None, result) => result.err(),
-                (Some(_), Ok(_)) => Some(format!(
-                    "expected `{}` to panic, but it returned",
-                    test.name
-                )),
-                (Some(None), Err(_)) => None,
-                (Some(Some(wanted)), Err(text)) => {
-                    if text.contains(wanted.as_str()) {
-                        None
-                    } else {
-                        // Naming the message that did arrive is the
-                        // point: "something died" does not say which
-                        // contract broke, which is the whole reason
-                        // the expected text can be written down.
-                        Some(format!(
-                            "expected a panic containing `{wanted}`, but it said:\n{text}"
-                        ))
-                    }
-                }
-            };
-            TestOutcome {
-                name: test.name.clone(),
-                line: test.line,
-                file: test.file.clone(),
-                expect_panic: test.expect_panic.clone(),
-                failure,
-            }
-        })
+    (0..program.tests.len())
+        .map(|index| run_test_at(program, string_interner, source_code, filename, index))
         .collect()
+}
+
+/// Run the `index`-th `test` block and report what happened.
+///
+/// Split out of [`run_tests`] so a runner can run **one** block: the
+/// unit `toy test` schedules in parallel is a test, not a file
+/// (TEST_PARALLEL.md D3), and a name filter should decide what runs
+/// rather than what gets printed afterwards.
+fn run_test_at(
+    program: &File,
+    string_interner: &DefaultStringInterner,
+    source_code: Option<&str>,
+    filename: Option<&str>,
+    index: usize,
+) -> TestOutcome {
+    let test = &program.tests[index];
+    let entry = program
+        .function
+        .iter()
+        .find(|f| f.name == test.function)
+        .cloned();
+    let outcome = match entry {
+        Some(entry) => {
+            execute_entry(program, string_interner, source_code, filename, entry)
+        }
+        None => Err(format!(
+            "internal error: test `{}` has no generated function",
+            test.name
+        )),
+    };
+    // TEST-TOOL T4: `test "..." panics { }` inverts the
+    // outcome. A block that stops the program is the only way
+    // to check that a contract fires — VEC-CONTRACTS turned
+    // `Vec`'s bounds into `requires` clauses and nothing could
+    // confirm one ever held.
+    let failure = match (&test.expect_panic, outcome) {
+        (None, result) => result.err(),
+        (Some(_), Ok(_)) => Some(format!(
+            "expected `{}` to panic, but it returned",
+            test.name
+        )),
+        (Some(None), Err(_)) => None,
+        (Some(Some(wanted)), Err(text)) => {
+            if text.contains(wanted.as_str()) {
+                None
+            } else {
+                // Naming the message that did arrive is the
+                // point: "something died" does not say which
+                // contract broke, which is the whole reason
+                // the expected text can be written down.
+                Some(format!(
+                    "expected a panic containing `{wanted}`, but it said:\n{text}"
+                ))
+            }
+        }
+    };
+    TestOutcome {
+        name: test.name.clone(),
+        line: test.line,
+        file: test.file.clone(),
+        expect_panic: test.expect_panic.clone(),
+        failure,
+    }
 }
 
 /// Parse `source`, reporting every syntax error the way a normal run
@@ -1935,53 +1948,76 @@ fn report_type_errors(
     format!("{} type-check error(s)", diagnostics.len())
 }
 
-/// The `test` blocks in `source`, without running any of them.
+/// A file that has been parsed and type-checked, holding still so its
+/// `test` blocks can be run one at a time (TEST_PARALLEL.md D3).
 ///
-/// Parses and type-checks exactly as a run would — a block that does
-/// not compile is not a test anyone can list — and then reports the
-/// names and positions. `toy test --list` and the compiled-lane runner
-/// both need to know what a file declares before deciding what to do
-/// with it.
-pub fn list_tests_from_source(
-    source: &str,
-    filename: &str,
-    options: &RunOptions<'_>,
-) -> Result<Vec<TestOutcome>, String> {
-    let formatter = ErrorFormatter::new(source, filename);
-    let mut session = compiler_core::CompilerSession::new();
-    let mut program = parse_reporting(&mut session, source, filename, &formatter, false)?;
-    if let Err(diagnostics) = check_typing_diagnostics(
-        &mut program,
-        session.string_interner_mut(),
-        Some(source),
-        Some(filename),
-        options.core_modules_dirs,
-    ) {
-        return Err(report_type_errors(&formatter, &diagnostics, false));
-    }
-    Ok(program
-        .tests
-        .iter()
-        .map(|t| TestOutcome {
-            name: t.name.clone(),
-            line: t.line,
-            file: t.file.clone(),
-            expect_panic: t.expect_panic.clone(),
-            failure: None,
-        })
-        .collect())
+/// **This is deliberately not `Send`.** The AST owns `Rc<Function>`,
+/// so a checked program cannot be shared between threads or moved to
+/// one; a parallel runner therefore prepares a file *on the worker
+/// that runs it* and keeps the result in a thread-local memo. What
+/// crosses a thread boundary is a [`TestOutcome`], which is strings
+/// and numbers.
+///
+/// It also exists for a smaller reason: [`run_tests_from_source`]
+/// checks and runs in one breath, so a caller that wanted one block
+/// had to run every block and discard the rest. `toy test <name>` on
+/// the IR VM cost the whole suite.
+pub struct PreparedTests {
+    program: File,
+    string_interner: DefaultStringInterner,
+    source: String,
+    filename: String,
+    cases: Vec<TestCaseInfo>,
 }
 
-/// Parse, type check, and run the `test` blocks in `source`.
+/// What a `test` block declares, before anything is run.
+#[derive(Debug, Clone)]
+pub struct TestCaseInfo {
+    pub name: String,
+    pub line: u32,
+    /// The file the block is written in, when it is not the entry (a
+    /// module's test, carried in by integration). `None` means the entry.
+    pub file: Option<String>,
+    /// `Some` when the block is expected to panic; the inner `Some`
+    /// carries the text the message must contain (TEST-TOOL T4).
+    pub expect_panic: Option<Option<String>>,
+}
+
+impl PreparedTests {
+    /// The blocks this file declares, in the order they are written.
+    pub fn cases(&self) -> &[TestCaseInfo] {
+        &self.cases
+    }
+
+    /// Run one block. The index is into [`cases`](Self::cases).
+    ///
+    /// Each call gets its own evaluation context and its own
+    /// allocation counters (`execute_entry` resets them, MEMORY_PROFILING
+    /// M4), so two blocks cannot reach each other through the heap —
+    /// which is what makes running them in any order, on any thread,
+    /// answer the same way.
+    pub fn run_one(&self, index: usize) -> TestOutcome {
+        run_test_at(
+            &self.program,
+            &self.string_interner,
+            Some(&self.source),
+            Some(&self.filename),
+            index,
+        )
+    }
+}
+
+/// Parse and type-check `source` so its `test` blocks can be run
+/// individually. Nothing is executed.
 ///
-/// Returns `Ok(outcomes)` once the program is valid; parse / type
-/// errors are reported through the same formatter as a normal run and
-/// come back as `Err`.
-pub fn run_tests_from_source(
+/// Parse / type errors are reported through the same formatter as a
+/// normal run and come back as `Err`, exactly as
+/// [`run_tests_from_source`] does.
+pub fn prepare_tests(
     source: &str,
     filename: &str,
     options: &RunOptions<'_>,
-) -> Result<Vec<TestOutcome>, String> {
+) -> Result<PreparedTests, String> {
     let formatter = ErrorFormatter::new(source, filename);
     let mut session = compiler_core::CompilerSession::new();
     let mut program = parse_reporting(
@@ -2000,12 +2036,64 @@ pub fn run_tests_from_source(
     ) {
         return Err(report_type_errors(&formatter, &diagnostics, false));
     }
-    Ok(run_tests(
-        &program,
-        session.string_interner(),
-        Some(source),
-        Some(filename),
-    ))
+    let cases = program
+        .tests
+        .iter()
+        .map(|t| TestCaseInfo {
+            name: t.name.clone(),
+            line: t.line,
+            file: t.file.clone(),
+            expect_panic: t.expect_panic.clone(),
+        })
+        .collect();
+    Ok(PreparedTests {
+        program,
+        string_interner: session.string_interner().clone(),
+        source: source.to_string(),
+        filename: filename.to_string(),
+        cases,
+    })
+}
+
+/// The `test` blocks in `source`, without running any of them.
+///
+/// Parses and type-checks exactly as a run would — a block that does
+/// not compile is not a test anyone can list — and then reports the
+/// names and positions. `toy test --list` and the compiled-lane runner
+/// both need to know what a file declares before deciding what to do
+/// with it.
+pub fn list_tests_from_source(
+    source: &str,
+    filename: &str,
+    options: &RunOptions<'_>,
+) -> Result<Vec<TestOutcome>, String> {
+    Ok(prepare_tests(source, filename, options)?
+        .cases()
+        .iter()
+        .map(|c| TestOutcome {
+            name: c.name.clone(),
+            line: c.line,
+            file: c.file.clone(),
+            expect_panic: c.expect_panic.clone(),
+            failure: None,
+        })
+        .collect())
+}
+
+/// Parse, type check, and run the `test` blocks in `source`.
+///
+/// Returns `Ok(outcomes)` once the program is valid; parse / type
+/// errors are reported through the same formatter as a normal run and
+/// come back as `Err`.
+pub fn run_tests_from_source(
+    source: &str,
+    filename: &str,
+    options: &RunOptions<'_>,
+) -> Result<Vec<TestOutcome>, String> {
+    let prepared = prepare_tests(source, filename, options)?;
+    Ok((0..prepared.cases().len())
+        .map(|i| prepared.run_one(i))
+        .collect())
 }
 
 /// EFFECTS: what every declaration in `source` can reach.

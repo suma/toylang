@@ -58,7 +58,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | **自分のモジュールを持つプログラム**のビルド (`toy`) | [`design-docs/BUILD_TOOL.md`](design-docs/BUILD_TOOL.md) |
 | **自分のモジュールを持つプログラム**のビルド (`toy` コマンドの提案) | [`design-docs/BUILD_TOOL.md`](design-docs/BUILD_TOOL.md) |
 | **toylang で書いたプログラム**のテスト (提案。処理系自身のテストは別) | [`design-docs/TEST_TOOL.md`](design-docs/TEST_TOOL.md) |
-| `toy test` を並列で走らせる設計 (未実装) | [`design-docs/TEST_PARALLEL.md`](design-docs/TEST_PARALLEL.md) |
+| `toy test` の並列実行 (P0〜P3 landing 済み) | [`design-docs/TEST_PARALLEL.md`](design-docs/TEST_PARALLEL.md) |
 | このリポジトリで LLM が作業する際の指針 | [`design-docs/COMPILER_DEV_LOOP.md`](design-docs/COMPILER_DEV_LOOP.md) |
 
 以下の「Language Syntax」節は**日常的に踏む要点の早見表**であって仕様書ではない。
@@ -147,11 +147,16 @@ cargo run -q -p toy -- clean mypkg [--all]   # 出力を消す (--all は build/
 cargo run -q -p toy -- version [-v]         # 各部の version / git rev / パス
 # パスが無い行は同じ行に色つきで警告する。stdlib の revision は実行時に
 # `git -C <root>` で引く (stdlib はデータで、別 checkout から来うるため)
-cargo run -q -p toy -- test  mypkg [FILTER] [--list] [--bless] [--format=json]
+cargo run -q -p toy -- test  mypkg [FILTER] [-j N] [--list] [--bless] [--format=json]
 # `test` は tests/*.t と entry を走らせ、**モジュール内の `test` も拾う**
 # (TEST-TOOL T0)。**既定は AOT** で、出荷するレーンが検査対象になる
 # (T1)。`--backend vm` は IR VM で走らせ、**全部の失敗を 1 回で報告する**
 # (AOT は panic がプロセスを終わらせるので最初の失敗で止まる)。
+# **既定でコア数ぶんのジョブを並列に走らせる** (TEST-PARALLEL)。
+# ジョブは VM レーンならテスト 1 本、AOT なら driver 1 本。報告は
+# 完了順ではなく plan 順に組み直すので **`-j1` と出力がバイト一致する**
+# (所要時間の行を除く)。共有資源を触るテストは `-j1` に落とす。
+# `--bless` は暗黙に `-j1`。
 # bare 名の衝突は実行前に警告する (--no-warn-collisions で無効)。
 # 出力は build/{debug,release}/ — build は成果物、run は .run/ に、
 # test は tests/ に出る。build/.gitignore は初回に自動生成

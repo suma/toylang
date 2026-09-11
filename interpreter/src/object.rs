@@ -305,19 +305,26 @@ pub enum Object {
 
 pub type RcObject = Rc<RefCell<Object>>;
 
-use std::sync::Mutex;
-
-/// Tracks object destruction for debugging and resource management
-static DESTRUCTION_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+thread_local! {
+    /// Tracks object destruction for debugging and resource management.
+    ///
+    /// Per-thread, not process-wide. It was a `Mutex<Vec<String>>`,
+    /// which meant a debug build took a global lock **on every object
+    /// destruction** — invisible while one thread ran the program, a
+    /// wall the moment `toy test` put a worker per core behind it
+    /// (TEST-PARALLEL X3). Release builds compile the macro to nothing,
+    /// so the cost only ever showed up in development, which is the
+    /// worst place for it to hide. The log is a debugging aid for a
+    /// single run, so a thread is the right scope for it anyway.
+    static DESTRUCTION_LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
 
 /// Conditional logging macro for destruction events
 /// Only active in debug builds or when debug-logging feature is enabled
 #[cfg(any(debug_assertions, feature = "debug-logging"))]
 macro_rules! destruction_log {
     ($msg:expr) => {
-        if let Ok(mut log) = DESTRUCTION_LOG.lock() {
-            log.push($msg);
-        }
+        DESTRUCTION_LOG.with(|log| log.borrow_mut().push($msg));
     };
 }
 
@@ -330,13 +337,13 @@ macro_rules! destruction_log {
 /// Get the destruction log (for testing purposes)
 /// Always available regardless of logging state for testing compatibility
 pub fn get_destruction_log() -> Vec<String> {
-    DESTRUCTION_LOG.lock().unwrap().clone()
+    DESTRUCTION_LOG.with(|log| log.borrow().clone())
 }
 
 /// Clear the destruction log (for testing purposes)
 /// Always available regardless of logging state for testing compatibility
 pub fn clear_destruction_log() {
-    DESTRUCTION_LOG.lock().unwrap().clear()
+    DESTRUCTION_LOG.with(|log| log.borrow_mut().clear())
 }
 
 /// Check if destruction logging is currently enabled

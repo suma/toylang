@@ -345,9 +345,11 @@ stdlib のバイト kernel も SIMD 化済み。使い方と実測は [`SIMD.md`
 |---|---|---|
 | **compound な *フィールド* を引数に渡せない** | `call argument produced no value` / `method argument produced no value` | 窓を渡す (`self.buf.as_span()` を `val` に束縛して `Span<u8>` で渡す)。束縛・リテラル・呼び出し結果は通るので、**フィールドパスだけが穴**。`len_of(&self.data)` の形も同じく通らない |
 | **`match` の arm から compound を代入できない** | `assignment rhs produced no value` | arm の中で使い切る (`Vec<String>` を外の `var` に代入せず、arm の内側でループを回す) |
+| **所有型を struct のフィールドへ代入できない** | `compiler MVP cannot assign whole struct to nested field \`name\` (assign individual leaf scalars instead)` | 値をフィールドに**後から入れず、構築時に渡す**。`mount.t` の `read_meta` は、識別子が分かった場所で `MountMeta { .. }` を組んで `return` する形になった。最小再現: `var h = Holder { name: n }` に対する `h.name = s` (`String` フィールド) |
+| **所有型を既存の束縛へ move できない** | `assignment rhs produced no value` | `var` に溜めずに `val` で受け切る。上の行と同じ理由で同じ回避になるので、**この 2 つは一緒に踏む**。最小再現: `var name = String::new()` に対する `name = s`。既出の「`match` の arm から compound を代入できない」と診断は同じだが、**arm でなくても起きる** (通常の呼び出し結果でも) |
 | **これらの診断に位置情報が無い** | `compile error: call argument produced no value` の 1 行だけ。ファイルも行番号も出ない | 二分探索するしかない。型検査の診断 (`[E0001]` など) はスニペット付きなので、**落ちる層で情報量が変わる** |
 
-**この 3 つは 2026-09-05 に再現を確認した。** 一方、以前ここにあった
+**最初の 2 行と最後の行は 2026-09-05 に、間の 2 行は 2026-09-11 に再現を確認した。** 一方、以前ここにあった
 「8 leaf を超える struct を返せない」「`&mut self` の書き戻しが同じ予算を
 食う」「str を返す関数の多重 `return`」の 3 行は WIDE-RETURN で消えた
 (12 フィールドの struct を返す関数と、5 leaf のレシーバが `Result` を

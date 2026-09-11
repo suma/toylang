@@ -193,7 +193,12 @@ test "an unreadable identity does not pass for a match" {
            "an unknown identity must not match")
 
     # 空の記憶とも一致しない (両方とも空なら通る、では困る)。
-    val dir = "build/mount-identity"
+    #
+    # **自分のディレクトリを使う。** 上のテストと共有すると、`-j4` で
+    # 並行に走ったときに片方の `remove_file` がもう片方の書き込みと
+    # 競り、`ensure_meta` が 5 回に 4 回落ちる。テストが触るファイルは
+    # テストごとに分けること。
+    val dir = "build/mount-identity-known"
     val known = mount::ensure_meta(dir, "test")
     val nothing = String::new()
     assert(!mount::identity_matches(&known, &nothing),

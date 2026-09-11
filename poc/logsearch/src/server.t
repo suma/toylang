@@ -470,6 +470,21 @@ fn text_of_writer(w: &ByteWriter) -> String {
 }
 
 # Whether any whitespace-separated token is `top=...`.
+# How many of the declared mounts are directories this process can
+# see. A path that is simply not there is a typo, and saying "no
+# readable mount" for it is right; a directory that exists and holds
+# nothing is not the same thing and must not borrow that answer.
+fn readable_mounts(ms: &MountSet) -> u64 {
+    var n: u64 = 0u64
+    var i: u64 = 0u64
+    while i < ms.size() {
+        val p = ms.path_of(i)
+        if fs::is_dir(p.to_str()) { n = n + 1u64 }
+        i = i + 1u64
+    }
+    n
+}
+
 fn has_top(text: &String) -> bool {
     val n = text.len()
     var at: u64 = 0u64
@@ -567,12 +582,23 @@ fn query_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
         }
     }
 
-    var segs: Vec<String> = Vec::new()
-    mount::segments_of(spec, &mut segs)
-    if segs.size() == 0u64 {
+    # **An archive with nothing in it is not a broken archive.**
+    # 503 is for a spec that named no mount this process can read; a
+    # mount that opened and holds no segments yet answers 200 with no
+    # records, and `segments_considered: 0` in the statistics is what
+    # says which of the two happened. Collapsing them sends someone to
+    # check disk permissions when the truth is that nothing has been
+    # archived -- which is what `serve` with no argument does, since
+    # the default spec is an empty `/tmp/logarchive`.
+    var ms = MountSet::new()
+    var usable = mount::open_spec(spec, &mut ms)
+    if usable { usable = readable_mounts(&ms) > 0u64 }
+    if !usable {
         http::respond_error(out, 503u64, "no readable mount", "", alive)
         return
     }
+    var segs: Vec<String> = Vec::new()
+    mount::segments_in(&ms, &mut segs)
 
     val now = time::now_unix_secs()
     var q = query::parse_query(text.to_str(), now)

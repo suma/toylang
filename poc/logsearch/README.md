@@ -42,7 +42,7 @@ cargo build --release -p toy
 
 ```bash
 toy check poc/logsearch          # 型検査だけ (コード生成をしない)
-toy test  poc/logsearch -j4      # test ブロックを走らせる (76 件)
+toy test  poc/logsearch -j4      # test ブロックを走らせる (77 件)
 toy clean poc/logsearch --all    # build/ とリンクキャッシュを消す
 ```
 
@@ -380,7 +380,14 @@ $ curl -s --get $Q --data-urlencode 'q=status=404 method=GET' -d limit=2 -d form
 | `top=: distributions are command-line only for now` | `top=` が入っている |
 
 読めるマウントが 1 つも無いときは `503` (`no readable mount`)。
-**要求は正しいのに答えられない**ので `400` ではない。
+**要求は正しいのに答えられない**ので `400` ではない。「読めない」は
+ディレクトリが存在しない (打ち間違い) か、`.conf` が読めない場合を指す。
+
+**中身が空のアーカイブは 503 ではない。** マウントは開けていて、
+セグメントを 1 本も持っていないだけなので `200` と空の結果を返し、
+`segments_considered` が `0` になる。Web UI はそれを見て
+「まだ何も archive されていない」と書く。引数なしの `serve` は
+既定で空の `/tmp/logarchive` を指すので、最初に見るのはたいていこの形。
 
 **管理系は loopback からの接続にしか答えない。** 認証機構が無いので、
 これが唯一の防御である。**同時接続は 1 本** — 理由と、それが設計の
@@ -410,7 +417,7 @@ poc/logsearch/
     http.t            話すと決めた HTTP/1.1 の部分集合
     server.t          イベントループと経路
     ui.t              Web UI (1 ページを埋め込みで持つ)
-  tests/              `toy test` が走らせる test ブロック (76 件)
+  tests/              `toy test` が走らせる test ブロック (77 件)
   design-docs/        設計文書 11 本 + 目次
   build/              toy の出力 (実行ファイル / リンクキャッシュ、git 管理外)
   log/                読ませる実ログ (git 管理外)
@@ -434,7 +441,7 @@ top-level `const` を失って `Identifier 'BUF_BYTES' not found` で落ちた�
 | 検索 (時刻 / フィールド / 部分一致 / 集計 / traversal) | 動く |
 | カタログ・マウント・保持期限 | 動く |
 | HTTP サーバと Web UI | 動く (同時接続は 1 本、取り込みは未) |
-| **テスト** | 76 件 (`toy test poc/logsearch -j4`) |
+| **テスト** | 77 件 (`toy test poc/logsearch -j4`) |
 
 実測 (`log/apache2` の 181,519 行 / 30.5 MB、AOT `--release`、2026-09-11):
 

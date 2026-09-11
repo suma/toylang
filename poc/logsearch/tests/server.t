@@ -9,6 +9,7 @@
 # 置くのは `compiler/tests/consistency/net.rs` の流儀で、相手を待つ
 # テストは決定的にならないため。
 
+import std.fs
 import std.io
 import std.net
 import std.poll
@@ -44,14 +45,23 @@ fn contains(hay: &String, needle: str) -> bool {
 }
 
 # 1 要求を通して、応答の本文を返す。
-fn answer(raw: str, local: bool) -> String {
+fn answer_for(spec: str, raw: str, local: bool) -> String {
     val req_text = String::from_str(raw)
     val b = span_of(&req_text)
     val r = http::parse_request(b, req_text.len())
     var st = Stats::new()
     var out = ByteWriter::with_capacity(4096u64)
-    server::route("build/server-spec", b, &r, local, &mut st, &mut out)
+    server::route(spec, b, &r, local, &mut st, &mut out)
     val text = rendered(&out)
+    text
+}
+
+# 既定のマウント。**`admin/repair` がここにカタログを書く**ので、
+# 「存在しないディレクトリ」を見たいテストは別の名前を使うこと
+# (最初に書いたとき、repair のテストがこのディレクトリを作ってしまい、
+# 後ろの 503 のテストが 200 を受け取った)。
+fn answer(raw: str, local: bool) -> String {
+    val text = answer_for("build/server-spec", raw, local)
     text
 }
 
@@ -262,9 +272,30 @@ test "a token that merely begins with top is left alone" {
 # 読めるマウントが 1 つも無いのは 400 ではない。要求は正しく、
 # 答えられないのはこちらの側である。
 test "nothing readable is 503 and not a bad request" {
-    val got = answer("GET /v1/query?q=a HTTP/1.1\r\n\r\n", true)
-    assert(contains(&got, "HTTP/1.1 503"), "an empty spec cannot be served")
+    # 存在しないディレクトリは打ち間違いであって、空のアーカイブでは
+    # ない。**この名前はどのテストも作らない** (作ると 200 になる)。
+    val got = answer_for("build/server-absent", "GET /v1/query?q=a HTTP/1.1\r\n\r\n", true)
+    assert(contains(&got, "HTTP/1.1 503"), "a spec that is not there cannot be served")
     assert(contains(&got, "no readable mount"), "and says so")
+}
+
+# **中身が無いアーカイブは壊れたアーカイブではない。** 開けたが
+# セグメントを 1 本も持っていないマウントは 200 と空の結果を返し、
+# `segments_considered: 0` がその事実を言う。ここを 503 と一緒に
+# すると、何も archive していないだけの人がディスクの権限を
+# 疑いに行くことになる — 引数なしの `serve` が既定で指す
+# `/tmp/logarchive` がまさにその状態になる。
+test "an archive with nothing in it answers, it does not fail" {
+    val dir = "build/server-empty"
+    val made = fs::mkdir_all(dir)
+    match made {
+        Result::Ok(u) => { }
+        Result::Err(e) => { panic("mkdir {dir}: {e}") }
+    }
+    val got = answer_for(dir, "GET /v1/query?q=a&format=json HTTP/1.1\r\n\r\n", true)
+    assert(contains(&got, "HTTP/1.1 200 OK"), "an empty archive is still an answer")
+    assert(contains(&got, "\u{22}records\u{22}:[]"), "with no records")
+    assert(contains(&got, "\u{22}segments_considered\u{22}:0"), "and nothing to have considered")
 }
 
 # ---------------------------------------------------------------------

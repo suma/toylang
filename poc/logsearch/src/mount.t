@@ -506,9 +506,24 @@ pub fn default_quota() -> u64 { 1099511627776u64 }
 # catalog a cache: an archive written before catalogs existed still
 # reads, and so does one whose `meta/` was deleted.
 pub fn segments_of(spec: str, out: &mut Vec<String>) {
-    out.clear()
     var ms = MountSet::new()
-    if !open_spec(spec, &mut ms) { return }
+    if !open_spec(spec, &mut ms) {
+        out.clear()
+        return
+    }
+    segments_in(&ms, out)
+}
+
+# The same, over mounts that are already open.
+#
+# Split out because **"no mount to read" and "no segments yet" are
+# different answers** and a caller that collapses them sends someone
+# to check disk permissions when the truth is that nothing has been
+# archived. `segments_of` cannot tell them apart -- both come back as
+# an empty list -- so a caller that has to distinguish opens the
+# mounts itself and calls this.
+pub fn segments_in(ms: &MountSet, out: &mut Vec<String>) {
+    out.clear()
     val crc = Crc32::new()
     var i: u64 = 0u64
     while i < ms.size() {

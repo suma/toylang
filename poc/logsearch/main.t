@@ -10,6 +10,7 @@
 #   verify  <spec>                 read every segment back and check it
 #   catalog <spec> [repair|compact] what the catalog holds, or rebuild it
 #   retain  <spec> [days]          drop segments older than the window
+#   serve   <spec> [port] [idle]   answer HTTP on 127.0.0.1
 #
 # `<spec>` is a mount configuration (`*.conf`) or a single directory
 # used as one mount. Several directories mean several mounts, and a
@@ -54,6 +55,7 @@ import logdir
 import mount
 import query
 import record
+import server
 import segfile
 
 # The largest log file this reads whole, and so the largest one the
@@ -1602,6 +1604,15 @@ fn main() -> u64 {
         val r_spec = arg_or(1u64, "/tmp/logarchive")
         val r_days = arg_u64(2u64, 14u64)
         return cmd_retain(r_spec, r_days)
+    }
+    if mode == "serve" {
+        val s_spec = arg_or(1u64, "/tmp/logarchive")
+        val s_port = arg_u64(2u64, 8080u64)
+        # An idle budget of 0 means "until told to stop". A test binds
+        # port 0 and passes a small one so a forgotten server cannot
+        # outlive the run.
+        val s_idle = arg_u64(3u64, 0u64)
+        return server::serve(s_spec, "127.0.0.1", s_port, s_idle)
     }
     if mode == "scan" {
         val s_dir = arg_or(1u64, "poc/logsearch/log")

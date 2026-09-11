@@ -1,5 +1,21 @@
 # HTTP_API — サーバインターフェースと Web UI
 
+> **実装状況 (2026-09-11)。** `src/http.t` (プロトコル) と
+> `src/server.t` (イベントループ) が入り、`logsearch serve <spec>
+> [port]` で上がる。動くのは `GET /healthz` / `GET /v1/stats` と
+> 管理系の `repair` / `gc` / `shutdown`。**`/v1/query` と `/v1/ingest`
+> と Web UI はまだ無い** — 検索はエンジンが stdout へ直接書く形なので、
+> 応答へ流すには出力先を引数にする作り替えが要る (次の 1 手)。
+>
+> §4 の表のうち**同時接続だけが 128 ではなく 1** である。理由は設計
+> ではなく言語側の穴で、接続表は socket ハンドルの容器を要求するが
+> `Vec<TcpStream>` は drop glue が fd を閉じる別名を返し、番号だけの
+> 表にする `TcpStream::from_fd` が無い ([`RUNTIME_GAPS.md`](RUNTIME_GAPS.md) G16)。
+> 余った客は TCP のバックログで待つ — 表が埋まったときに §4 が
+> 指示している振る舞いそのものなので、数を上げるときに変わるのは
+> `server.t` だけで済む。部分読み・部分書き・タイムアウト・keep-alive
+> は表のとおり入っている。
+
 ## 1. 何を話すか
 
 **HTTP/1.1 の部分集合**を話す。仕様の全部は要らないし、書けば書くほど

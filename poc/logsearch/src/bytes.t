@@ -118,6 +118,18 @@ impl ByteWriter {
         }
     }
 
+    # Append everything another writer holds. Building a response
+    # body separately and then framing it is the shape every HTTP
+    # reply here has, because the length has to be known before the
+    # headers go out.
+    pub fn put_all(&mut self, other: &ByteWriter) {
+        val w = other.span()
+        match w {
+            Option::Some(b) => { self.put_span(b, 0u64, other.len()) }
+            Option::None => { }
+        }
+    }
+
     pub fn capacity(&self) -> u64 { self.buf.capacity() }
 
     # A window over the whole allocation, not just the bytes written

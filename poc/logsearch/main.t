@@ -57,6 +57,7 @@ import query
 import record
 import server
 import segfile
+import store
 
 # The largest log file this reads whole, and so the largest one the
 # service can index. 16 MiB covers a rotated `kern.log`.
@@ -87,22 +88,6 @@ fn arg_u64(i: u64, fallback: u64) -> u64 {
         fallback
     }
 }
-
-# `YYYY/MM/DD` for the segment's own day, so that retention can drop
-# one directory instead of hunting for files (STORAGE_FORMAT.md §1).
-fn day_dir(out: str, secs: i64) -> String {
-    val dt = DateTime::from_unix(secs)
-    val ymd = time::format(dt, "%Y/%m/%d")
-    val head = String::from_str(out)
-    val seg = String::from_str("/seg/")
-    # Each step is bound: a compound-returning method cannot sit in
-    # an expression position in the compiled lanes.
-    val with_seg = head.concat(&seg)
-    val tail = String::from_str(ymd)
-    val full = with_seg.concat(&tail)
-    full
-}
-
 
 # ---------------------------------------------------------------------
 
@@ -166,7 +151,11 @@ fn cmd_scan(dir: str, limit: u64) -> u64 {
                 match nx {
                     Option::Some(l) => {
                         if l.len > 0u64 {
-                            record::parse_line(&reader, l, &mut rec)
+                            val scan_win = reader.span()
+                            match scan_win {
+                                Option::Some(sp) => { record::parse_line(sp, l, &mut rec) }
+                                Option::None => { }
+                            }
                             lines = lines + 1u64
                             if rec.has_ts {
                                 with_ts = with_ts + 1u64
@@ -226,42 +215,10 @@ fn cmd_archive(dir: str, spec: str, limit: u64) -> u64 {
     }
 
     var ms = MountSet::new()
-    if !mount::open_spec(spec, &mut ms) { return 1u64 }
-    val crc0 = Crc32::new()
-    ms.refresh_used(&crc0)
-
-    # Each mount gets its identity written if it has none, and a
-    # generation to append to. A mount that cannot do either is
-    # degraded rather than fatal -- the others still take writes,
-    # which is the whole reason there is more than one.
     var gens: Vec<u64> = Vec::new()
-    var mi: u64 = 0u64
-    while mi < ms.size() {
-        val mp = ms.path_of(mi)
-        val mps = mp.to_str()
-        var gen: u64 = 0u64
-        val meta = mount::ensure_meta(mps, "logsearch")
-        if !meta.ok {
-            println("  {mps}: cannot read or write meta/mount.json")
-            ms.mark(mi, mount::state_degraded())
-        } else {
-            var c = catalog::load(mps, &crc0)
-            gen = c.generation()
-            if gen == 0u64 {
-                if catalog::write_generation(mps, &c, 1u64, &crc0) {
-                    gen = 1u64
-                } else {
-                    println("  {mps}: cannot publish a catalog")
-                    ms.mark(mi, mount::state_degraded())
-                }
-            }
-            val share = ms.permille(mi)
-            val used = ms.used_of(mi)
-            val quota = ms.quota_of(mi)
-            println("  mount {mps}  {used} / {quota} B ({share} permille)")
-        }
-        gens.push(gen)
-        mi = mi + 1u64
+    val crc0 = Crc32::new()
+    if !store::open_for_write(spec, &mut ms, &mut gens, &crc0, true) {
+        return 1u64
     }
 
     var reader = LogReader::with_capacity(BUF_BYTES)
@@ -298,14 +255,16 @@ fn cmd_archive(dir: str, spec: str, limit: u64) -> u64 {
                 match nx {
                     Option::Some(l) => {
                         if l.len > 0u64 {
-                            record::parse_line(&reader, l, &mut rec)
                             val win = reader.span()
                             match win {
-                                Option::Some(sp) => { w.add(sp, l, &rec) }
+                                Option::Some(sp) => {
+                                    record::parse_line(sp, l, &mut rec)
+                                    w.add(sp, l, &rec)
+                                }
                                 Option::None => { }
                             }
                             if w.is_full() {
-                                val done = place_segment(&mut w, &mut ms, &gens, segid, &crc)
+                                val done = store::place_segment(&mut w, &mut ms, &gens, segid, &crc)
                                 if done == 0u64 { bad = bad + 1u64 }
                                 raw_total = raw_total + w.arena_bytes()
                                 records_total = records_total + w.count()
@@ -323,7 +282,7 @@ fn cmd_archive(dir: str, spec: str, limit: u64) -> u64 {
     }
 
     if !w.is_empty() {
-        val done = place_segment(&mut w, &mut ms, &gens, segid, &crc)
+        val done = store::place_segment(&mut w, &mut ms, &gens, segid, &crc)
         if done == 0u64 { bad = bad + 1u64 }
         raw_total = raw_total + w.arena_bytes()
         records_total = records_total + w.count()
@@ -334,18 +293,7 @@ fn cmd_archive(dir: str, spec: str, limit: u64) -> u64 {
 
     # Fold what was appended into a new generation, so the next start
     # reads one file instead of replaying the run.
-    var ci: u64 = 0u64
-    while ci < ms.size() {
-        val cp = ms.path_of(ci)
-        val cps = cp.to_str()
-        var c = catalog::load(cps, &crc)
-        if c.applied() > 0u64 {
-            if !catalog::compact(cps, &mut c, &crc) {
-                println("  {cps}: could not fold the journal into a new generation")
-            }
-        }
-        ci = ci + 1u64
-    }
+    store::compact_all(&ms, &crc, true)
 
     val took = watch.elapsed_ms()
     println("")
@@ -359,105 +307,6 @@ fn cmd_archive(dir: str, spec: str, limit: u64) -> u64 {
     }
     println("elapsed          {took} ms")
     0u64
-}
-
-# Write one segment and say how many bytes its `.seg` came to, or 0
-# when it could not be written.
-fn flush_segment(w: &mut ArchiveWriter, out: str, segid: u64, crc: &Crc32,
-                 gen: u64) -> u64 {
-    var stamp = w.ts_min()
-    if stamp == 0i64 { stamp = time::now_unix_secs() }
-    val dir = day_dir(out, stamp)
-    val dir_str = dir.to_str()
-    val made = fs::mkdir_all(dir_str)
-    match made {
-        Result::Ok(u) => { }
-        Result::Err(e) => { println("  mkdir {dir_str}: {e}")  return 0u64 }
-    }
-    val base = "{dir_str}/{segid:012}"
-    val wrote = w.finish(base, segid, crc)
-    var n: u64 = 0u64
-    match wrote {
-        Result::Ok(k) => { n = k }
-        Result::Err(e) => { println("  write {base}: {e}")  return 0u64 }
-    }
-    # Record it. The row is read back out of the file that was just
-    # written rather than built from what the writer believed, so the
-    # catalog cannot describe a segment the segment does not.
-    #
-    # A failure here is a warning, not a failure of the archive: the
-    # file is published, and a catalog that misses it is a catalog
-    # that `repair` rebuilds (STORAGE_FORMAT.md section 2, step 9).
-    if gen > 0u64 {
-        if !record_segment(out, base, gen, crc) {
-            println("  {base}.seg: written, but not recorded in the catalog")
-        }
-    }
-    val records = w.count()
-    val arena = w.arena_bytes()
-    val pct = if arena > 0u64 { (n * 100u64) / arena } else { 0u64 }
-    println("  {base}.seg  {records} records  {arena} B -> {n} B ({pct}%)")
-    n
-}
-
-# Append one `ADD` row for the segment at `<base>.seg`.
-fn record_segment(mount_dir: str, base: str, gen: u64, crc: &Crc32) -> bool {
-    val path = "{base}.seg"
-    val opened = File::open(path)
-    var ok = false
-    match opened {
-        Result::Ok(f) => {
-            var scratch = ByteWriter::with_capacity(512u64)
-            val h = segfile::head_of(&f, &mut scratch)
-            if h.ok {
-                var size: u64 = 0u64
-                val sz = f.size()
-                match sz {
-                    Result::Ok(k) => { size = k }
-                    Result::Err(e) => { }
-                }
-                var r = catalog::row_of_head(&h, size, false)
-                # Where it went, not where its timestamps say it
-                # should have: a segment with no dated records at all
-                # is filed under the day it was written.
-                val name = String::from_str(path)
-                val key = catalog::daykey_of_path(&name)
-                if key > 0u64 { r.daykey = key }
-                ok = catalog::append_add(mount_dir, gen, &r, crc)
-            }
-        }
-        Result::Err(e) => { }
-    }
-    ok
-}
-
-# Put one finished segment on the least-used writable mount.
-#
-# Returns the bytes it came to, or 0 when there was nowhere to put it
-# -- which is a real outcome (every mount full or degraded), not an
-# internal error, so the caller counts it rather than stopping.
-fn place_segment(w: &mut ArchiveWriter, ms: &mut MountSet, gens: &Vec<u64>,
-                 segid: u64, crc: &Crc32) -> u64 {
-    val at = ms.pick()
-    var done: u64 = 0u64
-    match at {
-        Option::Some(mi) => {
-            val p = ms.path_of(mi)
-            val mp = p.to_str()
-            val g = gens.get(mi)
-            done = flush_segment(w, mp, segid, crc, g)
-            if done > 0u64 {
-                val now = ms.used_of(mi)
-                ms.set_used(mi, now + done)
-            } else {
-                ms.mark(mi, mount::state_degraded())
-            }
-        }
-        Option::None => {
-            println("  segment {segid} has nowhere to go: every mount is full, readonly or degraded")
-        }
-    }
-    done
 }
 
 # ---------------------------------------------------------------------

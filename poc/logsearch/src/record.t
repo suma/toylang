@@ -94,22 +94,44 @@ impl ParsedLine {
 
 fn is_digit_byte(b: u8) -> bool { b >= '0' && b <= '9' }
 
-fn digits_at(r: &LogReader, at: u64, n: u64, end: u64) -> bool {
+# Whether the window holds `text` at `at`.
+#
+# A copy of what `LogReader::matches` did, over a window instead of
+# over the reader. **The window is the parameter now**, so this file
+# no longer knows that log lines come from files -- which is what
+# lets the ingest path parse a request body with the same code
+# (a compound *field* cannot be passed as an argument in the compiled
+# lanes, so an `&self.reader` never would have worked).
+unsafe fn matches_at(w: Span<u8>, at: u64, text: str) -> bool {
+    val n = text.len()
+    if at + n > w.len() { return false }
+    val p = __builtin_str_to_ptr(text)
+    var i: u64 = 0u64
+    while i < n {
+        val a: u8 = w.get(at + i)
+        val b: u8 = __builtin_ptr_read::<u8>(p, i)
+        if a != b { return false }
+        i = i + 1u64
+    }
+    true
+}
+
+fn digits_at(w: Span<u8>, at: u64, n: u64, end: u64) -> bool {
     if at + n > end { return false }
     var i: u64 = 0u64
     while i < n {
-        val b: u8 = r.byte(at + i)
+        val b: u8 = w.get(at + i)
         if !is_digit_byte(b) { return false }
         i = i + 1u64
     }
     true
 }
 
-fn num_at(r: &LogReader, at: u64, n: u64) -> u64 {
+fn num_at(w: Span<u8>, at: u64, n: u64) -> u64 {
     var v: u64 = 0u64
     var i: u64 = 0u64
     while i < n {
-        val b: u8 = r.byte(at + i)
+        val b: u8 = w.get(at + i)
         v = v * 10u64 + ((b - '0') as u64)
         i = i + 1u64
     }
@@ -133,19 +155,19 @@ fn civil_secs(y: u64, mo: u64, d: u64, h: u64, mi: u64, s: u64, out: &mut i64) -
 }
 
 # `Jan` .. `Dec` -> 1 .. 12, or 0 when it is not a month.
-fn month_at(r: &LogReader, at: u64) -> u64 {
-    if r.matches(at, "Jan") { return 1u64 }
-    if r.matches(at, "Feb") { return 2u64 }
-    if r.matches(at, "Mar") { return 3u64 }
-    if r.matches(at, "Apr") { return 4u64 }
-    if r.matches(at, "May") { return 5u64 }
-    if r.matches(at, "Jun") { return 6u64 }
-    if r.matches(at, "Jul") { return 7u64 }
-    if r.matches(at, "Aug") { return 8u64 }
-    if r.matches(at, "Sep") { return 9u64 }
-    if r.matches(at, "Oct") { return 10u64 }
-    if r.matches(at, "Nov") { return 11u64 }
-    if r.matches(at, "Dec") { return 12u64 }
+fn month_at(w: Span<u8>, at: u64) -> u64 {
+    if matches_at(w, at, "Jan") { return 1u64 }
+    if matches_at(w, at, "Feb") { return 2u64 }
+    if matches_at(w, at, "Mar") { return 3u64 }
+    if matches_at(w, at, "Apr") { return 4u64 }
+    if matches_at(w, at, "May") { return 5u64 }
+    if matches_at(w, at, "Jun") { return 6u64 }
+    if matches_at(w, at, "Jul") { return 7u64 }
+    if matches_at(w, at, "Aug") { return 8u64 }
+    if matches_at(w, at, "Sep") { return 9u64 }
+    if matches_at(w, at, "Oct") { return 10u64 }
+    if matches_at(w, at, "Nov") { return 11u64 }
+    if matches_at(w, at, "Dec") { return 12u64 }
     0u64
 }
 
@@ -153,17 +175,17 @@ fn month_at(r: &LogReader, at: u64) -> u64 {
 # for `+00:00` -- as the number of seconds to subtract to reach UTC.
 # `colon` says which of the two spellings to expect. An offset that
 # is absent or unreadable answers 0, which reads the time as UTC.
-fn offset_secs(r: &LogReader, at: u64, end: u64, colon: bool) -> i64 {
+fn offset_secs(w: Span<u8>, at: u64, end: u64, colon: bool) -> i64 {
     if at >= end { return 0i64 }
-    val sign: u8 = r.byte(at)
+    val sign: u8 = w.get(at)
     if sign == 'Z' { return 0i64 }
     if sign != '+' && sign != '-' { return 0i64 }
     val hh_at = at + 1u64
     val mm_at = if colon { at + 4u64 } else { at + 3u64 }
-    if !digits_at(r, hh_at, 2u64, end) { return 0i64 }
-    if !digits_at(r, mm_at, 2u64, end) { return 0i64 }
-    val hh = num_at(r, hh_at, 2u64)
-    val mm = num_at(r, mm_at, 2u64)
+    if !digits_at(w, hh_at, 2u64, end) { return 0i64 }
+    if !digits_at(w, mm_at, 2u64, end) { return 0i64 }
+    val hh = num_at(w, hh_at, 2u64)
+    val mm = num_at(w, mm_at, 2u64)
     val mag = (hh * 3600u64 + mm * 60u64) as i64
     if sign == '-' { return 0i64 - mag }
     mag
@@ -173,7 +195,7 @@ fn offset_secs(r: &LogReader, at: u64, end: u64, colon: bool) -> i64 {
 # which equals `from` when the line does not start with labels.
 # A key is `[a-z0-9_]` of 1..32 bytes -- the rule from DATA_MODEL.md,
 # kept narrow so that `[UFW BLOCK] IN=eth0` is body, not labels.
-fn scan_labels(r: &LogReader, from: u64, end: u64) -> u64 {
+fn scan_labels(w: Span<u8>, from: u64, end: u64) -> u64 {
     var p = from
     var last_good = from
     var scanning = true
@@ -181,7 +203,7 @@ fn scan_labels(r: &LogReader, from: u64, end: u64) -> u64 {
         var i = p
         var key_len: u64 = 0u64
         while i < end {
-            val b: u8 = r.byte(i)
+            val b: u8 = w.get(i)
             val ok = (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_'
             if !ok { break }
             key_len = key_len + 1u64
@@ -190,13 +212,13 @@ fn scan_labels(r: &LogReader, from: u64, end: u64) -> u64 {
         if key_len == 0u64 || key_len > 32u64 || i >= end {
             scanning = false
         } else {
-            val eq: u8 = r.byte(i)
+            val eq: u8 = w.get(i)
             if eq != '=' {
                 scanning = false
             } else {
                 var j = i + 1u64
                 while j < end {
-                    val c: u8 = r.byte(j)
+                    val c: u8 = w.get(j)
                     if c == ' ' { break }
                     j = j + 1u64
                 }
@@ -214,7 +236,7 @@ fn scan_labels(r: &LogReader, from: u64, end: u64) -> u64 {
 }
 
 # Fill `out` from the line `ln` of `r`.
-pub fn parse_line(r: &LogReader, ln: Line, out: &mut ParsedLine) {
+pub fn parse_line(w: Span<u8>, ln: Line, out: &mut ParsedLine) {
     val start = ln.start
     val end = ln.start + ln.len
     out.kind = 0u32
@@ -229,53 +251,53 @@ pub fn parse_line(r: &LogReader, ln: Line, out: &mut ParsedLine) {
     var cursor = start
 
     # --- shape 1 / 2: a date at the very start ---------------------
-    val dated = digits_at(r, start, 4u64, end)
-        && r.matches(start + 4u64, "-")
-        && digits_at(r, start + 5u64, 2u64, end)
-        && r.matches(start + 7u64, "-")
-        && digits_at(r, start + 8u64, 2u64, end)
+    val dated = digits_at(w, start, 4u64, end)
+        && matches_at(w, start + 4u64, "-")
+        && digits_at(w, start + 5u64, 2u64, end)
+        && matches_at(w, start + 7u64, "-")
+        && digits_at(w, start + 8u64, 2u64, end)
     if dated {
-        val sep: u8 = r.byte(start + 10u64)
+        val sep: u8 = w.get(start + 10u64)
         val timed = (sep == 'T' || sep == ' ')
-            && digits_at(r, start + 11u64, 2u64, end)
-            && r.matches(start + 13u64, ":")
-            && digits_at(r, start + 14u64, 2u64, end)
-            && r.matches(start + 16u64, ":")
-            && digits_at(r, start + 17u64, 2u64, end)
+            && digits_at(w, start + 11u64, 2u64, end)
+            && matches_at(w, start + 13u64, ":")
+            && digits_at(w, start + 14u64, 2u64, end)
+            && matches_at(w, start + 16u64, ":")
+            && digits_at(w, start + 17u64, 2u64, end)
         if timed {
-            val y = num_at(r, start, 4u64)
-            val mo = num_at(r, start + 5u64, 2u64)
-            val d = num_at(r, start + 8u64, 2u64)
-            val h = num_at(r, start + 11u64, 2u64)
-            val mi = num_at(r, start + 14u64, 2u64)
-            val s = num_at(r, start + 17u64, 2u64)
+            val y = num_at(w, start, 4u64)
+            val mo = num_at(w, start + 5u64, 2u64)
+            val d = num_at(w, start + 8u64, 2u64)
+            val h = num_at(w, start + 11u64, 2u64)
+            val mi = num_at(w, start + 14u64, 2u64)
+            val s = num_at(w, start + 17u64, 2u64)
             var secs: i64 = 0i64
             if civil_secs(y, mo, d, h, mi, s, &mut secs) {
                 var p = start + 19u64
                 # optional fractional seconds
                 if p < end {
-                    val dot: u8 = r.byte(p)
+                    val dot: u8 = w.get(p)
                     if dot == '.' {
                         p = p + 1u64
                         while p < end {
-                            val c: u8 = r.byte(p)
+                            val c: u8 = w.get(p)
                             if !is_digit_byte(c) { break }
                             p = p + 1u64
                         }
                     }
                 }
-                val off = offset_secs(r, p, end, true)
+                val off = offset_secs(w, p, end, true)
                 out.has_ts = true
                 out.ts = secs - off
                 out.kind = if sep == 'T' { 1u32 } else { 2u32 }
                 # step over the UTC offset (or `Z`) to the first space
                 while p < end {
-                    val c: u8 = r.byte(p)
+                    val c: u8 = w.get(p)
                     if c == ' ' { break }
                     p = p + 1u64
                 }
                 while p < end {
-                    val c: u8 = r.byte(p)
+                    val c: u8 = w.get(p)
                     if c != ' ' { break }
                     p = p + 1u64
                 }
@@ -289,15 +311,15 @@ pub fn parse_line(r: &LogReader, ln: Line, out: &mut ParsedLine) {
         var n: u64 = 0u64
         var i = start
         while i < end {
-            val b: u8 = r.byte(i)
+            val b: u8 = w.get(i)
             if !is_digit_byte(b) { break }
             n = n + 1u64
             i = i + 1u64
         }
-        val followed = i >= end || r.matches(i, " ")
+        val followed = i >= end || matches_at(w, i, " ")
         if n >= 9u64 && n <= 11u64 && followed {
             out.has_ts = true
-            out.ts = num_at(r, start, n) as i64
+            out.ts = num_at(w, start, n) as i64
             out.kind = 4u32
             cursor = if i < end { i + 1u64 } else { i }
         }
@@ -308,29 +330,29 @@ pub fn parse_line(r: &LogReader, ln: Line, out: &mut ParsedLine) {
         var i = start
         var bracket = end
         while i < end && i < start + 128u64 {
-            val b: u8 = r.byte(i)
+            val b: u8 = w.get(i)
             if b == '[' { bracket = i  break }
             i = i + 1u64
         }
         if bracket < end {
             val d0 = bracket + 1u64
-            val ok = digits_at(r, d0, 2u64, end)
-                && r.matches(d0 + 2u64, "/")
-                && month_at(r, d0 + 3u64) != 0u64
-                && r.matches(d0 + 6u64, "/")
-                && digits_at(r, d0 + 7u64, 4u64, end)
-                && r.matches(d0 + 11u64, ":")
-                && digits_at(r, d0 + 12u64, 2u64, end)
+            val ok = digits_at(w, d0, 2u64, end)
+                && matches_at(w, d0 + 2u64, "/")
+                && month_at(w, d0 + 3u64) != 0u64
+                && matches_at(w, d0 + 6u64, "/")
+                && digits_at(w, d0 + 7u64, 4u64, end)
+                && matches_at(w, d0 + 11u64, ":")
+                && digits_at(w, d0 + 12u64, 2u64, end)
             if ok {
-                val d = num_at(r, d0, 2u64)
-                val mo = month_at(r, d0 + 3u64)
-                val y = num_at(r, d0 + 7u64, 4u64)
-                val h = num_at(r, d0 + 12u64, 2u64)
-                val mi = num_at(r, d0 + 15u64, 2u64)
-                val s = num_at(r, d0 + 18u64, 2u64)
+                val d = num_at(w, d0, 2u64)
+                val mo = month_at(w, d0 + 3u64)
+                val y = num_at(w, d0 + 7u64, 4u64)
+                val h = num_at(w, d0 + 12u64, 2u64)
+                val mi = num_at(w, d0 + 15u64, 2u64)
+                val s = num_at(w, d0 + 18u64, 2u64)
                 var secs: i64 = 0i64
                 if civil_secs(y, mo, d, h, mi, s, &mut secs) {
-                    val off = offset_secs(r, d0 + 21u64, end, false)
+                    val off = offset_secs(w, d0 + 21u64, end, false)
                     out.has_ts = true
                     out.ts = secs - off
                     out.kind = 3u32
@@ -349,14 +371,14 @@ pub fn parse_line(r: &LogReader, ln: Line, out: &mut ParsedLine) {
     # labelled line, not a syslog line whose host happens to be
     # called `host=web01`. Labels are therefore probed first, and the
     # syslog header is only read when there are none.
-    val labelled_first = scan_labels(r, cursor, end)
+    val labelled_first = scan_labels(w, cursor, end)
 
     # --- syslog: host and tag sit between the time and the message --
     if out.kind == 1u32 && labelled_first == cursor {
         var p = cursor
         var i = p
         while i < end {
-            val b: u8 = r.byte(i)
+            val b: u8 = w.get(i)
             if b == ' ' { break }
             i = i + 1u64
         }
@@ -365,7 +387,7 @@ pub fn parse_line(r: &LogReader, ln: Line, out: &mut ParsedLine) {
             p = i + 1u64
             var j = p
             while j < end {
-                val b: u8 = r.byte(j)
+                val b: u8 = w.get(j)
                 if b == '[' || b == ':' || b == ' ' { break }
                 j = j + 1u64
             }
@@ -373,13 +395,13 @@ pub fn parse_line(r: &LogReader, ln: Line, out: &mut ParsedLine) {
                 out.tag = pack_span(p, j - p)
                 # skip `[pid]` and the `:` and the space after it
                 while j < end {
-                    val b: u8 = r.byte(j)
+                    val b: u8 = w.get(j)
                     if b == ':' { break }
                     j = j + 1u64
                 }
                 if j < end { j = j + 1u64 }
                 while j < end {
-                    val b: u8 = r.byte(j)
+                    val b: u8 = w.get(j)
                     if b != ' ' { break }
                     j = j + 1u64
                 }
@@ -390,12 +412,12 @@ pub fn parse_line(r: &LogReader, ln: Line, out: &mut ParsedLine) {
     }
 
     # --- leading `key=value` labels, whatever the shape ------------
-    val after = scan_labels(r, cursor, end)
+    val after = scan_labels(w, cursor, end)
     if after > cursor {
         out.labels = pack_span(cursor, after - cursor)
         var p = after
         while p < end {
-            val b: u8 = r.byte(p)
+            val b: u8 = w.get(p)
             if b != ' ' { break }
             p = p + 1u64
         }

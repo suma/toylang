@@ -67,10 +67,12 @@ fn build(stem: str) -> String {
         match nx {
             Option::Some(l) => {
                 if l.len > 0u64 {
-                    record::parse_line(&reader, l, &mut rec)
                     val win = reader.span()
                     match win {
-                        Option::Some(sp) => { w.add(sp, l, &rec) }
+                        Option::Some(sp) => {
+                            record::parse_line(sp, l, &mut rec)
+                            w.add(sp, l, &rec)
+                        }
                         Option::None => { }
                     }
                 }

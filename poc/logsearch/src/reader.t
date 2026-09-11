@@ -53,6 +53,38 @@ impl LogReader {
         Result::Ok(n)
     }
 
+    # Take `len` bytes that are already in memory, replacing what was
+    # there.
+    #
+    # `load` reads a file; this is the same buffer filled from a
+    # request body instead. Having both means the ingest path parses
+    # lines with exactly the code the archiver uses -- `next_line`
+    # and `record::parse_line` -- rather than a second implementation
+    # that agrees with it only until one of them is edited.
+    #
+    # The copy is one `memcpy` into a buffer taken at start-up, so
+    # nothing here allocates. False means the bytes do not fit, which
+    # the caller has to answer rather than silently truncate.
+    pub fn fill(&mut self, src: Span<u8>, len: u64) -> bool {
+        self.pos = 0u64
+        self.buf.set_size(0u64)
+        if len > self.buf.capacity() { return false }
+        if len == 0u64 { return true }
+        val room = self.buf.capacity_span()
+        var ok = false
+        match room {
+            Option::Some(window) => {
+                val dst = window.slice(0u64, len)
+                val piece = src.slice(0u64, len)
+                dst.copy_from(piece)
+                self.buf.set_size(len)
+                ok = true
+            }
+            Option::None => { }
+        }
+        ok
+    }
+
     pub fn size(&self) -> u64 { self.buf.size() }
 
     # `read_file_into` fills its window and stops, so a file that

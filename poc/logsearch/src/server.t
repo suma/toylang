@@ -40,6 +40,8 @@ import catalog
 import http
 import mount
 import query
+import record
+import store
 import ui
 
 # Tokens are names the poller stores and hands back without looking
@@ -62,6 +64,16 @@ pub fn send_bytes() -> u64 { 262144u64 }
 pub fn header_timeout_ns() -> u64 { 10000000000u64 }
 pub fn idle_timeout_ns() -> u64 { 60000000000u64 }
 
+# One record cannot be longer than a connection's receive buffer
+# (HTTP_API.md section 4). A line past this is rejected rather than
+# truncated: half a log line is not a log line.
+pub fn max_record_bytes() -> u64 { 65536u64 }
+
+# How long an active segment may sit before it is written out, even
+# if it never fills (DATA_MODEL.md section 4). A record that is only
+# in memory is a record that a crash loses.
+pub fn flush_after_ns() -> u64 { 60000000000u64 }
+
 # What the server has done since it started. Scalars only, so it can
 # be threaded through the loop as a `&mut`.
 pub struct Stats {
@@ -72,6 +84,16 @@ pub struct Stats {
     bytes_out: u64,
     connections: u64,
     shutdown: bool,
+    # Ingest. `segid` is the id the next flush will use, and `seq` the
+    # number given to the next record -- both have to survive a
+    # request, which is why they live with the counters rather than
+    # in the handler.
+    ready: bool,
+    segid: u64,
+    seq: u64,
+    accepted: u64,
+    rejected: u64,
+    segments: u64,
 }
 
 impl Stats {
@@ -81,6 +103,8 @@ impl Stats {
             requests: 0u64, refused: 0u64,
             bytes_in: 0u64, bytes_out: 0u64,
             connections: 0u64, shutdown: false,
+            ready: false, segid: 1u64, seq: 1u64,
+            accepted: 0u64, rejected: 0u64, segments: 0u64,
         }
         s
     }
@@ -161,6 +185,119 @@ fn send_some(conn: &TcpStream, buf: &ByteWriter, from: u64) -> i64 {
         Option::None => { }
     }
     out
+}
+
+# ---------------------------------------------------------------------
+# The active segment
+
+# Write what has been collected out to a mount and start a new
+# segment. Returns the bytes written, or 0 if there was nothing to
+# write or nowhere to put it.
+#
+# **The buffer is only reset when the write succeeded.** Throwing the
+# records away because no mount would take them is the one outcome
+# nobody can recover from; keeping them means the writer stays full
+# and ingest starts refusing, which is a state an operator can see
+# and fix.
+fn flush_active(w: &mut ArchiveWriter, ms: &mut MountSet, gens: &Vec<u64>,
+                st: &mut Stats, crc: &Crc32) -> u64 {
+    if w.is_empty() { return 0u64 }
+    val done = store::place_segment(w, ms, gens, st.segid, crc)
+    if done > 0u64 {
+        st.segid = st.segid + 1u64
+        st.segments = st.segments + 1u64
+        w.reset()
+    }
+    done
+}
+
+# `POST /v1/ingest` -- newline-separated lines, one record each.
+#
+# **Partial success is the point** (HTTP_API.md section 2): three bad
+# lines out of a hundred must not make the sender retry the
+# ninety-seven that were fine. So a line that cannot be taken is
+# counted and the rest go in.
+#
+# A line carrying its own timestamp keeps it; anything else gets the
+# time it arrived. That is the only way a line with no date can be
+# found by a time range at all, and pretending it has no time would
+# make it invisible to every query that names one.
+fn ingest_route(b: Span<u8>, r: &Request, st: &mut Stats,
+                w: &mut ArchiveWriter, ms: &mut MountSet, gens: &Vec<u64>,
+                alive: bool, out: &mut ByteWriter) {
+    if !st.ready {
+        http::respond_error(out, 503u64, "no writable mount",
+                            "the mount directory has to exist before serving",
+                            alive)
+        return
+    }
+    val crc = Crc32::new()
+    val now = time::now_unix_secs()
+    val body = b.slice(r.body_at, r.body_len)
+    var sc = LineScan::new(r.body_len)
+    var rec = ParsedLine::new()
+
+    val first = st.seq
+    var taken: u64 = 0u64
+    var bad: u64 = 0u64
+    var stalled = false
+    var more = true
+    while more {
+        val nx = sc.next(body)
+        match nx {
+            Option::Some(l) => {
+                if l.len > max_record_bytes() {
+                    bad = bad + 1u64
+                } elif l.len > 0u64 {
+                    if w.is_full() && !stalled {
+                        val done = flush_active(w, ms, gens, st, &crc)
+                        if done == 0u64 { stalled = true }
+                    }
+                    if stalled {
+                        bad = bad + 1u64
+                    } else {
+                        record::parse_line(body, l, &mut rec)
+                        if !rec.has_ts {
+                            rec.has_ts = true
+                            rec.ts = now
+                        }
+                        w.add(body, l, &rec)
+                        taken = taken + 1u64
+                        st.seq = st.seq + 1u64
+                    }
+                }
+            }
+            Option::None => { more = false }
+        }
+    }
+    st.accepted = st.accepted + taken
+    st.rejected = st.rejected + bad
+
+    # Nothing got in and the reason was nowhere to put it: that is
+    # this server's failure, not the sender's.
+    if taken == 0u64 && stalled {
+        http::respond_error(out, 503u64, "no writable mount",
+                            "every mount is full, readonly or degraded", alive)
+        return
+    }
+
+    var last = first
+    if taken > 0u64 { last = first + taken - 1u64 } else { last = 0u64 }
+    var seq_first = first
+    if taken == 0u64 { seq_first = 0u64 }
+    var body_out = ByteWriter::with_capacity(128u64)
+    body_out.put_str("{{\u{22}accepted\u{22}:")
+    body_out.put_str("{taken}")
+    body_out.put_str(",\u{22}rejected\u{22}:")
+    body_out.put_str("{bad}")
+    body_out.put_str(",\u{22}seq_first\u{22}:")
+    body_out.put_str("{seq_first}")
+    body_out.put_str(",\u{22}seq_last\u{22}:")
+    body_out.put_str("{last}")
+    body_out.put_str("}}\n")
+    http::begin_response(out, 200u64, "application/json", body_out.len(), alive)
+    http::end_headers(out)
+    out.put_all(&body_out)
 }
 
 # ---------------------------------------------------------------------
@@ -376,7 +513,8 @@ fn admin_gc(spec: str, days: u64, body: &mut ByteWriter) -> u64 {
 # connection, and taking the answer instead of the socket is what
 # makes every route testable without one.
 pub fn route(spec: str, b: Span<u8>, r: &Request, local: bool,
-             st: &mut Stats, out: &mut ByteWriter) {
+             st: &mut Stats, w: &mut ArchiveWriter, ms: &mut MountSet,
+             gens: &Vec<u64>, out: &mut ByteWriter) {
     out.clear()
     val alive = r.keep_alive
 
@@ -418,9 +556,15 @@ pub fn route(spec: str, b: Span<u8>, r: &Request, local: bool,
         return
     }
 
+    if r.is_post() && path_is(b, r, "/v1/ingest") {
+        ingest_route(b, r, st, w, ms, gens, alive, out)
+        return
+    }
+
     if r.is_post() {
         val admin = path_is(b, r, "/v1/admin/repair")
             || path_is(b, r, "/v1/admin/gc")
+            || path_is(b, r, "/v1/admin/flush")
             || path_is(b, r, "/v1/admin/shutdown")
         if admin {
             if !local {
@@ -430,6 +574,21 @@ pub fn route(spec: str, b: Span<u8>, r: &Request, local: bool,
             if path_is(b, r, "/v1/admin/shutdown") {
                 st.shutdown = true
                 http::respond_text(out, 200u64, "application/json", "{{\u{22}stopping\u{22}:true}}\n", false)
+                return
+            }
+            if path_is(b, r, "/v1/admin/flush") {
+                val crc2 = Crc32::new()
+                val held = w.count()
+                val wrote = flush_active(w, ms, gens, st, &crc2)
+                var body2 = ByteWriter::with_capacity(128u64)
+                body2.put_str("{{\u{22}records\u{22}:")
+                body2.put_str("{held}")
+                body2.put_str(",\u{22}bytes\u{22}:")
+                body2.put_str("{wrote}")
+                body2.put_str("}}\n")
+                http::begin_response(out, 200u64, "application/json", body2.len(), alive)
+                http::end_headers(out)
+                out.put_all(&body2)
                 return
             }
             var body = ByteWriter::with_capacity(256u64)
@@ -470,21 +629,6 @@ fn text_of_writer(w: &ByteWriter) -> String {
 }
 
 # Whether any whitespace-separated token is `top=...`.
-# How many of the declared mounts are directories this process can
-# see. A path that is simply not there is a typo, and saying "no
-# readable mount" for it is right; a directory that exists and holds
-# nothing is not the same thing and must not borrow that answer.
-fn readable_mounts(ms: &MountSet) -> u64 {
-    var n: u64 = 0u64
-    var i: u64 = 0u64
-    while i < ms.size() {
-        val p = ms.path_of(i)
-        if fs::is_dir(p.to_str()) { n = n + 1u64 }
-        i = i + 1u64
-    }
-    n
-}
-
 fn has_top(text: &String) -> bool {
     val n = text.len()
     var at: u64 = 0u64
@@ -592,7 +736,7 @@ fn query_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
     # the default spec is an empty `/tmp/logarchive`.
     var ms = MountSet::new()
     var usable = mount::open_spec(spec, &mut ms)
-    if usable { usable = readable_mounts(&ms) > 0u64 }
+    if usable { usable = mount::readable(&ms) > 0u64 }
     if !usable {
         http::respond_error(out, 503u64, "no readable mount", "", alive)
         return
@@ -648,7 +792,9 @@ fn number_of(w: &ByteWriter) -> Result<u64, ParseError> {
 # Serve `conn` until it closes, times out, or asks the server to stop.
 # Returns false when the server should stop.
 pub fn serve_connection(poller: &Poller, conn: &TcpStream, spec: str,
-                        st: &mut Stats, inbox: &mut ByteWriter,
+                        st: &mut Stats, w: &mut ArchiveWriter,
+                        ms: &mut MountSet, gens: &Vec<u64>,
+                        inbox: &mut ByteWriter,
                         outbox: &mut ByteWriter) -> bool {
     val fd = conn.as_fd()
     val local = is_local(conn)
@@ -731,12 +877,12 @@ pub fn serve_connection(poller: &Poller, conn: &TcpStream, spec: str,
                             alive = false
                         } else {
                             if got > 0i64 { st.bytes_in = st.bytes_in + (got as u64) }
-                            val w = inbox.span()
-                            match w {
+                            val seen = inbox.span()
+                            match seen {
                                 Option::Some(bytes) => {
                                     val req = http::parse_request(bytes, inbox.len())
                                     if req.status != 0u64 || req.complete {
-                                        route(spec, bytes, &req, local, st, outbox)
+                                        route(spec, bytes, &req, local, st, w, ms, gens, outbox)
                                         writing = true
                                         sent = 0u64
                                         val up = poller.register(fd, connection_token(), interest_write())
@@ -826,6 +972,25 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
     var outbox = ByteWriter::with_capacity(send_bytes())
     var st = Stats::new()
 
+    # The active segment, and the mounts it can be written to.
+    #
+    # **Ingest is only enabled when the mount directories already
+    # exist.** Creating them here would mean a typo in the spec
+    # silently becomes a new archive, and would hide the difference
+    # between "nothing readable" and "nothing yet" that the query
+    # path depends on. An operator makes the directory; this fills
+    # it.
+    var w = ArchiveWriter::new()
+    var ms = MountSet::new()
+    var gens: Vec<u64> = Vec::new()
+    val crc = Crc32::new()
+    st.ready = store::open_for_write(spec, &mut ms, &mut gens, &crc, false, true)
+    if st.ready { st.segid = store::next_segid(&ms, &crc) }
+    if !st.ready {
+        eprintln("ingest is off: no writable mount under {spec}")
+    }
+    var last_flush = time::now_mono_ns()
+
     # The port goes to stderr so a caller can read it while stdout
     # stays whatever the server prints about its work. Binding port 0
     # and reading it back is how the tests avoid naming a number.
@@ -845,6 +1010,14 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
             if n == 0u64 {
                 idle_ns = idle_ns + ((tick_ms() as u64) * 1000000u64)
                 if budget_ns > 0u64 && idle_ns >= budget_ns { running = false }
+                # A record that is only in memory is a record a crash
+                # loses, so the segment goes out on a timer as well as
+                # when it fills (DATA_MODEL.md section 4).
+                val now_ns = time::now_mono_ns()
+                if !w.is_empty() && now_ns - last_flush >= flush_after_ns() {
+                    val put = flush_active(&mut w, &mut ms, &gens, &mut st, &crc)
+                    last_flush = now_ns
+                }
             } else {
                 idle_ns = 0u64
                 var i: u64 = 0u64
@@ -855,7 +1028,9 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
                         match accepted {
                             Result::Ok(conn) => {
                                 running = serve_connection(&poller, &conn, spec,
-                                                           &mut st, &mut inbox,
+                                                           &mut st, &mut w,
+                                                           &mut ms, &gens,
+                                                           &mut inbox,
                                                            &mut outbox)
                             }
                             Result::Err(e) => { }
@@ -867,8 +1042,22 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
         }
     }
 
+    # Whatever is still held goes out before the process does. This
+    # is step 2 of the stop sequence in ARCHITECTURE.md section 5,
+    # and the reason `shutdown` is not just an exit.
+    if !w.is_empty() {
+        val put = flush_active(&mut w, &mut ms, &gens, &mut st, &crc)
+        if put == 0u64 {
+            eprintln("the active segment could not be written; its records are lost")
+        }
+    }
+    store::compact_all(&ms, &crc, false)
+
     val served = st.requests
     val conns = st.connections
+    val took = st.accepted
+    val segs = st.segments
     eprintln("served {served} request(s) over {conns} connection(s)")
+    eprintln("ingested {took} record(s) into {segs} segment(s)")
     0u64
 }

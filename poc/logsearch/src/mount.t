@@ -499,6 +499,23 @@ pub fn open_spec(spec: str, ms: &mut MountSet) -> bool {
 # chosen to stay out of the way rather than to mean anything.
 pub fn default_quota() -> u64 { 1099511627776u64 }
 
+# How many of the declared mounts are directories this process can
+# see.
+#
+# A path that is simply not there is a typo, and answering "no
+# readable mount" for it is right; a directory that exists and holds
+# nothing is a different thing and must not borrow that answer.
+pub fn readable(ms: &MountSet) -> u64 {
+    var n: u64 = 0u64
+    var i: u64 = 0u64
+    while i < ms.size() {
+        val p = ms.path_of(i)
+        if fs::is_dir(p.to_str()) { n = n + 1u64 }
+        i = i + 1u64
+    }
+    n
+}
+
 # Every segment a spec covers, in a stable order.
 #
 # **The catalog answers, and the directory answers when the catalog

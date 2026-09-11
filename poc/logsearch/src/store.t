@@ -138,8 +138,16 @@ pub fn place_segment(w: &mut ArchiveWriter, ms: &mut MountSet, gens: &Vec<u64>,
 # more than one. `gens` comes back index-aligned with `ms`, holding 0
 # for a mount that is not usable.
 pub fn open_for_write(spec: str, ms: &mut MountSet, gens: &mut Vec<u64>,
-                      crc: &Crc32, loud: bool) -> bool {
+                      crc: &Crc32, loud: bool, must_exist: bool) -> bool {
     if !mount::open_spec(spec, ms) { return false }
+    # `archive` may create the directory it was pointed at; a server
+    # may not. Letting a long-running process create its own mount
+    # means a typo in the spec silently becomes a new empty archive,
+    # and takes the difference between "nothing readable" and
+    # "nothing yet" with it.
+    if must_exist {
+        if mount::readable(ms) == 0u64 { return false }
+    }
     ms.refresh_used(crc)
     gens.clear()
     var i: u64 = 0u64
@@ -192,4 +200,27 @@ pub fn compact_all(ms: &MountSet, crc: &Crc32, loud: bool) {
         }
         i = i + 1u64
     }
+}
+
+# The next free segment id across every mount.
+#
+# `archive` starts at 1 every run, which is fine for a directory it
+# owns and wrong for a server that keeps taking records: reusing an
+# id overwrites the file that has it. The catalogs already know every
+# id in use, so the answer is one read per mount.
+pub fn next_segid(ms: &MountSet, crc: &Crc32) -> u64 {
+    var top: u64 = 0u64
+    var i: u64 = 0u64
+    while i < ms.size() {
+        val p = ms.path_of(i)
+        val c = catalog::load(p.to_str(), crc)
+        var k: u64 = 0u64
+        while k < c.size() {
+            val r = c.row(k)
+            if r.segid > top { top = r.segid }
+            k = k + 1u64
+        }
+        i = i + 1u64
+    }
+    top + 1u64
 }

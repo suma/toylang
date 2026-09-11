@@ -15,6 +15,7 @@ import std.net
 import std.poll
 import http
 import server
+import store
 import ui
 
 fn span_of(s: &String) -> Span<u8> {
@@ -51,7 +52,13 @@ fn answer_for(spec: str, raw: str, local: bool) -> String {
     val r = http::parse_request(b, req_text.len())
     var st = Stats::new()
     var out = ByteWriter::with_capacity(4096u64)
-    server::route(spec, b, &r, local, &mut st, &mut out)
+    # The ingest state a real server keeps for its lifetime. A fresh
+    # one per request is wrong for a server and right for a test:
+    # each case starts from nothing.
+    var w = ArchiveWriter::new()
+    var ms = MountSet::new()
+    var gens: Vec<u64> = Vec::new()
+    server::route(spec, b, &r, local, &mut st, &mut w, &mut ms, &gens, &mut out)
     val text = rendered(&out)
     text
 }
@@ -127,7 +134,10 @@ test "a refused request is counted apart from a served one" {
     val r = http::parse_request(b, req_text.len())
     var st = Stats::new()
     var out = ByteWriter::with_capacity(1024u64)
-    server::route("build/server-spec", b, &r, true, &mut st, &mut out)
+    var w = ArchiveWriter::new()
+    var ms = MountSet::new()
+    var gens: Vec<u64> = Vec::new()
+    server::route("build/server-spec", b, &r, true, &mut st, &mut w, &mut ms, &gens, &mut out)
     assert_eq(st.refused, 1u64)
     assert_eq(st.requests, 0u64)
 }
@@ -178,8 +188,12 @@ test "the server answers over a real socket" {
     var st = Stats::new()
     var inbox = ByteWriter::with_capacity(4096u64)
     var outbox = ByteWriter::with_capacity(4096u64)
+    var w = ArchiveWriter::new()
+    var ms = MountSet::new()
+    var gens: Vec<u64> = Vec::new()
     val keep = server::serve_connection(&poller, &conn, "build/server-spec",
-                                        &mut st, &mut inbox, &mut outbox)
+                                        &mut st, &mut w, &mut ms, &gens,
+                                        &mut inbox, &mut outbox)
     assert(keep, "one healthz does not stop the server")
     assert_eq(st.requests, 1u64)
     assert_eq(st.connections, 1u64)
@@ -335,4 +349,203 @@ test "the page comes out with the braces it was written with" {
     # `"` は toylang の文字列リテラルに書けないので、ページは
     # 単引用符だけで書かれている。混ざると属性が壊れる。
     assert(!contains(&page, "\u{22}"), "the page holds no double quote")
+}
+
+# ---------------------------------------------------------------------
+# `POST /v1/ingest`
+
+# A whole ingest request with the right `content-length`.
+fn ingest_request(body: &String) -> String {
+    val n = body.len()
+    val head = "POST /v1/ingest HTTP/1.1\r\ncontent-length: {n}\r\n\r\n"
+    var out = String::from_str(head)
+    out.push_str(body.to_str())
+    out
+}
+
+# Each ingest test gets its own directory. Two tests sharing one
+# fails four runs in five under `-j4`, which is how the identity
+# tests in `tests/mount.t` taught this file the rule.
+fn writable(dir: str, st: &mut Stats, ms: &mut MountSet,
+            gens: &mut Vec<u64>) -> bool {
+    val made = fs::mkdir_all(dir)
+    match made {
+        Result::Ok(u) => { }
+        Result::Err(e) => { panic("mkdir {dir}: {e}") }
+    }
+    val crc = Crc32::new()
+    val ok = store::open_for_write(dir, ms, gens, &crc, false, true)
+    if ok { st.segid = store::next_segid(ms, &crc) }
+    st.ready = ok
+    ok
+}
+
+# 2020-01-01T00:00:00Z. Safely in the past, so a record that took the
+# arrival time is always later than one that kept its own.
+fn y2020() -> i64 { 1577836800i64 }
+
+test "a batch of lines is taken, and the sequence runs on" {
+    var st = Stats::new()
+    var ms = MountSet::new()
+    var gens: Vec<u64> = Vec::new()
+    var w = ArchiveWriter::new()
+    assert(writable("build/server-ingest-batch", &st, &mut ms, &mut gens),
+           "the mount should be writable")
+
+    val body = String::from_str("2020-01-01T00:00:00Z first\n2020-01-01T00:00:02Z second\n")
+    val raw = ingest_request(&body)
+    val b = span_of(&raw)
+    val r = http::parse_request(b, raw.len())
+    assert(r.complete, "the request should be whole")
+
+    var out = ByteWriter::with_capacity(1024u64)
+    server::route("build/server-ingest-batch", b, &r, true, &mut st, &mut w,
+                  &mut ms, &gens, &mut out)
+    val got = rendered(&out)
+    assert(contains(&got, "HTTP/1.1 200 OK"), "the batch is accepted")
+    assert(contains(&got, "\u{22}accepted\u{22}:2"), "both lines went in")
+    assert(contains(&got, "\u{22}rejected\u{22}:0"), "neither was refused")
+    assert(contains(&got, "\u{22}seq_first\u{22}:1"), "numbering starts at 1")
+    assert(contains(&got, "\u{22}seq_last\u{22}:2"), "and runs to the last")
+    assert_eq(w.count(), 2u64)
+
+    # 2 通目は続きの番号から。送り手が自分の行を数え直せる。
+    var out2 = ByteWriter::with_capacity(1024u64)
+    val body2 = String::from_str("2020-01-01T00:00:03Z third\n")
+    val raw2 = ingest_request(&body2)
+    val b2 = span_of(&raw2)
+    val r2 = http::parse_request(b2, raw2.len())
+    server::route("build/server-ingest-batch", b2, &r2, true, &mut st, &mut w,
+                  &mut ms, &gens, &mut out2)
+    val got2 = rendered(&out2)
+    assert(contains(&got2, "\u{22}seq_first\u{22}:3"), "the sequence continues")
+    assert_eq(w.count(), 3u64)
+}
+
+# 行が時刻を持たなければ**受信時刻**を付ける。付けないと、時刻で
+# 絞るどのクエリからも見えなくなる。
+test "a line with no time of its own takes the time it arrived" {
+    var st = Stats::new()
+    var ms = MountSet::new()
+    var gens: Vec<u64> = Vec::new()
+    var w = ArchiveWriter::new()
+    assert(writable("build/server-ingest-time", &st, &mut ms, &mut gens),
+           "the mount should be writable")
+
+    val body = String::from_str("2020-01-01T00:00:00Z dated\nlevel=info undated\n")
+    val raw = ingest_request(&body)
+    val b = span_of(&raw)
+    val r = http::parse_request(b, raw.len())
+    var out = ByteWriter::with_capacity(1024u64)
+    server::route("build/server-ingest-time", b, &r, true, &mut st, &mut w,
+                  &mut ms, &gens, &mut out)
+
+    assert_eq(w.count(), 2u64)
+    assert_eq(w.ts_min(), y2020())
+    assert(w.ts_max() > y2020(), "the undated line landed at the arrival time")
+}
+
+# **部分成功。** 100 行のうち 3 行が壊れていても 97 行は取り込む —
+# 全体を失敗にすると、送り手は同じ 100 行を再送し続ける。
+test "a line that cannot be taken does not take the batch with it" {
+    var st = Stats::new()
+    var ms = MountSet::new()
+    var gens: Vec<u64> = Vec::new()
+    var w = ArchiveWriter::new()
+    assert(writable("build/server-ingest-partial", &st, &mut ms, &mut gens),
+           "the mount should be writable")
+
+    var body = String::new()
+    body.push_str("2020-01-01T00:00:00Z fine one\n")
+    var i: u64 = 0u64
+    while i < 70000u64 {
+        body.push('x')
+        i = i + 1u64
+    }
+    body.push_str("\n2020-01-01T00:00:01Z fine two\n")
+
+    val raw = ingest_request(&body)
+    val b = span_of(&raw)
+    val r = http::parse_request(b, raw.len())
+    assert(r.complete, "a 70 KB body is under the request limit")
+    var out = ByteWriter::with_capacity(1024u64)
+    server::route("build/server-ingest-partial", b, &r, true, &mut st, &mut w,
+                  &mut ms, &gens, &mut out)
+    val got = rendered(&out)
+    assert(contains(&got, "HTTP/1.1 200 OK"), "the batch still succeeds")
+    assert(contains(&got, "\u{22}accepted\u{22}:2"), "the good lines went in")
+    assert(contains(&got, "\u{22}rejected\u{22}:1"), "the long one is reported")
+    assert_eq(w.count(), 2u64)
+}
+
+# 空行は数えない。末尾の改行が「1 行」になると、送った数と受けた数が
+# 合わなくなる。
+test "a blank line is neither taken nor rejected" {
+    var st = Stats::new()
+    var ms = MountSet::new()
+    var gens: Vec<u64> = Vec::new()
+    var w = ArchiveWriter::new()
+    assert(writable("build/server-ingest-blank", &st, &mut ms, &mut gens),
+           "the mount should be writable")
+
+    val body = String::from_str("2020-01-01T00:00:00Z one\n\n\n2020-01-01T00:00:01Z two\n")
+    val raw = ingest_request(&body)
+    val b = span_of(&raw)
+    val r = http::parse_request(b, raw.len())
+    var out = ByteWriter::with_capacity(1024u64)
+    server::route("build/server-ingest-blank", b, &r, true, &mut st, &mut w,
+                  &mut ms, &gens, &mut out)
+    val got = rendered(&out)
+    assert(contains(&got, "\u{22}accepted\u{22}:2"), "two records, not four")
+    assert(contains(&got, "\u{22}rejected\u{22}:0"), "and nothing was refused")
+}
+
+# 書ける先が無ければ 503。要求は正しいので 400 ではない。
+test "ingest without a writable mount says so and keeps nothing" {
+    var st = Stats::new()
+    var ms = MountSet::new()
+    var gens: Vec<u64> = Vec::new()
+    var w = ArchiveWriter::new()
+    # `ready` は false のまま。サーバはマウントを自分で作らない。
+    val body = String::from_str("2020-01-01T00:00:00Z nowhere to go\n")
+    val raw = ingest_request(&body)
+    val b = span_of(&raw)
+    val r = http::parse_request(b, raw.len())
+    var out = ByteWriter::with_capacity(1024u64)
+    server::route("build/server-ingest-absent", b, &r, true, &mut st, &mut w,
+                  &mut ms, &gens, &mut out)
+    val got = rendered(&out)
+    assert(contains(&got, "HTTP/1.1 503"), "there is nowhere to put it")
+    assert(contains(&got, "no writable mount"), "and the answer says so")
+    assert_eq(w.count(), 0u64)
+}
+
+# `flush` は持っているものを書き出し、いくつ出したかを言う。
+test "flush writes what is held and reports it" {
+    var st = Stats::new()
+    var ms = MountSet::new()
+    var gens: Vec<u64> = Vec::new()
+    var w = ArchiveWriter::new()
+    val dir = "build/server-ingest-flush"
+    assert(writable(dir, &st, &mut ms, &mut gens), "the mount should be writable")
+
+    val body = String::from_str("2020-01-01T00:00:00Z one\n2020-01-01T00:00:01Z two\n")
+    val raw = ingest_request(&body)
+    val b = span_of(&raw)
+    val r = http::parse_request(b, raw.len())
+    var out = ByteWriter::with_capacity(1024u64)
+    server::route(dir, b, &r, true, &mut st, &mut w, &mut ms, &gens, &mut out)
+    assert_eq(w.count(), 2u64)
+
+    val fraw = String::from_str("POST /v1/admin/flush HTTP/1.1\r\n\r\n")
+    val fb = span_of(&fraw)
+    val fr = http::parse_request(fb, fraw.len())
+    var fout = ByteWriter::with_capacity(1024u64)
+    server::route(dir, fb, &fr, true, &mut st, &mut w, &mut ms, &gens, &mut fout)
+    val fgot = rendered(&fout)
+    assert(contains(&fgot, "HTTP/1.1 200 OK"), "flush answers")
+    assert(contains(&fgot, "\u{22}records\u{22}:2"), "it says what it held")
+    # 書き出したので writer は空になり、セグメントが 1 本増える。
+    assert(w.is_empty(), "the active segment starts over")
+    assert_eq(st.segments, 1u64)
 }

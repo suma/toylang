@@ -42,7 +42,7 @@ cargo build --release -p toy
 
 ```bash
 toy check poc/logsearch          # 型検査だけ (コード生成をしない)
-toy test  poc/logsearch -j4      # test ブロックを走らせる (77 件)
+toy test  poc/logsearch -j4      # test ブロックを走らせる (86 件)
 toy clean poc/logsearch --all    # build/ とリンクキャッシュを消す
 ```
 
@@ -311,6 +311,8 @@ listening on 127.0.0.1:8080
 | `GET /healthz` | `ok` |
 | `GET /v1/query?q=&limit=&format=` | `format` は `ndjson` (既定) / `json` / `text`、`limit` は 1〜1000 |
 | `GET /v1/stats` | 稼働時間・マウント・確保カウンタ |
+| `POST /v1/ingest` | 改行区切りの行を取り込む (下記) |
+| `POST /v1/admin/flush` | 書きかけのセグメントを今すぐ書き出す |
 | `POST /v1/admin/repair` | カタログを作り直す |
 | `POST /v1/admin/gc?days=N` | 保持期限の掃除を 1 巡 |
 | `POST /v1/admin/shutdown` | 止める |
@@ -379,6 +381,36 @@ $ curl -s --get $Q --data-urlencode 'q=status=404 method=GET' -d limit=2 -d form
 | `format: json, ndjson or text` | 知らない形式 |
 | `top=: distributions are command-line only for now` | `top=` が入っている |
 
+#### `/v1/ingest` に送るもの
+
+本文は**改行区切りの行**で、1 行 = 1 レコード。`Content-Type` は見ない。
+
+```bash
+printf '2026-09-11T10:00:01Z level=error request timed out after 30s\n
+level=info served 200 in 4ms\n' |
+  curl -s -X POST --data-binary @- http://127.0.0.1:8080/v1/ingest
+```
+
+```json
+{"accepted":2,"rejected":0,"seq_first":1,"seq_last":2}
+```
+
+- **行頭が時刻ならそれを使い、無ければ受信時刻**を付ける。付けないと、
+  時刻で絞るどのクエリからも見えなくなる
+- **部分成功を返す。** 100 行のうち 3 行が長すぎても 97 行は入り、
+  `rejected` で報告する。全体を失敗にすると送り手は同じ 100 行を
+  再送し続ける。1 レコードの上限は 64 KiB、要求全体は 1 MiB
+- 空行は数えない (末尾の改行が 1 行に化けない)
+- 取り込んだ行は**書きかけのセグメント**に溜まり、8 MiB に達するか
+  60 秒経つか `POST /v1/admin/flush` か停止で書き出される。
+  書き出されるまでは検索に出てこない
+
+**マウントのディレクトリが既にある場合だけ取り込める。** サーバに
+ディレクトリを作らせると spec の打ち間違いが黙って新しいアーカイブに
+なるので、作るのは人の仕事にしてある。無ければ起動時に
+`ingest is off: no writable mount under <spec>` と出て、`/v1/ingest` は
+`503` を返す。
+
 読めるマウントが 1 つも無いときは `503` (`no readable mount`)。
 **要求は正しいのに答えられない**ので `400` ではない。「読めない」は
 ディレクトリが存在しない (打ち間違い) か、`.conf` が読めない場合を指す。
@@ -412,12 +444,13 @@ poc/logsearch/
     archive.t         セグメントの書き出し / 検証 / 索引 / リンク
     search.t          部分一致検索 (SIMD、スカラー参照つき)
     query.t           クエリのパースと実行・3 形式の描画
+    store.t           セグメントの配置とカタログへの記録
     catalog.t         カタログ (スナップショット / ジャーナル / 再構築)
     mount.t           マウントの宣言・配置ポリシー・`meta/mount.json`
     http.t            話すと決めた HTTP/1.1 の部分集合
     server.t          イベントループと経路
     ui.t              Web UI (1 ページを埋め込みで持つ)
-  tests/              `toy test` が走らせる test ブロック (77 件)
+  tests/              `toy test` が走らせる test ブロック (86 件)
   design-docs/        設計文書 11 本 + 目次
   build/              toy の出力 (実行ファイル / リンクキャッシュ、git 管理外)
   log/                読ませる実ログ (git 管理外)
@@ -441,7 +474,7 @@ top-level `const` を失って `Identifier 'BUF_BYTES' not found` で落ちた�
 | 検索 (時刻 / フィールド / 部分一致 / 集計 / traversal) | 動く |
 | カタログ・マウント・保持期限 | 動く |
 | HTTP サーバと Web UI | 動く (同時接続は 1 本、取り込みは未) |
-| **テスト** | 77 件 (`toy test poc/logsearch -j4`) |
+| **テスト** | 86 件 (`toy test poc/logsearch -j4`) |
 
 実測 (`log/apache2` の 181,519 行 / 30.5 MB、AOT `--release`、2026-09-11):
 

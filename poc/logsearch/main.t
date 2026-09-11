@@ -217,7 +217,7 @@ fn cmd_archive(dir: str, spec: str, limit: u64) -> u64 {
     var ms = MountSet::new()
     var gens: Vec<u64> = Vec::new()
     val crc0 = Crc32::new()
-    if !store::open_for_write(spec, &mut ms, &mut gens, &crc0, true) {
+    if !store::open_for_write(spec, &mut ms, &mut gens, &crc0, true, false) {
         return 1u64
     }
 

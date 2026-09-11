@@ -384,7 +384,15 @@ pub fn parse_line(w: Span<u8>, ln: Line, out: &mut ParsedLine) {
         }
         if i > p {
             out.host = pack_span(p, i - p)
+            # Step over the space -- unless the host ran to the end of
+            # the line, in which case there is no space to step over.
+            # `2020-01-01T00:00:00Z one` is that line, and without the
+            # clamp the cursor lands one past the end and the body
+            # length underflows. Real syslog always has more words
+            # after the host, which is why a corpus of it never
+            # showed this.
             p = i + 1u64
+            if p > end { p = end }
             var j = p
             while j < end {
                 val b: u8 = w.get(j)

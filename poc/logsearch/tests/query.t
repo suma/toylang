@@ -58,3 +58,52 @@ test "the range is half-open at the top" {
     assert_eq(q.ts_from, y2030())
     assert_eq(q.ts_to, y2030() + 86400i64)
 }
+
+# ---------------------------------------------------------------------
+# 行の framing
+
+fn span_of(s: &String) -> Span<u8> {
+    val w = s.as_span()
+    match w {
+        Option::Some(sp) => sp,
+        Option::None => { panic("span_of: empty string") }
+    }
+}
+
+fn parsed(text: str) -> ParsedLine {
+    val s = String::from_str(text)
+    val w = span_of(&s)
+    val ln = Line { start: 0u64, len: s.len() }
+    var out = ParsedLine::new()
+    record::parse_line(w, ln, &mut out)
+    out
+}
+
+# syslog の形は「時刻 host tag: 本文」だが、**host のあとが無い行**が
+# 来る。実ログには必ず続きがあるので corpus では一度も出なかったが、
+# `/v1/ingest` に 1 語だけ送れば出る — cursor が行末を 1 つ越えて
+# 本文の長さが underflow し、プロセスが落ちていた (2026-09-11)。
+test "a dated line whose message is one word does not run off the end" {
+    val p = parsed("2020-01-01T00:00:00Z one")
+    assert(p.has_ts, "the timestamp is still read")
+    assert_eq(p.ts, 1577836800i64)
+    # 本文は空でも、長さが負にならないことが先。
+    assert(p.body_len() <= 24u64, "the body stays inside the line")
+}
+
+test "the same line with a message after the host still frames" {
+    val p = parsed("2020-01-01T00:00:00Z web01 cron: started")
+    assert(p.has_ts, "the timestamp is read")
+    assert(p.has_host(), "the host is read")
+    assert_eq(p.host_len(), 5u64)
+}
+
+# 時刻だけの行、区切りだけの行。どれも落ちない。空行は
+# `LineScan` の呼び出し側が弾くのでここには来ない。
+test "a line with nothing after the timestamp is still a line" {
+    val bare = parsed("2020-01-01T00:00:00Z")
+    assert(bare.has_ts, "a bare timestamp is a timestamp")
+    assert_eq(bare.body_len(), 0u64)
+    val spaces = parsed("2020-01-01T00:00:00Z   ")
+    assert(spaces.has_ts, "trailing spaces do not break the frame")
+}

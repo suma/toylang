@@ -551,6 +551,11 @@ pub fn route(spec: str, b: Span<u8>, r: &Request, local: bool,
         return
     }
 
+    if r.is_get() && path_is(b, r, "/v1/labels") {
+        labels_route(spec, b, r, alive, out)
+        return
+    }
+
     if r.is_get() && path_is(b, r, "/v1/query") {
         query_route(spec, b, r, alive, out)
         return
@@ -652,6 +657,114 @@ fn has_top(text: &String) -> bool {
         }
     }
     false
+}
+
+# `GET /v1/labels` -- what can be filtered on, and what the values
+# are.
+#
+# With no `name`, the keys the dictionaries hold; with `?name=host`,
+# the values under that key. Both are counted by records.
+#
+# **This opens every segment's term section**, which is not what
+# HTTP_API.md section 2 asks for -- it wants the answer out of a
+# per-mount label dictionary in the catalog, so that nothing under
+# `seg/` is touched. That dictionary does not exist yet. The cost is
+# one section read per segment (24 ms over four segments holding
+# 43,813 terms), so it is usable now and will not be at a hundred
+# thousand.
+fn labels_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
+                out: &mut ByteWriter) {
+    var limit: u64 = 200u64
+    var lbuf = ByteWriter::with_capacity(32u64)
+    if http::query_param(b, r.query_at, r.query_len, "limit", &mut lbuf) {
+        val got = number_of(&lbuf)
+        var parsed: u64 = 0u64
+        match got {
+            Result::Ok(n) => { parsed = n }
+            Result::Err(e) => { parsed = 0u64 }
+        }
+        if parsed == 0u64 || parsed > 1000u64 {
+            http::respond_error(out, 400u64, "bad parameter",
+                                "limit: a number from 1 to 1000", alive)
+            return
+        }
+        limit = parsed
+    }
+
+    var namebuf = ByteWriter::with_capacity(64u64)
+    val named = http::query_param(b, r.query_at, r.query_len, "name", &mut namebuf)
+    val name = text_of_writer(&namebuf)
+    if named {
+        if !query::is_index_key(&name) {
+            http::respond_error(out, 400u64, "bad parameter",
+                                "name: a label key is [a-z0-9_], 1 to 32 bytes",
+                                alive)
+            return
+        }
+    }
+
+    var ms = MountSet::new()
+    var usable = mount::open_spec(spec, &mut ms)
+    if usable { usable = mount::readable(&ms) > 0u64 }
+    if !usable {
+        http::respond_error(out, 503u64, "no readable mount", "", alive)
+        return
+    }
+    var segs: Vec<String> = Vec::new()
+    mount::segments_in(&ms, &mut segs)
+
+    val crc = Crc32::new()
+    var prefix = ""
+    if named { prefix = "{name}:" }
+    val tal = query::tally(&segs, prefix, !named, &crc)
+
+    # Biggest first: a list of labels is read top-down, and the one
+    # with a million records is the one being looked for.
+    var order: Vec<Tally> = Vec::new()
+    var i: u64 = 0u64
+    while i < tal.size() {
+        val c: u64 = tal.counts.get(i)
+        val one = Tally { count: c, idx: i }
+        order.push(one)
+        i = i + 1u64
+    }
+    order.sort()
+
+    var body = ByteWriter::with_capacity(4096u64)
+    if named {
+        body.put_str("{{\u{22}name\u{22}:")
+        http::put_json_string(&mut body, &name)
+        body.put_str(",\u{22}values\u{22}:[")
+    } else {
+        body.put_str("{{\u{22}labels\u{22}:[")
+    }
+    val total = order.size()
+    var shown: u64 = 0u64
+    var k: u64 = 0u64
+    while k < total && shown < limit {
+        if shown > 0u64 { body.put_u8(',') }
+        val t: Tally = order.get(total - 1u64 - k)
+        val nm: String = tal.names.get(t.idx)
+        body.put_str("{{\u{22}name\u{22}:")
+        http::put_json_string(&mut body, &nm)
+        body.put_str(",\u{22}records\u{22}:")
+        body.put_str("{t.count}")
+        body.put_str("}}")
+        shown = shown + 1u64
+        k = k + 1u64
+    }
+    val segs_read = tal.segments
+    body.put_str("],\u{22}distinct\u{22}:")
+    body.put_str("{total}")
+    body.put_str(",\u{22}shown\u{22}:")
+    body.put_str("{shown}")
+    body.put_str(",\u{22}segments\u{22}:")
+    body.put_str("{segs_read}")
+    body.put_str("}}\n")
+
+    http::begin_response(out, 200u64, "application/json", body.len(), alive)
+    http::end_headers(out)
+    out.put_all(&body)
 }
 
 # `GET /v1/query` -- the same search the terminal runs, rendered for a

@@ -456,11 +456,20 @@ test "the parser sorts tokens into index terms and body needles" {
     assert_eq(c.sub_count(), 1u64)
     assert_eq(c.needle_count(), 0u64)
 
-    # 索引が知らないキーは、`=` でも `~` でも本文の部分一致に落ちる。
-    # 打った人の意図がそれだから (QUERY.md)。
+    # **ラベルの形をしたキーはすべて索引の項になる** (2026-09-11)。
+    # 以前はキーが 8 つの決め打ちで、`level=error` は本文検索に
+    # 落ちていた — 辞書に `level` が無かったからである。取り込みが
+    # ラベルを索引するようになったので、問いは「その名前を知っているか」
+    # から「ラベルの形をしているか」に変わった。
     val d = query::parse_query("level=error level~err", 0i64)
-    assert_eq(d.indexed_count(), 0u64)
-    assert_eq(d.needle_count(), 2u64)
+    assert_eq(d.indexed_count(), 2u64)
+    assert_eq(d.needle_count(), 0u64)
+
+    # ラベルの形をしていないキーは本文のまま。大文字も、点も、
+    # 32 バイト超も、ラベルのキーにはなりえない (DATA_MODEL.md §2)。
+    val g = query::parse_query("Host=web01 a.b=c", 0i64)
+    assert_eq(g.indexed_count(), 0u64)
+    assert_eq(g.needle_count(), 2u64)
 
     # 制御語は本文検索に落ちない。`top=path` を含む行を探すのは
     # 誰の意図でもない。

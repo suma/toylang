@@ -11,6 +11,8 @@
 
 import std.fs
 import std.io
+import std.path
+import logdir
 import std.net
 import std.poll
 import http
@@ -363,6 +365,41 @@ fn ingest_request(body: &String) -> String {
     out
 }
 
+# Everything a previous run left. A test that reads its archive back
+# has to start from nothing, or the counts grow by one run every
+# time -- which is how this file learned that `build/` survives.
+fn wipe_mount(dir: str) {
+    val segs = logdir::scan_suffix(dir, ".seg")
+    var i: u64 = 0u64
+    while i < segs.size() {
+        val p: String = segs.get(i)
+        val gone = fs::remove_file(p.to_str())
+        match gone {
+            Result::Ok(u) => { }
+            Result::Err(e) => { }
+        }
+        i = i + 1u64
+    }
+    val meta = "{dir}/meta"
+    val listing = fs::list_dir(meta)
+    match listing {
+        Result::Ok(names) => {
+            var k: u64 = 0u64
+            while k < names.size() {
+                val nm: String = names.get(k)
+                val full = path::join(meta, nm.to_str())
+                val rm = fs::remove_file(full.to_str())
+                match rm {
+                    Result::Ok(u) => { }
+                    Result::Err(e) => { }
+                }
+                k = k + 1u64
+            }
+        }
+        Result::Err(e) => { }
+    }
+}
+
 # Each ingest test gets its own directory. Two tests sharing one
 # fails four runs in five under `-j4`, which is how the identity
 # tests in `tests/mount.t` taught this file the rule.
@@ -548,4 +585,65 @@ test "flush writes what is held and reports it" {
     # 書き出したので writer は空になり、セグメントが 1 本増える。
     assert(w.is_empty(), "the active segment starts over")
     assert_eq(st.segments, 1u64)
+}
+
+# ---------------------------------------------------------------------
+# `GET /v1/labels`
+
+test "a label key and its values are refused when they are not label-shaped" {
+    val shouty = answer("GET /v1/labels?name=Host HTTP/1.1\r\n\r\n", true)
+    assert(contains(&shouty, "HTTP/1.1 400"), "a capital is not a label key")
+    assert(contains(&shouty, "[a-z0-9_]"), "and the shape is stated")
+
+    val big = answer("GET /v1/labels?limit=5000 HTTP/1.1\r\n\r\n", true)
+    assert(contains(&big, "HTTP/1.1 400"), "the limit has the same cap as a query")
+}
+
+# ラベルは取り込んだレコードから索引される。**索引されなければ、
+# ラベルは剥がされただけで捨てられたのと同じ**で、`app=api` でも
+# 引けないし `/v1/labels` にも出ない。
+test "the labels a record was ingested with become terms" {
+    var st = Stats::new()
+    var ms = MountSet::new()
+    var gens: Vec<u64> = Vec::new()
+    var w = ArchiveWriter::new()
+    val dir = "build/server-labels"
+    wipe_mount(dir)
+    assert(writable(dir, &st, &mut ms, &mut gens), "the mount should be writable")
+
+    val body = String::from_str("2020-01-01T00:00:00Z host=web01 app=api level=error one\n2020-01-01T00:00:01Z host=web01 app=api level=info two\n")
+    val raw = ingest_request(&body)
+    val b = span_of(&raw)
+    val r = http::parse_request(b, raw.len())
+    var out = ByteWriter::with_capacity(1024u64)
+    server::route(dir, b, &r, true, &mut st, &mut w, &mut ms, &gens, &mut out)
+    assert_eq(w.count(), 2u64)
+    # host / app / level が 3 つずつではなく、値ごとに 1 語:
+    # host:web01, app:api, level:error, level:info の 4 語。
+    assert_eq(w.term_count(), 4u64)
+
+    # 書き出せば読める。
+    val fraw = String::from_str("POST /v1/admin/flush HTTP/1.1\r\n\r\n")
+    val fb = span_of(&fraw)
+    val fr = http::parse_request(fb, fraw.len())
+    var fout = ByteWriter::with_capacity(1024u64)
+    server::route(dir, fb, &fr, true, &mut st, &mut w, &mut ms, &gens, &mut fout)
+
+    val keys = answer_for(dir, "GET /v1/labels HTTP/1.1\r\n\r\n", true)
+    assert(contains(&keys, "HTTP/1.1 200 OK"), "the keys are served")
+    assert(contains(&keys, "\u{22}name\u{22}:\u{22}host\u{22}"), "host is a key")
+    assert(contains(&keys, "\u{22}name\u{22}:\u{22}app\u{22}"), "app is a key")
+    assert(contains(&keys, "\u{22}name\u{22}:\u{22}level\u{22}"), "level is a key")
+
+    val vals = answer_for(dir, "GET /v1/labels?name=level HTTP/1.1\r\n\r\n", true)
+    assert(contains(&vals, "\u{22}name\u{22}:\u{22}level\u{22}"), "the key is named back")
+    assert(contains(&vals, "\u{22}name\u{22}:\u{22}error\u{22}"), "error is a value")
+    assert(contains(&vals, "\u{22}name\u{22}:\u{22}info\u{22}"), "info is a value")
+    # 値は 2 つ。キーの一覧と取り違えていないこと。
+    assert(contains(&vals, "\u{22}distinct\u{22}:2"), "two values under level")
+
+    # そして同じラベルで引ける。
+    val q = answer_for(dir, "GET /v1/query?q=app%3Dapi&format=json HTTP/1.1\r\n\r\n", true)
+    assert(contains(&q, "HTTP/1.1 200 OK"), "a label filter is a query")
+    assert(contains(&q, "\u{22}records_matched\u{22}:2"), "both records carry it")
 }

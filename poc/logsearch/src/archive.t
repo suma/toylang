@@ -190,10 +190,20 @@ impl ArchiveWriter {
     # Record `key = <bytes>` for this record, and answer the term's
     # id so the caller can link it to the record's other fields.
     # `term_none()` means the field was absent.
-    fn emit(&mut self, w: Span<u8>, key: str, at: u64, len: u64,
-            has_ts: bool, ts: i64) -> u64 {
-        if len == 0u64 { return term_none() }
-        val h = extract::hash_term(key, w, at, len)
+    # Find the slot for a term with this hash, making one if the hash
+    # is new.
+    #
+    # The id is taken from `term_counts`, not from `term_names`, so
+    # that a new term can be counted here and named by the caller one
+    # step later: **`term_names` is shorter than `term_counts`
+    # exactly when this made a new slot**, which is how the caller
+    # knows without being told.
+    #
+    # The split exists because a label's key is bytes in the line
+    # while a field's key is a literal, and building a `String` per
+    # record to paper over that would allocate on the hot path
+    # (MEMORY.md D4b).
+    fn intern(&mut self, h: u64, has_ts: bool, ts: i64) -> u64 {
         val mask = self.term_slots.size() - 1u64
         var slot = h & mask
         var id: u64 = 0u64
@@ -201,9 +211,7 @@ impl ArchiveWriter {
         while !placed {
             val cell: u64 = self.term_slots.get(slot)
             if cell == 0u64 {
-                id = self.term_names.size()
-                val name = extract::term_text(key, w, at, len)
-                self.term_names.push(name)
+                id = self.term_counts.size()
                 self.term_counts.push(1u64)
                 # Empty interval until a dated record says otherwise.
                 if has_ts {
@@ -235,6 +243,15 @@ impl ArchiveWriter {
                 }
             }
         }
+        id
+    }
+
+    # Whether `intern` just made a slot that has no name yet.
+    fn needs_name(&self) -> bool {
+        self.term_names.size() < self.term_counts.size()
+    }
+
+    fn record_posting(&mut self, id: u64) {
         self.post_term.push(id as u32)
         self.post_ord.push(self.count as u32)
         # Grow before the table fills: linear probing degrades badly
@@ -243,6 +260,35 @@ impl ArchiveWriter {
         if self.term_names.size() * 8u64 >= self.term_slots.size() * 7u64 {
             self.rehash()
         }
+    }
+
+    # A term for a key this program knows by name (`status`, `host`).
+    fn emit(&mut self, w: Span<u8>, key: str, at: u64, len: u64,
+            has_ts: bool, ts: i64) -> u64 {
+        if len == 0u64 { return term_none() }
+        val h = extract::hash_term(key, w, at, len)
+        val id = self.intern(h, has_ts, ts)
+        if self.needs_name() {
+            val name = extract::term_text(key, w, at, len)
+            self.term_names.push(name)
+        }
+        self.record_posting(id)
+        id
+    }
+
+    # A term for a key that is **in the line**: a label (`app=api`).
+    # The hash has to match `emit`'s for the same `key:value`, or the
+    # syslog framing's `host` and a `host=` label become two terms.
+    fn emit_labelled(&mut self, w: Span<u8>, key_at: u64, key_len: u64,
+                     at: u64, len: u64, has_ts: bool, ts: i64) -> u64 {
+        if len == 0u64 || key_len == 0u64 { return term_none() }
+        val h = extract::hash_term_span(w, key_at, key_len, at, len)
+        val id = self.intern(h, has_ts, ts)
+        if self.needs_name() {
+            val name = extract::term_text_span(w, key_at, key_len, at, len)
+            self.term_names.push(name)
+        }
+        self.record_posting(id)
         id
     }
 
@@ -349,7 +395,53 @@ impl ArchiveWriter {
     # Every term this record contributes. Shapes the ontology knows
     # get their fields named; everything else contributes only what
     # the framing already found (ONTOLOGY.md §2).
+    # Every `key=value` the line began with, as its own term.
+    #
+    # Without this the labels are framed and then dropped: a record
+    # ingested as `level=error app=api ...` could only be found by
+    # searching its text, and `/v1/labels` would have nothing to
+    # list. The rules are DATA_MODEL.md section 2's -- a key of
+    # `[a-z0-9_]{1,32}`, a value that ends at a space -- and the
+    # framing already decided where the run of labels stops, so this
+    # only has to split what it was handed.
+    fn emit_labels(&mut self, w: Span<u8>, rec: &ParsedLine) {
+        val from = rec.labels_start()
+        val end = from + rec.labels_len()
+        var p = from
+        while p < end {
+            var k = p
+            var has_eq = false
+            var scanning = true
+            while scanning && k < end {
+                val b: u8 = w.get(k)
+                if b == '=' {
+                    has_eq = true
+                    scanning = false
+                } else {
+                    k = k + 1u64
+                }
+            }
+            if !has_eq {
+                # The framing said this run is labels, so this cannot
+                # normally happen; stopping is the safe reading.
+                p = end
+            } else {
+                val v = k + 1u64
+                var stop = v
+                var running = true
+                while running && stop < end {
+                    val b: u8 = w.get(stop)
+                    if b == ' ' { running = false } else { stop = stop + 1u64 }
+                }
+                val id = self.emit_labelled(w, p, k - p, v, stop - v,
+                                            rec.has_ts, rec.ts)
+                p = stop + 1u64
+            }
+        }
+    }
+
     fn emit_terms(&mut self, w: Span<u8>, ln: Line, rec: &ParsedLine) {
+        if rec.labels_len() > 0u64 { self.emit_labels(w, rec) }
         var host_id = term_none()
         var tag_id = term_none()
         if rec.has_host() {
@@ -1183,6 +1275,86 @@ pub struct TermHits {
     names: Vec<u64>,
     counts: Vec<u64>,
     scanned: u64,
+}
+
+# The distinct **keys** a dictionary holds, with the records behind
+# each.
+#
+# `/v1/labels` asks what can be filtered on, and that is the set of
+# keys -- not the tens of thousands of values under them. A key is
+# everything before the first `:`; the rest may hold more of them
+# (`vhost:blog.example:80`), which is why only the first counts.
+#
+# The dedup is a linear scan over the keys found so far. That is
+# quadratic in the number of *keys*, which is a handful -- unlike the
+# values, where the same shape once cost more than the scan it
+# replaced.
+pub fn term_keys(idx: Span<u8>, sec_off: u64, sec_len: u64) -> TermHits {
+    var names: Vec<u64> = Vec::new()
+    var counts: Vec<u64> = Vec::new()
+    var out = TermHits { names: names, counts: counts, scanned: 0u64 }
+    if sec_len > 0u64 {
+    var rd = ByteReader::new(sec_off + sec_len)
+    rd.seek(sec_off)
+    val n = rd.take_u32(idx)
+    out.scanned = n
+
+    var spans: Vec<u64> = Vec::with_capacity(n + 1u64)
+    var i: u64 = 0u64
+    while i < n {
+        val len = rd.take_varint(idx)
+        spans.push(record::pack_span(rd.position(), len))
+        rd.seek(rd.position() + len)
+        i = i + 1u64
+    }
+
+    i = 0u64
+    while i < n {
+        val doc_count = rd.take_varint(idx)
+        val post_off = rd.take_varint(idx)
+        val post_len = rd.take_varint(idx)
+        val sp: u64 = spans.get(i)
+        val at = record::span_start(sp)
+        val len = record::span_len(sp)
+        var klen: u64 = 0u64
+        var scanning = true
+        while scanning && klen < len {
+            val b: u8 = idx.get(at + klen)
+            if b == 58u8 { scanning = false } else { klen = klen + 1u64 }
+        }
+        if klen > 0u64 && klen < len {
+            var found = false
+            var k: u64 = 0u64
+            while k < out.names.size() && !found {
+                val other: u64 = out.names.get(k)
+                val oat = record::span_start(other)
+                val olen = record::span_len(other)
+                if olen == klen {
+                    var same = true
+                    var j: u64 = 0u64
+                    while j < klen && same {
+                        val a: u8 = idx.get(at + j)
+                        val b2: u8 = idx.get(oat + j)
+                        if a != b2 { same = false }
+                        j = j + 1u64
+                    }
+                    if same {
+                        val prev: u64 = out.counts.get(k)
+                        out.counts.set(k, prev + doc_count)
+                        found = true
+                    }
+                }
+                k = k + 1u64
+            }
+            if !found {
+                out.names.push(record::pack_span(at, klen))
+                out.counts.push(doc_count)
+            }
+        }
+        i = i + 1u64
+    }
+    }
+    out
 }
 
 pub fn terms_with_prefix(idx: Span<u8>, sec_off: u64, sec_len: u64, prefix: str) -> TermHits {

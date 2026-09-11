@@ -42,7 +42,7 @@ cargo build --release -p toy
 
 ```bash
 toy check poc/logsearch          # 型検査だけ (コード生成をしない)
-toy test  poc/logsearch -j4      # test ブロックを走らせる (86 件)
+toy test  poc/logsearch -j4      # test ブロックを走らせる (88 件)
 toy clean poc/logsearch --all    # build/ とリンクキャッシュを消す
 ```
 
@@ -189,8 +189,16 @@ logsearch query /tmp/arc "ip=10.0.0.1 top=path"      # traversal
 | `key^prefix` | 値が `prefix` で始まる |
 | `word` | 本文 (元の行) の部分一致 |
 
-キーは `status` / `method` / `path` / `ip` / `vhost` / `ua` / `host` / `tag`。
-制御は `from` / `to` / `limit` / `order` / `kind` / `top`。
+キーは**ラベルの形をしたものなら何でも** (`[a-z0-9_]` の 1〜32 バイト)。
+apache ログからは `status` / `method` / `path` / `ip` / `vhost` / `ua` が、
+syslog からは `host` / `tag` が出る。`/v1/ingest` で送った行の
+先頭にある `key=value` もそのまま索引されるので、`app=api` や
+`level=error` で引ける。何があるかは `logsearch fields <spec> <key>` か
+`GET /v1/labels` が答える。
+
+制御語は `from` / `to` / `limit` / `order` / `kind` / `top` で、これらは
+キーとして使えない。ラベルの形をしていないキー (`Host=x`、`a.b=c`) は
+本文の部分一致に落ちる。
 
 `from` / `to` は**半開区間**で、4 通りの書き方がある。
 
@@ -310,6 +318,7 @@ listening on 127.0.0.1:8080
 | `GET /` | Web UI (1 ページ。外部から何も読み込まない) |
 | `GET /healthz` | `ok` |
 | `GET /v1/query?q=&limit=&format=` | `format` は `ndjson` (既定) / `json` / `text`、`limit` は 1〜1000 |
+| `GET /v1/labels` | 絞り込めるキーの一覧。`?name=host` でその値の一覧 |
 | `GET /v1/stats` | 稼働時間・マウント・確保カウンタ |
 | `POST /v1/ingest` | 改行区切りの行を取り込む (下記) |
 | `POST /v1/admin/flush` | 書きかけのセグメントを今すぐ書き出す |
@@ -450,7 +459,7 @@ poc/logsearch/
     http.t            話すと決めた HTTP/1.1 の部分集合
     server.t          イベントループと経路
     ui.t              Web UI (1 ページを埋め込みで持つ)
-  tests/              `toy test` が走らせる test ブロック (86 件)
+  tests/              `toy test` が走らせる test ブロック (88 件)
   design-docs/        設計文書 11 本 + 目次
   build/              toy の出力 (実行ファイル / リンクキャッシュ、git 管理外)
   log/                読ませる実ログ (git 管理外)
@@ -474,7 +483,7 @@ top-level `const` を失って `Identifier 'BUF_BYTES' not found` で落ちた�
 | 検索 (時刻 / フィールド / 部分一致 / 集計 / traversal) | 動く |
 | カタログ・マウント・保持期限 | 動く |
 | HTTP サーバと Web UI | 動く (同時接続は 1 本、取り込みは未) |
-| **テスト** | 86 件 (`toy test poc/logsearch -j4`) |
+| **テスト** | 88 件 (`toy test poc/logsearch -j4`) |
 
 実測 (`log/apache2` の 181,519 行 / 30.5 MB、AOT `--release`、2026-09-11):
 

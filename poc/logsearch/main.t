@@ -891,9 +891,12 @@ fn cmd_query(dir: str, text: str) -> u64 {
 # decoded. `cmd_fields_scan` below is kept as the reference it has to
 # agree with.
 fn cmd_fields_indexed(dir: str, field: str, limit: u64) -> u64 {
-    val code = query::field_code(field)
-    if code == query::field_none() {
-        println("unknown field `{field}`")
+    # Any label key, not the eight `extract.t` knows: the dictionary
+    # holds whatever was written, and a `fields app` over ingested
+    # records is the same walk as a `fields status` over apache ones.
+    val name = String::from_str(field)
+    if !query::is_index_key(&name) {
+        println("`{field}` is not a label key ([a-z0-9_], 1 to 32 bytes)")
         return 1u64
     }
     println("field {field} (index)")
@@ -908,106 +911,13 @@ fn cmd_fields_indexed(dir: str, field: str, limit: u64) -> u64 {
 
     val watch = Stopwatch::start()
     val crc = Crc32::new()
-    var head_buf = ByteWriter::with_capacity(segfile::data_at() + 64u64)
-    var raw = ByteWriter::with_capacity(4194304u64)
-    var tsec = ByteWriter::with_capacity(4194304u64)
-    # Values repeat across segments, so they are folded through an
-    # open-addressing table. A linear scan over the values seen so far
-    # was the first attempt and it is quadratic: for `ip` (11,293
-    # distinct) it cost more than the full scan the index replaces.
-    val slot_bits: u64 = 65536u64
-    var slots: Vec<u64> = Vec::with_capacity(slot_bits)
-    var sz: u64 = 0u64
-    while sz < slot_bits {
-        slots.push(0u64)
-        sz = sz + 1u64
-    }
-    var hashes: Vec<u64> = Vec::new()
-    var names: Vec<String> = Vec::new()
-    var counts: Vec<u64> = Vec::new()
-    var terms_seen: u64 = 0u64
-    var indexed_segs: u64 = 0u64
-
-    var prefix = "status:"
-    if code == query::field_method() { prefix = "method:" }
-    if code == query::field_path() { prefix = "path:" }
-    if code == query::field_client() { prefix = "ip:" }
-    if code == query::field_vhost() { prefix = "vhost:" }
-    if code == query::field_ua() { prefix = "ua:" }
-    if code == query::field_host() { prefix = "host:" }
-    if code == query::field_tag() { prefix = "tag:" }
-
-    var si: u64 = 0u64
-    while si < n_segs {
-        val seg_path: String = segs.get(si)
-        val seg_str = seg_path.to_str()
-        si = si + 1u64
-        val opened_f = File::open(seg_str)
-        match opened_f {
-            Result::Ok(f) => {
-                # The dictionary answers this on its own: one section
-                # is read, no frame is touched, and the arena is never
-                # expanded.
-                val h = segfile::head_of(&f, &mut head_buf)
-                var got = h.ok && h.has_terms()
-                if got {
-                    indexed_segs = indexed_segs + 1u64
-                    if !segfile::load_block(&f, h.terms_off, h.terms_len, &crc, &mut raw, &mut tsec) { got = false }
-                }
-                if got {
-                        var raw_len: u64 = 0u64
-                        val tw = tsec.span()
-                        match tw {
-                        Option::Some(traw) => {
-                        raw_len = tsec.len()
-                        var head = ByteReader::new(raw_len)
-                        terms_seen = terms_seen + head.take_u32(traw)
-                        val hits = archive::terms_with_prefix(traw, 0u64, raw_len, prefix)
-                        var h: u64 = 0u64
-                        while h < hits.names.size() {
-                            val packed: u64 = hits.names.get(h)
-                            val at = record::span_start(packed)
-                            val vlen = record::span_len(packed)
-                            val c: u64 = hits.counts.get(h)
-                            # Values repeat across segments, so they
-                            # are folded here by the same hash trick
-                            # the scan uses.
-                            val key = extract::hash_span(traw, at, vlen)
-                            val mask = slot_bits - 1u64
-                            var slot = key & mask
-                            var placed = false
-                            while !placed {
-                                val cell: u64 = slots.get(slot)
-                                if cell == 0u64 {
-                                    val pos = hashes.size()
-                                    hashes.push(key)
-                                    counts.push(c)
-                                    val nm = query::text_of(traw, at, vlen)
-                                    names.push(nm)
-                                    slots.set(slot, pos + 1u64)
-                                    placed = true
-                                } else {
-                                    val pos = cell - 1u64
-                                    val hv: u64 = hashes.get(pos)
-                                    if hv == key {
-                                        val prev: u64 = counts.get(pos)
-                                        counts.set(pos, prev + c)
-                                        placed = true
-                                    } else {
-                                        slot = (slot + 1u64) & mask
-                                    }
-                                }
-                            }
-                            h = h + 1u64
-                        }
-                        }
-                        Option::None => { }
-                        }
-                }
-            }
-            Result::Err(e) => { println("  {seg_str}: {e}") }
-        }
-    }
+    # The dictionary spells a term `key:value`, so the key the caller
+    # named is the prefix. There is no table of eight any more: a
+    # label key is whatever was written.
+    val prefix = "{field}:"
+    val tal = query::tally(&segs, prefix, false, &crc)
+    val indexed_segs = tal.segments
+    val terms_seen = tal.terms
 
     if indexed_segs == 0u64 {
         println("no term index in these segments -- rebuild the archive")
@@ -1016,10 +926,10 @@ fn cmd_fields_indexed(dir: str, field: str, limit: u64) -> u64 {
 
     var tallies: Vec<Tally> = Vec::new()
     var i: u64 = 0u64
-    while i < names.size() {
-        val c: u64 = counts.get(i)
-        val t = Tally { count: c, idx: i }
-        tallies.push(t)
+    while i < tal.size() {
+        val c: u64 = tal.counts.get(i)
+        val one = Tally { count: c, idx: i }
+        tallies.push(one)
         i = i + 1u64
     }
     tallies.sort()
@@ -1028,7 +938,7 @@ fn cmd_fields_indexed(dir: str, field: str, limit: u64) -> u64 {
     var k: u64 = 0u64
     while k < total && shown < limit {
         val t: Tally = tallies.get(total - 1u64 - k)
-        val nm: String = names.get(t.idx)
+        val nm: String = tal.names.get(t.idx)
         println("  {t.count}  {nm}")
         shown = shown + 1u64
         k = k + 1u64

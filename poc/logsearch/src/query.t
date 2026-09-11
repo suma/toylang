@@ -262,11 +262,10 @@ pub fn parse_query(text: str, now: i64) -> Query {
                 }
             }
             if !handled {
-                # A key the index knows becomes a term; anything else
-                # is a substring, spelled exactly as it was typed.
-                # `level=error` stays a substring on purpose: there is
-                # no `level` field, and searching for the text is what
-                # the person meant.
+                # A label-shaped key becomes a term; anything else is
+                # a substring, spelled exactly as it was typed. A key
+                # with a dot or a capital in it is not a label, so
+                # `Host=x` searches the text.
                 var as_term = false
                 match at {
                     Option::Some(pos) => {
@@ -976,6 +975,133 @@ pub fn run(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32) -> u64 {
 }
 
 # ---------------------------------------------------------------------
+# Tallies over the term dictionary
+#
+# "How many of each?" is answered without opening a frame: one
+# section per segment, folded across segments. The same walk serves
+# `fields <key>` on the command line and `/v1/labels` over HTTP,
+# which is why it lives here rather than in either caller.
+
+pub struct FieldTally {
+    names: Vec<String>,
+    counts: Vec<u64>,
+    terms: u64,
+    segments: u64,
+}
+
+impl FieldTally {
+    pub fn new() -> Self {
+        var names: Vec<String> = Vec::new()
+        var counts: Vec<u64> = Vec::new()
+        val t = FieldTally {
+            names: names, counts: counts, terms: 0u64, segments: 0u64,
+        }
+        t
+    }
+    pub fn size(&self) -> u64 { self.names.size() }
+}
+
+# Every value under `prefix` (`status:`), or -- with `keys_only` --
+# every key the dictionary holds.
+#
+# Values repeat across segments, so they are folded through an
+# open-addressing table. A linear scan over the values seen so far
+# was the first attempt and it is quadratic: for `ip` (11,293
+# distinct) it cost more than the full scan the index replaces.
+pub fn tally(segs: &Vec<String>, prefix: str, keys_only: bool,
+             crc: &Crc32) -> FieldTally {
+    var out = FieldTally::new()
+    var head_buf = ByteWriter::with_capacity(segfile::data_at() + 64u64)
+    var raw = ByteWriter::with_capacity(4194304u64)
+    var tsec = ByteWriter::with_capacity(4194304u64)
+
+    val slot_bits: u64 = 65536u64
+    var slots: Vec<u64> = Vec::with_capacity(slot_bits)
+    var sz: u64 = 0u64
+    while sz < slot_bits {
+        slots.push(0u64)
+        sz = sz + 1u64
+    }
+    var hashes: Vec<u64> = Vec::new()
+
+    var si: u64 = 0u64
+    while si < segs.size() {
+        val seg_path: String = segs.get(si)
+        val seg_str = seg_path.to_str()
+        si = si + 1u64
+        val opened_f = File::open(seg_str)
+        match opened_f {
+            Result::Ok(f) => {
+                val h = segfile::head_of(&f, &mut head_buf)
+                var got = h.ok && h.has_terms()
+                if got {
+                    out.segments = out.segments + 1u64
+                    if !segfile::load_block(&f, h.terms_off, h.terms_len, crc, &mut raw, &mut tsec) { got = false }
+                }
+                if got {
+                    val tw = tsec.span()
+                    match tw {
+                        Option::Some(traw) => {
+                            val raw_len = tsec.len()
+                            var head = ByteReader::new(raw_len)
+                            out.terms = out.terms + head.take_u32(traw)
+                            if keys_only {
+                                val hits = archive::term_keys(traw, 0u64, raw_len)
+                                fold(&hits, traw, &mut slots, &mut hashes, &mut out)
+                            } else {
+                                val hits = archive::terms_with_prefix(traw, 0u64, raw_len, prefix)
+                                fold(&hits, traw, &mut slots, &mut hashes, &mut out)
+                            }
+                        }
+                        Option::None => { }
+                    }
+                }
+            }
+            Result::Err(e) => { }
+        }
+    }
+    out
+}
+
+fn fold(hits: &TermHits, traw: Span<u8>, slots: &mut Vec<u64>,
+        hashes: &mut Vec<u64>, out: &mut FieldTally) {
+    val mask = slots.size() - 1u64
+    var h: u64 = 0u64
+    while h < hits.names.size() {
+        val packed: u64 = hits.names.get(h)
+        val at = record::span_start(packed)
+        val vlen = record::span_len(packed)
+        val c: u64 = hits.counts.get(h)
+        val key = extract::hash_span(traw, at, vlen)
+        var slot = key & mask
+        var placed = false
+        while !placed {
+            val cell: u64 = slots.get(slot)
+            if cell == 0u64 {
+                val pos = hashes.size()
+                hashes.push(key)
+                out.counts.push(c)
+                val nm = text_of(traw, at, vlen)
+                out.names.push(nm)
+                slots.set(slot, pos + 1u64)
+                placed = true
+            } else {
+                val pos = cell - 1u64
+                val hv: u64 = hashes.get(pos)
+                if hv == key {
+                    val prev: u64 = out.counts.get(pos)
+                    out.counts.set(pos, prev + c)
+                    placed = true
+                } else {
+                    slot = (slot + 1u64) & mask
+                }
+            }
+        }
+        h = h + 1u64
+    }
+}
+
+# ---------------------------------------------------------------------
 # Renderings
 #
 # Three shapes over the same result (HTTP_API.md section 2): lines for
@@ -1130,17 +1256,41 @@ pub fn field_host() -> u32 { 8u32 }
 pub fn field_tag() -> u32 { 9u32 }
 pub fn field_none() -> u32 { 0u32 }
 
-# Whether this key has its own column in the term index.
+# Whether `key=value` names a term rather than a piece of text.
+#
+# **Any label key does.** It used to be a list of eight -- the fields
+# `extract.t` pulls out of an apache line -- because nothing else was
+# ever in the dictionary. Labels are indexed now (`app=api` on an
+# ingested record), and the dictionary holds whatever key was
+# written, so the question is no longer "do I know this name" but "is
+# this shaped like a label": `[a-z0-9_]{1,32}`, the rule from
+# DATA_MODEL.md section 2.
+#
+# The consequence is worth stating: `level=error` against an archive
+# with no `level` label now matches nothing instead of searching the
+# text for `level=error`. That is what `=` means -- a value in full
+# -- and `~` is the one that looks inside. The empty answer says so
+# ("no segment holds every field value").
+#
+# The control words are refused explicitly. They are read before this
+# is reached, but `limit=5` must never become a term by another road.
 pub fn is_index_key(key: &String) -> bool {
-    if key.eq_str("status") { return true }
-    if key.eq_str("method") { return true }
-    if key.eq_str("path") { return true }
-    if key.eq_str("ip") { return true }
-    if key.eq_str("vhost") { return true }
-    if key.eq_str("ua") { return true }
-    if key.eq_str("host") { return true }
-    if key.eq_str("tag") { return true }
-    false
+    val n = key.len()
+    if n == 0u64 || n > 32u64 { return false }
+    if key.eq_str("from") { return false }
+    if key.eq_str("to") { return false }
+    if key.eq_str("limit") { return false }
+    if key.eq_str("order") { return false }
+    if key.eq_str("kind") { return false }
+    if key.eq_str("top") { return false }
+    var i: u64 = 0u64
+    while i < n {
+        val c: u8 = key.get(i)
+        val ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
+        if !ok { return false }
+        i = i + 1u64
+    }
+    true
 }
 
 pub fn field_code(name: str) -> u32 {

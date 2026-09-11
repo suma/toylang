@@ -305,6 +305,62 @@ pub unsafe fn hash_term(key: str, w: Span<u8>, at: u64, len: u64) -> u64
     h
 }
 
+# The same hash for a key that is **in the window** rather than a
+# literal.
+#
+# A label's key is bytes in the line (`app=api`), not a name this
+# program knows in advance, so the two spellings have to produce the
+# same number for the same `key:value` -- otherwise `host` written by
+# the syslog framing and `host` written as a label are two different
+# terms.
+pub unsafe fn hash_term_span(w: Span<u8>, key_at: u64, key_len: u64,
+                             at: u64, len: u64) -> u64
+    requires at + len <= w.len()
+    requires key_at + key_len <= w.len()
+{
+    var h: u64 = 14695981039346656037u64
+    var i: u64 = 0u64
+    while i < key_len {
+        val b: u8 = w.get(key_at + i)
+        h = h ^ (b as u64)
+        h = h * 1099511628211u64
+        i = i + 1u64
+    }
+    h = h ^ 58u64          # ':'
+    h = h * 1099511628211u64
+    var j: u64 = 0u64
+    while j < len {
+        val b: u8 = w.get(at + j)
+        h = h ^ (b as u64)
+        h = h * 1099511628211u64
+        j = j + 1u64
+    }
+    h
+}
+
+# `key:value` where both halves are in the window.
+pub fn term_text_span(w: Span<u8>, key_at: u64, key_len: u64,
+                      at: u64, len: u64) -> String
+    requires at + len <= w.len()
+    requires key_at + key_len <= w.len()
+{
+    var out = String::with_capacity(key_len + len + 1u64)
+    var i: u64 = 0u64
+    while i < key_len {
+        val b: u8 = w.get(key_at + i)
+        out.push(b)
+        i = i + 1u64
+    }
+    out.push(58u8)
+    var j: u64 = 0u64
+    while j < len {
+        val b: u8 = w.get(at + j)
+        out.push(b)
+        j = j + 1u64
+    }
+    out
+}
+
 # `key:value` as a `String`, for the term dictionary on disk.
 pub fn term_text(key: str, w: Span<u8>, at: u64, len: u64) -> String
     requires at + len <= w.len()

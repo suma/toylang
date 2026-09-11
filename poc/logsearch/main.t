@@ -3,11 +3,18 @@
 # Three subcommands, all of them read-only towards the logs:
 #
 #   scan    <dir> [limit]          what is there, and how it framed
-#   archive <dir> <out> [limit]    parse it and compress it into segments
-#   query   <out> "<query>"        search the segments
-#   fields  <out> <field> [limit]   count the values of one field
-#   object  <out> "<key>=<value>"  one object: count, first / last seen
-#   verify  <out>                  read every segment back and check it
+#   archive <dir> <spec> [limit]   parse it and compress it into segments
+#   query   <spec> "<query>"       search the segments
+#   fields  <spec> <field> [limit]  count the values of one field
+#   object  <spec> "<key>=<value>" one object: count, first / last seen
+#   verify  <spec>                 read every segment back and check it
+#   catalog <spec> [repair|compact] what the catalog holds, or rebuild it
+#   retain  <spec> [days]          drop segments older than the window
+#
+# `<spec>` is a mount configuration (`*.conf`) or a single directory
+# used as one mount. Several directories mean several mounts, and a
+# new segment goes to the least-used share of the ones that can take
+# it (DATA_MODEL.md section 6).
 #
 # The two that matter are `archive` and `query`: one turns a log
 # directory into segments, the other answers questions about them.
@@ -41,8 +48,10 @@ import std.io
 import std.parse
 import std.time
 import archive
+import catalog
 import extract
 import logdir
+import mount
 import query
 import record
 import segfile
@@ -56,6 +65,12 @@ import segfile
 # cost of carrying a line across chunk boundaries -- worth doing, not
 # done (RUNTIME_GAPS.md).
 const BUF_BYTES: u64 = 16777216u64
+
+# The quota a bare directory gets when it is used as a mount. It is a
+# placeholder, not a policy: naming a directory on the command line
+# says nothing about how much of the disk this service may have. A
+# real limit is declared in a `.conf` (DATA_MODEL.md section 6).
+const SINGLE_MOUNT_QUOTA: u64 = 1099511627776u64
 
 fn arg_or(i: u64, fallback: str) -> str {
     var d = fallback
@@ -90,6 +105,81 @@ fn day_dir(out: str, secs: i64) -> String {
     val tail = String::from_str(ymd)
     val full = with_seg.concat(&tail)
     full
+}
+
+
+# Where the segments may go.
+#
+# `<spec>` is either a mount configuration (`*.conf`, DATA_MODEL.md
+# section 6) or a single directory, which is treated as one mount.
+# The single-directory form is what every command took before mounts
+# existed and is still the shape the tests and the examples use; the
+# quota it gets is a placeholder, because a directory named on the
+# command line is not declaring a limit.
+fn open_mounts(spec: str, ms: &mut MountSet) -> bool {
+    val s = String::from_str(spec)
+    val conf = String::from_str(".conf")
+    if s.ends_with(&conf) {
+        val got = mount::load_config(spec, ms)
+        match got {
+            Result::Ok(bad) => {
+                if bad > 0u64 {
+                    println("  {bad} line(s) of {spec} were not understood")
+                }
+            }
+            Result::Err(e) => {
+                println("cannot read {spec}: {e}")
+                return false
+            }
+        }
+        if ms.is_empty() {
+            println("{spec} declares no mounts")
+            return false
+        }
+        return true
+    }
+    val one = String::from_str(spec)
+    ms.add(&one, SINGLE_MOUNT_QUOTA, false)
+    true
+}
+
+# Every segment the spec covers, in a stable order.
+#
+# **The catalog answers, and the directory answers when the catalog
+# cannot** (DATA_MODEL.md section 6). Falling back rather than failing
+# is what makes the catalog a cache: an archive written before
+# catalogs existed still reads, and so does one whose `meta/` was
+# deleted.
+fn segments_of(spec: str, out: &mut Vec<String>) {
+    out.clear()
+    var ms = MountSet::new()
+    if !open_mounts(spec, &mut ms) { return }
+    val crc = Crc32::new()
+    var i: u64 = 0u64
+    while i < ms.size() {
+        val p = ms.path_of(i)
+        val ps = p.to_str()
+        val c = catalog::load(ps, &crc)
+        if c.size() > 0u64 {
+            var k: u64 = 0u64
+            while k < c.size() {
+                val r = c.row(k)
+                val path = catalog::seg_path(ps, &r)
+                out.push(path.clone())
+                k = k + 1u64
+            }
+        } else {
+            val walked = logdir::scan_suffix(ps, ".seg")
+            var k2: u64 = 0u64
+            while k2 < walked.size() {
+                val w: String = walked.get(k2)
+                out.push(w.clone())
+                k2 = k2 + 1u64
+            }
+        }
+        i = i + 1u64
+    }
+    out.sort()
 }
 
 # ---------------------------------------------------------------------
@@ -204,13 +294,52 @@ fn cmd_scan(dir: str, limit: u64) -> u64 {
 
 # ---------------------------------------------------------------------
 
-fn cmd_archive(dir: str, out: str, limit: u64) -> u64 {
-    println("archiving {dir} -> {out}")
+fn cmd_archive(dir: str, spec: str, limit: u64) -> u64 {
+    println("archiving {dir} -> {spec}")
     val files = logdir::scan(dir)
     val n_files = files.size()
     if n_files == 0u64 {
         println("no log files found")
         return 1u64
+    }
+
+    var ms = MountSet::new()
+    if !open_mounts(spec, &mut ms) { return 1u64 }
+    val crc0 = Crc32::new()
+    ms.refresh_used(&crc0)
+
+    # Each mount gets its identity written if it has none, and a
+    # generation to append to. A mount that cannot do either is
+    # degraded rather than fatal -- the others still take writes,
+    # which is the whole reason there is more than one.
+    var gens: Vec<u64> = Vec::new()
+    var mi: u64 = 0u64
+    while mi < ms.size() {
+        val mp = ms.path_of(mi)
+        val mps = mp.to_str()
+        var gen: u64 = 0u64
+        val meta = mount::ensure_meta(mps, "logsearch")
+        if !meta.ok {
+            println("  {mps}: cannot read or write meta/mount.json")
+            ms.mark(mi, mount::state_degraded())
+        } else {
+            var c = catalog::load(mps, &crc0)
+            gen = c.generation()
+            if gen == 0u64 {
+                if catalog::write_generation(mps, &c, 1u64, &crc0) {
+                    gen = 1u64
+                } else {
+                    println("  {mps}: cannot publish a catalog")
+                    ms.mark(mi, mount::state_degraded())
+                }
+            }
+            val share = ms.permille(mi)
+            val used = ms.used_of(mi)
+            val quota = ms.quota_of(mi)
+            println("  mount {mps}  {used} / {quota} B ({share} permille)")
+        }
+        gens.push(gen)
+        mi = mi + 1u64
     }
 
     var reader = LogReader::with_capacity(BUF_BYTES)
@@ -254,7 +383,7 @@ fn cmd_archive(dir: str, out: str, limit: u64) -> u64 {
                                 Option::None => { }
                             }
                             if w.is_full() {
-                                val done = flush_segment(&mut w, out, segid, &crc)
+                                val done = place_segment(&mut w, &mut ms, &gens, segid, &crc)
                                 if done == 0u64 { bad = bad + 1u64 }
                                 raw_total = raw_total + w.arena_bytes()
                                 records_total = records_total + w.count()
@@ -272,7 +401,7 @@ fn cmd_archive(dir: str, out: str, limit: u64) -> u64 {
     }
 
     if !w.is_empty() {
-        val done = flush_segment(&mut w, out, segid, &crc)
+        val done = place_segment(&mut w, &mut ms, &gens, segid, &crc)
         if done == 0u64 { bad = bad + 1u64 }
         raw_total = raw_total + w.arena_bytes()
         records_total = records_total + w.count()
@@ -281,7 +410,22 @@ fn cmd_archive(dir: str, out: str, limit: u64) -> u64 {
         w.reset()
     }
 
-    val ms = watch.elapsed_ms()
+    # Fold what was appended into a new generation, so the next start
+    # reads one file instead of replaying the run.
+    var ci: u64 = 0u64
+    while ci < ms.size() {
+        val cp = ms.path_of(ci)
+        val cps = cp.to_str()
+        var c = catalog::load(cps, &crc)
+        if c.applied() > 0u64 {
+            if !catalog::compact(cps, &mut c, &crc) {
+                println("  {cps}: could not fold the journal into a new generation")
+            }
+        }
+        ci = ci + 1u64
+    }
+
+    val took = watch.elapsed_ms()
     println("")
     println("segments         {segments} ({bad} failed)")
     println("records          {records_total}")
@@ -291,13 +435,14 @@ fn cmd_archive(dir: str, out: str, limit: u64) -> u64 {
         val pct = (dat_total * 100u64) / raw_total
         println("ratio            {pct}% of raw")
     }
-    println("elapsed          {ms} ms")
+    println("elapsed          {took} ms")
     0u64
 }
 
 # Write one segment and say how many bytes its `.seg` came to, or 0
 # when it could not be written.
-fn flush_segment(w: &mut ArchiveWriter, out: str, segid: u64, crc: &Crc32) -> u64 {
+fn flush_segment(w: &mut ArchiveWriter, out: str, segid: u64, crc: &Crc32,
+                 gen: u64) -> u64 {
     var stamp = w.ts_min()
     if stamp == 0i64 { stamp = time::now_unix_secs() }
     val dir = day_dir(out, stamp)
@@ -314,6 +459,18 @@ fn flush_segment(w: &mut ArchiveWriter, out: str, segid: u64, crc: &Crc32) -> u6
         Result::Ok(k) => { n = k }
         Result::Err(e) => { println("  write {base}: {e}")  return 0u64 }
     }
+    # Record it. The row is read back out of the file that was just
+    # written rather than built from what the writer believed, so the
+    # catalog cannot describe a segment the segment does not.
+    #
+    # A failure here is a warning, not a failure of the archive: the
+    # file is published, and a catalog that misses it is a catalog
+    # that `repair` rebuilds (STORAGE_FORMAT.md section 2, step 9).
+    if gen > 0u64 {
+        if !record_segment(out, base, gen, crc) {
+            println("  {base}.seg: written, but not recorded in the catalog")
+        }
+    }
     val records = w.count()
     val arena = w.arena_bytes()
     val pct = if arena > 0u64 { (n * 100u64) / arena } else { 0u64 }
@@ -321,11 +478,72 @@ fn flush_segment(w: &mut ArchiveWriter, out: str, segid: u64, crc: &Crc32) -> u6
     n
 }
 
+# Append one `ADD` row for the segment at `<base>.seg`.
+fn record_segment(mount_dir: str, base: str, gen: u64, crc: &Crc32) -> bool {
+    val path = "{base}.seg"
+    val opened = File::open(path)
+    var ok = false
+    match opened {
+        Result::Ok(f) => {
+            var scratch = ByteWriter::with_capacity(512u64)
+            val h = segfile::head_of(&f, &mut scratch)
+            if h.ok {
+                var size: u64 = 0u64
+                val sz = f.size()
+                match sz {
+                    Result::Ok(k) => { size = k }
+                    Result::Err(e) => { }
+                }
+                var r = catalog::row_of_head(&h, size, false)
+                # Where it went, not where its timestamps say it
+                # should have: a segment with no dated records at all
+                # is filed under the day it was written.
+                val name = String::from_str(path)
+                val key = catalog::daykey_of_path(&name)
+                if key > 0u64 { r.daykey = key }
+                ok = catalog::append_add(mount_dir, gen, &r, crc)
+            }
+        }
+        Result::Err(e) => { }
+    }
+    ok
+}
+
+# Put one finished segment on the least-used writable mount.
+#
+# Returns the bytes it came to, or 0 when there was nowhere to put it
+# -- which is a real outcome (every mount full or degraded), not an
+# internal error, so the caller counts it rather than stopping.
+fn place_segment(w: &mut ArchiveWriter, ms: &mut MountSet, gens: &Vec<u64>,
+                 segid: u64, crc: &Crc32) -> u64 {
+    val at = ms.pick()
+    var done: u64 = 0u64
+    match at {
+        Option::Some(mi) => {
+            val p = ms.path_of(mi)
+            val mp = p.to_str()
+            val g = gens.get(mi)
+            done = flush_segment(w, mp, segid, crc, g)
+            if done > 0u64 {
+                val now = ms.used_of(mi)
+                ms.set_used(mi, now + done)
+            } else {
+                ms.mark(mi, mount::state_degraded())
+            }
+        }
+        Option::None => {
+            println("  segment {segid} has nowhere to go: every mount is full, readonly or degraded")
+        }
+    }
+    done
+}
+
 # ---------------------------------------------------------------------
 
 fn cmd_verify(out: str) -> u64 {
     println("verifying {out}")
-    val segs = logdir::scan_suffix(out, ".seg")
+    var segs: Vec<String> = Vec::new()
+    segments_of(out, &mut segs)
     val n = segs.size()
     if n == 0u64 {
         println("no segments found")
@@ -382,6 +600,275 @@ fn cmd_verify(out: str) -> u64 {
     0u64
 }
 
+# ---------------------------------------------------------------------
+
+# What the catalog says, and the two ways of rewriting it.
+#
+#   catalog <spec>            what each mount holds
+#   catalog <spec> repair     rebuild from `seg/` and publish
+#   catalog <spec> compact    fold the journal into a new generation
+#
+# `repair` is not a last resort (STORAGE_FORMAT.md section 7): it
+# reads 320 bytes per segment, so it is something to run when in
+# doubt rather than something to fear.
+fn cmd_catalog(spec: str, action: str) -> u64 {
+    var ms = MountSet::new()
+    if !open_mounts(spec, &mut ms) { return 1u64 }
+    val crc = Crc32::new()
+    var rc: u64 = 0u64
+    var i: u64 = 0u64
+    while i < ms.size() {
+        val p = ms.path_of(i)
+        val ps = p.to_str()
+        if action == "repair" {
+            var built = catalog::rebuild(ps, &crc)
+            val rows = built.size()
+            # Publish *after* the generation being replaced, or the
+            # reader keeps taking the highest, which is the old one.
+            val at = catalog::latest_gen(ps)
+            built.adopt_generation(at)
+            if catalog::compact(ps, &mut built, &crc) {
+                val gen = built.generation()
+                println("{ps}: rebuilt {rows} row(s) as generation {gen}")
+            } else {
+                println("{ps}: could not publish the rebuilt catalog")
+                rc = 1u64
+            }
+        } elif action == "compact" {
+            var c = catalog::load(ps, &crc)
+            val was = c.applied()
+            if catalog::compact(ps, &mut c, &crc) {
+                val gen = c.generation()
+                println("{ps}: folded {was} journal record(s) into generation {gen}")
+            } else {
+                println("{ps}: could not compact")
+                rc = 1u64
+            }
+        } else {
+            val meta = mount::read_meta(ps)
+            if meta.ok {
+                val u = meta.uuid.clone()
+                println("{ps}  uuid {u}")
+            } else {
+                println("{ps}  (no meta/mount.json)")
+            }
+            val c = catalog::load(ps, &crc)
+            val gen = c.generation()
+            if gen == 0u64 {
+                println("  no catalog -- `catalog {spec} repair` builds one from seg/")
+            } else {
+                val rows = c.size()
+                val applied = c.applied()
+                val records = c.total_records()
+                val bytes = c.total_bytes()
+                println("  generation {gen}, {rows} segment(s), {applied} journal record(s)")
+                println("  {records} records, {bytes} bytes")
+                if rows > 0u64 {
+                    var lo: i64 = 0i64
+                    var hi: i64 = 0i64
+                    var k: u64 = 0u64
+                    while k < rows {
+                        val r = c.row(k)
+                        if k == 0u64 {
+                            lo = r.ts_min
+                            hi = r.ts_max
+                        } else {
+                            if r.ts_min < lo { lo = r.ts_min }
+                            if r.ts_max > hi { hi = r.ts_max }
+                        }
+                        k = k + 1u64
+                    }
+                    val dt_lo = DateTime::from_unix(lo)
+                    val dt_hi = DateTime::from_unix(hi)
+                    val lo_txt = time::format(dt_lo, "%Y-%m-%dT%H:%M:%SZ")
+                    val hi_txt = time::format(dt_hi, "%Y-%m-%dT%H:%M:%SZ")
+                    println("  {lo_txt} .. {hi_txt}")
+                }
+            }
+        }
+        i = i + 1u64
+    }
+    rc
+}
+
+# ---------------------------------------------------------------------
+
+# Drop the segments whose last record is older than `days`.
+#
+# **Retention is per segment, not per record** (DATA_MODEL.md section
+# 4): a segment holding one record inside the window stays whole. The
+# order is catalog first, file second (STORAGE_FORMAT.md section 8) --
+# a file that is still listed but gone reads as `NotFound` at query
+# time, while a file that is gone from the catalog but still on disk
+# costs only space and is found again by `repair`.
+#
+# The 60-second grace period the design calls for is not here: it
+# exists so a query that is already running does not lose a file out
+# from under it, and this command is the whole process. A server
+# needs it; a one-shot command does not have anyone to wait for.
+fn cmd_retain(spec: str, days: u64) -> u64 {
+    var ms = MountSet::new()
+    if !open_mounts(spec, &mut ms) { return 1u64 }
+    val crc = Crc32::new()
+    val now = time::now_unix_secs()
+    val cutoff = now - ((days as i64) * 86400i64)
+    val when = DateTime::from_unix(cutoff)
+    val when_txt = time::format(when, "%Y-%m-%dT%H:%M:%SZ")
+    println("dropping segments whose last record is before {when_txt}")
+
+    var rc: u64 = 0u64
+    var dropped: u64 = 0u64
+    var kept: u64 = 0u64
+    var freed: u64 = 0u64
+    var i: u64 = 0u64
+    while i < ms.size() {
+        val p = ms.path_of(i)
+        val ps = p.to_str()
+        if ms.is_readonly(i) {
+            println("  {ps}: readonly, left alone")
+        } else {
+            var c = catalog::load(ps, &crc)
+            val gen = c.generation()
+            if gen == 0u64 {
+                println("  {ps}: no catalog -- run `catalog {spec} repair` first")
+                rc = 1u64
+            } else {
+                var dead: Vec<u64> = Vec::new()
+                c.expired(cutoff, &mut dead)
+                kept = kept + (c.size() - dead.size())
+
+                # Read everything out before changing anything: the
+                # indices `expired` hands back stop meaning what they
+                # meant as soon as one row is removed.
+                var ids: Vec<u64> = Vec::new()
+                var sizes: Vec<u64> = Vec::new()
+                var keys: Vec<u64> = Vec::new()
+                var paths: Vec<String> = Vec::new()
+                var k: u64 = 0u64
+                while k < dead.size() {
+                    val idx = dead.get(k)
+                    val r = c.row(idx)
+                    ids.push(r.segid)
+                    sizes.push(r.seg_bytes)
+                    keys.push(r.daykey)
+                    val sp = catalog::seg_path(ps, &r)
+                    paths.push(sp.clone())
+                    k = k + 1u64
+                }
+
+                var j: u64 = 0u64
+                while j < ids.size() {
+                    val segid = ids.get(j)
+                    val why = catalog::why_retention()
+                    if catalog::append_remove(ps, gen, segid, why, &crc) {
+                        val gone = c.remove(segid)
+                        val sp: String = paths.get(j)
+                        val sps = sp.to_str()
+                        val rm = fs::remove_file(sps)
+                        match rm {
+                            Result::Ok(u) => {
+                                dropped = dropped + 1u64
+                                freed = freed + sizes.get(j)
+                            }
+                            Result::Err(e) => {
+                                # Already off the catalog, which is
+                                # the state that matters; the file is
+                                # space, and `repair` would put it
+                                # back, so say so.
+                                println("  {sps}: dropped from the catalog but not removed ({e})")
+                                rc = 1u64
+                            }
+                        }
+                    } else {
+                        println("  {ps}: cannot append REMOVE for segment {segid}")
+                        rc = 1u64
+                    }
+                    j = j + 1u64
+                }
+
+                # A day whose segments are all gone leaves an empty
+                # directory, and so do the month and the year above it
+                # once their last day goes. `remove_dir` failing *is*
+                # the check that a level was not empty, so there is
+                # nothing to test first and nothing to undo.
+                var d: u64 = 0u64
+                while d < keys.size() {
+                    val key = keys.get(d)
+                    val dir = catalog::day_path(ps, key)
+                    prune_empty_days(dir.to_str())
+                    d = d + 1u64
+                }
+
+                if ids.size() > 0u64 {
+                    if !catalog::compact(ps, &mut c, &crc) {
+                        println("  {ps}: could not fold the removals into a new generation")
+                        rc = 1u64
+                    }
+                }
+            }
+        }
+        i = i + 1u64
+    }
+
+    println("")
+    println("segments dropped {dropped}")
+    println("segments kept    {kept}")
+    println("bytes freed      {freed}")
+    rc
+}
+
+# Remove `<mount>/seg/YYYY/MM/DD` and each level above it that the
+# removal emptied, stopping at the first one that is still in use.
+fn prune_empty_days(day_dir: str) {
+    # Unrolled rather than looped: the tree is exactly
+    # `seg/YYYY/MM/DD`, and walking up it with a `var` would want to
+    # move a `String` into an existing binding, which the compiled
+    # lanes refuse (RUNTIME_GAPS.md G16).
+    val day = String::from_str(day_dir)
+    if !drop_dir(&day) { return }
+    val month = parent_of(&day)
+    if month.len() == 0u64 { return }
+    if !drop_dir(&month) { return }
+    val year = parent_of(&month)
+    if year.len() == 0u64 { return }
+    val done = drop_dir(&year)
+}
+
+# `remove_dir` succeeds only on an empty directory, which is exactly
+# the question being asked.
+fn drop_dir(path: &String) -> bool {
+    val gone = fs::remove_dir(path.to_str())
+    var ok = false
+    match gone {
+        Result::Ok(u) => { ok = true }
+        Result::Err(e) => { }
+    }
+    ok
+}
+
+# Everything before the last `/`, or empty when there is none.
+fn parent_of(path: &String) -> String {
+    var cut = path.len()
+    var found = false
+    var i = path.len()
+    while i > 0u64 && !found {
+        i = i - 1u64
+        val c: u8 = path.get(i)
+        if c == '/' {
+            cut = i
+            found = true
+        }
+    }
+    if !found {
+        val empty = String::new()
+        return empty
+    }
+    val out = path.substring(0u64, cut)
+    out
+}
+
+# ---------------------------------------------------------------------
+
 # `<key>=<value> top=<field>`: what this one value is linked to.
 #
 # The answer comes out of the link section -- pairs of field values
@@ -389,7 +876,8 @@ fn cmd_verify(out: str) -> u64 {
 # written (ONTOLOGY.md O1). No records are read and no frames are
 # expanded: the traversal is a walk of one group of link rows.
 fn cmd_top_linked(dir: str, q: &Query, field: str, limit: u64) -> u64 {
-    val segs = logdir::scan_suffix(dir, ".seg")
+    var segs: Vec<String> = Vec::new()
+    segments_of(dir, &mut segs)
     if segs.size() == 0u64 {
         println("no segments under {dir}")
         return 1u64
@@ -611,7 +1099,9 @@ fn cmd_query(dir: str, text: str) -> u64 {
     val now = time::now_unix_secs()
     val q = query::parse_query(text, now)
     val crc = Crc32::new()
-    val n = query::run(dir, &q, &crc)
+    var segs: Vec<String> = Vec::new()
+    segments_of(dir, &mut segs)
+    val n = query::run(dir, &segs, &q, &crc)
     n
 }
 
@@ -637,7 +1127,8 @@ fn cmd_fields_indexed(dir: str, field: str, limit: u64) -> u64 {
     }
     println("field {field} (index)")
 
-    val segs = logdir::scan_suffix(dir, ".seg")
+    var segs: Vec<String> = Vec::new()
+    segments_of(dir, &mut segs)
     val n_segs = segs.size()
     if n_segs == 0u64 {
         println("no segments under {dir}")
@@ -788,7 +1279,8 @@ fn cmd_fields(dir: str, field: str, limit: u64) -> u64 {
     }
     println("field {field}")
 
-    val segs = logdir::scan_suffix(dir, ".seg")
+    var segs: Vec<String> = Vec::new()
+    segments_of(dir, &mut segs)
     val n_segs = segs.size()
     if n_segs == 0u64 {
         println("no segments under {dir}")
@@ -967,7 +1459,8 @@ fn cmd_object(dir: str, spec: str) -> u64 {
     val want: String = q.terms.get(0u64)
     println("object {want}")
 
-    val segs = logdir::scan_suffix(dir, ".seg")
+    var segs: Vec<String> = Vec::new()
+    segments_of(dir, &mut segs)
     val crc = Crc32::new()
     var head_buf = ByteWriter::with_capacity(segfile::data_at() + 64u64)
     var raw = ByteWriter::with_capacity(1048576u64)
@@ -1099,6 +1592,16 @@ fn main() -> u64 {
     if mode == "verify" {
         val v_out = arg_or(1u64, "/tmp/logarchive")
         return cmd_verify(v_out)
+    }
+    if mode == "catalog" {
+        val c_spec = arg_or(1u64, "/tmp/logarchive")
+        val c_action = arg_or(2u64, "list")
+        return cmd_catalog(c_spec, c_action)
+    }
+    if mode == "retain" {
+        val r_spec = arg_or(1u64, "/tmp/logarchive")
+        val r_days = arg_u64(2u64, 14u64)
+        return cmd_retain(r_spec, r_days)
     }
     if mode == "scan" {
         val s_dir = arg_or(1u64, "poc/logsearch/log")

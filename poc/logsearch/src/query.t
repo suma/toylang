@@ -630,8 +630,13 @@ fn mark_frames(rb: Span<u8>, recs_len: u64, n_records: u64,
     }
 }
 
-pub fn run(dir: str, q: &Query, crc: &Crc32) -> u64 {
-    val segs = logdir::scan_suffix(dir, ".seg")
+# Run a query over the segments the caller found.
+#
+# The list is handed in rather than walked here: which files exist is
+# a question about mounts and catalogs (`main.t::segments_of`), and a
+# query has no business knowing how that was answered. `dir` is kept
+# only so the empty case can name what was searched.
+pub fn run(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32) -> u64 {
     val n_segs = segs.size()
     if n_segs == 0u64 {
         println("no segments under {dir}")

@@ -104,6 +104,43 @@ pub fn daykey_of(secs: i64) -> u64 {
     k as u64
 }
 
+# The day a segment actually lives under, read from its own path.
+#
+# The writer files a segment under its `ts_min` -- except that a
+# segment whose records carry no date at all has nowhere to go but
+# the day it was written. So **the path is the authority on the day
+# key, not the header**: deriving it from `ts_min` a second time
+# sends a reader to `1970/01/01` looking for a file that is under
+# `2026/09/11`, and the segment silently disappears from every query.
+#
+# Returns 0 for a path that is not `.../YYYY/MM/DD/<name>`.
+pub fn daykey_of_path(path: &String) -> u64 {
+    var cuts: Vec<u64> = Vec::new()
+    var i = path.len()
+    while i > 0u64 && cuts.size() < 4u64 {
+        i = i - 1u64
+        val c: u8 = path.get(i)
+        if c == '/' { cuts.push(i) }
+    }
+    if cuts.size() < 4u64 { return 0u64 }
+    val y = number_in(path, cuts.get(3u64) + 1u64, cuts.get(2u64))
+    val m = number_in(path, cuts.get(2u64) + 1u64, cuts.get(1u64))
+    val d = number_in(path, cuts.get(1u64) + 1u64, cuts.get(0u64))
+    if y == 0u64 || m == 0u64 || d == 0u64 { return 0u64 }
+    if m > 12u64 || d > 31u64 { return 0u64 }
+    (y * 10000u64) + (m * 100u64) + d
+}
+
+fn number_in(s: &String, from: u64, end: u64) -> u64 {
+    if end <= from { return 0u64 }
+    val part = s.substring(from, end)
+    val got = parse::to_u64(part.to_str())
+    match got {
+        Result::Ok(v) => { v }
+        Result::Err(e) => { 0u64 }
+    }
+}
+
 # Where a row's file lives under `mount`.
 pub fn seg_path(mount: str, r: &CatRow) -> String {
     val y = r.daykey / 10000u64
@@ -319,6 +356,15 @@ impl Catalog {
     pub fn generation(&self) -> u64 { self.gen }
     pub fn applied(&self) -> u64 { self.applied }
     pub fn is_empty(&self) -> bool { self.rows.size() == 0u64 }
+
+    # Take over an existing generation number without reading it.
+    #
+    # `rebuild` starts from nothing and so calls itself generation 0,
+    # which would publish generation 1 next to an already-published
+    # generation 7 and be ignored (the reader takes the highest). A
+    # repaired catalog has to be published *after* the one it
+    # replaces, and that is what this says.
+    pub fn adopt_generation(&mut self, gen: u64) { self.gen = gen }
 
     pub fn row(&self, i: u64) -> CatRow {
         val r: CatRow = self.rows.get(i)
@@ -740,7 +786,9 @@ pub fn rebuild(mount: str, crc: &Crc32) -> Catalog {
                         Result::Ok(n) => { size = n }
                         Result::Err(e) => { }
                     }
-                    val r = row_of_head(&h, size, is_arc)
+                    var r = row_of_head(&h, size, is_arc)
+                    val key = daykey_of_path(&p)
+                    if key > 0u64 { r.daykey = key }
                     c.add(&r)
                 }
             }

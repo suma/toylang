@@ -295,3 +295,42 @@ test "a mount with no catalog opens empty rather than failing" {
     assert_eq(c.generation(), 0u64)
     assert_eq(c.size(), 0u64)
 }
+
+# **どの日のディレクトリに居るかは、パスが答える。**
+#
+# 書き手はセグメントを `ts_min` の日に置くが、日付を 1 つも持たない
+# レコードばかりのセグメントは**書いた日**に置くしかない (置き場所が
+# 他に無い)。ヘッダから `ts_min` を読んで日付を組み直すと、`1970/01/01`
+# を探しに行って `2026/09/11` にあるファイルを見失う — 実際に
+# `verify` が「1 bad」と言うまで気づかなかった形である。
+test "the day a segment lives under is read from its path" {
+    val p = String::from_str("/tmp/la/seg/2026/09/11/000000000001.seg")
+    assert_eq(catalog::daykey_of_path(&p), 20260911u64)
+
+    # アーカイブ (`.arc.seg`) も同じ形。
+    val a = String::from_str("/mnt/disk2/logsearch/seg/2015/08/08/000000000117.arc.seg")
+    assert_eq(catalog::daykey_of_path(&a), 20150808u64)
+
+    # 日付の形をしていないものは 0 を返す — 呼び出し側が
+    # 「読めなかった」と区別できる必要がある。
+    val flat = String::from_str("000000000001.seg")
+    assert_eq(catalog::daykey_of_path(&flat), 0u64)
+    val shallow = String::from_str("/tmp/la/seg/000000000001.seg")
+    assert_eq(catalog::daykey_of_path(&shallow), 0u64)
+    val wordy = String::from_str("/tmp/la/seg/aaaa/bb/cc/000000000001.seg")
+    assert_eq(catalog::daykey_of_path(&wordy), 0u64)
+    val impossible = String::from_str("/tmp/la/seg/2026/13/40/000000000001.seg")
+    assert_eq(catalog::daykey_of_path(&impossible), 0u64)
+}
+
+# パスから読んだ日付で組んだ行は、そのパスへ戻れる。往復しないなら
+# カタログはファイルの在り処を答えられていない。
+test "a row built from a path points back at that path" {
+    val mount = "/tmp/la"
+    val p = String::from_str("/tmp/la/seg/2026/09/11/000000000042.seg")
+    var r = CatRow::empty()
+    r.segid = 42u64
+    r.daykey = catalog::daykey_of_path(&p)
+    val back = catalog::seg_path(mount, &r)
+    assert(back.eq(&p), "seg_path should rebuild the path the key came from")
+}

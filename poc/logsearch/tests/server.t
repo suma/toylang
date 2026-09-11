@@ -237,6 +237,28 @@ test "a format nobody renders is refused rather than guessed at" {
     assert(contains(&got, "json, ndjson or text"), "and the three are named")
 }
 
+# `top=<field>` は分布を求める言葉だが、その経路はまだコマンドライン
+# 側にしか無い。放っておくと **`parse_query` に落とされて全件が返る** —
+# 機能が無いのではなく答えが出たように見えるので、断る方を取る。
+test "a distribution asked for over HTTP is refused, not quietly dropped" {
+    val got = answer("GET /v1/query?q=top%3Dstatus HTTP/1.1\r\n\r\n", true)
+    assert(contains(&got, "HTTP/1.1 400"), "top= is not served here")
+    assert(contains(&got, "command-line only"), "and the answer says where it is")
+
+    # 条件と混ざっていても見つける。
+    val mixed = answer("GET /v1/query?q=status%3D404+top%3Dpath HTTP/1.1\r\n\r\n", true)
+    assert(contains(&mixed, "HTTP/1.1 400"), "even next to a filter")
+}
+
+# ただの前方一致で誤爆させない。`topic=x` を断ると、`top=` と何の
+# 関係も無いクエリが通らなくなる。
+test "a token that merely begins with top is left alone" {
+    val topic = answer("GET /v1/query?q=topic%3Dx HTTP/1.1\r\n\r\n", true)
+    assert(!contains(&topic, "command-line only"), "topic= is not top=")
+    val inside = answer("GET /v1/query?q=path%7Etop%3D HTTP/1.1\r\n\r\n", true)
+    assert(!contains(&inside, "command-line only"), "a needle containing it is not it")
+}
+
 # 読めるマウントが 1 つも無いのは 400 ではない。要求は正しく、
 # 答えられないのはこちらの側である。
 test "nothing readable is 503 and not a bad request" {

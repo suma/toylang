@@ -469,6 +469,32 @@ fn text_of_writer(w: &ByteWriter) -> String {
     t
 }
 
+# Whether any whitespace-separated token is `top=...`.
+fn has_top(text: &String) -> bool {
+    val n = text.len()
+    var at: u64 = 0u64
+    while at < n {
+        val c: u8 = text.get(at)
+        if c == ' ' || c == '\t' {
+            at = at + 1u64
+        } else {
+            var end = at
+            var scanning = true
+            while scanning && end < n {
+                val d: u8 = text.get(end)
+                if d == ' ' || d == '\t' { scanning = false } else { end = end + 1u64 }
+            }
+            if end >= at + 4u64 {
+                val head = text.substring(at, at + 4u64)
+                val want = String::from_str("top=")
+                if head.eq(&want) { return true }
+            }
+            at = end + 1u64
+        }
+    }
+    false
+}
+
 # `GET /v1/query` -- the same search the terminal runs, rendered for a
 # client instead of a person.
 #
@@ -481,6 +507,24 @@ fn query_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
     var qbuf = ByteWriter::with_capacity(512u64)
     if !http::query_param(b, r.query_at, r.query_len, "q", &mut qbuf) {
         http::respond_error(out, 400u64, "bad parameter", "q: missing", alive)
+        return
+    }
+    val text = text_of_writer(&qbuf)
+
+    # `top=<field>` asks for a distribution, not for records, and the
+    # tally path lives only in the command line so far. Left alone it
+    # is **dropped** by the query parser: the answer comes back with
+    # every record in the archive, which reads as a result rather than
+    # as a missing feature. Refusing says which one it is.
+    #
+    # With the other parameter checks, and before a mount is opened:
+    # a request that cannot be served should not cost a disk read,
+    # and "no readable mount" would otherwise answer first and hide
+    # this.
+    if has_top(&text) {
+        http::respond_error(out, 400u64, "unsupported parameter",
+                            "top=: distributions are command-line only for now",
+                            alive)
         return
     }
 
@@ -530,7 +574,6 @@ fn query_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
         return
     }
 
-    val text = text_of_writer(&qbuf)
     val now = time::now_unix_secs()
     var q = query::parse_query(text.to_str(), now)
     q.limit = limit

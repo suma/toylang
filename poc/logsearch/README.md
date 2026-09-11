@@ -42,7 +42,7 @@ cargo build --release -p toy
 
 ```bash
 toy check poc/logsearch          # 型検査だけ (コード生成をしない)
-toy test  poc/logsearch -j4      # test ブロックを走らせる (74 件)
+toy test  poc/logsearch -j4      # test ブロックを走らせる (76 件)
 toy clean poc/logsearch --all    # build/ とリンクキャッシュを消す
 ```
 
@@ -315,9 +315,72 @@ listening on 127.0.0.1:8080
 | `POST /v1/admin/gc?days=N` | 保持期限の掃除を 1 巡 |
 | `POST /v1/admin/shutdown` | 止める |
 
+#### `/v1/query` に投げるクエリ
+
+`q` の中身は**コマンドラインの `query` と同じ文字列**である。違うのは
+URL エンコードが要ることと、`limit` と `format` を `q` の外から渡すこと
+だけ。手で `%3D` を書かずに済むので、例は `--data-urlencode` で示す。
+
 ```bash
-curl -s 'http://127.0.0.1:8080/v1/query?q=status%3D404&limit=2&format=json'
+Q=http://127.0.0.1:8080/v1/query
+
+# 完全一致。`format` の既定は ndjson (1 行 1 レコード)
+curl -s --get $Q --data-urlencode 'q=status=404' -d limit=5
+
+# 値の部分一致 / 前方一致
+curl -s --get $Q --data-urlencode 'q=path~/wp-'   -d limit=5
+curl -s --get $Q --data-urlencode 'q=path^/blog/' -d limit=5
+
+# 本文 (元の行) の部分一致
+curl -s --get $Q --data-urlencode 'q=wp-login.php' -d limit=5
+
+# 条件は並べると AND
+curl -s --get $Q --data-urlencode 'q=status=404 method=GET' -d limit=5
+
+# 時刻で絞る (半開区間)。効けば `pruned_by_time` に出る
+curl -s --get $Q --data-urlencode 'q=status=404 from=2030-01-01' -d limit=5
+curl -s --get $Q --data-urlencode 'q=status=404 from=-6h to=-1h'  -d limit=5
+
+# 古い順に。既定は新しい順
+curl -s --get $Q --data-urlencode 'q=status=404 order=asc' -d limit=5
+
+# 統計つきの 1 オブジェクト (Web UI が使う形)
+curl -s --get $Q --data-urlencode 'q=status=404' -d limit=5 -d format=json
+
+# 元の行に近い形。`grep` に渡すならこれ
+curl -s --get $Q --data-urlencode 'q=status=404' -d limit=5 -d format=text
 ```
+
+`limit` は **URL 側が勝つ** (`q` の中に `limit=99` と書いても、
+`-d limit=5` があれば 5)。範囲は 1〜1000 で、外れると `400` が返る。
+
+`format=json` の答えは `records` と `stats` の 2 つを持つ:
+
+```console
+$ curl -s --get $Q --data-urlencode 'q=status=404 method=GET' -d limit=2 -d format=json
+{"records":[{"ts":"2026-09-04T13:22:59Z","body":"..."}, ...],
+ "stats":{"segments_opened":4,"segments_considered":4,
+          "pruned_by_time":0,"pruned_by_index":0,
+          "records_examined":49923,"records_matched":49923,
+          "bytes_read":8592081,"bytes_expanded":28462198,
+          "frames_expanded":109,"frames_total":120,
+          "shown":2,"truncated":true,"elapsed_ms":364}}
+```
+
+**`top=` は HTTP では使えない** — 分布を出す経路がまだコマンドライン側に
+しか無いので、`400` で断る。黙って落とすと「全レコードが返ってきた」形に
+なり、答えに見えてしまうため。分布が要るなら
+`logsearch fields <spec> <field>` を使う。
+
+| 返る `400` | いつ |
+|---|---|
+| `q: missing` | `q` が無い |
+| `limit: a number from 1 to 1000` | 範囲外、または数でない |
+| `format: json, ndjson or text` | 知らない形式 |
+| `top=: distributions are command-line only for now` | `top=` が入っている |
+
+読めるマウントが 1 つも無いときは `503` (`no readable mount`)。
+**要求は正しいのに答えられない**ので `400` ではない。
 
 **管理系は loopback からの接続にしか答えない。** 認証機構が無いので、
 これが唯一の防御である。**同時接続は 1 本** — 理由と、それが設計の
@@ -347,7 +410,7 @@ poc/logsearch/
     http.t            話すと決めた HTTP/1.1 の部分集合
     server.t          イベントループと経路
     ui.t              Web UI (1 ページを埋め込みで持つ)
-  tests/              `toy test` が走らせる test ブロック (74 件)
+  tests/              `toy test` が走らせる test ブロック (76 件)
   design-docs/        設計文書 11 本 + 目次
   build/              toy の出力 (実行ファイル / リンクキャッシュ、git 管理外)
   log/                読ませる実ログ (git 管理外)
@@ -371,7 +434,7 @@ top-level `const` を失って `Identifier 'BUF_BYTES' not found` で落ちた�
 | 検索 (時刻 / フィールド / 部分一致 / 集計 / traversal) | 動く |
 | カタログ・マウント・保持期限 | 動く |
 | HTTP サーバと Web UI | 動く (同時接続は 1 本、取り込みは未) |
-| **テスト** | 74 件 (`toy test poc/logsearch -j4`) |
+| **テスト** | 76 件 (`toy test poc/logsearch -j4`) |
 
 実測 (`log/apache2` の 181,519 行 / 30.5 MB、AOT `--release`、2026-09-11):
 

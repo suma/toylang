@@ -1173,6 +1173,95 @@ fn a_name_filter_decides_what_runs_rather_than_what_is_printed() {
     assert!(stdout.contains("1 passed, 0 failed"), "stdout: {stdout}");
 }
 
+#[test]
+fn a_run_remembers_what_each_test_cost() {
+    // TEST-PARALLEL P4. Nothing in the source says which tests are
+    // slow, and with a shared cursor the order jobs go out in decides
+    // the wall time — so the runner measures and remembers.
+    let pkg = multi_file_pkg("testtimes", 3);
+    let path = pkg.0.to_str().unwrap();
+    let first = run(&pkg, &["test", path, "--backend", "vm"]);
+    assert!(
+        first.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    let times = pkg.0.join("build/debug/.testtimes");
+    let body = std::fs::read_to_string(&times).expect("a run should record what it cost");
+    assert_eq!(
+        body.lines().count(),
+        6,
+        "one record per test, got:\n{body}"
+    );
+    assert!(
+        body.lines().all(|l| l.starts_with("test\tvm\t")),
+        "records carry the lane they were measured on:\n{body}"
+    );
+
+    // The second run schedules from it and reports the same thing.
+    let second = run(&pkg, &["test", path, "--backend", "vm"]);
+    assert_eq!(
+        without_elapsed(&first.stdout),
+        without_elapsed(&second.stdout)
+    );
+}
+
+#[test]
+fn a_filtered_run_does_not_forget_the_tests_it_skipped() {
+    // Merge rather than replace: a filtered run measures a handful of
+    // tests, and forgetting the rest would leave the next full run
+    // scheduling blind.
+    let pkg = multi_file_pkg("testtimes_merge", 3);
+    let path = pkg.0.to_str().unwrap();
+    assert!(run(&pkg, &["test", path, "--backend", "vm"]).status.success());
+    let times = pkg.0.join("build/debug/.testtimes");
+    let before = std::fs::read_to_string(&times).unwrap();
+    assert_eq!(before.lines().count(), 6);
+
+    assert!(
+        run(&pkg, &["test", "file 1", path, "--backend", "vm"])
+            .status
+            .success()
+    );
+    let after = std::fs::read_to_string(&times).unwrap();
+    assert_eq!(
+        after.lines().count(),
+        6,
+        "the four tests the filter excluded keep their measurements:\n{after}"
+    );
+}
+
+#[test]
+fn the_schedule_does_not_change_what_is_reported() {
+    // Ordering by cost reorders *execution*; the report is assembled
+    // in plan order, so a run with a history and one without have to
+    // agree. Without this, a scheduling change would be free to leak
+    // into the output and nobody would notice until a diff did.
+    let pkg = multi_file_pkg("schedule_report", 3);
+    write(
+        &pkg,
+        "tests/z.t",
+        "test \"this one fails\" { assert_eq(2u64, 3u64) }\n",
+    );
+    let path = pkg.0.to_str().unwrap();
+    for lane in [vec!["test", path], vec!["test", path, "--backend", "vm"]] {
+        let _ = std::fs::remove_file(pkg.0.join("build/debug/.testtimes"));
+        let cold = run(&pkg, &lane);
+        let warm = run(&pkg, &lane);
+        assert_eq!(
+            without_elapsed(&cold.stdout),
+            without_elapsed(&warm.stdout),
+            "stdout differs for {lane:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&cold.stderr),
+            String::from_utf8_lossy(&warm.stderr),
+            "stderr differs for {lane:?}"
+        );
+    }
+}
+
 /// A run's summary line ends in how long it took, which is the one
 /// thing two runs of the same suite may legitimately disagree about.
 fn without_elapsed(bytes: &[u8]) -> String {

@@ -58,7 +58,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | **自分のモジュールを持つプログラム**のビルド (`toy`) | [`design-docs/BUILD_TOOL.md`](design-docs/BUILD_TOOL.md) |
 | **自分のモジュールを持つプログラム**のビルド (`toy` コマンドの提案) | [`design-docs/BUILD_TOOL.md`](design-docs/BUILD_TOOL.md) |
 | **toylang で書いたプログラム**のテスト (提案。処理系自身のテストは別) | [`design-docs/TEST_TOOL.md`](design-docs/TEST_TOOL.md) |
-| `toy test` の並列実行 (P0〜P3 landing 済み) | [`design-docs/TEST_PARALLEL.md`](design-docs/TEST_PARALLEL.md) |
+| `toy test` の並列実行 (P0〜P4 landing 済み) | [`design-docs/TEST_PARALLEL.md`](design-docs/TEST_PARALLEL.md) |
 | このリポジトリで LLM が作業する際の指針 | [`design-docs/COMPILER_DEV_LOOP.md`](design-docs/COMPILER_DEV_LOOP.md) |
 
 以下の「Language Syntax」節は**日常的に踏む要点の早見表**であって仕様書ではない。
@@ -156,7 +156,8 @@ cargo run -q -p toy -- test  mypkg [FILTER] [-j N] [--list] [--bless] [--format=
 # ジョブは VM レーンならテスト 1 本、AOT なら driver 1 本。報告は
 # 完了順ではなく plan 順に組み直すので **`-j1` と出力がバイト一致する**
 # (所要時間の行を除く)。共有資源を触るテストは `-j1` に落とす。
-# `--bless` は暗黙に `-j1`。
+# `--bless` は暗黙に `-j1`。所要時間は build/<profile>/.testtimes に
+# 記録され、次回は長いジョブから配る (安いファイルはまとめる)。
 # bare 名の衝突は実行前に警告する (--no-warn-collisions で無効)。
 # 出力は build/{debug,release}/ — build は成果物、run は .run/ に、
 # test は tests/ に出る。build/.gitignore は初回に自動生成

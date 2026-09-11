@@ -92,6 +92,21 @@ impl ByteWriter {
     }
 
     # `len` bytes of `src` starting at `from`.
+    # Append a string's bytes. The most common thing a response
+    # builder does, and the reason it is here rather than at each
+    # call site: `put_span` needs a `Span`, and taking one of a
+    # temporary `String` is three lines every time.
+    pub unsafe fn put_str(&mut self, s: str) {
+        val w = String::from_str(s)
+        var i: u64 = 0u64
+        val n = w.len()
+        while i < n {
+            val c: u8 = w.get(i)
+            self.buf.push(c)
+            i = i + 1u64
+        }
+    }
+
     pub fn put_span(&mut self, src: Span<u8>, from: u64, len: u64)
         requires from + len <= src.len()
     {

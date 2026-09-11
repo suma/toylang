@@ -20,7 +20,6 @@ mod clean;
 mod collide;
 mod package;
 mod test_runner;
-mod test_times;
 mod version;
 
 use std::path::{Path, PathBuf};

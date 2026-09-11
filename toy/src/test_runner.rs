@@ -44,7 +44,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use interpreter::RunOptions;
 
 use crate::package::Package;
-use crate::test_times::{History, Lane};
 
 /// How to report.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -84,11 +83,6 @@ struct Outcome {
     /// twenty `println`s reach the terminal interleaves them into
     /// something no one can read (TEST-PARALLEL D4).
     output: String,
-    /// How long it took, for the next run's schedule (P4). Not
-    /// reported: a per-test time in the output would make `-j1` and
-    /// `-jN` disagree byte for byte, which is the one property the
-    /// whole design rests on.
-    took: std::time::Duration,
 }
 
 /// One planned test: what the plan pass learned about a `test` block
@@ -108,10 +102,6 @@ struct FilePlan {
     path: PathBuf,
     display: String,
     tests: Vec<Planned>,
-    /// What parsing and type-checking this file cost in the plan pass.
-    /// It is the price of *splitting* the file across workers, since
-    /// each one that takes a test from it has to check it again (P4).
-    front_end: std::time::Duration,
 }
 
 /// A unit of work with no dependency on any other.
@@ -124,19 +114,13 @@ enum Job {
     AotPanics { file: usize, test: usize },
     /// One test on the IR VM.
     Vm { file: usize, test: usize },
-    /// Every test in one file on the IR VM, checked once. Chosen when
-    /// the file's tests are cheaper than checking it (see
-    /// [`split_pays`]).
-    VmFile { file: usize, tests: Vec<usize> },
 }
 
 impl Job {
     /// Which planned tests this job answers for, as `(file, test)`.
     fn covers(&self) -> Vec<(usize, usize)> {
         match self {
-            Job::AotDriver { file, tests } | Job::VmFile { file, tests } => {
-                tests.iter().map(|t| (*file, *t)).collect()
-            }
+            Job::AotDriver { file, tests } => tests.iter().map(|t| (*file, *t)).collect(),
             Job::AotPanics { file, test } | Job::Vm { file, test } => vec![(*file, *test)],
         }
     }
@@ -253,7 +237,7 @@ const MARKER: &str = "__toy_test:";
 /// file it later takes a test from. Doing this sequentially while the
 /// tests ran in parallel was worse than not parallelising at all: a
 /// nine-file suite spent 0.19 s here and 0.02 s running.
-type Listing = (Vec<interpreter::TestCaseInfo>, std::time::Duration);
+type Listing = Vec<interpreter::TestCaseInfo>;
 
 fn list_all(
     pkg: &Package,
@@ -307,22 +291,20 @@ fn list_one(
     pkg: &Package,
     file: &Path,
     opts: &Options,
-) -> Result<(Vec<interpreter::TestCaseInfo>, std::time::Duration), String> {
+) -> Result<Listing, String> {
     if opts.verbose {
         eprintln!("toy: planning {}", file.display());
     }
-    let started = std::time::Instant::now();
     let display = display_path(pkg, file);
     let keep = !opts.aot && !opts.list_only && opts.jobs.max(1) == 1;
     if keep {
-        let cases = prepared_for(pkg, file, &display)?.cases().to_vec();
-        return Ok((cases, started.elapsed()));
+        return Ok(prepared_for(pkg, file, &display)?.cases().to_vec());
     }
     let source = std::fs::read_to_string(file)
         .map_err(|e| format!("cannot read `{}`: {e}", file.display()))?;
     let mut options = RunOptions::default();
     options.core_modules_dirs = &pkg.module_roots;
-    let cases = interpreter::list_tests_from_source(&source, &display, &options)?
+    Ok(interpreter::list_tests_from_source(&source, &display, &options)?
         .into_iter()
         .map(|o| interpreter::TestCaseInfo {
             name: o.name,
@@ -330,8 +312,7 @@ fn list_one(
             file: o.file,
             expect_panic: o.expect_panic,
         })
-        .collect();
-    Ok((cases, started.elapsed()))
+        .collect())
 }
 
 /// Learn what every file declares, apply the filter, and drop the
@@ -348,7 +329,7 @@ fn plan_all(pkg: &Package, files: &[PathBuf], opts: &Options) -> Result<Vec<File
     let mut seen: std::collections::HashSet<(String, u32, String)> =
         std::collections::HashSet::new();
     let mut plans = Vec::with_capacity(files.len());
-    for (file, (cases, front_end)) in files.iter().zip(listed) {
+    for (file, cases) in files.iter().zip(listed) {
         let display = display_path(pkg, file);
         let mut tests = Vec::new();
         for (index, case) in cases.into_iter().enumerate() {
@@ -374,7 +355,6 @@ fn plan_all(pkg: &Package, files: &[PathBuf], opts: &Options) -> Result<Vec<File
             path: file.clone(),
             display,
             tests,
-            front_end,
         });
     }
     Ok(plans)
@@ -386,12 +366,7 @@ fn plan_all(pkg: &Package, files: &[PathBuf], opts: &Options) -> Result<Vec<File
 
 /// Cut the plan into jobs and run them, `opts.jobs` at a time.
 fn execute(pkg: &Package, plans: &[FilePlan], opts: &Options) -> Result<Vec<Outcome>, String> {
-    // What the last run cost. A missing or stale file costs a worse
-    // schedule and nothing else (P4).
-    let times_path =
-        crate::test_times::path_for(&pkg.profile_dir(crate::package::Profile::of(opts.release)));
-    let history = crate::test_times::load(&times_path);
-    let jobs = build_jobs(plans, opts, &history);
+    let jobs = build_jobs(plans, opts);
     if jobs.is_empty() {
         return Ok(Vec::new());
     }
@@ -454,38 +429,11 @@ fn execute(pkg: &Package, plans: &[FilePlan], opts: &Options) -> Result<Vec<Outc
         return Err(error.clone());
     }
 
-    let mut measured = History::default();
-    for (file, plan) in plans.iter().enumerate() {
-        if opts.aot && plan.tests.iter().any(|t| t.expect_panic.is_none()) {
-            // A driver's cost is the file's: one compile, one link,
-            // one process for every test in it.
-            if let Some(outcome) = plan
-                .tests
-                .iter()
-                .enumerate()
-                .find(|(_, t)| t.expect_panic.is_none())
-                .and_then(|(i, _)| slots[file][i].get())
-            {
-                measured.record_driver(plan.display.clone(), outcome.took);
-            }
-        }
-    }
-
     let mut out = Vec::new();
     for (file, plan) in plans.iter().enumerate() {
         for (test, planned) in plan.tests.iter().enumerate() {
             match slots[file][test].get() {
-                Some(outcome) => {
-                    // A driver's time belongs to the file, not to each
-                    // of its tests: recording it per test would make
-                    // every one of them look like the whole binary.
-                    let per_test = !opts.aot || planned.expect_panic.is_some();
-                    if per_test {
-                        let lane = if opts.aot { Lane::Aot } else { Lane::Vm };
-                        measured.record_test(lane, key_of(planned), outcome.took);
-                    }
-                    out.push(clone_outcome(outcome))
-                }
+                Some(outcome) => out.push(clone_outcome(outcome)),
                 // Not reachable: every planned test belongs to exactly
                 // one job. Reported rather than panicked on, because a
                 // silently missing test is the one failure mode a test
@@ -496,51 +444,36 @@ fn execute(pkg: &Package, plans: &[FilePlan], opts: &Options) -> Result<Vec<Outc
                     line: planned.line,
                     failure: Some("internal error: no job claimed this test".to_string()),
                     output: String::new(),
-                    took: std::time::Duration::ZERO,
                 }),
             }
         }
     }
-
-    // Merge rather than replace: a filtered run measures a handful of
-    // tests, and forgetting the rest would leave the next full run
-    // scheduling blind.
-    let mut history = history;
-    history.absorb(measured);
-    if !history.is_empty() {
-        crate::test_times::save(&times_path, &history);
-    }
     Ok(out)
 }
 
-/// One job per driver on the compiled lane, one per test on the VM —
-/// unless the last run says splitting a file cannot pay.
+/// One job per driver on the compiled lane, one per test on the VM.
 ///
-/// **Splitting a file is not free.** A checked program holds `Rc`, so
-/// every worker that takes a test from a file checks that file again;
-/// cutting a file into `n` jobs can cost up to `n - 1` extra front
-/// ends. It pays when the tests are slower than the front end and
-/// loses when they are not — a nine-file suite of millisecond tests
-/// spent all of its time re-checking. The last run measured both
-/// numbers, so the question is answered rather than guessed. With no
-/// history, split: that is the shape that makes a slow suite fast,
-/// and one run later the answer is known.
-fn build_jobs(plans: &[FilePlan], opts: &Options, history: &History) -> Vec<Job> {
+/// **A file split across workers is checked once per worker**, since a
+/// checked program holds `Rc` and cannot be shared. That is the price
+/// of scheduling a test at a time, and it is what makes a slow suite
+/// fast: `poc/logsearch` has fourteen tests in two files and spends
+/// seconds in them, so paying a front end per worker to spread them is
+/// the whole win (4.83 s to 0.80 s). A suite of millisecond tests pays
+/// the same price for nothing — measurably so at low `-j`, where there
+/// are too few workers to hide it. Telling the two apart would need
+/// the tests' durations, and nothing here knows them: they are only
+/// learnable by running, and the runner keeps nothing between runs.
+/// So it splits unconditionally. `TEST_PARALLEL.md` §6 has the
+/// measurements, from when it did keep them.
+fn build_jobs(plans: &[FilePlan], opts: &Options) -> Vec<Job> {
     let mut jobs = Vec::new();
     for (file, plan) in plans.iter().enumerate() {
         if plan.tests.is_empty() {
             continue;
         }
         if !opts.aot {
-            if split_pays(plan, history) {
-                for test in 0..plan.tests.len() {
-                    jobs.push(Job::Vm { file, test });
-                }
-            } else {
-                jobs.push(Job::VmFile {
-                    file,
-                    tests: (0..plan.tests.len()).collect(),
-                });
+            for test in 0..plan.tests.len() {
+                jobs.push(Job::Vm { file, test });
             }
             continue;
         }
@@ -556,74 +489,7 @@ fn build_jobs(plans: &[FilePlan], opts: &Options, history: &History) -> Vec<Job>
             jobs.push(Job::AotDriver { file, tests: plain });
         }
     }
-    order_jobs(&mut jobs, plans, history);
     jobs
-}
-
-/// Is this file's work worth more than checking it again?
-fn split_pays(plan: &FilePlan, history: &History) -> bool {
-    if plan.tests.len() < 2 {
-        return false;
-    }
-    let mut total = std::time::Duration::ZERO;
-    for planned in &plan.tests {
-        match history.test(Lane::Vm, &key_of(planned)) {
-            Some(took) => total += took,
-            // Never measured: assume it is worth splitting rather than
-            // decide from a number nobody has.
-            None => return true,
-        }
-    }
-    // The front end this run just paid, which is the same work a
-    // second worker would have to repeat.
-    total > plan.front_end
-}
-
-/// Longest job first.
-///
-/// With a shared cursor the order jobs are handed out in is the whole
-/// schedule: start the long one last and every worker waits for it
-/// alone. `poc/logsearch` has one test that runs for seconds among
-/// thirteen that take milliseconds, which is exactly the shape that
-/// punishes plan order.
-///
-/// A job nobody has timed sorts **first**, not last. An unknown may be
-/// the long one, and the two mistakes are not the same size: starting
-/// a short job early costs nothing, while starting a long one late
-/// costs its whole length. Ties keep plan order, so a first run — when
-/// everything is unknown — behaves exactly as it did before.
-fn order_jobs(jobs: &mut [Job], plans: &[FilePlan], history: &History) {
-    let unknown = std::time::Duration::MAX;
-    let estimate = |job: &Job| -> std::time::Duration {
-        match job {
-            Job::Vm { file, test } => history
-                .test(Lane::Vm, &key_of(&plans[*file].tests[*test]))
-                .unwrap_or(unknown),
-            Job::VmFile { file, tests } => {
-                let mut total = plans[*file].front_end;
-                for test in tests {
-                    match history.test(Lane::Vm, &key_of(&plans[*file].tests[*test])) {
-                        Some(took) => total += took,
-                        None => return unknown,
-                    }
-                }
-                total
-            }
-            Job::AotPanics { file, test } => history
-                .test(Lane::Aot, &key_of(&plans[*file].tests[*test]))
-                .unwrap_or(unknown),
-            Job::AotDriver { file, .. } => {
-                history.driver(&plans[*file].display).unwrap_or(unknown)
-            }
-        }
-    };
-    // Stable, so equal estimates — and the all-unknown first run —
-    // keep the order the plan produced. Descending, hence `Reverse`.
-    jobs.sort_by_key(|job| std::cmp::Reverse(estimate(job)));
-}
-
-fn key_of(planned: &Planned) -> (String, u32, String) {
-    (planned.file.clone(), planned.line, planned.name.clone())
 }
 
 /// Run one job and file its outcomes. Never returns a failure: a job
@@ -649,10 +515,6 @@ fn run_job(
             run_aot_panics(pkg, &plans[*file], opts, *test).map(|o| vec![o])
         }
         Job::Vm { file, test } => run_vm_one(pkg, &plans[*file], opts, *test).map(|o| vec![o]),
-        Job::VmFile { file, tests } => tests
-            .iter()
-            .map(|test| run_vm_one(pkg, &plans[*file], opts, *test))
-            .collect(),
     };
     match produced {
         Ok(outcomes) => {
@@ -675,9 +537,6 @@ fn describe(plans: &[FilePlan], job: &Job) -> String {
             format!("{} (aot, panics)", plans[*file].tests[*test].name)
         }
         Job::Vm { file, test } => format!("{} (vm)", plans[*file].tests[*test].name),
-        Job::VmFile { file, tests } => {
-            format!("{} ({} test(s), vm)", plans[*file].display, tests.len())
-        }
     }
 }
 
@@ -729,20 +588,14 @@ fn run_vm_one(
     // The sink is thread-local, so two workers printing at once keep
     // their output apart (`interpreter::output` was built that way
     // precisely because an OS-level redirect would not).
-    let started = std::time::Instant::now();
     let (outcome, printed) =
         interpreter::output::with_capture(|| prepared.run_one(planned.index));
-    // The block's own time, not the job's: the front end that had to
-    // run first is a separate measurement, and conflating them would
-    // make every test in a big package look expensive.
-    let took = started.elapsed();
     Ok(Outcome {
         name: planned.name.clone(),
         file: planned.file.clone(),
         line: planned.line,
         failure: outcome.failure,
         output: printed,
-        took,
     })
 }
 
@@ -792,7 +645,6 @@ fn run_aot_panics(
 ) -> Result<Outcome, String> {
     let planned = &plan.tests[test];
     let names = [planned.name.clone()];
-    let started = std::time::Instant::now();
     let exe = compile_driver(pkg, plan, opts, Some(&names), Some(&planned.name))?;
     let run = std::process::Command::new(&exe)
         .envs(bless_env(opts))
@@ -820,9 +672,6 @@ fn run_aot_panics(
         line: planned.line,
         failure,
         output: String::from_utf8_lossy(&run.stdout).into_owned(),
-        // Compiling included: on this lane that is most of it, and it
-        // is what the next run has to schedule around.
-        took: started.elapsed(),
     })
 }
 
@@ -844,7 +693,6 @@ fn run_aot_driver(
     // driver runs a set, and "everything except the panicking tests"
     // is that set.
     let names: Vec<String> = tests.iter().map(|t| plan.tests[*t].name.clone()).collect();
-    let began = std::time::Instant::now();
     let exe = compile_driver(pkg, plan, opts, Some(&names), None)?;
     let out = std::process::Command::new(&exe)
         .envs(bless_env(opts))
@@ -867,10 +715,6 @@ fn run_aot_driver(
     let ok = out.status.success();
     let printed = String::from_utf8_lossy(&out.stdout).into_owned();
 
-    // One driver is one compile, one link and one process for all of
-    // its tests; there is no marker to cut the time by, so the job's
-    // cost belongs to the file rather than to any block in it.
-    let took = began.elapsed();
     let mut result = Vec::with_capacity(tests.len());
     for t in tests {
         let planned = &plan.tests[*t];
@@ -891,7 +735,6 @@ fn run_aot_driver(
             // is no marker on stdout to cut it by. Shown only when
             // something in it failed.
             output: printed.clone(),
-            took,
         });
     }
     Ok(result)
@@ -913,7 +756,6 @@ fn clone_outcome(o: &Outcome) -> Outcome {
         line: o.line,
         failure: o.failure.clone(),
         output: o.output.clone(),
-        took: o.took,
     }
 }
 

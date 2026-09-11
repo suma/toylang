@@ -138,7 +138,6 @@ build/
     tests/main_<hash>  toy test (テストファイルごとに 1 本。名前は
                       パッケージ相対パスのハッシュつき — 別ディレクトリの
                       同名ファイルが同じ binary を書いていた。TEST-PARALLEL X0)
-    .testtimes        前回のテストの所要時間 (次回の並べ順。TEST-PARALLEL P4)
   release/
     ...               同じ形
 ```

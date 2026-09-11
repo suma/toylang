@@ -945,7 +945,7 @@ impl<'a> FunctionLower<'a> {
             // receive the modified leaves alongside the
             // tuple result.
             if !self.module.function(target_id).self_writeback_types.is_empty() {
-                dests.extend(self.collect_compound_writeback_dests_slice(args_items)?);
+                dests.extend(self.collect_compound_writeback_dests_for(args_items, Some(target_id), 0)?);
             }
             self.bindings.insert(
                 name,
@@ -983,7 +983,7 @@ impl<'a> FunctionLower<'a> {
             let mut dests = Self::flatten_enum_dests(&storage);
             // REF-Stage-2 (ii-let-rhs): see Tuple branch.
             if !self.module.function(target_id).self_writeback_types.is_empty() {
-                dests.extend(self.collect_compound_writeback_dests_slice(args_items)?);
+                dests.extend(self.collect_compound_writeback_dests_for(args_items, Some(target_id), 0)?);
             }
             self.bindings
                 .insert(name, Binding::Enum(storage));
@@ -1019,7 +1019,7 @@ impl<'a> FunctionLower<'a> {
             // (`flatten_compound_leaf_types` ensures both
             // sides use the same shape).
             if !self.module.function(target_id).self_writeback_types.is_empty() {
-                dests.extend(self.collect_compound_writeback_dests_slice(args_items)?);
+                dests.extend(self.collect_compound_writeback_dests_for(args_items, Some(target_id), 0)?);
             }
             self.register_drop_for_struct_binding(struct_id, &field_bindings);
             self.bindings.insert(

@@ -2283,9 +2283,16 @@ impl<'a> FunctionLower<'a> {
             // through `&mut` returns the changed leaves, and the
             // caller's locals only see them if the call is emitted
             // with the writeback destinations attached.
+            // The callee has to be named here too. A `&mut`
+            // parameter wide enough to travel as an address declares
+            // no writeback slots -- it writes through the pointer --
+            // so counting its leaves makes the caller's dest list
+            // disagree with the callee's shape. The arguments above
+            // already pass `Some(target)`; these have to agree with
+            // them or the call cannot be built at all.
             let writeback_dests =
                 if !self.module.function(target).self_writeback_types.is_empty() {
-                    self.collect_compound_writeback_dests_slice(&args)?
+                    self.collect_compound_writeback_dests_for(&args, Some(target), 0)?
                 } else {
                     Vec::new()
                 };

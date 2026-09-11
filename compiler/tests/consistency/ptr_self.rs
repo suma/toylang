@@ -834,3 +834,57 @@ fn a_tuple_returning_call_still_passes_a_wide_borrow_by_address() {
     "#;
     assert_consistent(src, "ptr_param_tuple_return");
 }
+
+/// A callee that takes **both** a wide `&mut` and a narrow one.
+///
+/// The wide one travels as an address and writes through it, so it
+/// declares no writeback returns; the narrow one is passed as leaves
+/// and gets them back. A caller that counts both -- or neither --
+/// hands the call a dest list of a different length than the callee's
+/// signature, and the call cannot be built.
+///
+/// `val p = work(...)` is the shape: the return is compound, so the
+/// call names its result locals up front, and that is the path where
+/// the dest list is assembled.
+///
+/// The **module-qualified** version of this call (`m::work(...)`) has
+/// its own site and was fixed with it, but cannot be tested here: the
+/// harness fixes the module root to the stdlib, so there is nowhere
+/// to put a second module. `poc/logsearch` covers it -- `server.t`
+/// calls `query::search` with exactly this mix -- which means a
+/// regression there shows up in that package's suite rather than in
+/// this one.
+#[test]
+fn a_mixed_borrow_list_counts_only_the_writeback_half() {
+    let src = r#"
+        struct Wide {
+            a: u64, b: u64, c: u64, d: u64,
+            e: u64, f: u64, g: u64, h: u64,
+            i: u64, j: u64, k: u64, l: u64,
+        }
+
+        struct Pair { lo: u64, hi: u64 }
+
+        fn work(w: &mut Wide, v: &mut Vec<u64>) -> Pair {
+            w.a = w.a + 1u64
+            v.push(w.a)
+            val out = Pair { lo: w.a, hi: v.size() }
+            out
+        }
+
+        fn main() -> u64 {
+            var w = Wide {
+                a: 0u64, b: 0u64, c: 0u64, d: 0u64,
+                e: 0u64, f: 0u64, g: 0u64, h: 0u64,
+                i: 0u64, j: 0u64, k: 0u64, l: 7u64,
+            }
+            var v: Vec<u64> = Vec::new()
+            val p = work(&mut w, &mut v)
+            val q = work(&mut w, &mut v)
+            # Both borrows have to have reached: `w.a` counts the
+            # pointer writes, `v.size()` the writeback ones.
+            q.lo * 1000u64 + q.hi * 100u64 + w.a * 10u64 + v.size()
+        }
+    "#;
+    assert_consistent(src, "ptr_param_mixed_writeback");
+}

@@ -42,7 +42,7 @@ cargo build --release -p toy
 
 ```bash
 toy check poc/logsearch          # 型検査だけ (コード生成をしない)
-toy test  poc/logsearch          # test ブロックを走らせる (まだ 0 件)
+toy test  poc/logsearch -j4      # test ブロックを走らせる (74 件)
 toy clean poc/logsearch --all    # build/ とリンクキャッシュを消す
 ```
 
@@ -88,29 +88,241 @@ warning: `decode` is defined in core/std/base64.t and core/std/hex.t and
 
 ## サブコマンド
 
-| | |
-|---|---|
-| `archive <logdir> <out> [limit]` | ログを読んでセグメントに圧縮する |
-| `query <out> "<query>"` | 検索・集計・traversal |
-| `fields <out> <field> [limit] [scan]` | 1 フィールドの値分布 (`scan` で索引を使わず全走査) |
-| `verify <out>` | 全セグメントを読み戻して CRC を照合 |
-| `scan <logdir> [limit]` | 何があるか、どう framing されたかを見るだけ |
+すべて `logsearch <コマンド> <引数...>`。**引数は位置指定で、フラグは無い** —
+省略すると既定値が入り、途中だけ省くことはできない (後ろを指定するなら
+前も書く)。終了コードは成功が `0`、失敗が `1`。
 
-### クエリの書き方
+| コマンド | 引数 | すること |
+|---|---|---|
+| `scan` | `<logdir> [limit]` | 何があるか、どう framing されたかを見るだけ |
+| `archive` | `<logdir> <spec> [limit]` | 読んで圧縮し、セグメントを置いてカタログへ記録する |
+| `query` | `<spec> "<query>"` | 検索・集計・traversal |
+| `fields` | `<spec> <field> [limit] [scan]` | 1 フィールドの値分布 |
+| `object` | `<spec> "<key>=<value>"` | 1 つの値の件数と初出 / 最終 |
+| `verify` | `<spec>` | 全セグメントを読み戻して CRC を照合 |
+| `catalog` | `<spec> [list\|repair\|compact]` | カタログの中身 / 作り直し / 世代交代 |
+| `retain` | `<spec> [days]` | 保持期限を過ぎたセグメントを消す |
+| `serve` | `<spec> [port] [idle]` | HTTP で答える (Web UI つき) |
+
+サブコマンドを書かずにパスだけ渡すと `scan` として扱う
+(`logsearch /var/log` = `logsearch scan /var/log`)。
+
+### `<spec>` — どこに置き、どこを読むか
+
+`archive` 以降のコマンドが取る `<spec>` は 2 通りある。
+
+**ディレクトリ 1 つ** — それを 1 マウントとして扱う。ふだんはこれでよい。
+
+```bash
+logsearch archive /var/log /tmp/arc
+logsearch query   /tmp/arc "status=404 limit=5"
+```
+
+**`.conf` で終わるパス** — マウント設定。容量の違うディスクへ分散する
+ときに使う ([`design-docs/DATA_MODEL.md`](design-docs/DATA_MODEL.md) §6)。
+
+```
+# /etc/logsearch.conf
+mount /var/log/logsearch/a  quota=100G
+mount /mnt/disk2/logsearch  quota=400G
+mount /mnt/disk3/logsearch  quota=400G  readonly
+```
+
+- `quota` は**宣言値**であって実際の空きではない (`statfs` が無い)。
+  1024 倍の接尾辞 `K` `M` `G` `T` が使える
+- 新しいセグメントは**使用率 (`used / quota`) が最小**のマウントへ置く。
+  ラウンドロビンではないのは、容量の違うディスクを混ぜるのが普通だから
+- `readonly` は読むだけ。`retain` も触らない
+- **理解できない行はマウントを作らない**。quota を取り違えたマウントは、
+  無いマウントより高くつく
+
+### `archive` — 読んで、圧縮して、置く
+
+```bash
+logsearch archive <logdir> <spec> [limit]
+```
+
+`limit` は読むファイル数の上限 (既定 1,000,000)。`<logdir>` は再帰的に
+歩き、`.log` / `.log.<数字>` だけを拾う (`.gz` は飛ばす)。
+
+```console
+$ logsearch archive poc/logsearch/log/apache2 /tmp/arc
+archiving poc/logsearch/log/apache2 -> /tmp/arc
+  mount /tmp/arc  0 / 1099511627776 B (0 permille)
+  /tmp/arc/seg/2015/08/08/000000000001.seg  54241 records  8388680 B -> 2850940 B (33%)
+  /tmp/arc/seg/2026/08/04/000000000002.seg  52202 records  8388846 B -> 2658913 B (31%)
+  ...
+segments         4 (0 failed)
+records          181519
+arena bytes      30559782
+archive bytes    9331872
+ratio            30% of raw
+elapsed          780 ms
+```
+
+セグメントは `<mount>/seg/YYYY/MM/DD/<12 桁>.seg` に置かれ、同時に
+そのマウントのカタログへ 1 行追記される。**日付はそのセグメントの
+`ts_min`** で、日付を 1 つも持たない行ばかりのセグメントだけが
+「書いた日」に入る。
+
+### `query` — 検索
+
+```bash
+logsearch query <spec> "<query>"
+```
 
 空白区切り。**索引が知っているキーはフィルタ、それ以外は本文の部分一致**。
 
 ```bash
-logsearch query /tmp/arc "status=404 limit=10"          # フィールド指定
-logsearch query /tmp/arc "timeout from=-6h"             # 部分一致 + 時刻
-logsearch query /tmp/arc "top=status"                   # 値の分布
-logsearch query /tmp/arc "ip=127.0.0.1 top=path"        # traversal
+logsearch query /tmp/arc "status=404 limit=10"       # 完全一致
+logsearch query /tmp/arc "path~/wp- limit=10"        # 値の部分一致
+logsearch query /tmp/arc "path^/blog/ limit=10"      # 値の前方一致
+logsearch query /tmp/arc "timeout from=-6h"          # 本文の部分一致 + 時刻
+logsearch query /tmp/arc "top=status"                # 値の分布
+logsearch query /tmp/arc "ip=10.0.0.1 top=path"      # traversal
 ```
 
-キーは `status` / `method` / `path` / `ip` / `vhost` / `ua` / `host` / `tag`、
+| 書き方 | 意味 |
+|---|---|
+| `key=value` | **値の全体**に一致 |
+| `key~needle` | 値のどこかに `needle` を含む |
+| `key^prefix` | 値が `prefix` で始まる |
+| `word` | 本文 (元の行) の部分一致 |
+
+キーは `status` / `method` / `path` / `ip` / `vhost` / `ua` / `host` / `tag`。
 制御は `from` / `to` / `limit` / `order` / `kind` / `top`。
-**フィールドは値の全体に一致する** (`ua=MJ12bot` は 0 件 — 部分一致で探すなら
-`MJ12bot` と書く)。詳しくは [`design-docs/QUERY.md`](design-docs/QUERY.md)。
+
+`from` / `to` は**半開区間**で、4 通りの書き方がある。
+
+```bash
+from=2030-01-01              # 日付だけ
+from=2030-01-01T00:00:00Z    # ISO 8601 (オフセット可)
+from=1893456000              # UNIX 秒
+from=-6h                     # 今から遡って (`m` / `h` / `d`)
+```
+
+**読めなかった値は「指定なし」になる** (`from=yesterday` や
+`from=2030-1-1` は境界を作らない)。落ちた境界は空振りではなく
+**全件が返る**ので、時刻で絞ったつもりの件数が合わないときは
+まず書き方を疑うこと。`tests/query.t` がこの区別を固定している。
+
+**`=` は値の全体に一致する。** `ua=MJ12bot` は 0 件になる — user agent
+文字列の全体ではないため。部分で探すなら `ua~MJ12bot` と書く。
+詳しくは [`design-docs/QUERY.md`](design-docs/QUERY.md)。
+
+答えの下に**なぜその時間だったか**が出る。読んだセグメント数・枝刈りの
+内訳・展開したフレーム数までが答えの一部である。
+
+```console
+segments         4 opened of 12 (0 pruned by time, 8 by the index)
+records          53689 examined, 53689 matched
+bytes read       9433183 off the disk, 28573696 expanded
+frames           109 expanded of 132
+shown            3 (limit 3)
+elapsed          362 ms
+```
+
+### `fields` / `object` — 分布と、1 つの値
+
+```console
+$ logsearch fields /tmp/arc status 5
+field status (index)
+  77578  200
+  53689  404
+  34810  301
+   6105  400
+   4979  304
+
+segments         4 with an index
+terms            43813 in the dictionary
+distinct values  16
+elapsed          24 ms
+```
+
+第 4 引数に `scan` を書くと索引を使わず全レコードを走査する
+(`logsearch fields /tmp/arc status 5 scan`)。索引が出す答えを、
+索引が置き換えたものと突き合わせるためにある。
+
+`object` は 1 つの値だけを見る。**`key=value` をちょうど 1 つ**取り、
+それ以外のトークンがあると断る (落とした条件は答えに見えてしまうため)。
+
+```console
+$ logsearch object /tmp/arc "status=404"
+object status:404
+  records        53689
+  segments       4
+  first seen     2015-08-08T23:17:04Z
+  last seen      2026-09-04T13:22:59Z
+  span           349452355 s
+```
+
+### `catalog` / `retain` — 台帳と保持期限
+
+```console
+$ logsearch catalog /tmp/arc
+/tmp/arc  uuid d2853d3236801a1847bbde6b56a82538
+  generation 2, 4 segment(s), 0 journal record(s)
+  181519 records, 9331872 bytes
+  2015-08-08T21:35:02Z .. 2026-09-04T13:23:27Z
+```
+
+| 第 2 引数 | すること |
+|---|---|
+| (省略) / `list` | 何を持っているか |
+| `repair` | `seg/` を歩いてカタログを作り直す |
+| `compact` | ジャーナルを畳んで新しい世代を公開する |
+
+**カタログはキャッシュである。** 消しても `repair` が作り直すし、無ければ
+どのコマンドもディレクトリ走査に落ちて動く。`repair` は 1 セグメント
+あたり 320 バイトしか読まないので、迷ったら走らせてよい。
+
+```console
+$ logsearch retain /tmp/arc 0
+dropping segments whose last record is before 2026-09-11T10:14:28Z
+
+segments dropped 4
+segments kept    0
+bytes freed      9331872
+```
+
+`days` は既定 14。**セグメント単位でしか消さない** — 1 行でも期限内の
+レコードがあればそのセグメントは残る (行単位の削除は無い)。
+先にカタログから外し、次にファイルを消し、空になった日 / 月 / 年の
+ディレクトリを片付ける。`readonly` のマウントは触らない。
+
+### `serve` — HTTP
+
+```bash
+logsearch serve <spec> [port] [idle]
+```
+
+`port` は既定 8080 (`0` を渡すと OS が選び、選ばれた番号を stderr に
+出す)。`idle` は「誰も繋いでこない時間がこれだけ続いたら終わる」秒数で、
+既定の `0` は「止めろと言われるまで」。待ち受けは `127.0.0.1` のみ。
+
+```console
+$ logsearch serve /tmp/arc 8080
+listening on 127.0.0.1:8080
+```
+
+| | |
+|---|---|
+| `GET /` | Web UI (1 ページ。外部から何も読み込まない) |
+| `GET /healthz` | `ok` |
+| `GET /v1/query?q=&limit=&format=` | `format` は `ndjson` (既定) / `json` / `text`、`limit` は 1〜1000 |
+| `GET /v1/stats` | 稼働時間・マウント・確保カウンタ |
+| `POST /v1/admin/repair` | カタログを作り直す |
+| `POST /v1/admin/gc?days=N` | 保持期限の掃除を 1 巡 |
+| `POST /v1/admin/shutdown` | 止める |
+
+```bash
+curl -s 'http://127.0.0.1:8080/v1/query?q=status%3D404&limit=2&format=json'
+```
+
+**管理系は loopback からの接続にしか答えない。** 認証機構が無いので、
+これが唯一の防御である。**同時接続は 1 本** — 理由と、それが設計の
+どこから外れているかは [`design-docs/HTTP_API.md`](design-docs/HTTP_API.md)
+の冒頭にある。
 
 ## 構成
 
@@ -129,8 +341,14 @@ poc/logsearch/
     segfile.t         .seg のファイル層 (ヘッダ / セクション表 / read_at)
     archive.t         セグメントの書き出し / 検証 / 索引 / リンク
     search.t          部分一致検索 (SIMD、スカラー参照つき)
-    query.t           クエリのパースと実行
-  design-docs/        設計文書 11 本
+    query.t           クエリのパースと実行・3 形式の描画
+    catalog.t         カタログ (スナップショット / ジャーナル / 再構築)
+    mount.t           マウントの宣言・配置ポリシー・`meta/mount.json`
+    http.t            話すと決めた HTTP/1.1 の部分集合
+    server.t          イベントループと経路
+    ui.t              Web UI (1 ページを埋め込みで持つ)
+  tests/              `toy test` が走らせる test ブロック (74 件)
+  design-docs/        設計文書 11 本 + 目次
   build/              toy の出力 (実行ファイル / リンクキャッシュ、git 管理外)
   log/                読ませる実ログ (git 管理外)
 ```
@@ -151,24 +369,28 @@ top-level `const` を失って `Identifier 'BUF_BYTES' not found` で落ちた�
 | 保存 (1 ファイル `.seg` v3、読み戻し検証) | 動く |
 | 索引 (型付き語彙索引 / 共起リンク) | 動く |
 | 検索 (時刻 / フィールド / 部分一致 / 集計 / traversal) | 動く |
-| カタログ・マウント・保持期限 | 設計のみ |
-| HTTP サーバと Web UI | 設計のみ |
-| **テスト** | **無い** — 次にやること |
+| カタログ・マウント・保持期限 | 動く |
+| HTTP サーバと Web UI | 動く (同時接続は 1 本、取り込みは未) |
+| **テスト** | 74 件 (`toy test poc/logsearch -j4`) |
 
-実測 (`log/apache2` の 181,519 行 / 30.5 MB、AOT `--release`、2026-09-05):
+実測 (`log/apache2` の 181,519 行 / 30.5 MB、AOT `--release`、2026-09-11):
 
 ```
-archive   9.12 MB (29%)   785 ms          verify   4 セグメント OK    251 ms
-query "status=404"        53,689 件  370 ms   (8.6 MB 読んで 30.5 MB 展開)
-query "wp-login.php"         546 件  183 ms
+archive   8.90 MB (30%)   780 ms          verify   4 セグメント OK    211 ms
+query "status=404"        53,689 件  366 ms   (8.6 MB 読んで 28.5 MB 展開)
+query "wp-login.php"         546 件  178 ms
 query "top=status"            16 種   24 ms   (語彙セクションだけ読む)
-query "ip=X top=path"      1,908 種   35 ms   (フレームを 1 つも展開しない)
-query "from=2030-01-01"        0 件    0 ms   (1,280 バイトしか読まない)
+query "ip=<1 つの値> top=path"  1,908 種  35 ms   (フレームを 1 つも展開しない)
+query "from=2030-01-01"        0 件    0 ms   (ヘッダだけ読んで 4 本とも捨てる)
 ```
 
-サイズは本体 4.19 MB + 索引 4.93 MB の合計。v2 は 2 ファイルに
-分けていたので、この表の 9.12 MB と v2 の「4.19 MB」は同じものの
-数え方が違うだけである ([`design-docs/STORAGE_FORMAT.md`](design-docs/STORAGE_FORMAT.md) §0)。
+> traversal の行のアドレスは伏せてある (実ログ由来で、プライベート
+> アドレスではないため。CLAUDE.md の規約)。`logsearch fields <spec> ip 1`
+> が出す 1 位の値をそのまま入れると再現する。
+
+本体と索引は 1 ファイルに入っている。v2 は 2 ファイルに分けていたので、
+この表の 8.90 MB と v2 の「4.19 MB」は同じものの数え方が違うだけである
+([`design-docs/STORAGE_FORMAT.md`](design-docs/STORAGE_FORMAT.md) §0)。
 
 答えは `grep` / `awk` / Python の厳密パーサと突き合わせて一致を確認している。
 

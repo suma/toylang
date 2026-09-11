@@ -106,6 +106,18 @@ impl Ord for Hit {
 }
 
 # `-1h` / `-30m` / `-2d`, ISO 8601, or plain unix seconds.
+fn only_digits(s: &String) -> bool {
+    val n = s.len()
+    if n == 0u64 { return false }
+    var i: u64 = 0u64
+    while i < n {
+        val c: u8 = s.get(i)
+        if c < '0' || c > '9' { return false }
+        i = i + 1u64
+    }
+    true
+}
+
 fn parse_time(text: str, now: i64) -> i64 {
     val s = String::from_str(text)
     if s.len() == 0u64 { return 0i64 }
@@ -125,7 +137,12 @@ fn parse_time(text: str, now: i64) -> i64 {
         if unit == 'd' { secs = mag * 86400u64 }
         return now - (secs as i64)
     }
-    if first >= '0' && first <= '9' && s.len() <= 11u64 {
+    # Unix seconds only when the whole thing is digits. Testing the
+    # first character alone swallowed `2030-01-01`: ten characters
+    # starting with a digit, so it took the numeric path, failed to
+    # parse, and came back 0 -- which reads as "no bound". A time
+    # filter that silently is not there looks exactly like an answer.
+    if only_digits(&s) && s.len() <= 11u64 {
         return (parse::to_u64(text) ?? 0u64) as i64
     }
     val dt = time::parse_iso8601(text)

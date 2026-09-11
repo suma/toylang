@@ -15,7 +15,7 @@
 | [`STORAGE_FORMAT.md`](STORAGE_FORMAT.md) | オンディスク形式をバイト単位で。圧縮 `LSZ1` |
 | [`ONTOLOGY.md`](ONTOLOGY.md) | 行から実体へ。型付き索引とリンク |
 | [`QUERY.md`](QUERY.md) | クエリの構文と実行 |
-| [`HTTP_API.md`](HTTP_API.md) | サーバ API と Web UI (設計のみ) |
+| [`HTTP_API.md`](HTTP_API.md) | サーバ API と Web UI。冒頭に実装状況 |
 | [`MEMORY.md`](MEMORY.md) | **確保したメモリは返ってこない**前提での定常状態設計 |
 | [`SIMD.md`](SIMD.md) | どこをベクトル化し、どこをしないか |
 | [`RUNTIME_GAPS.md`](RUNTIME_GAPS.md) | 足りない言語機能と、踏んだ不具合 |

@@ -558,7 +558,13 @@ struct ThreadState {
     stats: RtMemoryStats,
     prof_tab: *mut ProfSlot,
     prof_tab_cap: u64,
+    // Live entries (state 1). What the table is actually holding.
     prof_tab_occupied: u64,
+    // Slots that are not free (state 1 or 2). What a probe has to walk
+    // past, and so what decides when the table must be rebuilt: a
+    // tombstone costs a probe step exactly as much as a live entry
+    // does, and `prof_take`'s probe only stops at a free slot.
+    prof_tab_used: u64,
     prof_sites: [ProfSite; PROF_SITES_CAP],
     prof_site_len: usize,
     prof_layouts: [ProfLayout; PROF_LAYOUT_CAP],
@@ -652,6 +658,7 @@ impl Default for ThreadState {
             prof_tab: core::ptr::null_mut(),
             prof_tab_cap: 0,
             prof_tab_occupied: 0,
+            prof_tab_used: 0,
             prof_sites: [PROF_SITE_ZERO; PROF_SITES_CAP],
             prof_site_len: 0,
             prof_layouts: [PROF_LAYOUT_ZERO; PROF_LAYOUT_CAP],
@@ -1098,12 +1105,34 @@ fn prof_enabled() -> bool {
 }
 
 fn prof_put(p: *mut u8, size: u64, site: u64, file: *const u8) {
-    let grow = {
+    // **The load factor counts tombstones**, not just live entries.
+    // A program that allocates and frees in a loop keeps a small live
+    // set for ever, so a threshold on live entries alone never fires
+    // while the deletions fill every slot with tombstones -- and then
+    // `prof_take`'s probe, which stops only at a free slot, spins
+    // without end. That is a hang in ordinary drop glue, because
+    // freeing an address the table no longer holds is the documented
+    // no-op case.
+    let rebuild = {
         let st = thread_state();
-        st.prof_tab_cap == 0 || (st.prof_tab_occupied + 1) * 4 >= st.prof_tab_cap * 3
+        st.prof_tab_cap == 0 || (st.prof_tab_used + 1) * 4 >= st.prof_tab_cap * 3
     };
-    if grow {
-        prof_tab_grow();
+    if rebuild {
+        let (cap, live) = {
+            let st = thread_state();
+            (st.prof_tab_cap, st.prof_tab_occupied)
+        };
+        // Tombstones, not entries, are usually what filled the table.
+        // Rebuilding at the same capacity drops them; doubling is for
+        // a table that is genuinely full of live blocks.
+        let next = if cap == 0 {
+            256
+        } else if (live + 1) * 2 < cap {
+            cap
+        } else {
+            cap * 2
+        };
+        prof_tab_grow(next);
     }
     let st = thread_state();
     let mask = st.prof_tab_cap - 1;
@@ -1113,6 +1142,9 @@ fn prof_put(p: *mut u8, size: u64, site: u64, file: *const u8) {
         && unsafe { (*tab.add(i as usize)).key } != p
     {
         i = (i + 1) & mask;
+    }
+    if unsafe { (*tab.add(i as usize)).state } == 0 {
+        st.prof_tab_used += 1;
     }
     if unsafe { (*tab.add(i as usize)).state } != 1 {
         st.prof_tab_occupied += 1;
@@ -1126,12 +1158,16 @@ fn prof_put(p: *mut u8, size: u64, site: u64, file: *const u8) {
     }
 }
 
-fn prof_tab_grow() {
+/// Rebuild the table at `new_cap`, keeping only the live entries.
+///
+/// Called to grow *and* to clear tombstones at the same capacity, so
+/// the name is a slight lie -- it is the one place that decides what
+/// a probe will have to walk past next.
+fn prof_tab_grow(new_cap: u64) {
     let (old_cap, old) = {
         let st = thread_state();
         (st.prof_tab_cap, st.prof_tab)
     };
-    let new_cap = if old_cap == 0 { 256 } else { old_cap * 2 };
     let fresh = unsafe { calloc(new_cap as usize, core::mem::size_of::<ProfSlot>()) } as *mut ProfSlot;
     if fresh.is_null() {
         return; // out of memory while profiling: keep running, lose accuracy
@@ -1141,6 +1177,7 @@ fn prof_tab_grow() {
         st.prof_tab = fresh;
         st.prof_tab_cap = new_cap;
         st.prof_tab_occupied = 0;
+        st.prof_tab_used = 0;
     }
     for i in 0..old_cap as usize {
         if unsafe { (*old.add(i)).state } == 1 {
@@ -1168,6 +1205,9 @@ fn prof_take(p: *mut u8) -> (u64, u64, *const u8) {
             && unsafe { (*tab.add(i as usize)).key } == p
         {
             let slot = unsafe { *tab.add(i as usize) };
+            // A tombstone, not a free slot: an entry that probed past
+            // here must still be reachable. `prof_tab_used` therefore
+            // stays as it was -- the slot still costs a probe step.
             unsafe { (*tab.add(i as usize)).state = 2 };
             st.prof_tab_occupied -= 1;
             return (slot.size, slot.site, slot.file);
@@ -5386,6 +5426,43 @@ mod tests {
         // The bump region never reuses a freed address.
         let r = toy_dispatched_alloc(0, 64, 3 << 32, core::ptr::null());
         assert_ne!(r, p);
+    }
+
+    /// A long run of allocate-then-free used to wedge the process.
+    ///
+    /// Deleting an entry leaves a tombstone, and the table only grew
+    /// when the count of *live* entries crossed the load factor. A
+    /// program whose live set stays small therefore never rebuilt,
+    /// the tombstones filled every slot, and `prof_take` -- whose
+    /// probe stops only at a free slot -- looped without end. Freeing
+    /// an address the table no longer holds is the ordinary case in
+    /// drop glue (the free is documented as idempotent), so this was
+    /// reachable from any program that churns strings: `toy test` on
+    /// `poc/logsearch` hung in `String::drop` once one driver ran
+    /// enough tests in a single process.
+    ///
+    /// The loop below is far longer than any table this reaches, so
+    /// it finishes only if deletions are reclaimed.
+    #[test]
+    fn churning_the_profiler_table_does_not_wedge() {
+        profiler_reset();
+        let mut last = core::ptr::null_mut();
+        for i in 0..20_000u64 {
+            let p = toy_dispatched_alloc(0, 32, i << 32, core::ptr::null());
+            assert!(!p.is_null());
+            toy_dispatched_free(0, p);
+            // The second free finds nothing, which is the probe that
+            // used to run off the end of the table.
+            toy_dispatched_free(0, p);
+            last = p;
+        }
+        let stats = profiler_stats();
+        assert_eq!(stats.alloc_count, 20_000);
+        assert_eq!(stats.free_count, 20_000);
+        assert_eq!(stats.live_bytes, 0);
+        // An address that was never handed out is the same no-op.
+        toy_dispatched_free(0, last);
+        assert_eq!(profiler_stats().free_count, 20_000);
     }
 
     #[test]

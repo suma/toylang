@@ -4,9 +4,12 @@
 > `src/server.t` (イベントループ) が入り、`logsearch serve <spec>
 > [port]` で上がる。動くのは `GET /healthz` / `GET /v1/query`
 > (`format=ndjson|json|text`) / `GET /v1/stats` と、管理系の
-> `repair` / `gc` / `shutdown`。**`/v1/ingest` と `/v1/streams` と
-> `/v1/labels` と Web UI はまだ無い** — 取り込みは書き込み経路が、
-> 残り 2 つはカタログのラベル辞書 (まだ無い) が要る。
+> `repair` / `gc` / `shutdown`、そして `GET /` の Web UI
+> (`src/ui.t`、1 ページ 4.2 KB)。**`/v1/ingest` と `/v1/streams` と
+> `/v1/labels` はまだ無い** — 取り込みは書き込み経路が、残り 2 つは
+> カタログのラベル辞書 (まだ無い) が要る。UI の「もっと読む」は
+> `next_cursor` がまだ無いので、次のページではなく `limit` を
+> 4 倍にして引き直す (上限 1000 で止まる)。
 >
 > `/v1/query` の応答は**組み上げてから送る**。§2 が ndjson を
 > 「段階的に流せる」と書いているのに対し、こちらは本文全体を先に

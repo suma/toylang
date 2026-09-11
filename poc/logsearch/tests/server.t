@@ -14,6 +14,7 @@ import std.net
 import std.poll
 import http
 import server
+import ui
 
 fn span_of(s: &String) -> Span<u8> {
     val w = s.as_span()
@@ -242,4 +243,43 @@ test "nothing readable is 503 and not a bad request" {
     val got = answer("GET /v1/query?q=a HTTP/1.1\r\n\r\n", true)
     assert(contains(&got, "HTTP/1.1 503"), "an empty spec cannot be served")
     assert(contains(&got, "no readable mount"), "and says so")
+}
+
+# ---------------------------------------------------------------------
+# Web UI
+
+fn ui_text() -> String {
+    var out = ByteWriter::with_capacity(16384u64)
+    ui::page(&mut out)
+    val text = rendered(&out)
+    text
+}
+
+test "the root is one page and nothing else is fetched" {
+    val got = answer("GET / HTTP/1.1\r\n\r\n", true)
+    assert(contains(&got, "HTTP/1.1 200 OK"), "the UI is served")
+    assert(contains(&got, "content-type: text/html"), "as HTML")
+    assert(contains(&got, "<!doctype html>"), "and it is a document")
+
+    val page = ui_text()
+    # 外から何も取らない。閉じたネットワークで動かないサーバに
+    # なるので、CDN も画像も外部 CSS も無い (HTTP_API.md §3)。
+    assert(!contains(&page, "http://"), "the page fetches nothing over http")
+    assert(!contains(&page, "https://"), "nor over https")
+    assert(!contains(&page, "<img"), "and there are no images")
+    # 話す相手は 1 つだけ。
+    assert(contains(&page, "/v1/query?format=json"), "it asks /v1/query for JSON")
+}
+
+# **二重化した波括弧が本文に漏れていないこと。** 足りなければ
+# コンパイルが補間エラーで落ちるので気づくが、多すぎても落ちない —
+# CSS が黙って壊れるだけである。ここが唯一その差を見る場所になる。
+test "the page comes out with the braces it was written with" {
+    val page = ui_text()
+    assert(contains(&page, "body {{ margin: 0;"), "a CSS rule opens with one brace")
+    assert(!contains(&page, "{{{{"), "no brace was doubled twice")
+    assert(!contains(&page, "}}}}"), "nor a closing one")
+    # `"` は toylang の文字列リテラルに書けないので、ページは
+    # 単引用符だけで書かれている。混ざると属性が壊れる。
+    assert(!contains(&page, "\u{22}"), "the page holds no double quote")
 }

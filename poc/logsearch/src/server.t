@@ -40,6 +40,7 @@ import catalog
 import http
 import mount
 import query
+import ui
 
 # Tokens are names the poller stores and hands back without looking
 # inside. Functions rather than `const`, because a module's top-level
@@ -400,6 +401,15 @@ pub fn route(spec: str, b: Span<u8>, r: &Request, local: bool,
         http::begin_response(out, 200u64, "application/json", body.len(), alive)
         http::end_headers(out)
         out.put_all(&body)
+        return
+    }
+
+    if r.is_get() && path_is(b, r, "/") {
+        var page = ByteWriter::with_capacity(16384u64)
+        ui::page(&mut page)
+        http::begin_response(out, 200u64, ui::content_type(), page.len(), alive)
+        http::end_headers(out)
+        out.put_all(&page)
         return
     }
 

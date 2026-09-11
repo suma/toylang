@@ -951,7 +951,14 @@ impl<'a> FunctionLower<'a> {
                 name,
                 Binding::Tuple { elements: element_bindings },
             );
-            let (arg_values, _no_reloads) = self.lower_call_arg_items(args_items, None)?;
+            // CODE-SIZE-SELF-ABI: the callee has to be named here, or
+            // a wide `&mut T` parameter is expanded leaf by leaf into
+            // a signature that takes one address. Every other call
+            // site passes it; these three (the `val x = f(..)` shapes
+            // whose return is compound) passed `None`, which is why
+            // `verify_call_arity` was the thing that noticed.
+            let (arg_values, ptr_arg_reloads) =
+                self.lower_call_arg_items(args_items, Some(target_id))?;
             self.emit(
                 InstKind::CallTuple {
                     target: target_id,
@@ -960,6 +967,9 @@ impl<'a> FunctionLower<'a> {
                 },
                 None,
             );
+            for r in ptr_arg_reloads {
+                r.apply(self);
+            }
             return Ok(Some(None));
         }
         if let Type::Enum(enum_id) = target_ret {
@@ -977,7 +987,8 @@ impl<'a> FunctionLower<'a> {
             }
             self.bindings
                 .insert(name, Binding::Enum(storage));
-            let (arg_values, _no_reloads) = self.lower_call_arg_items(args_items, None)?;
+            let (arg_values, ptr_arg_reloads) =
+                self.lower_call_arg_items(args_items, Some(target_id))?;
             self.emit(
                 InstKind::CallEnum {
                     target: target_id,
@@ -986,6 +997,9 @@ impl<'a> FunctionLower<'a> {
                 },
                 None,
             );
+            for r in ptr_arg_reloads {
+                r.apply(self);
+            }
             return Ok(Some(None));
         }
         if let Type::Struct(struct_id) = target_ret {
@@ -1021,7 +1035,8 @@ impl<'a> FunctionLower<'a> {
             // identifiers; cross-struct call args are handled by
             // the regular `lower_call` path below if they show up
             // in this position).
-            let (arg_values, _no_reloads) = self.lower_call_arg_items(args_items, None)?;
+            let (arg_values, ptr_arg_reloads) =
+                self.lower_call_arg_items(args_items, Some(target_id))?;
             self.emit(
                 InstKind::CallStruct {
                     target: target_id,
@@ -1030,6 +1045,9 @@ impl<'a> FunctionLower<'a> {
                 },
                 None,
             );
+            for r in ptr_arg_reloads {
+                r.apply(self);
+            }
             return Ok(Some(None));
         }
         Ok(None)

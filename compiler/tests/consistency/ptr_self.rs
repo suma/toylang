@@ -706,3 +706,131 @@ fn a_wide_reference_argument_to_a_method() {
     "#;
     assert_consistent(src, "ptr_self_wide_ref_arg_to_method");
 }
+
+/// A compound-returning callee that also takes a wide `&mut`.
+///
+/// `val x = f(a, &mut w)` is lowered by a different path from
+/// `f(a, &mut w)` in statement position: the return is a struct, a
+/// tuple or an enum, so the call has to name its result locals up
+/// front. Those three branches were the only ones that lowered their
+/// arguments **without telling the argument lowering which function
+/// they were calling**, so a wide `&mut` parameter was expanded into
+/// its leaves while the callee's signature took one address.
+///
+/// It failed loudly rather than silently, because `verify_call_arity`
+/// checks exactly this, but only in the compiled lanes -- the
+/// tree-walker never sees an ABI. These pin the answer on all of
+/// them.
+///
+/// The receiver is twelve leaves wide so the pointer form engages;
+/// under eight, everything rides in registers and the bug is
+/// invisible.
+#[test]
+fn an_enum_returning_call_still_passes_a_wide_borrow_by_address() {
+    let src = r#"
+        struct Wide {
+            a: u64, b: u64, c: u64, d: u64,
+            e: u64, f: u64, g: u64, h: u64,
+            i: u64, j: u64, k: u64, l: u64,
+        }
+
+        fn bump(n: u64, w: &mut Wide) -> Result<u64, u64> {
+            w.a = w.a + n
+            if n == 0u64 { return Result::Err(1u64) }
+            Result::Ok(w.a)
+        }
+
+        fn outer(w: &mut Wide) -> u64 {
+            # The shape that was mis-lowered: a `val` binding whose
+            # right-hand side returns a compound.
+            val got = bump(5u64, w)
+            match got {
+                Result::Ok(v) => v,
+                Result::Err(e) => 0u64,
+            }
+        }
+
+        fn main() -> u64 {
+            var w = Wide {
+                a: 1u64, b: 0u64, c: 0u64, d: 0u64,
+                e: 0u64, f: 0u64, g: 0u64, h: 0u64,
+                i: 0u64, j: 0u64, k: 0u64, l: 7u64,
+            }
+            val seen = outer(&mut w)
+            # `seen` is what the callee returned, `w.a` is what it
+            # wrote: both have to have gone through the same address.
+            seen * 100u64 + w.a * 10u64 + w.l
+        }
+    "#;
+    assert_consistent(src, "ptr_param_enum_return");
+}
+
+#[test]
+fn a_struct_returning_call_still_passes_a_wide_borrow_by_address() {
+    let src = r#"
+        struct Wide {
+            a: u64, b: u64, c: u64, d: u64,
+            e: u64, f: u64, g: u64, h: u64,
+            i: u64, j: u64, k: u64, l: u64,
+        }
+
+        struct Pair { lo: u64, hi: u64 }
+
+        fn bump(n: u64, w: &mut Wide) -> Pair {
+            w.a = w.a + n
+            Pair { lo: w.a, hi: w.l }
+        }
+
+        fn outer(w: &mut Wide) -> u64 {
+            val got = bump(5u64, w)
+            got.lo * 10u64 + got.hi
+        }
+
+        fn main() -> u64 {
+            var w = Wide {
+                a: 1u64, b: 0u64, c: 0u64, d: 0u64,
+                e: 0u64, f: 0u64, g: 0u64, h: 0u64,
+                i: 0u64, j: 0u64, k: 0u64, l: 7u64,
+            }
+            val seen = outer(&mut w)
+            seen * 100u64 + w.a
+        }
+    "#;
+    assert_consistent(src, "ptr_param_struct_return");
+}
+
+#[test]
+fn a_tuple_returning_call_still_passes_a_wide_borrow_by_address() {
+    let src = r#"
+        struct Wide {
+            a: u64, b: u64, c: u64, d: u64,
+            e: u64, f: u64, g: u64, h: u64,
+            i: u64, j: u64, k: u64, l: u64,
+        }
+
+        fn bump(n: u64, w: &mut Wide) -> (u64, u64) {
+            w.a = w.a + n
+            # Bound rather than written as the tail: an identifier at
+            # the end of a line and a `(` at the start of the next are
+            # read as a call (poc/logsearch RUNTIME_GAPS.md G14).
+            val pair = (w.a, w.l)
+            pair
+        }
+
+        fn outer(w: &mut Wide) -> u64 {
+            val got = bump(5u64, w)
+            got.0 * 10u64 + got.1
+        }
+
+        fn main() -> u64 {
+            var w = Wide {
+                a: 1u64, b: 0u64, c: 0u64, d: 0u64,
+                e: 0u64, f: 0u64, g: 0u64, h: 0u64,
+                i: 0u64, j: 0u64, k: 0u64, l: 7u64,
+            }
+            val seen = outer(&mut w)
+            seen * 100u64 + w.a
+        }
+    "#;
+    assert_consistent(src, "ptr_param_tuple_return");
+}

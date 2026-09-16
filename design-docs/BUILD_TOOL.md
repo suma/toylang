@@ -1,8 +1,8 @@
 # BUILD TOOL — `toy` コマンド
 
 > **状態: B0〜B4 landing 済み (2026-09-05)。** B5 (マニフェスト) は
-> 「必要になってから」のまま。B2 は TEST_TOOL の T0/T2 まで
-> (T1 = compiled レーンでの `test` は未着手)。
+> 「必要になってから」のまま。B2 が使う TEST_TOOL の T0〜T5 も
+> landing 済み (T1 で compiled レーンでも `test` が走る)。
 > 実装: [`toy/`](../toy) (`toy/src/main.rs` がサブコマンド、
 > `toy/src/package.rs` が §D2 の規約探索)。
 > 対象: **自分のモジュールを持つプログラム**をビルド・実行する手順。

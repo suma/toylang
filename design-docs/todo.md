@@ -1732,52 +1732,6 @@
   表を 1 つにする。CODE-SIZE-SELF-ABI を直すまでは優先度が低い。
   [`CODE_SIZE.md`](CODE_SIZE.md)。
 
-- **TEST-IN-MODULE: `test` ブロックをモジュールに置けない** ★★★ —
-  auto-load されるモジュールに `test "..." { assert_eq(...) }` を書くと
-  統合で落ちる:
-
-  ```
-  [E0010] Core module `mylib.mathx` integration error: Unsupported
-          expression type for remapping: BuiltinMethodCall(ExprRef(10),
-          StrConcat, [ExprRef(12)])
-  ```
-
-  `assert_eq` はパーサが文字列連結に desugar するマクロで、
-  `module_integration` の remapper が `BuiltinMethodCall` を知らない。
-  **テストがエントリファイルにしか書けない**ということで、
-  エントリはこの言語で唯一モジュールでないファイルなので、
-  12 モジュールのプログラムのテストが 1 ファイルに集まる
-  (`poc/logsearch` が 5,000 行でテスト 0 件だった理由)。
-  設計は [`TEST_TOOL.md`](TEST_TOOL.md) の T0。
-
-- **TEST-BLOCK-AOT: compiled レーンで `test` ブロックが通らない** ★★ —
-  `test` の中の `assert_eq` を AOT に渡すと
-  `compile error: assert requires a string literal message in this
-  compiler MVP`。**`--test` はインタプリタ専用**なので、出荷する
-  レーンは組み込みテストで検査できない。`poc/logsearch` が踏んだ
-  不具合はどれもバックエンド固有だった。[`TEST_TOOL.md`](TEST_TOOL.md) の T1。
-
-- **AOT-NO-MAIN-DIAG: `main` の無いファイルの AOT が無関係な
-  エラーを出す** ★ — `fn helper() -> u64 { 1u64 }` だけのファイルを
-  compiler に渡すと
-  `` compile error: `log::level_from_rank` is neither a variant of
-  `Level` nor an associated function returning it ``。インタプリタは
-  `main function symbol not found` と正しく言う。テストファイルは
-  `main` を持たないので、テストランナーを作ると必ず踏む。
-  [`TEST_TOOL.md`](TEST_TOOL.md) の T2。
-
-- **CORE-MODULES-SINGLE: `--core-modules` が「追加」ではなく
-  「置き換え」** ★★ — 根は 1 つしか取れず
-  (`resolve_core_modules_dir` の優先順位は CLI → env → exe 相対)、
-  自分のモジュールを指した瞬間に stdlib が消える。そのため
-  「stdlib と自分のモジュールを両方含む 1 ディレクトリ」を利用者が
-  自分で作ることになり、`poc/logsearch` は symlink を張る 25 行の
-  シェルスクリプト (`refresh.sh`) を持っている。**繰り返し指定可能に
-  すればスクリプトごと消える**。同時にエントリの二重取り込み
-  (ENTRY-IN-MODULE-ROOT) も、コンパイル対象と同じ正規化パスを
-  auto-load が飛ばせば消える。設計は
-  [`BUILD_TOOL.md`](BUILD_TOOL.md) の B0。
-
 - **MEMORY-ACCESS M4: `chunks::<N>()` と `read_uNN_le/be`** —
   設計は [`MEMORY_ACCESS.md`](MEMORY_ACCESS.md)。M3 で範囲を答える
   primitive は入ったが、**ブロック単位の反復と幅つきスカラー読みは
@@ -2437,21 +2391,11 @@
     残る。分割と同じコミットでディレクトリ監視に変える
 
 * **ビルドコマンド `toy`** — [`BUILD_TOOL.md`](BUILD_TOOL.md)。
-  自分のモジュールを持つプログラムを 1 コマンドでビルド・実行・
-  テストする薄い層。**速さの問題ではない** (空プログラム 90 ms、
-  リンクキャッシュが効けば 30 ms、`poc/logsearch` 5,067 行で 170 ms) —
-  モジュールの根を人間に組み立てさせないこと、同じ根をビルドと
-  クエリの両方に配ること、既にある速い経路を既定にすることが仕事。
-  **B0 (上の CORE-MODULES-SINGLE) だけは処理系側**で、そこだけで
-  `refresh.sh` が消える。マニフェストは依存が来るまで作らない。
+  B0〜B4 は landing 済み (完了済み節)。残る B5 (マニフェストと依存) は
+  依存が来るまで作らない。
 * **テストの道具とライブラリ** — [`TEST_TOOL.md`](TEST_TOOL.md)。
-  `test` ブロックと `--check` は landing 済み (LLM-LOOP P4/P5) だが、
-  **モジュールに置けず (TEST-IN-MODULE)、compiled レーンで走らない
-  (TEST-BLOCK-AOT)**。加えて語彙が `assert` / `assert_eq` /
-  `assert_ne` の 3 つしかなく、`panic` を期待するテスト・許容誤差
-  比較・バイト列の差分位置・確保量の検査・ゴールデンが書けない。
-  最初の受け入れ先は `poc/logsearch` (5,000 行・12 モジュール・
-  4 レーン・バイト形式)。
+  T0〜T5 は landing 済み (完了済み節)。残る T4 後半 (`--backend all`
+  = レーン間の食い違い報告) は未実装節の TEST-PARALLEL P6 で追う。
 * モジュール拡張 — バージョニング、リモートパッケージ
 * 言語内からの AST 取得・操作
 * LSP 対応 — 補完 / go-to-definition / hover / 診断 / フォーマット。frontend の AST・型チェッカ・`SourceLocation` を再利用できる。ただし**エージェントは LSP より CLI クエリを使いやすい**ので、LLM ループの観点では `--api` / 型ホール (P7 で landing 済み) の方が先だった
@@ -2576,15 +2520,6 @@ changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 
   BARE-NAME-COLLISION より重い (あちらは曖昧だと**言う**)。
   2026-09-05、BARE-NAME-COLLISION の検討中に見つけた。
 
-- **ENTRY-IN-MODULE-ROOT: プログラム本体をモジュール根に置くと
-  自分の `const` を失う** ★ — エントリはコンパイラに「プログラム」として
-  渡すので、同じファイルがモジュール根の下にもあると auto-load で
-  **もう一度取り込まれ**、その複製は自分の top-level `const` を持たない
-  まま型検査される (`[E0003] Identifier 'BUF_BYTES' not found`、
-  `= note: this comes from module ...`)。エントリを根の外に置けば済むが、
-  **診断からその結論に辿り着けない**。二重取り込みを検出して黙って
-  無視するか、はっきり拒否するかのどちらかが要る。
-
 - **ENUM-CALL-VALUE-COUNT (internal error)** ★ —
   `internal error: enum call returned 19 value(s), expected 15`。
   自由関数が `&mut` の compound を 2 つと `&` を 1 つ取り `u64` を返す形で
@@ -2592,18 +2527,6 @@ changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 
   7 フィールド struct を `Result` で返す形は通る。`&mut` を 1 つに
   減らしたら消えたので、writeback の leaf 数の数え方が疑わしい。
   internal error なのでユーザ側に直し方の手掛かりが無い。
-
-- **EFFECTS-CORE-MODULES: `--effects` が `--core-modules` を無視する** ★ —
-  `--core-modules <DIR> --effects prog.t` は指定を捨てて既定の探索に
-  倒れるので、ユーザのモジュールを持つプログラムは `[E0003] Struct
-  'logdir' not found` の山になる (`--effects` は型検査を通す
-  クエリなので、モジュールが無ければ何も答えられない)。原因は
-  `interpreter/src/main.rs` の `run_effects` が
-  `resolve_core_modules_dir(None)` を呼ぶこと — フラグは実行系の
-  引数と一緒に解析され、このクエリはその前に走る。回避策は
-  `TOYLANG_CORE_MODULES=<DIR>` (優先順位 2 の env var は効く)。
-  `--api` は parse だけなので影響しない。2026-09-05、
-  `poc/logsearch` を型検査しようとして踏んだ。
 
 - **E0014-WRONG-FILE: モジュールの中の `[E0014]` が入口ファイルを指す** ★★ —
   所有権検査の診断だけがモジュール帰属を持っていない。**ファイル名は

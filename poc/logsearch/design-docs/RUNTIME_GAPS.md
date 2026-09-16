@@ -314,6 +314,29 @@ Error at scratch/probe/g.t:10:1:     # 入口は 9 行しかない
 `[E0014]` が全部 `main.t` の無関係な行を指していて、原因の特定が
 grep 頼みになった。
 
+### ⚠ モジュールの中では配列の添字が書けない ★★ (2026-09-16)
+
+レコード表の復号を `archive.t` に置いたときに踏んだ。**入口ファイルでは
+通る `a[i]` が、auto-load されるモジュールの中では型検査の統合で落ちる。**
+
+```rust
+# src/arrmod.t
+pub fn third() -> u64 {
+    var a: [u64; 3] = [1u64, 2u64, 3u64]
+    a[2u64]
+}
+```
+
+```
+[E0010] Core module `arrmod` integration error: Unsupported expression
+type for remapping: SliceAccess(ExprRef(4), SliceInfo { ... })
+```
+
+同じ本体を入口に書けば `--all-backends` で 3 レーン一致する。
+モジュールの式を入口の pool に写す処理が `SliceAccess` を知らないのが
+原因と見られる。回避は配列を使わないこと — `decode_records` は
+`[u64; 11]` をやめ、名前つきの `var` 7 つに添字で振り分けた。
+
 ## G15. SIMD に残っている穴 ★
 
 **あるもの**: 5 つの 128bit 型、lane-wise の演算子、17 の intrinsic

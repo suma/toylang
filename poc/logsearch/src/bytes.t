@@ -307,6 +307,13 @@ impl ByteReader {
     pub fn take_varint(&mut self, src: Span<u8>) -> u64
         requires self.pos < self.end
     {
+        # Most values in a record table are below 128, so the one-byte
+        # case returns before the loop is set up.
+        val b0: u8 = src.get(self.pos)
+        if (b0 & 0x80u8) == 0u8 {
+            self.pos = self.pos + 1u64
+            return b0 as u64
+        }
         var v: u64 = 0u64
         var shift: u64 = 0u64
         var more = true
@@ -318,6 +325,20 @@ impl ByteReader {
             shift = shift + 7u64
         }
         v
+    }
+
+    # Step over `count` varints without assembling them: a varint ends
+    # at the first byte without its top bit, so skipping is a count of
+    # those bytes.
+    pub fn skip_varints(&mut self, src: Span<u8>, count: u64)
+        requires self.pos < self.end
+    {
+        var left = count
+        while left > 0u64 {
+            val b: u8 = src.get(self.pos)
+            self.pos = self.pos + 1u64
+            if (b & 0x80u8) == 0u8 { left = left - 1u64 }
+        }
     }
 
     # Whether the next four bytes spell `tag`, consuming them if so.

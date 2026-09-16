@@ -248,7 +248,7 @@ v2 では別ファイル `.idx` だった。統合しても**中身は変わっ�
 セクション表がファイルの中の位置を指すようになっただけである。
 
 ```
-kind 2  record table   レコードの列 (SoA varints、非圧縮)
+kind 2  record table   レコードの行 (1 レコード 11 varint、非圧縮)
 kind 3  frame table    フレームのオフセットと担当範囲 (20 バイト固定長)
         ↑ 索引で絞ったクエリが「どのフレームを展開するか」を決めるのに
           使う。飛ばしたフレームは**展開せず長さだけ進める**ので、
@@ -268,24 +268,40 @@ kind 8 は語の id 順に `has: varint` と、`has` なら `first: varint` +
 `"LST1"`, codec, 非圧縮長, 格納長, 非圧縮 CRC-32。読み手は
 `read_at` でその範囲だけ取り、展開して CRC を照合する。
 
-### 2. record table (SoA)
+### 2. record table
+
+**設計は列ごと (SoA) だったが、実装は行ごとに書いている。** 1 レコードは
+次の 11 個の varint が並んだもので、それが N 回続く:
 
 ```
-ts_base: u64                       # = ts_min (UNIX ns)
-ts_delta:   varint[N]              # ts - 直前の ts (ストリーム内で単調増加)
-seq_delta:  varint[N]
-stream_id:  varint[N]
-body_off:   varint[N]
-body_len:   varint[N]
-flags:      varint[N]
+flags  line_len  ts  host_rel  host_len  tag_rel  tag_len
+labels_rel  labels_len  body_rel  body_len
 ```
 
-**列ごとに置く (SoA)** のは、クエリが列を 1 本だけ舐める場面が多いから。
-時刻範囲の判定は `ts` 列しか要らない。加えて、この形は将来の
-**自動ベクトル化の入口**でもある ([`SIMD.md`](SIMD.md) §7)。
+`ts` は差分ではなく UNIX 秒をそのまま書く (最小値はセグメントを閉じる
+まで分からず、列を書き直すほうが高くつくため)。`line_at` (アリーナ上の
+位置) は書かない — `line_len` の累積で決まる。
 
-ns にしても、隣接レコードの差分は小さい (1 秒に 5,000 行なら平均 200µs =
-varint 3 バイト) ので、サイズはほとんど変わらない。
+**列にするのは読み手の側で行う。** クエリはセグメントごとに表を 1 回だけ
+`soa Vec<RecRow>` に復号し (`archive::decode_records`)、`mark_frames` と
+本体ループは**索引が残した候補の ordinal で列を直接引く**。以前は両方の
+パスが全レコードの 11 varint を読み直していた。計測 (444,549 レコード、
+12 セグメント、交互実行 21 回の中央値) は次のとおり:
+
+| クエリ | 前 | 後 |
+|---|---:|---:|
+| 全走査 (`limit=3`) | 938 ms | 935 ms |
+| `status=404` | 390 ms | 378 ms |
+| `method=POST` | 178 ms | 168 ms |
+| `ua~MJ12bot` | 221 ms | 210 ms |
+| `ip=<一つの住所>` | 74 ms | 69 ms |
+
+レコード表の復号と行ループを合わせた時間は `method=POST` で
+21 ms → 11 ms、`status=404` で 30 ms → 19 ms。**残りは
+varint の復号そのもの** (約 2 ns/バイト。`push` はその 1 割、生ポインタで
+読んでも変わらなかった) で、候補が少なくても最後の候補までは頭から
+読むしかない。これ以上削るならディスク上を固定幅の列にする
+(復号が消える代わりに表が大きくなる。形式の版上げが要る)。
 
 ### 6. 語彙索引 (bloom は未実装)
 

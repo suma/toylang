@@ -577,73 +577,49 @@ pub fn resolve_indexed(traw: Span<u8>, tlen: u64, q: &Query,
 
 # Which frames hold the records the index left standing.
 #
-# The record table is a varint stream, so finding a record's place in
-# the arena means decoding every record before it -- cheap, and it is
-# the walk the body pass does anyway. What it buys is skipping the
-# LSZ decode of every frame no surviving record lives in, which on a
-# selective query is nearly all of them.
+# Which frames hold a record the index let through.
+#
+# The rows are already decoded (`archive::decode_records`), so this
+# visits the candidates and nothing else: each one's place in the arena
+# is read off the `line_at` column by ordinal. What it buys is skipping
+# the LSZ decode of every frame no surviving record lives in, which on
+# a selective query is nearly all of them.
 #
 # A line can straddle a frame boundary (frames are cut at a fixed raw
 # size, not at line ends), so the whole extent is marked, not just the
 # offset it starts at.
-fn mark_frames(rb: Span<u8>, recs_len: u64, n_records: u64,
-               allowed: &Vec<u32>, starts: &Vec<u64>, lens: &Vec<u64>,
-               need: &mut Vec<u8>) {
+fn mark_frames(rows: &SoaVec<RecRow>, allowed: &Vec<u32>,
+               starts: &Vec<u64>, lens: &Vec<u64>, need: &mut Vec<u8>) {
     need.clear()
-    var k: u64 = 0u64
-    while k < starts.size() {
-        need.push(0u8)
-        k = k + 1u64
-    }
-    var rd = ByteReader::new(recs_len)
-    var line_at: u64 = 0u64
-    var cursor: u64 = 0u64
-    # Frames are in arena order and so are the records, so this only
-    # moves forward.
+    val n_frames = starts.size()
+    for k in 0u64..n_frames { need.push(0u8) }
+    val n = rows.size()
+    val ats = rows.line_at
+    val line_lens = rows.line_len
+    # Candidates ascend, and so do their offsets, so the frame cursor
+    # only moves forward.
     var fc: u64 = 0u64
-    var r: u64 = 0u64
-    while r < n_records && rd.remaining() > 0u64 {
-        val flags = rd.take_varint(rb)
-        val line_len = rd.take_varint(rb)
-        val ts = rd.take_varint(rb)
-        val a1 = rd.take_varint(rb)
-        val a2 = rd.take_varint(rb)
-        val a3 = rd.take_varint(rb)
-        val a4 = rd.take_varint(rb)
-        val a5 = rd.take_varint(rb)
-        val a6 = rd.take_varint(rb)
-        val a7 = rd.take_varint(rb)
-        val a8 = rd.take_varint(rb)
-
-        var in_set = false
-        while cursor < allowed.size() {
-            val a: u32 = allowed.get(cursor)
-            if (a as u64) < r {
-                cursor = cursor + 1u64
-            } else {
-                if (a as u64) == r { in_set = true }
-                break
-            }
+    for k in 0u64..allowed.size() {
+        val a: u32 = allowed.get(k)
+        val r = a as u64
+        if r >= n { break }
+        val line_at: u64 = ats.get(r)
+        val ll: u32 = line_lens.get(r)
+        val last = line_at + (ll as u64)
+        # Walk forward to the first frame that can hold `line_at`,
+        # then mark every frame the line reaches into.
+        while fc < n_frames {
+            val st: u64 = starts.get(fc)
+            val ln: u64 = lens.get(fc)
+            if st + ln <= line_at { fc = fc + 1u64 } else { break }
         }
-        if in_set {
-            val last = line_at + line_len
-            # Walk forward to the first frame that can hold `line_at`,
-            # then mark every frame the line reaches into.
-            while fc < starts.size() {
-                val st: u64 = starts.get(fc)
-                val ln: u64 = lens.get(fc)
-                if st + ln <= line_at { fc = fc + 1u64 } else { break }
-            }
-            var g = fc
-            while g < starts.size() {
-                val st: u64 = starts.get(g)
-                if st >= last { break }
-                need.set(g, 1u8)
-                g = g + 1u64
-            }
+        var g = fc
+        while g < n_frames {
+            val st: u64 = starts.get(g)
+            if st >= last { break }
+            need.set(g, 1u8)
+            g = g + 1u64
         }
-        line_at = line_at + line_len
-        r = r + 1u64
     }
 }
 
@@ -706,6 +682,9 @@ pub fn search(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32,
     var arena = ByteWriter::with_capacity(archive::segment_target_bytes() + 65536u64)
     var recs = ByteWriter::with_capacity(4194304u64)
     var tsec = ByteWriter::with_capacity(4194304u64)
+    # The record table of the segment in hand, by column. Cleared per
+    # segment rather than rebuilt, for the same reason as the buffers.
+    var rows: soa Vec<RecRow> = SoaVec::new()
 
     var allowed: Vec<u32> = Vec::new()
     # Frame selection: the table's extents, and one byte per frame.
@@ -788,17 +767,27 @@ pub fn search(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32,
                         println("  {seg_str}: record table unreadable")
                         good = false
                     }
+                    rows.clear()
+                    if good {
+                        val rw0 = recs.span()
+                        match rw0 {
+                            Option::Some(rb0) => {
+                                # Rows past the last candidate are never
+                                # looked at, so they are not decoded.
+                                var upto = h.records
+                                if use_terms && allowed.size() > 0u64 {
+                                    val last: u32 = allowed.get(allowed.size() - 1u64)
+                                    if (last as u64) + 1u64 < upto { upto = (last as u64) + 1u64 }
+                                }
+                                archive::decode_records(rb0, recs.len(), upto, &mut rows)
+                            }
+                            Option::None => { }
+                        }
+                    }
                     need.clear()
                     if good && use_terms {
                         if segfile::frame_extents(&f, &h, &mut ftbuf, &mut fstarts, &mut flens) {
-                            val rw0 = recs.span()
-                            match rw0 {
-                                Option::Some(rb0) => {
-                                    mark_frames(rb0, recs.len(), h.records, &allowed,
-                                                &fstarts, &flens, &mut need)
-                                }
-                                Option::None => { }
-                            }
+                            mark_frames(&rows, &allowed, &fstarts, &flens, &mut need)
                         }
                     }
                     # What was actually expanded, which is the point of
@@ -833,67 +822,57 @@ pub fn search(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32,
                         scanned_bytes = scanned_bytes + expanded_here
                         read_bytes = read_bytes + h.frames_len + h.recs_len
                         val aw = arena.span()
-                        val rw = recs.span()
                         match aw {
                             Option::Some(body) => {
-                                match rw {
-                                    Option::Some(rb) => {
-                                        var rd = ByteReader::new(recs.len())
-                                        var line_at: u64 = 0u64
-                                        var cursor: u64 = 0u64
-                                        var r: u64 = 0u64
-                                        while r < h.records && rd.remaining() > 0u64 {
-                                            val flags = rd.take_varint(rb)
-                                            val line_len = rd.take_varint(rb)
-                                            val ts = rd.take_varint(rb) as i64
-                                            val host_rel = rd.take_varint(rb)
-                                            val host_len = rd.take_varint(rb)
-                                            val tag_rel = rd.take_varint(rb)
-                                            val tag_len = rd.take_varint(rb)
-                                            val labels_rel = rd.take_varint(rb)
-                                            val labels_len = rd.take_varint(rb)
-                                            val body_rel = rd.take_varint(rb)
-                                            val body_len = rd.take_varint(rb)
+                                # With an index filter only the candidates
+                                # are visited, by ordinal; without one,
+                                # every row is. Either way a record is
+                                # read out of the columns it needs.
+                                val n_rows = rows.size()
+                                var n_visit = n_rows
+                                if use_terms { n_visit = allowed.size() }
+                                val ats = rows.line_at
+                                val line_lens = rows.line_len
+                                val stamps = rows.ts
+                                val flag_col = rows.flags
+                                val host_rels = rows.host_rel
+                                val host_lens = rows.host_len
+                                val tag_rels = rows.tag_rel
+                                val tag_lens = rows.tag_len
+                                for k in 0u64..n_visit {
+                                    var r = k
+                                    if use_terms {
+                                        val a: u32 = allowed.get(k)
+                                        r = a as u64
+                                    }
+                                    if r >= n_rows { break }
+                                    val line_at: u64 = ats.get(r)
+                                    val ll: u32 = line_lens.get(r)
+                                    val line_len = ll as u64
+                                    val ts: i64 = stamps.get(r)
+                                    val fl: u8 = flag_col.get(r)
+                                    val flags = fl as u64
+                                    val hr: u32 = host_rels.get(r)
+                                    val hl: u32 = host_lens.get(r)
+                                    val tr: u32 = tag_rels.get(r)
+                                    val tl: u32 = tag_lens.get(r)
 
-                                            val dated = (flags & 1u64) != 0u64
-                                            val kind = ((flags >> 1u64) & 7u64) as u32
+                                    val dated = (flags & 1u64) != 0u64
+                                    val kind = ((flags >> 1u64) & 7u64) as u32
 
-                                            # The postings are ascending and so is
-                                            # this walk, so membership is a cursor.
-                                            var in_set = true
-                                            if use_terms {
-                                                in_set = false
-                                                while cursor < allowed.size() {
-                                                    val a: u32 = allowed.get(cursor)
-                                                    if (a as u64) < r {
-                                                        cursor = cursor + 1u64
-                                                    } else {
-                                                        if (a as u64) == r { in_set = true }
-                                                        break
-                                                    }
-                                                }
-                                            }
-
-                                            if in_set {
-                                                examined = examined + 1u64
-                                                if matches(q, body, line_at, line_len, kind, ts, dated,
-                                                           host_rel, host_len, tag_rel, tag_len) {
-                                                    matched = matched + 1u64
-                                                    if hits.size() < max_hits() {
-                                                        val hit = Hit { ts: ts, ord: hits.size() }
-                                                        hits.push(hit)
-                                                        val line = text_of(body, line_at, line_len)
-                                                        texts.push(line)
-                                                    } else {
-                                                        truncated = true
-                                                    }
-                                                }
-                                            }
-                                            line_at = line_at + line_len
-                                            r = r + 1u64
+                                    examined = examined + 1u64
+                                    if matches(q, body, line_at, line_len, kind, ts, dated,
+                                               hr as u64, hl as u64, tr as u64, tl as u64) {
+                                        matched = matched + 1u64
+                                        if hits.size() < max_hits() {
+                                            val hit = Hit { ts: ts, ord: hits.size() }
+                                            hits.push(hit)
+                                            val line = text_of(body, line_at, line_len)
+                                            texts.push(line)
+                                        } else {
+                                            truncated = true
                                         }
                                     }
-                                    Option::None => { }
                                 }
                             }
                             Option::None => { }

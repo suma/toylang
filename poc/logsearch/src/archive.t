@@ -5,7 +5,7 @@
 #
 #   <seg>.seg   64-byte header, a section directory, then the frames
 #               (the line bytes, compressed 256 KiB at a time with
-#               LSZ1), the record table (SoA varints), the frame
+#               LSZ1), the record table (varints, a row per record), the frame
 #               table, the term dictionary and the link table
 #
 # v2 wrote the data and the index as two files, because a reader
@@ -1094,6 +1094,75 @@ fn put_dir(head: &mut ByteWriter, kind: u64, off: u64, len: u64, sum: u64) {
 # The offset of a part within its line, or 0 when the part is absent.
 fn rel_of(abs: u64, line_start: u64) -> u64 {
     if abs <= line_start { 0u64 } else { abs - line_start }
+}
+
+# ---------------------------------------------------------------------
+# The record table, decoded.
+#
+# On disk a record is eleven varints side by side (`add_line`), which
+# is the only order a varint stream can be read in. A query, though,
+# wants the table the other way round: `mark_frames` needs where each
+# candidate's line sits, the walk needs a handful of fields for each
+# candidate, and neither wants the fields it does not look at. So the
+# table is decoded **once** per segment into columns and the candidates
+# are looked up by ordinal -- before, both passes re-read all eleven
+# varints of every record, including the ones the index had already
+# ruled out.
+#
+# `soa Vec` puts each field in a column of its own width (37 bytes a
+# row, with no padding between fields), so a pass that reads `line_at`
+# touches only that column. `line_at` is not on disk:
+# it is the running sum of `line_len`, and it is what lets a record be
+# found without walking the ones before it.
+#
+# The labels and body offsets are dropped here: nothing that walks the
+# table reads them yet.
+pub struct RecRow {
+    line_at: u64,
+    ts: i64,
+    line_len: u32,
+    host_rel: u32,
+    host_len: u32,
+    tag_rel: u32,
+    tag_len: u32,
+    flags: u8,
+}
+
+# Decode up to `n` records of `rb` into `rows`, which is cleared first
+# and keeps its capacity, so one `SoaVec` serves every segment of a
+# walk. Stops early on a short table, as the per-record walks did; the
+# caller reads the count off `rows.size()`.
+#
+# The varints themselves are what this costs (about 2 ns a byte,
+# 20 ms for 444,549 records); the `push` is a tenth of it. Reading the
+# bytes through the raw address instead of `take_varint` was tried and
+# measured the same, so the safe form stays.
+pub fn decode_records(rb: Span<u8>, recs_len: u64, n: u64,
+                      rows: &mut SoaVec<RecRow>) {
+    rows.clear()
+    var rd = ByteReader::new(recs_len)
+    var line_at: u64 = 0u64
+    var r: u64 = 0u64
+    while r < n && rd.remaining() > 0u64 {
+        val flags = rd.take_varint(rb)
+        val line_len = rd.take_varint(rb)
+        val ts = rd.take_varint(rb) as i64
+        val host_rel = rd.take_varint(rb)
+        val host_len = rd.take_varint(rb)
+        val tag_rel = rd.take_varint(rb)
+        val tag_len = rd.take_varint(rb)
+        # labels and body offsets
+        rd.skip_varints(rb, 4u64)
+        rows.push(RecRow {
+            line_at: line_at, ts: ts,
+            line_len: line_len as u32,
+            host_rel: host_rel as u32, host_len: host_len as u32,
+            tag_rel: tag_rel as u32, tag_len: tag_len as u32,
+            flags: flags as u8,
+        })
+        line_at = line_at + line_len
+        r = r + 1u64
+    }
 }
 
 # ---------------------------------------------------------------------

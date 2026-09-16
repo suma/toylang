@@ -10,6 +10,15 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-09-17
+- **MODULE-EXPR-REMAP — モジュールの body に配列の添字を書くと
+  integration が落ちていた** — `remap_expression` に `SliceAccess` /
+  `SliceAssign` / `DictLiteral` / `Range` / `Closure` / `StructUpdate`
+  の腕が無く、`Unsupported expression type for remapping`。入口ファイルは
+  remap を通らないので、同じ関数を `src/` に移したときだけ落ちた
+  (`poc/logsearch`)。catch-all を消して `Expr` を網羅したので、
+  次に variant を足すと remap の書き忘れはコンパイルエラーになる。
+
 ### 2026-09-11
 - **TEST-PARALLEL P0〜P3 — `toy test` が並列に走る** — `-j N` (既定は
   コア数、`-j1` は従来の逐次経路、`--bless` は暗黙に `-j1`)。plan も

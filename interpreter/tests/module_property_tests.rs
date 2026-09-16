@@ -457,3 +457,90 @@ fn unknown_qualifier_names_both_possibilities() {
     .expect_err("a mistyped qualifier should be reported");
     assert!(err.contains("Type or module 'hh' not found"), "{err}");
 }
+
+// ============================================================================
+// Expression shapes a module body could not hold.
+//
+// Integration copies every expression of a module into the main pool,
+// and `remap_expression` used to end in a catch-all that refused the
+// shapes it had no arm for -- array indexing among them. The entry file
+// never goes through that copy, so each of these worked there and
+// failed with `Unsupported expression type for remapping` once the same
+// function moved into a module (`poc/logsearch`, 2026-09-16).
+// ============================================================================
+
+fn run_module_fn(module_src: &str, call: &str) -> Result<u64, String> {
+    let core = core_tree(&[("std/shapes.t", module_src)]);
+    let main = format!("fn main() -> u64 {{ {call} }}");
+    let result = test_program_with_core(&main, Some(core.path().to_path_buf()))?;
+    let value = result.borrow().unwrap_uint64();
+    Ok(value)
+}
+
+#[test]
+fn module_can_index_an_array() {
+    let src = "pub fn third() -> u64 {\n\
+               \x20   val a: [u64; 3] = [1u64, 2u64, 3u64]\n\
+               \x20   a[2u64]\n\
+               }\n";
+    assert_eq!(run_module_fn(src, "shapes::third()"), Ok(3));
+}
+
+#[test]
+fn module_can_assign_an_array_element() {
+    let src = "pub fn f() -> u64 {\n\
+               \x20   var a: [u64; 3] = [1u64, 2u64, 3u64]\n\
+               \x20   a[0u64] = 40u64\n\
+               \x20   a[0u64] + a[1u64]\n\
+               }\n";
+    assert_eq!(run_module_fn(src, "shapes::f()"), Ok(42));
+}
+
+#[test]
+fn module_can_take_a_range_slice() {
+    let src = "pub fn f() -> u64 {\n\
+               \x20   val a: [u64; 4] = [1u64, 2u64, 3u64, 4u64]\n\
+               \x20   val s = a[1u64..3u64]\n\
+               \x20   s[0u64] + s[1u64]\n\
+               }\n";
+    assert_eq!(run_module_fn(src, "shapes::f()"), Ok(5));
+}
+
+#[test]
+fn module_can_hold_a_closure_literal() {
+    let src = "pub fn f() -> u64 {\n\
+               \x20   val k = 5u64\n\
+               \x20   val g = fn(n: u64) -> u64 { n + k }\n\
+               \x20   g(37u64)\n\
+               }\n";
+    assert_eq!(run_module_fn(src, "shapes::f()"), Ok(42));
+}
+
+#[test]
+fn module_can_use_struct_update() {
+    let src = "pub struct Pt { x: u64, y: u64 }\n\
+               pub fn f() -> u64 {\n\
+               \x20   val p = Pt { x: 1u64, y: 2u64 }\n\
+               \x20   val q = Pt { x: 40u64, ..p }\n\
+               \x20   q.x + q.y\n\
+               }\n";
+    assert_eq!(run_module_fn(src, "shapes::f()"), Ok(42));
+}
+
+#[test]
+fn module_can_hold_a_range_value() {
+    let src = "pub fn f() -> u64 {\n\
+               \x20   val r = 1u64..3u64\n\
+               \x20   7u64\n\
+               }\n";
+    assert_eq!(run_module_fn(src, "shapes::f()"), Ok(7));
+}
+
+#[test]
+fn module_can_hold_a_dict_literal() {
+    let src = "pub fn f() -> u64 {\n\
+               \x20   val d = dict{\"a\": 1u64, \"b\": 41u64}\n\
+               \x20   d[\"b\"]\n\
+               }\n";
+    assert_eq!(run_module_fn(src, "shapes::f()"), Ok(41));
+}

@@ -450,8 +450,72 @@ impl<'a> AstIntegrationContext<'a> {
                     self.map_exprs(args, "BuiltinMethodCall argument")?,
                 ))
             }
-            // Add other expression types as needed
-            _ => Err(format!("Unsupported expression type for remapping: {:?}", expr))
+            // `a[i]` / `a[lo..hi]`. Before this arm a module could not
+            // index an array at all -- the entry file could, so the gap
+            // only showed once the code moved into `src/`
+            // (`poc/logsearch`'s record-table decoder, 2026-09-16).
+            Expr::SliceAccess(obj, info) => Ok(Expr::SliceAccess(
+                self.map_expr(obj, "SliceAccess object")?,
+                SliceInfo {
+                    start: self.map_opt_expr(info.start.as_ref(), "SliceAccess start")?,
+                    end: self.map_opt_expr(info.end.as_ref(), "SliceAccess end")?,
+                    has_dotdot: info.has_dotdot,
+                    slice_type: info.slice_type.clone(),
+                },
+            )),
+            // `a[i] = v` / `a[lo..hi] = v`.
+            Expr::SliceAssign(obj, start, end, value) => Ok(Expr::SliceAssign(
+                self.map_expr(obj, "SliceAssign object")?,
+                self.map_opt_expr(start.as_ref(), "SliceAssign start")?,
+                self.map_opt_expr(end.as_ref(), "SliceAssign end")?,
+                self.map_expr(value, "SliceAssign value")?,
+            )),
+            Expr::DictLiteral(pairs) => {
+                let mut new_pairs = Vec::with_capacity(pairs.len());
+                for (k, v) in pairs {
+                    new_pairs.push((
+                        self.map_expr(k, "DictLiteral key")?,
+                        self.map_expr(v, "DictLiteral value")?,
+                    ));
+                }
+                Ok(Expr::DictLiteral(new_pairs))
+            }
+            Expr::Range(start, end) => Ok(Expr::Range(
+                self.map_expr(start, "Range start")?,
+                self.map_expr(end, "Range end")?,
+            )),
+            // `fn(n: u64) -> u64 { ... }`. Parameter names and types
+            // carry module-interner symbols like a function's do.
+            Expr::Closure { params, return_type, body, captures_by_ref } => {
+                let mut new_params = Vec::with_capacity(params.len());
+                for (pname, pty) in params {
+                    new_params.push((self.remap_symbol(*pname)?, self.remap_type_decl(pty)?));
+                }
+                Ok(Expr::Closure {
+                    params: new_params,
+                    return_type: self.remap_opt_type_decl(return_type.as_ref())?,
+                    body: self.map_expr(body, "Closure body")?,
+                    captures_by_ref: *captures_by_ref,
+                })
+            }
+            // `P { x: 1, ..base }`. The type name aliases like
+            // `StructLiteral`'s; `base_binding` is the parser's
+            // synthetic temporary and is interned like any name.
+            Expr::StructUpdate { type_name, fields, base, base_binding } => {
+                let mut new_fields = Vec::with_capacity(fields.len());
+                for (fname, fexpr) in fields {
+                    new_fields.push((
+                        self.remap_symbol(*fname)?,
+                        self.map_expr(fexpr, "StructUpdate field expression")?,
+                    ));
+                }
+                Ok(Expr::StructUpdate {
+                    type_name: self.remap_type_symbol(*type_name)?,
+                    fields: new_fields,
+                    base: self.map_expr(base, "StructUpdate base")?,
+                    base_binding: self.remap_symbol(*base_binding)?,
+                })
+            }
         }
     }
 

@@ -26,16 +26,21 @@
 | **検索** `query` / `search` | 動く | `grep` と件数一致、traversal はオラクルと一致 |
 | **カタログ / マウント / 保持期限** | 動く | 2 マウント (8M / 32M) に 12 セグメント・444,549 レコードを配置。使用率で 2 本 / 10 本に分かれた |
 | **HTTP サーバ / Web UI** | 動く | `/` `/v1/query` (3 形式) `/v1/ingest` `/v1/labels` `/v1/stats` `/healthz` と管理系。1000 件 280 KB の応答が部分書き込みを跨いで届く。同時接続は 1 |
-| **テスト** | 77 件 | `toy test poc/logsearch -j4` が 0.5 秒。内訳は下記 |
+| **テスト** | 102 件 + プロパティ 2 本 | `toy test poc/logsearch` が 0.6 秒 (AOT、キャッシュ有り)。内訳は下記 |
 
 ### 次にやるなら
 
-1. **テスト** — 77 件。内訳は `http` 23 / `server` 17 / `catalog` 11 /
-   `ontology_index` 9 / `mount` 8 / `ontology_extract` 5 / `query` 4。
-   **残りは search / lsz / segfile と、クエリ実行そのもの** (今あるのは
-   時刻境界の解釈だけ)。プロパティ検査 (`--check`) と `--bless` の
-   ゴールデン (`.seg` のバイト列固定) はまだ 1 つも使っていない。
-   それ以前の回帰はすべて**目視と `grep` との突き合わせ**で見つけていた
+1. **テスト** — 102 件。内訳は `server` 25 / `http` 23 / `lsz` 14 /
+   `catalog` 11 / `ontology_index` 9 / `mount` 8 / `query` 7 /
+   `ontology_extract` 5。**残りは search / segfile と、クエリ実行そのもの**
+   (`query` は時刻境界の解釈だけ)。`.seg` 全体のゴールデンもまだ無い
+   (LSZ1 の出力だけ固定した)。
+   `tests/lsz.t` (2026-09-17) は LSZ1 のラウンドトリップ・壊れたフレーム・
+   エンコーダ出力のゴールデン (`tests/golden/lsz-shape*.lsz`) と、
+   `--check` にかけるプロパティ 2 本 (ラウンドトリップ、SIMD とスカラーの
+   `match_len` の一致) を持つ。**書いた初日に、途中で切れたフレームを
+   デコーダが長さの varint の途中から読み進めるバグを見つけた** —
+   契約を切った `--release` ではフレームの外のバイトを読んでいた
 2. ~~**語の部分一致 / 前方一致** (`ua~MJ12bot` / `path^/wp-`)~~ — 2026-09-10 に landing
 3. ~~**カタログとマウント** — 複数ディレクトリへの配置と保持期限~~ —
    2026-09-11 に landing。`src/catalog.t` / `src/mount.t` と、
@@ -111,28 +116,28 @@ toylang の道具をそのまま使う。**新しいテスト基盤は作らな�
 (v2 → v3 でマジックを `LSD2` → `LSD3` に上げて互換を捨てたのは、
 凍結前の POC だからできたことである。)
 
-## 5. 次の 1 コミット — テスト
-
-いまテストが 1 つも無い。ここまでの回帰はすべて目視と `grep` / `awk` /
-Python のオラクルとの突き合わせで見つけており、**同じ確認を機械が繰り返す
-形になっていない**。最初に置くべきは LSZ1 のラウンドトリップである
-(壊れると過去のログが読めなくなる、この設計で唯一取り返しのつかない箇所)。
+## 5. テストの回し方
 
 `toy test` は**パッケージの `tests/*.t` とモジュール内の `test` ブロックの
-両方**を拾うので、置き場所は `poc/logsearch/tests/lsz_props.t` でよい。
+両方**を拾う。結果を機械で読むときは JSON で出す:
 
 ```bash
-./target/release/toy test poc/logsearch              # 全部 (既定は AOT)
-./target/release/toy test poc/logsearch lsz          # 名前で絞る
+./target/release/toy test poc/logsearch --format=json --diagnostics=json  # 全部 (既定は AOT)
+./target/release/toy test poc/logsearch frame        # テスト名 (ファイル名ではない) で絞る
 ./target/release/toy test poc/logsearch --backend vm # 失敗を全部まとめて見る
+./target/release/toy test poc/logsearch pinned --bless   # ゴールデンを記録し直す
 ```
 
-プロパティ (ランダム入力に対する `requires` / `ensures`) は `--check` の
-担当なので、そちらは引き続き interpreter を直接叩く:
+**フィルタはテスト名に当たる**ので、`lsz` と書いても `tests/lsz.t` は
+選ばれない (0 件で終わる)。
+
+プロパティ (ランダムな形・長さ) は `--check` の担当なので、そちらは
+interpreter を直接叩く (ループ予算の都合で入力は 3000 バイトまで、~40 秒):
 
 ```bash
 ./target/release/interpreter --core-modules core --core-modules poc/logsearch/src \
-    --check poc/logsearch/tests/lsz_props.t
+    --check --diagnostics=json poc/logsearch/tests/lsz.t
 ```
 
-ここで `toy test` の回し方とモジュール解決が固まるので、他より丁寧に。
+範囲は `requires` ではなく剰余で絞ること。生成器は u64 全域から引くので、
+`requires len <= 3000` と書くと大半が捨てられて THIN になる。

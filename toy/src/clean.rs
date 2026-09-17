@@ -21,12 +21,13 @@ pub struct Options {
     /// Also remove the link cache and the `build/` directory itself.
     pub all: bool,
     pub verbose: bool,
+    /// `--format=json`: report what was removed as a document.
+    pub json: bool,
 }
 
 pub fn run(pkg: &Package, opts: &Options) -> Result<(), String> {
     if !pkg.build_dir.is_dir() {
-        println!("nothing to clean in {}", pkg.build_dir.display());
-        return Ok(());
+        return nothing(pkg, opts);
     }
     let targets: Vec<PathBuf> = if opts.all {
         vec![pkg.build_dir.clone()]
@@ -34,8 +35,7 @@ pub fn run(pkg: &Package, opts: &Options) -> Result<(), String> {
         pkg.existing_profile_dirs()
     };
     if targets.is_empty() {
-        println!("nothing to clean in {}", pkg.build_dir.display());
-        return Ok(());
+        return nothing(pkg, opts);
     }
 
     let mut removed = 0usize;
@@ -56,12 +56,31 @@ pub fn run(pkg: &Package, opts: &Options) -> Result<(), String> {
             .map_err(|e| format!("cannot remove `{}`: {e}", target.display()))?;
         removed += 1;
     }
+    if opts.json {
+        report_json(&targets, bytes);
+        return Ok(());
+    }
     println!(
         "removed {removed} director{} ({})",
         if removed == 1 { "y" } else { "ies" },
         human_bytes(bytes)
     );
     Ok(())
+}
+
+fn nothing(pkg: &Package, opts: &Options) -> Result<(), String> {
+    if opts.json {
+        report_json(&[], 0);
+    } else {
+        println!("nothing to clean in {}", pkg.build_dir.display());
+    }
+    Ok(())
+}
+
+fn report_json(removed: &[PathBuf], bytes: u64) {
+    let removed: Vec<String> = removed.iter().map(|p| p.display().to_string()).collect();
+    let doc = serde_json::json!({ "removed": removed, "bytes": bytes });
+    println!("{}", serde_json::to_string_pretty(&doc).unwrap_or_default());
 }
 
 /// Bytes under `dir`, for the one line the command prints. A file it

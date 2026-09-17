@@ -64,7 +64,7 @@ struct Row {
     missing_note: &'static str,
 }
 
-pub fn run(verbose: bool) -> Result<(), String> {
+pub fn run(verbose: bool, json: bool) -> Result<(), String> {
     let style = Style::new();
     let exe = std::env::current_exe().ok();
     let bin_dir = exe.as_ref().and_then(|p| p.parent()).map(Path::to_path_buf);
@@ -108,6 +108,30 @@ pub fn run(verbose: bool) -> Result<(), String> {
         },
     ];
 
+    if json {
+        // The same rows; a missing path is `exists: false` plus the
+        // note, rather than a coloured warning.
+        let entries: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|row| {
+                let exists = row.path.as_ref().is_some_and(|p| p.exists());
+                serde_json::json!({
+                    "name": row.name,
+                    "version": row.version,
+                    "revision": row.revision,
+                    "path": row.path.as_ref().map(|p| display_path(p)),
+                    "exists": exists,
+                    "note": if exists || row.missing_note.is_empty() { None } else { Some(row.missing_note) },
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::Value::Array(entries)).unwrap_or_default()
+        );
+        return Ok(());
+    }
+
     let name_w = rows.iter().map(|r| r.name.len()).max().unwrap_or(0);
     let ver_w = rows.iter().map(|r| r.version.len()).max().unwrap_or(0);
     let rev_w = rows.iter().map(|r| r.revision.len()).max().unwrap_or(0);
@@ -119,11 +143,7 @@ pub fn run(verbose: bool) -> Result<(), String> {
             // so. Canonicalise when the path exists; leave it as
             // computed when it does not, because that is the path the
             // reader has to go and create.
-            Some(p) => p
-                .canonicalize()
-                .unwrap_or_else(|_| p.clone())
-                .display()
-                .to_string(),
+            Some(p) => display_path(p),
             None => "<unknown>".to_string(),
         };
         let exists = row.path.as_ref().is_some_and(|p| p.exists());
@@ -160,6 +180,12 @@ pub fn run(verbose: bool) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// Canonical when the path exists; as computed when it does not,
+/// because that is the path the reader has to go and create.
+fn display_path(p: &Path) -> String {
+    p.canonicalize().unwrap_or_else(|_| p.to_path_buf()).display().to_string()
 }
 
 /// The revision of the checkout `dir` is in, or `unknown`.

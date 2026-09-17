@@ -15,8 +15,6 @@ path = "src/main.rs"
 compiler = { path = "../compiler" }
 compiler_core = { path = "../compiler_core" }
 compiler_lower = { path = "../compiler_lower" }
-frontend = { path = "../frontend" }
+frontend = { path = "../frontend", features = ["serde"] }
 interpreter = { path = "../interpreter" }
-
-[dev-dependencies]
 serde_json = "1.0"

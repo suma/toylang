@@ -32,15 +32,15 @@ const USAGE: &str = "\
 toy — build and run toylang programs
 
 usage:
-  toy build [PATH] [--release] [--backend aot|jit] [-o OUT] [--diagnostics=json] [-v]
+  toy build [PATH] [--release] [--backend aot|jit] [-o OUT] [--format=json] [--diagnostics=json] [-v]
   toy run   [PATH] [--release] [--backend aot|jit|vm|tree] [--diagnostics=json] [-v] [-- ARGS...]
-  toy check [PATH] [--diagnostics=json] [-v]
-  toy clean [PATH] [--all] [-v]
+  toy check [PATH] [--format=json] [--diagnostics=json] [-v]
+  toy clean [PATH] [--all] [--format=json] [-v]
   toy test  [FILTER] [PATH] [-j N] [--list] [--bless] [--format=json] [--diagnostics=json] [-v]
-  toy api <MODULE.t> [PATH]
-  toy effects [PATH] [--diagnostics=json] [-v]
-  toy explain <CODE>
-  toy version [-v]
+  toy api <MODULE.t> [PATH] [--format=json]
+  toy effects [PATH] [--format=json] [--diagnostics=json] [-v]
+  toy explain [CODE] [--format=json]
+  toy version [--format=json] [-v]
 
 PATH is a `.t` file or a directory; the package is the nearest
 ancestor holding `main.t` or `src/`. Module roots are the stdlib
@@ -56,7 +56,8 @@ options:
   -j, --jobs N         test: run N jobs at once (default: cores; 1 = serial)
   --list               list the tests instead of running them
   --bless              test: record the golden files instead of checking
-  --format=json        machine-readable results (test only)
+  --format=json        the result as one JSON document on stdout (every
+                       command but `run`, whose output is the program's)
   --diagnostics=json   parse / type / runtime errors as a JSON array on
                        stderr, as `compiler` and `interpreter` take it
   --all                clean: remove the link cache and build/ too
@@ -139,7 +140,7 @@ fn main() {
         "api" => cmd_api(&args),
         "effects" => cmd_effects(&args),
         "explain" => cmd_explain(&args),
-        "version" | "--version" | "-V" => version::run(args.verbose),
+        "version" | "--version" | "-V" => version::run(args.verbose, args.json),
         other => Err(format!("unknown command `{other}`\n\n{USAGE}")),
     };
     if let Err(e) = result {
@@ -184,17 +185,15 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
             "--release" => a.release = true,
             "--list" => a.list_only = true,
             "--bless" => a.bless = true,
-            "--format=json" => a.json = true,
             "--no-warn-collisions" => a.warn_collisions = false,
             "--all" => a.all = true,
             "--format" => {
                 i += 1;
                 let v = argv.get(i).ok_or("--format needs a value (text or json)")?;
-                match v.as_str() {
-                    "json" => a.json = true,
-                    "text" => a.json = false,
-                    other => return Err(format!("unknown format `{other}`")),
-                }
+                a.json = parse_format(v)?;
+            }
+            _ if arg.starts_with("--format=") => {
+                a.json = parse_format(&arg["--format=".len()..])?;
             }
             "--diagnostics" => {
                 i += 1;
@@ -264,6 +263,25 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
         i += 1;
     }
     Ok(a)
+}
+
+/// `--format`: `json` makes the command's result one JSON document on
+/// stdout. The same spelling `compiler` takes.
+fn parse_format(value: &str) -> Result<bool, String> {
+    match value {
+        "json" => Ok(true),
+        "text" => Ok(false),
+        other => Err(format!("--format expects `text` or `json`, got `{other}`")),
+    }
+}
+
+/// Print a `--format=json` result. Pretty, like the diagnostics array,
+/// so the two read the same when they share a terminal.
+fn print_json(value: &serde_json::Value) {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+    );
 }
 
 /// The same spelling `compiler` and `interpreter` accept.
@@ -343,11 +361,29 @@ fn cmd_build(args: &Args) -> Result<(), String> {
         );
     }
     compiler::compile_file(&options)?;
-    println!("{}", out.display());
+    if args.json {
+        print_json(&serde_json::json!({
+            "entry": pkg.entry.display().to_string(),
+            "output": out.display().to_string(),
+            "release": args.release,
+        }));
+    } else {
+        println!("{}", out.display());
+    }
     Ok(())
 }
 
 fn cmd_run(args: &Args) -> Result<(), String> {
+    // The output of `run` is the program's own; there is no result of
+    // the tool's to put in a document, and wrapping the program's
+    // stdout would change what a redirect captures.
+    if args.json {
+        return Err(
+            "`toy run` prints the program's own output, so it has no --format=json; \
+             use `compiler --all-backends --format=json` for a run as JSON"
+                .to_string(),
+        );
+    }
     let pkg = locate(args)?;
     // `run` defaults to the IR VM: it is the fastest way to see output
     // for a small program (no `cc`), and the design says so.
@@ -504,7 +540,15 @@ fn cmd_check(args: &Args) -> Result<(), String> {
         // the answer kept.
         compiler::codegen::emit_ir_text(&program, session.string_interner(), &contract_msgs, &options)?;
     }
-    println!("ok: {name}");
+    if args.json {
+        print_json(&serde_json::json!({
+            "ok": true,
+            "entry": name,
+            "lowered": lower_too,
+        }));
+    } else {
+        println!("ok: {name}");
+    }
     Ok(())
 }
 
@@ -516,7 +560,7 @@ fn cmd_clean(args: &Args) -> Result<(), String> {
     let pkg = package::find(&args.path, stdlib)?;
     clean::run(
         &pkg,
-        &clean::Options { all: args.all, verbose: args.verbose },
+        &clean::Options { all: args.all, verbose: args.verbose, json: args.json },
     )
 }
 
@@ -590,10 +634,18 @@ fn cmd_api(args: &Args) -> Result<(), String> {
     let program = session
         .parse_program_all_errors(&source, &path.to_string_lossy())
         .map_err(|errors| format!("{} parse error(s)", errors.len()))?;
-    print!(
-        "{}",
-        frontend::api::render(&program, session.string_interner(), Some(&source))
-    );
+    if args.json {
+        let items = frontend::api::items(&program, session.string_interner(), Some(&source));
+        print_json(&serde_json::json!({
+            "file": path.display().to_string(),
+            "items": items,
+        }));
+    } else {
+        print!(
+            "{}",
+            frontend::api::render(&program, session.string_interner(), Some(&source))
+        );
+    }
     Ok(())
 }
 
@@ -617,6 +669,20 @@ fn cmd_effects(args: &Args) -> Result<(), String> {
     options.diagnostics_json = args.diagnostics_json;
     let listing =
         interpreter::effects_from_source(&source, &pkg.entry.to_string_lossy(), &options)?;
+    if args.json {
+        // `pure` is the text listing's word for the empty set; the
+        // document says it with an empty list, so a reader tests one
+        // thing rather than two.
+        let entries: Vec<serde_json::Value> = listing
+            .iter()
+            .map(|f| {
+                let effects: Vec<&str> = f.effects.iter().map(|e| e.name()).collect();
+                serde_json::json!({ "name": f.name, "effects": effects })
+            })
+            .collect();
+        print_json(&serde_json::Value::Array(entries));
+        return Ok(());
+    }
     let width = listing.iter().map(|f| f.name.chars().count()).max().unwrap_or(0);
     for entry in &listing {
         println!("{:width$}  {}", entry.name, entry.effects, width = width);
@@ -627,6 +693,19 @@ fn cmd_effects(args: &Args) -> Result<(), String> {
 fn cmd_explain(args: &Args) -> Result<(), String> {
     match &args.subject {
         Some(code) => match frontend::explain::explain(code) {
+            Some(text) if args.json => {
+                let code = code.to_ascii_uppercase();
+                let summary = frontend::explain::summaries()
+                    .into_iter()
+                    .find(|(c, _)| *c == code)
+                    .map(|(_, s)| s);
+                print_json(&serde_json::json!({
+                    "code": code,
+                    "summary": summary,
+                    "text": text,
+                }));
+                Ok(())
+            }
             Some(text) => {
                 println!("{text}");
                 Ok(())
@@ -636,6 +715,14 @@ fn cmd_explain(args: &Args) -> Result<(), String> {
                  run `toy explain` with no argument to list them"
             )),
         },
+        None if args.json => {
+            let entries: Vec<serde_json::Value> = frontend::explain::summaries()
+                .into_iter()
+                .map(|(code, summary)| serde_json::json!({ "code": code, "summary": summary }))
+                .collect();
+            print_json(&serde_json::Value::Array(entries));
+            Ok(())
+        }
         None => {
             println!("diagnostic codes (use `toy explain <CODE>` for details):");
             for (code, summary) in frontend::explain::summaries() {

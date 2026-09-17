@@ -13,6 +13,11 @@
 //! times), so the flag composes with a redirect the way a plain run
 //! does; the verdict goes to stderr.
 //!
+//! With `--format=json` the verdict *is* the output: one JSON document
+//! on stdout carrying the program's stdout, each backend's result and
+//! every disagreement, so a caller reads one thing instead of splitting
+//! the program's output from the verdict.
+//!
 //! **Which three.** The interpreter (tree-walker), this crate's
 //! Cranelift JIT, and the AOT compiler. The interpreter crate's *own*
 //! JIT is deliberately not one of them: this crate's binary depends on
@@ -86,12 +91,13 @@ fn disagrees(reference: &Outcome, other: &Outcome) -> bool {
 }
 
 /// Run `source` on every backend. Returns the process exit code: 0 when
-/// they all ran and agreed.
+/// they all ran and agreed. `json` selects the `--format=json` report.
 pub fn run(
     options: &CompilerOptions,
     source: &str,
     display_name: &str,
     profile: ProfileMode,
+    json: bool,
 ) -> i32 {
     let interpreter = BackendResult {
         name: "interpreter",
@@ -106,6 +112,17 @@ pub fn run(
     let reference = match &interpreter.outcome {
         Ok(o) => o,
         Err(e) => {
+            if json {
+                let report = serde_json::json!({
+                    "agree": false,
+                    "exit": null,
+                    "stdout": null,
+                    "backends": [backend_json(&interpreter, None), backend_json(&jit, None), backend_json(&aot, None)],
+                    "problems": ["interpreter could not run the program, so there is nothing to compare against"],
+                });
+                println!("{}", pretty(&report));
+                return 1;
+            }
             eprintln!("interpreter could not run the program, so there is nothing to compare against:");
             for line in e.lines() {
                 eprintln!("  {line}");
@@ -115,8 +132,11 @@ pub fn run(
     };
 
     // The program's output, once. Emitted before the verdict so a
-    // redirect captures exactly what a plain run would have.
-    print!("{}", reference.stdout);
+    // redirect captures exactly what a plain run would have. The JSON
+    // report carries it inside the document instead.
+    if !json {
+        print!("{}", reference.stdout);
+    }
 
     let mut problems: Vec<String> = Vec::new();
     for backend in [&jit, &aot] {
@@ -182,23 +202,28 @@ pub fn run(
         }
     }
 
-    if problems.is_empty() {
-        if let Some(stats) = reference.memory {
-            match profile {
-                ProfileMode::Json => eprint!("{}", stats.report_json(&reference.sites, &reference.layouts)),
-                _ => {
-                    eprint!("{}", stats.report());
-                    eprint!(
-                        "{}",
-                        interpreter::heap::MemoryStats::leak_report(&reference.sites)
-                    );
-                    eprint!(
-                        "{}",
-                        interpreter::heap::allocator_layout_report_text(&reference.layouts)
-                    );
-                }
-            }
+    if json {
+        let report = serde_json::json!({
+            "agree": problems.is_empty(),
+            "exit": reference.exit,
+            "stdout": reference.stdout,
+            "backends": [
+                backend_json(&interpreter, None),
+                backend_json(&jit, Some(reference)),
+                backend_json(&aot, Some(reference)),
+            ],
+            "problems": problems,
+        });
+        println!("{}", pretty(&report));
+        // The allocation report keeps its own flag and its own stream.
+        if problems.is_empty() {
+            report_memory(reference, profile);
         }
+        return if problems.is_empty() { 0 } else { 1 };
+    }
+
+    if problems.is_empty() {
+        report_memory(reference, profile);
         eprintln!(
             "all 3 backends agree (exit={})",
             reference.exit.map(|c| c.to_string()).unwrap_or_else(|| "n/a".to_string())
@@ -209,6 +234,48 @@ pub fn run(
         eprintln!("{p}");
     }
     1
+}
+
+/// The allocation totals of the agreed run, on stderr in the shape
+/// `--profile-format` asked for.
+fn report_memory(reference: &Outcome, profile: ProfileMode) {
+    let Some(stats) = reference.memory else { return };
+    match profile {
+        ProfileMode::Json => eprint!("{}", stats.report_json(&reference.sites, &reference.layouts)),
+        _ => {
+            eprint!("{}", stats.report());
+            eprint!("{}", interpreter::heap::MemoryStats::leak_report(&reference.sites));
+            eprint!("{}", interpreter::heap::allocator_layout_report_text(&reference.layouts));
+        }
+    }
+}
+
+/// One backend's entry in the JSON report. `reference` is the run it is
+/// compared against; `None` for the reference itself.
+fn backend_json(backend: &BackendResult, reference: Option<&Outcome>) -> serde_json::Value {
+    match &backend.outcome {
+        Ok(o) => {
+            let status = match reference {
+                Some(r) if disagrees(r, o) => "disagrees",
+                _ => "ok",
+            };
+            serde_json::json!({
+                "name": backend.name,
+                "status": status,
+                "exit": o.exit,
+                "stdout": o.stdout,
+            })
+        }
+        Err(e) => serde_json::json!({
+            "name": backend.name,
+            "status": "failed",
+            "error": e,
+        }),
+    }
+}
+
+fn pretty(value: &serde_json::Value) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
 }
 
 fn indent(text: &str) -> String {

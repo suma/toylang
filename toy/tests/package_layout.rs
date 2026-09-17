@@ -1289,3 +1289,112 @@ fn an_unknown_diagnostics_format_is_refused() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success() && stderr.contains("`text` or `json`"), "{stderr}");
 }
+
+// --- `--format=json`: every command's result as a document -------------
+
+fn stdout_json(out: &std::process::Output, argv: &[&str]) -> serde_json::Value {
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{argv:?} failed:\nstdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("{argv:?}: stdout is not one JSON document ({e}):\n{stdout}"))
+}
+
+#[test]
+fn every_command_but_run_can_answer_in_json() {
+    let pkg = scratch("format_json");
+    write(
+        &pkg,
+        "src/greet.t",
+        r#"
+pub struct Point { pub x: i64, y: i64 }
+pub fn twice(n: u64) -> u64
+    requires n < 100u64
+{
+    n * 2u64
+}
+test "twice works" { assert_eq(twice(2u64), 4u64) }
+"#,
+    );
+    write(&pkg, "main.t", "fn main() -> u64 {\n    println(greet::twice(2u64))\n    0u64\n}\n");
+    let path = pkg.0.to_str().unwrap();
+    let json = |argv: &[&str]| {
+        let mut full = argv.to_vec();
+        full.extend(["--format=json", "--no-warn-collisions"]);
+        stdout_json(&run(&pkg, &full), &full)
+    };
+
+    let built = json(&["build", path]);
+    assert!(std::path::Path::new(built["output"].as_str().unwrap()).is_file(), "{built:#}");
+
+    assert_eq!(json(&["check", path])["ok"], true);
+
+    let effects = json(&["effects", path]);
+    let main = effects.as_array().unwrap().iter().find(|e| e["name"] == "main").expect("main");
+    assert_eq!(main["effects"], serde_json::json!(["io"]));
+
+    let listed = json(&["test", path, "--list"]);
+    assert_eq!(listed[0]["line"], 8, "{listed:#}");
+
+    let api = json(&["api", "src/greet.t", path]);
+    let items = api["items"].as_array().unwrap();
+    let twice = items.iter().find(|i| i["name"] == "twice").expect("twice");
+    assert_eq!(twice["requires"], serde_json::json!(["n < 100u64"]));
+    let point = items.iter().find(|i| i["name"] == "Point").expect("Point");
+    assert_eq!(point["members"][1]["public"], false);
+
+    let explained = json(&["explain", "e0001"]);
+    assert_eq!(explained["code"], "E0001");
+    assert!(explained["text"].as_str().unwrap().starts_with("E0001"));
+    assert!(json(&["explain"]).as_array().unwrap().len() > 10);
+
+    let version = json(&["version"]);
+    assert_eq!(version[0]["name"], "toy");
+
+    let cleaned = json(&["clean", path]);
+    assert_eq!(cleaned["removed"].as_array().unwrap().len(), 1, "{cleaned:#}");
+    assert_eq!(json(&["clean", path])["removed"], serde_json::json!([]));
+
+    // `run` has no result of its own to shape; it says so instead of
+    // silently printing text.
+    let out = run(&pkg, &["run", path, "--format=json"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--format=json"));
+}
+
+#[test]
+fn the_api_text_listing_is_the_json_items_joined() {
+    // `render` is a projection of `items`; if they drifted, the two
+    // forms would describe different modules.
+    let pkg = scratch("api_projection");
+    write(
+        &pkg,
+        "src/shapes.t",
+        r#"
+pub enum Shape { Circle(i64), Point }
+pub trait Area { fn area(self: Self) -> i64 }
+impl Area for Shape {
+    pub fn area(self: Self) -> i64 { 0i64 }
+}
+pub const K: u64 = 3u64
+pub fn f(n: u64) -> u64
+    ensures result == n
+{
+    n
+}
+pub fn g() -> u64 { 0u64 }
+"#,
+    );
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    let path = pkg.0.to_str().unwrap();
+    let text = run(&pkg, &["api", "src/shapes.t", path]);
+    let text = String::from_utf8_lossy(&text.stdout);
+    let doc = stdout_json(&run(&pkg, &["api", "src/shapes.t", path, "--format=json"]), &["api"]);
+    for item in doc["items"].as_array().unwrap() {
+        let block = item["text"].as_str().unwrap();
+        assert!(text.contains(block), "`{block}` is not in the text listing:\n{text}");
+    }
+}

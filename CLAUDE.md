@@ -123,6 +123,11 @@ cargo run -q -p interpreter -- --effects prog.t
 # 3 バックエンド (interpreter / JIT / AOT) を 1 コマンドで実行し、
 # 不一致だけ報告する。一致なら stderr に 1 行
 cargo run -q -p compiler -- <source_file.t> --all-backends
+# --format=json で判定を stdout に 1 文書で出す (agree / exit / stdout /
+# backends[].status = ok|disagrees|failed / problems)。プログラムの
+# stdout は文書の中に入る。通常のビルドでも --format=json で
+# {input, emit, output} を出す
+cargo run -q -p compiler -- <source_file.t> --all-backends --format=json
 
 # メモリ確保の集計を実行後に出す (MEMORY_PROFILING M1)
 cargo run -q -p interpreter -- --profile=mem <source_file.t>
@@ -140,11 +145,11 @@ cargo run -q -p compiler -- --core-modules core --core-modules mypkg/src mypkg/m
 
 # 同じことを規約でやる `toy`。root は「main.t か src/ を持つ最寄りの祖先」
 # から組み立てる。マニフェストは無い
-cargo run -q -p toy -- build mypkg [--release] [-o PATH] [--diagnostics=json]
+cargo run -q -p toy -- build mypkg [--release] [-o PATH] [--format=json] [--diagnostics=json]
 cargo run -q -p toy -- run   mypkg [--backend aot|jit|vm] [--diagnostics=json] [-- ARGS...]
-cargo run -q -p toy -- check mypkg [--diagnostics=json]
-cargo run -q -p toy -- clean mypkg [--all]   # 出力を消す (--all は build/ ごと)
-cargo run -q -p toy -- version [-v]         # 各部の version / git rev / パス
+cargo run -q -p toy -- check mypkg [--format=json] [--diagnostics=json]
+cargo run -q -p toy -- clean mypkg [--all] [--format=json]   # 出力を消す (--all は build/ ごと)
+cargo run -q -p toy -- version [-v] [--format=json]         # 各部の version / git rev / パス
 # パスが無い行は同じ行に色つきで警告する。stdlib の revision は実行時に
 # `git -C <root>` で引く (stdlib はデータで、別 checkout から来うるため)
 cargo run -q -p toy -- test  mypkg [FILTER] [-j N] [--list] [--bless] [--format=json] [--diagnostics=json]
@@ -160,8 +165,9 @@ cargo run -q -p toy -- test  mypkg [FILTER] [-j N] [--list] [--bless] [--format=
 # bare 名の衝突は実行前に警告する (--no-warn-collisions で無効)。
 # 出力は build/{debug,release}/ — build は成果物、run は .run/ に、
 # test は tests/ に出る。build/.gitignore は初回に自動生成
-cargo run -q -p toy -- api src/foo.t mypkg   # api / effects / explain も根つき
-cargo run -q -p toy -- effects mypkg [--diagnostics=json]
+cargo run -q -p toy -- api src/foo.t mypkg [--format=json]   # api / effects / explain も根つき
+cargo run -q -p toy -- effects mypkg [--format=json] [--diagnostics=json]
+cargo run -q -p toy -- explain [E0001] [--format=json]
 # `-v` は等価な compiler / interpreter 呼び出しを 1 行で出す (道具を捨てて戻れる)
 
 # 入力ファイル名 `-` で stdin から読む。スクラッチファイルを作らずに済む
@@ -184,12 +190,23 @@ backend / `check` / `test` / `effects`) が同じ綴りで受け、パース・�
 実行時 (IR VM) のエラーが対象。JSON 配列の後に `toy: N type-check error(s)`
 のような 1 行要約が続くことがあるので、`[` から対応する `]` までを読む。
 
-**`toy` を使うときは、結果を JSON で出せるなら JSON を指定すること。**
-診断は `--diagnostics=json`、`toy test` の結果は `--format=json` (両方
-指定できる)。text は人間向けのスニペットで行数が多く、位置やコードを
-読み取るのに解釈が要る。結果本体を JSON にできるのは今は `test` だけ
-(`effects` の一覧は text)、診断を JSON にできないのは `api` / `explain` /
-`version` / `clean`。
+**`toy` / `compiler` を使うときは、JSON で出せるなら JSON を指定すること。**
+flag は 2 つで独立しており、両方指定できる:
+
+- **`--format=json`** — **結果そのもの**を stdout に 1 つの JSON 文書で出す。
+  `toy` は `run` 以外の全サブコマンド (`build` / `check` / `test` (`--list`
+  含む) / `clean` / `api` / `effects` / `explain` / `version`)、`compiler` は
+  ビルドと `--all-backends`。`toy run` は出力がプログラム自身のものなので
+  拒否する (実行結果を JSON で欲しいなら `compiler --all-backends --format=json`)。
+  `toy api` の JSON は宣言ごとに `kind` / `name` / `public` / `text` /
+  `requires` / `ensures` / `members` を持ち、text の一覧はその `text` を
+  並べたもの。`effects` は `pure` を空配列で表す。
+  `toy test --format=json` だけは「1 レコード 1 行」の配列
+- **`--diagnostics=json`** — **エラー**を stderr に JSON 配列で出す (上記)
+
+text は人間向けで、位置・コード・一覧を取り出すのに解釈が要る。
+`interpreter` の `--api` / `--effects` / `--explain` は `--format` を
+持たないので、JSON が要るときは `toy` 側を使う。
 
 ### Testing
 

@@ -214,9 +214,9 @@ pub fn compile_checked_program(
     let (object_bytes, link_libs) =
         codegen::emit_object(program, string_interner, contract_msgs, options)?;
 
+    let out = output_path(options);
     match options.emit {
         EmitKind::Object => {
-            let out = options.output.clone().unwrap_or_else(|| default_object_path(&options.input));
             std::fs::write(&out, &object_bytes)
                 .map_err(|e| format!("failed to write {}: {}", out.display(), e))?;
             if options.verbose {
@@ -224,7 +224,6 @@ pub fn compile_checked_program(
             }
         }
         EmitKind::Executable => {
-            let out = options.output.clone().unwrap_or_else(|| default_exe_path(&options.input));
             driver::link_executable(
                 &object_bytes,
                 &out,
@@ -241,11 +240,6 @@ pub fn compile_checked_program(
             // Cranelift. Useful for inspecting how the front-end maps
             // onto the compiler's internal representation.
             let ir_text = codegen::emit_ir_text(program, string_interner, contract_msgs, options)?;
-            let out = options.output.clone().unwrap_or_else(|| {
-                let mut p = options.input.clone();
-                p.set_extension("ir");
-                p
-            });
             std::fs::write(&out, ir_text)
                 .map_err(|e| format!("failed to write {}: {}", out.display(), e))?;
             if options.verbose {
@@ -255,11 +249,6 @@ pub fn compile_checked_program(
         EmitKind::Clif => {
             // Cranelift IR text — for backend debugging.
             let clif_text = codegen::emit_clif_text(program, string_interner, contract_msgs, options)?;
-            let out = options.output.clone().unwrap_or_else(|| {
-                let mut p = options.input.clone();
-                p.set_extension("clif");
-                p
-            });
             std::fs::write(&out, clif_text)
                 .map_err(|e| format!("failed to write {}: {}", out.display(), e))?;
             if options.verbose {
@@ -320,6 +309,25 @@ pub fn resolve_core_modules_dirs(
         }
     }
     Vec::new()
+}
+
+/// Where a build with `options` writes its artefact: `-o` when given,
+/// otherwise the input's name with the extension `--emit` implies.
+/// Public so a caller reporting the build (`--format=json`) names the
+/// same path the build used.
+pub fn output_path(options: &CompilerOptions) -> PathBuf {
+    if let Some(out) = &options.output {
+        return out.clone();
+    }
+    match options.emit {
+        EmitKind::Object => default_object_path(&options.input),
+        EmitKind::Executable => default_exe_path(&options.input),
+        EmitKind::Ir | EmitKind::Clif => {
+            let mut p = options.input.clone();
+            p.set_extension(if options.emit == EmitKind::Ir { "ir" } else { "clif" });
+            p
+        }
+    }
 }
 
 fn default_object_path(input: &Path) -> std::path::PathBuf {

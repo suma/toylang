@@ -25,17 +25,117 @@ use crate::ast::{ExprRef, File, Stmt, StmtRef, Visibility};
 use crate::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
+/// One declaration in a module's listing.
+///
+/// [`render`] is a projection of these, so the text listing and the
+/// JSON one (`toy api --format=json`) cannot disagree about what a
+/// module provides.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct ApiItem {
+    /// `package`, `struct`, `enum`, `trait`, `impl`, `type`, `const`,
+    /// `fn` or `test`.
+    pub kind: &'static str,
+    /// The declared name. For an `impl`, the type it is for.
+    pub name: String,
+    pub public: bool,
+    /// For an `impl Trait for T`, the trait with its type arguments.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub trait_name: Option<String>,
+    /// The declaration exactly as the text listing prints it, without
+    /// the blank line that separates it from the next.
+    pub text: String,
+    /// `requires` clauses quoted from source (free functions).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub requires: Vec<String>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub ensures: Vec<String>,
+    /// Fields, variants or methods.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub members: Vec<ApiMember>,
+    /// Source line, where the AST keeps one (tests).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub line: Option<u32>,
+}
+
+/// A field, variant or method inside an [`ApiItem`].
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct ApiMember {
+    /// `field`, `variant` or `method`.
+    pub kind: &'static str,
+    pub name: String,
+    pub public: bool,
+    /// `pub x: i64`, `Circle(i64)`, `pub fn get(&self, i: u64) -> T`.
+    pub signature: String,
+    /// A trait method whose body an impl may omit.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "std::ops::Not::not"))]
+    pub default_body: bool,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub requires: Vec<String>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub ensures: Vec<String>,
+}
+
 /// Render every declaration in `file` as a signature listing.
 ///
 /// `source` is the original text; without it the contract clauses are
 /// omitted (they are the one part that cannot be reconstructed from
 /// the AST alone).
 pub fn render(file: &File, interner: &DefaultStringInterner, source: Option<&str>) -> String {
-    let r = Renderer { file, interner, source };
+    let items = items(file, interner, source);
     let mut out = String::new();
+    let mut consts_seen = false;
+    for item in &items {
+        // The separators are the listing's, not the declarations': a
+        // block is followed by a blank line, consts are grouped and the
+        // group gets one, and a function gets one only when contract
+        // lines would otherwise run into the next `fn`.
+        if consts_seen && item.kind != "const" {
+            out.push('\n');
+            consts_seen = false;
+        }
+        out.push_str(&item.text);
+        match item.kind {
+            "const" => {
+                out.push('\n');
+                consts_seen = true;
+            }
+            "fn" => {
+                out.push('\n');
+                if !item.requires.is_empty() || !item.ensures.is_empty() {
+                    out.push('\n');
+                }
+            }
+            "test" => out.push('\n'),
+            _ => out.push_str("\n\n"),
+        }
+    }
+    if consts_seen {
+        out.push('\n');
+    }
+    out
+}
+
+/// Every declaration in `file`, in the order [`render`] lists them.
+pub fn items(file: &File, interner: &DefaultStringInterner, source: Option<&str>) -> Vec<ApiItem> {
+    let r = Renderer { file, interner, source };
+    let mut out: Vec<ApiItem> = Vec::new();
+    let item = |kind: &'static str, name: String, public: bool, text: String| ApiItem {
+        kind,
+        name,
+        public,
+        trait_name: None,
+        text,
+        requires: Vec::new(),
+        ensures: Vec::new(),
+        members: Vec::new(),
+        line: None,
+    };
 
     if let Some(pkg) = &file.package_decl {
-        out.push_str(&format!("package {}\n\n", r.path(&pkg.name)));
+        let name = r.path(&pkg.name);
+        out.push(item("package", name.clone(), true, format!("package {name}")));
     }
 
     // Declaration order is preserved: it is the order the author chose,
@@ -54,115 +154,155 @@ pub fn render(file: &File, interner: &DefaultStringInterner, source: Option<&str
                     r.sym(*name),
                     r.generics(generic_params, generic_bounds)
                 );
+                let positional = fields.first().is_some_and(|f| f.is_positional());
+                let members: Vec<ApiMember> = fields
+                    .iter()
+                    .map(|f| {
+                        let signature = if positional {
+                            format!("{}{}", r.vis(f.visibility), r.ty(&f.type_decl))
+                        } else {
+                            format!("{}{}: {}", r.vis(f.visibility), f.name, r.ty(&f.type_decl))
+                        };
+                        ApiMember::plain("field", f.name.to_string(), is_pub(f.visibility), signature)
+                    })
+                    .collect();
                 // NEWTYPE: a tuple struct is echoed in the form it was
                 // written. Printing its interned field names would show
                 // `{ 0: i64 }`, which is not syntax the reader can type
                 // back in.
-                if fields.first().is_some_and(|f| f.is_positional()) {
-                    let payload: Vec<String> = fields
-                        .iter()
-                        .map(|f| format!("{}{}", r.vis(f.visibility), r.ty(&f.type_decl)))
-                        .collect();
-                    out.push_str(&format!("{}({})\n\n", header, payload.join(", ")));
+                let text = if positional {
+                    let payload: Vec<&str> = members.iter().map(|m| m.signature.as_str()).collect();
+                    format!("{}({})", header, payload.join(", "))
                 } else {
-                    out.push_str(&format!("{} {{\n", header));
-                    for f in fields {
-                        out.push_str(&format!(
-                            "    {}{}: {}\n",
-                            r.vis(f.visibility),
-                            f.name,
-                            r.ty(&f.type_decl)
-                        ));
+                    let mut text = format!("{} {{\n", header);
+                    for m in &members {
+                        text.push_str(&format!("    {}\n", m.signature));
                     }
-                    out.push_str("}\n\n");
-                }
+                    text.push('}');
+                    text
+                };
+                let mut it = item("struct", r.sym(*name).to_string(), is_pub(*visibility), text);
+                it.members = members;
+                out.push(it);
             }
             Stmt::EnumDecl { name, generic_params, variants, visibility } => {
-                out.push_str(&format!(
+                let members: Vec<ApiMember> = variants
+                    .iter()
+                    .map(|v| {
+                        let signature = if v.payload_types.is_empty() {
+                            r.sym(v.name).to_string()
+                        } else {
+                            let payload: Vec<String> =
+                                v.payload_types.iter().map(|t| r.ty(t)).collect();
+                            format!("{}({})", r.sym(v.name), payload.join(", "))
+                        };
+                        ApiMember::plain("variant", r.sym(v.name).to_string(), true, signature)
+                    })
+                    .collect();
+                let mut text = format!(
                     "{}enum {}{} {{\n",
                     r.vis(*visibility),
                     r.sym(*name),
                     r.generics(generic_params, &Default::default())
-                ));
-                for v in variants {
-                    if v.payload_types.is_empty() {
-                        out.push_str(&format!("    {},\n", r.sym(v.name)));
-                    } else {
-                        let payload: Vec<String> =
-                            v.payload_types.iter().map(|t| r.ty(t)).collect();
-                        out.push_str(&format!("    {}({}),\n", r.sym(v.name), payload.join(", ")));
-                    }
+                );
+                for m in &members {
+                    text.push_str(&format!("    {},\n", m.signature));
                 }
-                out.push_str("}\n\n");
+                text.push('}');
+                let mut it = item("enum", r.sym(*name).to_string(), is_pub(*visibility), text);
+                it.members = members;
+                out.push(it);
             }
             Stmt::TraitDecl { name, generic_params, methods, visibility } => {
-                out.push_str(&format!(
+                let mut text = format!(
                     "{}trait {}{} {{\n",
                     r.vis(*visibility),
                     r.sym(*name),
                     r.generics(generic_params, &Default::default())
-                ));
+                );
+                let mut members = Vec::new();
                 for m in methods {
-                    let default = if m.body.is_some() { "  # has default body" } else { "" };
-                    out.push_str(&format!(
-                        "    fn {}({}){}{}\n",
+                    let signature = format!(
+                        "fn {}({}){}",
                         r.sym(m.name),
                         r.params(m.has_self_param, m.self_is_mut, &m.parameter),
-                        r.ret(&m.return_type),
-                        default
-                    ));
-                    r.push_contracts(&mut out, &m.requires, &m.ensures, "        ");
+                        r.ret(&m.return_type)
+                    );
+                    let default = if m.body.is_some() { "  # has default body" } else { "" };
+                    text.push_str(&format!("    {signature}{default}\n"));
+                    let (requires, ensures) = r.contracts(&m.requires, &m.ensures);
+                    push_contract_lines(&mut text, &requires, &ensures, "        ");
+                    members.push(ApiMember {
+                        kind: "method",
+                        name: r.sym(m.name).to_string(),
+                        public: true,
+                        signature,
+                        default_body: m.body.is_some(),
+                        requires,
+                        ensures,
+                    });
                 }
-                out.push_str("}\n\n");
+                text.push('}');
+                let mut it = item("trait", r.sym(*name).to_string(), is_pub(*visibility), text);
+                it.members = members;
+                out.push(it);
             }
             Stmt::ImplBlock { target_type, target_type_args, methods, trait_name, trait_type_args } => {
                 let target = format!("{}{}", r.sym(*target_type), r.type_args(target_type_args));
-                let header = match trait_name {
-                    Some(t) => format!(
-                        "impl {}{} for {}",
-                        r.sym(*t),
-                        r.type_args(trait_type_args),
-                        target
-                    ),
+                let trait_text =
+                    trait_name.map(|t| format!("{}{}", r.sym(t), r.type_args(trait_type_args)));
+                let header = match &trait_text {
+                    Some(t) => format!("impl {} for {}", t, target),
                     None => format!("impl {}", target),
                 };
-                out.push_str(&format!("{header} {{\n"));
+                let mut text = format!("{header} {{\n");
+                let mut members = Vec::new();
                 for m in methods {
-                    out.push_str(&format!(
-                        "    {}fn {}{}({}){}\n",
+                    let signature = format!(
+                        "{}fn {}{}({}){}",
                         r.vis(m.visibility),
                         r.sym(m.name),
                         r.generics(&m.generic_params, &m.generic_bounds),
                         r.params(m.has_self_param, m.self_is_mut, &m.parameter),
                         r.ret(&m.return_type)
-                    ));
-                    r.push_contracts(&mut out, &m.requires, &m.ensures, "        ");
+                    );
+                    text.push_str(&format!("    {signature}\n"));
+                    let (requires, ensures) = r.contracts(&m.requires, &m.ensures);
+                    push_contract_lines(&mut text, &requires, &ensures, "        ");
+                    members.push(ApiMember {
+                        kind: "method",
+                        name: r.sym(m.name).to_string(),
+                        public: is_pub(m.visibility),
+                        signature,
+                        default_body: false,
+                        requires,
+                        ensures,
+                    });
                 }
-                out.push_str("}\n\n");
+                text.push('}');
+                // An impl has no visibility of its own; its methods do.
+                let mut it = item("impl", target, true, text);
+                it.trait_name = trait_text;
+                it.members = members;
+                out.push(it);
             }
             Stmt::TypeAlias { name, generic_params, target, visibility } => {
-                out.push_str(&format!(
-                    "{}type {}{} = {}\n\n",
+                let text = format!(
+                    "{}type {}{} = {}",
                     r.vis(*visibility),
                     r.sym(*name),
                     r.generics(generic_params, &Default::default()),
                     r.ty(target)
-                ));
+                );
+                out.push(item("type", r.sym(*name).to_string(), is_pub(*visibility), text));
             }
             _ => {}
         }
     }
 
     for c in &file.consts {
-        out.push_str(&format!(
-            "{}const {}: {}\n",
-            r.vis(c.visibility),
-            r.sym(c.name),
-            r.ty(&c.type_decl)
-        ));
-    }
-    if !file.consts.is_empty() {
-        out.push('\n');
+        let text = format!("{}const {}: {}", r.vis(c.visibility), r.sym(c.name), r.ty(&c.type_decl));
+        out.push(item("const", r.sym(c.name).to_string(), is_pub(c.visibility), text));
     }
 
     // Only the functions the file itself declares. `file.function` also
@@ -184,8 +324,8 @@ pub fn render(file: &File, interner: &DefaultStringInterner, source: Option<&str
         // hiding where it can be called from.
         let never_allocates_kw = if f.never_allocates { "never_allocates " } else { "" };
         let const_kw = if f.const_fn { "const " } else { "" };
-        out.push_str(&format!(
-            "{}{}{}{}fn {}{}({}){}\n",
+        let mut text = format!(
+            "{}{}{}{}fn {}{}({}){}",
             r.vis(f.visibility),
             never_allocates_kw,
             const_kw,
@@ -194,19 +334,54 @@ pub fn render(file: &File, interner: &DefaultStringInterner, source: Option<&str
             r.generics(&f.generic_params, &f.generic_bounds),
             r.params(false, false, &f.parameter),
             r.ret(&f.return_type)
-        ));
-        // A contracted signature spans several lines; without a blank
-        // line the next `fn` reads as one of its clauses.
-        if r.push_contracts(&mut out, &f.requires, &f.ensures, "    ") {
-            out.push('\n');
+        );
+        let (requires, ensures) = r.contracts(&f.requires, &f.ensures);
+        let mut clauses = String::new();
+        push_contract_lines(&mut clauses, &requires, &ensures, "    ");
+        if !clauses.is_empty() {
+            text.push('\n');
+            text.push_str(clauses.trim_end_matches('\n'));
         }
+        let mut it = item("fn", r.sym(f.name).to_string(), is_pub(f.visibility), text);
+        it.requires = requires;
+        it.ensures = ensures;
+        out.push(it);
     }
 
     for t in &file.tests {
-        out.push_str(&format!("test \"{}\"  # line {}\n", t.name, t.line));
+        let mut it =
+            item("test", t.name.clone(), false, format!("test \"{}\"  # line {}", t.name, t.line));
+        it.line = Some(t.line);
+        out.push(it);
     }
 
     out
+}
+
+impl ApiMember {
+    fn plain(kind: &'static str, name: String, public: bool, signature: String) -> Self {
+        ApiMember {
+            kind,
+            name,
+            public,
+            signature,
+            default_body: false,
+            requires: Vec::new(),
+            ensures: Vec::new(),
+        }
+    }
+}
+
+fn is_pub(v: Visibility) -> bool {
+    matches!(v, Visibility::Public)
+}
+
+fn push_contract_lines(out: &mut String, requires: &[String], ensures: &[String], indent: &str) {
+    for (keyword, clauses) in [("requires", requires), ("ensures", ensures)] {
+        for text in clauses {
+            out.push_str(&format!("{indent}{keyword} {text}\n"));
+        }
+    }
 }
 
 struct Renderer<'a> {
@@ -285,31 +460,22 @@ impl Renderer<'_> {
     }
 
     /// Quote the `requires` / `ensures` clauses from the original text.
-    /// Returns whether anything was written.
-    fn push_contracts(
-        &self,
-        out: &mut String,
-        requires: &[ExprRef],
-        ensures: &[ExprRef],
-        indent: &str,
-    ) -> bool {
-        let before = out.len();
-        for (keyword, clauses) in [("requires", requires), ("ensures", ensures)] {
-            for clause in clauses {
-                // The parser records the whole clause's span on its
-                // root expression, so this is the predicate as written.
-                let Some(text) = self
-                    .file
-                    .location_pool
-                    .get_expr_location(clause)
-                    .and_then(|loc| self.slice(loc.offset, loc.end_offset))
-                else {
-                    continue;
-                };
-                out.push_str(&format!("{indent}{keyword} {text}\n"));
-            }
-        }
-        out.len() != before
+    fn contracts(&self, requires: &[ExprRef], ensures: &[ExprRef]) -> (Vec<String>, Vec<String>) {
+        let quote = |clauses: &[ExprRef]| -> Vec<String> {
+            clauses
+                .iter()
+                .filter_map(|clause| {
+                    // The parser records the whole clause's span on its
+                    // root expression, so this is the predicate as written.
+                    self.file
+                        .location_pool
+                        .get_expr_location(clause)
+                        .and_then(|loc| self.slice(loc.offset, loc.end_offset))
+                        .map(str::to_string)
+                })
+                .collect()
+        };
+        (quote(requires), quote(ensures))
     }
 
     fn slice(&self, start: u32, end: u32) -> Option<&str> {

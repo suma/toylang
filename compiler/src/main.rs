@@ -15,7 +15,7 @@ use compiler::{compile_file, CompilerOptions, EmitKind};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (mut options, all_backends, profile) = match parse_args(&args) {
+    let (mut options, Mode { all_backends, profile, json }) = match parse_args(&args) {
         Ok(o) => o,
         Err(msg) => {
             eprintln!("{msg}");
@@ -41,13 +41,23 @@ fn main() -> ExitCode {
 
     if all_backends {
         return ExitCode::from(
-            u8::try_from(compiler::all_backends::run(&options, &source, &display_name, profile))
+            u8::try_from(compiler::all_backends::run(&options, &source, &display_name, profile, json))
                 .unwrap_or(1),
         );
     }
 
     match compile_file(&options) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => {
+            if json {
+                let report = serde_json::json!({
+                    "input": display_name,
+                    "emit": emit_name(options.emit),
+                    "output": compiler::output_path(&options).display().to_string(),
+                });
+                println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
+            }
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             eprintln!("compile error: {e}");
             ExitCode::FAILURE
@@ -55,11 +65,28 @@ fn main() -> ExitCode {
     }
 }
 
-/// Returns the build options plus whether `--all-backends` was asked
-/// for. It is not a `CompilerOptions` field because it selects a
-/// different action entirely (run everywhere and compare) rather than
-/// configuring the build.
-fn parse_args(args: &[String]) -> Result<(CompilerOptions, bool, ProfileMode), String> {
+/// What the invocation does besides configuring the build. Not
+/// `CompilerOptions` fields: `--all-backends` selects a different action
+/// entirely (run everywhere and compare), and the report shape is the
+/// CLI's business, not the library's.
+struct Mode {
+    all_backends: bool,
+    profile: ProfileMode,
+    /// `--format=json`: the result (what was built, or the backends'
+    /// verdict) as one JSON document on stdout.
+    json: bool,
+}
+
+fn emit_name(emit: EmitKind) -> &'static str {
+    match emit {
+        EmitKind::Executable => "exe",
+        EmitKind::Object => "obj",
+        EmitKind::Ir => "ir",
+        EmitKind::Clif => "clif",
+    }
+}
+
+fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
     if args.is_empty() {
         return Err("no input file".to_string());
     }
@@ -74,6 +101,7 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, bool, ProfileMode), S
     let mut test_mode = false;
     let mut core_modules_dirs: Vec<PathBuf> = Vec::new();
     let mut diagnostics_json = false;
+    let mut json = false;
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -130,6 +158,14 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, bool, ProfileMode), S
                     other => return Err(format!("--diagnostics expects `text` or `json`, got `{other}`")),
                 }
             }
+            s if s.starts_with("--format=") => {
+                json = parse_format(&s["--format=".len()..])?;
+            }
+            "--format" => {
+                i += 1;
+                let v = args.get(i).ok_or_else(|| "--format needs `text` or `json`".to_string())?;
+                json = parse_format(v)?;
+            }
             s if s.starts_with("--core-modules=") => {
                 core_modules_dirs.push(PathBuf::from(&s["--core-modules=".len()..]));
             }
@@ -165,7 +201,15 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, bool, ProfileMode), S
         (true, false) => ProfileMode::Text,
         (true, true) => ProfileMode::Json,
     };
-    Ok((options, all_backends, profile))
+    Ok((options, Mode { all_backends, profile, json }))
+}
+
+fn parse_format(value: &str) -> Result<bool, String> {
+    match value {
+        "json" => Ok(true),
+        "text" => Ok(false),
+        other => Err(format!("--format expects `text` or `json`, got `{other}`")),
+    }
 }
 
 fn parse_emit(s: &str) -> Result<EmitKind, String> {
@@ -180,7 +224,7 @@ fn parse_emit(s: &str) -> Result<EmitKind, String> {
 
 fn print_usage() {
     eprintln!(
-        "usage: compiler <input.t> [-o <output>] [--emit exe|obj|ir|clif] [--release] [--diagnostics=text|json] [-v]"
+        "usage: compiler <input.t> [-o <output>] [--emit exe|obj|ir|clif] [--release] [--diagnostics=text|json] [--format=text|json] [-v]"
     );
     eprintln!(
         "       compiler <input.t> --all-backends   # run on interpreter / JIT / AOT, report disagreements"
@@ -188,5 +232,6 @@ fn print_usage() {
     eprintln!(
         "       compiler <input.t> --all-backends --profile=mem [--profile-format=text|json]  # also compare allocation totals"
     );
+    eprintln!("       --format=json prints the result (what was built, or the backends' verdict) as JSON on stdout");
     eprintln!("       use `-` as <input.t> to read the program from stdin");
 }

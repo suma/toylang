@@ -147,3 +147,71 @@ fn stdin_works_for_an_ordinary_compile() {
     let _ = std::fs::remove_file(&out);
     assert_eq!(status.code(), Some(5));
 }
+
+// --- `--format=json`: the result as one document ------------------------
+
+fn parse_json(run: &Run) -> serde_json::Value {
+    serde_json::from_str(&run.stdout)
+        .unwrap_or_else(|e| panic!("stdout is not one JSON document ({e}):\n{}\nstderr: {}", run.stdout, run.stderr))
+}
+
+#[test]
+fn all_backends_as_json_carries_the_output_inside_the_document() {
+    if skip_e2e() {
+        return;
+    }
+    let run = run_stdin(
+        "fn main() -> u64 {\n    println(\"hello\")\n    7u64\n}\n",
+        &["--all-backends", "--format=json"],
+    );
+    assert_eq!(run.status, 0, "stderr: {}", run.stderr);
+    // The program's stdout moves into the document; a raw copy in
+    // front of it would make stdout unparseable.
+    let doc = parse_json(&run);
+    assert_eq!(doc["agree"], true);
+    assert_eq!(doc["exit"], 7);
+    assert_eq!(doc["stdout"], "hello\n");
+    let names: Vec<&str> =
+        doc["backends"].as_array().unwrap().iter().map(|b| b["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["interpreter", "jit", "aot"]);
+    assert!(doc["backends"].as_array().unwrap().iter().all(|b| b["status"] == "ok"));
+    assert!(run.stderr.is_empty(), "stderr: {}", run.stderr);
+}
+
+#[test]
+fn a_backend_that_cannot_run_the_program_is_a_failed_entry_in_json() {
+    if skip_e2e() {
+        return;
+    }
+    let run = run_stdin(
+        "fn main() -> u64 {\n    val d = 7.0f64 % 2.0f64\n    0u64\n}\n",
+        &["--all-backends", "--format", "json"],
+    );
+    assert_ne!(run.status, 0);
+    let doc = parse_json(&run);
+    assert_eq!(doc["agree"], false);
+    assert!(
+        doc["backends"].as_array().unwrap().iter().any(|b| b["status"] == "failed" && b["error"].is_string()),
+        "{doc:#}"
+    );
+    assert!(!doc["problems"].as_array().unwrap().is_empty(), "{doc:#}");
+}
+
+#[test]
+fn a_build_as_json_names_what_it_wrote() {
+    if skip_e2e() {
+        return;
+    }
+    let out = std::env::temp_dir().join(format!("toy_format_json_{}.ir", std::process::id()));
+    let run = run_stdin(
+        "fn main() -> u64 { 0u64 }\n",
+        &["--emit", "ir", "-o", out.to_str().unwrap(), "--format=json"],
+    );
+    let written = out.exists();
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(run.status, 0, "stderr: {}", run.stderr);
+    let doc = parse_json(&run);
+    assert_eq!(doc["emit"], "ir");
+    assert_eq!(doc["output"], out.to_str().unwrap());
+    assert!(written);
+}

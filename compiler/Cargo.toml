@@ -19,6 +19,7 @@ compiler_lower = { path = "../compiler_lower" }
 interpreter = { path = "../interpreter", default-features = false }
 toylang_rt = { path = "../compiler/runtime/toylang_rt" }
 string-interner.workspace = true
+serde_json = "1.0"
 
 cranelift = "0.131"
 cranelift-codegen = "0.131"

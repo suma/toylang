@@ -161,6 +161,15 @@ fn run_in_package(pkg: &Package, opts: &Options) -> Result<(), String> {
     let started = std::time::Instant::now();
     let plans = plan_all(pkg, &files, opts)?;
 
+    if opts.list_only && opts.format == Format::Json {
+        let tests: Vec<serde_json::Value> = plans
+            .iter()
+            .flat_map(|plan| plan.tests.iter())
+            .map(|t| serde_json::json!({ "name": t.name, "file": t.file, "line": t.line }))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&serde_json::Value::Array(tests)).unwrap_or_default());
+        return Ok(());
+    }
     if opts.list_only {
         let mut count = 0usize;
         for plan in &plans {
@@ -792,8 +801,9 @@ fn report_text(outcomes: &[Outcome], elapsed: std::time::Duration) {
     );
 }
 
-/// The machine form. Hand-written rather than pulled through serde:
-/// four fields, and `toy` has no other reason to take the dependency.
+/// The machine form. Hand-written rather than pretty-printed through
+/// serde like the other `--format=json` documents: one record per line
+/// is a shape readers depend on (a failing test is one `grep` away).
 fn report_json(outcomes: &[Outcome]) {
     println!("[");
     for (i, o) in outcomes.iter().enumerate() {

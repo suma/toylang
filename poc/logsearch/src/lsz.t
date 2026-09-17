@@ -284,6 +284,30 @@ impl Lsz {
     }
 }
 
+# Whether a whole varint starts at `at` and ends before `end`.
+#
+# `ByteReader::take_varint` trusts its input: it checks that one byte
+# is there and then follows continuation bits wherever they lead. A
+# frame cut inside a length would walk it into the next frame's bytes
+# (or past the buffer), so the decoder asks this first. Ten bytes is
+# the longest a u64 can take; more than that is corruption too.
+fn varint_fits(src: Span<u8>, at: u64, end: u64) -> bool
+    requires end <= src.len()
+{
+    var i = at
+    var fits = false
+    var done = false
+    while !done && i < end && i < at + 10u64 {
+        val b: u8 = src.get(i)
+        if (b & 0x80u8) == 0u8 {
+            fits = true
+            done = true
+        }
+        i = i + 1u64
+    }
+    fits
+}
+
 # Expand `clen` bytes at `from` into `out`, producing exactly
 # `raw_len` bytes. Answers false when the stream ran out early, which
 # is how a truncated or corrupt frame is caught before it becomes
@@ -303,10 +327,18 @@ pub fn decode_frame(src: Span<u8>, from: u64, clen: u64, raw_len: u64, out: &mut
             val token = rd.take_u8(src) as u64
             var litlen = token >> 4u64
             if litlen == 15u64 {
-                val more = rd.take_varint(src)
-                litlen = litlen + more
+                if varint_fits(src, rd.position(), from + clen) {
+                    val more = rd.take_varint(src)
+                    litlen = litlen + more
+                } else {
+                    ok = false
+                }
             }
-            if litlen > 0u64 {
+            # A length that is longer than what is left to produce is
+            # corruption, and refusing it here is what keeps a wild
+            # varint from becoming a wild `reserve`.
+            if ok && litlen > raw_len - produced { ok = false }
+            if ok && litlen > 0u64 {
                 if rd.remaining() < litlen {
                     ok = false
                 } else {
@@ -323,10 +355,16 @@ pub fn decode_frame(src: Span<u8>, from: u64, clen: u64, raw_len: u64, out: &mut
                     val dist = rd.take_u16(src)
                     var mlen = (token & 15u64) + min_match()
                     if (token & 15u64) == 15u64 {
-                        val more = rd.take_varint(src)
-                        mlen = mlen + more
+                        if varint_fits(src, rd.position(), from + clen) {
+                            val more = rd.take_varint(src)
+                            mlen = mlen + more
+                        } else {
+                            ok = false
+                        }
                     }
-                    if dist == 0u64 || dist > produced {
+                    if !ok || mlen > raw_len - produced {
+                        ok = false
+                    } elif dist == 0u64 || dist > produced {
                         ok = false
                     } else {
                         val from_at = base + produced - dist

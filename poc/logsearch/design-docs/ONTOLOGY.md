@@ -186,7 +186,7 @@ object status:404
 構文の正本は [`QUERY.md`](QUERY.md)。オントロジーが足したのは 2 つ。
 
 - **`key=value` のうち索引が知っているキー** (`status` / `method` / `path` /
-  `ip` / `vhost` / `ua` / `host` / `tag`) は postings で解決し、
+  `ip` / `vhost` / `ua` / `proto` / `host` / `tag` と、行頭のラベル) は postings で解決し、
   **語が無いセグメントは展開しない**。それ以外のトークンは今までどおり本文の部分一致
 - **`top=<field>`** は行ではなく値を返す。**フィルタと組み合わせると
   traversal になる** (`ip=X top=path`)

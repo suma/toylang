@@ -952,6 +952,52 @@ fn cmd_fields_indexed(dir: str, field: str, limit: u64) -> u64 {
     0u64
 }
 
+# The value of label `key` in the run of labels at [from, from + len),
+# packed with `record::pack_span`; length 0 when the run has no such
+# label. The rules are DATA_MODEL.md section 2's: `key=value`
+# tokens separated by one space, a value that ends at a space.
+fn label_value(w: Span<u8>, from: u64, len: u64, key: str) -> u64 {
+    val want = String::from_str(key)
+    val klen = want.len()
+    val end = from + len
+    var p = from
+    var found: u64 = record::pack_span(0u64, 0u64)
+    var done = false
+    while p < end && !done {
+        var stop = p
+        while stop < end && w.get(stop) != ' ' { stop = stop + 1u64 }
+        if stop - p > klen && w.get(p + klen) == '=' {
+            var same = true
+            var i = 0u64
+            while i < klen && same {
+                val a: u8 = w.get(p + i)
+                val b: u8 = want.get(i)
+                same = a == b
+                i = i + 1u64
+            }
+            if same {
+                found = record::pack_span(p + klen + 1u64, stop - p - klen - 1u64)
+                done = true
+            }
+        }
+        p = stop + 1u64
+    }
+    found
+}
+
+fn same_bytes(w: Span<u8>, a: u64, a_len: u64, b: u64, b_len: u64) -> bool {
+    if a_len != b_len { return false }
+    var i = 0u64
+    var same = true
+    while i < a_len && same {
+        val x: u8 = w.get(a + i)
+        val y: u8 = w.get(b + i)
+        same = x == y
+        i = i + 1u64
+    }
+    same
+}
+
 fn cmd_fields(dir: str, field: str, limit: u64) -> u64 {
     val code = query::field_code(field)
     if code == query::field_none() {
@@ -1057,23 +1103,50 @@ fn cmd_fields(dir: str, field: str, limit: u64) -> u64 {
                                                         }
                                                     }
 
-                                                    if flen > 0u64 {
-                                                        carried = carried + 1u64
-                                                        val h = extract::hash_span(arena, at, flen)
-                                                        val seen = index_of.get(h)
-                                                        match seen {
-                                                            Option::Some(pos) => {
-                                                                val c: u64 = counts.get(pos)
-                                                                counts.set(pos, c + 1u64)
-                                                            }
-                                                            Option::None => {
-                                                                val pos = names.size()
-                                                                val nm = query::text_of(arena, at, flen)
-                                                                names.push(nm)
-                                                                counts.push(1u64)
-                                                                index_of.insert(h, pos)
+                                                    # `host` is also a reserved label (DATA_MODEL.md
+                                                    # section 2), and the index folds `host=web01`
+                                                    # into the same term as a syslog header host.
+                                                    # The reference has to do the same, or it is the
+                                                    # one that comes up short. A record that says the
+                                                    # same host both ways is one record.
+                                                    var at2: u64 = 0u64
+                                                    var flen2: u64 = 0u64
+                                                    if code == query::field_host() && labels_len > 0u64 {
+                                                        val lv = label_value(arena, line_at + labels_rel, labels_len, "host")
+                                                        val l_at = record::span_start(lv)
+                                                        val l_len = record::span_len(lv)
+                                                        if l_len > 0u64 && !same_bytes(arena, at, flen, l_at, l_len) {
+                                                            at2 = l_at
+                                                            flen2 = l_len
+                                                        }
+                                                    }
+                                                    var pass: u64 = 0u64
+                                                    while pass < 2u64 {
+                                                        var v_at = at
+                                                        var v_len = flen
+                                                        if pass == 1u64 {
+                                                            v_at = at2
+                                                            v_len = flen2
+                                                        }
+                                                        if v_len > 0u64 {
+                                                            carried = carried + 1u64
+                                                            val h = extract::hash_span(arena, v_at, v_len)
+                                                            val seen = index_of.get(h)
+                                                            match seen {
+                                                                Option::Some(pos) => {
+                                                                    val c: u64 = counts.get(pos)
+                                                                    counts.set(pos, c + 1u64)
+                                                                }
+                                                                Option::None => {
+                                                                    val pos = names.size()
+                                                                    val nm = query::text_of(arena, v_at, v_len)
+                                                                    names.push(nm)
+                                                                    counts.push(1u64)
+                                                                    index_of.insert(h, pos)
+                                                                }
                                                             }
                                                         }
+                                                        pass = pass + 1u64
                                                     }
                                                     line_at = line_at + line_len
                                                     r = r + 1u64

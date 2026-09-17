@@ -262,6 +262,39 @@ impl ArchiveWriter {
         }
     }
 
+    # Post `id` for the current record unless it already has been.
+    #
+    # One record can spell the same term twice: a syslog line whose
+    # header host is `web01` and which also starts its message with
+    # `host=web01` gives `host:web01` from both (they are one key by
+    # design, DATA_MODEL.md section 2). Posting it twice made the
+    # record count as two in `fields host` and put its ordinal in the
+    # list twice. A record's postings are the run at the end of the
+    # list, so the check walks back only over those -- a dozen at most.
+    fn post_once(&mut self, id: u64) {
+        val me = self.count as u32
+        var k = self.post_ord.size()
+        var dup = false
+        var within = true
+        while within && !dup && k > 0u64 {
+            val o: u32 = self.post_ord.get(k - 1u64)
+            if o != me {
+                within = false
+            } else {
+                val t: u32 = self.post_term.get(k - 1u64)
+                if t == (id as u32) { dup = true }
+                k = k - 1u64
+            }
+        }
+        if dup {
+            # `intern` already counted this sighting; take it back.
+            val c: u64 = self.term_counts.get(id)
+            self.term_counts.set(id, c - 1u64)
+        } else {
+            self.record_posting(id)
+        }
+    }
+
     # A term for a key this program knows by name (`status`, `host`).
     fn emit(&mut self, w: Span<u8>, key: str, at: u64, len: u64,
             has_ts: bool, ts: i64) -> u64 {
@@ -272,7 +305,7 @@ impl ArchiveWriter {
             val name = extract::term_text(key, w, at, len)
             self.term_names.push(name)
         }
-        self.record_posting(id)
+        self.post_once(id)
         id
     }
 
@@ -288,7 +321,7 @@ impl ArchiveWriter {
             val name = extract::term_text_span(w, key_at, key_len, at, len)
             self.term_names.push(name)
         }
-        self.record_posting(id)
+        self.post_once(id)
         id
     }
 
@@ -461,6 +494,10 @@ impl ArchiveWriter {
                 val ip_id = self.emit(w, "ip", extract::field_start(f.client), extract::field_len(f.client), rec.has_ts, rec.ts)
                 val vhost_id = self.emit(w, "vhost", extract::field_start(f.vhost), extract::field_len(f.vhost), rec.has_ts, rec.ts)
                 val ua_id = self.emit(w, "ua", extract::field_start(f.ua), extract::field_len(f.ua), rec.has_ts, rec.ts)
+                # Not linked to anything, but it has to be a term: the
+                # query reads `proto=HTTP/1.1` as one, and a term that
+                # was never written prunes every segment.
+                val proto_id = self.emit(w, "proto", extract::field_start(f.proto), extract::field_len(f.proto), rec.has_ts, rec.ts)
                 # A fixed set of pairs, not every combination: six
                 # fields would make thirty ordered pairs per record,
                 # and the ones worth asking about are few.

@@ -234,6 +234,38 @@ impl<'a> FunctionLower<'a> {
                                 }
                         }
                     }
+                // RANGE-FOR: `r = a..b` / `r = other` on a `var` range.
+                // Both new bounds are evaluated before either is
+                // stored, so `r = r.end..r.start` reads the old pair.
+                if let Some(Binding::Range { start, end, ty }) = self.bindings.get(&sym).cloned() {
+                    let (s_val, e_val) = match self.program.expression.get(rhs) {
+                        Some(Expr::Range(a, b)) => (
+                            self.lower_expr(&a)?
+                                .ok_or_else(|| "range start produced no value".to_string())?,
+                            self.lower_expr(&b)?
+                                .ok_or_else(|| "range end produced no value".to_string())?,
+                        ),
+                        Some(Expr::Identifier(src)) => match self.bindings.get(&src).cloned() {
+                            Some(Binding::Range { start: from_s, end: from_e, .. }) => (
+                                self.emit(InstKind::LoadLocal(from_s), Some(ty))
+                                    .expect("LoadLocal returns a value"),
+                                self.emit(InstKind::LoadLocal(from_e), Some(ty))
+                                    .expect("LoadLocal returns a value"),
+                            ),
+                            _ => return Err(format!(
+                                "compiler MVP can only assign a range literal or another range to range `{}`",
+                                self.interner.resolve(sym).unwrap_or("?")
+                            )),
+                        },
+                        _ => return Err(format!(
+                            "compiler MVP can only assign a range literal or another range to range `{}`",
+                            self.interner.resolve(sym).unwrap_or("?")
+                        )),
+                    };
+                    self.emit(InstKind::StoreLocal { dst: start, src: s_val }, None);
+                    self.emit(InstKind::StoreLocal { dst: end, src: e_val }, None);
+                    return Ok(None);
+                }
                 if let Some(Binding::RefScalar { local, pointee_ty, is_mut }) =
                     self.bindings.get(&sym).cloned()
                 {
@@ -324,6 +356,9 @@ impl<'a> FunctionLower<'a> {
                             "compiler MVP cannot reassign a `&dyn Trait` binding `{}`",
                             self.interner.resolve(sym).unwrap_or("?")
                         ));
+                    }
+                    Some(Binding::Range { .. }) => {
+                        unreachable!("range assign was peeked");
                     }
                     None => {
                         return Err(format!(

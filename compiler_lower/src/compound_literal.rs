@@ -808,6 +808,9 @@ impl<'a> FunctionLower<'a> {
                 // returning None makes the caller fall through to a
                 // path that reports the unsupported usage cleanly.
                 Some(Binding::DynTraitObj { .. }) => None,
+                // RANGE-FOR: a range is not a tuple element the
+                // compiled lanes can hold; `None` reports it.
+                Some(Binding::Range { .. }) => None,
                 None => self.const_values.get(&sym).map(|c| c.ty()),
             },
             _ => self.value_scalar(expr_ref),

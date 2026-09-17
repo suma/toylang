@@ -2061,6 +2061,15 @@ impl<'a> FunctionLower<'a> {
     /// the right local / pending-compound storage.
     fn lower_expr_identifier(&mut self, sym: DefaultSymbol) -> Result<Option<ValueId>, String> {
         match self.bindings.get(&sym).cloned() {
+            // RANGE-FOR: a range carries no single value. Reading its
+            // bounds, copying it into a name, iterating and printing it
+            // each have their own path; reaching here means some other
+            // use (an argument, a return, an operand).
+            Some(Binding::Range { .. }) => Err(format!(
+                "compiler MVP cannot use range `{}` as a value here (read `.start` / `.end`, \
+                 iterate it with `for`, or print it)",
+                self.interner.resolve(sym).unwrap_or("?")
+            )),
             Some(Binding::Scalar { local, ty }) => {
                 self.pending_struct_value = None;
                 Ok(self.emit(InstKind::LoadLocal(local), Some(ty)))
@@ -3309,6 +3318,38 @@ impl<'a> FunctionLower<'a> {
                 // print path already uses).
                 if let Some(Type::Enum(enum_id)) = self.value_scalar(&args[0]) {
                     return self.lower_enum_to_string(enum_id, &args[0]);
+                }
+                // RANGE-FOR: `"{r}"` renders `start..end`, the
+                // tree-walker's `Object::Range` form.
+                if let Some(Expr::Identifier(sym)) = self.program.expression.get(&args[0])
+                    && let Some(Binding::Range { start, end, ty }) = self.bindings.get(&sym).cloned()
+                {
+                    let mut parts = Vec::with_capacity(3);
+                    for (i, local) in [start, end].into_iter().enumerate() {
+                        if i == 1 {
+                            parts.push(
+                                self.emit(
+                                    InstKind::ConstStrBytes { bytes: b"..".to_vec() },
+                                    Some(Type::Str),
+                                )
+                                .expect("ConstStrBytes returns a value"),
+                            );
+                        }
+                        let v = self
+                            .emit(InstKind::LoadLocal(local), Some(ty))
+                            .expect("LoadLocal returns a value");
+                        parts.push(
+                            self.emit(InstKind::ToString { value: v, value_ty: ty }, Some(Type::Str))
+                                .expect("ToString returns a value"),
+                        );
+                    }
+                    let mut acc = parts[0];
+                    for part in &parts[1..] {
+                        acc = self
+                            .emit(InstKind::StrConcat { a: acc, b: *part }, Some(Type::Str))
+                            .expect("StrConcat returns a value");
+                    }
+                    return Ok(Some(acc));
                 }
                 // Tuple-typed identifier — `value_scalar` can't
                 // surface a Tuple shape (the binding doesn't carry

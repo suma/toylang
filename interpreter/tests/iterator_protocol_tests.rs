@@ -270,3 +270,34 @@ fn generic_tuple_payload_variant_constructs() {
         7,
     );
 }
+
+// RANGE-FOR: `for i in r` over a range value is rewritten by the
+// checker into `for i in r.start..r.end`; the three-lane behaviour is
+// pinned in `compiler/tests/consistency/range_values.rs`. What is left
+// here is the checker's side of it.
+
+#[test]
+fn range_value_iterates_without_being_consumed() {
+    let src = r#"
+fn main() -> u64 {
+    val r = 1u64..4u64
+    var t: u64 = 0u64
+    for i in r { t = t + i }
+    for i in r { t = t + i }
+    t
+}
+"#;
+    assert_program_result_u64(src, 12);
+}
+
+#[test]
+fn range_value_has_only_start_and_end() {
+    let src = r#"
+fn main() -> u64 {
+    val r = 1u64..4u64
+    r.len
+}
+"#;
+    let err = crate::common::test_program(src).expect_err("`r.len` is not a field of a range");
+    assert!(err.contains("len"), "{err}");
+}

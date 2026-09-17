@@ -251,6 +251,9 @@ impl<'a> FunctionLower<'a> {
                 None => self.const_values.get(&sym).map(|c| c.ty()),
             },
             Expr::FieldAccess(obj, field) => {
+                if let Some((_, ty)) = self.range_bound(&obj, field) {
+                    return Some(ty);
+                }
                 // DATA-ORIENTED: a chain rooted at an array element
                 // (`ps[i].y`) names a leaf scalar — the same
                 // resolution the load lowering emits, so report the

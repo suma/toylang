@@ -92,6 +92,24 @@ impl<'a> FunctionLower<'a> {
         if let Expr::TupleLiteral(elems) = rhs.clone() {
             return self.lower_let_tuple_literal(name, elems);
         }
+        // RANGE-FOR: `val r = a..b`, or a copy of another range.
+        if let Expr::Range(start, end) = rhs.clone() {
+            return self.lower_let_range(name, &start, &end);
+        }
+        if let Expr::Identifier(src) = rhs.clone()
+            && let Some(Binding::Range { start, end, ty }) = self.bindings.get(&src).cloned()
+        {
+            let func = self.module.function_mut(self.func_id);
+            let (new_start, new_end) = (func.add_local(ty), func.add_local(ty));
+            for (from, to) in [(start, new_start), (end, new_end)] {
+                let v = self
+                    .emit(InstKind::LoadLocal(from), Some(ty))
+                    .expect("LoadLocal returns a value");
+                self.emit(InstKind::StoreLocal { dst: to, src: v }, None);
+            }
+            self.bindings.insert(name, Binding::Range { start: new_start, end: new_end, ty });
+            return Ok(None);
+        }
         // Array-literal RHS. Phase S supports a fixed-size array of
         // scalars: `val arr = [a, b, c]`. Each element gets its own
         // local; access happens via `arr[const_idx]` (constant
@@ -2332,6 +2350,37 @@ impl<'a> FunctionLower<'a> {
     /// Tuple-literal RHS helper. Allocates one local per element
     /// and stores each element value through
     /// `store_value_into_tuple_element_shape`.
+    /// RANGE-FOR: a range value is its two bounds, each in a local of
+    /// the element type. Both are evaluated before the binding is
+    /// visible, so `val r = r.start..n` over an older `r` reads the
+    /// old one.
+    fn lower_let_range(
+        &mut self,
+        name: DefaultSymbol,
+        start: &ExprRef,
+        end: &ExprRef,
+    ) -> Result<Option<ValueId>, String> {
+        let ty = self
+            .value_scalar(start)
+            .or_else(|| self.value_scalar(end))
+            .ok_or_else(|| "compiler MVP could not infer the element type of a range".to_string())?;
+        let s = self
+            .lower_expr(start)?
+            .ok_or_else(|| "range start produced no value".to_string())?;
+        let e = self
+            .lower_expr(end)?
+            .ok_or_else(|| "range end produced no value".to_string())?;
+        let func = self.module.function_mut(self.func_id);
+        let (start_local, end_local) = (func.add_local(ty), func.add_local(ty));
+        self.emit(InstKind::StoreLocal { dst: start_local, src: s }, None);
+        self.emit(InstKind::StoreLocal { dst: end_local, src: e }, None);
+        self.bindings.insert(
+            name,
+            Binding::Range { start: start_local, end: end_local, ty },
+        );
+        Ok(None)
+    }
+
     fn lower_let_tuple_literal(
         &mut self,
         name: DefaultSymbol,

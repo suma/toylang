@@ -1333,6 +1333,18 @@ impl EvaluationContext<'_> {
         let obj_borrowed = obj_val.borrow();
 
         match &*obj_borrowed {
+            // RANGE-FOR: a range value's bounds. The checker admits
+            // only these two names.
+            Object::Range { start, end } => {
+                match self.string_interner.resolve(*field) {
+                    Some("start") => Ok(EvaluationResult::Value(start.clone().into())),
+                    Some("end") => Ok(EvaluationResult::Value(end.clone().into())),
+                    other => Err(InterpreterError::InternalError(format!(
+                        "Field '{}' not found on a range",
+                        other.unwrap_or("<unknown>")
+                    ))),
+                }
+            }
             Object::Struct { type_name, fields, .. } => {
                 if let Some(rc) = fields.get(field) {
                     return Ok(EvaluationResult::Value(rc.clone().into()));

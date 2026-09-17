@@ -1032,7 +1032,7 @@ pub struct BuiltinFunctionSymbols {
 
 impl BuiltinFunctionSymbols {
     pub fn new(interner: &mut DefaultStringInterner) -> Self {
-        Self {
+        let symbols = Self {
             heap_alloc: interner.get_or_intern("__builtin_heap_alloc"),
             heap_free: interner.get_or_intern("__builtin_heap_free"),
             heap_realloc: interner.get_or_intern("__builtin_heap_realloc"),
@@ -1094,7 +1094,16 @@ impl BuiltinFunctionSymbols {
             dbg: interner.get_or_intern("__builtin_dbg"),
             assert_eq: interner.get_or_intern("assert_eq"),
             assert_ne: interner.get_or_intern("assert_ne"),
-        }
+        };
+        // RANGE-FOR: the checker rewrites `for i in r` over a range
+        // value into `for i in r.start..r.end`, and by then the
+        // interner it holds is read-only. Seeding the names here is
+        // what guarantees the main interner has them -- a module's
+        // own interner is remapped symbol by symbol, so names that no
+        // expression uses never arrive.
+        interner.get_or_intern("start");
+        interner.get_or_intern("end");
+        symbols
     }
 
     pub fn symbol_to_builtin(&self, symbol: DefaultSymbol) -> Option<BuiltinFunction> {

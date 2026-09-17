@@ -77,6 +77,7 @@ mod crypto;
 mod bulk_memory;
 mod typed_ptr_read;
 mod range_ops;
+mod range_values;
 mod writeback_prune;
 mod ptr_self;
 mod by_value_params;

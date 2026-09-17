@@ -903,6 +903,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         s: &StmtRef,
         last_empty: &mut bool,
     ) -> Result<TypeDecl, TypeCheckError> {
+        self.rewrite_range_for_in(s);
         let stmt = self.core.stmt_pool.get(s)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference in block"))?;
 

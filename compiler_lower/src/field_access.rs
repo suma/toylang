@@ -149,11 +149,32 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
+    /// RANGE-FOR: `r.start` / `r.end` on a range binding -- the local
+    /// that holds that bound and its type. `None` for anything else, so
+    /// every caller falls through to its struct path unchanged.
+    pub(super) fn range_bound(&self, obj: &ExprRef, field: DefaultSymbol) -> Option<(LocalId, Type)> {
+        let Some(Expr::Identifier(sym)) = self.program.expression.get(obj) else {
+            return None;
+        };
+        let Some(Binding::Range { start, end, ty }) = self.bindings.get(&sym) else {
+            return None;
+        };
+        match self.interner.resolve(field)? {
+            "start" => Some((*start, *ty)),
+            "end" => Some((*end, *ty)),
+            _ => None,
+        }
+    }
+
     pub(super) fn lower_field_access(
         &mut self,
         obj: &ExprRef,
         field: DefaultSymbol,
     ) -> Result<Option<ValueId>, String> {
+        if let Some((local, ty)) = self.range_bound(obj, field) {
+            self.pending_struct_value = None;
+            return Ok(self.emit(InstKind::LoadLocal(local), Some(ty)));
+        }
         // OP-OVERLOAD-CHAIN: `(a + b).x` — the root is an overloaded
         // operator, not a binding. `resolve_field_chain` is immutable
         // by design (reads and writes share it), so it cannot
@@ -274,6 +295,11 @@ impl<'a> FunctionLower<'a> {
                 Some(Binding::DynTraitObj { .. }) => {
                     Err(self.not_a_chain_root(sym, "dyn-trait", ""))
                 }
+                Some(Binding::Range { .. }) => Err(self.not_a_chain_root(
+                    sym,
+                    "range",
+                    ": only `.start` and `.end` can be read from it",
+                )),
                 None => Err(format!(
                     "undefined identifier `{}`",
                     self.interner.resolve(sym).unwrap_or("?")
@@ -303,6 +329,9 @@ impl<'a> FunctionLower<'a> {
                 }
             }
             Expr::FieldAccess(inner, field_sym) => {
+                if let Some((local, ty)) = self.range_bound(&inner, field_sym) {
+                    return Ok(FieldChainResult::Scalar { local, ty });
+                }
                 let inner_ref = self.resolve_field_chain(&inner)?;
                 let fields = match inner_ref {
                     FieldChainResult::Struct { fields, .. } => fields,

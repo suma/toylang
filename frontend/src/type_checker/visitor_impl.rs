@@ -335,12 +335,14 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
         let end_ty = self.visit_expr(end)?;
         self.type_inference.type_hint = saved_hint;
 
+        // Any integer width, as for `for i in 0u8..3u8` (RANGE-FOR:
+        // this used to admit only `i64` / `u64`, and refused `u8..u8`
+        // as "not matching").
         let element_ty = match (&start_ty, &end_ty) {
-            (TypeDecl::Int64, TypeDecl::Int64) => TypeDecl::Int64,
-            (TypeDecl::UInt64, TypeDecl::UInt64) => TypeDecl::UInt64,
             (TypeDecl::Number, TypeDecl::Number) => TypeDecl::UInt64,
+            (a, b) if a.is_integer() && a == b => a.clone(),
             (TypeDecl::Number, other) | (other, TypeDecl::Number)
-                if matches!(other, TypeDecl::Int64 | TypeDecl::UInt64) => other.clone(),
+                if other.is_integer() => other.clone(),
             _ => {
                 return Err(TypeCheckError::new(format!(
                     "range endpoints must be matching integer types, got {}..{}",

@@ -91,8 +91,11 @@ fn cases() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
             // The headline refusal — the one that used to print the
             // whole AST node. It now names the form instead.
             "an expression form the lowering pass does not handle",
+            // A range from a branch: `val r = a..b` lowers now
+            // (RANGE-FOR), but a range produced by an `if` does not.
             r#"fn main() -> u64 {
-                 val r = 0u64..10u64
+                 val b = true
+                 val r = if b { 0u64..1u64 } else { 1u64..2u64 }
                  0u64
                }"#,
             vec!["cannot lower a range"],

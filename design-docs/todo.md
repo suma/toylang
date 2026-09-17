@@ -11,6 +11,16 @@
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
 ### 2026-09-17
+- **RANGE-FOR — `for i in r` が範囲値で動き、範囲値が 3 レーンに
+  入った** — パーサは `in` の後の名前をイテレータとして desugar するので
+  `r.next()` が無くて落ちていた。型検査器が受け手の型が `Range<T>` の
+  ループを `for i in r.start..r.end` に書き戻す (消費しない。境界は
+  ループ開始時に 1 回読む)。`r.start` / `r.end` を足し、compiled lane は
+  `Binding::Range` (境界 2 local) で束縛・再代入・表示・補間に対応。
+  tuple 要素と分岐からの生成は compiled lane が拒否する (tree-walker は通る)。
+  範囲値が `i64` / `u64` 限定で `u8..u8` を「型不一致」と言っていたのも
+  直した。`start` / `end` は `BuiltinFunctionSymbols::new` で seed
+  (cache v46)。
 - **MODULE-EXPR-REMAP — モジュールの body に配列の添字を書くと
   integration が落ちていた** — `remap_expression` に `SliceAccess` /
   `SliceAssign` / `DictLiteral` / `Range` / `Closure` / `StructUpdate`
@@ -1715,6 +1725,14 @@
   `function_index collision` panic が、候補を名指しする型エラーに
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
+
+- **RANGE-TYPE-ANNOTATION — `Range<u64>` と書いた型が範囲値の型と
+  一致しない** ★ — `fn f(r: Range<u64>)` に `0u64..3u64` を渡すと
+  ``expected Range<u64>, but got Range<u64>``。注釈は generic な
+  識別子として読まれ、リテラルの `TypeDecl::Range` と別物になる。
+  このため範囲値は**どのレーンでも関数境界を越えられない**。直すなら
+  型注釈の解決で `Range<T>` を `TypeDecl::Range` に寄せ、compiled lane
+  に引数 / 戻り値 (2 leaf) を足す。見つけたのは RANGE-FOR (2026-09-17)。
 
 - **TEST-PARALLEL の残り (P5 / P6 とスケジューリング)** ★ —
   **P0〜P3 は 2026-09-11 に landing** (完了済み節)。残り:

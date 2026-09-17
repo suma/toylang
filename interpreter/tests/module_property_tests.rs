@@ -544,3 +544,18 @@ fn module_can_hold_a_dict_literal() {
                }\n";
     assert_eq!(run_module_fn(src, "shapes::f()"), Ok(41));
 }
+
+/// RANGE-FOR: the rewrite needs `start` / `end` in the main interner,
+/// and a module's names reach it only when some expression uses them.
+/// The entry file here has no loop at all, so this passes only because
+/// `BuiltinFunctionSymbols::new` seeds both names.
+#[test]
+fn module_can_iterate_a_range_value() {
+    let src = "pub fn f() -> u64 {\n\
+               \x20   val r = 1u64..4u64\n\
+               \x20   var t: u64 = 0u64\n\
+               \x20   for i in r { t = t + i }\n\
+               \x20   t\n\
+               }\n";
+    assert_eq!(run_module_fn(src, "shapes::f()"), Ok(6));
+}

@@ -121,6 +121,17 @@ pub(super) enum Binding {    Scalar {
         data_ptr_local: LocalId,
         vtable_ptr_local: LocalId,
     },
+    /// RANGE-FOR: a range value, `val r = a..b`. Its two bounds are
+    /// two scalar locals of the element type. What a range can do in
+    /// the compiled lanes is read its bounds (`r.start` / `r.end`,
+    /// which is also what `for i in r` is rewritten into), be copied
+    /// into another name, and be printed; anything else that meets
+    /// one is refused by name rather than guessed at.
+    Range {
+        start: LocalId,
+        end: LocalId,
+        ty: Type,
+    },
 }
 
 /// Storage tree for one enum value in IR. `tag_local` holds the

@@ -1898,6 +1898,31 @@ val r = 0u64..10u64           # range as a value
 for i in 0u64 to n { ... }    # legacy `to` form, still accepted
 ```
 
+A range **value** (`Range<T>`, any integer width) holds its two
+bounds, readable as `r.start` and `r.end`. `for i in r` iterates it
+without consuming it: the loop reads both bounds once, when it starts,
+so a second `for i in r` visits the same numbers, and reassigning a
+`var` range inside its own loop does not change the loop in progress.
+It prints and interpolates as `start..end`.
+
+```rust
+val r = 2u64..6u64
+for i in r { ... }            # 2, 3, 4, 5
+for i in r { ... }            # 2, 3, 4, 5 again
+println("{r.start} {r.end}")  # 2 6
+println(r)                    # 2..6
+```
+
+In every lane a range can be bound (`val` / `var`, from a literal or
+another range), reassigned from either, iterated, printed, and have its
+bounds read. It cannot yet cross a function boundary on any lane: a
+`Range<u64>` annotation does not name the same type the literal has,
+so a parameter or return type written that way is a type mismatch.
+The compiled lanes also refuse a range inside a tuple and a range
+produced by a branch (`val r = if c { a..b } else { c..d }`), which
+the tree-walker accepts. A range literal on the right of `=` needs
+parentheses (`w = (1u64..3u64)`).
+
 ### `with` blocks
 
 Lexically scoped allocator binding:
@@ -2330,6 +2355,9 @@ Bind the struct first if you need one (`val it = MyIter { .. }`).
    Legacy spelling, semantically identical to `..`.
 3. **Iterator protocol** — `for x in EXPR { body }` where EXPR is
    any value whose type exposes `fn next(&mut self) -> Option<T>`.
+   (A range *value* also takes this spelling — `for i in r` — and the
+   checker turns it back into form 1 over `r.start..r.end`; see
+   [Range expressions](#range-expressions).)
    The parser desugars at parse time:
 
        for x in EXPR { body }

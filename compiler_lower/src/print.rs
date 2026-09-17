@@ -95,6 +95,27 @@ impl<'a> FunctionLower<'a> {
                         );
                         return Ok(None);
                     }
+                    // RANGE-FOR: `start..end`, the tree-walker's form.
+                    Binding::Range { start, end, ty } => {
+                        for (i, local) in [start, end].into_iter().enumerate() {
+                            if i == 1 {
+                                self.emit_print_raw_text("..".to_string(), false);
+                            }
+                            let v = self
+                                .emit(InstKind::LoadLocal(local), Some(ty))
+                                .expect("LoadLocal returns a value");
+                            self.emit(
+                                InstKind::Print {
+                                    value: v,
+                                    value_ty: ty,
+                                    newline: newline && i == 1,
+                                    stderr: self.print_stderr,
+                                },
+                                None,
+                            );
+                        }
+                        return Ok(None);
+                    }
                     Binding::DynTraitObj { .. } => {
                         // A5-P2: printing an opaque trait object is
                         // not meaningful (no canonical user-visible

@@ -983,10 +983,11 @@ impl<'a> FunctionLower<'a> {
                     }
                     Binding::Array { .. }
                     | Binding::FunctionPtr { .. }
-                    | Binding::DynTraitObj { .. } => {
+                    | Binding::DynTraitObj { .. }
+                    | Binding::Range { .. } => {
                         return Err(format!(
                             "compiler MVP does not support `match` on array / \
-                             function-value / dyn-trait binding `{}`",
+                             function-value / dyn-trait / range binding `{}`",
                             self.interner.resolve(sym).unwrap_or("?")
                         ));
                     }

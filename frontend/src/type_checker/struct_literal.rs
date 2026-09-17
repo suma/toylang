@@ -270,6 +270,18 @@ impl<'a> TypeCheckerVisitor<'a> {
         let obj_type = obj_type_result?;
 
         match obj_type {
+            // RANGE-FOR: a range value's bounds. `for i in r` is
+            // rewritten to `for i in r.start..r.end` (see
+            // `rewrite_range_for_in`), and the same two names are
+            // there to be read directly.
+            TypeDecl::Range(ref element) => {
+                let field_name = self.resolve_symbol_name(*field);
+                if field_name == "start" || field_name == "end" {
+                    Ok((**element).clone())
+                } else {
+                    Err(TypeCheckError::not_found("field", &field_name))
+                }
+            }
             // DATA-ORIENTED Phase 1: a field name on an *array* is the
             // column window — `ps.mass` is every element's `mass`,
             // typed `Column<f64>` (`core/std/column.t`). Accepted for

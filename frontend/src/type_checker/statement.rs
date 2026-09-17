@@ -238,6 +238,96 @@ impl<'a> TypeCheckerVisitor<'a> {
         res
     }
 
+    /// RANGE-FOR: `for i in r` over a range **value**.
+    ///
+    /// The parser cannot tell a range value from an iterator (it sees
+    /// only a name), so it desugars `for x in EXPR { body }` into the
+    /// iterator protocol:
+    ///
+    /// ```text
+    /// while true {
+    ///     match RECV.next() {
+    ///         Option::Some(x) => { body; continue },
+    ///         Option::None => { break },
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// where `RECV` is `EXPR` itself when it is a name, and otherwise a
+    /// `var __iter_for_N = EXPR` bound just before. A range has no
+    /// `next`, so this used to stop at "method not found". By the time
+    /// the loop is reached the receiver's type is known, and when it is
+    /// `Range<T>` the loop is replaced in place by the integer fast
+    /// path:
+    ///
+    /// ```text
+    /// for x in RECV.start..RECV.end { body }
+    /// ```
+    ///
+    /// Rewriting rather than giving ranges a `next` keeps the range
+    /// **unconsumed**: a stateful `next` would leave a second
+    /// `for i in r` over the same binding with nothing to visit. The
+    /// bounds are read once, when the loop starts, as `Stmt::For`
+    /// always does. Backends only ever see the rewritten loop.
+    pub(super) fn rewrite_range_for_in(&mut self, s: &StmtRef) {
+        let Some(Stmt::While(label, cond, while_body)) = self.core.stmt_pool.get(s) else {
+            return;
+        };
+        if !matches!(self.core.expr_pool.get(&cond), Some(Expr::True)) {
+            return;
+        }
+        let Some(Expr::Block(inner)) = self.core.expr_pool.get(&while_body) else {
+            return;
+        };
+        let [only] = inner.as_slice() else { return };
+        let Some(Stmt::Expression(match_ref)) = self.core.stmt_pool.get(only) else {
+            return;
+        };
+        let Some(Expr::Match(scrutinee, arms)) = self.core.expr_pool.get(&match_ref) else {
+            return;
+        };
+        let Some(Expr::MethodCall(recv_ref, method, args)) = self.core.expr_pool.get(&scrutinee)
+        else {
+            return;
+        };
+        if !args.is_empty() || self.core.string_interner.resolve(method) != Some("next") {
+            return;
+        }
+        let Some(Expr::Identifier(recv)) = self.core.expr_pool.get(&recv_ref) else {
+            return;
+        };
+        if !matches!(self.context.get_var(recv), Some(TypeDecl::Range(_))) {
+            return;
+        }
+        // The two arms the parser writes: `Some(x) => { body; continue }`
+        // and `None => { break }`.
+        let [some_arm, _none_arm] = arms.as_slice() else { return };
+        let Pattern::EnumVariant(_, _, subs) = &some_arm.pattern else { return };
+        let [Pattern::Name(loop_var)] = subs.as_slice() else { return };
+        let Some(Expr::Block(arm_stmts)) = self.core.expr_pool.get(&some_arm.body) else {
+            return;
+        };
+        let [body_stmt, _continue] = arm_stmts.as_slice() else { return };
+        let Some(Stmt::Expression(user_body)) = self.core.stmt_pool.get(body_stmt) else {
+            return;
+        };
+
+        // Seeded by `BuiltinFunctionSymbols::new`.
+        let (Some(start_sym), Some(end_sym)) = (
+            self.core.string_interner.get("start"),
+            self.core.string_interner.get("end"),
+        ) else {
+            return;
+        };
+        let start_recv = self.core.expr_pool.add(Expr::Identifier(recv));
+        let end_recv = self.core.expr_pool.add(Expr::Identifier(recv));
+        let start = self.core.expr_pool.add(Expr::FieldAccess(start_recv, start_sym));
+        let end = self.core.expr_pool.add(Expr::FieldAccess(end_recv, end_sym));
+        self.core
+            .stmt_pool
+            .update(s, Stmt::For(label, *loop_var, start, end, user_body));
+    }
+
     /// Type check while loops - internal implementation
     pub fn visit_while_impl(&mut self, label: Option<DefaultSymbol>, cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         // Evaluate condition type first

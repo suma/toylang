@@ -32,13 +32,13 @@ const USAGE: &str = "\
 toy — build and run toylang programs
 
 usage:
-  toy build [PATH] [--release] [--backend aot|jit] [-o OUT] [-v]
-  toy run   [PATH] [--release] [--backend aot|jit|vm|tree] [-v] [-- ARGS...]
-  toy check [PATH] [-v]
+  toy build [PATH] [--release] [--backend aot|jit] [-o OUT] [--diagnostics=json] [-v]
+  toy run   [PATH] [--release] [--backend aot|jit|vm|tree] [--diagnostics=json] [-v] [-- ARGS...]
+  toy check [PATH] [--diagnostics=json] [-v]
   toy clean [PATH] [--all] [-v]
-  toy test  [FILTER] [PATH] [-j N] [--list] [--bless] [--format=json] [-v]
+  toy test  [FILTER] [PATH] [-j N] [--list] [--bless] [--format=json] [--diagnostics=json] [-v]
   toy api <MODULE.t> [PATH]
-  toy effects [PATH] [-v]
+  toy effects [PATH] [--diagnostics=json] [-v]
   toy explain <CODE>
   toy version [-v]
 
@@ -57,6 +57,8 @@ options:
   --list               list the tests instead of running them
   --bless              test: record the golden files instead of checking
   --format=json        machine-readable results (test only)
+  --diagnostics=json   parse / type / runtime errors as a JSON array on
+                       stderr, as `compiler` and `interpreter` take it
   --all                clean: remove the link cache and build/ too
   --no-warn-collisions skip the duplicate-name pre-check
   -- ARGS...           arguments for the program (run only)
@@ -102,6 +104,10 @@ struct Args {
     list_only: bool,
     bless: bool,
     json: bool,
+    /// `--diagnostics=json`: the compiler's and interpreter's flag,
+    /// handed through unchanged. Separate from `json`, which shapes
+    /// `toy test`'s own report rather than the diagnostics.
+    diagnostics_json: bool,
     warn_collisions: bool,
     all: bool,
     /// `toy test -j N`. `None` means "as many as the machine has"
@@ -159,6 +165,7 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
         list_only: false,
         bless: false,
         json: false,
+        diagnostics_json: false,
         warn_collisions: true,
         all: false,
         jobs: None,
@@ -188,6 +195,14 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
                     "text" => a.json = false,
                     other => return Err(format!("unknown format `{other}`")),
                 }
+            }
+            "--diagnostics" => {
+                i += 1;
+                let v = argv.get(i).ok_or("--diagnostics needs a value (text or json)")?;
+                a.diagnostics_json = parse_diagnostics(v)?;
+            }
+            _ if arg.starts_with("--diagnostics=") => {
+                a.diagnostics_json = parse_diagnostics(&arg["--diagnostics=".len()..])?;
             }
             "-v" | "--verbose" => a.verbose = true,
             "-j" | "--jobs" => {
@@ -251,6 +266,20 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
     Ok(a)
 }
 
+/// The same spelling `compiler` and `interpreter` accept.
+fn parse_diagnostics(value: &str) -> Result<bool, String> {
+    match value {
+        "json" => Ok(true),
+        "text" => Ok(false),
+        other => Err(format!("--diagnostics expects `text` or `json`, got `{other}`")),
+    }
+}
+
+/// The flag as it would be typed to `compiler` / `interpreter`, for `-v`.
+fn show_diagnostics(args: &Args) -> &'static str {
+    if args.diagnostics_json { "--diagnostics=json " } else { "" }
+}
+
 /// The package `args` names, with the module roots assembled.
 fn locate(args: &Args) -> Result<package::Package, String> {
     let stdlib = compiler::resolve_core_modules_dirs(Vec::new());
@@ -302,12 +331,14 @@ fn cmd_build(args: &Args) -> Result<(), String> {
     options.core_modules_dirs = pkg.module_roots.clone();
     options.link_cache_dir = Some(pkg.link_cache_dir());
     options.verbose = args.verbose;
+    options.diagnostics_json = args.diagnostics_json;
     if args.verbose {
         eprintln!(
-            "toy: compiler {} {} {}-o {}",
+            "toy: compiler {} {} {}{}-o {}",
             show_roots(&pkg),
             pkg.entry.display(),
             if args.release { "--release " } else { "" },
+            show_diagnostics(args),
             out.display()
         );
     }
@@ -341,6 +372,7 @@ fn run_aot(args: &Args, pkg: &package::Package) -> Result<(), String> {
     options.core_modules_dirs = pkg.module_roots.clone();
     options.link_cache_dir = Some(pkg.link_cache_dir());
     options.verbose = args.verbose;
+    options.diagnostics_json = args.diagnostics_json;
     compiler::compile_file(&options)?;
     if args.verbose {
         eprintln!("toy: {} {}", out.display(), args.program_args.join(" "));
@@ -361,8 +393,9 @@ fn run_in_process(
     let filename = pkg.entry.to_string_lossy().into_owned();
     if args.verbose {
         eprintln!(
-            "toy: interpreter {} {} {}",
+            "toy: interpreter {} {}{} {}",
             show_roots(pkg),
+            show_diagnostics(args),
             filename,
             args.program_args.join(" ")
         );
@@ -374,6 +407,7 @@ fn run_in_process(
         options.release = args.release;
         options.core_modules_dirs = pkg.module_roots.clone();
         options.verbose = args.verbose;
+        options.diagnostics_json = args.diagnostics_json;
         let program = compiler::compile_to_jit_main_with_options(&source, &options)?;
         let code = program.run();
         process::exit(code as i32);
@@ -381,12 +415,19 @@ fn run_in_process(
     let mut options = RunOptions::default();
     options.core_modules_dirs = &pkg.module_roots;
     options.args = args.program_args.clone();
+    options.diagnostics_json = args.diagnostics_json;
     // `tree` asks for the tree-walker, which `run_source` reaches by
     // way of the engine choice inside the interpreter; `vm` is the
     // default engine. Neither takes a flag here today, so `tree` is
     // recorded as an intent and served by the same entry point — see
     // the note in `USAGE`.
-    let outcome = interpreter::run_source(&source, &filename, &options)?;
+    // `run_source` has already reported the failure — as text or as
+    // JSON — so passing its message on would print it a second time,
+    // after the JSON array when that was asked for. `interpreter`
+    // exits the same way.
+    let Ok(outcome) = interpreter::run_source(&source, &filename, &options) else {
+        process::exit(1);
+    };
     if let Some(code) = outcome.exit_code {
         process::exit(code);
     }
@@ -406,24 +447,52 @@ fn cmd_check(args: &Args) -> Result<(), String> {
     let lower_too = !matches!(args.backend, Some(Backend::Vm) | Some(Backend::Tree));
     if args.verbose {
         eprintln!(
-            "toy: {} {} {}",
+            "toy: {} {} {}{}",
             if lower_too { "compiler --emit ir" } else { "interpreter --check" },
             show_roots(&pkg),
+            show_diagnostics(args),
             pkg.entry.display()
         );
     }
     let mut session = compiler_core::CompilerSession::new();
-    let mut program = session
-        .parse_program_all_errors(&source, &name)
-        .map_err(|errors| format!("{} parse error(s)", errors.len()))?;
-    interpreter::check_typing_with_core_modules(
-        &mut program,
-        session.string_interner_mut(),
-        Some(&source),
-        Some(&name),
-        &pkg.module_roots,
-    )
-    .map_err(|errors| errors.join("\n"))?;
+    let mut program = match session.parse_program_all_errors(&source, &name) {
+        Ok(program) => program,
+        Err(errors) => {
+            if args.diagnostics_json {
+                let diagnostics: Vec<_> = errors
+                    .iter()
+                    .map(|e| frontend::diagnostic::Diagnostic::from_parser_error(e, &name))
+                    .collect();
+                interpreter::emit_diagnostics_json(&diagnostics);
+            } else {
+                interpreter::error_formatter::ErrorFormatter::new(&source, &name)
+                    .display_parse_errors(&errors);
+            }
+            return Err(format!("{} parse error(s)", errors.len()));
+        }
+    };
+    if args.diagnostics_json {
+        interpreter::check_typing_diagnostics(
+            &mut program,
+            session.string_interner_mut(),
+            Some(&source),
+            Some(&name),
+            &pkg.module_roots,
+        )
+        .map_err(|diagnostics| {
+            interpreter::emit_diagnostics_json(&diagnostics);
+            format!("{} type-check error(s)", diagnostics.len())
+        })?;
+    } else {
+        interpreter::check_typing_with_core_modules(
+            &mut program,
+            session.string_interner_mut(),
+            Some(&source),
+            Some(&name),
+            &pkg.module_roots,
+        )
+        .map_err(|errors| errors.join("\n"))?;
+    }
     if lower_too {
         let mut options = compiler::options::CompilerOptions::new(pkg.entry.clone());
         options.release = args.release;
@@ -470,6 +539,7 @@ fn cmd_test(args: &Args) -> Result<(), String> {
             test_runner::Format::Text
         },
         verbose: args.verbose,
+        diagnostics_json: args.diagnostics_json,
         // AOT is the default here for the reason TEST_TOOL gives: the
         // lane that ships is the one worth testing, and the bugs a
         // real program hits are backend-specific. `--backend vm` runs
@@ -532,8 +602,9 @@ fn cmd_effects(args: &Args) -> Result<(), String> {
     let source = read_entry(&pkg)?;
     if args.verbose {
         eprintln!(
-            "toy: interpreter --effects {} {}",
+            "toy: interpreter --effects {} {}{}",
             show_roots(&pkg),
+            show_diagnostics(args),
             pkg.entry.display()
         );
     }
@@ -543,6 +614,7 @@ fn cmd_effects(args: &Args) -> Result<(), String> {
     // package's, like every other command.
     let mut options = RunOptions::default();
     options.core_modules_dirs = &pkg.module_roots;
+    options.diagnostics_json = args.diagnostics_json;
     let listing =
         interpreter::effects_from_source(&source, &pkg.entry.to_string_lossy(), &options)?;
     let width = listing.iter().map(|f| f.name.chars().count()).max().unwrap_or(0);

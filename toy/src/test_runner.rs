@@ -58,6 +58,9 @@ pub struct Options {
     pub list_only: bool,
     pub format: Format,
     pub verbose: bool,
+    /// `--diagnostics=json`, for the parse / type errors met while
+    /// planning (IR VM) or compiling a driver (AOT).
+    pub diagnostics_json: bool,
     /// Run the blocks natively (TEST-TOOL T1) rather than on the IR
     /// VM. The default, because the lane that ships is the one worth
     /// testing — the bugs a real program hits are backend-specific.
@@ -298,12 +301,13 @@ fn list_one(
     let display = display_path(pkg, file);
     let keep = !opts.aot && !opts.list_only && opts.jobs.max(1) == 1;
     if keep {
-        return Ok(prepared_for(pkg, file, &display)?.cases().to_vec());
+        return Ok(prepared_for(pkg, file, &display, opts)?.cases().to_vec());
     }
     let source = std::fs::read_to_string(file)
         .map_err(|e| format!("cannot read `{}`: {e}", file.display()))?;
     let mut options = RunOptions::default();
     options.core_modules_dirs = &pkg.module_roots;
+    options.diagnostics_json = opts.diagnostics_json;
     Ok(interpreter::list_tests_from_source(&source, &display, &options)?
         .into_iter()
         .map(|o| interpreter::TestCaseInfo {
@@ -562,6 +566,7 @@ fn prepared_for(
     pkg: &Package,
     path: &Path,
     display: &str,
+    opts: &Options,
 ) -> Result<std::rc::Rc<interpreter::PreparedTests>, String> {
     if let Some(hit) = PREPARED.with(|c| c.borrow().get(path).cloned()) {
         return Ok(hit);
@@ -570,6 +575,7 @@ fn prepared_for(
         .map_err(|e| format!("cannot read `{}`: {e}", path.display()))?;
     let mut options = RunOptions::default();
     options.core_modules_dirs = &pkg.module_roots;
+    options.diagnostics_json = opts.diagnostics_json;
     let prepared =
         std::rc::Rc::new(interpreter::prepare_tests(&source, display, &options)?);
     PREPARED.with(|c| c.borrow_mut().insert(path.to_path_buf(), prepared.clone()));
@@ -580,11 +586,11 @@ fn prepared_for(
 fn run_vm_one(
     pkg: &Package,
     plan: &FilePlan,
-    _opts: &Options,
+    opts: &Options,
     test: usize,
 ) -> Result<Outcome, String> {
     let planned = &plan.tests[test];
-    let prepared = prepared_for(pkg, &plan.path, &plan.display)?;
+    let prepared = prepared_for(pkg, &plan.path, &plan.display, opts)?;
     // The sink is thread-local, so two workers printing at once keep
     // their output apart (`interpreter::output` was built that way
     // precisely because an OS-level redirect would not).
@@ -623,6 +629,7 @@ fn compile_driver(
     options.link_cache_dir = Some(pkg.link_cache_dir());
     options.test_mode = true;
     options.test_only = only.map(|names| names.to_vec());
+    options.diagnostics_json = opts.diagnostics_json;
     compiler::compile_file(&options)?;
     Ok(exe)
 }

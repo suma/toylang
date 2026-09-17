@@ -140,14 +140,14 @@ cargo run -q -p compiler -- --core-modules core --core-modules mypkg/src mypkg/m
 
 # 同じことを規約でやる `toy`。root は「main.t か src/ を持つ最寄りの祖先」
 # から組み立てる。マニフェストは無い
-cargo run -q -p toy -- build mypkg [--release] [-o PATH]
-cargo run -q -p toy -- run   mypkg [--backend aot|jit|vm] [-- ARGS...]
-cargo run -q -p toy -- check mypkg
+cargo run -q -p toy -- build mypkg [--release] [-o PATH] [--diagnostics=json]
+cargo run -q -p toy -- run   mypkg [--backend aot|jit|vm] [--diagnostics=json] [-- ARGS...]
+cargo run -q -p toy -- check mypkg [--diagnostics=json]
 cargo run -q -p toy -- clean mypkg [--all]   # 出力を消す (--all は build/ ごと)
 cargo run -q -p toy -- version [-v]         # 各部の version / git rev / パス
 # パスが無い行は同じ行に色つきで警告する。stdlib の revision は実行時に
 # `git -C <root>` で引く (stdlib はデータで、別 checkout から来うるため)
-cargo run -q -p toy -- test  mypkg [FILTER] [-j N] [--list] [--bless] [--format=json]
+cargo run -q -p toy -- test  mypkg [FILTER] [-j N] [--list] [--bless] [--format=json] [--diagnostics=json]
 # `test` は tests/*.t と entry を走らせ、**モジュール内の `test` も拾う**
 # (TEST-TOOL T0)。**既定は AOT** で、出荷するレーンが検査対象になる
 # (T1)。`--backend vm` は IR VM で走らせ、**全部の失敗を 1 回で報告する**
@@ -161,7 +161,7 @@ cargo run -q -p toy -- test  mypkg [FILTER] [-j N] [--list] [--bless] [--format=
 # 出力は build/{debug,release}/ — build は成果物、run は .run/ に、
 # test は tests/ に出る。build/.gitignore は初回に自動生成
 cargo run -q -p toy -- api src/foo.t mypkg   # api / effects / explain も根つき
-cargo run -q -p toy -- effects mypkg
+cargo run -q -p toy -- effects mypkg [--diagnostics=json]
 # `-v` は等価な compiler / interpreter 呼び出しを 1 行で出す (道具を捨てて戻れる)
 
 # 入力ファイル名 `-` で stdin から読む。スクラッチファイルを作らずに済む
@@ -174,10 +174,22 @@ echo 'fn main() -> u64 { 7u64 }' | cargo run -q -p compiler -- - --all-backends
 全ホールが答えられ、束縛は推論した型で登録されるので後続がカスケードしない。
 
 **`--diagnostics=json`** で診断を stderr に JSON 配列で出す
-(各要素は `severity` / `code` / `message` / `span` (`line`・`column`・
-`offset`・`end_offset`) / `suggestions` を持つ)。既定は
+(各要素は `severity` / `code` / `message` / `file` / `span` (`line`・`column`・
+`offset`・`end_offset`) / `origin_module` / `suggestions`、実行時エラーは
+`backtrace` も持つ)。既定は
 `--diagnostics=text` (スニペット付き、1 エラーあたり ~11 行)。位置情報は
 JSON でも保持されるので、機械的に読む場面 (LLM ループ) ではこちらを使う。
+`compiler` / `interpreter` / `toy` の全サブコマンド (`build` / `run` 全
+backend / `check` / `test` / `effects`) が同じ綴りで受け、パース・型・
+実行時 (IR VM) のエラーが対象。JSON 配列の後に `toy: N type-check error(s)`
+のような 1 行要約が続くことがあるので、`[` から対応する `]` までを読む。
+
+**`toy` を使うときは、結果を JSON で出せるなら JSON を指定すること。**
+診断は `--diagnostics=json`、`toy test` の結果は `--format=json` (両方
+指定できる)。text は人間向けのスニペットで行数が多く、位置やコードを
+読み取るのに解釈が要る。結果本体を JSON にできるのは今は `test` だけ
+(`effects` の一覧は text)、診断を JSON にできないのは `api` / `explain` /
+`version` / `clean`。
 
 ### Testing
 

@@ -175,13 +175,7 @@ pub fn compile_to_jit_main_with_options(
     options: &CompilerOptions,
 ) -> Result<JitProgram, String> {
     let mut session = compiler_core::CompilerSession::new();
-    let mut program = session
-        .parse_program(source)
-        // DIAG-SYMBOL-NAME-LOWER: `ParserError` has a `Display` that
-        // says what went wrong and where; `{:?}` handed the reader the
-        // struct instead (`ParserError { kind: UnexpectedToken { .. },
-        // location: SourceLocation { file: FileId(0), .. } }`).
-        .map_err(|e| format!("parse error: {e}"))?;
+    let mut program = crate::parse_for(&mut session, source, options)?;
 
     let core_modules_dirs =
         crate::resolve_core_modules_dirs(options.core_modules_dirs.clone());
@@ -190,14 +184,28 @@ pub fn compile_to_jit_main_with_options(
     // says `<input>` while the AOT run of the same program names the
     // file is a disagreement nobody meant to introduce.
     let display_name = options.input.display().to_string();
-    interpreter::check_typing_with_core_modules(
-        &mut program,
-        session.string_interner_mut(),
-        Some(source),
-        Some(&display_name),
-        &core_modules_dirs,
-    )
-    .map_err(|errors| format!("type-check failed:\n  {}", errors.join("\n  ")))?;
+    if options.diagnostics_json {
+        interpreter::check_typing_diagnostics(
+            &mut program,
+            session.string_interner_mut(),
+            Some(source),
+            Some(&display_name),
+            &core_modules_dirs,
+        )
+        .map_err(|diagnostics| {
+            interpreter::emit_diagnostics_json(&diagnostics);
+            format!("{} type-check error(s)", diagnostics.len())
+        })?;
+    } else {
+        interpreter::check_typing_with_core_modules(
+            &mut program,
+            session.string_interner_mut(),
+            Some(source),
+            Some(&display_name),
+            &core_modules_dirs,
+        )
+        .map_err(|errors| format!("type-check failed:\n  {}", errors.join("\n  ")))?;
+    }
 
     let contract_msgs = ContractMessages::intern(session.string_interner_mut());
     compile_program_to_jit(&program, session.string_interner(), &contract_msgs, options)

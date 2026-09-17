@@ -2034,7 +2034,7 @@ pub fn prepare_tests(
         Some(filename),
         options.core_modules_dirs,
     ) {
-        return Err(report_type_errors(&formatter, &diagnostics, false));
+        return Err(report_type_errors(&formatter, &diagnostics, options.diagnostics_json));
     }
     let cases = program
         .tests
@@ -2109,7 +2109,8 @@ pub fn effects_from_source(
 ) -> Result<Vec<FunctionEffects>, String> {
     let formatter = ErrorFormatter::new(source, filename);
     let mut session = compiler_core::CompilerSession::new();
-    let mut program = parse_reporting(&mut session, source, filename, &formatter, false)?;
+    let mut program =
+        parse_reporting(&mut session, source, filename, &formatter, options.diagnostics_json)?;
     let mut effects = Vec::new();
     if let Err(diagnostics) = check_typing_effects(
         &mut program,
@@ -2119,7 +2120,7 @@ pub fn effects_from_source(
         options.core_modules_dirs,
         &mut effects,
     ) {
-        return Err(report_type_errors(&formatter, &diagnostics, false));
+        return Err(report_type_errors(&formatter, &diagnostics, options.diagnostics_json));
     }
     Ok(effects)
 }

@@ -75,6 +75,37 @@ impl Drop for SpillGuard {
     }
 }
 
+/// Parse `source` the way `options` asks diagnostics to be reported.
+///
+/// With `--diagnostics=json` every syntax error goes to stderr as the
+/// same JSON array a type error does, and the caller gets a count back.
+/// Parse errors used to be the one failure that stayed text under the
+/// flag, so a reader of the JSON saw nothing at all for them.
+pub(crate) fn parse_for(
+    session: &mut compiler_core::CompilerSession,
+    source: &str,
+    options: &CompilerOptions,
+) -> Result<File, String> {
+    if options.diagnostics_json {
+        let name = options.input.to_string_lossy();
+        return session.parse_program_all_errors(source, &name).map_err(|errors| {
+            let diagnostics: Vec<_> = errors
+                .iter()
+                .map(|e| frontend::diagnostic::Diagnostic::from_parser_error(e, &name))
+                .collect();
+            interpreter::emit_diagnostics_json(&diagnostics);
+            format!("{} parse error(s)", errors.len())
+        });
+    }
+    session
+        .parse_program(source)
+        // DIAG-SYMBOL-NAME-LOWER: `ParserError` has a `Display` that
+        // says what went wrong and where; `{:?}` handed the reader the
+        // struct instead (`ParserError { kind: UnexpectedToken { .. },
+        // location: SourceLocation { file: FileId(0), .. } }`).
+        .map_err(|e| format!("parse error: {e}"))
+}
+
 /// Top-level entry point used by both the CLI and the integration tests.
 /// Returns `Ok(())` after writing whichever artefact `options.emit`
 /// requested. Errors are stringified for display.
@@ -87,13 +118,7 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
     // shares interner state with the interpreter and stays consistent with
     // every other consumer of the frontend.
     let mut session = compiler_core::CompilerSession::new();
-    let mut program = session
-        .parse_program(&source)
-        // DIAG-SYMBOL-NAME-LOWER: `ParserError` has a `Display` that
-        // says what went wrong and where; `{:?}` handed the reader the
-        // struct instead (`ParserError { kind: UnexpectedToken { .. },
-        // location: SourceLocation { file: FileId(0), .. } }`).
-        .map_err(|e| format!("parse error: {e}"))?;
+    let mut program = parse_for(&mut session, &source, options)?;
 
     // Reuse the interpreter's check_typing so trait conformance, allocator
     // bounds, and contract validation all run before codegen sees the AST.

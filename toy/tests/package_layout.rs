@@ -1187,3 +1187,105 @@ fn without_elapsed(bytes: &[u8]) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+// --- `--diagnostics=json`: the compiler's flag, handed through ---------
+
+/// The JSON array `--diagnostics=json` wrote to stderr. Anything else
+/// on stderr (the `toy: N error(s)` summary) is outside the brackets.
+fn diagnostics_in(stderr: &str) -> Vec<serde_json::Value> {
+    let (start, end) = (stderr.find('['), stderr.rfind(']'));
+    let (Some(start), Some(end)) = (start, end) else {
+        panic!("no JSON array on stderr:\n{stderr}");
+    };
+    match serde_json::from_str(&stderr[start..=end]) {
+        Ok(serde_json::Value::Array(items)) => items,
+        other => panic!("stderr is not one JSON array ({other:?}):\n{stderr}"),
+    }
+}
+
+#[test]
+fn every_command_that_checks_a_program_reports_type_errors_as_json() {
+    let pkg = scratch("diag_json_type");
+    write(&pkg, "main.t", "fn main() -> u64 {\n    val x: u64 = true\n    x\n}\n");
+    let path = pkg.0.to_str().unwrap();
+    // Each of these reaches the type checker by a different route —
+    // the compiler driver, the compiler JIT, the interpreter, the
+    // effect query, the test planner and `check`'s own call — and
+    // each used to be free to ignore the flag.
+    let commands: &[&[&str]] = &[
+        &["check"],
+        &["build"],
+        &["run", "--backend", "aot"],
+        &["run", "--backend", "jit"],
+        &["run", "--backend", "vm"],
+        &["effects"],
+        &["test"],
+        &["test", "--backend", "vm"],
+    ];
+    for command in commands {
+        let mut argv = command.to_vec();
+        argv.extend([path, "--diagnostics=json", "--no-warn-collisions"]);
+        let out = run(&pkg, &argv);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{argv:?} succeeded:\n{stderr}");
+        let diagnostics = diagnostics_in(&stderr);
+        assert!(
+            diagnostics.len() == 1 && diagnostics[0]["code"] == "E0001",
+            "{argv:?}:\n{stderr}"
+        );
+        assert!(!stderr.contains("Error at"), "{argv:?} also rendered text:\n{stderr}");
+    }
+}
+
+#[test]
+fn a_parse_error_is_json_too_on_the_compiled_lanes() {
+    // `compile_file` parsed with the single-error entry point and
+    // stringified it, so the flag never reached a syntax error there.
+    let pkg = scratch("diag_json_parse");
+    write(&pkg, "main.t", "fn main() -> u64 {\n    val x: u64 =\n}\n");
+    let path = pkg.0.to_str().unwrap();
+    for command in [["build", path], ["check", path]] {
+        let mut argv = command.to_vec();
+        argv.push("--diagnostics=json");
+        let out = run(&pkg, &argv);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let diagnostics = diagnostics_in(&stderr);
+        assert!(
+            !out.status.success() && diagnostics[0]["span"]["line"] == 3,
+            "{argv:?}:\n{stderr}"
+        );
+    }
+}
+
+#[test]
+fn a_runtime_error_is_reported_once() {
+    // `run_source` reports the failure itself; `toy` used to print the
+    // returned message again, which after `--diagnostics=json` put
+    // rendered text behind the JSON array.
+    let pkg = scratch("diag_json_runtime");
+    write(&pkg, "main.t", "fn main() -> u64 {\n    val a = 1u64\n    a - 2u64\n}\n");
+    let path = pkg.0.to_str().unwrap();
+    let out = run(&pkg, &["run", path, "--diagnostics", "json"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let diagnostics = diagnostics_in(&stderr);
+    assert!(
+        !out.status.success()
+            && diagnostics.len() == 1
+            && diagnostics[0]["message"].as_str().unwrap_or("").contains("underflow"),
+        "stderr:\n{stderr}"
+    );
+    assert_eq!(stderr.trim_end().chars().last(), Some(']'), "stderr:\n{stderr}");
+
+    let text = run(&pkg, &["run", path]);
+    let stderr = String::from_utf8_lossy(&text.stderr);
+    assert_eq!(stderr.matches("underflowed").count(), 1, "stderr:\n{stderr}");
+}
+
+#[test]
+fn an_unknown_diagnostics_format_is_refused() {
+    let pkg = scratch("diag_bad");
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    let out = run(&pkg, &["check", pkg.0.to_str().unwrap(), "--diagnostics=xml"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && stderr.contains("`text` or `json`"), "{stderr}");
+}

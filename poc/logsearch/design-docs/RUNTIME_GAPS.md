@@ -226,6 +226,7 @@ STDLIB-COLLECTIONS の交差点)。
 | クロージャ捕捉 | AOT はスカラーしか捕捉できない。比較器にバッファを捕捉させられない | CLAUDE.md |
 | メソッド戻り値へのフィールドアクセス | `v.get(0u64).first` が AOT で不可 (`compiler MVP only supports field-access chains rooted at a bare identifier`)。`val` に束縛してから | 本設計 |
 | `Vec<(A, B)>` | タプル要素の Vec が AOT 不可 (`__builtin_sizeof: could not infer arg type at AOT`)。ペアは struct にする | todo |
+| 要素の解放がレーンで割れる | tree-walker は `Vec<String>` の要素を解放しない (他 3 レーンは解放する)。確保カウンタの答えがレーンに依存するので、定常性テストは canary でレーンを検出して測定を飛ばす (`tests/steady.t`) | todo (TREE-WALK-ELEM-DROP) |
 
 ---
 

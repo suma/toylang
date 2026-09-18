@@ -1010,7 +1010,17 @@ impl EvaluationContext<'_> {
             };
             drop(s_borrowed);
             let total = bytes.len() + 1; // +1 for NUL terminator
-            let addr = self.heap_manager.borrow_mut().alloc(total);
+            // Uncounted, like the IR VM's `alloc_str_bytes` and unlike
+            // a program's own `__builtin_heap_alloc`: the compiled
+            // backends keep literals in `.rodata`, so counting the
+            // buffer this engine needs to hand out an address made the
+            // allocation counters lane-dependent (MEM-COUNTER-INTERP-
+            // DRIFT settled that they report what the *program* asked
+            // for). It also never came back -- `as_ptr` hands out a
+            // view, nobody frees it -- so every call added `len + 1`
+            // live bytes and no steady-state promise could be checked
+            // on this engine.
+            let addr = self.heap_manager.borrow_mut().alloc_uncounted(total);
             if addr == 0 && total != 0 {
                 return Err(InterpreterError::InternalError(
                     "str_to_ptr: heap allocation failed".to_string(),

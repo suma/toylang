@@ -10,6 +10,21 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-09-18
+
+- **STR-PTR-UNCOUNTED — `str::as_ptr` が確保カウンタを動かさなくなった**
+  — tree-walker だけが `__builtin_str_to_ptr` の受け皿 (`len + 1` バイト)
+  を**プログラムの確保として数え、しかも誰も解放しない**ので、
+  `String::from_str` を呼ぶたびに live バイトが増えていた。IR VM は
+  最初から `alloc_uncounted` で、compiled レーンは `.rodata` なので
+  0 — カウンタの意味がレーンで割れていた
+  (MEM-COUNTER-INTERP-DRIFT が固定した定義に戻した)。tree-walker は
+  `--check` と consistency harness のオラクルなので、**メモリの約束を
+  オラクル側で検査できるようになった**。
+  `poc/logsearch` の定常性テストが見つけた (当初は
+  「`Vec<String>` の要素が解放されない」と読んでいたが、要素ではなく
+  文字列リテラルの受け皿だった)。
+
 ### 2026-09-17
 - **RANGE-FOR — `for i in r` が範囲値で動き、範囲値が 3 レーンに
   入った** — パーサは `in` の後の名前をイテレータとして desugar するので
@@ -1725,37 +1740,6 @@
   `function_index collision` panic が、候補を名指しする型エラーに
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
-
-- **TREE-WALK-ELEM-DROP — tree-walker がコンテナの要素を解放しない**
-  ★★ — `Vec<String>` を作って捨てると、Vec 自身のバッファは戻るが
-  **要素の `String` が live に残る**。AOT / JIT / IR VM は戻す。
-  4 レーンで意味論が割れているので、`--profile=mem` と確保カウンタ
-  (`__builtin_live_bytes`) の答えがレーンに依存する。tree-walker は
-  `--check` と consistency harness のオラクルなので、**メモリの
-  約束をオラクル側で検査できない**のが実害。
-
-  ```rust
-  fn churn(n: u64) -> u64 {
-      val m = __builtin_live_bytes()
-      var j = 0u64
-      while j < n {
-          var v: Vec<String> = Vec::new()
-          v.push(String::from_str("0123456789"))
-          j = j + 1u64
-      }
-      __builtin_live_bytes() - m
-  }
-  ```
-
-  10 回で **110 バイト** (要素 1 個ぶん × 回数) が残る。踏むには
-  **IR VM が lower できないプログラム**にして tree-walker に落とす
-  必要がある (`poc/logsearch` の `query::parse_query` を呼ぶ形で再現。
-  IR VM のままだと 0 と出る)。`glue_drop` の `Vec` 分岐は
-  `typed_read(addr, i * elem_size)` で要素を辿るので、compound 要素の
-  置き方と読み方が食い違っているのが疑い
-  (`interpreter/src/evaluation/mod.rs`)。
-  見つけたのは `poc/logsearch` の定常性テスト (2026-09-18) で、
-  そちらは canary で**レーンを検出して測定を飛ばしている**。
 
 - **RANGE-TYPE-ANNOTATION — `Range<u64>` と書いた型が範囲値の型と
   一致しない** ★ — `fn f(r: Range<u64>)` に `0u64..3u64` を渡すと

@@ -232,3 +232,30 @@ fn generic_raii_drop_on_early_return_round_trip() {
     "#;
     assert_consistent(src, "generic_raii_drop_on_early_return_round_trip");
 }
+
+#[test]
+fn a_str_literal_address_is_not_the_programs_allocation() {
+    // MEM-COUNTER-INTERP-DRIFT: the counters report what the program
+    // asked the allocator for. A `str` lives in `.rodata` on the
+    // compiled lanes, so handing out its address costs nothing there —
+    // but the tree-walker has to materialise the bytes somewhere, and
+    // it used to charge the program `len + 1` for every `as_ptr`,
+    // never returning it. `String::from_str` goes through exactly that
+    // path, so a loop of them drifted up on one lane and stayed flat
+    // on the others, and no steady-state promise could be checked
+    // against the tree-walker (which is the `--check` oracle).
+    let src = r#"
+        fn main() -> u64 {
+            val before = __builtin_live_bytes()
+            var i = 0u64
+            while i < 4u64 {
+                val s = String::from_str("0123456789")
+                i = i + 1u64
+            }
+            val after = __builtin_live_bytes()
+            if after != before { return 1u64 }
+            7u64
+        }
+    "#;
+    assert_consistent(src, "a_str_literal_address_is_not_the_programs_allocation");
+}

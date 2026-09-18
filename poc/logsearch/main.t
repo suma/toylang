@@ -1539,3 +1539,115 @@ test "retention drops the segments that fell out of the window" {
     assert_eq(cmd_retain(arch, 36500u64), 0u64)
     assert_eq(e2e_segments(arch), 0u64)
 }
+
+# 健全なアーカイブしか通らないなら、`verify` は「読めた」としか
+# 言っていない。**壊れているものを壊れていると言う**ところまでが
+# このコマンドの仕事なので、1 バイト書き換えた写しを食わせる。
+# (ブロック単位の拒否そのものは `tests/segment_format.t` の担当。
+# ここは `verify` の**報告と終了コード**。)
+fn e2e_first_segment(spec: str) -> String {
+    var segs: Vec<String> = Vec::new()
+    mount::segments_of(spec, &mut segs)
+    if segs.size() == 0u64 { panic("e2e: no segment under {spec}") }
+    val first: String = segs.get(0u64)
+    first
+}
+
+# `path` の `at` バイト目を 1 ビット反転して書き戻す。
+unsafe fn e2e_flip_byte(path: &String, at: u64) {
+    val ps = path.to_str()
+    val sized = fs::file_size(ps)
+    val n: u64 = match sized {
+        Result::Ok(v) => v,
+        Result::Err(e) => { panic("e2e: cannot size {ps}: {e}") }
+    }
+    var buf = ByteWriter::with_capacity(n + 16u64)
+    buf.reserve(n)
+    val room = buf.room()
+    val window: Span<u8> = match room {
+        Option::Some(s) => s,
+        Option::None => { panic("e2e: cannot hold {n} bytes") }
+    }
+    val got = io::read_file_into(ps, window)
+    val read: u64 = match got {
+        Result::Ok(v) => v,
+        Result::Err(e) => { panic("e2e: cannot read {ps}: {e}") }
+    }
+    buf.set_len(read)
+
+    var out = ByteWriter::with_capacity(read + 16u64)
+    var i = 0u64
+    while i < read {
+        val b = buf.byte_at(i)
+        if i == at { out.put_u8(b ^ 1u8) } else { out.put_u8(b) }
+        i = i + 1u64
+    }
+    val sp = out.span()
+    match sp {
+        Option::Some(bytes) => {
+            val wrote = io::write_file_bytes(ps, bytes)
+            match wrote {
+                Result::Ok(k) => { }
+                Result::Err(e) => { panic("e2e: cannot write {ps}: {e}") }
+            }
+        }
+        Option::None => { panic("e2e: empty segment") }
+    }
+}
+
+test "verify says so when a segment's bytes changed under it" {
+    val logs = e2e_logs("build/e2e-bad", 120u64)
+    val arch = "build/e2e-bad-arch"
+    e2e_wipe(arch)
+    assert_eq(cmd_archive(logs.to_str(), arch, 100u64), 0u64)
+    assert_eq(cmd_verify(arch), 0u64)
+
+    # レコード表の途中を 1 ビット。ヘッダは無傷なので、セグメントは
+    # 開けるが中身が合わない — 「読めない」ではなく「合わない」を
+    # 見つけられるかが要点。
+    val seg = e2e_first_segment(arch)
+    val opened = File::open(seg.to_str())
+    var at = 0u64
+    match opened {
+        Result::Ok(f) => {
+            var scratch = ByteWriter::with_capacity(4096u64)
+            val h = segfile::head_of(&f, &mut scratch)
+            assert(h.ok, "the fixture segment should read")
+            at = h.recs_off + h.recs_len / 2u64
+        }
+        Result::Err(e) => { panic("cannot open {seg.to_str()}: {e}") }
+    }
+    e2e_flip_byte(&seg, at)
+
+    assert_eq(cmd_verify(arch), 1u64)
+}
+
+# 残りのサブコマンド。`scan` は書き出す前のログを、`fields` は
+# 値の分布を、`object` は 1 つの値の素性を答える。どれも
+# **索引と全走査の 2 経路**を持つか、引数の検査を持つので、
+# 「通る形」と「断る形」を 1 つずつ踏む。
+test "scan, fields and object answer about what was archived" {
+    val logs = e2e_logs("build/e2e-rest", 120u64)
+    val arch = "build/e2e-rest-arch"
+    e2e_wipe(arch)
+    assert_eq(cmd_scan(logs.to_str(), 10u64), 0u64)
+    assert_eq(cmd_archive(logs.to_str(), arch, 100u64), 0u64)
+
+    # `fields` は索引版と全走査版の両方が同じ道を通る
+    # (答えが一致することは `tests/index_scan.t` の担当)。
+    assert_eq(cmd_fields_indexed(arch, "status", 5u64), 0u64)
+    assert_eq(cmd_fields(arch, "status", 5u64), 0u64)
+    # ラベルの形をしていないキーは索引版が断る。
+    assert_eq(cmd_fields_indexed(arch, "Status", 5u64), 1u64)
+    # 全走査版が知っているのは 9 つの名前だけ。
+    assert_eq(cmd_fields(arch, "app", 5u64), 1u64)
+
+    # 1 つの値の素性。素材のステータスは 200 と 204 だけなので、
+    # **在る値**と**無い値**で答えが分かれることまで見る
+    # ("not in this archive" は 1 で返る)。
+    assert_eq(cmd_object(arch, "status=200"), 0u64)
+    assert_eq(cmd_object(arch, "status=404"), 1u64)
+    # 2 つ以上のトークンは断る — 落とした方が答えに見えてしまう。
+    assert_eq(cmd_object(arch, "status=200 method=GET"), 1u64)
+    assert_eq(cmd_object(arch, "just-some-text"), 1u64)
+}

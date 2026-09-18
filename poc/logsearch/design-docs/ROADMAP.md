@@ -26,17 +26,20 @@
 | **検索** `query` / `search` | 動く | `grep` と件数一致、traversal はオラクルと一致 |
 | **カタログ / マウント / 保持期限** | 動く | 2 マウント (8M / 32M) に 12 セグメント・444,549 レコードを配置。使用率で 2 本 / 10 本に分かれた |
 | **HTTP サーバ / Web UI** | 動く | `/` `/v1/query` (3 形式) `/v1/ingest` `/v1/labels` `/v1/stats` `/healthz` と管理系。1000 件 280 KB の応答が部分書き込みを跨いで届く。同時接続は 1 |
-| **テスト** | 133 件 + プロパティ 3 本 | `toy test poc/logsearch` が 0.6 秒 (AOT、キャッシュ有り)。内訳は下記 |
+| **テスト** | 135 件 + プロパティ 3 本 | `toy test poc/logsearch` が 0.6 秒 (AOT、キャッシュ有り)。内訳は下記 |
 
 ### 次にやるなら
 
-1. **テスト** — 133 件。内訳は `server` 25 / `http` 23 / `lsz` 14 /
+1. **テスト** — 135 件。内訳は `server` 25 / `http` 23 / `lsz` 14 /
    `catalog` 11 / `search_query` 9 / `ontology_index` 9 / `mount` 8 /
    `segment_format` 7 / `query` 7 / `ontology_extract` 5 / `steady` 5 /
-   `main` 4 / `index_scan` 3 / `catalog_rebuild` 3。
+   `main` 6 / `index_scan` 3 / `catalog_rebuild` 3。
    **`main.t` のサブコマンドも通しで走る** (2026-09-18) — ログを読む →
    セグメントを書く → 検証する → 引く → 台帳を作り直す → 保持期限で
    捨てる、の 1 本道と、「ログが 1 つも無いディレクトリは失敗で返る」。
+   加えて **`verify` が壊れたセグメントを見つける**こと (1 バイト
+   反転した写しで終了コード 1)、`scan` / `fields` (索引版と全走査版) /
+   `object` が通る形と断る形の両方で答えること。
    `test` ブロックが `main.t` に在るのは、サブコマンドが関数であり、
    `toy test` が entry も拾うため。**残りは search / segfile と、クエリ実行そのもの**
    (`query` は時刻境界の解釈だけ)。`.seg` 全体のゴールデンもまだ無い

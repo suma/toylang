@@ -179,8 +179,9 @@ method を持つ struct ならそれに dispatch する。残る問題は逆で�
 **持たない**型を渡すと型検査を通って実行時に壊れた診断で落ちること
 (同文書の C0)。
 
-**P3 並行性** — 最小形は `spawn(fn () -> ())` + join ハンドル + channel
-(todo CONCURRENCY)。下地は 2 つある: `toylang_rt` の `ThreadState` が
+**P3 並行性** — **設計は [`CONCURRENCY.md`](CONCURRENCY.md) (2026-09-18)**。
+そこでの結論は「最初に入れるのは `spawn` ではなくデータ並列」で、以下は
+その前に書いた見立てである。下地は 2 つある: `toylang_rt` の `ThreadState` が
 pthread_key TLS で per-thread 化済み (出力シンクも)、
 EFFECT_SYSTEM.md「この先」に **「region を跨がない値 = 送れる値」という
 `Send` 相当の定義**の見通しがある。本体は move / Drop モデルとの接合で、

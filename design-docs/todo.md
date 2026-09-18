@@ -2066,7 +2066,9 @@
   `Stopwatch` だけにした**
 - **並行性 (CONCURRENCY)** は分野としては stdlib だが、本体が move /
   Drop モデルとの接合なので「検討中の機能」節に置いてある (★★★)。
-  RUNTIME_LIBRARY P3 も「設計文書を別に取ってから着手」と同じ判断
+  RUNTIME_LIBRARY P3 も「設計文書を別に取ってから着手」と同じ判断。
+  **設計文書は 2026-09-18 に取った** →
+  [`CONCURRENCY.md`](CONCURRENCY.md)
 
 - **io.t の範囲外 `""` 既定の厳格化** ★ — `arg(i)` / `env_name(i)` /
   `env_value(i)` は範囲外で `""` を返す (ドキュメント化済みの既定)。
@@ -2369,11 +2371,15 @@
   でも落ちるので**サーバは作らない**。スナップショットの方は 1 テスト 1
   プロセスのテスト群にも効くので、INCREMENTAL-COMPILATION 側の候補
 * 並行性 (CONCURRENCY) ★★★ — **言語コアで唯一の完全な空白** (2026-08-20 まで
-  仕様にもこの todo にも項目が無かった)。最小形は `spawn(fn () -> ())` + join ハンドル +
-  チャネル。ランタイム側の下地は一部ある (`toylang_rt` の出力シンクは
-  `pthread_key` TLS で per-thread 化済み)。ただし本体は「共有可変性を現行の
-  move / Drop モデルにどう載せるか」で、`Send` 相当の判定を決めるまで
-  着手できない。設計フェーズを別に取る前提。
+  仕様にもこの todo にも項目が無かった)。**設計は
+  [`CONCURRENCY.md`](CONCURRENCY.md) (2026-09-18)** にある。要点は 3 つ:
+  (a) 最初に入れるのは `spawn` ではなく**データ並列** — ハンドルもチャネルも
+  持たない形なら `Send` 相当の判定が要らず、tree-walker では逐次に走って
+  同じ答えになる、(b) `Send` の定義はデータ並列を 1 回出荷してから決める
+  (実プログラムが 1 本も無いまま型の話を進めない)、(c) **サーバの同時接続は
+  並行性の需要ではない** — `poc/logsearch` の 1 本という制限は
+  「容器から取り出したハンドルの drop glue が fd を閉じる」別の穴だった。
+  着手条件は CONCURRENCY.md §6。
 * データ指向の配列 layout (DOD) ★★ — Phase 0 (`soa [T; N]` + `ps[i].f`
   単列 shortcut) と Phase 2 (`soa Vec<T>` → `SoaVec<T>`) は 2026-08-30、
   Phase 0.5 (列 tight pack) / Phase 1 (列の窓 `Column<T>`) /

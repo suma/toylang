@@ -1375,3 +1375,167 @@ fn main() -> u64 {
     val d_limit = arg_u64(1u64, 1000000u64)
     cmd_scan(mode, d_limit)
 }
+
+# ---------------------------------------------------------------------
+# サブコマンドの通し検査
+#
+# モジュール単位のテストは `tests/` に在るが、**`main.t` の
+# サブコマンド自身**はここまで手で叩いて確かめていた。1 本の道
+# (ログを読む → セグメントを書く → 検証する → 引く → 台帳を直す →
+# 保持期限で捨てる) が繋がっていることは、部品が全部通っていても
+# 言えない — 繋ぎ目はここにしか無いため。
+#
+# `test` ブロックが `main.t` に在るのは、サブコマンドが関数だから
+# である (`toy test` はパッケージの entry も拾う)。
+#
+# 素材は合成で、アドレスはプライベート帯だけ (CLAUDE.md)。
+
+fn e2e_line(text: str, out: &mut String) {
+    out.push_str(text)
+    out.push(10u8)
+}
+
+# apache 行と syslog 行を混ぜる。日付は 2026-09-03 で固定なので、
+# 保持期限の検査が「今から見て古い」を安定して踏める。
+fn e2e_fixture(n: u64) -> String {
+    var s = String::new()
+    var i = 0u64
+    while i < n {
+        e2e_line("10.0.0.{1u64 + i % 5u64} - - [03/Sep/2026:12:00:{i % 60u64} +0000] \u{22}GET /p{i % 7u64} HTTP/1.1\u{22} {200u64 + 4u64 * (i % 2u64)} {i} \u{22}-\u{22} \u{22}curl/8.0\u{22}", &mut s)
+        i = i + 1u64
+    }
+    e2e_line("2026-09-03T12:30:00Z web01 cron[5]: job ran", &mut s)
+    s
+}
+
+# 再帰削除。`fs` は `remove_dir_all` を持たない (意図的に —
+# 要る人が `list_dir` + `remove_file` で書く形) ので、ここで書く。
+fn e2e_wipe(path: str) {
+    if fs::is_dir(path) {
+        val listed = fs::list_dir(path)
+        match listed {
+            Result::Ok(names) => {
+                var i = 0u64
+                while i < names.size() {
+                    val nm: String = names.get(i)
+                    e2e_wipe("{path}/{nm.to_str()}")
+                    i = i + 1u64
+                }
+            }
+            Result::Err(e) => { }
+        }
+        val gone = fs::remove_dir(path)
+        match gone {
+            Result::Ok(u) => { }
+            Result::Err(e) => { panic("e2e: cannot remove {path}: {e}") }
+        }
+    } elif fs::is_file(path) {
+        val gone = fs::remove_file(path)
+        match gone {
+            Result::Ok(u) => { }
+            Result::Err(e) => { panic("e2e: cannot remove {path}: {e}") }
+        }
+    }
+}
+
+# 空のログディレクトリを作り、1 ファイル書く。返すのはそのディレクトリ。
+fn e2e_logs(stem: str, lines: u64) -> String {
+    val dir = "{stem}-logs"
+    e2e_wipe(dir)
+    val made = fs::mkdir_all(dir)
+    match made {
+        Result::Ok(u) => { }
+        Result::Err(e) => { panic("e2e: cannot make {dir}: {e}") }
+    }
+    val body = e2e_fixture(lines)
+    val wrote = io::write_file("{dir}/app.log", body.to_str())
+    match wrote {
+        Result::Ok(k) => { }
+        Result::Err(e) => { panic("e2e: cannot write the fixture log: {e}") }
+    }
+    val out = String::from_str(dir)
+    out
+}
+
+fn e2e_segments(spec: str) -> u64 {
+    var segs: Vec<String> = Vec::new()
+    mount::segments_of(spec, &mut segs)
+    segs.size()
+}
+
+# ---------------------------------------------------------------------
+
+test "archive, verify and query run as one road" {
+    val logs = e2e_logs("build/e2e-road", 200u64)
+    val arch = "build/e2e-road-arch"
+    e2e_wipe(arch)
+
+    assert_eq(cmd_archive(logs.to_str(), arch, 100u64), 0u64)
+    assert(e2e_segments(arch) > 0u64, "archiving should leave a segment behind")
+    # 書いたものを読み返して CRC まで見る。
+    assert_eq(cmd_verify(arch), 0u64)
+    # 索引で引く形と本文を舐める形、どちらも 0 で返る (件数は
+    # `tests/search_query.t` の担当。ここは道が繋がっていること)。
+    assert_eq(cmd_query(arch, "status=404 limit=0"), 0u64)
+    assert_eq(cmd_query(arch, "job limit=0"), 0u64)
+    # 台帳もこの 1 本の道の一部で、archive が書く。
+    val crc = Crc32::new()
+    val c = catalog::load(arch, &crc)
+    assert_eq(c.size(), e2e_segments(arch))
+    assert(c.total_records() >= 201u64, "the catalog should count every record")
+}
+
+# ログが 1 つも無いディレクトリは**失敗で返る**。0 を返すと、
+# cron から呼んだ人が「何も無いのに成功した」と読む。
+test "archiving a directory with no logs is not a success" {
+    val dir = "build/e2e-empty-logs"
+    e2e_wipe(dir)
+    val made = fs::mkdir_all(dir)
+    match made {
+        Result::Ok(u) => { }
+        Result::Err(e) => { panic("cannot make {dir}: {e}") }
+    }
+    assert_eq(cmd_archive(dir, "build/e2e-empty-arch", 10u64), 1u64)
+}
+
+# 台帳を丸ごと捨てても `catalog repair` が作り直す。カタログが
+# キャッシュであるという主張は、この 1 コマンドで支えられている。
+test "a repair rebuilds the catalog after the metadata is thrown away" {
+    val logs = e2e_logs("build/e2e-repair", 120u64)
+    val arch = "build/e2e-repair-arch"
+    e2e_wipe(arch)
+    assert_eq(cmd_archive(logs.to_str(), arch, 100u64), 0u64)
+    val segs = e2e_segments(arch)
+    assert(segs > 0u64, "there should be something to rebuild from")
+
+    e2e_wipe("{arch}/meta")
+    val crc = Crc32::new()
+    val empty = catalog::load(arch, &crc)
+    assert(empty.is_empty(), "the catalog should be gone")
+    # セグメントは残っているので、クエリは台帳が無くても答えられる。
+    assert_eq(e2e_segments(arch), segs)
+
+    assert_eq(cmd_catalog(arch, "repair"), 0u64)
+    val back = catalog::load(arch, &crc)
+    assert_eq(back.size(), segs)
+}
+
+# 保持期限はセグメント単位。素材は 2026-09-03 なので、窓を 1 日に
+# すれば全部が古い。**ファイルが消え、台帳からも消える**こと。
+test "retention drops the segments that fell out of the window" {
+    val logs = e2e_logs("build/e2e-retain", 120u64)
+    val arch = "build/e2e-retain-arch"
+    e2e_wipe(arch)
+    assert_eq(cmd_archive(logs.to_str(), arch, 100u64), 0u64)
+    assert(e2e_segments(arch) > 0u64, "there should be something to drop")
+
+    assert_eq(cmd_retain(arch, 1u64), 0u64)
+    assert_eq(e2e_segments(arch), 0u64)
+    val crc = Crc32::new()
+    val c = catalog::load(arch, &crc)
+    assert(c.is_empty(), "the catalog should not keep rows for files that are gone")
+
+    # 窓の広い保持は何も落とさない (2 回目が冪等であること)。
+    assert_eq(cmd_retain(arch, 36500u64), 0u64)
+    assert_eq(e2e_segments(arch), 0u64)
+}

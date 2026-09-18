@@ -964,6 +964,109 @@ impl FieldTally {
 # open-addressing table. A linear scan over the values seen so far
 # was the first attempt and it is quadratic: for `ip` (11,293
 # distinct) it cost more than the full scan the index replaces.
+# Every stream (label set) the segments hold, folded across them.
+#
+# `/v1/streams` is the caller: the UI asks for it whenever somebody
+# picks a label, so the work is a section read per segment and no
+# frame expansion at all (DATA_MODEL.md section 3, the table is
+# written while archiving).
+pub struct StreamTally {
+    texts: Vec<String>,
+    counts: Vec<u64>,
+    ts_min: Vec<i64>,
+    ts_max: Vec<i64>,
+    segments: u64,
+}
+
+impl StreamTally {
+    pub fn new() -> Self {
+        val t: Vec<String> = Vec::new()
+        val c: Vec<u64> = Vec::new()
+        val a: Vec<i64> = Vec::new()
+        val b: Vec<i64> = Vec::new()
+        StreamTally { texts: t, counts: c, ts_min: a, ts_max: b, segments: 0u64 }
+    }
+    pub fn size(&self) -> u64 { self.texts.size() }
+}
+
+pub fn streams(segs: &Vec<String>, crc: &Crc32) -> StreamTally {
+    var out = StreamTally::new()
+    var head_buf = ByteWriter::with_capacity(segfile::data_at() + 64u64)
+    var raw = ByteWriter::with_capacity(1048576u64)
+    var ssec = ByteWriter::with_capacity(1048576u64)
+
+    var si: u64 = 0u64
+    while si < segs.size() {
+        val seg_path: String = segs.get(si)
+        val seg_str = seg_path.to_str()
+        si = si + 1u64
+        val opened_f = File::open(seg_str)
+        match opened_f {
+            Result::Ok(f) => {
+                val h = segfile::head_of(&f, &mut head_buf)
+                var got = h.ok && h.has_streams()
+                if got {
+                    if !segfile::load_block(&f, h.strs_off, h.strs_len, crc, &mut raw, &mut ssec) { got = false }
+                }
+                if got {
+                    out.segments = out.segments + 1u64
+                    val sw = ssec.span()
+                    match sw {
+                        Option::Some(sraw) => {
+                            val rows = archive::streams_of(sraw, ssec.len())
+                            fold_streams(&rows, &mut out)
+                        }
+                        Option::None => { }
+                    }
+                }
+            }
+            Result::Err(e) => { }
+        }
+    }
+    out
+}
+
+# Streams are few, so the fold is a linear search over what is held
+# so far -- the quadratic blow-up that made `tally` use a hash table
+# needs thousands of distinct values, and a label set per sender is
+# not that.
+fn fold_streams(rows: &StreamRows, out: &mut StreamTally) {
+    var i: u64 = 0u64
+    while i < rows.size() {
+        val text: String = rows.texts.get(i)
+        val count: u64 = rows.counts.get(i)
+        val lo: i64 = rows.ts_min.get(i)
+        val hi: i64 = rows.ts_max.get(i)
+        var at = out.texts.size()
+        var found = false
+        var k: u64 = 0u64
+        while k < out.texts.size() && !found {
+            val have: String = out.texts.get(k)
+            if have.eq(&text) {
+                at = k
+                found = true
+            }
+            k = k + 1u64
+        }
+        if found {
+            val c: u64 = out.counts.get(at)
+            out.counts.set(at, c + count)
+            if lo <= hi {
+                val was_lo: i64 = out.ts_min.get(at)
+                val was_hi: i64 = out.ts_max.get(at)
+                if lo < was_lo { out.ts_min.set(at, lo) }
+                if hi > was_hi { out.ts_max.set(at, hi) }
+            }
+        } else {
+            out.texts.push(text.clone())
+            out.counts.push(count)
+            out.ts_min.push(lo)
+            out.ts_max.push(hi)
+        }
+        i = i + 1u64
+    }
+}
+
 pub fn tally(segs: &Vec<String>, prefix: str, keys_only: bool,
              crc: &Crc32) -> FieldTally {
     var out = FieldTally::new()

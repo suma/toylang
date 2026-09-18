@@ -551,6 +551,11 @@ pub fn route(spec: str, b: Span<u8>, r: &Request, local: bool,
         return
     }
 
+    if r.is_get() && path_is(b, r, "/v1/streams") {
+        streams_route(spec, b, r, alive, out)
+        return
+    }
+
     if r.is_get() && path_is(b, r, "/v1/labels") {
         labels_route(spec, b, r, alive, out)
         return
@@ -765,6 +770,132 @@ fn labels_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
     http::begin_response(out, 200u64, "application/json", body.len(), alive)
     http::end_headers(out)
     out.put_all(&body)
+}
+
+# `GET /v1/streams` -- the label sets that have been seen, and how
+# many records each carries.
+#
+# A stream is a label set (DATA_MODEL.md section 3), which the term
+# dictionary cannot answer: it holds pairs, and "how many records
+# carry *both* `app=api` and `level=error`" is not a pair. The archive
+# writes a table of its own while building the segment (kind 9), so
+# this reads one section per segment and expands nothing.
+#
+# `labels` is an object, the way HTTP_API.md section 2 spells it, so
+# a client can index it. A record with no labels at all is a stream
+# too -- `{}` -- because dropping it would make the counts stop
+# adding up to the number of records.
+fn streams_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
+                 out: &mut ByteWriter) {
+    var limit: u64 = 200u64
+    var lbuf = ByteWriter::with_capacity(32u64)
+    if http::query_param(b, r.query_at, r.query_len, "limit", &mut lbuf) {
+        val got = number_of(&lbuf)
+        var parsed: u64 = 0u64
+        match got {
+            Result::Ok(n) => { parsed = n }
+            Result::Err(e) => { parsed = 0u64 }
+        }
+        if parsed == 0u64 || parsed > 1000u64 {
+            http::respond_error(out, 400u64, "bad parameter",
+                                "limit: a number from 1 to 1000", alive)
+            return
+        }
+        limit = parsed
+    }
+
+    var ms = MountSet::new()
+    var usable = mount::open_spec(spec, &mut ms)
+    if usable { usable = mount::readable(&ms) > 0u64 }
+    if !usable {
+        http::respond_error(out, 503u64, "no readable mount", "", alive)
+        return
+    }
+    var segs: Vec<String> = Vec::new()
+    mount::segments_in(&ms, &mut segs)
+
+    val crc = Crc32::new()
+    val tal = query::streams(&segs, &crc)
+
+    # Biggest first, like the label list: the stream with a million
+    # records is the one being looked for.
+    var order: Vec<Tally> = Vec::new()
+    var i: u64 = 0u64
+    while i < tal.size() {
+        val c: u64 = tal.counts.get(i)
+        val one = Tally { count: c, idx: i }
+        order.push(one)
+        i = i + 1u64
+    }
+    order.sort()
+
+    var body = ByteWriter::with_capacity(4096u64)
+    body.put_str("{{\u{22}streams\u{22}:[")
+    val total = order.size()
+    var shown: u64 = 0u64
+    var k: u64 = 0u64
+    while k < total && shown < limit {
+        if shown > 0u64 { body.put_u8(',') }
+        val t: Tally = order.get(total - 1u64 - k)
+        val text: String = tal.texts.get(t.idx)
+        body.put_str("{{\u{22}labels\u{22}:")
+        put_label_object(&mut body, &text)
+        body.put_str(",\u{22}records\u{22}:")
+        body.put_str("{t.count}")
+        val lo: i64 = tal.ts_min.get(t.idx)
+        val hi: i64 = tal.ts_max.get(t.idx)
+        if lo <= hi {
+            val from = DateTime::from_unix(lo)
+            val until = DateTime::from_unix(hi)
+            body.put_str(",\u{22}ts_min\u{22}:\u{22}")
+            body.put_str(time::format(from, "%Y-%m-%dT%H:%M:%SZ"))
+            body.put_str("\u{22},\u{22}ts_max\u{22}:\u{22}")
+            body.put_str(time::format(until, "%Y-%m-%dT%H:%M:%SZ"))
+            body.put_str("\u{22}")
+        }
+        body.put_str("}}")
+        shown = shown + 1u64
+        k = k + 1u64
+    }
+    val segs_read = tal.segments
+    body.put_str("],\u{22}distinct\u{22}:")
+    body.put_str("{total}")
+    body.put_str(",\u{22}shown\u{22}:")
+    body.put_str("{shown}")
+    body.put_str(",\u{22}segments\u{22}:")
+    body.put_str("{segs_read}")
+    body.put_str("}}\n")
+
+    http::begin_response(out, 200u64, "application/json", body.len(), alive)
+    http::end_headers(out)
+    out.put_all(&body)
+}
+
+# `key=value key=value` as a JSON object. The text comes from the
+# segment, so the values are whatever was logged -- quoting is
+# `put_json_string`'s job, not this one's.
+fn put_label_object(body: &mut ByteWriter, text: &String) {
+    body.put_u8('{')
+    val n = text.len()
+    var at: u64 = 0u64
+    var written: u64 = 0u64
+    while at < n {
+        var eq = at
+        while eq < n && text.get(eq) != '=' { eq = eq + 1u64 }
+        var stop = eq
+        while stop < n && text.get(stop) != ' ' { stop = stop + 1u64 }
+        if eq < n && stop > eq + 1u64 {
+            if written > 0u64 { body.put_u8(',') }
+            val key = text.substring(at, eq)
+            val value = text.substring(eq + 1u64, stop)
+            http::put_json_string(body, &key)
+            body.put_u8(':')
+            http::put_json_string(body, &value)
+            written = written + 1u64
+        }
+        at = stop + 1u64
+    }
+    body.put_u8('}')
 }
 
 # `GET /v1/query` -- the same search the terminal runs, rendered for a

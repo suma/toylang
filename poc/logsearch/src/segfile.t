@@ -41,6 +41,8 @@ pub fn kind_links() -> u64 { 7u64 }
 # ONTOLOGY O1: per-term first_seen / last_seen. A reader that does not
 # know this kind skips it, so segments written before it still load.
 pub fn kind_objects() -> u64 { 8u64 }
+# The stream table (DATA_MODEL.md section 3): one row per label set.
+pub fn kind_streams() -> u64 { 9u64 }
 
 # Everything the header and the directory say, in one value.
 #
@@ -69,6 +71,8 @@ pub struct SegHead {
     links_len: u64,
     objs_off: u64,
     objs_len: u64,
+    strs_off: u64,
+    strs_len: u64,
 }
 
 impl SegHead {
@@ -83,11 +87,13 @@ impl SegHead {
             terms_off: 0u64, terms_len: 0u64,
             links_off: 0u64, links_len: 0u64,
             objs_off: 0u64, objs_len: 0u64,
+            strs_off: 0u64, strs_len: 0u64,
         }
     }
 
     pub fn has_terms(&self) -> bool { self.terms_len > 0u64 }
     pub fn has_links(&self) -> bool { self.links_len > 0u64 }
+    pub fn has_streams(&self) -> bool { self.strs_len > 0u64 }
     pub fn has_objects(&self) -> bool { self.objs_len > 0u64 }
     pub fn has_records(&self) -> bool { self.recs_len > 0u64 }
 }
@@ -163,6 +169,7 @@ pub fn head_of(f: &File, scratch: &mut ByteWriter) -> SegHead {
                     if k == kind_terms() { h.terms_off = off  h.terms_len = len }
                     if k == kind_links() { h.links_off = off  h.links_len = len }
                     if k == kind_objects() { h.objs_off = off  h.objs_len = len }
+                    if k == kind_streams() { h.strs_off = off  h.strs_len = len }
                     i = i + 1u64
                 }
                 if version == seg_version() { h.ok = true }

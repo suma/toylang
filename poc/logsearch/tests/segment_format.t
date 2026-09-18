@@ -156,10 +156,12 @@ test "the pinned segment reads back with every section in place" {
             assert(h.has_terms(), "term section")
             assert(h.has_links(), "link section")
             assert(h.has_objects(), "object section")
+            assert(h.has_streams(), "stream section")
             # 節は header の後ろに在り、互いに重ならない。
             assert(h.frames_off >= segfile::data_at(), "frames start after the directory")
             assert(h.recs_off >= h.frames_off + h.frames_len, "records follow the frames")
             assert(h.terms_off >= h.recs_off + h.recs_len, "terms follow the records")
+            assert(h.strs_off >= h.terms_off + h.terms_len, "streams follow the terms")
             # 時刻の範囲は日付のある 4 行から取り、日付の無い行は動かさない。
             assert(h.ts_min < h.ts_max, "the segment should span time")
             assert_eq(h.n_frames, 1u64)

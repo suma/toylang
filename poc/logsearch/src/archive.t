@@ -63,6 +63,80 @@ pub fn mix64(x: u64) -> u64 {
     z ^ (z >> 31u64)
 }
 
+# The label set of one record, spelled out: `key=value` pairs
+# separated by a space, in the order the record carries them (the
+# reserved `host` and `tag` first, then the leading label run). Only
+# called when a stream is seen for the first time.
+#
+# A pair the record spells twice -- a syslog header host and a
+# `host=` label naming the same host -- is written once, because the
+# stream's identity dropped it too.
+fn stream_text_of(w: Span<u8>, rec: &ParsedLine) -> String {
+    var out = String::new()
+    var seen: Vec<u64> = Vec::new()
+    if rec.has_host() {
+        val h = extract::hash_term("host", w, rec.host_start(), rec.host_len())
+        seen.push(h)
+        out.push_str("host=")
+        push_span_text(&mut out, w, rec.host_start(), rec.host_len())
+    }
+    if rec.tag_len() > 0u64 {
+        val h = extract::hash_term("tag", w, rec.tag_start(), rec.tag_len())
+        var dup = false
+        var i: u64 = 0u64
+        while i < seen.size() && !dup {
+            val have: u64 = seen.get(i)
+            if have == h { dup = true }
+            i = i + 1u64
+        }
+        if !dup {
+            seen.push(h)
+            if out.len() > 0u64 { out.push(32u8) }
+            out.push_str("tag=")
+            push_span_text(&mut out, w, rec.tag_start(), rec.tag_len())
+        }
+    }
+    val from = rec.labels_start()
+    val end = from + rec.labels_len()
+    var p = from
+    while p < end {
+        var k = p
+        while k < end && w.get(k) != '=' { k = k + 1u64 }
+        var v = k + 1u64
+        if v > end { v = end }
+        var stop = v
+        while stop < end && w.get(stop) != ' ' { stop = stop + 1u64 }
+        if k < end && stop > v {
+            val h = extract::hash_term_span(w, p, k - p, v, stop - v)
+            var dup = false
+            var i: u64 = 0u64
+            while i < seen.size() && !dup {
+                val have: u64 = seen.get(i)
+                if have == h { dup = true }
+                i = i + 1u64
+            }
+            if !dup {
+                seen.push(h)
+                if out.len() > 0u64 { out.push(32u8) }
+                push_span_text(&mut out, w, p, k - p)
+                out.push(61u8)          # '='
+                push_span_text(&mut out, w, v, stop - v)
+            }
+        }
+        p = stop + 1u64
+    }
+    out
+}
+
+fn push_span_text(out: &mut String, w: Span<u8>, at: u64, len: u64) {
+    var i: u64 = 0u64
+    while i < len {
+        val b: u8 = w.get(at + i)
+        out.push(b)
+        i = i + 1u64
+    }
+}
+
 pub struct ArchiveWriter {
     arena: ByteWriter,   # every line, back to back
     recs: ByteWriter,    # the record table, already varint-encoded
@@ -109,6 +183,28 @@ pub struct ArchiveWriter {
     link_slots: Vec<u64>,     # index + 1, or 0
     link_key: Vec<u64>,       # (from << 32) | to, by index
     link_count: Vec<u64>,
+    # --- streams (DATA_MODEL.md section 3) ---
+    #
+    # A stream is a **label set**: the reserved `host` / `tag` the
+    # framing found, plus the leading `key=value` run, taken as a set.
+    # `/v1/streams` answers out of this, and the UI asks for it every
+    # time somebody picks a label, so it is counted while writing
+    # rather than by expanding segments later.
+    #
+    # Identity is the **sum of the pairs' hashes**, which does not
+    # depend on the order they were written in -- a sender that swaps
+    # two labels is still the same stream. Duplicate pairs are dropped
+    # first (a syslog header host and a `host=` label with the same
+    # value are one pair, the same way they are one term), which is
+    # what `stream_pairs` is for: a scratch column, cleared per record
+    # so that the common case allocates nothing.
+    stream_slots: Vec<u64>,   # index + 1, or 0
+    stream_hash: Vec<u64>,
+    stream_text: Vec<String>, # `key=value` pairs, space separated
+    stream_count: Vec<u64>,
+    stream_first: Vec<i64>,
+    stream_last: Vec<i64>,
+    stream_pairs: Vec<u64>,   # scratch: this record's pair hashes
 }
 
 impl ArchiveWriter {
@@ -137,6 +233,18 @@ impl ArchiveWriter {
         }
         val lkeys: Vec<u64> = Vec::new()
         val lcounts: Vec<u64> = Vec::new()
+        var sslots: Vec<u64> = Vec::with_capacity(term_slot_start())
+        var ssi: u64 = 0u64
+        while ssi < term_slot_start() {
+            sslots.push(0u64)
+            ssi = ssi + 1u64
+        }
+        val shashes: Vec<u64> = Vec::new()
+        val stexts: Vec<String> = Vec::new()
+        val scounts: Vec<u64> = Vec::new()
+        val sfirst: Vec<i64> = Vec::new()
+        val slast: Vec<i64> = Vec::new()
+        val spairs: Vec<u64> = Vec::new()
         ArchiveWriter {
             arena: a, recs: r, z: zz, count: 0u64,
             ts_min: 0i64, ts_max: 0i64, dated: 0u64,
@@ -145,6 +253,10 @@ impl ArchiveWriter {
             term_first: tfirst, term_last: tlast,
             post_term: pterm, post_ord: pord,
             link_slots: lslots, link_key: lkeys, link_count: lcounts,
+            stream_slots: sslots, stream_hash: shashes,
+            stream_text: stexts, stream_count: scounts,
+            stream_first: sfirst, stream_last: slast,
+            stream_pairs: spairs,
         }
     }
 
@@ -167,6 +279,17 @@ impl ArchiveWriter {
             self.term_slots.set(si, 0u64)
             si = si + 1u64
         }
+        var ssr: u64 = 0u64
+        while ssr < self.stream_slots.size() {
+            self.stream_slots.set(ssr, 0u64)
+            ssr = ssr + 1u64
+        }
+        self.stream_hash.clear()
+        self.stream_text.clear()
+        self.stream_count.clear()
+        self.stream_first.clear()
+        self.stream_last.clear()
+        self.stream_pairs.clear()
         self.term_hash.clear()
         self.term_names.clear()
         self.term_counts.clear()
@@ -473,6 +596,142 @@ impl ArchiveWriter {
         }
     }
 
+    # The label-set of one record, noted against its stream.
+    #
+    # The pairs are hashed (not spelled) so that a record costs no
+    # allocation; only a stream seen for the first time is written
+    # out, which is the same bargain the term dictionary makes.
+    fn note_stream(&mut self, w: Span<u8>, rec: &ParsedLine) {
+        self.stream_pairs.clear()
+        if rec.has_host() {
+            val h = extract::hash_term("host", w, rec.host_start(), rec.host_len())
+            self.push_pair(h)
+        }
+        if rec.tag_len() > 0u64 {
+            val h = extract::hash_term("tag", w, rec.tag_start(), rec.tag_len())
+            self.push_pair(h)
+        }
+        val from = rec.labels_start()
+        val end = from + rec.labels_len()
+        var p = from
+        while p < end {
+            var k = p
+            while k < end && w.get(k) != '=' { k = k + 1u64 }
+            var v = k + 1u64
+            if v > end { v = end }
+            var stop = v
+            while stop < end && w.get(stop) != ' ' { stop = stop + 1u64 }
+            if k < end && stop > v {
+                val h = extract::hash_term_span(w, p, k - p, v, stop - v)
+                self.push_pair(h)
+            }
+            p = stop + 1u64
+        }
+
+        # The key is order-free, so `app=api level=error` and
+        # `level=error app=api` are one stream.
+        var key: u64 = 14695981039346656037u64
+        var i: u64 = 0u64
+        while i < self.stream_pairs.size() {
+            val h: u64 = self.stream_pairs.get(i)
+            key = key + mix64(h)
+            i = i + 1u64
+        }
+        self.intern_stream(w, rec, key)
+    }
+
+    # Add a pair unless this record already carries it.
+    fn push_pair(&mut self, h: u64) {
+        var i: u64 = 0u64
+        var seen = false
+        while i < self.stream_pairs.size() && !seen {
+            val have: u64 = self.stream_pairs.get(i)
+            if have == h { seen = true }
+            i = i + 1u64
+        }
+        if !seen { self.stream_pairs.push(h) }
+    }
+
+    fn intern_stream(&mut self, w: Span<u8>, rec: &ParsedLine, key: u64) {
+        val mask = self.stream_slots.size() - 1u64
+        var slot = key & mask
+        var id: u64 = 0u64
+        var placed = false
+        while !placed {
+            val cell: u64 = self.stream_slots.get(slot)
+            if cell == 0u64 {
+                id = self.stream_hash.size()
+                self.stream_hash.push(key)
+                val text = stream_text_of(w, rec)
+                self.stream_text.push(text)
+                self.stream_count.push(1u64)
+                if rec.has_ts {
+                    self.stream_first.push(rec.ts)
+                    self.stream_last.push(rec.ts)
+                } else {
+                    self.stream_first.push(limits::i64_max())
+                    self.stream_last.push(limits::i64_min())
+                }
+                self.stream_slots.set(slot, id + 1u64)
+                placed = true
+            } else {
+                val cand = cell - 1u64
+                val ch: u64 = self.stream_hash.get(cand)
+                if ch == key {
+                    id = cand
+                    val c: u64 = self.stream_count.get(cand)
+                    self.stream_count.set(cand, c + 1u64)
+                    if rec.has_ts {
+                        val fi: i64 = self.stream_first.get(cand)
+                        val la: i64 = self.stream_last.get(cand)
+                        if rec.ts < fi { self.stream_first.set(cand, rec.ts) }
+                        if rec.ts > la { self.stream_last.set(cand, rec.ts) }
+                    }
+                    placed = true
+                } else {
+                    slot = (slot + 1u64) & mask
+                }
+            }
+        }
+        # The table is small (streams are few next to terms), but a
+        # busy ingest can still fill it; grow on the same rule the
+        # term table uses.
+        if self.stream_hash.size() * 8u64 >= self.stream_slots.size() * 7u64 {
+            self.rehash_streams()
+        }
+    }
+
+    fn rehash_streams(&mut self) {
+        val bigger = self.stream_slots.size() * 2u64
+        var i = self.stream_slots.size()
+        while i < bigger {
+            self.stream_slots.push(0u64)
+            i = i + 1u64
+        }
+        var k: u64 = 0u64
+        while k < bigger {
+            self.stream_slots.set(k, 0u64)
+            k = k + 1u64
+        }
+        val mask = bigger - 1u64
+        var id: u64 = 0u64
+        while id < self.stream_hash.size() {
+            val h: u64 = self.stream_hash.get(id)
+            var slot = h & mask
+            var placed = false
+            while !placed {
+                val cell: u64 = self.stream_slots.get(slot)
+                if cell == 0u64 {
+                    self.stream_slots.set(slot, id + 1u64)
+                    placed = true
+                } else {
+                    slot = (slot + 1u64) & mask
+                }
+            }
+            id = id + 1u64
+        }
+    }
+
     fn emit_terms(&mut self, w: Span<u8>, ln: Line, rec: &ParsedLine) {
         if rec.labels_len() > 0u64 { self.emit_labels(w, rec) }
         var host_id = term_none()
@@ -541,6 +800,7 @@ impl ArchiveWriter {
         # Terms are emitted before the arena grows, because they name
         # offsets in `src`, not in the arena.
         self.emit_terms(src, ln, rec)
+        self.note_stream(src, rec)
 
         self.arena.put_span(src, start, len)
 
@@ -1054,6 +1314,84 @@ impl ArchiveWriter {
         if !ok { return 0u64 }
         at_off = at_off + objs_len
 
+        # ---- the stream table (DATA_MODEL.md section 3) ----------
+        #
+        # One row per label set: the text, how many records carried
+        # it, and the span of time they covered. Rows are few (a label
+        # set per sender, not per value), so this is written plainly
+        # in first-seen order and read whole.
+        var ssec = ByteWriter::with_capacity(65536u64)
+        val n_streams = self.stream_text.size()
+        ssec.put_u32(n_streams)
+        var sti: u64 = 0u64
+        while sti < n_streams {
+            val text: String = self.stream_text.get(sti)
+            ssec.put_varint(text.len())
+            val sw = text.as_span()
+            match sw {
+                Option::Some(sb) => { ssec.put_span(sb, 0u64, text.len()) }
+                Option::None => { }
+            }
+            val c: u64 = self.stream_count.get(sti)
+            ssec.put_varint(c)
+            val fi: i64 = self.stream_first.get(sti)
+            val la: i64 = self.stream_last.get(sti)
+            # The same "no span" shape the object table uses: a
+            # leading 0 rather than a timestamp that means "none".
+            if fi <= la {
+                ssec.put_varint(1u64)
+                ssec.put_varint(fi as u64)
+                ssec.put_varint((la - fi) as u64)
+            } else {
+                ssec.put_varint(0u64)
+            }
+            sti = sti + 1u64
+        }
+
+        blk.clear()
+        val strs_off = at_off
+        val sraw_len = ssec.len()
+        var sraw_crc: u64 = 0u64
+        val ssw = ssec.span()
+        match ssw {
+            Option::Some(sb) => { sraw_crc = crc.of(sb, 0u64, sraw_len) }
+            Option::None => { }
+        }
+        blk.put_magic("LST1")
+        val scodec_at = blk.len()
+        blk.put_u32(1u64)
+        blk.put_u32(sraw_len)
+        val sclen_at = blk.len()
+        blk.put_u32(0u64)
+        blk.put_u32(sraw_crc)
+        val sbody_at = blk.len()
+        match ssw {
+            Option::Some(sb) => {
+                val clen = self.z.encode(sb, 0u64, sraw_len, &mut blk)
+                if clen * 8u64 >= sraw_len * 7u64 {
+                    blk.truncate(sbody_at)
+                    blk.put_span(sb, 0u64, sraw_len)
+                    blk.patch_u32(scodec_at, 0u64)
+                    blk.patch_u32(sclen_at, sraw_len)
+                } else {
+                    blk.patch_u32(sclen_at, clen)
+                }
+            }
+            Option::None => { }
+        }
+        val strs_len = blk.len()
+        var strs_crc: u64 = 0u64
+        val bw5 = blk.span()
+        match bw5 {
+            Option::Some(bb) => {
+                strs_crc = crc.of(bb, 0u64, strs_len)
+                if !segfile::put_bytes(f, bb, strs_len) { ok = false }
+            }
+            Option::None => { ok = false }
+        }
+        if !ok { return 0u64 }
+        at_off = at_off + strs_len
+
         # ---- the header and the directory, written back ----------
         #
         # Everything above had to happen before these numbers
@@ -1082,7 +1420,7 @@ impl ArchiveWriter {
             Option::None => { }
         }
 
-        hdr.put_u32(6u64)                  # section count
+        hdr.put_u32(7u64)                  # section count
         hdr.put_u32(0u64)                  # reserved
         put_dir(&mut hdr, segfile::kind_frames(), frames_off, frames_len, 0u64)
         put_dir(&mut hdr, segfile::kind_records(), recs_off, recs_len, recs_crc)
@@ -1090,6 +1428,7 @@ impl ArchiveWriter {
         put_dir(&mut hdr, segfile::kind_terms(), terms_off, terms_len, terms_crc)
         put_dir(&mut hdr, segfile::kind_links(), links_off, links_len, links_crc)
         put_dir(&mut hdr, segfile::kind_objects(), objs_off, objs_len, objs_crc)
+        put_dir(&mut hdr, segfile::kind_streams(), strs_off, strs_len, strs_crc)
         while hdr.len() < segfile::data_at() { hdr.put_u8(0u8) }
 
         val hw2 = hdr.span()
@@ -1459,6 +1798,74 @@ pub fn term_keys(idx: Span<u8>, sec_off: u64, sec_len: u64) -> TermHits {
         }
         i = i + 1u64
     }
+    }
+    out
+}
+
+# One segment's stream table (kind 9), decoded.
+#
+# Rows are few, so this reads all of them: the caller folds them
+# across segments. `ts_min > ts_max` means every record in that
+# stream was undated -- the same "no span" shape the object table
+# uses, so no timestamp has to stand in for "none".
+pub struct StreamRows {
+    texts: Vec<String>,
+    counts: Vec<u64>,
+    ts_min: Vec<i64>,
+    ts_max: Vec<i64>,
+}
+
+impl StreamRows {
+    pub fn new() -> Self {
+        val t: Vec<String> = Vec::new()
+        val c: Vec<u64> = Vec::new()
+        val a: Vec<i64> = Vec::new()
+        val b: Vec<i64> = Vec::new()
+        StreamRows { texts: t, counts: c, ts_min: a, ts_max: b }
+    }
+    pub fn size(&self) -> u64 { self.texts.size() }
+}
+
+pub fn streams_of(sec: Span<u8>, sec_len: u64) -> StreamRows {
+    var out = StreamRows::new()
+    if sec_len > 0u64 {
+        var rd = ByteReader::new(sec_len)
+        rd.seek(0u64)
+        val n = rd.take_u32(sec)
+        var i: u64 = 0u64
+        while i < n && rd.remaining() > 0u64 {
+            val tlen = rd.take_varint(sec)
+            val text = query_text_of(sec, rd.position(), tlen)
+            rd.seek(rd.position() + tlen)
+            val count = rd.take_varint(sec)
+            val spanned = rd.take_varint(sec)
+            var lo: i64 = limits::i64_max()
+            var hi: i64 = limits::i64_min()
+            if spanned == 1u64 {
+                val first = rd.take_varint(sec) as i64
+                val width = rd.take_varint(sec) as i64
+                lo = first
+                hi = first + width
+            }
+            out.texts.push(text)
+            out.counts.push(count)
+            out.ts_min.push(lo)
+            out.ts_max.push(hi)
+            i = i + 1u64
+        }
+    }
+    out
+}
+
+# The bytes of a span as a `String`. (`query::text_of` does the same
+# thing, but `archive` is below `query` in the dependency order.)
+fn query_text_of(w: Span<u8>, at: u64, len: u64) -> String {
+    var out = String::with_capacity(len)
+    var i: u64 = 0u64
+    while i < len {
+        val b: u8 = w.get(at + i)
+        out.push(b)
+        i = i + 1u64
     }
     out
 }

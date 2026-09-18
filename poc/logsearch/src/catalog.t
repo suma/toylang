@@ -243,9 +243,13 @@ pub fn row_of_head(h: &SegHead, seg_bytes: u64, is_archive: bool) -> CatRow {
     r.records = h.records
     r.seg_bytes = seg_bytes
     r.index_bytes = h.recs_len + h.ftab_len + h.terms_len + h.links_len
-        + h.objs_len
+        + h.objs_len + h.strs_len
     r.kind = if is_archive { kind_archive() } else { kind_segment() }
-    r.streams = h.n_frames
+    # How many streams the segment holds is in its stream table (kind
+    # 9), not in the 320 bytes this reads, and a row built from the
+    # header alone must not invent it. It held the *frame* count,
+    # which is a different number wearing this one's name.
+    r.streams = 0u64
     r.terms = h.terms_len
     r.daykey = daykey_of(h.ts_min)
     r

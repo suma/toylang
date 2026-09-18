@@ -647,3 +647,48 @@ test "the labels a record was ingested with become terms" {
     assert(contains(&q, "HTTP/1.1 200 OK"), "a label filter is a query")
     assert(contains(&q, "\u{22}records_matched\u{22}:2"), "both records carry it")
 }
+
+# `GET /v1/streams` — 観測されているラベル集合と件数 (HTTP_API.md §2)。
+#
+# 語彙索引は組ごとなので、「`app=api` と `level=error` を**同時に**
+# 持つ行が何件か」は答えられない。書き出し時のストリーム表 (kind 9)
+# がその答えで、ここはそれが HTTP の形で出てくることを固める。
+test "the streams endpoint answers with label sets and their counts" {
+    var st = Stats::new()
+    var ms = MountSet::new()
+    var gens: Vec<u64> = Vec::new()
+    var w = ArchiveWriter::new()
+    val dir = "build/server-streams"
+    wipe_mount(dir)
+    assert(writable(dir, &st, &mut ms, &mut gens), "the mount should be writable")
+
+    # 2 つのラベル集合: {app:api, level:error} が 2 件、
+    # {app:api, level:info} が 1 件。
+    val body = String::from_str("2020-01-01T00:00:00Z app=api level=error one\n2020-01-01T00:00:01Z level=error app=api two\n2020-01-01T00:00:02Z app=api level=info three\n")
+    val raw = ingest_request(&body)
+    val b = span_of(&raw)
+    val r = http::parse_request(b, raw.len())
+    var out = ByteWriter::with_capacity(1024u64)
+    server::route(dir, b, &r, true, &mut st, &mut w, &mut ms, &gens, &mut out)
+    assert_eq(w.count(), 3u64)
+
+    val fraw = String::from_str("POST /v1/admin/flush HTTP/1.1\r\n\r\n")
+    val fb = span_of(&fraw)
+    val fr = http::parse_request(fb, fraw.len())
+    var fout = ByteWriter::with_capacity(1024u64)
+    server::route(dir, fb, &fr, true, &mut st, &mut w, &mut ms, &gens, &mut fout)
+
+    val ans = answer_for(dir, "GET /v1/streams HTTP/1.1\r\n\r\n", true)
+    assert(contains(&ans, "HTTP/1.1 200 OK"), "the streams are served")
+    # ラベルは**オブジェクト**で出る (クライアントが添字で引けるように)。
+    assert(contains(&ans, "\u{22}labels\u{22}:{{\u{22}app\u{22}:\u{22}api\u{22},\u{22}level\u{22}:\u{22}error\u{22}}}"),
+           "a label set is an object")
+    # 順が違う 2 行は 1 つのストリーム。
+    assert(contains(&ans, "\u{22}records\u{22}:2"), "the two error lines are one stream")
+    assert(contains(&ans, "\u{22}distinct\u{22}:2"), "two label sets in all")
+    # 時刻の幅も出る。
+    assert(contains(&ans, "\u{22}ts_min\u{22}:\u{22}2020-01-01T00:00:00Z\u{22}"), "the span starts where the first record did")
+
+    val capped = answer_for(dir, "GET /v1/streams?limit=5000 HTTP/1.1\r\n\r\n", true)
+    assert(contains(&capped, "HTTP/1.1 400"), "the limit has the same cap as the rest")
+}

@@ -124,6 +124,11 @@ fn sq_fixture() -> String {
 
 fn sq_build(stem: str) -> String {
     val body = sq_fixture()
+    val seg = sq_build_from(stem, &body)
+    seg
+}
+
+fn sq_build_from(stem: str, body: &String) -> String {
     val log = "{stem}.log"
     val wrote = io::write_file(log, body.to_str())
     match wrote {
@@ -254,6 +259,50 @@ test "a segment without the term is pruned, not scanned" {
     segs.push(seg)
     val crc = Crc32::new()
     val q = query::parse_query("status=500", 0i64)
+    var hits: Vec<Hit> = Vec::new()
+    var texts: Vec<String> = Vec::new()
+    var st = SearchStats::new()
+    query::search("build", &segs, &q, &crc, &mut hits, &mut texts, &mut st)
+    assert_eq(hits.size(), 0u64)
+    assert_eq(st.pruned_terms, 1u64)
+    assert_eq(st.examined, 0u64)
+}
+
+# `host` は**予約ラベル** (DATA_MODEL.md §2) で、意味は「送信元ホスト」。
+# syslog のヘッダで来ても `host=` ラベルで来ても同じ語なので、
+# `host=web01` は**両方**に当たらなければならない。かつてクエリだけが
+# ヘッダと直接比べていて、取り込んだレコードには当たらず、しかも索引を
+# 通らないので 12 セグメント全部を展開していた (2026-09-18 に修正)。
+test "a host is the sending host, however it arrived" {
+    var body = String::new()
+    sq_line("2026-09-03T12:00:01Z web01 cron[5]: header says web01", &mut body)
+    sq_line("2026-09-03T12:00:02Z host=web01 app=api label says web01", &mut body)
+    sq_line("2026-09-03T12:00:03Z host=web02 app=api label says web02", &mut body)
+    sq_line("2026-09-03T12:00:04Z db01 cron[6]: header says db01", &mut body)
+    val seg = sq_build_from("build/search-query-host", &body)
+    var segs: Vec<String> = Vec::new()
+    segs.push(seg)
+
+    assert_eq(sq_hits(&segs, "host=web01"), 2u64)
+    assert_eq(sq_hits(&segs, "host=web02"), 1u64)
+    assert_eq(sq_hits(&segs, "host=db01"), 1u64)
+    # ラベルの他のキーも同じ扱い。
+    assert_eq(sq_hits(&segs, "app=api"), 2u64)
+    assert_eq(sq_hits(&segs, "host=web01 app=api"), 1u64)
+}
+
+# 索引を通るということは、**当たらないセグメントを開かない**という
+# ことでもある。ここが `host=` の食い違いで失われていた分。
+test "a host query prunes segments like any other term" {
+    var body = String::new()
+    sq_line("2026-09-03T12:00:01Z web01 cron[5]: only web01 here", &mut body)
+    val seg = sq_build_from("build/search-query-host-prune", &body)
+    var segs: Vec<String> = Vec::new()
+    segs.push(seg)
+
+    val crc = Crc32::new()
+    val q = query::parse_query("host=nowhere", 0i64)
+    assert_eq(q.term_count(), 1u64)
     var hits: Vec<Hit> = Vec::new()
     var texts: Vec<String> = Vec::new()
     var st = SearchStats::new()

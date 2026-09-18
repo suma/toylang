@@ -6,20 +6,30 @@
 #
 #   host=web01 timeout from=2026-09-03T00:00:00Z limit=20 order=desc
 #
-# Tokens are separated by spaces. A token with a **known** key sets a
-# filter; every other token is a substring the line must contain.
-# That last rule is what makes `level=error` and `SRC=1.2.3.4` work
-# without either being a field: they are searched for literally, which
-# is what a person typing them means.
+# Tokens are separated by spaces. A few keys control the search
+# itself; a `key=value` whose key is label-shaped is answered from the
+# term index; everything else is a substring the line must contain.
+# That last rule is what makes `SRC=1.2.3.4` work without being a
+# field: it is searched for literally, which is what a person typing
+# it means.
 #
 #   from=<t> to=<t>   time range, half-open. ISO 8601, unix seconds,
 #                     or relative (`-1h`, `-30m`, `-2d`)
-#   host=<s>          the syslog host, compared whole
-#   tag=<s>           the syslog tag (`CRON`, `kernel`, ...)
 #   kind=<s>          syslog | apache | datetime | epoch | plain
 #   limit=<n>         how many lines to print (default 20)
 #   order=asc|desc    by time; desc is the default
+#   <key>=<value>     a term, out of the index (`status=404`,
+#                     `host=web01`, `app=api`)
 #   <anything else>   a substring the line must contain (AND)
+#
+# **`host` is not the syslog header, it is the sending host.** It is a
+# reserved label (DATA_MODEL.md section 2), so the archive writes the
+# header and a `host=` label as one term and `fields host` counts them
+# together. This used to compare the header here and nowhere else,
+# which missed every ingested record and, because it never reached the
+# index, opened every segment on the way (`host=web01` went from 0
+# hits in 558 ms to 3 in 32 ms when it was folded in). `tag` moved the
+# same way.
 #
 # **Filters are AND across kinds.** There is no `or`, no parentheses
 # and no negation: the shapes a log search actually needs are a
@@ -48,15 +58,6 @@ pub struct Query {
     kind: u32,
     limit: u64,
     desc: bool,
-    # `host` and `tag` hold at most one element each.
-    #
-    # A plain `String` field would read better, but a whole struct
-    # cannot be assigned into a field ("compiler MVP cannot assign
-    # whole struct to nested field"), and the parser fills these in
-    # as it goes. A one-element `Vec` is filled by a method call on
-    # the field, which is allowed.
-    host: Vec<String>,
-    tag: Vec<String>,
     needles: Vec<String>,
     # `key=value` for a key the index knows, spelled the way the term
     # dictionary spells it (`status:404`). These are answered from
@@ -71,15 +72,13 @@ pub struct Query {
 
 impl Query {
     pub fn new() -> Self {
-        val h: Vec<String> = Vec::new()
-        val t: Vec<String> = Vec::new()
         val n: Vec<String> = Vec::new()
         val tm: Vec<String> = Vec::new()
         val sb: Vec<String> = Vec::new()
         Query {
             ts_from: 0i64, ts_to: 0i64, kind: kind_any(),
             limit: default_limit(), desc: true,
-            host: h, tag: t, needles: n, terms: tm, subs: sb,
+            needles: n, terms: tm, subs: sb,
         }
     }
     pub fn needle_count(&self) -> u64 { self.needles.size() }
@@ -87,8 +86,6 @@ impl Query {
     pub fn sub_count(&self) -> u64 { self.subs.size() }
     # Whether anything at all is answered from the index.
     pub fn indexed_count(&self) -> u64 { self.terms.size() + self.subs.size() }
-    pub fn has_host(&self) -> bool { self.host.size() > 0u64 }
-    pub fn has_tag(&self) -> bool { self.tag.size() > 0u64 }
 }
 
 # One line that matched, kept small so that sorting is cheap: the text
@@ -189,8 +186,16 @@ pub fn parse_query(text: str, now: i64) -> Query {
                     val vs = value.to_str()
                     if key.eq_str("from") { q.ts_from = parse_time(vs, now)  handled = true }
                     if key.eq_str("to") { q.ts_to = parse_time(vs, now)  handled = true }
-                    if key.eq_str("host") { q.host.push(value.clone())  handled = true }
-                    if key.eq_str("tag") { q.tag.push(value.clone())  handled = true }
+                    # `host` and `tag` are not special: they are keys
+                    # the index knows, and they fall through to the
+                    # term path below. `host` is a *reserved label*
+                    # (DATA_MODEL.md section 2) — the sending host,
+                    # however it arrived — so the syslog header and a
+                    # `host=` label are one key, which is already how
+                    # the archive writes them and how `fields host`
+                    # counts them. Comparing only the syslog header
+                    # here meant `host=web01` missed every ingested
+                    # record and opened all twelve segments on the way.
                     if key.eq_str("kind") { q.kind = kind_code(vs)  handled = true }
                     # `top=` is read by the caller, which decides
                     # between a traversal and a whole distribution. It
@@ -295,8 +300,7 @@ pub fn parse_query(text: str, now: i64) -> Query {
 
 # Does this record pass every filter?
 fn matches(q: &Query, arena: Span<u8>, line_at: u64, line_len: u64,
-           kind: u32, ts: i64, dated: bool,
-           host_rel: u64, host_len: u64, tag_rel: u64, tag_len: u64) -> bool {
+           kind: u32, ts: i64, dated: bool) -> bool {
     if q.kind != kind_any() && q.kind != kind { return false }
     if q.ts_from != 0i64 {
         if !dated { return false }
@@ -305,32 +309,6 @@ fn matches(q: &Query, arena: Span<u8>, line_at: u64, line_len: u64,
     if q.ts_to != 0i64 {
         if !dated { return false }
         if ts >= q.ts_to { return false }
-    }
-    if q.has_host() {
-        if host_len == 0u64 { return false }
-        val want_host: String = q.host.get(0u64)
-        val hw = want_host.as_span()
-        match hw {
-            Option::Some(want) => {
-                if !search::equals(arena, line_at + host_rel, host_len, want, want_host.len()) {
-                    return false
-                }
-            }
-            Option::None => { return false }
-        }
-    }
-    if q.has_tag() {
-        if tag_len == 0u64 { return false }
-        val want_tag: String = q.tag.get(0u64)
-        val tw = want_tag.as_span()
-        match tw {
-            Option::Some(want) => {
-                if !search::equals(arena, line_at + tag_rel, tag_len, want, want_tag.len()) {
-                    return false
-                }
-            }
-            Option::None => { return false }
-        }
     }
     var k: u64 = 0u64
     while k < q.needles.size() {
@@ -861,8 +839,7 @@ pub fn search(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32,
                                     val kind = ((flags >> 1u64) & 7u64) as u32
 
                                     examined = examined + 1u64
-                                    if matches(q, body, line_at, line_len, kind, ts, dated,
-                                               hr as u64, hl as u64, tr as u64, tl as u64) {
+                                    if matches(q, body, line_at, line_len, kind, ts, dated) {
                                         matched = matched + 1u64
                                         if hits.size() < max_hits() {
                                             val hit = Hit { ts: ts, ord: hits.size() }

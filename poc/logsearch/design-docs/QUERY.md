@@ -17,11 +17,11 @@ logsearch query <archive> "path^/wp- from=-24h"
 
 | 種類 | 例 | 解決の仕方 |
 |---|---|---|
-| **索引の効くフィールド** | `status=404` `ip=10.0.0.1` `path=/x` `method=GET` `vhost=v` `ua=…` `host=h` `tag=CRON` | 語彙索引の postings。**語が無いセグメントは展開しない** ([`ONTOLOGY.md`](ONTOLOGY.md) §4) |
+| **索引の効くフィールド** | `status=404` `ip=10.0.0.1` `path=/x` `method=GET` `vhost=v` `ua=…` `proto=HTTP/1.1` `host=h` `tag=CRON` と、**行頭のラベル** (`app=api` `level=error`) | 語彙索引の postings。**語が無いセグメントは展開しない** ([`ONTOLOGY.md`](ONTOLOGY.md) §4)。`host` は予約ラベルなので、syslog のヘッダと `host=` ラベルは**同じ語** ([`DATA_MODEL.md`](DATA_MODEL.md) §2) |
 | **同じキーの部分一致** | `ua~MJ12bot` `path~admin` | 辞書をそのキーの接頭辞で 1 周し、needle を**値の中に**含む語を集めて postings を合併する。`=` と同じく索引の答えなので、当たらないセグメントは展開しない |
 | **同じキーの前方一致** | `path^/wp-` `ip^10.0.` | 同じ走査で、**値の先頭でだけ**比べる。`~` との差は実データで大きい — `/.env` はパスの 7,860 件に現れるが、始めるのは 3,027 件 |
 | **クエリの制御** | `from=` `to=` `limit=` `order=` `kind=` `top=` | 下記 |
-| **それ以外すべて** | `timeout` `level=error` `SRC=10.0.0.1` `level~err` | **本文の部分一致** (AND)。キーに見えても索引が知らなければ文字列として探す — 打った人の意図がそれだから。`~` も同じで、索引の知らないキーなら書かれたとおりの文字列になる |
+| **それ以外すべて** | `timeout` `SRC=10.0.0.1` `Host~x` | **本文の部分一致** (AND)。キーがラベルの形 (`[a-z0-9_]{1,32}`) でなければ文字列として探す — 打った人の意図がそれだから。`~` も同じ |
 
 | 制御 | 意味 |
 |---|---|

@@ -10,16 +10,14 @@
 # 確保そのものを禁じると、実装を試験することになって約束を試験
 # しなくなる。
 #
+# **書いた日に 1 つ出た。** tree-walker だけが `str::as_ptr` の受け皿を
+# 確保カウンタに載せ、しかも解放していなかったので、`String::from_str`
+# を呼ぶたびに live バイトが増えていた (本体側 todo の
+# STR-PTR-UNCOUNTED、2026-09-18 に修正)。今は 4 レーンとも測れる。
+#
 # 1 周目は測らない。初回だけは器 (Vec の backing store、読み取り
 # バッファ) を確保するのが当たり前で、そこを含めると「2 周目以降は
 # 一定」という肝心の性質が見えなくなる。
-#
-# **レーンによっては測れない。** tree-walker は `Vec<String>` の要素を
-# 解放しない (AOT / JIT / IR VM は解放する。`design-docs/todo.md` の
-# TREE-WALK-ELEM-DROP)。そのレーンでは何を測っても「増えた」としか
-# 出ないので、各テストは**まず canary を 1 つ落として**確かめ、
-# 解放しないレーンでは理由を 1 行書いて測らない。`toy test` の既定
-# (AOT) は測る側に居る。
 #
 # 素材は合成で、アドレスはプライベート帯だけ (CLAUDE.md)。
 
@@ -86,37 +84,10 @@ fn st_build(stem: str) -> String {
 
 
 # ---------------------------------------------------------------------
-# このレーンは要素を解放するか
-
-# 1 個だけ確保して捨てる。戻ってこなければ、このレーンでは
-# 定常性を測れない。
-fn st_churn() {
-    var v: Vec<String> = Vec::new()
-    v.push(String::from_str("0123456789"))
-}
-
-fn st_lane_frees() -> bool {
-    st_churn()
-    val mark = testing::heap_mark()
-    st_churn()
-    __builtin_live_bytes() <= mark
-}
-
-fn st_skip() -> bool {
-    val ok = st_lane_frees()
-    if !ok {
-        eprintln("steady: this lane does not free container elements (todo TREE-WALK-ELEM-DROP) -- not measuring")
-    }
-    !ok
-}
-
-# ---------------------------------------------------------------------
 
 # 同じクエリを何度も投げる。これがサーバの定常状態そのもので、
 # 1 回ぶんでも残れば時間とともに積み上がる。
 test "answering the same query again and again does not grow the heap" {
-    if st_skip() { return }
-
     val seg = st_build("build/steady-query")
     var segs: Vec<String> = Vec::new()
     segs.push(seg)
@@ -147,8 +118,6 @@ test "answering the same query again and again does not grow the heap" {
 # 本文を舐める形も同じ。索引で絞る形とは別の経路 (フレームを
 # 展開して 1 行ずつ読む) を通るので、別に踏む。
 test "scanning the text of every record leaves nothing behind" {
-    if st_skip() { return }
-
     val seg = st_build("build/steady-scan")
     var segs: Vec<String> = Vec::new()
     segs.push(seg)
@@ -177,8 +146,6 @@ test "scanning the text of every record leaves nothing behind" {
 # 集計 (`fields` / `/v1/labels`) は語彙をまるごと歩く。値ごとに
 # `String` を作る経路なので、戻ってこなければここで見える。
 test "tallying a field repeatedly returns to where it started" {
-    if st_skip() { return }
-
     val seg = st_build("build/steady-tally")
     var segs: Vec<String> = Vec::new()
     segs.push(seg)
@@ -200,8 +167,6 @@ test "tallying a field repeatedly returns to where it started" {
 # セグメントを開いて展開し直す経路。`raw` / `out` を使い回す形は
 # **確保をしない**はずで、ここが増えるならバッファが毎回取り直されている。
 test "expanding a segment with reused buffers allocates nothing" {
-    if st_skip() { return }
-
     val seg = st_build("build/steady-expand")
     val crc = Crc32::new()
     val opened = File::open(seg.to_str())
@@ -233,8 +198,6 @@ test "expanding a segment with reused buffers allocates nothing" {
 # クエリの読み取りそのもの。`String` を何本も作って捨てる形なので、
 # 「作って捨てた」が live に残らないことをここで言う。
 test "parsing a query a hundred times holds nothing" {
-    if st_skip() { return }
-
     val warm = query::parse_query("status=404 method=POST ua~bot from=-1h limit=20", 0i64)
     assert_eq(warm.term_count(), 2u64)
 

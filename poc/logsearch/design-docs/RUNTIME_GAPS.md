@@ -226,7 +226,7 @@ STDLIB-COLLECTIONS の交差点)。
 | クロージャ捕捉 | AOT はスカラーしか捕捉できない。比較器にバッファを捕捉させられない | CLAUDE.md |
 | メソッド戻り値へのフィールドアクセス | `v.get(0u64).first` が AOT で不可 (`compiler MVP only supports field-access chains rooted at a bare identifier`)。`val` に束縛してから | 本設計 |
 | `Vec<(A, B)>` | タプル要素の Vec が AOT 不可 (`__builtin_sizeof: could not infer arg type at AOT`)。ペアは struct にする | todo |
-| 要素の解放がレーンで割れる | tree-walker は `Vec<String>` の要素を解放しない (他 3 レーンは解放する)。確保カウンタの答えがレーンに依存するので、定常性テストは canary でレーンを検出して測定を飛ばす (`tests/steady.t`) | todo (TREE-WALK-ELEM-DROP) |
+| ~~確保カウンタがレーンで割れる~~ (解決済み) | tree-walker だけが `str::as_ptr` の受け皿を数え、解放もしていなかったので、`String::from_str` を呼ぶたびに live バイトが増えた。**2026-09-18 に修正** (todo の STR-PTR-UNCOUNTED)。`tests/steady.t` はこれで全レーンで測れる | todo |
 
 ---
 
@@ -374,7 +374,7 @@ stdlib のバイト kernel も SIMD 化済み。使い方と実測は [`SIMD.md`
 | 踏んだもの | 内容 |
 |---|---|
 | **bare な関数名がモジュールを跨いで衝突する** ★★ | `fn is_digit` が `std::json::is_digit` と衝突して `[E0010] ambiguous module path`。**`pub` でない関数でも衝突する**ので、auto-load される全モジュールが 1 つの名前空間を共有していることになる。`max_depth` も同じ。**この POC の回避策は改名** (`is_digit` → `is_digit_byte`)。**2026-09-05 に半分だけ解消** — 後の module root が bare 名を勝つようになった (BUILD-TOOL B0) ので、**ユーザの `src/` は stdlib に勝つ**。残っていた 2 件 (`decode`: `lsz.t` と `std::base64` / `std::hex`、`parse`: `record.t` と `std::json`) も**同日に改名で潰した** (`decode_frame` / `parse_line`) ので `toy check` は無警告。ただし**回避しただけ**で、stdlib に名前が増えるたびに踏みうる。**class ごと消す設計**は本体側 [`MODULE_IMPORTS.md`](../../../design-docs/MODULE_IMPORTS.md) (明示 import。D3 が「bare 名は自分のファイル + prelude だけ」にする) |
-| **`&mut self` が struct 全体を呼出規約に展開する** ★★★ | `ArchiveWriter` は 19 フィールドだが `ByteWriter` / `Lsz` / `Vec<T>` が入れ子で開いて **52 leaf**。`&mut self` メソッドは全 leaf を引数で受け全 leaf を返すので、`write_seg` の署名は **58 params → 53 returns** になり、1 フィールド読むだけの `ts_min()` すら 52 引数取る。引数レジスタは 8 本なので残りは呼び出しのたびにメモリを往復し、`write_seg` は 3,452 命令の **70% が load/store** (`add` は 90 個)。**この POC のバイナリの 29% が `ArchiveWriter` の 16 メソッド**。回避は「触るフィールドだけを渡す」(`g.buf.bump()` は 3 命令、`g.bump_self()` は 20 命令) だが、複数フィールドを同時に触る `write_seg` / `emit_terms` は割れない。計測と直し方は本体側 [`CODE_SIZE.md`](../../../design-docs/CODE_SIZE.md) |
+| **~~`&mut self` が struct 全体を呼出規約に展開する~~** (解決済み) | **2026-09-05 に直った** (CODE-SIZE-SELF-ABI の S1〜S3b)。leaf が 8 個を超える `&self` / `&mut self`、`&T` / `&mut T` 引数、幅の広いローカル束縛は**番地 1 本で渡る**。かつては `ArchiveWriter` (52 leaf) の 16 メソッドで**バイナリの 29%** を占め、1 フィールド読むだけの `ts_min()` が 52 引数取っていた。2026-09-17 に測り直すと `ArchiveWriter` のメソッドは幅の広い署名の上位から消えており、残る幅広は**値で返す compound** (`ArchiveWriter::new` は戻り値 60) と**8 leaf 以下の参照引数が何本も並ぶ関数** (`query::search` は参照 7 本で 19 引数)。閾値を 8 → 4 に下げる実験では `__text` が 292,148 → 290,472 B (−0.6%)、archive の所要時間は変わらず — **署名全体の幅で見る形に広げても、得るものは小さい**。計測は本体側 [`CODE_SIZE.md`](../../../design-docs/CODE_SIZE.md) |
 | **プログラム本体をモジュール根に置くと自分の `const` を失う** | `src/main.t` を根に入れると auto-load で二重取り込みになり、複製側が `Identifier 'BUF_BYTES' not found` で落ちる。エントリは根の外に置くのが正解 ([`ARCHITECTURE.md`](ARCHITECTURE.md) §4) |
 
 ## G17. 所有型を分岐の中で move できない ★

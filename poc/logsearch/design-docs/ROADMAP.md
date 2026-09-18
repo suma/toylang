@@ -49,10 +49,11 @@
    2026-09-18 に §4 の残り 3 つが入った — `.seg` のゴールデンと読み側の
    約束 (`segment_format`)、`search` / `query::search` の答え
    (`search_query`)、定常性 (`steady`)、そしてセグメントのファイルだけ
-   から台帳を作り直す経路 (`catalog_rebuild`)。**定常性はレーンで
-   割れる** — tree-walker がコンテナの要素を解放しないので
-   (`design-docs/todo.md` の TREE-WALK-ELEM-DROP)、`steady` は canary で
-   それを検出し、測れないレーンでは 1 行書いて飛ばす。
+   から台帳を作り直す経路 (`catalog_rebuild`)。**`steady` は書いた日に
+   言語側のバグを 1 つ出した** — tree-walker だけが `str::as_ptr` の
+   受け皿を確保カウンタに載せ、解放もしていなかった
+   (`design-docs/todo.md` の STR-PTR-UNCOUNTED、2026-09-18 に修正)。
+   直ったので、定常性は全レーンで測る。
    **未解決**: `host=` の**クエリ**は索引を通らず syslog ヘッダだけと
    比べる (`query.t` の `q.host`)。`fields host` は `host=` ラベルも
    数えるので、同じ `host` が 2 つの意味を持っている
@@ -125,7 +126,7 @@ toylang の道具をそのまま使う。**新しいテスト基盤は作らな�
    「答えが少ない」形で出るので、比較対象が無いと気づけない**
 4. **定常性** — 2026-09-18、`tests/steady.t`。クエリ・本文走査・集計・
    セグメント展開・クエリの読み取りを 20〜100 周し、live バイトが戻ることを
-   見る。**測れないレーンでは測らない** (上記 TREE-WALK-ELEM-DROP)
+   見る。4 レーンすべてで測れる (STR-PTR-UNCOUNTED を直したので)
 
 ### 形式のバージョニング
 

@@ -308,6 +308,48 @@ impl MoveCheck<'_> {
         self.drop_analysis.contains_drop(ty)
     }
 
+    /// ELEMENT-BORROW 2-d: an owning value may not be copied out of a
+    /// borrow.
+    ///
+    /// Reading through a borrow is what it is for, and a scalar read
+    /// is a plain copy of something that owns nothing. But binding an
+    /// **owning** type to what a borrow names would make a second
+    /// owner of one resource — the very shape `borrow` exists to
+    /// avoid. `clone()` is the way to ask for a copy on purpose.
+    fn check_copy_out_of_borrow(
+        &mut self,
+        name: DefaultSymbol,
+        annotation: &Option<TypeDecl>,
+        rhs: ExprRef,
+    ) {
+        // Only a binding that **asks for a value** is in question.
+        // Without an annotation the binding takes the borrow's own
+        // type and names it (`val e = v.borrow(i)`), which is the
+        // shape this feature exists for; `val e: &T = ...` says the
+        // same thing out loud.
+        let Some(want) = annotation else {
+            return;
+        };
+        if Self::is_borrow(want) || matches!(want, TypeDecl::Unknown | TypeDecl::Hole) {
+            return;
+        }
+        let Some(rhs_ty) = self.expr_types.get(&rhs).cloned() else {
+            return;
+        };
+        let TypeDecl::Ref { inner, .. } = rhs_ty else {
+            return;
+        };
+        if !self.is_owning(&inner) {
+            return;
+        }
+        let ty_text = inner.spell_with(Some(self.interner));
+        let mut error = TypeCheckError::borrow_copy_out(self.name_of(name), ty_text);
+        if let Some(loc) = self.location(rhs) {
+            error = error.with_location(loc);
+        }
+        self.errors.push(error);
+    }
+
     /// Whether this binding names a borrow rather than a value.
     fn is_borrow(ty: &TypeDecl) -> bool {
         matches!(ty, TypeDecl::Ref { .. })
@@ -342,6 +384,7 @@ impl MoveCheck<'_> {
             // always has one.
             Stmt::Val(name, annotation, rhs) => {
                 self.walk_expr(rhs, Use::Read, conditional);
+                self.check_copy_out_of_borrow(name, &annotation, rhs);
                 if let Some(ty) = self.binding_type(&annotation, rhs) {
                     if Self::is_borrow(&ty) {
                         // ELEMENT-BORROW E2: a binding that names a
@@ -357,6 +400,7 @@ impl MoveCheck<'_> {
             }
             Stmt::Var(name, annotation, Some(rhs)) => {
                 self.walk_expr(rhs, Use::Read, conditional);
+                self.check_copy_out_of_borrow(name, &annotation, rhs);
                 if let Some(ty) = self.binding_type(&annotation, rhs) {
                     if Self::is_borrow(&ty) {
                         self.transferred.insert(stmt_ref);

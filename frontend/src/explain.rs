@@ -72,6 +72,7 @@ const ENTRIES: &[Entry] = &[
     (codes::UNSAFE_REQUIRED, E0024),
     (codes::UNUSED_RESULT, E0025),
     (codes::WINDOW_ESCAPE, E0026),
+    (codes::BORROW_COPY_OUT, E0027),
 ];
 
 const E0001: &str = "\
@@ -929,6 +930,30 @@ absence is the answer; an ignored `Result` is an unreported failure.
 
 Reported as a warning: programs were written this way before the check
 existed, and ignoring a failure can be deliberate.";
+
+const E0027: &str = "\
+E0027: an owning value copied out of a borrow
+
+A borrow names something somebody else owns. Taking a *value* out of
+one copies the handle, not the resource, so the copy and the original
+would both free it —
+
+    val e = v.borrow(0u64)       # `e` names the element
+    val s: String = e            # E0027: `s` would own it too
+
+For a scalar this is harmless and allowed: a `u64` owns nothing, so
+`val n: u64 = e` is a plain read. It is types that free something —
+`String`, `Vec<T>`, `Box<T>`, anything holding one — that are refused.
+
+Two ways forward. Read through the borrow, which is what it is for
+(`e.len()`, `e.field`, comparisons, printing). Or take a copy of your
+own, and say so:
+
+    val s = e.clone()            # a second String, with its own buffer
+
+The rule exists because the alternative is silent: on a heap that never
+reuses an address the second free is invisible, and the damage shows up
+only for something the OS hands back once, like a descriptor.";
 
 const E0026: &str = "\
 E0026: a window outlives the buffer it views

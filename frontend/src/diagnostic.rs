@@ -283,6 +283,10 @@ pub mod codes {
     /// views (POINTER P4's deferred half).
     pub const WINDOW_ESCAPE: &str = "E0026";
 
+    /// ELEMENT-BORROW 2-d: an owning value copied out of a borrow,
+    /// which would make a second owner of one resource.
+    pub const BORROW_COPY_OUT: &str = "E0027";
+
     /// Every code, in order. `crate::explain` is checked against this
     /// list by a test, so a new code cannot ship without prose.
     pub const ALL: &[&str] = &[
@@ -312,6 +316,7 @@ pub mod codes {
         UNSAFE_REQUIRED,
         UNUSED_RESULT,
         WINDOW_ESCAPE,
+        BORROW_COPY_OUT,
     ];
 }
 
@@ -344,6 +349,7 @@ fn code_for(kind: &TypeCheckErrorKind) -> &'static str {
         TypeCheckErrorKind::UnsafeRequired { .. } => codes::UNSAFE_REQUIRED,
         TypeCheckErrorKind::UnusedResult { .. } => codes::UNUSED_RESULT,
         TypeCheckErrorKind::WindowEscape { .. } => codes::WINDOW_ESCAPE,
+        TypeCheckErrorKind::BorrowCopyOut { .. } => codes::BORROW_COPY_OUT,
     }
 }
 

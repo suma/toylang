@@ -809,12 +809,10 @@ impl EvaluationContext<'_> {
         // way — this engine aliases values anyway, so naming and
         // reading are the same operation here. The difference is in
         // the type, which keeps the caller's binding from owning it.
-        BuiltinFunction::PtrRef => {
-            return Err(InterpreterError::InternalError(
-                "__builtin_ptr_ref needs its type argument: write __builtin_ptr_ref::<T>(p, off)"
-                    .to_string(),
-            ));
-        }
+        BuiltinFunction::PtrRef => Err(InterpreterError::InternalError(
+            "__builtin_ptr_ref needs its type argument: write __builtin_ptr_ref::<T>(p, off)"
+                .to_string(),
+        )),
         BuiltinFunction::PtrRefTyped(ty) | BuiltinFunction::PtrReadTyped(ty) => {
             Self::expect_args("ptr_read", args, 2)?;
 

@@ -156,6 +156,10 @@ pub enum TypeCheckErrorKind {
     /// outlives the buffer it views. `owner` names the buffer,
     /// `place` where the window got to.
     WindowEscape { owner: String, place: String },
+    /// ELEMENT-BORROW 2-d: an owning value was copied out of a borrow.
+    /// `name` is the binding that would have become the second owner,
+    /// `ty` what it names.
+    BorrowCopyOut { name: String, ty: String },
     /// MUST-USE: a statement produced a `Result` and threw it away.
     /// `ty` is how the value was spelled, `what` names what produced
     /// it when that is knowable (`the call \`write_file(...)\``).
@@ -438,6 +442,17 @@ impl TypeCheckError {
         }
     }
 
+    /// ELEMENT-BORROW 2-d: an owning value copied out of a borrow.
+    pub fn borrow_copy_out(name: String, ty: String) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::BorrowCopyOut { name, ty }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
     /// MUST-USE: a `Result` was produced and discarded.
     pub fn unused_result(ty: String, what: String) -> Self {
         Self {
@@ -678,6 +693,13 @@ impl TypeCheckError {
                     "this window views {owner}, and {place} — the buffer dies first, so the \
                      window would be left pointing at freed memory. Return the owner instead \
                      and let the caller take the window, or copy the elements out"
+                )
+            }
+            TypeCheckErrorKind::BorrowCopyOut { name, ty } => {
+                format!(
+                    "`{name}` would take a `{ty}` out of a borrow, and that value owns what \
+                     the borrow only names — two owners of one resource. Read through the \
+                     borrow instead, or take a copy of your own with `clone()`"
                 )
             }
             TypeCheckErrorKind::UnusedResult { ty, what } => {

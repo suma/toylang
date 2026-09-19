@@ -627,124 +627,6 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// that knows which function is being walked: a callee dragged in by
     /// `type_check_forward_ref` runs its own `type_check` and so tags its
     /// own errors.
-
-    /// ELEMENT-BORROW E1: a reference may only leave a function as a
-    /// **reborrow**.
-    ///
-    /// Accepted at every return site:
-    ///
-    /// * a parameter that is itself a reference (`&self` included),
-    /// * a field / index path rooted at one,
-    /// * `__builtin_ptr_ref::<T>(...)`, whose whole promise is "this
-    ///   memory belongs to the receiver".
-    ///
-    /// Anything else — a borrow of a local, most of all — is refused,
-    /// which is what the old blanket rule was protecting against.
-    fn check_reborrow_returns(&mut self, func: &crate::ast::Function) -> Result<(), TypeCheckError> {
-        let mut refs: Vec<DefaultSymbol> = Vec::new();
-        for p in func.parameter.iter() {
-            if p.1.contains_ref() {
-                refs.push(p.0);
-            }
-        }
-        let fn_name = self
-            .core
-            .string_interner
-            .resolve(func.name)
-            .unwrap_or("?")
-            .to_string();
-        let mut bad = false;
-        self.walk_return_sites(func.code, &refs, &mut bad);
-        if bad {
-            return Err(TypeCheckError::generic_error(&format!(
-                "function `{}` returns a reference that is not a reborrow of one of its \
-                 parameters; a borrow may only be handed back when the caller already \
-                 holds what it points at (ELEMENT-BORROW E1)",
-                fn_name
-            )));
-        }
-        Ok(())
-    }
-
-    /// Walk the body, reporting any return site whose expression is
-    /// not reborrow-shaped. The tail of a block is a return site too.
-    fn walk_return_sites(&self, stmt_ref: StmtRef, refs: &[DefaultSymbol], bad: &mut bool) {
-        let Some(stmt) = self.core.stmt_pool.get(&stmt_ref) else {
-            return;
-        };
-        match stmt {
-            Stmt::Return(Some(e)) => {
-                if !self.is_reborrow_expr(&e, refs) {
-                    *bad = true;
-                }
-            }
-            Stmt::Return(None) => {}
-            Stmt::Expression(e) => self.walk_return_sites_expr(&e, refs, bad),
-            Stmt::Val(_, _, e) => self.walk_return_sites_expr(&e, refs, bad),
-            Stmt::Var(_, _, Some(e)) => self.walk_return_sites_expr(&e, refs, bad),
-            _ => {}
-        }
-    }
-
-    fn walk_return_sites_expr(&self, expr_ref: &ExprRef, refs: &[DefaultSymbol], bad: &mut bool) {
-        let Some(expr) = self.core.expr_pool.get(expr_ref) else {
-            return;
-        };
-        match expr {
-            Expr::Block(stmts) => {
-                let n = stmts.len();
-                for (i, st) in stmts.iter().enumerate() {
-                    // The tail of a block is a return site; any other
-                    // statement matters only for the `return`s in it.
-                    if i + 1 == n
-                        && let Some(Stmt::Expression(tail)) = self.core.stmt_pool.get(st)
-                    {
-                        if self.expr_is_reference(&tail) && !self.is_reborrow_expr(&tail, refs) {
-                            *bad = true;
-                        }
-                        continue;
-                    }
-                    self.walk_return_sites(*st, refs, bad);
-                }
-            }
-            Expr::IfElifElse(_, then_block, elifs, else_block) => {
-                self.walk_return_sites_expr(&then_block, refs, bad);
-                for (_, blk) in elifs.iter() {
-                    self.walk_return_sites_expr(blk, refs, bad);
-                }
-                self.walk_return_sites_expr(&else_block, refs, bad);
-            }
-            _ => {}
-        }
-    }
-
-    /// Whether this expression's type is a reference (so a tail that
-    /// merely computes a number is not asked to be a reborrow).
-    fn expr_is_reference(&self, expr_ref: &ExprRef) -> bool {
-        match self.optimization.get_cached_type(expr_ref) {
-            Some(ty) => ty.contains_ref(),
-            None => false,
-        }
-    }
-
-    /// The reborrow shapes of E1.
-    fn is_reborrow_expr(&self, expr_ref: &ExprRef, refs: &[DefaultSymbol]) -> bool {
-        let Some(expr) = self.core.expr_pool.get(expr_ref) else {
-            return false;
-        };
-        match expr {
-            Expr::Identifier(sym) => refs.contains(&sym),
-            Expr::FieldAccess(obj, _) => self.is_reborrow_expr(&obj, refs),
-            Expr::SliceAccess(obj, _) => self.is_reborrow_expr(&obj, refs),
-            Expr::BuiltinCall(BuiltinFunction::PtrRefTyped(_), _) => true,
-            Expr::BuiltinCall(BuiltinFunction::PtrRef, _) => true,
-            // A call answering a reference is a reborrow of whatever
-            // it was handed; the callee was checked by this same rule.
-            Expr::MethodCall(..) | Expr::Call(..) => self.expr_is_reference(expr_ref),
-            _ => false,
-        }
-    }
-
     pub fn type_check(&mut self, func: Rc<Function>) -> Result<TypeDecl, TypeCheckError> {
         let errors_before = self.errors.len();
         let result = self.type_check_body(func.clone());
@@ -1250,6 +1132,123 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.function_checking.is_checked_fn.insert(func.name, Some(last.clone()));
         self.function_checking.checked_bodies.insert(s, Some(last.clone()));
         Ok(last)
+    }
+
+    /// ELEMENT-BORROW E1: a reference may only leave a function as a
+    /// **reborrow**.
+    ///
+    /// Accepted at every return site:
+    ///
+    /// * a parameter that is itself a reference (`&self` included),
+    /// * a field / index path rooted at one,
+    /// * `__builtin_ptr_ref::<T>(...)`, whose whole promise is "this
+    ///   memory belongs to the receiver".
+    ///
+    /// Anything else — a borrow of a local, most of all — is refused,
+    /// which is what the old blanket rule was protecting against.
+    fn check_reborrow_returns(&mut self, func: &crate::ast::Function) -> Result<(), TypeCheckError> {
+        let mut refs: Vec<DefaultSymbol> = Vec::new();
+        for p in func.parameter.iter() {
+            if p.1.contains_ref() {
+                refs.push(p.0);
+            }
+        }
+        let fn_name = self
+            .core
+            .string_interner
+            .resolve(func.name)
+            .unwrap_or("?")
+            .to_string();
+        let mut bad = false;
+        self.walk_return_sites(func.code, &refs, &mut bad);
+        if bad {
+            return Err(TypeCheckError::generic_error(&format!(
+                "function `{}` returns a reference that is not a reborrow of one of its \
+                 parameters; a borrow may only be handed back when the caller already \
+                 holds what it points at (ELEMENT-BORROW E1)",
+                fn_name
+            )));
+        }
+        Ok(())
+    }
+
+    /// Walk the body, reporting any return site whose expression is
+    /// not reborrow-shaped. The tail of a block is a return site too.
+    fn walk_return_sites(&self, stmt_ref: StmtRef, refs: &[DefaultSymbol], bad: &mut bool) {
+        let Some(stmt) = self.core.stmt_pool.get(&stmt_ref) else {
+            return;
+        };
+        match stmt {
+            Stmt::Return(Some(e)) => {
+                if !self.is_reborrow_expr(&e, refs) {
+                    *bad = true;
+                }
+            }
+            Stmt::Return(None) => {}
+            Stmt::Expression(e) => self.walk_return_sites_expr(&e, refs, bad),
+            Stmt::Val(_, _, e) => self.walk_return_sites_expr(&e, refs, bad),
+            Stmt::Var(_, _, Some(e)) => self.walk_return_sites_expr(&e, refs, bad),
+            _ => {}
+        }
+    }
+
+    fn walk_return_sites_expr(&self, expr_ref: &ExprRef, refs: &[DefaultSymbol], bad: &mut bool) {
+        let Some(expr) = self.core.expr_pool.get(expr_ref) else {
+            return;
+        };
+        match expr {
+            Expr::Block(stmts) => {
+                let n = stmts.len();
+                for (i, st) in stmts.iter().enumerate() {
+                    // The tail of a block is a return site; any other
+                    // statement matters only for the `return`s in it.
+                    if i + 1 == n
+                        && let Some(Stmt::Expression(tail)) = self.core.stmt_pool.get(st)
+                    {
+                        if self.expr_is_reference(&tail) && !self.is_reborrow_expr(&tail, refs) {
+                            *bad = true;
+                        }
+                        continue;
+                    }
+                    self.walk_return_sites(*st, refs, bad);
+                }
+            }
+            Expr::IfElifElse(_, then_block, elifs, else_block) => {
+                self.walk_return_sites_expr(&then_block, refs, bad);
+                for (_, blk) in elifs.iter() {
+                    self.walk_return_sites_expr(blk, refs, bad);
+                }
+                self.walk_return_sites_expr(&else_block, refs, bad);
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether this expression's type is a reference (so a tail that
+    /// merely computes a number is not asked to be a reborrow).
+    fn expr_is_reference(&self, expr_ref: &ExprRef) -> bool {
+        match self.optimization.get_cached_type(expr_ref) {
+            Some(ty) => ty.contains_ref(),
+            None => false,
+        }
+    }
+
+    /// The reborrow shapes of E1.
+    fn is_reborrow_expr(&self, expr_ref: &ExprRef, refs: &[DefaultSymbol]) -> bool {
+        let Some(expr) = self.core.expr_pool.get(expr_ref) else {
+            return false;
+        };
+        match expr {
+            Expr::Identifier(sym) => refs.contains(&sym),
+            Expr::FieldAccess(obj, _) => self.is_reborrow_expr(&obj, refs),
+            Expr::SliceAccess(obj, _) => self.is_reborrow_expr(&obj, refs),
+            Expr::BuiltinCall(BuiltinFunction::PtrRefTyped(_), _) => true,
+            Expr::BuiltinCall(BuiltinFunction::PtrRef, _) => true,
+            // A call answering a reference is a reborrow of whatever
+            // it was handed; the callee was checked by this same rule.
+            Expr::MethodCall(..) | Expr::Call(..) => self.expr_is_reference(expr_ref),
+            _ => false,
+        }
     }
 
     /// ALLOC-CONTRACT: type-check the `old(...)` snapshot expressions

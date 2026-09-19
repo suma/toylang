@@ -536,6 +536,51 @@ mod errors {
     }
 
     #[test]
+    fn test_owning_value_cannot_be_copied_out_of_a_borrow() {
+        // ELEMENT-BORROW 2-d: reading through a borrow is what it is
+        // for; asking for the *value* of an owning type would make a
+        // second owner, which is the bug `borrow` exists to avoid.
+        let copied = r#"
+            fn main() -> u64 {
+                var v: Vec<String> = Vec::new()
+                v.push(String::from_str("hello"))
+                val s: String = v.borrow(0u64)
+                s.len()
+            }
+        "#;
+        let err = test_program(copied).expect_err("expected a copy-out error");
+        assert!(
+            err.contains("E0027") || err.contains("two owners"),
+            "expected the copy-out error, got: {}", err
+        );
+
+        // A scalar owns nothing, so taking its value is a plain read.
+        let scalar = r#"
+            fn main() -> u64 {
+                var v: Vec<u64> = Vec::new()
+                v.push(41u64)
+                val n: u64 = v.borrow(0u64)
+                n + 1u64
+            }
+        "#;
+        let value = test_program(scalar).expect("a scalar reads through the borrow");
+        assert_eq!(format!("{:?}", value), "RefCell { value: UInt64(42) }");
+
+        // And a copy asked for on purpose is fine.
+        let cloned = r#"
+            fn main() -> u64 {
+                var v: Vec<String> = Vec::new()
+                v.push(String::from_str("hello"))
+                val e = v.borrow(0u64)
+                val mine = e.clone()
+                mine.len()
+            }
+        "#;
+        let value = test_program(cloned).expect("clone is the way to take a copy");
+        assert_eq!(format!("{:?}", value), "RefCell { value: UInt64(5) }");
+    }
+
+    #[test]
     fn test_binding_a_borrow_is_allowed_but_it_cannot_escape() {
         // ELEMENT-BORROW E2: the binding is fine; outliving what it
         // names is not. The escape is the window rule (`[E0026]`),

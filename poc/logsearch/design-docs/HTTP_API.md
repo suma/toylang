@@ -31,8 +31,10 @@
 >
 > §4 の表のうち**同時接続だけが 128 ではなく 1** である。理由は設計
 > ではなく言語側の穴で、接続表は socket ハンドルの容器を要求するが
-> `Vec<TcpStream>` は drop glue が fd を閉じる別名を返し、番号だけの
-> 表にする `TcpStream::from_fd` が無い ([`RUNTIME_GAPS.md`](RUNTIME_GAPS.md) G16)。
+> `Vec<TcpStream>` は取り出した要素の drop glue が fd を閉じる
+> ([`RUNTIME_GAPS.md`](RUNTIME_GAPS.md) G16)。**言語側は 2026-09-18 に
+> `into_fd` / `from_fd` を得た**ので、表を `Vec<i32>` にすれば
+> `server.t` だけで 128 にできる (まだやっていない)。
 > 余った客は TCP のバックログで待つ — 表が埋まったときに §4 が
 > 指示している振る舞いそのものなので、数を上げるときに変わるのは
 > `server.t` だけで済む。部分読み・部分書き・タイムアウト・keep-alive

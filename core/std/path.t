@@ -191,10 +191,19 @@ pub unsafe fn normalize(p: str) -> String {
     val b: String = String::from_str(p)
     val slash: String = String::from_str("/")
     val parts: Vec<String> = b.split(slash)
-    var out: Vec<String> = Vec::new()
+    # **What is kept is a list of indices, not of strings.** The
+    # components already exist, in `parts`, and it owns them; a second
+    # `Vec<String>` would have to either clone each one (an allocation
+    # per component) or share the buffers and have both vectors free
+    # them. Indices own nothing, so neither question arises
+    # (design-docs/ELEMENT_BORROW.md).
+    var out: Vec<u64> = Vec::new()
     var i: u64 = 0u64
     while i < parts.size() {
-        val part: String = parts.get(i)
+        # Reading only, so it borrows: `get` would hand back a value
+        # sharing the element's buffer, and the paths that `continue`
+        # would free it while `parts` still points at it.
+        val part: &String = parts.borrow(i)
         val s: str = part.to_str()
         if s == "" || s == "." {
             i = i + 1u64
@@ -202,9 +211,10 @@ pub unsafe fn normalize(p: str) -> String {
         }
         if s == ".." {
             if out.size() > 0u64 {
-                val last: String = out.get(out.size() - 1u64)
+                val at: u64 = out.get(out.size() - 1u64)
+                val last: &String = parts.borrow(at)
                 if last.eq_str("..") == false {
-                    val _dropped: String = out.pop()
+                    val _dropped: u64 = out.pop()
                     i = i + 1u64
                     continue
                 }
@@ -216,7 +226,7 @@ pub unsafe fn normalize(p: str) -> String {
                 continue
             }
         }
-        out.push(part)
+        out.push(i)
         i = i + 1u64
     }
     var result: String = String::new()
@@ -224,7 +234,9 @@ pub unsafe fn normalize(p: str) -> String {
     var k: u64 = 0u64
     while k < out.size() {
         if k > 0u64 { result.push_str("/") }
-        val piece: String = out.get(k)
+        # `push_string` takes a borrow, so nothing is handed over.
+        val at: u64 = out.get(k)
+        val piece: &String = parts.borrow(at)
         result.push_string(piece)
         k = k + 1u64
     }

@@ -410,3 +410,56 @@ fn a_failure_inside_the_stdlib_names_the_stdlib_file() {
     assert_eq!(d["file"], "core/std/option.t", "{d}");
     assert_eq!(d["backtrace"][0]["function"], "Option::unwrap", "{d}");
 }
+
+#[test]
+fn a_type_error_in_a_module_names_the_module_file_and_line() {
+    // DEBUG-OBS D2, the type-check half of
+    // `a_failure_inside_the_stdlib_names_the_stdlib_file`.
+    //
+    // The line used to be recomputed from the offset against the
+    // *entry* file's text, so an error on line 5 of a module was
+    // reported as line 3 — and the number moved when the entry file
+    // was edited, which is the tell that it was never the module's
+    // line at all.
+    let dir = std::env::temp_dir().join(format!(
+        "toy-modline-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).expect("temp module dir");
+    let module = dir.join("modline.t");
+    // The error is on line 5. The leading blank lines are the point:
+    // they make the module's numbering differ from any other file's.
+    std::fs::write(
+        &module,
+        "\n\n\npub fn modline_boom(n: u64) -> u64 {\n    val bad: u64 = \"nope\"\n    n\n}\n",
+    )
+    .expect("write module");
+
+    let mut options = interpreter::RunOptions::default();
+    options.diagnostics_json = true;
+    let roots = [dir.clone()];
+    options.core_modules_dirs = &roots;
+    let (result, stderr) = interpreter::output::with_stderr_capture(|| {
+        interpreter::run_source(
+            "fn main() -> u64 { modline::modline_boom(1u64) }",
+            "test.t",
+            &options,
+        )
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(result.is_err(), "expected the module to fail type checking");
+
+    let value: serde_json::Value = serde_json::from_str(&stderr)
+        .unwrap_or_else(|e| panic!("not JSON ({e}):\n{stderr}"));
+    let d = &value[0];
+    assert_eq!(d["code"], "E0001", "{d}");
+    assert!(
+        d["file"].as_str().unwrap_or("").ends_with("modline.t"),
+        "the diagnostic should name the module's own file: {d}"
+    );
+    assert_eq!(d["span"]["line"], 5, "{d}");
+}

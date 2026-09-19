@@ -100,7 +100,21 @@ impl<'a> ErrorFormatter<'a> {
             frontend::diagnostic::Severity::Warning => "Warning",
             _ => "Error",
         };
-        let mut out = if let Some(module) = &diagnostic.origin_module {
+        // A module span that names a file the map knows is drawn from
+        // that file. Saying "line 5 of that module" was all the reader
+        // got for module code even when the module's text was right
+        // there, and a line number with no file and no excerpt is the
+        // hardest kind of report to act on.
+        //
+        // The span has to name the module's own file to be drawable:
+        // a diagnostic tagged with a module but still positioned at
+        // `FileId::ENTRY` is one integration did not re-anchor, and
+        // rendering it here would quote whatever sits at that offset
+        // in the file being compiled — the failure P2 fixed.
+        let drawable = diagnostic.span.is_some_and(|s| {
+            s.file != FileId::ENTRY && self.source_map.is_some_and(|m| m.get(s.file).is_some())
+        });
+        let mut out = if let (Some(module), false) = (&diagnostic.origin_module, drawable) {
             let position = diagnostic
                 .span
                 .map(|s| format!(" (line {} of that module)", s.line))

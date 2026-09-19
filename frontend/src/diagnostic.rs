@@ -193,6 +193,25 @@ impl Diagnostic {
         }
     }
 
+    /// The same diagnostic with `file` naming the file its span is
+    /// actually in.
+    ///
+    /// DEBUG-OBS D2: `file` is the file being compiled, which is not
+    /// where an imported module's span lives. The text renderer has
+    /// resolved the span's `FileId` against the source map for a
+    /// while; a JSON consumer could not, because the id means nothing
+    /// outside the program that produced it. Resolving it here puts
+    /// the path on the wire, so `file` + `span` is a position a tool
+    /// can open. `origin_module` still says *why* it is not the entry.
+    pub fn anchor_in(&mut self, source_map: &crate::source_map::SourceMap) {
+        if let Some(span) = self.span
+            && span.file != crate::source_map::FileId::ENTRY
+            && let Some(path) = source_map.path(span.file)
+        {
+            self.file = path.to_string();
+        }
+    }
+
     /// A parse error as a structured diagnostic. Lex errors carry
     /// their own code (E0012); the parser's other failures have no
     /// category yet and share the catch-all.

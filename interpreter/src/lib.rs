@@ -850,15 +850,39 @@ fn check_typing_collecting(
     });
 
     for mut error in fn_errors {
-        // Add source location information if available
-        if let (Some(source), Some(location)) = (source_code, error.location.as_ref()) {
-            // Calculate line and column from source
-            let (line, column) = calculate_line_col_from_offset(source, location.offset as usize);
-            error.location = Some(location.with_line_col(line, column));
+        // Add source location information if available.
+        //
+        // DEBUG-OBS D2: the offset belongs to the file the location
+        // names, which is not always the entry — module integration
+        // re-anchors imported nodes to their own `FileId`. Recomputing
+        // every line against the entry's text gave imported code a
+        // line number from a file it is not in: an error on line 5 of
+        // a module was reported as "line 3 of that module", and the
+        // number moved when the *entry* file was edited. The entry's
+        // own text is still used for `FileId::ENTRY`, which is where
+        // it is the only source available (an inline program has no
+        // source map).
+        if let Some(location) = error.location.as_ref() {
+            let source = if location.file == frontend::source_map::FileId::ENTRY {
+                source_code
+            } else {
+                program.source_map.source(location.file).or(source_code)
+            };
+            if let Some(source) = source {
+                let (line, column) =
+                    calculate_line_col_from_offset(source, location.offset as usize);
+                error.location = Some(location.with_line_col(line, column));
+            }
         }
         errors.push(Diagnostic::from_type_check_error(&error, diag_file, Some(&*string_interner)));
     }
 
+    // DEBUG-OBS D2: name the file each span is in. Done once, at the
+    // end, because the earlier producers hold a borrow of `program`
+    // through the type checker and cannot read its source map.
+    for d in errors.iter_mut().chain(warnings.iter_mut()) {
+        d.anchor_in(&program.source_map);
+    }
     if errors.is_empty() {
         Ok(warnings)
     } else {

@@ -1741,6 +1741,32 @@
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
 
+- **MATCH-PAYLOAD-COPY — `match` の腕で受けた所有型が複製になり、
+  元が閉じる / 解放される** ★★★ — `match r { Result::Ok(c) => { ... } }`
+  の `c` は **compiled レーンでは複製**で、元の payload はスコープの
+  終わりに drop される。tree-walker は別名なので drop されない。
+  **4 レーンで意味が割れる**うえ、症状は「ソケットが黙って閉じる」
+  「バッファが解放される」で、診断は 1 つも出ない。
+
+  ```rust
+  # ループの中で開くと、反復が終わるたびに接続が閉じる
+  while i < 3u64 {
+      val dialled = TcpStream::connect("127.0.0.1", port)
+      match dialled {
+          Result::Ok(c) => { var cl = c  fds.push(cl.into_fd()) }
+          Result::Err(e) => { }
+      }
+      i = i + 1u64
+  }
+  ```
+
+  `var x = match r { Result::Ok(c) => c, ... }` の形 (腕から**返す**)
+  なら move になり、閉じない。**腕の中で使い切る形だけが壊れる**。
+  見つけたのは `poc/logsearch` の接続表 (2026-09-19)。POC 側は
+  `TcpListener::accept_fd` を足して回避したが、これは回避であって
+  直りではない。所有の扱いなので CODE-SIZE-SELF-ABI と同じく
+  「沈黙する誤り」の類。
+
 - **RANGE-TYPE-ANNOTATION — `Range<u64>` と書いた型が範囲値の型と
   一致しない** ★ — `fn f(r: Range<u64>)` に `0u64..3u64` を渡すと
   ``expected Range<u64>, but got Range<u64>``。注釈は generic な

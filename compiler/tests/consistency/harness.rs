@@ -498,6 +498,13 @@ pub(super) fn ir_vm_exit_code(source: &str, with_core: bool) -> Option<i64> {
 ///
 /// Phase 1+: when the IR VM lane is eligible, a 4-way agreement
 /// (interpreter / compiler / JIT / IR VM) is required on the fast path.
+/// **This compares the lanes with each other, not with an answer.**
+/// A program that fails the same way everywhere is consistent, so a
+/// test whose failure mode is "every lane returns the error code"
+/// passes while the thing it checks is broken (a `net` test caught a
+/// closed descriptor this way only after it was rewritten to compare
+/// output). When the failure would look alike on every lane, assert on
+/// the rendered output with `assert_renders` instead.
 pub(super) fn assert_consistent(source: &str, stem: &str) {
     if skip_e2e() {
         return;

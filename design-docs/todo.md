@@ -1741,6 +1741,30 @@
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
 
+- **CONTAINER-ELEM-DROP — 容器から取り出した要素の別名に drop glue が
+  付き、容器の持ち物を解放する** ★★★ — `val e: T = v.get(i)` は
+  **要素の別名**であって所有ではないのに、compound を返す method 呼び出し
+  から束縛したローカルには drop glue が付く。`T` が所有型なら、その
+  束縛が死ぬときに**容器がまだ指している資源**が解放される。
+
+  ```rust
+  var conns: Vec<TcpStream> = Vec::new()
+  conns.push(cl)
+  val s: TcpStream = conns.get(0u64)   # 別名。束縛が死ぬと fd が閉じる
+  # 表にはまだ載っているのに、次の write は EBADF
+  ```
+
+  `Vec<File>` も同じ。**stdlib は `__builtin_ptr_read::<T>` で回避して
+  いる** (STRING-NO-DROP で `Vec::sort` が use-after-free になったとき
+  にそうした) が、利用者側には `unsafe` な builtin に降りる以外の道が
+  無い。`poc/logsearch` の HTTP サーバはこれで接続表を持てず、番号の表
+  (`into_fd` / `from_fd`) を使う形に倒した — **回避であって直りではない**。
+
+  直すなら「method の戻り値が容器の要素の別名かどうか」を型で言える
+  必要があり、ä¸ã® `MATCH-PAYLOAD-COPY` と同じ「所有と別名の区別」の
+  問題に行き着く。2 つまとめて設計を取るのが筋で、CONCURRENCY.md §2-a が
+  「共有可変性を静的に止める道具が今は無い」と書いているのもこれである。
+
 - **MATCH-PAYLOAD-COPY — `match` の腕で受けた所有型が複製になり、
   元が閉じる / 解放される** ★★★ — `match r { Result::Ok(c) => { ... } }`
   の `c` は **compiled レーンでは複製**で、元の payload はスコープの

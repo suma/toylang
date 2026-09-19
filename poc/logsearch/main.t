@@ -122,7 +122,7 @@ fn cmd_scan(dir: str, limit: u64) -> u64 {
 
     var fi: u64 = 0u64
     while fi < n_files && read_files < limit {
-        val path: String = files.get(fi)
+        val path: &String = files.borrow(fi)
         val path_str = path.to_str()
         fi = fi + 1u64
 
@@ -237,7 +237,7 @@ fn cmd_archive(dir: str, spec: str, limit: u64) -> u64 {
 
     var fi: u64 = 0u64
     while fi < n_files && read_files < limit {
-        val path: String = files.get(fi)
+        val path: &String = files.borrow(fi)
         val path_str = path.to_str()
         fi = fi + 1u64
 
@@ -330,7 +330,7 @@ fn cmd_verify(out: str) -> u64 {
 
     var i: u64 = 0u64
     while i < n {
-        val p: String = segs.get(i)
+        val p: &String = segs.borrow(i)
         val full = p.to_str()
         # `verify` takes the base name and adds the extension back.
         val base = p.substring(0u64, p.len() - 4u64)
@@ -533,7 +533,7 @@ fn cmd_retain(spec: str, days: u64) -> u64 {
                     val why = catalog::why_retention()
                     if catalog::append_remove(ps, gen, segid, why, &crc) {
                         val gone = c.remove(segid)
-                        val sp: String = paths.get(j)
+                        val sp: &String = paths.borrow(j)
                         val sps = sp.to_str()
                         val rm = fs::remove_file(sps)
                         match rm {
@@ -653,7 +653,7 @@ fn cmd_top_linked(dir: str, q: &Query, field: str, limit: u64) -> u64 {
         println("no segments under {dir}")
         return 1u64
     }
-    val anchor: String = q.terms.get(0u64)
+    val anchor: &String = q.terms.borrow(0u64)
     println("linked {field} for {anchor}")
 
     val watch = Stopwatch::start()
@@ -682,7 +682,7 @@ fn cmd_top_linked(dir: str, q: &Query, field: str, limit: u64) -> u64 {
 
     var si: u64 = 0u64
     while si < segs.size() {
-        val seg_path: String = segs.get(si)
+        val seg_path: &String = segs.borrow(si)
         val seg_str = seg_path.to_str()
         si = si + 1u64
         val opened_f = File::open(seg_str)
@@ -796,7 +796,7 @@ fn cmd_top_linked(dir: str, q: &Query, field: str, limit: u64) -> u64 {
     var k: u64 = 0u64
     while k < total && shown < limit {
         val t: Tally = tallies.get(total - 1u64 - k)
-        val nm: String = names.get(t.idx)
+        val nm: &String = names.borrow(t.idx)
         println("  {t.count}  {nm}")
         shown = shown + 1u64
         k = k + 1u64
@@ -824,7 +824,7 @@ fn cmd_query(dir: str, text: str) -> u64 {
     var top_limit: u64 = 10u64
     var i: u64 = 0u64
     while i < parts.size() {
-        val tok: String = parts.get(i)
+        val tok: &String = parts.borrow(i)
         if tok.len() > 4u64 {
             val head = tok.substring(0u64, 4u64)
             if head.eq_str("top=") {
@@ -842,7 +842,7 @@ fn cmd_query(dir: str, text: str) -> u64 {
         i = i + 1u64
     }
     if top_fields.size() > 0u64 {
-        val chosen: String = top_fields.get(0u64)
+        val chosen: &String = top_fields.borrow(0u64)
         # `ip=1.2.3.4 top=path` is a traversal: the field filter picks
         # one object and `top=` asks what it is linked to. Without a
         # filter the same word means "the whole distribution", which
@@ -938,7 +938,7 @@ fn cmd_fields_indexed(dir: str, field: str, limit: u64) -> u64 {
     var k: u64 = 0u64
     while k < total && shown < limit {
         val t: Tally = tallies.get(total - 1u64 - k)
-        val nm: String = tal.names.get(t.idx)
+        val nm: &String = tal.names.borrow(t.idx)
         println("  {t.count}  {nm}")
         shown = shown + 1u64
         k = k + 1u64
@@ -1028,7 +1028,7 @@ fn cmd_fields(dir: str, field: str, limit: u64) -> u64 {
 
     var si: u64 = 0u64
     while si < n_segs {
-        val seg_path: String = segs.get(si)
+        val seg_path: &String = segs.borrow(si)
         val seg_str = seg_path.to_str()
         si = si + 1u64
 
@@ -1178,7 +1178,7 @@ fn cmd_fields(dir: str, field: str, limit: u64) -> u64 {
     var k: u64 = 0u64
     while k < total && shown < limit {
         val t: Tally = tallies.get(total - 1u64 - k)
-        val nm: String = names.get(t.idx)
+        val nm: &String = names.borrow(t.idx)
         println("  {t.count}  {nm}")
         shown = shown + 1u64
         k = k + 1u64
@@ -1210,7 +1210,7 @@ fn cmd_object(dir: str, spec: str) -> u64 {
         println("  a value with spaces cannot be named here -- use `fields` or `query`")
         return 1u64
     }
-    val want: String = q.terms.get(0u64)
+    val want: &String = q.terms.borrow(0u64)
     println("object {want}")
 
     var segs: Vec<String> = Vec::new()
@@ -1234,7 +1234,7 @@ fn cmd_object(dir: str, spec: str) -> u64 {
 
     var si: u64 = 0u64
     while si < segs.size() {
-        val seg: String = segs.get(si)
+        val seg: &String = segs.borrow(si)
         si = si + 1u64
         val opened = File::open(seg.to_str())
         match opened {
@@ -1417,7 +1417,7 @@ fn e2e_wipe(path: str) {
             Result::Ok(names) => {
                 var i = 0u64
                 while i < names.size() {
-                    val nm: String = names.get(i)
+                    val nm: &String = names.borrow(i)
                     e2e_wipe("{path}/{nm.to_str()}")
                     i = i + 1u64
                 }
@@ -1549,8 +1549,11 @@ fn e2e_first_segment(spec: str) -> String {
     var segs: Vec<String> = Vec::new()
     mount::segments_of(spec, &mut segs)
     if segs.size() == 0u64 { panic("e2e: no segment under {spec}") }
-    val first: String = segs.get(0u64)
-    first
+    # 借りたままでは返せない — `segs` はこの関数で死ぬ ([E0026])。
+    # 呼び出し側が持ち続ける 1 本なので、写しを渡す。
+    val first: &String = segs.borrow(0u64)
+    val mine: String = first.clone()
+    mine
 }
 
 # `path` の `at` バイト目を 1 ビット反転して書き戻す。

@@ -69,7 +69,7 @@ fn sm_count(tal: &StreamTally, want: str) -> u64 {
     var i = 0u64
     var out = 0u64
     while i < tal.size() {
-        val text: String = tal.texts.get(i)
+        val text: &String = tal.texts.borrow(i)
         if text.eq(&w) { out = tal.counts.get(i) }
         i = i + 1u64
     }
@@ -170,7 +170,7 @@ test "streams fold across segments" {
     # 時刻の端は両方のセグメントを覆う。
     var i = 0u64
     while i < tal.size() {
-        val text: String = tal.texts.get(i)
+        val text: &String = tal.texts.borrow(i)
         if text.eq_str("app=api") {
             val lo: i64 = tal.ts_min.get(i)
             val hi: i64 = tal.ts_max.get(i)

@@ -51,7 +51,7 @@ fn wipe(dir: str) {
         Result::Ok(names) => {
             var i: u64 = 0u64
             while i < names.size() {
-                val nm: String = names.get(i)
+                val nm: &String = names.borrow(i)
                 val full = path::join(dir, nm.to_str())
                 val gone = fs::remove_file(full.to_str())
                 match gone {

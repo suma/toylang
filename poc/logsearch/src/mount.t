@@ -115,7 +115,7 @@ impl MountSet {
     # A copy, not the stored one: handing out the container's own
     # `String` would let the caller's drop glue free it.
     pub fn path_of(&self, i: u64) -> String {
-        val p: String = self.paths.get(i)
+        val p: &String = self.paths.borrow(i)
         val c = p.clone()
         c
     }
@@ -231,7 +231,7 @@ fn apply_line(line: &String, out: &mut MountSet, toks: &mut Vec<String>) -> bool
     tokens_of(line, toks)
     if toks.size() == 0u64 { return true }
 
-    val head: String = toks.get(0u64)
+    val head: &String = toks.borrow(0u64)
     val hash: u8 = head.get(0u64)
     if hash == '#' { return true }
 
@@ -239,14 +239,14 @@ fn apply_line(line: &String, out: &mut MountSet, toks: &mut Vec<String>) -> bool
     if !head.eq(&want) { return false }
     if toks.size() < 2u64 { return false }
 
-    val path: String = toks.get(1u64)
+    val path: &String = toks.borrow(1u64)
     var quota: u64 = 0u64
     var ro = false
     var ok = true
 
     var i: u64 = 2u64
     while i < toks.size() {
-        val t: String = toks.get(i)
+        val t: &String = toks.borrow(i)
         val qkey = String::from_str("quota=")
         val rokey = String::from_str("readonly")
         if t.starts_with(&qkey) {
@@ -559,7 +559,7 @@ pub fn segments_in(ms: &MountSet, out: &mut Vec<String>) {
             val walked = logdir::scan_suffix(ps, ".seg")
             var k2: u64 = 0u64
             while k2 < walked.size() {
-                val w: String = walked.get(k2)
+                val w: &String = walked.borrow(k2)
                 out.push(w.clone())
                 k2 = k2 + 1u64
             }

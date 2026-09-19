@@ -1003,7 +1003,7 @@ impl ArchiveWriter {
         # postpones, and it arrives with a real sort.
         var t: u64 = 0u64
         while t < n_terms {
-            val name: String = self.term_names.get(t)
+            val name: &String = self.term_names.borrow(t)
             tsec.put_varint(name.len())
             val nw = name.as_span()
             match nw {
@@ -1325,7 +1325,7 @@ impl ArchiveWriter {
         ssec.put_u32(n_streams)
         var sti: u64 = 0u64
         while sti < n_streams {
-            val text: String = self.stream_text.get(sti)
+            val text: &String = self.stream_text.borrow(sti)
             ssec.put_varint(text.len())
             val sw = text.as_span()
             match sw {

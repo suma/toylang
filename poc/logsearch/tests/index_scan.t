@@ -86,7 +86,7 @@ impl Oracle {
         var i = 0u64
         var found = false
         while i < self.names.size() && !found {
-            val nm: String = self.names.get(i)
+            val nm: &String = self.names.borrow(i)
             if nm.eq(term) {
                 val c: u64 = self.counts.get(i)
                 self.counts.set(i, c + 1u64)
@@ -112,7 +112,7 @@ fn push_unique(terms: &mut Vec<String>, t: &String) {
     var i = 0u64
     var dup = false
     while i < terms.size() && !dup {
-        val have: String = terms.get(i)
+        val have: &String = terms.borrow(i)
         if have.eq(t) { dup = true }
         i = i + 1u64
     }
@@ -203,7 +203,7 @@ fn build_and_count(stem: str, oracle: &mut Oracle) -> String {
                             record_terms(sp, l, &rec, &mut terms)
                             var i = 0u64
                             while i < terms.size() {
-                                val t: String = terms.get(i)
+                                val t: &String = terms.borrow(i)
                                 oracle.add(&t)
                                 i = i + 1u64
                             }
@@ -238,7 +238,7 @@ fn agree_on(key: str, segs: &Vec<String>, oracle: &Oracle) -> u64 {
     var expected = 0u64
     var i = 0u64
     while i < oracle.names.size() {
-        val nm: String = oracle.names.get(i)
+        val nm: &String = oracle.names.borrow(i)
         var keyed = false
         if nm.len() > prefix.len() {
             val head = nm.substring(0u64, prefix.len())
@@ -252,7 +252,7 @@ fn agree_on(key: str, segs: &Vec<String>, oracle: &Oracle) -> u64 {
             var seen = false
             var j = 0u64
             while j < tal.size() {
-                val tn: String = tal.names.get(j)
+                val tn: &String = tal.names.borrow(j)
                 if tn.eq(&value) {
                     got = tal.counts.get(j)
                     seen = true
@@ -307,7 +307,7 @@ test "a syslog host and a host label are one key, counted once per record" {
     val tal = query::tally(&segs, "host:", false, &crc)
     var i = 0u64
     while i < tal.size() {
-        val nm: String = tal.names.get(i)
+        val nm: &String = tal.names.borrow(i)
         val c: u64 = tal.counts.get(i)
         assert_eq(c, 2u64)
         i = i + 1u64

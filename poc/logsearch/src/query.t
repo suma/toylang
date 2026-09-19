@@ -171,7 +171,7 @@ pub fn parse_query(text: str, now: i64) -> Query {
     val parts = whole.split(sep)
     var i: u64 = 0u64
     while i < parts.size() {
-        val tok: String = parts.get(i)
+        val tok: &String = parts.borrow(i)
         i = i + 1u64
         if tok.len() == 0u64 {
             # split leaves empty pieces where spaces repeat
@@ -312,7 +312,7 @@ fn matches(q: &Query, arena: Span<u8>, line_at: u64, line_len: u64,
     }
     var k: u64 = 0u64
     while k < q.needles.size() {
-        val needle: String = q.needles.get(k)
+        val needle: &String = q.needles.borrow(k)
         val nw = needle.as_span()
         match nw {
             Option::Some(want) => {
@@ -377,7 +377,7 @@ pub fn resolve_indexed(traw: Span<u8>, tlen: u64, q: &Query,
     var first = true
     var t: u64 = 0u64
     while t < q.terms.size() && !empty {
-        val name: String = q.terms.get(t)
+        val name: &String = q.terms.borrow(t)
         val nw = name.as_span()
         match nw {
             Option::Some(want) => {
@@ -435,7 +435,7 @@ pub fn resolve_indexed(traw: Span<u8>, tlen: u64, q: &Query,
     # once per needle.
     var u: u64 = 0u64
     while u < q.subs.size() && !empty {
-        val spec: String = q.subs.get(u)
+        val spec: &String = q.subs.borrow(u)
         val colon = String::from_str(":")
         val cpos = spec.find(colon)
         match cpos {
@@ -685,7 +685,7 @@ pub fn search(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32,
 
     var si: u64 = 0u64
     while si < n_segs {
-        val seg_path: String = segs.get(si)
+        val seg_path: &String = segs.borrow(si)
         val seg_str = seg_path.to_str()
         si = si + 1u64
         considered = considered + 1u64
@@ -895,7 +895,7 @@ pub fn run(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32) -> u64 {
         var pick = i
         if q.desc { pick = total - 1u64 - i }
         val h: Hit = hits.get(pick)
-        val line: String = texts.get(h.ord)
+        val line: &String = texts.borrow(h.ord)
         val dt = DateTime::from_unix(h.ts)
         val stamp = time::format(dt, "%Y-%m-%dT%H:%M:%SZ")
         if h.ts == 0i64 {
@@ -997,7 +997,7 @@ pub fn streams(segs: &Vec<String>, crc: &Crc32) -> StreamTally {
 
     var si: u64 = 0u64
     while si < segs.size() {
-        val seg_path: String = segs.get(si)
+        val seg_path: &String = segs.borrow(si)
         val seg_str = seg_path.to_str()
         si = si + 1u64
         val opened_f = File::open(seg_str)
@@ -1033,7 +1033,7 @@ pub fn streams(segs: &Vec<String>, crc: &Crc32) -> StreamTally {
 fn fold_streams(rows: &StreamRows, out: &mut StreamTally) {
     var i: u64 = 0u64
     while i < rows.size() {
-        val text: String = rows.texts.get(i)
+        val text: &String = rows.texts.borrow(i)
         val count: u64 = rows.counts.get(i)
         val lo: i64 = rows.ts_min.get(i)
         val hi: i64 = rows.ts_max.get(i)
@@ -1041,7 +1041,7 @@ fn fold_streams(rows: &StreamRows, out: &mut StreamTally) {
         var found = false
         var k: u64 = 0u64
         while k < out.texts.size() && !found {
-            val have: String = out.texts.get(k)
+            val have: &String = out.texts.borrow(k)
             if have.eq(&text) {
                 at = k
                 found = true
@@ -1085,7 +1085,7 @@ pub fn tally(segs: &Vec<String>, prefix: str, keys_only: bool,
 
     var si: u64 = 0u64
     while si < segs.size() {
-        val seg_path: String = segs.get(si)
+        val seg_path: &String = segs.borrow(si)
         val seg_str = seg_path.to_str()
         si = si + 1u64
         val opened_f = File::open(seg_str)
@@ -1191,7 +1191,7 @@ pub fn render_text(hits: &Vec<Hit>, texts: &Vec<String>, q: &Query,
     var i: u64 = 0u64
     while i < total && shown < q.limit {
         val h: Hit = hits.get(pick_at(hits, q, i))
-        val line: String = texts.get(h.ord)
+        val line: &String = texts.borrow(h.ord)
         if h.ts == 0i64 {
             out.put_str("-                     ")
         } else {
@@ -1227,7 +1227,7 @@ pub fn render_ndjson(hits: &Vec<Hit>, texts: &Vec<String>, q: &Query,
     var i: u64 = 0u64
     while i < total && shown < q.limit {
         val h: Hit = hits.get(pick_at(hits, q, i))
-        val line: String = texts.get(h.ord)
+        val line: &String = texts.borrow(h.ord)
         put_record(out, h.ts, &line)
         out.put_u8('\n')
         shown = shown + 1u64
@@ -1249,7 +1249,7 @@ pub fn render_json(hits: &Vec<Hit>, texts: &Vec<String>, q: &Query,
     while i < total && shown < q.limit {
         if shown > 0u64 { out.put_u8(',') }
         val h: Hit = hits.get(pick_at(hits, q, i))
-        val line: String = texts.get(h.ord)
+        val line: &String = texts.borrow(h.ord)
         put_record(out, h.ts, &line)
         shown = shown + 1u64
         i = i + 1u64

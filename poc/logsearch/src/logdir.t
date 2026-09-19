@@ -94,7 +94,7 @@ fn collect(dir: str, suffix: String, use_suffix: bool, out: &mut Vec<String>) {
                 Result::Ok(names) => {
                     var i: u64 = 0u64
                     while i < names.size() {
-                        val name: String = names.get(i)
+                        val name: &String = names.borrow(i)
                         val name_str = name.to_str()
                         val full = path::join(here_str, name_str)
                         val full_str = full.to_str()

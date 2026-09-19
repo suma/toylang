@@ -372,7 +372,7 @@ fn wipe_mount(dir: str) {
     val segs = logdir::scan_suffix(dir, ".seg")
     var i: u64 = 0u64
     while i < segs.size() {
-        val p: String = segs.get(i)
+        val p: &String = segs.borrow(i)
         val gone = fs::remove_file(p.to_str())
         match gone {
             Result::Ok(u) => { }
@@ -386,7 +386,7 @@ fn wipe_mount(dir: str) {
         Result::Ok(names) => {
             var k: u64 = 0u64
             while k < names.size() {
-                val nm: String = names.get(k)
+                val nm: &String = names.borrow(k)
                 val full = path::join(meta, nm.to_str())
                 val rm = fs::remove_file(full.to_str())
                 match rm {

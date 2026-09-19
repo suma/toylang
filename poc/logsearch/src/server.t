@@ -496,7 +496,7 @@ fn admin_gc(spec: str, days: u64, body: &mut ByteWriter) -> u64 {
                     val why = catalog::why_retention()
                     if catalog::append_remove(ps, gen, segid, why, &crc) {
                         val gone = c.remove(segid)
-                        val sp: String = paths.get(j)
+                        val sp: &String = paths.borrow(j)
                         val rm = fs::remove_file(sp.to_str())
                         match rm {
                             Result::Ok(u) => {
@@ -770,7 +770,7 @@ fn labels_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
     while k < total && shown < limit {
         if shown > 0u64 { body.put_u8(',') }
         val t: Tally = order.get(total - 1u64 - k)
-        val nm: String = tal.names.get(t.idx)
+        val nm: &String = tal.names.borrow(t.idx)
         body.put_str("{{\u{22}name\u{22}:")
         http::put_json_string(&mut body, &nm)
         body.put_str(",\u{22}records\u{22}:")
@@ -858,7 +858,7 @@ fn streams_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
     while k < total && shown < limit {
         if shown > 0u64 { body.put_u8(',') }
         val t: Tally = order.get(total - 1u64 - k)
-        val text: String = tal.texts.get(t.idx)
+        val text: &String = tal.texts.borrow(t.idx)
         body.put_str("{{\u{22}labels\u{22}:")
         put_label_object(&mut body, &text)
         body.put_str(",\u{22}records\u{22}:")

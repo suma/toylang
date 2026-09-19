@@ -537,7 +537,7 @@ pub fn latest_gen(mount: str) -> u64 {
         Result::Ok(names) => {
             var i: u64 = 0u64
             while i < names.size() {
-                val nm: String = names.get(i)
+                val nm: &String = names.borrow(i)
                 val g = gen_of_snap(&nm)
                 match g {
                     Option::Some(v) => { if v > best { best = v } }
@@ -775,7 +775,7 @@ pub fn rebuild(mount: str, crc: &Crc32) -> Catalog {
     var scratch = ByteWriter::with_capacity(segfile::data_at())
     var i: u64 = 0u64
     while i < segs.size() {
-        val p: String = segs.get(i)
+        val p: &String = segs.borrow(i)
         val ps = p.to_str()
         val arc = String::from_str(".arc.seg")
         val is_arc = p.ends_with(&arc)

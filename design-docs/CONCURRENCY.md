@@ -31,16 +31,15 @@ val s: TcpStream = conns.get(0u64)       # 要素の**別名**に drop glue が�
 # `unknown error` (EBADF) になる
 ```
 
-CLAUDE.md が stdlib 実装向けに書いている落とし穴 (「compound を返す
-method から束縛したローカルはコンテナのバッファを解放する」) と同じ根で、
-stdlib は `__builtin_ptr_read::<T>` で回避している。利用者側の回避は
-「取り出して束縛しない」か、番号だけの表にして `TcpStream::from_fd` で
-開き直すこと (**その API が無い**)。POC 側の `RUNTIME_GAPS.md` G16 に
-記録した。
+**2026-09-19 / 20 に塞いだ** (ELEMENT-BORROW): 要素を名指す `borrow` が
+入り、値で取り出す形は `[E0028]` で拒否される。上の `conns.get(0u64)` は
+今はコンパイルエラーで、`conns.borrow(0u64)` と書く。
 
 イベントループ (epoll / kqueue の統一形)、部分読み・部分書き、
-タイムアウト、keep-alive はすべて入っている。**この穴を塞げば 128 接続に
-なる** — 並行性は要らない。
+タイムアウト、keep-alive はすべて入っている。**同時接続は 2026-09-19 に
+128 になった** (サーバ本体は番号の表のまま — poller の token に対応する
+固定スロットが要り、`Vec<TcpStream>` には「空き」を書けないため)。
+いずれにせよ**並行性は要らなかった**。
 
 この取り違えは 1 度実際に起きた (このファイルを書く直前まで、POC の
 残タスク一覧は「同時接続は CONCURRENCY 待ち」と書いていた)。並行性の
@@ -214,4 +213,4 @@ B / C の設計を進めない。**
 - [`NETWORK_IO.md`](NETWORK_IO.md) / [`EVENT_POLLING.md`](EVENT_POLLING.md)
   — 並行性を使わずに多重化する側
 - [`poc/logsearch/design-docs/RUNTIME_GAPS.md`](../poc/logsearch/design-docs/RUNTIME_GAPS.md)
-  — G12 (並行性) と G16 (容器から取り出したハンドルが閉じる)
+  — G12 (並行性) と G16 (AOT の形の制約)

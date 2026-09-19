@@ -287,6 +287,11 @@ pub mod codes {
     /// which would make a second owner of one resource.
     pub const BORROW_COPY_OUT: &str = "E0027";
 
+    /// ELEMENT-BORROW E5: an owning element read out of a container by
+    /// value, which leaves the container and the binding both owning
+    /// it. `borrow` names the element instead.
+    pub const OWNING_ELEMENT_COPY: &str = "E0028";
+
     /// Every code, in order. `crate::explain` is checked against this
     /// list by a test, so a new code cannot ship without prose.
     pub const ALL: &[&str] = &[
@@ -317,6 +322,7 @@ pub mod codes {
         UNUSED_RESULT,
         WINDOW_ESCAPE,
         BORROW_COPY_OUT,
+        OWNING_ELEMENT_COPY,
     ];
 }
 
@@ -350,6 +356,7 @@ fn code_for(kind: &TypeCheckErrorKind) -> &'static str {
         TypeCheckErrorKind::UnusedResult { .. } => codes::UNUSED_RESULT,
         TypeCheckErrorKind::WindowEscape { .. } => codes::WINDOW_ESCAPE,
         TypeCheckErrorKind::BorrowCopyOut { .. } => codes::BORROW_COPY_OUT,
+        TypeCheckErrorKind::OwningElementCopy { .. } => codes::OWNING_ELEMENT_COPY,
     }
 }
 

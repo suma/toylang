@@ -378,7 +378,7 @@ fn stdlib_split_skips_whole_chunks() {
         fn part_len(h: &String, s: str, k: u64) -> u64 {
             val sep = String::from_str(s)
             val parts = h.split(sep)
-            val p = parts.get(k)
+            val p: &String = parts.borrow(k)
             p.len()
         }
         fn count(h: &String, s: str) -> u64 {

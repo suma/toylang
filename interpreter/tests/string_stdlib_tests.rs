@@ -639,9 +639,9 @@ fn string_split_basic() {
             val sep: String = String::from_str(",")
             val parts: Vec<String> = s.split(sep)
             assert(parts.size() == 3u64, "3 parts")
-            val a: String = parts.get(0u64)
-            val b: String = parts.get(1u64)
-            val c: String = parts.get(2u64)
+            val a: &String = parts.borrow(0u64)
+            val b: &String = parts.borrow(1u64)
+            val c: &String = parts.borrow(2u64)
             val ea: String = String::from_str("a")
             val eb: String = String::from_str("b")
             val ec: String = String::from_str("c")
@@ -664,7 +664,7 @@ fn string_split_no_match() {
             val sep: String = String::from_str(",")
             val parts: Vec<String> = s.split(sep)
             assert(parts.size() == 1u64, "1 part")
-            val first: String = parts.get(0u64)
+            val first: &String = parts.borrow(0u64)
             assert(first.eq(s), "first equals whole input")
             42u64
         }
@@ -682,7 +682,7 @@ fn string_split_trailing_separator() {
             val sep: String = String::from_str(",")
             val parts: Vec<String> = s.split(sep)
             assert(parts.size() == 3u64, "3 parts (last empty)")
-            val tail: String = parts.get(2u64)
+            val tail: &String = parts.borrow(2u64)
             assert(tail.is_empty(), "last is empty")
             42u64
         }
@@ -698,9 +698,9 @@ fn string_split_multibyte_separator() {
             val sep: String = String::from_str("--")
             val parts: Vec<String> = s.split(sep)
             assert(parts.size() == 3u64, "3 parts")
-            val foo: String = parts.get(0u64)
-            val bar: String = parts.get(1u64)
-            val baz: String = parts.get(2u64)
+            val foo: &String = parts.borrow(0u64)
+            val bar: &String = parts.borrow(1u64)
+            val baz: &String = parts.borrow(2u64)
             val efoo: String = String::from_str("foo")
             val ebar: String = String::from_str("bar")
             val ebaz: String = String::from_str("baz")

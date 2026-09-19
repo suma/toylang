@@ -13,7 +13,10 @@
 # into an argument (`node(leaf(), ...)`) or into another enum's
 # payload (`Tree::Node(Box::new(l), v, Box::new(r))`).
 #
-# `l.get()` is still bound with `val` first: a compound-returning
+# The walk takes the tree by reference and `borrow`s each child: a
+# `Box<Tree>` owns what it points at, so reading it out by value
+# (`l.get()`) would give the payload a second owner ([E0028]).
+# The borrow is still bound with `val` first — a compound-returning
 # method in expression position is the one part of this that has not
 # landed (todo.md, COMPOUND-BLOCK-RHS residual).
 #
@@ -32,12 +35,12 @@ fn node(l: Tree, v: i64, r: Tree) -> Tree {
     Tree::Node(Box::new(l), v, Box::new(r))
 }
 
-fn sum(t: Tree) -> i64 {
+fn sum(t: &Tree) -> i64 {
     match t {
         Tree::Leaf => 0i64,
         Tree::Node(l, v, r) => {
-            val left: Tree = l.get()
-            val right: Tree = r.get()
+            val left: &Tree = l.borrow()
+            val right: &Tree = r.borrow()
             sum(left) + v + sum(right)
         }
     }
@@ -54,5 +57,5 @@ fn main() -> i64 {
         2i64,
         node(node(leaf(), 3i64, leaf()), 4i64, leaf()),
     )
-    sum(t)
+    sum(&t)
 }

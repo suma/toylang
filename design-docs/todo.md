@@ -10,6 +10,27 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-09-20
+
+- **ELEMENT-BORROW / CONTAINER-ELEM-DROP — 容器は要素を貸せるようになり、
+  値で取り出すのは拒否されるようになった** — `val e: T = v.get(i)` は
+  要素の**別名**なのに所有者として扱われ、`T` が所有型なら容器がまだ
+  指している資源を解放していた (fd なら EBADF)。`&T` を返す `borrow` を
+  `Vec` / `Box` / `Span` / `Column` に、`Option<&V>` を `Dict` に新設し
+  (E1〜E3)、参照の返却 (引数の再借用のみ) とローカル束縛を許して
+  `[E0026]` / `[E0027]` で囲った。stdlib 自身の 16 か所が**実バグ**
+  だった (`Vec::clone` / `Box::clone` / `json` 12 か所 / `String::join`)。
+  最後に **`[E0028]`** で「所有型を返す `get` から束縛し、その値を誰にも
+  渡さない」形をエラーにした (E5)。`SoaVec` に `borrow` は無い — 列に
+  散った要素に貸せる番地が無いので、**所有型を `soa Vec` に入れない**。
+  設計は [`ELEMENT_BORROW.md`](ELEMENT_BORROW.md)。
+- **MOVE-CHECK-OVERLOAD — move 検査が同名の別署名を取り違えなくなった**
+  — 関数表が名前だけを鍵にしていたので、`Box::set(value)` と
+  `Vec::set(i, value)` が衝突して**すべての `set` が借用扱い**になり、
+  `self.nodes.set(id, n)` の転送が記録されず json が読んだノードの文字列を
+  解放していた。利用者の `fn sum(l: List)` を `sha256::sum(&Vec<u8>)` が
+  上書きする形も同じ穴。名前 + arity を鍵にし、食い違えば答えないようにした。
+
 ### 2026-09-19
 
 - **MATCH-PAYLOAD-COPY — `match` の腕は payload を名指すのであって
@@ -1753,36 +1774,6 @@
   `function_index collision` panic が、候補を名指しする型エラーに
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
-
-- **CONTAINER-ELEM-DROP — 容器から取り出した要素の別名に drop glue が
-  付き、容器の持ち物を解放する** ★★★ — `val e: T = v.get(i)` は
-  **要素の別名**であって所有ではないのに、compound を返す method 呼び出し
-  から束縛したローカルには drop glue が付く。`T` が所有型なら、その
-  束縛が死ぬときに**容器がまだ指している資源**が解放される。
-
-  ```rust
-  var conns: Vec<TcpStream> = Vec::new()
-  conns.push(cl)
-  val s: TcpStream = conns.get(0u64)   # 別名。束縛が死ぬと fd が閉じる
-  # 表にはまだ載っているのに、次の write は EBADF
-  ```
-
-  `Vec<File>` も同じ。**stdlib は `__builtin_ptr_read::<T>` で回避して
-  いる** (STRING-NO-DROP で `Vec::sort` が use-after-free になったとき
-  にそうした) が、利用者側には `unsafe` な builtin に降りる以外の道が
-  無い。`poc/logsearch` の HTTP サーバはこれで接続表を持てず、番号の表
-  (`into_fd` / `from_fd`) を使う形に倒した — **回避であって直りではない**。
-
-  **設計は [`ELEMENT_BORROW.md`](ELEMENT_BORROW.md) (2026-09-19)、
-  E1〜E4 と stdlib の移行の一部は同日に landing (完了済み節)。残りは
-  E5 (所有型要素の `get` を拒否) と、その前提になる stdlib の残り** —
-  `get` は値を返すまま据え置き、`&T` を返す `borrow` を新設する。
-  そのために言語側で 2 つ緩める必要がある: 参照を**返せる**ようにする
-  (引数の再借用に限る) ことと、参照を**ローカルに束縛できる**ように
-  すること。どちらも今は REF-Stage-2 (e) が止めている。
-  兄弟だった MATCH-PAYLOAD-COPY は 2026-09-19 に直したが、あちらは
-  lowering の情報だけで決まったのに対し、こちらは「この method の
-  戻り値は別名か、新しい所有者か」を**型で言う**必要がある点が違う。
 
 - **RANGE-TYPE-ANNOTATION — `Range<u64>` と書いた型が範囲値の型と
   一致しない** ★ — `fn f(r: Range<u64>)` に `0u64..3u64` を渡すと

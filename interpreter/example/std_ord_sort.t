@@ -44,7 +44,7 @@ fn main() -> u64 {
     val c: String = String::from_str("fig")
     words.push(c)
     words.sort()
-    val first_word: String = words.get(0u64)
+    val first_word: &String = words.borrow(0u64)
     val want: String = String::from_str("apple")
 
     # User struct with `impl Ord`.

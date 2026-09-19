@@ -802,6 +802,13 @@ fn soa_vec_drop_glue_releases_owning_elements() {
     // has the same four fields) and frees each element before the
     // buffer. Without the column-aware walk the boxes would leak
     // silently — the values would still be right.
+    //
+    // The elements are never read back, and cannot be: a `SoaVec` has
+    // no `borrow`, because an element split across columns has no
+    // address to lend, and taking one by value is `[E0028]`. That is
+    // the concrete reason not to put an owning type in a `soa Vec` —
+    // the layout can hold them and free them, but nothing can look at
+    // them afterwards.
     let src = r#"
         fn main() -> i64 {
             var bs: soa Vec<Box<i64>> = SoaVec::new()
@@ -811,17 +818,10 @@ fn soa_vec_drop_glue_releases_owning_elements() {
             bs.push(b1)
             bs.push(b2)
             bs.push(b3)
-            var total: i64 = 0i64
-            var i: u64 = 0u64
-            while i < bs.size() {
-                val b: Box<i64> = bs.get(i)
-                total = total + b.get()
-                i = i + 1u64
-            }
-            total
+            bs.size() as i64
         }
     "#;
-    assert_eq!(interpreter_value(src) & 0xff, 6);
+    assert_eq!(interpreter_value(src) & 0xff, 3);
     assert_consistent(src, "soa_vec_boxes");
     // Every box and the buffer are freed: nothing outlives `main`,
     // on any of the lanes (the report is the one all three agreed on).

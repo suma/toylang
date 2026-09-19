@@ -179,7 +179,7 @@ fn a_value_built_and_transferred_inside_a_branch_is_fine() {
         val c: Cell<i64> = Cell::new(7i64)
         store.push(c)
     }
-    val back: Cell<i64> = store.get(0u64)
+    val back: &Cell<i64> = store.borrow(0u64)
     back.get()
 }"),
         7i64
@@ -389,7 +389,7 @@ fn main() -> i64 {
     var v: Vec<Cell<i64>> = Vec::new()
     val f = Filler { tag: 0i64 }
     f.fill(&mut v)
-    val held = v.get(0u64)
+    val held: &Cell<i64> = v.borrow(0u64)
     held.get() + 1i64
 }
 "#

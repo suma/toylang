@@ -162,12 +162,12 @@ fn an_enum_returning_call_is_an_argument() {
             Tree::Node(Box::new(l), v, Box::new(r))
         }
 
-        fn sum(t: Tree) -> i64 {
+        fn sum(t: &Tree) -> i64 {
             match t {
                 Tree::Leaf => 0i64,
                 Tree::Node(l, v, r) => {
-                    val lt = l.get()
-                    val rt = r.get()
+                    val lt: &Tree = l.borrow()
+                    val rt: &Tree = r.borrow()
                     sum(lt) + v + sum(rt)
                 }
             }
@@ -175,7 +175,7 @@ fn an_enum_returning_call_is_an_argument() {
 
         fn main() -> i64 {
             val t = node(node(leaf(), 1i64, leaf()), 2i64, node(leaf(), 3i64, leaf()))
-            sum(t)
+            sum(&t)
         }
     "#;
     assert_eq!(interpreter_value(src) & 0xff, 6);

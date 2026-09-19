@@ -105,6 +105,7 @@ pub fn check_moves(
         errors: Vec::new(),
         transferred: HashSet::new(),
         borrows: HashSet::new(),
+        element_copies: Vec::new(),
     };
     for function in &program.function {
         if function.is_extern {
@@ -134,8 +135,18 @@ pub fn check_moves(
             checker.run_function(&m.parameter, m.code);
         }
     }
+    // ELEMENT-BORROW E5, reported here rather than in the walk: a
+    // binding that hands the element straight on has one owner, and
+    // whether it does is only known once its function has been walked
+    // through.
+    let mut errors = checker.errors;
+    for (stmt_ref, error) in checker.element_copies {
+        if !checker.transferred.contains(&stmt_ref) {
+            errors.push(error);
+        }
+    }
     MoveAnalysis {
-        errors: checker.errors,
+        errors,
         transferred: checker.transferred,
     }
 }
@@ -293,6 +304,9 @@ struct MoveCheck<'a> {
     /// copy-out check cannot tell `val s: String = e` (a second owner)
     /// from `val s: String = make()` (a first one).
     borrows: HashSet<DefaultSymbol>,
+    /// ELEMENT-BORROW E5 candidates, keyed by the binding that would
+    /// become the second owner. Filtered by `transferred` at the end.
+    element_copies: Vec<(StmtRef, TypeCheckError)>,
 }
 
 impl MoveCheck<'_> {
@@ -405,6 +419,54 @@ impl MoveCheck<'_> {
         self.errors.push(error);
     }
 
+    /// ELEMENT-BORROW E5: an owning element may not be read out of a
+    /// container by value.
+    ///
+    /// `get` answers with the element, and for an owning type that is
+    /// a shallow copy — the same pointer, the same descriptor. The
+    /// container keeps it and the binding claims it, so both free it.
+    /// `borrow` names the element instead.
+    ///
+    /// The rule reads the *name* `get`, which is how this language
+    /// dispatches elsewhere (`eq`, `to_str`, `next`, `lt`). The callee
+    /// cannot answer instead: a body that reads an element out of raw
+    /// memory is spelled the same whether it lends (`get`) or hands
+    /// over (`pop`).
+    fn check_owning_element_copy(
+        &mut self,
+        stmt_ref: StmtRef,
+        name: DefaultSymbol,
+        annotation: &Option<TypeDecl>,
+        rhs: ExprRef,
+    ) {
+        let Some(ty) = self.binding_type(annotation, rhs) else {
+            return;
+        };
+        if Self::is_borrow(&ty) || !self.is_owning(&ty) {
+            return;
+        }
+        let Some(Expr::MethodCall(receiver, method, _)) = self.program.expression.get(&rhs) else {
+            return;
+        };
+        if self.interner.resolve(method) != Some("get") {
+            return;
+        }
+        let receiver_text = self
+            .expr_types
+            .get(&receiver)
+            .map(|t| t.spell_with(Some(self.interner)))
+            .unwrap_or_else(|| "the container".to_string());
+        let mut error = TypeCheckError::owning_element_copy(
+            self.name_of(name),
+            ty.spell_with(Some(self.interner)),
+            receiver_text,
+        );
+        if let Some(loc) = self.location(rhs) {
+            error = error.with_location(loc);
+        }
+        self.element_copies.push((stmt_ref, error));
+    }
+
     /// Whether this binding names a borrow rather than a value.
     fn is_borrow(ty: &TypeDecl) -> bool {
         matches!(ty, TypeDecl::Ref { .. })
@@ -440,6 +502,7 @@ impl MoveCheck<'_> {
             Stmt::Val(name, annotation, rhs) => {
                 self.walk_expr(rhs, Use::Read, conditional);
                 self.check_copy_out_of_borrow(name, &annotation, rhs);
+                self.check_owning_element_copy(stmt_ref, name, &annotation, rhs);
                 if let Some(ty) = self.binding_type(&annotation, rhs) {
                     if Self::is_borrow(&ty) {
                         // ELEMENT-BORROW E2: a binding that names a
@@ -457,6 +520,7 @@ impl MoveCheck<'_> {
             Stmt::Var(name, annotation, Some(rhs)) => {
                 self.walk_expr(rhs, Use::Read, conditional);
                 self.check_copy_out_of_borrow(name, &annotation, rhs);
+                self.check_owning_element_copy(stmt_ref, name, &annotation, rhs);
                 if let Some(ty) = self.binding_type(&annotation, rhs) {
                     if Self::is_borrow(&ty) {
                         self.transferred.insert(stmt_ref);

@@ -599,6 +599,67 @@ mod errors {
     }
 
     #[test]
+    fn test_owning_element_cannot_be_taken_out_of_a_container() {
+        // ELEMENT-BORROW E5: `get` answers with the element, and for an
+        // owning type that is a shallow copy — the container keeps the
+        // resource and the binding claims it, so both free it. This is
+        // the trap `borrow` was added to make avoidable; refusing the
+        // shape is what makes it avoided.
+        let taken = r#"
+            fn main() -> u64 {
+                var v: Vec<String> = Vec::new()
+                v.push(String::from_str("hello"))
+                val s: String = v.get(0u64)
+                s.len()
+            }
+        "#;
+        let err = test_program(taken).expect_err("expected an owning-element error");
+        assert!(
+            err.contains("E0028") || err.contains("both free it"),
+            "expected the owning-element diagnostic, got: {}", err
+        );
+
+        // A scalar element owns nothing, so `get` stays the way to read
+        // one.
+        let scalar = r#"
+            fn main() -> u64 {
+                var v: Vec<u64> = Vec::new()
+                v.push(41u64)
+                val n: u64 = v.get(0u64)
+                n + 1u64
+            }
+        "#;
+        let value = test_program(scalar).expect("a scalar element is still taken by value");
+        assert_eq!(format!("{:?}", value), "RefCell { value: UInt64(42) }");
+
+        // Handing the value straight on leaves one owner, so the check
+        // says nothing: the binding does not outlive the hand-over.
+        let handed_on = r#"
+            fn len_of(s: String) -> u64 { s.len() }
+            fn main() -> u64 {
+                var v: Vec<String> = Vec::new()
+                v.push(String::from_str("hello"))
+                val s: String = v.get(0u64)
+                len_of(s)
+            }
+        "#;
+        let value = test_program(handed_on).expect("a transferred element has one owner");
+        assert_eq!(format!("{:?}", value), "RefCell { value: UInt64(5) }");
+
+        // And `borrow` is the way to read one without claiming it.
+        let borrowed = r#"
+            fn main() -> u64 {
+                var v: Vec<String> = Vec::new()
+                v.push(String::from_str("hello"))
+                val s: &String = v.borrow(0u64)
+                s.len()
+            }
+        "#;
+        let value = test_program(borrowed).expect("borrow names the element");
+        assert_eq!(format!("{:?}", value), "RefCell { value: UInt64(5) }");
+    }
+
+    #[test]
     fn test_binding_a_borrow_is_allowed_but_it_cannot_escape() {
         // ELEMENT-BORROW E2: the binding is fine; outliving what it
         // names is not. The escape is the window rule (`[E0026]`),

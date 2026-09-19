@@ -138,7 +138,7 @@ fn main() -> i64 {
     var t: Tree = Tree { v: 1i64, kids: Vec::new() }
     val leaf = Tree { v: 41i64, kids: Vec::new() }
     t.kids.push(leaf)
-    val got: Tree = t.kids.get(0u64)
+    val got: &Tree = t.kids.borrow(0u64)
     t.v + got.v
 }",
     )

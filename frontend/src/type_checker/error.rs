@@ -160,6 +160,10 @@ pub enum TypeCheckErrorKind {
     /// `name` is the binding that would have become the second owner,
     /// `ty` what it names.
     BorrowCopyOut { name: String, ty: String },
+    /// ELEMENT-BORROW E5: an owning element was read out of a
+    /// container by value. `name` is the binding, `ty` the element
+    /// type, `receiver` how the container was spelled.
+    OwningElementCopy { name: String, ty: String, receiver: String },
     /// MUST-USE: a statement produced a `Result` and threw it away.
     /// `ty` is how the value was spelled, `what` names what produced
     /// it when that is knowable (`the call \`write_file(...)\``).
@@ -453,6 +457,17 @@ impl TypeCheckError {
         }
     }
 
+    /// ELEMENT-BORROW E5: an owning element was taken by value.
+    pub fn owning_element_copy(name: String, ty: String, receiver: String) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::OwningElementCopy { name, ty, receiver }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
     /// MUST-USE: a `Result` was produced and discarded.
     pub fn unused_result(ty: String, what: String) -> Self {
         Self {
@@ -700,6 +715,14 @@ impl TypeCheckError {
                     "`{name}` would take a `{ty}` out of a borrow, and that value owns what \
                      the borrow only names — two owners of one resource. Read through the \
                      borrow instead, or take a copy of your own with `clone()`"
+                )
+            }
+            TypeCheckErrorKind::OwningElementCopy { name, ty, receiver } => {
+                format!(
+                    "`{name}` takes a `{ty}` out of `{receiver}` by value, and a `{ty}` owns \
+                     what it holds — the container and the binding would both free it. Name \
+                     the element with `borrow` instead, or ask for a copy of your own with \
+                     `clone()`"
                 )
             }
             TypeCheckErrorKind::UnusedResult { ty, what } => {

@@ -6,8 +6,11 @@
 # stdlib struct whose only field is a `ptr`, which is exactly what makes
 # `Box<List>` legal inside `List`.
 #
-# `rest.get()` is bound with `val` before use: a compound-returning
-# method cannot yet be called in expression position (todo.md #183).
+# The walk takes the list by reference and `borrow`s the rest: a
+# `Box<List>` owns what it points at, so reading it out by value
+# (`rest.get()`) would give the node a second owner ([E0028]). The
+# borrow is bound with `val` before use — a compound-returning method
+# cannot yet be called in expression position (todo.md #183).
 #
 # The nodes are freed when the last path to them dies: the `Box`
 # bindings handed their slots into the `List` being built (transfer,
@@ -23,10 +26,10 @@ enum List {
     Nil,
 }
 
-fn sum(l: List) -> i64 {
+fn sum(l: &List) -> i64 {
     match l {
         List::Cons(v, rest) => {
-            val inner: List = rest.get()
+            val inner: &List = rest.borrow()
             v + sum(inner)
         }
         List::Nil => 0i64,
@@ -41,5 +44,5 @@ fn main() -> i64 {
     val two: List = List::Cons(2i64, b2)
     val b1: Box<List> = Box::new(two)
     val one: List = List::Cons(1i64, b1)
-    sum(one)
+    sum(&one)
 }

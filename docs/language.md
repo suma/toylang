@@ -245,11 +245,15 @@ Escape rule (REF-Stage-2 (e)) — references can only flow into a
 function via parameters / method receivers and cannot **escape** the
 referent's frame:
 
-- Returning a reference is rejected: `fn f(x: &u64) -> &u64` is a
-  compile-time error.
-- Storing a reference in a `val` / `var` binding is rejected — both an
-  explicit annotation (`val r: &u64 = &a`) and an inferred type
-  (`val r = &a`) trip the rule.
+- Returning a reference is allowed only as a **reborrow** — the value
+  returned has to be something the caller already lent (a parameter, or
+  a read through one, as in `fn borrow(&self, i: u64) -> &T`). A
+  reference to anything the frame owns is rejected.
+- Storing a reference in a `val` / `var` binding is allowed
+  (`val e: &String = v.borrow(0u64)`), and the binding is a window: it
+  may not outlive what it views (`[E0026]`), and an owning value may
+  not be copied out of it (`[E0027]`). See
+  [Lending an element](#lending-an-element-borrow).
 - Storing a reference in a struct field is rejected
   (`struct S { r: &u64 }`).
 - Compound types containing a reference (e.g. `(u64, &u64)`,
@@ -6148,6 +6152,44 @@ Two limits worth knowing:
   `get()` copy, a shared boxed node) is freed once and later visits are
   no-ops. Both heaps are bump allocators that never reuse an address,
   so a second visit reads the block's original contents.
+
+#### Lending an element (`borrow`)
+
+A container's `get` answers with the element, and for an owning element
+that is a *shallow* copy — the same pointer, the same descriptor. The
+container still holds it and the binding claims it too, so both free
+it. Reading an owning element that way is refused (`[E0028]`):
+
+```rust
+var conns: Vec<TcpStream> = Vec::new()
+conns.push(cl)
+val s: TcpStream = conns.get(0u64)      # [E0028]
+val s: &TcpStream = conns.borrow(0u64)  # names the element instead
+```
+
+`borrow` is the lending half of the pair, on `Vec<T>`, `Box<T>`,
+`Span<T>`, `Column<T>` and `Dict<K, V>` (which answers
+`Option<&V>`). It returns `&T`, which owns nothing, so no second owner
+appears. `get` is unchanged and stays the way to read a scalar element,
+which owns nothing either.
+
+What a borrow can do is **read**: call methods, read fields, compare,
+print, pass it on to a `&T` parameter. Taking the *value* of an owning
+type out of one is the same second owner and is refused as well
+(`[E0027]`); `clone()` is how to ask for a copy on purpose. A binding
+that hands the element straight on — into another container, into a
+by-value parameter, back into the same slot with `set` — has only ever
+one owner, and neither rule fires.
+
+A borrow is a **window**, so it may not outlive the container: the
+escape rule that stops a `Span<T>` from leaving its buffer's frame
+(`[E0026]`) covers it. Changing the container's size while a borrow is
+alive is **not** checked, and the borrow is not guaranteed to mean
+anything afterwards — the same footing `Span<T>` is on.
+
+`SoaVec<T>` has no `borrow`: its elements are split across columns and
+have no address to lend. An owning element cannot be read back out of
+one at all.
 
 ---
 

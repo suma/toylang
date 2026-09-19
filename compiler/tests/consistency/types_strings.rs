@@ -648,9 +648,9 @@ fn vec_of_vec_round_trip() {
             outer.push(a)
             outer.push(b)
             if outer.size() != 2u64 { return 1u64 }
-            val first: String = outer.get(0u64)
+            val first: &String = outer.borrow(0u64)
             if first.size() != 2u64 { return 2u64 }
-            val second: String = outer.get(1u64)
+            val second: &String = outer.borrow(1u64)
             if second.size() != 5u64 { return 3u64 }
             42u64
         }
@@ -669,9 +669,9 @@ fn string_split_round_trip() {
             val sep: String = String::from_str(",")
             val parts: Vec<String> = s.split(sep)
             if parts.size() != 3u64 { return 1u64 }
-            val a: String = parts.get(0u64)
-            val b: String = parts.get(1u64)
-            val c: String = parts.get(2u64)
+            val a: &String = parts.borrow(0u64)
+            val b: &String = parts.borrow(1u64)
+            val c: &String = parts.borrow(2u64)
             val ea: String = String::from_str("a")
             val eb: String = String::from_str("b")
             val ec: String = String::from_str("c")
@@ -1724,7 +1724,7 @@ fn lines_drops_the_carriage_return_and_the_trailing_newline() {
             println(ls.size())
             var i: u64 = 0u64
             while i < ls.size() {
-                val line = ls.get(i)
+                val line: &String = ls.borrow(i)
                 println(line)
                 i = i + 1u64
             }

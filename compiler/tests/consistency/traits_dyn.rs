@@ -1230,7 +1230,7 @@ fn a_cloned_vector_of_strings_copies_each_element() {
             var total: u64 = 0u64
             var i: u64 = 0u64
             while i < w.size() {
-                val s: String = w.get(i)
+                val s: &String = w.borrow(i)
                 total = total + s.len()
                 i = i + 1u64
             }

@@ -396,7 +396,7 @@ impl RegionCheck<'_> {
                 self.walk_expr(&args);
                 self.call_result(expr_ref)
             }
-            Expr::MethodCall(receiver, _, args) => {
+            Expr::MethodCall(receiver, method, args) => {
                 let receiver_taint = self.walk_expr(&receiver);
                 for arg in &args {
                     self.walk_expr(arg);
@@ -404,6 +404,21 @@ impl RegionCheck<'_> {
                 // A method can hand back part of its receiver, so the
                 // receiver's region carries over when the result could
                 // hold a pointer.
+                //
+                // `clone` is the exception, and it has to be: it is
+                // what `[E0027]` and `[E0028]` tell people to reach for
+                // when they need a value of their own, and a copy with
+                // its own buffer is not a view of the receiver's. Only
+                // the *carried* taint is dropped — a clone that
+                // allocates inside a scoped allocator still belongs to
+                // that allocator, which `call_result` answers for.
+                let receiver_taint = if self.interner.resolve(method) == Some("clone")
+                    && !self.is_window_type(expr_ref)
+                {
+                    None
+                } else {
+                    receiver_taint
+                };
                 let carried =
                     innermost(self.through(expr_ref, receiver_taint), self.call_result(expr_ref));
                 // WINDOW-ESCAPE: `v.as_span()` on a buffer this frame

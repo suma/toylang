@@ -154,7 +154,7 @@ fn sorting_a_vec_of_strings_does_not_free_what_it_sorts() {
             val c: String = String::from_str("fig")
             v.push(c)
             v.sort()
-            val first: String = v.get(0u64)
+            val first: &String = v.borrow(0u64)
             val want: String = String::from_str("apple")
             if first == want { 0u64 } else { 1u64 }
         }

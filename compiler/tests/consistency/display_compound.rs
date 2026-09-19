@@ -356,7 +356,7 @@ fn a_type_holding_a_vec_of_itself_round_trips() {
             var i: u64 = 0u64
             var total: i64 = t.v
             while i < t.kids.size() {
-                val kid: Tree = t.kids.get(i)
+                val kid: &Tree = t.kids.borrow(i)
                 total = total + kid.v
                 i = i + 1u64
             }
@@ -402,7 +402,7 @@ fn a_transferred_value_is_not_freed_by_the_binding_that_built_it() {
             var store: Vec<Cell<i64>> = Vec::new()
             val c: Cell<i64> = Cell::new(7i64)
             store.push(c)
-            val back: Cell<i64> = store.get(0u64)
+            val back: &Cell<i64> = store.borrow(0u64)
             back.get()
         }
     "#;
@@ -453,10 +453,10 @@ fn a_recursive_enum_through_box_round_trips() {
             Nil,
         }
 
-        fn sum(l: List) -> i64 {
+        fn sum(l: &List) -> i64 {
             match l {
                 List::Cons(v, rest) => {
-                    val inner: List = rest.get()
+                    val inner: &List = rest.borrow()
                     v + sum(inner)
                 }
                 List::Nil => 0i64,
@@ -471,7 +471,7 @@ fn a_recursive_enum_through_box_round_trips() {
             val two: List = List::Cons(2i64, b2)
             val b1: Box<List> = Box::new(two)
             val one: List = List::Cons(1i64, b1)
-            sum(one)
+            sum(&one)
         }
     "#;
     assert_consistent(src, "box_recursive_enum");
@@ -559,10 +559,10 @@ fn a_boxed_list_chain_is_freed_exactly_once_across_recursion() {
             Nil,
         }
 
-        fn sum(l: List) -> i64 {
+        fn sum(l: &List) -> i64 {
             match l {
                 List::Cons(v, rest) => {
-                    val inner: List = rest.get()
+                    val inner: &List = rest.borrow()
                     v + sum(inner)
                 }
                 List::Nil => 0i64,
@@ -577,7 +577,7 @@ fn a_boxed_list_chain_is_freed_exactly_once_across_recursion() {
             val two: List = List::Cons(2i64, b2)
             val b1: Box<List> = Box::new(two)
             val one: List = List::Cons(1i64, b1)
-            sum(one)
+            sum(&one)
         }
         "#,
         "prof_boxed_list_chain_freed",
@@ -902,7 +902,7 @@ fn vec_sort_is_consistent_across_backends() {
             val pc: String = String::from_str("fig")
             s.push(pc)
             s.sort()
-            val s0: String = s.get(0u64)
+            val s0: &String = s.borrow(0u64)
             val want: String = String::from_str("apple")
             # user struct with `impl Ord`
             var p: Vec<Pt> = Vec::new()

@@ -73,6 +73,7 @@ const ENTRIES: &[Entry] = &[
     (codes::UNUSED_RESULT, E0025),
     (codes::WINDOW_ESCAPE, E0026),
     (codes::BORROW_COPY_OUT, E0027),
+    (codes::OWNING_ELEMENT_COPY, E0028),
 ];
 
 const E0001: &str = "\
@@ -930,6 +931,49 @@ absence is the answer; an ignored `Result` is an unreported failure.
 
 Reported as a warning: programs were written this way before the check
 existed, and ignoring a failure can be deliberate.";
+
+const E0028: &str = "\
+E0028: an owning element taken out of a container by value
+
+`get` answers with the element itself, and for a type that owns
+something — `String`, `Vec<T>`, `Box<T>`, `TcpStream`, anything holding
+one — what comes back is a shallow copy: the same pointer, the same
+descriptor. The container still holds it, and now so does the binding.
+Both free it.
+
+    var conns: Vec<TcpStream> = Vec::new()
+    conns.push(cl)
+    val s: TcpStream = conns.get(0u64)   # E0028
+    # `s` dies at the brace and closes the descriptor the table still
+    # lists; the next write reports EBADF
+
+Say what you mean instead:
+
+    val s: &TcpStream = conns.borrow(0u64)   # name it, do not claim it
+    val s: TcpStream = conns.get(0u64).clone()  # a second one, if that
+                                                # is really what you want
+
+A scalar element is unaffected — `val n: u64 = v.get(i)` copies a
+number, which owns nothing.
+
+**Handing the value straight on is allowed.** If the binding gives the
+value away before it dies — into another container, into a by-value
+parameter, back into the same slot with `set` — there is only ever one
+owner, and the check says nothing. It is the binding that *keeps* the
+value that is reported.
+
+The rule reads a name: `get`. That is the convention this language
+already dispatches on (`eq` for `==`, `to_str` for printing, `next` for
+`for`), and the callee cannot be asked instead — a function that reads
+an element out of raw memory looks exactly like `pop`, which is
+*supposed* to hand ownership over.
+
+Every place this check found in the stdlib was a live bug: `Vec::clone`
+freed the elements it was copying, `String::join` freed the parts it
+joined, and the JSON reader freed a node's text each time it read the
+node. None of them failed a test, because the bump heap never reuses an
+address — the second free is invisible until the resource is something
+the OS hands back once.";
 
 const E0027: &str = "\
 E0027: an owning value copied out of a borrow

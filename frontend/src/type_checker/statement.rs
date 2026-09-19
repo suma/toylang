@@ -64,18 +64,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         let is_hole = matches!(type_decl, Some(TypeDecl::Hole));
         let type_decl = if is_hole { Some(TypeDecl::Unknown) } else { type_decl.clone() };
 
-        // REF-Stage-2 (e): syntactic escape rule — a `val` binding
-        // cannot annotate a reference type. The inferred-type form
-        // is also rejected after evaluation below.
-        if let Some(decl) = type_decl.as_ref()
-            && decl.contains_ref() {
-                let var_name = self.resolve_symbol_name(name);
-                return Err(TypeCheckError::generic_error(&format!(
-                    "binding `{}` annotates a reference type; references cannot be \
-                     stored in val / var bindings (REF-Stage-2 (e))",
-                    var_name
-                )));
-            }
+        // ELEMENT-BORROW E2: a binding may name a reference; the
+        // escape check is what keeps it inside its referent's life.
 
         // Set type hint and evaluate expression
         let old_hint = self.setup_type_hint_for_val(&type_decl);
@@ -126,16 +116,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Determine final type and store variable
         let final_type = self.determine_final_type_for_expr(&type_decl, &expr_ty);
 
-        // REF-Stage-2 (e): same escape rule for the inferred-type
-        // case (no annotation, rhs evaluated to a reference type).
-        if final_type.contains_ref() {
-            let var_name = self.resolve_symbol_name(name);
-            return Err(TypeCheckError::generic_error(&format!(
-                "binding `{}` is inferred to a reference type; references cannot be \
-                 stored in val / var bindings (REF-Stage-2 (e))",
-                var_name
-            )));
-        }
+        // ELEMENT-BORROW E2: the inferred form is allowed too.
 
         // Debug: Print variable type information
         let _var_name_str = self.resolve_symbol_name(name);

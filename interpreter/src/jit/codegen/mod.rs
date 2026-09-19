@@ -1669,6 +1669,9 @@ impl<'a, 'b> State<'a, 'b> {
                          the interpreter JIT"
                             .to_string(),
                     ),
+                    BuiltinFunction::PtrRef | BuiltinFunction::PtrRefTyped(_) => {
+                        Err("__builtin_ptr_ref unreachable in JIT codegen (eligibility should reject)".into())
+                    }
                     BuiltinFunction::PtrReadTyped(ref ty) => {
                         let expected = ScalarTy::from_type_decl(ty)
                             .ok_or_else(|| "ptr_read::<T> element type unsupported".to_string())?;

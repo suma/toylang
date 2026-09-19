@@ -282,6 +282,9 @@ impl<'a> AstIntegrationContext<'a> {
                     // MEMORY-ACCESS M1: `__builtin_ptr_read::<T>` carries
                     // a written type for the same reason and needs the
                     // same remap.
+                    frontend::ast::BuiltinFunction::PtrRefTyped(ty) => {
+                        frontend::ast::BuiltinFunction::PtrRefTyped(self.remap_type_decl(ty)?)
+                    }
                     frontend::ast::BuiltinFunction::PtrReadTyped(ty) => {
                         frontend::ast::BuiltinFunction::PtrReadTyped(self.remap_type_decl(ty)?)
                     }

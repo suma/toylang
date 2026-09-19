@@ -485,6 +485,9 @@ fn parse_primary_after_identifier(
             match parser.builtin_symbols.symbol_to_builtin(name) {
                 Some(BuiltinFunction::SizeOf) => Some(false),
                 Some(BuiltinFunction::PtrRead) => Some(true),
+                // ELEMENT-BORROW E1: same `::<T>` shape, answering a
+                // borrow instead of a value.
+                Some(BuiltinFunction::PtrRef) => Some(true),
                 _ => None,
             }
         } else {
@@ -508,7 +511,10 @@ fn parse_primary_after_identifier(
             // Span the whole `__builtin_sizeof::<T>()`, not just the name.
             let location = parser.span_to_cursor(name_location);
             let func = if takes_args {
-                BuiltinFunction::PtrReadTyped(ty)
+                match parser.builtin_symbols.symbol_to_builtin(name) {
+                    Some(BuiltinFunction::PtrRef) => BuiltinFunction::PtrRefTyped(ty),
+                    _ => BuiltinFunction::PtrReadTyped(ty),
+                }
             } else {
                 BuiltinFunction::SizeOfType(ty)
             };

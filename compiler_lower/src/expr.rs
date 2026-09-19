@@ -2664,6 +2664,8 @@ impl<'a> FunctionLower<'a> {
             | BuiltinFunction::HeapRealloc
             | BuiltinFunction::PtrRead
             | BuiltinFunction::PtrReadTyped(_)
+            | BuiltinFunction::PtrRef
+            | BuiltinFunction::PtrRefTyped(_)
             | BuiltinFunction::PtrWrite
             | BuiltinFunction::PtrOffset
             | BuiltinFunction::SoaRead
@@ -2764,7 +2766,18 @@ impl<'a> FunctionLower<'a> {
                         .to_string(),
                 )
             }
-            BuiltinFunction::PtrReadTyped(ty) => {
+            // ELEMENT-BORROW E1: a borrow lowers exactly like the read
+            // it borrows from — references erase here. The difference
+            // lives in the type checker, which keeps drop glue off the
+            // binding that names it.
+            BuiltinFunction::PtrRef => {
+                Err(
+                    "`__builtin_ptr_ref(p, off)` carries no width; write \
+                     `__builtin_ptr_ref::<TYPE>(p, off)`"
+                        .to_string(),
+                )
+            }
+            BuiltinFunction::PtrRefTyped(ty) | BuiltinFunction::PtrReadTyped(ty) => {
                 // MEMORY-ACCESS M1: `__builtin_ptr_read::<T>(p, off)`.
                 // The width is the written type, so unlike the arm
                 // above this is an ordinary expression -- it needs no

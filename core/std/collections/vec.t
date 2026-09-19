@@ -266,6 +266,29 @@ impl<T> Vec<T> {
         v
     }
 
+    # Name an element without taking it (ELEMENT-BORROW).
+    #
+    # `get` answers a **value**, and for an owning `T` that value is a
+    # shallow copy sharing the element's resource — bind it and the
+    # binding frees what the vector still points at. `borrow` answers a
+    # reference, which owns nothing, so the element keeps its single
+    # owner.
+    #
+    # **The borrow is only good while the vector keeps its shape.**
+    # `push` / `pop` / `clear` may move the buffer, and a reference
+    # taken before that names memory the vector no longer uses. That is
+    # not checked (design-docs/ELEMENT_BORROW.md section 2-e).
+    unsafe fn borrow(&self, index: u64) -> &T
+        requires index < self.len
+    {
+        if index >= self.len { panic("Vec::borrow index out of bounds") }
+        # Bound first: a compound `T` expands into one load per leaf,
+        # and the compiled lanes want the destination binding for that
+        # (the same reason `get` is written this way).
+        val e: &T = __builtin_ptr_ref::<T>(self.data, index * self.elem_size)
+        e
+    }
+
     # Random-access write. `push` writes through the raw pointer, so
     # appending is not affected by the bound stated here.
     unsafe fn set(&mut self, index: u64, value: T)

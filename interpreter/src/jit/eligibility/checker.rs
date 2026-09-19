@@ -2376,6 +2376,16 @@ impl<'a> Checker<'a> {
                         });
                         None
                     }
+                    // ELEMENT-BORROW E1: not modelled here yet; the
+                    // tree-walker answers it.
+                    BuiltinFunction::PtrRef | BuiltinFunction::PtrRefTyped(_) => {
+                        self.reject(|| {
+                            "__builtin_ptr_ref (ELEMENT-BORROW) is not modelled in the \
+                             interpreter JIT"
+                                .to_string()
+                        });
+                        None
+                    }
                     BuiltinFunction::PtrReadTyped(ref ty) => {
                         if !self.check_builtin_args(&[ScalarTy::Ptr, ScalarTy::U64], &args) {
                             return None;

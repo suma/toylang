@@ -29,6 +29,10 @@ fn is_supported_impl_signature_shape(ty: &TypeDecl) -> bool {
         // the parameter match the declared signature.
         TypeDecl::Function(_, _)
     )
+    // ELEMENT-BORROW E1: a method may hand back a borrow of what it
+    // was given (`Vec::borrow`). The reborrow rule is checked at the
+    // return sites; this is only the shape.
+    || matches!(ty, TypeDecl::Ref { inner, .. } if is_supported_impl_signature_shape(inner))
 }
 
 /// Method processing and Self type handling for type checker

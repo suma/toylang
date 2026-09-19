@@ -485,20 +485,10 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
     pub(super) fn process_val_type_with_mut(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>, is_mut: bool) -> Result<TypeDecl, TypeCheckError> {
-        // REF-Stage-2 (e): a `val` / `var` binding cannot have a
-        // reference type. The annotation gets checked here; the
-        // inferred type from the rhs gets checked after evaluation
-        // below. This prevents references from outliving their
-        // referents via name binding.
-        if let Some(decl) = type_decl.as_ref()
-            && decl.contains_ref() {
-                let var_name = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
-                return Err(TypeCheckError::generic_error(&format!(
-                    "binding `{}` annotates a reference type; references cannot be \
-                     stored in val / var bindings (REF-Stage-2 (e))",
-                    var_name
-                )));
-            }
+        // ELEMENT-BORROW E2: a binding **may** name a reference now.
+        // What keeps it from outliving its referent is the escape
+        // check (`region_check`, `[E0026]`), which treats a borrow the
+        // way it already treats a window.
 
         // LLM-LOOP P7: a `_` annotation is a hole. Treated as an
         // unannotated binding here (`Unknown` is the parser's spelling
@@ -570,17 +560,9 @@ impl<'a> TypeCheckerVisitor<'a> {
                 if final_ty == TypeDecl::Unit {
                     return Err(TypeCheckError::type_mismatch(TypeDecl::Unknown, final_ty.clone()));
                 }
-                // REF-Stage-2 (e): same escape rule — even without an
-                // annotation, an inferred reference type for the rhs
-                // is rejected.
-                if final_ty.contains_ref() {
-                    let var_name = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
-                    return Err(TypeCheckError::generic_error(&format!(
-                        "binding `{}` is inferred to a reference type; references cannot be \
-                         stored in val / var bindings (REF-Stage-2 (e))",
-                        var_name
-                    )));
-                }
+                // ELEMENT-BORROW E2: an inferred reference is a
+                // borrow binding, and is allowed for the same reason
+                // the annotated form is.
                 Some(final_ty)
             }
             None => None,
@@ -645,6 +627,124 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// that knows which function is being walked: a callee dragged in by
     /// `type_check_forward_ref` runs its own `type_check` and so tags its
     /// own errors.
+
+    /// ELEMENT-BORROW E1: a reference may only leave a function as a
+    /// **reborrow**.
+    ///
+    /// Accepted at every return site:
+    ///
+    /// * a parameter that is itself a reference (`&self` included),
+    /// * a field / index path rooted at one,
+    /// * `__builtin_ptr_ref::<T>(...)`, whose whole promise is "this
+    ///   memory belongs to the receiver".
+    ///
+    /// Anything else — a borrow of a local, most of all — is refused,
+    /// which is what the old blanket rule was protecting against.
+    fn check_reborrow_returns(&mut self, func: &crate::ast::Function) -> Result<(), TypeCheckError> {
+        let mut refs: Vec<DefaultSymbol> = Vec::new();
+        for p in func.parameter.iter() {
+            if p.1.contains_ref() {
+                refs.push(p.0);
+            }
+        }
+        let fn_name = self
+            .core
+            .string_interner
+            .resolve(func.name)
+            .unwrap_or("?")
+            .to_string();
+        let mut bad = false;
+        self.walk_return_sites(func.code, &refs, &mut bad);
+        if bad {
+            return Err(TypeCheckError::generic_error(&format!(
+                "function `{}` returns a reference that is not a reborrow of one of its \
+                 parameters; a borrow may only be handed back when the caller already \
+                 holds what it points at (ELEMENT-BORROW E1)",
+                fn_name
+            )));
+        }
+        Ok(())
+    }
+
+    /// Walk the body, reporting any return site whose expression is
+    /// not reborrow-shaped. The tail of a block is a return site too.
+    fn walk_return_sites(&self, stmt_ref: StmtRef, refs: &[DefaultSymbol], bad: &mut bool) {
+        let Some(stmt) = self.core.stmt_pool.get(&stmt_ref) else {
+            return;
+        };
+        match stmt {
+            Stmt::Return(Some(e)) => {
+                if !self.is_reborrow_expr(&e, refs) {
+                    *bad = true;
+                }
+            }
+            Stmt::Return(None) => {}
+            Stmt::Expression(e) => self.walk_return_sites_expr(&e, refs, bad),
+            Stmt::Val(_, _, e) => self.walk_return_sites_expr(&e, refs, bad),
+            Stmt::Var(_, _, Some(e)) => self.walk_return_sites_expr(&e, refs, bad),
+            _ => {}
+        }
+    }
+
+    fn walk_return_sites_expr(&self, expr_ref: &ExprRef, refs: &[DefaultSymbol], bad: &mut bool) {
+        let Some(expr) = self.core.expr_pool.get(expr_ref) else {
+            return;
+        };
+        match expr {
+            Expr::Block(stmts) => {
+                let n = stmts.len();
+                for (i, st) in stmts.iter().enumerate() {
+                    // The tail of a block is a return site; any other
+                    // statement matters only for the `return`s in it.
+                    if i + 1 == n
+                        && let Some(Stmt::Expression(tail)) = self.core.stmt_pool.get(st)
+                    {
+                        if self.expr_is_reference(&tail) && !self.is_reborrow_expr(&tail, refs) {
+                            *bad = true;
+                        }
+                        continue;
+                    }
+                    self.walk_return_sites(*st, refs, bad);
+                }
+            }
+            Expr::IfElifElse(_, then_block, elifs, else_block) => {
+                self.walk_return_sites_expr(&then_block, refs, bad);
+                for (_, blk) in elifs.iter() {
+                    self.walk_return_sites_expr(blk, refs, bad);
+                }
+                self.walk_return_sites_expr(&else_block, refs, bad);
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether this expression's type is a reference (so a tail that
+    /// merely computes a number is not asked to be a reborrow).
+    fn expr_is_reference(&self, expr_ref: &ExprRef) -> bool {
+        match self.optimization.get_cached_type(expr_ref) {
+            Some(ty) => ty.contains_ref(),
+            None => false,
+        }
+    }
+
+    /// The reborrow shapes of E1.
+    fn is_reborrow_expr(&self, expr_ref: &ExprRef, refs: &[DefaultSymbol]) -> bool {
+        let Some(expr) = self.core.expr_pool.get(expr_ref) else {
+            return false;
+        };
+        match expr {
+            Expr::Identifier(sym) => refs.contains(&sym),
+            Expr::FieldAccess(obj, _) => self.is_reborrow_expr(&obj, refs),
+            Expr::SliceAccess(obj, _) => self.is_reborrow_expr(&obj, refs),
+            Expr::BuiltinCall(BuiltinFunction::PtrRefTyped(_), _) => true,
+            Expr::BuiltinCall(BuiltinFunction::PtrRef, _) => true,
+            // A call answering a reference is a reborrow of whatever
+            // it was handed; the callee was checked by this same rule.
+            Expr::MethodCall(..) | Expr::Call(..) => self.expr_is_reference(expr_ref),
+            _ => false,
+        }
+    }
+
     pub fn type_check(&mut self, func: Rc<Function>) -> Result<TypeDecl, TypeCheckError> {
         let errors_before = self.errors.len();
         let result = self.type_check_body(func.clone());
@@ -686,19 +786,19 @@ impl<'a> TypeCheckerVisitor<'a> {
             None => (),
         }
 
-        // REF-Stage-2 (e): syntactic escape rule — references can
-        // only flow into a function via parameters and out via
-        // method-receiver writeback (`&mut self`). They cannot
-        // escape via the return type. Without lifetimes this is
-        // the simplest defence against dangling references.
+        // REF-Stage-2 (e) / ELEMENT-BORROW E1: a reference may leave a
+        // function only as a **reborrow** — the borrow it hands back
+        // has to come from something the caller already holds.
+        //
+        // What that means concretely is checked at the return sites
+        // (`check_reborrow_returns`): a reference parameter, a path
+        // rooted at one, or `__builtin_ptr_ref`, whose whole promise
+        // is "this memory is the receiver's". Returning a borrow of a
+        // local is still refused — that is the dangling reference the
+        // old blanket rule existed to stop.
         if let Some(ret) = func.return_type.as_ref()
             && ret.contains_ref() {
-                let fn_name = self.core.string_interner.resolve(func.name).unwrap_or("?").to_string();
-                return Err(TypeCheckError::generic_error(&format!(
-                    "function `{}` declares a reference type in its return position; \
-                     references cannot escape their referent's frame (REF-Stage-2 (e))",
-                    fn_name
-                )));
+                self.check_reborrow_returns(func.as_ref())?;
             }
 
         // `extern fn` declarations have no body to walk — the
@@ -1006,6 +1106,19 @@ impl<'a> TypeCheckerVisitor<'a> {
                     if last == TypeDecl::Unknown {
                         true
                     } else if &last == expected_return_type {
+                        true
+                    } else if let TypeDecl::Ref { inner, .. } = expected_return_type
+                        && last == **inner
+                    {
+                        // ELEMENT-BORROW E1: reading a reference hands
+                        // back the value it names — that is how a `&u64`
+                        // parameter adds like a `u64`. A function that
+                        // declares `-> &T` therefore sees `T` at its
+                        // return site, and the borrow is re-made here,
+                        // mirroring the auto-borrow at argument
+                        // positions. Which expressions may do this is
+                        // the reborrow rule's business
+                        // (`check_reborrow_returns`), not the type's.
                         true
                     } else {
                         match (&last, expected_return_type) {

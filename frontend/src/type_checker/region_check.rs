@@ -572,7 +572,12 @@ impl RegionCheck<'_> {
             TypeDecl::Array(elements, _, _) | TypeDecl::Tuple(elements) => {
                 elements.iter().any(|e| self.names_window(e))
             }
-            TypeDecl::Ref { inner, .. } => self.names_window(inner),
+            // ELEMENT-BORROW E2: a borrow **is** a window. `v.borrow(i)`
+            // names memory the container owns, and the same rule that
+            // stops a `Span` from outliving its buffer is what stops
+            // the borrow from outliving the container
+            // (design-docs/ELEMENT_BORROW.md section 2-b).
+            TypeDecl::Ref { .. } => true,
             _ => false,
         }
     }

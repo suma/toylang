@@ -660,6 +660,24 @@ impl<'a> TypeCheckerVisitor<'a> {
             return true;
         }
 
+        // ELEMENT-BORROW E1: reading a reference hands back what it
+        // names, so a body that ends in a borrow reports the inner
+        // type. Re-making the borrow here is the mirror of the
+        // auto-borrow at argument positions; which expressions may
+        // do it is the reborrow rule's business, not the type's.
+        if let TypeDecl::Ref { inner, .. } = expected
+            && self.are_types_compatible(inner, actual)
+        {
+            return true;
+        }
+        // The same question arrives with the two sides swapped from
+        // the method-return path, so both directions answer alike.
+        if let TypeDecl::Ref { inner, .. } = actual
+            && self.are_types_compatible(expected, inner)
+        {
+            return true;
+        }
+
         // Handle explicit type conversions that are allowed
         match (expected, actual) {
             // Number type can be converted to numeric types

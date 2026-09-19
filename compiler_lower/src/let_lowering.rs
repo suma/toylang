@@ -443,8 +443,15 @@ impl<'a> FunctionLower<'a> {
         // element type -- including for a compound `T`, which is why
         // it routes here rather than through `lower_builtin_call`
         // (the per-leaf expansion needs the destination binding).
-        if let Expr::BuiltinCall(frontend::ast::BuiltinFunction::PtrReadTyped(ty), args) =
-            rhs.clone()
+        // ELEMENT-BORROW E1: `__builtin_ptr_ref::<T>` rides the same
+        // path — a borrow lowers exactly like the read it borrows
+        // from, and the binding that catches it differs only in
+        // carrying no drop glue.
+        if let Expr::BuiltinCall(
+            frontend::ast::BuiltinFunction::PtrReadTyped(ty)
+            | frontend::ast::BuiltinFunction::PtrRefTyped(ty),
+            args,
+        ) = rhs.clone()
             && args.len() == 2
                 && let Some(result) =
                     self.lower_let_builtin_ptr_read(name, Some(&ty), &args, false)?

@@ -717,6 +717,19 @@ pub enum BuiltinFunction {
     // resolves through the backend's active substitution, exactly as
     // for `SizeOfType`. See design-docs/MEMORY_ACCESS.md.
     PtrReadTyped(TypeDecl),
+    // ELEMENT-BORROW E1: `__builtin_ptr_ref::<T>(p, offset) -> &T`.
+    //
+    // The same read as `PtrReadTyped`, answering a **borrow** instead
+    // of a value. The distinction is entirely in the type: a `&T`
+    // binding takes no drop glue, which is what lets a container hand
+    // out one of its elements without a second owner appearing
+    // (design-docs/ELEMENT_BORROW.md). Every lane lowers it exactly
+    // like `PtrReadTyped` — references erase.
+    //
+    // Only callable from an `unsafe fn`: naming raw memory as a `T`
+    // is the same promise `__builtin_ptr_read` makes.
+    PtrRef,
+    PtrRefTyped(TypeDecl),
     PtrWrite,     // __builtin_ptr_write(pointer: ptr, offset: u64, value: u64) -> unit
     PtrIsNull,    // __builtin_ptr_is_null(pointer: ptr) -> bool
     PtrEq,        // __builtin_ptr_eq(a: ptr, b: ptr) -> bool
@@ -935,6 +948,7 @@ pub struct BuiltinFunctionSymbols {
 
     // Pointer operations
     pub ptr_read: DefaultSymbol,
+    pub ptr_ref: DefaultSymbol,
     pub ptr_write: DefaultSymbol,
     pub ptr_is_null: DefaultSymbol,
     pub ptr_eq: DefaultSymbol,
@@ -1037,6 +1051,7 @@ impl BuiltinFunctionSymbols {
             heap_free: interner.get_or_intern("__builtin_heap_free"),
             heap_realloc: interner.get_or_intern("__builtin_heap_realloc"),
             ptr_read: interner.get_or_intern("__builtin_ptr_read"),
+            ptr_ref: interner.get_or_intern("__builtin_ptr_ref"),
             ptr_write: interner.get_or_intern("__builtin_ptr_write"),
             ptr_is_null: interner.get_or_intern("__builtin_ptr_is_null"),
             ptr_eq: interner.get_or_intern("__builtin_ptr_eq"),
@@ -1111,6 +1126,7 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.heap_free { Some(BuiltinFunction::HeapFree) }
         else if symbol == self.heap_realloc { Some(BuiltinFunction::HeapRealloc) }
         else if symbol == self.ptr_read { Some(BuiltinFunction::PtrRead) }
+        else if symbol == self.ptr_ref { Some(BuiltinFunction::PtrRef) }
         else if symbol == self.ptr_write { Some(BuiltinFunction::PtrWrite) }
         else if symbol == self.ptr_is_null { Some(BuiltinFunction::PtrIsNull) }
         else if symbol == self.ptr_eq { Some(BuiltinFunction::PtrEq) }

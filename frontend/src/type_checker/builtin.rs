@@ -157,6 +157,34 @@ impl<'a> TypeCheckerVisitor<'a> {
         Ok(ty.clone())
     }
 
+    /// ELEMENT-BORROW E1: `__builtin_ptr_ref::<T>(p, off) -> &T`.
+    ///
+    /// The same read as `__builtin_ptr_read::<T>`, answering a borrow.
+    /// The difference is the type it hands back: a `&T` takes no drop
+    /// glue, so a container can name one of its elements without a
+    /// second owner appearing (design-docs/ELEMENT_BORROW.md).
+    pub fn check_ptr_ref_typed(
+        &mut self,
+        ty: &TypeDecl,
+        args: &Vec<ExprRef>,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        self.validate_type_argument(ty, "__builtin_ptr_ref")?;
+        if args.len() != 2 {
+            return Err(TypeCheckError::generic_error(&format!(
+                "__builtin_ptr_ref::<T> takes 2 arguments (pointer, byte offset), got {}",
+                args.len()
+            )));
+        }
+        self.expect_builtin_arg(&args[0], &TypeDecl::Ptr, "__builtin_ptr_ref", "pointer")?;
+        self.expect_builtin_arg(
+            &args[1],
+            &TypeDecl::UInt64,
+            "__builtin_ptr_ref",
+            "byte offset",
+        )?;
+        Ok(TypeDecl::Ref { is_mut: false, inner: Box::new(ty.clone()) })
+    }
+
     /// One argument against one expected type, letting a suffix-less
     /// numeric literal take the expected type the way every other
     /// argument position does.

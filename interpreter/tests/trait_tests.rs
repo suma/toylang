@@ -519,39 +519,50 @@ mod errors {
     }
 
     #[test]
-    fn test_function_returning_ref_is_rejected() {
-        // REF-Stage-2 (e): syntactic escape rule — a function
-        // cannot return `&T` / `&mut T`. Without lifetimes the
-        // referent's frame would die at the return, so the rule
-        // is enforced unconditionally.
+    fn test_function_may_return_a_reborrow() {
+        // ELEMENT-BORROW E1: a reference may leave a function when it
+        // is a **reborrow** of what the caller already holds. Handing
+        // a parameter back is the simplest shape of that.
         let source = r#"
-            fn dangling(x: &u64) -> &u64 { x }
-            fn main() -> u64 { 0u64 }
+            fn pick(x: &u64) -> &u64 { x }
+            fn main() -> u64 {
+                val n = 7u64
+                val r = pick(&n)
+                r + 0u64
+            }
         "#;
-        let err = test_program(source).expect_err("expected error");
-        assert!(
-            err.contains("references cannot escape") || err.contains("return position"),
-            "expected return-ref escape error, got: {}", err
-        );
+        let value = test_program(source).expect("a reborrow is allowed");
+        assert_eq!(format!("{:?}", value), "RefCell { value: UInt64(7) }");
     }
 
     #[test]
-    fn test_val_binding_of_ref_is_rejected() {
-        // REF-Stage-2 (e): a `val` / `var` binding cannot have a
-        // reference type. Either an explicit annotation OR an
-        // inferred ref type triggers the reject.
-        let source = r#"
+    fn test_binding_a_borrow_is_allowed_but_it_cannot_escape() {
+        // ELEMENT-BORROW E2: the binding is fine; outliving what it
+        // names is not. The escape is the window rule (`[E0026]`),
+        // which a borrow now travels under.
+        let ok = r#"
             fn main() -> u64 {
                 var a: u64 = 1u64
                 val r: &u64 = &a
-                0u64
+                r + 1u64
             }
         "#;
-        let err = test_program(source).expect_err("expected error");
+        let value = test_program(ok).expect("binding a borrow is allowed");
+        assert_eq!(format!("{:?}", value), "RefCell { value: UInt64(2) }");
+
+        let escaping = r#"
+            fn dangle() -> &String {
+                var v: Vec<String> = Vec::new()
+                v.push(String::from_str("x"))
+                val e = v.borrow(0u64)
+                e
+            }
+            fn main() -> u64 { 0u64 }
+        "#;
+        let err = test_program(escaping).expect_err("expected an escape error");
         assert!(
-            err.contains("references cannot be stored in val")
-                || err.contains("annotates a reference"),
-            "expected val-ref escape error, got: {}", err
+            err.contains("E0026") || err.contains("window"),
+            "expected the window-escape error, got: {}", err
         );
     }
 

@@ -694,6 +694,12 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
             return self.check_ptr_read_typed(&ty, args);
         }
 
+        // ELEMENT-BORROW E1: the borrowing twin.
+        if let BuiltinFunction::PtrRefTyped(ty) = func {
+            let ty = ty.clone();
+            return self.check_ptr_ref_typed(&ty, args);
+        }
+
         // MEMORY-ACCESS M0: the bulk-memory builtins check their own
         // arguments (the flat table below never visits them).
         if matches!(

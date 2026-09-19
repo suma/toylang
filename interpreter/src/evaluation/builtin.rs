@@ -614,6 +614,8 @@ impl EvaluationContext<'_> {
             | BuiltinFunction::HeapRealloc
             | BuiltinFunction::PtrRead
             | BuiltinFunction::PtrReadTyped(_)
+            | BuiltinFunction::PtrRef
+            | BuiltinFunction::PtrRefTyped(_)
             | BuiltinFunction::PtrWrite
             | BuiltinFunction::PtrOffset
             | BuiltinFunction::SoaRead
@@ -803,7 +805,17 @@ impl EvaluationContext<'_> {
         // write is mirrored into the byte buffer -- and the slot map
         // is the fallback for the values that live only there
         // (struct / enum / `String` / `Allocator`).
-        BuiltinFunction::PtrReadTyped(ty) => {
+        // ELEMENT-BORROW E1: `__builtin_ptr_ref::<T>` reads the same
+        // way — this engine aliases values anyway, so naming and
+        // reading are the same operation here. The difference is in
+        // the type, which keeps the caller's binding from owning it.
+        BuiltinFunction::PtrRef => {
+            return Err(InterpreterError::InternalError(
+                "__builtin_ptr_ref needs its type argument: write __builtin_ptr_ref::<T>(p, off)"
+                    .to_string(),
+            ));
+        }
+        BuiltinFunction::PtrRefTyped(ty) | BuiltinFunction::PtrReadTyped(ty) => {
             Self::expect_args("ptr_read", args, 2)?;
 
             let ptr_result = self.evaluate(&args[0])?;

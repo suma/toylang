@@ -308,6 +308,11 @@ impl MoveCheck<'_> {
         self.drop_analysis.contains_drop(ty)
     }
 
+    /// Whether this binding names a borrow rather than a value.
+    fn is_borrow(ty: &TypeDecl) -> bool {
+        matches!(ty, TypeDecl::Ref { .. })
+    }
+
     /// The declared or inferred type of a `val` / `var` initializer.
     fn binding_type(&self, annotation: &Option<TypeDecl>, rhs: ExprRef) -> Option<TypeDecl> {
         if let Some(t) = annotation
@@ -337,18 +342,27 @@ impl MoveCheck<'_> {
             // always has one.
             Stmt::Val(name, annotation, rhs) => {
                 self.walk_expr(rhs, Use::Read, conditional);
-                if let Some(ty) = self.binding_type(&annotation, rhs)
-                    && self.is_owning(&ty)
-                {
-                    self.declare(name, Some(stmt_ref));
+                if let Some(ty) = self.binding_type(&annotation, rhs) {
+                    if Self::is_borrow(&ty) {
+                        // ELEMENT-BORROW E2: a binding that names a
+                        // borrow owns nothing, so the backends must
+                        // not drop it. `transferred` is exactly that
+                        // instruction, and it already reaches every
+                        // lane.
+                        self.transferred.insert(stmt_ref);
+                    } else if self.is_owning(&ty) {
+                        self.declare(name, Some(stmt_ref));
+                    }
                 }
             }
             Stmt::Var(name, annotation, Some(rhs)) => {
                 self.walk_expr(rhs, Use::Read, conditional);
-                if let Some(ty) = self.binding_type(&annotation, rhs)
-                    && self.is_owning(&ty)
-                {
-                    self.declare(name, Some(stmt_ref));
+                if let Some(ty) = self.binding_type(&annotation, rhs) {
+                    if Self::is_borrow(&ty) {
+                        self.transferred.insert(stmt_ref);
+                    } else if self.is_owning(&ty) {
+                        self.declare(name, Some(stmt_ref));
+                    }
                 }
             }
             Stmt::Var(_, _, None) => {}

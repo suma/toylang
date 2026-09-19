@@ -147,13 +147,31 @@ pub fn check_moves(
 /// so all of them transfer when handed over.
 /// Parameter lists, so a call site can tell a borrow from a transfer.
 struct Signatures {
-    /// Free functions by name.
-    functions: HashMap<DefaultSymbol, Vec<TypeDecl>>,
-    /// Methods by name, receiver excluded. A name with several
-    /// signatures keeps only one entry when they agree on every
+    /// Free functions by name **and arity**, under the same agreement
+    /// rule as `methods`.
+    ///
+    /// A name is not unique across modules: a program that declares
+    /// `fn sum(l: List)` shares the name with `sha256::sum(&Vec<u8>)`,
+    /// and a plain by-name table let the last declaration answer for
+    /// the first. The two disagree on whether the argument is borrowed,
+    /// so every `sum(x)` call was read as a borrow — or, the other way
+    /// round, would have been read as a transfer and rejected a working
+    /// program. An ambiguous name now answers nothing, which costs a
+    /// missed transfer rather than a wrong diagnostic.
+    functions: HashMap<(DefaultSymbol, usize), Option<Vec<TypeDecl>>>,
+    /// Methods by name **and arity**, receiver excluded. A name with
+    /// several signatures keeps only one entry when they agree on every
     /// parameter's borrow-ness, and none when they disagree — an
     /// ambiguous call is left alone rather than guessed at.
-    methods: HashMap<DefaultSymbol, Option<Vec<TypeDecl>>>,
+    ///
+    /// The arity is part of the key because names collide across
+    /// unrelated containers: `Box::set(value)` and `Vec::set(i, value)`
+    /// are both `set`, and keying by name alone made the pair
+    /// ambiguous, so *every* `set` call was read as a borrow. That is
+    /// the safe direction for rejecting programs but the wrong one for
+    /// drop glue — `self.nodes.set(id, n)` handed the value back to the
+    /// container and the binding dropped it anyway.
+    methods: HashMap<(DefaultSymbol, usize), Option<Vec<TypeDecl>>>,
     /// `Type::function(...)` calls, keyed by both names. Unlike a
     /// method call the receiving type is written at the call site, so
     /// these need no agreement rule — and they must not share the
@@ -169,11 +187,21 @@ struct Signatures {
 
 impl Signatures {
     fn collect(program: &File, interner: &DefaultStringInterner) -> Self {
-        let mut functions = HashMap::new();
+        let mut functions: HashMap<(DefaultSymbol, usize), Option<Vec<TypeDecl>>> = HashMap::new();
         for f in &program.function {
-            functions.insert(f.name, f.parameter.iter().map(|(_, t)| t.clone()).collect());
+            let params: Vec<TypeDecl> = f.parameter.iter().map(|(_, t)| t.clone()).collect();
+            let key = (f.name, params.len());
+            match functions.get(&key) {
+                None => {
+                    functions.insert(key, Some(params));
+                }
+                Some(Some(existing)) if borrow_shape(existing) == borrow_shape(&params) => {}
+                Some(_) => {
+                    functions.insert(key, None);
+                }
+            }
         }
-        let mut methods: HashMap<DefaultSymbol, Option<Vec<TypeDecl>>> = HashMap::new();
+        let mut methods: HashMap<(DefaultSymbol, usize), Option<Vec<TypeDecl>>> = HashMap::new();
         let mut associated: HashMap<(DefaultSymbol, DefaultSymbol), Vec<TypeDecl>> = HashMap::new();
         let mut enum_variants = HashSet::new();
         for i in 0..program.statement.len() {
@@ -203,13 +231,14 @@ impl Signatures {
                     .map(|(_, t)| t.clone())
                     .collect();
                 associated.insert((target_type, m.name), params.clone());
-                match methods.get(&m.name) {
+                let key = (m.name, params.len());
+                match methods.get(&key) {
                     None => {
-                        methods.insert(m.name, Some(params));
+                        methods.insert(key, Some(params));
                     }
                     Some(Some(existing)) if borrow_shape(existing) == borrow_shape(&params) => {}
                     Some(_) => {
-                        methods.insert(m.name, None);
+                        methods.insert(key, None);
                     }
                 }
             }
@@ -542,7 +571,17 @@ impl MoveCheck<'_> {
             }
 
             Expr::Call(name, args) => {
-                let params = self.signatures.functions.get(&name).cloned();
+                let arity = match self.program.expression.get(&args) {
+                    Some(Expr::ExprList(items)) => items.len(),
+                    Some(_) => 1,
+                    None => 0,
+                };
+                let params = self
+                    .signatures
+                    .functions
+                    .get(&(name, arity))
+                    .cloned()
+                    .flatten();
                 self.walk_args(args, params.as_deref(), conditional);
             }
             Expr::MethodCall(receiver, method, args) => {
@@ -552,7 +591,12 @@ impl MoveCheck<'_> {
                 // costs a missed transfer, where the other way round
                 // would reject working programs.
                 self.walk_expr(receiver, Use::Read, conditional);
-                let params = self.signatures.methods.get(&method).cloned().flatten();
+                let params = self
+                    .signatures
+                    .methods
+                    .get(&(method, args.len()))
+                    .cloned()
+                    .flatten();
                 self.walk_arg_list(&args, params.as_deref(), conditional);
             }
             Expr::AssociatedFunctionCall(type_name, fn_name, args) => {
@@ -565,12 +609,21 @@ impl MoveCheck<'_> {
                     }
                     return;
                 }
+                // `module::f(args)` is spelled the same way as
+                // `Type::f(args)`, so a name that is not an associated
+                // function is looked up among the free ones.
                 let params = self
                     .signatures
                     .associated
                     .get(&(type_name, fn_name))
-                    .or_else(|| self.signatures.functions.get(&fn_name))
-                    .cloned();
+                    .cloned()
+                    .or_else(|| {
+                        self.signatures
+                            .functions
+                            .get(&(fn_name, args.len()))
+                            .cloned()
+                            .flatten()
+                    });
                 self.walk_arg_list(&args, params.as_deref(), conditional);
             }
 

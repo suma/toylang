@@ -692,3 +692,171 @@ test "the streams endpoint answers with label sets and their counts" {
     val capped = answer_for(dir, "GET /v1/streams?limit=5000 HTTP/1.1\r\n\r\n", true)
     assert(contains(&capped, "HTTP/1.1 400"), "the limit has the same cap as the rest")
 }
+
+# 1 本ぶんの答えを読み、`200 OK` だったか。
+fn reply_is_ok(conn: &TcpStream) -> bool {
+    var reply: Vec<u8> = Vec::with_capacity(1024u64)
+    var total: u64 = 0u64
+    var tries: u64 = 0u64
+    while total == 0u64 && tries < 500u64 {
+        val room = reply.capacity_span()
+        match room {
+            Option::Some(win) => {
+                val got = conn.read(win)
+                match got {
+                    Result::Ok(n) => { total = n }
+                    Result::Err(e) => { }
+                }
+            }
+            Option::None => { }
+        }
+        tries = tries + 1u64
+    }
+    reply.set_size(total)
+    var text = String::new()
+    var b: u64 = 0u64
+    while b < reply.size() {
+        text.push(reply.get(b))
+        b = b + 1u64
+    }
+    contains(&text, "HTTP/1.1 200 OK")
+}
+
+# HTTP_API.md §4 — 同時接続。
+#
+# 表が 1 本しか持てなかった間、2 人目の客は**最初の客が帰るまで**
+# TCP のバックログで待っていた。表が番号で持てるようになった今、
+# 3 本を同時に開いて、3 本とも答えが返ることを見る。
+#
+# `serve` のループそのものは回さない (自分の poller で待つので、
+# 壊れたときにテストが固まる)。代わりに表の操作を直接叩く —
+# accept して `conn_open`、イベントが来たら `serve_slot`。
+test "three connections are served at the same time" {
+    val bound = TcpListener::bind("127.0.0.1", 0u64)
+    var listener = match bound {
+        Result::Ok(l) => l,
+        Result::Err(e) => { panic("bind: {e}") }
+    }
+    val got_port = listener.local_port()
+    val port = match got_port {
+        Result::Ok(n) => n,
+        Result::Err(e) => { panic("local_port: {e}") }
+    }
+
+    # 3 本つないで、3 本とも要求を送り切ってから 1 つも読まない。
+    # 「最初の 1 本を返し終えるまで次を見ない」サーバなら、ここで
+    # 2 本目と 3 本目が待たされる。
+    #
+    # **束縛を 3 つ並べる**のはループを嫌ったからではない。`match` の
+    # 腕で受けた値は compiled レーンでは**複製**で、元はスコープの
+    # 終わりに drop される — ループの中で開くと、反復が終わるたびに
+    # クライアント側の接続が閉じ、サーバは 44 バイトの直後に EOF を
+    # 見る (`RUNTIME_GAPS.md` G16)。関数スコープの束縛なら、答えを
+    # 読み終えるまで生きている。
+    val d1 = TcpStream::connect("127.0.0.1", port)
+    var c1 = match d1 {
+        Result::Ok(c) => c,
+        Result::Err(e) => { panic("connect 1: {e}") }
+    }
+    val d2 = TcpStream::connect("127.0.0.1", port)
+    var c2 = match d2 {
+        Result::Ok(c) => c,
+        Result::Err(e) => { panic("connect 2: {e}") }
+    }
+    val d3 = TcpStream::connect("127.0.0.1", port)
+    var c3 = match d3 {
+        Result::Ok(c) => c,
+        Result::Err(e) => { panic("connect 3: {e}") }
+    }
+    # `connect` は**ブロッキング**のハンドルを返す。答えが来なければ
+    # `read` がそこで止まるので、テストが壊れたときに固まる代わりに
+    # 落ちるよう、非ブロッキングに倒しておく。
+    val nb1 = c1.set_blocking(false)
+    val nb2 = c2.set_blocking(false)
+    val nb3 = c3.set_blocking(false)
+
+    val request = String::from_str("GET /healthz HTTP/1.1\r\nconnection: close\r\n\r\n")
+    val w1 = c1.write(span_of(&request))
+    match w1 {
+        Result::Ok(n) => { }
+        Result::Err(e) => { panic("write 1: {e}") }
+    }
+    val w2 = c2.write(span_of(&request))
+    match w2 {
+        Result::Ok(n) => { }
+        Result::Err(e) => { panic("write 2: {e}") }
+    }
+    val w3 = c3.write(span_of(&request))
+    match w3 {
+        Result::Ok(n) => { }
+        Result::Err(e) => { panic("write 3: {e}") }
+    }
+
+    val made = Poller::new()
+    var poller = match made {
+        Result::Ok(p) => p,
+        Result::Err(e) => { panic("poller: {e}") }
+    }
+    var conns = Conns::new()
+    var st = Stats::new()
+    var w = ArchiveWriter::new()
+    var ms = MountSet::new()
+    var gens: Vec<u64> = Vec::new()
+    var big = ByteWriter::with_capacity(65536u64)
+
+    # 3 本を表に入れる。1 本ずつ答えるのではなく、全部入れてから回す。
+    var taken: u64 = 0u64
+    while taken < 3u64 {
+        val accepted = listener.accept_fd()
+        match accepted {
+            Result::Ok(fd) => {
+                val slot = server::conn_open(&mut conns, &poller, fd, true, true)
+                assert(slot >= 0i64, "the table should have room for {taken}")
+                taken = taken + 1u64
+            }
+            Result::Err(e) => { }
+        }
+    }
+    assert_eq(conns.live(), 3u64)
+
+    # 3 本とも答え終わるまで回す。
+    # **答えを書き終えるまで**回す。要求を読んだ時点で止めると、
+    # 応答はまだソケットに出ていない (`connection: close` なので、
+    # 書き終えた接続は表から落ちる)。
+    var spins: u64 = 0u64
+    while conns.live() > 0u64 && spins < 400u64 {
+        val ready = poller.wait(50i64)
+        var n: u64 = 0u64
+        match ready {
+            Result::Ok(k) => { n = k }
+            Result::Err(e) => { }
+        }
+        var i: u64 = 0u64
+        while i < n {
+            val ev = poller.event(i)
+            val tok = ev.token()
+            if tok >= 2u64 {
+                val slot = tok - 2u64
+                val fd: i32 = conns.fd.get(slot)
+                if fd >= 0i32 {
+                    val bad = ev.is_error() || ev.is_hup()
+                    val keep = server::serve_slot(&mut conns, slot, ev.is_readable(),
+                                                  ev.is_writable(), bad, &poller,
+                                                  "build/server-spec", &mut st, &mut w,
+                                                  &mut ms, &gens, &mut big)
+                    if !keep { server::conn_close(&mut conns, &poller, slot, &mut big) }
+                }
+            }
+            i = i + 1u64
+        }
+        spins = spins + 1u64
+    }
+    assert_eq(st.requests, 3u64)
+
+    # 3 本とも答えを受け取っている。
+    var answered: u64 = 0u64
+    if reply_is_ok(&c1) { answered = answered + 1u64 }
+    if reply_is_ok(&c2) { answered = answered + 1u64 }
+    if reply_is_ok(&c3) { answered = answered + 1u64 }
+    assert_eq(answered, 3u64)
+}

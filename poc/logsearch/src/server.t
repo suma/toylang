@@ -50,7 +50,28 @@ import ui
 # compiled lanes (todo.md MODULE-CONST) -- the same reason
 # `core/std/poll.t` spells its interests as `pub fn`.
 fn listener_token() -> u64 { 1u64 }
-fn connection_token() -> u64 { 2u64 }
+
+# One token per slot, so an event names its connection without a
+# search. Slot 0 is token 2; the listener keeps 1.
+fn conn_token(slot: u64) -> u64 { slot + 2u64 }
+fn token_slot(tok: u64) -> u64 { tok - 2u64 }
+
+# How many connections are served at once, and what each one costs.
+#
+# The table is allocated at startup (HTTP_API.md section 4): two
+# arenas, carved into one region per slot, so a connection needs no
+# allocation of its own and a slow client cannot make the server grow.
+# The price is fixed and visible -- 128 * (64 KiB + 256 KiB) = 40 MiB --
+# and `max_conns` is the knob if that is too much for a host.
+#
+# A request bigger than its slot gets `413`: 64 KiB is the record
+# limit (`max_record_bytes`), so a body that does not fit is one this
+# server was not going to accept anyway. A *response* bigger than its
+# slot is different -- a query legitimately answers with megabytes --
+# and that is what the shared `big` buffer below is for.
+pub fn max_conns() -> u64 { 128u64 }
+pub fn recv_slot_bytes() -> u64 { 65536u64 }
+pub fn send_slot_bytes() -> u64 { 262144u64 }
 
 # One `wait` is this long. It bounds how quickly a timeout is noticed,
 # not how quickly a ready socket is served.
@@ -1035,34 +1056,403 @@ fn number_of(w: &ByteWriter) -> Result<u64, ParseError> {
 
 # Serve `conn` until it closes, times out, or asks the server to stop.
 # Returns false when the server should stop.
+# ---------------------------------------------------------------------
+# The connection table
+#
+# Parallel columns rather than a `Vec<Conn>`: a container of handles
+# cannot be read back, because taking an element out binds an alias
+# whose drop glue closes the fd (`NETWORK_IO.md`). The table holds
+# **descriptors**, and a turn owns its socket by `TcpStream::from_fd`
+# and hands it back with `into_fd` before the binding dies.
+pub struct Conns {
+    fd: Vec<i32>,          # -1 = free slot
+    owned: Vec<bool>,      # false = the caller still owns this handle
+    writing: Vec<bool>,
+    local: Vec<bool>,
+    in_len: Vec<u64>,
+    out_len: Vec<u64>,
+    sent: Vec<u64>,
+    deadline: Vec<u64>,
+    # One request that is parsed but not answered yet, because the
+    # shared `big` buffer was busy. Retried on the next tick.
+    pending: Vec<bool>,
+    inbox: ByteWriter,     # max_conns * recv_slot_bytes()
+    outbox: ByteWriter,    # max_conns * send_slot_bytes()
+    # Which slot owns the shared oversize buffer, if any. The buffer
+    # itself is a separate binding the caller holds: a field cannot be
+    # handed to a function as `&mut` on the compiled lanes
+    # (`RUNTIME_GAPS.md` G16), and every route needs it as one.
+    big_owner: i64,        # -1 = free
+    live: u64,
+}
+
+impl Conns {
+    pub fn new() -> Self {
+        val n = max_conns()
+        var fds: Vec<i32> = Vec::with_capacity(n)
+        var own: Vec<bool> = Vec::with_capacity(n)
+        var wr: Vec<bool> = Vec::with_capacity(n)
+        var lo: Vec<bool> = Vec::with_capacity(n)
+        var il: Vec<u64> = Vec::with_capacity(n)
+        var ol: Vec<u64> = Vec::with_capacity(n)
+        var sn: Vec<u64> = Vec::with_capacity(n)
+        var dl: Vec<u64> = Vec::with_capacity(n)
+        var pd: Vec<bool> = Vec::with_capacity(n)
+        var i: u64 = 0u64
+        while i < n {
+            fds.push(-1i32)
+            own.push(true)
+            wr.push(false)
+            lo.push(false)
+            il.push(0u64)
+            ol.push(0u64)
+            sn.push(0u64)
+            dl.push(0u64)
+            pd.push(false)
+            i = i + 1u64
+        }
+        val ib = ByteWriter::with_capacity(n * recv_slot_bytes())
+        val ob = ByteWriter::with_capacity(n * send_slot_bytes())
+        Conns {
+            fd: fds, owned: own, writing: wr, local: lo,
+            in_len: il, out_len: ol, sent: sn, deadline: dl,
+            pending: pd, inbox: ib, outbox: ob,
+            big_owner: -1i64, live: 0u64,
+        }
+    }
+
+    pub fn live(&self) -> u64 { self.live }
+    pub fn is_full(&self) -> bool { self.live >= max_conns() }
+
+    # The first free slot, or -1.
+    fn free_slot(&self) -> i64 {
+        var i: u64 = 0u64
+        var out: i64 = -1i64
+        while i < max_conns() && out < 0i64 {
+            val f: i32 = self.fd.get(i)
+            if f < 0i32 { out = i as i64 }
+            i = i + 1u64
+        }
+        out
+    }
+}
+
+# Take a descriptor into the table. Answers the slot, or -1 when full.
+#
+# `conn_open` / `serve_slot` / `conn_close` are public because the
+# tests drive a table without a `serve` loop around it: starting the
+# real loop would mean waiting on its own poller, and a test that
+# waits is a test that hangs when it breaks.
+pub fn conn_open(c: &mut Conns, poller: &Poller, fd: i32, owned: bool,
+             local: bool) -> i64 {
+    val got = c.free_slot()
+    if got < 0i64 { return -1i64 }
+    val slot = got as u64
+    val reg = poller.register(fd, conn_token(slot), interest_read())
+    match reg {
+        Result::Ok(u) => { }
+        Result::Err(e) => { return -1i64 }
+    }
+    c.fd.set(slot, fd)
+    c.owned.set(slot, owned)
+    c.local.set(slot, local)
+    c.writing.set(slot, false)
+    c.in_len.set(slot, 0u64)
+    c.out_len.set(slot, 0u64)
+    c.sent.set(slot, 0u64)
+    c.pending.set(slot, false)
+    c.deadline.set(slot, time::now_mono_ns() + header_timeout_ns())
+    c.live = c.live + 1u64
+    got
+}
+
+# Give the slot back. The descriptor is closed unless the caller said
+# it owns the handle (`serve_connection` passes a borrowed socket).
+pub fn conn_close(c: &mut Conns, poller: &Poller, slot: u64, big: &mut ByteWriter) {
+    val fd: i32 = c.fd.get(slot)
+    if fd < 0i32 { return }
+    val off = poller.deregister(fd)
+    match off {
+        Result::Ok(u) => { }
+        Result::Err(e) => { }
+    }
+    val owns: bool = c.owned.get(slot)
+    if owns {
+        var s = TcpStream::from_fd(fd)
+        val shut = s.close()
+        match shut {
+            Result::Ok(u) => { }
+            Result::Err(e) => { }
+        }
+    }
+    c.fd.set(slot, -1i32)
+    c.writing.set(slot, false)
+    c.pending.set(slot, false)
+    c.in_len.set(slot, 0u64)
+    c.out_len.set(slot, 0u64)
+    c.sent.set(slot, 0u64)
+    if c.big_owner == (slot as i64) {
+        c.big_owner = -1i64
+        big.clear()
+    }
+    c.live = c.live - 1u64
+}
+
+# Read what is waiting into this slot's region. `false` means the
+# connection is finished (closed, failed, or over its limit).
+fn conn_read(c: &mut Conns, slot: u64, st: &mut Stats) -> bool {
+    val fd: i32 = c.fd.get(slot)
+    val base = slot * recv_slot_bytes()
+    val have: u64 = c.in_len.get(slot)
+    if have >= recv_slot_bytes() { return false }
+    val room = c.inbox.room()
+    var out = true
+    match room {
+        Option::Some(all) => {
+            val win = all.slice(base + have, recv_slot_bytes() - have)
+            var s = TcpStream::from_fd(fd)
+            val got = s.read(win)
+            c.fd.set(slot, s.into_fd())
+            match got {
+                Result::Ok(n) => {
+                    if n == 0u64 {
+                        out = false
+                    } else {
+                        c.in_len.set(slot, have + n)
+                        st.bytes_in = st.bytes_in + n
+                    }
+                }
+                Result::Err(e) => {
+                    match e {
+                        NetError::WouldBlock => { }
+                        NetError::Interrupted => { }
+                        _ => { out = false }
+                    }
+                }
+            }
+        }
+        Option::None => { out = false }
+    }
+    out
+}
+
+# Copy a finished response into the slot's region, or keep it in the
+# shared buffer when it does not fit.
+fn conn_hold_response(c: &mut Conns, slot: u64, big: &ByteWriter) {
+    val n = big.len()
+    if n <= send_slot_bytes() {
+        val src = big.span()
+        val dst = c.outbox.room()
+        match src {
+            Option::Some(srcw) => {
+                match dst {
+                    Option::Some(dstw) => {
+                        val base = slot * send_slot_bytes()
+                        val win = dstw.slice(base, n)
+                        win.copy_from(srcw)
+                    }
+                    Option::None => { }
+                }
+            }
+            Option::None => { }
+        }
+        c.out_len.set(slot, n)
+        c.big_owner = -1i64
+    } else {
+        # Sent straight out of `big`; nobody else may route until it
+        # has gone.
+        c.out_len.set(slot, n)
+        c.big_owner = slot as i64
+    }
+}
+
+# If this slot holds a complete request, answer it. `false` means the
+# connection is finished.
+fn conn_route(c: &mut Conns, slot: u64, poller: &Poller, spec: str,
+              st: &mut Stats, w: &mut ArchiveWriter, ms: &mut MountSet,
+              gens: &Vec<u64>, big: &mut ByteWriter) -> bool {
+    val have: u64 = c.in_len.get(slot)
+    if have == 0u64 { return true }
+    # Another connection is still sending a big answer. Try next tick
+    # rather than dropping the request.
+    if c.big_owner >= 0i64 && c.big_owner != (slot as i64) {
+        c.pending.set(slot, true)
+        return true
+    }
+    val base = slot * recv_slot_bytes()
+    val room = c.inbox.room()
+    var out = true
+    match room {
+        Option::Some(all) => {
+            val bytes = all.slice(base, have)
+            val req = http::parse_request(bytes, have)
+            if req.status != 0u64 || req.complete {
+                val local: bool = c.local.get(slot)
+                big.clear()
+                route(spec, bytes, &req, local, st, w, ms, gens, big)
+                conn_hold_response(c, slot, big)
+                c.pending.set(slot, false)
+                c.writing.set(slot, true)
+                c.sent.set(slot, 0u64)
+                c.in_len.set(slot, 0u64)
+                val fd: i32 = c.fd.get(slot)
+                val up = poller.register(fd, conn_token(slot), interest_write())
+                match up {
+                    Result::Ok(u) => { }
+                    Result::Err(e) => { out = false }
+                }
+                c.deadline.set(slot, time::now_mono_ns() + idle_timeout_ns())
+            } elif have >= recv_slot_bytes() {
+                # The slot filled without a request ending in it.
+                out = false
+            } else {
+                c.pending.set(slot, false)
+            }
+        }
+        Option::None => { out = false }
+    }
+    out
+}
+
+# Push out what is left of this slot's response. `false` means the
+# connection is finished.
+fn conn_write(c: &mut Conns, slot: u64, poller: &Poller, st: &mut Stats,
+              big: &ByteWriter) -> bool {
+    val total: u64 = c.out_len.get(slot)
+    val sent: u64 = c.sent.get(slot)
+    if sent >= total { return true }
+    val from_big = c.big_owner == (slot as i64)
+    var window = big.span()
+    if !from_big { window = c.outbox.room() }
+    var base = 0u64
+    if !from_big { base = slot * send_slot_bytes() }
+    val fd: i32 = c.fd.get(slot)
+    var out = true
+    match window {
+        Option::Some(all) => {
+            val piece = all.slice(base + sent, total - sent)
+            var s = TcpStream::from_fd(fd)
+            val put = s.write(piece)
+            c.fd.set(slot, s.into_fd())
+            match put {
+                Result::Ok(n) => {
+                    c.sent.set(slot, sent + n)
+                    st.bytes_out = st.bytes_out + n
+                }
+                Result::Err(e) => {
+                    match e {
+                        NetError::WouldBlock => { }
+                        NetError::Interrupted => { }
+                        _ => { out = false }
+                    }
+                }
+            }
+        }
+        Option::None => { out = false }
+    }
+    out
+}
+
+# The response has gone out. Either park the slot for the next request
+# or finish the connection.
+fn conn_sent_all(c: &mut Conns, slot: u64, poller: &Poller,
+                 big: &mut ByteWriter) -> bool {
+    var keep = false
+    if c.big_owner == (slot as i64) {
+        keep = keep_open(big)
+        big.clear()
+        c.big_owner = -1i64
+    } else {
+        val base = slot * send_slot_bytes()
+        val n: u64 = c.out_len.get(slot)
+        val room = c.outbox.room()
+        match room {
+            Option::Some(all) => {
+                val win = all.slice(base, n)
+                keep = keep_open_bytes(win, n)
+            }
+            Option::None => { }
+        }
+    }
+    if !keep { return false }
+    c.writing.set(slot, false)
+    c.sent.set(slot, 0u64)
+    c.out_len.set(slot, 0u64)
+    c.in_len.set(slot, 0u64)
+    val fd: i32 = c.fd.get(slot)
+    val back = poller.register(fd, conn_token(slot), interest_read())
+    match back {
+        Result::Ok(u) => { }
+        Result::Err(e) => { return false }
+    }
+    c.deadline.set(slot, time::now_mono_ns() + idle_timeout_ns())
+    true
+}
+
+# Requests that were parsed while the shared buffer was busy.
+#
+# An event already came and went for these, so nothing else will wake
+# them: the sweep is what keeps a deferred request from waiting for a
+# client that has no reason to send anything more.
+fn sweep_pending(c: &mut Conns, poller: &Poller, spec: str, st: &mut Stats,
+                 w: &mut ArchiveWriter, ms: &mut MountSet, gens: &Vec<u64>,
+                 big: &mut ByteWriter) {
+    if c.big_owner >= 0i64 { return }
+    var i: u64 = 0u64
+    while i < max_conns() {
+        val fd: i32 = c.fd.get(i)
+        val waiting: bool = c.pending.get(i)
+        if fd >= 0i32 && waiting {
+            if !conn_route(c, i, poller, spec, st, w, ms, gens, big) {
+                conn_close(c, poller, i, big)
+            }
+        }
+        i = i + 1u64
+    }
+}
+
+# Connections that stopped talking. The header timeout answers
+# slow-loris; the idle timeout reclaims a keep-alive nobody is using.
+fn sweep_deadlines(c: &mut Conns, poller: &Poller, big: &mut ByteWriter) {
+    val now = time::now_mono_ns()
+    var i: u64 = 0u64
+    while i < max_conns() {
+        val fd: i32 = c.fd.get(i)
+        if fd >= 0i32 {
+            val due: u64 = c.deadline.get(i)
+            if now > due { conn_close(c, poller, i, big) }
+        }
+        i = i + 1u64
+    }
+}
+
+# Serve exactly one connection until it is done, on a table of one.
+#
+# The server proper (`serve`) runs many slots at once; this is the
+# single-connection driver, kept because a caller that has already
+# accepted a socket -- a test, or a one-shot tool -- should not have
+# to build a table. The socket stays the caller's: the slot is opened
+# **borrowed**, so finishing it does not close the handle.
+#
+# Answers false when the request asked the server to stop.
 pub fn serve_connection(poller: &Poller, conn: &TcpStream, spec: str,
                         st: &mut Stats, w: &mut ArchiveWriter,
                         ms: &mut MountSet, gens: &Vec<u64>,
                         inbox: &mut ByteWriter,
                         outbox: &mut ByteWriter) -> bool {
-    val fd = conn.as_fd()
+    var c = Conns::new()
     val local = is_local(conn)
-    val reg = poller.register(fd, connection_token(), interest_read())
-    match reg {
-        Result::Ok(u) => { }
-        Result::Err(e) => { return true }
-    }
+    val got = conn_open(&mut c, poller, conn.as_fd(), false, local)
+    if got < 0i64 { return true }
+    val slot = got as u64
     st.connections = st.connections + 1u64
 
-    inbox.clear()
-    outbox.clear()
-    var sent: u64 = 0u64
-    var writing = false
-    var alive = true
     var running = true
-    var deadline = time::now_mono_ns() + header_timeout_ns()
-
+    var alive = true
     while alive {
         val now = time::now_mono_ns()
-        if now > deadline {
-            # A client that stopped mid-request gets the descriptor
-            # back rather than an explanation: there is nowhere to put
-            # one that it is listening to.
+        val due: u64 = c.deadline.get(slot)
+        if now > due {
             alive = false
         } else {
             val ready = poller.wait(tick_ms())
@@ -1074,85 +1464,67 @@ pub fn serve_connection(poller: &Poller, conn: &TcpStream, spec: str,
             var i: u64 = 0u64
             while i < n && alive {
                 val ev = poller.event(i)
-                if ev.token() == connection_token() {
-                    if ev.is_error() || ev.is_hup() {
-                        # Drain first: a peer that sent a whole
-                        # request and closed its side is not an error,
-                        # and half-closed uploads are how `curl
-                        # --data-binary` finishes.
-                        if !writing {
-                            val got = recv_some(conn, inbox, recv_bytes())
-                            if got > 0i64 { st.bytes_in = st.bytes_in + (got as u64) }
-                        }
-                        if inbox.len() == 0u64 { alive = false }
+                if ev.token() == conn_token(slot) {
+                    val bad = ev.is_error() || ev.is_hup()
+                    if !serve_slot(&mut c, slot, ev.is_readable(), ev.is_writable(),
+                                   bad, poller, spec, st, w, ms, gens, outbox) {
+                        alive = false
                     }
-                    if alive && writing && ev.is_writable() {
-                        val put = send_some(conn, outbox, sent)
-                        if put > 0i64 {
-                            sent = sent + (put as u64)
-                            st.bytes_out = st.bytes_out + (put as u64)
-                        }
-                        if put == io_failed() { alive = false }
-                        if alive && sent >= outbox.len() {
-                            # The response is out. Keep the
-                            # connection only if both sides said so.
-                            if st.shutdown {
-                                alive = false
-                                running = false
-                            } elif keep_open(outbox) {
-                                writing = false
-                                sent = 0u64
-                                outbox.clear()
-                                inbox.clear()
-                                val back = poller.register(fd, connection_token(), interest_read())
-                                match back {
-                                    Result::Ok(u) => { }
-                                    Result::Err(e) => { alive = false }
-                                }
-                                deadline = time::now_mono_ns() + idle_timeout_ns()
-                            } else {
-                                alive = false
-                            }
-                        }
-                    }
-                    if alive && !writing && ev.is_readable() {
-                        val got = recv_some(conn, inbox, recv_bytes())
-                        if got == io_closed() || got == io_failed() {
-                            alive = false
-                        } else {
-                            if got > 0i64 { st.bytes_in = st.bytes_in + (got as u64) }
-                            val seen = inbox.span()
-                            match seen {
-                                Option::Some(bytes) => {
-                                    val req = http::parse_request(bytes, inbox.len())
-                                    if req.status != 0u64 || req.complete {
-                                        route(spec, bytes, &req, local, st, w, ms, gens, outbox)
-                                        writing = true
-                                        sent = 0u64
-                                        val up = poller.register(fd, connection_token(), interest_write())
-                                        match up {
-                                            Result::Ok(u) => { }
-                                            Result::Err(e) => { alive = false }
-                                        }
-                                        deadline = time::now_mono_ns() + idle_timeout_ns()
-                                    }
-                                }
-                                Option::None => { }
-                            }
-                        }
+                    val writing: bool = c.writing.get(slot)
+                    val sent: u64 = c.sent.get(slot)
+                    val total: u64 = c.out_len.get(slot)
+                    if alive && writing && sent >= total && st.shutdown {
+                        alive = false
+                        running = false
                     }
                 }
                 i = i + 1u64
             }
         }
     }
-
-    val off = poller.deregister(fd)
-    match off {
-        Result::Ok(u) => { }
-        Result::Err(e) => { }
-    }
+    conn_close(&mut c, poller, slot, outbox)
     running
+}
+
+# One event on one slot. `false` means the connection is finished.
+#
+# The order is the one an event loop has to keep: drain a peer that
+# hung up before believing it, write before reading (a response half
+# out is the thing holding the connection), and only then take more
+# bytes in.
+pub fn serve_slot(c: &mut Conns, slot: u64, readable: bool, writable: bool,
+              gone: bool, poller: &Poller,
+              spec: str, st: &mut Stats, w: &mut ArchiveWriter,
+              ms: &mut MountSet, gens: &Vec<u64>, big: &mut ByteWriter) -> bool {
+    var alive = true
+    val writing: bool = c.writing.get(slot)
+    if gone {
+        if !writing {
+            val more = conn_read(c, slot, st)
+            val have: u64 = c.in_len.get(slot)
+            if have == 0u64 { alive = false }
+        }
+    }
+    if alive && writing && writable {
+        if !conn_write(c, slot, poller, st, big) {
+            alive = false
+        } else {
+            val sent: u64 = c.sent.get(slot)
+            val total: u64 = c.out_len.get(slot)
+            if sent >= total {
+                if !conn_sent_all(c, slot, poller, big) { alive = false }
+            }
+        }
+    }
+    val still_writing: bool = c.writing.get(slot)
+    if alive && !still_writing && readable {
+        if !conn_read(c, slot, st) {
+            alive = false
+        } else {
+            if !conn_route(c, slot, poller, spec, st, w, ms, gens, big) { alive = false }
+        }
+    }
+    alive
 }
 
 # Whether the response that was just written asked to keep going.
@@ -1161,14 +1533,19 @@ pub fn serve_connection(poller: &Poller, conn: &TcpStream, spec: str,
 fn keep_open(out: &ByteWriter) -> bool {
     val w = out.span()
     match w {
-        Option::Some(b) => {
-            val needle = String::from_str("\r\nconnection: keep-alive\r\n")
-            val at = b.find_seq(span_of_string(&needle))
-            match at {
-                Option::Some(i) => { true }
-                Option::None => { false }
-            }
-        }
+        Option::Some(b) => { keep_open_bytes(b, out.len()) }
+        Option::None => { false }
+    }
+}
+
+# The same question asked of a window, for a response that lives in a
+# slot of the table rather than in a buffer of its own.
+fn keep_open_bytes(b: Span<u8>, len: u64) -> bool {
+    val needle = String::from_str("\r\nconnection: keep-alive\r\n")
+    val win = b.slice(0u64, len)
+    val at = win.find_seq(span_of_string(&needle))
+    match at {
+        Option::Some(i) => { true }
         Option::None => { false }
     }
 }
@@ -1240,9 +1617,11 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
     # and reading it back is how the tests avoid naming a number.
     eprintln("listening on {addr}:{real_port}")
 
+    var conns = Conns::new()
     var idle_ns: u64 = 0u64
     val budget_ns = idle_s * 1000000000u64
     var running = true
+    var watching = true          # is the listener still in the poller?
     while running {
         val ready = poller.wait(tick_ms())
         var n: u64 = 0u64
@@ -1251,39 +1630,118 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
             Result::Err(e) => { running = false }
         }
         if running {
-            if n == 0u64 {
+            if n == 0u64 && conns.live() == 0u64 {
                 idle_ns = idle_ns + ((tick_ms() as u64) * 1000000u64)
                 if budget_ns > 0u64 && idle_ns >= budget_ns { running = false }
-                # A record that is only in memory is a record a crash
-                # loses, so the segment goes out on a timer as well as
-                # when it fills (DATA_MODEL.md section 4).
-                val now_ns = time::now_mono_ns()
-                if !w.is_empty() && now_ns - last_flush >= flush_after_ns() {
-                    val put = flush_active(&mut w, &mut ms, &gens, &mut st, &crc)
-                    last_flush = now_ns
-                }
             } else {
                 idle_ns = 0u64
-                var i: u64 = 0u64
-                while i < n && running {
-                    val ev = poller.event(i)
-                    if ev.token() == listener_token() {
-                        val accepted = listener.accept()
-                        match accepted {
-                            Result::Ok(conn) => {
-                                running = serve_connection(&poller, &conn, spec,
-                                                           &mut st, &mut w,
-                                                           &mut ms, &gens,
-                                                           &mut inbox,
-                                                           &mut outbox)
+            }
+
+            var i: u64 = 0u64
+            while i < n && running {
+                val ev = poller.event(i)
+                val tok = ev.token()
+                if tok == listener_token() {
+                    # Take as many as the table will hold. A slot that
+                    # cannot be opened means the listener comes out of
+                    # the poller until one frees up -- the clients wait
+                    # in the TCP backlog, which is easier on a sender
+                    # than an accept followed by a close.
+                    var taking = true
+                    while taking {
+                        if conns.is_full() {
+                            taking = false
+                        } else {
+                            # `accept_fd` rather than `accept`: a
+                            # handle caught here is owned by the
+                            # binding that caught it, and on the
+                            # compiled lanes the payload is a **copy**,
+                            # so the original closes the connection
+                            # when the arm ends. The table wants the
+                            # number anyway.
+                            val accepted = listener.accept_fd()
+                            match accepted {
+                                Result::Ok(fd) => {
+                                    var probe = TcpStream::from_fd(fd)
+                                    val local = is_local(&probe)
+                                    val back = probe.into_fd()
+                                    val slot = conn_open(&mut conns, &poller, back, true, local)
+                                    if slot < 0i64 {
+                                        var spill = TcpStream::from_fd(back)
+                                        val shut = spill.close()
+                                        match shut {
+                                            Result::Ok(u) => { }
+                                            Result::Err(e) => { }
+                                        }
+                                        taking = false
+                                    } else {
+                                        st.connections = st.connections + 1u64
+                                    }
+                                }
+                                Result::Err(e) => { taking = false }
                             }
-                            Result::Err(e) => { }
                         }
                     }
-                    i = i + 1u64
+                } else {
+                    val slot = token_slot(tok)
+                    val fd: i32 = conns.fd.get(slot)
+                    if fd >= 0i32 {
+                        val bad = ev.is_error() || ev.is_hup()
+                        val keep = serve_slot(&mut conns, slot, ev.is_readable(),
+                                              ev.is_writable(), bad, &poller, spec,
+                                              &mut st, &mut w, &mut ms, &gens,
+                                              &mut outbox)
+                        if !keep { conn_close(&mut conns, &poller, slot, &mut outbox) }
+                        if st.shutdown { running = false }
+                    }
+                }
+                i = i + 1u64
+            }
+
+            # Requests that had to wait for the shared buffer, and
+            # connections that stopped talking.
+            if running {
+                sweep_pending(&mut conns, &poller, spec, &mut st, &mut w,
+                              &mut ms, &gens, &mut outbox)
+                sweep_deadlines(&mut conns, &poller, &mut outbox)
+            }
+
+            # The listener goes out of the poller while the table is
+            # full, and comes back when it is not.
+            if running {
+                if conns.is_full() && watching {
+                    val off = poller.deregister(listener.as_fd())
+                    match off {
+                        Result::Ok(u) => { watching = false }
+                        Result::Err(e) => { }
+                    }
+                } elif !conns.is_full() && !watching {
+                    val on = poller.register(listener.as_fd(), listener_token(), interest_read())
+                    match on {
+                        Result::Ok(u) => { watching = true }
+                        Result::Err(e) => { }
+                    }
                 }
             }
+
+            # A record that is only in memory is a record a crash
+            # loses, so the segment goes out on a timer as well as
+            # when it fills (DATA_MODEL.md section 4).
+            val now_ns = time::now_mono_ns()
+            if !w.is_empty() && now_ns - last_flush >= flush_after_ns() {
+                val put = flush_active(&mut w, &mut ms, &gens, &mut st, &crc)
+                last_flush = now_ns
+            }
         }
+    }
+
+    # Whoever is still connected is told nothing: the process is
+    # going away, and a half-written answer is worse than none.
+    var k: u64 = 0u64
+    while k < max_conns() {
+        val fd: i32 = conns.fd.get(k)
+        if fd >= 0i32 { conn_close(&mut conns, &poller, k, &mut outbox) }
+        k = k + 1u64
     }
 
     # Whatever is still held goes out before the process does. This

@@ -310,6 +310,23 @@ impl TcpListener {
     # `Err(NetError::WouldBlock)` means none is waiting — the normal
     # answer while a non-blocking server idles. The stream that comes
     # back is non-blocking too, whatever this listener's mode is.
+    # Accept, and answer the **descriptor** rather than a handle.
+    #
+    # A server that keeps a table of connections wants the number: a
+    # `TcpStream` handed out here is owned by whatever binding catches
+    # it, and letting that binding die closes the connection. The
+    # handle form is the right one for a client or a one-shot server;
+    # this is the right one for a table (`NETWORK_IO.md`).
+    pub fn accept_fd(&self) -> Result<i32, NetError> {
+        val fd: i32 = __extern_net_accept(self.fd)
+        if fd < 0i32 {
+            val status: u64 = __extern_net_status()
+            val err: NetError = net_error_from_status(status)
+            return Result::Err(err)
+        }
+        Result::Ok(fd)
+    }
+
     pub fn accept(&self) -> Result<TcpStream, NetError> {
         val fd: i32 = __extern_net_accept(self.fd)
         if fd < 0i32 {

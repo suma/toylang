@@ -283,10 +283,17 @@ impl TcpStream {
     # `TcpListener` and `UdpSocket` have the same pair.
     fn into_fd(&mut self) -> i32
     fn from_fd(fd: i32) -> Self
+    # `TcpListener` だけ: ハンドルを作らない accept。
+    fn accept_fd(&self) -> Result<i32, NetError>
 }
 ```
 
 ### 接続の表は**番号**で持つ (`into_fd` / `from_fd`)
+
+`accept_fd` は同じ問題の accept 側である。`match listener.accept() {
+Result::Ok(conn) => { ... } }` の `conn` は compiled レーンでは複製で、
+元の payload は腕が終わるときに drop される — **受け取った瞬間に接続が
+閉じる** (todo の MATCH-PAYLOAD-COPY)。番号を返す口ならその話が無い。
 
 `Vec<TcpStream>` は作れるが、**表として使えない**。要素を取り出して
 束縛すると (`val s: TcpStream = conns.get(0u64)`)、その別名に drop glue が

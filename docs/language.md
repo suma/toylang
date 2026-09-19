@@ -1759,11 +1759,22 @@ Alongside `push` / `pop` / `get` / `set` / `size` / `capacity` /
 v.insert(1u64, 9u64)      # shift everything from index 1 up; index == size appends
 val gone: u64 = v.remove(0u64)       # shift down, keeps order, O(n)
 val any: u64 = v.swap_remove(0u64)   # last element fills the hole, O(1), reorders
+val was: u64 = v.replace(0u64, 7u64) # put 7 in the slot, hand back what was there
 v.contains(5u64)          # bool
 v.index_of(5u64)          # Option<u64> — the first match
 v.reverse()
 v.sort_by(less)           # stable, `less(a, b)` = "a comes strictly before b"
 ```
+
+`replace` is how an **owning** element leaves a container without
+disturbing the others: `remove` shifts and `swap_remove` moves the last
+element into the hole, so both change what an index names — no good
+when the index *is* the name (a poller token, a connection number).
+`set` cannot do it at all: it overwrites, and whatever was in the slot
+is never freed. The value `replace` hands back is owned by the caller,
+so a `Vec<Option<TcpStream>>` can serve as a slot table — `None` is a
+free slot, `borrow` lends the stream to read and write through, and
+`replace(i, None)` closes it.
 
 `contains` and `index_of` compare with `==`, so the element type needs
 an answer for it (see [`==` on a type parameter](#-on-a-type-parameter));

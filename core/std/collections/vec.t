@@ -361,6 +361,23 @@ impl<T> Vec<T> {
         self.len = self.len + 1u64
     }
 
+    # Put `value` in the slot and hand back what was there.
+    #
+    # The way to move an owning element out of a fixed slot. `remove`
+    # shifts and `swap_remove` moves the last element into the hole,
+    # so both change what an index names — no good when the index
+    # *is* the name (a poller token, a connection number). `set`
+    # cannot do it either: it overwrites, and whatever was there is
+    # never freed.
+    unsafe fn replace(&mut self, index: u64, value: T) -> T
+        requires index < self.len
+    {
+        if index >= self.len { panic("Vec::replace index out of bounds") }
+        val out: T = __builtin_ptr_read::<T>(self.data, index * self.elem_size)
+        __builtin_ptr_write(self.data, index * self.elem_size, value)
+        out
+    }
+
     # Remove the element at `index` and return it, shifting the rest
     # down. Order-preserving and O(n); `swap_remove` is the O(1) one.
     unsafe fn remove(&mut self, index: u64) -> T

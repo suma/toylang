@@ -867,10 +867,8 @@ test "three connections are served at the same time" {
 # すると別名に drop glue が付き、fd が閉じたからである (G16)。
 # `borrow` が入って、名指すだけで使えるようになった。
 #
-# **サーバ本体は番号の表のままにしてある。** ここで示すのは「持てる」
-# ことで、`server.t` が番号を使うのは別の理由 — poller の token と
-# 対応する**固定スロット**が要り、「空き」を表せるハンドルが無い
-# (`Vec<TcpStream>` に「不在」は書けない)。
+# **サーバ本体は番号の表のままにしてある。** 固定スロットの形が
+# 書けることは下の `Vec<Option<TcpStream>>` のテストで示す。
 test "a table of connections can hold handles now" {
     val bound = TcpListener::bind("127.0.0.1", 0u64)
     var listener = match bound {
@@ -949,4 +947,146 @@ test "a table of connections can hold handles now" {
         tries = tries + 1u64
     }
     assert(total > 0u64, "the writes should reach the peer")
+}
+
+# 固定スロットの表 — poller の token がそのまま添字になる形。
+#
+# サーバが必要としているのは `Vec<TcpStream>` ではなく「**空きを
+# 書ける**表」である。token は接続の番号で、閉じても他の接続の番号が
+# ずれてはいけないので、`remove` (詰める) も `swap_remove` (最後を
+# 持ってくる) も使えない。
+#
+# `Vec<Option<TcpStream>>` がその形になる:
+#
+# * 空きは `Option::None`
+# * 使うときは `borrow` して腕の中で `&TcpStream` として読む
+#   (`read` / `write` / `shutdown_write` は `&self`)
+# * 閉じるときは `replace` で**所有を取り戻す** — `set` は上書きする
+#   だけで、載っていた fd は誰にも閉じられない
+#
+# 最後の 1 つのために `Vec::replace` を足した。取り戻した値が本当に
+# 所有であることは、**相手が EOF を見る**ことで確かめる。
+test "a slot table holds a connection, lends it, and frees the slot" {
+    val bound = TcpListener::bind("127.0.0.1", 0u64)
+    var listener = match bound {
+        Result::Ok(l) => l,
+        Result::Err(e) => { panic("bind: {e}") }
+    }
+    val got_port = listener.local_port()
+    val port = match got_port {
+        Result::Ok(n) => n,
+        Result::Err(e) => { panic("local_port: {e}") }
+    }
+    val dialled = TcpStream::connect("127.0.0.1", port)
+    var client = match dialled {
+        Result::Ok(c) => c,
+        Result::Err(e) => { panic("connect: {e}") }
+    }
+    val blocking = listener.set_blocking(true)
+    match blocking {
+        Result::Ok(u) => { }
+        Result::Err(e) => { panic("set_blocking: {e}") }
+    }
+    val taken = listener.accept()
+    var conn = match taken {
+        Result::Ok(c) => c,
+        Result::Err(e) => { panic("accept: {e}") }
+    }
+
+    # 4 スロットぶんの空きを先に作る。token は添字そのもの。
+    var conns: Vec<Option<TcpStream>> = Vec::new()
+    var i: u64 = 0u64
+    while i < 4u64 {
+        val empty: Option<TcpStream> = Option::None
+        conns.push(empty)
+        i = i + 1u64
+    }
+    val filled: Option<TcpStream> = Option::Some(conn)
+    conns.set(2u64, filled)
+    assert_eq(conns.size(), 4u64)
+
+    val nb = client.set_blocking(false)
+    match nb {
+        Result::Ok(u) => { }
+        Result::Err(e) => { panic("set_blocking: {e}") }
+    }
+
+    # 2 回借りて 2 回書く。借用は所有を作らないので、1 回目で
+    # 閉じたりしない。
+    val msg = String::from_str("ping")
+    var sent: u64 = 0u64
+    var round: u64 = 0u64
+    while round < 2u64 {
+        val slot: &Option<TcpStream> = conns.borrow(2u64)
+        match slot {
+            Option::Some(s) => {
+                val wrote = s.write(span_of(&msg))
+                match wrote {
+                    Result::Ok(n) => { sent = sent + n }
+                    Result::Err(e) => { panic("round {round}: {e}") }
+                }
+            }
+            Option::None => { panic("slot 2 should be occupied") }
+        }
+        round = round + 1u64
+    }
+    assert_eq(sent, 8u64)
+
+    # 届いたものを読み切ってから空ける。
+    var reply: Vec<u8> = Vec::with_capacity(64u64)
+    var total: u64 = 0u64
+    var tries: u64 = 0u64
+    while total == 0u64 && tries < 500u64 {
+        val room = reply.capacity_span()
+        match room {
+            Option::Some(win) => {
+                val got = client.read(win)
+                match got {
+                    Result::Ok(n) => { total = n }
+                    Result::Err(e) => { }
+                }
+            }
+            Option::None => { }
+        }
+        tries = tries + 1u64
+    }
+    assert(total > 0u64, "the writes should reach the peer")
+
+    # スロットを空ける。取り戻した接続はこの関数の中で死ぬ。
+    slot_free(&mut conns, 2u64)
+    val after: &Option<TcpStream> = conns.borrow(2u64)
+    match after {
+        Option::Some(s) => { panic("slot 2 should be empty now") }
+        Option::None => { }
+    }
+
+    # 所有が本当に戻っていたなら fd は閉じている — 相手は EOF を見る。
+    var eof: bool = false
+    var spins: u64 = 0u64
+    while !eof && spins < 2000u64 {
+        val room = reply.capacity_span()
+        match room {
+            Option::Some(win) => {
+                val got = client.read(win)
+                match got {
+                    Result::Ok(n) => { if n == 0u64 { eof = true } }
+                    Result::Err(e) => { }
+                }
+            }
+            Option::None => { }
+        }
+        spins = spins + 1u64
+    }
+    assert(eof, "freeing the slot should close the connection")
+}
+
+# スロットを空にして、載っていた接続を手放す。`replace` が返す値は
+# **所有**なので、この関数が終われば drop glue が fd を閉じる。
+fn slot_free(conns: &mut Vec<Option<TcpStream>>, at: u64) {
+    val empty: Option<TcpStream> = Option::None
+    val was: Option<TcpStream> = conns.replace(at, empty)
+    match was {
+        Option::Some(s) => { }
+        Option::None => { }
+    }
 }

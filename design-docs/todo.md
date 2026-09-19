@@ -10,6 +10,19 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-09-19
+
+- **MATCH-PAYLOAD-COPY — `match` の腕は payload を名指すのであって
+  複製しない** — 腕の `Name` 束縛は compiled レーンで payload の**複製**
+  を作り、自分の drop glue も持っていた。scrutinee 側も持っているので
+  **1 つの資源に所有者が 2 人**。heap ブロックでは見えない (アドレスを
+  再利用しないヒープで `free` は冪等) が、OS が 1 度しか返さないもの —
+  fd — では致命的で、`match listener.accept() { Result::Ok(c) => ... }`
+  が**受け取った瞬間に接続を閉じていた**。tree-walker は別名なので
+  閉じず、4 レーンで意味が割れていた。腕は別名を張るようにし、drop は
+  「まだ誰も持っていないとき」(一時値やパラメータを match したとき) だけ
+  腕に付ける。`poc/logsearch` の接続表が踏んだ。
+
 ### 2026-09-18
 
 - **STR-PTR-UNCOUNTED — `str::as_ptr` が確保カウンタを動かさなくなった**
@@ -1764,32 +1777,6 @@
   必要があり、ä¸ã® `MATCH-PAYLOAD-COPY` と同じ「所有と別名の区別」の
   問題に行き着く。2 つまとめて設計を取るのが筋で、CONCURRENCY.md §2-a が
   「共有可変性を静的に止める道具が今は無い」と書いているのもこれである。
-
-- **MATCH-PAYLOAD-COPY — `match` の腕で受けた所有型が複製になり、
-  元が閉じる / 解放される** ★★★ — `match r { Result::Ok(c) => { ... } }`
-  の `c` は **compiled レーンでは複製**で、元の payload はスコープの
-  終わりに drop される。tree-walker は別名なので drop されない。
-  **4 レーンで意味が割れる**うえ、症状は「ソケットが黙って閉じる」
-  「バッファが解放される」で、診断は 1 つも出ない。
-
-  ```rust
-  # ループの中で開くと、反復が終わるたびに接続が閉じる
-  while i < 3u64 {
-      val dialled = TcpStream::connect("127.0.0.1", port)
-      match dialled {
-          Result::Ok(c) => { var cl = c  fds.push(cl.into_fd()) }
-          Result::Err(e) => { }
-      }
-      i = i + 1u64
-  }
-  ```
-
-  `var x = match r { Result::Ok(c) => c, ... }` の形 (腕から**返す**)
-  なら move になり、閉じない。**腕の中で使い切る形だけが壊れる**。
-  見つけたのは `poc/logsearch` の接続表 (2026-09-19)。POC 側は
-  `TcpListener::accept_fd` を足して回避したが、これは回避であって
-  直りではない。所有の扱いなので CODE-SIZE-SELF-ABI と同じく
-  「沈黙する誤り」の類。
 
 - **RANGE-TYPE-ANNOTATION — `Range<u64>` と書いた型が範囲値の型と
   一致しない** ★ — `fn f(r: Range<u64>)` に `0u64..3u64` を渡すと

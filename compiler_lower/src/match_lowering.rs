@@ -413,10 +413,42 @@ impl<'a> FunctionLower<'a> {
         Ok(())
     }
 
-    /// The binding half of one enum payload sub-pattern. A `Name`
-    /// takes ownership of a fresh copy of the payload — the scrutinee
-    /// itself may never be dropped (a function parameter, say), so the
-    /// arm's binding is what the drop glue can reach.
+    /// Whether some live drop target already covers these locals.
+    ///
+    /// A payload the scrutinee's own binding will free must not be
+    /// freed by an arm as well: two owners of one resource is a double
+    /// close for a descriptor and a double free for a heap block.
+    fn already_owned(&self, leaves: &[(crate::ir::LocalId, crate::ir::Type)]) -> bool {
+        if leaves.is_empty() {
+            return false;
+        }
+        self.drop_scopes.iter().any(|scope| {
+            scope.iter().any(|target| {
+                target
+                    .field_locals
+                    .iter()
+                    .any(|(local, _)| leaves.iter().any(|(l, _)| l == local))
+            })
+        })
+    }
+
+    /// The binding half of one enum payload sub-pattern.
+    ///
+    /// A `Name` **aliases** the payload rather than copying it, the
+    /// way `val b = a` aliases in this language: one value, two names,
+    /// one drop. Copying it made two owners of one resource, which is
+    /// invisible for heap blocks (`free` is idempotent on a heap that
+    /// never reuses an address) and fatal for anything the OS hands
+    /// back once -- `match listener.accept() { Result::Ok(c) => ... }`
+    /// closed the connection when the arm ended, while the tree-walker,
+    /// which aliases, kept it open. That divergence is
+    /// MATCH-PAYLOAD-COPY in todo.md.
+    ///
+    /// The arm still takes a drop target when **nobody else holds
+    /// one** -- matching a temporary (`match f() { ... }`) or a
+    /// parameter, where the payload would otherwise never be freed.
+    /// `already_owned` answers that by looking for a live drop target
+    /// over the same locals.
     fn bind_payload_sub_pattern(
         &mut self,
         sp: &Pattern,
@@ -430,38 +462,25 @@ impl<'a> FunctionLower<'a> {
                 // nothing is the whole job.
                 PayloadSlot::Unit => {}
                 PayloadSlot::Scalar { local, ty } => {
-                    let v = self
-                        .emit(InstKind::LoadLocal(local), Some(ty))
-                        .expect("LoadLocal returns a value");
-                    let dst = self
-                        .module
-                        .function_mut(self.func_id)
-                        .add_local(ty);
-                    self.emit(InstKind::StoreLocal { dst, src: v }, None);
+                    // Scalars carry no resource, so the alias is the
+                    // whole story: the name reads the payload's local.
                     self.bindings
-                        .insert(*sym, Binding::Scalar { local: dst, ty });
+                        .insert(*sym, Binding::Scalar { local, ty });
                 }
                 PayloadSlot::Enum(inner_storage) => {
-                    // Bind the name to a fresh EnumStorage that's
-                    // a deep copy of the matched payload.
                     let inner = (*inner_storage).clone();
-                    let copy = self.allocate_enum_storage(inner.enum_id);
-                    self.copy_enum_storage(&inner, &copy);
-                    self.bindings.insert(*sym, Binding::Enum(copy.clone()));
-                    // DROP-GLUE: the payload binding owns what it
-                    // names (the scrutinee may never be dropped —
-                    // e.g. a function parameter), so it must free
-                    // it at the arm's scope exit. Collected into
-                    // `arm_drop_targets` so the drop fires on this
-                    // arm's path only. A transfer can never
-                    // suppress this (no statement is in flight
-                    // during match lowering) — an over-
-                    // approximation that is safe because `free` is
-                    // idempotent everywhere.
-                    if self.ir_contains_drop(crate::ir::Type::Enum(copy.enum_id)) {
-                        let leaves = flatten_enum_storage_locals(&copy);
+                    let leaves = flatten_enum_storage_locals(&inner);
+                    let enum_id = inner.enum_id;
+                    self.bindings.insert(*sym, Binding::Enum(inner));
+                    // DROP-GLUE: only when the payload has no owner
+                    // yet (see this function's doc comment). The drop
+                    // goes in `arm_drop_targets` so it fires on this
+                    // arm's path alone.
+                    if self.ir_contains_drop(crate::ir::Type::Enum(enum_id))
+                        && !self.already_owned(&leaves)
+                    {
                         self.arm_drop_targets.push(DropTarget {
-                            ty: crate::ir::Type::Enum(copy.enum_id),
+                            ty: crate::ir::Type::Enum(enum_id),
                             field_locals: leaves,
                         });
                     }
@@ -470,20 +489,17 @@ impl<'a> FunctionLower<'a> {
                     struct_id,
                     fields: src_fields,
                 } => {
-                    // Same idea for a struct payload: allocate a
-                    // fresh struct binding and deep-copy each
-                    // field's leaf locals across.
-                    let dst_fields = self.allocate_struct_fields(struct_id);
-                    self.copy_struct_fields(&src_fields, &dst_fields);
+                    let leaves = flatten_struct_locals(&src_fields);
                     self.bindings.insert(
                         *sym,
                         Binding::Struct {
                             struct_id,
-                            fields: dst_fields.clone(),
+                            fields: src_fields,
                         },
                     );
-                    if self.ir_contains_drop(crate::ir::Type::Struct(struct_id)) {
-                        let leaves = flatten_struct_locals(&dst_fields);
+                    if self.ir_contains_drop(crate::ir::Type::Struct(struct_id))
+                        && !self.already_owned(&leaves)
+                    {
                         self.arm_drop_targets.push(DropTarget {
                             ty: crate::ir::Type::Struct(struct_id),
                             field_locals: leaves,
@@ -494,49 +510,12 @@ impl<'a> FunctionLower<'a> {
                     elements: src_elements,
                     ..
                 } => {
-                    // Same shape for tuple payloads: fresh per-
-                    // element locals + element-wise copy. The new
-                    // binding is reachable as a regular tuple
-                    // binding, supporting `t.0` access in arm
-                    // bodies.
-                    let mut dst_elements: Vec<TupleElementBinding> =
-                        Vec::with_capacity(src_elements.len());
-                    for el in &src_elements {
-                        let shape = match &el.shape {
-                            TupleElementShape::Scalar { ty, .. } => {
-                                let local = self
-                                    .module
-                                    .function_mut(self.func_id)
-                                    .add_local(*ty);
-                                TupleElementShape::Scalar { local, ty: *ty }
-                            }
-                            TupleElementShape::Struct { struct_id, .. } => {
-                                let fields =
-                                    self.allocate_struct_fields(*struct_id);
-                                TupleElementShape::Struct {
-                                    struct_id: *struct_id,
-                                    fields,
-                                }
-                            }
-                            TupleElementShape::Tuple { tuple_id, .. } => {
-                                let elements = self
-                                    .allocate_tuple_elements(*tuple_id)
-                                    .unwrap_or_default();
-                                TupleElementShape::Tuple {
-                                    tuple_id: *tuple_id,
-                                    elements,
-                                }
-                            }
-                        };
-                        dst_elements.push(TupleElementBinding {
-                            index: el.index,
-                            shape,
-                        });
-                    }
-                    self.copy_tuple_elements(&src_elements, &dst_elements);
+                    // Aliased like the others: the name reads the
+                    // payload's own element locals, so `t.0` in the
+                    // arm body is the scrutinee's element.
                     self.bindings.insert(
                         *sym,
-                        Binding::Tuple { elements: dst_elements },
+                        Binding::Tuple { elements: src_elements },
                     );
                 }
             },

@@ -259,3 +259,57 @@ fn a_str_literal_address_is_not_the_programs_allocation() {
     "#;
     assert_consistent(src, "a_str_literal_address_is_not_the_programs_allocation");
 }
+
+#[test]
+fn a_match_arm_names_the_payload_it_does_not_copy_it() {
+    // MATCH-PAYLOAD-COPY: the arm used to bind a *copy* of the
+    // payload, with drop glue of its own, while the scrutinee kept
+    // its own. Two owners of one resource is invisible for a heap
+    // block -- `free` is idempotent on a heap that never reuses an
+    // address -- and fatal for anything the OS hands back once, which
+    // is how a server closed a connection it had just accepted.
+    //
+    // The counter is the visible half: writing through the arm's name
+    // has to reach the value the scrutinee holds, and the resource
+    // has to be released once, not twice.
+    let src = r#"
+        struct Handle { open: bool }
+
+        impl Handle {
+            fn new() -> Self {
+                val p = __builtin_heap_alloc(16u64)
+                __builtin_heap_free(p)
+                Handle { open: true }
+            }
+            fn shut(&mut self) -> u64 {
+                if !self.open { return 1u64 }
+                self.open = false
+                0u64
+            }
+        }
+
+        fn main() -> u64 {
+            val held: Result<Handle, u64> = Result::Ok(Handle::new())
+            var closed_twice = 0u64
+            match held {
+                Result::Ok(h) => {
+                    var one = h
+                    closed_twice = closed_twice + one.shut()
+                }
+                Result::Err(e) => { return 90u64 }
+            }
+            # The arm named the scrutinee's payload, so the flag it
+            # cleared is the one the scrutinee still holds: shutting it
+            # again answers "already shut".
+            match held {
+                Result::Ok(h2) => {
+                    var two = h2
+                    closed_twice = closed_twice + two.shut()
+                }
+                Result::Err(e) => { return 91u64 }
+            }
+            closed_twice
+        }
+    "#;
+    assert_consistent(src, "a_match_arm_names_the_payload_it_does_not_copy_it");
+}

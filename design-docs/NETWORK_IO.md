@@ -290,10 +290,11 @@ impl TcpStream {
 
 ### 接続の表は**番号**で持つ (`into_fd` / `from_fd`)
 
-`accept_fd` は同じ問題の accept 側である。`match listener.accept() {
-Result::Ok(conn) => { ... } }` の `conn` は compiled レーンでは複製で、
-元の payload は腕が終わるときに drop される — **受け取った瞬間に接続が
-閉じる** (todo の MATCH-PAYLOAD-COPY)。番号を返す口ならその話が無い。
+`accept_fd` は表を作る側の口である。かつては `match listener.accept()
+{ Result::Ok(conn) => { ... } }` が**受け取った瞬間に接続を閉じて**いた
+(腕が payload の複製を束縛し、所有者が 2 人になっていた。todo の
+MATCH-PAYLOAD-COPY、2026-09-19 に修正)。今は `accept` でも閉じないが、
+**表に入れるなら番号のほうが素直**なので `accept_fd` は残す。
 
 `Vec<TcpStream>` は作れるが、**表として使えない**。要素を取り出して
 束縛すると (`val s: TcpStream = conns.get(0u64)`)、その別名に drop glue が

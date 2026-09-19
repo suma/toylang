@@ -993,7 +993,7 @@ impl String {
         val n: u64 = parts.size()
         while i < n {
             if i > 0u64 { out.push_string(sep) }
-            val part: String = parts.get(i)
+            val part: &String = parts.borrow(i)
             out.push_string(part)
             i = i + 1u64
         }

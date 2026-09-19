@@ -13,7 +13,7 @@
 //! agree, and that the answer is one of the two backends rather than
 //! an empty string from a missing symbol, is.
 
-use super::harness::{assert_consistent, interpreter_value};
+use super::harness::{assert_consistent, assert_renders, interpreter_value};
 
 #[test]
 fn every_lane_reports_the_same_event_backend() {
@@ -996,4 +996,74 @@ fn every_lane_connects_by_name() {
     "#;
     assert_eq!(interpreter_value(src) & 0xff, 6);
     assert_consistent(src, "net_connect_by_name");
+}
+
+/// A table of connections, held as descriptors rather than handles.
+///
+/// `Vec<TcpStream>` cannot serve as one: taking an element out binds
+/// an alias that carries drop glue, so the fd closes with the binding
+/// and the table's next write fails with EBADF. `into_fd` / `from_fd`
+/// give the same table without aliases -- the number is parked in the
+/// vector and owned again only for the turn it is used.
+///
+/// Three rounds, because the bug shows on the *second* use, and the
+/// bytes written are **printed** rather than returned: every lane
+/// failing the same way is still consistent, so a test that only
+/// compared the lanes would pass with the fd closed under it.
+#[test]
+fn every_lane_keeps_a_table_of_connections_by_descriptor() {
+    let port = spawn_echo_server();
+    let src = format!(
+        r#"
+        fn main() -> u64 {{
+            val dialed = TcpStream::connect("127.0.0.1", {port}u64)
+            var cl = match dialed {{
+                Result::Ok(s) => s,
+                Result::Err(e) => {{ println("connect failed")  return 90u64 }}
+            }}
+
+            var fds: Vec<i32> = Vec::new()
+            fds.push(cl.into_fd())
+
+            val msg = String::from_str("ping")
+            val window = msg.as_span()
+            val out: Span<u8> = match window {{
+                Option::Some(w) => w,
+                Option::None => {{ return 91u64 }}
+            }}
+
+            var round: u64 = 0u64
+            while round < 3u64 {{
+                val fd: i32 = fds.get(0u64)
+                var s = TcpStream::from_fd(fd)
+                val wrote = s.write(out)
+                match wrote {{
+                    Result::Ok(n) => {{ println("round {{round}}: wrote {{n}}") }}
+                    Result::Err(e) => {{ println("round {{round}}: {{e}}") }}
+                }}
+                # Hand the number back before the binding dies, or the
+                # drop glue closes the connection the table still lists.
+                fds.set(0u64, s.into_fd())
+                round = round + 1u64
+            }}
+
+            # The last owner does close it: taking the number out one
+            # final time and letting the handle die is how a connection
+            # ends.
+            val last: i32 = fds.get(0u64)
+            var done = TcpStream::from_fd(last)
+            val shut = done.close()
+            match shut {{
+                Result::Ok(u) => {{ println("closed") }}
+                Result::Err(e) => {{ println("close failed: {{e}}") }}
+            }}
+            0u64
+        }}
+    "#
+    );
+    assert_renders(
+        &src,
+        "every_lane_keeps_a_table_of_connections_by_descriptor",
+        "round 0: wrote 4\nround 1: wrote 4\nround 2: wrote 4\nclosed\n",
+    );
 }

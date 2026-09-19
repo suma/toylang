@@ -279,8 +279,44 @@ impl TcpStream {
     fn peer_addr(&self) -> Result<str, NetError>
     fn as_fd(&self) -> i32
     fn close(&mut self) -> Result<(), NetError>
+    # Hand the descriptor out and stop owning it / take one back.
+    # `TcpListener` and `UdpSocket` have the same pair.
+    fn into_fd(&mut self) -> i32
+    fn from_fd(fd: i32) -> Self
 }
 ```
+
+### 接続の表は**番号**で持つ (`into_fd` / `from_fd`)
+
+`Vec<TcpStream>` は作れるが、**表として使えない**。要素を取り出して
+束縛すると (`val s: TcpStream = conns.get(0u64)`)、その別名に drop glue が
+付き、束縛が死ぬときに fd を閉じる — 表にはまだ載っているのに、次の
+`write` が EBADF になる。`Vec<File>` も同じ形で、CLAUDE.md が stdlib
+実装向けに書いている落とし穴 (「compound を返す method から束縛した
+ローカルはコンテナのバッファを解放する」) と同じ根である。
+
+そこで表は `Vec<i32>` で持ち、使う番だけ所有を取り戻す:
+
+```rust
+var fds: Vec<i32> = Vec::new()
+fds.push(conn.into_fd())          # 所有を手放す (field は -1 に park)
+
+# ready になった接続の番
+val fd: i32 = fds.get(0u64)
+var s = TcpStream::from_fd(fd)    # この turn だけ所有する
+val wrote = s.write(out)
+fds.set(0u64, s.into_fd())        # 束縛が死ぬ前に番号を返す
+```
+
+**番号は 1 か所だけが所有する**のが規約で、`from_fd` を 2 回重ねると
+二重 close になる (`close` が `-1` に park して避けている失敗と同じもの
+に、別の経路で当たる)。最後に閉じるときは `from_fd` して `close` するか、
+束縛を落とせばよい。
+
+3 レーンの固定は
+`compiler/tests/consistency/net.rs::every_lane_keeps_a_table_of_connections_by_descriptor`。
+**出力を突き合わせている** — 終了コードだけを比べると、fd が閉じた状態でも
+全レーンが同じように失敗して「一致」してしまう。
 
 `read` / `write` が **`Span<u8>` を受け取ってバイト数を返す**のは
 POINTER P4 の決定 (`&[T]` はライブラリ側で回収済み) に従うと同時に、

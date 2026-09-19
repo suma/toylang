@@ -351,6 +351,30 @@ impl TcpListener {
         self.fd = -1i32
         net_unit_result(status)
     }
+
+    # Hand the descriptor out, and stop owning it.
+    #
+    # The field parks at `-1`, so `Drop` does nothing afterwards: the
+    # number is the caller's to close (or to hand back to `from_fd`).
+    # This is what a **table of connections** needs -- `Vec<TcpStream>`
+    # holds handles, and taking one out binds an alias whose drop glue
+    # closes the fd while the table still lists it. A table of numbers
+    # has no aliases to lose.
+    pub fn into_fd(&mut self) -> i32 {
+        val fd = self.fd
+        self.fd = -1i32
+        fd
+    }
+
+    # Take ownership of a descriptor this program already has.
+    #
+    # The inverse of `into_fd`. **The number must be owned exactly
+    # once**: two of these over the same fd close it twice, and the
+    # second close may land on whatever unrelated file has since been
+    # given that number (the same failure `close` parks `-1` to avoid).
+    pub fn from_fd(fd: i32) -> Self {
+        TcpListener { fd: fd }
+    }
 }
 
 # A connected TCP socket.
@@ -582,6 +606,31 @@ impl TcpStream {
         self.fd = -1i32
         net_unit_result(status)
     }
+
+    # Hand the descriptor out, and stop owning it.
+    #
+    # The field parks at `-1`, so `Drop` does nothing afterwards. This
+    # is what a **table of connections** needs: `Vec<TcpStream>` holds
+    # handles, and taking one out binds an alias whose drop glue closes
+    # the fd while the table still lists it (the next write on that
+    # connection fails with EBADF). A table of numbers has no aliases
+    # to lose -- `from_fd` when a connection is ready, `into_fd` when
+    # the turn is over.
+    pub fn into_fd(&mut self) -> i32 {
+        val fd = self.fd
+        self.fd = -1i32
+        fd
+    }
+
+    # Take ownership of a descriptor this program already has.
+    #
+    # The inverse of `into_fd`. **The number must be owned exactly
+    # once**: two of these over the same fd close it twice, and the
+    # second close may land on whatever unrelated file has since been
+    # given that number (the failure `close` parks `-1` to avoid).
+    pub fn from_fd(fd: i32) -> Self {
+        TcpStream { fd: fd }
+    }
 }
 
 
@@ -687,5 +736,16 @@ impl UdpSocket {
         val status: u64 = __extern_net_close(self.fd)
         self.fd = -1i32
         net_unit_result(status)
+    }
+
+    # The same pair as `TcpStream`: hand the number out, take it back.
+    pub fn into_fd(&mut self) -> i32 {
+        val fd = self.fd
+        self.fd = -1i32
+        fd
+    }
+
+    pub fn from_fd(fd: i32) -> Self {
+        UdpSocket { fd: fd }
     }
 }

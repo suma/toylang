@@ -313,3 +313,37 @@ fn a_match_arm_names_the_payload_it_does_not_copy_it() {
     "#;
     assert_consistent(src, "a_match_arm_names_the_payload_it_does_not_copy_it");
 }
+
+#[test]
+fn cloning_a_vector_of_strings_leaves_the_original_whole() {
+    // ELEMENT-BORROW: `Vec::clone` used to read each element with
+    // `get`, which hands back a value sharing the element's buffer.
+    // The binding freed it one iteration later, with the vector still
+    // pointing at it -- invisible on a heap that never reuses an
+    // address, and wrong in every accounting of it.
+    //
+    // The live-byte count is the visible half: cloning two strings
+    // must *add* their bytes, not swap them.
+    let src = r#"
+        fn main() -> u64 {
+            var v: Vec<String> = Vec::new()
+            v.push(String::from_str("hello"))
+            v.push(String::from_str("world"))
+
+            val before = __builtin_live_bytes()
+            val copy = v.clone()
+            val after = __builtin_live_bytes()
+            if after <= before { return 1u64 }
+            # The ten bytes of the two elements are still the original's,
+            # and the copy has ten of its own.
+            if after - before < 10u64 { return 2u64 }
+
+            val a: &String = v.borrow(0u64)
+            val b: &String = copy.borrow(1u64)
+            if a.len() != 5u64 { return 3u64 }
+            if b.len() != 5u64 { return 4u64 }
+            0u64
+        }
+    "#;
+    assert_consistent(src, "cloning_a_vector_of_strings_leaves_the_original_whole");
+}

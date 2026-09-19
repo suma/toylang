@@ -53,7 +53,7 @@ struct Box<T> {
 # freed independently of the first.
 impl<T: Clone> Clone for Box<T> {
     unsafe fn clone(&self) -> Self {
-        val v: T = self.get()
+        val v: &T = self.borrow()
         val c: T = v.clone()
         val b: Box<T> = Box::new(c)
         b
@@ -79,6 +79,14 @@ impl<T> Box<T> {
     # its shape, so it cannot be dropped.
     unsafe fn get(&self) -> T {
         val v: T = __builtin_ptr_read::<T>(self.data, 0u64)
+        v
+    }
+
+    # Name the boxed value without taking it (ELEMENT-BORROW). `get`
+    # answers a value that shares the box's resource when `T` owns one,
+    # so a binding of it would free what the box still holds.
+    unsafe fn borrow(&self) -> &T {
+        val v: &T = __builtin_ptr_ref::<T>(self.data, 0u64)
         v
     }
 

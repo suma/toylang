@@ -302,7 +302,7 @@ impl Json {
     fn size(&self) -> u64 { self.nodes.size() }
 
     fn kind(&self, id: u64) -> JsonKind {
-        val n: JsonNode = self.nodes.get(id)
+        val n = self.nodes.borrow(id)
         if n.kind == 0u64 {
             JsonKind::Null
         } elif n.kind == 1u64 {
@@ -321,12 +321,12 @@ impl Json {
     }
 
     fn as_bool(&self, id: u64) -> bool {
-        val n: JsonNode = self.nodes.get(id)
+        val n = self.nodes.borrow(id)
         n.int != 0i64
     }
 
     fn as_int(&self, id: u64) -> i64 {
-        val n: JsonNode = self.nodes.get(id)
+        val n = self.nodes.borrow(id)
         n.int
     }
 
@@ -334,23 +334,23 @@ impl Json {
     # not care which of the two it got. Above 2^53 this is lossy, and
     # that is the reason the two kinds exist.
     fn as_num(&self, id: u64) -> f64 {
-        val n: JsonNode = self.nodes.get(id)
+        val n = self.nodes.borrow(id)
         if n.kind == 2u64 { n.int as f64 } else { n.num }
     }
 
     fn as_text(&self, id: u64) -> str {
-        val n: JsonNode = self.nodes.get(id)
+        val n = self.nodes.borrow(id)
         val t: str = n.text.to_str()
         t
     }
 
     # Elements of an array, or members of an object.
     fn len(&self, id: u64) -> u64 {
-        val n: JsonNode = self.nodes.get(id)
+        val n = self.nodes.borrow(id)
         var count: u64 = 0u64
         var child: u64 = id + 1u64
         while child < n.next {
-            val c: JsonNode = self.nodes.get(child)
+            val c = self.nodes.borrow(child)
             child = c.next
             count = count + 1u64
         }
@@ -360,13 +360,13 @@ impl Json {
     # The `i`th child node of an array, or the `i`th key node of an
     # object. Out of range is a panic, like `Vec::get`.
     fn child(&self, id: u64, i: u64) -> u64 {
-        val n: JsonNode = self.nodes.get(id)
+        val n = self.nodes.borrow(id)
         val step: u64 = if n.kind == 6u64 { 2u64 } else { 1u64 }
         var seen: u64 = 0u64
         var child: u64 = id + 1u64
         while child < n.next {
             if seen == i * step { return child }
-            val c: JsonNode = self.nodes.get(child)
+            val c = self.nodes.borrow(child)
             child = c.next
             seen = seen + 1u64
         }
@@ -381,7 +381,7 @@ impl Json {
 
     fn value_at(&self, id: u64, i: u64) -> u64 {
         val k: u64 = self.child(id, i)
-        val n: JsonNode = self.nodes.get(k)
+        val n = self.nodes.borrow(k)
         n.next
     }
 
@@ -412,7 +412,7 @@ impl Json {
     }
 
     fn node_to_string(&self, id: u64) -> String {
-        val n: JsonNode = self.nodes.get(id)
+        val n = self.nodes.borrow(id)
         var out: String = String::new()
         if n.kind == 0u64 {
             out.push_str("null")
@@ -450,7 +450,7 @@ impl Json {
                 }
                 val part: String = self.node_to_string(child)
                 out.push_string(&part)
-                val c: JsonNode = self.nodes.get(child)
+                val c = self.nodes.borrow(child)
                 child = c.next
                 index = index + 1u64
             }

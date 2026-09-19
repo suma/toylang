@@ -484,7 +484,11 @@ impl<T: Clone> Clone for Vec<T> {
         var out: Vec<T> = Vec::new()
         var i: u64 = 0u64
         while i < self.len {
-            val v: T = self.get(i)
+            # ELEMENT-BORROW: `get` would hand back a value sharing
+            # the element's resource, and this binding would free it
+            # one iteration later — with the vector still pointing at
+            # it. The clone is made from a borrow.
+            val v: &T = self.borrow(i)
             val c: T = v.clone()
             out.push(c)
             i = i + 1u64

@@ -87,7 +87,10 @@ pub fn check_moves(
 ) -> MoveAnalysis {
     let drop_analysis = DropAnalysis::new(program, interner);
     if drop_analysis.drop_implementing_types().is_empty() {
-        return MoveAnalysis { errors: Vec::new(), transferred: HashSet::new() };
+        return MoveAnalysis {
+            errors: Vec::new(),
+            transferred: HashSet::new(),
+        };
     }
     let signatures = Signatures::collect(program, interner);
 
@@ -101,6 +104,7 @@ pub fn check_moves(
         moved: HashMap::new(),
         errors: Vec::new(),
         transferred: HashSet::new(),
+        borrows: HashSet::new(),
     };
     for function in &program.function {
         if function.is_extern {
@@ -130,7 +134,10 @@ pub fn check_moves(
             checker.run_function(&m.parameter, m.code);
         }
     }
-    MoveAnalysis { errors: checker.errors, transferred: checker.transferred }
+    MoveAnalysis {
+        errors: checker.errors,
+        transferred: checker.transferred,
+    }
 }
 
 /// The set of owning types is computed by `DropAnalysis` (DROP-GLUE):
@@ -252,12 +259,18 @@ struct MoveCheck<'a> {
     moved: HashMap<DefaultSymbol, SourceLocation>,
     errors: Vec<TypeCheckError>,
     transferred: HashSet<StmtRef>,
+    /// ELEMENT-BORROW 2-d: names currently bound to a borrow. Reading
+    /// one hands back the value it points at, so without this the
+    /// copy-out check cannot tell `val s: String = e` (a second owner)
+    /// from `val s: String = make()` (a first one).
+    borrows: HashSet<DefaultSymbol>,
 }
 
 impl MoveCheck<'_> {
     fn run_function(&mut self, params: &[(DefaultSymbol, TypeDecl)], body: StmtRef) {
         self.scopes.clear();
         self.moved.clear();
+        self.borrows.clear();
         self.scopes.push(Vec::new());
         for (name, ty) in params {
             if self.is_owning(ty) {
@@ -336,8 +349,21 @@ impl MoveCheck<'_> {
         let Some(rhs_ty) = self.expr_types.get(&rhs).cloned() else {
             return;
         };
-        let TypeDecl::Ref { inner, .. } = rhs_ty else {
-            return;
+        // Either the right-hand side *is* a borrow, or it reads one:
+        // an identifier that names a borrow answers the value it
+        // points at, and taking that value is the same second owner.
+        let inner = match rhs_ty {
+            TypeDecl::Ref { inner, .. } => *inner,
+            other => {
+                let names_borrow = matches!(
+                    self.program.expression.get(&rhs),
+                    Some(Expr::Identifier(sym)) if self.borrows.contains(&sym)
+                );
+                if !names_borrow {
+                    return;
+                }
+                other
+            }
         };
         if !self.is_owning(&inner) {
             return;
@@ -393,6 +419,7 @@ impl MoveCheck<'_> {
                         // instruction, and it already reaches every
                         // lane.
                         self.transferred.insert(stmt_ref);
+                        self.borrows.insert(name);
                     } else if self.is_owning(&ty) {
                         self.declare(name, Some(stmt_ref));
                     }
@@ -404,6 +431,7 @@ impl MoveCheck<'_> {
                 if let Some(ty) = self.binding_type(&annotation, rhs) {
                     if Self::is_borrow(&ty) {
                         self.transferred.insert(stmt_ref);
+                        self.borrows.insert(name);
                     } else if self.is_owning(&ty) {
                         self.declare(name, Some(stmt_ref));
                     }

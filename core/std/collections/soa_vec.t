@@ -106,6 +106,11 @@ impl<T> SoaVec<T> {
         v
     }
 
+    # **There is no `borrow` here** (ELEMENT-BORROW E3). A borrow is
+    # an address, and an SoA element has none: its leaves live one per
+    # column, so `get` *assembles* a value rather than reading one.
+    # An owning `T` in an SoA vector therefore keeps the `get` caveat —
+    # which is also an argument for keeping owning types out of SoA.
     unsafe fn set(&mut self, index: u64, value: T) {
         if index >= self.len { panic("SoaVec::set index out of bounds") }
         __builtin_soa_write(self.data, index, self.cap, value)

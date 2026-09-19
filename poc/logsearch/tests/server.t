@@ -210,7 +210,7 @@ test "the server answers over a real socket" {
             Option::Some(win) => {
                 val got = client.read(win)
                 match got {
-                    Result::Ok(n) => { total = n }
+                    Result::Ok(n) => { total = total + n }
                     Result::Err(e) => { }
                 }
             }
@@ -859,4 +859,94 @@ test "three connections are served at the same time" {
     if reply_is_ok(&c2) { answered = answered + 1u64 }
     if reply_is_ok(&c3) { answered = answered + 1u64 }
     assert_eq(answered, 3u64)
+}
+
+# ELEMENT-BORROW E4 — ハンドルの表が持てること。
+#
+# `Vec<TcpStream>` は長らく**表として使えなかった**。取り出して束縛
+# すると別名に drop glue が付き、fd が閉じたからである (G16)。
+# `borrow` が入って、名指すだけで使えるようになった。
+#
+# **サーバ本体は番号の表のままにしてある。** ここで示すのは「持てる」
+# ことで、`server.t` が番号を使うのは別の理由 — poller の token と
+# 対応する**固定スロット**が要り、「空き」を表せるハンドルが無い
+# (`Vec<TcpStream>` に「不在」は書けない)。
+test "a table of connections can hold handles now" {
+    val bound = TcpListener::bind("127.0.0.1", 0u64)
+    var listener = match bound {
+        Result::Ok(l) => l,
+        Result::Err(e) => { panic("bind: {e}") }
+    }
+    val got_port = listener.local_port()
+    val port = match got_port {
+        Result::Ok(n) => n,
+        Result::Err(e) => { panic("local_port: {e}") }
+    }
+    val dialled = TcpStream::connect("127.0.0.1", port)
+    var client = match dialled {
+        Result::Ok(c) => c,
+        Result::Err(e) => { panic("connect: {e}") }
+    }
+    # 待って受ける。**腕の中から容器へ渡さない**のが要点で、
+    # `var conn = match ...` で先に所有を取り出してから push する
+    # (腕の中で渡すと、元の `Result` の drop が接続を閉じる — 所有と
+    # 別名の残りの論点)。
+    val blocking = listener.set_blocking(true)
+    match blocking {
+        Result::Ok(u) => { }
+        Result::Err(e) => { panic("set_blocking: {e}") }
+    }
+    val taken = listener.accept()
+    var conn = match taken {
+        Result::Ok(c) => c,
+        Result::Err(e) => { panic("accept: {e}") }
+    }
+    var conns: Vec<TcpStream> = Vec::new()
+    conns.push(conn)
+    assert_eq(conns.size(), 1u64)
+
+    # 読む側は非ブロッキングにしておく。壊れたときに固まらずに落ちる。
+    val nb = client.set_blocking(false)
+    match nb {
+        Result::Ok(u) => { }
+        Result::Err(e) => { panic("set_blocking: {e}") }
+    }
+
+    # 2 回使う。かつては 1 回目の借用で fd が閉じ、2 回目が EBADF に
+    # なっていた。
+    val msg = String::from_str("ping")
+    var sent: u64 = 0u64
+    var round: u64 = 0u64
+    while round < 2u64 {
+        val s = conns.borrow(0u64)
+        val wrote = s.write(span_of(&msg))
+        match wrote {
+            Result::Ok(n) => { sent = sent + n }
+            Result::Err(e) => { panic("round {round}: {e}") }
+        }
+        round = round + 1u64
+    }
+    assert_eq(sent, 8u64)
+
+    # 相手にも届いている。**何バイト揃うかは TCP の都合**なので、
+    # ここで見るのは「届いた」ことだけ — このテストの主張は 2 回目の
+    # 借用で書けること (かつては fd が閉じていた) である。
+    var reply: Vec<u8> = Vec::with_capacity(64u64)
+    var total: u64 = 0u64
+    var tries: u64 = 0u64
+    while total == 0u64 && tries < 500u64 {
+        val room = reply.capacity_span()
+        match room {
+            Option::Some(win) => {
+                val got = client.read(win)
+                match got {
+                    Result::Ok(n) => { total = n }
+                    Result::Err(e) => { }
+                }
+            }
+            Option::None => { }
+        }
+        tries = tries + 1u64
+    }
+    assert(total > 0u64, "the writes should reach the peer")
 }

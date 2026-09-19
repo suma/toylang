@@ -222,6 +222,35 @@ impl<K: Hash, V> Dict<K, V> {
         Option::None
     }
 
+    # The borrowing lookup (ELEMENT-BORROW E3): `Option<&V>`, the
+    # shape Rust's `HashMap::get` has. A hit names the value the table
+    # holds instead of copying it out, so an owning `V` keeps its
+    # single owner.
+    unsafe fn borrow(&self, key: K) -> Option<&V> {
+        val scap: u64 = self.caps & 0xFFFFFFFFu64
+        if scap == 0u64 {
+            return Option::None
+        }
+        val ks: u64 = self.sizes >> 32u64
+        val vs: u64 = self.sizes & 0xFFFFFFFFu64
+        val mask: u64 = scap - 1u64
+        var j: u64 = hash_mix(key.hash()) & mask
+        loop {
+            val s: u32 = __builtin_ptr_read::<u32>(self.slots, j * 4u64)
+            if s == dict_slot_empty() {
+                break
+            }
+            val idx: u64 = s as u64
+            val existing: K = __builtin_ptr_read::<K>(self.keys, idx * ks)
+            if existing == key {
+                val v: &V = __builtin_ptr_ref::<V>(self.vals, idx * vs)
+                return Option::Some(v)
+            }
+            j = (j + 1u64) & mask
+        }
+        Option::None
+    }
+
     unsafe fn contains_key(&self, key: K) -> bool {
         val scap: u64 = self.caps & 0xFFFFFFFFu64
         if scap == 0u64 {

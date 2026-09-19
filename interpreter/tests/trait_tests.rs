@@ -554,6 +554,24 @@ mod errors {
             "expected the copy-out error, got: {}", err
         );
 
+        // The same through a name: reading a borrow answers the value
+        // it points at, so this has to be caught by knowing that `e`
+        // names one.
+        let through_a_name = r#"
+            fn main() -> u64 {
+                var v: Vec<String> = Vec::new()
+                v.push(String::from_str("hello"))
+                val e = v.borrow(0u64)
+                val s: String = e
+                s.len()
+            }
+        "#;
+        let err = test_program(through_a_name).expect_err("expected a copy-out error");
+        assert!(
+            err.contains("E0027") || err.contains("two owners"),
+            "expected the copy-out error, got: {}", err
+        );
+
         // A scalar owns nothing, so taking its value is a plain read.
         let scalar = r#"
             fn main() -> u64 {

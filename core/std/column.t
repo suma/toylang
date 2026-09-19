@@ -53,6 +53,14 @@ impl<T> Column<T> {
         v
     }
 
+    # Name an element without taking it (ELEMENT-BORROW). The stride
+    # is the column's, so this is the same address `get` reads.
+    unsafe fn borrow(&self, index: u64) -> &T {
+        if index >= self.len { panic("Column::borrow index out of bounds") }
+        val e: &T = __builtin_ptr_ref::<T>(self.addr, index * self.stride)
+        e
+    }
+
     # Write through the window — the array behind it changes.
     unsafe fn set(&mut self, index: u64, value: T) {
         if index >= self.len { panic("Column::set index out of bounds") }

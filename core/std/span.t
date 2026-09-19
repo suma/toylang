@@ -105,6 +105,17 @@ impl<T> Span<T> {
         v
     }
 
+    # Name an element without taking it (ELEMENT-BORROW).
+    #
+    # `get` hands back a value; for an owning `T` that value shares the
+    # element's resource and a binding would free what the window still
+    # views. `borrow` answers a reference, which owns nothing.
+    unsafe fn borrow(&self, i: u64) -> &T {
+        if i >= self.count { panic("Span::borrow index out of bounds") }
+        val e: &T = __builtin_ptr_ref::<T>(self.data.addr, i * __builtin_sizeof::<T>())
+        e
+    }
+
     # Bounds-checked element write.
     unsafe fn set(&self, i: u64, value: T) {
         if i >= self.count { panic("Span::set index out of bounds") }

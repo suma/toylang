@@ -1233,7 +1233,18 @@ impl<'a> TypeCheckerVisitor<'a> {
                     if let TypeDecl::Generic(p) = expected_ty
                         && generic_params.contains(p) {
                             if let Some(prev) = substitutions.get(p) {
-                                if !prev.is_equivalent(&actual_ty) {
+                                // ELEMENT-BORROW E3: a borrow reads as
+                                // the value it names, so a payload
+                                // built from one reports the inner
+                                // type where the parameter was fixed
+                                // to `&V` (`Dict::borrow` answering
+                                // `Option<&V>`). Same value, two
+                                // spellings — not a conflict.
+                                let borrow_of_same = match prev {
+                                    TypeDecl::Ref { inner, .. } => inner.is_equivalent(&actual_ty),
+                                    _ => false,
+                                };
+                                if !borrow_of_same && !prev.is_equivalent(&actual_ty) {
                                     let enum_str = self.resolve_symbol_name(struct_name);
                                     let v_str = self.resolve_symbol_name(function_name);
                                     return Err(TypeCheckError::generic_error(&format!(

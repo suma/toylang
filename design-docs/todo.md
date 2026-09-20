@@ -12,6 +12,13 @@
 
 ### 2026-09-20
 
+- **ASSOC-FN-REF-ARG — associated function が `&compound` を取れるように
+  なった** — `String::join(&parts, &sep)` が JIT / AOT で
+  `call argument produced no value` だった。`Type::f(args)` の 3 つの
+  形 (struct 戻り / enum 戻り / scalar 戻り) だけが**引数を 1 つずつ、
+  呼び先を知らずに** lowering していたので、`&`-compound の
+  パラメータが番地を欲しがることを誰も知らなかった。自由関数と同じ
+  `lower_call_arg_items(args, Some(target))` に揃えた。
 - **MODULE-DIAG-POSITION — モジュール内の診断がファイルと行を言うように
   なった** — 行と列を**エントリのファイル**の本文から計算し直していたので、
   モジュールの 5 行目のエラーが「3 行目」になり、しかも**エントリを
@@ -1952,17 +1959,6 @@
   自由関数**や **method** なら scalar 戻りでも通る。拒否なので誤答は
   出ない。`core/std/json.t` の `skip_ws` / `byte_at` / `hex4` /
   `word_at` はこれを避けて method にしてある。
-- **ASSOC-FN-REF-ARG: associated function が `&compound` を取ると
-  lowering が落ちる** ★★ — `Holder::glue(parts: &Vec<String>, sep:
-  &String) -> String` を `Holder::glue(&v, &sep)` で呼ぶと
-  `call argument produced no value` (JIT / AOT)。**同じシグネチャの
-  自由関数は通る** (確認済み) ので、違うのは呼び出しの綴りだけ。
-  MODULE-FN-REF-ARG と同じ根に見えるが、あちらは「scalar 戻りなら
-  落ちる」で、こちらは**compound 戻りでも落ちる**。
-  **`String::join(&Vec<String>, &String) -> String` がこれで
-  compiled レーンから呼べない** — `toy build` / `toy test` が既定で
-  AOT なので、tree-walker と IR VM でしか動かない stdlib 関数が
-  1 つある状態。2026-09-20 に発見。
 - **AOT-MATCH-STR-ARM-BLOCK: `str` を返す match の arm がブロックだと
   AOT が拒否する** — 最小再現:
   ```

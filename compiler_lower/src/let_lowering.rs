@@ -1191,16 +1191,17 @@ impl<'a> FunctionLower<'a> {
         // Scalar return — emit a regular Call.
         let target_ret = self.module.function(func_id).return_type;
         if target_ret.produces_value() {
-            let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());
-            for a in args_vec {
-                arg_values.extend(self.lower_arg_values(a)?);
-            }
+            let (arg_values, ptr_arg_reloads) =
+                self.lower_call_arg_items(args_vec, Some(func_id))?;
             let v = self
                 .emit(
                     InstKind::Call { target: func_id, args: arg_values },
                     Some(target_ret),
                 )
                 .expect("Call returns a value");
+            for r in ptr_arg_reloads {
+                r.apply(self);
+            }
             let local = self
                 .module
                 .function_mut(self.func_id)
@@ -1805,10 +1806,15 @@ impl<'a> FunctionLower<'a> {
                     fields: field_bindings,
                 },
             );
-            let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());
-            for a in args_vec {
-                arg_values.extend(self.lower_arg_values(a)?);
-            }
+            // ASSOC-FN-REF-ARG: ask the callee. Lowering the
+            // arguments one at a time with no target meant nothing
+            // knew that a `&Vec<String>` parameter wants an address,
+            // and an explicit `&v` argument produced no value at all
+            // (`String::join(&parts, &sep)` did not compile). The
+            // free-function path has always passed the target; these
+            // three did not.
+            let (arg_values, ptr_arg_reloads) =
+                self.lower_call_arg_items(args_vec, Some(func_id))?;
             self.emit(
                 InstKind::CallStruct {
                     target: func_id,
@@ -1817,6 +1823,9 @@ impl<'a> FunctionLower<'a> {
                 },
                 None,
             );
+            for r in ptr_arg_reloads {
+                r.apply(self);
+            }
             return Ok(Some(None));
         }
         // Enum return — `fn try_from_raw(p: ptr) -> Option<Self>` and
@@ -1832,10 +1841,8 @@ impl<'a> FunctionLower<'a> {
             let storage = self.allocate_enum_storage(ret_enum_id);
             let dests = Self::flatten_enum_dests(&storage);
             self.bindings.insert(name, Binding::Enum(storage));
-            let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());
-            for a in args_vec {
-                arg_values.extend(self.lower_arg_values(a)?);
-            }
+            let (arg_values, ptr_arg_reloads) =
+                self.lower_call_arg_items(args_vec, Some(func_id))?;
             self.emit(
                 InstKind::CallEnum {
                     target: func_id,
@@ -1844,20 +1851,24 @@ impl<'a> FunctionLower<'a> {
                 },
                 None,
             );
+            for r in ptr_arg_reloads {
+                r.apply(self);
+            }
             return Ok(Some(None));
         }
         // Scalar return — emit a regular Call.
         if target_ret.produces_value() {
-            let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());
-            for a in args_vec {
-                arg_values.extend(self.lower_arg_values(a)?);
-            }
+            let (arg_values, ptr_arg_reloads) =
+                self.lower_call_arg_items(args_vec, Some(func_id))?;
             let v = self
                 .emit(
                     InstKind::Call { target: func_id, args: arg_values },
                     Some(target_ret),
                 )
                 .expect("Call returns a value");
+            for r in ptr_arg_reloads {
+                r.apply(self);
+            }
             let local = self
                 .module
                 .function_mut(self.func_id)

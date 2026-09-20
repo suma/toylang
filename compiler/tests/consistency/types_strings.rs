@@ -1760,6 +1760,35 @@ fn join_is_the_inverse_of_split() {
 }
 
 #[test]
+fn an_associated_function_takes_a_borrowed_container() {
+    // ASSOC-FN-REF-ARG: `String::join(&parts, &sep)` — the explicit
+    // borrow, which is what a reader writes once the parameter is
+    // spelled `&Vec<String>`. It did not lower at all: the three
+    // associated-call shapes lowered their arguments one at a time
+    // with no callee to ask, so nothing knew a `&`-compound parameter
+    // wants an address, and the argument produced no value. The same
+    // signature as a *free* function has always worked, so the
+    // difference was the call spelling.
+    let src = r#"
+        fn main() -> u64 {
+            val s = String::from_str("a,b,c")
+            val comma = String::from_str(",")
+            val parts = s.split(comma)
+            val dash = String::from_str("-")
+            val joined: String = String::join(&parts, &dash)
+            println(joined)
+            # The parts are still there: `join` borrows them, and
+            # borrows the separator too.
+            val first: &String = parts.borrow(0u64)
+            println(first)
+            println(parts.size())
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "string_join_explicit_borrow");
+}
+
+#[test]
 fn push_str_takes_the_literal_everyone_writes_first() {
     // `s.push_str("literal")` used to type-check and then die at run
     // time with `Cannot access field on non-struct object:

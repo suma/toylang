@@ -194,6 +194,12 @@ pub struct Parser<'a> {
     /// before the return value of `parse_stmt`, preserving source
     /// order.
     pub pending_prelude_stmts: Vec<StmtRef>,
+    /// CONCURRENCY A1: the `for` statements written `parallel for`.
+    /// Handed to `File::parallel_loops` when the program is built —
+    /// the loop itself is an ordinary `Stmt::For`, so a pass that
+    /// does not care never learns a second shape.
+    pub parallel_loops:
+        std::collections::HashMap<StmtRef, crate::type_checker::SourceLocation>,
     /// ALLOC-CONTRACT: set while parsing an `ensures` predicate, so
     /// `old(...)` is recognised there and refused everywhere else.
     /// Cleared around the argument of an `old` so a nested
@@ -337,6 +343,7 @@ impl<'a> Parser<'a> {
             normalization_context: TokenNormalizationContext::new(),
             context_stack: vec![ParseContext::Expression],
             pending_prelude_stmts: Vec::new(),
+            parallel_loops: std::collections::HashMap::new(),
             synthetic_counter: 0,
             in_ensures_clause: false,
             old_exprs: Vec::new(),

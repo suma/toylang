@@ -328,6 +328,7 @@ impl<'a> Parser<'a> {
             consts: out.consts,
             tests: out.tests,
             transferred_bindings: std::collections::HashSet::new(),
+            parallel_loops: std::mem::take(&mut self.parallel_loops),
             statement: stmt,
             expression: expr,
             location_pool,

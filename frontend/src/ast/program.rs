@@ -78,6 +78,18 @@ pub struct File {
     /// Empty until the checker runs, which is the right default — an
     /// empty set is exactly the pre-ownership behaviour.
     pub transferred_bindings: std::collections::HashSet<StmtRef>,
+    /// CONCURRENCY A1: the `for` statements written `parallel for`.
+    ///
+    /// A parallel loop *is* a `Stmt::For` — the modifier says the
+    /// iterations may run in any order and in parallel, not that the
+    /// loop has a different shape. Recording it beside the tree
+    /// rather than as a variant means every pass that does not care
+    /// (and most do not) is unchanged, and the sequential lanes are
+    /// correct implementations by construction.
+    /// The location is the `parallel` keyword's own: a `Stmt::For`
+    /// records where the parser *finished* the loop, which is past
+    /// the closing brace and no use to a reader.
+    pub parallel_loops: std::collections::HashMap<StmtRef, crate::type_checker::SourceLocation>,
 
     pub statement: StmtPool,
     pub expression: ExprPool,

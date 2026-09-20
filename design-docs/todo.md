@@ -12,6 +12,16 @@
 
 ### 2026-09-20
 
+- **CONCURRENCY A1 — `parallel for` の意味論が入った (実行はまだ逐次)**
+  — §5 の論点 1〜4 を決めて (構文にする / 並列度はコア数・意味論では
+  ない / disjoint は規約 / 逐次レーンは完全逐次)、構文と検査を landing
+  した。ループは普通の `Stmt::For` で、`parallel` が付いたことは
+  `File::parallel_loops` に**脇に記録する** (`transferred_bindings` と
+  同じ手口) ので、気にしないパスは 1 行も変わらない。本文は出力
+  (`Io`) と `with allocator` を禁じる (`[E0029]`)。**4 レーンとも
+  逐次で実行する** — 答えを先に固定してから並列化を足すと、並列化は
+  答えを変えられない最適化になる。残りは A2 (pthread、shadow stack の
+  per-thread 化、本文の切り出し)。
 - **BORROW-MATCH-DROP — 借用越しの `match` が payload を解放しなくなった**
   — `match v.borrow(i) { Some(s) => .. }` の腕が payload に drop を
   付けていた。tree-walker は**無条件に**、compiled レーンは「同じ
@@ -2149,8 +2159,8 @@
 - **並行性 (CONCURRENCY)** は分野としては stdlib だが、本体が move /
   Drop モデルとの接合なので「検討中の機能」節に置いてある (★★★)。
   RUNTIME_LIBRARY P3 も「設計文書を別に取ってから着手」と同じ判断。
-  **設計文書は 2026-09-18 に取った** →
-  [`CONCURRENCY.md`](CONCURRENCY.md)
+  **設計文書は 2026-09-18 に取り、2026-09-20 に §5 を決めて A1 を
+  landing した** → [`CONCURRENCY.md`](CONCURRENCY.md)
 
 - **io.t の範囲外 `""` 既定の厳格化** ★ — `arg(i)` / `env_name(i)` /
   `env_value(i)` は範囲外で `""` を返す (ドキュメント化済みの既定)。
@@ -2452,16 +2462,15 @@
   **統合済みスナップショット 1 ファイル (cold で 0.95ms ロード、319KB)**
   でも落ちるので**サーバは作らない**。スナップショットの方は 1 テスト 1
   プロセスのテスト群にも効くので、INCREMENTAL-COMPILATION 側の候補
-* 並行性 (CONCURRENCY) ★★★ — **言語コアで唯一の完全な空白** (2026-08-20 まで
-  仕様にもこの todo にも項目が無かった)。**設計は
-  [`CONCURRENCY.md`](CONCURRENCY.md) (2026-09-18)** にある。要点は 3 つ:
-  (a) 最初に入れるのは `spawn` ではなく**データ並列** — ハンドルもチャネルも
-  持たない形なら `Send` 相当の判定が要らず、tree-walker では逐次に走って
-  同じ答えになる、(b) `Send` の定義はデータ並列を 1 回出荷してから決める
-  (実プログラムが 1 本も無いまま型の話を進めない)、(c) **サーバの同時接続は
-  並行性の需要ではない** — `poc/logsearch` の 1 本という制限は
-  「容器から取り出したハンドルの drop glue が fd を閉じる」別の穴だった。
-  着手条件は CONCURRENCY.md §6。
+* 並行性 (CONCURRENCY) ★★★ — **設計は決まり、A1 は landing 済み**
+  ([`CONCURRENCY.md`](CONCURRENCY.md) §5、2026-09-20)。入れたのは
+  `parallel for` の**意味論**で、実行は 4 レーンとも逐次 — 答えを
+  先に固定したので、並列化は答えを変えられない最適化になる。
+  **残りは A2**: `toylang_rt` に pthread、shadow stack の per-thread
+  化 (今は `static mut`)、AOT / JIT が本文を関数に切り出して分割実行、
+  逐次との一致を consistency で縛る。`Send` 相当の判定は A の形では
+  要らない (捕捉はスカラーと窓だけ) ので、`spawn` / チャネルに進む
+  ときに初めて決める。
 * データ指向の配列 layout (DOD) ★★ — Phase 0 (`soa [T; N]` + `ps[i].f`
   単列 shortcut) と Phase 2 (`soa Vec<T>` → `SoaVec<T>`) は 2026-08-30、
   Phase 0.5 (列 tight pack) / Phase 1 (列の窓 `Column<T>`) /

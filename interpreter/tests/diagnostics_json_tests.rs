@@ -463,3 +463,29 @@ fn a_type_error_in_a_module_names_the_module_file_and_line() {
     );
     assert_eq!(d["span"]["line"], 5, "{d}");
 }
+
+#[test]
+fn a_parallel_loop_that_prints_is_refused() {
+    // CONCURRENCY A1: interleaved output is not the same output, and
+    // a lane that ran the iterations at once would stop agreeing
+    // with one that did not.
+    let core = crate::common::core_modules_dir();
+    let mut options = interpreter::RunOptions::default();
+    options.diagnostics_json = true;
+    options.core_modules_dirs = std::slice::from_ref(&core);
+    let (result, stderr) = interpreter::output::with_stderr_capture(|| {
+        interpreter::run_source(
+            "fn main() -> u64 {\n    parallel for i in 0u64..4u64 {\n        println(i)\n    }\n    0u64\n}",
+            "test.t",
+            &options,
+        )
+    });
+    assert!(result.is_err(), "printing inside a parallel body should be refused");
+    let value: serde_json::Value = serde_json::from_str(&stderr)
+        .unwrap_or_else(|e| panic!("not JSON ({e}):\n{stderr}"));
+    let d = &value[0];
+    assert_eq!(d["code"], "E0029", "{d}");
+    // The caret sits on the modifier, not past the closing brace:
+    // a `Stmt::For` records where the parser finished.
+    assert_eq!(d["span"]["line"], 2, "{d}");
+}

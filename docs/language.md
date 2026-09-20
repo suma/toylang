@@ -2475,6 +2475,34 @@ Bind the struct first if you need one (`val it = MyIter { .. }`).
    writeback through `iter.next()` mutates the user's original
    binding correctly between iterations.
 
+#### `parallel for` (CONCURRENCY A1)
+
+```rust
+parallel for i in 0u64..segs.size() {
+    out.set(i, work(i))          # one slot per index
+}
+```
+
+A `for` over a **range**, written with the modifier, says the
+iterations may run **in any order** and, in a later phase, at the
+same time. Today every lane runs them in order, which is a correct
+implementation of that promise: the answer is fixed first, and
+parallelising it becomes an optimisation that cannot change it
+(`design-docs/CONCURRENCY.md`).
+
+- `parallel` is **contextual** — only the identifier immediately
+  before a `for` is the modifier, so `val parallel = 7u64` is still
+  a binding.
+- The iterator form (`parallel for x in it`) is refused: an iterator
+  has an order of its own.
+- The body may not **print** and may not open a **scoped allocator**
+  (`[E0029]`). Both would make the order observable; collect per
+  index and do the rest after the loop.
+- **Whether the iterations are independent is not checked.** Writing
+  to `out[i]` is the author's promise, and `requires` is where to
+  write it down. The language has no aliasing rules — see the same
+  decision for `Span<T>`.
+
 By default, `break` / `continue` apply to the innermost enclosing
 loop. **Labelled loops** (LABEL feature) let you target an outer
 loop directly:

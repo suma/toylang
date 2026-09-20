@@ -74,6 +74,7 @@ const ENTRIES: &[Entry] = &[
     (codes::WINDOW_ESCAPE, E0026),
     (codes::BORROW_COPY_OUT, E0027),
     (codes::OWNING_ELEMENT_COPY, E0028),
+    (codes::PARALLEL_BODY, E0029),
 ];
 
 const E0001: &str = "\
@@ -931,6 +932,39 @@ absence is the answer; an ignored `Result` is an unreported failure.
 
 Reported as a warning: programs were written this way before the check
 existed, and ignoring a failure can be deliberate.";
+
+const E0029: &str = "\
+E0029: a parallel loop body depends on the order of its iterations
+
+`parallel for i in 0u64..n { .. }` says the iterations may run in any
+order, and later at the same time. Two things in a body would make
+that visible, so neither is allowed in one:
+
+    parallel for i in 0u64..n {
+        println(i)                    # E0029: interleaved output
+    }
+
+    parallel for i in 0u64..n {
+        with allocator = arena { .. }  # E0029: a scoped allocator
+    }
+
+Output because interleaved lines are not the same output, and the
+lanes that run the loop sequentially would stop agreeing with the
+ones that do not. Collect what each iteration produces — into a slot
+of its own, indexed by `i` — and print after the loop.
+
+A scoped allocator because the region check reasons about one control
+flow; several iterations sharing one arena is outside what it can
+say. The body runs on the default allocator.
+
+**What is not checked is whether the iterations are independent.**
+Writing to `out[i]` is yours to get right, and `requires` is where to
+say it. That is the same decision `Span` makes about aliasing: the
+language has no aliasing rules, and inventing one for this construct
+alone would leave two rule systems to keep straight.
+
+A `parallel for` takes a range. An iterator has an order of its own,
+and splitting one is a different question (`design-docs/CONCURRENCY.md`).";
 
 const E0028: &str = "\
 E0028: an owning element taken out of a container by value

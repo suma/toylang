@@ -35,6 +35,18 @@ impl<'a> Parser<'a> {
 }
 
 pub fn parse_stmt(parser: &mut Parser) -> ParserResult<StmtRef> {
+    // CONCURRENCY A1: `parallel for ...`. Decided before the match
+    // because the modifier is an *identifier* — it is only a keyword
+    // when a `for` follows it, so `val parallel = 5u64` keeps
+    // working — and the two-token look-ahead cannot happen inside a
+    // `match` on `peek()`.
+    let parallel_for = matches!(parser.peek(), Some(Kind::Identifier(name)) if name == "parallel")
+        && matches!(parser.peek_n(1), Some(Kind::For));
+    if parallel_for {
+        let at = parser.current_source_location();
+        parser.next();
+        return parse_for_with_label(parser, None, Some(at));
+    }
     match parser.peek() {
         Some(Kind::Val) | Some(Kind::Var) => {
             parse_var_def(parser)
@@ -87,7 +99,7 @@ pub fn parse_stmt(parser: &mut Parser) -> ParserResult<StmtRef> {
                 }
             }
         }
-        Some(Kind::For) => parse_for_with_label(parser, None),
+        Some(Kind::For) => parse_for_with_label(parser, None, None),
         Some(Kind::While) => parse_while_with_label(parser, None),
         Some(Kind::Loop) => parse_loop_with_label(parser, None),
         _ => parser.parse_expr(),
@@ -117,7 +129,7 @@ fn parse_labelled_loop(parser: &mut Parser) -> ParserResult<StmtRef> {
     match parser.peek() {
         Some(Kind::While) => parse_while_with_label(parser, Some(label_sym)),
         Some(Kind::Loop) => parse_loop_with_label(parser, Some(label_sym)),
-        Some(Kind::For) => parse_for_with_label(parser, Some(label_sym)),
+        Some(Kind::For) => parse_for_with_label(parser, Some(label_sym), None),
         other => {
             let other_clone = other.cloned();
             let location = parser.current_source_location();
@@ -250,7 +262,11 @@ fn parse_while_val(parser: &mut Parser, outer_label: Option<DefaultSymbol>) -> P
         .while_stmt_with_label(outer_label, true_expr, while_body, Some(location)))
 }
 
-fn parse_for_with_label(parser: &mut Parser, label: Option<DefaultSymbol>) -> ParserResult<StmtRef> {
+fn parse_for_with_label(
+    parser: &mut Parser,
+    label: Option<DefaultSymbol>,
+    parallel: Option<crate::type_checker::SourceLocation>,
+) -> ParserResult<StmtRef> {
     parser.expect_err(&Kind::For)?;
     let current_token = parser.peek().cloned();
     match current_token {
@@ -285,9 +301,23 @@ fn parse_for_with_label(parser: &mut Parser, label: Option<DefaultSymbol>) -> Pa
                     let end = end?;
                     let block = super::expr::parse_block(parser)?;
                     let location = parser.current_source_location();
-                    Ok(parser.ast_builder.for_stmt_with_label(label, ident, start, end, block, Some(location)))
+                    let stmt = parser.ast_builder.for_stmt_with_label(label, ident, start, end, block, Some(location));
+                    if let Some(at) = parallel {
+                        parser.parallel_loops.insert(stmt, at);
+                    }
+                    Ok(stmt)
                 }
                 Some(Kind::BraceOpen) => {
+                    if parallel.is_some() {
+                        let location = parser.current_source_location();
+                        return Err(ParserError::generic_error(
+                            location,
+                            "`parallel for` takes a range (`0u64..n`); an iterator has \
+                             an order of its own, and splitting it is not the same \
+                             question as splitting a range"
+                                .to_string(),
+                        ));
+                    }
                     let body = super::expr::parse_block(parser)?;
                     let location = parser.current_source_location();
                     Ok(desugar_for_in_iterator(parser, label, ident, start, body, location))

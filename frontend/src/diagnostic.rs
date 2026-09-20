@@ -311,6 +311,10 @@ pub mod codes {
     /// it. `borrow` names the element instead.
     pub const OWNING_ELEMENT_COPY: &str = "E0028";
 
+    /// CONCURRENCY A1: a `parallel for` body does something the
+    /// order of the iterations would be visible in.
+    pub const PARALLEL_BODY: &str = "E0029";
+
     /// Every code, in order. `crate::explain` is checked against this
     /// list by a test, so a new code cannot ship without prose.
     pub const ALL: &[&str] = &[
@@ -342,6 +346,7 @@ pub mod codes {
         WINDOW_ESCAPE,
         BORROW_COPY_OUT,
         OWNING_ELEMENT_COPY,
+        PARALLEL_BODY,
     ];
 }
 
@@ -376,6 +381,7 @@ fn code_for(kind: &TypeCheckErrorKind) -> &'static str {
         TypeCheckErrorKind::WindowEscape { .. } => codes::WINDOW_ESCAPE,
         TypeCheckErrorKind::BorrowCopyOut { .. } => codes::BORROW_COPY_OUT,
         TypeCheckErrorKind::OwningElementCopy { .. } => codes::OWNING_ELEMENT_COPY,
+        TypeCheckErrorKind::ParallelBody { .. } => codes::PARALLEL_BODY,
     }
 }
 

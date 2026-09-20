@@ -770,6 +770,14 @@ fn check_typing_collecting(
         string_interner,
         &expr_types,
     ));
+    // CONCURRENCY A1: a `parallel for` body may not print or switch
+    // the allocator. Same effect walk as the two checks above, one
+    // more mask; the roots are the loops the parser marked.
+    fn_errors.extend(frontend::type_checker::check_parallel_loops(
+        program,
+        string_interner,
+        &expr_types,
+    ));
     // REGION: memory taken from a scoped allocator must not outlive
     // it. Reads the same `expr_types` and the same effect walk as the
     // two checks above — an allocation is what the effect table says

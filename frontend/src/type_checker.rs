@@ -53,6 +53,7 @@ pub use trait_overload::{
 pub mod effects;
 pub use effects::{Effect, EffectSet, EffectTable};
 mod alloc_check;
+mod parallel_check;
 pub use alloc_check::check_never_allocates;
 mod const_fn_check;
 mod unsafe_check;
@@ -81,6 +82,7 @@ pub use recursive_type::check_recursive_types;
 
 mod move_check;
 pub use move_check::check_moves;
+pub use parallel_check::check_parallel_loops;
 
 mod contains_drop;
 pub use contains_drop::{type_contains_drop, DropAnalysis};

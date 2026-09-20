@@ -164,6 +164,10 @@ pub enum TypeCheckErrorKind {
     /// container by value. `name` is the binding, `ty` the element
     /// type, `receiver` how the container was spelled.
     OwningElementCopy { name: String, ty: String, receiver: String },
+    /// CONCURRENCY A1: a `parallel for` body does something whose
+    /// result depends on the order the iterations run in. `what`
+    /// names it ("prints"), `path` is how the body reaches it.
+    ParallelBody { what: String, path: String },
     /// MUST-USE: a statement produced a `Result` and threw it away.
     /// `ty` is how the value was spelled, `what` names what produced
     /// it when that is knowable (`the call \`write_file(...)\``).
@@ -468,6 +472,17 @@ impl TypeCheckError {
         }
     }
 
+    /// CONCURRENCY A1: a `parallel for` body is order-dependent.
+    pub fn parallel_body(what: String, path: String) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::ParallelBody { what, path }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
     /// MUST-USE: a `Result` was produced and discarded.
     pub fn unused_result(ty: String, what: String) -> Self {
         Self {
@@ -723,6 +738,19 @@ impl TypeCheckError {
                      what it holds — the container and the binding would both free it. Name \
                      the element with `borrow` instead, or ask for a copy of your own with \
                      `clone()`"
+                )
+            }
+            TypeCheckErrorKind::ParallelBody { what, path } => {
+                let fix = if what == "prints" {
+                    "Collect what each iteration produces, into a slot of its own, and \
+                     print after the loop"
+                } else {
+                    "Open the allocator outside the loop, or leave the body on the \
+                     default one"
+                };
+                format!(
+                    "a `parallel for` body {what}, and the iterations may run in any order, \
+                     so the result would depend on which one got there first ({path}). {fix}"
                 )
             }
             TypeCheckErrorKind::UnusedResult { ty, what } => {

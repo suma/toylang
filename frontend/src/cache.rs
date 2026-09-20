@@ -32,7 +32,7 @@ use crate::ast::module_interface::ModuleInterface;
 ///
 /// Mismatched versions are treated as a cache miss by
 /// [`load_full_module`].
-pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 47;
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 48;
 // v2: `File` gained `id` (JIT cache key) and `tests` (LLM-LOOP P4).
 // v3: `BuiltinFunctionSymbols` interns the MEMORY_PROFILING M4 counter
 // names, shifting every later symbol id.
@@ -114,6 +114,8 @@ pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 47;
 // unchanged module would be read back against the old intern order
 // (the same reason convert.t bumped v9). See
 // `design-docs/MODULE_SYSTEM.md`.
+// v48: CONCURRENCY A1 — `File::parallel_loops` (a new field on the
+//      cached `File`, so an older entry decodes to the wrong shape).
 // v47: ELEMENT-BORROW E1 — `BuiltinFunction::PtrRef` /
 //      `PtrRefTyped(TypeDecl)` join the intern table, so the symbol
 //      order changed (see CLAUDE.md on why that alone needs a bump).

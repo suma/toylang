@@ -400,7 +400,11 @@ fn cmd_catalog(spec: str, action: str) -> u64 {
             built.adopt_generation(at)
             if catalog::compact(ps, &mut built, &crc) {
                 val gen = built.generation()
-                println("{ps}: rebuilt {rows} row(s) as generation {gen}")
+                # The label dictionary caches the same segments.
+                val relabelled = labels::repair(ps, gen, &crc)
+                var words = "label dictionary rebuilt"
+                if !relabelled { words = "label dictionary NOT written" }
+                println("{ps}: rebuilt {rows} row(s) as generation {gen}, {words}")
             } else {
                 println("{ps}: could not publish the rebuilt catalog")
                 rc = 1u64
@@ -534,6 +538,10 @@ fn cmd_retain(spec: str, days: u64) -> u64 {
                     if catalog::append_remove(ps, gen, segid, why, &crc) {
                         val gone = c.remove(segid)
                         val sp: &String = paths.borrow(j)
+                        # Out of the label dictionary before the file
+                        # goes: after the unlink there is nothing left
+                        # to read the segment's terms from.
+                        val forgot = labels::forget_segment(ps, sp, gen, &crc)
                         val sps = sp.to_str()
                         val rm = fs::remove_file(sps)
                         match rm {

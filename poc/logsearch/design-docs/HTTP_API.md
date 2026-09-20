@@ -152,8 +152,12 @@ level=info served 200 in 4ms
 
 ### `GET /v1/labels` / `GET /v1/labels?name=host`
 
-ラベルのキー一覧、あるいは指定キーの値一覧。カタログのラベル辞書から
-答えるので、セグメントは開かない。
+ラベルのキー一覧、あるいは指定キーの値一覧。マウントごとのラベル辞書
+(`meta/labels.dict`、[`STORAGE_FORMAT.md`](STORAGE_FORMAT.md) §6) から
+答えるので、セグメントは開かない — 応答の `segments` が 0 なのがその
+印である。**辞書を持たないマウント** (辞書が入る前に書かれたもの、
+消されたもの) では従来どおりセグメントの語彙セクションを歩く。
+`catalog <spec> repair` が辞書を作り直す。
 
 ### `GET /v1/stats`
 

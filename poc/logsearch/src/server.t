@@ -448,6 +448,9 @@ fn admin_repair(spec: str, body: &mut ByteWriter) -> u64 {
         if catalog::compact(ps, &mut built, &crc) {
             rows = rows + built.size()
             mounts = mounts + 1u64
+            # The label dictionary is a cache of the same segments,
+            # so it is rebuilt with them.
+            val relabelled = labels::repair(ps, built.generation(), &crc)
         }
         i = i + 1u64
     }
@@ -498,6 +501,10 @@ fn admin_gc(spec: str, days: u64, body: &mut ByteWriter) -> u64 {
                     if catalog::append_remove(ps, gen, segid, why, &crc) {
                         val gone = c.remove(segid)
                         val sp: &String = paths.borrow(j)
+                        # Out of the label dictionary before the file
+                        # goes: after the unlink there is nothing left
+                        # to read the segment's terms from.
+                        val forgot = labels::forget_segment(ps, sp, gen, &crc)
                         val rm = fs::remove_file(sp.to_str())
                         match rm {
                             Result::Ok(u) => {
@@ -692,13 +699,14 @@ fn has_top(text: &String) -> bool {
 # With no `name`, the keys the dictionaries hold; with `?name=host`,
 # the values under that key. Both are counted by records.
 #
-# **This opens every segment's term section**, which is not what
-# HTTP_API.md section 2 asks for -- it wants the answer out of a
-# per-mount label dictionary in the catalog, so that nothing under
-# `seg/` is touched. That dictionary does not exist yet. The cost is
-# one section read per segment (24 ms over four segments holding
-# 43,813 terms), so it is usable now and will not be at a hundred
-# thousand.
+# **Answered from the per-mount label dictionary** (`src/labels.t`),
+# so nothing under `seg/` is opened -- HTTP_API.md section 2. The
+# dictionary is kept current one segment at a time (a write folds
+# its terms in, retention takes them out), and it is a cache, so a
+# mount that has none yet falls back to reading the segments' term
+# sections, which is what this route used to do for every request.
+# The fallback also answers for a mount written before the
+# dictionary existed; one `catalog <spec> repair` retires it.
 fn labels_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
                 out: &mut ByteWriter) {
     var limit: u64 = 200u64
@@ -741,16 +749,51 @@ fn labels_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
     mount::segments_in(&ms, &mut segs)
 
     val crc = Crc32::new()
-    var prefix = ""
-    if named { prefix = "{name}:" }
-    val tal = query::tally(&segs, prefix, !named, &crc)
+
+    # The answer: a name and a record count per row, however it was
+    # obtained. `names` / `counts` are filled either from the
+    # dictionary or, when a mount has none, from the segments.
+    var names: Vec<String> = Vec::new()
+    var counts: Vec<u64> = Vec::new()
+    var segs_read: u64 = 0u64
+    var from_dict = true
+    var mi: u64 = 0u64
+    while mi < ms.size() {
+        val mp = ms.path_of(mi)
+        val mps = mp.to_str()
+        if labels::has_dict(mps) {
+            collect_from_dict(mps, named, &name, &crc, &mut names, &mut counts)
+        } else {
+            from_dict = false
+        }
+        mi = mi + 1u64
+    }
+    if !from_dict {
+        # No dictionary on at least one mount: fall back to the walk
+        # this route used to do, for all of them, so the answer is
+        # not half of each.
+        names.clear()
+        counts.clear()
+        var prefix = ""
+        if named { prefix = "{name}:" }
+        val tal = query::tally(&segs, prefix, !named, &crc)
+        segs_read = tal.segments
+        var ti: u64 = 0u64
+        while ti < tal.size() {
+            val nm: &String = tal.names.borrow(ti)
+            val copy = nm.clone()
+            names.push(copy)
+            counts.push(tal.counts.get(ti))
+            ti = ti + 1u64
+        }
+    }
 
     # Biggest first: a list of labels is read top-down, and the one
     # with a million records is the one being looked for.
     var order: Vec<Tally> = Vec::new()
     var i: u64 = 0u64
-    while i < tal.size() {
-        val c: u64 = tal.counts.get(i)
+    while i < names.size() {
+        val c: u64 = counts.get(i)
         val one = Tally { count: c, idx: i }
         order.push(one)
         i = i + 1u64
@@ -771,7 +814,7 @@ fn labels_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
     while k < total && shown < limit {
         if shown > 0u64 { body.put_u8(',') }
         val t: Tally = order.get(total - 1u64 - k)
-        val nm: &String = tal.names.borrow(t.idx)
+        val nm: &String = names.borrow(t.idx)
         body.put_str("{{\u{22}name\u{22}:")
         http::put_json_string(&mut body, &nm)
         body.put_str(",\u{22}records\u{22}:")
@@ -780,7 +823,6 @@ fn labels_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
         shown = shown + 1u64
         k = k + 1u64
     }
-    val segs_read = tal.segments
     body.put_str("],\u{22}distinct\u{22}:")
     body.put_str("{total}")
     body.put_str(",\u{22}shown\u{22}:")
@@ -792,6 +834,61 @@ fn labels_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
     http::begin_response(out, 200u64, "application/json", body.len(), alive)
     http::end_headers(out)
     out.put_all(&body)
+}
+
+# Merge one mount's dictionary rows into the answer.
+#
+# With no `name`, the key rows (the ones whose value is empty); with
+# `?name=host`, the value rows under that key. A name that appears on
+# two mounts is one row with the counts added -- the question is
+# about the archive, not about a disk.
+fn collect_from_dict(mount: str, named: bool, name: &String, crc: &Crc32,
+                     names: &mut Vec<String>, counts: &mut Vec<u64>) {
+    val d = labels::load_dict(mount, crc)
+    var i: u64 = 0u64
+    while i < d.size() {
+        val k = d.key_at(i)
+        val v = d.value_at(i)
+        val is_key_row = v.len() == 0u64
+        var take = false
+        if named {
+            if !is_key_row && k.eq(name) { take = true }
+        } elif is_key_row {
+            take = true
+        }
+        if take {
+            # The name this row contributes is the value under the
+            # key that was asked for, or the key itself. It is built
+            # where it is pushed: a binding cannot be handed away
+            # from inside a branch it was declared outside of.
+            val at = index_of_pair(names, named, &k, &v)
+            if at < 0i64 {
+                var label = String::new()
+                if named { label.push_string(&v) } else { label.push_string(&k) }
+                names.push(label)
+                counts.push(d.count_at(i))
+            } else {
+                val j = at as u64
+                val have: u64 = counts.get(j)
+                counts.set(j, have + d.count_at(i))
+            }
+        }
+        i = i + 1u64
+    }
+}
+
+# Where this dictionary row's name already sits in the answer, or -1.
+fn index_of_pair(names: &Vec<String>, named: bool, k: &String, v: &String) -> i64 {
+    var i: u64 = 0u64
+    var out: i64 = -1i64
+    while i < names.size() && out < 0i64 {
+        val n: &String = names.borrow(i)
+        var hit = false
+        if named { hit = n.eq(v) } else { hit = n.eq(k) }
+        if hit { out = i as i64 }
+        i = i + 1u64
+    }
+    out
 }
 
 # `GET /v1/streams` -- the label sets that have been seen, and how

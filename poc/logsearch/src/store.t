@@ -94,6 +94,14 @@ pub fn record_segment(mount_dir: str, base: str, gen: u64, crc: &Crc32) -> bool 
                 val key = catalog::daykey_of_path(&name)
                 if key > 0u64 { r.daykey = key }
                 ok = catalog::append_add(mount_dir, gen, &r, crc)
+                # The label dictionary follows the catalog: one
+                # segment's terms folded in, so `/v1/labels` never
+                # opens a segment to answer (HTTP_API.md section 2).
+                # A failure here is not a failure of the write — the
+                # dictionary is a cache and `repair` rebuilds it.
+                if ok {
+                    val noted = labels::note_segment(mount_dir, &name, gen, crc)
+                }
             }
         }
         Result::Err(e) => { }

@@ -509,11 +509,13 @@ impl Json {
     }
 
     # These take the input by reference and answer with a scalar, and
-    # they are methods for exactly one reason: a module-level free
-    # function with that shape -- a `&`-compound parameter and a
-    # scalar return -- does not lower in the compiled lanes
-    # (`call argument produced no value`; MODULE-FN-REF-ARG). The
-    # same body reached through `self` lowers fine.
+    # they were made methods because a module-level free function
+    # with that shape -- a `&`-compound parameter and a scalar
+    # return -- did not lower in the compiled lanes at the time
+    # (`call argument produced no value`; MODULE-FN-REF-ARG). **That
+    # is fixed** (the module-call path passes the callee, so a `&T`
+    # parameter receives an address); they stay methods because
+    # nothing is gained by moving them back.
 
     # Whitespace is the four characters JSON names, and no others.
     fn skip_ws(&self, text: &String, pos: u64) -> u64 {

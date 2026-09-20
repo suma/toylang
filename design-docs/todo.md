@@ -12,6 +12,13 @@
 
 ### 2026-09-20
 
+- **MODULE-FN-REF-ARG は既に直っていた** — 「module の自由関数が
+  `&compound` を取り scalar を返すと lowering が落ちる」は、
+  `random::shuffle(&mut v)` を直したとき (module-call の経路が呼び先を
+  渡すようになり、`&T` パラメータが leaf ではなく番地を受け取る) に
+  一緒に消えていた。**誰も pin していなかった**ので todo に残り続けて
+  いた。`time::format(&DateTime, str) -> str` が stdlib にあるその形
+  なので、consistency に置いた。
 - **CONCURRENCY A1 — `parallel for` の意味論が入った (実行はまだ逐次)**
   — §5 の論点 1〜4 を決めて (構文にする / 並列度はコア数・意味論では
   ない / disjoint は規約 / 逐次レーンは完全逐次)、構文と検査を landing
@@ -1986,14 +1993,6 @@
   [`MODULE_SYSTEM.md`](MODULE_SYSTEM.md) P3。**3 つ目だった
   `import a.b as h` は 2026-09-05 に解消** (MODULE-IMPORTS D1)。
 
-- **MODULE-FN-REF-ARG: module の自由関数が `&compound` を取り scalar を
-  返すと lowering が落ちる** — `hex::probe(v: &Vec<u8>) -> u64` を
-  `hex::probe(&v)` で呼ぶと `call argument produced no value`
-  (JIT / AOT)。**同じシグネチャでも戻りが compound なら通る**
-  (`hex::encode(&Vec<u8>) -> String` は動く) し、**同一ファイルの
-  自由関数**や **method** なら scalar 戻りでも通る。拒否なので誤答は
-  出ない。`core/std/json.t` の `skip_ws` / `byte_at` / `hex4` /
-  `word_at` はこれを避けて method にしてある。
 - **AOT-MATCH-STR-ARM-BLOCK: `str` を返す match の arm がブロックだと
   AOT が拒否する** — 最小再現:
   ```

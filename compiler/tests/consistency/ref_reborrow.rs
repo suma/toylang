@@ -194,3 +194,33 @@ fn a_forwarded_mut_parameter_reaches_a_module_function() {
     "#;
     assert_consistent(src, "reborrow_into_module_function");
 }
+
+#[test]
+fn a_module_function_takes_a_borrowed_compound_and_answers_a_scalar() {
+    // MODULE-FN-REF-ARG, the shape todo.md recorded as broken:
+    // `hex::probe(v: &Vec<u8>) -> u64` reported "call argument
+    // produced no value" on the compiled lanes, while the same
+    // signature as a *same-file* free function, or with a compound
+    // return, worked. It was fixed with `random::shuffle(&mut v)`
+    // (the module-call path passes the callee, so a `&T` parameter
+    // gets an address rather than leaves) and nothing pinned it.
+    //
+    // `time::format(&DateTime, str) -> str` is that shape in the
+    // stdlib: a module free function, a borrowed compound, a scalar
+    // back.
+    let src = r#"
+        fn main() -> u64 {
+            val dt = DateTime::from_unix(1756900000i64)
+            val whole = time::format(&dt, "%Y-%m-%d")
+            println(whole)
+            # In expression position too, not only as a let's rhs.
+            println(time::format(&dt, "%H:%M:%S"))
+            0u64
+        }
+    "#;
+    assert_renders(
+        src,
+        "module_fn_borrowed_compound_arg",
+        "2025-09-03\n11:46:40\n",
+    );
+}

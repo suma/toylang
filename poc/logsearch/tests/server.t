@@ -193,7 +193,8 @@ test "the server answers over a real socket" {
     var w = ArchiveWriter::new()
     var ms = MountSet::new()
     var gens: Vec<u64> = Vec::new()
-    val keep = server::serve_connection(&poller, &conn, "build/server-spec",
+    # 接続はサーバに渡す。表が持ち主になるので、終わったら閉じる。
+    val keep = server::serve_connection(&poller, conn, "build/server-spec",
                                         &mut st, &mut w, &mut ms, &gens,
                                         &mut inbox, &mut outbox)
     assert(keep, "one healthz does not stop the server")
@@ -810,7 +811,8 @@ test "three connections are served at the same time" {
         val accepted = listener.accept_fd()
         match accepted {
             Result::Ok(fd) => {
-                val slot = server::conn_open(&mut conns, &poller, fd, true, true)
+                var sock = TcpStream::from_fd(fd)
+                val slot = server::conn_open(&mut conns, &poller, sock, true)
                 assert(slot >= 0i64, "the table should have room for {taken}")
                 taken = taken + 1u64
             }
@@ -837,8 +839,7 @@ test "three connections are served at the same time" {
             val tok = ev.token()
             if tok >= 2u64 {
                 val slot = tok - 2u64
-                val fd: i32 = conns.fd.get(slot)
-                if fd >= 0i32 {
+                if conns.fd_of(slot) >= 0i32 {
                     val bad = ev.is_error() || ev.is_hup()
                     val keep = server::serve_slot(&mut conns, slot, ev.is_readable(),
                                                   ev.is_writable(), bad, &poller,

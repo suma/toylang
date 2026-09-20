@@ -30,11 +30,12 @@
 > 起動時に stderr へ 1 行出る。
 >
 > **同時接続は 2026-09-19 に 1 本から 128 本になった。** 接続表は
-> `Vec<i32>` — 番号で持つ。ハンドルの容器 (`Vec<TcpStream>`) は使え
-> ないままで、理由は [`RUNTIME_GAPS.md`](RUNTIME_GAPS.md) G16 にある
-> (取り出した要素の drop glue が fd を閉じる)。言語側が
-> `into_fd` / `from_fd` / `accept_fd` を得たので、サーバは番号の表を
-> 持ち、使う番だけ所有を取り戻す形になった。
+> 当初 `Vec<i32>` (番号) だったが、**2026-09-20 に
+> `Vec<Option<TcpStream>>` になった** — 空きスロットは `None`、
+> 使うときは `borrow` して `&TcpStream` のまま読み書きし、閉じるときは
+> `Vec::replace` で所有を取り戻す。ハンドルの容器が持てるように
+> なった経緯は [`RUNTIME_GAPS.md`](RUNTIME_GAPS.md) G16 と本体の
+> `design-docs/ELEMENT_BORROW.md` にある。
 
 ## 1. 何を話すか
 

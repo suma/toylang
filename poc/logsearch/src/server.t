@@ -5,16 +5,17 @@
 # them, when to write, and when to give up. Keeping the two apart is
 # what let the protocol be tested without a socket.
 #
-# **One connection is served at a time.** That is a real limit, and
-# not the one HTTP_API.md section 4 describes (128, with the listener
-# unhooked when the table fills). The reason is a language gap rather
-# than a decision: a connection table means a container of socket
-# handles, `Vec<TcpStream>` hands back an alias whose drop glue closes
-# the descriptor, and there is no `TcpStream::from_fd` to keep a table
-# of plain numbers instead (RUNTIME_GAPS.md G16). Until one of those
-# changes, extra clients wait in the TCP backlog -- which is the
-# behaviour the design already asks for when the table is full, so
-# raising the number later changes this file and nothing else.
+# **128 connections at a time**, with the listener unhooked when the
+# table fills (HTTP_API.md section 4). Extra clients then wait in the
+# TCP backlog, which is easier on a sender than an accept followed by
+# a close.
+#
+# The table holds the handles themselves (`Vec<Option<TcpStream>>`,
+# `None` = free slot). It could not until 2026-09-20: reading a handle
+# out of a container bound an alias whose drop glue closed the
+# descriptor, so the table had to hold plain numbers and re-open each
+# one for a turn. `borrow` lends a slot's socket without claiming it,
+# and `Vec::replace` takes it back when the slot is freed.
 #
 # What is *not* given up: reads and writes are both partial-safe. A
 # search result is megabytes and a socket takes what it takes, so
@@ -1059,14 +1060,17 @@ fn number_of(w: &ByteWriter) -> Result<u64, ParseError> {
 # ---------------------------------------------------------------------
 # The connection table
 #
-# Parallel columns rather than a `Vec<Conn>`: a container of handles
-# cannot be read back, because taking an element out binds an alias
-# whose drop glue closes the fd (`NETWORK_IO.md`). The table holds
-# **descriptors**, and a turn owns its socket by `TcpStream::from_fd`
-# and hands it back with `into_fd` before the binding dies.
+# Parallel columns rather than a `Vec<Conn>`: a struct per connection
+# would put nine values behind one index, and every turn reads two or
+# three of them. The columns are also what let the handle column be
+# the only owning one.
+#
+# `sock` owns every handle it holds. A turn `borrow`s the slot and
+# reads or writes through the reference — `read` / `write` /
+# `shutdown_write` all take `&self` — and `conn_close` takes the
+# handle back with `Vec::replace`, which is what closes it.
 pub struct Conns {
-    fd: Vec<i32>,          # -1 = free slot
-    owned: Vec<bool>,      # false = the caller still owns this handle
+    sock: Vec<Option<TcpStream>>,   # None = free slot
     writing: Vec<bool>,
     local: Vec<bool>,
     in_len: Vec<u64>,
@@ -1089,8 +1093,7 @@ pub struct Conns {
 impl Conns {
     pub fn new() -> Self {
         val n = max_conns()
-        var fds: Vec<i32> = Vec::with_capacity(n)
-        var own: Vec<bool> = Vec::with_capacity(n)
+        var socks: Vec<Option<TcpStream>> = Vec::with_capacity(n)
         var wr: Vec<bool> = Vec::with_capacity(n)
         var lo: Vec<bool> = Vec::with_capacity(n)
         var il: Vec<u64> = Vec::with_capacity(n)
@@ -1100,8 +1103,8 @@ impl Conns {
         var pd: Vec<bool> = Vec::with_capacity(n)
         var i: u64 = 0u64
         while i < n {
-            fds.push(-1i32)
-            own.push(true)
+            val free: Option<TcpStream> = Option::None
+            socks.push(free)
             wr.push(false)
             lo.push(false)
             il.push(0u64)
@@ -1114,7 +1117,7 @@ impl Conns {
         val ib = ByteWriter::with_capacity(n * recv_slot_bytes())
         val ob = ByteWriter::with_capacity(n * send_slot_bytes())
         Conns {
-            fd: fds, owned: own, writing: wr, local: lo,
+            sock: socks, writing: wr, local: lo,
             in_len: il, out_len: ol, sent: sn, deadline: dl,
             pending: pd, inbox: ib, outbox: ob,
             big_owner: -1i64, live: 0u64,
@@ -1124,13 +1127,27 @@ impl Conns {
     pub fn live(&self) -> u64 { self.live }
     pub fn is_full(&self) -> bool { self.live >= max_conns() }
 
+    # The descriptor a slot holds, or -1 when the slot is free.
+    #
+    # The poller speaks in descriptors, so every turn needs this even
+    # though the table holds handles. Borrowing the slot answers it
+    # without taking the handle out.
+    pub fn fd_of(&self, slot: u64) -> i32 {
+        val held: &Option<TcpStream> = self.sock.borrow(slot)
+        var out: i32 = -1i32
+        match held {
+            Option::Some(s) => { out = s.as_fd() }
+            Option::None => { }
+        }
+        out
+    }
+
     # The first free slot, or -1.
     fn free_slot(&self) -> i64 {
         var i: u64 = 0u64
         var out: i64 = -1i64
         while i < max_conns() && out < 0i64 {
-            val f: i32 = self.fd.get(i)
-            if f < 0i32 { out = i as i64 }
+            if self.fd_of(i) < 0i32 { out = i as i64 }
             i = i + 1u64
         }
         out
@@ -1143,18 +1160,39 @@ impl Conns {
 # tests drive a table without a `serve` loop around it: starting the
 # real loop would mean waiting on its own poller, and a test that
 # waits is a test that hangs when it breaks.
-pub fn conn_open(c: &mut Conns, poller: &Poller, fd: i32, owned: bool,
+# **The handle is handed over**, and the table closes it from then on.
+#
+# The socket goes into the slot **before** the poller is asked, and a
+# refusal takes it back out again. That order is not decoration: a
+# by-value parameter registers no drop, so a path that neither stores
+# the handle nor closes it would leak the descriptor — and the move
+# check refuses to hand it away from inside a branch, because whether
+# the binding still owns anything would depend on the path. One
+# unconditional move, and the undo goes through the table.
+#
+# The caller checks `is_full()` first. Arriving here with no free slot
+# is a bug in the caller, not a runtime condition, so it says so.
+pub fn conn_open(c: &mut Conns, poller: &Poller, sock: TcpStream,
              local: bool) -> i64 {
+    val fd = sock.as_fd()
     val got = c.free_slot()
-    if got < 0i64 { return -1i64 }
+    if got < 0i64 { panic("conn_open: no free slot; the caller must check is_full()") }
     val slot = got as u64
+    val held: Option<TcpStream> = Option::Some(sock)
+    c.sock.set(slot, held)
     val reg = poller.register(fd, conn_token(slot), interest_read())
     match reg {
         Result::Ok(u) => { }
-        Result::Err(e) => { return -1i64 }
+        Result::Err(e) => {
+            val free: Option<TcpStream> = Option::None
+            val back: Option<TcpStream> = c.sock.replace(slot, free)
+            match back {
+                Option::Some(s) => { }
+                Option::None => { }
+            }
+            return -1i64
+        }
     }
-    c.fd.set(slot, fd)
-    c.owned.set(slot, owned)
     c.local.set(slot, local)
     c.writing.set(slot, false)
     c.in_len.set(slot, 0u64)
@@ -1166,26 +1204,25 @@ pub fn conn_open(c: &mut Conns, poller: &Poller, fd: i32, owned: bool,
     got
 }
 
-# Give the slot back. The descriptor is closed unless the caller said
-# it owns the handle (`serve_connection` passes a borrowed socket).
+# Give the slot back, closing the handle it held.
 pub fn conn_close(c: &mut Conns, poller: &Poller, slot: u64, big: &mut ByteWriter) {
-    val fd: i32 = c.fd.get(slot)
+    val fd = c.fd_of(slot)
     if fd < 0i32 { return }
     val off = poller.deregister(fd)
     match off {
         Result::Ok(u) => { }
         Result::Err(e) => { }
     }
-    val owns: bool = c.owned.get(slot)
-    if owns {
-        var s = TcpStream::from_fd(fd)
-        val shut = s.close()
-        match shut {
-            Result::Ok(u) => { }
-            Result::Err(e) => { }
-        }
+    # Taking the handle out of the slot makes this binding its owner,
+    # and the drop at the end of the function closes the descriptor.
+    # `set` would not do: it overwrites, and the handle it covered
+    # would never be closed.
+    val free: Option<TcpStream> = Option::None
+    val was: Option<TcpStream> = c.sock.replace(slot, free)
+    match was {
+        Option::Some(s) => { }
+        Option::None => { }
     }
-    c.fd.set(slot, -1i32)
     c.writing.set(slot, false)
     c.pending.set(slot, false)
     c.in_len.set(slot, 0u64)
@@ -1201,7 +1238,6 @@ pub fn conn_close(c: &mut Conns, poller: &Poller, slot: u64, big: &mut ByteWrite
 # Read what is waiting into this slot's region. `false` means the
 # connection is finished (closed, failed, or over its limit).
 fn conn_read(c: &mut Conns, slot: u64, st: &mut Stats) -> bool {
-    val fd: i32 = c.fd.get(slot)
     val base = slot * recv_slot_bytes()
     val have: u64 = c.in_len.get(slot)
     if have >= recv_slot_bytes() { return false }
@@ -1210,25 +1246,31 @@ fn conn_read(c: &mut Conns, slot: u64, st: &mut Stats) -> bool {
     match room {
         Option::Some(all) => {
             val win = all.slice(base + have, recv_slot_bytes() - have)
-            var s = TcpStream::from_fd(fd)
-            val got = s.read(win)
-            c.fd.set(slot, s.into_fd())
-            match got {
-                Result::Ok(n) => {
-                    if n == 0u64 {
-                        out = false
-                    } else {
-                        c.in_len.set(slot, have + n)
-                        st.bytes_in = st.bytes_in + n
+            # Borrowed, not taken: `read` is `&self`, and the table
+            # goes on owning the handle.
+            val held: &Option<TcpStream> = c.sock.borrow(slot)
+            match held {
+                Option::Some(s) => {
+                    val got = s.read(win)
+                    match got {
+                        Result::Ok(n) => {
+                            if n == 0u64 {
+                                out = false
+                            } else {
+                                c.in_len.set(slot, have + n)
+                                st.bytes_in = st.bytes_in + n
+                            }
+                        }
+                        Result::Err(e) => {
+                            match e {
+                                NetError::WouldBlock => { }
+                                NetError::Interrupted => { }
+                                _ => { out = false }
+                            }
+                        }
                     }
                 }
-                Result::Err(e) => {
-                    match e {
-                        NetError::WouldBlock => { }
-                        NetError::Interrupted => { }
-                        _ => { out = false }
-                    }
-                }
+                Option::None => { out = false }
             }
         }
         Option::None => { out = false }
@@ -1295,7 +1337,7 @@ fn conn_route(c: &mut Conns, slot: u64, poller: &Poller, spec: str,
                 c.writing.set(slot, true)
                 c.sent.set(slot, 0u64)
                 c.in_len.set(slot, 0u64)
-                val fd: i32 = c.fd.get(slot)
+                val fd = c.fd_of(slot)
                 val up = poller.register(fd, conn_token(slot), interest_write())
                 match up {
                     Result::Ok(u) => { }
@@ -1326,26 +1368,29 @@ fn conn_write(c: &mut Conns, slot: u64, poller: &Poller, st: &mut Stats,
     if !from_big { window = c.outbox.room() }
     var base = 0u64
     if !from_big { base = slot * send_slot_bytes() }
-    val fd: i32 = c.fd.get(slot)
     var out = true
     match window {
         Option::Some(all) => {
             val piece = all.slice(base + sent, total - sent)
-            var s = TcpStream::from_fd(fd)
-            val put = s.write(piece)
-            c.fd.set(slot, s.into_fd())
-            match put {
-                Result::Ok(n) => {
-                    c.sent.set(slot, sent + n)
-                    st.bytes_out = st.bytes_out + n
-                }
-                Result::Err(e) => {
-                    match e {
-                        NetError::WouldBlock => { }
-                        NetError::Interrupted => { }
-                        _ => { out = false }
+            val held: &Option<TcpStream> = c.sock.borrow(slot)
+            match held {
+                Option::Some(s) => {
+                    val put = s.write(piece)
+                    match put {
+                        Result::Ok(n) => {
+                            c.sent.set(slot, sent + n)
+                            st.bytes_out = st.bytes_out + n
+                        }
+                        Result::Err(e) => {
+                            match e {
+                                NetError::WouldBlock => { }
+                                NetError::Interrupted => { }
+                                _ => { out = false }
+                            }
+                        }
                     }
                 }
+                Option::None => { out = false }
             }
         }
         Option::None => { out = false }
@@ -1379,7 +1424,7 @@ fn conn_sent_all(c: &mut Conns, slot: u64, poller: &Poller,
     c.sent.set(slot, 0u64)
     c.out_len.set(slot, 0u64)
     c.in_len.set(slot, 0u64)
-    val fd: i32 = c.fd.get(slot)
+    val fd = c.fd_of(slot)
     val back = poller.register(fd, conn_token(slot), interest_read())
     match back {
         Result::Ok(u) => { }
@@ -1400,9 +1445,8 @@ fn sweep_pending(c: &mut Conns, poller: &Poller, spec: str, st: &mut Stats,
     if c.big_owner >= 0i64 { return }
     var i: u64 = 0u64
     while i < max_conns() {
-        val fd: i32 = c.fd.get(i)
         val waiting: bool = c.pending.get(i)
-        if fd >= 0i32 && waiting {
+        if c.fd_of(i) >= 0i32 && waiting {
             if !conn_route(c, i, poller, spec, st, w, ms, gens, big) {
                 conn_close(c, poller, i, big)
             }
@@ -1417,8 +1461,7 @@ fn sweep_deadlines(c: &mut Conns, poller: &Poller, big: &mut ByteWriter) {
     val now = time::now_mono_ns()
     var i: u64 = 0u64
     while i < max_conns() {
-        val fd: i32 = c.fd.get(i)
-        if fd >= 0i32 {
+        if c.fd_of(i) >= 0i32 {
             val due: u64 = c.deadline.get(i)
             if now > due { conn_close(c, poller, i, big) }
         }
@@ -1431,18 +1474,18 @@ fn sweep_deadlines(c: &mut Conns, poller: &Poller, big: &mut ByteWriter) {
 # The server proper (`serve`) runs many slots at once; this is the
 # single-connection driver, kept because a caller that has already
 # accepted a socket -- a test, or a one-shot tool -- should not have
-# to build a table. The socket stays the caller's: the slot is opened
-# **borrowed**, so finishing it does not close the handle.
+# to build a table. **The socket is handed over**: the table owns what
+# it holds, so the connection is closed when it is finished with.
 #
 # Answers false when the request asked the server to stop.
-pub fn serve_connection(poller: &Poller, conn: &TcpStream, spec: str,
+pub fn serve_connection(poller: &Poller, conn: TcpStream, spec: str,
                         st: &mut Stats, w: &mut ArchiveWriter,
                         ms: &mut MountSet, gens: &Vec<u64>,
                         inbox: &mut ByteWriter,
                         outbox: &mut ByteWriter) -> bool {
     var c = Conns::new()
-    val local = is_local(conn)
-    val got = conn_open(&mut c, poller, conn.as_fd(), false, local)
+    val local = is_local(&conn)
+    val got = conn_open(&mut c, poller, conn, local)
     if got < 0i64 { return true }
     val slot = got as u64
     st.connections = st.connections + 1u64
@@ -1652,27 +1695,23 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
                         if conns.is_full() {
                             taking = false
                         } else {
-                            # `accept_fd` rather than `accept`: a
-                            # handle caught here is owned by the
-                            # binding that caught it, and on the
-                            # compiled lanes the payload is a **copy**,
-                            # so the original closes the connection
-                            # when the arm ends. The table wants the
-                            # number anyway.
+                            # `accept_fd` rather than `accept`: the
+                            # handle is built here, inside the arm,
+                            # from the number. Binding the accepted
+                            # socket out of the `Result` instead would
+                            # put the arm's alias and the temporary
+                            # `Result` in the same conversation about
+                            # who closes it, and there is nothing to
+                            # gain from having it.
                             val accepted = listener.accept_fd()
                             match accepted {
                                 Result::Ok(fd) => {
-                                    var probe = TcpStream::from_fd(fd)
-                                    val local = is_local(&probe)
-                                    val back = probe.into_fd()
-                                    val slot = conn_open(&mut conns, &poller, back, true, local)
+                                    var sock = TcpStream::from_fd(fd)
+                                    val local = is_local(&sock)
+                                    # The table takes the handle. A
+                                    # full table closes it for us.
+                                    val slot = conn_open(&mut conns, &poller, sock, local)
                                     if slot < 0i64 {
-                                        var spill = TcpStream::from_fd(back)
-                                        val shut = spill.close()
-                                        match shut {
-                                            Result::Ok(u) => { }
-                                            Result::Err(e) => { }
-                                        }
                                         taking = false
                                     } else {
                                         st.connections = st.connections + 1u64
@@ -1684,8 +1723,7 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
                     }
                 } else {
                     val slot = token_slot(tok)
-                    val fd: i32 = conns.fd.get(slot)
-                    if fd >= 0i32 {
+                    if conns.fd_of(slot) >= 0i32 {
                         val bad = ev.is_error() || ev.is_hup()
                         val keep = serve_slot(&mut conns, slot, ev.is_readable(),
                                               ev.is_writable(), bad, &poller, spec,
@@ -1739,8 +1777,7 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
     # going away, and a half-written answer is worse than none.
     var k: u64 = 0u64
     while k < max_conns() {
-        val fd: i32 = conns.fd.get(k)
-        if fd >= 0i32 { conn_close(&mut conns, &poller, k, &mut outbox) }
+        if conns.fd_of(k) >= 0i32 { conn_close(&mut conns, &poller, k, &mut outbox) }
         k = k + 1u64
     }
 

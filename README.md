@@ -11,11 +11,23 @@ A complete programming language implementation featuring a frontend library and 
 
 ## Overview
 
-This project implements a statically-typed programming language with comprehensive type checking, automatic type inference, and modern language features. The implementation is split into three main components:
+This project implements a statically-typed programming language with
+comprehensive type checking, automatic type inference, and modern language
+features. **The same program has to mean the same thing on four engines**,
+which is the constraint most of the design answers to:
 
-- **Frontend Library**: Shared parser, AST, and type checker with automatic lexer generation
-- **Interpreter**: Tree-walking interpreter with optional Cranelift JIT and a comprehensive test suite
-- **Compiler**: AOT compiler that lowers numeric programs to a native executable via Cranelift Object (MVP — see [`compiler/README.md`](compiler/README.md))
+| Crate | What it is |
+|---|---|
+| `frontend` | Parser, AST pools, type checker, and the whole-program checks (ownership, regions, effects, contracts) |
+| `interpreter` | The tree-walking engine — the **reference oracle** — plus an AST-level Cranelift JIT |
+| `compiler_ir` / `compiler_lower` / `compiler_vm` | The shared IR, the AST → IR lowering, and an IR interpreter (the engine `interpreter` actually uses by default) |
+| `compiler` | AOT: IR → Cranelift → object file → executable, and a Cranelift JIT over the same IR |
+| `compiler/runtime/toylang_rt` | The runtime both compiled lanes link: output, allocator, profiler, backtraces |
+| `toy` | The build tool — `toy build` / `run` / `test` / `check` for a program with its own modules |
+
+A larger program written **in** the language lives in
+[`poc/logsearch`](poc/logsearch) — a log archiver and search server, which
+is where most of the gaps in the language were found.
 
 ## Language Features
 
@@ -24,7 +36,10 @@ This project implements a statically-typed programming language with comprehensi
 - **Variables**: Immutable (`val`) and mutable (`var`) declarations
 - **Top-level constants**: `const PI: f64 = 3.14159f64` evaluated once at startup
 - **Control Flow**: `if/else/elif`, `for` loops with `break/continue`, `while` loops
-- **Types**: `u64`, `i64`, `f64`, `bool`, `str`, `ptr`, `Dict`, tuples, fixed arrays
+- **Types**: `u64` / `i64` / `f64` / `f32` / `bool` / `str` / `ptr` / `usize`,
+  narrow integers (`u8`–`u32`, `i8`–`i32`), `char`, 128-bit SIMD vectors
+  (`f64x2` / `f32x4` / `i32x4` / `i64x2` / `u8x16`), tuples, fixed arrays,
+  `dict`
 
 ### Advanced Features
 - **Fixed Arrays**: `val arr: [i64; 5] = [1, 2, 3, 4, 5]` with type inference
@@ -38,11 +53,23 @@ This project implements a statically-typed programming language with comprehensi
 - **Allocator system**: `with allocator = arena { … }` lexically scoped allocator binding, `<A: Allocator>` bound, arena / fixed-buffer / global allocator builtins
 - **Built-in Methods**: String operations like `"hello".len()` returning `u64`
 - **Unary Operators**: `-x` (signed int / `f64`), `!` (logical not), `~` (bitwise not)
-- **Resource Management**: Automatic destruction system with custom `drop` methods
+- **Ownership**: a type with an `impl Drop` has one owner. Handing it to
+  something that outlives the scope **transfers** it (`[E0014]`), drop glue
+  frees containers recursively, and a container **lends** an element with
+  `borrow` rather than handing out a second owner (`[E0028]`)
+- **Effects**: what a declaration can do besides compute — `never_allocates`
+  and `const fn` are checked against the same reachability walk
+- **Data parallelism**: `parallel for i in 0u64..n { .. }` — the iterations
+  may run in any order (every engine runs them in order today; the answer is
+  fixed before the threads arrive)
 - **Comments**: `# line` and `/* block */`
 - **No Semicolons**: Statements are separated by newlines, not semicolons
-- **Module System**: Go-style modules with `package`/`import` declarations
+- **Module System**: Go-style modules with `package`/`import` declarations,
+  resolved by matching the **end** of a path (`math::f` finds `std.math.f`)
 - **Qualified Identifiers**: Rust-style `module::function` syntax
+- **A standard library written in the language itself** (`core/std/`):
+  `String` / `Vec<T>` / `Box<T>` / `Dict<K, V>` / `Option` / `Result` /
+  `Span<T>` / `Ptr<T>`, files, sockets, a poller, JSON, hashes, time
 
 ### Type System
 - **Context-based Type Inference**: Automatic type resolution based on usage context
@@ -76,77 +103,101 @@ This project implements a statically-typed programming language with comprehensi
 
 ### Building
 
+Everything runs from the repository root with `-p`; `cd <crate> && cargo …`
+buys nothing and costs a directory change.
+
 ```bash
-# Build frontend library
-cd frontend && cargo build
+# Type errors only, as fast as they come
+cargo check --workspace --message-format=short
 
-# Build interpreter
-cd interpreter && cargo build
+# One crate
+cargo build -p frontend
+cargo build -p interpreter
+cargo build -p compiler
 
-# Build with debug logging enabled (for development)
-cd interpreter && cargo build --features debug-logging
-
-# Build release version (production-optimized, no logging overhead)
-cd interpreter && cargo build --release
+# Release
+cargo build --release -p interpreter
 ```
 
 ### Running Programs
 
 ```bash
-# Execute a program file with interpreter
-cd interpreter && cargo run example/fib.t
+# Run a program (the process exit code is the program's result)
+cargo run -q -p interpreter -- interpreter/example/fib.t
 
-# A few illustrative example programs
-cargo run example/fib.t                  # Recursive Fibonacci (process exit = result)
-cargo run example/contracts.t            # Design-by-Contract: requires / ensures / result
-cargo run example/const_decls.t          # Top-level const declarations
-cargo run example/panic.t                # panic("msg") explicit failure
-cargo run example/float64.t              # f64 arithmetic, casts, comparisons
-cargo run example/match_guard.t          # match with per-arm `if` guards
-cargo run example/allocator_basic.t      # `with allocator = arena { ... }`
+# A few illustrative examples out of the ~190 in interpreter/example/
+cargo run -q -p interpreter -- interpreter/example/contracts.t      # requires / ensures / result
+cargo run -q -p interpreter -- interpreter/example/box_linked_list.t # Box, ownership, drop glue
+cargo run -q -p interpreter -- interpreter/example/net_echo_server.t # sockets + poller
+cargo run -q -p interpreter -- interpreter/example/simd.t            # 128-bit vectors
+cargo run -q -p interpreter -- interpreter/example/allocator_basic.t # `with allocator = arena`
 
-# Same fib.t with the cranelift JIT (default-on cargo feature)
-INTERPRETER_JIT=1 cargo run --release example/fib.t
+# Compile ahead of time, then run the binary
+cargo run -q -p compiler -- interpreter/example/fib.t -o /tmp/fib && /tmp/fib
 
-# Disable contract evaluation (D `-release` equivalent)
-INTERPRETER_CONTRACTS=off cargo run --release example/contracts.t
+# Run the same program on every engine and report only disagreements
+cargo run -q -p compiler -- interpreter/example/fib.t --all-backends
+
+# Ask instead of running: error prose, a module's signatures, what a
+# declaration can do besides compute
+cargo run -q -p interpreter -- --explain E0028
+cargo run -q -p interpreter -- --api core/std/string.t
+cargo run -q -p interpreter -- --effects interpreter/example/fib.t
+
+# `test "..." { }` blocks, and `requires` / `ensures` as a property test
+cargo run -q -p interpreter -- --test interpreter/example/memory_contract.t
+cargo run -q -p interpreter -- --check interpreter/example/memory_contract.t
 
 # Print allocation totals after the run (JSON with --profile-format=json)
-cd interpreter && cargo run -- example/allocator_list.t --profile=mem
+cargo run -q -p interpreter -- --profile=mem interpreter/example/allocator_list.t
 ```
+
+### A program with its own modules (`toy`)
+
+```bash
+cargo run -q -p toy -- build poc/logsearch [--release]
+cargo run -q -p toy -- run   poc/logsearch -- serve /var/log/archive 8080
+cargo run -q -p toy -- test  poc/logsearch          # AOT by default, in parallel
+cargo run -q -p toy -- check poc/logsearch --diagnostics=json
+```
+
+Most subcommands take `--format=json` for the result and
+`--diagnostics=json` for the errors; see
+[`design-docs/BUILD_TOOL.md`](design-docs/BUILD_TOOL.md).
 
 For the full CLI / env-var reference see [`interpreter/README.md`](interpreter/README.md).
 
 ### Testing
 
+`cargo nextest` is what the suite is tuned for — a green run prints six
+lines, because the output is what makes a test run readable, not the speed.
+
 ```bash
-# Run all tests with comprehensive coverage (3 phases: lib.rs, main.rs, doc-tests)
-cd interpreter && cargo test
+# Everything (~3,000 tests, about 45 s)
+cargo nextest run
 
-# Run frontend library tests  
-cd frontend && cargo test
+# One crate, or a name (filters are substring matches, not exact)
+cargo nextest run -p compiler
+cargo nextest run -E 'test(basic_arithmetic)'
 
-# Run property-based tests
-cd interpreter && cargo test proptest
-
-# Run destruction system tests specifically
-cd interpreter && cargo test destruction_tests custom_destructor_tests
-
-# Run tests with logging enabled (useful for debugging)
-cd interpreter && cargo test --features test-logging
+# Doc-tests, which nextest does not run
+cargo test --doc --workspace
 ```
+
+The tests that matter most are in `compiler/tests/consistency/`: they run
+one program on every engine and compare. A check that only asserts the
+engines *agree* can pass while all of them are wrong, so those tests pin
+the output itself wherever the answer is known.
 
 ### Linting
 
 The workspace uses `[workspace.lints.clippy]` in `Cargo.toml` for consistent lint rules. Run clippy across the entire workspace:
 
-```bash
-# All crates at once
-cargo clippy --workspace --all-targets --all-features
+Clippy is expected to be **silent**; a warning means the change that just
+landed introduced it.
 
-# Per crate
-cd frontend && cargo clippy --all-targets --all-features
-cd interpreter && cargo clippy --all-targets --all-features
+```bash
+cargo clippy --workspace --all-targets --all-features --message-format=short
 ```
 
 ## Language Syntax
@@ -236,10 +287,13 @@ fn main() -> i64 {
 }
 ```
 
-Every `match` arm must produce the same result type. Patterns supported today:
-`Enum::Variant`, `Enum::Variant(x, _, y)` (with binding / discard slots), and
-`_` catch-all. Exhaustiveness checking, generic enums, and nested structural
-patterns are on the roadmap.
+Every `match` arm must produce the same result type, and a `match` has to
+cover its scrutinee: a missing variant is a type error, and so is an arm no
+value can reach. Beyond `Enum::Variant` and `Enum::Variant(x, _, y)` the
+patterns are struct (`Point { x: 0i64, y }`), tuple, literal, or
+(`1i64 | 2i64`), half-open range (`0i64..5i64`), binding (`n @ 3i64`) and
+nesting of any of them — including inside a payload. Generic enums
+(`Option<T>` / `Result<T, E>`) are ordinary declarations in the stdlib.
 
 ### Unary Operators
 ```rust
@@ -261,7 +315,7 @@ val a: i64 = 10i64
 -a
 ```
 
-### Resource Management with Custom Destructors
+### Ownership and Destructors
 ```rust
 struct FileResource {
     path: str,
@@ -295,6 +349,26 @@ fn main() -> u64 {
     0u64
 }
 ```
+
+A type with an `impl Drop` has **one owner**. Putting it somewhere that
+outlives the scope — a by-value argument, a container, a struct field —
+transfers it, and reading the old name afterwards is `[E0014]`. Ownership
+is transitive, so a `Vec<Box<i64>>` frees its elements and their contents
+when it dies.
+
+Reading an element is where that gets interesting: `get` answers with the
+element, which for an owning type is a shallow copy — two owners of one
+resource. A container **lends** instead:
+
+```rust
+var conns: Vec<TcpStream> = Vec::new()
+conns.push(cl)
+val s: TcpStream = conns.get(0u64)      # [E0028]: both would close the socket
+val s: &TcpStream = conns.borrow(0u64)  # names it without claiming it
+```
+
+The rules and what they cost are in
+[`design-docs/ELEMENT_BORROW.md`](design-docs/ELEMENT_BORROW.md).
 
 ### Generic Programming
 ```rust
@@ -435,16 +509,16 @@ safety checks behave identically across build profiles.
 
 ```bash
 # Print the run's allocation totals to stderr (text)
-cd interpreter && cargo run -- example/memory_contract.t --profile=mem
+cargo run -q -p interpreter -- --profile=mem interpreter/example/memory_contract.t
 
 # Machine-readable form — `leaks` is always present, `[]` when nothing leaked
-cd interpreter && cargo run -- example/memory_contract.t --profile=mem --profile-format=json
+cargo run -q -p interpreter -- --profile=mem --profile-format=json interpreter/example/memory_contract.t
 
 # AOT-compiled binaries profile themselves, no interpreter involved
 TOY_PROFILE_MEM=1 ./fib
 
 # All backends must report the same numbers — verify with one command
-cargo run -p compiler -- example/allocator_list.t --all-backends --profile=mem
+cargo run -q -p compiler -- interpreter/example/allocator_list.t --all-backends --profile=mem
 ```
 
 Example report:
@@ -542,12 +616,19 @@ fn main() -> u64 {
 
 ## Project Status
 
-This is a fully functional programming language implementation suitable for:
-- Educational purposes and language design study
-- Experimenting with type system design
-- Understanding interpreter implementation techniques
-- Exploring modern language features in a controlled environment
-The implementation includes comprehensive documentation, extensive testing, and performance optimizations, making it a robust foundation for further language development.
+The language runs real programs. [`poc/logsearch`](poc/logsearch) is ~10k
+lines of it: a log archiver with its own on-disk format, a compressor, an
+inverted index, a catalog, and an HTTP server holding 128 connections —
+written entirely in the language, and the source of most of the gaps that
+have since been closed (a container could not hold socket handles; a
+`match` arm copied its payload; reading an element freed it).
+
+What is missing is listed, not hidden:
+[`design-docs/todo.md`](design-docs/todo.md) has the unimplemented section
+and the known defects, each with what it costs and what it would take. The
+largest open item is real parallel execution — the semantics of
+`parallel for` are in, the threads are not
+([`design-docs/CONCURRENCY.md`](design-docs/CONCURRENCY.md)).
 
 ## Technical Highlights
 
@@ -559,8 +640,19 @@ The implementation includes comprehensive documentation, extensive testing, and 
 - **Design by Contract**: `requires` / `ensures` clauses with `result` binding and an `INTERPRETER_CONTRACTS=all|pre|post|off` runtime gate (D `-release` equivalent)
 - **Memory profiling**: request-based allocation counters, leak detection (per allocation site), and allocator layout reports — `--profile=mem` / `--profile-format=json` on the interpreter and `TOY_PROFILE_MEM=1` on AOT binaries, byte-identical across all four backends. The same counters are readable from `requires` / `ensures` / `test`, so memory use can be pinned by contract (see [`design-docs/MEMORY_PROFILING.md`](design-docs/MEMORY_PROFILING.md))
 - **Efficient Memory Management**: Append-only `StmtPool` / `ExprPool` plus automatic destruction with custom `drop` methods
-- **Production-quality Testing**: Comprehensive test suite (970+ tests) with full pass rate
+- **Testing**: ~3,000 tests in the workspace, plus the POC's own 147. The
+  interesting ones are the consistency tests, which run a program on all
+  four engines and compare — and pin the *output*, because four engines
+  agreeing on a wrong answer is the failure mode that costs the most
 - **Debug-mode Logging**: Conditional compilation for zero-overhead production builds
+- **Diagnostics built for a reader** (and for a machine): every error has a
+  code, a span, and `--explain` prose with a reproduction and a fix;
+  `--diagnostics=json` puts the same thing on stderr as data. A diagnostic
+  from an imported module names *that* file and line
+- **Ownership without a borrow checker**: one owner per resource, checked
+  transfers, drop glue through containers, and `borrow` for reading an
+  element. No lifetimes — an escape rule instead, shared with the region
+  check for scoped allocators
 
 All major language features are implemented and thoroughly tested. The
 canonical language reference is [`docs/language.md`](docs/language.md);

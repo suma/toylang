@@ -547,10 +547,14 @@ Error at core/std/option.t:57:29:
 
 ### D4 — shadow stack ✅ (2026-08-27)
 
-1. `toylang_rt` に frame ポインタ配列 + 深さ (`toy_shadow_stack` /
-   `toy_shadow_depth`)。**スレッドローカルではなく素の static** —
-   この言語にスレッドは無い。増えたらここが `#[thread_local]` になり、
-   codegen のアドレッシングも一緒に変わる。
+1. `toylang_rt` に frame ポインタ配列 + 深さ。当初は素の static 2 つ
+   (`toy_shadow_stack` / `toy_shadow_depth`) で、「この言語にスレッドは
+   無い」を理由にしていた。**2026-09-21 に per-thread になった**
+   (CONCURRENCY A2-a): `toy_shadow_ctx()` がスレッドごとの
+   `{ depth, slots }` を返し、codegen は **prologue で 1 回**呼ぶ。
+   番地は活性化の間は定数なので、下の hoisting の前提は変わらない。
+   実測は呼び出ししかしないマイクロベンチ (6,000 万活性化) で
+   0.13 → 0.30 秒、実仕事で +4%、`--release` は frame を記録しないので 0。
 2. codegen が呼び出しの前後で push/pop を出す (`--release` では出さない)。
 3. `toy_panic_at` / `toy_panic_alloc_budget` が shadow stack を D1 と
    同じ規則 (折り畳み・上限) で描く。

@@ -397,3 +397,50 @@ fn main() -> i64 {
     let result = test_program(&source).expect("program should run");
     assert_eq!(result.borrow().unwrap_int64(), 42);
 }
+
+#[test]
+fn a_function_whose_name_the_stdlib_also_uses_still_takes_ownership() {
+    // The signature tables are keyed by name, and a name is not
+    // unique: a program that declares `fn sum(c: Cell<i64>)` shares
+    // it with `sha256::sum(&Vec<u8>)`. With one table for both, the
+    // two disagreed on whether the argument is borrowed and the
+    // entry was blanked — every `sum(x)` was then read as a borrow,
+    // so the transfer went unrecorded and the binding dropped a
+    // value it had handed away.
+    //
+    // A user-authored top-level function wins a bare name outright,
+    // which is how the call resolves at run time, so the tables are
+    // now split the same way.
+    let diagnostic = move_diagnostic(
+        "fn sum(c: Cell<i64>) -> i64 { 1i64 }
+fn main() -> i64 {
+    val c: Cell<i64> = Cell::new(7i64)
+    val n: i64 = sum(c)
+    val again: i64 = c.get()
+    n + again
+}",
+    );
+    assert!(
+        diagnostic.message.contains("`c` was moved"),
+        "the transfer into the same-named function should be seen: {}",
+        diagnostic.message
+    );
+}
+
+#[test]
+fn a_module_function_is_resolved_by_its_qualifier() {
+    // `sha256::sum(&data)` borrows, and must keep borrowing even
+    // though the program also declares a `sum` that does not. The
+    // qualifier names the module, so the signature is exact.
+    assert_eq!(
+        run("fn sum(c: Cell<i64>) -> i64 { 1i64 }
+fn main() -> i64 {
+    var data: Vec<u8> = Vec::new()
+    data.push(1u8)
+    val digest = sha256::sum(&data)
+    val still: u64 = data.size()
+    still as i64
+}"),
+        1i64
+    );
+}

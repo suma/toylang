@@ -158,18 +158,24 @@ pub fn check_moves(
 /// so all of them transfer when handed over.
 /// Parameter lists, so a call site can tell a borrow from a transfer.
 struct Signatures {
-    /// Free functions by name **and arity**, under the same agreement
-    /// rule as `methods`.
+    /// Free functions the entry file declares, by name and arity.
     ///
-    /// A name is not unique across modules: a program that declares
-    /// `fn sum(l: List)` shares the name with `sha256::sum(&Vec<u8>)`,
-    /// and a plain by-name table let the last declaration answer for
-    /// the first. The two disagree on whether the argument is borrowed,
-    /// so every `sum(x)` call was read as a borrow — or, the other way
-    /// round, would have been read as a transfer and rejected a working
-    /// program. An ambiguous name now answers nothing, which costs a
-    /// missed transfer rather than a wrong diagnostic.
-    functions: HashMap<(DefaultSymbol, usize), Option<Vec<TypeDecl>>>,
+    /// Separate from the module ones because that is how a call
+    /// resolves: a user-authored top-level function wins a bare name
+    /// outright (`File::function_module_paths` is `None` for exactly
+    /// those). Before the split, `fn sum(l: List)` in a program and
+    /// `sha256::sum(&Vec<u8>)` in the stdlib were one ambiguous
+    /// entry, and `sum(x)` was read as a borrow — the value went into
+    /// the callee and the binding dropped it too.
+    local_functions: HashMap<(DefaultSymbol, usize), Option<Vec<TypeDecl>>>,
+    /// Module functions by **module tail**, name and arity, which is
+    /// how `sha256::sum(..)` is written. MODULE-SYSTEM P2 resolves a
+    /// qualifier by matching the end of the path, so the last segment
+    /// is the part a call site always spells.
+    module_functions: HashMap<(DefaultSymbol, DefaultSymbol, usize), Option<Vec<TypeDecl>>>,
+    /// The same module functions by name and arity alone, for a bare
+    /// call to one. Ambiguity here answers nothing, as before.
+    bare_module_functions: HashMap<(DefaultSymbol, usize), Option<Vec<TypeDecl>>>,
     /// Methods by name **and arity**, receiver excluded. A name with
     /// several signatures keeps only one entry when they agree on every
     /// parameter's borrow-ness, and none when they disagree — an
@@ -198,17 +204,29 @@ struct Signatures {
 
 impl Signatures {
     fn collect(program: &File, interner: &DefaultStringInterner) -> Self {
-        let mut functions: HashMap<(DefaultSymbol, usize), Option<Vec<TypeDecl>>> = HashMap::new();
-        for f in &program.function {
+        let mut local_functions: HashMap<(DefaultSymbol, usize), Option<Vec<TypeDecl>>> =
+            HashMap::new();
+        let mut module_functions: HashMap<
+            (DefaultSymbol, DefaultSymbol, usize),
+            Option<Vec<TypeDecl>>,
+        > = HashMap::new();
+        let mut bare_module_functions: HashMap<(DefaultSymbol, usize), Option<Vec<TypeDecl>>> =
+            HashMap::new();
+        for (i, f) in program.function.iter().enumerate() {
             let params: Vec<TypeDecl> = f.parameter.iter().map(|(_, t)| t.clone()).collect();
-            let key = (f.name, params.len());
-            match functions.get(&key) {
+            let arity = params.len();
+            let module_tail = program
+                .function_module_paths
+                .get(i)
+                .and_then(|p| p.as_ref())
+                .and_then(|p| p.last().copied());
+            match module_tail {
                 None => {
-                    functions.insert(key, Some(params));
+                    agree_or_none(&mut local_functions, (f.name, arity), params);
                 }
-                Some(Some(existing)) if borrow_shape(existing) == borrow_shape(&params) => {}
-                Some(_) => {
-                    functions.insert(key, None);
+                Some(tail) => {
+                    agree_or_none(&mut module_functions, (tail, f.name, arity), params.clone());
+                    agree_or_none(&mut bare_module_functions, (f.name, arity), params);
                 }
             }
         }
@@ -254,7 +272,34 @@ impl Signatures {
                 }
             }
         }
-        Signatures { functions, methods, associated, enum_variants }
+        Signatures {
+            local_functions,
+            module_functions,
+            bare_module_functions,
+            methods,
+            associated,
+            enum_variants,
+        }
+    }
+}
+
+/// Record a signature under `key`, or blank the entry when two
+/// declarations that share it disagree on which parameters borrow.
+/// Refusing to guess costs a missed transfer; guessing wrong would
+/// reject a working program.
+fn agree_or_none<K: std::hash::Hash + Eq>(
+    table: &mut HashMap<K, Option<Vec<TypeDecl>>>,
+    key: K,
+    params: Vec<TypeDecl>,
+) {
+    match table.get(&key) {
+        None => {
+            table.insert(key, Some(params));
+        }
+        Some(Some(existing)) if borrow_shape(existing) == borrow_shape(&params) => {}
+        Some(_) => {
+            table.insert(key, None);
+        }
     }
 }
 
@@ -640,11 +685,15 @@ impl MoveCheck<'_> {
                     Some(_) => 1,
                     None => 0,
                 };
+                // The entry file's own function wins a bare name;
+                // a module one answers only when the name is not
+                // taken and is unambiguous among the modules.
                 let params = self
                     .signatures
-                    .functions
+                    .local_functions
                     .get(&(name, arity))
                     .cloned()
+                    .or_else(|| self.signatures.bare_module_functions.get(&(name, arity)).cloned())
                     .flatten();
                 self.walk_args(args, params.as_deref(), conditional);
             }
@@ -682,9 +731,12 @@ impl MoveCheck<'_> {
                     .get(&(type_name, fn_name))
                     .cloned()
                     .or_else(|| {
+                        // `module::f(args)`: the qualifier names the
+                        // module, so the signature is exact rather
+                        // than a guess among same-named functions.
                         self.signatures
-                            .functions
-                            .get(&(fn_name, args.len()))
+                            .module_functions
+                            .get(&(type_name, fn_name, args.len()))
                             .cloned()
                             .flatten()
                     });

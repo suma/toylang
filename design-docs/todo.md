@@ -63,6 +63,15 @@
   `poc/logsearch` の `tests/server.t` が `Vec<Option<TcpStream>>` で
   「持つ・貸す・空ける」を通し、空けたときに**相手が EOF を見る**ことで
   所有が戻っていることを確かめている。
+- **MOVE-CHECK-QUALIFIER — move 検査が呼び先を修飾子で引くようになった**
+  — 関数表が名前 + arity だけだったので、利用者の `fn sum(c: Cell)` と
+  `sha256::sum(&Vec<u8>)` が 1 つの曖昧な項目に潰れ、`sum(x)` が借用
+  扱いになっていた (= 転送が記録されず、渡した先とローカルの両方が
+  解放する)。`File::function_module_paths` が「どのモジュール由来か」を
+  持っているので、(a) エントリ由来は名前 + arity、(b) モジュール由来は
+  **モジュールの末尾セグメント** + 名前 + arity で引く形に分けた。
+  bare 名はエントリ由来が勝ち、`sha256::sum(..)` は修飾子で一意に解決
+  する — 実行時の解決規則と同じ。
 - **MOVE-CHECK-OVERLOAD — move 検査が同名の別署名を取り違えなくなった**
   — 関数表が名前だけを鍵にしていたので、`Box::set(value)` と
   `Vec::set(i, value)` が衝突して**すべての `set` が借用扱い**になり、

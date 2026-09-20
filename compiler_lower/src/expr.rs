@@ -1807,6 +1807,35 @@ impl<'a> FunctionLower<'a> {
 
     // -- expression lowering -------------------------------------------------------
 
+    /// MODULE-SYSTEM P3: the qualifier a call was written with.
+    ///
+    /// `a::b::f(..)` records `[a, b]` beside the tree; anything else
+    /// is the single segment the node carries. Both resolvers match
+    /// a path by its end, so the extra segments narrow the
+    /// candidates — and the **frontend uses the same slice**, which
+    /// is what keeps the call this lowers and the call that was
+    /// type-checked the same one.
+    pub(super) fn written_qualifier(&self, nearest: DefaultSymbol) -> Vec<DefaultSymbol> {
+        self.written_qualifier_at(self.current_expr.as_ref(), nearest)
+    }
+
+    /// As [`Self::written_qualifier`], for a node this frame names
+    /// rather than the one being lowered — a `val`'s right-hand side
+    /// is reached by intercept, not through `lower_expr`, so
+    /// `current_expr` is still the statement above it.
+    pub(super) fn written_qualifier_at(
+        &self,
+        at: Option<&ExprRef>,
+        nearest: DefaultSymbol,
+    ) -> Vec<DefaultSymbol> {
+        if let Some(expr_ref) = at
+            && let Some(path) = self.program.call_paths.get(expr_ref)
+        {
+            return path.clone();
+        }
+        vec![nearest]
+    }
+
     /// Lower one expression, remembering which it is for DEBUG-OBS D3.
     ///
     /// The site of a diverging terminator is "wherever we are now", and
@@ -2239,8 +2268,9 @@ impl<'a> FunctionLower<'a> {
             if self.generic_funcs.contains_key(&fn_name) {
                 Some(self.resolve_call_target_from_args(fn_name, &args)?)
             } else {
+                let written = self.written_qualifier(struct_name);
                 self.module
-                    .lookup_function(Some(&[struct_name]), fn_name)
+                    .lookup_function(Some(&written), fn_name)
                     .or_else(|| self.module.lookup_function(None, fn_name))
             }
         } else {

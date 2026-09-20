@@ -204,15 +204,14 @@ impl<'a> TypeCheckerVisitor<'a> {
                  after them (a later `--core-modules` root wins)",
                 paths.join(" and ")
             )),
-            // A qualifier that still matches several modules *is* the
-            // file-name clash: the parser keeps only the last segment
-            // today, so two modules whose paths end the same way are
-            // indistinguishable until MODULE-SYSTEM P3 keeps more.
+            // A qualifier that still matches several modules is one
+            // that does not say enough. MODULE-SYSTEM P3 made the
+            // leading segments count, so the fix is to write more of
+            // the path rather than to rename a file.
             Some(_) => TypeCheckError::generic_error(&format!(
-                "ambiguous module path `{written}`: it matches {}. Two modules \
-                 cannot share a file name — rename one of them (writing more \
-                 leading segments will be the other way out once multi-segment \
-                 paths are checked)",
+                "ambiguous module path `{written}`: it matches {}. A qualifier is \
+                 matched from the end, so write enough leading segments to pick \
+                 one of them",
                 paths.join(" and ")
             )),
         }

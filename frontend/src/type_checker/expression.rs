@@ -187,7 +187,14 @@ impl<'a> TypeCheckerVisitor<'a> {
             return self.visit_expr(expr);
         }
 
+        // MODULE-SYSTEM P3: this is the only frame that knows the
+        // node's `ExprRef`, and a multi-segment qualifier is
+        // recorded against it. Saved and restored so a call inside
+        // an argument list does not inherit the outer one.
+        let saved_call_path = self.current_call_path.take();
+        self.current_call_path = self.call_paths.get(expr).cloned();
         let result = expr_obj.clone().accept_expr(self);
+        self.current_call_path = saved_call_path;
         
         // Add location information to errors if not already present
         let result = match result {

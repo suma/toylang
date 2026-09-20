@@ -1285,9 +1285,19 @@ impl<'a> TypeCheckerVisitor<'a> {
         // `std.math.add` and a user-defined `fn add(Point, Point)`
         // does not shadow it. The bare-name fallback covers older
         // flows where module integration left the entry unqualified.
+        // MODULE-SYSTEM P3: the qualifier is everything the author
+        // wrote, not just the segment next to the name. Both
+        // resolvers (here and `compiler_ir::lookup_function`) match
+        // a path by its end, so extra segments narrow the candidates
+        // — which is what P2's ambiguity diagnostic tells the reader
+        // to do.
+        let written: Vec<DefaultSymbol> = self
+            .current_call_path
+            .clone()
+            .unwrap_or_else(|| vec![struct_name]);
         let module_alias = vec![struct_name];
         if self.imported_modules.contains_key(&module_alias) {
-            let qualifier = [struct_name];
+            let qualifier = written.clone();
             let qualified = self
                 .context
                 .lookup_fn_detailed(Some(&qualifier), function_name);

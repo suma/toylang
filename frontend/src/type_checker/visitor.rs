@@ -50,6 +50,16 @@ pub struct TypeCheckerVisitor<'a> {
     // Module system support
     pub current_package: Option<Vec<DefaultSymbol>>,
     pub imported_modules: HashMap<Vec<DefaultSymbol>, Vec<DefaultSymbol>>, // alias -> full_path
+    /// MODULE-SYSTEM P3: the full qualifier of every call written
+    /// with more than one module segment (`File::call_paths`).
+    /// Cloned for the same reason `function_module_paths` is — the
+    /// core holds `program` mutably, so a borrow of one of its
+    /// fields cannot live alongside it.
+    pub call_paths: HashMap<ExprRef, Vec<DefaultSymbol>>,
+    /// The qualifier of the call being visited right now, when it
+    /// has more than one segment. Set by `visit_expr`, which is the
+    /// only frame that knows the node's `ExprRef`.
+    pub current_call_path: Option<Vec<DefaultSymbol>>,
     // Track transformed expressions for Number -> concrete type conversions
     pub transformed_exprs: HashMap<ExprRef, Expr>,
     /// NUMBER-HINT: type holes (`val x: _ = ...`) whose initializer is
@@ -157,9 +167,12 @@ impl<'a> TypeCheckerVisitor<'a> {
         // re-borrowing `program`.
         let function_module_paths = program.function_module_paths.clone();
         let function_module_ranks = program.function_module_ranks.clone();
+        let call_paths = program.call_paths.clone();
 
         let mut visitor = Self {
             core: CoreReferences::from_program(program, string_interner),
+            call_paths,
+            current_call_path: None,
             context: TypeCheckContext::new(),
             type_inference: TypeInferenceState::new(),
             function_checking: FunctionCheckingState::new(),
@@ -243,6 +256,8 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn new(stmt_pool: &'a mut StmtPool, expr_pool: &'a mut ExprPool, string_interner: &'a DefaultStringInterner, location_pool: &'a LocationPool) -> Self {
         Self {
             core: CoreReferences::new(stmt_pool, expr_pool, string_interner, location_pool),
+            call_paths: HashMap::new(),
+            current_call_path: None,
             context: TypeCheckContext::new(),
             type_inference: TypeInferenceState::new(),
             function_checking: FunctionCheckingState::new(),
@@ -453,6 +468,8 @@ impl<'a> TypeCheckerVisitor<'a> {
     ) -> Self {
         Self {
             core: CoreReferences::with_module_resolver(stmt_pool, expr_pool, string_interner, location_pool, module_resolver),
+            call_paths: HashMap::new(),
+            current_call_path: None,
             context: TypeCheckContext::new(),
             type_inference: TypeInferenceState::new(),
             function_checking: FunctionCheckingState::new(),

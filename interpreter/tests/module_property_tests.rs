@@ -352,8 +352,8 @@ fn same_leaf_name_same_function_is_ambiguous_not_a_panic() {
     .expect_err("colliding module file names should be reported");
     // `dup::f()` names a module, and two modules end in `dup`, so
     // the qualifier itself is what cannot be resolved -- a different
-    // problem from a bare call, with a different remedy (rename a
-    // file), and now a different message.
+    // problem from a bare call, and a different remedy: write more
+    // of the path (the test below does).
     assert!(err.contains("ambiguous module path `dup::f`"), "{err}");
     assert!(err.contains("std::a::dup::f"), "{err}");
     assert!(err.contains("std::b::dup::f"), "{err}");
@@ -621,4 +621,42 @@ fn a_path_whose_nearest_segment_is_wrong_is_reported_once() {
         !err.contains("E0030"),
         "the path check should stay quiet when the near end already failed: {err}"
     );
+}
+
+#[test]
+fn more_segments_pick_between_two_modules_of_the_same_name() {
+    // MODULE-SYSTEM P3, the half that resolution cares about: the
+    // leading segments are not decoration. `a::dup::f` and
+    // `b::dup::f` are different functions, and the qualifier that
+    // says which is the one the author wrote.
+    //
+    // Until this landed the parser dropped everything but `dup`,
+    // both spellings resolved to whichever module came last, and the
+    // ambiguity diagnostic suggested a fix nobody could apply.
+    let core = core_tree(&[
+        ("std/a/dup.t", "pub fn f() -> u64 { 11u64 }\n"),
+        ("std/b/dup.t", "pub fn f() -> u64 { 22u64 }\n"),
+    ]);
+    let from_a = test_program_with_core(
+        "fn main() -> u64 { a::dup::f() }",
+        Some(core.path().to_path_buf()),
+    )
+    .expect("a path that names one module should resolve");
+    assert_eq!(from_a.borrow().unwrap_uint64(), 11);
+
+    let from_b = test_program_with_core(
+        "fn main() -> u64 { b::dup::f() }",
+        Some(core.path().to_path_buf()),
+    )
+    .expect("and so should the other one");
+    assert_eq!(from_b.borrow().unwrap_uint64(), 22);
+
+    // A path that names no module is still refused, even when the
+    // last segment would have resolved.
+    let err = test_program_with_core(
+        "fn main() -> u64 { c::dup::f() }",
+        Some(core.path().to_path_buf()),
+    )
+    .expect_err("an invented leading segment should not be ignored");
+    assert!(err.contains("E0030") && err.contains("c::dup"), "{err}");
 }

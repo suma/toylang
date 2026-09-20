@@ -12,6 +12,17 @@
 
 ### 2026-09-21
 
+- **MODULE-SYSTEM P3 (後半) — 余分なセグメントが解決に参加するように
+  なった** — `a::dup::f()` と `b::dup::f()` が**別の関数として解決
+  する**。2 つの解決器 (`context::lookup_fn_detailed` と
+  `compiler_ir::lookup_function`) は元から多セグメントの修飾子を
+  末尾一致で受けていて、呼び出し側が 1 セグメントしか渡していな
+  かっただけだった。型検査は `visit_expr` と `check_expr_located`
+  (文・末尾式の経路) で `File::call_paths` を拾い、lowering は
+  `written_qualifier_at` で同じものを引く — **両者が同じ slice を
+  使う**ことが、型検査した呼び先と lowering した呼び先が一致する
+  理由である。P2 の曖昧エラーの文言も「ファイル名を変えろ」から
+  「セグメントを増やせ」に変わった。
 - **MODULE-SYSTEM P3 (前半) — 書いたモジュールパスが検査されるように
   なった (`[E0030]`)** — パーサが 3 セグメント以上のパスを**全部
   捨てて**いたので、`zzz::math::min_i64(..)` は `min_i64(..)` として
@@ -2006,18 +2017,12 @@
   で、collection に `--check` を効かせる唯一の道
   ([`VEC_CONTRACTS.md`](VEC_CONTRACTS.md) §5-3)。
 
-- **MODULE-SYSTEM P3 の残り: 多セグメントのパスで**選べない** / `mod.t`** ★★
-  — **「検査されない」半分は 2026-09-21 に解消** (`[E0030]`、完了済み節)。
-  パーサが全パスを `File::call_paths` に記録し、専用パスが
-  「書いたパスが実在するか」を見る。`zzz::math::min_i64` はエラーに
-  なった。**残りは 2 つ**: (1) 余分なセグメントが**解決に参加しない**
-  ので、P2 の曖昧エラーが案内する「セグメントを増やして選ぶ」はまだ
-  書けない (解決は今も最寄り 1 つ)。参加させるには修飾子を 3 つの
-  関数表と 2 つの lowering 経路で多セグメントにする必要がある。
-  (2) auto-load の walker が `mod.t` を `mod` という名前のファイルと
-  して扱うので `<core>/foo/mod.t` は `foo::` ではなく `mod::` で
-  呼ぶことになり、`import` 側の解決 (`candidate_module_paths`) と
-  食い違う。設計は [`MODULE_SYSTEM.md`](MODULE_SYSTEM.md) P3。
+- **MODULE-SYSTEM P3 の残り: `mod.t`** ★ — auto-load の walker が
+  `mod.t` を `mod` という名前のファイルとして扱うので
+  `<core>/foo/mod.t` は `foo::` ではなく `mod::` で呼ぶことになり、
+  `import` 側の解決 (`candidate_module_paths`) と食い違う。
+  **多セグメントのパスは 2026-09-21 に解消** (完了済み節)。
+  設計は [`MODULE_SYSTEM.md`](MODULE_SYSTEM.md) P3。
 
 - **AOT-MATCH-STR-ARM-BLOCK: `str` を返す match の arm がブロックだと
   AOT が拒否する** — 最小再現:

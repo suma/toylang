@@ -18,6 +18,8 @@ mod tests {
     ) -> TypeCheckerVisitor<'a> {
         TypeCheckerVisitor {
             core: CoreReferences::new(stmt_pool, expr_pool, string_interner, location_pool),
+            call_paths: std::collections::HashMap::new(),
+            current_call_path: None,
             context: TypeCheckContext::new(),
             type_inference: TypeInferenceState::new(),
             function_checking: FunctionCheckingState::new(),

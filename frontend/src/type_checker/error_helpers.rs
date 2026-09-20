@@ -266,7 +266,15 @@ impl<'a> TypeCheckerVisitor<'a> {
             self.type_inference.set_expr_type(*expr_ref, ty.clone());
             return Ok(ty);
         }
-        match expr_obj.clone().accept_expr(self) {
+        // MODULE-SYSTEM P3: this route reaches a node without
+        // `visit_expr`, so it has to carry the same thing —
+        // otherwise a call written `a::b::f(..)` in tail or
+        // statement position loses everything but `b`.
+        let saved_call_path = self.current_call_path.take();
+        self.current_call_path = self.call_paths.get(expr_ref).cloned();
+        let accepted = expr_obj.clone().accept_expr(self);
+        self.current_call_path = saved_call_path;
+        match accepted {
             // Record the type here as well as in `visit_expr`: this
             // route is how a *tail* expression is checked (a statement
             // in value position, a condition), and without this the

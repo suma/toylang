@@ -20,6 +20,14 @@ import server
 import store
 import ui
 
+# 相手からの応答を待つ上限。**スピン回数ではなく時間**で切る。
+#
+# 非ブロッキングの `read` を 500 回回すのは速い機械では数百
+# マイクロ秒で、忙しい機械では応答が届く前に使い切る — 実際に
+# 10〜20 回に 1 回落ちていた。締切なら、速い機械でも遅い機械でも
+# 「5 秒待った」を意味する。
+fn sv_deadline_ns() -> u64 { time::now_mono_ns() + 5000000000u64 }
+
 fn span_of(s: &String) -> Span<u8> {
     val w = s.as_span()
     match w {
@@ -175,6 +183,15 @@ test "the server answers over a real socket" {
         Result::Err(e) => { panic("write: {e}") }
     }
 
+    # 待って受ける。ソケットの既定は非ブロッキングなので、SYN が
+    # 届く前に `accept` すると `WouldBlock` が返る — 忙しい機械では
+    # 実際に起き、**10 回に 1 回ほど落ちていた**。他の 2 本の
+    # ソケットテストは最初からこうしてある。
+    val listening = listener.set_blocking(true)
+    match listening {
+        Result::Ok(u) => { }
+        Result::Err(e) => { panic("set_blocking: {e}") }
+    }
     val taken = listener.accept()
     var conn = match taken {
         Result::Ok(c) => c,
@@ -204,8 +221,8 @@ test "the server answers over a real socket" {
     # 返ってきたバイトを読む。非ブロッキングなので、来るまで回す。
     var reply: Vec<u8> = Vec::with_capacity(4096u64)
     var total: u64 = 0u64
-    var spins: u64 = 0u64
-    while total == 0u64 && spins < 500u64 {
+    val until = sv_deadline_ns()
+    while total == 0u64 && time::now_mono_ns() < until {
         val room = reply.capacity_span()
         match room {
             Option::Some(win) => {
@@ -217,7 +234,6 @@ test "the server answers over a real socket" {
             }
             Option::None => { }
         }
-        spins = spins + 1u64
     }
     assert(total > 0u64, "the response should arrive")
     reply.set_size(total)
@@ -698,8 +714,8 @@ test "the streams endpoint answers with label sets and their counts" {
 fn reply_is_ok(conn: &TcpStream) -> bool {
     var reply: Vec<u8> = Vec::with_capacity(1024u64)
     var total: u64 = 0u64
-    var tries: u64 = 0u64
-    while total == 0u64 && tries < 500u64 {
+    val until = sv_deadline_ns()
+    while total == 0u64 && time::now_mono_ns() < until {
         val room = reply.capacity_span()
         match room {
             Option::Some(win) => {
@@ -711,7 +727,6 @@ fn reply_is_ok(conn: &TcpStream) -> bool {
             }
             Option::None => { }
         }
-        tries = tries + 1u64
     }
     reply.set_size(total)
     var text = String::new()
@@ -825,8 +840,8 @@ test "three connections are served at the same time" {
     # **答えを書き終えるまで**回す。要求を読んだ時点で止めると、
     # 応答はまだソケットに出ていない (`connection: close` なので、
     # 書き終えた接続は表から落ちる)。
-    var spins: u64 = 0u64
-    while conns.live() > 0u64 && spins < 400u64 {
+    val until = sv_deadline_ns()
+    while conns.live() > 0u64 && time::now_mono_ns() < until {
         val ready = poller.wait(50i64)
         var n: u64 = 0u64
         match ready {
@@ -850,7 +865,6 @@ test "three connections are served at the same time" {
             }
             i = i + 1u64
         }
-        spins = spins + 1u64
     }
     assert_eq(st.requests, 3u64)
 
@@ -932,8 +946,8 @@ test "a table of connections can hold handles now" {
     # 借用で書けること (かつては fd が閉じていた) である。
     var reply: Vec<u8> = Vec::with_capacity(64u64)
     var total: u64 = 0u64
-    var tries: u64 = 0u64
-    while total == 0u64 && tries < 500u64 {
+    val until = sv_deadline_ns()
+    while total == 0u64 && time::now_mono_ns() < until {
         val room = reply.capacity_span()
         match room {
             Option::Some(win) => {
@@ -945,7 +959,6 @@ test "a table of connections can hold handles now" {
             }
             Option::None => { }
         }
-        tries = tries + 1u64
     }
     assert(total > 0u64, "the writes should reach the peer")
 }
@@ -1036,8 +1049,8 @@ test "a slot table holds a connection, lends it, and frees the slot" {
     # 届いたものを読み切ってから空ける。
     var reply: Vec<u8> = Vec::with_capacity(64u64)
     var total: u64 = 0u64
-    var tries: u64 = 0u64
-    while total == 0u64 && tries < 500u64 {
+    val until = sv_deadline_ns()
+    while total == 0u64 && time::now_mono_ns() < until {
         val room = reply.capacity_span()
         match room {
             Option::Some(win) => {
@@ -1049,7 +1062,6 @@ test "a slot table holds a connection, lends it, and frees the slot" {
             }
             Option::None => { }
         }
-        tries = tries + 1u64
     }
     assert(total > 0u64, "the writes should reach the peer")
 
@@ -1063,8 +1075,8 @@ test "a slot table holds a connection, lends it, and frees the slot" {
 
     # 所有が本当に戻っていたなら fd は閉じている — 相手は EOF を見る。
     var eof: bool = false
-    var spins: u64 = 0u64
-    while !eof && spins < 2000u64 {
+    val eof_until = sv_deadline_ns()
+    while !eof && time::now_mono_ns() < eof_until {
         val room = reply.capacity_span()
         match room {
             Option::Some(win) => {
@@ -1076,7 +1088,6 @@ test "a slot table holds a connection, lends it, and frees the slot" {
             }
             Option::None => { }
         }
-        spins = spins + 1u64
     }
     assert(eof, "freeing the slot should close the connection")
 }

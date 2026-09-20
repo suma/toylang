@@ -25,15 +25,17 @@
 | **索引** 語彙 (kind=6) / リンク (kind=7) | 動く | 索引の追加ぶん +20%、`top=status` が 24 ms |
 | **検索** `query` / `search` | 動く | `grep` と件数一致、traversal はオラクルと一致 |
 | **カタログ / マウント / 保持期限** | 動く | 2 マウント (8M / 32M) に 12 セグメント・444,549 レコードを配置。使用率で 2 本 / 10 本に分かれた |
-| **HTTP サーバ / Web UI** | 動く | `/` `/v1/query` (3 形式) `/v1/ingest` `/v1/labels` `/v1/stats` `/healthz` と管理系。1000 件 280 KB の応答が部分書き込みを跨いで届く。同時接続は 1 |
-| **テスト** | 141 件 + プロパティ 3 本 | `toy test poc/logsearch` が 0.6 秒 (AOT、キャッシュ有り)。内訳は下記 |
+| **HTTP サーバ / Web UI** | 動く | `/` `/v1/query` (3 形式) `/v1/ingest` `/v1/labels` `/v1/stats` `/v1/streams` `/healthz` と管理系。1000 件 280 KB の応答が部分書き込みを跨いで届く。**同時接続 128** (接続表は `Vec<Option<TcpStream>>`)。20 並列の `/healthz` が全部 200、8 並列の `/v1/query` も全部 200 で本文が同一 |
+| **ラベル辞書** `labels` (`meta/labels.dict`) | 動く | `/v1/labels` はセグメントを開かない (応答の `segments` が 0)。書けば足し、保持期限で引く |
+| **テスト** | 147 件 + プロパティ 3 本 | `toy test poc/logsearch` が 3.3 秒 (AOT、キャッシュ有り)。内訳は下記 |
 
 ### 次にやるなら
 
-1. **テスト** — 141 件。内訳は `server` 27 / `http` 23 / `lsz` 14 /
+1. **テスト** — 147 件。内訳は `server` 29 / `http` 23 / `lsz` 14 /
    `catalog` 11 / `search_query` 9 / `ontology_index` 9 / `mount` 8 /
    `segment_format` 7 / `query` 7 / `main` 6 / `ontology_extract` 5 /
-   `steady` 5 / `streams` 4 / `index_scan` 3 / `catalog_rebuild` 3。
+   `steady` 5 / `streams` 4 / `labels` 4 / `index_scan` 3 /
+   `catalog_rebuild` 3。
    **`main.t` のサブコマンドも通しで走る** (2026-09-18) — ログを読む →
    セグメントを書く → 検証する → 引く → 台帳を作り直す → 保持期限で
    捨てる、の 1 本道と、「ログが 1 つも無いディレクトリは失敗で返る」。
@@ -42,7 +44,11 @@
    `object` が通る形と断る形の両方で答えること。
    `test` ブロックが `main.t` に在るのは、サブコマンドが関数であり、
    `toy test` が entry も拾うため。**モジュールもサブコマンドも一通り
-   覆えた**ので、次に薄いのは並行 (同時接続が 1 本なので書けない)。
+   覆えた。** 同時接続は 2026-09-19 に 128 になり (下の 4)、表が
+   ハンドルを持つ形は 2026-09-20 に `tests/server.t` が実ソケットで
+   固定した — 借りて 2 回書き、`Vec::replace` で空けると相手が EOF を
+   見る。`tests/labels.t` (同日) はラベル辞書が**全走査と値ごとに
+   一致する**ことを見る (ROADMAP §4-3 と同じ考え方)。
    `tests/lsz.t` (2026-09-17) は LSZ1 のラウンドトリップ・壊れたフレーム・
    エンコーダ出力のゴールデン (`tests/golden/lsz-shape*.lsz`) と、
    `--check` にかけるプロパティ 2 本 (ラウンドトリップ、SIMD とスカラーの

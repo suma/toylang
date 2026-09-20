@@ -189,7 +189,7 @@ level=info served 200 in 4ms
 | エンドポイント | 意味 |
 |---|---|
 | `POST /v1/admin/flush` | アクティブセグメントを今すぐ書き出す |
-| `POST /v1/admin/compact` | 冷えたセグメントの併合を 1 本ぶん進める |
+| `POST /v1/admin/compact` | 冷えたセグメントの併合を**1 パスぶん**進める (2026-09-21)。答えは `{"merged":3,"records":75,"bytes_in":5023,"bytes_out":2997,"failed":0}` で、`merged` が 0 なら冷えたものが無かったということ。繰り返し呼べば進む |
 | `POST /v1/admin/repair` | カタログを捨て、`seg/` を歩いて作り直す ([`STORAGE_FORMAT.md`](STORAGE_FORMAT.md) §7) |
 | `POST /v1/admin/gc` | 保持期限切れの削除を今すぐ 1 巡ぶん進める |
 | `POST /v1/admin/shutdown` | きれいに停止する ([`ARCHITECTURE.md`](ARCHITECTURE.md) §5) |

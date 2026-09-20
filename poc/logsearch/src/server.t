@@ -432,6 +432,49 @@ fn stats_body(spec: str, st: &Stats, body: &mut ByteWriter) {
 }
 
 # Rebuild every writable mount's catalog from `seg/`.
+# `POST /v1/admin/compact` — merge one run of cold segments per
+# mount and say what moved. One pass per request: the caller decides
+# how much work to ask for by asking again (HTTP_API.md section 2).
+fn admin_compact(spec: str, body: &mut ByteWriter) -> u64 {
+    val crc = Crc32::new()
+    var ms = MountSet::new()
+    if !mount::open_spec(spec, &mut ms) { return 503u64 }
+    val now = time::now_unix_secs()
+    var merged: u64 = 0u64
+    var records: u64 = 0u64
+    var bytes_in: u64 = 0u64
+    var bytes_out: u64 = 0u64
+    var failed: u64 = 0u64
+    var i: u64 = 0u64
+    while i < ms.size() {
+        if !ms.is_readonly(i) {
+            val p = ms.path_of(i)
+            val done = compact::compact_once(p.to_str(), now, &crc)
+            if !done.is_ok() {
+                failed = failed + 1u64
+            } else {
+                merged = merged + done.merged()
+                records = records + done.records()
+                bytes_in = bytes_in + done.bytes_in()
+                bytes_out = bytes_out + done.bytes_out()
+            }
+        }
+        i = i + 1u64
+    }
+    body.put_str("{{\u{22}merged\u{22}:")
+    body.put_str("{merged}")
+    body.put_str(",\u{22}records\u{22}:")
+    body.put_str("{records}")
+    body.put_str(",\u{22}bytes_in\u{22}:")
+    body.put_str("{bytes_in}")
+    body.put_str(",\u{22}bytes_out\u{22}:")
+    body.put_str("{bytes_out}")
+    body.put_str(",\u{22}failed\u{22}:")
+    body.put_str("{failed}")
+    body.put_str("}}\n")
+    200u64
+}
+
 fn admin_repair(spec: str, body: &mut ByteWriter) -> u64 {
     val crc = Crc32::new()
     var ms = MountSet::new()
@@ -603,6 +646,7 @@ pub fn route(spec: str, b: Span<u8>, r: &Request, local: bool,
     if r.is_post() {
         val admin = path_is(b, r, "/v1/admin/repair")
             || path_is(b, r, "/v1/admin/gc")
+            || path_is(b, r, "/v1/admin/compact")
             || path_is(b, r, "/v1/admin/flush")
             || path_is(b, r, "/v1/admin/shutdown")
         if admin {
@@ -634,6 +678,8 @@ pub fn route(spec: str, b: Span<u8>, r: &Request, local: bool,
             var code: u64 = 200u64
             if path_is(b, r, "/v1/admin/repair") {
                 code = admin_repair(spec, &mut body)
+            } elif path_is(b, r, "/v1/admin/compact") {
+                code = admin_compact(spec, &mut body)
             } else {
                 var days: u64 = 14u64
                 var arg = ByteWriter::with_capacity(32u64)

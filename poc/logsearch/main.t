@@ -481,6 +481,45 @@ fn cmd_catalog(spec: str, action: str) -> u64 {
 # exists so a query that is already running does not lose a file out
 # from under it, and this command is the whole process. A server
 # needs it; a one-shot command does not have anyone to wait for.
+# `compact <spec>` — merge one run of cold segments per mount.
+#
+# One pass, not a loop: compaction is meant to be interruptible, and
+# an operator (or a cron line) that wants more calls it again. It
+# says what it did so "nothing to do" is visible rather than silent.
+fn cmd_compact(spec: str) -> u64 {
+    var ms = MountSet::new()
+    if !mount::open_spec(spec, &mut ms) { return 1u64 }
+    val crc = Crc32::new()
+    val now = time::now_unix_secs()
+    var rc: u64 = 0u64
+    var merged: u64 = 0u64
+    var i: u64 = 0u64
+    while i < ms.size() {
+        val p = ms.path_of(i)
+        val ps = p.to_str()
+        if ms.is_readonly(i) {
+            println("  {ps}: readonly, left alone")
+        } else {
+            val done = compact::compact_once(ps, now, &crc)
+            if !done.is_ok() {
+                println("  {ps}: could not compact")
+                rc = 1u64
+            } elif done.merged() == 0u64 {
+                println("  {ps}: nothing cold enough to merge")
+            } else {
+                val pct = if done.bytes_in() > 0u64 {
+                    (done.bytes_out() * 100u64) / done.bytes_in()
+                } else { 0u64 }
+                println("  {ps}: {done.merged()} segments -> archive {done.segid()}  {done.records()} records  {done.bytes_in()} B -> {done.bytes_out()} B ({pct}%)")
+                merged = merged + done.merged()
+            }
+        }
+        i = i + 1u64
+    }
+    println("segments merged {merged}")
+    rc
+}
+
 fn cmd_retain(spec: str, days: u64) -> u64 {
     var ms = MountSet::new()
     if !mount::open_spec(spec, &mut ms) { return 1u64 }
@@ -1359,6 +1398,10 @@ fn main() -> u64 {
         val c_spec = arg_or(1u64, "/tmp/logarchive")
         val c_action = arg_or(2u64, "list")
         return cmd_catalog(c_spec, c_action)
+    }
+    if mode == "compact" {
+        val k_spec = arg_or(1u64, "/tmp/logarchive")
+        return cmd_compact(k_spec)
     }
     if mode == "retain" {
         val r_spec = arg_or(1u64, "/tmp/logarchive")

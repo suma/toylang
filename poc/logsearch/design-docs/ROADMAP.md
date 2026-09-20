@@ -26,16 +26,17 @@
 | **検索** `query` / `search` | 動く | `grep` と件数一致、traversal はオラクルと一致 |
 | **カタログ / マウント / 保持期限** | 動く | 2 マウント (8M / 32M) に 12 セグメント・444,549 レコードを配置。使用率で 2 本 / 10 本に分かれた |
 | **HTTP サーバ / Web UI** | 動く | `/` `/v1/query` (3 形式) `/v1/ingest` `/v1/labels` `/v1/stats` `/v1/streams` `/healthz` と管理系。1000 件 280 KB の応答が部分書き込みを跨いで届く。**同時接続 128** (接続表は `Vec<Option<TcpStream>>`)。20 並列の `/healthz` が全部 200、8 並列の `/v1/query` も全部 200 で本文が同一 |
+| **併合** `compact` (`<segid>.arc.seg`) | 動く | 3 セグメント 75 レコードを 5,023 B → 2,997 B (59%)。答えは変わらない — 併合前後で同じ語が同じ件数 |
 | **ラベル辞書** `labels` (`meta/labels.dict`) | 動く | `/v1/labels` はセグメントを開かない (応答の `segments` が 0)。書けば足し、保持期限で引く |
-| **テスト** | 147 件 + プロパティ 3 本 | `toy test poc/logsearch` が 3.3 秒 (AOT、キャッシュ有り)。内訳は下記 |
+| **テスト** | 151 件 + プロパティ 3 本 | `toy test poc/logsearch` が 3.3 秒 (AOT、キャッシュ有り)。内訳は下記 |
 
 ### 次にやるなら
 
 1. **テスト** — 147 件。内訳は `server` 29 / `http` 23 / `lsz` 14 /
    `catalog` 11 / `search_query` 9 / `ontology_index` 9 / `mount` 8 /
    `segment_format` 7 / `query` 7 / `main` 6 / `ontology_extract` 5 /
-   `steady` 5 / `streams` 4 / `labels` 4 / `index_scan` 3 /
-   `catalog_rebuild` 3。
+   `steady` 5 / `streams` 4 / `labels` 4 / `compact` 4 /
+   `index_scan` 3 / `catalog_rebuild` 3。
    **`main.t` のサブコマンドも通しで走る** (2026-09-18) — ログを読む →
    セグメントを書く → 検証する → 引く → 台帳を作り直す → 保持期限で
    捨てる、の 1 本道と、「ログが 1 つも無いディレクトリは失敗で返る」。

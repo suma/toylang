@@ -865,6 +865,43 @@ impl EvaluationContext<'_> {
     ) -> Result<EvaluationResult, InterpreterError> {
         let scrutinee_val = self.evaluate(scrutinee);
         let scrutinee_val = try_value!(scrutinee_val);
+        // Whether the value being matched lives somewhere that
+        // outlives the arm. See `bind_pattern_name`.
+        let scrutinee_is_place = self.is_place_expression(scrutinee);
+        self.match_scrutinee_is_place.push(scrutinee_is_place);
+        let result = self.evaluate_match_arms(&scrutinee_val, arms);
+        self.match_scrutinee_is_place.pop();
+        result
+    }
+
+    /// Does this expression name storage that outlives the
+    /// expression, rather than producing a fresh value?
+    ///
+    /// A name, a field of one, an element of one, or a borrow of any
+    /// of those: whoever owns that storage frees what is in it. A
+    /// call result is the other case — nobody holds it, so a `match`
+    /// arm that binds its payload is the only owner there will be.
+    fn is_place_expression(&self, expr_ref: &ExprRef) -> bool {
+        match self.expr_pool.get(expr_ref) {
+            Some(Expr::Identifier(_)) => true,
+            Some(Expr::FieldAccess(obj, _)) | Some(Expr::TupleAccess(obj, _)) => {
+                self.is_place_expression(&obj)
+            }
+            Some(Expr::SliceAccess(obj, _)) => self.is_place_expression(&obj),
+            Some(Expr::Unary(frontend::ast::UnaryOp::Borrow, inner))
+            | Some(Expr::Unary(frontend::ast::UnaryOp::BorrowMut, inner)) => {
+                self.is_place_expression(&inner)
+            }
+            _ => false,
+        }
+    }
+
+    fn evaluate_match_arms(
+        &mut self,
+        scrutinee_val: &RcObject,
+        arms: &Vec<MatchArm>,
+    ) -> Result<EvaluationResult, InterpreterError> {
+        let scrutinee_val = scrutinee_val.clone();
         for arm in arms {
             // Probe each arm in a fresh scope so bindings that were set
             // during a partial match don't leak across arms when the
@@ -924,6 +961,19 @@ impl EvaluationContext<'_> {
     /// over-approximation that is safe because `free` is idempotent
     /// everywhere.
     fn bind_pattern_name(&mut self, sym: DefaultSymbol, value: &RcObject) {
+        // ELEMENT-BORROW: only a payload nobody else holds. When the
+        // scrutinee is a *place* — a name, a field, an element, a
+        // borrow of one — the payload belongs to that storage and
+        // will be freed with it. Registering here as well made the
+        // arm a second owner, which is invisible for a heap block
+        // (`free` is idempotent on a never-reused heap) and fatal for
+        // a descriptor: reading a slot with
+        // `match v.borrow(i) { Some(s) => .. }` closed the socket the
+        // container still listed.
+        if self.match_scrutinee_is_place.last().copied().unwrap_or(false) {
+            self.environment.set_val(sym, value.clone().into());
+            return;
+        }
         let v = crate::value::Value::from_rc(value);
         self.register_drop_if_needed(frontend::ast::StmtRef(u32::MAX), sym, &v);
         self.environment.set_val(sym, value.clone().into());

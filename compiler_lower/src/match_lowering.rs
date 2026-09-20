@@ -422,6 +422,17 @@ impl<'a> FunctionLower<'a> {
         if leaves.is_empty() {
             return false;
         }
+        // ELEMENT-BORROW: a scrutinee read through a borrow has no
+        // drop target of its own *and* must not be given one — the
+        // container owns the payload. Without this an arm over
+        // `v.borrow(i)` closed the descriptor the table still listed,
+        // and the next `accept` handed the number straight back out.
+        if leaves
+            .iter()
+            .any(|(l, _)| self.not_owned_locals.contains(l))
+        {
+            return true;
+        }
         self.drop_scopes.iter().any(|scope| {
             scope.iter().any(|target| {
                 target

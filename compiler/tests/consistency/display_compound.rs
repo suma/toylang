@@ -932,3 +932,107 @@ fn vec_sort_is_consistent_across_backends() {
     "#;
     assert_consistent(src, "vec_sort");
 }
+
+#[test]
+fn matching_through_a_borrow_does_not_free_the_payload() {
+    // ELEMENT-BORROW: `match v.borrow(i) { Some(s) => .. }` reads a
+    // slot without taking it. The arm used to register a drop for the
+    // payload — the tree-walker unconditionally, the compiled lanes
+    // whenever no live drop target covered the same locals, which is
+    // exactly the case for a borrow (a borrow binding owns nothing,
+    // so it has no target). Reading a slot therefore freed what the
+    // container still held: invisible for a heap block, fatal for a
+    // descriptor, which is where it was found (a connection table
+    // whose sockets closed as soon as the table was scanned).
+    //
+    // `freed` must appear once, after the reads, and both reads must
+    // see the value.
+    let src = r#"
+        struct Cell { p: ptr }
+
+        impl Cell {
+            unsafe fn new(v: i64) -> Self {
+                val p: ptr = __builtin_heap_alloc(8u64)
+                __builtin_ptr_write(p, 0u64, v)
+                Cell { p: p }
+            }
+            unsafe fn get(&self) -> i64 {
+                val v: i64 = __builtin_ptr_read(self.p, 0u64)
+                v
+            }
+        }
+
+        impl Drop for Cell {
+            unsafe fn drop(&mut self) {
+                println("freed")
+                __builtin_heap_free(self.p)
+            }
+        }
+
+        unsafe fn main() -> i64 {
+            var v: Vec<Option<Cell>> = Vec::new()
+            val c: Cell = Cell::new(7i64)
+            val held: Option<Cell> = Option::Some(c)
+            v.push(held)
+
+            var total: i64 = 0i64
+            var i: u64 = 0u64
+            while i < 3u64 {
+                val slot: &Option<Cell> = v.borrow(0u64)
+                match slot {
+                    Option::Some(s) => { total = total + s.get() }
+                    Option::None => { }
+                }
+                i = i + 1u64
+            }
+            println(total)
+            total
+        }
+    "#;
+    // The output is pinned, not merely agreed on: every lane freeing
+    // early would be a consistent wrong answer.
+    assert_renders(src, "borrow_match_no_free", "21\nfreed\n");
+}
+
+#[test]
+fn an_enum_inside_another_generic_lowers_in_a_struct_field() {
+    // `Vec<Option<T>>` as a *field*: the parser hands an enum
+    // argument over as `Struct("Option", [T])`, and the type-argument
+    // substitution only recognised an enum spelled `Enum(..)`. The
+    // field lowering had the arm; argument position did not, so the
+    // whole struct became unlowerable and the refusal surfaced one
+    // level up as "cannot lower parameter `t: &mut Table`".
+    let src = r#"
+        struct Table { slots: Vec<Option<u64>>, n: u64 }
+
+        fn park(t: &mut Table, at: u64, v: u64) {
+            val held: Option<u64> = Option::Some(v)
+            t.slots.set(at, held)
+            t.n = t.n + 1u64
+        }
+
+        fn main() -> u64 {
+            var t = Table { slots: Vec::new(), n: 0u64 }
+            var i: u64 = 0u64
+            while i < 3u64 {
+                val empty: Option<u64> = Option::None
+                t.slots.push(empty)
+                i = i + 1u64
+            }
+            park(&mut t, 1u64, 41u64)
+            var total: u64 = t.n
+            var k: u64 = 0u64
+            while k < t.slots.size() {
+                val slot: &Option<u64> = t.slots.borrow(k)
+                match slot {
+                    Option::Some(v) => { total = total + v }
+                    Option::None => { }
+                }
+                k = k + 1u64
+            }
+            println(total)
+            total
+        }
+    "#;
+    assert_renders(src, "enum_arg_in_struct_field", "42\n");
+}

@@ -377,6 +377,13 @@ struct FunctionLower<'a> {
     /// `Stmt::Break` / `Stmt::Continue`). Mirrors the
     /// interpreter's `EvaluationContext::drop_scopes`.
     drop_scopes: Vec<Vec<DropTarget>>,
+    /// Locals of bindings that hold a value **somebody else owns**:
+    /// one that handed its value away (BOX-T) and one that names a
+    /// borrow (ELEMENT-BORROW). Neither gets a drop of its own, and
+    /// neither may give one to a `match` arm — an arm that dropped a
+    /// payload read through `v.borrow(i)` closed the container's
+    /// descriptor while the container still listed it.
+    not_owned_locals: std::collections::HashSet<crate::ir::LocalId>,
     /// The `val` / `var` statement currently being lowered, so
     /// `register_drop_for_struct_binding` can ask whether this binding
     /// transferred its value away (BOX-T). Parked here because that
@@ -2043,6 +2050,7 @@ impl<'a> FunctionLower<'a> {
         if let Some(stmt) = self.current_let_stmt
             && self.program.transferred_bindings.contains(&stmt)
         {
+            self.mark_not_owned(&bindings::flatten_struct_locals(fields));
             return;
         }
         // DROP-GLUE: register any type that owns resources, not just
@@ -2060,6 +2068,14 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
+    /// Remember that these locals hold something this scope does not
+    /// own, so no `match` arm over them takes a drop target.
+    fn mark_not_owned(&mut self, leaves: &[(crate::ir::LocalId, crate::ir::Type)]) {
+        for (local, _) in leaves {
+            self.not_owned_locals.insert(*local);
+        }
+    }
+
     /// DROP-GLUE: register an enum binding (tag + payload storage)
     /// whose type carries resources. The same transfer / containment
     /// rules as the struct path.
@@ -2074,6 +2090,7 @@ impl<'a> FunctionLower<'a> {
         if let Some(stmt) = self.current_let_stmt
             && self.program.transferred_bindings.contains(&stmt)
         {
+            self.mark_not_owned(&bindings::flatten_enum_storage_locals(storage));
             return;
         }
         if !self.ir_contains_drop(crate::ir::Type::Enum(enum_id)) {
@@ -2104,6 +2121,7 @@ impl<'a> FunctionLower<'a> {
         if let Some(stmt) = self.current_let_stmt
             && self.program.transferred_bindings.contains(&stmt)
         {
+            self.mark_not_owned(&bindings::flatten_tuple_element_locals(elements));
             return;
         }
         self.push_tuple_element_drops(elements);

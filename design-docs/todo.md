@@ -12,6 +12,22 @@
 
 ### 2026-09-20
 
+- **BORROW-MATCH-DROP — 借用越しの `match` が payload を解放しなくなった**
+  — `match v.borrow(i) { Some(s) => .. }` の腕が payload に drop を
+  付けていた。tree-walker は**無条件に**、compiled レーンは「同じ
+  local を覆う生きた drop 対象が無いとき」— 借用は何も所有しないので
+  対象が無く、まさにこの条件に当たる。**スロットを読むだけで容器の
+  持ち物が解放されていた**。腕が drop を取るのは「他に誰も持って
+  いないとき」だけ、という元の規則はそのままで、判定に (a) 借用 /
+  転送された束縛の local (compiled)、(b) 場所式かどうか (tree-walker)
+  を足した。`poc/logsearch` の接続表が踏んだ — 表を走査した瞬間に
+  ソケットが閉じた。
+- **ENUM-ARG-NESTED-LOWER — `Vec<Option<T>>` が lower されるように
+  なった** — 型引数の置換が enum を `Enum(..)` の綴りでしか認識せず、
+  パーサが渡す `Struct("Option", [T])` を取りこぼしていた
+  (フィールドの位置には同じ arm が既にあった)。構造体が丸ごと
+  lower 不能になり、診断は 1 つ上の「cannot lower parameter
+  `t: &mut Table`」として出ていた。
 - **ASSOC-FN-REF-ARG — associated function が `&compound` を取れるように
   なった** — `String::join(&parts, &sep)` が JIT / AOT で
   `call argument produced no value` だった。`Type::f(args)` の 3 つの

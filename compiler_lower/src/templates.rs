@@ -825,7 +825,18 @@ pub(super) fn substitute_type_arg(
             .ok()
             .map(Type::Struct)
         }
-        TypeDecl::Enum(name, args) if enum_templates.contains_key(name) => {
+        // STRUCT-FIELD-GENERIC-ENUM, in argument position: the parser
+        // cannot tell a struct name from an enum one, so `Option<T>`
+        // arrives as `Struct("Option", [T])` and only the template
+        // tables say which it is. `substitute_field_type` has had
+        // this arm since the field case was found; without the same
+        // arm here, an enum *inside* another generic
+        // (`Vec<Option<TcpStream>>` — a table of slots) lowered
+        // nowhere, and the refusal surfaced as "cannot lower
+        // parameter `c: &mut Conns`" one level up.
+        TypeDecl::Struct(name, args) | TypeDecl::Enum(name, args)
+            if enum_templates.contains_key(name) =>
+        {
             let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
             for a in args {
                 concrete.push(substitute_type_arg(

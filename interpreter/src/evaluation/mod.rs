@@ -280,6 +280,9 @@ pub struct EvaluationContext<'a> {
     /// register a drop — the receiver owns the resource now. Copied
     /// from `File::transferred_bindings` at startup.
     pub(crate) transferred_bindings: std::rc::Rc<std::collections::HashSet<frontend::ast::StmtRef>>,
+    /// Per-`match` nesting: whether the value being matched lives in
+    /// storage that outlives the arm (see `bind_pattern_name`).
+    pub(crate) match_scrutinee_is_place: Vec<bool>,
     /// Phase 5 (汎用 RAII): per-active-scope LIFO list of bindings
     /// awaiting auto-drop. Each `enter_drop_scope` pushes a fresh
     /// Vec, `register_drop` appends, `exit_drop_scope` runs the
@@ -456,6 +459,7 @@ impl<'a> EvaluationContext<'a> {
             },
             drop_trait_structs: Rc::new(std::collections::HashSet::new()),
             transferred_bindings: Rc::new(std::collections::HashSet::new()),
+            match_scrutinee_is_place: Vec::new(),
             drop_scopes: vec![Vec::new()],
             generic_type_scopes: Vec::new(),
             pending_annotation: None,
@@ -517,6 +521,7 @@ impl<'a> EvaluationContext<'a> {
             },
             drop_trait_structs: shared.drop_trait_structs.clone(),
             transferred_bindings: shared.transferred_bindings.clone(),
+            match_scrutinee_is_place: Vec::new(),
             drop_scopes: vec![Vec::new()],
             generic_type_scopes: Vec::new(),
             pending_annotation: None,

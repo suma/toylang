@@ -288,7 +288,7 @@ impl TcpStream {
 }
 ```
 
-### 接続の表は**番号**で持つ (`into_fd` / `from_fd`)
+### 接続の表 — ハンドルで持つか、番号で持つか
 
 `accept_fd` は表を作る側の口である。かつては `match listener.accept()
 { Result::Ok(conn) => { ... } }` が**受け取った瞬間に接続を閉じて**いた
@@ -296,14 +296,33 @@ impl TcpStream {
 MATCH-PAYLOAD-COPY、2026-09-19 に修正)。今は `accept` でも閉じないが、
 **表に入れるなら番号のほうが素直**なので `accept_fd` は残す。
 
-`Vec<TcpStream>` は作れるが、**表として使えない**。要素を取り出して
-束縛すると (`val s: TcpStream = conns.get(0u64)`)、その別名に drop glue が
-付き、束縛が死ぬときに fd を閉じる — 表にはまだ載っているのに、次の
-`write` が EBADF になる。`Vec<File>` も同じ形で、CLAUDE.md が stdlib
-実装向けに書いている落とし穴 (「compound を返す method から束縛した
-ローカルはコンテナのバッファを解放する」) と同じ根である。
+**2026-09-20 以降、ハンドルの表がそのまま持てる** (ELEMENT-BORROW)。
+固定スロットが要るなら `Vec<Option<TcpStream>>` で、空きは
+`Option::None`:
 
-そこで表は `Vec<i32>` で持ち、使う番だけ所有を取り戻す:
+```rust
+var conns: Vec<Option<TcpStream>> = Vec::new()   # 空きは None
+val held: Option<TcpStream> = Option::Some(sock)
+conns.set(slot, held)
+
+# 使う — `read` / `write` / `shutdown_write` は `&self` なので借用で足りる
+val at: &Option<TcpStream> = conns.borrow(slot)
+match at {
+    Option::Some(s) => { val wrote = s.write(out) }
+    Option::None => { }
+}
+
+# 空ける — `replace` が所有を返し、束縛が死ぬときに閉じる。
+# `set` では閉じられない (上書きするだけ)
+val free: Option<TcpStream> = Option::None
+val was: Option<TcpStream> = conns.replace(slot, free)
+```
+
+かつては `val s: TcpStream = conns.get(0u64)` が別名に drop glue を
+付けて fd を閉じていた。今は `[E0028]` がその形を**コンパイル時に
+断る**。`poc/logsearch` の接続表はこの形に移してある。
+
+番号の表も引き続き書ける。使う番だけ所有を取り戻す形:
 
 ```rust
 var fds: Vec<i32> = Vec::new()

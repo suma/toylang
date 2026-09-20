@@ -559,3 +559,66 @@ fn module_can_iterate_a_range_value() {
                }\n";
     assert_eq!(run_module_fn(src, "shapes::f()"), Ok(6));
 }
+
+// ---------------------------------------------------------------
+// MODULE-SYSTEM P3: a path that does not exist is a path that does
+// not compile.
+
+#[test]
+fn a_longer_path_that_names_a_real_module_resolves() {
+    // `std::math::min_i64` is `std.math.min_i64` spelled with one
+    // more segment than it needs. A qualifier is matched from the
+    // end, so writing more of the truth is allowed.
+    let source = r"
+        fn main() -> u64 {
+            std::math::min_i64(3i64, 7i64) as u64
+        }
+        ";
+    let result = test_program_with_core_modules(source);
+    assert!(result.is_ok(), "a true path should resolve: {:?}", result.err());
+    assert_eq!(result.unwrap().borrow().unwrap_uint64(), 3);
+}
+
+#[test]
+fn a_longer_path_that_names_no_module_is_refused() {
+    // This used to *run*. The parser dropped every segment of a
+    // three-part path, so the call resolved as a bare `min_i64` and
+    // the invented `zzz` was never looked at.
+    let source = r"
+        fn main() -> u64 {
+            zzz::math::min_i64(3i64, 7i64) as u64
+        }
+        ";
+    let err = test_program_with_core_modules(source)
+        .expect_err("an invented path should not resolve");
+    assert!(
+        err.contains("E0030") && err.contains("zzz::math"),
+        "the diagnostic should name the path that does not exist: {err}"
+    );
+    assert!(
+        err.contains("std::math::min_i64"),
+        "and where the function actually lives: {err}"
+    );
+}
+
+#[test]
+fn a_path_whose_nearest_segment_is_wrong_is_reported_once() {
+    // `up` is not a module either, and the ordinary resolution
+    // already says so at this position. Two diagnostics for one
+    // mistake is worse than one.
+    let source = r"
+        fn main() -> u64 {
+            totally::made::up::min_i64(3i64, 7i64) as u64
+        }
+        ";
+    let err = test_program_with_core_modules(source)
+        .expect_err("an invented path should not resolve");
+    assert!(
+        err.contains("'up'"),
+        "the near end is what resolution could not find: {err}"
+    );
+    assert!(
+        !err.contains("E0030"),
+        "the path check should stay quiet when the near end already failed: {err}"
+    );
+}

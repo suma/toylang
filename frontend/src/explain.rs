@@ -75,6 +75,7 @@ const ENTRIES: &[Entry] = &[
     (codes::BORROW_COPY_OUT, E0027),
     (codes::OWNING_ELEMENT_COPY, E0028),
     (codes::PARALLEL_BODY, E0029),
+    (codes::UNKNOWN_MODULE_PATH, E0030),
 ];
 
 const E0001: &str = "\
@@ -932,6 +933,26 @@ absence is the answer; an ignored `Result` is an unreported failure.
 
 Reported as a warning: programs were written this way before the check
 existed, and ignoring a failure can be deliberate.";
+
+const E0030: &str = "\
+E0030: a call names a module path that does not exist
+
+    zzz::math::min_i64(3i64, 7i64)   # E0030: no module is called `zzz::math`
+
+A qualifier is checked **from the end**: `math::min_i64` finds
+`std.math.min_i64` because the path ends in `math`, and the leading
+segments are optional. Optional is not the same as ignored — until
+this check, everything before the last segment was dropped, so a
+wrong path resolved exactly like a right one and ran.
+
+Write as many trailing segments as it takes to name one module, and
+no more: `math::` where the name is unique, `std::math::` if
+something else grows a `math`.
+
+**The extra segments do not yet pick between two candidates.** When
+a bare name is ambiguous, `[E0010]` lists the competing paths;
+writing more of one of them is the fix it suggests, and that half is
+still to come (`design-docs/MODULE_SYSTEM.md` P3).";
 
 const E0029: &str = "\
 E0029: a parallel loop body depends on the order of its iterations

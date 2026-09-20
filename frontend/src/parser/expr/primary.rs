@@ -555,8 +555,26 @@ fn parse_primary_after_identifier(
                     let function_name = qualified_path[1];
                     Ok(parser.ast_builder.associated_function_call_expr(struct_name, function_name, args, Some(location)))
                 } else {
+                    // MODULE-SYSTEM P3: a longer path used to become a
+                    // *bare* call — every segment dropped, so
+                    // `zzz::math::min_i64(..)` resolved as
+                    // `min_i64(..)` and a path nobody could follow was
+                    // accepted in silence. The call keeps the shape
+                    // resolution uses (the nearest qualifier), and the
+                    // whole path is recorded beside the tree for
+                    // `check_module_paths` to verify.
                     let function_name = qualified_path.last().copied().unwrap_or(name);
-                    Ok(parser.ast_builder.call_expr(function_name, args, Some(location)))
+                    let nearest = qualified_path[qualified_path.len() - 2];
+                    let call = parser.ast_builder.associated_function_call_expr(
+                        nearest,
+                        function_name,
+                        args,
+                        Some(location),
+                    );
+                    let mut segments = qualified_path.clone();
+                    segments.pop();
+                    parser.call_paths.insert(call, segments);
+                    Ok(call)
                 }
             }
             _ => {

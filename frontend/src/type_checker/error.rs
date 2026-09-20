@@ -168,6 +168,10 @@ pub enum TypeCheckErrorKind {
     /// result depends on the order the iterations run in. `what`
     /// names it ("prints"), `path` is how the body reaches it.
     ParallelBody { what: String, path: String },
+    /// MODULE-SYSTEM P3: the qualifier a call was written with names
+    /// no module. `written` is what was typed, `name` the function,
+    /// `known` the paths that do define it.
+    UnknownModulePath { written: String, name: String, known: Vec<String> },
     /// MUST-USE: a statement produced a `Result` and threw it away.
     /// `ty` is how the value was spelled, `what` names what produced
     /// it when that is knowable (`the call \`write_file(...)\``).
@@ -483,6 +487,17 @@ impl TypeCheckError {
         }
     }
 
+    /// MODULE-SYSTEM P3: a call's module path does not exist.
+    pub fn unknown_module_path(written: String, name: String, known: Vec<String>) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::UnknownModulePath { written, name, known }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
     /// MUST-USE: a `Result` was produced and discarded.
     pub fn unused_result(ty: String, what: String) -> Self {
         Self {
@@ -751,6 +766,23 @@ impl TypeCheckError {
                 format!(
                     "a `parallel for` body {what}, and the iterations may run in any order, \
                      so the result would depend on which one got there first ({path}). {fix}"
+                )
+            }
+            TypeCheckErrorKind::UnknownModulePath { written, name, known } => {
+                let where_it_is = if known.len() == 1 {
+                    format!("it is `{}::{name}`", known[0])
+                } else {
+                    let list = known
+                        .iter()
+                        .map(|p| format!("`{p}::{name}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("it is one of {list}")
+                };
+                format!(
+                    "no module is called `{written}`, so `{written}::{name}` names nothing — \
+                     {where_it_is}. A path is checked from the end, so the last segments are \
+                     enough as long as they pick one module"
                 )
             }
             TypeCheckErrorKind::UnusedResult { ty, what } => {

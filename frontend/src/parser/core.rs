@@ -200,6 +200,11 @@ pub struct Parser<'a> {
     /// does not care never learns a second shape.
     pub parallel_loops:
         std::collections::HashMap<StmtRef, crate::type_checker::SourceLocation>,
+    /// MODULE-SYSTEM P3: the full qualifier of a call written with
+    /// more than one module segment (`a::b::f(..)` records `[a, b]`).
+    /// Resolution uses the nearest segment, as it always has; this is
+    /// what lets the rest be checked instead of dropped.
+    pub call_paths: std::collections::HashMap<ExprRef, Vec<DefaultSymbol>>,
     /// ALLOC-CONTRACT: set while parsing an `ensures` predicate, so
     /// `old(...)` is recognised there and refused everywhere else.
     /// Cleared around the argument of an `old` so a nested
@@ -344,6 +349,7 @@ impl<'a> Parser<'a> {
             context_stack: vec![ParseContext::Expression],
             pending_prelude_stmts: Vec::new(),
             parallel_loops: std::collections::HashMap::new(),
+            call_paths: std::collections::HashMap::new(),
             synthetic_counter: 0,
             in_ensures_clause: false,
             old_exprs: Vec::new(),

@@ -1,6 +1,8 @@
 # MODULE SYSTEM — stdlib のディレクトリと名前空間
 
-> **状態: P1 / P2 landing 済み (2026-09-04)。P3 は未着手。**
+> **状態: P1 / P2 landing 済み (2026-09-04)。P3 は半分
+> (2026-09-21): 書いたパスは**検査される** (`[E0030]`) が、余分な
+> セグメントはまだ**解決に参加しない**。**`mod.t` も未着手。**
 > 対象: `core/std/**.t` の配置と、`module::name(...)` の解決規則。
 > 実装サイト: [`interpreter/src/module_integration.rs`](../interpreter/src/module_integration.rs)
 > (発見・統合)、[`frontend/src/module_resolver.rs`](../frontend/src/module_resolver.rs)
@@ -54,7 +56,7 @@
 
 | # | 書いた形 | 実際 |
 |---|---|---|
-| 1 | `std::math::abs(-3i64)` | **通るが検査されていない。** パーサが 3 セグメント以上を「最後だけ」に潰し (`primary.rs` の qualified-path 分岐)、bare `abs` の一意フォールバックで当たっている。`zzz::math::abs` でも通る (**P3 で解消予定**) |
+| 1 | `std::math::abs(-3i64)` | **通り、検査もされる** (2026-09-21)。パーサは全セグメントを `File::call_paths` に記録し、`check_module_paths` が「書いたパスが実在するか」を見る (`zzz::math::abs` は `[E0030]`)。**解決は今も最寄りのセグメント 1 つ**なので、余分なセグメントで候補を選ぶことはまだできない |
 | 2 | 同じリーフ名 + 同じ関数名の 2 モジュール | **panic。** `std/a/dup.t` と `std/b/dup.t` が両方 `pub fn f` を持つと型検査を素通りし、`compiler_ir/src/lib.rs:447` で `function_index collision for symbol=... qualifier=...` (**P2 で解消済み** — 候補パスを名指しする型エラーになった) |
 | 3 | `<core>/foo/mod.t` の `foo::f()` | **`[E0003] Struct 'foo' not found`。** auto-load の walker は `mod` をリーフ名として扱うので alias は `mod`。`import` 側の `candidate_module_paths` だけが `mod.t` を知っていて、2 経路が食い違っている (`docs/language.md` の表は `["foo"]` と書いていて誤り) |
 | 4 | `import my.helpers as h` の `h::add(...)` | **`[E0003] Struct 'h' not found`。** パーサは `as` を受理するが `visit_import` が alias を捨てていた (**2026-09-05 に解消** — パーサが alias をモジュールパスの末尾セグメントに置換する。[`MODULE_IMPORTS.md`](MODULE_IMPORTS.md) D1) |

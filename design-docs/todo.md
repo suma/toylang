@@ -12,6 +12,15 @@
 
 ### 2026-09-21
 
+- **MODULE-SYSTEM P3 (前半) — 書いたモジュールパスが検査されるように
+  なった (`[E0030]`)** — パーサが 3 セグメント以上のパスを**全部
+  捨てて**いたので、`zzz::math::min_i64(..)` は `min_i64(..)` として
+  解決し、誰も辿れないパスが黙って通っていた。全パスを
+  `File::call_paths` に脇に記録し (`parallel_loops` と同じ手口)、
+  専用パスが「書いたパスが実在するか」を見る。**解決規則は P2 のまま**
+  (最寄りのセグメントで引く) で、余分なセグメントは検証されるだけ。
+  最寄りのセグメント自体が無いときは黙る — 既存の診断が同じ位置で
+  同じことを言うので、1 つの間違いに 1 つの診断。
 - **CONCURRENCY A2-a — shadow stack が per-thread になった** —
   `toy_shadow_stack` / `toy_shadow_depth` の 2 つのグローバルを、
   `toy_shadow_ctx()` が返すスレッドごとの `{ depth, slots }` に
@@ -1997,17 +2006,18 @@
   で、collection に `--check` を効かせる唯一の道
   ([`VEC_CONTRACTS.md`](VEC_CONTRACTS.md) §5-3)。
 
-- **MODULE-SYSTEM P3: 多セグメントの `::` パスが検査されない / `mod.t`** ★★★
-  — 2 つとも同じ「モジュールパスが構文で 1 シンボルに
-  潰れている」ことの現れ。**P2 で表と解決規則は既にパスを理解している**
-  ので、残っているのは構文側。(1) パーサが `a::b::c(...)` の中間を
-  捨てるので `std::math::abs` も `zzz::math::abs` も通る。**P2 の曖昧
-  エラーが案内する「セグメントを増やして選ぶ」がまだ書けないのはこれ**。(2) auto-load の walker が
-  `mod.t` を `mod` という名前のファイルとして扱うので
-  `<core>/foo/mod.t` は `foo::` ではなく `mod::` で呼ぶことになり、
-  `import` 側の解決 (`candidate_module_paths`) と食い違う。設計は
-  [`MODULE_SYSTEM.md`](MODULE_SYSTEM.md) P3。**3 つ目だった
-  `import a.b as h` は 2026-09-05 に解消** (MODULE-IMPORTS D1)。
+- **MODULE-SYSTEM P3 の残り: 多セグメントのパスで**選べない** / `mod.t`** ★★
+  — **「検査されない」半分は 2026-09-21 に解消** (`[E0030]`、完了済み節)。
+  パーサが全パスを `File::call_paths` に記録し、専用パスが
+  「書いたパスが実在するか」を見る。`zzz::math::min_i64` はエラーに
+  なった。**残りは 2 つ**: (1) 余分なセグメントが**解決に参加しない**
+  ので、P2 の曖昧エラーが案内する「セグメントを増やして選ぶ」はまだ
+  書けない (解決は今も最寄り 1 つ)。参加させるには修飾子を 3 つの
+  関数表と 2 つの lowering 経路で多セグメントにする必要がある。
+  (2) auto-load の walker が `mod.t` を `mod` という名前のファイルと
+  して扱うので `<core>/foo/mod.t` は `foo::` ではなく `mod::` で
+  呼ぶことになり、`import` 側の解決 (`candidate_module_paths`) と
+  食い違う。設計は [`MODULE_SYSTEM.md`](MODULE_SYSTEM.md) P3。
 
 - **AOT-MATCH-STR-ARM-BLOCK: `str` を返す match の arm がブロックだと
   AOT が拒否する** — 最小再現:

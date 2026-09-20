@@ -90,6 +90,9 @@ pub struct File {
     /// records where the parser *finished* the loop, which is past
     /// the closing brace and no use to a reader.
     pub parallel_loops: std::collections::HashMap<StmtRef, crate::type_checker::SourceLocation>,
+    /// MODULE-SYSTEM P3: the full qualifier of every call written with
+    /// more than one module segment. See `Parser::call_paths`.
+    pub call_paths: std::collections::HashMap<ExprRef, Vec<DefaultSymbol>>,
 
     pub statement: StmtPool,
     pub expression: ExprPool,

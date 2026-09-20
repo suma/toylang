@@ -770,6 +770,13 @@ fn check_typing_collecting(
         string_interner,
         &expr_types,
     ));
+    // MODULE-SYSTEM P3: a call's module path has to be one that
+    // exists. Needs nothing but the program — the module each
+    // function came from is recorded on `File`.
+    fn_errors.extend(frontend::type_checker::check_module_paths(
+        program,
+        string_interner,
+    ));
     // CONCURRENCY A1: a `parallel for` body may not print or switch
     // the allocator. Same effect walk as the two checks above, one
     // more mask; the roots are the loops the parser marked.

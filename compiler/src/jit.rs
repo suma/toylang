@@ -564,15 +564,12 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
         toy_format_bool,
         toy_format_str,
     );
-    // DEBUG-OBS D4: the shadow stack is *data*, not a function, and
-    // the generated code writes to it directly rather than calling in.
+    // DEBUG-OBS D4 / CONCURRENCY A2: the shadow stack is per-thread,
+    // so the generated code asks for its address once per activation
+    // instead of naming two globals.
     jit_builder.symbol(
-        "toy_shadow_stack",
-        (&raw const toylang_rt::toy_shadow_stack) as *const u8,
-    );
-    jit_builder.symbol(
-        "toy_shadow_depth",
-        (&raw const toylang_rt::toy_shadow_depth) as *const u8,
+        "toy_shadow_ctx",
+        toylang_rt::toy_shadow_ctx as *const u8,
     );
 }
 

@@ -731,11 +731,32 @@ fn run_aot_driver(
     let ok = out.status.success();
     let printed = String::from_utf8_lossy(&out.stdout).into_owned();
 
+    // The driver never reached its first test. Whatever it said on
+    // the way out is the only evidence there is, and it used to be
+    // dropped: every test read "not run: an earlier test ended the
+    // process", naming an earlier test that does not exist. A flake
+    // of this shape cost an afternoon because the report withheld
+    // the reason.
+    let died_at_startup = started.is_empty() && !ok;
+    let startup_failure = || {
+        let code = out
+            .status
+            .code()
+            .map(|c| format!("exit code {c}"))
+            .unwrap_or_else(|| "killed by a signal".to_string());
+        if failure_text.trim().is_empty() {
+            format!("the test driver ended before its first test ({code}), saying nothing")
+        } else {
+            format!("the test driver ended before its first test ({code}):\n{failure_text}")
+        }
+    };
+
     let mut result = Vec::with_capacity(tests.len());
     for t in tests {
         let planned = &plan.tests[*t];
         let position = started.iter().position(|s| *s == planned.name);
         let failure = match position {
+            None if died_at_startup => Some(startup_failure()),
             // Never started: an earlier test ended the process.
             None => Some("not run: an earlier test ended the process".to_string()),
             // Started, and it is the last one, and we died: this is it.

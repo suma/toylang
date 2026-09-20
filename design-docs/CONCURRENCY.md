@@ -94,9 +94,12 @@ tree-walker は `--check` と consistency harness の**オラクル**である�
 
 - `toylang_rt` の `ThreadState` は **pthread_key TLS で per-thread 化済み**。
   出力シンク (`sink` / `err_sink`) と **allocator スタック**がここに居る
-- **shadow stack は `static mut`** (`toy_shadow_stack` / `toy_shadow_depth`)。
-  backtrace の土台なので、スレッドを入れるなら per-thread 化と
-  codegen のアドレッシング変更が要る (ソースにその旨のコメントがある)
+- **shadow stack は 2026-09-21 に per-thread になった** (A2-a)。
+  `toy_shadow_ctx()` がスレッドごとの `{ depth, slots }` を返し、
+  codegen は prologue で 1 回だけ呼ぶ。実測: 呼び出ししかしない
+  マイクロベンチ (6,000 万活性化) が 0.13 → 0.30 秒、`toy test
+  poc/logsearch` のような実仕事は +4%。`--release` は frame を
+  1 つも記録しないので 0
 - ヒープは libc `malloc` なのでスレッド安全。ただし**確保カウンタ**
   (`__builtin_live_bytes` 等) はプロセス全体の数であり、per-thread に
   するか合算にするかは決めていない
@@ -242,7 +245,8 @@ per-thread にすると `--profile=mem` の数がスレッド数で割れて、
 | | 中身 | 単独で出荷できるか |
 |---|---|---|
 | **A1** | 構文 + 検査 (Io / allocator) + **4 レーンとも逐次**で実行 | **可**。意味論と診断がここで固まり、以後の並列化は答えを変えられない |
-| **A2** | `toylang_rt` に pthread、shadow stack の per-thread 化、AOT / JIT は本文を関数に切り出して分割実行 | A1 の後。逐次との一致を consistency で縛る |
+| **A2-a** | shadow stack の per-thread 化 | **2026-09-21 に landing**。`toy_shadow_stack` / `toy_shadow_depth` の 2 つのグローバルが `toy_shadow_ctx()` が返す**スレッドごとの記録**になった (`{ depth, slots }`、既存の pthread_key TLS の上)。codegen は prologue で 1 回呼ぶだけ — 番地は活性化の間は定数のままなので、hoisting の前提は変わらない |
+| **A2-b** | `toylang_rt` に pthread、AOT / JIT は本文を関数に切り出して分割実行 | A2-a の後。逐次との一致を consistency で縛る |
 
 A1 を先に出すのは、**並列化が最適化になる**ようにするためである。
 「逐次と並列で答えが同じ」を後から確かめるのではなく、逐次の答えを

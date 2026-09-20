@@ -325,6 +325,11 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_panic_at: cranelift_module::FuncId,
     /// DEBUG-OBS D5: `toy_backtrace_str() -> str`.
     rt_backtrace_str: cranelift_module::FuncId,
+    /// CONCURRENCY A2: `toy_shadow_ctx()` — this thread's shadow
+    /// stack (`{ u64 depth, [*const ToyFrameInfo; CAP] }`). Called
+    /// once per activation from the prologue; the pair used to be
+    /// two globals, which two threads could not share.
+    rt_shadow_ctx: cranelift_module::FuncId,
     /// DEBUG-OBS D6: `toy_panic_recursion()` — report a runaway
     /// recursion and exit.
     rt_panic_recursion: cranelift_module::FuncId,
@@ -391,10 +396,11 @@ pub(crate) struct CodegenSession<M: Module> {
     /// The entry function's own frame. Nothing calls `main`, so no
     /// call site pushes it; its prologue does.
     entry_frame_blob: Option<DataId>,
-    /// `toy_shadow_stack` / `toy_shadow_depth`, imported from the
-    /// runtime. `None` when the module has no frames to record — a
-    /// `--release` build imports neither.
-    shadow_globals: Option<(DataId, DataId)>,
+    /// Whether this module records frames at all. False for a
+    /// `--release` build, which pushes none and so needs no
+    /// prologue. The stack itself is the runtime's, reached through
+    /// `toy_shadow_ctx()`.
+    records_frames: bool,
     /// `print`/`println` string-literal symbol → data id holding
     /// `"<msg>\0"`. The literal is unprefixed because the user is
     /// already supplying the exact bytes they want printed.
@@ -448,8 +454,8 @@ pub(super) struct ShadowPrologue {
 /// DEBUG-OBS D4: the global values one function needs to keep the
 /// shadow stack up to date.
 pub(super) struct ShadowImports {
-    pub stack: cranelift_codegen::ir::GlobalValue,
-    pub depth: cranelift_codegen::ir::GlobalValue,
+    /// `toy_shadow_ctx()`, called once in the prologue.
+    pub ctx: cranelift_codegen::ir::FuncRef,
     /// The entry function's own frame record.
     pub entry: Option<cranelift_codegen::ir::GlobalValue>,
     pub frames: HashMap<compiler_ir::FrameId, cranelift_codegen::ir::GlobalValue>,
@@ -715,6 +721,7 @@ impl<M: Module> CodegenSession<M> {
         // built from the shadow stack. D6 reports a runaway recursion.
         let rt_backtrace_str = imp.declare("toy_backtrace_str", &[], &[abi(I64)])?;
         let rt_panic_recursion = imp.declare("toy_panic_recursion", &[], &[])?;
+        let rt_shadow_ctx = imp.declare("toy_shadow_ctx", &[], &[abi(I64)])?;
         // A value-carrying trap: kind, the two operands, and the two
         // static halves of the frame around the message. `panic_dynamic`
         // is the same for a message the program built.
@@ -833,6 +840,7 @@ impl<M: Module> CodegenSession<M> {
             rt_panic_at,
             rt_backtrace_str,
             rt_panic_recursion,
+            rt_shadow_ctx,
             rt_panic_values,
             rt_panic_dynamic,
             rt_prof_force_counting,
@@ -862,7 +870,7 @@ impl<M: Module> CodegenSession<M> {
             frame_blobs: HashMap::new(),
             alloc_file_blobs: HashMap::new(),
             entry_frame_blob: None,
-            shadow_globals: None,
+            records_frames: false,
             print_strings: HashMap::new(),
             raw_print_strings: HashMap::new(),
             const_str_bytes: HashMap::new(),
@@ -1309,17 +1317,10 @@ impl<M: Module> CodegenSession<M> {
             .unwrap_or_else(|| "main".to_string());
         self.entry_frame_blob = Some(self.declare_frame_record("toy_bt_entry", &entry, 0)?);
 
-        // The runtime owns the stack itself; this side only writes to
-        // it. `writable` matters — it is `.bss`, not `.rodata`.
-        let stack = self
-            .module
-            .declare_data("toy_shadow_stack", CLinkage::Import, true, false)
-            .map_err(|e| format!("declare toy_shadow_stack: {e}"))?;
-        let depth = self
-            .module
-            .declare_data("toy_shadow_depth", CLinkage::Import, true, false)
-            .map_err(|e| format!("declare toy_shadow_depth: {e}"))?;
-        self.shadow_globals = Some((stack, depth));
+        // The stack itself is the runtime's, and per-thread: this
+        // side asks for the address once per activation rather than
+        // naming two globals.
+        self.records_frames = true;
         Ok(())
     }
 
@@ -2139,8 +2140,15 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 .any(|b| b.instructions.iter().any(|i| i.frame.is_some()));
             if is_entry || pushes {
                 let flags = cranelift_codegen::ir::MemFlags::trusted();
-                let stack_addr = self.builder.ins().symbol_value(types::I64, shadow.stack);
-                let depth_addr = self.builder.ins().symbol_value(types::I64, shadow.depth);
+                // CONCURRENCY A2: one call, here, for the whole
+                // activation. The stack is per-thread now, so its
+                // address is not a link-time constant — but it is
+                // constant for the activation, which is the property
+                // the hoisting depends on. `depth` sits first in the
+                // record and the slots follow it.
+                let ctx_call = self.builder.ins().call(shadow.ctx, &[]);
+                let depth_addr = self.builder.inst_results(ctx_call)[0];
+                let stack_addr = self.builder.ins().iadd_imm(depth_addr, 8);
                 let found = self.builder.ins().load(types::I64, flags, depth_addr, 0);
                 // The entry function pushes its own frame here: nothing
                 // calls `main`, so no call site would, and a backtrace

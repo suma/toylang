@@ -110,7 +110,9 @@ impl<M: Module> CodegenSession<M> {
         func_id: FuncId,
         func: &mut cranelift_codegen::ir::Function,
     ) -> Option<ShadowImports> {
-        let (stack, depth) = self.shadow_globals?;
+        if !self.records_frames {
+            return None;
+        }
         let mut frames = HashMap::new();
         let ir_func = ir_module.function(func_id);
         for blk in &ir_func.blocks {
@@ -129,8 +131,7 @@ impl<M: Module> CodegenSession<M> {
             .entry_frame_blob
             .map(|data| self.declare_data_in_func_readonly(data, func));
         Some(ShadowImports {
-            stack: self.declare_data_in_func_readonly(stack, func),
-            depth: self.declare_data_in_func_readonly(depth, func),
+            ctx: self.declare_func_in_func_readonly(self.rt_shadow_ctx, func),
             entry,
             frames,
         })

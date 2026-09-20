@@ -544,6 +544,10 @@ pub struct RtLayout {
 
 struct ThreadState {
     sink: SinkFn,
+    // CONCURRENCY A2: this thread's shadow stack (DEBUG-OBS D4), or
+    // null until the first function with frames runs. Boxed: 8 KiB,
+    // and most of this struct is touched on every `print`.
+    shadow: *mut ToyShadowCtx,
     // #121 Phase B-min: active-allocator stack. 64 nesting levels
     // covers any realistic `with allocator = ...` structure; overflow
     // aborts (the only way to hit it is a codegen bug).
@@ -648,6 +652,7 @@ impl Default for ThreadState {
     fn default() -> Self {
         ThreadState {
             sink: default_sink,
+            shadow: core::ptr::null_mut(),
             alloc_stack: [0; ALLOC_STACK_CAP],
             alloc_stack_len: 0,
             bump_head: core::ptr::null_mut(),
@@ -1289,15 +1294,45 @@ pub struct ToyFrameInfo {
 /// Where the name starts inside a frame record.
 const FRAME_NAME_OFFSET: usize = 8;
 
-#[unsafe(no_mangle)]
-pub static mut toy_shadow_stack: [*const ToyFrameInfo; TOY_SHADOW_CAP] =
-    [core::ptr::null(); TOY_SHADOW_CAP];
+/// One thread's call stack, as codegen addresses it: the depth
+/// first, the slots right after it.
+///
+/// CONCURRENCY A2: this was two globals. A backtrace is per-thread —
+/// two threads sharing one depth would interleave their frames and
+/// report neither correctly — so the pair moved into the thread
+/// state the sinks and the allocator stack already live in.
+///
+/// The cost is one call per *activation*, not per call site: codegen
+/// hoists the address into the prologue, and the whole prologue is
+/// skipped in `--release` (no frames are recorded there at all) and
+/// in any function that pushes nothing.
+#[repr(C)]
+pub struct ToyShadowCtx {
+    /// Live call depth. Counts every push, including the ones past
+    /// `TOY_SHADOW_CAP` that had nowhere to go, so the report can say
+    /// how many frames it is not showing.
+    pub depth: u64,
+    pub stack: [*const ToyFrameInfo; TOY_SHADOW_CAP],
+}
 
-/// Live call depth. Counts every push, including the ones past
-/// `TOY_SHADOW_CAP` that had nowhere to go, so the report can say how
-/// many frames it is not showing.
+impl ToyShadowCtx {
+    const fn new() -> Self {
+        Self { depth: 0, stack: [core::ptr::null(); TOY_SHADOW_CAP] }
+    }
+}
+
+/// The calling thread's shadow stack, created on first use.
+///
+/// Boxed rather than inline in `ThreadState` because it is 8 KiB and
+/// most of the state is read on every `print`.
 #[unsafe(no_mangle)]
-pub static mut toy_shadow_depth: u64 = 0;
+pub extern "C" fn toy_shadow_ctx() -> *mut ToyShadowCtx {
+    let state = thread_state();
+    if state.shadow.is_null() {
+        state.shadow = Box::into_raw(Box::new(ToyShadowCtx::new()));
+    }
+    state.shadow
+}
 
 /// Write the backtrace for the current shadow stack, innermost first.
 ///
@@ -1329,7 +1364,8 @@ fn write_backtrace() {
 /// already has. `compiler/tests/consistency/diagnostics.rs` pins the
 /// two against each other by comparing stderr across engines.
 fn render_backtrace_into(sink: &mut dyn BacktraceSink, leading_newline: bool) {
-    let depth = unsafe { toy_shadow_depth } as usize;
+    let ctx = toy_shadow_ctx();
+    let depth = unsafe { (*ctx).depth } as usize;
     if depth == 0 {
         return;
     }
@@ -1393,10 +1429,12 @@ fn render_backtrace_into(sink: &mut dyn BacktraceSink, leading_newline: bool) {
 const BACKTRACE_HEAD: usize = 10;
 const BACKTRACE_TAIL: usize = 5;
 
-/// The `i`-th frame counting inwards from the top of the stack.
+/// The `i`-th frame counting inwards from the top of **this
+/// thread's** stack.
 fn frame_at(depth: usize, i: usize) -> *const ToyFrameInfo {
     let slot = (depth - 1 - i) & (TOY_SHADOW_CAP - 1);
-    unsafe { toy_shadow_stack[slot] }
+    let ctx = toy_shadow_ctx();
+    unsafe { (*ctx).stack[slot] }
 }
 
 fn write_frame_line(sink: &mut dyn BacktraceSink, frame: *const ToyFrameInfo, repeats: usize) {

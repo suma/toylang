@@ -10,6 +10,22 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-09-21
+
+- **CONCURRENCY A2-a — shadow stack が per-thread になった** —
+  `toy_shadow_stack` / `toy_shadow_depth` の 2 つのグローバルを、
+  `toy_shadow_ctx()` が返すスレッドごとの `{ depth, slots }` に
+  置き換えた (既存の pthread_key TLS の上)。backtrace は
+  スレッドごとのもので、2 つのスレッドが 1 つの depth を共有したら
+  どちらの backtrace も正しくない。codegen は prologue で 1 回
+  呼ぶだけ (番地は活性化の間は定数なので hoisting の前提は不変)、
+  `--release` は frame を記録しないので 0 コスト。実測は呼び出し
+  しかしないマイクロベンチで 0.13 → 0.30 秒、実仕事で +4%。
+- **`toy test` の driver が 1 件も走らずに落ちたとき、理由を捨てて
+  いた** — 「not run: an earlier test ended the process」が全件に
+  付くだけで、**その「earlier test」は存在しない**。driver の
+  stderr と終了コードを報告するようにした。
+
 ### 2026-09-20
 
 - **MODULE-FN-REF-ARG は既に直っていた** — 「module の自由関数が

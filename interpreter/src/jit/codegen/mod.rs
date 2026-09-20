@@ -897,14 +897,11 @@ impl<'a, 'b> State<'a, 'b> {
     fn emit_frame_push(&mut self, record: *const u8) -> Value {
         let flags = cranelift_codegen::ir::MemFlags::trusted();
         self.emit_recursion_check();
-        let stack_addr = self.builder.ins().iconst(
-            types::I64,
-            (&raw const toylang_rt::toy_shadow_stack) as i64,
-        );
-        let depth_addr = self
-            .builder
-            .ins()
-            .iconst(types::I64, (&raw const toylang_rt::toy_shadow_depth) as i64);
+        // CONCURRENCY A2: the stack is per-thread, so its address is
+        // asked for rather than baked in. `depth` sits first in the
+        // record and the slots follow it.
+        let depth_addr = self.shadow_ctx();
+        let stack_addr = self.builder.ins().iadd_imm(depth_addr, 8);
         let record_v = self.builder.ins().iconst(types::I64, record as i64);
         let depth = self.builder.ins().load(types::I64, flags, depth_addr, 0);
         let masked = self
@@ -930,10 +927,7 @@ impl<'a, 'b> State<'a, 'b> {
     /// about the toylang program that filled it.
     fn emit_recursion_check(&mut self) {
         let flags = cranelift_codegen::ir::MemFlags::trusted();
-        let depth_addr = self
-            .builder
-            .ins()
-            .iconst(types::I64, (&raw const toylang_rt::toy_shadow_depth) as i64);
+        let depth_addr = self.shadow_ctx();
         let depth = self.builder.ins().load(types::I64, flags, depth_addr, 0);
         let over = self.builder.ins().icmp_imm(
             IntCC::UnsignedGreaterThanOrEqual,
@@ -954,11 +948,15 @@ impl<'a, 'b> State<'a, 'b> {
     fn pop_frame(&mut self, saved: Option<Value>) {
         let Some(saved) = saved else { return };
         let flags = cranelift_codegen::ir::MemFlags::trusted();
-        let depth_addr = self
-            .builder
-            .ins()
-            .iconst(types::I64, (&raw const toylang_rt::toy_shadow_depth) as i64);
+        let depth_addr = self.shadow_ctx();
         self.builder.ins().store(flags, saved, depth_addr, 0);
+    }
+
+    /// The calling thread's shadow-stack record. The depth is at
+    /// offset 0, so the returned pointer *is* `&depth`.
+    fn shadow_ctx(&mut self) -> Value {
+        self.call_helper(HelperKind::ShadowCtx, &[])
+            .expect("toy_shadow_ctx returns a pointer")
     }
 
     /// The two static halves of a diagnostic frame for `expr_ref`

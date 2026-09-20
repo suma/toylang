@@ -440,6 +440,9 @@ pub(crate) enum HelperKind {
     PanicText,
     /// DEBUG-OBS D6.
     PanicRecursion,
+    /// CONCURRENCY A2: this thread's shadow stack (depth first, then
+    /// the slots). Called where the address used to be a constant.
+    ShadowCtx,
     /// A trap whose operands are part of the message.
     PanicValues,
     HeapAlloc,
@@ -532,6 +535,7 @@ impl HelperKind {
             HelperKind::Panic => "jit_panic",
             HelperKind::PanicText => "jit_panic_text",
             HelperKind::PanicRecursion => "toy_panic_recursion",
+            HelperKind::ShadowCtx => "toy_shadow_ctx",
             HelperKind::PanicValues => "toy_panic_values",
             HelperKind::HeapAlloc => "jit_heap_alloc",
             HelperKind::HeapFree => "jit_heap_free",
@@ -603,6 +607,7 @@ impl HelperKind {
             HelperKind::Panic => jit_panic as *const u8,
             HelperKind::PanicText => jit_panic_text as *const u8,
             HelperKind::PanicRecursion => toylang_rt::toy_panic_recursion as *const u8,
+            HelperKind::ShadowCtx => toylang_rt::toy_shadow_ctx as *const u8,
             HelperKind::PanicValues => toylang_rt::toy_panic_values as *const u8,
             HelperKind::HeapAlloc => jit_heap_alloc as *const u8,
             HelperKind::HeapFree => jit_heap_free as *const u8,
@@ -667,6 +672,7 @@ impl HelperKind {
             // (text ptr, len)
             HelperKind::PanicText => (vec![types::I64, types::I64], None),
             HelperKind::PanicRecursion => (vec![], None),
+            HelperKind::ShadowCtx => (vec![], Some(types::I64)),
             // (kind, a, b, frame prefix, frame suffix)
             HelperKind::PanicValues => (vec![types::I64; 5], None),
             HelperKind::HeapAlloc => (vec![types::I64], Some(types::I64)),
@@ -723,7 +729,7 @@ impl HelperKind {
         }
     }
 
-    pub(crate) const ALL: [HelperKind; 66] = [
+    pub(crate) const ALL: [HelperKind; 67] = [
         HelperKind::PrintI64,
         HelperKind::PrintlnI64,
         HelperKind::PrintU64,
@@ -747,6 +753,7 @@ impl HelperKind {
         HelperKind::Panic,
         HelperKind::PanicText,
         HelperKind::PanicRecursion,
+        HelperKind::ShadowCtx,
         HelperKind::PanicValues,
         HelperKind::HeapAlloc,
         HelperKind::HeapFree,

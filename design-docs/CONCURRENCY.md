@@ -246,7 +246,39 @@ per-thread にすると `--profile=mem` の数がスレッド数で割れて、
 |---|---|---|
 | **A1** | 構文 + 検査 (Io / allocator) + **4 レーンとも逐次**で実行 | **可**。意味論と診断がここで固まり、以後の並列化は答えを変えられない |
 | **A2-a** | shadow stack の per-thread 化 | **2026-09-21 に landing**。`toy_shadow_stack` / `toy_shadow_depth` の 2 つのグローバルが `toy_shadow_ctx()` が返す**スレッドごとの記録**になった (`{ depth, slots }`、既存の pthread_key TLS の上)。codegen は prologue で 1 回呼ぶだけ — 番地は活性化の間は定数のままなので、hoisting の前提は変わらない |
-| **A2-b** | `toylang_rt` に pthread、AOT / JIT は本文を関数に切り出して分割実行 | A2-a の後。逐次との一致を consistency で縛る |
+| **A2-b** | `toylang_rt` に pthread、本文を関数に切り出して分割実行 | A2-a の後。逐次との一致を consistency で縛る |
+
+### A2-b をどこで切り出すか
+
+本文を「関数」にする作業は、**フロントエンドの desugar** でやる。
+IR でやると自由変数の解析と env の組み立てを IR の語彙で書くことに
+なり、4 レーンぶんの codegen に手が入る。AST なら名前がまだあり、
+出てくるのは**普通の関数と普通の呼び出し**なので、バックエンドは
+1 行も変わらない — `?` や `Display` と同じ手口である。
+
+```rust
+parallel for i in a..b { out.set(i, work(i)) }
+```
+
+が、およそ次に化ける:
+
+```rust
+struct __ParEnv0 { out: &mut Vec<u64> }          # 捕捉したもの
+fn __par_body0(from: u64, to: u64, env: &__ParEnv0) {
+    for i in from..to { env.out.set(i, work(i)) }
+}
+# ランタイムが範囲を割って、スレッドごとに本文を呼ぶ
+__builtin_par_for(__par_body0, &env, a, b)
+```
+
+**クロージャにはできない。** AOT のクロージャが捕捉できるのは
+スカラーだけで (CLOSURE_CAPTURE)、並列にしたい仕事はどれも容器か窓を
+要る。env を明示の struct にするのはそのためで、ついでに「何を
+捕捉したか」が診断に出せる。
+
+残る論点は 3 つ、どれも実装中に決まる類のもの: 捕捉した**スカラーへの
+書き込み**をどう断るか (競合なので断る)、**入れ子の `parallel for`**
+(外側だけ並列でよい)、`self` を捕捉したときの綴り。
 
 A1 を先に出すのは、**並列化が最適化になる**ようにするためである。
 「逐次と並列で答えが同じ」を後から確かめるのではなく、逐次の答えを

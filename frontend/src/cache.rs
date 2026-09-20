@@ -299,15 +299,28 @@ fn write_atomically(dir: &std::path::Path, path: &std::path::Path, bytes: &[u8])
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let tmp = dir.join(format!(".{stem}.{}.{nanos}.tmp", std::process::id()));
+    // The path is part of the error. A bare "No such file or
+    // directory" from here says nothing about *what* was missing —
+    // the staging file, the directory it sits in, or the destination
+    // — and the cache is written from several processes at once, so
+    // the report is the only way to tell a race from a bad path.
     {
-        let mut file = std::fs::File::create(&tmp)?;
-        file.write_all(bytes)?;
+        let mut file = std::fs::File::create(&tmp).map_err(|e| named(e, &tmp, "create"))?;
+        file.write_all(bytes).map_err(|e| named(e, &tmp, "write"))?;
     }
     match std::fs::rename(&tmp, path) {
         Ok(()) => Ok(()),
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
-            Err(e)
+            Err(named(e, path, "rename into"))
         }
     }
+}
+
+/// The same error, saying which file and which step.
+fn named(e: std::io::Error, path: &std::path::Path, what: &str) -> std::io::Error {
+    std::io::Error::new(
+        e.kind(),
+        format!("cannot {what} `{}`: {e}", path.display()),
+    )
 }

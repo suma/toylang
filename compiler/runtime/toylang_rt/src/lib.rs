@@ -173,7 +173,26 @@ unsafe extern "C" {
     fn pthread_key_create(key: *mut usize, destructor: Option<unsafe extern "C" fn(*mut u8)>) -> i32;
     fn pthread_getspecific(key: usize) -> *mut u8;
     fn pthread_setspecific(key: usize, value: *mut u8) -> i32;
+    // CONCURRENCY A2-b. `pthread_t` is pointer-sized on both
+    // supported platforms (an opaque pointer on macOS, an unsigned
+    // long on Linux), which is the same reason `pthread_key_t` is
+    // spelled `usize` above.
+    fn pthread_create(
+        thread: *mut usize,
+        attr: *const u8,
+        start: extern "C" fn(*mut u8) -> *mut u8,
+        arg: *mut u8,
+    ) -> i32;
+    fn pthread_join(thread: usize, retval: *mut *mut u8) -> i32;
+    fn sysconf(name: i32) -> isize;
 }
+
+/// `_SC_NPROCESSORS_ONLN`. 58 on macOS, 84 on Linux — the one
+/// sysconf name this crate needs and the only place the two differ.
+#[cfg(target_os = "macos")]
+const SC_NPROCESSORS_ONLN: i32 = 58;
+#[cfg(not(target_os = "macos"))]
+const SC_NPROCESSORS_ONLN: i32 = 84;
 
 /// `strlen` in this crate's byte world. See `c_strlen` above.
 ///
@@ -5352,6 +5371,242 @@ pub extern "C" fn rust_eh_personality() {}
 // ---------------------------------------------------------------------------
 // Unit tests (the crate builds with std under `cargo test`).
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// CONCURRENCY A2-b: running a range in parallel.
+
+/// The most workers one `parallel for` will use.
+///
+/// A fixed ceiling because the jobs live in the caller's frame: no
+/// allocation, and nothing for the profiler to see. Sixty-four is
+/// past any machine this runs on today, and a bigger one would be a
+/// bigger stack frame for no answer.
+const PAR_MAX_THREADS: usize = 64;
+
+/// What one worker is told: where its slice starts and ends, and the
+/// two values every slice shares.
+#[derive(Clone, Copy)]
+struct ParJob {
+    body: Option<extern "C" fn(*mut u8, u64, u64)>,
+    env: *mut u8,
+    from: u64,
+    until: u64,
+}
+
+/// How many threads a `parallel for` uses.
+///
+/// `TOY_PAR_THREADS` wins, then the machine's parallelism, then 1.
+/// It is **not** part of the language's meaning: a different count
+/// must not change an answer, so nothing about it is specified
+/// beyond "at least one" (`design-docs/CONCURRENCY.md` section 5).
+fn par_threads() -> usize {
+    let raw = unsafe { getenv(c"TOY_PAR_THREADS".as_ptr().cast()) };
+    if !raw.is_null() {
+        let len = unsafe { strlen(raw) };
+        let text = unsafe { core::slice::from_raw_parts(raw, len) };
+        let mut n: usize = 0;
+        let mut digits = 0usize;
+        for b in text {
+            if !b.is_ascii_digit() {
+                digits = 0;
+                break;
+            }
+            n = n.saturating_mul(10).saturating_add((b - b'0') as usize);
+            digits += 1;
+        }
+        if digits > 0 && n > 0 {
+            return if n > PAR_MAX_THREADS { PAR_MAX_THREADS } else { n };
+        }
+    }
+    let online = unsafe { sysconf(SC_NPROCESSORS_ONLN) };
+    if online <= 1 {
+        return 1;
+    }
+    let n = online as usize;
+    if n > PAR_MAX_THREADS { PAR_MAX_THREADS } else { n }
+}
+
+/// The trampoline `pthread_create` calls. Reads one job and runs it.
+///
+/// # Safety
+/// `arg` is a `*mut ParJob` that outlives the thread: it points into
+/// `toy_par_for`'s frame, and that frame is blocked in `pthread_join`
+/// until this returns.
+extern "C" fn par_worker(arg: *mut u8) -> *mut u8 {
+    let job = unsafe { *(arg as *mut ParJob) };
+    if let Some(body) = job.body {
+        body(job.env, job.from, job.until);
+    }
+    core::ptr::null_mut()
+}
+
+/// Run `body(env, from, until)` over `[from, until)`, split across
+/// threads, and return when every part is done.
+///
+/// The calling thread takes the last chunk itself, so one thread
+/// spawns nothing and N spawn N-1 — a short range costs no more than
+/// the loop it replaces.
+///
+/// A panic inside a body ends the process, as it does anywhere else
+/// (`ERROR_MODEL.md`); nothing is carried back to a join.
+///
+/// **Disjointness is the program's promise.** The iterations are
+/// supposed to write to places that do not overlap, and the language
+/// says so without checking it (CONCURRENCY.md section 5, point 3).
+/// This function assumes it and would happily race if it were false.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_par_for(
+    from: u64,
+    until: u64,
+    env: *mut u8,
+    body: extern "C" fn(*mut u8, u64, u64),
+) {
+    if until <= from {
+        return;
+    }
+    let len = until - from;
+    let want = par_threads() as u64;
+    // Never more threads than iterations: an empty chunk is a thread
+    // that costs only its spawn.
+    let parts = if want > len { len } else { want };
+    if parts <= 1 {
+        body(env, from, until);
+        return;
+    }
+
+    let mut jobs = [ParJob { body: None, env: core::ptr::null_mut(), from: 0, until: 0 };
+        PAR_MAX_THREADS];
+    let mut threads = [0usize; PAR_MAX_THREADS];
+    let mut spawned = 0usize;
+
+    let per = len / parts;
+    let extra = len % parts;
+    let mut start = from;
+    for part in 0..parts {
+        // The first `extra` chunks take one more, so the split is
+        // even to within one iteration and covers the range exactly.
+        let take = per + if part < extra { 1 } else { 0 };
+        let end = start + take;
+        if part + 1 == parts {
+            // Ours. Running it here rather than in a thread is what
+            // makes the one-thread case free.
+            body(env, start, end);
+        } else {
+            let slot = part as usize;
+            jobs[slot] = ParJob { body: Some(body), env, from: start, until: end };
+            let arg = (&raw mut jobs[slot]) as *mut u8;
+            let rc = unsafe {
+                pthread_create(&mut threads[spawned], core::ptr::null(), par_worker, arg)
+            };
+            if rc == 0 {
+                spawned += 1;
+            } else {
+                // No thread, so this chunk is ours too. Refusing to
+                // spawn is not a reason to skip iterations.
+                body(env, start, end);
+            }
+        }
+        start = end;
+    }
+    for t in threads.iter().take(spawned) {
+        unsafe {
+            pthread_join(*t, core::ptr::null_mut());
+        }
+    }
+}
+
+#[cfg(test)]
+mod par_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    /// The body writes through the environment, which is how a
+    /// `parallel for` will reach its output: one slot per index, so
+    /// a race shows up as a wrong slot rather than a total that
+    /// happens to add up.
+    extern "C" fn fill(env: *mut u8, from: u64, until: u64) {
+        let slots = env as *mut u64;
+        for i in from..until {
+            unsafe { slots.add(i as usize).write(100 + i * i) };
+        }
+    }
+
+    fn run_and_check(threads: &str, len: u64) {
+        unsafe { std::env::set_var("TOY_PAR_THREADS", threads) };
+        let mut slots: Vec<u64> = std::vec![0; 256];
+        toy_par_for(0, len, slots.as_mut_ptr() as *mut u8, fill);
+        unsafe { std::env::remove_var("TOY_PAR_THREADS") };
+        for i in 0..len {
+            assert_eq!(
+                slots[i as usize],
+                100 + i * i,
+                "slot {i} with {threads} threads"
+            );
+        }
+        for (i, slot) in slots.iter().enumerate().skip(len as usize) {
+            assert_eq!(*slot, 0, "slot {i} was written past the end");
+        }
+    }
+
+    #[test]
+    fn every_index_is_visited_exactly_once_however_it_is_split() {
+        // The split has to cover the range exactly: one thread and
+        // many must write the same slots, and nothing outside.
+        for threads in ["1", "2", "3", "7", "8"] {
+            for len in [0u64, 1, 2, 7, 8, 9, 100] {
+                run_and_check(threads, len);
+            }
+        }
+    }
+
+    #[test]
+    fn a_range_shorter_than_the_thread_count_spawns_no_empty_workers() {
+        // Three iterations over eight threads is three chunks, not
+        // eight — five of which would be a spawn and nothing else.
+        run_and_check("8", 3);
+    }
+
+    #[test]
+    fn an_empty_range_does_nothing() {
+        let mut slots: Vec<u64> = std::vec![7; 8];
+        toy_par_for(5, 5, slots.as_mut_ptr() as *mut u8, fill);
+        assert!(slots.iter().all(|s| *s == 7), "an empty range touched something");
+    }
+
+    /// The threads are real: eight chunks of slow work finish sooner
+    /// than one. A timing test is a blunt instrument, so the bar is
+    /// deliberately low (any speed-up at all) — what it guards is
+    /// "the work ran on more than one thread", not a ratio.
+    #[test]
+    fn more_threads_finish_a_slow_body_sooner() {
+        extern "C" fn spin(env: *mut u8, from: u64, until: u64) {
+            let slots = env as *mut u64;
+            for i in from..until {
+                let mut acc: u64 = 0;
+                for k in 0..2_000_000u64 {
+                    acc = acc.wrapping_add(i ^ k);
+                }
+                unsafe { slots.add(i as usize).write(acc) };
+            }
+        }
+
+        let mut slots: Vec<u64> = std::vec![0; 8];
+        let mut time = |threads: &str| {
+            unsafe { std::env::set_var("TOY_PAR_THREADS", threads) };
+            let start = std::time::Instant::now();
+            toy_par_for(0, 8, slots.as_mut_ptr() as *mut u8, spin);
+            start.elapsed()
+        };
+        let one = time("1");
+        let many = time("8");
+        unsafe { std::env::remove_var("TOY_PAR_THREADS") };
+        assert!(
+            many < one,
+            "eight threads should beat one: {many:?} vs {one:?}"
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {

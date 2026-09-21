@@ -247,15 +247,29 @@ per-thread にすると `--profile=mem` の数がスレッド数で割れて、
 |---|---|---|
 | **A1** | 構文 + 検査 (Io / allocator) + **4 レーンとも逐次**で実行 | **可**。意味論と診断がここで固まり、以後の並列化は答えを変えられない |
 | **A2-a** | shadow stack の per-thread 化 | **2026-09-21 に landing**。`toy_shadow_stack` / `toy_shadow_depth` の 2 つのグローバルが `toy_shadow_ctx()` が返す**スレッドごとの記録**になった (`{ depth, slots }`、既存の pthread_key TLS の上)。codegen は prologue で 1 回呼ぶだけ — 番地は活性化の間は定数のままなので、hoisting の前提は変わらない |
-| **A2-b** | `toylang_rt` に pthread、本文を関数に切り出して分割実行 | A2-a の後。逐次との一致を consistency で縛る |
+| **A2-b-1** | `toylang_rt` の `toy_par_for` (pthread と範囲分割) | **2026-09-21 に landing**。`toy_par_for(from, until, env, body)` が範囲を割ってスレッドに配り、**呼び出し元も 1 区間を担当する** (1 スレッドなら spawn 0)。スレッド数は `TOY_PAR_THREADS`、既定は `sysconf(_SC_NPROCESSORS_ONLN)`、上限 64。ジョブは呼び出し元のフレームに置くので**確保ゼロ** (プロファイラに見えない)。テストは「どう割っても各添字がちょうど 1 回」と「8 スレッドは 1 スレッドより速い」 |
+| **A2-b-2** | lowering が本文を切り出し、`toy_par_for` を呼ぶ | A2-b-1 の後。逐次との一致を consistency で縛る |
 
-### A2-b をどこで切り出すか
+### A2-b をどこで切り出すか — **lowering** (2026-09-21 に訂正)
 
-本文を「関数」にする作業は、**フロントエンドの desugar** でやる。
-IR でやると自由変数の解析と env の組み立てを IR の語彙で書くことに
-なり、4 レーンぶんの codegen に手が入る。AST なら名前がまだあり、
-出てくるのは**普通の関数と普通の呼び出し**なので、バックエンドは
-1 行も変わらない — `?` や `Display` と同じ手口である。
+最初ここには「フロントエンドの desugar で」と書いていた。**できない**:
+フロントエンドは**宣言を新造できない**。env struct と本文関数を
+型検査の途中で足すことになるが、この層の書き換えは `?` / `??` /
+`Display` のような**式の差し替え**しか持っていない。
+
+`compiler_lower` は逆に、**関数を新造するのが日常**である —
+generic の単相化 (`instantiate_generic_function`) も drop glue も
+`declare_function_anon` で関数を宣言し、body を後で埋める作業待ち
+行列に積む。並列本文はまさにその形をしている:
+
+- `declare_function_anon("__par_body_N", Local, [env: ptr, from: u64, until: u64], Unit)`
+- 捕捉したものは呼び出し側フレームの**スタックスロット**に置き、
+  その番地を渡す (ポインタ渡し ABI の `receiver_address` と同じ手口)
+- 逐次レーン (tree-walker / IR VM) は**本文をその場で回す**ので、
+  切り出し自体が要らない
+
+型の情報が要る作業 (どの捕捉が窓でどれがスカラーか) も、IR には
+型があるので lowering のほうが素直である。
 
 ```rust
 parallel for i in a..b { out.set(i, work(i)) }

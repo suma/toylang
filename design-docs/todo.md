@@ -2271,7 +2271,6 @@
   f64 同様 AOT 未対応 (cranelift の fmin / fmax で入れられる)。
 - **NUM-W-AOT-pack Phase 3** ★ — compound element 配列の tighter layout (`[PackedRgba; N]` が 4 バイト相当のところ 32 バイト消費)。メモリ効率のみで機能差はない。
 - **195b. `extern fn` の monomorph 化** ★ — generic extern は現状 interpreter の type-erased registry でのみ動く。JIT / AOT には mangled symbol の emit と Rust 側実装の登録が要る。実需要なし。
-- **185残. 3+ part qualified call** ★ — `std::math::abs(x)`。現状は `import std.math` 経由のみ (parser が last 名だけを採る)。auto-load があるので実害は限定的。
 - **121-Phase-B-rest-leftover** ★ — `AllocatorBinding::Generic/Local/Ambient` の lower 配線 (perf のみ、観察可能な振る舞い変化なし)、`__builtin_default_allocator()` の戻り型を `u64` にして生比較を許すかの API 判断。
 - **REF-Stage-2 (residual)** ★ — compound `&mut T` の真の pointer-passing、`&T` compound の RefScalar 経路活用。どちらも copy 削減で機能差はない。
 
@@ -2887,4 +2886,4 @@ changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 
 - `extern fn` の generic params は parser では受理されるが、JIT / AOT が per-instance シンボル名を持たないため interpreter でのみ動く (`#195b`)。
 - `package` 宣言 / `import` path のセグメントに primitive type キーワード (`i64` / `f64` / ...) は使えない (`core/std/str.t` が `package` 宣言を省いているのはこのため)。
 - 関数名に primitive type キーワードは使えない (`fn f64(...)` は `expected function name`)。
-- 3-part qualified call (`std::math::abs(x)`) は parser が **last 名だけを採る**。名前が一意なら結果的に解決するが、意図した経路ではない (`#185残`)。
+- 3-part qualified call (`std::math::abs(x)`) は **MODULE-SYSTEM P3 で解決済み** (2026-09-21)。パーサが全セグメントを記録し、型検査と lowering が同じものを修飾子として使う。実在しないパスは `[E0030]`。

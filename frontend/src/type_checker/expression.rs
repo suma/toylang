@@ -32,22 +32,12 @@ fn stdlib_enum_name(name: &str) -> &str {
 /// place that synthesises a same-type cast, and it asks here whether
 /// to spell one at all.
 fn is_scalar_cast_target(ty: &TypeDecl) -> bool {
-    matches!(
-        ty,
-        TypeDecl::Int64
-            | TypeDecl::UInt64
-            | TypeDecl::Int32
-            | TypeDecl::UInt32
-            | TypeDecl::Int16
-            | TypeDecl::UInt16
-            | TypeDecl::Int8
-            | TypeDecl::UInt8
-            | TypeDecl::Float64
-            | TypeDecl::Float32
-            | TypeDecl::Bool
-            | TypeDecl::String
-            | TypeDecl::Ptr
-    )
+    // Every numeric width, plus the three scalars that are not
+    // numbers. Asked through `is_numeric` rather than listed: a
+    // spelled-out list is one more place to find when a width is
+    // added, and `f32` has already been missed by two of them
+    // (STDLIB-NUMERIC N5, SIMD-F32).
+    ty.is_numeric() || matches!(ty, TypeDecl::Bool | TypeDecl::String | TypeDecl::Ptr)
 }
 
 /// Expression type checking implementation
@@ -3528,6 +3518,11 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub(super) fn validate_type_argument(&self, ty: &TypeDecl, builtin: &str) -> Result<(), TypeCheckError> {
         match ty {
             // Fixed-width scalars and the pointer-width opaque handles.
+            //
+            // Listed rather than asked through `is_numeric`: this
+            // match is **exhaustive**, which is what makes a new
+            // `TypeDecl` variant fail the build here instead of
+            // silently landing in whichever arm a guard let it reach.
             TypeDecl::Bool
             | TypeDecl::Int8 | TypeDecl::UInt8
             | TypeDecl::Int16 | TypeDecl::UInt16

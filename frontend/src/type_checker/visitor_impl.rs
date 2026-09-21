@@ -540,20 +540,18 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
                 )));
             };
             let value_ty = self.visit_expr(value)?;
-            let formattable = matches!(
-                value_ty,
-                TypeDecl::Int64 | TypeDecl::UInt64
-                    | TypeDecl::Int8 | TypeDecl::UInt8
-                    | TypeDecl::Int16 | TypeDecl::UInt16
-                    | TypeDecl::Int32 | TypeDecl::UInt32
-                    | TypeDecl::Float64
-                    // STDLIB-NUMERIC N5: f32 was left out when it was
-                    // added, so `{x:.2}` worked for every numeric type
-                    // but one.
-                    | TypeDecl::Float32
-                    | TypeDecl::Bool | TypeDecl::String
-                    | TypeDecl::Number
-            );
+            // Every numeric width, plus the three primitives that
+            // are not numbers. Asked through `is_numeric` rather
+            // than listed: `f32` was left out of the list when it
+            // was added, so `{x:.2}` worked for every numeric type
+            // but one (STDLIB-NUMERIC N5) — a list spelled out here
+            // is a list that has to be found again when the next
+            // width lands.
+            let formattable = value_ty.is_numeric()
+                || matches!(
+                    value_ty,
+                    TypeDecl::Bool | TypeDecl::String | TypeDecl::Number
+                );
             if !formattable {
                 let shown = self.named_type_for_error(&value_ty);
                 let err = TypeCheckError::generic_error(&format!(

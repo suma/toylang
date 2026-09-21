@@ -1361,104 +1361,14 @@ impl<'a> FunctionLower<'a> {
             _ => unreachable!("receiver shape already validated"),
         }
         for (arg_idx, a) in args.iter().enumerate() {
-            // REF-Stage-2: scalar `&` / `&mut` borrow of a local
-            // emits an `AddressOf` (with the local marked
-            // address-taken so codegen places it in a stack slot).
-            // Compound borrows fall through to identifier expansion
-            // below so the leaf-flatten erasure continues at the
-            // boundary.
-            if let Some(Expr::Unary(op, inner)) = self.program.expression.get(a)
-                && matches!(
-                    op,
-                    frontend::ast::UnaryOp::Borrow | frontend::ast::UnaryOp::BorrowMut
-                ) {
-                    if let Some(Expr::Identifier(sym)) = self.program.expression.get(&inner) {
-                        if let Some(Binding::Scalar { local, ty }) =
-                            self.bindings.get(&sym).cloned()
-                            && matches!(
-                                ty,
-                                Type::I64 | Type::U64 | Type::F64 | Type::Bool
-                                    | Type::I8 | Type::U8 | Type::I16 | Type::U16
-                                    | Type::I32 | Type::U32
-                            ) {
-                                self.module
-                                    .function_mut(self.func_id)
-                                    .address_taken_locals
-                                    .insert(local);
-                                let v = self
-                                    .emit(InstKind::AddressOf { local }, Some(Type::U64))
-                                    .expect("AddressOf returns a value");
-                                values.push(v);
-                                continue;
-                            }
-                        if let Some(Binding::RefScalar { local, .. }) =
-                            self.bindings.get(&sym).cloned()
-                        {
-                            let v = self
-                                .emit(InstKind::LoadLocal(local), Some(Type::U64))
-                                .expect("LoadLocal returns a value");
-                            values.push(v);
-                            continue;
-                        }
-                    }
-                    // Field/tuple chain ending in a scalar leaf —
-                    // emit `AddressOf` of the leaf local.
-                    if matches!(
-                        self.program.expression.get(&inner),
-                        Some(Expr::FieldAccess(_, _)) | Some(Expr::TupleAccess(_, _))
-                    )
-                        && let Ok(super::bindings::FieldChainResult::Scalar { local, ty }) =
-                            self.resolve_field_chain(&inner)
-                            && matches!(
-                                ty,
-                                Type::I64 | Type::U64 | Type::F64 | Type::Bool
-                                    | Type::I8 | Type::U8 | Type::I16 | Type::U16
-                                    | Type::I32 | Type::U32
-                            ) {
-                                self.module
-                                    .function_mut(self.func_id)
-                                    .address_taken_locals
-                                    .insert(local);
-                                let v = self
-                                    .emit(InstKind::AddressOf { local }, Some(Type::U64))
-                                    .expect("AddressOf returns a value");
-                                values.push(v);
-                                continue;
-                            }
-                    // `&mut <name>[i]` — array element address.
-                    if let Some(Expr::SliceAccess(arr_expr, info)) =
-                        self.program.expression.get(&inner)
-                            && matches!(info.slice_type, frontend::ast::SliceType::SingleElement)
-                                && let Some(Expr::Identifier(arr_sym)) =
-                                    self.program.expression.get(&arr_expr)
-                                        && let Some(Binding::Array { element_ty, storage, .. }) =
-                                            self.bindings.get(&arr_sym).cloned()
-                                            && matches!(
-                                                element_ty,
-                                                Type::I64 | Type::U64 | Type::F64 | Type::Bool
-                                                    | Type::I8 | Type::U8 | Type::I16 | Type::U16
-                                                    | Type::I32 | Type::U32
-                                            )
-                                                && let Some(idx_ref) = info.start {
-                                                    let idx_v = self
-                                                        .lower_expr(&idx_ref)?
-                                                        .ok_or_else(|| {
-                                                            "array index produced no value".to_string()
-                                                        })?;
-                                                    let v = self
-                                                        .emit(
-                                                            InstKind::ArrayElemAddr {
-                                                                slot: storage.scalar_slot(),
-                                                                index: idx_v,
-                                                                elem_ty: element_ty,
-                                                            },
-                                                            Some(Type::U64),
-                                                        )
-                                                        .expect("ArrayElemAddr returns a value");
-                                                    values.push(v);
-                                                    continue;
-                                                }
-                }
+            // REF-Stage-2: a scalar borrow travels as an address —
+            // the same four shapes a function call's arguments take
+            // (`borrow_arg_address`). Compound borrows fall through
+            // to the identifier expansion below.
+            if let Some(v) = self.borrow_arg_address(a)? {
+                values.push(v);
+                continue;
+            }
             // Peel any explicit borrow so compound borrows
             // (`&p` / `&mut p` of a struct/tuple/enum binding) flow
             // through the identifier-expansion path below.

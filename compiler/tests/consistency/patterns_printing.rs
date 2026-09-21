@@ -375,3 +375,60 @@ fn stdout_narrow_int_dedicated_helpers() {
     "#;
     assert_stdout_consistent(src, "stdout_narrow_int_dedicated");
 }
+
+#[test]
+fn a_match_arm_may_be_a_block_that_ends_in_a_name() {
+    // AOT-MATCH-STR-ARM-BLOCK, which named the type it was first met
+    // with rather than the shape: a tail `match` whose arms are
+    // blocks ending in a name the block itself bound produced no
+    // value, and the function was rejected with "falls through
+    // without producing a value of the declared return type" — for a
+    // body the interpreter ran.
+    //
+    // The result local is sized by peeking at the arms before they
+    // are lowered, and the peek could not see through `val a = ..`
+    // to what `a` is. It reads the binding now.
+    //
+    // Both `str` (where it was found) and `u64` (where it was also
+    // broken, which is what showed the title was wrong).
+    let src = r#"
+        fn spell(o: Option<u64>) -> str {
+            match o {
+                Option::Some(v) => { val a: String = String::from_str("one")
+                                     val s: str = a.to_str()
+                                     s }
+                Option::None => { val b: String = String::from_str("none")
+                                  val t: str = b.to_str()
+                                  t }
+            }
+        }
+
+        fn count(o: Option<u64>) -> u64 {
+            match o {
+                Option::Some(v) => { val a = v + 1u64
+                                     a }
+                Option::None => { val b = 9u64
+                                  b }
+            }
+        }
+
+        fn main() -> u64 {
+            println(spell(Option::Some(1u64)))
+            println(spell(Option::None))
+            println(count(Option::Some(1u64)))
+            println(count(Option::None))
+            # And bound rather than returned, which failed with a
+            # different message ("val/var rhs produced no value").
+            val five: Option<u64> = Option::Some(5u64)
+            val r = match five {
+                Option::Some(v) => { val a = v * 2u64
+                                     a }
+                Option::None => { val b = 0u64
+                                  b }
+            }
+            println(r)
+            0u64
+        }
+    "#;
+    assert_renders(src, "match_arm_block_tail_name", "one\nnone\n2\n9\n10\n");
+}

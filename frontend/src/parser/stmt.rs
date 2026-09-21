@@ -1210,16 +1210,26 @@ fn parse_method_modifiers(
 ) -> (bool, bool) {
     let mut never_allocates = false;
     let mut is_unsafe = false;
+    // NEVER-ALLOCATES-METHOD-STACK: the run of modifiers ends at
+    // `fn`, and each one may be followed by another. This used to ask
+    // whether `fn` came *immediately* after the word it was looking
+    // at, so `never_allocates unsafe fn` did not parse in an `impl`
+    // block while `unsafe fn` and `never_allocates fn` both did — and
+    // the free-function parser accepted all three. Which is why the
+    // read-only half of `Vec` (nearly all of it `unsafe fn`) could
+    // not also promise not to allocate.
+    if !leads_to_fn(parser) {
+        return (never_allocates, is_unsafe);
+    }
     loop {
-        let next_leads_to_fn = matches!(parser.peek_n(1), Some(Kind::Function));
         let is_never_allocates =
             matches!(parser.peek(), Some(Kind::Identifier(s)) if s == "never_allocates");
         let is_unsafe_mod =
             matches!(parser.peek(), Some(Kind::Identifier(s)) if s == "unsafe");
-        if next_leads_to_fn && is_never_allocates && !never_allocates {
+        if is_never_allocates && !never_allocates {
             parser.next();
             never_allocates = true;
-        } else if next_leads_to_fn && is_unsafe_mod && !is_unsafe {
+        } else if is_unsafe_mod && !is_unsafe {
             parser.next();
             is_unsafe = true;
         } else {
@@ -1227,4 +1237,20 @@ fn parse_method_modifiers(
         }
     }
     (never_allocates, is_unsafe)
+}
+
+/// Whether what follows is a run of method modifiers ending in `fn`.
+///
+/// Looked at as a whole before any of it is consumed, so a stray
+/// identifier that happens to be called `unsafe` is not eaten by a
+/// parser that has already committed to a modifier.
+fn leads_to_fn(parser: &mut Parser) -> bool {
+    let mut at = 0usize;
+    loop {
+        match parser.peek_n(at) {
+            Some(Kind::Function) => return at > 0,
+            Some(Kind::Identifier(s)) if s == "never_allocates" || s == "unsafe" => at += 1,
+            _ => return false,
+        }
+    }
 }

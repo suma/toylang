@@ -194,6 +194,37 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
+    /// The type a `val` / `var` in this block gives `name`, for the
+    /// block's own tail.
+    ///
+    /// The last binding of the name wins, which is what shadowing
+    /// means. Annotated bindings answer from the annotation; the rest
+    /// recurse through `value_scalar` on the right-hand side, so a
+    /// tail that names a call's result reads the callee's return
+    /// type.
+    fn block_binding_type(
+        &self,
+        stmts: &[frontend::ast::StmtRef],
+        name: DefaultSymbol,
+    ) -> Option<Type> {
+        let mut found = None;
+        for stmt_ref in stmts {
+            let (bound, annotation, rhs) = match self.program.statement.get(stmt_ref) {
+                Some(Stmt::Val(bound, annotation, rhs)) => (bound, annotation, Some(rhs)),
+                Some(Stmt::Var(bound, annotation, rhs)) => (bound, annotation, rhs),
+                _ => continue,
+            };
+            if bound != name {
+                continue;
+            }
+            found = annotation
+                .as_ref()
+                .and_then(lower_scalar)
+                .or_else(|| rhs.and_then(|r| self.value_scalar(&r)));
+        }
+        found
+    }
+
     pub(super) fn value_scalar(&self, expr_ref: &ExprRef) -> Option<Type> {
         let e = self.program.expression.get(expr_ref)?;
         match e {
@@ -345,11 +376,30 @@ impl<'a> FunctionLower<'a> {
                 _ => self.value_scalar(&operand),
             },
             Expr::Block(stmts) => {
-                if let Some(last) = stmts.last()
-                    && let Some(Stmt::Expression(e)) = self.program.statement.get(last) {
-                        return self.value_scalar(&e);
-                    }
-                None
+                let last = stmts.last()?;
+                let Some(Stmt::Expression(tail)) = self.program.statement.get(last) else {
+                    return None;
+                };
+                if let Some(ty) = self.value_scalar(&tail) {
+                    return Some(ty);
+                }
+                // AOT-MATCH-ARM-BLOCK: the tail may be a name the
+                // block itself bound — `{ val a = f()  a }` — which
+                // `self.bindings` cannot answer for, because the
+                // binding does not exist until the block is lowered.
+                // Read it off the `val` instead.
+                //
+                // Without this a tail `match` whose arms are blocks
+                // of that shape inferred `Unit`, so the match got no
+                // result local and the function "falls through
+                // without producing a value" — for a body the
+                // interpreter runs. Recorded as
+                // AOT-MATCH-STR-ARM-BLOCK, which named the type it
+                // was first met with rather than the shape.
+                let Some(Expr::Identifier(name)) = self.program.expression.get(&tail) else {
+                    return None;
+                };
+                self.block_binding_type(&stmts, name)
             }
             Expr::IfElifElse(_, then_body, _, _) => self.value_scalar(&then_body),
             Expr::Match(scrutinee, arms) => {

@@ -53,7 +53,7 @@
 | `ensures self.get(i) == value` (generic `T` の `==`) | `T` に `eq` が無いと **呼び出し側が `[E0010]`** — `contains` と同じ規則が `push` に掛かる |
 | `ensures result.cap == n` (`-> Self` の構築子) | **書ける** (2026-09-21、§5-2)。`with_capacity` が実例 |
 | `never_allocates fn size(&self)` (method、単独) | parse OK |
-| `never_allocates unsafe fn get(...)` (method、重ね書き) | **parse エラー** (§5-1)。自由関数では通る |
+| `never_allocates unsafe fn get(...)` (method、重ね書き) | **書ける** (§5-1、2026-09-21) |
 | `ensures allocations(0u64)` と `realloc` | `heap_realloc` は `alloc_count` を増やさない (`realloc_count` 側)。`push` が realloc しても `allocations(0)` は成立 |
 | 違反時の文言 | `` Contract violation: `requires` clause #1 of function `get` evaluated to false (with index = 5) `` — **添字の実値が出る**。method 名は `Vec::` 無しの裸名 (backtrace には `Vec::get` が出る) |
 | `--api core/std/collections/vec.t` | 契約節がそのまま出る (`requires` / `ensures` 行) |
@@ -138,13 +138,13 @@ struct を要素にした `Vec` の `push` 呼び出しが**すべて** `[E0010]
 
 ### C. メモリ挙動を約束する
 
-2 系統ある。**静的 (`never_allocates`) の方がゼロコストで強い**が、
-§5-1 の parser の穴で `unsafe fn` と重ねられない。
+2 系統ある。**静的 (`never_allocates`) の方がゼロコストで強い**。
+§5-1 の parser の穴は 2026-09-21 に解消した。
 
 | method | 静的 `never_allocates` | 実行時 `ensures` |
 |---|---|---|
 | `size` / `capacity` / `is_empty` / `as_ptr` / `clear` / `set_size` / `iter` | 今すぐ書ける (unsafe でない) | 不要 (静的で足りる) |
-| `get` / `set` / `pop` / `remove` / `swap_remove` / `reverse` / `VecIter::next` | **§5-1 待ち** (`unsafe fn`) | `ensures allocations(0u64)` で代用可 |
+| `get` / `set` / `pop` / `remove` / `swap_remove` / `reverse` / `VecIter::next` | 書ける (§5-1、2026-09-21)。`get` は入れた | `ensures allocations(0u64)` で代用可 |
 | `sort` | `unsafe` ではないが `T: Ord` の `lt` を辿れるか**未確認** (`String` の `lt` は extern に届く → 拒否される可能性) | `ensures allocations(0u64)` |
 | `sort_by(less)` | 不可 (closure 呼び出しは追えない仕様) | `ensures allocations(0u64)` |
 | `push` / `insert` | 不可 (確保する) | `ensures allocations(0u64)` + `ensures __builtin_realloc_count() <= old(__builtin_realloc_count()) + 1u64` (「確保は realloc 高々 1 回」。糖衣に realloc の軸が無いので生で書く。確認済み) |
@@ -208,7 +208,7 @@ D は B と重なる (`push` の `ensures self.cap >= self.len` は不変条件 
 | A1 で panic を消す (`get` / `set` / `pop` / `insert` / `remove` / `swap_remove` / `set_size`) | `--release` で範囲外アクセスが unchecked になる。組み込み配列は release でも guard を残す設計と食い違う |
 | 要素値の `ensures` (`self.get(i) == value`) | `Vec<T>` 全体に `eq` を要求してしまう (確認済み) |
 | `-> Self` / `-> VecIter<T>` を返す method の `ensures result.field` | 書ける (§5-2、2026-09-21) |
-| `never_allocates` を `unsafe fn` に重ねる | parse エラー (§5-1)。直ってから |
+| `never_allocates` を `unsafe fn` に重ねる | 書ける (§5-1、2026-09-21) |
 | `VecIter::next` の `ensures` | for ループ 1 周ごとのコスト。B の他がすべて入って、なお欲しいときに |
 | `clone` の `allocations(1)` | 実装が逐次 push なので成立しない |
 
@@ -256,15 +256,19 @@ D は B と重なる (`push` の `ensures self.cap >= self.len` は不変条件 
 
 契約とは独立に直す価値があるもの。`todo.md` に登録済み。
 
-### 5-1. method に `never_allocates` と `unsafe` を重ねられない
+### 5-1. method に `never_allocates` と `unsafe` を重ねられなかった (**2026-09-21 に解消**)
 
 `frontend/src/parser/stmt.rs::parse_method_modifiers` が「次のトークンが
-`fn`」を両方の修飾子の条件にしているので、`never_allocates unsafe fn` /
-`unsafe never_allocates fn` は impl ブロック内で parse エラーになる
+`fn`」を両方の修飾子の条件にしていたので、`never_allocates unsafe fn` /
+`unsafe never_allocates fn` は impl ブロック内で parse エラーだった
 (自由関数の `program_parser.rs` は「次がもう 1 つの修飾子」も通す)。
-CLAUDE.md は「順不同」と書いているので実装が仕様に追いついていない。
-`Vec` の読み取り系はほぼ全部 `unsafe fn` なので、C の静的形はこれに
-塞がれている。修正は自由関数側の `next_leads_to_fn` 条件を写すだけ。
+並び全体を先に見てから消費する形にして解決。`Vec::get` が実例。
+
+**ただし静的形は思っていたほど必要ではなかった**: `never_allocates` の
+検査は到達可能性なので、**呼び出し側が名乗るのに被呼び出し側の宣言は
+要らない** (`never_allocates fn total(v: &Vec<u64>)` は `get` が
+名乗らなくても通る)。宣言の値打ちは「将来 `get` が確保したらここで
+落ちる」ことと、`--api` / `--effects` に出ることにある。
 
 ### 5-2. `ensures result.field` が compiled lane で落ちていた (**2026-09-21 に解消**)
 

@@ -12,6 +12,20 @@
 
 ### 2026-09-21
 
+- **AOT-MATCH-STR-ARM-BLOCK — 名前は型を指していたが、原因は形
+  だった** — 末尾の `match` の arm が**そのブロック自身が束縛した名前
+  で終わる** (`{ val a = f()  a }`) と、結果の局所を決める覗き見が
+  `Unit` を返し、「falls through without producing a value」で断られて
+  いた。`str` で見つかったので名前に `STR` が入っているが、**`u64`
+  でも同じ**だった (`val` に束縛する形は別の文面 `val/var rhs produced
+  no value` で落ちる)。覗き見が `val` の注釈か右辺から型を読むように
+  した。
+- **NEVER-ALLOCATES-METHOD-STACK — impl の中で修飾子を重ねられる
+  ようになった** — 修飾子の並びは「今見ている語の**直後**が `fn` か」で
+  判定していたので、`unsafe fn` と `never_allocates fn` は通り
+  `never_allocates unsafe fn` は通らなかった (自由関数側は 3 つとも
+  通る)。並び全体を先に見てから消費する。`unsafe` を名前に使う形は
+  従来どおり。`Vec::get` が `never_allocates` を名乗る。
 - **TEST-PARALLEL P5 — `test "..." serial { }`** — 共有資源を触る
   テストが**最後に 1 本ずつ**走る。既定が並列になった以上、逃げ道が
   `-j1` (スイート全体) しかないのは粗すぎた。ジョブは 1 本のリストの
@@ -2173,31 +2187,6 @@
   で、collection に `--check` を効かせる唯一の道
   ([`VEC_CONTRACTS.md`](VEC_CONTRACTS.md) §5-3)。
 
-- **AOT-MATCH-STR-ARM-BLOCK: `str` を返す match の arm がブロックだと
-  AOT が拒否する** — 最小再現:
-  ```
-  fn pick(o: Option<u64>) -> str {
-      match o {
-          Option::Some(v) => { val a: String = String::from_str("one")
-                               val s: str = a.to_str()
-                               s }
-          Option::None => { val b: String = String::from_str("none")
-                            val t: str = b.to_str()
-                            t }
-      }
-  }
-  ```
-  → `function falls through without producing a value of the declared
-  return type`。**片方の arm がリテラル (`"err"`) なら通る**ので、
-  両 arm が実行時に組み立てた `str` を返す形が落ちる。
-  **拒否であって誤答ではない** (コンパイル時に止まる)。回避は
-  arm で `println` する / `String` を返して呼び出し側で `to_str`。
-  `core/std/hex.t` / `base64.t` のテストはこの形を避けている。
-> 完了した項目はここに残さない (完了済み節と二重になる)。優先度は
-> ★ = あると良い / ★★ = 効果が見えている / ★★★ = ロードマップ級。
-
-### バックエンドのカバレッジ
-
 - **FN-NAME-AS-VALUE: トップレベル関数の名前を `fn` 値として渡せない**
   ★ — `fn twice(x: u64) -> u64` があっても `apply(twice, 21u64)` は
   `[E0001] expected fn (u64) -> u64, but got u64` (名前が値の位置で
@@ -2224,11 +2213,15 @@
   `struct S { u: () }` が `[E0004] Unsupported operation 'field type in
   struct 'S'' for type ()`。`()` は戻り型 / `val` 注釈 / 引数 / 型引数
   (`Result<(), E>` / `Vec<()>`) / リテラル (`val x = ()`) では**すべて
-  書ける**ので、フィールドだけが穴。門番は `struct_literal.rs` の
-  フィールド型検査 1 箇所で、layout 側は `flatten_compound_leaf_types`
-  が `Type::Unit` に leaf 0 個を与える扱いを既に持っている
-  (UNIT-TYPE-ARG がそれで通った)。実用途 (phantom フィールド、
-  `T = ()` の実体化) を踏んでから
+  書ける**ので、フィールドだけが穴。
+  **「門番 1 箇所」ではなかった** (2026-09-21 に着手して戻した):
+  型検査の門 (`struct_literal.rs`) と lowering の門
+  (`templates.rs`) を開けると、次は `FieldShape` に**局所を持たない
+  `Unit` 枝**が要る — enum 側には同じ理由で `PayloadSlot::Unit` が
+  既に在り、「leaf 0 個なので値の並びがずれない」という同じコメントが
+  付いている。`FieldShape` の分類箇所は **74**。半分だけ開けると
+  tree-walker が通して compiled lane が断る形になるので、やるなら
+  通しで。実用途 (phantom フィールド、`T = ()` の実体化) を踏んでから
 - **COMPOUND-BLOCK-RHS の残: method call の枝** ★ —
   `val p = if c { x.twin() } else { .. }` は
   `detect_struct_result` が method の戻り型を安く引けないので検出されず、

@@ -259,3 +259,59 @@ fn recursion_does_not_confuse_the_walk() {
         7,
     );
 }
+
+#[test]
+fn a_method_may_stack_never_allocates_and_unsafe() {
+    // NEVER-ALLOCATES-METHOD-STACK: the modifier run in an `impl`
+    // block asked whether `fn` came *immediately* after the word it
+    // was looking at, so `unsafe fn` and `never_allocates fn` parsed
+    // and `never_allocates unsafe fn` did not — while the
+    // free-function parser accepted all three. `Vec`'s read-only half
+    // is nearly all `unsafe fn`, and this is why none of it could also
+    // promise not to allocate.
+    //
+    // Both orders, because the two say different things about the
+    // same method and neither qualifies the other.
+    assert_program_result_u64(
+        r#"
+        struct Cell { v: u64 }
+
+        impl Cell {
+            never_allocates unsafe fn one(&self) -> u64 { self.v }
+            unsafe never_allocates fn two(&self) -> u64 { self.v * 2u64 }
+        }
+
+        fn main() -> u64 {
+            val c = Cell { v: 3u64 }
+            c.one() + c.two()
+        }
+        "#,
+        9,
+    );
+}
+
+#[test]
+fn unsafe_is_still_an_ordinary_name_in_an_impl_block() {
+    // The run is recognised as a whole before any of it is consumed,
+    // so a binding that happens to be called `unsafe` is not eaten by
+    // a parser that has already committed to a modifier.
+    assert_program_result_u64(
+        r#"
+        struct Cell { v: u64 }
+
+        impl Cell {
+            fn plain(&self) -> u64 {
+                val unsafe = 7u64
+                val never_allocates = 2u64
+                unsafe * never_allocates
+            }
+        }
+
+        fn main() -> u64 {
+            val c = Cell { v: 0u64 }
+            c.plain()
+        }
+        "#,
+        14,
+    );
+}

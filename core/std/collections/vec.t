@@ -261,7 +261,17 @@ impl<T> Vec<T> {
     # this used to be the one indexed read that did not, and reading
     # past the end reached the host — `value not defined` from inside
     # the IR VM, with no toylang position or backtrace left.
-    unsafe fn get(&self, index: u64) -> T
+    # `never_allocates` as well as `unsafe`. A caller that promises the
+    # same does not need it — the check is reachability-based, and
+    # reading an element reaches no allocation either way — but the
+    # declaration is checked, so a future `get` that did allocate
+    # would fail here rather than quietly widen what every
+    # `never_allocates` caller is allowed to reach. It also shows up
+    # in `--api` and `--effects`, where the property is the answer.
+    #
+    # The two modifiers could not be stacked at all until 2026-09-21
+    # (NEVER-ALLOCATES-METHOD-STACK).
+    never_allocates unsafe fn get(&self, index: u64) -> T
         requires index < self.len
     {
         if index >= self.len { panic("Vec::get index out of bounds") }

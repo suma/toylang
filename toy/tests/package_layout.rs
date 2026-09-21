@@ -1508,3 +1508,51 @@ fn main() -> u64 {
         "and be reported in the file that declares it: {stderr}"
     );
 }
+
+#[test]
+fn a_module_calls_its_own_function_not_the_programs() {
+    // STDLIB-FN-SHADOWED-BY-USER-FN, in its quiet form. A bare call
+    // in a module's body resolved to the *program's* function of that
+    // name, so where the two signatures happened to agree the wrong
+    // one was called and nothing said so: `lib2::report(2)` answered
+    // 2000 (the program's `helper`) instead of 20 (its own).
+    //
+    // `import` makes a module's names visible to the program. It does
+    // not work the other way round — a module is written without any
+    // knowledge of what will import it.
+    let pkg = scratch("module_own_helper");
+    write(
+        &pkg,
+        "src/lib2.t",
+        r#"
+fn helper(n: u64) -> u64 { n * 10u64 }
+
+pub fn report(n: u64) -> u64 {
+    helper(n)
+}
+"#,
+    );
+    write(
+        &pkg,
+        "main.t",
+        r#"
+fn helper(n: u64) -> u64 { n * 1000u64 }
+
+fn main() -> u64 {
+    println(lib2::report(2u64))
+    println(helper(2u64))
+    0u64
+}
+"#,
+    );
+    for backend in ["vm", "aot"] {
+        let out = run(&pkg, &["run", pkg.0.to_str().unwrap(), "--backend", backend]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("20\n") && stdout.contains("2000"),
+            "{backend}: the module's own `helper` answers its call, the program's answers \
+             the program's: stdout: {stdout}\nstderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}

@@ -412,7 +412,7 @@ impl<'a> FunctionLower<'a> {
         if let Expr::AssociatedFunctionCall(qualifier, fn_name, ref args_vec) = rhs.clone()
             && !self.struct_defs.contains_key(&qualifier)
             && !self.enum_defs.contains_key(&qualifier)
-            && let Some(target_id) = self.module.lookup_function(
+            && let Some(target_id) = self.lookup_fn_here(
                 Some(&self.written_qualifier_at(Some(rhs_ref), qualifier)),
                 fn_name,
             )
@@ -799,7 +799,7 @@ impl<'a> FunctionLower<'a> {
         rhs_ref: &ExprRef,
         callee_name: DefaultSymbol,
     ) -> Result<Option<Option<ValueId>>, String> {
-        if let Some(callee_id) = self.module.lookup_function(None, callee_name)
+        if let Some(callee_id) = self.lookup_fn_here(None, callee_name)
             && let Some(callee_fn) = self
                 .program
                 .function
@@ -927,7 +927,7 @@ impl<'a> FunctionLower<'a> {
         annotation: Option<&TypeDecl>,
         args_ref: &ExprRef,
     ) -> Option<crate::ir::FuncId> {
-        if let Some(id) = self.module.lookup_function(None, fn_name) {
+        if let Some(id) = self.lookup_fn_here(None, fn_name) {
             return Some(id);
         }
         if !self.generic_funcs.contains_key(&fn_name) {

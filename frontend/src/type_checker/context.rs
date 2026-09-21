@@ -141,6 +141,16 @@ pub struct TypeCheckContext {
     pub struct_generic_params: HashMap<DefaultSymbol, Vec<DefaultSymbol>>, // Store generic parameters for structs
     pub struct_generic_bounds: HashMap<DefaultSymbol, HashMap<DefaultSymbol, TypeDecl>>, // Bounds per struct generic param
     pub var_type_mappings: Vec<HashMap<DefaultSymbol, HashMap<DefaultSymbol, TypeDecl>>>, // Store type parameter mappings for variables
+    /// STDLIB-FN-SHADOWED-BY-USER-FN: the module whose body is being
+    /// checked, or `None` for the user's own file.
+    ///
+    /// A bare call resolves against this module **before** the
+    /// user-authored table. Without it, `core/std/time.t` calling its
+    /// own `pad2_field` resolved to a user function of that name —
+    /// the stdlib body was checked against the wrong signature, and
+    /// the error was reported at a line of the *user's* file that had
+    /// nothing to do with it.
+    pub current_module_path: Option<Vec<DefaultSymbol>>,
     pub current_impl_target: Option<DefaultSymbol>,  // For Self type resolution
     pub current_impl_generic_params: Option<Vec<DefaultSymbol>>,  // For generic parameters in current impl block
     // Bounds for the generic parameters of the function currently being
@@ -261,6 +271,7 @@ impl TypeCheckContext {
             vars: vec![HashMap::with_capacity(16)],
             functions: HashMap::with_capacity(32),
             module_functions: HashMap::with_capacity(256),
+            current_module_path: None,
             struct_definitions: HashMap::with_capacity(16),
             struct_methods: HashMap::with_capacity(16),
             struct_generic_params: HashMap::with_capacity(16),
@@ -453,6 +464,18 @@ impl TypeCheckContext {
         qualifier: Option<&[DefaultSymbol]>,
         name: DefaultSymbol,
     ) -> FnLookup {
+        // STDLIB-FN-SHADOWED-BY-USER-FN: a body inside a module asks
+        // its own module first. `import` makes a module's names
+        // visible to the program; it does not make the program's
+        // names visible to the module, and a module was written
+        // without any knowledge of what would import it.
+        if qualifier.is_none()
+            && let Some(home) = self.current_module_path.as_deref()
+            && let Some(candidates) = self.module_functions.get(&name)
+            && let Some(own) = candidates.iter().find(|c| *c.path == *home)
+        {
+            return FnLookup::Found(Rc::clone(&own.func));
+        }
         if qualifier.is_none()
             && let Some(f) = self.functions.get(&name)
         {

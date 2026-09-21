@@ -1935,6 +1935,7 @@ impl<'a> FunctionLower<'a> {
             pending_closure_work,
             pending_par_work,
             in_par_body: false,
+            home_module: None,
             pending_glue_work,
             arm_drop_targets: Vec::new(),
             scheduled,
@@ -2179,6 +2180,11 @@ impl<'a> FunctionLower<'a> {
             is_extern: false,
             extern_link: None,
             visibility: method.visibility,
+            // STDLIB-FN-SHADOWED-BY-USER-FN: `lower_body` reads the
+            // home off the function it is handed, and this wrapper is
+            // what it gets for a method — so the method's own module
+            // has to survive the wrapping.
+            module_path: method.module_path.clone(),
         };
         // Stage 1 of `&` references: remember whether this body
         // is a `&mut self` method. After parameter binding (in
@@ -2196,6 +2202,11 @@ impl<'a> FunctionLower<'a> {
     }
 
     pub(super) fn lower_body(&mut self, func: &frontend::ast::Function) -> Result<(), String> {
+        // STDLIB-FN-SHADOWED-BY-USER-FN: a bare call in this body
+        // resolves in the module the function was written in. One
+        // `FunctionLower` lowers one body, so there is nothing to
+        // restore.
+        self.home_module = func.module_path.clone();
         // Allocate one local slot per scalar parameter (struct
         // parameters expand into one local per field) and seed
         // `bindings` so identifier references resolve via `LoadLocal`.

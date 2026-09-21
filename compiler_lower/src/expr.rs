@@ -935,7 +935,7 @@ impl<'a> FunctionLower<'a> {
             // A scalar-returning call falls through to the caller's
             // normal path.
             Expr::Call(fn_name, args_ref) => {
-                let Some(target_id) = self.module.lookup_function(None, fn_name) else {
+                let Some(target_id) = self.lookup_fn_here(None, fn_name) else {
                     return Ok(None);
                 };
                 let ret = self.module.function(target_id).return_type;
@@ -2271,7 +2271,7 @@ impl<'a> FunctionLower<'a> {
                 let written = self.written_qualifier(struct_name);
                 self.module
                     .lookup_function(Some(&written), fn_name)
-                    .or_else(|| self.module.lookup_function(None, fn_name))
+                    .or_else(|| self.lookup_fn_here(None, fn_name))
             }
         } else {
             None

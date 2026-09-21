@@ -12,6 +12,20 @@
 
 ### 2026-09-21
 
+- **STDLIB-FN-SHADOWED-BY-USER-FN — モジュールの body は自分の
+  モジュールを先に見る** — 素の名前は**必ずユーザ側の表を先に**
+  引いていたので、`core/std/time.t` が自分の `pad2_field` を呼ぶと
+  ユーザの同名関数に解決していた。大きい方の症状は stdlib の body が
+  誤ったシグネチャで検査され、**ユーザのファイルの存在しない行**を
+  指してエラーが出ること。**静かな方**はシグネチャがたまたま合った
+  場合で、全レーンが黙って違う関数を呼ぶ (`lib2::report(2)` が
+  20 ではなく 2000 を返す)。`import` はモジュールの名前を
+  プログラムに見せる仕組みであって、その逆ではない — モジュールは
+  何にインポートされるか知らずに書かれている。
+  `Function` / `MethodFunction` / `TraitMethodSignature` が
+  **自分のモジュールを持つ**ようになり (統合が刻む)、3 つの解決器
+  (型検査器 / tree-walker / lowering) が同じ規則を読む。
+  `.toycache` の schema は 50 に。
 - **TRAIT-CONTRACT-EXPRREF — モジュールの trait が契約を持てるように
   なった** — 署名の `requires` / `ensures` は**モジュールのプール**を
   指す `ExprRef` なのに、統合がそれを写さずそのまま運んでいた。
@@ -2142,21 +2156,6 @@
   **拒否であって誤答ではない** (コンパイル時に止まる)。回避は
   arm で `println` する / `String` を返して呼び出し側で `to_str`。
   `core/std/hex.t` / `base64.t` のテストはこの形を避けている。
-- **STDLIB-FN-SHADOWED-BY-USER-FN: user の自由関数が stdlib module の
-  同名関数を内側から置き換える** — `fn pad2_field(n: u64) -> u64` を
-  書いたプログラムが `println(dt)` で落ちる
-  (`[E0001] expected u64, but got u32 ... 'pad2_field'`、**行は
-  `core/std/time.t` の中**を指す)。stdlib の body の裸の呼び出しが
-  user の関数に解決されるため。**黙って壊れる形もある**: `fn at(...)`
-  を書くと `log::at` の body が誤った引数型で検査され、
-  `Display for Level` の書き換えが起きず `INFO` の代わりに
-  `Level::Info` が出た (診断は出ない)。回避は module 側が自分の名前を
-  `log::` で修飾すること (それでも body の検査は直らないので、
-  `log.t` は Display 依存も外した)。直す場所は名前解決 —
-  module の body から見える自由関数は、その module のものを先に
-  探すべき。FREE-FN-VS-ASSOC-COLLISION (型の method vs 自由関数、
-  解決済み) と同じ族の残り。
-
 > 完了した項目はここに残さない (完了済み節と二重になる)。優先度は
 > ★ = あると良い / ★★ = 効果が見えている / ★★★ = ロードマップ級。
 

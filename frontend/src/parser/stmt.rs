@@ -943,6 +943,9 @@ pub fn parse_trait_method_signatures_with_generics(
                 let fn_end_pos = parser.peek_position_n(0).unwrap_or(&std::ops::Range { start: 0, end: 0 }).end;
 
                 methods.push(TraitMethodSignature {
+                    // The parser reads one file; integration says
+                    // which module it was.
+                    module_path: None,
                     node: Node::new(fn_start_pos, fn_end_pos),
                     name: method_name,
                     generic_params: vec![],
@@ -1086,6 +1089,7 @@ pub fn parse_impl_methods_with_generic_context(
                             has_self_param: has_self,
                             self_is_mut,
                             visibility,
+                            module_path: None,
                         }));
                         
                         parser.skip_newlines();

@@ -591,6 +591,9 @@ fn synthesize_default_method(sig: &TraitMethodSignature, body: StmtRef) -> Rc<Me
         has_self_param: sig.has_self_param,
         self_is_mut: sig.self_is_mut,
         visibility: Visibility::Public,
+        // A1: the body being copied in is the *trait's*, so it
+        // resolves in the trait's module, not the impl's.
+        module_path: sig.module_path.clone(),
     })
 }
 

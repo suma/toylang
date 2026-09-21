@@ -68,6 +68,11 @@ pub(crate) struct AstIntegrationContext<'a> {
     /// the caller knows. `None` for the prelude and for direct
     /// integration calls that pass no path.
     module_label: Option<String>,
+    /// STDLIB-FN-SHADOWED-BY-USER-FN: the module's own dotted path,
+    /// in **main**-interner symbols, stamped onto every function it
+    /// declares. `None` for a direct integration call that names no
+    /// path (a bare `import` of a file, and the prelude).
+    module_path: Option<Vec<DefaultSymbol>>,
     /// The module's path as a diagnostic names it, so a failing test
     /// in it cites its own file rather than the entry's.
     module_display_path: String,
@@ -126,6 +131,7 @@ impl<'a> AstIntegrationContext<'a> {
             shadowed_stdlib_types,
             module_file,
             module_label: None,
+            module_path: None,
             module_display_path: String::new(),
         }
     }
@@ -134,6 +140,14 @@ impl<'a> AstIntegrationContext<'a> {
     fn with_label(mut self, label: Option<String>, display_path: &str) -> Self {
         self.module_label = label;
         self.module_display_path = display_path.to_string();
+        self
+    }
+
+    /// STDLIB-FN-SHADOWED-BY-USER-FN: which module this is, so its
+    /// functions can say so. The path arrives in module-interner
+    /// symbols and is translated here, once.
+    fn with_path(mut self, path: Option<&[DefaultSymbol]>) -> Self {
+        self.module_path = path.map(|p| p.to_vec());
         self
     }
 
@@ -885,6 +899,10 @@ impl<'a> AstIntegrationContext<'a> {
                         .map(|e| self.map_expr(e, "trait old() snapshot expr"))
                         .collect::<Result<Vec<_>, _>>()?;
                     new_methods.push(TraitMethodSignature {
+                        // STDLIB-FN-SHADOWED-BY-USER-FN: a default
+                        // body inherited by an impl elsewhere still
+                        // resolves its bare calls here.
+                        module_path: self.module_path.clone(),
                         node: sig.node.clone(),
                         name: remapped_method_name,
                         generic_params: remapped_generic_params,
@@ -1106,7 +1124,11 @@ impl<'a> AstIntegrationContext<'a> {
             code: new_code,
             is_extern: function.is_extern,
             extern_link: new_extern_link,
-            visibility: function.visibility
+            visibility: function.visibility,
+            // STDLIB-FN-SHADOWED-BY-USER-FN: where this function was
+            // written. A bare call in its body resolves here first,
+            // so it has to travel with the function.
+            module_path: self.module_path.clone(),
         })
     }
 
@@ -1171,7 +1193,10 @@ impl<'a> AstIntegrationContext<'a> {
             code: new_code,
             has_self_param: method.has_self_param,
             self_is_mut: method.self_is_mut,
-            visibility: method.visibility
+            visibility: method.visibility,
+            // STDLIB-FN-SHADOWED-BY-USER-FN: a method's bare calls
+            // resolve in the module its impl block was written in.
+            module_path: self.module_path.clone(),
         }))
     }
 
@@ -1816,7 +1841,8 @@ pub fn integrate_module_into_program_with_options_full(
         shadowed_stdlib_types,
         module_file,
     )
-    .with_label(label, display_path);
+    .with_label(label, display_path)
+    .with_path(module_path.as_deref());
 
     let integrated_functions = integration_context.integrate()?;
     for function in integrated_functions {
@@ -1876,7 +1902,8 @@ pub(crate) fn integrate_cached_module(
         shadowed_stdlib_types.clone(),
         module_file,
     )
-    .with_label(label, display_path);
+    .with_label(label, display_path)
+    .with_path(module_path);
     let integrated_functions = integration_context.integrate()?;
     for function in integrated_functions {
         main_program.function.push(function);
@@ -2057,7 +2084,8 @@ pub(crate) fn integrate_preparsed_core_module(
                 shadowed_stdlib_types.clone(),
                 module_file,
             )
-            .with_label(label, display_path);
+            .with_label(label, display_path)
+                .with_path(module_path);
             let integrated_functions = integration_context.integrate()?;
             for function in integrated_functions {
                 main_program.function.push(function);

@@ -544,6 +544,10 @@ struct FunctionLower<'a> {
     /// loop already has every thread, and nesting them would only
     /// oversubscribe (CONCURRENCY.md section 6).
     in_par_body: bool,
+    /// STDLIB-FN-SHADOWED-BY-USER-FN: the module this body was
+    /// written in. A bare call resolves here first — see
+    /// [`FunctionLower::lookup_fn_here`].
+    home_module: Option<Vec<DefaultSymbol>>,
     /// DROP-GLUE: queue of pending drop-glue function bodies whose
     /// anonymous function has been declared but not yet lowered.
     /// Glue functions request further glue functions, so the
@@ -665,6 +669,31 @@ pub(crate) struct PendingThunkBody {
 pub(crate) struct ClosureBindingLink {
     pub(crate) func_id: FuncId,
     pub(crate) env_ptr: Option<crate::ir::ValueId>,
+}
+
+impl FunctionLower<'_> {
+    /// Resolve a called name the way this body would read it.
+    ///
+    /// STDLIB-FN-SHADOWED-BY-USER-FN: a bare name inside a module's
+    /// body means that module's function, if it has one. Every
+    /// `lookup_function` in the lowering goes through here so the
+    /// three resolvers (this one, the type checker, the tree-walker)
+    /// answer one question the same way — the alternative is a
+    /// program that type-checks against one function and calls
+    /// another.
+    pub(crate) fn lookup_fn_here(
+        &self,
+        qualifier: Option<&[DefaultSymbol]>,
+        name: DefaultSymbol,
+    ) -> Option<FuncId> {
+        if qualifier.is_none()
+            && let Some(home) = self.home_module.as_deref()
+            && let Some(id) = self.module.lookup_function_in(home, name)
+        {
+            return Some(id);
+        }
+        self.module.lookup_function(qualifier, name)
+    }
 }
 
 impl<'a> FunctionLower<'a> {

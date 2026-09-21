@@ -260,6 +260,22 @@ pub struct Function {
     /// `-l<lib>`. `None` for every non-extern function.
     pub extern_link: Option<ExternLink>,
     pub visibility: Visibility,
+    /// STDLIB-FN-SHADOWED-BY-USER-FN: the module this function was
+    /// written in, as a full dotted path (`["std", "time"]`), or
+    /// `None` for one the user wrote.
+    ///
+    /// The same fact as `File::function_module_paths[i]`, carried by
+    /// the function instead of by its index — because **a bare call
+    /// inside a body resolves against the body's own module first**,
+    /// and the three resolvers that have to agree about that
+    /// (the type checker, the tree-walker, the lowering) each hold a
+    /// function rather than an index into the file that declared it.
+    /// Without it, `core/std/time.t` calling its own `pad2_field`
+    /// reached a user function of that name: the stdlib body was
+    /// checked against the wrong signature, and — where the
+    /// signatures happened to match — silently *called* the wrong
+    /// function on every lane.
+    pub module_path: Option<Vec<DefaultSymbol>>,
 }
 
 /// `from "lib" as "sym"` on an `extern fn` declaration (FFI_PLAN 論点 1).
@@ -346,6 +362,11 @@ pub enum EnsuresKind {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TraitMethodSignature {
+    /// STDLIB-FN-SHADOWED-BY-USER-FN: the module the trait was
+    /// declared in. A **default body** is the trait's own code, so a
+    /// bare call in it resolves in the trait's module even when the
+    /// impl that inherited it lives somewhere else.
+    pub module_path: Option<Vec<DefaultSymbol>>,
     pub node: Node,
     pub name: DefaultSymbol,
     pub generic_params: Vec<DefaultSymbol>,
@@ -459,6 +480,12 @@ pub struct MethodFunction {
     /// semantics on every receiver kind).
     pub self_is_mut: bool,
     pub visibility: Visibility,
+    /// STDLIB-FN-SHADOWED-BY-USER-FN: the module this method was
+    /// written in. Same rule and same reason as
+    /// [`Function::module_path`] — `DateTime::to_str` calls its
+    /// file's own `pad2_field`, and a user function of that name must
+    /// not answer for it.
+    pub module_path: Option<Vec<DefaultSymbol>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -436,6 +436,13 @@ impl EvaluationContext<'_> {
         self.push_frame(frame, call_site);
 
         // Create new scope for method execution
+        // STDLIB-FN-SHADOWED-BY-USER-FN: a bare call in this
+        // body resolves in the module the method was written
+        // in. Restored beside every `exit_block` below.
+        let prev_home = std::mem::replace(
+            &mut self.current_module_path,
+            method.module_path.clone(),
+        );
         self.environment.enter_block();
 
         // Stage 1 of `&` references: implicit `&self` / `&mut self`
@@ -518,11 +525,13 @@ impl EvaluationContext<'_> {
         if let Err(e) = self.evaluate_requires_clauses(method.name, &method.requires, &method.parameter) {
             self.pop_generic_type_scope();
             self.environment.exit_block();
+                self.current_module_path = prev_home.clone();
             return Err(e);
         }
         if let Err(e) = self.evaluate_old_snapshots(&method.old_exprs) {
             self.pop_generic_type_scope();
             self.environment.exit_block();
+                self.current_module_path = prev_home.clone();
             return Err(e);
         }
 
@@ -538,6 +547,7 @@ impl EvaluationContext<'_> {
             Ok(EvaluationResult::Value(v)) => {
                 if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, &method.ensures_kinds, v.clone_to_rc(), &method.parameter) {
                     self.environment.exit_block();
+                self.current_module_path = prev_home.clone();
                     return Err(e);
                 }
                 Ok(EvaluationResult::Value(v))
@@ -546,6 +556,7 @@ impl EvaluationContext<'_> {
                 let ret = v.clone().map(|val| val.into_rc()).unwrap_or_else(|| Rc::new(RefCell::new(Object::Unit)));
                 if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, &method.ensures_kinds, ret, &method.parameter) {
                     self.environment.exit_block();
+                self.current_module_path = prev_home.clone();
                     return Err(e);
                 }
                 // DICT-RETURN-WHILE follow-up: an explicit `return v`
@@ -565,6 +576,7 @@ impl EvaluationContext<'_> {
 
         // Clean up scope
         self.environment.exit_block();
+                self.current_module_path = prev_home.clone();
         if result.is_ok() {
             self.pop_frame();
         }
@@ -2112,6 +2124,13 @@ impl EvaluationContext<'_> {
             ));
         }
 
+        // STDLIB-FN-SHADOWED-BY-USER-FN: a bare call inside this body
+        // resolves in the module the function was written in. Restored
+        // at every exit below, beside the recursion counter.
+        let prev_home = std::mem::replace(
+            &mut self.current_module_path,
+            function.module_path.clone(),
+        );
         self.environment.enter_block();
         // Track which params are `&mut T` so we can snapshot their
         // post-body values just before `exit_block` clears the
@@ -2180,12 +2199,14 @@ impl EvaluationContext<'_> {
             self.pop_generic_type_scope();
             self.environment.exit_block();
             self.call_depth -= 1;
+            self.current_module_path = prev_home.clone();
             return Err(e);
         }
         if let Err(e) = self.evaluate_old_snapshots(&function.old_exprs) {
             self.pop_generic_type_scope();
             self.environment.exit_block();
             self.call_depth -= 1;
+            self.current_module_path = prev_home.clone();
             return Err(e);
         }
 
@@ -2216,6 +2237,7 @@ impl EvaluationContext<'_> {
         if let Err(e) = self.evaluate_ensures_clauses(function.name, &function.ensures, &function.ensures_kinds, return_value.clone_to_rc(), &function.parameter) {
             self.environment.exit_block();
             self.call_depth -= 1;
+            self.current_module_path = prev_home.clone();
             return Err(e);
         }
 
@@ -2229,6 +2251,7 @@ impl EvaluationContext<'_> {
             .collect();
 
         self.call_depth -= 1;
+        self.current_module_path = prev_home.clone();
         self.environment.exit_block();
         Ok((return_value, writebacks))
     }

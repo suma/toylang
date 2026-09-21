@@ -432,6 +432,9 @@ fn lower_for_fold(
             is_extern: false,
             extern_link: None,
             visibility: Visibility::Private,
+            // A synthesised wrapper for one `const` initialiser; it
+            // belongs to the file being compiled, not to a module.
+            module_path: None,
         });
         program.function.push(Rc::clone(&function));
         program.tests.push(TestCase {

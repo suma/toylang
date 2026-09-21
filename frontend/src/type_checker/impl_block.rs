@@ -108,6 +108,15 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         // Impl block type checking - validate methods
         for method in methods {
+            // STDLIB-FN-SHADOWED-BY-USER-FN: a bare call in this
+            // body asks the module the method was written in first.
+            // Restored beside `current_eq_owner` at every exit —
+            // leaving it set would make the *next* thing checked
+            // resolve as if it lived in this module.
+            let prev_home = std::mem::replace(
+                &mut self.context.current_module_path,
+                method.module_path.clone(),
+            );
             // Use method.rs module for validation
             self.process_impl_method_validation(struct_symbol, method, has_generics)?;
 
@@ -159,6 +168,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     self.context.current_fn_generic_bounds = prev_bounds;
                     self.context.current_fn_generic_params = prev_generic_params;
                     self.context.current_eq_owner = prev_eq_owner;
+                    self.context.current_module_path = prev_home.clone();
                     self.restore_method_parameter_context();
                     if has_generics {
                         self.type_inference.pop_generic_scope();
@@ -196,6 +206,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     self.context.current_fn_generic_bounds = prev_bounds;
                     self.context.current_fn_generic_params = prev_generic_params;
                     self.context.current_eq_owner = prev_eq_owner;
+                    self.context.current_module_path = prev_home.clone();
                     self.restore_method_parameter_context();
                     if has_generics {
                         self.type_inference.pop_generic_scope();
@@ -207,6 +218,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         self.context.current_fn_generic_bounds = prev_bounds;
                         self.context.current_fn_generic_params = prev_generic_params;
                         self.context.current_eq_owner = prev_eq_owner;
+                        self.context.current_module_path = prev_home.clone();
                         self.restore_method_parameter_context();
                         if has_generics {
                             self.type_inference.pop_generic_scope();
@@ -223,6 +235,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             self.context.current_fn_generic_bounds = prev_bounds;
             self.context.current_fn_generic_params = prev_generic_params;
             self.context.current_eq_owner = prev_eq_owner;
+            self.context.current_module_path = prev_home.clone();
             self.restore_method_parameter_context();
 
             // Validate method return type compatibility using method.rs module

@@ -266,8 +266,7 @@ impl<'a> FunctionLower<'a> {
             }
             Expr::Call(fn_name, args_ref) => {
                 let func_id = self
-                    .module
-                    .lookup_function(None, fn_name)
+                    .lookup_fn_here(None, fn_name)
                     .ok_or_else(|| {
                         format!(
                             "unknown function `{}`",
@@ -413,8 +412,7 @@ impl<'a> FunctionLower<'a> {
             }
             Expr::Call(fn_name, args_ref) => {
                 let func_id = self
-                    .module
-                    .lookup_function(None, fn_name)
+                    .lookup_fn_here(None, fn_name)
                     .ok_or_else(|| {
                         format!(
                             "unknown function `{}`",

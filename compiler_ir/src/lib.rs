@@ -567,6 +567,24 @@ impl Module {
     /// `None` overall means "not found or ambiguous" — the type
     /// checker has already reported the difference by the time
     /// lowering runs.
+    /// STDLIB-FN-SHADOWED-BY-USER-FN: the function of this name
+    /// declared **in this exact module**, if there is one.
+    ///
+    /// A bare call inside a module's body asks this first: `import`
+    /// makes a module's names visible to the program, not the
+    /// program's names visible to the module.
+    pub fn lookup_function_in(
+        &self,
+        home: &[DefaultSymbol],
+        name: DefaultSymbol,
+    ) -> Option<FuncId> {
+        self.function_index
+            .get(&name)?
+            .iter()
+            .find(|e| e.module_path.as_deref() == Some(home))
+            .map(|e| e.id)
+    }
+
     pub fn lookup_function(
         &self,
         qualifier: Option<&[DefaultSymbol]>,

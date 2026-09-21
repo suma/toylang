@@ -171,6 +171,16 @@ pub struct EvaluationContext<'a> {
     /// `function` map above is kept for backwards-compatibility at
     /// sites that don't yet thread the qualifier.
     pub(crate) function_qualified: Rc<HashMap<DefaultSymbol, Vec<QualifiedFunction>>>,
+    /// STDLIB-FN-SHADOWED-BY-USER-FN: the module whose body is
+    /// running, or `None` in the user's own code.
+    ///
+    /// A bare call resolves here first. `import` makes a module's
+    /// names visible to the program; it does not make the program's
+    /// names visible to the module, and a module was written without
+    /// any knowledge of what would import it — so `time.t` calling
+    /// its own `pad2_field` must reach *its* one even when the
+    /// program has a function of that name.
+    pub(crate) current_module_path: Option<Vec<DefaultSymbol>>,
     pub environment: Environment,
     /// `Rc` for the same reason as `function` (shared across trials).
     pub(crate) method_registry: Rc<HashMap<DefaultSymbol, HashMap<DefaultSymbol, Vec<MethodSpec>>>>, // struct_name -> method_name -> [specs by target_type_args]
@@ -417,6 +427,7 @@ impl<'a> EvaluationContext<'a> {
             string_interner,
             function: Rc::new(function),
             function_qualified: Rc::new(function_qualified),
+            current_module_path: None,
             environment: Environment::new(),
             method_registry: Rc::new(HashMap::new()),
             null_object: Rc::new(RefCell::new(Object::null_unknown())),
@@ -489,6 +500,7 @@ impl<'a> EvaluationContext<'a> {
             string_interner,
             function: shared.func_map.clone(),
             function_qualified: shared.func_qualified.clone(),
+            current_module_path: None,
             environment: Environment::new(),
             method_registry: shared.method_registry.clone(),
             null_object: Rc::new(RefCell::new(Object::null_unknown())),
@@ -547,6 +559,16 @@ impl<'a> EvaluationContext<'a> {
     ) -> Option<Rc<Function>> {
         let entries = self.function_qualified.get(&name)?;
         if qualifier.is_none() {
+            // The running body's own module first — see
+            // `current_module_path`.
+            if let Some(home) = self.current_module_path.as_deref() {
+                if let Some(own) = entries
+                    .iter()
+                    .find(|e| e.module_path.as_deref() == Some(home))
+                {
+                    return Some(Rc::clone(&own.func));
+                }
+            }
             if let Some(entry) = entries.iter().find(|e| e.module_path.is_none()) {
                 return Some(Rc::clone(&entry.func));
             }

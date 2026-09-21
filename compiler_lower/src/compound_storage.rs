@@ -132,7 +132,7 @@ impl<'a> FunctionLower<'a> {
             // version stops short of it: `if c { mk(1u64) } else {
             // mk(2u64) }` is the shape people write, and the callee's
             // declared return type says which struct it is.
-            Expr::Call(fn_name, _) => match self.module.lookup_function(None, fn_name) {
+            Expr::Call(fn_name, _) => match self.lookup_fn_here(None, fn_name) {
                 Some(func_id) => match self.module.function(func_id).return_type {
                     Type::Struct(struct_id) => {
                         Some(BranchShape::Produces(ShapeSource::Instance(struct_id)))
@@ -263,7 +263,7 @@ impl<'a> FunctionLower<'a> {
         let Some(Expr::Call(fn_name, _)) = self.program.expression.get(rhs?) else {
             return None;
         };
-        let func_id = self.module.lookup_function(None, fn_name)?;
+        let func_id = self.lookup_fn_here(None, fn_name)?;
         match self.module.function(func_id).return_type {
             Type::Enum(enum_id) => Some(enum_id),
             _ => None,
@@ -368,7 +368,7 @@ impl<'a> FunctionLower<'a> {
                 )),
                 _ => None,
             },
-            Expr::Call(fn_name, _) => match self.module.lookup_function(None, fn_name) {
+            Expr::Call(fn_name, _) => match self.lookup_fn_here(None, fn_name) {
                 Some(func_id) => match self.module.function(func_id).return_type {
                     Type::Tuple(tuple_id) => {
                         Some(BranchShape::Produces(TupleShapeSource::Interned(tuple_id)))
@@ -1158,8 +1158,7 @@ impl<'a> FunctionLower<'a> {
             // hoisted to its own `val` first.
             Expr::Call(fn_name, args_ref) => {
                 let target_id = self
-                    .module
-                    .lookup_function(None, fn_name)
+                    .lookup_fn_here(None, fn_name)
                     .ok_or_else(|| {
                         format!(
                             "unknown function `{}` in enum-producing position",

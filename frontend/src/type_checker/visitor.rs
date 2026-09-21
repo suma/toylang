@@ -646,7 +646,16 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// own errors.
     pub fn type_check(&mut self, func: Rc<Function>) -> Result<TypeDecl, TypeCheckError> {
         let errors_before = self.errors.len();
+        // STDLIB-FN-SHADOWED-BY-USER-FN: a bare call in this body
+        // asks this function's own module first. Saved and restored
+        // rather than set once, because checking a body can reach
+        // another function's body, and that one has its own home.
+        let outer_home = std::mem::replace(
+            &mut self.context.current_module_path,
+            func.module_path.clone(),
+        );
         let result = self.type_check_body(func.clone());
+        self.context.current_module_path = outer_home;
 
         // The qualifier lookup scans the function table, so only pay for
         // it when there is actually something to tag.

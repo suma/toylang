@@ -175,7 +175,7 @@ impl<'a> FunctionLower<'a> {
             // takes `&mut self` and would queue a monomorphisation from
             // what is supposed to be a peek.
             Expr::Call(fn_name, _) => {
-                let target = self.module.lookup_function(None, fn_name)?;
+                let target = self.lookup_fn_here(None, fn_name)?;
                 match self.module.function(target).return_type {
                     Type::Enum(id) => Some(id),
                     _ => None,
@@ -390,7 +390,7 @@ impl<'a> FunctionLower<'a> {
                 self.closure_bindings
                     .get(&fn_name)
                     .map(|link| link.func_id)
-                    .or_else(|| self.module.lookup_function(None, fn_name))
+                    .or_else(|| self.lookup_fn_here(None, fn_name))
                     .map(|id| self.module.function(id).return_type)
                     // A generic template is *not* in the function index
                     // (its instances are registered under the mangled
@@ -488,7 +488,7 @@ impl<'a> FunctionLower<'a> {
                 let written = self.written_qualifier_at(Some(expr_ref), struct_name);
                 self.module
                     .lookup_function(Some(&written), fn_name)
-                    .or_else(|| self.module.lookup_function(None, fn_name))
+                    .or_else(|| self.lookup_fn_here(None, fn_name))
                     .or_else(|| {
                         crate::method_registry::lookup_method_func(
                             self.method_func_ids,

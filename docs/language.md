@@ -3961,7 +3961,7 @@ Module paths come from the file system layout under the core dir:
 |----------------------------|--------------------|----------|
 | `<core>/foo.t`             | `["foo"]`          | `foo`    |
 | `<core>/foo/foo.t`         | `["foo", "foo"]`   | `foo`    |
-| `<core>/foo/mod.t`         | `["foo", "mod"]`   | `mod`    |
+| `<core>/foo/mod.t`         | `["foo"]`          | `foo`    |
 | `<core>/std/math.t`        | `["std", "math"]`  | `math`   |
 | `<core>/std/collections/vec.t` | `["std", "collections", "vec"]` | `vec` |
 
@@ -3970,18 +3970,25 @@ always the last one** — so `math::sin(x)` resolves through
 `core/std/math.t` even though the on-disk path is nested, and the
 leading `std` is not part of any name a program writes.
 
-> **`mod.t` is not an entry point on the auto-load path.** It is
-> treated as a file named `mod`, so `<core>/foo/mod.t` answers to
-> `mod::`, not `foo::`. Only `import` resolution (below) knows the
-> `mod.t` / `<name>/<name>.t` conventions. Unifying the two is
-> `design-docs/MODULE_SYSTEM.md` P3; until then, name a directory
-> module's entry point after something other than `mod`.
+> **`mod.t` names its directory.** `<core>/foo/mod.t` answers to
+> `foo::`, the same name `import foo` resolves to, so the two paths
+> agree. A `mod.t` directly under the core root has no directory to
+> name and is skipped.
 
 Auto-loaded modules opt out of bare-call enforcement, so user code
 can shadow auto-loaded names with same-name local definitions
 (`fn sin(x: i64) -> i64 { ... }` works even though `math::sin`
 exists). The qualified form keeps working through the synthetic
 `ImportDecl` the auto-load path inserts.
+
+**A bare name inside a module means that module's function.** The
+shadowing above is one-directional: a program may give a name its own
+meaning, and a module goes on meaning what it wrote. `import` makes a
+module's names visible to the program, never the other way round — a
+module is written without any knowledge of what will import it, so a
+program that happens to declare `fn pad2_field` does not change what
+`core/std/time.t` calls. A trait's **default body** resolves in the
+trait's module, not in the module of the impl that inherited it.
 
 The function table records each function's **full** module path
 end-to-end (IR `function_index`, type-checker

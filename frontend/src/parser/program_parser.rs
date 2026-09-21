@@ -251,6 +251,9 @@ impl<'a> Parser<'a> {
                     is_extern: false,
                     extern_link: None,
                     visibility: Visibility::Private,
+                    // The parser reads one file and does not know
+                    // where it sits; integration fills this in.
+                    module_path: None,
                 }));
                 out.tests.push(TestCase {
                     name: display_name,
@@ -501,6 +504,7 @@ impl<'a> Parser<'a> {
             is_extern: true,
             extern_link,
             visibility,
+            module_path: None,
         }));
         Ok(())
     }
@@ -575,6 +579,7 @@ impl<'a> Parser<'a> {
                     is_extern: false,
                     extern_link: None,
                     visibility,
+                    module_path: None,
                 }));
             }
             _ => {

@@ -84,3 +84,4 @@ mod by_value_params;
 mod ref_reborrow;
 mod try_compound;
 mod parallel_for;
+mod name_resolution;

@@ -149,7 +149,7 @@ impl<'a> FunctionLower<'a> {
         // first, then any unique `(Some(_), fn_name)` integrated
         // module's `pub fn`. See `Module::lookup_function` for the
         // ambiguity rule.
-        if let Some(id) = self.module.lookup_function(None, fn_name) {
+        if let Some(id) = self.lookup_fn_here(None, fn_name) {
             return Ok(id);
         }
         Err(format!(

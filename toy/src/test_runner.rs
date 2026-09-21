@@ -95,6 +95,9 @@ struct Planned {
     file: String,
     line: u32,
     expect_panic: Option<Option<String>>,
+    /// TEST-PARALLEL P5: `test "..." serial { }` — runs after every
+    /// parallel job, one at a time.
+    serial: bool,
     /// Position among the declaring file's blocks, which is how the
     /// IR VM lane names the one to run.
     index: usize,
@@ -165,7 +168,17 @@ fn run_in_package(pkg: &Package, opts: &Options) -> Result<(), String> {
         let tests: Vec<serde_json::Value> = plans
             .iter()
             .flat_map(|plan| plan.tests.iter())
-            .map(|t| serde_json::json!({ "name": t.name, "file": t.file, "line": t.line }))
+            // TEST-PARALLEL P5: `serial` is a property of the test,
+            // and it is the answer to "why did this suite not go any
+            // faster" — so the inventory says it.
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name,
+                    "file": t.file,
+                    "line": t.line,
+                    "serial": t.serial,
+                })
+            })
             .collect();
         println!("{}", serde_json::to_string_pretty(&serde_json::Value::Array(tests)).unwrap_or_default());
         return Ok(());
@@ -174,7 +187,8 @@ fn run_in_package(pkg: &Package, opts: &Options) -> Result<(), String> {
         let mut count = 0usize;
         for plan in &plans {
             for test in &plan.tests {
-                println!("{}  ({}:{})", test.name, test.file, test.line);
+                let mark = if test.serial { "  serial" } else { "" };
+                println!("{}  ({}:{}){mark}", test.name, test.file, test.line);
                 count += 1;
             }
         }
@@ -324,6 +338,7 @@ fn list_one(
             line: o.line,
             file: o.file,
             expect_panic: o.expect_panic,
+            serial: o.serial,
         })
         .collect())
 }
@@ -361,6 +376,7 @@ fn plan_all(pkg: &Package, files: &[PathBuf], opts: &Options) -> Result<Vec<File
                 file: file_name,
                 line: case.line,
                 expect_panic: case.expect_panic,
+                serial: case.serial,
                 index,
             });
         }
@@ -379,7 +395,7 @@ fn plan_all(pkg: &Package, files: &[PathBuf], opts: &Options) -> Result<Vec<File
 
 /// Cut the plan into jobs and run them, `opts.jobs` at a time.
 fn execute(pkg: &Package, plans: &[FilePlan], opts: &Options) -> Result<Vec<Outcome>, String> {
-    let jobs = build_jobs(plans, opts);
+    let Schedule { jobs, serial_from } = build_jobs(plans, opts);
     if jobs.is_empty() {
         return Ok(Vec::new());
     }
@@ -393,7 +409,7 @@ fn execute(pkg: &Package, plans: &[FilePlan], opts: &Options) -> Result<Vec<Outc
         .collect();
     let errors: Vec<OnceLock<String>> = jobs.iter().map(|_| OnceLock::new()).collect();
 
-    let workers = opts.jobs.max(1).min(jobs.len());
+    let workers = opts.jobs.max(1).min(serial_from.max(1));
     if workers == 1 {
         // No threads at all in the sequential case: it is the fallback
         // for anything the parallel path would disturb (`--bless`), so
@@ -404,7 +420,7 @@ fn execute(pkg: &Package, plans: &[FilePlan], opts: &Options) -> Result<Vec<Outc
     } else {
         let counter = AtomicUsize::new(0);
         let cursor = &counter;
-        let jobs_ref = &jobs;
+        let jobs_ref = &jobs[..serial_from];
         let slots_ref = &slots;
         let errors_ref = &errors;
         std::thread::scope(|scope| {
@@ -433,6 +449,14 @@ fn execute(pkg: &Package, plans: &[FilePlan], opts: &Options) -> Result<Vec<Outc
                 });
             }
         });
+        // TEST-PARALLEL P5: the `serial` ones, after every worker has
+        // finished, one at a time. Last rather than first because
+        // "after everything else" is a rule a reader can hold, and a
+        // test that needs the machine to itself gets exactly that.
+        for (offset, job) in jobs[serial_from..].iter().enumerate() {
+            let id = serial_from + offset;
+            run_job(pkg, plans, opts, job, id, &slots, &errors, 0);
+        }
     }
 
     // A job that could not even be compiled is reported the way it was
@@ -478,22 +502,50 @@ fn execute(pkg: &Package, plans: &[FilePlan], opts: &Options) -> Result<Vec<Outc
 /// learnable by running, and the runner keeps nothing between runs.
 /// So it splits unconditionally. `TEST_PARALLEL.md` §6 has the
 /// measurements, from when it did keep them.
-fn build_jobs(plans: &[FilePlan], opts: &Options) -> Vec<Job> {
+/// Every job, with the ones that may not run beside anything else
+/// gathered at the end.
+///
+/// TEST-PARALLEL P5: one list rather than two, so a job keeps a single
+/// id (which is what the error slots are indexed by) and the workers'
+/// cursor needs no second bound. `serial_from` is where the parallel
+/// part stops.
+struct Schedule {
+    jobs: Vec<Job>,
+    serial_from: usize,
+}
+
+fn build_jobs(plans: &[FilePlan], opts: &Options) -> Schedule {
     let mut jobs = Vec::new();
+    let mut serial = Vec::new();
     for (file, plan) in plans.iter().enumerate() {
         if plan.tests.is_empty() {
             continue;
         }
         if !opts.aot {
-            for test in 0..plan.tests.len() {
-                jobs.push(Job::Vm { file, test });
+            for (test, planned) in plan.tests.iter().enumerate() {
+                let job = Job::Vm { file, test };
+                if planned.serial {
+                    serial.push(job);
+                } else {
+                    jobs.push(job);
+                }
             }
             continue;
         }
         let mut plain = Vec::new();
         for (test, planned) in plan.tests.iter().enumerate() {
             if planned.expect_panic.is_some() {
-                jobs.push(Job::AotPanics { file, test });
+                let job = Job::AotPanics { file, test };
+                if planned.serial {
+                    serial.push(job);
+                } else {
+                    jobs.push(job);
+                }
+            } else if planned.serial {
+                // A driver of its own: sharing one with the file's
+                // other tests would make them serial too, and a
+                // `serial` test says nothing about its neighbours.
+                serial.push(Job::AotDriver { file, tests: vec![test] });
             } else {
                 plain.push(test);
             }
@@ -502,7 +554,9 @@ fn build_jobs(plans: &[FilePlan], opts: &Options) -> Vec<Job> {
             jobs.push(Job::AotDriver { file, tests: plain });
         }
     }
-    jobs
+    let serial_from = jobs.len();
+    jobs.extend(serial);
+    Schedule { jobs, serial_from }
 }
 
 /// Run one job and file its outcomes. Never returns a failure: a job

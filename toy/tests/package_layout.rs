@@ -1670,3 +1670,84 @@ fn main() -> u64 {
         "a wrong one is refused, and says where the const is: {stderr}"
     );
 }
+
+#[test]
+fn a_serial_test_has_the_machine_to_itself() {
+    // TEST-PARALLEL P5. The default is parallel, so a test that
+    // touches something the others also touch — a fixed path, a fixed
+    // port, a file named relative to the working directory — needs a
+    // way out that is not "`-j1` for the whole suite".
+    //
+    // The proof is what a shared file sees: two `serial` tests write
+    // and then read the same path, which is exactly the race the
+    // modifier exists to prevent. Running them beside eight other
+    // tests (and each other) is what would break it.
+    let pkg = scratch("serial_tests");
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    for stem in ["b", "c", "d", "e"] {
+        write(
+            &pkg,
+            &format!("tests/{stem}.t"),
+            &format!(
+                "test \"plain {stem} one\" {{ assert_eq(1u64, 1u64) }}\n\
+                 test \"plain {stem} two\" {{ assert_eq(2u64, 2u64) }}\n"
+            ),
+        );
+    }
+    std::fs::create_dir_all(pkg.0.join("build")).expect("build dir");
+    write(
+        &pkg,
+        "tests/a.t",
+        r#"
+test "runs beside the others" { assert_eq(1u64, 1u64) }
+
+test "writes the shared file" serial {
+    val wrote = io::write_file("build/serial-probe.txt", "xy")
+    match wrote {
+        Result::Ok(n) => { assert_eq(n, 2u64) }
+        Result::Err(e) => { panic("write failed") }
+    }
+}
+
+test "reads what the other one wrote" serial {
+    val read = io::read_file("build/serial-probe.txt")
+    match read {
+        Result::Ok(s) => { assert_eq(s.len(), 2u64) }
+        Result::Err(e) => { panic("read failed") }
+    }
+}
+
+# The two modifiers are order-free: they say different things about
+# the same test, and neither qualifies the other.
+test "a serial test may also panic" serial panics "boom" { panic("boom") }
+"#,
+    );
+    let path = pkg.0.to_str().unwrap();
+    for lane in [vec!["test", path, "-j8"], vec!["test", path, "-j8", "--backend", "vm"]] {
+        let out = run(&pkg, &lane);
+        assert!(
+            out.status.success(),
+            "{lane:?} failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("12 passed"),
+            "{lane:?}: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+
+    // The inventory says which tests are serial — it is the answer to
+    // "why did this suite not go any faster".
+    let listed = run(&pkg, &["test", path, "--list"]);
+    let stdout = String::from_utf8_lossy(&listed.stdout);
+    assert!(
+        stdout.contains("writes the shared file  (tests/a.t:4)  serial"),
+        "the listing marks them: {stdout}"
+    );
+    assert!(
+        stdout.contains("runs beside the others  (tests/a.t:2)\n"),
+        "and leaves the others alone: {stdout}"
+    );
+}

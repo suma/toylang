@@ -158,9 +158,11 @@ cargo run -q -p toy -- test  mypkg [FILTER] [-j N] [--list] [--bless] [--format=
 # (T1)。`--backend vm` は IR VM で走らせ、**全部の失敗を 1 回で報告する**
 # (AOT は panic がプロセスを終わらせるので最初の失敗で止まる)。
 # **既定でコア数ぶんのジョブを並列に走らせる** (TEST-PARALLEL)。
+# 共有資源を触るテストは `test "..." serial { }` と書くと
+# **最後に 1 本ずつ**走る (P5)。
 # ジョブは VM レーンならテスト 1 本、AOT なら driver 1 本。報告は
 # 完了順ではなく plan 順に組み直すので **`-j1` と出力がバイト一致する**
-# (所要時間の行を除く)。共有資源を触るテストは `-j1` に落とす。
+# (所要時間の行を除く)。
 # `--bless` は暗黙に `-j1`。
 # bare 名の衝突は実行前に警告する (--no-warn-collisions で無効)。
 # 出力は build/{debug,release}/ — build は成果物、run は .run/ に、

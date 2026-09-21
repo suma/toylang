@@ -5426,6 +5426,24 @@ test "add works" {
   `panic`, and the [allocation counters](#allocation-counters) are all
   available.
 
+Two modifiers may sit between the name and the block, in either order:
+
+```rust
+test "the contract fires" panics "index" { v.get(99u64) }
+test "writes the shared file" serial { ... }
+```
+
+- **`panics`** expects the block to stop the program, and
+  `panics "text"` requires the message to contain `text` — "something
+  died" is not a test of *which* contract broke.
+- **`serial`** says the block must not run beside another test.
+  `toy test` runs tests in parallel by default, so a block that
+  touches something the others also touch — a fixed path, a fixed
+  port, a file named relative to the working directory — says so here
+  and is run last, one at a time. It is written beside the test
+  because that is where `panics` already is; a rule that read the
+  directory instead would be a second place to look.
+
 ```
 $ interpreter --test example.t
 FAILED  this one fails (example.t:7)

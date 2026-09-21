@@ -1857,6 +1857,8 @@ pub struct TestOutcome {
     /// TEST-TOOL T4: the block is expected to panic, optionally with
     /// a message containing this text. Mirrors `TestCase`.
     pub expect_panic: Option<Option<String>>,
+    /// TEST-PARALLEL P5: the block must not run beside another test.
+    pub serial: bool,
     /// `None` when the test passed; the diagnostic when it did not.
     pub failure: Option<String>,
 }
@@ -1937,6 +1939,7 @@ fn run_test_at(
         line: test.line,
         file: test.file.clone(),
         expect_panic: test.expect_panic.clone(),
+        serial: test.serial,
         failure,
     }
 }
@@ -2025,6 +2028,8 @@ pub struct TestCaseInfo {
     /// `Some` when the block is expected to panic; the inner `Some`
     /// carries the text the message must contain (TEST-TOOL T4).
     pub expect_panic: Option<Option<String>>,
+    /// TEST-PARALLEL P5: the block must not run beside another test.
+    pub serial: bool,
 }
 
 impl PreparedTests {
@@ -2093,6 +2098,7 @@ pub fn prepare_tests(
             line: t.line,
             file: t.file.clone(),
             expect_panic: t.expect_panic.clone(),
+            serial: t.serial,
         })
         .collect();
     Ok(PreparedTests {
@@ -2124,6 +2130,7 @@ pub fn list_tests_from_source(
             line: c.line,
             file: c.file.clone(),
             expect_panic: c.expect_panic.clone(),
+            serial: c.serial,
             failure: None,
         })
         .collect())

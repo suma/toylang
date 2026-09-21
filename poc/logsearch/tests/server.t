@@ -99,7 +99,11 @@ test "a path nobody serves is 404 and not a guess" {
 }
 
 # **認証が無いので、これが唯一の防御である。**
-test "administration does not answer anyone but the loopback" {
+# `serial` (TEST-PARALLEL P5): **`repair` はこのマウントに書く**唯一の
+# テストで、他のテストは同じマウントを読む。既定が並列になった今、
+# 書き手が読み手と同時に走らないことを言えるのはこれだけである
+# (上のコメントが記録している事故は、順番に走っていた頃の同じ話)。
+test "administration does not answer anyone but the loopback" serial {
     val far = answer("POST /v1/admin/repair HTTP/1.1\r\n\r\n", false)
     assert(contains(&far, "HTTP/1.1 403"), "a remote peer gets 403")
     assert(contains(&far, "loopback"), "and is told why")

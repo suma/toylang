@@ -443,6 +443,8 @@ fn lower_for_fold(
             line: 0,
             file: None,
             expect_panic: None,
+            // A synthesised evaluation, never reported or scheduled.
+            serial: false,
         });
     }
     for (i, sym) in const_fn_entries.iter().enumerate() {
@@ -452,6 +454,8 @@ fn lower_for_fold(
             line: 0,
             file: None,
             expect_panic: None,
+            // A synthesised evaluation, never reported or scheduled.
+            serial: false,
         });
     }
     // 3. Lower.

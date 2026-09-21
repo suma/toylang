@@ -1379,6 +1379,7 @@ impl<'a> AstIntegrationContext<'a> {
                 line: test.line,
                 file: Some(self.module_display_path.clone()),
                 expect_panic: test.expect_panic.clone(),
+                serial: test.serial,
             });
         }
         Ok(())

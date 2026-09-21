@@ -130,6 +130,19 @@ pub struct TestCase {
     /// message to contain `text`, because "something died" is not a
     /// test of *which* contract was broken.
     pub expect_panic: Option<Option<String>>,
+    /// TEST-PARALLEL P5: the block must not run beside another test.
+    ///
+    /// `test "..." serial { }` for a test that touches something the
+    /// others also touch — a fixed path, a fixed port, a file named
+    /// relative to the working directory. The runner collects these
+    /// and runs them **last, one at a time**, after every parallel
+    /// job is done.
+    ///
+    /// Written beside the test rather than decided by where its file
+    /// sits: `panics` already says a property of a test next to the
+    /// test, and a second rule that reads the directory instead would
+    /// be one place too many to look.
+    pub serial: bool,
     /// Which file the block is in, when it is not the entry.
     ///
     /// TEST-TOOL T0: a module's tests are carried into the program

@@ -190,7 +190,7 @@ impl<'a> Parser<'a> {
             if matches!(self.peek(), Some(Kind::Identifier(s)) if s == "test")
                 && matches!(self.peek_n(1), Some(Kind::String(_)))
                 && (matches!(self.peek_n(2), Some(Kind::BraceOpen))
-                    || matches!(self.peek_n(2), Some(Kind::Identifier(s)) if s == "panics"))
+                    || matches!(self.peek_n(2), Some(Kind::Identifier(s)) if s == "panics" || s == "serial"))
             {
                 let test_start_pos = self.peek_position_n(0).unwrap().start;
                 let location = self.current_source_location();
@@ -201,22 +201,32 @@ impl<'a> Parser<'a> {
                     _ => unreachable!("peeked above"),
                 };
                 self.next(); // consume the name
-                let expect_panic = if matches!(
-                    self.peek(),
-                    Some(Kind::Identifier(s)) if s == "panics"
-                ) {
-                    self.next(); // consume `panics`
+                // TEST-PARALLEL P5: `serial` joins `panics` between the
+                // name and the block, and the two are order-free —
+                // they say different things about the same test and
+                // neither is a qualifier on the other.
+                let mut expect_panic = None;
+                let mut serial = false;
+                loop {
                     match self.peek() {
-                        Some(Kind::String(msg)) => {
-                            let msg = msg.clone();
-                            self.next();
-                            Some(Some(msg))
+                        Some(Kind::Identifier(s)) if s == "panics" => {
+                            self.next(); // consume `panics`
+                            expect_panic = match self.peek() {
+                                Some(Kind::String(msg)) => {
+                                    let msg = msg.clone();
+                                    self.next();
+                                    Some(Some(msg))
+                                }
+                                _ => Some(None),
+                            };
                         }
-                        _ => Some(None),
+                        Some(Kind::Identifier(s)) if s == "serial" => {
+                            self.next(); // consume `serial`
+                            serial = true;
+                        }
+                        _ => break,
                     }
-                } else {
-                    None
-                };
+                }
                 let outer_function = self
                     .current_function
                     .replace(format!("test \"{display_name}\""));
@@ -261,6 +271,7 @@ impl<'a> Parser<'a> {
                     line: location.line,
                     file: None,
                     expect_panic,
+                    serial,
                 });
                 continue;
             }

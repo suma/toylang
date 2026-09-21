@@ -2188,11 +2188,27 @@
   ([`VEC_CONTRACTS.md`](VEC_CONTRACTS.md) §5-3)。
 
 - **FN-NAME-AS-VALUE: トップレベル関数の名前を `fn` 値として渡せない**
-  ★ — `fn twice(x: u64) -> u64` があっても `apply(twice, 21u64)` は
-  `[E0001] expected fn (u64) -> u64, but got u64` (名前が値の位置で
-  u64 と型付けされている)。closure literal を `val` に束縛すれば通るので
-  回避はできるが、`Vec::sort_by(cmp)` のような comparator API は毎回
-  これを踏む。2026-09-03 に COLLECTIONS C3 で発見。
+  ★★ — `fn twice(x: u64) -> u64` があっても `apply(twice, 21u64)` は
+  `[E0001] expected fn (u64) -> u64, but got u64`。closure literal を
+  `val` に束縛すれば通るので回避はできるが、`Vec::sort_by(cmp)` の
+  ような comparator API は毎回これを踏む。2026-09-03 に COLLECTIONS C3
+  で発見。
+  **型検査の 1 行ではない** (2026-09-21 に測った): 値の位置の関数名は
+  `visit_identifier` が**戻り型**を返しているので、そこを
+  `TypeDecl::Function(params, ret)` に変えるのは 1 箇所で、全テストも
+  通る。**通らないのはその先**で、
+  * tree-walker: 識別子が呼べる値に評価されない
+    (`Undefined variable`)。`Object::Closure` の `body` は `ExprRef`
+    なので、関数の `code` (`StmtRef`) から中の block を取り出せば
+    作れそう
+  * compiled lane: **`fn` 引数は env つきの closure ABI**
+    (`CallIndirect` は callee を env とみなし、`env+0` の fn_ptr を
+    読んで env を前置する)。生の `FuncAddr` はそのままでは渡せず、
+    `(env, args...) -> R` の**thunk を新造**して `MakeClosure` で
+    包む必要がある (dyn の `PendingThunkBody` と同じ手口)
+
+  やるなら 3 レーン通しで。半分だけ入れると型検査がどのレーンでも
+  走らないプログラムを受理する。
 
 
 - **tuple 要素の `Vec` / `SoaVec` が AOT 不可** ★ —

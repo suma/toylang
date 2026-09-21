@@ -280,7 +280,7 @@ interpreter のテストは共有ヘルパを `use crate::common::...` で参照
 
 ```bash
 # 世代 GC (古い成果物を残して今のビルドを保つ)。定期実行の運用に
-cargo sweep --time 30
+cargo sweep --time 1
 # 全削除 (フルリビルドを覚悟するときだけ)
 cargo clean
 ```

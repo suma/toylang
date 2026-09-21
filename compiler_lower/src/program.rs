@@ -462,6 +462,46 @@ struct DeclCtx<'a> {
     enum_defs: &'a EnumDefs,
 }
 
+/// Everything a body lowering reads or adds to, other than the module
+/// itself.
+///
+/// The drain loop builds one `FunctionLower` per queued body, and the
+/// constructor took twenty-two arguments — so the same twenty-two
+/// lines appeared at each of the seven call sites, and a new table
+/// meant editing all seven plus the signature. (That is not
+/// hypothetical: `const_arrays` and `pending_par_work` were both
+/// added that way.) Bundled, a new table is one field and one
+/// initialiser.
+///
+/// Same shape as [`DeclCtx`], one phase later: that one carries what
+/// the *declaration* passes read, this one what body lowering needs.
+/// The mutable halves are the work queues — a body can discover
+/// another body (a generic instance, a method instance, a closure, an
+/// outlined `parallel for`, drop glue), which is why they are here
+/// rather than returned.
+pub(super) struct LowerCtx<'a> {
+    pub(super) program: &'a File,
+    pub(super) interner: &'a DefaultStringInterner,
+    pub(super) struct_defs: &'a StructDefs,
+    pub(super) enum_defs: &'a EnumDefs,
+    pub(super) generic_funcs: &'a GenericFuncs,
+    pub(super) const_values: &'a ConstValues,
+    pub(super) const_arrays: &'a crate::consts::ConstArrays,
+    pub(super) contract_msgs: &'a crate::ContractMessages,
+    pub(super) release: bool,
+    pub(super) method_registry: &'a MethodRegistry,
+    pub(super) method_func_ids: &'a MethodFuncIds,
+    pub(super) generic_methods: &'a GenericMethods,
+    pub(super) generic_instances: &'a mut GenericInstances,
+    pub(super) pending_generic_work: &'a mut Vec<PendingGenericInstance>,
+    pub(super) method_instances: &'a mut MethodInstances,
+    pub(super) pending_method_work: &'a mut Vec<PendingMethodInstance>,
+    pub(super) pending_closure_work: &'a mut Vec<super::PendingClosureBody>,
+    pub(super) pending_par_work: &'a mut Vec<super::parallel::PendingParBody>,
+    pub(super) pending_glue_work: &'a mut Vec<super::drop_glue::GlueWork>,
+    pub(super) scheduled: &'a mut HashSet<FuncId>,
+}
+
 /// First pass: declare every non-generic function so call sites -- which
 /// may name a function defined later in the file -- can resolve to a
 /// `FuncId` during body lowering. Generic functions go into
@@ -1372,6 +1412,32 @@ pub fn lower_program(
         }
     }
 
+    // Everything the bodies read and add to, named once. The module
+    // stays out of it: the loop hands it to each builder and reads it
+    // back (`schedule_from_ir`) between bodies.
+    let mut ctx = LowerCtx {
+        program,
+        interner,
+        struct_defs: &struct_defs,
+        enum_defs: &enum_defs,
+        generic_funcs: &generic_funcs,
+        const_values: &const_values,
+        const_arrays: &const_arrays,
+        contract_msgs,
+        release,
+        method_registry: &method_registry,
+        method_func_ids: &method_func_ids,
+        generic_methods: &generic_methods,
+        generic_instances: &mut generic_instances,
+        pending_generic_work: &mut pending_generic_work,
+        method_instances: &mut method_instances,
+        pending_method_work: &mut pending_method_work,
+        pending_closure_work: &mut pending_closure_work,
+        pending_par_work: &mut pending_par_work,
+        pending_glue_work: &mut pending_glue_work,
+        scheduled: &mut scheduled,
+    };
+
     // Drain every body-lowering queue until nothing new is scheduled.
     // Order within an iteration is fixed (plain → generic → method →
     // glue → closure → thunk) so the order in which lazily-instantiated
@@ -1382,30 +1448,7 @@ pub fn lower_program(
         // 1. Deferred non-generic functions and methods.
         while let Some(work) = pending_plain_work.pop() {
             made_progress = true;
-            let mut builder = FunctionLower::new(
-                &mut module,
-                work.func_id,
-                program,
-                interner,
-                &struct_defs,
-                &enum_defs,
-                &generic_funcs,
-                &mut generic_instances,
-                &mut pending_generic_work,
-                &const_values,
-                &const_arrays,
-                contract_msgs,
-                release,
-                &method_registry,
-                &method_func_ids,
-                &generic_methods,
-                &mut method_instances,
-                &mut pending_method_work,
-                &mut pending_closure_work,
-                &mut pending_par_work,
-                &mut pending_glue_work,
-                &mut scheduled,
-            )?;
+            let mut builder = FunctionLower::new(&mut module, work.func_id, &mut ctx)?;
             match &work.source {
                 PlainSource::Function(func) => builder.lower_body(func)?,
                 PlainSource::Method { target_sym, method } => {
@@ -1416,14 +1459,14 @@ pub fn lower_program(
                 &module,
                 work.func_id,
                 &plain_sources,
-                &mut scheduled,
+                ctx.scheduled,
                 &mut pending_plain_work,
                 &mut used_vtables,
             );
         }
 
         // 2. Generic function instances.
-        while let Some(work) = pending_generic_work.pop() {
+        while let Some(work) = ctx.pending_generic_work.pop() {
             made_progress = true;
             let template = generic_funcs
                 .get(&work.template_name)
@@ -1434,30 +1477,7 @@ pub fn lower_program(
                     )
                 })?
                 .clone();
-            let mut builder = FunctionLower::new(
-                &mut module,
-                work.func_id,
-                program,
-                interner,
-                &struct_defs,
-                &enum_defs,
-                &generic_funcs,
-                &mut generic_instances,
-                &mut pending_generic_work,
-                &const_values,
-                &const_arrays,
-                contract_msgs,
-                release,
-                &method_registry,
-                &method_func_ids,
-                &generic_methods,
-                &mut method_instances,
-                &mut pending_method_work,
-                &mut pending_closure_work,
-                &mut pending_par_work,
-                &mut pending_glue_work,
-                &mut scheduled,
-            )?;
+            let mut builder = FunctionLower::new(&mut module, work.func_id, &mut ctx)?;
             // POINTER P1: install the per-monomorph subst so body
             // paths that read a generic parameter out of the AST
             // (`__builtin_sizeof::<T>()`, substituted annotations)
@@ -1469,14 +1489,14 @@ pub fn lower_program(
                 &module,
                 work.func_id,
                 &plain_sources,
-                &mut scheduled,
+                ctx.scheduled,
                 &mut pending_plain_work,
                 &mut used_vtables,
             );
         }
 
         // 3. Generic method instances.
-        while let Some(work) = pending_method_work.pop() {
+        while let Some(work) = ctx.pending_method_work.pop() {
             made_progress = true;
             // CONCRETE-IMPL Phase 2b: `generic_methods` is now
             // `(target, method) -> Vec<MethodTemplateSpec>`. The
@@ -1504,30 +1524,7 @@ pub fn lower_program(
                         interner.resolve(work.method_sym).unwrap_or("?"),
                     )
                 })?;
-            let mut builder = FunctionLower::new(
-                &mut module,
-                work.func_id,
-                program,
-                interner,
-                &struct_defs,
-                &enum_defs,
-                &generic_funcs,
-                &mut generic_instances,
-                &mut pending_generic_work,
-                &const_values,
-                &const_arrays,
-                contract_msgs,
-                release,
-                &method_registry,
-                &method_func_ids,
-                &generic_methods,
-                &mut method_instances,
-                &mut pending_method_work,
-                &mut pending_closure_work,
-                &mut pending_par_work,
-                &mut pending_glue_work,
-                &mut scheduled,
-            )?;
+            let mut builder = FunctionLower::new(&mut module, work.func_id, &mut ctx)?;
             // Install the per-monomorph subst so val/var
             // annotations inside the body that reference
             // generic params (or `Self`) resolve to the
@@ -1538,77 +1535,31 @@ pub fn lower_program(
                 &module,
                 work.func_id,
                 &plain_sources,
-                &mut scheduled,
+                ctx.scheduled,
                 &mut pending_plain_work,
                 &mut used_vtables,
             );
         }
 
         // 4. DROP-GLUE.
-        while let Some(work) = pending_glue_work.pop() {
+        while let Some(work) = ctx.pending_glue_work.pop() {
             made_progress = true;
-            let mut builder = FunctionLower::new(
-                &mut module,
-                work.func_id,
-                program,
-                interner,
-                &struct_defs,
-                &enum_defs,
-                &generic_funcs,
-                &mut generic_instances,
-                &mut pending_generic_work,
-                &const_values,
-                &const_arrays,
-                contract_msgs,
-                release,
-                &method_registry,
-                &method_func_ids,
-                &generic_methods,
-                &mut method_instances,
-                &mut pending_method_work,
-                &mut pending_closure_work,
-                &mut pending_par_work,
-                &mut pending_glue_work,
-                &mut scheduled,
-            )?;
+            let mut builder = FunctionLower::new(&mut module, work.func_id, &mut ctx)?;
             builder.lower_drop_glue(&work)?;
             schedule_from_ir(
                 &module,
                 work.func_id,
                 &plain_sources,
-                &mut scheduled,
+                ctx.scheduled,
                 &mut pending_plain_work,
                 &mut used_vtables,
             );
         }
 
         // 5. Closures.
-        while let Some(work) = pending_closure_work.pop() {
+        while let Some(work) = ctx.pending_closure_work.pop() {
             made_progress = true;
-            let mut builder = FunctionLower::new(
-                &mut module,
-                work.func_id,
-                program,
-                interner,
-                &struct_defs,
-                &enum_defs,
-                &generic_funcs,
-                &mut generic_instances,
-                &mut pending_generic_work,
-                &const_values,
-                &const_arrays,
-                contract_msgs,
-                release,
-                &method_registry,
-                &method_func_ids,
-                &generic_methods,
-                &mut method_instances,
-                &mut pending_method_work,
-                &mut pending_closure_work,
-                &mut pending_par_work,
-                &mut pending_glue_work,
-                &mut scheduled,
-            )?;
+            let mut builder = FunctionLower::new(&mut module, work.func_id, &mut ctx)?;
             builder.lower_closure_body(
                 &work.parameter,
                 &work.body,
@@ -1619,45 +1570,22 @@ pub fn lower_program(
                 &module,
                 work.func_id,
                 &plain_sources,
-                &mut scheduled,
+                ctx.scheduled,
                 &mut pending_plain_work,
                 &mut used_vtables,
             );
         }
 
         // 5b. CONCURRENCY A2-b-2: outlined `parallel for` bodies.
-        while let Some(work) = pending_par_work.pop() {
+        while let Some(work) = ctx.pending_par_work.pop() {
             made_progress = true;
-            let mut builder = FunctionLower::new(
-                &mut module,
-                work.func_id,
-                program,
-                interner,
-                &struct_defs,
-                &enum_defs,
-                &generic_funcs,
-                &mut generic_instances,
-                &mut pending_generic_work,
-                &const_values,
-                &const_arrays,
-                contract_msgs,
-                release,
-                &method_registry,
-                &method_func_ids,
-                &generic_methods,
-                &mut method_instances,
-                &mut pending_method_work,
-                &mut pending_closure_work,
-                &mut pending_par_work,
-                &mut pending_glue_work,
-                &mut scheduled,
-            )?;
+            let mut builder = FunctionLower::new(&mut module, work.func_id, &mut ctx)?;
             par_checks.push(builder.lower_par_body(&work)?);
             schedule_from_ir(
                 &module,
                 work.func_id,
                 &plain_sources,
-                &mut scheduled,
+                ctx.scheduled,
                 &mut pending_plain_work,
                 &mut used_vtables,
             );
@@ -1675,30 +1603,8 @@ pub fn lower_program(
                 continue;
             }
             made_progress = true;
-            let mut builder = FunctionLower::new(
-                &mut module,
-                work.thunk_func_id,
-                program,
-                interner,
-                &struct_defs,
-                &enum_defs,
-                &generic_funcs,
-                &mut generic_instances,
-                &mut pending_generic_work,
-                &const_values,
-                &const_arrays,
-                contract_msgs,
-                release,
-                &method_registry,
-                &method_func_ids,
-                &generic_methods,
-                &mut method_instances,
-                &mut pending_method_work,
-                &mut pending_closure_work,
-                &mut pending_par_work,
-                &mut pending_glue_work,
-                &mut scheduled,
-            )?;
+            let mut builder =
+                FunctionLower::new(&mut module, work.thunk_func_id, &mut ctx)?;
             builder.lower_dyn_thunk_body(
                 work.impl_func_id,
                 &work.struct_leaves,
@@ -1709,7 +1615,7 @@ pub fn lower_program(
                 &module,
                 work.thunk_func_id,
                 &plain_sources,
-                &mut scheduled,
+                ctx.scheduled,
                 &mut pending_plain_work,
                 &mut used_vtables,
             );
@@ -1857,30 +1763,48 @@ pub(super) struct PendingGenericInstance {
 }
 
 impl<'a> FunctionLower<'a> {
+    /// One body's lowering, over `module`, reading and adding to
+    /// `ctx`.
+    ///
+    /// The context is **reborrowed**, so the builder's borrows last
+    /// as long as this call and no longer — which is what lets the
+    /// drain loop keep using `ctx` for the next body.
     pub(super) fn new(
         module: &'a mut Module,
         func_id: FuncId,
-        program: &'a File,
-        interner: &'a DefaultStringInterner,
-        struct_defs: &'a StructDefs,
-        enum_defs: &'a EnumDefs,
-        generic_funcs: &'a GenericFuncs,
-        generic_instances: &'a mut GenericInstances,
-        pending_generic_work: &'a mut Vec<PendingGenericInstance>,
-        const_values: &'a ConstValues,
-        const_arrays: &'a crate::consts::ConstArrays,
-        contract_msgs: &'a crate::ContractMessages,
-        release: bool,
-        method_registry: &'a MethodRegistry,
-        method_func_ids: &'a MethodFuncIds,
-        generic_methods: &'a GenericMethods,
-        method_instances: &'a mut MethodInstances,
-        pending_method_work: &'a mut Vec<PendingMethodInstance>,
-        pending_closure_work: &'a mut Vec<super::PendingClosureBody>,
-        pending_par_work: &'a mut Vec<super::parallel::PendingParBody>,
-        pending_glue_work: &'a mut Vec<super::drop_glue::GlueWork>,
-        scheduled: &'a mut HashSet<FuncId>,
+        ctx: &'a mut LowerCtx<'_>,
     ) -> Result<Self, String> {
+        let LowerCtx {
+            program,
+            interner,
+            struct_defs,
+            enum_defs,
+            generic_funcs,
+            const_values,
+            const_arrays,
+            contract_msgs,
+            release,
+            method_registry,
+            method_func_ids,
+            generic_methods,
+            generic_instances,
+            pending_generic_work,
+            method_instances,
+            pending_method_work,
+            pending_closure_work,
+            pending_par_work,
+            pending_glue_work,
+            scheduled,
+        } = ctx;
+        let (program, interner) = (*program, *interner);
+        let (struct_defs, enum_defs) = (*struct_defs, *enum_defs);
+        let generic_funcs = *generic_funcs;
+        let (const_values, const_arrays) = (*const_values, *const_arrays);
+        let contract_msgs = *contract_msgs;
+        let release = *release;
+        let method_registry = *method_registry;
+        let method_func_ids = *method_func_ids;
+        let generic_methods = *generic_methods;
         Ok(Self {
             module,
             func_id,

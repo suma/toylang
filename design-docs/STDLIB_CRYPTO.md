@@ -249,7 +249,7 @@ E0023 が impl 側での追加を禁じる規則は変わらないので、**強
 作業領域である。固定長配列を struct のフィールドに置けるようになれば
 こちらも落とせる。
 
-### 実測 5 — compound の `result` に触る `ensures` が書けない
+### 実測 5 — compound の `result` に触る `ensures` が書けなかった (**2026-09-21 に解消**)
 
 ```rust
 pub fn sum(data: &Vec<u8>) -> Sum
@@ -259,12 +259,13 @@ pub fn sum(data: &Vec<u8>) -> Sum
 
 field 形 (`ensures result.bytes.size() == 32u64`) は
 `field access on a non-struct value`。**interpreter では両方通る**ので、
-インタプリタで書いた契約が AOT で落ちる形になっている。既載の
-DBC-RESULT-FIELD (field 形) と同じ根で、method 形もそこに追記した。
+インタプリタで書いた契約が AOT で落ちる形になっていた。
 
-`Sum` が長さを実行時に持つ設計 (§3.2) と噛み合って、**出力長を契約で
-言う手段が無い**。§7 は `Sha256::fresh` の入口の scalar に倒して回避
-している。
+**原因** (2026-09-21): `result` は**先頭の戻り値 1 本**にスカラーとして
+束縛されていた。compound の戻りは leaf ごとに 1 本なので、`result` は
+struct でも tuple でもなく「その先頭の leaf」だった。戻り型の形どおりに
+leaf を束縛して解決 (DBC-RESULT-FIELD)。`sum` は
+`ensures result.size() == 32u64` を持っている。
 
 ## 7. 契約をどこに置いたか (C0 / C1)
 
@@ -281,11 +282,9 @@ DBC-RESULT-FIELD (field 形) と同じ根で、method 形もそこに追記し�
 | `Sha256::fresh(..., out)` | `requires out == 32u64 \|\| out == 28u64` | SHA-256 / SHA-224 以外の切り詰めを作らせない |
 | `Sha256::pad_byte(b)` | `requires self.nbuf < 64u64` | バッファ不変条件。書き込み位置が枠の内側に居ること |
 
-**出力長は契約にできなかった。** `sum` に
-`ensures result.size() == 32u64` と書くのが素直だが、compound の
-`result` に触る契約は compiled lane が拒否する (実測 5)。同じ事実を
-`Sha256::fresh` の入口で `out` について言う形に倒してある — そちらは
-まだ scalar なので通る。
+**出力長は `sum` の `ensures result.size() == 32u64`** (2026-09-21、
+実測 5 の解消後に入れた)。同じ事実は `Sha256::fresh` の入口でも
+`out` について言ってあり、入口と出口の両方から挟んでいる。
 
 `shr32` の `requires n < 32u64` が一番効く。u64 に広げてから shift する
 回避策は、**32 以上の shift でも trap せず 0 を返す** — 元の u32 の

@@ -1204,3 +1204,67 @@ fn an_overrunning_loop_still_stops_every_backend() {
         .expect("the program should still compile");
     assert_ne!(compiled, 0, "compiled binary should exit non-zero");
 }
+
+#[test]
+fn a_postcondition_can_reach_into_a_compound_result() {
+    // DBC-RESULT-FIELD: `result` was bound to the *first* returned
+    // value, and a compound return is one value per leaf — so
+    // `ensures result.cap == n` failed to compile with `field access
+    // on a non-struct value`, and a constructor could not state
+    // anything about what it built. Both shapes here, plus a method
+    // call on `result`, which failed the same way for the same
+    // reason ("the method receiver must be a struct or enum
+    // binding" — it is one now).
+    let src = r#"
+        struct Buf { cap: u64, len: u64 }
+
+        impl Buf {
+            fn room(&self) -> u64 { self.cap - self.len }
+        }
+
+        fn make(n: u64) -> Buf
+            ensures result.cap == n
+            ensures result.room() == n
+        {
+            Buf { cap: n, len: 0u64 }
+        }
+
+        fn split(n: u64) -> (u64, u64)
+            ensures result.0 == n
+        {
+            (n, n * 2u64)
+        }
+
+        fn main() -> u64 {
+            val b = make(8u64)
+            val p: (u64, u64) = split(3u64)
+            println(b.cap)
+            println(b.room())
+            println(p.1)
+            0u64
+        }
+    "#;
+    assert_renders(src, "ensures_compound_result", "8\n8\n6\n");
+}
+
+#[test]
+fn a_broken_postcondition_on_a_field_says_so() {
+    // And it has to *check*, not merely compile: a clause that reads
+    // the wrong leaf would pass for the wrong reason.
+    let src = r#"
+        struct Buf { cap: u64, len: u64 }
+
+        fn make(n: u64) -> Buf
+            ensures result.cap == n
+        {
+            Buf { cap: n + 1u64, len: 0u64 }
+        }
+
+        fn main() -> u64 {
+            val b = make(8u64)
+            println(b.cap)
+            0u64
+        }
+    "#;
+    assert_diagnostic_consistent(src, "ensures_compound_result_violated");
+}

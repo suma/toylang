@@ -2864,6 +2864,64 @@ impl<'a> FunctionLower<'a> {
         Ok(())
     }
 
+    /// Bind `result` to what the function is about to return.
+    ///
+    /// DBC-RESULT-FIELD: a **compound** return is several values, one
+    /// per leaf, and binding only the first as a scalar is what made
+    /// `ensures result.cap == n` fail with `field access on a
+    /// non-struct value` — a constructor could not state anything
+    /// about what it built. The values arrive in the order
+    /// `flatten_*` produces, which is the order the return itself was
+    /// assembled in, so the leaves line up by position.
+    ///
+    /// A count that does not match is not a contract worth guessing
+    /// at: the scalar binding stays, and a clause that reaches into
+    /// the value says so in the old words rather than reading the
+    /// wrong local.
+    fn bind_result(
+        &mut self,
+        result_sym: DefaultSymbol,
+        result_values: &[ValueId],
+    ) -> Result<(), String> {
+        let ret_ty = self.module.function(self.func_id).return_type;
+        let compound = match ret_ty {
+            Type::Struct(struct_id) => {
+                let fields = self.allocate_struct_fields(struct_id);
+                let leaves = super::bindings::flatten_struct_locals(&fields);
+                Some((leaves, Binding::Struct { struct_id, fields }))
+            }
+            Type::Tuple(tuple_id) => {
+                let elements = self.allocate_tuple_elements(tuple_id)?;
+                let leaves = super::bindings::flatten_tuple_element_locals(&elements);
+                Some((leaves, Binding::Tuple { elements }))
+            }
+            _ => None,
+        };
+        if let Some((leaves, binding)) = compound
+            && leaves.len() == result_values.len()
+        {
+            for ((local, _), value) in leaves.iter().zip(result_values.iter()) {
+                self.emit(
+                    InstKind::StoreLocal { dst: *local, src: *value },
+                    None,
+                );
+            }
+            self.bindings.insert(result_sym, binding);
+            return Ok(());
+        }
+        let Some(first) = result_values.first().copied() else {
+            return Ok(());
+        };
+        // Recover the value's IR type from the function's
+        // value-table-via-instructions scan; codegen does the
+        // same trick. Falls back to U64 for safety.
+        let ty = self.value_ir_type_for(first).unwrap_or(Type::U64);
+        let local = self.module.function_mut(self.func_id).add_local(ty);
+        self.emit(InstKind::StoreLocal { dst: local, src: first }, None);
+        self.bindings.insert(result_sym, Binding::Scalar { local, ty });
+        Ok(())
+    }
+
     /// Emit the function's stashed `ensures` checks at a return
     /// site. `result_values` is what the function is about to return
     /// (empty for void, one entry for scalar, N for struct); we bind
@@ -2878,14 +2936,8 @@ impl<'a> FunctionLower<'a> {
         // returned value. We do this before every ensures emission
         // so each clause sees the same value. If the body never
         // mentions `result`, the binding is harmless dead code.
-        if let (Some(result_sym), Some(first)) = (self.result_sym, result_values.first().copied()) {
-            // Recover the value's IR type from the function's
-            // value-table-via-instructions scan; codegen does the
-            // same trick. Falls back to U64 for safety.
-            let ty = self.value_ir_type_for(first).unwrap_or(Type::U64);
-            let local = self.module.function_mut(self.func_id).add_local(ty);
-            self.emit(InstKind::StoreLocal { dst: local, src: first }, None);
-            self.bindings.insert(result_sym, Binding::Scalar { local, ty });
+        if let Some(result_sym) = self.result_sym {
+            self.bind_result(result_sym, result_values)?;
         }
         let clauses: Vec<ExprRef> = self.ensures.clone();
         let kinds = self.ensures_kinds.clone();

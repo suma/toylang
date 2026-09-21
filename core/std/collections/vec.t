@@ -70,7 +70,10 @@ impl<T> Vec<T> {
     # The stride comes from the type rather than from a first
     # `push`, which is what lets the buffer exist before any element
     # does. `n == 0` allocates nothing, exactly like `new()`.
-    fn with_capacity(n: u64) -> Self {
+    fn with_capacity(n: u64) -> Self
+        ensures result.capacity() == n
+        ensures result.size() == 0u64
+    {
         val stride: u64 = __builtin_sizeof::<T>()
         val bytes: u64 = n.checked_mul(stride) ?? panic("Vec::with_capacity: capacity overflows u64")
         val data: ptr = __builtin_heap_alloc(bytes)

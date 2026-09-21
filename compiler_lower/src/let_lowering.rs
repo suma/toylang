@@ -48,6 +48,26 @@ impl<'a> FunctionLower<'a> {
         annotation: Option<&TypeDecl>,
         rhs_ref: &ExprRef,
     ) -> Result<Option<ValueId>, String> {
+        // DEBUG-OBS D3/D4: "where we are" is the right-hand side.
+        // Most of this function dispatches on the rhs *shape* and
+        // emits the call itself rather than going through
+        // `lower_expr`, which is the only other place that records
+        // it — so a compound-returning call had no position, and the
+        // frame it entered was attributed to whatever had been
+        // lowered last. A backtrace said `make (called at line 14)`
+        // for a call on line 10, while the tree-walker said 10.
+        let outer_expr = self.current_expr.replace(*rhs_ref);
+        let result = self.lower_let_inner(name, annotation, rhs_ref);
+        self.current_expr = outer_expr;
+        result
+    }
+
+    fn lower_let_inner(
+        &mut self,
+        name: DefaultSymbol,
+        annotation: Option<&TypeDecl>,
+        rhs_ref: &ExprRef,
+    ) -> Result<Option<ValueId>, String> {
         // CONTRACT-ELISION: this binding takes over the name from here
         // on, so whatever a `requires` clause proved about a parameter
         // of the same name no longer describes what a guard site would

@@ -12,6 +12,20 @@
 
 ### 2026-09-21
 
+- **DBC-RESULT-FIELD — compound を返す関数が `result` の中身を
+  契約で言えるようになった** — `result` は**先頭の戻り値 1 本**に
+  スカラーとして束縛されていたが、compound の戻りは leaf ごとに 1 本
+  なので、`ensures result.cap == n` は `field access on a non-struct
+  value` で拒否されていた (構築子が自分の作ったものについて何も
+  言えない)。戻り型の形どおりに leaf を束縛する。method 呼び出し
+  (`ensures result.size() == 32u64`) と tuple (`result.0`) も同じ理由で
+  直った。**`sha256::sum` が出力長を、`Vec::with_capacity` が容量と
+  長さを契約で言う**ようになった。
+  副産物として **`val` の右辺の位置が backtrace に入るようになった** —
+  compound を返す呼び出しは `lower_expr` を通らずに lower されるので
+  現在位置が更新されず、`make (called at line 14)` のように**ファイルの
+  末尾**を指していた (tree-walker は正しく 10 と言う)。
+  `interpreter/example/contracts.t` が AOT の skip リストから外れた。
 - **STDLIB-FN-SHADOWED-BY-USER-FN — モジュールの body は自分の
   モジュールを先に見る** — 素の名前は**必ずユーザ側の表を先に**
   引いていたので、`core/std/time.t` が自分の `pad2_field` を呼ぶと
@@ -2118,16 +2132,6 @@
   通す。CLAUDE.md の「順不同」に実装が追いついていない。`Vec` の読み取り系
   (ほぼ全部 `unsafe fn`) に `never_allocates` を付けられない原因
   ([`VEC_CONTRACTS.md`](VEC_CONTRACTS.md) §5-1、2026-09-04)。
-
-- **DBC-RESULT-FIELD: compound を返す関数の `ensures result.field` が
-  compiled lane で落ちる** — `fn f(n: u64) -> Self ensures result.cap == n`
-  は interpreter で通り、AOT / JIT は `field access on a non-struct value`。
-  構築子 (`Vec::with_capacity` 等) に事後条件を書けない
-  ([`VEC_CONTRACTS.md`](VEC_CONTRACTS.md) §5-2、2026-09-04)。
-  **method 呼び出しの形も同じ** — `ensures result.size() == 32u64` は
-  `compiler MVP requires the method receiver to be a struct or enum
-  binding`。`sha256::sum` が出力長を契約で言えない理由
-  ([`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md) 実測 5、2026-09-04)。
 
 - **DBC-CHECK-SKIP-REPORT: `--check` が `ptr` レシーバの method を黙って
   飛ばす** — design_by_contract.md には明記があるが、`Vec` のように契約が

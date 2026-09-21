@@ -81,7 +81,6 @@ const AOT_UNSUPPORTED: &[&str] = &[
     "allocator_list.t",
     "array_type_only.t",
     "const_decls.t",
-    "contracts.t",
     "extern_generic_identity.t",
     "float64.t",
     // (`jit_heap.t` left in MEMORY-ACCESS M0: `__builtin_mem_set`

@@ -51,7 +51,7 @@
 | `ensures` から `self.get(i)` を呼ぶ (`__builtin_ptr_read` に到達) | **警告なし** — 純粋性検査 (`E0018`) は alloc / free / ptr **write** / print / 追えない呼び出しだけを見る |
 | `ensures self.is_sorted()` (`T: Ord` の `lt` を辿る) | **`E0018` 警告** — `lt` の impl のひとつ (`String`) が `__extern_str_cmp` に届くため。警告であって実行は通る |
 | `ensures self.get(i) == value` (generic `T` の `==`) | `T` に `eq` が無いと **呼び出し側が `[E0010]`** — `contains` と同じ規則が `push` に掛かる |
-| `ensures result.cap == n` (`-> Self` の構築子) | **interpreter だけ通る**。AOT / JIT は `field access on a non-struct value` (§5-2) |
+| `ensures result.cap == n` (`-> Self` の構築子) | **書ける** (2026-09-21、§5-2)。`with_capacity` が実例 |
 | `never_allocates fn size(&self)` (method、単独) | parse OK |
 | `never_allocates unsafe fn get(...)` (method、重ね書き) | **parse エラー** (§5-1)。自由関数では通る |
 | `ensures allocations(0u64)` と `realloc` | `heap_realloc` は `alloc_count` を増やさない (`realloc_count` 側)。`push` が realloc しても `allocations(0)` は成立 |
@@ -126,8 +126,8 @@ A2 を選ぶと **panic 文を pin しているテストが 2 本変わる** (§
 | `extend_bytes(src, count)` | `ensures self.len == old(self.len) + count` | `impl Vec<u8>` |
 | `push_str(other)` | `ensures self.len == old(self.len) + other.size()` | 同上 |
 | `push_char(c)` | `ensures self.len >= old(self.len) + 1u64` / `ensures self.len <= old(self.len) + 4u64` | RFC 3629 の 1〜4 byte |
-| `iter()` | `ensures result.len == self.len` | **§5-2 により今は compiled lane で落ちる** |
-| `with_capacity(n)` / `try_with_capacity(n)` / `from_str(s)` / `clone()` | `ensures result.len == ...` / `result.cap == n` | **同上、§5-2 が直るまで書けない** |
+| `iter()` | `ensures result.len == self.len` | 書けるようになった (§5-2) |
+| `with_capacity(n)` / `try_with_capacity(n)` / `from_str(s)` / `clone()` | `ensures result.len == ...` / `result.cap == n` | 同上。`with_capacity` は入れた |
 | `VecIter::next()` | `ensures self.index <= self.len` | イテレーション 1 回ごとに評価される。for ループの内側なので、入れるなら B の中で最後 |
 
 **不採用: 要素値の契約。** `push` に `ensures self.get(self.len - 1u64) ==
@@ -207,7 +207,7 @@ D は B と重なる (`push` の `ensures self.cap >= self.len` は不変条件 
 |---|---|
 | A1 で panic を消す (`get` / `set` / `pop` / `insert` / `remove` / `swap_remove` / `set_size`) | `--release` で範囲外アクセスが unchecked になる。組み込み配列は release でも guard を残す設計と食い違う |
 | 要素値の `ensures` (`self.get(i) == value`) | `Vec<T>` 全体に `eq` を要求してしまう (確認済み) |
-| `-> Self` / `-> VecIter<T>` を返す method の `ensures result.field` | compiled lane で落ちる (§5-2)。直ってから |
+| `-> Self` / `-> VecIter<T>` を返す method の `ensures result.field` | 書ける (§5-2、2026-09-21) |
 | `never_allocates` を `unsafe fn` に重ねる | parse エラー (§5-1)。直ってから |
 | `VecIter::next` の `ensures` | for ループ 1 周ごとのコスト。B の他がすべて入って、なお欲しいときに |
 | `clone` の `allocations(1)` | 実装が逐次 push なので成立しない |
@@ -266,12 +266,15 @@ CLAUDE.md は「順不同」と書いているので実装が仕様に追いつ�
 `Vec` の読み取り系はほぼ全部 `unsafe fn` なので、C の静的形はこれに
 塞がれている。修正は自由関数側の `next_leads_to_fn` 条件を写すだけ。
 
-### 5-2. `ensures result.field` が compiled lane で落ちる
+### 5-2. `ensures result.field` が compiled lane で落ちていた (**2026-09-21 に解消**)
 
 `fn with_capacity(n: u64) -> Self ensures result.cap == n` は interpreter で
-通り、AOT / JIT は `field access on a non-struct value`。`result` が
-compound のとき、契約の評価位置で `result` が struct として束縛されて
-いない。B の構築子 4 本と `iter` がこれで書けない。
+通り、AOT / JIT は `field access on a non-struct value` だった。`result` が
+**先頭の戻り値 1 本**にスカラーとして束縛されていたのが原因で、compound の
+戻りは leaf ごとに 1 本なので「その先頭の leaf」を指していた
+(DBC-RESULT-FIELD)。戻り型の形どおりに leaf を束縛して解決。
+**`with_capacity` は `ensures result.capacity() == n` と
+`ensures result.size() == 0u64` を持っている。**
 
 ### 5-3. `--check` が `ptr` レシーバの method を黙って飛ばす
 

@@ -322,14 +322,12 @@ const SHA256_K: [u32; 64] = [
     0x90befffau32, 0xa4506cebu32, 0xbef9a3f7u32, 0xc67178f2u32,
 ]
 
-# SHA-256 of one buffer. The digest is 32 bytes.
-#
-# The length wants to be an `ensures` -- `Sum` carries it at run time,
-# so prose is the only other place it can live -- but a contract that
-# reaches into a compound `result` is refused by the compiled lanes
-# (STDLIB_CRYPTO.md "実測 5"). `Sha256::fresh` contracts the same fact
-# on the way in instead, where the value is still a scalar.
-pub fn sum(data: &Vec<u8>) -> Sum {
+# SHA-256 of one buffer. The digest is 32 bytes, and the contract
+# says so (DBC-RESULT-FIELD, 2026-09-21: a postcondition may reach
+# into a compound `result`).
+pub fn sum(data: &Vec<u8>) -> Sum
+    ensures result.size() == 32u64
+{
     var h = Sha256::new()
     h.update(data)
     val d = h.finalize()

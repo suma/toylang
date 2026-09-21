@@ -264,9 +264,10 @@ parallel for i in a..b { out.set(i, work(i)) }
 が、およそ次に化ける:
 
 ```rust
-struct __ParEnv0 { out: &mut Vec<u64> }          # 捕捉したもの
-fn __par_body0(from: u64, to: u64, env: &__ParEnv0) {
-    for i in from..to { env.out.set(i, work(i)) }
+struct __ParEnv0 { out: Span<u64>, base: u64 }   # 捕捉したもの
+fn __par_body0(env: &__ParEnv0, from: u64, until: u64) {
+    var i = from
+    while i < until { env.out.set(i, env.base + work(i))  i = i + 1u64 }
 }
 # ランタイムが範囲を割って、スレッドごとに本文を呼ぶ
 __builtin_par_for(__par_body0, &env, a, b)
@@ -276,6 +277,24 @@ __builtin_par_for(__par_body0, &env, a, b)
 スカラーだけで (CLOSURE_CAPTURE)、並列にしたい仕事はどれも容器か窓を
 要る。env を明示の struct にするのはそのためで、ついでに「何を
 捕捉したか」が診断に出せる。
+
+### env が持てるのは**スカラーと窓**だけ (2026-09-21 に確かめた)
+
+最初この節は `out: &mut Vec<u64>` と書いていた。**書けない** —
+`struct S { r: &u64 }` は REF-Stage-2 (e) が拒否する
+(`references cannot be stored in struct fields`)。参照を持てる env は
+今の言語には無い。
+
+代わりに**窓**を持つ。`Span<T>` / `Column<T>` はただの struct なので
+フィールドに置けて、`set` で元のバッファに書ける — 添字で分かれた
+書き込みという §1 の仕事に必要なのは、まさにそれである。上の形は
+**3 レーンで動くことを確認した** (`Env { out: Span<u64>, base: u64 }`
+を `work(&e, from, until)` が 2 回に分けて埋め、答えは逐次と同じ)。
+
+これは制限であると同時に、§5-3 の「disjoint は規約で守る」を書きやすく
+する: 捕捉できるものが窓とスカラーだけなら、**書き込み先は窓の添字
+しかない**。窓にできない捕捉 (`String`、`Dict`、値で使う `Vec`) は
+診断で断り、「窓を渡せ」と言う。
 
 残る論点は 3 つ、どれも実装中に決まる類のもの: 捕捉した**スカラーへの
 書き込み**をどう断るか (競合なので断る)、**入れ子の `parallel for`**

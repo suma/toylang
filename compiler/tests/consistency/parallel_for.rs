@@ -99,3 +99,57 @@ fn a_parallel_loop_carries_its_range_semantics() {
     "#;
     assert_renders(src, "parallel_for_range", "0\n4\n");
 }
+
+#[test]
+fn a_window_in_a_struct_field_writes_through_to_its_buffer() {
+    // CONCURRENCY A2-b groundwork. The plan for outlining a
+    // `parallel for` body was to build an environment struct holding
+    // what the body captures — and it was written as
+    // `struct Env { out: &mut Vec<u64> }`, which **cannot exist**:
+    // a struct field may not be a reference (REF-Stage-2 (e)).
+    //
+    // A window can. `Span<T>` is an ordinary struct, so it lives in
+    // a field, and `set` writes through to the buffer it views —
+    // which is exactly the shape the workloads need (a slot per
+    // index). This pins that the substitute works, and works the
+    // same on every lane, before anything is built on it.
+    let src = r#"
+        struct Env { out: Span<u64>, base: u64 }
+
+        fn work(e: &Env, from: u64, until: u64) {
+            var i: u64 = from
+            while i < until {
+                e.out.set(i, e.base + i * i)
+                i = i + 1u64
+            }
+        }
+
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::with_capacity(8u64)
+            var k: u64 = 0u64
+            while k < 8u64 {
+                v.push(0u64)
+                k = k + 1u64
+            }
+            val w = v.as_span()
+            match w {
+                Option::Some(sp) => {
+                    val e = Env { out: sp, base: 100u64 }
+                    # Two halves, as a split range would be.
+                    work(&e, 0u64, 4u64)
+                    work(&e, 4u64, 8u64)
+                }
+                Option::None => { }
+            }
+            var total: u64 = 0u64
+            var j: u64 = 0u64
+            while j < v.size() {
+                total = total + v.get(j)
+                j = j + 1u64
+            }
+            println(total)
+            0u64
+        }
+    "#;
+    assert_renders(src, "window_in_env_struct", "940\n");
+}

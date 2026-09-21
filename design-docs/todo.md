@@ -12,6 +12,17 @@
 
 ### 2026-09-21
 
+- **TRAIT-CONTRACT-EXPRREF — モジュールの trait が契約を持てるように
+  なった** — 署名の `requires` / `ensures` は**モジュールのプール**を
+  指す `ExprRef` なのに、統合がそれを写さずそのまま運んでいた。
+  結果、各節は本体側プールの同じ添字にたまたま在る節点を指し、
+  `[E0010] requires clause must be of type bool, got Unknown` が
+  **無関係なファイルの無関係な行**を指して出ていた (カレットが
+  コメント行に載る)。関数の節と同じ `map_expr` を通すだけ。
+  `trait Digest` が約束を散文で書いていた理由で、DBC-LISKOV の
+  `[E0023]` が出していた**「trait 側に移せ」が従える指示になった**。
+  `trait Digest` の `output_size` / `block_size` に
+  `ensures result > 0u64` を入れてある。
 - **CONST-ARRAY — `const K: [u32; 64] = [...]` が全レーンで読めるように
   なった** — 定数配列は `.rodata` のバイト列になり、添字は
   `InstKind::ConstBytesAddr` + `PtrRead` 1 回。境界検査はスタック配列と
@@ -676,8 +687,9 @@
   出力は裸の `Vec<u8>` ではなく `Sum` — 入力も出力もバイト列なので、
   型が無いと二重ハッシュを検査器が見逃す。`to_hex` は `hex::encode`
   に委譲 (16 進の綴りを 2 つ持たない)。契約は shift 量 / 出力長 /
-  ブロック長 / 添字に置いた (trait 側に置けない理由は上の
-  TRAIT-CONTRACT-EXPRREF)。3 レーン一致 + 公開ベクタで pin。
+  ブロック長 / 添字に置いた (trait 側に置けなかった理由は
+  TRAIT-CONTRACT-EXPRREF。2026-09-21 に解消)。3 レーン一致 +
+  公開ベクタで pin。
   例: `interpreter/example/crypto_sha256.t`。C2〜C4 は未着手。
 - **WIDE-RETURN — 戻り値の leaf が返却レジスタを超える compound を
   compiled lane が返せるようになった** — struct / tuple / enum の戻りは
@@ -2062,17 +2074,6 @@
   が旧形の read を残しているのはこれを避けるため (移行すると
   lowering が通り、プログラムが IR VM レーンに乗ってしまう)。
   最小再現は git log の MEMORY-ACCESS M2 コミット。
-
-- **TRAIT-CONTRACT-EXPRREF: body 無しの trait method に `requires` を
-  書くと壊れる** ★★ — clause の ExprRef が inheritance の先で別の節点に
-  結び付き、`[E0010] requires clause must be of type bool, got Unknown`
-  が**impl 側の無関係な method を指して**出る (`requires true` でも同じ)。
-  2 つの記述と食い違う: CLAUDE.md の「trait 本体には ... `requires` /
-  `ensures` 節も書ける」と、DBC-LISKOV の `[E0023]` が出す
-  **「move the clause to `trait Foo`」という指示** — 従えない指示に
-  なっている。default body 付きの trait method は未確認。
-  `trait Digest` が契約を持てない理由
-  ([`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md) 実測 2、2026-09-04)。
 
 - **CONST-ARRAY の残り: 名前で渡せない / 要素はスカラーだけ** ★ —
   2026-09-21 に `const K: [u32; 64] = [...]` は読めるようになった

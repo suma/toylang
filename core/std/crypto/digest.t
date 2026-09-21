@@ -114,10 +114,12 @@ pub trait Digest {
     fn finalize(&mut self) -> Sum
     # Bytes the finished digest occupies.
     fn output_size(&self) -> u64
+        ensures result > 0u64
     # Bytes the compression function consumes at a time. HMAC needs
     # this to size its key padding, which is the reason it is on the
     # trait rather than on each hasher.
     fn block_size(&self) -> u64
+        ensures result > 0u64
 }
 
 # Compare two digests without letting the time taken say how far the

@@ -26,7 +26,8 @@
   interpreter 6.2s / AOT 7ms (~900x)** (実測 3)。この数字を承知の上で
   純 toylang を採る — 理由は §4
 - **契約は inherent method と自由関数に置く。** `trait` の method に
-  `requires` を書くと壊れる (実測 2)。これは既知の穴として §6 に記録した
+  書けなかったため (実測 2、2026-09-21 に解消)。trait 側の契約は
+  `output_size` / `block_size` の出力長から入れ始めた
 
 ## 1. なぜ crypto が要るか
 
@@ -183,7 +184,7 @@ NUM-W-SHIFT として既載 (2026-09-01 の NET N3 で `u8` について踏ん�
 同じ穴) — 幅が `u32` でも同じことと、回避が持ち込む意味論のずれを
 追記した。
 
-### 実測 2 — body 無しの trait method に `requires` を書くと壊れる
+### 実測 2 — body 無しの trait method に `requires` を書くと壊れた (**2026-09-21 に解消**)
 
 ```rust
 trait T {
@@ -197,15 +198,22 @@ trait T {
 **impl 側の別の method を指して**出る。clause の ExprRef が
 inheritance の先で別の節点に結び付いている。`requires true` でも同じ。
 
-これは 2 つの記述と食い違う: CLAUDE.md の「trait 本体には ...
-`requires` / `ensures` 節も書ける」と、DBC-LISKOV の `[E0023]` が出す
-**「move the clause to `trait Foo`」という指示** — 従えない指示を
-出している。todo の TRAIT-CONTRACT-EXPRREF に記録。
+当時これは 2 つの記述と食い違っていた: CLAUDE.md の「trait 本体には
+... `requires` / `ensures` 節も書ける」と、DBC-LISKOV の `[E0023]` が
+出す**「move the clause to `trait Foo`」という指示** — 従えない指示に
+なっていた。
 
-**設計への影響**: `trait Digest` は契約を持てない。かつ E0023 が
-impl 側での追加を禁じるので、**契約は inherent method と自由関数に
-置く**。crypto の場合これは実害が小さい — 効く場所 (`Sum::get` の
-添字、`shr32` の shift 量、`compress` の offset) はどれも inherent 側。
+**原因** (2026-09-21): 署名の節は**モジュールのプール**を指す
+`ExprRef` なのに、統合がそれを写さずそのまま運んでいた。各節は本体側
+プールの同じ添字に在る別の節点を指すことになり、型が合わないと
+言われる。同じファイルに書いた trait では起きない (プールが 1 つ
+なので添字が正しい) ため、最小再現が module をまたがないと出なかった。
+関数の節と同じ `map_expr` を通して解決。
+
+**設計への影響**: 解消したので `trait Digest` は契約を持てる。
+`output_size` / `block_size` に `ensures result > 0u64` を入れた。
+E0023 が impl 側での追加を禁じる規則は変わらないので、**強める向きの
+契約は trait 側に書く**。
 
 ### 実測 3 — 性能
 

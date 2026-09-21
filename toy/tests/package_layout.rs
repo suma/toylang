@@ -1445,3 +1445,66 @@ fn main() -> u64 {
         );
     }
 }
+
+#[test]
+fn a_trait_in_a_module_carries_its_contracts() {
+    // TRAIT-CONTRACT-EXPRREF: a trait method signature's `requires` /
+    // `ensures` are `ExprRef`s into the module's pool, and
+    // integration copied them across **unmapped** — so each clause
+    // pointed at whatever the main pool held at that index. What came
+    // out was `[E0010] requires clause must be of type bool, got
+    // Unknown`, with the caret on an unrelated line of an unrelated
+    // file. `trait Digest` kept its promises in prose because of it,
+    // and DBC-LISKOV's `[E0023]` was telling authors to "move the
+    // clause to the trait" — an instruction that could not be
+    // followed.
+    let pkg = scratch("trait_contracts");
+    write(
+        &pkg,
+        "src/shapes.t",
+        r#"
+pub trait Bounded {
+    fn at(&self, i: u64) -> u64
+        requires i < 4u64
+    fn size(&self) -> u64
+        ensures result > 0u64
+}
+
+pub struct Four { base: u64 }
+
+impl Bounded for Four {
+    fn at(&self, i: u64) -> u64 { self.base + i }
+    fn size(&self) -> u64 { 4u64 }
+}
+"#,
+    );
+    write(
+        &pkg,
+        "main.t",
+        r#"
+fn main() -> u64 {
+    val f = Four { base: 10u64 }
+    println(f.at(2u64))
+    println(f.size())
+    f.at(9u64)
+}
+"#,
+    );
+    let out = run(&pkg, &["run", pkg.0.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stdout.contains("12") && stdout.contains("4"),
+        "the contracted calls should run: stdout: {stdout}\nstderr: {stderr}"
+    );
+    // The inherited clause is checked, and it is reported against the
+    // line of the trait that declares it.
+    assert!(
+        stderr.contains("Contract violation") && stderr.contains("requires"),
+        "the trait's precondition should fire: {stderr}"
+    );
+    assert!(
+        stderr.contains("shapes.t"),
+        "and be reported in the file that declares it: {stderr}"
+    );
+}

@@ -859,6 +859,31 @@ impl<'a> AstIntegrationContext<'a> {
                         Some(body_ref) => Some(self.map_stmt(body_ref, "trait default body")?),
                         None => None,
                     };
+                    // TRAIT-CONTRACT-EXPRREF: a signature's clauses
+                    // are `ExprRef`s into the *module's* pool, and
+                    // they were copied across unmapped — so each one
+                    // pointed at whatever the main pool happened to
+                    // hold at that index. The symptom was
+                    // `[E0010] requires clause must be of type bool,
+                    // got Unknown` against an unrelated line of an
+                    // unrelated file, which is why `trait Digest`
+                    // carried its promises in prose. Same mapping
+                    // `remap_function` gives a function's clauses.
+                    let remapped_requires = sig
+                        .requires
+                        .iter()
+                        .map(|e| self.map_expr(e, "trait requires-clause expr"))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let remapped_ensures = sig
+                        .ensures
+                        .iter()
+                        .map(|e| self.map_expr(e, "trait ensures-clause expr"))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let remapped_old_exprs = sig
+                        .old_exprs
+                        .iter()
+                        .map(|e| self.map_expr(e, "trait old() snapshot expr"))
+                        .collect::<Result<Vec<_>, _>>()?;
                     new_methods.push(TraitMethodSignature {
                         node: sig.node.clone(),
                         name: remapped_method_name,
@@ -866,12 +891,12 @@ impl<'a> AstIntegrationContext<'a> {
                         generic_bounds: remapped_generic_bounds,
                         parameter: remapped_params,
                         return_type: remapped_return_type,
-                        requires: sig.requires.clone(),
-                        ensures: sig.ensures.clone(),
+                        requires: remapped_requires,
+                        ensures: remapped_ensures,
                         ensures_kinds: sig.ensures_kinds.clone(),
                         never_allocates: sig.never_allocates,
                         is_unsafe: sig.is_unsafe,
-                        old_exprs: sig.old_exprs.clone(),
+                        old_exprs: remapped_old_exprs,
                         has_self_param: sig.has_self_param,
                         self_is_mut: sig.self_is_mut,
                         body: remapped_body,

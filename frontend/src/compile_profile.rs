@@ -141,6 +141,9 @@ struct State {
     hot_typecheck: Vec<Hot>,
     hot_lower: Vec<Hot>,
     hot_codegen: Vec<Hot>,
+    /// Open [`quiet`] guards. While non-zero, counters and hotspots are
+    /// dropped; phases are still recorded.
+    quiet: u32,
 }
 
 /// Start recording. Time is measured from here.
@@ -156,6 +159,7 @@ pub fn enable() {
         hot_typecheck: Vec::new(),
         hot_lower: Vec::new(),
         hot_codegen: Vec::new(),
+        quiet: 0,
     });
     ENABLED.store(true, Ordering::Release);
 }
@@ -238,9 +242,42 @@ pub fn phase(name: &'static str) -> PhaseGuard {
     PhaseGuard { active }
 }
 
+/// Ends a [`quiet`] region when dropped.
+#[must_use = "the quiet region ends when this guard is dropped"]
+pub struct QuietGuard {
+    active: bool,
+}
+
+impl Drop for QuietGuard {
+    fn drop(&mut self) {
+        if self.active {
+            with_state(|state| state.quiet = state.quiet.saturating_sub(1));
+        }
+    }
+}
+
+/// Run a pass a second time without it counting as the first.
+///
+/// The const fold lowers the whole program to run it on the IR VM;
+/// without this its bodies land in the `lower` hotspot table beside
+/// the real lowering, and a function lowered twice is listed twice.
+/// The time still shows, under whatever phase encloses the region.
+pub fn quiet() -> QuietGuard {
+    let mut active = false;
+    with_state(|state| {
+        state.quiet += 1;
+        active = true;
+    });
+    QuietGuard { active }
+}
+
 /// Add `n` to a counter.
 pub fn count(key: &'static str, n: u64) {
-    with_state(|state| *state.counters.entry(key).or_insert(0) += n);
+    with_state(|state| {
+        if state.quiet == 0 {
+            *state.counters.entry(key).or_insert(0) += n;
+        }
+    });
 }
 
 /// A start time for [`hot`] / [`file_parsed`], or `None` when not
@@ -259,10 +296,15 @@ pub fn hot(table: HotTable, started: Option<Instant>, name: impl FnOnce() -> Str
 
 /// Record a fully built hotspot entry.
 pub fn hot_record(table: HotTable, record: Hot) {
-    with_state(|state| match table {
-        HotTable::Typecheck => state.hot_typecheck.push(record),
-        HotTable::Lower => state.hot_lower.push(record),
-        HotTable::Codegen => state.hot_codegen.push(record),
+    with_state(|state| {
+        if state.quiet > 0 {
+            return;
+        }
+        match table {
+            HotTable::Typecheck => state.hot_typecheck.push(record),
+            HotTable::Lower => state.hot_lower.push(record),
+            HotTable::Codegen => state.hot_codegen.push(record),
+        }
     });
 }
 
@@ -331,6 +373,13 @@ mod tests {
             file_parsed("a.t", Origin::Entry, "x\ny\n", CacheUse::Off, timer());
             file_integrated("a.t", Origin::Entry, timer());
             hot(HotTable::Codegen, timer(), || "main".to_string());
+            {
+                // A second run of a pass keeps its phase, not its records.
+                let _quiet = quiet();
+                let _again = phase("again");
+                count("things", 100);
+                hot(HotTable::Codegen, timer(), || "main again".to_string());
+            }
             // A phase from another thread is dropped, not mis-nested.
             std::thread::spawn(|| drop(phase("elsewhere"))).join().unwrap();
         }
@@ -338,11 +387,12 @@ mod tests {
         assert!(!is_enabled());
         assert_eq!(profile.phases.len(), 1);
         assert_eq!(profile.phases[0].name, "outer");
-        assert_eq!(profile.phases[0].children.len(), 1);
-        assert_eq!(profile.phases[0].children[0].name, "inner");
+        let children: Vec<_> = profile.phases[0].children.iter().map(|p| p.name).collect();
+        assert_eq!(children, ["inner", "again"]);
         assert_eq!(profile.counters["things"], 5);
         assert_eq!(profile.files.len(), 1);
         assert_eq!((profile.files[0].bytes, profile.files[0].lines), (4, 2));
+        assert_eq!(profile.hot_codegen.len(), 1);
         assert_eq!(profile.hot_codegen[0].name, "main");
     }
 }

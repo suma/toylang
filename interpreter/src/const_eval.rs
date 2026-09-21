@@ -458,8 +458,13 @@ fn lower_for_fold(
             serial: false,
         });
     }
-    // 3. Lower.
+    // 3. Lower. COMPILE-PROFILE: a phase of its own, and quiet, so this
+    // second lowering is not read as (or mixed into) the real one.
+    let lower_phase = frontend::compile_profile::phase("ctfe_lower");
+    let quiet = frontend::compile_profile::quiet();
     let module = compiler_lower::lower_program(program, interner, contract_msgs, false).ok();
+    drop(quiet);
+    drop(lower_phase);
     // 4. Restore (wrapper first, then the stubs).
     let extra = const_fn_entries.len();
     for _ in 0..extra + usize::from(wrapper.is_some()) {

@@ -82,6 +82,9 @@ toy build mypkg --profile=compile [--format=json]
 │  ├─ post_checks                moves / never_allocates / const_fn /
 │  │                             unsafe / module_paths / parallel / regions
 │  ├─ const_fold                 const fold + 計算された配列長
+│  │  └─ ctfe_lower              fold が IR VM で走らせるための 2 度目の
+│  │                             lowering。`quiet()` の中なので lower の
+│  │                             表・カウンタには入らない (時間だけ残る)
 │  └─ lints                      contract_purity / unused_results
 ├─ lower                         compiler_lower::lower_program (+ test driver)
 │  ├─ declare                    型定義の収集・全関数 / method の宣言
@@ -156,6 +159,9 @@ codegen は並列なので、各行の時間は重なる。
   からでもよい
 - 表示 (text / JSON、見出しの A) は **`compiler/src/compile_profile.rs`**。
   記録器はデータだけを持つ
+- 同じ pass を別目的でもう一度走らせるところは `quiet()` で包む
+  (段は記録し、重い関数の表とカウンタには入れない)。でないと 1 つの
+  関数が表に 2 回載り、本番の量と混ざる
 - 計測点を足すときは、既存のフェーズの**中に**入れ子で置くこと。
   親の `self_ms` が大きいのは「名前の無い時間」がある印
 

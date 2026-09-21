@@ -660,3 +660,37 @@ fn more_segments_pick_between_two_modules_of_the_same_name() {
     .expect_err("an invented leading segment should not be ignored");
     assert!(err.contains("E0030") && err.contains("c::dup"), "{err}");
 }
+
+#[test]
+fn a_mod_file_names_its_directory() {
+    // MODULE-SYSTEM P3: `<root>/geo/mod.t` is the `geo` module, not
+    // a module called `mod`. The walker used to take the file's stem
+    // whatever it was, so the only way to call into it was `mod::`
+    // — a name nobody would write, disagreeing with what `import
+    // geo` resolves to, and shared by every other `mod.t` in the
+    // tree.
+    let core = core_tree(&[("geo/mod.t", "pub fn area(w: u64, h: u64) -> u64 { w * h }\n")]);
+    let value = test_program_with_core(
+        "fn main() -> u64 { geo::area(3u64, 4u64) }",
+        Some(core.path().to_path_buf()),
+    )
+    .expect("`geo::` should reach the directory's own mod.t");
+    assert_eq!(value.borrow().unwrap_uint64(), 12);
+}
+
+#[test]
+fn a_mod_file_and_a_sibling_are_different_modules() {
+    // The directory keeps its other files: `geo/mod.t` is `geo::`
+    // and `geo/shape.t` is `geo::shape::`, which is the layout the
+    // rule exists to make writable.
+    let core = core_tree(&[
+        ("geo/mod.t", "pub fn area(w: u64, h: u64) -> u64 { w * h }\n"),
+        ("geo/shape.t", "pub fn sides() -> u64 { 4u64 }\n"),
+    ]);
+    let value = test_program_with_core(
+        "fn main() -> u64 { geo::area(3u64, 4u64) + geo::shape::sides() }",
+        Some(core.path().to_path_buf()),
+    )
+    .expect("both spellings should resolve");
+    assert_eq!(value.borrow().unwrap_uint64(), 16);
+}

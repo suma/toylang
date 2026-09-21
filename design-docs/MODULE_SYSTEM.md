@@ -3,7 +3,8 @@
 > **状態: P1 / P2 landing 済み (2026-09-04)。P3 の
 > 多セグメントパスは 2026-09-21 に landing** — 書いたパスは
 > 検査され (`[E0030]`)、**解決にも参加する** (末尾一致なので、
-> 曖昧なときはセグメントを増やせば選べる)。**`mod.t` は未着手。**
+> 曖昧なときはセグメントを増やせば選べる)。**`mod.t` も同日に
+> landing — ディレクトリ自身の名前になった。P3 は埋まった。**
 > 対象: `core/std/**.t` の配置と、`module::name(...)` の解決規則。
 > 実装サイト: [`interpreter/src/module_integration.rs`](../interpreter/src/module_integration.rs)
 > (発見・統合)、[`frontend/src/module_resolver.rs`](../frontend/src/module_resolver.rs)
@@ -59,7 +60,7 @@
 |---|---|---|
 | 1 | `std::math::abs(-3i64)` | **通り、検査され、解決にも参加する** (2026-09-21)。パーサは全セグメントを `File::call_paths` に記録し、型検査と lowering の両方がそれを修飾子として使う (`path_ends_with` は元から多セグメントを受けていた)。`zzz::math::abs` は `[E0030]`、`a::dup::f` と `b::dup::f` は別の関数として解決する |
 | 2 | 同じリーフ名 + 同じ関数名の 2 モジュール | **panic。** `std/a/dup.t` と `std/b/dup.t` が両方 `pub fn f` を持つと型検査を素通りし、`compiler_ir/src/lib.rs:447` で `function_index collision for symbol=... qualifier=...` (**P2 で解消済み** — 候補パスを名指しする型エラーになった) |
-| 3 | `<core>/foo/mod.t` の `foo::f()` | **`[E0003] Struct 'foo' not found`。** auto-load の walker は `mod` をリーフ名として扱うので alias は `mod`。`import` 側の `candidate_module_paths` だけが `mod.t` を知っていて、2 経路が食い違っている (`docs/language.md` の表は `["foo"]` と書いていて誤り) |
+| 3 | `<core>/foo/mod.t` の `foo::f()` | **通る** (2026-09-21)。`mod.t` は段を足さずディレクトリの段を名乗るので、auto-load と `import` の 2 経路が同じ `foo` に着く。ルート直下の `mod.t` は名乗るものが無いので読み飛ばす |
 | 4 | `import my.helpers as h` の `h::add(...)` | **`[E0003] Struct 'h' not found`。** パーサは `as` を受理するが `visit_import` が alias を捨てていた (**2026-09-05 に解消** — パーサが alias をモジュールパスの末尾セグメントに置換する。[`MODULE_IMPORTS.md`](MODULE_IMPORTS.md) D1) |
 
 2 は「今フラットだからリーフ名が一意で踏んでいない」だけで、
@@ -250,11 +251,15 @@ std::a::dup::f and std::b::dup::f`)。**bare 呼び出しも同じ**で、
 
 ### P3 — 構文と `import` の穴埋め
 
-- パーサの `a::b::c(...)`: 現状 2 セグメントだけ `AssociatedFunctionCall`、
-  3 以上は黙って最後だけ残す。パス表現に一本化して型検査で
-  「先頭がモジュールパス / 末尾が型・関数」に振り分ける (現状 #1)
-- auto-load の walker に `mod.t` / `<name>/<name>.t` を入れて
-  `import` 側の `candidate_module_paths` と揃える (現状 #3)
+- ~~パーサの `a::b::c(...)`~~ — 2026-09-21 に解消。パーサは全セグメントを
+  `File::call_paths` に記録し、**型検査と lowering の両方が同じものを
+  修飾子として使う**。`path_ends_with` は元から多セグメントを受けて
+  いたので、変わったのは呼び出し側だけ。実在しないパスは `[E0030]`
+- ~~auto-load の walker の `mod.t`~~ — 同日に解消。`mod.t` は段を
+  足さずディレクトリの段を名乗る。`<name>/<name>.t` は
+  `import` 側の候補にはあるが auto-load は素直に 2 段
+  (`name::name::`) にするので、**揃えるならこちらも**という項目は
+  残っている (実害の報告は無い)
 - ~~`import a.b as h` の alias を `register_import` に通す (現状 #4)~~ —
   2026-09-05 に解消。ただし `register_import` ではなく**パーサでの置換**で
   ([`MODULE_IMPORTS.md`](MODULE_IMPORTS.md) D1)。alias はファイル局所

@@ -131,8 +131,18 @@ pub struct Diagnostic {
     pub message: String,
     pub file: String,
     pub span: Option<Span>,
-    /// Set when `span` refers to an imported module's source rather than
-    /// `file`. Consumers must not resolve the span against `file`.
+    /// The module a diagnostic came from, when one is known.
+    ///
+    /// It used to mean "the span is **not** in `file`, do not resolve
+    /// it there", because `file` was always the file being compiled.
+    /// `Diagnostic::anchor_in` fixed that: `file` now names the file
+    /// the span is actually in, so this is a hint about *provenance*
+    /// rather than a warning about a trap.
+    ///
+    /// Which is why the whole-program checks (ownership, regions,
+    /// effects) leave it `None` and are still correct — they run
+    /// after the per-module walk that would set it, and they no
+    /// longer need to.
     pub origin_module: Option<String>,
     pub suggestions: Vec<Suggestion>,
     /// How the failure was reached, innermost first (DEBUG-OBS D5).

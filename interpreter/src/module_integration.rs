@@ -1480,9 +1480,24 @@ fn walk_core_dir(
     }
     // Leaf `.t` files in this directory become modules with the
     // current `prefix + stem` segments.
+    //
+    // MODULE-SYSTEM P3: `mod.t` is the exception — it **is** the
+    // directory, so it takes the directory's own segments rather
+    // than adding one called `mod`. Without this, `<root>/geo/mod.t`
+    // had to be called `mod::`, which is not a name anybody would
+    // write, disagrees with what `import geo` resolves to
+    // (`candidate_module_paths` already looks for `geo/mod.t`), and
+    // collides with every other `mod.t` in the tree.
     for (stem, path) in leaf_files {
         let mut segments = prefix.clone();
-        segments.push(stem);
+        if stem != "mod" {
+            segments.push(stem);
+        } else if segments.is_empty() {
+            // A `mod.t` at the root of a module tree names nothing.
+            // Skipping it is better than inventing a name: the file
+            // is still readable, and nothing silently shadows.
+            continue;
+        }
         let source = std::fs::read_to_string(&path)
             .map_err(|e| format!("read {}: {}", path.display(), e))?;
         let file_name = path

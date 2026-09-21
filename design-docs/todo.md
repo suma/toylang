@@ -12,6 +12,19 @@
 
 ### 2026-09-21
 
+- **MODULE-SYSTEM P3 (`mod.t`) — ディレクトリ自身の名前になった** —
+  auto-load の walker がファイル名をそのまま段にしていたので
+  `<root>/geo/mod.t` は `mod::` で呼ぶしかなく、`import geo` の解決
+  (`candidate_module_paths` は `geo/mod.t` を探す) と食い違い、
+  ツリー中のすべての `mod.t` が同じ名前で衝突していた。`mod.t` は
+  段を足さずディレクトリの段を名乗る。ルート直下の `mod.t` は
+  名乗るものが無いので読み飛ばす (名前を発明するより黙る)。
+  **これで P3 は全部埋まった。**
+- **E0026〜E0030 の `origin_module` は `None` のままでよい** — この
+  項目は「全体パスの診断がどのモジュールか言わない」だったが、
+  `Diagnostic::anchor_in` が `file` を span の実ファイルにしたので、
+  この欄が守っていた不変条件 (「span は `file` に無い」) は成立して
+  いない。意味を「出どころのヒント」に書き直した。
 - **compound 要素の drop glue が `f32` leaf を通るようになった** —
   glue のシグネチャを組む leaf 型の一覧が `f32` 以前に書かれたもので、
   誰も足していなかった。`Vec<S>` の `S` に `f32` フィールドがあるだけで
@@ -2022,13 +2035,6 @@
   本命は構築子 (`new()` + ランダムな `push` 列) 経由でレシーバを生成すること
   で、collection に `--check` を効かせる唯一の道
   ([`VEC_CONTRACTS.md`](VEC_CONTRACTS.md) §5-3)。
-
-- **MODULE-SYSTEM P3 の残り: `mod.t`** ★ — auto-load の walker が
-  `mod.t` を `mod` という名前のファイルとして扱うので
-  `<core>/foo/mod.t` は `foo::` ではなく `mod::` で呼ぶことになり、
-  `import` 側の解決 (`candidate_module_paths`) と食い違う。
-  **多セグメントのパスは 2026-09-21 に解消** (完了済み節)。
-  設計は [`MODULE_SYSTEM.md`](MODULE_SYSTEM.md) P3。
 
 - **AOT-MATCH-STR-ARM-BLOCK: `str` を返す match の arm がブロックだと
   AOT が拒否する** — 最小再現:

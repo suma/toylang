@@ -91,9 +91,15 @@ impl<'a> FunctionLower<'a> {
                 }
                 Ok(out)
             }
+            // SIMD-F32 arrived after this list and was not added to
+            // it, so a struct with an `f32` field could not be an
+            // element of a `Vec` on the compiled lanes — the leaf
+            // carries no resource, exactly like `f64`, and the only
+            // thing missing was the name.
             scalar @ (Type::I64
             | Type::U64
             | Type::F64
+            | Type::F32
             | Type::Bool
             | Type::Str
             | Type::I8

@@ -94,3 +94,44 @@ fn f32_print_formatting_agrees() {
     "#;
     assert_consistent(src, "f32_print_formatting_agrees");
 }
+
+#[test]
+fn an_f32_field_does_not_stop_the_drop_glue() {
+    // The leaf-type list the glue signature is built from was written
+    // before `f32` existed, and nothing added it — so a struct with
+    // an `f32` field could not be a `Vec` element on the compiled
+    // lanes at all ("drop glue: unsupported leaf type f32"), even
+    // though the leaf owns nothing, exactly like `f64`.
+    //
+    // The `Box` is what makes this a drop-glue question: the glue has
+    // to walk *past* the float leaves to reach it.
+    let src = r#"
+        struct S { a: f32, b: Box<i64>, c: f32 }
+
+        fn main() -> i64 {
+            var v: Vec<S> = Vec::new()
+            var i: u64 = 0u64
+            while i < 3u64 {
+                val one = S { a: 1.5f32, b: Box::new(i as i64), c: 2.5f32 }
+                v.push(one)
+                i = i + 1u64
+            }
+            var total: i64 = 0i64
+            var k: u64 = 0u64
+            while k < v.size() {
+                val e: &S = v.borrow(k)
+                total = total + e.b.get()
+                k = k + 1u64
+            }
+            println(total)
+            0i64
+        }
+    "#;
+    assert_renders(src, "f32_leaf_drop_glue", "3\n");
+    // And the boxes are freed: the glue reached them.
+    let report = memory_profile_report(src, "prof_f32_leaf_drop_glue");
+    assert!(
+        report.contains("live_bytes        0"),
+        "something leaked:\n{report}"
+    );
+}

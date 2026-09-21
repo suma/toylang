@@ -12,6 +12,12 @@
 
 ### 2026-09-21
 
+- **compound 要素の drop glue が `f32` leaf を通るようになった** —
+  glue のシグネチャを組む leaf 型の一覧が `f32` 以前に書かれたもので、
+  誰も足していなかった。`Vec<S>` の `S` に `f32` フィールドがあるだけで
+  compiled レーンが `drop glue: unsupported leaf type f32` で拒否して
+  いた。leaf は何も所有しない (`f64` と同じ) ので、足りなかったのは
+  名前だけ。
 - **MODULE-SYSTEM P3 (後半) — 余分なセグメントが解決に参加するように
   なった** — `a::dup::f()` と `b::dup::f()` が**別の関数として解決
   する**。2 つの解決器 (`context::lookup_fn_detailed` と
@@ -2072,12 +2078,6 @@
   これを踏む。2026-09-03 に COLLECTIONS C3 で発見。
 
 
-- **compound 要素の drop glue が `f32` leaf で落ちる** ★ —
-  `Vec<S>` / `SoaVec<S>` の `S` に `f32` フィールドがあると
-  `drop glue: unsupported leaf type F32` で compiled レーンが拒否する
-  (`drop_glue.rs::drop_glue_signature`)。`f64` / narrow int は通るので
-  抜けているのは f32 だけ。SIMD-F32 が後から入った順序の名残
-  (2026-08-30 に DOD Phase 2 の作業中に発見)
 - **tuple 要素の `Vec` / `SoaVec` が AOT 不可** ★ —
   `Vec<(i64, u64)>` は `push` の `__builtin_sizeof(value)` が
   `could not infer arg type at AOT` になる。iterator アダプタの

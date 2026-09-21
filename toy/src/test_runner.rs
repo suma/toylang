@@ -763,7 +763,18 @@ fn run_aot_driver(
     // driver runs a set, and "everything except the panicking tests"
     // is that set.
     let names: Vec<String> = tests.iter().map(|t| plan.tests[*t].name.clone()).collect();
-    let exe = compile_driver(pkg, plan, opts, Some(&names), None)?;
+    // TEST-PARALLEL X0 / P5: the binary is named after the file, so a
+    // file with a `serial` test would have **two** drivers wanting
+    // one path — the parallel set and the serial one — and a worker
+    // would execute a binary the other was still writing. A
+    // single-test driver takes its name from the test, which is what
+    // `run_aot_panics` has always done.
+    let single = if tests.len() == 1 && plan.tests[tests[0]].serial {
+        Some(plan.tests[tests[0]].name.as_str())
+    } else {
+        None
+    };
+    let exe = compile_driver(pkg, plan, opts, Some(&names), single)?;
     let out = std::process::Command::new(&exe)
         .envs(bless_env(opts))
         .output()

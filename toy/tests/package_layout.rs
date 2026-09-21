@@ -1738,6 +1738,24 @@ test "a serial test may also panic" serial panics "boom" { panic("boom") }
         );
     }
 
+    // TEST-PARALLEL X0 again, and the reason this test asserts about
+    // files rather than only about the result: the driver binary is
+    // named after the *file*, so a file holding both parallel and
+    // serial tests wanted one path for two drivers — and a worker
+    // executed a binary the other was still writing ("the test
+    // driver ended before its first test (killed by a signal)").
+    // It shows up as a flake, so the check is that the binaries are
+    // distinct rather than that one run happened to pass.
+    let built: Vec<String> = std::fs::read_dir(pkg.0.join("build/debug/tests"))
+        .expect("tests dir")
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    let from_a: Vec<&String> = built.iter().filter(|n| n.starts_with("a_")).collect();
+    assert!(
+        from_a.len() >= 3,
+        "tests/a.t needs a binary of its own for each serial test and one for the          rest; got {from_a:?}"
+    );
+
     // The inventory says which tests are serial — it is the answer to
     // "why did this suite not go any faster".
     let listed = run(&pkg, &["test", path, "--list"]);

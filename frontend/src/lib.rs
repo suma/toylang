@@ -5,6 +5,7 @@ pub mod api;
 pub mod ast;
 #[cfg(feature = "serde")]
 pub mod cache;
+pub mod compile_profile;
 pub mod type_decl;
 pub mod token;
 pub mod format_spec;

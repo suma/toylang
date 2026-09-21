@@ -1291,6 +1291,22 @@ fn an_unknown_format_is_refused() {
 }
 
 #[test]
+fn build_can_profile_the_compile_and_only_build() {
+    let pkg = scratch("compile_profile");
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    let path = pkg.0.to_str().unwrap();
+    let out = run(&pkg, &["build", path, "--profile=compile", "--no-warn-collisions"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(stderr.starts_with("compile profile:"), "{stderr}");
+    assert!(stderr.lines().any(|l| l.starts_with("codegen ")), "{stderr}");
+
+    let out = run(&pkg, &["check", path, "--profile=compile"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("only `toy build`"));
+}
+
+#[test]
 fn the_old_diagnostics_flag_points_at_format() {
     // Folded into `--format`; a command copied from an old note should
     // say what to type rather than "unknown option".

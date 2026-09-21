@@ -29,6 +29,7 @@
 pub mod all_backends;
 pub mod cache;
 pub mod codegen;
+pub mod compile_profile;
 pub mod driver;
 pub use compiler_ir as ir;
 pub mod jit;
@@ -110,15 +111,28 @@ pub(crate) fn parse_for(
 /// Returns `Ok(())` after writing whichever artefact `options.emit`
 /// requested. Errors are stringified for display.
 pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
+    use frontend::compile_profile as prof;
+    let read_phase = prof::phase("read_source");
     let source = std::fs::read_to_string(&options.input).map_err(|e| {
         format!("failed to read {}: {}", options.input.display(), e)
     })?;
+    drop(read_phase);
 
     // Parse + type-check via the existing CompilerSession so this binary
     // shares interner state with the interpreter and stays consistent with
     // every other consumer of the frontend.
+    let parse_phase = prof::phase("parse");
+    let started = prof::timer();
     let mut session = compiler_core::CompilerSession::new();
     let mut program = parse_for(&mut session, &source, options)?;
+    prof::file_parsed(
+        &options.input.to_string_lossy(),
+        prof::Origin::Entry,
+        &source,
+        prof::CacheUse::Off,
+        started,
+    );
+    drop(parse_phase);
 
     // Reuse the interpreter's check_typing so trait conformance, allocator
     // bounds, and contract validation all run before codegen sees the AST.
@@ -226,6 +240,10 @@ pub fn compile_checked_program(
         codegen::emit_object(program, string_interner, contract_msgs, options)?;
 
     let out = output_path(options);
+    let _output_phase = frontend::compile_profile::phase(match options.emit {
+        EmitKind::Executable => "link",
+        _ => "write",
+    });
     match options.emit {
         EmitKind::Object => {
             std::fs::write(&out, &object_bytes)

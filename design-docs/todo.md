@@ -12,6 +12,11 @@
 
 ### 2026-09-22
 
+- **COMPILE-PROFILE: `compiler` / `toy build` の `--profile=compile`** —
+  AOT コンパイルのフェーズの木・読んだファイルごとの量と AST キャッシュ・
+  各段の処理量・重い関数 (typecheck / lower / codegen) を stderr に出す。
+  記録器は `frontend::compile_profile`。項目と初回の計測結果は
+  [`COMPILE_PROFILE.md`](COMPILE_PROFILE.md)。
 - **出力の形を選ぶ flag を `--format=text|json` 1 つに統合** —
   `compiler` / `interpreter` / `toy` の `--diagnostics` と
   `--profile-format` を廃止 (渡すと `--format` を案内するエラー)。

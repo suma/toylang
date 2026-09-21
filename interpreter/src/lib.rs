@@ -153,12 +153,14 @@ fn integrate_modules(
     entry: Option<&std::path::Path>,
 ) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = Vec::new();
+    use frontend::compile_profile as prof;
 
     // Always integrate the prelude first so its trait declarations
     // are visible before user impl blocks try to reference them. The
     // prelude has no `import` line, so it cannot itself depend on
     // user code or other modules — the integration order doesn't
     // need to fixpoint here.
+    let prelude_phase = prof::phase("prelude");
     if let Err(err) = module_integration::integrate_module_into_program_with_options_full(
         PRELUDE_SOURCE,
         program,
@@ -178,6 +180,7 @@ fn integrate_modules(
     ) {
         errors.push(format!("Prelude integration error: {}", err));
     }
+    drop(prelude_phase);
 
     // Track which module paths have been integrated so the
     // user-import pass below doesn't re-integrate (the integration
@@ -204,6 +207,7 @@ fn integrate_modules(
     let mut shadowed_stdlib_types: std::collections::HashSet<String> =
         std::collections::HashSet::new();
 
+    let discover_phase = prof::phase("discover");
     let discovered_modules = if core_modules_dirs.is_empty() {
         None
     } else {
@@ -224,16 +228,20 @@ fn integrate_modules(
         }
     };
 
+    drop(discover_phase);
+
     // Phase 1: parallel pre-parse (cache load or cold parse + type-name
     // extraction).  This is CPU-bound and safe to run in parallel
     // because each module gets its own `ParserWithInterner` which is
     // created, used, and dropped on the same rayon worker thread.
+    let preparse_phase = prof::phase("preparse");
     let mut preparsed_results: Vec<Result<module_integration::PreparsedCoreModule, String>> =
         if let Some(ref modules) = discovered_modules {
             module_integration::preparse_core_modules(modules)
         } else {
             Vec::new()
         };
+    drop(preparse_phase);
 
     // Build the shadow set from the union of all extracted type names.
     for (idx, result) in preparsed_results.iter().enumerate() {
@@ -259,6 +267,7 @@ fn integrate_modules(
 
     // Phase 2: sequential integrate pass.  Mutates
     // `main_string_interner`, so it must stay sequential.
+    let integrate_phase = prof::phase("integrate");
     if let Some(modules) = discovered_modules {
         for (idx, module) in modules.iter().enumerate() {
             let dotted = module.segments.join(".");
@@ -279,7 +288,8 @@ fn integrate_modules(
                 Err(_) => continue, // error already recorded above
             };
 
-            if let Err(err) = module_integration::integrate_preparsed_core_module(
+            let started = prof::timer();
+            let integrated = module_integration::integrate_preparsed_core_module(
                 preparsed,
                 program,
                 string_interner,
@@ -287,7 +297,13 @@ fn integrate_modules(
                 &shadowed_stdlib_types,
                 &module.display_path,
                 module.root_rank,
-            ) {
+            );
+            prof::file_integrated(
+                &module.display_path,
+                prof::Origin::of_root(module.root_rank),
+                started,
+            );
+            if let Err(err) = integrated {
                 errors.push(format!(
                     "Core module `{}` integration error: {}",
                     dotted, err
@@ -300,10 +316,12 @@ fn integrate_modules(
             });
         }
     }
+    drop(integrate_phase);
 
     // User-declared imports. Skip paths that were already auto-loaded
     // from the core modules directory so `import math` after an
     // auto-load that already contains math is a no-op.
+    let _imports_phase = prof::phase("imports");
     let imports = program.imports.clone();
     for import in &imports {
         let module_name = import
@@ -368,6 +386,7 @@ fn process_impl_blocks_extracted(
     // (`impl Iterator<i64> for Counter`) substitute `T -> i64`
     // before the conformance check compares signatures.
     for (target_type, target_type_args, methods, trait_name, trait_type_args) in impl_blocks {
+        let started = frontend::compile_profile::timer();
         if let Err(err) = tc.visit_impl_block_with_trait_args(
             *target_type,
             target_type_args,
@@ -377,6 +396,13 @@ fn process_impl_blocks_extracted(
         ) {
             errors.push(err);
         }
+        frontend::compile_profile::hot(frontend::compile_profile::HotTable::Typecheck, started, || {
+            let name = |sym: DefaultSymbol| tc.core.string_interner.resolve(sym).unwrap_or("?").to_string();
+            match trait_name {
+                Some(t) => format!("impl {} for {}", name(*t), name(*target_type)),
+                None => format!("impl {}", name(*target_type)),
+            }
+        });
     }
 
     errors
@@ -519,9 +545,18 @@ fn check_typing_collecting(
     let entry_path = filename
         .filter(|f| *f != "-" && !f.starts_with('<'))
         .map(std::path::PathBuf::from);
-    if let Err(module_errors) =
-        integrate_modules(program, string_interner, core_modules_dirs, entry_path.as_deref())
-    {
+    use frontend::compile_profile as prof;
+    let modules_phase = prof::phase("modules");
+    let integrated =
+        integrate_modules(program, string_interner, core_modules_dirs, entry_path.as_deref());
+    drop(modules_phase);
+    if prof::is_enabled() {
+        // COMPILE-PROFILE C: the size of what every later pass walks.
+        prof::count("ast.functions", program.function.len() as u64);
+        prof::count("ast.statements", program.statement.len() as u64);
+        prof::count("ast.expressions", program.expression.len() as u64);
+    }
+    if let Err(module_errors) = integrated {
         errors.extend(module_errors.into_iter().map(|m| Diagnostic::message_only(m, diag_file)));
         return Err(errors);
     }
@@ -541,7 +576,9 @@ fn check_typing_collecting(
     // The resolution pass walks the now-integrated AST and
     // substitutes every alias reference (chains and generic
     // aliases included) before any type-check work runs.
+    let alias_phase = prof::phase("resolve_aliases");
     frontend::resolve_type_aliases(program);
+    drop(alias_phase);
 
     // RECURSIVE-TYPES: reject types that contain themselves by value
     // before anything tries to lay one out. `compiler_lower`'s
@@ -550,11 +587,15 @@ fn check_typing_collecting(
     // was gone — the process aborted (exit 134) with no diagnostic at
     // all. Placed right after alias resolution: `type L = List` is
     // substituted by then, and every later pass is spared the shape.
+    let recursive_phase = prof::phase("recursive_types");
     errors.extend(
         frontend::type_checker::check_recursive_types(program, string_interner)
             .iter()
             .map(|e| Diagnostic::from_type_check_error(e, diag_file, Some(&*string_interner))),
     );
+    drop(recursive_phase);
+    let _typecheck_phase = prof::phase("typecheck");
+    let setup_phase = prof::phase("setup");
 
     // Every function body, the integrated stdlib's included.
     //
@@ -628,6 +669,8 @@ fn check_typing_collecting(
     // LLM-LOOP P3: a fix suggestion has to quote the text it replaces,
     // so the checker needs the source to build one.
     tc.source_code = source_code;
+    drop(setup_phase);
+    let declarations_phase = prof::phase("declarations");
 
 
     // Validate struct field types and register enum declarations. Running
@@ -653,6 +696,9 @@ fn check_typing_collecting(
             }
         }
     }
+
+    drop(declarations_phase);
+    let consts_phase = prof::phase("consts");
 
     // Type-check top-level `const` declarations and register them in the
     // global scope. Consts are checked in declaration order so each one
@@ -693,9 +739,13 @@ fn check_typing_collecting(
     // failures raised around a body (reference-typed return position,
     // malformed body, non-bool `requires`), so both are collected.
     tc.recovery_enabled = true;
+    drop(consts_phase);
 
     // Process impl blocks and collect errors
+    let impl_phase = prof::phase("impl_blocks");
     let impl_errors = process_impl_blocks_extracted(&mut tc, &impl_blocks);
+    drop(impl_phase);
+    prof::count("typecheck.impl_blocks", impl_blocks.len() as u64);
     errors.extend(
         impl_errors
             .iter()
@@ -703,14 +753,29 @@ fn check_typing_collecting(
     );
 
     // Process functions
+    let functions_phase = prof::phase("functions");
     let mut fn_errors: Vec<frontend::type_checker::TypeCheckError> = Vec::new();
-    functions.iter().for_each(|func| {
-        // Commented out for performance benchmarking
-        // println!("Checking function {}", name);
+    functions.iter().enumerate().for_each(|(index, func)| {
+        let started = prof::timer();
         if let Err(error) = tc.type_check(func.clone()) {
             fn_errors.push(error);
         }
+        // A call can pull its callee's body forward, so a function's
+        // time may include a callee checked on its behalf.
+        prof::hot(prof::HotTable::Typecheck, started, || {
+            tc.core.string_interner.resolve(func.name).unwrap_or("<fn>").to_string()
+        });
+        if prof::is_enabled() {
+            let key = if index < user_func_count {
+                "typecheck.functions_entry"
+            } else {
+                "typecheck.functions_modules"
+            };
+            prof::count(key, 1);
+        }
     });
+    drop(functions_phase);
+    let rewrites_phase = prof::phase("rewrites");
     tc.recovery_enabled = false;
     // NEWTYPE: install the tuple-struct desugar's pool rewrites. Runs
     // before the move / never-allocates passes so they walk the same
@@ -744,6 +809,8 @@ fn check_typing_collecting(
     // Drop`. Runs after the bodies are checked because it reads the
     // type checker's own `expr_types` record rather than re-inferring;
     // the map is cloned out so `tc`'s borrow of `program` can end.
+    drop(rewrites_phase);
+    let post_checks_phase = prof::phase("post_checks");
     let expr_types = tc.get_expr_types();
     drop(tc);
     let mut analysis = frontend::type_checker::check_moves(program, string_interner, &expr_types);
@@ -813,6 +880,8 @@ fn check_typing_collecting(
     //
     // Only reached when nothing above failed: the fold executes user
     // code, and code that does not type-check has no business running.
+    drop(post_checks_phase);
+    let const_fold_phase = prof::phase("const_fold");
     if fn_errors.is_empty() && errors.is_empty() {
         let folded = crate::const_eval::fold_const_evaluations(program, string_interner);
         fn_errors.extend(folded.errors);
@@ -836,6 +905,8 @@ fn check_typing_collecting(
     if fn_errors.is_empty() && errors.is_empty() {
         fn_errors.extend(crate::const_eval::resolve_array_lengths(program, string_interner));
     }
+    drop(const_fold_phase);
+    let lints_phase = prof::phase("lints");
 
     // COMPILE-TIME-EVAL C4: a contract that can do something other
     // than answer a question makes `INTERPRETER_CONTRACTS` / `--release`
@@ -859,6 +930,7 @@ fn check_typing_collecting(
     for warning in &mut warnings {
         warning.severity = frontend::diagnostic::Severity::Warning;
     }
+    drop(lints_phase);
     // Recorded on the program so every backend's auto-drop
     // registration can skip a binding that no longer owns its value.
     program.transferred_bindings = analysis.transferred;
@@ -903,6 +975,8 @@ fn check_typing_collecting(
     for d in errors.iter_mut().chain(warnings.iter_mut()) {
         d.anchor_in(&program.source_map);
     }
+    prof::count("typecheck.errors", errors.len() as u64);
+    prof::count("typecheck.warnings", warnings.len() as u64);
     if errors.is_empty() {
         Ok(warnings)
     } else {

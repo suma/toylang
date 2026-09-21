@@ -1214,12 +1214,34 @@ fn declare_methods(
 }
 
 
+/// COMPILE-PROFILE: the time since `started` against the body just
+/// lowered into `func_id`.
+fn record_lowered(module: &Module, func_id: FuncId, started: Option<std::time::Instant>) {
+    use frontend::compile_profile as prof;
+    let Some(started) = started else { return };
+    let wall = started.elapsed();
+    let func = module.function(func_id);
+    let insts = func
+        .blocks
+        .iter()
+        .map(|b| b.instructions.len() as u64 + u64::from(b.terminator.is_some()))
+        .sum();
+    prof::hot_record(prof::HotTable::Lower, prof::Hot {
+        name: func.display_name.clone().unwrap_or_else(|| func.export_name.clone()),
+        wall,
+        ir_insts: Some(insts),
+        code_bytes: None,
+    });
+}
+
 pub fn lower_program(
     program: &File,
     interner: &DefaultStringInterner,
     contract_msgs: &crate::ContractMessages,
     release: bool,
 ) -> Result<Module, String> {
+    use frontend::compile_profile as prof;
+    let declare_phase = prof::phase("declare");
     let mut module = Module::new();
     // DEBUG-OBS D4/D6: the shadow stack exists in a default build and
     // not under `--release`, and the backends need to know which even
@@ -1332,6 +1354,9 @@ pub fn lower_program(
         &mut plain_sources,
         &mut scheduled,
     )?;
+
+    drop(declare_phase);
+    let bodies_phase = prof::phase("bodies");
 
     // Second pass: lower bodies for the reachable transitive closure
     // from the entry points (`main` + `test` blocks) instead of every
@@ -1448,6 +1473,7 @@ pub fn lower_program(
         // 1. Deferred non-generic functions and methods.
         while let Some(work) = pending_plain_work.pop() {
             made_progress = true;
+            let started = prof::timer();
             let mut builder = FunctionLower::new(&mut module, work.func_id, &mut ctx)?;
             match &work.source {
                 PlainSource::Function(func) => builder.lower_body(func)?,
@@ -1455,6 +1481,7 @@ pub fn lower_program(
                     builder.lower_method_body(method, *target_sym)?
                 }
             }
+            record_lowered(&module, work.func_id, started);
             schedule_from_ir(
                 &module,
                 work.func_id,
@@ -1477,6 +1504,7 @@ pub fn lower_program(
                     )
                 })?
                 .clone();
+            let started = prof::timer();
             let mut builder = FunctionLower::new(&mut module, work.func_id, &mut ctx)?;
             // POINTER P1: install the per-monomorph subst so body
             // paths that read a generic parameter out of the AST
@@ -1485,6 +1513,7 @@ pub fn lower_program(
             // method path below gives its instances.
             builder.set_active_subst(work.subst.clone());
             builder.lower_body(&template)?;
+            record_lowered(&module, work.func_id, started);
             schedule_from_ir(
                 &module,
                 work.func_id,
@@ -1524,6 +1553,7 @@ pub fn lower_program(
                         interner.resolve(work.method_sym).unwrap_or("?"),
                     )
                 })?;
+            let started = prof::timer();
             let mut builder = FunctionLower::new(&mut module, work.func_id, &mut ctx)?;
             // Install the per-monomorph subst so val/var
             // annotations inside the body that reference
@@ -1531,6 +1561,7 @@ pub fn lower_program(
             // concrete type for this instance.
             builder.set_active_subst(work.subst.clone());
             builder.lower_method_body(&template, work.target_sym)?;
+            record_lowered(&module, work.func_id, started);
             schedule_from_ir(
                 &module,
                 work.func_id,
@@ -1544,8 +1575,10 @@ pub fn lower_program(
         // 4. DROP-GLUE.
         while let Some(work) = ctx.pending_glue_work.pop() {
             made_progress = true;
+            let started = prof::timer();
             let mut builder = FunctionLower::new(&mut module, work.func_id, &mut ctx)?;
             builder.lower_drop_glue(&work)?;
+            record_lowered(&module, work.func_id, started);
             schedule_from_ir(
                 &module,
                 work.func_id,
@@ -1559,6 +1592,7 @@ pub fn lower_program(
         // 5. Closures.
         while let Some(work) = ctx.pending_closure_work.pop() {
             made_progress = true;
+            let started = prof::timer();
             let mut builder = FunctionLower::new(&mut module, work.func_id, &mut ctx)?;
             builder.lower_closure_body(
                 &work.parameter,
@@ -1566,6 +1600,7 @@ pub fn lower_program(
                 &work.captures,
                 work.captures_by_ref,
             )?;
+            record_lowered(&module, work.func_id, started);
             schedule_from_ir(
                 &module,
                 work.func_id,
@@ -1579,8 +1614,10 @@ pub fn lower_program(
         // 5b. CONCURRENCY A2-b-2: outlined `parallel for` bodies.
         while let Some(work) = ctx.pending_par_work.pop() {
             made_progress = true;
+            let started = prof::timer();
             let mut builder = FunctionLower::new(&mut module, work.func_id, &mut ctx)?;
             par_checks.push(builder.lower_par_body(&work)?);
+            record_lowered(&module, work.func_id, started);
             schedule_from_ir(
                 &module,
                 work.func_id,
@@ -1603,6 +1640,7 @@ pub fn lower_program(
                 continue;
             }
             made_progress = true;
+            let started = prof::timer();
             let mut builder =
                 FunctionLower::new(&mut module, work.thunk_func_id, &mut ctx)?;
             builder.lower_dyn_thunk_body(
@@ -1611,6 +1649,7 @@ pub fn lower_program(
                 &work.user_param_tys,
                 work.self_is_mut,
             )?;
+            record_lowered(&module, work.thunk_func_id, started);
             schedule_from_ir(
                 &module,
                 work.thunk_func_id,
@@ -1626,6 +1665,8 @@ pub fn lower_program(
             break;
         }
     }
+    drop(bodies_phase);
+    let _finish_phase = prof::phase("finish");
     enable_allocation_counting_if_read(&mut module);
     // COMPILE-TIME-EVAL C2: the operands the fold made redundant.
     // Last, so every body — including the generic instances and

@@ -161,6 +161,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 | バックエンド一致 (単発) | `compiler/tests/consistency/` の `assert_consistent` |
 | バックエンド一致 (全 example 掃引) | `compiler/tests/example_consistency.rs` |
 | バックエンド一致 (CLI・D6) | `compiler/src/all_backends.rs` (`compiler f.t --all-backends`) |
+| コンパイル時間のプロファイル (COMPILE-PROFILE) | 記録器: `frontend/src/compile_profile.rs` (`phase` / `count` / `file_parsed` / `hot`)。表示: `compiler/src/compile_profile.rs`。計測点: `compiler/src/lib.rs::compile_file` (read / parse / link)、`interpreter/src/lib.rs` の `integrate_modules` と `check_typing_collecting` (modules / typecheck の各段)、`interpreter/src/module_integration.rs` (ファイルごと)、`compiler_lower/src/program.rs::lower_program` (+ `record_lowered`)、`compiler/src/codegen/mod.rs` の `emit_object` / `build_object_module` |
 | コード生成の再現性 | `compiler/tests/reproducible_build.rs` (**lowering / codegen で HashMap を反復すると link cache が全ミスになる**) |
 | JIT の eligibility / fallback | `interpreter/src/jit/eligibility/` |
 

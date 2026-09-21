@@ -15,7 +15,7 @@ use compiler::{compile_file, CompilerOptions, EmitKind};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (mut options, Mode { all_backends, profile, json }) = match parse_args(&args) {
+    let (mut options, Mode { all_backends, profile, compile_profile, json }) = match parse_args(&args) {
         Ok(o) => o,
         Err(msg) => {
             eprintln!("{msg}");
@@ -46,7 +46,18 @@ fn main() -> ExitCode {
         );
     }
 
-    match compile_file(&options) {
+    // COMPILE-PROFILE: time is measured from here, so reading the input
+    // above (done again inside `compile_file`) is not counted twice.
+    if compile_profile {
+        frontend::compile_profile::enable();
+    }
+    let result = compile_file(&options);
+    if let Some(recorded) = frontend::compile_profile::finish() {
+        // A failed compile still reports: which phase it got to, and
+        // how long that took, is part of the answer.
+        eprint!("{}", compiler::compile_profile::render(&recorded, &options, json));
+    }
+    match result {
         Ok(()) => {
             if json {
                 let report = serde_json::json!({
@@ -72,6 +83,8 @@ fn main() -> ExitCode {
 struct Mode {
     all_backends: bool,
     profile: ProfileMode,
+    /// `--profile=compile`: time the compile's phases (COMPILE-PROFILE).
+    compile_profile: bool,
     /// `--format=json`: the result (what was built, or the backends'
     /// verdict) as one JSON document on stdout. The same flag also
     /// shapes the diagnostics and the memory report.
@@ -93,6 +106,7 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
     }
     let mut all_backends = false;
     let mut profile_mem = false;
+    let mut compile_profile = false;
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut emit = EmitKind::Executable;
@@ -115,10 +129,18 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
             // blocks instead of `main`.
             "--test" => test_mode = true,
             "--all-backends" => all_backends = true,
-            s if s.starts_with("--profile=") => match &s["--profile=".len()..] {
-                "mem" => profile_mem = true,
-                other => return Err(format!("--profile expects `mem`, got `{other}`")),
-            },
+            // Repeatable, and a comma list: `--profile=mem,compile`.
+            s if s.starts_with("--profile=") => {
+                for what in s["--profile=".len()..].split(',') {
+                    match what {
+                        "mem" => profile_mem = true,
+                        "compile" => compile_profile = true,
+                        other => {
+                            return Err(format!("--profile expects `mem` or `compile`, got `{other}`"))
+                        }
+                    }
+                }
+            }
             "-o" => {
                 i += 1;
                 let v = args.get(i).ok_or_else(|| "-o needs an argument".to_string())?;
@@ -182,7 +204,12 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
         (true, false) => ProfileMode::Text,
         (true, true) => ProfileMode::Json,
     };
-    Ok((options, Mode { all_backends, profile, json }))
+    // `--all-backends` runs the program; there is no single compile
+    // whose phases the profile would describe.
+    if compile_profile && all_backends {
+        return Err("--profile=compile times one AOT build; drop --all-backends".to_string());
+    }
+    Ok((options, Mode { all_backends, profile, compile_profile, json }))
 }
 
 fn parse_format(value: &str) -> Result<bool, String> {
@@ -223,5 +250,8 @@ fn print_usage() {
     );
     eprintln!("       --format=json prints the result (what was built, or the backends' verdict) as JSON on stdout,");
     eprintln!("       and the diagnostics and the memory report as JSON on stderr");
+    eprintln!(
+        "       compiler <input.t> --profile=compile [--format=text|json]  # time each compile phase (stderr)"
+    );
     eprintln!("       use `-` as <input.t> to read the program from stdin");
 }

@@ -66,7 +66,7 @@ const LINK_CACHE_VERSION: u32 = 3;
 ///
 /// Production users don't set the env var so behaviour stays
 /// identical to the uncached path.
-fn link_cache_dir(cli_override: Option<&Path>) -> Option<PathBuf> {
+pub(crate) fn link_cache_dir(cli_override: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = cli_override {
         return Some(p.to_path_buf());
     }
@@ -126,8 +126,11 @@ pub fn link_executable(
             // included) so the resulting binary is runnable.
             std::fs::copy(&cached, output)
                 .map_err(|e| format!("link cache copy {} -> {}: {}", cached.display(), output.display(), e))?;
+            frontend::compile_profile::count("link.cache_hit", 1);
+            record_exe_size(output);
             return Ok(());
         }
+        frontend::compile_profile::count("link.cache_miss", 1);
         // Miss: link normally, then populate the cache atomically.
         link_executable_uncached(object_bytes, output, verbose, &cc, link_libs)?;
         if let Err(e) = populate_link_cache(&dir, hash, output) {
@@ -136,9 +139,21 @@ pub fn link_executable(
             // rather than failing the user's build.
             eprintln!("link-cache: populate failed: {e}");
         }
+        record_exe_size(output);
         return Ok(());
     }
-    link_executable_uncached(object_bytes, output, verbose, &cc, link_libs)
+    link_executable_uncached(object_bytes, output, verbose, &cc, link_libs)?;
+    record_exe_size(output);
+    Ok(())
+}
+
+/// COMPILE-PROFILE D: the size of what the link produced.
+fn record_exe_size(output: &Path) {
+    if frontend::compile_profile::is_enabled()
+        && let Ok(meta) = std::fs::metadata(output)
+    {
+        frontend::compile_profile::count("link.exe_bytes", meta.len());
+    }
 }
 
 /// Atomic cache write: copy `output` to a temp file in the cache

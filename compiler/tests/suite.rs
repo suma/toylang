@@ -19,6 +19,9 @@
 #[path = "all_backends_cli.rs"]
 mod all_backends_cli;
 
+#[path = "compile_profile_cli.rs"]
+mod compile_profile_cli;
+
 #[path = "consistency/mod.rs"]
 mod consistency;
 

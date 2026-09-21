@@ -32,7 +32,7 @@ const USAGE: &str = "\
 toy — build and run toylang programs
 
 usage:
-  toy build [PATH] [--release] [--backend aot|jit] [-o OUT] [--format=text|json] [-v]
+  toy build [PATH] [--release] [--backend aot|jit] [-o OUT] [--profile=compile] [--format=text|json] [-v]
   toy run   [PATH] [--release] [--backend aot|jit|vm|tree] [--format=text|json] [-v] [-- ARGS...]
   toy check [PATH] [--format=text|json] [-v]
   toy clean [PATH] [--all] [--format=text|json] [-v]
@@ -60,6 +60,7 @@ options:
                        and parse / type / runtime errors as a JSON array
                        on stderr. `run` leaves the program's own output
                        alone and reshapes only the errors. Default text
+  --profile=compile    build: time each compile phase, report on stderr
   --all                clean: remove the link cache and build/ too
   --no-warn-collisions skip the duplicate-name pre-check
   -- ARGS...           arguments for the program (run only)
@@ -113,6 +114,8 @@ struct Args {
     /// `toy test -j N`. `None` means "as many as the machine has"
     /// (TEST-PARALLEL D2).
     jobs: Option<usize>,
+    /// `toy build --profile=compile` (COMPILE-PROFILE).
+    compile_profile: bool,
 }
 
 fn main() {
@@ -130,6 +133,9 @@ fn main() {
         Err(e) => fail(&e),
     };
 
+    if args.compile_profile && command != "build" {
+        fail("--profile=compile times an AOT build; only `toy build` takes it");
+    }
     let result = match command.as_str() {
         "build" => cmd_build(&args),
         "run" => cmd_run(&args),
@@ -168,6 +174,7 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
         warn_collisions: true,
         all: false,
         jobs: None,
+        compile_profile: false,
     };
     let mut i = 0usize;
     while i < argv.len() {
@@ -185,6 +192,7 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
             "--bless" => a.bless = true,
             "--no-warn-collisions" => a.warn_collisions = false,
             "--all" => a.all = true,
+            "--profile=compile" => a.compile_profile = true,
             "--format" => {
                 i += 1;
                 let v = argv.get(i).ok_or("--format needs a value (text or json)")?;
@@ -343,15 +351,23 @@ fn cmd_build(args: &Args) -> Result<(), String> {
     options.diagnostics_json = args.json;
     if args.verbose {
         eprintln!(
-            "toy: compiler {} {} {}{}-o {}",
+            "toy: compiler {} {} {}{}{}-o {}",
             show_roots(&pkg),
             pkg.entry.display(),
             if args.release { "--release " } else { "" },
+            if args.compile_profile { "--profile=compile " } else { "" },
             show_format(args),
             out.display()
         );
     }
-    compiler::compile_file(&options)?;
+    if args.compile_profile {
+        frontend::compile_profile::enable();
+    }
+    let result = compiler::compile_file(&options);
+    if let Some(recorded) = frontend::compile_profile::finish() {
+        eprint!("{}", compiler::compile_profile::render(&recorded, &options, args.json));
+    }
+    result?;
     if args.json {
         print_json(&serde_json::json!({
             "entry": pkg.entry.display().to_string(),

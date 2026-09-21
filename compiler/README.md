@@ -29,6 +29,7 @@ A POSIX shell truncates that to the low 8 bits, so anything at or above
 | `--core-modules <DIR>` / `--core-modules=<DIR>` | Override the core-modules directory |
 | `--all-backends` | Run the program on the tree-walker, this crate's JIT and AOT, and report only disagreements (one stderr line when they agree) |
 | `--profile=mem` | Print an allocation profile (totals + leaks + allocator layout) to stderr after the run |
+| `--profile=compile` | Time the compile itself: a tree of phases (parse, module loading, type check, lowering, codegen, link), every source file read (bytes, lines, AST-cache hit), per-phase counts and the slowest functions per phase, on stderr. Not with `--all-backends`. `--profile=mem,compile` takes both. See [`design-docs/COMPILE_PROFILE.md`](../design-docs/COMPILE_PROFILE.md) |
 | `-h` / `--help` | Usage |
 
 ### Environment variables

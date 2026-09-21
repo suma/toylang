@@ -54,16 +54,45 @@ pub fn emit_object(
     contract_msgs: &ContractMessages,
     options: &CompilerOptions,
 ) -> Result<(Vec<u8>, Vec<String>), String> {
+    use frontend::compile_profile as prof;
+    let lower_phase = prof::phase("lower");
     let mut ir_module = lower::lower_program(program, interner, contract_msgs, options.release)?;
     if options.test_mode {
         lower::install_test_driver(&mut ir_module, program, interner, options.test_only.as_deref())?;
     }
+    drop(lower_phase);
+    if prof::is_enabled() {
+        let bodies = ir_module.functions.iter().filter(|f| !f.blocks.is_empty());
+        let (mut lowered, mut blocks, mut insts) = (0u64, 0u64, 0u64);
+        for f in bodies {
+            lowered += 1;
+            blocks += f.blocks.len() as u64;
+            insts += ir_insts(f);
+        }
+        prof::count("lower.functions_declared", ir_module.functions.len() as u64);
+        prof::count("lower.functions_lowered", lowered);
+        prof::count("lower.blocks", blocks);
+        prof::count("lower.instructions", insts);
+    }
+    let codegen_phase = prof::phase("codegen");
     let module = build_object_module(&ir_module, interner, options)?;
+    let emit_phase = prof::phase("emit_object");
     let product = module.finish();
     let bytes = product
         .emit()
         .map_err(|e| format!("object emission failed: {e}"))?;
+    drop(emit_phase);
+    drop(codegen_phase);
+    prof::count("codegen.object_bytes", bytes.len() as u64);
     Ok((bytes, ir_module.link_libs))
+}
+
+/// COMPILE-PROFILE: the size of one function's IR, terminators included.
+fn ir_insts(func: &compiler_ir::Function) -> u64 {
+    func.blocks
+        .iter()
+        .map(|b| b.instructions.len() as u64 + u64::from(b.terminator.is_some()))
+        .sum()
 }
 
 /// Render the freshly-built IR as text. Used by `--emit=ir`.
@@ -126,9 +155,12 @@ fn build_object_module(
     interner: &DefaultStringInterner,
     options: &CompilerOptions,
 ) -> Result<ObjectModule, String> {
+    use frontend::compile_profile as prof;
+    let declare_phase = prof::phase("declare");
     let module = make_object_module()?;
     let mut session = CodegenSession::new(module)?;
     session.declare_all(ir_module, interner)?;
+    drop(declare_phase);
 
     let funcs_to_compile: Vec<FuncId> = {
         // TEST-PERF: only compile functions reachable from `main`. The
@@ -165,6 +197,9 @@ fn build_object_module(
     }
 
     let isa = session.module.isa();
+    prof::count("codegen.functions", funcs_to_compile.len() as u64);
+    prof::count("codegen.threads", crate::small_pool::pool().current_num_threads() as u64);
+    let compile_phase = prof::phase("compile_functions");
 
     // Phase 2 parallel codegen: lower + compile each function on a
     // separate rayon worker.  Only `define_function_bytes` touches
@@ -175,6 +210,7 @@ fn build_object_module(
         funcs_to_compile
             .par_iter()
             .map(|&func_id| {
+                let started = prof::timer();
                 let mut ctx = session.prepare_function_context(ir_module, func_id)?;
                 let mut ctrl_plane = cranelift_control::ControlPlane::default();
                 ctx.compile(isa, &mut ctrl_plane).map_err(|e| {
@@ -197,12 +233,28 @@ fn build_object_module(
                         ModuleReloc::from_mach_reloc(reloc, &ctx.func, cl_func_id)
                     })
                     .collect();
+                if let Some(started) = started {
+                    let wall = started.elapsed();
+                    let func = ir_module.function(func_id);
+                    prof::count("codegen.cpu_us", wall.as_micros() as u64);
+                    prof::count("codegen.code_bytes", bytes.len() as u64);
+                    prof::count("codegen.relocations", relocs.len() as u64);
+                    prof::hot_record(prof::HotTable::Codegen, prof::Hot {
+                        name: func.display_name.clone().unwrap_or_else(|| func.export_name.clone()),
+                        wall,
+                        ir_insts: Some(ir_insts(func)),
+                        code_bytes: Some(bytes.len() as u64),
+                    });
+                }
                 Ok((func_id, bytes, alignment, relocs))
             })
             .collect()
         })
     };
 
+    drop(compile_phase);
+
+    let _define_phase = prof::phase("define");
     for result in compiled {
         let (func_id, bytes, alignment, relocs) = result?;
         let cl_id = session.fn_id(func_id).unwrap();

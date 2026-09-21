@@ -30,6 +30,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 機能ごとの実装詳細・フェーズ履歴 | [`design-docs/FEATURE_NOTES.md`](design-docs/FEATURE_NOTES.md) |
 | LLM 向けの診断・テスト機能の設計 | [`design-docs/LLM_FEEDBACK_LOOP.md`](design-docs/LLM_FEEDBACK_LOOP.md) |
 | backtrace / 行番号 / ファイル名の設計 | [`design-docs/DEBUG_OBSERVABILITY.md`](design-docs/DEBUG_OBSERVABILITY.md) |
+| **AOT コンパイルのどこが遅いか** (`--profile=compile`) | [`design-docs/COMPILE_PROFILE.md`](design-docs/COMPILE_PROFILE.md) |
 | `const fn` / コンパイル時実行の設計 | [`design-docs/COMPILE_TIME_EVAL.md`](design-docs/COMPILE_TIME_EVAL.md) |
 | closure が捕捉した束縛をどう掴むかの設計 | [`design-docs/CLOSURE_CAPTURE.md`](design-docs/CLOSURE_CAPTURE.md) |
 | エフェクト格子と 3 検査の関係 | [`design-docs/EFFECT_SYSTEM.md`](design-docs/EFFECT_SYSTEM.md) |
@@ -138,6 +139,15 @@ TOY_PROFILE_MEM=1 ./compiled_binary          # AOT バイナリ単体
 cargo run -q -p interpreter -- --profile=mem --format=json <source_file.t>
 TOY_PROFILE_MEM=json ./compiled_binary
 
+# コンパイル自体のどこに時間がかかるか (COMPILE-PROFILE、デバッグ用)。
+# フェーズの木 (read → parse → modules → typecheck → lower → codegen →
+# link、各段の子まで) / 読んだファイルごとの bytes・lines・AST キャッシュ
+# hit/miss / 各段の処理量 / 重い関数の上位 10 (typecheck・lower・codegen)
+# を **stderr** に出す。失敗したコンパイルでも出る
+cargo run -q -p compiler -- <source_file.t> --profile=compile
+cargo run -q -p compiler -- <source_file.t> --profile=compile --format=json   # 1 文書
+cargo run -q -p toy -- build mypkg --profile=compile
+
 # 自分のモジュールを持つプログラム (BUILD-TOOL B0/B1)。
 # `--core-modules` は**繰り返せて、後の root が勝つ** — stdlib を
 # 消さずに自分の src/ を足せる (以前は置き換えだった)
@@ -176,6 +186,14 @@ cargo run -q -p toy -- explain [E0001] [--format=text|json]
 echo 'fn main() -> u64 { 0u64 }' | cargo run -q -p interpreter -- --check -
 echo 'fn main() -> u64 { 7u64 }' | cargo run -q -p compiler -- - --all-backends
 ```
+
+**`--profile=compile` を読むときの注意**: 見出し行の
+`... build of the compiler` が **`debug` なら数字は数倍に膨らむ**
+(`cargo run` は debug)。ボトルネックを比べるなら
+`cargo build --release -p compiler` した `target/release/compiler` で測る。
+`TOYLANG_CRANELIFT_OPT_LEVEL` (テスト用に `.cargo/config.toml` が `none`
+にしている) も codegen を ~20x 変えるので、見出しに出る値を揃えて
+比べること。親フェーズの `self ms` が大きいのは計測点の無い時間がある印。
 
 **型ホール**: `val x: _ = expr` と書くと推論結果を報告して停止する
 (`[E0011] type hole: \`x\` has type \`i64\``)。1 回の実行でファイル中の

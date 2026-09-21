@@ -1838,10 +1838,19 @@ pub fn integrate_module_into_program_with_options_full(
     // interner is interchangeable with `ParserWithInterner`'s in that
     // role. Result: warm-cache and cold runs emit identical
     // `main_program` state by construction.
+    use frontend::compile_profile as prof;
+    let origin = if display_path == "<prelude>" {
+        prof::Origin::Prelude
+    } else {
+        prof::Origin::of_root(root_rank)
+    };
+    let started = prof::timer();
     let cache_dir = frontend::cache::default_cache_dir();
     if !is_cache_disabled() {
         if let Some(cached) = frontend::cache::load_full_module(source, &cache_dir) {
-            return integrate_cached_module(
+            prof::file_parsed(display_path, origin, source, prof::CacheUse::Hit, started);
+            let started = prof::timer();
+            let integrated = integrate_cached_module(
                 cached,
                 main_program,
                 main_string_interner,
@@ -1851,6 +1860,8 @@ pub fn integrate_module_into_program_with_options_full(
                 source,
                 root_rank,
             );
+            prof::file_integrated(display_path, origin, started);
+            return integrated;
         }
     }
 
@@ -1859,6 +1870,9 @@ pub fn integrate_module_into_program_with_options_full(
     let module_program = parser
         .parse_program()
         .map_err(|e| format!("Parse error in module: {}", e))?;
+    let cache_use = if is_cache_disabled() { prof::CacheUse::Off } else { prof::CacheUse::Miss };
+    prof::file_parsed(display_path, origin, source, cache_use, started);
+    let started = prof::timer();
 
     // Snapshot the module-local interner before handing the mutable
     // borrow to `AstIntegrationContext`. Phase 4 caches the snapshot
@@ -1909,6 +1923,7 @@ pub fn integrate_module_into_program_with_options_full(
             eprintln!("toylang: warning: failed to save module cache: {}", e);
         }
     }
+    prof::file_integrated(display_path, origin, started);
 
     Ok(())
 }
@@ -2016,6 +2031,9 @@ pub(crate) fn preparse_core_modules(
     modules
         .par_iter()
         .map(|module| {
+            use frontend::compile_profile as prof;
+            let started = prof::timer();
+            let origin = prof::Origin::of_root(module.root_rank);
             // --- Try cache first ---
             if !cache_disabled {
                 if let Some(cached) =
@@ -2023,6 +2041,13 @@ pub(crate) fn preparse_core_modules(
                 {
                     let type_names =
                         collect_top_level_type_names(&cached.file, &cached.interner);
+                    prof::file_parsed(
+                        &module.display_path,
+                        origin,
+                        &module.source,
+                        prof::CacheUse::Hit,
+                        started,
+                    );
                     return Ok(PreparsedCoreModule {
                         source: module.source.clone(),
                         payload: PreparsedPayload::Cached(SendCachedModule(cached)),
@@ -2038,6 +2063,8 @@ pub(crate) fn preparse_core_modules(
                 .map_err(|e| format!("Parse error in module: {}", e))?;
             let interner = parser.get_string_interner().clone();
             let type_names = collect_top_level_type_names(&file, &interner);
+            let cache_use = if cache_disabled { prof::CacheUse::Off } else { prof::CacheUse::Miss };
+            prof::file_parsed(&module.display_path, origin, &module.source, cache_use, started);
 
             Ok(PreparsedCoreModule {
                 source: module.source.clone(),

@@ -208,3 +208,35 @@ fn a_field_of_an_array_element_can_be_printed() {
     "#;
     assert_renders(src, "print_array_element_field", "3\n2.5\n7\n6.5\n");
 }
+
+#[test]
+fn a_closure_may_take_and_capture_an_f32() {
+    // The same family as the two above, in the closure ABI: the
+    // capture list and the parameter list are two more hand-written
+    // enumerations of "primitive scalar", and `f32` was in neither.
+    // The refusal contradicted itself — "can only capture primitive
+    // scalars; `scale` has type `f32`" — and the capture list's own
+    // comment says only opaque and compound types are meant to be
+    // out.
+    //
+    // Both directions: a copy capture read in the body, and a shared
+    // capture written through (CLOSURE-CAPTURE), plus an `f32`
+    // closure passed to a higher-order function.
+    let src = r#"
+        fn apply(f: fn (f32) -> f32, v: f32) -> f32 { f(v) }
+
+        fn main() -> u64 {
+            val base: f32 = 1.25f32
+            val g = fn(x: f32) -> f32 { x + base }
+            println(apply(g, 2.75f32))
+
+            var acc: f32 = 0.0f32
+            val bump = fn(x: f32) -> f32 { acc = acc + x  acc }
+            println(bump(1.5f32))
+            println(bump(2.0f32))
+            println(acc)
+            0u64
+        }
+    "#;
+    assert_renders(src, "f32_closure", "4.0\n1.5\n3.5\n3.5\n");
+}

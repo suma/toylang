@@ -778,12 +778,7 @@ impl<'a> FunctionLower<'a> {
             // store at MakeClosure time and a width-aware load at
             // body-entry time. Only opaque/compound types stay
             // rejected.
-            if !matches!(
-                cap_ty,
-                Type::I64 | Type::U64 | Type::F64 | Type::Bool
-                    | Type::I8 | Type::U8 | Type::I16 | Type::U16
-                    | Type::I32 | Type::U32
-            ) {
+            if !crate::templates::is_scalar_pointee(*cap_ty) {
                 return Err(format!(
                     "compiler MVP: capturing closure can only capture primitive scalars; `{}` has type `{}`",
                     self.interner.resolve(*cap_name).unwrap_or("?"),
@@ -1247,12 +1242,7 @@ impl<'a> FunctionLower<'a> {
             // store at MakeClosure time and a width-aware load at
             // body-entry time. Only opaque/compound types stay
             // rejected.
-            if !matches!(
-                cap_ty,
-                Type::I64 | Type::U64 | Type::F64 | Type::Bool
-                    | Type::I8 | Type::U8 | Type::I16 | Type::U16
-                    | Type::I32 | Type::U32
-            ) {
+            if !crate::templates::is_scalar_pointee(*cap_ty) {
                 return Err(format!(
                     "compiler MVP: capturing closure can only capture primitive scalars; `{}` has type `{}`",
                     self.interner.resolve(*cap_name).unwrap_or("?"),
@@ -1751,7 +1741,8 @@ impl<'a> FunctionLower<'a> {
         for (i, (name, _decl_ty)) in parameter.iter().enumerate() {
             let pt_idx = i + user_param_offset;
             match param_types[pt_idx] {
-                scalar @ (Type::I64 | Type::U64 | Type::F64 | Type::Bool | Type::Str
+                scalar @ (Type::I64 | Type::U64 | Type::F64 | Type::F32 | Type::Bool
+                    | Type::Str
                     | Type::I8 | Type::U8 | Type::I16 | Type::U16
                     | Type::I32 | Type::U32) => {
                     let local = self.module.function_mut(self.func_id).add_local(scalar);

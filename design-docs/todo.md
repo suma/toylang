@@ -10,6 +10,26 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-09-22
+
+- **`f32` を知らない型の列挙が 3 つあった** — リファクタリングの
+  棚卸しで見つけた。`SIMD-F32` が `f32` をスカラーとして足したとき、
+  **手書きの型リスト**が付いてこなかった:
+  * `&f32` / `&mut f32` — 「どの引数を番地で渡すか」を決めるリストと
+    「受け側でどう束縛するか」のリストが、この型 1 つで食い違って
+    いた。**両者は同じ答えでなければならないと doc に書いてある**。
+    しかも症状は診断ではなく **cranelift の verifier が panic**
+    (`declared type of variable var0 doesn't match type of value v0`)
+  * `[f32; N]` — 要素型として拒否されていたのに、`elem_stride_bytes`
+    は最初から `f32` に 4 バイト stride を与えていた
+
+  3 つを 1 つの定義 (`is_scalar_pointee`) に寄せた。
+- **`println(ps[i].f)` が compiled lane で断られていた** — `val` に
+  束縛すれば通るのに print に直接書くと
+  「field-access chains rooted at a bare identifier」。print の経路が
+  `resolve_field_chain` の拒否を `?` で伝播していたためで、値の経路に
+  落ちれば 1 回の leaf load で済む (DATA-ORIENTED)。
+
 ### 2026-09-21
 
 - **AOT-MATCH-STR-ARM-BLOCK — 名前は型を指していたが、原因は形
@@ -2278,7 +2298,7 @@
   今のところ variant を match する (tuple scrutinee は AOT 非対応なので
   ネストするか scalar tag に落とす)。実プログラムで踏んでから。
 
-- **SIMD-F32 の残** ★ — (a) **format spec 未対応**: `{x:.2}` の
+- **SIMD-F32 の残** ★ — (2026-09-22 に `&f32` / `[f32; N]` は解消) (a) **format spec 未対応**: `{x:.2}` の
   formattable 集合に f32 を入れるには `toy_format_f32` が要る
   (promote して f64 で整形すると最下位桁が変わるので専用ヘルパ)。
   (b) **f32 の math intrinsics** (`math::sqrt_f32` 等) は未提供 —

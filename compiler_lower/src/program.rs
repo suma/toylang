@@ -2194,13 +2194,7 @@ impl<'a> FunctionLower<'a> {
             // wrong numbers.
             if let frontend::type_decl::TypeDecl::Ref { is_mut, inner } = decl_ty
                 && let Some(pointee_ty) = self.lower_scalar_with_subst(inner)
-                    && matches!(
-                        pointee_ty,
-                        Type::I64 | Type::U64 | Type::F64 | Type::Bool
-                            | Type::I8 | Type::U8 | Type::I16 | Type::U16
-                            | Type::I32 | Type::U32
-                            | Type::F32
-                    ) {
+                    && crate::templates::is_scalar_pointee(pointee_ty) {
                         // The IR Type for the local that holds the
                         // pointer is U64 regardless of the pointee.
                         let local = self.module.function_mut(self.func_id).add_local(Type::U64);

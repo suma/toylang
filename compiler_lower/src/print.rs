@@ -132,10 +132,18 @@ impl<'a> FunctionLower<'a> {
         // the same leaf-local tree an identifier binding carries, so
         // the existing formatters take it unchanged. A scalar leaf
         // falls through to the value path below.
+        // A chain this cannot walk is not a failure here: the value
+        // path below is more general for a scalar leaf, and it is
+        // what `println(ps[i].x)` needs — a chain rooted at an array
+        // element, which `resolve_field_chain` refuses ("field-access
+        // chains rooted at a bare identifier") while `lower_expr`
+        // lowers it to a single leaf load (DATA-ORIENTED). Binding it
+        // to a `val` first worked; printing it directly did not.
         if let Some(arg_expr) = self.program.expression.get(&args[0])
             && matches!(arg_expr, Expr::FieldAccess(_, _) | Expr::TupleAccess(_, _))
+            && let Ok(chain) = self.resolve_field_chain(&args[0])
         {
-            match self.resolve_field_chain(&args[0])? {
+            match chain {
                 FieldChainResult::Struct { struct_id, fields } => {
                     self.emit_print_struct(struct_id, &fields, newline)?;
                     return Ok(None);

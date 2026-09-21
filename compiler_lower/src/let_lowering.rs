@@ -2154,6 +2154,11 @@ impl<'a> FunctionLower<'a> {
             Type::I64
                 | Type::U64
                 | Type::F64
+                // SIMD-F32: `f32` was missing while
+                // `elem_stride_bytes` already gave it a native
+                // 4-byte stride — so `[f32; 3]` was refused by the
+                // one list that had not been told about the type.
+                | Type::F32
                 | Type::Bool
                 | Type::I8
                 | Type::U8

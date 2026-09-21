@@ -903,7 +903,7 @@ pub(super) fn param_ref_pointee_ty(ty: &TypeDecl) -> Option<Type> {
 pub(super) fn is_scalar_pointee(scalar: Type) -> bool {
     matches!(
         scalar,
-        Type::I64 | Type::U64 | Type::F64 | Type::Bool
+        Type::I64 | Type::U64 | Type::F64 | Type::F32 | Type::Bool
             | Type::I8 | Type::U8 | Type::I16 | Type::U16
             | Type::I32 | Type::U32
     )
@@ -965,14 +965,10 @@ pub(super) fn lower_param_or_return_type(
     // ref-of-struct.
     if let TypeDecl::Ref { inner, .. } = ty {
         if let Some(scalar) = lower_scalar(inner)
-            && matches!(
-                scalar,
-                Type::I64 | Type::U64 | Type::F64 | Type::Bool
-                    | Type::I8 | Type::U8 | Type::I16 | Type::U16
-                    | Type::I32 | Type::U32
-            ) {
-                return Some(Type::U64);
-            }
+            && is_scalar_pointee(scalar)
+        {
+            return Some(Type::U64);
+        }
         // A5-P2: `&dyn Trait` is the trait-object form. Lower to a
         // 2-tuple (data_ptr, vtable_ptr) so it slots into the
         // existing tuple-passing ABI. The fat-pointer's trait

@@ -1279,6 +1279,17 @@
   `panic` と違って発散扱いされていなかったこと。前者は
   **scrutinee の enum が payload の型を知っている**ので復元できる。
   `break` / `continue` は型検査器も発散扱いしないので載せていない。
+- **CACHE-DIR-RACE: schema を上げた直後の `toy test` が
+  「failed to save module cache」を出す** ★ — `.toycache/<2桁>/` を
+  `create_dir_all` で作ってから `rename` するのに、その間に
+  ディレクトリが消えて `No such file or directory` になる
+  (2026-09-21 に 2 回観測、どちらも schema bump の直後 = 全エントリが
+  書き直される回)。`.toycache` は**カレントディレクトリ相対**なので、
+  並列ジョブが別の cwd を掃除しているのが筋。無害 (キャッシュミスに
+  落ちるだけ) だが、bump のたびに出る。直すなら ENOENT のとき
+  ディレクトリを作り直して 1 回だけ再試行する — ただし**誰が消して
+  いるか**を先に確かめること。
+
 - **PARALLEL-CAPTURE-WRITE-LANE: 捕捉を変える呼び出しを断るのが
   compiled レーンだけ** ★ — `parallel for` の本文が外側の束縛に
   **書く method を呼ぶ** (`v.push(x)`) と lowering が断り、

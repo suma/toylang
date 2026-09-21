@@ -37,6 +37,16 @@ impl<'a> Parser<'a> {
             }
             x => {
                 let location = self.current_source_location();
+                // A reserved word here used to be reported by the
+                // caller as a missing `)`, because this error was
+                // swallowed by its recovery. Collect it, so what the
+                // reader sees names the word.
+                if let Some(kind) = x.as_ref()
+                    && let Some(message) = kind.as_name_error("a parameter name")
+                {
+                    self.collect_error(&message);
+                    return Err(ParserError::generic_error(location, message));
+                }
                 Err(ParserError::generic_error(location, format!("expect type parameter of function but: {:?}", x)))
             },
         }

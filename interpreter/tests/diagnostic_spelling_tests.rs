@@ -188,3 +188,40 @@ fn no_diagnostic_shows_an_interned_id_or_a_debug_type_name() {
         }
     }
 }
+
+/// A reserved word written where a name goes says which word, and
+/// where it belongs.
+///
+/// Three positions reported it three ways, none of them useful:
+/// `fn f(to: u64)` said `ParenClose` (the real error was swallowed by
+/// the parameter loop's recovery), `val to = 3u64` said "reserved
+/// keyword 'keyword'" — the catch-all arm of a hand-written match —
+/// and a struct field said "expected field name" without saying why
+/// the name was refused.
+#[test]
+fn a_keyword_used_as_a_name_says_which_keyword() {
+    let cases = [
+        ("fn f(to: u64) -> u64 { 1u64 }", "a parameter name"),
+        ("fn main() -> u64 { val to = 3u64  1u64 }", "the name of a binding"),
+        ("struct S { to: u64 }\nfn main() -> u64 { 0u64 }", "a field name"),
+    ];
+    for (source, position) in cases {
+        let err = test_program(source).expect_err("a keyword is not a name");
+        assert!(
+            err.contains("`to` is a keyword"),
+            "the word should be named ({position}): {err}"
+        );
+        assert!(
+            err.contains(position),
+            "and the position said plainly: {err}"
+        );
+        assert!(
+            err.contains("range keyword"),
+            "`to` has an obvious neighbour, so the message offers it: {err}"
+        );
+        assert!(
+            !err.contains("ParserError {") && !err.contains("GenericError {"),
+            "and no struct dump reaches the reader: {err}"
+        );
+    }
+}

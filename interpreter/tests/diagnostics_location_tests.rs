@@ -364,7 +364,7 @@ fn a_malformed_format_spec_points_at_its_literal() {
         "the diagnostic should name the problem:\n{diags}"
     );
     assert!(
-        diags.contains("line: 3"),
+        diags.contains("line 3"),
         "the spec is written on line 3:\n{diags}"
     );
 }

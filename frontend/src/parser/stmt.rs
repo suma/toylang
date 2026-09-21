@@ -516,23 +516,10 @@ pub fn parse_var_def(parser: &mut Parser) -> ParserResult<StmtRef> {
         }
         Some(ref kind) if kind.is_keyword() => {
             let location = parser.current_source_location();
-            return Err(ParserError::generic_error(location, format!("parse_var_def: reserved keyword '{}' cannot be used as identifier", 
-                match kind {
-                    Kind::If => "if",
-                    Kind::Else => "else", 
-                    Kind::While => "while",
-                    Kind::For => "for",
-                    Kind::Function => "fn",
-                    Kind::Return => "return",
-                    Kind::Break => "break", 
-                    Kind::Continue => "continue",
-                    Kind::Val => "val",
-                    Kind::Var => "var",
-                    Kind::Struct => "struct",
-                    Kind::Impl => "impl",
-                    _ => "keyword"
-                }
-            )))
+            let message = kind
+                .as_name_error("the name of a binding")
+                .unwrap_or_else(|| "a keyword cannot be the name of a binding".to_string());
+            return Err(ParserError::generic_error(location, message))
         }
         x => {
             let location = parser.current_source_location();
@@ -794,15 +781,18 @@ pub fn parse_struct_fields_with_generic_context(parser: &mut Parser, mut fields:
             _ => Visibility::Private,
         };
 
-        let field_name = match parser.peek() {
+        let field_name = match parser.peek().cloned() {
             Some(Kind::Identifier(s)) => {
                 let name = s.to_string();
                 parser.next();
                 name
             }
-            _ => {
+            other => {
                 let location = parser.current_source_location();
-                return Err(ParserError::generic_error(location, "expected field name".to_string()))
+                let message = other
+                    .and_then(|k| k.as_name_error("a field name"))
+                    .unwrap_or_else(|| "expected field name".to_string());
+                return Err(ParserError::generic_error(location, message))
             },
         };
 

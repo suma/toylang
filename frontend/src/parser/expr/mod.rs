@@ -234,8 +234,20 @@ pub fn parse_block_impl(parser: &mut Parser, mut statements: Vec<StmtRef>) -> Pa
                 statements.push(stmt);
             }
             Err(err) => {
+                // The inner error already says what is wrong, in
+                // prose. Wrapping it in `{:?}` buried that in a
+                // struct dump — the reader had to find the message
+                // inside `ParserError { kind: GenericError { .. } }`
+                // to learn that `to` is a keyword.
                 let error_token = parser.peek().cloned();
-                parser.collect_error(&format!("expected statement in block: {:?} at token {:?}", err, error_token));
+                let inner = err.to_string();
+                if inner.trim().is_empty() {
+                    parser.collect_error(&format!(
+                        "expected a statement here (at {error_token:?})"
+                    ));
+                } else {
+                    parser.collect_error(&inner);
+                }
                 
                 // Critical: Always ensure we make progress to avoid infinite loop
                 match parser.peek() {

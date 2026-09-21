@@ -51,7 +51,17 @@ pub fn test_program_with_core(
     let mut parser = frontend::ParserWithInterner::new(source_code);
     parser.set_source_file("test.t");
     let mut program = parser.parse_program()
-        .map_err(|e| format!("Parse error: {e:?}"))?;
+        // `Display`, not `Debug`: a test that asserts on a message
+        // should see what a reader sees (DIAG-SYMBOL-NAME). The
+        // position is added here rather than by `Display`, which
+        // deliberately carries none (LLM-LOOP P2 — the formatter
+        // prints the `Error at ...` header itself).
+        .map_err(|e| {
+            format!(
+                "Parse error at line {}:{}: {e}",
+                e.location.line, e.location.column
+            )
+        })?;
 
     let string_interner = parser.get_string_interner();
 

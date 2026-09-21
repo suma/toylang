@@ -12,6 +12,15 @@
 
 ### 2026-09-21
 
+- **予約語を名前に書いたときの診断が、どの語かを言うようになった** —
+  3 か所が 3 通りに壊れていた: `fn f(to: u64)` は `ParenClose`
+  (本当のエラーを引数ループの回復が握り潰していた)、`val to = ...` は
+  「reserved keyword 'keyword'」(手書き match の catch-all)、struct
+  フィールドは「expected field name」で理由を言わなかった。
+  `Kind::keyword_spelling` / `keyword_hint` の 1 つの表に寄せ、
+  `to` のように紛れやすい語には行き先も添える。ブロックの回復が
+  内側のエラーを `{:?}` で包んでいたのも直した (構造体ダンプの中に
+  文面が埋まっていた)。テストヘルパも `Display` を使う。
 - **CONCURRENCY A2-b の設計を訂正した** — env struct に
   `&mut Vec<u64>` を持たせる案は**書けなかった**
   (`struct S { r: &u64 }` は REF-Stage-2 (e) が拒否する)。持てるのは

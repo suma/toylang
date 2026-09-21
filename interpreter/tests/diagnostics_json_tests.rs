@@ -337,7 +337,7 @@ fn a_module_flagged_diagnostic_is_never_rendered_against_the_local_file() {
 
 // --- DEBUG-OBS D5: runtime failures on the JSON channel ------------
 //
-// 実測 8: `--diagnostics=json` covered parse and type-check failures
+// 実測 8: `--format=json` covered parse and type-check failures
 // only. The one thing left in plain text was the failure that happens
 // while the program runs — the one an LLM loop reads most often.
 

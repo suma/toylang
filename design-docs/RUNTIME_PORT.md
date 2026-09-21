@@ -369,7 +369,7 @@ Layer 0  libc                  write / malloc / exit / getenv / fopen
 
 - `cargo nextest run` グリーン (f64 の golden 更新を含む)。 ✅
 - `--all-backends` で f64 が 3 者一致 (実測 1 の 3 式を consistency テストに追加)。 ✅
-- `--profile=mem` / `--profile-format=json` が interpreter と一致。 ✅
+- `--profile=mem` / `--format=json` が interpreter と一致。 ✅
 - `reproducible_build.rs` グリーン (rustc 出力の決定性確認)。 ✅
 - `cc` 依存が残るのはリンクのみ (C コンパイルは消える)。 ✅
 
@@ -424,7 +424,7 @@ interpreter のベンチ (`println` ループ) が許容範囲内 (基準は移�
 | 何を守るか | 手段 |
 |---|---|
 | 3 バックエンドの出力一致 | `compiler/tests/consistency/` / `example_consistency.rs` |
-| メモリ計数の一致 | `--profile=mem` / `--profile-format=json` の 3 者比較 |
+| メモリ計数の一致 | `--profile=mem` / `--format=json` の 3 者比較 |
 | リンクキャッシュが効き続けること | `compiler/tests/reproducible_build.rs` |
 | f64 の乖離が再発しないこと | `f64_display_agrees_across_backends` (実測 1 の 3 式 + 境界値、R1 で追加) |
 | ランタイム単体の性質 | `toylang_rt` crate の `#[test]` (C では書けなかった) |

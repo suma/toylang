@@ -154,7 +154,7 @@ toy test lsz                  # 名前の部分一致で絞る
 toy test --list               # 走らせずに一覧
 toy test --backend all        # 4 レーンで走らせ、食い違いを報告
 toy test --check              # 契約プロパティテスト (P5) も回す
-toy test --format=json        # 機械向け (--diagnostics=json と同じ流儀)
+toy test --format=json        # 機械向け (結果も診断も JSON)
 ```
 
 - **探索**: `tests/*.t` と `src/**/*.t` と `main.t` の `test` ブロック。

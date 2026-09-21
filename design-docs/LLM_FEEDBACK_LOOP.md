@@ -13,7 +13,7 @@ FFI_PLAN.md / ALLOCATOR_PLAN.md / DYN_TRAIT_AOT.md と同じく
 | **P0** | 致命的な診断バグの修正 (bare-name 解決順) | ✅ 2026-08-09 |
 | **P1** | 診断の一括報告 (文単位のエラー回復) | ✅ 2026-08-09 |
 | **P2** | Span 化 + 全診断への location 強制 | ✅ 2026-08-09 |
-| **P3** | 構造化診断出力 (`--diagnostics=json`) + 修正提案 | ✅ 2026-08-09 |
+| **P3** | 構造化診断出力 (`--format=json`) + 修正提案 | ✅ 2026-08-09 |
 | **P4** | 言語組み込みテスト (`test` ブロック + `assert_eq`) | ✅ 2026-08-09 |
 | **P5** | 契約ベース自動プロパティテスト (`--check`) | ✅ 2026-08-09 |
 | **P6** | 実行時の観測性 (panic backtrace / 契約違反の値 / 算術 trap) | ✅ 2026-08-10 |
@@ -206,7 +206,7 @@ P1 (一括報告) は単独で往復回数を N → 1 にする唯一の変更�
 
 ### 論点 2: 出力はテキストか JSON か
 
-**決定: 両方出す。テキストが正、JSON はオプトイン (`--diagnostics=json`)。**
+**決定: 両方出す。テキストが正、JSON はオプトイン (`--format=json`)。**
 
 LLM はテキストも読めるので JSON は必須ではない。JSON が効くのは
 **エージェントのツール層**が「該当行だけ抽出する」「修正提案を自動適用する」
@@ -474,9 +474,13 @@ formatter を通した String を返していたため、`Error: [E0010] Error a
 
 #### CLI
 
-`--diagnostics=json` を interpreter / compiler の両方に追加。
+`--format=json` を interpreter / compiler の両方に追加。
 出力先は **stderr** (プログラム自身の `print` 出力を同一実行で
-使えるように)。`--diagnostics=text` が既定。
+使えるように)。`--format=text` が既定。
+
+> 当初の綴りは `--diagnostics=json`。2026-09-22 に結果の形を選ぶ
+> `--format` と統合し、`--format=json` 1 つで結果 (stdout)・診断
+> (stderr)・`--profile=mem` のレポートがまとめて JSON になる。
 
 ```json
 {
@@ -753,7 +757,7 @@ $ echo 'fn main() -> u64 { val x: _ = 1i64 + 2i64  0u64 }' | interpreter -
   `UInt8` → "uint8" になり**貼り戻せない**。ホールの出力は貼り戻すためのもの
   なので別関数にした。表記を持たない型 (`Unknown` / `Number` / `Range`) は
   `None` を返し、呼び出し側が「表記なし」と明示する
-- 専用コード **E0011**。`--diagnostics=json` の consumer が
+- 専用コード **E0011**。`--format=json` の consumer が
   「欲しかった型はこれ」と「プログラムが壊れている」を区別できる必要がある —
   この 2 つは逆の信号
 

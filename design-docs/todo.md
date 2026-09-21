@@ -12,6 +12,12 @@
 
 ### 2026-09-22
 
+- **出力の形を選ぶ flag を `--format=text|json` 1 つに統合** —
+  `compiler` / `interpreter` / `toy` の `--diagnostics` と
+  `--profile-format` を廃止 (渡すと `--format` を案内するエラー)。
+  `json` で結果 (stdout)・診断・`--profile=mem` レポート (stderr) が
+  まとめて JSON になる。`toy run --format=json` は拒否をやめ、
+  プログラムの stdout はそのままで診断だけ JSON にする。
 - **`f32` を知らない型の列挙が 5 つあった** — リファクタリングの
   棚卸しで見つけた。`SIMD-F32` が `f32` をスカラーとして足したとき、
   **手書きの型リスト**が付いてこなかった:
@@ -1781,7 +1787,7 @@
 - **`str + str` を型検査で拒否 (E0002)** — `visit_binary` が `str + str`
   を明示的に受理する arm があったが、**どのバックエンドにも実装が無い**
   (interpreter はゴミハンドル、AOT は bus error / exit 138)。
-- **CLAUDE.md の `--message-format=short` 案内を `--diagnostics=json`
+- **CLAUDE.md の `--message-format=short` 案内を `--format=json`
   に誘導** — `--message-format=short` はどちらの CLI にも実装が無く、渡すと
   usage を出して終わるのに「診断を 1 行にする手段」として繰り返し勧めていた。
 - **INCR-INTEGRATE: 統合パスを placeholder 2 パス + HashMap から 1 パス +
@@ -2454,7 +2460,7 @@
 > `compiler/tests/consistency/diagnostics.rs` に pin されている。
 > backtrace の穴は塞がり、位置はどのファイルのものかを持ち、5 実行系
 > すべてが panic の位置と backtrace を stderr に同じ書式で出し、
-> 実行時の失敗は `--diagnostics=json` にも載り、無限再帰と stdlib の
+> 実行時の失敗は `--format=json` にも載り、無限再帰と stdlib の
 > 範囲外はホストではなく toylang の言葉で落ちる。**5 レーンは pin した
 > 全プログラムで完全一致**しており、両方向 pin の
 > `assert_diagnostic_report` は現在どこからも呼ばれていない。

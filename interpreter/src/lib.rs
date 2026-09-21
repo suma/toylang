@@ -1267,7 +1267,7 @@ pub fn execute_program(program: &File, string_interner: &DefaultStringInterner, 
 /// (DEBUG-OBS D5).
 ///
 /// `execute_program` renders and drops the structure; a driver that
-/// might be asked for `--diagnostics=json` needs it kept.
+/// might be asked for `--format=json` needs it kept.
 pub fn execute_program_reporting(
     program: &File,
     string_interner: &DefaultStringInterner,
@@ -1607,7 +1607,7 @@ fn execute_entry_with_values(
 /// The same runtime failure, in the shape a tool consumes
 /// (DEBUG-OBS D5, 実測 8).
 ///
-/// Until this, `--diagnostics=json` covered parse and type-check
+/// Until this, `--format=json` covered parse and type-check
 /// failures only — the one thing left in plain text was the failure
 /// that happens while the program runs, which is the one an LLM loop
 /// most often has to read.
@@ -2307,7 +2307,7 @@ pub fn run_source(
         Err((text, diagnostic)) => {
             // DEBUG-OBS D5 (実測 8): a runtime failure goes down the
             // same channel a type error does. It was the last thing
-            // `--diagnostics=json` did not cover, and the one an LLM
+            // `--format=json` did not cover, and the one an LLM
             // loop reads most.
             if options.diagnostics_json {
                 emit_diagnostics_json(std::slice::from_ref(&*diagnostic));

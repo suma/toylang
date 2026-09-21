@@ -73,7 +73,8 @@ struct Mode {
     all_backends: bool,
     profile: ProfileMode,
     /// `--format=json`: the result (what was built, or the backends'
-    /// verdict) as one JSON document on stdout.
+    /// verdict) as one JSON document on stdout. The same flag also
+    /// shapes the diagnostics and the memory report.
     json: bool,
 }
 
@@ -92,7 +93,6 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
     }
     let mut all_backends = false;
     let mut profile_mem = false;
-    let mut profile_json = false;
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut emit = EmitKind::Executable;
@@ -100,7 +100,6 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
     let mut release = false;
     let mut test_mode = false;
     let mut core_modules_dirs: Vec<PathBuf> = Vec::new();
-    let mut diagnostics_json = false;
     let mut json = false;
     let mut i = 0;
     while i < args.len() {
@@ -120,17 +119,6 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
                 "mem" => profile_mem = true,
                 other => return Err(format!("--profile expects `mem`, got `{other}`")),
             },
-            s if s.starts_with("--profile-format=") => {
-                match &s["--profile-format=".len()..] {
-                    "json" => profile_json = true,
-                    "text" => profile_json = false,
-                    other => {
-                        return Err(format!(
-                            "--profile-format expects `text` or `json`, got `{other}`"
-                        ))
-                    }
-                }
-            }
             "-o" => {
                 i += 1;
                 let v = args.get(i).ok_or_else(|| "-o needs an argument".to_string())?;
@@ -151,12 +139,8 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
                     .ok_or_else(|| "--core-modules needs a path argument".to_string())?;
                 core_modules_dirs.push(PathBuf::from(v));
             }
-            s if s.starts_with("--diagnostics=") => {
-                match &s["--diagnostics=".len()..] {
-                    "json" => diagnostics_json = true,
-                    "text" => diagnostics_json = false,
-                    other => return Err(format!("--diagnostics expects `text` or `json`, got `{other}`")),
-                }
+            s if s.starts_with("--diagnostics") || s.starts_with("--profile-format") => {
+                return Err(folded_into_format(s));
             }
             s if s.starts_with("--format=") => {
                 json = parse_format(&s["--format=".len()..])?;
@@ -190,13 +174,10 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
     options.release = release;
     options.core_modules_dirs = core_modules_dirs;
     options.test_mode = test_mode;
-    options.diagnostics_json = diagnostics_json;
-    // Asking for a shape without asking for the report is a typo; a
-    // silently-ignored flag would leave the user waiting for JSON.
-    if profile_json && !profile_mem {
-        return Err("--profile-format needs --profile=mem".to_string());
-    }
-    let profile = match (profile_mem, profile_json) {
+    // One flag shapes everything the tool itself prints: the result,
+    // the diagnostics and the memory report.
+    options.diagnostics_json = json;
+    let profile = match (profile_mem, json) {
         (false, _) => ProfileMode::Off,
         (true, false) => ProfileMode::Text,
         (true, true) => ProfileMode::Json,
@@ -212,6 +193,14 @@ fn parse_format(value: &str) -> Result<bool, String> {
     }
 }
 
+/// `--diagnostics` and `--profile-format` were separate spellings of
+/// the same choice; they are now `--format`. Named rather than reported
+/// as unknown, so a command copied from an old note says what to type.
+fn folded_into_format(flag: &str) -> String {
+    let name = flag.split('=').next().unwrap_or(flag);
+    format!("{name} was folded into --format; use --format=json (or --format=text)")
+}
+
 fn parse_emit(s: &str) -> Result<EmitKind, String> {
     match s {
         "exe" | "executable" => Ok(EmitKind::Executable),
@@ -224,14 +213,15 @@ fn parse_emit(s: &str) -> Result<EmitKind, String> {
 
 fn print_usage() {
     eprintln!(
-        "usage: compiler <input.t> [-o <output>] [--emit exe|obj|ir|clif] [--release] [--diagnostics=text|json] [--format=text|json] [-v]"
+        "usage: compiler <input.t> [-o <output>] [--emit exe|obj|ir|clif] [--release] [--format=text|json] [-v]"
     );
     eprintln!(
         "       compiler <input.t> --all-backends   # run on interpreter / JIT / AOT, report disagreements"
     );
     eprintln!(
-        "       compiler <input.t> --all-backends --profile=mem [--profile-format=text|json]  # also compare allocation totals"
+        "       compiler <input.t> --all-backends --profile=mem [--format=text|json]  # also compare allocation totals"
     );
-    eprintln!("       --format=json prints the result (what was built, or the backends' verdict) as JSON on stdout");
+    eprintln!("       --format=json prints the result (what was built, or the backends' verdict) as JSON on stdout,");
+    eprintln!("       and the diagnostics and the memory report as JSON on stderr");
     eprintln!("       use `-` as <input.t> to read the program from stdin");
 }

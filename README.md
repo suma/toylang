@@ -149,7 +149,7 @@ cargo run -q -p interpreter -- --effects interpreter/example/fib.t
 cargo run -q -p interpreter -- --test interpreter/example/memory_contract.t
 cargo run -q -p interpreter -- --check interpreter/example/memory_contract.t
 
-# Print allocation totals after the run (JSON with --profile-format=json)
+# Print allocation totals after the run (JSON with --format=json)
 cargo run -q -p interpreter -- --profile=mem interpreter/example/allocator_list.t
 ```
 
@@ -159,11 +159,12 @@ cargo run -q -p interpreter -- --profile=mem interpreter/example/allocator_list.
 cargo run -q -p toy -- build poc/logsearch [--release]
 cargo run -q -p toy -- run   poc/logsearch -- serve /var/log/archive 8080
 cargo run -q -p toy -- test  poc/logsearch          # AOT by default, in parallel
-cargo run -q -p toy -- check poc/logsearch --diagnostics=json
+cargo run -q -p toy -- check poc/logsearch --format=json
 ```
 
-Most subcommands take `--format=json` for the result and
-`--diagnostics=json` for the errors; see
+Every subcommand takes `--format=text|json`; `json` puts the result on
+stdout and the errors on stderr as JSON (`run` keeps the program's own
+output and reshapes only the errors); see
 [`design-docs/BUILD_TOOL.md`](design-docs/BUILD_TOOL.md).
 
 For the full CLI / env-var reference see [`interpreter/README.md`](interpreter/README.md).
@@ -513,7 +514,7 @@ safety checks behave identically across build profiles.
 cargo run -q -p interpreter -- --profile=mem interpreter/example/memory_contract.t
 
 # Machine-readable form — `leaks` is always present, `[]` when nothing leaked
-cargo run -q -p interpreter -- --profile=mem --profile-format=json interpreter/example/memory_contract.t
+cargo run -q -p interpreter -- --profile=mem --format=json interpreter/example/memory_contract.t
 
 # AOT-compiled binaries profile themselves, no interpreter involved
 TOY_PROFILE_MEM=1 ./fib
@@ -639,7 +640,7 @@ largest open item is real parallel execution — the semantics of
 - **Cranelift JIT** (default-on cargo feature, `INTERPRETER_JIT=1` to opt in at runtime): native-code compilation for numeric / bool / struct / tuple / `f64` subsets, with `panic("literal")` and `assert(cond, "literal")` lowered through a host helper + `trap` (see [`design-docs/JIT.md`](design-docs/JIT.md))
 - **Multi-backend Architecture**: Tree-walker (reference oracle) + AOT compiler (IR → cranelift → object file) + Cranelift JIT (AST direct) + IR VM (shared IR flat-slot interpreter). 4-way consistency is continuously validated via `compiler/tests/consistency.rs` (see [`design-docs/BACKEND.md`](design-docs/BACKEND.md) for the full backend technical specification)
 - **Design by Contract**: `requires` / `ensures` clauses with `result` binding and an `INTERPRETER_CONTRACTS=all|pre|post|off` runtime gate (D `-release` equivalent)
-- **Memory profiling**: request-based allocation counters, leak detection (per allocation site), and allocator layout reports — `--profile=mem` / `--profile-format=json` on the interpreter and `TOY_PROFILE_MEM=1` on AOT binaries, byte-identical across all four backends. The same counters are readable from `requires` / `ensures` / `test`, so memory use can be pinned by contract (see [`design-docs/MEMORY_PROFILING.md`](design-docs/MEMORY_PROFILING.md))
+- **Memory profiling**: request-based allocation counters, leak detection (per allocation site), and allocator layout reports — `--profile=mem` / `--format=json` on the interpreter and `TOY_PROFILE_MEM=1` on AOT binaries, byte-identical across all four backends. The same counters are readable from `requires` / `ensures` / `test`, so memory use can be pinned by contract (see [`design-docs/MEMORY_PROFILING.md`](design-docs/MEMORY_PROFILING.md))
 - **Efficient Memory Management**: Append-only `StmtPool` / `ExprPool` plus automatic destruction with custom `drop` methods
 - **Testing**: ~3,000 tests in the workspace, plus the POC's own 147. The
   interesting ones are the consistency tests, which run a program on all
@@ -648,7 +649,7 @@ largest open item is real parallel execution — the semantics of
 - **Debug-mode Logging**: Conditional compilation for zero-overhead production builds
 - **Diagnostics built for a reader** (and for a machine): every error has a
   code, a span, and `--explain` prose with a reproduction and a fix;
-  `--diagnostics=json` puts the same thing on stderr as data. A diagnostic
+  `--format=json` puts the same thing on stderr as data. A diagnostic
   from an imported module names *that* file and line
 - **Ownership without a borrow checker**: one owner per resource, checked
   transfers, drop glue through containers, and `borrow` for reading an

@@ -173,7 +173,7 @@ toylang の道具をそのまま使う。**新しいテスト基盤は作らな�
 両方**を拾う。結果を機械で読むときは JSON で出す:
 
 ```bash
-./target/release/toy test poc/logsearch --format=json --diagnostics=json  # 全部 (既定は AOT)
+./target/release/toy test poc/logsearch --format=json  # 全部 (既定は AOT)
 ./target/release/toy test poc/logsearch frame        # テスト名 (ファイル名ではない) で絞る
 ./target/release/toy test poc/logsearch --backend vm # 失敗を全部まとめて見る
 ./target/release/toy test poc/logsearch pinned --bless   # ゴールデンを記録し直す
@@ -187,7 +187,7 @@ interpreter を直接叩く (ループ予算の都合で入力は 3000 バイト
 
 ```bash
 ./target/release/interpreter --core-modules core --core-modules poc/logsearch/src \
-    --check --diagnostics=json poc/logsearch/tests/lsz.t
+    --check --format=json poc/logsearch/tests/lsz.t
 ```
 
 範囲は `requires` ではなく剰余で絞ること。生成器は u64 全域から引くので、

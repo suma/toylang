@@ -108,10 +108,11 @@ struct CliArgs {
     prog_args: Vec<String>,
     verbose: bool,
     core_modules_cli: Vec<PathBuf>,
-    /// LLM-LOOP P3: emit diagnostics as JSON on stderr instead of the
-    /// rendered text form, so a tool driving the compiler can read spans
-    /// and applicable fixes without scraping formatted output.
-    diagnostics_json: bool,
+    /// `--format=json`. LLM-LOOP P3: emit diagnostics as JSON on stderr
+    /// instead of the rendered text form, so a tool driving the compiler
+    /// can read spans and applicable fixes without scraping formatted
+    /// output. MEMORY_PROFILING M4: the `--profile=mem` report too.
+    json: bool,
     /// LLM-LOOP P4: run the file's `test` blocks instead of `main`.
     run_tests: bool,
     /// LLM-LOOP P5: property-check contracts instead of running `main`.
@@ -120,8 +121,6 @@ struct CliArgs {
     seed: Option<u64>,
     /// MEMORY_PROFILING M1: print allocation totals after the run.
     profile_mem: bool,
-    /// MEMORY_PROFILING M4: emit that report as JSON instead of text.
-    profile_json: bool,
 }
 
 /// The `--core-modules` roots as written on the command line.
@@ -190,12 +189,11 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
     let mut filename: Option<String> = None;
     let mut verbose = false;
     let mut core_modules_cli: Vec<PathBuf> = Vec::new();
-    let mut diagnostics_json = false;
+    let mut json = false;
     let mut run_tests = false;
     let mut check_contracts = false;
     let mut seed: Option<u64> = None;
     let mut profile_mem = false;
-    let mut profile_json = false;
     let mut prog_args: Vec<String> = Vec::new();
     let mut iter = raw.iter().skip(1);
     while let Some(arg) = iter.next() {
@@ -206,17 +204,6 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
                 "mem" => profile_mem = true,
                 other => return Err(format!("--profile expects `mem`, got `{other}`")),
             },
-            s if s.starts_with("--profile-format=") => {
-                match &s["--profile-format=".len()..] {
-                    "json" => profile_json = true,
-                    "text" => profile_json = false,
-                    other => {
-                        return Err(format!(
-                            "--profile-format expects `text` or `json`, got `{other}`"
-                        ))
-                    }
-                }
-            }
             "--check" => check_contracts = true,
             s if s.starts_with("--seed=") => {
                 let raw = &s["--seed=".len()..];
@@ -235,12 +222,20 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
             s if s.starts_with("--core-modules=") => {
                 core_modules_cli.push(PathBuf::from(&s["--core-modules=".len()..]));
             }
-            s if s.starts_with("--diagnostics=") => {
-                match &s["--diagnostics=".len()..] {
-                    "json" => diagnostics_json = true,
-                    "text" => diagnostics_json = false,
-                    other => return Err(format!("--diagnostics expects `text` or `json`, got `{other}`")),
-                }
+            s if s.starts_with("--format=") => json = parse_format(&s["--format=".len()..])?,
+            "--format" => {
+                let v = iter.next().ok_or_else(|| "--format needs `text` or `json`".to_string())?;
+                json = parse_format(v)?;
+            }
+            // Separate spellings of the same choice until they were
+            // folded into `--format`. Named rather than reported as
+            // unknown, so a command copied from an old note says what
+            // to type instead.
+            s if s.starts_with("--diagnostics") || s.starts_with("--profile-format") => {
+                let name = s.split('=').next().unwrap_or(s);
+                return Err(format!(
+                    "{name} was folded into --format; use --format=json (or --format=text)"
+                ));
             }
             // A bare `-` is the input, not a flag (D6: read stdin).
             s if s.starts_with('-') && s != "-" => {
@@ -256,13 +251,18 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
         }
     }
     let filename = filename.ok_or_else(|| "no input file".to_string())?;
-    // Choosing a shape for a report that was never asked for is a
-    // typo, not a request. Ignoring it silently would leave the user
-    // waiting for JSON that is not coming.
-    if profile_json && !profile_mem {
-        return Err("--profile-format needs --profile=mem".to_string());
+    Ok(CliArgs { filename, prog_args, verbose, core_modules_cli, json, run_tests, check_contracts, seed, profile_mem })
+}
+
+/// `--format`: the shape of everything the interpreter itself prints
+/// (diagnostics, the `--profile=mem` report). The program's own output
+/// is never reshaped. The same spelling `compiler` and `toy` take.
+fn parse_format(value: &str) -> Result<bool, String> {
+    match value {
+        "json" => Ok(true),
+        "text" => Ok(false),
+        other => Err(format!("--format expects `text` or `json`, got `{other}`")),
     }
-    Ok(CliArgs { filename, prog_args, verbose, core_modules_cli, diagnostics_json, run_tests, check_contracts, seed, profile_mem, profile_json })
 }
 
 fn main() {
@@ -288,16 +288,16 @@ fn main() {
             let exe = raw.first().map(String::as_str).unwrap_or("interpreter");
             println!("Usage:");
             println!("  {exe} <file>");
-            println!("  {exe} <file> [-v] [--test] [--check [--seed=N]] [--core-modules <DIR>] [--diagnostics=text|json]");
+            println!("  {exe} <file> [-v] [--test] [--check [--seed=N]] [--core-modules <DIR>] [--format=text|json]");
             println!("  {exe} --explain [<CODE>]   # what a diagnostic code means");
             println!("  {exe} --api <file>         # signatures a module provides");
             println!("  {exe} --effects <file>     # what each declaration can reach");
-            println!("  {exe} --profile=mem [--profile-format=text|json] <file>  # allocation totals after the run");
+            println!("  {exe} --profile=mem [--format=text|json] <file>  # allocation totals after the run");
             println!("  (use `-` as <file> to read the program from stdin)");
             return;
         }
     };
-    let CliArgs { filename, prog_args, verbose, core_modules_cli, diagnostics_json, run_tests, check_contracts, seed, profile_mem, profile_json } = cli;
+    let CliArgs { filename, prog_args, verbose, core_modules_cli, json, run_tests, check_contracts, seed, profile_mem } = cli;
     let core_modules_dirs = resolve_core_modules_dirs(core_modules_cli);
     if verbose {
         if core_modules_dirs.is_empty() {
@@ -331,7 +331,7 @@ fn main() {
     let mut options = RunOptions::default();
     options.jit = jit;
     options.core_modules_dirs = &core_modules_dirs;
-    options.diagnostics_json = diagnostics_json;
+    options.diagnostics_json = json;
     options.args = prog_args;
     if run_tests {
         process::exit(report_tests(&source, &filename, &options));
@@ -351,7 +351,7 @@ fn main() {
         let stats = interpreter::heap::profile();
         let sites = interpreter::heap::profile_sites();
         let layouts = interpreter::heap::allocator_layouts();
-        if profile_json {
+        if json {
             eprint!("{}", stats.report_json(&sites, &layouts));
         } else {
             eprint!("{}", stats.report());

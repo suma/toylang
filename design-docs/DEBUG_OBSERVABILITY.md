@@ -155,9 +155,9 @@ value not defined
 `Vec` はそこから外れている。しかも失敗の出方が**ホストの内部 panic**なので、
 toylang 側の位置も backtrace も一切残らない。
 
-### 実測 8: 実行時の失敗は `--diagnostics=json` に載らない (D5 で解消)
+### 実測 8: 実行時の失敗は `--format=json` に載らない (D5 で解消)
 
-`--diagnostics=json` を付けても panic はテキストのまま出る。
+`--format=json` を付けても panic はテキストのまま出る。
 JSON は型検査 / パースの診断だけを扱う。LLM ループ (P1〜P7) の観点では、
 **機械可読になっていないのは実行時の失敗だけ**という状態。
 
@@ -619,7 +619,7 @@ Error at core/std/option.t:57:29:
 
 1. `__builtin_function_name()`、`__builtin_backtrace()`。
 2. `ContractViolation` にも位置と backtrace を付けた。
-3. `--diagnostics=json` に**実行時の失敗**を載せた (実測 8 の解消)。
+3. `--format=json` に**実行時の失敗**を載せた (実測 8 の解消)。
 4. `--explain` にコードを 2 つ足した: **`E0019`** (panic / assert /
    RUNTIME-TRAP)、**`E0020`** (契約違反)。
 
@@ -764,7 +764,7 @@ D3/D4 と「値を持つ文言」で VM が位置も backtrace も値も自分�
   「走らせられない」と「走って失敗した」を同じ顔で返していたのが元凶。
 - `compiler_vm::Divergence` が message / site / frames を**構造のまま**
   運ぶ。replay がある間はレンダ済み文字列で足りていたが、いまはこれが
-  `--diagnostics=json` の出どころでもある。
+  `--format=json` の出どころでもある。
 - 途中まで出た stdout は**プログラムの出力**として印字する
   (replay 前提の「捨てて再実行」ではなくなった)。
 

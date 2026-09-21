@@ -634,7 +634,7 @@ Failures that happen *while the program runs* carry codes too: `E0019`
 for a panic, a failed `assert` or a runtime trap, and `E0020` for a
 violated `requires` / `ensures`.
 
-`--diagnostics=json` emits the same diagnostics on stderr in machine
+`--format=json` emits the same diagnostics on stderr in machine
 form, including spans and any machine-applicable fix. A runtime
 failure adds a `backtrace` array — `function` plus the `line` it was
 called from, innermost first, with no `line` on the entry frame:
@@ -6013,7 +6013,7 @@ Error at core/std/option.t:57:29:
 `.rodata` the program never reads unless it dies, while the backtrace
 costs a store per call.
 
-`--diagnostics=json` reports the same failure as data (see *Errors*
+`--format=json` reports the same failure as data (see *Errors*
 under the CLI, above).
 
 Categories include: `TypeError`, `UndefinedVariable`,

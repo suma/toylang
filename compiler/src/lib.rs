@@ -77,7 +77,7 @@ impl Drop for SpillGuard {
 
 /// Parse `source` the way `options` asks diagnostics to be reported.
 ///
-/// With `--diagnostics=json` every syntax error goes to stderr as the
+/// With `--format=json` every syntax error goes to stderr as the
 /// same JSON array a type error does, and the caller gets a count back.
 /// Parse errors used to be the one failure that stayed text under the
 /// flag, so a reader of the JSON saw nothing at all for them.

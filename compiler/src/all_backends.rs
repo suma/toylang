@@ -237,7 +237,7 @@ pub fn run(
 }
 
 /// The allocation totals of the agreed run, on stderr in the shape
-/// `--profile-format` asked for.
+/// `--format` asked for.
 fn report_memory(reference: &Outcome, profile: ProfileMode) {
     let Some(stats) = reference.memory else { return };
     match profile {
@@ -334,7 +334,7 @@ fn run_aot(options: &CompilerOptions, profile: ProfileMode) -> Result<Outcome, S
         // The compiled runtime writes its report to stderr at exit
         // when this is set; the parent parses it back.
         //
-        // Always the text shape, even under `--profile-format=json`:
+        // Always the text shape, even under `--format=json`:
         // what crosses this boundary is the numbers, and the shape is
         // the driver's choice about its own stderr. Asking the child
         // for JSON would buy a second parser and nothing else. The C

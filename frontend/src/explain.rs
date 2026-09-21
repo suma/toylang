@@ -94,7 +94,7 @@ initializer where the conversion is exact, so `val x: i64 = 1u64` and
 the value could not be represented, not merely that the names differ.
 
 When both sides are numeric the diagnostic carries a machine-applicable
-suggestion holding the exact replacement text -- `--diagnostics=json`
+suggestion holding the exact replacement text -- `--format=json`
 exposes it as `suggestions[].replacement`. When they are not (`u64`
 reaching a `bool`, as above) no suggestion is offered, because no cast
 would fix it: the value itself is wrong.
@@ -684,7 +684,7 @@ innermost-first:
            f (x7, called at line 3)
            main
 
-`--diagnostics=json` gives the same failure with `span` and
+`--format=json` gives the same failure with `span` and
 `backtrace` as data. A `--release` build keeps the position and drops
 the backtrace, which is the only part with a run-time cost.
 

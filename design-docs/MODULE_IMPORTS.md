@@ -240,7 +240,7 @@ bare 名しか持たないため、`File` に側テーブル (`ExprRef` → 解�
   = help: add `import std.math`
 ```
 
-`--diagnostics=json` の `suggestions` に載るので、修正は機械的に当てられる
+`--format=json` の `suggestions` に載るので、修正は機械的に当てられる
 (LLM ループがそのまま直せる)。既定を warning → error に倒すのが Phase 2 の
 最後。
 

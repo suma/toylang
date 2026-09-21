@@ -42,7 +42,7 @@ use slot::RawSlot;
 /// A rendered string was enough while the interpreter answered a
 /// divergence by replaying the whole program on the tree-walker and
 /// printing that engine's diagnostic. Without the replay this *is* the
-/// diagnostic, so it has to carry what `--diagnostics=json` wants too.
+/// diagnostic, so it has to carry what `--format=json` wants too.
 #[derive(Debug, Clone)]
 pub struct Divergence {
     /// The message, `panic: `-prefixed where that applies.
@@ -735,7 +735,7 @@ pub fn run_module_capturing(
 /// As [`run_module_capturing`], handing back the failure in parts.
 ///
 /// The interpreter needs them: without the tree-walker replay this is
-/// the diagnostic a user sees *and* the one `--diagnostics=json`
+/// the diagnostic a user sees *and* the one `--format=json`
 /// serialises, and a rendered string cannot answer the second.
 pub fn run_module_capturing_reporting(
     module: &Module,

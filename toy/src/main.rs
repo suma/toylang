@@ -32,15 +32,15 @@ const USAGE: &str = "\
 toy — build and run toylang programs
 
 usage:
-  toy build [PATH] [--release] [--backend aot|jit] [-o OUT] [--format=json] [--diagnostics=json] [-v]
-  toy run   [PATH] [--release] [--backend aot|jit|vm|tree] [--diagnostics=json] [-v] [-- ARGS...]
-  toy check [PATH] [--format=json] [--diagnostics=json] [-v]
-  toy clean [PATH] [--all] [--format=json] [-v]
-  toy test  [FILTER] [PATH] [-j N] [--list] [--bless] [--format=json] [--diagnostics=json] [-v]
-  toy api <MODULE.t> [PATH] [--format=json]
-  toy effects [PATH] [--format=json] [--diagnostics=json] [-v]
-  toy explain [CODE] [--format=json]
-  toy version [--format=json] [-v]
+  toy build [PATH] [--release] [--backend aot|jit] [-o OUT] [--format=text|json] [-v]
+  toy run   [PATH] [--release] [--backend aot|jit|vm|tree] [--format=text|json] [-v] [-- ARGS...]
+  toy check [PATH] [--format=text|json] [-v]
+  toy clean [PATH] [--all] [--format=text|json] [-v]
+  toy test  [FILTER] [PATH] [-j N] [--list] [--bless] [--format=text|json] [-v]
+  toy api <MODULE.t> [PATH] [--format=text|json]
+  toy effects [PATH] [--format=text|json] [-v]
+  toy explain [CODE] [--format=text|json]
+  toy version [--format=text|json] [-v]
 
 PATH is a `.t` file or a directory; the package is the nearest
 ancestor holding `main.t` or `src/`. Module roots are the stdlib
@@ -56,10 +56,10 @@ options:
   -j, --jobs N         test: run N jobs at once (default: cores; 1 = serial)
   --list               list the tests instead of running them
   --bless              test: record the golden files instead of checking
-  --format=json        the result as one JSON document on stdout (every
-                       command but `run`, whose output is the program's)
-  --diagnostics=json   parse / type / runtime errors as a JSON array on
-                       stderr, as `compiler` and `interpreter` take it
+  --format=text|json   json: the result as one JSON document on stdout,
+                       and parse / type / runtime errors as a JSON array
+                       on stderr. `run` leaves the program's own output
+                       alone and reshapes only the errors. Default text
   --all                clean: remove the link cache and build/ too
   --no-warn-collisions skip the duplicate-name pre-check
   -- ARGS...           arguments for the program (run only)
@@ -104,11 +104,10 @@ struct Args {
     subject: Option<String>,
     list_only: bool,
     bless: bool,
+    /// `--format=json`: the command's result as a JSON document, and
+    /// the diagnostics as a JSON array. One flag for both, as
+    /// `compiler` and `interpreter` take it.
     json: bool,
-    /// `--diagnostics=json`: the compiler's and interpreter's flag,
-    /// handed through unchanged. Separate from `json`, which shapes
-    /// `toy test`'s own report rather than the diagnostics.
-    diagnostics_json: bool,
     warn_collisions: bool,
     all: bool,
     /// `toy test -j N`. `None` means "as many as the machine has"
@@ -166,7 +165,6 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
         list_only: false,
         bless: false,
         json: false,
-        diagnostics_json: false,
         warn_collisions: true,
         all: false,
         jobs: None,
@@ -195,13 +193,14 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
             _ if arg.starts_with("--format=") => {
                 a.json = parse_format(&arg["--format=".len()..])?;
             }
-            "--diagnostics" => {
-                i += 1;
-                let v = argv.get(i).ok_or("--diagnostics needs a value (text or json)")?;
-                a.diagnostics_json = parse_diagnostics(v)?;
-            }
-            _ if arg.starts_with("--diagnostics=") => {
-                a.diagnostics_json = parse_diagnostics(&arg["--diagnostics=".len()..])?;
+            // Folded into `--format`. Named rather than reported as
+            // unknown, so a command copied from an old note says what
+            // to type instead.
+            _ if arg.starts_with("--diagnostics") => {
+                return Err(
+                    "--diagnostics was folded into --format; use --format=json (or --format=text)"
+                        .to_string(),
+                );
             }
             "-v" | "--verbose" => a.verbose = true,
             "-j" | "--jobs" => {
@@ -266,7 +265,8 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
 }
 
 /// `--format`: `json` makes the command's result one JSON document on
-/// stdout. The same spelling `compiler` takes.
+/// stdout and its diagnostics a JSON array on stderr. The same spelling
+/// `compiler` and `interpreter` take.
 fn parse_format(value: &str) -> Result<bool, String> {
     match value {
         "json" => Ok(true),
@@ -284,18 +284,9 @@ fn print_json(value: &serde_json::Value) {
     );
 }
 
-/// The same spelling `compiler` and `interpreter` accept.
-fn parse_diagnostics(value: &str) -> Result<bool, String> {
-    match value {
-        "json" => Ok(true),
-        "text" => Ok(false),
-        other => Err(format!("--diagnostics expects `text` or `json`, got `{other}`")),
-    }
-}
-
 /// The flag as it would be typed to `compiler` / `interpreter`, for `-v`.
-fn show_diagnostics(args: &Args) -> &'static str {
-    if args.diagnostics_json { "--diagnostics=json " } else { "" }
+fn show_format(args: &Args) -> &'static str {
+    if args.json { "--format=json " } else { "" }
 }
 
 /// The package `args` names, with the module roots assembled.
@@ -349,14 +340,14 @@ fn cmd_build(args: &Args) -> Result<(), String> {
     options.core_modules_dirs = pkg.module_roots.clone();
     options.link_cache_dir = Some(pkg.link_cache_dir());
     options.verbose = args.verbose;
-    options.diagnostics_json = args.diagnostics_json;
+    options.diagnostics_json = args.json;
     if args.verbose {
         eprintln!(
             "toy: compiler {} {} {}{}-o {}",
             show_roots(&pkg),
             pkg.entry.display(),
             if args.release { "--release " } else { "" },
-            show_diagnostics(args),
+            show_format(args),
             out.display()
         );
     }
@@ -376,14 +367,9 @@ fn cmd_build(args: &Args) -> Result<(), String> {
 fn cmd_run(args: &Args) -> Result<(), String> {
     // The output of `run` is the program's own; there is no result of
     // the tool's to put in a document, and wrapping the program's
-    // stdout would change what a redirect captures.
-    if args.json {
-        return Err(
-            "`toy run` prints the program's own output, so it has no --format=json; \
-             use `compiler --all-backends --format=json` for a run as JSON"
-                .to_string(),
-        );
-    }
+    // stdout would change what a redirect captures. `--format=json`
+    // therefore reshapes only the diagnostics here (for a run as a
+    // JSON document, `compiler --all-backends --format=json`).
     let pkg = locate(args)?;
     // `run` defaults to the IR VM: it is the fastest way to see output
     // for a small program (no `cc`), and the design says so.
@@ -408,7 +394,7 @@ fn run_aot(args: &Args, pkg: &package::Package) -> Result<(), String> {
     options.core_modules_dirs = pkg.module_roots.clone();
     options.link_cache_dir = Some(pkg.link_cache_dir());
     options.verbose = args.verbose;
-    options.diagnostics_json = args.diagnostics_json;
+    options.diagnostics_json = args.json;
     compiler::compile_file(&options)?;
     if args.verbose {
         eprintln!("toy: {} {}", out.display(), args.program_args.join(" "));
@@ -431,7 +417,7 @@ fn run_in_process(
         eprintln!(
             "toy: interpreter {} {}{} {}",
             show_roots(pkg),
-            show_diagnostics(args),
+            show_format(args),
             filename,
             args.program_args.join(" ")
         );
@@ -443,7 +429,7 @@ fn run_in_process(
         options.release = args.release;
         options.core_modules_dirs = pkg.module_roots.clone();
         options.verbose = args.verbose;
-        options.diagnostics_json = args.diagnostics_json;
+        options.diagnostics_json = args.json;
         let program = compiler::compile_to_jit_main_with_options(&source, &options)?;
         let code = program.run();
         process::exit(code as i32);
@@ -451,7 +437,7 @@ fn run_in_process(
     let mut options = RunOptions::default();
     options.core_modules_dirs = &pkg.module_roots;
     options.args = args.program_args.clone();
-    options.diagnostics_json = args.diagnostics_json;
+    options.diagnostics_json = args.json;
     // `tree` asks for the tree-walker, which `run_source` reaches by
     // way of the engine choice inside the interpreter; `vm` is the
     // default engine. Neither takes a flag here today, so `tree` is
@@ -486,7 +472,7 @@ fn cmd_check(args: &Args) -> Result<(), String> {
             "toy: {} {} {}{}",
             if lower_too { "compiler --emit ir" } else { "interpreter --check" },
             show_roots(&pkg),
-            show_diagnostics(args),
+            show_format(args),
             pkg.entry.display()
         );
     }
@@ -494,7 +480,7 @@ fn cmd_check(args: &Args) -> Result<(), String> {
     let mut program = match session.parse_program_all_errors(&source, &name) {
         Ok(program) => program,
         Err(errors) => {
-            if args.diagnostics_json {
+            if args.json {
                 let diagnostics: Vec<_> = errors
                     .iter()
                     .map(|e| frontend::diagnostic::Diagnostic::from_parser_error(e, &name))
@@ -507,7 +493,7 @@ fn cmd_check(args: &Args) -> Result<(), String> {
             return Err(format!("{} parse error(s)", errors.len()));
         }
     };
-    if args.diagnostics_json {
+    if args.json {
         interpreter::check_typing_diagnostics(
             &mut program,
             session.string_interner_mut(),
@@ -583,7 +569,7 @@ fn cmd_test(args: &Args) -> Result<(), String> {
             test_runner::Format::Text
         },
         verbose: args.verbose,
-        diagnostics_json: args.diagnostics_json,
+        diagnostics_json: args.json,
         // AOT is the default here for the reason TEST_TOOL gives: the
         // lane that ships is the one worth testing, and the bugs a
         // real program hits are backend-specific. `--backend vm` runs
@@ -656,7 +642,7 @@ fn cmd_effects(args: &Args) -> Result<(), String> {
         eprintln!(
             "toy: interpreter --effects {} {}{}",
             show_roots(&pkg),
-            show_diagnostics(args),
+            show_format(args),
             pkg.entry.display()
         );
     }
@@ -666,7 +652,7 @@ fn cmd_effects(args: &Args) -> Result<(), String> {
     // package's, like every other command.
     let mut options = RunOptions::default();
     options.core_modules_dirs = &pkg.module_roots;
-    options.diagnostics_json = args.diagnostics_json;
+    options.diagnostics_json = args.json;
     let listing =
         interpreter::effects_from_source(&source, &pkg.entry.to_string_lossy(), &options)?;
     if args.json {

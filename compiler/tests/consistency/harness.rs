@@ -828,7 +828,7 @@ pub(super) const JSON_PROFILE_EXPECTED: &str = r#"{
 "#;
 
 /// Run `source` on the tree-walker and render the JSON report, the way
-/// `interpreter --profile=mem --profile-format=json` does. The entry
+/// `interpreter --profile=mem --format=json` does. The entry
 /// file is named `test.t`, matching [`JSON_PROFILE_EXPECTED`].
 pub(super) fn interpreter_json_profile(source: &str) -> String {
     interpreter_json_profile_as(source, "test.t")

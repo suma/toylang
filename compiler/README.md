@@ -24,12 +24,11 @@ A POSIX shell truncates that to the low 8 bits, so anything at or above
 | `-o <path>` | Output path, whatever `--emit` produces. Defaults to the input path with the extension replaced: none for `exe`, `.o` / `.ir` / `.clif` for the rest |
 | `--emit <kind>` / `--emit=<kind>` | `exe` (default) / `obj` / `ir` / `clif` |
 | `--release` | Skip design-by-contract checks (`requires` / `ensures`) — the build-flag equivalent of `INTERPRETER_CONTRACTS=off` |
-| `--diagnostics=text\|json` | Diagnostic format. `text` (default) prints a snippet with a caret; `json` writes an array to stderr with spans and suggestions |
+| `--format=text\|json` | Output shape. `text` (default) prints diagnostics as a snippet with a caret; `json` prints the result (what was built, or the `--all-backends` verdict) as one document on stdout, diagnostics as an array on stderr with spans and suggestions, and the `--profile=mem` report as JSON. Replaces the former `--diagnostics` and `--profile-format` |
 | `-v` / `--verbose` | Progress log to stderr |
 | `--core-modules <DIR>` / `--core-modules=<DIR>` | Override the core-modules directory |
 | `--all-backends` | Run the program on the tree-walker, this crate's JIT and AOT, and report only disagreements (one stderr line when they agree) |
 | `--profile=mem` | Print an allocation profile (totals + leaks + allocator layout) to stderr after the run |
-| `--profile-format=text\|json` | Report shape for `--profile=mem`. Children of `--all-backends` always use `text` |
 | `-h` / `--help` | Usage |
 
 ### Environment variables

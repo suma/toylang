@@ -470,11 +470,15 @@ segfault / IR VM が panic する。真因は「struct 束縛を return する�
 
 ### M4 — JSON + 契約 / テスト連携
 
-#### `--profile-format=json` (✅ 2026-08-13)
+#### `--format=json` (✅ 2026-08-13)
+
+> 当初は専用の `--profile-format=json` だった。2026-09-22 に診断の
+> `--diagnostics` と一緒に `--format=text|json` へ統合した (出力の形を
+> 選ぶ flag を 1 つにするため)。
 
 ```bash
-interpreter --profile=mem --profile-format=json prog.t
-compiler prog.t --all-backends --profile=mem --profile-format=json
+interpreter --profile=mem --format=json prog.t
+compiler prog.t --all-backends --profile=mem --format=json
 TOY_PROFILE_MEM=json ./compiled_binary
 ```
 
@@ -502,8 +506,9 @@ TOY_PROFILE_MEM=json ./compiled_binary
   子に JSON を要求してもパーサが 1 つ増えるだけになる。C 側の JSON は
   `the_aot_json_report_is_byte_identical_to_the_shared_one` が
   **バイト単位で直接** pin する
-- `--profile-format` を `--profile=mem` 無しで渡すとエラー。黙って無視すると
-  来ない JSON を待つことになる
+- 専用 flag だった頃は `--profile-format` を `--profile=mem` 無しで渡すと
+  エラーにしていた (来ない JSON を待たせないため)。統合後の `--format=json`
+  は診断の形も決めるので、`--profile=mem` 無しでも意味を持つ
 
 **受け入れ基準の結果**: `the_json_report_is_identical_between_runs` /
 `the_aot_json_report_is_byte_identical_to_the_shared_one` が、同一プログラムの

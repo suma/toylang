@@ -1188,9 +1188,9 @@ fn without_elapsed(bytes: &[u8]) -> String {
         .join("\n")
 }
 
-// --- `--diagnostics=json`: the compiler's flag, handed through ---------
+// --- `--format=json` on stderr: the diagnostics, handed through --------
 
-/// The JSON array `--diagnostics=json` wrote to stderr. Anything else
+/// The JSON array `--format=json` wrote to stderr. Anything else
 /// on stderr (the `toy: N error(s)` summary) is outside the brackets.
 fn diagnostics_in(stderr: &str) -> Vec<serde_json::Value> {
     let (start, end) = (stderr.find('['), stderr.rfind(']'));
@@ -1224,7 +1224,7 @@ fn every_command_that_checks_a_program_reports_type_errors_as_json() {
     ];
     for command in commands {
         let mut argv = command.to_vec();
-        argv.extend([path, "--diagnostics=json", "--no-warn-collisions"]);
+        argv.extend([path, "--format=json", "--no-warn-collisions"]);
         let out = run(&pkg, &argv);
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(!out.status.success(), "{argv:?} succeeded:\n{stderr}");
@@ -1246,7 +1246,7 @@ fn a_parse_error_is_json_too_on_the_compiled_lanes() {
     let path = pkg.0.to_str().unwrap();
     for command in [["build", path], ["check", path]] {
         let mut argv = command.to_vec();
-        argv.push("--diagnostics=json");
+        argv.push("--format=json");
         let out = run(&pkg, &argv);
         let stderr = String::from_utf8_lossy(&out.stderr);
         let diagnostics = diagnostics_in(&stderr);
@@ -1260,12 +1260,12 @@ fn a_parse_error_is_json_too_on_the_compiled_lanes() {
 #[test]
 fn a_runtime_error_is_reported_once() {
     // `run_source` reports the failure itself; `toy` used to print the
-    // returned message again, which after `--diagnostics=json` put
+    // returned message again, which after `--format=json` put
     // rendered text behind the JSON array.
     let pkg = scratch("diag_json_runtime");
     write(&pkg, "main.t", "fn main() -> u64 {\n    val a = 1u64\n    a - 2u64\n}\n");
     let path = pkg.0.to_str().unwrap();
-    let out = run(&pkg, &["run", path, "--diagnostics", "json"]);
+    let out = run(&pkg, &["run", path, "--format", "json"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     let diagnostics = diagnostics_in(&stderr);
     assert!(
@@ -1282,12 +1282,23 @@ fn a_runtime_error_is_reported_once() {
 }
 
 #[test]
-fn an_unknown_diagnostics_format_is_refused() {
+fn an_unknown_format_is_refused() {
     let pkg = scratch("diag_bad");
     write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
-    let out = run(&pkg, &["check", pkg.0.to_str().unwrap(), "--diagnostics=xml"]);
+    let out = run(&pkg, &["check", pkg.0.to_str().unwrap(), "--format=xml"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success() && stderr.contains("`text` or `json`"), "{stderr}");
+}
+
+#[test]
+fn the_old_diagnostics_flag_points_at_format() {
+    // Folded into `--format`; a command copied from an old note should
+    // say what to type rather than "unknown option".
+    let pkg = scratch("diag_folded");
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    let out = run(&pkg, &["check", pkg.0.to_str().unwrap(), "--diagnostics=json"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && stderr.contains("use --format=json"), "{stderr}");
 }
 
 // --- `--format=json`: every command's result as a document -------------
@@ -1304,7 +1315,7 @@ fn stdout_json(out: &std::process::Output, argv: &[&str]) -> serde_json::Value {
 }
 
 #[test]
-fn every_command_but_run_can_answer_in_json() {
+fn every_command_can_answer_in_json() {
     let pkg = scratch("format_json");
     write(
         &pkg,
@@ -1358,11 +1369,11 @@ test "twice works" { assert_eq(twice(2u64), 4u64) }
     assert_eq!(cleaned["removed"].as_array().unwrap().len(), 1, "{cleaned:#}");
     assert_eq!(json(&["clean", path])["removed"], serde_json::json!([]));
 
-    // `run` has no result of its own to shape; it says so instead of
-    // silently printing text.
-    let out = run(&pkg, &["run", path, "--format=json"]);
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("--format=json"));
+    // `run` has no result of its own to shape: the program's output
+    // goes through untouched, and only diagnostics would be JSON.
+    let out = run(&pkg, &["run", path, "--format=json", "--no-warn-collisions"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "4\n");
 }
 
 #[test]

@@ -58,8 +58,10 @@ pub struct Options {
     pub list_only: bool,
     pub format: Format,
     pub verbose: bool,
-    /// `--diagnostics=json`, for the parse / type errors met while
-    /// planning (IR VM) or compiling a driver (AOT).
+    /// `--format=json` as it applies to the parse / type errors met
+    /// while planning (IR VM) or compiling a driver (AOT). Set from the
+    /// same flag as `format`; kept apart because the report and the
+    /// diagnostics go to different streams.
     pub diagnostics_json: bool,
     /// Run the blocks natively (TEST-TOOL T1) rather than on the IR
     /// VM. The default, because the lane that ships is the one worth

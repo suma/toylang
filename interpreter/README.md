@@ -10,7 +10,7 @@ knobs.
 
 ```
 interpreter <file> [-v] [--core-modules <DIR>] [--test] [--check [--seed=N]]
-             [--diagnostics=text|json] [--profile=mem [--profile-format=text|json]]
+             [--format=text|json] [--profile=mem]
 ```
 
 | Flag | Meaning |
@@ -20,9 +20,8 @@ interpreter <file> [-v] [--core-modules <DIR>] [--test] [--check [--seed=N]]
 | `--core-modules <DIR>` (also `--core-modules=<DIR>`) | Override the core-modules directory the interpreter auto-loads at startup. See *Core modules* below. |
 | `--test` | Run the `test "name" { … }` blocks instead of `main`, each in its own evaluation context. |
 | `--check [--seed=N]` | Property-check `requires` / `ensures` over generated inputs and report the smallest failing case (`--seed` reproduces a run). |
-| `--diagnostics=text\|json` | Render type-check / parse diagnostics as text (default) or as a JSON array on stderr. |
+| `--format=text\|json` | Shape of what the interpreter itself prints: diagnostics (parse / type / runtime) as rendered text (default) or a JSON array on stderr, and the `--profile=mem` report. The program's own output is never reshaped. Replaces the former `--diagnostics` and `--profile-format`. |
 | `--profile=mem` | Print the run's allocation totals — plus leaks and allocator layouts — to stderr after the run. See *Memory profiling* below. |
-| `--profile-format=text\|json` | Shape of the `--profile=mem` report. Requires `--profile=mem`. |
 
 The exit code is the integer returned by `main`:
 
@@ -36,7 +35,7 @@ $ cargo run example/fib.t          # exits 8 (the 6th Fibonacci)
 $ cargo run example/contracts.t    # exits 22
 $ cargo run example/fib.t -v       # show pipeline phases on stderr
 $ cargo run example/fib.t --profile=mem     # allocation totals after the run
-$ cargo run example/fib.t --profile=mem --profile-format=json
+$ cargo run example/fib.t --profile=mem --format=json
 ```
 
 ## Core modules (auto-load)
@@ -153,7 +152,7 @@ memory profile
     2:18  1 allocations  32 bytes
   ```
 
-  `--profile-format=json` always emits the `leaks` array (`[]` when
+  `--format=json` always emits the `leaks` array (`[]` when
   clean).
 - **allocator layouts** — `trait Alloc::layout_report()` results,
   registered by allocators that manage their own region (e.g. the

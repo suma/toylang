@@ -128,7 +128,7 @@ pub enum TypeCheckErrorKind {
     /// Reported as an error rather than a note because a hole is a
     /// question the author asked, not code they meant to keep — letting
     /// it compile would leave the query silently in the program. It gets
-    /// its own kind (and code) so `--diagnostics=json` consumers can
+    /// its own kind (and code) so `--format=json` consumers can
     /// tell "here is the type you asked for" apart from "your program is
     /// wrong", which are opposite signals.
     TypeHole { name: String, inferred: String },

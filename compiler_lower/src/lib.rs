@@ -249,6 +249,9 @@ struct FunctionLower<'a> {
     /// expression position falls back to this table when no local
     /// binding shadows the name.
     const_values: &'a ConstValues,
+    /// CONST-ARRAY: the program's `const` tables, laid out as bytes.
+    /// Indexing one emits the blob's address and a load.
+    const_arrays: &'a crate::consts::ConstArrays,
     /// Pre-interned panic messages for contract violations. Set once
     /// per `lower_program` call.
     contract_msgs: &'a crate::ContractMessages,

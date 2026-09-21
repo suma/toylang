@@ -2217,6 +2217,29 @@ fn area(r: f64) -> f64 { PI * r * r }
 - Each const is evaluated **once** at program startup, before `main`,
   and the result is bound as an immutable global.
 - Visibility (`pub const ...`) follows the same rules as `pub fn`.
+- A `const` declared **inside a module** is visible from that module's
+  own bodies and from every other body, by its bare name. The
+  namespace is flat, as it is for functions, so the first declaration
+  of a name wins; a qualifier on a `const` (`tbl::K`) is currently not
+  checked against the module it names.
+
+A `const` may be a **table**:
+
+```rust
+const K: [u32; 4] = [11u32, 22u32, 33u32, 44u32]
+
+fn pick(i: u64) -> u32 { K[i] }
+```
+
+- The elements are literals (or earlier consts), and their type is a
+  **scalar**. The table is laid out once, in the element's own width,
+  and lives in read-only memory: reading one **allocates nothing**, so
+  a function that only indexes tables can be `never_allocates`.
+- An index is checked like any other array index — out of range is the
+  same panic, with the same message.
+- What a table cannot do yet is travel: `K` names no value, so it
+  cannot be passed to a function. Index it, or build a `Span<T>` over
+  a copy.
 
 Today the JIT silently falls back to the tree-walking interpreter for
 any function that references a `const` — see [`JIT.md`](../design-docs/JIT.md).

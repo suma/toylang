@@ -80,7 +80,7 @@ kernel の前後を比べたのも、全部シェルの `time` でやってい�
 5. **module の top-level `const` は使えない。** poll.t が
    `pub const` ではなく `pub fn interest_read()` を並べているのは、
    「module の const は他モジュールにも**自分の body にも**届かない」
-   から (todo MODULE-CONST)。`NS_PER_SEC` の類はすべて `pub fn` にする。
+   から (MODULE-CONST、2026-09-21 に解消)。`NS_PER_SEC` の類が `pub fn` なのはその名残。
 
 ## 既存の決定から引く制約
 

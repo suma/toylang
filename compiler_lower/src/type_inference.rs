@@ -589,6 +589,16 @@ impl<'a> FunctionLower<'a> {
                     Expr::Identifier(s) => s,
                     _ => return None,
                 };
+                // CONST-ARRAY: not a binding — `K[i]` reads the
+                // element type off the table itself. Without this
+                // `println(K[2u64])` failed on "accepts only scalar
+                // values", which is about the *print*, not about the
+                // index that could not be typed.
+                if !self.bindings.contains_key(&arr_sym)
+                    && let Some(array) = self.const_arrays.get(&arr_sym)
+                {
+                    return Some(array.elem_ty);
+                }
                 match self.bindings.get(&arr_sym)? {
                     Binding::Array { element_ty, .. } => Some(*element_ty),
                     // POINTER P2: `p[i]` on a struct / enum binding

@@ -268,6 +268,19 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }
         }
+        InstKind::ConstBytesAddr { bytes } => {
+            // CONST-ARRAY: the compiled lanes read this straight out
+            // of `.rodata`. The VM has no such section, so it
+            // materialises the blob once per content and hands back
+            // the same address every time — an index inside a loop
+            // must not keep allocating, and the table has to keep the
+            // identity a read-only symbol would have.
+            let blob = bytes.clone();
+            let addr = vm.const_bytes_addr(&blob);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
+        }
         InstKind::ConstStrBytes { bytes } => {
             let addr = host.alloc_str_bytes(bytes);
             if let Some((vid, _)) = inst.result {

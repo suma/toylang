@@ -1398,3 +1398,50 @@ pub fn g() -> u64 { 0u64 }
         assert!(text.contains(block), "`{block}` is not in the text listing:\n{text}");
     }
 }
+
+#[test]
+fn a_module_sees_its_own_consts() {
+    // MODULE-CONST: integration copied a module's functions, structs,
+    // impls and tests, and not its `const`s — so a module could not
+    // read a name its own file declared two lines up
+    // (`[E0003] Identifier 'K' not found`, reported against a line of
+    // the module). That is why `core/std/poll.t` spells its flags as
+    // `pub fn interest_read()` rather than `pub const`.
+    //
+    // Both shapes, because a `const` array takes a different path
+    // through the lowering than a scalar (CONST-ARRAY): it is laid
+    // out as read-only bytes and indexed, rather than folded to a
+    // literal.
+    let pkg = scratch("module_consts");
+    write(
+        &pkg,
+        "src/tbl.t",
+        r#"
+const BASE: u64 = 100u64
+const K: [u32; 4] = [11u32, 22u32, 33u32, 44u32]
+
+pub fn pick(i: u64) -> u64 {
+    BASE + K[i] as u64
+}
+"#,
+    );
+    write(
+        &pkg,
+        "main.t",
+        r#"
+fn main() -> u64 {
+    println(tbl::pick(2u64))
+    0u64
+}
+"#,
+    );
+    for backend in ["vm", "aot"] {
+        let out = run(&pkg, &["run", pkg.0.to_str().unwrap(), "--backend", backend]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("133"),
+            "{backend}: stdout: {stdout}\nstderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}

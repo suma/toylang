@@ -1045,8 +1045,16 @@ impl<M: Module> CodegenSession<M> {
         for func in &ir_module.functions {
             for blk in &func.blocks {
                 for inst in &blk.instructions {
-                    if let InstKind::ConstStrBytes { bytes } = &inst.kind {
-                        const_bytes_needed.insert(bytes.clone());
+                    match &inst.kind {
+                        // CONST-ARRAY reuses the same content-keyed
+                        // `.rodata` store; it just reads from the
+                        // front of the payload rather than from the
+                        // string's trailing length field.
+                        InstKind::ConstStrBytes { bytes }
+                        | InstKind::ConstBytesAddr { bytes } => {
+                            const_bytes_needed.insert(bytes.clone());
+                        }
+                        _ => {}
                     }
                 }
             }

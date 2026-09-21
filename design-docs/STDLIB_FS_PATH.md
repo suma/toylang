@@ -57,7 +57,7 @@
    検査しないのと同じ」(`core/std/poll.t`)。**ディレクトリ列挙は同じ形**
    になる。
 
-4. **module の top-level `const` は届かない** (MODULE-CONST)。区切り文字も
+4. **module の top-level `const` は届かなかった** (MODULE-CONST、2026-09-21 に解消)。区切り文字も
    `pub fn separator() -> u8` の形になる。
 
 5. **path に NUL を入れるとレーンで割れる** (コード上の帰結、未計測)。
@@ -321,10 +321,10 @@ NotEmpty           # ENOTEMPTY (remove_dir)
 ### 決めたこと
 
 1. **`whence` を露出しない。** `lseek(2)` の 0/1/2 は `seek_to` /
-   `seek_by` / `seek_end` の 3 メソッドに分けた。module top-level の
-   `const` が他モジュールから見えない (todo MODULE-CONST) ので、
-   `Poller` の `interest_read()` 方式を採るしかないが、この 3 つは
-   名前にした方が短い。
+   `seek_by` / `seek_end` の 3 メソッドに分けた。書いた当時は module
+   top-level の `const` がどこからも見えず (MODULE-CONST、2026-09-21 に
+   解消) `Poller` の `interest_read()` 方式しか無かったが、この 3 つは
+   どちらにせよ名前にした方が短い。
 2. **開き方は 4 つの named constructor。** `open(2)` の
    `O_CREAT` / `O_TRUNC` / `O_APPEND` は**値がホストで違う**ので、
    flag を toylang 側に出すと `sys_epoll` / `sys_kqueue` を分けた

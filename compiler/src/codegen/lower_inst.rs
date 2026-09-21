@@ -103,6 +103,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             | InstKind::PrintStr { .. }
             | InstKind::ConstStr { .. }
             | InstKind::ConstStrBytes { .. }
+            | InstKind::ConstBytesAddr { .. }
             | InstKind::PrintRaw { .. } => self.lower_printing(inst),
             InstKind::ArrayLoad { .. }
             | InstKind::ArrayStore { .. } => self.lower_arrays(inst),
@@ -1096,6 +1097,20 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 if let Some((vid, _)) = inst.result {
                     self.values.insert(vid.0, addr);
                 }
+            }
+            InstKind::ConstBytesAddr { bytes } => {
+                // CONST-ARRAY: the blob's own address. Same `.rodata`
+                // entry a `ConstStrBytes` would get, read from the
+                // front — the `+ len + 1` below is the string
+                // layout's, not the data's.
+                let gv = *self
+                    .const_str_bytes_imports
+                    .get(bytes)
+                    .ok_or_else(|| {
+                        format!("missing ConstBytesAddr import (len={})", bytes.len())
+                    })?;
+                let addr = self.builder.ins().symbol_value(types::I64, gv);
+                self.record_result(inst, addr);
             }
             InstKind::ConstStrBytes { bytes } => {
                 // STR-INTERP-COMPOUND: same `.rodata` shape as

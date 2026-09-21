@@ -261,3 +261,92 @@ fn a_computed_array_length_matches_a_literal_one() {
         "a computed length and the literal it resolves to must agree"
     );
 }
+
+/// CONST-ARRAY: a `const` table is read-only data, and every lane
+/// reads the same bytes out of it.
+///
+/// The compiled lanes used to refuse the declaration outright ("only
+/// literal values and references to earlier consts are supported"),
+/// so a table had to be a `Vec` the program filled in at run time —
+/// which is an allocation, and why `sha256`'s round constants kept
+/// `compress` from being `never_allocates`.
+#[test]
+fn a_const_array_is_read_the_same_by_every_lane() {
+    let src = r#"
+        const K: [u32; 6] = [11u32, 22u32, 33u32, 44u32, 55u32, 66u32]
+        const W: [i64; 3] = [-1i64, 0i64, 7i64]
+        const B: [u8; 4] = [1u8, 2u8, 4u8, 8u8]
+
+        fn at(i: u64) -> u32 { K[i] }
+
+        fn main() -> u64 {
+            # A constant index, folded, and a runtime one through a call.
+            println(K[0u64])
+            println(at(5u64))
+            # Narrow elements keep their own width, so the table is
+            # packed rather than one 8-byte slot per entry.
+            var total: u64 = 0u64
+            var i: u64 = 0u64
+            while i < 4u64 {
+                total = total + B[i] as u64
+                i = i + 1u64
+            }
+            println(total)
+            # A signed element is sign-extended, not read as a huge
+            # unsigned — the bytes are the element's width.
+            println(W[0u64])
+            0u64
+        }
+    "#;
+    assert_renders(src, "const_array_reads", "11\n66\n15\n-1\n");
+}
+
+/// The table is data, not a program: reading one allocates nothing.
+#[test]
+fn a_const_array_allocates_nothing() {
+    let src = r#"
+        const K: [u64; 4] = [2u64, 3u64, 5u64, 7u64]
+
+        never_allocates fn product() -> u64 {
+            var p: u64 = 1u64
+            var i: u64 = 0u64
+            while i < 4u64 {
+                p = p * K[i]
+                i = i + 1u64
+            }
+            p
+        }
+
+        fn main() -> u64 {
+            val before: u64 = __builtin_live_bytes()
+            println(product())
+            println(__builtin_live_bytes() - before)
+            0u64
+        }
+    "#;
+    // `never_allocates` is the compile-time half of the claim and the
+    // counter is the run-time half. Both, because the first proves no
+    // allocating call is reachable and the second proves the lanes
+    // agree about what the table itself costs.
+    assert_renders(src, "const_array_allocation_free", "210\n0\n");
+}
+
+/// An index past the end panics, with the message and the position
+/// every other array access gives.
+#[test]
+fn a_const_array_index_is_bounds_checked() {
+    let src = r#"
+        const K: [u64; 3] = [1u64, 2u64, 3u64]
+
+        fn at(i: u64) -> u64 { K[i] }
+
+        fn main() -> u64 {
+            # Nothing on stdout first: the lanes flush a panicking
+            # program's output differently, and this test is about
+            # the panic.
+            println(at(7u64))
+            0u64
+        }
+    "#;
+    assert_diagnostic_consistent(src, "const_array_out_of_bounds");
+}

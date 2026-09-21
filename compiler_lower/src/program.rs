@@ -1242,7 +1242,7 @@ pub fn lower_program(
     // with a clear message. Each evaluated value is stashed in a map
     // that function-body lowering consults when it sees an Identifier
     // referring to a const symbol.
-    let const_values = evaluate_consts(program, interner)?;
+    let (const_values, const_arrays) = evaluate_consts(program, interner)?;
 
     // Generic functions stay outside the IR module's `function_index`
     // until a call site instantiates them with concrete type args. We
@@ -1393,6 +1393,7 @@ pub fn lower_program(
                 &mut generic_instances,
                 &mut pending_generic_work,
                 &const_values,
+                &const_arrays,
                 contract_msgs,
                 release,
                 &method_registry,
@@ -1444,6 +1445,7 @@ pub fn lower_program(
                 &mut generic_instances,
                 &mut pending_generic_work,
                 &const_values,
+                &const_arrays,
                 contract_msgs,
                 release,
                 &method_registry,
@@ -1513,6 +1515,7 @@ pub fn lower_program(
                 &mut generic_instances,
                 &mut pending_generic_work,
                 &const_values,
+                &const_arrays,
                 contract_msgs,
                 release,
                 &method_registry,
@@ -1555,6 +1558,7 @@ pub fn lower_program(
                 &mut generic_instances,
                 &mut pending_generic_work,
                 &const_values,
+                &const_arrays,
                 contract_msgs,
                 release,
                 &method_registry,
@@ -1592,6 +1596,7 @@ pub fn lower_program(
                 &mut generic_instances,
                 &mut pending_generic_work,
                 &const_values,
+                &const_arrays,
                 contract_msgs,
                 release,
                 &method_registry,
@@ -1634,6 +1639,7 @@ pub fn lower_program(
                 &mut generic_instances,
                 &mut pending_generic_work,
                 &const_values,
+                &const_arrays,
                 contract_msgs,
                 release,
                 &method_registry,
@@ -1680,6 +1686,7 @@ pub fn lower_program(
                 &mut generic_instances,
                 &mut pending_generic_work,
                 &const_values,
+                &const_arrays,
                 contract_msgs,
                 release,
                 &method_registry,
@@ -1861,6 +1868,7 @@ impl<'a> FunctionLower<'a> {
         generic_instances: &'a mut GenericInstances,
         pending_generic_work: &'a mut Vec<PendingGenericInstance>,
         const_values: &'a ConstValues,
+        const_arrays: &'a crate::consts::ConstArrays,
         contract_msgs: &'a crate::ContractMessages,
         release: bool,
         method_registry: &'a MethodRegistry,
@@ -1881,6 +1889,7 @@ impl<'a> FunctionLower<'a> {
             struct_defs,
             enum_defs,
             const_values,
+            const_arrays,
             contract_msgs,
             release,
             ensures: Vec::new(),

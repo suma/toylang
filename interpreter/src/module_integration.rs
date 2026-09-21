@@ -1230,6 +1230,7 @@ impl<'a> AstIntegrationContext<'a> {
         // the duplicate walk also confuses generic-method lookup
         // paths that key on the first declaration site.
         let integrated_functions = self.copy_functions()?;
+        self.copy_consts()?;
         self.copy_tests()?;
 
         Ok(integrated_functions)
@@ -1244,6 +1245,41 @@ impl<'a> AstIntegrationContext<'a> {
     /// name is prefixed with the module path, because a report listing
     /// two tests called "roundtrip" from different modules cannot be
     /// acted on.
+    /// MODULE-CONST: carry the module's top-level `const`s across.
+    ///
+    /// Integration never copied them, so a module's own functions
+    /// could not see a name the module itself declared — `const K` at
+    /// the top of `tbl.t` and `K[i]` two lines below it failed with
+    /// `Identifier 'K' not found`, reported against a line of the
+    /// module. That is why `core/std/poll.t` spells its flags as
+    /// `pub fn interest_read()` rather than `pub const`.
+    ///
+    /// The namespace is **flat**, as it is for functions: the
+    /// module's bare name is what its body writes, so that is the
+    /// name it gets here. A name already taken keeps its first
+    /// definition — the main file's own `const` outranks an imported
+    /// one, and an earlier import outranks a later one — which is the
+    /// same rule (and the same hazard) bare function names already
+    /// have.
+    fn copy_consts(&mut self) -> Result<(), String> {
+        for c in &self.module_program.consts {
+            let name = self.remap_symbol(c.name)?;
+            if self.main_program.consts.iter().any(|existing| existing.name == name) {
+                continue;
+            }
+            let type_decl = self.remap_type_decl(&c.type_decl)?;
+            let value = self.map_expr(&c.value, "const initialiser")?;
+            self.main_program.consts.push(ConstDecl {
+                node: c.node.clone(),
+                name,
+                type_decl,
+                value,
+                visibility: c.visibility,
+            });
+        }
+        Ok(())
+    }
+
     fn copy_tests(&mut self) -> Result<(), String> {
         for test in &self.module_program.tests {
             let function = self.remap_symbol(test.function)?;

@@ -506,7 +506,6 @@ fn check_typing_collecting(
     // they were authored, and re-checking would trip the namespace
     // enforcement on their internal bare calls.
     let user_func_count = program.function.len();
-    let consts: Vec<frontend::ast::ConstDecl> = program.consts.clone();
 
     // Integrate user imports + the always-loaded prelude *before* we
     // extract impl_blocks below — the prelude's `impl Abs for i64`
@@ -526,6 +525,12 @@ fn check_typing_collecting(
         errors.extend(module_errors.into_iter().map(|m| Diagnostic::message_only(m, diag_file)));
         return Err(errors);
     }
+
+    // MODULE-CONST: **after** integration, so a module's own `const`
+    // is registered too. Taken before it, the snapshot held only the
+    // entry file's, and a module's functions could not see a name
+    // their own file declared two lines up.
+    let consts: Vec<frontend::ast::ConstDecl> = program.consts.clone();
 
     // Cross-module type-alias resolution. A `type String = Vec<u8>`
     // declaration in `core/std/string.t` is parsed by that file's

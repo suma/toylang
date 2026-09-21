@@ -220,7 +220,9 @@ impl<M: Module> CodegenSession<M> {
         let ir_func = ir_module.function(func_id);
         for blk in &ir_func.blocks {
             for inst in &blk.instructions {
-                if let InstKind::ConstStrBytes { bytes } = &inst.kind {
+                if let InstKind::ConstStrBytes { bytes } | InstKind::ConstBytesAddr { bytes } =
+                    &inst.kind
+                {
                     let key = bytes.clone();
                     if imports.contains_key(&key) {
                         continue;

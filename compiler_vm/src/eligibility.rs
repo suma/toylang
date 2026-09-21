@@ -151,7 +151,9 @@ fn inst_supported(kind: &InstKind) -> bool {
         // outlined body once over the whole range — no threads, and
         // the body is an ordinary function it already knows how to
         // call.
-        | InstKind::ParFor { .. } => true,
+        | InstKind::ParFor { .. }
+        // CONST-ARRAY: a read-only blob, materialised once.
+        | InstKind::ConstBytesAddr { .. } => true,
     }
 }
 

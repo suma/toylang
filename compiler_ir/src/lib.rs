@@ -1669,7 +1669,8 @@ impl InstKind {
             | InstKind::MakeClosure { .. }
             | InstKind::VtableAddr { .. }
             | InstKind::CallIndirectFn { .. }
-            | InstKind::DynCoerceSlotAddr { .. } => {}
+            | InstKind::DynCoerceSlotAddr { .. }
+            | InstKind::ConstBytesAddr { .. } => {}
         }
     }
 }
@@ -2260,6 +2261,18 @@ pub enum InstKind {
         from: ValueId,
         until: ValueId,
     },
+    /// CONST-ARRAY: the address of a read-only blob of bytes.
+    ///
+    /// A `const K: [u32; 64] = [...]` is laid out once, by the
+    /// lowering, in the element widths the target reads — so an index
+    /// is one load from `.rodata` rather than a table the program
+    /// fills in at run time. The bytes are content-keyed, so two
+    /// identical tables share one symbol.
+    ///
+    /// Distinct from [`InstKind::ConstStrBytes`], which answers with
+    /// the address of a `str`'s trailing length field: that offset
+    /// belongs to the string layout, and a blob has no length field.
+    ConstBytesAddr { bytes: Vec<u8> },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2580,7 +2593,8 @@ impl InstKind {
             | InstKind::AddressOf { .. }
             | InstKind::FuncAddr { .. }
             | InstKind::VtableAddr { .. }
-            | InstKind::DynCoerceSlotAddr { .. } => {}
+            | InstKind::DynCoerceSlotAddr { .. }
+            | InstKind::ConstBytesAddr { .. } => {}
         }
     }
 }
@@ -2934,6 +2948,9 @@ impl fmt::Display for DisplayInst<'_> {
             InstKind::Const(c) => write!(f, "{prefix}const {c}"),
             InstKind::ParFor { body, env, from, until } => {
                 write!(f, "{prefix}par_for {body}, {env}, {from}, {until}")
+            }
+            InstKind::ConstBytesAddr { bytes } => {
+                write!(f, "{prefix}const_bytes_addr [{} bytes]", bytes.len())
             }
             InstKind::SimdSplat { value, ty } => {
                 write!(f, "{prefix}simd.splat.{} {value}", ty.source_name())

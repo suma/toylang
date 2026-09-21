@@ -46,8 +46,8 @@ SIMD の mask 集計、ビットセット — は**全部ビット演算の上�
 
 2. **限界値はリテラルの直書き。** `impl Checked for u8` は
    `if self > 255u8 - other` と書いている (`checked.t:67`)。
-   associated const も module const (MODULE-CONST) も無いので、
-   これが唯一の書き方だった。
+   associated const も module const (MODULE-CONST、2026-09-21 に解消)
+   も無かったので、これが唯一の書き方だった。
 
 3. **IEEE の端は正しく動いている** (interpreter で確認):
 
@@ -83,7 +83,7 @@ SIMD の mask 集計、ビットセット — は**全部ビット演算の上�
 3. **`Self` を返す trait method は bound 越しに呼べない**
    (STDLIB_TRAIT_BASE 実測 4)。`min` / `max` を `Ord` の default body に
    置くと、**generic 文脈で呼べない method** ができる。→ §3。
-4. **MODULE-CONST**: module の `const` は届かない。限界値は `pub fn`。
+4. **MODULE-CONST**: module の `const` は届かなかった (2026-09-21 に解消)。限界値が `pub fn` なのはその名残。
 5. **決定性**: `random_seed(s)` の後の列は 3 バックエンド一致
    (既存の pin)。**分布を足しても同じ列から作る** — 実装が違えば
    同じ seed で違う値が出る。

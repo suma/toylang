@@ -12,6 +12,25 @@
 
 ### 2026-09-21
 
+- **CONST-ARRAY — `const K: [u32; 64] = [...]` が全レーンで読めるように
+  なった** — 定数配列は `.rodata` のバイト列になり、添字は
+  `InstKind::ConstBytesAddr` + `PtrRead` 1 回。境界検査はスタック配列と
+  同じ経路を通るので、範囲外は同じ文面と位置で panic する。
+  **`Sha256` の K 表が `Vec` から `const` に移り、`compress` が
+  `never_allocates` を名乗れるようになった** — 64 回の `push` と
+  ハッシャごとの 256 バイトが消えた。narrow なリテラル
+  (`99u32`) も定数評価器が読めるようになっている (`Expr::UInt32` 等
+  6 種と char リテラルを知らず、`const S: u32 = 99u32` が
+  「評価できない」と言われていた)。
+- **MODULE-CONST — モジュールの `const` が見えるようになった** —
+  統合が module の `const` を 1 つも運んでいなかったので、
+  **そのモジュール自身の関数本体からも**見えなかった
+  (`[E0003] Identifier 'K' not found` が、それを宣言している
+  ファイルの行を指す)。型検査器の const 登録が**統合の前**の
+  スナップショットを見ていたのも同じ穴の片側。名前空間は関数と同じく
+  平らで、先に定義したものが勝つ。`core/std/poll.t` が
+  `pub fn interest_read()` と書いているのはこれが理由だった
+  (stdlib 側の書き換えは別途)。
 - **CONCURRENCY A2-b-2 — `parallel for` が本当に並列に走るように
   なった** — lowering が本文を関数に切り出し、`InstKind::ParFor` が
   AOT / JIT では `toy_par_for` に、IR VM では「1 区間として 1 回
@@ -1199,14 +1218,12 @@
   `panic` と違って発散扱いされていなかったこと。前者は
   **scrutinee の enum が payload の型を知っている**ので復元できる。
   `break` / `continue` は型検査器も発散扱いしないので載せていない。
-- **MODULE-CONST: モジュールの top-level `const` がどこからも見えない** ★★ —
-  `pub const X: u32 = 1u32` を `core/std/poll.t` に書いても、他モジュール
-  からは修飾しても `import` しても見えず、**同じモジュールの関数本体
-  からも見えない**。統合が module の const を運んでいない
-  (`interpreter/src/lib.rs` の const 登録はユーザプログラムの
-  `program.consts` だけを見る)。2026-09-01 に NET N3 で踏み、
-  `poll.t` は `pub fn interest_read() -> u32 { 1u32 }` の形で回避した。
-  stdlib に定数を置く自然な方法が無いので、次に定数が要る機能でまた踏む。
+- **MODULE-CONST-PATH: `const` の修飾子が検査されない** ★ —
+  MODULE-CONST 自体は 2026-09-21 に解消した (完了済み節) が、
+  `zzz::BASE_X` が `BASE_X` として通る。**呼び出しは P3 で検査される
+  ようになった** (`[E0030]`) のに、定数は修飾子を捨てたままなので、
+  同じ「書いた道が存在しない」が呼び出しでは鳴り定数では鳴らない。
+  直すなら `File::call_paths` と同じものを修飾付き識別子にも記録する。
 
 - **NUM-W-SHIFT: narrow int の `<<` / `>>` が型検査で拒否される** ★★ —
   `u8 << u8` も `u8 << u64` も「incompatible types u8 and u64」。
@@ -2057,16 +2074,12 @@
   `trait Digest` が契約を持てない理由
   ([`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md) 実測 2、2026-09-04)。
 
-- **CONST-ARRAY: `const K: [u32; 64] = [...]` が compiled lane で
-  書けない** — 初期化子を `only literal values and references to
-  earlier consts` で拒否し、stdlib モジュール内の const 配列添字は
-  integration が拒否する (`Unsupported expression type for
-  remapping: SliceAccess`)。**`[value; N]` は 2026-09-21 に解消**
-  (完了済み節) したので、残るのはこの 2 つ。
-  **`Sha256` の K 表がヒープの `Vec` なのはこれが理由**で、
-  `never_allocates` を名乗れない ([`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md)
-  実測 4、2026-09-04)。ブロックバッファと message schedule は
-  `[value; N]` が入ったので固定長で書ける。
+- **CONST-ARRAY の残り: 名前で渡せない / 要素はスカラーだけ** ★ —
+  2026-09-21 に `const K: [u32; 64] = [...]` は読めるようになった
+  (完了済み節) が、渡せるのは**添字の結果だけ**で `K` そのものを
+  引数にはできない (`Span<T>` を作って渡す形が要る)。要素も
+  スカラーのみ — struct / tuple の表は `.rodata` のレイアウトを
+  leaf 単位で決める必要がある。
 
 - **STDLIB-CRYPTO C2〜C4: SHA-512 族 / HMAC / SHA-1・MD5** —
   設計と優先順位は [`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md)。C2 (SHA-512 /

@@ -76,8 +76,8 @@
 - **`math::sqrt(x)` と `x.sqrt()` が二重にある** (`f64.t` の
   `impl Sqrt for f64` は `math::sqrt` へ転送するだけ)。
 - **`limits.t` の 28 本の自由関数** (`limits::i64_max()`) は本来
-  `i64::MAX` の associated const。[`todo.md`](todo.md) の
-  **MODULE-CONST** が空いているせいで、名前ではなく機能の欠落。
+  `i64::MAX` の associated const。**MODULE-CONST** が空いていたせいで
+  書かれた形で (2026-09-21 に解消)、残る欠落は associated const の方。
 
 ## 参照系 — C++ と Rust の並び方
 

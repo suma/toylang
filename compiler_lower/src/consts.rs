@@ -26,12 +26,34 @@ use crate::ir::Const;
 
 pub type ConstValues = HashMap<DefaultSymbol, Const>;
 
+/// CONST-ARRAY: one `const K: [T; N] = [..]`, already flat.
+///
+/// The elements are laid out as bytes here, once, rather than carried
+/// as a list the lowering re-reads: an index is then a load from a
+/// read-only symbol, and the table costs nothing at run time. That is
+/// the whole point of writing it `const` — the heap `Vec` it replaces
+/// is what stopped `Sha256` from claiming `never_allocates`.
+pub struct ConstArray {
+    pub elem_ty: crate::ir::Type,
+    /// Element width, and therefore the index stride.
+    pub stride: u64,
+    pub length: u64,
+    pub bytes: Vec<u8>,
+}
+
+pub type ConstArrays = HashMap<DefaultSymbol, ConstArray>;
+
 pub(super) fn evaluate_consts(
     program: &File,
     interner: &DefaultStringInterner,
-) -> Result<ConstValues, String> {
+) -> Result<(ConstValues, ConstArrays), String> {
     let mut values: ConstValues = HashMap::new();
+    let mut arrays: ConstArrays = HashMap::new();
     for c in &program.consts {
+        if let Some(array) = eval_const_array(c, program, &values, interner)? {
+            arrays.insert(c.name, array);
+            continue;
+        }
         let v = eval_const_expr(&c.value, program, &values, interner).ok_or_else(|| {
             format!(
                 "compiler MVP cannot evaluate the initialiser for `const {}`: only literal values and references to earlier consts are supported",
@@ -42,7 +64,100 @@ pub(super) fn evaluate_consts(
         // against the initialiser; we don't re-check here.
         values.insert(c.name, v);
     }
-    Ok(values)
+    Ok((values, arrays))
+}
+
+/// A `const` whose initialiser is an array literal, laid out.
+///
+/// `Ok(None)` means "not an array literal" — the scalar path takes
+/// it from there. An array of anything but a scalar is an error
+/// rather than a fallthrough: the scalar reader would only report
+/// "cannot evaluate the initialiser", which says nothing about the
+/// part that is actually unsupported.
+fn eval_const_array(
+    decl: &frontend::ast::ConstDecl,
+    program: &File,
+    values: &ConstValues,
+    interner: &DefaultStringInterner,
+) -> Result<Option<ConstArray>, String> {
+    let Some(Expr::ArrayLiteral(items)) = program.expression.get(&decl.value) else {
+        return Ok(None);
+    };
+    let name = interner.resolve(decl.name).unwrap_or("?");
+    let elem_ty = match &decl.type_decl {
+        frontend::type_decl::TypeDecl::Array(inner, _, _) => inner
+            .first()
+            .and_then(crate::types::lower_scalar)
+            .ok_or_else(|| {
+                format!(
+                    "compiler MVP: `const {name}` is an array of a type its elements cannot                      be laid out in; only scalars are supported"
+                )
+            })?,
+        other => {
+            return Err(format!(
+                "compiler MVP: `const {name}` has an array initialiser but is declared `{}`",
+                crate::spelling::spell_type_decl(interner, other)
+            ));
+        }
+    };
+    let stride = scalar_byte_width(elem_ty).ok_or_else(|| {
+        format!("compiler MVP: `const {name}` has elements with no fixed width")
+    })?;
+    let mut bytes = Vec::with_capacity(items.len() * stride as usize);
+    for item in &items {
+        let value = eval_const_expr(item, program, values, interner).ok_or_else(|| {
+            format!(
+                "compiler MVP cannot evaluate an element of `const {name}`: only literal                  values and references to earlier consts are supported"
+            )
+        })?;
+        append_const_bytes(&mut bytes, value, stride);
+    }
+    Ok(Some(ConstArray {
+        elem_ty,
+        stride,
+        length: items.len() as u64,
+        bytes,
+    }))
+}
+
+/// The byte width of a scalar. `None` for anything that is not one,
+/// which an array of it cannot be laid out in.
+///
+/// Deliberately not [`crate::array_layout::elem_stride_bytes`]: that
+/// answers for a *stack array's slot*, where a compound element still
+/// takes a uniform 8 bytes per leaf. A `const` table is bytes in
+/// `.rodata` and only holds scalars.
+fn scalar_byte_width(ty: crate::ir::Type) -> Option<u64> {
+    use crate::ir::Type;
+    match ty {
+        Type::I8 | Type::U8 | Type::Bool => Some(1),
+        Type::I16 | Type::U16 => Some(2),
+        Type::I32 | Type::U32 | Type::F32 => Some(4),
+        Type::I64 | Type::U64 | Type::F64 => Some(8),
+        _ => None,
+    }
+}
+
+/// One element's bytes, little-endian, in its own width.
+///
+/// Little-endian because that is what both supported targets read
+/// (x86-64 and aarch64) and what `PtrRead` does on the byte the
+/// address names; a big-endian port would flip this one function.
+fn append_const_bytes(out: &mut Vec<u8>, value: Const, stride: u64) {
+    let raw: u64 = match value {
+        Const::I64(v) => v as u64,
+        Const::U64(v) => v,
+        Const::I32(v) => v as u32 as u64,
+        Const::U32(v) => v as u64,
+        Const::I16(v) => v as u16 as u64,
+        Const::U16(v) => v as u64,
+        Const::I8(v) => v as u8 as u64,
+        Const::U8(v) => v as u64,
+        Const::Bool(v) => v as u64,
+        Const::F64(v) => v.to_bits(),
+        Const::F32(v) => v.to_bits() as u64,
+    };
+    out.extend_from_slice(&raw.to_le_bytes()[..stride as usize]);
 }
 
 /// Evaluate an expression to a scalar constant, or `None` when it is
@@ -78,6 +193,19 @@ pub fn eval_const_expr_in_pool(
     match pool.get(expr_ref)? {
         Expr::Int64(v) => Some(Const::I64(v)),
         Expr::UInt64(v) => Some(Const::U64(v)),
+        // NUM-W: a suffixed narrow literal is its own node, and this
+        // reader only knew the two wide ones — so `const S: u32 =
+        // 99u32` was "only literal values ... are supported" on the
+        // compiled lanes while the tree-walker read it fine.
+        Expr::Int8(v) => Some(Const::I8(v)),
+        Expr::Int16(v) => Some(Const::I16(v)),
+        Expr::Int32(v) => Some(Const::I32(v)),
+        Expr::UInt8(v) => Some(Const::U8(v)),
+        Expr::UInt16(v) => Some(Const::U16(v)),
+        Expr::UInt32(v) => Some(Const::U32(v)),
+        // CHAR-LITERAL-NUM: a `char` is a u32 that was written as a
+        // character.
+        Expr::CharLiteral(v) => Some(Const::U32(v)),
         Expr::Float64(v) => Some(Const::F64(v)),
         // SIMD-F32: single-precision const initialisers.
         Expr::Float32(v) => Some(Const::F32(v)),

@@ -792,8 +792,9 @@ fn main() -> u64 {
   epoll (Linux) と kqueue (macOS/BSD) の統一形。`new` / `register(fd,
   token, interest)` / `deregister` / `wait(timeout_ms)` / `event(i)`、
   interest は `interest_read()` / `interest_write()` / `interest_edge()` /
-  `interest_oneshot()` (**`pub const` ではなく `pub fn`** — module の
-  top-level `const` が他モジュールから見えないため、todo MODULE-CONST)。
+  `interest_oneshot()` (**`pub const` ではなく `pub fn`** — 書いた当時は
+  module の top-level `const` がどこからも見えなかったため。
+  MODULE-CONST は 2026-09-21 に解消したので、この形は名残)。
   **ready な fd は 1 イベントで、フラグはマージ済み** (両プラットフォームで
   ループ回数が一致する)。`wait` のタイムアウトは `Ok(0)` であって
   エラーではない。token は runtime が中身を見ない数。

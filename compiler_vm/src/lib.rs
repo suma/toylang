@@ -121,6 +121,9 @@ pub struct Vm<'a> {
     /// trait declaration order), matching the AOT vtable layout so a
     /// `PtrRead(vtable_ptr, idx*8, U64)` recovers the dispatch FuncId.
     vtable_addrs: HashMap<(DefaultSymbol, DefaultSymbol), u64>,
+    /// CONST-ARRAY: read-only blobs, keyed by content, exactly as the
+    /// `.rodata` symbols the compiled lanes share are.
+    const_blobs: HashMap<Vec<u8>, u64>,
     /// When the entry function returns a compound value, the full flat leaf
     /// list is preserved here so the caller can reconstruct it.
     main_return_slots: Vec<RawSlot>,
@@ -142,6 +145,7 @@ impl<'a> Vm<'a> {
             interner: None,
             host,
             vtable_addrs: HashMap::new(),
+            const_blobs: HashMap::new(),
             main_return_slots: Vec::new(),
             step_budget: None,
             steps: 0,
@@ -161,6 +165,7 @@ impl<'a> Vm<'a> {
             interner: Some(interner),
             host,
             vtable_addrs: HashMap::new(),
+            const_blobs: HashMap::new(),
             main_return_slots: Vec::new(),
             step_budget: None,
             steps: 0,
@@ -642,6 +647,29 @@ impl<'a> Vm<'a> {
             );
         }
         self.vtable_addrs.insert((trait_sym, struct_sym), addr);
+        addr
+    }
+
+    /// The address of a read-only blob, materialised on first use.
+    ///
+    /// Not counted as an allocation: the other lanes put this in
+    /// `.rodata`, so a program that reads a `const` table would
+    /// otherwise report memory here that it does not report there.
+    pub(crate) fn const_bytes_addr(&mut self, bytes: &[u8]) -> u64 {
+        let host = self.host;
+        if let Some(addr) = self.const_blobs.get(bytes) {
+            return *addr;
+        }
+        let addr = host.alloc_internal(bytes.len().max(1) as u64);
+        for (i, b) in bytes.iter().enumerate() {
+            host.ptr_write(
+                addr,
+                i as u64,
+                RawSlot::from_u64(*b as u64),
+                compiler_ir::Type::U8,
+            );
+        }
+        self.const_blobs.insert(bytes.to_vec(), addr);
         addr
     }
 

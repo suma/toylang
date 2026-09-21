@@ -500,6 +500,50 @@ impl<'a> FunctionLower<'a> {
         // same call written by hand. The tree-walker has always
         // dispatched this way (slice.rs), so this is the compiled
         // lanes catching up, not a new semantics.
+        // CONST-ARRAY: a `const K: [T; N] = [..]` is not a binding —
+        // it is bytes in the read-only section, and an index is one
+        // load from them. Ahead of the `__getitem__` detour because a
+        // const array has no methods to dispatch to.
+        if !matches!(self.bindings.get(&arr_sym), Some(Binding::Array { .. }))
+            && let Some(array) = self.const_arrays.get(&arr_sym)
+        {
+            let (elem_ty, stride, length, bytes) = (
+                array.elem_ty,
+                array.stride,
+                array.length,
+                array.bytes.clone(),
+            );
+            // The same index path a stack array takes: constants are
+            // folded and rejected at compile time, a runtime index is
+            // adjusted for a negative value and bounds-checked. A
+            // `const` table reads out of bounds exactly as loudly as
+            // any other array.
+            let idx = self.lower_element_index(index_ref, length as usize)?;
+            let base = self
+                .emit(InstKind::ConstBytesAddr { bytes }, Some(Type::U64))
+                .ok_or_else(|| "const array address returned no value".to_string())?;
+            let stride_v = self
+                .emit(InstKind::Const(Const::U64(stride)), Some(Type::U64))
+                .ok_or_else(|| "const array stride returned no value".to_string())?;
+            let offset = self
+                .emit(
+                    InstKind::BinOp {
+                        op: crate::ir::BinOp::Mul,
+                        lhs: idx,
+                        rhs: stride_v,
+                    },
+                    Some(Type::U64),
+                )
+                .ok_or_else(|| "const array offset returned no value".to_string())?;
+            return Ok(self.emit(
+                InstKind::PtrRead {
+                    ptr: base,
+                    offset,
+                    elem_ty,
+                },
+                Some(elem_ty),
+            ));
+        }
         if !matches!(
             self.bindings.get(&arr_sym),
             Some(Binding::Array { .. })

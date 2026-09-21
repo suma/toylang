@@ -219,19 +219,27 @@ impl 側での追加を禁じるので、**契約は inherent method と自由�
 ~900x。[`RUNTIME_LIBRARY.md`](RUNTIME_LIBRARY.md) が RUNTIME-PORT R3/R4
 で str ヘルパについて出したのと同じ結論で、§4 の判断の前提になっている。
 
-### 実測 4 — 固定長の作業領域が持てない
+### 実測 4 — 固定長の作業領域が持てなかった (**2026-09-21 に解消**)
+
+当時の状況:
 
 - `[0u8; 64]` (repeat array literal) が**無い** — 64 要素を並べる以外に
   書けない
 - `const K: [u32; 64] = [...]` は**コンパイル系が拒否する**
   (`only literal values and references to earlier consts are supported`)
-- stdlib モジュール内の const 配列添字は integration が拒否する
-  (`Unsupported expression type for remapping: SliceAccess`)
+- モジュールの `const` はそのモジュール自身の関数からも見えない
 
-結果、**ブロックバッファも `w[]` も K 表も `Vec` になる** = ヒープ。
-`never_allocates` を名乗れないのはこれが理由で、契約でメモリ挙動を
-約束する (ALLOC-CONTRACT) 余地も今は無い。repeat literal が入れば
-`Sha256` は確保ゼロで書ける。todo の ARRAY-REPEAT-LITERAL に記録。
+結果、**ブロックバッファも `w[]` も K 表も `Vec`** = ヒープだった。
+
+3 つとも埋まった (ARRAY-REPEAT-LITERAL / CONST-ARRAY / MODULE-CONST)。
+**K 表は `const SHA256_K: [u32; 64]` になり** — `.rodata` の 256 バイトを
+全ハッシャが読む、誰も組み立てない — **`compress` は
+`never_allocates` を名乗る**。ハッシャごとの 64 回の `push` と 256
+バイトが消えた。
+
+残っているのは `buf` と `w` で、どちらも `&mut self` から使う可変の
+作業領域である。固定長配列を struct のフィールドに置けるようになれば
+こちらも落とせる。
 
 ### 実測 5 — compound の `result` に触る `ensures` が書けない
 

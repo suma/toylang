@@ -50,9 +50,6 @@ pub struct Sha256 {
     nbuf: u64,
     # The 64-word message schedule, reused by every block.
     w: Vec<u32>,
-    # The 64 round constants: the first 32 bits of the fractional
-    # parts of the cube roots of the first 64 primes.
-    k: Vec<u32>,
     # Message bytes fed so far. The padding encodes this times 8.
     total: u64,
     # 32 for SHA-256, 28 for SHA-224. The only difference between the
@@ -148,10 +145,9 @@ impl Sha256 {
         var w: Vec<u32> = Vec::new()
         i = 0u64
         while i < 64u64 { w.push(0u32)  i = i + 1u64 }
-        val k: Vec<u32> = sha256_k()
         Sha256 {
             h0: a, h1: b, h2: c, h3: d, h4: e, h5: f, h6: g, h7: h,
-            buf: buf, nbuf: 0u64, w: w, k: k,
+            buf: buf, nbuf: 0u64, w: w,
             total: 0u64, out: out,
         }
     }
@@ -185,7 +181,7 @@ impl Sha256 {
     # -- but the read happens 64 times per block, and this is the one
     # place where a future change to how `buf` is managed would go
     # wrong silently rather than loudly.
-    fn compress(&mut self)
+    never_allocates fn compress(&mut self)
         requires self.buf.size() == 64u64
     {
         # Words 0..15 are the block, read big-endian.
@@ -216,7 +212,7 @@ impl Sha256 {
         var h = self.h7
         t = 0u64
         while t < 64u64 {
-            val t1 = h + bsig1(e) + ch(e, f, g) + self.k.get(t) + self.w.get(t)
+            val t1 = h + bsig1(e) + ch(e, f, g) + SHA256_K[t] + self.w.get(t)
             val t2 = bsig0(a) + maj(a, b, c)
             h = g
             g = f
@@ -297,32 +293,34 @@ impl Digest for Sha256 {
     fn block_size(&self) -> u64 { 64u64 }
 }
 
-# The 64 round constants, K[0..63] (FIPS 180-4 §4.2.2).
+# The 64 round constants, K[0..63] (FIPS 180-4 §4.2.2): the first 32
+# bits of the fractional parts of the cube roots of the first 64
+# primes.
 #
-# Built into a `Vec` per hasher rather than declared as a `const`
-# array: the compiled lanes refuse a `const` whose initialiser is an
-# array (STDLIB_CRYPTO.md "実測 4"). One 256-byte allocation per
-# hasher, amortised to nothing over any message worth hashing.
-fn sha256_k() -> Vec<u32> {
-    var k: Vec<u32> = Vec::new()
-    k.push(0x428a2f98u32) k.push(0x71374491u32) k.push(0xb5c0fbcfu32) k.push(0xe9b5dba5u32)
-    k.push(0x3956c25bu32) k.push(0x59f111f1u32) k.push(0x923f82a4u32) k.push(0xab1c5ed5u32)
-    k.push(0xd807aa98u32) k.push(0x12835b01u32) k.push(0x243185beu32) k.push(0x550c7dc3u32)
-    k.push(0x72be5d74u32) k.push(0x80deb1feu32) k.push(0x9bdc06a7u32) k.push(0xc19bf174u32)
-    k.push(0xe49b69c1u32) k.push(0xefbe4786u32) k.push(0x0fc19dc6u32) k.push(0x240ca1ccu32)
-    k.push(0x2de92c6fu32) k.push(0x4a7484aau32) k.push(0x5cb0a9dcu32) k.push(0x76f988dau32)
-    k.push(0x983e5152u32) k.push(0xa831c66du32) k.push(0xb00327c8u32) k.push(0xbf597fc7u32)
-    k.push(0xc6e00bf3u32) k.push(0xd5a79147u32) k.push(0x06ca6351u32) k.push(0x14292967u32)
-    k.push(0x27b70a85u32) k.push(0x2e1b2138u32) k.push(0x4d2c6dfcu32) k.push(0x53380d13u32)
-    k.push(0x650a7354u32) k.push(0x766a0abbu32) k.push(0x81c2c92eu32) k.push(0x92722c85u32)
-    k.push(0xa2bfe8a1u32) k.push(0xa81a664bu32) k.push(0xc24b8b70u32) k.push(0xc76c51a3u32)
-    k.push(0xd192e819u32) k.push(0xd6990624u32) k.push(0xf40e3585u32) k.push(0x106aa070u32)
-    k.push(0x19a4c116u32) k.push(0x1e376c08u32) k.push(0x2748774cu32) k.push(0x34b0bcb5u32)
-    k.push(0x391c0cb3u32) k.push(0x4ed8aa4au32) k.push(0x5b9cca4fu32) k.push(0x682e6ff3u32)
-    k.push(0x748f82eeu32) k.push(0x78a5636fu32) k.push(0x84c87814u32) k.push(0x8cc70208u32)
-    k.push(0x90befffau32) k.push(0xa4506cebu32) k.push(0xbef9a3f7u32) k.push(0xc67178f2u32)
-    k
-}
+# A `const` array, so it is 256 bytes of read-only data that every
+# hasher reads and none of them builds. It used to be a `Vec` filled
+# by 64 `push`es per hasher, because the compiled lanes refused a
+# `const` whose initialiser was an array (CONST-ARRAY, fixed
+# 2026-09-21) — which is what kept `compress` from being
+# `never_allocates`.
+const SHA256_K: [u32; 64] = [
+    0x428a2f98u32, 0x71374491u32, 0xb5c0fbcfu32, 0xe9b5dba5u32,
+    0x3956c25bu32, 0x59f111f1u32, 0x923f82a4u32, 0xab1c5ed5u32,
+    0xd807aa98u32, 0x12835b01u32, 0x243185beu32, 0x550c7dc3u32,
+    0x72be5d74u32, 0x80deb1feu32, 0x9bdc06a7u32, 0xc19bf174u32,
+    0xe49b69c1u32, 0xefbe4786u32, 0x0fc19dc6u32, 0x240ca1ccu32,
+    0x2de92c6fu32, 0x4a7484aau32, 0x5cb0a9dcu32, 0x76f988dau32,
+    0x983e5152u32, 0xa831c66du32, 0xb00327c8u32, 0xbf597fc7u32,
+    0xc6e00bf3u32, 0xd5a79147u32, 0x06ca6351u32, 0x14292967u32,
+    0x27b70a85u32, 0x2e1b2138u32, 0x4d2c6dfcu32, 0x53380d13u32,
+    0x650a7354u32, 0x766a0abbu32, 0x81c2c92eu32, 0x92722c85u32,
+    0xa2bfe8a1u32, 0xa81a664bu32, 0xc24b8b70u32, 0xc76c51a3u32,
+    0xd192e819u32, 0xd6990624u32, 0xf40e3585u32, 0x106aa070u32,
+    0x19a4c116u32, 0x1e376c08u32, 0x2748774cu32, 0x34b0bcb5u32,
+    0x391c0cb3u32, 0x4ed8aa4au32, 0x5b9cca4fu32, 0x682e6ff3u32,
+    0x748f82eeu32, 0x78a5636fu32, 0x84c87814u32, 0x8cc70208u32,
+    0x90befffau32, 0xa4506cebu32, 0xbef9a3f7u32, 0xc67178f2u32,
+]
 
 # SHA-256 of one buffer. The digest is 32 bytes.
 #

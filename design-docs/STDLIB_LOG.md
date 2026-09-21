@@ -12,7 +12,7 @@
 | stderr への出力 | `eprint` / `eprintln` (RUNTIME-LIB P0-A) |
 | 出力シンク | runtime に 2 本 (`sink` / `err_sink`)。**差し替え可能**で、`pthread_key` の TLS で per-thread |
 | レベル | 無い |
-| 言語の可変なグローバル | **無い** (top-level は `const` のみ。しかも module の `const` は他モジュールにも自分の body にも届かない — MODULE-CONST) |
+| 言語の可変なグローバル | **無い** (top-level は `const` のみ。module の `const` は 2026-09-21 まで自分の body にも届かなかった — MODULE-CONST) |
 | 環境変数で runtime を切り替える先例 | `TOY_PROFILE_MEM` (`toylang_rt` が `getenv` で読む) |
 
 ## なぜ今これを設計するか
@@ -43,7 +43,7 @@ todo が挙げていた論点は 2 つだった — **出力先を stderr 固定
    が使えないため)。一方 `TOY_PROFILE_MEM` は `getenv` で
    プロセス全体 (`lib.rs:1021`)。**レベルは後者の側**に置く。
 
-4. **module の `const` は届かない** (MODULE-CONST)。`poll.t` が
+4. **module の `const` は届かなかった** (MODULE-CONST、2026-09-21 に解消)。`poll.t` が
    `pub const` をあきらめて `pub fn interest_read()` を並べている
    のと同じ制約。**stdlib のログ関数から user の
    `const LOG_LEVEL` は見えない。**

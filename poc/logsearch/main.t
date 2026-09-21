@@ -227,7 +227,15 @@ fn cmd_archive(dir: str, spec: str, limit: u64) -> u64 {
     val crc = Crc32::new()
     val watch = Stopwatch::start()
 
-    var segid: u64 = 1u64
+    # Where this run's ids start. **Not 1**: a mount that already
+    # holds segments has those ids in its catalog, and re-using one
+    # overwrites the row (the file lands under a different day, so
+    # the records are still there — they are simply no longer
+    # listed, until a `repair` finds them again). `next_segid` is
+    # what the server has always used; `archive` predates it and
+    # kept counting from 1, which was fine only for a directory it
+    # owned alone.
+    var segid: u64 = store::next_segid(&ms, &crc)
     var raw_total: u64 = 0u64
     var dat_total: u64 = 0u64
     var records_total: u64 = 0u64
@@ -1534,6 +1542,33 @@ test "archive, verify and query run as one road" {
     val c = catalog::load(arch, &crc)
     assert_eq(c.size(), e2e_segments(arch))
     assert(c.total_records() >= 201u64, "the catalog should count every record")
+}
+
+# 同じマウントへ 2 回 `archive` しても、1 回目が消えない。
+#
+# `archive` は id を 1 から振っていたので、2 回目が 1 回目の行を
+# **上書き**していた。ファイルは別の日ディレクトリに残るので、
+# 消えるのは台帳の行だけ — `repair` するまで「在るのに載っていない」
+# という、いちばん気づきにくい形になる。
+test "archiving twice into one mount keeps both runs in the catalog" {
+    val first = e2e_logs("build/e2e-twice-a", 30u64)
+    val second = e2e_logs("build/e2e-twice-b", 30u64)
+    val arch = "build/e2e-twice-arch"
+    e2e_wipe(arch)
+
+    assert_eq(cmd_archive(first.to_str(), arch, 100u64), 0u64)
+    val crc = Crc32::new()
+    val after_one = catalog::load(arch, &crc)
+    assert_eq(after_one.size(), 1u64)
+    val records_one = after_one.total_records()
+
+    assert_eq(cmd_archive(second.to_str(), arch, 100u64), 0u64)
+    val after_two = catalog::load(arch, &crc)
+    assert_eq(after_two.size(), 2u64)
+    assert_eq(after_two.total_records(), records_one * 2u64)
+    # 台帳の行数とファイルの本数が一致する — どちらかだけが増えて
+    # いたら、そのずれこそがこのテストの対象である。
+    assert_eq(after_two.size(), e2e_segments(arch))
 }
 
 # ログが 1 つも無いディレクトリは**失敗で返る**。0 を返すと、

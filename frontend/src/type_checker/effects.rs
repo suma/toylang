@@ -446,6 +446,10 @@ pub struct EffectTable<'a> {
     /// cycle contributed nothing — so it is used but not memoised.
     cycles: u32,
     order: u32,
+    /// Every `(enum, variant)` the program declares. A call whose
+    /// name is one of these builds a value rather than entering a
+    /// body, so it has no effects of its own.
+    variants: HashSet<(DefaultSymbol, DefaultSymbol)>,
     /// POINTER P6: when set, the walk does **not** descend into
     /// callees — `Expr::Call` / `MethodCall` /
     /// `AssociatedFunctionCall` contribute their arguments' effects
@@ -481,6 +485,21 @@ impl<'a> EffectTable<'a> {
                 }
             }
         }
+        // `Option::Some(x)` parses as a call, and no function of that
+        // name exists — so `enter` used to call it opaque and hand it
+        // every effect. Building a value does nothing: what the
+        // arguments do is the whole of it.
+        let mut variants: HashSet<(DefaultSymbol, DefaultSymbol)> = HashSet::new();
+        for index in 0..program.statement.len() {
+            let stmt_ref = StmtRef(index as u32);
+            if let Some(Stmt::EnumDecl { name, variants: defs, .. }) =
+                program.statement.get(&stmt_ref)
+            {
+                for variant in &defs {
+                    variants.insert((name, variant.name));
+                }
+            }
+        }
         EffectTable {
             program,
             interner,
@@ -488,6 +507,7 @@ impl<'a> EffectTable<'a> {
             by_name,
             methods,
             by_method_name,
+            variants,
             memo: HashMap::new(),
             in_progress: HashSet::new(),
             cycles: 0,
@@ -680,7 +700,7 @@ impl<'a> EffectTable<'a> {
                 let mut effects = self.walk_all(&args);
                 // `Type::func()` names its owner outright. Direct-only
                 // mode skips the descent, same as the two arms above.
-                if !self.direct_only {
+                if !self.direct_only && !self.variants.contains(&(type_name, function)) {
                     let callee_effects = self.enter(Some(type_name), &function);
                     effects.merge(&callee_effects);
                 }

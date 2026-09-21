@@ -489,3 +489,63 @@ fn a_parallel_loop_that_prints_is_refused() {
     // a `Stmt::For` records where the parser finished.
     assert_eq!(d["span"]["line"], 2, "{d}");
 }
+
+/// The three shapes A2-b-2 had to add to E0029, each refused where
+/// every lane can see it.
+///
+/// They are order dependencies, not lowering limits: an accumulator
+/// reads what the previous iteration wrote, and `break` / `return`
+/// stop iterations that may already be running. Refusing them in the
+/// type checker is what keeps the tree-walker from happily running a
+/// program the compiled lanes cannot.
+#[test]
+fn a_parallel_loop_that_depends_on_order_is_refused() {
+    let core = crate::common::core_modules_dir();
+    let cases = [
+        (
+            "an accumulator",
+            "fn main() -> u64 {\n    var acc = 0u64\n    parallel for i in 0u64..4u64 {\n        acc = acc + i\n    }\n    println(acc)\n    0u64\n}",
+            4,
+        ),
+        (
+            "break",
+            "fn main() -> u64 {\n    parallel for i in 0u64..4u64 {\n        if i > 2u64 { break }\n    }\n    0u64\n}",
+            2,
+        ),
+        (
+            "return",
+            "fn main() -> u64 {\n    parallel for i in 0u64..4u64 {\n        if i > 2u64 { return 1u64 }\n    }\n    0u64\n}",
+            3,
+        ),
+    ];
+    for (what, src, line) in cases {
+        let mut options = interpreter::RunOptions::default();
+        options.diagnostics_json = true;
+        options.core_modules_dirs = std::slice::from_ref(&core);
+        let (result, stderr) = interpreter::output::with_stderr_capture(|| {
+            interpreter::run_source(src, "test.t", &options)
+        });
+        assert!(result.is_err(), "{what} inside a parallel body should be refused");
+        let value: serde_json::Value = serde_json::from_str(&stderr)
+            .unwrap_or_else(|e| panic!("not JSON ({e}):\n{stderr}"));
+        let d = &value[0];
+        assert_eq!(d["code"], "E0029", "{what}: {d}");
+        assert_eq!(d["span"]["line"], line, "{what}: {d}");
+    }
+}
+
+/// ... and the one that is a lowering limit rather than an order
+/// dependency: a `var` the body declares itself is per iteration, so
+/// assigning to it is fine.
+#[test]
+fn a_parallel_body_may_assign_to_what_it_declares() {
+    let core = crate::common::core_modules_dir();
+    let mut options = interpreter::RunOptions::default();
+    options.core_modules_dirs = std::slice::from_ref(&core);
+    let result = interpreter::run_source(
+        "fn main() -> u64 {\n    parallel for i in 0u64..4u64 {\n        var seen = i\n        seen = seen + 1u64\n    }\n    0u64\n}",
+        "test.t",
+        &options,
+    );
+    assert!(result.is_ok(), "a binding made inside the body is the body's own: {result:?}");
+}

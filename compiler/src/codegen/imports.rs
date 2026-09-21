@@ -319,6 +319,7 @@ impl<M: Module> CodegenSession<M> {
             mem_eq: self.declare_func_in_func_readonly(self.rt_mem_eq, func),
             mem_find: self.declare_func_in_func_readonly(self.rt_mem_find, func),
             mem_find_seq: self.declare_func_in_func_readonly(self.rt_mem_find_seq, func),
+            par_for: self.declare_func_in_func_readonly(self.rt_par_for, func),
             print_i64: self.declare_func_in_func_readonly(self.rt_print_i64, func),
             println_i64: self.declare_func_in_func_readonly(self.rt_println_i64, func),
             print_u64: self.declare_func_in_func_readonly(self.rt_print_u64, func),

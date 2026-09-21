@@ -658,7 +658,14 @@ impl<'a> Vm<'a> {
             .get(slot_idx as usize)
             .copied()
             .unwrap_or(0);
-        let addr = self.host.alloc_at(size.max(1) as u64, 0);
+        // A frame slot, not something the program asked for: the
+        // compiled lanes put it in the cranelift frame, so counting
+        // it here would make `__builtin_live_bytes()` answer
+        // differently on this engine for the same program. The same
+        // reasoning `alloc_internal` was added for (address-taken
+        // locals); a `&dyn Trait` coercion and a `parallel for`
+        // environment are the other two users of these slots.
+        let addr = self.host.alloc_internal(size.max(1) as u64);
         self.current_frame_mut().dyn_coerce_addrs.insert(slot_idx, addr);
         addr
     }

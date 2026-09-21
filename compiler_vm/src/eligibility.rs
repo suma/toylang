@@ -146,7 +146,12 @@ fn inst_supported(kind: &InstKind) -> bool {
         // like the moves do.
         | InstKind::MemEq { .. }
         | InstKind::MemFind { .. }
-        | InstKind::MemFindSeq { .. } => true,
+        | InstKind::MemFindSeq { .. }
+        // CONCURRENCY A2-b-2: a `parallel for`. The VM runs the
+        // outlined body once over the whole range — no threads, and
+        // the body is an ordinary function it already knows how to
+        // call.
+        | InstKind::ParFor { .. } => true,
     }
 }
 

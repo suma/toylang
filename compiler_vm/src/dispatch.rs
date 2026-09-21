@@ -565,6 +565,16 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }
         }
+        InstKind::ParFor { body, env, from, until } => {
+            // CONCURRENCY A2-b-2: the IR VM is a sequential lane, and
+            // one chunk is a legal split. `[from, until)` whole, on
+            // this thread, in order — which is also what makes the VM
+            // the lane that says what a `parallel for` *means*.
+            let env_v = vm.read_value(*env);
+            let from_v = vm.read_value(*from);
+            let until_v = vm.read_value(*until);
+            vm.call_function(*body, vec![env_v, from_v, until_v], None, Vec::new());
+        }
         InstKind::CallIndirect { callee, args, .. } => {
             // Phase 3a: env-based indirect call. `callee` is an env_ptr;
             // fn_ptr lives at env+0. The lifted closure body's first

@@ -542,6 +542,8 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
         toy_mem_eq,
         toy_mem_find,
         toy_mem_find_seq,
+        // CONCURRENCY A2-b-2: `parallel for`.
+        toy_par_for,
         toy_str_eq,
         toy_to_string_i64,
         toy_to_string_u64,

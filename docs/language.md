@@ -2489,7 +2489,7 @@ Bind the struct first if you need one (`val it = MyIter { .. }`).
    writeback through `iter.next()` mutates the user's original
    binding correctly between iterations.
 
-#### `parallel for` (CONCURRENCY A1)
+#### `parallel for` (CONCURRENCY)
 
 ```rust
 parallel for i in 0u64..segs.size() {
@@ -2498,24 +2498,38 @@ parallel for i in 0u64..segs.size() {
 ```
 
 A `for` over a **range**, written with the modifier, says the
-iterations may run **in any order** and, in a later phase, at the
-same time. Today every lane runs them in order, which is a correct
-implementation of that promise: the answer is fixed first, and
-parallelising it becomes an optimisation that cannot change it
-(`design-docs/CONCURRENCY.md`).
+iterations may run **in any order and at the same time**. The
+compiled lanes run them on threads; the tree-walker and the IR VM
+run them in order, which is a legal split of the same range. The
+number of threads is not part of the language — it comes from the
+machine, or from `TOY_PAR_THREADS` — and **it may not change the
+answer**: a program whose result depends on it is wrong, not
+configurable.
 
 - `parallel` is **contextual** — only the identifier immediately
   before a `for` is the modifier, so `val parallel = 7u64` is still
   a binding.
 - The iterator form (`parallel for x in it`) is refused: an iterator
   has an order of its own.
-- The body may not **print** and may not open a **scoped allocator**
-  (`[E0029]`). Both would make the order observable; collect per
-  index and do the rest after the loop.
+- The body may not **print**, open a **scoped allocator**, **assign
+  to a name from outside the loop**, or **`break` / `return`**
+  (`[E0029]`). Each would make the order observable. A `var`
+  declared inside the body is one per iteration and may be assigned
+  freely, and `continue` is fine — ending one iteration is a
+  decision an iteration can make on its own.
+- The body reads outer values through a **copy**, so it reaches
+  memory it may write through a **window** (`Span<T>` / `Column<T>`,
+  whose `set` stores into the buffer the window views). Capturing
+  something the body then mutates — `v.push(x)` on an outer `Vec` —
+  is refused by the compiler.
 - **Whether the iterations are independent is not checked.** Writing
   to `out[i]` is the author's promise, and `requires` is where to
   write it down. The language has no aliasing rules — see the same
   decision for `Span<T>`.
+- A `parallel for` **allocates nothing of its own**, so a loop
+  inside a function with `ensures allocates(0)` stays within it.
+- Nesting one inside another runs the **inner one in order**: the
+  outer loop already has the threads.
 
 By default, `break` / `continue` apply to the innermost enclosing
 loop. **Labelled loops** (LABEL feature) let you target an outer

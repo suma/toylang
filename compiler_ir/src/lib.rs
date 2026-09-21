@@ -671,6 +671,10 @@ impl Module {
             | InstKind::CallWithSelfWritebackCompound { target, .. }
             | InstKind::FuncAddr { target }
             | InstKind::MakeClosure { target, .. } => vec![*target],
+            // The outlined body of a `parallel for` is reached from
+            // here and nowhere else, so the reachability scan has to
+            // see the edge or the body is never compiled.
+            InstKind::ParFor { body, .. } => vec![*body],
             // Dynamic dispatch: every thunk in the referenced vtable is
             // callable.
             InstKind::VtableAddr { trait_sym, struct_sym } => self
@@ -1583,6 +1587,11 @@ impl InstKind {
         match self {
             InstKind::StoreLocal { dst, .. } => visit(*dst),
             InstKind::AddressOf { local } => visit(*local),
+            // The outlined body writes through the environment, not
+            // into this function's locals: every capture was copied
+            // into the env before the call, and a body that writes
+            // to its copy is refused at lowering time.
+            InstKind::ParFor { .. } => {}
             InstKind::CallStruct { dests, .. }
             | InstKind::CallTuple { dests, .. }
             | InstKind::CallEnum { dests, .. }
@@ -2225,6 +2234,32 @@ pub enum InstKind {
     /// parameter; the dispatched thunk reads field leaves out of
     /// this slot via `PtrRead`.
     DynCoerceSlotAddr { slot_idx: u32 },
+    /// CONCURRENCY A2-b-2: run `body(env, from, until)` over the
+    /// whole range, in whatever order and on whatever threads the
+    /// lane likes.
+    ///
+    /// This is what a `parallel for` becomes once the lowering has
+    /// outlined its body (`FunctionLower::lower_par_for`). It is an
+    /// instruction rather than a plain call to the runtime helper
+    /// because **each lane may answer it differently and both
+    /// answers are right**: AOT and JIT call `toy_par_for`, which
+    /// splits the range across threads; the IR VM calls the body
+    /// once over the whole range. The language promises only that
+    /// the iterations are independent, so one chunk is as valid a
+    /// split as many.
+    ///
+    /// `env` is the address of a caller-frame slot holding the
+    /// captured values, one 8-byte slot each, which the body reads
+    /// back at the same offsets. `from` / `until` are **iteration
+    /// counts**,
+    /// not the loop's own indices — the body adds its base back, so
+    /// a signed range splits as an unsigned count.
+    ParFor {
+        body: FuncId,
+        env: ValueId,
+        from: ValueId,
+        until: ValueId,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2526,6 +2561,11 @@ impl InstKind {
                 args.iter().for_each(one);
             }
             InstKind::MakeClosure { captures, .. } => captures.iter().for_each(one),
+            InstKind::ParFor { env, from, until, .. } => {
+                one(env);
+                one(from);
+                one(until);
+            }
             // Reads nothing.
             InstKind::Const(_)
             | InstKind::LoadLocal(_)
@@ -2892,6 +2932,9 @@ impl fmt::Display for DisplayInst<'_> {
         };
         match &self.0.kind {
             InstKind::Const(c) => write!(f, "{prefix}const {c}"),
+            InstKind::ParFor { body, env, from, until } => {
+                write!(f, "{prefix}par_for {body}, {env}, {from}, {until}")
+            }
             InstKind::SimdSplat { value, ty } => {
                 write!(f, "{prefix}simd.splat.{} {value}", ty.source_name())
             }

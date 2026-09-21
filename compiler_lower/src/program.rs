@@ -1312,6 +1312,10 @@ pub fn lower_program(
     // synthetic top-level FuncId immediately so call sites resolve;
     // the body is lowered here under its own `FunctionLower` instance.
     let mut pending_closure_work: Vec<super::PendingClosureBody> = Vec::new();
+    // CONCURRENCY A2-b-2: outlined `parallel for` bodies.
+    let mut pending_par_work: Vec<super::parallel::PendingParBody> = Vec::new();
+    // ... and what to ask of each once the module is finished.
+    let mut par_checks: Vec<super::parallel::ParCheck> = Vec::new();
     // DROP-GLUE: queue of synthesized per-type drop-glue function
     // bodies awaiting lowering. Filled by `ensure_drop_glue` (from
     // drop-site emission and from other glue bodies).
@@ -1397,6 +1401,7 @@ pub fn lower_program(
                 &mut method_instances,
                 &mut pending_method_work,
                 &mut pending_closure_work,
+                &mut pending_par_work,
                 &mut pending_glue_work,
                 &mut scheduled,
             )?;
@@ -1447,6 +1452,7 @@ pub fn lower_program(
                 &mut method_instances,
                 &mut pending_method_work,
                 &mut pending_closure_work,
+                &mut pending_par_work,
                 &mut pending_glue_work,
                 &mut scheduled,
             )?;
@@ -1515,6 +1521,7 @@ pub fn lower_program(
                 &mut method_instances,
                 &mut pending_method_work,
                 &mut pending_closure_work,
+                &mut pending_par_work,
                 &mut pending_glue_work,
                 &mut scheduled,
             )?;
@@ -1556,6 +1563,7 @@ pub fn lower_program(
                 &mut method_instances,
                 &mut pending_method_work,
                 &mut pending_closure_work,
+                &mut pending_par_work,
                 &mut pending_glue_work,
                 &mut scheduled,
             )?;
@@ -1592,6 +1600,7 @@ pub fn lower_program(
                 &mut method_instances,
                 &mut pending_method_work,
                 &mut pending_closure_work,
+                &mut pending_par_work,
                 &mut pending_glue_work,
                 &mut scheduled,
             )?;
@@ -1601,6 +1610,43 @@ pub fn lower_program(
                 &work.captures,
                 work.captures_by_ref,
             )?;
+            schedule_from_ir(
+                &module,
+                work.func_id,
+                &plain_sources,
+                &mut scheduled,
+                &mut pending_plain_work,
+                &mut used_vtables,
+            );
+        }
+
+        // 5b. CONCURRENCY A2-b-2: outlined `parallel for` bodies.
+        while let Some(work) = pending_par_work.pop() {
+            made_progress = true;
+            let mut builder = FunctionLower::new(
+                &mut module,
+                work.func_id,
+                program,
+                interner,
+                &struct_defs,
+                &enum_defs,
+                &generic_funcs,
+                &mut generic_instances,
+                &mut pending_generic_work,
+                &const_values,
+                contract_msgs,
+                release,
+                &method_registry,
+                &method_func_ids,
+                &generic_methods,
+                &mut method_instances,
+                &mut pending_method_work,
+                &mut pending_closure_work,
+                &mut pending_par_work,
+                &mut pending_glue_work,
+                &mut scheduled,
+            )?;
+            par_checks.push(builder.lower_par_body(&work)?);
             schedule_from_ir(
                 &module,
                 work.func_id,
@@ -1642,6 +1688,7 @@ pub fn lower_program(
                 &mut method_instances,
                 &mut pending_method_work,
                 &mut pending_closure_work,
+                &mut pending_par_work,
                 &mut pending_glue_work,
                 &mut scheduled,
             )?;
@@ -1678,6 +1725,10 @@ pub fn lower_program(
     // ends move together, so this has to be after the last call site
     // is emitted.
     crate::writeback_prune::prune_unwritten_writeback(&mut module);
+    // CONCURRENCY A2-b-2: and now that a writeback tail means the
+    // callee really did write, ask whether any parallel body wrote to
+    // what it captured.
+    crate::parallel::reject_capture_writes(&module, interner, &par_checks)?;
     // CODE-SIZE-SELF-ABI: a call shape nobody taught about the pointer
     // receiver must stop here, not reach codegen.
     crate::ptr_self_verify::verify_call_arity(&module)?;
@@ -1818,6 +1869,7 @@ impl<'a> FunctionLower<'a> {
         method_instances: &'a mut MethodInstances,
         pending_method_work: &'a mut Vec<PendingMethodInstance>,
         pending_closure_work: &'a mut Vec<super::PendingClosureBody>,
+        pending_par_work: &'a mut Vec<super::parallel::PendingParBody>,
         pending_glue_work: &'a mut Vec<super::drop_glue::GlueWork>,
         scheduled: &'a mut HashSet<FuncId>,
     ) -> Result<Self, String> {
@@ -1872,6 +1924,8 @@ impl<'a> FunctionLower<'a> {
             binding_params: false,
             closure_bindings: HashMap::new(),
             pending_closure_work,
+            pending_par_work,
+            in_par_body: false,
             pending_glue_work,
             arm_drop_targets: Vec::new(),
             scheduled,

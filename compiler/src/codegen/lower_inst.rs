@@ -91,7 +91,10 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             | InstKind::CallIndirectFnStruct { .. }
             | InstKind::DynCoerceSlotAddr { .. }
             | InstKind::VtableAddr { .. }
-            | InstKind::MakeClosure { .. } => self.lower_callee_resolution(inst),
+            | InstKind::MakeClosure { .. }
+            // CONCURRENCY A2-b-2: the outlined body is named the same
+            // way a function pointer is, so it resolves here too.
+            | InstKind::ParFor { .. } => self.lower_callee_resolution(inst),
             InstKind::CallIndirect { .. }
             | InstKind::CallStruct { .. }
             | InstKind::CallTuple { .. }
@@ -496,6 +499,24 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     })?;
                     self.values.insert(vid.0, v);
                 }
+            }
+            InstKind::ParFor { body, env, from, until } => {
+                // CONCURRENCY A2-b-2: hand the range and the
+                // environment to the runtime, which splits it across
+                // threads and returns when the last chunk is done.
+                // The body is an ordinary local function whose
+                // address this call is the only user of.
+                let func_ref = *self
+                    .imports
+                    .get(body)
+                    .ok_or_else(|| format!("missing import for {body:?}"))?;
+                let body_addr = self.builder.ins().func_addr(types::I64, func_ref);
+                let e = self.value(*env);
+                let f = self.value(*from);
+                let u = self.value(*until);
+                self.builder
+                    .ins()
+                    .call(self.runtime.par_for, &[f, u, e, body_addr]);
             }
             InstKind::FuncAddr { target } => {
                 // Closures Phase 5b: yield the runtime address of a

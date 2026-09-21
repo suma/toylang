@@ -167,7 +167,7 @@ pub enum TypeCheckErrorKind {
     /// CONCURRENCY A1: a `parallel for` body does something whose
     /// result depends on the order the iterations run in. `what`
     /// names it ("prints"), `path` is how the body reaches it.
-    ParallelBody { what: String, path: String },
+    ParallelBody { what: String, path: String, fix: String },
     /// MODULE-SYSTEM P3: the qualifier a call was written with names
     /// no module. `written` is what was typed, `name` the function,
     /// `known` the paths that do define it.
@@ -477,9 +477,16 @@ impl TypeCheckError {
     }
 
     /// CONCURRENCY A1: a `parallel for` body is order-dependent.
-    pub fn parallel_body(what: String, path: String) -> Self {
+    ///
+    /// `what` names what the body does, `path` says where it was
+    /// found, and `fix` is the way out — carried rather than derived
+    /// from `what`, because the ways out have nothing in common
+    /// (print after the loop, write through a window, hoist the
+    /// allocator) and picking one by matching on a sentence is how a
+    /// new case quietly gets the wrong advice.
+    pub fn parallel_body(what: String, path: String, fix: String) -> Self {
         Self {
-            kind: Box::new(TypeCheckErrorKind::ParallelBody { what, path }),
+            kind: Box::new(TypeCheckErrorKind::ParallelBody { what, path, fix }),
             context: None,
             location: None,
             origin_module: None,
@@ -755,14 +762,7 @@ impl TypeCheckError {
                      `clone()`"
                 )
             }
-            TypeCheckErrorKind::ParallelBody { what, path } => {
-                let fix = if what == "prints" {
-                    "Collect what each iteration produces, into a slot of its own, and \
-                     print after the loop"
-                } else {
-                    "Open the allocator outside the loop, or leave the body on the \
-                     default one"
-                };
+            TypeCheckErrorKind::ParallelBody { what, path, fix } => {
                 format!(
                     "a `parallel for` body {what}, and the iterations may run in any order, \
                      so the result would depend on which one got there first ({path}). {fix}"

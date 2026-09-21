@@ -958,8 +958,8 @@ const E0029: &str = "\
 E0029: a parallel loop body depends on the order of its iterations
 
 `parallel for i in 0u64..n { .. }` says the iterations may run in any
-order, and later at the same time. Two things in a body would make
-that visible, so neither is allowed in one:
+order, and now they do. Four things in a body would make that
+visible, so none of them is allowed in one:
 
     parallel for i in 0u64..n {
         println(i)                    # E0029: interleaved output
@@ -967,6 +967,15 @@ that visible, so neither is allowed in one:
 
     parallel for i in 0u64..n {
         with allocator = arena { .. }  # E0029: a scoped allocator
+    }
+
+    var acc = 0u64
+    parallel for i in 0u64..n {
+        acc = acc + i                 # E0029: a name from outside
+    }
+
+    parallel for i in 0u64..n {
+        if found(i) { break }         # E0029: break (and return)
     }
 
 Output because interleaved lines are not the same output, and the
@@ -977,6 +986,21 @@ of its own, indexed by `i` — and print after the loop.
 A scoped allocator because the region check reasons about one control
 flow; several iterations sharing one arena is outside what it can
 say. The body runs on the default allocator.
+
+A write to a name from outside because the next iteration would read
+what the last one wrote, which is the one thing `any order` cannot
+survive. Give each iteration a place of its own — a slot indexed by
+`i`, written through a window (`Span<T>`, whose `set` reaches the
+buffer it views) — and combine them after the loop. A `var` declared
+*inside* the body is one per iteration and may be assigned freely.
+
+`break` and `return` because both mean `stop the rest`, and the rest
+may already have run or be running. `continue` is fine: ending one
+iteration is a thing an iteration can decide on its own.
+
+A body that *calls* something which writes to an outer binding
+(`v.push(x)`) is refused too, by the compiler rather than here —
+knowing that `push` writes to `v` takes the callee's signature.
 
 **What is not checked is whether the iterations are independent.**
 Writing to `out[i]` is yours to get right, and `requires` is where to

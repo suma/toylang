@@ -257,6 +257,10 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_mem_eq: cranelift_module::FuncId,
     rt_mem_find: cranelift_module::FuncId,
     rt_mem_find_seq: cranelift_module::FuncId,
+    /// CONCURRENCY A2-b-2: `toy_par_for(from, until, env, body)` —
+    /// splits the range over threads and joins. The outlined body's
+    /// address is passed as a plain pointer.
+    rt_par_for: cranelift_module::FuncId,
     /// libm `double pow(double, double)` — used by `BinOp::Pow`.
     libm_pow: cranelift_module::FuncId,
     /// libm transcendentals — `double sin(double)` etc. Used by the
@@ -596,6 +600,14 @@ impl<M: Module> CodegenSession<M> {
             &[abi(I64), abi(I64), abi(I64), abi(I64)],
             &[abi(I64)],
         )?;
+        // CONCURRENCY A2-b-2: `parallel for`. Four pointer-sized
+        // arguments (`from`, `until`, `env`, `body`) and no result —
+        // it returns when every chunk is done.
+        let rt_par_for = imp.declare(
+            "toy_par_for",
+            &[abi(I64), abi(I64), abi(I64), abi(I64)],
+            &[],
+        )?;
 
         // (`libc_strlen` was used by an earlier draft of
         // `__builtin_str_len`; the str runtime value now points at
@@ -794,6 +806,7 @@ impl<M: Module> CodegenSession<M> {
             rt_mem_eq,
             rt_mem_find,
             rt_mem_find_seq,
+            rt_par_for,
             libm_pow,
             libm_sin,
             libm_cos,
@@ -1657,6 +1670,7 @@ struct RuntimeRefs {
     mem_eq: cranelift_codegen::ir::FuncRef,
     mem_find: cranelift_codegen::ir::FuncRef,
     mem_find_seq: cranelift_codegen::ir::FuncRef,
+    par_for: cranelift_codegen::ir::FuncRef,
     print_i64: cranelift_codegen::ir::FuncRef,
     println_i64: cranelift_codegen::ir::FuncRef,
     print_u64: cranelift_codegen::ir::FuncRef,

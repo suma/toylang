@@ -189,6 +189,8 @@ mod expr;
 
 mod drop_glue;
 
+mod parallel;
+
 /// Phase 5 (汎用 RAII): one per-binding auto-drop record kept on
 /// the `FunctionLower::drop_scopes` stack. Captures the binding's
 /// IR type (so the drop site can dispatch to the per-type drop
@@ -530,6 +532,15 @@ struct FunctionLower<'a> {
     /// to the same queue; the program-level driver drains it
     /// after the main + generic + method passes complete.
     pending_closure_work: &'a mut Vec<PendingClosureBody>,
+    /// CONCURRENCY A2-b-2: queue of outlined `parallel for` bodies.
+    /// Same shape as the closure queue — declared at the loop, the
+    /// body lowered by the program-level driver.
+    pending_par_work: &'a mut Vec<parallel::PendingParBody>,
+    /// CONCURRENCY A2-b-2: true while lowering an outlined body.
+    /// A `parallel for` inside one runs as a plain loop — the outer
+    /// loop already has every thread, and nesting them would only
+    /// oversubscribe (CONCURRENCY.md section 6).
+    in_par_body: bool,
     /// DROP-GLUE: queue of pending drop-glue function bodies whose
     /// anonymous function has been declared but not yet lowered.
     /// Glue functions request further glue functions, so the

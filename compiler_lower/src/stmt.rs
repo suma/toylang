@@ -345,7 +345,17 @@ impl<'a> FunctionLower<'a> {
                 Ok(None)
             }
             Stmt::While(label, cond, body) => self.lower_while(label, &cond, &body),
-            Stmt::For(label, var_name, start, end, body) => self.lower_for(label, var_name, &start, &end, &body),
+            Stmt::For(label, var_name, start, end, body) => {
+                // CONCURRENCY A2-b-2: `parallel for` is outlined into
+                // a function the runtime can hand to several threads.
+                // Inside an outlined body it is a plain loop again —
+                // the outer one already owns every thread.
+                if self.program.parallel_loops.contains_key(stmt_ref) && !self.in_par_body {
+                    self.lower_par_for(var_name, &start, &end, &body)
+                } else {
+                    self.lower_for(label, var_name, &start, &end, &body)
+                }
+            }
             // Struct declarations are picked up by `collect_struct_defs`
             // before any function body is lowered; their presence inside
             // a function body (which the parser doesn't actually allow)

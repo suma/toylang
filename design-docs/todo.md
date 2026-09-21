@@ -12,6 +12,37 @@
 
 ### 2026-09-21
 
+- **CONCURRENCY A2-b-2 — `parallel for` が本当に並列に走るように
+  なった** — lowering が本文を関数に切り出し、`InstKind::ParFor` が
+  AOT / JIT では `toy_par_for` に、IR VM では「1 区間として 1 回
+  呼ぶ」になる (逐次も合法な分割)。実測は 64 反復の重い本文が
+  **23 ms → 3 ms (8 スレッド)**。捕捉は呼び出し元フレームのスロットに
+  置くので**確保ゼロ** (`ensures allocates(0)` の中に置ける)。
+  渡すのは添字ではなく**個数**なので `-3i64..3i64` も特別扱い無しで
+  通る。**捕捉への書き込みは断る** — env に入るのは写しで、書いても
+  届かず、届いていたら競合している。検査は生成後の IR に対して、
+  **writeback の枝刈りの後**に行う (`v.set(i, x)` は ABI 上 `v` の
+  全 leaf を返すが 1 つも書かないので、枝刈り前に訊くと並列本文で
+  いちばん普通の行が断られる)。A1 の consistency テストは
+  アキュムレータの 2 本以外**1 つも変わっていない** — 逐次の答えを
+  先に固定した狙いどおり。
+- **E0029 が `break` / `return` と外側の名前への代入も断るように
+  なった** — どれも順序が観測できる側で、lowering の都合ではないので
+  型検査器で断る (でないと tree-walker だけがアキュムレータを平然と
+  回す)。本文の中で宣言した `var` は反復ごとなので自由に書ける。
+- **効果解析が `Option::Some(x)` を「本体の無い呼び出し」と見なさなく
+  なった** — enum の variant 構築は呼び出しの形に parse されるが本体が
+  無いので、`enter` が opaque (= 全効果) を与えていた。結果
+  **`Option` を作る関数を呼ぶ `parallel for` は軒並み「prints」で
+  断られて**いた (`the loop body -> pick -> Some`)。値を作るだけなので
+  効果は引数のぶんだけ。`never_allocates` / `const fn` も同じ表を
+  読むので、そちらの偽陽性も消えた。
+- **IR VM がフレームスロットを確保として数えなくなった** — `&dyn
+  Trait` の coercion スロットを `alloc_at` で取っていたので、
+  compiled レーンが cranelift のフレームに置く同じものが、この
+  レーンだけ `__builtin_live_bytes()` に出ていた。`alloc_internal`
+  (address-taken local のために用意された、カウンタに届かない確保) に
+  寄せた。
 - **CONCURRENCY A2-b-1 — ランタイムが範囲を並列に回せるようになった**
   — `toy_par_for(from, until, env, body)` を `toylang_rt` に追加。
   範囲を割ってスレッドに配り、**呼び出し元も 1 区間を担当する**ので

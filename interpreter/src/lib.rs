@@ -2078,6 +2078,11 @@ pub fn prepare_tests(
         Some(filename),
         options.core_modules_dirs,
     ) {
+        // With the source map: a diagnostic about an imported module
+        // carries that module's `FileId`, and a formatter without the
+        // map draws the snippet from the entry file — the right line
+        // read out of the wrong file.
+        let formatter = ErrorFormatter::with_source_map(source, filename, &program.source_map);
         return Err(report_type_errors(&formatter, &diagnostics, options.diagnostics_json));
     }
     let cases = program
@@ -2164,6 +2169,7 @@ pub fn effects_from_source(
         options.core_modules_dirs,
         &mut effects,
     ) {
+        let formatter = ErrorFormatter::with_source_map(source, filename, &program.source_map);
         return Err(report_type_errors(&formatter, &diagnostics, options.diagnostics_json));
     }
     Ok(effects)
@@ -2250,6 +2256,10 @@ pub fn run_source(
         options.core_modules_dirs,
     ) {
         Err(diagnostics) => {
+            // With the source map, so a diagnostic about an imported
+            // module draws its snippet from that module's file.
+            let formatter =
+                ErrorFormatter::with_source_map(source, filename, &program.source_map);
             return Err(report_type_errors(
                 &formatter,
                 &diagnostics,

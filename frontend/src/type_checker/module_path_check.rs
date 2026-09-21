@@ -32,6 +32,101 @@ pub fn check_module_paths(
     program: &File,
     interner: &DefaultStringInterner,
 ) -> Vec<TypeCheckError> {
+    let mut errors = check_call_paths(program, interner);
+    errors.extend(check_const_paths(program, interner));
+    errors.sort_by_key(|e| e.location.map(|l| (l.line, l.column)));
+    errors
+}
+
+/// MODULE-CONST-PATH: a `const` named through a module that does not
+/// have it.
+///
+/// The call form has been checked since P3, and a `const` is the
+/// other thing a module exports — so `zzz::LIMIT` resolving quietly
+/// to `LIMIT` was the same silence in the half nobody had looked at.
+/// The written path is already in the tree (the parser keeps every
+/// segment of a qualified identifier), so this is only the reading.
+///
+/// **Checking, not selecting.** The namespace is flat: a bare name
+/// picks the first `const` of that name whatever module it came from,
+/// and a qualifier cannot change which one. What it can do is be
+/// wrong, and now it says so.
+fn check_const_paths(
+    program: &File,
+    interner: &DefaultStringInterner,
+) -> Vec<TypeCheckError> {
+    if program.consts.is_empty() {
+        return Vec::new();
+    }
+    let mut by_name: HashMap<DefaultSymbol, Vec<Vec<DefaultSymbol>>> = HashMap::new();
+    for c in &program.consts {
+        by_name
+            .entry(c.name)
+            .or_default()
+            .push(c.module_path.clone().unwrap_or_default());
+    }
+
+    let mut errors = Vec::new();
+    for i in 0..program.expression.len() {
+        let expr_ref = ExprRef(i as u32);
+        let Some(Expr::QualifiedIdentifier(path)) = program.expression.get(&expr_ref) else {
+            continue;
+        };
+        if path.len() < 2 {
+            continue;
+        }
+        let name = path[path.len() - 1];
+        // An enum variant (`Color::Red`) reaches here too, and it is
+        // not a const. Only a name some `const` declares is ours.
+        let Some(known) = by_name.get(&name) else {
+            continue;
+        };
+        let written: Vec<DefaultSymbol> = path[..path.len() - 1].to_vec();
+        if known.iter().any(|p| path_ends_with(p, &written)) {
+            continue;
+        }
+        // The user's own `const` has no module. Saying "no module is
+        // called `foo`" about it is exactly right: there isn't one.
+        let spelled_known: Vec<String> = known
+            .iter()
+            .filter(|p| !p.is_empty())
+            .map(|p| spell(interner, p))
+            .collect();
+        if spelled_known.is_empty() {
+            // Declared in the file being compiled. A qualifier on it
+            // names a module that does not exist, but the useful
+            // thing to say is that it is right here.
+            let mut error = TypeCheckError::unknown_module_path(
+                spell(interner, &written),
+                interner.resolve(name).unwrap_or("?").to_string(),
+                Vec::new(),
+            );
+            if let Some(loc) = program.location_pool.get_expr_location(&expr_ref) {
+                error = error.with_location(*loc);
+            }
+            errors.push(error);
+            continue;
+        }
+        let mut sorted = spelled_known;
+        sorted.sort();
+        sorted.dedup();
+        let mut error = TypeCheckError::unknown_module_path(
+            spell(interner, &written),
+            interner.resolve(name).unwrap_or("?").to_string(),
+            sorted,
+        );
+        if let Some(loc) = program.location_pool.get_expr_location(&expr_ref) {
+            error = error.with_location(*loc);
+        }
+        errors.push(error);
+    }
+    errors
+}
+
+fn check_call_paths(
+    program: &File,
+    interner: &DefaultStringInterner,
+) -> Vec<TypeCheckError> {
     if program.call_paths.is_empty() {
         return Vec::new();
     }

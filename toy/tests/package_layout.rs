@@ -1556,3 +1556,117 @@ fn main() -> u64 {
         );
     }
 }
+
+#[test]
+fn a_module_carries_what_the_parser_recorded_about_it() {
+    // Integration copies the pools and the declarations; two side
+    // tables keyed by pool refs were left behind, so a fact the
+    // parser recorded about a module's code was simply absent once
+    // the module was imported.
+    //
+    // `parallel_loops` is the one with teeth: without it a
+    // `parallel for` inside a module was an ordinary loop. The body
+    // could `println` (E0029 never ran) and the lowering never
+    // outlined it — the one construct whose answer was pinned
+    // before it went parallel was not that construct at all.
+    //
+    // `call_paths` is MODULE-SYSTEM P3's silence, in the half nobody
+    // had looked at: `zzz::tbl::f()` written *inside* a module.
+    let pkg = scratch("module_side_tables");
+    write(
+        &pkg,
+        "src/tbl.t",
+        r#"
+pub fn pick(i: u64) -> u64 { i + 1u64 }
+"#,
+    );
+    write(
+        &pkg,
+        "src/loud.t",
+        r#"
+pub fn shout() -> u64 {
+    parallel for k in 0u64..4u64 {
+        println(k)
+    }
+    0u64
+}
+"#,
+    );
+    write(&pkg, "main.t", "fn main() -> u64 { loud::shout() }\n");
+    let out = run(&pkg, &["run", pkg.0.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("E0029"),
+        "a printing `parallel for` in a module is refused like any other: {stderr}"
+    );
+    // And it is reported in the file that contains it, with that
+    // file's line — the snippet used to be drawn from the entry.
+    assert!(
+        stderr.contains("loud.t") && stderr.contains("parallel for k"),
+        "reported where it is written: {stderr}"
+    );
+
+    // Now the written path, inside a module.
+    write(
+        &pkg,
+        "src/loud.t",
+        r#"
+pub fn shout() -> u64 {
+    zzz::tbl::pick(1u64)
+}
+"#,
+    );
+    let out = run(&pkg, &["run", pkg.0.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("E0030"),
+        "a path that names nothing is refused inside a module too: {stderr}"
+    );
+}
+
+#[test]
+fn a_const_names_the_module_that_has_it() {
+    // MODULE-CONST-PATH: a call's qualifier has been checked since
+    // MODULE-SYSTEM P3, and a `const` is the other thing a module
+    // exports — so `zzz::BASE` resolving quietly to `BASE` was the
+    // same silence, in the half that had no check.
+    //
+    // Checking, not selecting: the namespace is flat, so a qualifier
+    // cannot pick between two consts of one name. What it can do is
+    // be wrong.
+    let pkg = scratch("const_path");
+    write(&pkg, "src/tbl.t", "pub const BASE: u64 = 500u64\n");
+    write(
+        &pkg,
+        "main.t",
+        r#"
+fn main() -> u64 {
+    println(tbl::BASE)
+    0u64
+}
+"#,
+    );
+    let out = run(&pkg, &["run", pkg.0.to_str().unwrap()]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("500"),
+        "the right qualifier resolves: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    write(
+        &pkg,
+        "main.t",
+        r#"
+fn main() -> u64 {
+    println(zzz::BASE)
+    0u64
+}
+"#,
+    );
+    let out = run(&pkg, &["run", pkg.0.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("E0030") && stderr.contains("tbl::BASE"),
+        "a wrong one is refused, and says where the const is: {stderr}"
+    );
+}

@@ -638,6 +638,7 @@ impl<'a> Parser<'a> {
             type_decl: const_ty,
             value,
             visibility,
+            module_path: None,
         });
         Ok(())
     }

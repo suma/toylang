@@ -1281,6 +1281,7 @@ impl<'a> AstIntegrationContext<'a> {
         // paths that key on the first declaration site.
         let integrated_functions = self.copy_functions()?;
         self.copy_consts()?;
+        self.copy_side_tables()?;
         self.copy_tests()?;
 
         Ok(integrated_functions)
@@ -1295,6 +1296,39 @@ impl<'a> AstIntegrationContext<'a> {
     /// name is prefixed with the module path, because a report listing
     /// two tests called "roundtrip" from different modules cannot be
     /// acted on.
+    /// The side tables that hang off the pools, keyed by the refs
+    /// the pool copy just translated.
+    ///
+    /// Integration copies the pools and the declarations, and these
+    /// two were left behind — so a fact the parser recorded about a
+    /// module's code was simply absent once the module was imported:
+    ///
+    /// * `call_paths` — the whole of a written module path
+    ///   (MODULE-SYSTEM P3). Without it `zzz::tbl::f()` **inside a
+    ///   module** was accepted in the silence P3 exists to end.
+    /// * `parallel_loops` — which `for` was written `parallel`
+    ///   (CONCURRENCY A1). Without it a `parallel for` in a module
+    ///   was an ordinary loop: the body could `println` (E0029 never
+    ///   ran) and the lowering never outlined it, so the one
+    ///   construct whose answer was pinned before it went parallel
+    ///   was not the construct at all.
+    fn copy_side_tables(&mut self) -> Result<(), String> {
+        for (expr_ref, path) in &self.module_program.call_paths {
+            let mapped = self.map_expr(expr_ref, "call path")?;
+            let segments = path
+                .iter()
+                .map(|s| self.remap_symbol(*s))
+                .collect::<Result<Vec<_>, _>>()?;
+            self.main_program.call_paths.insert(mapped, segments);
+        }
+        for (stmt_ref, at) in &self.module_program.parallel_loops {
+            let mapped = self.map_stmt(stmt_ref, "parallel loop")?;
+            let located = at.in_file(self.module_file);
+            self.main_program.parallel_loops.insert(mapped, located);
+        }
+        Ok(())
+    }
+
     /// MODULE-CONST: carry the module's top-level `const`s across.
     ///
     /// Integration never copied them, so a module's own functions
@@ -1325,6 +1359,8 @@ impl<'a> AstIntegrationContext<'a> {
                 type_decl,
                 value,
                 visibility: c.visibility,
+                // MODULE-CONST-PATH: what `tbl::K` is checked against.
+                module_path: self.module_path.clone(),
             });
         }
         Ok(())

@@ -151,6 +151,11 @@ pub struct ConstDecl {
     pub type_decl: TypeDecl,
     pub value: ExprRef,
     pub visibility: Visibility,
+    /// MODULE-CONST-PATH: the module this `const` was written in, or
+    /// `None` for the user's own file. What a written qualifier
+    /// (`tbl::K`) is checked against — see
+    /// [`crate::type_checker::check_module_paths`].
+    pub module_path: Option<Vec<DefaultSymbol>>,
 }
 
 /// Source of [`File::id`]. Monotonic for the life of the process.

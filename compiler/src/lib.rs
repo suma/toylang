@@ -155,8 +155,16 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
             return format!("{} type-check error(s)", diagnostics.len());
         }
         let input_name = options.input.to_string_lossy();
-        let formatter =
-            interpreter::error_formatter::ErrorFormatter::new(&source, input_name.as_ref());
+        // With the source map: a diagnostic about an imported module
+        // has that module's `FileId` in its span, and without the map
+        // the snippet is drawn from the entry file — the right line
+        // number read out of the wrong file, which prints as
+        // `<line not available>` or, worse, as an unrelated line.
+        let formatter = interpreter::error_formatter::ErrorFormatter::with_source_map(
+            &source,
+            input_name.as_ref(),
+            &program.source_map,
+        );
         let rendered: Vec<String> = diagnostics
             .iter()
             .map(|d| formatter.format_diagnostic(d))
@@ -171,8 +179,11 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
             interpreter::emit_diagnostics_json(&warnings);
         } else {
             let input_name = options.input.to_string_lossy();
-            let formatter =
-                interpreter::error_formatter::ErrorFormatter::new(&source, input_name.as_ref());
+            let formatter = interpreter::error_formatter::ErrorFormatter::with_source_map(
+                &source,
+                input_name.as_ref(),
+                &program.source_map,
+            );
             let rendered: Vec<String> = warnings
                 .iter()
                 .map(|d| formatter.format_diagnostic(d))

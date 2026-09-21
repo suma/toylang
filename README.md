@@ -42,7 +42,8 @@ is where most of the gaps in the language were found.
   `dict`
 
 ### Advanced Features
-- **Fixed Arrays**: `val arr: [i64; 5] = [1, 2, 3, 4, 5]` with type inference
+- **Fixed Arrays**: `val arr: [i64; 5] = [1, 2, 3, 4, 5]` with type
+  inference, and `[0u8; 64]` to repeat a literal
 - **Tuples**: `val (a, b) = (1u64, 2u64)` with destructuring (including nested patterns)
 - **Dictionary Type**: `dict{key1: value1, key2: value2}` with Object-keyable types
 - **Structures**: `struct Point { x: i64, y: i64 }` with method implementations

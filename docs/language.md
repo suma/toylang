@@ -2308,6 +2308,20 @@ against the array literal that initialises it (a literal length is).
 
 Example: `interpreter/example/const_fn.t`.
 
+#### `[value; N]` — the same element, N times
+
+```rust
+var scratch: [u8; 64] = [0u8; 64]
+val flags: [bool; 3] = [true; 3]
+```
+
+The parser expands it, so nothing downstream sees the form. **The
+value must be a literal** and the length a literal count: repeating
+an arbitrary expression would evaluate it once per element, which is
+not what the form says, so `[f(); 3]` is refused with that reason
+rather than guessed at. (Rust asks for `Copy` to answer the same
+question.)
+
 ### Top-level `type` declarations
 
 `type Name = TargetType` declares a top-level type alias. See

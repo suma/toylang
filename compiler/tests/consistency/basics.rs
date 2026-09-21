@@ -554,3 +554,55 @@ fn bitwise_operators_work_at_every_integer_width() {
     );
     assert_consistent(src, "bitwise_every_width");
 }
+
+#[test]
+fn a_repeated_array_literal_fills_every_slot() {
+    // ARRAY-REPEAT-LITERAL: `[0u8; 64]` was a parse error, so a
+    // fixed-size scratch buffer had to be written out element by
+    // element — which is why `Sha256`'s block buffer, message
+    // schedule and K table are all heap `Vec`s and it cannot claim
+    // `never_allocates` (STDLIB_CRYPTO.md).
+    //
+    // The parser expands the form, so no backend sees the sugar.
+    let src = r#"
+        fn main() -> u64 {
+            var a: [u8; 8] = [0u8; 8]
+            a[3] = 9u8
+            val b: [bool; 3] = [true; 3]
+            val c: [i64; 4] = [-1; 4]
+
+            var total: u64 = 0u64
+            var i: u64 = 0u64
+            while i < 8u64 {
+                total = total + (a[i] as u64)
+                i = i + 1u64
+            }
+            println(total)
+            println(b[0] && b[1] && b[2])
+            println(c[0] == c[3])
+            0u64
+        }
+    "#;
+    // Every slot is the value, and the one that was written is the
+    // only one that differs: 9, not 72.
+    assert_renders(src, "array_repeat_literal", "9\ntrue\ntrue\n");
+}
+
+#[test]
+fn a_repeated_array_literal_refuses_what_it_cannot_repeat() {
+    // Repeating a call would evaluate it once per element, which is
+    // not what the form means — and is why Rust asks for `Copy`.
+    // Saying so beats guessing.
+    let src = "fn f() -> u64 { 1u64 }\nfn main() -> u64 { val a: [u64; 3] = [f(); 3]  a[0] }";
+    // A parse-time refusal, so it is the parser that is asked.
+    let mut parser = frontend::ParserWithInterner::new(src);
+    let err = parser
+        .parse_program()
+        .err()
+        .map(|e| format!("{e:?}"))
+        .unwrap_or_default();
+    assert!(
+        err.contains("repeats a literal"),
+        "the refusal should say why: {err}"
+    );
+}

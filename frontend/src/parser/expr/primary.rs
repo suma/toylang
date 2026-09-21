@@ -865,6 +865,31 @@ pub fn parse_array_elements(parser: &mut Parser, mut elements: Vec<ExprRef>) -> 
                     _ => continue,
                 }
             }
+            // ARRAY-REPEAT-LITERAL: `[value; N]`. Expanded here, so
+            // nothing downstream sees the sugar — the same treatment
+            // `struct update` and tuple destructuring get.
+            //
+            // `value` has to be a literal and `N` a literal count.
+            // Repeating an arbitrary expression would evaluate it
+            // once per element, which is not what the form means (and
+            // is why Rust asks for `Copy`); refusing to guess keeps
+            // the one useful case honest.
+            Some(Kind::Semicolon) => {
+                parser.next();
+                let repeated = match expand_array_repeat(parser, &elements) {
+                    Some(v) => v,
+                    None => {
+                        parser.exit_nested_structure(false);
+                        return Ok(elements);
+                    }
+                };
+                parser.skip_newlines();
+                if !matches!(parser.peek(), Some(Kind::BracketClose)) {
+                    parser.collect_error("expected `]` after the length of `[value; N]`");
+                }
+                parser.exit_nested_structure(false);
+                return Ok(repeated);
+            }
             x => {
                 let x_cloned = x.cloned();
                 parser.collect_error(&format!("unexpected token in array elements: {:?}", x_cloned));
@@ -873,6 +898,74 @@ pub fn parse_array_elements(parser: &mut Parser, mut elements: Vec<ExprRef>) -> 
             }
         }
     }
+}
+
+
+/// ARRAY-REPEAT-LITERAL: turn `[value; N]` into `N` copies of the
+/// value's node.
+///
+/// Distinct nodes rather than one `ExprRef` repeated: an expression
+/// is keyed by its ref all over the compiler (types, locations,
+/// rewrites), and giving eight array slots one identity would make
+/// any of those speak for all of them.
+fn expand_array_repeat(parser: &mut Parser, elements: &[ExprRef]) -> Option<Vec<ExprRef>> {
+    if elements.len() != 1 {
+        parser.collect_error("`[value; N]` takes one value before the `;`");
+        return None;
+    }
+    let value_ref = elements[0];
+    let value = parser.ast_builder.get_expr_pool_mut().get(&value_ref)?;
+    if !is_repeatable_literal(&value) {
+        parser.collect_error(
+            "`[value; N]` repeats a literal; anything else would be evaluated once \
+             per element, so write the elements out or fill the array in a loop",
+        );
+        return None;
+    }
+    let count = match parser.peek() {
+        Some(Kind::UInt64(n)) => *n,
+        Some(Kind::Int64(n)) if *n >= 0 => *n as u64,
+        Some(Kind::Integer(text)) => match text.parse::<u64>() {
+            Ok(n) => n,
+            Err(_) => {
+                parser.collect_error("`[value; N]` needs a length that fits in u64");
+                return None;
+            }
+        },
+        _ => {
+            parser.collect_error("`[value; N]` needs a literal length");
+            return None;
+        }
+    };
+    parser.next();
+    let mut out = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        out.push(parser.ast_builder.get_expr_pool_mut().add(value.clone()));
+    }
+    Some(out)
+}
+
+/// A value `[value; N]` may repeat: one with no sub-expressions and
+/// no side effect, so `N` copies mean exactly what one does.
+fn is_repeatable_literal(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Int64(_)
+            | Expr::UInt64(_)
+            | Expr::Int8(_)
+            | Expr::UInt8(_)
+            | Expr::Int16(_)
+            | Expr::UInt16(_)
+            | Expr::Int32(_)
+            | Expr::UInt32(_)
+            | Expr::CharLiteral(_)
+            | Expr::Float64(_)
+            | Expr::Float32(_)
+            | Expr::Number(_)
+            | Expr::String(_)
+            | Expr::True
+            | Expr::False
+    )
 }
 
 /// Parse struct literal fields, plus the optional `..base` tail

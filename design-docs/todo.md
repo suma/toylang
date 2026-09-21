@@ -12,6 +12,12 @@
 
 ### 2026-09-21
 
+- **ARRAY-REPEAT-LITERAL — `[0u8; 64]` が書けるようになった** —
+  parse エラーだったので、固定長の作業領域は要素を全部並べるしか
+  なかった。パーサが展開するので**バックエンドは砂糖を見ない**。
+  繰り返せるのは**リテラルだけ**で、呼び出しを書くと断る — 任意の式は
+  要素ごとに評価されることになり、それはこの形の意味ではない
+  (Rust が `Copy` を要求するのと同じ理由)。
 - **MODULE-SYSTEM P3 (`mod.t`) — ディレクトリ自身の名前になった** —
   auto-load の walker がファイル名をそのまま段にしていたので
   `<root>/geo/mod.t` は `mod::` で呼ぶしかなく、`import geo` の解決
@@ -1993,16 +1999,16 @@
   `trait Digest` が契約を持てない理由
   ([`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md) 実測 2、2026-09-04)。
 
-- **ARRAY-REPEAT-LITERAL: `[value; N]` が書けない** — `[0u8; 64]` は
-  parse エラー (`unexpected token in array elements: Some(Semicolon)`)
-  なので、固定長の作業領域は要素を全部並べるしかない。加えて
-  `const K: [u32; 64] = [...]` は compiled lane が拒否
-  (`only literal values and references to earlier consts`)、stdlib
-  モジュール内の const 配列添字は integration が拒否
-  (`Unsupported expression type for remapping: SliceAccess`)。
-  この 3 つで **`Sha256` のブロックバッファ・message schedule・K 表が
-  全部ヒープの `Vec`** になり、`never_allocates` を名乗れない
-  ([`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md) 実測 4、2026-09-04)。
+- **CONST-ARRAY: `const K: [u32; 64] = [...]` が compiled lane で
+  書けない** — 初期化子を `only literal values and references to
+  earlier consts` で拒否し、stdlib モジュール内の const 配列添字は
+  integration が拒否する (`Unsupported expression type for
+  remapping: SliceAccess`)。**`[value; N]` は 2026-09-21 に解消**
+  (完了済み節) したので、残るのはこの 2 つ。
+  **`Sha256` の K 表がヒープの `Vec` なのはこれが理由**で、
+  `never_allocates` を名乗れない ([`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md)
+  実測 4、2026-09-04)。ブロックバッファと message schedule は
+  `[value; N]` が入ったので固定長で書ける。
 
 - **STDLIB-CRYPTO C2〜C4: SHA-512 族 / HMAC / SHA-1・MD5** —
   設計と優先順位は [`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md)。C2 (SHA-512 /

@@ -1230,6 +1230,14 @@
   `panic` と違って発散扱いされていなかったこと。前者は
   **scrutinee の enum が payload の型を知っている**ので復元できる。
   `break` / `continue` は型検査器も発散扱いしないので載せていない。
+- **PARALLEL-CAPTURE-WRITE-LANE: 捕捉を変える呼び出しを断るのが
+  compiled レーンだけ** ★ — `parallel for` の本文が外側の束縛に
+  **書く method を呼ぶ** (`v.push(x)`) と lowering が断り、
+  tree-walker は通す。`push` が `v` に書くことは callee の
+  シグネチャを読まないと分からないので、型検査器に同じ検査を置くと
+  近似の二重実装になる。「インタプリタで動いた形が AOT で落ちる」形の
+  1 つ ([`CONCURRENCY.md`](CONCURRENCY.md) の A2-b-2 節)。
+
 - **MODULE-CONST-PATH: `const` の修飾子が検査されない** ★ —
   MODULE-CONST 自体は 2026-09-21 に解消した (完了済み節) が、
   `zzz::BASE_X` が `BASE_X` として通る。**呼び出しは P3 で検査される

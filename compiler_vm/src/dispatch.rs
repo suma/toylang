@@ -2,7 +2,20 @@
 //!
 //! Each instruction is executed against the current `Vm` state.
 //! Terminators are handled by the caller (`run_loop`) so this
-//! function only processes non-terminator instructions.
+//! module only processes non-terminator instructions.
+//!
+//! [`execute`] routes by category and each category has a function of
+//! its own — the same shape, and the same words, the AOT lane uses in
+//! `compiler::codegen::lower_inst`. The two lanes implement one
+//! instruction set twice, so an instruction that sits under
+//! `exec_strings` here and `lower_strings` there is one lookup in each
+//! rather than a search through a six-hundred-line match.
+//!
+//! The routing match is **exhaustive**: a new `InstKind` fails the
+//! build here, where the question "which category" has to be
+//! answered. The `unreachable!` at the end of each category is the
+//! other half of that — it can only fire if the router sends an
+//! instruction to the wrong function.
 //!
 //! Everything the interpreter used to reach for here — stdout, the
 //! heap manager, the allocator stack, the allocation counters — now
@@ -23,6 +36,90 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
     // and one of them forgetting is exactly the kind of hole this
     // phase exists to close.
     vm.set_pending_frame(inst.frame);
+    // Routed by category, the way the AOT lane routes
+    // `lower_instruction_inner`. The same instruction sits under the
+    // same word in both lanes, so adding one means visiting the
+    // same-named function in each rather than finding where it fits
+    // in a six-hundred-line match.
+    match &inst.kind {
+        InstKind::Const(..)
+        | InstKind::BinOp { .. }
+        | InstKind::UnaryOp { .. }
+        | InstKind::Cast { .. }
+        | InstKind::LoadLocal(..)
+        | InstKind::StoreLocal { .. }
+        | InstKind::AddressOf { .. }
+        | InstKind::LoadRef { .. }
+        | InstKind::StoreRef { .. }
+        | InstKind::ArrayElemAddr { .. }
+        | InstKind::DynCoerceSlotAddr { .. } => exec_values_and_locals(vm, inst),
+        InstKind::Call { .. }
+        | InstKind::CallStruct { .. }
+        | InstKind::CallTuple { .. }
+        | InstKind::CallEnum { .. }
+        | InstKind::CallWithSelfWriteback { .. }
+        | InstKind::CallWithSelfWritebackCompound { .. }
+        | InstKind::CallIndirect { .. }
+        | InstKind::CallIndirectFn { .. }
+        | InstKind::CallIndirectFnStruct { .. }
+        | InstKind::CallIndirectFnTuple { .. }
+        | InstKind::CallIndirectFnEnum { .. }
+        | InstKind::FuncAddr { .. }
+        | InstKind::MakeClosure { .. }
+        | InstKind::VtableAddr { .. }
+        | InstKind::ParFor { .. }
+        | InstKind::Backtrace => exec_calls(vm, inst),
+        InstKind::Print { .. }
+        | InstKind::PrintStr { .. }
+        | InstKind::PrintRaw { .. }
+        | InstKind::ConstStr { .. }
+        | InstKind::ConstStrBytes { .. }
+        | InstKind::ConstBytesAddr { .. } => exec_printing(vm, inst),
+        InstKind::ArrayLoad { .. }
+        | InstKind::ArrayStore { .. } => exec_arrays(vm, inst),
+        InstKind::HeapAlloc { .. }
+        | InstKind::HeapRealloc { .. }
+        | InstKind::HeapFree { .. }
+        | InstKind::PtrRead { .. }
+        | InstKind::PtrWrite { .. } => exec_heap_and_pointer(vm, inst),
+        InstKind::StrLen { .. }
+        | InstKind::StrConcat { .. }
+        | InstKind::StrEq { .. }
+        | InstKind::StrFromBytes { .. }
+        | InstKind::ToString { .. }
+        | InstKind::Format { .. } => exec_strings(vm, inst),
+        InstKind::MemCopy { .. }
+        | InstKind::MemMove { .. }
+        | InstKind::MemSet { .. }
+        | InstKind::MemEq { .. }
+        | InstKind::MemFind { .. }
+        | InstKind::MemFindSeq { .. }
+        | InstKind::AllocPush { .. }
+        | InstKind::AllocPop
+        | InstKind::AllocCurrent
+        | InstKind::PtrIsNull { .. }
+        | InstKind::PtrEq { .. }
+        | InstKind::MemStat { .. }
+        | InstKind::MemStatEnable
+        | InstKind::RecordAllocatorLayout { .. } => exec_allocator_and_memory(vm, inst),
+        InstKind::SimdSplat { .. }
+        | InstKind::SimdLoad { .. }
+        | InstKind::SimdStore { .. }
+        | InstKind::SimdExtract { .. }
+        | InstKind::SimdInsert { .. }
+        | InstKind::SimdSelect { .. }
+        | InstKind::SimdReduce { .. }
+        | InstKind::SimdTest { .. }
+        | InstKind::SimdBitmask { .. }
+        | InstKind::SimdSwizzle { .. }
+        | InstKind::SimdShuffle { .. }
+        | InstKind::SimdBitcast { .. } => exec_simd(vm, inst),
+    }
+}
+
+/// Constants, arithmetic, casts, and the local / reference slots that
+/// values move through.
+fn exec_values_and_locals(vm: &mut Vm, inst: &Instruction) {
     let host = vm.host();
     match &inst.kind {
         InstKind::Const(c) => {
@@ -89,6 +186,505 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
                 vm.write_value(vid, result);
             }
         }
+        InstKind::LoadLocal(local) => {
+            let slot = vm.read_local(*local);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, slot);
+            }
+        }
+        InstKind::StoreLocal { dst, src } => {
+            let slot = vm.read_value(*src);
+            vm.write_local(*dst, slot);
+        }
+        InstKind::Cast { value, from, to } => {
+            let v = vm.read_value(*value);
+            let result = eval_cast(v, *from, *to);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, result);
+            }
+        }
+        InstKind::AddressOf { local } => {
+            // Phase 3c: pointer to an address-taken local's backing cell.
+            let addr = vm.addr_of_local(*local);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
+        }
+        InstKind::LoadRef { ptr, ty } => {
+            // Phase 3c: dereference a pointer to read a scalar of `ty`.
+            let p = unsafe { vm.read_value(*ptr).u64 };
+            let result = host.ptr_read(p, 0, *ty).unwrap_or_default();
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, result);
+            }
+        }
+        InstKind::StoreRef { ptr, value, ty } => {
+            // Phase 3c: write a scalar through a pointer.
+            let p = unsafe { vm.read_value(*ptr).u64 };
+            let v = vm.read_value(*value);
+            host.ptr_write(p, 0, v, *ty);
+        }
+        InstKind::ArrayElemAddr { slot, index, elem_ty: _ } => {
+            let idx = vm.read_value(*index);
+            let base = vm.current_frame().array_bases[slot.0 as usize];
+            let stride = vm.current_frame().array_strides[slot.0 as usize];
+            let addr = base + unsafe { idx.u64 } * stride;
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
+        }
+        InstKind::DynCoerceSlotAddr { slot_idx } => {
+            // Phase 3b: yield the address of a caller-frame coercion buffer
+            // for a field-bearing struct passed through `&dyn Trait`.
+            let addr = vm.dyn_coerce_addr(*slot_idx);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
+        }
+        _ => unreachable!("exec_values_and_locals was handed an instruction it does not own"),
+    }
+}
+
+/// Everything that hands control to another function — direct, through
+/// a value, or through a vtable — and the instructions that name one.
+fn exec_calls(vm: &mut Vm, inst: &Instruction) {
+    let host = vm.host();
+    match &inst.kind {
+        InstKind::Call { target, args } => {
+            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
+            let return_dest = inst.result.map(|(vid, _)| vid);
+            vm.call_function(*target, arg_slots, return_dest, Vec::new());
+        }
+        InstKind::CallStruct { target, args, dests } => {
+            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
+            vm.call_function(*target, arg_slots, None, dests.clone());
+        }
+        InstKind::CallTuple { target, args, dests } => {
+            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
+            vm.call_function(*target, arg_slots, None, dests.clone());
+        }
+        InstKind::CallEnum { target, args, dests } => {
+            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
+            vm.call_function(*target, arg_slots, None, dests.clone());
+        }
+        // DEBUG-OBS D5: the VM has a call stack of its own, so the
+        // answer is the same walk the panic path makes.
+        InstKind::Backtrace => {
+            let text = vm.backtrace_text();
+            let addr = host.alloc_str_bytes(text.trim_start_matches('\n').as_bytes());
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
+        }
+        InstKind::CallWithSelfWriteback { target, args, ret_dest, self_dests, .. } => {
+            // Phase 3c: `&mut self` call. The callee returns
+            // `[ret_leaf?, self_writeback_leaves...]`; route every
+            // returned leaf into the combined dest list so the existing
+            // multi-result return wiring distributes them.
+            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
+            let mut dests: Vec<LocalId> = Vec::with_capacity(self_dests.len() + 1);
+            if let Some(local) = ret_dest {
+                dests.push(*local);
+            }
+            dests.extend_from_slice(self_dests);
+            vm.call_function(*target, arg_slots, None, dests);
+        }
+        InstKind::CallWithSelfWritebackCompound { target, args, ret_dests, self_dests } => {
+            // Phase 3c: writeback + compound user return. Results come
+            // back as `[ret_leaves..., self_writeback_leaves...]`.
+            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
+            let mut dests: Vec<LocalId> = Vec::with_capacity(ret_dests.len() + self_dests.len());
+            dests.extend_from_slice(ret_dests);
+            dests.extend_from_slice(self_dests);
+            vm.call_function(*target, arg_slots, None, dests);
+        }
+        InstKind::FuncAddr { target } => {
+            // Phase 3a: a function pointer is represented in the VM as the
+            // raw FuncId index encoded into a u64. `CallIndirect` /
+            // `MakeClosure` recover it as `FuncId(slot.u64 as u32)`.
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(target.0 as u64));
+            }
+        }
+        InstKind::MakeClosure { target, captures, capture_tys } => {
+            // Phase 3a: heap-allocate the env `[fn_ptr][cap0][cap1]...`,
+            // mirroring the AOT layout (8-byte slots, fn_ptr at +0,
+            // capture `i` at +(i+1)*8). The fn_ptr stores the FuncId so
+            // CallIndirect can dispatch back into the VM.
+            let env_size = ((1 + captures.len()) as u64) * 8;
+            let addr = host.alloc_at(env_size, 0);
+            host.ptr_write(addr, 0, RawSlot::from_u64(target.0 as u64), Type::U64);
+            for (i, (cap, cap_ty)) in captures.iter().zip(capture_tys.iter()).enumerate() {
+                let v = vm.read_value(*cap);
+                host.ptr_write(addr, ((i + 1) * 8) as u64, v, *cap_ty);
+            }
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
+        }
+        InstKind::ParFor { body, env, from, until } => {
+            // CONCURRENCY A2-b-2: the IR VM is a sequential lane, and
+            // one chunk is a legal split. `[from, until)` whole, on
+            // this thread, in order — which is also what makes the VM
+            // the lane that says what a `parallel for` *means*.
+            let env_v = vm.read_value(*env);
+            let from_v = vm.read_value(*from);
+            let until_v = vm.read_value(*until);
+            vm.call_function(*body, vec![env_v, from_v, until_v], None, Vec::new());
+        }
+        InstKind::CallIndirect { callee, args, .. } => {
+            // Phase 3a: env-based indirect call. `callee` is an env_ptr;
+            // fn_ptr lives at env+0. The lifted closure body's first
+            // parameter is the env_ptr, so prepend it to the user args.
+            let env_ptr = unsafe { vm.read_value(*callee).u64 };
+            let fn_ptr = host
+                .ptr_read(env_ptr, 0, Type::U64)
+                .map(|s| unsafe { s.u64 })
+                .unwrap_or(0);
+            let target = compiler_ir::FuncId(fn_ptr as u32);
+            let mut arg_slots: Vec<RawSlot> = Vec::with_capacity(args.len() + 1);
+            arg_slots.push(RawSlot::from_u64(env_ptr));
+            for a in args {
+                arg_slots.push(vm.read_value(*a));
+            }
+            let return_dest = inst.result.map(|(vid, _)| vid);
+            vm.call_function(target, arg_slots, return_dest, Vec::new());
+        }
+        InstKind::VtableAddr { trait_sym, struct_sym } => {
+            // Phase 3b: materialise the vtable on the heap and yield its
+            // address (a U64). A later PtrRead recovers the per-method
+            // dispatch FuncId.
+            let addr = vm.vtable_addr(*trait_sym, *struct_sym);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
+        }
+        InstKind::CallIndirectFn { callee, args, .. } => {
+            // Phase 3b: raw fn-pointer indirect call (no implicit env).
+            // `callee` is already a FuncId (loaded out of a vtable slot).
+            let target = compiler_ir::FuncId(unsafe { vm.read_value(*callee).u64 } as u32);
+            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
+            let return_dest = inst.result.map(|(vid, _)| vid);
+            vm.call_function(target, arg_slots, return_dest, Vec::new());
+        }
+        InstKind::CallIndirectFnStruct { callee, args, dests, .. }
+        | InstKind::CallIndirectFnTuple { callee, args, dests, .. }
+        | InstKind::CallIndirectFnEnum { callee, args, dests, .. } => {
+            // Phase 3b: indirect call returning a compound (struct/tuple/
+            // enum). The compound leaves fan out into `dests`, mirroring
+            // the direct-call CallStruct/CallTuple/CallEnum lowering.
+            let target = compiler_ir::FuncId(unsafe { vm.read_value(*callee).u64 } as u32);
+            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
+            vm.call_function(target, arg_slots, None, dests.clone());
+        }
+        _ => unreachable!("exec_calls was handed an instruction it does not own"),
+    }
+}
+
+/// Output, and the constant blobs it reads from.
+fn exec_printing(vm: &mut Vm, inst: &Instruction) {
+    let host = vm.host();
+    match &inst.kind {
+        InstKind::Print { value, value_ty, newline, stderr } => {
+            let v = vm.read_value(*value);
+            let text = format_scalar(host, v, *value_ty);
+            emit_text(host, &text, *newline, *stderr);
+        }
+        InstKind::PrintStr { message, newline, stderr, .. } => {
+            let text = vm
+                .interner()
+                .and_then(|i| i.resolve(*message))
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("printstr #{}", message.to_usize()));
+            emit_text(host, &text, *newline, *stderr);
+        }
+        InstKind::PrintRaw { text, newline, stderr } => {
+            emit_text(host, text, *newline, *stderr);
+        }
+        InstKind::ConstStr { message, .. } => {
+            if let Some(interner) = vm.interner() {
+                let text = interner.resolve(*message).unwrap_or("");
+                let addr = host.alloc_str_bytes(text.as_bytes());
+                if let Some((vid, _)) = inst.result {
+                    vm.write_value(vid, RawSlot::from_u64(addr));
+                }
+            }
+        }
+        InstKind::ConstBytesAddr { bytes } => {
+            // CONST-ARRAY: the compiled lanes read this straight out
+            // of `.rodata`. The VM has no such section, so it
+            // materialises the blob once per content and hands back
+            // the same address every time — an index inside a loop
+            // must not keep allocating, and the table has to keep the
+            // identity a read-only symbol would have.
+            let blob = bytes.clone();
+            let addr = vm.const_bytes_addr(&blob);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
+        }
+        InstKind::ConstStrBytes { bytes } => {
+            let addr = host.alloc_str_bytes(bytes);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
+        }
+        _ => unreachable!("exec_printing was handed an instruction it does not own"),
+    }
+}
+
+/// Stack-array slots.
+fn exec_arrays(vm: &mut Vm, inst: &Instruction) {
+    let host = vm.host();
+    match &inst.kind {
+        InstKind::ArrayLoad { slot, index, elem_ty } => {
+            let idx = vm.read_value(*index);
+            let base = vm.current_frame().array_bases[slot.0 as usize];
+            let stride = vm.current_frame().array_strides[slot.0 as usize];
+            let addr = base + unsafe { idx.u64 } * stride;
+            if let Some((vid, _)) = inst.result {
+                let result = host.ptr_read(addr, 0, *elem_ty);
+                if let Some(slot_val) = result {
+                    vm.write_value(vid, slot_val);
+                }
+            }
+        }
+        InstKind::ArrayStore { slot, index, value, elem_ty } => {
+            let idx = vm.read_value(*index);
+            let val = vm.read_value(*value);
+            let base = vm.current_frame().array_bases[slot.0 as usize];
+            let stride = vm.current_frame().array_strides[slot.0 as usize];
+            let addr = base + unsafe { idx.u64 } * stride;
+            host.ptr_write(addr, 0, val, *elem_ty);
+        }
+        _ => unreachable!("exec_arrays was handed an instruction it does not own"),
+    }
+}
+
+/// The heap, and reading / writing through a pointer.
+fn exec_heap_and_pointer(vm: &mut Vm, inst: &Instruction) {
+    let host = vm.host();
+    match &inst.kind {
+        InstKind::HeapAlloc { size, site, .. } => {
+            let sz = vm.read_value(*size);
+            let packed = vm.module().packed_site(*site);
+            // The file is noted rather than passed: the profiler keys
+            // on the position so every engine agrees, and only the
+            // report wants the name.
+            host.note_alloc_site_file(packed, vm.module().site_file(*site));
+            let addr = host.alloc_at(unsafe { sz.u64 }, packed);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
+        }
+        InstKind::HeapRealloc { ptr, new_size, site, .. } => {
+            let p = vm.read_value(*ptr);
+            let ns = vm.read_value(*new_size);
+            let (p_u64, ns_u64) = (unsafe { p.u64 }, unsafe { ns.u64 });
+            let addr = if p_u64 == 0 {
+                // A null resize is an allocation, and gets the call
+                // site the way `HeapAlloc` does (M2 + D2) — most
+                // stdlib collections grow through this shape, so a
+                // report that cannot name it names nothing.
+                let packed = vm.module().packed_site(*site);
+                host.note_alloc_site_file(packed, vm.module().site_file(*site));
+                host.alloc_at(ns_u64, packed)
+            } else {
+                // A real resize keeps the site its block already had.
+                host.realloc(p_u64, ns_u64)
+            };
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
+        }
+        InstKind::HeapFree { ptr, .. } => {
+            let p = vm.read_value(*ptr);
+            host.free(unsafe { p.u64 });
+        }
+        InstKind::PtrRead { ptr, offset, elem_ty } => {
+            let p = vm.read_value(*ptr);
+            let off = vm.read_value(*offset);
+            let result = host.ptr_read(unsafe { p.u64 }, unsafe { off.u64 }, *elem_ty);
+            if let (Some((vid, _)), Some(slot)) = (inst.result, result) {
+                vm.write_value(vid, slot);
+            }
+        }
+        InstKind::PtrWrite { ptr, offset, value, value_ty } => {
+            let p = vm.read_value(*ptr);
+            let off = vm.read_value(*offset);
+            let v = vm.read_value(*value);
+            host.ptr_write(unsafe { p.u64 }, unsafe { off.u64 }, v, *value_ty);
+        }
+        _ => unreachable!("exec_heap_and_pointer was handed an instruction it does not own"),
+    }
+}
+
+/// `str` values: length, concatenation, comparison, conversion.
+fn exec_strings(vm: &mut Vm, inst: &Instruction) {
+    let host = vm.host();
+    match &inst.kind {
+        InstKind::StrLen { value } => {
+            let v = vm.read_value(*value);
+            let len = host.string_len(unsafe { v.u64 });
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(len));
+            }
+        }
+        InstKind::StrConcat { a, b } => {
+            let l = vm.read_value(*a);
+            let r = vm.read_value(*b);
+            let addr = host.concat_strings(unsafe { l.u64 }, unsafe { r.u64 });
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
+        }
+        InstKind::StrEq { a, b } => {
+            let l = unsafe { vm.read_value(*a).u64 };
+            let r = unsafe { vm.read_value(*b).u64 };
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_bool(host.str_eq(l, r)));
+            }
+        }
+        InstKind::StrFromBytes { ptr, len } => {
+            let p = unsafe { vm.read_value(*ptr).u64 };
+            let n = unsafe { vm.read_value(*len).u64 };
+            let addr = host.str_from_bytes(p, n);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
+        }
+        InstKind::ToString { value, value_ty } => {
+            let v = vm.read_value(*value);
+            let addr = host.to_string_value(v, *value_ty);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
+        }
+        InstKind::Format { value, value_ty, spec } => {
+            // STR-INTERP-FMT: same shape as ToString, plus the packed
+            // spec the parser fixed at compile time.
+            let v = vm.read_value(*value);
+            let addr = host.format_value(v, *value_ty, *spec);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
+        }
+        _ => unreachable!("exec_strings was handed an instruction it does not own"),
+    }
+}
+
+/// The allocator stack, the range operations, and the allocation
+/// counters.
+fn exec_allocator_and_memory(vm: &mut Vm, inst: &Instruction) {
+    let host = vm.host();
+    match &inst.kind {
+        InstKind::MemCopy { src, dest, size } => {
+            // Phase 3c: libc memcpy (toylang arg order src, dest, size).
+            let s = unsafe { vm.read_value(*src).u64 };
+            let d = unsafe { vm.read_value(*dest).u64 };
+            let n = unsafe { vm.read_value(*size).u64 };
+            host.mem_copy(s, d, n);
+        }
+        InstKind::MemMove { src, dest, size } => {
+            // MEMORY-ACCESS M0: memcpy's overlap-tolerant sibling,
+            // same toylang argument order.
+            let s = unsafe { vm.read_value(*src).u64 };
+            let d = unsafe { vm.read_value(*dest).u64 };
+            let n = unsafe { vm.read_value(*size).u64 };
+            host.mem_move(s, d, n);
+        }
+        InstKind::MemEq { a, b, size } => {
+            let av = unsafe { vm.read_value(*a).u64 };
+            let bv = unsafe { vm.read_value(*b).u64 };
+            let n = unsafe { vm.read_value(*size).u64 };
+            let eq = host.mem_eq(av, bv, n);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_bool(eq));
+            }
+        }
+        InstKind::MemFind { ptr, len, byte } => {
+            let p = unsafe { vm.read_value(*ptr).u64 };
+            let n = unsafe { vm.read_value(*len).u64 };
+            let b = unsafe { vm.read_value(*byte).u64 } as u8;
+            let at = host.mem_find(p, n, b);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(at));
+            }
+        }
+        InstKind::MemFindSeq { hay, hay_len, needle, needle_len } => {
+            let h = unsafe { vm.read_value(*hay).u64 };
+            let hn = unsafe { vm.read_value(*hay_len).u64 };
+            let n = unsafe { vm.read_value(*needle).u64 };
+            let nn = unsafe { vm.read_value(*needle_len).u64 };
+            let at = host.mem_find_seq(h, hn, n, nn);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(at));
+            }
+        }
+        InstKind::MemSet { dest, byte, size } => {
+            // The fill value is a `u8`; the slot carries it in the
+            // low byte.
+            let d = unsafe { vm.read_value(*dest).u64 };
+            let b = unsafe { vm.read_value(*byte).u64 } as u8;
+            let n = unsafe { vm.read_value(*size).u64 };
+            host.mem_set(d, b, n);
+        }
+        InstKind::AllocPush { handle } => {
+            let h = vm.read_value(*handle);
+            host.alloc_push(unsafe { h.u64 });
+        }
+        InstKind::AllocPop => {
+            host.alloc_pop();
+        }
+        InstKind::AllocCurrent => {
+            let handle = host.alloc_current();
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(handle));
+            }
+        }
+        InstKind::PtrIsNull { ptr } => {
+            let p = vm.read_value(*ptr);
+            let is_null = unsafe { p.u64 } == 0;
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_bool(is_null));
+            }
+        }
+        InstKind::PtrEq { a, b } => {
+            let pa = vm.read_value(*a);
+            let pb = vm.read_value(*b);
+            let eq = unsafe { pa.u64 } == unsafe { pb.u64 };
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_bool(eq));
+            }
+        }
+        // MEMORY_PROFILING M4. The interpreter's counters are always
+        // being kept, so there is nothing for `MemStatEnable` to turn
+        // on here — only the compiled runtime gates counting.
+        InstKind::MemStat { stat } => {
+            let value = frontend::ast::MemStat::from_code(*stat)
+                .map(|s| host.mem_stat(s))
+                .unwrap_or(0);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(value));
+            }
+        }
+        InstKind::MemStatEnable => {}
+        InstKind::RecordAllocatorLayout { name, managed, live, free_blocks, largest } => {
+            let name_str = host.read_str(unsafe { vm.read_value(*name).u64 });
+            let managed = unsafe { vm.read_value(*managed).u64 };
+            let live = unsafe { vm.read_value(*live).u64 };
+            let free_blocks = unsafe { vm.read_value(*free_blocks).u64 };
+            let largest = unsafe { vm.read_value(*largest).u64 };
+            host.record_allocator_layout(&name_str, managed, live, free_blocks, largest);
+        }
+        _ => unreachable!("exec_allocator_and_memory was handed an instruction it does not own"),
+    }
+}
+
+/// The 128-bit vector instructions (SIMD).
+fn exec_simd(vm: &mut Vm, inst: &Instruction) {
+    let host = vm.host();
+    match &inst.kind {
         // SIMD: a vector is one slot holding its 16-byte image, so
         // these arms are ordinary value-in / value-out instructions.
         // The lane work itself lives in `crate::simd`.
@@ -200,447 +796,7 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
                 vm.write_value(vid, RawSlot::from_v128(bytes));
             }
         }
-        InstKind::LoadLocal(local) => {
-            let slot = vm.read_local(*local);
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, slot);
-            }
-        }
-        InstKind::StoreLocal { dst, src } => {
-            let slot = vm.read_value(*src);
-            vm.write_local(*dst, slot);
-        }
-        InstKind::Call { target, args } => {
-            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
-            let return_dest = inst.result.map(|(vid, _)| vid);
-            vm.call_function(*target, arg_slots, return_dest, Vec::new());
-        }
-        InstKind::CallStruct { target, args, dests } => {
-            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
-            vm.call_function(*target, arg_slots, None, dests.clone());
-        }
-        InstKind::CallTuple { target, args, dests } => {
-            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
-            vm.call_function(*target, arg_slots, None, dests.clone());
-        }
-        InstKind::CallEnum { target, args, dests } => {
-            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
-            vm.call_function(*target, arg_slots, None, dests.clone());
-        }
-        InstKind::Cast { value, from, to } => {
-            let v = vm.read_value(*value);
-            let result = eval_cast(v, *from, *to);
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, result);
-            }
-        }
-        InstKind::Print { value, value_ty, newline, stderr } => {
-            let v = vm.read_value(*value);
-            let text = format_scalar(host, v, *value_ty);
-            emit_text(host, &text, *newline, *stderr);
-        }
-        InstKind::PrintStr { message, newline, stderr, .. } => {
-            let text = vm
-                .interner()
-                .and_then(|i| i.resolve(*message))
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| format!("printstr #{}", message.to_usize()));
-            emit_text(host, &text, *newline, *stderr);
-        }
-        InstKind::PrintRaw { text, newline, stderr } => {
-            emit_text(host, text, *newline, *stderr);
-        }
-        InstKind::ConstStr { message, .. } => {
-            if let Some(interner) = vm.interner() {
-                let text = interner.resolve(*message).unwrap_or("");
-                let addr = host.alloc_str_bytes(text.as_bytes());
-                if let Some((vid, _)) = inst.result {
-                    vm.write_value(vid, RawSlot::from_u64(addr));
-                }
-            }
-        }
-        // DEBUG-OBS D5: the VM has a call stack of its own, so the
-        // answer is the same walk the panic path makes.
-        InstKind::Backtrace => {
-            let text = vm.backtrace_text();
-            let addr = host.alloc_str_bytes(text.trim_start_matches('\n').as_bytes());
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_u64(addr));
-            }
-        }
-        InstKind::ConstBytesAddr { bytes } => {
-            // CONST-ARRAY: the compiled lanes read this straight out
-            // of `.rodata`. The VM has no such section, so it
-            // materialises the blob once per content and hands back
-            // the same address every time — an index inside a loop
-            // must not keep allocating, and the table has to keep the
-            // identity a read-only symbol would have.
-            let blob = bytes.clone();
-            let addr = vm.const_bytes_addr(&blob);
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_u64(addr));
-            }
-        }
-        InstKind::ConstStrBytes { bytes } => {
-            let addr = host.alloc_str_bytes(bytes);
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_u64(addr));
-            }
-        }
-        InstKind::ArrayLoad { slot, index, elem_ty } => {
-            let idx = vm.read_value(*index);
-            let base = vm.current_frame().array_bases[slot.0 as usize];
-            let stride = vm.current_frame().array_strides[slot.0 as usize];
-            let addr = base + unsafe { idx.u64 } * stride;
-            if let Some((vid, _)) = inst.result {
-                let result = host.ptr_read(addr, 0, *elem_ty);
-                if let Some(slot_val) = result {
-                    vm.write_value(vid, slot_val);
-                }
-            }
-        }
-        InstKind::ArrayStore { slot, index, value, elem_ty } => {
-            let idx = vm.read_value(*index);
-            let val = vm.read_value(*value);
-            let base = vm.current_frame().array_bases[slot.0 as usize];
-            let stride = vm.current_frame().array_strides[slot.0 as usize];
-            let addr = base + unsafe { idx.u64 } * stride;
-            host.ptr_write(addr, 0, val, *elem_ty);
-        }
-        InstKind::HeapAlloc { size, site, .. } => {
-            let sz = vm.read_value(*size);
-            let packed = vm.module().packed_site(*site);
-            // The file is noted rather than passed: the profiler keys
-            // on the position so every engine agrees, and only the
-            // report wants the name.
-            host.note_alloc_site_file(packed, vm.module().site_file(*site));
-            let addr = host.alloc_at(unsafe { sz.u64 }, packed);
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_u64(addr));
-            }
-        }
-        InstKind::HeapRealloc { ptr, new_size, site, .. } => {
-            let p = vm.read_value(*ptr);
-            let ns = vm.read_value(*new_size);
-            let (p_u64, ns_u64) = (unsafe { p.u64 }, unsafe { ns.u64 });
-            let addr = if p_u64 == 0 {
-                // A null resize is an allocation, and gets the call
-                // site the way `HeapAlloc` does (M2 + D2) — most
-                // stdlib collections grow through this shape, so a
-                // report that cannot name it names nothing.
-                let packed = vm.module().packed_site(*site);
-                host.note_alloc_site_file(packed, vm.module().site_file(*site));
-                host.alloc_at(ns_u64, packed)
-            } else {
-                // A real resize keeps the site its block already had.
-                host.realloc(p_u64, ns_u64)
-            };
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_u64(addr));
-            }
-        }
-        InstKind::HeapFree { ptr, .. } => {
-            let p = vm.read_value(*ptr);
-            host.free(unsafe { p.u64 });
-        }
-        InstKind::PtrRead { ptr, offset, elem_ty } => {
-            let p = vm.read_value(*ptr);
-            let off = vm.read_value(*offset);
-            let result = host.ptr_read(unsafe { p.u64 }, unsafe { off.u64 }, *elem_ty);
-            if let (Some((vid, _)), Some(slot)) = (inst.result, result) {
-                vm.write_value(vid, slot);
-            }
-        }
-        InstKind::PtrWrite { ptr, offset, value, value_ty } => {
-            let p = vm.read_value(*ptr);
-            let off = vm.read_value(*offset);
-            let v = vm.read_value(*value);
-            host.ptr_write(unsafe { p.u64 }, unsafe { off.u64 }, v, *value_ty);
-        }
-        InstKind::StrLen { value } => {
-            let v = vm.read_value(*value);
-            let len = host.string_len(unsafe { v.u64 });
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_u64(len));
-            }
-        }
-        InstKind::StrConcat { a, b } => {
-            let l = vm.read_value(*a);
-            let r = vm.read_value(*b);
-            let addr = host.concat_strings(unsafe { l.u64 }, unsafe { r.u64 });
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_u64(addr));
-            }
-        }
-        InstKind::StrEq { a, b } => {
-            let l = unsafe { vm.read_value(*a).u64 };
-            let r = unsafe { vm.read_value(*b).u64 };
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_bool(host.str_eq(l, r)));
-            }
-        }
-        InstKind::StrFromBytes { ptr, len } => {
-            let p = unsafe { vm.read_value(*ptr).u64 };
-            let n = unsafe { vm.read_value(*len).u64 };
-            let addr = host.str_from_bytes(p, n);
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_u64(addr));
-            }
-        }
-        InstKind::ToString { value, value_ty } => {
-            let v = vm.read_value(*value);
-            let addr = host.to_string_value(v, *value_ty);
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_u64(addr));
-            }
-        }
-        InstKind::Format { value, value_ty, spec } => {
-            // STR-INTERP-FMT: same shape as ToString, plus the packed
-            // spec the parser fixed at compile time.
-            let v = vm.read_value(*value);
-            let addr = host.format_value(v, *value_ty, *spec);
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_u64(addr));
-            }
-        }
-        InstKind::MemCopy { src, dest, size } => {
-            // Phase 3c: libc memcpy (toylang arg order src, dest, size).
-            let s = unsafe { vm.read_value(*src).u64 };
-            let d = unsafe { vm.read_value(*dest).u64 };
-            let n = unsafe { vm.read_value(*size).u64 };
-            host.mem_copy(s, d, n);
-        }
-        InstKind::MemMove { src, dest, size } => {
-            // MEMORY-ACCESS M0: memcpy's overlap-tolerant sibling,
-            // same toylang argument order.
-            let s = unsafe { vm.read_value(*src).u64 };
-            let d = unsafe { vm.read_value(*dest).u64 };
-            let n = unsafe { vm.read_value(*size).u64 };
-            host.mem_move(s, d, n);
-        }
-        InstKind::MemEq { a, b, size } => {
-            let av = unsafe { vm.read_value(*a).u64 };
-            let bv = unsafe { vm.read_value(*b).u64 };
-            let n = unsafe { vm.read_value(*size).u64 };
-            let eq = host.mem_eq(av, bv, n);
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_bool(eq));
-            }
-        }
-        InstKind::MemFind { ptr, len, byte } => {
-            let p = unsafe { vm.read_value(*ptr).u64 };
-            let n = unsafe { vm.read_value(*len).u64 };
-            let b = unsafe { vm.read_value(*byte).u64 } as u8;
-            let at = host.mem_find(p, n, b);
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_u64(at));
-            }
-        }
-        InstKind::MemFindSeq { hay, hay_len, needle, needle_len } => {
-            let h = unsafe { vm.read_value(*hay).u64 };
-            let hn = unsafe { vm.read_value(*hay_len).u64 };
-            let n = unsafe { vm.read_value(*needle).u64 };
-            let nn = unsafe { vm.read_value(*needle_len).u64 };
-            let at = host.mem_find_seq(h, hn, n, nn);
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_u64(at));
-            }
-        }
-        InstKind::MemSet { dest, byte, size } => {
-            // The fill value is a `u8`; the slot carries it in the
-            // low byte.
-            let d = unsafe { vm.read_value(*dest).u64 };
-            let b = unsafe { vm.read_value(*byte).u64 } as u8;
-            let n = unsafe { vm.read_value(*size).u64 };
-            host.mem_set(d, b, n);
-        }
-        InstKind::CallWithSelfWriteback { target, args, ret_dest, self_dests, .. } => {
-            // Phase 3c: `&mut self` call. The callee returns
-            // `[ret_leaf?, self_writeback_leaves...]`; route every
-            // returned leaf into the combined dest list so the existing
-            // multi-result return wiring distributes them.
-            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
-            let mut dests: Vec<LocalId> = Vec::with_capacity(self_dests.len() + 1);
-            if let Some(local) = ret_dest {
-                dests.push(*local);
-            }
-            dests.extend_from_slice(self_dests);
-            vm.call_function(*target, arg_slots, None, dests);
-        }
-        InstKind::CallWithSelfWritebackCompound { target, args, ret_dests, self_dests } => {
-            // Phase 3c: writeback + compound user return. Results come
-            // back as `[ret_leaves..., self_writeback_leaves...]`.
-            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
-            let mut dests: Vec<LocalId> = Vec::with_capacity(ret_dests.len() + self_dests.len());
-            dests.extend_from_slice(ret_dests);
-            dests.extend_from_slice(self_dests);
-            vm.call_function(*target, arg_slots, None, dests);
-        }
-        InstKind::AllocPush { handle } => {
-            let h = vm.read_value(*handle);
-            host.alloc_push(unsafe { h.u64 });
-        }
-        InstKind::AllocPop => {
-            host.alloc_pop();
-        }
-        InstKind::AllocCurrent => {
-            let handle = host.alloc_current();
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_u64(handle));
-            }
-        }
-        InstKind::PtrIsNull { ptr } => {
-            let p = vm.read_value(*ptr);
-            let is_null = unsafe { p.u64 } == 0;
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_bool(is_null));
-            }
-        }
-        InstKind::PtrEq { a, b } => {
-            let pa = vm.read_value(*a);
-            let pb = vm.read_value(*b);
-            let eq = unsafe { pa.u64 } == unsafe { pb.u64 };
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_bool(eq));
-            }
-        }
-        // MEMORY_PROFILING M4. The interpreter's counters are always
-        // being kept, so there is nothing for `MemStatEnable` to turn
-        // on here — only the compiled runtime gates counting.
-        InstKind::MemStat { stat } => {
-            let value = frontend::ast::MemStat::from_code(*stat)
-                .map(|s| host.mem_stat(s))
-                .unwrap_or(0);
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_u64(value));
-            }
-        }
-        InstKind::MemStatEnable => {}
-        InstKind::RecordAllocatorLayout { name, managed, live, free_blocks, largest } => {
-            let name_str = host.read_str(unsafe { vm.read_value(*name).u64 });
-            let managed = unsafe { vm.read_value(*managed).u64 };
-            let live = unsafe { vm.read_value(*live).u64 };
-            let free_blocks = unsafe { vm.read_value(*free_blocks).u64 };
-            let largest = unsafe { vm.read_value(*largest).u64 };
-            host.record_allocator_layout(&name_str, managed, live, free_blocks, largest);
-        }
-        InstKind::AddressOf { local } => {
-            // Phase 3c: pointer to an address-taken local's backing cell.
-            let addr = vm.addr_of_local(*local);
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_u64(addr));
-            }
-        }
-        InstKind::LoadRef { ptr, ty } => {
-            // Phase 3c: dereference a pointer to read a scalar of `ty`.
-            let p = unsafe { vm.read_value(*ptr).u64 };
-            let result = host.ptr_read(p, 0, *ty).unwrap_or_default();
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, result);
-            }
-        }
-        InstKind::StoreRef { ptr, value, ty } => {
-            // Phase 3c: write a scalar through a pointer.
-            let p = unsafe { vm.read_value(*ptr).u64 };
-            let v = vm.read_value(*value);
-            host.ptr_write(p, 0, v, *ty);
-        }
-        InstKind::ArrayElemAddr { slot, index, elem_ty: _ } => {
-            let idx = vm.read_value(*index);
-            let base = vm.current_frame().array_bases[slot.0 as usize];
-            let stride = vm.current_frame().array_strides[slot.0 as usize];
-            let addr = base + unsafe { idx.u64 } * stride;
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_u64(addr));
-            }
-        }
-        InstKind::FuncAddr { target } => {
-            // Phase 3a: a function pointer is represented in the VM as the
-            // raw FuncId index encoded into a u64. `CallIndirect` /
-            // `MakeClosure` recover it as `FuncId(slot.u64 as u32)`.
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_u64(target.0 as u64));
-            }
-        }
-        InstKind::MakeClosure { target, captures, capture_tys } => {
-            // Phase 3a: heap-allocate the env `[fn_ptr][cap0][cap1]...`,
-            // mirroring the AOT layout (8-byte slots, fn_ptr at +0,
-            // capture `i` at +(i+1)*8). The fn_ptr stores the FuncId so
-            // CallIndirect can dispatch back into the VM.
-            let env_size = ((1 + captures.len()) as u64) * 8;
-            let addr = host.alloc_at(env_size, 0);
-            host.ptr_write(addr, 0, RawSlot::from_u64(target.0 as u64), Type::U64);
-            for (i, (cap, cap_ty)) in captures.iter().zip(capture_tys.iter()).enumerate() {
-                let v = vm.read_value(*cap);
-                host.ptr_write(addr, ((i + 1) * 8) as u64, v, *cap_ty);
-            }
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_u64(addr));
-            }
-        }
-        InstKind::ParFor { body, env, from, until } => {
-            // CONCURRENCY A2-b-2: the IR VM is a sequential lane, and
-            // one chunk is a legal split. `[from, until)` whole, on
-            // this thread, in order — which is also what makes the VM
-            // the lane that says what a `parallel for` *means*.
-            let env_v = vm.read_value(*env);
-            let from_v = vm.read_value(*from);
-            let until_v = vm.read_value(*until);
-            vm.call_function(*body, vec![env_v, from_v, until_v], None, Vec::new());
-        }
-        InstKind::CallIndirect { callee, args, .. } => {
-            // Phase 3a: env-based indirect call. `callee` is an env_ptr;
-            // fn_ptr lives at env+0. The lifted closure body's first
-            // parameter is the env_ptr, so prepend it to the user args.
-            let env_ptr = unsafe { vm.read_value(*callee).u64 };
-            let fn_ptr = host
-                .ptr_read(env_ptr, 0, Type::U64)
-                .map(|s| unsafe { s.u64 })
-                .unwrap_or(0);
-            let target = compiler_ir::FuncId(fn_ptr as u32);
-            let mut arg_slots: Vec<RawSlot> = Vec::with_capacity(args.len() + 1);
-            arg_slots.push(RawSlot::from_u64(env_ptr));
-            for a in args {
-                arg_slots.push(vm.read_value(*a));
-            }
-            let return_dest = inst.result.map(|(vid, _)| vid);
-            vm.call_function(target, arg_slots, return_dest, Vec::new());
-        }
-        InstKind::VtableAddr { trait_sym, struct_sym } => {
-            // Phase 3b: materialise the vtable on the heap and yield its
-            // address (a U64). A later PtrRead recovers the per-method
-            // dispatch FuncId.
-            let addr = vm.vtable_addr(*trait_sym, *struct_sym);
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_u64(addr));
-            }
-        }
-        InstKind::DynCoerceSlotAddr { slot_idx } => {
-            // Phase 3b: yield the address of a caller-frame coercion buffer
-            // for a field-bearing struct passed through `&dyn Trait`.
-            let addr = vm.dyn_coerce_addr(*slot_idx);
-            if let Some((vid, _)) = inst.result {
-                vm.write_value(vid, RawSlot::from_u64(addr));
-            }
-        }
-        InstKind::CallIndirectFn { callee, args, .. } => {
-            // Phase 3b: raw fn-pointer indirect call (no implicit env).
-            // `callee` is already a FuncId (loaded out of a vtable slot).
-            let target = compiler_ir::FuncId(unsafe { vm.read_value(*callee).u64 } as u32);
-            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
-            let return_dest = inst.result.map(|(vid, _)| vid);
-            vm.call_function(target, arg_slots, return_dest, Vec::new());
-        }
-        InstKind::CallIndirectFnStruct { callee, args, dests, .. }
-        | InstKind::CallIndirectFnTuple { callee, args, dests, .. }
-        | InstKind::CallIndirectFnEnum { callee, args, dests, .. } => {
-            // Phase 3b: indirect call returning a compound (struct/tuple/
-            // enum). The compound leaves fan out into `dests`, mirroring
-            // the direct-call CallStruct/CallTuple/CallEnum lowering.
-            let target = compiler_ir::FuncId(unsafe { vm.read_value(*callee).u64 } as u32);
-            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
-            vm.call_function(target, arg_slots, None, dests.clone());
-        }
+        _ => unreachable!("exec_simd was handed an instruction it does not own"),
     }
 }
 

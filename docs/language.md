@@ -892,13 +892,16 @@ values >= U+110000 panic.
 ```rust
 "hello"           # ConstString — interned, immutable
 "line1\nline2"    # \n decoded to LF in the lexer
+"say \"hi\""      # \" is a quote that does not close the literal
 "hex \x41 here"   # \x41 decoded to 'A' (ASCII only, see below)
 "unicode \u{3042} here"   # \u{3042} encoded as 3-byte UTF-8 'あ'
 "日本語 ♠ 😀"      # non-ASCII source characters pass through verbatim
+r"C:\tmp\{x}"     # raw: no escapes, no interpolation (see below)
+r#"{"k": "v"}"#   # raw with `#`s: the text may hold `"`
 ```
 
 The lexer decodes the same escape ladder as the char literal rule
-(`\n` / `\t` / `\r` / `\0` / `\\` / `\'` / `\xHH` / `\u{HEX}`)
+(`\n` / `\t` / `\r` / `\0` / `\\` / `\'` / `\"` / `\xHH` / `\u{HEX}`)
 once at lex time and stores the resulting bytes in the
 `Kind::String(...)` token. Downstream layers see only the decoded
 byte sequence.
@@ -920,12 +923,37 @@ string or interpolation, a number followed by letters (`123abc`), or a
 character no rule recognizes (`$`). A lex error fails the parse, so it
 never leaks into type checking as a mismatch elsewhere in the file.
 
-`\"` inside a `"..."` literal is **not** yet decodable — the
-closing-quote regex still wins. Use `'\"'` (char) or
-`"\u{22}"` (Unicode escape) when you need a literal `"` in a
-string for now.
+A literal closes at the first `"` that is not escaped: `"a\"b"` is
+the three characters `a"b`, and `"a\\"` is `a\` (the backslash is
+escaped, so the quote after it closes). A literal may **span lines**;
+each newline between the quotes is part of the value, exactly as if it
+were written `\n`. Indentation on the continuation lines is kept too —
+there is no dedent.
 
-Multi-line string literals are not yet supported.
+#### Raw string literals
+
+`r"..."` is a **raw** literal: the bytes between the quotes are the
+value, with **no escape decoding and no interpolation**. `\n` is a
+backslash and an `n`; `{x}` is a brace, an `x` and a brace — no `{{` /
+`}}` doubling. It may span lines like an ordinary literal.
+
+A raw literal cannot contain `"` on its own, so the opening quote may
+be preceded by any number of `#`s, and the literal then closes only at
+a `"` followed by **the same number** of `#`s:
+
+```rust
+r"C:\tmp\{x}.txt"                    # C:\tmp\{x}.txt
+r#"{"error":"not found"}"#          # {"error":"not found"}
+r##"a "# inside"##                  # a "# inside
+```
+
+This is the literal to reach for when writing JSON, HTML, or any text
+with braces and quotes in it. Use an ordinary literal with `\"` when
+the text also needs an interpolated value (`"{{\"n\":{n}}}"`) — a raw
+literal never interpolates. `r"` only starts a raw literal at the
+beginning of a token: `bar"x"` is still the identifier `bar` followed
+by the string `"x"`. An unterminated raw literal is an `E0012` that
+names the closer it was looking for (`"#`).
 
 #### String interpolation
 
@@ -6365,8 +6393,6 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   `INTERPRETER_CONTRACTS` gate exists only because contract clauses
   can carry non-trivial cost; even there, `all` is the recommended
   setting — see "Operational guidance" above.)
-- **No raw strings or multi-line strings** — only the regular
-  `"..."` literal with backslash escapes today.
 - **Compound-returning calls in expression position** — a compound
   never travels as one SSA value, so a call producing one needs
   locals to write its leaves into. Two positions have those:

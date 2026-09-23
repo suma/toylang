@@ -84,11 +84,11 @@ pub enum LexErrorKind {
     UnterminatedInterpolation,
     /// A string literal with no closing `"` before end of input.
     UnterminatedString,
+    /// A raw string literal (`r"..."`, `r#"..."#`) whose closing `"`
+    /// followed by `hashes` `#`s never appears.
+    UnterminatedRawString { hashes: usize },
     /// `\u{HEX}` naming a value outside the Unicode scalar range.
     InvalidCodePoint,
-    /// A string literal ending with a bare `\` (which would escape the
-    /// closing quote — `\"` is not decodable yet).
-    DanglingEscape,
     /// A float literal whose text cannot be parsed as `f64`.
     MalformedNumber,
     /// `[0-9][A-Za-z_0-9]*` — digits followed by identifier chars.
@@ -127,14 +127,16 @@ impl LexErrorKind {
             LexErrorKind::UnterminatedString => format!(
                 "unterminated string literal: `{text}` has no closing `\"`"
             ),
+            LexErrorKind::UnterminatedRawString { hashes } => {
+                let closer = format!("\"{}", "#".repeat(hashes));
+                format!(
+                    "unterminated raw string literal: `{text}` has no closing `{closer}` \
+                     — add a `#` to both ends if the text itself contains `{closer}`"
+                )
+            }
             LexErrorKind::InvalidCodePoint => format!(
                 "invalid Unicode code point in `{text}`: `\\u{{HEX}}` must name a scalar \
                  value (max U+10FFFF, no surrogates)"
-            ),
-            LexErrorKind::DanglingEscape => format!(
-                "`{text}` ends with a bare backslash: `\\\"` (an escaped quote) is not \
-                 decodable inside a string literal yet — use `\\u{{22}}` for the quote \
-                 character"
             ),
             LexErrorKind::MalformedNumber => format!("invalid number literal `{text}`"),
             LexErrorKind::BadNumber => {
@@ -143,6 +145,51 @@ impl LexErrorKind {
             LexErrorKind::UnmatchedChar => format!("unrecognized character `{text}`"),
         }
     }
+}
+
+/// Byte index of the `"` that closes a string literal whose body
+/// starts at `from`, or `None` when the input ends first.
+///
+/// A backslash always takes the byte after it, so `\"` stays inside
+/// the literal and `\\"` closes it. This is why the string rule
+/// matches only the opening quote and scans by hand: a regex that
+/// stops at the first `"` cannot tell an escaped quote from a closing
+/// one. What the escape *means* is decided later by the decoder — a
+/// backslash before a multi-byte character skips into the middle of
+/// it, which is harmless here because every UTF-8 continuation byte
+/// is >= 0x80 and so never looks like `"`.
+#[allow(dead_code)]
+fn find_string_close(input: &str, from: usize) -> Option<usize> {
+    let bytes = input.as_bytes();
+    let mut i = from;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'"' => return Some(i),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Byte index of the `"` that closes a raw string literal opened with
+/// `hashes` `#`s (`r"` has 0, `r#"` has 1), or `None` when the input
+/// ends first. The closer is `"` followed by the same number of `#`s,
+/// so a text containing `"#` is written with `r##"..."##`.
+#[allow(dead_code)]
+fn find_raw_string_close(input: &str, from: usize, hashes: usize) -> Option<usize> {
+    let bytes = input.as_bytes();
+    let mut i = from;
+    while i < bytes.len() {
+        if bytes[i] == b'"'
+            && bytes.len() - (i + 1) >= hashes
+            && bytes[i + 1..i + 1 + hashes].iter().all(|&b| b == b'#')
+        {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Parse the body of a `\u{HEX}` Unicode escape. `bytes[start]`
@@ -595,15 +642,65 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
 
 -?[0-9][0-9_]*            return Ok(token!(self, Kind::Integer(self.yytext())));
 
-\"[^"]*\"              {
+r"#"*["]            {
+                        // Raw string literal: `r"..."`, `r#"..."#`,
+                        // `r##"..."##`, ... No escape is decoded and no
+                        // `{...}` is interpolated — the bytes between
+                        // the delimiters are the value, newlines
+                        // included. The `#`s exist so the text can hold
+                        // a `"`: it closes only at `"` followed by as
+                        // many `#`s as it opened with. Beats the
+                        // identifier rule on `r` by being longer.
+                        let hashes = self.yytext().len() - 2;
+                        let body_start = self.zz_marked_pos;
+                        match find_raw_string_close(self.input, body_start, hashes) {
+                            Some(close) => {
+                                let body = self.input[body_start..close].to_string();
+                                self.extend_token_to(close + 1 + hashes);
+                                return Ok(token!(self, Kind::String(body)));
+                            }
+                            None => {
+                                let end = self.input.len();
+                                self.extend_token_to(end);
+                                self.get_last_lex_error()
+                                    .replace(LexErrorKind::UnterminatedRawString { hashes });
+                                return Err(Error::Unmatch);
+                            }
+                        }
+                    }
+
+["]                 {
                         // String literal with escape support + string
-                        // interpolation. The regex itself stays simple
-                        // (closing `"` always wins; `\"` would terminate
-                        // early — same constraint as before). The 6
-                        // single-char escapes `\n` / `\t` / `\r` / `\0`
-                        // / `\\` / `\'`, plus `\xHH` and `\u{HEX}`, are
+                        // interpolation. The rule matches only the
+                        // opening quote — written `["]` because rflex
+                        // compiles a rule that is a lone `\"` into one
+                        // that also matches `$`, which turned the
+                        // unmatched-char fallback into a bogus
+                        // "unterminated string"; `find_string_close` finds the
+                        // closing one by hand so that `\"` can stay
+                        // inside the literal (a regex stopping at the
+                        // first `"` cannot tell the two apart). A
+                        // literal may span lines. The 7 single-char
+                        // escapes `\n` / `\t` / `\r` / `\0` / `\\` /
+                        // `\'` / `\"`, plus `\xHH` and `\u{HEX}`, are
                         // converted in the byte-by-byte pass below.
                         // Unknown escapes bail out via `Error::Unmatch`.
+                        //
+                        // No closing quote: the token runs to end of
+                        // input, so the parser can say "the string
+                        // never closes" and quote it, instead of
+                        // "unrecognized character `\"`".
+                        let body_start = self.zz_marked_pos;
+                        match find_string_close(self.input, body_start) {
+                            Some(close) => self.extend_token_to(close + 1),
+                            None => {
+                                let end = self.input.len();
+                                self.extend_token_to(end);
+                                self.get_last_lex_error()
+                                    .replace(LexErrorKind::UnterminatedString);
+                                return Err(Error::Unmatch);
+                            }
+                        }
                         //
                         // Interpolation: `{...}` inside the literal
                         // marks an expression segment. `{{` / `}}` are
@@ -714,9 +811,14 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                                 continue;
                             }
                             if b == b'\\' {
+                                // Unreachable: `find_string_close` pairs
+                                // every backslash with the byte after it,
+                                // so the body never ends on a lone one.
+                                // Kept so a future change to the scan
+                                // fails as a lex error, not an index panic.
                                 if i + 1 >= bytes.len() {
                                     self.get_last_lex_error()
-                                        .replace(LexErrorKind::DanglingEscape);
+                                        .replace(LexErrorKind::UnterminatedString);
                                     return Err(Error::Unmatch);
                                 }
                                 // `\xHH` — 2-digit hex byte. Consumes
@@ -795,12 +897,6 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                                     b'0'  => 0u8,
                                     b'\\' => b'\\',
                                     b'\'' => b'\'',
-                                    // `\"` would terminate the regex
-                                    // early today — unreachable until
-                                    // the regex grows multi-char
-                                    // matching, but listed so the
-                                    // handler stays symmetric with the
-                                    // char literal escape table.
                                     b'"'  => b'"',
                                     other => {
                                         self.get_last_lex_error()
@@ -839,18 +935,6 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                             return Ok(token!(self, Kind::InterpolatedString(parts)));
                         }
                         return Ok(token!(self, Kind::String(out)));
-                    }
-
-\"[^"]*  {
-                        // Unterminated string literal — no closing `"`.
-                        // The rule above needs the closing quote to
-                        // match, so this one only fires when it does
-                        // not exist; the longest match takes the full
-                        // literal (possibly to EOF). Recorded so the
-                        // parser can say "the string never closes"
-                        // instead of "unrecognized character `\"`".
-                        self.get_last_lex_error().replace(LexErrorKind::UnterminatedString);
-                        return Err(Error::Unmatch);
                     }
 
 '\\u"{"[0-9a-fA-F]+"}"'            {
@@ -910,8 +994,7 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                         // backslash. The table is pinned value by
                         // value in `parser/tests.rs`
                         // (`lexer_decodes_char_literal_escapes`); it
-                        // matches the string-literal table above, plus
-                        // `\"` which a string literal cannot reach.
+                        // matches the string-literal table above.
                         // Unknown escapes (e.g. `'\x'` without 2 hex
                         // digits) bail out with `Error::Unmatch`
                         // rather than yielding the bare character.
@@ -981,6 +1064,23 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
 
     pub fn get_current_line_count(&self) -> usize {
         self.line_count as usize
+    }
+
+    /// Stretch the token being matched so it ends at byte `end`.
+    ///
+    /// For rules whose regex matches only an opening delimiter and
+    /// whose action finds the closing one by hand (string literals).
+    /// Moves the same three cursors `skip_current_char` does, so the
+    /// token's span (`yybytepos` / `yytext`) covers the whole literal
+    /// and the next `yylex` resumes after it. Newlines inside the
+    /// literal are counted like a block comment's.
+    #[allow(dead_code)]
+    fn extend_token_to(&mut self, end: usize) {
+        let consumed = &self.input[self.zz_marked_pos..end];
+        self.zz_marked_char += consumed.chars().count();
+        self.line_count += consumed.matches('\n').count() as u64;
+        self.zz_marked_pos = end;
+        self.current = self.input[end..].char_indices();
     }
 
     /// Advance the lexer one character past a zero-width failure.

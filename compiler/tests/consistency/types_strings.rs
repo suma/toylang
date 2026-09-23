@@ -41,6 +41,44 @@ fn char_literal_round_trip() {
 }
 
 #[test]
+fn string_literal_escape_hatches_render_the_same() {
+    // Three ways to write a `"` or a `{` that is not interpolation,
+    // pinned on every lane (the lexer is shared, but the bytes still
+    // have to survive to stdout the same way):
+    // - `\"` inside an ordinary literal, which interpolation still
+    //   applies to (`{n}`), so JSON with a value in it is one literal;
+    // - `r"..."`: no escapes, no interpolation (`\n` and `{x}` are text);
+    // - `r#"..."#`: the same, and the text may hold `"`.
+    // A literal may also span lines; the newline is part of the value.
+    let src = r###"
+        fn main() -> u64 {
+            val n = 42u64
+            println("{{\"n\":{n},\"s\":\"a\\b\"}}")
+            println(r"C:\tmp\{x}.txt")
+            println(r#"{"error":"not found","path":"/v1/q"}"#)
+            println(r##"a "# inside"##)
+            val two = "line one
+line two"
+            println(two)
+            println(two.len())
+            0u64
+        }
+    "###;
+    assert_renders(
+        src,
+        "string_literal_escape_hatches",
+        concat!(
+            "{\"n\":42,\"s\":\"a\\b\"}\n",
+            "C:\\tmp\\{x}.txt\n",
+            "{\"error\":\"not found\",\"path\":\"/v1/q\"}\n",
+            "a \"# inside\n",
+            "line one\nline two\n",
+            "17\n",
+        ),
+    );
+}
+
+#[test]
 fn generic_struct_value_passing_round_trip() {
     // Pre-existing limitation now fixed: passing a generic-struct
     // value across a function boundary used to fail in the

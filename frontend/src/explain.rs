@@ -391,6 +391,12 @@ offending literal, on its own line.
   * `\"\\x\"` / `\"\\x4\"` / `\"\\xZZ\"` — `\\x` requires exactly two
     hex digits
   * `\"abc {x` — the `{...}` interpolation never closes
+  * `\"abc\\\"` — `\\\"` is an escaped quote, so the literal never
+    closes: end it with a bare `\"`, or write `\\\\` for a trailing
+    backslash
+  * `r#\"a\"b` — a raw literal closes only at `\"` followed by as many
+    `#`s as it opened with; add a `#` to both ends if the text itself
+    contains the closer
   * `'\\u{110000}'` — a code point outside the Unicode scalar range
     (max U+10FFFF, no surrogates)
   * `123abc` — digits followed by letters is not a number

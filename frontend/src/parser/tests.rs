@@ -319,7 +319,10 @@ mod lexer_tests{
             (r#""\u{}""#, LexErrorKind::MalformedHexEscape),
             (r#""a {b""#, LexErrorKind::UnterminatedInterpolation),
             (r#""abc"#, LexErrorKind::UnterminatedString),
-            (r#""\""#, LexErrorKind::DanglingEscape),
+            // `\"` escapes the quote, so this literal never closes.
+            (r#""abc\""#, LexErrorKind::UnterminatedString),
+            (r##"r"abc"##, LexErrorKind::UnterminatedRawString { hashes: 0 }),
+            (r###"r#"a"b"###, LexErrorKind::UnterminatedRawString { hashes: 1 }),
             (r"'\q'", LexErrorKind::UnknownEscape { byte: b'q' }),
             (r"'\u{110000}'", LexErrorKind::InvalidCodePoint),
             ("123abc", LexErrorKind::BadNumber),
@@ -338,6 +341,43 @@ mod lexer_tests{
         let mut l = lexer::Lexer::new("$", 1u64, None);
         assert!(l.yylex().is_err());
         assert_eq!(*l.get_last_lex_error(), None);
+    }
+
+    #[test]
+    fn lexer_string_literal_escapes_the_quote() {
+        // `\"` is an escaped quote, not the end of the literal; `\\"`
+        // is an escaped backslash followed by the closing quote.
+        assert_token(r#""a\"b""#, Kind::String("a\"b".to_string()));
+        assert_token(r#""\"""#, Kind::String("\"".to_string()));
+        assert_token(r#""a\\""#, Kind::String("a\\".to_string()));
+        assert_token(r#""{{\"k\":1}}""#, Kind::String("{\"k\":1}".to_string()));
+    }
+
+    #[test]
+    fn lexer_raw_string_literal_is_taken_verbatim() {
+        // No escapes and no interpolation: `\n` is two bytes and `{x}`
+        // is text. The `#`s let the text hold a `"`.
+        assert_token(r#"r"a\nb{x}""#, Kind::String(r"a\nb{x}".to_string()));
+        assert_token(r##"r#"{"k": "v"}"#"##, Kind::String(r#"{"k": "v"}"#.to_string()));
+        assert_token(r###"r##"say "#hi""##"###, Kind::String(r##"say "#hi""##.to_string()));
+        assert_token(r#"r"""#, Kind::String(String::new()));
+        // An identifier ending in `r` is not a raw-string prefix.
+        assert_tokens(r#"bar "x""#, vec![
+            Kind::Identifier("bar".to_string()),
+            Kind::String("x".to_string()),
+        ]);
+    }
+
+    #[test]
+    fn lexer_multi_line_string_literals_count_their_lines() {
+        // A literal may span lines; the newlines inside it are counted
+        // so the line after it is numbered correctly.
+        for input in ["\"a\nb\" x", "r\"a\nb\" x", "r#\"a\nb\"# x"] {
+            let mut l = lexer::Lexer::new(input, 1u64, None);
+            assert_eq!(l.yylex().unwrap().kind, Kind::String("a\nb".to_string()), "{input}");
+            assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("x".to_string()), "{input}");
+            assert_eq!(l.get_current_line_count(), 2, "{input}");
+        }
     }
 
     #[test]

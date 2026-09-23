@@ -2200,7 +2200,11 @@
   (完了済み節) が、渡せるのは**添字の結果だけ**で `K` そのものを
   引数にはできない (`Span<T>` を作って渡す形が要る)。要素も
   スカラーのみ — struct / tuple の表は `.rodata` のレイアウトを
-  leaf 単位で決める必要がある。
+  leaf 単位で決める必要がある。**配列型のパラメータ自体が compiled
+  レーンで lower できない** (``compiler MVP cannot lower parameter
+  `a: [u64; 3]` yet``) のが、名前で渡せないことの下にある制約。
+  `poc/logsearch` の CRC 表 (256 エントリ) が起動時構築のままなのは
+  これが理由で、`src/crc.t` はその旨をコメントに書いている。
 
 - **STDLIB-CRYPTO C2〜C4: SHA-512 族 / HMAC / SHA-1・MD5** —
   設計と優先順位は [`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md)。C2 (SHA-512 /
@@ -2405,7 +2409,11 @@
   enum, struct, primitive (bool / i64 / u64 / str), or tuple, got
   UInt8`)。pattern 側は char リテラルを受けるようになったので、残るのは
   scrutinee の型リスト + 網羅性 + 4 バックエンドの lowering。
-  byte 走査を書いていて実際に困ってから。
+  ~~byte 走査を書いていて実際に困ってから。~~ **`poc/logsearch` が
+  困っている** (2026-09-23): バイト分岐が `== '...'` の if 連鎖
+  **53 箇所**で、`Jan`..`Dec` の 12 連 (`src/record.t:159`) のような
+  表が網羅性検査の外にある。計測は同 POC の
+  [`RUNTIME_GAPS.md`](../poc/logsearch/design-docs/RUNTIME_GAPS.md) G19。
 
 - **NUM-W-ENUMERATION の残り** ★ — 整数型の列挙が
   **42 ファイル 625 箇所**に散っている。型を 1 つ足すコストがそのまま
@@ -2501,7 +2509,14 @@
 
 ### 構文糖衣の候補 (NEW-FEATURES、未着手)
 
-- **raw / multi-line string literal** ★ — `r"..."` と `"""..."""`。
+- **raw / multi-line string literal** ★★ — `r"..."` と `"""..."""`。
+  **2026-09-23 に ★ から上げた**: `poc/logsearch` は JSON と HTML を
+  吐くので、`\"` が書けないことと `{` が常に補間であることの回避が
+  `\u{22}` **435 出現 (137 行)** と `{{` / `}}` **128 箇所**になり、
+  `src/ui.t` は 166 行中 **133 行**が `put_str("...")` 1 行ずつという
+  形になっている。しかも二重化の抜けは**起動時まで落ちない**
+  (テストではなく初回描画で補間エラー)。この POC で**最大の**
+  文法由来の負債。
   lexer 拡張のみで AST / 型検査 / バックエンドは無変更。設計メモ:
   (a) `r"..."` は**生文字列** — エスケープ処理も文字列補間もしない
   (正規表現・パス向け。`{{` / `}}` の二重化も不要になる)、
@@ -2551,6 +2566,57 @@
   型だけ付けて pool 書き換えを post-pass (`apply_null_coalesce_rewrites`)
   に回す — を `?` にもそのまま適用できる (`check_expr_located` と
   `visit_binary` の operand 経路に intercept を足す形)。
+
+以下 6 件は **`poc/logsearch` (18,000 行) を書いて出てきた穴**で、
+2026-09-23 に 3 レーン (`--all-backends`) で「本当に無い」ことを
+確かめてから登録した。各項目の実測値と現物の引用は同 POC の
+[`RUNTIME_GAPS.md`](../poc/logsearch/design-docs/RUNTIME_GAPS.md) §G19
+にあり、ここには二重に置かない。
+
+- **ENUM-STRUCT-VARIANT: enum の struct variant** ★★ —
+  `enum E { A { x: u64, y: u64 }, B }` が parse エラー
+  (`expected variant name in enum body, got Some(BraceOpen)`)。
+  **variant ごとに持つフィールドが違う**データ (ログのレコード形状、
+  プロトコルのメッセージ) が enum で表せず、タグ + フラットな struct +
+  「この形のときだけ有効」というコメントの約束に倒れる。POC は
+  `enum` 宣言 **0 件** / タグ用の 0 引数関数 **74 本**。pattern 側は
+  struct パターン (PATTERN-STRUCT) が既にあるので、要るのは宣言構文と
+  variant ごとの payload layout。**ENUM-DISCRIMINANT とセットで効く**
+  (タグがディスクに出る用途では往復が要るため)。
+- **MATCH-CONST-PATTERN: 名前つき定数を pattern に書けるように** ★★ —
+  `const K: u64 = 3u64` に対する `match n { K => a, _ => b }` は今、
+  **`K` という名前で全部を束縛する腕**として読まれる。比較は起きず、
+  診断は `[E0010] unreachable match arm at position 1` (後続の `_` に
+  ついてのもの) だけなので、**書き手の意図と逆の意味で黙って通る**。
+  穴としては「書けない」より重い。最小の直しは pattern の識別子解決で
+  const を先に引くこと (Rust と同じ規則)。これが入ると
+  `if k == kind_ftable()` 形の表 (POC に 5 本) が match になる。
+- **MATCH-STRING-LITERAL: `String` をリテラル腕で match** ★ —
+  `str` は `match s { "a" => ..., "b" | "c" => ... }` が 3 レーンで
+  動くのに、`String` は `[E0010] literal pattern cannot be used in a
+  match on a struct` (nominal struct なので)。文字列は `String` で
+  持ち回ることが多いので、`==` が `eq` に落ちるのと同じ流儀で
+  リテラル腕を `eq` 呼び出しに書き換えれば済むはず。
+- **BREAK-WITH-VALUE: `break <expr>` でループを値にする** ★ —
+  `loop` / `break` / ラベルはあるが**値を持ち出せない**ので、
+  「見つかったか」「なぜ抜けたか」を必ず `var` のフラグに書き戻す
+  (POC で 30 箇所以上、`ok` 系の梯子は別に 90 箇所)。
+  `val k = loop { if ... { break Option::Some(i) } ... }` が書ければ
+  フラグごと消える。型は全 `break` の合流で決める。
+- **STRUCT-SUGAR-GAP: struct 構文の非対称** ★ — pattern 側にあって
+  構築・束縛側に無いものが 2 つ: (a) field shorthand
+  (`P { x, y }` は parse エラー、`P { x: x, y: y }` と書く)、
+  (b) `val P { x, y } = mk()` の分割束縛 (タプルは
+  `val (a, b) = f()` が動く)。どちらも既存の desugar と同じ位置で
+  潰せる (前者は parser、後者は tuple destructuring と同じ
+  hidden temp + field access)。
+- **COLLECTION-LITERAL: compiled レーンで使えるコレクションリテラル** ★ —
+  `dict{...}` は interpreter 限定 (`compiler MVP cannot lower a dict
+  literal yet`)、`Vec` のリテラルは無いので、表は `push` の列になる。
+  配列リテラル `[a, b]` は動くが**イテレートできない** (`for v in
+  [a, b]` は `Method 'next' error for type [u64; 2]`)。`Vec::from`
+  相当か、配列の `IntoIterator` のどちらかが入れば「小さな表を 1 行で
+  書く」が成立する。
 
 ### インクリメンタルコンパイル
 

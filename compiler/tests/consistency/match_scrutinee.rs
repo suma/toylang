@@ -998,3 +998,42 @@ fn narrow_integers_can_be_matched_on_every_lane() {
         "60 3600 86400 1\n7 99\n10 20 0\n1 2 3\n1 2 3\n5 6 7\n",
     );
 }
+
+#[test]
+fn a_str_built_at_run_time_matches_its_literal_arm() {
+    // The compiled lanes compared a `str` scrutinee against a literal
+    // arm with `BinOp::Eq` -- the runtime handles, which are pointers.
+    // A literal scrutinee shares the interned pointer, so the existing
+    // tests passed; a `str` read out of a `String` never matched any
+    // arm on JIT / AOT while the interpreter matched it. Same fix `==`
+    // already had: compare the bytes (`StrEq`). Top level, `|`, and a
+    // payload position.
+    let src = r#"
+        fn classify(s: str) -> u64 {
+            match s {
+                "from" => 1u64,
+                "to" | "until" => 2u64,
+                _ => 0u64,
+            }
+        }
+        fn nested(o: Option<str>) -> u64 {
+            match o {
+                Option::Some("to") => 5u64,
+                Option::Some(_) => 6u64,
+                Option::None => 7u64,
+            }
+        }
+        fn main() -> u64 {
+            val whole = String::from_str("from=5 until=9")
+            val a = whole.substring(0u64, 4u64)
+            val b = whole.substring(7u64, 12u64)
+            val t = String::from_str("to")
+            val x = classify(a.to_str())
+            val y = classify(b.to_str())
+            val z = nested(Option::Some(t.to_str()))
+            println("{x} {y} {z}")
+            0u64
+        }
+    "#;
+    assert_renders(src, "str_match_runtime_value", "1 2 5\n");
+}

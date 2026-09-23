@@ -1193,15 +1193,22 @@ impl<'a> FunctionLower<'a> {
         let lit_v = self
             .lower_expr(lit_ref)?
             .ok_or_else(|| "literal pattern produced no value".to_string())?;
+        // A `str` compares by its bytes, as `==` does (`expr_ops.rs`). A
+        // `BinOp::Eq` compares the runtime handles, which are pointers:
+        // a literal scrutinee happened to share the arm's interned
+        // pointer, so `match "from" { "from" => .. }` worked while a
+        // `str` built at run time never matched any arm once compiled.
+        let inst = if ty == Type::Str {
+            InstKind::StrEq { a: cmp, b: lit_v }
+        } else {
+            InstKind::BinOp {
+                op: BinOp::Eq,
+                lhs: cmp,
+                rhs: lit_v,
+            }
+        };
         let cond = self
-            .emit(
-                InstKind::BinOp {
-                    op: BinOp::Eq,
-                    lhs: cmp,
-                    rhs: lit_v,
-                },
-                Some(Type::Bool),
-            )
+            .emit(inst, Some(Type::Bool))
             .expect("Eq returns a value");
         let then_blk = self.fresh_block();
         self.terminate(Terminator::Branch {

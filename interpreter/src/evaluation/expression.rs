@@ -1006,7 +1006,22 @@ impl EvaluationContext<'_> {
                 // propagating it (this helper can't return EvaluationResult).
                 let lit_res = self.evaluate(literal_expr)?;
                 let lit_value = self.unwrap_value(lit_res)?;
-                let eq = *value.borrow() == *lit_value.borrow();
+                let (v, l) = (value.borrow(), lit_value.borrow());
+                let eq = match (&*v, &*l) {
+                    // A `str` compares by its text, as `==` does. The
+                    // arm is a `ConstString` symbol and a string built
+                    // at run time is an owned `String`, and the derived
+                    // equality calls two representations unequal, so a
+                    // run-time `str` never matched a literal arm.
+                    (
+                        Object::String(_) | Object::ConstString(_),
+                        Object::String(_) | Object::ConstString(_),
+                    ) => {
+                        v.to_string_value(self.string_interner)
+                            == l.to_string_value(self.string_interner)
+                    }
+                    _ => *v == *l,
+                };
                 Ok(eq)
             }
             // PATTERN-EXTEND: `lo..hi` is half-open, so the test is

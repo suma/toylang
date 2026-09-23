@@ -50,11 +50,15 @@ pub fn fmt_name(kind: u32) -> str {
 # An (offset, length) pair packed into one `u64`: offset in the high
 # 32 bits, length in the low 32.
 #
-# The packing is not premature cleverness -- it is what keeps this
-# struct *returnable*. The AOT backend can hand back at most 8 leaves
-# from a function ("Too many return values to fit in registers"), and
-# four separate start/len pairs plus the header fields come to eleven.
-# Buffers here are capped at 16 MiB, so 32 bits is room to spare.
+# The packing first kept `ParsedLine` *returnable*: the AOT backend
+# once handed back at most 8 leaves, and four start/len pairs plus the
+# header fields came to eleven. WIDE-RETURN removed that limit. What
+# keeps the packing now is that a span is written *after* its struct
+# is built: the compiled lanes cannot assign a whole struct into a
+# field (`out.host = Extent { .. }`) or re-assign a struct `var`
+# (checked 2026-09-23), so a two-field span type would have to be
+# written leaf by leaf at every site. A `u64` is one leaf. Buffers are
+# capped at 16 MiB for their own reasons, so 32 bits is room to spare.
 pub fn pack_span(start: u64, len: u64) -> u64 {
     (start << 32u64) | (len & 0xFFFFFFFFu64)
 }

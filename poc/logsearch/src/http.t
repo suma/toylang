@@ -525,16 +525,18 @@ pub fn put_json_string(out: &mut ByteWriter, s: &String) {
 # Responses
 
 pub fn reason(status: u64) -> str {
-    if status == 200u64 { return "OK" }
-    if status == 400u64 { return "Bad Request" }
-    if status == 404u64 { return "Not Found" }
-    if status == 405u64 { return "Method Not Allowed" }
-    if status == 411u64 { return "Length Required" }
-    if status == 413u64 { return "Payload Too Large" }
-    if status == 431u64 { return "Request Header Fields Too Large" }
-    if status == 500u64 { return "Internal Server Error" }
-    if status == 503u64 { return "Service Unavailable" }
-    "Unknown"
+    match status {
+        200u64 => "OK",
+        400u64 => "Bad Request",
+        404u64 => "Not Found",
+        405u64 => "Method Not Allowed",
+        411u64 => "Length Required",
+        413u64 => "Payload Too Large",
+        431u64 => "Request Header Fields Too Large",
+        500u64 => "Internal Server Error",
+        503u64 => "Service Unavailable",
+        _ => "Unknown",
+    }
 }
 
 # Status line and the headers every response carries.

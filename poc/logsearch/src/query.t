@@ -152,13 +152,14 @@ fn parse_time(text: str, now: i64) -> i64 {
 }
 
 fn kind_code(text: str) -> u32 {
-    val s = String::from_str(text)
-    if s.eq_str("syslog") { return 1u32 }
-    if s.eq_str("datetime") { return 2u32 }
-    if s.eq_str("apache") { return 3u32 }
-    if s.eq_str("epoch") { return 4u32 }
-    if s.eq_str("plain") { return 0u32 }
-    kind_any()
+    match text {
+        "syslog" => 1u32,
+        "datetime" => 2u32,
+        "apache" => 3u32,
+        "epoch" => 4u32,
+        "plain" => 0u32,
+        _ => kind_any(),
+    }
 }
 
 # Turn the query string into a `Query`.
@@ -186,8 +187,7 @@ pub fn parse_query(text: str, now: i64) -> Query {
                     val key = tok.substring(0u64, pos)
                     val value = tok.substring(pos + 1u64, tok.len())
                     val vs = value.to_str()
-                    if key.eq_str("from") { q.ts_from = parse_time(vs, now)  handled = true }
-                    if key.eq_str("to") { q.ts_to = parse_time(vs, now)  handled = true }
+                    val ks = key.to_str()
                     # `host` and `tag` are not special: they are keys
                     # the index knows, and they fall through to the
                     # term path below. `host` is a *reserved label*
@@ -198,24 +198,30 @@ pub fn parse_query(text: str, now: i64) -> Query {
                     # counts them. Comparing only the syslog header
                     # here meant `host=web01` missed every ingested
                     # record and opened all twelve segments on the way.
-                    if key.eq_str("kind") { q.kind = kind_code(vs)  handled = true }
+                    #
                     # `top=` is read by the caller, which decides
                     # between a traversal and a whole distribution. It
                     # is consumed here so it does not fall through and
                     # become a body substring -- searching lines for
                     # the text `top=path` is nobody's intent.
-                    if key.eq_str("top") { handled = true }
-                    if key.eq_str("order") {
-                        q.desc = value.eq_str("desc")
-                        handled = true
-                    }
-                    if key.eq_str("limit") {
-                        val n = parse::to_u64(vs)
-                        match n {
-                            Result::Ok(v) => { q.limit = v }
-                            Result::Err(e) => { }
+                    match ks {
+                        "from" => { q.ts_from = parse_time(vs, now)  handled = true }
+                        "to" => { q.ts_to = parse_time(vs, now)  handled = true }
+                        "kind" => { q.kind = kind_code(vs)  handled = true }
+                        "top" => { handled = true }
+                        "order" => {
+                            q.desc = vs == "desc"
+                            handled = true
                         }
-                        handled = true
+                        "limit" => {
+                            val n = parse::to_u64(vs)
+                            match n {
+                                Result::Ok(v) => { q.limit = v }
+                                Result::Err(e) => { }
+                            }
+                            handled = true
+                        }
+                        _ => {}
                     }
                 }
                 Option::None => { }
@@ -1338,12 +1344,11 @@ pub fn field_none() -> u32 { 0u32 }
 pub fn is_index_key(key: &String) -> bool {
     val n = key.len()
     if n == 0u64 || n > 32u64 { return false }
-    if key.eq_str("from") { return false }
-    if key.eq_str("to") { return false }
-    if key.eq_str("limit") { return false }
-    if key.eq_str("order") { return false }
-    if key.eq_str("kind") { return false }
-    if key.eq_str("top") { return false }
+    val word = key.to_str()
+    match word {
+        "from" | "to" | "limit" | "order" | "kind" | "top" => { return false }
+        _ => {}
+    }
     var i: u64 = 0u64
     while i < n {
         val c: u8 = key.get(i)
@@ -1355,16 +1360,16 @@ pub fn is_index_key(key: &String) -> bool {
 }
 
 pub fn field_code(name: str) -> u32 {
-    val s = String::from_str(name)
-    if s.eq_str("status") { return field_status() }
-    if s.eq_str("method") { return field_method() }
-    if s.eq_str("path") { return field_path() }
-    if s.eq_str("client") { return field_client() }
-    if s.eq_str("ip") { return field_client() }
-    if s.eq_str("vhost") { return field_vhost() }
-    if s.eq_str("ua") { return field_ua() }
-    if s.eq_str("proto") { return field_proto() }
-    if s.eq_str("host") { return field_host() }
-    if s.eq_str("tag") { return field_tag() }
-    field_none()
+    match name {
+        "status" => field_status(),
+        "method" => field_method(),
+        "path" => field_path(),
+        "client" | "ip" => field_client(),
+        "vhost" => field_vhost(),
+        "ua" => field_ua(),
+        "proto" => field_proto(),
+        "host" => field_host(),
+        "tag" => field_tag(),
+        _ => field_none(),
+    }
 }

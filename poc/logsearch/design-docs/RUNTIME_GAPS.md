@@ -350,8 +350,8 @@ stdlib のバイト kernel も SIMD 化済み。使い方と実測は [`SIMD.md`
 |---|---|---|
 | **compound な *フィールド* を引数に渡せない** | `call argument produced no value` / `method argument produced no value` | 窓を渡す (`self.buf.as_span()` を `val` に束縛して `Span<u8>` で渡す)。束縛・リテラル・呼び出し結果は通るので、**フィールドパスだけが穴**。`len_of(&self.data)` の形も同じく通らない |
 | **`match` の arm から compound を代入できない** | `assignment rhs produced no value` | arm の中で使い切る (`Vec<String>` を外の `var` に代入せず、arm の内側でループを回す) |
-| **所有型を struct のフィールドへ代入できない** | `compiler MVP cannot assign whole struct to nested field \`name\` (assign individual leaf scalars instead)` | 値をフィールドに**後から入れず、構築時に渡す**。`mount.t` の `read_meta` は、識別子が分かった場所で `MountMeta { .. }` を組んで `return` する形になった。最小再現: `var h = Holder { name: n }` に対する `h.name = s` (`String` フィールド) |
-| **所有型を既存の束縛へ move できない** | `assignment rhs produced no value` | `var` に溜めずに `val` で受け切る。上の行と同じ理由で同じ回避になるので、**この 2 つは一緒に踏む**。最小再現: `var name = String::new()` に対する `name = s`。既出の「`match` の arm から compound を代入できない」と診断は同じだが、**arm でなくても起きる** (通常の呼び出し結果でも) |
+| **struct を struct のフィールドへ代入できない** (所有型に限らない — `Drop` の無い 2 フィールドの struct でも同じ、2026-09-23) | `compiler MVP cannot assign whole struct to nested field \`name\` (assign individual leaf scalars instead)` | 値をフィールドに**後から入れず、構築時に渡す**。`mount.t` の `read_meta` は、識別子が分かった場所で `MountMeta { .. }` を組んで `return` する形になった。最小再現: `var h = Holder { name: n }` に対する `h.name = s` (`String` フィールド) |
+| **既存の `var` へ struct を代入できない** (所有型に限らない、2026-09-23) | `assignment rhs produced no value` | `var` に溜めずに `val` で受け切る。上の行と同じ理由で同じ回避になるので、**この 2 つは一緒に踏む**。最小再現: `var name = String::new()` に対する `name = s`。既出の「`match` の arm から compound を代入できない」と診断は同じだが、**arm でなくても起きる** (通常の呼び出し結果でも) |
 | **associated function に wide な `&mut` を渡せない** | `call argument produced no value` | 自由関数かモジュール関数にする。`fn f(w: &mut Wide, v: &mut Vec<u64>)` は通るが、同じものを `impl Ops { fn f(...) }` の associated function として書くと通らない — **呼び出し位置ごとに引数の lowering が呼び先を知っているかどうかが違う**のが原因で、同じ根から 3 件目 (2026-09-11、前の 2 件は本体側で直した)。最小再現: 12 leaf の struct への `&mut` を `Ops::touch(&mut w, &mut v)` に渡す |
 | ~~**`match` の腕で受けたハンドルは複製で、元が閉じる**~~ (解決済み) | **2026-09-19 に本体側で直った** (todo の MATCH-PAYLOAD-COPY)。腕は payload の複製ではなく**別名**を張るようになり、所有者は 1 人になった。踏んだのはサーバの接続表で、当時の回避は `TcpListener::accept_fd` (今も表を作るには番号のほうが素直なので残っている) |
 | ~~**容器から取り出したハンドルを束縛すると閉じる**~~ (解決済み) | **2026-09-19 / 20 に本体側で直った** (ELEMENT-BORROW)。`val s: TcpStream = conns.get(0u64)` は要素の**別名**に drop glue が付いて fd を閉じていた。今は `[E0028]` が**コンパイル時に断り**、`conns.borrow(0u64)` で名指す。固定スロットの表は `Vec<Option<TcpStream>>` — 空きは `None`、閉じるときは `Vec::replace` で所有を取り戻す (`set` は上書きするだけで fd を閉じない)。サーバ本体も 2026-09-20 に `Vec<Option<TcpStream>>` へ移した (同時接続 128 はそのまま) |
@@ -537,24 +537,24 @@ push している箇所は 0 件だった。
 その最大の原因が 1 行目の `Option` 手展開である。**言語側の宿題は
 文法追加ではなく、なぜ辿り着かなかったか** (診断・例・API の形) の方。
 
-### 8. 化石になっている回避策 (2026-09-23 に叩き直した)
+### 8. 化石と思われた回避策 — 叩き直した結果 (2026-09-23)
 
-**穴が埋まったのに、埋まる前に曲げた形が残っている**もの。§R が
-R2 / R5 でやったのと同じ片付けが要る。
+§G19 を書いた日に「穴が埋まったのに残っている形」として 4 つ挙げたが、
+**実際に書き換えようとすると 2 つは化石ではなかった**。
 
-| 残っている形 | 箇所 | 叩き直した結果 |
+| 形 | 箇所 | 結果 |
 |---|---|---|
-| `pack_span` で 2 値を `u64` に詰める (`src/record.t:50-56` が「AOT は 8 leaf しか返せない」と説明) | **54** | **11 leaf の struct 返しも `(u64, u64)` のタプル返し + 分割束縛も 3 レーン一致で動く** (WIDE-RETURN で消えた制約)。バッファ 16 MiB 上限の根拠もこれだった |
-| `(Span<u8>, at, len)` の 3 つ組パラメータ | **28** | `Span::slice(offset, len)` が `core/std/span.t:82` に**ある**。`value_matches(w, needle)` の 2 引数で書ける |
-| `String::from_str` + `eq_str` で文字列を比べる | **33** | `match name { "status" => ..., "ip" \| "client" => ..., _ => ... }` が 3 レーンで動く (`str` のまま比べれば確保も要らない)。`main.t:1367` では既に `mode == "archive"` が使われている |
-| 兄弟の分岐ごとに束縛名を変える (`a_out` / `q_out` / `f_out` … **22 個**、`main.t:1368` に理由のコメント) | 22 | **最小形では再現しなかった** — 逐次 `if` でも `if/else` でも、同名の `String` 束縛を 2 つの枝で move して 3 レーン一致。規則が変わったのか、別の条件が要るのかは未特定 |
+| `String::from_str` + `eq_str` で文字列の表を引く | 33 | **化石だった — 書き換えた**。表になっている 5 本 (`kind_code` / `field_code` / `is_index_key` / クエリの `key=` 振り分け / `main` の `idx_mode`) と整数の表 `http::reason` を `match` にした。`str` のまま比べるので確保も消えた。残る `eq_str` は 1 回きりの比較。**書き換えの途中で compiled レーンと tree-walker のバグを踏んだ** — 実行時に作った `str` がリテラル腕に当たらない (`b4a33055` で修正) |
+| 兄弟の分岐ごとに束縛名を変える (`a_out` / `q_out` …) | 22 | **化石だった — 書き換えた**。`arg_or` は `str` を返すので、そもそも move の対象ではなかった |
+| `pack_span` で 2 値を `u64` に詰める | 54 | **化石ではなかった**。元の理由 (戻り値は 8 leaf まで) は WIDE-RETURN で消えたが、span は struct を組んだ**後から**書くので、struct にすると G16 の「struct を struct のフィールドへ / 既存の `var` へ代入できない」に当たる。`record.t` のコメントを今の理由に書き直した。なお「バッファ 16 MiB 上限の根拠もこれ」と書いたのは向きが逆で、詰め方が上限に**頼っている**のであって上限の原因ではない |
+| `(Span<u8>, at, len)` の 3 つ組パラメータ | 28 | **化石ではなかった**。`Span::slice` はあるが、この POC はこれを回避策と書いていない — 関数が**外側の窓での絶対位置**を返す設計で、slice にすると位置の意味が変わる。機械的に戻せる形ではない |
 
 **言語側の台帳は `design-docs/todo.md` が正本**なので、ここには
 対応する項目名だけを書いた。todo にも `docs/language.md` にも項目が
-無い**新規要望**は 6 つ: **enum の struct variant** /
-**名前つき定数を pattern に書けること** (今は黙って束縛になる) /
-**`break <value>`** / **field shorthand** / **`val` の struct 分割束縛** /
-**compiled レーンのコレクションリテラル**。
+無かった**新規要望**は 6 つで、2026-09-23 に todo へ登録した:
+**enum の struct variant** / ~~名前つき定数を pattern に書けること~~
+(同日に解消) / **`break <value>`** / **field shorthand** /
+**`val` の struct 分割束縛** / **compiled レーンのコレクションリテラル**。
 
 ## R. 前提条件 (回避策が無い / 弱いもの)
 

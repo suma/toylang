@@ -1365,74 +1365,69 @@ fn cmd_object(dir: str, spec: str) -> u64 {
 
 fn main() -> u64 {
     val mode = arg_or(0u64, "scan")
-    # Each branch names its bindings differently. Two sibling
-    # branches that both bind `out` are read as one binding moved
-    # twice ("cannot be moved inside a branch"), even though only one
-    # of them can run.
     if mode == "archive" {
-        val a_dir = arg_or(1u64, "poc/logsearch/log")
-        val a_out = arg_or(2u64, "/tmp/logarchive")
-        val a_limit = arg_u64(3u64, 1000000u64)
-        return cmd_archive(a_dir, a_out, a_limit)
+        val dir = arg_or(1u64, "poc/logsearch/log")
+        val out = arg_or(2u64, "/tmp/logarchive")
+        val limit = arg_u64(3u64, 1000000u64)
+        return cmd_archive(dir, out, limit)
     }
     if mode == "query" {
-        val q_out = arg_or(1u64, "/tmp/logarchive")
-        val q_text = arg_or(2u64, "")
-        return cmd_query(q_out, q_text)
+        val out = arg_or(1u64, "/tmp/logarchive")
+        val text = arg_or(2u64, "")
+        return cmd_query(out, text)
     }
     if mode == "fields" {
         # A fourth argument of `scan` forces the full walk, which is
         # how the index is checked against the thing it replaces.
         val how = arg_or(4u64, "index")
-        val idx_mode = String::from_str(how)
-        val f_out = arg_or(1u64, "/tmp/logarchive")
-        val f_field = arg_or(2u64, "status")
-        val f_limit = arg_u64(3u64, 20u64)
-        if idx_mode.eq_str("scan") {
-            return cmd_fields(f_out, f_field, f_limit)
+        val out = arg_or(1u64, "/tmp/logarchive")
+        val field = arg_or(2u64, "status")
+        val limit = arg_u64(3u64, 20u64)
+        if how == "scan" {
+            return cmd_fields(out, field, limit)
         }
-        return cmd_fields_indexed(f_out, f_field, f_limit)
+        return cmd_fields_indexed(out, field, limit)
     }
     if mode == "object" {
-        val o_out = arg_or(1u64, "/tmp/logarchive")
-        val o_spec = arg_or(2u64, "")
-        return cmd_object(o_out, o_spec)
+        val out = arg_or(1u64, "/tmp/logarchive")
+        val spec = arg_or(2u64, "")
+        return cmd_object(out, spec)
     }
     if mode == "verify" {
-        val v_out = arg_or(1u64, "/tmp/logarchive")
-        return cmd_verify(v_out)
+        val out = arg_or(1u64, "/tmp/logarchive")
+        return cmd_verify(out)
     }
     if mode == "catalog" {
-        val c_spec = arg_or(1u64, "/tmp/logarchive")
-        val c_action = arg_or(2u64, "list")
-        return cmd_catalog(c_spec, c_action)
+        val spec = arg_or(1u64, "/tmp/logarchive")
+        val action = arg_or(2u64, "list")
+        return cmd_catalog(spec, action)
     }
     if mode == "compact" {
-        val k_spec = arg_or(1u64, "/tmp/logarchive")
-        return cmd_compact(k_spec)
+        val spec = arg_or(1u64, "/tmp/logarchive")
+        return cmd_compact(spec)
     }
     if mode == "retain" {
-        val r_spec = arg_or(1u64, "/tmp/logarchive")
-        val r_days = arg_u64(2u64, 14u64)
-        return cmd_retain(r_spec, r_days)
+        val spec = arg_or(1u64, "/tmp/logarchive")
+        val days = arg_u64(2u64, 14u64)
+        return cmd_retain(spec, days)
     }
     if mode == "serve" {
-        val s_spec = arg_or(1u64, "/tmp/logarchive")
-        val s_port = arg_u64(2u64, 8080u64)
+        val spec = arg_or(1u64, "/tmp/logarchive")
+        val port = arg_u64(2u64, 8080u64)
         # An idle budget of 0 means "until told to stop". A test binds
         # port 0 and passes a small one so a forgotten server cannot
         # outlive the run.
-        val s_idle = arg_u64(3u64, 0u64)
-        return server::serve(s_spec, "127.0.0.1", s_port, s_idle)
+        val idle = arg_u64(3u64, 0u64)
+        return server::serve(spec, "127.0.0.1", port, idle)
     }
     if mode == "scan" {
-        val s_dir = arg_or(1u64, "poc/logsearch/log")
-        val s_limit = arg_u64(2u64, 1000000u64)
-        return cmd_scan(s_dir, s_limit)
+        val dir = arg_or(1u64, "poc/logsearch/log")
+        val limit = arg_u64(2u64, 1000000u64)
+        return cmd_scan(dir, limit)
     }
     # No subcommand: the first argument is the directory.
-    val d_limit = arg_u64(1u64, 1000000u64)
-    cmd_scan(mode, d_limit)
+    val limit = arg_u64(1u64, 1000000u64)
+    cmd_scan(mode, limit)
 }
 
 # ---------------------------------------------------------------------

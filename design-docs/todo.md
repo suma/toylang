@@ -12,6 +12,12 @@
 
 ### 2026-09-23
 
+- **CHAR-LITERAL-MATCH: 全整数幅を match の scrutinee に** — `u8` / `u16` /
+  `u32` / `i8` / `i16` / `i32` を match でき、腕は suffix つき narrow
+  literal・char リテラル (scrutinee の幅に narrow)・範囲・`|` で書ける。
+  網羅性は値の区間で数えるので、範囲で埋めた `u8` は `_` が要らない。
+  バックエンドは無変更 (interpreter JIT は narrow の literal を断って
+  fallback)。
 - **MATCH-CONST-PATTERN: pattern の const 名は値と比較する** — 以前は
   黙って新しい名前の束縛になり、腕が全値に当たって後続の `_` が
   unreachable と言われるだけだった。型検査器がリテラルパターンに
@@ -2417,17 +2423,6 @@
   2026-09-03 に `core/std/base64.t` の `symbol()` で踏んで、
   `'+' as u8` / `'/' as u8` で回避した (隣の 3 arm が元から `as u8`
   なので実害は小さい)。
-
-- **CHAR-LITERAL-MATCH: narrow int の match scrutinee** ★ —
-  `match byte { 'h' => ... }` は書けない (`match scrutinee must be an
-  enum, struct, primitive (bool / i64 / u64 / str), or tuple, got
-  UInt8`)。pattern 側は char リテラルを受けるようになったので、残るのは
-  scrutinee の型リスト + 網羅性 + 4 バックエンドの lowering。
-  ~~byte 走査を書いていて実際に困ってから。~~ **`poc/logsearch` が
-  困っている** (2026-09-23): バイト分岐が `== '...'` の if 連鎖
-  **53 箇所**で、`Jan`..`Dec` の 12 連 (`src/record.t:159`) のような
-  表が網羅性検査の外にある。計測は同 POC の
-  [`RUNTIME_GAPS.md`](../poc/logsearch/design-docs/RUNTIME_GAPS.md) G19。
 
 - **NUM-W-ENUMERATION の残り** ★ — 整数型の列挙が
   **42 ファイル 625 箇所**に散っている。型を 1 つ足すコストがそのまま

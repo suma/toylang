@@ -189,7 +189,18 @@ fn expand_slots(slots: Vec<Vec<crate::ast::Pattern>>) -> Vec<Vec<crate::ast::Pat
 fn pattern_starts_a_range(parser: &mut Parser) -> bool {
     let starts_literal = matches!(
         parser.peek(),
-        Some(Kind::UInt64(_) | Kind::Int64(_) | Kind::Integer(_) | Kind::CharLiteral(_))
+        Some(
+            Kind::UInt64(_)
+                | Kind::Int64(_)
+                | Kind::Integer(_)
+                | Kind::CharLiteral(_)
+                | Kind::UInt8(_)
+                | Kind::UInt16(_)
+                | Kind::UInt32(_)
+                | Kind::Int8(_)
+                | Kind::Int16(_)
+                | Kind::Int32(_)
+        )
     );
     starts_literal && matches!(parser.peek_n(1), Some(Kind::DotDot))
 }
@@ -459,6 +470,39 @@ fn parse_pattern_literal(parser: &mut Parser) -> ParserResult<Option<crate::ast:
             parser.next();
             let sym = parser.string_interner.get_or_intern(s_copy);
             parser.ast_builder.number_expr(sym, Some(location))
+        }
+        // CHAR-LITERAL-MATCH: the narrow widths, so a match on a `u8`
+        // or a `u32` can name its arms with the suffix it was declared
+        // with (`0x0Au8`, `3u32`).
+        Some(&Kind::UInt8(n)) => {
+            let location = parser.current_source_location();
+            parser.next();
+            parser.ast_builder.uint8_expr(n, Some(location))
+        }
+        Some(&Kind::UInt16(n)) => {
+            let location = parser.current_source_location();
+            parser.next();
+            parser.ast_builder.uint16_expr(n, Some(location))
+        }
+        Some(&Kind::UInt32(n)) => {
+            let location = parser.current_source_location();
+            parser.next();
+            parser.ast_builder.uint32_expr(n, Some(location))
+        }
+        Some(&Kind::Int8(n)) => {
+            let location = parser.current_source_location();
+            parser.next();
+            parser.ast_builder.int8_expr(n, Some(location))
+        }
+        Some(&Kind::Int16(n)) => {
+            let location = parser.current_source_location();
+            parser.next();
+            parser.ast_builder.int16_expr(n, Some(location))
+        }
+        Some(&Kind::Int32(n)) => {
+            let location = parser.current_source_location();
+            parser.next();
+            parser.ast_builder.int32_expr(n, Some(location))
         }
         // CHAR-LITERAL-NUM: `match b { 'h' => ... }` over a string's
         // bytes. The literal is `u32` like anywhere else, and the

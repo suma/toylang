@@ -417,38 +417,18 @@ stdlib のバイト kernel も SIMD 化済み。使い方と実測は [`SIMD.md`
 
 ### 1. ~~文字列リテラルに逃げ道が無い~~ — 2026-09-23 に解消 (§Z)
 
-### 2. narrow int を `match` の scrutinee にできない ★★
+### 2. `String` をリテラル腕で match できない ★ (narrow int と const は解消)
 
-**無いもの**: `u8` / `u16` / `u32` を `match` に掛けること
-(`match c { '0' => ... }` は **parse エラー**、`u32` のリテラル腕も同じ)。
+**narrow int の match は 2026-09-23 に解消** (CHAR-LITERAL-MATCH、§Z)。
+const 名を pattern に書くと黙って束縛になる件も同日に解消した
+(MATCH-CONST-PATTERN)。どちらも関数で作ったタグ (`kind_ftable()`) には
+まだ効かない — 先に `const` か enum に移す必要がある (§3)。
 
-**困ること**: バイト走査が主業なのに、分岐が `if` の連鎖になる。
-`== '...'` の比較は **53 箇所**:
-
-```rust
-if unit == 'm' { secs = mag * 60u64 }        # src/query.t:132-134
-if unit == 'h' { secs = mag * 3600u64 }
-if unit == 'd' { secs = mag * 86400u64 }
-```
-
-**回避策**: if の連鎖。動くが**網羅性検査が効かない** — 増やした
-バイトの扱いを 1 箇所書き忘れても誰も言ってくれない。
-
-**入ったら**: `match` 1 つになり、腕の抜けをコンパイラが言う。→ todo の
-**CHAR-LITERAL-MATCH** (「byte 走査で困ってから」と書いてある。
-**もう困っている**のが現状)。
-
-**同じ形の穴が 2 つ隣にある**:
-
-- **`String` は match できない** — `[E0010] literal pattern cannot be
-  used in a match on a struct`。`String` は nominal struct なので、
-  `str` では通るリテラル腕が `String` では通らない。この POC の
-  `field_code` / `is_reserved` ほか **`eq_str` 33 箇所**がこれ
-  (ただし半分は化石。§8 を見ること)
-- ~~**名前つき定数を pattern に書くと、黙って新しい束縛になる**~~ —
-  **2026-09-23 に解消** (MATCH-CONST-PATTERN)。const 名は値と比較
-  される。初期化子が literal の const に限るので、`kind_ftable()` の
-  ような**関数で作ったタグ**はまず `const` に移す必要がある (§3)
+**残っているもの**: `String` のリテラル腕 — `[E0010] literal pattern
+cannot be used in a match on a struct`。`String` は nominal struct
+なので、`str` では通るリテラル腕が `String` では通らない。この POC の
+`field_code` / `is_reserved` ほか **`eq_str` 33 箇所**がこれ
+(ただし半分は化石。§8 を見ること)。→ todo の **MATCH-STRING-LITERAL**。
 
 ### 3. enum の表現力 ★★ — 2 つとも保存形式のモデリングに効く
 
@@ -612,4 +592,5 @@ R2 / R5 は 2026-09-05 に解消し、**同日その回避策を設計から外�
 | **`&mut` 引数を再帰呼び出しに渡せない** (REF-REBORROW) | `5dbb422` (2026-09-05)。**自由関数でも、ループと分岐の内側でも通る**ことを確認した。`logdir::collect` の work list は回避策ではなく選択になった |
 | **`Dict<u64, V>` が別モジュールから使えない** | 2026-09-05。`Dict` はハッシュ表になり、`impl Hash for u64` がモジュールを跨いで見える。**表側が splitmix64 で混ぜる**ので、`(from << 32) \| to` のような鍵でも退化しない (`archive.t` の自前表はこの理由では要らなくなった) |
 | **G19-1 文字列リテラルに逃げ道が無い** — `\"` も raw リテラルも無く、`{` は必ず補間 | `4de9ce70` (2026-09-23) で `\"` と `r"..."` / `r#"..."#` が入った。**同日に回避策を戻した**: `\u{22}` 435 → **0**、`{{` / `}}` 128 → **4 リテラル** (値そのものに `}}` があるか `\n` と同居するものだけ)、`ui.t` の `put_str` 133 → **1** (ページ全体が raw リテラル 1 つ。出力は書き換え前とバイト一致を確認) |
+| **G19-2 narrow int を match に掛けられない** | CHAR-LITERAL-MATCH (2026-09-23)。同日に `== '...'` の連鎖 3 本 (`mount.t` の単位、`query.t` の相対時刻、`record.t` の `fmt_name`) を match に戻した。残りの比較は 1 回きりの `if` で、表ではない |
 | **SHA-256 / SHA-224** | `core/std/crypto/` (2026-09-05)。ただしフレームの検査には重すぎるので `src/crc.t` は残る (G7) |

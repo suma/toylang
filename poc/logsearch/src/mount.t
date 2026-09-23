@@ -52,13 +52,16 @@ pub fn state_name(s: u64) -> str {
 pub fn parse_size(s: &String) -> Option<u64> {
     val n = s.len()
     if n == 0u64 { return Option::None }
-    var mul: u64 = 1u64
-    var end = n
     val last: u8 = s.get(n - 1u64)
-    if last == 'K' || last == 'k' { mul = 1024u64  end = n - 1u64 }
-    if last == 'M' || last == 'm' { mul = 1048576u64  end = n - 1u64 }
-    if last == 'G' || last == 'g' { mul = 1073741824u64  end = n - 1u64 }
-    if last == 'T' || last == 't' { mul = 1099511627776u64  end = n - 1u64 }
+    val mul: u64 = match last {
+        'K' | 'k' => 1024u64,
+        'M' | 'm' => 1048576u64,
+        'G' | 'g' => 1073741824u64,
+        'T' | 't' => 1099511627776u64,
+        _ => 1u64,
+    }
+    # A suffix was read exactly when it multiplied.
+    val end = if mul == 1u64 { n } else { n - 1u64 }
     if end == 0u64 { return Option::None }
     val digits = s.substring(0u64, end)
     val got = parse::to_u64(digits.to_str())

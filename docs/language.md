@@ -3706,7 +3706,9 @@ Patterns:
 - `Type { field: p, ... }` — struct patterns; `{ x }` is shorthand for
   `x: x`, and a trailing `..` ignores the fields not named (see
   [Struct patterns](#struct-patterns))
-- `42i64`, `true`, `"hello"` — literal patterns for primitives
+- `42i64`, `true`, `"hello"`, `'h'` — literal patterns for primitives
+  (`bool`, `str`, and every integer width — see
+  [Matching integers and bytes](#matching-integers-and-bytes))
 - `K` where `K` is a top-level `const` — compares against its value
   (see [Constants in patterns](#constants-in-patterns))
 - `a | b | c` — alternatives, all sharing one arm body
@@ -3797,6 +3799,32 @@ In practice most integer matches still want a `_`; spanning `i64` by
 hand is only worth it when the bounds are meaningful. An or-pattern
 counts toward exhaustiveness the same way — an enum whose variants are
 all named across alternatives needs no wildcard.
+
+#### Matching integers and bytes
+
+Any integer type can be matched — `i64`, `u64`, and the six narrow
+widths — with literal arms written at the scrutinee's width (`3u32`,
+`-1i8`) or unsuffixed. A **char literal narrows to the scrutinee** the
+way it does in `b == 'h'`, so a byte read out of a string is matched
+by the character it stands for:
+
+```rust
+fn unit_seconds(c: u8) -> u64 {
+    match c {
+        'm'       => 60u64,
+        'h'       => 3600u64,
+        'd'       => 86400u64,
+        '0'..':'  => 0u64,       # the ten digits: `..` excludes `:`
+        _         => 1u64,
+    }
+}
+```
+
+A char that does not fit is a type error (`'\u{1F600}'` against a
+`u8`), and `'a'` and `97u8` are the same arm, so the second is
+unreachable. Exhaustiveness counts values, so a `u8` covered by ranges
+(`0u8..128u8`, `128u8..255u8`, `255u8`) needs no `_` — the narrow
+widths are small enough for that to be practical.
 
 #### Constants in patterns
 

@@ -96,8 +96,44 @@ fn integer_type_span(ty: &TypeDecl) -> Option<(i128, i128)> {
     match ty {
         TypeDecl::Int64 => Some((i64::MIN as i128, i64::MAX as i128)),
         TypeDecl::UInt64 => Some((0, u64::MAX as i128)),
+        TypeDecl::Int8 => Some((i8::MIN as i128, i8::MAX as i128)),
+        TypeDecl::Int16 => Some((i16::MIN as i128, i16::MAX as i128)),
+        TypeDecl::Int32 => Some((i32::MIN as i128, i32::MAX as i128)),
+        TypeDecl::UInt8 => Some((0, u8::MAX as i128)),
+        TypeDecl::UInt16 => Some((0, u16::MAX as i128)),
+        TypeDecl::UInt32 => Some((0, u32::MAX as i128)),
         _ => None,
     }
+}
+
+/// CHAR-LITERAL-MATCH: the integers a `match` may switch on — `i64`,
+/// `u64` and the six narrow widths.
+fn is_matchable_integer(ty: &TypeDecl) -> bool {
+    integer_type_span(ty).is_some()
+}
+
+/// The value of an integer literal node, whatever width it was written
+/// at. A char literal that no position narrowed is still its code
+/// point, and an unsuffixed literal is still `Number` in the pool, its
+/// interned text the value. `None` for anything that is not an
+/// integer literal.
+fn integer_literal_value(
+    expr: &Expr,
+    interner: &string_interner::DefaultStringInterner,
+) -> Option<i128> {
+    Some(match expr {
+        Expr::Int64(v) => *v as i128,
+        Expr::UInt64(v) => *v as i128,
+        Expr::Int8(v) => *v as i128,
+        Expr::Int16(v) => *v as i128,
+        Expr::Int32(v) => *v as i128,
+        Expr::UInt8(v) => *v as i128,
+        Expr::UInt16(v) => *v as i128,
+        Expr::UInt32(v) => *v as i128,
+        Expr::CharLiteral(cp) => *cp as i128,
+        Expr::Number(sym) => interner.resolve(*sym)?.replace('_', "").parse::<i128>().ok()?,
+        _ => return None,
+    })
 }
 
 impl<'a> TypeCheckerVisitor<'a> {
@@ -193,7 +229,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 Ok(())
             }
             Pattern::Literal(lit_expr) => {
-                if !matches!(expected_ty, TypeDecl::Bool | TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::String) {
+                if !matches!(expected_ty, TypeDecl::Bool | TypeDecl::String) && !is_matchable_integer(expected_ty) {
                     return Err(TypeCheckError::new(format!(
                         "literal pattern is only valid where a primitive value is expected, got {}",
                         self.type_name_for_error(expected_ty)
@@ -203,6 +239,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 self.type_inference.type_hint = Some(expected_ty.clone());
                 let lit_ty = self.visit_expr(lit_expr)?;
                 self.type_inference.type_hint = saved_hint;
+                let lit_ty = self.coerce_char_literal(lit_expr, expected_ty)?.unwrap_or(lit_ty);
                 if !lit_ty.is_equivalent(expected_ty) {
                     if let Some(name) = self.const_pattern_origin(lit_expr) {
                         return Err(TypeCheckError::new(format!(
@@ -358,6 +395,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.type_inference.type_hint = Some(expected_ty.clone());
         let ty = self.visit_expr(endpoint)?;
         self.type_inference.type_hint = saved_hint;
+        let ty = self.coerce_char_literal(endpoint, expected_ty)?.unwrap_or(ty);
         if !ty.is_equivalent(expected_ty) {
             return Err(TypeCheckError::new(format!(
                 "range endpoint type {} does not match {}",
@@ -365,23 +403,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                 self.type_name_for_error(expected_ty)
             )));
         }
-        match self.core.expr_pool.get(endpoint) {
-            Some(Expr::Int64(v)) => Ok(v as i128),
-            Some(Expr::UInt64(v)) => Ok(v as i128),
-            // An unsuffixed literal is still `Number` in the pool; its
-            // interned text is the value.
-            Some(Expr::Number(sym)) => self
-                .core
-                .string_interner
-                .resolve(sym)
-                .and_then(|t| t.replace('_', "").parse::<i128>().ok())
-                .ok_or_else(|| {
-                    TypeCheckError::new("range endpoint is not an integer literal".to_string())
-                }),
-            _ => Err(TypeCheckError::new(
-                "range endpoints must be integer literals".to_string(),
-            )),
-        }
+        self.core
+            .expr_pool
+            .get(endpoint)
+            .and_then(|e| integer_literal_value(&e, self.core.string_interner))
+            .ok_or_else(|| TypeCheckError::new("range endpoints must be integer literals".to_string()))
     }
 
     /// Entry point for `Expr::Match`. Classifies the scrutinee, walks arms
@@ -439,7 +465,10 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let variants = self.context.enum_definitions.get(name).cloned().unwrap();
                 ScrutineeKind::Enum { name: *name, type_args: args.clone(), variants }
             }
-            TypeDecl::Bool | TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::String => ScrutineeKind::Primitive(scrutinee_ty.clone()),
+            TypeDecl::Bool | TypeDecl::String => ScrutineeKind::Primitive(scrutinee_ty.clone()),
+            // CHAR-LITERAL-MATCH: every integer width, so a byte read
+            // out of a string is matched as the `u8` it is.
+            t if is_matchable_integer(t) => ScrutineeKind::Primitive(scrutinee_ty.clone()),
             TypeDecl::Tuple(element_types) => ScrutineeKind::Tuple(element_types.clone()),
             TypeDecl::Struct(name, _) | TypeDecl::Identifier(name)
                 if self.context.struct_definitions.contains_key(name) =>
@@ -448,7 +477,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
             _ => {
                 return Err(TypeCheckError::new(format!(
-                    "match scrutinee must be an enum, struct, primitive (bool / i64 / u64 / str), or tuple, got {}",
+                    "match scrutinee must be an enum, struct, primitive (bool / an integer / str), or tuple, got {}",
                     self.type_name_for_error(&scrutinee_ty)
                 )));
             }
@@ -560,6 +589,9 @@ impl<'a> TypeCheckerVisitor<'a> {
                     self.type_inference.type_hint = Some(prim_ty.clone());
                     let lit_ty = self.visit_expr(literal_expr)?;
                     self.type_inference.type_hint = saved_hint;
+                    // CHAR-LITERAL-MATCH: `'h'` in a match on a `u8` is
+                    // the byte, the way it is in `b == 'h'`.
+                    let lit_ty = self.coerce_char_literal(literal_expr, &prim_ty)?.unwrap_or(lit_ty);
                     if !lit_ty.is_equivalent(&prim_ty) {
                         if let Some(name) = self.const_pattern_origin(literal_expr) {
                             return Err(TypeCheckError::new(format!(
@@ -581,12 +613,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     if !is_guarded
                         && let Some(lit_expr) = self.core.expr_pool.get(literal_expr) {
                             match lit_expr {
-                                Expr::Int64(_) | Expr::UInt64(_) => {
-                                    let v = match lit_expr {
-                                        Expr::Int64(v) => v as i128,
-                                        Expr::UInt64(v) => v as i128,
-                                        _ => unreachable!(),
-                                    };
+                                ref e if let Some(v) = integer_literal_value(e, self.core.string_interner) => {
                                     if covered_ints.contains(v, v) {
                                         return Err(TypeCheckError::new(format!(
                                             "unreachable match arm: literal {} already handled by an earlier arm", v

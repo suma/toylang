@@ -931,3 +931,70 @@ fn const_patterns_compare_on_every_lane() {
     "#;
     assert_consistent(src, "const_patterns_compare");
 }
+
+#[test]
+fn narrow_integers_can_be_matched_on_every_lane() {
+    // CHAR-LITERAL-MATCH: a `u8` / `u32` / `i8` scrutinee, with char
+    // literals narrowed to the byte they name (`'m'`), suffixed narrow
+    // literals, `|`, ranges (half-open, so `'0'..':'` is the ten
+    // digits), a payload position, and a `u8` covered by ranges alone
+    // -- 256 values is small enough to be exhaustive without `_`.
+    let src = r#"
+        fn unit(c: u8) -> u64 {
+            match c {
+                'm' => 60u64,
+                'h' => 3600u64,
+                'd' => 86400u64,
+                _ => 1u64,
+            }
+        }
+        fn digit(c: u8) -> u64 {
+            match c {
+                '0'..':' => (c - '0') as u64,
+                _ => 99u64,
+            }
+        }
+        fn kind(k: u32) -> u64 {
+            match k {
+                1u32 => 10u64,
+                2u32 | 3u32 => 20u64,
+                _ => 0u64,
+            }
+        }
+        fn signed(v: i8) -> u64 {
+            match v {
+                -1i8 => 1u64,
+                0i8..10i8 => 2u64,
+                _ => 3u64,
+            }
+        }
+        fn all_bytes(b: u8) -> u64 {
+            match b {
+                0u8..128u8 => 1u64,
+                128u8..255u8 => 2u64,
+                255u8 => 3u64,
+            }
+        }
+        fn payload(o: Option<u8>) -> u64 {
+            match o {
+                Option::Some('x') => 5u64,
+                Option::Some(_) => 6u64,
+                Option::None => 7u64,
+            }
+        }
+        fn main() -> u64 {
+            println("{unit('m')} {unit('h')} {unit('d')} {unit('z')}")
+            println("{digit('7')} {digit('a')}")
+            println("{kind(1u32)} {kind(3u32)} {kind(9u32)}")
+            println("{signed(-1i8)} {signed(5i8)} {signed(-9i8)}")
+            println("{all_bytes(5u8)} {all_bytes(200u8)} {all_bytes(255u8)}")
+            println("{payload(Option::Some('x'))} {payload(Option::Some('y'))} {payload(Option::None)}")
+            0u64
+        }
+    "#;
+    assert_renders(
+        src,
+        "narrow_integer_match",
+        "60 3600 86400 1\n7 99\n10 20 0\n1 2 3\n1 2 3\n5 6 7\n",
+    );
+}

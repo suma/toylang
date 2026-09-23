@@ -38,11 +38,13 @@ pub fn fmt_apache() -> u32 { 3u32 }
 pub fn fmt_epoch() -> u32 { 4u32 }
 
 pub fn fmt_name(kind: u32) -> str {
-    if kind == 1u32 { return "syslog" }
-    if kind == 2u32 { return "datetime" }
-    if kind == 3u32 { return "apache" }
-    if kind == 4u32 { return "epoch" }
-    "plain"
+    match kind {
+        1u32 => "syslog",
+        2u32 => "datetime",
+        3u32 => "apache",
+        4u32 => "epoch",
+        _ => "plain",
+    }
 }
 
 # An (offset, length) pair packed into one `u64`: offset in the high

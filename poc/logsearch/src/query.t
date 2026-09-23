@@ -128,10 +128,12 @@ fn parse_time(text: str, now: i64) -> i64 {
             Result::Ok(v) => { mag = v }
             Result::Err(e) => { return 0i64 }
         }
-        var secs = mag
-        if unit == 'm' { secs = mag * 60u64 }
-        if unit == 'h' { secs = mag * 3600u64 }
-        if unit == 'd' { secs = mag * 86400u64 }
+        val secs = match unit {
+            'm' => mag * 60u64,
+            'h' => mag * 3600u64,
+            'd' => mag * 86400u64,
+            _ => mag,
+        }
         return now - (secs as i64)
     }
     # Unix seconds only when the whole thing is digits. Testing the

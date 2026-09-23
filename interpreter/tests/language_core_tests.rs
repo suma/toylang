@@ -3323,6 +3323,56 @@ mod enum_and_match {
         );
     }
 
+    // CHAR-LITERAL-MATCH: narrow integers as scrutinees. The passing
+    // shapes are pinned on every lane in the compiler's consistency
+    // suite; these are the type errors.
+
+    #[test]
+    fn test_a_u8_match_without_a_wildcard_is_not_exhaustive() {
+        let source = r#"
+            fn main() -> u64 {
+                val b: u8 = 1u8
+                match b { 0u8 => 1u64, 1u8 => 2u64 }
+            }
+        "#;
+        let err = execute_test_program(source).expect_err("non-exhaustive u8");
+        assert!(
+            err.contains("non-exhaustive match on u8"),
+            "expected a u8 exhaustiveness diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_a_char_that_does_not_fit_the_scrutinee_is_rejected() {
+        let source = r#"
+            fn main() -> u64 {
+                val b: u8 = 1u8
+                match b { '\u{1F600}' => 1u64, _ => 2u64 }
+            }
+        "#;
+        let err = execute_test_program(source).expect_err("char too wide for u8");
+        assert!(
+            err.contains("Cannot convert '128512' to u8"),
+            "expected the out-of-range conversion error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_a_char_and_its_byte_are_the_same_arm() {
+        // `'a'` narrowed to `u8` is 97, so a later `97u8` is unreachable.
+        let source = r#"
+            fn main() -> u64 {
+                val b: u8 = 97u8
+                match b { 'a' => 1u64, 97u8 => 2u64, _ => 3u64 }
+            }
+        "#;
+        let err = execute_test_program(source).expect_err("duplicate byte");
+        assert!(
+            err.contains("unreachable match arm: literal 97"),
+            "expected the duplicate-literal diagnostic, got: {err}"
+        );
+    }
+
     #[test]
     fn test_two_consts_with_one_value_make_the_second_arm_unreachable() {
         let source = r#"

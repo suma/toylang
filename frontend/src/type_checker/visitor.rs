@@ -95,6 +95,9 @@ pub struct TypeCheckerVisitor<'a> {
     /// collected while checking and applied by
     /// `apply_tuple_struct_rewrites`.
     pub tuple_struct_rewrites: TupleStructRewrites,
+    /// MATCH-CONST-PATTERN: consts a pattern may name, and the arms
+    /// rewritten to compare against them.
+    pub const_patterns: ConstPatterns,
     /// NULL-COALESCE: the checked left-operand type and resolved
     /// success type of `a ?? b` nodes, keyed by the operand ref (the
     /// one ref every visit route holds). The post-pass rewrite reads
@@ -129,6 +132,38 @@ impl TupleStructRewrites {
     pub fn is_empty(&self) -> bool {
         self.constructions.is_empty() && self.accesses.is_empty()
     }
+}
+
+/// MATCH-CONST-PATTERN: what naming a `const` in a pattern means.
+///
+/// A bare name in a pattern used to always *bind*, so
+/// `match n { K => a, _ => b }` bound `K` to every value: the arm was
+/// irrefutable, and the only diagnostic was that the `_` after it was
+/// unreachable -- nothing said the comparison never happened. A name
+/// that is a top-level `const` now compares against it (Rust's rule).
+///
+/// The pattern is rewritten to a literal pattern holding a copy of the
+/// const's value, typed at the const's declared type. Exhaustiveness,
+/// duplicate arms and every backend then see the literal form they
+/// already handle. A copy rather than the initialiser's own node,
+/// because checking a literal pattern types a suffix-less literal from
+/// the scrutinee, and that must not retype the const.
+#[derive(Debug, Default)]
+pub struct ConstPatterns {
+    /// const name -> its value as a typed literal, when the initialiser
+    /// is one (directly, or by naming an earlier const that is).
+    /// `None` is a const whose value exists only after type checking
+    /// (a `const fn` call, an expression): naming it in a pattern is an
+    /// error, never a binding.
+    pub values: HashMap<DefaultSymbol, Option<Expr>>,
+    /// scrutinee ref -> the arms with their const names replaced,
+    /// installed by `apply_const_pattern_rewrites`. Keyed by the
+    /// scrutinee for the reason `TupleStructRewrites` is keyed by a
+    /// child: it is the one ref the checker holds for the node.
+    pub rewrites: HashMap<ExprRef, Vec<MatchArm>>,
+    /// literal node the rewrite created -> the const it stands for, so
+    /// a type mismatch names `K` rather than a literal nobody wrote.
+    pub origins: HashMap<ExprRef, DefaultSymbol>,
 }
 
 /// One row of the builtin catalogue, so a row reads as the prototype
@@ -187,6 +222,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             display_types: None,
             current_fn_return_type: None,
             tuple_struct_rewrites: TupleStructRewrites::default(),
+            const_patterns: ConstPatterns::default(),
             null_coalesce_lhs_types: HashMap::new(),
             transformed_exprs: HashMap::new(),
             pending_number_holes: Vec::new(),
@@ -274,6 +310,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             display_types: None,
             current_fn_return_type: None,
             tuple_struct_rewrites: TupleStructRewrites::default(),
+            const_patterns: ConstPatterns::default(),
             null_coalesce_lhs_types: HashMap::new(),
         }
     }
@@ -484,6 +521,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             display_types: None,
             current_fn_return_type: None,
             tuple_struct_rewrites: TupleStructRewrites::default(),
+            const_patterns: ConstPatterns::default(),
             null_coalesce_lhs_types: HashMap::new(),
             transformed_exprs: HashMap::new(),
             pending_number_holes: Vec::new(),

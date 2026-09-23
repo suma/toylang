@@ -54,6 +54,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         // NEWTYPE: install the tuple-struct desugar's pool rewrites now
         // that every body has been checked.
         self.apply_tuple_struct_rewrites();
+        // MATCH-CONST-PATTERN: arms that named a const.
+        self.apply_const_pattern_rewrites();
 
         // NULL-COALESCE: replace the `a ?? b` nodes that surfaced
         // through direct `accept_expr` dispatch (and were typed but not

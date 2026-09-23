@@ -12,6 +12,11 @@
 
 ### 2026-09-23
 
+- **MATCH-CONST-PATTERN: pattern の const 名は値と比較する** — 以前は
+  黙って新しい名前の束縛になり、腕が全値に当たって後続の `_` が
+  unreachable と言われるだけだった。型検査器がリテラルパターンに
+  書き換える (ネスト位置・const の連鎖・モジュールの `pub const` も)。
+  初期化子が型検査時点で literal でない const と型の不一致はエラー。
 - **STR-ESCAPE-HATCH: `\"` と raw 文字列リテラル** — 通常リテラルで
   `\"` が書け (閉じない)、`r"..."` / `r#"..."#` (`#` は任意個) は
   エスケープも補間もしない。どちらも改行をまたげる。lexer は開き
@@ -2558,7 +2563,7 @@
   に回す — を `?` にもそのまま適用できる (`check_expr_located` と
   `visit_binary` の operand 経路に intercept を足す形)。
 
-以下 6 件は **`poc/logsearch` (18,000 行) を書いて出てきた穴**で、
+以下は **`poc/logsearch` (18,000 行) を書いて出てきた穴**で、
 2026-09-23 に 3 レーン (`--all-backends`) で「本当に無い」ことを
 確かめてから登録した。各項目の実測値と現物の引用は同 POC の
 [`RUNTIME_GAPS.md`](../poc/logsearch/design-docs/RUNTIME_GAPS.md) §G19
@@ -2574,14 +2579,6 @@
   struct パターン (PATTERN-STRUCT) が既にあるので、要るのは宣言構文と
   variant ごとの payload layout。**ENUM-DISCRIMINANT とセットで効く**
   (タグがディスクに出る用途では往復が要るため)。
-- **MATCH-CONST-PATTERN: 名前つき定数を pattern に書けるように** ★★ —
-  `const K: u64 = 3u64` に対する `match n { K => a, _ => b }` は今、
-  **`K` という名前で全部を束縛する腕**として読まれる。比較は起きず、
-  診断は `[E0010] unreachable match arm at position 1` (後続の `_` に
-  ついてのもの) だけなので、**書き手の意図と逆の意味で黙って通る**。
-  穴としては「書けない」より重い。最小の直しは pattern の識別子解決で
-  const を先に引くこと (Rust と同じ規則)。これが入ると
-  `if k == kind_ftable()` 形の表 (POC に 5 本) が match になる。
 - **MATCH-STRING-LITERAL: `String` をリテラル腕で match** ★ —
   `str` は `match s { "a" => ..., "b" | "c" => ... }` が 3 レーンで
   動くのに、`String` は `[E0010] literal pattern cannot be used in a
@@ -2861,6 +2858,15 @@ changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 
 経緯は git log と完了済み節にある。`__getitem__` の 2 件
 (`&self` 受理 / generic 戻り型置換) も 2026-08-30 に解消
 (POINTER P2、完了済み節)。
+
+- **CONST-UNSUFFIXED-INIT: サフィックス無しの整数で初期化した `const`
+  が実行時に落ちる** ★ — `const J: u64 = 4` は型検査を通るが、
+  `Const initializer for `J` failed: Internal error: Expr::Number
+  should be transformed to concrete type during type checking` で
+  止まる (`interpreter` で確認。2026-09-23 に MATCH-CONST-PATTERN
+  の確認中に踏んだ)。宣言型が「型を名指す位置」なのに、const の
+  初期化子は型ヒント無しで検査されている (`interpreter/src/lib.rs` の
+  const 登録ループ)。`4u64` と書けば通る。
 
 - **COMPOUND-FIELD-ARG: compound な *フィールド* を引数に渡せない** ★★ —
   束縛・リテラル・呼び出し結果は通る (COMPOUND-ARG-CALL、2026-09-02) が、

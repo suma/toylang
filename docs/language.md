@@ -3707,6 +3707,8 @@ Patterns:
   `x: x`, and a trailing `..` ignores the fields not named (see
   [Struct patterns](#struct-patterns))
 - `42i64`, `true`, `"hello"` — literal patterns for primitives
+- `K` where `K` is a top-level `const` — compares against its value
+  (see [Constants in patterns](#constants-in-patterns))
 - `a | b | c` — alternatives, all sharing one arm body
 - `lo..hi` — a half-open integer range
 - `name @ p` — bind the matched value while `p` still tests it; `p`
@@ -3795,6 +3797,52 @@ In practice most integer matches still want a `_`; spanning `i64` by
 hand is only worth it when the bounds are meaningful. An or-pattern
 counts toward exhaustiveness the same way — an enum whose variants are
 all named across alternatives needs no wildcard.
+
+#### Constants in patterns
+
+A bare name in a pattern **binds** — unless it names a top-level
+`const`, in which case the arm **compares against the const's value**
+(Rust's rule). This holds at any depth:
+
+```rust
+const GET: u64 = 1u64
+const POST: u64 = 2u64
+
+fn verb(code: u64) -> str {
+    match code {
+        GET  => "GET",
+        POST => "POST",
+        _    => "other",
+    }
+}
+
+match reply {
+    Option::Some(GET) => "a GET",      # compares the payload
+    Option::Some(v)   => "something",  # `v` is not a const: binds
+    Option::None      => "nothing",
+}
+```
+
+The type checker rewrites such an arm into the literal pattern it
+stands for, so it takes part in exhaustiveness and reachability
+exactly as the literal would — two consts with the same value make the
+second arm unreachable — and the backends never see the name. A
+const that names another const (`const L: u64 = K`) works when `K`
+does. A module's `pub const` works the same way.
+
+Two limits, both reported rather than silently binding:
+
+- **The initialiser must be a literal** when the program is checked.
+  `const D: u64 = dbl(2u64)` gets its value from the compile-time fold,
+  which runs after type checking, so `D` cannot be a pattern; write the
+  literal, or bind and compare in a guard (`v if v == D =>`).
+- **The types must agree**: `const K: u64` in a match on an `i64` is
+  `const `K` has type u64, but the match is on i64`.
+
+`n @ pat` always binds, whatever `n` is called — it says so. Before
+this rule a const name in a pattern bound a fresh name that shadowed
+the const, which made the arm match everything and left only an
+"unreachable match arm" error on the `_` that followed.
 
 ### Guards
 

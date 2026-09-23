@@ -730,6 +730,9 @@ fn check_typing_collecting(
             continue;
         }
         tc.context.set_var(c.name, c.type_decl.clone());
+        // MATCH-CONST-PATTERN: a pattern naming this const compares
+        // against its value instead of binding a fresh name.
+        tc.register_const_for_patterns(c.name, &c.type_decl, &c.value);
     }
 
     // LLM-LOOP P1: let a failing statement be recorded rather than
@@ -781,6 +784,9 @@ fn check_typing_collecting(
     // before the move / never-allocates passes so they walk the same
     // named-struct AST the backends will lower.
     tc.apply_tuple_struct_rewrites();
+    // MATCH-CONST-PATTERN: arms that named a const now hold the
+    // literal pattern they were checked as. Same placement rationale.
+    tc.apply_const_pattern_rewrites();
     // NULL-COALESCE: replace the `a ?? b` nodes that surfaced through
     // direct `accept_expr` dispatch (and were typed but not rewritten)
     // with their lazy `val` + `match` blocks. Same placement rationale

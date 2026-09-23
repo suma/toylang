@@ -444,14 +444,11 @@ if unit == 'd' { secs = mag * 86400u64 }
   used in a match on a struct`。`String` は nominal struct なので、
   `str` では通るリテラル腕が `String` では通らない。この POC の
   `field_code` / `is_reserved` ほか **`eq_str` 33 箇所**がこれ
-  (ただし半分は化石。§7 を見ること)
-- **名前つき定数を pattern に書くと、黙って新しい束縛になる ★★** —
-  `const K: u64 = 3u64` に対する `match n { K => a, _ => b }` は
-  「`K` という名前で全部を束縛する腕」として読まれ、診断は
-  **`[E0010] unreachable match arm at position 1`** としか言わない
-  (比較が起きていないことは言わない)。`segfile.t:168` の
-  `if k == kind_ftable()` 群が match にならない理由がこれで、
-  **間違えても止まらない形**なので穴としては重い
+  (ただし半分は化石。§8 を見ること)
+- ~~**名前つき定数を pattern に書くと、黙って新しい束縛になる**~~ —
+  **2026-09-23 に解消** (MATCH-CONST-PATTERN)。const 名は値と比較
+  される。初期化子が literal の const に限るので、`kind_ftable()` の
+  ような**関数で作ったタグ**はまず `const` に移す必要がある (§3)
 
 ### 3. enum の表現力 ★★ — 2 つとも保存形式のモデリングに効く
 

@@ -3269,6 +3269,75 @@ mod enum_and_match {
             15, // (3 + 4) * 2, plus 1 for the None the overflow took
         );
     }
+
+    // MATCH-CONST-PATTERN: a name that is a const compares against it.
+    // It used to bind a fresh name, which made the arm irrefutable and
+    // left only "unreachable match arm" on the `_` after it.
+
+    #[test]
+    fn test_a_const_in_a_pattern_is_compared_not_bound() {
+        let source = r#"
+            const K: u64 = 3u64
+            fn f(n: u64) -> u64 {
+                match n {
+                    K => 10u64,
+                    _ => 0u64,
+                }
+            }
+            fn main() -> u64 { f(3u64) + f(4u64) }
+        "#;
+        let result = execute_test_program(source).expect("const pattern");
+        assert!(result.contains("UInt64(10)"), "Expected UInt64(10), got: {}", result);
+    }
+
+    #[test]
+    fn test_a_const_pattern_whose_value_is_not_a_literal_is_rejected() {
+        // The value of `D` exists only once the fold has run, after type
+        // checking; treating it as a binding would be the old bug.
+        let source = r#"
+            const fn dbl(n: u64) -> u64 { n * 2u64 }
+            const D: u64 = dbl(2u64)
+            fn main() -> u64 {
+                match 4u64 { D => 1u64, _ => 0u64 }
+            }
+        "#;
+        let err = execute_test_program(source).expect_err("non-literal const");
+        assert!(
+            err.contains("`D` is a const") && err.contains("v if v == D"),
+            "expected the const-pattern diagnostic with the guard spelling, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_a_const_pattern_of_the_wrong_type_names_the_const() {
+        let source = r#"
+            const K: u64 = 3u64
+            fn main() -> u64 {
+                match 3i64 { K => 1u64, _ => 0u64 }
+            }
+        "#;
+        let err = execute_test_program(source).expect_err("type mismatch");
+        assert!(
+            err.contains("const `K` has type u64, but the match is on i64"),
+            "expected the mismatch to name the const, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_two_consts_with_one_value_make_the_second_arm_unreachable() {
+        let source = r#"
+            const K: u64 = 3u64
+            const L: u64 = K
+            fn main() -> u64 {
+                match 3u64 { K => 1u64, L => 2u64, _ => 0u64 }
+            }
+        "#;
+        let err = execute_test_program(source).expect_err("duplicate value");
+        assert!(
+            err.contains("unreachable match arm: literal 3"),
+            "expected the duplicate-literal diagnostic, got: {err}"
+        );
+    }
 }
 
 

@@ -204,6 +204,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let lit_ty = self.visit_expr(lit_expr)?;
                 self.type_inference.type_hint = saved_hint;
                 if !lit_ty.is_equivalent(expected_ty) {
+                    if let Some(name) = self.const_pattern_origin(lit_expr) {
+                        return Err(TypeCheckError::new(format!(
+                            "const `{name}` has type {}, but this position holds {}",
+                            self.type_name_for_error(&lit_ty),
+                            self.type_name_for_error(expected_ty)
+                        )));
+                    }
                     return Err(TypeCheckError::new(format!(
                         "literal pattern type {} does not match expected {}",
                         self.type_name_for_error(&lit_ty),
@@ -390,6 +397,15 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
         let scrutinee_ty = self.visit_expr(scrutinee)?;
 
+        // MATCH-CONST-PATTERN: a name that is a const compares against
+        // it. Rewritten before anything below reads the arms, so the
+        // checks see the literal pattern the backends will.
+        let rewritten = self.rewrite_const_patterns(arms)?;
+        if let Some(new_arms) = &rewritten {
+            self.const_patterns.rewrites.insert(*scrutinee, new_arms.clone());
+        }
+        let arms: &Vec<MatchArm> = rewritten.as_ref().unwrap_or(arms);
+
         // Classify the scrutinee. Enum matches and primitive matches accept
         // different pattern shapes, so we dispatch on this up-front.
         enum ScrutineeKind {
@@ -545,6 +561,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                     let lit_ty = self.visit_expr(literal_expr)?;
                     self.type_inference.type_hint = saved_hint;
                     if !lit_ty.is_equivalent(&prim_ty) {
+                        if let Some(name) = self.const_pattern_origin(literal_expr) {
+                            return Err(TypeCheckError::new(format!(
+                                "const `{name}` has type {}, but the match is on {}",
+                                self.type_name_for_error(&lit_ty),
+                                self.type_name_for_error(&prim_ty)
+                            )));
+                        }
                         return Err(TypeCheckError::new(format!(
                             "literal pattern type {} does not match scrutinee type {}",
                             self.type_name_for_error(&lit_ty),
@@ -1039,5 +1062,172 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
         Ok(())
+    }
+}
+
+/// MATCH-CONST-PATTERN: a const's initialiser as a literal typed at the
+/// const's declared type, or `None` when it is not a literal.
+///
+/// A literal that already names its type (`3u64`, `true`, `"GET"`) is
+/// copied as is. The two that take their type from context -- a
+/// suffix-less number and a char literal -- are pinned to the declared
+/// type here, so the copy a pattern gets cannot be retyped by the
+/// scrutinee: `const K: u64 = 3` stays a `u64` in a match on an `i64`,
+/// and the mismatch is reported instead of silently compared.
+fn typed_const_literal(
+    expr: &Expr,
+    ty: &TypeDecl,
+    interner: &string_interner::DefaultStringInterner,
+) -> Option<Expr> {
+    let value: i128 = match expr {
+        Expr::True
+        | Expr::False
+        | Expr::String(_)
+        | Expr::Int64(_)
+        | Expr::UInt64(_)
+        | Expr::Int8(_)
+        | Expr::Int16(_)
+        | Expr::Int32(_)
+        | Expr::UInt8(_)
+        | Expr::UInt16(_)
+        | Expr::UInt32(_) => return Some(expr.clone()),
+        Expr::CharLiteral(cp) => i128::from(*cp),
+        Expr::Number(sym) => {
+            let text = interner.resolve(*sym)?.replace('_', "");
+            let (negative, digits) = match text.strip_prefix('-') {
+                Some(rest) => (true, rest.to_string()),
+                None => (false, text),
+            };
+            let magnitude = match digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
+                Some(hex) => i128::from_str_radix(hex, 16).ok()?,
+                None => digits.parse::<i128>().ok()?,
+            };
+            if negative { -magnitude } else { magnitude }
+        }
+        _ => return None,
+    };
+    Some(match ty {
+        TypeDecl::Int64 => Expr::Int64(i64::try_from(value).ok()?),
+        TypeDecl::UInt64 => Expr::UInt64(u64::try_from(value).ok()?),
+        TypeDecl::Int8 => Expr::Int8(i8::try_from(value).ok()?),
+        TypeDecl::Int16 => Expr::Int16(i16::try_from(value).ok()?),
+        TypeDecl::Int32 => Expr::Int32(i32::try_from(value).ok()?),
+        TypeDecl::UInt8 => Expr::UInt8(u8::try_from(value).ok()?),
+        TypeDecl::UInt16 => Expr::UInt16(u16::try_from(value).ok()?),
+        TypeDecl::UInt32 => Expr::UInt32(u32::try_from(value).ok()?),
+        _ => return None,
+    })
+}
+
+impl<'a> TypeCheckerVisitor<'a> {
+    /// MATCH-CONST-PATTERN: record a top-level `const` so a pattern
+    /// naming it compares against its value. Called once per const,
+    /// in declaration order, after its initialiser type-checked.
+    ///
+    /// An initialiser that names an earlier const takes that const's
+    /// literal, so `const B: u64 = A` works as a pattern when `A` does.
+    pub fn register_const_for_patterns(&mut self, name: DefaultSymbol, ty: &TypeDecl, value: &ExprRef) {
+        let literal = match self.core.expr_pool.get(value) {
+            Some(Expr::Identifier(sym)) => self.const_patterns.values.get(&sym).cloned().flatten(),
+            Some(expr) => typed_const_literal(&expr, ty, self.core.string_interner),
+            None => None,
+        };
+        self.const_patterns.values.insert(name, literal);
+    }
+
+    /// MATCH-CONST-PATTERN: `arms` with every const name in their
+    /// patterns replaced by a literal pattern, or `None` when no arm
+    /// names a const.
+    ///
+    /// Runs before the arms are checked, so everything downstream --
+    /// type agreement, duplicate arms, exhaustiveness -- sees the
+    /// literal. Only bare names are candidates: `n @ pat` is always a
+    /// binding (it says so), and a name that is not a const binds as
+    /// before.
+    pub(super) fn rewrite_const_patterns(
+        &mut self,
+        arms: &[MatchArm],
+    ) -> Result<Option<Vec<MatchArm>>, TypeCheckError> {
+        if self.const_patterns.values.is_empty() {
+            return Ok(None);
+        }
+        let mut changed = false;
+        let mut out = Vec::with_capacity(arms.len());
+        for arm in arms {
+            let pattern = self.rewrite_const_pattern(&arm.pattern, &mut changed)?;
+            out.push(MatchArm { pattern, guard: arm.guard, body: arm.body });
+        }
+        Ok(changed.then_some(out))
+    }
+
+    fn rewrite_const_sub_patterns(
+        &mut self,
+        pats: &[Pattern],
+        changed: &mut bool,
+    ) -> Result<Vec<Pattern>, TypeCheckError> {
+        pats.iter().map(|p| self.rewrite_const_pattern(p, changed)).collect()
+    }
+
+    fn rewrite_const_pattern(&mut self, pat: &Pattern, changed: &mut bool) -> Result<Pattern, TypeCheckError> {
+        Ok(match pat {
+            Pattern::Name(sym) => match self.const_patterns.values.get(sym).cloned() {
+                None => pat.clone(),
+                Some(Some(literal)) => {
+                    let literal_ref = self.core.expr_pool.add(literal);
+                    self.const_patterns.origins.insert(literal_ref, *sym);
+                    *changed = true;
+                    Pattern::Literal(literal_ref)
+                }
+                Some(None) => {
+                    let name = self.core.string_interner.resolve(*sym).unwrap_or("?");
+                    return Err(TypeCheckError::new(format!(
+                        "`{name}` is a const, so this pattern would compare against it — but its \
+                         value is not a literal, and a pattern needs one while compiling. Write the \
+                         literal, or bind and compare in a guard: `v if v == {name} =>`"
+                    )));
+                }
+            },
+            Pattern::EnumVariant(enum_name, variant, subs) => {
+                Pattern::EnumVariant(*enum_name, *variant, self.rewrite_const_sub_patterns(subs, changed)?)
+            }
+            Pattern::Tuple(subs) => Pattern::Tuple(self.rewrite_const_sub_patterns(subs, changed)?),
+            Pattern::Struct(struct_name, fields, has_rest) => {
+                let mut out = Vec::with_capacity(fields.len());
+                for (field, sub) in fields {
+                    out.push((*field, self.rewrite_const_pattern(sub, changed)?));
+                }
+                Pattern::Struct(*struct_name, out, *has_rest)
+            }
+            Pattern::Binding(name, inner) => {
+                Pattern::Binding(*name, Box::new(self.rewrite_const_pattern(inner, changed)?))
+            }
+            Pattern::Literal(_) | Pattern::Range(_, _) | Pattern::Wildcard => pat.clone(),
+        })
+    }
+
+    /// MATCH-CONST-PATTERN: the const a literal pattern stands for, for
+    /// a diagnostic that should name `K` rather than its value.
+    pub(super) fn const_pattern_origin(&self, literal_ref: &ExprRef) -> Option<String> {
+        let sym = self.const_patterns.origins.get(literal_ref)?;
+        self.core.string_interner.resolve(*sym).map(str::to_string)
+    }
+
+    /// MATCH-CONST-PATTERN: install the rewritten arms, so every backend
+    /// sees literal patterns where the source named a const.
+    ///
+    /// One pass over the pool, and only when a match named a const.
+    pub fn apply_const_pattern_rewrites(&mut self) {
+        if self.const_patterns.rewrites.is_empty() {
+            return;
+        }
+        let rewrites = std::mem::take(&mut self.const_patterns.rewrites);
+        for index in 0..self.core.expr_pool.len() {
+            let expr_ref = ExprRef(index as u32);
+            if let Some(Expr::Match(scrutinee, _)) = self.core.expr_pool.get(&expr_ref)
+                && let Some(arms) = rewrites.get(&scrutinee)
+            {
+                self.core.expr_pool.update(&expr_ref, Expr::Match(scrutinee, arms.clone()));
+            }
+        }
     }
 }

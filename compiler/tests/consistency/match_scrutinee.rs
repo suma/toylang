@@ -898,3 +898,36 @@ fn explicit_and_implicit_impl_parameter_lists_agree() {
 // an address-derived metric could not be made to agree here, and a
 // fragmentation number computed from the interpreter would describe
 // the bump allocator rather than the program.
+
+#[test]
+fn const_patterns_compare_on_every_lane() {
+    // MATCH-CONST-PATTERN: the type checker rewrites a const named in a
+    // pattern to a literal pattern, so the backends only ever see the
+    // literal form. Pinned at the top level, in a payload position, and
+    // through a const that names another const.
+    let src = r#"
+        const K: u64 = 3u64
+        const J: u64 = 4u64
+        const L: u64 = K
+        fn classify(n: u64) -> u64 {
+            match n {
+                K => 10u64,
+                J => 20u64,
+                _ => 0u64,
+            }
+        }
+        fn nested(o: Option<u64>) -> u64 {
+            match o {
+                Option::Some(L) => 7u64,
+                Option::Some(v) => v,
+                Option::None => 0u64,
+            }
+        }
+        fn main() -> u64 {
+            val flat = classify(3u64) + classify(4u64) + classify(5u64)
+            val deep = nested(Option::Some(3u64)) + nested(Option::Some(9u64))
+            flat + deep
+        }
+    "#;
+    assert_consistent(src, "const_patterns_compare");
+}

@@ -3373,6 +3373,89 @@ mod enum_and_match {
         );
     }
 
+    // ENUM-DISCRIMINANT: the ways a discriminant or an `as` from an
+    // enum is refused. The accepted shapes run on every lane in the
+    // compiler's consistency suite.
+
+    #[test]
+    fn test_two_variants_with_one_number_are_rejected() {
+        // `C` follows `B = 0`, so it is 1 -- the number `A` already has.
+        let source = r#"
+            enum E { A = 1, B = 0, C }
+            fn main() -> u64 { 0u64 }
+        "#;
+        let err = execute_test_program(source).expect_err("duplicate discriminant");
+        assert!(
+            err.contains("`E::A` and `E::C` both stand for 1"),
+            "expected the duplicate-discriminant diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_a_payload_variant_cannot_have_a_discriminant() {
+        let source = r#"
+            enum E { A(u64) = 1, B }
+            fn main() -> u64 { 0u64 }
+        "#;
+        let err = execute_test_program(source).expect_err("payload discriminant");
+        assert!(
+            err.contains("variant `A` carries data, so it cannot have a discriminant"),
+            "expected the payload-discriminant diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_an_enum_with_a_payload_variant_cannot_be_cast() {
+        let source = r#"
+            enum E { A(u64), B }
+            fn main() -> u64 {
+                val e = E::B
+                e as u64
+            }
+        "#;
+        let err = execute_test_program(source).expect_err("payload enum cast");
+        assert!(
+            err.contains("`E::A` carries data") && err.contains("Match on the value instead"),
+            "expected the payload-cast diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_a_discriminant_that_does_not_fit_the_target_is_rejected() {
+        // Every variant is checked, not only the one held: the cast
+        // becomes a match with an arm for each.
+        let source = r#"
+            enum E { A = 300, B }
+            fn main() -> u64 {
+                val e = E::B
+                val n = e as u8
+                n as u64
+            }
+        "#;
+        let err = execute_test_program(source).expect_err("too wide");
+        assert!(
+            err.contains("`E::A` stands for 300, which does not fit"),
+            "expected the does-not-fit diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_an_enum_casts_to_integers_only() {
+        let source = r#"
+            enum E { A, B }
+            fn main() -> u64 {
+                val e = E::B
+                val f = e as f64
+                0u64
+            }
+        "#;
+        let err = execute_test_program(source).expect_err("float target");
+        assert!(
+            err.contains("`as` turns an enum into an integer type only"),
+            "expected the integer-only diagnostic, got: {err}"
+        );
+    }
+
     #[test]
     fn test_two_consts_with_one_value_make_the_second_arm_unreachable() {
         let source = r#"

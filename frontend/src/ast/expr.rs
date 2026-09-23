@@ -141,6 +141,12 @@ pub enum Stmt {
 pub struct EnumVariantDef {
     pub name: DefaultSymbol,
     pub payload_types: Vec<TypeDecl>,
+    /// ENUM-DISCRIMINANT: the value written after `=` (`Red = 1`), if
+    /// any. Only a variant without a payload may carry one. It is not
+    /// the tag -- layout and `match` dispatch keep the variant index --
+    /// but the number `as` projects the variant to; a variant without
+    /// one takes the previous variant's plus one, the first 0.
+    pub discriminant: Option<i128>,
 }
 
 /// Patterns for `match` arms. Patterns compose recursively — tuple-variant

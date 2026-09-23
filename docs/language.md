@@ -3684,6 +3684,36 @@ val c: Option<i64> = Option::None      # type annotation infers T = i64
 val d              = Option::Some(7i64) # T inferred from payload
 ```
 
+### Discriminants and `as`
+
+A unit variant may name the number it stands for, and `as` turns a
+value of such an enum into that number:
+
+```rust
+enum Kind { Plain, Syslog, Datetime, Apache = 10, Epoch }   # 0 1 2 10 11
+
+fn code(k: Kind) -> u32 { k as u32 }
+val c = Kind::Apache as u8                                  # 10
+```
+
+- A variant without `= n` takes the **previous variant's number plus
+  one**; the first takes 0. `Apache = 10` makes `Epoch` 11.
+- The value is any integer literal — suffixed or not, negative, hex,
+  or a char literal (`A = 'a'`). Two variants that end up with the
+  same number are a type error, and a variant **with a payload cannot
+  have one** (parse error).
+- `e as T` is legal when **every** variant is a unit variant, `T` is an
+  integer type, and **every** variant's number fits `T` — not only the
+  one the value happens to hold. So `enum E { A = 300, B }` cannot be
+  cast to `u8` at all, rather than truncating. A float target is an
+  error.
+- The number is **not the tag**. Layout and `match` keep the variant
+  index; the type checker rewrites `e as T` into
+  `match e { Kind::Plain => 0u32, ... }` (a bare `Kind::Apache as u8`
+  into the literal), so the backends never see a cast from an enum.
+  There is no conversion the other way; write the `match` (or a
+  function holding one) that decides what an unknown number means.
+
 ### `match`
 
 ```rust

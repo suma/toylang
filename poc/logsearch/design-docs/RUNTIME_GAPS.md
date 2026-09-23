@@ -432,6 +432,12 @@ cannot be used in a match on a struct`。`String` は nominal struct
 
 ### 3. enum の表現力 ★★ — 2 つとも保存形式のモデリングに効く
 
+> **2026-09-23: (a) discriminant と `as` は入った** (ENUM-DISCRIMINANT)。
+> `enum Fmt { Plain, Syslog, Datetime, Apache, Epoch }` に対して
+> `f as u32` がディスクに書く番号になる。**逆向き (番号 → enum) の
+> 変換は無い**ので、読む側は `match` を 1 本書く。この POC のタグ関数は
+> まだ移していない。(b) struct variant は未実装。
+
 **無いもの**: (a) 明示 discriminant と整数変換 (`Red = 1` / `as u64`)、
 (b) **struct variant** (`enum E { A { x: u64 } }` は parse エラー)。
 

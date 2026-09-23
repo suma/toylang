@@ -831,6 +831,12 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn visit_cast_impl(&mut self, expr: &ExprRef, target_type: &TypeDecl) -> Result<TypeDecl, TypeCheckError> {
         let expr_type = self.visit_expr(expr)?;
 
+        // ENUM-DISCRIMINANT: an enum becomes the number its variant
+        // stands for.
+        if let Some(enum_name) = self.enum_named_by(&expr_type) {
+            return self.check_enum_cast(expr, enum_name, target_type);
+        }
+
         // NUM-W cast matrix: any numeric primitive can cast to
         // any other numeric primitive. Runtime semantics
         // (`evaluate_cast`) match Rust's `as`: int-int truncates

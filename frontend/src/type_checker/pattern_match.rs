@@ -1133,6 +1133,12 @@ fn typed_const_literal(
         }
         _ => return None,
     };
+    integer_literal_of(value, ty)
+}
+
+/// An integer literal node holding `value` at type `ty`, or `None` when
+/// `ty` is not an integer type or the value does not fit it.
+pub(super) fn integer_literal_of(value: i128, ty: &TypeDecl) -> Option<Expr> {
     Some(match ty {
         TypeDecl::Int64 => Expr::Int64(i64::try_from(value).ok()?),
         TypeDecl::UInt64 => Expr::UInt64(u64::try_from(value).ok()?),

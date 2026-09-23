@@ -12,6 +12,10 @@
 
 ### 2026-09-23
 
+- **ENUM-DISCRIMINANT: unit variant の番号と `as`** — `Apache = 10`、
+  未指定は直前 +1。`e as T` は全 variant が unit で全番号が `T` に
+  収まるときだけ許し、型検査器が `match` (素のパスは literal) に
+  書き換える。layout と tag は変えていない (AST キャッシュは v52)。
 - **CHAR-LITERAL-MATCH: 全整数幅を match の scrutinee に** — `u8` / `u16` /
   `u32` / `i8` / `i16` / `i32` を match でき、腕は suffix つき narrow
   literal・char リテラル (scrutinee の幅に narrow)・範囲・`|` で書ける。
@@ -2531,17 +2535,6 @@
   入らない (既存の曖昧性なし)。`Kind::Float64` に落とせば
   suffix 付き `1.5f64` と同じ AST になり、f64 は唯一の float 型なので
   NUMBER-HINT の型確定機構は不要。
-- **ENUM-DISCRIMINANT: enum の明示 discriminant + `as u64`** ★ —
-  `enum Color { Red = 1u64, Green = 4u64 }` (unit variant のみに `= <整数
-  リテラル>` を許す。data-carrying variant は不可、未指定は Rust 規約
-  (先頭 0、以降 +1) で自動採番、重複は型エラー)。**layout / match
-  dispatch は現状のまま** (tag = variant index) — discriminant は
-  `as u64` の射影としてだけ存在する。`as u64` は**型検査器が match に
-  書き換える** (`E::A as u64` ならリテラルへ直接畳み、式なら
-  `match e { E::A => 1u64, ... }` の網羅 match — バックエンドは砂糖を
-  見ない)。`as` は全 variant が unit の enum に限る (Rust と同じ)。
-  [`RUNTIME_LIBRARY.md`](RUNTIME_LIBRARY.md) の P4 (FFI P2 で C に
-  enum を渡す / bitflags) の前提になる。
 - **STR-INTERP-FMT の残** ★ — (a) user 型に spec を渡す API
   (`Display` の `to_str(&self)` は引数を取らない規約なので、
   `fn to_str(&self, spec: str)` にするかは未決)、(b) fill 文字 / `+` /
@@ -2572,7 +2565,7 @@
   「この形のときだけ有効」というコメントの約束に倒れる。POC は
   `enum` 宣言 **0 件** / タグ用の 0 引数関数 **74 本**。pattern 側は
   struct パターン (PATTERN-STRUCT) が既にあるので、要るのは宣言構文と
-  variant ごとの payload layout。**ENUM-DISCRIMINANT とセットで効く**
+  variant ごとの payload layout。**ENUM-DISCRIMINANT (2026-09-23 に完了) とセットで効く**
   (タグがディスクに出る用途では往復が要るため)。
 - **MATCH-STRING-LITERAL: `String` をリテラル腕で match** ★ —
   `str` は `match s { "a" => ..., "b" | "c" => ... }` が 3 レーンで

@@ -1037,3 +1037,36 @@ fn a_str_built_at_run_time_matches_its_literal_arm() {
     "#;
     assert_renders(src, "str_match_runtime_value", "1 2 5\n");
 }
+
+#[test]
+fn enum_discriminants_cast_on_every_lane() {
+    // ENUM-DISCRIMINANT: `e as T` becomes a match over the variants'
+    // numbers (a bare path folds to the literal), so the backends see
+    // nothing new. Auto-numbering continues from an explicit value
+    // (`Apache = 10`, so `Epoch` is 11; `Neg = -1`, so `Zero` is 0), a
+    // char literal is a number, and the operand can be a local, a call,
+    // a field, or sit inside an arithmetic expression.
+    let src = r#"
+        enum Kind { Plain, Syslog, Datetime, Apache = 10, Epoch }
+        enum Signed { Neg = -1, Zero, Pos }
+        enum Byte { A = 'a', B }
+        fn pick(n: u64) -> Kind {
+            if n == 0u64 { Kind::Plain } elif n == 1u64 { Kind::Apache } else { Kind::Epoch }
+        }
+        struct Rec { kind: Kind, n: u64 }
+        fn main() -> u64 {
+            val k = pick(1u64)
+            val a = k as u32
+            val b = pick(2u64) as u64
+            val c = Kind::Datetime as u8
+            val r = Rec { kind: Kind::Syslog, n: 1u64 }
+            val d = r.kind as u64
+            val e = 100u64 + (pick(0u64) as u64)
+            val s = Signed::Neg as i64
+            val t = Byte::B as u8
+            println("{a} {b} {c} {d} {e} {s} {t}")
+            0u64
+        }
+    "#;
+    assert_renders(src, "enum_discriminant_cast", "10 11 2 1 100 -1 98\n");
+}

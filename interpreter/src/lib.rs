@@ -787,6 +787,9 @@ fn check_typing_collecting(
     // MATCH-CONST-PATTERN: arms that named a const now hold the
     // literal pattern they were checked as. Same placement rationale.
     tc.apply_const_pattern_rewrites();
+    // ENUM-DISCRIMINANT: `e as T` on an enum becomes the match (or the
+    // literal) it stands for.
+    tc.apply_enum_cast_rewrites();
     // NULL-COALESCE: replace the `a ?? b` nodes that surfaced through
     // direct `accept_expr` dispatch (and were typed but not rewritten)
     // with their lazy `val` + `match` blocks. Same placement rationale

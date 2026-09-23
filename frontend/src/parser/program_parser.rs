@@ -858,9 +858,33 @@ impl<'a> Parser<'a> {
                                 }
                                 self.expect_err(&Kind::ParenClose)?;
                             }
+                            // ENUM-DISCRIMINANT: `Red = 1`. Only a
+                            // variant without a payload has a number to
+                            // stand for.
+                            let mut discriminant: Option<i128> = None;
+                            if matches!(self.peek(), Some(Kind::Equal)) {
+                                self.next(); // consume '='
+                                if !payload_types.is_empty() {
+                                    self.collect_error(&format!(
+                                        "variant `{variant_name}` carries data, so it cannot have a \
+                                         discriminant: only a variant without a payload stands for a number"
+                                    ));
+                                }
+                                match self.parse_discriminant_literal() {
+                                    Some(v) => discriminant = Some(v),
+                                    None => {
+                                        let other_str = format!("{:?}", self.peek());
+                                        self.collect_error(&format!(
+                                            "expected an integer literal after `{variant_name} =`, got {other_str}"
+                                        ));
+                                        self.next();
+                                    }
+                                }
+                            }
                             variants.push(crate::ast::EnumVariantDef {
                                 name: variant_sym,
                                 payload_types,
+                                discriminant,
                             });
                             self.skip_newlines();
                             if matches!(self.peek(), Some(Kind::Comma)) {
@@ -893,6 +917,39 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(())
+    }
+
+    /// ENUM-DISCRIMINANT: the integer literal after `Variant =`, as the
+    /// value it names. Any width or none (`1u8`, `-1i32`, `0x10`, a char
+    /// literal); whether it fits the type an `as` converts to is the
+    /// type checker's call. Consumes the token only when it is one.
+    fn parse_discriminant_literal(&mut self) -> Option<i128> {
+        let value: i128 = match self.peek()? {
+            Kind::UInt64(v) => *v as i128,
+            Kind::Int64(v) => *v as i128,
+            Kind::UInt32(v) => *v as i128,
+            Kind::UInt16(v) => *v as i128,
+            Kind::UInt8(v) => *v as i128,
+            Kind::Int32(v) => *v as i128,
+            Kind::Int16(v) => *v as i128,
+            Kind::Int8(v) => *v as i128,
+            Kind::CharLiteral(v) => *v as i128,
+            Kind::Integer(text) => {
+                let text = text.replace('_', "");
+                let (negative, digits) = match text.strip_prefix('-') {
+                    Some(rest) => (true, rest.to_string()),
+                    None => (false, text),
+                };
+                let magnitude = match digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
+                    Some(hex) => i128::from_str_radix(hex, 16).ok()?,
+                    None => digits.parse::<i128>().ok()?,
+                };
+                if negative { -magnitude } else { magnitude }
+            }
+            _ => return None,
+        };
+        self.next();
+        Some(value)
     }
 
     /// An `impl` block.

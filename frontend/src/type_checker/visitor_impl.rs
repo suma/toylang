@@ -845,6 +845,7 @@ impl<'a> DeclVisitor for TypeCheckerVisitor<'a> {
                 )));
             }
         }
+        self.check_enum_discriminants(name, variants)?;
         self.context.enum_definitions.insert(name, variants.clone());
         if !generic_params.is_empty() {
             self.context.enum_generic_params.insert(name, generic_params.clone());

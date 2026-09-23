@@ -37,6 +37,7 @@ mod tests {
             current_fn_return_type: None,
             tuple_struct_rewrites: Default::default(),
             const_patterns: Default::default(),
+            enum_casts: Default::default(),
             null_coalesce_lhs_types: HashMap::new(),
         }
     }

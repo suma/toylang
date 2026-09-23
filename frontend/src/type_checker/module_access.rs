@@ -56,6 +56,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.apply_tuple_struct_rewrites();
         // MATCH-CONST-PATTERN: arms that named a const.
         self.apply_const_pattern_rewrites();
+        // ENUM-DISCRIMINANT: `e as T` on an enum.
+        self.apply_enum_cast_rewrites();
 
         // NULL-COALESCE: replace the `a ?? b` nodes that surfaced
         // through direct `accept_expr` dispatch (and were typed but not

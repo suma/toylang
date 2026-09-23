@@ -670,6 +670,7 @@ fn main() -> u64 {
   }
   ```
   - unit variant は `Color::Red`、tuple variant は `Shape::Circle(5i64)` で生成
+  - **discriminant (ENUM-DISCRIMINANT)**: unit variant に `Red = 1` と番号を付けられる (未指定は直前 +1、先頭 0、負数・hex・char リテラル可、重複はエラー、payload を持つ variant には付けられない)。`e as u32` で番号になる — 全 variant が unit で**全 variant の番号が目標の整数型に収まる**ときだけ (切り詰めない)。番号は tag ではなく、型検査器が `as` を `match` (素のパスは literal) に書き換えるのでバックエンドは知らない。整数 → enum の変換は無い
   - 各 arm は式。全 arm が同じ型でなければならない
   - パターン: `Enum::Variant` / `Enum::Variant(x, _, y)`（`_` は discard） / `_`（全 catch）
   - **struct パターン (PATTERN-STRUCT)**: `Point { x: 0i64, y }` / 省略形 `{ x }` /

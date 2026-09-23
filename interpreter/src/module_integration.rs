@@ -828,6 +828,7 @@ impl<'a> AstIntegrationContext<'a> {
                     new_variants.push(EnumVariantDef {
                         name: v_name,
                         payload_types: new_payloads,
+                        discriminant: v.discriminant,
                     });
                 }
                 Ok(Stmt::EnumDecl {

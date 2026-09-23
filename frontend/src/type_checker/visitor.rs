@@ -98,6 +98,10 @@ pub struct TypeCheckerVisitor<'a> {
     /// MATCH-CONST-PATTERN: consts a pattern may name, and the arms
     /// rewritten to compare against them.
     pub const_patterns: ConstPatterns,
+    /// ENUM-DISCRIMINANT: `e as T` casts from an enum, keyed by the
+    /// operand, with the enum and the target type; rewritten into a
+    /// match by `apply_enum_cast_rewrites`.
+    pub enum_casts: HashMap<ExprRef, (DefaultSymbol, TypeDecl)>,
     /// NULL-COALESCE: the checked left-operand type and resolved
     /// success type of `a ?? b` nodes, keyed by the operand ref (the
     /// one ref every visit route holds). The post-pass rewrite reads
@@ -223,6 +227,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             current_fn_return_type: None,
             tuple_struct_rewrites: TupleStructRewrites::default(),
             const_patterns: ConstPatterns::default(),
+            enum_casts: HashMap::new(),
             null_coalesce_lhs_types: HashMap::new(),
             transformed_exprs: HashMap::new(),
             pending_number_holes: Vec::new(),
@@ -311,6 +316,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             current_fn_return_type: None,
             tuple_struct_rewrites: TupleStructRewrites::default(),
             const_patterns: ConstPatterns::default(),
+            enum_casts: HashMap::new(),
             null_coalesce_lhs_types: HashMap::new(),
         }
     }
@@ -522,6 +528,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             current_fn_return_type: None,
             tuple_struct_rewrites: TupleStructRewrites::default(),
             const_patterns: ConstPatterns::default(),
+            enum_casts: HashMap::new(),
             null_coalesce_lhs_types: HashMap::new(),
             transformed_exprs: HashMap::new(),
             pending_number_holes: Vec::new(),

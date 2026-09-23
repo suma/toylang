@@ -25,8 +25,8 @@ fn line(text: str, out: &mut String) {
 # リンク)、syslog 行 (host / tag)、ラベル行、日付の無い行。
 fn small_fixture() -> String {
     var s = String::new()
-    line("10.0.0.1 - - [03/Sep/2026:12:00:01 +0000] \u{22}GET /a HTTP/1.1\u{22} 200 12 \u{22}-\u{22} \u{22}curl/8.0\u{22}", &mut s)
-    line("10.0.0.2 - - [03/Sep/2026:12:00:02 +0000] \u{22}POST /b HTTP/1.0\u{22} 404 7 \u{22}-\u{22} \u{22}MJ12bot/1.4\u{22}", &mut s)
+    line(r#"10.0.0.1 - - [03/Sep/2026:12:00:01 +0000] "GET /a HTTP/1.1" 200 12 "-" "curl/8.0""#, &mut s)
+    line(r#"10.0.0.2 - - [03/Sep/2026:12:00:02 +0000] "POST /b HTTP/1.0" 404 7 "-" "MJ12bot/1.4""#, &mut s)
     line("2026-09-03T12:00:03Z web01 sshd[101]: Accepted publickey for deploy", &mut s)
     line("2026-09-03T12:00:04Z host=web02 app=api level=error request timed out", &mut s)
     line("a line with no date at all", &mut s)
@@ -201,7 +201,7 @@ fn big_fixture() -> String {
     while i < 9000u64 {
         val ip = 1u64 + i % 200u64
         val path = i % 37u64
-        line("10.0.0.{ip} - - [03/Sep/2026:12:00:01 +0000] \u{22}GET /p{path} HTTP/1.1\u{22} 200 {i} \u{22}-\u{22} \u{22}curl/8.0\u{22}", &mut s)
+        line("10.0.0.{ip} - - [03/Sep/2026:12:00:01 +0000] \"GET /p{path} HTTP/1.1\" 200 {i} \"-\" \"curl/8.0\"", &mut s)
         i = i + 1u64
     }
     s

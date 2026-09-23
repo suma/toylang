@@ -1460,7 +1460,7 @@ fn e2e_fixture(n: u64) -> String {
     var s = String::new()
     var i = 0u64
     while i < n {
-        e2e_line("10.0.0.{1u64 + i % 5u64} - - [03/Sep/2026:12:00:{i % 60u64} +0000] \u{22}GET /p{i % 7u64} HTTP/1.1\u{22} {200u64 + 4u64 * (i % 2u64)} {i} \u{22}-\u{22} \u{22}curl/8.0\u{22}", &mut s)
+        e2e_line("10.0.0.{1u64 + i % 5u64} - - [03/Sep/2026:12:00:{i % 60u64} +0000] \"GET /p{i % 7u64} HTTP/1.1\" {200u64 + 4u64 * (i % 2u64)} {i} \"-\" \"curl/8.0\"", &mut s)
         i = i + 1u64
     }
     e2e_line("2026-09-03T12:30:00Z web01 cron[5]: job ran", &mut s)

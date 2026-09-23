@@ -36,7 +36,7 @@ fn check(line: str, name: str, got: &String, want: str) {
 
 # vhost の無い形。第 1 フィールドが client。
 test "an access line without a vhost gives up its fields" {
-    val s = String::from_str("10.0.0.1 - - [03/Sep/2026:12:00:01 +0000] \u{22}GET /index.html HTTP/1.1\u{22} 200 11103 \u{22}-\u{22} \u{22}curl/8.0\u{22}")
+    val s = String::from_str(r#"10.0.0.1 - - [03/Sep/2026:12:00:01 +0000] "GET /index.html HTTP/1.1" 200 11103 "-" "curl/8.0""#)
     val w = span_of(&s)
     val f = extract::http(w, 0u64, s.len())
 
@@ -53,7 +53,7 @@ test "an access line without a vhost gives up its fields" {
 # vhost のある形。§3 の「第 1 フィールドを client と決め打つと 6,682 件が
 # ホスト名という名前の IP になる」がこれ。
 test "an access line with a vhost does not mistake it for the client" {
-    val s = String::from_str("blog.example:80 10.0.0.2 - - [03/Sep/2026:12:00:02 +0000] \u{22}GET /robots.txt HTTP/1.1\u{22} 301 612 \u{22}-\u{22} \u{22}MJ12bot/1.4\u{22}")
+    val s = String::from_str(r#"blog.example:80 10.0.0.2 - - [03/Sep/2026:12:00:02 +0000] "GET /robots.txt HTTP/1.1" 301 612 "-" "MJ12bot/1.4""#)
     val w = span_of(&s)
     val f = extract::http(w, 0u64, s.len())
 
@@ -68,7 +68,7 @@ test "an access line with a vhost does not mistake it for the client" {
 # 引用を閉じる実装は 19 行でフィールドがずれ、payload が「ステータス」
 # として数えられた。distinct な status が 30 → 16 に落ちたのがその効果。
 test "an escaped quote does not close the field" {
-    val s = String::from_str("10.0.0.3 - - [03/Sep/2026:12:00:03 +0000] \u{22}GET /a HTTP/1.1\u{22} 404 209 \u{22}-\u{22} \u{22}Mozilla/5.0 (\\\u{22}weird\\\u{22}) Gecko\u{22}")
+    val s = String::from_str(r#"10.0.0.3 - - [03/Sep/2026:12:00:03 +0000] "GET /a HTTP/1.1" 404 209 "-" "Mozilla/5.0 (\"weird\") Gecko""#)
     val w = span_of(&s)
     val f = extract::http(w, 0u64, s.len())
 
@@ -76,13 +76,13 @@ test "an escaped quote does not close the field" {
     # ずれていれば status は payload の断片になる。
     check("escaped-quote", "status", &field_str(w, f.status), "404")
     check("escaped-quote", "bytes", &field_str(w, f.bytes), "209")
-    check("escaped-quote", "ua", &field_str(w, f.ua), "Mozilla/5.0 (\\\u{22}weird\\\u{22}) Gecko")
+    check("escaped-quote", "ua", &field_str(w, f.ua), r#"Mozilla/5.0 (\"weird\") Gecko"#)
 }
 
 # §3: `method` の 4 位は TLS ハンドシェイク — HTTPS を平文ポートに
 # 投げたクライアント。部分一致では決して見えない。
 test "a TLS handshake shows up as the method it is" {
-    val s = String::from_str("10.0.0.4 - - [03/Sep/2026:12:00:04 +0000] \u{22}\u{16}\u{03}\u{01}\u{02}\u{00}\u{22} 400 0 \u{22}-\u{22} \u{22}-\u{22}")
+    val s = String::from_str("10.0.0.4 - - [03/Sep/2026:12:00:04 +0000] \"\u{16}\u{03}\u{01}\u{02}\u{00}\" 400 0 \"-\" \"-\"")
     val w = span_of(&s)
     val f = extract::http(w, 0u64, s.len())
 

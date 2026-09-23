@@ -6,14 +6,14 @@
 # memory (HTTP_API.md section 3). Embedding it also means the UI
 # cannot 404 because an install put the file somewhere else.
 #
-# **Two rules for editing this file.** A `{` in a string literal
-# starts an interpolation, so every brace here is doubled (`{{` and
-# `}}`); and a `"` cannot appear in a toylang string literal at all,
-# so the page uses single quotes throughout -- in attributes and in
-# the script. Both are checked when this file is generated: the page
-# is written as plain HTML and the braces are doubled mechanically,
-# because doing it by hand is how a stray brace ends up rendering as
-# an interpolation error at start-up rather than in a test.
+# **The page is one raw literal** (`r#"..."#`): no escape is decoded
+# and no `{...}` is interpolated, so what is below is the HTML exactly
+# as it is served -- braces, backslashes and quotes as written, with no
+# doubling to get wrong. The one thing it cannot contain is `"#`, which
+# would end the literal; add a `#` to both ends if it ever needs one.
+# (Attributes and the script still use single quotes. That is left
+# over from when a `"` could not be written in a literal at all;
+# changing it is a change to the page, not to how it is spelled.)
 #
 # It talks to `/v1/query?format=json` and nothing else. The state
 # lives in the URL, so a result someone found is a link they can
@@ -21,145 +21,146 @@
 
 # The page, appended to `out`.
 pub fn page(out: &mut ByteWriter) {
-    out.put_str("<!doctype html>\n")
-    out.put_str("<html lang='en'>\n")
-    out.put_str("<head>\n")
-    out.put_str("<meta charset='utf-8'>\n")
-    out.put_str("<meta name='viewport' content='width=device-width, initial-scale=1'>\n")
-    out.put_str("<title>logsearch</title>\n")
-    out.put_str("<style>\n")
-    out.put_str(":root {{ color-scheme: light dark; --line: #8883; --dim: #8888; }}\n")
-    out.put_str("* {{ box-sizing: border-box; }}\n")
-    out.put_str("body {{ margin: 0; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }}\n")
-    out.put_str("header {{ display: flex; gap: 8px; flex-wrap: wrap; align-items: center;\n")
-    out.put_str("         padding: 10px 12px; border-bottom: 1px solid var(--line); }}\n")
-    out.put_str("input, select, button {{ font: inherit; padding: 4px 6px; }}\n")
-    out.put_str("input[name=q] {{ flex: 1 1 22em; min-width: 12em; }}\n")
-    out.put_str("input[name=limit] {{ width: 6em; }}\n")
-    out.put_str("main {{ padding: 0 12px; }}\n")
-    out.put_str("table {{ border-collapse: collapse; width: 100%; }}\n")
-    out.put_str("td {{ padding: 2px 8px 2px 0; vertical-align: top; border-bottom: 1px solid var(--line); }}\n")
-    out.put_str("td.ts {{ white-space: nowrap; color: var(--dim); }}\n")
-    out.put_str("td.body {{ word-break: break-all; }}\n")
-    out.put_str("footer {{ padding: 10px 12px; color: var(--dim); border-top: 1px solid var(--line); }}\n")
-    out.put_str("footer dl {{ display: grid; grid-template-columns: max-content auto; gap: 0 10px; margin: 0; }}\n")
-    out.put_str("dt {{ color: var(--dim); }}\n")
-    out.put_str("dd {{ margin: 0; }}\n")
-    out.put_str(".err {{ color: #c33; padding: 10px 12px; }}\n")
-    out.put_str(".note {{ color: var(--dim); padding: 10px 12px; }}\n")
-    out.put_str(".note code {{ color: inherit; }}\n")
-    out.put_str(".more {{ margin: 10px 0; }}\n")
-    out.put_str("</style>\n")
-    out.put_str("</head>\n")
-    out.put_str("<body>\n")
-    out.put_str("<header>\n")
-    out.put_str("  <form id='f'>\n")
-    out.put_str("    <input name='q' placeholder='status=404 path~/wp- timeout' autofocus>\n")
-    out.put_str("    <input name='limit' value='50' inputmode='numeric'>\n")
-    out.put_str("    <button>search</button>\n")
-    out.put_str("  </form>\n")
-    out.put_str("</header>\n")
-    out.put_str("<main>\n")
-    out.put_str("  <div id='err' class='err' hidden></div>\n")
-    out.put_str("  <div id='empty' class='note' hidden></div>\n")
-    out.put_str("  <table><tbody id='rows'></tbody></table>\n")
-    out.put_str("  <div class='more'><button id='more' hidden>more</button></div>\n")
-    out.put_str("</main>\n")
-    out.put_str("<footer><dl id='stats'></dl></footer>\n")
-    out.put_str("<script>\n")
-    out.put_str("const $ = (id) => document.getElementById(id);\n")
-    out.put_str("const form = $('f'), rows = $('rows'), stats = $('stats'), err = $('err'), more = $('more');\n")
-    out.put_str("const empty = $('empty');\n")
-    out.put_u8('\n')
-    out.put_str("// The state lives in the URL, so a result is a link someone can send.\n")
-    out.put_str("function fromUrl() {{\n")
-    out.put_str("  const p = new URLSearchParams(location.search);\n")
-    out.put_str("  form.q.value = p.get('q') || '';\n")
-    out.put_str("  form.limit.value = p.get('limit') || '50';\n")
-    out.put_str("}}\n")
-    out.put_u8('\n')
-    out.put_str("function label(k) {{\n")
-    out.put_str("  return k.replace(/_/g, ' ');\n")
-    out.put_str("}}\n")
-    out.put_u8('\n')
-    out.put_str("// Nothing found and nothing to search are different things, and the\n")
-    out.put_str("// difference is the first one a new reader hits: `serve` with no\n")
-    out.put_str("// argument points at an empty archive, and an empty table alone looks\n")
-    out.put_str("// like a query that missed.\n")
-    out.put_str("function emptyState(data) {{\n")
-    out.put_str("  if (data.records.length > 0) {{ empty.hidden = true; return; }}\n")
-    out.put_str("  empty.hidden = false;\n")
-    out.put_str("  if (data.stats.segments_considered === 0) {{\n")
-    out.put_str("    empty.textContent = 'This archive holds no segments. Fill one with: logsearch archive <logdir> <spec>';\n")
-    out.put_str("  }} else {{\n")
-    out.put_str("    empty.textContent = 'No records matched. `=` matches a whole value; try `~` for a part of one.';\n")
-    out.put_str("  }}\n")
-    out.put_str("}}\n")
-    out.put_u8('\n')
-    out.put_str("function show(data) {{\n")
-    out.put_str("  emptyState(data);\n")
-    out.put_str("  rows.replaceChildren();\n")
-    out.put_str("  for (const r of data.records) {{\n")
-    out.put_str("    const tr = document.createElement('tr');\n")
-    out.put_str("    const ts = document.createElement('td');\n")
-    out.put_str("    ts.className = 'ts';\n")
-    out.put_str("    ts.textContent = r.ts === null ? '-' : r.ts;\n")
-    out.put_str("    const body = document.createElement('td');\n")
-    out.put_str("    body.className = 'body';\n")
-    out.put_str("    body.textContent = r.body;\n")
-    out.put_str("    tr.append(ts, body);\n")
-    out.put_str("    rows.append(tr);\n")
-    out.put_str("  }}\n")
-    out.put_str("  // Why it cost what it did, next to what it found. A search that\n")
-    out.put_str("  // opened 4 of 12 segments is a different thing from one that opened\n")
-    out.put_str("  // all 12, and the number is the only way to see which happened.\n")
-    out.put_str("  stats.replaceChildren();\n")
-    out.put_str("  for (const [k, v] of Object.entries(data.stats)) {{\n")
-    out.put_str("    const dt = document.createElement('dt');\n")
-    out.put_str("    dt.textContent = label(k);\n")
-    out.put_str("    const dd = document.createElement('dd');\n")
-    out.put_str("    dd.textContent = String(v);\n")
-    out.put_str("    stats.append(dt, dd);\n")
-    out.put_str("  }}\n")
-    out.put_str("  // There are no cursors yet, so 'more' asks for a larger limit\n")
-    out.put_str("  // rather than for the next page. It stops at the server's cap.\n")
-    out.put_str("  const n = data.stats.shown;\n")
-    out.put_str("  more.hidden = !(data.stats.truncated || n >= Number(form.limit.value));\n")
-    out.put_str("}}\n")
-    out.put_u8('\n')
-    out.put_str("async function run(push) {{\n")
-    out.put_str("  const q = form.q.value.trim();\n")
-    out.put_str("  const limit = form.limit.value.trim() || '50';\n")
-    out.put_str("  if (!q) {{ return; }}\n")
-    out.put_str("  const url = '/v1/query?format=json&q=' + encodeURIComponent(q) + '&limit=' + encodeURIComponent(limit);\n")
-    out.put_str("  if (push) {{ history.pushState(null, '', '?q=' + encodeURIComponent(q) + '&limit=' + encodeURIComponent(limit)); }}\n")
-    out.put_str("  err.hidden = true;\n")
-    out.put_str("  try {{\n")
-    out.put_str("    const res = await fetch(url);\n")
-    out.put_str("    const data = await res.json();\n")
-    out.put_str("    if (!res.ok) {{ throw new Error(data.detail || data.error || res.status); }}\n")
-    out.put_str("    show(data);\n")
-    out.put_str("  }} catch (e) {{\n")
-    out.put_str("    rows.replaceChildren();\n")
-    out.put_str("    stats.replaceChildren();\n")
-    out.put_str("    more.hidden = true;\n")
-    out.put_str("    empty.hidden = true;\n")
-    out.put_str("    err.textContent = String(e.message || e);\n")
-    out.put_str("    err.hidden = false;\n")
-    out.put_str("  }}\n")
-    out.put_str("}}\n")
-    out.put_u8('\n')
-    out.put_str("form.addEventListener('submit', (e) => {{ e.preventDefault(); run(true); }});\n")
-    out.put_str("more.addEventListener('click', () => {{\n")
-    out.put_str("  form.limit.value = Math.min(1000, Number(form.limit.value) * 4);\n")
-    out.put_str("  run(true);\n")
-    out.put_str("}});\n")
-    out.put_str("window.addEventListener('popstate', () => {{ fromUrl(); run(false); }});\n")
-    out.put_str("fromUrl();\n")
-    out.put_str("if (form.q.value) {{ run(false); }}\n")
-    out.put_str("</script>\n")
-    out.put_str("</body>\n")
-    out.put_str("</html>\n")
+    out.put_str(r#"<!doctype html>
+<html lang='en'>
+<head>
+<meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>logsearch</title>
+<style>
+:root { color-scheme: light dark; --line: #8883; --dim: #8888; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+header { display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+         padding: 10px 12px; border-bottom: 1px solid var(--line); }
+input, select, button { font: inherit; padding: 4px 6px; }
+input[name=q] { flex: 1 1 22em; min-width: 12em; }
+input[name=limit] { width: 6em; }
+main { padding: 0 12px; }
+table { border-collapse: collapse; width: 100%; }
+td { padding: 2px 8px 2px 0; vertical-align: top; border-bottom: 1px solid var(--line); }
+td.ts { white-space: nowrap; color: var(--dim); }
+td.body { word-break: break-all; }
+footer { padding: 10px 12px; color: var(--dim); border-top: 1px solid var(--line); }
+footer dl { display: grid; grid-template-columns: max-content auto; gap: 0 10px; margin: 0; }
+dt { color: var(--dim); }
+dd { margin: 0; }
+.err { color: #c33; padding: 10px 12px; }
+.note { color: var(--dim); padding: 10px 12px; }
+.note code { color: inherit; }
+.more { margin: 10px 0; }
+</style>
+</head>
+<body>
+<header>
+  <form id='f'>
+    <input name='q' placeholder='status=404 path~/wp- timeout' autofocus>
+    <input name='limit' value='50' inputmode='numeric'>
+    <button>search</button>
+  </form>
+</header>
+<main>
+  <div id='err' class='err' hidden></div>
+  <div id='empty' class='note' hidden></div>
+  <table><tbody id='rows'></tbody></table>
+  <div class='more'><button id='more' hidden>more</button></div>
+</main>
+<footer><dl id='stats'></dl></footer>
+<script>
+const $ = (id) => document.getElementById(id);
+const form = $('f'), rows = $('rows'), stats = $('stats'), err = $('err'), more = $('more');
+const empty = $('empty');
+
+// The state lives in the URL, so a result is a link someone can send.
+function fromUrl() {
+  const p = new URLSearchParams(location.search);
+  form.q.value = p.get('q') || '';
+  form.limit.value = p.get('limit') || '50';
+}
+
+function label(k) {
+  return k.replace(/_/g, ' ');
+}
+
+// Nothing found and nothing to search are different things, and the
+// difference is the first one a new reader hits: `serve` with no
+// argument points at an empty archive, and an empty table alone looks
+// like a query that missed.
+function emptyState(data) {
+  if (data.records.length > 0) { empty.hidden = true; return; }
+  empty.hidden = false;
+  if (data.stats.segments_considered === 0) {
+    empty.textContent = 'This archive holds no segments. Fill one with: logsearch archive <logdir> <spec>';
+  } else {
+    empty.textContent = 'No records matched. `=` matches a whole value; try `~` for a part of one.';
+  }
+}
+
+function show(data) {
+  emptyState(data);
+  rows.replaceChildren();
+  for (const r of data.records) {
+    const tr = document.createElement('tr');
+    const ts = document.createElement('td');
+    ts.className = 'ts';
+    ts.textContent = r.ts === null ? '-' : r.ts;
+    const body = document.createElement('td');
+    body.className = 'body';
+    body.textContent = r.body;
+    tr.append(ts, body);
+    rows.append(tr);
+  }
+  // Why it cost what it did, next to what it found. A search that
+  // opened 4 of 12 segments is a different thing from one that opened
+  // all 12, and the number is the only way to see which happened.
+  stats.replaceChildren();
+  for (const [k, v] of Object.entries(data.stats)) {
+    const dt = document.createElement('dt');
+    dt.textContent = label(k);
+    const dd = document.createElement('dd');
+    dd.textContent = String(v);
+    stats.append(dt, dd);
+  }
+  // There are no cursors yet, so 'more' asks for a larger limit
+  // rather than for the next page. It stops at the server's cap.
+  const n = data.stats.shown;
+  more.hidden = !(data.stats.truncated || n >= Number(form.limit.value));
+}
+
+async function run(push) {
+  const q = form.q.value.trim();
+  const limit = form.limit.value.trim() || '50';
+  if (!q) { return; }
+  const url = '/v1/query?format=json&q=' + encodeURIComponent(q) + '&limit=' + encodeURIComponent(limit);
+  if (push) { history.pushState(null, '', '?q=' + encodeURIComponent(q) + '&limit=' + encodeURIComponent(limit)); }
+  err.hidden = true;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!res.ok) { throw new Error(data.detail || data.error || res.status); }
+    show(data);
+  } catch (e) {
+    rows.replaceChildren();
+    stats.replaceChildren();
+    more.hidden = true;
+    empty.hidden = true;
+    err.textContent = String(e.message || e);
+    err.hidden = false;
+  }
+}
+
+form.addEventListener('submit', (e) => { e.preventDefault(); run(true); });
+more.addEventListener('click', () => {
+  form.limit.value = Math.min(1000, Number(form.limit.value) * 4);
+  run(true);
+});
+window.addEventListener('popstate', () => { fromUrl(); run(false); });
+fromUrl();
+if (form.q.value) { run(false); }
+</script>
+</body>
+</html>
+"#)
 }
 
 # `text/html`, and the length is whatever the page came to.

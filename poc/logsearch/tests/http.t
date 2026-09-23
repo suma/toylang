@@ -286,7 +286,7 @@ test "an error response says what went wrong in the documented shape" {
     var out = ByteWriter::with_capacity(256u64)
     http::respond_error(&mut out, 400u64, "bad parameter", "limit: not a number", false)
     val got = rendered(&out)
-    val want = String::from_str("HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 57\r\nconnection: close\r\n\r\n{{\u{22}error\u{22}:\u{22}bad parameter\u{22},\u{22}detail\u{22}:\u{22}limit: not a number\u{22}}}\n")
+    val want = String::from_str("HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 57\r\nconnection: close\r\n\r\n{{\"error\":\"bad parameter\",\"detail\":\"limit: not a number\"}}\n")
     assert(got.eq(&want), "the error response should be exactly this")
 }
 
@@ -305,11 +305,11 @@ fn as_json(raw: str) -> String {
 # リクエスト行には必ず 2 つある)。素通しした応答は、どの JSON
 # パーサにも読めない。
 test "a log line survives being put in a JSON string" {
-    check("plain", &as_json("hello"), "\u{22}hello\u{22}")
-    check("quote", &as_json("say \u{22}hi\u{22}"), "\u{22}say \\\u{22}hi\\\u{22}\u{22}")
-    check("backslash", &as_json("a\\b"), "\u{22}a\\\\b\u{22}")
-    check("newline", &as_json("a\nb"), "\u{22}a\\nb\u{22}")
-    check("tab", &as_json("a\tb"), "\u{22}a\\tb\u{22}")
+    check("plain", &as_json("hello"), "\"hello\"")
+    check("quote", &as_json("say \"hi\""), r#""say \"hi\"""#)
+    check("backslash", &as_json(r"a\b"), r#""a\\b""#)
+    check("newline", &as_json("a\nb"), r#""a\nb""#)
+    check("tab", &as_json("a\tb"), r#""a\tb""#)
 }
 
 # §3 の TLS ハンドシェイク — 平文ポートに来た HTTPS のバイト列は
@@ -320,5 +320,5 @@ test "a control byte with no short form becomes an escape" {
     var out = ByteWriter::with_capacity(64u64)
     http::put_json_string(&mut out, &s)
     val got = rendered(&out)
-    check("control", &got, "\u{22}x\\u0016\\u0003y\u{22}")
+    check("control", &got, r#""x\u0016\u0003y""#)
 }

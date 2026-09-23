@@ -1207,17 +1207,17 @@ pub fn render_text(hits: &Vec<Hit>, texts: &Vec<String>, q: &Query,
 }
 
 fn put_record(out: &mut ByteWriter, ts: i64, line: &String) {
-    out.put_str("{{\u{22}ts\u{22}:")
+    out.put_str(r#"{"ts":"#)
     if ts == 0i64 {
         out.put_str("null")
     } else {
-        out.put_u8('\u{22}')
+        out.put_u8('"')
         put_stamp(out, ts)
-        out.put_u8('\u{22}')
+        out.put_u8('"')
     }
-    out.put_str(",\u{22}body\u{22}:")
+    out.put_str(",\"body\":")
     http::put_json_string(out, line)
-    out.put_str("}}")
+    out.put_str("}")
 }
 
 pub fn render_ndjson(hits: &Vec<Hit>, texts: &Vec<String>, q: &Query,
@@ -1242,7 +1242,7 @@ pub fn render_ndjson(hits: &Vec<Hit>, texts: &Vec<String>, q: &Query,
 # selective query from an unselective one.
 pub fn render_json(hits: &Vec<Hit>, texts: &Vec<String>, q: &Query,
                    st: &SearchStats, out: &mut ByteWriter) -> u64 {
-    out.put_str("{{\u{22}records\u{22}:[")
+    out.put_str(r#"{"records":["#)
     val total = hits.size()
     var shown: u64 = 0u64
     var i: u64 = 0u64
@@ -1254,31 +1254,31 @@ pub fn render_json(hits: &Vec<Hit>, texts: &Vec<String>, q: &Query,
         shown = shown + 1u64
         i = i + 1u64
     }
-    out.put_str("],\u{22}stats\u{22}:{{\u{22}segments_opened\u{22}:")
+    out.put_str(r#"],"stats":{"segments_opened":"#)
     out.put_str("{st.opened}")
-    out.put_str(",\u{22}segments_considered\u{22}:")
+    out.put_str(",\"segments_considered\":")
     out.put_str("{st.considered}")
-    out.put_str(",\u{22}pruned_by_time\u{22}:")
+    out.put_str(",\"pruned_by_time\":")
     out.put_str("{st.pruned_time}")
-    out.put_str(",\u{22}pruned_by_index\u{22}:")
+    out.put_str(",\"pruned_by_index\":")
     out.put_str("{st.pruned_terms}")
-    out.put_str(",\u{22}records_examined\u{22}:")
+    out.put_str(",\"records_examined\":")
     out.put_str("{st.examined}")
-    out.put_str(",\u{22}records_matched\u{22}:")
+    out.put_str(",\"records_matched\":")
     out.put_str("{st.matched}")
-    out.put_str(",\u{22}bytes_read\u{22}:")
+    out.put_str(",\"bytes_read\":")
     out.put_str("{st.read_bytes}")
-    out.put_str(",\u{22}bytes_expanded\u{22}:")
+    out.put_str(",\"bytes_expanded\":")
     out.put_str("{st.scanned_bytes}")
-    out.put_str(",\u{22}frames_expanded\u{22}:")
+    out.put_str(",\"frames_expanded\":")
     out.put_str("{st.frames_read}")
-    out.put_str(",\u{22}frames_total\u{22}:")
+    out.put_str(",\"frames_total\":")
     out.put_str("{st.frames_total}")
-    out.put_str(",\u{22}shown\u{22}:")
+    out.put_str(",\"shown\":")
     out.put_str("{shown}")
-    out.put_str(",\u{22}truncated\u{22}:")
+    out.put_str(",\"truncated\":")
     if st.truncated { out.put_str("true") } else { out.put_str("false") }
-    out.put_str(",\u{22}elapsed_ms\u{22}:")
+    out.put_str(",\"elapsed_ms\":")
     out.put_str("{st.ms}")
     out.put_str("}}}}\n")
     shown

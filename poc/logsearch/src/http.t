@@ -485,14 +485,14 @@ pub fn query_param(b: Span<u8>, at: u64, len: u64, name: str,
 # two), and a response that hands them through unescaped is a
 # response no JSON parser will read.
 pub fn put_json_string(out: &mut ByteWriter, s: &String) {
-    out.put_u8('\u{22}')
+    out.put_u8('"')
     var i: u64 = 0u64
     val n = s.len()
     while i < n {
         val c: u8 = s.get(i)
-        if c == '\u{22}' {
+        if c == '"' {
             out.put_u8('\\')
-            out.put_u8('\u{22}')
+            out.put_u8('"')
         } elif c == '\\' {
             out.put_u8('\\')
             out.put_u8('\\')
@@ -518,7 +518,7 @@ pub fn put_json_string(out: &mut ByteWriter, s: &String) {
         }
         i = i + 1u64
     }
-    out.put_u8('\u{22}')
+    out.put_u8('"')
 }
 
 # ---------------------------------------------------------------------
@@ -578,17 +578,16 @@ pub fn respond_text(out: &mut ByteWriter, status: u64, ctype: str,
 # optional `detail`.
 pub fn respond_error(out: &mut ByteWriter, status: u64, message: str,
                      detail: str, keep_alive: bool) {
-    # `{{` and `}}` are how a literal brace survives interpolation.
     var body = String::new()
-    body.push_str("{{\u{22}error\u{22}:\u{22}")
+    body.push_str(r#"{"error":""#)
     body.push_str(message)
-    body.push_str("\u{22}")
+    body.push_str("\"")
     if detail.len() > 0u64 {
-        body.push_str(",\u{22}detail\u{22}:\u{22}")
+        body.push_str(",\"detail\":\"")
         body.push_str(detail)
-        body.push_str("\u{22}")
+        body.push_str("\"")
     }
-    body.push_str("}}\n")
+    body.push_str("}\n")
     begin_response(out, status, "application/json", body.len(), keep_alive)
     end_headers(out)
     out.put_str(body.to_str())

@@ -27,7 +27,7 @@ fn cp_fixture(n: u64, first: u64) -> String {
     var i = 0u64
     while i < n {
         val sec = first + i
-        cp_line("10.0.0.{1u64 + i % 7u64} - - [03/Sep/2026:12:00:{sec % 60u64} +0000] \u{22}GET /p{i % 5u64} HTTP/1.1\u{22} 200 {i} \u{22}-\u{22} \u{22}curl/8.0\u{22}", &mut s)
+        cp_line("10.0.0.{1u64 + i % 7u64} - - [03/Sep/2026:12:00:{sec % 60u64} +0000] \"GET /p{i % 5u64} HTTP/1.1\" 200 {i} \"-\" \"curl/8.0\"", &mut s)
         i = i + 1u64
     }
     s

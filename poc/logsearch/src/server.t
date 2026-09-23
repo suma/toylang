@@ -308,15 +308,15 @@ fn ingest_route(b: Span<u8>, r: &Request, st: &mut Stats,
     var seq_first = first
     if taken == 0u64 { seq_first = 0u64 }
     var body_out = ByteWriter::with_capacity(128u64)
-    body_out.put_str("{{\u{22}accepted\u{22}:")
+    body_out.put_str(r#"{"accepted":"#)
     body_out.put_str("{taken}")
-    body_out.put_str(",\u{22}rejected\u{22}:")
+    body_out.put_str(",\"rejected\":")
     body_out.put_str("{bad}")
-    body_out.put_str(",\u{22}seq_first\u{22}:")
+    body_out.put_str(",\"seq_first\":")
     body_out.put_str("{seq_first}")
-    body_out.put_str(",\u{22}seq_last\u{22}:")
+    body_out.put_str(",\"seq_last\":")
     body_out.put_str("{last}")
-    body_out.put_str("}}\n")
+    body_out.put_str("}\n")
     http::begin_response(out, 200u64, "application/json", body_out.len(), alive)
     http::end_headers(out)
     out.put_all(&body_out)
@@ -351,9 +351,9 @@ fn put_json_str(out: &mut ByteWriter, s: str) {
     # a uuid, all of them from the configuration or from hex. A value
     # that could carry a quote does not reach here, and pretending to
     # escape without doing it properly would be worse than saying so.
-    out.put_str("\u{22}")
+    out.put_str("\"")
     out.put_str(s)
-    out.put_str("\u{22}")
+    out.put_str("\"")
 }
 
 # `GET /v1/stats` -- what the process is doing and what the disks hold.
@@ -373,19 +373,19 @@ fn stats_body(spec: str, st: &Stats, body: &mut ByteWriter) {
     val conns = st.connections
     val bin = st.bytes_in
     val bout = st.bytes_out
-    body.put_str("{{\u{22}uptime_s\u{22}:")
+    body.put_str(r#"{"uptime_s":"#)
     body.put_str("{up}")
-    body.put_str(",\u{22}requests\u{22}:{{\u{22}served\u{22}:")
+    body.put_str(r#","requests":{"served":"#)
     body.put_str("{reqs}")
-    body.put_str(",\u{22}refused\u{22}:")
+    body.put_str(",\"refused\":")
     body.put_str("{refused}")
-    body.put_str(",\u{22}connections\u{22}:")
+    body.put_str(",\"connections\":")
     body.put_str("{conns}")
-    body.put_str(",\u{22}bytes_in\u{22}:")
+    body.put_str(",\"bytes_in\":")
     body.put_str("{bin}")
-    body.put_str(",\u{22}bytes_out\u{22}:")
+    body.put_str(",\"bytes_out\":")
     body.put_str("{bout}")
-    body.put_str("}},\u{22}mounts\u{22}:[")
+    body.put_str("},\"mounts\":[")
 
     if have {
         var i: u64 = 0u64
@@ -400,21 +400,21 @@ fn stats_body(spec: str, st: &Stats, body: &mut ByteWriter) {
             val quota = ms.quota_of(i)
             val state = mount::state_name(ms.state_of(i))
             val ro = ms.is_readonly(i)
-            body.put_str("{{\u{22}path\u{22}:")
+            body.put_str(r#"{"path":"#)
             put_json_str(body, ps)
-            body.put_str(",\u{22}state\u{22}:")
+            body.put_str(",\"state\":")
             put_json_str(body, state)
-            body.put_str(",\u{22}readonly\u{22}:")
+            body.put_str(",\"readonly\":")
             if ro { body.put_str("true") } else { body.put_str("false") }
-            body.put_str(",\u{22}quota\u{22}:")
+            body.put_str(",\"quota\":")
             body.put_str("{quota}")
-            body.put_str(",\u{22}used\u{22}:")
+            body.put_str(",\"used\":")
             body.put_str("{used}")
-            body.put_str(",\u{22}segments\u{22}:")
+            body.put_str(",\"segments\":")
             body.put_str("{segs}")
-            body.put_str(",\u{22}records\u{22}:")
+            body.put_str(",\"records\":")
             body.put_str("{recs}")
-            body.put_str("}}")
+            body.put_str("}")
             i = i + 1u64
         }
     }
@@ -422,11 +422,11 @@ fn stats_body(spec: str, st: &Stats, body: &mut ByteWriter) {
     val live = __builtin_live_bytes()
     val cumulative = __builtin_cumulative_bytes()
     val allocs = __builtin_alloc_count()
-    body.put_str("],\u{22}memory\u{22}:{{\u{22}live_bytes\u{22}:")
+    body.put_str(r#"],"memory":{"live_bytes":"#)
     body.put_str("{live}")
-    body.put_str(",\u{22}cumulative_bytes\u{22}:")
+    body.put_str(",\"cumulative_bytes\":")
     body.put_str("{cumulative}")
-    body.put_str(",\u{22}alloc_count\u{22}:")
+    body.put_str(",\"alloc_count\":")
     body.put_str("{allocs}")
     body.put_str("}}}}\n")
 }
@@ -461,17 +461,17 @@ fn admin_compact(spec: str, body: &mut ByteWriter) -> u64 {
         }
         i = i + 1u64
     }
-    body.put_str("{{\u{22}merged\u{22}:")
+    body.put_str(r#"{"merged":"#)
     body.put_str("{merged}")
-    body.put_str(",\u{22}records\u{22}:")
+    body.put_str(",\"records\":")
     body.put_str("{records}")
-    body.put_str(",\u{22}bytes_in\u{22}:")
+    body.put_str(",\"bytes_in\":")
     body.put_str("{bytes_in}")
-    body.put_str(",\u{22}bytes_out\u{22}:")
+    body.put_str(",\"bytes_out\":")
     body.put_str("{bytes_out}")
-    body.put_str(",\u{22}failed\u{22}:")
+    body.put_str(",\"failed\":")
     body.put_str("{failed}")
-    body.put_str("}}\n")
+    body.put_str("}\n")
     200u64
 }
 
@@ -497,11 +497,11 @@ fn admin_repair(spec: str, body: &mut ByteWriter) -> u64 {
         }
         i = i + 1u64
     }
-    body.put_str("{{\u{22}mounts\u{22}:")
+    body.put_str(r#"{"mounts":"#)
     body.put_str("{mounts}")
-    body.put_str(",\u{22}segments\u{22}:")
+    body.put_str(",\"segments\":")
     body.put_str("{rows}")
-    body.put_str("}}\n")
+    body.put_str("}\n")
     200u64
 }
 
@@ -566,11 +566,11 @@ fn admin_gc(spec: str, days: u64, body: &mut ByteWriter) -> u64 {
         }
         i = i + 1u64
     }
-    body.put_str("{{\u{22}dropped\u{22}:")
+    body.put_str(r#"{"dropped":"#)
     body.put_str("{dropped}")
-    body.put_str(",\u{22}bytes_freed\u{22}:")
+    body.put_str(",\"bytes_freed\":")
     body.put_str("{freed}")
-    body.put_str("}}\n")
+    body.put_str("}\n")
     200u64
 }
 
@@ -656,7 +656,7 @@ pub fn route(spec: str, b: Span<u8>, r: &Request, local: bool,
             }
             if path_is(b, r, "/v1/admin/shutdown") {
                 st.shutdown = true
-                http::respond_text(out, 200u64, "application/json", "{{\u{22}stopping\u{22}:true}}\n", false)
+                http::respond_text(out, 200u64, "application/json", "{{\"stopping\":true}}\n", false)
                 return
             }
             if path_is(b, r, "/v1/admin/flush") {
@@ -664,11 +664,11 @@ pub fn route(spec: str, b: Span<u8>, r: &Request, local: bool,
                 val held = w.count()
                 val wrote = flush_active(w, ms, gens, st, &crc2)
                 var body2 = ByteWriter::with_capacity(128u64)
-                body2.put_str("{{\u{22}records\u{22}:")
+                body2.put_str(r#"{"records":"#)
                 body2.put_str("{held}")
-                body2.put_str(",\u{22}bytes\u{22}:")
+                body2.put_str(",\"bytes\":")
                 body2.put_str("{wrote}")
-                body2.put_str("}}\n")
+                body2.put_str("}\n")
                 http::begin_response(out, 200u64, "application/json", body2.len(), alive)
                 http::end_headers(out)
                 out.put_all(&body2)
@@ -848,11 +848,11 @@ fn labels_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
 
     var body = ByteWriter::with_capacity(4096u64)
     if named {
-        body.put_str("{{\u{22}name\u{22}:")
+        body.put_str(r#"{"name":"#)
         http::put_json_string(&mut body, &name)
-        body.put_str(",\u{22}values\u{22}:[")
+        body.put_str(",\"values\":[")
     } else {
-        body.put_str("{{\u{22}labels\u{22}:[")
+        body.put_str(r#"{"labels":["#)
     }
     val total = order.size()
     var shown: u64 = 0u64
@@ -861,21 +861,21 @@ fn labels_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
         if shown > 0u64 { body.put_u8(',') }
         val t: Tally = order.get(total - 1u64 - k)
         val nm: &String = names.borrow(t.idx)
-        body.put_str("{{\u{22}name\u{22}:")
+        body.put_str(r#"{"name":"#)
         http::put_json_string(&mut body, &nm)
-        body.put_str(",\u{22}records\u{22}:")
+        body.put_str(",\"records\":")
         body.put_str("{t.count}")
-        body.put_str("}}")
+        body.put_str("}")
         shown = shown + 1u64
         k = k + 1u64
     }
-    body.put_str("],\u{22}distinct\u{22}:")
+    body.put_str("],\"distinct\":")
     body.put_str("{total}")
-    body.put_str(",\u{22}shown\u{22}:")
+    body.put_str(",\"shown\":")
     body.put_str("{shown}")
-    body.put_str(",\u{22}segments\u{22}:")
+    body.put_str(",\"segments\":")
     body.put_str("{segs_read}")
-    body.put_str("}}\n")
+    body.put_str("}\n")
 
     http::begin_response(out, 200u64, "application/json", body.len(), alive)
     http::end_headers(out)
@@ -995,7 +995,7 @@ fn streams_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
     order.sort()
 
     var body = ByteWriter::with_capacity(4096u64)
-    body.put_str("{{\u{22}streams\u{22}:[")
+    body.put_str(r#"{"streams":["#)
     val total = order.size()
     var shown: u64 = 0u64
     var k: u64 = 0u64
@@ -1003,33 +1003,33 @@ fn streams_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
         if shown > 0u64 { body.put_u8(',') }
         val t: Tally = order.get(total - 1u64 - k)
         val text: &String = tal.texts.borrow(t.idx)
-        body.put_str("{{\u{22}labels\u{22}:")
+        body.put_str(r#"{"labels":"#)
         put_label_object(&mut body, &text)
-        body.put_str(",\u{22}records\u{22}:")
+        body.put_str(",\"records\":")
         body.put_str("{t.count}")
         val lo: i64 = tal.ts_min.get(t.idx)
         val hi: i64 = tal.ts_max.get(t.idx)
         if lo <= hi {
             val from = DateTime::from_unix(lo)
             val until = DateTime::from_unix(hi)
-            body.put_str(",\u{22}ts_min\u{22}:\u{22}")
+            body.put_str(",\"ts_min\":\"")
             body.put_str(time::format(from, "%Y-%m-%dT%H:%M:%SZ"))
-            body.put_str("\u{22},\u{22}ts_max\u{22}:\u{22}")
+            body.put_str(r#"","ts_max":""#)
             body.put_str(time::format(until, "%Y-%m-%dT%H:%M:%SZ"))
-            body.put_str("\u{22}")
+            body.put_str("\"")
         }
-        body.put_str("}}")
+        body.put_str("}")
         shown = shown + 1u64
         k = k + 1u64
     }
     val segs_read = tal.segments
-    body.put_str("],\u{22}distinct\u{22}:")
+    body.put_str("],\"distinct\":")
     body.put_str("{total}")
-    body.put_str(",\u{22}shown\u{22}:")
+    body.put_str(",\"shown\":")
     body.put_str("{shown}")
-    body.put_str(",\u{22}segments\u{22}:")
+    body.put_str(",\"segments\":")
     body.put_str("{segs_read}")
-    body.put_str("}}\n")
+    body.put_str("}\n")
 
     http::begin_response(out, 200u64, "application/json", body.len(), alive)
     http::end_headers(out)

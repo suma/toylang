@@ -120,8 +120,8 @@ test "a host spelled twice is one pair, spelled differently is two" {
 # 合わなくなる。
 test "records with no labels are a stream of their own" {
     var body = String::new()
-    sm_line("10.0.0.1 - - [03/Sep/2026:12:00:01 +0000] \u{22}GET /a HTTP/1.1\u{22} 200 12 \u{22}-\u{22} \u{22}curl/8.0\u{22}", &mut body)
-    sm_line("10.0.0.2 - - [03/Sep/2026:12:00:02 +0000] \u{22}GET /b HTTP/1.1\u{22} 200 12 \u{22}-\u{22} \u{22}curl/8.0\u{22}", &mut body)
+    sm_line(r#"10.0.0.1 - - [03/Sep/2026:12:00:01 +0000] "GET /a HTTP/1.1" 200 12 "-" "curl/8.0""#, &mut body)
+    sm_line(r#"10.0.0.2 - - [03/Sep/2026:12:00:02 +0000] "GET /b HTTP/1.1" 200 12 "-" "curl/8.0""#, &mut body)
     sm_line("2026-09-03T12:00:03Z app=api labelled", &mut body)
     val seg = sm_build("build/streams-empty", &body)
     var segs: Vec<String> = Vec::new()

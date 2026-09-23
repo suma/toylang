@@ -331,8 +331,8 @@ test "an archive with nothing in it answers, it does not fail" {
     }
     val got = answer_for(dir, "GET /v1/query?q=a&format=json HTTP/1.1\r\n\r\n", true)
     assert(contains(&got, "HTTP/1.1 200 OK"), "an empty archive is still an answer")
-    assert(contains(&got, "\u{22}records\u{22}:[]"), "with no records")
-    assert(contains(&got, "\u{22}segments_considered\u{22}:0"), "and nothing to have considered")
+    assert(contains(&got, "\"records\":[]"), "with no records")
+    assert(contains(&got, "\"segments_considered\":0"), "and nothing to have considered")
 }
 
 # ---------------------------------------------------------------------
@@ -361,17 +361,15 @@ test "the root is one page and nothing else is fetched" {
     assert(contains(&page, "/v1/query?format=json"), "it asks /v1/query for JSON")
 }
 
-# **二重化した波括弧が本文に漏れていないこと。** 足りなければ
-# コンパイルが補間エラーで落ちるので気づくが、多すぎても落ちない —
-# CSS が黙って壊れるだけである。ここが唯一その差を見る場所になる。
+# **書いた波括弧がそのまま出ること。** ページは raw リテラル
+# (`r#"..."#`) なので補間も二重化も無い。通常のリテラルに戻すと
+# `{` が補間になり、`{{` を書き足せば今度は多すぎても落ちない —
+# CSS が黙って壊れるだけなので、ここでその差を見る。
 test "the page comes out with the braces it was written with" {
     val page = ui_text()
-    assert(contains(&page, "body {{ margin: 0;"), "a CSS rule opens with one brace")
-    assert(!contains(&page, "{{{{"), "no brace was doubled twice")
-    assert(!contains(&page, "}}}}"), "nor a closing one")
-    # `"` は toylang の文字列リテラルに書けないので、ページは
-    # 単引用符だけで書かれている。混ざると属性が壊れる。
-    assert(!contains(&page, "\u{22}"), "the page holds no double quote")
+    assert(contains(&page, r"body { margin: 0;"), "a CSS rule opens with one brace")
+    assert(!contains(&page, r"{{"), "no brace came out doubled")
+    assert(!contains(&page, r"}}"), "nor a closing one")
 }
 
 # ---------------------------------------------------------------------
@@ -461,10 +459,10 @@ test "a batch of lines is taken, and the sequence runs on" {
                   &mut ms, &gens, &mut out)
     val got = rendered(&out)
     assert(contains(&got, "HTTP/1.1 200 OK"), "the batch is accepted")
-    assert(contains(&got, "\u{22}accepted\u{22}:2"), "both lines went in")
-    assert(contains(&got, "\u{22}rejected\u{22}:0"), "neither was refused")
-    assert(contains(&got, "\u{22}seq_first\u{22}:1"), "numbering starts at 1")
-    assert(contains(&got, "\u{22}seq_last\u{22}:2"), "and runs to the last")
+    assert(contains(&got, "\"accepted\":2"), "both lines went in")
+    assert(contains(&got, "\"rejected\":0"), "neither was refused")
+    assert(contains(&got, "\"seq_first\":1"), "numbering starts at 1")
+    assert(contains(&got, "\"seq_last\":2"), "and runs to the last")
     assert_eq(w.count(), 2u64)
 
     # 2 通目は続きの番号から。送り手が自分の行を数え直せる。
@@ -476,7 +474,7 @@ test "a batch of lines is taken, and the sequence runs on" {
     server::route("build/server-ingest-batch", b2, &r2, true, &mut st, &mut w,
                   &mut ms, &gens, &mut out2)
     val got2 = rendered(&out2)
-    assert(contains(&got2, "\u{22}seq_first\u{22}:3"), "the sequence continues")
+    assert(contains(&got2, "\"seq_first\":3"), "the sequence continues")
     assert_eq(w.count(), 3u64)
 }
 
@@ -531,8 +529,8 @@ test "a line that cannot be taken does not take the batch with it" {
                   &mut ms, &gens, &mut out)
     val got = rendered(&out)
     assert(contains(&got, "HTTP/1.1 200 OK"), "the batch still succeeds")
-    assert(contains(&got, "\u{22}accepted\u{22}:2"), "the good lines went in")
-    assert(contains(&got, "\u{22}rejected\u{22}:1"), "the long one is reported")
+    assert(contains(&got, "\"accepted\":2"), "the good lines went in")
+    assert(contains(&got, "\"rejected\":1"), "the long one is reported")
     assert_eq(w.count(), 2u64)
 }
 
@@ -554,8 +552,8 @@ test "a blank line is neither taken nor rejected" {
     server::route("build/server-ingest-blank", b, &r, true, &mut st, &mut w,
                   &mut ms, &gens, &mut out)
     val got = rendered(&out)
-    assert(contains(&got, "\u{22}accepted\u{22}:2"), "two records, not four")
-    assert(contains(&got, "\u{22}rejected\u{22}:0"), "and nothing was refused")
+    assert(contains(&got, "\"accepted\":2"), "two records, not four")
+    assert(contains(&got, "\"rejected\":0"), "and nothing was refused")
 }
 
 # 書ける先が無ければ 503。要求は正しいので 400 ではない。
@@ -602,7 +600,7 @@ test "flush writes what is held and reports it" {
     server::route(dir, fb, &fr, true, &mut st, &mut w, &mut ms, &gens, &mut fout)
     val fgot = rendered(&fout)
     assert(contains(&fgot, "HTTP/1.1 200 OK"), "flush answers")
-    assert(contains(&fgot, "\u{22}records\u{22}:2"), "it says what it held")
+    assert(contains(&fgot, "\"records\":2"), "it says what it held")
     # 書き出したので writer は空になり、セグメントが 1 本増える。
     assert(w.is_empty(), "the active segment starts over")
     assert_eq(st.segments, 1u64)
@@ -652,21 +650,21 @@ test "the labels a record was ingested with become terms" {
 
     val keys = answer_for(dir, "GET /v1/labels HTTP/1.1\r\n\r\n", true)
     assert(contains(&keys, "HTTP/1.1 200 OK"), "the keys are served")
-    assert(contains(&keys, "\u{22}name\u{22}:\u{22}host\u{22}"), "host is a key")
-    assert(contains(&keys, "\u{22}name\u{22}:\u{22}app\u{22}"), "app is a key")
-    assert(contains(&keys, "\u{22}name\u{22}:\u{22}level\u{22}"), "level is a key")
+    assert(contains(&keys, r#""name":"host""#), "host is a key")
+    assert(contains(&keys, r#""name":"app""#), "app is a key")
+    assert(contains(&keys, r#""name":"level""#), "level is a key")
 
     val vals = answer_for(dir, "GET /v1/labels?name=level HTTP/1.1\r\n\r\n", true)
-    assert(contains(&vals, "\u{22}name\u{22}:\u{22}level\u{22}"), "the key is named back")
-    assert(contains(&vals, "\u{22}name\u{22}:\u{22}error\u{22}"), "error is a value")
-    assert(contains(&vals, "\u{22}name\u{22}:\u{22}info\u{22}"), "info is a value")
+    assert(contains(&vals, r#""name":"level""#), "the key is named back")
+    assert(contains(&vals, r#""name":"error""#), "error is a value")
+    assert(contains(&vals, r#""name":"info""#), "info is a value")
     # 値は 2 つ。キーの一覧と取り違えていないこと。
-    assert(contains(&vals, "\u{22}distinct\u{22}:2"), "two values under level")
+    assert(contains(&vals, "\"distinct\":2"), "two values under level")
 
     # そして同じラベルで引ける。
     val q = answer_for(dir, "GET /v1/query?q=app%3Dapi&format=json HTTP/1.1\r\n\r\n", true)
     assert(contains(&q, "HTTP/1.1 200 OK"), "a label filter is a query")
-    assert(contains(&q, "\u{22}records_matched\u{22}:2"), "both records carry it")
+    assert(contains(&q, "\"records_matched\":2"), "both records carry it")
 }
 
 # `GET /v1/streams` — 観測されているラベル集合と件数 (HTTP_API.md §2)。
@@ -702,13 +700,13 @@ test "the streams endpoint answers with label sets and their counts" {
     val ans = answer_for(dir, "GET /v1/streams HTTP/1.1\r\n\r\n", true)
     assert(contains(&ans, "HTTP/1.1 200 OK"), "the streams are served")
     # ラベルは**オブジェクト**で出る (クライアントが添字で引けるように)。
-    assert(contains(&ans, "\u{22}labels\u{22}:{{\u{22}app\u{22}:\u{22}api\u{22},\u{22}level\u{22}:\u{22}error\u{22}}}"),
+    assert(contains(&ans, r#""labels":{"app":"api","level":"error"}"#),
            "a label set is an object")
     # 順が違う 2 行は 1 つのストリーム。
-    assert(contains(&ans, "\u{22}records\u{22}:2"), "the two error lines are one stream")
-    assert(contains(&ans, "\u{22}distinct\u{22}:2"), "two label sets in all")
+    assert(contains(&ans, "\"records\":2"), "the two error lines are one stream")
+    assert(contains(&ans, "\"distinct\":2"), "two label sets in all")
     # 時刻の幅も出る。
-    assert(contains(&ans, "\u{22}ts_min\u{22}:\u{22}2020-01-01T00:00:00Z\u{22}"), "the span starts where the first record did")
+    assert(contains(&ans, r#""ts_min":"2020-01-01T00:00:00Z""#), "the span starts where the first record did")
 
     val capped = answer_for(dir, "GET /v1/streams?limit=5000 HTTP/1.1\r\n\r\n", true)
     assert(contains(&capped, "HTTP/1.1 400"), "the limit has the same cap as the rest")

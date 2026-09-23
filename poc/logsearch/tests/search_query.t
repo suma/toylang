@@ -110,11 +110,11 @@ fn sq_line(text: str, out: &mut String) {
 #   host=web01 (syslog ヘッダ) が 3、本文に `timeout` が 2
 fn sq_fixture() -> String {
     var s = String::new()
-    sq_line("10.0.0.1 - - [03/Sep/2026:12:00:01 +0000] \u{22}GET /a HTTP/1.1\u{22} 200 12 \u{22}-\u{22} \u{22}curl/8.0\u{22}", &mut s)
-    sq_line("10.0.0.1 - - [03/Sep/2026:12:00:02 +0000] \u{22}GET /b HTTP/1.1\u{22} 404 7 \u{22}-\u{22} \u{22}curl/8.0\u{22}", &mut s)
-    sq_line("10.0.0.2 - - [03/Sep/2026:12:00:03 +0000] \u{22}POST /a HTTP/1.1\u{22} 404 9 \u{22}-\u{22} \u{22}MJ12bot/1.4\u{22}", &mut s)
-    sq_line("10.0.0.2 - - [03/Sep/2026:12:00:04 +0000] \u{22}POST /c HTTP/1.0\u{22} 200 3 \u{22}-\u{22} \u{22}curl/8.0\u{22}", &mut s)
-    sq_line("10.0.0.3 - - [03/Sep/2026:12:00:05 +0000] \u{22}GET /d HTTP/1.1\u{22} 404 0 \u{22}-\u{22} \u{22}curl/8.0\u{22}", &mut s)
+    sq_line(r#"10.0.0.1 - - [03/Sep/2026:12:00:01 +0000] "GET /a HTTP/1.1" 200 12 "-" "curl/8.0""#, &mut s)
+    sq_line(r#"10.0.0.1 - - [03/Sep/2026:12:00:02 +0000] "GET /b HTTP/1.1" 404 7 "-" "curl/8.0""#, &mut s)
+    sq_line(r#"10.0.0.2 - - [03/Sep/2026:12:00:03 +0000] "POST /a HTTP/1.1" 404 9 "-" "MJ12bot/1.4""#, &mut s)
+    sq_line(r#"10.0.0.2 - - [03/Sep/2026:12:00:04 +0000] "POST /c HTTP/1.0" 200 3 "-" "curl/8.0""#, &mut s)
+    sq_line(r#"10.0.0.3 - - [03/Sep/2026:12:00:05 +0000] "GET /d HTTP/1.1" 404 0 "-" "curl/8.0""#, &mut s)
     sq_line("2026-09-03T12:10:00Z web01 cron[5]: job ran with a timeout of 30s", &mut s)
     sq_line("2026-09-03T12:10:01Z web01 cron[6]: job ran", &mut s)
     sq_line("2026-09-03T12:10:02Z web01 sshd[9]: connection timeout", &mut s)

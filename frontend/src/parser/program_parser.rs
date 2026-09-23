@@ -840,7 +840,51 @@ impl<'a> Parser<'a> {
                             self.next();
                             // Optional tuple payload: `Name(Type, Type, ...)`.
                             let mut payload_types: Vec<TypeDecl> = Vec::new();
-                            if matches!(self.peek(), Some(Kind::ParenOpen)) {
+                            // ENUM-STRUCT-VARIANT: or named fields,
+                            // `Name { x: Type, y: Type }`.
+                            let mut field_names: Vec<DefaultSymbol> = Vec::new();
+                            if matches!(self.peek(), Some(Kind::BraceOpen)) {
+                                self.next(); // consume '{'
+                                loop {
+                                    self.skip_newlines();
+                                    let field = match self.peek() {
+                                        Some(Kind::BraceClose) => break,
+                                        Some(Kind::Identifier(f)) => f.clone(),
+                                        other => {
+                                            let other_str = format!("{:?}", other);
+                                            self.collect_error(&format!(
+                                                "expected a field name in variant `{variant_name}`, got {other_str}"
+                                            ));
+                                            break;
+                                        }
+                                    };
+                                    let field_sym = self.string_interner.get_or_intern(&field);
+                                    self.next();
+                                    if field_names.contains(&field_sym) {
+                                        self.collect_error(&format!(
+                                            "field `{field}` appears twice in variant `{variant_name}`"
+                                        ));
+                                    }
+                                    self.expect_err(&Kind::Colon)?;
+                                    let ty = self.parse_type_declaration_with_generic_context(&generic_context)?;
+                                    field_names.push(field_sym);
+                                    payload_types.push(ty);
+                                    self.skip_newlines();
+                                    if matches!(self.peek(), Some(Kind::Comma)) {
+                                        self.next();
+                                    } else {
+                                        self.skip_newlines();
+                                        break;
+                                    }
+                                }
+                                self.expect_err(&Kind::BraceClose)?;
+                                if field_names.is_empty() {
+                                    self.collect_error(&format!(
+                                        "variant `{variant_name} {{}}` has no fields: write `{variant_name}` for a variant without data"
+                                    ));
+                                }
+                            }
+                            if field_names.is_empty() && matches!(self.peek(), Some(Kind::ParenOpen)) {
                                 self.next(); // consume '('
                                 loop {
                                     self.skip_newlines();
@@ -885,6 +929,7 @@ impl<'a> Parser<'a> {
                                 name: variant_sym,
                                 payload_types,
                                 discriminant,
+                                field_names,
                             });
                             self.skip_newlines();
                             if matches!(self.peek(), Some(Kind::Comma)) {

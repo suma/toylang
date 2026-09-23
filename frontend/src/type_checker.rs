@@ -98,6 +98,7 @@ mod module_access;
 mod eq_requirement;
 mod pattern_match;
 mod enum_cast;
+mod enum_struct_variant;
 mod method_call;
 mod simd;
 

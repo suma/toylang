@@ -829,6 +829,11 @@ impl<'a> AstIntegrationContext<'a> {
                         name: v_name,
                         payload_types: new_payloads,
                         discriminant: v.discriminant,
+                        field_names: v
+                            .field_names
+                            .iter()
+                            .map(|f| self.remap_symbol(*f))
+                            .collect::<Result<Vec<_>, _>>()?,
                     });
                 }
                 Ok(Stmt::EnumDecl {

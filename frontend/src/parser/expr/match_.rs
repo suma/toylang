@@ -557,6 +557,13 @@ fn parse_pattern_enum_variant_tail(
             ));
         }
     };
+    // ENUM-STRUCT-VARIANT: `E::A { x, y: 0u64, .. }` -- a struct
+    // pattern under the joined name, which the type checker turns into
+    // the positional variant pattern once it knows the field order.
+    if matches!(parser.peek(), Some(Kind::BraceOpen)) {
+        let path = parser.enum_variant_path_symbol(enum_name, variant);
+        return parse_pattern_struct(parser, path);
+    }
     let mut slots: Vec<Vec<crate::ast::Pattern>> = Vec::new();
     if matches!(parser.peek(), Some(Kind::ParenOpen)) {
         parser.next();

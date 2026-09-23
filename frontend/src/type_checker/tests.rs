@@ -36,8 +36,9 @@ mod tests {
             builtin_methods: TypeCheckerVisitor::create_builtin_method_registry(),
             current_fn_return_type: None,
             tuple_struct_rewrites: Default::default(),
-            const_patterns: Default::default(),
+            pattern_rewrites: Default::default(),
             enum_casts: Default::default(),
+            enum_struct_literals: Default::default(),
             null_coalesce_lhs_types: HashMap::new(),
         }
     }

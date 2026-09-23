@@ -12,6 +12,10 @@
 
 ### 2026-09-23
 
+- **ENUM-STRUCT-VARIANT: enum の struct variant** — `A { x: u64 }` を
+  宣言でき、構築 `E::A { x: .. }` と pattern `E::A { x, .. }` を
+  型検査器が tuple variant の形に書き換える (バックエンド無変更、
+  AST キャッシュは v53)。`println` の位置表示は下の未実装項目。
 - **ENUM-DISCRIMINANT: unit variant の番号と `as`** — `Apache = 10`、
   未指定は直前 +1。`e as T` は全 variant が unit で全番号が `T` に
   収まるときだけ許し、型検査器が `match` (素のパスは literal) に
@@ -2557,16 +2561,14 @@
 [`RUNTIME_GAPS.md`](../poc/logsearch/design-docs/RUNTIME_GAPS.md) §G19
 にあり、ここには二重に置かない。
 
-- **ENUM-STRUCT-VARIANT: enum の struct variant** ★★ —
-  `enum E { A { x: u64, y: u64 }, B }` が parse エラー
-  (`expected variant name in enum body, got Some(BraceOpen)`)。
-  **variant ごとに持つフィールドが違う**データ (ログのレコード形状、
-  プロトコルのメッセージ) が enum で表せず、タグ + フラットな struct +
-  「この形のときだけ有効」というコメントの約束に倒れる。POC は
-  `enum` 宣言 **0 件** / タグ用の 0 引数関数 **74 本**。pattern 側は
-  struct パターン (PATTERN-STRUCT) が既にあるので、要るのは宣言構文と
-  variant ごとの payload layout。**ENUM-DISCRIMINANT (2026-09-23 に完了) とセットで効く**
-  (タグがディスクに出る用途では往復が要るため)。
+- **ENUM-STRUCT-VARIANT-PRINT: struct variant の表示にフィールド名を**
+  ★ — `println(R::A { x: 1u64, y: 2u64 })` は位置の形 `R::A(1, 2)` で
+  出る (struct variant は型検査器が tuple variant に書き換えるため、
+  表示器は名前を知らない)。NEWTYPE が「書いた形で出す」のと同じく
+  名前つきで出すには、NEWTYPE が手を入れた 2 つの表示器
+  (`interpreter/src/object.rs::to_display_string` /
+  `compiler_lower/src/print.rs`) に `field_names` を渡す必要がある
+  (`--api` の宣言の描画は対応済み)。踏んでから。
 - **MATCH-STRING-LITERAL: `String` をリテラル腕で match** ★ —
   `str` は `match s { "a" => ..., "b" | "c" => ... }` が 3 レーンで
   動くのに、`String` は `[E0010] literal pattern cannot be used in a

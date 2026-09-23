@@ -402,6 +402,37 @@ impl<'a> Parser<'a> {
         *self.context_stack.last().unwrap_or(&ParseContext::Expression)
     }
 
+    /// ENUM-STRUCT-VARIANT: `Enum::Variant` as the one symbol a
+    /// struct-variant literal (`E::A { x: 1u64 }`) or pattern
+    /// (`E::A { x, .. }`) carries until the type checker resolves it.
+    ///
+    /// The literal and the pattern reuse the struct forms
+    /// (`Expr::StructLiteral` / `Pattern::Struct`), which name one
+    /// symbol; the parser cannot turn them into the tuple-variant forms
+    /// itself, because the field order lives in the enum's
+    /// declaration, which may come later or from a module. The checker
+    /// splits the name at `::`, reorders, and rewrites -- nothing past
+    /// it sees the joined symbol.
+    pub fn enum_variant_path_symbol(&mut self, enum_name: DefaultSymbol, variant: DefaultSymbol) -> DefaultSymbol {
+        let e = self.string_interner.resolve(enum_name).unwrap_or("").to_string();
+        let v = self.string_interner.resolve(variant).unwrap_or("").to_string();
+        self.string_interner.get_or_intern(format!("{e}::{v}"))
+    }
+
+    /// ENUM-STRUCT-VARIANT: the tokens after the current `{` read
+    /// `name :` -- the start of a field list, not of a block or of match
+    /// arms. Newlines between them are skipped.
+    pub fn brace_opens_field_list(&mut self) -> bool {
+        let mut k = 1;
+        while matches!(self.peek_n(k), Some(Kind::NewLine)) {
+            k += 1;
+        }
+        if !matches!(self.peek_n(k), Some(Kind::Identifier(_))) {
+            return false;
+        }
+        matches!(self.peek_n(k + 1), Some(Kind::Colon))
+    }
+
     /// Check if struct literals are allowed in the current context
     pub fn is_struct_literal_allowed(&self) -> bool {
         match self.current_context() {

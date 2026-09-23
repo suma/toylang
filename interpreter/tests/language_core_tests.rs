@@ -3456,6 +3456,54 @@ mod enum_and_match {
         );
     }
 
+    // ENUM-STRUCT-VARIANT: what a struct variant's literal and pattern
+    // refuse. The accepted shapes run on every lane in the compiler's
+    // consistency suite.
+
+    fn struct_variant_error(body: &str) -> String {
+        let source = format!("enum R {{ A {{ x: u64, y: u64 }}, B(u64), C }}\n{body}");
+        execute_test_program(&source).expect_err("expected a struct-variant error")
+    }
+
+    #[test]
+    fn test_a_struct_variant_literal_names_every_field() {
+        let err = struct_variant_error("fn main() -> u64 {\n    val r = R::A { x: 1u64 }\n    0u64\n}\n");
+        assert!(err.contains("`R::A` is missing `y`"), "got: {err}");
+    }
+
+    #[test]
+    fn test_a_struct_variant_has_only_its_own_fields() {
+        let err = struct_variant_error(
+            "fn main() -> u64 {\n    val r = R::A { x: 1u64, y: 2u64, z: 3u64 }\n    0u64\n}\n",
+        );
+        assert!(err.contains("`R::A` has no field `z`"), "got: {err}");
+        let err = struct_variant_error("fn main() -> u64 {\n    val r = R::A { x: 1u64, x: 2u64 }\n    0u64\n}\n");
+        assert!(err.contains("field `x` of `R::A` is given twice"), "got: {err}");
+    }
+
+    #[test]
+    fn test_a_struct_variant_pattern_needs_every_field_or_a_rest() {
+        let err = struct_variant_error(
+            "fn main() -> u64 {\n    val r = R::C\n    match r { R::A { x } => x, _ => 0u64 }\n}\n",
+        );
+        assert!(err.contains("`R::A` is missing `y`") && err.contains("end a pattern with `..`"), "got: {err}");
+    }
+
+    #[test]
+    fn test_braces_on_a_variant_that_is_not_a_struct_variant_are_rejected() {
+        let err = struct_variant_error("fn main() -> u64 {\n    val r = R::B { x: 1u64 }\n    0u64\n}\n");
+        assert!(err.contains("its fields are positional: write `R::B(..)`"), "got: {err}");
+        let err = struct_variant_error("fn main() -> u64 {\n    val r = R::C { x: 1u64 }\n    0u64\n}\n");
+        assert!(err.contains("it carries no data: write `R::C`"), "got: {err}");
+    }
+
+    #[test]
+    fn test_a_struct_variant_needs_a_field() {
+        let source = "enum R { A {}, B }\nfn main() -> u64 { 0u64 }\n";
+        let err = execute_test_program(source).expect_err("empty struct variant");
+        assert!(err.contains("variant `A {}` has no fields"), "got: {err}");
+    }
+
     #[test]
     fn test_two_consts_with_one_value_make_the_second_arm_unreachable() {
         let source = r#"

@@ -147,6 +147,14 @@ pub struct EnumVariantDef {
     /// but the number `as` projects the variant to; a variant without
     /// one takes the previous variant's plus one, the first 0.
     pub discriminant: Option<i128>,
+    /// ENUM-STRUCT-VARIANT: `A { x: u64, y: u64 }` -- the payload's
+    /// names, one per `payload_types` entry, in declaration order.
+    /// Empty for unit and tuple variants. A struct variant *is* a tuple
+    /// variant whose positions have names: the type checker turns
+    /// `E::A { y: 2, x: 1 }` into `E::A(1, 2)` and the pattern
+    /// `E::A { x, .. }` into `E::A(x, _)`, so layout and every backend
+    /// are the tuple variant's.
+    pub field_names: Vec<DefaultSymbol>,
 }
 
 /// Patterns for `match` arms. Patterns compose recursively — tuple-variant

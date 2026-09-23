@@ -189,13 +189,26 @@ pub fn items(file: &File, interner: &DefaultStringInterner, source: Option<&str>
                 let members: Vec<ApiMember> = variants
                     .iter()
                     .map(|v| {
-                        let signature = if v.payload_types.is_empty() {
+                        let mut signature = if v.payload_types.is_empty() {
                             r.sym(v.name).to_string()
+                        } else if !v.field_names.is_empty() {
+                            // ENUM-STRUCT-VARIANT: as declared, with names.
+                            let fields: Vec<String> = v
+                                .field_names
+                                .iter()
+                                .zip(&v.payload_types)
+                                .map(|(f, t)| format!("{}: {}", r.sym(*f), r.ty(t)))
+                                .collect();
+                            format!("{} {{ {} }}", r.sym(v.name), fields.join(", "))
                         } else {
                             let payload: Vec<String> =
                                 v.payload_types.iter().map(|t| r.ty(t)).collect();
                             format!("{}({})", r.sym(v.name), payload.join(", "))
                         };
+                        // ENUM-DISCRIMINANT: the number, where one was written.
+                        if let Some(d) = v.discriminant {
+                            signature.push_str(&format!(" = {d}"));
+                        }
                         ApiMember::plain("variant", r.sym(v.name).to_string(), true, signature)
                     })
                     .collect();

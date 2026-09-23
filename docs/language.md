@@ -3684,6 +3684,45 @@ val c: Option<i64> = Option::None      # type annotation infers T = i64
 val d              = Option::Some(7i64) # T inferred from payload
 ```
 
+### Struct variants
+
+A variant can name its fields:
+
+```rust
+enum Rec {
+    Syslog { host: u64, tag: u64 },
+    Apache { status: u64, bytes: u64 },
+    Plain,
+}
+
+val r = Rec::Apache { bytes: 10u64, status: 404u64 }   # any order
+
+match r {
+    Rec::Syslog { host, tag }        => host + tag,   # `{ x }` binds `x`
+    Rec::Apache { status: 404u64, .. } => 1u64,       # `..` ignores the rest
+    Rec::Apache { status, .. }       => status,
+    Rec::Plain                       => 0u64,
+}
+```
+
+- The literal names **every** field, once each, and nothing else; a
+  pattern names every field unless it ends in `..`. Field patterns are
+  any pattern, as in a [struct pattern](#struct-patterns). A struct
+  variant needs at least one field (`A {}` is a parse error — write
+  `A`), and `..base` is not available.
+- Like a struct literal, `E::A { .. }` is not read where a block could
+  start — a `match` scrutinee or an `if` / `while` condition. Bind it
+  to a `val` first.
+- A struct variant **is a tuple variant whose positions have names**:
+  the type checker turns `Rec::Apache { bytes: 10u64, status: 404u64 }`
+  into `Rec::Apache(404u64, 10u64)` and the pattern
+  `Rec::Apache { status, .. }` into `Rec::Apache(status, _)`, so the
+  layout and every backend are the tuple variant's. Three consequences:
+  the fields of a literal are **evaluated in declaration order**; the
+  positional forms `Rec::Apache(404u64, 10u64)` / `Rec::Apache(s, b)`
+  work too, in declaration order; and `println` shows the value
+  positionally (`Rec::Apache(404, 10)`).
+
 ### Discriminants and `as`
 
 A unit variant may name the number it stands for, and `as` turns a

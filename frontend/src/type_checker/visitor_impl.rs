@@ -451,6 +451,11 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
     }
 
     fn visit_struct_literal(&mut self, struct_name: &DefaultSymbol, fields: &Vec<(DefaultSymbol, ExprRef)>) -> Result<TypeDecl, TypeCheckError> {
+        // ENUM-STRUCT-VARIANT: `E::A { .. }`, which the parser hands over
+        // under the joined name `E::A`.
+        if let Some((enum_name, variant)) = self.split_enum_variant_path(*struct_name) {
+            return self.visit_enum_struct_literal(enum_name, variant, fields);
+        }
         self.visit_struct_literal_impl(struct_name, fields)
     }
 

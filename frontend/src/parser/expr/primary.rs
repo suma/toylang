@@ -544,7 +544,29 @@ fn parse_primary_after_identifier(
         {
             qualified_path[0] = target;
         }
+        let field_list_follows = qualified_path.len() == 2
+            && matches!(parser.peek(), Some(Kind::BraceOpen))
+            && parser.is_struct_literal_allowed()
+            && parser.brace_opens_field_list();
         return match parser.peek() {
+            // ENUM-STRUCT-VARIANT: `E::A { x: 1u64, y: 2u64 }`. Only
+            // where a struct literal may appear, and only when the
+            // brace opens a field list -- `match E::A { E::A => .. }`
+            // and `if c == E::A { .. }` keep their meaning.
+            Some(Kind::BraceOpen) if field_list_follows => {
+                parser.next(); // `{`
+                let (fields, base) = parse_struct_literal_fields(parser, vec![])?;
+                parser.expect_err(&Kind::BraceClose)?;
+                let location = parser.span_to_cursor(name_location);
+                if base.is_some() {
+                    return Err(ParserError::generic_error(
+                        location,
+                        "`..base` is not available for an enum variant: write every field".to_string(),
+                    ));
+                }
+                let path = parser.enum_variant_path_symbol(qualified_path[0], qualified_path[1]);
+                Ok(parser.ast_builder.struct_literal_expr(path, fields, Some(location)))
+            }
             Some(Kind::ParenOpen) => {
                 let location = name_location;
                 parser.next();

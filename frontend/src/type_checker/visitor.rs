@@ -95,13 +95,18 @@ pub struct TypeCheckerVisitor<'a> {
     /// collected while checking and applied by
     /// `apply_tuple_struct_rewrites`.
     pub tuple_struct_rewrites: TupleStructRewrites,
-    /// MATCH-CONST-PATTERN: consts a pattern may name, and the arms
-    /// rewritten to compare against them.
-    pub const_patterns: ConstPatterns,
+    /// MATCH-CONST-PATTERN / ENUM-STRUCT-VARIANT: consts a pattern may
+    /// name, and the arms rewritten from pattern sugar.
+    pub pattern_rewrites: PatternRewrites,
     /// ENUM-DISCRIMINANT: `e as T` casts from an enum, keyed by the
     /// operand, with the enum and the target type; rewritten into a
     /// match by `apply_enum_cast_rewrites`.
     pub enum_casts: HashMap<ExprRef, (DefaultSymbol, TypeDecl)>,
+    /// ENUM-STRUCT-VARIANT: `E::A { .. }` literals, keyed by the first
+    /// initializer, with the enum, the variant and the arguments in
+    /// declaration order; rewritten into `E::A(..)` by
+    /// `apply_enum_struct_literal_rewrites`.
+    pub enum_struct_literals: HashMap<ExprRef, (DefaultSymbol, DefaultSymbol, Vec<ExprRef>)>,
     /// NULL-COALESCE: the checked left-operand type and resolved
     /// success type of `a ?? b` nodes, keyed by the operand ref (the
     /// one ref every visit route holds). The post-pass rewrite reads
@@ -138,6 +143,10 @@ impl TupleStructRewrites {
     }
 }
 
+/// Pattern sugar the type checker resolves before an arm is checked:
+/// const names (MATCH-CONST-PATTERN, described below) and struct-variant
+/// patterns (ENUM-STRUCT-VARIANT, `enum_struct_variant.rs`).
+///
 /// MATCH-CONST-PATTERN: what naming a `const` in a pattern means.
 ///
 /// A bare name in a pattern used to always *bind*, so
@@ -153,15 +162,15 @@ impl TupleStructRewrites {
 /// because checking a literal pattern types a suffix-less literal from
 /// the scrutinee, and that must not retype the const.
 #[derive(Debug, Default)]
-pub struct ConstPatterns {
+pub struct PatternRewrites {
     /// const name -> its value as a typed literal, when the initialiser
     /// is one (directly, or by naming an earlier const that is).
     /// `None` is a const whose value exists only after type checking
     /// (a `const fn` call, an expression): naming it in a pattern is an
     /// error, never a binding.
-    pub values: HashMap<DefaultSymbol, Option<Expr>>,
+    pub const_values: HashMap<DefaultSymbol, Option<Expr>>,
     /// scrutinee ref -> the arms with their const names replaced,
-    /// installed by `apply_const_pattern_rewrites`. Keyed by the
+    /// installed by `apply_pattern_rewrites`. Keyed by the
     /// scrutinee for the reason `TupleStructRewrites` is keyed by a
     /// child: it is the one ref the checker holds for the node.
     pub rewrites: HashMap<ExprRef, Vec<MatchArm>>,
@@ -226,8 +235,9 @@ impl<'a> TypeCheckerVisitor<'a> {
             display_types: None,
             current_fn_return_type: None,
             tuple_struct_rewrites: TupleStructRewrites::default(),
-            const_patterns: ConstPatterns::default(),
+            pattern_rewrites: PatternRewrites::default(),
             enum_casts: HashMap::new(),
+            enum_struct_literals: HashMap::new(),
             null_coalesce_lhs_types: HashMap::new(),
             transformed_exprs: HashMap::new(),
             pending_number_holes: Vec::new(),
@@ -315,8 +325,9 @@ impl<'a> TypeCheckerVisitor<'a> {
             display_types: None,
             current_fn_return_type: None,
             tuple_struct_rewrites: TupleStructRewrites::default(),
-            const_patterns: ConstPatterns::default(),
+            pattern_rewrites: PatternRewrites::default(),
             enum_casts: HashMap::new(),
+            enum_struct_literals: HashMap::new(),
             null_coalesce_lhs_types: HashMap::new(),
         }
     }
@@ -527,8 +538,9 @@ impl<'a> TypeCheckerVisitor<'a> {
             display_types: None,
             current_fn_return_type: None,
             tuple_struct_rewrites: TupleStructRewrites::default(),
-            const_patterns: ConstPatterns::default(),
+            pattern_rewrites: PatternRewrites::default(),
             enum_casts: HashMap::new(),
+            enum_struct_literals: HashMap::new(),
             null_coalesce_lhs_types: HashMap::new(),
             transformed_exprs: HashMap::new(),
             pending_number_holes: Vec::new(),

@@ -426,9 +426,9 @@ impl<'a> TypeCheckerVisitor<'a> {
         // MATCH-CONST-PATTERN: a name that is a const compares against
         // it. Rewritten before anything below reads the arms, so the
         // checks see the literal pattern the backends will.
-        let rewritten = self.rewrite_const_patterns(arms)?;
+        let rewritten = self.rewrite_patterns(arms)?;
         if let Some(new_arms) = &rewritten {
-            self.const_patterns.rewrites.insert(*scrutinee, new_arms.clone());
+            self.pattern_rewrites.rewrites.insert(*scrutinee, new_arms.clone());
         }
         let arms: &Vec<MatchArm> = rewritten.as_ref().unwrap_or(arms);
 
@@ -1161,53 +1161,54 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// literal, so `const B: u64 = A` works as a pattern when `A` does.
     pub fn register_const_for_patterns(&mut self, name: DefaultSymbol, ty: &TypeDecl, value: &ExprRef) {
         let literal = match self.core.expr_pool.get(value) {
-            Some(Expr::Identifier(sym)) => self.const_patterns.values.get(&sym).cloned().flatten(),
+            Some(Expr::Identifier(sym)) => self.pattern_rewrites.const_values.get(&sym).cloned().flatten(),
             Some(expr) => typed_const_literal(&expr, ty, self.core.string_interner),
             None => None,
         };
-        self.const_patterns.values.insert(name, literal);
+        self.pattern_rewrites.const_values.insert(name, literal);
     }
 
-    /// MATCH-CONST-PATTERN: `arms` with every const name in their
-    /// patterns replaced by a literal pattern, or `None` when no arm
-    /// names a const.
+    /// `arms` with the pattern sugar the type checker resolves replaced
+    /// by the patterns it stands for, or `None` when an arm has none:
+    ///
+    /// - MATCH-CONST-PATTERN: a const name becomes a literal pattern.
+    ///   Only bare names are candidates -- `n @ pat` is always a
+    ///   binding (it says so), and a name that is not a const binds as
+    ///   before.
+    /// - ENUM-STRUCT-VARIANT: `E::A { x, .. }` (a struct pattern under
+    ///   the joined name) becomes the positional `E::A(x, _)`.
     ///
     /// Runs before the arms are checked, so everything downstream --
     /// type agreement, duplicate arms, exhaustiveness -- sees the
-    /// literal. Only bare names are candidates: `n @ pat` is always a
-    /// binding (it says so), and a name that is not a const binds as
-    /// before.
-    pub(super) fn rewrite_const_patterns(
+    /// rewritten form, which is also what the backends receive.
+    pub(super) fn rewrite_patterns(
         &mut self,
         arms: &[MatchArm],
     ) -> Result<Option<Vec<MatchArm>>, TypeCheckError> {
-        if self.const_patterns.values.is_empty() {
-            return Ok(None);
-        }
         let mut changed = false;
         let mut out = Vec::with_capacity(arms.len());
         for arm in arms {
-            let pattern = self.rewrite_const_pattern(&arm.pattern, &mut changed)?;
+            let pattern = self.rewrite_pattern(&arm.pattern, &mut changed)?;
             out.push(MatchArm { pattern, guard: arm.guard, body: arm.body });
         }
         Ok(changed.then_some(out))
     }
 
-    fn rewrite_const_sub_patterns(
+    fn rewrite_sub_patterns(
         &mut self,
         pats: &[Pattern],
         changed: &mut bool,
     ) -> Result<Vec<Pattern>, TypeCheckError> {
-        pats.iter().map(|p| self.rewrite_const_pattern(p, changed)).collect()
+        pats.iter().map(|p| self.rewrite_pattern(p, changed)).collect()
     }
 
-    fn rewrite_const_pattern(&mut self, pat: &Pattern, changed: &mut bool) -> Result<Pattern, TypeCheckError> {
+    fn rewrite_pattern(&mut self, pat: &Pattern, changed: &mut bool) -> Result<Pattern, TypeCheckError> {
         Ok(match pat {
-            Pattern::Name(sym) => match self.const_patterns.values.get(sym).cloned() {
+            Pattern::Name(sym) => match self.pattern_rewrites.const_values.get(sym).cloned() {
                 None => pat.clone(),
                 Some(Some(literal)) => {
                     let literal_ref = self.core.expr_pool.add(literal);
-                    self.const_patterns.origins.insert(literal_ref, *sym);
+                    self.pattern_rewrites.origins.insert(literal_ref, *sym);
                     *changed = true;
                     Pattern::Literal(literal_ref)
                 }
@@ -1221,18 +1222,25 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
             },
             Pattern::EnumVariant(enum_name, variant, subs) => {
-                Pattern::EnumVariant(*enum_name, *variant, self.rewrite_const_sub_patterns(subs, changed)?)
+                Pattern::EnumVariant(*enum_name, *variant, self.rewrite_sub_patterns(subs, changed)?)
             }
-            Pattern::Tuple(subs) => Pattern::Tuple(self.rewrite_const_sub_patterns(subs, changed)?),
+            Pattern::Tuple(subs) => Pattern::Tuple(self.rewrite_sub_patterns(subs, changed)?),
             Pattern::Struct(struct_name, fields, has_rest) => {
                 let mut out = Vec::with_capacity(fields.len());
                 for (field, sub) in fields {
-                    out.push((*field, self.rewrite_const_pattern(sub, changed)?));
+                    out.push((*field, self.rewrite_pattern(sub, changed)?));
                 }
-                Pattern::Struct(*struct_name, out, *has_rest)
+                // ENUM-STRUCT-VARIANT: `E::A { x, .. }`, parsed under the
+                // joined name, is the positional `E::A(x, _)`.
+                if let Some((enum_name, variant)) = self.split_enum_variant_path(*struct_name) {
+                    *changed = true;
+                    self.struct_variant_pattern(enum_name, variant, &out, *has_rest)?
+                } else {
+                    Pattern::Struct(*struct_name, out, *has_rest)
+                }
             }
             Pattern::Binding(name, inner) => {
-                Pattern::Binding(*name, Box::new(self.rewrite_const_pattern(inner, changed)?))
+                Pattern::Binding(*name, Box::new(self.rewrite_pattern(inner, changed)?))
             }
             Pattern::Literal(_) | Pattern::Range(_, _) | Pattern::Wildcard => pat.clone(),
         })
@@ -1241,19 +1249,19 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// MATCH-CONST-PATTERN: the const a literal pattern stands for, for
     /// a diagnostic that should name `K` rather than its value.
     pub(super) fn const_pattern_origin(&self, literal_ref: &ExprRef) -> Option<String> {
-        let sym = self.const_patterns.origins.get(literal_ref)?;
+        let sym = self.pattern_rewrites.origins.get(literal_ref)?;
         self.core.string_interner.resolve(*sym).map(str::to_string)
     }
 
-    /// MATCH-CONST-PATTERN: install the rewritten arms, so every backend
-    /// sees literal patterns where the source named a const.
+    /// Install the rewritten arms, so every backend sees the literal and
+    /// positional patterns the sugar stands for.
     ///
-    /// One pass over the pool, and only when a match named a const.
-    pub fn apply_const_pattern_rewrites(&mut self) {
-        if self.const_patterns.rewrites.is_empty() {
+    /// One pass over the pool, and only when some match had sugar.
+    pub fn apply_pattern_rewrites(&mut self) {
+        if self.pattern_rewrites.rewrites.is_empty() {
             return;
         }
-        let rewrites = std::mem::take(&mut self.const_patterns.rewrites);
+        let rewrites = std::mem::take(&mut self.pattern_rewrites.rewrites);
         for index in 0..self.core.expr_pool.len() {
             let expr_ref = ExprRef(index as u32);
             if let Some(Expr::Match(scrutinee, _)) = self.core.expr_pool.get(&expr_ref)

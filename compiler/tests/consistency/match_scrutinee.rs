@@ -1070,3 +1070,56 @@ fn enum_discriminants_cast_on_every_lane() {
     "#;
     assert_renders(src, "enum_discriminant_cast", "10 11 2 1 100 -1 98\n");
 }
+
+#[test]
+fn enum_struct_variants_on_every_lane() {
+    // ENUM-STRUCT-VARIANT: the type checker turns `E::A { .. }` into the
+    // tuple-variant construction and `E::A { x, .. }` into the positional
+    // pattern, so the backends see nothing new. Pinned: fields written out
+    // of order and across lines, a literal sub-pattern with `..`, `if val`,
+    // and a struct variant nested in an `Option`.
+    let src = r#"
+        enum Rec {
+            Syslog { host: u64, tag: u64 },
+            Apache { status: u64, bytes: u64, client: u64 },
+            Plain,
+        }
+        fn make(n: u64) -> Rec {
+            if n == 0u64 {
+                Rec::Syslog { tag: 7u64, host: 3u64 }
+            } elif n == 1u64 {
+                Rec::Apache {
+                    status: 404u64,
+                    bytes: 10u64,
+                    client: 9u64,
+                }
+            } else {
+                Rec::Plain
+            }
+        }
+        fn describe(r: Rec) -> u64 {
+            match r {
+                Rec::Syslog { host, tag } => host * 100u64 + tag,
+                Rec::Apache { status: 404u64, .. } => 1u64,
+                Rec::Apache { status, bytes, .. } => status + bytes,
+                Rec::Plain => 0u64,
+            }
+        }
+        fn main() -> u64 {
+            val a = describe(make(0u64))
+            val b = describe(make(1u64))
+            val c = describe(make(2u64))
+            val r = Rec::Apache { status: 200u64, bytes: 5u64, client: 1u64 }
+            val d = describe(r)
+            val e = if val Rec::Syslog { host, .. } = make(0u64) { host } else { 99u64 }
+            val o: Option<Rec> = Option::Some(Rec::Syslog { host: 1u64, tag: 2u64 })
+            val f = match o {
+                Option::Some(Rec::Syslog { tag, .. }) => tag,
+                _ => 0u64,
+            }
+            println("{a} {b} {c} {d} {e} {f}")
+            0u64
+        }
+    "#;
+    assert_renders(src, "enum_struct_variant", "307 1 0 205 3 2\n");
+}

@@ -194,6 +194,11 @@ pub struct Parser<'a> {
     /// before the return value of `parse_stmt`, preserving source
     /// order.
     pub pending_prelude_stmts: Vec<StmtRef>,
+    /// BREAK-WITH-VALUE: the loops enclosing the cursor, innermost
+    /// last, so a `break` knows which loop it leaves and whether that
+    /// loop is a value (and so needs one). A closure body starts an
+    /// empty stack of its own.
+    pub loop_stack: Vec<LoopFrame>,
     /// CONCURRENCY A1: the `for` statements written `parallel for`.
     /// Handed to `File::parallel_loops` when the program is built —
     /// the loop itself is an ordinary `Stmt::For`, so a pass that
@@ -348,6 +353,7 @@ impl<'a> Parser<'a> {
             normalization_context: TokenNormalizationContext::new(),
             context_stack: vec![ParseContext::Expression],
             pending_prelude_stmts: Vec::new(),
+            loop_stack: Vec::new(),
             parallel_loops: std::collections::HashMap::new(),
             call_paths: std::collections::HashMap::new(),
             synthetic_counter: 0,
@@ -421,7 +427,8 @@ impl<'a> Parser<'a> {
 
     /// ENUM-STRUCT-VARIANT: the tokens after the current `{` read
     /// `name :` -- the start of a field list, not of a block or of match
-    /// arms. Newlines between them are skipped.
+    /// arms. Newlines between them are skipped. STRUCT-SUGAR-GAP: the
+    /// shorthand `name ,` and `name }` open one too.
     pub fn brace_opens_field_list(&mut self) -> bool {
         let mut k = 1;
         while matches!(self.peek_n(k), Some(Kind::NewLine)) {
@@ -430,7 +437,7 @@ impl<'a> Parser<'a> {
         if !matches!(self.peek_n(k), Some(Kind::Identifier(_))) {
             return false;
         }
-        matches!(self.peek_n(k + 1), Some(Kind::Colon))
+        matches!(self.peek_n(k + 1), Some(Kind::Colon | Kind::Comma | Kind::BraceClose))
     }
 
     /// Check if struct literals are allowed in the current context
@@ -794,4 +801,21 @@ mod offset_to_line_col_tests {
         let parser = Parser::new(input, &mut interner);
         assert_eq!(parser.offset_to_line_col(99), (1, 3)); // clamps to len 2 -> column 3
     }
+}
+
+/// One loop enclosing the parser's cursor (BREAK-WITH-VALUE).
+#[derive(Debug, Clone, Copy)]
+pub struct LoopFrame {
+    pub label: Option<DefaultSymbol>,
+    /// The hidden `var` a `loop` keeps a `break <value>` in. `None`
+    /// for `while` / `for`, which cannot be values.
+    pub value: Option<DefaultSymbol>,
+    /// How many `break`s leave this loop with a value, and without.
+    /// A `loop` with any of the first is a value, and then may not
+    /// have any of the second.
+    pub value_breaks: u32,
+    pub plain_breaks: u32,
+    /// Where the first plain `break` is, for the error when both kinds
+    /// turn up.
+    pub first_plain: Option<crate::type_checker::SourceLocation>,
 }

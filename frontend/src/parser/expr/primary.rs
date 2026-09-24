@@ -121,7 +121,12 @@ fn parse_closure_expr(parser: &mut Parser) -> ParserResult<ExprRef> {
     } else {
         None
     };
-    let body = parse_block(parser)?;
+    // A `break` in a closure body cannot leave a loop around the
+    // closure, so the body starts with no enclosing loops.
+    let outer_loops = std::mem::take(&mut parser.loop_stack);
+    let body = parse_block(parser);
+    parser.loop_stack = outer_loops;
+    let body = body?;
     Ok(parser.ast_builder.closure_expr(params, return_type, body, Some(location)))
 }
 
@@ -315,7 +320,7 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
     }
     match parser.peek() {
         Some(Kind::ParenOpen) => parse_tuple_or_grouped_expr(parser),
-        Some(ref kind) if kind.is_keyword() && !matches!(kind, Kind::True | Kind::False | Kind::Null | Kind::If | Kind::Dict | Kind::Self_ | Kind::With | Kind::Ambient | Kind::Match) => {
+        Some(ref kind) if kind.is_keyword() && !matches!(kind, Kind::True | Kind::False | Kind::Null | Kind::If | Kind::Dict | Kind::Self_ | Kind::With | Kind::Ambient | Kind::Match | Kind::Loop) => {
             let location = parser.current_source_location();
             Err(ParserError::generic_error(location, "parse_primary_impl: reserved keyword cannot be used as identifier".to_string()))
         }
@@ -793,6 +798,22 @@ fn keyword_form(
 
 /// Parse primary expression starting with keyword or punctuation.
 fn parse_primary_keyword_form(parser: &mut Parser) -> ParserResult<ExprRef> {
+    // BREAK-WITH-VALUE: `@label: loop { .. }` as a value, so a
+    // `break @label v` from an inner loop can name it.
+    if matches!(parser.peek(), Some(Kind::At))
+        && matches!(parser.peek_n(1), Some(Kind::Identifier(_)))
+        && matches!(parser.peek_n(2), Some(Kind::Colon))
+        && matches!(parser.peek_n(3), Some(Kind::Loop))
+    {
+        parser.next();
+        let label = match parser.peek().cloned() {
+            Some(Kind::Identifier(s)) => parser.string_interner.get_or_intern(s),
+            _ => unreachable!("peeked above"),
+        };
+        parser.next();
+        parser.next();
+        return crate::parser::stmt::parse_loop_expr(parser, Some(label));
+    }
     let x = parser.peek();
     match x {
         Some(Kind::ParenOpen) => {
@@ -826,6 +847,8 @@ fn parse_primary_keyword_form(parser: &mut Parser) -> ParserResult<ExprRef> {
             parse_dict_literal(parser)
         }
         Some(Kind::Match) => keyword_form(parser, parse_match),
+        // BREAK-WITH-VALUE: `loop` where a value is expected.
+        Some(Kind::Loop) => crate::parser::stmt::parse_loop_expr(parser, None),
         _ => {
             let x_cloned = x.cloned();
             parser.collect_error(&format!("unexpected token in primary expression: {:?}", x_cloned));
@@ -1016,6 +1039,7 @@ fn parse_struct_literal_fields_impl(parser: &mut Parser, mut fields: Vec<(Defaul
             }
             _ => (),
         }
+        let name_location = parser.current_source_location();
         let field_name = match parser.peek() {
             Some(Kind::Identifier(s)) => {
                 let s = s.to_string();
@@ -1033,9 +1057,19 @@ fn parse_struct_literal_fields_impl(parser: &mut Parser, mut fields: Vec<(Defaul
                 return Ok((fields, None));
             }
         };
-        parser.expect_err(&Kind::Colon)?;
-        let field_value = parser.parse_expr_impl()?;
+        // STRUCT-SUGAR-GAP: `P { x, y }` is `P { x: x, y: y }`, the
+        // shorthand a struct pattern already accepts.
+        let field_value = if matches!(
+            parser.peek(),
+            Some(Kind::Comma) | Some(Kind::BraceClose) | Some(Kind::NewLine)
+        ) {
+            parser.ast_builder.identifier_expr(field_name, Some(name_location))
+        } else {
+            parser.expect_err(&Kind::Colon)?;
+            parser.parse_expr_impl()?
+        };
         fields.push((field_name, field_value));
+        parser.skip_newlines();
         match parser.peek() {
             Some(Kind::Comma) => {
                 parser.next();

@@ -946,12 +946,106 @@ impl<'a> TypeCheckerVisitor<'a> {
                     Ok(TypeDecl::Unknown)
                 }
             }
+            // BREAK-WITH-VALUE: a value loop's hidden `var` has no
+            // type until its first `break <value>`; see
+            // `settle_loop_value`.
+            // The tail `match __loop_value_N { .. }` of a value loop
+            // whose `break`s never named a type.
+            Stmt::Expression(e) if self.unsettled_loop_value(&e).is_some() => {
+                let name = self.unsettled_loop_value(&e).expect("checked by the guard");
+                self.loop_values.remove(&name);
+                Err(self.error_with_location(
+                    TypeCheckError::generic_error(
+                        "cannot tell the type of this `loop`'s value: no `break <value>` in it \
+                         names one (`break Option::None` does not) -- annotate the binding, \
+                         as in `val x: Option<u64> = loop { .. }`",
+                    ),
+                    &e,
+                ))
+            }
+            Stmt::Var(name, Some(TypeDecl::Unknown), Some(init))
+                if self.resolve_symbol_name(name).starts_with("__loop_value_") =>
+            {
+                let hint = self
+                    .type_inference
+                    .type_hint
+                    .clone()
+                    .filter(|h| !matches!(h, TypeDecl::Unknown | TypeDecl::Number));
+                self.loop_values.insert(name, crate::type_checker::visitor::LoopValue { stmt: *s, init, hint });
+                self.context.set_mutable_var(name, TypeDecl::Unknown);
+                Ok(TypeDecl::Unit)
+            }
             _ => {
                 let stmt_obj = self.core.stmt_pool.get(s)
                     .ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference"))?;
                 stmt_obj.clone().accept_stmt(self)
             }
         }
+    }
+
+    /// The hidden `var` of a value loop whose tail `match` `e` is, when
+    /// no `break` has given it a type yet.
+    fn unsettled_loop_value(&self, e: &ExprRef) -> Option<DefaultSymbol> {
+        let Some(Expr::Match(scrutinee, _)) = self.core.expr_pool.get(e) else {
+            return None;
+        };
+        match self.core.expr_pool.get(&scrutinee) {
+            Some(Expr::Identifier(name)) if self.loop_values.contains_key(&name) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// BREAK-WITH-VALUE: the first `break <value>` out of a value loop,
+    /// `__loop_value_N = Option::Some(v)`, gives the hidden `var` its
+    /// type. `v` is checked (a suffix-less literal takes the hint where
+    /// the loop stands, else `u64`), and the `var`'s declaration gets
+    /// the annotation `Option<T>` written back -- the compiled lanes
+    /// lay the `Option` out from it, and a bare `Option::None` names no
+    /// type. Later `break`s are ordinary assignments against it.
+    fn settle_loop_value(&mut self, name: DefaultSymbol, rhs: &ExprRef) -> Result<(), TypeCheckError> {
+        let Some(pending) = self.loop_values.remove(&name) else {
+            return Ok(());
+        };
+        let Some(Expr::AssociatedFunctionCall(_, _, args)) = self.core.expr_pool.get(rhs) else {
+            return Ok(());
+        };
+        let Some(value) = args.first().copied() else {
+            return Ok(());
+        };
+        let saved = self.type_inference.type_hint.clone();
+        self.type_inference.type_hint = pending.hint.clone();
+        let value_ty = self.visit_expr(&value);
+        self.type_inference.type_hint = saved.clone();
+        let value_ty = value_ty?;
+        // A value that names no type by itself (`break Option::None`)
+        // leaves the question to a later `break`; the loop's tail
+        // reports it if none answers (`unsettled_loop_value`).
+        if !value_ty_is_settled(&value_ty) && value_ty != TypeDecl::Number {
+            self.loop_values.insert(name, pending);
+            return Ok(());
+        }
+        let target = pending.hint.clone().unwrap_or(TypeDecl::UInt64);
+        let value_ty = self.coerce_number_expr(&value, &value_ty, &target)?;
+        let Some(Expr::AssociatedFunctionCall(option, _, _)) = self.core.expr_pool.get(rhs) else {
+            return Ok(());
+        };
+        self.type_inference.type_hint = Some(TypeDecl::Enum(option, vec![value_ty]));
+        let option_ty = self.visit_expr(rhs);
+        self.type_inference.type_hint = saved.clone();
+        let option_ty = option_ty?;
+        if let Some(Stmt::Var(_, _, init)) = self.core.stmt_pool.get(&pending.stmt) {
+            self.core
+                .stmt_pool
+                .update(&pending.stmt, Stmt::Var(name, Some(option_ty.clone()), init));
+        }
+        self.type_inference.type_hint = Some(option_ty.clone());
+        let init_ty = self.visit_expr(&pending.init);
+        self.type_inference.type_hint = saved;
+        init_ty?;
+        // The `break` sits in an inner scope; the binding to retype is
+        // the one in the scope that declared it.
+        self.context.update_var_type(name, option_ty);
+        Ok(())
     }
 
     pub fn visit_block(&mut self, statements: &Vec<StmtRef>) -> Result<TypeDecl, TypeCheckError> {
@@ -1137,6 +1231,11 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn visit_assign(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let lhs = *lhs;
         let rhs = *rhs;
+        if let Some(Expr::Identifier(name)) = self.core.expr_pool.get(&lhs)
+            && self.loop_values.contains_key(&name)
+        {
+            self.settle_loop_value(name, &rhs)?;
+        }
 
         // Reject assignment to an immutable (`val`) binding at type-check
         // time. The tree-walker enforces this at runtime; hoisting it to
@@ -3642,3 +3741,17 @@ impl<'a> TypeCheckerVisitor<'a> {
 /// `String::to_string() -> String` already means the idempotent clone;
 /// interpolation splices `str`, which is what this returns.
 const DISPLAY_METHOD: &str = "to_str";
+
+/// Whether `ty` names a type all the way down: no generic parameter
+/// left unsubstituted and no `Unknown` / literal placeholder.
+fn value_ty_is_settled(ty: &TypeDecl) -> bool {
+    fn walk(ty: &TypeDecl) -> bool {
+        match ty {
+            TypeDecl::Unknown | TypeDecl::Number => false,
+            TypeDecl::Struct(_, args) | TypeDecl::Enum(_, args) => args.iter().all(walk),
+            TypeDecl::Tuple(elems) => elems.iter().all(walk),
+            _ => true,
+        }
+    }
+    !ty.contains_generic() && walk(ty)
+}

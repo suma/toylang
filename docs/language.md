@@ -2403,6 +2403,26 @@ The parser desugars tuple destructuring into a hidden temporary plus
 per-name `tmp.0`, `tmp.1`, … bindings. Outer `val` / `var` propagates
 to leaf bindings only.
 
+#### Struct destructuring
+
+A struct pattern binds the same way, with the syntax of a
+[struct pattern](#struct-patterns):
+
+```rust
+val Point { x, y }          = make_point()     # `{ x }` binds field `x` to `x`
+val Point { x: px, .. }     = make_point()     # rename; `..` skips the rest
+val User { name, at: Point { x, .. }, .. } = load()   # nested
+var (Point { x, .. }, n)    = (p, 4u64)        # inside a tuple pattern
+```
+
+It is checked like a `match` arm: the name must be the value's struct,
+and every field must be named unless the pattern ends with `..`. The
+parser binds the value once to a hidden temporary, checks it against
+the pattern with a one-arm `match`, and reads each field from the
+temporary, so a field of an owned type (`String`) is the temporary's
+and is freed once. A generic struct is written without its arguments
+(`val Box { v, .. } = b`).
+
 ### Control flow
 
 ```rust
@@ -2412,6 +2432,7 @@ for x in iter { ... }        # iterator protocol (see below)
 while cond { ... }
 loop { ... }                 # infinite loop (desugars to while true)
 break
+break value                  # leave a `loop` with a value (see below)
 continue
 return                       # returns Unit
 return value                 # returns a value
@@ -2627,6 +2648,58 @@ parser desugars to a synthetic `while true { match iter.next()
 { Some(x) => body, None => break } }` and propagates the label
 to that synthetic while, so user-written `break @label` inside
 the body resolves to the correct loop.
+
+#### `break` with a value
+
+A `loop` is an expression when a `break` in it carries a value, and
+that value is the loop's:
+
+```rust
+val k = loop {
+    i = i + 1u64
+    if i * i > n { break i }
+}
+
+fn first_even(v: &Vec<u64>) -> Option<u64> {
+    var i = 0u64
+    loop {                                   # the function's value
+        if i == v.size() { break Option::None }
+        if v.get(i) % 2u64 == 0u64 { break Option::Some(v.get(i)) }
+        i = i + 1u64
+    }
+}
+
+val s = @outer: loop {
+    while b < 10u64 {
+        if found(a, b) { break @outer a * b }   # out of the inner loop
+        b = b + 1u64
+    }
+    a = a + 1u64
+}
+```
+
+- Only `loop` has a value; `break v` out of a `while` or `for` is an
+  error (they can end without a `break`).
+- A `loop` with a value needs one on **every** `break` out of it, and
+  a `loop` written where a value is expected (`val x = loop { .. }`)
+  needs at least one. `return` and `panic` leave it as usual.
+- The value is the expression **on the `break`'s line**; `break` with
+  a statement on the next line breaks without one.
+- Breaking out a value created in the `break` (`break String::new()`)
+  is fine. Breaking out an owned **binding declared outside the loop**
+  (`break s`) is a move inside a loop body and is rejected (`[E0014]`),
+  as any such move is today.
+- The type is the first value's that names a type. A suffix-less
+  literal takes the type the loop's position names
+  (`val x: i64 = loop { break -5 }`), else `u64`. A value that names
+  no type by itself (`break Option::None`) needs an annotation:
+  `val a: Option<u64> = loop { break Option::None }`.
+
+The parser desugars a value loop into a hidden `var` holding
+`Option<T>`, the `while true`, and a `match` that takes the value out;
+`break v` stores `Option::Some(v)` and breaks. The type checker writes
+`T` into the hidden `var`'s annotation from the first `break`, so the
+backends run an ordinary loop.
 
 ### `if val` / `while val`
 
@@ -3087,7 +3160,7 @@ struct Point {
 impl Point {
     # Associated function (no self) — call as `Point::new(...)`
     fn new(x: i64, y: i64) -> Self {
-        Point { x: x, y: y }
+        Point { x, y }              # shorthand for `Point { x: x, y: y }`
     }
 
     # Method (takes `self: Self`) — call as `p.distance_sq()`

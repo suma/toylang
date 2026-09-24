@@ -98,6 +98,10 @@ pub struct TypeCheckerVisitor<'a> {
     /// MATCH-CONST-PATTERN / ENUM-STRUCT-VARIANT: consts a pattern may
     /// name, and the arms rewritten from pattern sugar.
     pub pattern_rewrites: PatternRewrites,
+    /// BREAK-WITH-VALUE: the hidden `var`s of value loops whose type is
+    /// not known yet, with their declaration and the type hint that
+    /// was in force there. The first `break <value>` settles each.
+    pub loop_values: HashMap<DefaultSymbol, LoopValue>,
     /// ENUM-DISCRIMINANT: `e as T` casts from an enum, keyed by the
     /// operand, with the enum and the target type; rewritten into a
     /// match by `apply_enum_cast_rewrites`.
@@ -236,6 +240,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             current_fn_return_type: None,
             tuple_struct_rewrites: TupleStructRewrites::default(),
             pattern_rewrites: PatternRewrites::default(),
+            loop_values: HashMap::new(),
             enum_casts: HashMap::new(),
             enum_struct_literals: HashMap::new(),
             null_coalesce_lhs_types: HashMap::new(),
@@ -326,6 +331,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             current_fn_return_type: None,
             tuple_struct_rewrites: TupleStructRewrites::default(),
             pattern_rewrites: PatternRewrites::default(),
+            loop_values: HashMap::new(),
             enum_casts: HashMap::new(),
             enum_struct_literals: HashMap::new(),
             null_coalesce_lhs_types: HashMap::new(),
@@ -539,6 +545,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             current_fn_return_type: None,
             tuple_struct_rewrites: TupleStructRewrites::default(),
             pattern_rewrites: PatternRewrites::default(),
+            loop_values: HashMap::new(),
             enum_casts: HashMap::new(),
             enum_struct_literals: HashMap::new(),
             null_coalesce_lhs_types: HashMap::new(),
@@ -1369,4 +1376,14 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
         Ok(())
     }
+}
+
+/// One value loop's hidden `var` awaiting its type (BREAK-WITH-VALUE).
+#[derive(Debug, Clone)]
+pub struct LoopValue {
+    pub stmt: crate::ast::StmtRef,
+    pub init: crate::ast::ExprRef,
+    /// The hint where the loop stands (`val x: i64 = loop { .. }`),
+    /// which a suffix-less `break 0` takes.
+    pub hint: Option<TypeDecl>,
 }

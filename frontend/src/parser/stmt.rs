@@ -61,7 +61,8 @@ pub fn parse_stmt(parser: &mut Parser) -> ParserResult<StmtRef> {
             let location = parser.current_source_location();
             parser.next();
             let label = parse_optional_loop_label(parser)?;
-            Ok(parser.ast_builder.break_stmt_with_label(label, Some(location)))
+            let line_end = parser.current_position().map(|p| p.start).unwrap_or(0);
+            parse_break_value(parser, label, location, line_end)
         }
         Some(Kind::Continue) => {
             let location = parser.current_source_location();
@@ -177,18 +178,215 @@ fn parse_while_with_label(parser: &mut Parser, label: Option<DefaultSymbol>) -> 
     let cond = super::expr::parse_logical_expr(parser)?;
     parser.pop_context();
 
-    let block = super::expr::parse_block(parser)?;
+    let (block, _) = parse_loop_body(parser, label, None)?;
     let location = parser.current_source_location();
     Ok(parser.ast_builder.while_stmt_with_label(label, cond, block, Some(location)))
 }
 
-/// `loop { BODY }` desugars to `while true { BODY }` at parse time.
-fn parse_loop_with_label(parser: &mut Parser, label: Option<DefaultSymbol>) -> ParserResult<StmtRef> {
-    parser.expect_err(&Kind::Loop)?;
-    let block = super::expr::parse_block(parser)?;
+/// A loop's body, parsed with its frame on `loop_stack` so a `break`
+/// inside knows what it leaves. Returns the frame as it stands after
+/// the body, with the `break`s counted.
+fn parse_loop_body(
+    parser: &mut Parser,
+    label: Option<DefaultSymbol>,
+    value: Option<DefaultSymbol>,
+) -> ParserResult<(ExprRef, crate::parser::core::LoopFrame)> {
+    parser.loop_stack.push(crate::parser::core::LoopFrame {
+        label,
+        value,
+        value_breaks: 0,
+        plain_breaks: 0,
+        first_plain: None,
+    });
+    let block = super::expr::parse_block(parser);
+    let frame = parser.loop_stack.pop().expect("pushed above");
+    Ok((block?, frame))
+}
+
+/// A parse error recorded where it points. Returned alone, the block
+/// parser re-collects it at the cursor, which is past the statement it
+/// is about (the same reason `reject_else_if` records its error).
+fn reported(parser: &mut Parser, error: ParserError) -> ParserError {
+    parser.report_error(error.clone());
+    error
+}
+
+/// BREAK-WITH-VALUE: the rest of a `break [@label]`, with an optional
+/// value. `break v` out of a `loop` stores `Option::Some(v)` in the
+/// loop's hidden `var` (a prelude statement) and then breaks; see
+/// [`parse_loop_value`].
+///
+/// The value must start on the `break`'s own line. The parser sees no
+/// newline tokens, so without this `break` followed by a statement on
+/// the next line (dead code, but written) would take that statement
+/// as its value.
+fn parse_break_value(
+    parser: &mut Parser,
+    label: Option<DefaultSymbol>,
+    location: crate::type_checker::SourceLocation,
+    next_start: usize,
+) -> ParserResult<StmtRef> {
+    let same_line = parser
+        .input
+        .get(location.offset as usize..next_start)
+        .is_some_and(|between| !between.contains('\n'));
+    let has_value = same_line
+        && !matches!(
+            parser.peek(),
+            None | Some(Kind::NewLine) | Some(Kind::BraceClose) | Some(Kind::Comma) | Some(Kind::EOF)
+        );
+    let target = match label {
+        Some(l) => parser.loop_stack.iter().rposition(|f| f.label == Some(l)),
+        None => parser.loop_stack.len().checked_sub(1),
+    };
+    if !has_value {
+        if let Some(i) = target {
+            let frame = &mut parser.loop_stack[i];
+            frame.plain_breaks += 1;
+            frame.first_plain.get_or_insert(location);
+        }
+        return Ok(parser.ast_builder.break_stmt_with_label(label, Some(location)));
+    }
+    let Some(i) = target.filter(|i| parser.loop_stack[*i].value.is_some()) else {
+        return Err(reported(parser, ParserError::generic_error(
+            location,
+            "`break` with a value can only leave a `loop`; a `while` or `for` has no value"
+                .to_string(),
+        )));
+    };
+    parser.loop_stack[i].value_breaks += 1;
+    let var = parser.loop_stack[i].value.expect("filtered above");
+    let value = parser.parse_expr_impl()?;
+    let option = parser.string_interner.get_or_intern("Option");
+    let some = parser.string_interner.get_or_intern("Some");
+    let wrapped = parser.ast_builder.add_expr_with_location(
+        Expr::AssociatedFunctionCall(option, some, vec![value]),
+        Some(location),
+    );
+    let target = parser.ast_builder.identifier_expr(var, Some(location));
+    let store = parser
+        .ast_builder
+        .add_expr_with_location(Expr::Assign(target, wrapped), Some(location));
+    let store_stmt = parser.ast_builder.expression_stmt(store, Some(location));
+    parser.pending_prelude_stmts.push(store_stmt);
+    Ok(parser.ast_builder.break_stmt_with_label(label, Some(location)))
+}
+
+/// BREAK-WITH-VALUE: `[@label:] loop { BODY }`, parsed as a value when
+/// any `break` in it carries one, and as the plain `while true` it
+/// always was otherwise. `expected_value` is set where the loop stands
+/// as an expression (`val x = loop { .. }`), which must have one.
+///
+/// A value loop desugars to
+///
+/// ```text
+/// {
+///     var __loop_value_N = Option::None
+///     [@label:] while true { BODY }          # `break v` stores Some(v)
+///     match __loop_value_N {
+///         Option::Some(__loop_out_N) => __loop_out_N,
+///         _ => panic("unreachable: a value loop ended without a value"),
+///     }
+/// }
+/// ```
+///
+/// The `var` has no annotation because nothing here knows the value's
+/// type; the type checker takes it from the first `break <value>` and
+/// writes the annotation back (the compiled lanes need it to lay the
+/// `Option` out). Every way out of the loop stores a value first, so
+/// the `_` arm is never taken. A `return` or a `panic` still leaves it
+/// the usual way.
+fn parse_loop_value(
+    parser: &mut Parser,
+    label: Option<DefaultSymbol>,
+    expected_value: bool,
+) -> ParserResult<Result<ExprRef, StmtRef>> {
     let location = parser.current_source_location();
+    parser.expect_err(&Kind::Loop)?;
+    let counter = parser.synthetic_counter;
+    parser.synthetic_counter += 1;
+    let var = parser.string_interner.get_or_intern(format!("__loop_value_{counter}"));
+    let (body, frame) = parse_loop_body(parser, label, Some(var))?;
     let true_expr = parser.ast_builder.bool_true_expr(Some(location));
-    Ok(parser.ast_builder.while_stmt_with_label(label, true_expr, block, Some(location)))
+    let lp = parser.ast_builder.while_stmt_with_label(label, true_expr, body, Some(location));
+
+    if frame.value_breaks == 0 {
+        if expected_value {
+            return Err(reported(parser, ParserError::generic_error(
+                location,
+                "this `loop` stands where a value is expected, but no `break` in it \
+                 carries one: write `break <value>`"
+                    .to_string(),
+            )));
+        }
+        return Ok(Err(lp));
+    }
+    if frame.plain_breaks > 0 {
+        return Err(reported(parser, ParserError::generic_error(
+            frame.first_plain.unwrap_or(location),
+            "this `loop` has a value (another `break` in it carries one), so every \
+             `break` out of it needs one: write `break <value>`"
+                .to_string(),
+        )));
+    }
+
+    let out = parser.string_interner.get_or_intern(format!("__loop_out_{counter}"));
+    let option = parser.string_interner.get_or_intern("Option");
+    let none = parser.string_interner.get_or_intern("None");
+    let some = parser.string_interner.get_or_intern("Some");
+    let init = parser.ast_builder.add_expr_with_location(
+        Expr::QualifiedIdentifier(vec![option, none]),
+        Some(location),
+    );
+    let decl = parser.ast_builder.var_stmt(var, Some(TypeDecl::Unknown), Some(init), Some(location));
+    let scrutinee = parser.ast_builder.identifier_expr(var, Some(location));
+    let got = parser.ast_builder.identifier_expr(out, Some(location));
+    let text = parser
+        .string_interner
+        .get_or_intern("unreachable: a value loop ended without a value");
+    let msg = parser.ast_builder.string_expr(text, Some(location));
+    let never = parser.ast_builder.builtin_call_expr(
+        crate::ast::BuiltinFunction::Panic,
+        vec![msg],
+        Some(location),
+    );
+    let tail = parser.ast_builder.add_expr_with_location(
+        Expr::Match(
+            scrutinee,
+            vec![
+                MatchArm {
+                    pattern: Pattern::EnumVariant(option, some, vec![Pattern::Name(out)]),
+                    guard: None,
+                    body: got,
+                },
+                MatchArm { pattern: Pattern::Wildcard, guard: None, body: never },
+            ],
+        ),
+        Some(location),
+    );
+    let tail_stmt = parser.ast_builder.expression_stmt(tail, Some(location));
+    Ok(Ok(parser.ast_builder.block_expr(vec![decl, lp, tail_stmt], Some(location))))
+}
+
+/// `loop` where a value is expected (`val x = loop { .. }`).
+pub(crate) fn parse_loop_expr(parser: &mut Parser, label: Option<DefaultSymbol>) -> ParserResult<ExprRef> {
+    match parse_loop_value(parser, label, true)? {
+        Ok(expr) => Ok(expr),
+        Err(_) => unreachable!("an expected value loop is a value or an error"),
+    }
+}
+
+/// `loop { BODY }` desugars to `while true { BODY }` at parse time.
+///
+/// BREAK-WITH-VALUE: a `loop` statement whose `break`s carry a value
+/// is that value -- `fn f() -> u64 { loop { .. break n } }` -- and
+/// becomes an expression statement of the desugared block.
+fn parse_loop_with_label(parser: &mut Parser, label: Option<DefaultSymbol>) -> ParserResult<StmtRef> {
+    let location = parser.current_source_location();
+    match parse_loop_value(parser, label, false)? {
+        Ok(expr) => Ok(parser.ast_builder.expression_stmt(expr, Some(location))),
+        Err(stmt) => Ok(stmt),
+    }
 }
 
 /// IF-VAL: parse `while val PAT = EXPR { BODY }` (the leading `while`
@@ -218,7 +416,7 @@ fn parse_while_val(parser: &mut Parser, outer_label: Option<DefaultSymbol>) -> P
     parser.push_context(crate::parser::core::ParseContext::Condition);
     let scrutinee = super::expr::parse_logical_expr(parser)?;
     parser.pop_context();
-    let user_body = super::expr::parse_block(parser)?;
+    let (user_body, _) = parse_loop_body(parser, outer_label, None)?;
 
     // Some(PAT) arm: `{ BODY; continue }`. The trailing `continue`
     // unifies the arm's type with the None-arm's `{ break }` (both
@@ -299,7 +497,7 @@ fn parse_for_with_label(
                     let end = super::expr::parse_logical_expr(parser);
                     parser.pop_context();
                     let end = end?;
-                    let block = super::expr::parse_block(parser)?;
+                    let (block, _) = parse_loop_body(parser, label, None)?;
                     let location = parser.current_source_location();
                     let stmt = parser.ast_builder.for_stmt_with_label(label, ident, start, end, block, Some(location));
                     if let Some(at) = parallel {
@@ -318,7 +516,7 @@ fn parse_for_with_label(
                                 .to_string(),
                         ));
                     }
-                    let body = super::expr::parse_block(parser)?;
+                    let (body, _) = parse_loop_body(parser, label, None)?;
                     let location = parser.current_source_location();
                     Ok(desugar_for_in_iterator(parser, label, ident, start, body, location))
                 }
@@ -506,6 +704,13 @@ pub fn parse_var_def(parser: &mut Parser) -> ParserResult<StmtRef> {
     if matches!(parser.peek(), Some(Kind::ParenOpen)) {
         return parse_tuple_destructuring(parser, is_val);
     }
+    // STRUCT-SUGAR-GAP: `val P { x, y: b, .. } = expr` -- a binding
+    // is never followed by `{`, so a name and a brace are a pattern.
+    if matches!(parser.peek(), Some(Kind::Identifier(_)))
+        && matches!(parser.peek_n(1), Some(Kind::BraceOpen))
+    {
+        return parse_tuple_destructuring(parser, is_val);
+    }
 
     let current_token = parser.peek().cloned();
     let ident: DefaultSymbol = match current_token {
@@ -576,6 +781,120 @@ pub fn parse_var_def(parser: &mut Parser) -> ParserResult<StmtRef> {
 enum DestructPat {
     Name(DefaultSymbol),
     Tuple(Vec<DestructPat>),
+    /// STRUCT-SUGAR-GAP: `P { field: sub, .. }`. The bool is the `..`.
+    Struct(DefaultSymbol, Vec<(DefaultSymbol, DestructPat)>, bool),
+}
+
+/// One sub-pattern: a tuple, a struct, or a name.
+fn parse_destruct_sub(parser: &mut Parser, context: &str) -> ParserResult<DestructPat> {
+    match parser.peek().cloned() {
+        Some(Kind::ParenOpen) => parse_destruct_tuple(parser),
+        Some(Kind::Identifier(_)) if matches!(parser.peek_n(1), Some(Kind::BraceOpen)) => {
+            parse_destruct_struct(parser)
+        }
+        Some(Kind::Identifier(s)) => {
+            parser.next();
+            Ok(DestructPat::Name(parser.string_interner.get_or_intern(s.as_str())))
+        }
+        other => {
+            let loc = parser.current_source_location();
+            Err(ParserError::generic_error(
+                loc,
+                format!("expected identifier, `(` or `Name {{` in {context}, got {:?}", other),
+            ))
+        }
+    }
+}
+
+/// Parse `P { x, y: sub, .. }`; the name must be at `parser.peek()`.
+/// `{ x }` binds field `x` to `x`, as in a struct pattern.
+fn parse_destruct_struct(parser: &mut Parser) -> ParserResult<DestructPat> {
+    let name = match parser.peek().cloned() {
+        Some(Kind::Identifier(s)) => parser.string_interner.get_or_intern(s.as_str()),
+        _ => unreachable!("parse_destruct_struct is entered at a name"),
+    };
+    parser.next();
+    parser.expect_err(&Kind::BraceOpen)?;
+    let mut fields: Vec<(DefaultSymbol, DestructPat)> = Vec::new();
+    let mut has_rest = false;
+    loop {
+        parser.skip_newlines();
+        match parser.peek().cloned() {
+            Some(Kind::BraceClose) => break,
+            Some(Kind::DotDot) => {
+                parser.next();
+                has_rest = true;
+                parser.skip_newlines();
+                if !matches!(parser.peek(), Some(Kind::BraceClose)) {
+                    let loc = parser.current_source_location();
+                    return Err(ParserError::generic_error(
+                        loc,
+                        "`..` must be the last item in a struct pattern".to_string(),
+                    ));
+                }
+                break;
+            }
+            Some(Kind::Identifier(s)) => {
+                let field = parser.string_interner.get_or_intern(s.as_str());
+                parser.next();
+                let sub = if matches!(parser.peek(), Some(Kind::Colon)) {
+                    parser.next();
+                    parse_destruct_sub(parser, "struct pattern")?
+                } else {
+                    DestructPat::Name(field)
+                };
+                fields.push((field, sub));
+            }
+            other => {
+                let loc = parser.current_source_location();
+                return Err(ParserError::generic_error(
+                    loc,
+                    format!("expected a field name in struct pattern, got {:?}", other),
+                ));
+            }
+        }
+        parser.skip_newlines();
+        match parser.peek() {
+            Some(Kind::Comma) => {
+                parser.next();
+            }
+            Some(Kind::BraceClose) => break,
+            other => {
+                let other = other.cloned();
+                let loc = parser.current_source_location();
+                return Err(ParserError::generic_error(
+                    loc,
+                    format!("expected `,` or `}}` in struct pattern, got {:?}", other),
+                ));
+            }
+        }
+    }
+    parser.expect_err(&Kind::BraceClose)?;
+    Ok(DestructPat::Struct(name, fields, has_rest))
+}
+
+/// The pattern `pat` checks against, with every binding a `_`: a
+/// struct pattern is checked like a `match` arm's (the struct's name,
+/// every field named unless `..`), which the field reads alone would
+/// not do.
+fn destruct_check_pattern(pat: &DestructPat) -> Pattern {
+    match pat {
+        DestructPat::Name(_) => Pattern::Wildcard,
+        DestructPat::Tuple(subs) => Pattern::Tuple(subs.iter().map(destruct_check_pattern).collect()),
+        DestructPat::Struct(name, fields, has_rest) => Pattern::Struct(
+            *name,
+            fields.iter().map(|(f, sub)| (*f, destruct_check_pattern(sub))).collect(),
+            *has_rest,
+        ),
+    }
+}
+
+fn contains_struct(pat: &DestructPat) -> bool {
+    match pat {
+        DestructPat::Name(_) => false,
+        DestructPat::Tuple(subs) => subs.iter().any(contains_struct),
+        DestructPat::Struct(..) => true,
+    }
 }
 
 /// Parse a `(p, q, ...)` tuple sub-pattern, recursively. The leading
@@ -584,20 +903,7 @@ fn parse_destruct_tuple(parser: &mut Parser) -> ParserResult<DestructPat> {
     parser.expect_err(&Kind::ParenOpen)?;
     let mut subs: Vec<DestructPat> = Vec::new();
     loop {
-        let sub = match parser.peek().cloned() {
-            Some(Kind::ParenOpen) => parse_destruct_tuple(parser)?,
-            Some(Kind::Identifier(s)) => {
-                parser.next();
-                DestructPat::Name(parser.string_interner.get_or_intern(s.as_str()))
-            }
-            other => {
-                let loc = parser.current_source_location();
-                return Err(ParserError::generic_error(
-                    loc,
-                    format!("expected identifier or `(` in tuple pattern, got {:?}", other),
-                ));
-            }
-        };
+        let sub = parse_destruct_sub(parser, "tuple pattern")?;
         subs.push(sub);
         match parser.peek().cloned() {
             Some(Kind::Comma) => {
@@ -646,6 +952,20 @@ fn emit_destructure(
             };
             out.push(stmt);
         }
+        DestructPat::Struct(_, fields, _) => {
+            let counter = parser.synthetic_counter;
+            parser.synthetic_counter += 1;
+            let tmp_sym = parser.string_interner.get_or_intern(format!("__struct_tmp_{counter}"));
+            let tmp_stmt = parser
+                .ast_builder
+                .val_stmt(tmp_sym, Some(TypeDecl::Unknown), rhs_expr, Some(*location));
+            out.push(tmp_stmt);
+            for (field, sub) in fields {
+                let tmp_id = parser.ast_builder.identifier_expr(tmp_sym, Some(*location));
+                let access = parser.ast_builder.field_access_expr(tmp_id, *field, Some(*location));
+                emit_destructure(parser, sub, access, is_val, location, out);
+            }
+        }
         DestructPat::Tuple(subs) => {
             let counter = parser.synthetic_counter;
             parser.synthetic_counter += 1;
@@ -666,6 +986,16 @@ fn emit_destructure(
     }
 }
 
+fn out_val(
+    parser: &mut Parser,
+    name: DefaultSymbol,
+    rhs: ExprRef,
+    location: &crate::type_checker::SourceLocation,
+    out: &mut Vec<StmtRef>,
+) {
+    out.push(parser.ast_builder.val_stmt(name, Some(TypeDecl::Unknown), rhs, Some(*location)));
+}
+
 /// Lower `val (a, b, ...) = expr` (or `var (...) = ...`) into a series
 /// of plain `Val` / `Var` statements. Sub-patterns may themselves be
 /// tuple patterns, so `val ((a, b), c) = expr` decomposes through an
@@ -675,7 +1005,11 @@ fn emit_destructure(
 /// the resulting block.
 fn parse_tuple_destructuring(parser: &mut Parser, is_val: bool) -> ParserResult<StmtRef> {
     let location = parser.current_source_location();
-    let pat = parse_destruct_tuple(parser)?;
+    let pat = if matches!(parser.peek(), Some(Kind::ParenOpen)) {
+        parse_destruct_tuple(parser)?
+    } else {
+        parse_destruct_struct(parser)?
+    };
 
     // Optional whole-tuple type annotation, e.g. `val (a, b): (i64, i64) = ...`.
     // We currently parse-and-discard it; the rhs's element types
@@ -689,7 +1023,30 @@ fn parse_tuple_destructuring(parser: &mut Parser, is_val: bool) -> ParserResult<
     let rhs = super::expr::parse_range_expr(parser)?;
 
     let mut stmts: Vec<StmtRef> = Vec::new();
-    emit_destructure(parser, &pat, rhs, is_val, &location, &mut stmts);
+    if contains_struct(&pat) {
+        // STRUCT-SUGAR-GAP: bind the value once and check it against
+        // the pattern with a one-arm `match`, so a wrong struct name or
+        // a missing field without `..` is the same error a `match` arm
+        // gives. The field reads below then go through the binding.
+        let counter = parser.synthetic_counter;
+        parser.synthetic_counter += 1;
+        let whole = parser.string_interner.get_or_intern(format!("__destruct_{counter}"));
+        out_val(parser, whole, rhs, &location, &mut stmts);
+        let scrutinee = parser.ast_builder.identifier_expr(whole, Some(location));
+        let unit = parser.ast_builder.tuple_literal_expr(vec![], Some(location));
+        let check = parser.ast_builder.add_expr_with_location(
+            Expr::Match(
+                scrutinee,
+                vec![MatchArm { pattern: destruct_check_pattern(&pat), guard: None, body: unit }],
+            ),
+            Some(location),
+        );
+        stmts.push(parser.ast_builder.expression_stmt(check, Some(location)));
+        let reread = parser.ast_builder.identifier_expr(whole, Some(location));
+        emit_destructure(parser, &pat, reread, is_val, &location, &mut stmts);
+    } else {
+        emit_destructure(parser, &pat, rhs, is_val, &location, &mut stmts);
+    }
 
     // The last emitted statement (the rightmost leaf binding) is the
     // primary; everything else is prelude.

@@ -519,12 +519,18 @@ of an owned value.」 **この 1 行のために関数全体が 1 段深い。**
 で `ok` の梯子が消える。drop flag が入れば条件つき `return` も通る。
 → todo の **MOVE-CONDITIONAL**。`break value` は項目が無い (新規要望)。
 
+**2026-09-25: `break <value>` は入った** (BREAK-WITH-VALUE)。「見つかったか」
+を持ち出すフラグ (`scanning` / `placed` / …) はこれで書ける。**`ok` の
+梯子の大半は残る** — 梯子の理由は所有値を分岐の中から出せないこと
+で、ループの外の所有束縛を `break s` で出すのも同じ E0014 になる
+(MOVE-CONDITIONAL)。POC はまだ書き換えていない。
+
 ### 6. 小さな穴 (どれも回避できるが、書き方が 1 段遠くなる)
 
 | 無いもの | この POC での現れ方 |
 |---|---|
-| struct literal の field shorthand `P { x, y }` | **パターン側には shorthand がある**のに構築側に無い (非対称) |
-| `val P { x, y } = mk()` (struct の分割束縛) | タプルは分割できる。struct はフィールドを 1 つずつ |
+| ~~struct literal の field shorthand `P { x, y }`~~ | 2026-09-25 に解消 (STRUCT-SUGAR-GAP) |
+| ~~`val P { x, y } = mk()` (struct の分割束縛)~~ | 2026-09-25 に解消 (STRUCT-SUGAR-GAP) |
 | `Default` / 構造的な `==` (derive 相当) | ゼロ初期化コンストラクタ 6 本が全フィールド手書き (`src/segfile.t:78 SegHead::empty()` は **23 フィールド**)。`tests/catalog.t:33` は `!=` を 10 本並べて等値を書いている |
 | 名前つき引数 (todo は「導入予定も無い」) | 6 引数以上の関数が **17 本**、最大 12 (`src/server.t:1681`)。`readable, writable, gone` の bool 3 連は順番を入れ替えても型が通る |
 | compiled レーンで使えるコレクションリテラル | `dict{...}` は interpreter 限定、`Vec` リテラルは無い → 表は `push` の列 |

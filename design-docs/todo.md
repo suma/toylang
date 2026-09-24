@@ -10,6 +10,21 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-09-25
+
+- **BREAK-WITH-VALUE: `break <value>` で `loop` を値にする** — パーサが
+  `var __loop_value_N = None` + `while true` + 取り出しの `match` に
+  desugar し、型検査器が最初に型を名指す `break` から var の注釈
+  `Option<T>` を書き戻す (バックエンド無変更)。`val x = loop {..}` /
+  関数末尾 / `@label: loop` からの `break @label v`。`while` / `for` は
+  値を持たない、値つきと値なしの `break` の混在は不可、値は `break` と
+  同じ行。**ループの外の所有束縛を `break s` で出すのは MOVE-CONDITIONAL
+  の E0014 のまま**。
+- **STRUCT-SUGAR-GAP: struct の省略形と分割束縛** — `P { x, y }` と
+  `val P { x, y: b, .. } = e` (入れ子・tuple の中・`var` 可)。分割束縛は
+  一時束縛 + 1 腕の `match` による検査 + フィールド読みに desugar する
+  ので、型名とフィールドの過不足は match の腕と同じ診断になる。
+
 ### 2026-09-24
 
 - **MATCH-STRING-LITERAL: `String` をリテラル腕で match** — `"a" =>` の
@@ -2601,19 +2616,6 @@
   (`interpreter/src/object.rs::to_display_string` /
   `compiler_lower/src/print.rs`) に `field_names` を渡す必要がある
   (`--api` の宣言の描画は対応済み)。踏んでから。
-- **BREAK-WITH-VALUE: `break <expr>` でループを値にする** ★ —
-  `loop` / `break` / ラベルはあるが**値を持ち出せない**ので、
-  「見つかったか」「なぜ抜けたか」を必ず `var` のフラグに書き戻す
-  (POC で 30 箇所以上、`ok` 系の梯子は別に 90 箇所)。
-  `val k = loop { if ... { break Option::Some(i) } ... }` が書ければ
-  フラグごと消える。型は全 `break` の合流で決める。
-- **STRUCT-SUGAR-GAP: struct 構文の非対称** ★ — pattern 側にあって
-  構築・束縛側に無いものが 2 つ: (a) field shorthand
-  (`P { x, y }` は parse エラー、`P { x: x, y: y }` と書く)、
-  (b) `val P { x, y } = mk()` の分割束縛 (タプルは
-  `val (a, b) = f()` が動く)。どちらも既存の desugar と同じ位置で
-  潰せる (前者は parser、後者は tuple destructuring と同じ
-  hidden temp + field access)。
 - **COLLECTION-LITERAL: compiled レーンで使えるコレクションリテラル** ★ —
   `dict{...}` は interpreter 限定 (`compiler MVP cannot lower a dict
   literal yet`)、`Vec` のリテラルは無いので、表は `push` の列になる。

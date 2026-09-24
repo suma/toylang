@@ -160,3 +160,67 @@ fn typecheck_undefined_label_rejected() {
     let err = test_program(src).expect_err("expected type-check failure for undefined label");
     assert!(err.contains("undefined loop label") && err.contains("@missing"), "actual: {err}");
 }
+
+// ---------------------------------------------------------------------
+// BREAK-WITH-VALUE: the parse errors of a value loop.
+// ---------------------------------------------------------------------
+
+#[test]
+fn value_loop_without_a_value_rejected() {
+    let src = r#"
+        fn main() -> u64 {
+            val a = loop { break }
+            0u64
+        }
+    "#;
+    let err = test_program(src).expect_err("a value loop needs `break <value>`");
+    assert!(err.contains("no `break` in it carries one"), "actual: {err}");
+}
+
+#[test]
+fn value_loop_mixing_plain_break_rejected() {
+    let src = r#"
+        fn main() -> u64 {
+            var i = 0u64
+            val a = loop {
+                i = i + 1u64
+                if i > 3u64 { break 1u64 }
+                if i > 9u64 { break }
+            }
+            a
+        }
+    "#;
+    let err = test_program(src).expect_err("every break out of a value loop needs a value");
+    assert!(err.contains("every `break` out of it needs one"), "actual: {err}");
+}
+
+#[test]
+fn break_value_out_of_while_rejected() {
+    let src = r#"
+        fn main() -> u64 {
+            while true { break 3u64 }
+            0u64
+        }
+    "#;
+    let err = test_program(src).expect_err("a while has no value");
+    assert!(err.contains("a `while` or `for` has no value"), "actual: {err}");
+}
+
+/// The value starts on the `break`'s line; a statement on the next
+/// line stays a statement.
+#[test]
+fn break_value_is_on_the_break_line() {
+    let src = r#"
+        fn main() -> u64 {
+            var n = 0u64
+            loop {
+                n = n + 1u64
+                if n == 4u64 {
+                    break
+                }
+            }
+            n
+        }
+    "#;
+    assert_program_result_u64(src, 4);
+}

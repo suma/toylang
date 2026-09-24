@@ -85,3 +85,5 @@ mod ref_reborrow;
 mod try_compound;
 mod parallel_for;
 mod name_resolution;
+mod loop_values;
+mod struct_sugar;

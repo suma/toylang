@@ -676,20 +676,14 @@ fn drop_dir(path: &String) -> bool {
 
 # Everything before the last `/`, or empty when there is none.
 fn parent_of(path: &String) -> String {
-    var cut = path.len()
-    var found = false
     var i = path.len()
-    while i > 0u64 && !found {
-        i = i - 1u64
-        val c: u8 = path.get(i)
-        if c == '/' {
-            cut = i
-            found = true
+    val cut = loop {
+        if i == 0u64 {
+            val empty = String::new()
+            return empty
         }
-    }
-    if !found {
-        val empty = String::new()
-        return empty
+        i = i - 1u64
+        if path.get(i) == '/' { break i }
     }
     val out = path.substring(0u64, cut)
     out
@@ -1018,9 +1012,8 @@ fn label_value(w: Span<u8>, from: u64, len: u64, key: str) -> u64 {
     val klen = want.len()
     val end = from + len
     var p = from
-    var found: u64 = record::pack_span(0u64, 0u64)
-    var done = false
-    while p < end && !done {
+    loop {
+        if p >= end { break record::pack_span(0u64, 0u64) }
         var stop = p
         while stop < end && w.get(stop) != ' ' { stop = stop + 1u64 }
         if stop - p > klen && w.get(p + klen) == '=' {
@@ -1032,14 +1025,10 @@ fn label_value(w: Span<u8>, from: u64, len: u64, key: str) -> u64 {
                 same = a == b
                 i = i + 1u64
             }
-            if same {
-                found = record::pack_span(p + klen + 1u64, stop - p - klen - 1u64)
-                done = true
-            }
+            if same { break record::pack_span(p + klen + 1u64, stop - p - klen - 1u64) }
         }
         p = stop + 1u64
     }
-    found
 }
 
 fn same_bytes(w: Span<u8>, a: u64, a_len: u64, b: u64, b_len: u64) -> bool {

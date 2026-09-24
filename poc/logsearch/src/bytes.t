@@ -249,7 +249,7 @@ pub struct ByteReader {
 }
 
 impl ByteReader {
-    pub fn new(end: u64) -> Self { ByteReader { pos: 0u64, end: end } }
+    pub fn new(end: u64) -> Self { ByteReader { pos: 0u64, end } }
     pub fn seek(&mut self, at: u64) { self.pos = at }
     pub fn position(&self) -> u64 { self.pos }
     pub fn remaining(&self) -> u64 { if self.pos >= self.end { 0u64 } else { self.end - self.pos } }

@@ -101,8 +101,8 @@ impl MountSet {
         var states: Vec<MountState> = Vec::new()
         var used: Vec<u64> = Vec::new()
         val out = MountSet {
-            paths: paths, quotas: quotas, readonly: readonly,
-            states: states, used: used,
+            paths, quotas, readonly,
+            states, used,
         }
         out
     }

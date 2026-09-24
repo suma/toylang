@@ -374,7 +374,7 @@ pub struct Catalog {
 impl Catalog {
     pub fn new() -> Self {
         var rows: Vec<CatRow> = Vec::new()
-        val c = Catalog { rows: rows, gen: 0u64, applied: 0u64 }
+        val c = Catalog { rows, gen: 0u64, applied: 0u64 }
         c
     }
 

@@ -194,12 +194,11 @@ pub fn compact_once(mount: str, now: i64, crc: &Crc32) -> CompactReport {
 
 fn taken(picked: &Vec<u64>, i: u64) -> bool {
     var k: u64 = 0u64
-    var hit = false
-    while k < picked.size() && !hit {
-        if picked.get(k) == i { hit = true }
+    loop {
+        if k >= picked.size() { break false }
+        if picked.get(k) == i { break true }
         k = k + 1u64
     }
-    hit
 }
 
 fn next_id(c: &Catalog) -> u64 {

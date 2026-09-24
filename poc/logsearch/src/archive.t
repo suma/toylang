@@ -329,12 +329,10 @@ impl ArchiveWriter {
     fn intern(&mut self, h: u64, has_ts: bool, ts: i64) -> u64 {
         val mask = self.term_slots.size() - 1u64
         var slot = h & mask
-        var id: u64 = 0u64
-        var placed = false
-        while !placed {
+        loop {
             val cell: u64 = self.term_slots.get(slot)
             if cell == 0u64 {
-                id = self.term_counts.size()
+                val id = self.term_counts.size()
                 self.term_counts.push(1u64)
                 # Empty interval until a dated record says otherwise.
                 if has_ts {
@@ -346,12 +344,11 @@ impl ArchiveWriter {
                 }
                 self.term_hash.push(h)
                 self.term_slots.set(slot, id + 1u64)
-                placed = true
+                break id
             } else {
                 val cand = cell - 1u64
                 val ch: u64 = self.term_hash.get(cand)
                 if ch == h {
-                    id = cand
                     val c: u64 = self.term_counts.get(cand)
                     self.term_counts.set(cand, c + 1u64)
                     if has_ts {
@@ -360,13 +357,12 @@ impl ArchiveWriter {
                         if ts < f { self.term_first.set(cand, ts) }
                         if ts > l { self.term_last.set(cand, ts) }
                     }
-                    placed = true
+                    break cand
                 } else {
                     slot = (slot + 1u64) & mask
                 }
             }
         }
-        id
     }
 
     # Whether `intern` just made a slot that has no name yet.
@@ -643,10 +639,10 @@ impl ArchiveWriter {
     # Add a pair unless this record already carries it.
     fn push_pair(&mut self, h: u64) {
         var i: u64 = 0u64
-        var seen = false
-        while i < self.stream_pairs.size() && !seen {
+        val seen = loop {
+            if i >= self.stream_pairs.size() { break false }
             val have: u64 = self.stream_pairs.get(i)
-            if have == h { seen = true }
+            if have == h { break true }
             i = i + 1u64
         }
         if !seen { self.stream_pairs.push(h) }
@@ -777,8 +773,7 @@ impl ArchiveWriter {
     # the table does not have to be rewritten if the arena moves, and
     # the numbers stay one byte each for the common case.
     pub fn add(&mut self, src: Span<u8>, ln: Line, rec: &ParsedLine) {
-        val start = ln.start
-        val len = ln.len
+        val Line { start, len } = ln
 
         # flags: bit 0 = dated, bits 1..3 = shape
         var flags: u64 = 0u64
@@ -1530,7 +1525,7 @@ pub fn decode_records(rb: Span<u8>, recs_len: u64, n: u64,
         # labels and body offsets
         rd.skip_varints(rb, 4u64)
         rows.push(RecRow {
-            line_at: line_at, ts: ts,
+            line_at, ts,
             line_len: line_len as u32,
             host_rel: host_rel as u32, host_len: host_len as u32,
             tag_rel: tag_rel as u32, tag_len: tag_len as u32,
@@ -1737,7 +1732,7 @@ pub struct TermHits {
 pub fn term_keys(idx: Span<u8>, sec_off: u64, sec_len: u64) -> TermHits {
     var names: Vec<u64> = Vec::new()
     var counts: Vec<u64> = Vec::new()
-    var out = TermHits { names: names, counts: counts, scanned: 0u64 }
+    var out = TermHits { names, counts, scanned: 0u64 }
     if sec_len > 0u64 {
     var rd = ByteReader::new(sec_off + sec_len)
     rd.seek(sec_off)
@@ -1768,9 +1763,9 @@ pub fn term_keys(idx: Span<u8>, sec_off: u64, sec_len: u64) -> TermHits {
             if b == 58u8 { scanning = false } else { klen = klen + 1u64 }
         }
         if klen > 0u64 && klen < len {
-            var found = false
             var k: u64 = 0u64
-            while k < out.names.size() && !found {
+            val found = loop {
+                if k >= out.names.size() { break false }
                 val other: u64 = out.names.get(k)
                 val oat = record::span_start(other)
                 val olen = record::span_len(other)
@@ -1786,7 +1781,7 @@ pub fn term_keys(idx: Span<u8>, sec_off: u64, sec_len: u64) -> TermHits {
                     if same {
                         val prev: u64 = out.counts.get(k)
                         out.counts.set(k, prev + doc_count)
-                        found = true
+                        break true
                     }
                 }
                 k = k + 1u64
@@ -1873,7 +1868,7 @@ fn query_text_of(w: Span<u8>, at: u64, len: u64) -> String {
 pub fn terms_with_prefix(idx: Span<u8>, sec_off: u64, sec_len: u64, prefix: str) -> TermHits {
     var names: Vec<u64> = Vec::new()
     var counts: Vec<u64> = Vec::new()
-    var out = TermHits { names: names, counts: counts, scanned: 0u64 }
+    var out = TermHits { names, counts, scanned: 0u64 }
     # Single exit again: `return out` from inside the guard would be
     # a conditional move of an owned value.
     if sec_len > 0u64 {

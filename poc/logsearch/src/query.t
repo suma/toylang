@@ -850,7 +850,7 @@ pub fn search(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32,
                                     if matches(q, body, line_at, line_len, kind, ts, dated) {
                                         matched = matched + 1u64
                                         if hits.size() < MAX_HITS {
-                                            val hit = Hit { ts: ts, ord: hits.size() }
+                                            val hit = Hit { ts, ord: hits.size() }
                                             hits.push(hit)
                                             val line = text_of(body, line_at, line_len)
                                             texts.push(line)
@@ -958,7 +958,7 @@ impl FieldTally {
         var names: Vec<String> = Vec::new()
         var counts: Vec<u64> = Vec::new()
         val t = FieldTally {
-            names: names, counts: counts, terms: 0u64, segments: 0u64,
+            names, counts, terms: 0u64, segments: 0u64,
         }
         t
     }
@@ -1045,18 +1045,14 @@ fn fold_streams(rows: &StreamRows, out: &mut StreamTally) {
         val count: u64 = rows.counts.get(i)
         val lo: i64 = rows.ts_min.get(i)
         val hi: i64 = rows.ts_max.get(i)
-        var at = out.texts.size()
-        var found = false
         var k: u64 = 0u64
-        while k < out.texts.size() && !found {
+        val seen = loop {
+            if k >= out.texts.size() { break Option::None }
             val have: &String = out.texts.borrow(k)
-            if have.eq(&text) {
-                at = k
-                found = true
-            }
+            if have.eq(&text) { break Option::Some(k) }
             k = k + 1u64
         }
-        if found {
+        if val Option::Some(at) = seen {
             val c: u64 = out.counts.get(at)
             out.counts.set(at, c + count)
             if lo <= hi {

@@ -295,17 +295,12 @@ fn varint_fits(src: Span<u8>, at: u64, end: u64) -> bool
     requires end <= src.len()
 {
     var i = at
-    var fits = false
-    var done = false
-    while !done && i < end && i < at + 10u64 {
+    loop {
+        if i >= end || i >= at + 10u64 { break false }
         val b: u8 = src.get(i)
-        if (b & 0x80u8) == 0u8 {
-            fits = true
-            done = true
-        }
+        if (b & 0x80u8) == 0u8 { break true }
         i = i + 1u64
     }
-    fits
 }
 
 # Expand `clen` bytes at `from` into `out`, producing exactly

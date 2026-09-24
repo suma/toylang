@@ -35,7 +35,7 @@ pub struct LineScan {
 
 impl LineScan {
     pub fn new(len: u64) -> Self {
-        LineScan { pos: 0u64, len: len }
+        LineScan { pos: 0u64, len }
     }
 
     # Point the cursor back at the start of a buffer of `len` bytes.
@@ -68,7 +68,7 @@ impl LineScan {
             if prev == 13u8 { end = end - 1u64 }
         }
         self.pos = i + 1u64
-        val out = Line { start: start, len: end - start }
+        val out = Line { start, len: end - start }
         Option::Some(out)
     }
 }

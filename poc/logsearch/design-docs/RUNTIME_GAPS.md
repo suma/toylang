@@ -523,14 +523,27 @@ of an owned value.」 **この 1 行のために関数全体が 1 段深い。**
 を持ち出すフラグ (`scanning` / `placed` / …) はこれで書ける。**`ok` の
 梯子の大半は残る** — 梯子の理由は所有値を分岐の中から出せないこと
 で、ループの外の所有束縛を `break s` で出すのも同じ E0014 になる
-(MOVE-CONDITIONAL)。POC はまだ書き換えていない。
+(MOVE-CONDITIONAL)。
+
+**2026-09-25 に POC を移した。** 「見つかったか」と「どこで」を 2 つの
+`var` で運んでいたループ 13 本を `val x = loop { .. break v }` にした
+(`main.t` の `parent_of` / `label_value`、`archive.t` の `intern` /
+`push_pair` / 名前の突き合わせ、`http.t` の区切り探し 5 本、`compact.t`
+の `taken`、`lsz.t` の varint 判定、`query.t` の集計)。「無ければ終端」
+の探索は `if i >= end || b.get(i) == c { break i }` の 1 行になる。
+**移さなかったもの**: 値を運ばず止めるだけのフラグ (`placed` で抜ける
+再ハッシュ、`more` の varint 書き出し、`scanning` のラベル走査) —
+`break` は前からあったので、今回の穴とは別の話。`mount.t` の最小値
+探しのように最後まで回るループも対象外。**出力は移行前と一致**
+(実ログ 12 セグメントがバイト一致、`scan` / `fields` / `query` /
+`verify` の 488 行が一致、`archive` の所要時間も同じ)。
 
 ### 6. 小さな穴 (どれも回避できるが、書き方が 1 段遠くなる)
 
 | 無いもの | この POC での現れ方 |
 |---|---|
-| ~~struct literal の field shorthand `P { x, y }`~~ | 2026-09-25 に解消 (STRUCT-SUGAR-GAP) |
-| ~~`val P { x, y } = mk()` (struct の分割束縛)~~ | 2026-09-25 に解消 (STRUCT-SUGAR-GAP) |
+| ~~struct literal の field shorthand `P { x, y }`~~ | 2026-09-25 に解消 (STRUCT-SUGAR-GAP)。同日に `x: x` の 18 か所を省略形にした |
+| ~~`val P { x, y } = mk()` (struct の分割束縛)~~ | 2026-09-25 に解消 (STRUCT-SUGAR-GAP)。書き換えたのは `archive.t` の `val Line { start, len } = ln` の 1 か所 — 連続したフィールド読みの残りは改名つき (`val reqs = st.requests`) か、`soa Vec` の**列** (`rows.line_at` は struct のフィールドではない) だった |
 | `Default` / 構造的な `==` (derive 相当) | ゼロ初期化コンストラクタ 6 本が全フィールド手書き (`src/segfile.t:78 SegHead::empty()` は **23 フィールド**)。`tests/catalog.t:33` は `!=` を 10 本並べて等値を書いている |
 | 名前つき引数 (todo は「導入予定も無い」) | 6 引数以上の関数が **17 本**、最大 12 (`src/server.t:1681`)。`readable, writable, gone` の bool 3 連は順番を入れ替えても型が通る |
 | compiled レーンで使えるコレクションリテラル | `dict{...}` は interpreter 限定、`Vec` リテラルは無い → 表は `push` の列 |

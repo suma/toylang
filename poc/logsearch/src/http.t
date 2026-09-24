@@ -214,35 +214,23 @@ pub fn parse_request(b: Span<u8>, len: u64) -> Request {
     # 2. The request line: METHOD SP target SP VERSION
     val rl_nl = eol(b, 0u64, head_end)
     val rl_len = line_len(b, 0u64, rl_nl)
-    var sp1: u64 = 0u64
-    var found1 = false
     var i: u64 = 0u64
-    while i < rl_len && !found1 {
-        val c: u8 = b.get(i)
-        if c == ' ' {
-            sp1 = i
-            found1 = true
+    val sp1 = loop {
+        if i >= rl_len {
+            r.status = 400u64
+            return r
         }
+        if b.get(i) == ' ' { break i }
         i = i + 1u64
     }
-    if !found1 {
-        r.status = 400u64
-        return r
-    }
-    var sp2: u64 = 0u64
-    var found2 = false
     var j = sp1 + 1u64
-    while j < rl_len && !found2 {
-        val c: u8 = b.get(j)
-        if c == ' ' {
-            sp2 = j
-            found2 = true
+    val sp2 = loop {
+        if j >= rl_len {
+            r.status = 400u64
+            return r
         }
+        if b.get(j) == ' ' { break j }
         j = j + 1u64
-    }
-    if !found2 {
-        r.status = 400u64
-        return r
     }
 
     if eq_at(b, 0u64, sp1, "GET") {
@@ -269,20 +257,15 @@ pub fn parse_request(b: Span<u8>, len: u64) -> Request {
         r.status = 400u64
         return r
     }
-    var q_mark = t_at + t_len
+    # The `?`, or the end of the target when there is none.
     var k = t_at
-    var found_q = false
-    while k < t_at + t_len && !found_q {
-        val c: u8 = b.get(k)
-        if c == '?' {
-            q_mark = k
-            found_q = true
-        }
+    val q_mark = loop {
+        if k >= t_at + t_len || b.get(k) == '?' { break k }
         k = k + 1u64
     }
     r.path_at = t_at
     r.path_len = q_mark - t_at
-    if found_q {
+    if q_mark < t_at + t_len {
         r.query_at = q_mark + 1u64
         r.query_len = (t_at + t_len) - (q_mark + 1u64)
     }
@@ -436,29 +419,19 @@ pub fn query_param(b: Span<u8>, at: u64, len: u64, name: str,
     var start: u64 = 0u64
     while start <= len {
         # One `key=value` run, ending at `&` or the end.
-        var stop = len
         var i = start
-        var found = false
-        while i < len && !found {
-            val c: u8 = b.get(at + i)
-            if c == '&' {
-                stop = i
-                found = true
-            }
+        val stop = loop {
+            if i >= len || b.get(at + i) == '&' { break i }
             i = i + 1u64
         }
         if stop > start {
-            var eq = stop
-            var has_eq = false
+            # The `=`, or `stop` when the run has none.
             var j = start
-            while j < stop && !has_eq {
-                val c: u8 = b.get(at + j)
-                if c == '=' {
-                    eq = j
-                    has_eq = true
-                }
+            val eq = loop {
+                if j >= stop || b.get(at + j) == '=' { break j }
                 j = j + 1u64
             }
+            val has_eq = eq < stop
             val key_len = eq - start
             if key_len == wn {
                 if eq_at(b, at + start, key_len, name) {

@@ -34,8 +34,12 @@ is where most of the gaps in the language were found.
 ### Core Language Constructs
 - **Functions** with explicit return types: `fn fibonacci(n: u64) -> u64`
 - **Variables**: Immutable (`val`) and mutable (`var`) declarations
-- **Top-level constants**: `const PI: f64 = 3.14159f64` evaluated once at startup
-- **Control Flow**: `if/else/elif`, `for` loops with `break/continue`, `while` loops
+- **Top-level constants**: `const PI: f64 = 3.14159f64` evaluated once at startup;
+  the annotation types the initializer, so `const N: u64 = 3` and
+  `const SEP: u8 = ','` need no suffix
+- **Control Flow**: `if/else/elif`, `for` loops with `break/continue`, `while` loops,
+  and `loop`, which **is a value** when its `break`s carry one
+  (`val k = loop { .. break i }`, `break @outer v` from an inner loop)
 - **Types**: `u64` / `i64` / `f64` / `f32` / `bool` / `str` / `ptr` / `usize`,
   narrow integers (`u8`–`u32`, `i8`–`i32`), `char`, 128-bit SIMD vectors
   (`f64x2` / `f32x4` / `i32x4` / `i64x2` / `u8x16`), tuples, fixed arrays,
@@ -46,7 +50,9 @@ is where most of the gaps in the language were found.
   inference, and `[0u8; 64]` to repeat a literal
 - **Tuples**: `val (a, b) = (1u64, 2u64)` with destructuring (including nested patterns)
 - **Dictionary Type**: `dict{key1: value1, key2: value2}` with Object-keyable types
-- **Structures**: `struct Point { x: i64, y: i64 }` with method implementations
+- **Structures**: `struct Point { x: i64, y: i64 }` with method implementations,
+  the field shorthand `Point { x, y }`, and destructuring
+  `val Point { x, y: b, .. } = p`
 - **String literals**: `\"` for a quote, `{expr}` interpolation (`{{` for a
   brace), and raw literals `r"..."` / `r#"..."#` with no escapes and no
   interpolation — JSON and HTML are written as themselves. Any literal may
@@ -56,7 +62,8 @@ is where most of the gaps in the language were found.
   **discriminants** on unit variants with `as` to an integer (`Apache = 10`,
   `k as u32`), literal / range / or / `@` / nested patterns, per-arm `if`
   guards, a `match` over **any integer width** with char literals narrowed to
-  it (`match b: u8 { '0'..':' => .. }`), and **named constants** as patterns
+  it (`match b: u8 { '0'..':' => .. }`), **named constants** as patterns, and
+  string-literal arms on a `String` as well as a `str`
 - **Generics with bounds**: `fn id<T>(x: T) -> T` and `fn run<A: Allocator>(a: A)`
 - **Design by Contract**: `requires` (preconditions) and `ensures` (postconditions) on functions and methods, with `result` for the return value. Runtime gating via `INTERPRETER_CONTRACTS=all|pre|post|off`
 - **Termination primitives**: `panic("msg")` and `assert(cond, "msg")` for explicit failure
@@ -276,14 +283,22 @@ struct Point {
 
 impl Point {
     fn new(x: i64, y: i64) -> Point {
-        Point { x: x, y: y }
+        Point { x, y }                  # shorthand for `Point { x: x, y: y }`
     }
-    
+
     fn distance(&self) -> i64 {
         self.x * self.x + self.y * self.y
     }
 }
+
+fn swap(p: Point) -> Point {
+    val Point { x, y } = p              # destructure; `..` would skip fields
+    Point { x: y, y: x }
+}
 ```
+
+A destructuring is checked like a `match` arm: the struct's name must be
+the value's, and every field must be named unless the pattern ends in `..`.
 
 ### Enums and Pattern Matching
 ```rust
@@ -349,6 +364,19 @@ fn classify(b: u8) -> u64 {
         SPACE => 0u64,        # a const name compares against its value
         '0'..':' => 1u64,     # a char literal narrows to the `u8` scrutinee
         _ => 2u64,
+    }
+}
+```
+
+A `String` matches string literals the way a `str` does, without
+allocating for the comparison:
+
+```rust
+fn verb(method: &String) -> u64 {
+    match method {
+        "GET" => 1u64,
+        "PUT" | "POST" => 2u64,
+        _ => 0u64,
     }
 }
 ```
@@ -503,14 +531,44 @@ fn main() -> u64 {
 }
 ```
 
+### Loops as Values
+```rust
+fn first_square_over(n: u64) -> u64 {
+    var i = 0u64
+    loop {                              # the loop's value is the function's
+        i = i + 1u64
+        if i * i > n { break i }
+    }
+}
+
+fn find(grid: u64) -> u64 {
+    var a = 1u64
+    val hit = @outer: loop {
+        if a > grid { break @outer 0u64 }
+        var b = 1u64
+        while b <= grid {
+            if a * b == 12u64 { break @outer a * 10u64 + b }  # out of the `while`
+            b = b + 1u64
+        }
+        a = a + 1u64
+    }
+    hit
+}
+```
+
+Only a `loop` has a value (a `while` or `for` can end without a `break`),
+and once one `break` out of it carries a value, every one must. The value
+is the expression on the `break`'s own line.
+
 ### Top-level Constants
 ```rust
 # `const` declarations sit at file scope and are evaluated once at startup.
-# The type annotation is mandatory; initializers may reference earlier
-# consts but not later ones (no forward references).
+# The type annotation is mandatory and types the initializer; initializers
+# may reference earlier consts but not later ones (no forward references).
 const PI: f64 = 3.14159f64
 const TWO_PI: f64 = PI + PI
-const MAX_RETRIES: u64 = 3u64
+const MAX_RETRIES: u64 = 3
+const SEP: u8 = ','
 
 fn area(r: f64) -> f64 { PI * r * r }
 ```

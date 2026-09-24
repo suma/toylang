@@ -124,7 +124,9 @@ TIME (日付のパースと整形) はすべてこの上に載る。**境界を�
    **`match` の腕でも同じ** (`match b { '0'..':' => .. }`、
    CHAR-LITERAL-MATCH) で、文字の表を網羅性検査の内側で書ける。
    文字列リテラルは `\"` と raw 文字列 (`r#"..."#`) を持つ
-   (STR-ESCAPE-HATCH)。
+   (STR-ESCAPE-HATCH)。2026-09-24 から **`String` も文字列リテラルの
+   腕で match できる** (MATCH-STRING-LITERAL、`eq_str` の guard に
+   書き換えるので確保なし)。
 5. **受け入れは 4 レーン一致**。文字列は tree-walker だけ Rust の
    `String` で持っているので、**この分野は 3 レーンでは足りない**
    (実測 4 がまさにそれ)。

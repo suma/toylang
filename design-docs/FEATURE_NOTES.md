@@ -29,7 +29,7 @@
 
 - **クロージャ / ラムダ**: `fn(params) -> R { body }` 形式の anonymous function literal、関数型は `fn (T1, T2) -> R` (推奨、`fn` prefix で意図を明示) または `(T1, T2) -> R` (bare 形、後方互換) を parameter / return / val 注釈 / **struct field 型** 位置に書ける。bind は `val f = fn(x: i64) -> i64 { x + 1i64 }` (closure literal から型推論)、または `val f: fn (i64) -> i64 = fn(x: i64) -> i64 { x + 1i64 }` (明示注釈)。struct field に格納する場合は `struct S { f: fn (i64) -> i64 }`、call は `s.f(args)` (field-call dispatch)。free var capture は creation time の snapshot (primitive は値コピー、compound は Rc 共有)。**backend coverage**: interpreter は full support (literals + captures + HOF args + return + nest)、JIT は silent fallback、**AOT compiler は env-based ABI 統一 (Phase 6b) で direct call + HOF 引数の両方で capturing/non-capturing 両対応** — 残: closure を return / field 格納、narrow int capture (Phase 6c)。captures は 8-byte scalar (i64/u64/f64/bool) のみ。closure value = env_ptr (`[fn_ptr, cap0, cap1, ...]` を heap allocate)、callee body の第 1 param は env: U64。詳細は [`docs/language.md` → Closures](docs/language.md)。
 
-## 文字列リテラル・パターン・enum・所有権 (2026-09-23〜24)
+## 文字列リテラル・パターン・enum・所有権・ループの値 (2026-09-23〜25)
 
 `poc/logsearch` の文法の空白 (RUNTIME_GAPS.md G19) から来た一連の追加。
 どれも**型検査器 (と字句解析) の書き換えで既存の形に落とす**方針で、
@@ -88,3 +88,39 @@
   引数を drop させる案 (Rust と同じ) は、フィールドの値渡し・曖昧な
   シグネチャ・生ポインタへの書き込みのそれぞれが二重 drop の経路に
   なるので採らなかった。
+- **const 初期化子の型** (CONST-UNSUFFIXED-INIT): `interpreter/src/lib.rs`
+  の const 登録ループが初期化子を宣言型のヒントつきで検査し、
+  `coerce_number_expr` で寄せる。以前は `Number` を素通しにしていたので
+  `const J: u64 = 4` が実行時に `Expr::Number` で落ちていた。
+- **const 表の隣の fold** (バグ修正): fold の lowering は未評価の const を
+  scalar `0` で仮置きする。const 表 (`[u32; N]`) まで仮置きすると
+  `K[i]` が lower できず、pass 1 が黙って打ち切られ、計算式の const が
+  compiled レーンに畳まれずに届いていた。値が確定済みの const
+  (任意幅の literal と、その配列) は仮置きしない (`is_known_value`)。
+- **`String` のリテラル腕** (MATCH-STRING-LITERAL): `rewrite_string_literal_arms`
+  が `"a" =>` を `_ if <scrutinee>.eq_str("a")` に書き換える (const
+  パターンと同じ `pattern_rewrites` の経路)。`to_str` は写しを作るので
+  使わない。guard が scrutinee を読み直すので、scrutinee は名前か
+  フィールドパスに限る。同時に compiled レーンの `classify_match_scrutinee`
+  が struct / tuple **フィールド**を scrutinee にできるようにした
+  (`r.method` が要る)。
+- **struct の省略形と分割束縛** (STRUCT-SUGAR-GAP): 省略形はフィールド
+  解析 1 か所 (`brace_opens_field_list` も `name ,` / `name }` を受ける)。
+  分割束縛は tuple の分割と同じ `DestructPat` に `Struct` を足し、
+  「値を 1 回束縛 → 1 腕の `match` で検査 → フィールド読み」を出す。
+  検査の `match` が型名・フィールドの過不足を match の腕と同じ文言で
+  報告する。`val 名前 {` は通常の束縛では現れない並びなので曖昧さは無い。
+- **ループの値** (BREAK-WITH-VALUE): `loop` は文でも式でも、本体を
+  解析し終えた時点で値つきの `break` があれば値のループになる
+  (`LoopFrame` が `break` を数える)。値のループは
+  `var __loop_value_N = Option::None` + `while true` + 取り出しの `match`
+  に desugar し、`break v` は `__loop_value_N = Option::Some(v)` を
+  prelude に積んで `break` する。var の型は型検査器が決める
+  (`settle_loop_value`): 最初に**型を名指す**値 (`Option::None` は
+  名指さない) の型で注釈 `Option<T>` を stmt pool に書き戻し、宣言した
+  スコープの束縛を `update_var_type` で更新する (`break` は内側の
+  スコープにあるので `set_var` では外に届かない)。注釈を書き戻すのは
+  compiled レーンが `Option` の layout をそこから取るため。
+  **パーサは改行トークンを見ない** (`with_format_normalization`) ので、
+  値は `break` と同じ行の式に限る — でないと `break` の次の行の文
+  (到達しないコード) が値になる。

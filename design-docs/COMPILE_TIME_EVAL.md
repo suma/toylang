@@ -468,6 +468,11 @@ C2 の定数畳み込みは CTFE と独立に効くので先に入れられる�
      `stub_references` (reachability と同じ呼び出しグラフ歩き) で
      **強制位置は E0017、任意位置は fold を skip** にして、
      「stub 値がそのまま答えになる」誤コンパイルを防ぐ。
+     **値が確定済みの const は位置に関係なく stub しない** (任意幅の
+     literal とその配列、`is_known_value`、2026-09-24)。以前は const 表
+     (`const K: [u32; N]`) まで scalar の `0u64` で stub していたので、
+     本体の `K[i]` が lower できずに下の「静かに skip」に落ち、計算式の
+     const が compiled レーンに畳まれないまま届いていた。
    - **step budget を VM に追加** (`charge_back_edge`、後退ジャンプ
      のみカウント)。非停止の初期化子は 100 万 back-edge で
      `step budget exceeded (N loop iterations)` の E0017。

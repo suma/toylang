@@ -30,7 +30,7 @@ import extract
 import record
 import segfile
 
-pub fn frame_raw_bytes() -> u64 { 262144u64 }
+pub const FRAME_RAW_BYTES: u64 = 262144u64
 
 # How much raw log one segment holds before it is closed.
 #
@@ -40,14 +40,14 @@ pub fn frame_raw_bytes() -> u64 { 262144u64 }
 # number is now a trade -- bigger segments mean fewer files and a
 # longer compression context, at the cost of the arena a scan holds
 # while it walks one.
-pub fn segment_target_bytes() -> u64 { 8388608u64 }
+pub const SEGMENT_TARGET_BYTES: u64 = 8388608u64
 
 # The term table starts here and doubles. A segment of this corpus
 # holds about twenty thousand distinct terms.
-pub fn term_slot_start() -> u64 { 4096u64 }
+pub const TERM_SLOT_START: u64 = 4096u64
 
 # The id that means "this record had no such field".
-pub fn term_none() -> u64 { 18446744073709551615u64 }
+pub const TERM_NONE: u64 = 18446744073709551615u64
 
 # splitmix64's finalizer.
 #
@@ -209,12 +209,12 @@ pub struct ArchiveWriter {
 
 impl ArchiveWriter {
     pub fn new() -> Self {
-        val a = ByteWriter::with_capacity(segment_target_bytes() + frame_raw_bytes())
+        val a = ByteWriter::with_capacity(SEGMENT_TARGET_BYTES + FRAME_RAW_BYTES)
         val r = ByteWriter::with_capacity(1048576u64)
         val zz = Lsz::new()
-        var slots: Vec<u64> = Vec::with_capacity(term_slot_start())
+        var slots: Vec<u64> = Vec::with_capacity(TERM_SLOT_START)
         var si: u64 = 0u64
-        while si < term_slot_start() {
+        while si < TERM_SLOT_START {
             slots.push(0u64)
             si = si + 1u64
         }
@@ -225,17 +225,17 @@ impl ArchiveWriter {
         val tlast: Vec<i64> = Vec::new()
         val pterm: Vec<u32> = Vec::new()
         val pord: Vec<u32> = Vec::new()
-        var lslots: Vec<u64> = Vec::with_capacity(term_slot_start())
+        var lslots: Vec<u64> = Vec::with_capacity(TERM_SLOT_START)
         var li: u64 = 0u64
-        while li < term_slot_start() {
+        while li < TERM_SLOT_START {
             lslots.push(0u64)
             li = li + 1u64
         }
         val lkeys: Vec<u64> = Vec::new()
         val lcounts: Vec<u64> = Vec::new()
-        var sslots: Vec<u64> = Vec::with_capacity(term_slot_start())
+        var sslots: Vec<u64> = Vec::with_capacity(TERM_SLOT_START)
         var ssi: u64 = 0u64
-        while ssi < term_slot_start() {
+        while ssi < TERM_SLOT_START {
             sslots.push(0u64)
             ssi = ssi + 1u64
         }
@@ -262,7 +262,7 @@ impl ArchiveWriter {
 
     pub fn count(&self) -> u64 { self.count }
     pub fn arena_bytes(&self) -> u64 { self.arena.len() }
-    pub fn is_full(&self) -> bool { self.arena.len() >= segment_target_bytes() }
+    pub fn is_full(&self) -> bool { self.arena.len() >= SEGMENT_TARGET_BYTES }
     pub fn is_empty(&self) -> bool { self.count == 0u64 }
     pub fn ts_min(&self) -> i64 { self.ts_min }
     pub fn ts_max(&self) -> i64 { self.ts_max }
@@ -312,7 +312,7 @@ impl ArchiveWriter {
     # Record that this record carries `key = <the bytes at at..len>`.
     # Record `key = <bytes>` for this record, and answer the term's
     # id so the caller can link it to the record's other fields.
-    # `term_none()` means the field was absent.
+    # `TERM_NONE` means the field was absent.
     # Find the slot for a term with this hash, making one if the hash
     # is new.
     #
@@ -421,7 +421,7 @@ impl ArchiveWriter {
     # A term for a key this program knows by name (`status`, `host`).
     fn emit(&mut self, w: Span<u8>, key: str, at: u64, len: u64,
             has_ts: bool, ts: i64) -> u64 {
-        if len == 0u64 { return term_none() }
+        if len == 0u64 { return TERM_NONE }
         val h = extract::hash_term(key, w, at, len)
         val id = self.intern(h, has_ts, ts)
         if self.needs_name() {
@@ -437,7 +437,7 @@ impl ArchiveWriter {
     # syslog framing's `host` and a `host=` label become two terms.
     fn emit_labelled(&mut self, w: Span<u8>, key_at: u64, key_len: u64,
                      at: u64, len: u64, has_ts: bool, ts: i64) -> u64 {
-        if len == 0u64 || key_len == 0u64 { return term_none() }
+        if len == 0u64 || key_len == 0u64 { return TERM_NONE }
         val h = extract::hash_term_span(w, key_at, key_len, at, len)
         val id = self.intern(h, has_ts, ts)
         if self.needs_name() {
@@ -450,8 +450,8 @@ impl ArchiveWriter {
 
     # One co-occurrence: `from` and `to` were on the same record.
     fn link(&mut self, from_id: u64, to_id: u64) {
-        if from_id == term_none() { return }
-        if to_id == term_none() { return }
+        if from_id == TERM_NONE { return }
+        if to_id == TERM_NONE { return }
         val key = (from_id << 32u64) | to_id
         val mask = self.link_slots.size() - 1u64
         var slot = mix64(key) & mask
@@ -734,8 +734,8 @@ impl ArchiveWriter {
 
     fn emit_terms(&mut self, w: Span<u8>, ln: Line, rec: &ParsedLine) {
         if rec.labels_len() > 0u64 { self.emit_labels(w, rec) }
-        var host_id = term_none()
-        var tag_id = term_none()
+        var host_id = TERM_NONE
+        var tag_id = TERM_NONE
         if rec.has_host() {
             host_id = self.emit(w, "host", rec.host_start(), rec.host_len(), rec.has_ts, rec.ts)
         }
@@ -836,14 +836,14 @@ impl ArchiveWriter {
                     base_off: u64) -> u64 {
         val total = self.arena.len()
         val w = self.arena.span()
-        var blk = ByteWriter::with_capacity(frame_raw_bytes() + 65536u64)
+        var blk = ByteWriter::with_capacity(FRAME_RAW_BYTES + 65536u64)
         var written: u64 = 0u64
         var ok = true
         match w {
             Option::Some(arena) => {
                 var at: u64 = 0u64
                 while at < total && ok {
-                    var raw = frame_raw_bytes()
+                    var raw = FRAME_RAW_BYTES
                     if at + raw > total { raw = total - at }
                     val sum = crc.of(arena, at, raw)
 
@@ -928,12 +928,12 @@ impl ArchiveWriter {
     # where the handle lives, so the file is closed by its `Drop` the
     # moment this returns.
     fn write_seg(&mut self, f: &File, segid: u64, crc: &Crc32) -> u64 {
-        var hdr = ByteWriter::with_capacity(segfile::data_at() + 64u64)
+        var hdr = ByteWriter::with_capacity(segfile::DATA_AT + 64u64)
         var ok = true
 
         # 1. Reserve the header and the directory.
         var z: u64 = 0u64
-        while z < segfile::data_at() { hdr.put_u8(0u8)  z = z + 1u64 }
+        while z < segfile::DATA_AT { hdr.put_u8(0u8)  z = z + 1u64 }
         val zw = hdr.span()
         match zw {
             Option::Some(zb) => {
@@ -945,7 +945,7 @@ impl ArchiveWriter {
 
         # 2. The frames.
         var ftab = ByteWriter::with_capacity(65536u64)
-        val frames_off = segfile::data_at()
+        val frames_off = segfile::DATA_AT
         val frames_len = self.write_frames(f, &mut ftab, crc, frames_off)
         val n_frames = ftab.len() / 20u64
         if frames_len == 0u64 && self.arena.len() > 0u64 { return 0u64 }
@@ -1400,13 +1400,13 @@ impl ArchiveWriter {
         # belong without disturbing the cursor.
         hdr.clear()
         hdr.put_magic("LSD3")
-        hdr.put_u32(segfile::seg_version())
+        hdr.put_u32(segfile::SEG_VERSION)
         hdr.put_u64(segid)
         hdr.put_u64(self.ts_min as u64)
         hdr.put_u64(self.ts_max as u64)
         hdr.put_u64(self.count)
         hdr.put_u32(n_frames)
-        hdr.put_u32(frame_raw_bytes())
+        hdr.put_u32(FRAME_RAW_BYTES)
         hdr.put_u64(self.arena.len())
         hdr.put_u32(0u64)                  # kind: 0 = segment
         val hcrc_at = hdr.len()
@@ -1429,14 +1429,14 @@ impl ArchiveWriter {
         put_dir(&mut hdr, segfile::kind_links(), links_off, links_len, links_crc)
         put_dir(&mut hdr, segfile::kind_objects(), objs_off, objs_len, objs_crc)
         put_dir(&mut hdr, segfile::kind_streams(), strs_off, strs_len, strs_crc)
-        while hdr.len() < segfile::data_at() { hdr.put_u8(0u8) }
+        while hdr.len() < segfile::DATA_AT { hdr.put_u8(0u8) }
 
         val hw2 = hdr.span()
         match hw2 {
             Option::Some(hb) => {
-                val put = f.write_at(0u64, hb.slice(0u64, segfile::data_at()))
+                val put = f.write_at(0u64, hb.slice(0u64, segfile::DATA_AT))
                 match put {
-                    Result::Ok(n) => { if n != segfile::data_at() { ok = false } }
+                    Result::Ok(n) => { if n != segfile::DATA_AT { ok = false } }
                     Result::Err(e) => { ok = false }
                 }
             }
@@ -1574,9 +1574,9 @@ pub fn term_spans(traw: Span<u8>, raw_len: u64) -> Vec<u64> {
     spans
 }
 
-# The id of a term, or `term_none()`.
+# The id of a term, or `TERM_NONE`.
 pub fn term_id_of(traw: Span<u8>, raw_len: u64, want: Span<u8>, want_len: u64) -> u64 {
-    var out = term_none()
+    var out = TERM_NONE
     if raw_len < 4u64 { return out }
     var rd = ByteReader::new(raw_len)
     val n = rd.take_u32(traw)
@@ -1584,7 +1584,7 @@ pub fn term_id_of(traw: Span<u8>, raw_len: u64, want: Span<u8>, want_len: u64) -
     while i < n {
         val len = rd.take_varint(traw)
         val at = rd.position()
-        if len == want_len && out == term_none() {
+        if len == want_len && out == TERM_NONE {
             var same = true
             var k: u64 = 0u64
             while k < len && same {
@@ -2111,9 +2111,9 @@ pub fn verify(base: str, crc: &Crc32) -> Result<VerifyReport, IoError> {
     report.seg_bytes = fs::file_size(path.to_str())?
 
     val f = File::open(path.to_str())?
-    var head = ByteWriter::with_capacity(segfile::data_at() + 64u64)
-    var raw = ByteWriter::with_capacity(frame_raw_bytes() + 65536u64)
-    var arena = ByteWriter::with_capacity(segment_target_bytes() + 65536u64)
+    var head = ByteWriter::with_capacity(segfile::DATA_AT + 64u64)
+    var raw = ByteWriter::with_capacity(FRAME_RAW_BYTES + 65536u64)
+    var arena = ByteWriter::with_capacity(SEGMENT_TARGET_BYTES + 65536u64)
     var sec = ByteWriter::with_capacity(1048576u64)
 
     val h = segfile::head_of(&f, &mut head)

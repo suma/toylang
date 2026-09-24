@@ -158,7 +158,7 @@ test "the pinned segment reads back with every section in place" {
             assert(h.has_objects(), "object section")
             assert(h.has_streams(), "stream section")
             # 節は header の後ろに在り、互いに重ならない。
-            assert(h.frames_off >= segfile::data_at(), "frames start after the directory")
+            assert(h.frames_off >= segfile::DATA_AT, "frames start after the directory")
             assert(h.recs_off >= h.frames_off + h.frames_len, "records follow the frames")
             assert(h.terms_off >= h.recs_off + h.recs_len, "terms follow the records")
             assert(h.strs_off >= h.terms_off + h.terms_len, "streams follow the terms")
@@ -355,7 +355,7 @@ test "a truncated segment is not a segment" {
     val seg = build_segment("build/segment-short", &body)
     var bytes = ByteWriter::with_capacity(65536u64)
     slurp_file(&seg, &mut bytes)
-    bytes.truncate(segfile::head_bytes() / 2u64)
+    bytes.truncate(segfile::HEAD_BYTES / 2u64)
     val short = String::from_str("build/segment-short-cut.seg")
     val wrote = io::write_file_bytes(short.to_str(), span_of(&bytes))
     match wrote {

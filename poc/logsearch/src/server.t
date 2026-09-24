@@ -46,11 +46,8 @@ import store
 import ui
 
 # Tokens are names the poller stores and hands back without looking
-# inside. Functions rather than `const`, because a module's top-level
-# `const` is not visible to the module's own functions in the
-# compiled lanes (todo.md MODULE-CONST) -- the same reason
-# `core/std/poll.t` spells its interests as `pub fn`.
-fn listener_token() -> u64 { 1u64 }
+# inside.
+const LISTENER_TOKEN: u64 = 1u64
 
 # One token per slot, so an event names its connection without a
 # search. Slot 0 is token 2; the listener keeps 1.
@@ -70,31 +67,31 @@ fn token_slot(tok: u64) -> u64 { tok - 2u64 }
 # server was not going to accept anyway. A *response* bigger than its
 # slot is different -- a query legitimately answers with megabytes --
 # and that is what the shared `big` buffer below is for.
-pub fn max_conns() -> u64 { 128u64 }
-pub fn recv_slot_bytes() -> u64 { 65536u64 }
-pub fn send_slot_bytes() -> u64 { 262144u64 }
+pub const MAX_CONNS: u64 = 128u64
+pub const RECV_SLOT_BYTES: u64 = 65536u64
+pub const SEND_SLOT_BYTES: u64 = 262144u64
 
 # One `wait` is this long. It bounds how quickly a timeout is noticed,
 # not how quickly a ready socket is served.
-fn tick_ms() -> i64 { 250i64 }
+const TICK_MS: i64 = 250i64
 
 # HTTP_API.md section 4. The receive buffer is the request limit
 # rather than 64 KiB: `http.t` refuses anything larger, so this is the
 # most that can ever be outstanding.
-pub fn recv_bytes() -> u64 { http::max_request_bytes() }
-pub fn send_bytes() -> u64 { 262144u64 }
-pub fn header_timeout_ns() -> u64 { 10000000000u64 }
-pub fn idle_timeout_ns() -> u64 { 60000000000u64 }
+pub fn recv_bytes() -> u64 { http::MAX_REQUEST_BYTES }
+pub const SEND_BYTES: u64 = 262144u64
+pub const HEADER_TIMEOUT_NS: u64 = 10000000000u64
+pub const IDLE_TIMEOUT_NS: u64 = 60000000000u64
 
 # One record cannot be longer than a connection's receive buffer
 # (HTTP_API.md section 4). A line past this is rejected rather than
 # truncated: half a log line is not a log line.
-pub fn max_record_bytes() -> u64 { 65536u64 }
+pub const MAX_RECORD_BYTES: u64 = 65536u64
 
 # How long an active segment may sit before it is written out, even
 # if it never fills (DATA_MODEL.md section 4). A record that is only
 # in memory is a record that a crash loses.
-pub fn flush_after_ns() -> u64 { 60000000000u64 }
+pub const FLUSH_AFTER_NS: u64 = 60000000000u64
 
 # What the server has done since it started. Scalars only, so it can
 # be threaded through the loop as a `&mut`.
@@ -145,18 +142,18 @@ impl Stats {
 # and "done" -- and the loop has to tell them apart. `WouldBlock` is
 # the one that is easy to get wrong: it is the socket being a socket.
 
-pub fn io_again() -> i64 { 0i64 }
-pub fn io_closed() -> i64 { -1i64 }
-pub fn io_failed() -> i64 { -2i64 }
-pub fn io_full() -> i64 { -3i64 }
+pub const IO_AGAIN: i64 = 0i64
+pub const IO_CLOSED: i64 = -1i64
+pub const IO_FAILED: i64 = -2i64
+pub const IO_FULL: i64 = -3i64
 
 fn recv_some(conn: &TcpStream, buf: &mut ByteWriter, cap: u64) -> i64 {
     val have = buf.len()
-    if have >= cap { return io_full() }
+    if have >= cap { return IO_FULL }
     val want = cap - have
     buf.reserve(want)
     val room = buf.room()
-    var out = io_failed()
+    var out = IO_FAILED
     match room {
         Option::Some(all) => {
             val win = all.slice(have, want)
@@ -164,7 +161,7 @@ fn recv_some(conn: &TcpStream, buf: &mut ByteWriter, cap: u64) -> i64 {
             match got {
                 Result::Ok(n) => {
                     if n == 0u64 {
-                        out = io_closed()
+                        out = IO_CLOSED
                     } else {
                         buf.set_len(have + n)
                         out = n as i64
@@ -172,9 +169,9 @@ fn recv_some(conn: &TcpStream, buf: &mut ByteWriter, cap: u64) -> i64 {
                 }
                 Result::Err(e) => {
                     match e {
-                        NetError::WouldBlock => { out = io_again() }
-                        NetError::Interrupted => { out = io_again() }
-                        _ => { out = io_failed() }
+                        NetError::WouldBlock => { out = IO_AGAIN }
+                        NetError::Interrupted => { out = IO_AGAIN }
+                        _ => { out = IO_FAILED }
                     }
                 }
             }
@@ -188,7 +185,7 @@ fn send_some(conn: &TcpStream, buf: &ByteWriter, from: u64) -> i64 {
     val total = buf.len()
     if from >= total { return 0i64 }
     val win = buf.span()
-    var out = io_failed()
+    var out = IO_FAILED
     match win {
         Option::Some(all) => {
             val piece = all.slice(from, total - from)
@@ -197,9 +194,9 @@ fn send_some(conn: &TcpStream, buf: &ByteWriter, from: u64) -> i64 {
                 Result::Ok(n) => { out = n as i64 }
                 Result::Err(e) => {
                     match e {
-                        NetError::WouldBlock => { out = io_again() }
-                        NetError::Interrupted => { out = io_again() }
-                        _ => { out = io_failed() }
+                        NetError::WouldBlock => { out = IO_AGAIN }
+                        NetError::Interrupted => { out = IO_AGAIN }
+                        _ => { out = IO_FAILED }
                     }
                 }
             }
@@ -268,7 +265,7 @@ fn ingest_route(b: Span<u8>, r: &Request, st: &mut Stats,
         val nx = sc.next(body)
         match nx {
             Option::Some(l) => {
-                if l.len > max_record_bytes() {
+                if l.len > MAX_RECORD_BYTES {
                     bad = bad + 1u64
                 } elif l.len > 0u64 {
                     if w.is_full() && !stalled {
@@ -1223,8 +1220,8 @@ pub struct Conns {
     # One request that is parsed but not answered yet, because the
     # shared `big` buffer was busy. Retried on the next tick.
     pending: Vec<bool>,
-    inbox: ByteWriter,     # max_conns * recv_slot_bytes()
-    outbox: ByteWriter,    # max_conns * send_slot_bytes()
+    inbox: ByteWriter,     # max_conns * RECV_SLOT_BYTES
+    outbox: ByteWriter,    # max_conns * SEND_SLOT_BYTES
     # Which slot owns the shared oversize buffer, if any. The buffer
     # itself is a separate binding the caller holds: a field cannot be
     # handed to a function as `&mut` on the compiled lanes
@@ -1235,7 +1232,7 @@ pub struct Conns {
 
 impl Conns {
     pub fn new() -> Self {
-        val n = max_conns()
+        val n = MAX_CONNS
         var socks: Vec<Option<TcpStream>> = Vec::with_capacity(n)
         var wr: Vec<bool> = Vec::with_capacity(n)
         var lo: Vec<bool> = Vec::with_capacity(n)
@@ -1257,8 +1254,8 @@ impl Conns {
             pd.push(false)
             i = i + 1u64
         }
-        val ib = ByteWriter::with_capacity(n * recv_slot_bytes())
-        val ob = ByteWriter::with_capacity(n * send_slot_bytes())
+        val ib = ByteWriter::with_capacity(n * RECV_SLOT_BYTES)
+        val ob = ByteWriter::with_capacity(n * SEND_SLOT_BYTES)
         Conns {
             sock: socks, writing: wr, local: lo,
             in_len: il, out_len: ol, sent: sn, deadline: dl,
@@ -1268,7 +1265,7 @@ impl Conns {
     }
 
     pub fn live(&self) -> u64 { self.live }
-    pub fn is_full(&self) -> bool { self.live >= max_conns() }
+    pub fn is_full(&self) -> bool { self.live >= MAX_CONNS }
 
     # The descriptor a slot holds, or -1 when the slot is free.
     #
@@ -1289,7 +1286,7 @@ impl Conns {
     fn free_slot(&self) -> i64 {
         var i: u64 = 0u64
         var out: i64 = -1i64
-        while i < max_conns() && out < 0i64 {
+        while i < MAX_CONNS && out < 0i64 {
             if self.fd_of(i) < 0i32 { out = i as i64 }
             i = i + 1u64
         }
@@ -1342,7 +1339,7 @@ pub fn conn_open(c: &mut Conns, poller: &Poller, sock: TcpStream,
     c.out_len.set(slot, 0u64)
     c.sent.set(slot, 0u64)
     c.pending.set(slot, false)
-    c.deadline.set(slot, time::now_mono_ns() + header_timeout_ns())
+    c.deadline.set(slot, time::now_mono_ns() + HEADER_TIMEOUT_NS)
     c.live = c.live + 1u64
     got
 }
@@ -1381,14 +1378,14 @@ pub fn conn_close(c: &mut Conns, poller: &Poller, slot: u64, big: &mut ByteWrite
 # Read what is waiting into this slot's region. `false` means the
 # connection is finished (closed, failed, or over its limit).
 fn conn_read(c: &mut Conns, slot: u64, st: &mut Stats) -> bool {
-    val base = slot * recv_slot_bytes()
+    val base = slot * RECV_SLOT_BYTES
     val have: u64 = c.in_len.get(slot)
-    if have >= recv_slot_bytes() { return false }
+    if have >= RECV_SLOT_BYTES { return false }
     val room = c.inbox.room()
     var out = true
     match room {
         Option::Some(all) => {
-            val win = all.slice(base + have, recv_slot_bytes() - have)
+            val win = all.slice(base + have, RECV_SLOT_BYTES - have)
             # Borrowed, not taken: `read` is `&self`, and the table
             # goes on owning the handle.
             val held: &Option<TcpStream> = c.sock.borrow(slot)
@@ -1425,14 +1422,14 @@ fn conn_read(c: &mut Conns, slot: u64, st: &mut Stats) -> bool {
 # shared buffer when it does not fit.
 fn conn_hold_response(c: &mut Conns, slot: u64, big: &ByteWriter) {
     val n = big.len()
-    if n <= send_slot_bytes() {
+    if n <= SEND_SLOT_BYTES {
         val src = big.span()
         val dst = c.outbox.room()
         match src {
             Option::Some(srcw) => {
                 match dst {
                     Option::Some(dstw) => {
-                        val base = slot * send_slot_bytes()
+                        val base = slot * SEND_SLOT_BYTES
                         val win = dstw.slice(base, n)
                         win.copy_from(srcw)
                     }
@@ -1464,7 +1461,7 @@ fn conn_route(c: &mut Conns, slot: u64, poller: &Poller, spec: str,
         c.pending.set(slot, true)
         return true
     }
-    val base = slot * recv_slot_bytes()
+    val base = slot * RECV_SLOT_BYTES
     val room = c.inbox.room()
     var out = true
     match room {
@@ -1486,8 +1483,8 @@ fn conn_route(c: &mut Conns, slot: u64, poller: &Poller, spec: str,
                     Result::Ok(u) => { }
                     Result::Err(e) => { out = false }
                 }
-                c.deadline.set(slot, time::now_mono_ns() + idle_timeout_ns())
-            } elif have >= recv_slot_bytes() {
+                c.deadline.set(slot, time::now_mono_ns() + IDLE_TIMEOUT_NS)
+            } elif have >= RECV_SLOT_BYTES {
                 # The slot filled without a request ending in it.
                 out = false
             } else {
@@ -1510,7 +1507,7 @@ fn conn_write(c: &mut Conns, slot: u64, poller: &Poller, st: &mut Stats,
     var window = big.span()
     if !from_big { window = c.outbox.room() }
     var base = 0u64
-    if !from_big { base = slot * send_slot_bytes() }
+    if !from_big { base = slot * SEND_SLOT_BYTES }
     var out = true
     match window {
         Option::Some(all) => {
@@ -1551,7 +1548,7 @@ fn conn_sent_all(c: &mut Conns, slot: u64, poller: &Poller,
         big.clear()
         c.big_owner = -1i64
     } else {
-        val base = slot * send_slot_bytes()
+        val base = slot * SEND_SLOT_BYTES
         val n: u64 = c.out_len.get(slot)
         val room = c.outbox.room()
         match room {
@@ -1573,7 +1570,7 @@ fn conn_sent_all(c: &mut Conns, slot: u64, poller: &Poller,
         Result::Ok(u) => { }
         Result::Err(e) => { return false }
     }
-    c.deadline.set(slot, time::now_mono_ns() + idle_timeout_ns())
+    c.deadline.set(slot, time::now_mono_ns() + IDLE_TIMEOUT_NS)
     true
 }
 
@@ -1587,7 +1584,7 @@ fn sweep_pending(c: &mut Conns, poller: &Poller, spec: str, st: &mut Stats,
                  big: &mut ByteWriter) {
     if c.big_owner >= 0i64 { return }
     var i: u64 = 0u64
-    while i < max_conns() {
+    while i < MAX_CONNS {
         val waiting: bool = c.pending.get(i)
         if c.fd_of(i) >= 0i32 && waiting {
             if !conn_route(c, i, poller, spec, st, w, ms, gens, big) {
@@ -1603,7 +1600,7 @@ fn sweep_pending(c: &mut Conns, poller: &Poller, spec: str, st: &mut Stats,
 fn sweep_deadlines(c: &mut Conns, poller: &Poller, big: &mut ByteWriter) {
     val now = time::now_mono_ns()
     var i: u64 = 0u64
-    while i < max_conns() {
+    while i < MAX_CONNS {
         if c.fd_of(i) >= 0i32 {
             val due: u64 = c.deadline.get(i)
             if now > due { conn_close(c, poller, i, big) }
@@ -1641,7 +1638,7 @@ pub fn serve_connection(poller: &Poller, conn: TcpStream, spec: str,
         if now > due {
             alive = false
         } else {
-            val ready = poller.wait(tick_ms())
+            val ready = poller.wait(TICK_MS)
             var n: u64 = 0u64
             match ready {
                 Result::Ok(k) => { n = k }
@@ -1765,7 +1762,7 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
         Result::Ok(p) => p,
         Result::Err(e) => { eprintln("cannot create a poller: {e}")  return 1u64 }
     }
-    val watch = poller.register(listener.as_fd(), listener_token(), interest_read())
+    val watch = poller.register(listener.as_fd(), LISTENER_TOKEN, interest_read())
     match watch {
         Result::Ok(u) => { }
         Result::Err(e) => { eprintln("cannot watch the listener: {e}")  return 1u64 }
@@ -1776,7 +1773,7 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
     # section 3), and `live_bytes` in `/v1/stats` is what says whether
     # it held.
     var inbox = ByteWriter::with_capacity(65536u64)
-    var outbox = ByteWriter::with_capacity(send_bytes())
+    var outbox = ByteWriter::with_capacity(SEND_BYTES)
     var st = Stats::new()
 
     # The active segment, and the mounts it can be written to.
@@ -1809,7 +1806,7 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
     var running = true
     var watching = true          # is the listener still in the poller?
     while running {
-        val ready = poller.wait(tick_ms())
+        val ready = poller.wait(TICK_MS)
         var n: u64 = 0u64
         match ready {
             Result::Ok(k) => { n = k }
@@ -1817,7 +1814,7 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
         }
         if running {
             if n == 0u64 && conns.live() == 0u64 {
-                idle_ns = idle_ns + ((tick_ms() as u64) * 1000000u64)
+                idle_ns = idle_ns + ((TICK_MS as u64) * 1000000u64)
                 if budget_ns > 0u64 && idle_ns >= budget_ns { running = false }
             } else {
                 idle_ns = 0u64
@@ -1827,7 +1824,7 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
             while i < n && running {
                 val ev = poller.event(i)
                 val tok = ev.token()
-                if tok == listener_token() {
+                if tok == LISTENER_TOKEN {
                     # Take as many as the table will hold. A slot that
                     # cannot be opened means the listener comes out of
                     # the poller until one frees up -- the clients wait
@@ -1897,7 +1894,7 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
                         Result::Err(e) => { }
                     }
                 } elif !conns.is_full() && !watching {
-                    val on = poller.register(listener.as_fd(), listener_token(), interest_read())
+                    val on = poller.register(listener.as_fd(), LISTENER_TOKEN, interest_read())
                     match on {
                         Result::Ok(u) => { watching = true }
                         Result::Err(e) => { }
@@ -1909,7 +1906,7 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
             # loses, so the segment goes out on a timer as well as
             # when it fills (DATA_MODEL.md section 4).
             val now_ns = time::now_mono_ns()
-            if !w.is_empty() && now_ns - last_flush >= flush_after_ns() {
+            if !w.is_empty() && now_ns - last_flush >= FLUSH_AFTER_NS {
                 val put = flush_active(&mut w, &mut ms, &gens, &mut st, &crc)
                 last_flush = now_ns
             }
@@ -1919,7 +1916,7 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
     # Whoever is still connected is told nothing: the process is
     # going away, and a half-written answer is worse than none.
     var k: u64 = 0u64
-    while k < max_conns() {
+    while k < MAX_CONNS {
         if conns.fd_of(k) >= 0i32 { conn_close(&mut conns, &poller, k, &mut outbox) }
         k = k + 1u64
     }

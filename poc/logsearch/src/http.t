@@ -20,9 +20,9 @@
 
 # A request is refused outright past this, because the read buffer is
 # a fixed size and there is no second one to grow into.
-pub fn max_request_bytes() -> u64 { 1048576u64 }
-pub fn max_headers() -> u64 { 32u64 }
-pub fn max_header_bytes() -> u64 { 1024u64 }
+pub const MAX_REQUEST_BYTES: u64 = 1048576u64
+pub const MAX_HEADERS: u64 = 32u64
+pub const MAX_HEADER_BYTES: u64 = 1024u64
 
 pub fn method_none() -> u64 { 0u64 }
 pub fn method_get() -> u64 { 1u64 }
@@ -147,7 +147,7 @@ fn header_number(b: Span<u8>, at: u64, len: u64) -> u64 {
     var i: u64 = 0u64
     while i < len {
         val c: u8 = b.get(at + i)
-        if v > 1844674407370955161u64 { return max_request_bytes() + 1u64 }
+        if v > 1844674407370955161u64 { return MAX_REQUEST_BYTES + 1u64 }
         v = (v * 10u64) + ((c - '0') as u64)
         i = i + 1u64
     }
@@ -166,7 +166,7 @@ fn header_number(b: Span<u8>, at: u64, len: u64) -> u64 {
 pub fn parse_request(b: Span<u8>, len: u64) -> Request {
     var r = Request::empty()
     if len == 0u64 { return r }
-    if len > max_request_bytes() {
+    if len > MAX_REQUEST_BYTES {
         r.status = 413u64
         return r
     }
@@ -180,7 +180,7 @@ pub fn parse_request(b: Span<u8>, len: u64) -> Request {
         val nl = eol(b, start, len)
         if nl >= len {
             # No newline yet: everything so far is one unfinished line.
-            if len - start > max_header_bytes() {
+            if len - start > MAX_HEADER_BYTES {
                 r.status = 431u64
                 return r
             }
@@ -191,12 +191,12 @@ pub fn parse_request(b: Span<u8>, len: u64) -> Request {
                 head_end = nl + 1u64
                 have_head = true
             } else {
-                if n > max_header_bytes() {
+                if n > MAX_HEADER_BYTES {
                     r.status = 431u64
                     return r
                 }
                 count = count + 1u64
-                if count > max_headers() + 1u64 {
+                if count > MAX_HEADERS + 1u64 {
                     r.status = 431u64
                     return r
                 }
@@ -363,7 +363,7 @@ pub fn parse_request(b: Span<u8>, len: u64) -> Request {
         r.status = 400u64
         return r
     }
-    if head_end + content_length > max_request_bytes() {
+    if head_end + content_length > MAX_REQUEST_BYTES {
         r.status = 413u64
         return r
     }

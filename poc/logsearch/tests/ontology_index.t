@@ -212,14 +212,14 @@ test "co-occurrence links are countable without expanding a frame" {
                             # id で引き当てるので名前を引き戻さずに済む。
                             val who = String::from_str("ip:10.0.0.1")
                             val from_id = archive::term_id_of(traw, tsec.len(), span_of(&who), who.len())
-                            assert(from_id != archive::term_none(), "ip:10.0.0.1 should be a term")
+                            assert(from_id != archive::TERM_NONE, "ip:10.0.0.1 should be a term")
 
                             val pa_s = String::from_str("path:/a")
                             val pb_s = String::from_str("path:/b")
                             val pa = archive::term_id_of(traw, tsec.len(), span_of(&pa_s), pa_s.len())
                             val pb = archive::term_id_of(traw, tsec.len(), span_of(&pb_s), pb_s.len())
-                            assert(pa != archive::term_none(), "path:/a should be a term")
-                            assert(pb != archive::term_none(), "path:/b should be a term")
+                            assert(pa != archive::TERM_NONE, "path:/a should be a term")
+                            assert(pb != archive::TERM_NONE, "path:/b should be a term")
 
                             var to_ids: Vec<u32> = Vec::new()
                             var counts: Vec<u32> = Vec::new()

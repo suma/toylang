@@ -100,7 +100,7 @@ test "a snapshot gives back every row it was given" {
 
     var w = ByteWriter::with_capacity(512u64)
     catalog::encode_snapshot(&c, 4u64, &mut w, &crc)
-    assert_eq(w.len(), catalog::snap_head_bytes() + 3u64 * catalog::row_bytes())
+    assert_eq(w.len(), catalog::SNAP_HEAD_BYTES + 3u64 * catalog::ROW_BYTES)
 
     var back = Catalog::new()
     val sp = w.span()
@@ -132,7 +132,7 @@ test "a snapshot that does not check out is refused whole" {
     var w = ByteWriter::with_capacity(512u64)
     catalog::encode_snapshot(&c, 1u64, &mut w, &crc)
     # 2 行目のレコード数を書き換える。行の CRC も全体の CRC も外れる。
-    w.patch_u64(catalog::snap_head_bytes() + catalog::row_bytes() + 24u64, 9u64)
+    w.patch_u64(catalog::SNAP_HEAD_BYTES + catalog::ROW_BYTES + 24u64, 9u64)
 
     var back = Catalog::new()
     val sp = w.span()

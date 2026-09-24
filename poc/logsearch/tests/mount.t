@@ -163,7 +163,7 @@ test "a mount directory keeps the identity it was given" {
 
     val first = mount::ensure_meta(dir, "test")
     assert(first.ok, "ensure_meta should write a mount.json")
-    assert_eq(first.format, mount::meta_format())
+    assert_eq(first.format, mount::META_FORMAT)
     # 束縛してから使う。struct フィールドへの `&` を引数位置に直接
     # 書く形は compiled レーンが lower できない。
     val born = first.uuid.clone()

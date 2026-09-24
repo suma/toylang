@@ -49,8 +49,8 @@ import logdir
 import search
 import segfile
 
-pub fn kind_any() -> u32 { 255u32 }
-pub fn default_limit() -> u64 { 20u64 }
+pub const KIND_ANY: u32 = 255u32
+pub const DEFAULT_LIMIT: u64 = 20u64
 
 pub struct Query {
     ts_from: i64,
@@ -76,8 +76,8 @@ impl Query {
         val tm: Vec<String> = Vec::new()
         val sb: Vec<String> = Vec::new()
         Query {
-            ts_from: 0i64, ts_to: 0i64, kind: kind_any(),
-            limit: default_limit(), desc: true,
+            ts_from: 0i64, ts_to: 0i64, kind: KIND_ANY,
+            limit: DEFAULT_LIMIT, desc: true,
             needles: n, terms: tm, subs: sb,
         }
     }
@@ -158,7 +158,7 @@ fn kind_code(text: str) -> u32 {
         "apache" => 3u32,
         "epoch" => 4u32,
         "plain" => 0u32,
-        _ => kind_any(),
+        _ => KIND_ANY,
     }
 }
 
@@ -309,7 +309,7 @@ pub fn parse_query(text: str, now: i64) -> Query {
 # Does this record pass every filter?
 fn matches(q: &Query, arena: Span<u8>, line_at: u64, line_len: u64,
            kind: u32, ts: i64, dated: bool) -> bool {
-    if q.kind != kind_any() && q.kind != kind { return false }
+    if q.kind != KIND_ANY && q.kind != kind { return false }
     if q.ts_from != 0i64 {
         if !dated { return false }
         if ts < q.ts_from { return false }
@@ -338,7 +338,7 @@ fn matches(q: &Query, arena: Span<u8>, line_at: u64, line_len: u64,
 # The bytes of one line, as a `String`, for printing.
 #
 # Allocates, once per *hit* -- bounded by `limit` in the normal case
-# and by `max_hits()` in the worst.
+# and by `MAX_HITS` in the worst.
 pub fn text_of(arena: Span<u8>, at: u64, len: u64) -> String {
     var out = String::with_capacity(len)
     var i: u64 = 0u64
@@ -353,7 +353,7 @@ pub fn text_of(arena: Span<u8>, at: u64, len: u64) -> String {
 # How many matches are kept before the answer is called truncated.
 # A query that matches a million lines is a query whose author wants
 # a different query, not a million lines of output.
-pub fn max_hits() -> u64 { 20000u64 }
+pub const MAX_HITS: u64 = 20000u64
 
 # Run `q` over every segment under `dir` and print the answer.
 #
@@ -663,9 +663,9 @@ pub fn search(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32,
     # opened, which on a runtime that never reuses a freed byte meant
     # a scan's footprint grew with the corpus (MEMORY.md). `clear`
     # keeps the room and drops the contents.
-    var head_buf = ByteWriter::with_capacity(segfile::data_at() + 64u64)
-    var raw = ByteWriter::with_capacity(archive::frame_raw_bytes() + 65536u64)
-    var arena = ByteWriter::with_capacity(archive::segment_target_bytes() + 65536u64)
+    var head_buf = ByteWriter::with_capacity(segfile::DATA_AT + 64u64)
+    var raw = ByteWriter::with_capacity(archive::FRAME_RAW_BYTES + 65536u64)
+    var arena = ByteWriter::with_capacity(archive::SEGMENT_TARGET_BYTES + 65536u64)
     var recs = ByteWriter::with_capacity(4194304u64)
     var tsec = ByteWriter::with_capacity(4194304u64)
     # The record table of the segment in hand, by column. Cleared per
@@ -706,7 +706,7 @@ pub fn search(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32,
                 # `.dat` read, because the header could only be
                 # reached by reading the file it starts (R2).
                 val h = segfile::head_of(&f, &mut head_buf)
-                read_bytes = read_bytes + segfile::data_at()
+                read_bytes = read_bytes + segfile::DATA_AT
                 var wanted = h.ok
                 if !h.ok { println("  {seg_str}: not a segment") }
                 if wanted && q.ts_from != 0i64 && h.ts_max < q.ts_from { wanted = false }
@@ -849,7 +849,7 @@ pub fn search(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32,
                                     examined = examined + 1u64
                                     if matches(q, body, line_at, line_len, kind, ts, dated) {
                                         matched = matched + 1u64
-                                        if hits.size() < max_hits() {
+                                        if hits.size() < MAX_HITS {
                                             val hit = Hit { ts: ts, ord: hits.size() }
                                             hits.push(hit)
                                             val line = text_of(body, line_at, line_len)
@@ -933,7 +933,7 @@ pub fn run(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32) -> u64 {
     println("bytes read       {st.read_bytes} off the disk, {st.scanned_bytes} expanded")
     println("frames           {st.frames_read} expanded of {st.frames_total}")
     println("shown            {shown} (limit {q.limit})")
-    if st.truncated { println("truncated        yes -- more than {max_hits()} matches were kept") }
+    if st.truncated { println("truncated        yes -- more than {MAX_HITS} matches were kept") }
     println("elapsed          {st.ms} ms")
     0u64
 }
@@ -999,7 +999,7 @@ impl StreamTally {
 
 pub fn streams(segs: &Vec<String>, crc: &Crc32) -> StreamTally {
     var out = StreamTally::new()
-    var head_buf = ByteWriter::with_capacity(segfile::data_at() + 64u64)
+    var head_buf = ByteWriter::with_capacity(segfile::DATA_AT + 64u64)
     var raw = ByteWriter::with_capacity(1048576u64)
     var ssec = ByteWriter::with_capacity(1048576u64)
 
@@ -1078,7 +1078,7 @@ fn fold_streams(rows: &StreamRows, out: &mut StreamTally) {
 pub fn tally(segs: &Vec<String>, prefix: str, keys_only: bool,
              crc: &Crc32) -> FieldTally {
     var out = FieldTally::new()
-    var head_buf = ByteWriter::with_capacity(segfile::data_at() + 64u64)
+    var head_buf = ByteWriter::with_capacity(segfile::DATA_AT + 64u64)
     var raw = ByteWriter::with_capacity(4194304u64)
     var tsec = ByteWriter::with_capacity(4194304u64)
 

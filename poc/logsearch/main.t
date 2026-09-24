@@ -713,7 +713,7 @@ fn cmd_top_linked(dir: str, q: &Query, field: str, limit: u64) -> u64 {
 
     val watch = Stopwatch::start()
     val crc = Crc32::new()
-    var head_buf = ByteWriter::with_capacity(segfile::data_at() + 64u64)
+    var head_buf = ByteWriter::with_capacity(segfile::DATA_AT + 64u64)
     var raw = ByteWriter::with_capacity(4194304u64)
     var tsec = ByteWriter::with_capacity(4194304u64)
     var lsec = ByteWriter::with_capacity(4194304u64)
@@ -765,7 +765,7 @@ fn cmd_top_linked(dir: str, q: &Query, field: str, limit: u64) -> u64 {
                             match aw {
                                 Option::Some(want) => {
                                     val id = archive::term_id_of(traw, tsec.len(), want, anchor.len())
-                                    if id != archive::term_none() {
+                                    if id != archive::TERM_NONE {
                                         segs_hit = segs_hit + 1u64
                                         var to_ids: Vec<u32> = Vec::new()
                                         var to_counts: Vec<u32> = Vec::new()
@@ -1071,9 +1071,9 @@ fn cmd_fields(dir: str, field: str, limit: u64) -> u64 {
 
     val watch = Stopwatch::start()
     val crc = Crc32::new()
-    var head_buf = ByteWriter::with_capacity(segfile::data_at() + 64u64)
-    var raw = ByteWriter::with_capacity(archive::frame_raw_bytes() + 65536u64)
-    var arena_buf = ByteWriter::with_capacity(archive::segment_target_bytes() + 65536u64)
+    var head_buf = ByteWriter::with_capacity(segfile::DATA_AT + 64u64)
+    var raw = ByteWriter::with_capacity(archive::FRAME_RAW_BYTES + 65536u64)
+    var arena_buf = ByteWriter::with_capacity(archive::SEGMENT_TARGET_BYTES + 65536u64)
     var recs = ByteWriter::with_capacity(4194304u64)
     var index_of: Dict<u64, u64> = Dict::new()
     var names: Vec<String> = Vec::new()
@@ -1271,7 +1271,7 @@ fn cmd_object(dir: str, spec: str) -> u64 {
     var segs: Vec<String> = Vec::new()
     mount::segments_of(dir, &mut segs)
     val crc = Crc32::new()
-    var head_buf = ByteWriter::with_capacity(segfile::data_at() + 64u64)
+    var head_buf = ByteWriter::with_capacity(segfile::DATA_AT + 64u64)
     var raw = ByteWriter::with_capacity(1048576u64)
     var tsec = ByteWriter::with_capacity(1048576u64)
     var osec = ByteWriter::with_capacity(1048576u64)

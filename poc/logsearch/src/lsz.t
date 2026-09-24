@@ -32,14 +32,14 @@
 # its own, so a query can expand the two frames it needs out of a
 # hundred (STORAGE_FORMAT.md §3).
 
-pub fn hash_bits() -> u64 { 15u64 }
-pub fn hash_size() -> u64 { 32768u64 }
-pub fn min_match() -> u64 { 4u64 }
-pub fn max_offset() -> u64 { 65535u64 }
+pub const HASH_BITS: u64 = 15u64
+pub const HASH_SIZE: u64 = 32768u64
+pub const MIN_MATCH: u64 = 4u64
+pub const MAX_OFFSET: u64 = 65535u64
 
 # How many bytes agree at `cand` and `pos`, counted from zero.
 #
-# Counting from zero rather than from `min_match()` means the
+# Counting from zero rather than from `MIN_MATCH` means the
 # four-byte test and the extension are the same comparison: a caller
 # reads "fewer than four" as "not a match" and never walks those
 # bytes twice.
@@ -148,9 +148,9 @@ pub struct Lsz {
 
 impl Lsz {
     pub fn new() -> Self {
-        var t: Vec<u32> = Vec::with_capacity(hash_size())
+        var t: Vec<u32> = Vec::with_capacity(HASH_SIZE)
         var i: u64 = 0u64
-        while i < hash_size() {
+        while i < HASH_SIZE {
             t.push(0u32)
             i = i + 1u64
         }
@@ -161,7 +161,7 @@ impl Lsz {
     # may not reach across one.
     pub fn reset(&mut self) {
         var i: u64 = 0u64
-        while i < hash_size() {
+        while i < HASH_SIZE {
             self.table.set(i, 0u32)
             i = i + 1u64
         }
@@ -178,7 +178,7 @@ impl Lsz {
         # Knuth's multiplicative hash, kept inside 32 bits: `*` wraps
         # rather than trapping (RUNTIME-TRAP), which is what we want.
         val m = (v * 2654435761u64) & 0xFFFFFFFFu64
-        (m >> (32u64 - hash_bits())) & (hash_size() - 1u64)
+        (m >> (32u64 - HASH_BITS)) & (HASH_SIZE - 1u64)
     }
 
     # Compress `len` bytes of `src` starting at `from` into `out`.
@@ -194,7 +194,7 @@ impl Lsz {
         val low15: i32x4 = __simd_splat(32767i32)
         var pos = from
         var anchor = from
-        while pos + min_match() <= end {
+        while pos + MIN_MATCH <= end {
             # Four hashes at a time while there is a full window to
             # load; the tail falls back to the scalar hash, which is
             # also the reference the batch is checked against.
@@ -220,7 +220,7 @@ impl Lsz {
             var advanced = false
             while k < batch && !advanced {
                 val at = pos + k
-                if at + min_match() > end {
+                if at + MIN_MATCH > end {
                     k = batch
                 } else {
                     var h: u64 = h0
@@ -235,19 +235,19 @@ impl Lsz {
                     if slot != 0u32 {
                         val cand = (slot as u64) - 1u64
                         val dist = at - cand
-                        if cand >= from && dist <= max_offset() && dist > 0u64 {
+                        if cand >= from && dist <= MAX_OFFSET && dist > 0u64 {
                             # The four-byte check and the extension are
                             # the same comparison, so they are one call:
                             # `match_len` answers 0..3 for "not a match".
                             matched = match_len(src, cand, at, end)
-                            if matched < min_match() { matched = 0u64 }
+                            if matched < MIN_MATCH { matched = 0u64 }
                         }
                     }
 
-                    if matched >= min_match() {
+                    if matched >= MIN_MATCH {
                         val dist = at - ((slot as u64) - 1u64)
                         val litlen = at - anchor
-                        val extra = matched - min_match()
+                        val extra = matched - MIN_MATCH
 
                         var token: u64 = 0u64
                         if litlen >= 15u64 { token = 15u64 << 4u64 } else { token = litlen << 4u64 }
@@ -353,7 +353,7 @@ pub fn decode_frame(src: Span<u8>, from: u64, clen: u64, raw_len: u64, out: &mut
                     ok = false
                 } else {
                     val dist = rd.take_u16(src)
-                    var mlen = (token & 15u64) + min_match()
+                    var mlen = (token & 15u64) + MIN_MATCH
                     if (token & 15u64) == 15u64 {
                         if varint_fits(src, rd.position(), from + clen) {
                             val more = rd.take_varint(src)

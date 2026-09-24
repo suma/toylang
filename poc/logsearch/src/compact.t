@@ -56,25 +56,25 @@ impl CompactReport {
 # still being queried by "the last hour" dashboards is a file whose
 # pages are warm; merging it spends I/O to make the common case
 # slower for a while.
-pub fn cold_secs() -> i64 { 86400i64 }
+pub const COLD_SECS: i64 = 86400i64
 
 # How many inputs one pass takes. A pass is meant to be interruptible
 # — `/v1/admin/compact` advances it by one, a cron loop calls it until
 # it answers 0 — so the bound is on the work, not on the result size.
-pub fn max_inputs() -> u64 { 32u64 }
+pub const MAX_INPUTS: u64 = 32u64
 
 # Merge one run of cold segments on `mount`. Answers what it did.
 pub fn compact_once(mount: str, now: i64, crc: &Crc32) -> CompactReport {
     var out = CompactReport::nothing()
     val c = catalog::load(mount, crc)
     if c.size() < 2u64 { return out }
-    val cutoff = now - cold_secs()
+    val cutoff = now - COLD_SECS
 
     # The oldest first, so a run of merges walks the archive forward
     # in time rather than leaving holes.
     var picked: Vec<u64> = Vec::new()
     var best_first = true
-    while best_first && picked.size() < max_inputs() {
+    while best_first && picked.size() < MAX_INPUTS {
         var at: i64 = -1i64
         var oldest: i64 = 0i64
         var i: u64 = 0u64

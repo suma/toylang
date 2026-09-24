@@ -27,11 +27,11 @@
 
 import lsz
 
-pub fn head_bytes() -> u64 { 64u64 }
-pub fn dir_at() -> u64 { 64u64 }
-pub fn dir_slots() -> u64 { 8u64 }
-pub fn data_at() -> u64 { 320u64 }
-pub fn seg_version() -> u64 { 3u64 }
+pub const HEAD_BYTES: u64 = 64u64
+pub const DIR_AT: u64 = 64u64
+pub const DIR_SLOTS: u64 = 8u64
+pub const DATA_AT: u64 = 320u64
+pub const SEG_VERSION: u64 = 3u64
 
 pub fn kind_frames() -> u64 { 1u64 }
 pub fn kind_records() -> u64 { 2u64 }
@@ -133,11 +133,11 @@ pub fn read_range(f: &File, off: u64, len: u64, out: &mut ByteWriter) -> bool {
 # many segments allocates once).
 pub fn head_of(f: &File, scratch: &mut ByteWriter) -> SegHead {
     var h = SegHead::empty()
-    if !read_range(f, 0u64, data_at(), &mut scratch) { return h }
+    if !read_range(f, 0u64, DATA_AT, &mut scratch) { return h }
     val w = scratch.span()
     match w {
         Option::Some(b) => {
-            var rd = ByteReader::new(data_at())
+            var rd = ByteReader::new(DATA_AT)
             if rd.take_magic(b, "LSD3") {
                 val version = rd.take_u32(b)
                 h.segid = rd.take_u64(b)
@@ -150,11 +150,11 @@ pub fn head_of(f: &File, scratch: &mut ByteWriter) -> SegHead {
                 val kind = rd.take_u32(b)
                 val hcrc = rd.take_u32(b)
 
-                rd.seek(dir_at())
+                rd.seek(DIR_AT)
                 val count = rd.take_u32(b)
                 val reserved = rd.take_u32(b)
                 var i: u64 = 0u64
-                while i < count && i < dir_slots() {
+                while i < count && i < DIR_SLOTS {
                     val k = rd.take_u32(b)
                     val off = rd.take_u64(b)
                     val len = rd.take_u64(b)
@@ -172,7 +172,7 @@ pub fn head_of(f: &File, scratch: &mut ByteWriter) -> SegHead {
                     if k == kind_streams() { h.strs_off = off  h.strs_len = len }
                     i = i + 1u64
                 }
-                if version == seg_version() { h.ok = true }
+                if version == SEG_VERSION { h.ok = true }
             }
         }
         Option::None => { }

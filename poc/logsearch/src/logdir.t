@@ -21,7 +21,7 @@ import std.path
 # How deep to recurse. `/var/log` is two levels in practice
 # (`apache2/`, `nginx/`, ...); the bound keeps a symlink loop from
 # turning into an unbounded walk.
-pub fn max_scan_depth() -> u64 { 4u64 }
+pub const MAX_SCAN_DEPTH: u64 = 4u64
 
 # Whether `name` looks like a log file this reader can parse.
 #

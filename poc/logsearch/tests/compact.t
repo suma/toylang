@@ -10,7 +10,7 @@
 #   3. **元は出力が在ってから消える** — 台帳にアーカイブが載り、
 #      入力の行が消え、ファイルも消える
 #
-# 熱いセグメント (`cold_secs()` より新しいもの) は触らない。それも
+# 熱いセグメント (`COLD_SECS` より新しいもの) は触らない。それも
 # ここで言う — 触ってしまうと「今読まれているファイル」を書き換える
 # ことになる。
 #
@@ -207,7 +207,7 @@ test "merging three segments keeps every record and every answer" {
 }
 
 # 熱いものは触らない。**今読まれているファイル**を書き換えないのが
-# 併合の前提で、`cold_secs()` はそのための境界である。
+# 併合の前提で、`COLD_SECS` はそのための境界である。
 test "a segment that is still warm is left alone" {
     val mount = "build/compact-warm"
     val records = cp_mount(mount)

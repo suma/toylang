@@ -204,7 +204,7 @@ test "a damaged dictionary reads as empty, not as half a dictionary" {
     labels::merge_segment(&mut d, &seg, true, &crc)
     var w = ByteWriter::with_capacity(1024u64)
     labels::encode_dict(&d, 3u64, &mut w, &crc)
-    assert(w.len() > labels::dict_head_bytes(), "the fixture should have rows")
+    assert(w.len() > labels::DICT_HEAD_BYTES, "the fixture should have rows")
 
     # 本文の 1 バイトを反転する。CRC はヘッダに入っているので、
     # 反転は必ず見つかる。
@@ -215,7 +215,7 @@ test "a damaged dictionary reads as empty, not as half a dictionary" {
             var i: u64 = 0u64
             while i < w.len() {
                 var byte = b.get(i)
-                if i == labels::dict_head_bytes() { byte = byte ^ 0x01u8 }
+                if i == labels::DICT_HEAD_BYTES { byte = byte ^ 0x01u8 }
                 flipped.put_u8(byte)
                 i = i + 1u64
             }

@@ -36,7 +36,7 @@ pub fn state_degraded() -> u64 { 2u64 }
 
 # The format number written into `meta/mount.json`. It is the segment
 # format's, because that is what a reader has to understand.
-pub fn meta_format() -> u64 { 3u64 }
+pub const META_FORMAT: u64 = 3u64
 
 pub fn state_name(s: u64) -> str {
     if s == state_full() { return "full" }
@@ -414,7 +414,7 @@ pub fn write_meta(mount: str, uuid: &String, note: str) -> bool {
     var w = JsonWriter::new()
     w.begin_object()
     w.key("format")
-    w.u64_value(meta_format())
+    w.u64_value(META_FORMAT)
     w.key("uuid")
     w.str_value(uuid.to_str())
     w.key("created_unix_ns")
@@ -494,13 +494,13 @@ pub fn open_spec(spec: str, ms: &mut MountSet) -> bool {
         return true
     }
     val one = String::from_str(spec)
-    ms.add(&one, default_quota(), false)
+    ms.add(&one, DEFAULT_QUOTA, false)
     true
 }
 
 # The placeholder a bare directory gets. 1 TiB, which is a number
 # chosen to stay out of the way rather than to mean anything.
-pub fn default_quota() -> u64 { 1099511627776u64 }
+pub const DEFAULT_QUOTA: u64 = 1099511627776u64
 
 # How many of the declared mounts are directories this process can
 # see.

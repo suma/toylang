@@ -33,7 +33,7 @@
 # what changed, which is what makes this cheaper than the query it
 # replaces. `repair` rebuilds from `seg/` like everything else here.
 
-pub fn dict_head_bytes() -> u64 { 24u64 }
+pub const DICT_HEAD_BYTES: u64 = 24u64
 
 # One (key, value) pair and the records carrying it. A row whose
 # value is empty is the key's own total, so both forms of
@@ -149,8 +149,8 @@ pub fn encode_dict(d: &LabelDict, gen: u64, w: &mut ByteWriter, crc: &Crc32) {
     val sp = w.span()
     match sp {
         Option::Some(b) => {
-            val n = w.len() - dict_head_bytes()
-            if n > 0u64 { sum = crc.of(b, dict_head_bytes(), n) }
+            val n = w.len() - DICT_HEAD_BYTES
+            if n > 0u64 { sum = crc.of(b, DICT_HEAD_BYTES, n) }
         }
         Option::None => { }
     }
@@ -183,7 +183,7 @@ fn take_short(rd: &mut ByteReader, b: Span<u8>) -> String {
 # understands. A bad CRC is the same answer as a bad magic: the
 # dictionary is rebuildable, so there is nothing to salvage.
 pub fn decode_dict(b: Span<u8>, len: u64, d: &mut LabelDict, crc: &Crc32) -> u64 {
-    if len < dict_head_bytes() { return 0u64 }
+    if len < DICT_HEAD_BYTES { return 0u64 }
     var rd = ByteReader::new(len)
     if !rd.take_magic(b, "LSD1") { return 0u64 }
     val gen = rd.take_u32(b)
@@ -191,9 +191,9 @@ pub fn decode_dict(b: Span<u8>, len: u64, d: &mut LabelDict, crc: &Crc32) -> u64
     val want = rd.take_u32(b)
     val reserved = rd.take_u32(b)
 
-    val body = len - dict_head_bytes()
+    val body = len - DICT_HEAD_BYTES
     var got: u64 = 0u64
-    if body > 0u64 { got = crc.of(b, dict_head_bytes(), body) }
+    if body > 0u64 { got = crc.of(b, DICT_HEAD_BYTES, body) }
     if got != want { return 0u64 }
 
     var i: u64 = 0u64

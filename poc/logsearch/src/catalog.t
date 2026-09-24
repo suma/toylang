@@ -30,13 +30,13 @@ import segfile
 
 # One row is 64 bytes: five u64 and six u32. Fixed length is what
 # lets `file_size` check the row count before anything is decoded.
-pub fn row_bytes() -> u64 { 64u64 }
+pub const ROW_BYTES: u64 = 64u64
 
 # Magic, gen, rows, crc -- and room to grow without moving the rows.
-pub fn snap_head_bytes() -> u64 { 32u64 }
+pub const SNAP_HEAD_BYTES: u64 = 32u64
 
 # Magic, total length, op, body crc.
-pub fn jrec_head_bytes() -> u64 { 16u64 }
+pub const JREC_HEAD_BYTES: u64 = 16u64
 
 # A row describes either a segment or the archive a run of segments
 # was merged into (DATA_MODEL.md §5). Same format, different grain.
@@ -491,8 +491,8 @@ pub fn encode_snapshot(c: &Catalog, gen: u64, w: &mut ByteWriter, crc: &Crc32) {
     val sp = w.span()
     match sp {
         Option::Some(b) => {
-            val n = w.len() - snap_head_bytes()
-            if n > 0u64 { sum = crc.of(b, snap_head_bytes(), n) }
+            val n = w.len() - SNAP_HEAD_BYTES
+            if n > 0u64 { sum = crc.of(b, SNAP_HEAD_BYTES, n) }
         }
         Option::None => { }
     }
@@ -502,7 +502,7 @@ pub fn encode_snapshot(c: &Catalog, gen: u64, w: &mut ByteWriter, crc: &Crc32) {
 # The reverse. Returns the generation the snapshot names, or 0 if it
 # is not a snapshot this reader understands.
 pub fn decode_snapshot(b: Span<u8>, len: u64, c: &mut Catalog, crc: &Crc32) -> u64 {
-    if len < snap_head_bytes() { return 0u64 }
+    if len < SNAP_HEAD_BYTES { return 0u64 }
     var rd = ByteReader::new(len)
     if !rd.take_magic(b, "LSC2") { return 0u64 }
     val gen = rd.take_u32(b)
@@ -511,10 +511,10 @@ pub fn decode_snapshot(b: Span<u8>, len: u64, c: &mut Catalog, crc: &Crc32) -> u
     val reserved = rd.take_u32(b)
     val reserved2 = rd.take_u64(b)
 
-    val body = len - snap_head_bytes()
-    if body != rows * row_bytes() { return 0u64 }
+    val body = len - SNAP_HEAD_BYTES
+    if body != rows * ROW_BYTES { return 0u64 }
     var got: u64 = 0u64
-    if body > 0u64 { got = crc.of(b, snap_head_bytes(), body) }
+    if body > 0u64 { got = crc.of(b, SNAP_HEAD_BYTES, body) }
     if got != want { return 0u64 }
 
     var i: u64 = 0u64
@@ -571,15 +571,15 @@ pub fn gen_of_snap(name: &String) -> Option<u64> {
 # The journal
 
 fn put_jrec(w: &mut ByteWriter, op: u64, crc: &Crc32, body_len: u64) {
-    # Called after the body has been written at `jrec_head_bytes()`;
+    # Called after the body has been written at `JREC_HEAD_BYTES`;
     # see `append_add`. Kept separate so the two record shapes share
     # one framing.
-    w.patch_u32(4u64, jrec_head_bytes() + body_len)
+    w.patch_u32(4u64, JREC_HEAD_BYTES + body_len)
     w.patch_u32(8u64, op)
     var sum: u64 = 0u64
     val sp = w.span()
     match sp {
-        Option::Some(b) => { sum = crc.of(b, jrec_head_bytes(), body_len) }
+        Option::Some(b) => { sum = crc.of(b, JREC_HEAD_BYTES, body_len) }
         Option::None => { }
     }
     w.patch_u32(12u64, sum)
@@ -599,7 +599,7 @@ pub fn append_add(mount: str, gen: u64, r: &CatRow, crc: &Crc32) -> bool {
     var w = ByteWriter::with_capacity(128u64)
     frame_start(&mut w)
     put_row(&mut w, r, crc)
-    put_jrec(&mut w, op_add(), crc, row_bytes())
+    put_jrec(&mut w, op_add(), crc, ROW_BYTES)
     val p = log_path(mount, gen)
     append_whole(p.to_str(), &w)
 }
@@ -630,7 +630,7 @@ pub fn replay(b: Span<u8>, len: u64, c: &mut Catalog, crc: &Crc32) -> u64 {
     var going = true
     while going {
         val at = rd.position()
-        if at + jrec_head_bytes() > len { going = false }
+        if at + JREC_HEAD_BYTES > len { going = false }
         if going {
             if !rd.take_magic(b, "LSJ1") {
                 going = false
@@ -638,15 +638,15 @@ pub fn replay(b: Span<u8>, len: u64, c: &mut Catalog, crc: &Crc32) -> u64 {
                 val total = rd.take_u32(b)
                 val op = rd.take_u32(b)
                 val want = rd.take_u32(b)
-                if total < jrec_head_bytes() || at + total > len {
+                if total < JREC_HEAD_BYTES || at + total > len {
                     going = false
                 } else {
-                    val body = total - jrec_head_bytes()
-                    val got = crc.of(b, at + jrec_head_bytes(), body)
+                    val body = total - JREC_HEAD_BYTES
+                    val got = crc.of(b, at + JREC_HEAD_BYTES, body)
                     if got != want {
                         going = false
                     } else {
-                        if op == op_add() && body == row_bytes() {
+                        if op == op_add() && body == ROW_BYTES {
                             val r = take_row(&mut rd, b, crc)
                             if r.ok { c.add(&r) }
                             applied = applied + 1u64
@@ -721,7 +721,7 @@ pub fn load(mount: str, crc: &Crc32) -> Catalog {
 pub fn write_generation(mount: str, c: &Catalog, gen: u64,
                         crc: &Crc32) -> bool {
     if !ensure_dirs(mount) { return false }
-    var w = ByteWriter::with_capacity(snap_head_bytes() + c.size() * row_bytes() + 64u64)
+    var w = ByteWriter::with_capacity(SNAP_HEAD_BYTES + c.size() * ROW_BYTES + 64u64)
     encode_snapshot(c, gen, &mut w, crc)
 
     val part = "{mount}/tmp/catalog.{gen:06}.snap.part"
@@ -772,7 +772,7 @@ pub fn rebuild(mount: str, crc: &Crc32) -> Catalog {
     var c = Catalog::new()
     val root = "{mount}/seg"
     val segs = logdir::scan_suffix(root, ".seg")
-    var scratch = ByteWriter::with_capacity(segfile::data_at())
+    var scratch = ByteWriter::with_capacity(segfile::DATA_AT)
     var i: u64 = 0u64
     while i < segs.size() {
         val p: &String = segs.borrow(i)
